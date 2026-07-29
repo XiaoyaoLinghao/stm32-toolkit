@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 99,
+  "project": {
+    "name": "firmware",
+    "origin": "manual"
+  },
+  "target": {
+    "device": "STM32F429ZGTx",
+    "core": "cortex-m4"
+  },
+  "framework": {
+    "type": "spl",
+    "version": null
+  },
+  "build": {
+    "sources": [],
+    "includePaths": [],
+    "defines": [],
+    "compileOptions": [],
+    "assemblySources": []
+  },
+  "debug": {}
+}
