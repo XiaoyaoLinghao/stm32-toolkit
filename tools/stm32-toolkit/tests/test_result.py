@@ -30,16 +30,15 @@ def test_failure_result_has_machine_readable_code():
 
 
 def test_success_result_snapshots_json_style_data():
-    data = {"items": [{"name": "initial"}], "tags": {"keil"}}
+    data = {"items": [{"name": "initial"}], "kind": "keil"}
     result = OperationResult.success("project.detect", data)
 
     data["items"][0]["name"] = "mutated"
     data["items"].append({"name": "later"})
-    data["tags"].add("cubeide")
 
     assert result.to_dict()["data"] == {
         "items": [{"name": "initial"}],
-        "tags": ["keil"],
+        "kind": "keil",
     }
     with pytest.raises(TypeError):
         result.data["items"] = []
@@ -62,3 +61,28 @@ def test_failure_result_serializes_mapping_proxy_details():
     result = OperationResult.failure("project.load", "INVALID", "Invalid project", details)
 
     assert result.to_dict()["details"] == {"field": "logicalProjectId"}
+
+
+def test_success_result_rejects_nested_set_data():
+    with pytest.raises(TypeError, match="set and frozenset values are not supported"):
+        OperationResult.success("project.detect", {"targets": {"keil"}})
+
+
+def test_success_result_rejects_nested_frozenset_data():
+    with pytest.raises(TypeError, match="set and frozenset values are not supported"):
+        OperationResult.success("project.detect", {"targets": frozenset({"keil"})})
+
+
+def test_failure_result_rejects_nested_set_details():
+    with pytest.raises(TypeError, match="set and frozenset values are not supported"):
+        OperationResult.failure("project.load", "INVALID", "Invalid project", {"targets": {"keil"}})
+
+
+def test_failure_result_rejects_nested_frozenset_details():
+    with pytest.raises(TypeError, match="set and frozenset values are not supported"):
+        OperationResult.failure(
+            "project.load",
+            "INVALID",
+            "Invalid project",
+            {"targets": frozenset({"keil"})},
+        )

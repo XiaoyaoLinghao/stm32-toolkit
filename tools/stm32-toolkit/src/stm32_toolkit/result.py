@@ -13,8 +13,9 @@ def _freeze_protocol_value(value: object) -> object:
     """Snapshot JSON-style containers without serializing arbitrary objects.
 
     OperationResult keeps scalar and custom Generic[T] values opaque. Mappings,
-    lists, tuples, and sets are recursively copied into immutable containers so
-    callers cannot mutate protocol payloads after construction.
+    lists, and tuples are recursively copied into immutable containers so callers
+    cannot mutate protocol payloads after construction. Sets and frozensets are
+    rejected because they are not JSON protocol values.
     """
     if isinstance(value, MappingABC):
         return MappingProxyType(
@@ -23,7 +24,7 @@ def _freeze_protocol_value(value: object) -> object:
     if isinstance(value, (list, tuple)):
         return tuple(_freeze_protocol_value(item) for item in value)
     if isinstance(value, (set, frozenset)):
-        return frozenset(_freeze_protocol_value(item) for item in value)
+        raise TypeError("set and frozenset values are not supported in OperationResult payloads")
     return value
 
 
@@ -31,7 +32,7 @@ def _thaw_protocol_value(value: object) -> object:
     """Convert frozen protocol containers to ordinary JSON-style containers."""
     if isinstance(value, MappingABC):
         return {key: _thaw_protocol_value(item) for key, item in value.items()}
-    if isinstance(value, (tuple, frozenset)):
+    if isinstance(value, tuple):
         return [_thaw_protocol_value(item) for item in value]
     return value
 
