@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "stm32-toolkit"
+version = "0.2.0"
+requires-python = ">=3.10"
+dependencies = [
+  "jsonschema>=4.23,<5",
+  "mcp>=1.27,<2",
+]
+
+[project.optional-dependencies]
+test = ["pytest>=8,<9", "pytest-cov>=5,<7"]
+
+[project.scripts]
+stm32-toolkit = "stm32_toolkit.cli:main"
+stm32-toolkit-mcp = "stm32_toolkit.mcp_server:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
