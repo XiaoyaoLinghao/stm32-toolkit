@@ -51,7 +51,7 @@ class WorkspacePaths:
     ) -> "WorkspacePaths":
         canonical_project = canonical_project_root(project_root)
         canonical_data = data_root.expanduser().resolve(strict=False)
-        resolved_session_id = _require_safe_session_id(session_id or new_session_id())
+        resolved_session_id = _require_safe_session_id(session_id if session_id is not None else new_session_id())
         workspace_id = compute_workspace_id(logical_project_id, canonical_project)
         workspace_root = canonical_data / "projects" / workspace_id
 
@@ -68,7 +68,18 @@ class WorkspacePaths:
             session_root=workspace_root / "sessions" / resolved_session_id,
         )
 
+    def _require_owned_data_path(self, path: Path) -> None:
+        try:
+            path.resolve(strict=False).relative_to(self.data_root)
+        except ValueError as error:
+            raise ValueError("path is outside plugin data root") from error
+
     def ensure(self) -> None:
+        """Create owned state directories after resolving reparse-point redirects.
+
+        A component can still be swapped between the check and mkdir calls; fully
+        eliminating that TOCTOU race would require platform-native handle APIs.
+        """
         for directory in (
             self.monitor_root,
             self.diagnostics_root,
@@ -76,7 +87,9 @@ class WorkspacePaths:
             self.cache_root,
             self.session_root,
         ):
+            self._require_owned_data_path(directory)
             directory.mkdir(parents=True, exist_ok=True)
+            self._require_owned_data_path(directory)
 
     def require_project_path(self, path: Path) -> Path:
         candidate = path if path.is_absolute() else self.project_root / path
