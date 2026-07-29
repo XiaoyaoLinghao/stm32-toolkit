@@ -1,0 +1,14 @@
+{
+  "name": "stm32-toolkit",
+  "version": "1.0.0",
+  "description": "STM32F4 嵌入式开发完整工具包 — 环境安装、Keil 迁移、工程初始化、变量调试、实时监控面板",
+  "author": "STM32 Toolkit Team",
+  "setup": "pip install -e tools/stm32-monitor/",
+  "skills": [
+    "setup-stm32-env",
+    "migrate-keil",
+    "init-stm32-project",
+    "read-var",
+    "stm32-monitor"
+  ]
+}
