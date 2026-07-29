@@ -1,3 +1,7 @@
+from types import MappingProxyType
+
+import pytest
+
 from stm32_toolkit.result import OperationResult
 
 
@@ -23,3 +27,38 @@ def test_failure_result_has_machine_readable_code():
     assert payload["ok"] is False
     assert payload["code"] == "PROJECT_SCHEMA_INVALID"
     assert payload["details"] == {"field": "logicalProjectId"}
+
+
+def test_success_result_snapshots_json_style_data():
+    data = {"items": [{"name": "initial"}], "tags": {"keil"}}
+    result = OperationResult.success("project.detect", data)
+
+    data["items"][0]["name"] = "mutated"
+    data["items"].append({"name": "later"})
+    data["tags"].add("cubeide")
+
+    assert result.to_dict()["data"] == {
+        "items": [{"name": "initial"}],
+        "tags": ["keil"],
+    }
+    with pytest.raises(TypeError):
+        result.data["items"] = []
+
+
+def test_failure_result_snapshots_and_does_not_expose_mutable_details():
+    details = {"field": {"name": "initial"}}
+    result = OperationResult.failure("project.load", "INVALID", "Invalid project", details)
+
+    details["field"]["name"] = "mutated"
+
+    assert result.to_dict()["details"] == {"field": {"name": "initial"}}
+    with pytest.raises(TypeError):
+        result.details["field"] = {}
+
+
+def test_failure_result_serializes_mapping_proxy_details():
+    details = MappingProxyType({"field": "logicalProjectId"})
+
+    result = OperationResult.failure("project.load", "INVALID", "Invalid project", details)
+
+    assert result.to_dict()["details"] == {"field": "logicalProjectId"}
