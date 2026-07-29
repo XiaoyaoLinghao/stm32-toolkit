@@ -1,0 +1,103 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://stm32-toolkit.dev/schemas/stm32-project.schema.json",
+  "title": "STM32 Toolkit Project Manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "logicalProjectId",
+    "project",
+    "target",
+    "framework",
+    "build",
+    "debug"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "logicalProjectId": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "project": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "origin"],
+      "properties": {
+        "name": {"type": "string", "minLength": 1},
+        "origin": {"type": "string", "minLength": 1}
+      }
+    },
+    "target": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["device", "core"],
+      "properties": {
+        "device": {"type": "string", "minLength": 1},
+        "core": {"type": "string", "minLength": 1},
+        "fpu": {"type": "string", "minLength": 1},
+        "floatAbi": {"type": "string", "minLength": 1},
+        "devicePack": {"type": "string", "minLength": 1}
+      }
+    },
+    "framework": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type"],
+      "properties": {
+        "type": {
+          "enum": ["spl", "hal", "ll", "cmsis", "bare-metal"]
+        },
+        "version": {"type": ["string", "null"]}
+      }
+    },
+    "build": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "sources",
+        "includePaths",
+        "defines",
+        "compileOptions",
+        "assemblySources"
+      ],
+      "properties": {
+        "sources": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1}
+        },
+        "includePaths": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1}
+        },
+        "defines": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1}
+        },
+        "compileOptions": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1}
+        },
+        "assemblySources": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1}
+        },
+        "elf": {
+          "type": ["string", "null"],
+          "minLength": 1
+        }
+      }
+    },
+    "debug": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "backend": {"type": "string", "minLength": 1},
+        "target": {"type": "string", "minLength": 1},
+        "svd": {"type": ["string", "null"], "minLength": 1}
+      }
+    }
+  }
+}

@@ -1,4 +1,5 @@
 import json
+from importlib import resources
 from pathlib import Path
 from uuid import UUID
 
@@ -111,3 +112,22 @@ def test_explicit_schema_path_is_used(configured_project: Path, tmp_path: Path):
 
     assert error.value.code == "PROJECT_SCHEMA_INVALID"
     assert error.value.details == {"field": "missing", "rule": "required"}
+
+
+def test_malformed_explicit_schema_returns_stable_schema_error(configured_project: Path, tmp_path: Path):
+    schema_path = tmp_path / "schema.json"
+    schema_path.write_text('{"type": 12}', encoding="utf-8")
+
+    with pytest.raises(ProjectManifestError) as error:
+        ProjectManifest.load(configured_project, schema_path)
+
+    assert error.value.code == "PROJECT_SCHEMA_INVALID"
+    assert error.value.details == {"field": "$schema", "rule": "invalidSchema"}
+
+
+def test_packaged_schema_matches_plugin_root_schema():
+    package_schema = resources.files("stm32_toolkit").joinpath("schemas/stm32-project.schema.json")
+    root_schema = Path(__file__).resolve().parents[3] / "schemas/stm32-project.schema.json"
+    assert json.loads(package_schema.read_text(encoding="utf-8")) == json.loads(
+        root_schema.read_text(encoding="utf-8")
+    )

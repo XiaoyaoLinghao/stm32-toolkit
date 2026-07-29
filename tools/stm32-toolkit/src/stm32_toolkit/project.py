@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from importlib import resources
 from dataclasses import dataclass
 from pathlib import Path
 from uuid import UUID
@@ -115,9 +116,12 @@ def _load_manifest_json(manifest_path: Path) -> object:
 
 
 def _load_schema(schema_path: Path | None) -> object:
-    path = schema_path if schema_path is not None else _default_schema_path()
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
+        if schema_path is None:
+            schema_text = resources.files("stm32_toolkit").joinpath("schemas", _SCHEMA_NAME).read_text(encoding="utf-8")
+        else:
+            schema_text = schema_path.read_text(encoding="utf-8")
+        return json.loads(schema_text)
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
         raise ProjectManifestError(
             "PROJECT_SCHEMA_INVALID",
@@ -126,18 +130,11 @@ def _load_schema(schema_path: Path | None) -> object:
         ) from error
 
 
-def _default_schema_path() -> Path:
-    package_path = Path(__file__).resolve()
-    for ancestor in package_path.parents:
-        candidate = ancestor / "schemas" / _SCHEMA_NAME
-        if candidate.is_file():
-            return candidate
-    return package_path.parent / "schemas" / _SCHEMA_NAME
-
-
 def _validate_schema(payload: object, schema: object) -> None:
     try:
+        Draft202012Validator.check_schema(schema)
         validator = Draft202012Validator(schema, format_checker=FormatChecker())
+        errors = sorted(validator.iter_errors(payload), key=_validation_sort_key)
     except Exception as error:
         raise ProjectManifestError(
             "PROJECT_SCHEMA_INVALID",
@@ -145,7 +142,6 @@ def _validate_schema(payload: object, schema: object) -> None:
             {"field": "$schema", "rule": "invalidSchema"},
         ) from error
 
-    errors = sorted(validator.iter_errors(payload), key=_validation_sort_key)
     if errors:
         error = errors[0]
         raise ProjectManifestError(
