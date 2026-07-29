@@ -24,7 +24,11 @@ class ProjectDetection:
 
 def detect_project(project_root: Path) -> ProjectDetection:
     """Identify project markers without reading or modifying their contents."""
-    entries = tuple(project_root.iterdir())
+    try:
+        entries = tuple(entry for entry in project_root.iterdir() if entry.is_file())
+    except (FileNotFoundError, NotADirectoryError):
+        return _unknown_detection()
+
     names = {entry.name for entry in entries}
 
     if ".stm32-project.json" in names:
@@ -57,6 +61,10 @@ def detect_project(project_root: Path) -> ProjectDetection:
             recommended_skill="/configure-stm32-project",
         )
 
+    return _unknown_detection()
+
+
+def _unknown_detection() -> ProjectDetection:
     return ProjectDetection(
         kind="unknown",
         files=(),

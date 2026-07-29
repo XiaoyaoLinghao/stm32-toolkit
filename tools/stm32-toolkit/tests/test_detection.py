@@ -95,3 +95,40 @@ def test_project_detection_is_frozen():
 
     with pytest.raises(AttributeError):
         detection.files = ("unexpected",)
+
+@pytest.mark.parametrize("root_name", ["missing", "not-a-directory"])
+def test_missing_or_non_directory_root_is_unknown(tmp_path: Path, root_name: str):
+    project_root = tmp_path / root_name
+    if root_name == "not-a-directory":
+        project_root.write_text("not a project root", encoding="utf-8")
+
+    result = detect_project(project_root)
+
+    assert result.kind == "unknown"
+    assert result.files == ()
+    assert result.recommended_skill == "/create-stm32-project"
+
+
+def test_marker_shaped_directories_are_ignored_in_precedence(tmp_path: Path):
+    (tmp_path / ".stm32-project.json").mkdir()
+    (tmp_path / "legacy.uvprojx").mkdir()
+    (tmp_path / "board.ioc").mkdir()
+    (tmp_path / "CMakeLists.txt").mkdir()
+    (tmp_path / "actual.uvprojx").write_text("<Project/>", encoding="utf-8")
+
+    result = detect_project(tmp_path)
+
+    assert result.kind == "keil"
+    assert result.files == ("actual.uvprojx",)
+    assert result.recommended_skill == "/migrate-keil"
+
+
+def test_directory_only_markers_are_unknown(tmp_path: Path):
+    for name in (".stm32-project.json", "legacy.uvprojx", "board.ioc", "CMakeLists.txt"):
+        (tmp_path / name).mkdir()
+
+    result = detect_project(tmp_path)
+
+    assert result.kind == "unknown"
+    assert result.files == ()
+    assert result.recommended_skill == "/create-stm32-project"
