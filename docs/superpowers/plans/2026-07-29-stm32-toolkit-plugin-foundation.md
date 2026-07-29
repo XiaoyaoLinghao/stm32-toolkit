@@ -31,7 +31,7 @@
 └── plugin.json                         Plugin metadata and unified version
 .mcp.json                               Per-session project-bound MCP startup
 bin/
-└── stm32-toolkit-mcp.py                Source-tree MCP launcher
+└── stm32-toolkit-mcp.cmd               Versioned-runtime MCP launcher
 schemas/
 └── stm32-project.schema.json           Version 1 project model contract
 skills/
@@ -823,7 +823,7 @@ git commit -m "feat: expose project-bound MCP tools"
 **Files:**
 - Modify: `.claude-plugin/plugin.json`
 - Create: `.mcp.json`
-- Create: `bin/stm32-toolkit-mcp.py`
+- Create: `bin/stm32-toolkit-mcp.cmd`
 - Modify: `skills/setup-stm32-env/SKILL.md`
 - Create: `tools/stm32-toolkit/tests/test_plugin_layout.py`
 - Modify: `README.md`
@@ -859,6 +859,8 @@ def test_mcp_config_uses_claude_path_variables():
     assert "${CLAUDE_PLUGIN_DATA}" in joined
     assert "${CLAUDE_PROJECT_DIR}" in joined
     assert "D:/" not in joined and "C:/" not in joined
+    assert server["command"] == "${CLAUDE_PLUGIN_ROOT}/bin/stm32-toolkit-mcp.cmd"
+    assert "python" not in server["command"].lower()
 ```
 
 - [ ] **Step 2: Run layout tests and verify failure**
@@ -893,9 +895,8 @@ Use:
 {
   "mcpServers": {
     "stm32-toolkit": {
-      "command": "python",
+      "command": "${CLAUDE_PLUGIN_ROOT}/bin/stm32-toolkit-mcp.cmd",
       "args": [
-        "${CLAUDE_PLUGIN_ROOT}/bin/stm32-toolkit-mcp.py",
         "--project-root",
         "${CLAUDE_PROJECT_DIR}",
         "--data-root",
@@ -911,14 +912,14 @@ Use:
 }
 ```
 
-The source-tree launcher prepends `tools/stm32-toolkit/src` to `sys.path`, then imports and calls `stm32_toolkit.mcp_server.main()`. Release packaging replaces this development launcher with a self-contained Windows executable in a later packaging plan; until then `/setup-stm32-env` must establish Python 3.10+ before MCP tools become available.
+The Windows launcher must invoke `${CLAUDE_PLUGIN_DATA}/runtime/0.2.0/Scripts/python.exe -m stm32_toolkit.mcp_server` and forward all MCP arguments. If that interpreter is absent, it must print a clear instruction to run `/setup-stm32-env` and exit nonzero. It must never fall back to `python`, `py`, or another system interpreter. The one-time setup installs this plugin version and its dependencies into that exact virtual environment, so every project uses the same Toolkit runtime while project and session data remain isolated.
 
 - [ ] **Step 5: Rewrite setup responsibilities without installing hardware tools automatically**
 
 Update `skills/setup-stm32-env/SKILL.md` so it:
 
 1. Checks Python 3.10+ first.
-2. Installs the plugin Python package into a versioned environment under `${CLAUDE_PLUGIN_DATA}/runtime/0.2.0` only after user authorization.
+2. Creates `${CLAUDE_PLUGIN_DATA}/runtime/0.2.0` and installs the plugin Python package and dependencies into its `Scripts/python.exe` only after user authorization.
 3. Runs `stm32-toolkit doctor --json`.
 4. Reports ARM GCC, CMake, Ninja, PyOCD, CubeMX, VS Code extension, and CMSIS-Pack gaps.
 5. Does not probe hardware, kill processes, install packs, or register a second MCP during the check phase.
@@ -952,7 +953,7 @@ Expected: two distinct workspace namespaces and no files written to either proje
 - [ ] **Step 9: Commit the plugin foundation**
 
 ```bash
-git add .claude-plugin/plugin.json .mcp.json bin/stm32-toolkit-mcp.py skills/setup-stm32-env/SKILL.md README.md tools/stm32-toolkit/tests/test_plugin_layout.py
+git add .claude-plugin/plugin.json .mcp.json bin/stm32-toolkit-mcp.cmd skills/setup-stm32-env/SKILL.md README.md tools/stm32-toolkit/tests/test_plugin_layout.py
 git commit -m "feat: wire project-isolated Claude plugin"
 ```
 
