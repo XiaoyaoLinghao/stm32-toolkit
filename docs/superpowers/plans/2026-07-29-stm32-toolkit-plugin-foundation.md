@@ -935,7 +935,7 @@ Update `skills/setup-stm32-env/SKILL.md` so it:
 2. Creates `${CLAUDE_PLUGIN_DATA}/runtime/0.2.0` and installs the plugin Python package and dependencies into its `Scripts/python.exe` only after user authorization.
 3. Runs `stm32-toolkit doctor --json`.
 4. Reports ARM GCC, CMake, Ninja, PyOCD, CubeMX, VS Code extension, and CMSIS-Pack gaps.
-5. Does not probe hardware, kill processes, install packs, or register a second MCP during the check phase.
+5. Does not probe hardware, kill unrelated or existing processes, install packs, or register a second MCP during the check phase; it may terminate only a probe subprocess that CHECK started after timeout.
 6. Explains that the plugin-bundled `.mcp.json` replaces manual `claude mcp add` registration.
 
 - [ ] **Step 6: Update README installation and isolation documentation**

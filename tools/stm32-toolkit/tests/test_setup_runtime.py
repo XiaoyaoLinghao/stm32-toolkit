@@ -6,6 +6,7 @@ import shutil
 import subprocess
 import sys
 import zipfile
+import venv
 from pathlib import Path
 
 import pytest
@@ -38,6 +39,38 @@ def test_check_reports_broken_runtime_as_structured_evidence(tmp_path: Path):
     assert payload["authorizationRequired"] is True
     assert payload["recommendedMode"] == "Repair"
 
+
+def test_partial_runtime_directory_is_broken_and_recommends_repair(tmp_path: Path):
+    project = tmp_path / "project"
+    project.mkdir()
+    plugin_data = tmp_path / "plugin-data"
+    (plugin_data / "runtime" / "0.2.0").mkdir(parents=True)
+
+    result = _run_helper("Check", REPO_ROOT, plugin_data, project)
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["runtime"]["status"] == "broken"
+    assert payload["runtime"]["present"] is True
+    assert payload["runtime"]["interpreterPresent"] is False
+    assert payload["recommendedMode"] == "Repair"
+
+def test_runtime_version_path_file_is_broken_and_recommends_repair(tmp_path: Path):
+    project = tmp_path / "project"
+    project.mkdir()
+    plugin_data = tmp_path / "plugin-data"
+    runtime_path = plugin_data / "runtime" / "0.2.0"
+    runtime_path.parent.mkdir(parents=True)
+    runtime_path.write_text("partial", encoding="utf-8")
+
+    result = _run_helper("Check", REPO_ROOT, plugin_data, project)
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["runtime"]["status"] == "broken"
+    assert payload["runtime"]["present"] is True
+    assert payload["runtime"]["directoryPresent"] is False
+    assert payload["recommendedMode"] == "Repair"
 
 def test_failed_bootstrap_removes_staging_and_never_promotes(tmp_path: Path):
     project = tmp_path / "project"
@@ -122,6 +155,35 @@ def test_check_bounds_a_hanging_bootstrap_python(tmp_path: Path):
     assert not plugin_data.exists()
 
 
+def test_bounded_process_drains_both_streams_without_unbounded_retention(tmp_path: Path):
+    project = tmp_path / "project"
+    project.mkdir()
+    plugin_data = tmp_path / "plugin-data"
+    runtime = plugin_data / "runtime" / "0.2.0"
+    venv.EnvBuilder(with_pip=False).create(runtime)
+    module_root = tmp_path / "module"
+    package = module_root / "stm32_toolkit"
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_text("", encoding="utf-8")
+    (package / "cli.py").write_text(
+        "import sys\nsys.stdout.write('o' * 200000)\nsys.stderr.write('e' * 200000)\nraise SystemExit(7)\n",
+        encoding="utf-8",
+    )
+    environment = _clean_environment()
+    environment["PYTHONPATH"] = str(module_root)
+
+    result = _run_helper(
+        "Check", REPO_ROOT, plugin_data, project, environment=environment, timeout=30
+    )
+
+    assert result.returncode == 0, result.stderr
+    runtime_evidence = json.loads(result.stdout)["runtime"]
+    assert runtime_evidence["status"] == "broken"
+    assert len(runtime_evidence["error"]) <= 66000
+    helper_source = HELPER.read_text(encoding="utf-8")
+    assert "ReadToEndAsync" not in helper_source
+    assert "ReadAsync" in helper_source
+
 def test_bootstrap_installs_declared_build_requirements_in_fresh_venv(tmp_path: Path):
     project = tmp_path / "project"
     project.mkdir()
@@ -151,6 +213,40 @@ def test_bootstrap_installs_declared_build_requirements_in_fresh_venv(tmp_path: 
     assert payload["runtime"]["status"] == "healthy"
     assert payload["runtime"]["version"] == "0.2.0"
 
+
+def test_healthy_check_preserves_drive_root_argument_and_following_doctor_args(tmp_path: Path):
+    bootstrap_project = tmp_path / "project"
+    bootstrap_project.mkdir()
+    plugin_root = tmp_path / "plugin"
+    package = plugin_root / "tools" / "stm32-toolkit"
+    package.mkdir(parents=True)
+    wheelhouse = tmp_path / "wheelhouse"
+    wheelhouse.mkdir()
+    _write_test_build_backend(wheelhouse)
+    (package / "pyproject.toml").write_text(
+        "[build-system]\nrequires = ['test-build-backend==1.0']\nbuild-backend = 'test_backend'\n",
+        encoding="utf-8",
+    )
+    plugin_data = tmp_path / "plugin-data"
+    environment = _clean_environment()
+    environment["PIP_NO_INDEX"] = "1"
+    environment["PIP_FIND_LINKS"] = str(wheelhouse)
+    bootstrap = _run_helper(
+        "Bootstrap", plugin_root, plugin_data, bootstrap_project,
+        environment=environment, timeout=180,
+    )
+    assert bootstrap.returncode == 0, bootstrap.stderr
+
+    drive_root = Path(tmp_path.anchor)
+    checked = _run_helper(
+        "Check", plugin_root, plugin_data, drive_root, environment=environment, timeout=30
+    )
+
+    assert checked.returncode == 0, checked.stderr
+    runtime = json.loads(checked.stdout)["runtime"]
+    assert runtime["status"] == "healthy"
+    assert runtime["doctor"]["data"]["projectRoot"] == str(drive_root)
+    assert runtime["doctor"]["data"]["argv"][-2:] == ["doctor", "--json"]
 
 def test_check_rejects_redirected_plugin_data_ancestor(tmp_path: Path):
     project = tmp_path / "project"
@@ -200,6 +296,7 @@ def test_setup_contract_uses_namespaced_skill_and_ignores_coverage_data():
 def _write_test_build_backend(wheelhouse: Path) -> None:
     backend_source = """from pathlib import Path
 import zipfile
+import venv
 
 
 def prepare_metadata_for_build_wheel(metadata_directory, config_settings=None):
@@ -214,7 +311,7 @@ def build_wheel(wheel_directory, config_settings=None, metadata_directory=None):
     name = 'stm32_toolkit-0.2.0-py3-none-any.whl'
     files = {
         'stm32_toolkit/__init__.py': "__version__ = '0.2.0'\\n",
-        'stm32_toolkit/cli.py': "import json,sys\\nif sys.argv[1:]==['version']: print('0.2.0')\\nelif 'doctor' in sys.argv: print(json.dumps({'protocol':'stm32-toolkit/1','ok':True}))\\nelse: raise SystemExit(2)\\n",
+        'stm32_toolkit/cli.py': "import json,sys\\nif sys.argv[1:]==['version']: print('0.2.0')\\nelif 'doctor' in sys.argv:\\n i=sys.argv.index('--project-root'); print(json.dumps({'protocol':'stm32-toolkit/1','ok':True,'data':{'projectRoot':sys.argv[i+1],'argv':sys.argv[1:]}}))\\nelse: raise SystemExit(2)\\n",
         'stm32_toolkit-0.2.0.dist-info/METADATA': 'Metadata-Version: 2.1\\nName: stm32-toolkit\\nVersion: 0.2.0\\n',
         'stm32_toolkit-0.2.0.dist-info/WHEEL': 'Wheel-Version: 1.0\\nGenerator: test-backend\\nRoot-Is-Purelib: true\\nTag: py3-none-any\\n',
         'stm32_toolkit-0.2.0.dist-info/RECORD': '',

@@ -41,45 +41,74 @@ function Assert-NoRedirectAncestors {
         Assert-NotRedirect $Name $current
     }
 }
-function ConvertTo-ProcessArguments {
-    param([string[]]$Values)
-    return (($Values | ForEach-Object { '"' + $_.Replace('"', '\"') + '"' }) -join ' ')
+function ConvertTo-WindowsArgument {
+    param([AllowEmptyString()][string]$Value)
+    $builder = [Text.StringBuilder]::new()
+    [void]$builder.Append([char]34)
+    $backslashes = 0
+    foreach ($character in $Value.ToCharArray()) {
+        if ($character -eq [char]92) { $backslashes++; continue }
+        if ($character -eq [char]34) {
+            [void]$builder.Append([char]92, ($backslashes * 2) + 1)
+            [void]$builder.Append([char]34)
+        } else {
+            if ($backslashes -gt 0) { [void]$builder.Append([char]92, $backslashes) }
+            [void]$builder.Append($character)
+        }
+        $backslashes = 0
+    }
+    if ($backslashes -gt 0) { [void]$builder.Append([char]92, $backslashes * 2) }
+    [void]$builder.Append([char]34)
+    return $builder.ToString()
 }
 
+function ConvertTo-ProcessArguments {
+    param([string[]]$Values)
+    return (($Values | ForEach-Object { ConvertTo-WindowsArgument $_ }) -join ' ')
+}
+
+function Add-RetainedBytes {
+    param([IO.MemoryStream]$Destination, [byte[]]$Buffer, [int]$Count)
+    $remaining = $ProcessOutputLimit - [int]$Destination.Length
+    if ($remaining -le 0 -or $Count -le 0) { return }
+    $Destination.Write($Buffer, 0, [Math]::Min($remaining, $Count))
+}
 
 function Invoke-BoundedProcess {
     param([string]$FilePath, [string[]]$Arguments, [int]$TimeoutSeconds = 5)
     $process = [Diagnostics.Process]::new()
-    $process.StartInfo = [Diagnostics.ProcessStartInfo]@{
-        FileName = $FilePath
-        Arguments = (ConvertTo-ProcessArguments $Arguments)
-        UseShellExecute = $false
-        CreateNoWindow = $true
-        RedirectStandardOutput = $true
-        RedirectStandardError = $true
-    }
+    $process.StartInfo = [Diagnostics.ProcessStartInfo]@{ FileName=$FilePath; Arguments=(ConvertTo-ProcessArguments $Arguments); UseShellExecute=$false; CreateNoWindow=$true; RedirectStandardOutput=$true; RedirectStandardError=$true }
+    $stdoutRetained = [IO.MemoryStream]::new()
+    $stderrRetained = [IO.MemoryStream]::new()
     try {
-        try { [void]$process.Start() } catch { return [ordered]@{ status = "error"; exitCode = $null; stdout = ""; stderr = $_.Exception.Message } }
-        $stdoutTask = $process.StandardOutput.ReadToEndAsync()
-        $stderrTask = $process.StandardError.ReadToEndAsync()
-        if (-not $process.WaitForExit($TimeoutSeconds * 1000)) {
-            try { $process.Kill() } catch {}
-            [void]$process.WaitForExit(1000)
-            [void]$stdoutTask.Wait(1000)
-            [void]$stderrTask.Wait(1000)
-            $out = if ($stdoutTask.IsCompleted) { $stdoutTask.Result.Substring(0, [Math]::Min($stdoutTask.Result.Length, $ProcessOutputLimit)).Trim() } else { "" }
-            $err = if ($stderrTask.IsCompleted) { $stderrTask.Result.Substring(0, [Math]::Min($stderrTask.Result.Length, $ProcessOutputLimit)).Trim() } else { "" }
-            return [ordered]@{ status = "timeout"; exitCode = $null; stdout = $out; stderr = $err }
+        try { [void]$process.Start() } catch { return [ordered]@{ status="error"; exitCode=$null; stdout=""; stderr=$_.Exception.Message } }
+        $stdoutBuffer = [byte[]]::new(4096); $stderrBuffer = [byte[]]::new(4096)
+        $stdoutStream = $process.StandardOutput.BaseStream; $stderrStream = $process.StandardError.BaseStream
+        $stdoutTask = $stdoutStream.ReadAsync($stdoutBuffer, 0, $stdoutBuffer.Length)
+        $stderrTask = $stderrStream.ReadAsync($stderrBuffer, 0, $stderrBuffer.Length)
+        $clock = [Diagnostics.Stopwatch]::StartNew(); $exited=$false; $timedOut=$false; $drainDeadline=[long]::MaxValue
+        while ($true) {
+            if ($null -ne $stdoutTask -and $stdoutTask.IsCompleted) {
+                try { $count=$stdoutTask.Result } catch { $count=0 }
+                if ($count -gt 0) { Add-RetainedBytes $stdoutRetained $stdoutBuffer $count; $stdoutTask=$stdoutStream.ReadAsync($stdoutBuffer,0,$stdoutBuffer.Length) } else { $stdoutTask=$null }
+            }
+            if ($null -ne $stderrTask -and $stderrTask.IsCompleted) {
+                try { $count=$stderrTask.Result } catch { $count=0 }
+                if ($count -gt 0) { Add-RetainedBytes $stderrRetained $stderrBuffer $count; $stderrTask=$stderrStream.ReadAsync($stderrBuffer,0,$stderrBuffer.Length) } else { $stderrTask=$null }
+            }
+            if (-not $exited) {
+                if ($process.HasExited) { $exited=$true; $drainDeadline=$clock.ElapsedMilliseconds+1000 }
+                elseif ($clock.ElapsedMilliseconds -ge ($TimeoutSeconds*1000)) { $timedOut=$true; try{$process.Kill()}catch{}; [void]$process.WaitForExit(1000); $exited=$true; $drainDeadline=$clock.ElapsedMilliseconds+1000 }
+            }
+            if ($exited -and $null -eq $stdoutTask -and $null -eq $stderrTask) { break }
+            if ($exited -and $clock.ElapsedMilliseconds -ge $drainDeadline) { try{$stdoutStream.Close()}catch{}; try{$stderrStream.Close()}catch{}; break }
+            Start-Sleep -Milliseconds 5
         }
-        [void]$stdoutTask.Wait(1000)
-        [void]$stderrTask.Wait(1000)
-        $status = if ($process.ExitCode -eq 0) { "ok" } else { "nonzero" }
-        $out = if ($stdoutTask.IsCompleted) { $stdoutTask.Result.Substring(0, [Math]::Min($stdoutTask.Result.Length, $ProcessOutputLimit)).Trim() } else { "" }
-        $err = if ($stderrTask.IsCompleted) { $stderrTask.Result.Substring(0, [Math]::Min($stderrTask.Result.Length, $ProcessOutputLimit)).Trim() } else { "" }
-        return [ordered]@{ status = $status; exitCode = $process.ExitCode; stdout = $out; stderr = $err }
-    } finally {
-        $process.Dispose()
-    }
+        $out=[Text.Encoding]::UTF8.GetString($stdoutRetained.ToArray()).Trim(); $err=[Text.Encoding]::UTF8.GetString($stderrRetained.ToArray()).Trim()
+        if ($timedOut) { return [ordered]@{ status="timeout"; exitCode=$null; stdout=$out; stderr=$err } }
+        $status=if($process.ExitCode -eq 0){"ok"}else{"nonzero"}
+        return [ordered]@{ status=$status; exitCode=$process.ExitCode; stdout=$out; stderr=$err }
+    } finally { $stdoutRetained.Dispose(); $stderrRetained.Dispose(); $process.Dispose() }
 }
 
 function Find-BootstrapPython {
@@ -101,8 +130,13 @@ function Find-BootstrapPython {
 
 function Get-RuntimeEvidence {
     param([string]$Runtime, [string]$RuntimePython, [string]$Project)
-    $evidence = [ordered]@{ path = $Runtime.Replace("\", "/"); present = (Test-Path -LiteralPath $RuntimePython -PathType Leaf); status = "missing"; version = $null; error = $null }
-    if (-not $evidence.present) { return $evidence }
+    $runtimePathExists = Test-Path -LiteralPath $Runtime
+    $runtimeDirectoryPresent = Test-Path -LiteralPath $Runtime -PathType Container
+    $interpreterPresent = Test-Path -LiteralPath $RuntimePython -PathType Leaf
+    $evidence = [ordered]@{ path = $Runtime.Replace("\", "/"); present = $runtimePathExists; directoryPresent = $runtimeDirectoryPresent; interpreterPresent = $interpreterPresent; status = "missing"; version = $null; error = $null }
+    if (-not $runtimePathExists) { return $evidence }
+    if (-not $runtimeDirectoryPresent) { $evidence.status = "broken"; $evidence.error = "managed runtime path is not a directory"; return $evidence }
+    if (-not $interpreterPresent) { $evidence.status = "broken"; $evidence.error = "managed runtime interpreter is missing"; return $evidence }
     try { Assert-NotRedirect "managed runtime" $Runtime; Assert-NotRedirect "managed runtime Scripts" (Join-Path $Runtime "Scripts"); Assert-NotRedirect "managed runtime interpreter" $RuntimePython } catch { $evidence.status = "broken"; $evidence.error = $_.Exception.Message; return $evidence }
     $version = Invoke-BoundedProcess $RuntimePython @("-m", "stm32_toolkit.cli", "version") 10
     if ($version.status -ne "ok") { $evidence.status = "broken"; $evidence.error = "version check $($version.status): $($version.stderr)".Trim(); return $evidence }

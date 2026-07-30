@@ -11,7 +11,7 @@ description: Use when a Claude Code user asks to check, bootstrap, repair, or di
 
 ## Non-negotiable boundaries
 
-- CHECK is read-only and offline with respect to installation. It never creates files, probes hardware, kills processes, or installs anything.
+- CHECK is read-only and offline with respect to installation. It never creates files, probes hardware, kills unrelated or existing processes, or installs anything. It may terminate only a probe subprocess that CHECK itself started after that probe exceeds its timeout.
 - Never register a second MCP. The plugin-bundled `.mcp.json` starts only after the managed runtime is healthy.
 - The only MCP interpreter is `${CLAUDE_PLUGIN_DATA}/runtime/0.2.0/Scripts/python.exe`; system `python`, `py`, or `uv` is never an MCP fallback.
 - Host Python 3.10+ is only a bounded bootstrap prerequisite for installing `${CLAUDE_PLUGIN_ROOT}/tools/stm32-toolkit`.
