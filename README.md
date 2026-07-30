@@ -1,6 +1,6 @@
 # STM32 Toolkit
 
-STM32 Toolkit is a Claude Code plugin for AI-assisted STM32 coding, debugging, testing, and monitoring. It keeps shared project intent in the repository while isolating machine-owned runtime and session state for every checkout.
+STM32 Toolkit 0.2.0 is the read-only project-detection and environment-diagnosis foundation for future AI-assisted STM32 coding, debugging, testing, and monitoring. It keeps shared project intent in the repository while isolating machine-owned runtime and session state for every checkout.
 
 ## Install once for the user
 
@@ -10,9 +10,9 @@ Install the plugin from your configured Claude Code plugin source at user scope.
 claude plugin install stm32-toolkit@<marketplace-name> --scope user
 ```
 
-Do not copy Skills manually and do not register a second MCP server. Claude Code discovers the plugin's standard `skills/` directory and bundled `.mcp.json`. Version 0.2.0 exposes only `/setup-stm32-env`; unfinished skill sources are preserved under `requirements/follow-on-skills/`, outside Claude's automatic Skill discovery.
+Do not copy Skills manually and do not register a second MCP server. Claude Code discovers the plugin's standard `skills/` directory and bundled `.mcp.json`. Version 0.2.0 exposes only `/stm32-toolkit:setup-stm32-env`; unfinished skill sources are preserved under `requirements/follow-on-skills/`, outside Claude's automatic Skill discovery.
 
-Run `/setup-stm32-env` once after installation. It first performs an offline, read-only check. If `${CLAUDE_PLUGIN_DATA}/runtime/0.2.0` is absent, it asks for explicit authorization before using Host Python 3.10+ to create that venv and install the local `${CLAUDE_PLUGIN_ROOT}/tools/stm32-toolkit` package and dependencies. Host Python is never an MCP fallback.
+Run `/stm32-toolkit:setup-stm32-env` after installation. Its Skill-only CHECK works before MCP startup and always reports the managed runtime as `missing`, `healthy`, or `broken`. After explicit authorization, Bootstrap or Repair builds in a unique plugin-data staging directory, validates Toolkit 0.2.0 plus doctor, and only then promotes it. Repair quarantines the failed runtime for recovery. Host Python 3.10+ is only a bounded bootstrap prerequisite and never an MCP fallback.
 
 ## Automatic project binding and isolation
 
@@ -30,12 +30,12 @@ The MCP process is bound to one canonical project root. Unconfigured Keil-only o
 The first troubleshooting command is `stm32-toolkit doctor --json`. Run it through the managed runtime so diagnosis uses the same environment as MCP:
 
 ```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File '${CLAUDE_PLUGIN_ROOT}/bin/setup-stm32-env.ps1' -Mode Check -PluginRoot '${CLAUDE_PLUGIN_ROOT}' -PluginData '${CLAUDE_PLUGIN_DATA}' -ProjectDir '${CLAUDE_PROJECT_DIR}'
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File '${CLAUDE_PLUGIN_ROOT}/bin/stm32-toolkit:setup-stm32-env.ps1' -Mode Check -PluginRoot '${CLAUDE_PLUGIN_ROOT}' -PluginData '${CLAUDE_PLUGIN_DATA}' -ProjectDir '${CLAUDE_PROJECT_DIR}'
 ```
 
-Doctor reports offline evidence for ARM GCC/GDB, CMake, Ninja, PyOCD, CubeMX, and VS Code without probing hardware or changing the project. `/setup-stm32-env` also reports existing VS Code extension and CMSIS-Pack inventory gaps. Missing hardware tools, extensions, drivers, or packs are reported for the user to resolve; setup does not install them.
+Doctor reports offline evidence for ARM GCC/GDB, CMake, Ninja, PyOCD, CubeMX, and VS Code without probing hardware or changing the project. `/stm32-toolkit:setup-stm32-env` also reports existing VS Code extension and CMSIS-Pack inventory gaps. Missing hardware tools, extensions, drivers, or packs are reported for the user to resolve; setup does not install them.
 
-If MCP startup says the runtime is missing, rerun `/setup-stm32-env`. The plugin-bundled `.mcp.json` is authoritative, so manual `claude mcp add` registration is neither required nor supported.
+If MCP startup says the runtime is missing, rerun `/stm32-toolkit:setup-stm32-env`. The plugin-bundled `.mcp.json` is authoritative, so manual `claude mcp add` registration is neither required nor supported. A failed setup never promotes a partial runtime; authorize `Repair` only when CHECK reports `broken`.
 
 ## Foundation and follow-on capabilities
 

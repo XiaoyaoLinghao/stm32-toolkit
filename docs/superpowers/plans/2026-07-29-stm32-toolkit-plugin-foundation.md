@@ -824,7 +824,7 @@ git commit -m "feat: expose project-bound MCP tools"
 - Modify: `.claude-plugin/plugin.json`
 - Create: `.mcp.json`
 - Create: `bin/stm32-toolkit-mcp.cmd`
-- Modify: `skills/setup-stm32-env/SKILL.md`
+- Modify: `skills/stm32-toolkit:setup-stm32-env/SKILL.md`
 - Create: `tools/stm32-toolkit/tests/test_plugin_layout.py`
 - Modify: `README.md`
 
@@ -878,7 +878,7 @@ Set `.claude-plugin/plugin.json` to valid metadata with:
   "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
   "name": "stm32-toolkit",
   "version": "0.2.0",
-  "description": "AI-assisted STM32 migration, development, test, debug, and live monitoring toolkit",
+  "description": "Foundation for AI-assisted STM32 development with read-only project detection and environment diagnosis",
   "author": {
     "name": "STM32 Toolkit Team"
   }
@@ -912,11 +912,11 @@ Use:
 }
 ```
 
-The Windows launcher must invoke `${CLAUDE_PLUGIN_DATA}/runtime/0.2.0/Scripts/python.exe -m stm32_toolkit.mcp_server` and forward all MCP arguments. If that interpreter is absent, it must print a clear instruction to run `/setup-stm32-env` and exit nonzero. It must never fall back to `python`, `py`, or another system interpreter. The one-time setup installs this plugin version and its dependencies into that exact virtual environment, so every project uses the same Toolkit runtime while project and session data remain isolated.
+The Windows launcher must invoke `${CLAUDE_PLUGIN_DATA}/runtime/0.2.0/Scripts/python.exe -m stm32_toolkit.mcp_server` and forward all MCP arguments. If that interpreter is absent, it must print a clear instruction to run `/stm32-toolkit:setup-stm32-env` and exit nonzero. It must never fall back to `python`, `py`, or another system interpreter. The one-time setup installs this plugin version and its dependencies into that exact virtual environment, so every project uses the same Toolkit runtime while project and session data remain isolated. CHECK is a Skill-only pre-MCP operation and returns structured `missing`, `healthy`, or `broken` evidence. Authorized Bootstrap/Repair operations build in a unique plugin-data staging directory, validate exact version and doctor before promotion, and quarantine a broken runtime during Repair.
 
 - [ ] **Step 5: Rewrite setup responsibilities without installing hardware tools automatically**
 
-Update `skills/setup-stm32-env/SKILL.md` so it:
+Update `skills/stm32-toolkit:setup-stm32-env/SKILL.md` so it:
 
 1. Checks Python 3.10+ first.
 2. Creates `${CLAUDE_PLUGIN_DATA}/runtime/0.2.0` and installs the plugin Python package and dependencies into its `Scripts/python.exe` only after user authorization.
@@ -930,7 +930,7 @@ Update `skills/setup-stm32-env/SKILL.md` so it:
 Document:
 
 - one user-scope plugin installation;
-- one-time `/setup-stm32-env` bootstrap;
+- one-time `/stm32-toolkit:setup-stm32-env` bootstrap;
 - automatic per-project MCP binding;
 - `.stm32-project.json` as shared project configuration;
 - `${CLAUDE_PLUGIN_DATA}/projects/<workspaceId>` as isolated user state;
@@ -953,7 +953,7 @@ Expected: two distinct workspace namespaces and no files written to either proje
 - [ ] **Step 9: Commit the plugin foundation**
 
 ```bash
-git add .claude-plugin/plugin.json .mcp.json bin/stm32-toolkit-mcp.cmd skills/setup-stm32-env/SKILL.md README.md tools/stm32-toolkit/tests/test_plugin_layout.py
+git add .claude-plugin/plugin.json .mcp.json bin/stm32-toolkit-mcp.cmd skills/stm32-toolkit:setup-stm32-env/SKILL.md README.md tools/stm32-toolkit/tests/test_plugin_layout.py
 git commit -m "feat: wire project-isolated Claude plugin"
 ```
 

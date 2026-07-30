@@ -195,22 +195,27 @@ def test_reader_cleanup_uses_a_bounded_join_for_each_pipe():
 
 
 def test_runner_returns_before_a_descendant_releases_inherited_pipes(tmp_path: Path):
-    """Catches waiting for inherited pipe handles after the direct child exits."""
+    """Catches waiting for inherited pipe handles without scheduler timing assumptions."""
     marker = tmp_path / "descendant-finished"
+    release = tmp_path / "release-descendant"
     descendant = (
-        "import pathlib, time; time.sleep(0.5); "
-        f"pathlib.Path({str(marker)!r}).write_text('done')"
+        "import pathlib, time; "
+        f"release=pathlib.Path({str(release)!r}); marker=pathlib.Path({str(marker)!r}); "
+        "\nwhile not release.exists(): time.sleep(0.01)\n"
+        "marker.write_text('done')"
     )
     parent = (
         "import subprocess, sys; "
         f"subprocess.Popen([sys.executable, '-c', {descendant!r}])"
     )
 
-    status, return_code, _, _ = _run_process((sys.executable, "-c", parent))
-
-    assert status == "ok"
-    assert return_code == 0
-    assert not marker.exists()
+    try:
+        status, return_code, _, _ = _run_process((sys.executable, "-c", parent))
+        assert status == "ok"
+        assert return_code == 0
+        assert not marker.exists()
+    finally:
+        release.write_text("release", encoding="utf-8")
 
     deadline = time.monotonic() + 3
     while not marker.exists() and time.monotonic() < deadline:

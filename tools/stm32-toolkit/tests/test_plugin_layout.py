@@ -37,8 +37,8 @@ def test_plugin_manifest_uses_standard_skill_discovery_and_version():
         "name": "stm32-toolkit",
         "version": "0.2.0",
         "description": (
-            "AI-assisted STM32 migration, development, test, debug, and live "
-            "monitoring toolkit"
+            "Foundation for AI-assisted STM32 development with read-only "
+            "project detection and environment diagnosis"
         ),
         "author": {"name": "STM32 Toolkit Team"},
     }
@@ -90,7 +90,7 @@ def test_launcher_reports_missing_environment_without_interpreter_fallback(tmp_p
 
     assert result.returncode != 0
     assert result.stdout == ""
-    assert "/setup-stm32-env" in result.stderr
+    assert "/stm32-toolkit:setup-stm32-env" in result.stderr
     assert "CLAUDE_PLUGIN_DATA" in result.stderr
     assert not marker.exists()
 
@@ -116,7 +116,7 @@ def test_launcher_reports_missing_versioned_runtime_without_interpreter_fallback
 
     assert result.returncode != 0
     assert result.stdout == ""
-    assert "/setup-stm32-env" in result.stderr
+    assert "/stm32-toolkit:setup-stm32-env" in result.stderr
     assert "runtime/0.2.0/Scripts/python.exe" in result.stderr.replace("\\", "/")
     assert not marker.exists()
 
@@ -313,10 +313,10 @@ def test_setup_skill_passes_inline_claude_paths_explicitly_without_ambient_varia
 def test_readme_documents_the_foundation_contract_without_follow_on_claims():
     readme = README.read_text(encoding="utf-8")
 
-    assert "AI-assisted STM32 coding, debugging, testing, and monitoring" in readme
+    assert "foundation for future AI-assisted STM32 coding, debugging, testing, and monitoring" in readme
     for phrase in (
         "user scope",
-        "/setup-stm32-env",
+        "/stm32-toolkit:setup-stm32-env",
         "automatically",
         "${CLAUDE_PROJECT_DIR}",
         ".stm32-project.json",

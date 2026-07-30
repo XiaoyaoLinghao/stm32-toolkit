@@ -198,15 +198,11 @@ stm32-toolkit/
 
 每个会话的 MCP 从启动时绑定一个项目根目录，不能在运行中切换项目。所有文件路径必须经过规范化并验证位于项目根目录或该项目专属数据目录中。
 
-### 6.5 环境未完成时的降级
+### 6.5 环境未完成时的 Skill-only 引导
 
-MCP 的最小启动不依赖完整 STM32 环境。未执行 `/setup-stm32-env` 时仍提供：
+版本化 MCP runtime 未安装或损坏时，MCP launcher 必须失败关闭，不使用系统 Python 回退。此时 Claude Code 仍可发现插件 Skill `/stm32-toolkit:setup-stm32-env`；该 Skill 通过显式内联插件路径执行只读 CHECK，并返回 runtime 的 `missing`、`healthy` 或 `broken` 结构化证据。
 
-- `stm32_doctor`；
-- `stm32_project_detect`；
-- 缺失依赖和下一步报告。
-
-安装完成后再开放构建、烧录、测试、监控和调试能力。环境缺失不能导致整个 MCP 无法启动。
+用户明确授权后，Bootstrap 或 Repair 在 `${CLAUDE_PLUGIN_DATA}/runtime/.staging/` 的唯一目录中构建，验证 Toolkit 精确版本和 doctor 后才提升到 `runtime/0.2.0`。Repair 先隔离损坏 runtime，并在提升失败时回滚。环境完成后，插件 `.mcp.json` 才启动 MCP 并提供 `stm32_doctor`、`stm32_project_detect` 和 `stm32_project_context`。Skill 检查不访问硬件、不安装外部工具，也不写项目目录。
 
 ## 7. 项目上下文和数据隔离
 
@@ -665,7 +661,7 @@ Monitor 和调试报告显示固件身份，避免用旧 ELF 分析新固件。
 
 ### 16.6 Doctor
 
-`/setup-stm32-env` 和 `stm32-toolkit doctor` 检查：
+`/stm32-toolkit:setup-stm32-env` 和 `stm32-toolkit doctor` 检查：
 
 - 插件、CLI、Probe Service 和 MCP 版本；
 - Python 运行时；
