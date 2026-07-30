@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import argparse
 import sys
 from dataclasses import dataclass
@@ -22,6 +23,7 @@ _SERVER_INSTRUCTIONS = (
     "This server is permanently bound to one project root and exposes only "
     "read-only STM32 Toolkit foundation tools."
 )
+_CLIENT_ROOTS_TIMEOUT_SECONDS = 5.0
 
 
 @dataclass(frozen=True)
@@ -147,11 +149,18 @@ async def _client_roots_failure(
         return _roots_unavailable(runtime, operation)
 
     try:
-        result = await session.list_roots()
+        result = await asyncio.wait_for(
+            session.list_roots(), timeout=_CLIENT_ROOTS_TIMEOUT_SECONDS
+        )
         roots = result.roots
         if not roots:
             raise ValueError("client advertised roots but returned none")
         canonical_roots = tuple(_canonical_client_root(root.uri) for root in roots)
+    except asyncio.CancelledError:
+        current_task = asyncio.current_task()
+        if current_task is not None and current_task.cancelling():
+            raise
+        return _roots_unavailable(runtime, operation)
     except Exception:
         return _roots_unavailable(runtime, operation)
 

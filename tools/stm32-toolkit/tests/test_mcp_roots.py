@@ -131,6 +131,102 @@ def test_client_roots_inspection_failure_has_a_stable_error(tmp_path: Path):
     assert result["details"] == {"boundProjectRoot": str(runtime.project_root)}
 
 
+def test_client_roots_timeout_cancels_request_and_returns_stable_error(
+    monkeypatch,
+    tmp_path: Path,
+):
+    runtime = _runtime(tmp_path)
+
+    class NeverReturningSession:
+        def __init__(self):
+            self.client_params = SimpleNamespace(
+                capabilities=SimpleNamespace(roots=object())
+            )
+            self.cancelled = False
+
+        async def list_roots(self):
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                self.cancelled = True
+                raise
+
+    session = NeverReturningSession()
+    monkeypatch.setattr(
+        "stm32_toolkit.mcp_server._CLIENT_ROOTS_TIMEOUT_SECONDS",
+        0.01,
+        raising=False,
+    )
+
+    async def bounded_call():
+        try:
+            return await asyncio.wait_for(
+                tool_project_detect_for_request(runtime, _context(session)),
+                timeout=0.2,
+            )
+        except TimeoutError:
+            return {"code": "HUNG"}
+
+    result = asyncio.run(bounded_call())
+
+    assert result["code"] == "MCP_ROOTS_UNAVAILABLE"
+    assert result["message"] == "MCP client roots are unavailable"
+    assert result["details"] == {"boundProjectRoot": str(runtime.project_root)}
+    assert session.cancelled is True
+
+
+def test_inner_roots_cancellation_returns_stable_unavailable(tmp_path: Path):
+    runtime = _runtime(tmp_path)
+
+    class CancelledSession:
+        def __init__(self):
+            self.client_params = SimpleNamespace(
+                capabilities=SimpleNamespace(roots=object())
+            )
+
+        async def list_roots(self):
+            raise asyncio.CancelledError
+
+    async def bounded_call():
+        try:
+            return await tool_project_detect_for_request(
+                runtime, _context(CancelledSession())
+            )
+        except asyncio.CancelledError:
+            return {"code": "CANCELLED"}
+
+    result = asyncio.run(bounded_call())
+
+    assert result["code"] == "MCP_ROOTS_UNAVAILABLE"
+
+
+def test_external_tool_cancellation_is_not_swallowed(tmp_path: Path):
+    runtime = _runtime(tmp_path)
+
+    class BlockingSession:
+        def __init__(self):
+            self.client_params = SimpleNamespace(
+                capabilities=SimpleNamespace(roots=object())
+            )
+            self.started = asyncio.Event()
+
+        async def list_roots(self):
+            self.started.set()
+            await asyncio.Event().wait()
+
+    async def cancel_call():
+        session = BlockingSession()
+        call = asyncio.create_task(
+            tool_project_detect_for_request(runtime, _context(session))
+        )
+        await session.started.wait()
+        call.cancel()
+        await call
+
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(cancel_call())
+
+
 def test_client_capability_inspection_failure_has_the_same_stable_error(
     tmp_path: Path,
 ):
