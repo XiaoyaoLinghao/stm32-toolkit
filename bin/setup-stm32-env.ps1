@@ -78,6 +78,11 @@ function Invoke-BoundedProcess {
     param([string]$FilePath, [string[]]$Arguments, [int]$TimeoutSeconds = 5)
     $process = [Diagnostics.Process]::new()
     $process.StartInfo = [Diagnostics.ProcessStartInfo]@{ FileName=$FilePath; Arguments=(ConvertTo-ProcessArguments $Arguments); UseShellExecute=$false; CreateNoWindow=$true; RedirectStandardOutput=$true; RedirectStandardError=$true }
+    foreach ($name in @("PYTHONPATH", "PYTHONHOME", "PYTHONUSERBASE", "PYTHONSTARTUP", "PYTHONINSPECT")) {
+        [void]$process.StartInfo.EnvironmentVariables.Remove($name)
+    }
+    $process.StartInfo.EnvironmentVariables["PYTHONNOUSERSITE"] = "1"
+    $process.StartInfo.EnvironmentVariables["PYTHONSAFEPATH"] = "1"
     $stdoutRetained = [IO.MemoryStream]::new()
     $stderrRetained = [IO.MemoryStream]::new()
     try {
@@ -116,7 +121,7 @@ function Find-BootstrapPython {
     foreach ($name in @("python", "python3", "py")) {
         $command = Get-Command $name -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
         if (-not $command) { continue }
-        $probe = Invoke-BoundedProcess $command.Source @("-c", "import json,sys;print(json.dumps({'version':'.'.join(map(str,sys.version_info[:3])),'supported':sys.version_info>=(3,10)}))") 3
+        $probe = Invoke-BoundedProcess $command.Source @("-I", "-c", "import json,sys;print(json.dumps({'version':'.'.join(map(str,sys.version_info[:3])),'supported':sys.version_info>=(3,10)}))") 3
         if ($probe.status -ne "ok") {
             if (-not $firstFailure) { $firstFailure = [ordered]@{ available = $true; path = $command.Source; version = $null; supported = $false; status = $probe.status } }
             continue
@@ -138,11 +143,11 @@ function Get-RuntimeEvidence {
     if (-not $runtimeDirectoryPresent) { $evidence.status = "broken"; $evidence.error = "managed runtime path is not a directory"; return $evidence }
     if (-not $interpreterPresent) { $evidence.status = "broken"; $evidence.error = "managed runtime interpreter is missing"; return $evidence }
     try { Assert-NotRedirect "managed runtime" $Runtime; Assert-NotRedirect "managed runtime Scripts" (Join-Path $Runtime "Scripts"); Assert-NotRedirect "managed runtime interpreter" $RuntimePython } catch { $evidence.status = "broken"; $evidence.error = $_.Exception.Message; return $evidence }
-    $version = Invoke-BoundedProcess $RuntimePython @("-m", "stm32_toolkit.cli", "version") 10
+    $version = Invoke-BoundedProcess $RuntimePython @("-I", "-m", "stm32_toolkit.cli", "version") 10
     if ($version.status -ne "ok") { $evidence.status = "broken"; $evidence.error = "version check $($version.status): $($version.stderr)".Trim(); return $evidence }
     $evidence.version = ($version.stdout -split "`r?`n")[0].Trim()
     if ($evidence.version -ne $RuntimeVersion) { $evidence.status = "broken"; $evidence.error = "expected toolkit $RuntimeVersion, found $($evidence.version)"; return $evidence }
-    $doctor = Invoke-BoundedProcess $RuntimePython @("-m", "stm32_toolkit.cli", "--project-root", $Project, "doctor", "--json") 15
+    $doctor = Invoke-BoundedProcess $RuntimePython @("-I", "-m", "stm32_toolkit.cli", "--project-root", $Project, "doctor", "--json") 15
     if ($doctor.status -ne "ok") { $evidence.status = "broken"; $evidence.error = "doctor $($doctor.status): $($doctor.stderr)".Trim(); return $evidence }
     try { $doctorPayload = $doctor.stdout | ConvertFrom-Json } catch { $evidence.status = "broken"; $evidence.error = "doctor returned invalid JSON"; return $evidence }
     if ($doctorPayload.ok -ne $true) { $evidence.status = "broken"; $evidence.error = "doctor reported failure"; return $evidence }
@@ -231,17 +236,17 @@ try {
     Assert-NoRedirectAncestors "staging root" $stagingRoot
     $staging = Join-Path $stagingRoot ("$RuntimeVersion-" + [Guid]::NewGuid().ToString("N"))
 
-    Assert-StepOk (Invoke-BoundedProcess $bootstrapPython.path @("-m", "venv", $staging) 120) "runtime creation"
+    Assert-StepOk (Invoke-BoundedProcess $bootstrapPython.path @("-I", "-m", "venv", $staging) 120) "runtime creation"
     $stagingPython = Join-Path $staging "Scripts/python.exe"
     Assert-NotRedirect "staging runtime" $staging
     Assert-NotRedirect "staging Scripts" (Join-Path $staging "Scripts")
     Assert-NotRedirect "staging interpreter" $stagingPython
-    Assert-StepOk (Invoke-BoundedProcess $stagingPython @("-m", "pip", "install", "--disable-pip-version-check", "--no-cache-dir", $package) 300) "toolkit installation"
-    $versionCheck = Invoke-BoundedProcess $stagingPython @("-m", "stm32_toolkit.cli", "version") 10
+    Assert-StepOk (Invoke-BoundedProcess $stagingPython @("-I", "-m", "pip", "install", "--disable-pip-version-check", "--no-cache-dir", $package) 300) "toolkit installation"
+    $versionCheck = Invoke-BoundedProcess $stagingPython @("-I", "-m", "stm32_toolkit.cli", "version") 10
     Assert-StepOk $versionCheck "toolkit version validation"
     $installedVersion = ($versionCheck.stdout -split "`r?`n")[0].Trim()
     if ($installedVersion -ne $RuntimeVersion) { throw "expected toolkit $RuntimeVersion, found $installedVersion" }
-    $doctorCheck = Invoke-BoundedProcess $stagingPython @("-m", "stm32_toolkit.cli", "--project-root", $resolvedProjectDir, "doctor", "--json") 15
+    $doctorCheck = Invoke-BoundedProcess $stagingPython @("-I", "-m", "stm32_toolkit.cli", "--project-root", $resolvedProjectDir, "doctor", "--json") 15
     Assert-StepOk $doctorCheck "toolkit doctor validation"
     try { $doctorPayload = $doctorCheck.stdout | ConvertFrom-Json } catch { throw "toolkit doctor returned invalid JSON" }
     if ($doctorPayload.ok -ne $true) { throw "toolkit doctor reported failure" }

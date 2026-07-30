@@ -137,13 +137,15 @@ def test_check_bounds_a_hanging_bootstrap_python(tmp_path: Path):
     project = tmp_path / "project"
     project.mkdir()
     plugin_data = tmp_path / "plugin-data"
-    startup = tmp_path / "startup"
-    startup.mkdir()
-    (startup / "sitecustomize.py").write_text(
+    probe_runtime = tmp_path / "probe-runtime"
+    venv.EnvBuilder(with_pip=False).create(probe_runtime)
+    (probe_runtime / "Lib" / "site-packages" / "sitecustomize.py").write_text(
         "import time\ntime.sleep(30)\n", encoding="utf-8"
     )
     environment = _clean_environment()
-    environment["PYTHONPATH"] = str(startup)
+    environment["PATH"] = os.pathsep.join(
+        [str(probe_runtime / "Scripts"), str(Path(os.environ["SystemRoot"]) / "System32")]
+    )
 
     result = _run_helper(
         "Check", REPO_ROOT, plugin_data, project, environment=environment, timeout=15
@@ -161,8 +163,7 @@ def test_bounded_process_drains_both_streams_without_unbounded_retention(tmp_pat
     plugin_data = tmp_path / "plugin-data"
     runtime = plugin_data / "runtime" / "0.2.0"
     venv.EnvBuilder(with_pip=False).create(runtime)
-    module_root = tmp_path / "module"
-    package = module_root / "stm32_toolkit"
+    package = runtime / "Lib" / "site-packages" / "stm32_toolkit"
     package.mkdir(parents=True)
     (package / "__init__.py").write_text("", encoding="utf-8")
     (package / "cli.py").write_text(
@@ -170,7 +171,6 @@ def test_bounded_process_drains_both_streams_without_unbounded_retention(tmp_pat
         encoding="utf-8",
     )
     environment = _clean_environment()
-    environment["PYTHONPATH"] = str(module_root)
 
     result = _run_helper(
         "Check", REPO_ROOT, plugin_data, project, environment=environment, timeout=30
@@ -213,6 +213,43 @@ def test_bootstrap_installs_declared_build_requirements_in_fresh_venv(tmp_path: 
     assert payload["runtime"]["status"] == "healthy"
     assert payload["runtime"]["version"] == "0.2.0"
 
+
+def test_bootstrap_ignores_hostile_python_path_and_home(tmp_path: Path):
+    project = tmp_path / "project"
+    project.mkdir()
+    plugin_root = tmp_path / "plugin"
+    package = plugin_root / "tools" / "stm32-toolkit"
+    package.mkdir(parents=True)
+    wheelhouse = tmp_path / "wheelhouse"
+    wheelhouse.mkdir()
+    _write_test_build_backend(wheelhouse)
+    (package / "pyproject.toml").write_text(
+        "[build-system]\nrequires = ['test-build-backend==1.0']\nbuild-backend = 'test_backend'\n",
+        encoding="utf-8",
+    )
+    poison = tmp_path / "poison"
+    poisoned_package = poison / "stm32_toolkit"
+    poisoned_package.mkdir(parents=True)
+    (poisoned_package / "__init__.py").write_text("", encoding="utf-8")
+    (poisoned_package / "cli.py").write_text(
+        "raise RuntimeError('ambient workspace package imported')\n", encoding="utf-8"
+    )
+    plugin_data = tmp_path / "plugin-data"
+    environment = _clean_environment()
+    environment["PIP_NO_INDEX"] = "1"
+    environment["PIP_FIND_LINKS"] = str(wheelhouse)
+    environment["PYTHONPATH"] = str(poison)
+    environment["PYTHONHOME"] = str(tmp_path / "invalid-python-home")
+
+    result = _run_helper(
+        "Bootstrap", plugin_root, plugin_data, project,
+        environment=environment, timeout=180,
+    )
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["runtime"]["status"] == "healthy"
+    assert payload["runtime"]["version"] == "0.2.0"
 
 def test_healthy_check_preserves_drive_root_argument_and_following_doctor_args(tmp_path: Path):
     bootstrap_project = tmp_path / "project"
@@ -371,7 +408,10 @@ def _run_helper(
 
 def _clean_environment() -> dict[str, str]:
     environment = os.environ.copy()
-    for name in ("CLAUDE_PLUGIN_ROOT", "CLAUDE_PLUGIN_DATA", "CLAUDE_PROJECT_DIR"):
+    for name in (
+        "CLAUDE_PLUGIN_ROOT", "CLAUDE_PLUGIN_DATA", "CLAUDE_PROJECT_DIR",
+        "PYTHONPATH", "PYTHONHOME", "PYTHONUSERBASE", "PYTHONSTARTUP",
+    ):
         environment.pop(name, None)
     environment["PATH"] = os.pathsep.join(
         [str(Path(sys.executable).parent), str(Path(os.environ["SystemRoot"]) / "System32")]
