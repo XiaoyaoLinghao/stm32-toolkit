@@ -4,7 +4,9 @@ import platform
 import shutil
 import subprocess
 import sys
+import threading
 from pathlib import Path
+from typing import BinaryIO
 
 from stm32_toolkit.detection import detect_project
 from stm32_toolkit.result import OperationResult
@@ -20,6 +22,9 @@ TOOLS = (
     "code",
 )
 _VERSION_TIMEOUT_SECONDS = 5
+_REAP_TIMEOUT_SECONDS = 1
+_VERSION_CAPTURE_LIMIT = 8 * 1024
+_STREAM_READ_BYTES = 4 * 1024
 _VERSION_LINE_LIMIT = 512
 
 
@@ -66,22 +71,120 @@ def _tool_evidence(name: str) -> dict[str, object]:
         return _tool_result(False, None, "missing", None, None)
 
     try:
-        completed = subprocess.run(
+        process = subprocess.Popen(
             (executable, "--version"),
-            capture_output=True,
-            check=False,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             shell=False,
-            text=True,
-            timeout=_VERSION_TIMEOUT_SECONDS,
         )
-    except subprocess.TimeoutExpired:
-        return _tool_result(True, executable, "timeout", None, None)
     except OSError:
         return _tool_result(True, executable, "error", None, None)
 
-    version = _version_line(completed.stdout) or _version_line(completed.stderr)
-    status = "ok" if completed.returncode == 0 else "nonzero"
-    return _tool_result(True, executable, status, completed.returncode, version)
+    captured, readers = _start_readers(process)
+    try:
+        return_code = process.wait(timeout=_VERSION_TIMEOUT_SECONDS)
+    except subprocess.TimeoutExpired:
+        _terminate_and_reap(process)
+        _close_streams(process)
+        _join_readers(readers)
+        return _tool_result(True, executable, "timeout", None, None)
+    except OSError:
+        _terminate_and_reap(process)
+        _close_streams(process)
+        _join_readers(readers)
+        return _tool_result(True, executable, "error", None, None)
+
+    _join_readers(readers)
+    _close_streams(process)
+    version = _version_line(_decode_output(captured["stdout"]))
+    if version is None:
+        version = _version_line(_decode_output(captured["stderr"]))
+    status = "ok" if return_code == 0 else "nonzero"
+    return _tool_result(True, executable, status, return_code, version)
+
+
+def _start_readers(process: subprocess.Popen[bytes]) -> tuple[dict[str, bytes], tuple[threading.Thread, ...]]:
+    captured: dict[str, bytes] = {"stdout": b"", "stderr": b""}
+    readers = tuple(
+        threading.Thread(
+            target=_read_stream,
+            args=(stream, captured, name),
+            name=f"stm32-toolkit-doctor-{name}",
+        )
+        for name, stream in (("stdout", process.stdout), ("stderr", process.stderr))
+        if stream is not None
+    )
+    for reader in readers:
+        reader.start()
+    return captured, readers
+
+
+def _read_stream(stream: BinaryIO, captured: dict[str, bytes], name: str) -> None:
+    try:
+        captured[name] = _drain_stream(stream)
+    except (OSError, ValueError):
+        captured[name] = b""
+    finally:
+        _close_stream(stream)
+
+
+def _drain_stream(stream: BinaryIO) -> bytes:
+    retained = bytearray()
+    while True:
+        chunk = stream.read(_STREAM_READ_BYTES)
+        if not chunk:
+            break
+        available = _VERSION_CAPTURE_LIMIT - len(retained)
+        if available > 0:
+            retained.extend(chunk[:available])
+    return bytes(retained)
+
+
+def _terminate_and_reap(process: subprocess.Popen[bytes]) -> None:
+    try:
+        process.terminate()
+    except OSError:
+        pass
+    try:
+        process.wait(timeout=_REAP_TIMEOUT_SECONDS)
+        return
+    except subprocess.TimeoutExpired:
+        pass
+    except OSError:
+        return
+
+    try:
+        process.kill()
+    except OSError:
+        pass
+    try:
+        process.wait()
+    except OSError:
+        pass
+
+
+def _join_readers(readers: tuple[threading.Thread, ...]) -> None:
+    for reader in readers:
+        reader.join()
+
+
+def _close_streams(process: subprocess.Popen[bytes]) -> None:
+    _close_stream(process.stdout)
+    _close_stream(process.stderr)
+
+
+def _close_stream(stream: BinaryIO | None) -> None:
+    if stream is None:
+        return
+    try:
+        stream.close()
+    except OSError:
+        pass
+
+
+def _decode_output(output: bytes) -> str:
+    return output.decode("utf-8", errors="replace")
 
 
 def _tool_result(
