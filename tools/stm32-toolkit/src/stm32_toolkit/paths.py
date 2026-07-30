@@ -19,7 +19,8 @@ _WINDOWS_DEVICE_NAMES = {
 }
 
 
-def _require_safe_session_id(session_id: str) -> str:
+def require_safe_session_id(session_id: str) -> str:
+    """Validate the shared filesystem-safe session identifier contract."""
     if (
         not _SESSION_ID_PATTERN.fullmatch(session_id)
         or session_id in _WINDOWS_DEVICE_NAMES
@@ -51,7 +52,7 @@ class WorkspacePaths:
     ) -> "WorkspacePaths":
         canonical_project = canonical_project_root(project_root)
         canonical_data = data_root.expanduser().resolve(strict=False)
-        resolved_session_id = _require_safe_session_id(session_id if session_id is not None else new_session_id())
+        resolved_session_id = require_safe_session_id(session_id if session_id is not None else new_session_id())
         workspace_id = compute_workspace_id(logical_project_id, canonical_project)
         workspace_root = canonical_data / "projects" / workspace_id
 
