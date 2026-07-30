@@ -1,13 +1,17 @@
 import io
 import json
 import subprocess
+import sys
+import time
 from pathlib import Path
 
 from stm32_toolkit.doctor import (
     TOOLS,
+    _READER_JOIN_TIMEOUT_SECONDS,
     _STREAM_READ_BYTES,
     _VERSION_CAPTURE_LIMIT,
     _drain_stream,
+    _run_process,
     run_doctor,
 )
 
@@ -167,6 +171,23 @@ def test_doctor_decodes_invalid_version_bytes_as_evidence(monkeypatch, tmp_path:
     assert result.data["tools"]["cmake"]["status"] == "ok"
     assert result.data["tools"]["cmake"]["version"] == "\ufffdcmake version"
 
+
+
+def test_runner_returns_when_a_descendant_keeps_its_pipes_open():
+    descendant = "import time; time.sleep(0.5)"
+    parent = (
+        "import subprocess, sys; "
+        f"subprocess.Popen([sys.executable, '-c', {descendant!r}])"
+    )
+    started = time.monotonic()
+
+    status, return_code, _, _ = _run_process((sys.executable, "-c", parent))
+
+    elapsed = time.monotonic() - started
+    assert status == "ok"
+    assert return_code == 0
+    assert elapsed < _READER_JOIN_TIMEOUT_SECONDS * 3
+    time.sleep(0.6)
 
 def test_doctor_evidence_is_json_serializable(monkeypatch, tmp_path: Path):
     monkeypatch.setattr("stm32_toolkit.doctor.shutil.which", lambda name: None)

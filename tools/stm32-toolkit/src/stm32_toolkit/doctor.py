@@ -23,6 +23,7 @@ TOOLS = (
 )
 _VERSION_TIMEOUT_SECONDS = 5
 _REAP_TIMEOUT_SECONDS = 1
+_READER_JOIN_TIMEOUT_SECONDS = 0.1
 _VERSION_CAPTURE_LIMIT = 8 * 1024
 _STREAM_READ_BYTES = 4 * 1024
 _VERSION_LINE_LIMIT = 512
@@ -70,39 +71,44 @@ def _tool_evidence(name: str) -> dict[str, object]:
     if executable is None:
         return _tool_result(False, None, "missing", None, None)
 
+    status, return_code, stdout, stderr = _run_process((executable, "--version"))
+    if status in {"timeout", "error"}:
+        return _tool_result(True, executable, status, return_code, None)
+
+    version = _version_line(_decode_output(stdout))
+    if version is None:
+        version = _version_line(_decode_output(stderr))
+    status = "ok" if return_code == 0 else "nonzero"
+    return _tool_result(True, executable, status, return_code, version)
+
+
+def _run_process(argv: tuple[str, ...]) -> tuple[str, int | None, bytes, bytes]:
     try:
         process = subprocess.Popen(
-            (executable, "--version"),
+            argv,
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             shell=False,
         )
     except OSError:
-        return _tool_result(True, executable, "error", None, None)
+        return "error", None, b"", b""
 
     captured, readers = _start_readers(process)
     try:
         return_code = process.wait(timeout=_VERSION_TIMEOUT_SECONDS)
+        status = "ok"
     except subprocess.TimeoutExpired:
         _terminate_and_reap(process)
-        _close_streams(process)
-        _join_readers(readers)
-        return _tool_result(True, executable, "timeout", None, None)
+        return_code = None
+        status = "timeout"
     except OSError:
         _terminate_and_reap(process)
-        _close_streams(process)
-        _join_readers(readers)
-        return _tool_result(True, executable, "error", None, None)
-
+        return_code = None
+        status = "error"
     _join_readers(readers)
-    _close_streams(process)
-    version = _version_line(_decode_output(captured["stdout"]))
-    if version is None:
-        version = _version_line(_decode_output(captured["stderr"]))
-    status = "ok" if return_code == 0 else "nonzero"
-    return _tool_result(True, executable, status, return_code, version)
-
+    _close_finished_streams(process, readers)
+    return status, return_code, bytes(captured["stdout"]), bytes(captured["stderr"])
 
 def _start_readers(process: subprocess.Popen[bytes]) -> tuple[dict[str, bytes], tuple[threading.Thread, ...]]:
     captured: dict[str, bytes] = {"stdout": b"", "stderr": b""}
@@ -111,6 +117,7 @@ def _start_readers(process: subprocess.Popen[bytes]) -> tuple[dict[str, bytes], 
             target=_read_stream,
             args=(stream, captured, name),
             name=f"stm32-toolkit-doctor-{name}",
+            daemon=True,
         )
         for name, stream in (("stdout", process.stdout), ("stderr", process.stderr))
         if stream is not None
@@ -159,19 +166,22 @@ def _terminate_and_reap(process: subprocess.Popen[bytes]) -> None:
     except OSError:
         pass
     try:
-        process.wait()
-    except OSError:
+        process.wait(timeout=_REAP_TIMEOUT_SECONDS)
+    except (OSError, subprocess.TimeoutExpired):
         pass
 
 
 def _join_readers(readers: tuple[threading.Thread, ...]) -> None:
     for reader in readers:
-        reader.join()
+        reader.join(timeout=_READER_JOIN_TIMEOUT_SECONDS)
 
 
-def _close_streams(process: subprocess.Popen[bytes]) -> None:
-    _close_stream(process.stdout)
-    _close_stream(process.stderr)
+def _close_finished_streams(
+    process: subprocess.Popen[bytes], readers: tuple[threading.Thread, ...]
+) -> None:
+    for stream, reader in zip((process.stdout, process.stderr), readers):
+        if not reader.is_alive():
+            _close_stream(stream)
 
 
 def _close_stream(stream: BinaryIO | None) -> None:
