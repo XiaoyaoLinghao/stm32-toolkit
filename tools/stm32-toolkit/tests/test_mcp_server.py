@@ -63,12 +63,31 @@ def test_runtime_reuses_one_generated_session_for_every_context_call(
 
 
 def test_runtime_uses_the_shared_safe_session_id_validation(tmp_path: Path):
-    """Catches MCP startup accepting session IDs Task 2 rejects as unsafe paths."""
+    """Catches invalid supplied session IDs creating plugin state before rejection."""
     project = tmp_path / "project"
+    data_root = tmp_path / "plugin-data"
     project.mkdir()
 
     with pytest.raises(ValueError, match="invalid session id"):
-        ServerRuntime.create(project, tmp_path / "plugin-data", "Session-A")
+        ServerRuntime.create(project, data_root, "Session-A")
+
+    assert not data_root.exists()
+
+
+def test_runtime_validates_a_generated_session_before_creating_data(
+    monkeypatch, tmp_path: Path
+):
+    """Catches generated session validation occurring after the data-root write."""
+    project = tmp_path / "project"
+    data_root = tmp_path / "plugin-data"
+    project.mkdir()
+
+    monkeypatch.setattr("stm32_toolkit.mcp_server.new_session_id", lambda: "Session-A")
+
+    with pytest.raises(ValueError, match="invalid session id"):
+        ServerRuntime.create(project, data_root)
+
+    assert not data_root.exists()
 
 
 def test_server_registers_exactly_the_project_bound_zero_argument_tools(tmp_path: Path):

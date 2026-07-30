@@ -44,6 +44,10 @@ class ServerRuntime:
         if not canonical_project.is_dir():
             raise ValueError("project root is not a directory")
 
+        resolved_session_id = require_safe_session_id(
+            session_id if session_id is not None else new_session_id()
+        )
+
         try:
             canonical_data = data_root.expanduser().resolve(strict=False)
         except (OSError, ValueError) as error:
@@ -59,9 +63,6 @@ class ServerRuntime:
             raise ValueError("data root is not a directory")
         _require_external_data_root(canonical_data, canonical_project)
 
-        resolved_session_id = require_safe_session_id(
-            session_id if session_id is not None else new_session_id()
-        )
         return cls(canonical_project, canonical_data, resolved_session_id)
 
 
