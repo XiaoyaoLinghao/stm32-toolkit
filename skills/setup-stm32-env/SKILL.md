@@ -1,141 +1,119 @@
 ---
 name: setup-stm32-env
-description: 检查并安装 STM32F4 GCC 开发环境：编译器、构建工具、PyOCD、VS Code 插件、DAP-Link 探针、pyocd-debug-mcp。纯环境操作，不涉及任何工程代码。
+description: Use when a Claude Code user asks to check, bootstrap, repair, or diagnose the STM32 Toolkit environment.
 ---
 
-# setup-stm32-env — STM32F4 开发环境安装（一次性）
+# Setup STM32 Environment
 
-## 触发
+## Overview
 
-用户输入 `/setup-stm32-env`，或说"配置STM32开发环境"、"安装STM32工具链"。
+Keep diagnosis separate from installation. Always start in CHECK; enter MUTATE only after the user explicitly authorizes the exact versioned runtime creation and local package installation.
 
-## 执行流程
+## Non-negotiable boundaries
 
-逐项检查以下 6 项，每项给出通过/未通过状态。未通过的提示安装方法。全部完成后输出总结表。
+- CHECK is read-only and offline. Do not create, modify, or delete files; install anything; kill processes; enumerate USB devices, boards, or debug probes; or access hardware.
+- CHECK may inspect existing executable versions, the existing VS Code extension list, and the installed CMSIS-Pack inventory. Do not install or update hardware tools, extensions, drivers, or packs.
+- Never run probe-enumeration commands (including `pyocd list`) during setup.
+- Never register MCP manually. Do not run `claude mcp add` or edit Claude settings. The plugin-bundled `.mcp.json` is authoritative and binds the project automatically.
+- The only MCP runtime is `${CLAUDE_PLUGIN_DATA}/runtime/0.2.0/Scripts/python.exe`. Never fall back to system `python`, `py`, `uv`, or another interpreter.
+- Host Python 3.10+ is only a bootstrap prerequisite for creating the managed runtime and installing `${CLAUDE_PLUGIN_ROOT}/tools/stm32-toolkit`.
+- Monitoring groups are user-created. Preserve that requirement; do not create presets or rewrite monitoring in this foundation.
 
-### 1. 编译器 (arm-none-eabi-gcc)
+## CHECK
 
-```bash
-arm-none-eabi-gcc --version 2>&1 | head -1
+1. Check Host Python 3.10+ first, solely as a bootstrap prerequisite. Resolve the executable before running the version check; do not treat it as the MCP runtime:
+
+```powershell
+$hostPython = @("python", "python3", "py") | ForEach-Object { Get-Command $_ -CommandType Application -ErrorAction SilentlyContinue } | Select-Object -First 1
+if ($hostPython) { & $hostPython.Source -c "import json, sys; print(json.dumps({'version': list(sys.version_info[:3]), 'supported': sys.version_info >= (3, 10)}))" }
 ```
 
-- 预期：版本 ≥ 10.0
-- 未通过：引导用户下载 STM32CubeCLT
-  - 下载地址：https://www.st.com/en/development-tools/stm32cubeclt.html
-  - 默认安装路径：`C:/ST/STM32CubeCLT_1.22.0/`
+2. Confirm `CLAUDE_PLUGIN_ROOT`, `CLAUDE_PLUGIN_DATA`, and `CLAUDE_PROJECT_DIR` are set. Use forward-slash paths in all feedback.
+3. Set the expected runtime path and test whether it exists:
 
-### 2. 构建系统 (CMake + Ninja)
-
-```bash
-cmake --version 2>&1 | head -1
-ninja --version 2>&1
+```powershell
+$runtime = "$env:CLAUDE_PLUGIN_DATA/runtime/0.2.0"
+$runtimePython = "$runtime/Scripts/python.exe"
+Test-Path -LiteralPath $runtimePython -PathType Leaf
 ```
 
-- 未通过：`pip install cmake ninja`
+4. If the runtime exists, run only that interpreter:
 
-### 3. 烧录/调试工具 (PyOCD + CMSIS-Pack)
-
-```bash
-pyocd --version 2>&1
-pyocd pack show 2>&1 | findstr -i stm32f429
+```powershell
+& $runtimePython -m stm32_toolkit.cli version
+& $runtimePython -m stm32_toolkit.cli --project-root "$env:CLAUDE_PROJECT_DIR" doctor --json
 ```
 
-- 未通过：
-  ```bash
-  pip install pyocd
-  pyocd pack install stm32f429zgtx
-  ```
+5. Read-only gap checks must report:
 
-### 4. VS Code 插件
+   - ARM GCC (`arm-none-eabi-gcc`) and ARM GDB (`arm-none-eabi-gdb`)
+   - CMake, Ninja, PyOCD, and CubeMX
+   - existing VS Code extensions
+   - installed CMSIS-Pack inventory, but only when an existing PyOCD executable provides a local inventory command
 
-```bash
-code --list-extensions 2>&1 | findstr "cpptools\|cortex-debug\|cmake-tools"
+Use only these read-only discovery patterns. A missing executable is a gap, not permission to install it:
+
+```powershell
+$toolNames = @("arm-none-eabi-gcc", "arm-none-eabi-gdb", "cmake", "ninja", "pyocd", "STM32CubeMX")
+foreach ($name in $toolNames) {
+  $tool = Get-Command $name -CommandType Application -ErrorAction SilentlyContinue
+  if ($tool) { & $tool.Source --version }
+}
+$code = Get-Command code -CommandType Application -ErrorAction SilentlyContinue
+if ($code) { & $code.Source --list-extensions }
+$pyocd = Get-Command pyocd -CommandType Application -ErrorAction SilentlyContinue
+if ($pyocd) { & $pyocd.Source pack show }
 ```
 
-| 插件 ID | 用途 | 必须 |
-|---|---|---|
-| `ms-vscode.cpptools` | C/C++ IntelliSense | 是 |
-| `marus25.cortex-debug` | ARM Cortex 调试 | 是 |
-| `ms-vscode.cmake-tools` | CMake 状态栏 Build/Debug | 推荐 |
-
-- 未通过：告知用户在 VS Code 中 `Ctrl+Shift+X` 搜索安装
-
-### 5. DAP-Link 探针
-
-```bash
-pyocd list 2>&1
-```
-
-- 预期：看到 STM32F429ZGTx 目标
-- 未通过：检查 USB 数据线（非充电线）、Zadig WinUSB 驱动
-
-### 6. pyocd-debug-mcp（Claude 嵌入式调试 MCP 服务器）
-
-**说明**：`pyocd-debug-mcp` 是一个 MCP 服务器，让 Claude 能直接通过 MCP 协议调用 pyOCD 的全部调试能力（读内存、读外设寄存器、HardFault 分析、RTT、断点等）。它是 `read-var` skill 的底层能力提供者。
-
-```bash
-uv --version 2>&1
-```
-
-- **uv 未安装**：
-  ```bash
-  pip install uv
-  ```
-
-```bash
-uv pip list 2>&1 | findstr "pyocd-debug-mcp"
-```
-
-- **pyocd-debug-mcp 未安装**：
-  ```bash
-  uv pip install "pyocd-debug-mcp[svd] @ git+https://github.com/konbakuyomu/pyocd-debug-mcp.git"
-  ```
-
-**MCP 注册**（Claude Code）：
-
-```bash
-claude mcp add pyocd-debug -- uv --directory <pyocd-debug-mcp-path> run pyocd-debug-mcp
-```
-
-或者手动在 `.claude/settings.local.json` 中添加：
+6. Return a concise result with this shape (JSON when requested):
 
 ```json
 {
-  "mcpServers": {
-    "pyocd-debug": {
-      "command": "uv",
-      "args": ["--directory", "<pyocd-debug-mcp-path>", "run", "pyocd-debug-mcp"]
-    }
-  }
+  "mode": "CHECK",
+  "runtime": {"path": ".../runtime/0.2.0", "present": false, "version": null},
+  "bootstrapPython": {"available": true, "version": "3.10+"},
+  "tools": {"armGcc": {}, "armGdb": {}, "cmake": {}, "ninja": {}, "pyocd": {}, "cubeMx": {}},
+  "vscodeExtensions": {"installed": [], "gaps": []},
+  "cmsisPacks": {"installed": [], "gaps": []},
+  "mutated": false,
+  "authorizationRequired": true
 }
 ```
 
-其中 `<pyocd-debug-mcp-path>` 是 `pyocd-debug-mcp` 的安装路径（通过 `uv pip show pyocd-debug-mcp` 查找或使用 `uv tool dir`）。
+If the runtime is absent or broken, report that fact, identify a Host Python 3.10+ candidate without using it as the MCP runtime, ask for explicit authorization to create the exact runtime and install the local package, and stop. Do not begin MUTATE in the same response without an affirmative answer.
 
-## 输出格式
+## MUTATE
 
-全部检查完毕后，输出表格：
+Enter this section only after explicit authorization. Restate the exact runtime and package paths, then perform only this bootstrap:
 
-```
-环境检查结果:
-  ✅ arm-none-eabi-gcc   13.2.1  (C:/ST/STM32CubeCLT_1.22.0/)
-  ✅ cmake               3.28.1
-  ✅ ninja               1.11.1
-  ✅ pyocd               0.45.1  (pack: stm32f429zgtx)
-  ✅ VS Code 插件         cpptools / cortex-debug / cmake-tools
-  ✅ DAP-Link            STM32F429ZGTx 已连接
-  ✅ pyocd-debug-mcp     已安装 + 已注册 MCP
-
-全部通过，环境就绪。
+```powershell
+$runtime = "$env:CLAUDE_PLUGIN_DATA/runtime/0.2.0"
+$package = "$env:CLAUDE_PLUGIN_ROOT/tools/stm32-toolkit"
+& $hostPython -m venv $runtime
+if ($LASTEXITCODE -ne 0) { throw "runtime creation failed" }
+& "$runtime/Scripts/python.exe" -m pip install $package
+if ($LASTEXITCODE -ne 0) { throw "toolkit installation failed" }
+& "$runtime/Scripts/python.exe" -m stm32_toolkit.cli --project-root "$env:CLAUDE_PROJECT_DIR" doctor --json
+if ($LASTEXITCODE -ne 0) { throw "toolkit doctor failed" }
 ```
 
-## 工具链生态总览
+`$hostPython` must be the already checked Python 3.10+ executable. The local package installation brings its declared dependencies into this venv. Create no other runtime and install no external hardware tool, CMSIS-Pack, VS Code extension, driver, or second MCP.
 
-安装完成后，这四个 skill 形成完整链路：
+After MUTATE, repeat CHECK with the exact managed interpreter and report remaining gaps. Toolchain gaps do not make the plugin runtime invalid.
 
-```
-setup-stm32-env       →  安装全部工具
-migrate-keil          →  解析 Keil 工程 → .stm32-project.json
-init-stm32-project    →  生成 CMake/VSCode 配置 + .pyocd-debug.json
-read-var              →  运行时调试（通过 pyocd-debug-mcp）
-```
+## Quick reference
+
+| Situation | Required action |
+|---|---|
+| Runtime missing or broken | Report, ask explicit authorization, stop |
+| Runtime healthy | Run its version and `doctor --json` |
+| Tool, extension, or pack missing | Report the gap only |
+| Board may be attached | Do not enumerate it during setup |
+| MCP unavailable | Repair the versioned runtime; rely on bundled `.mcp.json` |
+
+## Common mistakes
+
+- Treating a check-only request as permission to remediate.
+- Using an ambient Python command after the managed runtime is missing.
+- Turning an optional tool gap into an automatic install.
+- Mixing machine-owned runtime state into the project or registering another MCP.

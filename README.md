@@ -1,73 +1,54 @@
 # STM32 Toolkit
 
-STM32F4 嵌入式开发的完整 Claude Code 插件工具包。
+STM32 Toolkit is a Claude Code plugin for AI-assisted STM32 coding, debugging, testing, and monitoring. It keeps shared project intent in the repository while isolating machine-owned runtime and session state for every checkout.
 
-## 安装
+## Install once for the user
 
-### 方式 1：从本地安装
+Install the plugin from your configured Claude Code plugin source at user scope. For a marketplace installation, replace the placeholder with that source name:
 
-```bash
-# 1. 安装 Python 工具
-cd stm32-toolkit/tools/stm32-monitor
-pip install -e .
-
-# 2. 注册 skills 到 Claude Code
-cp -r stm32-toolkit/skills/* ~/.claude/skills/
-
-# 3. 验证
-stm32-monitor --help
+```powershell
+claude plugin install stm32-toolkit@<marketplace-name> --scope user
 ```
 
-### 方式 2：作为 Claude Code Plugin（待发布）
+Do not copy Skills manually and do not register a second MCP server. Claude Code discovers the plugin's standard `skills/` directory and bundled `.mcp.json`.
 
-```bash
-claude plugin add /path/to/stm32-toolkit
+Run `/setup-stm32-env` once after installation. It first performs an offline, read-only check. If `${CLAUDE_PLUGIN_DATA}/runtime/0.2.0` is absent, it asks for explicit authorization before using Host Python 3.10+ to create that venv and install the local `${CLAUDE_PLUGIN_ROOT}/tools/stm32-toolkit` package and dependencies. Host Python is never an MCP fallback.
+
+## Automatic project binding and isolation
+
+When the plugin is enabled, its bundled MCP configuration automatically starts the managed runtime and binds the server to `${CLAUDE_PROJECT_DIR}`. The launcher always uses `${CLAUDE_PLUGIN_DATA}/runtime/0.2.0/Scripts/python.exe`; it never selects a system interpreter.
+
+Two kinds of data stay deliberately separate:
+
+- `.stm32-project.json` is the shared, version-controlled project configuration. Its `logicalProjectId` identifies the logical firmware project.
+- `${CLAUDE_PLUGIN_DATA}/projects/<workspaceId>` contains isolated user state for one canonical checkout, including sessions, logs, diagnostics, caches, and future monitor state. Separate clones get different workspace IDs even when they share a logical project ID.
+
+The MCP process is bound to one canonical project root. Unconfigured Keil-only or unknown projects remain read-only and do not receive a workspace until a valid `.stm32-project.json` exists.
+
+## Troubleshooting
+
+The first troubleshooting command is `stm32-toolkit doctor --json`. Run it through the managed runtime so diagnosis uses the same environment as MCP:
+
+```powershell
+& "$env:CLAUDE_PLUGIN_DATA/runtime/0.2.0/Scripts/python.exe" -m stm32_toolkit.cli --project-root "$env:CLAUDE_PROJECT_DIR" doctor --json
 ```
 
-## 包含的 Skill
+Doctor reports offline evidence for ARM GCC/GDB, CMake, Ninja, PyOCD, CubeMX, and VS Code without probing hardware or changing the project. `/setup-stm32-env` also reports existing VS Code extension and CMSIS-Pack inventory gaps. Missing hardware tools, extensions, drivers, or packs are reported for the user to resolve; setup does not install them.
 
-| 命令 | 用途 |
-|---|---|
-| `/setup-stm32-env` | 安装 ARM GCC + CMake + PyOCD + MCP 调试服务器 |
-| `/migrate-keil` | 解析 Keil `.uvprojx` → `.stm32-project.json` |
-| `/init-stm32-project` | 生成 CMakeLists.txt + `.vscode/` + `.pyocd-debug.json` |
-| `/stm32-monitor` | ⭐ 启动实时变量监控 Web 面板 |
-| `/read-var` | 运行时读变量 + 趋势分析 + 问题诊断 |
+If MCP startup says the runtime is missing, rerun `/setup-stm32-env`. The plugin-bundled `.mcp.json` is authoritative, so manual `claude mcp add` registration is neither required nor supported.
 
-## 工具链总览
+## Foundation and follow-on capabilities
 
-```
-新机环境:
-  /setup-stm32-env      → 一次性安装所有工具链
+### Foundation delivered in version 0.2.0
 
-新工程:
-  /migrate-keil         → 从 Keil 工程提取配置
-  /init-stm32-project   → 生成 CMake + VSCode 构建调试配置
+- versioned Python package and stable JSON result envelopes;
+- STM32 project detection and validated `.stm32-project.json` loading;
+- deterministic per-checkout workspace IDs and isolated plugin-data paths;
+- offline doctor, project context, CLI wrappers, and project-bound MCP tools;
+- user-scope plugin layout, one-time managed runtime bootstrap guidance, and automatic MCP binding.
 
-日常开发:
-  Ctrl+Shift+B          → 编译 + 烧录 (程序自动运行)
-  /stm32-monitor        → Web 实时监控面板 (趋势图/预设/导出)
-  /read-var             → AI 辅助变量诊断分析
-  F5                    → 断点单步调试
-```
+### Follow-on work
 
-## stm32-monitor 使用
+The foundation does not yet claim hardware flashing, probe leases, live target inspection, breakpoint debugging, host/target test execution, project generation, or a monitoring UI. Those capabilities require later implementation and hardware-aware safety contracts.
 
-```bash
-# 基本启动 (自动发现 ELF 和配置)
-stm32-monitor
-
-# 指定参数
-stm32-monitor --elf build-fw/firmware.elf --target stm32f429zgtx --preset motor_status
-
-# 高刷新率
-stm32-monitor --interval 200 --preset can_bus
-```
-
-启动后浏览器打开 `http://localhost:8888`：
-
-- **左侧**：ELF 变量树 + SVD 外设浏览 → 勾选加入监控
-- **中间**：实时数值表格（名称/值/Hex/趋势箭头）
-- **底部**：ECharts 趋势图（多变量叠加/zoom）
-- **预设**：电机状态 / CAN 总线 / PC 协议 / 系统时序 一键切换
-- **AI 分析**：导出快照 JSON → 释放探针 → 交给 Claude Code 分析
+Keil-to-GCC migration is one-way: future migration work may inspect Keil input and generate GCC/CMake configuration, but it must not write back to or synchronize the Keil project. The existing monitor requirement is preserved but monitoring is not implemented in this foundation. The contract requires user-created monitor groups; the toolkit does not ship or invent named presets.

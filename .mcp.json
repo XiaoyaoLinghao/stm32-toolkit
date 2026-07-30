@@ -1,0 +1,18 @@
+{
+  "mcpServers": {
+    "stm32-toolkit": {
+      "command": "${CLAUDE_PLUGIN_ROOT}/bin/stm32-toolkit-mcp.cmd",
+      "args": [
+        "--project-root",
+        "${CLAUDE_PROJECT_DIR}",
+        "--data-root",
+        "${CLAUDE_PLUGIN_DATA}"
+      ],
+      "env": {
+        "STM32_TOOLKIT_PLUGIN_ROOT": "${CLAUDE_PLUGIN_ROOT}",
+        "STM32_TOOLKIT_DATA_ROOT": "${CLAUDE_PLUGIN_DATA}",
+        "STM32_TOOLKIT_PROJECT_ROOT": "${CLAUDE_PROJECT_DIR}"
+      }
+    }
+  }
+}
