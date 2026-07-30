@@ -239,3 +239,6 @@ def test_registered_tools_return_bound_runtime_results(monkeypatch, tmp_path: Pa
     assert results["stm32_project_detect"]["data"]["kind"] == "keil"
     assert results["stm32_project_context"]["operation"] == "project.context"
     assert results["stm32_project_context"]["data"]["workspace"] is None
+    assert results["stm32_project_context"]["data"]["project"]["root"] == str(
+        project.resolve()
+    )

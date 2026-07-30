@@ -18,17 +18,20 @@ def build_project_context(
 ) -> OperationResult[dict[str, object]]:
     """Return a deterministic project evidence snapshot without hardware access."""
     try:
-        detection = detect_project(project_root)
+        canonical_root = project_root.expanduser().resolve(strict=False)
+        detection = detect_project(canonical_root)
     except ValueError:
         return _context_invalid("projectRoot", str(project_root))
     except OSError:
         return _context_unavailable("projectRoot", str(project_root))
 
     if detection.kind != "configured":
-        return OperationResult.success(_OPERATION, _unconfigured_context(detection))
+        return OperationResult.success(
+            _OPERATION, _unconfigured_context(detection, canonical_root)
+        )
 
     try:
-        manifest = ProjectManifest.load(project_root)
+        manifest = ProjectManifest.load(canonical_root)
     except ProjectManifestError as error:
         return OperationResult.failure(
             _OPERATION,
@@ -71,6 +74,7 @@ def build_project_context(
         {
             "project": {
                 "kind": "configured",
+                "root": str(manifest.project_root),
                 "logicalProjectId": str(manifest.logical_project_id),
                 "target": manifest.target_device,
                 "framework": manifest.framework_type,
@@ -117,10 +121,13 @@ def _is_project_path(path: Path, project_root: Path) -> bool:
         return False
     return True
 
-def _unconfigured_context(detection: ProjectDetection) -> dict[str, object]:
+def _unconfigured_context(
+    detection: ProjectDetection, project_root: Path
+) -> dict[str, object]:
     return {
         "project": {
             "kind": detection.kind,
+            "root": str(project_root),
             "files": list(detection.files),
             "recommendedSkill": detection.recommended_skill,
         },
@@ -136,8 +143,9 @@ def _build_evidence(manifest: ProjectManifest) -> dict[str, object]:
     cmake_lists = manifest.project_root / "CMakeLists.txt"
     elf_path = manifest.elf_path
     elf_exists = elf_path is not None and elf_path.is_file()
-    existing_sources = tuple(path for path in manifest.source_paths if path.is_file())
-    missing_sources = tuple(path for path in manifest.source_paths if not path.is_file())
+    sources = (*manifest.source_paths, *manifest.assembly_source_paths)
+    existing_sources = tuple(path for path in sources if path.is_file())
+    missing_sources = tuple(path for path in sources if not path.is_file())
     elf_fresh = (
         elf_exists
         and not missing_sources

@@ -355,6 +355,8 @@ def test_two_configured_clones_use_distinct_workspaces_without_project_mutation(
 
     assert first_result.ok is True
     assert second_result.ok is True
+    assert first_result.data["project"]["root"] == str(first.resolve())
+    assert second_result.data["project"]["root"] == str(second.resolve())
     first_workspace = first_result.data["workspace"]
     second_workspace = second_result.data["workspace"]
     assert first_workspace["workspaceId"] != second_workspace["workspaceId"]

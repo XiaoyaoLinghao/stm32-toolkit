@@ -23,6 +23,7 @@ def test_configured_context_reports_only_the_six_contract_sections(
         "data": {
             "project": {
                 "kind": "configured",
+                "root": str(configured_project),
                 "logicalProjectId": "12345678-1234-5678-1234-567812345678",
                 "target": "STM32F429ZGTx",
                 "framework": "spl",
@@ -67,6 +68,7 @@ def test_keil_context_stays_read_only_without_a_logical_project_id(tmp_path: Pat
     assert result.to_dict()["data"] == {
         "project": {
             "kind": "keil",
+            "root": str(tmp_path),
             "files": ["legacy.uvprojx"],
             "recommendedSkill": "/migrate-keil",
         },
@@ -257,3 +259,45 @@ def test_workspace_creation_error_maps_to_data_root_without_project_mutation(
     assert result.details == {"field": "dataRoot", "path": str(data_root)}
     assert before == after
     assert not data_root.exists()
+
+
+def test_missing_assembly_source_keeps_existing_elf_stale(
+    configured_project: Path, tmp_path: Path
+):
+    manifest_path = configured_project / ".stm32-project.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["build"]["assemblySources"] = ["Startup/missing.s"]
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    result = build_project_context(
+        configured_project, tmp_path.parent / "data", "session-a"
+    )
+
+    assert result.ok is True
+    assert result.data["build"]["missingSourcePaths"] == (
+        str(configured_project / "Startup" / "missing.s"),
+    )
+    assert result.data["build"]["elfFresh"] is False
+
+
+def test_newer_assembly_source_makes_elf_stale(
+    configured_project: Path, tmp_path: Path
+):
+    startup = configured_project / "Startup" / "startup.s"
+    startup.parent.mkdir()
+    startup.write_text("Reset_Handler:\n", encoding="utf-8")
+    manifest_path = configured_project / ".stm32-project.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["build"]["assemblySources"] = ["Startup/startup.s"]
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    elf = configured_project / "build-fw" / "firmware.elf"
+    os.utime(elf, ns=(1_000_000_000, 1_000_000_000))
+    os.utime(startup, ns=(2_000_000_000, 2_000_000_000))
+
+    result = build_project_context(
+        configured_project, tmp_path.parent / "data", "session-a"
+    )
+
+    assert result.ok is True
+    assert str(startup) in result.data["build"]["existingSourcePaths"]
+    assert result.data["build"]["elfFresh"] is False

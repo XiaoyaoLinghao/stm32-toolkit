@@ -96,3 +96,65 @@ def test_workspace_paths_reject_data_root_component_redirect(tmp_path: Path):
     with pytest.raises(ValueError, match="outside plugin data root"):
         paths.ensure()
     assert not (redirected / paths.workspace_id / "monitor").exists()
+
+
+def test_workspace_paths_reject_redirect_into_another_workspace_without_writes(
+    tmp_path: Path,
+):
+    project_a = tmp_path / "project-a"
+    project_b = tmp_path / "project-b"
+    data = tmp_path / "data"
+    project_a.mkdir()
+    project_b.mkdir()
+    target = WorkspacePaths.from_roots(
+        data,
+        project_b,
+        UUID("22345678-1234-5678-1234-567812345678"),
+        "session-b",
+    )
+    target.ensure()
+    marker = target.workspace_root / "owner.txt"
+    marker.write_text("workspace-b", encoding="utf-8")
+    before = {
+        path.relative_to(target.workspace_root).as_posix(): path.read_bytes()
+        for path in target.workspace_root.rglob("*")
+        if path.is_file()
+    }
+    redirected = WorkspacePaths.from_roots(data, project_a, PROJECT_ID, "session-a")
+    _create_directory_redirect(redirected.workspace_root, target.workspace_root)
+
+    with pytest.raises(ValueError, match="redirect"):
+        redirected.ensure()
+
+    after = {
+        path.relative_to(target.workspace_root).as_posix(): path.read_bytes()
+        for path in target.workspace_root.rglob("*")
+        if path.is_file()
+    }
+    assert after == before
+    assert not (target.workspace_root / "sessions" / "session-a").exists()
+
+
+def test_workspace_paths_reject_descendant_redirect_into_another_workspace(
+    tmp_path: Path,
+):
+    project_a = tmp_path / "project-a"
+    project_b = tmp_path / "project-b"
+    data = tmp_path / "data"
+    project_a.mkdir()
+    project_b.mkdir()
+    target = WorkspacePaths.from_roots(
+        data,
+        project_b,
+        UUID("22345678-1234-5678-1234-567812345678"),
+        "session-b",
+    )
+    target.ensure()
+    redirected = WorkspacePaths.from_roots(data, project_a, PROJECT_ID, "session-a")
+    redirected.workspace_root.mkdir(parents=True)
+    _create_directory_redirect(redirected.monitor_root, target.monitor_root)
+
+    with pytest.raises(ValueError, match="redirect"):
+        redirected.ensure()
+
+    assert not (target.monitor_root / "sessions").exists()

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import os
 import re
+import stat
 from dataclasses import dataclass
 from pathlib import Path
 from uuid import UUID
@@ -75,21 +77,48 @@ class WorkspacePaths:
         except ValueError as error:
             raise ValueError("path is outside plugin data root") from error
 
+    def _require_unredirected_workspace_path(self, path: Path) -> None:
+        try:
+            relative = path.relative_to(self.workspace_root)
+        except ValueError as error:
+            raise ValueError("path is outside workspace root") from error
+
+        current = self.workspace_root
+        for component in (*relative.parts, None):
+            try:
+                metadata = os.lstat(current)
+            except FileNotFoundError:
+                metadata = None
+            if metadata is not None:
+                attributes = getattr(metadata, "st_file_attributes", 0)
+                reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
+                if current.is_symlink() or attributes & reparse_flag:
+                    raise ValueError("workspace path contains redirect")
+            if component is not None:
+                current /= component
+
     def ensure(self) -> None:
         """Create owned state directories after resolving reparse-point redirects.
 
         A component can still be swapped between the check and mkdir calls; fully
         eliminating that TOCTOU race would require platform-native handle APIs.
         """
-        for directory in (
+        directories = (
             self.monitor_root,
             self.diagnostics_root,
             self.logs_root,
             self.cache_root,
             self.session_root,
-        ):
+        )
+        for directory in directories:
+            self._require_unredirected_workspace_path(directory)
+            self._require_owned_data_path(directory)
+
+        for directory in directories:
+            self._require_unredirected_workspace_path(directory)
             self._require_owned_data_path(directory)
             directory.mkdir(parents=True, exist_ok=True)
+            self._require_unredirected_workspace_path(directory)
             self._require_owned_data_path(directory)
 
     def require_project_path(self, path: Path) -> Path:

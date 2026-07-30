@@ -19,7 +19,21 @@ def test_load_valid_project(tmp_path: Path, copy_fixture):
     assert manifest.target_device == "STM32F429ZGTx"
     assert manifest.framework_type == "spl"
     assert manifest.source_paths == (tmp_path / "App/main.c",)
+    assert manifest.assembly_source_paths == ()
     assert manifest.elf_path == tmp_path / "build-fw/firmware.elf"
+
+
+def test_load_retains_validated_assembly_sources(configured_project: Path):
+    manifest_path = configured_project / ".stm32-project.json"
+    payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    payload["build"]["assemblySources"] = ["Startup/startup.s"]
+    manifest_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    manifest = ProjectManifest.load(configured_project)
+
+    assert manifest.assembly_source_paths == (
+        configured_project / "Startup" / "startup.s",
+    )
 
 
 def test_invalid_project_returns_schema_error(tmp_path: Path, copy_fixture):

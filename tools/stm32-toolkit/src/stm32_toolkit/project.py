@@ -33,6 +33,7 @@ class ProjectManifest:
     target_device: str
     framework_type: str
     source_paths: tuple[Path, ...]
+    assembly_source_paths: tuple[Path, ...]
     elf_path: Path | None
 
     @classmethod
@@ -51,6 +52,10 @@ class ProjectManifest:
             _resolve_project_path(root, path, f"build.sources[{index}]")
             for index, path in enumerate(build["sources"])
         )
+        assembly_sources = tuple(
+            _resolve_project_path(root, path, f"build.assemblySources[{index}]")
+            for index, path in enumerate(build["assemblySources"])
+        )
         elf_value = build.get("elf")
         elf_path = (
             _resolve_project_path(root, elf_value, "build.elf")
@@ -64,6 +69,7 @@ class ProjectManifest:
             target_device=payload["target"]["device"],
             framework_type=payload["framework"]["type"],
             source_paths=sources,
+            assembly_source_paths=assembly_sources,
             elf_path=elf_path,
         )
 
