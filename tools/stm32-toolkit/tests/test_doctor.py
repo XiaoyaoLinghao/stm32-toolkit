@@ -11,7 +11,10 @@ from stm32_toolkit.doctor import (
     _STREAM_READ_BYTES,
     _VERSION_CAPTURE_LIMIT,
     _drain_stream,
+    _join_readers,
+    _read_stream,
     _run_process,
+    _terminate_and_reap,
     run_doctor,
 )
 
@@ -173,21 +176,175 @@ def test_doctor_decodes_invalid_version_bytes_as_evidence(monkeypatch, tmp_path:
 
 
 
-def test_runner_returns_when_a_descendant_keeps_its_pipes_open():
-    descendant = "import time; time.sleep(0.5)"
+def test_reader_cleanup_uses_a_bounded_join_for_each_pipe():
+    """Catches one blocked pipe preventing cleanup of the other reader."""
+    class BlockingReader:
+        def __init__(self):
+            self.timeouts: list[float] = []
+
+        def join(self, timeout: float) -> None:
+            self.timeouts.append(timeout)
+
+    stdout_reader = BlockingReader()
+    stderr_reader = BlockingReader()
+
+    _join_readers((stdout_reader, stderr_reader))
+
+    assert stdout_reader.timeouts == [_READER_JOIN_TIMEOUT_SECONDS]
+    assert stderr_reader.timeouts == [_READER_JOIN_TIMEOUT_SECONDS]
+
+
+def test_runner_returns_before_a_descendant_releases_inherited_pipes(tmp_path: Path):
+    """Catches waiting for inherited pipe handles after the direct child exits."""
+    marker = tmp_path / "descendant-finished"
+    descendant = (
+        "import pathlib, time; time.sleep(0.5); "
+        f"pathlib.Path({str(marker)!r}).write_text('done')"
+    )
     parent = (
         "import subprocess, sys; "
         f"subprocess.Popen([sys.executable, '-c', {descendant!r}])"
     )
-    started = time.monotonic()
 
     status, return_code, _, _ = _run_process((sys.executable, "-c", parent))
 
-    elapsed = time.monotonic() - started
     assert status == "ok"
     assert return_code == 0
-    assert elapsed < _READER_JOIN_TIMEOUT_SECONDS * 3
-    time.sleep(0.6)
+    assert not marker.exists()
+
+    deadline = time.monotonic() + 3
+    while not marker.exists() and time.monotonic() < deadline:
+        time.sleep(0.05)
+    assert marker.read_text(encoding="utf-8") == "done"
+
+
+def test_doctor_treats_executable_discovery_errors_as_missing(monkeypatch, tmp_path: Path):
+    """Catches an OS lookup error aborting the complete doctor report."""
+    def unavailable(name: str) -> str | None:
+        raise OSError("lookup unavailable")
+
+    monkeypatch.setattr("stm32_toolkit.doctor.shutil.which", unavailable)
+
+    result = run_doctor(tmp_path)
+
+    assert result.ok is True
+    assert all(tool["status"] == "missing" for tool in result.data["tools"].values())
+
+
+def test_doctor_treats_process_start_errors_as_tool_evidence(monkeypatch, tmp_path: Path):
+    """Catches a stale executable path crashing doctor instead of reporting it."""
+    monkeypatch.setattr(
+        "stm32_toolkit.doctor.shutil.which",
+        lambda name: "C:/tools/cmake.exe" if name == "cmake" else None,
+    )
+
+    def unavailable(argv, **kwargs):
+        raise OSError("cannot start")
+
+    monkeypatch.setattr("stm32_toolkit.doctor.subprocess.Popen", unavailable)
+
+    result = run_doctor(tmp_path)
+
+    assert result.data["tools"]["cmake"] == {
+        "available": True,
+        "path": "C:/tools/cmake.exe",
+        "status": "error",
+        "returnCode": None,
+        "version": None,
+    }
+
+
+def test_runner_kills_a_process_that_does_not_terminate(monkeypatch):
+    """Catches a timed-out version process surviving terminate and cleanup."""
+    process = _FakeProcess()
+    waits = iter([
+        subprocess.TimeoutExpired(("tool", "--version"), 5),
+        subprocess.TimeoutExpired(("tool", "--version"), 1),
+        9,
+    ])
+
+    def wait(timeout: float) -> int:
+        process.wait_timeouts.append(timeout)
+        outcome = next(waits)
+        if isinstance(outcome, BaseException):
+            raise outcome
+        return outcome
+
+    process.wait = wait
+    monkeypatch.setattr(
+        "stm32_toolkit.doctor.subprocess.Popen",
+        lambda argv, **kwargs: process,
+    )
+
+    status, return_code, _, _ = _run_process(("tool", "--version"))
+
+    assert status == "timeout"
+    assert return_code is None
+    assert process.terminated is True
+    assert process.killed is True
+    assert process.wait_timeouts == [5, 1, 1]
+
+
+def test_reaper_swallows_wait_errors_after_termination():
+    """Catches cleanup exceptions escaping from an already failed tool check."""
+    process = _FakeProcess()
+
+    def wait(timeout: float) -> int:
+        raise OSError("wait unavailable")
+
+    process.wait = wait
+
+    _terminate_and_reap(process)
+
+    assert process.terminated is True
+    assert process.killed is False
+
+
+def test_runner_translates_wait_os_error_and_reaps_process(monkeypatch):
+    """Catches process wait failures escaping doctor or skipping termination."""
+    process = _FakeProcess()
+    waits = iter([OSError("wait unavailable"), 0])
+
+    def wait(timeout: float) -> int:
+        process.wait_timeouts.append(timeout)
+        outcome = next(waits)
+        if isinstance(outcome, BaseException):
+            raise outcome
+        return outcome
+
+    process.wait = wait
+    monkeypatch.setattr(
+        "stm32_toolkit.doctor.subprocess.Popen",
+        lambda argv, **kwargs: process,
+    )
+
+    status, return_code, stdout, stderr = _run_process(("tool", "--version"))
+
+    assert (status, return_code, stdout, stderr) == ("error", None, b"", b"")
+    assert process.terminated is True
+    assert process.wait_timeouts == [5, 1]
+
+
+def test_reader_discards_stream_errors_and_attempts_close():
+    """Catches malformed pipe reads crashing doctor or bypassing stream cleanup."""
+    class BrokenStream:
+        def __init__(self):
+            self.close_attempted = False
+
+        def read(self, size: int) -> bytes:
+            raise ValueError("stream closed")
+
+        def close(self) -> None:
+            self.close_attempted = True
+            raise OSError("close unavailable")
+
+    stream = BrokenStream()
+    captured = {"stdout": b"stale"}
+
+    _read_stream(stream, captured, "stdout")
+
+    assert captured == {"stdout": b""}
+    assert stream.close_attempted is True
 
 def test_doctor_evidence_is_json_serializable(monkeypatch, tmp_path: Path):
     monkeypatch.setattr("stm32_toolkit.doctor.shutil.which", lambda name: None)

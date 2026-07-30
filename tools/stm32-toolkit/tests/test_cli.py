@@ -84,3 +84,25 @@ def test_unserializable_doctor_result_goes_to_stderr_without_json(monkeypatch, t
     captured = capsys.readouterr()
     assert captured.out == ""
     assert "internal error" in captured.err
+
+
+def test_detect_filesystem_error_is_a_machine_readable_result(
+    monkeypatch, tmp_path: Path, capsys
+):
+    """Catches detection I/O errors escaping to the generic stderr channel."""
+    def unavailable(project_root: Path):
+        raise OSError("directory unavailable")
+
+    monkeypatch.setattr("stm32_toolkit.cli.detect_project", unavailable)
+
+    exit_code = main([
+        "project", "detect", "--project-root", str(tmp_path), "--json"
+    ])
+
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+    assert exit_code == 2
+    assert payload["operation"] == "project.detect"
+    assert payload["code"] == "PROJECT_DETECTION_UNAVAILABLE"
+    assert payload["details"] == {"path": str(tmp_path)}
+    assert captured.err == ""

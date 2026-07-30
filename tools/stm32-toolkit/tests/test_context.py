@@ -212,3 +212,48 @@ def test_invalid_session_id_identifies_the_session_field(configured_project: Pat
         "data": None,
         "details": {"field": "sessionId"},
     }
+
+
+def test_detection_os_error_maps_to_stable_unavailable_context(monkeypatch, tmp_path: Path):
+    """Catches filesystem discovery failures escaping the result envelope."""
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    data_root = tmp_path / "data"
+
+    def unavailable(path: Path):
+        raise OSError("directory unavailable")
+
+    monkeypatch.setattr("stm32_toolkit.context.detect_project", unavailable)
+
+    result = build_project_context(project_root, data_root, "session-a")
+
+    assert result.code == "PROJECT_CONTEXT_UNAVAILABLE"
+    assert result.details == {"field": "projectRoot", "path": str(project_root)}
+    assert not data_root.exists()
+
+
+def test_workspace_creation_error_maps_to_data_root_without_project_mutation(
+    monkeypatch, configured_project: Path, tmp_path: Path
+):
+    """Catches plugin-state creation errors leaking or mutating project files."""
+    data_root = tmp_path.parent / "unavailable-data"
+    before = {
+        path.relative_to(configured_project): path.stat().st_mtime_ns
+        for path in configured_project.rglob("*")
+    }
+
+    def unavailable(workspace) -> None:
+        raise OSError("cannot create workspace")
+
+    monkeypatch.setattr("stm32_toolkit.context.WorkspacePaths.ensure", unavailable)
+
+    result = build_project_context(configured_project, data_root, "session-a")
+
+    after = {
+        path.relative_to(configured_project): path.stat().st_mtime_ns
+        for path in configured_project.rglob("*")
+    }
+    assert result.code == "PROJECT_CONTEXT_UNAVAILABLE"
+    assert result.details == {"field": "dataRoot", "path": str(data_root)}
+    assert before == after
+    assert not data_root.exists()

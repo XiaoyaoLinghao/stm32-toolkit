@@ -153,3 +153,89 @@ def test_main_reports_startup_failures_on_stderr_without_stdout(tmp_path: Path, 
     captured = capsys.readouterr()
     assert captured.out == ""
     assert "startup failed" in captured.err
+
+
+def test_runtime_rejects_project_root_file_without_creating_data(tmp_path: Path):
+    """Catches binding an MCP process to a non-directory project path."""
+    project_file = tmp_path / "project.bin"
+    data_root = tmp_path / "plugin-data"
+    project_file.write_bytes(b"project")
+
+    with pytest.raises(ValueError, match="project root is not a directory"):
+        ServerRuntime.create(project_file, data_root, "session-a")
+
+    assert not data_root.exists()
+
+
+def test_runtime_rejects_data_root_file(tmp_path: Path):
+    """Catches accepting a mutable-state file where a directory is required."""
+    project = tmp_path / "project"
+    data_file = tmp_path / "plugin-data"
+    project.mkdir()
+    data_file.write_bytes(b"state")
+
+    with pytest.raises(ValueError, match="data root is not available"):
+        ServerRuntime.create(project, data_file, "session-a")
+
+    assert data_file.read_bytes() == b"state"
+
+
+def test_runtime_resolution_error_fails_before_data_creation(monkeypatch, tmp_path: Path):
+    """Catches root canonicalization failures creating unbound plugin state."""
+    project = tmp_path / "project"
+    data_root = tmp_path / "plugin-data"
+    project.mkdir()
+
+    def unavailable(path: Path) -> Path:
+        raise OSError("root unavailable")
+
+    monkeypatch.setattr("stm32_toolkit.mcp_server.canonical_project_root", unavailable)
+
+    with pytest.raises(ValueError, match="project root does not exist"):
+        ServerRuntime.create(project, data_root, "session-a")
+
+    assert not data_root.exists()
+
+
+def test_detect_tool_translates_bound_project_filesystem_errors(
+    monkeypatch, tmp_path: Path
+):
+    """Catches an MCP detection failure escaping its protocol envelope."""
+    project = tmp_path / "project"
+    project.mkdir()
+    runtime = ServerRuntime.create(project, tmp_path / "plugin-data", "session-a")
+
+    def unavailable(path: Path):
+        raise OSError("directory unavailable")
+
+    monkeypatch.setattr("stm32_toolkit.mcp_server.detect_project", unavailable)
+
+    result = tool_project_detect(runtime)
+
+    assert result["code"] == "PROJECT_DETECTION_UNAVAILABLE"
+    assert result["details"] == {"path": str(project)}
+
+
+def test_registered_tools_return_bound_runtime_results(monkeypatch, tmp_path: Path):
+    """Catches registered MCP wrappers drifting from the three bound operations."""
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "legacy.uvprojx").write_text("<Project/>", encoding="utf-8")
+    monkeypatch.setattr("stm32_toolkit.doctor.shutil.which", lambda name: None)
+    server = create_server(project, tmp_path / "plugin-data", "session-a")
+
+    results = {}
+    for tool_name in (
+        "stm32_doctor",
+        "stm32_project_detect",
+        "stm32_project_context",
+    ):
+        _, structured = asyncio.run(server.call_tool(tool_name, {}))
+        results[tool_name] = structured
+
+    assert results["stm32_doctor"]["operation"] == "doctor"
+    assert results["stm32_doctor"]["data"]["project"]["files"] == ["legacy.uvprojx"]
+    assert results["stm32_project_detect"]["operation"] == "project.detect"
+    assert results["stm32_project_detect"]["data"]["kind"] == "keil"
+    assert results["stm32_project_context"]["operation"] == "project.context"
+    assert results["stm32_project_context"]["data"]["workspace"] is None
