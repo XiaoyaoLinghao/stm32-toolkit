@@ -10,7 +10,7 @@ Install the plugin from your configured Claude Code plugin source at user scope.
 claude plugin install stm32-toolkit@<marketplace-name> --scope user
 ```
 
-Do not copy Skills manually and do not register a second MCP server. Claude Code discovers the plugin's standard `skills/` directory and bundled `.mcp.json`.
+Do not copy Skills manually and do not register a second MCP server. Claude Code discovers the plugin's standard `skills/` directory and bundled `.mcp.json`. Version 0.2.0 exposes only `/setup-stm32-env`; unfinished skill sources are preserved under `requirements/follow-on-skills/`, outside Claude's automatic Skill discovery.
 
 Run `/setup-stm32-env` once after installation. It first performs an offline, read-only check. If `${CLAUDE_PLUGIN_DATA}/runtime/0.2.0` is absent, it asks for explicit authorization before using Host Python 3.10+ to create that venv and install the local `${CLAUDE_PLUGIN_ROOT}/tools/stm32-toolkit` package and dependencies. Host Python is never an MCP fallback.
 
@@ -30,7 +30,7 @@ The MCP process is bound to one canonical project root. Unconfigured Keil-only o
 The first troubleshooting command is `stm32-toolkit doctor --json`. Run it through the managed runtime so diagnosis uses the same environment as MCP:
 
 ```powershell
-& "$env:CLAUDE_PLUGIN_DATA/runtime/0.2.0/Scripts/python.exe" -m stm32_toolkit.cli --project-root "$env:CLAUDE_PROJECT_DIR" doctor --json
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File '${CLAUDE_PLUGIN_ROOT}/bin/setup-stm32-env.ps1' -Mode Check -PluginRoot '${CLAUDE_PLUGIN_ROOT}' -PluginData '${CLAUDE_PLUGIN_DATA}' -ProjectDir '${CLAUDE_PROJECT_DIR}'
 ```
 
 Doctor reports offline evidence for ARM GCC/GDB, CMake, Ninja, PyOCD, CubeMX, and VS Code without probing hardware or changing the project. `/setup-stm32-env` also reports existing VS Code extension and CMSIS-Pack inventory gaps. Missing hardware tools, extensions, drivers, or packs are reported for the user to resolve; setup does not install them.

@@ -17,8 +17,16 @@ PLUGIN_MANIFEST = REPO_ROOT / ".claude-plugin" / "plugin.json"
 MCP_CONFIG = REPO_ROOT / ".mcp.json"
 LAUNCHER = REPO_ROOT / "bin" / "stm32-toolkit-mcp.cmd"
 SETUP_SKILL = REPO_ROOT / "skills" / "setup-stm32-env" / "SKILL.md"
+SETUP_HELPER = REPO_ROOT / "bin" / "setup-stm32-env.ps1"
+FOLLOW_ON_SKILLS = REPO_ROOT / "requirements" / "follow-on-skills"
 README = REPO_ROOT / "README.md"
 LOGICAL_PROJECT_ID = "12345678-1234-5678-1234-567812345678"
+LEGACY_SKILLS = {
+    "init-stm32-project",
+    "migrate-keil",
+    "read-var",
+    "stm32-monitor",
+}
 
 
 def test_plugin_manifest_uses_standard_skill_discovery_and_version():
@@ -203,6 +211,105 @@ def test_setup_skill_has_an_explicit_read_only_check_and_authorized_mutation_con
     assert "pip install pyocd" not in normalized
 
 
+def test_only_foundation_skill_is_discovered_and_follow_on_sources_are_preserved():
+    discovered = {
+        path.parent.name
+        for path in (REPO_ROOT / "skills").glob("*/SKILL.md")
+    }
+    preserved = {
+        path.parent.name
+        for path in FOLLOW_ON_SKILLS.glob("*/SKILL.md")
+    }
+
+    assert discovered == {"setup-stm32-env"}
+    assert preserved == LEGACY_SKILLS
+
+
+@pytest.mark.skipif(os.name != "nt", reason="PowerShell setup helper")
+def test_setup_helper_uses_explicit_paths_without_ambient_environment(tmp_path: Path):
+    project = tmp_path / "project"
+    project.mkdir()
+    plugin_data = tmp_path / "plugin-data"
+    environment = _environment_without_claude_plugin_paths()
+    result = subprocess.run(
+        [
+            "powershell.exe",
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(SETUP_HELPER),
+            "-Mode",
+            "Check",
+            "-PluginRoot",
+            str(REPO_ROOT),
+            "-PluginData",
+            str(plugin_data),
+            "-ProjectDir",
+            str(project),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        env=environment,
+    )
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["mode"] == "CHECK"
+    assert payload["runtime"]["path"].endswith("/runtime/0.2.0")
+    assert payload["project"] == project.as_posix()
+    assert payload["mutated"] is False
+    assert not plugin_data.exists()
+
+
+@pytest.mark.skipif(os.name != "nt", reason="PowerShell setup helper")
+def test_setup_helper_rejects_unresolved_inline_paths_before_mutation(tmp_path: Path):
+    environment = _environment_without_claude_plugin_paths()
+    result = subprocess.run(
+        [
+            "powershell.exe",
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(SETUP_HELPER),
+            "-Mode",
+            "Bootstrap",
+            "-PluginRoot",
+            "${CLAUDE_PLUGIN_ROOT}",
+            "-PluginData",
+            str(tmp_path / "${CLAUDE_PLUGIN_DATA}"),
+            "-ProjectDir",
+            "${CLAUDE_PROJECT_DIR}",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        env=environment,
+    )
+
+    assert result.returncode != 0
+    assert "unresolved Claude placeholder" in result.stderr
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_setup_skill_passes_inline_claude_paths_explicitly_without_ambient_variables():
+    skill = SETUP_SKILL.read_text(encoding="utf-8")
+    command_blocks = "\n".join(_fenced_blocks(skill))
+
+    assert "$env:CLAUDE_PLUGIN_" not in skill
+    assert "powershell.exe" in command_blocks
+    assert "-File '${CLAUDE_PLUGIN_ROOT}/bin/setup-stm32-env.ps1'" in command_blocks
+    for argument in (
+        "-PluginRoot '${CLAUDE_PLUGIN_ROOT}'",
+        "-PluginData '${CLAUDE_PLUGIN_DATA}'",
+        "-ProjectDir '${CLAUDE_PROJECT_DIR}'",
+    ):
+        assert argument in command_blocks
+    assert "PowerShell" in skill
+    assert "Git Bash" in skill
+
 def test_readme_documents_the_foundation_contract_without_follow_on_claims():
     readme = README.read_text(encoding="utf-8")
 
@@ -272,6 +379,16 @@ def _run_launcher(environment: dict[str, str], *arguments: str) -> subprocess.Co
         env=environment,
     )
 
+
+def _environment_without_claude_plugin_paths() -> dict[str, str]:
+    environment = os.environ.copy()
+    for name in (
+        "CLAUDE_PLUGIN_ROOT",
+        "CLAUDE_PLUGIN_DATA",
+        "CLAUDE_PROJECT_DIR",
+    ):
+        environment.pop(name, None)
+    return environment
 
 def _fenced_blocks(markdown: str) -> list[str]:
     blocks: list[str] = []
