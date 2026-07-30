@@ -129,13 +129,13 @@ def _unconfigured_context(
             "kind": detection.kind,
             "root": str(project_root),
             "files": list(detection.files),
-            "recommendedSkill": detection.recommended_skill,
+            "recommendedAction": detection.recommended_action.to_dict(),
         },
         "workspace": None,
         "build": _empty_build_evidence(),
         "hardware": _hardware_evidence(),
         "capabilities": _capabilities(build_available=False),
-        "recommendedActions": [detection.recommended_skill],
+        "recommendedActions": [detection.recommended_action.to_dict()],
     }
 
 

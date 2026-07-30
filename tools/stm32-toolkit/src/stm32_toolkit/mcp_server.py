@@ -4,8 +4,10 @@ import argparse
 import sys
 from dataclasses import dataclass
 from pathlib import Path
+from urllib.parse import urlsplit
+from urllib.request import url2pathname
 
-from mcp.server.fastmcp import FastMCP
+from mcp.server.fastmcp import Context, FastMCP
 
 from stm32_toolkit.context import build_project_context
 from stm32_toolkit.detection import detect_project
@@ -102,6 +104,89 @@ def tool_project_context(runtime: ServerRuntime) -> dict[str, object]:
     ).to_dict()
 
 
+async def tool_doctor_for_request(
+    runtime: ServerRuntime, context: Context | None
+) -> dict[str, object]:
+    failure = await _client_roots_failure(runtime, context, "doctor")
+    return failure if failure is not None else tool_doctor(runtime)
+
+
+async def tool_project_detect_for_request(
+    runtime: ServerRuntime, context: Context | None
+) -> dict[str, object]:
+    failure = await _client_roots_failure(runtime, context, "project.detect")
+    return failure if failure is not None else tool_project_detect(runtime)
+
+
+async def tool_project_context_for_request(
+    runtime: ServerRuntime, context: Context | None
+) -> dict[str, object]:
+    failure = await _client_roots_failure(runtime, context, "project.context")
+    return failure if failure is not None else tool_project_context(runtime)
+
+
+async def _client_roots_failure(
+    runtime: ServerRuntime,
+    context: Context | None,
+    operation: str,
+) -> dict[str, object] | None:
+    if context is None:
+        return None
+    try:
+        session = context.session
+    except ValueError:
+        # FastMCP's direct in-memory call path has no client request context.
+        return None
+
+    try:
+        client_params = getattr(session, "client_params", None)
+        capabilities = getattr(client_params, "capabilities", None)
+        if getattr(capabilities, "roots", None) is None:
+            return None
+    except Exception:
+        return _roots_unavailable(runtime, operation)
+
+    try:
+        result = await session.list_roots()
+        roots = result.roots
+        if not roots:
+            raise ValueError("client advertised roots but returned none")
+        canonical_roots = tuple(_canonical_client_root(root.uri) for root in roots)
+    except Exception:
+        return _roots_unavailable(runtime, operation)
+
+    if len(canonical_roots) != 1 or canonical_roots[0] != runtime.project_root:
+        return OperationResult.failure(
+            operation,
+            "UNSUPPORTED_MULTIROOT",
+            "MCP client roots must contain only the bound project root",
+            {
+                "boundProjectRoot": str(runtime.project_root),
+                "roots": [str(root) for root in canonical_roots],
+            },
+        ).to_dict()
+    return None
+
+
+def _canonical_client_root(uri: object) -> Path:
+    parsed = urlsplit(str(uri))
+    if parsed.scheme != "file" or parsed.query or parsed.fragment:
+        raise ValueError("client root is not a plain file URI")
+    uri_path = f"//{parsed.netloc}{parsed.path}" if parsed.netloc else parsed.path
+    return canonical_project_root(Path(url2pathname(uri_path)))
+
+
+def _roots_unavailable(
+    runtime: ServerRuntime, operation: str
+) -> dict[str, object]:
+    return OperationResult.failure(
+        operation,
+        "MCP_ROOTS_UNAVAILABLE",
+        "MCP client roots are unavailable",
+        {"boundProjectRoot": str(runtime.project_root)},
+    ).to_dict()
+
+
 def create_server(
     project_root: Path, data_root: Path, session_id: str | None = None
 ) -> FastMCP:
@@ -110,16 +195,16 @@ def create_server(
     mcp = FastMCP(_SERVER_NAME, instructions=_SERVER_INSTRUCTIONS)
 
     @mcp.tool(name="stm32_doctor")
-    def stm32_doctor() -> dict[str, object]:
-        return tool_doctor(runtime)
+    async def stm32_doctor(ctx: Context) -> dict[str, object]:
+        return await tool_doctor_for_request(runtime, ctx)
 
     @mcp.tool(name="stm32_project_detect")
-    def stm32_project_detect() -> dict[str, object]:
-        return tool_project_detect(runtime)
+    async def stm32_project_detect(ctx: Context) -> dict[str, object]:
+        return await tool_project_detect_for_request(runtime, ctx)
 
     @mcp.tool(name="stm32_project_context")
-    def stm32_project_context() -> dict[str, object]:
-        return tool_project_context(runtime)
+    async def stm32_project_context(ctx: Context) -> dict[str, object]:
+        return await tool_project_context_for_request(runtime, ctx)
 
     return mcp
 

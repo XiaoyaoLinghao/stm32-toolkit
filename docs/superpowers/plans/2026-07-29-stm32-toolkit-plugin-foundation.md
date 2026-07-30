@@ -487,7 +487,8 @@ git commit -m "feat: define STM32 project schema"
 - Create: `tools/stm32-toolkit/tests/test_detection.py`
 
 **Interfaces:**
-- Produces: `ProjectDetection(kind: Literal["configured", "keil", "cubemx", "cmake", "unknown"], files: tuple[str, ...], recommended_skill: str)`
+- Produces: `PlannedAction(id: Literal["migrate-keil", "configure-project", "create-project"], explanation: str, available: bool = False)`
+- Produces: `ProjectDetection(kind: Literal["configured", "keil", "cubemx", "cmake", "unknown"], files: tuple[str, ...], recommended_action: PlannedAction)`
 - Produces: `ProjectDetection.to_dict() -> dict[str, object]`
 - Produces: `detect_project(project_root: Path) -> ProjectDetection`
 
@@ -509,12 +510,14 @@ def test_keil_project_recommends_migration(tmp_path: Path):
     (tmp_path / "legacy.uvprojx").write_text("<Project/>", encoding="utf-8")
     result = detect_project(tmp_path)
     assert result.kind == "keil"
-    assert result.recommended_skill == "/migrate-keil"
+    assert result.recommended_action.id == "migrate-keil"
+    assert result.recommended_action.available is False
 
 
 def test_cubemx_project_recommends_configuration(tmp_path: Path):
     (tmp_path / "board.ioc").write_text("Mcu.Name=STM32F4", encoding="utf-8")
-    assert detect_project(tmp_path).recommended_skill == "/configure-stm32-project"
+    action = detect_project(tmp_path).recommended_action
+    assert (action.id, action.available) == ("configure-project", False)
 ```
 
 - [ ] **Step 2: Run tests and verify failure**
@@ -527,11 +530,13 @@ Expected: FAIL because `detection.py` does not exist.
 
 Use this precedence:
 
-1. `.stm32-project.json` → `configured`, `/configure-stm32-project`;
-2. sorted `*.uvprojx` → `keil`, `/migrate-keil`;
-3. sorted `*.ioc` → `cubemx`, `/configure-stm32-project`;
-4. `CMakeLists.txt` → `cmake`, `/configure-stm32-project`;
-5. otherwise `unknown`, `/create-stm32-project`.
+1. `.stm32-project.json` → `configured`, planned action `configure-project`;
+2. sorted `*.uvprojx` → `keil`, planned action `migrate-keil`;
+3. sorted `*.ioc` → `cubemx`, planned action `configure-project`;
+4. `CMakeLists.txt` → `cmake`, planned action `configure-project`;
+5. otherwise `unknown`, planned action `create-project`.
+
+Every planned action serializes as `{id, available: false, explanation}`. These identifiers describe unavailable future work and must not be rendered as slash commands.
 
 The function only reads directory entries and never creates files.
 
@@ -562,6 +567,7 @@ git commit -m "feat: detect STM32 project kind"
 - Consumes: `ProjectManifest`, `ProjectDetection`, `WorkspacePaths`
 - Produces: `build_project_context(project_root: Path, data_root: Path, session_id: str | None = None) -> OperationResult[dict[str, object]]`
 - Result data keys: `project`, `workspace`, `build`, `hardware`, `capabilities`, `recommendedActions`
+- Unconfigured result shape: `project.recommendedAction` and each `recommendedActions` entry contain the same `{id, available: false, explanation}` object.
 
 - [ ] **Step 1: Write configured-context tests**
 
@@ -584,7 +590,11 @@ def test_keil_context_recommends_migration(tmp_path):
     result = build_project_context(tmp_path, tmp_path / "data", "session-a")
     assert result.ok is True
     assert result.data["project"]["kind"] == "keil"
-    assert result.data["recommendedActions"] == ["/migrate-keil"]
+    assert result.data["recommendedActions"] == [{
+        "id": "migrate-keil",
+        "available": False,
+        "explanation": "Keil migration is planned but unavailable in this foundation release.",
+    }]
 ```
 
 - [ ] **Step 3: Run tests and verify failure**
@@ -604,7 +614,7 @@ For configured projects:
 - Keep `flash`, `hostTest`, `targetTest`, `monitor`, and `breakpointDebug` false in this foundation plan.
 - Return `hardware.probe = null` and `hardware.state = "unavailable"` without probing USB.
 
-For unconfigured projects, return detection results and the recommended Skill without creating a logical project ID or workspace directory.
+For unconfigured projects, return detection evidence and unavailable planned-action objects without creating a logical project ID or workspace directory.
 
 - [ ] **Step 5: Run context tests**
 
@@ -725,7 +735,7 @@ git commit -m "feat: add toolkit doctor CLI"
 
 **Files:**
 - Create: `tools/stm32-toolkit/src/stm32_toolkit/mcp_server.py`
-- Create: `tools/stm32-toolkit/tests/test_mcp_server.py`
+- Create: `tools/stm32-toolkit/tests/test_mcp_server.py`, `tools/stm32-toolkit/tests/test_mcp_roots.py`
 
 **Interfaces:**
 - Consumes: `run_doctor`, `detect_project`, `build_project_context`
@@ -789,6 +799,8 @@ def tool_project_context(runtime: ServerRuntime) -> dict[str, object]:
     ).to_dict()
 ```
 
+Registered wrappers accept an injected FastMCP `Context`, while their advertised input schemas remain zero-argument. If the client does not advertise the roots capability (or the plain functions are called directly), use the bound runtime. If it does, call `roots/list` on every request and accept exactly one canonical root equal to `runtime.project_root`. Return `UNSUPPORTED_MULTIROOT` for multiple or mismatched roots, and `MCP_ROOTS_UNAVAILABLE` if roots cannot be inspected. Never add, remove, or cache client roots.
+
 Register thin `@mcp.tool()` wrappers around these functions. Do not accept a project path argument in any MCP tool; the server runtime is the only source of project identity.
 
 - [ ] **Step 5: Implement stdio startup**
@@ -803,7 +815,8 @@ Set FastMCP name to `STM32 Toolkit` and instructions to state that the server is
 
 - [ ] **Step 6: Run MCP and full tests**
 
-Run: `python -m pytest tests/test_mcp_server.py -q`
+Run: `python -m pytest tests/test_mcp_server.py tests/test_mcp_roots.py -q`
+
 
 Run: `python -m pytest -q`
 
@@ -971,7 +984,7 @@ Expected: no untested branch in identity, containment, schema validation, projec
 
 - [ ] Run: `stm32-toolkit --project-root tests/fixtures/keil-project project detect --json`
 
-Expected: `kind=keil`, `recommended_skill=/migrate-keil`, and no project mutation.
+Expected: `kind=keil`, `recommended_action.id=migrate-keil`, `recommended_action.available=false`, and no project mutation.
 
 - [ ] Run: `claude plugin validate .`
 

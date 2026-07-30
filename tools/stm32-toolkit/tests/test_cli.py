@@ -24,7 +24,11 @@ def test_detect_command_emits_a_json_result_envelope(tmp_path: Path, capsys):
     assert payload["data"] == {
         "kind": "keil",
         "files": ["legacy.uvprojx"],
-        "recommended_skill": "/migrate-keil",
+        "recommended_action": {
+            "id": "migrate-keil",
+            "available": False,
+            "explanation": "Keil migration is planned but unavailable in this foundation release.",
+        },
     }
     assert captured.err == ""
 

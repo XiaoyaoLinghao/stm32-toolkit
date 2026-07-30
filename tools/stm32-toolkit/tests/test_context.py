@@ -70,7 +70,11 @@ def test_keil_context_stays_read_only_without_a_logical_project_id(tmp_path: Pat
             "kind": "keil",
             "root": str(tmp_path),
             "files": ["legacy.uvprojx"],
-            "recommendedSkill": "/migrate-keil",
+            "recommendedAction": {
+                "id": "migrate-keil",
+                "available": False,
+                "explanation": "Keil migration is planned but unavailable in this foundation release.",
+            },
         },
         "workspace": None,
         "build": {
@@ -90,7 +94,13 @@ def test_keil_context_stays_read_only_without_a_logical_project_id(tmp_path: Pat
             "monitor": False,
             "breakpointDebug": False,
         },
-        "recommendedActions": ["/migrate-keil"],
+        "recommendedActions": [{
+            "id": "migrate-keil",
+            "available": False,
+            "explanation": (
+                "Keil migration is planned but unavailable in this foundation release."
+            ),
+        }],
     }
     assert not data_root.exists()
 

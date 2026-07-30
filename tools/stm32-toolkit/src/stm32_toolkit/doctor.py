@@ -8,7 +8,7 @@ import threading
 from pathlib import Path
 from typing import BinaryIO
 
-from stm32_toolkit.detection import detect_project
+from stm32_toolkit.detection import detect_project, planned_action
 from stm32_toolkit.result import OperationResult
 
 
@@ -58,7 +58,7 @@ def _project_evidence(project_root: Path) -> dict[str, object]:
         return {
             "kind": "unknown",
             "files": [],
-            "recommended_skill": "/create-stm32-project",
+            "recommended_action": planned_action("create-project").to_dict(),
         }
 
 
