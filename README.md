@@ -30,7 +30,7 @@ The MCP process is bound to one canonical project root. Unconfigured Keil-only o
 The first troubleshooting command is `stm32-toolkit doctor --json`. Run it through the managed runtime so diagnosis uses the same environment as MCP:
 
 ```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File '${CLAUDE_PLUGIN_ROOT}/bin/stm32-toolkit:setup-stm32-env.ps1' -Mode Check -PluginRoot '${CLAUDE_PLUGIN_ROOT}' -PluginData '${CLAUDE_PLUGIN_DATA}' -ProjectDir '${CLAUDE_PROJECT_DIR}'
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File '${CLAUDE_PLUGIN_ROOT}/bin/setup-stm32-env.ps1' -Mode Check -PluginRoot '${CLAUDE_PLUGIN_ROOT}' -PluginData '${CLAUDE_PLUGIN_DATA}' -ProjectDir '${CLAUDE_PROJECT_DIR}'
 ```
 
 Doctor reports offline evidence for ARM GCC/GDB, CMake, Ninja, PyOCD, CubeMX, and VS Code without probing hardware or changing the project. `/stm32-toolkit:setup-stm32-env` also reports existing VS Code extension and CMSIS-Pack inventory gaps. Missing hardware tools, extensions, drivers, or packs are reported for the user to resolve; setup does not install them.

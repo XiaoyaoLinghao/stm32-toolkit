@@ -837,7 +837,7 @@ git commit -m "feat: expose project-bound MCP tools"
 - Modify: `.claude-plugin/plugin.json`
 - Create: `.mcp.json`
 - Create: `bin/stm32-toolkit-mcp.cmd`
-- Modify: `skills/stm32-toolkit:setup-stm32-env/SKILL.md`
+- Modify: `skills/setup-stm32-env/SKILL.md`
 - Create: `tools/stm32-toolkit/tests/test_plugin_layout.py`
 - Modify: `README.md`
 
@@ -929,7 +929,7 @@ The Windows launcher must invoke `${CLAUDE_PLUGIN_DATA}/runtime/0.2.0/Scripts/py
 
 - [ ] **Step 5: Rewrite setup responsibilities without installing hardware tools automatically**
 
-Update `skills/stm32-toolkit:setup-stm32-env/SKILL.md` so it:
+Update `skills/setup-stm32-env/SKILL.md` so it:
 
 1. Checks Python 3.10+ first.
 2. Creates `${CLAUDE_PLUGIN_DATA}/runtime/0.2.0` and installs the plugin Python package and dependencies into its `Scripts/python.exe` only after user authorization.
@@ -966,7 +966,7 @@ Expected: two distinct workspace namespaces and no files written to either proje
 - [ ] **Step 9: Commit the plugin foundation**
 
 ```bash
-git add .claude-plugin/plugin.json .mcp.json bin/stm32-toolkit-mcp.cmd skills/stm32-toolkit:setup-stm32-env/SKILL.md README.md tools/stm32-toolkit/tests/test_plugin_layout.py
+git add .claude-plugin/plugin.json .mcp.json bin/stm32-toolkit-mcp.cmd skills/setup-stm32-env/SKILL.md README.md tools/stm32-toolkit/tests/test_plugin_layout.py
 git commit -m "feat: wire project-isolated Claude plugin"
 ```
 

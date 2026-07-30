@@ -30,6 +30,17 @@ function Assert-NotRedirect {
     }
 }
 
+function Assert-NoRedirectAncestors {
+    param([string]$Name, [string]$Path)
+    $full = [IO.Path]::GetFullPath($Path)
+    $root = [IO.Path]::GetPathRoot($full)
+    $current = $root
+    $relative = $full.Substring($root.Length)
+    foreach ($part in $relative.Split([char[]]"\/", [StringSplitOptions]::RemoveEmptyEntries)) {
+        $current = Join-Path $current $part
+        Assert-NotRedirect $Name $current
+    }
+}
 function ConvertTo-ProcessArguments {
     param([string[]]$Values)
     return (($Values | ForEach-Object { '"' + $_.Replace('"', '\"') + '"' }) -join ' ')
@@ -149,7 +160,7 @@ try {
     $resolvedPluginRoot = Resolve-ClaudePath "PluginRoot" $PluginRoot -MustExist
     $resolvedPluginData = Resolve-ClaudePath "PluginData" $PluginData
     $resolvedProjectDir = Resolve-ClaudePath "ProjectDir" $ProjectDir -MustExist
-    Assert-NotRedirect "PluginData" $resolvedPluginData
+    Assert-NoRedirectAncestors "PluginData" $resolvedPluginData
     $package = Join-Path $resolvedPluginRoot "tools/stm32-toolkit"
     if (-not (Test-Path -LiteralPath $package -PathType Container)) { throw "PluginRoot does not contain tools/stm32-toolkit" }
     $runtimeParent = Join-Path $resolvedPluginData "runtime"
@@ -176,14 +187,14 @@ try {
     if (-not $bootstrapPython.supported) { throw "Host Python 3.10+ is required to create the managed runtime" }
     if ($Mode -eq "Bootstrap" -and (Test-Path -LiteralPath $runtime)) { throw "managed runtime path already exists; run Check and authorize Repair if it is broken" }
     if ($Mode -eq "Repair" -and -not (Test-Path -LiteralPath $runtime)) { throw "managed runtime is missing; authorize Bootstrap instead" }
-    Assert-NotRedirect "runtime parent" $runtimeParent
+    Assert-NoRedirectAncestors "runtime parent" $runtimeParent
     Assert-NotRedirect "managed runtime" $runtime
 
     [void][IO.Directory]::CreateDirectory($runtimeParent)
-    Assert-NotRedirect "runtime parent" $runtimeParent
+    Assert-NoRedirectAncestors "runtime parent" $runtimeParent
     $stagingRoot = Join-Path $runtimeParent ".staging"
     [void][IO.Directory]::CreateDirectory($stagingRoot)
-    Assert-NotRedirect "staging root" $stagingRoot
+    Assert-NoRedirectAncestors "staging root" $stagingRoot
     $staging = Join-Path $stagingRoot ("$RuntimeVersion-" + [Guid]::NewGuid().ToString("N"))
 
     Assert-StepOk (Invoke-BoundedProcess $bootstrapPython.path @("-m", "venv", $staging) 120) "runtime creation"
@@ -191,7 +202,7 @@ try {
     Assert-NotRedirect "staging runtime" $staging
     Assert-NotRedirect "staging Scripts" (Join-Path $staging "Scripts")
     Assert-NotRedirect "staging interpreter" $stagingPython
-    Assert-StepOk (Invoke-BoundedProcess $stagingPython @("-m", "pip", "install", "--disable-pip-version-check", "--no-cache-dir", "--no-build-isolation", $package) 300) "toolkit installation"
+    Assert-StepOk (Invoke-BoundedProcess $stagingPython @("-m", "pip", "install", "--disable-pip-version-check", "--no-cache-dir", $package) 300) "toolkit installation"
     $versionCheck = Invoke-BoundedProcess $stagingPython @("-m", "stm32_toolkit.cli", "version") 10
     Assert-StepOk $versionCheck "toolkit version validation"
     $installedVersion = ($versionCheck.stdout -split "`r?`n")[0].Trim()
@@ -205,7 +216,7 @@ try {
     if ($Mode -eq "Repair") {
         $quarantineRoot = Join-Path $runtimeParent ".quarantine"
         [void][IO.Directory]::CreateDirectory($quarantineRoot)
-        Assert-NotRedirect "quarantine root" $quarantineRoot
+        Assert-NoRedirectAncestors "quarantine root" $quarantineRoot
         $quarantined = Join-Path $quarantineRoot ("$RuntimeVersion-" + [DateTime]::UtcNow.ToString("yyyyMMddTHHmmssfffZ") + "-" + [Guid]::NewGuid().ToString("N"))
         Move-Item -LiteralPath $runtime -Destination $quarantined
     }
