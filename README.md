@@ -1,5 +1,7 @@
 # STM32 Toolkit
 
+[简体中文](README_zh-CN.md) | English
+
 STM32 Toolkit 0.2.0 is the read-only project-detection and environment-diagnosis foundation for future AI-assisted STM32 coding, debugging, testing, and monitoring. It keeps shared project intent in the repository while isolating machine-owned runtime and session state for every checkout.
 
 ## Install once for the user
