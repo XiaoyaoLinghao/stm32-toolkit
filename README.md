@@ -4,13 +4,25 @@
 
 STM32 Toolkit 0.2.0 is the read-only project-detection and environment-diagnosis foundation for future AI-assisted STM32 coding, debugging, testing, and monitoring. It keeps shared project intent in the repository while isolating machine-owned runtime and session state for every checkout.
 
-## Install once for the user
+## Install directly from GitHub
 
-Install the plugin from your configured Claude Code plugin source at user scope. For a marketplace installation, replace the placeholder with that source name:
+This project is distributed directly from GitHub and is not submitted to a public plugin directory. Register the repository as a Claude Code plugin source, then install the plugin once at user scope:
 
 ```powershell
-claude plugin install stm32-toolkit@<marketplace-name> --scope user
+claude plugin marketplace add https://github.com/XiaoyaoLinghao/stm32-toolkit.git --scope user
+claude plugin install stm32-toolkit@stm32-toolkit --scope user
 ```
+
+Run `/reload-plugins` in an active Claude Code session, or restart Claude Code. The `marketplace` word in the first command is Claude Code's fixed command name; this repository remains the installation source and is not listed in a public catalog.
+
+To update an existing installation after a new Toolkit version is released:
+
+```powershell
+claude plugin marketplace update stm32-toolkit
+claude plugin update stm32-toolkit@stm32-toolkit --scope user
+```
+
+Toolkit uses the version in `.claude-plugin/plugin.json` as Claude Code's update key, so each published release must bump that version.
 
 Do not copy Skills manually and do not register a second MCP server. Claude Code discovers the plugin's standard `skills/` directory and bundled `.mcp.json`. Version 0.2.0 exposes only `/stm32-toolkit:setup-stm32-env`; unfinished skill sources are preserved under `requirements/follow-on-skills/`, outside Claude's automatic Skill discovery.
 

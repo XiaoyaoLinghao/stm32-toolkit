@@ -4,13 +4,25 @@
 
 STM32 Toolkit 0.2.0 是面向未来 AI 辅助 STM32 编码、调试、测试与监控的只读项目检测和环境诊断基础。它将项目的共享意图保存在代码仓库中，同时为每个检出目录隔离由本机管理的运行时与会话状态。
 
-## 为当前用户安装一次
+## 直接从 GitHub 安装
 
-从已配置的 Claude Code 插件源以用户级作用域安装插件。如果通过 marketplace 安装，请将占位符替换为对应的插件源名称：
+本项目仅通过 GitHub 源代码分发，不提交到任何公开插件目录。先将该 GitHub 仓库注册为 Claude Code 插件源，再以用户级作用域安装一次：
 
 ```powershell
-claude plugin install stm32-toolkit@<marketplace-name> --scope user
+claude plugin marketplace add https://github.com/XiaoyaoLinghao/stm32-toolkit.git --scope user
+claude plugin install stm32-toolkit@stm32-toolkit --scope user
 ```
+
+在已经打开的 Claude Code 会话中运行 `/reload-plugins`，或重启 Claude Code。第一条命令中的 `marketplace` 是 Claude Code 固定的命令名称；实际安装源仍是本 GitHub 仓库，项目不会进入公开插件目录。
+
+发布新的 Toolkit 版本后，可按以下方式更新已有安装：
+
+```powershell
+claude plugin marketplace update stm32-toolkit
+claude plugin update stm32-toolkit@stm32-toolkit --scope user
+```
+
+Toolkit 使用 `.claude-plugin/plugin.json` 中的版本号作为 Claude Code 的更新标识，因此每次正式发布都必须提升该版本号。
 
 请勿手动复制 Skills，也不要重复注册 MCP 服务器。Claude Code 会自动发现插件的标准 `skills/` 目录和随插件提供的 `.mcp.json`。0.2.0 版本仅公开 `/stm32-toolkit:setup-stm32-env`；尚未完成的 Skill 源文件保存在 `requirements/follow-on-skills/` 下，该目录不在 Claude 自动发现 Skill 的范围内。
 
