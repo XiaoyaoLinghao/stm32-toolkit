@@ -8,6 +8,15 @@ Specification owner: Codex
 Implementer: OpenClaw
 Reviewer: Codex
 
+## 0. r001 revision authority
+
+- Review verdict: `REVISION_REQUIRED` against remote head `c19d53ffe40026251ed10a7ec01b19b6c9edaca0` in Draft PR `https://github.com/XiaoyaoLinghao/stm32-toolkit/pull/1`.
+- Keep the same branch and PR: `openclaw/STM32TK-0301-SCHEMA-V2/r001`; do not create `r002`, replace the PR, merge `master`, or rewrite the accepted base.
+- This revision supersedes only the contradicted file-count/scope statements and the affected gates below. All other requirements remain in force.
+- The accepted product base remains exactly `2a3114290ab8d4f4f6933b88c036d9f02b48e826`; the reviewed and revised implementation must still be assessed as the complete accepted-base-to-new-head diff.
+- OpenClaw may resume only after the specification commit containing this section is remotely visible on `master` and the user explicitly dispatches that full specification SHA.
+- Required corrections are consolidated: CPython 3.10 cancellation compatibility, Windows junction containment, complete compatibility-loader validation/version dispatch, tampered-plan write prevention, platform-correct result assertions, and truthful final report reconciliation.
+
 ## 1. Objective and user-visible outcome
 
 - Objective: add a version-dispatched immutable project model that reads Schema v1 and v2, and add a read-only-plan/digest-guarded v1→v2 upgrade API.
@@ -25,6 +34,7 @@ Reviewer: Codex
 - Add immutable `UpgradePlan`, `plan_project_upgrade(Path)`, and `apply_project_upgrade(UpgradePlan)`.
 - Validate every project-relative path against the canonical project root, including existing symlink/junction parents.
 - Add focused unit tests and keep the complete 0.2 test suite green with branch coverage at least 90%.
+- Apply the bounded CPython 3.10 compatibility correction in `_client_roots_failure`: distinguish caller cancellation from an inner client-roots cancellation using public `asyncio` APIs available in Python 3.10, preserve the timeout cleanup behavior, and make the two existing cancellation tests pass without changing MCP interfaces.
 
 ### 2.2 Out of scope
 
@@ -60,7 +70,7 @@ Reviewer: Codex
 
 - Architecture position: project-schema/model layer below CLI, MCP, context, migration, generation, build, and hardware layers.
 - Allowed dependencies: Python standard library, `jsonschema`, `stm32_toolkit.identity.canonical_project_root`, `stm32_toolkit.result.OperationResult`, and `stm32_toolkit.__version__`.
-- Forbidden dependencies: CLI, MCP server, context, detection, hardware/probe code, monitor code, Jinja2, CMake, Git, network, or subprocesses.
+- Forbidden dependencies for the schema/model/upgrade implementation: CLI, MCP server, context, detection, hardware/probe code, monitor code, Jinja2, CMake, Git, network, or subprocesses. The separately bounded `mcp_server.py` compatibility correction may use only its existing standard-library and MCP-layer dependencies and must not depend on the schema/model/upgrade modules.
 - Data flow for load: canonical root → read JSON once → inspect integer `schemaVersion` → select packaged v1/v2 schema → validate → validate project-relative paths → construct frozen model.
 - Data flow for upgrade plan: load raw v1 bytes → validate v1 → compute SHA-256 → add only defined v2 fields/defaults → validate proposed v2 → return a recursively immutable `UpgradePlan`; no filesystem writes.
 - Data flow for apply: reread bytes → compare SHA-256 → revalidate proposed v2 → serialize → write sibling temporary file → flush and `fsync` file → `os.replace` manifest → return immutable result evidence. Directory `fsync` is required where the platform supports opening directories and is best-effort on Windows.
@@ -76,6 +86,7 @@ Reviewer: Codex
 | `tools/stm32-toolkit/src/stm32_toolkit/project_model.py` | create | frozen model types, schema dispatch, path validation, stable model errors | stdlib, jsonschema, identity |
 | `tools/stm32-toolkit/src/stm32_toolkit/project_upgrade.py` | create | immutable upgrade plan, deterministic mapping, atomic digest-guarded apply | stdlib, project_model, result, package version |
 | `tools/stm32-toolkit/src/stm32_toolkit/project.py` | modify | preserve `ProjectManifest`/`ProjectManifestError` imports and adapt v1/v2 models to resolved paths | project_model |
+| `tools/stm32-toolkit/src/stm32_toolkit/mcp_server.py` | modify | bounded CPython 3.10 client-roots cancellation compatibility; preserve timeout and caller-cancellation semantics | existing dependencies only; public Python 3.10 `asyncio` APIs |
 | `tools/stm32-toolkit/tests/test_project_model.py` | create | model/schema/path/compatibility tests | pytest, package APIs |
 | `tools/stm32-toolkit/tests/test_project_upgrade.py` | create | read-only plan, mappings, digest, atomicity, errors, cleanup tests | pytest, package APIs |
 
@@ -255,7 +266,10 @@ The uppercase values in the success example are runtime values and are never emi
 |---|---|---|
 | manifest bytes changed/missing after plan | `PROJECT_CHANGED_SINCE_PLAN` | `path`, `expectedSha256`, and actual `observedSha256` or `null` |
 | plan versions are not exactly 1→2 | `PROJECT_UPGRADE_PLAN_INVALID` | `fromVersion`, `toVersion` |
+| manifest path is not the canonical absolute `.stm32-project.json` produced by the planner | `PROJECT_UPGRADE_PLAN_INVALID` | `field: "manifestPath"`, `rule: "canonicalProjectManifest"` |
+| digest-matching current bytes are not a valid Schema v1 manifest | `PROJECT_UPGRADE_PLAN_INVALID` | `field: "source"`, `rule: "validSchemaVersion1"` |
 | proposed payload is not valid v2 | `PROJECT_UPGRADE_PLAN_INVALID` | `field`, `rule` |
+| proposed payload is valid v2 but is not the deterministic v1→v2 mapping of the digest-matching current bytes | `PROJECT_UPGRADE_PLAN_INVALID` | `field: "proposed"`, `rule: "deterministicUpgrade"` |
 | temporary write, flush, replace, or cleanup fails | `PROJECT_UPGRADE_IO_ERROR` | `path`, `stage` (`write|flush|replace|cleanup`) |
 
 Messages are stable English summaries and must not expose exception text, temporary random names, home directories unrelated to the project, or file contents.
@@ -283,16 +297,19 @@ Planning must leave the complete project tree byte-for-byte and metadata-equival
 
 ### 7.2 Validation and error handling
 
-- `schemaVersion` must be an integer and exactly 1 or 2; booleans are not accepted as integers.
+- `schemaVersion` must be an integer and exactly 1 or 2; booleans are not accepted as integers. This applies to `load_project_model`, default `ProjectManifest.load`, explicit-schema `ProjectManifest.load`, and upgrade planning.
 - Malformed JSON/UTF-8, missing manifests, unavailable schemas, and JSON Schema errors retain the existing stable error contract from `stm32_toolkit.project`.
-- Every path field listed below is non-absolute and resolves within `canonical_project_root`: build sources/include paths/assembly sources/elf, debug SVD, generation CubeMX IOC/managed manifest/generated directories/user directories.
+- Every path field listed below is non-absolute and resolves within `canonical_project_root` under both public loaders, including `ProjectManifest.load` with a caller-supplied schema: build sources/include paths/assembly sources/elf, debug SVD, generation CubeMX IOC/managed manifest/generated directories/user directories.
 - Windows drive/UNC absolute forms and POSIX absolute forms must be rejected on both Windows and POSIX hosts, even when the host-native `Path` parser would treat the foreign form as relative.
+- Existing Windows NTFS junction/reparse-point parents must be detected on supported Python 3.10+ without relying only on `stat.S_ISLNK`; an escaping junction is rejected as `PROJECT_SCHEMA_INVALID`/`pathWithinProjectRoot`. The Codex Windows gate must exercise a real junction and must not satisfy this requirement with a skipped symlink test.
+- Embedded NUL or another path value that makes host path inspection raise must produce the same stable `PROJECT_SCHEMA_INVALID`/`pathWithinProjectRoot` error and must not leak a raw host exception.
 - Duplicate memory-region names return `PROJECT_SCHEMA_INVALID`, field `memory.regions`, rule `uniqueRegionName`.
 - Do not dereference target files or require them to exist; only canonical containment and existing-parent symlink/junction escape are checked.
 
 ### 7.3 Security and privacy
 
 - Digest comparison uses SHA-256 over the exact original bytes.
+- A public `UpgradePlan` constructor is not a write capability: apply must reject a forged plan before writing. It must never replace an arbitrary digest-matching non-manifest file, an invalid/non-v1 manifest, or a valid-but-nondeterministic proposed payload.
 - The upgrade plan contains only manifest-derived project facts and package version; it must not read source files, Git configuration, environment variables, probes, credentials, or plugin data.
 - Temporary files use exclusive creation in the manifest directory with user-only permissions where supported.
 - No exception `repr`, stack trace, source content, token, or unrelated absolute path enters `OperationResult`.
@@ -303,6 +320,7 @@ Planning must leave the complete project tree byte-for-byte and metadata-equival
 - Memory budget: processing is O(manifest size); do not recursively scan the project tree.
 - Accessibility/input behavior: no UI is present; deterministic English errors and structured details are required for AI and CLI adapters.
 - Compatibility: Windows 10/11 and Linux path forms; Python 3.10+; existing v1 `ProjectManifest` callers and tests remain source-compatible.
+- MCP cancellation compatibility: on Python 3.10.11 an inner `list_roots()` cancellation returns the existing stable `MCP_ROOTS_UNAVAILABLE` result, cancellation of the outer tool task propagates `CancelledError`, and a timeout cancels/awaits the in-flight request before returning the stable unavailable result. Use public APIs only; do not use private task attributes, version checks, or change protocol output.
 
 ### 7.5 Visual acceptance gate
 
@@ -323,7 +341,8 @@ Planning must leave the complete project tree byte-for-byte and metadata-equival
 | Focused GREEN | same focused pytest command after implementation | Same OpenClaw environment | OpenClaw | Exit 0; all collected tests pass; no new skip/xfail | None |
 | Full Python suite and branch coverage | `python -m pytest tools/stm32-toolkit/tests -q --cov=stm32_toolkit --cov-branch --cov-report=term-missing` | Same OpenClaw environment | OpenClaw | Exit 0; zero failures/errors; branch coverage at least 90% | None |
 | Syntax compilation | `python -m compileall -q tools/stm32-toolkit/src tools/stm32-toolkit/tests` | Same OpenClaw environment | OpenClaw | Exit 0 and no output | None |
-| Diff scope and whitespace | commands in section 8.5 against the accepted base | Git on OpenClaw worker | OpenClaw | Exit 0; exactly nine implementation paths plus one report path; no whitespace errors | None |
+| CPython 3.10 cancellation regression | `python -m pytest tools/stm32-toolkit/tests/test_mcp_roots.py::test_client_roots_timeout_cancels_request_and_returns_stable_error tools/stm32-toolkit/tests/test_mcp_roots.py::test_inner_roots_cancellation_returns_stable_unavailable tools/stm32-toolkit/tests/test_mcp_roots.py::test_external_tool_cancellation_is_not_swallowed -q` | Same OpenClaw environment | OpenClaw | Exit 0; all three pass | None |
+| Diff scope and whitespace | commands in section 8.5 against the accepted base | Git on OpenClaw worker | OpenClaw | Exit 0; exactly ten implementation paths plus one report path; no whitespace errors | None |
 | Manual upgrade and digest guard | steps in section 8.6 | Same OpenClaw environment, disposable temporary project | OpenClaw | Exact successful and mismatch behaviors with SHA-256 evidence | None |
 | Performance | 20 warm runs described in section 7.4 | Same OpenClaw environment | OpenClaw | Both medians below 100 ms; method and values recorded | None |
 | Windows compatibility review | focused and full pytest commands against returned code head | Codex clean Windows review worktree; Windows NT 10.0.26200.0; CPython 3.12.13 | Codex | Exit 0; zero failures/errors; branch coverage at least 90% | May be `DEFERRED` only to Codex’s named review gate |
@@ -345,9 +364,10 @@ Tests create manifests and project trees with `tmp_path`; no committed binary fi
 - v1/v2 root and packaged schema equivalence;
 - unsupported, missing, boolean, and malformed `schemaVersion` errors;
 - unknown properties and duplicate memory region names;
-- POSIX, Windows drive, UNC, `..`, symlink, and junction escape rejection;
+- POSIX, Windows drive, UNC, `..`, symlink, and junction escape rejection; the Windows gate creates a real NTFS junction and does not skip it;
+- embedded-NUL path input returns stable structured rejection rather than a raw `ValueError`/`OSError`;
 - safe nonexistent in-root paths;
-- existing `ProjectManifest.load` behavior for v1 and v2, including explicit schema-path tests.
+- existing `ProjectManifest.load` behavior for v1 and v2, including explicit schema-path tests, complete post-schema validation of every listed path field, and unsupported/boolean version behavior.
 
 `tools/stm32-toolkit/tests/test_project_upgrade.py` must cover:
 
@@ -356,9 +376,11 @@ Tests create manifests and project trees with `tmp_path`; no committed binary fi
 - proposed mapping is recursively immutable and valid against v2;
 - v2 not-required and unsupported-version behavior;
 - changed bytes, deletion, invalid plan versions, and invalid proposed payload fail without writes;
+- a forged public plan targeting a digest-matching arbitrary file or invalid/non-v1 manifest fails without changing the target, and a valid-v2 but nondeterministic proposal also fails without writes;
 - successful atomic replacement, one trailing LF, expected digests, and reload as v2;
 - injected write/flush/replace/cleanup failures return the specified code/stage, preserve or clearly retain the last valid manifest, and leave no temporary sibling;
-- failure details do not contain injected exception text or unrelated environment paths.
+- failure details do not contain injected exception text or unrelated environment paths;
+- assertions inspect structured `OperationResult.to_dict()` fields directly and remain valid on Windows path escaping; do not compare an unescaped Windows path with `str(dict)`.
 
 ### 8.4 TDD evidence
 
@@ -370,6 +392,8 @@ python -m pytest tools/stm32-toolkit/tests/test_project_model.py tools/stm32-too
 
 Expected RED: collection fails because `stm32_toolkit.project_model` and `stm32_toolkit.project_upgrade` do not exist. Record the exact observed output in the implementation report. After implementation the same command must exit 0 with all collected tests passing and no new skip/xfail.
 
+For the `r001` revision, preserve the original RED evidence and additionally record these pre-fix regressions against reviewed head `c19d53ffe40026251ed10a7ec01b19b6c9edaca0`: the three-test CPython 3.10 cancellation command has the two `Task.cancelling()` failures; the Windows CPython 3.12.13 focused suite has one failure in `test_apply_result_never_leaks_exception_or_environment_details`; a real NTFS junction escape is accepted; `ProjectManifest.load` accepts an escaping `generation.managedManifest`; and a forged `UpgradePlan` overwrites a digest-matching arbitrary file. Run the corresponding automated regression tests before and after correction and record both results without relabeling Codex observations as OpenClaw evidence.
+
 ### 8.5 Required verification commands
 
 Run from repository root in this order:
@@ -378,13 +402,14 @@ Run from repository root in this order:
 $baseCommit = "2a3114290ab8d4f4f6933b88c036d9f02b48e826"
 python -m pip install -e "tools/stm32-toolkit[test]"
 python -m pytest tools/stm32-toolkit/tests/test_project_model.py tools/stm32-toolkit/tests/test_project_upgrade.py -q
+python -m pytest tools/stm32-toolkit/tests/test_mcp_roots.py::test_client_roots_timeout_cancels_request_and_returns_stable_error tools/stm32-toolkit/tests/test_mcp_roots.py::test_inner_roots_cancellation_returns_stable_unavailable tools/stm32-toolkit/tests/test_mcp_roots.py::test_external_tool_cancellation_is_not_swallowed -q
 python -m pytest tools/stm32-toolkit/tests -q --cov=stm32_toolkit --cov-branch --cov-report=term-missing
 python -m compileall -q tools/stm32-toolkit/src tools/stm32-toolkit/tests
 git diff --check "$baseCommit..HEAD"
 git diff --name-status "$baseCommit..HEAD"
 ```
 
-Expected: every command exits 0; focused/full suites have zero failures/errors; branch coverage is at least 90%; compileall is silent; diff check is silent; changed paths are exactly the nine paths in section 5 plus the required implementation report.
+Expected: every command exits 0; focused/cancellation/full suites have zero failures/errors; branch coverage is at least 90%; compileall is silent; diff check is silent; changed paths are exactly the ten paths in section 5 plus the required implementation report.
 
 ### 8.6 Manual verification
 
@@ -392,6 +417,8 @@ Expected: every command exits 0; focused/full suites have zero failures/errors; 
 2. Call `plan_project_upgrade`; confirm no byte, path, or mtime changes and inspect the exact proposed v2 mapping.
 3. Call `apply_project_upgrade`; confirm only the manifest changed, reload it through both public loaders, and verify the success evidence digests.
 4. Repeat after changing one byte between plan/apply; confirm `PROJECT_CHANGED_SINCE_PLAN` and no upgrade write.
+5. Construct a public `UpgradePlan` targeting a digest-matching non-manifest file; confirm `PROJECT_UPGRADE_PLAN_INVALID` and byte-for-byte preservation of that file.
+6. On the Codex Windows gate, create a real NTFS junction inside the disposable project that targets a sibling outside the project; confirm both public loaders reject every path field routed through it and no junction test is skipped.
 
 ## 9. Artifacts and return evidence
 
@@ -406,6 +433,7 @@ OpenClaw must return:
 - performance measurement method and 20-run medians;
 - SHA-256 values from the manual successful and digest-mismatch checks;
 - known limitations/deviations, with no silent substitutions;
+- the actual Draft PR URL `https://github.com/XiaoyaoLinghao/stm32-toolkit/pull/1`; remove statements that no remote branch/PR exists and remove any unsubstantiated Ubuntu 22.04 dispatch assumption;
 - clean `git status` plus proof that local HEAD, remote branch HEAD, and PR head are identical.
 
 The tracked report records the accepted base and code head before the report commit. It must not record its own final SHA or a moving commit count; final head is returned out of band.
@@ -414,7 +442,7 @@ Do not commit `.coverage`, `htmlcov`, `__pycache__`, `.pytest_cache`, wheels, ed
 
 ## 10. Acceptance checklist
 
-- [ ] All nine product/test paths in section 5 have exactly the assigned responsibility.
+- [ ] All ten product/test paths in section 5 have exactly the assigned responsibility.
 - [ ] Schema v1 remains supported and frozen; Schema v2 matches section 6.2.
 - [ ] Model types/signatures and compatibility view match section 6.1.
 - [ ] Upgrade mapping/result/errors and atomicity match section 6.3.
@@ -438,4 +466,4 @@ Do not commit `.coverage`, `htmlcov`, `__pycache__`, `.pytest_cache`, wheels, ed
 
 ## 12. Dispatch readiness
 
-This work order is `READY_FOR_OPENCLAW`: accepted base `2a3114290ab8d4f4f6933b88c036d9f02b48e826`, branch, versions, paths, contracts, environment owners, tests, evidence, and rejection conditions are resolved. Dispatch is allowed only after this revised work order is committed, pushed, and verified on remote `master`. OpenClaw must stop as `BLOCKED` rather than guess if the recorded base is unavailable or an exact-path contradiction exists.
+This work order is `READY_FOR_OPENCLAW` for revision of the existing `r001` branch and Draft PR after the specification commit containing section 0 is committed, pushed, and verified on remote `master`. The accepted base remains `2a3114290ab8d4f4f6933b88c036d9f02b48e826`; OpenClaw must fetch the revised specification, keep the same branch/PR, review the complete accepted-base-to-new-head diff, and stop as `BLOCKED` rather than guess if any revised path, contract, or gate is unavailable or contradictory.
