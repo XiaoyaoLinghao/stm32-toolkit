@@ -372,6 +372,70 @@ def test_apply_invalid_plan_versions_fail_without_writes(
     assert sorted(path.name for path in tmp_path.iterdir()) == [MANIFEST_NAME]
 
 
+@pytest.mark.parametrize(
+    ("from_version", "to_version"),
+    [(True, 2), (1.0, 2), (1, 2.0), (True, 2.0), ("1", 2)],
+)
+def test_apply_boolean_float_string_plan_versions_fail_without_writes(
+    tmp_path: Path, from_version: object, to_version: object
+):
+    """Plan versions must be built-in integers exactly 1 and 2.
+
+    Work-order section 6.3: booleans, floats, strings, and subclasses are
+    invalid. Codex-observed RED: ``True``, ``1.0``, and ``2.0`` passed the
+    equality check and could write.
+    """
+    manifest_path = _write_manifest(tmp_path, _v1_payload())
+    plan = plan_project_upgrade(tmp_path)
+    original_bytes = manifest_path.read_bytes()
+    bad_plan = UpgradePlan(
+        manifest_path=plan.manifest_path,
+        source_sha256=plan.source_sha256,
+        from_version=from_version,
+        to_version=to_version,
+        proposed=plan.proposed,
+    )
+
+    result = apply_project_upgrade(bad_plan)
+
+    assert result.ok is False
+    assert result.code == "PROJECT_UPGRADE_PLAN_INVALID"
+    assert result.details == {"fromVersion": from_version, "toVersion": to_version}
+    assert manifest_path.read_bytes() == original_bytes
+    assert sorted(path.name for path in tmp_path.iterdir()) == [MANIFEST_NAME]
+
+
+def test_apply_string_manifest_path_returns_plan_invalid_without_attribute_error(
+    tmp_path: Path,
+):
+    """A non-Path manifest_path never leaks AttributeError.
+
+    Codex-observed RED: a string ``manifest_path`` leaked
+    ``AttributeError: 'str' object has no attribute 'name'``.
+    """
+    manifest_path = _write_manifest(tmp_path, _v1_payload())
+    plan = plan_project_upgrade(tmp_path)
+    original_bytes = manifest_path.read_bytes()
+    bad_plan = UpgradePlan(
+        manifest_path=str(plan.manifest_path),
+        source_sha256=plan.source_sha256,
+        from_version=1,
+        to_version=2,
+        proposed=plan.proposed,
+    )
+
+    result = apply_project_upgrade(bad_plan)
+
+    assert result.ok is False
+    assert result.code == "PROJECT_UPGRADE_PLAN_INVALID"
+    assert result.details == {
+        "field": "manifestPath",
+        "rule": "canonicalProjectManifest",
+    }
+    assert manifest_path.read_bytes() == original_bytes
+    assert sorted(path.name for path in tmp_path.iterdir()) == [MANIFEST_NAME]
+
+
 def test_apply_invalid_proposed_schema_fails_without_writes(tmp_path: Path):
     manifest_path = _write_manifest(tmp_path, _v1_payload())
     plan = plan_project_upgrade(tmp_path)

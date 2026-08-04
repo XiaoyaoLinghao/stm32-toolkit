@@ -103,13 +103,10 @@ def apply_project_upgrade(plan: UpgradePlan) -> OperationResult[Mapping[str, obj
     mapping of the digest-matching bytes. Only then is a same-directory
     temporary file atomically replaced into place.
     """
-    if plan.from_version != 1 or plan.to_version != 2:
-        return OperationResult.failure(
-            "project.upgrade",
-            "PROJECT_UPGRADE_PLAN_INVALID",
-            "Project upgrade plan is invalid",
-            {"fromVersion": plan.from_version, "toVersion": plan.to_version},
-        )
+    if type(plan.from_version) is not int or plan.from_version != 1:
+        return _invalid_plan_versions(plan)
+    if type(plan.to_version) is not int or plan.to_version != 2:
+        return _invalid_plan_versions(plan)
 
     manifest_path = plan.manifest_path
     if not _is_canonical_manifest_path(manifest_path):
@@ -190,9 +187,32 @@ def apply_project_upgrade(plan: UpgradePlan) -> OperationResult[Mapping[str, obj
     )
 
 
+def _invalid_plan_versions(plan: UpgradePlan) -> OperationResult[None]:
+    """Reject plan versions that are not built-in integers exactly 1 and 2.
+
+    Booleans, floats, strings, and int subclasses are invalid even when they
+    compare equal to 1 or 2 (``True == 1`` and ``1.0 == 1`` in Python).
+    """
+    return OperationResult.failure(
+        "project.upgrade",
+        "PROJECT_UPGRADE_PLAN_INVALID",
+        "Project upgrade plan is invalid",
+        {"fromVersion": plan.from_version, "toVersion": plan.to_version},
+    )
+
+
 def _is_canonical_manifest_path(manifest_path: Path) -> bool:
-    """The only writable apply target is the canonical project-root manifest."""
-    if manifest_path.name != _MANIFEST_NAME or not manifest_path.is_absolute():
+    """The only writable apply target is the canonical project-root manifest.
+
+    A non-``Path`` target (for example a string) is rejected here without
+    ever touching ``.name`` or other ``Path`` attributes, so no raw
+    ``AttributeError`` can leak from a forged plan.
+    """
+    if (
+        not isinstance(manifest_path, Path)
+        or manifest_path.name != _MANIFEST_NAME
+        or not manifest_path.is_absolute()
+    ):
         return False
     try:
         canonical_parent = canonical_project_root(manifest_path.parent)

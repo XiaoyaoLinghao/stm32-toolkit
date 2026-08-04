@@ -14,7 +14,7 @@ import re
 import stat
 from dataclasses import dataclass
 from importlib import resources
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from uuid import UUID
 
 from jsonschema import Draft202012Validator, FormatChecker
@@ -30,7 +30,11 @@ _SCHEMA_V2_NAME = "stm32-project.schema.json"
 #: Exact v1 origin to v2 memory.source mapping; anything else maps to manual.
 SOURCE_MAPPING = {"keil-migration": "keil", "cubemx": "cubemx"}
 
-_WINDOWS_ABSOLUTE_RE = re.compile(r"^[A-Za-z]:[\\/]")
+#: Windows drive-qualified forms: drive-absolute (``C:\\x``, ``C:/x``) and
+#: drive-relative (``D:outside.c``) are never project-relative and are
+#: rejected on every host, even where the host-native parser would treat the
+#: foreign form as relative.
+_WINDOWS_ABSOLUTE_RE = re.compile(r"^[A-Za-z]:")
 
 #: Windows NTFS reparse-point attribute (FILE_ATTRIBUTE_REPARSE_POINT). NTFS
 #: junctions and symlinks carry it; Python exposes it as ``st_file_attributes``
@@ -367,7 +371,7 @@ def _validate_path_value(
 ) -> None:
     if not isinstance(value, str):
         return
-    if "\x00" in value or _reject_foreign_absolute(value):
+    if "\x00" in value or _reject_foreign_absolute(value) or _has_traversal(value):
         raise _path_error(field)
     try:
         contained = _contained_in_root(root, value, cache)
@@ -413,9 +417,19 @@ def _has_existing_link_component(
         if st is None:
             try:
                 st = os.lstat(candidate)
-            except OSError:
-                # Missing components cannot be links; nothing deeper can exist.
+            except FileNotFoundError:
+                # A confirmed missing component cannot be a link; nothing
+                # deeper can exist.
                 st = None
+            except NotADirectoryError:
+                # A confirmed non-directory component cannot have children;
+                # nothing deeper can exist.
+                st = None
+            except OSError:
+                # PermissionError and every other inspection failure are
+                # rejected conservatively by the caller; an uninspectable
+                # component is never treated as safe or absent.
+                raise
             cache[candidate] = st
         if st is None:
             return False
@@ -443,11 +457,11 @@ def _resolve_project_path(
     project_root: Path, value: str, field: str, cache: dict[Path, os.stat_result | None]
 ) -> Path:
     """Resolve a project-relative manifest path for the compatibility view."""
-    if "\x00" in value or _reject_foreign_absolute(value):
+    if "\x00" in value or _reject_foreign_absolute(value) or _has_traversal(value):
         raise _path_error(field)
     try:
         parts = Path(value).parts
-        if ".." in parts or _has_existing_link_component(project_root, parts, cache):
+        if _has_traversal(value) or _has_existing_link_component(project_root, parts, cache):
             resolved = (project_root / value).resolve(strict=False)
             resolved.relative_to(project_root)
             return resolved
@@ -461,6 +475,16 @@ def _reject_foreign_absolute(value: str) -> bool:
     if value.startswith("/") or value.startswith("\\"):
         return True
     return _WINDOWS_ABSOLUTE_RE.match(value) is not None
+
+
+def _has_traversal(value: str) -> bool:
+    """Detect ``..`` traversal under both ``/`` and ``\\`` conventions.
+
+    On POSIX hosts the native parser treats ``..\\outside.c`` as a single
+    component, so the Windows parser is consulted as well; a manifest
+    accepted on Linux must not escape after relocation to Windows.
+    """
+    return ".." in PureWindowsPath(value).parts
 
 
 def _path_error(field: str) -> ProjectManifestError:

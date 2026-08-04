@@ -12,6 +12,8 @@ from stm32_toolkit.project_model import (
     _load_manifest_json,
     _load_schema,
     _model_schema_version,
+    _packaged_first_schema_error,
+    _require_manifest_object,
     _require_schema_version,
     _resolve_project_path,
     _validate_packaged_schema,
@@ -84,14 +86,35 @@ class ProjectManifest:
         )
 
 
-def _compat_dispatch_version(payload: dict) -> int:
+def _compat_dispatch_version(payload: object) -> int:
     """Default compatibility dispatch: exact integer 2 selects v2, else v1.
 
-    The stable required/type checks from the model loader still apply, so
-    missing, boolean, float, or string ``schemaVersion`` values are rejected.
-    An unsupported integer (for example 99) keeps the pre-existing stable
-    v1-schema error contract of the compatibility loader instead of the model
-    loader's unsupported-version error.
+    The manifest object is required before any version dispatch, so a list
+    returns ``PROJECT_SCHEMA_INVALID`` with ``{"field": "$", "rule":
+    "type"}`` and a scalar such as JSON ``"schemaVersion"`` never leaks a
+    raw ``TypeError``. Missing, boolean, float, or string ``schemaVersion``
+    values keep the stable required/type errors. An otherwise valid
+    v1-shaped unsupported integer version (for example 99) returns
+    ``PROJECT_SCHEMA_VERSION_UNSUPPORTED`` with ``{"schemaVersion": value,
+    "supported": [1, 2]}``; when another v1 schema defect sorts before the
+    version error, that older deterministic first error is preserved (the
+    ``invalid-project.json`` fixture keeps missing
+    ``logicalProjectId``/``required``).
     """
+    payload = _require_manifest_object(payload)
     version = _require_schema_version(payload)
-    return 2 if version == 2 else 1
+    if version in (1, 2):
+        return int(version)
+    first = _packaged_first_schema_error(payload, 1)
+    if first is None or first[0] == "schemaVersion":
+        raise ProjectManifestError(
+            "PROJECT_SCHEMA_VERSION_UNSUPPORTED",
+            "Project manifest schema version is not supported",
+            {"schemaVersion": version, "supported": [1, 2]},
+        )
+    field, rule = first
+    raise ProjectManifestError(
+        "PROJECT_SCHEMA_INVALID",
+        "Project manifest does not satisfy schema version 1",
+        {"field": field, "rule": rule},
+    )

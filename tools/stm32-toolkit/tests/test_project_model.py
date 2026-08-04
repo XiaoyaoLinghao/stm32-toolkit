@@ -465,6 +465,199 @@ def test_parent_traversal_paths_are_rejected(tmp_path: Path, field: str, value: 
     assert error.value.details == {"field": field, "rule": "pathWithinProjectRoot"}
 
 
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("build.sources[0]", "D:outside.c"),
+        ("build.includePaths[0]", "D:outside/include"),
+        ("build.assemblySources[0]", "E:startup.s"),
+        ("build.elf", "D:build/firmware.elf"),
+        ("debug.svd", "D:debug/chip.svd"),
+        ("generation.cubeMxIoc", "D:firmware.ioc"),
+        ("generation.managedManifest", "D:generated-files.json"),
+        ("generation.generatedDirectories[0]", "D:generated"),
+        ("generation.userDirectories[0]", "D:user"),
+    ],
+)
+def test_windows_drive_relative_paths_are_rejected_on_posix_hosts(
+    tmp_path: Path, field: str, value: str
+):
+    """Windows drive-qualified relative forms such as ``D:outside.c`` reject.
+
+    Codex-observed RED: ``D:outside.c`` was accepted by the model loader on
+    Linux. Work-order section 7.2: drive-qualified relative forms are not
+    project-relative and must be rejected on every host.
+    """
+    payload = _v2_payload()
+    _set_path(payload, field, value)
+    _write_manifest(tmp_path, payload)
+
+    with pytest.raises(ProjectManifestError) as error:
+        load_project_model(tmp_path)
+
+    assert error.value.code == "PROJECT_SCHEMA_INVALID"
+    assert error.value.details == {"field": field, "rule": "pathWithinProjectRoot"}
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("build.sources[0]", "D:outside.c"),
+        ("build.assemblySources[0]", "D:startup.s"),
+        ("build.elf", "D:build/firmware.elf"),
+        ("generation.managedManifest", "D:generated-files.json"),
+    ],
+)
+def test_windows_drive_relative_paths_are_rejected_in_compat_loader(
+    tmp_path: Path, field: str, value: str
+):
+    """Both public loaders reject ``D:outside.c`` host-independently.
+
+    Codex-observed RED: the compatibility view returned
+    ``WindowsPath('D:outside.c')`` for an accepted drive-relative path.
+    """
+    payload = _v2_payload()
+    _set_path(payload, field, value)
+    _write_manifest(tmp_path, payload)
+
+    with pytest.raises(ProjectManifestError) as error:
+        ProjectManifest.load(tmp_path)
+
+    assert error.value.code == "PROJECT_SCHEMA_INVALID"
+    assert error.value.details == {"field": field, "rule": "pathWithinProjectRoot"}
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("build.sources[0]", "..\\outside.c"),
+        ("build.includePaths[0]", "..\\outside\\include"),
+        ("build.assemblySources[0]", "..\\outside\\startup.s"),
+        ("build.elf", "..\\outside\\firmware.elf"),
+        ("debug.svd", "..\\outside\\chip.svd"),
+        ("generation.cubeMxIoc", "..\\outside\\firmware.ioc"),
+        ("generation.managedManifest", "..\\outside\\generated-files.json"),
+        ("generation.generatedDirectories[0]", "..\\outside\\generated"),
+        ("generation.userDirectories[0]", "..\\outside\\user"),
+        ("build.sources[1]", "App\\..\\outside.c"),
+    ],
+)
+def test_backslash_traversal_paths_are_rejected_on_posix_hosts(
+    tmp_path: Path, field: str, value: str
+):
+    """``..`` traversal under the backslash convention is rejected on Linux.
+
+    Work-order section 7.2: detect ``..`` traversal under both ``/`` and
+    ``\\`` separator conventions so a manifest accepted on Linux cannot
+    escape after relocation to Windows.
+    """
+    payload = _v2_payload()
+    _set_path(payload, field, value)
+    _write_manifest(tmp_path, payload)
+
+    with pytest.raises(ProjectManifestError) as error:
+        load_project_model(tmp_path)
+
+    assert error.value.code == "PROJECT_SCHEMA_INVALID"
+    assert error.value.details == {"field": field, "rule": "pathWithinProjectRoot"}
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("build.sources[0]", "..\\outside.c"),
+        ("build.elf", "..\\outside\\firmware.elf"),
+        ("generation.managedManifest", "..\\outside\\generated-files.json"),
+    ],
+)
+def test_backslash_traversal_paths_are_rejected_in_compat_loader(
+    tmp_path: Path, field: str, value: str
+):
+    """Both public loaders reject backslash-convention traversal."""
+    payload = _v2_payload()
+    _set_path(payload, field, value)
+    _write_manifest(tmp_path, payload)
+
+    with pytest.raises(ProjectManifestError) as error:
+        ProjectManifest.load(tmp_path)
+
+    assert error.value.code == "PROJECT_SCHEMA_INVALID"
+    assert error.value.details == {"field": field, "rule": "pathWithinProjectRoot"}
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        PermissionError(13, "Permission denied"),
+        OSError(5, "Input/output error"),
+    ],
+)
+def test_injected_lstat_failure_is_rejected_conservatively(
+    tmp_path: Path, monkeypatch, error: OSError
+):
+    """PermissionError and other lstat failures reject, never treat as safe.
+
+    Codex-observed RED: an injected ``PermissionError`` from ``os.lstat`` was
+    treated as a missing component and the path was accepted. Work-order
+    section 7.2: only confirmed missing/non-directory components may use the
+    nonexistent-path fast path.
+    """
+    import os as _os
+
+    payload = _v2_payload()
+    payload["build"]["sources"] = ["App/main.c"]
+    _write_manifest(tmp_path, payload)
+
+    real_lstat = _os.lstat
+
+    def failing_lstat(path):
+        if str(path).rsplit(_os.sep, 1)[-1] == "App":
+            raise error
+        return real_lstat(path)
+
+    monkeypatch.setattr("stm32_toolkit.project_model.os.lstat", failing_lstat)
+
+    with pytest.raises(ProjectManifestError) as exc_info:
+        load_project_model(tmp_path)
+
+    assert exc_info.value.code == "PROJECT_SCHEMA_INVALID"
+    assert exc_info.value.details == {
+        "field": "build.sources[0]",
+        "rule": "pathWithinProjectRoot",
+    }
+
+
+def test_injected_lstat_permission_error_is_rejected_in_compat_loader(
+    tmp_path: Path, monkeypatch
+):
+    """The compatibility loader rejects an uninspectable component too."""
+    import os as _os
+
+    payload = _v2_payload()
+    payload["build"]["sources"] = ["App/main.c"]
+    _write_manifest(tmp_path, payload)
+
+    real_lstat = _os.lstat
+
+    def permission_denied_lstat(path):
+        if str(path).rsplit(_os.sep, 1)[-1] == "App":
+            raise PermissionError(13, "Permission denied")
+        return real_lstat(path)
+
+    monkeypatch.setattr(
+        "stm32_toolkit.project_model.os.lstat", permission_denied_lstat
+    )
+
+    with pytest.raises(ProjectManifestError) as exc_info:
+        ProjectManifest.load(tmp_path)
+
+    assert exc_info.value.code == "PROJECT_SCHEMA_INVALID"
+    assert exc_info.value.details == {
+        "field": "build.sources[0]",
+        "rule": "pathWithinProjectRoot",
+    }
+
+
 def test_file_symlink_cannot_escape_project_root(tmp_path: Path):
     outside = tmp_path.parent / "outside-model-file.c"
     outside.write_text("int outside;", encoding="utf-8")
@@ -784,16 +977,16 @@ def test_project_manifest_load_rejects_non_integer_schema_version(
     assert error.value.details == {"field": "schemaVersion", "rule": "type"}
 
 
-def test_project_manifest_load_unsupported_integer_keeps_v1_schema_errors(
+def test_compat_loader_otherwise_valid_v1_unsupported_version_returns_unsupported(
     tmp_path: Path,
 ):
-    """Unsupported integer versions keep the pre-existing v1-schema contract.
+    """Otherwise valid v1-shaped unsupported integers are version-unsupported.
 
-    The compatibility loader's existing stable error for an unsupported
-    integer ``schemaVersion`` (for example the 99 in
-    ``fixtures/invalid-project.json``) is the v1-schema rejection, not the
-    model loader's unsupported-version error; the pre-existing 0.2 suite pins
-    this contract and the work order preserves existing stable errors.
+    Work-order section 7.2: default ``ProjectManifest.load`` returns
+    ``PROJECT_SCHEMA_VERSION_UNSUPPORTED`` with ``{"schemaVersion": value,
+    "supported": [1, 2]}`` when the manifest's only v1 schema defect is the
+    unsupported integer ``schemaVersion`` (Codex-observed RED: version 99
+    returned ``PROJECT_SCHEMA_INVALID``/``const``).
     """
     payload = _v1_payload()
     payload["schemaVersion"] = 99
@@ -802,8 +995,75 @@ def test_project_manifest_load_unsupported_integer_keeps_v1_schema_errors(
     with pytest.raises(ProjectManifestError) as error:
         ProjectManifest.load(tmp_path)
 
+    assert error.value.code == "PROJECT_SCHEMA_VERSION_UNSUPPORTED"
+    assert error.value.details == {"schemaVersion": 99, "supported": [1, 2]}
+
+
+def test_compat_loader_list_manifest_returns_object_type_error(tmp_path: Path):
+    """A list manifest returns ``{"field": "$", "rule": "type"}``.
+
+    Codex-observed RED: default ``ProjectManifest.load`` returned the wrong
+    required-field error (``schemaVersion``/``required``) for a list.
+    """
+    (tmp_path / ".stm32-project.json").write_text("[1, 2, 3]", encoding="utf-8")
+
+    with pytest.raises(ProjectManifestError) as error:
+        ProjectManifest.load(tmp_path)
+
     assert error.value.code == "PROJECT_SCHEMA_INVALID"
-    assert error.value.details == {"field": "schemaVersion", "rule": "const"}
+    assert error.value.details == {"field": "$", "rule": "type"}
+
+
+def test_compat_loader_scalar_manifest_never_leaks_type_error(tmp_path: Path):
+    """A scalar manifest such as JSON ``"schemaVersion"`` never leaks TypeError.
+
+    Codex-observed RED: raw ``TypeError: string indices must be integers``
+    escaped the compatibility loader for a scalar manifest.
+    """
+    (tmp_path / ".stm32-project.json").write_text('"schemaVersion"', encoding="utf-8")
+
+    with pytest.raises(ProjectManifestError) as error:
+        ProjectManifest.load(tmp_path)
+
+    assert error.value.code == "PROJECT_SCHEMA_INVALID"
+    assert error.value.details == {"field": "$", "rule": "type"}
+
+
+def test_compat_loader_explicit_schema_list_manifest_returns_object_type_error(
+    tmp_path: Path,
+):
+    """Explicit-schema mode also requires a manifest object first."""
+    (tmp_path / ".stm32-project.json").write_text("[1, 2, 3]", encoding="utf-8")
+    schema_path = _write_explicit_v2_schema(tmp_path)
+
+    with pytest.raises(ProjectManifestError) as error:
+        ProjectManifest.load(tmp_path, schema_path)
+
+    assert error.value.code == "PROJECT_SCHEMA_INVALID"
+    assert error.value.details == {"field": "$", "rule": "type"}
+
+
+def test_compat_loader_preserves_invalid_project_required_precedence(
+    tmp_path: Path,
+):
+    """The invalid-project.json required error keeps its precedence.
+
+    Work-order section 7.2: when another v1 schema defect sorts before the
+    version error, the older deterministic first error is preserved; the
+    ``invalid-project.json`` fixture keeps returning missing
+    ``logicalProjectId``/``required`` so the existing context contract stays
+    green.
+    """
+    fixture = Path(__file__).resolve().parent / "fixtures" / "invalid-project.json"
+    (tmp_path / ".stm32-project.json").write_text(
+        fixture.read_text(encoding="utf-8"), encoding="utf-8"
+    )
+
+    with pytest.raises(ProjectManifestError) as error:
+        ProjectManifest.load(tmp_path)
+
+    assert error.value.code == "PROJECT_SCHEMA_INVALID"
+    assert error.value.details == {"field": "logicalProjectId", "rule": "required"}
 
 
 @pytest.mark.parametrize("bad_version", [True, "1", 1.0])
