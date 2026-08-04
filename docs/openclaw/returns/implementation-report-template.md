@@ -4,17 +4,18 @@ Copy this file to `docs/openclaw/returns/{MODULE-ID}/{ATTEMPT}-implementation-re
 
 Status: `IMPLEMENTED` or `BLOCKED`
 Branch: `openclaw/{MODULE-ID}/{ATTEMPT}`
-Base commit: full 40-character commit
-Head commit: full 40-character commit
+Accepted base commit: full 40-character SHA
+Code head before report commit: full 40-character SHA
+Final branch head: supplied only in the return message and PR metadata
 PR/compare URL: GitHub URL
 Work order: exact repository-relative path
 
 ## 1. Outcome
 
-- Implemented user-visible result: exact observed result
+- Observable result: exact observed result
 - Scope completed: complete item list
 - Known limitations: `NONE` or an explicit list
-- Deviations from work order: `NONE` or an explicit list with reason
+- Deviations: `NONE` or an explicit list with reason
 
 ## 2. Complete changed-path inventory
 
@@ -22,7 +23,7 @@ Work order: exact repository-relative path
 |---|---|---|---|
 | A/M/D/R | exact repository-relative path | section number | purpose |
 
-The table must reconcile with `git diff --name-status {BASE}..{HEAD}`.
+Reconcile this table with the accepted-base-to-code-head diff. Include this report path as the final report-only addition. Do not record a moving commit total.
 
 ## 3. Public contracts delivered
 
@@ -30,17 +31,19 @@ The table must reconcile with `git diff --name-status {BASE}..{HEAD}`.
 - Commands/events/configuration/schemas: exact list
 - External interfaces: exact list or `NONE`
 
-## 4. Verification evidence
+## 4. Environment-separated verification
 
-| Command | Environment | Exit code | Observed result |
-|---|---|---:|---|
-| exact command | OS/runtime/version | numeric exit code | test count and result |
+| Gate/command | Evidence owner | Environment/tool versions | Commit tested | Exit | Observed result | Status |
+|---|---|---|---|---:|---|---|
+| exact command | OpenClaw/Codex/User | OS/runtime versions | full SHA | numeric exit | count/result | PASS/FAIL/DEFERRED/BLOCKED |
 
-### Manual verification
+Do not report another actor’s command as OpenClaw evidence. A deferment must name the later owner and gate.
 
-| Step | Observed result | Evidence path |
-|---|---|---|
-| exact step | observed result | repository-relative path or `N/A` |
+### Manual and visual evidence
+
+| Gate | Owner | Observed result | Evidence path/status |
+|---|---|---|---|
+| exact step or viewport | named owner | result | repository-relative path or named deferment |
 
 ### Artifacts
 
@@ -48,7 +51,7 @@ The table must reconcile with `git diff --name-status {BASE}..{HEAD}`.
 |---|---|---|
 | exact name | repository-relative or external artifact path | value |
 
-## 5. Security, privacy, performance, and compatibility
+## 5. Security, privacy, performance, accessibility, and compatibility
 
 - Security checks: commands and results
 - Privacy/redaction checks: results
@@ -56,16 +59,19 @@ The table must reconcile with `git diff --name-status {BASE}..{HEAD}`.
 - Accessibility/input checks: results or `NOT_APPLICABLE` with reason
 - Compatibility checks: targets and results
 
-## 6. Blockers or risks
+## 6. Blockers and residual risks
 
 - Blockers: `NONE` or exact evidence
-- Residual risks: `NONE` or exact list
+- Residual risks: `NONE` or explicit list
 - Follow-up recommendation: `NONE` or an out-of-scope recommendation; do not implement it silently
 
 ## 7. Author checklist
 
-- [ ] Report matches the returned head commit and complete diff.
-- [ ] Every required test command is recorded with observed output.
+- [ ] Accepted base and code head are full SHAs.
+- [ ] Final head will be returned out of band after this report commit.
+- [ ] Inventory matches the complete implementation diff and report addition.
+- [ ] Every required OpenClaw gate has direct observed evidence.
+- [ ] Other-environment gates are accurately attributed or deferred.
 - [ ] No credentials, private data, caches, build output, or unredacted diagnostics are committed.
 - [ ] No unrelated file, agent instruction, approved work order, or remote policy changed.
 - [ ] Every instructional value in this report is replaced with actual evidence.

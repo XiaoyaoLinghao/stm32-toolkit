@@ -1,11 +1,12 @@
 # STM32TK-0301-SCHEMA-V2: Project Schema v2 and Explicit Upgrade
 
 Status: `READY_FOR_OPENCLAW`
-Owner: OpenClaw implementation agent
-Reviewer: Codex
-Target branch: `master`
-Base rule: fetched `master` commit containing this ready work order; record its full hash before branch creation
+Accepted base commit: `2a3114290ab8d4f4f6933b88c036d9f02b48e826`
+Default branch: `master`
 Implementation branch: `openclaw/STM32TK-0301-SCHEMA-V2/r001`
+Specification owner: Codex
+Implementer: OpenClaw
+Reviewer: Codex
 
 ## 1. Objective and user-visible outcome
 
@@ -44,8 +45,8 @@ Implementation branch: `openclaw/STM32TK-0301-SCHEMA-V2/r001`
 
 ## 3. Prerequisites and fixed decisions
 
-- Base repository: `https://github.com/XiaoyaoLinghao/stm32-toolkit.git`; use the fetched `master` commit that contains this ready work order and record its full hash before branch creation.
-- Runtime used for evidence: CPython 3.10.11.
+- Base repository: `https://github.com/XiaoyaoLinghao/stm32-toolkit.git`; accepted product base is exactly `2a3114290ab8d4f4f6933b88c036d9f02b48e826` and must not be substituted.
+- Required OpenClaw runtime for module evidence: CPython 3.10.11.
 - Exact test environment: `jsonschema==4.23.0`, `mcp==1.27.0`, `pytest==8.3.5`, `pytest-cov==6.0.0`.
 - Declared compatibility remains Python 3.10 or newer, jsonschema in `[4.23, 5.0)`, mcp in `[1.27, 2.0)`, pytest in `[8.0, 9.0)`, and pytest-cov in `[5.0, 7.0)`.
 - Prerequisite module: 0.2 foundation on the recorded base commit; no other OpenClaw module.
@@ -303,13 +304,38 @@ Planning must leave the complete project tree byte-for-byte and metadata-equival
 - Accessibility/input behavior: no UI is present; deterministic English errors and structured details are required for AI and CLI adapters.
 - Compatibility: Windows 10/11 and Linux path forms; Python 3.10+; existing v1 `ProjectManifest` callers and tests remain source-compatible.
 
-## 8. Tests
+### 7.5 Visual acceptance gate
 
-### 8.1 Fixtures
+- Applies: `NO`.
+- Fixture/route: `N/A`.
+- Viewport/scale: `N/A`.
+- Production asset/CSS entry: `N/A`.
+- Evidence owner: `N/A`.
+- Expected result: this module creates no UI, rendered output, or visual asset; no screenshot may be presented as implementation evidence.
+
+## 8. Tests and environment evidence
+
+### 8.1 Required environment evidence matrix
+
+| Gate | Exact command/action | Required environment | Evidence owner | Expected result | Deferred owner if unavailable |
+|---|---|---|---|---|---|
+| TDD RED | `python -m pytest tools/stm32-toolkit/tests/test_project_model.py tools/stm32-toolkit/tests/test_project_upgrade.py -q` before implementation | OpenClaw worker; CPython 3.10.11; exact dependencies in section 3 | OpenClaw | Nonzero exit caused only by the two missing modules; record output | None; unexpected failure is `BLOCKED` |
+| Focused GREEN | same focused pytest command after implementation | Same OpenClaw environment | OpenClaw | Exit 0; all collected tests pass; no new skip/xfail | None |
+| Full Python suite and branch coverage | `python -m pytest tools/stm32-toolkit/tests -q --cov=stm32_toolkit --cov-branch --cov-report=term-missing` | Same OpenClaw environment | OpenClaw | Exit 0; zero failures/errors; branch coverage at least 90% | None |
+| Syntax compilation | `python -m compileall -q tools/stm32-toolkit/src tools/stm32-toolkit/tests` | Same OpenClaw environment | OpenClaw | Exit 0 and no output | None |
+| Diff scope and whitespace | commands in section 8.5 against the accepted base | Git on OpenClaw worker | OpenClaw | Exit 0; exactly nine implementation paths plus one report path; no whitespace errors | None |
+| Manual upgrade and digest guard | steps in section 8.6 | Same OpenClaw environment, disposable temporary project | OpenClaw | Exact successful and mismatch behaviors with SHA-256 evidence | None |
+| Performance | 20 warm runs described in section 7.4 | Same OpenClaw environment | OpenClaw | Both medians below 100 ms; method and values recorded | None |
+| Windows compatibility review | focused and full pytest commands against returned code head | Codex clean Windows review worktree; Windows NT 10.0.26200.0; CPython 3.12.13 | Codex | Exit 0; zero failures/errors; branch coverage at least 90% | May be `DEFERRED` only to Codex’s named review gate |
+| Visual/UI | no action | N/A | N/A | `NOT_APPLICABLE` under section 7.5 | None |
+
+`PASS` requires the named evidence owner to run the gate against the stated returned commit. OpenClaw must mark the Windows gate `DEFERRED` to Codex rather than claim it ran on Linux. A failure in an OpenClaw-owned pure code gate is `FAIL` or `BLOCKED`, never deferred.
+
+### 8.2 Fixtures
 
 Tests create manifests and project trees with `tmp_path`; no committed binary fixture is required. Use the current `tools/stm32-toolkit/tests/fixtures/valid-project.json` only as read-only v1 source data.
 
-### 8.2 Required focused tests
+### 8.3 Required focused tests
 
 `tools/stm32-toolkit/tests/test_project_model.py` must cover:
 
@@ -334,7 +360,7 @@ Tests create manifests and project trees with `tmp_path`; no committed binary fi
 - injected write/flush/replace/cleanup failures return the specified code/stage, preserve or clearly retain the last valid manifest, and leave no temporary sibling;
 - failure details do not contain injected exception text or unrelated environment paths.
 
-### 8.3 TDD evidence
+### 8.4 TDD evidence
 
 Before implementation, add the focused tests and run:
 
@@ -344,11 +370,12 @@ python -m pytest tools/stm32-toolkit/tests/test_project_model.py tools/stm32-too
 
 Expected RED: collection fails because `stm32_toolkit.project_model` and `stm32_toolkit.project_upgrade` do not exist. Record the exact observed output in the implementation report. After implementation the same command must exit 0 with all collected tests passing and no new skip/xfail.
 
-### 8.4 Required verification commands
+### 8.5 Required verification commands
 
 Run from repository root in this order:
 
 ```powershell
+$baseCommit = "2a3114290ab8d4f4f6933b88c036d9f02b48e826"
 python -m pip install -e "tools/stm32-toolkit[test]"
 python -m pytest tools/stm32-toolkit/tests/test_project_model.py tools/stm32-toolkit/tests/test_project_upgrade.py -q
 python -m pytest tools/stm32-toolkit/tests -q --cov=stm32_toolkit --cov-branch --cov-report=term-missing
@@ -359,7 +386,7 @@ git diff --name-status "$baseCommit..HEAD"
 
 Expected: every command exits 0; focused/full suites have zero failures/errors; branch coverage is at least 90%; compileall is silent; diff check is silent; changed paths are exactly the nine paths in section 5 plus the required implementation report.
 
-### 8.5 Manual verification
+### 8.6 Manual verification
 
 1. Copy `tools/stm32-toolkit/tests/fixtures/valid-project.json` into a disposable project as `.stm32-project.json` and record its SHA-256/tree inventory.
 2. Call `plan_project_upgrade`; confirm no byte, path, or mtime changes and inspect the exact proposed v2 mapping.
@@ -370,15 +397,18 @@ Expected: every command exits 0; focused/full suites have zero failures/errors; 
 
 OpenClaw must return:
 
-- branch `openclaw/STM32TK-0301-SCHEMA-V2/r001`, full base/head commits, and PR/compare URL targeting `master`;
+- branch `openclaw/STM32TK-0301-SCHEMA-V2/r001`, accepted base, code head before report commit, final remote head in the return message, and one PR/compare URL targeting `master`;
 - report `docs/openclaw/returns/STM32TK-0301-SCHEMA-V2/r001-implementation-report.md` copied from `docs/openclaw/returns/implementation-report-template.md`;
-- complete changed-path inventory reconciled with the base-to-head diff;
-- exact dependency versions and OS used;
+- complete changed-path inventory reconciled with the accepted-base-to-code-head diff, plus the report-only addition;
+- environment-separated evidence recording owner, OS/tool versions, tested commit, command, exit code, observed result, and status;
 - RED test command/output summary and subsequent GREEN focused/full command results;
 - branch-coverage percentage and missing-line output;
 - performance measurement method and 20-run medians;
 - SHA-256 values from the manual successful and digest-mismatch checks;
-- known limitations/deviations, with no silent substitutions.
+- known limitations/deviations, with no silent substitutions;
+- clean `git status` plus proof that local HEAD, remote branch HEAD, and PR head are identical.
+
+The tracked report records the accepted base and code head before the report commit. It must not record its own final SHA or a moving commit count; final head is returned out of band.
 
 Do not commit `.coverage`, `htmlcov`, `__pycache__`, `.pytest_cache`, wheels, editable-install metadata, temporary manifests, or manual-test projects.
 
@@ -390,6 +420,7 @@ Do not commit `.coverage`, `htmlcov`, `__pycache__`, `.pytest_cache`, wheels, ed
 - [ ] Upgrade mapping/result/errors and atomicity match section 6.3.
 - [ ] All validation, security, privacy, performance, and compatibility requirements pass.
 - [ ] Focused and complete suites pass with branch coverage at least 90%.
+- [ ] Every gate is attributed to the correct evidence owner; the Windows gate is passed by Codex or explicitly deferred to that named review gate.
 - [ ] Implementation report matches the complete diff and evidence.
 - [ ] No out-of-scope product, workflow, plan, or agent file changed.
 
@@ -407,4 +438,4 @@ Do not commit `.coverage`, `htmlcov`, `__pycache__`, `.pytest_cache`, wheels, ed
 
 ## 12. Dispatch readiness
 
-This work order is `READY_FOR_OPENCLAW`: repository, base, branch, versions, paths, public contracts, defaults, errors, tests, evidence, and rejection conditions are resolved. OpenClaw must stop as `BLOCKED` rather than guess if the recorded base is unavailable or an exact-path contradiction exists.
+This work order is `READY_FOR_OPENCLAW`: accepted base `2a3114290ab8d4f4f6933b88c036d9f02b48e826`, branch, versions, paths, contracts, environment owners, tests, evidence, and rejection conditions are resolved. Dispatch is allowed only after this revised work order is committed, pushed, and verified on remote `master`. OpenClaw must stop as `BLOCKED` rather than guess if the recorded base is unavailable or an exact-path contradiction exists.
