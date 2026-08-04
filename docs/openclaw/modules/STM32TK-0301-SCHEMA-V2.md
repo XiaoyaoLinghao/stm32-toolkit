@@ -11,11 +11,12 @@ Reviewer: Codex
 ## 0. r001 revision authority
 
 - Review verdict: `REVISION_REQUIRED` against remote head `c19d53ffe40026251ed10a7ec01b19b6c9edaca0` in Draft PR `https://github.com/XiaoyaoLinghao/stm32-toolkit/pull/1`.
+- Second review verdict: `REVISION_REQUIRED` against remote head `ec292ba6819a1aa2b0c3f2ab38dfb55379d6f3da`; keep the same branch and Draft PR and re-review the complete accepted-base-to-new-head diff.
 - Keep the same branch and PR: `openclaw/STM32TK-0301-SCHEMA-V2/r001`; do not create `r002`, replace the PR, merge `master`, or rewrite the accepted base.
 - This revision supersedes only the contradicted file-count/scope statements and the affected gates below. All other requirements remain in force.
 - The accepted product base remains exactly `2a3114290ab8d4f4f6933b88c036d9f02b48e826`; the reviewed and revised implementation must still be assessed as the complete accepted-base-to-new-head diff.
 - OpenClaw may resume only after the specification commit containing this section is remotely visible on `master` and the user explicitly dispatches that full specification SHA.
-- Required corrections are consolidated: CPython 3.10 cancellation compatibility, Windows junction containment, complete compatibility-loader validation/version dispatch, tampered-plan write prevention, platform-correct result assertions, and truthful final report reconciliation.
+- Required corrections are consolidated across both reviews: CPython 3.10 cancellation compatibility, Windows junction containment, complete compatibility-loader validation/version dispatch, conservative path-inspection failure handling, host-independent drive-relative/traversal rejection, exact built-in-integer plan versions, tampered-plan write prevention, platform-correct result assertions, and truthful final report reconciliation.
 
 ## 1. Objective and user-visible outcome
 
@@ -265,7 +266,7 @@ The uppercase values in the success example are runtime values and are never emi
 | Condition | `OperationResult.code` | Details |
 |---|---|---|
 | manifest bytes changed/missing after plan | `PROJECT_CHANGED_SINCE_PLAN` | `path`, `expectedSha256`, and actual `observedSha256` or `null` |
-| plan versions are not exactly 1→2 | `PROJECT_UPGRADE_PLAN_INVALID` | `fromVersion`, `toVersion` |
+| plan versions are not built-in integers exactly equal to 1→2 (booleans, floats, strings, and subclasses are invalid) | `PROJECT_UPGRADE_PLAN_INVALID` | `fromVersion`, `toVersion` |
 | manifest path is not the canonical absolute `.stm32-project.json` produced by the planner | `PROJECT_UPGRADE_PLAN_INVALID` | `field: "manifestPath"`, `rule: "canonicalProjectManifest"` |
 | digest-matching current bytes are not a valid Schema v1 manifest | `PROJECT_UPGRADE_PLAN_INVALID` | `field: "source"`, `rule: "validSchemaVersion1"` |
 | proposed payload is not valid v2 | `PROJECT_UPGRADE_PLAN_INVALID` | `field`, `rule` |
@@ -297,12 +298,15 @@ Planning must leave the complete project tree byte-for-byte and metadata-equival
 
 ### 7.2 Validation and error handling
 
-- `schemaVersion` must be an integer and exactly 1 or 2; booleans are not accepted as integers. This applies to `load_project_model`, default `ProjectManifest.load`, explicit-schema `ProjectManifest.load`, and upgrade planning.
+- `schemaVersion` must be an integer and exactly 1 or 2; booleans are not accepted as integers. This applies to `load_project_model`, default `ProjectManifest.load`, explicit-schema `ProjectManifest.load`, and upgrade planning. Both compatibility-loader modes must first require a manifest object, so a list returns `PROJECT_SCHEMA_INVALID` with `{"field": "$", "rule": "type"}` and a scalar such as JSON `"schemaVersion"` never leaks `TypeError`.
+- For an otherwise valid v1-shaped manifest whose only schema defect is an unsupported integer `schemaVersion`, default `ProjectManifest.load` returns `PROJECT_SCHEMA_VERSION_UNSUPPORTED` with `{"schemaVersion": value, "supported": [1, 2]}`. Preserve the older deterministic first error when another v1 schema defect sorts before the version error; specifically, the existing `invalid-project.json` fixture must continue returning missing `logicalProjectId`/`required` so the existing context contract stays green.
 - Malformed JSON/UTF-8, missing manifests, unavailable schemas, and JSON Schema errors retain the existing stable error contract from `stm32_toolkit.project`.
 - Every path field listed below is non-absolute and resolves within `canonical_project_root` under both public loaders, including `ProjectManifest.load` with a caller-supplied schema: build sources/include paths/assembly sources/elf, debug SVD, generation CubeMX IOC/managed manifest/generated directories/user directories.
 - Windows drive/UNC absolute forms and POSIX absolute forms must be rejected on both Windows and POSIX hosts, even when the host-native `Path` parser would treat the foreign form as relative.
+- Windows drive-qualified relative forms such as `D:outside.c` are not project-relative and must be rejected on every host. Detect `..` traversal under both `/` and `\` separator conventions so a manifest accepted on Linux cannot escape after relocation to Windows.
 - Existing Windows NTFS junction/reparse-point parents must be detected on supported Python 3.10+ without relying only on `stat.S_ISLNK`; an escaping junction is rejected as `PROJECT_SCHEMA_INVALID`/`pathWithinProjectRoot`. The Codex Windows gate must exercise a real junction and must not satisfy this requirement with a skipped symlink test.
 - Embedded NUL or another path value that makes host path inspection raise must produce the same stable `PROJECT_SCHEMA_INVALID`/`pathWithinProjectRoot` error and must not leak a raw host exception.
+- Only a confirmed missing/non-directory component may use the lexical nonexistent-path fast path. `PermissionError` and every other inspection failure must be rejected conservatively as `PROJECT_SCHEMA_INVALID`/`pathWithinProjectRoot`; never treat an uninspectable component as safe or absent.
 - Duplicate memory-region names return `PROJECT_SCHEMA_INVALID`, field `memory.regions`, rule `uniqueRegionName`.
 - Do not dereference target files or require them to exist; only canonical containment and existing-parent symlink/junction escape are checked.
 
@@ -316,7 +320,7 @@ Planning must leave the complete project tree byte-for-byte and metadata-equival
 
 ### 7.4 Performance, accessibility, and compatibility
 
-- Performance budget: for a 100 KiB manifest with 1,000 source strings, median `load_project_model` and `plan_project_upgrade` time over 20 warm runs must each be below 100 ms on the declared test environment; record the measurements, but do not add a timing-fragile CI assertion.
+- Performance budget: for a manifest of at least 102,400 bytes (100 KiB) with exactly 1,000 source strings, median `load_project_model` and `plan_project_upgrade` time over 20 warm runs must each be below 100 ms on the declared test environment; record the exact byte size and measurements, but do not add a timing-fragile CI assertion.
 - Memory budget: processing is O(manifest size); do not recursively scan the project tree.
 - Accessibility/input behavior: no UI is present; deterministic English errors and structured details are required for AI and CLI adapters.
 - Compatibility: Windows 10/11 and Linux path forms; Python 3.10+; existing v1 `ProjectManifest` callers and tests remain source-compatible.
@@ -365,9 +369,11 @@ Tests create manifests and project trees with `tmp_path`; no committed binary fi
 - unsupported, missing, boolean, and malformed `schemaVersion` errors;
 - unknown properties and duplicate memory region names;
 - POSIX, Windows drive, UNC, `..`, symlink, and junction escape rejection; the Windows gate creates a real NTFS junction and does not skip it;
+- drive-relative forms such as `D:outside.c` and backslash `..\outside.c` traversal are rejected host-independently by both public loaders;
 - embedded-NUL path input returns stable structured rejection rather than a raw `ValueError`/`OSError`;
+- injected `PermissionError`/non-missing `OSError` from component inspection returns stable rejection, while truly nonexistent in-root paths remain accepted;
 - safe nonexistent in-root paths;
-- existing `ProjectManifest.load` behavior for v1 and v2, including explicit schema-path tests, complete post-schema validation of every listed path field, and unsupported/boolean version behavior.
+- existing `ProjectManifest.load` behavior for v1 and v2, including explicit schema-path tests, complete post-schema validation of every listed path field, non-object/scalar manifest behavior without raw exceptions, and the unsupported/boolean version precedence defined in section 7.2.
 
 `tools/stm32-toolkit/tests/test_project_upgrade.py` must cover:
 
@@ -375,7 +381,7 @@ Tests create manifests and project trees with `tmp_path`; no committed binary fi
 - exact origin mapping and all v2 defaults;
 - proposed mapping is recursively immutable and valid against v2;
 - v2 not-required and unsupported-version behavior;
-- changed bytes, deletion, invalid plan versions, and invalid proposed payload fail without writes;
+- changed bytes, deletion, invalid plan versions (including `True`, `1.0`, and `2.0`), non-`Path` manifest targets, and invalid proposed payload fail without writes or raw exceptions;
 - a forged public plan targeting a digest-matching arbitrary file or invalid/non-v1 manifest fails without changing the target, and a valid-v2 but nondeterministic proposal also fails without writes;
 - successful atomic replacement, one trailing LF, expected digests, and reload as v2;
 - injected write/flush/replace/cleanup failures return the specified code/stage, preserve or clearly retain the last valid manifest, and leave no temporary sibling;
@@ -393,6 +399,8 @@ python -m pytest tools/stm32-toolkit/tests/test_project_model.py tools/stm32-too
 Expected RED: collection fails because `stm32_toolkit.project_model` and `stm32_toolkit.project_upgrade` do not exist. Record the exact observed output in the implementation report. After implementation the same command must exit 0 with all collected tests passing and no new skip/xfail.
 
 For the `r001` revision, preserve the original RED evidence and additionally record these pre-fix regressions against reviewed head `c19d53ffe40026251ed10a7ec01b19b6c9edaca0`: the three-test CPython 3.10 cancellation command has the two `Task.cancelling()` failures; the Windows CPython 3.12.13 focused suite has one failure in `test_apply_result_never_leaks_exception_or_environment_details`; a real NTFS junction escape is accepted; `ProjectManifest.load` accepts an escaping `generation.managedManifest`; and a forged `UpgradePlan` overwrites a digest-matching arbitrary file. Run the corresponding automated regression tests before and after correction and record both results without relabeling Codex observations as OpenClaw evidence.
+
+For the second `r001` revision, record these Codex-observed RED cases against `ec292ba6819a1aa2b0c3f2ab38dfb55379d6f3da`: default `ProjectManifest.load` returns the wrong required-field error for a list and leaks raw `TypeError` for JSON string `"schemaVersion"`; an otherwise valid v1-shaped version 99 returns `PROJECT_SCHEMA_INVALID`/`const`; injected `PermissionError` from `os.lstat` is treated as safe; `D:outside.c` is accepted and the compatibility view returns `WindowsPath('D:outside.c')`; `UpgradePlan` versions `True`, `1.0`, or `2.0` can pass equality checks and write; and a string `manifest_path` leaks `AttributeError`. Add focused regressions, run them RED before the correction and GREEN after it, and preserve the first-review Windows PASS evidence as Codex evidence only.
 
 ### 8.5 Required verification commands
 
@@ -419,6 +427,8 @@ Expected: every command exits 0; focused/cancellation/full suites have zero fail
 4. Repeat after changing one byte between plan/apply; confirm `PROJECT_CHANGED_SINCE_PLAN` and no upgrade write.
 5. Construct a public `UpgradePlan` targeting a digest-matching non-manifest file; confirm `PROJECT_UPGRADE_PLAN_INVALID` and byte-for-byte preservation of that file.
 6. On the Codex Windows gate, create a real NTFS junction inside the disposable project that targets a sibling outside the project; confirm both public loaders reject every path field routed through it and no junction test is skipped.
+7. On Windows, pass `D:outside.c` through both public loaders and confirm stable rejection; inject a `PermissionError` for one existing path component and confirm stable rejection rather than acceptance.
+8. Construct plans with `from_version=True`, `from_version=1.0`, `to_version=2.0`, and a string `manifest_path`; confirm every case returns `PROJECT_UPGRADE_PLAN_INVALID`, writes nothing, and leaks no raw exception.
 
 ## 9. Artifacts and return evidence
 
@@ -433,7 +443,9 @@ OpenClaw must return:
 - performance measurement method and 20-run medians;
 - SHA-256 values from the manual successful and digest-mismatch checks;
 - known limitations/deviations, with no silent substitutions;
-- the actual Draft PR URL `https://github.com/XiaoyaoLinghao/stm32-toolkit/pull/1`; remove statements that no remote branch/PR exists and remove any unsubstantiated Ubuntu 22.04 dispatch assumption;
+- the actual Draft PR URL `https://github.com/XiaoyaoLinghao/stm32-toolkit/pull/1`; remove statements that no remote branch/PR exists and remove every unsubstantiated Ubuntu 22.04 dispatch assumption, including claims that such wording has already been removed;
+- a truthful `Deviations` field: it must not say `NONE` while listing deviations; after conforming to this revised work order, record `NONE` without contradictory notes;
+- fresh performance evidence from the new code head using at least 102,400 bytes and exactly 1,000 source strings;
 - clean `git status` plus proof that local HEAD, remote branch HEAD, and PR head are identical.
 
 The tracked report records the accepted base and code head before the report commit. It must not record its own final SHA or a moving commit count; final head is returned out of band.
