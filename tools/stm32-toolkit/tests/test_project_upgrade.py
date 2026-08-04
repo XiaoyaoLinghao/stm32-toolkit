@@ -507,4 +507,107 @@ def test_apply_result_never_leaks_exception_or_environment_details(tmp_path: Pat
     assert result.code == "PROJECT_CHANGED_SINCE_PLAN"
     rendered = str(result.to_dict())
     assert "Traceback" not in rendered
-    assert str(manifest_path.resolve()) in rendered
+    # Inspect structured fields directly rather than comparing an unescaped
+    # path with str(dict), which renders Windows separators escaped and fails
+    # on Windows hosts.
+    assert result.details["path"] == str(manifest_path.resolve())
+    assert result.details["expectedSha256"] == plan.source_sha256
+    assert result.details["observedSha256"] == sha256(
+        manifest_path.read_bytes()
+    ).hexdigest()
+
+
+def test_apply_forged_plan_cannot_overwrite_arbitrary_digest_matching_file(
+    tmp_path: Path,
+):
+    target = tmp_path / "notes.txt"
+    target_bytes = b"digest-matching arbitrary content, not a manifest\n"
+    target.write_bytes(target_bytes)
+    forged = UpgradePlan(
+        manifest_path=target.resolve(),
+        source_sha256=sha256(target_bytes).hexdigest(),
+        from_version=1,
+        to_version=2,
+        proposed={"schemaVersion": 2},
+    )
+
+    result = apply_project_upgrade(forged)
+
+    assert result.ok is False
+    assert result.code == "PROJECT_UPGRADE_PLAN_INVALID"
+    assert result.details == {
+        "field": "manifestPath",
+        "rule": "canonicalProjectManifest",
+    }
+    assert target.read_bytes() == target_bytes
+    assert sorted(path.name for path in tmp_path.iterdir()) == ["notes.txt"]
+
+
+def test_apply_forged_plan_rejects_digest_matching_non_v1_manifest(
+    tmp_path: Path,
+):
+    manifest_path = _write_manifest(tmp_path, _v2_payload())
+    current_bytes = manifest_path.read_bytes()
+    forged = UpgradePlan(
+        manifest_path=manifest_path.resolve(),
+        source_sha256=sha256(current_bytes).hexdigest(),
+        from_version=1,
+        to_version=2,
+        proposed={},
+    )
+
+    result = apply_project_upgrade(forged)
+
+    assert result.ok is False
+    assert result.code == "PROJECT_UPGRADE_PLAN_INVALID"
+    assert result.details == {"field": "source", "rule": "validSchemaVersion1"}
+    assert manifest_path.read_bytes() == current_bytes
+    assert sorted(path.name for path in tmp_path.iterdir()) == [MANIFEST_NAME]
+
+
+def test_apply_forged_plan_rejects_non_object_digest_matching_source(
+    tmp_path: Path,
+):
+    manifest_path = tmp_path / MANIFEST_NAME
+    current_bytes = b"[1, 2, 3]"
+    manifest_path.write_bytes(current_bytes)
+    forged = UpgradePlan(
+        manifest_path=manifest_path.resolve(),
+        source_sha256=sha256(current_bytes).hexdigest(),
+        from_version=1,
+        to_version=2,
+        proposed={},
+    )
+
+    result = apply_project_upgrade(forged)
+
+    assert result.ok is False
+    assert result.code == "PROJECT_UPGRADE_PLAN_INVALID"
+    assert result.details == {"field": "source", "rule": "validSchemaVersion1"}
+    assert manifest_path.read_bytes() == current_bytes
+    assert sorted(path.name for path in tmp_path.iterdir()) == [MANIFEST_NAME]
+
+
+def test_apply_valid_v2_but_nondeterministic_proposal_fails_without_writes(
+    tmp_path: Path,
+):
+    manifest_path = _write_manifest(tmp_path, _v1_payload())
+    plan = plan_project_upgrade(tmp_path)
+    original_bytes = manifest_path.read_bytes()
+    tampered = _thaw(plan.proposed)
+    tampered["debug"]["backend"] = "gdb"
+    forged = UpgradePlan(
+        manifest_path=plan.manifest_path,
+        source_sha256=plan.source_sha256,
+        from_version=1,
+        to_version=2,
+        proposed=tampered,
+    )
+
+    result = apply_project_upgrade(forged)
+
+    assert result.ok is False
+    assert result.code == "PROJECT_UPGRADE_PLAN_INVALID"
+    assert result.details == {"field": "proposed", "rule": "deterministicUpgrade"}
+    assert manifest_path.read_bytes() == original_bytes
+    assert sorted(path.name for path in tmp_path.iterdir()) == [MANIFEST_NAME]

@@ -148,18 +148,46 @@ async def _client_roots_failure(
     except Exception:
         return _roots_unavailable(runtime, operation)
 
+    inner_task: asyncio.Task | None = None
     try:
-        result = await asyncio.wait_for(
-            session.list_roots(), timeout=_CLIENT_ROOTS_TIMEOUT_SECONDS
+        inner_task = asyncio.ensure_future(session.list_roots())
+        done, _pending = await asyncio.wait(
+            {inner_task}, timeout=_CLIENT_ROOTS_TIMEOUT_SECONDS
         )
+    except asyncio.CancelledError:
+        # Only cancellation of the current tool task can surface here: cancel
+        # the in-flight request so it cannot outlive the caller, then
+        # propagate. This uses only public asyncio APIs and therefore also
+        # behaves correctly on Python 3.10, where Task.cancelling() is not
+        # available.
+        if inner_task is not None:
+            inner_task.cancel()
+            try:
+                await inner_task
+            except BaseException:
+                pass
+        raise
+    except Exception:
+        return _roots_unavailable(runtime, operation)
+
+    if not done:
+        # Timeout: cancel and await the in-flight request before returning the
+        # stable unavailable result.
+        inner_task.cancel()
+        try:
+            await inner_task
+        except asyncio.CancelledError:
+            pass
+        return _roots_unavailable(runtime, operation)
+
+    try:
+        result = inner_task.result()
         roots = result.roots
         if not roots:
             raise ValueError("client advertised roots but returned none")
         canonical_roots = tuple(_canonical_client_root(root.uri) for root in roots)
     except asyncio.CancelledError:
-        current_task = asyncio.current_task()
-        if current_task is not None and current_task.cancelling():
-            raise
+        # The client-roots request cancelled itself; report the stable result.
         return _roots_unavailable(runtime, operation)
     except Exception:
         return _roots_unavailable(runtime, operation)

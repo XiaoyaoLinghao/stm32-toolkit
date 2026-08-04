@@ -21,11 +21,13 @@ from typing import Mapping, cast
 from uuid import uuid4
 
 from stm32_toolkit import __version__
+from stm32_toolkit.identity import canonical_project_root
 from stm32_toolkit.project_model import (
     SOURCE_MAPPING,
     ProjectManifestError,
     _MANIFEST_NAME,
     _canonical_root,
+    _model_schema_version,
     _packaged_first_schema_error,
     _require_manifest_object,
     _require_schema_version,
@@ -92,14 +94,30 @@ def plan_project_upgrade(project_root: Path) -> UpgradePlan:
 
 
 def apply_project_upgrade(plan: UpgradePlan) -> OperationResult[Mapping[str, object]]:
-    """Atomically apply a validated 1-to-2 plan when the source digest matches."""
-    manifest_path = plan.manifest_path
+    """Atomically apply a validated 1-to-2 plan when the source digest matches.
+
+    A public ``UpgradePlan`` constructor is not a write capability: the target
+    path must be the canonical project-root manifest, the digest-matching
+    current bytes must be a valid Schema v1 manifest, the proposed payload
+    must be valid Schema v2, and it must be exactly the deterministic v1-to-v2
+    mapping of the digest-matching bytes. Only then is a same-directory
+    temporary file atomically replaced into place.
+    """
     if plan.from_version != 1 or plan.to_version != 2:
         return OperationResult.failure(
             "project.upgrade",
             "PROJECT_UPGRADE_PLAN_INVALID",
             "Project upgrade plan is invalid",
             {"fromVersion": plan.from_version, "toVersion": plan.to_version},
+        )
+
+    manifest_path = plan.manifest_path
+    if not _is_canonical_manifest_path(manifest_path):
+        return OperationResult.failure(
+            "project.upgrade",
+            "PROJECT_UPGRADE_PLAN_INVALID",
+            "Project upgrade plan is invalid",
+            {"field": "manifestPath", "rule": "canonicalProjectManifest"},
         )
 
     try:
@@ -110,6 +128,24 @@ def apply_project_upgrade(plan: UpgradePlan) -> OperationResult[Mapping[str, obj
     if observed != plan.source_sha256:
         return _changed_since_plan(manifest_path, plan.source_sha256, observed)
 
+    try:
+        current_payload = _parse_manifest_bytes(current_bytes)
+        if _model_schema_version(current_payload) != 1:
+            raise ProjectManifestError(
+                "PROJECT_UPGRADE_PLAN_INVALID",
+                "Current project manifest is not schema version 1",
+                {"schemaVersion": current_payload.get("schemaVersion")},
+            )
+        _validate_packaged_schema(current_payload, 1)
+        validate_model_document(manifest_path.parent, current_payload, 1)
+    except ProjectManifestError:
+        return OperationResult.failure(
+            "project.upgrade",
+            "PROJECT_UPGRADE_PLAN_INVALID",
+            "Project upgrade plan is invalid",
+            {"field": "source", "rule": "validSchemaVersion1"},
+        )
+
     proposed = cast(Mapping[str, object], _thaw(plan.proposed))
     invalid = _proposed_validation_error(proposed, manifest_path.parent)
     if invalid is not None:
@@ -119,6 +155,15 @@ def apply_project_upgrade(plan: UpgradePlan) -> OperationResult[Mapping[str, obj
             "PROJECT_UPGRADE_PLAN_INVALID",
             "Project upgrade plan is invalid",
             {"field": field, "rule": rule},
+        )
+
+    expected = _build_proposed(current_payload)
+    if proposed != expected:
+        return OperationResult.failure(
+            "project.upgrade",
+            "PROJECT_UPGRADE_PLAN_INVALID",
+            "Project upgrade plan is invalid",
+            {"field": "proposed", "rule": "deterministicUpgrade"},
         )
 
     content = _serialize(proposed)
@@ -143,6 +188,17 @@ def apply_project_upgrade(plan: UpgradePlan) -> OperationResult[Mapping[str, obj
             "resultSha256": result_sha256,
         },
     )
+
+
+def _is_canonical_manifest_path(manifest_path: Path) -> bool:
+    """The only writable apply target is the canonical project-root manifest."""
+    if manifest_path.name != _MANIFEST_NAME or not manifest_path.is_absolute():
+        return False
+    try:
+        canonical_parent = canonical_project_root(manifest_path.parent)
+    except OSError:
+        return False
+    return canonical_parent == manifest_path.parent
 
 
 def _read_manifest_bytes(manifest_path: Path) -> bytes:

@@ -32,6 +32,13 @@ SOURCE_MAPPING = {"keil-migration": "keil", "cubemx": "cubemx"}
 
 _WINDOWS_ABSOLUTE_RE = re.compile(r"^[A-Za-z]:[\\/]")
 
+#: Windows NTFS reparse-point attribute (FILE_ATTRIBUTE_REPARSE_POINT). NTFS
+#: junctions and symlinks carry it; Python exposes it as ``st_file_attributes``
+#: on Windows. The value is a stable public Windows constant and is spelled
+#: here so detection also works on Python 3.10 where ``stat`` does not export
+#: the named attribute.
+_REPARSE_POINT_ATTRIBUTE = 0x400
+
 
 class ProjectManifestError(Exception):
     """A deterministic manifest loading failure suitable for protocol responses."""
@@ -321,7 +328,7 @@ def validate_model_document(root: Path, payload: dict, version: int) -> None:
     Checks canonical-root containment of every project-relative path field and
     memory-region name uniqueness. Never dereferences or requires target files.
     """
-    cache: dict[Path, int] = {}
+    cache: dict[Path, os.stat_result | None] = {}
     build = payload["build"]
     _validate_path_field(root, "build.sources", build.get("sources"), cache)
     _validate_path_field(root, "build.includePaths", build.get("includePaths"), cache)
@@ -347,7 +354,7 @@ def validate_model_document(root: Path, payload: dict, version: int) -> None:
 
 
 def _validate_path_field(
-    root: Path, field_prefix: str, value: object, cache: dict[Path, int]
+    root: Path, field_prefix: str, value: object, cache: dict[Path, os.stat_result | None]
 ) -> None:
     if isinstance(value, str):
         _validate_path_value(root, value, field_prefix, cache)
@@ -356,75 +363,97 @@ def _validate_path_field(
             _validate_path_value(root, item, f"{field_prefix}[{index}]", cache)
 
 def _validate_path_value(
-    root: Path, value: object, field: str, cache: dict[Path, int]
+    root: Path, value: object, field: str, cache: dict[Path, os.stat_result | None]
 ) -> None:
     if not isinstance(value, str):
         return
-    if _reject_foreign_absolute(value):
+    if "\x00" in value or _reject_foreign_absolute(value):
         raise _path_error(field)
-    if not _contained_in_root(root, value, cache):
+    try:
+        contained = _contained_in_root(root, value, cache)
+    except (OSError, ValueError):
+        # A path value that makes host path inspection raise (for example an
+        # embedded NUL) is rejected with the same stable structured error.
+        raise _path_error(field) from None
+    if not contained:
         raise _path_error(field)
 
 
-def _contained_in_root(root: Path, value: str, cache: dict[Path, int]) -> bool:
+def _contained_in_root(
+    root: Path, value: str, cache: dict[Path, os.stat_result | None]
+) -> bool:
     """Canonical containment with a resolve-free fast path.
 
     A project-relative value without ``..`` components and without any
-    existing symlink/junction component is lexically inside the canonical
+    existing link/reparse-point component is lexically inside the canonical
     root and needs no filesystem resolution. Only those cases, plus ``..``
     traversals, pay for a full ``resolve(strict=False)`` walk. Component
     lstat results are cached for the duration of one document validation.
     """
     parts = Path(value).parts
-    if ".." in parts or _has_existing_symlink_component(root, parts, cache):
+    if ".." in parts or _has_existing_link_component(root, parts, cache):
         return _resolved_within(root, value)
     return True
 
 
-def _has_existing_symlink_component(
-    root: Path, parts: tuple[str, ...], cache: dict[Path, int]
+def _has_existing_link_component(
+    root: Path, parts: tuple[str, ...], cache: dict[Path, os.stat_result | None]
 ) -> bool:
+    """True when an existing component is a symlink or Windows reparse point.
+
+    Windows NTFS junctions are directories with the reparse-point attribute
+    and are not reported by ``stat.S_ISLNK``, so detection must also inspect
+    ``st_file_attributes`` when the host provides it. Any ``..`` traversal or
+    existing link component forces a full resolved containment check.
+    """
     candidate = root
     for part in parts:
         candidate = candidate / part
-        mode = cache.get(candidate)
-        if mode is None:
+        st = cache.get(candidate)
+        if st is None:
             try:
-                mode = os.lstat(candidate).st_mode
+                st = os.lstat(candidate)
             except OSError:
-                # Missing components cannot be symlinks; nothing deeper can exist.
-                mode = 0
-            cache[candidate] = mode
-        if mode == 0:
+                # Missing components cannot be links; nothing deeper can exist.
+                st = None
+            cache[candidate] = st
+        if st is None:
             return False
-        if stat.S_ISLNK(mode):
+        if _is_link_or_reparse(st):
             return True
     return False
+
+
+def _is_link_or_reparse(st: os.stat_result) -> bool:
+    """A symlink or a Windows reparse point (for example an NTFS junction)."""
+    if stat.S_ISLNK(st.st_mode):
+        return True
+    return bool(getattr(st, "st_file_attributes", 0) & _REPARSE_POINT_ATTRIBUTE)
 
 
 def _resolved_within(root: Path, value: str) -> bool:
     try:
         (root / value).resolve(strict=False).relative_to(root)
         return True
-    except ValueError:
+    except (OSError, ValueError):
         return False
 
 
 def _resolve_project_path(
-    project_root: Path, value: str, field: str, cache: dict[Path, int]
+    project_root: Path, value: str, field: str, cache: dict[Path, os.stat_result | None]
 ) -> Path:
     """Resolve a project-relative manifest path for the compatibility view."""
-    if _reject_foreign_absolute(value):
+    if "\x00" in value or _reject_foreign_absolute(value):
         raise _path_error(field)
-    parts = Path(value).parts
-    if ".." in parts or _has_existing_symlink_component(project_root, parts, cache):
-        resolved = (project_root / value).resolve(strict=False)
-        try:
+    try:
+        parts = Path(value).parts
+        if ".." in parts or _has_existing_link_component(project_root, parts, cache):
+            resolved = (project_root / value).resolve(strict=False)
             resolved.relative_to(project_root)
-        except ValueError as error:
-            raise _path_error(field) from error
-        return resolved
-    return project_root / value
+            return resolved
+        return project_root / value
+    except (OSError, ValueError) as error:
+        raise _path_error(field) from error
 
 
 def _reject_foreign_absolute(value: str) -> bool:

@@ -505,6 +505,110 @@ def test_directory_symlink_parent_cannot_escape_project_root(tmp_path: Path):
     assert error.value.details == {"field": "build.sources[0]", "rule": "pathWithinProjectRoot"}
 
 
+def test_reparse_point_junction_parent_cannot_escape_project_root(
+    tmp_path: Path, monkeypatch
+):
+    """NTFS junction escape is rejected through reparse-point detection.
+
+    Linux cannot create a real NTFS junction, so the junction is simulated
+    faithfully with three Windows-accurate behaviors: the junction node is a
+    real directory; ``os.lstat`` reports it with the reparse-point attribute
+    (FILE_ATTRIBUTE_REPARSE_POINT = 0x400) and a plain directory mode rather
+    than a symlink mode; and path resolution follows the junction to its
+    outside target exactly as Windows ``GetFinalPathNameByHandle`` does. The
+    Codex Windows gate exercises a real NTFS junction and does not skip it.
+    """
+    import os as _os
+    from types import SimpleNamespace
+
+    outside = tmp_path.parent / "outside-reparse-dir"
+    outside.mkdir()
+    junction = tmp_path / "linked-dir"
+    junction.mkdir()
+
+    real_lstat = _os.lstat
+
+    def junction_lstat(path):
+        st = real_lstat(path)
+        if str(path) == str(junction):
+            return SimpleNamespace(
+                st_mode=st.st_mode & ~0o170000 | 0o040000,
+                st_file_attributes=0x400,
+            )
+        return st
+
+    real_resolve = Path.resolve
+
+    def junction_resolve(self, strict=False):
+        resolved = real_resolve(self, strict=strict)
+        text = str(self)
+        if text == str(junction) or text.startswith(str(junction) + _os.sep):
+            return Path(str(outside / _os.path.relpath(str(resolved), str(junction))))
+        return resolved
+
+    monkeypatch.setattr("stm32_toolkit.project_model.os.lstat", junction_lstat)
+    monkeypatch.setattr(Path, "resolve", junction_resolve)
+
+    payload = _v2_payload()
+    payload["build"]["sources"] = ["linked-dir/main.c"]
+    _write_manifest(tmp_path, payload)
+
+    with pytest.raises(ProjectManifestError) as error:
+        load_project_model(tmp_path)
+
+    assert error.value.code == "PROJECT_SCHEMA_INVALID"
+    assert error.value.details == {"field": "build.sources[0]", "rule": "pathWithinProjectRoot"}
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("build.sources[0]", "App/\x00main.c"),
+        ("build.includePaths[0]", "App/\x00inc"),
+        ("build.assemblySources[0]", "Startup/\x00startup.s"),
+        ("build.elf", "build/\x00firmware.elf"),
+        ("debug.svd", "debug/\x00chip.svd"),
+        ("generation.cubeMxIoc", "firmware.\x00ioc"),
+        ("generation.managedManifest", ".stm32-toolkit/\x00generated-files.json"),
+        ("generation.generatedDirectories[0]", "gen/\x00dir"),
+        ("generation.userDirectories[0]", "user/\x00dir"),
+    ],
+)
+def test_embedded_nul_paths_return_stable_structured_rejection(
+    tmp_path: Path, field: str, value: str
+):
+    payload = _v2_payload()
+    _set_path(payload, field, value)
+    _write_manifest(tmp_path, payload)
+
+    with pytest.raises(ProjectManifestError) as error:
+        load_project_model(tmp_path)
+
+    assert error.value.code == "PROJECT_SCHEMA_INVALID"
+    assert error.value.details == {"field": field, "rule": "pathWithinProjectRoot"}
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("build.sources[0]", "App/\x00main.c"),
+        ("generation.managedManifest", ".stm32-toolkit/\x00generated-files.json"),
+    ],
+)
+def test_embedded_nul_paths_return_stable_rejection_in_compat_loader(
+    tmp_path: Path, field: str, value: str
+):
+    payload = _v2_payload()
+    _set_path(payload, field, value)
+    _write_manifest(tmp_path, payload)
+
+    with pytest.raises(ProjectManifestError) as error:
+        ProjectManifest.load(tmp_path)
+
+    assert error.value.code == "PROJECT_SCHEMA_INVALID"
+    assert error.value.details == {"field": field, "rule": "pathWithinProjectRoot"}
+
+
 def test_nonexistent_in_root_paths_load_safely(tmp_path: Path):
     payload = _v2_payload()
     payload["build"]["sources"] = ["future/main.c"]
@@ -605,3 +709,129 @@ def test_project_manifest_explicit_v1_schema_rejects_v2_manifest(tmp_path: Path)
     # the alphabetically-first unexpected property first.
     assert error.value.code == "PROJECT_SCHEMA_INVALID"
     assert error.value.details == {"field": "build.presets", "rule": "additionalProperties"}
+
+
+def _write_explicit_v2_schema(tmp_path: Path) -> Path:
+    schema_path = tmp_path / "schema-v2.json"
+    schema_path.write_text(
+        resources.files("stm32_toolkit")
+        .joinpath("schemas/stm32-project.schema.json")
+        .read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+    return schema_path
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("build.sources[0]", "../outside/main.c"),
+        ("build.includePaths[0]", "../outside/include"),
+        ("build.assemblySources[0]", "../outside/startup.s"),
+        ("build.elf", "../outside/firmware.elf"),
+        ("debug.svd", "../outside/chip.svd"),
+        ("generation.cubeMxIoc", "../outside/firmware.ioc"),
+        ("generation.managedManifest", "../outside/generated-files.json"),
+        ("generation.generatedDirectories[0]", "../outside/generated"),
+        ("generation.userDirectories[0]", "../outside/user"),
+    ],
+)
+def test_project_manifest_explicit_schema_validates_every_path_field(
+    tmp_path: Path, field: str, value: str
+):
+    """Explicit-schema loads run complete post-schema path validation."""
+    payload = _v2_payload()
+    _set_path(payload, field, value)
+    _write_manifest(tmp_path, payload)
+    schema_path = _write_explicit_v2_schema(tmp_path)
+
+    with pytest.raises(ProjectManifestError) as error:
+        ProjectManifest.load(tmp_path, schema_path)
+
+    assert error.value.code == "PROJECT_SCHEMA_INVALID"
+    assert error.value.details == {"field": field, "rule": "pathWithinProjectRoot"}
+
+
+def test_project_manifest_default_schema_rejects_escaping_generation_path(
+    tmp_path: Path,
+):
+    payload = _v2_payload()
+    payload["generation"]["managedManifest"] = "../outside/generated-files.json"
+    _write_manifest(tmp_path, payload)
+
+    with pytest.raises(ProjectManifestError) as error:
+        ProjectManifest.load(tmp_path)
+
+    assert error.value.code == "PROJECT_SCHEMA_INVALID"
+    assert error.value.details == {
+        "field": "generation.managedManifest",
+        "rule": "pathWithinProjectRoot",
+    }
+
+
+@pytest.mark.parametrize("bad_version", [True, "1", 1.0])
+def test_project_manifest_load_rejects_non_integer_schema_version(
+    tmp_path: Path, bad_version: object
+):
+    payload = _v2_payload()
+    payload["schemaVersion"] = bad_version
+    _write_manifest(tmp_path, payload)
+
+    with pytest.raises(ProjectManifestError) as error:
+        ProjectManifest.load(tmp_path)
+
+    assert error.value.code == "PROJECT_SCHEMA_INVALID"
+    assert error.value.details == {"field": "schemaVersion", "rule": "type"}
+
+
+def test_project_manifest_load_unsupported_integer_keeps_v1_schema_errors(
+    tmp_path: Path,
+):
+    """Unsupported integer versions keep the pre-existing v1-schema contract.
+
+    The compatibility loader's existing stable error for an unsupported
+    integer ``schemaVersion`` (for example the 99 in
+    ``fixtures/invalid-project.json``) is the v1-schema rejection, not the
+    model loader's unsupported-version error; the pre-existing 0.2 suite pins
+    this contract and the work order preserves existing stable errors.
+    """
+    payload = _v1_payload()
+    payload["schemaVersion"] = 99
+    _write_manifest(tmp_path, payload)
+
+    with pytest.raises(ProjectManifestError) as error:
+        ProjectManifest.load(tmp_path)
+
+    assert error.value.code == "PROJECT_SCHEMA_INVALID"
+    assert error.value.details == {"field": "schemaVersion", "rule": "const"}
+
+
+@pytest.mark.parametrize("bad_version", [True, "1", 1.0])
+def test_project_manifest_explicit_schema_rejects_non_integer_schema_version(
+    tmp_path: Path, bad_version: object
+):
+    payload = _v2_payload()
+    payload["schemaVersion"] = bad_version
+    _write_manifest(tmp_path, payload)
+    schema_path = _write_explicit_v2_schema(tmp_path)
+
+    with pytest.raises(ProjectManifestError) as error:
+        ProjectManifest.load(tmp_path, schema_path)
+
+    assert error.value.code == "PROJECT_SCHEMA_INVALID"
+    assert error.value.details == {"field": "schemaVersion", "rule": "type"}
+
+
+def test_project_manifest_explicit_schema_rejects_unsupported_version(
+    tmp_path: Path,
+):
+    payload = _v2_payload()
+    payload["schemaVersion"] = 3
+    _write_manifest(tmp_path, payload)
+    schema_path = _write_explicit_v2_schema(tmp_path)
+
+    with pytest.raises(ProjectManifestError) as error:
+        ProjectManifest.load(tmp_path, schema_path)
+
+    assert error.value.code == "PROJECT_SCHEMA_VERSION_UNSUPPORTED"
+    assert error.value.details == {"schemaVersion": 3, "supported": [1, 2]}
