@@ -3,8 +3,8 @@
 Status: `IMPLEMENTED`
 Branch: `openclaw/STM32TK-0302-KEIL-INSPECT/r001`
 Accepted base commit: `53321e8721cc479122c43285537dc108461a8e0e`
-Reviewed predecessor: `50d263e378469ff0d6480eef8917a68c5c88d3e3`
-Code head before report commit: `352a345f1ad6356603ae5fbdff74f93f89b335e9`
+Reviewed predecessor: `92a0392a4ef21e1f13ea1348eb0790444f818dfc`
+Code head before report commit: `53b0c9a38e345ede0335b2b39cdf7852ccc019b3`
 Final branch head: supplied only in the return message and PR metadata
 PR/compare URL: https://github.com/XiaoyaoLinghao/stm32-toolkit/pull/2
 Work order: `docs/openclaw/modules/STM32TK-0302-KEIL-INSPECT.md`
@@ -13,7 +13,7 @@ Work order: `docs/openclaw/modules/STM32TK-0302-KEIL-INSPECT.md`
 
 - Observable result: `inspect_keil(root, uvprojx=None, target_name=None) -> KeilInspection` performs read-only discovery, bounded namespace-agnostic XML parsing, exact target selection, option/compiler/memory extraction, path validation and normalization, ARMCC lexical scanning, framework inference, and exact-byte SHA-256 input hashing. `capture_keil_baseline(root, inspection) -> KeilBaseline` reads the validated AXF/MAP candidates with pyelftools 0.33, reports honest unavailable evidence for missing artifacts, and never writes. The complete project tree remains byte-for-byte, name-for-name, mtime- and permission-equivalent after every call (verified by automated and manual snapshots).
 - Scope completed: all of work-order sections 2.1, 4, 5, 6, 7, 8 (OpenClaw gates), 9, 10, including the six revision findings below.
-- Revision round: this is the r001 revision addressing the Codex review of the predecessor head. All six rejection items are fixed and covered by new regression tests (see section 1a).
+- Revision round: this is the r001 second revision (third round) addressing the Codex re-review of the first-revision head `92a0392`. All six first-revision findings stay fixed (section 1a round 1) and the single second-revision finding (CRLF test fixture vs LF digest assertions) is fixed with regression coverage (section 1a round 2).
 - Known limitations:
   - The committed `keil-project` fixture references `Objects/legacy.sct` (scatter setting) without a committed `.sct` file; the missing scatter input is honestly excluded from digests and produces no fabricated evidence.
   - The parser implements the bounded field set of section 6, not a replacement for `PROJECT_PROJX.XSD` (per work-order section 3).
@@ -34,6 +34,16 @@ Codex review (Windows-focused run, 19 failed) observed the following on the pred
 | 5 | In-root symlink/junction was unconditionally rejected: `_check_redirects` rejected every symlink/reparse point; a real NTFS junction to an in-root directory returned `KEIL_PATH_OUTSIDE_PROJECT`. | missing feature | Redirects are resolved to their canonical target; accepted when the target stays in the canonical root; escapes, cycles, resolution failures, and inspection errors are rejected conservatively. Applies to source, include, scatter, and AXF/MAP paths. | `test_symlink_inside_root_accepted`, `test_in_root_redirects_accepted_source_include_scatter`, `test_artifact_in_root_redirect_accepted`, `test_simulated_reparse_inside_root_accepted`, `test_symlink_escape_rejected`, `test_simulated_reparse_escape_rejected`, `test_artifact_symlink_escape_rejected` |
 | 6 | Windows tests depended on administrator rights and POSIX permission semantics: 3 tests called `os.symlink()` directly (WinError 1314 on ordinary Windows) and 2 tests used `chmod(0)` to simulate unreadable files (files stay readable on Windows). | architecture | Redirect tests use a platform-adapted fixture: real `os.symlink` on POSIX, simulated `Path.resolve` mapping on Windows (no admin rights). Unreadable-source/artifact tests inject `PermissionError` at the `Path.open` boundary instead of `chmod(0)`. Linux symlink tests still run (no skip); Windows runs the identical test bodies. | `redirect` fixture in both test files, `raise_on_open` helper, `test_unreadable_source_warning`, `test_artifact_unreadable_permission` |
 
+#### Round 2 (second revision, single Codex observation)
+
+Codex Windows re-review of the first-revision head observed one test-only defect; it is fixed in this revision. The Windows observation is recorded here as a Codex review observation, not as OpenClaw-run evidence.
+
+Root cause: the `write_project()` fixture helper wrote the generated `.uvprojx` with `Path.write_text(xml, encoding="utf-8")`. On Windows, text-mode writes rewrite LF as CRLF, so the on-disk fixture bytes (observed size 1767) did not match the LF byte expectations in assertions that compute the expected SHA-256 and size from `xml.encode("utf-8")` (expected size 1712). The product behavior is correct: it hashes the raw disk bytes of the project and every input, so the mismatch was entirely in the test fixture.
+
+| # | Codex observation | Type | Fix (this revision) | Regression coverage |
+|---|---|---|---|---|
+| 7 | Test fixture is not byte-deterministic across platforms: `write_project()` used `write_text()` (Windows text mode converts LF to CRLF), while digest/size assertions at `test_keil_inspect.py:779-781` compute the expected SHA-256 and size from LF bytes (`xml.encode("utf-8")`); observed Windows size 1767 vs expected 1712. | test defect | `write_project()` now materializes the exact bytes with `write_bytes(xml.encode("utf-8"))` so fixture bytes equal the LF expectations on every platform; the product hashing of raw disk bytes is unchanged. A new test writes the same XML as LF and as CRLF projects and proves each digest/size matches its own actual disk bytes and the two digests differ (product behavior is byte-accurate; only the fixture was wrong). | `test_digest_hashes_actual_disk_bytes_lf_and_crlf`; the previously failing `test_exclusion_from_build_and_duplicate_sources` digest assertion now holds on every platform |
+
 ## 2. Complete changed-path inventory
 
 | Status | Path | Work-order section | Purpose |
@@ -53,7 +63,7 @@ Codex review (Windows-focused run, 19 failed) observed the following on the pred
 | A | `tools/stm32-toolkit/tests/test_keil_baseline.py` | 5, 8.2 | AXF/MAP/missing/corrupt/read-only baseline tests |
 | A | `docs/openclaw/returns/STM32TK-0302-KEIL-INSPECT/r001-implementation-report.md` | 9 | this report (report-only addition) |
 
-This revision round (predecessor `50d263e` -> code head `352a345`) changes exactly the five allowed implementation/test paths listed in the revision work order; the report is the only additional path. No other path changed; the 0.3 plan checkbox, roadmap, architecture, CLI, MCP, schemas, Skills, model.py, `__init__.py`, and pyproject.toml are untouched by this revision.
+This revision round (predecessor `92a0392` -> code head `53b0c9a`) changes exactly one path: `tools/stm32-toolkit/tests/test_keil_inspect.py` (the `write_project()` fixture helper plus one new regression test); the report is the only additional path. No product code changed and no other path changed.
 
 ## 3. Public contracts delivered
 
@@ -81,6 +91,19 @@ OpenClaw environment: Linux x86_64 (Ubuntu 26.04 LTS), CPython 3.10.11 (`/home/o
 | Windows focused/full suite (19 predecessor failures) | Codex | Windows NT 10.0.26200.0; CPython 3.12.13 | latest head | — | re-run required on the revision head | `DEFERRED_TO_CODEX` |
 | Windows real NTFS junction gate (8.1, 8.5.7) | Codex | Windows NT 10.0.26200.0; CPython 3.12.13 | latest head | — | real junction in-root acceptance and junction-escape rejection must be re-run by Codex | `DEFERRED_TO_CODEX` |
 
+#### Round 2 (second revision) gates on code head `53b0c9a`
+
+| Gate/command | Evidence owner | Environment/tool versions | Commit tested | Exit | Observed result | Status |
+|---|---:|---:|---:|---|
+| Focused GREEN (second revision): `python -m pytest tools/stm32-toolkit/tests/test_keil_inspect.py tools/stm32-toolkit/tests/test_keil_baseline.py -q` | OpenClaw | Linux x86_64 (Ubuntu 26.04 LTS); CPython 3.10.11; pytest 8.3.5 | `53b0c9a` | 0 | 113 collected, 0 failed, 0 skipped, 0 xfailed (87 inspect + 26 baseline; first-revision round: 112) | PASS |
+| Full suite + branch coverage: `python -m pytest tools/stm32-toolkit/tests -q --cov=stm32_toolkit --cov-branch --cov-report=term` | OpenClaw | same | `53b0c9a` | 0 | 420 collected, 0 failed; branch coverage 93.16% (TOTAL 2252 stmts / 628 branches), “Required test coverage of 90.0% reached”; keil modules: armcc_scan 94%, baseline 91%, model 96%, uvprojx 90% (unchanged vs first revision) | PASS |
+| Compile: `python -m compileall -q tools/stm32-toolkit/src tools/stm32-toolkit/tests` | OpenClaw | same | `53b0c9a` | 0 | silent | PASS |
+| Diff hygiene: `git diff --check 53321e87..HEAD` | OpenClaw | same | `53b0c9a` | 0 | silent | PASS |
+| Diff scope: `git diff --name-status 92a0392..HEAD` | OpenClaw | same | `53b0c9a` | 0 | exactly `tools/stm32-toolkit/tests/test_keil_inspect.py` (M) | PASS |
+| Working tree: `git status --short` | OpenClaw | same | `53b0c9a` | 0 | clean before the report commit (only the report addition after the final commit) | PASS |
+| Windows focused/full suite (second revision, incl. fixture CRLF check) | Codex | Windows NT 10.0.26200.0; CPython 3.12.13 | latest head | — | re-run required on the second-revision head | `DEFERRED_TO_CODEX` |
+| Windows real NTFS junction gate (8.1, 8.5.7) | Codex | Windows NT 10.0.26200.0; CPython 3.12.13 | latest head | — | unchanged; re-run by Codex | `DEFERRED_TO_CODEX` |
+
 ### Manual and visual evidence
 
 | Gate | Owner | Observed result | Evidence path/status |
@@ -102,7 +125,7 @@ OpenClaw environment: Linux x86_64 (Ubuntu 26.04 LTS), CPython 3.10.11 (`/home/o
 |---|---|---|
 | Keil inspection package | `tools/stm32-toolkit/src/stm32_toolkit/keil/` | 5 modules (model 215 lines, uvprojx ~1,100, armcc_scan ~360, baseline ~310, `__init__` 41) |
 | Keil fixture project | `tools/stm32-toolkit/tests/fixtures/keil-project/` | legacy.uvprojx 3,125 B; common.c 570 B; main.c 90 B; startup_stm32f4xx.s 134 B; legacy.map 1,778 B |
-| Focused tests | `test_keil_inspect.py`, `test_keil_baseline.py` | 112 tests collected |
+| Focused tests | `test_keil_inspect.py`, `test_keil_baseline.py` | 113 tests collected (87 inspect + 26 baseline) |
 
 ## 5. Security, privacy, performance, accessibility, and compatibility
 
@@ -132,12 +155,13 @@ OpenClaw environment: Linux x86_64 (Ubuntu 26.04 LTS), CPython 3.10.11 (`/home/o
 
 ## 7. Author checklist
 
-- [x] Accepted base, reviewed predecessor, and revised code head are full SHAs (`53321e8721cc479122c43285537dc108461a8e0e`, `50d263e378469ff0d6480eef8917a68c5c88d3e3`, `352a345f1ad6356603ae5fbdff74f93f89b335e9`).
+- [x] Accepted base, reviewed predecessor, and revised code head are full SHAs (`53321e8721cc479122c43285537dc108461a8e0e`, `92a0392a4ef21e1f13ea1348eb0790444f818dfc`, `53b0c9a38e345ede0335b2b39cdf7852ccc019b3`).
 - [x] Final head will be returned out of band after this report commit (PR metadata + return message).
-- [x] This revision changes exactly the five allowed implementation/test paths plus this report (`git diff --name-status 50d263e..HEAD`).
-- [x] Every required OpenClaw gate has direct observed evidence on the revision code head (focused/full/coverage/compile/dependency/diff/read-only/performance/scans, all exit codes above).
-- [x] Codex Windows observations (19 predecessor failures) are recorded as Codex review observations; OpenClaw does not claim Windows evidence. Windows gates remain `DEFERRED_TO_CODEX`.
-- [x] The previous "unconditionally reject in-root redirects" deviation statement is removed; in-root redirect acceptance matches work-order section 6.2.
+- [x] This second revision changes exactly one allowed path plus this report: `git diff --name-status 92a0392..HEAD` shows only `tools/stm32-toolkit/tests/test_keil_inspect.py`.
+- [x] Every required OpenClaw gate has direct observed evidence on the second-revision code head `53b0c9a` (focused 113/full 420/coverage 93.16%/compile/diff/status, all exit codes above).
+- [x] The second-revision Codex Windows observation (CRLF fixture vs LF digest assertions) is recorded as a Codex review observation with root cause and fix; OpenClaw does not claim Windows evidence. Windows gates remain `DEFERRED_TO_CODEX`.
+- [x] No skip, xfail, or os.name-based relaxation was added; the new regression test runs on every platform.
+- [x] Product code is unchanged in this revision (raw-disk-byte hashing already correct); the fix is confined to the test fixture helper.
 - [x] No credentials, private data, caches, build output, binary fixtures, temp projects, or unredacted diagnostics are committed (ELF baselines are generated in tests, never committed).
 - [x] No unrelated file, agent instruction, approved work order, or remote policy changed.
 - [x] Every instructional value in this report is replaced with actual evidence; no self-referential final SHA and no moving commit totals.
