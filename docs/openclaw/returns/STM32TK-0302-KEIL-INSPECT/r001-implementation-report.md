@@ -39,7 +39,7 @@ Work order: `docs/openclaw/modules/STM32TK-0302-KEIL-INSPECT.md`
 | A | `tools/stm32-toolkit/tests/test_keil_baseline.py` | 5, 8.2 | AXF/MAP/missing/corrupt/read-only baseline tests |
 | A | `docs/openclaw/returns/STM32TK-0302-KEIL-INSPECT/r001-implementation-report.md` | 9 | this report (report-only addition) |
 
-Reconciled with `git diff --name-status 53321e87..HEAD`: exactly the 12 code/fixture paths plus this report. No other path changed; the 0.3 plan checkbox, roadmap, architecture, CLI, MCP, schemas, and Skills are untouched.
+Reconciled with `git diff --name-status 53321e87..HEAD`: exactly the 13 code/fixture paths plus this report. No other path changed; the 0.3 plan checkbox, roadmap, architecture, CLI, MCP, schemas, and Skills are untouched.
 
 ## 3. Public contracts delivered
 
