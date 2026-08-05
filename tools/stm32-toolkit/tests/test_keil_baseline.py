@@ -123,6 +123,90 @@ def snapshot_tree(root: Path) -> dict[str, tuple]:
     return entries
 
 
+class _GrowingFile:
+    """Wraps a real file handle and pads reads to simulate on-disk growth."""
+
+    def __init__(self, real, extra: int) -> None:
+        self._real = real
+        self._extra = extra
+
+    def read(self, n: int = -1) -> bytes:
+        data = self._real.read(n)
+        if self._extra > 0 and n > 0:
+            pad = min(self._extra, n - len(data))
+            if pad > 0:
+                self._extra -= pad
+                return data + b"x" * pad
+        return data
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        return self._real.__exit__(*args)
+
+    def close(self):
+        self._real.close()
+
+
+def grow_on_read(path: Path, extra: int, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Make reads of ``path`` return ``extra`` more bytes than exist on disk."""
+    real_open = Path.open
+
+    def patched(self, mode: str = "r", *args, **kwargs):
+        handle = real_open(self, mode, *args, **kwargs)
+        if mode == "rb" and self == path:
+            return _GrowingFile(handle, extra)
+        return handle
+
+    monkeypatch.setattr(Path, "open", patched)
+
+
+def raise_on_open(path: Path, monkeypatch: pytest.MonkeyPatch, error: OSError) -> None:
+    """Make ``Path.open`` raise ``error`` for ``path`` (platform-independent)."""
+    real_open = Path.open
+
+    def patched(self, mode: str = "r", *args, **kwargs):
+        if mode == "rb" and self == path:
+            raise error
+        return real_open(self, mode, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", patched)
+
+
+@pytest.fixture
+def redirect(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """Create real symlinks on POSIX; simulate redirects on Windows.
+
+    Windows symlink creation needs administrator rights or Developer Mode, so
+    on Windows the redirect is simulated by mapping ``Path.resolve`` for the
+    link path to its canonical target.  The inspected code path (resolve and
+    containment check) is identical on both platforms.
+    """
+    simulated: dict[Path, Path] = {}
+    real_resolve = Path.resolve
+
+    def resolve(self, strict: bool = False):
+        text = str(self)
+        for link, target in simulated.items():
+            link_text = str(link)
+            if text == link_text:
+                return target
+            if text.startswith(link_text + os.sep):
+                return target.joinpath(text[len(link_text) + 1 :])
+        return real_resolve(self, strict)
+
+    monkeypatch.setattr(Path, "resolve", resolve)
+
+    def make(link: Path, target: Path) -> None:
+        if os.name == "posix":
+            os.symlink(target, link, target_is_directory=target.is_dir())
+        else:
+            simulated[link] = target
+
+    return make
+
+
 @pytest.fixture
 def keil_project(tmp_path: Path) -> Path:
     destination = tmp_path / "keil-project"
@@ -399,16 +483,29 @@ def test_unreadable_artifact(keil_project: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_artifact_symlink_escape_rejected(keil_project: Path, tmp_path: Path) -> None:
+def test_artifact_symlink_escape_rejected(keil_project: Path, tmp_path: Path, redirect) -> None:
     outside = tmp_path / "outside"
     outside.mkdir()
     (outside / "payload.elf").write_bytes(build_minimal_elf32())
     inspection = inspect_keil(keil_project)
-    os.symlink(outside / "payload.elf", keil_project / "Objects" / "legacy.axf")
+    redirect(keil_project / "Objects" / "legacy.axf", outside / "payload.elf")
     with pytest.raises(KeilInspectionError) as error:
         capture_keil_baseline(keil_project, inspection)
     assert error.value.code == "KEIL_PATH_OUTSIDE_PROJECT"
     assert "outside" not in str(error.value.details)
+
+
+def test_artifact_in_root_redirect_accepted(keil_project: Path, redirect) -> None:
+    real_dir = keil_project / "Objects-real"
+    os.rename(keil_project / "Objects", real_dir)
+    redirect(keil_project / "Objects", real_dir)
+    inspection = inspect_keil(keil_project)
+    assert inspection.output.object_directory == "Objects-real"
+    assert inspection.output.map_file == "Objects-real/legacy.map"
+    baseline = capture_keil_baseline(keil_project, inspection)
+    assert baseline.map_file.available is True
+    assert baseline.map_file.path == "Objects-real/legacy.map"
+    assert baseline.program_size == KeilProgramSize(8124, 720, 92, 16988, 8936, 17080)
 
 
 def test_artifact_escape_via_relative_path_rejected(keil_project: Path) -> None:
@@ -477,17 +574,31 @@ def test_repeated_capture_equal_serialization(keil_project: Path) -> None:
     assert first == second
 
 
-def test_artifact_unreadable_permission(keil_project: Path) -> None:
+def test_artifact_unreadable_permission(
+    keil_project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     target = write_axf(keil_project, build_minimal_elf32())
-    target.chmod(0)
-    try:
-        inspection = inspect_keil(keil_project)
-        with pytest.raises(KeilInspectionError) as error:
-            capture_keil_baseline(keil_project, inspection)
-        assert error.value.code == "KEIL_BASELINE_ARTIFACT_UNAVAILABLE"
-        assert error.value.details == {"artifact": "axf", "path": "Objects/legacy.axf"}
-    finally:
-        target.chmod(0o644)
+    raise_on_open(target, monkeypatch, PermissionError("denied"))
+    inspection = inspect_keil(keil_project)
+    with pytest.raises(KeilInspectionError) as error:
+        capture_keil_baseline(keil_project, inspection)
+    assert error.value.code == "KEIL_BASELINE_ARTIFACT_UNAVAILABLE"
+    assert error.value.details == {"artifact": "axf", "path": "Objects/legacy.axf"}
+
+
+def test_axf_grows_between_stat_and_read(
+    keil_project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from stm32_toolkit.keil import baseline as baseline_mod
+
+    monkeypatch.setattr(baseline_mod, "AXF_SIZE_LIMIT", 100)
+    target = write_axf(keil_project, build_minimal_elf32()[:100])
+    grow_on_read(target, 64, monkeypatch)
+    inspection = inspect_keil(keil_project)
+    with pytest.raises(KeilInspectionError) as error:
+        capture_keil_baseline(keil_project, inspection)
+    assert error.value.code == "KEIL_AXF_INVALID"
+    assert error.value.details == {"path": "Objects/legacy.axf", "rule": "size"}
 
 
 def test_no_output_name_no_artifact_candidates(tmp_path: Path) -> None:

@@ -112,7 +112,7 @@ def _read_artifact(
             {"path": relative, "rule": "size"},
         )
     try:
-        return absolute.read_bytes()
+        data = uvprojx._read_limited(absolute, size_limit)
     except FileNotFoundError:
         warnings.append(
             KeilWarning(
@@ -128,6 +128,13 @@ def _read_artifact(
             "baseline artifact is unreadable",
             {"artifact": artifact, "path": relative},
         )
+    if len(data) > size_limit:
+        raise _raise(
+            invalid_code,
+            "baseline artifact exceeds the size limit",
+            {"path": relative, "rule": "size"},
+        )
+    return data
 
 
 def _parse_axf(

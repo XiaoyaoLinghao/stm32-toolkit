@@ -77,7 +77,12 @@ def scan_sources(files: list[tuple[str, Path, str]]) -> ScanOutcome:
     """Scan readable included C/C++/assembly files.
 
     ``files`` is a list of (relative path, absolute path, language) triples.
+    Reads are bounded to ``SCAN_FILE_LIMIT + 1`` bytes and both the per-file
+    and the aggregate limits are re-enforced on the bytes actually read, so a
+    file that grows between ``stat`` and ``read`` is still rejected.
     """
+    from stm32_toolkit.keil import uvprojx as _uvprojx  # lazy: avoid import cycle
+
     raw_findings: list[tuple[str, int, int, str, str, str]] = []
     include_items: list[tuple[str, str]] = []
     unreadable: list[str] = []
@@ -106,7 +111,7 @@ def scan_sources(files: list[tuple[str, Path, str]]) -> ScanOutcome:
                 {"limitBytes": SCAN_TOTAL_LIMIT, "scope": "inspection"},
             )
         try:
-            data = abs_path.read_bytes()
+            data = _uvprojx._read_limited(abs_path, SCAN_FILE_LIMIT)
         except FileNotFoundError:
             continue
         except NotADirectoryError:
@@ -121,6 +126,12 @@ def scan_sources(files: list[tuple[str, Path, str]]) -> ScanOutcome:
                 {"limitBytes": SCAN_FILE_LIMIT, "scope": "file"},
             )
         total += len(data)
+        if total > SCAN_TOTAL_LIMIT:
+            raise KeilInspectionError(
+                "KEIL_SCAN_LIMIT_EXCEEDED",
+                "aggregate source size exceeds the inspection scan limit",
+                {"limitBytes": SCAN_TOTAL_LIMIT, "scope": "inspection"},
+            )
         read_paths.append(rel)
         try:
             text = data.decode("utf-8-sig")

@@ -54,6 +54,90 @@ def snapshot_tree(root: Path) -> dict[str, tuple]:
     return entries
 
 
+class _GrowingFile:
+    """Wraps a real file handle and pads reads to simulate on-disk growth."""
+
+    def __init__(self, real, extra: int) -> None:
+        self._real = real
+        self._extra = extra
+
+    def read(self, n: int = -1) -> bytes:
+        data = self._real.read(n)
+        if self._extra > 0 and n > 0:
+            pad = min(self._extra, n - len(data))
+            if pad > 0:
+                self._extra -= pad
+                return data + b"x" * pad
+        return data
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        return self._real.__exit__(*args)
+
+    def close(self):
+        self._real.close()
+
+
+def grow_on_read(path: Path, extra: int, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Make reads of ``path`` return ``extra`` more bytes than exist on disk."""
+    real_open = Path.open
+
+    def patched(self, mode: str = "r", *args, **kwargs):
+        handle = real_open(self, mode, *args, **kwargs)
+        if mode == "rb" and self == path:
+            return _GrowingFile(handle, extra)
+        return handle
+
+    monkeypatch.setattr(Path, "open", patched)
+
+
+def raise_on_open(path: Path, monkeypatch: pytest.MonkeyPatch, error: OSError) -> None:
+    """Make ``Path.open`` raise ``error`` for ``path`` (platform-independent)."""
+    real_open = Path.open
+
+    def patched(self, mode: str = "r", *args, **kwargs):
+        if mode == "rb" and self == path:
+            raise error
+        return real_open(self, mode, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", patched)
+
+
+@pytest.fixture
+def redirect(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """Create real symlinks on POSIX; simulate redirects on Windows.
+
+    Windows symlink creation needs administrator rights or Developer Mode, so
+    on Windows the redirect is simulated by mapping ``Path.resolve`` for the
+    link path to its canonical target.  The inspected code path (resolve and
+    containment check) is identical on both platforms.
+    """
+    simulated: dict[Path, Path] = {}
+    real_resolve = Path.resolve
+
+    def resolve(self, strict: bool = False):
+        text = str(self)
+        for link, target in simulated.items():
+            link_text = str(link)
+            if text == link_text:
+                return target
+            if text.startswith(link_text + os.sep):
+                return target.joinpath(text[len(link_text) + 1 :])
+        return real_resolve(self, strict)
+
+    monkeypatch.setattr(Path, "resolve", resolve)
+
+    def make(link: Path, target: Path) -> None:
+        if os.name == "posix":
+            os.symlink(target, link, target_is_directory=target.is_dir())
+        else:
+            simulated[link] = target
+
+    return make
+
+
 def project_xml(*targets: dict, xmlns: bool = True) -> str:
     """Build a Keil .uvprojx XML document from target dictionaries."""
     ns = ' xmlns="http://www.keil.com/project"' if xmlns else ""
@@ -416,6 +500,63 @@ def test_unsafe_dtd_and_entity_rejected(keil_project: Path) -> None:
         assert error.value.details == {"rule": "doctypeOrEntity"}
 
 
+def test_utf16_dtd_and_entity_rejected(keil_project: Path) -> None:
+    payloads = [
+        "<!DOCTYPE foo [<!ENTITY x SYSTEM 'file:///etc/passwd'>]><Project/>",
+        "<!ENTITY x 'y'><Project/>",
+        "<!DoCtYpE foo><Project/>",
+        "<!eNtItY x 'y'><Project/>",
+    ]
+    for bom, encoding in ((b"\xff\xfe", "utf-16-le"), (b"\xfe\xff", "utf-16-be")):
+        for payload in payloads:
+            (keil_project / "evil16.uvprojx").write_bytes(bom + payload.encode(encoding))
+            with pytest.raises(KeilInspectionError) as error:
+                inspect_keil(keil_project, uvprojx=keil_project / "evil16.uvprojx")
+            assert error.value.code == "KEIL_XML_UNSAFE", (encoding, payload)
+            assert error.value.details == {"rule": "doctypeOrEntity"}
+
+
+def test_utf16_declared_without_bom_dtd_rejected(keil_project: Path) -> None:
+    payload = (
+        '<?xml version="1.0" encoding="UTF-16"?>'
+        "<!DOCTYPE foo><Project/>"
+    )
+    for encoding in ("utf-16-le", "utf-16-be"):
+        (keil_project / "evil16.uvprojx").write_bytes(payload.encode(encoding))
+        with pytest.raises(KeilInspectionError) as error:
+            inspect_keil(keil_project, uvprojx=keil_project / "evil16.uvprojx")
+        assert error.value.code == "KEIL_XML_UNSAFE", encoding
+        assert error.value.details == {"rule": "doctypeOrEntity"}
+
+
+def test_utf8_bom_dtd_rejected(keil_project: Path) -> None:
+    payload = "<!DOCTYPE foo><Project/>"
+    (keil_project / "evil.uvprojx").write_bytes(b"\xef\xbb\xbf" + payload.encode("utf-8"))
+    with pytest.raises(KeilInspectionError) as error:
+        inspect_keil(keil_project, uvprojx=keil_project / "evil.uvprojx")
+    assert error.value.code == "KEIL_XML_UNSAFE"
+    assert error.value.details == {"rule": "doctypeOrEntity"}
+
+
+def test_utf16_project_xml_parses(keil_project: Path) -> None:
+    text = (keil_project / "legacy.uvprojx").read_text(encoding="utf-8")
+    declared = text.replace('encoding="UTF-8"', 'encoding="UTF-16"', 1)
+    for bom, encoding in ((b"\xff\xfe", "utf-16-le"), (b"\xfe\xff", "utf-16-be")):
+        (keil_project / "utf16.uvprojx").write_bytes(bom + declared.encode(encoding))
+        report = inspect_keil(keil_project, uvprojx=keil_project / "utf16.uvprojx")
+        assert report.target_name == "Legacy"
+        assert report.device == "STM32F429ZGTx"
+        assert report.sources[0].path == "Common/common.c"
+
+
+def test_utf16_project_xml_declared_without_bom_parses(keil_project: Path) -> None:
+    text = (keil_project / "legacy.uvprojx").read_text(encoding="utf-8")
+    declared = text.replace('encoding="UTF-8"', 'encoding="UTF-16"', 1)
+    (keil_project / "utf16.uvprojx").write_bytes(declared.encode("utf-16-le"))
+    report = inspect_keil(keil_project, uvprojx=keil_project / "utf16.uvprojx")
+    assert report.target_name == "Legacy"
+
+
 def test_malformed_xml_reports_position(keil_project: Path) -> None:
     (keil_project / "evil.uvprojx").write_text("<Project><Targets></Project>", encoding="utf-8")
     with pytest.raises(KeilInspectionError) as error:
@@ -676,6 +817,106 @@ def test_mixed_separators_normalized(tmp_path: Path) -> None:
     assert report.sources[0].path == "Src/mixed.c"
 
 
+def test_nested_project_parent_relative_paths(tmp_path: Path) -> None:
+    root = tmp_path / "root"
+    (root / "Common").mkdir(parents=True)
+    (root / "Common" / "main.c").write_text("int main;\n", encoding="utf-8")
+    (root / "Inc").mkdir()
+    (root / "MDK-ARM").mkdir()
+    variants = [
+        "..\\Common\\main.c",
+        "../Common/main.c",
+        "..\\Common\\..\\Common\\main.c",
+    ]
+    for index, source_path in enumerate(variants):
+        target = {
+            "name": "T",
+            "include_paths": "..\\Inc",
+            "scatter": "..\\Objects\\app.sct",
+            "groups": [
+                {
+                    "name": "G",
+                    "files": [{"name": "main.c", "path": source_path}],
+                }
+            ],
+        }
+        write_project(
+            root / "MDK-ARM",
+            project_xml(target),
+            name=f"nested{index}.uvprojx",
+        )
+        (root / "Objects").mkdir(exist_ok=True)
+        (root / "Objects" / "app.sct").write_text("LR_IROM1 0x08000000 0x100000 {}", encoding="utf-8")
+        report = inspect_keil(root, uvprojx=root / "MDK-ARM" / f"nested{index}.uvprojx")
+        assert report.sources[0].path == "Common/main.c", source_path
+        assert report.include_paths == ("Inc",), source_path
+        assert report.output.scatter_file == "Objects/app.sct", source_path
+        assert any(d.path == "Common/main.c" for d in report.inputs)
+        assert any(d.path == "Objects/app.sct" for d in report.inputs)
+
+
+def test_nested_parent_relative_escape_rejected(tmp_path: Path) -> None:
+    root = tmp_path / "root"
+    (root / "MDK-ARM").mkdir(parents=True)
+    write_project(
+        root / "MDK-ARM",
+        project_xml(
+            {
+                "name": "T",
+                "groups": [
+                    {
+                        "name": "G",
+                        "files": [{"name": "a.c", "path": "..\\..\\..\\outside.c"}],
+                    }
+                ],
+            }
+        ),
+        name="nested.uvprojx",
+    )
+    with pytest.raises(KeilInspectionError) as error:
+        inspect_keil(root, uvprojx=root / "MDK-ARM" / "nested.uvprojx")
+    assert error.value.code == "KEIL_PATH_OUTSIDE_PROJECT"
+    assert error.value.details == {"field": "source", "rule": "withinProjectRoot"}
+
+
+def test_windows_style_paths_serialize_posix(keil_project: Path) -> None:
+    nested = keil_project / "MDK-ARM"
+    nested.mkdir()
+    shutil.copyfile(keil_project / "legacy.uvprojx", nested / "legacy.uvprojx")
+    for name in ("Common", "Main", "Startup", "Objects"):
+        shutil.move(str(keil_project / name), str(nested / name))
+    os.remove(keil_project / "legacy.uvprojx")
+    report = inspect_keil(keil_project, uvprojx=keil_project / "MDK-ARM" / "legacy.uvprojx")
+    data = report.to_dict()
+
+    def assert_posix(value: object) -> None:
+        if isinstance(value, str):
+            assert "\\" not in value
+            assert not value.startswith("/")
+        elif isinstance(value, dict):
+            for item in value.values():
+                assert_posix(item)
+        elif isinstance(value, list):
+            for item in value:
+                assert_posix(item)
+
+    assert_posix(data)
+    assert data["project_file"] == "MDK-ARM/legacy.uvprojx"
+    assert data["sources"][0]["path"] == "MDK-ARM/Common/common.c"
+    assert data["include_paths"] == ["MDK-ARM/Common", "MDK-ARM/Main", "MDK-ARM/Startup"]
+    assert data["output"]["axf"] == "MDK-ARM/Objects/legacy.axf"
+    assert data["output"]["map_file"] == "MDK-ARM/Objects/legacy.map"
+    assert data["output"]["scatter_file"] == "MDK-ARM/Objects/legacy.sct"
+    assert data["findings"][-1]["path"] == "MDK-ARM/Objects/legacy.sct"
+    assert all(d["path"].startswith("MDK-ARM/") for d in data["inputs"])
+    scoped = {item["scope"]: item for item in data["scoped_options"]}
+    assert scoped["target"]["include_paths"] == [
+        "MDK-ARM/Common",
+        "MDK-ARM/Main",
+        "MDK-ARM/Startup",
+    ]
+
+
 @pytest.mark.parametrize(
     "bad_path",
     [
@@ -721,7 +962,7 @@ def test_output_directory_escape_rejected(tmp_path: Path) -> None:
     assert error.value.details == {"field": "outputDirectory", "rule": "withinProjectRoot"}
 
 
-def test_symlink_escape_rejected(tmp_path: Path) -> None:
+def test_symlink_escape_rejected(tmp_path: Path, redirect) -> None:
     root = tmp_path / "root"
     outside = tmp_path / "outside"
     outside.mkdir()
@@ -733,14 +974,14 @@ def test_symlink_escape_rejected(tmp_path: Path) -> None:
         }
     )
     write_project(root, xml, files={})
-    os.symlink(outside, root / "Link")
+    redirect(root / "Link", outside)
     with pytest.raises(KeilInspectionError) as error:
         inspect_keil(root)
     assert error.value.code == "KEIL_PATH_OUTSIDE_PROJECT"
     assert "secret" not in str(error.value.details)
 
 
-def test_symlink_inside_root_rejected_conservatively(tmp_path: Path) -> None:
+def test_symlink_inside_root_accepted(tmp_path: Path, redirect) -> None:
     root = tmp_path / "root"
     xml = project_xml(
         {
@@ -749,38 +990,61 @@ def test_symlink_inside_root_rejected_conservatively(tmp_path: Path) -> None:
         }
     )
     write_project(root, xml, {".\\Src\\a.c": "int a;\n"})
-    os.symlink(root / "Src", root / "Link")
-    with pytest.raises(KeilInspectionError) as error:
-        inspect_keil(root)
-    assert error.value.code == "KEIL_PATH_OUTSIDE_PROJECT"
+    redirect(root / "Link", root / "Src")
+    report = inspect_keil(root)
+    assert report.sources[0].path == "Src/a.c"
+    assert all(d.path != "Link/a.c" for d in report.inputs)
+    assert any(d.path == "Src/a.c" for d in report.inputs)
 
 
-def test_simulated_reparse_point_rejected(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_in_root_redirects_accepted_source_include_scatter(
+    tmp_path: Path, redirect
+) -> None:
+    root = tmp_path / "root"
+    simple_project(
+        root,
+        include_paths="Link",
+        scatter=".\\Link\\app.sct",
+        sources={".\\Src\\a.c": "int a;\n", ".\\Src\\app.sct": "LR_IROM1 0x08000000 0x100000 {}"},
+    )
+    redirect(root / "Link", root / "Src")
+    report = inspect_keil(root)
+    assert report.sources[0].path == "Src/a.c"
+    assert report.include_paths == ("Src",)
+    assert report.output.scatter_file == "Src/app.sct"
+    assert any(d.path == "Src/app.sct" for d in report.inputs)
+
+
+def test_simulated_reparse_escape_rejected(tmp_path: Path, monkeypatch) -> None:
     root = tmp_path / "root"
     simple_project(root, sources={".\\Src\\a.c": "int a;\n"})
-    (root / "Objects").mkdir()
-    real_lstat = os.lstat
+    real_resolve = Path.resolve
 
-    class FakeStat:
-        st_file_attributes = 0x400  # FILE_ATTRIBUTE_REPARSE_POINT
+    def fake_resolve(self, strict: bool = False):
+        if self.name == "Objects":
+            return tmp_path / "outside-objects"
+        return real_resolve(self, strict)
 
-        def __init__(self, real):
-            self._real = real
-
-        @property
-        def st_mode(self):
-            return self._real.st_mode
-
-    def fake_lstat(path):
-        real = real_lstat(path)
-        if str(path).endswith("Objects"):
-            return FakeStat(real)
-        return real
-
-    monkeypatch.setattr(uvprojx_mod.os, "lstat", fake_lstat)
+    monkeypatch.setattr(Path, "resolve", fake_resolve)
     with pytest.raises(KeilInspectionError) as error:
         inspect_keil(root)
     assert error.value.code == "KEIL_PATH_OUTSIDE_PROJECT"
+
+
+def test_simulated_reparse_inside_root_accepted(tmp_path: Path, monkeypatch) -> None:
+    root = tmp_path / "root"
+    simple_project(root, sources={".\\Src\\a.c": "int a;\n"})
+    (root / "Objects-real").mkdir()
+    real_resolve = Path.resolve
+
+    def fake_resolve(self, strict: bool = False):
+        if self.name == "Objects":
+            return root / "Objects-real"
+        return real_resolve(self, strict)
+
+    monkeypatch.setattr(Path, "resolve", fake_resolve)
+    report = inspect_keil(root)
+    assert report.output.object_directory == "Objects-real"
 
 
 def test_permission_error_during_inspection_rejected(
@@ -788,14 +1052,14 @@ def test_permission_error_during_inspection_rejected(
 ) -> None:
     root = tmp_path / "root"
     simple_project(root, sources={".\\Src\\a.c": "int a;\n"})
-    real_lstat = os.lstat
+    real_resolve = Path.resolve
 
-    def fake_lstat(path):
-        if str(path).endswith("Objects"):
+    def fake_resolve(self, strict: bool = False):
+        if self.name == "Objects":
             raise PermissionError("denied")
-        return real_lstat(path)
+        return real_resolve(self, strict)
 
-    monkeypatch.setattr(uvprojx_mod.os, "lstat", fake_lstat)
+    monkeypatch.setattr(Path, "resolve", fake_resolve)
     with pytest.raises(KeilInspectionError) as error:
         inspect_keil(root)
     assert error.value.code == "KEIL_PATH_OUTSIDE_PROJECT"
@@ -807,14 +1071,14 @@ def test_generic_oserror_during_inspection_rejected(
 ) -> None:
     root = tmp_path / "root"
     simple_project(root, sources={".\\Src\\a.c": "int a;\n"})
-    real_lstat = os.lstat
+    real_resolve = Path.resolve
 
-    def fake_lstat(path):
-        if str(path).endswith("Src"):
+    def fake_resolve(self, strict: bool = False):
+        if "Src" in self.parts:
             raise OSError("boom")
-        return real_lstat(path)
+        return real_resolve(self, strict)
 
-    monkeypatch.setattr(uvprojx_mod.os, "lstat", fake_lstat)
+    monkeypatch.setattr(Path, "resolve", fake_resolve)
     with pytest.raises(KeilInspectionError) as error:
         inspect_keil(root)
     assert error.value.code == "KEIL_PATH_OUTSIDE_PROJECT"
@@ -1050,6 +1314,75 @@ def test_framework_spl_two_categories(tmp_path: Path) -> None:
     assert not any(w.code == "KEIL_FRAMEWORK_SELECTION_REQUIRED" for w in report.warnings)
 
 
+def test_framework_inference_windows_style_paths(tmp_path: Path) -> None:
+    root = tmp_path / "root"
+    simple_project(
+        root,
+        defines="USE_STDPERIPH_DRIVER",
+        include_paths="Libraries\\STM32F4xx_StdPeriph_Driver\\inc",
+        sources={
+            ".\\Libraries\\STM32F4xx_StdPeriph_Driver\\Src\\stm32f4xx_ll_gpio.c": "int g;\n"
+        },
+        extra={
+            "groups": [
+                {
+                    "name": "G",
+                    "files": [
+                        {
+                            "name": "stm32f4xx_ll_gpio.c",
+                            "path": ".\\Libraries\\STM32F4xx_StdPeriph_Driver\\Src\\stm32f4xx_ll_gpio.c",
+                        }
+                    ],
+                }
+            ]
+        },
+    )
+    (root / "Libraries/STM32F4xx_StdPeriph_Driver/inc").mkdir(parents=True)
+    report = inspect_keil(root)
+    assert report.framework == "spl"
+    assert report.include_paths == ("Libraries/STM32F4xx_StdPeriph_Driver/inc",)
+    assert report.sources[0].path == "Libraries/STM32F4xx_StdPeriph_Driver/Src/stm32f4xx_ll_gpio.c"
+
+
+def test_framework_hal_windows_style_paths(tmp_path: Path) -> None:
+    root = tmp_path / "root"
+    simple_project(
+        root,
+        defines="USE_HAL_DRIVER",
+        include_paths="Drivers\\STM32F4xx_HAL_Driver\\Inc",
+    )
+    (root / "Drivers/STM32F4xx_HAL_Driver/Inc").mkdir(parents=True)
+    report = inspect_keil(root)
+    assert report.framework == "hal"
+
+
+def test_framework_ll_windows_style_paths(tmp_path: Path) -> None:
+    root = tmp_path / "root"
+    simple_project(
+        root,
+        defines="USE_FULL_LL_DRIVER",
+        sources={
+            ".\\Drivers\\STM32F4xx_HAL_Driver\\Src\\stm32f4xx_ll_gpio.c": "int g;\n"
+        },
+        extra={
+            "groups": [
+                {
+                    "name": "G",
+                    "files": [
+                        {
+                            "name": "stm32f4xx_ll_gpio.c",
+                            "path": ".\\Drivers\\STM32F4xx_HAL_Driver\\Src\\stm32f4xx_ll_gpio.c",
+                        }
+                    ],
+                }
+            ]
+        },
+    )
+    report = inspect_keil(root)
+    assert report.framework == "ll"
+    assert report.framework_candidates == ("hal", "ll")
+
+
 def test_framework_hal_two_categories(tmp_path: Path) -> None:
     root = tmp_path / "root"
     simple_project(root, defines="USE_HAL_DRIVER", include_paths="Drivers/STM32F4xx_HAL_Driver/Inc")
@@ -1179,16 +1512,59 @@ def test_linker_section_input_finding(tmp_path: Path) -> None:
     assert report.output.scatter_file == "Objects/app.sct"
 
 
-def test_unreadable_source_warning(tmp_path: Path) -> None:
+def test_unreadable_source_warning(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     root = tmp_path / "root"
     simple_project(root, sources={".\\Src\\a.c": "int a;\n"})
-    (root / "Src" / "a.c").chmod(0)
-    try:
-        report = inspect_keil(root)
-        assert "KEIL_SOURCE_UNAVAILABLE" in [w.code for w in report.warnings]
-        assert all(d.path != "Src/a.c" for d in report.inputs)
-    finally:
-        (root / "Src" / "a.c").chmod(0o644)
+    raise_on_open(root / "Src" / "a.c", monkeypatch, PermissionError("denied"))
+    report = inspect_keil(root)
+    assert "KEIL_SOURCE_UNAVAILABLE" in [w.code for w in report.warnings]
+    assert all(d.path != "Src/a.c" for d in report.inputs)
+
+
+def test_source_grows_between_stat_and_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(uvprojx_mod.armcc_scan, "SCAN_FILE_LIMIT", 100)
+    root = tmp_path / "root"
+    simple_project(root, sources={".\\Src\\a.c": "x" * 100})
+    grow_on_read(root / "Src" / "a.c", 64, monkeypatch)
+    with pytest.raises(KeilInspectionError) as error:
+        inspect_keil(root)
+    assert error.value.code == "KEIL_SCAN_LIMIT_EXCEEDED"
+    assert error.value.details == {"limitBytes": 100, "scope": "file"}
+
+
+def test_aggregate_limit_reenforced_after_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(uvprojx_mod.armcc_scan, "SCAN_FILE_LIMIT", 200)
+    monkeypatch.setattr(uvprojx_mod.armcc_scan, "SCAN_TOTAL_LIMIT", 250)
+    root = tmp_path / "root"
+    xml = project_xml(
+        {
+            "name": "T",
+            "groups": [
+                {
+                    "name": "G",
+                    "files": [
+                        {"name": "a.c", "path": ".\\Src\\a.c"},
+                        {"name": "b.c", "path": ".\\Src\\b.c"},
+                    ],
+                }
+            ],
+        }
+    )
+    write_project(
+        root,
+        xml,
+        {".\\Src\\a.c": "x" * 100, ".\\Src\\b.c": "y" * 100},
+    )
+    # b.c grows past the aggregate budget between stat and read.
+    grow_on_read(root / "Src" / "b.c", 64, monkeypatch)
+    with pytest.raises(KeilInspectionError) as error:
+        inspect_keil(root)
+    assert error.value.code == "KEIL_SCAN_LIMIT_EXCEEDED"
+    assert error.value.details == {"limitBytes": 250, "scope": "inspection"}
 
 
 def test_scanner_edge_cases(tmp_path: Path) -> None:

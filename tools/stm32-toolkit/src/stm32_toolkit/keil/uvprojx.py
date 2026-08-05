@@ -6,6 +6,7 @@ extraction, path validation, input hashing, and scanner orchestration.
 
 from __future__ import annotations
 
+import codecs
 import hashlib
 import os
 import re
@@ -30,6 +31,9 @@ from stm32_toolkit.keil.model import (
 PROJECT_XML_LIMIT = 8 * 1024 * 1024
 _MAX_UINT64 = 0xFFFFFFFFFFFFFFFF
 
+_XML_DECL_ENCODING_RE = re.compile(
+    rb"<\?xml[^>]*encoding\s*=\s*['\"]([A-Za-z0-9._-]+)['\"]", re.IGNORECASE
+)
 _CPUTYPE_RE = re.compile(r'CPUTYPE\s*\(\s*"([^"]*)"\s*\)')
 _MEMORY_TOKEN_RE = re.compile(r"(IROM2|IRAM2|IROM|IRAM)\s*\(")
 _MEMORY_VALUE_RE = re.compile(r"^\s*(0x[0-9a-fA-F]+|\d+)\s*,\s*(0x[0-9a-fA-F]+|\d+)\s*$")
@@ -107,6 +111,66 @@ def _raw_text_of(element, name: str) -> str | None:
 
 def _raise(code: str, message: str, details: dict[str, object]) -> KeilInspectionError:
     return KeilInspectionError(code, message, details)
+
+
+def _read_limited(path: Path, limit: int) -> bytes:
+    """Read at most ``limit + 1`` bytes; callers enforce the cap on the result.
+
+    A growing or replaced file can therefore never be loaded beyond the limit.
+    """
+    with path.open("rb") as handle:
+        return handle.read(limit + 1)
+
+
+def _decoded_has_dtd_or_entity(data: bytes, encoding: str) -> bool:
+    try:
+        text = data.decode(encoding)
+    except (UnicodeDecodeError, LookupError):
+        return False
+    lowered = text.lower()
+    return "<!doctype" in lowered or "<!entity" in lowered
+
+
+def _contains_dtd_or_entity(data: bytes) -> bool:
+    """Reject case-insensitive DTD/ENTITY declarations before XML parsing.
+
+    Covers UTF-8, UTF-8 BOM, UTF-16 LE/BE with BOM, and encodings declared in
+    the XML declaration; the byte scan already covers every ASCII-compatible
+    single-byte encoding.  The XML parse never sees a document that declares
+    a DTD or entity, so no external resource can be requested.
+    """
+    lowered = data.lower()
+    if b"<!doctype" in lowered or b"<!entity" in lowered:
+        return True
+    if data[:2] == b"\xff\xfe":
+        return _decoded_has_dtd_or_entity(data, "utf-16-le")
+    if data[:2] == b"\xfe\xff":
+        return _decoded_has_dtd_or_entity(data, "utf-16-be")
+    prolog = data[:1024]
+    match = _XML_DECL_ENCODING_RE.search(prolog)
+    if match is not None:
+        try:
+            info = codecs.lookup(match.group(1).decode("ascii", errors="replace"))
+        except LookupError:
+            info = None
+        if info is not None and info.name in (
+            "utf-16",
+            "utf-16-le",
+            "utf-16-be",
+            "utf-16le",
+            "utf-16be",
+        ):
+            encoding = (
+                "utf-16-le"
+                if info.name in ("utf-16", "utf-16-le", "utf-16le")
+                else "utf-16-be"
+            )
+            return _decoded_has_dtd_or_entity(data, encoding)
+    if b"\x00" in prolog:
+        return _decoded_has_dtd_or_entity(data, "utf-16-le") or _decoded_has_dtd_or_entity(
+            data, "utf-16-be"
+        )
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -202,32 +266,32 @@ def _select_project(root: Path, uvprojx: object) -> tuple[str, Path]:
         raise _raise(
             "KEIL_PROJECT_UNAVAILABLE",
             "project file is missing",
-            {"path": str(relative)},
+            {"path": relative.as_posix()},
         )
     except NotADirectoryError:
         raise _raise(
             "KEIL_PROJECT_UNAVAILABLE",
             "project file is unavailable",
-            {"path": str(relative)},
+            {"path": relative.as_posix()},
         )
     except OSError:
         raise _raise(
             "KEIL_PROJECT_UNAVAILABLE",
             "project file is unavailable",
-            {"path": str(relative)},
+            {"path": relative.as_posix()},
         )
     if not stat.S_ISREG(metadata.st_mode):
         raise _raise(
             "KEIL_PROJECT_UNAVAILABLE",
             "project path is not a regular file",
-            {"path": str(relative)},
+            {"path": relative.as_posix()},
         )
-    return str(relative), resolved
+    return relative.as_posix(), resolved
 
 
-def _read_project(project_abs: Path, project_rel: str) -> tuple[ET.Element, str]:
+def _read_project(project_abs: Path, project_rel: str) -> tuple[ET.Element, str, int]:
     try:
-        data = project_abs.read_bytes()
+        data = _read_limited(project_abs, PROJECT_XML_LIMIT)
     except FileNotFoundError:
         raise _raise(
             "KEIL_PROJECT_UNAVAILABLE",
@@ -252,8 +316,7 @@ def _read_project(project_abs: Path, project_rel: str) -> tuple[ET.Element, str]
             "project XML exceeds the size limit",
             {"limitBytes": PROJECT_XML_LIMIT},
         )
-    lowered = data.lower()
-    if b"<!doctype" in lowered or b"<!entity" in lowered:
+    if _contains_dtd_or_entity(data):
         raise _raise(
             "KEIL_XML_UNSAFE",
             "project XML declares a DTD or entity",
@@ -268,7 +331,7 @@ def _read_project(project_abs: Path, project_rel: str) -> tuple[ET.Element, str]
             "project XML is malformed",
             {"path": project_rel, "line": line, "column": column},
         )
-    return tree, hashlib.sha256(data).hexdigest()
+    return tree, hashlib.sha256(data).hexdigest(), len(data)
 
 
 # ---------------------------------------------------------------------------
@@ -523,36 +586,14 @@ def _collect_entries(target) -> list[tuple]:
 
 
 def _check_redirects(path: Path, root: Path, field: str) -> None:
-    """Reject symlink or reparse-point components conservatively."""
-    try:
-        relative = path.relative_to(root)
-    except ValueError:
-        raise _raise(
-            "KEIL_PATH_OUTSIDE_PROJECT",
-            "path escapes the canonical project root",
-            {"field": field, "rule": "withinProjectRoot"},
-        )
-    current = root
-    for component in relative.parts:
-        current = current / component
-        try:
-            metadata = os.lstat(current)
-        except FileNotFoundError:
-            break
-        except OSError:
-            raise _raise(
-                "KEIL_PATH_OUTSIDE_PROJECT",
-                "path inspection failed",
-                {"field": field, "rule": "withinProjectRoot"},
-            )
-        attributes = getattr(metadata, "st_file_attributes", 0)
-        reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
-        if stat.S_ISLNK(metadata.st_mode) or attributes & reparse_flag:
-            raise _raise(
-                "KEIL_PATH_OUTSIDE_PROJECT",
-                "path contains a symlink or reparse point",
-                {"field": field, "rule": "withinProjectRoot"},
-            )
+    """Accept redirects whose canonical target stays in the root; reject escapes.
+
+    Symlinks/reparse points (and NTFS junctions on Windows) are resolved to
+    their canonical target and accepted when that target remains inside the
+    canonical project root.  Escapes, cycles, resolution failures, and
+    inspection errors are rejected conservatively.
+    """
+    _resolve_contained(path, root, field)
 
 
 def _resolve_contained(path: Path, root: Path, field: str) -> Path:
@@ -572,7 +613,6 @@ def _resolve_contained(path: Path, root: Path, field: str) -> Path:
             "path escapes the canonical project root",
             {"field": field, "rule": "withinProjectRoot"},
         )
-    _check_redirects(path, root, field)
     return resolved
 
 
@@ -603,33 +643,24 @@ def _normalize_keil_path(
             {"field": field, "rule": "withinProjectRoot"},
         )
     normalized = stripped.replace("\\", "/")
-    parts: list[str] = []
-    for component in normalized.split("/"):
-        if component in ("", "."):
-            continue
-        if component == "..":
-            if not parts:
-                raise _raise(
-                    "KEIL_PATH_OUTSIDE_PROJECT",
-                    "path escapes the canonical project root",
-                    {"field": field, "rule": "withinProjectRoot"},
-                )
-            parts.pop()
-            continue
-        parts.append(component)
-    relative = "/".join(parts)
-    if not relative:
+    parts = [component for component in normalized.split("/") if component not in ("", ".")]
+    if not parts:
         if allow_dir:
-            relative = "."
-        else:
-            raise _raise(
-                "KEIL_PATH_OUTSIDE_PROJECT",
-                "path resolves to an empty location",
-                {"field": field, "rule": "withinProjectRoot"},
-            )
-    absolute = _resolve_contained(base_dir / relative, root, field)
+            absolute = _resolve_contained(base_dir, root, field)
+            root_relative = absolute.relative_to(root).as_posix()
+            if not root_relative:
+                root_relative = "."
+            return root_relative, absolute
+        raise _raise(
+            "KEIL_PATH_OUTSIDE_PROJECT",
+            "path resolves to an empty location",
+            {"field": field, "rule": "withinProjectRoot"},
+        )
+    # Keil paths are relative to the .uvprojx directory: resolve ``..`` from
+    # base_dir first, then require the final canonical target inside the root.
+    absolute = _resolve_contained(base_dir.joinpath(*parts), root, field)
     try:
-        root_relative = str(absolute.relative_to(root))
+        root_relative = absolute.relative_to(root).as_posix()
     except ValueError:
         raise _raise(
             "KEIL_PATH_OUTSIDE_PROJECT",
@@ -638,6 +669,12 @@ def _normalize_keil_path(
         )
     if not root_relative:
         root_relative = "."
+    if not allow_dir and root_relative == ".":
+        raise _raise(
+            "KEIL_PATH_OUTSIDE_PROJECT",
+            "path resolves to an empty location",
+            {"field": field, "rule": "withinProjectRoot"},
+        )
     return root_relative, absolute
 
 
@@ -738,17 +775,37 @@ def _select_framework(
 # ---------------------------------------------------------------------------
 
 
-def _hash_inputs(entries: list[tuple[str, Path]]) -> tuple[KeilInputDigest, ...]:
+def _hash_inputs(entries: list[tuple[str, Path, int]]) -> tuple[KeilInputDigest, ...]:
+    """Bounded reads; re-enforce the per-file limit on the actual bytes read."""
     digests: list[KeilInputDigest] = []
-    for relative, absolute in sorted(entries, key=lambda entry: entry[0]):
+    for relative, absolute, limit in entries:
         try:
-            data = absolute.read_bytes()
+            data = _read_limited(absolute, limit)
         except OSError:
             continue
+        if len(data) > limit:
+            raise _raise(
+                "KEIL_SCAN_LIMIT_EXCEEDED",
+                "input exceeds the per-file scan limit",
+                {"limitBytes": limit, "scope": "file"},
+            )
         digests.append(
             KeilInputDigest(relative, hashlib.sha256(data).hexdigest(), len(data))
         )
     return tuple(digests)
+
+
+def _normalize_option_includes(
+    includes: tuple[str, ...], base_dir: Path, root: Path
+) -> tuple[str, ...]:
+    """Normalize scoped-option include paths to POSIX repository-relative form."""
+    result: list[str] = []
+    for raw in includes:
+        normalized = _normalize_keil_path(raw, base_dir, root, "includePath", allow_dir=True)
+        if normalized is None:
+            continue
+        result.append(normalized[0])
+    return tuple(result)
 
 
 # ---------------------------------------------------------------------------
@@ -763,7 +820,7 @@ def inspect_keil(
 ) -> KeilInspection:
     canonical_root = _validate_root(root)
     project_rel, project_abs = _select_project(canonical_root, uvprojx)
-    tree, project_sha256 = _read_project(project_abs, project_rel)
+    tree, project_sha256, project_size = _read_project(project_abs, project_rel)
     selected_name, target = _select_target(_collect_targets(tree), target_name)
 
     target_option = _descendant(target, "TargetOption")
@@ -818,7 +875,7 @@ def inspect_keil(
                 selected_name,
                 True,
                 target_options[0],
-                target_options[1],
+                _normalize_option_includes(target_options[1], base_dir, canonical_root),
                 target_options[2],
             )
         )
@@ -835,7 +892,7 @@ def inspect_keil(
                     group_name,
                     True,
                     group_options[0],
-                    group_options[1],
+                    _normalize_option_includes(group_options[1], base_dir, canonical_root),
                     group_options[2],
                 )
             )
@@ -884,7 +941,7 @@ def inspect_keil(
                     source_rel,
                     included,
                     file_options[0],
-                    file_options[1],
+                    _normalize_option_includes(file_options[1], base_dir, canonical_root),
                     file_options[2],
                 )
             )
@@ -957,9 +1014,11 @@ def inspect_keil(
     if framework_warning is not None:
         warnings.append(framework_warning)
 
-    hash_entries: list[tuple[str, Path]] = [(project_rel, project_abs)]
+    hash_entries: list[tuple[str, Path, int]] = []
     for source_rel in scan_outcome.read:
-        hash_entries.append((source_rel, absolute_by_path[source_rel]))
+        hash_entries.append(
+            (source_rel, absolute_by_path[source_rel], armcc_scan.SCAN_FILE_LIMIT)
+        )
     if scatter_abs is not None and _classify_path(scatter_abs) == "ok":
         try:
             if scatter_abs.stat().st_size > armcc_scan.SCAN_FILE_LIMIT:
@@ -971,7 +1030,11 @@ def inspect_keil(
         except FileNotFoundError:
             pass
         else:
-            hash_entries.append((scatter_rel, scatter_abs))  # type: ignore[arg-type]
+            hash_entries.append((scatter_rel, scatter_abs, armcc_scan.SCAN_FILE_LIMIT))
+
+    digests = [KeilInputDigest(project_rel, project_sha256, project_size)]
+    digests.extend(_hash_inputs(hash_entries))
+    inputs = tuple(sorted(digests, key=lambda digest: digest.path))
 
     linker_inputs = tuple(
         dict.fromkeys(
@@ -1010,5 +1073,5 @@ def inspect_keil(
         framework_evidence=evidence,
         findings=findings,
         warnings=tuple(warnings),
-        inputs=_hash_inputs(hash_entries),
+        inputs=inputs,
     )
