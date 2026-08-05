@@ -9,6 +9,7 @@ requires-python = ">=3.10"
 dependencies = [
   "jsonschema>=4.23,<5",
   "mcp>=1.27,<2",
+  "pyelftools>=0.33,<0.34",
 ]
 
 [project.optional-dependencies]
