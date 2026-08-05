@@ -1,0 +1,38 @@
+===============================================================================
+  Legacy
+===============================================================================
+
+  *** Using Compiler 'V5.06 update 7 (build 750)', folder: 'C:\Keil_v5\ARM\ARMCC\Bin'
+
+===============================================================================
+
+  Memory Map of the image
+
+  Image Entry point : 0x08000131
+
+  Load Region LR_IROM1 (Base: 0x08000000, Size: 0x0000244c, Max: 0x00010000, ABSOLUTE, COMPLIANT WITH ARM C6.18)
+
+  Execution Region ER_IROM1 (Base: 0x08000000, Size: 0x0000240c, Max: 0x00010000, ABSOLUTE)
+
+    Base Addr    Size         Type   Attr      Idx    E Section Name        Object
+    0x08000000   0x000000b8   Code   RO        15      .ARM.Collect$$$$00000000    startup_stm32f4xx.o(ARM_Collect)
+    0x080000b8   0x00000784   Code   RO        213     .text                   main.o
+    0x0800083c   0x00000008   Data   RW        468     .data                   common.o
+
+  Execution Region ER_IRAM1 (Base: 0x20000000, Size: 0x00000108, Max: 0x00030000, ABSOLUTE)
+
+    Base Addr    Size         Type   Attr      Idx    E Section Name        Object
+    0x20000000   0x00000108   Zero   RW        543     .bss                    common.o
+
+  Module Summary
+
+    Code (inc. data)   RO Data    RW Data    ZI Data      Debug   Object Name
+         8124          720        92         16988       13012    Common/common.o
+         8124          720        92         16988       13012    Main/main.o
+
+  Grand Totals
+  Total RO  Size (Code + RO Data)                 8844 (  0x228C)
+  Total RW  Size (RW Data + ZI Data)             17080 (  0x42B8)
+  Total ROM Size (Code + RO Data + RW Data)      8936 (  0x22E8)
+
+  Program Size: Code=8124 RO-data=720 RW-data=92 ZI-data=16988
