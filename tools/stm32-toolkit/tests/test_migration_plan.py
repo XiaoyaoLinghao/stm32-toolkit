@@ -31,7 +31,7 @@ from stm32_toolkit.migration import (
     plan_keil_conversion,
 )
 
-CORE_CPU = 'IRAM(0x20000000,0x30000) IROM(0x8000000,0x100000) CPUTYPE("Cortex-M4")'
+CORE_CPU = 'IRAM(0x20000000,0x30000) IROM(0x8000000,0x100000) CPUTYPE("Cortex-M4") FPU2'
 FRAMEWORK_INCLUDE = "Libraries/STM32F4xx_StdPeriph_Driver"
 UUID_NAMESPACE = uuid.UUID("a2e9f523-3c9e-5cb2-bf50-5cf9ff5d16a8")
 
@@ -116,6 +116,7 @@ def write_uvprojx(
     uac6: str = "0",
     pack: str = "Keil.STM32F4xx_DFP.2.16.1",
     fpu: str = "1",
+    pcc: str = "5060750::V5.06 update 7 (build 750)::ARMCC",
 ) -> Path:
     """Write a minimal namespace-qualified Keil MDK5 project file."""
     group_xml = []
@@ -145,7 +146,7 @@ def write_uvprojx(
         f"      <TargetName>{target}</TargetName>\n"
         "      <ToolsetNumber>0x4</ToolsetNumber>\n"
         "      <ToolsetName>ARM-ADS</ToolsetName>\n"
-        "      <pCCUsed>5060750::V5.06 update 7 (build 750)::ARMCC</pCCUsed>\n"
+        f"      <pCCUsed>{pcc}</pCCUsed>\n"
         f"      <uAC6>{uac6}</uAC6>\n"
         "      <TargetOption>\n"
         "        <TargetCommonOption>\n"
@@ -331,9 +332,8 @@ def test_root_mismatch_with_inspection_project_root(tmp_path):
     inspection = fixture_inspection(repo)
     other = tmp_path / "other"
     other.mkdir()
-    forged = replace(inspection, project_root=other)
     with pytest.raises(MigrationPlanError) as error:
-        plan_keil_conversion(other, forged)
+        plan_keil_conversion(other, inspection)
     assert error.value.code == "MIGRATION_INSPECTION_INVALID"
     assert error.value.details == {"field": "inspection", "rule": "rootMatch"}
 
@@ -386,9 +386,10 @@ def test_git_missing_binary_timeout_and_malformed_output(tmp_path, monkeypatch):
     repo = standard_repo(tmp_path)
     inspection = fixture_inspection(repo)
     git_guard = planner_mod.git_guard
+    real_run = git_guard._run_git
 
     def missing(*args, **kwargs):
-        raise FileNotFoundError("git")
+        raise git_guard._GitError("missing")
 
     monkeypatch.setattr(git_guard, "_run_git", missing)
     with pytest.raises(MigrationPlanError) as error:
@@ -397,14 +398,12 @@ def test_git_missing_binary_timeout_and_malformed_output(tmp_path, monkeypatch):
     assert error.value.details == {"rule": "repository"}
 
     def timed_out(*args, **kwargs):
-        raise subprocess.TimeoutExpired("git", 10.0)
+        raise git_guard._GitError("timeout")
 
     monkeypatch.setattr(git_guard, "_run_git", timed_out)
     with pytest.raises(MigrationPlanError) as error:
         plan_keil_conversion(repo, inspection)
     assert error.value.code == "MIGRATION_GIT_UNAVAILABLE"
-
-    real_run = git_guard._run_git
 
     def bad_head(*args, **kwargs):
         if args[0] == ["rev-parse", "HEAD"]:
@@ -448,6 +447,73 @@ def test_git_missing_binary_timeout_and_malformed_output(tmp_path, monkeypatch):
     with pytest.raises(MigrationPlanError) as error:
         plan_keil_conversion(repo, inspection)
     assert error.value.code == "MIGRATION_GIT_UNAVAILABLE"
+    assert error.value.details == {"rule": "status"}
+
+
+def test_git_output_shape_validation(tmp_path, monkeypatch):
+    repo = standard_repo(tmp_path)
+    inspection = fixture_inspection(repo)
+    git_guard = planner_mod.git_guard
+    real_run = git_guard._run_git
+
+    def undecodable_toplevel(*args, **kwargs):
+        if args[0] == ["rev-parse", "--show-toplevel"]:
+            return b"\xff\xfe"
+        return real_run(*args, **kwargs)
+
+    monkeypatch.setattr(git_guard, "_run_git", undecodable_toplevel)
+    with pytest.raises(MigrationPlanError) as error:
+        plan_keil_conversion(repo, inspection)
+    assert error.value.details == {"rule": "repository"}
+
+    def empty_toplevel(*args, **kwargs):
+        if args[0] == ["rev-parse", "--show-toplevel"]:
+            return b"\n"
+        return real_run(*args, **kwargs)
+
+    monkeypatch.setattr(git_guard, "_run_git", empty_toplevel)
+    with pytest.raises(MigrationPlanError) as error:
+        plan_keil_conversion(repo, inspection)
+    assert error.value.details == {"rule": "repository"}
+
+    def relative_toplevel(*args, **kwargs):
+        if args[0] == ["rev-parse", "--show-toplevel"]:
+            return b"relative/path\n"
+        return real_run(*args, **kwargs)
+
+    monkeypatch.setattr(git_guard, "_run_git", relative_toplevel)
+    with pytest.raises(MigrationPlanError) as error:
+        plan_keil_conversion(repo, inspection)
+    assert error.value.details == {"rule": "repository"}
+
+    def undecodable_head(*args, **kwargs):
+        if args[0] == ["rev-parse", "HEAD"]:
+            return b"\xff\xfe"
+        return real_run(*args, **kwargs)
+
+    monkeypatch.setattr(git_guard, "_run_git", undecodable_head)
+    with pytest.raises(MigrationPlanError) as error:
+        plan_keil_conversion(repo, inspection)
+    assert error.value.details == {"rule": "head"}
+
+    def empty_head(*args, **kwargs):
+        if args[0] == ["rev-parse", "HEAD"]:
+            return b"\n"
+        return real_run(*args, **kwargs)
+
+    monkeypatch.setattr(git_guard, "_run_git", empty_head)
+    with pytest.raises(MigrationPlanError) as error:
+        plan_keil_conversion(repo, inspection)
+    assert error.value.details == {"rule": "head"}
+
+    def overflow_status(*args, **kwargs):
+        if args[0][0] == "status":
+            raise git_guard._GitError("overflow")
+        return real_run(*args, **kwargs)
+
+    monkeypatch.setattr(git_guard, "_run_git", overflow_status)
+    with pytest.raises(MigrationPlanError) as error:
+        plan_keil_conversion(repo, inspection)
     assert error.value.details == {"rule": "status"}
 
 
@@ -652,13 +718,13 @@ def test_stale_or_forged_inspection_rejected(tmp_path):
     with pytest.raises(MigrationPlanError) as error:
         plan_keil_conversion(repo, stale)
     assert error.value.code == "MIGRATION_INSPECTION_INVALID"
-    assert error.value.details == {"rule": "freshInspection"}
+    assert error.value.details == {"field": "inspection", "rule": "freshInspection"}
 
     stale2 = replace(inspection, project_file="missing.uvprojx")
     with pytest.raises(MigrationPlanError) as error:
         plan_keil_conversion(repo, stale2)
     assert error.value.code == "MIGRATION_INSPECTION_INVALID"
-    assert error.value.details == {"rule": "freshInspection"}
+    assert error.value.details == {"field": "inspection", "rule": "freshInspection"}
 
 
 def test_inspection_with_missing_source_not_in_inputs_is_not_scanned(tmp_path):
@@ -669,8 +735,10 @@ def test_inspection_with_missing_source_not_in_inputs_is_not_scanned(tmp_path):
             "Main/main.c": MAIN_C,
             "Common/common.c": COMMON_C.replace("__irq void", "void"),
         },
+        commit=False,
     )
     (repo / "Common" / "common.c").unlink()
+    git_init(repo)
     inspection = fixture_inspection(repo)
     plan = plan_keil_conversion(repo, inspection)
     assert plan.blockers == ()
@@ -893,7 +961,7 @@ def test_absolute_placement_attribute_and_at_forms(tmp_path):
     assert sections["pinned"].address == 0x20000000
     assert sections["pinned"].source_path == "Main/main.c"
     assert sections["pinned"].line == 1
-    assert sections["decimal_pinned"].section == ".stm32tk.abs.20000000"
+    assert sections["decimal_pinned"].section == ".stm32tk.abs.20001000"
     assert sections["vector"].section == ".stm32tk.abs.08000000"
     # sorted by (address, section, source_path, line, symbol)
     assert [s.address for s in plan.fixed_sections] == sorted(s.address for s in plan.fixed_sections)
@@ -916,14 +984,21 @@ def test_absolute_placement_unsupported_grammar_blockers(tmp_path):
     ]
     repo = build_repo(
         tmp_path,
-        files={"Main/main.c": "".join(cases) + "int main(void) { return 0; }\n"},
+        files={
+            "Main/main.c": (
+                "__irq void isr(void) { __nop(); }\n"
+                + "".join(cases)
+                + "int main(void) { return 0; }\n"
+            )
+        },
     )
     inspection = fixture_inspection(repo)
     plan = plan_keil_conversion(repo, inspection)
     placement = [b for b in plan.blockers if b.code == "ARMCC_ABSOLUTE_PLACEMENT_UNSUPPORTED"]
     assert len(placement) == len(cases)
     patch = next(p for p in plan.patches if p.path == "Main/main.c")
-    # No partial rewrite: placement text is preserved byte-for-byte.
+    # Supported edits still apply; no placement is rewritten.
+    assert patch.after_bytes.startswith(b"void isr(void) { __NOP(); }\n")
     for case in cases:
         assert case.encode("utf-8") in patch.after_bytes
     assert plan.fixed_sections == ()
@@ -956,7 +1031,10 @@ def test_duplicate_address_across_files_is_blocked(tmp_path):
     repo = build_repo(
         tmp_path,
         files={
-            "Main/main.c": "__at(0x20000000) int a;\nint main(void) { return 0; }\n",
+            "Main/main.c": (
+                "__irq void m(void) { __nop(); }\n"
+                "__at(0x20000000) int a;\nint main(void) { return 0; }\n"
+            ),
             "Common/common.c": "__at(0x20000000) int b;\n",
         },
     )
@@ -968,6 +1046,7 @@ def test_duplicate_address_across_files_is_blocked(tmp_path):
     assert [b.path for b in placement] == ["Main/main.c"]
     main_patch = next(p for p in plan.patches if p.path == "Main/main.c")
     assert b"__at(0x20000000) int a;" in main_patch.after_bytes
+    assert b"void m(void) { __NOP(); }" in main_patch.after_bytes
     common_patch = next(p for p in plan.patches if p.path == "Common/common.c")
     assert b'__attribute__((section(".stm32tk.abs.20000000"), used)) int b;' in common_patch.after_bytes
 
@@ -981,6 +1060,7 @@ def test_encoding_bom_crlf_and_mixed_newlines_preserved(tmp_path):
             "Common/common.c": None,  # placeholder, replaced below
         },
     )
+    (repo / "Common").mkdir(exist_ok=True)
     (repo / "Common" / "common.c").write_bytes(bom + b"__irq void a(void) { __nop(); }\n")
     subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
     subprocess.run(["git", "-c", "user.name=T", "-c", "user.email=t@t", "commit", "-q", "-m", "bom"], cwd=repo, check=True)
@@ -1022,6 +1102,7 @@ def test_invalid_encoding_adds_blocker(tmp_path):
             "Common/common.c": None,
         },
     )
+    (repo / "Common").mkdir(exist_ok=True)
     (repo / "Common" / "common.c").write_bytes(b"\xff\xfe\x00__irq void broken() { }\n")
     subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
     subprocess.run(["git", "-c", "user.name=T", "-c", "user.email=t@t", "commit", "-q", "-m", "bin"], cwd=repo, check=True)
@@ -1045,6 +1126,95 @@ def test_evidence_is_capped(tmp_path):
     assert plan.blockers
     for blocker in plan.blockers:
         assert len(blocker.evidence) <= 200
+
+
+def test_raw_string_edge_cases(tmp_path):
+    # Unterminated raw string: the remainder is swallowed and never rewritten.
+    repo = build_repo(
+        tmp_path,
+        files={
+            "Main/main.c": "int main(void) { return 0; }\n",
+            "App/code.cpp": (
+                'const char *r = R"tag(__irq __nop()\n'
+                "__wfi();\n"
+                "int untouched(void) { return 0; }\n"
+            ),
+        },
+        uvprojx_kwargs={
+            "groups": (
+                ("Main", (("main.c", "1", "Main/main.c"),)),
+                ("App", (("code.cpp", "0", "App/code.cpp"),)),
+            )
+        },
+    )
+    inspection = fixture_inspection(repo)
+    plan = plan_keil_conversion(repo, inspection)
+    assert not any(patch.path == "App/code.cpp" for patch in plan.patches)
+
+    # R" not followed by a delimiter/paren is not a raw string; the ordinary
+    # string state still protects its content.
+    repo2 = build_repo(
+        tmp_path,
+        files={
+            "Main/main.c": "int main(void) { return 0; }\n",
+            "App/code.cpp": 'const char *s = R"x __irq __nop() y";\nint f() { return 0; }\n',
+        },
+        uvprojx_kwargs={
+            "groups": (
+                ("Main", (("main.c", "1", "Main/main.c"),)),
+                ("App", (("code.cpp", "0", "App/code.cpp"),)),
+            )
+        },
+    )
+    inspection2 = fixture_inspection(repo2)
+    plan2 = plan_keil_conversion(repo2, inspection2)
+    assert not any(patch.path == "App/code.cpp" for patch in plan2.patches)
+
+
+def test_asm_char_form_is_blocker(tmp_path):
+    repo = build_repo(
+        tmp_path,
+        files={"Main/main.c": "__asm('x');\nint main(void) { return 0; }\n"},
+    )
+    inspection = fixture_inspection(repo)
+    plan = plan_keil_conversion(repo, inspection)
+    # The work order sanctions only __asm("...") statement expressions;
+    # a char-literal operand is not a supported compatible form.
+    assert any(b.code == "ARMCC_INLINE_ASSEMBLY_UNSUPPORTED" for b in plan.blockers)
+
+
+def test_placement_token_edge_cases(tmp_path):
+    repo = build_repo(
+        tmp_path,
+        files={
+            "Main/main.c": (
+                "__at(0x10\n"  # unterminated call: no candidate
+                "__at x;\n"  # no paren: not a placement
+                "__attribute__\n"  # no parens: ignored
+                "__attribute__((at(0x20)\n"  # unbalanced: no candidate
+                "int main(void) { return 0; }\n"
+            )
+        },
+    )
+    inspection = fixture_inspection(repo)
+    plan = plan_keil_conversion(repo, inspection)
+    assert not any(b.code == "ARMCC_ABSOLUTE_PLACEMENT_UNSUPPORTED" for b in plan.blockers)
+    assert plan.fixed_sections == ()
+
+
+def test_rule_scan_limits_direct(monkeypatch):
+    import stm32_toolkit.migration.rules as rules_mod
+
+    with pytest.raises(MigrationPlanError) as error:
+        rules_mod.scan_sources([("big.c", b"x" * (8 * 1024 * 1024 + 1), "c")])
+    assert error.value.code == "MIGRATION_LIMIT_EXCEEDED"
+    assert error.value.details == {"scope": "file", "limitBytes": 8 * 1024 * 1024}
+
+    monkeypatch.setattr(rules_mod, "SCAN_TOTAL_LIMIT", 8)
+    with pytest.raises(MigrationPlanError) as error:
+        rules_mod.scan_sources([("a.c", b"aaaaa", "c"), ("b.c", b"bbbb", "c")])
+    assert error.value.code == "MIGRATION_LIMIT_EXCEEDED"
+    assert error.value.details == {"scope": "aggregate", "limitBytes": 8}
 
 
 # ---------------------------------------------------------------------------
@@ -1157,9 +1327,10 @@ def test_compiler_unsupported_blocker(tmp_path):
     repo = build_repo(
         tmp_path,
         files={"Main/main.c": "int main(void) { return 0; }\n"},
-        uvprojx_kwargs={"uac6": "1"},
+        uvprojx_kwargs={"pcc": "6190000::V6.19::ARMCLANG"},
     )
     inspection = fixture_inspection(repo)
+    assert inspection.compiler == "armclang"
     plan = plan_keil_conversion(repo, inspection)
     assert any(b.code == "MIGRATION_COMPILER_UNSUPPORTED" for b in plan.blockers)
 
