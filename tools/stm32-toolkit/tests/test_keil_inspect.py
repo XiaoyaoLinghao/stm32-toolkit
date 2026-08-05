@@ -216,7 +216,10 @@ def write_project(
 ) -> Path:
     root.mkdir(parents=True, exist_ok=True)
     project_path = root / name
-    project_path.write_text(xml, encoding="utf-8")
+    # write_bytes keeps the on-disk bytes identical to xml.encode("utf-8") on
+    # every platform; write_text() in text mode would rewrite LF as CRLF on
+    # Windows and break byte-exact digest/size expectations in assertions.
+    project_path.write_bytes(xml.encode("utf-8"))
     for rel, content in (files or {}).items():
         posix_rel = rel.replace("\\", "/")
         path = root / posix_rel
@@ -781,6 +784,43 @@ def test_exclusion_from_build_and_duplicate_sources(tmp_path: Path) -> None:
         KeilInputDigest("proj.uvprojx", hashlib.sha256(xml.encode("utf-8")).hexdigest(), len(xml.encode("utf-8"))),
     )
     assert not any(f.rule_id == "ARMCC_IRQ_QUALIFIER" for f in report.findings)
+
+
+def test_digest_hashes_actual_disk_bytes_lf_and_crlf(tmp_path: Path) -> None:
+    # Regression: the fixture helper must materialize the exact XML bytes so
+    # byte-exact LF digest/size expectations hold on every platform (Windows
+    # text mode rewrites LF as CRLF). The product hashes raw disk bytes, so an
+    # LF project and a CRLF project yield different, byte-accurate digests.
+    xml = project_xml(
+        {
+            "name": "T",
+            "groups": [{"name": "G", "files": [{"name": "a.c", "path": ".\\Src\\a.c"}]}],
+        }
+    )
+    files = {".\\Src\\a.c": "int a;\n"}
+
+    lf_root = tmp_path / "lf"
+    lf_proj = write_project(lf_root, xml, files)
+    lf_report = inspect_keil(lf_root)
+
+    crlf_root = tmp_path / "crlf"
+    crlf_proj = write_project(crlf_root, xml, files)
+    crlf_proj.write_bytes(crlf_proj.read_bytes().replace(b"\n", b"\r\n"))
+    crlf_report = inspect_keil(crlf_root)
+
+    lf_bytes = lf_proj.read_bytes()
+    crlf_bytes = crlf_proj.read_bytes()
+    assert lf_bytes == xml.encode("utf-8")
+    assert crlf_bytes == lf_bytes.replace(b"\n", b"\r\n")
+    assert len(crlf_bytes) > len(lf_bytes)
+    assert lf_report.project_sha256 == hashlib.sha256(lf_bytes).hexdigest()
+    assert crlf_report.project_sha256 == hashlib.sha256(crlf_bytes).hexdigest()
+    assert lf_report.project_sha256 != crlf_report.project_sha256
+    digest_map = {d.path: (d.sha256, d.size) for d in crlf_report.inputs}
+    assert digest_map["proj.uvprojx"] == (
+        hashlib.sha256(crlf_bytes).hexdigest(),
+        len(crlf_bytes),
+    )
 
 
 # ---------------------------------------------------------------------------
