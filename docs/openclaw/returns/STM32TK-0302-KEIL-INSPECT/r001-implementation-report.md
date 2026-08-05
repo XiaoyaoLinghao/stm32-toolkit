@@ -60,7 +60,7 @@ OpenClaw environment: Linux x86_64 (Ubuntu), CPython 3.10.11 (`/home/openclaw/.l
 | Compile: `python -m compileall -q tools/stm32-toolkit/src tools/stm32-toolkit/tests` | OpenClaw | same | `129dc2c` | 0 | silent | PASS |
 | Dependency: `python -c "from importlib.metadata import version; assert version('pyelftools') == '0.33'"` | OpenClaw | same | `129dc2c` | 0 | `pyelftools 0.33`; `stm32-toolkit` Requires-Dist = jsonschema, mcp, pyelftools (only addition) | PASS |
 | Diff hygiene: `git diff --check 53321e87..HEAD` | OpenClaw | same | `129dc2c` | 0 | silent | PASS |
-| Diff scope: `git diff --name-status 53321e87..HEAD` | OpenClaw | same | `129dc2c` | 0 | exactly section-5 paths (12 paths) | PASS |
+| Diff scope: `git diff --name-status 53321e87..HEAD` | OpenClaw | same | `129dc2c` | 0 | exactly section-5 paths (13 paths) | PASS |
 | Working tree: `git status --short` | OpenClaw | same | `129dc2c` | 0 | clean (only report addition after final commit) | PASS |
 | Read-only tree (8.5.1-8.5.4, 8.5.8): snapshot of bytes/SHA-256/names/mtimes/modes before vs after inspect+capture | OpenClaw | same | `129dc2c` | 0 | identical snapshots; see manual evidence below | PASS |
 | Performance (7.3): inspect/capture medians | OpenClaw | same | `129dc2c` | 0 | see section 5 performance | PASS |
@@ -117,7 +117,7 @@ OpenClaw environment: Linux x86_64 (Ubuntu), CPython 3.10.11 (`/home/openclaw/.l
 
 - [x] Accepted base and code head are full SHAs (`53321e8721cc479122c43285537dc108461a8e0e`, `129dc2c11f2507801abfa10cb2309c4e1130f431`).
 - [x] Final head will be returned out of band after this report commit (PR metadata + return message).
-- [x] Inventory matches the complete implementation diff and report addition (`git diff --name-status 53321e87..HEAD` = 12 paths + this report).
+- [x] Inventory matches the complete implementation diff and report addition (`git diff --name-status 53321e87..HEAD` = 13 paths + this report).
 - [x] Every required OpenClaw gate has direct observed evidence (RED/GREEN/full/compile/dependency/read-only/performance, all exit codes above).
 - [x] Other-environment gates are accurately attributed or deferred (Windows junction gate → `DEFERRED_TO_CODEX`).
 - [x] No credentials, private data, caches, build output, binary fixtures, temp projects, or unredacted diagnostics are committed (ELF baselines are generated in tests, never committed).
