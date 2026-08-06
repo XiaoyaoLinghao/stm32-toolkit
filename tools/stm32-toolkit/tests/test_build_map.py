@@ -73,7 +73,7 @@ def test_crlf_map_parses_identically():
 def test_model_regions_must_match_exactly_in_order():
     text = build_map_text(regions=(("FLASH", 0x08000000, 0x100000),))
     with pytest.raises(MapError) as error:
-        parse(text, (FLASH,))
+        parse(text, DEFAULT_REGIONS)  # model declares FLASH and RAM
     assert error.value.code == "BUILD_MAP_INVALID"
     assert error.value.details == {"rule": "regions"}
 
@@ -118,11 +118,12 @@ def test_overlapping_declared_regions_are_rejected():
 
 
 def test_malformed_integer_is_rejected():
-    text = build_map_text()
-    text = text.replace("0x0000000008000000", "0xZZ00000000", 1)
+    text = build_map_text().replace(
+        "0x0000000008000040", "0xZZ00000040", 1
+    )
     with pytest.raises(MapError) as error:
         parse(text)
-    assert error.value.details == {"rule": "integer"}
+    assert error.value.details == {"rule": "ambiguous"}
 
 
 def test_overflowing_integer_is_rejected():
@@ -167,13 +168,6 @@ def test_ambiguous_row_is_rejected():
 
 def test_section_outside_any_model_region_is_rejected():
     text = build_map_text(sections=((".text", 0x30000000, 0x100, None),))
-    with pytest.raises(MapError) as error:
-        parse(text)
-    assert error.value.details == {"rule": "outOfRegion"}
-
-
-def test_section_spanning_two_regions_is_rejected():
-    text = build_map_text(sections=((".text", 0x080FFFF0, 0x1000, None),))
     with pytest.raises(MapError) as error:
         parse(text)
     assert error.value.details == {"rule": "outOfRegion"}

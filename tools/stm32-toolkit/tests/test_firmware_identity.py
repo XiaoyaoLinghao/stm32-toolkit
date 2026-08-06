@@ -108,7 +108,7 @@ def test_snapshot_hash_is_canonical_and_excludes_mtimes(tmp_path: Path):
     root = prepare_project(tmp_path, git_repo=False)
     first = snapshot_for(root)
     source = root / "Src" / "main.c"
-    os.utime(source, ns=(9_000_000_000, 9_000_000_000))
+    os.utime(source, ns=(2_000_000_000_000_000_000, 2_000_000_000_000_000_000))
     second = snapshot_for(root)
     assert first.sha256 == second.sha256
     assert first.newest_mtime_ns != second.newest_mtime_ns
@@ -202,7 +202,7 @@ def test_snapshot_rejects_casefold_collision(tmp_path: Path):
     with pytest.raises(BuildError) as error:
         snapshot_for(root)
     assert error.value.code == "BUILD_INPUT_INVALID"
-    assert error.value.details == {"rule": "collision"}
+    assert error.value.details == {"path": "Inc/board.h", "rule": "collision"}
 
 
 def test_snapshot_rejects_duplicate_path(tmp_path: Path):
@@ -256,7 +256,7 @@ def test_snapshot_rejects_special_files(tmp_path: Path, monkeypatch):
     with pytest.raises(BuildError) as error:
         snapshot_for(root)
     assert error.value.code == "BUILD_INPUT_INVALID"
-    assert error.value.details == {"rule": "regularFile"}
+    assert error.value.details == {"path": "Inc/fifo", "rule": "regularFile"}
 
 
 # ---------------------------------------------------------------------------
