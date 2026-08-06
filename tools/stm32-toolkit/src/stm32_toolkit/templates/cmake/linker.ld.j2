@@ -37,7 +37,7 @@ SECTIONS
   } > {{ flash_region }}
 {%- for section in fixed_sections %}
 
-  {{ section.name }} (NOLOAD) :
+  {{ section.name }} {{ section.address_hex }} (NOLOAD) :
   {
     KEEP(*({{ section.name }}))
   } > {{ section.region }}{% endfor %}

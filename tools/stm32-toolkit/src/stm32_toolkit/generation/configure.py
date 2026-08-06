@@ -895,8 +895,12 @@ def _build_contexts(
         "flash_region": flash_region,
         "ram_region": ram_region,
         "fixed_sections": [
-            {"name": section, "region": region}
-            for section, _address, region in fixed_sections
+            {
+                "name": section,
+                "address_hex": "0x%08x" % address,
+                "region": region,
+            }
+            for section, address, region in fixed_sections
         ],
     }
     presets = {
@@ -1940,6 +1944,17 @@ def _apply(plan: GenerationPlan) -> dict[str, object]:
         success = True
         _remove_staging(staging)
     except _ApplyFailure:
+        # Semantic failures raised after the first real mutation (for
+        # example GENERATION_INPUT_CHANGED or GENERATION_TARGET_EXISTS from
+        # a replace-phase revalidation) must roll back exactly like any
+        # other recoverable failure. A successful rollback preserves the
+        # original stable code and details; a failed rollback returns
+        # GENERATION_ROLLBACK_FAILED and retains recoverable staging.
+        if in_replace:
+            try:
+                _rollback(staging, replaced, created_files, created_dirs, temp_files)
+            except _ApplyFailure:
+                raise
         raise
     except OSError as error:
         if isinstance(error, _FsyncError):
@@ -1985,6 +2000,34 @@ def _apply(plan: GenerationPlan) -> dict[str, object]:
 
 
 def _reject_existing_staging(staging: Path, plan: GenerationPlan) -> None:
+    # Every intermediate component of the staging path must be an existing
+    # directory or absent; a regular file in the way must be reported stably
+    # as GENERATION_TARGET_EXISTS before any write, on every host (Windows
+    # raises FileNotFoundError rather than NotADirectoryError for a file
+    # intermediate, which would otherwise surface later as an apply failure).
+    components = [
+        (STAGING_ROOT.split("/")[0], staging.parent.parent),
+        (STAGING_ROOT.split("/")[1], staging.parent),
+    ]
+    for name, component in components:
+        try:
+            lst = os.lstat(component)
+        except FileNotFoundError:
+            continue
+        except NotADirectoryError:
+            continue
+        except OSError:
+            raise _fail(
+                "GENERATION_PATH_INVALID",
+                "staging state cannot be verified",
+                {"path": name, "rule": "withinProjectRoot"},
+            ) from None
+        if not stat.S_ISDIR(lst.st_mode):
+            raise _fail(
+                "GENERATION_TARGET_EXISTS",
+                f"{name} is not a directory",
+                {"path": name},
+            )
     try:
         os.lstat(staging)
     except FileNotFoundError:
