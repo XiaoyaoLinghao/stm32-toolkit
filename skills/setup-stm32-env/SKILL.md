@@ -32,6 +32,12 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File '${CLAUDE_PLUGIN_ROOT}/b
 
 CHECK always returns JSON. `runtime.status` is `missing`, `healthy`, or `broken`; it includes exact version/error evidence and `recommendedMode`. A healthy runtime has version `0.2.0` and a successful bounded `-m stm32_toolkit.cli ... doctor --json`. Tool version, extension, and pack inventory commands are bounded; timeouts become evidence rather than hangs.
 
+## VS Code extensions (CHECK evidence only)
+
+The doctor `vscodeExtensions` evidence checks exactly three recommended extensions by invoking the bounded read-only `code --list-extensions --show-versions` probe: `ms-vscode.cpptools`, `ms-vscode.cmake-tools`, and `marus25.cortex-debug`. Each reports `installed`, `version`, and a status of `ok`, `missing`, `unavailable` (no `code` executable), or `nonzero`/`timeout`/`error` (probe failed).
+
+CHECK never installs, removes, or modifies extensions, settings, or the extensions directory. When an extension is `missing` or the probe is unavailable, tell the operator to install or remove the recommended extensions manually in VS Code and re-run CHECK afterwards. Do not run any other VS Code command.
+
 For `missing`, ask authorization for Bootstrap. For `broken`, ask authorization for Repair. Stop until the user explicitly approves the exact mode and paths.
 
 ## MUTATE
