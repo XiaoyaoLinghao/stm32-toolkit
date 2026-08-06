@@ -1,9 +1,13 @@
 """Bounded fixed-argv subprocess execution contracts.
 
-POSIX-only ``killpg``/``fcntl`` behavior is exercised through injected
-callable seams; the Windows ``_is_windows`` branch is exercised with real
-child processes on any host through the same seams, so no test touches
-``os.killpg`` on Windows and no test is skipped or xfailed.
+POSIX-only ``killpg`` behavior runs only through injected callable seams or
+in a POSIX environment; every liveness assertion goes through a
+platform-adapted helper (never ``os.killpg`` or ``os.kill(pid, 0)``
+directly).  The Windows ``_is_windows`` branch is exercised with real child
+processes on any host through the same seams, and the fake ``taskkill``
+seam deterministically terminates the whole test process tree so no test
+leaves a direct child, interpreter descendant, or pipe-drain thread behind.
+No test is skipped or xfailed.
 """
 
 from __future__ import annotations
@@ -30,6 +34,109 @@ def write_pid_child(pid_file: Path, code: str = "import time; time.sleep(60)") -
         "-c",
         f"import os; open({str(pid_file)!r}, 'w').write(str(os.getpid())); {code}",
     )
+
+
+def write_tree_child(pid_file: Path, grand_pid_file: Path) -> tuple[str, ...]:
+    """Spawn a child that (on POSIX) becomes its own process-group leader,
+    spawns a grandchild that inherits that group, then sleeps.  Both PIDs
+    are written to files so a test can prove the whole tree was reaped.
+
+    The Windows-branch tests strip ``start_new_session`` through the Popen
+    proxy, so on POSIX the child must create the group itself
+    (``os.setpgid(0, 0)``); the grandchild then shares the group and the
+    tree-killing ``taskkill`` fake can terminate exactly this tree with
+    ``killpg`` without touching the test runner's process group.
+    """
+    body = (
+        "import os, subprocess, sys, time\n"
+        "if os.name == 'posix':\n"
+        "    os.setpgid(0, 0)\n"
+        "grand = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'])\n"
+        f"open({str(grand_pid_file)!r}, 'w').write(str(grand.pid))\n"
+        f"open({str(pid_file)!r}, 'w').write(str(os.getpid()))\n"
+        "time.sleep(60)\n"
+    )
+    return (PYTHON, "-c", body)
+
+
+def _posix_process_state(pid: int) -> str | None:
+    """Return the ``/proc`` state character for ``pid`` or ``None``."""
+    try:
+        data = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8")
+        return data.rsplit(")", 1)[1].split()[0]
+    except (OSError, IndexError, ValueError):
+        return None
+
+
+def _windows_process_is_alive(pid: int) -> bool:
+    """Windows liveness probe via OpenProcess/GetExitCodeProcess."""
+    import ctypes
+
+    kernel32 = ctypes.windll.kernel32
+    handle = kernel32.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
+    if not handle:
+        return False
+    try:
+        exit_code = ctypes.c_ulong()
+        if not kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code)):
+            return False
+        return exit_code.value == 259  # STILL_ACTIVE
+    finally:
+        kernel32.CloseHandle(handle)
+
+
+def _process_is_alive(pid: int) -> bool:
+    """True when ``pid`` still identifies a live, non-zombie process."""
+    if os.name == "nt":
+        return _windows_process_is_alive(pid)
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    state = _posix_process_state(pid)
+    if state is None:
+        return False
+    return state != "Z"
+
+
+def assert_process_reaped(pid: int, timeout_seconds: float = 10.0) -> None:
+    """Assert ``pid`` no longer identifies a live process.
+
+    Waits up to ``timeout_seconds`` with an explicit bounded poll (never a
+    fixed sleep) so orphan reaping on any host completes deterministically.
+    """
+    deadline = time.monotonic() + timeout_seconds
+    while time.monotonic() < deadline:
+        if not _process_is_alive(pid):
+            return
+        time.sleep(0.02)
+    raise AssertionError(f"process {pid} is still alive after {timeout_seconds:.1f}s")
+
+
+def make_taskkill_fake(taskkilled: list[int]):
+    """A deterministic whole-process-tree ``taskkill`` double.
+
+    POSIX: the test child is its own group leader (``os.setpgid(0, 0)``),
+    so ``killpg`` terminates exactly the child tree.  Windows: ``taskkill
+    /T`` is the deterministic tree killer.  The fake always records the
+    root pid so a test can prove the seam was hit.
+    """
+    def fake_taskkill(pid: int) -> bool:
+        taskkilled.append(pid)
+        if os.name == "posix":
+            os.killpg(pid, signal.SIGKILL)
+        else:
+            subprocess.run(
+                ["taskkill", "/PID", str(pid), "/T", "/F"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=10,
+            )
+        return True
+
+    return fake_taskkill
 
 
 # ---------------------------------------------------------------------------
@@ -192,7 +299,10 @@ def test_invalid_utf8_is_decoded_with_replacement(tmp_path: Path):
 
 
 def test_crlf_and_bare_cr_are_normalized_to_lf(tmp_path: Path):
-    code = "import sys\nsys.stdout.write('a\\r\\nb\\rc\\n')\n"
+    # Exact bytes through the binary buffer: text-mode stdout on Windows
+    # would translate "\n" and produce "\r\r\n", so the fixture must
+    # write raw bytes to prove the product normalization is exact.
+    code = "import sys\nsys.stdout.buffer.write(b'a\\r\\nb\\rc\\n')\n"
     result = run_process(
         ProcessRequest(argv=(PYTHON, "-c", code), cwd=tmp_path, timeout_seconds=30)
     )
@@ -211,8 +321,7 @@ def test_timeout_terminates_and_reaps_the_child(tmp_path: Path):
     result = run_process(ProcessRequest(argv=argv, cwd=tmp_path, timeout_seconds=1))
     assert result.timed_out is True
     pid = int(pid_file.read_text(encoding="utf-8"))
-    with pytest.raises(ProcessLookupError):
-        os.killpg(pid, 0)
+    assert_process_reaped(pid)
     assert result.returncode is not None
 
 
@@ -232,10 +341,8 @@ def test_timeout_kills_the_whole_process_tree(tmp_path: Path):
     assert result.timed_out is True
     pid = int(pid_file.read_text(encoding="utf-8"))
     grand_pid = int(grand_pid_file.read_text(encoding="utf-8"))
-    with pytest.raises(ProcessLookupError):
-        os.killpg(pid, 0)
-    with pytest.raises(ProcessLookupError):
-        os.kill(grand_pid, 0)
+    assert_process_reaped(pid)
+    assert_process_reaped(grand_pid)
 
 
 def test_timeout_uses_graceful_then_force_termination_seams(tmp_path: Path, monkeypatch):
@@ -250,8 +357,15 @@ def test_timeout_uses_graceful_then_force_termination_seams(tmp_path: Path, monk
 
     def force_kill(pid):
         killed.append(pid)
-        os.killpg(pid, signal.SIGKILL)
+        if os.name == "posix":
+            os.killpg(pid, signal.SIGKILL)
+        else:
+            os.kill(pid, signal.SIGKILL)  # TerminateProcess on Windows
 
+    # Force the POSIX branch on any host so the graceful→force seam
+    # contract is exercised deterministically (``start_new_session`` is a
+    # no-op on Windows, so the real child still runs).
+    monkeypatch.setattr(process_mod, "_is_windows", False)
     monkeypatch.setattr(process_mod, "_terminate_group", terminate)
     monkeypatch.setattr(process_mod, "_kill_group", force_kill)
     result = run_process(ProcessRequest(argv=argv, cwd=tmp_path, timeout_seconds=1))
@@ -259,8 +373,7 @@ def test_timeout_uses_graceful_then_force_termination_seams(tmp_path: Path, monk
     pid = int(pid_file.read_text(encoding="utf-8"))
     assert terminated == [pid]
     assert killed == [pid]
-    with pytest.raises(ProcessLookupError):
-        os.killpg(pid, 0)
+    assert_process_reaped(pid)
 
 
 def test_timeout_success_path_never_calls_termination_seams(tmp_path: Path, monkeypatch):
@@ -274,11 +387,17 @@ def test_timeout_success_path_never_calls_termination_seams(tmp_path: Path, monk
     assert called == []
 
 
-def install_windows_popen_proxy(monkeypatch: pytest.MonkeyPatch, captured: dict | None = None):
+def install_windows_popen_proxy(
+    monkeypatch: pytest.MonkeyPatch,
+    captured: dict | None = None,
+    instances: list | None = None,
+):
     """Strip Windows-only Popen kwargs so the real child runs on any host.
 
     The Windows branch passes ``creationflags`` which real POSIX ``Popen``
     rejects; the proxy captures or strips it and delegates everything else.
+    When ``instances`` is given every proxy instance is recorded so a test
+    can spy on ``kill()`` (the taskkill-fallback contract).
     """
     real_popen = subprocess.Popen
 
@@ -290,7 +409,14 @@ def install_windows_popen_proxy(monkeypatch: pytest.MonkeyPatch, captured: dict 
             else:
                 kwargs.pop("creationflags", None)
                 kwargs.pop("start_new_session", None)
+            self._kill_called = False
             self._popen = real_popen(*args, **kwargs)
+            if instances is not None:
+                instances.append(self)
+
+        def kill(self):
+            self._kill_called = True
+            return self._popen.kill()
 
         def __getattr__(self, name):
             return getattr(self._popen, name)
@@ -300,38 +426,41 @@ def install_windows_popen_proxy(monkeypatch: pytest.MonkeyPatch, captured: dict 
 
 def test_windows_branch_uses_taskkill_seam(tmp_path: Path, monkeypatch):
     pid_file = tmp_path / "child.pid"
-    argv = write_pid_child(pid_file)
+    grand_pid_file = tmp_path / "grand.pid"
+    argv = write_tree_child(pid_file, grand_pid_file)
     taskkilled: list[int] = []
-
-    def fake_taskkill(pid):
-        taskkilled.append(pid)
-        os.kill(pid, signal.SIGKILL)
-        return True
+    graceful: list[int] = []
 
     install_windows_popen_proxy(monkeypatch)
     monkeypatch.setattr(process_mod, "_is_windows", True)
-    monkeypatch.setattr(process_mod, "_windows_graceful", lambda pid: None)
-    monkeypatch.setattr(process_mod, "_taskkill", fake_taskkill)
+    monkeypatch.setattr(process_mod, "_windows_graceful", lambda pid: graceful.append(pid))
+    monkeypatch.setattr(process_mod, "_taskkill", make_taskkill_fake(taskkilled))
     result = run_process(ProcessRequest(argv=argv, cwd=tmp_path, timeout_seconds=1))
     assert result.timed_out is True
     pid = int(pid_file.read_text(encoding="utf-8"))
+    grand_pid = int(grand_pid_file.read_text(encoding="utf-8"))
+    assert graceful == [pid]
     assert taskkilled == [pid]
-    with pytest.raises(ProcessLookupError):
-        os.kill(pid, 0)
+    assert_process_reaped(pid)
+    assert_process_reaped(grand_pid)
 
 
 def test_windows_branch_falls_back_to_kill_when_taskkill_fails(tmp_path: Path, monkeypatch):
     pid_file = tmp_path / "child.pid"
     argv = write_pid_child(pid_file)
-    install_windows_popen_proxy(monkeypatch)
+    taskkilled: list[int] = []
+    instances: list = []
+
+    install_windows_popen_proxy(monkeypatch, instances=instances)
     monkeypatch.setattr(process_mod, "_is_windows", True)
     monkeypatch.setattr(process_mod, "_windows_graceful", lambda pid: None)
-    monkeypatch.setattr(process_mod, "_taskkill", lambda pid: False)
+    monkeypatch.setattr(process_mod, "_taskkill", lambda pid: taskkilled.append(pid) or False)
     result = run_process(ProcessRequest(argv=argv, cwd=tmp_path, timeout_seconds=1))
     assert result.timed_out is True
     pid = int(pid_file.read_text(encoding="utf-8"))
-    with pytest.raises(ProcessLookupError):
-        os.kill(pid, 0)
+    assert taskkilled == [pid]
+    assert instances[0]._kill_called is True  # the kill() fallback was exercised
+    assert_process_reaped(pid)
 
 
 def test_windows_branch_uses_create_new_process_group_flag(tmp_path: Path, monkeypatch):
@@ -375,8 +504,7 @@ def test_timeout_escalates_to_sigkill_when_sigterm_is_ignored(tmp_path: Path):
     result = run_process(ProcessRequest(argv=argv, cwd=tmp_path, timeout_seconds=1))
     assert result.timed_out is True
     pid = int(pid_file.read_text(encoding="utf-8"))
-    with pytest.raises(ProcessLookupError):
-        os.killpg(pid, 0)
+    assert_process_reaped(pid)
 
 
 def test_output_sink_edge_cases():
@@ -407,18 +535,20 @@ def test_output_sink_edge_cases():
 
 def test_windows_branch_graceful_signal_is_seam_injected(tmp_path: Path, monkeypatch):
     pid_file = tmp_path / "child.pid"
-    argv = write_pid_child(pid_file)
+    grand_pid_file = tmp_path / "grand.pid"
+    argv = write_tree_child(pid_file, grand_pid_file)
     graceful: list[int] = []
-
-    def fake_taskkill(pid):
-        os.kill(pid, signal.SIGKILL)
-        return True
+    taskkilled: list[int] = []
 
     install_windows_popen_proxy(monkeypatch)
     monkeypatch.setattr(process_mod, "_is_windows", True)
     monkeypatch.setattr(process_mod, "_windows_graceful", lambda pid: graceful.append(pid))
-    monkeypatch.setattr(process_mod, "_taskkill", fake_taskkill)
+    monkeypatch.setattr(process_mod, "_taskkill", make_taskkill_fake(taskkilled))
     result = run_process(ProcessRequest(argv=argv, cwd=tmp_path, timeout_seconds=1))
     assert result.timed_out is True
     pid = int(pid_file.read_text(encoding="utf-8"))
+    grand_pid = int(grand_pid_file.read_text(encoding="utf-8"))
     assert graceful == [pid]
+    assert taskkilled == [pid]
+    assert_process_reaped(pid)
+    assert_process_reaped(grand_pid)

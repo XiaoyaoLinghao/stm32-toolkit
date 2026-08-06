@@ -382,20 +382,36 @@ ELF_DEFECTS: dict[str, dict] = {
 }
 
 
+def fake_cmake_launcher(bin_dir: Path) -> Path:
+    """The exact fake-``cmake`` launcher path installed for this host."""
+    return bin_dir / ("cmake.cmd" if os.name == "nt" else "cmake")
+
+
 def install_fake_cmake(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
     *,
     env: dict[str, str] | None = None,
 ) -> Path:
-    """Install the hit-proven fake ``cmake`` at the front of PATH."""
+    """Install the hit-proven fake ``cmake`` at the front of PATH.
+
+    The launcher always points at a real Python script that exists on disk
+    (POSIX: the wrapper itself; Windows: ``fake_cmake.py`` next to
+    ``cmake.cmd``), so PATH interception never falls through to an ambient
+    real CMake.
+    """
     bin_dir = tmp_path / "fakebin"
     bin_dir.mkdir(parents=True, exist_ok=True)
     tests_dir = Path(__file__).parent
     if os.name == "nt":
+        script = bin_dir / "fake_cmake.py"
+        script.write_text(
+            FAKE_CMAKE_WRAPPER.format(python=sys.executable, tests_dir=str(tests_dir)),
+            encoding="utf-8",
+        )
         launcher = bin_dir / "cmake.cmd"
         launcher.write_text(
-            f'@echo off\r\n"{sys.executable}" "{bin_dir / "fake_cmake.py"}" %*\r\n',
+            f'@echo off\r\n"{sys.executable}" "{script}" %*\r\n',
             encoding="utf-8",
         )
     else:
@@ -413,13 +429,34 @@ def install_fake_cmake(
     return hit_file
 
 
+def install_script_binary(bin_dir: Path, name: str, script_body: str) -> Path:
+    """Install a Python-script ``name`` launcher for this host.
+
+    POSIX: the script itself is executable.  Windows: a real
+    ``fake_<name>.py`` script plus a ``<name>.cmd`` launcher, because a
+    bare extensionless file is never found by Windows PATH resolution.
+    Returns the launcher path.
+    """
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    if os.name == "nt":
+        script = bin_dir / f"fake_{name}.py"
+        script.write_text(script_body.format(python=sys.executable), encoding="utf-8")
+        launcher = bin_dir / f"{name}.cmd"
+        launcher.write_text(
+            f'@echo off\r\n"{sys.executable}" "{script}" %*\r\n',
+            encoding="utf-8",
+        )
+        return launcher
+    launcher = bin_dir / name
+    launcher.write_text(script_body.format(python=sys.executable), encoding="utf-8")
+    launcher.chmod(0o755)
+    return launcher
+
+
 def install_fake_git(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, mode: str) -> None:
     """Install a fake ``git`` binary that fails or emits malformed evidence."""
     bin_dir = tmp_path / "fakegit"
-    bin_dir.mkdir(parents=True, exist_ok=True)
-    launcher = bin_dir / "git"
-    launcher.write_text(FAKE_GIT_WRAPPER.format(python=sys.executable), encoding="utf-8")
-    launcher.chmod(0o755)
+    install_script_binary(bin_dir, "git", FAKE_GIT_WRAPPER)
     monkeypatch.setenv("PATH", str(bin_dir) + os.pathsep + os.environ.get("PATH", ""))
     monkeypatch.setenv("FAKE_GIT_MODE", mode)
 
@@ -640,6 +677,12 @@ def test_run_build_success_debug_publishes_exact_evidence(
     assert records[0]["argv"] == ["--preset", "arm-debug"]
     assert records[1]["argv"] == ["--build", "--preset", "arm-debug"]
     assert len(records) == 2
+    # Explicit ambient-CMake proof: a real cmake invocation would leave no
+    # hit record and could not produce the exact evidence below (no real
+    # toolchain exists here), so exactly these two fake invocations with the
+    # fixed product argv/cwd prove the fake was hit and ambient CMake was
+    # never executed.
+    assert [record["cwd"] for record in records] == [str(root), str(root)]
 
     identity_doc = read_json(identity_path_for(root))
     assert identity_doc["schemaVersion"] == 1
@@ -1157,19 +1200,17 @@ def test_pre_configure_input_change_returns_input_changed(
     install_fake_cmake(monkeypatch, tmp_path)
     # the fake git touches an input between the two pre-configure snapshots
     git_dir = tmp_path / "fakegit"
-    git_dir.mkdir(parents=True, exist_ok=True)
-    launcher = git_dir / "git"
-    launcher.write_text(
+    install_script_binary(
+        git_dir,
+        "git",
         "#!{python}\nimport os, sys\n"
         "with open('Src/main.c', 'ab') as handle:\n"
         "    handle.write(b'/* touched by fake git */\\n')\n"
         "if len(sys.argv) >= 2 and sys.argv[1] == 'rev-parse':\n"
         "    sys.stdout.write('a' * 40 + '\\n')\n"
         "    sys.stdout.flush()\n"
-        "os._exit(0)\n".format(python=sys.executable),
-        encoding="utf-8",
+        "os._exit(0)\n",
     )
-    launcher.chmod(0o755)
     monkeypatch.setenv("PATH", str(git_dir) + os.pathsep + os.environ.get("PATH", ""))
     result = run_build(BuildRequest(project_root=root, preset="arm-debug"))
     assert result.ok is False
@@ -1180,10 +1221,31 @@ def test_pre_configure_input_change_returns_input_changed(
     assert failure["stage"] == "snapshot"
 
 
+def test_fake_cmake_launcher_reaches_the_python_double(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """The installed launcher must execute the Python double on this host.
+
+    Running the launcher directly with a probe argv must record a hit and
+    answer with the double's unknown-argv exit code — proving the launcher
+    chain is complete (Windows ``.cmd`` references a real script) and never
+    falls through to an ambient real CMake.
+    """
+    hit_file = install_fake_cmake(monkeypatch, tmp_path)
+    launcher = fake_cmake_launcher(tmp_path / "fakebin")
+    assert launcher.exists()
+    completed = subprocess.run(
+        [str(launcher), "--probe"], cwd=str(tmp_path), capture_output=True, timeout=30
+    )
+    assert completed.returncode == 2  # the double's unknown-argv exit code
+    assert b"[fake cmake] unexpected argv" in completed.stderr
+    assert hit_records(hit_file) == [{"argv": ["--probe"], "cwd": str(tmp_path)}]
+
+
 def test_launch_failure_returns_configure_failed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     root = prepare_project(tmp_path)
     install_fake_cmake(monkeypatch, tmp_path)
-    launcher = tmp_path / "fakebin" / "cmake"
+    launcher = fake_cmake_launcher(tmp_path / "fakebin")
     launcher.unlink()
     launcher.mkdir()  # a directory is never executable: spawn must fail
     result = run_build(BuildRequest(project_root=root, preset="arm-debug"))
@@ -1382,19 +1444,17 @@ def test_pre_configure_snapshot_raise_publishes_failure(tmp_path: Path, monkeypa
     root = prepare_project(tmp_path)
     install_fake_cmake(monkeypatch, tmp_path)
     git_dir = tmp_path / "fakegit"
-    git_dir.mkdir(parents=True, exist_ok=True)
-    launcher = git_dir / "git"
-    launcher.write_text(
+    install_script_binary(
+        git_dir,
+        "git",
         "#!{python}\nimport os, sys\n"
         "if len(sys.argv) >= 2 and sys.argv[1] == 'rev-parse':\n"
         "    sys.stdout.write('a' * 40 + '\\n')\n"
         "    sys.stdout.flush()\n"
         "else:\n"
         "    os.remove('Src/main.c')\n"
-        "os._exit(0)\n".format(python=sys.executable),
-        encoding="utf-8",
+        "os._exit(0)\n",
     )
-    launcher.chmod(0o755)
     monkeypatch.setenv("PATH", str(git_dir) + os.pathsep + os.environ.get("PATH", ""))
     result = run_build(BuildRequest(project_root=root, preset="arm-debug"))
     assert result.ok is False

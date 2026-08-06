@@ -63,14 +63,18 @@ def raise_on_open(path: Path, monkeypatch: pytest.MonkeyPatch, error: OSError) -
 def escape_redirect(link: Path, target: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Create an escaping redirect without administrator privileges.
 
-    POSIX uses a real symlink; Windows simulates the redirect by mapping
-    ``Path.resolve`` for the link path to its canonical target and ``lstat``
-    of the link to a symlink mode (the inspected resolve/lstat-and-contain
-    checks are identical on both platforms).
+    POSIX uses a real symlink.  Windows simulates the redirect
+    deterministically through the module seams so traversal, lstat,
+    resolve, and containment all observe the same simulated object: the
+    directory enumeration presents the logical link entry, ``lstat``
+    reports a symlink mode for it, and ``resolve`` maps it to the
+    canonical target.
     """
     if os.name == "nt":
         simulated = {str(link): target}
         real_resolve = Path.resolve
+        real_listdir = identity_mod._listdir
+        real_lstat = identity_mod._lstat
 
         def resolve(self, strict: bool = False):
             text = str(self)
@@ -81,14 +85,21 @@ def escape_redirect(link: Path, target: Path, monkeypatch: pytest.MonkeyPatch) -
                     return real_resolve(resolved / text[len(link_text) + 1 :], strict=strict)
             return real_resolve(self, strict=strict)
 
-        monkeypatch.setattr(Path, "resolve", resolve)
-        real_lstat = identity_mod._lstat
+        def listdir(path):
+            entries = list(real_listdir(path))
+            for link_text in simulated:
+                link_path = Path(link_text)
+                if link_path.parent == Path(path) and link_path.name not in entries:
+                    entries.append(link_path.name)
+            return entries
 
         def fake_lstat(path):
             if Path(path) == link:
                 return os.stat_result((0o120000, 0, 0, 0, 0, 0, 0, 0, 0, 0))
             return real_lstat(path)
 
+        monkeypatch.setattr(Path, "resolve", resolve)
+        monkeypatch.setattr(identity_mod, "_listdir", listdir)
         monkeypatch.setattr(identity_mod, "_lstat", fake_lstat)
     else:
         link.symlink_to(target)
@@ -201,14 +212,36 @@ def test_snapshot_rejects_aggregate_limit(tmp_path: Path, monkeypatch):
     assert error.value.details == {"rule": "aggregate"}
 
 
-def test_snapshot_rejects_casefold_collision(tmp_path: Path):
+def test_snapshot_rejects_casefold_collision(tmp_path: Path, monkeypatch):
     root = prepare_project(tmp_path, git_repo=False)
-    (root / "Inc").mkdir()
-    (root / "Inc" / "Board.H").write_text("x\n", encoding="utf-8")
-    (root / "Inc" / "board.h").write_text("x\n", encoding="utf-8")
+    inc_dir = root / "Inc"
+    inc_dir.mkdir()
+    # One physical file: on case-insensitive filesystems (NTFS) a second
+    # case-only-different file cannot be created, so the collision is built
+    # through a controllable directory-enumeration seam that presents both
+    # logical paths to the walk.
+    (inc_dir / "Board.H").write_text("x\n", encoding="utf-8")
     payload = json.loads((root / ".stm32-project.json").read_text(encoding="utf-8"))
     payload["build"]["includePaths"] = ["Inc"]
     (root / ".stm32-project.json").write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    real_listdir = identity_mod._listdir
+    real_lstat = identity_mod._lstat
+    physical = inc_dir / "Board.H"
+    virtual = inc_dir / "board.h"
+
+    def collide_listdir(path):
+        entries = list(real_listdir(path))
+        if Path(path) == inc_dir and "board.h" not in entries:
+            entries.append("board.h")
+        return entries
+
+    def collide_lstat(path):
+        if Path(path) == virtual:
+            return real_lstat(physical)
+        return real_lstat(path)
+
+    monkeypatch.setattr(identity_mod, "_listdir", collide_listdir)
+    monkeypatch.setattr(identity_mod, "_lstat", collide_lstat)
     with pytest.raises(BuildError) as error:
         snapshot_for(root)
     assert error.value.code == "BUILD_INPUT_INVALID"
@@ -714,6 +747,50 @@ def test_snapshot_rejects_include_directory_escape(tmp_path: Path, monkeypatch):
         snapshot_project_inputs(model)
     assert error.value.code == "BUILD_INPUT_INVALID"
     assert error.value.details == {"path": "Inc", "rule": "escape"}
+
+
+def test_snapshot_rejects_redirect_loop(tmp_path: Path, monkeypatch):
+    root = prepare_project(tmp_path, git_repo=False)
+    inc_dir = root / "Inc"
+    inc_dir.mkdir()
+    payload = json.loads((root / ".stm32-project.json").read_text(encoding="utf-8"))
+    payload["build"]["includePaths"] = ["Inc"]
+    (root / ".stm32-project.json").write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    loop_link = inc_dir / "loop.h"
+    if os.name == "nt":
+        # Deterministic loop simulation: resolve raises for the link, lstat
+        # reports a symlink, and the enumeration presents the logical entry.
+        real_resolve = Path.resolve
+
+        def resolve(self, strict: bool = False):
+            if str(self) == str(loop_link):
+                raise RuntimeError("symlink loop")
+            return real_resolve(self, strict=strict)
+
+        monkeypatch.setattr(Path, "resolve", resolve)
+        real_listdir = identity_mod._listdir
+
+        def listdir(path):
+            entries = list(real_listdir(path))
+            if Path(path) == inc_dir and "loop.h" not in entries:
+                entries.append("loop.h")
+            return entries
+
+        monkeypatch.setattr(identity_mod, "_listdir", listdir)
+        real_lstat = identity_mod._lstat
+
+        def fake_lstat(path):
+            if Path(path) == loop_link:
+                return os.stat_result((0o120000, 0, 0, 0, 0, 0, 0, 0, 0, 0))
+            return real_lstat(path)
+
+        monkeypatch.setattr(identity_mod, "_lstat", fake_lstat)
+    else:
+        loop_link.symlink_to("loop.h")  # self-referential redirect loop
+    with pytest.raises(BuildError) as error:
+        snapshot_for(root)
+    assert error.value.code == "BUILD_INPUT_INVALID"
+    assert error.value.details == {"path": "Inc/loop.h", "rule": "escape"}
 
 
 def test_snapshot_rejects_unreadable_include_dir(tmp_path: Path, monkeypatch):
