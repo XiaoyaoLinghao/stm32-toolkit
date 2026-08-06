@@ -237,10 +237,10 @@ def build_repo(
             continue
         path = root / rel
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(content, encoding="utf-8")
+        path.write_bytes(content.encode("utf-8"))
     (root / FRAMEWORK_INCLUDE).mkdir(parents=True, exist_ok=True)
     if gitignore is not None:
-        (root / ".gitignore").write_text(gitignore, encoding="utf-8")
+        (root / ".gitignore").write_bytes(gitignore.encode("utf-8"))
     if commit:
         git_init(root)
     return root
@@ -255,6 +255,59 @@ def standard_repo(tmp_path: Path) -> Path:
 
 def fixture_inspection(root: Path) -> KeilInspection:
     return inspect_keil(root)
+
+
+def _inject_reparse(monkeypatch, link: Path, target: Path) -> None:
+    """Deterministically simulate a reparse point at ``link`` whose canonical
+    target is ``target``, without requiring OS privileges.
+
+    Windows fallback used when a real junction cannot be created (file
+    targets, missing ``mklink``, restricted policy): ``Path.resolve()`` is
+    made to behave exactly as if ``link`` were a reparse point, so the
+    product defense observes the redirect without any skip or xfail.
+    """
+    link_canon = os.path.realpath(os.fspath(link))
+    target_canon = os.path.realpath(os.fspath(target))
+    real_resolve = Path.resolve
+
+    def fake_resolve(self: Path, strict: bool = False) -> Path:
+        self_canon = os.path.realpath(os.fspath(self))
+        if self_canon == link_canon or self_canon.startswith(link_canon + os.sep):
+            rel = Path(self_canon).relative_to(link_canon)
+            resolved = (
+                Path(target_canon)
+                if rel == Path(".")
+                else Path(target_canon) / rel
+            )
+            return real_resolve(resolved, strict=strict)
+        return real_resolve(self, strict=strict)
+
+    monkeypatch.setattr(Path, "resolve", fake_resolve)
+
+
+def _make_redirect(monkeypatch, link: Path, target: Path) -> None:
+    """Create a real directory redirect without administrator rights.
+
+    POSIX uses a real symlink.  Windows prefers a real NTFS directory
+    junction (``mklink /J``, no admin rights); when a junction cannot be
+    created (file target, missing tooling, restricted policy) a deterministic
+    reparse-point simulation is injected instead, so every test still
+    exercises the defense with no skip.
+    """
+    if os.name == "nt":
+        if target.is_dir():
+            try:
+                created = subprocess.run(
+                    ["cmd", "/c", "mklink", "/J", os.fspath(link), os.fspath(target)],
+                    capture_output=True,
+                )
+            except OSError:
+                created = None
+            if created is not None and created.returncode == 0:
+                return
+        _inject_reparse(monkeypatch, link, target)
+        return
+    os.symlink(target, link)
 
 
 def snapshot_tree(root: Path) -> dict[str, tuple]:
@@ -371,7 +424,7 @@ def test_unborn_head_raises_git_unavailable(tmp_path):
     root.mkdir()
     write_uvprojx(root)
     (root / "Main").mkdir()
-    (root / "Main" / "main.c").write_text(MAIN_C, encoding="utf-8")
+    (root / "Main" / "main.c").write_bytes(MAIN_C.encode("utf-8"))
     (root / FRAMEWORK_INCLUDE).mkdir(parents=True, exist_ok=True)
     subprocess.run(["git", "init", "-q", "-b", "master"], cwd=root, check=True)
     subprocess.run(["git", "add", "-A"], cwd=root, check=True)
@@ -519,7 +572,7 @@ def test_git_output_shape_validation(tmp_path, monkeypatch):
 
 def test_dirty_tracked_untracked_and_staged_produce_blocker(tmp_path):
     repo = standard_repo(tmp_path)
-    (repo / "README.md").write_text("readme\n", encoding="utf-8")
+    (repo / "README.md").write_bytes(b"readme\n")
     subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
     subprocess.run(
         ["git", "-c", "user.name=T", "-c", "user.email=t@t", "commit", "-q", "-m", "readme"],
@@ -527,19 +580,19 @@ def test_dirty_tracked_untracked_and_staged_produce_blocker(tmp_path):
         check=True,
     )
     inspection = fixture_inspection(repo)
-    (repo / "README.md").write_text("readme changed\n", encoding="utf-8")
+    (repo / "README.md").write_bytes(b"readme changed\n")
     plan = plan_keil_conversion(repo, inspection)
     assert any(b.code == "MIGRATION_GIT_DIRTY" for b in plan.blockers)
 
     repo2 = standard_repo(tmp_path)
     inspection2 = fixture_inspection(repo2)
-    (repo2 / "scratch.txt").write_text("x", encoding="utf-8")
+    (repo2 / "scratch.txt").write_bytes(b"x")
     plan2 = plan_keil_conversion(repo2, inspection2)
     assert any(b.code == "MIGRATION_GIT_DIRTY" for b in plan2.blockers)
 
     repo3 = standard_repo(tmp_path)
     inspection3 = fixture_inspection(repo3)
-    (repo3 / "note.txt").write_text("n", encoding="utf-8")
+    (repo3 / "note.txt").write_bytes(b"n")
     subprocess.run(["git", "add", "-A"], cwd=repo3, check=True)
     plan3 = plan_keil_conversion(repo3, inspection3)
     assert any(b.code == "MIGRATION_GIT_DIRTY" for b in plan3.blockers)
@@ -553,7 +606,7 @@ def test_ignored_files_do_not_dirty_the_baseline(tmp_path):
     )
     inspection = fixture_inspection(repo)
     (repo / ".stm32-toolkit").mkdir()
-    (repo / ".stm32-toolkit" / "scratch").write_text("ignored", encoding="utf-8")
+    (repo / ".stm32-toolkit" / "scratch").write_bytes(b"ignored")
     plan = plan_keil_conversion(repo, inspection)
     assert not any(b.code == "MIGRATION_GIT_DIRTY" for b in plan.blockers)
 
@@ -574,7 +627,7 @@ def test_input_missing_changed_oversized_and_non_regular(tmp_path):
 
     repo2 = standard_repo(tmp_path)
     inspection2 = fixture_inspection(repo2)
-    (repo2 / "Common" / "common.c").write_text(COMMON_C.replace("common_work", "other_work"), encoding="utf-8")
+    (repo2 / "Common" / "common.c").write_bytes(COMMON_C.replace("common_work", "other_work").encode("utf-8"))
     with pytest.raises(MigrationPlanError) as error:
         plan_keil_conversion(repo2, inspection2)
     assert error.value.code == "MIGRATION_INSPECTION_CHANGED"
@@ -616,23 +669,48 @@ def test_input_unreadable_rejects_conservatively(tmp_path, monkeypatch):
     assert error.value.details == {"path": "Main/main.c", "rule": "regularFile"}
 
 
-def test_input_redirect_handling_in_revalidation(tmp_path):
+def test_input_redirect_handling_in_revalidation(tmp_path, monkeypatch):
     """The input revalidation defense accepts in-root redirects and rejects
-    redirects that escape the canonical root (real symlinks on Linux)."""
+    redirects that escape the canonical root (real symlinks on Linux, real
+    junctions or deterministic reparse simulation on Windows)."""
     repo = standard_repo(tmp_path)
     inspection = fixture_inspection(repo)
     common = next(d for d in inspection.inputs if d.path == "Common/common.c")
 
     (repo / "Common" / "common.c").unlink()
-    (repo / "Common" / "real_common.c").write_text(COMMON_C, encoding="utf-8")
-    os.symlink("real_common.c", repo / "Common" / "common.c")
+    (repo / "Common" / "real_common.c").write_bytes(COMMON_C.encode("utf-8"))
+    _make_redirect(monkeypatch, repo / "Common" / "common.c", repo / "Common" / "real_common.c")
     data = planner_mod._revalidate_inputs(repo, (common,))
     assert data["Common/common.c"] == COMMON_C.encode("utf-8")
 
     outside = tmp_path / "outside.c"
-    outside.write_text(COMMON_C, encoding="utf-8")
+    outside.write_bytes(COMMON_C.encode("utf-8"))
+    (repo / "Common" / "common.c").unlink(missing_ok=True)
+    _make_redirect(monkeypatch, repo / "Common" / "common.c", outside)
+    with pytest.raises(MigrationPlanError) as error:
+        planner_mod._revalidate_inputs(repo, (common,))
+    assert error.value.code == "MIGRATION_INPUT_INVALID"
+    assert error.value.details == {"path": "Common/common.c", "rule": "withinProjectRoot"}
+
+
+def test_input_redirect_handling_with_injected_reparse(tmp_path, monkeypatch):
+    """The deterministic reparse simulation (the Windows fallback for
+    unprivileged file redirects) must itself be exercised on Linux too: the
+    planner accepts an injected in-root reparse point and rejects an injected
+    escape exactly like the real-redirect test."""
+    repo = standard_repo(tmp_path)
+    inspection = fixture_inspection(repo)
+    common = next(d for d in inspection.inputs if d.path == "Common/common.c")
+
     (repo / "Common" / "common.c").unlink()
-    os.symlink(outside, repo / "Common" / "common.c")
+    (repo / "Common" / "real_common.c").write_bytes(COMMON_C.encode("utf-8"))
+    _inject_reparse(monkeypatch, repo / "Common" / "common.c", repo / "Common" / "real_common.c")
+    data = planner_mod._revalidate_inputs(repo, (common,))
+    assert data["Common/common.c"] == COMMON_C.encode("utf-8")
+
+    outside = tmp_path / "outside.c"
+    outside.write_bytes(COMMON_C.encode("utf-8"))
+    _inject_reparse(monkeypatch, repo / "Common" / "common.c", outside)
     with pytest.raises(MigrationPlanError) as error:
         planner_mod._revalidate_inputs(repo, (common,))
     assert error.value.code == "MIGRATION_INPUT_INVALID"
@@ -1292,7 +1370,7 @@ def test_linker_configuration_blockers(tmp_path):
         uvprojx_kwargs={"scatter": ".\\Objects\\app.sct"},
     )
     (repo / "Objects").mkdir()
-    (repo / "Objects" / "app.sct").write_text("LR_IROM1 0x08000000 0x100000 {\n}\n", encoding="utf-8")
+    (repo / "Objects" / "app.sct").write_bytes(b"LR_IROM1 0x08000000 0x100000 {\n}\n")
     subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
     subprocess.run(["git", "-c", "user.name=T", "-c", "user.email=t@t", "commit", "-q", "-m", "sct"], cwd=repo, check=True)
     inspection = fixture_inspection(repo)
@@ -1406,7 +1484,7 @@ def test_finding_unsupported_mapping_unit(tmp_path):
 def test_git_dirty_blocker_sorting(tmp_path):
     repo = standard_repo(tmp_path)
     inspection = fixture_inspection(repo)
-    (repo / "note.txt").write_text("x", encoding="utf-8")
+    (repo / "note.txt").write_bytes(b"x")
     plan = plan_keil_conversion(repo, inspection)
     assert plan.blockers[0].code == "MIGRATION_GIT_DIRTY"
     keys = [(b.path, b.line, b.column, b.code, b.rule_id) for b in plan.blockers]
@@ -1521,7 +1599,7 @@ def test_existing_identical_manifest_is_noop_input(tmp_path):
 def test_existing_different_manifest_adds_blocker(tmp_path):
     repo = standard_repo(tmp_path)
     inspection = fixture_inspection(repo)
-    (repo / ".stm32-project.json").write_text('{"schemaVersion": 2}\n', encoding="utf-8")
+    (repo / ".stm32-project.json").write_bytes(b'{"schemaVersion": 2}\n')
     subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
     subprocess.run(["git", "-c", "user.name=T", "-c", "user.email=t@t", "commit", "-q", "-m", "manifest"], cwd=repo, check=True)
     inspection2 = fixture_inspection(repo)

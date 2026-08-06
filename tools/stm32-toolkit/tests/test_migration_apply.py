@@ -239,10 +239,10 @@ def build_repo(
             continue
         path = root / rel
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(content, encoding="utf-8")
+        path.write_bytes(content.encode("utf-8"))
     (root / FRAMEWORK_INCLUDE).mkdir(parents=True, exist_ok=True)
     if gitignore is not None:
-        (root / ".gitignore").write_text(gitignore, encoding="utf-8")
+        (root / ".gitignore").write_bytes(gitignore.encode("utf-8"))
     git_init(root)
     return root
 
@@ -270,6 +270,78 @@ def snapshot_tree(root: Path) -> dict[str, tuple]:
         else:
             data = path.read_bytes()
             entries[rel] = (
+                "file",
+                hashlib.sha256(data).hexdigest(),
+                len(data),
+                lst.st_mode,
+                lst.st_mtime_ns,
+            )
+    return entries
+
+
+def _inject_reparse(monkeypatch, link: Path, target: Path) -> None:
+    """Deterministically simulate a reparse point at ``link`` whose canonical
+    target is ``target``, without requiring OS privileges.
+
+    Windows fallback used when a real junction cannot be created (file
+    targets, missing ``mklink``, restricted policy): ``Path.resolve()`` is
+    made to behave exactly as if ``link`` were a reparse point, so the
+    product defense observes the redirect without any skip or xfail.
+    """
+    link_canon = os.path.realpath(os.fspath(link))
+    target_canon = os.path.realpath(os.fspath(target))
+    real_resolve = Path.resolve
+
+    def fake_resolve(self: Path, strict: bool = False) -> Path:
+        self_canon = os.path.realpath(os.fspath(self))
+        if self_canon == link_canon or self_canon.startswith(link_canon + os.sep):
+            rel = Path(self_canon).relative_to(link_canon)
+            resolved = (
+                Path(target_canon)
+                if rel == Path(".")
+                else Path(target_canon) / rel
+            )
+            return real_resolve(resolved, strict=strict)
+        return real_resolve(self, strict=strict)
+
+    monkeypatch.setattr(Path, "resolve", fake_resolve)
+
+
+def _make_redirect(monkeypatch, link: Path, target: Path) -> None:
+    """Create a real directory redirect without administrator rights.
+
+    POSIX uses a real symlink.  Windows prefers a real NTFS directory
+    junction (``mklink /J``, no admin rights); when a junction cannot be
+    created (file target, missing tooling, restricted policy) a deterministic
+    reparse-point simulation is injected instead, so every test still
+    exercises the defense with no skip.
+    """
+    if os.name == "nt":
+        if target.is_dir():
+            try:
+                created = subprocess.run(
+                    ["cmd", "/c", "mklink", "/J", os.fspath(link), os.fspath(target)],
+                    capture_output=True,
+                )
+            except OSError:
+                created = None
+            if created is not None and created.returncode == 0:
+                return
+        _inject_reparse(monkeypatch, link, target)
+        return
+    os.symlink(target, link)
+
+
+def snapshot_dir(path: Path) -> dict[str, tuple]:
+    """Snapshot an external directory: entry names, bytes, and mtimes."""
+    entries: dict[str, tuple] = {}
+    for child in sorted(path.iterdir()):
+        lst = os.lstat(child)
+        if stat.S_ISDIR(lst.st_mode):
+            entries[child.name] = ("dir", lst.st_mode, lst.st_mtime_ns)
+        else:
+            data = child.read_bytes()
+            entries[child.name] = (
                 "file",
                 hashlib.sha256(data).hexdigest(),
                 len(data),
@@ -582,6 +654,42 @@ def test_apply_resolve_failure_rejected(tmp_path, monkeypatch):
     }
 
 
+def test_apply_staging_resolve_failures_rejected(tmp_path, monkeypatch):
+    """A staging component whose canonical resolution fails (loop, broken
+    reparse) and a project root that cannot be re-resolved both produce the
+    stable MIGRATION_PATH_INVALID / withinProjectRoot failure before any
+    write."""
+    repo = standard_repo(tmp_path)
+    plan = plan_keil_conversion(repo, fixture_inspection(repo))
+    real_resolve = Path.resolve
+    canonical = repo.resolve()
+    staging_path = f".stm32-toolkit/migration-staging/{plan.plan_id}"
+
+    def broken_component_resolve(self, strict=False):
+        if ".stm32-toolkit" in str(self):
+            raise RuntimeError("symlink loop")
+        return real_resolve(self, strict)
+
+    monkeypatch.setattr(Path, "resolve", broken_component_resolve)
+    result = apply_keil_conversion(plan)
+    assert result.code == "MIGRATION_PATH_INVALID"
+    assert result.details == {"path": staging_path, "rule": "withinProjectRoot"}
+
+    monkeypatch.setattr(Path, "resolve", real_resolve)
+
+    def broken_root_resolve(self, strict=False):
+        if strict is False and os.path.realpath(os.fspath(self)) == str(canonical):
+            raise RuntimeError("root loop")
+        return real_resolve(self, strict)
+
+    monkeypatch.setattr(Path, "resolve", broken_root_resolve)
+    result = apply_keil_conversion(plan)
+    assert result.code == "MIGRATION_PATH_INVALID"
+    assert result.details == {"path": staging_path, "rule": "withinProjectRoot"}
+
+    assert not (repo / ".stm32-toolkit").exists()
+
+
 def test_apply_success_cleanup_failure_rolls_back(tmp_path, monkeypatch):
     repo = standard_repo(tmp_path)
     plan = plan_keil_conversion(repo, fixture_inspection(repo))
@@ -789,7 +897,7 @@ def test_apply_blocked_plan_refuses_without_writes(tmp_path):
 def test_apply_head_changed(tmp_path):
     repo = standard_repo(tmp_path)
     plan = plan_keil_conversion(repo, fixture_inspection(repo))
-    (repo / "note.txt").write_text("new", encoding="utf-8")
+    (repo / "note.txt").write_bytes(b"new")
     subprocess.run(["git", "add", "-A"], cwd=repo, check=True, env=git_env())
     subprocess.run(["git", "commit", "-q", "-m", "second"], cwd=repo, check=True, env=git_env())
     before = snapshot_tree(repo)
@@ -803,25 +911,25 @@ def test_apply_head_changed(tmp_path):
 def test_apply_dirty_untracked_staged_and_unstaged(tmp_path):
     repo = standard_repo(tmp_path)
     plan = plan_keil_conversion(repo, fixture_inspection(repo))
-    (repo / "scratch.txt").write_text("x", encoding="utf-8")
+    (repo / "scratch.txt").write_bytes(b"x")
     result = apply_keil_conversion(plan)
     assert result.code == "MIGRATION_GIT_DIRTY"
     assert result.details == {"rule": "cleanWorktree"}
 
     repo2 = standard_repo(tmp_path)
     plan2 = plan_keil_conversion(repo2, fixture_inspection(repo2))
-    (repo2 / "note.txt").write_text("y", encoding="utf-8")
+    (repo2 / "note.txt").write_bytes(b"y")
     subprocess.run(["git", "add", "-A"], cwd=repo2, check=True)
     result2 = apply_keil_conversion(plan2)
     assert result2.code == "MIGRATION_GIT_DIRTY"
     assert result2.details == {"rule": "cleanWorktree"}
 
     repo3 = standard_repo(tmp_path)
-    (repo3 / "note.txt").write_text("z", encoding="utf-8")
+    (repo3 / "note.txt").write_bytes(b"z")
     subprocess.run(["git", "add", "-A"], cwd=repo3, check=True, env=git_env())
     subprocess.run(["git", "commit", "-q", "-m", "note"], cwd=repo3, check=True, env=git_env())
     plan3 = plan_keil_conversion(repo3, fixture_inspection(repo3))
-    (repo3 / "note.txt").write_text("z2", encoding="utf-8")
+    (repo3 / "note.txt").write_bytes(b"z2")
     result3 = apply_keil_conversion(plan3)
     assert result3.code == "MIGRATION_GIT_DIRTY"
     assert result3.details == {"rule": "cleanWorktree"}
@@ -848,7 +956,7 @@ def test_apply_git_status_unavailable(tmp_path, monkeypatch):
 def test_apply_changed_deleted_and_replaced_input(tmp_path):
     repo = standard_repo(tmp_path)
     plan = plan_keil_conversion(repo, fixture_inspection(repo))
-    (repo / "Main" / "main.c").write_text(MAIN_C.replace("__irq", "__irq "), encoding="utf-8")
+    (repo / "Main" / "main.c").write_bytes(MAIN_C.replace("__irq", "__irq ").encode("utf-8"))
     result = apply_keil_conversion(plan)
     assert result.code == "MIGRATION_INPUT_CHANGED"
     assert result.details == {"path": "Main/main.c"}
@@ -872,24 +980,24 @@ def test_apply_changed_deleted_and_replaced_input(tmp_path):
         assert not (repo_used / ".stm32-toolkit").exists()
 
 
-def test_apply_input_symlink_escape(tmp_path):
+def test_apply_input_symlink_escape(tmp_path, monkeypatch):
     outside = tmp_path / "outside.c"
-    outside.write_text(COMMON_C, encoding="utf-8")
+    outside.write_bytes(COMMON_C.encode("utf-8"))
     repo = standard_repo(tmp_path)
     plan = plan_keil_conversion(repo, fixture_inspection(repo))
     (repo / "Common" / "common.c").unlink()
-    os.symlink(outside, repo / "Common" / "common.c")
+    _make_redirect(monkeypatch, repo / "Common" / "common.c", outside)
     result = apply_keil_conversion(plan)
     assert result.code == "MIGRATION_INPUT_CHANGED"
     assert result.details == {"path": "Common/common.c"}
 
 
-def test_apply_patch_target_escape(tmp_path):
+def test_apply_patch_target_escape(tmp_path, monkeypatch):
     outside = tmp_path / "outside"
     outside.mkdir()
     repo = standard_repo(tmp_path)
     plan = plan_keil_conversion(repo, fixture_inspection(repo))
-    os.symlink(outside, repo / "artifacts")
+    _make_redirect(monkeypatch, repo / "artifacts", outside)
     result = apply_keil_conversion(plan)
     assert result.code == "MIGRATION_PATH_INVALID"
     assert result.details["rule"] == "withinProjectRoot"
@@ -900,7 +1008,7 @@ def test_apply_patch_target_escape(tmp_path):
 def test_apply_target_collision_manifest_and_artifacts(tmp_path):
     repo = standard_repo(tmp_path)
     plan = plan_keil_conversion(repo, fixture_inspection(repo))
-    (repo / ".stm32-project.json").write_text("{}", encoding="utf-8")
+    (repo / ".stm32-project.json").write_bytes(b"{}")
     result = apply_keil_conversion(plan)
     assert result.code == "MIGRATION_TARGET_EXISTS"
     assert result.details == {"path": ".stm32-project.json"}
@@ -926,6 +1034,103 @@ def test_apply_staging_collision(tmp_path):
     result = apply_keil_conversion(plan)
     assert result.code == "MIGRATION_TARGET_EXISTS"
     assert result.details == {"path": f".stm32-toolkit/migration-staging/{plan.plan_id}"}
+    assert (repo / "Main" / "main.c").read_bytes() == MAIN_C.encode("utf-8")
+
+
+def test_apply_staging_intermediate_redirect_escape_is_rejected(tmp_path, monkeypatch):
+    """A redirect on the staging path itself must be rejected before the first
+    write: the intermediate ``.stm32-toolkit/migration-staging`` directory may
+    be a junction/symlink/reparse point to a directory outside the project
+    root.  The external directory's bytes, entries, and mtimes must not
+    change."""
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    repo = build_repo(
+        tmp_path,
+        files={"Main/main.c": MAIN_C, "Common/common.c": COMMON_C},
+        gitignore=".stm32-toolkit/\n",
+    )
+    plan = plan_keil_conversion(repo, fixture_inspection(repo))
+    (repo / ".stm32-toolkit").mkdir()
+    _make_redirect(monkeypatch, repo / ".stm32-toolkit" / "migration-staging", outside)
+    outside_before = snapshot_dir(outside)
+    result = apply_keil_conversion(plan)
+    assert result.code == "MIGRATION_PATH_INVALID"
+    assert result.details == {
+        "path": f".stm32-toolkit/migration-staging/{plan.plan_id}",
+        "rule": "withinProjectRoot",
+    }
+    assert snapshot_dir(outside) == outside_before
+    assert not (repo / ".stm32-toolkit" / "migration-staging" / plan.plan_id).exists()
+    assert (repo / "Main" / "main.c").read_bytes() == MAIN_C.encode("utf-8")
+    assert (repo / "Common" / "common.c").read_bytes() == COMMON_C.encode("utf-8")
+
+
+def test_apply_staging_containment_with_injected_reparse(tmp_path, monkeypatch):
+    """The deterministic reparse simulation (the Windows fallback for
+    unprivileged redirects) must itself be exercised on Linux too: an
+    injected reparse point on the staging path is rejected exactly like a
+    real redirect, before any write, leaving the external directory
+    untouched."""
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    repo = build_repo(
+        tmp_path,
+        files={"Main/main.c": MAIN_C, "Common/common.c": COMMON_C},
+        gitignore=".stm32-toolkit/\n",
+    )
+    plan = plan_keil_conversion(repo, fixture_inspection(repo))
+    (repo / ".stm32-toolkit").mkdir()
+    _inject_reparse(monkeypatch, repo / ".stm32-toolkit" / "migration-staging", outside)
+    outside_before = snapshot_dir(outside)
+    result = apply_keil_conversion(plan)
+    assert result.code == "MIGRATION_PATH_INVALID"
+    assert result.details == {
+        "path": f".stm32-toolkit/migration-staging/{plan.plan_id}",
+        "rule": "withinProjectRoot",
+    }
+    assert snapshot_dir(outside) == outside_before
+    assert not (repo / ".stm32-toolkit" / "migration-staging" / plan.plan_id).exists()
+
+
+def test_apply_input_escape_with_injected_reparse(tmp_path, monkeypatch):
+    """The deterministic reparse simulation is also verified for a file
+    redirect (Windows cannot junction a file): the escape is rejected with
+    the same stable failure a real redirect produces."""
+    outside = tmp_path / "outside.c"
+    outside.write_bytes(COMMON_C.encode("utf-8"))
+    repo = standard_repo(tmp_path)
+    plan = plan_keil_conversion(repo, fixture_inspection(repo))
+    (repo / "Common" / "common.c").unlink()
+    _inject_reparse(monkeypatch, repo / "Common" / "common.c", outside)
+    result = apply_keil_conversion(plan)
+    assert result.code == "MIGRATION_INPUT_CHANGED"
+    assert result.details == {"path": "Common/common.c"}
+    assert not (repo / ".stm32-toolkit").exists()
+
+
+def test_apply_staging_root_redirect_escape_is_rejected(tmp_path, monkeypatch):
+    """A redirect on the staging root ``.stm32-toolkit`` itself must be
+    rejected before the first write with the same stable failure, leaving the
+    external directory untouched."""
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    repo = build_repo(
+        tmp_path,
+        files={"Main/main.c": MAIN_C, "Common/common.c": COMMON_C},
+        gitignore=".stm32-toolkit\n",
+    )
+    plan = plan_keil_conversion(repo, fixture_inspection(repo))
+    _make_redirect(monkeypatch, repo / ".stm32-toolkit", outside)
+    outside_before = snapshot_dir(outside)
+    result = apply_keil_conversion(plan)
+    assert result.code == "MIGRATION_PATH_INVALID"
+    assert result.details == {
+        "path": f".stm32-toolkit/migration-staging/{plan.plan_id}",
+        "rule": "withinProjectRoot",
+    }
+    assert snapshot_dir(outside) == outside_before
+    assert not (repo / ".stm32-toolkit" / "migration-staging" / plan.plan_id).exists()
     assert (repo / "Main" / "main.c").read_bytes() == MAIN_C.encode("utf-8")
 
 
@@ -1036,7 +1241,7 @@ def test_apply_forged_plan_with_consistent_plan_id_fails_fresh_replan(tmp_path):
     # fresh-replan equality, not an ordering check, is the failing defense).
     # The forged target exists with matching bytes and the tree stays clean.
     (repo / "Other").mkdir()
-    (repo / "Other" / "common.c").write_text(COMMON_C, encoding="utf-8")
+    (repo / "Other" / "common.c").write_bytes(COMMON_C.encode("utf-8"))
     subprocess.run(["git", "add", "-A"], cwd=repo, check=True, env=git_env())
     subprocess.run(["git", "commit", "-q", "-m", "other"], cwd=repo, check=True, env=git_env())
     plan = plan_keil_conversion(repo, fixture_inspection(repo))
@@ -1277,9 +1482,9 @@ def test_apply_no_writes_on_any_preflight_failure(tmp_path):
 
 def test_apply_leaves_unrelated_state_untouched(tmp_path):
     repo = standard_repo(tmp_path)
-    (repo / "README.md").write_text("readme\n", encoding="utf-8")
+    (repo / "README.md").write_bytes(b"readme\n")
     (repo / "Objects").mkdir()
-    (repo / "Objects" / "legacy.map").write_text("map\n", encoding="utf-8")
+    (repo / "Objects" / "legacy.map").write_bytes(b"map\n")
     subprocess.run(["git", "add", "-A"], cwd=repo, check=True, env=git_env())
     subprocess.run(["git", "commit", "-q", "-m", "extra"], cwd=repo, check=True, env=git_env())
     head_before = git_head(repo)
