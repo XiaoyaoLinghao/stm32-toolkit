@@ -41,6 +41,11 @@ _AMBIGUOUS_ROW_RE = re.compile(r"^(\S+)\s+0x\S+\s+0x\S+")
 _MAX_64_BIT = 0xFFFFFFFFFFFFFFFF
 _DEFAULT_REGION = "*default*"
 
+#: First characters that can start a region row (letters, underscore, star).
+_REGION_START = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_*")
+#: First characters that can start an output-section row (adds dot and dollar).
+_SECTION_START = _REGION_START | frozenset(".$")
+
 
 class MapError(BuildError):
     """A stable MAP failure carrying a stable code and bounded details."""
@@ -90,7 +95,16 @@ def _parse_rows(
     seen_regions: set[str] = set()
     seen_sections: set[str] = set()
     for line in text.splitlines():
-        region_match = _REGION_ROW_RE.match(line)
+        if not line:
+            continue
+        first = line[0]
+        if first not in _SECTION_START:
+            if _AMBIGUOUS_ROW_RE.match(line):
+                raise map_error("ambiguous", path)
+            continue
+        region_match = None
+        if first in _REGION_START:
+            region_match = _REGION_ROW_RE.match(line)
         if region_match is not None:
             name = region_match.group(1)
             if name == _DEFAULT_REGION:
@@ -127,7 +141,7 @@ def _parse_rows(
                 )
             )
             continue
-        if line and _AMBIGUOUS_ROW_RE.match(line):
+        if _AMBIGUOUS_ROW_RE.match(line):
             raise map_error("ambiguous", path)
     if not declared:
         raise map_error("regions", path)
