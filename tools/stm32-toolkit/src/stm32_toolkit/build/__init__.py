@@ -1,0 +1,68 @@
+"""Bounded build pipeline (STM32TK-0305): process execution, MAP evidence,
+firmware identity, and atomic publication."""
+
+from stm32_toolkit.build.identity import (
+    ElfEvidence,
+    GitEvidence,
+    build_identity,
+    git_evidence,
+    validate_elf,
+    validate_identity_document,
+)
+from stm32_toolkit.build.map_file import (
+    MapFile,
+    MapMemoryRegion,
+    MapParseError,
+    MapSection,
+    parse_map,
+)
+from stm32_toolkit.build.model import (
+    BUILD_BUSY,
+    BUILD_ENVIRONMENT_ERROR,
+    BUILD_EVIDENCE_INVALID,
+    BUILD_FAILED,
+    BUILD_IDENTITY_INVALID,
+    BUILD_MODEL_INVALID,
+    BUILD_PUBLICATION_FAILED,
+    BUILD_REQUEST_INVALID,
+    BUILD_TIMEOUT,
+    BuildError,
+    BuildReport,
+    BuildRequest,
+    FirmwareIdentity,
+    InputSnapshot,
+    InputSnapshotFile,
+    MemoryUsage,
+)
+from stm32_toolkit.build.runner import run_build
+
+__all__ = [
+    "BUILD_BUSY",
+    "BUILD_ENVIRONMENT_ERROR",
+    "BUILD_EVIDENCE_INVALID",
+    "BUILD_FAILED",
+    "BUILD_IDENTITY_INVALID",
+    "BUILD_MODEL_INVALID",
+    "BUILD_PUBLICATION_FAILED",
+    "BUILD_REQUEST_INVALID",
+    "BUILD_TIMEOUT",
+    "BuildError",
+    "BuildReport",
+    "BuildRequest",
+    "ElfEvidence",
+    "FirmwareIdentity",
+    "GitEvidence",
+    "InputSnapshot",
+    "InputSnapshotFile",
+    "MapFile",
+    "MapMemoryRegion",
+    "MapParseError",
+    "MapSection",
+    "MemoryUsage",
+    "build_identity",
+    "git_evidence",
+    "parse_map",
+    "run_build",
+    "validate_elf",
+    "validate_identity_document",
+]
