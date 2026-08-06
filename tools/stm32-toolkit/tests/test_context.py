@@ -33,6 +33,26 @@ def _git(command: str, cwd: Path, *args: str) -> None:
     assert result.returncode == 0
 
 
+def _git_commit(cwd: Path, message: str) -> None:
+    result = run_process(
+        ProcessRequest(
+            argv=(
+                "git",
+                "-c",
+                "user.name=test",
+                "-c",
+                "user.email=test@example.com",
+                "commit",
+                "-m",
+                message,
+            ),
+            cwd=cwd,
+            timeout_seconds=15.0,
+        )
+    )
+    assert result.returncode == 0
+
+
 @pytest.fixture
 def evidence_project(tmp_path: Path) -> Path:
     """A Schema v2 minimal project in a real Git repository."""
@@ -40,16 +60,7 @@ def evidence_project(tmp_path: Path) -> Path:
     shutil.copytree(FIXTURE_MINIMAL_GCC, root)
     _git("init", root, "-b", "main")
     _git("add", root, ".")
-    _git(
-        "commit",
-        root,
-        "-m",
-        "initial",
-        "-c",
-        "user.name=test",
-        "-c",
-        "user.email=test@example.com",
-    )
+    _git_commit(root, "initial")
     return root
 
 
@@ -121,7 +132,7 @@ def _publish_evidence_chain(
 def _context_build(root: Path, tmp_path: Path) -> dict:
     result = build_project_context(root, tmp_path.parent / "data", "session-a")
     assert result.ok is True
-    return result.data["build"]
+    return result.to_dict()["data"]["build"]
 
 
 def test_configured_context_reports_only_the_six_contract_sections(
@@ -308,16 +319,7 @@ def test_new_git_commit_breaks_evidence_chain(evidence_project: Path, tmp_path: 
     _publish_evidence_chain(evidence_project)
     (evidence_project / "README.md").write_text("readme\n", encoding="utf-8")
     _git("add", evidence_project, "README.md")
-    _git(
-        "commit",
-        evidence_project,
-        "-m",
-        "readme",
-        "-c",
-        "user.name=test",
-        "-c",
-        "user.email=test@example.com",
-    )
+    _git_commit(evidence_project, "readme")
 
     build = _context_build(evidence_project, tmp_path)
 
@@ -563,4 +565,258 @@ def test_newer_assembly_source_breaks_evidence_chain(
 
     startup.write_text("Reset_Handler:\n  b .\n", encoding="utf-8")
     build = _context_build(evidence_project, tmp_path)
+    assert build["elfFresh"] is False
+
+
+def test_unreadable_source_breaks_evidence_chain(evidence_project: Path, tmp_path: Path):
+    _publish_evidence_chain(evidence_project)
+    os.chmod(evidence_project / "Src" / "main.c", 0o000)
+
+    try:
+        build = _context_build(evidence_project, tmp_path)
+    finally:
+        os.chmod(evidence_project / "Src" / "main.c", 0o644)
+
+    assert build["elfFresh"] is False
+
+
+def test_unreadable_elf_breaks_evidence_chain(evidence_project: Path, tmp_path: Path):
+    _publish_evidence_chain(evidence_project)
+    elf = evidence_project / "build" / "arm-debug" / "firmware.elf"
+    os.chmod(elf, 0o000)
+
+    try:
+        build = _context_build(evidence_project, tmp_path)
+    finally:
+        os.chmod(elf, 0o644)
+
+    assert build["elfFresh"] is False
+
+
+def test_evidence_dir_as_file_breaks_evidence_chain(evidence_project: Path, tmp_path: Path):
+    _publish_evidence_chain(evidence_project)
+    build_root = evidence_project / ".stm32-toolkit" / "build"
+    import shutil as _shutil
+
+    _shutil.rmtree(build_root)
+    build_root.write_text("file", encoding="utf-8")
+
+    build = _context_build(evidence_project, tmp_path)
+
+    assert build["elfFresh"] is False
+
+
+def test_tampered_identity_schema_version_breaks_evidence_chain(
+    evidence_project: Path, tmp_path: Path
+):
+    _publish_evidence_chain(evidence_project)
+    identity_path = (
+        evidence_project
+        / ".stm32-toolkit"
+        / "build"
+        / "arm-debug"
+        / "firmware-identity.json"
+    )
+    identity = json.loads(identity_path.read_text(encoding="utf-8"))
+    identity["schemaVersion"] = 2
+    identity_path.write_text(json.dumps(identity), encoding="utf-8")
+
+    build = _context_build(evidence_project, tmp_path)
+
+    assert build["elfFresh"] is False
+
+
+def test_tampered_identity_elf_shape_breaks_evidence_chain(
+    evidence_project: Path, tmp_path: Path
+):
+    _publish_evidence_chain(evidence_project)
+    identity_path = (
+        evidence_project
+        / ".stm32-toolkit"
+        / "build"
+        / "arm-debug"
+        / "firmware-identity.json"
+    )
+    identity = json.loads(identity_path.read_text(encoding="utf-8"))
+    identity["elf"] = "not-a-dict"
+    identity_path.write_text(json.dumps(identity), encoding="utf-8")
+
+    build = _context_build(evidence_project, tmp_path)
+
+    assert build["elfFresh"] is False
+
+
+def test_tampered_identity_snapshot_shape_breaks_evidence_chain(
+    evidence_project: Path, tmp_path: Path
+):
+    _publish_evidence_chain(evidence_project)
+    identity_path = (
+        evidence_project
+        / ".stm32-toolkit"
+        / "build"
+        / "arm-debug"
+        / "firmware-identity.json"
+    )
+    identity = json.loads(identity_path.read_text(encoding="utf-8"))
+    identity["inputSnapshot"] = ["not", "a", "dict"]
+    identity_path.write_text(json.dumps(identity), encoding="utf-8")
+
+    build = _context_build(evidence_project, tmp_path)
+
+    assert build["elfFresh"] is False
+
+
+def test_tampered_identity_elf_path_breaks_evidence_chain(
+    evidence_project: Path, tmp_path: Path
+):
+    _publish_evidence_chain(evidence_project)
+    identity_path = (
+        evidence_project
+        / ".stm32-toolkit"
+        / "build"
+        / "arm-debug"
+        / "firmware-identity.json"
+    )
+    identity = json.loads(identity_path.read_text(encoding="utf-8"))
+    identity["elf"]["path"] = "other/firmware.elf"
+    identity_path.write_text(json.dumps(identity), encoding="utf-8")
+
+    build = _context_build(evidence_project, tmp_path)
+
+    assert build["elfFresh"] is False
+
+
+def test_tampered_identity_map_path_breaks_evidence_chain(
+    evidence_project: Path, tmp_path: Path
+):
+    _publish_evidence_chain(evidence_project)
+    identity_path = (
+        evidence_project
+        / ".stm32-toolkit"
+        / "build"
+        / "arm-debug"
+        / "firmware-identity.json"
+    )
+    identity = json.loads(identity_path.read_text(encoding="utf-8"))
+    identity["map"]["path"] = "other/firmware.map"
+    identity_path.write_text(json.dumps(identity), encoding="utf-8")
+
+    build = _context_build(evidence_project, tmp_path)
+
+    assert build["elfFresh"] is False
+
+
+def test_tampered_identity_elf_size_breaks_evidence_chain(
+    evidence_project: Path, tmp_path: Path
+):
+    _publish_evidence_chain(evidence_project)
+    identity_path = (
+        evidence_project
+        / ".stm32-toolkit"
+        / "build"
+        / "arm-debug"
+        / "firmware-identity.json"
+    )
+    identity = json.loads(identity_path.read_text(encoding="utf-8"))
+    identity["elf"]["size"] = identity["elf"]["size"] + 1
+    identity_path.write_text(json.dumps(identity), encoding="utf-8")
+
+    build = _context_build(evidence_project, tmp_path)
+
+    assert build["elfFresh"] is False
+
+
+def test_other_preset_result_does_not_masquerade_as_model_elf(
+    evidence_project: Path, tmp_path: Path
+):
+    _publish_evidence_chain(evidence_project, preset="arm-release")
+    _publish_evidence_chain(evidence_project)
+
+    build = _context_build(evidence_project, tmp_path)
+
+    assert build["elfFresh"] is True
+
+
+def test_failed_result_status_breaks_evidence_chain(evidence_project: Path, tmp_path: Path):
+    _publish_evidence_chain(evidence_project)
+    result_path = (
+        evidence_project
+        / ".stm32-toolkit"
+        / "build"
+        / "arm-debug"
+        / "build-result.json"
+    )
+    result = json.loads(result_path.read_text(encoding="utf-8"))
+    result["status"] = "failed"
+    result_path.write_text(json.dumps(result), encoding="utf-8")
+
+    build = _context_build(evidence_project, tmp_path)
+
+    assert build["elfFresh"] is False
+
+
+def test_result_preset_mismatch_breaks_evidence_chain(evidence_project: Path, tmp_path: Path):
+    _publish_evidence_chain(evidence_project)
+    result_path = (
+        evidence_project
+        / ".stm32-toolkit"
+        / "build"
+        / "arm-debug"
+        / "build-result.json"
+    )
+    result = json.loads(result_path.read_text(encoding="utf-8"))
+    result["preset"] = "arm-other"
+    result_path.write_text(json.dumps(result), encoding="utf-8")
+
+    build = _context_build(evidence_project, tmp_path)
+
+    assert build["elfFresh"] is False
+
+
+def test_result_build_id_mismatch_breaks_evidence_chain(evidence_project: Path, tmp_path: Path):
+    _publish_evidence_chain(evidence_project)
+    result_path = (
+        evidence_project
+        / ".stm32-toolkit"
+        / "build"
+        / "arm-debug"
+        / "build-result.json"
+    )
+    result = json.loads(result_path.read_text(encoding="utf-8"))
+    result["buildId"] = "0" * 64
+    result_path.write_text(json.dumps(result), encoding="utf-8")
+
+    build = _context_build(evidence_project, tmp_path)
+
+    assert build["elfFresh"] is False
+
+
+def test_tampered_map_breaks_evidence_chain(evidence_project: Path, tmp_path: Path):
+    _publish_evidence_chain(evidence_project)
+    (evidence_project / "build" / "arm-debug" / "firmware.map").write_text(
+        "tampered map\n", encoding="utf-8"
+    )
+
+    build = _context_build(evidence_project, tmp_path)
+
+    assert build["elfFresh"] is False
+
+
+def test_non_string_identity_elf_path_breaks_evidence_chain(
+    evidence_project: Path, tmp_path: Path
+):
+    _publish_evidence_chain(evidence_project)
+    identity_path = (
+        evidence_project
+        / ".stm32-toolkit"
+        / "build"
+        / "arm-debug"
+        / "firmware-identity.json"
+    )
+    identity = json.loads(identity_path.read_text(encoding="utf-8"))
+    identity["elf"]["path"] = 123
+    identity_path.write_text(json.dumps(identity), encoding="utf-8")
+
+    build = _context_build(evidence_project, tmp_path)
+
     assert build["elfFresh"] is False

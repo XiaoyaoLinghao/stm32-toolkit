@@ -204,3 +204,115 @@ def test_run_process_does_not_use_shell_or_command_strings():
 
     assert result.returncode == 0
     assert result.stdout == "ok\n"
+
+
+def test_run_process_reap_timeout_after_termination(monkeypatch):
+    """The post-termination reap itself can time out; the result stays total."""
+    monkeypatch.setattr(process_mod, "_terminate_tree", lambda process: None)
+    code = "import time; time.sleep(10)"
+
+    result = _run(argv=(sys.executable, "-c", code), timeout=1.0)
+
+    assert result.timed_out is True
+    assert result.returncode is None
+    assert result.duration_seconds < 10
+
+
+def test_run_process_rejects_non_path_cwd():
+    with pytest.raises(ValueError):
+        run_process(
+            ProcessRequest(
+                argv=(sys.executable, "-c", "pass"),
+                cwd="not-a-path",  # type: ignore[arg-type]
+                timeout_seconds=5.0,
+            )
+        )
+
+
+def test_run_process_reader_failure_clears_capture(monkeypatch):
+    def failing(_stream, _max_bytes, _max_lines):
+        raise OSError("read failed")
+
+    monkeypatch.setattr(process_mod, "_drain_stream", failing)
+    code = (
+        "import os, sys;"
+        "devnull = os.open(os.devnull, os.O_WRONLY);"
+        "os.dup2(devnull, 1); os.dup2(devnull, 2);"
+        "print('x')"
+    )
+
+    result = _run(argv=(sys.executable, "-c", code))
+
+    assert result.returncode == 0
+    assert result.stdout == ""
+    assert result.stderr == ""
+    assert result.stdout_truncated is True
+    assert result.stderr_truncated is True
+
+
+def test_run_process_posix_killpg_fallback(monkeypatch):
+    """When killpg is unavailable, terminate the direct child instead."""
+
+    def no_killpg(_pid, _sig):
+        raise OSError("no killpg")
+
+    monkeypatch.setattr(process_mod.os, "killpg", no_killpg)
+    code = "import time; time.sleep(60)"
+
+    result = _run(argv=(sys.executable, "-c", code), timeout=1.0)
+
+    assert result.timed_out is True
+    assert result.duration_seconds < 10
+
+
+def test_run_process_posix_sigkill_escalation():
+    """A SIGTERM-ignoring child is escalated to SIGKILL after the grace period."""
+    code = (
+        "import signal, time;"
+        "signal.signal(signal.SIGTERM, signal.SIG_IGN);"
+        "time.sleep(60)"
+    )
+
+    result = _run(argv=(sys.executable, "-c", code), timeout=1.0)
+
+    assert result.timed_out is True
+    assert result.duration_seconds < 10
+
+
+def test_run_process_posix_kill_fallback_when_killpg_unavailable(monkeypatch):
+    """When killpg never works, the SIGKILL escalation uses process.kill()."""
+
+    def no_killpg(_pid, _sig):
+        raise OSError("no killpg")
+
+    monkeypatch.setattr(process_mod.os, "killpg", no_killpg)
+    code = (
+        "import signal, time;"
+        "signal.signal(signal.SIGTERM, signal.SIG_IGN);"
+        "time.sleep(60)"
+    )
+
+    result = _run(argv=(sys.executable, "-c", code), timeout=1.0)
+
+    assert result.timed_out is True
+    assert result.duration_seconds < 10
+
+
+def test_run_process_windows_taskkill_failure_falls_back(monkeypatch):
+    """Windows tree-kill failure falls back to direct termination and kill."""
+    monkeypatch.setattr(process_mod, "_WINDOWS", True)
+
+    def no_taskkill(*_args, **_kwargs):
+        raise OSError("no taskkill")
+
+    monkeypatch.setattr(process_mod.subprocess, "run", no_taskkill)
+    code = (
+        "import signal, time;"
+        "signal.signal(signal.SIGTERM, signal.SIG_IGN);"
+        "time.sleep(60)"
+    )
+
+    result = _run(argv=(sys.executable, "-c", code), timeout=1.0)
+
+    assert result.timed_out is True
+    assert result.duration_seconds < 10

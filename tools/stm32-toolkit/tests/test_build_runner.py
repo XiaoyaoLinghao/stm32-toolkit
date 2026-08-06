@@ -458,9 +458,9 @@ def test_build_evidence_invalid_when_map_malformed(
     build_project: Path, fake_toolchain: Path, monkeypatch
 ):
     monkeypatch.setattr(
-        identity_mod,
+        runner_mod,
         "read_text_bounded",
-        lambda path, limit: "not a map at all\n",
+        lambda path, limit, rule="size": "not a map at all\n",
     )
 
     result = run_build(_request(build_project))
@@ -476,7 +476,7 @@ def test_build_publication_failure_keeps_log_but_not_result(
     def failing_write(path: Path, data) -> None:
         raise OSError("disk full")
 
-    monkeypatch.setattr(identity_mod, "write_json_atomic", failing_write)
+    monkeypatch.setattr(runner_mod, "write_json_atomic", failing_write)
 
     result = run_build(_request(build_project))
 
@@ -494,7 +494,7 @@ def test_build_identity_schema_failure_publishes_nothing(
     def failing_validation(payload: dict) -> None:
         raise BuildError("BUILD_IDENTITY_INVALID", "identity invalid", {"rule": "const"})
 
-    monkeypatch.setattr(identity_mod, "validate_identity_document", failing_validation)
+    monkeypatch.setattr(runner_mod, "validate_identity_document", failing_validation)
 
     result = run_build(_request(build_project))
 
@@ -543,3 +543,59 @@ def test_build_success_elf_sha_matches_artifact(
 
     assert result.data.identity.elf_sha256 == digest
     assert result.data.identity.elf_size == size
+
+
+def test_build_rejects_non_request_object(build_project: Path, fake_toolchain: Path):
+    result = run_build("not-a-request")  # type: ignore[arg-type]
+
+    assert result.ok is False
+    assert result.code == "BUILD_REQUEST_INVALID"
+    assert result.details == {"rule": "type"}
+
+
+def test_build_rejects_unresolvable_project_root(build_project: Path, fake_toolchain: Path):
+    result = run_build(BuildRequest(project_root=Path(chr(0)), preset="arm-debug"))
+
+    assert result.ok is False
+    assert result.code == "BUILD_REQUEST_INVALID"
+    assert result.details == {"rule": "projectRoot"}
+
+
+def test_build_rejects_model_without_elf(build_project: Path, fake_toolchain: Path):
+    manifest_path = build_project / ".stm32-project.json"
+    payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    payload["build"]["elf"] = None
+    manifest_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    result = run_build(_request(build_project))
+
+    assert result.ok is False
+    assert result.code == "BUILD_MODEL_INVALID"
+    assert result.details == {"rule": "missingElf"}
+
+
+def test_build_environment_error_when_lock_dir_unavailable(
+    build_project: Path, fake_toolchain: Path
+):
+    (build_project / ".stm32-toolkit").write_text("file", encoding="utf-8")
+
+    result = run_build(_request(build_project))
+
+    assert result.ok is False
+    assert result.code == "BUILD_ENVIRONMENT_ERROR"
+    assert result.details == {"rule": "lock"}
+
+
+def test_build_environment_error_when_lock_fd_raises_oserror(
+    build_project: Path, fake_toolchain: Path, monkeypatch
+):
+    def raising(_fileobj):
+        raise OSError("flock failed")
+
+    monkeypatch.setattr(runner_mod, "_lock_fd", raising)
+
+    result = run_build(_request(build_project))
+
+    assert result.ok is False
+    assert result.code == "BUILD_ENVIRONMENT_ERROR"
+    assert result.details == {"rule": "lock"}
