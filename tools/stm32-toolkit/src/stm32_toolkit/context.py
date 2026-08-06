@@ -2,6 +2,13 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from stm32_toolkit.build.identity import (
+    BuildError as _EvidenceError,
+    git_evidence,
+    read_json_bounded,
+    sha256_file,
+    snapshot_sha256,
+)
 from stm32_toolkit.detection import ProjectDetection, detect_project
 from stm32_toolkit.paths import WorkspacePaths
 from stm32_toolkit.project import ProjectManifest, ProjectManifestError
@@ -9,6 +16,12 @@ from stm32_toolkit.result import OperationResult
 
 
 _OPERATION = "project.context"
+
+#: Relative evidence directory and file names published by the build runner.
+_BUILD_EVIDENCE_DIR = ".stm32-toolkit/build"
+_RESULT_NAME = "build-result.json"
+_MAX_EVIDENCE_JSON_BYTES = 8 * 1024 * 1024
+_MAX_ARTIFACT_BYTES = 64 * 1024 * 1024
 
 
 def build_project_context(
@@ -150,7 +163,7 @@ def _build_evidence(manifest: ProjectManifest) -> dict[str, object]:
         elf_exists
         and not missing_sources
         and elf_path is not None
-        and all(elf_path.stat().st_mtime_ns >= source.stat().st_mtime_ns for source in existing_sources)
+        and _evidence_chain_fresh(manifest, elf_path)
     )
 
     return {
@@ -161,6 +174,117 @@ def _build_evidence(manifest: ProjectManifest) -> dict[str, object]:
         "missingSourcePaths": [str(path) for path in missing_sources],
         "elfFresh": elf_fresh,
     }
+
+
+def _evidence_chain_fresh(manifest: ProjectManifest, elf_path: Path) -> bool:
+    """Evidence-backed ELF freshness; never trusts mtimes.
+
+    ``elfFresh`` is true only when a published build result with status
+    ``success`` exists and the complete evidence chain is consistent: Git
+    HEAD, result-to-identity build id link, input snapshot, and the current
+    ELF/MAP bytes matching the identity digests.
+    """
+    root = manifest.project_root
+    evidence = git_evidence(root)
+    current_head = evidence.head
+    if current_head is None:
+        return False
+    try:
+        snapshot = snapshot_sha256(root, _snapshot_paths(manifest))
+    except _EvidenceError:
+        return False
+    elf_relative = _portable_relative(elf_path, root)
+    map_relative = _portable_relative(elf_path.with_suffix(".map"), root)
+    if elf_relative is None or map_relative is None:
+        return False
+    build_root = root / _BUILD_EVIDENCE_DIR
+    try:
+        preset_dirs = sorted(path for path in build_root.iterdir() if path.is_dir())
+    except OSError:
+        return False
+    for preset_dir in preset_dirs:
+        if _result_chain_fresh(
+            preset_dir, root, elf_relative, map_relative, current_head, snapshot
+        ):
+            return True
+    return False
+
+
+def _snapshot_paths(manifest: ProjectManifest) -> tuple[str, ...]:
+    root = manifest.project_root
+    relative: list[str] = [".stm32-project.json"]
+    for path in (*manifest.source_paths, *manifest.assembly_source_paths):
+        try:
+            relative.append(path.relative_to(root).as_posix())
+        except ValueError:
+            continue
+    return tuple(relative)
+
+
+def _result_chain_fresh(
+    preset_dir: Path,
+    root: Path,
+    elf_relative: str,
+    map_relative: str,
+    current_head: str,
+    snapshot: str,
+) -> bool:
+    try:
+        result = read_json_bounded(preset_dir / _RESULT_NAME, _MAX_EVIDENCE_JSON_BYTES)
+    except _EvidenceError:
+        return False
+    if result.get("status") != "success" or result.get("preset") != preset_dir.name:
+        return False
+    identity_path = preset_dir / Path(str(result.get("identityPath", ""))).name
+    try:
+        identity = read_json_bounded(identity_path, _MAX_EVIDENCE_JSON_BYTES)
+    except _EvidenceError:
+        return False
+    if identity.get("schemaVersion") != 1 or identity.get("gitHead") != current_head:
+        return False
+    if result.get("buildId") != identity.get("buildId"):
+        return False
+    elf = identity.get("elf")
+    map_artifact = identity.get("map")
+    snapshot_artifact = identity.get("inputSnapshot")
+    if not isinstance(elf, dict) or not isinstance(map_artifact, dict):
+        return False
+    if not isinstance(snapshot_artifact, dict):
+        return False
+    if _as_posix(elf.get("path")) != elf_relative:
+        return False
+    if _as_posix(map_artifact.get("path")) != map_relative:
+        return False
+    if snapshot_artifact.get("sha256") != snapshot:
+        return False
+    if not _artifact_matches(root / elf_relative, elf):
+        return False
+    if not _artifact_matches(root / map_relative, map_artifact):
+        return False
+    return True
+
+
+def _artifact_matches(path: Path, artifact: dict) -> bool:
+    if not path.is_file():
+        return False
+    try:
+        digest, size = sha256_file(path, _MAX_ARTIFACT_BYTES, "size")
+    except _EvidenceError:
+        return False
+    return artifact.get("sha256") == digest and artifact.get("size") == size
+
+
+def _portable_relative(path: Path, root: Path) -> str | None:
+    try:
+        return path.relative_to(root).as_posix()
+    except ValueError:
+        return None
+
+
+def _as_posix(value: object) -> str:
+    if not isinstance(value, str):
+        return ""
+    return Path(value).as_posix()
 
 
 def _empty_build_evidence() -> dict[str, object]:
