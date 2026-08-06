@@ -488,6 +488,55 @@ def plan_patch_bytes(plan: MigrationPlan) -> bytes:
 # ---------------------------------------------------------------------------
 
 
+def _within_root_prefix(root_resolved: str, candidate: Path) -> bool:
+    """String-prefix containment: equal to the root or directly under it."""
+    candidate_str = os.path.normcase(str(candidate))
+    return candidate_str == root_resolved or candidate_str.startswith(
+        root_resolved + os.sep
+    )
+
+
+def _validate_staging_containment(root: Path, staging: Path) -> None:
+    """Reject any staging path component that escapes the project root.
+
+    The staging directory lives at ``.stm32-toolkit/migration-staging/<id>``.
+    On a healthy tree those are regular project directories, but either
+    intermediate component may be an attacker-influenced redirect (symlink,
+    junction, or reparse point) whose canonical target lies outside the root.
+    Every component is resolved with ``Path.resolve()`` and string-prefix
+    compared against the resolved project root before the first staging write
+    (and before any ``lstat`` of the staging path), so an escape returns the
+    stable ``MIGRATION_PATH_INVALID`` / ``withinProjectRoot`` failure without
+    changing any external directory.
+    """
+    portable = f"{_STAGING_ROOT}/{staging.name}"
+    try:
+        root_resolved = os.path.normcase(str(root.resolve(strict=False)))
+    except (OSError, RuntimeError, ValueError):
+        raise _fail(
+            "MIGRATION_PATH_INVALID",
+            "project root resolution failed",
+            {"path": portable, "rule": "withinProjectRoot"},
+        )
+    current = root
+    for component in _STAGING_ROOT.split("/") + [staging.name]:
+        current = current.joinpath(component)
+        try:
+            resolved = current.resolve(strict=False)
+        except (OSError, RuntimeError, ValueError):
+            raise _fail(
+                "MIGRATION_PATH_INVALID",
+                "staging path resolution failed",
+                {"path": portable, "rule": "withinProjectRoot"},
+            )
+        if not _within_root_prefix(root_resolved, resolved):
+            raise _fail(
+                "MIGRATION_PATH_INVALID",
+                "staging path escapes the project root",
+                {"path": portable, "rule": "withinProjectRoot"},
+            )
+
+
 class _FsyncError(OSError):
     pass
 
@@ -591,6 +640,13 @@ def _apply(plan: MigrationPlan) -> dict[str, object]:
     _revalidate_apply_inputs(canonical, plan)
     _validate_patch_targets(canonical, plan)
 
+    staging = canonical.joinpath(*_STAGING_ROOT.split("/"), plan.plan_id)
+    # A staging escape must be rejected before any other preflight step can
+    # short-circuit with a less specific failure: the canonical staging path
+    # (including the .stm32-toolkit and migration-staging intermediates) must
+    # stay inside the project root before the first write.
+    _validate_staging_containment(canonical, staging)
+
     try:
         status = git_guard.porcelain_status(canonical)
     except MigrationPlanError as error:
@@ -625,6 +681,9 @@ def _apply(plan: MigrationPlan) -> dict[str, object]:
     destinations.sort(key=lambda item: item[0])
 
     staging = canonical.joinpath(*_STAGING_ROOT.split("/"), plan.plan_id)
+    # Repeat the containment check immediately before any staging state is
+    # inspected or created, closing the gap left by the earlier preflight run.
+    _validate_staging_containment(canonical, staging)
     try:
         os.lstat(staging)
     except FileNotFoundError:
