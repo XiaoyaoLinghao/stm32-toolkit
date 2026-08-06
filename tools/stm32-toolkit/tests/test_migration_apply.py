@@ -1,0 +1,1595 @@
+"""Tests for guarded atomic conversion apply and rollback (STM32TK-0303).
+
+Every repository used here is a disposable Git repository created below a
+pytest temporary directory; tests invoke only a local Git executable.  No
+network, compiler, Keil, or hardware is required.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+import shutil
+import stat
+import subprocess
+from dataclasses import replace
+from pathlib import Path
+
+import pytest
+
+from stm32_toolkit.keil import KeilInspection, inspect_keil
+
+import stm32_toolkit.migration.apply as apply_mod
+import stm32_toolkit.migration.model as model_mod
+import stm32_toolkit.migration.planner as planner_mod
+from stm32_toolkit.migration import (
+    FilePatch,
+    FixedSectionRequirement,
+    GitBaseline,
+    MigrationInput,
+    MigrationPlanError,
+    apply_keil_conversion,
+    plan_keil_conversion,
+)
+
+CORE_CPU = 'IRAM(0x20000000,0x30000) IROM(0x8000000,0x100000) CPUTYPE("Cortex-M4")'
+FRAMEWORK_INCLUDE = "Libraries/STM32F4xx_StdPeriph_Driver"
+
+COMMON_C = (
+    "/* common.c */\n"
+    '#include "stm32f4xx.h"\n'
+    "\n"
+    "__irq void systick_isr(void)\n"
+    "{\n"
+    "    __nop();\n"
+    "    __wfi();\n"
+    "}\n"
+    "\n"
+    '__asm("nop");\n'
+    "\n"
+    '__attribute__((section(".common.data"))) int shared_value;\n'
+    "__attribute__((at(0x20000000))) int pinned_value;\n"
+    "\n"
+    "int common_work(void) { return 0; }\n"
+)
+
+MAIN_C = (
+    "/* main.c */\n"
+    '#include "stm32f4xx.h"\n'
+    "\n"
+    "__irq void early_init(void) { __nop(); }\n"
+    "\n"
+    "int main(void) { return 0; }\n"
+)
+
+COMMON_C_AFTER = (
+    "/* common.c */\n"
+    '#include "stm32f4xx.h"\n'
+    "\n"
+    "void systick_isr(void)\n"
+    "{\n"
+    "    __NOP();\n"
+    "    __WFI();\n"
+    "}\n"
+    "\n"
+    '__asm("nop");\n'
+    "\n"
+    '__attribute__((section(".common.data"))) int shared_value;\n'
+    '__attribute__((section(".stm32tk.abs.20000000"), used)) int pinned_value;\n'
+    "\n"
+    "int common_work(void) { return 0; }\n"
+)
+
+MAIN_C_AFTER = (
+    "/* main.c */\n"
+    '#include "stm32f4xx.h"\n'
+    "\n"
+    "void early_init(void) { __NOP(); }\n"
+    "\n"
+    "int main(void) { return 0; }\n"
+)
+
+FIXED_GIT_TIME = "2026-01-01T00:00:00Z"
+
+
+# ---------------------------------------------------------------------------
+# disposable-repository helpers (duplicated from test_migration_plan so each
+# test module is self-contained; no new tracked path is introduced)
+# ---------------------------------------------------------------------------
+
+
+def write_uvprojx(
+    root: Path,
+    *,
+    name: str = "app.uvprojx",
+    target: str = "Legacy",
+    device: str = "STM32F429ZGTx",
+    cpu: str = CORE_CPU,
+    output: str = "app",
+    groups: tuple[tuple[str, tuple[tuple[str, str, str], ...]], ...] = (
+        ("Main", (("main.c", "1", "Main/main.c"),)),
+        ("Common", (("common.c", "1", "Common/common.c"),)),
+    ),
+    defines: str = "USE_STDPERIPH_DRIVER,STM32F429xx",
+    includes: str = f"Main;Common;{FRAMEWORK_INCLUDE}",
+    compiler_misc: str = "",
+    linker_misc: str = "",
+    scatter: str = "",
+    uac6: str = "0",
+    pack: str = "Keil.STM32F4xx_DFP.2.16.1",
+    pcc: str = "5060750::V5.06 update 7 (build 750)::ARMCC",
+) -> Path:
+    group_xml = []
+    for group_name, files in groups:
+        file_xml = []
+        for file_name, file_type, file_path in files:
+            file_xml.append(
+                "            <File>\n"
+                f"              <FileName>{file_name}</FileName>\n"
+                f"              <FileType>{file_type}</FileType>\n"
+                f"              <FilePath>.\\{file_path}</FilePath>\n"
+                "            </File>\n"
+            )
+        group_xml.append(
+            "          <Group>\n"
+            f"            <GroupName>{group_name}</GroupName>\n"
+            "            <Files>\n"
+            + "".join(file_xml)
+            + "            </Files>\n"
+            "          </Group>\n"
+        )
+    xml = (
+        '<?xml version="1.0" encoding="UTF-8" ?>\n'
+        '<Project xmlns="http://www.keil.com/project">\n'
+        "  <Targets>\n"
+        "    <Target>\n"
+        f"      <TargetName>{target}</TargetName>\n"
+        "      <ToolsetNumber>0x4</ToolsetNumber>\n"
+        "      <ToolsetName>ARM-ADS</ToolsetName>\n"
+        f"      <pCCUsed>{pcc}</pCCUsed>\n"
+        f"      <uAC6>{uac6}</uAC6>\n"
+        "      <TargetOption>\n"
+        "        <TargetCommonOption>\n"
+        f"          <Device>{device}</Device>\n"
+        "          <Vendor>STMicroelectronics</Vendor>\n"
+        f"          <PackID>{pack}</PackID>\n"
+        f"          <Cpu>{cpu}</Cpu>\n"
+        "          <uFloatingPoint>1</uFloatingPoint>\n"
+        "        </TargetCommonOption>\n"
+        "        <OutputDirectory>.\\Objects\\</OutputDirectory>\n"
+        f"        <OutputName>{output}</OutputName>\n"
+        "        <ListingPath>.\\Listing\\</ListingPath>\n"
+        "        <TargetArmAds>\n"
+        "          <Cads>\n"
+        "            <VariousControls>\n"
+        f"              <MiscControls>{compiler_misc}</MiscControls>\n"
+        f"              <Define>{defines}</Define>\n"
+        "              <Undefine></Undefine>\n"
+        f"              <IncludePath>{includes}</IncludePath>\n"
+        "            </VariousControls>\n"
+        "          </Cads>\n"
+        "          <LDads>\n"
+        "            <VariousControls>\n"
+        f"              <MiscControls>{linker_misc}</MiscControls>\n"
+        "              <ImageEntryPoint></ImageEntryPoint>\n"
+        f"              <ScatterFile>{scatter}</ScatterFile>\n"
+        "            </VariousControls>\n"
+        "          </LDads>\n"
+        "        </TargetArmAds>\n"
+        "      </TargetOption>\n"
+        "      <Groups>\n"
+        + "".join(group_xml)
+        + "      </Groups>\n"
+        "    </Target>\n"
+        "  </Targets>\n"
+        "</Project>\n"
+    )
+    project = root / name
+    project.write_bytes(xml.encode("utf-8"))
+    return project
+
+
+def git_env():
+    env = dict(os.environ)
+    env["GIT_AUTHOR_DATE"] = FIXED_GIT_TIME
+    env["GIT_COMMITTER_DATE"] = FIXED_GIT_TIME
+    env["GIT_AUTHOR_NAME"] = "Migration Test"
+    env["GIT_AUTHOR_EMAIL"] = "migration@test.local"
+    env["GIT_COMMITTER_NAME"] = "Migration Test"
+    env["GIT_COMMITTER_EMAIL"] = "migration@test.local"
+    return env
+
+
+def git_init(root: Path) -> None:
+    subprocess.run(["git", "init", "-q", "-b", "master"], cwd=root, check=True)
+    # Isolate the disposable repository from the user's global autocrlf
+    # setting: a global core.autocrlf=true would rewrite LF as CRLF on
+    # checkout (including later `git worktree add`) and dirty the worktree,
+    # breaking the clean-Git-required apply contract in this test module.
+    subprocess.run(
+        ["git", "config", "core.autocrlf", "false"],
+        cwd=root, check=True, env=git_env(),
+    )
+    subprocess.run(["git", "add", "-A"], cwd=root, check=True, env=git_env())
+    subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=root, check=True, env=git_env())
+
+
+def _path_is(path: os.PathLike | str, *components: str) -> bool:
+    """True when ``path``'s final components equal ``components`` exactly.
+
+    Compares parsed path components instead of raw strings containing
+    separators, so POSIX and Windows reach the same branch: ``str(path)``
+    uses ``/`` on Linux but ``\\`` on Windows, which would silently skip
+    matches like ``endswith("Main/main.c")`` on the latter.
+    """
+    return Path(path).parts[-len(components):] == components
+
+
+def _path_in_staging(path: os.PathLike | str) -> bool:
+    """True when ``path`` contains a ``migration-staging`` component."""
+    return "migration-staging" in Path(path).parts
+
+
+def git_status(root: Path) -> str:
+    return subprocess.run(
+        ["git", "status", "--porcelain=v1"], cwd=root, check=True, capture_output=True, text=True
+    ).stdout
+
+
+def git_head(root: Path) -> str:
+    return subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=root, check=True, capture_output=True, text=True
+    ).stdout.strip()
+
+
+def build_repo(
+    tmp_path: Path,
+    name: str = "proj",
+    *,
+    files: dict[str, str | None] | None = None,
+    uvprojx_kwargs: dict | None = None,
+    gitignore: str | None = None,
+) -> Path:
+    root = tmp_path / name
+    counter = 1
+    while root.exists():
+        root = tmp_path / f"{name}_{counter}"
+        counter += 1
+    root.mkdir()
+    write_uvprojx(root, **(uvprojx_kwargs or {}))
+    for rel, content in (files or {}).items():
+        if content is None:
+            continue
+        path = root / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(content.encode("utf-8"))
+    (root / FRAMEWORK_INCLUDE).mkdir(parents=True, exist_ok=True)
+    if gitignore is not None:
+        (root / ".gitignore").write_bytes(gitignore.encode("utf-8"))
+    git_init(root)
+    return root
+
+
+def standard_repo(tmp_path: Path) -> Path:
+    return build_repo(
+        tmp_path,
+        files={"Main/main.c": MAIN_C, "Common/common.c": COMMON_C},
+    )
+
+
+def fixture_inspection(root: Path) -> KeilInspection:
+    return inspect_keil(root)
+
+
+def snapshot_tree(root: Path) -> dict[str, tuple]:
+    entries: dict[str, tuple] = {}
+    for path in sorted(root.rglob("*")):
+        if ".git" in path.parts:
+            continue
+        rel = str(path.relative_to(root))
+        lst = os.lstat(path)
+        if stat.S_ISDIR(lst.st_mode):
+            entries[rel] = ("dir", lst.st_mode)
+        else:
+            data = path.read_bytes()
+            entries[rel] = (
+                "file",
+                hashlib.sha256(data).hexdigest(),
+                len(data),
+                lst.st_mode,
+                lst.st_mtime_ns,
+            )
+    return entries
+
+
+def _inject_reparse(monkeypatch, link: Path, target: Path) -> None:
+    """Deterministically simulate a reparse point at ``link`` whose canonical
+    target is ``target``, without requiring OS privileges.
+
+    Windows fallback used when a real junction cannot be created (file
+    targets, missing ``mklink``, restricted policy): ``Path.resolve()`` is
+    made to behave exactly as if ``link`` were a reparse point, so the
+    product defense observes the redirect without any skip or xfail.
+    """
+    link_canon = os.path.realpath(os.fspath(link))
+    target_canon = os.path.realpath(os.fspath(target))
+    real_resolve = Path.resolve
+
+    def fake_resolve(self: Path, strict: bool = False) -> Path:
+        self_canon = os.path.realpath(os.fspath(self))
+        if self_canon == link_canon or self_canon.startswith(link_canon + os.sep):
+            rel = Path(self_canon).relative_to(link_canon)
+            resolved = (
+                Path(target_canon)
+                if rel == Path(".")
+                else Path(target_canon) / rel
+            )
+            return real_resolve(resolved, strict=strict)
+        return real_resolve(self, strict=strict)
+
+    monkeypatch.setattr(Path, "resolve", fake_resolve)
+
+
+def _make_redirect(monkeypatch, link: Path, target: Path) -> None:
+    """Create a real directory redirect without administrator rights.
+
+    POSIX uses a real symlink.  Windows prefers a real NTFS directory
+    junction (``mklink /J``, no admin rights); when a junction cannot be
+    created (file target, missing tooling, restricted policy) a deterministic
+    reparse-point simulation is injected instead, so every test still
+    exercises the defense with no skip.
+    """
+    if os.name == "nt":
+        if target.is_dir():
+            try:
+                created = subprocess.run(
+                    ["cmd", "/c", "mklink", "/J", os.fspath(link), os.fspath(target)],
+                    capture_output=True,
+                )
+            except OSError:
+                created = None
+            if created is not None and created.returncode == 0:
+                return
+        _inject_reparse(monkeypatch, link, target)
+        return
+    os.symlink(target, link)
+
+
+def snapshot_dir(path: Path) -> dict[str, tuple]:
+    """Snapshot an external directory: entry names, bytes, and mtimes."""
+    entries: dict[str, tuple] = {}
+    for child in sorted(path.iterdir()):
+        lst = os.lstat(child)
+        if stat.S_ISDIR(lst.st_mode):
+            entries[child.name] = ("dir", lst.st_mode, lst.st_mtime_ns)
+        else:
+            data = child.read_bytes()
+            entries[child.name] = (
+                "file",
+                hashlib.sha256(data).hexdigest(),
+                len(data),
+                lst.st_mode,
+                lst.st_mtime_ns,
+            )
+    return entries
+
+
+def forge(plan, **changes) -> object:
+    """Rebuild a plan with the given fields replaced and a consistent plan_id.
+
+    This simulates a caller forging a plan whose digest metadata matches its
+    own payload; every remaining defense must still reject it.
+    """
+    changed = replace(plan, **changes)
+    return replace(changed, plan_id=model_mod.plan_id_for(changed))
+
+
+# ---------------------------------------------------------------------------
+# success path
+# ---------------------------------------------------------------------------
+
+
+def test_apply_success_exact_bytes_modes_artifacts_and_status(tmp_path):
+    repo = standard_repo(tmp_path)
+    # A non-default mode on a tracked file is not recorded by Git (only the
+    # executable bit is), so the working-tree mode must survive the apply.
+    os.chmod(repo / "Common" / "common.c", 0o640)
+    # Windows cannot express POSIX modes exactly (os.chmod only toggles the
+    # read-only bit), so capture the real pre-apply mode and require the
+    # apply to preserve exactly that value on every host.
+    mode_before = stat.S_IMODE((repo / "Common" / "common.c").stat().st_mode)
+    inspection = fixture_inspection(repo)
+    plan = plan_keil_conversion(repo, inspection)
+    assert plan.blockers == ()
+    head_before = git_head(repo)
+    uvprojx_before = (repo / "app.uvprojx").read_bytes()
+    result = apply_keil_conversion(plan)
+    assert result.ok is True
+    assert result.operation == "keil-conversion-apply"
+    assert result.code == "OK"
+    data = result.to_dict()["data"]
+    assert data["planId"] == plan.plan_id
+    assert data["gitHead"] == head_before
+    assert data["changedPaths"] == ["Common/common.c", "Main/main.c"]
+    assert data["createdPaths"] == [
+        ".stm32-project.json",
+        "artifacts/migration/conversion-report.json",
+        "artifacts/migration/conversion.patch",
+    ]
+    assert data["patchPath"] == "artifacts/migration/conversion.patch"
+    assert data["reportPath"] == "artifacts/migration/conversion-report.json"
+    assert data["fixedSections"] == [
+        {
+            "section": ".stm32tk.abs.20000000",
+            "address": 0x20000000,
+            "sourcePath": "Common/common.c",
+            "line": 13,
+            "symbol": "pinned_value",
+        }
+    ]
+
+    assert (repo / "Common" / "common.c").read_bytes() == COMMON_C_AFTER.encode("utf-8")
+    assert (repo / "Main" / "main.c").read_bytes() == MAIN_C_AFTER.encode("utf-8")
+    assert stat.S_IMODE((repo / "Common" / "common.c").stat().st_mode) == mode_before
+
+    manifest = json.loads((repo / ".stm32-project.json").read_bytes())
+    proposal = next(p for p in plan.patches if p.path == ".stm32-project.json")
+    assert json.loads(proposal.after_bytes) == manifest
+
+    patch_bytes = (repo / "artifacts" / "migration" / "conversion.patch").read_bytes()
+    assert patch_bytes == b"".join(p.unified_diff.encode("utf-8") for p in plan.patches)
+    assert data["patchSha256"] == hashlib.sha256(patch_bytes).hexdigest()
+
+    report = json.loads(
+        (repo / "artifacts" / "migration" / "conversion-report.json").read_bytes()
+    )
+    assert report["schemaVersion"] == 1
+    assert report["planId"] == plan.plan_id
+    assert report["gitHead"] == head_before
+    assert report["inspectionSha256"] == plan.inspection_sha256
+    assert {entry["path"] for entry in report["inputs"]} == {
+        entry.path for entry in plan.inputs
+    }
+    assert {entry["path"] for entry in report["patches"]} == {
+        entry.path for entry in plan.patches
+    }
+    assert report["fixedSections"] == data["fixedSections"]
+    assert report["ignoredCompatible"] == [
+        {"ruleId": "ARMCC_COMPATIBLE_ASM", "path": "Common/common.c", "line": 10, "column": 1, "evidence": '__asm("nop");'},
+        {"ruleId": "ARMCC_GCC_SECTION_ATTRIBUTE", "path": "Common/common.c", "line": 12, "column": 1, "evidence": '__attribute__((section(".common.data"))) int shared_value;'},
+    ]
+    assert report["blockers"] == []
+    assert report["artifacts"]["patchSha256"] == data["patchSha256"]
+    assert report["artifacts"]["patch"] == "artifacts/migration/conversion.patch"
+    assert "reportSha256" not in report
+    assert data["reportSha256"] == hashlib.sha256(
+        (repo / "artifacts" / "migration" / "conversion-report.json").read_bytes()
+    ).hexdigest()
+    report_text = json.dumps(report)
+    assert str(repo) not in report_text
+
+    # Staging is fully removed; the empty .stm32-toolkit state dir remains per
+    # the success protocol (never removed), but empty dirs are invisible to Git.
+    assert not (repo / ".stm32-toolkit" / "migration-staging").exists()
+    assert (repo / ".stm32-toolkit").is_dir()
+
+    # Expected dirty status: only the planned paths plus artifacts.
+    status_lines = set(git_status(repo).splitlines())
+    assert status_lines == {
+        " M Common/common.c",
+        " M Main/main.c",
+        "?? .stm32-project.json",
+        "?? artifacts/",
+    }
+    assert git_head(repo) == head_before
+    assert (repo / "app.uvprojx").read_bytes() == uvprojx_before
+    assert subprocess.run(
+        ["git", "diff", "--cached", "--quiet"], cwd=repo, check=False
+    ).returncode == 0
+    result.to_dict()
+    json.dumps(result.to_dict())
+
+
+def test_apply_deterministic_patch_and_report(tmp_path):
+    repo_a = standard_repo(tmp_path)
+    repo_b = standard_repo(tmp_path)
+    assert git_head(repo_a) == git_head(repo_b)
+    plan_a = plan_keil_conversion(repo_a, fixture_inspection(repo_a))
+    plan_b = plan_keil_conversion(repo_b, fixture_inspection(repo_b))
+    assert plan_a.plan_id == plan_b.plan_id
+    result_a = apply_keil_conversion(plan_a)
+    result_b = apply_keil_conversion(plan_b)
+    assert (repo_a / "artifacts" / "migration" / "conversion.patch").read_bytes() == (
+        repo_b / "artifacts" / "migration" / "conversion.patch"
+    ).read_bytes()
+    assert (repo_a / "artifacts" / "migration" / "conversion-report.json").read_bytes() == (
+        repo_b / "artifacts" / "migration" / "conversion-report.json"
+    ).read_bytes()
+    assert result_a.to_dict()["data"]["patchSha256"] == result_b.to_dict()["data"]["patchSha256"]
+
+
+def test_apply_forged_plan_type_and_field_errors(tmp_path):
+    repo = standard_repo(tmp_path)
+    plan = plan_keil_conversion(repo, fixture_inspection(repo))
+    common = next(p for p in plan.patches if p.path == "Common/common.c")
+    main = next(p for p in plan.patches if p.path == "Main/main.c")
+    manifest = next(p for p in plan.patches if p.path == ".stm32-project.json")
+    first_input = plan.inputs[0]
+
+    cases = [
+        (replace(plan, git="x"), "type"),
+        (replace(plan, inputs=("x",)), "type"),
+        (replace(plan, patches=(1,)), "type"),
+        (replace(plan, fixed_sections=(1,)), "type"),
+        (replace(plan, blockers=(1,)), "type"),
+        (replace(plan, inputs=(replace(first_input, sha256="xyz"), *plan.inputs[1:])), "digestFormat"),
+        (replace(plan, inputs=(replace(first_input, size=-1), *plan.inputs[1:])), "digestFormat"),
+        (replace(plan, patches=(manifest, replace(common, rule_ids=["x"]), main)), "type"),
+        (replace(plan, patches=(manifest, replace(common, unified_diff=1), main)), "type"),
+        (replace(plan, patches=(manifest, replace(common, after_bytes="x"), main)), "type"),
+        (replace(plan, patches=(manifest, replace(common, before_bytes="x"), main)), "type"),
+        (replace(plan, patches=(replace(manifest, before_sha256="0" * 64), common, main)), "patchDigest"),
+        (replace(plan, patches=(manifest, replace(common, before_size=1), main)), "patchDigest"),
+        (replace(plan, patches=(manifest, replace(common, after_size=1), main)), "patchDigest"),
+        (replace(plan, patches=(manifest, replace(common, after_sha256="0" * 64), main)), "patchDigest"),
+        (
+            replace(
+                plan,
+                fixed_sections=(
+                    plan.fixed_sections[0],
+                    replace(plan.fixed_sections[0], symbol="aaa"),
+                ),
+            ),
+            "sortedOrder",
+        ),
+        (replace(plan, inputs=(plan.inputs[0], plan.inputs[0])), "uniquePath"),
+        (replace(plan, git=GitBaseline("xyz", ".")), "type"),
+        (replace(plan, git=GitBaseline("0" * 40, "x")), "type"),
+        (replace(plan, plan_version="1"), "planVersion"),
+        (replace(plan, project_root="/etc"), "type"),
+    ]
+    for forged, rule in cases:
+        before = snapshot_tree(repo)
+        result = apply_keil_conversion(forged)
+        assert result.ok is False, (forged, rule)
+        assert result.code == "MIGRATION_PLAN_INVALID", (forged, rule)
+        assert result.details["rule"] == rule, (forged, rule)
+        assert snapshot_tree(repo) == before
+        assert not (repo / ".stm32-toolkit").exists()
+
+
+def test_apply_root_and_git_unavailability(tmp_path, monkeypatch):
+    repo = standard_repo(tmp_path)
+    plan = plan_keil_conversion(repo, fixture_inspection(repo))
+    git_guard = planner_mod.git_guard
+    real_run = git_guard._run_git
+
+    # A subdirectory root with a matching forged inspection fails projectRoot.
+    subdir = repo / "Sub"
+    subdir.mkdir()
+    forged_root = replace(plan, project_root=subdir)
+    forged_root = replace(
+        forged_root, inspection=replace(plan.inspection, project_root=subdir)
+    )
+    result = apply_keil_conversion(forged_root)
+    assert result.code == "MIGRATION_PLAN_INVALID"
+    assert result.details["rule"] == "projectRoot"
+
+    def fail_toplevel(*args, **kwargs):
+        if args[0] == ["rev-parse", "--show-toplevel"]:
+            raise git_guard._GitError("nonzero")
+        return real_run(*args, **kwargs)
+
+    monkeypatch.setattr(git_guard, "_run_git", fail_toplevel)
+    result = apply_keil_conversion(plan)
+    assert result.code == "MIGRATION_GIT_UNAVAILABLE"
+    assert result.details == {"rule": "repository"}
+
+    def fail_head(*args, **kwargs):
+        if args[0] == ["rev-parse", "HEAD"]:
+            raise git_guard._GitError("nonzero")
+        return real_run(*args, **kwargs)
+
+    monkeypatch.setattr(git_guard, "_run_git", fail_head)
+    result = apply_keil_conversion(plan)
+    assert result.code == "MIGRATION_GIT_UNAVAILABLE"
+    assert result.details == {"rule": "head"}
+
+
+def test_apply_input_lstat_and_read_failures(tmp_path, monkeypatch):
+    repo = standard_repo(tmp_path)
+    plan = plan_keil_conversion(repo, fixture_inspection(repo))
+    real_lstat = os.lstat
+    lstat_calls = {"common": 0}
+
+    def broken_lstat(path, *args, **kwargs):
+        if _path_is(path, "Common", "common.c"):
+            lstat_calls["common"] += 1
+            raise NotADirectoryError(20, "not a dir")
+        return real_lstat(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "lstat", broken_lstat)
+    result = apply_keil_conversion(plan)
+    assert result.code == "MIGRATION_INPUT_CHANGED"
+    assert result.details == {"path": "Common/common.c"}
+    assert lstat_calls["common"] > 0
+
+    monkeypatch.setattr(os, "lstat", real_lstat)
+
+    _read_limited_impl = apply_mod._read_limited
+    read_calls = {"main": 0}
+
+    def deny_read(path, limit):
+        if _path_is(path, "Main", "main.c"):
+            read_calls["main"] += 1
+            raise PermissionError(13, "denied")
+        return _read_limited_impl(path, limit)
+
+    monkeypatch.setattr(apply_mod, "_read_limited", deny_read)
+    result = apply_keil_conversion(plan)
+    assert result.code == "MIGRATION_INPUT_CHANGED"
+    assert result.details == {"path": "Main/main.c"}
+    assert read_calls["main"] > 0
+
+
+def test_apply_target_and_staging_state_failures(tmp_path, monkeypatch):
+    repo = standard_repo(tmp_path)
+    plan = plan_keil_conversion(repo, fixture_inspection(repo))
+    real_lstat = os.lstat
+    manifest_calls = {"n": 0}
+
+    def broken_manifest_lstat(path, *args, **kwargs):
+        if _path_is(path, ".stm32-project.json"):
+            manifest_calls["n"] += 1
+            raise PermissionError(13, "denied")
+        return real_lstat(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "lstat", broken_manifest_lstat)
+    result = apply_keil_conversion(plan)
+    assert result.code == "MIGRATION_PATH_INVALID"
+    assert result.details == {"path": ".stm32-project.json", "rule": "withinProjectRoot"}
+    assert manifest_calls["n"] > 0
+
+    monkeypatch.setattr(os, "lstat", real_lstat)
+
+    staging_calls = {"n": 0}
+
+    def broken_staging_lstat(path, *args, **kwargs):
+        if _path_in_staging(path):
+            staging_calls["n"] += 1
+            raise NotADirectoryError(20, "not a dir")
+        return real_lstat(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "lstat", broken_staging_lstat)
+    result = apply_keil_conversion(plan)
+    assert result.code == "MIGRATION_TARGET_EXISTS"
+    assert result.details == {"path": f".stm32-toolkit/migration-staging/{plan.plan_id}"}
+    assert staging_calls["n"] > 0
+
+    staging_calls["n"] = 0
+
+    def denied_staging_lstat(path, *args, **kwargs):
+        if _path_in_staging(path):
+            staging_calls["n"] += 1
+            raise PermissionError(13, "denied")
+        return real_lstat(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "lstat", denied_staging_lstat)
+    result = apply_keil_conversion(plan)
+    assert result.code == "MIGRATION_PATH_INVALID"
+    assert staging_calls["n"] > 0
+
+
+def test_apply_resolve_failure_rejected(tmp_path, monkeypatch):
+    repo = standard_repo(tmp_path)
+    plan = plan_keil_conversion(repo, fixture_inspection(repo))
+    real_resolve = Path.resolve
+    resolve_calls = {"patch": 0}
+
+    def broken_resolve(self, strict=False):
+        if _path_is(self, "conversion.patch"):
+            resolve_calls["patch"] += 1
+            raise RuntimeError("symlink loop")
+        return real_resolve(self, strict)
+
+    monkeypatch.setattr(Path, "resolve", broken_resolve)
+    result = apply_keil_conversion(plan)
+    assert result.code == "MIGRATION_PATH_INVALID"
+    assert result.details == {
+        "path": "artifacts/migration/conversion.patch",
+        "rule": "withinProjectRoot",
+    }
+    assert resolve_calls["patch"] > 0
+
+
+def test_apply_staging_resolve_failures_rejected(tmp_path, monkeypatch):
+    """A staging component whose canonical resolution fails (loop, broken
+    reparse) and a project root that cannot be re-resolved both produce the
+    stable MIGRATION_PATH_INVALID / withinProjectRoot failure before any
+    write."""
+    repo = standard_repo(tmp_path)
+    plan = plan_keil_conversion(repo, fixture_inspection(repo))
+    real_resolve = Path.resolve
+    canonical = repo.resolve()
+    staging_path = f".stm32-toolkit/migration-staging/{plan.plan_id}"
+    component_calls = {"n": 0}
+
+    def broken_component_resolve(self, strict=False):
+        if ".stm32-toolkit" in Path(self).parts:
+            component_calls["n"] += 1
+            raise RuntimeError("symlink loop")
+        return real_resolve(self, strict)
+
+    monkeypatch.setattr(Path, "resolve", broken_component_resolve)
+    result = apply_keil_conversion(plan)
+    assert result.code == "MIGRATION_PATH_INVALID"
+    assert result.details == {"path": staging_path, "rule": "withinProjectRoot"}
+    assert component_calls["n"] > 0
+
+    monkeypatch.setattr(Path, "resolve", real_resolve)
+
+    def broken_root_resolve(self, strict=False):
+        if strict is False and os.path.realpath(os.fspath(self)) == str(canonical):
+            raise RuntimeError("root loop")
+        return real_resolve(self, strict)
+
+    monkeypatch.setattr(Path, "resolve", broken_root_resolve)
+    result = apply_keil_conversion(plan)
+    assert result.code == "MIGRATION_PATH_INVALID"
+    assert result.details == {"path": staging_path, "rule": "withinProjectRoot"}
+
+    assert not (repo / ".stm32-toolkit").exists()
+
+
+def test_apply_success_cleanup_failure_rolls_back(tmp_path, monkeypatch):
+    repo = standard_repo(tmp_path)
+    plan = plan_keil_conversion(repo, fixture_inspection(repo))
+    real_rmtree = shutil.rmtree
+    calls = {"n": 0}
+
+    def broken_rmtree(*args, **kwargs):
+        if calls["n"] == 0:
+            calls["n"] += 1
+            raise OSError(5, "rmtree failed")
+        return real_rmtree(*args, **kwargs)
+
+    monkeypatch.setattr(shutil, "rmtree", broken_rmtree)
+    result = apply_keil_conversion(plan)
+    assert result.ok is False
+    assert result.code == "MIGRATION_APPLY_FAILED"
+    assert result.details == {"phase": "stage"}
+    monkeypatch.setattr(shutil, "rmtree", real_rmtree)
+    assert (repo / "Common" / "common.c").read_bytes() == COMMON_C.encode("utf-8")
+    assert (repo / "Main" / "main.c").read_bytes() == MAIN_C.encode("utf-8")
+    assert not (repo / ".stm32-project.json").exists()
+    assert not (repo / "artifacts").exists()
+    assert not (repo / ".stm32-toolkit").exists()
+    assert git_status(repo) == ""
+
+
+def test_apply_fresh_replan_input_change_mapped(tmp_path, monkeypatch):
+    repo = standard_repo(tmp_path)
+    plan = plan_keil_conversion(repo, fixture_inspection(repo))
+
+    def broken_revalidation(root, digests):
+        raise MigrationPlanError(
+            "MIGRATION_INSPECTION_CHANGED", "changed", {"path": "Main/main.c"}
+        )
+
+    monkeypatch.setattr(planner_mod, "_revalidate_inputs", broken_revalidation)
+    result = apply_keil_conversion(plan)
+    assert result.code == "MIGRATION_INPUT_CHANGED"
+    assert result.details == {"path": "Main/main.c"}
+
+
+def test_apply_plan_error_result_surface(tmp_path):
+    """A MigrationPlanError from canonicalization surfaces as a stable result."""
+    repo = standard_repo(tmp_path)
+    plan = plan_keil_conversion(repo, fixture_inspection(repo))
+    forged = replace(plan, project_root=tmp_path / "missing-root")
+    result = apply_keil_conversion(forged)
+    assert result.ok is False
+    assert result.code == "MIGRATION_ROOT_INVALID"
+    assert result.details == {"field": "projectRoot", "rule": "directory"}
+    result.to_dict()
+    json.dumps(result.to_dict())
+
+
+def test_apply_file_fsync_failure_phase(tmp_path, monkeypatch):
+    repo = standard_repo(tmp_path)
+    plan = plan_keil_conversion(repo, fixture_inspection(repo))
+
+    def broken_fsync(fd):
+        raise OSError(5, "fsync failed")
+
+    monkeypatch.setattr(os, "fsync", broken_fsync)
+    result = apply_keil_conversion(plan)
+    assert result.ok is False
+    assert result.code == "MIGRATION_APPLY_FAILED"
+    assert result.details == {"phase": "fsync"}
+    assert (repo / "Common" / "common.c").read_bytes() == COMMON_C.encode("utf-8")
+    assert not (repo / ".stm32-project.json").exists()
+    assert not (repo / ".stm32-toolkit").exists()
+    assert git_status(repo) == ""
+
+
+def test_apply_staging_prune_failures_are_best_effort(tmp_path, monkeypatch):
+    repo = standard_repo(tmp_path)
+    plan = plan_keil_conversion(repo, fixture_inspection(repo))
+    real_rmdir = os.rmdir
+    calls = {"n": 0}
+
+    def failing_rmdir(path, *args, **kwargs):
+        if _path_is(path, "migration-staging") or _path_is(path, ".stm32-toolkit"):
+            calls["n"] += 1
+            raise OSError(16, "busy")
+        return real_rmdir(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "rmdir", failing_rmdir)
+    result = apply_keil_conversion(plan)
+    assert result.ok is True
+    assert result.code == "OK"
+    assert calls["n"] > 0
+    monkeypatch.setattr(os, "rmdir", real_rmdir)
+    assert not (repo / ".stm32-toolkit" / "migration-staging" / plan.plan_id).exists()
+    assert (repo / ".stm32-project.json").exists()
+
+
+def test_apply_input_format_and_read_branches(tmp_path, monkeypatch):
+    repo = standard_repo(tmp_path)
+    plan = plan_keil_conversion(repo, fixture_inspection(repo))
+    first_input = plan.inputs[0]
+
+    forged = replace(plan, inputs=(replace(first_input, path="../x.c"), *plan.inputs[1:]))
+    result = apply_keil_conversion(forged)
+    assert result.code == "MIGRATION_PLAN_INVALID"
+    assert result.details["rule"] == "portablePath"
+
+    forged = replace(plan, patches=(plan.patches[0], replace(plan.patches[1], before_sha256="xyz"), plan.patches[2]))
+    result = apply_keil_conversion(forged)
+    assert result.code == "MIGRATION_PLAN_INVALID"
+    assert result.details["rule"] == "patchDigest"
+
+    forged = replace(plan, patches=(replace(plan.patches[0], before_size=1), plan.patches[1], plan.patches[2]))
+    result = apply_keil_conversion(forged)
+    assert result.code == "MIGRATION_PLAN_INVALID"
+    assert result.details["rule"] == "patchDigest"
+
+    real_limited = apply_mod._read_limited
+    missing_calls = {"n": 0}
+
+    def missing_read(path, limit):
+        if _path_is(path, "Main", "main.c"):
+            missing_calls["n"] += 1
+            raise FileNotFoundError(2, "gone")
+        return real_limited(path, limit)
+
+    monkeypatch.setattr(apply_mod, "_read_limited", missing_read)
+    result = apply_keil_conversion(plan)
+    assert result.code == "MIGRATION_INPUT_CHANGED"
+    assert result.details == {"path": "Main/main.c"}
+    assert missing_calls["n"] > 0
+
+    grown_calls = {"n": 0}
+
+    def grown_read(path, limit):
+        data = real_limited(path, limit)
+        if _path_is(path, "Main", "main.c"):
+            grown_calls["n"] += 1
+            return data + b"x"
+        return data
+
+    monkeypatch.setattr(apply_mod, "_read_limited", grown_read)
+    result = apply_keil_conversion(plan)
+    assert result.code == "MIGRATION_INPUT_CHANGED"
+    assert result.details == {"path": "Main/main.c"}
+    assert grown_calls["n"] > 0
+
+
+def test_apply_report_omitted_sources_and_artifacts(tmp_path):
+    repo = build_repo(
+        tmp_path,
+        files={
+            "Main/main.c": "int main(void) { return 0; }\n",
+            "Headers/board.h": "#pragma once\n",
+        },
+        uvprojx_kwargs={
+            "groups": (
+                ("Main", (("main.c", "1", "Main/main.c"),)),
+                ("Headers", (("board.h", "5", "Headers/board.h"),)),
+            )
+        },
+    )
+    plan = plan_keil_conversion(repo, fixture_inspection(repo))
+    assert plan.blockers == ()
+    result = apply_keil_conversion(plan)
+    assert result.ok is True
+    report = json.loads(
+        (repo / "artifacts" / "migration" / "conversion-report.json").read_bytes()
+    )
+    assert report["omittedSources"] == [{"path": "Headers/board.h", "language": "header"}]
+    assert report["includedAssembly"] == []
+    assert report["artifacts"]["patch"] == "artifacts/migration/conversion.patch"
+    assert report["artifacts"]["report"] == "artifacts/migration/conversion-report.json"
+    result.to_dict()
+    json.dumps(result.to_dict())
+
+
+def test_apply_manifest_only_project(tmp_path):
+    repo = build_repo(
+        tmp_path,
+        files={"Main/main.c": "int main(void) { return 0; }\n"},
+    )
+    inspection = fixture_inspection(repo)
+    plan = plan_keil_conversion(repo, inspection)
+    result = apply_keil_conversion(plan)
+    assert result.ok is True
+    assert result.to_dict()["data"]["changedPaths"] == []
+    assert result.to_dict()["data"]["createdPaths"] == [
+        ".stm32-project.json",
+        "artifacts/migration/conversion-report.json",
+        "artifacts/migration/conversion.patch",
+    ]
+    assert (repo / ".stm32-project.json").exists()
+
+
+# ---------------------------------------------------------------------------
+# refusals before any write
+# ---------------------------------------------------------------------------
+
+
+def test_apply_blocked_plan_refuses_without_writes(tmp_path):
+    repo = build_repo(
+        tmp_path,
+        files={"Main/main.c": "#pragma O3\nint main(void) { return 0; }\n"},
+    )
+    inspection = fixture_inspection(repo)
+    plan = plan_keil_conversion(repo, inspection)
+    assert plan.blockers
+    before = snapshot_tree(repo)
+    result = apply_keil_conversion(plan)
+    assert result.ok is False
+    assert result.code == "MIGRATION_BLOCKED"
+    assert list(result.details["blockerCodes"]) == sorted({b.code for b in plan.blockers})
+    assert snapshot_tree(repo) == before
+    assert not (repo / ".stm32-toolkit").exists()
+
+
+def test_apply_head_changed(tmp_path):
+    repo = standard_repo(tmp_path)
+    plan = plan_keil_conversion(repo, fixture_inspection(repo))
+    (repo / "note.txt").write_bytes(b"new")
+    subprocess.run(["git", "add", "-A"], cwd=repo, check=True, env=git_env())
+    subprocess.run(["git", "commit", "-q", "-m", "second"], cwd=repo, check=True, env=git_env())
+    before = snapshot_tree(repo)
+    result = apply_keil_conversion(plan)
+    assert result.ok is False
+    assert result.code == "MIGRATION_GIT_HEAD_CHANGED"
+    assert result.details == {"expected": plan.git.head, "actual": git_head(repo)}
+    assert snapshot_tree(repo) == before
+
+
+def test_apply_dirty_untracked_staged_and_unstaged(tmp_path):
+    repo = standard_repo(tmp_path)
+    plan = plan_keil_conversion(repo, fixture_inspection(repo))
+    (repo / "scratch.txt").write_bytes(b"x")
+    result = apply_keil_conversion(plan)
+    assert result.code == "MIGRATION_GIT_DIRTY"
+    assert result.details == {"rule": "cleanWorktree"}
+
+    repo2 = standard_repo(tmp_path)
+    plan2 = plan_keil_conversion(repo2, fixture_inspection(repo2))
+    (repo2 / "note.txt").write_bytes(b"y")
+    subprocess.run(["git", "add", "-A"], cwd=repo2, check=True)
+    result2 = apply_keil_conversion(plan2)
+    assert result2.code == "MIGRATION_GIT_DIRTY"
+    assert result2.details == {"rule": "cleanWorktree"}
+
+    repo3 = standard_repo(tmp_path)
+    (repo3 / "note.txt").write_bytes(b"z")
+    subprocess.run(["git", "add", "-A"], cwd=repo3, check=True, env=git_env())
+    subprocess.run(["git", "commit", "-q", "-m", "note"], cwd=repo3, check=True, env=git_env())
+    plan3 = plan_keil_conversion(repo3, fixture_inspection(repo3))
+    (repo3 / "note.txt").write_bytes(b"z2")
+    result3 = apply_keil_conversion(plan3)
+    assert result3.code == "MIGRATION_GIT_DIRTY"
+    assert result3.details == {"rule": "cleanWorktree"}
+
+
+def test_apply_git_status_unavailable(tmp_path, monkeypatch):
+    repo = standard_repo(tmp_path)
+    plan = plan_keil_conversion(repo, fixture_inspection(repo))
+    git_guard = planner_mod.git_guard
+    real_run = git_guard._run_git
+
+    def fail_status(*args, **kwargs):
+        if args[0][0] == "status":
+            raise git_guard._GitError("nonzero")
+        return real_run(*args, **kwargs)
+
+    monkeypatch.setattr(git_guard, "_run_git", fail_status)
+    result = apply_keil_conversion(plan)
+    assert result.ok is False
+    assert result.code == "MIGRATION_GIT_UNAVAILABLE"
+    assert result.details == {"rule": "status"}
+
+
+def test_apply_changed_deleted_and_replaced_input(tmp_path):
+    repo = standard_repo(tmp_path)
+    plan = plan_keil_conversion(repo, fixture_inspection(repo))
+    (repo / "Main" / "main.c").write_bytes(MAIN_C.replace("__irq", "__irq ").encode("utf-8"))
+    result = apply_keil_conversion(plan)
+    assert result.code == "MIGRATION_INPUT_CHANGED"
+    assert result.details == {"path": "Main/main.c"}
+
+    repo2 = standard_repo(tmp_path)
+    plan2 = plan_keil_conversion(repo2, fixture_inspection(repo2))
+    (repo2 / "Common" / "common.c").unlink()
+    result2 = apply_keil_conversion(plan2)
+    assert result2.code == "MIGRATION_INPUT_CHANGED"
+    assert result2.details == {"path": "Common/common.c"}
+
+    repo3 = standard_repo(tmp_path)
+    plan3 = plan_keil_conversion(repo3, fixture_inspection(repo3))
+    (repo3 / "Common" / "common.c").unlink()
+    (repo3 / "Common" / "common.c").mkdir()
+    result3 = apply_keil_conversion(plan3)
+    assert result3.code == "MIGRATION_INPUT_CHANGED"
+    assert result3.details == {"path": "Common/common.c"}
+
+    for repo_used in (repo, repo2, repo3):
+        assert not (repo_used / ".stm32-toolkit").exists()
+
+
+def test_apply_input_symlink_escape(tmp_path, monkeypatch):
+    outside = tmp_path / "outside.c"
+    outside.write_bytes(COMMON_C.encode("utf-8"))
+    repo = standard_repo(tmp_path)
+    plan = plan_keil_conversion(repo, fixture_inspection(repo))
+    (repo / "Common" / "common.c").unlink()
+    _make_redirect(monkeypatch, repo / "Common" / "common.c", outside)
+    result = apply_keil_conversion(plan)
+    assert result.code == "MIGRATION_INPUT_CHANGED"
+    assert result.details == {"path": "Common/common.c"}
+
+
+def test_apply_patch_target_escape(tmp_path, monkeypatch):
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    repo = standard_repo(tmp_path)
+    plan = plan_keil_conversion(repo, fixture_inspection(repo))
+    _make_redirect(monkeypatch, repo / "artifacts", outside)
+    result = apply_keil_conversion(plan)
+    assert result.code == "MIGRATION_PATH_INVALID"
+    assert result.details["rule"] == "withinProjectRoot"
+    assert result.details["path"] == "artifacts/migration/conversion.patch"
+    assert not (repo / ".stm32-toolkit").exists()
+
+
+def test_apply_target_collision_manifest_and_artifacts(tmp_path):
+    repo = standard_repo(tmp_path)
+    plan = plan_keil_conversion(repo, fixture_inspection(repo))
+    (repo / ".stm32-project.json").write_bytes(b"{}")
+    result = apply_keil_conversion(plan)
+    assert result.code == "MIGRATION_TARGET_EXISTS"
+    assert result.details == {"path": ".stm32-project.json"}
+
+    repo2 = standard_repo(tmp_path)
+    plan2 = plan_keil_conversion(repo2, fixture_inspection(repo2))
+    (repo2 / "artifacts" / "migration").mkdir(parents=True)
+    (repo2 / "artifacts" / "migration" / "conversion.patch").write_bytes(b"x")
+    result2 = apply_keil_conversion(plan2)
+    assert result2.code == "MIGRATION_TARGET_EXISTS"
+    assert result2.details == {"path": "artifacts/migration/conversion.patch"}
+
+
+def test_apply_staging_collision(tmp_path):
+    repo = build_repo(
+        tmp_path,
+        files={"Main/main.c": MAIN_C, "Common/common.c": COMMON_C},
+        gitignore=".stm32-toolkit/\n",
+    )
+    plan = plan_keil_conversion(repo, fixture_inspection(repo))
+    staging = repo / ".stm32-toolkit" / "migration-staging" / plan.plan_id
+    staging.mkdir(parents=True)
+    result = apply_keil_conversion(plan)
+    assert result.code == "MIGRATION_TARGET_EXISTS"
+    assert result.details == {"path": f".stm32-toolkit/migration-staging/{plan.plan_id}"}
+    assert (repo / "Main" / "main.c").read_bytes() == MAIN_C.encode("utf-8")
+
+
+def test_apply_staging_intermediate_redirect_escape_is_rejected(tmp_path, monkeypatch):
+    """A redirect on the staging path itself must be rejected before the first
+    write: the intermediate ``.stm32-toolkit/migration-staging`` directory may
+    be a junction/symlink/reparse point to a directory outside the project
+    root.  The external directory's bytes, entries, and mtimes must not
+    change."""
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    repo = build_repo(
+        tmp_path,
+        files={"Main/main.c": MAIN_C, "Common/common.c": COMMON_C},
+        gitignore=".stm32-toolkit/\n",
+    )
+    plan = plan_keil_conversion(repo, fixture_inspection(repo))
+    (repo / ".stm32-toolkit").mkdir()
+    _make_redirect(monkeypatch, repo / ".stm32-toolkit" / "migration-staging", outside)
+    outside_before = snapshot_dir(outside)
+    result = apply_keil_conversion(plan)
+    assert result.code == "MIGRATION_PATH_INVALID"
+    assert result.details == {
+        "path": f".stm32-toolkit/migration-staging/{plan.plan_id}",
+        "rule": "withinProjectRoot",
+    }
+    assert snapshot_dir(outside) == outside_before
+    assert not (repo / ".stm32-toolkit" / "migration-staging" / plan.plan_id).exists()
+    assert (repo / "Main" / "main.c").read_bytes() == MAIN_C.encode("utf-8")
+    assert (repo / "Common" / "common.c").read_bytes() == COMMON_C.encode("utf-8")
+
+
+def test_apply_staging_containment_with_injected_reparse(tmp_path, monkeypatch):
+    """The deterministic reparse simulation (the Windows fallback for
+    unprivileged redirects) must itself be exercised on Linux too: an
+    injected reparse point on the staging path is rejected exactly like a
+    real redirect, before any write, leaving the external directory
+    untouched."""
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    repo = build_repo(
+        tmp_path,
+        files={"Main/main.c": MAIN_C, "Common/common.c": COMMON_C},
+        gitignore=".stm32-toolkit/\n",
+    )
+    plan = plan_keil_conversion(repo, fixture_inspection(repo))
+    (repo / ".stm32-toolkit").mkdir()
+    _inject_reparse(monkeypatch, repo / ".stm32-toolkit" / "migration-staging", outside)
+    outside_before = snapshot_dir(outside)
+    result = apply_keil_conversion(plan)
+    assert result.code == "MIGRATION_PATH_INVALID"
+    assert result.details == {
+        "path": f".stm32-toolkit/migration-staging/{plan.plan_id}",
+        "rule": "withinProjectRoot",
+    }
+    assert snapshot_dir(outside) == outside_before
+    assert not (repo / ".stm32-toolkit" / "migration-staging" / plan.plan_id).exists()
+
+
+def test_apply_input_escape_with_injected_reparse(tmp_path, monkeypatch):
+    """The deterministic reparse simulation is also verified for a file
+    redirect (Windows cannot junction a file): the escape is rejected with
+    the same stable failure a real redirect produces."""
+    outside = tmp_path / "outside.c"
+    outside.write_bytes(COMMON_C.encode("utf-8"))
+    repo = standard_repo(tmp_path)
+    plan = plan_keil_conversion(repo, fixture_inspection(repo))
+    (repo / "Common" / "common.c").unlink()
+    _inject_reparse(monkeypatch, repo / "Common" / "common.c", outside)
+    result = apply_keil_conversion(plan)
+    assert result.code == "MIGRATION_INPUT_CHANGED"
+    assert result.details == {"path": "Common/common.c"}
+    assert not (repo / ".stm32-toolkit").exists()
+
+
+def test_apply_staging_root_redirect_escape_is_rejected(tmp_path, monkeypatch):
+    """A redirect on the staging root ``.stm32-toolkit`` itself must be
+    rejected before the first write with the same stable failure, leaving the
+    external directory untouched."""
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    repo = build_repo(
+        tmp_path,
+        files={"Main/main.c": MAIN_C, "Common/common.c": COMMON_C},
+        gitignore=".stm32-toolkit\n",
+    )
+    plan = plan_keil_conversion(repo, fixture_inspection(repo))
+    _make_redirect(monkeypatch, repo / ".stm32-toolkit", outside)
+    outside_before = snapshot_dir(outside)
+    result = apply_keil_conversion(plan)
+    assert result.code == "MIGRATION_PATH_INVALID"
+    assert result.details == {
+        "path": f".stm32-toolkit/migration-staging/{plan.plan_id}",
+        "rule": "withinProjectRoot",
+    }
+    assert snapshot_dir(outside) == outside_before
+    assert not (repo / ".stm32-toolkit" / "migration-staging" / plan.plan_id).exists()
+    assert (repo / "Main" / "main.c").read_bytes() == MAIN_C.encode("utf-8")
+
+
+def test_apply_inspection_failure(tmp_path, monkeypatch):
+    from stm32_toolkit.keil import KeilInspectionError
+
+    repo = standard_repo(tmp_path)
+    plan = plan_keil_conversion(repo, fixture_inspection(repo))
+
+    def broken(*args, **kwargs):
+        raise KeilInspectionError("KEIL_PROJECT_NOT_FOUND", "gone", {})
+
+    monkeypatch.setattr(planner_mod, "inspect_keil", broken)
+    result = apply_keil_conversion(plan)
+    assert result.ok is False
+    assert result.code == "MIGRATION_PLAN_INVALID"
+    assert result.details == {"rule": "freshInspection"}
+    assert not (repo / ".stm32-toolkit").exists()
+
+
+# ---------------------------------------------------------------------------
+# forged-plan defense
+# ---------------------------------------------------------------------------
+
+
+def test_apply_forged_plan_metadata(tmp_path):
+    repo = standard_repo(tmp_path)
+    plan = plan_keil_conversion(repo, fixture_inspection(repo))
+
+    cases = [
+        (replace(plan, plan_version=2), "planVersion"),
+        (replace(plan, plan_id="0" * 64), "planId"),
+        (replace(plan, git=GitBaseline("0" * 40, ".")), "planId"),
+        (
+            replace(
+                plan,
+                inputs=((MigrationInput("Main/main.c", "0" * 64, 5),),),
+            ),
+            "planId",
+        ),
+        (
+            replace(
+                plan,
+                patches=(
+                    replace(plan.patches[1], path="Other/renamed.c"),
+                    *plan.patches[:1],
+                    *plan.patches[2:],
+                ),
+            ),
+            "planId",
+        ),
+    ]
+    for forged, _rule in cases:
+        before = snapshot_tree(repo)
+        result = apply_keil_conversion(forged)
+        assert result.ok is False, forged
+        assert result.code == "MIGRATION_PLAN_INVALID"
+        assert snapshot_tree(repo) == before
+        assert not (repo / ".stm32-toolkit").exists()
+
+
+def test_apply_forged_after_bytes_with_consistent_plan_id(tmp_path):
+    repo = standard_repo(tmp_path)
+    plan = plan_keil_conversion(repo, fixture_inspection(repo))
+    common = next(p for p in plan.patches if p.path == "Common/common.c")
+    forged = forge(plan, patches=tuple(replace(p, after_bytes=p.after_bytes + b"//x\n") if p is common else p for p in plan.patches))
+    before = snapshot_tree(repo)
+    result = apply_keil_conversion(forged)
+    assert result.ok is False
+    assert result.code == "MIGRATION_PLAN_INVALID"
+    assert result.details["rule"] in ("patchDigest",)
+    assert snapshot_tree(repo) == before
+
+
+def test_apply_forged_plan_with_consistent_plan_id_fails_fresh_replan(tmp_path):
+    repo = standard_repo(tmp_path)
+    plan = plan_keil_conversion(repo, fixture_inspection(repo))
+
+    common = next(p for p in plan.patches if p.path == "Common/common.c")
+    main = next(p for p in plan.patches if p.path == "Main/main.c")
+    manifest = next(p for p in plan.patches if p.path == ".stm32-project.json")
+
+    # Blockers removed from a genuinely blocked plan.
+    repo_b = build_repo(
+        tmp_path,
+        files={"Main/main.c": "#pragma O3\nint main(void) { return 0; }\n"},
+    )
+    plan_b = plan_keil_conversion(repo_b, fixture_inspection(repo_b))
+    assert plan_b.blockers
+    forged_b = forge(plan_b, blockers=())
+    result_b = apply_keil_conversion(forged_b)
+    assert result_b.ok is False
+    assert result_b.code == "MIGRATION_PLAN_INVALID"
+    assert result_b.details == {"rule": "freshPlan"}
+
+    # Fixed sections forged with a consistent plan id.
+    forged_fixed = forge(
+        plan,
+        fixed_sections=(
+            FixedSectionRequirement(".stm32tk.abs.deadbeef", 0xDEADBEEF, "Common/common.c", 12, "x"),
+        ),
+    )
+    result_fixed = apply_keil_conversion(forged_fixed)
+    assert result_fixed.code == "MIGRATION_PLAN_INVALID"
+    assert result_fixed.details == {"rule": "freshPlan"}
+
+    # Patch path forged with a consistent plan id (tuple kept sorted so the
+    # fresh-replan equality, not an ordering check, is the failing defense).
+    # The forged target exists with matching bytes and the tree stays clean.
+    (repo / "Other").mkdir()
+    (repo / "Other" / "common.c").write_bytes(COMMON_C.encode("utf-8"))
+    subprocess.run(["git", "add", "-A"], cwd=repo, check=True, env=git_env())
+    subprocess.run(["git", "commit", "-q", "-m", "other"], cwd=repo, check=True, env=git_env())
+    plan = plan_keil_conversion(repo, fixture_inspection(repo))
+    common = next(p for p in plan.patches if p.path == "Common/common.c")
+    main = next(p for p in plan.patches if p.path == "Main/main.c")
+    manifest = next(p for p in plan.patches if p.path == ".stm32-project.json")
+    forged_path = forge(
+        plan,
+        patches=(
+            manifest,
+            main,
+            replace(common, path="Other/common.c"),
+        ),
+    )
+    result_path = apply_keil_conversion(forged_path)
+    assert result_path.code == "MIGRATION_PLAN_INVALID"
+    assert result_path.details == {"rule": "freshPlan"}
+
+    assert not (repo / ".stm32-toolkit").exists()
+    assert not (repo_b / ".stm32-toolkit").exists()
+
+
+def test_apply_forged_duplicate_unsorted_and_bad_paths(tmp_path):
+    repo = standard_repo(tmp_path)
+    plan = plan_keil_conversion(repo, fixture_inspection(repo))
+    common = next(p for p in plan.patches if p.path == "Common/common.c")
+    main = next(p for p in plan.patches if p.path == "Main/main.c")
+    manifest = next(p for p in plan.patches if p.path == ".stm32-project.json")
+
+    duplicates = replace(plan, patches=(common, common, main, manifest))
+    result = apply_keil_conversion(duplicates)
+    assert result.code == "MIGRATION_PLAN_INVALID"
+    assert result.details["rule"] in ("uniquePath", "planId")
+
+    unsorted = replace(plan, patches=(main, common, manifest))
+    result = apply_keil_conversion(unsorted)
+    assert result.code == "MIGRATION_PLAN_INVALID"
+    assert result.details["rule"] in ("sortedOrder", "planId")
+
+    for bad in ("../evil.c", "/abs.c", "C:\\evil.c", "a/../../evil.c", "bad\x00name", "a//b.c", ".stm32-toolkit/x", ".git/config", "artifacts/migration/conversion.patch", "other.uvprojx"):
+        forged = replace(plan, patches=(replace(common, path=bad), main, manifest))
+        result = apply_keil_conversion(forged)
+        assert result.code == "MIGRATION_PLAN_INVALID", bad
+        assert result.details["rule"] == "portablePath", bad
+
+    assert not (repo / ".stm32-toolkit").exists()
+
+
+def test_apply_casefold_collision(tmp_path):
+    repo = standard_repo(tmp_path)
+    plan = plan_keil_conversion(repo, fixture_inspection(repo))
+    common = next(p for p in plan.patches if p.path == "Common/common.c")
+    main = next(p for p in plan.patches if p.path == "Main/main.c")
+    manifest = next(p for p in plan.patches if p.path == ".stm32-project.json")
+    forged = forge(
+        plan,
+        patches=(
+            replace(common, path="Main/a.c"),
+            replace(main, path="main/a.c"),
+            manifest,
+        ),
+    )
+    result = apply_keil_conversion(forged)
+    assert result.code == "MIGRATION_PLAN_INVALID"
+    assert result.details["rule"] == "casefoldCollision"
+
+
+def test_apply_forged_before_bytes_digest_mismatch(tmp_path):
+    repo = standard_repo(tmp_path)
+    plan = plan_keil_conversion(repo, fixture_inspection(repo))
+    common = next(p for p in plan.patches if p.path == "Common/common.c")
+    forged = replace(
+        plan,
+        patches=(
+            plan.patches[0],
+            replace(common, before_bytes=common.before_bytes + b"#x\n"),
+            plan.patches[2],
+        ),
+    )
+    result = apply_keil_conversion(forged)
+    assert result.code == "MIGRATION_PLAN_INVALID"
+    assert result.details["rule"] == "patchDigest"
+
+
+def test_apply_report_limit(tmp_path, monkeypatch):
+    repo = standard_repo(tmp_path)
+    plan = plan_keil_conversion(repo, fixture_inspection(repo))
+    monkeypatch.setattr(apply_mod, "_REPORT_LIMIT_BYTES", 64)
+    result = apply_keil_conversion(plan)
+    assert result.ok is False
+    assert result.code == "MIGRATION_PLAN_INVALID"
+    assert result.details == {"rule": "reportLimit"}
+    assert not (repo / ".stm32-toolkit").exists()
+
+
+# ---------------------------------------------------------------------------
+# failure injection: staging, replace, fsync, rollback
+# ---------------------------------------------------------------------------
+
+
+def test_apply_stage_failure_removes_staging(tmp_path, monkeypatch):
+    repo = standard_repo(tmp_path)
+    plan = plan_keil_conversion(repo, fixture_inspection(repo))
+
+    def broken_stage(*args, **kwargs):
+        raise OSError(5, "stage failed")
+
+    monkeypatch.setattr(apply_mod, "_stage_write", broken_stage)
+    result = apply_keil_conversion(plan)
+    assert result.ok is False
+    assert result.code == "MIGRATION_APPLY_FAILED"
+    assert result.details == {"phase": "stage"}
+    assert (repo / "Main" / "main.c").read_bytes() == MAIN_C.encode("utf-8")
+    assert (repo / "Common" / "common.c").read_bytes() == COMMON_C.encode("utf-8")
+    assert not (repo / ".stm32-toolkit").exists()
+    assert git_status(repo) == ""
+
+
+def test_apply_replace_failure_rolls_back_exactly(tmp_path, monkeypatch):
+    repo = standard_repo(tmp_path)
+    plan = plan_keil_conversion(repo, fixture_inspection(repo))
+    mode_before = stat.S_IMODE((repo / "Common" / "common.c").stat().st_mode)
+    state_before = snapshot_tree(repo)
+
+    real_replace = os.replace
+    calls = {"n": 0}
+
+    def failing_replace(src, dst):
+        calls["n"] += 1
+        if calls["n"] == 2:
+            raise OSError(28, "replace failed")
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(os, "replace", failing_replace)
+    result = apply_keil_conversion(plan)
+    assert result.ok is False
+    assert result.code == "MIGRATION_APPLY_FAILED"
+    assert result.details == {"phase": "replace"}
+
+    # Every pre-apply byte and mode is restored; staging is gone; status clean.
+    assert (repo / "Main" / "main.c").read_bytes() == MAIN_C.encode("utf-8")
+    assert (repo / "Common" / "common.c").read_bytes() == COMMON_C.encode("utf-8")
+    assert stat.S_IMODE((repo / "Common" / "common.c").stat().st_mode) == mode_before
+    assert not (repo / ".stm32-project.json").exists()
+    assert not (repo / "artifacts").exists()
+    assert not (repo / ".stm32-toolkit").exists()
+    assert git_status(repo) == ""
+    # Content digest of every pre-existing file matches the pre-apply state.
+    for rel, entry in state_before.items():
+        if entry[0] == "file":
+            assert hashlib.sha256((repo / rel).read_bytes()).hexdigest() == entry[1]
+
+
+def test_apply_replace_failure_after_all_destinations_rolls_back_created(tmp_path, monkeypatch):
+    repo = standard_repo(tmp_path)
+    plan = plan_keil_conversion(repo, fixture_inspection(repo))
+    real_replace = os.replace
+    calls = {"n": 0}
+
+    def failing_replace(src, dst):
+        calls["n"] += 1
+        if calls["n"] == 5:
+            raise OSError(28, "replace failed")
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(os, "replace", failing_replace)
+    result = apply_keil_conversion(plan)
+    assert result.code == "MIGRATION_APPLY_FAILED"
+    assert result.details == {"phase": "replace"}
+    assert (repo / "Common" / "common.c").read_bytes() == COMMON_C.encode("utf-8")
+    assert (repo / "Main" / "main.c").read_bytes() == MAIN_C.encode("utf-8")
+    assert not (repo / ".stm32-project.json").exists()
+    assert not (repo / "artifacts").exists()
+    assert not (repo / ".stm32-toolkit").exists()
+    assert git_status(repo) == ""
+
+
+def test_apply_fsync_failure_rolls_back(tmp_path, monkeypatch):
+    repo = standard_repo(tmp_path)
+    plan = plan_keil_conversion(repo, fixture_inspection(repo))
+
+    def broken_fsync_dir(path):
+        raise OSError(5, "fsync failed")
+
+    monkeypatch.setattr(apply_mod, "_fsync_dir", broken_fsync_dir)
+    result = apply_keil_conversion(plan)
+    assert result.ok is False
+    assert result.code == "MIGRATION_APPLY_FAILED"
+    assert result.details == {"phase": "fsync"}
+    assert (repo / "Common" / "common.c").read_bytes() == COMMON_C.encode("utf-8")
+    assert not (repo / ".stm32-project.json").exists()
+    assert not (repo / ".stm32-toolkit").exists()
+    assert git_status(repo) == ""
+
+
+def test_apply_rollback_failure_retains_staging(tmp_path, monkeypatch):
+    repo = standard_repo(tmp_path)
+    plan = plan_keil_conversion(repo, fixture_inspection(repo))
+    real_replace = os.replace
+    calls = {"n": 0}
+
+    def failing_replace(src, dst):
+        calls["n"] += 1
+        # Fail the last destination replace (call 5) and then the first
+        # rollback restore of Main/main.c (call 6), so rollback itself fails
+        # while every other path is recoverable.
+        if calls["n"] in (5, 6):
+            raise OSError(28, "rollback replace failed")
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(os, "replace", failing_replace)
+    result = apply_keil_conversion(plan)
+    assert result.ok is False
+    assert result.code == "MIGRATION_ROLLBACK_FAILED"
+    assert result.details["paths"] == ("Main/main.c",)
+    # Staging with backups is retained for manual recovery.
+    staging = repo / ".stm32-toolkit" / "migration-staging" / plan.plan_id
+    assert staging.exists()
+    backups = staging / "backup"
+    assert backups.exists()
+    assert (backups / "Main" / "main.c").read_bytes() == MAIN_C.encode("utf-8")
+
+
+def test_apply_no_writes_on_any_preflight_failure(tmp_path):
+    repo = standard_repo(tmp_path)
+    plan = plan_keil_conversion(repo, fixture_inspection(repo))
+    (repo / "Main" / "main.c").unlink()
+    result = apply_keil_conversion(plan)
+    assert result.code == "MIGRATION_INPUT_CHANGED"
+    assert not (repo / ".stm32-toolkit").exists()
+    assert not (repo / "artifacts").exists()
+
+
+# ---------------------------------------------------------------------------
+# unrelated-state protection
+# ---------------------------------------------------------------------------
+
+
+def test_apply_leaves_unrelated_state_untouched(tmp_path):
+    repo = standard_repo(tmp_path)
+    (repo / "README.md").write_bytes(b"readme\n")
+    (repo / "Objects").mkdir()
+    (repo / "Objects" / "legacy.map").write_bytes(b"map\n")
+    subprocess.run(["git", "add", "-A"], cwd=repo, check=True, env=git_env())
+    subprocess.run(["git", "commit", "-q", "-m", "extra"], cwd=repo, check=True, env=git_env())
+    head_before = git_head(repo)
+    inspection = fixture_inspection(repo)
+    plan = plan_keil_conversion(repo, inspection)
+    assert plan.blockers == ()
+    result = apply_keil_conversion(plan)
+    assert result.ok is True
+    assert (repo / "README.md").read_bytes() == b"readme\n"
+    assert (repo / "Objects" / "legacy.map").read_bytes() == b"map\n"
+    assert (repo / "app.uvprojx").read_bytes().startswith(b"<?xml")
+    assert git_head(repo) == head_before
+    assert subprocess.run(["git", "diff", "--cached", "--quiet"], cwd=repo, check=False).returncode == 0
+
+
+def test_apply_existing_identical_manifest_is_not_rewritten(tmp_path):
+    repo = build_repo(
+        tmp_path,
+        files={"Main/main.c": "int main(void) { return 0; }\n"},
+    )
+    first = plan_keil_conversion(repo, fixture_inspection(repo))
+    proposal = next(p for p in first.patches if p.path == ".stm32-project.json").after_bytes
+    (repo / ".stm32-project.json").write_bytes(proposal)
+    subprocess.run(["git", "add", "-A"], cwd=repo, check=True, env=git_env())
+    subprocess.run(["git", "commit", "-q", "-m", "manifest"], cwd=repo, check=True, env=git_env())
+    plan = plan_keil_conversion(repo, fixture_inspection(repo))
+    assert not any(p.path == ".stm32-project.json" for p in plan.patches)
+    result = apply_keil_conversion(plan)
+    assert result.ok is True
+    assert ".stm32-project.json" not in result.to_dict()["data"]["createdPaths"]
+    assert ".stm32-project.json" not in result.to_dict()["data"]["changedPaths"]
+    assert (repo / ".stm32-project.json").read_bytes() == proposal
+    assert subprocess.run(["git", "diff", "--quiet"], cwd=repo, check=False).returncode == 0
+    assert subprocess.run(["git", "diff", "--cached", "--quiet"], cwd=repo, check=False).returncode == 0
+
+
+def test_apply_worktree_repo(tmp_path):
+    main = standard_repo(tmp_path)
+    worktree = tmp_path / "wt"
+    subprocess.run(["git", "worktree", "add", "-q", "-b", "wt", str(worktree)], cwd=main, check=True)
+    plan = plan_keil_conversion(worktree, fixture_inspection(worktree))
+    result = apply_keil_conversion(plan)
+    assert result.ok is True
+    assert (worktree / "Main" / "main.c").read_bytes() == MAIN_C_AFTER.encode("utf-8")
+    # The main worktree is untouched.
+    assert (main / "Main" / "main.c").read_bytes() == MAIN_C.encode("utf-8")
