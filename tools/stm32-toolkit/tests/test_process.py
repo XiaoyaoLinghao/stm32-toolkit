@@ -24,12 +24,12 @@ from stm32_toolkit.process import ProcessError, ProcessRequest, ProcessResult, r
 PYTHON = sys.executable
 
 
-def write_pid_child(pid_file: Path, code: str = "import time; time.sleep(60)") -> list[str]:
-    return [
+def write_pid_child(pid_file: Path, code: str = "import time; time.sleep(60)") -> tuple[str, ...]:
+    return (
         PYTHON,
         "-c",
         f"import os; open({str(pid_file)!r}, 'w').write(str(os.getpid())); {code}",
-    ]
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -165,7 +165,7 @@ def test_concurrent_flood_of_both_streams_is_bounded_without_deadlock(tmp_path: 
 
 
 def test_line_cap_cuts_at_the_nth_newline(tmp_path: Path):
-    code = "import sys\n" + "sys.stdout.write('a\\n')" * 40000 + "\n"
+    code = "import sys\nsys.stdout.write('a\\n' * 40000)\n"
     result = run_process(
         ProcessRequest(argv=(PYTHON, "-c", code), cwd=tmp_path, timeout_seconds=60)
     )
@@ -243,8 +243,17 @@ def test_timeout_uses_graceful_then_force_termination_seams(tmp_path: Path, monk
     argv = write_pid_child(pid_file)
     terminated: list[int] = []
     killed: list[int] = []
-    monkeypatch.setattr(process_mod, "_terminate_group", lambda pid: terminated.append(pid))
-    monkeypatch.setattr(process_mod, "_kill_group", lambda pid: killed.append(pid))
+
+    def terminate(pid):
+        terminated.append(pid)
+        raise OSError("injected graceful termination failure")
+
+    def force_kill(pid):
+        killed.append(pid)
+        os.killpg(pid, signal.SIGKILL)
+
+    monkeypatch.setattr(process_mod, "_terminate_group", terminate)
+    monkeypatch.setattr(process_mod, "_kill_group", force_kill)
     result = run_process(ProcessRequest(argv=argv, cwd=tmp_path, timeout_seconds=1))
     assert result.timed_out is True
     pid = int(pid_file.read_text(encoding="utf-8"))
@@ -265,13 +274,44 @@ def test_timeout_success_path_never_calls_termination_seams(tmp_path: Path, monk
     assert called == []
 
 
+def install_windows_popen_proxy(monkeypatch: pytest.MonkeyPatch, captured: dict | None = None):
+    """Strip Windows-only Popen kwargs so the real child runs on any host.
+
+    The Windows branch passes ``creationflags`` which real POSIX ``Popen``
+    rejects; the proxy captures or strips it and delegates everything else.
+    """
+    real_popen = subprocess.Popen
+
+    class WindowsPopenProxy:
+        def __init__(self, *args, **kwargs):
+            if captured is not None:
+                captured["creationflags"] = kwargs.pop("creationflags", 0)
+                captured["start_new_session"] = kwargs.pop("start_new_session", False)
+            else:
+                kwargs.pop("creationflags", None)
+                kwargs.pop("start_new_session", None)
+            self._popen = real_popen(*args, **kwargs)
+
+        def __getattr__(self, name):
+            return getattr(self._popen, name)
+
+    monkeypatch.setattr(subprocess, "Popen", WindowsPopenProxy)
+
+
 def test_windows_branch_uses_taskkill_seam(tmp_path: Path, monkeypatch):
     pid_file = tmp_path / "child.pid"
     argv = write_pid_child(pid_file)
     taskkilled: list[int] = []
+
+    def fake_taskkill(pid):
+        taskkilled.append(pid)
+        os.kill(pid, signal.SIGKILL)
+        return True
+
+    install_windows_popen_proxy(monkeypatch)
     monkeypatch.setattr(process_mod, "_is_windows", True)
     monkeypatch.setattr(process_mod, "_windows_graceful", lambda pid: None)
-    monkeypatch.setattr(process_mod, "_taskkill", lambda pid: taskkilled.append(pid) or True)
+    monkeypatch.setattr(process_mod, "_taskkill", fake_taskkill)
     result = run_process(ProcessRequest(argv=argv, cwd=tmp_path, timeout_seconds=1))
     assert result.timed_out is True
     pid = int(pid_file.read_text(encoding="utf-8"))
@@ -283,6 +323,7 @@ def test_windows_branch_uses_taskkill_seam(tmp_path: Path, monkeypatch):
 def test_windows_branch_falls_back_to_kill_when_taskkill_fails(tmp_path: Path, monkeypatch):
     pid_file = tmp_path / "child.pid"
     argv = write_pid_child(pid_file)
+    install_windows_popen_proxy(monkeypatch)
     monkeypatch.setattr(process_mod, "_is_windows", True)
     monkeypatch.setattr(process_mod, "_windows_graceful", lambda pid: None)
     monkeypatch.setattr(process_mod, "_taskkill", lambda pid: False)
@@ -295,16 +336,7 @@ def test_windows_branch_falls_back_to_kill_when_taskkill_fails(tmp_path: Path, m
 
 def test_windows_branch_uses_create_new_process_group_flag(tmp_path: Path, monkeypatch):
     captured: dict = {}
-    real_popen = subprocess.Popen
-
-    class SpyingPopen(real_popen):
-        def __init__(self, *args, **kwargs):
-            captured["creationflags"] = kwargs.get("creationflags", 0)
-            captured["start_new_session"] = kwargs.get("start_new_session", False)
-            super().__init__(*args, **kwargs)
-
-    monkeypatch.setattr(process_mod, "subprocess", subprocess)
-    monkeypatch.setattr(subprocess, "Popen", SpyingPopen)
+    install_windows_popen_proxy(monkeypatch, captured)
     monkeypatch.setattr(process_mod, "_is_windows", True)
     result = run_process(
         ProcessRequest(argv=(PYTHON, "-c", "pass"), cwd=tmp_path, timeout_seconds=30)
@@ -335,9 +367,15 @@ def test_windows_branch_graceful_signal_is_seam_injected(tmp_path: Path, monkeyp
     pid_file = tmp_path / "child.pid"
     argv = write_pid_child(pid_file)
     graceful: list[int] = []
+
+    def fake_taskkill(pid):
+        os.kill(pid, signal.SIGKILL)
+        return True
+
+    install_windows_popen_proxy(monkeypatch)
     monkeypatch.setattr(process_mod, "_is_windows", True)
     monkeypatch.setattr(process_mod, "_windows_graceful", lambda pid: graceful.append(pid))
-    monkeypatch.setattr(process_mod, "_taskkill", lambda pid: True)
+    monkeypatch.setattr(process_mod, "_taskkill", fake_taskkill)
     result = run_process(ProcessRequest(argv=argv, cwd=tmp_path, timeout_seconds=1))
     assert result.timed_out is True
     pid = int(pid_file.read_text(encoding="utf-8"))

@@ -37,6 +37,24 @@ def _thaw_protocol_value(value: object) -> object:
     return value
 
 
+def _capture_json_snapshot(data: object) -> object | None:
+    """Capture a construction-time immutable JSON snapshot when available.
+
+    When ``data`` provides the explicit Toolkit ``to_dict()`` contract, its
+    returned mapping is recursively frozen at construction time so later
+    mutation of that mapping cannot change the captured protocol payload and
+    ``json.dumps(result.to_dict())`` always succeeds.  Mapping/list/scalar
+    data is already snapshotted by the ordinary freeze path and needs no
+    separate capture; no arbitrary properties, iterators, serializers, or
+    ``repr`` are invoked.
+    """
+    to_dict = getattr(data, "to_dict", None)
+    if to_dict is None:
+        return None
+    payload = to_dict()
+    return _freeze_protocol_value(payload)
+
+
 @dataclass(frozen=True)
 class OperationResult(Generic[T]):
     protocol: str
@@ -46,11 +64,13 @@ class OperationResult(Generic[T]):
     message: str
     data: T | None
     details: Mapping[str, object] = field(default_factory=dict)
+    _json_data: object | None = field(init=False, repr=False, compare=False, default=None)
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "data", _freeze_protocol_value(self.data))
         frozen_details = _freeze_protocol_value(self.details)
         object.__setattr__(self, "details", cast(Mapping[str, object], frozen_details))
+        object.__setattr__(self, "_json_data", _capture_json_snapshot(self.data))
 
     @classmethod
     def success(cls, operation: str, data: T) -> "OperationResult[T]":
@@ -75,12 +95,13 @@ class OperationResult(Generic[T]):
         )
 
     def to_dict(self) -> dict[str, object]:
+        data = self._json_data if self._json_data is not None else self.data
         return {
             "protocol": self.protocol,
             "ok": self.ok,
             "operation": self.operation,
             "code": self.code,
             "message": self.message,
-            "data": _thaw_protocol_value(self.data),
+            "data": _thaw_protocol_value(data),
             "details": _thaw_protocol_value(self.details),
         }

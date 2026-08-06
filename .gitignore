@@ -26,3 +26,6 @@ Thumbs.db
 .coverage.*
 htmlcov/
 coverage.xml
+
+# STM32TK-0305: mandated Python package under the pre-existing global build/ rule
+!tools/stm32-toolkit/src/stm32_toolkit/build/
