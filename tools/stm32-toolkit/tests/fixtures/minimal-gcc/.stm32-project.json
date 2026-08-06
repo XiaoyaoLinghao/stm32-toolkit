@@ -1,0 +1,49 @@
+{
+  "schemaVersion": 2,
+  "logicalProjectId": "12345678-1234-5678-1234-567812345678",
+  "generatedBy": {
+    "tool": "stm32-toolkit",
+    "version": "0.2.0"
+  },
+  "project": {
+    "name": "minimal-gcc",
+    "origin": "manual"
+  },
+  "target": {
+    "device": "STM32F407VGTx",
+    "core": "cortex-m4",
+    "fpu": "fpv4-sp-d16",
+    "floatAbi": "hard"
+  },
+  "framework": {
+    "type": "spl",
+    "version": null
+  },
+  "build": {
+    "sources": ["Src/main.c"],
+    "includePaths": [],
+    "defines": [],
+    "compileOptions": ["-ffreestanding"],
+    "assemblySources": ["Startup/startup.s"],
+    "presets": ["arm-debug", "arm-release"],
+    "elf": "build/arm-debug/firmware.elf"
+  },
+  "memory": {
+    "source": "manual",
+    "regions": [
+      {"name": "FLASH", "origin": 134217728, "length": 1048576, "attributes": "r-x"},
+      {"name": "RAM", "origin": 536870912, "length": 131072, "attributes": "rwx"}
+    ]
+  },
+  "debug": {
+    "backend": "pyocd",
+    "target": "stm32f407vg",
+    "svd": null
+  },
+  "generation": {
+    "cubeMxIoc": null,
+    "managedManifest": ".stm32-toolkit/generated-files.json",
+    "generatedDirectories": [],
+    "userDirectories": []
+  }
+}
