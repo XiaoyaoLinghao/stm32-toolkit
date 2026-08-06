@@ -40,8 +40,16 @@ target_compile_options({{ target_name }} PRIVATE
 )
 
 target_link_options({{ target_name }} PRIVATE
+  {{ cpu_flag }}
+  -mthumb
+{%- if fpu_flag %}
+  {{ fpu_flag }}
+  {{ float_abi_flag }}
+{%- endif %}
+  -nostartfiles
   "-T${CMAKE_SOURCE_DIR}/linker/stm32tk.ld"
   "-Wl,-Map=${CMAKE_BINARY_DIR}/{{ map_name }}"
+  "-Wl,--gc-sections"
 )
 
 add_custom_command(TARGET {{ target_name }} POST_BUILD
