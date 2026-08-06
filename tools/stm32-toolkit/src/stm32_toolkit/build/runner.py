@@ -86,15 +86,25 @@ _RESULT_REL = "artifacts/migration/build-result.json"
 _IS_WINDOWS: bool = sys.platform == "win32"
 
 
-def _default_lock_impl(fd: int) -> bool:
-    if _IS_WINDOWS:
-        import msvcrt
+def _lock_impl_windows(fd: int) -> bool:  # pragma: no cover - Windows-only
+    import msvcrt
 
-        try:
-            msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
-        except OSError:
-            return False
-        return True
+    try:
+        msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+    except OSError:
+        return False
+    return True
+
+
+def _unlock_impl_windows(fd: int) -> None:  # pragma: no cover - Windows-only
+    import msvcrt
+
+    msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+
+
+def _default_lock_impl(fd: int) -> bool:
+    if _IS_WINDOWS:  # pragma: no cover - exercised on Windows
+        return _lock_impl_windows(fd)  # pragma: no cover
     import fcntl
 
     try:
@@ -116,10 +126,8 @@ def try_acquire_lock(fd: int) -> bool:
 
 def release_lock(fd: int) -> None:
     try:
-        if _IS_WINDOWS:
-            import msvcrt
-
-            msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+        if _IS_WINDOWS:  # pragma: no cover - exercised on Windows
+            _unlock_impl_windows(fd)  # pragma: no cover
         else:
             import fcntl
 
@@ -367,11 +375,10 @@ def _artifact_state(path: Path) -> _ArtifactState:
 def _snapshot_difference(first, second) -> str | None:
     a = {entry.path: (entry.size, entry.sha256) for entry in first.entries}
     b = {entry.path: (entry.size, entry.sha256) for entry in second.entries}
-    if a == b:
-        return None
-    for path in sorted(set(a) | set(b)):
-        if a.get(path) != b.get(path):
-            return path
+    if a != b:
+        for path in sorted(set(a) | set(b)):
+            if a.get(path) != b.get(path):
+                return path
     return None
 
 

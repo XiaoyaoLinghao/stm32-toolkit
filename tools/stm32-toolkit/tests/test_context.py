@@ -496,3 +496,170 @@ def test_context_unreadable_evidence_fails_closed_without_error(tmp_path: Path, 
     result = build_project_context(root, tmp_path.parent / "data", "session-a")
     assert result.ok is True
     assert result.data["build"]["elfFresh"] is False
+
+
+def test_context_stale_when_model_elf_is_not_standard(tmp_path: Path, monkeypatch):
+    root = prepare_project(tmp_path)
+    build_successfully(root, monkeypatch, tmp_path)
+    from test_build_runner import git
+
+    payload = json.loads((root / ".stm32-project.json").read_text(encoding="utf-8"))
+    payload["build"]["elf"] = "build-fw/firmware.elf"
+    (root / ".stm32-project.json").write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    git("add", "-A", cwd=root)
+    git("commit", "-q", "-m", "non-standard elf", cwd=root)
+
+    result = build_project_context(root, tmp_path.parent / "data", "session-a")
+
+    assert result.data["build"]["elfFresh"] is False
+
+
+def test_context_stale_when_model_elf_basename_invalid(tmp_path: Path, monkeypatch):
+    root = prepare_project(tmp_path)
+    build_successfully(root, monkeypatch, tmp_path)
+    from test_build_runner import git
+
+    payload = json.loads((root / ".stm32-project.json").read_text(encoding="utf-8"))
+    payload["build"]["elf"] = "build/arm-debug/weird"
+    (root / ".stm32-project.json").write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    git("add", "-A", cwd=root)
+    git("commit", "-q", "-m", "invalid elf basename", cwd=root)
+
+    result = build_project_context(root, tmp_path.parent / "data", "session-a")
+
+    assert result.data["build"]["elfFresh"] is False
+
+
+def test_context_stale_when_record_preset_mismatched(tmp_path: Path, monkeypatch):
+    root = prepare_project(tmp_path)
+    build_successfully(root, monkeypatch, tmp_path)
+    record_path = root / "artifacts" / "migration" / "build-result.json"
+    record = json.loads(record_path.read_text(encoding="utf-8"))
+    record["preset"] = "arm-release"
+    record_path.write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")
+
+    result = build_project_context(root, tmp_path.parent / "data", "session-a")
+
+    assert result.data["build"]["elfFresh"] is False
+
+
+def test_context_stale_when_record_target_mismatched(tmp_path: Path, monkeypatch):
+    root = prepare_project(tmp_path)
+    build_successfully(root, monkeypatch, tmp_path)
+    record_path = root / "artifacts" / "migration" / "build-result.json"
+    record = json.loads(record_path.read_text(encoding="utf-8"))
+    record["targetDevice"] = "STM32F429ZGTx"
+    record_path.write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")
+
+    result = build_project_context(root, tmp_path.parent / "data", "session-a")
+
+    assert result.data["build"]["elfFresh"] is False
+
+
+def test_context_stale_when_record_and_identity_disagree(tmp_path: Path, monkeypatch):
+    root = prepare_project(tmp_path)
+    build_successfully(root, monkeypatch, tmp_path)
+    identity_path = root / "build" / "arm-debug" / "firmware-identity.json"
+    document = json.loads(identity_path.read_text(encoding="utf-8"))
+    document["gitHead"] = "0" * 40
+    document["buildId"] = identity_mod.compute_build_id(document)
+    identity_path.write_text(json.dumps(document, indent=2) + "\n", encoding="utf-8")
+
+    result = build_project_context(root, tmp_path.parent / "data", "session-a")
+
+    assert result.data["build"]["elfFresh"] is False
+
+
+def test_context_stale_when_identity_preset_mismatched(tmp_path: Path, monkeypatch):
+    root = prepare_project(tmp_path)
+    build_successfully(root, monkeypatch, tmp_path)
+    identity_path = root / "build" / "arm-debug" / "firmware-identity.json"
+    document = json.loads(identity_path.read_text(encoding="utf-8"))
+    document["preset"] = "arm-release"
+    document["buildId"] = identity_mod.compute_build_id(document)
+    identity_path.write_text(json.dumps(document, indent=2) + "\n", encoding="utf-8")
+
+    result = build_project_context(root, tmp_path.parent / "data", "session-a")
+
+    assert result.data["build"]["elfFresh"] is False
+
+
+def test_context_stale_when_identity_paths_mismatched(tmp_path: Path, monkeypatch):
+    root = prepare_project(tmp_path)
+    build_successfully(root, monkeypatch, tmp_path)
+    identity_path = root / "build" / "arm-debug" / "firmware-identity.json"
+    document = json.loads(identity_path.read_text(encoding="utf-8"))
+    document["elfPath"] = "build/arm-debug/other.elf"
+    document["buildId"] = identity_mod.compute_build_id(document)
+    identity_path.write_text(json.dumps(document, indent=2) + "\n", encoding="utf-8")
+
+    result = build_project_context(root, tmp_path.parent / "data", "session-a")
+
+    assert result.data["build"]["elfFresh"] is False
+
+
+def test_context_stale_when_elf_unreadable(tmp_path: Path, monkeypatch):
+    root = prepare_project(tmp_path)
+    build_successfully(root, monkeypatch, tmp_path)
+    raise_on_open(root / "build" / "arm-debug" / "firmware.elf", monkeypatch, PermissionError("injected"))
+
+    result = build_project_context(root, tmp_path.parent / "data", "session-a")
+
+    assert result.data["build"]["elfFresh"] is False
+
+
+def test_context_stale_on_oversized_evidence(tmp_path: Path, monkeypatch):
+    root = prepare_project(tmp_path)
+    build_successfully(root, monkeypatch, tmp_path)
+    import stm32_toolkit.context as context_mod
+
+    monkeypatch.setattr(context_mod, "_ELF_LIMIT_BYTES", 4)
+
+    result = build_project_context(root, tmp_path.parent / "data", "session-a")
+
+    assert result.data["build"]["elfFresh"] is False
+
+
+def test_context_stale_when_map_tampered(tmp_path: Path, monkeypatch):
+    root = prepare_project(tmp_path)
+    build_successfully(root, monkeypatch, tmp_path)
+    (root / "build" / "arm-debug" / "firmware.map").write_text("tampered\n", encoding="utf-8")
+
+    result = build_project_context(root, tmp_path.parent / "data", "session-a")
+
+    assert result.data["build"]["elfFresh"] is False
+
+
+def test_regular_contained_fails_closed_on_escape(tmp_path: Path, monkeypatch):
+    import stm32_toolkit.context as context_mod
+
+    root = prepare_project(tmp_path)
+    assert context_mod._regular_contained(root, "Src/main.c", "elf") is True
+    assert context_mod._regular_contained(root, "../escape.c", "elf") is False
+    assert context_mod._regular_contained(root, "missing.c", "elf") is False
+    assert context_mod._regular_contained(root, "Src", "elf") is False
+
+
+def test_data_root_with_nul_returns_stable_invalid(configured_project: Path, tmp_path: Path):
+    result = build_project_context(configured_project, Path("bad\x00root"), "session-a")
+
+    assert result.code == "PROJECT_CONTEXT_INVALID"
+    assert result.details == {"field": "dataRoot", "path": "bad\x00root"}
+
+
+def test_data_root_resolve_os_error_maps_to_unavailable(
+    monkeypatch, configured_project: Path, tmp_path: Path
+):
+    real_resolve = Path.resolve
+
+    def selective(self, strict: bool = False):
+        if "unavailable-data" in str(self):
+            raise OSError("injected")
+        return real_resolve(self, strict=strict)
+
+    monkeypatch.setattr(Path, "resolve", selective)
+    data_root = tmp_path.parent / "unavailable-data"
+    result = build_project_context(configured_project, data_root, "session-a")
+
+    assert result.code == "PROJECT_CONTEXT_UNAVAILABLE"
+    assert result.details == {"field": "dataRoot", "path": str(data_root)}

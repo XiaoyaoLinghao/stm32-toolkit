@@ -27,6 +27,7 @@ from stm32_toolkit.build.identity import (
 )
 from stm32_toolkit.build.map_file import MapError
 from stm32_toolkit.project_model import load_project_model
+from stm32_toolkit.process import ProcessError
 
 from test_build_runner import (
     ELF_DEFECTS,
@@ -63,8 +64,9 @@ def escape_redirect(link: Path, target: Path, monkeypatch: pytest.MonkeyPatch) -
     """Create an escaping redirect without administrator privileges.
 
     POSIX uses a real symlink; Windows simulates the redirect by mapping
-    ``Path.resolve`` for the link path to its canonical target (the inspected
-    resolve-and-contain check is identical on both platforms).
+    ``Path.resolve`` for the link path to its canonical target and ``lstat``
+    of the link to a symlink mode (the inspected resolve/lstat-and-contain
+    checks are identical on both platforms).
     """
     if os.name == "nt":
         simulated = {str(link): target}
@@ -80,6 +82,14 @@ def escape_redirect(link: Path, target: Path, monkeypatch: pytest.MonkeyPatch) -
             return real_resolve(self, strict=strict)
 
         monkeypatch.setattr(Path, "resolve", resolve)
+        real_lstat = identity_mod._lstat
+
+        def fake_lstat(path):
+            if Path(path) == link:
+                return os.stat_result((0o120000, 0, 0, 0, 0, 0, 0, 0, 0, 0))
+            return real_lstat(path)
+
+        monkeypatch.setattr(identity_mod, "_lstat", fake_lstat)
     else:
         link.symlink_to(target)
 
@@ -346,6 +356,9 @@ def test_validate_elf_accepts_fixed_section_at_encoded_address(tmp_path: Path):
         ("vector-mismatch", "vectorReset"),
         ("alloc-escape", "sectionOutOfRange"),
         ("fixed-mismatch", "fixedSectionAddress"),
+        ("vector-noalloc", "vectorAlloc"),
+        ("vector-addr", "vectorRegion"),
+        ("no-reset", "resetHandler"),
         ("truncated", "format"),
     ],
 )
@@ -603,3 +616,397 @@ def test_map_text_oversized_is_rejected(tmp_path: Path, monkeypatch):
         identity_mod.read_map_text(map_path, "firmware.map")
     assert error.value.code == "BUILD_MAP_INVALID"
     assert error.value.details == {"path": "firmware.map", "rule": "size"}
+
+
+# ---------------------------------------------------------------------------
+# coverage closure: snapshot, git, ELF, schema, atomic helpers
+# ---------------------------------------------------------------------------
+
+
+def test_snapshot_rejects_missing_managed_manifest(tmp_path: Path):
+    root = prepare_project(tmp_path, git_repo=False)
+    (root / ".stm32-toolkit" / "generated-files.json").unlink()
+    with pytest.raises(BuildError) as error:
+        snapshot_for(root)
+    assert error.value.code == "BUILD_INPUT_INVALID"
+    assert error.value.details == {
+        "path": ".stm32-toolkit/generated-files.json",
+        "rule": "missing",
+    }
+
+
+def test_snapshot_rejects_malformed_managed_manifest(tmp_path: Path):
+    root = prepare_project(tmp_path, git_repo=False)
+    (root / ".stm32-toolkit" / "generated-files.json").write_bytes(b"{broken")
+    with pytest.raises(BuildError) as error:
+        snapshot_for(root)
+    assert error.value.code == "BUILD_PROJECT_INVALID"
+    assert error.value.details == {
+        "path": ".stm32-toolkit/generated-files.json",
+        "rule": "json",
+    }
+
+
+def test_snapshot_rejects_oversized_source_file(tmp_path: Path, monkeypatch):
+    root = prepare_project(tmp_path, git_repo=False)
+    real_read = identity_mod._read_limited
+
+    def selective(path, limit):
+        if Path(path).name == "main.c":
+            return b"x" * (limit + 1)
+        return real_read(path, limit)
+
+    monkeypatch.setattr(identity_mod, "_read_limited", selective)
+    with pytest.raises(BuildError) as error:
+        snapshot_for(root)
+    assert error.value.code == "BUILD_INPUT_INVALID"
+    assert error.value.details == {"path": "Src/main.c", "rule": "size"}
+
+
+def test_snapshot_rejects_escaping_declared_source(tmp_path: Path, monkeypatch):
+    root = prepare_project(tmp_path, git_repo=False)
+    model = model_for(root)  # the model is loaded before the redirect exists
+    outside = tmp_path / "outside.c"
+    outside.write_text("int main(void) { return 0; }\n", encoding="utf-8")
+    (root / "Src" / "main.c").unlink()
+    escape_redirect(root / "Src" / "main.c", outside, monkeypatch)
+    with pytest.raises(BuildError) as error:
+        snapshot_project_inputs(model)
+    assert error.value.code == "BUILD_INPUT_INVALID"
+    assert error.value.details == {"path": "Src/main.c", "rule": "escape"}
+
+
+def test_snapshot_rejects_directory_as_declared_source(tmp_path: Path):
+    root = prepare_project(tmp_path, git_repo=False)
+    (root / "Src" / "main.c").unlink()
+    (root / "Src" / "main.c").mkdir()
+    with pytest.raises(BuildError) as error:
+        snapshot_for(root)
+    assert error.value.code == "BUILD_INPUT_INVALID"
+    assert error.value.details == {"path": "Src/main.c", "rule": "regularFile"}
+
+
+def test_snapshot_accepts_in_root_symlinked_header(tmp_path: Path, monkeypatch):
+    root = prepare_project(tmp_path, git_repo=False)
+    (root / "Inc").mkdir()
+    (root / "Inc" / "real.h").write_text("x\n", encoding="utf-8")
+    escape_redirect(root / "Inc" / "link.h", root / "Inc" / "real.h", monkeypatch)
+    payload = json.loads((root / ".stm32-project.json").read_text(encoding="utf-8"))
+    payload["build"]["includePaths"] = ["Inc"]
+    (root / ".stm32-project.json").write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    snapshot = snapshot_for(root)
+    paths = {entry.path for entry in snapshot.entries}
+    assert "Inc/link.h" in paths
+    assert "Inc/real.h" in paths
+
+
+def test_snapshot_rejects_include_directory_escape(tmp_path: Path, monkeypatch):
+    root = prepare_project(tmp_path, git_repo=False)
+    payload = json.loads((root / ".stm32-project.json").read_text(encoding="utf-8"))
+    payload["build"]["includePaths"] = ["Inc"]
+    (root / ".stm32-project.json").write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    model = model_for(root)  # the model is loaded before the redirect exists
+    outside = tmp_path / "outside-dir"
+    outside.mkdir()
+    (outside / "x.h").write_text("x\n", encoding="utf-8")
+    escape_redirect(root / "Inc", outside, monkeypatch)
+    with pytest.raises(BuildError) as error:
+        snapshot_project_inputs(model)
+    assert error.value.code == "BUILD_INPUT_INVALID"
+    assert error.value.details == {"path": "Inc", "rule": "escape"}
+
+
+def test_snapshot_rejects_unreadable_include_dir(tmp_path: Path, monkeypatch):
+    root = prepare_project(tmp_path, git_repo=False)
+    (root / "Inc").mkdir()
+    payload = json.loads((root / ".stm32-project.json").read_text(encoding="utf-8"))
+    payload["build"]["includePaths"] = ["Inc"]
+    (root / ".stm32-project.json").write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    real_lstat = identity_mod._lstat
+
+    def fake_lstat(path):
+        if Path(path).name == "Inc":
+            raise PermissionError("injected")
+        return real_lstat(path)
+
+    monkeypatch.setattr(identity_mod, "_lstat", fake_lstat)
+    with pytest.raises(BuildError) as error:
+        snapshot_for(root)
+    assert error.value.details == {"path": "Inc", "rule": "inspection"}
+
+
+def test_snapshot_rejects_include_path_that_is_a_file(tmp_path: Path):
+    root = prepare_project(tmp_path, git_repo=False)
+    payload = json.loads((root / ".stm32-project.json").read_text(encoding="utf-8"))
+    payload["build"]["includePaths"] = ["Src/main.c"]
+    (root / ".stm32-project.json").write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    with pytest.raises(BuildError) as error:
+        snapshot_for(root)
+    assert error.value.details == {"path": "Src/main.c", "rule": "directory"}
+
+
+def test_snapshot_rejects_reserved_include_dir(tmp_path: Path):
+    root = prepare_project(tmp_path, git_repo=False)
+    payload = json.loads((root / ".stm32-project.json").read_text(encoding="utf-8"))
+    payload["build"]["includePaths"] = ["build/arm-debug"]
+    (root / ".stm32-project.json").write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    with pytest.raises(BuildError) as error:
+        snapshot_for(root)
+    assert error.value.details == {"path": "build/arm-debug", "rule": "reserved"}
+
+
+def test_snapshot_rejects_duplicate_include_dir(tmp_path: Path):
+    root = prepare_project(tmp_path, git_repo=False)
+    (root / "Inc").mkdir()
+    (root / "Inc" / "a.h").write_text("a\n", encoding="utf-8")
+    payload = json.loads((root / ".stm32-project.json").read_text(encoding="utf-8"))
+    payload["build"]["includePaths"] = ["Inc", "Inc"]
+    (root / ".stm32-project.json").write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    with pytest.raises(BuildError) as error:
+        snapshot_for(root)
+    assert error.value.details == {"rule": "duplicate"}
+
+
+def test_snapshot_rejects_unreadable_include_child(tmp_path: Path, monkeypatch):
+    root = prepare_project(tmp_path, git_repo=False)
+    (root / "Inc").mkdir()
+    (root / "Inc" / "a.h").write_text("a\n", encoding="utf-8")
+    payload = json.loads((root / ".stm32-project.json").read_text(encoding="utf-8"))
+    payload["build"]["includePaths"] = ["Inc"]
+    (root / ".stm32-project.json").write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    real_lstat = identity_mod._lstat
+
+    def fake_lstat(path):
+        if Path(path).name == "a.h":
+            raise PermissionError("injected")
+        return real_lstat(path)
+
+    monkeypatch.setattr(identity_mod, "_lstat", fake_lstat)
+    with pytest.raises(BuildError) as error:
+        snapshot_for(root)
+    assert error.value.details == {"path": "Inc/a.h", "rule": "inspection"}
+
+
+def test_snapshot_rejects_include_listing_failure(tmp_path: Path, monkeypatch):
+    root = prepare_project(tmp_path, git_repo=False)
+    (root / "Inc").mkdir()
+    payload = json.loads((root / ".stm32-project.json").read_text(encoding="utf-8"))
+    payload["build"]["includePaths"] = ["Inc"]
+    (root / ".stm32-project.json").write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+
+    def fake_listdir(path):
+        raise PermissionError("injected")
+
+    monkeypatch.setattr(identity_mod, "_listdir", fake_listdir)
+    with pytest.raises(BuildError) as error:
+        snapshot_for(root)
+    assert error.value.details == {"path": "Inc", "rule": "inspection"}
+
+
+def test_snapshot_hash_pass_rejects_special_file_race(tmp_path: Path, monkeypatch):
+    root = prepare_project(tmp_path, git_repo=False)
+    (root / "Inc").mkdir()
+    (root / "Inc" / "fifo").write_text("x\n", encoding="utf-8")
+    payload = json.loads((root / ".stm32-project.json").read_text(encoding="utf-8"))
+    payload["build"]["includePaths"] = ["Inc"]
+    (root / ".stm32-project.json").write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    real_lstat = identity_mod._lstat
+    counts: dict[str, int] = {}
+
+    def fake_lstat(path):
+        name = Path(path).name
+        counts[name] = counts.get(name, 0) + 1
+        if name == "fifo" and counts[name] > 1:
+            return os.stat_result((0o020000, 0, 0, 0, 0, 0, 0, 0, 0, 0))
+        return real_lstat(path)
+
+    monkeypatch.setattr(identity_mod, "_lstat", fake_lstat)
+    with pytest.raises(BuildError) as error:
+        snapshot_for(root)
+    assert error.value.details == {"path": "Inc/fifo", "rule": "regularFile"}
+
+
+def test_snapshot_hash_pass_rejects_missing_race(tmp_path: Path, monkeypatch):
+    root = prepare_project(tmp_path, git_repo=False)
+    real_lstat = identity_mod._lstat
+    counts: dict[str, int] = {}
+
+    def fake_lstat(path):
+        name = Path(path).name
+        counts[name] = counts.get(name, 0) + 1
+        if name == "main.c" and counts[name] > 1:
+            raise FileNotFoundError()
+        return real_lstat(path)
+
+    monkeypatch.setattr(identity_mod, "_lstat", fake_lstat)
+    with pytest.raises(BuildError) as error:
+        snapshot_for(root)
+    assert error.value.details == {"path": "Src/main.c", "rule": "missing"}
+
+
+def test_walk_depth_escape_is_rejected(tmp_path: Path):
+    root = prepare_project(tmp_path, git_repo=False)
+    with pytest.raises(BuildError) as error:
+        identity_mod._walk_include(root, "Inc", [], depth=65)
+    assert error.value.details == {"path": "Inc", "rule": "escape"}
+
+
+def test_require_input_path_rejects_non_portable_path(tmp_path: Path):
+    root = prepare_project(tmp_path, git_repo=False)
+    with pytest.raises(BuildError) as error:
+        identity_mod._require_input_path(root, "../escape.c", [])
+    assert error.value.details == {"path": "../escape.c", "rule": "portable"}
+
+
+def test_git_evidence_spawn_failure_is_stable(tmp_path: Path, monkeypatch):
+    root = prepare_project(tmp_path)
+
+    def failing(request):
+        raise ProcessError("launch", "boom")
+
+    monkeypatch.setattr(identity_mod, "run_process", failing)
+    with pytest.raises(BuildError) as error:
+        git_evidence(root)
+    assert error.value.code == "BUILD_GIT_INVALID"
+    assert error.value.details == {"rule": "head"}
+
+
+def test_git_evidence_status_nonzero_is_stable(tmp_path: Path, monkeypatch):
+    root = prepare_project(tmp_path)
+    real_run = identity_mod.run_process
+
+    def selective(request):
+        if "status" in request.argv:
+            from stm32_toolkit.process import ProcessResult
+
+            return ProcessResult(1, "", "", False, 0, False, False)
+        return real_run(request)
+
+    monkeypatch.setattr(identity_mod, "run_process", selective)
+    with pytest.raises(BuildError) as error:
+        git_evidence(root)
+    assert error.value.details == {"rule": "status"}
+
+
+def test_read_map_text_unreadable_is_rejected(tmp_path: Path, monkeypatch):
+    root = prepare_project(tmp_path, git_repo=False)
+    map_path = root / "firmware.map"
+    map_path.write_text(build_map_text())
+    real_read = identity_mod._read_limited
+
+    def selective(path, limit):
+        if Path(path).name == "firmware.map":
+            raise PermissionError("injected")
+        return real_read(path, limit)
+
+    monkeypatch.setattr(identity_mod, "_read_limited", selective)
+    with pytest.raises(MapError) as error:
+        identity_mod.read_map_text(map_path, "firmware.map")
+    assert error.value.details == {"path": "firmware.map", "rule": "unreadable"}
+
+
+def test_read_map_text_bad_encoding_is_rejected(tmp_path: Path):
+    root = prepare_project(tmp_path, git_repo=False)
+    map_path = root / "firmware.map"
+    map_path.write_bytes(b"\xff\xfe\x00not a map")
+    with pytest.raises(MapError) as error:
+        identity_mod.read_map_text(map_path, "firmware.map")
+    assert error.value.details == {"path": "firmware.map", "rule": "encoding"}
+
+
+def test_validate_elf_lstat_failure_is_unreadable(tmp_path: Path, monkeypatch):
+    root = prepare_project(tmp_path, git_repo=False)
+    elf_path = root / "firmware.elf"
+    elf_path.write_bytes(build_elf_bytes())
+    real_lstat = identity_mod._lstat
+
+    def fake_lstat(path):
+        if Path(path).name == "firmware.elf":
+            raise PermissionError("injected")
+        return real_lstat(path)
+
+    monkeypatch.setattr(identity_mod, "_lstat", fake_lstat)
+    with pytest.raises(BuildError) as error:
+        validate_elf(elf_path, model_for(root))
+    assert error.value.details == {"path": "firmware.elf", "rule": "unreadable"}
+
+
+def test_validate_elf_directory_is_not_regular(tmp_path: Path):
+    root = prepare_project(tmp_path, git_repo=False)
+    elf_path = root / "firmware.elf"
+    elf_path.mkdir()
+    with pytest.raises(BuildError) as error:
+        validate_elf(elf_path, model_for(root))
+    assert error.value.details == {"path": "firmware.elf", "rule": "regularFile"}
+
+
+def test_identity_validator_breakdown_is_stable(tmp_path: Path, monkeypatch):
+    root = prepare_project(tmp_path)
+    document = _identity_document(root)
+
+    def broken():
+        raise RuntimeError("injected validator failure")
+
+    monkeypatch.setattr(identity_mod, "_identity_validator", broken)
+    with pytest.raises(BuildError) as error:
+        validate_identity_document(document)
+    assert error.value.code == "BUILD_EVIDENCE_FAILED"
+
+
+def test_read_evidence_json_missing_and_oversized(tmp_path: Path):
+    assert identity_mod.read_evidence_json(tmp_path / "missing.json", "missing.json", 1024) is None
+    target = tmp_path / "doc.json"
+    target.write_text('{"x": 1}\n', encoding="utf-8")
+    assert identity_mod.read_evidence_json(target, "doc.json", 4) is None
+    target.write_text("{broken", encoding="utf-8")
+    assert identity_mod.read_evidence_json(target, "doc.json", 1024) is None
+    target.write_text("[1, 2]", encoding="utf-8")
+    assert identity_mod.read_evidence_json(target, "doc.json", 1024) is None
+
+
+def test_hash_artifact_oversized_is_rejected(tmp_path: Path):
+    target = tmp_path / "artifact.bin"
+    target.write_bytes(b"x" * 100)
+    with pytest.raises(BuildError) as error:
+        identity_mod.hash_artifact(target, "artifact.bin", 16, "BUILD_MAP_INVALID")
+    assert error.value.details == {"path": "artifact.bin", "rule": "size"}
+
+
+def test_atomic_write_fdopen_and_unlink_failures(tmp_path: Path, monkeypatch):
+    target = tmp_path / "doc.json"
+
+    def failing_fdopen(fd, mode):
+        raise OSError("injected fdopen failure")
+
+    monkeypatch.setattr(os, "fdopen", failing_fdopen)
+    with pytest.raises(OSError):
+        identity_mod.atomic_write_json(target, {"x": 1})
+    assert not target.exists()
+    assert [path for path in tmp_path.iterdir() if ".tmp" in path.name] == []
+
+    def failing_unlink(path):
+        raise OSError("injected unlink failure")
+
+    monkeypatch.setattr(os, "unlink", failing_unlink)
+    real_replace = identity_mod._replace
+
+    def failing_replace(src, dst):
+        raise OSError("injected replace failure")
+
+    monkeypatch.setattr(identity_mod, "_replace", failing_replace)
+    with pytest.raises(OSError):
+        identity_mod.atomic_write_json(target, {"x": 1})
+
+
+def test_default_sync_directory_os_error_is_swallowed(monkeypatch):
+    import tempfile as tempfile_mod
+
+    with tempfile_mod.TemporaryDirectory() as directory:
+        real_open = os.open
+
+        def failing_open(path, flags, *args):
+            raise OSError("injected")
+
+        monkeypatch.setattr(os, "open", failing_open)
+        identity_mod._default_sync_directory(Path(directory))
+        monkeypatch.setattr(os, "open", real_open)

@@ -304,13 +304,19 @@ def _walk_include(root: Path, rel_dir: str, paths: list[str], depth: int = 0) ->
         lst = _lstat(absolute)
     except OSError:
         raise _input_invalid(rel_dir, "inspection") from None
-    if not stat.S_ISDIR(lst.st_mode):
-        raise _input_invalid(rel_dir, "directory")
     try:
         resolved = absolute.resolve(strict=False)
         resolved.relative_to(root)
     except (OSError, RuntimeError, ValueError):
         raise _input_invalid(rel_dir, "escape") from None
+    if stat.S_ISLNK(lst.st_mode):
+        # follow a redirecting include directory; the target must be a directory
+        try:
+            lst = _lstat(resolved)
+        except OSError:
+            raise _input_invalid(rel_dir, "inspection") from None
+    if not stat.S_ISDIR(lst.st_mode):
+        raise _input_invalid(rel_dir, "directory")
     try:
         names = sorted(_listdir(absolute))
     except OSError:

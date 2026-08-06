@@ -40,10 +40,12 @@ def build_elf_bytes(
     vector_word: int | None = None,
     vector_addr: int = 0x08000000,
     vector_size: int = 64,
+    vector_flags: int = 0x2,
     text_addr: int = 0x08000040,
     text_size: int = 16,
     include_vector: bool = True,
     include_symtab: bool = True,
+    include_reset_symbol: bool = True,
     reset_undefined: bool = False,
     undefined_global: tuple[str, ...] = (),
     undefined_weak: tuple[str, ...] = (),
@@ -95,7 +97,7 @@ def build_elf_bytes(
             vector_data += b"\x00" * (vector_size - len(vector_data))
         else:
             vector_data = struct.pack("<I", 0x20020000)[:vector_size]
-        add(".isr_vector", 1, 0x2, vector_addr, vector_data)
+        add(".isr_vector", 1, vector_flags, vector_addr, vector_data)
     text_index = add(".text", 1, 0x6, text_addr, b"\x00\xbf" * (text_size // 2))
 
     symbol_names = ["Reset_Handler", "main", *undefined_global, *undefined_weak]
@@ -108,10 +110,11 @@ def build_elf_bytes(
 
     symbols: list[tuple[int, int, int, int, int, int]] = []  # (name, value, size, info, other, shndx)
     symbols.append((0, 0, 0, 0, 0, 0))  # null symbol
-    if reset_undefined:
-        symbols.append((name_offsets["Reset_Handler"], 0, 0, 0x10, 0, 0))  # undefined global
-    else:
-        symbols.append((name_offsets["Reset_Handler"], reset_handler, 8, 0x12, 0, text_index))
+    if include_reset_symbol:
+        if reset_undefined:
+            symbols.append((name_offsets["Reset_Handler"], 0, 0, 0x10, 0, 0))  # undefined global
+        else:
+            symbols.append((name_offsets["Reset_Handler"], reset_handler, 8, 0x12, 0, text_index))
     symbols.append((name_offsets["main"], 0x08000050, 4, 0x12, 0, text_index))
     for name in undefined_global:
         symbols.append((name_offsets[name], 0, 0, 0x10, 0, 0))
@@ -321,6 +324,9 @@ def fake_cmake_main(argv: list[str]) -> int:
         if touch_input:
             with open(os.path.join(cwd, touch_input), "ab") as handle:
                 handle.write(b"/* fake cmake touched an input */\n")
+        delete_input = env.get("FAKE_CMAKE_DELETE_INPUT")
+        if delete_input:
+            os.remove(os.path.join(cwd, delete_input))
         if env.get("FAKE_CMAKE_NO_OUTPUT") == "1":
             return 0
         regions = [
@@ -339,12 +345,15 @@ def fake_cmake_main(argv: list[str]) -> int:
             map_text = build_map_text(
                 regions=regions, sections=((".text", 0x08000000, 0x200000, None),)
             )
+        elif defect_map == "missing":
+            map_text = None
         else:
             map_text = build_map_text(regions=regions)
         with open(elf_path, "wb") as handle:
             handle.write(elf)
-        with open(map_path, "w", encoding="utf-8") as handle:
-            handle.write(map_text)
+        if map_text is not None:
+            with open(map_path, "w", encoding="utf-8") as handle:
+                handle.write(map_text)
         return 0
     sys.stderr.write(f"[fake cmake] unexpected argv {argv!r}\n")
     return 2
@@ -366,6 +375,9 @@ ELF_DEFECTS: dict[str, dict] = {
     "alloc-escape": {"text_addr": 0x30000000},
     "no-symtab": {"include_symtab": False},
     "fixed-mismatch": {"fixed_sections": ((".stm32tk.abs.20000000", 0x20000100, 16),)},
+    "vector-noalloc": {"vector_flags": 0},
+    "vector-addr": {"vector_addr": 0x40000000},
+    "no-reset": {"include_reset_symbol": False},
     "truncated": {"truncate": 40},
 }
 
@@ -1109,3 +1121,438 @@ def test_json_contract_of_published_files(tmp_path: Path, monkeypatch: pytest.Mo
         assert b"\r" not in raw
         text = raw.decode("utf-8")
         assert "\n  " in text  # indent=2
+
+
+def test_missing_source_publishes_failure_record(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    root = prepare_project(tmp_path)
+    install_fake_cmake(monkeypatch, tmp_path)
+    (root / "Src" / "main.c").unlink()
+    result = run_build(BuildRequest(project_root=root, preset="arm-debug"))
+    assert result.ok is False
+    assert result.code == "BUILD_INPUT_INVALID"
+    assert result.details == {"path": "Src/main.c", "rule": "missing"}
+    failure = read_json(result_path_for(root))
+    assert failure["status"] == "failure"
+    assert failure["code"] == "BUILD_INPUT_INVALID"
+    assert not identity_path_for(root).exists()
+
+
+def test_git_failure_publishes_failure_record(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    root = prepare_project(tmp_path)
+    install_fake_cmake(monkeypatch, tmp_path)
+    install_fake_git(monkeypatch, tmp_path, "exit1")
+    result = run_build(BuildRequest(project_root=root, preset="arm-debug"))
+    assert result.ok is False
+    assert result.code == "BUILD_GIT_INVALID"
+    failure = read_json(result_path_for(root))
+    assert failure["status"] == "failure"
+    assert failure["code"] == "BUILD_GIT_INVALID"
+    assert not identity_path_for(root).exists()
+
+
+def test_pre_configure_input_change_returns_input_changed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    root = prepare_project(tmp_path)
+    install_fake_cmake(monkeypatch, tmp_path)
+    # the fake git touches an input between the two pre-configure snapshots
+    git_dir = tmp_path / "fakegit"
+    git_dir.mkdir(parents=True, exist_ok=True)
+    launcher = git_dir / "git"
+    launcher.write_text(
+        "#!{python}\nimport os, sys\n"
+        "with open('Src/main.c', 'ab') as handle:\n"
+        "    handle.write(b'/* touched by fake git */\\n')\n"
+        "if len(sys.argv) >= 2 and sys.argv[1] == 'rev-parse':\n"
+        "    sys.stdout.write('a' * 40 + '\\n')\n"
+        "    sys.stdout.flush()\n"
+        "os._exit(0)\n".format(python=sys.executable),
+        encoding="utf-8",
+    )
+    launcher.chmod(0o755)
+    monkeypatch.setenv("PATH", str(git_dir) + os.pathsep + os.environ.get("PATH", ""))
+    result = run_build(BuildRequest(project_root=root, preset="arm-debug"))
+    assert result.ok is False
+    assert result.code == "BUILD_INPUT_CHANGED"
+    assert result.details == {"path": "Src/main.c"}
+    failure = read_json(result_path_for(root))
+    assert failure["code"] == "BUILD_INPUT_CHANGED"
+    assert failure["stage"] == "snapshot"
+
+
+def test_launch_failure_returns_configure_failed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    root = prepare_project(tmp_path)
+    install_fake_cmake(monkeypatch, tmp_path)
+    launcher = tmp_path / "fakebin" / "cmake"
+    launcher.unlink()
+    launcher.mkdir()  # a directory is never executable: spawn must fail
+    result = run_build(BuildRequest(project_root=root, preset="arm-debug"))
+    assert result.ok is False
+    assert result.code == "BUILD_CONFIGURE_FAILED"
+    assert result.details == {"stage": "configure", "rule": "launch", "log": "artifacts/migration/build.log"}
+    failure = read_json(result_path_for(root))
+    assert failure["status"] == "failure"
+    assert failure["code"] == "BUILD_CONFIGURE_FAILED"
+
+
+def test_oversized_elf_is_rejected(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    root = prepare_project(tmp_path)
+    install_fake_cmake(monkeypatch, tmp_path)
+    monkeypatch.setattr(identity_mod, "_ELF_LIMIT_BYTES", 16)
+    result = run_build(BuildRequest(project_root=root, preset="arm-debug"))
+    assert result.ok is False
+    assert result.code == "BUILD_ARTIFACT_INVALID"
+    assert result.details == {"path": "build/arm-debug/firmware.elf", "rule": "size"}
+
+
+def test_noop_rebuild_with_tampered_prior_evidence_is_stale(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    root = prepare_project(tmp_path)
+    install_fake_cmake(monkeypatch, tmp_path)
+    assert run_build(BuildRequest(project_root=root, preset="arm-debug")).ok is True
+    identity_path = identity_path_for(root)
+    document = read_json(identity_path)
+    document["buildId"] = "0" * 64
+    identity_path.write_text(json.dumps(document, indent=2) + "\n", encoding="utf-8")
+    monkeypatch.setenv("FAKE_CMAKE_NO_OUTPUT", "1")
+    result = run_build(BuildRequest(project_root=root, preset="arm-debug"))
+    assert result.ok is False
+    assert result.code == "BUILD_OUTPUT_STALE"
+    assert result.details == {"path": "build/arm-debug/firmware.elf", "rule": "unverifiable"}
+
+
+def test_release_noop_without_release_prior_evidence_is_stale(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    root = prepare_project(tmp_path)
+    install_fake_cmake(monkeypatch, tmp_path)
+    assert run_build(BuildRequest(project_root=root, preset="arm-debug")).ok is True
+    elf_dir = root / "build" / "arm-release"
+    elf_dir.mkdir(parents=True, exist_ok=True)
+    (elf_dir / "firmware.elf").write_bytes(build_elf_bytes())
+    (elf_dir / "firmware.map").write_text(build_map_text())
+    monkeypatch.setenv("FAKE_CMAKE_NO_OUTPUT", "1")
+    result = run_build(BuildRequest(project_root=root, preset="arm-release"))
+    assert result.ok is False
+    assert result.code == "BUILD_OUTPUT_STALE"
+    assert result.details == {"path": "build/arm-release/firmware.elf", "rule": "unverifiable"}
+
+
+def test_failure_record_publication_failure_returns_evidence_failed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    root = prepare_project(tmp_path)
+    install_fake_cmake(monkeypatch, tmp_path, env={"FAKE_CMAKE_EXIT": "3"})
+    real_replace = identity_mod._replace
+
+    def failing_replace(src, dst):
+        if Path(dst).name == "build-result.json":
+            raise OSError("injected replace failure")
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(identity_mod, "_replace", failing_replace)
+    result = run_build(BuildRequest(project_root=root, preset="arm-debug"))
+    assert result.ok is False
+    assert result.code == "BUILD_EVIDENCE_FAILED"
+    assert result.details == {
+        "path": "artifacts/migration/build-result.json",
+        "phase": "result",
+    }
+    assert not result_path_for(root).exists()
+
+
+def test_lock_contention_via_seam(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    root = prepare_project(tmp_path, git_repo=False)
+    import stm32_toolkit.build.runner as runner_mod
+
+    monkeypatch.setattr(runner_mod, "_lock_impl", lambda fd: False)
+    result = run_build(BuildRequest(project_root=root, preset="arm-debug"))
+    assert result.ok is False
+    assert result.code == "BUILD_BUSY"
+    assert result.details == {"path": ".stm32-toolkit/build.lock"}
+
+
+def raise_on_open(path: Path, monkeypatch: pytest.MonkeyPatch, error: OSError) -> None:
+    """Make ``Path.open`` raise ``error`` for ``path`` (platform-independent)."""
+    real_open = Path.open
+
+    def patched(self, mode: str = "r", *args, **kwargs):
+        if mode == "rb" and self == path:
+            raise error
+        return real_open(self, mode, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", patched)
+
+
+def rewrite_json(path: Path, mutator) -> None:
+    document = read_json(path)
+    mutator(document)
+    path.write_text(json.dumps(document, indent=2) + "\n", encoding="utf-8")
+
+
+def tamper_identity(root: Path, mutator) -> None:
+    path = identity_path_for(root)
+    rewrite_json(path, mutator)
+    document = read_json(path)
+    document["buildId"] = identity_mod.compute_build_id(document)
+    path.write_text(json.dumps(document, indent=2) + "\n", encoding="utf-8")
+
+
+# ---------------------------------------------------------------------------
+# coverage closure: prerequisites, locks, publication, prior evidence
+# ---------------------------------------------------------------------------
+
+
+def test_run_build_rejects_wrong_generation_tool(tmp_path: Path):
+    root = prepare_project(tmp_path, git_repo=False)
+    rewrite_json(root / ".stm32-project.json", lambda doc: doc["generatedBy"].__setitem__("tool", "other"))
+    result = run_build(BuildRequest(project_root=root, preset="arm-debug"))
+    assert result.code == "BUILD_PROJECT_INVALID"
+    assert result.details == {"field": "generation.tool", "rule": "tool"}
+
+
+def test_run_build_rejects_wrong_generation_version(tmp_path: Path):
+    root = prepare_project(tmp_path, git_repo=False)
+    rewrite_json(root / ".stm32-project.json", lambda doc: doc["generatedBy"].__setitem__("version", "9.9.9"))
+    result = run_build(BuildRequest(project_root=root, preset="arm-debug"))
+    assert result.code == "BUILD_PROJECT_INVALID"
+    assert result.details == {"field": "generation.version", "rule": "version"}
+
+
+def test_run_build_rejects_non_portable_manifest_path(tmp_path: Path):
+    root = prepare_project(tmp_path, git_repo=False)
+    rewrite_json(
+        root / ".stm32-project.json",
+        lambda doc: doc["generation"].__setitem__("managedManifest", "a//b"),
+    )
+    result = run_build(BuildRequest(project_root=root, preset="arm-debug"))
+    assert result.code == "BUILD_PROJECT_INVALID"
+    assert result.details == {"path": "a//b", "rule": "manifest"}
+
+
+def test_run_build_rejects_unreadable_manifest(tmp_path: Path, monkeypatch):
+    root = prepare_project(tmp_path, git_repo=False)
+    raise_on_open(root / ".stm32-toolkit" / "generated-files.json", monkeypatch, PermissionError("injected"))
+    result = run_build(BuildRequest(project_root=root, preset="arm-debug"))
+    assert result.code == "BUILD_PROJECT_INVALID"
+    assert result.details == {"path": ".stm32-toolkit/generated-files.json", "rule": "manifest"}
+
+
+def test_run_build_rejects_foreign_manifest_record(tmp_path: Path):
+    root = prepare_project(tmp_path, git_repo=False)
+    rewrite_json(
+        root / ".stm32-toolkit" / "generated-files.json",
+        lambda doc: doc["files"].insert(
+            next(index for index, item in enumerate(doc["files"]) if item["path"] == "linker/stm32tk.ld"),
+            {"path": "extra.txt", "ownership": "managed", "templateVersion": 1, "sha256": "a" * 64},
+        ),
+    )
+    result = run_build(BuildRequest(project_root=root, preset="arm-debug"))
+    assert result.code == "BUILD_PROJECT_INVALID"
+    assert result.details == {"path": "extra.txt", "rule": "ownership"}
+
+
+def test_run_build_rejects_missing_generated_file(tmp_path: Path):
+    root = prepare_project(tmp_path, git_repo=False)
+    (root / "CMakeLists.txt").unlink()
+    result = run_build(BuildRequest(project_root=root, preset="arm-debug"))
+    assert result.code == "BUILD_PROJECT_INVALID"
+    assert result.details == {"path": "CMakeLists.txt", "rule": "missing"}
+
+
+def test_run_build_rejects_unreadable_generated_file(tmp_path: Path, monkeypatch):
+    root = prepare_project(tmp_path, git_repo=False)
+    raise_on_open(root / "CMakeLists.txt", monkeypatch, PermissionError("injected"))
+    result = run_build(BuildRequest(project_root=root, preset="arm-debug"))
+    assert result.code == "BUILD_PROJECT_INVALID"
+    assert result.details == {"path": "CMakeLists.txt", "rule": "unreadable"}
+
+
+def test_map_missing_is_stale(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    root = prepare_project(tmp_path)
+    install_fake_cmake(monkeypatch, tmp_path, env={"FAKE_CMAKE_MAP_DEFECT": "missing"})
+    result = run_build(BuildRequest(project_root=root, preset="arm-debug"))
+    assert result.ok is False
+    assert result.code == "BUILD_OUTPUT_STALE"
+    assert result.details == {"path": "build/arm-debug/firmware.map", "rule": "missing"}
+
+
+def test_pre_configure_snapshot_raise_publishes_failure(tmp_path: Path, monkeypatch):
+    root = prepare_project(tmp_path)
+    install_fake_cmake(monkeypatch, tmp_path)
+    git_dir = tmp_path / "fakegit"
+    git_dir.mkdir(parents=True, exist_ok=True)
+    launcher = git_dir / "git"
+    launcher.write_text(
+        "#!{python}\nimport os, sys\n"
+        "if len(sys.argv) >= 2 and sys.argv[1] == 'rev-parse':\n"
+        "    sys.stdout.write('a' * 40 + '\\n')\n"
+        "    sys.stdout.flush()\n"
+        "else:\n"
+        "    os.remove('Src/main.c')\n"
+        "os._exit(0)\n".format(python=sys.executable),
+        encoding="utf-8",
+    )
+    launcher.chmod(0o755)
+    monkeypatch.setenv("PATH", str(git_dir) + os.pathsep + os.environ.get("PATH", ""))
+    result = run_build(BuildRequest(project_root=root, preset="arm-debug"))
+    assert result.ok is False
+    assert result.code == "BUILD_INPUT_INVALID"
+    assert result.details == {"path": "Src/main.c", "rule": "missing"}
+    failure = read_json(result_path_for(root))
+    assert failure["stage"] == "snapshot"
+
+
+def test_post_build_snapshot_raise_publishes_failure(tmp_path: Path, monkeypatch):
+    root = prepare_project(tmp_path)
+    install_fake_cmake(monkeypatch, tmp_path, env={"FAKE_CMAKE_DELETE_INPUT": "Src/main.c"})
+    result = run_build(BuildRequest(project_root=root, preset="arm-debug"))
+    assert result.ok is False
+    assert result.code == "BUILD_INPUT_INVALID"
+    assert result.details == {"path": "Src/main.c", "rule": "missing"}
+    failure = read_json(result_path_for(root))
+    assert failure["stage"] == "validate"
+
+
+def test_success_identity_publication_failure(tmp_path: Path, monkeypatch):
+    root = prepare_project(tmp_path)
+    install_fake_cmake(monkeypatch, tmp_path)
+    real_replace = identity_mod._replace
+
+    def failing_replace(src, dst):
+        if Path(dst).name == "firmware-identity.json":
+            raise OSError("injected replace failure")
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(identity_mod, "_replace", failing_replace)
+    result = run_build(BuildRequest(project_root=root, preset="arm-debug"))
+    assert result.ok is False
+    assert result.code == "BUILD_EVIDENCE_FAILED"
+    assert result.details == {
+        "path": "build/arm-debug/firmware-identity.json",
+        "phase": "identity",
+    }
+    assert not identity_path_for(root).exists()
+    assert log_path_for(root).exists()
+
+
+def test_failure_record_log_publication_failure(tmp_path: Path, monkeypatch):
+    root = prepare_project(tmp_path)
+    install_fake_cmake(monkeypatch, tmp_path, env={"FAKE_CMAKE_EXIT": "3"})
+    real_replace = identity_mod._replace
+
+    def failing_replace(src, dst):
+        if Path(dst).name == "build.log":
+            raise OSError("injected replace failure")
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(identity_mod, "_replace", failing_replace)
+    result = run_build(BuildRequest(project_root=root, preset="arm-debug"))
+    assert result.ok is False
+    assert result.code == "BUILD_EVIDENCE_FAILED"
+    assert result.details == {"path": "artifacts/migration/build.log", "phase": "log"}
+    assert not log_path_for(root).exists()
+
+
+@pytest.mark.parametrize(
+    "tamper",
+    [
+        lambda root, _result: rewrite_json(result_path_for(root), lambda doc: doc.__setitem__("status", "failure")),
+        lambda root, _result: rewrite_json(result_path_for(root), lambda doc: doc.__setitem__("preset", "arm-release")),
+        lambda root, _result: rewrite_json(result_path_for(root), lambda doc: doc.__setitem__("targetDevice", "OTHER")),
+        lambda root, _result: rewrite_json(result_path_for(root), lambda doc: doc.__setitem__("inputSnapshotSha256", "0" * 64)),
+        lambda root, _result: rewrite_json(result_path_for(root), lambda doc: doc.__setitem__("gitHead", "0" * 40)),
+        lambda root, _result: rewrite_json(result_path_for(root), lambda doc: doc.__setitem__("buildId", "1" * 64)),
+        lambda root, _result: tamper_identity(root, lambda doc: doc.__setitem__("preset", "arm-release")),
+        lambda root, _result: tamper_identity(root, lambda doc: doc.__setitem__("elfPath", "build/arm-debug/other.elf")),
+        lambda root, _result: tamper_identity(root, lambda doc: doc.__setitem__("elfSha256", "0" * 64)),
+        lambda root, _result: tamper_identity(root, lambda doc: doc.__setitem__("mapSha256", "0" * 64)),
+    ],
+)
+def test_noop_rebuild_with_mismatched_prior_evidence_is_stale(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, tamper
+):
+    root = prepare_project(tmp_path)
+    install_fake_cmake(monkeypatch, tmp_path)
+    first = run_build(BuildRequest(project_root=root, preset="arm-debug"))
+    assert first.ok is True
+    tamper(root, first)
+    monkeypatch.setenv("FAKE_CMAKE_NO_OUTPUT", "1")
+    result = run_build(BuildRequest(project_root=root, preset="arm-debug"))
+    assert result.ok is False
+    assert result.code == "BUILD_OUTPUT_STALE"
+    assert result.details == {"path": "build/arm-debug/firmware.elf", "rule": "unverifiable"}
+
+
+def test_artifact_state_edge_cases(tmp_path: Path, monkeypatch):
+    import stm32_toolkit.build.runner as runner_mod
+
+    assert runner_mod._artifact_state(tmp_path / "missing") == runner_mod._ArtifactState(False, 0, 0, "")
+    target = tmp_path / "firmware.elf"
+    target.write_bytes(b"x" * 100)
+    assert runner_mod._artifact_state(target) == runner_mod._ArtifactState(True, 100, target.stat().st_mtime_ns, sha256_hex(b"x" * 100))
+    raise_on_open(target, monkeypatch, PermissionError("injected"))
+    state = runner_mod._artifact_state(target)
+    assert state.exists is True
+    assert state.sha256 == ""
+    monkeypatch.setattr(runner_mod, "_ELF_LIMIT_BYTES", 16)
+    state = runner_mod._artifact_state(target)
+    assert state.exists is True
+    assert state.sha256 == ""
+
+
+def test_build_lock_direct_behavior(tmp_path: Path, monkeypatch):
+    import stm32_toolkit.build.runner as runner_mod
+
+    lock = runner_mod._BuildLock(tmp_path / "build.lock")
+    assert lock.acquire() is True
+    lock.release()
+    lock.release()  # idempotent when already released
+
+    real_open = os.open
+
+    def failing_open(path, flags, *args):
+        raise OSError("injected")
+
+    monkeypatch.setattr(os, "open", failing_open)
+    assert lock.acquire() is False
+
+    monkeypatch.setattr(os, "open", real_open)
+
+    def failing_close(fd):
+        raise OSError("injected")
+
+    monkeypatch.setattr(os, "close", failing_close)
+    monkeypatch.setattr(runner_mod, "_lock_impl", lambda fd: False)
+    assert lock.acquire() is False
+
+    monkeypatch.setattr(runner_mod, "_lock_impl", lambda fd: True)
+    assert lock.acquire() is True
+    lock.release()
+
+
+def test_model_artifact_paths_direct_validation(tmp_path: Path):
+    from dataclasses import replace
+
+    from stm32_toolkit.build.identity import model_artifact_paths
+
+    root = prepare_project(tmp_path, git_repo=False)
+    model = load_project_model(root)
+    with pytest.raises(Exception) as error:
+        model_artifact_paths(model, "host")
+    assert getattr(error.value, "code", None) == "BUILD_REQUEST_INVALID"
+    with pytest.raises(Exception) as error:
+        model_artifact_paths(replace(model, build=replace(model.build, elf=None)), "arm-debug")
+    assert getattr(error.value, "code", None) == "BUILD_PROJECT_INVALID"
+    with pytest.raises(Exception) as error:
+        model_artifact_paths(
+            replace(model, build=replace(model.build, elf="build/arm-debug/")), "arm-debug"
+        )
+    assert getattr(error.value, "code", None) == "BUILD_PROJECT_INVALID"
+    with pytest.raises(Exception) as error:
+        model_artifact_paths(
+            replace(model, build=replace(model.build, elf="build/arm-debug/x/evil.elf")),
+            "arm-debug",
+        )
+    assert getattr(error.value, "code", None) == "BUILD_PROJECT_INVALID"

@@ -363,6 +363,48 @@ def test_posix_branch_creates_a_new_session(tmp_path: Path, monkeypatch):
     assert captured["start_new_session"] is True
 
 
+def test_timeout_escalates_to_sigkill_when_sigterm_is_ignored(tmp_path: Path):
+    pid_file = tmp_path / "child.pid"
+    code = (
+        "import os, signal, time\n"
+        "signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
+        f"open({str(pid_file)!r}, 'w').write(str(os.getpid()))\n"
+        "time.sleep(60)\n"
+    )
+    argv = (PYTHON, "-c", code)
+    result = run_process(ProcessRequest(argv=argv, cwd=tmp_path, timeout_seconds=1))
+    assert result.timed_out is True
+    pid = int(pid_file.read_text(encoding="utf-8"))
+    with pytest.raises(ProcessLookupError):
+        os.killpg(pid, 0)
+
+
+def test_output_sink_edge_cases():
+    from stm32_toolkit.process import _OutputSink
+
+    sink = _OutputSink(8, 4)
+    sink.append(b"")
+    assert sink.text() == ""
+    sink.append(b"ab\ncd\n")
+    sink.append(b"ef\n")
+    assert sink.text() == "ab\ncd\nef"
+    # byte cap cuts mid-line deterministically
+    sink = _OutputSink(4, 100)
+    sink.append(b"abcdef")
+    assert sink.truncated is True
+    assert sink.text() == "abcd"
+    # line cap cuts at the Nth newline
+    sink = _OutputSink(1024, 2)
+    sink.append(b"a\nb\nc\nd\n")
+    assert sink.truncated is True
+    assert sink.text() == "a\nb\n"
+    # discarded overflow continues to be counted
+    sink = _OutputSink(4, 100)
+    sink.append(b"abcdef")
+    sink.append(b"gh")
+    assert sink.text() == "abcd"
+
+
 def test_windows_branch_graceful_signal_is_seam_injected(tmp_path: Path, monkeypatch):
     pid_file = tmp_path / "child.pid"
     argv = write_pid_child(pid_file)
