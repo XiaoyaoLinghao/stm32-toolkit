@@ -855,6 +855,17 @@ def _target_template(target: str) -> str:
     return TARGET_TEMPLATES[target]
 
 
+def _normalize_gnu_ld_attributes(attrs: str) -> str:
+    """Normalize memory region attributes for GNU ld compatibility.
+
+    Schema v2 model values are r--, rw-, r-x, rwx; GNU ld MEMORY flags
+    reject hyphens (ARM GNU ld 2.44: "invalid character %c (45) in flags")
+    and expect r, rw, rx, rwx.  The model enum values are never modified;
+    this is a deterministic rendering-time mapping only.
+    """
+    return attrs.replace("-", "")
+
+
 def _build_contexts(
     model: ProjectModel,
     options: dict[str, object],
@@ -886,7 +897,7 @@ def _build_contexts(
         "regions": [
             {
                 "name": region.name,
-                "attributes": region.attributes,
+                "attributes": _normalize_gnu_ld_attributes(region.attributes),
                 "origin_hex": "0x%08x" % region.origin,
                 "length_hex": "0x%08x" % region.length,
             }

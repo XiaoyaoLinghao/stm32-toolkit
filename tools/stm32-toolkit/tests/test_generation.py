@@ -121,7 +121,7 @@ _Min_Stack_Size = 1K;
 
 MEMORY
 {
-  FLASH (r-x) : ORIGIN = 0x08000000, LENGTH = 0x00100000
+  FLASH (rx) : ORIGIN = 0x08000000, LENGTH = 0x00100000
   RAM (rwx) : ORIGIN = 0x20000000, LENGTH = 0x00020000
 }
 
@@ -1351,12 +1351,60 @@ def test_linker_snapshot_with_ccm_region_preserves_order(tmp_path):
     plan = plan_for(root)
     entry = next(entry for entry in plan.files if entry.path == "linker/stm32tk.ld")
     text = entry.after_bytes.decode("utf-8")
-    flash = text.index("FLASH (r-x)")
+    flash = text.index("FLASH (rx)")
     ram = text.index("RAM (rwx)")
     ccm = text.index("CCM (rwx)")
     assert flash < ram < ccm
     assert "0x10000000" in text
     assert text.count("> RAM") == 4
+
+
+def _memory_block_attributes(text: str) -> list[str]:
+    """Extract GNU ld MEMORY attributes (the parenthesized flag groups)."""
+    memory = text.split("MEMORY", 1)[1].split("SECTIONS", 1)[0]
+    return [
+        line.split("(", 1)[1].split(")", 1)[0]
+        for line in memory.splitlines()
+        if "ORIGIN" in line
+    ]
+
+
+@pytest.mark.parametrize(
+    "attrs,expected",
+    [
+        ("r--", "r"),
+        ("rw-", "rw"),
+        ("r-x", "rx"),
+        ("rwx", "rwx"),
+    ],
+)
+def test_linker_memory_attributes_normalized_for_gnu_ld(tmp_path, attrs, expected):
+    """Schema v2 attributes must render as hyphen-free GNU ld flags."""
+    payload = standard_payload()
+    payload["memory"]["regions"] = [
+        {"name": "FLASH", "origin": 0x08000000, "length": 0x100000, "attributes": attrs},
+        {"name": "RAM", "origin": 0x20000000, "length": 0x20000, "attributes": "rwx"},
+    ]
+    root = write_project(tmp_path / "proj", payload)
+    plan = plan_for(root)
+    entry = next(entry for entry in plan.files if entry.path == "linker/stm32tk.ld")
+    text = entry.after_bytes.decode("utf-8")
+    assert f"FLASH ({expected})" in text
+    if attrs != expected:
+        assert f"FLASH ({attrs})" not in text
+    for attributes in _memory_block_attributes(text):
+        assert "-" not in attributes
+
+
+def test_no_hyphens_in_generated_linker_memory_attributes(tmp_path):
+    """GNU ld rejects hyphens in MEMORY flags; no generated attribute may have one."""
+    root = write_project(tmp_path / "proj")
+    plan = plan_for(root)
+    entry = next(entry for entry in plan.files if entry.path == "linker/stm32tk.ld")
+    text = entry.after_bytes.decode("utf-8")
+    for attributes in _memory_block_attributes(text):
+        assert "-" not in attributes
+        assert attributes in ("r", "rw", "rx", "rwx")
 
 
 def test_toolchain_snapshot_exact(tmp_path):
