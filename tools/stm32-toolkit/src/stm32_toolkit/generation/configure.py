@@ -1209,3 +1209,801 @@ def _collect_blockers(
 # ---------------------------------------------------------------------------
 # apply
 # ---------------------------------------------------------------------------
+
+
+def apply_project_configuration(plan: GenerationPlan) -> OperationResult[dict[str, object]]:
+    """Apply the accepted plan atomically, or fail without partial writes."""
+    try:
+        data = _apply(plan)
+    except _ApplyFailure as failure:
+        return OperationResult.failure(
+            "project-configuration-apply",
+            failure.code,
+            failure.message,
+            failure.details,
+        )
+    except GenerationError as error:
+        return OperationResult.failure(
+            "project-configuration-apply",
+            error.code,
+            error.message,
+            error.details,
+        )
+    return OperationResult.success("project-configuration-apply", data)
+
+
+def _validate_plan(plan: object) -> None:
+    """Full structural and digest validation of the supplied plan."""
+    if type(plan) is not GenerationPlan:
+        raise _plan_invalid("type")
+    if not isinstance(plan.plan_version, int) or plan.plan_version != PLAN_VERSION:
+        raise _plan_invalid("planVersion")
+    if not isinstance(plan.project_root, Path):
+        raise _plan_invalid("type")
+    if type(plan.model) is not ProjectModel:
+        raise _plan_invalid("type")
+    if sha256_error(plan.plan_id) is not None:
+        raise _plan_invalid("planId")
+    if sha256_error(plan.model_sha256) is not None:
+        raise _plan_invalid("modelSha256")
+    if plan.managed_manifest_path != MANAGED_MANIFEST_PATH:
+        raise _plan_invalid("manifestPath")
+    if not isinstance(plan.managed_manifest_bytes, bytes):
+        raise _plan_invalid("type")
+    if not isinstance(plan.inputs, tuple) or not all(
+        isinstance(entry, GenerationInput) for entry in plan.inputs
+    ):
+        raise _plan_invalid("type")
+    if not isinstance(plan.files, tuple) or not all(
+        isinstance(entry, GeneratedFile) for entry in plan.files
+    ):
+        raise _plan_invalid("type")
+    if not isinstance(plan.blockers, tuple) or not all(
+        isinstance(blocker, GenerationBlocker) for blocker in plan.blockers
+    ):
+        raise _plan_invalid("type")
+
+    input_paths = [entry.path for entry in plan.inputs]
+    for entry in plan.inputs:
+        if portable_path_error(entry.path) is not None:
+            raise _plan_invalid("portablePath")
+        if (
+            sha256_error(entry.sha256) is not None
+            or not isinstance(entry.size, int)
+            or entry.size < 0
+        ):
+            raise _plan_invalid("digestFormat")
+    if len(set(input_paths)) != len(input_paths):
+        raise _plan_invalid("uniquePath")
+    if _duplicate_or_casefold(input_paths) is not None:
+        raise _plan_invalid("casefoldCollision")
+    if input_paths != sorted(input_paths, key=portable_sort_key):
+        raise _plan_invalid("sortedOrder")
+    total_input = sum(entry.size for entry in plan.inputs)
+    if total_input > AGGREGATE_LIMIT_BYTES or any(
+        entry.size > FILE_LIMIT_BYTES for entry in plan.inputs
+    ):
+        raise _plan_invalid("inputLimit")
+
+    file_paths = [entry.path for entry in plan.files]
+    for entry in plan.files:
+        if portable_path_error(entry.path) is not None:
+            raise _plan_invalid("portablePath")
+        if entry.path not in GENERATED_TARGETS:
+            raise _plan_invalid("targetPath")
+        if entry.status not in {"create", "unchanged", "update-managed", "user-drift", "unowned-collision"}:
+            raise _plan_invalid("status")
+        if entry.template_name != _target_template(entry.path):
+            raise _plan_invalid("templateName")
+        if entry.template_version != TEMPLATE_VERSION:
+            raise _plan_invalid("templateVersion")
+        if not isinstance(entry.unified_diff, str):
+            raise _plan_invalid("type")
+        if not isinstance(entry.after_bytes, bytes) or not isinstance(
+            entry.before_bytes, (bytes, type(None))
+        ):
+            raise _plan_invalid("type")
+        if entry.before_bytes is None:
+            if entry.before_sha256 is not None or entry.before_size is not None:
+                raise _plan_invalid("fileDigest")
+        else:
+            if (
+                sha256_error(entry.before_sha256) is not None
+                or not isinstance(entry.before_size, int)
+                or entry.before_size < 0
+                or len(entry.before_bytes) != entry.before_size
+                or sha256_hex(entry.before_bytes) != entry.before_sha256
+            ):
+                raise _plan_invalid("fileDigest")
+        if (
+            sha256_error(entry.after_sha256) is not None
+            or not isinstance(entry.after_size, int)
+            or entry.after_size < 0
+            or len(entry.after_bytes) != entry.after_size
+            or sha256_hex(entry.after_bytes) != entry.after_sha256
+        ):
+            raise _plan_invalid("fileDigest")
+        if entry.status == "create" and entry.before_bytes is not None:
+            raise _plan_invalid("fileDigest")
+        if entry.status in ("unchanged", "user-drift", "unowned-collision") and entry.before_bytes is None:
+            raise _plan_invalid("fileDigest")
+        if entry.status == "unchanged" and entry.before_bytes != entry.after_bytes:
+            raise _plan_invalid("fileDigest")
+        if entry.status == "update-managed" and entry.before_bytes is not None and entry.before_bytes == entry.after_bytes:
+            raise _plan_invalid("fileDigest")
+    if len(set(file_paths)) != len(file_paths):
+        raise _plan_invalid("uniquePath")
+    if file_paths != sorted(file_paths, key=portable_sort_key):
+        raise _plan_invalid("sortedOrder")
+    if _duplicate_or_casefold(input_paths + file_paths) is not None:
+        raise _plan_invalid("casefoldCollision")
+
+    blocker_paths = [blocker.path for blocker in plan.blockers]
+    for blocker in plan.blockers:
+        if blocker.code not in {"GENERATED_FILE_DRIFT", "UNOWNED_COLLISION", "GENERATION_ORPHANED_MANAGED_FILE"}:
+            raise _plan_invalid("blockerCode")
+        if portable_path_error(blocker.path) is not None:
+            raise _plan_invalid("portablePath")
+        if not isinstance(blocker.message, str):
+            raise _plan_invalid("type")
+    if blocker_paths != sorted(blocker_paths, key=portable_sort_key):
+        raise _plan_invalid("sortedOrder")
+    if list(plan.blockers) != sorted(
+        plan.blockers, key=lambda blocker: (portable_sort_key(blocker.path), blocker.code)
+    ):
+        raise _plan_invalid("sortedOrder")
+
+    if len(plan.managed_manifest_bytes) > TOTAL_LIMIT_BYTES:
+        raise _plan_invalid("manifestLimit")
+    expected = build_managed_manifest_bytes(plan.files, plan.model_sha256)
+    if expected != plan.managed_manifest_bytes:
+        raise _plan_invalid("manifestBytes")
+    if model_sha256_for(plan.model) != plan.model_sha256:
+        raise _plan_invalid("modelSha256")
+    if plan_id_for(plan) != plan.plan_id:
+        raise _plan_invalid("planId")
+    if len(canonical_json_bytes(plan.to_dict())) > PLAN_LIMIT_BYTES:
+        raise _plan_invalid("planLimit")
+
+
+def _canonical_root(root: Path) -> Path:
+    try:
+        canonical = root.expanduser().resolve(strict=True)
+    except (OSError, RuntimeError, ValueError):
+        raise _plan_invalid("projectRoot") from None
+    if not canonical.is_dir():
+        raise _plan_invalid("projectRoot")
+    return canonical
+
+
+def _resolve_apply_target(root: Path, path: str, code: str) -> Path:
+    try:
+        resolved = root.joinpath(*path.split("/")).resolve(strict=False)
+    except (OSError, RuntimeError, ValueError):
+        raise _fail(
+            code,
+            "path resolution failed",
+            {"path": path, "rule": "withinProjectRoot"},
+        ) from None
+    try:
+        resolved.relative_to(root)
+    except ValueError:
+        raise _fail(
+            code,
+            "path escapes the project root",
+            {"path": path, "rule": "withinProjectRoot"},
+        ) from None
+    return resolved
+
+
+def _revalidate_inputs(root: Path, plan: GenerationPlan) -> None:
+    for entry in plan.inputs:
+        path = entry.path
+        try:
+            absolute = _resolve_apply_target(root, path, "GENERATION_INPUT_CHANGED")
+        except _ApplyFailure:
+            raise _fail(
+                "GENERATION_INPUT_CHANGED",
+                "recorded input is no longer inside the project root",
+                {"path": path},
+            ) from None
+        try:
+            lst = os.lstat(absolute)
+        except FileNotFoundError:
+            raise _fail("GENERATION_INPUT_CHANGED", "recorded input is missing", {"path": path}) from None
+        except NotADirectoryError:
+            raise _fail("GENERATION_INPUT_CHANGED", "recorded input is missing", {"path": path}) from None
+        except OSError:
+            raise _fail(
+                "GENERATION_INPUT_CHANGED",
+                "recorded input inspection failed",
+                {"path": path},
+            ) from None
+        if not stat.S_ISREG(lst.st_mode):
+            raise _fail(
+                "GENERATION_INPUT_CHANGED",
+                "recorded input is not a regular file",
+                {"path": path},
+            )
+        try:
+            data = _read_limited(absolute, entry.size)
+        except OSError:
+            raise _fail(
+                "GENERATION_INPUT_CHANGED",
+                "recorded input is unreadable",
+                {"path": path},
+            ) from None
+        if len(data) > entry.size or len(data) != entry.size or sha256_hex(data) != entry.sha256:
+            raise _fail(
+                "GENERATION_INPUT_CHANGED",
+                "recorded input bytes changed",
+                {"path": path},
+            )
+
+
+def _validate_destinations(root: Path, plan: GenerationPlan) -> None:
+    for entry in plan.files:
+        path = entry.path
+        absolute = _resolve_apply_target(root, path, "GENERATION_PATH_INVALID")
+        try:
+            lst = os.lstat(absolute)
+        except FileNotFoundError:
+            if entry.before_bytes is not None:
+                raise _fail("GENERATION_INPUT_CHANGED", "current target is missing", {"path": path}) from None
+            continue
+        except NotADirectoryError:
+            if entry.before_bytes is not None:
+                raise _fail("GENERATION_INPUT_CHANGED", "current target is missing", {"path": path}) from None
+            continue
+        except OSError:
+            raise _fail(
+                "GENERATION_PATH_INVALID",
+                "current target inspection failed",
+                {"path": path, "rule": "withinProjectRoot"},
+            ) from None
+        if entry.before_bytes is None:
+            raise _fail("GENERATION_TARGET_EXISTS", "creation target already exists", {"path": path})
+        if not stat.S_ISREG(lst.st_mode):
+            raise _fail(
+                "GENERATION_INPUT_CHANGED",
+                "current target is not a regular file",
+                {"path": path},
+            )
+        try:
+            data = _read_limited(absolute, entry.before_size)
+        except OSError:
+            raise _fail(
+                "GENERATION_INPUT_CHANGED",
+                "current target is unreadable",
+                {"path": path},
+            ) from None
+        if len(data) != entry.before_size or sha256_hex(data) != entry.before_sha256:
+            raise _fail(
+                "GENERATION_INPUT_CHANGED",
+                "current target bytes changed",
+                {"path": path},
+            )
+
+
+def _within_root_prefix(root_resolved: str, candidate: Path) -> bool:
+    candidate_str = os.path.normcase(str(candidate))
+    return candidate_str == root_resolved or candidate_str.startswith(root_resolved + os.sep)
+
+
+def _validate_staging_containment(root: Path, staging: Path) -> None:
+    """Reject any staging path component that escapes the project root."""
+    portable = f"{STAGING_ROOT}/{staging.name}"
+    try:
+        root_resolved = os.path.normcase(str(root.resolve(strict=False)))
+    except (OSError, RuntimeError, ValueError):
+        raise _fail(
+            "GENERATION_PATH_INVALID",
+            "project root resolution failed",
+            {"path": portable, "rule": "withinProjectRoot"},
+        ) from None
+    current = root
+    for component in STAGING_ROOT.split("/") + [staging.name]:
+        current = current.joinpath(component)
+        try:
+            resolved = current.resolve(strict=False)
+        except (OSError, RuntimeError, ValueError):
+            raise _fail(
+                "GENERATION_PATH_INVALID",
+                "staging path resolution failed",
+                {"path": portable, "rule": "withinProjectRoot"},
+            ) from None
+        if not _within_root_prefix(root_resolved, resolved):
+            raise _fail(
+                "GENERATION_PATH_INVALID",
+                "staging path escapes the project root",
+                {"path": portable, "rule": "withinProjectRoot"},
+            )
+
+
+class _FsyncError(OSError):
+    pass
+
+
+def _fsync(fd: int) -> None:
+    try:
+        os.fsync(fd)
+    except OSError as error:
+        raise _FsyncError(error.errno, error.strerror) from error
+
+
+def _fsync_dir(path: Path) -> None:
+    if os.name == "nt":
+        return
+    try:
+        fd = os.open(path, os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        _fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def _stage_write(path: Path, data: bytes, mode: int) -> None:
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(data)
+            handle.flush()
+            _fsync(handle.fileno())
+        os.chmod(path, mode)
+    except BaseException:
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+        raise
+
+
+def _temp_write(path: Path, data: bytes, mode: int) -> None:
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, mode)
+    try:
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(data)
+            handle.flush()
+            _fsync(handle.fileno())
+    except BaseException:
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+        raise
+
+
+def _remove_staging(staging: Path) -> None:
+    shutil.rmtree(staging)
+    try:
+        os.rmdir(staging.parent)
+    except OSError:
+        pass
+
+
+def _remove_created_dirs(created_dirs: list[Path], skip: set[Path]) -> None:
+    for directory in reversed(created_dirs):
+        if directory in skip:
+            continue
+        try:
+            os.rmdir(directory)
+        except OSError:
+            pass
+
+
+def _ensure_dir(path: Path, created_dirs: list[Path]) -> None:
+    if path.is_dir():
+        return
+    missing: list[Path] = []
+    current = path
+    while not current.is_dir():
+        missing.append(current)
+        if current.parent == current:
+            break
+        current = current.parent
+    os.makedirs(path, exist_ok=True)
+    created_dirs.extend(reversed(missing))
+
+
+def _before_sha_by_path(plan: GenerationPlan) -> dict[str, str | None]:
+    mapping = {entry.path: entry.before_sha256 for entry in plan.files}
+    for entry in plan.inputs:
+        if entry.path == MANAGED_MANIFEST_PATH:
+            mapping[MANAGED_MANIFEST_PATH] = entry.sha256
+    return mapping
+
+
+def _map_fresh_error(error: GenerationError) -> None:
+    code = error.code
+    if code == "GENERATION_MODEL_INVALID":
+        raise _fail(
+            "GENERATION_INPUT_CHANGED",
+            "project model changed since planning",
+            {"path": _STM32_PROJECT_MANIFEST},
+        )
+    if code == "GENERATION_MANIFEST_INVALID":
+        raise _fail(
+            "GENERATION_INPUT_CHANGED",
+            "managed manifest changed since planning",
+            {"path": MANAGED_MANIFEST_PATH},
+        )
+    if code == "GENERATION_FIXED_SECTION_INVALID":
+        raise _fail(
+            "GENERATION_INPUT_CHANGED",
+            "conversion report changed since planning",
+            {"path": _CONVERSION_REPORT_PATH},
+        )
+    if code in ("GENERATION_INPUT_INVALID", "GENERATION_PATH_INVALID"):
+        raise _fail(
+            "GENERATION_INPUT_CHANGED",
+            "recorded input changed since planning",
+            {"path": str(error.details.get("path", ""))},
+        )
+    raise _plan_invalid("freshPlan")
+
+
+def _fresh_matches(fresh: GenerationPlan, plan: GenerationPlan) -> None:
+    if fresh.plan_version != plan.plan_version:
+        raise _plan_invalid("freshPlan")
+    if fresh.model_sha256 != plan.model_sha256:
+        raise _fail(
+            "GENERATION_INPUT_CHANGED",
+            "project model changed since planning",
+            {"path": _STM32_PROJECT_MANIFEST},
+        )
+    if fresh.managed_manifest_path != plan.managed_manifest_path:
+        raise _plan_invalid("freshPlan")
+    if fresh.inputs != plan.inputs:
+        by_path = {entry.path: entry for entry in fresh.inputs}
+        for entry in plan.inputs:
+            if by_path.get(entry.path) != entry:
+                raise _fail(
+                    "GENERATION_INPUT_CHANGED",
+                    "recorded input changed since planning",
+                    {"path": entry.path},
+                )
+        extra = [
+            entry.path
+            for entry in fresh.inputs
+            if entry.path not in {known.path for known in plan.inputs}
+        ]
+        if extra:
+            raise _fail(
+                "GENERATION_INPUT_CHANGED",
+                "an input appeared since planning",
+                {"path": extra[0]},
+            )
+        raise _plan_invalid("freshPlan")
+    if len(fresh.files) != len(plan.files):
+        raise _plan_invalid("freshPlan")
+    for fresh_file, plan_file in zip(fresh.files, plan.files):
+        if fresh_file.to_dict() != plan_file.to_dict():
+            if (
+                fresh_file.before_sha256 != plan_file.before_sha256
+                or fresh_file.status != plan_file.status
+            ):
+                raise _fail(
+                    "GENERATION_INPUT_CHANGED",
+                    "current target changed since planning",
+                    {"path": plan_file.path},
+                )
+            raise _plan_invalid("freshPlan")
+        if (
+            fresh_file.before_bytes != plan_file.before_bytes
+            or fresh_file.after_bytes != plan_file.after_bytes
+        ):
+            raise _plan_invalid("freshPlan")
+    if fresh.blockers != plan.blockers:
+        raise _plan_invalid("freshPlan")
+    if fresh.managed_manifest_bytes != plan.managed_manifest_bytes:
+        raise _plan_invalid("freshPlan")
+
+
+def _rollback(
+    staging: Path,
+    replaced: list[tuple[str, Path, Path]],
+    created_files: list[tuple[str, Path]],
+    created_dirs: list[Path],
+    temp_files: list[tuple[str, Path]],
+) -> None:
+    """Restore every pre-apply byte and mode; failures retain recoverable staging."""
+    failed: list[str] = []
+    for path, temp in temp_files:
+        try:
+            os.unlink(temp)
+        except FileNotFoundError:
+            pass
+        except OSError:
+            failed.append(path)
+    for path, target, backup in reversed(replaced):
+        try:
+            os.replace(backup, target)
+        except OSError:
+            failed.append(path)
+    for path, target in reversed(created_files):
+        try:
+            os.unlink(target)
+        except FileNotFoundError:
+            pass
+        except OSError:
+            failed.append(path)
+    if failed:
+        raise _fail(
+            "GENERATION_ROLLBACK_FAILED",
+            "rollback could not restore every path",
+            {"paths": sorted(set(failed), key=portable_sort_key)},
+        )
+    try:
+        _remove_staging(staging)
+    except OSError:
+        pass
+    _remove_created_dirs(created_dirs, {staging, staging.parent})
+
+
+def _apply(plan: GenerationPlan) -> dict[str, object]:
+    _validate_plan(plan)
+
+    canonical = _canonical_root(plan.project_root)
+    try:
+        planned_root = plan.project_root.expanduser().resolve(strict=False)
+    except (OSError, RuntimeError, ValueError):
+        raise _plan_invalid("projectRoot") from None
+    if planned_root != canonical:
+        raise _plan_invalid("projectRoot")
+
+    staging = canonical.joinpath(*STAGING_ROOT.split("/"), plan.plan_id)
+    # A staging escape must be rejected before any other preflight step can
+    # short-circuit with a less specific failure: the canonical staging path
+    # (including the .stm32-toolkit and configuration-staging intermediates)
+    # must stay inside the project root before the first write.
+    _validate_staging_containment(canonical, staging)
+
+    try:
+        fresh_model = load_project_model(canonical)
+    except ProjectManifestError:
+        raise _fail(
+            "GENERATION_INPUT_CHANGED",
+            "project model is no longer available",
+            {"path": _STM32_PROJECT_MANIFEST},
+        ) from None
+    if model_sha256_for(fresh_model) != plan.model_sha256:
+        raise _fail(
+            "GENERATION_INPUT_CHANGED",
+            "project model changed since planning",
+            {"path": _STM32_PROJECT_MANIFEST},
+        )
+
+    _revalidate_inputs(canonical, plan)
+    _validate_destinations(canonical, plan)
+
+    staging = canonical.joinpath(*STAGING_ROOT.split("/"), plan.plan_id)
+    _validate_staging_containment(canonical, staging)
+    _reject_existing_staging(staging, plan)
+
+    try:
+        fresh = plan_project_configuration(fresh_model)
+    except GenerationError as error:
+        _map_fresh_error(error)
+    _fresh_matches(fresh, plan)
+
+    if plan.blockers:
+        drift = sorted(
+            (blocker.path for blocker in plan.blockers if blocker.code == "GENERATED_FILE_DRIFT"),
+            key=portable_sort_key,
+        )
+        if drift:
+            raise _fail(
+                "GENERATED_FILE_DRIFT",
+                "generated files were modified outside the toolkit",
+                {"paths": drift},
+            )
+        raise _fail(
+            "GENERATION_BLOCKED",
+            "configuration generation is blocked",
+            {
+                "codes": sorted({blocker.code for blocker in plan.blockers}),
+                "paths": sorted(
+                    (blocker.path for blocker in plan.blockers), key=portable_sort_key
+                ),
+            },
+        )
+
+    before_sha_by_path = _before_sha_by_path(plan)
+    destinations: list[tuple[str, bytes, bool]] = []
+    for entry in plan.files:
+        if entry.status in ("create", "update-managed"):
+            destinations.append((entry.path, entry.after_bytes, entry.before_bytes is not None))
+    manifest_existed = any(entry.path == MANAGED_MANIFEST_PATH for entry in plan.inputs)
+    if not manifest_existed:
+        destinations.append((MANAGED_MANIFEST_PATH, plan.managed_manifest_bytes, False))
+    else:
+        try:
+            current_manifest = _read_limited(
+                canonical.joinpath(*MANAGED_MANIFEST_PATH.split("/")), FILE_LIMIT_BYTES
+            )
+        except OSError:
+            raise _fail(
+                "GENERATION_INPUT_CHANGED",
+                "managed manifest is unreadable",
+                {"path": MANAGED_MANIFEST_PATH},
+            ) from None
+        if current_manifest != plan.managed_manifest_bytes:
+            destinations.append((MANAGED_MANIFEST_PATH, plan.managed_manifest_bytes, True))
+    destinations.sort(key=lambda item: portable_sort_key(item[0]))
+
+    if not destinations:
+        return {
+            "planId": plan.plan_id,
+            "modelSha256": plan.model_sha256,
+            "createdPaths": [],
+            "updatedPaths": [],
+            "unchangedPaths": sorted(
+                (entry.path for entry in plan.files), key=portable_sort_key
+            ),
+            "managedManifestPath": MANAGED_MANIFEST_PATH,
+            "managedManifestSha256": sha256_hex(plan.managed_manifest_bytes),
+            "templateVersion": TEMPLATE_VERSION,
+        }
+
+    staging = canonical.joinpath(*STAGING_ROOT.split("/"), plan.plan_id)
+    _validate_staging_containment(canonical, staging)
+    _reject_existing_staging(staging, plan)
+
+    created_dirs: list[Path] = []
+    replaced: list[tuple[str, Path, Path]] = []
+    created_files: list[tuple[str, Path]] = []
+    temp_files: list[tuple[str, Path]] = []
+    success = False
+    in_replace = False
+
+    try:
+        # --- stage phase ----------------------------------------------------
+        stage_root = staging / "new"
+        backup_root = staging / "backup"
+        _ensure_dir(staging, created_dirs)
+        _ensure_dir(stage_root, created_dirs)
+        _ensure_dir(backup_root, created_dirs)
+        for path, data, existed in destinations:
+            staged = stage_root.joinpath(*path.split("/"))
+            _ensure_dir(staged.parent, created_dirs)
+            if existed:
+                target = canonical.joinpath(*path.split("/"))
+                lst = os.lstat(target)
+                original_mode = stat.S_IMODE(lst.st_mode)
+                backup = backup_root.joinpath(*path.split("/"))
+                _ensure_dir(backup.parent, created_dirs)
+                with target.open("rb") as handle:
+                    original = handle.read()
+                _stage_write(backup, original, original_mode)
+                _stage_write(staged, data, original_mode)
+            else:
+                _stage_write(staged, data, 0o644)
+
+        # --- replace phase --------------------------------------------------
+        in_replace = True
+        for path, data, existed in destinations:
+            target = canonical.joinpath(*path.split("/"))
+            _resolve_apply_target(canonical, path, "GENERATION_PATH_INVALID")
+            _ensure_dir(target.parent, created_dirs)
+            expected = before_sha_by_path.get(path)
+            if existed:
+                lst = os.lstat(target)
+                if not stat.S_ISREG(lst.st_mode):
+                    raise _fail(
+                        "GENERATION_INPUT_CHANGED",
+                        "current target is not a regular file",
+                        {"path": path},
+                    )
+                with target.open("rb") as handle:
+                    current = handle.read()
+                if sha256_hex(current) != expected:
+                    raise _fail(
+                        "GENERATION_INPUT_CHANGED",
+                        "current target bytes changed",
+                        {"path": path},
+                    )
+                mode = stat.S_IMODE(lst.st_mode)
+            else:
+                try:
+                    os.lstat(target)
+                except FileNotFoundError:
+                    pass
+                except OSError:
+                    raise _fail(
+                        "GENERATION_PATH_INVALID",
+                        "creation target state cannot be verified",
+                        {"path": path, "rule": "withinProjectRoot"},
+                    ) from None
+                else:
+                    raise _fail(
+                        "GENERATION_TARGET_EXISTS",
+                        "creation target appeared during apply",
+                        {"path": path},
+                    )
+                mode = 0o644
+            temp = target.parent / f".{plan.plan_id[:12]}.{target.name}.stm32tk-tmp"
+            _temp_write(temp, data, mode)
+            temp_files.append((path, temp))
+            os.replace(temp, target)
+            temp_files.remove((path, temp))
+            os.chmod(target, mode)
+            if existed:
+                replaced.append((path, target, backup_root.joinpath(*path.split("/"))))
+            else:
+                created_files.append((path, target))
+            try:
+                _fsync_dir(target.parent)
+            except OSError as error:
+                raise _FsyncError(error.errno, error.strerror) from error
+        success = True
+        _remove_staging(staging)
+    except _ApplyFailure:
+        raise
+    except OSError as error:
+        if isinstance(error, _FsyncError):
+            phase = "fsync"
+        elif success:
+            phase = "stage"
+        elif in_replace:
+            phase = "replace"
+        else:
+            phase = "stage"
+        try:
+            if replaced or created_files or temp_files:
+                _rollback(staging, replaced, created_files, created_dirs, temp_files)
+            else:
+                try:
+                    _remove_staging(staging)
+                except OSError:
+                    pass
+                _remove_created_dirs(created_dirs, {staging, staging.parent})
+        except _ApplyFailure:
+            raise
+        raise _fail("GENERATION_APPLY_FAILED", "apply failed", {"phase": phase})
+
+    return {
+        "planId": plan.plan_id,
+        "modelSha256": plan.model_sha256,
+        "createdPaths": sorted(
+            (path for path, _data, existed in destinations if not existed),
+            key=portable_sort_key,
+        ),
+        "updatedPaths": sorted(
+            (path for path, _data, existed in destinations if existed),
+            key=portable_sort_key,
+        ),
+        "unchangedPaths": sorted(
+            (entry.path for entry in plan.files if entry.status == "unchanged"),
+            key=portable_sort_key,
+        ),
+        "managedManifestPath": MANAGED_MANIFEST_PATH,
+        "managedManifestSha256": sha256_hex(plan.managed_manifest_bytes),
+        "templateVersion": TEMPLATE_VERSION,
+    }
+
+
+def _reject_existing_staging(staging: Path, plan: GenerationPlan) -> None:
+    try:
+        os.lstat(staging)
+    except FileNotFoundError:
+        pass
+    except NotADirectoryError:
+        raise _fail(
+            "GENERATION_TARGET_EXISTS",
+            "staging path already exists",
+            {"path": f"{STAGING_ROOT}/{plan.plan_id}"},
+        ) from None
+    except OSError:
+        raise _fail(
+            "GENERATION_PATH_INVALID",
+            "staging state cannot be verified",
+            {"path": f"{STAGING_ROOT}/{plan.plan_id}", "rule": "withinProjectRoot"},
+        ) from None
+    else:
+        raise _fail(
+            "GENERATION_TARGET_EXISTS",
+            "staging path already exists",
+            {"path": f"{STAGING_ROOT}/{plan.plan_id}"},
+        )
