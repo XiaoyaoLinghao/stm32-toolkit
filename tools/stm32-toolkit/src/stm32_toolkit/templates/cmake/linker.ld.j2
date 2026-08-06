@@ -1,0 +1,80 @@
+ENTRY(Reset_Handler)
+
+_Min_Heap_Size = 4K;
+_Min_Stack_Size = 1K;
+
+MEMORY
+{
+{%- for region in regions %}
+  {{ region.name }} ({{ region.attributes }}) : ORIGIN = {{ region.origin_hex }}, LENGTH = {{ region.length_hex }}{% endfor %}
+}
+
+SECTIONS
+{
+  .isr_vector :
+  {
+    KEEP(*(.isr_vector))
+  } > {{ flash_region }}
+
+  .text :
+  {
+    *(.text*)
+    *(.rodata*)
+    KEEP(*(.init))
+    KEEP(*(.fini))
+    . = ALIGN(4);
+    _etext = .;
+  } > {{ flash_region }}
+
+  .ARM.extab :
+  {
+    *(.ARM.extab* .gnu.linkonce.arm.extab.*)
+  } > {{ flash_region }}
+
+  .ARM.exidx :
+  {
+    *(.ARM.exidx* .gnu.linkonce.arm.exidx.*)
+  } > {{ flash_region }}
+{%- for section in fixed_sections %}
+
+  {{ section.name }} {{ section.address_hex }} (NOLOAD) :
+  {
+    KEEP(*({{ section.name }}))
+  } > {{ section.region }}{% endfor %}
+
+  .data :
+  {
+    _sdata = .;
+    *(.data*)
+    . = ALIGN(4);
+    _edata = .;
+  } > {{ ram_region }} AT> {{ flash_region }}
+  _sidata = LOADADDR(.data);
+
+  .bss :
+  {
+    _sbss = .;
+    *(.bss*)
+    *(COMMON)
+    . = ALIGN(4);
+    _ebss = .;
+  } > {{ ram_region }}
+
+  .heap (NOLOAD) :
+  {
+    . = ALIGN(8);
+    __end__ = .;
+    end = __end__;
+    __HeapBase = .;
+    . += _Min_Heap_Size;
+    __HeapLimit = .;
+  } > {{ ram_region }}
+
+  .stack (NOLOAD) :
+  {
+    . = ALIGN(8);
+    __StackTop = .;
+    . += _Min_Stack_Size;
+    __StackLimit = .;
+  } > {{ ram_region }}
+}

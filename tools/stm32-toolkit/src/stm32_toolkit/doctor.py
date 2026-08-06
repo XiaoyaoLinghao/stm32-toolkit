@@ -21,6 +21,13 @@ TOOLS = (
     "STM32CubeMX",
     "code",
 )
+
+#: The exact three recommended VS Code extensions (STM32TK-0304).
+VSCODE_EXTENSIONS = (
+    "ms-vscode.cpptools",
+    "ms-vscode.cmake-tools",
+    "marus25.cortex-debug",
+)
 _VERSION_TIMEOUT_SECONDS = 5
 _REAP_TIMEOUT_SECONDS = 1
 _READER_JOIN_TIMEOUT_SECONDS = 0.1
@@ -37,6 +44,7 @@ def run_doctor(project_root: Path) -> OperationResult[dict[str, object]]:
             "platform": _platform_evidence(),
             "project": _project_evidence(project_root),
             "tools": {name: _tool_evidence(name) for name in TOOLS},
+            "vscodeExtensions": _vscode_extension_evidence(),
             "mutated": False,
         },
     )
@@ -211,6 +219,65 @@ def _tool_result(
         "returnCode": return_code,
         "version": version,
     }
+
+
+def _extension_evidence(
+    installed: bool, version: str | None, status: str
+) -> dict[str, object]:
+    return {"installed": installed, "version": version, "status": status}
+
+
+def _vscode_extension_evidence() -> dict[str, dict[str, object]]:
+    """Bounded, read-only evidence for the three recommended VS Code extensions.
+
+    Invokes exactly ``[resolved_code, "--list-extensions", "--show-versions"]``
+    through the existing bounded process machinery.  Missing ``code`` yields
+    ``unavailable`` for all three; a failed probe never claims missing.
+    """
+    try:
+        executable = shutil.which("code")
+    except OSError:
+        executable = None
+    if executable is None:
+        return {
+            extension: _extension_evidence(False, None, "unavailable")
+            for extension in VSCODE_EXTENSIONS
+        }
+    status, return_code, stdout, _stderr = _run_process(
+        (executable, "--list-extensions", "--show-versions")
+    )
+    if status != "ok" or return_code != 0:
+        failure = status if status != "ok" else "nonzero"
+        return {
+            extension: _extension_evidence(False, None, failure)
+            for extension in VSCODE_EXTENSIONS
+        }
+    parsed = _parse_extension_lines(_decode_output(stdout))
+    return {
+        extension: (
+            _extension_evidence(True, parsed[extension.casefold()], "ok")
+            if extension.casefold() in parsed
+            else _extension_evidence(False, None, "missing")
+        )
+        for extension in VSCODE_EXTENSIONS
+    }
+
+
+def _parse_extension_lines(output: str) -> dict[str, str]:
+    """Parse ``publisher.extension@version`` lines case-insensitively.
+
+    Malformed and unrelated lines are ignored; the retained output is already
+    capped at 8 KiB by the bounded reader.
+    """
+    parsed: dict[str, str] = {}
+    for line in output.splitlines():
+        identifier, separator, version = line.strip().rpartition("@")
+        if not separator or not identifier or not version:
+            continue
+        if "." not in identifier or any(ch.isspace() for ch in identifier):
+            continue
+        parsed[identifier.casefold()] = version
+    return parsed
 
 
 def _version_line(output: str | None) -> str | None:

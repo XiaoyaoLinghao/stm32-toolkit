@@ -10,6 +10,7 @@ dependencies = [
   "jsonschema>=4.23,<5",
   "mcp>=1.27,<2",
   "pyelftools>=0.33,<0.34",
+  "Jinja2>=3.1,<4",
 ]
 
 [project.optional-dependencies]
@@ -23,7 +24,7 @@ stm32-toolkit-mcp = "stm32_toolkit.mcp_server:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-stm32_toolkit = ["schemas/*.json"]
+stm32_toolkit = ["schemas/*.json", "templates/cmake/*", "templates/vscode/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
