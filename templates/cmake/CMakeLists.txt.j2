@@ -1,0 +1,51 @@
+cmake_minimum_required(VERSION 3.22)
+project({{ project_name }} LANGUAGES C CXX ASM)
+
+add_executable({{ target_name }}
+{%- for source in sources %}
+  {{ source }}{% endfor %}
+{%- for source in assembly_sources %}
+  {{ source }}{% endfor %}
+)
+
+set_target_properties({{ target_name }} PROPERTIES
+  PREFIX ""
+  SUFFIX ".elf"
+  RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}"
+)
+
+target_include_directories({{ target_name }} PRIVATE
+{%- for include in includes %}
+  {{ include }}{% endfor %}
+)
+
+target_compile_definitions({{ target_name }} PRIVATE
+{%- for define in defines %}
+  {{ define }}{% endfor %}
+)
+
+target_compile_options({{ target_name }} PRIVATE
+  {{ cpu_flag }}
+  -mthumb
+  -ffunction-sections
+  -fdata-sections
+{%- if fpu_flag %}
+  {{ fpu_flag }}
+  {{ float_abi_flag }}
+{%- endif %}
+{%- for option in compile_options %}
+  {{ option }}{% endfor %}
+  $<$<CONFIG:Debug>:-Og;-g3>
+  $<$<CONFIG:Release>:-O2;-g0>
+)
+
+target_link_options({{ target_name }} PRIVATE
+  "-T${CMAKE_SOURCE_DIR}/linker/stm32tk.ld"
+  "-Wl,-Map=${CMAKE_BINARY_DIR}/{{ map_name }}"
+)
+
+add_custom_command(TARGET {{ target_name }} POST_BUILD
+  COMMAND ${CMAKE_OBJCOPY} -O ihex "$<TARGET_FILE:{{ target_name }}>" "${CMAKE_BINARY_DIR}/{{ hex_name }}"
+  COMMAND ${CMAKE_OBJCOPY} -O binary "$<TARGET_FILE:{{ target_name }}>" "${CMAKE_BINARY_DIR}/{{ bin_name }}"
+  VERBATIM
+)
