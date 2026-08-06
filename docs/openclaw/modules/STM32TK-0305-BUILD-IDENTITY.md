@@ -6,6 +6,23 @@ Specification owner: Codex
 Implementation owner: OpenClaw
 Reviewer: Codex
 
+## 0. r002 replacement order after r001 REWRITE_REQUIRED
+
+- r001 reviewed final head: `bb747935eb002cad8b251ad7bd4ebae5467e08f7`; closed PR: `https://github.com/XiaoyaoLinghao/stm32-toolkit/pull/5`.
+- Verdict: `REWRITE_REQUIRED`, not a bounded revision. r002 starts again from accepted base `e47eee0d374bd3a959fe555990b66a6163eb18b8`; do not merge, rebase, or cherry-pick r001. It may be read only as negative evidence.
+- r001 Windows focused gate failed with 23 failures. The exact rejected classes were CRLF output, POSIX-only `killpg`/`fcntl` tests executed on Windows, a shebang-only fake `cmake` that invoked the real CMake on Windows, and `chmod(0)` unreadability assumptions.
+- r001 was also rejected independent of platform because it implemented a different public protocol and omitted the core safety boundary:
+  - it used `clean_first`, nullable Git branch/target, percent memory, boolean ELF observations, `.stm32-toolkit/build/<preset>` evidence, and unapproved error codes instead of section 6/11/12;
+  - it took only a post-build manifest/source snapshot, omitted headers and managed configuration, never compared a pre-build snapshot, and could identify source bytes that were not compiled;
+  - configure/build failure published no failure record, so a previous success could remain fresh;
+  - MAP LMA was discarded, out-of-region sections were clipped rather than rejected, model regions were not reconciled, and overflow was structurally impossible to detect;
+  - missing/short vector, undefined non-weak symbols, Reset_Handler definition/vector mismatch, alloc-section escape, and fixed-section mismatch were recorded as booleans/lists rather than rejected;
+  - release builds were labeled with `build/arm-debug/firmware.elf`; a real diagnostic built both outputs and observed the release success record point at the debug ELF;
+  - `OperationResult.to_dict()` returned a live `BuildReport` object and was not JSON serializable;
+  - raw process stdout/stderr were returned and published without the required root/privacy normalization.
+- Codex's real toolchain gate also exposed one upstream STM32TK-0304 defect: generated link options omit the CPU/FPU/ABI flags and freestanding startup suppression. Both presets fail with VFP ABI mismatch and newlib/crt0 unresolved symbols. r002 is explicitly authorized to correct the exact CMake template/test paths added to section 5.
+- r002 RED evidence must reproduce these safety failures against accepted base or isolated r001 code as appropriate. Passing rewritten assertions without demonstrating the rejected behavior is insufficient.
+
 ## 1. Objective and user-visible outcome
 
 - Turn one validated Schema v2 project with the managed configuration from STM32TK-0304 into a bounded ARM GNU build and a trustworthy firmware identity.
@@ -84,6 +101,7 @@ ProjectModel + managed generated-files manifest
 
 | Status | Path | Responsibility |
 |---|---|---|
+| M | `.gitignore` | unignore only the mandated Python `stm32_toolkit/build/` package below the pre-existing global `build/` rule |
 | A | `schemas/firmware-identity.schema.json` | review copy of identity schema |
 | A | `tools/stm32-toolkit/src/stm32_toolkit/schemas/firmware-identity.schema.json` | byte-identical packaged runtime schema |
 | A | `tools/stm32-toolkit/src/stm32_toolkit/process.py` | bounded fixed-argv subprocess execution |
@@ -93,6 +111,9 @@ ProjectModel + managed generated-files manifest
 | A | `tools/stm32-toolkit/src/stm32_toolkit/build/identity.py` | input snapshot, Git/ELF identity, schema, atomic evidence |
 | A | `tools/stm32-toolkit/src/stm32_toolkit/build/runner.py` | build orchestration, locking, stale-output defense |
 | M | `tools/stm32-toolkit/src/stm32_toolkit/context.py` | evidence-backed ELF freshness |
+| M | `tools/stm32-toolkit/src/stm32_toolkit/result.py` | preserve typed immutable data while snapshotting its explicit `to_dict()` representation for JSON serialization |
+| M | `templates/cmake/CMakeLists.txt.j2` | root review template: architecture-correct freestanding link options |
+| M | `tools/stm32-toolkit/src/stm32_toolkit/templates/cmake/CMakeLists.txt.j2` | byte-identical packaged template correction |
 | A | `tools/stm32-toolkit/tests/test_process.py` | process limits/timeout/reaping contracts |
 | A | `tools/stm32-toolkit/tests/test_build_runner.py` | build stages/failures/publication/atomicity |
 | A | `tools/stm32-toolkit/tests/test_build_map.py` | MAP parsing/overflow/malformed evidence |
@@ -101,9 +122,11 @@ ProjectModel + managed generated-files manifest
 | A | `tools/stm32-toolkit/tests/fixtures/minimal-gcc/Src/main.c` | freestanding deterministic main |
 | A | `tools/stm32-toolkit/tests/fixtures/minimal-gcc/Startup/startup.s` | Cortex-M vector and Reset_Handler fixture |
 | M | `tools/stm32-toolkit/tests/test_context.py` | successful/failure/stale identity context tests |
-| A | `docs/openclaw/returns/STM32TK-0305-BUILD-IDENTITY/r001-implementation-report.md` | report-only final commit |
+| M | `tools/stm32-toolkit/tests/test_generation.py` | exact link-option snapshot and root/package template identity regression |
+| M | `tools/stm32-toolkit/tests/test_result.py` | typed-data JSON snapshot and immutability regression |
+| A | `docs/openclaw/returns/STM32TK-0305-BUILD-IDENTITY/r002-implementation-report.md` | report-only final commit |
 
-No other path is approved. Existing `pyproject.toml` already packages `schemas/*.json`; do not change dependencies or package metadata.
+No other path is approved. Existing `pyproject.toml` already packages `schemas/*.json`; do not change dependencies or package metadata. The `.gitignore` exception must be exactly `!tools/stm32-toolkit/src/stm32_toolkit/build/` and must not unignore project build outputs.
 
 ## 6. Public contracts
 
@@ -165,6 +188,8 @@ def run_build(request: BuildRequest) -> OperationResult[BuildReport]: ...
 
 `stm32_toolkit.build.__init__` exports exactly these four types and `run_build`. `OperationResult.operation` is `build`.
 
+`result.data` remains the typed frozen `BuildReport`. `OperationResult` must capture a recursively frozen JSON representation at construction time when data provides the explicit Toolkit `to_dict()` contract; `OperationResult.to_dict()["data"]` returns a fresh ordinary mapping and `json.dumps(result.to_dict())` succeeds. Later mutation of a custom object's returned mapping cannot change the captured protocol payload. Existing mapping/list/scalar behavior and all foundation tests remain unchanged; do not invoke arbitrary properties, iterators, serializers, or `repr`.
+
 `process.py` exposes frozen `ProcessRequest`, `ProcessResult`, and `run_process(request)`. `ProcessRequest.argv` is a non-empty tuple of strings, `cwd` is a canonical existing directory, timeout is `1..3600`, and output cap is `1..8 MiB` per stream.
 
 ### 6.2 Identity and build ID
@@ -175,11 +200,19 @@ def run_build(request: BuildRequest) -> OperationResult[BuildReport]: ...
 - Firmware identity key order is: `schemaVersion`, `buildId`, `logicalProjectId`, `toolkitVersion`, `gitHead`, `gitDirty`, `inputSnapshotSha256`, `newestInputMtimeNs`, `targetDevice`, `preset`, `elfPath`, `elfSha256`, `elfSize`, `mapPath`, `mapSha256`, `entryPoint`, `vectorAddress`, `resetHandlerAddress`, `builtAtUtc`.
 - The root and packaged schemas are byte-identical and require exactly those fields, no additional properties, bounded strings/integers, portable paths, lowercase hashes, and RFC 3339 UTC time.
 
+### 6.3 Required STM32TK-0304 link correction
+
+- The generated CMake target must pass the exact validated architecture flags to both compile and link: `-mcpu=<core flag>`, `-mthumb`, and optional paired `-mfpu=<fpu>` / `-mfloat-abi=<abi>`.
+- Add `-nostartfiles` and `-Wl,--gc-sections` to `target_link_options`. Do not add guessed startup objects, host libraries, `--specs`, or `-nostdlib`; GCC may still supply required compiler runtime helpers while the project-owned `Reset_Handler` remains the entry.
+- Preserve `-T...` and deterministic MAP options. Root and packaged templates remain byte-identical.
+- Exact generation snapshots cover hard-FPU and no-FPU targets and prove link flags match their compile architecture flags. The real r002 fixture must link without VFP ABI mismatch, crt0, newlib syscall, or undefined-symbol errors.
+
 ## 7. Build prerequisites and input snapshot
 
 - Require `type(request) is BuildRequest`, `type(project_root) is Path`, canonical existing directory root, supported preset, `type(clean) is bool`, and `type(timeout_seconds) is int` in range `1..3600`; booleans are not integers.
 - Load a fresh Schema v2 `ProjectModel`. Require `generation.tool/version/managedManifest` contracts from STM32TK-0304 and exactly `CMakeLists.txt`, `CMakePresets.json`, the toolchain, linker script, and valid managed manifest ownership.
 - The model ELF must be `build/arm-debug/<basename>.elf`; release uses the same basename under `build/arm-release`. MAP is the same directory and basename with `.map`.
+- Centralize this mapping in one validated helper. Every debug/release pre-state check, process result, MAP/ELF validation, identity, context comparison, and artifact path uses the preset-specific path. A release result pointing to a debug artifact is an unconditional failure.
 - Snapshot exact bytes for `.stm32-project.json`, declared sources, assembly sources, and all currently owned generated files listed by the managed manifest.
 - Recursively snapshot only declared include directories. Walk lexically sorted portable relative paths; accept regular files only; reject escaping redirects, loops, special files, unreadable entries, duplicate/casefold collisions, and inspection failures.
 - Bounds: 8 MiB per input file, 10,000 files, and 256 MiB aggregate. Read `limit + 1`. Hash exact disk bytes. Directories themselves contribute their portable path but no host metadata.
@@ -195,6 +228,7 @@ def run_build(request: BuildRequest) -> OperationResult[BuildReport]: ...
 - Concurrently drain stdout and stderr as bytes while the child runs. Retain at most 1 MiB and 20,000 LF-delimited lines per stream; continue draining discarded overflow to prevent deadlock. Mark truncation deterministically.
 - On timeout terminate the process group/tree created for this invocation, wait up to two seconds, force-kill only that tree if needed, reap it, and return a timeout result. POSIX uses a new session/process group; Windows uses `CREATE_NEW_PROCESS_GROUP` and bounded child-tree termination without killing unrelated processes.
 - Decode retained output as UTF-8 with replacement only for the log. Protocol details never contain raw output, exception text, executable paths, cwd, environment, username, or stack traces.
+- Normalize captured CRLF and bare CR to LF before constructing `ProcessResult`; exact Windows and Linux subprocess output is therefore portable.
 - Log serialization uses stable stage headers, normalized LF, and replaces all canonical project-root spellings with `<PROJECT_ROOT>`. It records argv as JSON arrays, exit code, timeout/truncation flags, and retained output.
 
 ## 9. MAP and ELF validation
@@ -225,6 +259,7 @@ def run_build(request: BuildRequest) -> OperationResult[BuildReport]: ...
 - A configure/build timeout or nonzero exit returns failure with `data=None`, writes the new failure build-result/log atomically, and never rewrites the identity sidecar.
 - A post-build validation/input-race/publication failure also returns `data=None`; it must not leave a partially written JSON file. The failure build-result supersedes an older success for context freshness.
 - `build_project_context` reports `elfFresh=True` only when build-result status is `success`, identity schema/build ID are valid, identity and record agree, current Git HEAD/target/preset/input snapshot/ELF/MAP hashes agree, and every path remains contained and regular. Missing, malformed, failure, unreadable, mismatched, or oversized evidence yields `elfFresh=False` without trusting mtime.
+- The context implementation validates the complete packaged identity schema and independently recomputes `buildId`; it must not search another preset and accept it as evidence for the model-selected debug ELF.
 - Context adds `buildId`, `elfSha256`, `preset`, `gitHead`, and portable evidence paths when fresh; otherwise those values are `None`. Do not expose absolute ELF paths newly through these fields; preserve existing context compatibility outside this bounded change.
 
 ## 11. Evidence publication and locking
@@ -283,14 +318,18 @@ Tests cover:
 - frozen exact public types, recursive immutability, key order, fresh serialization, canonical build ID, no root/raw-byte leakage;
 - request type/range/preset/root validation and booleans-not-integers;
 - process concurrent stdout/stderr flood, no deadlock, byte/line truncation, invalid UTF-8, timeout, graceful/forced termination, child reaping, fixed argv/cwd, no shell/environment leakage;
+- exact CRLF/bare-CR normalization; POSIX-only killpg tests run through injected callable seams on Windows rather than touching absent `os.killpg`; Windows tests exercise the real `_WINDOWS=True` branch;
 - missing/stale/malformed managed configuration, manifest drift, source/header/config missing/change/race, limits, permission/lstat/resolve failures, redirects and junction escapes;
 - Git clean/dirty/non-repository/detached/malformed/nonzero/timeout/overflow results;
 - configure/build success, nonzero, timeout, launch failure, clean argv, stage order, lock contention, and lock release on every exit;
+- platform-adaptive fake CMake uses an explicit `sys.executable` wrapper or Windows `.cmd` launcher and proves the fake was hit; it must never fall through to ambient real CMake. Lock tests use the product lock abstraction and real `msvcrt`/`fcntl` according to host, never unconditional `import fcntl`;
 - stale ELF/MAP before a failed build, fake exit 0 without outputs, legitimate no-op rebuild with matching evidence, and changed outputs;
 - GNU MAP valid Flash/RAM/LMA, interval union, region mismatch, malformed/duplicate/conflict, unknown/out-of-range section, overflow, limits, and CRLF/LF exact-byte behavior;
 - ELF wrong class/endian/machine, truncated/malformed, missing/short vector, missing/mismatched Reset_Handler/entry/vector word, undefined global versus allowed weak, alloc section escape, fixed-section address, and size limit;
 - atomic log/identity/result order, write/flush/fsync/replace failures at every point, no partial JSON, previous success invalidated by failure, and no unrelated write;
 - context success, build failure, changed source/header/config/Git HEAD/ELF/MAP/identity, malformed/oversized/unreadable evidence, portable fields, and backward-compatible unconfigured context;
+- unreadability uses deterministic `PermissionError` injection on Windows; no `chmod(0)` assumption, skip, or xfail;
+- typed `BuildReport` remains accessible as `result.data`, while `json.dumps(result.to_dict())` succeeds and uses a construction-time immutable snapshot;
 - schema identity, installed-wheel loading, deterministic fixture, privacy/error serialization, and performance evidence.
 
 No new skip/xfail. Platform-adaptive tests must not require Windows developer mode.
@@ -327,6 +366,7 @@ Branch coverage must remain at least 90% overall and at least 90% for every new 
 - `startup.s` emits a non-empty `.isr_vector` whose first word is `0x20020000`, second word is `Reset_Handler`, and a Thumb `Reset_Handler` that calls `main` then loops. It contains no guessed production device startup logic and is test-only.
 - `main.c` is freestanding and returns zero without libc.
 - The Codex gate copies the fixture, calls STM32TK-0304 plan/apply, then calls `run_build` for `arm-debug` and `arm-release`. Both must produce valid MAP/ELF/identity; no fixture build artifact is committed.
+- The two builds use fresh fixture copies or prove preset isolation explicitly. Debug identity must reference only `build/arm-debug/*`; release identity must reference only `build/arm-release/*`. Independently inspect both ELF files with pyelftools/objdump.
 
 ## 16. Manual verification
 
@@ -341,7 +381,7 @@ Branch coverage must remain at least 90% overall and at least 90% for every new 
 
 ## 17. Implementation sequence and commits
 
-1. Commit focused RED tests and exact fixture bytes.
+1. Commit focused RED tests and exact fixture bytes. Include r001 rejected-head regression evidence without copying r001 implementation commits.
 2. Implement process/model foundations and make process tests green; commit.
 3. Implement snapshots, MAP/ELF identity, and schema; commit.
 4. Implement runner, atomic evidence, locking, and context freshness; commit.
@@ -352,8 +392,8 @@ Use small coherent commits; do not amend, rebase, or force-push after the branch
 
 ## 18. Return contract
 
-- Branch: `openclaw/STM32TK-0305-BUILD-IDENTITY/r001` from the exact accepted base.
-- Report: `docs/openclaw/returns/STM32TK-0305-BUILD-IDENTITY/r001-implementation-report.md`.
+- Branch: `openclaw/STM32TK-0305-BUILD-IDENTITY/r002` from the exact accepted base.
+- Report: `docs/openclaw/returns/STM32TK-0305-BUILD-IDENTITY/r002-implementation-report.md`.
 - The tracked report records the accepted base and full code head before the report commit. It must not contain its own final commit SHA or moving commit totals.
 - Push only the implementation branch and create/update one Draft PR targeting `master`.
 - Return status, branch, accepted base, code head, final remote head, PR URL, report path, exact changed-path inventory, environment-separated tests/coverage/performance/wheel evidence, deferred Codex gates, and proof local HEAD equals remote branch equals PR head with clean status.
