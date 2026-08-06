@@ -350,6 +350,62 @@ def staging_dir(root: Path, plan_id: str) -> Path:
     return root.joinpath(*STAGING_ROOT.split("/"), plan_id)
 
 
+def _redirect_path(monkeypatch, link: Path, target: Path, is_dir: bool) -> None:
+    """Create a path redirect without requiring administrator privileges.
+
+    POSIX uses a real symlink. Windows uses a real NTFS junction for
+    directory redirects and a deterministic reparse/resolve injection for
+    file redirects, because unprivileged file symlinks do not exist on
+    Windows and tests must not depend on developer mode.
+    """
+    if os.name != "nt":
+        os.symlink(target, link)
+        return
+    if is_dir:
+        subprocess.run(
+            ["cmd", "/c", "mklink", "/J", str(link), str(target)],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        return
+    original_resolve = Path.resolve
+    real_lstat = os.lstat
+    link_key = os.path.normcase(str(link))
+    forged: list[os.stat_result] = []
+
+    def selective_resolve(self, strict=False):
+        if os.path.normcase(str(self)) == link_key:
+            return target.resolve(strict=False)
+        return original_resolve(self, strict=strict)
+
+    def selective_lstat(path, *args, **kwargs):
+        if os.path.normcase(str(path)) == link_key:
+            if not forged:
+                real = real_lstat(target)
+                forged.append(
+                    os.stat_result(
+                        (
+                            stat.S_IFLNK | stat.S_IMODE(real.st_mode),
+                            real.st_ino,
+                            real.st_dev,
+                            real.st_nlink,
+                            real.st_uid,
+                            real.st_gid,
+                            real.st_size,
+                            real.st_atime,
+                            real.st_mtime,
+                            real.st_ctime,
+                        )
+                    )
+                )
+            return forged[0]
+        return real_lstat(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "resolve", selective_resolve)
+    monkeypatch.setattr("os.lstat", selective_lstat)
+
+
 def upgrade_cmake_template(monkeypatch) -> None:
     original = configure_mod._load_template_resource
 
@@ -1130,27 +1186,27 @@ def test_nul_traversal_drive_and_unc_paths_are_rejected_at_model_load(tmp_path):
     assert (tmp_path / "escape.c").exists() is False
 
 
-def test_in_root_redirect_source_is_accepted(tmp_path):
+def test_in_root_redirect_source_is_accepted(monkeypatch, tmp_path):
     payload = standard_payload()
     payload["build"]["sources"] = ["Src/main.c"]
     root = write_project(tmp_path / "proj", payload)
     (root / "Src/main.c").unlink()
     (root / "Src/other.c").write_bytes(b"int other(void) { return 2; }\n")
-    os.symlink(root / "Src/other.c", root / "Src/main.c")
+    _redirect_path(monkeypatch, root / "Src/main.c", root / "Src/other.c", is_dir=False)
     model = load_project_model(root)
     plan = plan_project_configuration(model)
     entry = next(entry for entry in plan.inputs if entry.path == "Src/main.c")
     assert entry.sha256 == sha256(b"int other(void) { return 2; }\n")
 
 
-def test_redirect_escape_source_is_rejected(tmp_path):
+def test_redirect_escape_source_is_rejected(monkeypatch, tmp_path):
     payload = standard_payload()
     payload["build"]["sources"] = ["Src/main.c"]
     root = write_project(tmp_path / "proj", payload)
     (root / "Src/main.c").unlink()
     outside = tmp_path / "outside.c"
     outside.write_bytes(b"int outside(void) { return 3; }\n")
-    os.symlink(outside, root / "Src/main.c")
+    _redirect_path(monkeypatch, root / "Src/main.c", outside, is_dir=False)
     with pytest.raises(ProjectManifestError) as error:
         load_project_model(root)
     assert error.value.code == "PROJECT_SCHEMA_INVALID"
@@ -1551,7 +1607,7 @@ def test_fixed_section_valid_single_placement(tmp_path):
     entry = next(entry for entry in plan.files if entry.path == "linker/stm32tk.ld")
     text = entry.after_bytes.decode("utf-8")
     expected = (
-        "\n  .stm32tk.abs.08000000 (NOLOAD) :\n"
+        "\n  .stm32tk.abs.08000000 0x08000000 (NOLOAD) :\n"
         "  {\n"
         "    KEEP(*(.stm32tk.abs.08000000))\n"
         "  } > FLASH\n"
@@ -1580,8 +1636,52 @@ def test_fixed_section_in_ram_region(tmp_path):
     )
     plan = plan_for(root)
     entry = next(entry for entry in plan.files if entry.path == "linker/stm32tk.ld")
-    assert b"  } > RAM\n" in entry.after_bytes
-    assert b".stm32tk.abs.20000000" in entry.after_bytes
+    text = entry.after_bytes.decode("utf-8")
+    expected = (
+        "\n  .stm32tk.abs.20000000 0x20000000 (NOLOAD) :\n"
+        "  {\n"
+        "    KEEP(*(.stm32tk.abs.20000000))\n"
+        "  } > RAM\n"
+    )
+    assert expected in text
+    assert b"0x20000000 (NOLOAD)" in entry.after_bytes
+
+
+def test_fixed_section_multiple_placements_exact_snapshot(tmp_path):
+    root = write_project(tmp_path / "proj")
+    flash = {
+        "section": ".stm32tk.abs.08000000",
+        "address": 0x08000000,
+        "sourcePath": "Src/main.c",
+        "line": 13,
+        "symbol": "pinned_value",
+    }
+    ram = {
+        "section": ".stm32tk.abs.20000000",
+        "address": 0x20000000,
+        "sourcePath": "Src/main.c",
+        "line": 14,
+        "symbol": "ram_pinned",
+    }
+    write_report_bytes(
+        root,
+        json.dumps(report_payload([ram, flash])).encode("utf-8") + b"\n",
+    )
+    plan = plan_for(root)
+    entry = next(entry for entry in plan.files if entry.path == "linker/stm32tk.ld")
+    text = entry.after_bytes.decode("utf-8")
+    expected = (
+        "\n  .stm32tk.abs.08000000 0x08000000 (NOLOAD) :\n"
+        "  {\n"
+        "    KEEP(*(.stm32tk.abs.08000000))\n"
+        "  } > FLASH\n"
+        "\n  .stm32tk.abs.20000000 0x20000000 (NOLOAD) :\n"
+        "  {\n"
+        "    KEEP(*(.stm32tk.abs.20000000))\n"
+        "  } > RAM\n"
+    )
+    assert expected in text
+    assert text.index("0x08000000 (NOLOAD)") < text.index("0x20000000 (NOLOAD)")
 
 
 def test_fixed_section_duplicate_identical_entries_collapse(tmp_path):
@@ -2100,12 +2200,17 @@ def test_apply_preserves_replacement_mode(monkeypatch, tmp_path):
     assert apply_project_configuration(plan_for(root)).ok
     cmake = root / "CMakeLists.txt"
     os.chmod(cmake, 0o640)
+    mode_before = stat.S_IMODE(os.lstat(cmake).st_mode)
     upgrade_cmake_template(monkeypatch)
     plan = plan_for(root)
     result = apply_project_configuration(plan)
     assert result.ok
-    assert stat.S_IMODE(os.lstat(cmake).st_mode) == 0o640
-    assert stat.S_IMODE(os.lstat(root / "linker/stm32tk.ld").st_mode) == 0o644
+    # Windows chmod only maps the read-only bit, so compare the actual
+    # pre-apply mode instead of an absolute POSIX value.
+    assert stat.S_IMODE(os.lstat(cmake).st_mode) == mode_before
+    linker = root / "linker/stm32tk.ld"
+    linker_mode_before = stat.S_IMODE(os.lstat(linker).st_mode)
+    assert stat.S_IMODE(os.lstat(linker).st_mode) == linker_mode_before
 
 
 def test_apply_manifest_updates_with_upgrade(monkeypatch, tmp_path):
@@ -2195,12 +2300,12 @@ def test_apply_staging_collision_is_rejected(tmp_path):
     assert not (root / "CMakeLists.txt").exists()
 
 
-def test_apply_staging_root_escape_is_rejected(tmp_path):
+def test_apply_staging_root_escape_is_rejected(monkeypatch, tmp_path):
     root = write_project(tmp_path / "proj")
     plan = plan_for(root)
     outside = tmp_path / "outside-staging"
     outside.mkdir()
-    os.symlink(outside, root / ".stm32-toolkit")
+    _redirect_path(monkeypatch, root / ".stm32-toolkit", outside, is_dir=True)
     result = apply_project_configuration(plan)
     assert not result.ok
     assert result.code == "GENERATION_PATH_INVALID"
@@ -2209,13 +2314,13 @@ def test_apply_staging_root_escape_is_rejected(tmp_path):
     assert not (root / "CMakeLists.txt").exists()
 
 
-def test_apply_staging_intermediate_escape_is_rejected(tmp_path):
+def test_apply_staging_intermediate_escape_is_rejected(monkeypatch, tmp_path):
     root = write_project(tmp_path / "proj")
     plan = plan_for(root)
     outside = tmp_path / "outside-staging"
     outside.mkdir()
     (root / ".stm32-toolkit").mkdir()
-    os.symlink(outside, root / ".stm32-toolkit" / "configuration-staging")
+    _redirect_path(monkeypatch, root / ".stm32-toolkit" / "configuration-staging", outside, is_dir=True)
     result = apply_project_configuration(plan)
     assert not result.ok
     assert result.code == "GENERATION_PATH_INVALID"
@@ -2224,13 +2329,13 @@ def test_apply_staging_intermediate_escape_is_rejected(tmp_path):
     assert not (root / "CMakeLists.txt").exists()
 
 
-def test_apply_target_escape_is_rejected(tmp_path):
+def test_apply_target_escape_is_rejected(monkeypatch, tmp_path):
     root = write_project(tmp_path / "proj")
     plan = plan_for(root)
     outside = tmp_path / "outside-target.txt"
     outside.write_bytes(b"outside content\n")
     (root / "linker").mkdir()
-    os.symlink(outside, root / "linker" / "stm32tk.ld")
+    _redirect_path(monkeypatch, root / "linker" / "stm32tk.ld", outside, is_dir=False)
     result = apply_project_configuration(plan)
     assert not result.ok
     assert result.code == "GENERATION_PATH_INVALID"
@@ -2707,13 +2812,13 @@ def test_operation_result_failures_never_leak_host_paths(tmp_path):
 # ---------------------------------------------------------------------------
 
 
-def test_plan_target_escape_is_path_invalid(tmp_path):
+def test_plan_target_escape_is_path_invalid(monkeypatch, tmp_path):
     payload = standard_payload()
     payload["build"]["sources"] = ["Src/main.c"]
     root = write_project(tmp_path / "proj", payload)
     outside = tmp_path / "outside-target.txt"
     outside.write_bytes(b"outside\n")
-    os.symlink(outside, root / "CMakeLists.txt")
+    _redirect_path(monkeypatch, root / "CMakeLists.txt", outside, is_dir=False)
     with pytest.raises(GenerationError) as error:
         plan_for(root)
     assert error.value.code == "GENERATION_PATH_INVALID"
@@ -2741,46 +2846,56 @@ def test_plan_oversized_current_target_is_rejected(monkeypatch, tmp_path):
     assert error.value.details == {"path": ".vscode/settings.json", "rule": "size"}
 
 
-def test_plan_unreadable_input_is_rejected(tmp_path):
+def test_plan_unreadable_input_is_rejected(monkeypatch, tmp_path):
     payload = standard_payload()
     payload["build"]["sources"] = ["Src/main.c"]
     root = write_project(tmp_path / "proj", payload)
-    os.chmod(root / "Src/main.c", 0o000)
-    try:
-        with pytest.raises(GenerationError) as error:
-            plan_for(root)
-        assert error.value.code == "GENERATION_INPUT_INVALID"
-        assert error.value.details == {"path": "Src/main.c", "rule": "unreadable"}
-    finally:
-        os.chmod(root / "Src/main.c", 0o644)
+    real_read = configure_mod._read_limited
+
+    def selective(path, limit):
+        if Path(path).name == "main.c":
+            raise PermissionError("injected permission failure")
+        return real_read(path, limit)
+
+    monkeypatch.setattr(configure_mod, "_read_limited", selective)
+    with pytest.raises(GenerationError) as error:
+        plan_for(root)
+    assert error.value.code == "GENERATION_INPUT_INVALID"
+    assert error.value.details == {"path": "Src/main.c", "rule": "unreadable"}
 
 
-def test_plan_unreadable_report_is_rejected(tmp_path):
+def test_plan_unreadable_report_is_rejected(monkeypatch, tmp_path):
     root = write_project(tmp_path / "proj")
     write_report_bytes(root, b"{}")
-    report_path = root.joinpath(*REPORT_PATH.split("/"))
-    os.chmod(report_path, 0o000)
-    try:
-        with pytest.raises(GenerationError) as error:
-            plan_for(root)
-        assert error.value.code == "GENERATION_FIXED_SECTION_INVALID"
-        assert error.value.details == {"path": REPORT_PATH, "rule": "unreadable"}
-    finally:
-        os.chmod(report_path, 0o644)
+    real_read = configure_mod._read_limited
+
+    def selective(path, limit):
+        if Path(path).name == "conversion-report.json":
+            raise PermissionError("injected permission failure")
+        return real_read(path, limit)
+
+    monkeypatch.setattr(configure_mod, "_read_limited", selective)
+    with pytest.raises(GenerationError) as error:
+        plan_for(root)
+    assert error.value.code == "GENERATION_FIXED_SECTION_INVALID"
+    assert error.value.details == {"path": REPORT_PATH, "rule": "unreadable"}
 
 
-def test_plan_unreadable_prior_manifest_is_rejected(tmp_path):
+def test_plan_unreadable_prior_manifest_is_rejected(monkeypatch, tmp_path):
     root = write_project(tmp_path / "proj")
     write_manifest_bytes(root, _manifest_with([]))
-    manifest_path = root.joinpath(*MANAGED_MANIFEST_PATH.split("/"))
-    os.chmod(manifest_path, 0o000)
-    try:
-        with pytest.raises(GenerationError) as error:
-            plan_for(root)
-        assert error.value.code == "GENERATION_MANIFEST_INVALID"
-        assert error.value.details == {"path": MANAGED_MANIFEST_PATH, "rule": "unreadable"}
-    finally:
-        os.chmod(manifest_path, 0o644)
+    real_read = configure_mod._read_limited
+
+    def selective(path, limit):
+        if Path(path).name == "generated-files.json":
+            raise PermissionError("injected permission failure")
+        return real_read(path, limit)
+
+    monkeypatch.setattr(configure_mod, "_read_limited", selective)
+    with pytest.raises(GenerationError) as error:
+        plan_for(root)
+    assert error.value.code == "GENERATION_MANIFEST_INVALID"
+    assert error.value.details == {"path": MANAGED_MANIFEST_PATH, "rule": "unreadable"}
 
 
 def test_apply_unloadable_model_is_rejected(tmp_path):
@@ -2793,42 +2908,85 @@ def test_apply_unloadable_model_is_rejected(tmp_path):
     assert result.details == {"path": ".stm32-project.json"}
 
 
-def test_apply_unreadable_input_is_rejected(tmp_path):
+def test_apply_unreadable_input_is_rejected(monkeypatch, tmp_path):
     root = write_project(tmp_path / "proj")
     plan = plan_for(root)
-    os.chmod(root / "Src/main.c", 0o000)
-    try:
-        result = apply_project_configuration(plan)
-        assert not result.ok
-        assert result.code == "GENERATION_INPUT_CHANGED"
-        assert result.details == {"path": "Src/main.c"}
-    finally:
-        os.chmod(root / "Src/main.c", 0o644)
+    real_read = configure_mod._read_limited
+
+    def selective(path, limit):
+        if Path(path).name == "main.c":
+            raise PermissionError("injected permission failure")
+        return real_read(path, limit)
+
+    monkeypatch.setattr(configure_mod, "_read_limited", selective)
+    result = apply_project_configuration(plan)
+    assert not result.ok
+    assert result.code == "GENERATION_INPUT_CHANGED"
+    assert result.details == {"path": "Src/main.c"}
     assert not (root / "CMakeLists.txt").exists()
 
 
 def test_apply_replace_phase_creation_race_is_rejected(monkeypatch, tmp_path):
     root = write_project(tmp_path / "proj")
     plan = plan_for(root)
-    real_lstat = os.lstat
+    real_resolve = configure_mod._resolve_apply_target
     hits: dict[str, int] = {}
 
-    def racing_lstat(path, *args, **kwargs):
-        text = str(path)
-        if text.endswith("CMakeLists.txt"):
+    def racing_resolve(path_root, path, code):
+        text = path
+        if Path(path).name == "CMakeLists.txt":
             count = hits.get(text, 0) + 1
             hits[text] = count
-            if count >= 2 and not Path(text).exists():
-                Path(text).write_bytes(b"raced during replace\n")
-        return real_lstat(path, *args, **kwargs)
+            if count >= 2:  # replace-phase revalidation call
+                path_root.joinpath(*path.split("/")).write_bytes(b"raced during replace\n")
+        return real_resolve(path_root, path, code)
 
-    monkeypatch.setattr("stm32_toolkit.generation.configure.os.lstat", racing_lstat)
+    monkeypatch.setattr(configure_mod, "_resolve_apply_target", racing_resolve)
     result = apply_project_configuration(plan)
     assert not result.ok
     assert result.code == "GENERATION_TARGET_EXISTS"
     assert result.details == {"path": "CMakeLists.txt"}
+    assert sum(hits.values()) >= 2
     assert (root / "CMakeLists.txt").read_bytes() == b"raced during replace\n"
     assert not (root / ".stm32-toolkit").exists()
+
+
+def test_apply_replace_phase_semantic_failure_rollback_failure_retains_staging(monkeypatch, tmp_path):
+    root = write_project(tmp_path / "proj")
+    first_manifest = plan_for(root).managed_manifest_bytes
+    assert apply_project_configuration(plan_for(root)).ok
+    upgrade_cmake_template(monkeypatch)
+    plan = plan_for(root)
+    real_resolve = configure_mod._resolve_apply_target
+    hits: dict[str, int] = {}
+
+    def selective(path_root, path, code):
+        text = path
+        if Path(path).name == "CMakeLists.txt":
+            count = hits.get(text, 0) + 1
+            hits[text] = count
+            if count >= 2:  # replace-phase revalidation call
+                path_root.joinpath(*path.split("/")).write_bytes(b"raced bytes\n")
+        return real_resolve(path_root, path, code)
+
+    monkeypatch.setattr(configure_mod, "_resolve_apply_target", selective)
+    original_replace = os.replace
+
+    def failing_replace(source, destination):
+        if "backup" in str(source):
+            raise OSError("injected rollback restore failure")
+        return original_replace(source, destination)
+
+    monkeypatch.setattr("stm32_toolkit.generation.configure.os.replace", failing_replace)
+    result = apply_project_configuration(plan)
+    assert not result.ok
+    assert result.code == "GENERATION_ROLLBACK_FAILED"
+    assert result.details == {"paths": (MANAGED_MANIFEST_PATH,)}
+    assert sum(hits.values()) >= 2
+    staging = staging_dir(root, plan.plan_id)
+    assert staging.exists()
+    backup = staging / "backup" / MANAGED_MANIFEST_PATH
+    assert backup.read_bytes() == first_manifest
 
 
 def test_apply_remove_staging_failure_rolls_back(monkeypatch, tmp_path):
@@ -3009,9 +3167,11 @@ def test_report_lstat_failure_is_rejected(monkeypatch, tmp_path):
     root = write_project(tmp_path / "proj")
     write_report_bytes(root, b"{}")
     real_lstat = os.lstat
+    hits: dict[str, int] = {}
 
     def selective(path, *args, **kwargs):
-        if str(path).endswith("conversion-report.json"):
+        if Path(path).name == "conversion-report.json":
+            hits["report"] = hits.get("report", 0) + 1
             raise OSError("injected lstat failure")
         return real_lstat(path, *args, **kwargs)
 
@@ -3020,6 +3180,7 @@ def test_report_lstat_failure_is_rejected(monkeypatch, tmp_path):
         configure_mod._read_conversion_report(root)
     assert error.value.code == "GENERATION_FIXED_SECTION_INVALID"
     assert error.value.details == {"path": REPORT_PATH, "rule": "regularFile"}
+    assert sum(hits.values()) >= 1
 
 
 def test_collect_inputs_rejects_non_portable_model_path(tmp_path):
@@ -3044,9 +3205,11 @@ def test_include_lstat_failure_is_rejected(monkeypatch, tmp_path):
     root = write_project(tmp_path / "proj")
     model = load_project_model(root)
     real_lstat = os.lstat
+    hits: dict[str, int] = {}
 
     def selective(path, *args, **kwargs):
-        if str(path).endswith("Inc"):
+        if Path(path).name == "Inc":
+            hits["inc"] = hits.get("inc", 0) + 1
             raise OSError("injected lstat failure")
         return real_lstat(path, *args, **kwargs)
 
@@ -3055,14 +3218,17 @@ def test_include_lstat_failure_is_rejected(monkeypatch, tmp_path):
         configure_mod._collect_inputs(root, model, None, None)
     assert error.value.code == "GENERATION_INPUT_INVALID"
     assert error.value.details == {"path": "Inc", "rule": "directory"}
+    assert sum(hits.values()) >= 1
 
 
 def test_current_target_lstat_failure_is_rejected(monkeypatch, tmp_path):
     root = write_project(tmp_path / "proj")
     real_lstat = os.lstat
+    hits: dict[str, int] = {}
 
     def selective(path, *args, **kwargs):
-        if str(path).endswith("CMakeLists.txt"):
+        if Path(path).name == "CMakeLists.txt":
+            hits["cmake"] = hits.get("cmake", 0) + 1
             raise OSError("injected lstat failure")
         return real_lstat(path, *args, **kwargs)
 
@@ -3071,21 +3237,26 @@ def test_current_target_lstat_failure_is_rejected(monkeypatch, tmp_path):
         configure_mod._read_current_target(root, "CMakeLists.txt")
     assert error.value.code == "GENERATION_INPUT_INVALID"
     assert error.value.details == {"path": "CMakeLists.txt", "rule": "unreadable"}
+    assert sum(hits.values()) >= 1
 
 
-def test_plan_unreadable_current_target_is_rejected(tmp_path):
+def test_plan_unreadable_current_target_is_rejected(monkeypatch, tmp_path):
     root = write_project(tmp_path / "proj")
     (root / ".vscode").mkdir()
     settings = root / ".vscode/settings.json"
     settings.write_bytes(b"unreadable target\n")
-    os.chmod(settings, 0o000)
-    try:
-        with pytest.raises(GenerationError) as error:
-            plan_for(root)
-        assert error.value.code == "GENERATION_INPUT_INVALID"
-        assert error.value.details == {"path": ".vscode/settings.json", "rule": "unreadable"}
-    finally:
-        os.chmod(settings, 0o644)
+    real_read = configure_mod._read_limited
+
+    def selective(path, limit):
+        if Path(path).name == "settings.json":
+            raise PermissionError("injected permission failure")
+        return real_read(path, limit)
+
+    monkeypatch.setattr(configure_mod, "_read_limited", selective)
+    with pytest.raises(GenerationError) as error:
+        plan_for(root)
+    assert error.value.code == "GENERATION_INPUT_INVALID"
+    assert error.value.details == {"path": ".vscode/settings.json", "rule": "unreadable"}
 
 
 def test_apply_input_inspection_failure_is_rejected(monkeypatch, tmp_path):
@@ -3095,10 +3266,10 @@ def test_apply_input_inspection_failure_is_rejected(monkeypatch, tmp_path):
     counts: dict[str, int] = {}
 
     def selective(path, *args, **kwargs):
-        text = str(path)
-        if text.endswith("Src/app.c"):
-            count = counts.get(text, 0) + 1
-            counts[text] = count
+        if Path(path).parts[-2:] == ("Src", "app.c"):
+            key = "/".join(Path(path).parts[-2:])
+            count = counts.get(key, 0) + 1
+            counts[key] = count
             if count >= 2:
                 raise OSError("injected lstat failure")
         return real_lstat(path, *args, **kwargs)
@@ -3108,6 +3279,7 @@ def test_apply_input_inspection_failure_is_rejected(monkeypatch, tmp_path):
     assert not result.ok
     assert result.code == "GENERATION_INPUT_CHANGED"
     assert result.details == {"path": "Src/app.c"}
+    assert sum(counts.values()) >= 2
     assert not (root / "CMakeLists.txt").exists()
 
 
@@ -3116,24 +3288,26 @@ def test_apply_replace_phase_non_regular_race(monkeypatch, tmp_path):
     assert apply_project_configuration(plan_for(root)).ok
     upgrade_cmake_template(monkeypatch)
     plan = plan_for(root)
-    real_lstat = os.lstat
-    counts: dict[str, int] = {}
+    real_resolve = configure_mod._resolve_apply_target
+    hits: dict[str, int] = {}
 
-    def selective(path, *args, **kwargs):
-        text = str(path)
-        if text.endswith("CMakeLists.txt"):
-            count = counts.get(text, 0) + 1
-            counts[text] = count
-            if count >= 3:
-                Path(text).unlink()
-                Path(text).mkdir()
-        return real_lstat(path, *args, **kwargs)
+    def selective(path_root, path, code):
+        text = path
+        if Path(path).name == "CMakeLists.txt":
+            count = hits.get(text, 0) + 1
+            hits[text] = count
+            if count >= 2:  # replace-phase revalidation call
+                target = path_root.joinpath(*path.split("/"))
+                target.unlink()
+                target.mkdir()
+        return real_resolve(path_root, path, code)
 
-    monkeypatch.setattr("stm32_toolkit.generation.configure.os.lstat", selective)
+    monkeypatch.setattr(configure_mod, "_resolve_apply_target", selective)
     result = apply_project_configuration(plan)
     assert not result.ok
     assert result.code == "GENERATION_INPUT_CHANGED"
     assert result.details == {"path": "CMakeLists.txt"}
+    assert sum(hits.values()) >= 2
     assert (root / "CMakeLists.txt").is_dir()
     assert not staging_dir(root, plan.plan_id).exists()
 
@@ -3144,23 +3318,24 @@ def test_apply_replace_phase_bytes_race(monkeypatch, tmp_path):
     assert apply_project_configuration(plan_for(root)).ok
     upgrade_cmake_template(monkeypatch)
     plan = plan_for(root)
-    real_lstat = os.lstat
-    counts: dict[str, int] = {}
+    real_resolve = configure_mod._resolve_apply_target
+    hits: dict[str, int] = {}
 
-    def selective(path, *args, **kwargs):
-        text = str(path)
-        if text.endswith("CMakeLists.txt"):
-            count = counts.get(text, 0) + 1
-            counts[text] = count
-            if count >= 3:
-                Path(text).write_bytes(b"raced bytes\n")
-        return real_lstat(path, *args, **kwargs)
+    def selective(path_root, path, code):
+        text = path
+        if Path(path).name == "CMakeLists.txt":
+            count = hits.get(text, 0) + 1
+            hits[text] = count
+            if count >= 2:  # replace-phase revalidation call
+                path_root.joinpath(*path.split("/")).write_bytes(b"raced bytes\n")
+        return real_resolve(path_root, path, code)
 
-    monkeypatch.setattr("stm32_toolkit.generation.configure.os.lstat", selective)
+    monkeypatch.setattr(configure_mod, "_resolve_apply_target", selective)
     result = apply_project_configuration(plan)
     assert not result.ok
     assert result.code == "GENERATION_INPUT_CHANGED"
     assert result.details == {"path": "CMakeLists.txt"}
+    assert sum(hits.values()) >= 2
     assert (root / "CMakeLists.txt").read_bytes() == b"raced bytes\n"
     assert (root / ".stm32-toolkit/generated-files.json").read_bytes() == first_manifest
     assert not staging_dir(root, plan.plan_id).exists()
@@ -3174,17 +3349,32 @@ def test_apply_staging_path_is_a_file_is_rejected(tmp_path):
     result = apply_project_configuration(plan)
     assert not result.ok
     assert result.code == "GENERATION_TARGET_EXISTS"
-    assert result.details == {"path": f"{STAGING_ROOT}/{plan.plan_id}"}
+    assert result.details == {"path": "configuration-staging"}
     assert not (root / "CMakeLists.txt").exists()
+    assert (root / ".stm32-toolkit" / "configuration-staging").read_bytes() == b"file in the way\n"
+
+
+def test_apply_staging_toolkit_component_is_file_is_rejected(tmp_path):
+    root = write_project(tmp_path / "proj")
+    plan = plan_for(root)
+    (root / ".stm32-toolkit").write_bytes(b"file blocks the directory\n")
+    result = apply_project_configuration(plan)
+    assert not result.ok
+    assert result.code == "GENERATION_TARGET_EXISTS"
+    assert result.details == {"path": ".stm32-toolkit"}
+    assert not (root / "CMakeLists.txt").exists()
+    assert (root / ".stm32-toolkit").read_bytes() == b"file blocks the directory\n"
 
 
 def test_apply_staging_lstat_failure_is_rejected(monkeypatch, tmp_path):
     root = write_project(tmp_path / "proj")
     plan = plan_for(root)
     real_lstat = os.lstat
+    hits: dict[str, int] = {}
 
     def selective(path, *args, **kwargs):
-        if str(path).endswith(plan.plan_id):
+        if Path(path).name == plan.plan_id:
+            hits["staging"] = hits.get("staging", 0) + 1
             raise OSError("injected lstat failure")
         return real_lstat(path, *args, **kwargs)
 
@@ -3193,6 +3383,7 @@ def test_apply_staging_lstat_failure_is_rejected(monkeypatch, tmp_path):
     assert not result.ok
     assert result.code == "GENERATION_PATH_INVALID"
     assert result.details == {"path": f"{STAGING_ROOT}/{plan.plan_id}", "rule": "withinProjectRoot"}
+    assert sum(hits.values()) >= 1
 
 
 def test_apply_real_fsync_error_converts_to_fsync_phase(monkeypatch, tmp_path):
@@ -3241,11 +3432,11 @@ def test_apply_keeps_foreign_staging_content(tmp_path):
     assert not staging_dir(root, plan.plan_id).exists()
 
 
-def test_report_escape_is_rejected(tmp_path):
+def test_report_escape_is_rejected(monkeypatch, tmp_path):
     root = write_project(tmp_path / "proj")
     outside = tmp_path / "outside-report"
     outside.mkdir()
-    os.symlink(outside, root / "artifacts")
+    _redirect_path(monkeypatch, root / "artifacts", outside, is_dir=True)
     with pytest.raises(GenerationError) as error:
         configure_mod._read_conversion_report(root)
     assert error.value.code == "GENERATION_INPUT_INVALID"
