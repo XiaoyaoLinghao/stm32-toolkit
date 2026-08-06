@@ -1,0 +1,170 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://stm32-toolkit.dev/schemas/firmware-identity.schema.json",
+  "title": "Firmware identity evidence",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "buildId",
+    "builtAtUtc",
+    "status",
+    "preset",
+    "cleanFirst",
+    "gitHead",
+    "gitBranch",
+    "gitTarget",
+    "inputSnapshot",
+    "elf",
+    "map",
+    "entryPoint",
+    "isrVectorPresent",
+    "resetHandlerPresent",
+    "entryPointConsistent",
+    "undefinedSymbols",
+    "memoryUsage"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "buildId": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "builtAtUtc": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"
+    },
+    "status": {
+      "const": "success"
+    },
+    "preset": {
+      "type": "string",
+      "minLength": 1
+    },
+    "cleanFirst": {
+      "type": "boolean"
+    },
+    "gitHead": {
+      "type": ["string", "null"],
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "gitBranch": {
+      "type": ["string", "null"],
+      "minLength": 1
+    },
+    "gitTarget": {
+      "type": ["string", "null"],
+      "minLength": 1
+    },
+    "inputSnapshot": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["sha256", "files"],
+      "properties": {
+        "sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "files": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["path", "sha256"],
+            "properties": {
+              "path": {
+                "type": "string",
+                "minLength": 1
+              },
+              "sha256": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{64}$"
+              }
+            }
+          }
+        }
+      }
+    },
+    "elf": {
+      "$ref": "#/$defs/artifact"
+    },
+    "map": {
+      "$ref": "#/$defs/artifact"
+    },
+    "entryPoint": {
+      "type": "string",
+      "pattern": "^0x[0-9a-f]{1,16}$"
+    },
+    "isrVectorPresent": {
+      "type": "boolean"
+    },
+    "resetHandlerPresent": {
+      "type": "boolean"
+    },
+    "entryPointConsistent": {
+      "type": "boolean"
+    },
+    "undefinedSymbols": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "memoryUsage": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["region", "origin", "length", "used", "percent"],
+        "properties": {
+          "region": {
+            "type": "string",
+            "minLength": 1
+          },
+          "origin": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "length": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "used": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "percent": {
+            "type": "number",
+            "minimum": 0
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "artifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "sha256", "size"],
+      "properties": {
+        "path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "size": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    }
+  }
+}

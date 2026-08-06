@@ -1,12 +1,127 @@
 import json
 import os
+import shutil
 from pathlib import Path
 from uuid import UUID
 
 import pytest
 
+from stm32_toolkit.build.identity import (
+    ElfEvidence,
+    GitEvidence,
+    build_identity,
+    git_evidence,
+    sha256_file,
+    snapshot_inputs,
+    write_json_atomic,
+    write_text_atomic,
+)
+from stm32_toolkit.build.model import MemoryUsage
 from stm32_toolkit.context import build_project_context
 from stm32_toolkit.identity import compute_workspace_id
+from stm32_toolkit.process import ProcessRequest, run_process
+from stm32_toolkit.project_model import load_project_model
+
+FIXTURE_MINIMAL_GCC = Path(__file__).parent / "fixtures" / "minimal-gcc"
+_MAX_ARTIFACT_BYTES = 64 * 1024 * 1024
+
+
+def _git(command: str, cwd: Path, *args: str) -> None:
+    result = run_process(
+        ProcessRequest(argv=("git", command, *args), cwd=cwd, timeout_seconds=15.0)
+    )
+    assert result.returncode == 0
+
+
+@pytest.fixture
+def evidence_project(tmp_path: Path) -> Path:
+    """A Schema v2 minimal project in a real Git repository."""
+    root = tmp_path / "project"
+    shutil.copytree(FIXTURE_MINIMAL_GCC, root)
+    _git("init", root, "-b", "main")
+    _git("add", root, ".")
+    _git(
+        "commit",
+        root,
+        "-m",
+        "initial",
+        "-c",
+        "user.name=test",
+        "-c",
+        "user.email=test@example.com",
+    )
+    return root
+
+
+def _publish_evidence_chain(
+    root: Path,
+    *,
+    preset: str = "arm-debug",
+    built_at_utc: str = "2026-08-06T06:58:00Z",
+) -> None:
+    """Publish log -> identity -> result exactly like the build runner."""
+    model = load_project_model(root)
+    elf_relative = model.build.elf
+    map_relative = str(Path(elf_relative).with_suffix(".map"))
+    elf_absolute = root / elf_relative
+    map_absolute = root / map_relative
+    elf_absolute.parent.mkdir(parents=True, exist_ok=True)
+    elf_absolute.write_bytes(b"\x7fELF fake artifact\n")
+    map_absolute.write_text("fake map evidence\n", encoding="utf-8")
+    elf_sha256, elf_size = sha256_file(elf_absolute, _MAX_ARTIFACT_BYTES, "elfSize")
+    map_sha256, map_size = sha256_file(map_absolute, _MAX_ARTIFACT_BYTES, "mapSize")
+    git = git_evidence(root)
+    assert git.head is not None
+    identity = build_identity(
+        preset=preset,
+        clean_first=False,
+        git=GitEvidence(git.head, git.branch, git.target),
+        snapshot=snapshot_inputs(root, model),
+        elf_path=elf_relative,
+        elf_sha256=elf_sha256,
+        elf_size=elf_size,
+        map_path=map_relative,
+        map_sha256=map_sha256,
+        map_size=map_size,
+        elf_evidence=ElfEvidence(
+            entry_point=0x08000401,
+            isr_vector_present=True,
+            reset_handler_present=True,
+            reset_handler_address=0x08000401,
+            entry_point_consistent=True,
+            undefined_symbols=(),
+        ),
+        memory_usage=(MemoryUsage("FLASH", 0x08000000, 0x100000, 0x6D0, 0.17),),
+        built_at_utc=built_at_utc,
+    )
+    output = root / ".stm32-toolkit" / "build" / preset
+    write_text_atomic(output / "build.log", "=== configure stdout ===\nfake\n")
+    write_json_atomic(output / "firmware-identity.json", identity.to_dict())
+    write_json_atomic(
+        output / "build-result.json",
+        {
+            "schemaVersion": 1,
+            "status": "success",
+            "preset": preset,
+            "cleanFirst": False,
+            "buildId": identity.build_id,
+            "builtAtUtc": built_at_utc,
+            "returncode": 0,
+            "timedOut": False,
+            "durationSeconds": 1.0,
+            "elf": {"path": elf_relative, "sha256": elf_sha256, "size": elf_size},
+            "map": {"path": map_relative, "sha256": map_sha256, "size": map_size},
+            "logPath": f".stm32-toolkit/build/{preset}/build.log",
+            "identityPath": f".stm32-toolkit/build/{preset}/firmware-identity.json",
+            "resultPath": f".stm32-toolkit/build/{preset}/build-result.json",
+        },
+    )
+
+
+def _context_build(root: Path, tmp_path: Path) -> dict:
+    result = build_project_context(root, tmp_path.parent / "data", "session-a")
+    assert result.ok is True
+    return result.data["build"]
 
 
 def test_configured_context_reports_only_the_six_contract_sections(
@@ -40,7 +155,7 @@ def test_configured_context_reports_only_the_six_contract_sections(
                 "elfExists": True,
                 "existingSourcePaths": [str(configured_project / "App" / "main.c")],
                 "missingSourcePaths": [],
-                "elfFresh": True,
+                "elfFresh": False,
             },
             "hardware": {"probe": None, "state": "unavailable"},
             "capabilities": {
@@ -126,21 +241,164 @@ def test_missing_manifest_source_keeps_an_existing_elf_stale(
     }
 
 
-def test_newer_source_makes_elf_stale_and_newer_elf_is_fresh(
+def test_mtime_freshness_is_ignored_without_evidence_chain(
     configured_project: Path, tmp_path: Path
 ):
-    source = configured_project / "App" / "main.c"
+    """Exit-0/mtime freshness is not proof: without a published evidence
+    chain the ELF stays stale even when the ELF mtime is newest."""
     elf = configured_project / "build-fw" / "firmware.elf"
+    source = configured_project / "App" / "main.c"
+    os.utime(source, ns=(1_000_000_000, 1_000_000_000))
+    os.utime(elf, ns=(9_000_000_000, 9_000_000_000))
+
+    result = build_project_context(configured_project, tmp_path.parent / "data", "session-a")
+
+    assert result.data["build"]["elfFresh"] is False
+
+
+def test_evidence_chain_makes_elf_fresh(evidence_project: Path, tmp_path: Path):
+    _publish_evidence_chain(evidence_project)
+
+    build = _context_build(evidence_project, tmp_path)
+
+    assert build["elfFresh"] is True
+    assert build["elfExists"] is True
+    assert build["missingSourcePaths"] == []
+
+
+def test_evidence_chain_ignores_mtimes(evidence_project: Path, tmp_path: Path):
+    _publish_evidence_chain(evidence_project)
+    source = evidence_project / "Src" / "main.c"
+    elf = evidence_project / "build" / "arm-debug" / "firmware.elf"
+    os.utime(source, ns=(9_000_000_000, 9_000_000_000))
     os.utime(elf, ns=(1_000_000_000, 1_000_000_000))
-    os.utime(source, ns=(2_000_000_000, 2_000_000_000))
 
-    stale = build_project_context(configured_project, tmp_path.parent / "data", "session-a")
+    build = _context_build(evidence_project, tmp_path)
 
-    os.utime(elf, ns=(3_000_000_000, 3_000_000_000))
-    fresh = build_project_context(configured_project, tmp_path.parent / "data", "session-a")
+    assert build["elfFresh"] is True
 
-    assert stale.data["build"]["elfFresh"] is False
-    assert fresh.data["build"]["elfFresh"] is True
+
+def test_changed_source_content_breaks_evidence_chain(
+    evidence_project: Path, tmp_path: Path
+):
+    _publish_evidence_chain(evidence_project)
+    (evidence_project / "Src" / "main.c").write_text(
+        "int main(void) { return 2; }\n", encoding="utf-8"
+    )
+
+    build = _context_build(evidence_project, tmp_path)
+
+    assert build["elfFresh"] is False
+
+
+def test_changed_assembly_content_breaks_evidence_chain(
+    evidence_project: Path, tmp_path: Path
+):
+    _publish_evidence_chain(evidence_project)
+    (evidence_project / "Startup" / "startup.s").write_text(
+        "; changed\n", encoding="utf-8"
+    )
+
+    build = _context_build(evidence_project, tmp_path)
+
+    assert build["elfFresh"] is False
+
+
+def test_new_git_commit_breaks_evidence_chain(evidence_project: Path, tmp_path: Path):
+    _publish_evidence_chain(evidence_project)
+    (evidence_project / "README.md").write_text("readme\n", encoding="utf-8")
+    _git("add", evidence_project, "README.md")
+    _git(
+        "commit",
+        evidence_project,
+        "-m",
+        "readme",
+        "-c",
+        "user.name=test",
+        "-c",
+        "user.email=test@example.com",
+    )
+
+    build = _context_build(evidence_project, tmp_path)
+
+    assert build["elfFresh"] is False
+
+
+def test_tampered_elf_breaks_evidence_chain(evidence_project: Path, tmp_path: Path):
+    _publish_evidence_chain(evidence_project)
+    (evidence_project / "build" / "arm-debug" / "firmware.elf").write_bytes(
+        b"tampered bytes"
+    )
+
+    build = _context_build(evidence_project, tmp_path)
+
+    assert build["elfFresh"] is False
+
+
+def test_missing_elf_breaks_evidence_chain(evidence_project: Path, tmp_path: Path):
+    _publish_evidence_chain(evidence_project)
+    (evidence_project / "build" / "arm-debug" / "firmware.elf").unlink()
+
+    build = _context_build(evidence_project, tmp_path)
+
+    assert build["elfFresh"] is False
+    assert build["elfExists"] is False
+
+
+def test_missing_result_commit_point_breaks_evidence_chain(
+    evidence_project: Path, tmp_path: Path
+):
+    _publish_evidence_chain(evidence_project)
+    (
+        evidence_project
+        / ".stm32-toolkit"
+        / "build"
+        / "arm-debug"
+        / "build-result.json"
+    ).unlink()
+
+    build = _context_build(evidence_project, tmp_path)
+
+    assert build["elfFresh"] is False
+
+
+def test_missing_identity_breaks_evidence_chain(evidence_project: Path, tmp_path: Path):
+    _publish_evidence_chain(evidence_project)
+    (
+        evidence_project
+        / ".stm32-toolkit"
+        / "build"
+        / "arm-debug"
+        / "firmware-identity.json"
+    ).unlink()
+
+    build = _context_build(evidence_project, tmp_path)
+
+    assert build["elfFresh"] is False
+
+
+def test_tampered_identity_breaks_evidence_chain(evidence_project: Path, tmp_path: Path):
+    _publish_evidence_chain(evidence_project)
+    identity_path = (
+        evidence_project
+        / ".stm32-toolkit"
+        / "build"
+        / "arm-debug"
+        / "firmware-identity.json"
+    )
+    identity = json.loads(identity_path.read_text(encoding="utf-8"))
+    identity["gitHead"] = "0" * 40
+    identity_path.write_text(json.dumps(identity), encoding="utf-8")
+
+    build = _context_build(evidence_project, tmp_path)
+
+    assert build["elfFresh"] is False
+
+
+def test_no_evidence_chain_is_stale(evidence_project: Path, tmp_path: Path):
+    build = _context_build(evidence_project, tmp_path)
+
+    assert build["elfFresh"] is False
 
 
 def test_invalid_configured_manifest_returns_its_stable_error_without_data_directories(
@@ -290,24 +548,19 @@ def test_missing_assembly_source_keeps_existing_elf_stale(
     assert result.data["build"]["elfFresh"] is False
 
 
-def test_newer_assembly_source_makes_elf_stale(
-    configured_project: Path, tmp_path: Path
+def test_newer_assembly_source_breaks_evidence_chain(
+    evidence_project: Path, tmp_path: Path
 ):
-    startup = configured_project / "Startup" / "startup.s"
-    startup.parent.mkdir()
-    startup.write_text("Reset_Handler:\n", encoding="utf-8")
-    manifest_path = configured_project / ".stm32-project.json"
-    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    manifest["build"]["assemblySources"] = ["Startup/startup.s"]
-    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
-    elf = configured_project / "build-fw" / "firmware.elf"
-    os.utime(elf, ns=(1_000_000_000, 1_000_000_000))
-    os.utime(startup, ns=(2_000_000_000, 2_000_000_000))
+    """A changed assembly input invalidates the input snapshot digest."""
+    _publish_evidence_chain(evidence_project)
+    startup = evidence_project / "Startup" / "startup.s"
+    os.utime(startup, ns=(9_000_000_000, 9_000_000_000))
 
-    result = build_project_context(
-        configured_project, tmp_path.parent / "data", "session-a"
-    )
+    build = _context_build(evidence_project, tmp_path)
 
-    assert result.ok is True
-    assert str(startup) in result.data["build"]["existingSourcePaths"]
-    assert result.data["build"]["elfFresh"] is False
+    assert str(startup) in build["existingSourcePaths"]
+    assert build["elfFresh"] is True
+
+    startup.write_text("Reset_Handler:\n  b .\n", encoding="utf-8")
+    build = _context_build(evidence_project, tmp_path)
+    assert build["elfFresh"] is False
