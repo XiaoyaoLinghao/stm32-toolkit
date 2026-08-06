@@ -110,11 +110,11 @@ def _default_kill_group(pid: int) -> None:
     os.killpg(pid, signal.SIGKILL)
 
 
-def _default_windows_graceful(pid: int) -> None:
+def _default_windows_graceful(pid: int) -> None:  # pragma: no cover - Windows-only
     os.kill(pid, signal.CTRL_BREAK_EVENT)
 
 
-def _default_windows_taskkill(pid: int) -> bool:
+def _default_windows_taskkill(pid: int) -> bool:  # pragma: no cover - Windows-only
     """Terminate the child tree on Windows; returns False when it fails."""
     try:
         completed = subprocess.run(
