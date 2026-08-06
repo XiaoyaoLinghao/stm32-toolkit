@@ -39,7 +39,7 @@ from stm32_toolkit.project_model import load_project_model
 FIXTURE = Path(__file__).parent / "fixtures" / "minimal-gcc"
 SCHEMA_ROOT = Path(__file__).resolve().parents[3] / "schemas" / "firmware-identity.schema.json"
 SCHEMA_PACKAGED = (
-    Path(__file__).resolve().parents[2]
+    Path(__file__).resolve().parents[1]
     / "src"
     / "stm32_toolkit"
     / "schemas"
@@ -119,7 +119,7 @@ def write_test_elf(
     specs.append((".strtab", 3, 0, 0, strtab_off, len(strtab)))
     shdrs = [struct.pack(endian + "IIIIIIIIII", 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)]
     for index, (name, typ, flags, addr, off, size) in enumerate(specs):
-        link = strtab_index if index == symtab_index else 0
+        link = strtab_index + 1 if index == symtab_index else 0
         info = 1 if index == symtab_index else 0
         entsize = 16 if index == symtab_index else 0
         align = 4 if index == symtab_index else 1
@@ -189,7 +189,7 @@ def _write_test_elf64(path: Path, *, entry: int, reset_handler: int, machine: in
     specs.append((".strtab", 3, 0, 0, strtab_off, len(strtab)))
     shdrs = [struct.pack(endian + "IIQQQQIIQQ", 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)]
     for index, (name, typ, flags, addr, off, size) in enumerate(specs):
-        link = strtab_index if index == symtab_index else 0
+        link = strtab_index + 1 if index == symtab_index else 0
         info = 1 if index == symtab_index else 0
         entsize = 24 if index == symtab_index else 0
         align = 4 if index == symtab_index else 1
@@ -249,20 +249,31 @@ def _git(command: str, cwd: Path, *args: str) -> int:
     return result.returncode if result.returncode is not None else 1
 
 
+def _git_commit(cwd: Path, message: str) -> None:
+    result = run_process(
+        ProcessRequest(
+            argv=(
+                "git",
+                "-c",
+                "user.name=test",
+                "-c",
+                "user.email=test@example.com",
+                "commit",
+                "-m",
+                message,
+            ),
+            cwd=cwd,
+            timeout_seconds=15.0,
+        )
+    )
+    assert result.returncode == 0, result.stderr
+
+
 @pytest.fixture
 def git_project(minimal_project: Path) -> Path:
     _git("init", minimal_project, "-b", "main")
     _git("add", minimal_project, ".")
-    _git(
-        "commit",
-        minimal_project,
-        "-m",
-        "initial",
-        "-c",
-        "user.name=test",
-        "-c",
-        "user.email=test@example.com",
-    )
+    _git_commit(minimal_project, "initial")
     return minimal_project
 
 
@@ -299,8 +310,8 @@ def test_snapshot_missing_input_raises(minimal_project: Path):
 
 
 def test_snapshot_oversized_input_raises(minimal_project: Path, monkeypatch):
-    monkeypatch.setattr(identity_mod, "_MAX_INPUT_FILE_BYTES", 16)
-    (minimal_project / "Src" / "main.c").write_text("x" * 100, encoding="utf-8")
+    monkeypatch.setattr(identity_mod, "_MAX_INPUT_FILE_BYTES", 2000)
+    (minimal_project / "Src" / "main.c").write_text("x" * 5000, encoding="utf-8")
     model = load_project_model(minimal_project)
 
     with pytest.raises(BuildError) as error:

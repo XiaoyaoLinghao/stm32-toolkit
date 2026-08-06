@@ -13,8 +13,7 @@
     "device": "STM32F407VGTx",
     "core": "cortex-m4",
     "fpu": "fpv4-sp-d16",
-    "floatAbi": "hard",
-    "devicePack": null
+    "floatAbi": "hard"
   },
   "framework": {
     "type": "bare-metal",

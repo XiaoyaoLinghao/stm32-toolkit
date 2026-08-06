@@ -64,7 +64,7 @@ def write_elf(path):
     specs.append((".strtab", 3, 0, 0, strtab_off, len(strtab)))
     shdrs = [struct.pack("<IIIIIIIIII", 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)]
     for index, (name, typ, flags, addr, off, size) in enumerate(specs):
-        link = strtab_index if index == symtab_index else 0
+        link = strtab_index + 1 if index == symtab_index else 0
         info = 1 if index == symtab_index else 0
         entsize = 16 if index == symtab_index else 0
         align = 4 if index == symtab_index else 1
@@ -186,16 +186,7 @@ def build_project(tmp_path: Path) -> Path:
     shutil.copytree(FIXTURE, root)
     _git("init", root, "-b", "main")
     _git("add", root, ".")
-    _git(
-        "commit",
-        root,
-        "-m",
-        "initial",
-        "-c",
-        "user.name=test",
-        "-c",
-        "user.email=test@example.com",
-    )
+    _git_commit(root, "initial")
     return root
 
 
@@ -205,7 +196,29 @@ def _git(command: str, cwd: Path, *args: str) -> None:
     result = run_process(
         ProcessRequest(argv=("git", command, *args), cwd=cwd, timeout_seconds=15.0)
     )
-    assert result.returncode == 0
+    assert result.returncode == 0, result.stderr
+
+
+def _git_commit(cwd: Path, message: str) -> None:
+    from stm32_toolkit.process import ProcessRequest, run_process
+
+    result = run_process(
+        ProcessRequest(
+            argv=(
+                "git",
+                "-c",
+                "user.name=test",
+                "-c",
+                "user.email=test@example.com",
+                "commit",
+                "-m",
+                message,
+            ),
+            cwd=cwd,
+            timeout_seconds=15.0,
+        )
+    )
+    assert result.returncode == 0, result.stderr
 
 
 def _request(root: Path, **kwargs) -> BuildRequest:
