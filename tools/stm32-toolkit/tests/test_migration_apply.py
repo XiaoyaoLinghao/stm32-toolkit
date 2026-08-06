@@ -203,8 +203,32 @@ def git_env():
 
 def git_init(root: Path) -> None:
     subprocess.run(["git", "init", "-q", "-b", "master"], cwd=root, check=True)
+    # Isolate the disposable repository from the user's global autocrlf
+    # setting: a global core.autocrlf=true would rewrite LF as CRLF on
+    # checkout (including later `git worktree add`) and dirty the worktree,
+    # breaking the clean-Git-required apply contract in this test module.
+    subprocess.run(
+        ["git", "config", "core.autocrlf", "false"],
+        cwd=root, check=True, env=git_env(),
+    )
     subprocess.run(["git", "add", "-A"], cwd=root, check=True, env=git_env())
     subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=root, check=True, env=git_env())
+
+
+def _path_is(path: os.PathLike | str, *components: str) -> bool:
+    """True when ``path``'s final components equal ``components`` exactly.
+
+    Compares parsed path components instead of raw strings containing
+    separators, so POSIX and Windows reach the same branch: ``str(path)``
+    uses ``/`` on Linux but ``\\`` on Windows, which would silently skip
+    matches like ``endswith("Main/main.c")`` on the latter.
+    """
+    return Path(path).parts[-len(components):] == components
+
+
+def _path_in_staging(path: os.PathLike | str) -> bool:
+    """True when ``path`` contains a ``migration-staging`` component."""
+    return "migration-staging" in Path(path).parts
 
 
 def git_status(root: Path) -> str:
@@ -371,6 +395,10 @@ def test_apply_success_exact_bytes_modes_artifacts_and_status(tmp_path):
     # A non-default mode on a tracked file is not recorded by Git (only the
     # executable bit is), so the working-tree mode must survive the apply.
     os.chmod(repo / "Common" / "common.c", 0o640)
+    # Windows cannot express POSIX modes exactly (os.chmod only toggles the
+    # read-only bit), so capture the real pre-apply mode and require the
+    # apply to preserve exactly that value on every host.
+    mode_before = stat.S_IMODE((repo / "Common" / "common.c").stat().st_mode)
     inspection = fixture_inspection(repo)
     plan = plan_keil_conversion(repo, inspection)
     assert plan.blockers == ()
@@ -403,7 +431,7 @@ def test_apply_success_exact_bytes_modes_artifacts_and_status(tmp_path):
 
     assert (repo / "Common" / "common.c").read_bytes() == COMMON_C_AFTER.encode("utf-8")
     assert (repo / "Main" / "main.c").read_bytes() == MAIN_C_AFTER.encode("utf-8")
-    assert stat.S_IMODE((repo / "Common" / "common.c").stat().st_mode) == 0o640
+    assert stat.S_IMODE((repo / "Common" / "common.c").stat().st_mode) == mode_before
 
     manifest = json.loads((repo / ".stm32-project.json").read_bytes())
     proposal = next(p for p in plan.patches if p.path == ".stm32-project.json")
@@ -573,9 +601,11 @@ def test_apply_input_lstat_and_read_failures(tmp_path, monkeypatch):
     repo = standard_repo(tmp_path)
     plan = plan_keil_conversion(repo, fixture_inspection(repo))
     real_lstat = os.lstat
+    lstat_calls = {"common": 0}
 
     def broken_lstat(path, *args, **kwargs):
-        if str(path).endswith("Common/common.c"):
+        if _path_is(path, "Common", "common.c"):
+            lstat_calls["common"] += 1
             raise NotADirectoryError(20, "not a dir")
         return real_lstat(path, *args, **kwargs)
 
@@ -583,28 +613,35 @@ def test_apply_input_lstat_and_read_failures(tmp_path, monkeypatch):
     result = apply_keil_conversion(plan)
     assert result.code == "MIGRATION_INPUT_CHANGED"
     assert result.details == {"path": "Common/common.c"}
+    assert lstat_calls["common"] > 0
 
     monkeypatch.setattr(os, "lstat", real_lstat)
 
+    _read_limited_impl = apply_mod._read_limited
+    read_calls = {"main": 0}
+
     def deny_read(path, limit):
-        if str(path).endswith("Main/main.c"):
+        if _path_is(path, "Main", "main.c"):
+            read_calls["main"] += 1
             raise PermissionError(13, "denied")
         return _read_limited_impl(path, limit)
 
-    _read_limited_impl = apply_mod._read_limited
     monkeypatch.setattr(apply_mod, "_read_limited", deny_read)
     result = apply_keil_conversion(plan)
     assert result.code == "MIGRATION_INPUT_CHANGED"
     assert result.details == {"path": "Main/main.c"}
+    assert read_calls["main"] > 0
 
 
 def test_apply_target_and_staging_state_failures(tmp_path, monkeypatch):
     repo = standard_repo(tmp_path)
     plan = plan_keil_conversion(repo, fixture_inspection(repo))
     real_lstat = os.lstat
+    manifest_calls = {"n": 0}
 
     def broken_manifest_lstat(path, *args, **kwargs):
-        if str(path).endswith(".stm32-project.json"):
+        if _path_is(path, ".stm32-project.json"):
+            manifest_calls["n"] += 1
             raise PermissionError(13, "denied")
         return real_lstat(path, *args, **kwargs)
 
@@ -612,11 +649,15 @@ def test_apply_target_and_staging_state_failures(tmp_path, monkeypatch):
     result = apply_keil_conversion(plan)
     assert result.code == "MIGRATION_PATH_INVALID"
     assert result.details == {"path": ".stm32-project.json", "rule": "withinProjectRoot"}
+    assert manifest_calls["n"] > 0
 
     monkeypatch.setattr(os, "lstat", real_lstat)
 
+    staging_calls = {"n": 0}
+
     def broken_staging_lstat(path, *args, **kwargs):
-        if "/migration-staging/" in str(path):
+        if _path_in_staging(path):
+            staging_calls["n"] += 1
             raise NotADirectoryError(20, "not a dir")
         return real_lstat(path, *args, **kwargs)
 
@@ -624,24 +665,31 @@ def test_apply_target_and_staging_state_failures(tmp_path, monkeypatch):
     result = apply_keil_conversion(plan)
     assert result.code == "MIGRATION_TARGET_EXISTS"
     assert result.details == {"path": f".stm32-toolkit/migration-staging/{plan.plan_id}"}
+    assert staging_calls["n"] > 0
+
+    staging_calls["n"] = 0
 
     def denied_staging_lstat(path, *args, **kwargs):
-        if "/migration-staging/" in str(path):
+        if _path_in_staging(path):
+            staging_calls["n"] += 1
             raise PermissionError(13, "denied")
         return real_lstat(path, *args, **kwargs)
 
     monkeypatch.setattr(os, "lstat", denied_staging_lstat)
     result = apply_keil_conversion(plan)
     assert result.code == "MIGRATION_PATH_INVALID"
+    assert staging_calls["n"] > 0
 
 
 def test_apply_resolve_failure_rejected(tmp_path, monkeypatch):
     repo = standard_repo(tmp_path)
     plan = plan_keil_conversion(repo, fixture_inspection(repo))
     real_resolve = Path.resolve
+    resolve_calls = {"patch": 0}
 
     def broken_resolve(self, strict=False):
-        if str(self).endswith("conversion.patch"):
+        if _path_is(self, "conversion.patch"):
+            resolve_calls["patch"] += 1
             raise RuntimeError("symlink loop")
         return real_resolve(self, strict)
 
@@ -652,6 +700,7 @@ def test_apply_resolve_failure_rejected(tmp_path, monkeypatch):
         "path": "artifacts/migration/conversion.patch",
         "rule": "withinProjectRoot",
     }
+    assert resolve_calls["patch"] > 0
 
 
 def test_apply_staging_resolve_failures_rejected(tmp_path, monkeypatch):
@@ -664,9 +713,11 @@ def test_apply_staging_resolve_failures_rejected(tmp_path, monkeypatch):
     real_resolve = Path.resolve
     canonical = repo.resolve()
     staging_path = f".stm32-toolkit/migration-staging/{plan.plan_id}"
+    component_calls = {"n": 0}
 
     def broken_component_resolve(self, strict=False):
-        if ".stm32-toolkit" in str(self):
+        if ".stm32-toolkit" in Path(self).parts:
+            component_calls["n"] += 1
             raise RuntimeError("symlink loop")
         return real_resolve(self, strict)
 
@@ -674,6 +725,7 @@ def test_apply_staging_resolve_failures_rejected(tmp_path, monkeypatch):
     result = apply_keil_conversion(plan)
     assert result.code == "MIGRATION_PATH_INVALID"
     assert result.details == {"path": staging_path, "rule": "withinProjectRoot"}
+    assert component_calls["n"] > 0
 
     monkeypatch.setattr(Path, "resolve", real_resolve)
 
@@ -766,9 +818,11 @@ def test_apply_staging_prune_failures_are_best_effort(tmp_path, monkeypatch):
     repo = standard_repo(tmp_path)
     plan = plan_keil_conversion(repo, fixture_inspection(repo))
     real_rmdir = os.rmdir
+    calls = {"n": 0}
 
     def failing_rmdir(path, *args, **kwargs):
-        if str(path).endswith("migration-staging") or str(path).endswith(".stm32-toolkit"):
+        if _path_is(path, "migration-staging") or _path_is(path, ".stm32-toolkit"):
+            calls["n"] += 1
             raise OSError(16, "busy")
         return real_rmdir(path, *args, **kwargs)
 
@@ -776,6 +830,7 @@ def test_apply_staging_prune_failures_are_best_effort(tmp_path, monkeypatch):
     result = apply_keil_conversion(plan)
     assert result.ok is True
     assert result.code == "OK"
+    assert calls["n"] > 0
     monkeypatch.setattr(os, "rmdir", real_rmdir)
     assert not (repo / ".stm32-toolkit" / "migration-staging" / plan.plan_id).exists()
     assert (repo / ".stm32-project.json").exists()
@@ -802,9 +857,11 @@ def test_apply_input_format_and_read_branches(tmp_path, monkeypatch):
     assert result.details["rule"] == "patchDigest"
 
     real_limited = apply_mod._read_limited
+    missing_calls = {"n": 0}
 
     def missing_read(path, limit):
-        if str(path).endswith("Main/main.c"):
+        if _path_is(path, "Main", "main.c"):
+            missing_calls["n"] += 1
             raise FileNotFoundError(2, "gone")
         return real_limited(path, limit)
 
@@ -812,10 +869,14 @@ def test_apply_input_format_and_read_branches(tmp_path, monkeypatch):
     result = apply_keil_conversion(plan)
     assert result.code == "MIGRATION_INPUT_CHANGED"
     assert result.details == {"path": "Main/main.c"}
+    assert missing_calls["n"] > 0
+
+    grown_calls = {"n": 0}
 
     def grown_read(path, limit):
         data = real_limited(path, limit)
-        if str(path).endswith("Main/main.c"):
+        if _path_is(path, "Main", "main.c"):
+            grown_calls["n"] += 1
             return data + b"x"
         return data
 
@@ -823,6 +884,7 @@ def test_apply_input_format_and_read_branches(tmp_path, monkeypatch):
     result = apply_keil_conversion(plan)
     assert result.code == "MIGRATION_INPUT_CHANGED"
     assert result.details == {"path": "Main/main.c"}
+    assert grown_calls["n"] > 0
 
 
 def test_apply_report_omitted_sources_and_artifacts(tmp_path):
