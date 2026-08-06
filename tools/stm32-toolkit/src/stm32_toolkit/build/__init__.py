@@ -12,12 +12,14 @@ from stm32_toolkit.build.model import (
     MemoryUsage,
     build_error,
 )
+from stm32_toolkit.build.runner import run_build
 
 __all__ = [
     "BuildRequest",
     "MemoryUsage",
     "FirmwareIdentity",
     "BuildReport",
+    "run_build",
     "BuildError",
     "build_error",
 ]

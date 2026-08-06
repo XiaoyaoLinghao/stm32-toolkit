@@ -369,7 +369,7 @@ def test_context_fresh_after_successful_build(tmp_path: Path, monkeypatch):
     assert evidence["buildResultPath"] == "artifacts/migration/build-result.json"
     assert evidence["buildLogPath"] == "artifacts/migration/build.log"
     assert evidence["elfExists"] is True
-    assert evidence["missingSourcePaths"] == []
+    assert evidence["missingSourcePaths"] == ()
 
 
 def test_context_stale_after_source_change(tmp_path: Path, monkeypatch):

@@ -90,33 +90,41 @@ def build_elf_bytes(
         return len(sections) - 1
 
     if include_vector:
-        vector_data = struct.pack("<II", 0x20020000, vector_second)
-        vector_data += b"\x00" * (vector_size - len(vector_data))
+        if vector_size >= 8:
+            vector_data = struct.pack("<II", 0x20020000, vector_second)
+            vector_data += b"\x00" * (vector_size - len(vector_data))
+        else:
+            vector_data = struct.pack("<I", 0x20020000)[:vector_size]
         add(".isr_vector", 1, 0x2, vector_addr, vector_data)
     text_index = add(".text", 1, 0x6, text_addr, b"\x00\xbf" * (text_size // 2))
 
-    symbol_names = ["Reset_Handler", "main"]
-    symbols: list[tuple[int, int, int, int, int]] = []  # (name, value, size, info, shndx)
-    symbols.append((0, 0, 0, 0, 0))  # null symbol
-    if reset_undefined:
-        symbols.append((1, 0, 0, 0x10, 0))  # undefined global Reset_Handler
-    else:
-        symbols.append((1, reset_handler, 8, 0x12, text_index))
-    symbols.append((2, 0x08000050, 4, 0x12, text_index))
-    for name in undefined_global:
-        symbol_names.append(name)
-        symbols.append((len(symbol_names) - 1, 0, 0, 0x10, 0))
-    for name in undefined_weak:
-        symbol_names.append(name)
-        symbols.append((len(symbol_names) - 1, 0, 0, 0x20, 0))
+    symbol_names = ["Reset_Handler", "main", *undefined_global, *undefined_weak]
+    strtab = bytearray(b"\x00")
+    name_offsets: dict[str, int] = {}
+    for name in symbol_names:
+        name_offsets[name] = len(strtab)
+        strtab += name.encode("utf-8") + b"\x00"
+    strtab_data = bytes(strtab)
 
-    strtab_data = b"\x00" + b"\x00".join(name.encode("utf-8") for name in symbol_names) + b"\x00"
+    symbols: list[tuple[int, int, int, int, int, int]] = []  # (name, value, size, info, other, shndx)
+    symbols.append((0, 0, 0, 0, 0, 0))  # null symbol
+    if reset_undefined:
+        symbols.append((name_offsets["Reset_Handler"], 0, 0, 0x10, 0, 0))  # undefined global
+    else:
+        symbols.append((name_offsets["Reset_Handler"], reset_handler, 8, 0x12, 0, text_index))
+    symbols.append((name_offsets["main"], 0x08000050, 4, 0x12, 0, text_index))
+    for name in undefined_global:
+        symbols.append((name_offsets[name], 0, 0, 0x10, 0, 0))
+    for name in undefined_weak:
+        symbols.append((name_offsets[name], 0, 0, 0x20, 0, 0))
+
     strtab_index = add(".strtab", 3, 0, 0, strtab_data, align=1)
 
     symtab_data = b"".join(struct.pack("<IIIBBH", *symbol) for symbol in symbols)
-    symtab_index = add(
-        ".symtab", 2, 0, 0, symtab_data, link=strtab_index, info=1, align=4, entsize=16
-    )
+    if include_symtab:
+        add(
+            ".symtab", 2, 0, 0, symtab_data, link=strtab_index + 1, info=1, align=4, entsize=16
+        )
 
     fixed_names: list[str] = []
     for name, addr, size in fixed_sections:
@@ -138,9 +146,9 @@ def build_elf_bytes(
 
     ident = b"\x7fELF" + bytes([elf_class, elf_data, 1, 0]) + b"\x00" * 8
     header = struct.pack(
-        "<16sHHI IIIIHHHH",
+        "<16sHHIIIIIHHHHHH",
         ident,
-        2,  # ET_EXEC
+        2,  # e_type: ET_EXEC
         elf_machine,
         1,  # e_version
         entry,
@@ -476,8 +484,10 @@ def log_path_for(root: Path) -> Path:
 
 
 def test_run_build_rejects_non_request(tmp_path: Path):
-    with pytest.raises(TypeError):
-        run_build("not a BuildRequest")  # type: ignore[arg-type]
+    result = run_build("not a BuildRequest")  # type: ignore[arg-type]
+    assert result.ok is False
+    assert result.code == "BUILD_REQUEST_INVALID"
+    assert result.details == {"field": "request", "rule": "type"}
 
 
 def test_run_build_rejects_invalid_request_fields(tmp_path: Path):
@@ -525,7 +535,7 @@ def test_run_build_requires_schema_v2_managed_configuration(tmp_path: Path):
 def test_run_build_requires_valid_managed_configuration(tmp_path: Path):
     root = prepare_project(tmp_path, git_repo=False)
     manifest_path = root / ".stm32-toolkit" / "generated-files.json"
-    manifest_path.write_bytes(b"{broken", encoding="utf-8")
+    manifest_path.write_bytes(b"{broken")
     result = run_build(BuildRequest(project_root=root, preset="arm-debug"))
     assert result.ok is False
     assert result.code == "BUILD_PROJECT_INVALID"
@@ -981,9 +991,11 @@ def test_publication_order_is_log_identity_result(
 ):
     root = prepare_project(tmp_path)
     install_fake_cmake(monkeypatch, tmp_path)
+    import stm32_toolkit.build.runner as runner_mod
+
     order: list[str] = []
-    real_text = identity_mod.atomic_write_text
-    real_json = identity_mod.atomic_write_json
+    real_text = runner_mod.atomic_write_text
+    real_json = runner_mod.atomic_write_json
 
     def spy_text(path, text):
         order.append(Path(path).name)
@@ -993,8 +1005,8 @@ def test_publication_order_is_log_identity_result(
         order.append(Path(path).name)
         return real_json(path, payload)
 
-    monkeypatch.setattr(identity_mod, "atomic_write_text", spy_text)
-    monkeypatch.setattr(identity_mod, "atomic_write_json", spy_json)
+    monkeypatch.setattr(runner_mod, "atomic_write_text", spy_text)
+    monkeypatch.setattr(runner_mod, "atomic_write_json", spy_json)
     result = run_build(BuildRequest(project_root=root, preset="arm-debug"))
     assert result.ok is True
     assert order == ["build.log", "firmware-identity.json", "build-result.json"]
