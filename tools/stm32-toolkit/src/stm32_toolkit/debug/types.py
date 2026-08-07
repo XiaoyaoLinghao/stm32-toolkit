@@ -22,6 +22,36 @@ class DwarfError(Exception):
 
 
 @dataclass(frozen=True)
+class DwarfLimits:
+    """Effective parser limits after caller values are clamped to hard caps."""
+
+    max_elf_bytes: int
+    max_debug_bytes: int
+    max_dies: int
+    max_die_depth: int
+    max_catalog_entries: int
+    max_type_depth: int
+    max_type_bytes: int
+    max_array_elements: int
+    max_location_expression_bytes: int
+    max_location_operations: int
+
+    def to_dict(self) -> dict[str, int]:
+        return {
+            "maxElfBytes": self.max_elf_bytes,
+            "maxDebugBytes": self.max_debug_bytes,
+            "maxDies": self.max_dies,
+            "maxDieDepth": self.max_die_depth,
+            "maxCatalogEntries": self.max_catalog_entries,
+            "maxTypeDepth": self.max_type_depth,
+            "maxTypeBytes": self.max_type_bytes,
+            "maxArrayElements": self.max_array_elements,
+            "maxLocationExpressionBytes": self.max_location_expression_bytes,
+            "maxLocationOperations": self.max_location_operations,
+        }
+
+
+@dataclass(frozen=True)
 class DwarfMember:
     name: str
     offset: int

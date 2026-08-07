@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import math
 import io
+import hashlib
 import struct
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -17,11 +19,15 @@ from stm32_toolkit.debug.dwarf import (
     _integer_attribute,
     _name,
 )
+from stm32_toolkit.debug import dwarf as dwarf_module
+from stm32_toolkit.debug.model import DebugFirmwareBinding, MemoryRegionBinding
 from stm32_toolkit.debug.types import DwarfError, DwarfSelection, DwarfType
 
 
 FIXTURE = Path(__file__).parent / "fixtures" / "dwarf" / "typed.elf"
 READABLE = ((0x08000000, 0x08100000), (0x20000000, 0x20100000))
+TOOL_ROOT = Path(__file__).parents[1]
+FIXTURE_RELATIVE = "tests/fixtures/dwarf/typed.elf"
 
 
 @pytest.fixture(scope="module")
@@ -302,7 +308,9 @@ def test_project_readable_regions_are_mandatory() -> None:
 
 
 def test_unavailable_elf_and_non_string_expression_fail_closed(tmp_path: Path) -> None:
-    _assert_error("DWARF_ELF_UNAVAILABLE", DwarfCatalog.from_elf, tmp_path / "missing")
+    _assert_error(
+        "DWARF_ELF_UNAVAILABLE", DwarfCatalog.from_elf, tmp_path / "missing.elf"
+    )
     catalog = DwarfCatalog.from_elf(FIXTURE, readable_regions=READABLE)
     _assert_error("DWARF_EXPRESSION_UNSUPPORTED", catalog.lookup, 123)
     _assert_error("DWARF_SYMBOL_NOT_FOUND", catalog.lookup, "does_not_exist")
@@ -507,3 +515,155 @@ def test_location_parser_failures_never_become_addresses() -> None:
             _Parser(LocationExpr([1])),
             _ExpressionParser(names),
         )[1] == code
+
+
+def test_all_caller_limits_are_clamped_to_hard_caps() -> None:
+    catalog = DwarfCatalog.from_elf(
+        FIXTURE,
+        readable_regions=READABLE,
+        max_elf_bytes=10**12,
+        max_debug_bytes=10**12,
+        max_dies=10**12,
+        max_die_depth=10**12,
+        max_catalog_entries=10**12,
+        max_type_depth=10**12,
+        max_type_bytes=10**12,
+        max_array_elements=10**12,
+    )
+    assert catalog.limits.to_dict() == {
+        "maxElfBytes": 64 * 1024 * 1024,
+        "maxDebugBytes": 32 * 1024 * 1024,
+        "maxDies": 250_000,
+        "maxDieDepth": 64,
+        "maxCatalogEntries": 50_000,
+        "maxTypeDepth": 32,
+        "maxTypeBytes": 1024 * 1024,
+        "maxArrayElements": 1_000_000,
+        "maxLocationExpressionBytes": 256,
+        "maxLocationOperations": 64,
+    }
+
+
+def test_location_expression_bytes_and_operation_count_have_hard_caps() -> None:
+    class _Parser:
+        def __init__(self, expression: list[int]):
+            self.expression = expression
+
+        def parse_from_attribute(self, *args):
+            return LocationExpr(self.expression)
+
+    class _ExpressionParser:
+        def __init__(self, count: int):
+            self.count = count
+
+        def parse_expr(self, expression):
+            return [SimpleNamespace(op_name="DW_OP_piece", args=[]) for _ in range(self.count)]
+
+    die = SimpleNamespace(attributes={"DW_AT_location": SimpleNamespace(value=b"")})
+    cu = {"version": 5}
+    assert DwarfCatalog._location(
+        die, cu, _Parser([1] * 257), _ExpressionParser(1)
+    )[1] == "DWARF_LOCATION_EXPRESSION_TOO_LARGE"
+    assert DwarfCatalog._location(
+        die, cu, _Parser([1]), _ExpressionParser(65)
+    )[1] == "DWARF_LOCATION_OPERATION_LIMIT_EXCEEDED"
+
+
+def _firmware_binding(
+    *,
+    project_root: Path = TOOL_ROOT,
+    elf_path: str = FIXTURE_RELATIVE,
+    elf_size: int | None = None,
+    elf_sha256: str | None = None,
+) -> DebugFirmwareBinding:
+    data = (project_root / elf_path).read_bytes()
+    return DebugFirmwareBinding(
+        logical_project_id="fixture-project",
+        workspace_id="workspace",
+        observation_session_id="observation",
+        flash_session_id="flash",
+        lease_id="lease",
+        probe_id="probe",
+        target_device="STM32F429ZI",
+        debug_target="stm32f429zi",
+        build_id="1" * 64,
+        elf_sha256=elf_sha256 or hashlib.sha256(data).hexdigest(),
+        elf_size=len(data) if elf_size is None else elf_size,
+        elf_path=elf_path,
+        input_snapshot_sha256="2" * 64,
+        git_head="3" * 40,
+        git_dirty=False,
+        confirmed_at_utc="2026-08-08T00:00:00.000000Z",
+        memory_regions=(
+            MemoryRegionBinding("FLASH", 0x08000000, 0x00100000, "r-x"),
+            MemoryRegionBinding("RAM", 0x20000000, 0x00100000, "rwx"),
+        ),
+        project_root=project_root.resolve(strict=True),
+    )
+
+
+def test_catalog_provenance_is_exact_hidden_and_revalidatable() -> None:
+    binding = _firmware_binding()
+    catalog = DwarfCatalog.from_binding(binding, TOOL_ROOT)
+
+    assert catalog.path == FIXTURE_RELATIVE
+    assert catalog.elf_size == binding.elf_size
+    assert catalog.elf_sha256 == binding.elf_sha256
+    assert catalog.readable_regions == READABLE
+    assert str(TOOL_ROOT.resolve()) not in repr(catalog)
+    assert catalog.revalidate(binding, TOOL_ROOT) is True
+    with pytest.raises(TypeError):
+        DwarfCatalog({}, READABLE, True)  # type: ignore[call-arg]
+
+
+def test_catalog_construction_and_revalidation_reject_changed_evidence(
+    tmp_path: Path,
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    elf = project / "firmware.elf"
+    elf.write_bytes(FIXTURE.read_bytes())
+    binding = _firmware_binding(project_root=project, elf_path="firmware.elf")
+    catalog = DwarfCatalog.from_binding(binding, project)
+    elf.write_bytes(elf.read_bytes() + b"changed")
+    with pytest.raises(DwarfError) as raised:
+        catalog.revalidate(binding, project)
+    assert raised.value.code == "DWARF_INPUT_CHANGED"
+    with pytest.raises(DwarfError) as raised:
+        DwarfCatalog.from_binding(binding, project)
+    assert raised.value.code == "DWARF_PROVENANCE_MISMATCH"
+
+
+def test_descriptor_metadata_change_during_read_is_rejected(monkeypatch) -> None:
+    real_fstat = dwarf_module.os.fstat
+    calls = 0
+
+    def changing_fstat(descriptor: int):
+        nonlocal calls
+        calls += 1
+        metadata = real_fstat(descriptor)
+        if calls == 2:
+            return SimpleNamespace(
+                st_mode=metadata.st_mode,
+                st_dev=metadata.st_dev,
+                st_ino=metadata.st_ino,
+                st_size=metadata.st_size,
+                st_mtime_ns=metadata.st_mtime_ns + 1,
+                st_ctime_ns=metadata.st_ctime_ns,
+            )
+        return metadata
+
+    monkeypatch.setattr(dwarf_module.os, "fstat", changing_fstat)
+    with pytest.raises(DwarfError) as raised:
+        DwarfCatalog.from_binding(_firmware_binding())
+    assert raised.value.code == "DWARF_INPUT_CHANGED"
+    assert calls == 2
+
+
+def test_revalidation_requires_the_exact_binding() -> None:
+    binding = _firmware_binding()
+    catalog = DwarfCatalog.from_binding(binding)
+    assert catalog.revalidate(binding) is True
+    with pytest.raises(DwarfError) as raised:
+        catalog.revalidate(replace(binding, elf_size=binding.elf_size + 1))
+    assert raised.value.code == "DWARF_PROVENANCE_MISMATCH"

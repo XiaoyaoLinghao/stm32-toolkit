@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import io
+import hashlib
+import os
 import re
+import stat
 import struct
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from types import MappingProxyType
 from typing import Iterable, Mapping
@@ -15,7 +18,14 @@ from elftools.dwarf.dwarf_expr import DWARFExprParser
 from elftools.dwarf.locationlists import LocationExpr, LocationParser
 from elftools.elf.elffile import ELFFile
 
-from .types import DwarfError, DwarfMember, DwarfSelection, DwarfType
+from .model import DebugFirmwareBinding
+from .types import (
+    DwarfError,
+    DwarfLimits,
+    DwarfMember,
+    DwarfSelection,
+    DwarfType,
+)
 
 
 _IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
@@ -28,8 +38,12 @@ _MAX_TYPE_DEPTH = 32
 _MAX_TYPE_BYTES = 1024 * 1024
 _MAX_ARRAY_ELEMENTS = 1_000_000
 _MAX_EXPRESSION = 256
+_MAX_LOCATION_EXPRESSION_BYTES = 256
+_MAX_LOCATION_OPERATIONS = 64
+_MAX_LOCATION_LIST_ENTRIES = 1024
 _MAX_REGIONS = 64
 _MAX_ADDRESS = (1 << 64) - 1
+_REPARSE_POINT = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
 
 
 def _fail(code: str, message: str) -> DwarfError:
@@ -61,6 +75,115 @@ class _CatalogSymbol:
     address: int | None
     location_error: str | None
     type_error: str | None = None
+
+
+@dataclass(frozen=True)
+class _ElfSource:
+    data: bytes
+    relative_path: str
+    canonical_project_root: Path = field(repr=False)
+    canonical_path: Path = field(repr=False)
+    source_identity: tuple[int, int] = field(repr=False)
+
+
+def _redirect(metadata: os.stat_result) -> bool:
+    attributes = getattr(metadata, "st_file_attributes", 0) or 0
+    return stat.S_ISLNK(metadata.st_mode) or bool(int(attributes) & _REPARSE_POINT)
+
+
+def _portable_path(value: Path) -> str:
+    text = value.as_posix()
+    if (
+        not text
+        or len(text) > 1024
+        or value.is_absolute()
+        or ":" in text
+        or "\\" in text
+        or "\x00" in text
+        or any(ord(character) < 32 or ord(character) == 127 for character in text)
+        or any(part in ("", ".", "..") for part in text.split("/"))
+        or not text.casefold().endswith((".elf", ".axf"))
+    ):
+        raise _fail("DWARF_PATH_INVALID", "ELF path is invalid")
+    return text
+
+
+def _safe_read(root: Path, relative: Path, max_bytes: int) -> _ElfSource:
+    portable = _portable_path(relative)
+    descriptor = -1
+    try:
+        lexical_root = root.expanduser().absolute()
+        resolved_root = root.expanduser().resolve(strict=True)
+        if lexical_root != resolved_root:
+            raise ValueError("root is not canonical")
+        components = [lexical_root]
+        current = lexical_root
+        for part in relative.parts:
+            current /= part
+            components.append(current)
+        parent_identity: list[tuple[int, int]] = []
+        for component in components[:-1]:
+            metadata = os.lstat(component)
+            if _redirect(metadata) or not stat.S_ISDIR(metadata.st_mode):
+                raise ValueError("unsafe parent")
+            parent_identity.append((metadata.st_dev, metadata.st_ino))
+        path = components[-1]
+        metadata = os.lstat(path)
+        if _redirect(metadata) or not stat.S_ISREG(metadata.st_mode):
+            raise ValueError("unsafe file")
+        if metadata.st_size > max_bytes:
+            raise _fail("DWARF_ELF_TOO_LARGE", "ELF exceeds the configured byte limit")
+        descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_BINARY", 0))
+        opened = os.fstat(descriptor)
+        named = os.lstat(path)
+        if (
+            _redirect(named)
+            or not stat.S_ISREG(opened.st_mode)
+            or not stat.S_ISREG(named.st_mode)
+            or (opened.st_dev, opened.st_ino) != (named.st_dev, named.st_ino)
+        ):
+            raise _fail("DWARF_INPUT_CHANGED", "ELF changed while reading")
+        chunks = bytearray()
+        while len(chunks) <= max_bytes:
+            chunk = os.read(descriptor, min(65_536, max_bytes + 1 - len(chunks)))
+            if not chunk:
+                break
+            chunks.extend(chunk)
+        opened_after = os.fstat(descriptor)
+        named_after = os.lstat(path)
+        after_parents: list[tuple[int, int]] = []
+        for component in components[:-1]:
+            parent = os.lstat(component)
+            if _redirect(parent) or not stat.S_ISDIR(parent.st_mode):
+                raise _fail("DWARF_INPUT_CHANGED", "ELF path changed while reading")
+            after_parents.append((parent.st_dev, parent.st_ino))
+        if (
+            _redirect(named_after)
+            or (opened.st_dev, opened.st_ino)
+            != (named_after.st_dev, named_after.st_ino)
+            or opened.st_size != opened_after.st_size
+            or opened.st_mtime_ns != opened_after.st_mtime_ns
+            or opened.st_ctime_ns != opened_after.st_ctime_ns
+            or after_parents != parent_identity
+        ):
+            raise _fail("DWARF_INPUT_CHANGED", "ELF path changed while reading")
+    except DwarfError:
+        raise
+    except (OSError, RuntimeError, TypeError, ValueError):
+        raise _fail("DWARF_ELF_UNAVAILABLE", "ELF bytes are unavailable") from None
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+    data = bytes(chunks)
+    if len(data) > max_bytes:
+        raise _fail("DWARF_ELF_TOO_LARGE", "ELF exceeds the configured byte limit")
+    return _ElfSource(
+        data,
+        portable,
+        resolved_root,
+        path.resolve(strict=True),
+        (opened.st_dev, opened.st_ino),
+    )
 
 
 class _TypeGraph:
@@ -234,18 +357,47 @@ class _TypeGraph:
         return DwarfType(kind, _name(die, f"<{kind}>"), size, members=tuple(members))
 
 
+@dataclass(frozen=True, init=False)
 class DwarfCatalog:
     """Immutable variable catalog parsed from bounded, current ELF/DWARF bytes."""
 
-    def __init__(
-        self,
-        symbols: Mapping[str, tuple[_CatalogSymbol, ...]],
+    path: str
+    elf_size: int
+    elf_sha256: str
+    readable_regions: tuple[tuple[int, int], ...]
+    limits: DwarfLimits
+    _symbols: Mapping[str, tuple[_CatalogSymbol, ...]] = field(repr=False)
+    _little_endian: bool = field(repr=False)
+    _canonical_project_root: Path = field(repr=False)
+    _canonical_path: Path = field(repr=False)
+    _source_identity: tuple[int, int] = field(repr=False)
+
+    @classmethod
+    def _create(
+        cls,
+        *,
+        source: _ElfSource,
         readable_regions: tuple[tuple[int, int], ...],
+        limits: DwarfLimits,
+        symbols: Mapping[str, tuple[_CatalogSymbol, ...]],
         little_endian: bool,
-    ) -> None:
-        self._symbols = MappingProxyType(dict(symbols))
-        self._readable_regions = readable_regions
-        self._little_endian = little_endian
+    ) -> "DwarfCatalog":
+        instance = object.__new__(cls)
+        values = (
+            ("path", source.relative_path),
+            ("elf_size", len(source.data)),
+            ("elf_sha256", hashlib.sha256(source.data).hexdigest()),
+            ("readable_regions", readable_regions),
+            ("limits", limits),
+            ("_symbols", MappingProxyType(dict(symbols))),
+            ("_little_endian", little_endian),
+            ("_canonical_project_root", source.canonical_project_root),
+            ("_canonical_path", source.canonical_path),
+            ("_source_identity", source.source_identity),
+        )
+        for name, value in values:
+            object.__setattr__(instance, name, value)
+        return instance
 
     @classmethod
     def from_elf(
@@ -261,6 +413,9 @@ class DwarfCatalog:
         max_type_depth: int = _MAX_TYPE_DEPTH,
         max_type_bytes: int = _MAX_TYPE_BYTES,
         max_array_elements: int = _MAX_ARRAY_ELEMENTS,
+        project_root: Path | None = None,
+        expected_elf_size: int | None = None,
+        expected_elf_sha256: str | None = None,
     ) -> "DwarfCatalog":
         for value in (
             max_elf_bytes,
@@ -278,13 +433,56 @@ class DwarfCatalog:
             max_elf_bytes = _MAX_ELF_BYTES
         if max_debug_bytes > _MAX_DEBUG_BYTES:
             max_debug_bytes = _MAX_DEBUG_BYTES
-        try:
-            with Path(path).open("rb") as stream:
-                data = stream.read(max_elf_bytes + 1)
-        except (OSError, ValueError, TypeError):
-            raise _fail("DWARF_ELF_UNAVAILABLE", "ELF bytes are unavailable") from None
-        if len(data) > max_elf_bytes:
-            raise _fail("DWARF_ELF_TOO_LARGE", "ELF exceeds the configured byte limit")
+        max_dies = min(max_dies, _MAX_DIES)
+        max_die_depth = min(max_die_depth, _MAX_DIE_DEPTH)
+        max_catalog_entries = min(max_catalog_entries, _MAX_CATALOG_ENTRIES)
+        max_type_depth = min(max_type_depth, _MAX_TYPE_DEPTH)
+        max_type_bytes = min(max_type_bytes, _MAX_TYPE_BYTES)
+        max_array_elements = min(max_array_elements, _MAX_ARRAY_ELEMENTS)
+        limits = DwarfLimits(
+            max_elf_bytes,
+            max_debug_bytes,
+            max_dies,
+            max_die_depth,
+            max_catalog_entries,
+            max_type_depth,
+            max_type_bytes,
+            max_array_elements,
+            _MAX_LOCATION_EXPRESSION_BYTES,
+            _MAX_LOCATION_OPERATIONS,
+        )
+        requested_path = Path(path)
+        if project_root is None:
+            absolute = requested_path.expanduser().absolute()
+            root = absolute.parent
+            relative = Path(absolute.name)
+        else:
+            if not isinstance(project_root, Path):
+                raise _fail("DWARF_PATH_INVALID", "Project root is invalid")
+            root = project_root
+            if requested_path.is_absolute():
+                try:
+                    relative = requested_path.relative_to(root)
+                except ValueError:
+                    raise _fail("DWARF_PATH_INVALID", "ELF path is outside the project") from None
+            else:
+                relative = requested_path
+        source = _safe_read(root, relative, max_elf_bytes)
+        if (
+            expected_elf_size is not None
+            and (type(expected_elf_size) is not int or len(source.data) != expected_elf_size)
+        ) or (
+            expected_elf_sha256 is not None
+            and (
+                not isinstance(expected_elf_sha256, str)
+                or hashlib.sha256(source.data).hexdigest() != expected_elf_sha256
+            )
+        ):
+            raise _fail(
+                "DWARF_PROVENANCE_MISMATCH",
+                "ELF bytes do not match the firmware binding",
+            )
+        data = source.data
         try:
             elf = ELFFile(io.BytesIO(data))
             cls._validate_debug_sections(elf, data, max_debug_bytes)
@@ -345,11 +543,100 @@ class DwarfCatalog:
                         )
                     )
             frozen = {name: tuple(values) for name, values in entries.items()}
-            return cls(frozen, regions, bool(elf.little_endian))
+            return cls._create(
+                source=source,
+                readable_regions=regions,
+                limits=limits,
+                symbols=frozen,
+                little_endian=bool(elf.little_endian),
+            )
         except DwarfError:
             raise
         except (ELFError, ElfToolsDwarfError, KeyError, TypeError, ValueError, IndexError, OverflowError):
             raise _fail("DWARF_ELF_MALFORMED", "ELF or DWARF data is malformed") from None
+
+    @classmethod
+    def from_binding(
+        cls,
+        binding: DebugFirmwareBinding,
+        project_root: Path | None = None,
+        **limits: int,
+    ) -> "DwarfCatalog":
+        if type(binding) is not DebugFirmwareBinding:
+            raise _fail(
+                "DWARF_PROVENANCE_MISMATCH",
+                "Firmware binding provenance is invalid",
+            )
+        root = binding.project_root if project_root is None else project_root
+        if not isinstance(root, Path) or root != binding.project_root:
+            raise _fail(
+                "DWARF_PROVENANCE_MISMATCH",
+                "Firmware binding provenance is invalid",
+            )
+        regions = cls._binding_regions(binding)
+        return cls.from_elf(
+            Path(binding.elf_path),
+            project_root=root,
+            readable_regions=regions,
+            expected_elf_size=binding.elf_size,
+            expected_elf_sha256=binding.elf_sha256,
+            **limits,
+        )
+
+    @staticmethod
+    def _binding_regions(
+        binding: DebugFirmwareBinding,
+    ) -> tuple[tuple[int, int], ...]:
+        regions = tuple(
+            (region.origin, region.origin + region.length)
+            for region in binding.memory_regions
+            if "r" in region.attributes
+        )
+        if not regions:
+            raise _fail(
+                "DWARF_PROVENANCE_MISMATCH",
+                "Firmware binding has no readable memory regions",
+            )
+        return DwarfCatalog._normalize_regions(regions)
+
+    def revalidate(
+        self,
+        binding: DebugFirmwareBinding,
+        project_root: Path | None = None,
+    ) -> bool:
+        root = (
+            binding.project_root
+            if type(binding) is DebugFirmwareBinding and project_root is None
+            else project_root
+        )
+        if (
+            type(binding) is not DebugFirmwareBinding
+            or not isinstance(root, Path)
+            or root != binding.project_root
+            or binding.elf_path != self.path
+            or binding.elf_size != self.elf_size
+            or binding.elf_sha256 != self.elf_sha256
+            or self._binding_regions(binding) != self.readable_regions
+        ):
+            raise _fail(
+                "DWARF_PROVENANCE_MISMATCH",
+                "DWARF catalog does not match the firmware binding",
+            )
+        try:
+            current = _safe_read(
+                root, Path(self.path), min(self.limits.max_elf_bytes, _MAX_ELF_BYTES)
+            )
+        except DwarfError:
+            raise _fail("DWARF_INPUT_CHANGED", "ELF changed after catalog creation") from None
+        if (
+            current.canonical_project_root != self._canonical_project_root
+            or current.canonical_path != self._canonical_path
+            or current.source_identity != self._source_identity
+            or len(current.data) != self.elf_size
+            or hashlib.sha256(current.data).hexdigest() != self.elf_sha256
+        ):
+            raise _fail("DWARF_INPUT_CHANGED", "ELF changed after catalog creation")
+        return True
 
     @staticmethod
     def _validate_debug_sections(
@@ -424,17 +711,26 @@ class DwarfCatalog:
             return None, "DWARF_LOCATION_UNAVAILABLE"
         try:
             parsed = parser.parse_from_attribute(attribute, cu["version"], die)
-            expressions = (
-                [parsed.loc_expr]
-                if isinstance(parsed, LocationExpr)
-                else [entry.loc_expr for entry in parsed if hasattr(entry, "loc_expr")]
-            )
+            if isinstance(parsed, LocationExpr):
+                expressions = [parsed.loc_expr]
+            else:
+                expressions = []
+                for entry in parsed:
+                    if not hasattr(entry, "loc_expr"):
+                        continue
+                    if len(expressions) >= _MAX_LOCATION_LIST_ENTRIES:
+                        return None, "DWARF_LOCATION_LIST_LIMIT_EXCEEDED"
+                    expressions.append(entry.loc_expr)
             if not expressions:
                 return None, "DWARF_LOCATION_OPTIMIZED_OUT"
             addresses: set[int] = set()
             failures: set[str] = set()
             for expression in expressions:
+                if len(expression) > _MAX_LOCATION_EXPRESSION_BYTES:
+                    return None, "DWARF_LOCATION_EXPRESSION_TOO_LARGE"
                 operations = expression_parser.parse_expr(expression)
+                if len(operations) > _MAX_LOCATION_OPERATIONS:
+                    return None, "DWARF_LOCATION_OPERATION_LIMIT_EXCEEDED"
                 if len(operations) == 1 and operations[0].op_name == "DW_OP_addr":
                     addresses.add(int(operations[0].args[0]))
                     continue
@@ -516,7 +812,7 @@ class DwarfCatalog:
             raise _fail("DWARF_EXPRESSION_UNSUPPORTED", "DWARF expression is unsupported")
         end = address + dwarf_type.byte_size
         if end > _MAX_ADDRESS + 1 or not any(
-            address >= start and end <= limit for start, limit in self._readable_regions
+            address >= start and end <= limit for start, limit in self.readable_regions
         ):
             raise _fail(
                 "DWARF_ADDRESS_OUTSIDE_READABLE_MEMORY",
