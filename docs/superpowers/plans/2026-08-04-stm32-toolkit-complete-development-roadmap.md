@@ -34,7 +34,7 @@
 
 ## Progress Tracking
 
-- [ ] 0.3.0 migration, managed GCC/CMake configuration, and reproducible build gate
+- [x] 0.3.0 migration, managed GCC/CMake configuration, and reproducible build gate
 - [ ] 0.4.0 Probe Service, leases, flash, typed reads, and debug handoff gate
 - [ ] 0.5.0 project-isolated monitor service and UI gate
 - [ ] 0.6.0 host/target tests and evidence-driven AI diagnostics gate
