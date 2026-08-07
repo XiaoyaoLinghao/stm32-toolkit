@@ -259,6 +259,67 @@ def test_snapshot_rejects_duplicate_path(tmp_path: Path):
     assert error.value.details == {"rule": "duplicate"}
 
 
+def test_snapshot_dedupes_source_also_reached_via_include_dir(tmp_path: Path):
+    """Regression (STM32TK-0306 revision 1): a canonical regular file reached
+    by both an explicit source declaration and include-directory traversal is
+    counted exactly once in the deterministic input snapshot."""
+    root = prepare_project(tmp_path, git_repo=False)
+    (root / "Inc").mkdir()
+    (root / "Inc" / "board.h").write_text("/* board */\n", encoding="utf-8")
+    payload = json.loads((root / ".stm32-project.json").read_text(encoding="utf-8"))
+    payload["build"]["sources"] = ["Src/main.c", "Inc/board.h"]
+    payload["build"]["includePaths"] = ["Inc"]
+    (root / ".stm32-project.json").write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+
+    snapshot = snapshot_for(root)
+
+    paths = [entry.path for entry in snapshot.entries]
+    assert paths.count("Inc/board.h") == 1
+    assert snapshot.entries[paths.index("Inc/board.h")].size == len("/* board */\n")
+
+
+def test_snapshot_dedupes_same_canonical_file_across_include_and_source(
+    tmp_path: Path,
+):
+    """Regression: a symlink inside an include directory that resolves to a
+    declared source is not counted a second time."""
+    root = prepare_project(tmp_path, git_repo=False)
+    (root / "Real").mkdir()
+    (root / "Real" / "a.c").write_text("int a;\n", encoding="utf-8")
+    (root / "Link").mkdir()
+    (root / "Link" / "a.c").symlink_to("../Real/a.c")
+    payload = json.loads((root / ".stm32-project.json").read_text(encoding="utf-8"))
+    payload["build"]["sources"] = ["Src/main.c", "Real/a.c"]
+    payload["build"]["includePaths"] = ["Link"]
+    (root / ".stm32-project.json").write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+
+    snapshot = snapshot_for(root)
+
+    paths = [entry.path for entry in snapshot.entries]
+    assert paths.count("Real/a.c") == 1
+    assert "Link/a.c" not in paths
+
+
+def test_snapshot_rejects_duplicate_declaration_of_same_canonical_file(
+    tmp_path: Path,
+):
+    """Regression: two declared paths resolving to the same canonical regular
+    file (hard link) are a duplicate declaration and fail closed."""
+    root = prepare_project(tmp_path, git_repo=False)
+    (root / "A").mkdir()
+    (root / "B").mkdir()
+    (root / "A" / "shared.c").write_text("int shared;\n", encoding="utf-8")
+    os.link(root / "A" / "shared.c", root / "B" / "shared.c")
+    payload = json.loads((root / ".stm32-project.json").read_text(encoding="utf-8"))
+    payload["build"]["sources"] = ["Src/main.c", "A/shared.c", "B/shared.c"]
+    (root / ".stm32-project.json").write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+
+    with pytest.raises(BuildError) as error:
+        snapshot_for(root)
+    assert error.value.code == "BUILD_INPUT_INVALID"
+    assert error.value.details == {"rule": "duplicate"}
+
+
 def test_snapshot_rejects_sources_inside_build_outputs(tmp_path: Path):
     root = prepare_project(tmp_path, git_repo=False)
     payload = json.loads((root / ".stm32-project.json").read_text(encoding="utf-8"))

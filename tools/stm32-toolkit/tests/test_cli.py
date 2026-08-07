@@ -362,13 +362,12 @@ def test_end_to_end_inspect_convert_configure_build(tmp_path: Path, monkeypatch,
     applied = json.loads(capsys.readouterr().out)
     assert applied["operation"] == "keil-conversion-apply"
 
-    # Supply the debug backend the accepted migration proposal leaves empty.
+    # The generated manifest is used exactly as produced: the debug spec
+    # stays empty and build-only configuration must still succeed.
     manifest_path = root / ".stm32-project.json"
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    manifest["debug"] = {"backend": "pyocd", "target": "stm32f429zgtx"}
-    manifest_path.write_text(
-        json.dumps(manifest, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
-    )
+    assert manifest["schemaVersion"] == 2
+    assert manifest["debug"] == {}
 
     # configuration plan -> apply
     assert main(["project", "configure", "--project", str(root), "--dry-run", "--json"]) == 0
@@ -379,6 +378,8 @@ def test_end_to_end_inspect_convert_configure_build(tmp_path: Path, monkeypatch,
     ]) == 0
     configured = json.loads(capsys.readouterr().out)
     assert configured["operation"] == "project-configuration-apply"
+    launch = json.loads((root / ".vscode" / "launch.json").read_text(encoding="utf-8"))
+    assert launch["configurations"] == []
 
     # build
     assert main(["build", "--project", str(root), "--preset", "arm-debug"]) == 0

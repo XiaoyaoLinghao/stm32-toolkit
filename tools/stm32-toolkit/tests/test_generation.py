@@ -892,14 +892,34 @@ def test_elf_basename_with_extra_elf_suffix_is_accepted(tmp_path):
     assert b"add_executable(firmware_elf\n" in cmake.after_bytes
 
 
-def test_missing_debug_backend_is_rejected(tmp_path):
+@pytest.mark.parametrize("debug", [{}, {"svd": None}])
+def test_empty_debug_allows_build_only_configuration(tmp_path, debug: dict):
+    """Regression (STM32TK-0306 revision 1): a fully absent debug spec never
+    blocks build-only configuration and no pyOCD target is guessed."""
     payload = standard_payload()
-    payload["debug"] = {}
+    payload["debug"] = debug
     root = write_project(tmp_path / "proj", payload)
-    with pytest.raises(GenerationError) as error:
-        plan_for(root)
-    assert error.value.code == "GENERATION_MODEL_INVALID"
-    assert error.value.details == {"field": "debug.backend", "rule": "value"}
+
+    plan = plan_for(root)
+
+    assert plan.blockers == ()
+    launch_entry = next(entry for entry in plan.files if entry.path == ".vscode/launch.json")
+    launch = json.loads(launch_entry.after_bytes.decode("utf-8"))
+    # Deterministic configuration that claims no usable hardware debugging.
+    assert launch == {"version": "0.2.0", "configurations": []}
+
+
+def test_fully_absent_debug_key_allows_build_only_configuration(tmp_path):
+    payload = standard_payload()
+    del payload["debug"]
+    root = write_project(tmp_path / "proj", payload)
+
+    plan = plan_for(root)
+
+    assert plan.blockers == ()
+    launch_entry = next(entry for entry in plan.files if entry.path == ".vscode/launch.json")
+    launch = json.loads(launch_entry.after_bytes.decode("utf-8"))
+    assert launch == {"version": "0.2.0", "configurations": []}
 
 
 def test_non_pyocd_backend_is_rejected(tmp_path):

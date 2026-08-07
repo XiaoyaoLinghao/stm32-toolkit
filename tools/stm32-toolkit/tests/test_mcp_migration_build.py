@@ -21,6 +21,7 @@ from pathlib import Path
 import pytest
 
 import stm32_toolkit.mcp_server as mcp_mod
+from stm32_toolkit.context import build_project_context
 from stm32_toolkit.mcp_server import ServerRuntime, create_server, main
 from stm32_toolkit.workflows import (
     build_firmware_workflow,
@@ -89,60 +90,13 @@ async def _call(server, name: str, arguments: dict) -> dict[str, object]:
 
 
 def convertible_fixture_copy(tmp_path: Path) -> Path:
-    """Copy the committed Keil fixture and make it convertible.
+    """Copy the committed naturally-convertible Keil fixture.
 
-    The committed fixture deliberately exercises scanner findings; this copy
-    removes the three blocker pragmas and the assembly source so the full
-    inspect/convert/configure/build gate can run against the real core.
+    Only the copy and Git init happen here: no uvprojx/source/scatter/
+    include/FPU content is rewritten before the first public workflow call.
     """
     root = tmp_path / "project"
-    shutil.copytree(FIXTURES / "keil-project", root)
-
-    common = root / "Common" / "common.c"
-    text = common.read_text(encoding="utf-8")
-    for pragma in (
-        '#pragma arm section code=".common"\n',
-        "#pragma import(__use_no_semihosting)\n",
-        "#pragma O3\n",
-    ):
-        assert pragma in text
-        text = text.replace(pragma, "")
-    common.write_text(text, encoding="utf-8")
-
-    uvprojx = root / "legacy.uvprojx"
-    xml = uvprojx.read_text(encoding="utf-8")
-    startup_entry = (
-        "            <File>\n"
-        "              <FileName>startup_stm32f4xx.s</FileName>\n"
-        "              <FileType>2</FileType>\n"
-        "              <FilePath>.\\Startup\\startup_stm32f4xx.s</FilePath>\n"
-        "            </File>\n"
-    )
-    assert startup_entry in xml
-    xml = xml.replace(startup_entry, "")
-    assert "<IncludePath>Common;Main;Startup</IncludePath>" in xml
-    xml = xml.replace(
-        "<IncludePath>Common;Main;Startup</IncludePath>",
-        "<IncludePath>Libraries/STM32F4xx_StdPeriph_Driver</IncludePath>",
-    )
-    # A non-empty scatter setting blocks conversion; remove it.
-    assert "<ScatterFile>.\\Objects\\legacy.sct</ScatterFile>" in xml
-    xml = xml.replace(
-        "<ScatterFile>.\\Objects\\legacy.sct</ScatterFile>",
-        "<ScatterFile></ScatterFile>",
-    )
-    # The raw numeric uFloatingPoint is not a valid GCC float ABI; use the
-    # Keil soft-float spelling so the migrated manifest configures cleanly.
-    assert "<uFloatingPoint>1</uFloatingPoint>" in xml
-    xml = xml.replace(
-        "<uFloatingPoint>1</uFloatingPoint>",
-        "<uFloatingPoint>soft</uFloatingPoint>",
-    )
-    uvprojx.write_text(xml, encoding="utf-8")
-    shutil.rmtree(root / "Startup")
-    # Second framework evidence category (path) so SPL inference is unambiguous.
-    (root / "Libraries" / "STM32F4xx_StdPeriph_Driver").mkdir(parents=True)
-
+    shutil.copytree(FIXTURES / "keil-convertible", root)
     (root / ".gitignore").write_text(GITIGNORE, encoding="utf-8")
     git_init(root)
     return root
@@ -464,7 +418,9 @@ def test_main_runs_the_extended_server_over_stdio(monkeypatch, tmp_path: Path):
 
 
 def test_end_to_end_fixture_inspect_convert_configure_build(tmp_path: Path, monkeypatch):
-    """Copy of the Keil fixture: inspect -> plan/apply -> configure -> build."""
+    """Copy of the committed convertible fixture: inspect -> plan/apply ->
+    configure -> build, entirely through public workflows without any
+    fixture surgery or manual manifest edits."""
     root = convertible_fixture_copy(tmp_path)
     hit_file = install_fake_cmake(monkeypatch, tmp_path)
 
@@ -497,14 +453,11 @@ def test_end_to_end_fixture_inspect_convert_configure_build(tmp_path: Path, monk
     assert manifest_path.is_file()
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     assert manifest["schemaVersion"] == 2
-    # The accepted migration proposal leaves the debug spec empty; supply the
-    # debug backend before configuration (as a user would).
-    manifest["debug"] = {"backend": "pyocd", "target": "stm32f429zgtx"}
-    manifest_path.write_text(
-        json.dumps(manifest, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
-    )
+    # The generated manifest is used exactly as produced: the debug spec
+    # stays empty and build-only configuration must still succeed.
+    assert manifest["debug"] == {}
 
-    # configuration plan/apply
+    # configuration plan/apply with the untouched generated manifest
     configure_plan = configure_project_workflow(root).to_dict()
     assert configure_plan["ok"] is True
     assert configure_plan["operation"] == "project-configuration-plan"
@@ -529,6 +482,10 @@ def test_end_to_end_fixture_inspect_convert_configure_build(tmp_path: Path, monk
         assert task["args"][2] in ("arm-debug", "arm-release")
         assert "--project" in task["args"]
         assert "${workspaceFolder}" in task["args"]
+    # Empty debug generates a deterministic launch config that claims no
+    # usable hardware debugging: no cortex-debug configuration at all.
+    launch = json.loads((root / ".vscode" / "launch.json").read_text(encoding="utf-8"))
+    assert launch["configurations"] == []
 
     # fake build through the workflow
     built = build_firmware_workflow(root, preset="arm-debug", authorized=True).to_dict()
@@ -559,3 +516,15 @@ def test_end_to_end_fixture_inspect_convert_configure_build(tmp_path: Path, monk
         "artifacts/migration/build-result.json",
     }
     assert hit_file.read_text(encoding="utf-8") != ""
+
+    # context agrees: build ready, hardware capabilities still false
+    context = build_project_context(
+        root, tmp_path / "plugin-data", "session-a"
+    ).to_dict()
+    assert context["ok"] is True
+    assert context["data"]["build"]["managedManifestValid"] is True
+    assert context["data"]["build"]["managedFilesMissing"] == []
+    assert context["data"]["build"]["managedFilesDrifted"] == []
+    assert context["data"]["capabilities"]["build"] is True
+    for key in ("flash", "hostTest", "targetTest", "monitor", "breakpointDebug"):
+        assert context["data"]["capabilities"][key] is False

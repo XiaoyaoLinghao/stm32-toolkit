@@ -14,6 +14,7 @@ from stm32_toolkit.context import build_project_context
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 PLUGIN_MANIFEST = REPO_ROOT / ".claude-plugin" / "plugin.json"
+MARKETPLACE_MANIFEST = REPO_ROOT / ".claude-plugin" / "marketplace.json"
 MCP_CONFIG = REPO_ROOT / ".mcp.json"
 LAUNCHER = REPO_ROOT / "bin" / "stm32-toolkit-mcp.cmd"
 SETUP_SKILL = REPO_ROOT / "skills" / "setup-stm32-env" / "SKILL.md"
@@ -44,6 +45,22 @@ def test_plugin_manifest_uses_standard_skill_discovery_and_version():
         "author": {"name": "STM32 Toolkit Team"},
     }
     assert plugin["version"] == __version__ == "0.3.0"
+
+
+def test_marketplace_manifest_uses_a_supported_plugin_source():
+    """Regression (STM32TK-0306 revision 1): Claude Code 2.1.140 rejects the
+    bare ``.`` plugin source; the repo-relative ``./`` form is the supported
+    structure for a marketplace whose plugin is its own repository root."""
+    marketplace = json.loads(
+        (REPO_ROOT / ".claude-plugin" / "marketplace.json").read_text(encoding="utf-8")
+    )
+
+    assert list(marketplace) == ["name", "owner", "description", "plugins"]
+    assert marketplace["name"] == "stm32-toolkit"
+    entry = marketplace["plugins"][0]
+    assert entry["name"] == "stm32-toolkit"
+    assert entry["source"] == "./"
+    assert "repository" in entry
 
 
 def test_mcp_config_binds_only_the_plugin_launcher_to_claude_roots():

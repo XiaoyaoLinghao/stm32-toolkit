@@ -275,6 +275,48 @@ def test_convert_apply_without_authorization_fails_closed_without_writes(
     assert git_porcelain(root) == before_git
 
 
+@pytest.mark.parametrize("authorized", ["true", "false", 1, 0, None, [], {}])
+def test_convert_workflow_non_boolean_authorization_fails_closed_without_plan_id(
+    monkeypatch, tmp_path: Path, authorized: object
+):
+    """Regression: only the JSON boolean false enters read-only planning.
+
+    Truthy and falsy non-bool values with no plan ID must fail closed with
+    AUTHORIZATION_REQUIRED instead of degrading to a success plan.
+    """
+    root = keil_repo(tmp_path)
+    calls = _count_apply_calls(monkeypatch)
+    before_tree = snapshot_tree(root)
+    before_git = git_porcelain(root)
+
+    result = convert_keil_workflow(root, authorized=authorized)
+
+    assert result.ok is False
+    assert result.code == AUTHORIZATION_REQUIRED
+    assert calls["n"] == 0
+    assert snapshot_tree(root) == before_tree
+    assert git_porcelain(root) == before_git
+
+
+@pytest.mark.parametrize("authorized", ["true", "false", 1, 0, None, [], {}])
+def test_convert_workflow_non_boolean_authorization_fails_closed_with_plan_id(
+    monkeypatch, tmp_path: Path, authorized: object
+):
+    """Regression: apply intent with a non-bool authorized never applies."""
+    root = keil_repo(tmp_path)
+    calls = _count_apply_calls(monkeypatch)
+    plan_id = convert_keil_workflow(root).to_dict()["data"]["plan_id"]
+    before_tree = snapshot_tree(root)
+
+    result = convert_keil_workflow(root, plan_id=plan_id, authorized=authorized)
+
+    assert result.ok is False
+    assert result.code == AUTHORIZATION_REQUIRED
+    assert result.operation == "keil-conversion-apply"
+    assert calls["n"] == 0
+    assert snapshot_tree(root) == before_tree
+
+
 def test_convert_apply_without_plan_id_or_malformed_plan_id_fails_closed(
     monkeypatch, tmp_path: Path
 ):
@@ -362,6 +404,44 @@ def test_configure_plan_mode_is_read_only_and_deterministic(
     assert snapshot_tree(root) == before_tree
 
 
+@pytest.mark.parametrize("authorized", ["true", "false", 1, 0, None, [], {}])
+def test_configure_workflow_non_boolean_authorization_fails_closed_without_plan_id(
+    monkeypatch, tmp_path: Path, authorized: object
+):
+    """Regression: only the JSON boolean false enters configuration planning."""
+    root = prepare_project(tmp_path)
+    calls = _count_apply_calls(monkeypatch)
+    before_tree = snapshot_tree(root)
+    before_git = git_porcelain(root)
+
+    result = configure_project_workflow(root, authorized=authorized)
+
+    assert result.ok is False
+    assert result.code == AUTHORIZATION_REQUIRED
+    assert calls["n"] == 0
+    assert snapshot_tree(root) == before_tree
+    assert git_porcelain(root) == before_git
+
+
+@pytest.mark.parametrize("authorized", ["true", "false", 1, 0, None, [], {}])
+def test_configure_workflow_non_boolean_authorization_fails_closed_with_plan_id(
+    monkeypatch, tmp_path: Path, authorized: object
+):
+    """Regression: configuration apply intent with a non-bool authorized never applies."""
+    root = prepare_project(tmp_path)
+    calls = _count_apply_calls(monkeypatch)
+    plan_id = configure_project_workflow(root).to_dict()["data"]["plan_id"]
+    before_tree = snapshot_tree(root)
+
+    result = configure_project_workflow(root, plan_id=plan_id, authorized=authorized)
+
+    assert result.ok is False
+    assert result.code == AUTHORIZATION_REQUIRED
+    assert result.operation == "project-configuration-apply"
+    assert calls["n"] == 0
+    assert snapshot_tree(root) == before_tree
+
+
 def test_configure_apply_requires_authorization_and_exact_plan(
     monkeypatch, tmp_path: Path
 ):
@@ -444,6 +524,24 @@ def test_configure_workflow_maps_unexpected_failures_to_unavailable(
 # ---------------------------------------------------------------------------
 # build
 # ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("authorized", ["true", "false", 1, 0, None, [], {}])
+def test_build_workflow_non_boolean_authorization_fails_closed(
+    tmp_path: Path, monkeypatch, authorized: object
+):
+    """Regression: build fails closed for every non-boolean authorized value."""
+    root = prepare_project(tmp_path)
+    hit_file = install_fake_cmake(monkeypatch, tmp_path)
+    before_tree = snapshot_tree(root)
+
+    result = build_firmware_workflow(root, preset="arm-debug", authorized=authorized)
+
+    assert result.ok is False
+    assert result.code == AUTHORIZATION_REQUIRED
+    assert result.operation == "build"
+    assert not hit_file.exists() or hit_file.read_text(encoding="utf-8") == ""
+    assert snapshot_tree(root) == before_tree
 
 
 def test_build_workflow_requires_authorization_before_process_launch(
