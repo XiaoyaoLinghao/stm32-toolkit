@@ -15,6 +15,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+probe = ["pyocd>=0.45.1,<0.46"]
 test = ["pytest>=8,<9", "pytest-cov>=5,<7"]
 
 [project.scripts]

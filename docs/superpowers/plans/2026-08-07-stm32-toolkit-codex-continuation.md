@@ -217,14 +217,14 @@ product commands in this packet.
   and probe modules load from a fresh environment.
 - [x] Run focused tests, full pytest with branch coverage >=90%, compileall,
   `git diff --check`, schema byte identity, and placeholder/credential scan.
-- [ ] Verify a clean worktree after the report commit.
+- [x] Verify a clean worktree after the report commit.
 - [x] Run Windows NTFS path/lock/cancellation gates.
 - [ ] Run Linux path/lock/cancellation gates during
   `STM32TK-0405-CLI-MCP-RELEASE`; record environment ownership honestly.
   Unavailable real hardware is not claimed by packet 0401.
 - [x] Commit product/tests first and reconcile the report in a separate final
   commit.
-- [ ] Push the Codex branch, update the PR targeting `master`, review the
+- [x] Push the Codex branch, update the PR targeting `master`, review the
   complete base-to-head diff, and merge only when all software gates pass.
 
 ## 5. Release-level acceptance strategy
@@ -271,7 +271,9 @@ product commands in this packet.
 Progress is gate-based, not line-count based:
 
 - 0.3.0 migration/build foundation: complete and accepted.
-- 0.4.0 hardware access/debug: not started at this baseline.
+- 0.4.0 hardware access/debug: STM32TK-0401 is integrated; STM32TK-0402 has a
+  verified software implementation. The release remains open for 0403 through
+  0405 and the named Linux/real-probe gates.
 - 0.5.0 monitor, 0.6.0 tests/diagnostics, 0.7.0 creation, and 1.0.0 vertical
   acceptance: not started.
 

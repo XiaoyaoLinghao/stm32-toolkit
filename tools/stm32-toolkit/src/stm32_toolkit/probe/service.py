@@ -513,7 +513,11 @@ class ProbeService:
             if heartbeat is not None and heartbeat is not current_task:
                 heartbeat.cancel()
                 await asyncio.gather(heartbeat, return_exceptions=True)
-            await asyncio.to_thread(self._backend.close)
+            backend_close_error: Exception | None = None
+            try:
+                await asyncio.to_thread(self._backend.close)
+            except Exception as error:
+                backend_close_error = error
             runner, self._runner = self._runner, None
             if runner is not None:
                 await runner.cleanup()
@@ -531,3 +535,5 @@ class ProbeService:
             if lease is not None:
                 lease.release()
             self._endpoint = None
+            if backend_close_error is not None:
+                raise backend_close_error
