@@ -34,13 +34,29 @@ class ProbeDescriptor:
 
 @dataclass(frozen=True)
 class FlashBackendReport:
-    bytes_programmed: int
-    sectors_programmed: int
+    bytes_programmed: int | None
+    sectors_programmed: int | None
 
     def to_dict(self) -> dict[str, object]:
         return {
             "bytesProgrammed": self.bytes_programmed,
             "sectorsProgrammed": self.sectors_programmed,
+        }
+
+
+@dataclass(frozen=True)
+class ProbeAttachmentEvidence:
+    probe_id: str
+    requested_target: str
+    resolved_part_number: str
+    core_count: int
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "probeId": self.probe_id,
+            "requestedTarget": self.requested_target,
+            "resolvedPartNumber": self.resolved_part_number,
+            "coreCount": self.core_count,
         }
 
 
@@ -50,7 +66,7 @@ class ProbeBackend(Protocol):
 
     def open_attach(
         self, probe_id: str, target: str, *, halt_on_connect: bool = False
-    ) -> None: ...
+    ) -> ProbeAttachmentEvidence: ...
 
     def read_memory(self, address: int, length: int) -> bytes: ...
 
@@ -64,6 +80,6 @@ class ProbeBackend(Protocol):
 
     def reset(self) -> None: ...
 
-    def flash_file(self, path: str) -> FlashBackendReport: ...
+    def flash_elf(self, image: bytes) -> FlashBackendReport: ...
 
     def close(self) -> None: ...

@@ -4,17 +4,24 @@ from __future__ import annotations
 
 import os
 import re
+from io import BytesIO
 from collections.abc import Iterable, Mapping
 from itertools import islice
 from typing import Protocol, runtime_checkable
 
-from .backend import FlashBackendReport, ProbeBackendError, ProbeDescriptor
+from .backend import (
+    FlashBackendReport,
+    ProbeAttachmentEvidence,
+    ProbeBackendError,
+    ProbeDescriptor,
+)
 
 _IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 _MIN_FREQUENCY_HZ = 100_000
 _MAX_FREQUENCY_HZ = 50_000_000
 _MAX_READ_BYTES = 65_536
 _MAX_REGISTER_BATCH = 256
+_MAX_FLASH_BYTES = 64 * 1024 * 1024
 
 
 @runtime_checkable
@@ -27,11 +34,16 @@ class PyOCDDriver(Protocol):
         self, probe: object, *, options: Mapping[str, object]
     ) -> object: ...
 
+    def program_file(
+        self, session: object, image: bytes, *, options: Mapping[str, object]
+    ) -> None: ...
+
 
 class _DefaultPyOCDDriver:
     def __init__(self) -> None:
         try:
             from pyocd.core.session import Session
+            from pyocd.flash.file_programmer import FileProgrammer
             from pyocd.probe.aggregator import DebugProbeAggregator
         except (ImportError, ModuleNotFoundError) as error:
             raise ProbeBackendError(
@@ -40,6 +52,7 @@ class _DefaultPyOCDDriver:
             ) from error
         self._aggregator = DebugProbeAggregator
         self._session_type = Session
+        self._programmer_type = FileProgrammer
 
     def list_probes(self) -> tuple[object, ...]:
         return tuple(self._aggregator.get_all_connected_probes())
@@ -52,6 +65,18 @@ class _DefaultPyOCDDriver:
             auto_open=False,
             options=dict(options),
         )
+
+    def program_file(
+        self, session: object, image: bytes, *, options: Mapping[str, object]
+    ) -> None:
+        programmer = self._programmer_type(
+            session,
+            progress=options["progress"],
+            chip_erase=options["chipErase"],
+            trust_crc=options["trustCrc"],
+            keep_unwritten=options["keepUnwritten"],
+        )
+        programmer.program(BytesIO(image), file_format=str(options["fileFormat"]))
 
 
 def _valid_identifier(value: object) -> bool:
@@ -212,7 +237,7 @@ class PyOCDBackend:
 
     def open_attach(
         self, probe_id: str, target: str, *, halt_on_connect: bool = False
-    ) -> None:
+    ) -> ProbeAttachmentEvidence:
         if not _valid_identifier(probe_id):
             raise ProbeBackendError(
                 "PROBE_SELECTION_REQUIRED", "An exact probe identifier is required"
@@ -256,6 +281,20 @@ class PyOCDBackend:
                     "PROBE_TARGET_AMBIGUOUS",
                     "Selected target does not resolve to exactly one core",
                 )
+            try:
+                part_number = _display_text(
+                    getattr(session_target, "part_number", None), fallback=None
+                )
+            except Exception as error:
+                raise ProbeBackendError(
+                    "PROBE_TARGET_IDENTITY_UNAVAILABLE",
+                    "Selected target identity is unavailable",
+                ) from error
+            if part_number is None or not _valid_identifier(part_number):
+                raise ProbeBackendError(
+                    "PROBE_TARGET_IDENTITY_UNAVAILABLE",
+                    "Selected target identity is unavailable",
+                )
         except ProbeBackendError:
             if session is not None:
                 self._close_external(session, probe)
@@ -277,6 +316,12 @@ class PyOCDBackend:
         self._probe = probe
         self._probe_id = probe_id
         self._target_name = target
+        return ProbeAttachmentEvidence(
+            probe_id=probe_id,
+            requested_target=target,
+            resolved_part_number=part_number,
+            core_count=1,
+        )
 
     def _require_target(self) -> object:
         target = self._target
@@ -414,11 +459,30 @@ class PyOCDBackend:
     def reset(self) -> None:
         self._control("reset")
 
-    def flash_file(self, path: str) -> FlashBackendReport:
+    def flash_elf(self, image: bytes) -> FlashBackendReport:
+        if not isinstance(image, bytes) or not 1 <= len(image) <= _MAX_FLASH_BYTES:
+            raise ProbeBackendError(
+                "PROBE_PROGRAM_INVALID", "Firmware image is invalid"
+            )
+        session = self._session
         self._require_target()
-        raise ProbeBackendError(
-            "PROBE_MODIFY_UNAVAILABLE",
-            "Flash requires the verified firmware gate",
+        assert session is not None
+        options: dict[str, object] = {
+            "chipErase": "sector",
+            "trustCrc": False,
+            "keepUnwritten": True,
+            "progress": None,
+            "fileFormat": "elf",
+        }
+        try:
+            self._get_driver().program_file(session, image, options=options)
+        except Exception as error:
+            raise ProbeBackendError(
+                "PROBE_PROGRAM_FAILED", "Firmware programming failed"
+            ) from error
+        return FlashBackendReport(
+            bytes_programmed=None,
+            sectors_programmed=None,
         )
 
     def close(self) -> None:

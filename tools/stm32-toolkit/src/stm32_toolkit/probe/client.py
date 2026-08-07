@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import urllib.parse
 from pathlib import Path
 from typing import Mapping
@@ -13,6 +14,7 @@ import aiohttp
 
 from stm32_toolkit import __version__
 
+from .backend import FlashBackendReport, ProbeAttachmentEvidence
 from .model import OperationLevel
 from .protocol import PROBE_PROTOCOL_VERSION
 from .service import ProbeEndpoint
@@ -25,6 +27,8 @@ _ENDPOINT_FIELDS = {
     "workspaceId",
     "sessionId",
     "leaseId",
+    "probeId",
+    "operationLevel",
 }
 _RESPONSE_FIELDS = {
     "protocol",
@@ -38,6 +42,7 @@ _RESPONSE_FIELDS = {
     "details",
 }
 MAX_RESPONSE_BYTES = 1_048_576
+_IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 
 
 class ProbeClientError(Exception):
@@ -142,6 +147,13 @@ def load_probe_endpoint(path: Path) -> ProbeEndpoint:
             value = payload[field]
             if not isinstance(value, str) or not value or len(value) > 128:
                 raise _endpoint_error()
+        probe_id = payload["probeId"]
+        if not isinstance(probe_id, str) or _IDENTIFIER.fullmatch(probe_id) is None:
+            raise _endpoint_error()
+        try:
+            operation_level = OperationLevel(payload["operationLevel"])
+        except (TypeError, ValueError) as error:
+            raise _endpoint_error() from error
         return ProbeEndpoint(
             protocol=str(payload["protocol"]),
             toolkit_version=str(payload["toolkitVersion"]),
@@ -151,6 +163,8 @@ def load_probe_endpoint(path: Path) -> ProbeEndpoint:
             workspace_id=str(payload["workspaceId"]),
             session_id=str(payload["sessionId"]),
             lease_id=str(payload["leaseId"]),
+            probe_id=probe_id,
+            operation_level=operation_level,
             record_path=path,
         )
     except ProbeClientError:
@@ -267,8 +281,62 @@ class ProbeClient:
             )
         return probes
 
-    async def attach(self, probe_id: str, target: str) -> None:
-        await self.request("probe.attach", {"probeId": probe_id, "target": target})
+    async def attach(self, probe_id: str, target: str) -> ProbeAttachmentEvidence:
+        data = await self.request("probe.attach", {"probeId": probe_id, "target": target})
+        if set(data) != {
+            "probeId",
+            "requestedTarget",
+            "resolvedPartNumber",
+            "coreCount",
+        }:
+            raise _response_error()
+        if (
+            data["probeId"] != probe_id
+            or data["requestedTarget"] != target
+            or not isinstance(data["resolvedPartNumber"], str)
+            or _IDENTIFIER.fullmatch(data["resolvedPartNumber"]) is None
+            or type(data["coreCount"]) is not int
+            or data["coreCount"] != 1
+        ):
+            raise _response_error()
+        return ProbeAttachmentEvidence(
+            probe_id=probe_id,
+            requested_target=target,
+            resolved_part_number=data["resolvedPartNumber"],
+            core_count=1,
+        )
+
+    async def program_verified_elf(
+        self,
+        elf_path: str,
+        elf_sha256: str,
+        elf_size: int,
+        *,
+        timeout_ms: int = 30_000,
+    ) -> FlashBackendReport:
+        data = await self.request(
+            "flash.program",
+            {
+                "elfPath": elf_path,
+                "elfSha256": elf_sha256,
+                "elfSize": elf_size,
+            },
+            operation_level=OperationLevel.MODIFY,
+            timeout_ms=timeout_ms,
+        )
+        if set(data) != {"bytesProgrammed", "sectorsProgrammed"}:
+            raise _response_error()
+        values = (data["bytesProgrammed"], data["sectorsProgrammed"])
+        if any(
+            value is not None
+            and (type(value) is not int or value < 0 or value > 0x7FFF_FFFF)
+            for value in values
+        ):
+            raise _response_error()
+        return FlashBackendReport(
+            bytes_programmed=values[0],
+            sectors_programmed=values[1],
+        )
 
     async def read_memory(self, address: int, length: int) -> bytes:
         data = await self.request("memory.read", {"address": address, "length": length})

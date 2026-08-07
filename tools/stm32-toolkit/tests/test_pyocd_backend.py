@@ -12,8 +12,8 @@ from fakes.fake_pyocd import (
     FakePyOCDProbe,
     FakePyOCDTarget,
 )
-from stm32_toolkit.probe.backend import ProbeBackendError
-from stm32_toolkit.probe.pyocd_backend import PyOCDBackend
+from stm32_toolkit.probe.backend import FlashBackendReport, ProbeBackendError
+from stm32_toolkit.probe.pyocd_backend import PyOCDBackend, _DefaultPyOCDDriver
 
 
 def backend_with_probes(*probe_ids: str) -> tuple[PyOCDBackend, FakePyOCDDriver]:
@@ -135,7 +135,7 @@ def test_exact_attach_uses_observation_only_session_options_without_halting():
     driver = FakePyOCDDriver((FakePyOCDProbe("probe-a"),), target=target)
     backend = PyOCDBackend(driver)
 
-    backend.open_attach("probe-a", "stm32f407vg")
+    evidence = backend.open_attach("probe-a", "stm32f407vg")
 
     assert len(driver.created_sessions) == 1
     session = driver.created_sessions[0]
@@ -154,6 +154,104 @@ def test_exact_attach_uses_observation_only_session_options_without_halting():
         "user_script": os.devnull,
     }
     assert target.calls == []
+    assert evidence.to_dict() == {
+        "probeId": "probe-a",
+        "requestedTarget": "stm32f407vg",
+        "resolvedPartNumber": "stm32f407vg",
+        "coreCount": 1,
+    }
+
+
+@pytest.mark.parametrize(
+    "part_number", (None, "", "unknown\npart", r"C:\\private", 1234)
+)
+def test_attach_fails_closed_without_stable_physical_target_identity(part_number):
+    target = FakePyOCDTarget(part_number=part_number)
+    driver = FakePyOCDDriver((FakePyOCDProbe("probe-a"),), target=target)
+
+    with pytest.raises(ProbeBackendError) as error:
+        PyOCDBackend(driver).open_attach("probe-a", "stm32f407vg")
+
+    assert error.value.code == "PROBE_TARGET_IDENTITY_UNAVAILABLE"
+
+
+def test_flash_elf_uses_sector_only_file_programmer_options():
+    backend, driver = backend_with_probes("probe-a")
+    backend.open_attach("probe-a", "stm32f407vg")
+
+    report = backend.flash_elf(b"ELF")
+
+    assert report == FlashBackendReport(
+        bytes_programmed=None, sectors_programmed=None
+    )
+    assert driver.program_calls == [
+        (
+            driver.created_sessions[0],
+            b"ELF",
+            {
+                "chipErase": "sector",
+                "trustCrc": False,
+                "keepUnwritten": True,
+                "progress": None,
+                "fileFormat": "elf",
+            },
+        )
+    ]
+    assert driver.target.calls == []
+
+
+def test_default_driver_programs_in_memory_elf_without_reset_or_progress():
+    calls = []
+
+    class Programmer:
+        def __init__(self, session, **options):
+            calls.append(("init", session, options))
+
+        def program(self, stream, *, file_format):
+            calls.append(("program", stream.read(), file_format))
+
+    driver = object.__new__(_DefaultPyOCDDriver)
+    driver._programmer_type = Programmer
+    session = object()
+    driver.program_file(
+        session,
+        b"ELF bytes",
+        options={
+            "chipErase": "sector",
+            "trustCrc": False,
+            "keepUnwritten": True,
+            "progress": None,
+            "fileFormat": "elf",
+        },
+    )
+
+    assert calls == [
+        (
+            "init",
+            session,
+            {
+                "progress": None,
+                "chip_erase": "sector",
+                "trust_crc": False,
+                "keep_unwritten": True,
+            },
+        ),
+        ("program", b"ELF bytes", "elf"),
+    ]
+
+
+def test_flash_elf_failure_has_stable_error_and_no_success_telemetry():
+    backend, driver = backend_with_probes("probe-a")
+    backend.open_attach("probe-a", "stm32f407vg")
+    driver.program_error = RuntimeError(r"program failed at C:\\private\\fw.elf")
+
+    with pytest.raises(ProbeBackendError) as error:
+        backend.flash_elf(b"ELF")
+
+    assert error.value.code == "PROBE_PROGRAM_FAILED"
+    assert error.value.message == "Firmware programming failed"
+    assert error.value.details == {}
+    assert "private" not in str(error.value)
 
 
 def test_halt_on_connect_is_rejected_before_hardware_enumeration():
@@ -392,7 +490,7 @@ def test_running_target_register_read_fails_without_implicit_halt():
     assert target.calls == [("get_state",)]
 
 
-def test_control_methods_delegate_but_flash_fails_closed():
+def test_control_methods_delegate_without_implicit_extra_operations():
     target = FakePyOCDTarget()
     driver = FakePyOCDDriver((FakePyOCDProbe("probe-a"),), target=target)
     backend = PyOCDBackend(driver)
@@ -402,10 +500,7 @@ def test_control_methods_delegate_but_flash_fails_closed():
     backend.resume()
     backend.step()
     backend.reset()
-    with pytest.raises(ProbeBackendError) as error:
-        backend.flash_file("build/firmware.elf")
 
-    assert error.value.code == "PROBE_MODIFY_UNAVAILABLE"
     assert target.calls == [("halt",), ("resume",), ("step",), ("reset",)]
 
 

@@ -7,6 +7,7 @@ from collections.abc import Mapping
 
 from stm32_toolkit.probe.backend import (
     FlashBackendReport,
+    ProbeAttachmentEvidence,
     ProbeBackendError,
     ProbeDescriptor,
 )
@@ -35,6 +36,7 @@ class FakeProbeBackend:
         self.closed = False
         self.reset_count = 0
         self.flashed_paths: list[str] = []
+        self.flashed_images: list[bytes] = []
 
     def list_probes(self) -> tuple[ProbeDescriptor, ...]:
         self.events.append(("list_probes",))
@@ -44,7 +46,7 @@ class FakeProbeBackend:
 
     def open_attach(
         self, probe_id: str, target: str, *, halt_on_connect: bool = False
-    ) -> None:
+    ) -> ProbeAttachmentEvidence:
         available = self.list_probes()
         if not probe_id:
             raise ProbeBackendError(
@@ -59,6 +61,7 @@ class FakeProbeBackend:
         self.attached_target = target
         self.halted = bool(halt_on_connect)
         self.closed = False
+        return ProbeAttachmentEvidence(probe_id, target, target, 1)
 
     def _require_attach(self) -> None:
         if self.disconnected:
@@ -157,6 +160,12 @@ class FakeProbeBackend:
         self._require_attach()
         self.events.append(("flash_file", path))
         self.flashed_paths.append(path)
+        return FlashBackendReport(bytes_programmed=1024, sectors_programmed=2)
+
+    def flash_elf(self, image: bytes) -> FlashBackendReport:
+        self._require_attach()
+        self.events.append(("flash_elf", len(image)))
+        self.flashed_images.append(bytes(image))
         return FlashBackendReport(bytes_programmed=1024, sectors_programmed=2)
 
     def close(self) -> None:

@@ -21,6 +21,7 @@ class ProbeServiceConfig:
     session_id: str
     operation_level: OperationLevel
     session_root: Path
+    project_root: Path | None = None
 
 
 class ProbeServiceSupervisor:
@@ -59,6 +60,7 @@ class ProbeServiceSupervisor:
                     session_id=self._config.session_id,
                     operation_level=self._config.operation_level,
                     session_root=self._config.session_root,
+                    project_root=self._config.project_root,
                 )
                 endpoint = await service.start()
             except BaseException:
