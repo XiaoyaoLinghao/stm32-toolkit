@@ -21,7 +21,8 @@ different implementer and no active PR at initialization.
 and the caller-confirmed identity before it invokes the authenticated
 loopback-only Probe Service. The service independently revalidates the exact
 project-relative ELF size and SHA-256 inside the serialized backend section,
-then PyOCD programs with sector erase only. Success requires exact readback of
+then passes those same bounded in-memory bytes to PyOCD for sector-only
+programming. Success requires exact readback of
 every file-backed load segment and is committed last in `flash-result.json`.
 The handoff coordinator persists a workspace/session/probe-bound one-time
 ticket, stops only its own Probe Service, releases the lease, and reacquires and
@@ -49,20 +50,20 @@ implicit reset.
 - Modify: `tools/stm32-toolkit/src/stm32_toolkit/probe/protocol.py`
 - Modify: `tools/stm32-toolkit/tests/test_probe_protocol.py`
 
-- [ ] Write RED tests for frozen JSON-safe `FlashRequest`, `FlashReport`, and
+- [x] Write RED tests for frozen JSON-safe `FlashRequest`, `FlashReport`, and
   bounded ELF load-segment evidence. Require exact boolean authorization,
   caller-confirmed 64-hex `buildId` and `elfSha256`, exact probe/target IDs,
   canonical project roots, and deterministic portable result paths.
-- [ ] Extend protocol version 1 compatibly with exactly one modify operation,
+- [x] Extend protocol version 1 compatibly with exactly one modify operation,
   `flash.program`, whose data is a portable project-relative `.elf` path,
   expected SHA-256, and expected byte size. Reject absolute/backslash/dot-dot,
   NUL/control characters, unknown fields, booleans-as-integers, overflow, and
   non-modify operation levels before backend execution.
-- [ ] Make backend programming telemetry honest: nullable backend-reported
+- [x] Make backend programming telemetry honest: nullable backend-reported
   programmed byte/sector counts are allowed because PyOCD 0.45.1 does not
   expose reliable post-commit counts. The high-level report separately records
   exact verified readback bytes.
-- [ ] Preserve root/packaged schema byte identity.
+- [x] Preserve root/packaged schema byte identity.
 
 **RED command:**
 
@@ -77,19 +78,19 @@ implicit reset.
 - Modify: `tools/stm32-toolkit/src/stm32_toolkit/probe/flash.py`
 - Modify: `tools/stm32-toolkit/tests/test_flash.py`
 
-- [ ] Write RED tests that reject missing/failed/oversize/malformed build
+- [x] Write RED tests that reject missing/failed/oversize/malformed build
   result or identity documents, invalid identity schema/recomputed build ID,
   non-debug presets, project/identity/result disagreement, changed Git HEAD or
   input snapshot, current ELF/MAP byte changes, unsafe redirects/reparse points,
   unsupported target configuration, no file-backed ELF load segments,
   overlapping/out-of-range segments, and aggregate image size above 64 MiB.
-- [ ] Reuse the existing project model, build identity schema, current input
+- [x] Reuse the existing project model, build identity schema, current input
   snapshot, Git evidence, ELF32 little-endian ARM validation, and bounded file
   readers. Do not duplicate a weaker mtime-based freshness rule.
-- [ ] Compare the request's expected build ID and ELF SHA before opening a
+- [x] Compare the request's expected build ID and ELF SHA before opening a
   probe. A stale UI/AI confirmation returns `FLASH_PLAN_CHANGED` and invokes no
   backend operation.
-- [ ] Extract deterministic non-overlapping file-backed `PT_LOAD` bytes at
+- [x] Extract deterministic non-overlapping file-backed `PT_LOAD` bytes at
   their physical load addresses for later target readback; never infer active
   firmware from a timestamp or filename.
 
@@ -110,22 +111,29 @@ implicit reset.
 - Modify: `tools/stm32-toolkit/tests/test_probe_supervisor.py`
 - Modify: `tools/stm32-toolkit/tests/test_pyocd_backend.py`
 
-- [ ] Write RED tests proving observe/control leases cannot program, service
+- [x] Write RED tests proving observe/control leases cannot program, service
   without an exact project root cannot program, path escape/reparse/non-regular
   files fail before the backend call, a size/hash race returns
   `FIRMWARE_INPUT_CHANGED`, request timeout/cancellation does not start a
   queued flash, and raw filesystem/PyOCD errors are never serialized.
-- [ ] Extend supervisor/service configuration with an optional canonical
+- [x] Extend supervisor/service configuration with an optional canonical
   project root. Resolve only portable project-relative paths under that root
-  and lstat every component. Hash and size-check the ELF immediately inside
-  the serialized backend operation before calling `flash_file`.
-- [ ] Add a strict client `program_verified_elf()` method that always requests
+  and lstat every component. Read, hash, and size-check the ELF immediately
+  inside the serialized backend operation, then pass those exact bytes to
+  `flash_elf` so a path replacement cannot change what PyOCD programs.
+- [x] Bind endpoint evidence to the exact probe ID and granted operation level.
+  Map `flash.program` to a server-owned `MODIFY` minimum regardless of the
+  client's claim. Once a modify call enters the backend critical section,
+  timeout/cancellation/shutdown waits for its explicit completion before close
+  or lease release; a queued call can still be cancelled before entry.
+- [x] Add a strict client `program_verified_elf()` method that always requests
   `OperationLevel.MODIFY` and validates the complete response shape.
-- [ ] Implement the PyOCD driver seam with `FileProgrammer` forced to
+- [x] Implement the PyOCD driver seam with `FileProgrammer` forced to
   `chip_erase="sector"`, `trust_crc=False`, `keep_unwritten=True`, no progress
-  output, and ELF format. Do not call reset, unlock, chip erase, mass erase, or
+  output, and ELF format. Do not pass PyOCD 0.45.1's deprecated/ignored
+  `no_reset` parameter. Do not call reset, unlock, chip erase, mass erase, or
   target writes outside PyOCD's verified file programmer.
-- [ ] Test exact programmer options and that a PyOCD failure yields a stable
+- [x] Test exact programmer options and that a PyOCD failure yields a stable
   code while leaving no success evidence.
 
 ---
@@ -138,22 +146,22 @@ implicit reset.
 - Modify: `tools/stm32-toolkit/src/stm32_toolkit/probe/__init__.py`
 - Modify: `tools/stm32-toolkit/tests/test_flash.py`
 
-- [ ] Write RED tests for exact authorization (`True` only), current identity,
+- [x] Write RED tests for exact authorization (`True` only), current identity,
   attach to the exact project-selected probe/target, modify-level programming,
   chunked readback at no more than 65,536 bytes, partial/mismatched readback,
   disconnects, and cancellation.
-- [ ] Sequence: validate current identity -> attach exact probe/target -> invoke
+- [x] Sequence: validate current identity -> attach exact probe/target -> invoke
   service-side guarded programming -> read every expected load-segment byte ->
   revalidate current disk identity -> atomically publish result. Any failure
   returns stable evidence, performs no reset, and never claims the firmware is
   active.
-- [ ] Publish `artifacts/migration/flash-result.json` with schema version,
+- [x] Publish `artifacts/migration/flash-result.json` with schema version,
   status/code, Toolkit version, workspace/session/probe, target device and
   debug target, build ID, ELF path/SHA/size, Git HEAD/dirty state, input
   snapshot, verified byte count, backend telemetry, start/finish timestamps,
   and authorization/operation-level audit facts. The result document is the
   commit point and is written only after successful readback.
-- [ ] Inject disk-change and atomic-write failures and prove stale success is
+- [x] Inject disk-change and atomic-write failures and prove stale success is
   never retained. Keep all public paths project-relative and all messages free
   of raw exception text/token/absolute-root leakage.
 
@@ -167,26 +175,26 @@ implicit reset.
 - Create: `tools/stm32-toolkit/tests/test_debug_handoff.py`
 - Modify: `tools/stm32-toolkit/src/stm32_toolkit/probe/__init__.py`
 
-- [ ] Write RED tests for states `observing`, `paused-for-debug`,
+- [x] Write RED tests for states `observing`, `paused-for-debug`,
   `externally-owned`, and `reacquiring`; exact boolean authorization; current
   successful flash identity; supervisor stop before external ownership; lease
   release; restart/reacquire; target readback after return; one-time ticket
   replay; forged/wrong workspace/session/probe/build tickets; corrupted state;
   begin/end races; cancellation; startup/stop failure; and process restart.
-- [ ] Persist a bounded, user-only, atomic state record below the exact session
+- [x] Persist a bounded, user-only, atomic state record below the exact session
   root. The ticket binds ticket ID, workspace/session/probe, target, build ID,
   ELF SHA, prior opaque watch-selection tuple, issue time, state, and schema/
   Toolkit version. Never persist an endpoint token.
-- [ ] Begin validates the current flash result and target readback, writes the
+- [x] Begin validates the current flash result and target readback, writes the
   paused transition, stops only the supplied supervisor, proves its lease is
   released, and then records external ownership. It never starts, signals, or
   kills Cortex-Debug/PyOCD/GDB.
-- [ ] End accepts only the active ticket, marks reacquiring, starts the owning
+- [x] End accepts only the active ticket, marks reacquiring, starts the owning
   supervisor, reattaches the exact probe/target, revalidates disk identity and
   complete target readback, consumes the ticket, and returns only the original
   workspace's prior watch selection. Transient reacquire failure remains
   retryable; success is not replayable.
-- [ ] Define a data-only Cortex-Debug contract for 0405 that requires
+- [x] Define a data-only Cortex-Debug contract for 0405 that requires
   `servertype=pyocd`, exact target/executable, and attach-only behavior. This
   packet does not edit generated tasks or expose public CLI/MCP commands.
 

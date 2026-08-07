@@ -574,6 +574,15 @@ def test_flash_request_validation_fails_before_evidence_or_probe_use(
     assert client.events == []
 
 
+def test_probe_package_exports_flash_and_attachment_contracts() -> None:
+    import stm32_toolkit.probe as probe
+
+    assert probe.FlashRequest is FlashRequest
+    assert probe.flash_firmware is flash_firmware
+    assert probe.FlashBackendReport is FlashBackendReport
+    assert probe.ProbeAttachmentEvidence.__name__ == "ProbeAttachmentEvidence"
+
+
 def test_secure_evidence_reader_classifies_path_failures(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
