@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import importlib.metadata
+import os
 import platform
 import shutil
+import stat
 import subprocess
 import sys
 import threading
@@ -36,7 +39,9 @@ _STREAM_READ_BYTES = 4 * 1024
 _VERSION_LINE_LIMIT = 512
 
 
-def run_doctor(project_root: Path) -> OperationResult[dict[str, object]]:
+def run_doctor(
+    project_root: Path, *, data_root: Path | None = None
+) -> OperationResult[dict[str, object]]:
     """Collect offline, read-only evidence about the local toolkit environment."""
     return OperationResult.success(
         "doctor",
@@ -45,9 +50,80 @@ def run_doctor(project_root: Path) -> OperationResult[dict[str, object]]:
             "project": _project_evidence(project_root),
             "tools": {name: _tool_evidence(name) for name in TOOLS},
             "vscodeExtensions": _vscode_extension_evidence(),
+            "probeCore": _probe_core_evidence(data_root),
             "mutated": False,
         },
     )
+
+
+def _dependency_evidence(distribution: str) -> dict[str, object]:
+    try:
+        version = importlib.metadata.version(distribution)
+    except importlib.metadata.PackageNotFoundError:
+        return {"available": False, "version": None}
+    except Exception:
+        return {"available": False, "version": None}
+    return {"available": True, "version": version}
+
+
+def _probe_registry_evidence(data_root: Path | None) -> dict[str, object]:
+    if data_root is None:
+        return {"status": "unconfigured", "safe": True}
+    lexical_data = data_root.expanduser().absolute()
+    registry = lexical_data / "probe-registry"
+    reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+    for component in reversed((lexical_data, *lexical_data.parents)):
+        try:
+            component_metadata = os.lstat(component)
+        except FileNotFoundError:
+            continue
+        except OSError:
+            return {"status": "unavailable", "safe": False}
+        if (
+            component.is_symlink()
+            or getattr(component_metadata, "st_file_attributes", 0) & reparse_flag
+            or not stat.S_ISDIR(component_metadata.st_mode)
+        ):
+            return {"status": "redirect", "safe": False}
+    try:
+        data_metadata = os.lstat(lexical_data)
+    except FileNotFoundError:
+        return {"status": "missing", "safe": True}
+    except OSError:
+        return {"status": "unavailable", "safe": False}
+    if (
+        lexical_data.is_symlink()
+        or getattr(data_metadata, "st_file_attributes", 0) & reparse_flag
+        or not stat.S_ISDIR(data_metadata.st_mode)
+    ):
+        return {"status": "redirect", "safe": False}
+    try:
+        registry_metadata = os.lstat(registry)
+    except FileNotFoundError:
+        return {"status": "missing", "safe": True}
+    except OSError:
+        return {"status": "unavailable", "safe": False}
+    if (
+        registry.is_symlink()
+        or getattr(registry_metadata, "st_file_attributes", 0) & reparse_flag
+        or not stat.S_ISDIR(registry_metadata.st_mode)
+    ):
+        return {"status": "redirect", "safe": False}
+    try:
+        registry.resolve(strict=True).relative_to(lexical_data.resolve(strict=True))
+    except (OSError, ValueError):
+        return {"status": "redirect", "safe": False}
+    return {"status": "ok", "safe": True}
+
+
+def _probe_core_evidence(data_root: Path | None) -> dict[str, object]:
+    return {
+        "dependencies": {
+            "aiohttp": _dependency_evidence("aiohttp"),
+            "pyocd": _dependency_evidence("pyocd"),
+        },
+        "registry": _probe_registry_evidence(data_root),
+    }
 
 
 def _platform_evidence() -> dict[str, str]:

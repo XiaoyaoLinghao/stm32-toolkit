@@ -34,6 +34,10 @@
 
 ## Progress Tracking
 
+Codex continuation ownership, packet boundaries, and the detailed first 0.4
+execution packet are recorded in
+`2026-08-07-stm32-toolkit-codex-continuation.md`.
+
 - [x] 0.3.0 migration, managed GCC/CMake configuration, and reproducible build gate
 - [ ] 0.4.0 Probe Service, leases, flash, typed reads, and debug handoff gate
 - [ ] 0.5.0 project-isolated monitor service and UI gate

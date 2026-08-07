@@ -1,0 +1,113 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://stm32-toolkit.dev/schemas/probe-protocol.schema.json",
+  "title": "STM32 Toolkit Probe Service request",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "protocol",
+    "toolkitVersion",
+    "requestId",
+    "workspaceId",
+    "sessionId",
+    "leaseId",
+    "operationLevel",
+    "operation",
+    "timeoutMs",
+    "data"
+  ],
+  "properties": {
+    "protocol": {"const": "stm32-toolkit-probe/1"},
+    "toolkitVersion": {"type": "string", "minLength": 1, "maxLength": 64},
+    "requestId": {"$ref": "#/$defs/identifier"},
+    "workspaceId": {"$ref": "#/$defs/identifier"},
+    "sessionId": {"$ref": "#/$defs/identifier"},
+    "leaseId": {"$ref": "#/$defs/identifier"},
+    "operationLevel": {"enum": ["observe", "control", "modify"]},
+    "operation": {
+      "enum": ["probe.list", "probe.attach", "memory.read", "register.read", "probe.close"]
+    },
+    "timeoutMs": {"type": "integer", "minimum": 1, "maximum": 30000},
+    "data": {"type": "object"}
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"operation": {"const": "memory.read"}}},
+      "then": {
+        "properties": {
+          "data": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["address", "length"],
+            "properties": {
+              "address": {"type": "integer", "minimum": 0, "maximum": 4294967295},
+              "length": {"type": "integer", "minimum": 1, "maximum": 65536}
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {"properties": {"operation": {"const": "register.read"}}},
+      "then": {
+        "properties": {
+          "data": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["names"],
+            "properties": {
+              "names": {
+                "type": "array",
+                "minItems": 1,
+                "maxItems": 256,
+                "uniqueItems": true,
+                "items": {"type": "string", "pattern": "^[A-Za-z][A-Za-z0-9_]{0,31}$"}
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "operation": {"enum": ["probe.list", "probe.close"]}
+        }
+      },
+      "then": {
+        "properties": {
+          "data": {"type": "object", "maxProperties": 0}
+        }
+      }
+    },
+    {
+      "if": {"properties": {"operation": {"const": "probe.attach"}}},
+      "then": {
+        "properties": {
+          "data": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["probeId", "target"],
+            "properties": {
+              "probeId": {"$ref": "#/$defs/identifier"},
+              "target": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128,
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+              }
+            }
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "identifier": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+    }
+  }
+}
