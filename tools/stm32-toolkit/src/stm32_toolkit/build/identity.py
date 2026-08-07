@@ -32,7 +32,12 @@ from elftools.elf.elffile import ELFFile
 from jsonschema import Draft202012Validator
 
 from stm32_toolkit import __version__
-from stm32_toolkit.build.map_file import MapError, map_error, parse_map
+from stm32_toolkit.build.map_file import (
+    ElfSectionEvidence,
+    MapError,
+    map_error,
+    parse_map,
+)
 from stm32_toolkit.build.model import (
     BUILD_ARTIFACT_INVALID,
     BUILD_EVIDENCE_FAILED,
@@ -460,6 +465,7 @@ class ElfEvidence:
     reset_handler_address: int
     sha256: str
     size: int
+    sections: tuple[ElfSectionEvidence, ...]
 
 
 def _artifact_invalid(rel: str, rule: str) -> BuildError:
@@ -563,18 +569,26 @@ def _inspect_elf(elffile: ELFFile, rel: str, model: ProjectModel, data: bytes) -
         if symbol["st_info"]["bind"] != _STB_WEAK:
             raise _artifact_invalid(rel, "undefinedSymbols")
 
+    section_evidence: list[ElfSectionEvidence] = []
     for section in elffile.iter_sections():
-        if not section["sh_flags"] & _SHF_ALLOC:
-            continue
         size = section["sh_size"]
         if size == 0:
             continue
+        alloc = bool(section["sh_flags"] & _SHF_ALLOC)
         addr = section["sh_addr"]
+        if not alloc:
+            section_evidence.append(
+                ElfSectionEvidence(name=section.name, address=addr, size=size, alloc=False)
+            )
+            continue
         if not _in_any_region(addr, size, model):
             raise _artifact_invalid(rel, "sectionOutOfRange")
         fixed = _FIXED_SECTION_RE.fullmatch(section.name)
         if fixed is not None and addr != int(fixed.group(1), 16):
             raise _artifact_invalid(rel, "fixedSectionAddress")
+        section_evidence.append(
+            ElfSectionEvidence(name=section.name, address=addr, size=size, alloc=True)
+        )
 
     return ElfEvidence(
         entry_point=entry,
@@ -582,6 +596,7 @@ def _inspect_elf(elffile: ELFFile, rel: str, model: ProjectModel, data: bytes) -
         reset_handler_address=reset_handler_addr,
         sha256=sha256_hex(data),
         size=len(data),
+        sections=tuple(section_evidence),
     )
 
 

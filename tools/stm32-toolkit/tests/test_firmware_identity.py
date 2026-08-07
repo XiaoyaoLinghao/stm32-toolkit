@@ -382,7 +382,11 @@ def test_validate_elf_evidence_classifies_alloc_and_non_alloc_sections(tmp_path:
     elf_path.write_bytes(
         build_elf_bytes(
             nonalloc_sections=((".debug_info", 0x0, 0x1A2),),
-            alloc_sections=((".rodata", 0x08000040, 0x100, 0x2),),
+            alloc_sections=(
+                (".data", 0x20000000, 0x100, 0x3),
+                (".bss", 0x20000100, 0x400, 0x3),
+                (".rodata", 0x08000040, 0x100, 0x2),
+            ),
         )
     )
     evidence = validate_elf(elf_path, model)

@@ -22,8 +22,8 @@ CCM = MemoryRegion(name="CCM", origin=0x10000000, length=0x10000, attributes="rw
 DEFAULT_REGIONS = (FLASH, RAM)
 
 
-def parse(text: str, regions=DEFAULT_REGIONS):
-    return parse_map(text, regions)
+def parse(text: str, regions=DEFAULT_REGIONS, **kwargs):
+    return parse_map(text, regions, **kwargs)
 
 
 def test_valid_map_accounts_vma_and_lma_with_interval_union():

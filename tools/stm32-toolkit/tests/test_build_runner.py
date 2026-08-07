@@ -396,7 +396,9 @@ def fake_cmake_main(argv: list[str]) -> int:
                 (".debug_info", 0x0, 0x1A2),
                 (".comment", 0x0, 0x2F),
             )
-        elf = build_elf_bytes(text_size=text_size, **elf_kwargs)
+        else:
+            elf_kwargs["text_size"] = text_size
+        elf = build_elf_bytes(**elf_kwargs)
         if defect_map == "malformed":
             map_text = "this is not a GNU linker map\n"
         elif defect_map == "overflow":

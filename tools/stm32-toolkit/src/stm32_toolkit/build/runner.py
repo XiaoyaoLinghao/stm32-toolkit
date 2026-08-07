@@ -793,11 +793,21 @@ def _run_locked(
             snapshot,
             git,
         )
-        map_text = read_map_text(map_path, map_rel)
-        usages = parse_map(map_text, model.memory.regions, path=map_rel)
-        map_size, map_sha = hash_artifact(map_path, map_rel, _MAP_LIMIT_BYTES, BUILD_MAP_INVALID)
+        # ELF format, security, and section attributes are validated first;
+        # its immutable section evidence then classifies every non-zero MAP
+        # output section (SHF_ALLOC vs debug/comment rows at VMA 0).
         elf_evidence = validate_elf(elf_path, model)
-        elf_size, elf_sha = hash_artifact(elf_path, elf_rel, _ELF_LIMIT_BYTES, BUILD_ARTIFACT_INVALID)
+        elf_size, elf_sha = hash_artifact(
+            elf_path, elf_rel, _ELF_LIMIT_BYTES, BUILD_ARTIFACT_INVALID
+        )
+        map_text = read_map_text(map_path, map_rel)
+        usages = parse_map(
+            map_text,
+            model.memory.regions,
+            path=map_rel,
+            elf_sections=elf_evidence.sections,
+        )
+        map_size, map_sha = hash_artifact(map_path, map_rel, _MAP_LIMIT_BYTES, BUILD_MAP_INVALID)
     except BuildError as error:
         return _publish_failure(
             error, root, model, preset, "validate", started_at, started_mono, sections
