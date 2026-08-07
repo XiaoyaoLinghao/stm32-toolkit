@@ -556,3 +556,102 @@ def test_cli_build_and_workflow_share_operation_and_identity(
     assert cli_payload["code"] == direct["code"] == "OK"
     assert cli_payload["data"]["identity"]["buildId"] == direct["data"]["identity"]["buildId"]
     assert cli_payload["data"]["identity"]["elfSha256"] == direct["data"]["identity"]["elfSha256"]
+
+
+# ---------------------------------------------------------------------------
+# remaining adapter branches
+# ---------------------------------------------------------------------------
+
+
+def test_inspect_workflow_rejects_non_path_project_root():
+    result = inspect_keil_workflow("not-a-path")  # type: ignore[arg-type]
+
+    assert result.ok is False
+    assert result.code == WORKFLOW_INPUT_INVALID
+    assert dict(result.details) == {"field": "projectRoot", "rule": "type"}
+
+
+def test_inspect_workflow_rejects_a_file_project_root(tmp_path: Path):
+    marker = tmp_path / "file"
+    marker.write_text("x", encoding="utf-8")
+
+    result = inspect_keil_workflow(marker)
+
+    assert result.ok is False
+    assert result.code == WORKFLOW_INPUT_INVALID
+    assert dict(result.details) == {"field": "projectRoot", "rule": "value"}
+
+
+def test_inspect_workflow_rejects_non_boolean_include_baseline(tmp_path: Path):
+    root = keil_repo(tmp_path)
+
+    result = inspect_keil_workflow(root, include_baseline="yes")  # type: ignore[arg-type]
+
+    assert result.ok is False
+    assert result.code == WORKFLOW_INPUT_INVALID
+    assert dict(result.details) == {"field": "includeBaseline", "rule": "type"}
+
+
+def test_convert_workflow_translates_stable_inspection_and_plan_errors(
+    monkeypatch, tmp_path: Path
+):
+    from stm32_toolkit.migration import MigrationPlanError
+
+    root = keil_repo(tmp_path)
+    empty = tmp_path / "empty"
+    empty.mkdir()
+
+    missing = convert_keil_workflow(empty)
+    assert missing.ok is False
+    assert missing.code == "KEIL_PROJECT_NOT_FOUND"
+    assert missing.operation == "keil-conversion-plan"
+
+    def plan_failure(root_path, inspection):
+        raise MigrationPlanError(
+            "MIGRATION_GIT_UNAVAILABLE", "git is unavailable", {"rule": "unavailable"}
+        )
+
+    monkeypatch.setattr(workflows_mod, "plan_keil_conversion", plan_failure)
+    failed = convert_keil_workflow(root)
+    assert failed.ok is False
+    assert failed.code == "MIGRATION_GIT_UNAVAILABLE"
+    assert failed.operation == "keil-conversion-plan"
+
+
+def test_convert_workflow_maps_unexpected_failures_to_plan_unavailable(
+    monkeypatch, tmp_path: Path
+):
+    root = keil_repo(tmp_path)
+    monkeypatch.setattr(
+        workflows_mod,
+        "plan_keil_conversion",
+        lambda *a, **k: (_ for _ in ()).throw(OSError("boom")),
+    )
+
+    result = convert_keil_workflow(root)
+
+    assert result.ok is False
+    assert result.code == MIGRATION_PLAN_UNAVAILABLE
+    assert "boom" not in json.dumps(result.to_dict())
+
+
+def test_configure_and_build_workflows_reject_bad_project_root():
+    for workflow in (
+        lambda: configure_project_workflow("not-a-path"),  # type: ignore[arg-type]
+        lambda: build_firmware_workflow("not-a-path", preset="arm-debug", authorized=True),  # type: ignore[arg-type]
+    ):
+        result = workflow()
+        assert result.ok is False
+        assert result.code == WORKFLOW_INPUT_INVALID
+        assert dict(result.details) == {"field": "projectRoot", "rule": "type"}
+
+
+def test_build_workflow_rejects_a_file_project_root(tmp_path: Path):
+    marker = tmp_path / "file"
+    marker.write_text("x", encoding="utf-8")
+
+    result = build_firmware_workflow(marker, preset="arm-debug", authorized=True)
+
+    assert result.ok is False
+    assert result.code == WORKFLOW_INPUT_INVALID
+    assert dict(result.details) == {"field": "projectRoot", "rule": "value"}
