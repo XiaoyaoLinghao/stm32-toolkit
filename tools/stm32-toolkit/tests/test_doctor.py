@@ -1,5 +1,7 @@
 import io
+import importlib.metadata
 import json
+import os
 import subprocess
 import sys
 import time
@@ -65,6 +67,141 @@ def test_doctor_reports_missing_planned_tools_without_mutating(monkeypatch, tmp_
     }
     assert result.data["mutated"] is False
     assert not any(tmp_path.iterdir())
+
+
+def test_doctor_reports_probe_core_dependencies_without_starting_or_writing(
+    monkeypatch, tmp_path: Path
+):
+    project = tmp_path / "project"
+    data_root = tmp_path / "plugin-data"
+    project.mkdir()
+    monkeypatch.setattr("stm32_toolkit.doctor.shutil.which", lambda name: None)
+    def dependency_version(name: str) -> str:
+        if name == "aiohttp":
+            return "3.14.3"
+        raise importlib.metadata.PackageNotFoundError(name)
+
+    monkeypatch.setattr(
+        "stm32_toolkit.doctor.importlib.metadata.version",
+        dependency_version,
+    )
+
+    result = run_doctor(project, data_root=data_root)
+
+    assert result.data["probeCore"] == {
+        "dependencies": {
+            "aiohttp": {"available": True, "version": "3.14.3"},
+            "pyocd": {"available": False, "version": None},
+        },
+        "registry": {"status": "missing", "safe": True},
+    }
+    assert not data_root.exists()
+
+
+def test_doctor_probe_registry_reports_safe_directory_read_only(monkeypatch, tmp_path: Path):
+    project = tmp_path / "project"
+    registry = tmp_path / "plugin-data" / "probe-registry"
+    project.mkdir()
+    registry.mkdir(parents=True)
+    marker = registry / "owner.lock"
+    marker.write_bytes(b"owner")
+    before = marker.stat().st_mtime_ns
+    monkeypatch.setattr("stm32_toolkit.doctor.shutil.which", lambda name: None)
+
+    result = run_doctor(project, data_root=registry.parent)
+
+    assert result.data["probeCore"]["registry"] == {"status": "ok", "safe": True}
+    assert marker.read_bytes() == b"owner"
+    assert marker.stat().st_mtime_ns == before
+
+
+def test_doctor_probe_registry_reports_redirect_without_following_it(
+    monkeypatch, tmp_path: Path
+):
+    project = tmp_path / "project"
+    data_root = tmp_path / "plugin-data"
+    outside = tmp_path / "outside"
+    project.mkdir()
+    data_root.mkdir()
+    outside.mkdir()
+    registry = data_root / "probe-registry"
+    try:
+        registry.symlink_to(outside, target_is_directory=True)
+    except OSError:
+        registry.mkdir()
+        real_lstat = os.lstat
+
+        def injected_lstat(path):
+            metadata = real_lstat(path)
+            if Path(path) == registry:
+                return type(
+                    "InjectedReparseStat",
+                    (),
+                    {
+                        "st_mode": metadata.st_mode,
+                        "st_file_attributes": 0x400,
+                    },
+                )()
+            return metadata
+
+        monkeypatch.setattr("stm32_toolkit.doctor.os.lstat", injected_lstat)
+    monkeypatch.setattr("stm32_toolkit.doctor.shutil.which", lambda name: None)
+
+    result = run_doctor(project, data_root=data_root)
+
+    assert result.data["probeCore"]["registry"] == {
+        "status": "redirect",
+        "safe": False,
+    }
+    assert list(outside.iterdir()) == []
+
+
+def test_doctor_probe_registry_reports_data_root_parent_redirect(
+    monkeypatch, tmp_path: Path
+):
+    project = tmp_path / "project"
+    container = tmp_path / "container"
+    outside = tmp_path / "outside"
+    redirect_parent = container / "redirect-parent"
+    project.mkdir()
+    container.mkdir()
+    outside.mkdir()
+    try:
+        redirect_parent.symlink_to(outside, target_is_directory=True)
+    except OSError:
+        redirect_parent.mkdir()
+        real_lstat = os.lstat
+
+        def injected_lstat(path):
+            metadata = real_lstat(path)
+            if Path(path) == redirect_parent:
+                return type(
+                    "InjectedParentReparseStat",
+                    (),
+                    {
+                        "st_mode": metadata.st_mode,
+                        "st_file_attributes": 0x400,
+                    },
+                )()
+            return metadata
+
+        monkeypatch.setattr("stm32_toolkit.doctor.os.lstat", injected_lstat)
+    data_root = redirect_parent / "plugin-data"
+    registry = data_root / "probe-registry"
+    registry.mkdir(parents=True)
+    marker = registry / "owner.lock"
+    marker.write_bytes(b"owner")
+    before = marker.stat().st_mtime_ns
+    monkeypatch.setattr("stm32_toolkit.doctor.shutil.which", lambda name: None)
+
+    result = run_doctor(project, data_root=data_root)
+
+    assert result.data["probeCore"]["registry"] == {
+        "status": "redirect",
+        "safe": False,
+    }
+    assert marker.read_bytes() == b"owner"
+    assert marker.stat().st_mtime_ns == before
 
 
 def test_doctor_records_a_found_tool_version_with_fixed_read_only_command(monkeypatch, tmp_path: Path):
