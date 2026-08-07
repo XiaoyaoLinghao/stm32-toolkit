@@ -212,18 +212,18 @@ implicit reset.
 - Modify: `docs/superpowers/plans/2026-08-07-stm32-toolkit-codex-continuation.md`
 - Modify: this plan's checkboxes
 
-- [ ] Run focused tests, full Toolkit pytest with branch coverage at least 90%,
+- [x] Run focused tests, full Toolkit pytest with branch coverage at least 90%,
   compileall, `git diff --check`, schema byte identity, changed-file inventory,
   no-suppression scan, credential/token/absolute-path scan, and forbidden API
   scan for process termination, shell strings, chip erase, mass erase, Option
   Bytes, arbitrary memory writes, or implicit reset.
-- [ ] Build a wheel and install `[probe]` into a fresh external environment.
+- [x] Build a wheel and install `[probe]` into a fresh external environment.
   Prove ordinary package import stays PyOCD-lazy and the new contracts load.
-- [ ] Run Windows real-NTFS state/path/atomicity/cancellation gates. Run Linux
+- [x] Run Windows real-NTFS state/path/atomicity/cancellation gates. Run Linux
   equivalents in 0405. If no selected physical probe is present, label actual
   sector programming/readback/handoff `DEFERRED_TO_AVAILABLE_REAL_PROBE`; fake
   evidence never closes that release gate.
-- [ ] Commit product/tests first and the reconciled report last. The report
+- [x] Commit product/tests first and the reconciled report last. The report
   records this accepted base and the code head before its own commit and never
   records its own final SHA.
 - [ ] Push, create a ready PR targeting `master`, verify local/remote/PR head
