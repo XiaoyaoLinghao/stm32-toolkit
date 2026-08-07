@@ -2,16 +2,18 @@
 
 Every fixture project is copied to a disposable pytest temporary directory,
 managed configuration is generated through the STM32TK-0304 plan/apply path,
-a git repository records the project state, and a Python ``cmake`` double
-(hit-proven) stands in for the real toolchain.  Interception uses a narrow
-deterministic process-launch seam: only an original argv whose executable
-is exactly ``"cmake"`` is mapped to ``sys.executable`` plus the real
-``fake_cmake.py`` script, while every other invocation (Git evidence,
-helper ``subprocess.run`` calls) is delegated unchanged to the real
-``subprocess.Popen``.  This never depends on Windows resolving a bare
-``cmake`` to a ``.cmd`` launcher (CreateProcess appends ``.exe`` and would
-find an ambient real CMake).  No real CMake/Ninja/ARM toolchain is
-required and no build artifact is committed.
+a git repository records the project state, and Python ``cmake`` and ``git``
+doubles (hit-proven) stand in for the real toolchain.  Interception uses a
+narrow deterministic process-launch seam per double: only an original argv
+whose executable is exactly ``"cmake"`` is mapped to ``sys.executable`` plus
+the real ``fake_cmake.py`` script, and only an original argv whose
+executable is exactly ``"git"`` is mapped to ``sys.executable`` plus the
+real ``fake_git.py`` script; every other invocation (helper
+``subprocess.run`` calls) is delegated unchanged down the seam chain to the
+real ``subprocess.Popen``.  This never depends on Windows resolving a bare
+``cmake``/``git`` to a ``.cmd`` launcher (CreateProcess appends ``.exe`` and
+would find an ambient real CMake or Git).  No real CMake/Ninja/ARM toolchain
+is required and no build artifact is committed.
 """
 
 from __future__ import annotations
@@ -33,11 +35,6 @@ from stm32_toolkit.generation import apply_project_configuration, plan_project_c
 from stm32_toolkit.project_model import load_project_model
 
 FIXTURE_ROOT = Path(__file__).parent / "fixtures" / "minimal-gcc"
-
-# Captured before any test monkeypatches ``subprocess.Popen``: the narrow
-# cmake seam delegates every non-cmake invocation (Git evidence, helper
-# ``subprocess.run`` calls) to this real implementation unchanged.
-_REAL_POPEN = subprocess.Popen
 
 # ---------------------------------------------------------------------------
 # deterministic ELF32 little-endian ARM builder (test-only)
@@ -263,11 +260,20 @@ from test_build_runner import fake_cmake_main
 sys.exit(fake_cmake_main(sys.argv[1:]))
 """
 
-FAKE_GIT_WRAPPER = """#!{python}
+FAKE_GIT_SCRIPT = """import json
 import os
 import sys
 
+hit_file = os.environ.get("FAKE_GIT_HIT_FILE")
+if hit_file:
+    with open(hit_file, "a", encoding="utf-8") as handle:
+        handle.write(json.dumps({"argv": sys.argv[1:], "cwd": os.getcwd()}) + "\\n")
 mode = os.environ.get("FAKE_GIT_MODE", "ok")
+if mode == "ok":
+    if len(sys.argv) >= 2 and sys.argv[1] == "rev-parse":
+        sys.stdout.write("a" * 40 + "\\n")
+        sys.stdout.flush()
+    sys.exit(0)
 if mode == "exit1":
     sys.exit(1)
 if mode == "malformed":
@@ -282,6 +288,14 @@ if mode == "sleep":
     sys.exit(0)
 sys.exit(3)
 """
+
+FAKE_GIT_HIT_PREAMBLE = (
+    "import json, os, sys\n"
+    "hit_file = os.environ.get('FAKE_GIT_HIT_FILE')\n"
+    "if hit_file:\n"
+    "    with open(hit_file, 'a', encoding='utf-8') as handle:\n"
+    "        handle.write(json.dumps({'argv': sys.argv[1:], 'cwd': os.getcwd()}) + '\\n')\n"
+)
 
 
 def fake_cmake_main(argv: list[str]) -> int:
@@ -398,38 +412,41 @@ def fake_cmake_launcher(bin_dir: Path) -> Path:
     return bin_dir / ("cmake.cmd" if os.name == "nt" else "cmake")
 
 
-class _CmakeOnlyPopenSeam:
-    """A narrow deterministic process-launch seam for the ``cmake`` double.
+class _FakeToolPopenSeam:
+    """A narrow deterministic process-launch seam for a tool double.
 
-    Only an original argv whose executable is exactly ``"cmake"`` (never a
+    Only an original argv whose executable is exactly ``name`` (never a
     path, never an extension) is mapped to ``sys.executable`` plus the real
-    ``fake_cmake.py`` script; the untouched product argv is recorded so the
+    ``fake_<name>.py`` script; the untouched product argv is recorded so the
     exact-argv contract can be asserted.  Every other invocation is
-    delegated unchanged to the real ``subprocess.Popen`` implementation, so
-    Git evidence and helper ``subprocess.run`` calls are never intercepted.
+    delegated unchanged to ``fallback`` — a previously installed seam or the
+    real ``subprocess.Popen`` implementation — so the other tool double,
+    Git evidence, and helper ``subprocess.run`` calls are never intercepted.
     When the launch target has been removed (the launch-failure fixture),
     the seam raises ``FileNotFoundError`` exactly like a real spawn so the
     product returns ``BUILD_CONFIGURE_FAILED`` with ``rule=launch``.
     """
 
-    def __init__(self, script: Path, recorded: Path) -> None:
+    def __init__(self, name: str, script: Path, recorded: Path, fallback) -> None:
+        self._name = name
         self._script = script
         self._recorded = recorded
+        self._fallback = fallback
 
     def __call__(self, *args, **kwargs):
         argv = args[0] if args else kwargs.get("args")
-        if isinstance(argv, (list, tuple)) and argv and argv[0] == "cmake":
+        if isinstance(argv, (list, tuple)) and argv and argv[0] == self._name:
             original = tuple(argv)
             with open(self._recorded, "a", encoding="utf-8") as handle:
                 handle.write(json.dumps({"argv": list(original)}) + "\n")
             if not self._script.is_file():
-                raise FileNotFoundError(2, "fake cmake launch target is missing")
+                raise FileNotFoundError(2, f"fake {self._name} launch target is missing")
             mapped = (sys.executable, str(self._script), *original[1:])
             if args:
                 args = (mapped,) + args[1:]
             else:
                 kwargs["args"] = mapped
-        return _REAL_POPEN(*args, **kwargs)
+        return self._fallback(*args, **kwargs)
 
 
 def install_fake_cmake(
@@ -474,40 +491,61 @@ def install_fake_cmake(
     monkeypatch.setenv("FAKE_CMAKE_HIT_FILE", str(hit_file))
     for key, value in (env or {}).items():
         monkeypatch.setenv(key, value)
-    monkeypatch.setattr(subprocess, "Popen", _CmakeOnlyPopenSeam(script, orig_file))
+    monkeypatch.setattr(
+        subprocess, "Popen", _FakeToolPopenSeam("cmake", script, orig_file, subprocess.Popen)
+    )
     return hit_file
 
 
-def install_script_binary(bin_dir: Path, name: str, script_body: str) -> Path:
-    """Install a Python-script ``name`` launcher for this host.
+def install_fake_git(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, mode: str
+) -> tuple[Path, Path]:
+    """Install the hit-proven fake ``git`` behind a narrow launch seam.
 
-    POSIX: the script itself is executable.  Windows: a real
-    ``fake_<name>.py`` script plus a ``<name>.cmd`` launcher, because a
-    bare extensionless file is never found by Windows PATH resolution.
-    Returns the launcher path.
+    The seam maps only the product's exact bare ``"git"`` argv to
+    ``sys.executable`` plus a real ``fake_git.py`` script that exists on
+    disk, so interception never depends on Windows PATH resolving a bare
+    ``git`` to a ``.cmd`` launcher (CreateProcess appends ``.exe`` and
+    would find an ambient real Git).  Falls back to the currently installed
+    ``subprocess.Popen`` so the git seam composes with an already installed
+    fake-``cmake`` seam.  Returns ``(hit_file, orig_file)``.
     """
-    bin_dir.mkdir(parents=True, exist_ok=True)
-    if os.name == "nt":
-        script = bin_dir / f"fake_{name}.py"
-        script.write_text(script_body.format(python=sys.executable), encoding="utf-8")
-        launcher = bin_dir / f"{name}.cmd"
-        launcher.write_text(
-            f'@echo off\r\n"{sys.executable}" "{script}" %*\r\n',
-            encoding="utf-8",
-        )
-        return launcher
-    launcher = bin_dir / name
-    launcher.write_text(script_body.format(python=sys.executable), encoding="utf-8")
-    launcher.chmod(0o755)
-    return launcher
-
-
-def install_fake_git(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, mode: str) -> None:
-    """Install a fake ``git`` binary that fails or emits malformed evidence."""
     bin_dir = tmp_path / "fakegit"
-    install_script_binary(bin_dir, "git", FAKE_GIT_WRAPPER)
-    monkeypatch.setenv("PATH", str(bin_dir) + os.pathsep + os.environ.get("PATH", ""))
-    monkeypatch.setenv("FAKE_GIT_MODE", mode)
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    script = bin_dir / "fake_git.py"
+    script.write_text(FAKE_GIT_SCRIPT, encoding="utf-8")
+    return _install_git_seam(monkeypatch, tmp_path, script, mode=mode)
+
+
+def install_fake_git_script(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, script_body: str
+) -> tuple[Path, Path]:
+    """Install a custom fake ``git`` script behind the same narrow seam.
+
+    The body is prefixed with the shared hit-recording preamble so custom
+    scripts prove they were actually invoked.  Returns ``(hit_file,
+    orig_file)``.
+    """
+    bin_dir = tmp_path / "fakegit"
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    script = bin_dir / "fake_git.py"
+    script.write_text(FAKE_GIT_HIT_PREAMBLE + script_body, encoding="utf-8")
+    return _install_git_seam(monkeypatch, tmp_path, script)
+
+
+def _install_git_seam(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, script: Path, mode: str | None = None
+) -> tuple[Path, Path]:
+    """Install the narrow git seam; returns ``(hit_file, orig_file)``."""
+    hit_file = tmp_path / "git-hit.jsonl"
+    orig_file = tmp_path / "git-orig.jsonl"
+    if mode is not None:
+        monkeypatch.setenv("FAKE_GIT_MODE", mode)
+    monkeypatch.setenv("FAKE_GIT_HIT_FILE", str(hit_file))
+    monkeypatch.setattr(
+        subprocess, "Popen", _FakeToolPopenSeam("git", script, orig_file, subprocess.Popen)
+    )
+    return hit_file, orig_file
 
 
 def git(*args: str, cwd: Path) -> None:
@@ -1076,27 +1114,41 @@ def test_git_invalid_non_repository(tmp_path: Path):
 
 def test_git_invalid_malformed_head(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     root = prepare_project(tmp_path)
-    install_fake_git(monkeypatch, tmp_path, "malformed")
+    hit_file, orig_file = install_fake_git(monkeypatch, tmp_path, "malformed")
     result = run_build(BuildRequest(project_root=root, preset="arm-debug"))
     assert result.ok is False
     assert result.code == "BUILD_GIT_INVALID"
     assert result.details == {"rule": "head"}
+    # the narrow seam mapped exactly the product's fixed git argv and the
+    # fake script actually ran (status is never reached once head is bad)
+    assert orig_argv_records(orig_file) == [["git", "rev-parse", "--verify", "HEAD"]]
+    assert [record["argv"] for record in hit_records(hit_file)] == [
+        ["rev-parse", "--verify", "HEAD"]
+    ]
 
 
 def test_git_invalid_nonzero_exit(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     root = prepare_project(tmp_path)
-    install_fake_git(monkeypatch, tmp_path, "exit1")
+    hit_file, orig_file = install_fake_git(monkeypatch, tmp_path, "exit1")
     result = run_build(BuildRequest(project_root=root, preset="arm-debug"))
     assert result.ok is False
     assert result.code == "BUILD_GIT_INVALID"
+    assert orig_argv_records(orig_file) == [["git", "rev-parse", "--verify", "HEAD"]]
+    assert [record["argv"] for record in hit_records(hit_file)] == [
+        ["rev-parse", "--verify", "HEAD"]
+    ]
 
 
 def test_git_invalid_overflow(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     root = prepare_project(tmp_path)
-    install_fake_git(monkeypatch, tmp_path, "overflow")
+    hit_file, orig_file = install_fake_git(monkeypatch, tmp_path, "overflow")
     result = run_build(BuildRequest(project_root=root, preset="arm-debug"))
     assert result.ok is False
     assert result.code == "BUILD_GIT_INVALID"
+    assert orig_argv_records(orig_file) == [["git", "rev-parse", "--verify", "HEAD"]]
+    assert [record["argv"] for record in hit_records(hit_file)] == [
+        ["rev-parse", "--verify", "HEAD"]
+    ]
 
 
 def test_dirty_git_is_recorded_truthfully(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
@@ -1198,18 +1250,20 @@ def test_success_publication_writes_no_unrelated_files(
     root = prepare_project(tmp_path)
     install_fake_cmake(monkeypatch, tmp_path)
     before = {
-        str(path.relative_to(root))
+        path.relative_to(root).as_posix()
         for path in root.rglob("*")
         if path.is_file() and ".git" not in path.parts
     }
     result = run_build(BuildRequest(project_root=root, preset="arm-debug"))
     assert result.ok is True
     after = {
-        str(path.relative_to(root))
+        path.relative_to(root).as_posix()
         for path in root.rglob("*")
         if path.is_file() and ".git" not in path.parts
     }
     new_files = after - before
+    # portable forward-slash inventory on every host (never os.sep, never
+    # backslashes from Windows ``relative_to``) and no unrelated write
     assert new_files <= {
         "build/arm-debug/firmware.elf",
         "build/arm-debug/firmware.map",
@@ -1250,15 +1304,66 @@ def test_missing_source_publishes_failure_record(tmp_path: Path, monkeypatch: py
 
 def test_git_failure_publishes_failure_record(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     root = prepare_project(tmp_path)
-    install_fake_cmake(monkeypatch, tmp_path)
-    install_fake_git(monkeypatch, tmp_path, "exit1")
+    cmake_hit = install_fake_cmake(monkeypatch, tmp_path)
+    git_hit, git_orig = install_fake_git(monkeypatch, tmp_path, "exit1")
     result = run_build(BuildRequest(project_root=root, preset="arm-debug"))
     assert result.ok is False
     assert result.code == "BUILD_GIT_INVALID"
+    # both seams are installed; git failed before any cmake stage ran
+    assert orig_argv_records(git_orig) == [["git", "rev-parse", "--verify", "HEAD"]]
+    assert [record["argv"] for record in hit_records(git_hit)] == [
+        ["rev-parse", "--verify", "HEAD"]
+    ]
+    assert hit_records(cmake_hit) == []
     failure = read_json(result_path_for(root))
     assert failure["status"] == "failure"
     assert failure["code"] == "BUILD_GIT_INVALID"
+    assert failure["stage"] == "git"
     assert not identity_path_for(root).exists()
+
+
+def test_fake_git_and_cmake_seams_compose(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """The git and cmake seams compose in one build on every host.
+
+    With both seams installed, the product's bare ``"git"`` argv reaches
+    the fake git script, its bare ``"cmake"`` argv reaches the fake cmake
+    script, and an unrelated invocation is delegated unchanged to the real
+    ``subprocess.Popen`` — no Windows PATH resolution of ``git.cmd`` is
+    involved anywhere.  prepare_project's real ``git init/add/commit`` ran
+    before either seam existed and is therefore never intercepted.
+    """
+    root = prepare_project(tmp_path)
+    cmake_hit = install_fake_cmake(monkeypatch, tmp_path)
+    git_hit, git_orig = install_fake_git(monkeypatch, tmp_path, "ok")
+    result = run_build(BuildRequest(project_root=root, preset="arm-debug"))
+    assert result.ok is True
+    # the fake git answered both fixed product argv with a synthetic HEAD
+    # and a clean status (ambient Git would report the fixture's own SHA)
+    assert orig_argv_records(git_orig) == [
+        ["git", "rev-parse", "--verify", "HEAD"],
+        ["git", "status", "--porcelain=v1", "-z", "--untracked-files=all"],
+    ]
+    assert [record["argv"] for record in hit_records(git_hit)] == [
+        ["rev-parse", "--verify", "HEAD"],
+        ["status", "--porcelain=v1", "-z", "--untracked-files=all"],
+    ]
+    identity_doc = read_json(identity_path_for(root))
+    assert identity_doc["gitHead"] == "a" * 40
+    assert identity_doc["gitDirty"] is False
+    # the cmake seam still routes configure and build to the cmake double
+    assert [record["argv"] for record in hit_records(cmake_hit)] == [
+        ["--preset", "arm-debug"],
+        ["--build", "--preset", "arm-debug"],
+    ]
+    # an unrelated invocation is delegated to the real implementation
+    completed = subprocess.run(
+        [sys.executable, "-c", "print('delegated')"],
+        cwd=str(tmp_path),
+        capture_output=True,
+        timeout=30,
+    )
+    assert completed.returncode == 0
+    assert completed.stdout.strip() == b"delegated"
 
 
 def test_pre_configure_input_change_returns_input_changed(
@@ -1267,11 +1372,10 @@ def test_pre_configure_input_change_returns_input_changed(
     root = prepare_project(tmp_path)
     install_fake_cmake(monkeypatch, tmp_path)
     # the fake git touches an input between the two pre-configure snapshots
-    git_dir = tmp_path / "fakegit"
-    install_script_binary(
-        git_dir,
-        "git",
-        "#!{python}\nimport os, sys\n"
+    _, orig_file = install_fake_git_script(
+        monkeypatch,
+        tmp_path,
+        "import os, sys\n"
         "with open('Src/main.c', 'ab') as handle:\n"
         "    handle.write(b'/* touched by fake git */\\n')\n"
         "if len(sys.argv) >= 2 and sys.argv[1] == 'rev-parse':\n"
@@ -1279,11 +1383,15 @@ def test_pre_configure_input_change_returns_input_changed(
         "    sys.stdout.flush()\n"
         "os._exit(0)\n",
     )
-    monkeypatch.setenv("PATH", str(git_dir) + os.pathsep + os.environ.get("PATH", ""))
     result = run_build(BuildRequest(project_root=root, preset="arm-debug"))
     assert result.ok is False
     assert result.code == "BUILD_INPUT_CHANGED"
     assert result.details == {"path": "Src/main.c"}
+    # the dynamic script ran behind the same narrow seam for both fixed argv
+    assert orig_argv_records(orig_file) == [
+        ["git", "rev-parse", "--verify", "HEAD"],
+        ["git", "status", "--porcelain=v1", "-z", "--untracked-files=all"],
+    ]
     failure = read_json(result_path_for(root))
     assert failure["code"] == "BUILD_INPUT_CHANGED"
     assert failure["stage"] == "snapshot"
@@ -1511,11 +1619,10 @@ def test_map_missing_is_stale(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
 def test_pre_configure_snapshot_raise_publishes_failure(tmp_path: Path, monkeypatch):
     root = prepare_project(tmp_path)
     install_fake_cmake(monkeypatch, tmp_path)
-    git_dir = tmp_path / "fakegit"
-    install_script_binary(
-        git_dir,
-        "git",
-        "#!{python}\nimport os, sys\n"
+    _, orig_file = install_fake_git_script(
+        monkeypatch,
+        tmp_path,
+        "import os, sys\n"
         "if len(sys.argv) >= 2 and sys.argv[1] == 'rev-parse':\n"
         "    sys.stdout.write('a' * 40 + '\\n')\n"
         "    sys.stdout.flush()\n"
@@ -1523,11 +1630,15 @@ def test_pre_configure_snapshot_raise_publishes_failure(tmp_path: Path, monkeypa
         "    os.remove('Src/main.c')\n"
         "os._exit(0)\n",
     )
-    monkeypatch.setenv("PATH", str(git_dir) + os.pathsep + os.environ.get("PATH", ""))
     result = run_build(BuildRequest(project_root=root, preset="arm-debug"))
     assert result.ok is False
     assert result.code == "BUILD_INPUT_INVALID"
     assert result.details == {"path": "Src/main.c", "rule": "missing"}
+    # the dynamic script ran behind the same narrow seam for both fixed argv
+    assert orig_argv_records(orig_file) == [
+        ["git", "rev-parse", "--verify", "HEAD"],
+        ["git", "status", "--porcelain=v1", "-z", "--untracked-files=all"],
+    ]
     failure = read_json(result_path_for(root))
     assert failure["stage"] == "snapshot"
 
