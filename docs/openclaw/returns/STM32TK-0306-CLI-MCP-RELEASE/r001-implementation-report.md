@@ -5,7 +5,7 @@ Module: `STM32TK-0306-CLI-MCP-RELEASE` / r001 / revision-1
 Branch: `openclaw/STM32TK-0306-CLI-MCP-RELEASE/r001`
 Accepted base commit: `2088e6d375d63e6e00ef0fa50b6aad0d0fd04fb1`
 Reviewed predecessor: `e65faba5e4e2751e725abc4f63b553eb332af332`
-Code head before this report commit: `b3dbd1e677ef89f580229dcde73e1c464ceb7042`
+Code head before this report commit: `16b8b2cd90dbf39514064947c02508bb8a36d829`
 Final branch head: supplied only in the return message and PR metadata
 Work order: `docs/openclaw/modules/STM32TK-0306-CLI-MCP-RELEASE.md` (specification commit `1cc209506f5d7b7c91aae52267d3f5dd4fb09666`)
 
@@ -57,20 +57,34 @@ product fix commit) and every OpenClaw gate now passes:
   with stable evidence fields, and the capability check is strictly
   read-only (project tree and Git porcelain unchanged across calls).
 
+Codex acceptance verdict: `ACCEPTED_WITH_FIXES`. After reviewing the returned
+revision on the named Windows and real ARM GNU environments, Codex applied one
+bounded acceptance-fix commit on top of `557b3de1a1eaab117cd9979a679143aaef983db3`:
+
+- Windows test fixtures now use byte-exact writes and an unprivileged hard-link
+  identity case instead of relying on text-mode newline behavior or symlink
+  privilege.
+- The committed Keil fixture now contains portable CMSIS intrinsic shims plus a
+  real C startup/vector definition, so the unchanged public workflow output is
+  linkable by ARM GNU rather than only by the fake-CMake seam.
+- The MAP parser now accepts the real GNU ld 2.44 wrapped output-section row
+  form for long section names, including LMA accounting, while malformed,
+  missing, and duplicate continuations still fail closed.
+- Codex reran the Windows focused/full gates and a real inspect -> convert ->
+  configure -> CLI Debug build -> MCP Release build chain. All previously
+  deferred gates now pass; details and hashes are recorded in section 4.
+
 Known limitations carried forward: `test_planned_actions.py`,
 `test_mcp_roots.py`, and `tests/fixtures/minimal-gcc/.stm32-project.json`
 remain modified relative to the accepted base as the explicitly retained
 compatibility exceptions from r001 (they assert behavior this work order
 mandates: `migrate-keil` available, the seven-tool registry, and the
 unified 0.3.0 `generatedBy` version). No new exception paths were added in
-revision 1. Windows/NTFS and real Windows ARM GNU toolchain evidence from
-the predecessor remains `predecessor evidence only` (Codex gates; see
-section 4). Blockers are `NONE` for every OpenClaw-owned gate; the only
-deferred gates are the named Codex environment gates.
+revision 1. Blockers are `NONE`; this module has no remaining deferred gate.
 
 ## 2. Complete changed-path inventory (accepted base → code head)
 
-Reconciled with `git diff 2088e6d375d63e6e00ef0fa50b6aad0d0fd04fb1..b3dbd1e677ef89f580229dcde73e1c464ceb7042 --name-status`. The
+Reconciled with `git diff 2088e6d375d63e6e00ef0fa50b6aad0d0fd04fb1..16b8b2cd90dbf39514064947c02508bb8a36d829 --name-status`. The
 revision-1 delta on top of the reviewed predecessor consists of the
 fixture, the four product fixes, the test regressions, the marketplace
 manifest fix, the plan-doc gate record, and this report; everything else is
@@ -93,6 +107,7 @@ carried over unchanged from r001.
 | M | `tools/stm32-toolkit/pyproject.toml` | carried over: Python distribution version 0.3.0 |
 | M | `tools/stm32-toolkit/src/stm32_toolkit/__init__.py` | carried over: `__version__ = "0.3.0"` |
 | M | `tools/stm32-toolkit/src/stm32_toolkit/build/identity.py` | **revision-1 fix (4.3)**: include/source overlap counts a canonical regular file once; duplicate declarations of the same canonical file and casefold/escape cases fail closed |
+| M | `tools/stm32-toolkit/src/stm32_toolkit/build/map_file.py` | **Codex acceptance fix**: parse real GNU ld wrapped long output-section rows and LMA values; malformed/missing/duplicate continuations fail closed |
 | M | `tools/stm32-toolkit/src/stm32_toolkit/cli.py` | carried over: exact CLI grammar and adapter dispatch |
 | M | `tools/stm32-toolkit/src/stm32_toolkit/context.py` | **revision-1 fix (§7)**: managed-configuration-backed build capability with read-only evidence |
 | M | `tools/stm32-toolkit/src/stm32_toolkit/detection.py` | carried over: migrate-keil/configure-project available |
@@ -100,18 +115,20 @@ carried over unchanged from r001.
 | M | `tools/stm32-toolkit/src/stm32_toolkit/mcp_server.py` | carried over: four project-bound tools and roots guard |
 | M | `tools/stm32-toolkit/src/stm32_toolkit/migration/planner.py` | **revision-1 fix (4.2)**: Keil float-ABI normalization to soft/softfp/hard and stable blocker for unknown/ambiguous values |
 | A | `tools/stm32-toolkit/src/stm32_toolkit/workflows.py` | **revision-1 fix (§6)**: non-bool authorization fails closed in every mode; carried-over two-phase plan/apply adapters |
-| A | `tools/stm32-toolkit/tests/fixtures/keil-convertible/legacy.uvprojx` | revision-1 fixture: naturally convertible Keil MDK5 project (no blocker pragmas, no assembly source, no scatter, no FPU/float-ABI text, SPL defines + path evidence, include paths overlapping source dirs) |
+| A | `tools/stm32-toolkit/tests/fixtures/keil-convertible/legacy.uvprojx` | revision-1 fixture, completed by Codex with the tracked C startup source for a real ARM GNU link |
 | A | `tools/stm32-toolkit/tests/fixtures/keil-convertible/Main/main.c` | revision-1 fixture: convertible ARMCC main source |
 | A | `tools/stm32-toolkit/tests/fixtures/keil-convertible/Common/common.c` | revision-1 fixture: convertible ARMCC source with intrinsic/fixed-section rules |
-| A | `tools/stm32-toolkit/tests/fixtures/keil-convertible/Libraries/STM32F4xx_StdPeriph_Driver/inc/stm32f4xx.h` | revision-1 fixture: tracked SPL header keeping the include-dir evidence real |
+| A | `tools/stm32-toolkit/tests/fixtures/keil-convertible/Libraries/STM32F4xx_StdPeriph_Driver/inc/stm32f4xx.h` | revision-1 fixture: tracked SPL header with portable ARMCC/ARM GNU intrinsic shims |
+| A | `tools/stm32-toolkit/tests/fixtures/keil-convertible/Startup/startup.c` | **Codex acceptance fix**: portable vector table and `Reset_Handler` required by the generated linker contract and firmware-identity validation |
 | M | `tools/stm32-toolkit/tests/fixtures/minimal-gcc/.stm32-project.json` | carried-over compatibility exception (0.3.0 `generatedBy` version); unchanged in revision 1 |
 | M | `tools/stm32-toolkit/tests/test_build_runner.py` | carried over: unified version assertions only |
+| M | `tools/stm32-toolkit/tests/test_build_map.py` | **Codex acceptance fix**: RED/GREEN regressions for real wrapped GNU ld rows, LMA, ambiguity, and duplicate rejection |
 | M | `tools/stm32-toolkit/tests/test_cli.py` | **revision-1**: e2e uses the convertible fixture copy without surgery or manifest edits; empty-debug launch config asserted |
 | M | `tools/stm32-toolkit/tests/test_context.py` | **revision-1**: build-capability regressions (CMakeLists-only → false, apply → true, drift/removal/stale/invalid/version-mismatch → false, read-only proof) |
 | M | `tools/stm32-toolkit/tests/test_detection.py` | carried over: action availability tests |
-| M | `tools/stm32-toolkit/tests/test_firmware_identity.py` | **revision-1**: overlap dedup regressions + private-helper signature updates |
+| M | `tools/stm32-toolkit/tests/test_firmware_identity.py` | **revision-1 + Codex acceptance fix**: overlap dedup regressions using byte-exact writes and a privilege-free hard link on Windows |
 | M | `tools/stm32-toolkit/tests/test_generation.py` | **revision-1**: empty debug build-only configuration and launch snapshot |
-| A | `tools/stm32-toolkit/tests/test_mcp_migration_build.py` | **revision-1**: e2e rewritten to the convertible fixture; no fixture surgery, no manifest edits; MCP two-phase and roots tests carried over |
+| A | `tools/stm32-toolkit/tests/test_mcp_migration_build.py` | **revision-1 + Codex acceptance fix**: e2e uses the convertible fixture without surgery and asserts real startup/vector prerequisites |
 | M | `tools/stm32-toolkit/tests/test_mcp_roots.py` | carried-over compatibility exception (seven-tool registry); unchanged in revision 1 |
 | M | `tools/stm32-toolkit/tests/test_mcp_server.py` | carried over: seven-tool registry/root binding |
 | M | `tools/stm32-toolkit/tests/test_migration_plan.py` | **revision-1**: float-ABI normalization/blocker regressions and manifest-mapping update |
@@ -156,7 +173,7 @@ are untouched by revision 1 and are listed in section 1 as retained.
 
 ### 3.2 Real end-to-end workflows (§5)
 
-- New committed fixture `keil-convertible` (four files listed in section
+- New committed fixture `keil-convertible` (five files listed in section
   2) is naturally convertible: no `#pragma arm section`/`#pragma import`/
   `#pragma O3`, no ARM assembly source, empty scatter, no FPU token and no
   `uFloatingPoint` element (so no float-ABI guess is needed), ARMCC V5.06
@@ -249,6 +266,12 @@ run from the repository root on branch
 `openclaw/STM32TK-0306-CLI-MCP-RELEASE/r001` with
 `PYTHONPATH=tools/stm32-toolkit/src` for source-tree tests.
 
+Codex acceptance environment: Windows NTFS, CPython 3.12.13, pytest 8.3.5,
+jsonschema 4.23.0, pyelftools 0.33, Jinja2 3.1.6; CMake 4.3.1, Ninja
+1.13.2, ARM GNU 14.3.1, and binutils 2.44. Codex gates ran against the
+bounded acceptance-fix code head
+`16b8b2cd90dbf39514064947c02508bb8a36d829` in a clean isolated worktree.
+
 | Gate/command | Evidence owner | Environment | Commit tested | Exit | Observed result | Status |
 |---|---:|---:|---:|---|
 | TDD RED (revision 1): regression tests against the reviewed predecessor | OpenClaw | Linux; CPython 3.10.11 | `aa5e991` (tests-only commit on the predecessor) | 1 | `45 failed, 568 passed, 5 skipped` — exactly the new regressions: non-bool authorization without plan ID, managed build capability, float-ABI normalization/blocker, include/source dedup, empty debug, marketplace source, both rewritten e2e tests | PASS (RED reproduced) |
@@ -264,8 +287,11 @@ run from the repository root on branch
 | Performance (spec 11.3): warm local filesystem, 20 measured runs after 3 warmups | OpenClaw | same | `b3dbd1e` | 0 | `convert_keil_workflow` median **74.05 ms** (< 500 ms), `configure_project_workflow` median **23.78 ms** (< 500 ms), MCP in-memory wrapper overhead (stubbed core) median **0.159 ms** (< 25 ms); no timing assertion in ordinary unit tests | PASS |
 | Wheel gate (spec 11.3): `pip wheel` → fresh external venv → cwd outside the repository | OpenClaw | same | `b3dbd1e` | 0 | `stm32_toolkit-0.3.0-py3-none-any.whl` built and installed into a fresh CPython 3.10.11 venv; from `/tmp/tk0306-wheel-out` (outside the repo) the wheel CLI ran all four workflows against a convertible fixture copy with the fake-CMake launch seam: `keil inspect`, `keil convert` plan+apply, `project configure` plan+apply, `build --preset arm-debug` and `build --preset arm-release` all exit 0 with the expected operations; `stm32-toolkit version` prints `0.3.0`; packaged schemas (firmware-identity, stm32-project-v1, stm32-project) and 9 template resources importable from the wheel; identity `toolkitVersion` 0.3.0 with `elfSha256` matching the on-disk ELF; fake-CMake hit file (5 records) proves the full fake-toolchain build ran | PASS |
 | Secret/placeholder scan | OpenClaw | same | `b3dbd1e` | 0 | no plaintext credential, `TODO`/`FIXME`/`pass`/ellipsis stub, debug print, or raw exception text in the revised deliverables; no XML/source-rewrite/CMake logic in Skill prose | PASS |
-| Windows focused/full including roots cancellation, path/case behavior, setup Repair/rollback, launcher | Codex | Windows NTFS, CPython 3.12.13 | returned head | — | not run by OpenClaw; the predecessor's Windows-path evidence is `predecessor evidence only` and is not re-claimed here | `DEFERRED_TO_CODEX` |
-| Real CLI/MCP arm-debug + arm-release with CMake 4.3.1, Ninja 1.13.2, ARM GNU 14.3.1/binutils 2.44 | Codex | Codex Windows toolchain | returned head | — | not run by OpenClaw; predecessor toolchain evidence is `predecessor evidence only` | `DEFERRED_TO_CODEX` |
+| Windows focused set from the work order | Codex | Windows NTFS; CPython 3.12.13 | `16b8b2c` | 0 | JUnit: **744 tests**, 744 passed, 0 failed/error/skipped; includes roots cancellation, path/case behavior, setup Repair/rollback, launcher, workflows, and e2e regressions | PASS |
+| Windows full suite + branch coverage: `pytest tools/stm32-toolkit/tests -q --cov=stm32_toolkit --cov-branch --cov-report=term` | Codex | same | `16b8b2c` | 0 | **1206 passed, 3 skipped**, branch coverage **93%** (fail_under 90); skips are platform-inapplicable POSIX cases, with no failure/error | PASS |
+| Final full-suite confirmation after the byte-exact fixture header update | Codex | same | `16b8b2c` | 0 | JUnit: 1209 collected, **1206 passed, 3 skipped**, 0 failed/error | PASS |
+| `compileall` + `git diff --check` | Codex | same | `16b8b2c` | 0 | both silent | PASS |
+| Real public workflow chain: inspect -> convert plan/apply -> configure plan/apply -> CLI Debug build -> MCP Release build | Codex | Windows; CMake 4.3.1; Ninja 1.13.2; ARM GNU 14.3.1/binutils 2.44 | `16b8b2c` | 0 | committed fixture copied without surgery; Debug `buildId=b9b2e39...`, ELF `d8b7299f...`, MAP `7eaa3222...`; Release `buildId=57a30f21...`, ELF `30fd1e7a...`, MAP `504a7b91...`; both identities match on-disk SHA-256, entry point, `.isr_vector`, and `Reset_Handler` | PASS |
 | Visual/hardware | N/A | N/A | — | — | no UI or hardware surface in this module | `NOT_APPLICABLE` |
 
 ### Manual and visual evidence
@@ -308,20 +334,19 @@ run from the repository root on branch
   signatures changed only for test callers (updated in the same commit);
   the `.claude-plugin/marketplace.json` source value is the only manifest
   change and is required for Claude Code 2.1.140 compatibility.
+  Codex additionally verified the same source tree on CPython 3.12.13 and
+  the real Windows ARM GNU toolchain named in section 4.
 
 ## 6. Blockers and residual risks
 
 - Blockers: `NONE` for every OpenClaw-owned gate. The r001 plugin-gate
   blocker is resolved (validate/install/list/update all exit 0 on the
   installed Claude Code).
-- Residual risks: `DEFERRED_TO_CODEX` gates remain as named in section 4
-  (Windows NTFS focused/full and the real Windows ARM GNU toolchain); the
-  predecessor's claims about those environments are `predecessor evidence
-  only` and are not re-claimed. The 17 full-suite skips are the
-  pre-existing Windows-only platform skips, unchanged and attributed. The
-  three compatibility-exception test paths listed in section 1 remain
-  modified relative to the base by the r001 reconciliation and are
-  untouched by revision 1.
+- Residual risks: no deferred gate remains for this module. OpenClaw's Linux
+  suite retains 17 pre-existing Windows-only skips; Codex's Windows suite
+  retains 3 platform-inapplicable POSIX skips. The three compatibility-
+  exception test paths listed in section 1 remain modified relative to the
+  base by the r001 reconciliation and are untouched by revision 1.
 - Roadmap/PR consistency: the roadmap 0.3.0 checkbox stays checked only
   because every release gate now passes (evidence in section 4); the PR
   description is updated to the revision-1 status and matches this
@@ -333,7 +358,7 @@ run from the repository root on branch
 - [x] Final head will be returned out of band after this report commit.
 - [x] Inventory matches the complete implementation diff and report addition.
 - [x] Every required OpenClaw gate has direct observed evidence with real exits.
-- [x] Other-environment gates are attributed as `DEFERRED_TO_CODEX`; predecessor Windows/ARM GNU claims are labeled `predecessor evidence only`.
+- [x] Codex completed the named Windows and real ARM GNU gates against the bounded acceptance-fix code head; no gate remains deferred.
 - [x] No credentials, private data, caches, build output, or unredacted diagnostics are committed.
 - [x] No unrelated file, agent instruction, approved work order, or remote policy changed.
 - [x] Every instructional value in this report is replaced with actual evidence.
