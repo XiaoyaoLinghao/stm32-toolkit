@@ -45,6 +45,10 @@ _CORE_REGISTERS = (
 _CORE_REGISTER_SET = frozenset(_CORE_REGISTERS)
 _SCB_BASE = 0xE000_ED24
 _SCB_LENGTH = 24
+_MAX_ELF_SECTIONS = 1024
+_MAX_ELF_SYMBOLS = 100_000
+_SHF_ALLOC = 0x2
+_SHF_EXECINSTR = 0x4
 _VALID_EXC_RETURN = frozenset(
     (0xFFFF_FFE1, 0xFFFF_FFE9, 0xFFFF_FFED, 0xFFFF_FFF1, 0xFFFF_FFF9, 0xFFFF_FFFD)
 )
@@ -259,7 +263,9 @@ def _decode_fault_status(data: bytes) -> dict[str, object]:
                 (
                     (0, "memFaultActive"),
                     (1, "busFaultActive"),
+                    (2, "hardFaultActive"),
                     (3, "usageFaultActive"),
+                    (5, "nmiActive"),
                     (7, "svCallActive"),
                     (8, "monitorActive"),
                     (10, "pendSvActive"),
@@ -298,7 +304,6 @@ def _decode_fault_status(data: bytes) -> dict[str, object]:
                     (17, "invstate"),
                     (18, "invpc"),
                     (19, "nocp"),
-                    (20, "stkof"),
                     (24, "unaligned"),
                     (25, "divbyzero"),
                 ),
@@ -403,16 +408,49 @@ async def _stack_frame(
 def _symbol_candidates(image: bytes) -> tuple[tuple[str, int, int], ...]:
     try:
         elf = ELFFile(io.BytesIO(image))
+        section_count = elf.num_sections()
+        if not 1 <= section_count <= _MAX_ELF_SECTIONS:
+            return ()
         candidates: list[tuple[str, int, int]] = []
+        symbol_count = 0
         for section in elf.iter_sections():
             if section.header["sh_type"] not in ("SHT_SYMTAB", "SHT_DYNSYM"):
                 continue
             for symbol in section.iter_symbols():
+                symbol_count += 1
+                if symbol_count > _MAX_ELF_SYMBOLS:
+                    return ()
                 if symbol["st_info"]["type"] != "STT_FUNC" or not symbol.name:
                     continue
+                section_index = symbol["st_shndx"]
+                if (
+                    type(section_index) is not int
+                    or not 0 < section_index < section_count
+                ):
+                    continue
+                owner = elf.get_section(section_index)
+                flags = int(owner.header["sh_flags"])
+                if flags & (_SHF_ALLOC | _SHF_EXECINSTR) != (
+                    _SHF_ALLOC | _SHF_EXECINSTR
+                ):
+                    continue
+                owner_start = int(owner.header["sh_addr"])
+                owner_size = int(owner.header["sh_size"])
+                if (
+                    not 0 <= owner_start <= 0xFFFF_FFFF
+                    or not 0 < owner_size <= 0x1_0000_0000 - owner_start
+                ):
+                    continue
+                owner_end = owner_start + owner_size
                 start = int(symbol["st_value"]) & ~1
                 size = int(symbol["st_size"])
-                if not 0 <= start <= 0xFFFF_FFFF or not 0 <= size <= 0x1_0000_0000 - start:
+                if (
+                    not 0 <= start <= 0xFFFF_FFFF
+                    or not 0 <= size <= 0x1_0000_0000 - start
+                    or start < owner_start
+                    or (size == 0 and start >= owner_end)
+                    or (size > 0 and start + size > owner_end)
+                ):
                     continue
                 candidates.append((symbol.name[:256], start, size))
         return tuple(candidates)
@@ -430,10 +468,9 @@ def _symbolize_one(
         if (size > 0 and start <= normalized < start + size)
         or (size == 0 and normalized == start)
     ]
-    unique = {(name, start, size) for name, start, size in matches}
-    if len(unique) != 1:
+    if len(matches) != 1:
         return {"status": "unavailable", "address": _word32(address)}
-    name, start, _size = next(iter(unique))
+    name, start, _size = matches[0]
     return {
         "status": "resolved",
         "address": _word32(address),
@@ -481,6 +518,7 @@ async def analyze_fault(
         fault_status = _decode_fault_status(status_data)
         stack_frame = await _stack_frame(client, binding, registers)
         symbols = _symbols(image, registers, stack_frame)
+        confirmed_at = utc_now_rfc3339()
         await _attachment(binding, client, final=True)
         final_registers = await _read_registers(client, final=True)
         if final_registers != registers:
@@ -490,7 +528,6 @@ async def analyze_fault(
             )
         _endpoint(binding, client)
         _current_firmware(root, binding)
-        confirmed_at = utc_now_rfc3339()
         report = FaultReport(
             binding=binding,
             target_state="halted",

@@ -2,12 +2,17 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import io
+import struct
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from elftools.elf.elffile import ELFFile
 
 from stm32_toolkit import __version__
+import stm32_toolkit.debug.fault as fault_mod
 from stm32_toolkit.debug.fault import FaultAnalysisRequest, analyze_fault
 from stm32_toolkit.debug.model import DebugFirmwareBinding, MemoryRegionBinding
 from stm32_toolkit.probe.client import ProbeClientError
@@ -78,11 +83,57 @@ def _status_bytes(
 
 
 def _frame(
-    *, pc: int = 0x0800_0011, lr: int = 0x0800_0005, xpsr: int = 0x2100_0000
+    *, pc: int = 0x0800_0111, lr: int = 0x0800_0105, xpsr: int = 0x2100_0000
 ) -> bytes:
     return b"".join(
         value.to_bytes(4, "little")
         for value in (1, 2, 3, 4, 12, lr, pc, xpsr)
+    )
+
+
+def _symbol_entry(image: bytes, name: str) -> tuple[int, dict[str, int]]:
+    elf = ELFFile(io.BytesIO(image))
+    for section in elf.iter_sections():
+        if section.header["sh_type"] != "SHT_SYMTAB":
+            continue
+        entry_size = int(section.header["sh_entsize"])
+        for index, symbol in enumerate(section.iter_symbols()):
+            if symbol.name == name:
+                return int(section.header["sh_offset"]) + index * entry_size, {
+                    "name": int(symbol.entry["st_name"]),
+                    "value": int(symbol.entry["st_value"]),
+                    "size": int(symbol.entry["st_size"]),
+                    "shndx": int(symbol.entry["st_shndx"]),
+                }
+    raise AssertionError(f"missing fixture symbol {name}")
+
+
+def _mutate_symbol(
+    image: bytes,
+    name: str,
+    *,
+    name_offset: int | None = None,
+    value: int | None = None,
+    size: int | None = None,
+    shndx: int | None = None,
+) -> bytes:
+    data = bytearray(image)
+    offset, original = _symbol_entry(image, name)
+    struct.pack_into("<I", data, offset, original["name"] if name_offset is None else name_offset)
+    struct.pack_into("<I", data, offset + 4, original["value"] if value is None else value)
+    struct.pack_into("<I", data, offset + 8, original["size"] if size is None else size)
+    struct.pack_into("<H", data, offset + 14, original["shndx"] if shndx is None else shndx)
+    return bytes(data)
+
+
+def _rebind_elf(fault_env, image: bytes) -> FaultAnalysisRequest:
+    _root, _elf, binding, current, _calls, _client, _request = fault_env
+    digest = hashlib.sha256(image).hexdigest()
+    current.elf_data = image
+    current.identity["elfSha256"] = digest
+    current.identity["elfSize"] = len(image)
+    return FaultAnalysisRequest(
+        replace(binding, elf_sha256=digest, elf_size=len(image))
     )
 
 
@@ -259,8 +310,8 @@ def test_already_halted_basic_msp_fault_is_complete_and_read_only(fault_env):
         "r2": {"value": 3, "rawHex": "0x00000003", "bitWidth": 32},
         "r3": {"value": 4, "rawHex": "0x00000004", "bitWidth": 32},
         "r12": {"value": 12, "rawHex": "0x0000000c", "bitWidth": 32},
-        "lr": {"value": 0x0800_0005, "rawHex": "0x08000005", "bitWidth": 32},
-        "pc": {"value": 0x0800_0011, "rawHex": "0x08000011", "bitWidth": 32},
+        "lr": {"value": 0x0800_0105, "rawHex": "0x08000105", "bitWidth": 32},
+        "pc": {"value": 0x0800_0111, "rawHex": "0x08000111", "bitWidth": 32},
         "xpsr": {"value": 0x2100_0000, "rawHex": "0x21000000", "bitWidth": 32},
     }
     assert document["symbols"]["pc"]["name"] == "main"
@@ -462,6 +513,25 @@ def test_endpoint_change_during_final_halted_check_is_caught_before_publish(faul
     assert result.code == "FAULT_ENDPOINT_MISMATCH"
 
 
+def test_confirmation_time_is_captured_before_final_external_revalidation(
+    fault_env, monkeypatch: pytest.MonkeyPatch
+):
+    *_rest, client, request = fault_env
+
+    def clock() -> str:
+        client.events.append(("confirmed_at",))
+        return "2026-08-08T02:03:04.000005Z"
+
+    monkeypatch.setattr(fault_mod, "utc_now_rfc3339", clock)
+    result = asyncio.run(analyze_fault(request, client))
+
+    assert result.ok is True
+    assert result.data.confirmed_at_utc == "2026-08-08T02:03:04.000005Z"
+    assert client.events.index(("confirmed_at",)) < max(
+        index for index, event in enumerate(client.events) if event[0] == "attach"
+    )
+
+
 def test_transition_away_from_halted_during_capture_fails_closed(fault_env):
     *_rest, client, request = fault_env
     original = client.read_registers
@@ -500,6 +570,108 @@ def test_symbolization_failure_keeps_raw_fault_evidence(fault_env):
             "address": {"value": 0x0800_0305, "rawHex": "0x08000305", "bitWidth": 32},
         },
     }
+
+
+def test_symbolization_rejects_ram_value_claimed_by_executable_symbol(fault_env):
+    *_rest, client, _request = fault_env
+    image = _mutate_symbol(
+        fault_env[1], "main", value=0x2000_0201, shndx=3
+    )
+    request = _rebind_elf(fault_env, image)
+    client.memory[0x2000_0000] = _frame(pc=0x2000_0201)
+
+    result = asyncio.run(analyze_fault(request, client))
+
+    assert result.ok is True
+    assert result.data.to_dict()["symbols"]["pc"] == {
+        "status": "unavailable",
+        "address": {"value": 0x2000_0201, "rawHex": "0x20000201", "bitWidth": 32},
+    }
+
+
+@pytest.mark.parametrize("shndx", [0, 0xFFF1, 100])
+def test_symbolization_rejects_undefined_absolute_and_invalid_section_indices(
+    fault_env, shndx: int
+):
+    *_rest, client, _request = fault_env
+    image = _mutate_symbol(fault_env[1], "main", shndx=shndx)
+    request = _rebind_elf(fault_env, image)
+
+    result = asyncio.run(analyze_fault(request, client))
+
+    assert result.ok is True
+    assert result.data.to_dict()["symbols"]["pc"]["status"] == "unavailable"
+
+
+def test_symbolization_rejects_symbol_extent_outside_owning_section(fault_env):
+    *_rest, client, _request = fault_env
+    image = _mutate_symbol(fault_env[1], "main", value=0x0800_0135, size=0)
+    request = _rebind_elf(fault_env, image)
+    client.memory[0x2000_0000] = _frame(pc=0x0800_0135)
+
+    result = asyncio.run(analyze_fault(request, client))
+
+    assert result.ok is True
+    assert result.data.to_dict()["symbols"]["pc"]["status"] == "unavailable"
+
+
+def test_zero_size_function_resolves_only_at_its_owned_executable_start(fault_env):
+    *_rest, client, _request = fault_env
+    image = _mutate_symbol(fault_env[1], "main", size=0)
+    request = _rebind_elf(fault_env, image)
+
+    result = asyncio.run(analyze_fault(request, client))
+
+    symbol = result.data.to_dict()["symbols"]["pc"]
+    assert symbol["status"] == "resolved"
+    assert symbol["name"] == "main"
+    assert symbol["offset"] == 0
+
+
+def test_duplicate_identical_symbols_are_ambiguous_not_collapsed(fault_env):
+    *_rest, client, _request = fault_env
+    main_offset, main = _symbol_entry(fault_env[1], "main")
+    assert main_offset > 0
+    image = _mutate_symbol(
+        fault_env[1],
+        "local_case_two",
+        name_offset=main["name"],
+        value=main["value"],
+        size=main["size"],
+        shndx=main["shndx"],
+    )
+    request = _rebind_elf(fault_env, image)
+
+    result = asyncio.run(analyze_fault(request, client))
+
+    assert result.ok is True
+    assert result.data.to_dict()["symbols"]["pc"]["status"] == "unavailable"
+
+
+@pytest.mark.parametrize("limit_name", ["_MAX_ELF_SECTIONS", "_MAX_ELF_SYMBOLS"])
+def test_symbolization_fails_closed_when_elf_catalog_limit_is_exceeded(
+    fault_env, monkeypatch: pytest.MonkeyPatch, limit_name: str
+):
+    *_rest, client, request = fault_env
+    monkeypatch.setattr(fault_mod, limit_name, 1, raising=False)
+
+    result = asyncio.run(analyze_fault(request, client))
+
+    assert result.ok is True
+    assert result.data.to_dict()["symbols"]["pc"]["status"] == "unavailable"
+
+
+def test_cortex_m4_fault_bits_include_hardfault_nmi_and_exclude_armv8_stkof(fault_env):
+    *_rest, client, request = fault_env
+    client.memory[SCB_BASE] = _status_bytes(
+        shcsr=(1 << 2) | (1 << 5), cfsr=(1 << 20)
+    )
+
+    result = asyncio.run(analyze_fault(request, client))
+
+    status = result.data.to_dict()["faultStatus"]
+    assert status["shcsr"]["active"] == ["hardFaultActive", "nmiActive"]
+    assert status["cfsr"]["active"] == []
 
 
 def test_invalid_fault_address_bits_never_publish_scb_address_values(fault_env):
