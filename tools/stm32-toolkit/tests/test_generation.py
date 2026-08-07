@@ -1532,17 +1532,16 @@ def test_tasks_snapshot_exact(tmp_path):
     assert labels == [
         "STM32 Toolkit: Build Debug",
         "STM32 Toolkit: Build Release",
-        "STM32 Toolkit: Flash",
-        "STM32 Toolkit: Debug Handoff Begin",
-        "STM32 Toolkit: Debug Handoff End",
     ]
     for task in payload["tasks"]:
         assert task["type"] == "process"
         assert task["command"] == "stm32-toolkit"
         assert isinstance(task["args"], list)
-        assert "${workspaceFolder}" in task["args"]
+        assert task["args"][:2] == ["build", "--preset"]
+        assert task["args"][2] in ("arm-debug", "arm-release")
+        assert task["args"][3:] == ["--project", "${workspaceFolder}"]
     joined = json.dumps(payload)
-    for forbidden in ("pyocd", "cmake", "arm-none-eabi", "shell", "ninja", "objcopy"):
+    for forbidden in ("pyocd", "cmake", "arm-none-eabi", "shell", "ninja", "objcopy", "flash", "handoff"):
         assert forbidden not in joined
 
 
@@ -2001,13 +2000,13 @@ def _valid_manifest_bytes(root: Path, extra_records=()) -> bytes:
         (b"[]", "type"),
         (b"{}", "version"),
         (b'{"extra": 1}', "key"),
-        (b'{"schemaVersion":2,"tool":"stm32-toolkit","toolVersion":"0.2.0","templateVersion":1,"projectManifestSha256":"' + b"a" * 64 + b'","files":[]}', "version"),
-        (b'{"schemaVersion":1,"tool":"other","toolVersion":"0.2.0","templateVersion":1,"projectManifestSha256":"' + b"a" * 64 + b'","files":[]}', "tool"),
+        (b'{"schemaVersion":2,"tool":"stm32-toolkit","toolVersion":"0.3.0","templateVersion":1,"projectManifestSha256":"' + b"a" * 64 + b'","files":[]}', "version"),
+        (b'{"schemaVersion":1,"tool":"other","toolVersion":"0.3.0","templateVersion":1,"projectManifestSha256":"' + b"a" * 64 + b'","files":[]}', "tool"),
         (b'{"schemaVersion":1,"tool":"stm32-toolkit","toolVersion":"9.9.9","templateVersion":1,"projectManifestSha256":"' + b"a" * 64 + b'","files":[]}', "version"),
-        (b'{"schemaVersion":1,"tool":"stm32-toolkit","toolVersion":"0.2.0","templateVersion":2,"projectManifestSha256":"' + b"a" * 64 + b'","files":[]}', "version"),
-        (b'{"schemaVersion":1,"tool":"stm32-toolkit","toolVersion":"0.2.0","templateVersion":1,"projectManifestSha256":"zzz","files":[]}', "hash"),
-        (b'{"schemaVersion":1,"tool":"stm32-toolkit","toolVersion":"0.2.0","templateVersion":1,"projectManifestSha256":"' + b"a" * 64 + b'","files":{}}', "type"),
-        (b'{"schemaVersion":1,"tool":"stm32-toolkit","toolVersion":"0.2.0","templateVersion":1,"projectManifestSha256":"' + b"a" * 64 + b'","files":[1]}', "type"),
+        (b'{"schemaVersion":1,"tool":"stm32-toolkit","toolVersion":"0.3.0","templateVersion":2,"projectManifestSha256":"' + b"a" * 64 + b'","files":[]}', "version"),
+        (b'{"schemaVersion":1,"tool":"stm32-toolkit","toolVersion":"0.3.0","templateVersion":1,"projectManifestSha256":"zzz","files":[]}', "hash"),
+        (b'{"schemaVersion":1,"tool":"stm32-toolkit","toolVersion":"0.3.0","templateVersion":1,"projectManifestSha256":"' + b"a" * 64 + b'","files":{}}', "type"),
+        (b'{"schemaVersion":1,"tool":"stm32-toolkit","toolVersion":"0.3.0","templateVersion":1,"projectManifestSha256":"' + b"a" * 64 + b'","files":[1]}', "type"),
     ],
 )
 def test_malformed_prior_manifests_are_rejected(tmp_path, content, rule):

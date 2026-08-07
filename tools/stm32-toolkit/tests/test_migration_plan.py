@@ -900,7 +900,7 @@ def test_plan_id_includes_expected_payload(tmp_path):
     assert payload["plan_version"] == 1
     assert payload["inspection_sha256"] == plan.inspection_sha256
     assert payload["git"]["head"] == plan.git.head
-    assert payload["toolkit_version"] == "0.2.0"
+    assert payload["toolkit_version"] == "0.3.0"
     assert payload["patch_content_sha256"] == hashlib.sha256(
         b"".join(patch.unified_diff.encode("utf-8") for patch in plan.patches)
     ).hexdigest()
@@ -1511,7 +1511,7 @@ def test_manifest_mapping_and_deterministic_uuid(tmp_path):
     assert payload["schemaVersion"] == 2
     expected_uuid = str(uuid.uuid5(UUID_NAMESPACE, "app.uvprojx\nLegacy\nSTM32F429ZGTx"))
     assert payload["logicalProjectId"] == expected_uuid
-    assert payload["generatedBy"] == {"tool": "stm32-toolkit", "version": "0.2.0"}
+    assert payload["generatedBy"] == {"tool": "stm32-toolkit", "version": "0.3.0"}
     assert payload["project"] == {"name": "my app v1", "origin": "keil-migration"}
     assert payload["target"] == {
         "device": "STM32F429ZGTx",
@@ -1615,7 +1615,7 @@ def test_manifest_validation_failure_is_stable(tmp_path):
     bad = {
         "schemaVersion": 2,
         "logicalProjectId": "not-a-uuid",
-        "generatedBy": {"tool": "stm32-toolkit", "version": "0.2.0"},
+        "generatedBy": {"tool": "stm32-toolkit", "version": "0.3.0"},
         "project": {"name": "x", "origin": "keil-migration"},
         "target": {"device": "d", "core": "c"},
         "framework": {"type": "spl", "version": None},

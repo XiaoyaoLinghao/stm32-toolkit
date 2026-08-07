@@ -35,14 +35,15 @@ def test_plugin_manifest_uses_standard_skill_discovery_and_version():
     assert plugin == {
         "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
         "name": "stm32-toolkit",
-        "version": "0.2.0",
+        "version": "0.3.0",
         "description": (
-            "Foundation for AI-assisted STM32 development with read-only "
-            "project detection and environment diagnosis"
+            "AI-assisted STM32 development with read-only Keil inspection, "
+            "guarded ARMCC-to-GCC conversion, managed GCC/CMake configuration, "
+            "and reproducible builds"
         ),
         "author": {"name": "STM32 Toolkit Team"},
     }
-    assert plugin["version"] == __version__ == "0.2.0"
+    assert plugin["version"] == __version__ == "0.3.0"
 
 
 def test_mcp_config_binds_only_the_plugin_launcher_to_claude_roots():
@@ -117,14 +118,14 @@ def test_launcher_reports_missing_versioned_runtime_without_interpreter_fallback
     assert result.returncode != 0
     assert result.stdout == ""
     assert "/stm32-toolkit:setup-stm32-env" in result.stderr
-    assert "runtime/0.2.0/Scripts/python.exe" in result.stderr.replace("\\", "/")
+    assert "runtime/0.3.0/Scripts/python.exe" in result.stderr.replace("\\", "/")
     assert not marker.exists()
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows cmd.exe launcher")
 def test_launcher_forwards_arguments_and_preserves_runtime_exit_code(tmp_path: Path):
     plugin_data = tmp_path / "plugin data"
-    runtime = plugin_data / "runtime" / "0.2.0"
+    runtime = plugin_data / "runtime" / "0.3.0"
     venv.EnvBuilder(with_pip=False).create(runtime)
     module_root = tmp_path / "stub module"
     package = module_root / "stm32_toolkit"
@@ -179,7 +180,7 @@ def test_setup_skill_has_an_explicit_read_only_check_and_authorized_mutation_con
         "read-only",
         "offline",
         "explicit authorization",
-        "${CLAUDE_PLUGIN_DATA}/runtime/0.2.0",
+        "${CLAUDE_PLUGIN_DATA}/runtime/0.3.0",
         "${CLAUDE_PLUGIN_ROOT}/tools/stm32-toolkit",
         "Host Python 3.10+",
         "ARM GCC",
@@ -221,7 +222,12 @@ def test_only_foundation_skill_is_discovered_and_follow_on_sources_are_preserved
         for path in FOLLOW_ON_SKILLS.glob("*/SKILL.md")
     }
 
-    assert discovered == {"setup-stm32-env"}
+    assert discovered == {
+        "setup-stm32-env",
+        "migrate-keil",
+        "configure-stm32-project",
+        "build-firmware",
+    }
     assert preserved == LEGACY_SKILLS
 
 
@@ -257,7 +263,7 @@ def test_setup_helper_uses_explicit_paths_without_ambient_environment(tmp_path: 
     assert result.returncode == 0, result.stderr
     payload = json.loads(result.stdout)
     assert payload["mode"] == "CHECK"
-    assert payload["runtime"]["path"].endswith("/runtime/0.2.0")
+    assert payload["runtime"]["path"].endswith("/runtime/0.3.0")
     assert payload["project"] == project.as_posix()
     assert payload["mutated"] is False
     assert not plugin_data.exists()

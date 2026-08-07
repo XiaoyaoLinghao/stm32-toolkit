@@ -90,8 +90,8 @@ def test_runtime_validates_a_generated_session_before_creating_data(
     assert not data_root.exists()
 
 
-def test_server_registers_exactly_the_project_bound_zero_argument_tools(tmp_path: Path):
-    """Catches an MCP registration exposing a root override or an extra tool."""
+def test_server_registers_exactly_the_seven_project_bound_tools(tmp_path: Path):
+    """Catches a registration exposing a root override or an extra tool."""
     project = tmp_path / "project"
     project.mkdir()
 
@@ -100,13 +100,29 @@ def test_server_registers_exactly_the_project_bound_zero_argument_tools(tmp_path
 
     assert server.name == "STM32 Toolkit"
     assert "permanently bound" in server.instructions
+    assert "explicitly authorized" in server.instructions
+    assert "only read-only foundation tools" not in server.instructions
     assert {tool.name for tool in tools} == {
         "stm32_doctor",
         "stm32_project_detect",
         "stm32_project_context",
+        "stm32_keil_inspect",
+        "stm32_keil_convert",
+        "stm32_project_configure",
+        "stm32_build",
     }
-    assert all(tool.inputSchema.get("properties", {}) == {} for tool in tools)
-    assert all(not tool.inputSchema.get("required", []) for tool in tools)
+    zero_argument_tools = {
+        "stm32_doctor",
+        "stm32_project_detect",
+        "stm32_project_context",
+    }
+    for tool in tools:
+        if tool.name in zero_argument_tools:
+            assert tool.inputSchema.get("properties", {}) == {}
+            assert not tool.inputSchema.get("required", [])
+        else:
+            assert "projectRoot" not in tool.inputSchema.get("properties", {})
+            assert "dataRoot" not in tool.inputSchema.get("properties", {})
 
 
 def test_main_runs_the_server_over_stdio(monkeypatch, tmp_path: Path):

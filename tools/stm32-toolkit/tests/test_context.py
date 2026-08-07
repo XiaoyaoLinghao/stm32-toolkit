@@ -92,6 +92,9 @@ def test_configured_context_reports_evidence_sections_without_build(
             "hardware": {"probe": None, "state": "unavailable"},
             "capabilities": {
                 "build": True,
+                "keilInspect": False,
+                "keilConvert": False,
+                "configure": False,
                 "flash": False,
                 "hostTest": False,
                 "targetTest": False,
@@ -105,7 +108,9 @@ def test_configured_context_reports_evidence_sections_without_build(
     assert (tmp_path.parent / "data" / "projects" / result.data["workspace"]["workspaceId"] / "sessions" / "session-a").is_dir()
 
 
-def test_keil_context_stays_read_only_without_a_logical_project_id(tmp_path: Path):
+def test_keil_context_stays_read_only_and_reports_inspection_capabilities(
+    tmp_path: Path,
+):
     (tmp_path / "legacy.uvprojx").write_text("<Project/>", encoding="utf-8")
     data_root = tmp_path / "data"
 
@@ -119,8 +124,11 @@ def test_keil_context_stays_read_only_without_a_logical_project_id(tmp_path: Pat
             "files": ["legacy.uvprojx"],
             "recommendedAction": {
                 "id": "migrate-keil",
-                "available": False,
-                "explanation": "Keil migration is planned but unavailable in this foundation release.",
+                "available": True,
+                "explanation": (
+                    "Inspect the Keil project and convert ARMCC sources to GCC "
+                    "with a read-only plan and explicit authorization."
+                ),
             },
         },
         "workspace": None,
@@ -136,6 +144,9 @@ def test_keil_context_stays_read_only_without_a_logical_project_id(tmp_path: Pat
         "hardware": {"probe": None, "state": "unavailable"},
         "capabilities": {
             "build": False,
+            "keilInspect": True,
+            "keilConvert": True,
+            "configure": False,
             "flash": False,
             "hostTest": False,
             "targetTest": False,
@@ -144,9 +155,10 @@ def test_keil_context_stays_read_only_without_a_logical_project_id(tmp_path: Pat
         },
         "recommendedActions": [{
             "id": "migrate-keil",
-            "available": False,
+            "available": True,
             "explanation": (
-                "Keil migration is planned but unavailable in this foundation release."
+                "Inspect the Keil project and convert ARMCC sources to GCC "
+                "with a read-only plan and explicit authorization."
             ),
         }],
     }
@@ -663,3 +675,34 @@ def test_data_root_resolve_os_error_maps_to_unavailable(
 
     assert result.code == "PROJECT_CONTEXT_UNAVAILABLE"
     assert result.details == {"field": "dataRoot", "path": str(data_root)}
+
+
+def test_configured_v2_project_reports_configure_capability(
+    tmp_path: Path, monkeypatch
+):
+    root = prepare_project(tmp_path)
+
+    result = build_project_context(root, tmp_path.parent / "data", "session-a")
+
+    assert result.ok is True
+    assert result.data["capabilities"]["configure"] is True
+    assert result.data["capabilities"]["keilInspect"] is False
+    assert result.data["capabilities"]["keilConvert"] is False
+    assert result.data["capabilities"]["build"] is True
+
+
+def test_unconfigured_kinds_keep_hardware_capabilities_false(tmp_path: Path):
+    for marker in ("board.ioc", "CMakeLists.txt"):
+        project = tmp_path / marker.replace(".", "_")
+        project.mkdir()
+        (project / marker).write_text("x", encoding="utf-8")
+
+        result = build_project_context(project, tmp_path / "data", "session-a")
+
+        assert result.ok is True
+        capabilities = result.data["capabilities"]
+        assert capabilities["keilInspect"] is False
+        assert capabilities["keilConvert"] is False
+        assert capabilities["configure"] is False
+        for key in ("flash", "hostTest", "targetTest", "monitor", "breakpointDebug"):
+            assert capabilities[key] is False

@@ -4,13 +4,30 @@ import pytest
 
 from stm32_toolkit.detection import PlannedAction, ProjectDetection, detect_project
 
-def _assert_unavailable_action(result: ProjectDetection, action_id: str) -> None:
+MIGRATE_EXPLANATION = (
+    "Inspect the Keil project and convert ARMCC sources to GCC "
+    "with a read-only plan and explicit authorization."
+)
+CONFIGURE_EXPLANATION = (
+    "Generate managed GCC/CMake and VS Code configuration "
+    "with a read-only plan and explicit authorization."
+)
+CONFIGURE_PREREQUISITE = (
+    "Project configuration requires a valid Schema v2 .stm32-project.json manifest."
+)
+CREATE_EXPLANATION = (
+    "Project creation is planned but unavailable in this foundation release."
+)
+
+
+def _assert_available(result: ProjectDetection, action_id: str) -> None:
+    assert result.recommended_action.id == action_id
+    assert result.recommended_action.available is True
+
+
+def _assert_unavailable(result: ProjectDetection, action_id: str) -> None:
     assert result.recommended_action.id == action_id
     assert result.recommended_action.available is False
-    assert result.recommended_action.explanation.endswith(
-        "is planned but unavailable in this foundation release."
-    )
-
 
 
 def test_manifest_wins_over_other_markers(tmp_path: Path):
@@ -23,10 +40,13 @@ def test_manifest_wins_over_other_markers(tmp_path: Path):
 
     assert result.kind == "configured"
     assert result.files == (".stm32-project.json",)
-    _assert_unavailable_action(result, "configure-project")
+    _assert_available(result, "configure-project")
+    assert result.recommended_action.explanation == CONFIGURE_EXPLANATION
 
 
-def test_keil_project_recommends_migration_and_sorts_marker_names(tmp_path: Path):
+def test_keil_project_recommends_available_migration_and_sorts_marker_names(
+    tmp_path: Path,
+):
     (tmp_path / "zeta.uvprojx").write_text("<Project/>", encoding="utf-8")
     (tmp_path / "alpha.uvprojx").write_text("<Project/>", encoding="utf-8")
 
@@ -34,10 +54,13 @@ def test_keil_project_recommends_migration_and_sorts_marker_names(tmp_path: Path
 
     assert result.kind == "keil"
     assert result.files == ("alpha.uvprojx", "zeta.uvprojx")
-    _assert_unavailable_action(result, "migrate-keil")
+    _assert_available(result, "migrate-keil")
+    assert result.recommended_action.explanation == MIGRATE_EXPLANATION
 
 
-def test_cubemx_wins_over_cmake_and_sorts_marker_names(tmp_path: Path):
+def test_cubemx_wins_over_cmake_and_reports_the_configuration_prerequisite(
+    tmp_path: Path,
+):
     (tmp_path / "zeta.ioc").write_text("Mcu.Name=STM32F4", encoding="utf-8")
     (tmp_path / "alpha.ioc").write_text("Mcu.Name=STM32F4", encoding="utf-8")
     (tmp_path / "CMakeLists.txt").write_text("project(example)", encoding="utf-8")
@@ -46,27 +69,32 @@ def test_cubemx_wins_over_cmake_and_sorts_marker_names(tmp_path: Path):
 
     assert result.kind == "cubemx"
     assert result.files == ("alpha.ioc", "zeta.ioc")
-    _assert_unavailable_action(result, "configure-project")
+    _assert_unavailable(result, "configure-project")
+    assert result.recommended_action.explanation == CONFIGURE_PREREQUISITE
 
 
-def test_cmake_project_recommends_configuration(tmp_path: Path):
+def test_cmake_project_without_manifest_reports_the_configuration_prerequisite(
+    tmp_path: Path,
+):
     (tmp_path / "CMakeLists.txt").write_text("project(example)", encoding="utf-8")
 
     result = detect_project(tmp_path)
 
     assert result.kind == "cmake"
     assert result.files == ("CMakeLists.txt",)
-    _assert_unavailable_action(result, "configure-project")
+    _assert_unavailable(result, "configure-project")
+    assert result.recommended_action.explanation == CONFIGURE_PREREQUISITE
 
 
-def test_unknown_project_recommends_creation(tmp_path: Path):
+def test_unknown_project_recommends_unavailable_creation(tmp_path: Path):
     (tmp_path / "README.md").write_text("empty", encoding="utf-8")
 
     result = detect_project(tmp_path)
 
     assert result.kind == "unknown"
     assert result.files == ()
-    _assert_unavailable_action(result, "create-project")
+    _assert_unavailable(result, "create-project")
+    assert result.recommended_action.explanation == CREATE_EXPLANATION
 
 
 def test_detection_is_immutable_and_serializes_json_style_values(tmp_path: Path):
@@ -79,8 +107,8 @@ def test_detection_is_immutable_and_serializes_json_style_values(tmp_path: Path)
         "files": ["legacy.uvprojx"],
         "recommended_action": {
             "id": "migrate-keil",
-            "available": False,
-            "explanation": "Keil migration is planned but unavailable in this foundation release.",
+            "available": True,
+            "explanation": MIGRATE_EXPLANATION,
         },
     }
     with pytest.raises(AttributeError):
@@ -105,12 +133,13 @@ def test_project_detection_is_frozen():
         recommended_action=PlannedAction(
             id="create-project",
             available=False,
-            explanation="Project creation is planned but unavailable in this foundation release.",
+            explanation=CREATE_EXPLANATION,
         ),
     )
 
     with pytest.raises(AttributeError):
         detection.files = ("unexpected",)
+
 
 @pytest.mark.parametrize("root_name", ["missing", "not-a-directory"])
 def test_missing_or_non_directory_root_is_unknown(tmp_path: Path, root_name: str):
@@ -122,7 +151,7 @@ def test_missing_or_non_directory_root_is_unknown(tmp_path: Path, root_name: str
 
     assert result.kind == "unknown"
     assert result.files == ()
-    _assert_unavailable_action(result, "create-project")
+    _assert_unavailable(result, "create-project")
 
 
 def test_marker_shaped_directories_are_ignored_in_precedence(tmp_path: Path):
@@ -136,7 +165,7 @@ def test_marker_shaped_directories_are_ignored_in_precedence(tmp_path: Path):
 
     assert result.kind == "keil"
     assert result.files == ("actual.uvprojx",)
-    _assert_unavailable_action(result, "migrate-keil")
+    _assert_available(result, "migrate-keil")
 
 
 def test_directory_only_markers_are_unknown(tmp_path: Path):
@@ -147,4 +176,4 @@ def test_directory_only_markers_are_unknown(tmp_path: Path):
 
     assert result.kind == "unknown"
     assert result.files == ()
-    _assert_unavailable_action(result, "create-project")
+    _assert_unavailable(result, "create-project")
