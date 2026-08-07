@@ -702,8 +702,8 @@ def test_configured_v2_project_reports_configure_capability(
     managed = result.data["build"]
     assert managed["managedManifestPresent"] is True
     assert managed["managedManifestValid"] is True
-    assert managed["managedFilesMissing"] == []
-    assert managed["managedFilesDrifted"] == []
+    assert managed["managedFilesMissing"] == ()
+    assert managed["managedFilesDrifted"] == ()
 
 
 # ---------------------------------------------------------------------------
@@ -786,8 +786,8 @@ def test_managed_file_drift_disables_build_capability(tmp_path: Path, monkeypatc
     assert result.ok is True
     assert result.data["capabilities"]["build"] is False
     assert result.data["build"]["managedManifestValid"] is True
-    assert result.data["build"]["managedFilesDrifted"] == ["CMakeLists.txt"]
-    assert result.data["build"]["managedFilesMissing"] == []
+    assert result.data["build"]["managedFilesDrifted"] == ("CMakeLists.txt",)
+    assert result.data["build"]["managedFilesMissing"] == ()
 
 
 def test_managed_file_removal_disables_build_capability(tmp_path: Path, monkeypatch):
@@ -800,8 +800,8 @@ def test_managed_file_removal_disables_build_capability(tmp_path: Path, monkeypa
     assert result.ok is True
     assert result.data["capabilities"]["build"] is False
     assert result.data["build"]["managedManifestValid"] is True
-    assert result.data["build"]["managedFilesMissing"] == [".vscode/tasks.json"]
-    assert result.data["build"]["managedFilesDrifted"] == []
+    assert result.data["build"]["managedFilesMissing"] == (".vscode/tasks.json",)
+    assert result.data["build"]["managedFilesDrifted"] == ()
 
 
 def test_stale_managed_manifest_disables_build_capability(tmp_path: Path, monkeypatch):
@@ -817,8 +817,8 @@ def test_stale_managed_manifest_disables_build_capability(tmp_path: Path, monkey
     assert result.ok is True
     assert result.data["capabilities"]["build"] is False
     assert result.data["build"]["managedManifestValid"] is False
-    assert result.data["build"]["managedFilesMissing"] == []
-    assert result.data["build"]["managedFilesDrifted"] == []
+    assert result.data["build"]["managedFilesMissing"] == ()
+    assert result.data["build"]["managedFilesDrifted"] == ()
 
 
 def test_invalid_managed_manifest_disables_build_capability(tmp_path: Path, monkeypatch):

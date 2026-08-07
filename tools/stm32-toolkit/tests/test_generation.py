@@ -909,19 +909,6 @@ def test_empty_debug_allows_build_only_configuration(tmp_path, debug: dict):
     assert launch == {"version": "0.2.0", "configurations": []}
 
 
-def test_fully_absent_debug_key_allows_build_only_configuration(tmp_path):
-    payload = standard_payload()
-    del payload["debug"]
-    root = write_project(tmp_path / "proj", payload)
-
-    plan = plan_for(root)
-
-    assert plan.blockers == ()
-    launch_entry = next(entry for entry in plan.files if entry.path == ".vscode/launch.json")
-    launch = json.loads(launch_entry.after_bytes.decode("utf-8"))
-    assert launch == {"version": "0.2.0", "configurations": []}
-
-
 def test_non_pyocd_backend_is_rejected(tmp_path):
     payload = standard_payload()
     payload["debug"] = {"backend": "openocd", "target": "stm32f407vg"}

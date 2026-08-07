@@ -109,8 +109,32 @@ def _require_plan_id(value: object) -> None:
 
 
 def _apply_intent(plan_id: object, authorized: object) -> bool:
-    """True when the caller's arguments indicate an apply request."""
+    """True when the caller's arguments indicate an apply request.
+
+    Only the JSON boolean ``True`` authorizes apply; ``False`` is the
+    read-only plan mode.  Every other value is an apply intent that fails
+    closed with ``AUTHORIZATION_REQUIRED`` before any core call.
+    """
     return plan_id is not None or authorized is not False
+
+
+def _authorization_failure(
+    operation: str, authorized: object
+) -> OperationResult[None] | None:
+    """Return the fail-closed authorization envelope for non-boolean values.
+
+    Only ``authorized is False`` may enter read-only planning and only
+    ``authorized is True`` may apply; strings, integers, null, and
+    containers always fail closed here without inspect/plan/apply work.
+    """
+    if type(authorized) is bool:
+        return None
+    return _failure(
+        operation,
+        AUTHORIZATION_REQUIRED,
+        "authorization must be the JSON boolean true",
+        {"field": "authorized", "rule": "type"},
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -188,6 +212,17 @@ def convert_keil_workflow(
             error.details,
         )
 
+    closed = _authorization_failure(operation, authorized)
+    if closed is not None:
+        return closed
+    if authorized is False and plan_id is not None:
+        return _failure(
+            operation,
+            AUTHORIZATION_REQUIRED,
+            "authorization is required to apply the conversion plan",
+            {"field": "authorized", "rule": "required"},
+        )
+
     try:
         inspection = inspect_keil(root, uvprojx_path, target)
         plan = plan_keil_conversion(root, inspection)
@@ -203,14 +238,7 @@ def convert_keil_workflow(
             {"field": "plan", "rule": "unavailable"},
         )
 
-    if authorized is not True:
-        if plan_id is not None:
-            return _failure(
-                operation,
-                AUTHORIZATION_REQUIRED,
-                "authorization is required to apply the conversion plan",
-                {"field": "authorized", "rule": "required"},
-            )
+    if authorized is False:
         return OperationResult.success("keil-conversion-plan", plan.to_dict())
 
     try:
@@ -259,6 +287,17 @@ def configure_project_workflow(
             error.details,
         )
 
+    closed = _authorization_failure(operation, authorized)
+    if closed is not None:
+        return closed
+    if authorized is False and plan_id is not None:
+        return _failure(
+            operation,
+            AUTHORIZATION_REQUIRED,
+            "authorization is required to apply the configuration plan",
+            {"field": "authorized", "rule": "required"},
+        )
+
     try:
         model = load_project_model(root)
         plan = plan_project_configuration(model)
@@ -274,14 +313,7 @@ def configure_project_workflow(
             {"field": "plan", "rule": "unavailable"},
         )
 
-    if authorized is not True:
-        if plan_id is not None:
-            return _failure(
-                operation,
-                AUTHORIZATION_REQUIRED,
-                "authorization is required to apply the configuration plan",
-                {"field": "authorized", "rule": "required"},
-            )
+    if authorized is False:
         return OperationResult.success("project-configuration-plan", plan.to_dict())
 
     try:
@@ -327,7 +359,7 @@ def build_firmware_workflow(
             error.details,
         )
 
-    if authorized is not True:
+    if type(authorized) is not bool or authorized is not True:
         return _failure(
             "build",
             AUTHORIZATION_REQUIRED,

@@ -1017,14 +1017,14 @@ def test_snapshot_hash_pass_rejects_missing_race(tmp_path: Path, monkeypatch):
 def test_walk_depth_escape_is_rejected(tmp_path: Path):
     root = prepare_project(tmp_path, git_repo=False)
     with pytest.raises(BuildError) as error:
-        identity_mod._walk_include(root, "Inc", [], depth=65)
+        identity_mod._walk_include(root, "Inc", [], {}, set(), depth=65)
     assert error.value.details == {"path": "Inc", "rule": "escape"}
 
 
 def test_require_input_path_rejects_non_portable_path(tmp_path: Path):
     root = prepare_project(tmp_path, git_repo=False)
     with pytest.raises(BuildError) as error:
-        identity_mod._require_input_path(root, "../escape.c", [])
+        identity_mod._require_input_path(root, "../escape.c", [], {})
     assert error.value.details == {"path": "../escape.c", "rule": "portable"}
 
 

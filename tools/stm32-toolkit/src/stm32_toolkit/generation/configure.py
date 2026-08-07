@@ -346,7 +346,19 @@ def _validate_options(model: ProjectModel) -> dict[str, object]:
             "ELF output path is not supported",
             {"field": "build.elf", "rule": "value"},
         )
-    if model.debug.backend != "pyocd" or not model.debug.target:
+    # A fully absent debug spec is a valid build-only configuration; it
+    # never blocks configuration and never guesses a debug backend or
+    # target.  A partially specified or unsupported debug spec still fails
+    # closed with the accepted error.
+    if (model.debug.backend is None) != (model.debug.target is None):
+        raise _raise_error(
+            "GENERATION_MODEL_INVALID",
+            "debug backend or target is not supported",
+            {"field": "debug.backend", "rule": "value"},
+        )
+    if model.debug.backend is not None and (
+        model.debug.backend != "pyocd" or not model.debug.target
+    ):
         raise _raise_error(
             "GENERATION_MODEL_INVALID",
             "debug backend or target is not supported",
@@ -961,24 +973,34 @@ def _build_contexts(
             ],
         }
     }
-    launch_config: dict[str, object] = {
-        "name": "STM32 Toolkit: Debug",
-        "type": "cortex-debug",
-        "request": "launch",
-        "servertype": "pyocd",
-        "target": model.debug.target,
-        "executable": "${workspaceFolder}/" + model.build.elf,
-    }
-    if model.debug.svd is not None:
-        launch_config["svdFile"] = "${workspaceFolder}/" + model.debug.svd
-    launch_config["preLaunchTask"] = "STM32 Toolkit: Debug Handoff Begin"
-    launch_config["postDebugTask"] = "STM32 Toolkit: Debug Handoff End"
-    launch = {
-        "launch": {
-            "version": "0.2.0",
-            "configurations": [launch_config],
+    if model.debug.backend is None:
+        # Build-only configuration: a deterministic launch document that
+        # claims no usable hardware debugging (no cortex-debug entry).
+        launch = {
+            "launch": {
+                "version": "0.2.0",
+                "configurations": [],
+            }
         }
-    }
+    else:
+        launch_config: dict[str, object] = {
+            "name": "STM32 Toolkit: Debug",
+            "type": "cortex-debug",
+            "request": "launch",
+            "servertype": "pyocd",
+            "target": model.debug.target,
+            "executable": "${workspaceFolder}/" + model.build.elf,
+        }
+        if model.debug.svd is not None:
+            launch_config["svdFile"] = "${workspaceFolder}/" + model.debug.svd
+        launch_config["preLaunchTask"] = "STM32 Toolkit: Debug Handoff Begin"
+        launch_config["postDebugTask"] = "STM32 Toolkit: Debug Handoff End"
+        launch = {
+            "launch": {
+                "version": "0.2.0",
+                "configurations": [launch_config],
+            }
+        }
     c_cpp = {
         "c_cpp": {
             "version": 4,

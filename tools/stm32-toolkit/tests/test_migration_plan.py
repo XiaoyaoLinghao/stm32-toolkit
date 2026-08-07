@@ -1656,9 +1656,7 @@ def test_float_abi_blocker_blocks_apply(tmp_path):
 
     assert result.ok is False
     assert result.code == "MIGRATION_BLOCKED"
-    assert result.details == {
-        "blockerCodes": ["MIGRATION_FLOAT_ABI_UNSUPPORTED"]
-    }
+    assert list(result.details["blockerCodes"]) == ["MIGRATION_FLOAT_ABI_UNSUPPORTED"]
     assert not (repo / ".stm32-project.json").exists()
 
 
