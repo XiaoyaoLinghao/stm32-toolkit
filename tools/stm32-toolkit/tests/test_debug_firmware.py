@@ -30,6 +30,30 @@ from stm32_toolkit.debug.model import (
     TypedLocation,
     TypedValue,
 )
+
+
+def test_debug_public_api_is_complete_and_pyocd_lazy() -> None:
+    import sys
+
+    import stm32_toolkit.debug as debug
+
+    expected = {
+        "DwarfCatalog",
+        "FaultAnalysisRequest",
+        "RegisterReadRequest",
+        "SampleVariablesRequest",
+        "SvdSelection",
+        "VariableReadRequest",
+        "analyze_fault",
+        "bind_debug_firmware",
+        "read_registers",
+        "read_variables",
+        "sample_variables",
+        "select_svd",
+    }
+    assert expected <= set(debug.__all__)
+    assert all(hasattr(debug, name) for name in expected)
+    assert not any(name == "pyocd" or name.startswith("pyocd.") for name in sys.modules)
 from stm32_toolkit.probe.backend import ProbeAttachmentEvidence
 from stm32_toolkit.probe.model import OperationLevel, PROBE_PROTOCOL_VERSION
 from test_build_runner import prepare_project
