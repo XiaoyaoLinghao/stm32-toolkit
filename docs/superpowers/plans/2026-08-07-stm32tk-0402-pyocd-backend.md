@@ -46,7 +46,7 @@
 - Consumes: `ProbeBackendError` and `ProbeDescriptor` from `stm32_toolkit.probe.backend`.
 - Produces: `PyOCDBackend(driver: PyOCDDriver | None = None, *, frequency_hz: int = 1_000_000)` and the internal `PyOCDDriver.list_probes()/create_session()` boundary.
 
-- [ ] **Step 1: Write the exact-enumeration RED tests**
+- [x] **Step 1: Write the exact-enumeration RED tests**
 
   Add literal expectations proving deterministic descriptor ordering, case-sensitive equality, duplicate-exact rejection, partial/wildcard rejection, and stable dependency/enumeration failures. The key behavioral tests use this shape:
 
@@ -68,13 +68,13 @@
       assert backend.driver.created_sessions == []
   ```
 
-- [ ] **Step 2: Run the new file and verify RED**
+- [x] **Step 2: Run the new file and verify RED**
 
   Run: `C:\tmp\stm32tk-0402-venv\Scripts\python.exe -m pytest tools/stm32-toolkit/tests/test_pyocd_backend.py -q`
 
   Expected: collection fails because `stm32_toolkit.probe.pyocd_backend` and `fakes.fake_pyocd` do not exist.
 
-- [ ] **Step 3: Implement the minimal lazy driver and enumeration path**
+- [x] **Step 3: Implement the minimal lazy driver and enumeration path**
 
   Define this narrow boundary and load PyOCD only when the default driver is first needed:
 
@@ -97,7 +97,7 @@
 
   The default driver imports `DebugProbeAggregator` and `Session` inside its constructor. Import failure maps to `PROBE_BACKEND_UNAVAILABLE`. `list_probes()` enumerates without a filter, validates each full `unique_id`, bounds display strings, and sorts by `probe_id` without exposing Python exception text.
 
-- [ ] **Step 4: Run enumeration tests GREEN and commit**
+- [x] **Step 4: Run enumeration tests GREEN and commit**
 
   Run: `C:\tmp\stm32tk-0402-venv\Scripts\python.exe -m pytest tools/stm32-toolkit/tests/test_pyocd_backend.py -q`
 
@@ -121,7 +121,7 @@
 - Consumes: the exact selected probe object from Task 1.
 - Produces: the complete existing `ProbeBackend` method surface; observation works, control methods remain internal to the backend contract, and `flash_file()` returns `PROBE_MODIFY_UNAVAILABLE`.
 
-- [ ] **Step 1: Add safe-session and observation RED tests**
+- [x] **Step 1: Add safe-session and observation RED tests**
 
   Add tests proving the session receives this literal option mapping and that the adapter does not halt on connect:
 
@@ -141,13 +141,13 @@
 
   Add independently derived boundary cases for `address=0`, the final 32-bit address, zero/65,537-byte reads, address overflow, 257 registers, malformed names, exact-length memory, partial data, one failed register, disconnect, session-open failure, and repeated `close()`.
 
-- [ ] **Step 2: Run the focused file and verify RED**
+- [x] **Step 2: Run the focused file and verify RED**
 
   Run: `C:\tmp\stm32tk-0402-venv\Scripts\python.exe -m pytest tools/stm32-toolkit/tests/test_pyocd_backend.py -q`
 
   Expected: tests fail because attach/read/control/cleanup behavior is absent.
 
-- [ ] **Step 3: Implement minimal attach, read, control, and cleanup behavior**
+- [x] **Step 3: Implement minimal attach, read, control, and cleanup behavior**
 
   `open_attach()` must reject `halt_on_connect=True`, validate target syntax and length, close a previous session before opening a replacement, and call `session.open()` only after exact selection. After open, require a non-null board target. If construction/open/target discovery fails, close the created session once and leave the backend detached.
 
@@ -155,13 +155,13 @@
 
   `halt()`, `resume()`, `step()`, and `reset()` call the matching target methods for use by the next packet but are not exposed through service routes here. `flash_file()` always raises `PROBE_MODIFY_UNAVAILABLE`. `close()` is idempotent and clears local state before calling the external close so a close exception cannot leave a falsely attached backend.
 
-- [ ] **Step 4: Run adapter and existing backend contract tests GREEN**
+- [x] **Step 4: Run adapter and existing backend contract tests GREEN**
 
   Run: `C:\tmp\stm32tk-0402-venv\Scripts\python.exe -m pytest tools/stm32-toolkit/tests/test_pyocd_backend.py tools/stm32-toolkit/tests/test_probe_backend.py -q`
 
   Expected: all selected tests pass with no warnings.
 
-- [ ] **Step 5: Commit the adapter behavior**
+- [x] **Step 5: Commit the adapter behavior**
 
   ```powershell
   git add tools/stm32-toolkit/src/stm32_toolkit/probe/pyocd_backend.py tools/stm32-toolkit/tests/fakes/fake_pyocd.py tools/stm32-toolkit/tests/test_pyocd_backend.py
@@ -276,4 +276,3 @@
 - [ ] **Step 6: Commit report, push, review, and merge**
 
   Commit product/tests before the report-only commit. Push `codex/STM32TK-0402-PYOCD-BACKEND`, create one PR targeting `master`, review the exact accepted-base-to-remote-head diff in a clean worktree, rerun required gates there, and merge only after all non-deferred gates pass. Preserve the remote branch.
-
