@@ -5,6 +5,7 @@ import io
 import hashlib
 import struct
 from dataclasses import replace
+import shutil
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -22,6 +23,8 @@ from stm32_toolkit.debug.dwarf import (
 from stm32_toolkit.debug import dwarf as dwarf_module
 from stm32_toolkit.debug.model import DebugFirmwareBinding, MemoryRegionBinding
 from stm32_toolkit.debug.types import DwarfError, DwarfSelection, DwarfType
+from stm32_toolkit.build.identity import validate_elf
+from stm32_toolkit.project_model import load_project_model
 
 
 FIXTURE = Path(__file__).parent / "fixtures" / "dwarf" / "typed.elf"
@@ -667,3 +670,29 @@ def test_revalidation_requires_the_exact_binding() -> None:
     with pytest.raises(DwarfError) as raised:
         catalog.revalidate(replace(binding, elf_size=binding.elf_size + 1))
     assert raised.value.code == "DWARF_PROVENANCE_MISMATCH"
+
+
+def test_real_dwarf_fixture_is_a_valid_cortex_m_firmware_elf(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    shutil.copyfile(
+        TOOL_ROOT / "tests" / "fixtures" / "minimal-gcc" / ".stm32-project.json",
+        project / ".stm32-project.json",
+    )
+    firmware = project / "build" / "arm-debug" / "firmware.elf"
+    firmware.parent.mkdir(parents=True)
+    firmware.write_bytes(FIXTURE.read_bytes())
+
+    evidence = validate_elf(firmware, load_project_model(project))
+
+    assert evidence.vector_address == 0x08000000
+    assert evidence.entry_point & 1 == 1
+    assert evidence.entry_point & ~1 == evidence.reset_handler_address & ~1
+    with firmware.open("rb") as stream:
+        vector = ELFFile(stream).get_section_by_name(".isr_vector")
+        assert vector is not None
+        vector_bytes = vector.data()
+    assert int.from_bytes(vector_bytes[:4], "little") == 0x20020000
+    assert int.from_bytes(vector_bytes[4:8], "little") & ~1 == (
+        evidence.reset_handler_address & ~1
+    )

@@ -1,10 +1,20 @@
 /*
  * Reproducible fixture source. The checked-in ELF was built with:
  * arm-none-eabi-gcc 14.3.1 -mcpu=cortex-m4 -mthumb -g3 -Og -nostdlib
- *   -Wl,-e,main -Wl,-Ttext=0x08000000 -Wl,-Tdata=0x20000000
+ *   -Wl,-e,Reset_Handler -Wl,--section-start=.isr_vector=0x08000000
+ *   -Wl,--section-start=.text=0x08000100 -Wl,-Tdata=0x20000000
  */
 #include <stdbool.h>
 #include <stdint.h>
+
+int main(void);
+void Reset_Handler(void);
+
+__attribute__((section(".isr_vector"), used))
+const uintptr_t interrupt_vectors[] = {
+    0x20020000U,
+    (uintptr_t)Reset_Handler,
+};
 
 enum RunMode { MODE_IDLE = 0, MODE_RUN = 7 };
 
@@ -61,4 +71,11 @@ __attribute__((used, noinline)) int local_case_two(int argument) {
 
 int main(void) {
     return signed8 + (int)packet.tag + local_case_one(2) + local_case_two(2);
+}
+
+void Reset_Handler(void) {
+    (void)main();
+    for (;;) {
+        __asm volatile ("nop");
+    }
 }
