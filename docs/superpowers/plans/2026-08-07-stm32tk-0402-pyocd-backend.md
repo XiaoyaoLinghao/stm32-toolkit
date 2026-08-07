@@ -255,7 +255,7 @@
 
   Preserve the existing `test` extra. Export `PyOCDBackend`, `ProbeServiceConfig`, and `ProbeServiceSupervisor` from `stm32_toolkit.probe` without importing PyOCD at package import time.
 
-- [ ] **Step 3: Run focused, full, static, and package gates**
+- [x] **Step 3: Run focused, full, static, and package gates**
 
   Run these commands from the worktree root:
 
@@ -271,11 +271,11 @@
 
   Build a wheel, install it into a new venv outside the repository, run `from stm32_toolkit.probe import PyOCDBackend, ProbeServiceSupervisor`, and call `PyOCDBackend().list_probes()`. Search the complete diff for token-like credentials, raw exception serialization, process termination APIs, shell strings, skip/xfail additions, and generated caches.
 
-- [ ] **Step 4: Run available platform and hardware evidence**
+- [x] **Step 4: Run available platform and hardware evidence**
 
   On Windows, run the focused suite against real NTFS and record PyOCD 0.45.1 enumeration. If `pyocd list` shows a physical probe, attach non-halting to the explicitly selected ID/target, read one harmless bounded location, close, and record the exact target/probe environment outside source history. If no probe is listed, record `DEFERRED_TO_AVAILABLE_REAL_PROBE` and retain the release-level real gate for 0405/1.0.
 
-- [ ] **Step 5: Reconcile plan checkboxes and write the report**
+- [x] **Step 5: Reconcile plan checkboxes and write the report**
 
   Mark the previously completed 0401 clean-worktree and merge steps in the continuation plan. Write the report with accepted base `8e16c4bef4fe52b29e8edea501e6b4d5bed37ff4`, the code head before the report commit, exact changed-path inventory, commands/versions/counts, Windows evidence, and named deferred Linux/real-probe gates. Do not write the report's own final SHA inside it.
 
