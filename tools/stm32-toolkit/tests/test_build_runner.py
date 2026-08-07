@@ -867,7 +867,7 @@ def test_run_build_success_debug_publishes_exact_evidence(
     assert identity_doc["mapPath"] == "build/arm-debug/firmware.map"
     assert identity_doc["targetDevice"] == "STM32F407VGTx"
     assert identity_doc["logicalProjectId"] == "12345678-1234-5678-1234-567812345678"
-    assert identity_doc["toolkitVersion"] == "0.2.0"
+    assert identity_doc["toolkitVersion"] == "0.3.0"
     assert identity_doc["buildId"] == report.identity.build_id
     assert len(identity_doc["gitHead"]) == 40
     assert identity_doc["entryPoint"] == 0x08000011

@@ -302,6 +302,68 @@ def test_real_gnu_ld_style_map_uses_elf_alloc_classification():
     assert ram.used == 0x800 + 0x400 + 0x100 + 0x400  # heap + stack + data + bss
 
 
+def test_real_gnu_ld_wrapped_output_section_row_is_reconciled_with_elf():
+    """GNU ld wraps long output-section names onto an address-only line."""
+    name = ".stm32tk.abs.20000000"
+    text = build_map_text(sections=((name, 0x20000000, 0x4, None),))
+    text = text.replace(
+        f"{name:<16} 0x0000000020000000 0x4",
+        f"{name}\n                0x0000000020000000 0x4",
+    )
+
+    _, ram = parse(
+        text,
+        elf_sections=evidence((name, 0x20000000, 0x4, True)),
+    )
+
+    assert ram.used == 0x4
+
+
+def test_wrapped_output_section_preserves_load_address_accounting():
+    name = ".stm32tk.generated.data"
+    text = build_map_text(sections=((name, 0x20000000, 0x20, 0x08000100),))
+    text = text.replace(
+        f"{name:<16} 0x0000000020000000 0x20 load address 0x0000000008000100",
+        f"{name}\n                0x0000000020000000 0x20 load address 0x0000000008000100",
+    )
+
+    flash, ram = parse(
+        text,
+        elf_sections=evidence((name, 0x20000000, 0x20, True)),
+    )
+
+    assert flash.used == 0x20
+    assert ram.used == 0x20
+
+
+@pytest.mark.parametrize(
+    "continuation",
+    [
+        "",
+        "                0xNOTHEX 0x4",
+        ".text 0x0000000008000040 0x10",
+    ],
+)
+def test_wrapped_output_section_without_exact_continuation_fails_closed(continuation: str):
+    text = build_map_text(sections=()) + ".stm32tk.abs.20000000\n" + continuation + "\n"
+
+    with pytest.raises(MapError) as error:
+        parse(text)
+
+    assert error.value.details == {"rule": "ambiguous"}
+
+
+def test_duplicate_inline_and_wrapped_output_sections_are_rejected():
+    name = ".stm32tk.abs.20000000"
+    text = build_map_text(sections=((name, 0x20000000, 0x4, None),))
+    text += f"{name}\n                0x0000000020000000 0x4\n"
+
+    with pytest.raises(MapError) as error:
+        parse(text)
+
+    assert error.value.details == {"rule": "duplicateSection"}
+
+
 def test_alloc_classification_uses_elf_flags_not_section_names():
     # a section named .debug_fake but marked SHF_ALLOC is still accounted
     text = build_map_text(sections=((".debug_fake", 0x08000040, 0x100, None),))

@@ -9,7 +9,7 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-$RuntimeVersion = "0.2.0"
+$RuntimeVersion = "0.3.0"
 $ProcessOutputLimit = 65536
 
 function Resolve-ClaudePath {

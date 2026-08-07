@@ -6,12 +6,15 @@ from stm32_toolkit.mcp_server import ServerRuntime, tool_project_detect
 
 MIGRATE_ACTION = {
     "id": "migrate-keil",
-    "available": False,
-    "explanation": "Keil migration is planned but unavailable in this foundation release.",
+    "available": True,
+    "explanation": (
+        "Inspect the Keil project and convert ARMCC sources to GCC "
+        "with a read-only plan and explicit authorization."
+    ),
 }
 
 
-def test_context_reports_an_unavailable_action_instead_of_an_unshipped_skill(
+def test_context_reports_the_shipped_migration_action_for_keil_projects(
     tmp_path: Path,
 ):
     (tmp_path / "legacy.uvprojx").write_text("<Project/>", encoding="utf-8")
@@ -25,7 +28,7 @@ def test_context_reports_an_unavailable_action_instead_of_an_unshipped_skill(
     assert not MIGRATE_ACTION["id"].startswith("/")
 
 
-def test_mcp_detection_reports_the_same_unavailable_action(tmp_path: Path):
+def test_mcp_detection_reports_the_same_migration_action(tmp_path: Path):
     project = tmp_path / "project"
     project.mkdir()
     (project / "legacy.uvprojx").write_text("<Project/>", encoding="utf-8")

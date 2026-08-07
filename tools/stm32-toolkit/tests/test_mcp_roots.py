@@ -271,5 +271,16 @@ def test_injected_context_does_not_add_arguments_to_tool_schemas(tmp_path: Path)
     )
     tools = asyncio.run(server.list_tools())
 
-    assert all(tool.inputSchema.get("properties", {}) == {} for tool in tools)
-    assert all(not tool.inputSchema.get("required", []) for tool in tools)
+    # The injected ``ctx`` parameter must never surface as a schema property.
+    assert all("ctx" not in tool.inputSchema.get("properties", {}) for tool in tools)
+    zero_argument_tools = {
+        "stm32_doctor",
+        "stm32_project_detect",
+        "stm32_project_context",
+    }
+    for tool in tools:
+        if tool.name in zero_argument_tools:
+            assert tool.inputSchema.get("properties", {}) == {}
+            assert not tool.inputSchema.get("required", [])
+        else:
+            assert tool.inputSchema.get("properties", {})

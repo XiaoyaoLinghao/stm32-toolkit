@@ -892,14 +892,21 @@ def test_elf_basename_with_extra_elf_suffix_is_accepted(tmp_path):
     assert b"add_executable(firmware_elf\n" in cmake.after_bytes
 
 
-def test_missing_debug_backend_is_rejected(tmp_path):
+@pytest.mark.parametrize("debug", [{}, {"svd": None}])
+def test_empty_debug_allows_build_only_configuration(tmp_path, debug: dict):
+    """Regression (STM32TK-0306 revision 1): a fully absent debug spec never
+    blocks build-only configuration and no pyOCD target is guessed."""
     payload = standard_payload()
-    payload["debug"] = {}
+    payload["debug"] = debug
     root = write_project(tmp_path / "proj", payload)
-    with pytest.raises(GenerationError) as error:
-        plan_for(root)
-    assert error.value.code == "GENERATION_MODEL_INVALID"
-    assert error.value.details == {"field": "debug.backend", "rule": "value"}
+
+    plan = plan_for(root)
+
+    assert plan.blockers == ()
+    launch_entry = next(entry for entry in plan.files if entry.path == ".vscode/launch.json")
+    launch = json.loads(launch_entry.after_bytes.decode("utf-8"))
+    # Deterministic configuration that claims no usable hardware debugging.
+    assert launch == {"version": "0.2.0", "configurations": []}
 
 
 def test_non_pyocd_backend_is_rejected(tmp_path):
@@ -1532,17 +1539,16 @@ def test_tasks_snapshot_exact(tmp_path):
     assert labels == [
         "STM32 Toolkit: Build Debug",
         "STM32 Toolkit: Build Release",
-        "STM32 Toolkit: Flash",
-        "STM32 Toolkit: Debug Handoff Begin",
-        "STM32 Toolkit: Debug Handoff End",
     ]
     for task in payload["tasks"]:
         assert task["type"] == "process"
         assert task["command"] == "stm32-toolkit"
         assert isinstance(task["args"], list)
-        assert "${workspaceFolder}" in task["args"]
+        assert task["args"][:2] == ["build", "--preset"]
+        assert task["args"][2] in ("arm-debug", "arm-release")
+        assert task["args"][3:] == ["--project", "${workspaceFolder}"]
     joined = json.dumps(payload)
-    for forbidden in ("pyocd", "cmake", "arm-none-eabi", "shell", "ninja", "objcopy"):
+    for forbidden in ("pyocd", "cmake", "arm-none-eabi", "shell", "ninja", "objcopy", "flash", "handoff"):
         assert forbidden not in joined
 
 
@@ -2001,13 +2007,13 @@ def _valid_manifest_bytes(root: Path, extra_records=()) -> bytes:
         (b"[]", "type"),
         (b"{}", "version"),
         (b'{"extra": 1}', "key"),
-        (b'{"schemaVersion":2,"tool":"stm32-toolkit","toolVersion":"0.2.0","templateVersion":1,"projectManifestSha256":"' + b"a" * 64 + b'","files":[]}', "version"),
-        (b'{"schemaVersion":1,"tool":"other","toolVersion":"0.2.0","templateVersion":1,"projectManifestSha256":"' + b"a" * 64 + b'","files":[]}', "tool"),
+        (b'{"schemaVersion":2,"tool":"stm32-toolkit","toolVersion":"0.3.0","templateVersion":1,"projectManifestSha256":"' + b"a" * 64 + b'","files":[]}', "version"),
+        (b'{"schemaVersion":1,"tool":"other","toolVersion":"0.3.0","templateVersion":1,"projectManifestSha256":"' + b"a" * 64 + b'","files":[]}', "tool"),
         (b'{"schemaVersion":1,"tool":"stm32-toolkit","toolVersion":"9.9.9","templateVersion":1,"projectManifestSha256":"' + b"a" * 64 + b'","files":[]}', "version"),
-        (b'{"schemaVersion":1,"tool":"stm32-toolkit","toolVersion":"0.2.0","templateVersion":2,"projectManifestSha256":"' + b"a" * 64 + b'","files":[]}', "version"),
-        (b'{"schemaVersion":1,"tool":"stm32-toolkit","toolVersion":"0.2.0","templateVersion":1,"projectManifestSha256":"zzz","files":[]}', "hash"),
-        (b'{"schemaVersion":1,"tool":"stm32-toolkit","toolVersion":"0.2.0","templateVersion":1,"projectManifestSha256":"' + b"a" * 64 + b'","files":{}}', "type"),
-        (b'{"schemaVersion":1,"tool":"stm32-toolkit","toolVersion":"0.2.0","templateVersion":1,"projectManifestSha256":"' + b"a" * 64 + b'","files":[1]}', "type"),
+        (b'{"schemaVersion":1,"tool":"stm32-toolkit","toolVersion":"0.3.0","templateVersion":2,"projectManifestSha256":"' + b"a" * 64 + b'","files":[]}', "version"),
+        (b'{"schemaVersion":1,"tool":"stm32-toolkit","toolVersion":"0.3.0","templateVersion":1,"projectManifestSha256":"zzz","files":[]}', "hash"),
+        (b'{"schemaVersion":1,"tool":"stm32-toolkit","toolVersion":"0.3.0","templateVersion":1,"projectManifestSha256":"' + b"a" * 64 + b'","files":{}}', "type"),
+        (b'{"schemaVersion":1,"tool":"stm32-toolkit","toolVersion":"0.3.0","templateVersion":1,"projectManifestSha256":"' + b"a" * 64 + b'","files":[1]}', "type"),
     ],
 )
 def test_malformed_prior_manifests_are_rejected(tmp_path, content, rule):

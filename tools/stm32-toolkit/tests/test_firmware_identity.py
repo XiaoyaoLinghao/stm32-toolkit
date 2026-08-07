@@ -259,6 +259,68 @@ def test_snapshot_rejects_duplicate_path(tmp_path: Path):
     assert error.value.details == {"rule": "duplicate"}
 
 
+def test_snapshot_dedupes_source_also_reached_via_include_dir(tmp_path: Path):
+    """Regression (STM32TK-0306 revision 1): a canonical regular file reached
+    by both an explicit source declaration and include-directory traversal is
+    counted exactly once in the deterministic input snapshot."""
+    root = prepare_project(tmp_path, git_repo=False)
+    (root / "Inc").mkdir()
+    board_bytes = b"/* board */\n"
+    (root / "Inc" / "board.h").write_bytes(board_bytes)
+    payload = json.loads((root / ".stm32-project.json").read_text(encoding="utf-8"))
+    payload["build"]["sources"] = ["Src/main.c", "Inc/board.h"]
+    payload["build"]["includePaths"] = ["Inc"]
+    (root / ".stm32-project.json").write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+
+    snapshot = snapshot_for(root)
+
+    paths = [entry.path for entry in snapshot.entries]
+    assert paths.count("Inc/board.h") == 1
+    assert snapshot.entries[paths.index("Inc/board.h")].size == len(board_bytes)
+
+
+def test_snapshot_dedupes_same_canonical_file_across_include_and_source(
+    tmp_path: Path,
+):
+    """Regression: a hard link inside an include directory that resolves to
+    a declared source is not counted a second time without symlink privilege."""
+    root = prepare_project(tmp_path, git_repo=False)
+    (root / "Real").mkdir()
+    (root / "Real" / "a.c").write_bytes(b"int a;\n")
+    (root / "Link").mkdir()
+    os.link(root / "Real" / "a.c", root / "Link" / "a.c")
+    payload = json.loads((root / ".stm32-project.json").read_text(encoding="utf-8"))
+    payload["build"]["sources"] = ["Src/main.c", "Real/a.c"]
+    payload["build"]["includePaths"] = ["Link"]
+    (root / ".stm32-project.json").write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+
+    snapshot = snapshot_for(root)
+
+    paths = [entry.path for entry in snapshot.entries]
+    assert paths.count("Real/a.c") == 1
+    assert "Link/a.c" not in paths
+
+
+def test_snapshot_rejects_duplicate_declaration_of_same_canonical_file(
+    tmp_path: Path,
+):
+    """Regression: two declared paths resolving to the same canonical regular
+    file (hard link) are a duplicate declaration and fail closed."""
+    root = prepare_project(tmp_path, git_repo=False)
+    (root / "A").mkdir()
+    (root / "B").mkdir()
+    (root / "A" / "shared.c").write_text("int shared;\n", encoding="utf-8")
+    os.link(root / "A" / "shared.c", root / "B" / "shared.c")
+    payload = json.loads((root / ".stm32-project.json").read_text(encoding="utf-8"))
+    payload["build"]["sources"] = ["Src/main.c", "A/shared.c", "B/shared.c"]
+    (root / ".stm32-project.json").write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+
+    with pytest.raises(BuildError) as error:
+        snapshot_for(root)
+    assert error.value.code == "BUILD_INPUT_INVALID"
+    assert error.value.details == {"rule": "duplicate"}
+
+
 def test_snapshot_rejects_sources_inside_build_outputs(tmp_path: Path):
     root = prepare_project(tmp_path, git_repo=False)
     payload = json.loads((root / ".stm32-project.json").read_text(encoding="utf-8"))
@@ -956,14 +1018,14 @@ def test_snapshot_hash_pass_rejects_missing_race(tmp_path: Path, monkeypatch):
 def test_walk_depth_escape_is_rejected(tmp_path: Path):
     root = prepare_project(tmp_path, git_repo=False)
     with pytest.raises(BuildError) as error:
-        identity_mod._walk_include(root, "Inc", [], depth=65)
+        identity_mod._walk_include(root, "Inc", [], {}, set(), depth=65)
     assert error.value.details == {"path": "Inc", "rule": "escape"}
 
 
 def test_require_input_path_rejects_non_portable_path(tmp_path: Path):
     root = prepare_project(tmp_path, git_repo=False)
     with pytest.raises(BuildError) as error:
-        identity_mod._require_input_path(root, "../escape.c", [])
+        identity_mod._require_input_path(root, "../escape.c", [], {})
     assert error.value.details == {"path": "../escape.c", "rule": "portable"}
 
 

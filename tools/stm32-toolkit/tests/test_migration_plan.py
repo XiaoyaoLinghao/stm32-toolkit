@@ -154,8 +154,8 @@ def write_uvprojx(
         "          <Vendor>STMicroelectronics</Vendor>\n"
         f"          <PackID>{pack}</PackID>\n"
         f"          <Cpu>{cpu}</Cpu>\n"
-        f"          <uFloatingPoint>{fpu}</uFloatingPoint>\n"
-        "        </TargetCommonOption>\n"
+        + (f"          <uFloatingPoint>{fpu}</uFloatingPoint>\n" if fpu is not None else "")
+        + "        </TargetCommonOption>\n"
         "        <OutputDirectory>.\\Objects\\</OutputDirectory>\n"
         f"        <OutputName>{output}</OutputName>\n"
         "        <ListingPath>.\\Listing\\</ListingPath>\n"
@@ -900,7 +900,7 @@ def test_plan_id_includes_expected_payload(tmp_path):
     assert payload["plan_version"] == 1
     assert payload["inspection_sha256"] == plan.inspection_sha256
     assert payload["git"]["head"] == plan.git.head
-    assert payload["toolkit_version"] == "0.2.0"
+    assert payload["toolkit_version"] == "0.3.0"
     assert payload["patch_content_sha256"] == hashlib.sha256(
         b"".join(patch.unified_diff.encode("utf-8") for patch in plan.patches)
     ).hexdigest()
@@ -1511,13 +1511,13 @@ def test_manifest_mapping_and_deterministic_uuid(tmp_path):
     assert payload["schemaVersion"] == 2
     expected_uuid = str(uuid.uuid5(UUID_NAMESPACE, "app.uvprojx\nLegacy\nSTM32F429ZGTx"))
     assert payload["logicalProjectId"] == expected_uuid
-    assert payload["generatedBy"] == {"tool": "stm32-toolkit", "version": "0.2.0"}
+    assert payload["generatedBy"] == {"tool": "stm32-toolkit", "version": "0.3.0"}
     assert payload["project"] == {"name": "my app v1", "origin": "keil-migration"}
     assert payload["target"] == {
         "device": "STM32F429ZGTx",
         "core": "cortex-m4",
         "fpu": "FPU2",
-        "floatAbi": "1",
+        "floatAbi": "softfp",
         "devicePack": "Keil.STM32F4xx_DFP.2.16.1",
     }
     assert payload["framework"] == {"type": "spl", "version": None}
@@ -1569,6 +1569,97 @@ def test_manifest_canonical_bytes(tmp_path):
     assert patch.after_size == len(patch.after_bytes)
 
 
+# ---------------------------------------------------------------------------
+# Keil float ABI normalization (STM32TK-0306 revision 1)
+# ---------------------------------------------------------------------------
+
+
+def _plan_target_for_fpu(tmp_path, fpu: str | None):
+    repo = build_repo(
+        tmp_path,
+        files={"Main/main.c": "int main(void) { return 0; }\n"},
+        uvprojx_kwargs={"fpu": fpu},
+    )
+    inspection = fixture_inspection(repo)
+    plan = plan_keil_conversion(repo, inspection)
+    patch = next(p for p in plan.patches if p.path == ".stm32-project.json")
+    return plan, manifest_json(patch)
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("0", "soft"),  # Keil "Not Used": no FPU instructions -> soft ABI
+        ("1", "softfp"),  # Keil "Single precision" (ARMCC softfp ABI)
+        ("2", "softfp"),  # Keil "Double precision" (ARMCC softfp ABI)
+        ("soft", "soft"),
+        ("softfp", "softfp"),
+        ("hard", "hard"),
+    ],
+)
+def test_known_keil_float_abi_values_are_normalized(tmp_path, raw: str, expected: str):
+    """Regression: raw Keil numbers or GCC spellings are normalized to
+    soft/softfp/hard only on verifiable Keil-format evidence."""
+    plan, payload = _plan_target_for_fpu(tmp_path, raw)
+
+    assert payload["target"]["floatAbi"] == expected
+    assert not any(b.code == "MIGRATION_FLOAT_ABI_UNSUPPORTED" for b in plan.blockers)
+
+
+@pytest.mark.parametrize("raw", ["3", "Single", "Double", "FPU2", "weird", "SoftFP"])
+def test_unknown_or_ambiguous_float_abi_produces_a_stable_blocker(
+    tmp_path, raw: str
+):
+    """Regression: unknown or ambiguous float ABI text never enters the
+    manifest and always produces a stable blocker."""
+    plan, payload = _plan_target_for_fpu(tmp_path, raw)
+
+    assert "floatAbi" not in payload["target"]
+    blocker = [b for b in plan.blockers if b.code == "MIGRATION_FLOAT_ABI_UNSUPPORTED"]
+    assert len(blocker) == 1
+    assert blocker[0].message == "unsupported or ambiguous Keil float ABI"
+
+
+def test_absent_float_abi_stays_absent(tmp_path):
+    """No uFloatingPoint evidence means no floatAbi in the proposal."""
+    _, payload = _plan_target_for_fpu(tmp_path, None)
+
+    assert "floatAbi" not in payload["target"]
+
+
+def test_float_abi_blocker_is_deterministic_across_calls(tmp_path):
+    repo = build_repo(
+        tmp_path,
+        files={"Main/main.c": "int main(void) { return 0; }\n"},
+        uvprojx_kwargs={"fpu": "weird"},
+    )
+    inspection = fixture_inspection(repo)
+
+    first = plan_keil_conversion(repo, inspection)
+    second = plan_keil_conversion(repo, inspection)
+
+    codes = [b.code for b in first.blockers if b.code == "MIGRATION_FLOAT_ABI_UNSUPPORTED"]
+    assert codes == ["MIGRATION_FLOAT_ABI_UNSUPPORTED"]
+    assert first.plan_id == second.plan_id
+
+
+def test_float_abi_blocker_blocks_apply(tmp_path):
+    repo = build_repo(
+        tmp_path,
+        files={"Main/main.c": "int main(void) { return 0; }\n"},
+        uvprojx_kwargs={"fpu": "weird"},
+    )
+    inspection = fixture_inspection(repo)
+    plan = plan_keil_conversion(repo, inspection)
+
+    result = apply_keil_conversion(plan)
+
+    assert result.ok is False
+    assert result.code == "MIGRATION_BLOCKED"
+    assert list(result.details["blockerCodes"]) == ["MIGRATION_FLOAT_ABI_UNSUPPORTED"]
+    assert not (repo / ".stm32-project.json").exists()
+
+
 def test_elf_name_sanitization(tmp_path):
     repo = build_repo(
         tmp_path,
@@ -1615,7 +1706,7 @@ def test_manifest_validation_failure_is_stable(tmp_path):
     bad = {
         "schemaVersion": 2,
         "logicalProjectId": "not-a-uuid",
-        "generatedBy": {"tool": "stm32-toolkit", "version": "0.2.0"},
+        "generatedBy": {"tool": "stm32-toolkit", "version": "0.3.0"},
         "project": {"name": "x", "origin": "keil-migration"},
         "target": {"device": "d", "core": "c"},
         "framework": {"type": "spl", "version": None},

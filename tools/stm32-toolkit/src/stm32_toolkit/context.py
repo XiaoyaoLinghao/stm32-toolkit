@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from stm32_toolkit.build.identity import (
@@ -12,7 +13,13 @@ from stm32_toolkit.build.identity import (
     validate_identity_document,
 )
 from stm32_toolkit.detection import ProjectDetection, detect_project
-from stm32_toolkit.generation.managed_files import sha256_hex
+from stm32_toolkit.generation.managed_files import (
+    MANAGED_MANIFEST_PATH,
+    GenerationError,
+    model_sha256_for,
+    parse_managed_manifest,
+    sha256_hex,
+)
 from stm32_toolkit.paths import WorkspacePaths
 from stm32_toolkit.project import ProjectManifest, ProjectManifestError
 from stm32_toolkit.project_model import load_project_model
@@ -102,11 +109,21 @@ def build_project_context(
             "build": build,
             "hardware": _hardware_evidence(),
             "capabilities": _capabilities(
-                build_available=bool(build["cmakeListsPresent"])
+                build_available=_build_ready(build),
+                configure_available=_valid_schema_v2(canonical_root),
             ),
             "recommendedActions": [],
         },
     )
+
+
+def _valid_schema_v2(project_root: Path) -> bool:
+    """True only when a valid Schema v2 project model loads from the root."""
+    try:
+        model = load_project_model(project_root)
+    except (ProjectManifestError, OSError, ValueError, TypeError):
+        return False
+    return model.schema_version == 2
 
 
 def _context_invalid(field: str, path: str | None = None) -> OperationResult[None]:
@@ -140,6 +157,7 @@ def _is_project_path(path: Path, project_root: Path) -> bool:
 def _unconfigured_context(
     detection: ProjectDetection, project_root: Path
 ) -> dict[str, object]:
+    keil_detected = detection.kind == "keil"
     return {
         "project": {
             "kind": detection.kind,
@@ -150,7 +168,11 @@ def _unconfigured_context(
         "workspace": None,
         "build": _empty_build_evidence(),
         "hardware": _hardware_evidence(),
-        "capabilities": _capabilities(build_available=False),
+        "capabilities": _capabilities(
+            build_available=False,
+            keil_inspect=keil_detected,
+            keil_convert=keil_detected,
+        ),
         "recommendedActions": [detection.recommended_action.to_dict()],
     }
 
@@ -179,6 +201,7 @@ def _build_evidence(manifest: ProjectManifest) -> dict[str, object]:
         "buildResultPath": None,
         "buildLogPath": None,
     }
+    evidence.update(_managed_configuration_evidence(root))
     if fresh is not None:
         evidence.update(fresh)
     return evidence
@@ -192,6 +215,12 @@ def _empty_build_evidence() -> dict[str, object]:
         "existingSourcePaths": [],
         "missingSourcePaths": [],
         "elfFresh": False,
+        **{
+            "managedManifestPresent": False,
+            "managedManifestValid": False,
+            "managedFilesMissing": [],
+            "managedFilesDrifted": [],
+        },
         "buildId": None,
         "elfSha256": None,
         "preset": None,
@@ -206,14 +235,108 @@ def _hardware_evidence() -> dict[str, object]:
     return {"probe": None, "state": "unavailable"}
 
 
-def _capabilities(*, build_available: bool) -> dict[str, bool]:
+def _capabilities(
+    *,
+    build_available: bool,
+    keil_inspect: bool = False,
+    keil_convert: bool = False,
+    configure_available: bool = False,
+) -> dict[str, bool]:
     return {
         "build": build_available,
+        "keilInspect": keil_inspect,
+        "keilConvert": keil_convert,
+        "configure": configure_available,
         "flash": False,
         "hostTest": False,
         "targetTest": False,
         "monitor": False,
         "breakpointDebug": False,
+    }
+
+
+def _build_ready(evidence: dict[str, object]) -> bool:
+    """Build capability requires complete managed configuration evidence.
+
+    A bare CMakeLists.txt is not enough: the managed manifest must be
+    present and valid (parse, versions, and model digest) and every managed
+    file it records must exist un-drifted on disk.  This check is strictly
+    read-only; it never repairs or refreshes any file.
+    """
+    return (
+        bool(evidence["cmakeListsPresent"])
+        and bool(evidence["managedManifestPresent"])
+        and bool(evidence["managedManifestValid"])
+        and not evidence["managedFilesMissing"]
+        and not evidence["managedFilesDrifted"]
+    )
+
+
+# ---------------------------------------------------------------------------
+# managed-configuration evidence (STM32TK-0306 revision 1)
+# ---------------------------------------------------------------------------
+
+
+def _managed_configuration_evidence(root: Path) -> dict[str, object]:
+    """Read-only evidence about the managed configuration state.
+
+    Returns ``managedManifestPresent``, ``managedManifestValid`` (parse,
+    version, template version, and model digest agreement), and the lists of
+    managed files that are missing or drifted on disk.  Any invalid,
+    unreadable, oversized, escaping, or non-regular state fails closed to
+    ``valid=False`` without ever writing to the project.
+    """
+    manifest_abs = root.joinpath(*MANAGED_MANIFEST_PATH.split("/"))
+    if not _regular_contained(root, MANAGED_MANIFEST_PATH, "manifest"):
+        return {
+            "managedManifestPresent": False,
+            "managedManifestValid": False,
+            "managedFilesMissing": [],
+            "managedFilesDrifted": [],
+        }
+    try:
+        data = read_bounded(manifest_abs, _EVIDENCE_LIMIT_BYTES)
+        if len(data) > _EVIDENCE_LIMIT_BYTES:
+            raise ValueError("oversize")
+        payload = json.loads(data.decode("utf-8"))
+        records = parse_managed_manifest(data)
+    except (BuildError, GenerationError, OSError, ValueError, TypeError, UnicodeDecodeError, KeyError):
+        return {
+            "managedManifestPresent": True,
+            "managedManifestValid": False,
+            "managedFilesMissing": [],
+            "managedFilesDrifted": [],
+        }
+
+    digest_ok = True
+    try:
+        model = load_project_model(root)
+        if model.schema_version == 2:
+            digest_ok = (
+                model_sha256_for(model) == payload.get("projectManifestSha256")
+            )
+    except (ProjectManifestError, OSError, ValueError, TypeError):
+        digest_ok = False
+
+    missing: list[str] = []
+    drifted: list[str] = []
+    for record in records:
+        if not _regular_contained(root, record.path, "managed"):
+            missing.append(record.path)
+            continue
+        path = root.joinpath(*record.path.split("/"))
+        try:
+            file_data = read_bounded(path, _EVIDENCE_LIMIT_BYTES)
+        except OSError:
+            missing.append(record.path)
+            continue
+        if sha256_hex(file_data) != record.sha256:
+            drifted.append(record.path)
+    return {
+        "managedManifestPresent": True,
+        "managedManifestValid": digest_ok,
+        "managedFilesMissing": missing,
+        "managedFilesDrifted": drifted,
     }
 
 

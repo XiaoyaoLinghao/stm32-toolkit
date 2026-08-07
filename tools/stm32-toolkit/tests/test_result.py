@@ -96,7 +96,7 @@ def make_build_report():
             schema_version=1,
             build_id="a" * 64,
             logical_project_id="12345678-1234-5678-1234-567812345678",
-            toolkit_version="0.2.0",
+            toolkit_version="0.3.0",
             git_head="b" * 40,
             git_dirty=False,
             input_snapshot_sha256="c" * 64,

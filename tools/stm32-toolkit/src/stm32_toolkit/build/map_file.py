@@ -44,6 +44,16 @@ _SECTION_ROW_RE = re.compile(
     r"^([A-Za-z_.$][A-Za-z0-9_.$-]*)\s+0x([0-9A-Fa-f]+)\s+0x([0-9A-Fa-f]+)"
     r"(?:\s+load address\s+0x([0-9A-Fa-f]+))?\s*$"
 )
+#: GNU ld wraps output-section names longer than its 16-column name field:
+#: the first line contains only the name and the immediately following
+#: indented line contains address, size, and optional load address.
+_WRAPPED_SECTION_NAME_RE = re.compile(
+    r"^([A-Za-z_.$][A-Za-z0-9_.$-]{16,})\s*$"
+)
+_WRAPPED_SECTION_VALUE_RE = re.compile(
+    r"^\s+0x([0-9A-Fa-f]+)\s+0x([0-9A-Fa-f]+)"
+    r"(?:\s+load address\s+0x([0-9A-Fa-f]+))?\s*$"
+)
 #: Rows that look like section rows but fail the anchored patterns (including
 #: rows whose second/third tokens start with ``0x`` but are not valid hex).
 _AMBIGUOUS_ROW_RE = re.compile(r"^(\S+)\s+0x\S+\s+0x\S+")
@@ -134,8 +144,46 @@ def _parse_rows(
     sections: list[_Section] = []
     seen_regions: set[str] = set()
     seen_sections: set[str] = set()
+    pending_section: str | None = None
+
+    def append_section(
+        name: str,
+        address_text: str,
+        size_text: str,
+        load_address_text: str | None,
+    ) -> None:
+        if name in seen_sections:
+            raise map_error("duplicateSection", path)
+        seen_sections.add(name)
+        sections.append(
+            _Section(
+                name=name,
+                address=_parse_hex(address_text, path),
+                size=_parse_hex(size_text, path),
+                load_address=(
+                    _parse_hex(load_address_text, path)
+                    if load_address_text is not None
+                    else None
+                ),
+            )
+        )
+
     for line in text.splitlines():
         if not line:
+            if pending_section is not None:
+                raise map_error("ambiguous", path)
+            continue
+        if pending_section is not None:
+            continuation = _WRAPPED_SECTION_VALUE_RE.match(line)
+            if continuation is None:
+                raise map_error("ambiguous", path)
+            append_section(
+                pending_section,
+                continuation.group(1),
+                continuation.group(2),
+                continuation.group(3),
+            )
+            pending_section = None
             continue
         first = line[0]
         if first not in _SECTION_START:
@@ -161,28 +209,21 @@ def _parse_rows(
             continue
         section_match = _SECTION_ROW_RE.match(line)
         if section_match is not None:
-            name = section_match.group(1)
-            if name in seen_sections:
-                raise map_error("duplicateSection", path)
-            seen_sections.add(name)
-            address = _parse_hex(section_match.group(2), path)
-            size = _parse_hex(section_match.group(3), path)
-            load_address = (
-                _parse_hex(section_match.group(4), path)
-                if section_match.group(4) is not None
-                else None
+            append_section(
+                section_match.group(1),
+                section_match.group(2),
+                section_match.group(3),
+                section_match.group(4),
             )
-            sections.append(
-                _Section(
-                    name=name,
-                    address=address,
-                    size=size,
-                    load_address=load_address,
-                )
-            )
+            continue
+        wrapped_name = _WRAPPED_SECTION_NAME_RE.match(line)
+        if wrapped_name is not None:
+            pending_section = wrapped_name.group(1)
             continue
         if _AMBIGUOUS_ROW_RE.match(line):
             raise map_error("ambiguous", path)
+    if pending_section is not None:
+        raise map_error("ambiguous", path)
     if not declared:
         raise map_error("regions", path)
     if not sections:

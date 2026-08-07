@@ -14,6 +14,7 @@ from stm32_toolkit.context import build_project_context
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 PLUGIN_MANIFEST = REPO_ROOT / ".claude-plugin" / "plugin.json"
+MARKETPLACE_MANIFEST = REPO_ROOT / ".claude-plugin" / "marketplace.json"
 MCP_CONFIG = REPO_ROOT / ".mcp.json"
 LAUNCHER = REPO_ROOT / "bin" / "stm32-toolkit-mcp.cmd"
 SETUP_SKILL = REPO_ROOT / "skills" / "setup-stm32-env" / "SKILL.md"
@@ -35,14 +36,31 @@ def test_plugin_manifest_uses_standard_skill_discovery_and_version():
     assert plugin == {
         "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
         "name": "stm32-toolkit",
-        "version": "0.2.0",
+        "version": "0.3.0",
         "description": (
-            "Foundation for AI-assisted STM32 development with read-only "
-            "project detection and environment diagnosis"
+            "AI-assisted STM32 development with read-only Keil inspection, "
+            "guarded ARMCC-to-GCC conversion, managed GCC/CMake configuration, "
+            "and reproducible builds"
         ),
         "author": {"name": "STM32 Toolkit Team"},
     }
-    assert plugin["version"] == __version__ == "0.2.0"
+    assert plugin["version"] == __version__ == "0.3.0"
+
+
+def test_marketplace_manifest_uses_a_supported_plugin_source():
+    """Regression (STM32TK-0306 revision 1): Claude Code 2.1.140 rejects the
+    bare ``.`` plugin source; the repo-relative ``./`` form is the supported
+    structure for a marketplace whose plugin is its own repository root."""
+    marketplace = json.loads(
+        (REPO_ROOT / ".claude-plugin" / "marketplace.json").read_text(encoding="utf-8")
+    )
+
+    assert list(marketplace) == ["name", "owner", "description", "plugins"]
+    assert marketplace["name"] == "stm32-toolkit"
+    entry = marketplace["plugins"][0]
+    assert entry["name"] == "stm32-toolkit"
+    assert entry["source"] == "./"
+    assert "repository" in entry
 
 
 def test_mcp_config_binds_only_the_plugin_launcher_to_claude_roots():
@@ -117,14 +135,14 @@ def test_launcher_reports_missing_versioned_runtime_without_interpreter_fallback
     assert result.returncode != 0
     assert result.stdout == ""
     assert "/stm32-toolkit:setup-stm32-env" in result.stderr
-    assert "runtime/0.2.0/Scripts/python.exe" in result.stderr.replace("\\", "/")
+    assert "runtime/0.3.0/Scripts/python.exe" in result.stderr.replace("\\", "/")
     assert not marker.exists()
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows cmd.exe launcher")
 def test_launcher_forwards_arguments_and_preserves_runtime_exit_code(tmp_path: Path):
     plugin_data = tmp_path / "plugin data"
-    runtime = plugin_data / "runtime" / "0.2.0"
+    runtime = plugin_data / "runtime" / "0.3.0"
     venv.EnvBuilder(with_pip=False).create(runtime)
     module_root = tmp_path / "stub module"
     package = module_root / "stm32_toolkit"
@@ -179,7 +197,7 @@ def test_setup_skill_has_an_explicit_read_only_check_and_authorized_mutation_con
         "read-only",
         "offline",
         "explicit authorization",
-        "${CLAUDE_PLUGIN_DATA}/runtime/0.2.0",
+        "${CLAUDE_PLUGIN_DATA}/runtime/0.3.0",
         "${CLAUDE_PLUGIN_ROOT}/tools/stm32-toolkit",
         "Host Python 3.10+",
         "ARM GCC",
@@ -221,7 +239,12 @@ def test_only_foundation_skill_is_discovered_and_follow_on_sources_are_preserved
         for path in FOLLOW_ON_SKILLS.glob("*/SKILL.md")
     }
 
-    assert discovered == {"setup-stm32-env"}
+    assert discovered == {
+        "setup-stm32-env",
+        "migrate-keil",
+        "configure-stm32-project",
+        "build-firmware",
+    }
     assert preserved == LEGACY_SKILLS
 
 
@@ -257,7 +280,7 @@ def test_setup_helper_uses_explicit_paths_without_ambient_environment(tmp_path: 
     assert result.returncode == 0, result.stderr
     payload = json.loads(result.stdout)
     assert payload["mode"] == "CHECK"
-    assert payload["runtime"]["path"].endswith("/runtime/0.2.0")
+    assert payload["runtime"]["path"].endswith("/runtime/0.3.0")
     assert payload["project"] == project.as_posix()
     assert payload["mutated"] is False
     assert not plugin_data.exists()
@@ -435,3 +458,23 @@ def _project_snapshot(root: Path) -> dict[str, bytes]:
         for path in root.rglob("*")
         if path.is_file()
     }
+
+
+def test_unified_0_3_0_runtime_version_across_launcher_setup_and_skill():
+    """Regression: after the bump, no launcher/helper/skill selects 0.2.0."""
+    launcher = LAUNCHER.read_text(encoding="utf-8")
+    helper = SETUP_HELPER.read_text(encoding="utf-8")
+    skill = SETUP_SKILL.read_text(encoding="utf-8")
+    manifest = json.loads(PLUGIN_MANIFEST.read_text(encoding="utf-8"))
+
+    assert manifest["version"] == __version__ == "0.3.0"
+    assert "runtime\\0.3.0\\Scripts\\python.exe" in launcher
+    assert "runtime/0.3.0/Scripts/python.exe" in launcher.replace("\\", "/")
+    assert "0.2.0" not in launcher
+    assert '$RuntimeVersion = "0.3.0"' in helper
+    assert "0.2.0" not in helper
+    assert "${CLAUDE_PLUGIN_DATA}/runtime/0.3.0" in skill
+    assert "${CLAUDE_PLUGIN_DATA}/runtime/.staging/0.3.0-<id>" in skill
+    # The only 0.2.0 mention is the required non-current-version evidence.
+    assert "existing `0.2.0` runtime reports `broken`" in skill
+    assert skill.count("0.2.0") == 1

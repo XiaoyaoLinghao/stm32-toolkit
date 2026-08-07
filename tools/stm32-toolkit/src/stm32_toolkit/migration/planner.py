@@ -74,6 +74,41 @@ def _raise(code: str, message: str, details: dict[str, object]) -> MigrationPlan
     return MigrationPlanError(code, message, details)
 
 
+#: Exact GCC float ABIs the migration may emit (work order revision 1).
+_KNOWN_FLOAT_ABIS = frozenset({"soft", "softfp", "hard"})
+
+#: Verifiable Keil ``uFloatingPoint`` evidence mapped to a GCC float ABI.
+#: Keil writes 0/1/2 for "Not Used"/"Single precision"/"Double precision"
+#: (documented MDK-ARM project format).  "Not Used" (0) selects soft; both
+#: precision values use the ARM softfp ABI that ARMCC and ARMCLANG apply for
+#: hardware FPU (a hard ABI can only be selected through misc controls,
+#: which are already blocked separately).  Any other text is unknown or
+#: ambiguous and produces a stable blocker instead of entering the manifest.
+_KEIL_FLOAT_ABI_EVIDENCE = {"0": "soft", "1": "softfp", "2": "softfp"}
+
+
+def _normalize_float_abi(raw: str | None) -> tuple[str | None, str | None]:
+    """Map raw Keil ``uFloatingPoint`` text to a GCC float ABI.
+
+    Returns ``(normalized_value, None)`` for verifiable evidence (the exact
+    GCC spellings ``soft``/``softfp``/``hard`` and Keil's "Not Used" value
+    ``0``), ``(None, None)`` for an absent/empty element, and
+    ``(None, blocker_code)`` for unknown or ambiguous text so the raw value
+    never enters the manifest.
+    """
+    if raw is None:
+        return None, None
+    value = raw.strip()
+    if not value:
+        return None, None
+    if value in _KNOWN_FLOAT_ABIS:
+        return value, None
+    normalized = _KEIL_FLOAT_ABI_EVIDENCE.get(value)
+    if normalized is not None:
+        return normalized, None
+    return None, "MIGRATION_FLOAT_ABI_UNSUPPORTED"
+
+
 def _canonical_root(root: object, field: str = "projectRoot") -> Path:
     if not isinstance(root, Path):
         raise _raise(
@@ -344,6 +379,19 @@ def _inspection_blockers(inspection: KeilInspection) -> list[MigrationBlocker]:
                 "non-empty scatter-file linker setting",
             )
         )
+    _, float_abi_blocker = _normalize_float_abi(inspection.float_abi)
+    if float_abi_blocker is not None:
+        blockers.append(
+            MigrationBlocker(
+                float_abi_blocker,
+                float_abi_blocker,
+                inspection.project_file,
+                0,
+                0,
+                (inspection.float_abi or "")[:200],
+                "unsupported or ambiguous Keil float ABI",
+            )
+        )
     for option in inspection.scoped_options:
         if option.misc_controls:
             owner = option.owner if option.scope == "file" else ""
@@ -479,8 +527,9 @@ def _manifest_proposal(root: Path, inspection: KeilInspection) -> dict | None:
     }
     if inspection.fpu is not None:
         payload["target"]["fpu"] = inspection.fpu
-    if inspection.float_abi is not None:
-        payload["target"]["floatAbi"] = inspection.float_abi
+    normalized_float_abi, _ = _normalize_float_abi(inspection.float_abi)
+    if normalized_float_abi is not None:
+        payload["target"]["floatAbi"] = normalized_float_abi
     if inspection.device_pack is not None:
         payload["target"]["devicePack"] = inspection.device_pack
     _validate_manifest_payload(root, payload)

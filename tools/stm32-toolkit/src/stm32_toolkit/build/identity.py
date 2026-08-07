@@ -189,12 +189,23 @@ def _input_invalid_rule(rule: str) -> BuildError:
 
 
 def snapshot_project_inputs(model: ProjectModel) -> InputSnapshot:
-    """Hash exact bytes for every declared input and owned generated file."""
+    """Hash exact bytes for every declared input and owned generated file.
+
+    A regular file reached by both an explicit source declaration and
+    include-directory traversal is counted exactly once (STM32TK-0306
+    revision 1): the traversal skips any path that is already declared or
+    that resolves to an already-declared canonical file.  Duplicate
+    declarations of the same canonical file, Unicode casefold conflicts,
+    and redirect/reparse escapes fail closed; include-only overlaps (for
+    example two case-variant names for one file) remain distinct so the
+    casefold collision check still fails closed.
+    """
     root = model.project_root
     paths: list[str] = []
+    declared_identities: dict[tuple[int, int], str] = {}
     declared = [".stm32-project.json", *model.build.sources, *model.build.assembly_sources]
     for rel in declared:
-        _require_input_path(root, rel, paths)
+        _require_input_path(root, rel, paths, declared_identities)
     manifest_rel = model.generation.managed_manifest
     manifest_abs = root.joinpath(*manifest_rel.split("/"))
     try:
@@ -215,9 +226,10 @@ def snapshot_project_inputs(model: ProjectModel) -> InputSnapshot:
             dict(details) if isinstance(details, dict) else {"path": manifest_rel, "rule": "manifest"},
         ) from None
     for record in records:
-        _require_input_path(root, record.path, paths)
+        _require_input_path(root, record.path, paths, declared_identities)
+    walked: set[str] = set()
     for include in model.build.include_paths:
-        _walk_include(root, include, paths)
+        _walk_include(root, include, paths, declared_identities, walked)
     if len(paths) > _FILE_LIMIT_COUNT:
         raise _input_invalid_rule("fileCount")
     collision = casefold_collision(paths)
@@ -273,7 +285,12 @@ def snapshot_project_inputs(model: ProjectModel) -> InputSnapshot:
     return InputSnapshot(entries=tuple(entries), sha256=digest, newest_mtime_ns=newest)
 
 
-def _require_input_path(root: Path, rel: str, paths: list[str]) -> None:
+def _require_input_path(
+    root: Path,
+    rel: str,
+    paths: list[str],
+    declared_identities: dict[tuple[int, int], str],
+) -> None:
     if portable_path_error(rel) is not None:
         raise _input_invalid(rel, "portable")
     if rel.startswith("build/") or rel.startswith("artifacts/migration"):
@@ -294,16 +311,55 @@ def _require_input_path(root: Path, rel: str, paths: list[str]) -> None:
         raise _input_invalid(rel, "inspection") from None
     if not stat.S_ISREG(lst.st_mode):
         raise _input_invalid(rel, "regularFile")
+    identity = _canonical_identity(absolute, lst, root, rel)
+    if identity is not None and identity in declared_identities:
+        raise _input_invalid_rule("duplicate")
+    if identity is not None:
+        declared_identities[identity] = rel
     paths.append(rel)
 
 
-def _walk_include(root: Path, rel_dir: str, paths: list[str], depth: int = 0) -> None:
+def _canonical_identity(
+    absolute: Path, lst: os.stat_result, root: Path, rel: str
+) -> tuple[int, int] | None:
+    """Return the canonical ``(st_dev, st_ino)`` the path resolves to.
+
+    Symlink declarations resolve to their target; redirect/reparse escapes
+    and non-regular targets fail closed with the established rules.
+    """
+    if not stat.S_ISLNK(lst.st_mode):
+        return (lst.st_dev, lst.st_ino)
+    try:
+        resolved = absolute.resolve(strict=True)
+        resolved.relative_to(root)
+    except (OSError, RuntimeError, ValueError):
+        raise _input_invalid(rel, "escape") from None
+    try:
+        target_lst = _lstat(resolved)
+    except OSError:
+        raise _input_invalid(rel, "inspection") from None
+    if not stat.S_ISREG(target_lst.st_mode):
+        raise _input_invalid(rel, "regularFile")
+    return (target_lst.st_dev, target_lst.st_ino)
+
+
+def _walk_include(
+    root: Path,
+    rel_dir: str,
+    paths: list[str],
+    declared_identities: dict[tuple[int, int], str],
+    walked: set[str],
+    depth: int = 0,
+) -> None:
     if depth > _MAX_WALK_DEPTH:
         raise _input_invalid(rel_dir, "escape")
     if portable_path_error(rel_dir) is not None:
         raise _input_invalid(rel_dir, "portable")
     if rel_dir.startswith("build/") or rel_dir.startswith("artifacts/migration"):
         raise _input_invalid(rel_dir, "reserved")
+    if rel_dir in walked:
+        raise _input_invalid_rule("duplicate")
+    walked.add(rel_dir)
     absolute = root.joinpath(*rel_dir.split("/"))
     try:
         lst = _lstat(absolute)
@@ -344,18 +400,20 @@ def _walk_include(root: Path, rel_dir: str, paths: list[str], depth: int = 0) ->
             except OSError:
                 raise _input_invalid(rel, "inspection") from None
             if stat.S_ISDIR(target_lst.st_mode):
-                _walk_include(root, rel, paths, depth + 1)
+                _walk_include(root, rel, paths, declared_identities, walked, depth + 1)
             elif stat.S_ISREG(target_lst.st_mode):
-                if rel in paths:
-                    raise _input_invalid_rule("duplicate")
+                identity = (target_lst.st_dev, target_lst.st_ino)
+                if rel in paths or identity in declared_identities:
+                    continue
                 paths.append(rel)
             else:
                 raise _input_invalid(rel, "regularFile")
         elif stat.S_ISDIR(child_lst.st_mode):
-            _walk_include(root, rel, paths, depth + 1)
+            _walk_include(root, rel, paths, declared_identities, walked, depth + 1)
         elif stat.S_ISREG(child_lst.st_mode):
-            if rel in paths:
-                raise _input_invalid_rule("duplicate")
+            identity = (child_lst.st_dev, child_lst.st_ino)
+            if rel in paths or identity in declared_identities:
+                continue
             paths.append(rel)
         else:
             raise _input_invalid(rel, "regularFile")

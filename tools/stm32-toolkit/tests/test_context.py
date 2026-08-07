@@ -54,6 +54,13 @@ EMPTY_FRESHNESS = {
     "buildLogPath": None,
 }
 
+EMPTY_MANAGED = {
+    "managedManifestPresent": False,
+    "managedManifestValid": False,
+    "managedFilesMissing": [],
+    "managedFilesDrifted": [],
+}
+
 
 def test_configured_context_reports_evidence_sections_without_build(
     configured_project: Path, tmp_path: Path
@@ -87,11 +94,15 @@ def test_configured_context_reports_evidence_sections_without_build(
                 "existingSourcePaths": [str(configured_project / "App" / "main.c")],
                 "missingSourcePaths": [],
                 "elfFresh": False,
+                **EMPTY_MANAGED,
                 **EMPTY_FRESHNESS,
             },
             "hardware": {"probe": None, "state": "unavailable"},
             "capabilities": {
-                "build": True,
+                "build": False,
+                "keilInspect": False,
+                "keilConvert": False,
+                "configure": False,
                 "flash": False,
                 "hostTest": False,
                 "targetTest": False,
@@ -105,7 +116,9 @@ def test_configured_context_reports_evidence_sections_without_build(
     assert (tmp_path.parent / "data" / "projects" / result.data["workspace"]["workspaceId"] / "sessions" / "session-a").is_dir()
 
 
-def test_keil_context_stays_read_only_without_a_logical_project_id(tmp_path: Path):
+def test_keil_context_stays_read_only_and_reports_inspection_capabilities(
+    tmp_path: Path,
+):
     (tmp_path / "legacy.uvprojx").write_text("<Project/>", encoding="utf-8")
     data_root = tmp_path / "data"
 
@@ -119,8 +132,11 @@ def test_keil_context_stays_read_only_without_a_logical_project_id(tmp_path: Pat
             "files": ["legacy.uvprojx"],
             "recommendedAction": {
                 "id": "migrate-keil",
-                "available": False,
-                "explanation": "Keil migration is planned but unavailable in this foundation release.",
+                "available": True,
+                "explanation": (
+                    "Inspect the Keil project and convert ARMCC sources to GCC "
+                    "with a read-only plan and explicit authorization."
+                ),
             },
         },
         "workspace": None,
@@ -131,11 +147,15 @@ def test_keil_context_stays_read_only_without_a_logical_project_id(tmp_path: Pat
             "existingSourcePaths": [],
             "missingSourcePaths": [],
             "elfFresh": False,
+            **EMPTY_MANAGED,
             **EMPTY_FRESHNESS,
         },
         "hardware": {"probe": None, "state": "unavailable"},
         "capabilities": {
             "build": False,
+            "keilInspect": True,
+            "keilConvert": True,
+            "configure": False,
             "flash": False,
             "hostTest": False,
             "targetTest": False,
@@ -144,9 +164,10 @@ def test_keil_context_stays_read_only_without_a_logical_project_id(tmp_path: Pat
         },
         "recommendedActions": [{
             "id": "migrate-keil",
-            "available": False,
+            "available": True,
             "explanation": (
-                "Keil migration is planned but unavailable in this foundation release."
+                "Inspect the Keil project and convert ARMCC sources to GCC "
+                "with a read-only plan and explicit authorization."
             ),
         }],
     }
@@ -171,6 +192,7 @@ def test_missing_manifest_source_keeps_evidence_stale(
         "existingSourcePaths": [str(configured_project / "App" / "main.c")],
         "missingSourcePaths": [str(configured_project / "App" / "missing.c")],
         "elfFresh": False,
+        **EMPTY_MANAGED,
         **EMPTY_FRESHNESS,
     }
 
@@ -663,3 +685,185 @@ def test_data_root_resolve_os_error_maps_to_unavailable(
 
     assert result.code == "PROJECT_CONTEXT_UNAVAILABLE"
     assert result.details == {"field": "dataRoot", "path": str(data_root)}
+
+
+def test_configured_v2_project_reports_configure_capability(
+    tmp_path: Path, monkeypatch
+):
+    root = prepare_project(tmp_path)
+
+    result = build_project_context(root, tmp_path.parent / "data", "session-a")
+
+    assert result.ok is True
+    assert result.data["capabilities"]["configure"] is True
+    assert result.data["capabilities"]["keilInspect"] is False
+    assert result.data["capabilities"]["keilConvert"] is False
+    assert result.data["capabilities"]["build"] is True
+    managed = result.data["build"]
+    assert managed["managedManifestPresent"] is True
+    assert managed["managedManifestValid"] is True
+    assert managed["managedFilesMissing"] == ()
+    assert managed["managedFilesDrifted"] == ()
+
+
+# ---------------------------------------------------------------------------
+# managed-configuration-backed build capability (STM32TK-0306 revision 1)
+# ---------------------------------------------------------------------------
+
+
+def _valid_v2_with_cmakelists_only(tmp_path: Path) -> Path:
+    """A schema-valid v2 project whose only build artifact is CMakeLists.txt."""
+    import shutil
+
+    from test_build_runner import FIXTURE_ROOT
+
+    root = tmp_path / "project"
+    shutil.copytree(FIXTURE_ROOT, root)
+    (root / "CMakeLists.txt").write_text(
+        "cmake_minimum_required(VERSION 3.24)\n", encoding="utf-8"
+    )
+    return root
+
+
+def test_cmakelists_alone_does_not_enable_build_capability(tmp_path: Path):
+    """Regression: a bare CMakeLists.txt without managed configuration is not
+    a buildable project."""
+    root = _valid_v2_with_cmakelists_only(tmp_path)
+
+    result = build_project_context(root, tmp_path.parent / "data", "session-a")
+
+    assert result.ok is True
+    assert result.data["build"]["cmakeListsPresent"] is True
+    assert result.data["capabilities"]["build"] is False
+    assert result.data["build"]["managedManifestPresent"] is False
+    assert result.data["capabilities"]["configure"] is True
+
+
+def test_context_is_read_only_for_project_tree_and_git(
+    tmp_path: Path, monkeypatch
+):
+    """Regression: capability checks never create, repair, or rewrite files."""
+    import subprocess
+
+    root = prepare_project(tmp_path)
+
+    def snapshot():
+        entries = {}
+        for path in sorted(root.rglob("*")):
+            rel = path.relative_to(root)
+            if rel.parts and rel.parts[0] == ".git":
+                continue
+            if path.is_file():
+                entries[str(rel)] = (path.read_bytes(), path.stat().st_mode)
+            else:
+                entries[str(rel)] = ("dir", path.stat().st_mode)
+        porcelain = subprocess.run(
+            ["git", "status", "--porcelain"],
+            cwd=root,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout
+        return entries, porcelain
+
+    before_tree, before_git = snapshot()
+    result = build_project_context(root, tmp_path.parent / "data", "session-a")
+    assert result.ok is True
+    after_tree, after_git = snapshot()
+
+    assert before_tree == after_tree
+    assert before_git == after_git
+
+
+def test_managed_file_drift_disables_build_capability(tmp_path: Path, monkeypatch):
+    """Regression: a drifted managed file is stable evidence for build=false."""
+    root = prepare_project(tmp_path)
+    cmake = root / "CMakeLists.txt"
+    cmake.write_text(cmake.read_text(encoding="utf-8") + "# user drift\n", encoding="utf-8")
+
+    result = build_project_context(root, tmp_path.parent / "data", "session-a")
+
+    assert result.ok is True
+    assert result.data["capabilities"]["build"] is False
+    assert result.data["build"]["managedManifestValid"] is True
+    assert result.data["build"]["managedFilesDrifted"] == ("CMakeLists.txt",)
+    assert result.data["build"]["managedFilesMissing"] == ()
+
+
+def test_managed_file_removal_disables_build_capability(tmp_path: Path, monkeypatch):
+    """Regression: a missing managed file is stable evidence for build=false."""
+    root = prepare_project(tmp_path)
+    (root / ".vscode" / "tasks.json").unlink()
+
+    result = build_project_context(root, tmp_path.parent / "data", "session-a")
+
+    assert result.ok is True
+    assert result.data["capabilities"]["build"] is False
+    assert result.data["build"]["managedManifestValid"] is True
+    assert result.data["build"]["managedFilesMissing"] == (".vscode/tasks.json",)
+    assert result.data["build"]["managedFilesDrifted"] == ()
+
+
+def test_stale_managed_manifest_disables_build_capability(tmp_path: Path, monkeypatch):
+    """Regression: a manifest whose model digest no longer matches is stale."""
+    root = prepare_project(tmp_path)
+    manifest_path = root / ".stm32-project.json"
+    payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    payload["build"]["defines"] = ["USER_DEFINE"]
+    manifest_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+
+    result = build_project_context(root, tmp_path.parent / "data", "session-a")
+
+    assert result.ok is True
+    assert result.data["capabilities"]["build"] is False
+    assert result.data["build"]["managedManifestValid"] is False
+    assert result.data["build"]["managedFilesMissing"] == ()
+    assert result.data["build"]["managedFilesDrifted"] == ()
+
+
+def test_invalid_managed_manifest_disables_build_capability(tmp_path: Path, monkeypatch):
+    """Regression: an unparseable managed manifest is build=false evidence."""
+    root = prepare_project(tmp_path)
+    (root / ".stm32-toolkit" / "generated-files.json").write_bytes(b"{broken")
+
+    result = build_project_context(root, tmp_path.parent / "data", "session-a")
+
+    assert result.ok is True
+    assert result.data["capabilities"]["build"] is False
+    assert result.data["build"]["managedManifestPresent"] is True
+    assert result.data["build"]["managedManifestValid"] is False
+
+
+def test_version_mismatched_managed_manifest_disables_build_capability(
+    tmp_path: Path, monkeypatch
+):
+    """Regression: a manifest built by another toolkit version is build=false."""
+    root = prepare_project(tmp_path)
+    manifest_path = root / ".stm32-toolkit" / "generated-files.json"
+    payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    payload["toolVersion"] = "9.9.9"
+    manifest_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+
+    result = build_project_context(root, tmp_path.parent / "data", "session-a")
+
+    assert result.ok is True
+    assert result.data["capabilities"]["build"] is False
+    assert result.data["build"]["managedManifestPresent"] is True
+    assert result.data["build"]["managedManifestValid"] is False
+
+
+def test_unconfigured_kinds_keep_hardware_capabilities_false(tmp_path: Path):
+    for marker in ("board.ioc", "CMakeLists.txt"):
+        project = tmp_path / marker.replace(".", "_")
+        project.mkdir()
+        (project / marker).write_text("x", encoding="utf-8")
+
+        result = build_project_context(project, tmp_path / "data", "session-a")
+
+        assert result.ok is True
+        capabilities = result.data["capabilities"]
+        assert capabilities["keilInspect"] is False
+        assert capabilities["keilConvert"] is False
+        assert capabilities["configure"] is False
+        for key in ("flash", "hostTest", "targetTest", "monitor", "breakpointDebug"):
+            assert capabilities[key] is False
