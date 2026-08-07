@@ -16,6 +16,13 @@ _DECIMAL = re.compile(r"^(?:0|-?[1-9][0-9]*)$")
 _RAW_HEX = re.compile(r"^0x[0-9a-f]+$")
 _TIMESTAMP = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z$")
 _FLOAT_SYMBOLS = {"nan", "positiveInfinity", "negativeInfinity"}
+_CODE = re.compile(r"^[A-Z][A-Z0-9_]{0,127}$")
+_REGISTER_ACCESS = {"read-only", "read-write", "readOnce", "read-writeOnce"}
+_REGISTER_SIDE_EFFECTS = {None, "none", "read-clear", "read-set", "modify", "unknown"}
+_MAX_REPORT_ITEMS = 256
+_MAX_SAMPLES = 10_000
+_MAX_JSON_NODES = 200_000
+_MAX_JSON_STRING_CHARS = 4_000_000
 
 
 def _integer(name: str, value: object, minimum: int, maximum: int) -> int:
@@ -48,7 +55,22 @@ def _portable_path(value: object) -> str:
     return value
 
 
-def _freeze_json(value: object) -> object:
+def _freeze_json(
+    value: object,
+    *,
+    _depth: int = 0,
+    _budget: list[int] | None = None,
+) -> object:
+    budget = [0, 0] if _budget is None else _budget
+    if _depth > 64:
+        raise ValueError("JSON value exceeds the nesting budget")
+    budget[0] += 1
+    if budget[0] > _MAX_JSON_NODES:
+        raise ValueError("JSON value exceeds the node budget")
+    if isinstance(value, str):
+        budget[1] += len(value)
+        if budget[1] > _MAX_JSON_STRING_CHARS:
+            raise ValueError("JSON value exceeds the string budget")
     if value is None or isinstance(value, (bool, str)):
         return value
     if type(value) is int:
@@ -62,10 +84,15 @@ def _freeze_json(value: object) -> object:
         for key, item in value.items():
             if not isinstance(key, str):
                 raise TypeError("JSON mappings require string keys")
-            frozen[key] = _freeze_json(item)
+            budget[1] += len(key)
+            if budget[1] > _MAX_JSON_STRING_CHARS:
+                raise ValueError("JSON value exceeds the string budget")
+            frozen[key] = _freeze_json(item, _depth=_depth + 1, _budget=budget)
         return MappingProxyType(frozen)
     if isinstance(value, (list, tuple)):
-        return tuple(_freeze_json(item) for item in value)
+        return tuple(
+            _freeze_json(item, _depth=_depth + 1, _budget=budget) for item in value
+        )
     raise TypeError("value must be JSON-safe")
 
 
@@ -75,6 +102,52 @@ def _thaw_json(value: object) -> object:
     if isinstance(value, tuple):
         return [_thaw_json(item) for item in value]
     return value
+
+
+def _text(name: str, value: object, maximum: int) -> str:
+    if (
+        not isinstance(value, str)
+        or not value
+        or len(value) > maximum
+        or "\x00" in value
+        or any(ord(character) < 32 for character in value)
+    ):
+        raise ValueError(f"{name} is invalid")
+    return value
+
+
+def _timestamp(name: str, value: object) -> str:
+    if not isinstance(value, str) or _TIMESTAMP.fullmatch(value) is None:
+        raise ValueError(f"{name} is invalid")
+    return value
+
+
+def _raw_hex_width(value: object, bit_width: int) -> str:
+    if not isinstance(value, str) or _RAW_HEX.fullmatch(value) is None:
+        raise ValueError("raw_hex is invalid")
+    if len(value) != 2 + (bit_width + 3) // 4 or int(value[2:], 16) >= 1 << bit_width:
+        raise ValueError("raw_hex width does not match bit_width")
+    return value
+
+
+def _json_budget(value: object) -> None:
+    nodes = 0
+    characters = 0
+    pending = [value]
+    while pending:
+        item = pending.pop()
+        nodes += 1
+        if nodes > _MAX_JSON_NODES:
+            raise ValueError("JSON output exceeds the node budget")
+        if isinstance(item, str):
+            characters += len(item)
+            if characters > _MAX_JSON_STRING_CHARS:
+                raise ValueError("JSON output exceeds the string budget")
+        elif isinstance(item, MappingABC):
+            pending.extend(item.keys())
+            pending.extend(item.values())
+        elif isinstance(item, tuple):
+            pending.extend(item)
 
 
 @dataclass(frozen=True)
@@ -135,6 +208,7 @@ class DebugFirmwareBinding:
     git_dirty: bool
     confirmed_at_utc: str
     memory_regions: tuple[MemoryRegionBinding, ...]
+    project_root: Path = field(repr=False, compare=True)
 
     def __post_init__(self) -> None:
         for name in (
@@ -157,12 +231,23 @@ class DebugFirmwareBinding:
             raise TypeError("git_dirty must be a boolean")
         _integer("elf_size", self.elf_size, 1, 64 * 1024 * 1024)
         _portable_path(self.elf_path)
-        if _TIMESTAMP.fullmatch(self.confirmed_at_utc) is None:
-            raise ValueError("confirmed_at_utc is invalid")
+        _timestamp("confirmed_at_utc", self.confirmed_at_utc)
         if type(self.memory_regions) is not tuple or not self.memory_regions or not all(
             isinstance(region, MemoryRegionBinding) for region in self.memory_regions
         ):
             raise TypeError("memory_regions must be a non-empty tuple")
+        if not isinstance(self.project_root, Path):
+            raise TypeError("project_root must be a Path")
+        try:
+            canonical = self.project_root.resolve(strict=True)
+        except (OSError, RuntimeError):
+            raise ValueError("project_root must exist") from None
+        if (
+            not self.project_root.is_absolute()
+            or canonical != self.project_root
+            or not canonical.is_dir()
+        ):
+            raise ValueError("project_root must be a canonical absolute directory")
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -239,10 +324,7 @@ class FloatEvidence:
                 raise ValueError("floating symbol is invalid")
         elif not isinstance(self.value, float) or not math.isfinite(self.value):
             raise ValueError("non-finite floats require symbolic evidence")
-        if not isinstance(self.raw_hex, str) or _RAW_HEX.fullmatch(self.raw_hex) is None:
-            raise ValueError("raw_hex must be canonical lowercase hexadecimal")
-        if len(self.raw_hex) != 2 + width // 4:
-            raise ValueError("raw_hex width does not match bit_width")
+        _raw_hex_width(self.raw_hex, width)
 
     @classmethod
     def symbolic(cls, value: str, *, raw_hex: str, bit_width: int) -> "FloatEvidence":
@@ -269,6 +351,8 @@ class TypedLocation:
         _integer("address", self.address, 0, 0xFFFF_FFFF)
         _integer("size", self.size, 1, 1024 * 1024)
         _integer("bit_width", self.bit_width, 1, 8 * 1024 * 1024)
+        if self.size * 8 != self.bit_width:
+            raise ValueError("size and bit_width disagree")
         if self.signed is not None and type(self.signed) is not bool:
             raise TypeError("signed must be boolean or null")
         for name in ("type_name", "kind"):
@@ -303,10 +387,11 @@ class TypedValue:
             raise ValueError("expression is invalid")
         if not isinstance(self.type_name, str) or not self.type_name or len(self.type_name) > 256:
             raise ValueError("type_name is invalid")
-        object.__setattr__(self, "value", _freeze_json(self.value))
-        _integer("bit_width", self.bit_width, 1, 8 * 1024 * 1024)
-        if not isinstance(self.raw_hex, str) or _RAW_HEX.fullmatch(self.raw_hex) is None:
-            raise ValueError("raw_hex is invalid")
+        frozen = _freeze_json(self.value)
+        _json_budget(frozen)
+        object.__setattr__(self, "value", frozen)
+        width = _integer("bit_width", self.bit_width, 1, 8 * 1024 * 1024)
+        _raw_hex_width(self.raw_hex, width)
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -325,6 +410,18 @@ class DebugReadItem:
     value: TypedValue | None = None
     code: str | None = None
 
+    def __post_init__(self) -> None:
+        _text("expression", self.expression, 512)
+        if self.status not in {"ok", "error"}:
+            raise ValueError("status is invalid")
+        if self.status == "ok":
+            if not isinstance(self.value, TypedValue) or self.code is not None:
+                raise ValueError("successful read items require only a value")
+            if self.value.expression != self.expression:
+                raise ValueError("read item expression and value disagree")
+        elif self.value is not None or not isinstance(self.code, str) or _CODE.fullmatch(self.code) is None:
+            raise ValueError("failed read items require only a stable code")
+
     def to_dict(self) -> dict[str, object]:
         return {
             "expression": self.expression,
@@ -339,6 +436,17 @@ class DebugReadReport:
     binding: DebugFirmwareBinding
     items: tuple[DebugReadItem, ...]
     confirmed_at_utc: str
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.binding, DebugFirmwareBinding):
+            raise TypeError("binding is invalid")
+        if (
+            type(self.items) is not tuple
+            or not 1 <= len(self.items) <= _MAX_REPORT_ITEMS
+            or not all(isinstance(item, DebugReadItem) for item in self.items)
+        ):
+            raise TypeError("items must be a bounded tuple")
+        _timestamp("confirmed_at_utc", self.confirmed_at_utc)
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -377,6 +485,10 @@ class RegisterEvidence:
             raise ValueError("register path is invalid")
         _integer("address", self.address, 0, 0xFFFF_FFFF)
         _integer("size", self.size, 1, 8)
+        if self.access not in _REGISTER_ACCESS:
+            raise ValueError("register access is invalid")
+        if self.side_effect not in _REGISTER_SIDE_EFFECTS:
+            raise ValueError("register side effect is invalid")
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -399,13 +511,21 @@ class SampleReport:
     dropped_samples: int
 
     def __post_init__(self) -> None:
+        if not isinstance(self.binding, DebugFirmwareBinding):
+            raise TypeError("binding is invalid")
+        if type(self.samples) is not tuple or len(self.samples) > _MAX_SAMPLES:
+            raise TypeError("samples must be a bounded tuple")
+        if not all(isinstance(item, MappingABC) for item in self.samples):
+            raise TypeError("sample entries must be mappings")
         _integer("requested_interval_ms", self.requested_interval_ms, 1, 3_600_000)
         _integer("applied_interval_ms", self.applied_interval_ms, 100, 10_000)
         _integer("deadline_misses", self.deadline_misses, 0, 1_000_000)
         _integer("dropped_samples", self.dropped_samples, 0, 1_000_000)
         if not isinstance(self.actual_rate_hz, float) or not math.isfinite(self.actual_rate_hz) or self.actual_rate_hz < 0:
             raise ValueError("actual_rate_hz is invalid")
-        object.__setattr__(self, "samples", cast(tuple[Mapping[str, object], ...], tuple(_freeze_json(item) for item in self.samples)))
+        frozen = tuple(_freeze_json(item) for item in self.samples)
+        _json_budget(frozen)
+        object.__setattr__(self, "samples", cast(tuple[Mapping[str, object], ...], frozen))
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -431,10 +551,20 @@ class FaultReport:
     audit_operation: str = "fault.analyze"
 
     def __post_init__(self) -> None:
+        if not isinstance(self.binding, DebugFirmwareBinding):
+            raise TypeError("binding is invalid")
+        if self.target_state != "halted" or self.audit_operation != "fault.analyze":
+            raise ValueError("Fault report state or audit operation is invalid")
+        _timestamp("confirmed_at_utc", self.confirmed_at_utc)
         for name in ("registers", "fault_status", "stack_frame", "symbols"):
             value = getattr(self, name)
-            if value is not None:
-                object.__setattr__(self, name, _freeze_json(value))
+            if value is None and name == "stack_frame":
+                continue
+            if not isinstance(value, MappingABC):
+                raise TypeError(f"{name} must be a mapping")
+            frozen = _freeze_json(value)
+            _json_budget(frozen)
+            object.__setattr__(self, name, frozen)
 
     def to_dict(self) -> dict[str, object]:
         return {

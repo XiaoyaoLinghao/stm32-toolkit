@@ -14,6 +14,7 @@ from stm32_toolkit import __version__
 from stm32_toolkit.build.identity import atomic_write_json, utc_now_rfc3339
 from stm32_toolkit.debug.firmware import bind_debug_firmware
 from stm32_toolkit.debug import firmware as firmware_mod
+from stm32_toolkit.debug import model as model_mod
 from stm32_toolkit.debug.model import (
     DebugBindingRequest,
     DebugFirmwareBinding,
@@ -206,6 +207,7 @@ def _model_binding(**updates: object) -> DebugFirmwareBinding:
         "git_dirty": False,
         "confirmed_at_utc": "2026-08-08T01:02:03.000004Z",
         "memory_regions": (MemoryRegionBinding("FLASH", 0x08000000, 1024, "r-x"),),
+        "project_root": Path(__file__).resolve().parents[3],
     }
     values.update(updates)
     return DebugFirmwareBinding(**values)  # type: ignore[arg-type]
@@ -231,6 +233,89 @@ def test_all_shared_reports_are_frozen_json_documents():
     assert json.dumps(document, allow_nan=False)
     with pytest.raises(TypeError):
         sample.samples[0]["items"] = []  # type: ignore[index]
+    with pytest.raises(TypeError):
+        fault.registers["pc"] = "changed"  # type: ignore[index]
+
+
+def test_binding_internal_project_root_is_canonical_compared_and_never_serialized(tmp_path: Path):
+    root = (tmp_path / "project").resolve()
+    root.mkdir()
+    binding = _model_binding(project_root=root)
+    assert binding.project_root == root
+    assert "project_root" not in repr(binding)
+    assert "projectRoot" not in binding.to_dict()
+    assert binding != _model_binding(project_root=tmp_path.resolve())
+    with pytest.raises((TypeError, ValueError)):
+        _model_binding(project_root=Path("relative"))
+    with pytest.raises((TypeError, ValueError)):
+        _model_binding(project_root=tmp_path / "missing")
+
+
+@pytest.mark.parametrize(
+    "item",
+    [
+        DebugReadItem("x", "ok", TypedValue("x", "u8", 1, "0x01", 8)),
+        DebugReadItem("x", "error", code="DEBUG_UNAVAILABLE"),
+    ],
+)
+def test_read_item_xor_contract_accepts_only_coherent_variants(item: DebugReadItem):
+    assert json.dumps(item.to_dict(), allow_nan=False)
+
+
+@pytest.mark.parametrize(
+    "factory",
+    [
+        lambda: DebugReadItem("x", "ok"),
+        lambda: DebugReadItem("x", "ok", TypedValue("x", "u8", 1, "0x01", 8), "ERROR"),
+        lambda: DebugReadItem("x", "error"),
+        lambda: DebugReadItem("x", "error", TypedValue("x", "u8", 1, "0x01", 8), "ERROR"),
+        lambda: DebugReadItem("x", "other", code="ERROR"),
+        lambda: DebugReadItem("bad\x00", "error", code="ERROR"),
+        lambda: DebugReadItem("x", "error", code="bad code"),
+        lambda: DebugReadItem("x", "ok", TypedValue("y", "u8", 1, "0x01", 8)),
+        lambda: DebugReadReport(object(), (), "2026-08-08T01:02:03.000004Z"),
+        lambda: DebugReadReport(_model_binding(), [], "2026-08-08T01:02:03.000004Z"),
+        lambda: DebugReadReport(_model_binding(), (), "invalid"),
+        lambda: RegisterEvidence("GPIOA.IDR", 0, 4, "write-only"),
+        lambda: RegisterEvidence("GPIOA.IDR", 0, 4, "read-only", "bad-effect"),
+        lambda: SampleReport(object(), 100, 100, (), 1.0, 0, 0),
+        lambda: SampleReport(_model_binding(), 100, 100, [], 1.0, 0, 0),
+        lambda: SampleReport(_model_binding(), 100, 100, ({1: "bad"},), 1.0, 0, 0),
+        lambda: SampleReport(_model_binding(), 100, 100, (1,), 1.0, 0, 0),
+        lambda: FaultReport(object(), "halted", {}, {}, None, {}, "2026-08-08T01:02:03.000004Z"),
+        lambda: FaultReport(_model_binding(), "running", {}, {}, None, {}, "2026-08-08T01:02:03.000004Z"),
+        lambda: FaultReport(_model_binding(), "halted", [], {}, None, {}, "2026-08-08T01:02:03.000004Z"),
+        lambda: FaultReport(_model_binding(), "halted", {}, {}, None, {}, "invalid"),
+        lambda: FaultReport(_model_binding(), "halted", {}, {}, None, {}, "2026-08-08T01:02:03.000004Z", "halt"),
+        lambda: TypedValue("x", "u16", 1, "0x01", 16),
+        lambda: TypedLocation("x", 0, 1, "u16", "integer", 16, False, "RAM"),
+        lambda: _model_binding(project_root="bad"),
+        lambda: _model_binding(project_root=Path(".")),
+        lambda: IntegerEvidence("1", "0x01", 8, 1),
+        lambda: IntegerEvidence("0", "0x1ff", 8, False),
+    ],
+)
+def test_report_and_strong_value_invariants_fail_closed(factory):
+    with pytest.raises((TypeError, ValueError)):
+        factory()
+
+
+def test_deep_json_budgets_fail_before_mutable_output(monkeypatch):
+    monkeypatch.setattr(model_mod, "_MAX_JSON_NODES", 3)
+    with pytest.raises(ValueError, match="node budget"):
+        TypedValue("x", "array", [1, 2, 3], "0x000000", 24)
+    monkeypatch.setattr(model_mod, "_MAX_JSON_NODES", 200_000)
+    monkeypatch.setattr(model_mod, "_MAX_JSON_STRING_CHARS", 3)
+    with pytest.raises(ValueError, match="string budget"):
+        TypedValue("x", "text", "long", "0x00", 8)
+
+
+def test_deep_json_nesting_is_bounded():
+    value: object = 0
+    for _ in range(66):
+        value = [value]
+    with pytest.raises(ValueError, match="nesting budget"):
+        TypedValue("x", "nested", value, "0x00", 8)
 
 
 @pytest.mark.parametrize(
@@ -294,6 +379,8 @@ def test_bind_records_distinct_observation_and_flash_sessions_and_is_read_only(b
     assert binding.build_id == identity["buildId"]
     assert binding.elf_sha256 == identity["elfSha256"]
     assert binding.elf_path == "build/arm-debug/firmware.elf"
+    assert binding.project_root == root.resolve()
+    assert "projectRoot" not in binding.to_dict()
     assert binding.to_dict()["observationSessionId"] != binding.to_dict()["flashSessionId"]
     assert before == after
     assert client.events[0] == ("attach", "probe-123", "stm32f407vg")

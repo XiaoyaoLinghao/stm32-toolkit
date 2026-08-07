@@ -242,6 +242,7 @@ async def bind_debug_firmware(
             git_dirty=bool(current.identity["gitDirty"]),
             confirmed_at_utc=utc_now_rfc3339(),
             memory_regions=regions,
+            project_root=root,
         )
         return OperationResult.success(_OPERATION, binding)
     except asyncio.CancelledError:
