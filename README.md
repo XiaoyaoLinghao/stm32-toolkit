@@ -2,7 +2,7 @@
 
 [简体中文](README_zh-CN.md) | English
 
-STM32 Toolkit 0.2.0 is the read-only project-detection and environment-diagnosis foundation for future AI-assisted STM32 coding, debugging, testing, and monitoring. It keeps shared project intent in the repository while isolating machine-owned runtime and session state for every checkout.
+STM32 Toolkit 0.3.0 turns one Keil uVision project into a reproducible ARM GNU/GCC build: read-only Keil inspection, a guarded ARMCC-to-GCC conversion plan, managed GCC/CMake and VS Code configuration, and bounded builds with firmware identity. It is the foundation for future AI-assisted STM32 coding, debugging, testing, and monitoring. It keeps shared project intent in the repository while isolating machine-owned runtime and session state for every checkout.
 
 ## Install directly from GitHub
 
@@ -22,22 +22,37 @@ claude plugin marketplace update stm32-toolkit
 claude plugin update stm32-toolkit@stm32-toolkit --scope user
 ```
 
-Toolkit uses the version in `.claude-plugin/plugin.json` as Claude Code's update key, so each published release must bump that version.
+Toolkit uses the version in `.claude-plugin/plugin.json` as Claude Code's update key, so each published release must bump that version. Upgrading from 0.2.0 to 0.3.0 updates the managed runtime path from `runtime/0.2.0` to `runtime/0.3.0`; CHECK reports an existing 0.2.0 runtime as `broken` with `recommendedMode` `Repair`, and Repair quarantines it before promoting the 0.3.0 runtime.
 
-Do not copy Skills manually and do not register a second MCP server. Claude Code discovers the plugin's standard `skills/` directory and bundled `.mcp.json`. Version 0.2.0 exposes only `/stm32-toolkit:setup-stm32-env`; unfinished skill sources are preserved under `requirements/follow-on-skills/`, outside Claude's automatic Skill discovery.
+Do not copy Skills manually and do not register a second MCP server. Claude Code discovers the plugin's standard `skills/` directory and bundled `.mcp.json`. Version 0.3.0 exposes exactly four Skills: `/stm32-toolkit:setup-stm32-env`, `/stm32-toolkit:migrate-keil`, `/stm32-toolkit:configure-stm32-project`, and `/stm32-toolkit:build-firmware`. Unfinished skill sources are preserved under `requirements/follow-on-skills/`, outside Claude's automatic Skill discovery.
 
-Run `/stm32-toolkit:setup-stm32-env` after installation. Its Skill-only CHECK works before MCP startup and always reports the managed runtime as `missing`, `healthy`, or `broken`. After explicit authorization, Bootstrap or Repair builds in a unique plugin-data staging directory, validates Toolkit 0.2.0 plus doctor, and only then promotes it. Repair quarantines the failed runtime for recovery. Host Python 3.10+ is only a bounded bootstrap prerequisite and never an MCP fallback.
+Run `/stm32-toolkit:setup-stm32-env` after installation. Its Skill-only CHECK works before MCP startup and always reports the managed runtime as `missing`, `healthy`, or `broken`. After explicit authorization, Bootstrap or Repair builds in a unique plugin-data staging directory, validates Toolkit 0.3.0 plus doctor, and only then promotes it. Repair quarantines the failed runtime for recovery. Host Python 3.10+ is only a bounded bootstrap prerequisite and never an MCP fallback.
 
 ## Automatic project binding and isolation
 
-When the plugin is enabled, its bundled MCP configuration automatically starts the managed runtime and binds the server to `${CLAUDE_PROJECT_DIR}`. The launcher always uses `${CLAUDE_PLUGIN_DATA}/runtime/0.2.0/Scripts/python.exe`; it never selects a system interpreter.
+When the plugin is enabled, its bundled MCP configuration automatically starts the managed runtime and binds the server to `${CLAUDE_PROJECT_DIR}`. The launcher always uses `${CLAUDE_PLUGIN_DATA}/runtime/0.3.0/Scripts/python.exe`; it never selects a system interpreter.
 
 Two kinds of data stay deliberately separate:
 
 - `.stm32-project.json` is the shared, version-controlled project configuration. Its `logicalProjectId` identifies the logical firmware project.
 - `${CLAUDE_PLUGIN_DATA}/projects/<workspaceId>` contains isolated user state for one canonical checkout, including sessions, logs, diagnostics, caches, and future monitor state. Separate clones get different workspace IDs even when they share a logical project ID.
 
-The MCP process is bound to one canonical project root. Unconfigured Keil-only or unknown projects remain read-only and do not receive a workspace until a valid `.stm32-project.json` exists.
+The MCP process is bound to one canonical project root and exposes exactly seven tools: `stm32_doctor`, `stm32_project_detect`, `stm32_project_context`, `stm32_keil_inspect`, `stm32_keil_convert`, `stm32_project_configure`, and `stm32_build`. No tool accepts a project root, command, or environment argument. Unconfigured Keil-only or unknown projects remain read-only and do not receive a workspace until a valid `.stm32-project.json` exists.
+
+## Workflows and authorization
+
+Every conversion and configuration workflow is two-phase. The read-only plan returns a deterministic `plan_id`; mutation requires the caller to return that exact ID with explicit authorization. The core then independently replans from current disk state and rechecks every digest, Git, and drift guard immediately before its first write. Applying with a missing, malformed, or stale plan ID fails closed (`AUTHORIZATION_REQUIRED` / `PLAN_CHANGED`) without writes.
+
+- **Inspect**: `stm32-toolkit keil inspect --project <path> [--uvprojx <rel>] [--target-name <name>] [--no-baseline] --json` returns the read-only `inspection` and optional `baseline` evidence.
+- **Conversion plan**: `stm32-toolkit keil convert --project <path> --dry-run --json` shows blockers, exact changed paths, diffs, and the plan ID.
+- **Conversion apply**: `stm32-toolkit keil convert --project <path> --apply --plan-id <sha256> --authorized --json` applies only the exact plan.
+- **Configuration plan**: `stm32-toolkit project configure --project <path> --dry-run --json` shows file statuses, diffs, blockers, and the plan ID.
+- **Configuration apply**: `stm32-toolkit project configure --project <path> --apply --plan-id <sha256> --authorized --json` installs the managed files.
+- **Build**: `stm32-toolkit build --project <path> --preset {arm-debug,arm-release} [--clean] [--timeout-seconds 300] [--json]` runs the guarded CMake/Ninja build and publishes build logs, a build result, and firmware identity. The CLI invocation is itself the explicit user action; the MCP `stm32_build` tool additionally requires `authorized=true`.
+
+The same operations are available to Claude Code through the MCP tools and the three workflow Skills, which always start with `stm32_project_context`, show the read-only plan and evidence, and request authorization at the mutation boundary. A Skill never infers consent from a previous read-only call.
+
+The VS Code tasks generated for a configured project call only the supported `stm32-toolkit build --preset ... --project ${workspaceFolder}` contract; flash and debug handoff commands are not exposed in this release.
 
 ## Troubleshooting
 
@@ -53,16 +68,20 @@ If MCP startup says the runtime is missing, rerun `/stm32-toolkit:setup-stm32-en
 
 ## Foundation and follow-on capabilities
 
-### Foundation delivered in version 0.2.0
+### Delivered in version 0.3.0
 
-- versioned Python package and stable JSON result envelopes;
-- STM32 project detection and validated `.stm32-project.json` loading;
+- versioned Python package and stable JSON result envelopes (`stm32-toolkit/1`);
+- STM32 project detection and validated Schema v1/v2 `.stm32-project.json` loading;
 - deterministic per-checkout workspace IDs and isolated plugin-data paths;
-- offline doctor, project context, CLI wrappers, and project-bound MCP tools;
+- read-only Keil inspection and AXF/MAP baseline evidence;
+- guarded ARMCC-to-GCC conversion plans with exact patches, blockers, and deterministic plan IDs;
+- managed GCC/CMake, linker, and VS Code configuration with drift protection;
+- bounded CMake/Ninja builds with MAP validation, ELF identity, and failure records;
+- offline doctor, project context, CLI wrappers, and seven project-bound MCP tools;
 - user-scope plugin layout, one-time managed runtime bootstrap guidance, and automatic MCP binding.
 
 ### Follow-on work
 
-The foundation does not yet claim hardware flashing, probe leases, live target inspection, breakpoint debugging, host/target test execution, project generation, or a monitoring UI. Those capabilities require later implementation and hardware-aware safety contracts.
+The toolkit does not yet claim hardware flashing, probe leases, live target inspection, breakpoint debugging, host/target test execution, or a monitoring UI. Those capabilities require later implementation and hardware-aware safety contracts.
 
-Keil-to-GCC migration is one-way: future migration work may inspect Keil input and generate GCC/CMake configuration, but it must not write back to or synchronize the Keil project. The existing monitor requirement is preserved but monitoring is not implemented in this foundation. The contract requires user-created monitor groups; the toolkit does not ship or invent named presets.
+Keil-to-GCC migration is one-way: migration inspects Keil input and generates GCC/CMake configuration, but it must not write back to or synchronize the Keil project. The existing monitor requirement is preserved but monitoring is not implemented in this release. The contract requires user-created monitor groups; the toolkit does not ship or invent named presets.

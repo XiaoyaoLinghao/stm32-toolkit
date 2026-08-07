@@ -1,8 +1,8 @@
 {
   "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
   "name": "stm32-toolkit",
-  "version": "0.2.0",
-  "description": "Foundation for AI-assisted STM32 development with read-only project detection and environment diagnosis",
+  "version": "0.3.0",
+  "description": "AI-assisted STM32 development with read-only Keil inspection, guarded ARMCC-to-GCC conversion, managed GCC/CMake configuration, and reproducible builds",
   "author": {
     "name": "STM32 Toolkit Team"
   }
