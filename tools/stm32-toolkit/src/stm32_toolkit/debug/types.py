@@ -128,4 +128,3 @@ class DwarfSelection:
         raise DwarfError(
             "DWARF_TYPE_UNSUPPORTED", "Aggregate type decoding is unsupported"
         )
-
