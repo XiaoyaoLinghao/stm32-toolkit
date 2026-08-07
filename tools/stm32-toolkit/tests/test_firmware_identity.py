@@ -265,7 +265,8 @@ def test_snapshot_dedupes_source_also_reached_via_include_dir(tmp_path: Path):
     counted exactly once in the deterministic input snapshot."""
     root = prepare_project(tmp_path, git_repo=False)
     (root / "Inc").mkdir()
-    (root / "Inc" / "board.h").write_text("/* board */\n", encoding="utf-8")
+    board_bytes = b"/* board */\n"
+    (root / "Inc" / "board.h").write_bytes(board_bytes)
     payload = json.loads((root / ".stm32-project.json").read_text(encoding="utf-8"))
     payload["build"]["sources"] = ["Src/main.c", "Inc/board.h"]
     payload["build"]["includePaths"] = ["Inc"]
@@ -275,19 +276,19 @@ def test_snapshot_dedupes_source_also_reached_via_include_dir(tmp_path: Path):
 
     paths = [entry.path for entry in snapshot.entries]
     assert paths.count("Inc/board.h") == 1
-    assert snapshot.entries[paths.index("Inc/board.h")].size == len("/* board */\n")
+    assert snapshot.entries[paths.index("Inc/board.h")].size == len(board_bytes)
 
 
 def test_snapshot_dedupes_same_canonical_file_across_include_and_source(
     tmp_path: Path,
 ):
-    """Regression: a symlink inside an include directory that resolves to a
-    declared source is not counted a second time."""
+    """Regression: a hard link inside an include directory that resolves to
+    a declared source is not counted a second time without symlink privilege."""
     root = prepare_project(tmp_path, git_repo=False)
     (root / "Real").mkdir()
-    (root / "Real" / "a.c").write_text("int a;\n", encoding="utf-8")
+    (root / "Real" / "a.c").write_bytes(b"int a;\n")
     (root / "Link").mkdir()
-    (root / "Link" / "a.c").symlink_to("../Real/a.c")
+    os.link(root / "Real" / "a.c", root / "Link" / "a.c")
     payload = json.loads((root / ".stm32-project.json").read_text(encoding="utf-8"))
     payload["build"]["sources"] = ["Src/main.c", "Real/a.c"]
     payload["build"]["includePaths"] = ["Link"]

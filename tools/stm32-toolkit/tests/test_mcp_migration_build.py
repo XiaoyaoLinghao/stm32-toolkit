@@ -3,11 +3,12 @@
 
 The four new tools are permanently bound to ``ServerRuntime.project_root``;
 every request wrapper runs the existing client-roots guard before adapter
-work.  The end-to-end test copies the committed Keil fixture, makes it
-convertible (removes the blocker pragmas and the assembly source), and runs
-inspect -> conversion plan/apply -> configuration plan/apply -> fake build,
-linking plan IDs, the conversion report, the managed manifest, the build
-result, the identity, hashes, and Git HEAD.
+work.  The end-to-end test copies a committed naturally convertible Keil
+fixture without rewriting it, then runs inspect -> conversion plan/apply ->
+configuration plan/apply -> fake build, linking plan IDs, the conversion
+report, the managed manifest, the build result, the identity, hashes, and
+Git HEAD.  The fixture also contains the startup/vector prerequisites used
+by Codex's real ARM GNU acceptance gate.
 """
 
 from __future__ import annotations
@@ -100,6 +101,26 @@ def convertible_fixture_copy(tmp_path: Path) -> Path:
     (root / ".gitignore").write_text(GITIGNORE, encoding="utf-8")
     git_init(root)
     return root
+
+
+def test_convertible_fixture_contains_real_arm_build_prerequisites():
+    """The no-surgery fixture must remain linkable by the real ARM gate."""
+    fixture = FIXTURES / "keil-convertible"
+    project = (fixture / "legacy.uvprojx").read_text(encoding="utf-8")
+    startup = (fixture / "Startup" / "startup.c").read_text(encoding="utf-8")
+    device_header = (
+        fixture
+        / "Libraries"
+        / "STM32F4xx_StdPeriph_Driver"
+        / "inc"
+        / "stm32f4xx.h"
+    ).read_text(encoding="utf-8")
+
+    assert ".\\Startup\\startup.c" in project
+    assert "Reset_Handler" in startup
+    assert '.isr_vector' in startup
+    assert "__NOP" in device_header
+    assert "__WFI" in device_header
 
 
 # ---------------------------------------------------------------------------
