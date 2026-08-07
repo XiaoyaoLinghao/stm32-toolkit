@@ -5,6 +5,7 @@
     <peripheral>
       <name>GPIOA</name>
       <baseAddress>0x40020000</baseAddress>
+      <size>32</size>
       <access>read-write</access>
       <resetValue>0x00000000</resetValue>
       <resetMask>0xffffffff</resetMask>

@@ -8,10 +8,23 @@ from types import SimpleNamespace
 import pytest
 
 from stm32_toolkit.debug import svd as svd_module
-from stm32_toolkit.debug.svd import SvdError, select_svd
+from stm32_toolkit.debug.model import DebugFirmwareBinding, MemoryRegionBinding
+from stm32_toolkit.debug.svd import SvdError, SvdSelection, select_svd as _select_svd
 
 
 FIXTURE = Path(__file__).parent / "fixtures" / "svd" / "STM32F429-exact.svd"
+READABLE = (
+    MemoryRegionBinding("PERIPHERAL", 0x40000000, 0x01000000, "rw-"),
+)
+
+
+def select_svd(project_root, target_device, candidates, *, readable_regions=READABLE):
+    return _select_svd(
+        project_root,
+        target_device,
+        candidates,
+        readable_regions=readable_regions,
+    )
 
 
 def test_selects_one_exact_device_and_expands_register_metadata(tmp_path: Path) -> None:
@@ -198,7 +211,7 @@ def test_access_policy_denies_write_only_and_guards_side_effects(tmp_path: Path)
 def _document(peripheral_body: str, *, device_access: str = "") -> bytes:
     return (
         '<?xml version="1.0" encoding="utf-8"?>'
-        '<device><name>STM32F429ZITx</name>'
+        '<device><name>STM32F429ZITx</name><size>32</size>'
         f'{device_access}<peripherals><peripheral><name>GPIOA</name>'
         '<baseAddress>0x40020000</baseAddress>'
         f'{peripheral_body}</peripheral></peripherals></device>'
@@ -428,3 +441,256 @@ def test_real_ntfs_junction_candidate_is_rejected(tmp_path: Path) -> None:
     with pytest.raises(SvdError) as root_error:
         select_svd(junction, "STM32F429ZITx", (Path("device.svd"),))
     assert root_error.value.code == "SVD_PATH_INVALID"
+
+
+def _binding(project_root: Path, *, regions=READABLE) -> DebugFirmwareBinding:
+    return DebugFirmwareBinding(
+        project_root=project_root.resolve(strict=True),
+        logical_project_id="project-a",
+        workspace_id="workspace-a",
+        observation_session_id="observe-a",
+        flash_session_id="flash-a",
+        lease_id="lease-a",
+        probe_id="probe-a",
+        target_device="STM32F429ZITx",
+        debug_target="stm32f429zitx",
+        build_id="a" * 64,
+        elf_sha256="b" * 64,
+        elf_size=1024,
+        elf_path="build/firmware.elf",
+        input_snapshot_sha256="c" * 64,
+        git_head="d" * 40,
+        git_dirty=False,
+        confirmed_at_utc="2026-08-08T12:00:00.000000Z",
+        memory_regions=regions,
+    )
+
+
+def test_readable_regions_are_required_and_every_register_must_be_contained(
+    tmp_path: Path,
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "device.svd").write_bytes(FIXTURE.read_bytes())
+
+    with pytest.raises(TypeError):
+        _select_svd(project, "STM32F429ZITx", (Path("device.svd"),))
+    with pytest.raises(SvdError) as outside:
+        select_svd(
+            project,
+            "STM32F429ZITx",
+            (Path("device.svd"),),
+            readable_regions=(MemoryRegionBinding("RAM", 0x20000000, 0x1000, "rw-"),),
+        )
+    assert outside.value.code == "SVD_ADDRESS_OUT_OF_RANGE"
+
+
+def test_selection_has_unforgeable_provenance_and_revalidates_current_binding(
+    tmp_path: Path,
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    path = project / "device.svd"
+    path.write_bytes(FIXTURE.read_bytes())
+    selection = select_svd(project, "STM32F429ZITx", (Path("device.svd"),))
+
+    assert selection.file_size == path.stat().st_size
+    assert selection.readable_regions == READABLE
+    assert selection.revalidate(_binding(project), project) is True
+    with pytest.raises(TypeError):
+        SvdSelection("STM32F429ZITx", "device.svd", "a" * 64, ())
+
+    path.write_bytes(path.read_bytes() + b"\n")
+    with pytest.raises(SvdError) as changed:
+        selection.revalidate(_binding(project), project)
+    assert changed.value.code == "SVD_INPUT_CHANGED"
+
+
+def test_forward_derived_register_and_cluster_defaults_are_resolved(
+    tmp_path: Path,
+) -> None:
+    selection = _select_payload(
+        tmp_path,
+        _document(
+            '<access>read-write</access><registers>'
+            '<register derivedFrom="BASE"><name>COPY</name><addressOffset>4</addressOffset></register>'
+            '<register><name>BASE</name><addressOffset>0</addressOffset><size>16</size>'
+            '<access>read-only</access><resetValue>0x12</resetValue><resetMask>0xffff</resetMask></register>'
+            '<cluster><name>GROUP</name><addressOffset>0x20</addressOffset><size>8</size>'
+            '<access>write-only</access><resetValue>1</resetValue><resetMask>0xff</resetMask>'
+            '<register><name>COMMAND</name><addressOffset>0</addressOffset></register></cluster>'
+            '</registers>'
+        ),
+    )
+
+    copy = selection.register("GPIOA.COPY")
+    assert (copy.size_bytes, copy.access, copy.reset_value, copy.reset_mask) == (
+        2,
+        "read-only",
+        0x12,
+        0xFFFF,
+    )
+    command = selection.register("GPIOA.GROUP.COMMAND")
+    assert (command.size_bytes, command.access, command.reset_value) == (
+        1,
+        "write-only",
+        1,
+    )
+    with pytest.raises(SvdError) as denied:
+        command.authorize_read(True, sampling=False)
+    assert denied.value.code == "SVD_REGISTER_WRITE_ONLY"
+
+
+def test_derived_from_cycle_and_wrong_scope_fail_closed(tmp_path: Path) -> None:
+    cycle = _document(
+        '<registers><register derivedFrom="B"><name>A</name><addressOffset>0</addressOffset></register>'
+        '<register derivedFrom="A"><name>B</name><addressOffset>4</addressOffset></register></registers>'
+    )
+    with pytest.raises(SvdError) as cycle_error:
+        _select_payload(tmp_path, cycle)
+    assert cycle_error.value.code == "SVD_XML_INVALID"
+
+    wrong_scope = tmp_path / "wrong-scope"
+    payload = _document(
+        '<registers><cluster><name>GROUP</name><addressOffset>0</addressOffset>'
+        '<register derivedFrom="OUTER"><name>VALUE</name><addressOffset>0</addressOffset></register>'
+        '</cluster><register><name>OUTER</name><addressOffset>4</addressOffset></register></registers>'
+    )
+    with pytest.raises(SvdError) as scope_error:
+        _select_payload(wrong_scope, payload)
+    assert scope_error.value.code == "SVD_XML_INVALID"
+
+
+def test_forward_peripheral_and_cluster_inheritance_use_local_scope(
+    tmp_path: Path,
+) -> None:
+    payload = (
+        '<device><name>STM32F429ZITx</name><size>32</size><peripherals>'
+        '<peripheral derivedFrom="BASE"><name>COPY</name><baseAddress>0x40021000</baseAddress></peripheral>'
+        '<peripheral><name>BASE</name><baseAddress>0x40020000</baseAddress><size>16</size>'
+        '<access>read-only</access><registers>'
+        '<cluster derivedFrom="GROUP_BASE"><name>GROUP_COPY</name><addressOffset>0x40</addressOffset></cluster>'
+        '<cluster><name>GROUP_BASE</name><addressOffset>0x20</addressOffset><size>8</size>'
+        '<resetValue>1</resetValue><resetMask>0xff</resetMask>'
+        '<register><name>VALUE</name><addressOffset>0</addressOffset></register>'
+        '</cluster></registers></peripheral></peripherals></device>'
+    ).encode("utf-8")
+
+    selection = _select_payload(tmp_path, payload)
+
+    assert selection.register("BASE.GROUP_COPY.VALUE").address == 0x40020040
+    inherited = selection.register("COPY.GROUP_BASE.VALUE")
+    assert (inherited.address, inherited.size_bytes, inherited.access) == (
+        0x40021020,
+        1,
+        "read-only",
+    )
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        (
+            '<device><name>STM32F429ZITx</name><size>32</size><peripherals>'
+            '<peripheral derivedFrom="B"><name>A</name><baseAddress>0x40020000</baseAddress></peripheral>'
+            '<peripheral derivedFrom="A"><name>B</name><baseAddress>0x40021000</baseAddress></peripheral>'
+            '</peripherals></device>'
+        ).encode("utf-8"),
+        _document(
+            '<registers><cluster derivedFrom="B"><name>A</name><addressOffset>0</addressOffset></cluster>'
+            '<cluster derivedFrom="A"><name>B</name><addressOffset>4</addressOffset></cluster></registers>'
+        ),
+        (
+            '<device><name>STM32F429ZITx</name><size>32</size><peripherals>'
+            '<peripheral><name>GPIOA</name><baseAddress>0x40020000</baseAddress></peripheral>'
+            '<peripheral><name>GPIOA</name><baseAddress>0x40021000</baseAddress></peripheral>'
+            '</peripherals></device>'
+        ).encode("utf-8"),
+    ],
+)
+def test_peripheral_cluster_cycles_and_ambiguity_fail_closed(
+    tmp_path: Path, payload: bytes
+) -> None:
+    with pytest.raises(SvdError) as error:
+        _select_payload(tmp_path, payload)
+    assert error.value.code == "SVD_XML_INVALID"
+
+
+def test_expansion_budget_fails_before_dim_cartesian_product(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setattr(svd_module, "_MAX_REGISTERS", 2)
+    monkeypatch.setattr(
+        svd_module,
+        "_format_dim_name",
+        lambda *args: (_ for _ in ()).throw(
+            AssertionError("dimension expansion began before budget check")
+        ),
+    )
+    payload = _document(
+        '<registers><register><name>VALUE%s</name><addressOffset>0</addressOffset>'
+        '<dim>3</dim><dimIncrement>4</dimIncrement></register></registers>'
+    )
+    with pytest.raises(SvdError) as error:
+        _select_payload(tmp_path, payload)
+    assert error.value.code == "SVD_SIZE_LIMIT"
+
+
+def test_xml_and_declaration_budgets_return_stable_size_limit(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setattr(svd_module, "_MAX_XML_ELEMENTS", 3)
+    with pytest.raises(SvdError) as xml_error:
+        _select_payload(tmp_path, FIXTURE.read_bytes())
+    assert xml_error.value.code == "SVD_SIZE_LIMIT"
+
+
+@pytest.mark.parametrize(
+    ("constant", "limit"),
+    [
+        ("_MAX_PERIPHERALS", 0),
+        ("_MAX_CLUSTERS", 0),
+        ("_MAX_REGISTER_DECLARATIONS", 1),
+        ("_MAX_FIELDS", 1),
+    ],
+)
+def test_each_declaration_budget_has_a_stable_limit_plus_one_failure(
+    tmp_path: Path, monkeypatch, constant: str, limit: int
+) -> None:
+    monkeypatch.setattr(svd_module, constant, limit)
+    with pytest.raises(SvdError) as error:
+        _select_payload(tmp_path, FIXTURE.read_bytes())
+    assert error.value.code == "SVD_SIZE_LIMIT"
+
+
+def test_revalidation_rejects_wrong_root_binding_and_replaced_descriptor(
+    tmp_path: Path,
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    path = project / "device.svd"
+    path.write_bytes(FIXTURE.read_bytes())
+    selection = select_svd(project, "STM32F429ZITx", (Path("device.svd"),))
+
+    wrong_regions = (
+        MemoryRegionBinding("PERIPHERAL", 0x40000000, 0x00800000, "rw-"),
+    )
+    with pytest.raises(SvdError) as binding_error:
+        selection.revalidate(_binding(project, regions=wrong_regions), project)
+    assert binding_error.value.code == "SVD_PROVENANCE_MISMATCH"
+
+    other = tmp_path / "other"
+    other.mkdir()
+    (other / "device.svd").write_bytes(FIXTURE.read_bytes())
+    with pytest.raises(SvdError) as root_error:
+        selection.revalidate(_binding(other), other)
+    assert root_error.value.code == "SVD_PROVENANCE_MISMATCH"
+
+    original = path.read_bytes()
+    replacement = project / "replacement.svd"
+    replacement.write_bytes(original)
+    path.unlink()
+    replacement.rename(path)
+    with pytest.raises(SvdError) as descriptor_error:
+        selection.revalidate(_binding(project), project)
+    assert descriptor_error.value.code == "SVD_INPUT_CHANGED"
