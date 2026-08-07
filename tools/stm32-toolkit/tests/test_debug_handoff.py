@@ -59,12 +59,18 @@ class FakeSupervisor:
         self.modify_attempts: list[bool] = []
         self.start_error: BaseException | None = None
         self.stop_error: BaseException | None = None
+        self.stop_error_after_cleanup: BaseException | None = None
         self.drain_error: BaseException | None = None
         session_root.mkdir(parents=True, exist_ok=True)
         self._activate()
 
     def _new_endpoint(self):
         return SimpleNamespace(
+            protocol="stm32-toolkit-probe-v1",
+            toolkit_version=__version__,
+            host="127.0.0.1",
+            port=43123,
+            token="11" * 32,
             workspace_id="workspace-a",
             session_id="session-a",
             probe_id="probe-123",
@@ -93,6 +99,8 @@ class FakeSupervisor:
             self._lease_manager.path,
             {"schemaVersion": 1, "state": "released", "leaseId": "lease-a"},
         )
+        if self.stop_error_after_cleanup is not None:
+            raise self.stop_error_after_cleanup
 
     async def start(self):
         self.start_calls += 1
@@ -345,6 +353,36 @@ def test_begin_drains_modifications_before_final_target_readback(handoff_env):
     assert supervisor.stop_calls == 1
 
 
+@pytest.mark.parametrize(
+    ("field", "replacement"),
+    [
+        ("protocol", "other-protocol"),
+        ("toolkit_version", "99.0.0"),
+        ("host", "127.0.0.2"),
+        ("port", 43124),
+        ("token", "22" * 32),
+        ("workspace_id", "workspace-other"),
+        ("session_id", "session-other"),
+        ("lease_id", "lease-other"),
+        ("probe_id", "probe-other"),
+        ("operation_level", OperationLevel.OBSERVE),
+    ],
+)
+def test_begin_rejects_client_not_bound_to_supervisor_endpoint(
+    handoff_env, field: str, replacement: object
+):
+    _, _, session_root, supervisor, client, request = handoff_env
+    client.endpoint = SimpleNamespace(**vars(supervisor.endpoint))
+    setattr(client.endpoint, field, replacement)
+
+    result = asyncio.run(begin_debug_handoff(request, supervisor, client))
+
+    assert result.code == "HANDOFF_CLIENT_MISMATCH"
+    assert supervisor.stop_calls == 0
+    assert client.events == []
+    assert not (session_root / STATE_NAME).exists()
+
+
 def test_begin_drain_failure_is_stable_and_does_not_touch_target(handoff_env):
     _, _, session_root, supervisor, client, request = handoff_env
     supervisor.drain_error = RuntimeError("private drain detail")
@@ -368,6 +406,34 @@ def test_begin_drain_cancellation_propagates_without_state(handoff_env):
     assert supervisor.stop_calls == 0
     assert client.events == []
     assert not (session_root / STATE_NAME).exists()
+
+
+def test_begin_stop_cancellation_finalizes_external_state_before_propagating(
+    handoff_env,
+):
+    _, _, session_root, supervisor, client, request = handoff_env
+    supervisor.stop_error_after_cleanup = asyncio.CancelledError()
+
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(begin_debug_handoff(request, supervisor, client))
+
+    assert supervisor.endpoint is None
+    assert _state(session_root)["state"] == "externally-owned"
+    assert json.loads(supervisor._lease_manager.path.read_text(encoding="utf-8"))["state"] == "released"
+
+
+def test_begin_cleanup_failure_after_release_stays_paused(handoff_env):
+    _, _, session_root, supervisor, client, request = handoff_env
+    supervisor.stop_error_after_cleanup = RuntimeError("private cleanup detail")
+
+    result = asyncio.run(begin_debug_handoff(request, supervisor, client))
+
+    assert result.code == "HANDOFF_STOP_FAILED"
+    assert "private cleanup detail" not in json.dumps(result.to_dict())
+    assert supervisor.endpoint is None
+    assert _state(session_root)["state"] == "paused-for-debug"
+    retry = asyncio.run(begin_debug_handoff(request, supervisor, client))
+    assert retry.code == "HANDOFF_REACQUIRE_REQUIRED"
 
 
 def test_probe_package_exports_handoff_contracts() -> None:
@@ -509,6 +575,24 @@ def test_end_reacquires_revalidates_and_consumes_one_time_ticket(handoff_env):
     assert replay.ok is False
     assert replay.code == "HANDOFF_TICKET_INVALID"
     assert supervisor.start_calls == 1
+
+
+def test_end_rejects_factory_client_bound_to_another_endpoint(handoff_env):
+    _, _, session_root, supervisor, client, request = handoff_env
+    ticket = asyncio.run(begin_debug_handoff(request, supervisor, client)).data
+
+    def wrong_factory(endpoint: object) -> FakeClient:
+        wrong_endpoint = SimpleNamespace(**vars(endpoint))
+        wrong_endpoint.token = "22" * 32
+        return FakeClient(wrong_endpoint, client.image)
+
+    result = asyncio.run(
+        end_debug_handoff(ticket.ticket_id, supervisor, wrong_factory)
+    )
+
+    assert result.code == "HANDOFF_CLIENT_MISMATCH"
+    assert _state(session_root)["state"] == "reacquiring"
+    assert _state(session_root)["ticketId"] == ticket.ticket_id
 
 
 def test_end_wrong_ticket_or_binding_does_not_start(handoff_env):
@@ -800,6 +884,45 @@ def test_state_opened_and_named_identity_mismatch_fails_closed(
         end_debug_handoff(ticket.ticket_id, supervisor, lambda endpoint: client)
     )
     assert result.code == "HANDOFF_STATE_INVALID"
+
+
+def test_state_parent_identity_change_after_open_fails_closed(
+    handoff_env, monkeypatch: pytest.MonkeyPatch
+):
+    _, _, session_root, supervisor, client, request = handoff_env
+    first = asyncio.run(begin_debug_handoff(request, supervisor, client))
+    assert first.ok is True
+    state_path = session_root / STATE_NAME
+    real_fstat = os.fstat
+    real_lstat = os.lstat
+    state_metadata = real_lstat(state_path)
+    state_identity = (state_metadata.st_dev, state_metadata.st_ino)
+    state_opened = False
+    changed_paths: list[Path] = []
+
+    def tracking_fstat(descriptor: int):
+        nonlocal state_opened
+        metadata = real_fstat(descriptor)
+        state_opened = (metadata.st_dev, metadata.st_ino) == state_identity
+        return metadata
+
+    def changed_parent(path: object, *args, **kwargs):
+        metadata = real_lstat(path, *args, **kwargs)
+        if state_opened and Path(path) == session_root:
+            changed_paths.append(Path(path))
+            return SimpleNamespace(
+                st_mode=metadata.st_mode,
+                st_dev=metadata.st_dev,
+                st_ino=metadata.st_ino + 1,
+                st_file_attributes=getattr(metadata, "st_file_attributes", 0),
+            )
+        return metadata
+
+    monkeypatch.setattr("stm32_toolkit.probe.handoff.os.fstat", tracking_fstat)
+    monkeypatch.setattr("stm32_toolkit.probe.handoff.os.lstat", changed_parent)
+
+    result = asyncio.run(begin_debug_handoff(request, supervisor, client))
+    assert result.code == "HANDOFF_STATE_INVALID", (result.code, changed_paths)
     assert supervisor.start_calls == 0
 
 
@@ -1003,6 +1126,41 @@ def test_atomic_transition_failure_does_not_stop_service_or_publish_partial_stat
     assert supervisor.stop_calls == 0
     assert not (session_root / STATE_NAME).exists()
     assert list(session_root.glob(".debug-handoff-*.tmp")) == []
+
+
+def test_external_transition_write_failure_requires_reacquire_and_readback(
+    handoff_env, monkeypatch: pytest.MonkeyPatch
+):
+    _, _, session_root, supervisor, client, request = handoff_env
+    real_replace = os.replace
+    state_replacements = 0
+
+    def fail_second_state_replace(source: object, destination: object):
+        nonlocal state_replacements
+        if Path(destination).name == STATE_NAME:
+            state_replacements += 1
+            if state_replacements == 2:
+                raise PermissionError("private path")
+        return real_replace(source, destination)
+
+    monkeypatch.setattr(
+        "stm32_toolkit.probe.handoff.os.replace", fail_second_state_replace
+    )
+    failed = asyncio.run(begin_debug_handoff(request, supervisor, client))
+    assert failed.code == "HANDOFF_STATE_UNAVAILABLE"
+    assert supervisor.endpoint is None
+    assert _state(session_root)["state"] == "paused-for-debug"
+
+    blocked = asyncio.run(begin_debug_handoff(request, supervisor, client))
+    assert blocked.code == "HANDOFF_REACQUIRE_REQUIRED"
+    assert _state(session_root)["state"] == "paused-for-debug"
+
+    asyncio.run(supervisor.start())
+    client.image = b"\x00" * len(client.image)
+    changed = asyncio.run(begin_debug_handoff(request, supervisor, client))
+    assert changed.code == "FLASH_VERIFY_FAILED"
+    assert supervisor.endpoint is not None
+    assert _state(session_root)["state"] == "paused-for-debug"
 
 
 def test_begin_conflicting_selection_does_not_replace_active_ticket(handoff_env):

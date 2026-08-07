@@ -43,13 +43,10 @@ async def _await_task_completion(task: asyncio.Task[object]) -> object:
                 cancellation = error
         except BaseException:
             break
+    result = task.result()
     if cancellation is not None:
-        try:
-            task.result()
-        except BaseException:
-            pass
         raise cancellation
-    return task.result()
+    return result
 
 
 class ProbeServiceError(Exception):

@@ -431,6 +431,56 @@ def test_cancelled_supervisor_stop_during_service_dispatch_still_cleans(
     run(scenario())
 
 
+def test_supervisor_cleanup_failure_wins_over_concurrent_cancellation(
+    tmp_path: Path,
+) -> None:
+    class BlockingFailingBackend(RecordingBackend):
+        def __init__(self) -> None:
+            super().__init__()
+            self.entered = __import__("threading").Event()
+            self.release = __import__("threading").Event()
+
+        def close(self) -> None:
+            self.entered.set()
+            self.release.wait()
+            super().close()
+            raise RuntimeError("supervisor backend cleanup failed")
+
+    async def scenario() -> None:
+        data_root = tmp_path / "plugin-data"
+        backend = BlockingFailingBackend()
+        supervisor = make_supervisor(data_root, lambda: backend)
+        endpoint = await supervisor.start()
+        stopping = asyncio.create_task(supervisor.stop())
+        assert await asyncio.to_thread(backend.entered.wait, 2)
+
+        stopping.cancel()
+        await asyncio.sleep(0)
+        assert not stopping.done()
+        assert supervisor.endpoint is endpoint
+        backend.release.set()
+        with pytest.raises(RuntimeError, match="supervisor backend cleanup failed"):
+            await stopping
+
+        assert backend.closed is True
+        assert supervisor.endpoint is None
+        assert supervisor._service is None
+        assert supervisor._backend is None
+        assert not endpoint.record_path.exists()
+        lease_record = __import__("json").loads(
+            ProbeLeaseManager(data_root)
+            .record_path("probe-a")
+            .read_text(encoding="utf-8")
+        )
+        assert lease_record == {
+            "leaseId": endpoint.lease_id,
+            "schemaVersion": 1,
+            "state": "released",
+        }
+
+    run(scenario())
+
+
 def test_supervisor_drain_requires_running_service(tmp_path: Path) -> None:
     async def scenario() -> None:
         supervisor = make_supervisor(tmp_path / "plugin-data", BackendFactory())

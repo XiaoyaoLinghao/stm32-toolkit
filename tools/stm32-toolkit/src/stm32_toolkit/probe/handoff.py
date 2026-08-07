@@ -325,8 +325,55 @@ def _process_guard(path: Path) -> Iterator[None]:
             handle.close()
 
 
-def _read_json_file(path: Path, limit: int, *, missing: bool = False) -> dict[str, object] | None:
+def _directory_identity_chain(root: Path, parent: Path) -> tuple[tuple[int, int], ...]:
+    lexical_root = root.expanduser().absolute()
+    lexical_parent = parent.expanduser().absolute()
+    try:
+        relative = lexical_parent.relative_to(lexical_root)
+    except ValueError:
+        raise _fail(
+            "HANDOFF_STATE_INVALID",
+            "Debug handoff state is invalid",
+            rule="parentContainment",
+        ) from None
+    components = (
+        lexical_root,
+        *(
+            lexical_root.joinpath(*relative.parts[:index])
+            for index in range(1, len(relative.parts) + 1)
+        ),
+    )
+    identities: list[tuple[int, int]] = []
+    try:
+        for component in components:
+            metadata = os.lstat(component)
+            if _is_redirect(metadata) or not stat.S_ISDIR(metadata.st_mode):
+                raise _fail(
+                    "HANDOFF_STATE_INVALID",
+                    "Debug handoff state is invalid",
+                    rule="parentChain",
+                )
+            identities.append((metadata.st_dev, metadata.st_ino))
+    except _HandoffFailure:
+        raise
+    except OSError:
+        raise _fail(
+            "HANDOFF_STATE_UNAVAILABLE",
+            "Debug handoff state is unavailable",
+        ) from None
+    return tuple(identities)
+
+
+def _read_json_file(
+    path: Path,
+    limit: int,
+    *,
+    missing: bool = False,
+    containment_root: Path | None = None,
+) -> dict[str, object] | None:
     descriptor = -1
+    root = path.parent if containment_root is None else containment_root
+    parent_identity = _directory_identity_chain(root, path.parent)
     try:
         info = os.lstat(path)
     except FileNotFoundError:
@@ -355,6 +402,20 @@ def _read_json_file(path: Path, limit: int, *, missing: bool = False) -> dict[st
         with os.fdopen(descriptor, "rb") as handle:
             descriptor = -1
             raw = handle.read(limit + 1)
+            named_after = os.lstat(path)
+            parent_after = _directory_identity_chain(root, path.parent)
+            if (
+                _is_redirect(named_after)
+                or not stat.S_ISREG(named_after.st_mode)
+                or (opened.st_dev, opened.st_ino)
+                != (named_after.st_dev, named_after.st_ino)
+                or parent_after != parent_identity
+            ):
+                raise _fail(
+                    "HANDOFF_STATE_INVALID",
+                    "Debug handoff state is invalid",
+                    rule="fileRace",
+                )
     except _HandoffFailure:
         raise
     except OSError:
@@ -413,7 +474,12 @@ def _validate_state(value: dict[str, object]) -> dict[str, object]:
 
 
 def _read_state(session_root: Path) -> dict[str, object] | None:
-    value = _read_json_file(session_root / _STATE_NAME, _STATE_LIMIT, missing=True)
+    value = _read_json_file(
+        session_root / _STATE_NAME,
+        _STATE_LIMIT,
+        missing=True,
+        containment_root=session_root,
+    )
     return None if value is None else _validate_state(value)
 
 
@@ -494,6 +560,35 @@ def _endpoint(endpoint: object, probe: str, workspace: str, session: str) -> str
     return lease_id
 
 
+def _validate_client_endpoint(client: object, endpoint: object) -> None:
+    actual = getattr(client, "endpoint", None)
+    expected_token = getattr(endpoint, "token", None)
+    actual_token = getattr(actual, "token", None)
+    fields = (
+        "protocol",
+        "toolkit_version",
+        "host",
+        "port",
+        "workspace_id",
+        "session_id",
+        "lease_id",
+        "probe_id",
+    )
+    if (
+        actual is None
+        or any(getattr(actual, field, None) != getattr(endpoint, field, None) for field in fields)
+        or getattr(getattr(actual, "operation_level", None), "value", None)
+        != getattr(getattr(endpoint, "operation_level", None), "value", None)
+        or not isinstance(expected_token, str)
+        or not isinstance(actual_token, str)
+        or not secrets.compare_digest(actual_token, expected_token)
+    ):
+        raise _fail(
+            "HANDOFF_CLIENT_MISMATCH",
+            "Probe client does not match the owning service endpoint",
+        )
+
+
 def _load_flash_result(root: Path) -> dict[str, object]:
     path = root
     for component in _FLASH_RESULT_REL.split("/"):
@@ -505,7 +600,9 @@ def _load_flash_result(root: Path) -> dict[str, object]:
         if _is_redirect(info):
             raise _fail("HANDOFF_FLASH_REQUIRED", "A current successful flash result is required")
     try:
-        value = _read_json_file(path, _FLASH_RESULT_LIMIT)
+        value = _read_json_file(
+            path, _FLASH_RESULT_LIMIT, containment_root=root
+        )
     except _HandoffFailure:
         raise _fail("HANDOFF_FLASH_REQUIRED", "A current successful flash result is required") from None
     assert value is not None
@@ -617,7 +714,13 @@ def _prove_released(supervisor: object, probe: str, lease_id: str, endpoint_path
     manager = getattr(supervisor, "_lease_manager", None)
     try:
         record_path = manager.record_path(probe)
-        record = _read_json_file(record_path, _LEASE_RECORD_LIMIT)
+        data_root = getattr(manager, "data_root", None)
+        containment_root = data_root if isinstance(data_root, Path) else record_path.parent
+        record = _read_json_file(
+            record_path,
+            _LEASE_RECORD_LIMIT,
+            containment_root=containment_root,
+        )
     except Exception:
         raise _fail("HANDOFF_STOP_FAILED", "Probe lease release could not be proven") from None
     if record != {"schemaVersion": 1, "state": "released", "leaseId": lease_id}:
@@ -683,10 +786,14 @@ async def begin_debug_handoff(
                 endpoint = getattr(supervisor, "endpoint", None)
                 if endpoint is None and state is None:
                     raise _fail("HANDOFF_SUPERVISOR_INVALID", "Probe Service is not active")
+                if endpoint is None:
+                    raise _fail(
+                        "HANDOFF_REACQUIRE_REQUIRED",
+                        "Probe Service must be reacquired before debug handoff can resume",
+                    )
                 if endpoint is not None:
                     lease_id = _endpoint(endpoint, probe, workspace, session)
-                    if state is not None and state.get("leaseId") != lease_id:
-                        raise _fail("HANDOFF_STATE_CONFLICT", "Another debug handoff is active")
+                    _validate_client_endpoint(client, endpoint)
                     try:
                         await supervisor.drain_modifications()
                     except asyncio.CancelledError:
@@ -761,20 +868,28 @@ async def begin_debug_handoff(
                         "issuedAtUtc": utc_now_rfc3339(),
                     }
                     _write_state(session_root, state)
+                else:
+                    state["leaseId"] = lease_id
+                    _write_state(session_root, state)
 
                 endpoint_path = getattr(endpoint, "record_path", None)
                 if endpoint_path is not None and not isinstance(endpoint_path, Path):
                     raise _fail("HANDOFF_SUPERVISOR_INVALID", "Probe supervisor endpoint is invalid")
+                stop_cancellation: asyncio.CancelledError | None = None
                 if endpoint is not None:
                     try:
                         await supervisor.stop()
-                    except asyncio.CancelledError:
-                        raise
+                    except asyncio.CancelledError as error:
+                        stop_cancellation = error
                     except Exception:
                         raise _fail("HANDOFF_STOP_FAILED", "Probe Service could not be stopped") from None
-                _prove_released(supervisor, probe, str(state["leaseId"]), endpoint_path)
-                state["state"] = "externally-owned"
-                _write_state(session_root, state)
+                try:
+                    _prove_released(supervisor, probe, str(state["leaseId"]), endpoint_path)
+                    state["state"] = "externally-owned"
+                    _write_state(session_root, state)
+                finally:
+                    if stop_cancellation is not None:
+                        raise stop_cancellation
                 return OperationResult.success(
                     _BEGIN_OPERATION, _ticket(state, firmware.elf_path)
                 )
@@ -859,6 +974,7 @@ async def end_debug_handoff(
                     client = client_factory(endpoint)
                 except Exception:
                     raise _fail("HANDOFF_REACQUIRE_FAILED", "Probe client could not be created") from None
+                _validate_client_endpoint(client, endpoint)
                 attachment = await client.attach(probe, str(state["target"]))
                 _validate_attachment(attachment, probe, str(state["target"]))
                 firmware = _load_fresh_firmware(root)

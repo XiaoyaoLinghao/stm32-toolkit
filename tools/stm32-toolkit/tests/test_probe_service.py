@@ -128,6 +128,12 @@ class BlockingCloseBackend(FakeProbeBackend):
         super().close()
 
 
+class BlockingFailingCloseBackend(BlockingCloseBackend):
+    def close(self) -> None:
+        super().close()
+        raise RuntimeError("backend cleanup failed")
+
+
 def test_service_binds_loopback_dynamic_port_and_publishes_private_endpoint(tmp_path: Path):
     async def scenario():
         service = make_service(tmp_path)
@@ -248,6 +254,42 @@ def test_cancelled_stop_finishes_cleanup_before_propagating(
                 asyncio.open_connection(endpoint.host, endpoint.port), timeout=0.5
             )
         await service.stop()
+
+    run(scenario())
+
+
+def test_cleanup_failure_wins_over_concurrent_stop_cancellation(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        entered = threading.Event()
+        release = threading.Event()
+        backend = BlockingFailingCloseBackend(entered=entered, release=release)
+        service = make_service(tmp_path, backend=backend)
+        endpoint = await service.start()
+        stopping = asyncio.create_task(service.stop())
+        assert await asyncio.to_thread(entered.wait, 2)
+
+        stopping.cancel()
+        await asyncio.sleep(0)
+        assert not stopping.done()
+        release.set()
+        with pytest.raises(RuntimeError, match="backend cleanup failed"):
+            await stopping
+
+        assert backend.closed is True
+        assert service.endpoint is None
+        assert not endpoint.record_path.exists()
+        lease_record = json.loads(
+            lease_manager(tmp_path / "plugin-data")
+            .record_path("probe-a")
+            .read_text(encoding="utf-8")
+        )
+        assert lease_record == {
+            "leaseId": endpoint.lease_id,
+            "schemaVersion": 1,
+            "state": "released",
+        }
 
     run(scenario())
 
