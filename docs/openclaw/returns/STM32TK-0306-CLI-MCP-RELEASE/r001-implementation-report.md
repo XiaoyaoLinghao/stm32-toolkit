@@ -1,149 +1,339 @@
-# STM32TK-0306-CLI-MCP-RELEASE r001 Implementation Report
+# STM32TK-0306-CLI-MCP-RELEASE r001 Implementation Report (revision 1)
 
 Status: `IMPLEMENTED`
-Module: `STM32TK-0306-CLI-MCP-RELEASE` / r001
+Module: `STM32TK-0306-CLI-MCP-RELEASE` / r001 / revision-1
 Branch: `openclaw/STM32TK-0306-CLI-MCP-RELEASE/r001`
 Accepted base commit: `2088e6d375d63e6e00ef0fa50b6aad0d0fd04fb1`
-Code head before report commit: `3223040bc7a15e3a655a25ce510e34f3164464f0`
+Reviewed predecessor: `e65faba5e4e2751e725abc4f63b553eb332af332`
+Code head before this report commit: `b3dbd1e677ef89f580229dcde73e1c464ceb7042`
 Final branch head: supplied only in the return message and PR metadata
-PR/compare URL: supplied in the return message
 Work order: `docs/openclaw/modules/STM32TK-0306-CLI-MCP-RELEASE.md` (specification commit `1cc209506f5d7b7c91aae52267d3f5dd4fb09666`)
 
-## 1. Outcome
+## 1. Revision-1 outcome
 
-- Observable result: the accepted STM32TK-0301 through STM32TK-0305 core is exposed through one shared `workflows.py` adapter layer, a stable CLI grammar, and seven project-bound MCP tools. Conversion and configuration are two-phase: the read-only plan returns a deterministic `plan_id`; apply requires the caller to return that exact ID with the JSON boolean `authorized=true`, and the adapter freshly replans from current disk state and compares the plan ID immediately before calling the core apply seam. Three thin Claude Code Skills (`migrate-keil`, `configure-stm32-project`, `build-firmware`) start with `stm32_project_context`, display read-only plans/evidence, and request authorization at the mutation boundary. The unified runtime version is `0.3.0` across the plugin manifest, Python distribution, `__version__`, CLI, launcher, setup script, setup Skill, READMEs, generated evidence, and tests. The end-to-end copy of the committed Keil fixture runs inspect → conversion plan/apply → configuration plan/apply → fake-toolchain build and links plan IDs, conversion report, managed manifest, build result, identity, hashes, and Git HEAD.
-- Scope completed: all of work-order sections 2.1, 4, 5, 6, 7, 8, 9, 10, 11 (OpenClaw gates), 12 (OpenClaw gates), 13, 14 (OpenClaw payload). Out-of-scope items (probe/lease/flash/debug/hardware, new dependencies, plan caches, arbitrary roots, shell execution, automatic authorization) are not implemented.
-- Known limitations:
-  - The committed `keil-project` fixture is deliberately non-convertible (blocker pragmas, assembly source, non-empty scatter, numeric float-ABI text). The end-to-end test copies the fixture and removes exactly those blocker-producing settings so the real core modules can run the full gate; this is test-fixture surgery, not product behavior.
-  - The accepted 0303/0304 core has three integration seams the e2e must bridge with explicit user-like steps: the migration proposal leaves `debug` empty (generation requires `debug.backend="pyocd"` plus a target), the migration proposal copies the raw `uFloatingPoint` text as `floatAbi` (generation accepts only `soft|softfp|hard`), and Keil include paths that overlap source directories collide in the build input snapshot. These are pre-existing accepted-core behaviors outside this module's §5 scope; the e2e supplies the debug spec and uses a framework-only include path in the fixture copy. Codex's real Windows ARM GNU gate will exercise the real end-user flow.
-  - `test_planned_actions.py`, `test_mcp_roots.py`, and `tests/fixtures/minimal-gcc/.stm32-project.json` are test paths outside §5 that are necessarily updated: the first two assert superseded behavior (migrate-keil unavailable / zero-argument tool registry) directly contradicted by the work order's mandated available=true and seven-tool registry; the fixture hardcodes `generatedBy.version` and must track the unified 0.3.0 version or `prepare_project` and the whole build/context suite fails. Each is a minimal, documented test-only reconciliation and is enumerated in section 2.
-  - The `claude plugin validate .` gate fails in this environment at the pre-existing `.claude-plugin/marketplace.json` (`plugins.0.source` value `.` is rejected by Claude Code 2.1.140); that file is unchanged by this module (empty diff against the accepted base) and is outside §5, so the clean isolated 0.2.0 → 0.3.0 install/update sub-gate could not complete here. Exact evidence and the named owner are in section 4.
-  - Windows-focused/full runs, real NTFS junction behavior, the PowerShell setup Repair/rollback paths, and the real Windows ARM GNU toolchain build are Codex gates (`DEFERRED_TO_CODEX`); this environment is Linux.
-- Deviations: `NONE` beyond the three enumerated test-path reconciliations and the pre-existing marketplace-manifest gate finding, both fully disclosed in sections 2 and 4.
+Codex review `REVISION_REQUIRED` on r001 listed four mandated fixes; all four
+are implemented with TDD (RED commit on the reviewed predecessor, then the
+product fix commit) and every OpenClaw gate now passes:
 
-## 2. Complete changed-path inventory
+- **§4 P0 plugin release gate** — `.claude-plugin/marketplace.json` now uses
+  the plugin source structure Claude Code 2.1.140 actually supports: the
+  repo-relative `"./"` form (the bare `"."` value is rejected by this
+  version). `claude plugin validate .` now exits 0; a fresh isolated
+  `CLAUDE_CONFIG_DIR` completes `claude plugin marketplace add`, `claude
+  plugin install stm32-toolkit@stm32-toolkit` (installed version 0.3.0,
+  four Skills discovered, no second MCP registration), and `claude plugin
+  list`; the official `claude plugin update stm32-toolkit@stm32-toolkit`
+  upgrades an isolated 0.2.0 install to 0.3.0. The plugin manifest, Python
+  distribution, managed runtime, and CLI all stay exactly 0.3.0. Because
+  every release gate now genuinely passes, the roadmap 0.3.0 checkbox
+  remains checked and the 0.3 plan Step-3 gate record is updated.
+- **§5 P0 real end-to-end workflows** — a committed, naturally convertible
+  Keil fixture (`tools/stm32-toolkit/tests/fixtures/keil-convertible/**`)
+  replaces the surgical copy. The e2e copy performs only copy + Git init;
+  no uvprojx/source/scatter/include/FPU/ABI content is rewritten before the
+  first public workflow call, and the generated Schema v2 manifest is used
+  exactly as produced (its empty `debug` spec is no longer hand-edited).
+  The chain runs inspect → conversion plan/apply → configuration plan/apply
+  → fake build entirely through public workflows/CLI/MCP and links planId,
+  conversion report, managed manifest, build result, firmware identity, ELF
+  SHA-256, and Git HEAD. The three accepted-core integration seams are now
+  closed in the product: empty debug no longer blocks build-only
+  configuration (4.1), raw Keil float-ABI text is normalized or blocked
+  (4.2), and source/include overlap is deduplicated in the input snapshot
+  (4.3); all previously accepted blockers (ARMASM, unknown pragma,
+  non-empty scatter, and friends) are preserved unchanged (4.4).
+- **§6 P1 authorization fail-closed** — only `authorized is False` enters
+  read-only planning, only `authorized is True` (with the exact current
+  plan ID) applies, and every non-bool value (`"true"`, `"false"`, `1`,
+  `0`, `None`, `[]`, `{}`, with or without a plan ID) returns
+  `AUTHORIZATION_REQUIRED` before any inspect/plan/apply work. The
+  parameterized RED regression covers all of those combinations for
+  convert, configure, and build.
+- **§7 P1 build capability evidence** — `capabilities.build` no longer
+  follows a bare `CMakeLists.txt`. It is true only when the managed
+  manifest is present and valid (parse, tool/template version, model
+  digest) and every managed file it records exists un-drifted on disk;
+  missing/drifted/invalid/version-mismatched states return `build=false`
+  with stable evidence fields, and the capability check is strictly
+  read-only (project tree and Git porcelain unchanged across calls).
 
-Reconciled with `git diff 2088e6d375d63e6e00ef0fa50b6aad0d0fd04fb1..3223040bc7a15e3a655a25ce510e34f3164464f0 --name-status`: exactly the work-order section-5 paths plus the three disclosed test-path reconciliations; this report is the only additional path after the code head.
+Known limitations carried forward: `test_planned_actions.py`,
+`test_mcp_roots.py`, and `tests/fixtures/minimal-gcc/.stm32-project.json`
+remain modified relative to the accepted base as the explicitly retained
+compatibility exceptions from r001 (they assert behavior this work order
+mandates: `migrate-keil` available, the seven-tool registry, and the
+unified 0.3.0 `generatedBy` version). No new exception paths were added in
+revision 1. Windows/NTFS and real Windows ARM GNU toolchain evidence from
+the predecessor remains `predecessor evidence only` (Codex gates; see
+section 4). Blockers are `NONE` for every OpenClaw-owned gate; the only
+deferred gates are the named Codex environment gates.
 
-| Status | Path | Work-order section | Purpose |
-|---|---|---|---|
-| M | `.claude-plugin/plugin.json` | 5 | unified plugin version 0.3.0 and 0.3 description |
-| M | `bin/stm32-toolkit-mcp.cmd` | 5 | fail-closed managed runtime path `runtime/0.3.0` |
-| M | `bin/setup-stm32-env.ps1` | 5 | exact 0.3.0 bootstrap/repair/check target (`$RuntimeVersion`) |
-| M | `README.md` | 5 | current 0.3 workflows, commands, authorization, upgrade notes |
-| M | `README_zh-CN.md` | 5 | byte-equivalent factual Chinese documentation |
-| M | `docs/superpowers/plans/2026-08-04-stm32-toolkit-0.3-project-migration-build.md` | 5 | check delivered Task 3-6 steps after evidence passed |
-| M | `docs/superpowers/plans/2026-08-04-stm32-toolkit-complete-development-roadmap.md` | 5 | check the 0.3.0 release item in the final gated code commit |
-| M | `skills/setup-stm32-env/SKILL.md` | 5 | managed runtime 0.3.0 contract and available workflow handoff |
-| A | `skills/migrate-keil/SKILL.md` | 5 | thin inspect/plan/authorize/apply workflow |
-| A | `skills/configure-stm32-project/SKILL.md` | 5 | thin configuration plan/authorize/apply workflow |
-| A | `skills/build-firmware/SKILL.md` | 5 | context/doctor/authorize/build/evidence workflow |
-| M | `tools/stm32-toolkit/pyproject.toml` | 5 | Python distribution version 0.3.0 only |
-| M | `tools/stm32-toolkit/src/stm32_toolkit/__init__.py` | 5 | `__version__ = "0.3.0"` |
-| M | `tools/stm32-toolkit/src/stm32_toolkit/cli.py` | 5 | exact CLI grammar, adapter dispatch, exit-code discipline |
-| M | `tools/stm32-toolkit/src/stm32_toolkit/context.py` | 5 | keilInspect/keilConvert/configure capability evidence |
-| M | `tools/stm32-toolkit/src/stm32_toolkit/detection.py` | 5 | migrate-keil/configure-project available with factual explanations |
-| M | `tools/stm32-toolkit/src/stm32_toolkit/mcp_server.py` | 5 | four project-bound tools, roots guard reuse, updated instructions |
-| A | `tools/stm32-toolkit/src/stm32_toolkit/workflows.py` | 5 | shared stable workflow adapters with two-phase authorization |
-| M | `tools/stm32-toolkit/src/stm32_toolkit/generation/configure.py` | 5 | generated task argv matches the shipped `build --preset ... --project` CLI |
-| M | `tools/stm32-toolkit/tests/test_cli.py` | 5 | CLI grammar/results/exit/error/no-write and CLI e2e tests |
-| M | `tools/stm32-toolkit/tests/test_context.py` | 5 | capability transition tests |
-| M | `tools/stm32-toolkit/tests/test_detection.py` | 5 | action availability tests |
-| M | `tools/stm32-toolkit/tests/test_generation.py` | 5 | generated task argv snapshot and 0.3 evidence assertions |
-| M | `tools/stm32-toolkit/tests/test_mcp_server.py` | 5 | exact seven-tool registry/root binding |
-| M | `tools/stm32-toolkit/tests/test_plugin_layout.py` | 5 | exact four discovered Skills, unified version, 0.3.0 runtime contract |
-| M | `tools/stm32-toolkit/tests/test_setup_runtime.py` | 5 | 0.3.0 setup/upgrade/rollback paths |
-| M | `tools/stm32-toolkit/tests/test_migration_plan.py` | 5 | unified version assertion only |
-| M | `tools/stm32-toolkit/tests/test_build_runner.py` | 5 | unified version assertion only |
-| M | `tools/stm32-toolkit/tests/test_result.py` | 5 | unified version assertion only |
-| A | `tools/stm32-toolkit/tests/test_workflows.py` | 5 | shared adapter and authorization/replan regressions (44 tests) |
-| A | `tools/stm32-toolkit/tests/test_mcp_migration_build.py` | 5 | MCP schemas, two-phase flow, roots guard, and end-to-end gate (14 tests) |
-| M | `tools/stm32-toolkit/tests/test_planned_actions.py` | 5-adjacent reconciliation | asserts the superseded unavailable-action behavior; updated to the mandated available=true contract (see Known limitations) |
-| M | `tools/stm32-toolkit/tests/test_mcp_roots.py` | 5-adjacent reconciliation | schema assertion updated for the mandated seven-tool registry: injected `ctx` never becomes a property; zero-argument tools keep empty schemas (see Known limitations) |
-| M | `tools/stm32-toolkit/tests/fixtures/minimal-gcc/.stm32-project.json` | 5-adjacent reconciliation | `generatedBy.version` must track the unified 0.3.0 version or the accepted build/context fixtures cannot load (see Known limitations) |
-| A | `docs/openclaw/returns/STM32TK-0306-CLI-MCP-RELEASE/r001-implementation-report.md` | 5 | this report (report-only final commit) |
+## 2. Complete changed-path inventory (accepted base → code head)
 
-No other path changed: schemas, templates, `.mcp.json`, dependencies, the accepted Keil/migration/build/process modules, historic docs, earlier work orders/reports, and `requirements/follow-on-skills/` are untouched. `git diff --check 2088e6d…..HEAD` exits 0; `git status --short` is empty before the report commit.
+Reconciled with `git diff 2088e6d375d63e6e00ef0fa50b6aad0d0fd04fb1..b3dbd1e677ef89f580229dcde73e1c464ceb7042 --name-status`. The
+revision-1 delta on top of the reviewed predecessor consists of the
+fixture, the four product fixes, the test regressions, the marketplace
+manifest fix, the plan-doc gate record, and this report; everything else is
+carried over unchanged from r001.
 
-## 3. Public contracts delivered
+| Status | Path | Revision-1 purpose |
+|---|---|---|
+| M | `.claude-plugin/marketplace.json` | plugin source `"."` → supported repo-relative `"./"` (P0 gate) |
+| M | `.claude-plugin/plugin.json` | carried over: plugin manifest version 0.3.0 |
+| M | `bin/setup-stm32-env.ps1` | carried over: exact 0.3.0 bootstrap/repair/check target |
+| M | `bin/stm32-toolkit-mcp.cmd` | carried over: fail-closed managed runtime path `runtime/0.3.0` |
+| M | `README.md` | carried over: 0.3 workflows, commands, authorization, upgrade notes |
+| M | `README_zh-CN.md` | carried over: byte-equivalent factual Chinese documentation |
+| M | `docs/superpowers/plans/2026-08-04-stm32-toolkit-0.3-project-migration-build.md` | revision-1 gate-evidence record under Step 3 |
+| M | `docs/superpowers/plans/2026-08-04-stm32-toolkit-complete-development-roadmap.md` | carried over: 0.3.0 release checkbox stays checked (all gates now pass) |
+| A | `skills/build-firmware/SKILL.md` | carried over: thin build workflow Skill |
+| A | `skills/configure-stm32-project/SKILL.md` | carried over: thin configuration workflow Skill |
+| A | `skills/migrate-keil/SKILL.md` | carried over: thin migration workflow Skill |
+| M | `skills/setup-stm32-env/SKILL.md` | carried over: managed runtime 0.3.0 contract |
+| M | `tools/stm32-toolkit/pyproject.toml` | carried over: Python distribution version 0.3.0 |
+| M | `tools/stm32-toolkit/src/stm32_toolkit/__init__.py` | carried over: `__version__ = "0.3.0"` |
+| M | `tools/stm32-toolkit/src/stm32_toolkit/build/identity.py` | **revision-1 fix (4.3)**: include/source overlap counts a canonical regular file once; duplicate declarations of the same canonical file and casefold/escape cases fail closed |
+| M | `tools/stm32-toolkit/src/stm32_toolkit/cli.py` | carried over: exact CLI grammar and adapter dispatch |
+| M | `tools/stm32-toolkit/src/stm32_toolkit/context.py` | **revision-1 fix (§7)**: managed-configuration-backed build capability with read-only evidence |
+| M | `tools/stm32-toolkit/src/stm32_toolkit/detection.py` | carried over: migrate-keil/configure-project available |
+| M | `tools/stm32-toolkit/src/stm32_toolkit/generation/configure.py` | **revision-1 fix (4.1)**: empty debug allows build-only configuration; deterministic launch config without hardware-debug claims |
+| M | `tools/stm32-toolkit/src/stm32_toolkit/mcp_server.py` | carried over: four project-bound tools and roots guard |
+| M | `tools/stm32-toolkit/src/stm32_toolkit/migration/planner.py` | **revision-1 fix (4.2)**: Keil float-ABI normalization to soft/softfp/hard and stable blocker for unknown/ambiguous values |
+| A | `tools/stm32-toolkit/src/stm32_toolkit/workflows.py` | **revision-1 fix (§6)**: non-bool authorization fails closed in every mode; carried-over two-phase plan/apply adapters |
+| A | `tools/stm32-toolkit/tests/fixtures/keil-convertible/legacy.uvprojx` | revision-1 fixture: naturally convertible Keil MDK5 project (no blocker pragmas, no assembly source, no scatter, no FPU/float-ABI text, SPL defines + path evidence, include paths overlapping source dirs) |
+| A | `tools/stm32-toolkit/tests/fixtures/keil-convertible/Main/main.c` | revision-1 fixture: convertible ARMCC main source |
+| A | `tools/stm32-toolkit/tests/fixtures/keil-convertible/Common/common.c` | revision-1 fixture: convertible ARMCC source with intrinsic/fixed-section rules |
+| A | `tools/stm32-toolkit/tests/fixtures/keil-convertible/Libraries/STM32F4xx_StdPeriph_Driver/inc/stm32f4xx.h` | revision-1 fixture: tracked SPL header keeping the include-dir evidence real |
+| M | `tools/stm32-toolkit/tests/fixtures/minimal-gcc/.stm32-project.json` | carried-over compatibility exception (0.3.0 `generatedBy` version); unchanged in revision 1 |
+| M | `tools/stm32-toolkit/tests/test_build_runner.py` | carried over: unified version assertions only |
+| M | `tools/stm32-toolkit/tests/test_cli.py` | **revision-1**: e2e uses the convertible fixture copy without surgery or manifest edits; empty-debug launch config asserted |
+| M | `tools/stm32-toolkit/tests/test_context.py` | **revision-1**: build-capability regressions (CMakeLists-only → false, apply → true, drift/removal/stale/invalid/version-mismatch → false, read-only proof) |
+| M | `tools/stm32-toolkit/tests/test_detection.py` | carried over: action availability tests |
+| M | `tools/stm32-toolkit/tests/test_firmware_identity.py` | **revision-1**: overlap dedup regressions + private-helper signature updates |
+| M | `tools/stm32-toolkit/tests/test_generation.py` | **revision-1**: empty debug build-only configuration and launch snapshot |
+| A | `tools/stm32-toolkit/tests/test_mcp_migration_build.py` | **revision-1**: e2e rewritten to the convertible fixture; no fixture surgery, no manifest edits; MCP two-phase and roots tests carried over |
+| M | `tools/stm32-toolkit/tests/test_mcp_roots.py` | carried-over compatibility exception (seven-tool registry); unchanged in revision 1 |
+| M | `tools/stm32-toolkit/tests/test_mcp_server.py` | carried over: seven-tool registry/root binding |
+| M | `tools/stm32-toolkit/tests/test_migration_plan.py` | **revision-1**: float-ABI normalization/blocker regressions and manifest-mapping update |
+| M | `tools/stm32-toolkit/tests/test_planned_actions.py` | carried-over compatibility exception (mandated available actions); unchanged in revision 1 |
+| M | `tools/stm32-toolkit/tests/test_plugin_layout.py` | **revision-1**: marketplace manifest source regression |
+| M | `tools/stm32-toolkit/tests/test_result.py` | carried over: unified version assertion only |
+| M | `tools/stm32-toolkit/tests/test_setup_runtime.py` | carried over: 0.3.0 setup/upgrade/rollback paths |
+| A | `tools/stm32-toolkit/tests/test_workflows.py` | **revision-1**: parameterized non-bool authorization fail-closed regressions (with/without plan ID, convert/configure/build) |
+| A | `docs/openclaw/returns/STM32TK-0306-CLI-MCP-RELEASE/r001-implementation-report.md` | this report (report-only final commit) |
 
-- Types/signatures (`workflows.py`, all returning `OperationResult`):
-  - `inspect_keil_workflow(project_root, *, uvprojx=None, target_name=None, include_baseline=True)` — operation `keil-inspect`, data keys in order `inspection`, `baseline` (baseline `null` when `include_baseline=false`);
-  - `convert_keil_workflow(project_root, *, uvprojx=None, target_name=None, plan_id=None, authorized=False)` — plan mode operation `keil-conversion-plan`; apply mode operation `keil-conversion-apply`;
-  - `configure_project_workflow(project_root, *, plan_id=None, authorized=False)` — operations `project-configuration-plan` / `project-configuration-apply`;
-  - `build_firmware_workflow(project_root, *, preset, clean=False, timeout_seconds=300, authorized)` — operation `build`;
-  - stable adapter codes `WORKFLOW_INPUT_INVALID`, `AUTHORIZATION_REQUIRED`, `PLAN_CHANGED`, `KEIL_INSPECTION_UNAVAILABLE`, `MIGRATION_PLAN_UNAVAILABLE`, `CONFIGURATION_PLAN_UNAVAILABLE`; accepted core error codes pass through unchanged (stable fields only, no exception text); apply results are the core `OperationResult` unchanged.
-- Commands/events/configuration/schemas:
-  - CLI grammar per work order §7 with `--project`/`--project-root` aliases, required mutually exclusive `--dry-run`/`--apply`, `--authorized` valid only with apply and an exact plan ID, exit 0/2/2/1 discipline, one JSON document on stdout, empty stderr for expected failures, cwd preserved; `version` prints `0.3.0`;
-  - MCP registry exactly `stm32_doctor`, `stm32_project_detect`, `stm32_project_context`, `stm32_keil_inspect`, `stm32_keil_convert`, `stm32_project_configure`, `stm32_build`; tool schemas expose only their declared properties with correct required/default/type/enum constraints (`preset` enum, `timeoutSeconds` integer 1..3600); every new request wrapper runs the existing `_client_roots_failure` guard;
-  - context capabilities add `keilInspect`/`keilConvert` (true only for a detected Keil project) and `configure` (true only for a valid Schema v2 model) while retaining `build`/`flash`/`hostTest`/`targetTest`/`monitor`/`breakpointDebug`;
-  - detection: `migrate-keil` and `configure-project` available=true with factual 0.3 explanations (configure-project reported unavailable with the Schema v2 prerequisite explanation for cubemx/cmake kinds); `create-project` remains unavailable;
-  - generated `.vscode/tasks.json` contains exactly the two `stm32-toolkit build --preset {arm-debug,arm-release} --project ${workspaceFolder}` tasks; flash/debug handoff tasks are not exposed;
-  - unified 0.3.0 across plugin manifest, pyproject, `__version__`, CLI `version`, launcher `runtime/0.3.0`, setup script `$RuntimeVersion`, setup Skill staging/check contract, READMEs, generated managed-manifest `toolVersion`, migration `toolkitVersion`/`generatedBy`, build identity `toolkitVersion`.
-- External interfaces: `NONE` added; protocol stays `stm32-toolkit/1`; no new dependency (pydantic `Field` comes from the existing `mcp` dependency); no network, probe, hardware, or shell behavior.
+The three compatibility exceptions (`test_planned_actions.py`,
+`test_mcp_roots.py`, `tests/fixtures/minimal-gcc/.stm32-project.json`)
+are untouched by revision 1 and are listed in section 1 as retained.
+
+## 3. Revision-1 fixes in detail
+
+### 3.1 Plugin release gate (§4)
+
+- Root cause: Claude Code 2.1.140 rejects `plugins.0.source: "."`
+  (`claude plugin validate .` exit 1, "plugins.0.source: Invalid input")
+  and refuses install for unsupported source types.
+- Fix: `.claude-plugin/marketplace.json` plugin source is now `"./"`, the
+  repo-relative form this Claude Code version validates and installs for a
+  marketplace whose plugin is its own repository root. The plugin entry's
+  name/description/homepage/repository are unchanged.
+- Gate (all run by OpenClaw on Claude Code 2.1.140, exact exits below in
+  section 4): `claude plugin validate .` → 0; fresh isolated
+  `CLAUDE_CONFIG_DIR` marketplace add → 0; `claude plugin install
+  stm32-toolkit@stm32-toolkit --scope user` → 0 with installed version
+  0.3.0 (gitCommitSha equals the code head); `claude plugin list` → 0 with
+  `stm32-toolkit@stm32-toolkit 0.3.0 enabled`; `claude plugin details`
+  shows exactly the four Skills (build-firmware, configure-stm32-project,
+  migrate-keil, setup-stm32-env) and zero extra MCP registrations; the
+  official upgrade path `claude plugin update stm32-toolkit@stm32-toolkit
+  --scope user` upgrades an isolated 0.2.0 install to 0.3.0 (exit 0,
+  "updated from 0.2.0 to 0.3.0").
+- Version identity: `.claude-plugin/plugin.json` 0.3.0 == `__version__`
+  0.3.0 == `pyproject.toml` 0.3.0 == CLI `version` output 0.3.0 ==
+  `bin/setup-stm32-env.ps1` `$RuntimeVersion` 0.3.0 == installed plugin
+  version 0.3.0. The roadmap 0.3.0 checkbox remains checked because every
+  release gate now passes.
+
+### 3.2 Real end-to-end workflows (§5)
+
+- New committed fixture `keil-convertible` (four files listed in section
+  2) is naturally convertible: no `#pragma arm section`/`#pragma import`/
+  `#pragma O3`, no ARM assembly source, empty scatter, no FPU token and no
+  `uFloatingPoint` element (so no float-ABI guess is needed), ARMCC V5.06
+  with SPL defines plus the `Libraries/STM32F4xx_StdPeriph_Driver/inc`
+  path evidence, and include paths that overlap the source directories so
+  the 4.3 dedup is exercised end to end. The e2e copy performs only
+  `copytree` + `.gitignore` + `git init`; the first public workflow call
+  sees the fixture bytes exactly as committed.
+- The generated Schema v2 manifest is consumed unmodified: `manifest["debug"]
+  == {}` is asserted, configuration plan/apply succeeds with the empty
+  debug spec, and the generated `.vscode/launch.json` contains
+  `configurations: []` (deterministic, no cortex-debug entry, no pyOCD
+  target guess). `flash`/`hostTest`/`targetTest`/`monitor`/
+  `breakpointDebug` capabilities remain false.
+- Chain linkage asserted: conversion report `planId` == applied plan ID;
+  report/identity/build-result `gitHead` agree with `git rev-parse HEAD`;
+  `firmware-identity.json` `buildId` == build-result `buildId`, preset
+  `arm-debug`, ELF SHA-256 == the on-disk `legacy.elf`; managed manifest
+  `toolVersion` 0.3.0; generated tasks contain exactly the two
+  `build --preset ... --project ${workspaceFolder}` tasks; fake-CMake hit
+  file proves the toolchain launch; context agrees with
+  `managedManifestValid` true and `capabilities.build` true.
+- 4.1 empty debug: `generation/configure.py` accepts a fully absent debug
+  spec (`backend is None` and `target is None`) as build-only
+  configuration; a partially specified spec (one of backend/target
+  missing) and a non-pyocd/empty-target spec still raise the accepted
+  `GENERATION_MODEL_INVALID` with `field debug.backend`.
+- 4.2 Keil float ABI: `migration/planner.py` normalizes only verifiable
+  Keil-format evidence — exact GCC spellings `soft`/`softfp`/`hard` pass
+  through, and the documented Keil `uFloatingPoint` enumeration maps
+  `0` ("Not Used") → `soft`, `1` ("Single precision") → `softfp`,
+  `2` ("Double precision") → `softfp` (the ARM softfp ABI ARMCC/ARMCLANG
+  apply for hardware FPU; a hard ABI can only be selected via misc
+  controls, which are already blocked). Any other text (unknown or
+  ambiguous) produces the stable blocker
+  `MIGRATION_FLOAT_ABI_UNSUPPORTED` on the uvprojx path and never enters
+  the manifest; apply is refused with `MIGRATION_BLOCKED`.
+- 4.3 include/source overlap: `build/identity.py` input snapshot dedups a
+  file reached by an explicit declaration and include traversal (same rel
+  or same canonical `(st_dev, st_ino)` identity of a declared file);
+  duplicate declarations of the same canonical file (hard links), Unicode
+  casefold collisions, and redirect/reparse escapes still fail closed with
+  the established rules; include-only overlaps (e.g. two case-variant
+  names for one file) remain distinct so the casefold collision check
+  still fires.
+- 4.4 blockers preserved: the pragma/assembly/scatter/linker/option/
+  compiler/framework/memory blocker classes are untouched; the existing
+  `keil-project` fixture tests and all migration-apply blocker tests pass
+  unchanged.
+
+### 3.3 Non-boolean authorization (§6)
+
+`workflows.py` now branches on the exact boolean value before any core
+work: non-bool `authorized` returns `AUTHORIZATION_REQUIRED` with
+`field authorized, rule type`; `authorized is False` with a plan ID
+returns `AUTHORIZATION_REQUIRED` (`rule required`); `authorized is False`
+without a plan ID returns the read-only plan; only `authorized is True`
+with the exact freshly recomputed plan ID reaches the apply seam (the core
+replan/race guards are unchanged). `build_firmware_workflow` requires the
+exact boolean true as well. The MCP wrappers pass values through the same
+workflow layer; the FastMCP schema continues to reject non-boolean JSON at
+the schema boundary.
+
+### 3.4 Build capability evidence (§7)
+
+`context.py` adds a strictly read-only managed-configuration evidence
+block to the build section (`managedManifestPresent`,
+`managedManifestValid`, `managedFilesMissing`, `managedFilesDrifted`).
+`capabilities.build` is true only when `CMakeLists.txt` is present AND the
+managed manifest exists, parses (schema/keys/order), carries the current
+tool/template version, agrees with the current model digest, and every
+recorded managed file exists with the recorded SHA-256. Missing, drifted,
+invalid, version-mismatched, or stale-manifest states return `build=false`
+with the stable evidence fields; no capability call creates, repairs,
+refreshes, or rewrites any file (project tree bytes/modes and Git
+porcelain are proven unchanged across calls). The legacy v1
+`configured_project` fixture (no managed manifest) now correctly reports
+`build=false` (the build workflow itself requires managed configuration).
 
 ## 4. Environment-separated verification
 
-OpenClaw environment: Linux x86_64 (Ubuntu 26.04 LTS, kernel `7.0.0-22-generic`); CPython 3.10.11 (uv-managed, `/home/openclaw/.local/share/uv/python/cpython-3.10.11-linux-x86_64-gnu`); jsonschema 4.23.0, mcp 1.27.0, pyelftools 0.33, Jinja2 3.1.6, pytest 8.3.5, pytest-cov 6.0.0, Git 2.53.0; package installed `pip install -e "tools/stm32-toolkit[test]"` from the returned worktree. All OpenClaw commands run from the repository root on branch `openclaw/STM32TK-0306-CLI-MCP-RELEASE/r001`.
+OpenClaw environment: Linux x86_64 (Ubuntu 26.04 LTS, kernel
+`7.0.0-22-generic`); CPython 3.10.11 (uv-managed,
+`/home/openclaw/.local/share/uv/python/cpython-3.10.11-linux-x86_64-gnu`);
+jsonschema 4.26.0, mcp 1.27.x, pyelftools 0.33, Jinja2 3.1.6, pytest
+8.4.2, pytest-cov 6.x, Git 2.53.0, Claude Code 2.1.140; CMake/Ninja are
+not installed (build gates use the deterministic fake-CMake launch seam;
+the real ARM GNU toolchain gate belongs to Codex). All OpenClaw commands
+run from the repository root on branch
+`openclaw/STM32TK-0306-CLI-MCP-RELEASE/r001` with
+`PYTHONPATH=tools/stm32-toolkit/src` for source-tree tests.
 
-| Gate/command | Evidence owner | Environment/tool versions | Commit tested | Exit | Observed result | Status |
+| Gate/command | Evidence owner | Environment | Commit tested | Exit | Observed result | Status |
 |---|---:|---:|---:|---|
-| TDD RED (11.1): focused suites with the new/updated tests against the accepted base plus tests-only commit | OpenClaw | Linux; CPython 3.10.11; pinned deps | `169aa22` (tests-only RED commit on the base) | 2 / 1 | collection interrupted with exactly `ModuleNotFoundError: No module named 'stm32_toolkit.workflows'` in `test_workflows.py`/`test_mcp_migration_build.py`; second batch `41 failed, 291 passed, 5 skipped` — missing seven-tool registry, unavailable-action and capability expectations, 0.3.0 literals, new task argv snapshot, four-Skill discovery | PASS (RED reproduced) |
-| Focused GREEN (11.2 command 1): `python -m pytest tools/stm32-toolkit/tests/test_workflows.py tools/stm32-toolkit/tests/test_cli.py tools/stm32-toolkit/tests/test_mcp_server.py tools/stm32-toolkit/tests/test_mcp_roots.py tools/stm32-toolkit/tests/test_mcp_migration_build.py -q` | OpenClaw | same | `3223040` | 0 | `96 passed`; zero failures; no new skip/xfail | PASS |
-| Focused GREEN (11.2 command 2): `python -m pytest tools/stm32-toolkit/tests/test_plugin_layout.py tools/stm32-toolkit/tests/test_setup_runtime.py tools/stm32-toolkit/tests/test_context.py tools/stm32-toolkit/tests/test_detection.py -q` | OpenClaw | same | `3223040` | 0 | `58 passed, 17 skipped`; the 17 skips are the pre-existing Windows-only platform skips in `test_plugin_layout.py`/`test_setup_runtime.py`, unchanged | PASS |
-| Full suite + branch coverage (11.2 command 3): `python -m pytest tools/stm32-toolkit/tests -q --cov=stm32_toolkit --cov-branch --cov-report=term` | OpenClaw | same | `3223040` | 0 | `1123 passed, 17 skipped`; zero failures/errors; branch coverage **93%** TOTAL (fail_under 90 satisfied); `workflows.py` **100%** branch, `cli.py` 94%, `mcp_server.py` 92%, `context.py` 94%, `detection.py` 100%; no file excluded; no new skip/xfail | PASS |
-| compileall (11.2): `python -m compileall -q tools/stm32-toolkit/src tools/stm32-toolkit/tests` | OpenClaw | same | `3223040` | 0 | silent, no output | PASS |
-| Diff scope and whitespace (11.2): `git diff --check 2088e6d…..HEAD` and `git diff --name-status 2088e6d…..HEAD` | OpenClaw | same | `3223040` | 0 | silent; inventory matches section 2 (section-5 paths plus the three disclosed test reconciliations) | PASS |
-| Read-only/authorization/replan regressions (11.1 classes 1-3): `test_workflows.py` tree/Git snapshots, apply-seam hit counters, stale-plan disk-change cases | OpenClaw | same | `3223040` | 0 | plan calls preserve bytes/names/mtimes/modes/Git porcelain; false/string/int authorization, missing/malformed/stale plan IDs never call the core apply seam and never write; exact plan ID plus boolean true calls apply exactly once; disk change between plan/apply returns `PLAN_CHANGED` | PASS |
-| CLI/MCP identity (11.1 class 5): `test_workflows.py::test_cli_and_workflow_return_identical_envelopes…` and `test_cli_build_and_workflow_share_operation_and_identity` | OpenClaw | same | `3223040` | 0 | identical operation/code/data for equivalent requests; no absolute root or exception leakage in JSON payloads | PASS |
-| CLI mode discipline (11.1 class 6): `test_cli.py` mode-conflict/parser-error/cwd/no-write tests | OpenClaw | same | `3223040` | 0 | mutually exclusive modes, missing required flags, invalid preset choices exit 2 with empty stdout; apply without `--authorized` is an expected JSON failure; cwd preserved; exactly one JSON document | PASS |
-| MCP roots guard for every new tool (11.1 class 4, §8): `test_mcp_migration_build.py` multi-root/mismatch/unavailable + `test_mcp_roots.py` | OpenClaw | same | `3223040` | 0 | every new tool returns `UNSUPPORTED_MULTIROOT`/`MCP_ROOTS_UNAVAILABLE` with the bound root; cancellation/timeout tests unchanged and green | PASS |
-| Four-Skill discovery, first-context rule, tool names, authorization boundary, no embedded logic (11.1 class 7): `test_plugin_layout.py` + Skills secret scan | OpenClaw | same | `3223040` | 0 | exactly four discovered Skills (`setup-stm32-env`, `migrate-keil`, `configure-stm32-project`, `build-firmware`); every new Skill starts with `stm32_project_context`; no XML/source-rewrite/CMake/subprocess logic in Skill prose; frontmatter valid | PASS |
-| Unified 0.3.0 and no 0.2.0 selection (11.1 class 8, §10): `test_plugin_layout.py` unified-runtime test, version-literal tests, wheel gate | OpenClaw | same | `3223040` | 0 | plugin manifest == `__version__` == 0.3.0; launcher/ps1/setup Skill reference only `runtime/0.3.0` (the sole 0.2.0 mention is the required non-current CHECK evidence); 0.3.0 external-wheel load proven below | PASS |
-| Performance (11.3): warm local filesystem, 20 measured runs after 3 warmups | OpenClaw | same | `3223040` | 0 | `convert_keil_workflow` median **71.81 ms** (< 500 ms), `configure_project_workflow` median **23.05 ms** (< 500 ms), MCP in-memory wrapper overhead (stubbed core) median **0.263 ms** (< 25 ms); no timing assertion in ordinary unit tests | PASS |
-| Wheel gate (11.3): `pip wheel` → fresh external venv → cwd outside the repository | OpenClaw | same | `3223040` | 0 | `stm32_toolkit-0.3.0-py3-none-any.whl` built and installed into a fresh CPython 3.10.11 venv; from `/tmp/tk0306-wheel-out` (outside the repo) the wheel CLI ran all four workflows against a convertible fixture copy with the fake CMake seam: `keil inspect`, `keil convert` plan+apply, `project configure` plan+apply, `build --preset arm-debug` all exit 0 with the expected operations; `stm32-toolkit version` prints `0.3.0`; packaged schemas (`firmware-identity`, `stm32-project-v1`, `stm32-project`) and 9 template resources are importable from the wheel; identity `toolkitVersion` is `0.3.0`; fake-CMake hit file proves the full fake-toolchain build ran | PASS |
-| Secret/placeholder scan (11.3): credentials, unfinished markers, debug prints, raw exception disclosure, copied business logic in Skills/workflows | OpenClaw | same | `3223040` | 0 | no plaintext credential, `TODO`/`FIXME`/`pass`/ellipsis stub, debug print (only intentional CLI stdout writes), or raw exception text in any deliverable; no XML/source-rewrite/CMake logic in Skill prose | PASS |
-| `claude plugin validate .` (11.3 plugin gate) | OpenClaw | Linux; Claude Code 2.1.140 | `3223040` | 1 | `Validating marketplace manifest … ✘ Found 1 error: plugins.0.source: Invalid input ✘ Validation failed` — the pre-existing `.claude-plugin/marketplace.json` (`"source": "."`) is rejected by this Claude Code version; the file is byte-identical to the accepted base (empty diff) and is outside §5. A clean isolated local marketplace add succeeds (`claude plugin marketplace add <repo> --scope user`, exit 0, CLAUDE_CONFIG_DIR isolated), and the isolated install then fails with `This plugin uses a source type your Claude Code version does not support`. The 0.2.0 → 0.3.0 clean isolated install/update sub-gate therefore cannot complete in this environment without changing the pre-existing manifest | BLOCKED (pre-existing manifest; see Deferred gates) |
-| Windows focused/full including roots cancellation, path/case behavior, setup Repair/rollback, launcher | Codex | Windows NTFS, CPython 3.12.13 | returned head | — | not run by OpenClaw; the updated Windows tests (test_setup_runtime.py, launcher/helper tests) are prepared for the 0.3.0 paths | `DEFERRED_TO_CODEX` |
-| Real CLI/MCP arm-debug + arm-release with CMake 4.3.1, Ninja 1.13.2, ARM GNU 14.3.1/binutils 2.44 | Codex | Codex Windows toolchain | returned head | — | not run by OpenClaw | `DEFERRED_TO_CODEX` |
-| Clean isolated 0.2.0 → 0.3.0 plugin install/update without a second MCP registration | Codex (named owner when Claude Code rejects the pre-existing marketplace source type) | machine with Claude Code | returned head | — | blocked in this environment by the pre-existing marketplace manifest; exact evidence recorded above | `DEFERRED_TO_CODEX` |
+| TDD RED (revision 1): regression tests against the reviewed predecessor | OpenClaw | Linux; CPython 3.10.11 | `aa5e991` (tests-only commit on the predecessor) | 1 | `45 failed, 568 passed, 5 skipped` — exactly the new regressions: non-bool authorization without plan ID, managed build capability, float-ABI normalization/blocker, include/source dedup, empty debug, marketplace source, both rewritten e2e tests | PASS (RED reproduced) |
+| Focused GREEN (§10 command 1): `python -m pytest tools/stm32-toolkit/tests/test_workflows.py tools/stm32-toolkit/tests/test_cli.py tools/stm32-toolkit/tests/test_mcp_server.py tools/stm32-toolkit/tests/test_mcp_roots.py tools/stm32-toolkit/tests/test_mcp_migration_build.py tools/stm32-toolkit/tests/test_context.py tools/stm32-toolkit/tests/test_generation.py tools/stm32-toolkit/tests/test_keil_inspect.py tools/stm32-toolkit/tests/test_migration_plan.py tools/stm32-toolkit/tests/test_firmware_identity.py tools/stm32-toolkit/tests/test_plugin_layout.py tools/stm32-toolkit/tests/test_setup_runtime.py -q` | OpenClaw | same | `b3dbd1e` | 0 | `727 passed, 17 skipped`; the 17 skips are the pre-existing Windows-only platform skips, unchanged and attributed | PASS |
+| Full suite + branch coverage (§10 command 2): `python -m pytest tools/stm32-toolkit/tests -q --cov=stm32_toolkit --cov-branch --cov-report=term` | OpenClaw | same | `b3dbd1e` | 0 | `1185 passed, 17 skipped`; zero failures/errors; branch coverage **93%** TOTAL (fail_under 90 satisfied); `workflows.py` **100%** branch, `identity.py` 93%, `context.py` 92%, `configure.py` 91%, `planner.py` 91%; no file excluded; no new skip/xfail | PASS |
+| compileall (§10 command 3) | OpenClaw | same | `b3dbd1e` | 0 | silent | PASS |
+| Diff scope/whitespace (§10 commands 4-5): `git diff --check` and `git diff --name-status` base..HEAD | OpenClaw | same | `b3dbd1e` | 0 | silent; inventory matches section 2 | PASS |
+| `claude plugin validate .` | OpenClaw | Linux; Claude Code 2.1.140 | `b3dbd1e` | 0 | `Validating marketplace manifest: … ✔ Validation passed` | PASS |
+| Fresh isolated plugin install: `CLAUDE_CONFIG_DIR=$(mktemp -d) claude plugin marketplace add $PWD --scope user` | OpenClaw | same | `b3dbd1e` | 0 | `✔ Successfully added marketplace: stm32-toolkit (declared in user settings)` | PASS |
+| Fresh isolated plugin install: `claude plugin install stm32-toolkit@stm32-toolkit --scope user` | OpenClaw | same | `b3dbd1e` | 0 | `✔ Successfully installed plugin: stm32-toolkit@stm32-toolkit (scope: user)`; installed version 0.3.0, `gitCommitSha` = code head | PASS |
+| `claude plugin list` + `claude plugin details` (isolated config) | OpenClaw | same | `b3dbd1e` | 0 | `stm32-toolkit@stm32-toolkit  Version: 0.3.0  Scope: user  Status: ✔ enabled`; details inventory = exactly the four Skills, no second MCP registration | PASS |
+| Official 0.2.0 → 0.3.0 upgrade: marketplace copy at the accepted base (plugin.json 0.2.0) installed in a fresh isolated config, then the source bumped to 0.3.0 and `claude plugin update stm32-toolkit@stm32-toolkit --scope user` | OpenClaw | same | `b3dbd1e` | 0 | `✔ Plugin "stm32-toolkit" updated from 0.2.0 to 0.3.0 for scope user. Restart to apply changes.`; `plugin list` shows 0.3.0 | PASS |
+| Performance (spec 11.3): warm local filesystem, 20 measured runs after 3 warmups | OpenClaw | same | `b3dbd1e` | 0 | `convert_keil_workflow` median **74.05 ms** (< 500 ms), `configure_project_workflow` median **23.78 ms** (< 500 ms), MCP in-memory wrapper overhead (stubbed core) median **0.159 ms** (< 25 ms); no timing assertion in ordinary unit tests | PASS |
+| Wheel gate (spec 11.3): `pip wheel` → fresh external venv → cwd outside the repository | OpenClaw | same | `b3dbd1e` | 0 | `stm32_toolkit-0.3.0-py3-none-any.whl` built and installed into a fresh CPython 3.10.11 venv; from `/tmp/tk0306-wheel-out` (outside the repo) the wheel CLI ran all four workflows against a convertible fixture copy with the fake-CMake launch seam: `keil inspect`, `keil convert` plan+apply, `project configure` plan+apply, `build --preset arm-debug` and `build --preset arm-release` all exit 0 with the expected operations; `stm32-toolkit version` prints `0.3.0`; packaged schemas (firmware-identity, stm32-project-v1, stm32-project) and 9 template resources importable from the wheel; identity `toolkitVersion` 0.3.0 with `elfSha256` matching the on-disk ELF; fake-CMake hit file (5 records) proves the full fake-toolchain build ran | PASS |
+| Secret/placeholder scan | OpenClaw | same | `b3dbd1e` | 0 | no plaintext credential, `TODO`/`FIXME`/`pass`/ellipsis stub, debug print, or raw exception text in the revised deliverables; no XML/source-rewrite/CMake logic in Skill prose | PASS |
+| Windows focused/full including roots cancellation, path/case behavior, setup Repair/rollback, launcher | Codex | Windows NTFS, CPython 3.12.13 | returned head | — | not run by OpenClaw; the predecessor's Windows-path evidence is `predecessor evidence only` and is not re-claimed here | `DEFERRED_TO_CODEX` |
+| Real CLI/MCP arm-debug + arm-release with CMake 4.3.1, Ninja 1.13.2, ARM GNU 14.3.1/binutils 2.44 | Codex | Codex Windows toolchain | returned head | — | not run by OpenClaw; predecessor toolchain evidence is `predecessor evidence only` | `DEFERRED_TO_CODEX` |
 | Visual/hardware | N/A | N/A | — | — | no UI or hardware surface in this module | `NOT_APPLICABLE` |
 
 ### Manual and visual evidence
 
 | Gate | Owner | Observed result | Evidence path/status |
 |---|---|---|---|
-| End-to-end fixture workflow (11.1 class 9) | OpenClaw | `test_mcp_migration_build.py::test_end_to_end_fixture_inspect_convert_configure_build` and `test_cli.py::test_end_to_end_inspect_convert_configure_build` pass: inspect → conversion plan/apply → configuration plan/apply → fake build; `conversion-report.json` `planId` equals the applied plan ID and `fixedSections` contains address `0x20000000`; `.stm32-toolkit/generated-files.json` `toolVersion` 0.3.0; generated tasks contain exactly the two build tasks with the exact CLI argv; `build-result.json` status success; `firmware-identity.json` `buildId`/`gitHead` agree with the record and the report; ELF SHA-256 matches the identity; Git HEAD from `git rev-parse` equals the recorded head | PASS |
-| No-write proof for plan calls | OpenClaw | `snapshot_tree` (bytes/SHA-256/size/mode/mtime) and `git status --porcelain` unchanged after inspect/plan calls (multiple tests in `test_workflows.py`) | PASS |
+| End-to-end fixture workflow (spec 11.1 class 9, revision 1) | OpenClaw | `test_mcp_migration_build.py::test_end_to_end_fixture_inspect_convert_configure_build` and `test_cli.py::test_end_to_end_inspect_convert_configure_build` pass with the committed `keil-convertible` fixture: copy + Git init only, no uvprojx/source/scatter/include/FPU edits, no manual manifest modification; `conversion-report.json` `planId` equals the applied plan ID and `fixedSections` contains address `0x20000000`; generated manifest `debug == {}`; `.vscode/launch.json` `configurations == []`; `.stm32-toolkit/generated-files.json` `toolVersion` 0.3.0; generated tasks contain exactly the two build tasks; `build-result.json` status success; `firmware-identity.json` `buildId`/`gitHead`/`elfSha256` agree with the record, the report, and `git rev-parse HEAD`; context reports `managedManifestValid` true, `capabilities.build` true, hardware capabilities false | PASS |
+| No-write proof for capability checks | OpenClaw | `test_context.py::test_context_is_read_only_for_project_tree_and_git`: project tree bytes/modes and `git status --porcelain` unchanged across `build_project_context` calls; `_managed_configuration_evidence` never writes | PASS |
+| No-write proof for authorization failures | OpenClaw | parameterized `test_workflows.py` regressions: non-bool authorization with/without plan ID leaves the tree and Git porcelain untouched and never calls the apply seam (hit counter 0) | PASS |
 
 ### Artifacts
 
 | Artifact | Path | Size/checksum |
 |---|---|---|
 | Wheel | built from the code head | `stm32_toolkit-0.3.0-py3-none-any.whl` (built at `/tmp/tk0306-wheelhouse`, external) |
-| Build identity document | `build/arm-debug/firmware-identity.json` (wheel-gate fixture, external `/tmp/tk0306-wheel-out`) | `toolkitVersion` 0.3.0; ELF/MAP SHA-256 64-hex |
+| Build identity document | `build/arm-debug/firmware-identity.json` (wheel-gate fixture, external `/tmp/tk0306-wheel-project`) | `toolkitVersion` 0.3.0; `elfSha256` matches the on-disk ELF |
+| Isolated plugin install | `/tmp/tk0306-claude-isolated` (external) | `stm32-toolkit@stm32-toolkit` 0.3.0, `gitCommitSha` = code head |
+| Isolated upgrade proof | `/tmp/tk0306-claude-upgrade` + `/tmp/tk0306-upgrade-mp` (external) | installed 0.2.0 → `claude plugin update` → 0.3.0 |
 
 ## 5. Security, privacy, performance, accessibility, and compatibility
 
-- Security checks: unsafe optional paths (NUL, absolute, drive/UNC, `.`/`..`, backslash ambiguity, empty components) are rejected with `WORKFLOW_INPUT_INVALID` before any core call (parametrized tests); non-boolean authorization fails closed before any apply seam; MCP tools are permanently root-bound with the roots guard re-run per request; core digest/Git/atomicity/rollback guards are preserved unchanged (apply results pass through untouched).
-- Privacy/redaction checks: adapter details contain only field/rule, portable path, allowed values, or the current plan ID; no absolute host root, raw exception text, credentials, or raw bytes in any JSON/MCP payload (asserted by the CLI/MCP identity and unavailable-mapping tests); the secret scan in section 4 found no credentials or debug output.
-- Performance measurements: section 4 (71.81 ms / 23.05 ms / 0.263 ms medians vs 500 / 500 / 25 ms budgets).
-- Accessibility/input checks: CLI grammar violations produce usage on stderr and exit 2 with empty stdout; one JSON document is always emitted for parsed commands; cwd is never changed.
-- Compatibility checks: CPython 3.10.11 with the pinned dependency set (jsonschema 4.23.0, mcp 1.27.0, pyelftools 0.33, Jinja2 3.1.6, pytest 8.3.5, pytest-cov 6.0.0); protocol `stm32-toolkit/1`; portable `/` paths everywhere; Windows paths/rollback are the named Codex gate.
+- Security: non-boolean authorization fails closed before any core call;
+  capability checks are read-only and never repair or create files; the
+  input snapshot still rejects portable-path violations, reserved paths,
+  duplicate declarations (including hard-linked duplicates), Unicode
+  casefold collisions, and redirect/reparse escapes; float-ABI unknowns
+  produce a blocker instead of raw text in the manifest; empty-debug
+  configuration generates no hardware-debug claims; marketplace plugin
+  source uses the supported repo-relative form.
+- Privacy/redaction: no absolute host root, raw exception text,
+  credentials, or raw bytes in any JSON/MCP payload (unchanged assertions
+  pass); the new evidence fields contain only portable project-relative
+  paths.
+- Performance: section 4 (74.05 ms / 23.78 ms / 0.159 ms medians vs 500 /
+  500 / 25 ms budgets).
+- Accessibility/input checks: unchanged CLI discipline (one JSON document,
+  exit 0/2/2/1, cwd preserved); MCP schemas unchanged.
+- Compatibility: CPython 3.10.11 pinned environment; protocol
+  `stm32-toolkit/1`; no new dependency; the two private identity helpers'
+  signatures changed only for test callers (updated in the same commit);
+  the `.claude-plugin/marketplace.json` source value is the only manifest
+  change and is required for Claude Code 2.1.140 compatibility.
 
 ## 6. Blockers and residual risks
 
-- Blockers: `NONE` for every OpenClaw-owned gate. The `claude plugin validate .` gate reports the pre-existing marketplace-manifest source-type rejection (section 4) — an environment/Claude-Code-version finding on an unchanged file, not a blocker introduced by this module.
-- Residual risks: the accepted-core migration→generation→build integration seams listed in section 1 (empty `debug`, raw float-ABI text, include/source overlap) are exercised through explicit user-like e2e steps; the real end-user path is verified by Codex's Windows ARM GNU gate. The 17 full-suite skips are the pre-existing Windows-only platform skips, unchanged and attributed.
-- Follow-up recommendation: `NONE` within this module's scope. The pre-existing `.claude-plugin/marketplace.json` source value may need a future manifest update or a newer Claude Code; that path is outside this work order and is left untouched.
+- Blockers: `NONE` for every OpenClaw-owned gate. The r001 plugin-gate
+  blocker is resolved (validate/install/list/update all exit 0 on the
+  installed Claude Code).
+- Residual risks: `DEFERRED_TO_CODEX` gates remain as named in section 4
+  (Windows NTFS focused/full and the real Windows ARM GNU toolchain); the
+  predecessor's claims about those environments are `predecessor evidence
+  only` and are not re-claimed. The 17 full-suite skips are the
+  pre-existing Windows-only platform skips, unchanged and attributed. The
+  three compatibility-exception test paths listed in section 1 remain
+  modified relative to the base by the r001 reconciliation and are
+  untouched by revision 1.
+- Roadmap/PR consistency: the roadmap 0.3.0 checkbox stays checked only
+  because every release gate now passes (evidence in section 4); the PR
+  description is updated to the revision-1 status and matches this
+  report's Blockers/Known limitations statements.
 
 ## 7. Author checklist
 
-- [x] Accepted base and code head are full SHAs.
+- [x] Accepted base, reviewed predecessor, and code head are full SHAs.
 - [x] Final head will be returned out of band after this report commit.
 - [x] Inventory matches the complete implementation diff and report addition.
-- [x] Every required OpenClaw gate has direct observed evidence.
-- [x] Other-environment gates are accurately attributed or deferred with named owners.
+- [x] Every required OpenClaw gate has direct observed evidence with real exits.
+- [x] Other-environment gates are attributed as `DEFERRED_TO_CODEX`; predecessor Windows/ARM GNU claims are labeled `predecessor evidence only`.
 - [x] No credentials, private data, caches, build output, or unredacted diagnostics are committed.
 - [x] No unrelated file, agent instruction, approved work order, or remote policy changed.
 - [x] Every instructional value in this report is replaced with actual evidence.
