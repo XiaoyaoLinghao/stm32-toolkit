@@ -151,4 +151,3 @@ warning from MCP server construction.
 - Passive enumeration deliberately reports `boardName=null`; board identity is
   collected only after an exact probe owns an attached session in a later
   evidence path.
-
