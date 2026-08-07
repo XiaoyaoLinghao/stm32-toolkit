@@ -25,7 +25,7 @@
     "leaseId": {"$ref": "#/$defs/identifier"},
     "operationLevel": {"enum": ["observe", "control", "modify"]},
     "operation": {
-      "enum": ["probe.list", "probe.attach", "memory.read", "register.read", "probe.close"]
+      "enum": ["probe.list", "probe.attach", "memory.read", "register.read", "probe.close", "flash.program"]
     },
     "timeoutMs": {"type": "integer", "minimum": 1, "maximum": 30000},
     "data": {"type": "object"}
@@ -96,6 +96,29 @@
                 "maxLength": 128,
                 "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
               }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {"properties": {"operation": {"const": "flash.program"}}},
+      "then": {
+        "properties": {
+          "operationLevel": {"const": "modify"},
+          "data": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["elfPath", "elfSha256", "elfSize"],
+            "properties": {
+              "elfPath": {
+                "type": "string",
+                "minLength": 5,
+                "maxLength": 1024,
+                "pattern": "^(?!/)(?![A-Za-z]:)(?!.*(?:^|/)\\.\\.?(?:/|$))[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)*\\.elf$"
+              },
+              "elfSha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+              "elfSize": {"type": "integer", "minimum": 1, "maximum": 67108864}
             }
           }
         }

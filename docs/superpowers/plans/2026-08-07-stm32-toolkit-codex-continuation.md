@@ -271,9 +271,9 @@ product commands in this packet.
 Progress is gate-based, not line-count based:
 
 - 0.3.0 migration/build foundation: complete and accepted.
-- 0.4.0 hardware access/debug: STM32TK-0401 is integrated; STM32TK-0402 has a
-  verified software implementation. The release remains open for 0403 through
-  0405 and the named Linux/real-probe gates.
+- 0.4.0 hardware access/debug: STM32TK-0401 and STM32TK-0402 are integrated;
+  STM32TK-0403 has a verified software implementation. The release remains open
+  for 0404, 0405, and the named Linux/real-probe gates.
 - 0.5.0 monitor, 0.6.0 tests/diagnostics, 0.7.0 creation, and 1.0.0 vertical
   acceptance: not started.
 

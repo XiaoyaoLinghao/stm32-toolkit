@@ -51,10 +51,12 @@ class FakePyOCDTarget:
         memory: Mapping[int, bytes] | None = None,
         registers: Mapping[str, int] | None = None,
         state: object = "halted",
+        part_number: object = "stm32f407vg",
     ) -> None:
         self.memory = {address: bytes(data) for address, data in (memory or {}).items()}
         self.registers = dict(registers or {})
         self.state = state
+        self.part_number = part_number
         self.cores: dict[int, object] = {0: self}
         self.calls: list[tuple[object, ...]] = []
         self.memory_result: object = _DEFAULT_MEMORY_RESULT
@@ -154,6 +156,8 @@ class FakePyOCDDriver:
         self.session_open_error: BaseException | None = None
         self.session_close_error: BaseException | None = None
         self.created_sessions: list[FakePyOCDSession] = []
+        self.program_calls: list[tuple[object, bytes, dict[str, object]]] = []
+        self.program_error: BaseException | None = None
 
     def list_probes(self) -> tuple[FakePyOCDProbe, ...]:
         if self.list_error is not None:
@@ -175,3 +179,10 @@ class FakePyOCDDriver:
         session.close_error = self.session_close_error
         self.created_sessions.append(session)
         return session
+
+    def program_file(
+        self, session: object, image: bytes, *, options: Mapping[str, object]
+    ) -> None:
+        self.program_calls.append((session, bytes(image), dict(options)))
+        if self.program_error is not None:
+            raise self.program_error

@@ -214,6 +214,63 @@ def test_attach_requires_only_exact_portable_probe_and_target(data):
     assert error.value.details["field"].startswith("data")
 
 
+def test_flash_program_accepts_only_modify_level_and_exact_evidence():
+    payload = valid_request_dict()
+    payload.update(
+        {
+            "operation": "flash.program",
+            "operationLevel": "modify",
+            "data": {
+                "elfPath": "build/arm-debug/firmware.elf",
+                "elfSha256": "ab" * 32,
+                "elfSize": 4096,
+            },
+        }
+    )
+
+    request = decode_request(json.dumps(payload).encode("utf-8"), TOOLKIT_VERSION)
+
+    assert request.operation_level is OperationLevel.MODIFY
+    assert request.operation == "flash.program"
+    assert dict(request.data) == payload["data"]
+
+
+@pytest.mark.parametrize(
+    ("operation_level", "data"),
+    [
+        ("observe", {"elfPath": "build/fw.elf", "elfSha256": "ab" * 32, "elfSize": 1}),
+        ("control", {"elfPath": "build/fw.elf", "elfSha256": "ab" * 32, "elfSize": 1}),
+        ("modify", {"elfPath": "C:/private/fw.elf", "elfSha256": "ab" * 32, "elfSize": 1}),
+        ("modify", {"elfPath": "/private/fw.elf", "elfSha256": "ab" * 32, "elfSize": 1}),
+        ("modify", {"elfPath": "build\\fw.elf", "elfSha256": "ab" * 32, "elfSize": 1}),
+        ("modify", {"elfPath": "build/../fw.elf", "elfSha256": "ab" * 32, "elfSize": 1}),
+        ("modify", {"elfPath": "./build/fw.elf", "elfSha256": "ab" * 32, "elfSize": 1}),
+        ("modify", {"elfPath": "build/fw.bin", "elfSha256": "ab" * 32, "elfSize": 1}),
+        ("modify", {"elfPath": "build/\x00fw.elf", "elfSha256": "ab" * 32, "elfSize": 1}),
+        ("modify", {"elfPath": "build/fw.elf", "elfSha256": "AB" * 32, "elfSize": 1}),
+        ("modify", {"elfPath": "build/fw.elf", "elfSha256": "ab" * 31, "elfSize": 1}),
+        ("modify", {"elfPath": "build/fw.elf", "elfSha256": "ab" * 32, "elfSize": True}),
+        ("modify", {"elfPath": "build/fw.elf", "elfSha256": "ab" * 32, "elfSize": 0}),
+        ("modify", {"elfPath": "build/fw.elf", "elfSha256": "ab" * 32, "elfSize": 67_108_865}),
+        ("modify", {"elfPath": "build/fw.elf", "elfSha256": "ab" * 32, "elfSize": 1, "extra": 1}),
+    ],
+)
+def test_flash_program_rejects_unsafe_or_ambiguous_evidence(operation_level, data):
+    payload = valid_request_dict()
+    payload.update(
+        {
+            "operation": "flash.program",
+            "operationLevel": operation_level,
+            "data": data,
+        }
+    )
+
+    with pytest.raises(ProbeProtocolError) as error:
+        decode_request(json.dumps(payload).encode("utf-8"), TOOLKIT_VERSION)
+
+    assert error.value.code == "PROBE_REQUEST_INVALID"
+
+
 def test_operation_level_order_is_explicit_and_not_string_order():
     assert OperationLevel.OBSERVE.allows(OperationLevel.OBSERVE)
     assert not OperationLevel.OBSERVE.allows(OperationLevel.CONTROL)
