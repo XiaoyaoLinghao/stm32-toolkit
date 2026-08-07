@@ -26,6 +26,7 @@ _END_OPERATION = "stm32_debug_handoff_end"
 _STATE_NAME = "debug-handoff.json"
 _GUARD_NAME = ".debug-handoff.guard"
 _STATE_LIMIT = 65_536
+_LEASE_RECORD_LIMIT = 16_384
 _FLASH_RESULT_LIMIT = 8 * 1024 * 1024
 _REPARSE_POINT = 0x400
 _IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
@@ -90,6 +91,7 @@ class DebugHandoffRequest:
 class CortexDebugAttachContract:
     target: str
     executable: str
+    serial_number: str
     servertype: str = "pyocd"
     request: str = "attach"
 
@@ -98,6 +100,8 @@ class CortexDebugAttachContract:
             raise ValueError("Cortex-Debug contract must use PyOCD attach mode")
         if _IDENTIFIER.fullmatch(self.target) is None:
             raise ValueError("Cortex-Debug target is invalid")
+        if _IDENTIFIER.fullmatch(self.serial_number) is None:
+            raise ValueError("Cortex-Debug probe selector is invalid")
         _validate_relative_path(self.executable)
 
     def to_dict(self) -> dict[str, str]:
@@ -105,6 +109,7 @@ class CortexDebugAttachContract:
             "servertype": "pyocd",
             "request": "attach",
             "target": self.target,
+            "serialNumber": self.serial_number,
             "executable": f"${{workspaceFolder}}/{self.executable}",
         }
 
@@ -321,6 +326,7 @@ def _process_guard(path: Path) -> Iterator[None]:
 
 
 def _read_json_file(path: Path, limit: int, *, missing: bool = False) -> dict[str, object] | None:
+    descriptor = -1
     try:
         info = os.lstat(path)
     except FileNotFoundError:
@@ -332,10 +338,30 @@ def _read_json_file(path: Path, limit: int, *, missing: bool = False) -> dict[st
     if _is_redirect(info) or not stat.S_ISREG(info.st_mode):
         raise _fail("HANDOFF_STATE_INVALID", "Debug handoff state is invalid", rule="regularFile")
     try:
-        with path.open("rb") as handle:
+        descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_BINARY", 0))
+        opened = os.fstat(descriptor)
+        named = os.lstat(path)
+        if (
+            _is_redirect(named)
+            or not stat.S_ISREG(opened.st_mode)
+            or not stat.S_ISREG(named.st_mode)
+            or (opened.st_dev, opened.st_ino) != (named.st_dev, named.st_ino)
+        ):
+            raise _fail(
+                "HANDOFF_STATE_INVALID",
+                "Debug handoff state is invalid",
+                rule="fileRace",
+            )
+        with os.fdopen(descriptor, "rb") as handle:
+            descriptor = -1
             raw = handle.read(limit + 1)
+    except _HandoffFailure:
+        raise
     except OSError:
         raise _fail("HANDOFF_STATE_UNAVAILABLE", "Debug handoff state is unavailable") from None
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
     if len(raw) > limit:
         raise _fail("HANDOFF_STATE_INVALID", "Debug handoff state is invalid", rule="size")
     try:
@@ -437,10 +463,16 @@ def _configuration(config: object, root: Path) -> tuple[str, str, str]:
     configured_root = getattr(config, "project_root", None)
     level = getattr(config, "operation_level", None)
     level_value = getattr(level, "value", level)
+    try:
+        root_matches = (
+            isinstance(configured_root, Path)
+            and configured_root.expanduser().resolve(strict=True) == root
+        )
+    except (OSError, RuntimeError):
+        root_matches = False
     if (
         any(not isinstance(value, str) or _IDENTIFIER.fullmatch(value) is None for value in (probe, workspace, session))
-        or not isinstance(configured_root, Path)
-        or configured_root.expanduser().resolve(strict=True) != root
+        or not root_matches
         or level_value != OperationLevel.MODIFY.value
     ):
         raise _fail("HANDOFF_SUPERVISOR_INVALID", "Probe supervisor configuration is invalid")
@@ -571,7 +603,9 @@ def _state_matches(
 def _ticket(state: Mapping[str, object], executable: str) -> HandoffTicket:
     return HandoffTicket(
         str(state["ticketId"]),
-        CortexDebugAttachContract(str(state["target"]), executable),
+        CortexDebugAttachContract(
+            str(state["target"]), executable, str(state["probeId"])
+        ),
     )
 
 
@@ -583,11 +617,7 @@ def _prove_released(supervisor: object, probe: str, lease_id: str, endpoint_path
     manager = getattr(supervisor, "_lease_manager", None)
     try:
         record_path = manager.record_path(probe)
-        record = json.loads(
-            record_path.read_text(encoding="utf-8"),
-            object_pairs_hook=_unique_pairs,
-            parse_constant=lambda value: (_ for _ in ()).throw(ValueError(value)),
-        )
+        record = _read_json_file(record_path, _LEASE_RECORD_LIMIT)
     except Exception:
         raise _fail("HANDOFF_STOP_FAILED", "Probe lease release could not be proven") from None
     if record != {"schemaVersion": 1, "state": "released", "leaseId": lease_id}:
@@ -650,14 +680,71 @@ async def begin_debug_handoff(
                         )
                     if state["state"] == "reacquiring":
                         raise _fail("HANDOFF_STATE_CONFLICT", "Debug handoff is already reacquiring")
-                else:
-                    endpoint = getattr(supervisor, "endpoint", None)
-                    if endpoint is None:
-                        raise _fail("HANDOFF_SUPERVISOR_INVALID", "Probe Service is not active")
+                endpoint = getattr(supervisor, "endpoint", None)
+                if endpoint is None and state is None:
+                    raise _fail("HANDOFF_SUPERVISOR_INVALID", "Probe Service is not active")
+                if endpoint is not None:
                     lease_id = _endpoint(endpoint, probe, workspace, session)
+                    if state is not None and state.get("leaseId") != lease_id:
+                        raise _fail("HANDOFF_STATE_CONFLICT", "Another debug handoff is active")
+                    try:
+                        await supervisor.drain_modifications()
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception:
+                        raise _fail(
+                            "HANDOFF_DRAIN_FAILED",
+                            "Probe Service modification operations could not be drained",
+                        ) from None
+
+                    firmware = _load_fresh_firmware(root)
+                    target = firmware.model.debug.target
+                    if (
+                        not isinstance(target, str)
+                        or typed.expected_build_id != firmware.identity.get("buildId")
+                        or typed.expected_elf_sha256 != firmware.identity.get("elfSha256")
+                    ):
+                        raise _fail(
+                            "HANDOFF_IDENTITY_MISMATCH",
+                            "Firmware identity does not match the debug handoff",
+                        )
+                    flash_result = _load_flash_result(root)
+                    _validate_flash(
+                        flash_result,
+                        firmware,
+                        probe=probe,
+                        workspace=workspace,
+                        session=session,
+                        target=target,
+                    )
                     attachment = await client.attach(probe, target)
                     _validate_attachment(attachment, probe, target)
                     await _verify_segments(client, firmware.segments)
+
+                    current_firmware = _load_fresh_firmware(root)
+                    if (
+                        current_firmware.identity.get("buildId")
+                        != typed.expected_build_id
+                        or current_firmware.identity.get("elfSha256")
+                        != typed.expected_elf_sha256
+                        or current_firmware.model.debug.target != target
+                    ):
+                        raise _fail(
+                            "HANDOFF_IDENTITY_MISMATCH",
+                            "Firmware identity changed during debug handoff",
+                        )
+                    current_flash = _load_flash_result(root)
+                    _validate_flash(
+                        current_flash,
+                        current_firmware,
+                        probe=probe,
+                        workspace=workspace,
+                        session=session,
+                        target=target,
+                    )
+                    firmware = current_firmware
+
+                if state is None:
                     state = {
                         "schemaVersion": 1,
                         "toolkitVersion": __version__,
@@ -675,7 +762,6 @@ async def begin_debug_handoff(
                     }
                     _write_state(session_root, state)
 
-                endpoint = getattr(supervisor, "endpoint", None)
                 endpoint_path = getattr(endpoint, "record_path", None)
                 if endpoint_path is not None and not isinstance(endpoint_path, Path):
                     raise _fail("HANDOFF_SUPERVISOR_INVALID", "Probe supervisor endpoint is invalid")
@@ -712,7 +798,13 @@ async def end_debug_handoff(
         configured_root = getattr(config, "project_root", None)
         if not isinstance(configured_root, Path):
             raise _fail("HANDOFF_SUPERVISOR_INVALID", "Probe supervisor configuration is invalid")
-        root = configured_root.expanduser().resolve(strict=True)
+        try:
+            root = configured_root.expanduser().resolve(strict=True)
+        except (OSError, RuntimeError):
+            raise _fail(
+                "HANDOFF_SUPERVISOR_INVALID",
+                "Probe supervisor configuration is invalid",
+            ) from None
         probe, workspace, session = _configuration(config, root)
         lock = _async_lock(session_root)
         async with lock:

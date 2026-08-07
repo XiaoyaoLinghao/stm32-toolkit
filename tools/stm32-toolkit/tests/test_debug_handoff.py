@@ -54,8 +54,12 @@ class FakeSupervisor:
         self.endpoint = self._new_endpoint()
         self.start_calls = 0
         self.stop_calls = 0
+        self.drain_calls = 0
+        self.modifications_allowed = True
+        self.modify_attempts: list[bool] = []
         self.start_error: BaseException | None = None
         self.stop_error: BaseException | None = None
+        self.drain_error: BaseException | None = None
         session_root.mkdir(parents=True, exist_ok=True)
         self._activate()
 
@@ -98,6 +102,15 @@ class FakeSupervisor:
             self._activate()
         return self.endpoint
 
+    async def drain_modifications(self) -> None:
+        self.drain_calls += 1
+        if self.drain_error is not None:
+            raise self.drain_error
+        self.modifications_allowed = False
+
+    def attempt_modify(self) -> None:
+        self.modify_attempts.append(self.modifications_allowed)
+
 
 class FakeClient:
     def __init__(self, endpoint: object, image: bytes) -> None:
@@ -105,6 +118,7 @@ class FakeClient:
         self.image = image
         self.events: list[tuple[object, ...]] = []
         self.read_error: BaseException | None = None
+        self.after_read: object | None = None
         self.resolved_part = "STM32F407VG"
 
     async def attach(self, probe_id: str, target: str) -> ProbeAttachmentEvidence:
@@ -120,6 +134,8 @@ class FakeClient:
         self.events.append(("read", address, length))
         if self.read_error is not None:
             raise self.read_error
+        if callable(self.after_read):
+            self.after_read()
         offset = address - 0x08000000
         return self.image[offset : offset + length]
 
@@ -180,14 +196,29 @@ def _state(session_root: Path) -> dict[str, object]:
 
 def test_cortex_debug_contract_is_data_only_exact_attach_configuration():
     contract = CortexDebugAttachContract(
-        target="stm32f407vg", executable="build/arm-debug/firmware.elf"
+        target="stm32f407vg",
+        executable="build/arm-debug/firmware.elf",
+        serial_number="probe-123",
     )
     assert contract.to_dict() == {
         "servertype": "pyocd",
         "request": "attach",
         "target": "stm32f407vg",
+        "serialNumber": "probe-123",
         "executable": "${workspaceFolder}/build/arm-debug/firmware.elf",
     }
+
+
+def test_cortex_debug_contract_selects_exact_probe_when_two_are_present():
+    first = CortexDebugAttachContract(
+        "stm32f407vg", "build/arm-debug/firmware.elf", "probe-a"
+    )
+    second = CortexDebugAttachContract(
+        "stm32f407vg", "build/arm-debug/firmware.elf", "probe-b"
+    )
+    assert first.to_dict()["serialNumber"] == "probe-a"
+    assert second.to_dict()["serialNumber"] == "probe-b"
+    assert first.to_dict() != second.to_dict()
 
 
 @pytest.mark.parametrize(
@@ -196,6 +227,7 @@ def test_cortex_debug_contract_is_data_only_exact_attach_configuration():
         {"servertype": "openocd"},
         {"request": "launch"},
         {"target": "bad target"},
+        {"serial_number": "bad probe"},
         {"executable": "../firmware.elf"},
         {"executable": "C:/firmware.elf"},
     ],
@@ -204,6 +236,7 @@ def test_cortex_debug_contract_rejects_non_attach_or_nonportable_values(kwargs):
     fields = {
         "target": "stm32f407vg",
         "executable": "build/arm-debug/firmware.elf",
+        "serial_number": "probe-123",
         **kwargs,
     }
     with pytest.raises(ValueError):
@@ -213,7 +246,7 @@ def test_cortex_debug_contract_rejects_non_attach_or_nonportable_values(kwargs):
 def test_cortex_debug_contract_rejects_backslash_and_control_paths():
     for executable in ("build\\firmware.elf", "build/firmware\n.elf"):
         with pytest.raises(ValueError):
-            CortexDebugAttachContract("stm32f407vg", executable)
+            CortexDebugAttachContract("stm32f407vg", executable, "probe-123")
 
 
 @pytest.mark.parametrize("authorized", [False, "true", 1, None])
@@ -298,6 +331,43 @@ def test_begin_persists_paused_stops_releases_then_marks_external(handoff_env):
         assert stat.S_IMODE((session_root / STATE_NAME).stat().st_mode) == 0o600
     assert [event[0] for event in client.events] == ["attach", "read"]
     assert ticket.ticket_id not in repr(ticket)
+
+
+def test_begin_drains_modifications_before_final_target_readback(handoff_env):
+    _, _, _, supervisor, client, request = handoff_env
+    client.after_read = supervisor.attempt_modify
+
+    result = asyncio.run(begin_debug_handoff(request, supervisor, client))
+
+    assert result.ok is True
+    assert supervisor.drain_calls == 1
+    assert supervisor.modify_attempts == [False]
+    assert supervisor.stop_calls == 1
+
+
+def test_begin_drain_failure_is_stable_and_does_not_touch_target(handoff_env):
+    _, _, session_root, supervisor, client, request = handoff_env
+    supervisor.drain_error = RuntimeError("private drain detail")
+
+    result = asyncio.run(begin_debug_handoff(request, supervisor, client))
+
+    assert result.code == "HANDOFF_DRAIN_FAILED"
+    assert "private drain detail" not in json.dumps(result.to_dict())
+    assert supervisor.stop_calls == 0
+    assert client.events == []
+    assert not (session_root / STATE_NAME).exists()
+
+
+def test_begin_drain_cancellation_propagates_without_state(handoff_env):
+    _, _, session_root, supervisor, client, request = handoff_env
+    supervisor.drain_error = asyncio.CancelledError()
+
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(begin_debug_handoff(request, supervisor, client))
+
+    assert supervisor.stop_calls == 0
+    assert client.events == []
+    assert not (session_root / STATE_NAME).exists()
 
 
 def test_probe_package_exports_handoff_contracts() -> None:
@@ -671,6 +741,130 @@ def test_guard_open_permission_failure_is_structured(handoff_env, monkeypatch):
     result = asyncio.run(begin_debug_handoff(request, supervisor, client))
     assert result.code == "HANDOFF_STATE_UNAVAILABLE"
     assert "private guard path" not in json.dumps(result.to_dict())
+
+
+def test_state_swap_to_redirect_after_open_fails_closed(handoff_env, monkeypatch):
+    _, _, session_root, supervisor, client, request = handoff_env
+    ticket = asyncio.run(begin_debug_handoff(request, supervisor, client)).data
+    state_path = session_root / STATE_NAME
+    real_lstat = os.lstat
+    state_lstats = 0
+
+    def swapped(path: object, *args, **kwargs):
+        nonlocal state_lstats
+        result = real_lstat(path, *args, **kwargs)
+        if Path(path) == state_path:
+            state_lstats += 1
+            if state_lstats >= 3:
+                return SimpleNamespace(
+                    st_mode=result.st_mode,
+                    st_file_attributes=0x400,
+                    st_dev=result.st_dev,
+                    st_ino=result.st_ino,
+                )
+        return result
+
+    monkeypatch.setattr("stm32_toolkit.probe.handoff.os.lstat", swapped)
+    result = asyncio.run(
+        end_debug_handoff(ticket.ticket_id, supervisor, lambda endpoint: client)
+    )
+    assert result.code == "HANDOFF_STATE_INVALID"
+    assert supervisor.start_calls == 0
+
+
+def test_state_opened_and_named_identity_mismatch_fails_closed(
+    handoff_env, monkeypatch
+):
+    _, _, session_root, supervisor, client, request = handoff_env
+    ticket = asyncio.run(begin_debug_handoff(request, supervisor, client)).data
+    state_path = session_root / STATE_NAME
+    real_lstat = os.lstat
+    state_lstats = 0
+
+    def replaced(path: object, *args, **kwargs):
+        nonlocal state_lstats
+        result = real_lstat(path, *args, **kwargs)
+        if Path(path) == state_path:
+            state_lstats += 1
+            if state_lstats >= 3:
+                return SimpleNamespace(
+                    st_mode=result.st_mode,
+                    st_file_attributes=0,
+                    st_dev=result.st_dev,
+                    st_ino=result.st_ino + 1,
+                )
+        return result
+
+    monkeypatch.setattr("stm32_toolkit.probe.handoff.os.lstat", replaced)
+    result = asyncio.run(
+        end_debug_handoff(ticket.ticket_id, supervisor, lambda endpoint: client)
+    )
+    assert result.code == "HANDOFF_STATE_INVALID"
+    assert supervisor.start_calls == 0
+
+
+def test_oversized_lease_release_record_cannot_publish_external_ownership(
+    handoff_env, monkeypatch
+):
+    _, _, session_root, supervisor, client, request = handoff_env
+    original_stop = supervisor.stop
+
+    async def oversized_release() -> None:
+        await original_stop()
+        supervisor._lease_manager.path.write_bytes(b"{" + b"x" * 70_000)
+
+    supervisor.stop = oversized_release
+    real_read_text = Path.read_text
+    read_text_paths: list[Path] = []
+
+    def recorded_read_text(path: Path, *args, **kwargs):
+        read_text_paths.append(path)
+        return real_read_text(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", recorded_read_text)
+    result = asyncio.run(begin_debug_handoff(request, supervisor, client))
+    assert result.code == "HANDOFF_STOP_FAILED"
+    assert _state(session_root)["state"] == "paused-for-debug"
+    assert supervisor._lease_manager.path not in read_text_paths
+
+
+def test_lease_opened_and_named_identity_mismatch_blocks_external_state(
+    handoff_env, monkeypatch
+):
+    _, _, session_root, supervisor, client, request = handoff_env
+    lease_path = supervisor._lease_manager.path
+    real_lstat = os.lstat
+    lease_lstats = 0
+
+    def replaced(path: object, *args, **kwargs):
+        nonlocal lease_lstats
+        result = real_lstat(path, *args, **kwargs)
+        if Path(path) == lease_path:
+            lease_lstats += 1
+            if lease_lstats >= 2:
+                return SimpleNamespace(
+                    st_mode=result.st_mode,
+                    st_file_attributes=0,
+                    st_dev=result.st_dev,
+                    st_ino=result.st_ino + 1,
+                )
+        return result
+
+    monkeypatch.setattr("stm32_toolkit.probe.handoff.os.lstat", replaced)
+    result = asyncio.run(begin_debug_handoff(request, supervisor, client))
+    assert result.code == "HANDOFF_STOP_FAILED"
+    assert _state(session_root)["state"] == "paused-for-debug"
+
+
+def test_end_missing_configured_project_root_is_stable_supervisor_error(handoff_env):
+    _, _, _, supervisor, client, request = handoff_env
+    ticket = asyncio.run(begin_debug_handoff(request, supervisor, client)).data
+    supervisor._config.project_root = request.project_root / "missing"
+    result = asyncio.run(
+        end_debug_handoff(ticket.ticket_id, supervisor, lambda endpoint: client)
+    )
+    assert result.code == "HANDOFF_SUPERVISOR_INVALID"
+    assert supervisor.start_calls == 0
 
 
 def test_system_exit_is_never_converted_to_protocol_failure(handoff_env):

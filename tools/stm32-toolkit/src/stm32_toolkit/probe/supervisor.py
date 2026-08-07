@@ -11,7 +11,12 @@ from types import TracebackType
 from .backend import ProbeBackend
 from .lease import ProbeLeaseManager
 from .model import OperationLevel
-from .service import ProbeEndpoint, ProbeService
+from .service import (
+    ProbeEndpoint,
+    ProbeService,
+    ProbeServiceError,
+    _await_task_completion,
+)
 
 
 @dataclass(frozen=True)
@@ -65,9 +70,10 @@ class ProbeServiceSupervisor:
                 endpoint = await service.start()
             except BaseException:
                 if backend is not None:
+                    closing = asyncio.create_task(asyncio.to_thread(backend.close))
                     try:
-                        await asyncio.to_thread(backend.close)
-                    except Exception:
+                        await _await_task_completion(closing)
+                    except BaseException:
                         pass
                 raise
 
@@ -78,14 +84,28 @@ class ProbeServiceSupervisor:
 
     async def stop(self) -> None:
         async with self._lifecycle_lock:
-            service, self._service = self._service, None
-            backend, self._backend = self._backend, None
-            self._endpoint = None
+            service = self._service
+            backend = self._backend
+            try:
+                if service is not None:
+                    stopping = asyncio.create_task(service.stop())
+                    await _await_task_completion(stopping)
+                elif backend is not None:
+                    closing = asyncio.create_task(asyncio.to_thread(backend.close))
+                    await _await_task_completion(closing)
+            finally:
+                self._service = None
+                self._backend = None
+                self._endpoint = None
 
-            if service is not None:
-                await service.stop()
-            elif backend is not None:
-                await asyncio.to_thread(backend.close)
+    async def drain_modifications(self) -> None:
+        async with self._lifecycle_lock:
+            service = self._service
+            if service is None or self._endpoint is None:
+                raise ProbeServiceError(
+                    "PROBE_SERVICE_UNAVAILABLE", "Probe Service is unavailable"
+                )
+            await service.drain_modifications()
 
     async def __aenter__(self) -> ProbeEndpoint:
         return await self.start()

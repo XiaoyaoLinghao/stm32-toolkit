@@ -8,6 +8,7 @@ import json
 import os
 import secrets
 import stat
+from collections.abc import Coroutine
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Callable
@@ -29,6 +30,26 @@ from .protocol import (
 )
 
 _REPARSE_POINT = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+
+
+async def _await_task_completion(task: asyncio.Task[object]) -> object:
+    """Finish an owned task before propagating caller cancellation."""
+    cancellation: asyncio.CancelledError | None = None
+    while not task.done():
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError as error:
+            if cancellation is None:
+                cancellation = error
+        except BaseException:
+            break
+    if cancellation is not None:
+        try:
+            task.result()
+        except BaseException:
+            pass
+        raise cancellation
+    return task.result()
 
 
 class ProbeServiceError(Exception):
@@ -233,6 +254,7 @@ class ProbeService:
         self._endpoint: ProbeEndpoint | None = None
         self._backend_tasks: set[asyncio.Task[object]] = set()
         self._backend_modify_tasks: set[asyncio.Task[object]] = set()
+        self._modifications_draining = False
         self._backend_lock = asyncio.Lock()
         self._heartbeat_task: asyncio.Task[None] | None = None
         self._stop_lock = asyncio.Lock()
@@ -257,16 +279,16 @@ class ProbeService:
         application.router.add_get("/health", self._handle_health)
         application.router.add_post("/v1/request", self._handle_request)
         runner = web.AppRunner(application, access_log=None)
-        await runner.setup()
-        site = web.TCPSite(runner, host="127.0.0.1", port=0)
-        await site.start()
-        addresses = runner.addresses
-        if len(addresses) != 1:
-            await runner.cleanup()
-            raise RuntimeError("Probe Service did not bind exactly one endpoint")
-        host, port = addresses[0][:2]
         lease: ProbeLease | None = None
+        endpoint: ProbeEndpoint | None = None
         try:
+            await runner.setup()
+            site = web.TCPSite(runner, host="127.0.0.1", port=0)
+            await site.start()
+            addresses = runner.addresses
+            if len(addresses) != 1:
+                raise RuntimeError("Probe Service did not bind exactly one endpoint")
+            host, port = addresses[0][:2]
             lease = self._lease_manager.acquire(
                 probe_id=self._probe_id,
                 workspace_id=self._workspace_id,
@@ -289,11 +311,32 @@ class ProbeService:
                 record_path=record_path,
             )
             _write_endpoint(record_path, endpoint)
-        except Exception:
-            if lease is not None:
-                lease.release()
-            await runner.cleanup()
+        except BaseException:
+            async def rollback_start() -> None:
+                try:
+                    await runner.cleanup()
+                finally:
+                    if endpoint is not None:
+                        try:
+                            endpoint.record_path.unlink()
+                        except (FileNotFoundError, OSError):
+                            pass
+                    if lease is not None:
+                        try:
+                            lease.release()
+                        except Exception:
+                            pass
+
+            rollback = asyncio.create_task(rollback_start())
+            try:
+                await _await_task_completion(rollback)
+            except BaseException:
+                pass
             raise
+        assert endpoint is not None
+        assert lease is not None
+        self._stopping = False
+        self._modifications_draining = False
         self._runner = runner
         self._lease = lease
         self._endpoint = endpoint
@@ -414,6 +457,13 @@ class ProbeService:
                 return self._backend.flash_elf(image).to_dict()
             raise ProbeBackendError("PROBE_OPERATION_UNSUPPORTED", "Operation is unsupported")
 
+        is_modify = request.operation == "flash.program"
+        if is_modify and self._modifications_draining:
+            raise ProbeBackendError(
+                "PROBE_MODIFICATIONS_DRAINING",
+                "Probe Service is draining modification operations",
+            )
+
         entered_backend = asyncio.Event()
 
         async def invoke_serialized() -> object:
@@ -423,7 +473,6 @@ class ProbeService:
 
         task = asyncio.create_task(invoke_serialized())
         self._backend_tasks.add(task)
-        is_modify = request.operation == "flash.program"
         if is_modify:
             self._backend_modify_tasks.add(task)
         task.add_done_callback(self._backend_task_finished)
@@ -438,6 +487,19 @@ class ProbeService:
             elif is_modify and not task.cancelled():
                 return await asyncio.shield(task)
             raise
+
+    def drain_modifications(self) -> Coroutine[object, object, None]:
+        self._modifications_draining = True
+
+        async def wait_for_registered_modifications() -> None:
+            tasks = tuple(self._backend_modify_tasks)
+            if tasks:
+                await asyncio.gather(
+                    *(asyncio.shield(task) for task in tasks),
+                    return_exceptions=True,
+                )
+
+        return wait_for_registered_modifications()
 
     def _backend_task_finished(self, task: asyncio.Task[object]) -> None:
         self._backend_tasks.discard(task)
@@ -642,40 +704,59 @@ class ProbeService:
         return web.Response(body=encode_response(response), content_type="application/json")
 
     async def stop(self) -> None:
+        caller = asyncio.current_task()
         async with self._stop_lock:
             if self._runner is None and self._lease is None:
                 return
             self._stopping = True
-            heartbeat, self._heartbeat_task = self._heartbeat_task, None
-            current_task = asyncio.current_task()
-            if heartbeat is not None and heartbeat is not current_task:
-                heartbeat.cancel()
-                await asyncio.gather(heartbeat, return_exceptions=True)
-            backend_close_error: Exception | None = None
-            if self._backend_modify_tasks:
-                await asyncio.gather(
-                    *tuple(self._backend_modify_tasks), return_exceptions=True
-                )
+            stopping = asyncio.create_task(self._stop_owned_state(caller))
+            await _await_task_completion(stopping)
+
+    async def _stop_owned_state(
+        self, caller: asyncio.Task[object] | None
+    ) -> None:
+        heartbeat = self._heartbeat_task
+        runner = self._runner
+        endpoint = self._endpoint
+        lease = self._lease
+        first_error: Exception | None = None
+
+        if heartbeat is not None and heartbeat is not caller:
+            heartbeat.cancel()
+            await asyncio.gather(heartbeat, return_exceptions=True)
+        if self._backend_modify_tasks:
+            await asyncio.gather(
+                *tuple(self._backend_modify_tasks), return_exceptions=True
+            )
+        try:
+            await asyncio.to_thread(self._backend.close)
+        except Exception as error:
+            first_error = error
+        if runner is not None:
             try:
-                await asyncio.to_thread(self._backend.close)
-            except Exception as error:
-                backend_close_error = error
-            runner, self._runner = self._runner, None
-            if runner is not None:
                 await runner.cleanup()
-            if self._backend_tasks:
-                await asyncio.gather(*tuple(self._backend_tasks), return_exceptions=True)
-            endpoint = self._endpoint
-            if endpoint is not None:
-                try:
-                    current = json.loads(endpoint.record_path.read_text(encoding="utf-8"))
-                    if current.get("leaseId") == endpoint.lease_id:
-                        endpoint.record_path.unlink()
-                except (FileNotFoundError, OSError, json.JSONDecodeError):
-                    pass
-            lease, self._lease = self._lease, None
-            if lease is not None:
+            except Exception as error:
+                if first_error is None:
+                    first_error = error
+        if self._backend_tasks:
+            await asyncio.gather(*tuple(self._backend_tasks), return_exceptions=True)
+        if endpoint is not None:
+            try:
+                current = json.loads(endpoint.record_path.read_text(encoding="utf-8"))
+                if current.get("leaseId") == endpoint.lease_id:
+                    endpoint.record_path.unlink()
+            except (FileNotFoundError, OSError, json.JSONDecodeError):
+                pass
+        if lease is not None:
+            try:
                 lease.release()
-            self._endpoint = None
-            if backend_close_error is not None:
-                raise backend_close_error
+            except Exception as error:
+                if first_error is None:
+                    first_error = error
+
+        self._heartbeat_task = None
+        self._runner = None
+        self._lease = None
+        self._endpoint = None
+        if first_error is not None:
+            raise first_error

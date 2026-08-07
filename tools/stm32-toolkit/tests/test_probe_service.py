@@ -13,6 +13,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
+from aiohttp import web
 
 from stm32_toolkit.probe.client import ProbeClient, ProbeClientError
 from stm32_toolkit.probe.lease import (
@@ -24,7 +25,11 @@ from stm32_toolkit.probe.model import OperationLevel
 from stm32_toolkit.probe.model import ProbeRequest
 from stm32_toolkit.probe.service import ProbeEndpoint, ProbeService, ProbeServiceError
 from fakes.fake_probe import FakeProbeBackend
-from stm32_toolkit.probe.backend import FlashBackendReport, ProbeDescriptor
+from stm32_toolkit.probe.backend import (
+    FlashBackendReport,
+    ProbeBackendError,
+    ProbeDescriptor,
+)
 
 
 NOW = datetime(2026, 8, 7, 12, 0, 0, tzinfo=timezone.utc)
@@ -106,6 +111,23 @@ def run(coroutine):
     return asyncio.run(coroutine)
 
 
+class BlockingCloseBackend(FakeProbeBackend):
+    def __init__(self, *, entered: threading.Event, release: threading.Event) -> None:
+        source = fake_backend()
+        super().__init__(
+            probes=source.list_probes(),
+            memory={0x20000000: b"\x01\x02\x03\x04"},
+            registers={"r0": 7, "pc": 0x08000101},
+        )
+        self._close_entered = entered
+        self._close_release = release
+
+    def close(self) -> None:
+        self._close_entered.set()
+        self._close_release.wait()
+        super().close()
+
+
 def test_service_binds_loopback_dynamic_port_and_publishes_private_endpoint(tmp_path: Path):
     async def scenario():
         service = make_service(tmp_path)
@@ -129,6 +151,317 @@ def test_service_binds_loopback_dynamic_port_and_publishes_private_endpoint(tmp_
             if os.name != "nt":
                 assert stat.S_IMODE(endpoint.record_path.stat().st_mode) == 0o600
         finally:
+            await service.stop()
+
+    run(scenario())
+
+
+def test_cancelled_start_closes_bound_port_and_can_retry(
+    tmp_path: Path, monkeypatch
+) -> None:
+    async def scenario() -> None:
+        service = make_service(tmp_path)
+        entered = asyncio.Event()
+        bound_port: list[int] = []
+        captured_runners = []
+        calls = 0
+        original_start = web.TCPSite.start
+
+        async def phased_start(site) -> None:
+            nonlocal calls
+            calls += 1
+            await original_start(site)
+            if calls == 1:
+                captured_runners.append(site._runner)
+                bound_port.append(int(site._runner.addresses[0][1]))
+                entered.set()
+                await asyncio.Event().wait()
+
+        monkeypatch.setattr(web.TCPSite, "start", phased_start)
+        starting = asyncio.create_task(service.start())
+        await entered.wait()
+        starting.cancel()
+        try:
+            with pytest.raises(asyncio.CancelledError):
+                await starting
+
+            assert service.endpoint is None
+            assert not lease_manager(tmp_path / "plugin-data").record_path(
+                "probe-a"
+            ).exists()
+            with pytest.raises(OSError):
+                await asyncio.wait_for(
+                    asyncio.open_connection("127.0.0.1", bound_port[0]), timeout=0.5
+                )
+
+            endpoint = await service.start()
+            assert endpoint.host == "127.0.0.1"
+            assert endpoint.record_path.exists()
+            await service.stop()
+        finally:
+            for runner in captured_runners:
+                await runner.cleanup()
+
+    run(scenario())
+
+
+def test_cancelled_stop_finishes_cleanup_before_propagating(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        entered = threading.Event()
+        release = threading.Event()
+        backend = BlockingCloseBackend(entered=entered, release=release)
+        service = make_service(tmp_path, backend=backend)
+        endpoint = await service.start()
+        stopping = asyncio.create_task(service.stop())
+        assert await asyncio.to_thread(entered.wait, 2)
+
+        stopping.cancel()
+        await asyncio.sleep(0)
+        remained_pending = not stopping.done()
+        retained_endpoint = service.endpoint is endpoint
+        retained_record = endpoint.record_path.exists()
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await stopping
+        await service.stop()
+
+        assert remained_pending
+        assert retained_endpoint
+        assert retained_record
+        assert backend.closed is True
+        assert service.endpoint is None
+        assert not endpoint.record_path.exists()
+        lease_record = json.loads(
+            lease_manager(tmp_path / "plugin-data")
+            .record_path("probe-a")
+            .read_text(encoding="utf-8")
+        )
+        assert lease_record == {
+            "leaseId": endpoint.lease_id,
+            "schemaVersion": 1,
+            "state": "released",
+        }
+        with pytest.raises(OSError):
+            await asyncio.wait_for(
+                asyncio.open_connection(endpoint.host, endpoint.port), timeout=0.5
+            )
+        await service.stop()
+
+    run(scenario())
+
+
+def test_drain_closes_modify_gate_before_await_and_preserves_observe(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        backend = fake_backend()
+        project_root = tmp_path / "project"
+        project_root.mkdir()
+        firmware = project_root / "firmware.elf"
+        firmware.write_bytes(b"firmware")
+        entered = threading.Event()
+        release = threading.Event()
+        original_flash = backend.flash_elf
+
+        def blocking_flash(image: bytes):
+            entered.set()
+            release.wait()
+            return original_flash(image)
+
+        backend.flash_elf = blocking_flash
+        service = make_service(
+            tmp_path,
+            level=OperationLevel.MODIFY,
+            backend=backend,
+            project_root=project_root,
+        )
+        endpoint = await service.start()
+        first_client = ProbeClient(endpoint)
+        second_client = ProbeClient(endpoint)
+        await first_client.attach("probe-a", "STM32F429ZITx")
+        first = asyncio.create_task(
+            first_client.program_verified_elf(
+                "firmware.elf", hashlib.sha256(b"firmware").hexdigest(), 8
+            )
+        )
+        assert await asyncio.to_thread(entered.wait, 2)
+        try:
+            drain = service.drain_modifications()
+            with pytest.raises(ProbeClientError) as error:
+                await second_client.program_verified_elf(
+                    "firmware.elf", hashlib.sha256(b"firmware").hexdigest(), 8
+                )
+            assert error.value.code == "PROBE_MODIFICATIONS_DRAINING"
+            assert backend.flashed_images == []
+
+            draining = asyncio.create_task(drain)
+            await asyncio.sleep(0)
+            assert not draining.done()
+            release.set()
+            assert await first == FlashBackendReport(1024, 2)
+            await draining
+            assert backend.flashed_images == [b"firmware"]
+
+            await second_client.attach("probe-a", "STM32F429ZITx")
+            assert (
+                await second_client.read_memory(0x20000000, 4)
+                == b"\x01\x02\x03\x04"
+            )
+            with pytest.raises(ProbeClientError) as error:
+                await second_client.program_verified_elf(
+                    "firmware.elf", hashlib.sha256(b"firmware").hexdigest(), 8
+                )
+            assert error.value.code == "PROBE_MODIFICATIONS_DRAINING"
+            assert backend.flashed_images == [b"firmware"]
+        finally:
+            release.set()
+            await asyncio.gather(first, return_exceptions=True)
+            await first_client.close()
+            await second_client.close()
+            await service.stop()
+
+    run(scenario())
+
+
+def test_cancelled_drain_keeps_gate_closed_without_cancelling_inflight_flash(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        backend = fake_backend()
+        project_root = tmp_path / "project"
+        project_root.mkdir()
+        (project_root / "firmware.elf").write_bytes(b"firmware")
+        entered = threading.Event()
+        release = threading.Event()
+        original_flash = backend.flash_elf
+
+        def blocking_flash(image: bytes):
+            entered.set()
+            release.wait()
+            return original_flash(image)
+
+        backend.flash_elf = blocking_flash
+        service = make_service(
+            tmp_path,
+            level=OperationLevel.MODIFY,
+            backend=backend,
+            project_root=project_root,
+        )
+        endpoint = await service.start()
+        client = ProbeClient(endpoint)
+        await client.attach("probe-a", "STM32F429ZITx")
+        first = asyncio.create_task(
+            client.program_verified_elf(
+                "firmware.elf", hashlib.sha256(b"firmware").hexdigest(), 8
+            )
+        )
+        assert await asyncio.to_thread(entered.wait, 2)
+        try:
+            draining = asyncio.create_task(service.drain_modifications())
+            await asyncio.sleep(0)
+            draining.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await draining
+
+            with pytest.raises(ProbeClientError) as error:
+                await client.program_verified_elf(
+                    "firmware.elf", hashlib.sha256(b"firmware").hexdigest(), 8
+                )
+            assert error.value.code == "PROBE_MODIFICATIONS_DRAINING"
+            assert not first.done()
+
+            release.set()
+            assert await first == FlashBackendReport(1024, 2)
+            assert backend.flashed_images == [b"firmware"]
+        finally:
+            release.set()
+            await asyncio.gather(first, return_exceptions=True)
+            await client.close()
+            await service.stop()
+
+    run(scenario())
+
+
+def test_drain_waits_for_failed_inflight_flash_without_propagating_its_error(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        backend = fake_backend()
+        project_root = tmp_path / "project"
+        project_root.mkdir()
+        (project_root / "firmware.elf").write_bytes(b"firmware")
+        entered = threading.Event()
+        release = threading.Event()
+
+        def failing_flash(image: bytes):
+            entered.set()
+            release.wait()
+            raise ProbeBackendError("PROBE_FLASH_FAILED", "Programming failed")
+
+        backend.flash_elf = failing_flash
+        service = make_service(
+            tmp_path,
+            level=OperationLevel.MODIFY,
+            backend=backend,
+            project_root=project_root,
+        )
+        endpoint = await service.start()
+        client = ProbeClient(endpoint)
+        await client.attach("probe-a", "STM32F429ZITx")
+        flashing = asyncio.create_task(
+            client.program_verified_elf(
+                "firmware.elf", hashlib.sha256(b"firmware").hexdigest(), 8
+            )
+        )
+        assert await asyncio.to_thread(entered.wait, 2)
+        draining = asyncio.create_task(service.drain_modifications())
+        await asyncio.sleep(0)
+        assert not draining.done()
+        try:
+            release.set()
+            with pytest.raises(ProbeClientError) as error:
+                await flashing
+            assert error.value.code == "PROBE_FLASH_FAILED"
+            await draining
+        finally:
+            release.set()
+            await asyncio.gather(flashing, draining, return_exceptions=True)
+            await client.close()
+            await service.stop()
+
+    run(scenario())
+
+
+def test_restart_same_service_reopens_modification_gate(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        backend = fake_backend()
+        project_root = tmp_path / "project"
+        project_root.mkdir()
+        (project_root / "firmware.elf").write_bytes(b"firmware")
+        service = make_service(
+            tmp_path,
+            level=OperationLevel.MODIFY,
+            backend=backend,
+            project_root=project_root,
+        )
+
+        first_endpoint = await service.start()
+        await service.drain_modifications()
+        await service.stop()
+
+        second_endpoint = await service.start()
+        client = ProbeClient(second_endpoint)
+        try:
+            assert second_endpoint.lease_id != first_endpoint.lease_id
+            await client.attach("probe-a", "STM32F429ZITx")
+            assert await client.program_verified_elf(
+                "firmware.elf", hashlib.sha256(b"firmware").hexdigest(), 8
+            ) == FlashBackendReport(1024, 2)
+            assert backend.flashed_images == [b"firmware"]
+        finally:
+            await client.close()
             await service.stop()
 
     run(scenario())
