@@ -36,6 +36,10 @@ from stm32_toolkit.project_model import load_project_model
 
 FIXTURE_ROOT = Path(__file__).parent / "fixtures" / "minimal-gcc"
 
+#: Default extra SHF_ALLOC sections that mirror the default MAP rows so the
+#: deterministic ELF and MAP evidence always agree (VMA and size).
+_DEFAULT_ALLOC_SECTIONS = ((".data", 0x20000000, 0x100, 0x3), (".bss", 0x20000100, 0x400, 0x3))
+
 # ---------------------------------------------------------------------------
 # deterministic ELF32 little-endian ARM builder (test-only)
 # ---------------------------------------------------------------------------
@@ -50,7 +54,7 @@ def build_elf_bytes(
     vector_size: int = 64,
     vector_flags: int = 0x2,
     text_addr: int = 0x08000040,
-    text_size: int = 16,
+    text_size: int = 256,
     include_vector: bool = True,
     include_symtab: bool = True,
     include_reset_symbol: bool = True,
@@ -61,14 +65,22 @@ def build_elf_bytes(
     elf_data: int = 1,
     elf_machine: int = 40,
     fixed_sections: tuple[tuple[str, int, int], ...] = (),
+    alloc_sections: tuple[tuple[str, int, int, int], ...] | None = None,
+    nonalloc_sections: tuple[tuple[str, int, int], ...] = (),
     truncate: int = 0,
 ) -> bytes:
     """Build a minimal valid ELF32 little-endian ARM image for tests.
 
     Layout: ELF header, ``.isr_vector`` (first word 0x20020000, second word
-    the reset handler), ``.text``, optional fixed ``.stm32tk.abs.*``
-    sections, ``.symtab``/``.strtab``/``.shstrtab`` and the section header
-    table.  ``truncate`` cuts the file short to emulate malformed input.
+    the reset handler), ``.text``, default ``.data``/``.bss`` SHF_ALLOC
+    sections (mirroring the default MAP rows), extra ``alloc_sections``
+    ``(name, addr, size, flags)`` and ``nonalloc_sections``
+    ``(name, addr, size)`` (flags 0, e.g. debug/comment rows at VMA 0),
+    optional fixed ``.stm32tk.abs.*`` sections,
+    ``.symtab``/``.strtab``/``.shstrtab`` and the section header table.
+    ``alloc_sections=None`` selects the default data/bss pair; an explicit
+    empty tuple omits them.  ``truncate`` cuts the file short to emulate
+    malformed input.
     """
     vector_second = reset_handler if vector_word is None else vector_word
     sections: list[dict] = []
@@ -107,6 +119,12 @@ def build_elf_bytes(
             vector_data = struct.pack("<I", 0x20020000)[:vector_size]
         add(".isr_vector", 1, vector_flags, vector_addr, vector_data)
     text_index = add(".text", 1, 0x6, text_addr, b"\x00\xbf" * (text_size // 2))
+    if alloc_sections is None:
+        alloc_sections = _DEFAULT_ALLOC_SECTIONS
+    for name, addr, size, flags in alloc_sections:
+        add(name, 1, flags, addr, b"\x00" * size)
+    for name, addr, size in nonalloc_sections:
+        add(name, 1, 0, addr, b"\x00" * size)
 
     symbol_names = ["Reset_Handler", "main", *undefined_global, *undefined_weak]
     strtab = bytearray(b"\x00")
@@ -142,7 +160,10 @@ def build_elf_bytes(
         add(name, 1, 0x2, addr, b"\x00" * size)
         fixed_names.append(name)
 
-    shstr_names = [".isr_vector", ".text", ".symtab", ".strtab", ".shstrtab"]
+    shstr_names = [".isr_vector", ".text"]
+    shstr_names.extend(section[0] for section in alloc_sections)
+    shstr_names.extend(section[0] for section in nonalloc_sections)
+    shstr_names.extend([".symtab", ".strtab", ".shstrtab"])
     shstr_names.extend(fixed_names)
     shstr_data = b"\x00" + b"\x00".join(name.encode("utf-8") for name in shstr_names) + b"\x00"
     shstrtab_index = add(".shstrtab", 3, 0, 0, shstr_data, align=1)
@@ -360,20 +381,66 @@ def fake_cmake_main(argv: list[str]) -> int:
         ]
         defect_elf = env.get("FAKE_CMAKE_ELF_DEFECT", "")
         defect_map = env.get("FAKE_CMAKE_MAP_DEFECT", "")
-        elf = build_elf_bytes(
-            text_size=int(env.get("FAKE_CMAKE_ELF_TEXT_SIZE", "16")),
-            **ELF_DEFECTS.get(defect_elf, {}),
-        )
+        text_size = int(env.get("FAKE_CMAKE_ELF_TEXT_SIZE", "256"))
+        elf_kwargs = dict(ELF_DEFECTS.get(defect_elf, {}))
+        if defect_map == "overflow":
+            # Consistent ELF/MAP evidence whose disjoint RAM LMAs overflow
+            # the writable region (ELF validation still passes first).
+            elf_kwargs["text_size"] = 0x20000
+            elf_kwargs["alloc_sections"] = ((".rodata", 0x08020040, 0x20000, 0x2),)
+        elif env.get("FAKE_CMAKE_DEBUG_MAP") == "1":
+            # GNU ld style non-alloc debug/comment sections at VMA 0; the
+            # MAP may omit their rows entirely (line wrapping) so only the
+            # ELF carries them.
+            elf_kwargs["nonalloc_sections"] = (
+                (".debug_info", 0x0, 0x1A2),
+                (".comment", 0x0, 0x2F),
+            )
+        elf = build_elf_bytes(text_size=text_size, **elf_kwargs)
         if defect_map == "malformed":
             map_text = "this is not a GNU linker map\n"
         elif defect_map == "overflow":
             map_text = build_map_text(
-                regions=regions, sections=((".text", 0x08000000, 0x200000, None),)
+                regions=regions,
+                sections=(
+                    (".isr_vector", 0x08000000, 0x40, None),
+                    (".text", 0x08000040, 0x20000, 0x20000000),
+                    (".rodata", 0x08020040, 0x20000, 0x20010000),
+                ),
+            )
+        elif defect_map == "unknown":
+            map_text = build_map_text(
+                regions=regions, sections=((".mystery", 0x08000040, 0x100, None),)
+            )
+        elif defect_map == "address":
+            map_text = build_map_text(
+                regions=regions, sections=((".text", 0x08000200, text_size, None),)
+            )
+        elif defect_map == "size":
+            map_text = build_map_text(
+                regions=regions, sections=((".text", 0x08000040, text_size + 0x10, None),)
+            )
+        elif defect_map == "missing-section":
+            map_text = build_map_text(
+                regions=regions,
+                sections=(
+                    (".isr_vector", 0x08000000, 0x40, None),
+                    (".text", 0x08000040, text_size, None),
+                    (".data", 0x20000000, 0x100, 0x08001000),
+                ),
             )
         elif defect_map == "missing":
             map_text = None
         else:
-            map_text = build_map_text(regions=regions)
+            map_text = build_map_text(
+                regions=regions,
+                sections=(
+                    (".isr_vector", 0x08000000, 0x40, None),
+                    (".text", 0x08000040, text_size, None),
+                    (".data", 0x20000000, 0x100, 0x08001000),
+                    (".bss", 0x20000100, 0x400, None),
+                ),
+            )
         with open(elf_path, "wb") as handle:
             handle.write(elf)
         if map_text is not None:
@@ -1062,23 +1129,131 @@ def test_map_invalid_publishes_failure(tmp_path: Path, monkeypatch: pytest.Monke
     assert not identity_path_for(root).exists()
 
 
-def test_map_overflow_returns_flash_overflow(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+def test_map_overflow_returns_ram_overflow(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """Overflow is still detected with ELF-backed evidence: disjoint RAM
+    LMA intervals of consistent FLASH sections exceed the writable region."""
     root = prepare_project(tmp_path)
     install_fake_cmake(monkeypatch, tmp_path, env={"FAKE_CMAKE_MAP_DEFECT": "overflow"})
     result = run_build(BuildRequest(project_root=root, preset="arm-debug"))
     assert result.ok is False
-    assert result.code == "FLASH_OVERFLOW"
+    assert result.code == "RAM_OVERFLOW"
     assert result.details == {
-        "region": "FLASH",
-        "used": 2097152,
-        "length": 1048576,
-        "overflow": 1048576,
+        "region": "RAM",
+        "used": 196608,
+        "length": 131072,
+        "overflow": 65536,
     }
     failure = read_json(result_path_for(root))
-    assert failure["code"] == "FLASH_OVERFLOW"
+    assert failure["code"] == "RAM_OVERFLOW"
 
 
-def test_elf_invalid_returns_artifact_invalid(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+def test_map_unknown_section_not_in_elf_is_rejected(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    root = prepare_project(tmp_path)
+    install_fake_cmake(monkeypatch, tmp_path, env={"FAKE_CMAKE_MAP_DEFECT": "unknown"})
+    result = run_build(BuildRequest(project_root=root, preset="arm-debug"))
+    assert result.ok is False
+    assert result.code == "BUILD_MAP_INVALID"
+    assert result.details == {"path": "build/arm-debug/firmware.map", "rule": "unknown"}
+    failure = read_json(result_path_for(root))
+    assert failure["code"] == "BUILD_MAP_INVALID"
+
+
+def test_map_elf_address_mismatch_is_rejected(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    root = prepare_project(tmp_path)
+    install_fake_cmake(monkeypatch, tmp_path, env={"FAKE_CMAKE_MAP_DEFECT": "address"})
+    result = run_build(BuildRequest(project_root=root, preset="arm-debug"))
+    assert result.ok is False
+    assert result.code == "BUILD_MAP_INVALID"
+    assert result.details == {"path": "build/arm-debug/firmware.map", "rule": "address"}
+
+
+def test_map_elf_size_mismatch_is_rejected(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    root = prepare_project(tmp_path)
+    install_fake_cmake(monkeypatch, tmp_path, env={"FAKE_CMAKE_MAP_DEFECT": "size"})
+    result = run_build(BuildRequest(project_root=root, preset="arm-debug"))
+    assert result.ok is False
+    assert result.code == "BUILD_MAP_INVALID"
+    assert result.details == {"path": "build/arm-debug/firmware.map", "rule": "size"}
+
+
+def test_alloc_elf_section_missing_from_map_is_rejected(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    root = prepare_project(tmp_path)
+    install_fake_cmake(
+        monkeypatch, tmp_path, env={"FAKE_CMAKE_MAP_DEFECT": "missing-section"}
+    )
+    result = run_build(BuildRequest(project_root=root, preset="arm-debug"))
+    assert result.ok is False
+    assert result.code == "BUILD_MAP_INVALID"
+    assert result.details == {"path": "build/arm-debug/firmware.map", "rule": "missing"}
+
+
+def test_non_alloc_elf_sections_absent_from_map_are_allowed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """GNU ld may omit debug rows; ELF debug/comment sections at VMA 0 are
+    neither required in the MAP nor counted in memory."""
+    root = prepare_project(tmp_path)
+    install_fake_cmake(monkeypatch, tmp_path, env={"FAKE_CMAKE_DEBUG_MAP": "1"})
+    result = run_build(BuildRequest(project_root=root, preset="arm-debug"))
+    assert result.ok is True
+    assert [item.to_dict() for item in result.data.memory] == [
+        {
+            "name": "FLASH",
+            "origin": 0x08000000,
+            "length": 0x100000,
+            "used": 0x240,
+            "free": 0x100000 - 0x240,
+        },
+        {
+            "name": "RAM",
+            "origin": 0x20000000,
+            "length": 0x20000,
+            "used": 0x500,
+            "free": 0x20000 - 0x500,
+        },
+    ]
+
+
+def test_runner_orders_elf_validation_before_map_accounting(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """The ELF is fully validated first and its section evidence is handed
+    to MAP accounting for the allocation classification."""
+    root = prepare_project(tmp_path)
+    install_fake_cmake(monkeypatch, tmp_path)
+    import stm32_toolkit.build.runner as runner_mod
+
+    calls: list[str] = []
+    real_validate_elf = runner_mod.validate_elf
+    real_parse_map = runner_mod.parse_map
+
+    def spy_validate_elf(path, model):
+        calls.append("elf")
+        return real_validate_elf(path, model)
+
+    def spy_parse_map(text, regions, **kwargs):
+        calls.append("map")
+        assert kwargs.get("elf_sections") is not None
+        return real_parse_map(text, regions, **kwargs)
+
+    monkeypatch.setattr(runner_mod, "validate_elf", spy_validate_elf)
+    monkeypatch.setattr(runner_mod, "parse_map", spy_parse_map)
+    result = run_build(BuildRequest(project_root=root, preset="arm-debug"))
+    assert result.ok is True
+    assert calls == ["elf", "map"]
+
+
+def test_elf_invalid_returns_artifact_invalid(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
     root = prepare_project(tmp_path)
     install_fake_cmake(monkeypatch, tmp_path, env={"FAKE_CMAKE_ELF_DEFECT": "no-vector"})
     result = run_build(BuildRequest(project_root=root, preset="arm-debug"))

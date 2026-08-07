@@ -373,6 +373,34 @@ def test_validate_elf_accepts_fixed_section_at_encoded_address(tmp_path: Path):
     assert evidence.sha256
 
 
+def test_validate_elf_evidence_classifies_alloc_and_non_alloc_sections(tmp_path: Path):
+    """ELF section evidence carries name, address, size, and SHF_ALLOC so
+    MAP accounting can classify every output section from ELF flags."""
+    root = prepare_project(tmp_path, git_repo=False)
+    model = model_for(root)
+    elf_path = root / "firmware.elf"
+    elf_path.write_bytes(
+        build_elf_bytes(
+            nonalloc_sections=((".debug_info", 0x0, 0x1A2),),
+            alloc_sections=((".rodata", 0x08000040, 0x100, 0x2),),
+        )
+    )
+    evidence = validate_elf(elf_path, model)
+    by_name = {section.name: section for section in evidence.sections}
+    assert by_name[".isr_vector"].alloc is True
+    assert by_name[".isr_vector"].address == 0x08000000
+    assert by_name[".isr_vector"].size == 64
+    assert by_name[".text"].alloc is True
+    assert by_name[".rodata"].alloc is True
+    assert by_name[".data"].alloc is True
+    assert by_name[".bss"].alloc is True
+    assert by_name[".debug_info"].alloc is False
+    assert by_name[".debug_info"].address == 0
+    assert by_name[".symtab"].alloc is False
+    with pytest.raises(AttributeError):
+        by_name[".text"].size = 1  # type: ignore[misc]
+
+
 @pytest.mark.parametrize(
     ("defect", "rule"),
     [
