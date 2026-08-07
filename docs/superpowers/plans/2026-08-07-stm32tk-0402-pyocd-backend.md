@@ -14,7 +14,10 @@
 - Develop only on `codex/STM32TK-0402-PYOCD-BACKEND`; do not edit or commit on `master`.
 - The Probe Service remains the only owner of a PyOCD Session; no CLI, MCP, Monitor, test, or helper may open another hardware path.
 - Probe selection is exact and case-sensitive. Empty IDs, partial IDs, wildcard-like IDs, no match, and duplicate exact IDs fail with structured codes.
-- Every session uses `connect_mode=attach`, `auto_unlock=false`, `resume_on_disconnect=false`, `no_config=true`, an explicit target override, and an inert explicit user script. Observation must not halt on connect.
+- Every session uses `connect_mode=attach`, `dap_protocol=swd`, `auto_unlock=false`, `resume_on_disconnect=false`, `no_config=true`, `pack.debug_sequences.enable=false`, `primary_core=0`, an explicit target override, and an inert explicit user script. Observation must not intentionally halt, reset, unlock, or erase on connect.
+- PyOCD 0.45.1 `Session.open()` necessarily enables the debug port and may initialize a target; this packet promises non-halting attach, not a physically side-effect-free debug connection. Runtime register reads require an already halted core and never halt implicitly.
+- Passive enumeration does not query `associated_board_info`, because the CMSIS-DAP implementation may temporarily open hardware merely to populate that property. Displayed board name is therefore absent until a later attached evidence path owns the session.
+- A failed Session/probe cleanup prevents replacement attach. A failed partial open directly closes a probe still reported open, and multi-core targets are rejected until a later packet defines explicit core selection.
 - Do not signal or terminate any process. Do not invoke `Stop-Process`, `taskkill`, `pkill`, `kill`, or a PyOCD command-line subprocess.
 - No Option Bytes, arbitrary writes, chip erase, flash, or public control operations are added in this packet. The adapter's flash method fails closed until `STM32TK-0403-FLASH-HANDOFF` supplies identity and authorization gates.
 - Backend methods independently bound addresses, read lengths, register batches, identifiers, and text even when the authenticated protocol has already validated them.
@@ -129,8 +132,11 @@
   assert driver.created_sessions[0].options == {
       "auto_unlock": False,
       "connect_mode": "attach",
+      "dap_protocol": "swd",
       "frequency": 1_000_000,
       "no_config": True,
+      "pack.debug_sequences.enable": False,
+      "primary_core": 0,
       "project_dir": os.getcwd(),
       "resume_on_disconnect": False,
       "target_override": "stm32f407vg",
@@ -179,7 +185,7 @@
 - Consumes: `ProbeService`, `ProbeLeaseManager`, `OperationLevel`, and a zero-argument `backend_factory`.
 - Produces: `ProbeServiceConfig` and `ProbeServiceSupervisor.start()/stop()/endpoint`, plus async context-manager support.
 
-- [ ] **Step 1: Write lifecycle RED tests**
+- [x] **Step 1: Write lifecycle RED tests**
 
   Cover concurrent/idempotent start, idempotent stop, restart with a new endpoint/lease, backend-factory failure, service-start failure cleanup, context-manager cleanup after cancellation, and stop after a backend close error. Start an unrelated sleeping Python subprocess as a sentinel, exercise supervisor start/stop, and assert the sentinel remains alive until the test itself terminates it.
 
@@ -201,23 +207,23 @@
   endpoint = await supervisor.start()
   ```
 
-- [ ] **Step 2: Run supervisor tests and verify RED**
+- [x] **Step 2: Run supervisor tests and verify RED**
 
   Run: `C:\tmp\stm32tk-0402-venv\Scripts\python.exe -m pytest tools/stm32-toolkit/tests/test_probe_supervisor.py -q`
 
   Expected: collection fails because `stm32_toolkit.probe.supervisor` does not exist.
 
-- [ ] **Step 3: Implement owned-object supervision**
+- [x] **Step 3: Implement owned-object supervision**
 
   Use one `asyncio.Lock` to serialize lifecycle transitions. `start()` creates one backend and one `ProbeService`, publishes state only after `service.start()` succeeds, and closes the newly created backend if any startup step fails. `stop()` clears supervisor references before awaiting service shutdown, calls backend close only when no service ever owned it, and returns safely when already stopped. It never enumerates OS processes or invokes a subprocess.
 
-- [ ] **Step 4: Run lifecycle and service integration tests GREEN**
+- [x] **Step 4: Run lifecycle and service integration tests GREEN**
 
   Run: `C:\tmp\stm32tk-0402-venv\Scripts\python.exe -m pytest tools/stm32-toolkit/tests/test_probe_supervisor.py tools/stm32-toolkit/tests/test_probe_service.py tools/stm32-toolkit/tests/test_probe_client.py -q`
 
   Expected: all selected tests pass and the sentinel-process assertion proves unrelated ownership is preserved.
 
-- [ ] **Step 5: Commit supervision**
+- [x] **Step 5: Commit supervision**
 
   ```powershell
   git add tools/stm32-toolkit/src/stm32_toolkit/probe/supervisor.py tools/stm32-toolkit/src/stm32_toolkit/probe/__init__.py tools/stm32-toolkit/tests/test_probe_supervisor.py
@@ -235,11 +241,11 @@
 - Consumes: the completed adapter and supervisor.
 - Produces: installable `stm32-toolkit[probe]`, exact package evidence, a reviewed Codex branch, and a truthful implementation report.
 
-- [ ] **Step 1: Add package/import RED coverage**
+- [x] **Step 1: Add package/import RED coverage**
 
   Add a test proving ordinary `import stm32_toolkit.probe` does not import `pyocd`, while constructing the default backend without the optional dependency returns `PROBE_BACKEND_UNAVAILABLE`. Add a subprocess smoke that imports and enumerates through installed PyOCD 0.45.1; zero connected probes is a valid structured empty result, not a real-hardware PASS.
 
-- [ ] **Step 2: Add the optional dependency and exports**
+- [x] **Step 2: Add the optional dependency and exports**
 
   Add exactly:
 

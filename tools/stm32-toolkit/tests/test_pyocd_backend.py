@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import os
+import subprocess
+import sys
 
 import pytest
 
@@ -55,7 +57,7 @@ def test_list_probes_returns_bounded_deterministic_descriptors():
             "probeId": "probe-z",
             "vendor": "STMicroelectronics",
             "product": "ST-LINK/V3",
-            "boardName": "NUCLEO-F429ZI",
+            "boardName": None,
         },
     ]
 
@@ -141,8 +143,11 @@ def test_exact_attach_uses_observation_only_session_options_without_halting():
     assert session.options == {
         "auto_unlock": False,
         "connect_mode": "attach",
+        "dap_protocol": "swd",
         "frequency": 1_000_000,
         "no_config": True,
+        "pack.debug_sequences.enable": False,
+        "primary_core": 0,
         "project_dir": os.getcwd(),
         "resume_on_disconnect": False,
         "target_override": "stm32f407vg",
@@ -192,6 +197,8 @@ def test_session_open_failure_closes_once_and_leaves_backend_detached():
     assert error.value.details == {"probeId": "probe-a", "target": "stm32f407vg"}
     assert "secret" not in str(error.value)
     assert driver.created_sessions[0].close_count == 1
+    assert driver.probes[0].close_count == 1
+    assert driver.probes[0].is_open is False
     with pytest.raises(ProbeBackendError) as detached:
         backend.read_memory(0x20000000, 4)
     assert detached.value.code == "PROBE_NOT_ATTACHED"
@@ -222,6 +229,46 @@ def test_replacing_an_attachment_closes_the_previous_session():
     assert first.close_count == 1
     assert len(driver.created_sessions) == 2
     assert driver.created_sessions[1].open_count == 1
+
+
+def test_failed_cleanup_prevents_opening_a_replacement_session():
+    driver = FakePyOCDDriver(
+        (FakePyOCDProbe("probe-a"), FakePyOCDProbe("probe-b"))
+    )
+    backend = PyOCDBackend(driver)
+    backend.open_attach("probe-a", "stm32f407vg")
+    driver.created_sessions[0].close_error = RuntimeError("close failed")
+
+    with pytest.raises(ProbeBackendError) as error:
+        backend.open_attach("probe-b", "stm32f429zi")
+
+    assert error.value.code == "PROBE_CLOSE_FAILED"
+    assert len(driver.created_sessions) == 1
+
+
+def test_failed_open_and_failed_direct_probe_cleanup_report_close_failure():
+    probe = FakePyOCDProbe("probe-a")
+    probe.close_error = RuntimeError("probe close failed")
+    driver = FakePyOCDDriver((probe,))
+    driver.session_open_error = RuntimeError("session open failed")
+
+    with pytest.raises(ProbeBackendError) as error:
+        PyOCDBackend(driver).open_attach("probe-a", "stm32f407vg")
+
+    assert error.value.code == "PROBE_CLOSE_FAILED"
+    assert probe.is_open is True
+
+
+def test_multicore_target_is_rejected_instead_of_selecting_an_implicit_core():
+    target = FakePyOCDTarget()
+    target.cores[1] = object()
+    driver = FakePyOCDDriver((FakePyOCDProbe("probe-a"),), target=target)
+
+    with pytest.raises(ProbeBackendError) as error:
+        PyOCDBackend(driver).open_attach("probe-a", "stm32h745xi")
+
+    assert error.value.code == "PROBE_TARGET_AMBIGUOUS"
+    assert driver.created_sessions[0].close_count == 1
 
 
 @pytest.mark.parametrize(
@@ -323,11 +370,26 @@ def test_registers_are_read_individually_and_one_failure_does_not_detach():
     assert error.value.code == "PROBE_REGISTER_UNAVAILABLE"
     assert error.value.details == {"name": "pc"}
     assert target.calls == [
+        ("get_state",),
         ("read_core_registers_raw", ("r0",)),
         ("read_core_registers_raw", ("pc",)),
     ]
     target.register_errors.clear()
     assert backend.read_core_registers(("pc",)) == {"pc": 0x08000101}
+
+
+def test_running_target_register_read_fails_without_implicit_halt():
+    target = FakePyOCDTarget(registers={"pc": 0x08000101}, state="running")
+    driver = FakePyOCDDriver((FakePyOCDProbe("probe-a"),), target=target)
+    backend = PyOCDBackend(driver)
+    backend.open_attach("probe-a", "stm32f407vg")
+
+    with pytest.raises(ProbeBackendError) as error:
+        backend.read_core_registers(("pc",))
+
+    assert error.value.code == "PROBE_REGISTER_UNAVAILABLE"
+    assert error.value.details == {"state": "running"}
+    assert target.calls == [("get_state",)]
 
 
 def test_control_methods_delegate_but_flash_fails_closed():
@@ -347,16 +409,76 @@ def test_control_methods_delegate_but_flash_fails_closed():
     assert target.calls == [("halt",), ("resume",), ("step",), ("reset",)]
 
 
-def test_close_is_idempotent_and_external_close_failure_does_not_retain_state():
+def test_close_failure_is_structured_idempotent_and_does_not_retain_state():
     driver = FakePyOCDDriver((FakePyOCDProbe("probe-a"),))
     driver.session_close_error = RuntimeError(r"close failed C:\secret")
     backend = PyOCDBackend(driver)
     backend.open_attach("probe-a", "stm32f407vg")
 
-    backend.close()
+    with pytest.raises(ProbeBackendError) as close_error:
+        backend.close()
     backend.close()
 
+    assert close_error.value.code == "PROBE_CLOSE_FAILED"
     assert driver.created_sessions[0].close_count == 1
+    assert driver.probes[0].close_count == 1
     with pytest.raises(ProbeBackendError) as error:
         backend.read_memory(0, 1)
     assert error.value.code == "PROBE_NOT_ATTACHED"
+
+
+def test_board_metadata_property_is_not_opened_during_passive_enumeration():
+    class ProbeWithExplosiveBoardInfo(FakePyOCDProbe):
+        @property
+        def associated_board_info(self):
+            raise RuntimeError("USB must not be opened for board metadata")
+
+        @associated_board_info.setter
+        def associated_board_info(self, value):
+            pass
+
+    probe = ProbeWithExplosiveBoardInfo("probe-a")
+
+    assert PyOCDBackend(FakePyOCDDriver((probe,))).list_probes()[0].board_name is None
+
+
+def test_public_probe_import_exports_backend_without_importing_pyocd():
+    code = """
+import sys
+from stm32_toolkit.probe import PyOCDBackend, ProbeServiceConfig, ProbeServiceSupervisor
+assert PyOCDBackend.__name__ == "PyOCDBackend"
+assert ProbeServiceConfig.__name__ == "ProbeServiceConfig"
+assert ProbeServiceSupervisor.__name__ == "ProbeServiceSupervisor"
+assert not any(name == "pyocd" or name.startswith("pyocd.") for name in sys.modules)
+"""
+
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+
+    assert result.returncode == 0, result.stderr
+
+
+def test_missing_optional_dependency_is_a_stable_backend_failure(monkeypatch):
+    import builtins
+
+    real_import = builtins.__import__
+
+    def blocked_import(name, globals=None, locals=None, fromlist=(), level=0):
+        if name == "pyocd" or name.startswith("pyocd."):
+            raise ModuleNotFoundError("blocked optional dependency")
+        return real_import(name, globals, locals, fromlist, level)
+
+    monkeypatch.setattr(builtins, "__import__", blocked_import)
+    backend = PyOCDBackend()
+
+    with pytest.raises(ProbeBackendError) as error:
+        backend.list_probes()
+
+    assert error.value.code == "PROBE_BACKEND_UNAVAILABLE"
+    assert error.value.message == "PyOCD support is not installed"
+    assert error.value.details == {}

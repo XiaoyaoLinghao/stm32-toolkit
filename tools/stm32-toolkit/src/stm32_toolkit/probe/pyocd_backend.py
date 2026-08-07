@@ -94,6 +94,7 @@ class PyOCDBackend:
         self._driver = driver
         self._frequency_hz = frequency_hz
         self._session: object | None = None
+        self._probe: object | None = None
         self._target: object | None = None
         self._probe_id: str | None = None
         self._target_name: str | None = None
@@ -115,7 +116,13 @@ class PyOCDBackend:
                 "PROBE_ENUMERATION_FAILED", "Debug probe enumeration failed"
             ) from error
         for probe in probes:
-            if not _valid_identifier(getattr(probe, "unique_id", None)):
+            try:
+                probe_id = getattr(probe, "unique_id", None)
+            except Exception as error:
+                raise ProbeBackendError(
+                    "PROBE_DESCRIPTOR_INVALID", "Debug probe descriptor is invalid"
+                ) from error
+            if not _valid_identifier(probe_id):
                 raise ProbeBackendError(
                     "PROBE_DESCRIPTOR_INVALID", "Debug probe descriptor is invalid"
                 )
@@ -123,24 +130,22 @@ class PyOCDBackend:
 
     @staticmethod
     def _descriptor(probe: object) -> ProbeDescriptor:
-        probe_id = getattr(probe, "unique_id", None)
+        try:
+            probe_id = getattr(probe, "unique_id", None)
+            vendor_value = getattr(probe, "vendor_name", None)
+            product_value = getattr(probe, "product_name", None)
+            if product_value is None:
+                product_value = getattr(probe, "description", None)
+        except Exception as error:
+            raise ProbeBackendError(
+                "PROBE_DESCRIPTOR_INVALID", "Debug probe descriptor is invalid"
+            ) from error
         if not _valid_identifier(probe_id):
             raise ProbeBackendError(
                 "PROBE_DESCRIPTOR_INVALID", "Debug probe descriptor is invalid"
             )
-        vendor = _display_text(
-            getattr(probe, "vendor_name", None), fallback="Unknown"
-        )
-        product_value = getattr(probe, "product_name", None)
-        if product_value is None:
-            product_value = getattr(probe, "description", None)
+        vendor = _display_text(vendor_value, fallback="Unknown")
         product = _display_text(product_value, fallback="Unknown")
-        board_info = getattr(probe, "associated_board_info", None)
-        board_name = (
-            None
-            if board_info is None
-            else _display_text(getattr(board_info, "name", None), fallback=None)
-        )
         assert isinstance(probe_id, str)
         assert isinstance(vendor, str)
         assert isinstance(product, str)
@@ -148,7 +153,7 @@ class PyOCDBackend:
             probe_id=probe_id,
             vendor=vendor,
             product=product,
-            board_name=board_name,
+            board_name=None,
         )
 
     def list_probes(self) -> tuple[ProbeDescriptor, ...]:
@@ -156,11 +161,16 @@ class PyOCDBackend:
         return tuple(sorted(descriptors, key=lambda item: item.probe_id))
 
     def _select_probe(self, probe_id: str) -> object:
-        matches = tuple(
-            probe
-            for probe in self._enumerate_raw()
-            if getattr(probe, "unique_id", None) == probe_id
-        )
+        matches: list[object] = []
+        for probe in self._enumerate_raw():
+            try:
+                candidate = getattr(probe, "unique_id", None)
+            except Exception as error:
+                raise ProbeBackendError(
+                    "PROBE_DESCRIPTOR_INVALID", "Debug probe descriptor is invalid"
+                ) from error
+            if candidate == probe_id:
+                matches.append(probe)
         if not matches:
             raise ProbeBackendError(
                 "PROBE_NOT_FOUND", "Selected debug probe is unavailable"
@@ -173,11 +183,32 @@ class PyOCDBackend:
         return matches[0]
 
     @staticmethod
-    def _quiet_close(session: object) -> None:
+    def _close_external(session: object, probe: object) -> None:
+        close_error: Exception | None = None
         try:
             getattr(session, "close")()
+        except Exception as error:
+            close_error = error
+        try:
+            probe_is_open = bool(getattr(probe, "is_open", False))
+        except Exception as error:
+            probe_is_open = True
+            if close_error is None:
+                close_error = error
+        if probe_is_open:
+            try:
+                getattr(probe, "close")()
+            except Exception as error:
+                if close_error is None:
+                    close_error = error
+        try:
+            still_open = bool(getattr(probe, "is_open", False))
         except Exception:
-            pass
+            still_open = True
+        if close_error is not None or still_open:
+            raise ProbeBackendError(
+                "PROBE_CLOSE_FAILED", "Debug probe cleanup failed"
+            ) from close_error
 
     def open_attach(
         self, probe_id: str, target: str, *, halt_on_connect: bool = False
@@ -199,8 +230,11 @@ class PyOCDBackend:
         options: dict[str, object] = {
             "auto_unlock": False,
             "connect_mode": "attach",
+            "dap_protocol": "swd",
             "frequency": self._frequency_hz,
             "no_config": True,
+            "pack.debug_sequences.enable": False,
+            "primary_core": 0,
             "project_dir": os.getcwd(),
             "resume_on_disconnect": False,
             "target_override": target,
@@ -216,13 +250,22 @@ class PyOCDBackend:
                 raise ProbeBackendError(
                     "PROBE_TARGET_UNAVAILABLE", "Selected target is unavailable"
                 )
+            cores = getattr(session_target, "cores", None)
+            if not isinstance(cores, Mapping) or len(cores) != 1:
+                raise ProbeBackendError(
+                    "PROBE_TARGET_AMBIGUOUS",
+                    "Selected target does not resolve to exactly one core",
+                )
         except ProbeBackendError:
             if session is not None:
-                self._quiet_close(session)
+                self._close_external(session, probe)
             raise
         except Exception as error:
             if session is not None:
-                self._quiet_close(session)
+                try:
+                    self._close_external(session, probe)
+                except ProbeBackendError:
+                    raise
             raise ProbeBackendError(
                 "PROBE_ATTACH_FAILED",
                 "Debug probe attach failed",
@@ -231,6 +274,7 @@ class PyOCDBackend:
 
         self._session = session
         self._target = session_target
+        self._probe = probe
         self._probe_id = probe_id
         self._target_name = target
 
@@ -305,6 +349,27 @@ class PyOCDBackend:
     def read_core_registers(self, names: tuple[str, ...]) -> Mapping[str, int]:
         self._validate_register_names(names)
         target = self._require_target()
+        try:
+            state = getattr(target, "get_state")()
+            raw_state = getattr(state, "name", state)
+            state_name = str(raw_state).lower()
+            if state_name not in {
+                "halted",
+                "running",
+                "reset",
+                "sleeping",
+                "lockedup",
+                "programming",
+            }:
+                state_name = "unknown"
+        except Exception:
+            state_name = "unknown"
+        if state_name != "halted":
+            raise ProbeBackendError(
+                "PROBE_REGISTER_UNAVAILABLE",
+                "Core registers require an already halted target",
+                {"state": state_name},
+            )
         values: dict[str, int] = {}
         for name in names:
             try:
@@ -358,9 +423,9 @@ class PyOCDBackend:
 
     def close(self) -> None:
         session, self._session = self._session, None
+        probe, self._probe = self._probe, None
         self._target = None
         self._probe_id = None
         self._target_name = None
-        if session is not None:
-            self._quiet_close(session)
-
+        if session is not None and probe is not None:
+            self._close_external(session, probe)

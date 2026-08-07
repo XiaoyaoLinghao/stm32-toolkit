@@ -30,6 +30,15 @@ class FakePyOCDProbe:
         self.description = description
         self.associated_board_info = board_info
         self.session: object | None = None
+        self.is_open = False
+        self.close_count = 0
+        self.close_error: BaseException | None = None
+
+    def close(self) -> None:
+        self.close_count += 1
+        if self.close_error is not None:
+            raise self.close_error
+        self.is_open = False
 
 
 _DEFAULT_MEMORY_RESULT = object()
@@ -41,9 +50,12 @@ class FakePyOCDTarget:
         *,
         memory: Mapping[int, bytes] | None = None,
         registers: Mapping[str, int] | None = None,
+        state: object = "halted",
     ) -> None:
         self.memory = {address: bytes(data) for address, data in (memory or {}).items()}
         self.registers = dict(registers or {})
+        self.state = state
+        self.cores: dict[int, object] = {0: self}
         self.calls: list[tuple[object, ...]] = []
         self.memory_result: object = _DEFAULT_MEMORY_RESULT
         self.memory_error: BaseException | None = None
@@ -71,6 +83,10 @@ class FakePyOCDTarget:
         if name not in self.registers:
             raise RuntimeError("fake register is unavailable")
         return [self.registers[name]]
+
+    def get_state(self) -> object:
+        self.calls.append(("get_state",))
+        return self.state
 
     def halt(self) -> None:
         self.calls.append(("halt",))
@@ -108,13 +124,17 @@ class FakePyOCDSession:
 
     def open(self) -> None:
         self.open_count += 1
+        self.probe.is_open = True
         if self.open_error is not None:
             raise self.open_error
 
     def close(self) -> None:
         self.close_count += 1
+        if self.open_error is not None:
+            return
         if self.close_error is not None:
             raise self.close_error
+        self.probe.is_open = False
 
 
 _DEFAULT_TARGET = object()

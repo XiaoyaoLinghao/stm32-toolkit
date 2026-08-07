@@ -39,6 +39,24 @@ def fake_backend() -> FakeProbeBackend:
     )
 
 
+class AlwaysFailingCloseBackend(FakeProbeBackend):
+    def __init__(self) -> None:
+        source = fake_backend()
+        super().__init__(
+            probes=source.list_probes(),
+            memory={0x20000000: b"\x01\x02\x03\x04"},
+            registers={"r0": 7, "pc": 0x08000101},
+        )
+        self.close_attempts = 0
+        self.raise_on_close = True
+
+    def close(self) -> None:
+        self.close_attempts += 1
+        super().close()
+        if self.raise_on_close:
+            raise RuntimeError("persistent backend close failure")
+
+
 def lease_manager(data_root: Path) -> ProbeLeaseManager:
     return ProbeLeaseManager(
         data_root,
@@ -390,6 +408,40 @@ def test_stop_closes_backend_releases_lease_and_removes_endpoint_record(tmp_path
             assert next_endpoint.lease_id != endpoint.lease_id
         finally:
             await successor.stop()
+
+    run(scenario())
+
+
+def test_stop_cleans_owned_state_before_reraising_persistent_backend_close_error(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        data_root = tmp_path / "plugin-data"
+        backend = AlwaysFailingCloseBackend()
+        service = make_service(tmp_path, backend=backend, data_root=data_root)
+        endpoint = await service.start()
+        replacement: ProbeService | None = None
+
+        try:
+            with pytest.raises(
+                RuntimeError, match="persistent backend close failure"
+            ):
+                await service.stop()
+
+            assert not endpoint.record_path.exists()
+            await service.stop()
+            assert backend.close_attempts == 1
+
+            replacement = make_service(
+                tmp_path, backend=fake_backend(), data_root=data_root
+            )
+            replacement_endpoint = await replacement.start()
+            assert replacement_endpoint.lease_id != endpoint.lease_id
+        finally:
+            backend.raise_on_close = False
+            await service.stop()
+            if replacement is not None:
+                await replacement.stop()
 
     run(scenario())
 
