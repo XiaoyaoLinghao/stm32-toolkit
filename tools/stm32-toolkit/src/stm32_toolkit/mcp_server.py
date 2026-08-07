@@ -5,10 +5,12 @@ import argparse
 import sys
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Annotated, Literal
 from urllib.parse import urlsplit
 from urllib.request import url2pathname
 
 from mcp.server.fastmcp import Context, FastMCP
+from pydantic import Field
 
 from stm32_toolkit.context import build_project_context
 from stm32_toolkit.detection import detect_project
@@ -16,12 +18,19 @@ from stm32_toolkit.doctor import run_doctor
 from stm32_toolkit.identity import canonical_project_root, new_session_id
 from stm32_toolkit.paths import require_safe_session_id
 from stm32_toolkit.result import OperationResult
+from stm32_toolkit.workflows import (
+    build_firmware_workflow,
+    configure_project_workflow,
+    convert_keil_workflow,
+    inspect_keil_workflow,
+)
 
 
 _SERVER_NAME = "STM32 Toolkit"
 _SERVER_INSTRUCTIONS = (
-    "This server is permanently bound to one project root and exposes only "
-    "read-only STM32 Toolkit foundation tools."
+    "This server is permanently bound to one project root and exposes "
+    "read-only Keil inspection and planning plus explicitly authorized "
+    "conversion, configuration, and build operations."
 )
 _CLIENT_ROOTS_TIMEOUT_SECONDS = 5.0
 
@@ -106,6 +115,71 @@ def tool_project_context(runtime: ServerRuntime) -> dict[str, object]:
     ).to_dict()
 
 
+def tool_keil_inspect(
+    runtime: ServerRuntime,
+    uvprojx: str | None = None,
+    target_name: str | None = None,
+    include_baseline: bool = True,
+) -> dict[str, object]:
+    """Read-only Keil inspection and baseline for the bound project."""
+    return inspect_keil_workflow(
+        runtime.project_root,
+        uvprojx=uvprojx,
+        target_name=target_name,
+        include_baseline=include_baseline,
+    ).to_dict()
+
+
+def tool_keil_convert(
+    runtime: ServerRuntime,
+    uvprojx: str | None = None,
+    target_name: str | None = None,
+    plan_id: str | None = None,
+    authorized: bool = False,
+) -> dict[str, object]:
+    """Read-only conversion plan, or apply with the exact plan ID plus
+    ``authorized=true``."""
+    return convert_keil_workflow(
+        runtime.project_root,
+        uvprojx=uvprojx,
+        target_name=target_name,
+        plan_id=plan_id,
+        authorized=authorized,
+    ).to_dict()
+
+
+def tool_project_configure(
+    runtime: ServerRuntime,
+    plan_id: str | None = None,
+    authorized: bool = False,
+) -> dict[str, object]:
+    """Read-only configuration plan, or apply with the exact plan ID plus
+    ``authorized=true``."""
+    return configure_project_workflow(
+        runtime.project_root,
+        plan_id=plan_id,
+        authorized=authorized,
+    ).to_dict()
+
+
+def tool_build(
+    runtime: ServerRuntime,
+    preset: str,
+    clean: bool = False,
+    timeout_seconds: int = 300,
+    authorized: bool = False,
+) -> dict[str, object]:
+    """Run the guarded build for the bound project with explicit
+    ``authorized=true``."""
+    return build_firmware_workflow(
+        runtime.project_root,
+        preset=preset,
+        clean=clean,
+        timeout_seconds=timeout_seconds,
+        authorized=authorized,
+    ).to_dict()
+
+
 async def tool_doctor_for_request(
     runtime: ServerRuntime, context: Context | None
 ) -> dict[str, object]:
@@ -125,6 +199,69 @@ async def tool_project_context_for_request(
 ) -> dict[str, object]:
     failure = await _client_roots_failure(runtime, context, "project.context")
     return failure if failure is not None else tool_project_context(runtime)
+
+
+async def tool_keil_inspect_for_request(
+    runtime: ServerRuntime,
+    context: Context | None,
+    uvprojx: str | None = None,
+    target_name: str | None = None,
+    include_baseline: bool = True,
+) -> dict[str, object]:
+    failure = await _client_roots_failure(runtime, context, "keil-inspect")
+    if failure is not None:
+        return failure
+    return tool_keil_inspect(runtime, uvprojx, target_name, include_baseline)
+
+
+async def tool_keil_convert_for_request(
+    runtime: ServerRuntime,
+    context: Context | None,
+    uvprojx: str | None = None,
+    target_name: str | None = None,
+    plan_id: str | None = None,
+    authorized: bool = False,
+) -> dict[str, object]:
+    operation = (
+        "keil-conversion-apply"
+        if plan_id is not None or authorized is not False
+        else "keil-conversion-plan"
+    )
+    failure = await _client_roots_failure(runtime, context, operation)
+    if failure is not None:
+        return failure
+    return tool_keil_convert(runtime, uvprojx, target_name, plan_id, authorized)
+
+
+async def tool_project_configure_for_request(
+    runtime: ServerRuntime,
+    context: Context | None,
+    plan_id: str | None = None,
+    authorized: bool = False,
+) -> dict[str, object]:
+    operation = (
+        "project-configuration-apply"
+        if plan_id is not None or authorized is not False
+        else "project-configuration-plan"
+    )
+    failure = await _client_roots_failure(runtime, context, operation)
+    if failure is not None:
+        return failure
+    return tool_project_configure(runtime, plan_id, authorized)
+
+
+async def tool_build_for_request(
+    runtime: ServerRuntime,
+    context: Context | None,
+    preset: str,
+    clean: bool = False,
+    timeout_seconds: int = 300,
+    authorized: bool = False,
+) -> dict[str, object]:
+    failure = await _client_roots_failure(runtime, context, "build")
+    if failure is not None:
+        return failure
+    return tool_build(runtime, preset, clean, timeout_seconds, authorized)
 
 
 async def _client_roots_failure(
@@ -242,6 +379,49 @@ def create_server(
     @mcp.tool(name="stm32_project_context")
     async def stm32_project_context(ctx: Context) -> dict[str, object]:
         return await tool_project_context_for_request(runtime, ctx)
+
+    @mcp.tool(name="stm32_keil_inspect")
+    async def stm32_keil_inspect(
+        ctx: Context,
+        uvprojx: str | None = None,
+        targetName: str | None = None,
+        includeBaseline: bool = True,
+    ) -> dict[str, object]:
+        return await tool_keil_inspect_for_request(
+            runtime, ctx, uvprojx, targetName, includeBaseline
+        )
+
+    @mcp.tool(name="stm32_keil_convert")
+    async def stm32_keil_convert(
+        ctx: Context,
+        uvprojx: str | None = None,
+        targetName: str | None = None,
+        planId: str | None = None,
+        authorized: bool = False,
+    ) -> dict[str, object]:
+        return await tool_keil_convert_for_request(
+            runtime, ctx, uvprojx, targetName, planId, authorized
+        )
+
+    @mcp.tool(name="stm32_project_configure")
+    async def stm32_project_configure(
+        ctx: Context,
+        planId: str | None = None,
+        authorized: bool = False,
+    ) -> dict[str, object]:
+        return await tool_project_configure_for_request(runtime, ctx, planId, authorized)
+
+    @mcp.tool(name="stm32_build")
+    async def stm32_build(
+        ctx: Context,
+        preset: Literal["arm-debug", "arm-release"],
+        clean: bool = False,
+        timeoutSeconds: Annotated[int, Field(ge=1, le=3600)] = 300,
+        authorized: bool = False,
+    ) -> dict[str, object]:
+        return await tool_build_for_request(
+            runtime, ctx, preset, clean, timeoutSeconds, authorized
+        )
 
     return mcp
 

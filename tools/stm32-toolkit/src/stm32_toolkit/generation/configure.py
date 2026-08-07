@@ -958,24 +958,6 @@ def _build_contexts(
                     "command": "stm32-toolkit",
                     "args": ["build", "--preset", "arm-release", "--project", "${workspaceFolder}"],
                 },
-                {
-                    "label": "STM32 Toolkit: Flash",
-                    "type": "process",
-                    "command": "stm32-toolkit",
-                    "args": ["flash", "--preset", "arm-debug", "--project", "${workspaceFolder}"],
-                },
-                {
-                    "label": "STM32 Toolkit: Debug Handoff Begin",
-                    "type": "process",
-                    "command": "stm32-toolkit",
-                    "args": ["debug", "handoff-begin", "--project", "${workspaceFolder}"],
-                },
-                {
-                    "label": "STM32 Toolkit: Debug Handoff End",
-                    "type": "process",
-                    "command": "stm32-toolkit",
-                    "args": ["debug", "handoff-end", "--project", "${workspaceFolder}"],
-                },
             ],
         }
     }

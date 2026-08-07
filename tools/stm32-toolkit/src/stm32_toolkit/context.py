@@ -102,11 +102,21 @@ def build_project_context(
             "build": build,
             "hardware": _hardware_evidence(),
             "capabilities": _capabilities(
-                build_available=bool(build["cmakeListsPresent"])
+                build_available=bool(build["cmakeListsPresent"]),
+                configure_available=_valid_schema_v2(canonical_root),
             ),
             "recommendedActions": [],
         },
     )
+
+
+def _valid_schema_v2(project_root: Path) -> bool:
+    """True only when a valid Schema v2 project model loads from the root."""
+    try:
+        model = load_project_model(project_root)
+    except (ProjectManifestError, OSError, ValueError, TypeError):
+        return False
+    return model.schema_version == 2
 
 
 def _context_invalid(field: str, path: str | None = None) -> OperationResult[None]:
@@ -140,6 +150,7 @@ def _is_project_path(path: Path, project_root: Path) -> bool:
 def _unconfigured_context(
     detection: ProjectDetection, project_root: Path
 ) -> dict[str, object]:
+    keil_detected = detection.kind == "keil"
     return {
         "project": {
             "kind": detection.kind,
@@ -150,7 +161,11 @@ def _unconfigured_context(
         "workspace": None,
         "build": _empty_build_evidence(),
         "hardware": _hardware_evidence(),
-        "capabilities": _capabilities(build_available=False),
+        "capabilities": _capabilities(
+            build_available=False,
+            keil_inspect=keil_detected,
+            keil_convert=keil_detected,
+        ),
         "recommendedActions": [detection.recommended_action.to_dict()],
     }
 
@@ -206,9 +221,18 @@ def _hardware_evidence() -> dict[str, object]:
     return {"probe": None, "state": "unavailable"}
 
 
-def _capabilities(*, build_available: bool) -> dict[str, bool]:
+def _capabilities(
+    *,
+    build_available: bool,
+    keil_inspect: bool = False,
+    keil_convert: bool = False,
+    configure_available: bool = False,
+) -> dict[str, bool]:
     return {
         "build": build_available,
+        "keilInspect": keil_inspect,
+        "keilConvert": keil_convert,
+        "configure": configure_available,
         "flash": False,
         "hostTest": False,
         "targetTest": False,

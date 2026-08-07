@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
@@ -7,17 +5,24 @@ from typing import Literal
 
 ProjectKind = Literal["configured", "keil", "cubemx", "cmake", "unknown"]
 ActionId = Literal["migrate-keil", "configure-project", "create-project"]
+
 _ACTION_EXPLANATIONS: dict[ActionId, str] = {
     "migrate-keil": (
-        "Keil migration is planned but unavailable in this foundation release."
+        "Inspect the Keil project and convert ARMCC sources to GCC "
+        "with a read-only plan and explicit authorization."
     ),
     "configure-project": (
-        "Project configuration is planned but unavailable in this foundation release."
+        "Generate managed GCC/CMake and VS Code configuration "
+        "with a read-only plan and explicit authorization."
     ),
     "create-project": (
         "Project creation is planned but unavailable in this foundation release."
     ),
 }
+
+_CONFIGURATION_PREREQUISITE = (
+    "Project configuration requires a valid Schema v2 .stm32-project.json manifest."
+)
 
 
 @dataclass(frozen=True)
@@ -49,7 +54,21 @@ class ProjectDetection:
 
 
 def planned_action(action_id: ActionId) -> PlannedAction:
-    return PlannedAction(action_id, _ACTION_EXPLANATIONS[action_id])
+    """Return the shipped action; project creation remains unavailable."""
+    return PlannedAction(
+        action_id,
+        _ACTION_EXPLANATIONS[action_id],
+        available=action_id != "create-project",
+    )
+
+
+def _configuration_prerequisite_action() -> PlannedAction:
+    """The configure action for kinds that lack the Schema v2 prerequisite."""
+    return PlannedAction(
+        "configure-project",
+        _CONFIGURATION_PREREQUISITE,
+        available=False,
+    )
 
 
 def detect_project(project_root: Path) -> ProjectDetection:
@@ -81,14 +100,14 @@ def detect_project(project_root: Path) -> ProjectDetection:
         return ProjectDetection(
             kind="cubemx",
             files=cubemx_files,
-            recommended_action=planned_action("configure-project"),
+            recommended_action=_configuration_prerequisite_action(),
         )
 
     if "CMakeLists.txt" in names:
         return ProjectDetection(
             kind="cmake",
             files=("CMakeLists.txt",),
-            recommended_action=planned_action("configure-project"),
+            recommended_action=_configuration_prerequisite_action(),
         )
 
     return _unknown_detection()
