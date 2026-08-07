@@ -114,17 +114,17 @@ product commands in this packet.
 - Create: `tools/stm32-toolkit/tests/test_probe_protocol.py`
 - Modify: `tools/stm32-toolkit/pyproject.toml`
 
-- [ ] Write schema/model RED tests for exact protocol and Toolkit version,
+- [x] Write schema/model RED tests for exact protocol and Toolkit version,
   bounded identifiers, enums, timestamps, redacted owner evidence, deterministic
   JSON, unknown fields, and root/packaged schema byte identity.
-- [ ] Define operation levels `observe`, `control`, and `modify`; a request may
+- [x] Define operation levels `observe`, `control`, and `modify`; a request may
   use only the level granted by the live lease.
-- [ ] Define stable error codes for bad token, incompatible protocol/version,
+- [x] Define stable error codes for bad token, incompatible protocol/version,
   invalid request, probe busy, lease lost, target mismatch, backend unavailable,
   partial read, and internal failure without raw exception leakage.
-- [ ] Bound request body, read length, batch size, identifier length, and timeout
+- [x] Bound request body, read length, batch size, identifier length, and timeout
   before backend execution.
-- [ ] Run:
+- [x] Run:
   `python -m pytest tools/stm32-toolkit/tests/test_probe_protocol.py -q`.
 
 ### Task 4.2: Implement a portable global lease registry
@@ -134,25 +134,27 @@ product commands in this packet.
 - Create: `tools/stm32-toolkit/src/stm32_toolkit/probe/lease.py`
 - Create: `tools/stm32-toolkit/tests/test_probe_lease.py`
 
-- [ ] Write RED tests for exclusive creation, same/different workspace conflict,
+- [x] Write RED tests for exclusive creation, same/different workspace conflict,
   same process with a different start identity, heartbeat expiry, crashed owner,
   live-but-unresponsive owner, forged release, replacement race, truncated lock,
   permission failure, symlink/junction escape, process cancellation, and two
   independent processes racing for the same probe.
-- [ ] Store registry records only under the canonical
+- [x] Store registry records only under the canonical
   `${CLAUDE_PLUGIN_DATA}/probe-registry`; reject reparse/symlink redirection and
   non-directory intermediate components before the first write.
-- [ ] Acquire by atomic exclusive file creation and durable metadata promotion.
+- [x] Acquire by atomic exclusive file creation and durable metadata promotion.
   Include schema/protocol/toolkit versions, probe/workspace/session/lease IDs,
   PID, process-start identity, boot identity when available, health endpoint,
   operation level, created time, and heartbeat.
-- [ ] Treat a live or ambiguously identified process as busy. Reclaim only when
+- [x] Treat a live or ambiguously identified process as busy. Reclaim only when
   process identity and authenticated service health both prove the owner dead.
   Never signal or terminate the owner.
-- [ ] Release only when lease ID and full owner identity match the current
+- [x] Release only when lease ID and full owner identity match the current
   record. A stale client cannot delete a successor's lease.
-- [ ] Run the focused suite on Windows and Linux, including a real cross-process
+- [x] Run the focused suite on Windows, including a real cross-process
   contention test.
+- [ ] Run the same real path/lock/cancellation suite on Linux during the unified
+  `STM32TK-0405-CLI-MCP-RELEASE` platform gate.
 
 ### Task 4.3: Implement backend protocol and FakeProbe
 
@@ -163,14 +165,14 @@ product commands in this packet.
 - Create: `tools/stm32-toolkit/tests/fakes/fake_probe.py`
 - Create: `tools/stm32-toolkit/tests/test_probe_backend.py`
 
-- [ ] Define a narrow `ProbeBackend` protocol for enumerate, exact attach,
+- [x] Define a narrow `ProbeBackend` protocol for enumerate, exact attach,
   bounded memory/register reads, halt/resume/step/reset, verified program, and
   close. Packet 0401 exposes only enumerate/attach/read/close through the
   service.
-- [ ] FakeProbe must record ordered calls, target state, deterministic memory and
+- [x] FakeProbe must record ordered calls, target state, deterministic memory and
   register values, partial item failures, delays, cancellation, disconnects,
   and reconnects without relying on wall-clock sleeps.
-- [ ] Write RED/GREEN contract tests that every later backend must pass.
+- [x] Write RED/GREEN contract tests that every later backend must pass.
 
 ### Task 4.4: Implement authenticated loopback service and client
 
@@ -182,21 +184,21 @@ product commands in this packet.
 - Create: `tools/stm32-toolkit/tests/test_probe_client.py`
 - Modify: `tools/stm32-toolkit/pyproject.toml`
 
-- [ ] Add the narrowly pinned runtime dependency required for the loopback
+- [x] Add the narrowly pinned runtime dependency required for the loopback
   transport; do not add monitor/UI dependencies to the Toolkit package.
-- [ ] Bind only `127.0.0.1` on port 0. Generate a 32-byte random token, store the
+- [x] Bind only `127.0.0.1` on port 0. Generate a 32-byte random token, store the
   endpoint/token atomically in the owning session directory with user-only
   access where supported, and never include the token in logs/errors/repr.
-- [ ] Authenticate token, lease ID, workspace/session, protocol, Toolkit
+- [x] Authenticate token, lease ID, workspace/session, protocol, Toolkit
   version, operation level, content type, body bounds, and loopback peer before
   dispatch. Reject browser cross-origin calls; allow the non-browser client
   without fabricating an Origin header.
-- [ ] Heartbeat lease and service state independently. Shutdown stops accepting
+- [x] Heartbeat lease and service state independently. Shutdown stops accepting
   work, cancels/awaits bounded in-flight requests, closes the backend, releases
   only its own lease, and removes only its own endpoint record.
-- [ ] Client deadlines and caller cancellation must propagate without orphaning
+- [x] Client deadlines and caller cancellation must propagate without orphaning
   service tasks or converting outer cancellation into an ordinary error.
-- [ ] Test bad/missing tokens, version skew, stale/replaced lease, wrong
+- [x] Test bad/missing tokens, version skew, stale/replaced lease, wrong
   workspace/session, wrong operation level, non-loopback bind attempt, Host and
   Origin attacks, oversized/slow bodies, partial item failures, shutdown races,
   endpoint tampering, and token redaction.
@@ -209,18 +211,21 @@ product commands in this packet.
 - Modify: `tools/stm32-toolkit/tests/test_doctor.py`
 - Create: `docs/codex/returns/STM32TK-0401-PROBE-CORE/implementation-report.md`
 
-- [ ] Add read-only doctor evidence for optional probe-core dependencies and
+- [x] Add read-only doctor evidence for optional probe-core dependencies and
   registry path safety. Do not start a service or enumerate hardware in doctor.
-- [ ] Build/install a wheel outside the repository and prove the packaged schema
+- [x] Build/install a wheel outside the repository and prove the packaged schema
   and probe modules load from a fresh environment.
-- [ ] Run focused tests, full pytest with branch coverage >=90%, compileall,
-  `git diff --check`, schema byte identity, placeholder/credential scan, and
-  clean worktree checks.
-- [ ] Run Windows NTFS and Linux path/lock/cancellation gates. Record environment
-  ownership honestly; unavailable real hardware is not claimed by packet 0401.
-- [ ] Commit product/tests first. Reconcile the report in a separate final
-  commit, push the Codex branch, open/update one PR targeting `master`, review
-  the complete base-to-head diff, and merge only when all software gates pass.
+- [x] Run focused tests, full pytest with branch coverage >=90%, compileall,
+  `git diff --check`, schema byte identity, and placeholder/credential scan.
+- [ ] Verify a clean worktree after the report commit.
+- [x] Run Windows NTFS path/lock/cancellation gates.
+- [ ] Run Linux path/lock/cancellation gates during
+  `STM32TK-0405-CLI-MCP-RELEASE`; record environment ownership honestly.
+  Unavailable real hardware is not claimed by packet 0401.
+- [x] Commit product/tests first and reconcile the report in a separate final
+  commit.
+- [ ] Push the Codex branch, update the PR targeting `master`, review the
+  complete base-to-head diff, and merge only when all software gates pass.
 
 ## 5. Release-level acceptance strategy
 
