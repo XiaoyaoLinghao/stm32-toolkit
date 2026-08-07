@@ -1,0 +1,112 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://stm32-toolkit.dev/schemas/firmware-identity.schema.json",
+  "title": "STM32 Toolkit firmware identity",
+  "description": "Schema-1 firmware build identity evidence produced by run_build.",
+  "type": "object",
+  "required": [
+    "schemaVersion",
+    "buildId",
+    "logicalProjectId",
+    "toolkitVersion",
+    "gitHead",
+    "gitDirty",
+    "inputSnapshotSha256",
+    "newestInputMtimeNs",
+    "targetDevice",
+    "preset",
+    "elfPath",
+    "elfSha256",
+    "elfSize",
+    "mapPath",
+    "mapSha256",
+    "entryPoint",
+    "vectorAddress",
+    "resetHandlerAddress",
+    "builtAtUtc"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "buildId": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "logicalProjectId": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+    },
+    "toolkitVersion": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64
+    },
+    "gitHead": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "gitDirty": {
+      "type": "boolean"
+    },
+    "inputSnapshotSha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "newestInputMtimeNs": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "targetDevice": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "preset": {
+      "enum": [
+        "arm-debug",
+        "arm-release"
+      ]
+    },
+    "elfPath": {
+      "type": "string",
+      "pattern": "^build/arm-(debug|release)/[^/\\\\]+\\.elf$"
+    },
+    "elfSha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "elfSize": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "mapPath": {
+      "type": "string",
+      "pattern": "^build/arm-(debug|release)/[^/\\\\]+\\.map$"
+    },
+    "mapSha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "entryPoint": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 4294967295
+    },
+    "vectorAddress": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 4294967295
+    },
+    "resetHandlerAddress": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 4294967295
+    },
+    "builtAtUtc": {
+      "type": "string",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{6}Z$"
+    }
+  }
+}

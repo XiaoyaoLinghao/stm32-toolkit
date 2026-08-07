@@ -103,8 +103,14 @@ target_compile_options(firmware PRIVATE
 )
 
 target_link_options(firmware PRIVATE
+  -mcpu=cortex-m4
+  -mthumb
+  -mfpu=fpv4-sp-d16
+  -mfloat-abi=hard
+  -nostartfiles
   "-T${CMAKE_SOURCE_DIR}/linker/stm32tk.ld"
   "-Wl,-Map=${CMAKE_BINARY_DIR}/firmware.map"
+  "-Wl,--gc-sections"
 )
 
 add_custom_command(TARGET firmware POST_BUILD
@@ -1274,6 +1280,82 @@ def test_cmake_snapshot_no_fpu(tmp_path):
         ")\n"
     )
     assert expected_options in text
+
+
+def test_cmake_link_options_exact_hard_fpu_snapshot(tmp_path):
+    root = write_project(tmp_path / "proj")
+    plan = plan_for(root)
+    entry = next(entry for entry in plan.files if entry.path == "CMakeLists.txt")
+    text = entry.after_bytes.decode("utf-8")
+    expected = (
+        "target_link_options(firmware PRIVATE\n"
+        "  -mcpu=cortex-m4\n"
+        "  -mthumb\n"
+        "  -mfpu=fpv4-sp-d16\n"
+        "  -mfloat-abi=hard\n"
+        "  -nostartfiles\n"
+        '  "-T${CMAKE_SOURCE_DIR}/linker/stm32tk.ld"\n'
+        '  "-Wl,-Map=${CMAKE_BINARY_DIR}/firmware.map"\n'
+        '  "-Wl,--gc-sections"\n'
+        ")\n"
+    )
+    assert expected in text
+
+
+def test_cmake_link_options_no_fpu_snapshot(tmp_path):
+    payload = standard_payload()
+    payload["target"] = {"device": "X", "core": "cortex-m4"}
+    root = write_project(tmp_path / "proj", payload)
+    plan = plan_for(root)
+    entry = next(entry for entry in plan.files if entry.path == "CMakeLists.txt")
+    text = entry.after_bytes.decode("utf-8")
+    assert "-mfpu=" not in text
+    assert "-mfloat-abi=" not in text
+    expected = (
+        "target_link_options(firmware PRIVATE\n"
+        "  -mcpu=cortex-m4\n"
+        "  -mthumb\n"
+        "  -nostartfiles\n"
+        '  "-T${CMAKE_SOURCE_DIR}/linker/stm32tk.ld"\n'
+        '  "-Wl,-Map=${CMAKE_BINARY_DIR}/firmware.map"\n'
+        '  "-Wl,--gc-sections"\n'
+        ")\n"
+    )
+    assert expected in text
+
+
+def test_cmake_link_arch_flags_match_compile_arch_flags_hard_fpu(tmp_path):
+    root = write_project(tmp_path / "proj")
+    plan = plan_for(root)
+    entry = next(entry for entry in plan.files if entry.path == "CMakeLists.txt")
+    text = entry.after_bytes.decode("utf-8")
+    compile_block = text.split("target_compile_options(")[1].split(")")[0]
+    link_block = text.split("target_link_options(")[1].split(")")[0]
+    for flag in ("-mcpu=cortex-m4", "-mthumb", "-mfpu=fpv4-sp-d16", "-mfloat-abi=hard"):
+        assert flag in compile_block
+        assert flag in link_block
+    assert "-nostartfiles" in link_block
+    assert "--gc-sections" in link_block
+    assert "-Map=" in link_block
+    assert "-T${CMAKE_SOURCE_DIR}" in link_block
+
+
+def test_cmake_link_arch_flags_match_compile_arch_flags_no_fpu(tmp_path):
+    payload = standard_payload()
+    payload["target"] = {"device": "X", "core": "cortex-m3"}
+    root = write_project(tmp_path / "proj", payload)
+    plan = plan_for(root)
+    entry = next(entry for entry in plan.files if entry.path == "CMakeLists.txt")
+    text = entry.after_bytes.decode("utf-8")
+    compile_block = text.split("target_compile_options(")[1].split(")")[0]
+    link_block = text.split("target_link_options(")[1].split(")")[0]
+    assert "-mcpu=cortex-m3" in compile_block
+    assert "-mcpu=cortex-m3" in link_block
+    assert "-mthumb" in link_block
+    assert "-mfpu=" not in link_block
+    assert "-mfloat-abi=" not in link_block
+    assert "-nostartfiles" in link_block
+    assert "-Wl,--gc-sections" in link_block
 
 
 def test_cmake_snapshot_paths_with_spaces(tmp_path):
