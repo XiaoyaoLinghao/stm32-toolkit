@@ -10,12 +10,17 @@ leaves a direct child, interpreter descendant, or pipe-drain thread behind.
 The fake ``taskkill`` launches the real ``taskkill`` through the
 ``subprocess.Popen`` captured at import time, so its own launch is never
 routed through the tests' Popen proxy (which strips Windows-only kwargs and
-is not a context manager, so ``subprocess.run`` would raise ``TypeError``).
-PID assertions always distinguish the Popen root process (``Popen.pid``),
-the command launcher, and the script interpreter (the pid the child itself
-writes), and no test references the nonexistent ``signal.SIGKILL`` on
-Windows (the force-kill seam uses ``os.kill(pid, SIGTERM)`` there, which is
-TerminateProcess).  No test is skipped or xfailed.
+implements the context-manager protocol).  PID assertions always
+distinguish the Popen root process (``Popen.pid``), the command launcher,
+and the script interpreter (the pid the child itself writes) and never
+assume the launcher and interpreter PIDs are equal or unequal: on Windows a
+venv ``Scripts/python.exe`` redirector can spawn a distinct interpreter
+child, so the termination seams are asserted to receive the root PID and
+every PID is reaped independently.  Force-kill fixtures that must also reap
+a Windows launcher's interpreter child terminate the whole tree through
+the real ``taskkill`` (the product's own Windows force-kill); no test
+references the nonexistent ``signal.SIGKILL`` on Windows.  No test is
+skipped or xfailed.
 """
 
 from __future__ import annotations
@@ -128,6 +133,36 @@ def assert_process_reaped(pid: int, timeout_seconds: float = 10.0) -> None:
     raise AssertionError(f"process {pid} is still alive after {timeout_seconds:.1f}s")
 
 
+def _real_taskkill_tree(pid: int) -> bool:
+    """Kill the whole child tree via the real ``taskkill`` on Windows.
+
+    Windows venv launchers (``Scripts/python.exe`` redirectors) can spawn a
+    distinct interpreter child that a root-only ``Popen.kill()`` cannot
+    reach, so any fixture that must reap every PID on Windows terminates
+    the tree through the real ``taskkill /T`` captured at import time
+    (never routed through the tests' Popen proxy).
+    """
+    try:
+        process = _REAL_POPEN(
+            ["taskkill", "/PID", str(pid), "/T", "/F"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    except OSError:
+        return False
+    try:
+        return process.wait(timeout=10) == 0
+    except subprocess.SubprocessError:
+        return False
+    finally:
+        for stream in (process.stdout, process.stderr):
+            if stream is not None:
+                try:
+                    stream.close()
+                except OSError:
+                    pass
+
+
 def make_taskkill_fake(taskkilled: list[int]):
     """A deterministic whole-process-tree ``taskkill`` double.
 
@@ -145,25 +180,7 @@ def make_taskkill_fake(taskkilled: list[int]):
         if os.name == "posix":
             os.killpg(pid, signal.SIGKILL)
         else:
-            try:
-                process = _REAL_POPEN(
-                    ["taskkill", "/PID", str(pid), "/T", "/F"],
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                )
-            except OSError:
-                return False
-            try:
-                return process.wait(timeout=10) == 0
-            except subprocess.SubprocessError:
-                return False
-            finally:
-                for stream in (process.stdout, process.stderr):
-                    if stream is not None:
-                        try:
-                            stream.close()
-                        except OSError:
-                            pass
+            return _real_taskkill_tree(pid)
         return True
 
     return fake_taskkill
@@ -391,9 +408,10 @@ def test_timeout_uses_graceful_then_force_termination_seams(tmp_path: Path, monk
         if os.name == "posix":
             os.killpg(pid, signal.SIGKILL)
         else:
-            # ``signal.SIGKILL`` does not exist on Windows; ``os.kill(pid,
-            # SIGTERM)`` is the documented TerminateProcess force-kill.
-            os.kill(pid, signal.SIGTERM)
+            # Windows venv launchers can spawn a distinct interpreter child
+            # that a root-only TerminateProcess cannot reach; terminate the
+            # whole tree so every PID is reaped.
+            _real_taskkill_tree(pid)
 
     # Force the POSIX branch on any host so the graceful→force seam
     # contract is exercised deterministically (``start_new_session`` is a
@@ -408,7 +426,8 @@ def test_timeout_uses_graceful_then_force_termination_seams(tmp_path: Path, monk
     interpreter_pid = int(pid_file.read_text(encoding="utf-8"))
     assert terminated == [root_pid]  # graceful seam hit on the Popen root PID
     assert killed == [root_pid]  # force-kill seam hit on the Popen root PID
-    assert interpreter_pid == root_pid  # direct exec: no launcher shim in between
+    # Root and interpreter are reaped independently; they may coincide on
+    # direct-exec hosts or differ behind a Windows venv launcher.
     assert_process_reaped(root_pid)
     assert_process_reaped(interpreter_pid)
 
@@ -492,7 +511,8 @@ def test_windows_branch_uses_taskkill_seam(tmp_path: Path, monkeypatch):
     grand_pid = int(grand_pid_file.read_text(encoding="utf-8"))
     assert graceful == [root_pid]  # graceful seam hit on the Popen root PID
     assert taskkilled == [root_pid]  # taskkill seam hit on the Popen root PID
-    assert interpreter_pid == root_pid  # direct exec: root process == interpreter
+    # Root and interpreter are reaped independently (they may differ behind
+    # a Windows venv launcher); the grandchild must also be reaped.
     assert_process_reaped(root_pid)
     assert_process_reaped(interpreter_pid)
     assert_process_reaped(grand_pid)
@@ -507,7 +527,18 @@ def test_windows_branch_falls_back_to_kill_when_taskkill_fails(tmp_path: Path, m
     install_windows_popen_proxy(monkeypatch, instances=instances)
     monkeypatch.setattr(process_mod, "_is_windows", True)
     monkeypatch.setattr(process_mod, "_windows_graceful", lambda pid: None)
-    monkeypatch.setattr(process_mod, "_taskkill", lambda pid: taskkilled.append(pid) or False)
+
+    def taskkill_reports_failure(pid):
+        taskkilled.append(pid)
+        if os.name == "nt":
+            # A Windows launcher's interpreter child is unreachable through
+            # ``Popen.kill()``; the fake terminates the whole tree (like
+            # the real taskkill) while still reporting failure so the
+            # fallback dispatch is exercised and every PID is reaped.
+            _real_taskkill_tree(pid)
+        return False
+
+    monkeypatch.setattr(process_mod, "_taskkill", taskkill_reports_failure)
     result = run_process(ProcessRequest(argv=argv, cwd=tmp_path, timeout_seconds=1))
     assert result.timed_out is True
     root = instances[0]
@@ -515,7 +546,8 @@ def test_windows_branch_falls_back_to_kill_when_taskkill_fails(tmp_path: Path, m
     interpreter_pid = int(pid_file.read_text(encoding="utf-8"))
     assert taskkilled == [root_pid]  # taskkill seam hit with the Popen root PID
     assert root._kill_called is True  # the Popen.kill() fallback was exercised
-    assert interpreter_pid == root_pid  # direct exec: root process == interpreter
+    # Root and interpreter are reaped independently; they may coincide on
+    # direct-exec hosts or differ behind a Windows venv launcher.
     assert_process_reaped(root_pid)
     assert_process_reaped(interpreter_pid)
 
@@ -609,7 +641,8 @@ def test_windows_branch_graceful_signal_is_seam_injected(tmp_path: Path, monkeyp
     grand_pid = int(grand_pid_file.read_text(encoding="utf-8"))
     assert graceful == [root_pid]  # graceful seam hit on the Popen root PID
     assert taskkilled == [root_pid]  # taskkill seam hit on the Popen root PID
-    assert interpreter_pid == root_pid  # direct exec: root process == interpreter
+    # Root and interpreter are reaped independently (they may differ behind
+    # a Windows venv launcher); the grandchild must also be reaped.
     assert_process_reaped(root_pid)
     assert_process_reaped(interpreter_pid)
     assert_process_reaped(grand_pid)
