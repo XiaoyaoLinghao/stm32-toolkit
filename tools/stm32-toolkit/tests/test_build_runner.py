@@ -3,9 +3,15 @@
 Every fixture project is copied to a disposable pytest temporary directory,
 managed configuration is generated through the STM32TK-0304 plan/apply path,
 a git repository records the project state, and a Python ``cmake`` double
-with an explicit ``sys.executable`` wrapper (hit-proven) stands in for the
-real toolchain.  No real CMake/Ninja/ARM toolchain is required and no build
-artifact is committed.
+(hit-proven) stands in for the real toolchain.  Interception uses a narrow
+deterministic process-launch seam: only an original argv whose executable
+is exactly ``"cmake"`` is mapped to ``sys.executable`` plus the real
+``fake_cmake.py`` script, while every other invocation (Git evidence,
+helper ``subprocess.run`` calls) is delegated unchanged to the real
+``subprocess.Popen``.  This never depends on Windows resolving a bare
+``cmake`` to a ``.cmd`` launcher (CreateProcess appends ``.exe`` and would
+find an ambient real CMake).  No real CMake/Ninja/ARM toolchain is
+required and no build artifact is committed.
 """
 
 from __future__ import annotations
@@ -27,6 +33,11 @@ from stm32_toolkit.generation import apply_project_configuration, plan_project_c
 from stm32_toolkit.project_model import load_project_model
 
 FIXTURE_ROOT = Path(__file__).parent / "fixtures" / "minimal-gcc"
+
+# Captured before any test monkeypatches ``subprocess.Popen``: the narrow
+# cmake seam delegates every non-cmake invocation (Git evidence, helper
+# ``subprocess.run`` calls) to this real implementation unchanged.
+_REAL_POPEN = subprocess.Popen
 
 # ---------------------------------------------------------------------------
 # deterministic ELF32 little-endian ARM builder (test-only)
@@ -387,28 +398,64 @@ def fake_cmake_launcher(bin_dir: Path) -> Path:
     return bin_dir / ("cmake.cmd" if os.name == "nt" else "cmake")
 
 
+class _CmakeOnlyPopenSeam:
+    """A narrow deterministic process-launch seam for the ``cmake`` double.
+
+    Only an original argv whose executable is exactly ``"cmake"`` (never a
+    path, never an extension) is mapped to ``sys.executable`` plus the real
+    ``fake_cmake.py`` script; the untouched product argv is recorded so the
+    exact-argv contract can be asserted.  Every other invocation is
+    delegated unchanged to the real ``subprocess.Popen`` implementation, so
+    Git evidence and helper ``subprocess.run`` calls are never intercepted.
+    When the launch target has been removed (the launch-failure fixture),
+    the seam raises ``FileNotFoundError`` exactly like a real spawn so the
+    product returns ``BUILD_CONFIGURE_FAILED`` with ``rule=launch``.
+    """
+
+    def __init__(self, script: Path, recorded: Path) -> None:
+        self._script = script
+        self._recorded = recorded
+
+    def __call__(self, *args, **kwargs):
+        argv = args[0] if args else kwargs.get("args")
+        if isinstance(argv, (list, tuple)) and argv and argv[0] == "cmake":
+            original = tuple(argv)
+            with open(self._recorded, "a", encoding="utf-8") as handle:
+                handle.write(json.dumps({"argv": list(original)}) + "\n")
+            if not self._script.is_file():
+                raise FileNotFoundError(2, "fake cmake launch target is missing")
+            mapped = (sys.executable, str(self._script), *original[1:])
+            if args:
+                args = (mapped,) + args[1:]
+            else:
+                kwargs["args"] = mapped
+        return _REAL_POPEN(*args, **kwargs)
+
+
 def install_fake_cmake(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
     *,
     env: dict[str, str] | None = None,
 ) -> Path:
-    """Install the hit-proven fake ``cmake`` at the front of PATH.
+    """Install the hit-proven fake ``cmake`` behind a narrow launch seam.
 
-    The launcher always points at a real Python script that exists on disk
-    (POSIX: the wrapper itself; Windows: ``fake_cmake.py`` next to
-    ``cmake.cmd``), so PATH interception never falls through to an ambient
-    real CMake.
+    The seam maps only the product's exact bare ``"cmake"`` argv to
+    ``sys.executable`` plus a real ``fake_cmake.py`` script that exists on
+    disk, so interception never falls through to an ambient real CMake on
+    any host.  The POSIX executable wrapper / Windows ``.cmd`` launcher are
+    still installed for the launcher-probe contract (Windows only resolves
+    ``.cmd`` when invoked by full path).  Returns the hit-file path.
     """
     bin_dir = tmp_path / "fakebin"
     bin_dir.mkdir(parents=True, exist_ok=True)
     tests_dir = Path(__file__).parent
+    script = bin_dir / "fake_cmake.py"
+    script.write_text(
+        FAKE_CMAKE_WRAPPER.format(python=sys.executable, tests_dir=str(tests_dir)),
+        encoding="utf-8",
+    )
     if os.name == "nt":
-        script = bin_dir / "fake_cmake.py"
-        script.write_text(
-            FAKE_CMAKE_WRAPPER.format(python=sys.executable, tests_dir=str(tests_dir)),
-            encoding="utf-8",
-        )
         launcher = bin_dir / "cmake.cmd"
         launcher.write_text(
             f'@echo off\r\n"{sys.executable}" "{script}" %*\r\n',
@@ -422,10 +469,12 @@ def install_fake_cmake(
         )
         launcher.chmod(0o755)
     hit_file = tmp_path / "cmake-hit.jsonl"
+    orig_file = tmp_path / "cmake-orig.jsonl"
     monkeypatch.setenv("PATH", str(bin_dir) + os.pathsep + os.environ.get("PATH", ""))
     monkeypatch.setenv("FAKE_CMAKE_HIT_FILE", str(hit_file))
     for key, value in (env or {}).items():
         monkeypatch.setenv(key, value)
+    monkeypatch.setattr(subprocess, "Popen", _CmakeOnlyPopenSeam(script, orig_file))
     return hit_file
 
 
@@ -507,6 +556,17 @@ def hit_records(hit_file: Path) -> list[dict]:
     return [
         json.loads(line)
         for line in hit_file.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+
+
+def orig_argv_records(orig_file: Path) -> list[list[str]]:
+    """The untouched product argv recorded by the launch seam, in order."""
+    if not orig_file.exists():
+        return []
+    return [
+        json.loads(line)["argv"]
+        for line in orig_file.read_text(encoding="utf-8").splitlines()
         if line.strip()
     ]
 
@@ -683,6 +743,14 @@ def test_run_build_success_debug_publishes_exact_evidence(
     # fixed product argv/cwd prove the fake was hit and ambient CMake was
     # never executed.
     assert [record["cwd"] for record in records] == [str(root), str(root)]
+    # The launch seam recorded the product's untouched argv: it remains
+    # exactly the fixed ("cmake", "--preset", preset) configure argv and
+    # ("cmake", "--build", "--preset", preset) build argv — never a path,
+    # never a shell string, and never an ambient real CMake.
+    assert orig_argv_records(tmp_path / "cmake-orig.jsonl") == [
+        ["cmake", "--preset", "arm-debug"],
+        ["cmake", "--build", "--preset", "arm-debug"],
+    ]
 
     identity_doc = read_json(identity_path_for(root))
     assert identity_doc["schemaVersion"] == 1
@@ -1245,9 +1313,9 @@ def test_fake_cmake_launcher_reaches_the_python_double(
 def test_launch_failure_returns_configure_failed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     root = prepare_project(tmp_path)
     install_fake_cmake(monkeypatch, tmp_path)
-    launcher = fake_cmake_launcher(tmp_path / "fakebin")
-    launcher.unlink()
-    launcher.mkdir()  # a directory is never executable: spawn must fail
+    target = tmp_path / "fakebin" / "fake_cmake.py"
+    target.unlink()
+    target.mkdir()  # the seam's launch target is destroyed: spawn must fail
     result = run_build(BuildRequest(project_root=root, preset="arm-debug"))
     assert result.ok is False
     assert result.code == "BUILD_CONFIGURE_FAILED"

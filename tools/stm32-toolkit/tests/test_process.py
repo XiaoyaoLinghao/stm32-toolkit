@@ -7,7 +7,15 @@ directly).  The Windows ``_is_windows`` branch is exercised with real child
 processes on any host through the same seams, and the fake ``taskkill``
 seam deterministically terminates the whole test process tree so no test
 leaves a direct child, interpreter descendant, or pipe-drain thread behind.
-No test is skipped or xfailed.
+The fake ``taskkill`` launches the real ``taskkill`` through the
+``subprocess.Popen`` captured at import time, so its own launch is never
+routed through the tests' Popen proxy (which strips Windows-only kwargs and
+is not a context manager, so ``subprocess.run`` would raise ``TypeError``).
+PID assertions always distinguish the Popen root process (``Popen.pid``),
+the command launcher, and the script interpreter (the pid the child itself
+writes), and no test references the nonexistent ``signal.SIGKILL`` on
+Windows (the force-kill seam uses ``os.kill(pid, SIGTERM)`` there, which is
+TerminateProcess).  No test is skipped or xfailed.
 """
 
 from __future__ import annotations
@@ -26,6 +34,11 @@ import stm32_toolkit.process as process_mod
 from stm32_toolkit.process import ProcessError, ProcessRequest, ProcessResult, run_process
 
 PYTHON = sys.executable
+
+# Captured before any test monkeypatches ``subprocess.Popen``: the fake
+# ``taskkill`` must drive the real implementation so its own ``taskkill``
+# launch is never intercepted by the Windows-branch Popen proxy.
+_REAL_POPEN = subprocess.Popen
 
 
 def write_pid_child(pid_file: Path, code: str = "import time; time.sleep(60)") -> tuple[str, ...]:
@@ -120,7 +133,11 @@ def make_taskkill_fake(taskkilled: list[int]):
 
     POSIX: the test child is its own group leader (``os.setpgid(0, 0)``),
     so ``killpg`` terminates exactly the child tree.  Windows: ``taskkill
-    /T`` is the deterministic tree killer.  The fake always records the
+    /T`` is the deterministic tree killer.  The fake launches ``taskkill``
+    through the real ``subprocess.Popen`` captured at import time, so its
+    own launch is never routed through the tests' Popen proxy (which would
+    otherwise intercept ``subprocess.run`` and raise ``TypeError`` because
+    the proxy is not a context manager).  The fake always records the
     root pid so a test can prove the seam was hit.
     """
     def fake_taskkill(pid: int) -> bool:
@@ -128,12 +145,25 @@ def make_taskkill_fake(taskkilled: list[int]):
         if os.name == "posix":
             os.killpg(pid, signal.SIGKILL)
         else:
-            subprocess.run(
-                ["taskkill", "/PID", str(pid), "/T", "/F"],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                timeout=10,
-            )
+            try:
+                process = _REAL_POPEN(
+                    ["taskkill", "/PID", str(pid), "/T", "/F"],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+            except OSError:
+                return False
+            try:
+                return process.wait(timeout=10) == 0
+            except subprocess.SubprocessError:
+                return False
+            finally:
+                for stream in (process.stdout, process.stderr):
+                    if stream is not None:
+                        try:
+                            stream.close()
+                        except OSError:
+                            pass
         return True
 
     return fake_taskkill
@@ -350,6 +380,7 @@ def test_timeout_uses_graceful_then_force_termination_seams(tmp_path: Path, monk
     argv = write_pid_child(pid_file)
     terminated: list[int] = []
     killed: list[int] = []
+    instances: list = []
 
     def terminate(pid):
         terminated.append(pid)
@@ -360,20 +391,26 @@ def test_timeout_uses_graceful_then_force_termination_seams(tmp_path: Path, monk
         if os.name == "posix":
             os.killpg(pid, signal.SIGKILL)
         else:
-            os.kill(pid, signal.SIGKILL)  # TerminateProcess on Windows
+            # ``signal.SIGKILL`` does not exist on Windows; ``os.kill(pid,
+            # SIGTERM)`` is the documented TerminateProcess force-kill.
+            os.kill(pid, signal.SIGTERM)
 
     # Force the POSIX branch on any host so the graceful→force seam
     # contract is exercised deterministically (``start_new_session`` is a
     # no-op on Windows, so the real child still runs).
+    install_windows_popen_proxy(monkeypatch, instances=instances)
     monkeypatch.setattr(process_mod, "_is_windows", False)
     monkeypatch.setattr(process_mod, "_terminate_group", terminate)
     monkeypatch.setattr(process_mod, "_kill_group", force_kill)
     result = run_process(ProcessRequest(argv=argv, cwd=tmp_path, timeout_seconds=1))
     assert result.timed_out is True
-    pid = int(pid_file.read_text(encoding="utf-8"))
-    assert terminated == [pid]
-    assert killed == [pid]
-    assert_process_reaped(pid)
+    root_pid = instances[0].pid  # the Popen root process the product tracks
+    interpreter_pid = int(pid_file.read_text(encoding="utf-8"))
+    assert terminated == [root_pid]  # graceful seam hit on the Popen root PID
+    assert killed == [root_pid]  # force-kill seam hit on the Popen root PID
+    assert interpreter_pid == root_pid  # direct exec: no launcher shim in between
+    assert_process_reaped(root_pid)
+    assert_process_reaped(interpreter_pid)
 
 
 def test_timeout_success_path_never_calls_termination_seams(tmp_path: Path, monkeypatch):
@@ -403,20 +440,32 @@ def install_windows_popen_proxy(
 
     class WindowsPopenProxy:
         def __init__(self, *args, **kwargs):
+            # ``creationflags`` is Windows-only and rejected by real POSIX
+            # ``Popen``; it is stripped (and captured) so the real child
+            # runs on any host.  ``start_new_session`` is left untouched:
+            # POSIX ``Popen`` uses it to create the child's own group (the
+            # graceful→force seam contract depends on it) and Windows
+            # ``Popen`` silently ignores it.
             if captured is not None:
                 captured["creationflags"] = kwargs.pop("creationflags", 0)
-                captured["start_new_session"] = kwargs.pop("start_new_session", False)
+                captured["start_new_session"] = kwargs.get("start_new_session", False)
             else:
                 kwargs.pop("creationflags", None)
-                kwargs.pop("start_new_session", None)
             self._kill_called = False
             self._popen = real_popen(*args, **kwargs)
+            self.pid = self._popen.pid  # the Popen root process (product-tracked PID)
             if instances is not None:
                 instances.append(self)
 
         def kill(self):
             self._kill_called = True
             return self._popen.kill()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc_info):
+            return self._popen.__exit__(*exc_info)
 
         def __getattr__(self, name):
             return getattr(self._popen, name)
@@ -430,18 +479,22 @@ def test_windows_branch_uses_taskkill_seam(tmp_path: Path, monkeypatch):
     argv = write_tree_child(pid_file, grand_pid_file)
     taskkilled: list[int] = []
     graceful: list[int] = []
+    instances: list = []
 
-    install_windows_popen_proxy(monkeypatch)
+    install_windows_popen_proxy(monkeypatch, instances=instances)
     monkeypatch.setattr(process_mod, "_is_windows", True)
     monkeypatch.setattr(process_mod, "_windows_graceful", lambda pid: graceful.append(pid))
     monkeypatch.setattr(process_mod, "_taskkill", make_taskkill_fake(taskkilled))
     result = run_process(ProcessRequest(argv=argv, cwd=tmp_path, timeout_seconds=1))
     assert result.timed_out is True
-    pid = int(pid_file.read_text(encoding="utf-8"))
+    root_pid = instances[0].pid  # the Popen root process (product-tracked PID)
+    interpreter_pid = int(pid_file.read_text(encoding="utf-8"))
     grand_pid = int(grand_pid_file.read_text(encoding="utf-8"))
-    assert graceful == [pid]
-    assert taskkilled == [pid]
-    assert_process_reaped(pid)
+    assert graceful == [root_pid]  # graceful seam hit on the Popen root PID
+    assert taskkilled == [root_pid]  # taskkill seam hit on the Popen root PID
+    assert interpreter_pid == root_pid  # direct exec: root process == interpreter
+    assert_process_reaped(root_pid)
+    assert_process_reaped(interpreter_pid)
     assert_process_reaped(grand_pid)
 
 
@@ -457,10 +510,14 @@ def test_windows_branch_falls_back_to_kill_when_taskkill_fails(tmp_path: Path, m
     monkeypatch.setattr(process_mod, "_taskkill", lambda pid: taskkilled.append(pid) or False)
     result = run_process(ProcessRequest(argv=argv, cwd=tmp_path, timeout_seconds=1))
     assert result.timed_out is True
-    pid = int(pid_file.read_text(encoding="utf-8"))
-    assert taskkilled == [pid]
-    assert instances[0]._kill_called is True  # the kill() fallback was exercised
-    assert_process_reaped(pid)
+    root = instances[0]
+    root_pid = root.pid  # the Popen root process (product-tracked PID)
+    interpreter_pid = int(pid_file.read_text(encoding="utf-8"))
+    assert taskkilled == [root_pid]  # taskkill seam hit with the Popen root PID
+    assert root._kill_called is True  # the Popen.kill() fallback was exercised
+    assert interpreter_pid == root_pid  # direct exec: root process == interpreter
+    assert_process_reaped(root_pid)
+    assert_process_reaped(interpreter_pid)
 
 
 def test_windows_branch_uses_create_new_process_group_flag(tmp_path: Path, monkeypatch):
@@ -539,16 +596,20 @@ def test_windows_branch_graceful_signal_is_seam_injected(tmp_path: Path, monkeyp
     argv = write_tree_child(pid_file, grand_pid_file)
     graceful: list[int] = []
     taskkilled: list[int] = []
+    instances: list = []
 
-    install_windows_popen_proxy(monkeypatch)
+    install_windows_popen_proxy(monkeypatch, instances=instances)
     monkeypatch.setattr(process_mod, "_is_windows", True)
     monkeypatch.setattr(process_mod, "_windows_graceful", lambda pid: graceful.append(pid))
     monkeypatch.setattr(process_mod, "_taskkill", make_taskkill_fake(taskkilled))
     result = run_process(ProcessRequest(argv=argv, cwd=tmp_path, timeout_seconds=1))
     assert result.timed_out is True
-    pid = int(pid_file.read_text(encoding="utf-8"))
+    root_pid = instances[0].pid  # the Popen root process (product-tracked PID)
+    interpreter_pid = int(pid_file.read_text(encoding="utf-8"))
     grand_pid = int(grand_pid_file.read_text(encoding="utf-8"))
-    assert graceful == [pid]
-    assert taskkilled == [pid]
-    assert_process_reaped(pid)
+    assert graceful == [root_pid]  # graceful seam hit on the Popen root PID
+    assert taskkilled == [root_pid]  # taskkill seam hit on the Popen root PID
+    assert interpreter_pid == root_pid  # direct exec: root process == interpreter
+    assert_process_reaped(root_pid)
+    assert_process_reaped(interpreter_pid)
     assert_process_reaped(grand_pid)
