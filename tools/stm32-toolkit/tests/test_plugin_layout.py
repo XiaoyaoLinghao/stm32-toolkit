@@ -441,3 +441,20 @@ def _project_snapshot(root: Path) -> dict[str, bytes]:
         for path in root.rglob("*")
         if path.is_file()
     }
+
+
+def test_unified_0_3_0_runtime_version_across_launcher_setup_and_skill():
+    """Regression: after the bump, no launcher/helper/skill selects 0.2.0."""
+    launcher = LAUNCHER.read_text(encoding="utf-8")
+    helper = SETUP_HELPER.read_text(encoding="utf-8")
+    skill = SETUP_SKILL.read_text(encoding="utf-8")
+    manifest = json.loads(PLUGIN_MANIFEST.read_text(encoding="utf-8"))
+
+    assert manifest["version"] == __version__ == "0.3.0"
+    assert "runtime\\0.3.0\\Scripts\\python.exe" in launcher
+    assert "runtime/0.3.0/Scripts/python.exe" in launcher.replace("\\", "/")
+    assert "0.2.0" not in launcher
+    assert '$RuntimeVersion = "0.3.0"' in helper
+    assert "0.2.0" not in helper
+    assert "${CLAUDE_PLUGIN_DATA}/runtime/0.3.0" in skill
+    assert "0.2.0" not in skill
