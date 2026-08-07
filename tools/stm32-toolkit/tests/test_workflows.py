@@ -655,3 +655,34 @@ def test_build_workflow_rejects_a_file_project_root(tmp_path: Path):
     assert result.ok is False
     assert result.code == WORKFLOW_INPUT_INVALID
     assert dict(result.details) == {"field": "projectRoot", "rule": "value"}
+
+
+def test_convert_workflow_rejects_unsafe_uvprojx(tmp_path: Path):
+    root = keil_repo(tmp_path)
+
+    result = convert_keil_workflow(root, uvprojx="../escape.uvprojx")
+
+    assert result.ok is False
+    assert result.code == WORKFLOW_INPUT_INVALID
+    assert dict(result.details) == {"field": "uvprojx", "rule": "portablePath"}
+    assert result.operation == "keil-conversion-plan"
+
+
+def test_configure_workflow_translates_stable_generation_errors(
+    monkeypatch, tmp_path: Path
+):
+    from stm32_toolkit.generation import GenerationError
+
+    root = prepare_project(tmp_path)
+
+    def plan_failure(model):
+        raise GenerationError(
+            "GENERATION_MODEL_INVALID", "model is invalid", {"field": "model", "rule": "value"}
+        )
+
+    monkeypatch.setattr(workflows_mod, "plan_project_configuration", plan_failure)
+    result = configure_project_workflow(root)
+
+    assert result.ok is False
+    assert result.code == "GENERATION_MODEL_INVALID"
+    assert result.operation == "project-configuration-plan"
