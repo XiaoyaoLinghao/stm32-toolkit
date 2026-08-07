@@ -457,4 +457,7 @@ def test_unified_0_3_0_runtime_version_across_launcher_setup_and_skill():
     assert '$RuntimeVersion = "0.3.0"' in helper
     assert "0.2.0" not in helper
     assert "${CLAUDE_PLUGIN_DATA}/runtime/0.3.0" in skill
-    assert "0.2.0" not in skill
+    assert "${CLAUDE_PLUGIN_DATA}/runtime/.staging/0.3.0-<id>" in skill
+    # The only 0.2.0 mention is the required non-current-version evidence.
+    assert "existing `0.2.0` runtime reports `broken`" in skill
+    assert skill.count("0.2.0") == 1
