@@ -226,7 +226,7 @@ implicit reset.
 - [x] Commit product/tests first and the reconciled report last. The report
   records this accepted base and the code head before its own commit and never
   records its own final SHA.
-- [ ] Push, create a ready PR targeting `master`, verify local/remote/PR head
+- [x] Push, create a ready PR targeting `master`, verify local/remote/PR head
   identity, review the full accepted-base-to-final-head diff in a clean detached
   worktree, correct findings on the same branch, and merge without deleting the
   remote branch only after all non-deferred gates pass.
