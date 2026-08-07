@@ -195,6 +195,24 @@ def test_incompatible_owner_record_is_never_reclaimed(tmp_path: Path, field, val
     assert json.loads(path.read_text(encoding="utf-8"))[field] == value
 
 
+def test_truncated_owner_record_is_never_reclaimed_or_overwritten(tmp_path: Path):
+    successor = manager(
+        tmp_path / "data",
+        SUCCESSOR,
+        inspected={OWNER.pid: None, SUCCESSOR.pid: SUCCESSOR},
+        health=False,
+    )
+    path = successor.record_path("probe-123")
+    path.parent.mkdir(parents=True)
+    path.write_bytes(b'{"schemaVersion":1')
+
+    with pytest.raises(ProbeLeaseError) as error:
+        acquire(successor, workspace="workspace-b")
+
+    assert error.value.code == "PROBE_REGISTRY_UNAVAILABLE"
+    assert path.read_bytes() == b'{"schemaVersion":1'
+
+
 def test_heartbeat_updates_only_the_current_lease(tmp_path: Path):
     first_manager = manager(tmp_path / "data", OWNER, now=NOW)
     lease = acquire(first_manager)
@@ -414,3 +432,57 @@ else:
     )
     assert successor.returncode == 0, successor.stderr
     assert successor.stdout.strip() == "ACQUIRED:workspace-child"
+
+
+def test_real_crashed_owner_releases_guard_and_allows_safe_reclaim(tmp_path: Path):
+    data_root = tmp_path / "data"
+    source_root = Path(__file__).resolve().parents[1] / "src"
+    script = """
+import os
+import sys
+from pathlib import Path
+from stm32_toolkit.probe.lease import ProbeLeaseManager
+from stm32_toolkit.probe.model import OperationLevel
+
+lease = ProbeLeaseManager(Path(sys.argv[1])).acquire(
+    probe_id="probe-crash",
+    workspace_id="workspace-crashed",
+    session_id="session-crashed",
+    operation_level=OperationLevel.OBSERVE,
+    health_url="http://127.0.0.1:43125/health",
+)
+print(lease.lease_id, flush=True)
+os._exit(0)
+"""
+    environment = os.environ.copy()
+    environment["PYTHONPATH"] = str(source_root)
+    process = subprocess.Popen(
+        [sys.executable, "-c", script, str(data_root)],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        env=environment,
+    )
+    stdout, stderr = process.communicate(timeout=10)
+    assert process.returncode == 0, stderr
+    crashed_lease_id = stdout.strip()
+    assert crashed_lease_id.startswith("lease-")
+
+    successor_manager = manager(
+        data_root,
+        SUCCESSOR,
+        inspected={process.pid: None, SUCCESSOR.pid: SUCCESSOR},
+        health=False,
+    )
+    successor = successor_manager.acquire(
+        probe_id="probe-crash",
+        workspace_id="workspace-successor",
+        session_id="session-successor",
+        operation_level=OperationLevel.OBSERVE,
+        health_url="http://127.0.0.1:43126/health",
+    )
+    try:
+        assert successor.lease_id != crashed_lease_id
+        assert successor.owner.workspace_id == "workspace-successor"
+    finally:
+        successor.release()

@@ -100,6 +100,34 @@ def _write_endpoint(path: Path, endpoint: ProbeEndpoint) -> None:
         raise
 
 
+async def _read_bounded_request_body(request: web.Request) -> bytes:
+    if request.content_length is not None and request.content_length > MAX_REQUEST_BYTES:
+        raise ProbeProtocolError(
+            "PROBE_REQUEST_TOO_LARGE",
+            "Probe request exceeds the body limit",
+            {"limit": MAX_REQUEST_BYTES},
+        )
+    body = bytearray()
+    while True:
+        remaining = MAX_REQUEST_BYTES + 1 - len(body)
+        if remaining <= 0:
+            raise ProbeProtocolError(
+                "PROBE_REQUEST_TOO_LARGE",
+                "Probe request exceeds the body limit",
+                {"limit": MAX_REQUEST_BYTES},
+            )
+        chunk = await request.content.read(min(65_536, remaining))
+        if not chunk:
+            return bytes(body)
+        body.extend(chunk)
+        if len(body) > MAX_REQUEST_BYTES:
+            raise ProbeProtocolError(
+                "PROBE_REQUEST_TOO_LARGE",
+                "Probe request exceeds the body limit",
+                {"limit": MAX_REQUEST_BYTES},
+            )
+
+
 def _ensure_safe_session_root(data_root: Path, session_root: Path) -> None:
     lexical_data = data_root.expanduser().absolute()
     lexical_session = session_root.expanduser().absolute()
@@ -177,6 +205,7 @@ class ProbeService:
         session_root: Path,
         token_factory: Callable[[], bytes] = lambda: secrets.token_bytes(32),
         heartbeat_interval_seconds: float = 5.0,
+        body_read_timeout_seconds: float = 2.0,
     ) -> None:
         self._backend = backend
         self._lease_manager = lease_manager
@@ -188,7 +217,10 @@ class ProbeService:
         self._token_factory = token_factory
         if heartbeat_interval_seconds <= 0 or heartbeat_interval_seconds > 60:
             raise ValueError("Probe Service heartbeat interval is invalid")
+        if body_read_timeout_seconds <= 0 or body_read_timeout_seconds > 30:
+            raise ValueError("Probe Service body read timeout is invalid")
         self._heartbeat_interval_seconds = heartbeat_interval_seconds
+        self._body_read_timeout_seconds = body_read_timeout_seconds
         self._runner: web.AppRunner | None = None
         self._lease: ProbeLease | None = None
         self._endpoint: ProbeEndpoint | None = None
@@ -394,12 +426,22 @@ class ProbeService:
         access_failure = self._request_access_failure(web_request)
         if access_failure is not None:
             return access_failure
-        body = await web_request.content.read(MAX_REQUEST_BYTES + 1)
-        if len(body) > MAX_REQUEST_BYTES:
+        try:
+            body = await asyncio.wait_for(
+                _read_bounded_request_body(web_request),
+                timeout=self._body_read_timeout_seconds,
+            )
+        except asyncio.TimeoutError:
             return self._failure(
-                "PROBE_REQUEST_TOO_LARGE",
-                "Probe request exceeds the body limit",
-                details={"limit": MAX_REQUEST_BYTES},
+                "PROBE_REQUEST_TIMEOUT",
+                "Probe request body was not received before the deadline",
+                status=408,
+            )
+        except ProbeProtocolError as error:
+            return self._failure(
+                error.code,
+                error.message,
+                details=error.details,
                 status=413,
             )
         try:

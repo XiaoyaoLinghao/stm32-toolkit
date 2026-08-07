@@ -7,6 +7,7 @@ import os
 import stat
 import subprocess
 import threading
+from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -56,8 +57,14 @@ def make_service(
     data_root: Path | None = None,
     session_root: Path | None = None,
     heartbeat_interval_seconds: float = 5.0,
+    body_read_timeout_seconds: float | None = None,
 ) -> ProbeService:
     configured_data_root = data_root or tmp_path / "plugin-data"
+    timeout_options = (
+        {"body_read_timeout_seconds": body_read_timeout_seconds}
+        if body_read_timeout_seconds is not None
+        else {}
+    )
     return ProbeService(
         backend=backend or fake_backend(),
         lease_manager=lease_manager(configured_data_root),
@@ -69,6 +76,7 @@ def make_service(
         or configured_data_root / "projects" / "workspace-a" / "sessions" / "session-a",
         token_factory=lambda: b"\x11" * 32,
         heartbeat_interval_seconds=heartbeat_interval_seconds,
+        **timeout_options,
     )
 
 
@@ -100,6 +108,24 @@ def test_service_binds_loopback_dynamic_port_and_publishes_private_endpoint(tmp_
             await service.stop()
 
     run(scenario())
+
+
+def test_service_rejects_non_loopback_bind_configuration(tmp_path: Path):
+    options: dict[str, object] = {
+        "backend": fake_backend(),
+        "lease_manager": lease_manager(tmp_path / "plugin-data"),
+        "probe_id": "probe-a",
+        "workspace_id": "workspace-a",
+        "session_id": "session-a",
+        "operation_level": OperationLevel.OBSERVE,
+        "session_root": tmp_path / "plugin-data" / "session-a",
+        "bind_host": "0.0.0.0",
+    }
+
+    with pytest.raises(TypeError):
+        ProbeService(**options)
+
+    assert not (tmp_path / "plugin-data").exists()
 
 
 def test_default_health_checker_authenticates_live_service_lease(tmp_path: Path):
@@ -157,9 +183,24 @@ def test_client_lists_attaches_and_reads_without_halting(tmp_path: Path):
     ("mutation", "code"),
     [
         (lambda endpoint: endpoint.with_token("00" * 32), "PROBE_AUTH_REQUIRED"),
+        (lambda endpoint: endpoint.with_token(""), "PROBE_AUTH_REQUIRED"),
+        (
+            lambda endpoint: replace(
+                endpoint, protocol="stm32-toolkit-probe/2"
+            ),
+            "PROBE_PROTOCOL_INCOMPATIBLE",
+        ),
         (
             lambda endpoint: endpoint.with_workspace("workspace-b"),
             "PROBE_SESSION_MISMATCH",
+        ),
+        (
+            lambda endpoint: replace(endpoint, session_id="session-b"),
+            "PROBE_SESSION_MISMATCH",
+        ),
+        (
+            lambda endpoint: replace(endpoint, lease_id="lease-stale"),
+            "PROBE_LEASE_LOST",
         ),
         (
             lambda endpoint: endpoint.with_toolkit_version("0.4.0"),
@@ -215,18 +256,27 @@ def test_cross_origin_and_wrong_content_type_are_rejected(tmp_path: Path):
     async def scenario():
         service = make_service(tmp_path)
         endpoint = await service.start()
+        clients: list[ProbeClient] = []
         try:
             origin_client = ProbeClient(endpoint, extra_headers={"Origin": "https://evil.invalid"})
+            clients.append(origin_client)
             with pytest.raises(ProbeClientError) as origin_error:
                 await origin_client.list_probes()
             assert origin_error.value.code == "PROBE_ORIGIN_REJECTED"
 
+            host_client = ProbeClient(endpoint, extra_headers={"Host": "evil.invalid"})
+            clients.append(host_client)
+            with pytest.raises(ProbeClientError) as host_error:
+                await host_client.list_probes()
+            assert host_error.value.code == "PROBE_HOST_REJECTED"
+
             content_client = ProbeClient(endpoint, content_type="text/plain")
+            clients.append(content_client)
             with pytest.raises(ProbeClientError) as content_error:
                 await content_client.list_probes()
             assert content_error.value.code == "PROBE_CONTENT_TYPE_REQUIRED"
         finally:
-            for client in (origin_client, content_client):
+            for client in clients:
                 try:
                     await client.close()
                 except ProbeClientError:
@@ -248,6 +298,54 @@ def test_oversized_body_is_rejected_without_backend_dispatch(tmp_path: Path):
             assert error.value.code == "PROBE_REQUEST_TOO_LARGE"
             assert backend.events == []
         finally:
+            await service.stop()
+
+    run(scenario())
+
+
+def test_slow_incomplete_body_is_rejected_on_service_deadline(tmp_path: Path):
+    async def scenario():
+        backend = fake_backend()
+        service = make_service(
+            tmp_path,
+            backend=backend,
+            body_read_timeout_seconds=0.02,
+        )
+        endpoint = await service.start()
+        reader: asyncio.StreamReader | None = None
+        writer: asyncio.StreamWriter | None = None
+        try:
+            reader, writer = await asyncio.open_connection(endpoint.host, endpoint.port)
+            request_head = (
+                "POST /v1/request HTTP/1.1\r\n"
+                f"Host: {endpoint.host}:{endpoint.port}\r\n"
+                f"Authorization: Bearer {endpoint.token}\r\n"
+                "Content-Type: application/json\r\n"
+                "Content-Length: 100\r\n"
+                "Connection: close\r\n\r\n"
+                "{"
+            ).encode("ascii")
+            writer.write(request_head)
+            await writer.drain()
+
+            response_head = await asyncio.wait_for(
+                reader.readuntil(b"\r\n\r\n"), timeout=1
+            )
+            assert response_head.startswith(b"HTTP/1.1 408")
+            content_length = next(
+                int(line.split(b":", 1)[1].strip())
+                for line in response_head.split(b"\r\n")
+                if line.lower().startswith(b"content-length:")
+            )
+            response_body = await asyncio.wait_for(
+                reader.readexactly(content_length), timeout=1
+            )
+            assert b"PROBE_REQUEST_TIMEOUT" in response_body
+            assert backend.events == []
+        finally:
+            if writer is not None:
+                writer.close()
+                await writer.wait_closed()
             await service.stop()
 
     run(scenario())
