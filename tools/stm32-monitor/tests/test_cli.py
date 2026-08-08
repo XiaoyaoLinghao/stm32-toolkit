@@ -111,3 +111,90 @@ def test_module_entrypoint_delegates_to_cli_without_importing_legacy_runtime() -
     finally:
         sys.argv = original
 
+
+def test_cli_returns_sanitized_json_failure_without_traceback(tmp_path: Path) -> None:
+    from stm32_monitor.cli import main
+    from stm32_monitor.runtime import MonitorRuntimeError
+
+    class FailingRuntime(FakeRuntime):
+        async def start(self, config):
+            raise MonitorRuntimeError("MONITOR_RUNTIME_BUSY", "Workspace is busy")
+
+    project = tmp_path / "project"
+    project.mkdir()
+    output = io.StringIO()
+    code = main(
+        [
+            "serve",
+            "--project",
+            str(project),
+            "--data-root",
+            str(tmp_path / "data"),
+            "--session-id",
+            "session-a",
+            "--json",
+        ],
+        _runtime_factory=FailingRuntime,
+        _stdout=output,
+    )
+    assert code == 1
+    assert json.loads(output.getvalue()) == {
+        "ok": False,
+        "code": "MONITOR_RUNTIME_BUSY",
+        "message": "Workspace is busy",
+    }
+
+    class HostileRuntime(FakeRuntime):
+        async def start(self, config):
+            error = RuntimeError("SECRET C:\\private\\token.txt")
+            error.code = "FORGED"  # type: ignore[attr-defined]
+            error.message = "SECRET " + "d" * 64  # type: ignore[attr-defined]
+            raise error
+
+    hostile_output = io.StringIO()
+    hostile_code = main(
+        [
+            "serve",
+            "--project",
+            str(project),
+            "--data-root",
+            str(tmp_path / "data"),
+            "--session-id",
+            "session-a",
+            "--json",
+        ],
+        _runtime_factory=HostileRuntime,
+        _stdout=hostile_output,
+    )
+    assert hostile_code == 1
+    assert json.loads(hostile_output.getvalue()) == {
+        "ok": False,
+        "code": "MONITOR_INPUT_INVALID",
+        "message": "Monitor service failed",
+    }
+
+
+def test_cli_maps_keyboard_interrupt_to_130(tmp_path: Path) -> None:
+    from stm32_monitor.cli import main
+
+    class InterruptedRuntime(FakeRuntime):
+        async def start(self, config):
+            raise KeyboardInterrupt
+
+    project = tmp_path / "project"
+    project.mkdir()
+    code = main(
+        [
+            "serve",
+            "--project",
+            str(project),
+            "--data-root",
+            str(tmp_path / "data"),
+            "--session-id",
+            "session-a",
+            "--json",
+        ],
+        _runtime_factory=InterruptedRuntime,
+        _stdout=io.StringIO(),
+    )
+    assert code == 130
