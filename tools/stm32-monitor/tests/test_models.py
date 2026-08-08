@@ -448,8 +448,10 @@ def test_protocol_result_snapshots_and_serializes_known_history_and_export_model
 @pytest.mark.parametrize(
     "forgery",
     [
+        "page-subclass",
         "batch-subclass",
         "binding-subclass",
+        "sample-subclass",
         "sample-status",
         "watch-subclass",
         "nested-json-subclass",
@@ -468,8 +470,19 @@ def test_history_protocol_snapshot_rejects_forged_current_object_graph(
     )
     batch = _history_slice([sample])
     page = HistoryPage.create((batch,), next_cursor=None)
+    candidate = page
 
-    if forgery == "batch-subclass":
+    if forgery == "page-subclass":
+        class DerivedPage(HistoryPage):
+            pass
+
+        candidate = DerivedPage(
+            page.batches,
+            page.value_count,
+            page.next_cursor,
+            page.serialized_bytes,
+        )
+    elif forgery == "batch-subclass":
         class DerivedBatch(HistoryBatchSlice):
             pass
 
@@ -488,6 +501,18 @@ def test_history_protocol_snapshot_rejects_forged_current_object_graph(
             for field in binding.__dataclass_fields__
         })
         object.__setattr__(batch, "binding", derived)
+    elif forgery == "sample-subclass":
+        class DerivedSample(SampleValue):
+            pass
+
+        derived = DerivedSample(
+            sample.watch,
+            sample.status,
+            typed_value=sample.typed_value,
+            code=sample.code,
+            definition=sample.definition,
+        )
+        object.__setattr__(batch, "values", (derived,))
     elif forgery == "sample-status":
         object.__setattr__(sample, "status", "NO")
     elif forgery == "watch-subclass":
@@ -512,7 +537,7 @@ def test_history_protocol_snapshot_rejects_forged_current_object_graph(
         object.__setattr__(page, "value_count", 2)
 
     with pytest.raises((TypeError, ValueError)):
-        success("history.query", page)
+        success("history.query", candidate)
 
 
 def test_history_page_rejects_subclasses_ordinal_gaps_count_mismatch_and_bad_cursor() -> None:
