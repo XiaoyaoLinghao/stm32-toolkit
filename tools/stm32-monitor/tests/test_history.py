@@ -33,13 +33,13 @@ def _binding(paths: WorkspacePaths) -> ObservationBinding:
         physical_target="stm32f407vg",
         build_id="b" * 64,
         elf_sha256="e" * 64,
-        input_snapshot_sha256="i" * 64,
+        input_snapshot_sha256="f" * 64,
         git_head="a" * 40,
         git_dirty=False,
         flash_session_id="flash-1",
         lease_id="lease-1",
         dwarf_sha256="d" * 64,
-        svd_sha256="s" * 64,
+        svd_sha256="a" * 64,
     )
 
 
@@ -135,7 +135,7 @@ def test_history_paging_caps_values_and_serialized_bytes(tmp_path: Path, monkeyp
         for sequence in range(5):
             assert store.append_batch(_batch(paths, sequence, value="x" * 80)).ok
         monkeypatch.setattr(history_module, "MAX_HISTORY_VALUES", 2)
-        monkeypatch.setattr(history_module, "MAX_HISTORY_PAGE_BYTES", 2_000)
+        monkeypatch.setattr(history_module, "MAX_HISTORY_PAGE_BYTES", 3_000)
         first = store.query_history(HistoryQuery("monitor-1", 0, 2_000_000_000, limit=10))
         assert first.ok and len(first.data.values) == 2 and first.data.next_cursor is not None
         second = store.query_history(HistoryQuery("monitor-1", 0, 2_000_000_000, limit=10, cursor=first.data.next_cursor))
@@ -204,3 +204,40 @@ def test_database_plus_wal_hard_stop_prevents_new_batch(tmp_path: Path, monkeypa
     finally:
         store.close()
 
+
+def test_wrong_workspace_batch_invalid_cursor_and_oversized_row_fail_closed(tmp_path: Path, monkeypatch) -> None:
+    import stm32_monitor.history as history_module
+
+    paths = _paths(tmp_path)
+    store = HistoryStore(paths)
+    try:
+        wrong = _binding(paths).to_dict()
+        wrong["workspaceId"] = "c" * 24
+        batch = _batch(paths, 1)
+        foreign = SampleBatch(
+            binding=ObservationBinding.from_dict(wrong), group_id=batch.group_id,
+            group_revision=batch.group_revision, run_id=batch.run_id, sequence=batch.sequence,
+            scheduled_unix_ns=batch.scheduled_unix_ns, captured_unix_ns=batch.captured_unix_ns,
+            latency_ns=batch.latency_ns, actual_rate_hz=batch.actual_rate_hz,
+            subscriber_drops=0, history_drops=0, deadline_drops=0, values=batch.values,
+        )
+        assert store.append_batch(foreign).code == "MONITOR_WORKSPACE_MISMATCH"
+        assert store.query_history(HistoryQuery("monitor-1", 0, 2_000_000_000, cursor="bad")).code == "MONITOR_HISTORY_QUERY_INVALID"
+
+        assert store.append_batch(batch).ok
+        monkeypatch.setattr(history_module, "MAX_HISTORY_PAGE_BYTES", 1)
+        assert store.query_history(HistoryQuery("monitor-1", 0, 2_000_000_000)).code == "MONITOR_HISTORY_LIMIT_EXCEEDED"
+    finally:
+        store.close()
+
+
+def test_invalid_retention_and_empty_retention_do_not_create_storage(tmp_path: Path) -> None:
+    paths = _paths(tmp_path)
+    store = HistoryStore(paths)
+    try:
+        assert store.run_retention(now_ns=-1).code == "MONITOR_REQUEST_INVALID"
+        result = store.run_retention(now_ns=10_000)
+        assert result.ok and result.data == {"deletedBatches": 0, "logicalBytes": 0, "passes": 0}
+        assert not paths.monitor_root.exists()
+    finally:
+        store.close()

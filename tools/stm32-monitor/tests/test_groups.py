@@ -1,7 +1,11 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
+import subprocess
+import threading
+from dataclasses import replace
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from uuid import UUID
@@ -10,6 +14,7 @@ import pytest
 
 from stm32_monitor.groups import GroupStore
 from stm32_monitor.models import WatchItem
+from stm32_monitor.storage import MonitorDatabase, StorageFailure
 from stm32_toolkit.paths import WorkspacePaths
 
 
@@ -18,7 +23,7 @@ LOGICAL_ID = UUID("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
 
 def _paths(tmp_path: Path, *, logical_id: UUID = LOGICAL_ID) -> WorkspacePaths:
     project = tmp_path / f"project-{logical_id}"
-    project.mkdir()
+    project.mkdir(parents=True)
     return WorkspacePaths.from_roots(tmp_path / "state", project, logical_id, "monitor-1")
 
 
@@ -53,6 +58,7 @@ def test_authorized_create_persists_only_under_workspace_monitor_root(tmp_path: 
         assert paths.monitor_root.joinpath("monitor.sqlite3").is_file()
         assert list(paths.project_root.iterdir()) == []
         assert store.get_group(result.data.group_id).data == result.data
+        json.dumps(store.list_groups().to_dict())
     finally:
         store.close()
 
@@ -173,6 +179,44 @@ def test_two_writers_serialize_without_lost_groups(tmp_path: Path) -> None:
         second.close()
 
 
+def test_readers_progress_while_bounded_writer_serializes_mutations(tmp_path: Path) -> None:
+    paths = _paths(tmp_path)
+    stores = [GroupStore(paths) for _ in range(4)]
+    try:
+        with ThreadPoolExecutor(max_workers=8) as executor:
+            mutations = [
+                executor.submit(stores[index % 4].create_group, f"G{index}", "", 250, (), authorized=True)
+                for index in range(12)
+            ]
+            reads = [executor.submit(stores[index % 4].list_groups) for index in range(24)]
+        assert all(future.result().ok for future in mutations)
+        assert all(future.result().ok for future in reads)
+        assert len(stores[0].list_groups().data) == 12
+    finally:
+        for store in stores:
+            store.close()
+
+
+def test_writer_close_waits_for_owned_mutation_to_finish(tmp_path: Path) -> None:
+    database = MonitorDatabase(_paths(tmp_path))
+    entered = threading.Event()
+    release = threading.Event()
+
+    def mutation(connection):
+        entered.set()
+        assert release.wait(timeout=5)
+        return "committed"
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        writing = executor.submit(database.write, mutation)
+        assert entered.wait(timeout=5)
+        closing = executor.submit(database.close)
+        assert not closing.done()
+        release.set()
+        assert writing.result(timeout=5) == "committed"
+        closing.result(timeout=5)
+
+
 def test_wrong_workspace_future_version_and_corruption_are_stable_failures(tmp_path: Path) -> None:
     paths = _paths(tmp_path)
     store = GroupStore(paths)
@@ -218,10 +262,16 @@ def test_redirected_monitor_root_is_rejected_before_database_open(tmp_path: Path
     outside = tmp_path / "outside"
     outside.mkdir()
     paths.workspace_root.mkdir(parents=True)
-    try:
+    if os.name == "nt":
+        created = subprocess.run(
+            ["cmd", "/c", "mklink", "/J", str(paths.monitor_root), str(outside)],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        assert created.returncode == 0, created.stderr
+    else:
         paths.monitor_root.symlink_to(outside, target_is_directory=True)
-    except OSError:
-        pytest.skip("host cannot create directory redirects")
 
     store = GroupStore(paths)
     try:
@@ -231,3 +281,200 @@ def test_redirected_monitor_root_is_rejected_before_database_open(tmp_path: Path
     finally:
         store.close()
 
+
+def test_get_update_and_delete_missing_or_invalid_groups_are_stable(tmp_path: Path) -> None:
+    store = GroupStore(_paths(tmp_path))
+    missing = UUID("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb")
+    try:
+        assert store.get_group("bad").code == "MONITOR_REQUEST_INVALID"
+        assert store.get_group(missing).code == "MONITOR_GROUP_NOT_FOUND"
+        assert store.update_group(missing, expected_revision=1, name="new", authorized=True).code == "MONITOR_GROUP_NOT_FOUND"
+        assert store.update_group(missing, expected_revision=True, authorized=True).code == "MONITOR_REQUEST_INVALID"
+        assert store.update_group(missing, expected_revision=1, authorized=False).code == "MONITOR_AUTH_REQUIRED"
+        assert store.delete_group(missing, expected_revision=1, authorized=True).code == "MONITOR_GROUP_NOT_FOUND"
+        assert store.delete_group(missing, expected_revision=True, authorized=True).code == "MONITOR_REQUEST_INVALID"
+        assert store.delete_group(missing, expected_revision=1, authorized=False).code == "MONITOR_AUTH_REQUIRED"
+    finally:
+        store.close()
+
+
+def test_update_revalidates_name_item_and_workspace_limits(tmp_path: Path, monkeypatch) -> None:
+    import stm32_monitor.groups as groups_module
+
+    store = GroupStore(_paths(tmp_path))
+    try:
+        one = _create(store, "One").data
+        two = store.create_group("Two", "", 250, (), authorized=True).data
+        assert store.update_group(one.group_id, expected_revision=1, name="TWO", authorized=True).code == "MONITOR_GROUP_CONFLICT"
+        assert store.update_group(one.group_id, expected_revision=1, interval_ms=1, authorized=True).code == "MONITOR_REQUEST_INVALID"
+        monkeypatch.setattr(groups_module, "MAX_ITEMS_PER_GROUP", 1)
+        assert store.update_group(two.group_id, expected_revision=1, items=(WatchItem.variable("a"), WatchItem.variable("b")), authorized=True).code == "MONITOR_GROUP_LIMIT_EXCEEDED"
+        monkeypatch.setattr(groups_module, "MAX_ITEMS_PER_GROUP", 256)
+        monkeypatch.setattr(groups_module, "MAX_TOTAL_ITEMS", 2)
+        assert store.update_group(two.group_id, expected_revision=1, items=(WatchItem.variable("a"),), authorized=True).code == "MONITOR_GROUP_LIMIT_EXCEEDED"
+    finally:
+        store.close()
+
+
+@pytest.mark.parametrize(
+    "document",
+    [
+        b'{"schemaVersion":2,"groups":[]}',
+        b'{"schemaVersion":1,"groups":[{"name":"G"}]}',
+        b'{"schemaVersion":1,"groups":[{"name":"G","description":"","intervalMs":250,"items":[{"kind":"address","address":"0"}]}]}',
+        b'{"schemaVersion":1,"groups":[{"name":"Same","description":"","intervalMs":250,"items":[]},{"name":"same","description":"","intervalMs":250,"items":[]}]}',
+    ],
+)
+def test_import_rejects_wrong_schema_partial_items_and_internal_conflicts(tmp_path: Path, document: bytes) -> None:
+    store = GroupStore(_paths(tmp_path))
+    try:
+        result = store.import_groups(document, authorized=True)
+        assert not result.ok and result.code == "MONITOR_IMPORT_INVALID"
+        assert store.list_groups().data == ()
+    finally:
+        store.close()
+
+
+def test_storage_rejects_escaped_nonregular_and_replaced_database(tmp_path: Path, monkeypatch) -> None:
+    import stm32_monitor.storage as storage_module
+
+    paths = _paths(tmp_path)
+    escaped = replace(paths, monitor_root=tmp_path / "escaped")
+    escaped_store = GroupStore(escaped)
+    try:
+        assert escaped_store.list_groups().code == "MONITOR_STORAGE_INVALID"
+    finally:
+        escaped_store.close()
+
+    paths.monitor_root.mkdir(parents=True)
+    paths.monitor_root.joinpath("monitor.sqlite3").mkdir()
+    nonregular = GroupStore(paths)
+    try:
+        assert nonregular.list_groups().code == "MONITOR_STORAGE_INVALID"
+    finally:
+        nonregular.close()
+
+    swap_paths = _paths(tmp_path / "swap")
+    seeded = GroupStore(swap_paths)
+    assert _create(seeded).ok
+    seeded.close()
+    real_identity = storage_module._identity
+    calls = 0
+
+    def changed_identity(path):
+        nonlocal calls
+        calls += 1
+        device, inode, size = real_identity(path)
+        return (device, inode + 1, size) if calls == 2 else (device, inode, size)
+
+    monkeypatch.setattr(storage_module, "_identity", changed_identity)
+    swapped = GroupStore(swap_paths)
+    try:
+        assert swapped.list_groups().code == "MONITOR_STORAGE_INVALID"
+    finally:
+        swapped.close()
+
+
+def test_storage_identity_schema_and_error_mapping_are_stable(tmp_path: Path) -> None:
+    paths = _paths(tmp_path)
+    database = MonitorDatabase(paths)
+    database.write(lambda connection: None)
+    file_path = paths.monitor_root / "monitor.sqlite3"
+
+    connection = sqlite3.connect(file_path)
+    connection.execute("PRAGMA application_id = 0")
+    connection.close()
+    with pytest.raises(StorageFailure, match="identity") as invalid_identity:
+        database.read(lambda connection: None, empty=None)
+    assert invalid_identity.value.code == "MONITOR_STORAGE_INVALID"
+    connection = sqlite3.connect(file_path)
+    connection.execute("PRAGMA application_id = 1398033741")
+    connection.close()
+
+    for exception, code in (
+        (sqlite3.IntegrityError("constraint"), "MONITOR_STORAGE_INVALID"),
+        (sqlite3.OperationalError("database is locked"), "MONITOR_STORAGE_BUSY"),
+        (sqlite3.OperationalError("other"), "MONITOR_STORAGE_INVALID"),
+        (sqlite3.DatabaseError("broken"), "MONITOR_STORAGE_CORRUPT"),
+    ):
+        with pytest.raises(StorageFailure) as raised:
+            database.write(lambda connection, error=exception: (_ for _ in ()).throw(error))
+        assert raised.value.code == code
+    with pytest.raises(StorageFailure) as busy_read:
+        database.read(lambda connection: (_ for _ in ()).throw(sqlite3.OperationalError("locked")), empty=None)
+    assert busy_read.value.code == "MONITOR_STORAGE_BUSY"
+    database.close()
+    database.close()
+    with pytest.raises(StorageFailure) as closed:
+        database.write(lambda connection: None)
+    assert closed.value.code == "MONITOR_STORAGE_INVALID"
+
+
+def test_storage_constructor_queue_schema_and_inspection_fail_closed(tmp_path: Path, monkeypatch) -> None:
+    import stm32_monitor.storage as storage_module
+
+    with pytest.raises(TypeError, match="WorkspacePaths"):
+        MonitorDatabase(object())
+
+    paths = _paths(tmp_path)
+    database = MonitorDatabase(paths)
+    database.write(lambda connection: None)
+    with pytest.raises(StorageFailure) as corrupt_read:
+        database.read(lambda connection: (_ for _ in ()).throw(sqlite3.DatabaseError("broken")), empty=None)
+    assert corrupt_read.value.code == "MONITOR_STORAGE_CORRUPT"
+
+    for _ in range(128):
+        assert database._writer.slots.acquire(blocking=False)
+    try:
+        with pytest.raises(StorageFailure) as full_queue:
+            database.write(lambda connection: None)
+        assert full_queue.value.code == "MONITOR_STORAGE_BUSY"
+    finally:
+        for _ in range(128):
+            database._writer.slots.release()
+    database.close()
+
+    inspect_paths = _paths(tmp_path / "inspect")
+    monkeypatch.setattr(storage_module, "_is_redirect", lambda path: (_ for _ in ()).throw(PermissionError("denied")))
+    inspected = GroupStore(inspect_paths)
+    try:
+        assert inspected.list_groups().code == "MONITOR_STORAGE_INVALID"
+    finally:
+        inspected.close()
+
+
+def test_store_rejects_workspace_state_inside_project_before_any_write(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    paths = WorkspacePaths.from_roots(project / ".state", project, LOGICAL_ID, "monitor-1")
+    store = GroupStore(paths)
+    try:
+        result = store.create_group("G", "", 250, (), authorized=True)
+        assert not result.ok and result.code == "MONITOR_STORAGE_INVALID"
+        assert not (project / ".state").exists()
+    finally:
+        store.close()
+
+
+def test_schema_initialization_rolls_back_every_statement_on_failure(tmp_path: Path, monkeypatch) -> None:
+    import stm32_monitor.storage as storage_module
+
+    paths = _paths(tmp_path)
+    statements = storage_module._SCHEMA_STATEMENTS
+    monkeypatch.setattr(
+        storage_module,
+        "_SCHEMA_STATEMENTS",
+        statements[:2] + ("THIS IS NOT SQL",) + statements[2:],
+    )
+    database = MonitorDatabase(paths)
+    try:
+        with pytest.raises(StorageFailure):
+            database.write(lambda connection: None)
+    finally:
+        database.close()
+    connection = sqlite3.connect(paths.monitor_root / "monitor.sqlite3")
+    try:
+        tables = connection.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'").fetchall()
+        assert tables == []
+    finally:
+        connection.close()

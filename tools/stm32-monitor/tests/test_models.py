@@ -38,7 +38,7 @@ def _config(tmp_path: Path) -> MonitorConfig:
 
 def _binding() -> ObservationBinding:
     return ObservationBinding(
-        workspace_id="w" * 64,
+        workspace_id="c" * 24,
         logical_project_id="33333333-3333-4333-8333-333333333333",
         session_id="monitor-1",
         probe_id="probe-serial-1",
@@ -46,13 +46,13 @@ def _binding() -> ObservationBinding:
         physical_target="stm32f407vg",
         build_id="b" * 64,
         elf_sha256="e" * 64,
-        input_snapshot_sha256="i" * 64,
+        input_snapshot_sha256="f" * 64,
         git_head="a" * 40,
         git_dirty=False,
         flash_session_id="flash-1",
         lease_id="lease-1",
         dwarf_sha256="d" * 64,
-        svd_sha256="s" * 64,
+        svd_sha256="a" * 64,
     )
 
 
@@ -130,6 +130,15 @@ def test_watch_group_rejects_out_of_range_interval(interval: int) -> None:
         WatchGroup.create("group", "", interval, (), group_id=GROUP_ID, now=NOW)
 
 
+def test_watch_group_enforces_name_and_description_character_limits() -> None:
+    accepted = WatchGroup.create("n" * 128, "d" * 1024, 250, (), group_id=GROUP_ID, now=NOW)
+    assert len(accepted.name) == 128 and len(accepted.description) == 1024
+    with pytest.raises(ValueError, match="name"):
+        WatchGroup.create("n" * 129, "", 250, (), group_id=GROUP_ID, now=NOW)
+    with pytest.raises(ValueError, match="description"):
+        WatchGroup.create("g", "d" * 1025, 250, (), group_id=GROUP_ID, now=NOW)
+
+
 def test_observation_and_sample_models_are_deeply_immutable_and_json_safe() -> None:
     typed = {"type": "uint32", "value": 7, "nested": [1, {"ok": True}]}
     sample = SampleValue(WatchItem.variable("counter"), "OK", typed_value=typed)
@@ -181,3 +190,64 @@ def test_protocol_json_parser_is_bounded_and_requires_an_object() -> None:
             parse_json_object(payload, limit=64)
         assert raised.value.code in {"MONITOR_REQUEST_INVALID", "MONITOR_IMPORT_INVALID"}
 
+
+def test_models_reject_mutable_or_malformed_evidence_boundaries(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    assert config.project_root.is_dir()
+    with pytest.raises(ValueError, match="directory"):
+        MonitorConfig(config.project_root / "missing", tmp_path / "other", "monitor-1")
+
+    with pytest.raises(TypeError, match="sets"):
+        SampleValue(WatchItem.variable("counter"), "OK", typed_value={"values": {1, 2}})
+    for item in (
+        {"kind": "register", "registerPath": "GPIOA.IDR"},
+        {"kind": "address", "address": "0x20000000"},
+    ):
+        if item["kind"] == "register":
+            assert WatchItem.from_dict(item) == WatchItem.register("GPIOA.IDR")
+        else:
+            with pytest.raises(ValueError):
+                WatchItem.from_dict(item)
+
+
+def test_group_sample_and_batch_reject_invalid_shapes() -> None:
+    with pytest.raises(ValueError, match="unique"):
+        WatchGroup.create("G", "", 250, (WatchItem.variable("x"), WatchItem.variable("x")), group_id=GROUP_ID, now=NOW)
+    with pytest.raises(ValueError, match="revision"):
+        WatchGroup(GROUP_ID, "G", "", 250, (), 0, NOW, NOW)
+    with pytest.raises(ValueError, match="status"):
+        SampleValue(WatchItem.variable("x"), "UNKNOWN", typed_value=1)
+    with pytest.raises(ValueError, match="typed value"):
+        SampleValue(WatchItem.variable("x"), "OK")
+    with pytest.raises(ValueError, match="code"):
+        SampleValue(WatchItem.variable("x"), "ERROR")
+
+    base = dict(
+        binding=_binding(), group_id=GROUP_ID, group_revision=1, run_id=RUN_ID,
+        sequence=1, scheduled_unix_ns=100, captured_unix_ns=200, latency_ns=100,
+        actual_rate_hz=4.0, subscriber_drops=0, history_drops=0, deadline_drops=0,
+        values=(SampleValue(WatchItem.variable("x"), "OK", typed_value=1),),
+    )
+    for update in (
+        {"group_revision": 0},
+        {"captured_unix_ns": 99},
+        {"actual_rate_hz": -1.0},
+        {"values": ("bad",)},
+    ):
+        with pytest.raises(ValueError):
+            SampleBatch(**(base | update))
+
+
+def test_binding_rejects_bad_git_and_non_boolean_dirty_state() -> None:
+    payload = _binding().to_dict()
+    payload["gitHead"] = "not-a-sha"
+    with pytest.raises(ValueError, match="Git HEAD"):
+        ObservationBinding.from_dict(payload)
+    payload = _binding().to_dict()
+    payload["gitDirty"] = 1
+    with pytest.raises(ValueError, match="dirty"):
+        ObservationBinding.from_dict(payload)
+    payload = _binding().to_dict()
+    payload.pop("leaseId")
+    with pytest.raises(ValueError, match="binding"):
+        ObservationBinding.from_dict(payload)

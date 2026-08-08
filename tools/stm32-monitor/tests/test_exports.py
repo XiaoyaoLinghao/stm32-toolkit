@@ -35,7 +35,7 @@ def _append(paths: WorkspacePaths, history: HistoryStore, value: object = 7) -> 
         physical_target="stm32f407vg",
         build_id="b" * 64,
         elf_sha256="e" * 64,
-        input_snapshot_sha256="i" * 64,
+        input_snapshot_sha256="f" * 64,
         git_head="a" * 40,
         git_dirty=False,
         flash_session_id="flash-1",
@@ -78,6 +78,7 @@ def test_export_requires_exact_authorization_and_uses_server_owned_path(tmp_path
         assert artifact.data_path.is_file() and artifact.manifest_path.is_file()
         assert paths.project_root.joinpath("export.jsonl").exists() is False
     finally:
+        exporter.close()
         history.close()
 
 
@@ -97,6 +98,7 @@ def test_jsonl_export_manifest_binds_sha_size_count_and_protocol(tmp_path: Path)
         assert manifest["valueCount"] == 1
         assert len(data.splitlines()) == 1
     finally:
+        exporter.close()
         history.close()
 
 
@@ -113,6 +115,7 @@ def test_csv_export_neutralizes_formula_cells(tmp_path: Path, dangerous: str) ->
         assert typed_value["value"].startswith("'")
         assert typed_value["value"][1:] == dangerous
     finally:
+        exporter.close()
         history.close()
 
 
@@ -135,6 +138,7 @@ def test_export_size_and_value_quotas_fail_without_published_directory(tmp_path:
         export_root = paths.monitor_root / "exports" / "monitor-1"
         assert not export_root.exists() or list(export_root.iterdir()) == []
     finally:
+        exporter.close()
         history.close()
 
 
@@ -153,6 +157,7 @@ def test_export_replace_failure_is_atomic_and_returns_stable_failure(tmp_path: P
         export_root = paths.monitor_root / "exports" / "monitor-1"
         assert not export_root.exists() or list(export_root.iterdir()) == []
     finally:
+        exporter.close()
         history.close()
 
 
@@ -164,3 +169,21 @@ def test_export_request_rejects_bad_format_range_and_session() -> None:
     with pytest.raises(ValueError):
         ExportRequest("monitor-1", 0, 1, "xlsx")
 
+
+def test_export_metadata_is_retrieved_only_by_id_and_detects_tampering(tmp_path: Path) -> None:
+    paths = _paths(tmp_path)
+    history = HistoryStore(paths)
+    exporter = HistoryExporter(paths, history)
+    try:
+        _append(paths, history)
+        created = exporter.create_export(ExportRequest("monitor-1", 0, 1_000, "jsonl"), authorized=True).data
+        loaded = exporter.get_export(created.export_id)
+        assert loaded.ok and loaded.data == created
+        assert exporter.get_export("not-a-uuid").code == "MONITOR_REQUEST_INVALID"
+        assert exporter.get_export(UUID("ffffffff-ffff-4fff-8fff-ffffffffffff")).code == "MONITOR_EXPORT_FAILED"
+
+        created.data_path.write_bytes(b"tampered")
+        assert exporter.get_export(created.export_id).code == "MONITOR_EXPORT_FAILED"
+    finally:
+        exporter.close()
+        history.close()
