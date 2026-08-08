@@ -21,8 +21,10 @@ from stm32_toolkit.monitor_observation import (
     open_monitor_observation,
 )
 from stm32_toolkit.probe.model import OperationLevel
+from stm32_toolkit.probe.lease import ProbeLeaseManager
 from stm32_toolkit.probe.protocol import PROBE_PROTOCOL_VERSION
 from stm32_toolkit.probe.service import ProbeEndpoint
+from stm32_toolkit.probe.supervisor import ProbeServiceSupervisor
 from stm32_toolkit.result import OperationResult
 from test_debug_read import Client, DebugEnv, debug_env
 
@@ -111,6 +113,14 @@ class Supervisor:
         self.endpoint = None
         if self.stop_error is not None:
             raise self.stop_error
+
+
+class RootSwapBackend:
+    def __init__(self) -> None:
+        self.closed = False
+
+    def close(self) -> None:
+        self.closed = True
 
 
 class Harness:
@@ -272,10 +282,14 @@ def test_external_root_parent_change_never_writes_into_project(
     before = _project_snapshot(debug_env.root)
     original = observation._safe_mkdir_chain
 
-    def changed_parent(root: Path, destination: Path) -> None:
+    def changed_parent(
+        root: Path,
+        destination: Path,
+        identities: tuple[tuple[Path, int, int], ...],
+    ) -> None:
         external_parent.rmdir()
         _directory_redirect(external_parent, debug_env.root)
-        original(root, destination)
+        original(root, destination, identities)
 
     monkeypatch.setattr(observation, "_safe_mkdir_chain", changed_parent)
     result = asyncio.run(
@@ -302,10 +316,14 @@ def test_external_root_identity_change_fails_before_backend_start(
     data_root = external_parent / "data"
     original = observation._safe_mkdir_chain
 
-    def changed_parent(root: Path, destination: Path) -> None:
+    def changed_parent(
+        root: Path,
+        destination: Path,
+        identities: tuple[tuple[Path, int, int], ...],
+    ) -> None:
         external_parent.rmdir()
         external_parent.mkdir()
-        original(root, destination)
+        original(root, destination, identities)
 
     monkeypatch.setattr(observation, "_safe_mkdir_chain", changed_parent)
     result = asyncio.run(
@@ -318,6 +336,69 @@ def test_external_root_identity_change_fails_before_backend_start(
     assert result.ok is False
     assert result.code == "MONITOR_REQUEST_INVALID"
     assert harness.supervisors == []
+
+
+def test_real_supervisor_root_swap_in_backend_factory_writes_no_replacement_state(
+    debug_env: DebugEnv, tmp_path: Path
+) -> None:
+    harness = Harness(debug_env)
+    external_parent = tmp_path / "real-supervisor-parent"
+    external_parent.mkdir()
+    displaced_parent = tmp_path / "real-supervisor-parent-displaced"
+    data_root = external_parent / "data"
+    replacement_snapshots: list[dict[str, tuple[str, bytes | None, int]]] = []
+    backends: list[RootSwapBackend] = []
+    supervisors: list[ProbeServiceSupervisor] = []
+
+    def swapping_backend_factory() -> RootSwapBackend:
+        try:
+            external_parent.rename(displaced_parent)
+            external_parent.mkdir()
+        except PermissionError:
+            replacement_snapshots.append(_project_snapshot(external_parent))
+            raise MonitorObservationError(
+                "MONITOR_REQUEST_INVALID", "Monitor data root identity changed"
+            ) from None
+        replacement_snapshots.append(_project_snapshot(external_parent))
+        backend = RootSwapBackend()
+        backends.append(backend)
+        return backend
+
+    def real_supervisor_factory(
+        config: object, lease_manager: object, backend_factory: object
+    ) -> ProbeServiceSupervisor:
+        assert isinstance(lease_manager, ProbeLeaseManager)
+        supervisor = ProbeServiceSupervisor(
+            config=config,
+            lease_manager=lease_manager,
+            backend_factory=backend_factory,
+        )
+        supervisors.append(supervisor)
+        return supervisor
+
+    seams = replace(
+        harness.seams(),
+        backend_factory=swapping_backend_factory,
+        lease_manager_factory=ProbeLeaseManager,
+        supervisor_factory=real_supervisor_factory,
+    )
+    result = asyncio.run(
+        open_monitor_observation(request(debug_env, data_root), _seams=seams)
+    )
+    if result.ok:
+        asyncio.run(result.data.close())
+
+    assert result.ok is False
+    assert result.code == "MONITOR_REQUEST_INVALID"
+    assert replacement_snapshots
+    assert _project_snapshot(external_parent) == replacement_snapshots[0]
+    assert all(supervisor.endpoint is None for supervisor in supervisors)
+    assert all(backend.closed for backend in backends)
+    assert not ProbeLeaseManager(data_root).record_path("probe-123").exists()
+    assert not list(tmp_path.rglob("probe-endpoint.json"))
+    released_parent = tmp_path / "real-supervisor-parent-released"
+    external_parent.rename(released_parent)
+    released_parent.rename(external_parent)
 
 
 def test_posix_directory_creation_uses_directory_descriptors(
@@ -345,7 +426,9 @@ def test_posix_directory_creation_uses_directory_descriptors(
     monkeypatch.setattr(
         observation.os,
         "fstat",
-        lambda descriptor: SimpleNamespace(st_mode=stat.S_IFDIR | 0o700),
+        lambda descriptor: SimpleNamespace(
+            st_mode=stat.S_IFDIR | 0o700, st_dev=1, st_ino=descriptor
+        ),
     )
     monkeypatch.setattr(observation.os, "close", closed.append)
 
@@ -369,7 +452,11 @@ def test_posix_directory_creation_rejects_non_directory_component(
     monkeypatch.setattr(
         observation.os,
         "fstat",
-        lambda descriptor: SimpleNamespace(st_mode=stat.S_IFREG | 0o600),
+        lambda descriptor: SimpleNamespace(
+            st_mode=(stat.S_IFDIR | 0o700) if descriptor == 20 else (stat.S_IFREG | 0o600),
+            st_dev=1,
+            st_ino=descriptor,
+        ),
     )
     monkeypatch.setattr(observation.os, "close", closed.append)
 
@@ -387,16 +474,415 @@ def test_posix_directory_identity_failure_closes_new_descriptor(
     closed: list[int] = []
     monkeypatch.setattr(observation.os, "open", lambda *args, **kwargs: next(descriptors))
     monkeypatch.setattr(observation.os, "mkdir", lambda *args, **kwargs: None)
-    monkeypatch.setattr(
-        observation.os,
-        "fstat",
-        lambda descriptor: (_ for _ in ()).throw(OSError("identity unavailable")),
-    )
+    def fake_fstat(descriptor: int) -> SimpleNamespace:
+        if descriptor == 31:
+            raise OSError("identity unavailable")
+        return SimpleNamespace(st_mode=stat.S_IFDIR | 0o700, st_dev=1, st_ino=30)
+
+    monkeypatch.setattr(observation.os, "fstat", fake_fstat)
     monkeypatch.setattr(observation.os, "close", closed.append)
 
     with pytest.raises(OSError, match="identity"):
         observation._safe_mkdir_posix(Path("/external"), Path("/external/data"))
     assert sorted(closed) == [30, 31]
+
+
+def test_posix_guard_revalidates_named_and_descriptor_identity_and_closes_all(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import stm32_toolkit.monitor_observation as observation
+
+    paths = (Path("/one"), Path("/one/two"))
+    identities = ((paths[0], 7, 11), (paths[1], 7, 12))
+    descriptors = iter((41, 42))
+    descriptor_identities = {41: 11, 42: 12}
+    closed: list[int] = []
+
+    monkeypatch.setattr(observation.os, "name", "posix")
+    monkeypatch.setattr(observation.os, "open", lambda *args, **kwargs: next(descriptors))
+    monkeypatch.setattr(
+        observation.os,
+        "lstat",
+        lambda path: SimpleNamespace(
+            st_mode=stat.S_IFDIR | 0o700,
+            st_dev=7,
+            st_ino=11 if path == paths[0] else 12,
+        ),
+    )
+    monkeypatch.setattr(
+        observation.os,
+        "fstat",
+        lambda descriptor: SimpleNamespace(
+            st_mode=stat.S_IFDIR | 0o700,
+            st_dev=7,
+            st_ino=descriptor_identities[descriptor],
+        ),
+    )
+
+    def close_descriptor(descriptor: int) -> None:
+        closed.append(descriptor)
+        if descriptor == 42:
+            raise OSError("close failed")
+
+    monkeypatch.setattr(observation.os, "close", close_descriptor)
+    guard = observation._DirectoryGuard(identities)
+    with pytest.raises(OSError, match="close failed"):
+        guard.close()
+    assert closed == [42, 41]
+    guard.close()
+    assert closed == [42, 41]
+
+
+def test_windows_guard_close_attempts_every_handle_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import stm32_toolkit.monitor_observation as observation
+
+    guard = observation._DirectoryGuard.__new__(observation._DirectoryGuard)
+    guard._identities = ()
+    guard._posix_descriptors = []
+    guard._windows_handles = [51, 52]
+    closed: list[int] = []
+
+    def close_handle(handle: int) -> None:
+        closed.append(handle)
+        if handle == 52:
+            raise OSError("handle close failed")
+
+    monkeypatch.setattr(observation, "_close_windows_handle", close_handle)
+    with pytest.raises(OSError, match="handle close failed"):
+        guard.close()
+    assert closed == [52, 51]
+    guard.close()
+    assert closed == [52, 51]
+
+
+def test_windows_close_handle_declares_signature_and_reports_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import ctypes
+    import stm32_toolkit.monitor_observation as observation
+
+    class CloseHandle:
+        argtypes = None
+        restype = None
+
+        def __call__(self, handle: object) -> int:
+            return 0
+
+    close_handle = CloseHandle()
+    monkeypatch.setattr(
+        ctypes,
+        "WinDLL",
+        lambda *args, **kwargs: SimpleNamespace(CloseHandle=close_handle),
+    )
+    monkeypatch.setattr(ctypes, "get_last_error", lambda: 6)
+
+    with pytest.raises(OSError):
+        observation._close_windows_handle(73)
+    assert close_handle.argtypes is not None
+    assert close_handle.restype is not None
+
+
+def test_posix_guard_constructor_closes_all_after_identity_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import stm32_toolkit.monitor_observation as observation
+
+    paths = (Path("/guard-one"), Path("/guard-one/two"))
+    identities = ((paths[0], 3, 21), (paths[1], 3, 22))
+    descriptors = iter((61, 62))
+    closed: list[int] = []
+    monkeypatch.setattr(observation.os, "name", "posix")
+    monkeypatch.setattr(observation.os, "open", lambda *args, **kwargs: next(descriptors))
+    monkeypatch.setattr(
+        observation.os,
+        "lstat",
+        lambda path: SimpleNamespace(
+            st_mode=stat.S_IFDIR | 0o700,
+            st_dev=3,
+            st_ino=21 if path == paths[0] else 999,
+        ),
+    )
+    monkeypatch.setattr(
+        observation.os,
+        "fstat",
+        lambda descriptor: SimpleNamespace(
+            st_mode=stat.S_IFDIR | 0o700,
+            st_dev=3,
+            st_ino=21 if descriptor == 61 else 22,
+        ),
+    )
+    monkeypatch.setattr(observation.os, "close", closed.append)
+
+    with pytest.raises(ValueError):
+        observation._DirectoryGuard(identities)
+    assert closed == [62, 61]
+
+
+def test_posix_directory_close_failure_closes_each_descriptor_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import stm32_toolkit.monitor_observation as observation
+
+    descriptors = iter((81, 82, 83))
+    closed: list[int] = []
+    monkeypatch.setattr(observation.os, "open", lambda *args, **kwargs: next(descriptors))
+    monkeypatch.setattr(observation.os, "mkdir", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        observation.os,
+        "fstat",
+        lambda descriptor: SimpleNamespace(
+            st_mode=stat.S_IFDIR | 0o700, st_dev=1, st_ino=descriptor
+        ),
+    )
+
+    def close_descriptor(descriptor: int) -> None:
+        closed.append(descriptor)
+        if descriptor == 83:
+            raise OSError("descriptor close failed")
+
+    monkeypatch.setattr(observation.os, "close", close_descriptor)
+
+    with pytest.raises(OSError, match="descriptor close failed"):
+        observation._safe_mkdir_posix(Path("/external"), Path("/external/data"))
+    assert closed == [83, 82, 81]
+
+
+def test_posix_guard_capture_is_cleaned_when_temporary_close_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import stm32_toolkit.monitor_observation as observation
+
+    class Guard:
+        def __init__(self) -> None:
+            self.close_calls = 0
+
+        def close(self) -> None:
+            self.close_calls += 1
+            raise RuntimeError("guard close also failed")
+
+    guard = Guard()
+    descriptors = iter((91, 92, 93))
+    monkeypatch.setattr(observation.os, "open", lambda *args, **kwargs: next(descriptors))
+    monkeypatch.setattr(observation.os, "mkdir", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        observation.os,
+        "fstat",
+        lambda descriptor: SimpleNamespace(
+            st_mode=stat.S_IFDIR | 0o700, st_dev=1, st_ino=descriptor
+        ),
+    )
+    monkeypatch.setattr(observation, "_DirectoryGuard", lambda identities: guard)
+    monkeypatch.setattr(
+        observation.os,
+        "close",
+        lambda descriptor: (_ for _ in ()).throw(OSError("temporary close failed"))
+        if descriptor == 93
+        else None,
+    )
+
+    with pytest.raises(OSError, match="temporary close failed"):
+        observation._safe_mkdir_posix(
+            Path("/external"),
+            Path("/external/data"),
+            capture_guard=True,
+        )
+    assert guard.close_calls == 1
+
+
+def test_posix_directory_guard_rejects_swap_between_walk_and_capture(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import stm32_toolkit.monitor_observation as observation
+
+    root = Path("/external")
+    destination = root / "data"
+    opened = iter((101, 102, 103))
+    temporary = {101: 1, 102: 2, 103: 3}
+    closed: list[int] = []
+
+    class Guard:
+        def __init__(
+            self, identities: tuple[tuple[Path, int, int], ...]
+        ) -> None:
+            assert identities[1] == (root, 5, 2)
+            raise ValueError
+
+        @classmethod
+        def capture(cls, destination: Path) -> object:
+            return object()
+
+    monkeypatch.setattr(observation, "_DirectoryGuard", Guard)
+    monkeypatch.setattr(observation.os, "open", lambda *args, **kwargs: next(opened))
+    monkeypatch.setattr(observation.os, "mkdir", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        observation.os,
+        "fstat",
+        lambda descriptor: SimpleNamespace(
+            st_mode=stat.S_IFDIR | 0o700,
+            st_dev=5,
+            st_ino=temporary[descriptor],
+        ),
+    )
+    monkeypatch.setattr(observation.os, "close", closed.append)
+
+    with pytest.raises(ValueError):
+        observation._safe_mkdir_posix(
+            root,
+            destination,
+            capture_guard=True,
+        )
+    assert sorted(closed) == [101, 102, 103]
+
+
+def test_windows_directory_creation_closes_guard_if_temporary_handle_close_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import stm32_toolkit.monitor_observation as observation
+
+    opened: list[int] = []
+    closed: list[int] = []
+
+    def open_handle(path: Path) -> int:
+        handle = len(opened) + 101
+        opened.append(handle)
+        return handle
+
+    def close_handle(handle: int) -> None:
+        closed.append(handle)
+        if handle == 101:
+            raise OSError("temporary handle close failed")
+
+    monkeypatch.setattr(observation, "_windows_directory_handle", open_handle)
+    monkeypatch.setattr(observation, "_close_windows_handle", close_handle)
+
+    root = tmp_path / "windows-create-root"
+    destination = root / "sessions" / "one"
+    with pytest.raises(OSError, match="temporary handle close failed"):
+        observation._safe_mkdir_windows(root, destination, ())
+    assert set(opened).issubset(closed)
+
+
+def test_windows_directory_creation_rejects_changed_anchor_identity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import stm32_toolkit.monitor_observation as observation
+
+    anchor = Path(tmp_path.anchor)
+    metadata = os.lstat(anchor)
+    closed: list[int] = []
+    monkeypatch.setattr(observation, "_windows_directory_handle", lambda path: 201)
+    monkeypatch.setattr(observation, "_close_windows_handle", closed.append)
+
+    with pytest.raises(ValueError):
+        observation._safe_mkdir_windows(
+            tmp_path / "root",
+            tmp_path / "root" / "session",
+            ((anchor, int(metadata.st_dev), int(metadata.st_ino) + 1),),
+        )
+    assert closed == [201]
+
+
+def test_safe_mkdir_chain_uses_posix_guard_result(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import stm32_toolkit.monitor_observation as observation
+
+    guard = object()
+    calls: list[tuple[Path, Path, tuple[tuple[Path, int, int], ...], bool]] = []
+    root = Path("/data")
+    destination = root / "session"
+    monkeypatch.setattr(observation.os, "name", "posix")
+    monkeypatch.setattr(observation, "_verify_ancestor_identities", lambda value: None)
+
+    def create(
+        root: Path,
+        destination: Path,
+        identities: tuple[tuple[Path, int, int], ...],
+        *,
+        capture_guard: bool,
+    ) -> object:
+        calls.append((root, destination, identities, capture_guard))
+        return guard
+
+    monkeypatch.setattr(observation, "_safe_mkdir_posix", create)
+
+    assert observation._safe_mkdir_chain(root, destination) is guard
+    assert calls == [(root, destination, (), True)]
+
+
+def test_directory_guard_capture_requires_existing_destination(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import stm32_toolkit.monitor_observation as observation
+
+    monkeypatch.setattr(observation, "_ancestor_identities", lambda destination: ())
+    with pytest.raises(ValueError):
+        observation._DirectoryGuard.capture(Path("/missing"))
+
+
+def test_guarded_backend_factory_closes_backend_when_root_identity_changes() -> None:
+    import stm32_toolkit.monitor_observation as observation
+
+    class Guard:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def verify(self) -> None:
+            self.calls += 1
+            if self.calls == 2:
+                raise ValueError
+
+    backend = RootSwapBackend()
+    guarded = observation._guard_backend_factory(Guard(), lambda: backend)
+
+    with pytest.raises(MonitorObservationError) as raised:
+        guarded()
+    assert raised.value.code == "MONITOR_REQUEST_INVALID"
+    assert backend.closed is True
+
+
+def test_guarded_backend_factory_cleanup_failure_has_priority() -> None:
+    import stm32_toolkit.monitor_observation as observation
+
+    class Guard:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def verify(self) -> None:
+            self.calls += 1
+            if self.calls == 2:
+                raise ValueError
+
+    class Backend:
+        def close(self) -> None:
+            raise RuntimeError("raw backend cleanup detail")
+
+    guarded = observation._guard_backend_factory(Guard(), Backend)
+
+    with pytest.raises(MonitorObservationError) as raised:
+        guarded()
+    assert raised.value.code == "MONITOR_CLEANUP_FAILED"
+    assert "detail" not in str(raised.value)
+
+
+def test_guarded_backend_factory_returns_only_after_two_identity_checks() -> None:
+    import stm32_toolkit.monitor_observation as observation
+
+    class Guard:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def verify(self) -> None:
+            self.calls += 1
+
+    guard = Guard()
+    backend = RootSwapBackend()
+    guarded = observation._guard_backend_factory(guard, lambda: backend)
+
+    assert guarded() is backend
+    assert guard.calls == 2
 
 
 def test_revalidate_rejects_firmware_epoch_change(
@@ -498,9 +984,21 @@ def test_revalidate_maps_binding_and_svd_failures(
     asyncio.run(exercise())
 
 
-def test_open_cancellation_awaits_cleanup(debug_env: DebugEnv, tmp_path: Path) -> None:
+def test_open_cancellation_awaits_cleanup(
+    debug_env: DebugEnv, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import stm32_toolkit.monitor_observation as observation
+
     harness = Harness(debug_env)
     seams = harness.seams()
+    guard_closes: list[object] = []
+    original_guard_close = observation._DirectoryGuard.close
+
+    def tracked_guard_close(guard: object) -> None:
+        guard_closes.append(guard)
+        original_guard_close(guard)
+
+    monkeypatch.setattr(observation._DirectoryGuard, "close", tracked_guard_close)
 
     async def cancel_bind(request: object, client: object) -> OperationResult:
         raise asyncio.CancelledError
@@ -514,15 +1012,26 @@ def test_open_cancellation_awaits_cleanup(debug_env: DebugEnv, tmp_path: Path) -
         )
     assert harness.clients[0].closed is True
     assert harness.supervisors[0].stopped is True
+    assert len(guard_closes) == 1
 
 
 def test_cleanup_failure_has_priority_when_open_fails(
-    debug_env: DebugEnv, tmp_path: Path
+    debug_env: DebugEnv, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    import stm32_toolkit.monitor_observation as observation
+
     harness = Harness(debug_env)
     harness.bind_result = OperationResult.failure("stm32_debug_bind", "DEBUG_FIRMWARE_CHANGED", "changed", {})
     seams = harness.seams()
     original = seams.client_factory
+    guard_closes: list[object] = []
+    original_guard_close = observation._DirectoryGuard.close
+
+    def tracked_guard_close(guard: object) -> None:
+        guard_closes.append(guard)
+        original_guard_close(guard)
+
+    monkeypatch.setattr(observation._DirectoryGuard, "close", tracked_guard_close)
 
     def broken_client(endpoint: object) -> ObservationClient:
         client = original(endpoint)
@@ -534,12 +1043,23 @@ def test_cleanup_failure_has_priority_when_open_fails(
     assert result.code == "MONITOR_CLEANUP_FAILED"
     assert "secret" not in str(result.to_dict())
     assert harness.supervisors[0].stopped is True
+    assert len(guard_closes) == 1
 
 
 def test_close_finishes_owned_cleanup_despite_repeated_cancellation(
-    debug_env: DebugEnv, tmp_path: Path
+    debug_env: DebugEnv, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    import stm32_toolkit.monitor_observation as observation
+
     harness = Harness(debug_env)
+    guard_closes: list[object] = []
+    original_guard_close = observation._DirectoryGuard.close
+
+    def tracked_guard_close(guard: object) -> None:
+        guard_closes.append(guard)
+        original_guard_close(guard)
+
+    monkeypatch.setattr(observation._DirectoryGuard, "close", tracked_guard_close)
 
     async def exercise() -> None:
         opened = await open_monitor_observation(request(debug_env, tmp_path / "data"), _seams=harness.seams())
@@ -557,7 +1077,9 @@ def test_close_finishes_owned_cleanup_despite_repeated_cancellation(
             await closing
         assert client.closed is True
         assert harness.supervisors[0].stopped is True
+        assert len(guard_closes) == 1
         await session.close()
+        assert len(guard_closes) == 1
 
     asyncio.run(exercise())
 
@@ -603,3 +1125,56 @@ def test_supervisor_cleanup_error_and_cancelled_client_are_stable(
         assert harness.supervisors[0].stopped is True
 
     asyncio.run(cancelled_client())
+
+
+def test_cleanup_attempts_every_resource_and_preserves_first_fatal() -> None:
+    import stm32_toolkit.monitor_observation as observation
+
+    class Fatal(BaseException):
+        pass
+
+    events: list[str] = []
+
+    class Client:
+        async def close(self) -> None:
+            events.append("client")
+            raise Fatal("client fatal")
+
+    class Supervisor:
+        async def stop(self) -> None:
+            events.append("supervisor")
+            raise Fatal("supervisor fatal")
+
+    class Guard:
+        def close(self) -> None:
+            events.append("guard")
+            raise Fatal("guard fatal")
+
+    with pytest.raises(Fatal, match="client fatal"):
+        asyncio.run(observation._cleanup_resources(Client(), Supervisor(), Guard()))
+    assert events == ["client", "supervisor", "guard"]
+
+
+@pytest.mark.parametrize("cancelled_resource", ("supervisor", "guard"))
+def test_cleanup_maps_resource_cancellation_to_stable_failure(
+    cancelled_resource: str,
+) -> None:
+    import stm32_toolkit.monitor_observation as observation
+
+    class Client:
+        async def close(self) -> None:
+            return None
+
+    class Supervisor:
+        async def stop(self) -> None:
+            if cancelled_resource == "supervisor":
+                raise asyncio.CancelledError
+
+    class Guard:
+        def close(self) -> None:
+            if cancelled_resource == "guard":
+                raise asyncio.CancelledError
+
+    with pytest.raises(MonitorObservationError) as raised:
+        asyncio.run(observation._cleanup_resources(Client(), Supervisor(), Guard()))
+    assert raised.value.code == "MONITOR_CLEANUP_FAILED"
