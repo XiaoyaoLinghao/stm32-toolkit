@@ -440,7 +440,9 @@ class MonitorRuntime:
         self._state_revision = 0
         self._public_sequence = 0
         self._events: deque[object] = deque(maxlen=_REPLAY_EVENTS)
-        self._private_anchors: deque[tuple[int, int]] = deque(maxlen=_REPLAY_EVENTS)
+        self._private_anchors: deque[tuple[int, int, tuple[object, ...]]] = deque(
+            maxlen=_REPLAY_EVENTS
+        )
         self._live_subscribers: set[asyncio.Queue[object]] = set()
         self._heartbeat_task: asyncio.Task[None] | None = None
         self._sample_task: asyncio.Task[None] | None = None
@@ -588,13 +590,11 @@ class MonitorRuntime:
             queue.put_nowait(event)
         return event.to_dict()
 
-    def _private_event(self, kind: str, data: Mapping[str, object]) -> dict[str, object]:
+    def _private_event(self, kind: str, data: Mapping[str, object]):
         from .models import LiveEvent
 
         self._event_id += 1
-        event = LiveEvent(self._event_id, kind, data)
-        self._private_anchors.append((event.event_id, self._public_sequence))
-        return event.to_dict()
+        return LiveEvent(self._event_id, kind, data)
 
     def _bootstrap_events(self, *, gap: bool) -> tuple[dict[str, object], dict[str, object]]:
         assert self._paths is not None and self._config is not None
@@ -615,7 +615,13 @@ class MonitorRuntime:
                 "status": self._status(self._paths, self._config),
             },
         )
-        return hello, state
+        self._private_anchors.append(
+            (hello.event_id, self._public_sequence, (state,))
+        )
+        self._private_anchors.append(
+            (state.event_id, self._public_sequence, ())
+        )
+        return hello.to_dict(), state.to_dict()
 
     def _publish_state(
         self, *, gap: bool = False, increment_revision: bool = True
@@ -1122,16 +1128,21 @@ class MonitorRuntime:
             else:
                 anchor = next(
                     (
-                        sequence
-                        for event_id, sequence in self._private_anchors
+                        (sequence, pending)
+                        for event_id, sequence, pending in self._private_anchors
                         if event_id == after_event_id
                     ),
                     None,
                 )
                 oldest = self._public_sequence - len(retained) + 1
-                if anchor is not None and anchor >= oldest - 1:
-                    start = max(0, anchor - oldest + 1)
+                if anchor is not None and anchor[0] >= oldest - 1:
+                    sequence, pending = anchor
+                    start = max(0, sequence - oldest + 1)
                     initial = tuple(
+                        event.to_dict()
+                        for event in pending
+                        if isinstance(event, LiveEvent)
+                    ) + tuple(
                         event.to_dict()
                         for event in retained[start:]
                         if isinstance(event, LiveEvent)

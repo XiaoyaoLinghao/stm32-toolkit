@@ -1293,6 +1293,76 @@ def test_private_bootstrap_anchor_retention_is_bounded_and_cleared_on_stop(
     asyncio.run(scenario())
 
 
+def test_fresh_private_hello_cursor_recovers_paired_state_before_public_events(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        runtime, config, *_ = _protocol_runtime(tmp_path)
+        await runtime.start(config)
+        try:
+            first = runtime.live_subscribe()
+            hello = await asyncio.wait_for(anext(first), 1)
+            await first.aclose()
+            revision = runtime._state_revision
+            ring_before = tuple(runtime._events)
+
+            resumed = runtime.live_subscribe(after_event_id=hello["eventId"])
+            state = await asyncio.wait_for(anext(resumed), 1)
+            assert state["eventId"] == hello["eventId"] + 1
+            assert state["type"] == "state"
+            assert state["data"]["gap"] is False
+            assert state["data"]["stateRevision"] == revision
+            assert state["data"]["status"]["sampling"]["state"] == "IDLE"
+            assert runtime._state_revision == revision
+            assert tuple(runtime._events) == ring_before
+
+            pending = asyncio.create_task(anext(resumed))
+            await asyncio.sleep(0)
+            assert not pending.done()
+            heartbeat = runtime._publish_heartbeat()
+            assert await asyncio.wait_for(pending, 1) == heartbeat
+            await resumed.aclose()
+        finally:
+            await runtime.stop()
+
+    asyncio.run(scenario())
+
+
+def test_gap_private_hello_cursor_recovers_exact_gap_state_without_rebootstrap(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        runtime, config, *_ = _protocol_runtime(tmp_path)
+        await runtime.start(config)
+        try:
+            published = [runtime._publish_heartbeat() for _ in range(257)]
+            ring_before = tuple(runtime._events)
+            revision = runtime._state_revision
+            gap = runtime.live_subscribe(after_event_id=published[0]["eventId"])
+            hello = await asyncio.wait_for(anext(gap), 1)
+            await gap.aclose()
+
+            resumed = runtime.live_subscribe(after_event_id=hello["eventId"])
+            state = await asyncio.wait_for(anext(resumed), 1)
+            assert state["eventId"] == hello["eventId"] + 1
+            assert state["type"] == "state"
+            assert state["data"]["gap"] is True
+            assert state["data"]["stateRevision"] == revision
+            assert runtime._state_revision == revision
+            assert tuple(runtime._events) == ring_before
+
+            pending = asyncio.create_task(anext(resumed))
+            await asyncio.sleep(0)
+            assert not pending.done()
+            heartbeat = runtime._publish_heartbeat()
+            assert await asyncio.wait_for(pending, 1) == heartbeat
+            await resumed.aclose()
+        finally:
+            await runtime.stop()
+
+    asyncio.run(scenario())
+
+
 def test_live_broker_publishes_state_after_dispatch_transitions_and_sample_events(
     tmp_path: Path,
 ) -> None:
