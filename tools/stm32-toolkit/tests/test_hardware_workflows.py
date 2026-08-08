@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
+import stat
 import threading
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -10,6 +12,7 @@ from uuid import UUID
 
 import pytest
 
+import stm32_toolkit.hardware_workflows as hardware_mod
 from stm32_toolkit.hardware_workflows import (
     FaultWorkflowRequest,
     FlashWorkflowRequest,
@@ -33,6 +36,7 @@ from stm32_toolkit.identity import compute_workspace_id
 from stm32_toolkit.probe.backend import ProbeDescriptor
 from stm32_toolkit.probe.model import OperationLevel
 from stm32_toolkit.result import OperationResult
+from fakes.fake_probe import FakeProbeBackend
 
 
 BUILD_ID = "1" * 64
@@ -218,6 +222,21 @@ def _snapshot(root: Path) -> dict[str, bytes]:
     }
 
 
+def _exact_tree_snapshot(root: Path) -> dict[str, tuple[str, int, int, bytes | None]]:
+    snapshot: dict[str, tuple[str, int, int, bytes | None]] = {}
+    for path in (root, *sorted(root.rglob("*"))):
+        metadata = path.lstat()
+        relative = "." if path == root else path.relative_to(root).as_posix()
+        kind = "file" if stat.S_ISREG(metadata.st_mode) else "directory"
+        snapshot[relative] = (
+            kind,
+            stat.S_IMODE(metadata.st_mode),
+            metadata.st_mtime_ns,
+            path.read_bytes() if kind == "file" else None,
+        )
+    return snapshot
+
+
 def test_probe_list_is_bounded_read_only_and_closes_backend_without_lease(tmp_path: Path) -> None:
     project = _project(tmp_path / "project")
     data_root = tmp_path / "data-alias" / ".." / "data"
@@ -336,6 +355,53 @@ def test_handoff_begin_and_end_use_observe_and_end_before_release(tmp_path: Path
     assert recorder.configs[-1].operation_level is OperationLevel.OBSERVE
     assert recorder.operation_request == TICKET
     assert recorder.events == ["operation", "supervisor.stop"]
+
+
+def test_probe_session_roots_are_deterministic_isolated_and_hide_raw_probe_ids(
+    tmp_path: Path,
+) -> None:
+    project = _project(tmp_path / "project")
+    data_root = tmp_path / "data"
+    recorder = _Recorder()
+    seams = _seams(recorder)
+
+    for probe_id in ("probe-a", "probe-b"):
+        result = _run(
+            handoff_begin_workflow(
+                HandoffBeginWorkflowRequest(
+                    project,
+                    data_root,
+                    "origin-session",
+                    probe_id,
+                    BUILD_ID,
+                    ELF_SHA,
+                    True,
+                ),
+                _seams=seams,
+            )
+        )
+        assert result.ok
+    restored = _run(
+        handoff_end_workflow(
+            HandoffEndWorkflowRequest(
+                project, data_root, "origin-session", "probe-a", TICKET
+            ),
+            _seams=seams,
+        )
+    )
+    assert restored.ok
+
+    first, second, first_again = (
+        config.session_root for config in recorder.configs
+    )
+    assert first != second
+    assert first == first_again
+    assert first.parent == second.parent
+    assert first.parent.name == "probes"
+    assert "probe-a" not in first.as_posix()
+    assert "probe-b" not in second.as_posix()
+    assert first.name.startswith("probe-") and len(first.name) == 30
+    assert second.name.startswith("probe-") and len(second.name) == 30
 
 
 @pytest.mark.parametrize(
@@ -457,6 +523,86 @@ def test_schema_v2_session_and_portable_input_validation_precedes_hardware(tmp_p
     assert not result.ok
     assert result.code == "HARDWARE_INPUT_INVALID"
     assert recorder.events == []
+
+
+@pytest.mark.parametrize("operation", ["observe", "flash"])
+@pytest.mark.parametrize("location", ["equal", "nested"])
+def test_project_local_data_root_is_rejected_before_creation_or_backend(
+    tmp_path: Path,
+    operation: str,
+    location: str,
+) -> None:
+    project = _project(tmp_path / "project")
+    data_root = project if location == "equal" else project / "runtime-state"
+    before = _exact_tree_snapshot(project)
+    recorder = _Recorder()
+    request = (
+        VariableReadWorkflowRequest(
+            project,
+            data_root,
+            "session-a",
+            "probe-a",
+            BUILD_ID,
+            ELF_SHA,
+            ("counter",),
+        )
+        if operation == "observe"
+        else FlashWorkflowRequest(
+            project,
+            data_root,
+            "session-a",
+            "probe-a",
+            BUILD_ID,
+            ELF_SHA,
+            True,
+        )
+    )
+
+    result = _run(
+        variable_read_workflow(request, _seams=_seams(recorder))
+        if operation == "observe"
+        else flash_workflow(request, _seams=_seams(recorder))
+    )
+
+    assert not result.ok
+    assert result.code == "HARDWARE_INPUT_INVALID"
+    assert recorder.events == []
+    assert _exact_tree_snapshot(project) == before
+
+
+def test_redirected_data_root_is_rejected_before_creation_or_backend(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project = _project(tmp_path / "project")
+    data_root = tmp_path / "redirected-data"
+    data_root.mkdir()
+    before = _exact_tree_snapshot(project)
+    recorder = _Recorder()
+    real_redirect = hardware_mod._redirect
+
+    def redirected(path: Path, metadata: os.stat_result) -> bool:
+        return path == data_root or real_redirect(path, metadata)
+
+    monkeypatch.setattr(hardware_mod, "_redirect", redirected)
+    result = _run(
+        variable_read_workflow(
+            VariableReadWorkflowRequest(
+                project,
+                data_root,
+                "session-a",
+                "probe-a",
+                BUILD_ID,
+                ELF_SHA,
+                ("counter",),
+            ),
+            _seams=_seams(recorder),
+        )
+    )
+
+    assert not result.ok
+    assert result.code == "HARDWARE_INPUT_INVALID"
+    assert recorder.events == []
+    assert _exact_tree_snapshot(project) == before
 
 
 def test_unsafe_existing_session_component_is_rejected_before_service(tmp_path: Path) -> None:
@@ -633,6 +779,137 @@ def test_repeated_cancellation_cannot_interrupt_owned_transport_or_service_clean
     ]
 
 
+def test_real_services_for_different_probes_run_in_parallel_without_endpoint_collision(
+    tmp_path: Path,
+) -> None:
+    project = _project(tmp_path / "project")
+    data_root = tmp_path / "data"
+
+    async def scenario() -> tuple[list[Path], list[dict[str, object]], list[object]]:
+        entered = {"probe-a": asyncio.Event(), "probe-b": asyncio.Event()}
+        release = asyncio.Event()
+
+        def backend_factory() -> FakeProbeBackend:
+            return FakeProbeBackend(
+                probes=(
+                    ProbeDescriptor("probe-a", "ST", "ST-Link", None),
+                    ProbeDescriptor("probe-b", "ST", "ST-Link", None),
+                ),
+                memory={},
+                registers={},
+            )
+
+        async def bind(request: object, client: object) -> OperationResult[object]:
+            return OperationResult.success(
+                "bind", SimpleNamespace(probe_id=request.probe_id)
+            )
+
+        async def read(request: object, client: object) -> OperationResult[object]:
+            probe_id = request.binding.probe_id
+            entered[probe_id].set()
+            await release.wait()
+            return OperationResult.success(
+                "stm32_variable_read", {"probeId": probe_id}
+            )
+
+        seams = HardwareWorkflowSeams(
+            backend_factory=backend_factory,
+            bind=bind,
+            read_variables=read,
+            catalog_from_binding=lambda binding: "catalog",
+        )
+
+        def invoke(probe_id: str) -> object:
+            return variable_read_workflow(
+                VariableReadWorkflowRequest(
+                    project,
+                    data_root,
+                    "session-a",
+                    probe_id,
+                    BUILD_ID,
+                    ELF_SHA,
+                    ("counter",),
+                ),
+                _seams=seams,
+            )
+
+        first = asyncio.create_task(invoke("probe-a"))
+        await asyncio.wait_for(entered["probe-a"].wait(), 5)
+        second = asyncio.create_task(invoke("probe-b"))
+        await asyncio.wait_for(entered["probe-b"].wait(), 5)
+        records = sorted(data_root.rglob("probe-endpoint.json"))
+        payloads = [json.loads(path.read_text(encoding="utf-8")) for path in records]
+        release.set()
+        results = list(await asyncio.gather(first, second))
+        return records, payloads, results
+
+    records, payloads, results = asyncio.run(scenario())
+
+    assert len(records) == 2
+    assert {payload["probeId"] for payload in payloads} == {"probe-a", "probe-b"}
+    assert records[0].parent != records[1].parent
+    assert all("probe-a" not in path.as_posix() for path in records)
+    assert all("probe-b" not in path.as_posix() for path in records)
+    assert all(result.ok for result in results)
+    assert not list(data_root.rglob("probe-endpoint.json"))
+
+
+def test_real_service_same_probe_overlap_returns_immediate_busy(
+    tmp_path: Path,
+) -> None:
+    project = _project(tmp_path / "project")
+    data_root = tmp_path / "data"
+
+    async def scenario() -> tuple[object, object]:
+        entered = asyncio.Event()
+        release = asyncio.Event()
+
+        def backend_factory() -> FakeProbeBackend:
+            return FakeProbeBackend(
+                probes=(ProbeDescriptor("probe-a", "ST", "ST-Link", None),),
+                memory={},
+                registers={},
+            )
+
+        async def bind(request: object, client: object) -> OperationResult[object]:
+            return OperationResult.success(
+                "bind", SimpleNamespace(probe_id=request.probe_id)
+            )
+
+        async def read(request: object, client: object) -> OperationResult[object]:
+            entered.set()
+            await release.wait()
+            return OperationResult.success("stm32_variable_read", {})
+
+        seams = HardwareWorkflowSeams(
+            backend_factory=backend_factory,
+            bind=bind,
+            read_variables=read,
+            catalog_from_binding=lambda binding: "catalog",
+        )
+        request = VariableReadWorkflowRequest(
+            project,
+            data_root,
+            "session-a",
+            "probe-a",
+            BUILD_ID,
+            ELF_SHA,
+            ("counter",),
+        )
+        first = asyncio.create_task(variable_read_workflow(request, _seams=seams))
+        await asyncio.wait_for(entered.wait(), 5)
+        second = await asyncio.wait_for(
+            variable_read_workflow(request, _seams=seams), 2
+        )
+        release.set()
+        return await first, second
+
+    first, second = asyncio.run(scenario())
+    assert first.ok
+    assert not second.ok
+    assert second.code == "PROBE_BUSY"
+
+
 def test_probe_list_failure_and_close_failure_are_stable(tmp_path: Path) -> None:
     project = _project(tmp_path / "project")
     recorder = _Recorder()
@@ -804,7 +1081,7 @@ def test_cleanup_failure_has_priority_over_repeated_cancellation(tmp_path: Path)
     assert recorder.events[-1] == "supervisor.stop"
 
 
-def test_catalog_stable_failure_is_preserved_and_absolute_roots_are_redacted(
+def test_arbitrary_code_shaped_exception_is_not_trusted_or_leaked(
     tmp_path: Path,
 ) -> None:
     project = _project(tmp_path / "project")
@@ -812,8 +1089,11 @@ def test_catalog_stable_failure_is_preserved_and_absolute_roots_are_redacted(
 
     class CatalogError(Exception):
         code = "DWARF_INPUT_CHANGED"
-        message = "ELF changed after catalog creation"
-        details = {"source": str(project / "build" / "firmware.elf")}
+        message = f"token=secret at {project / 'build' / 'firmware.elf'}"
+        details = {
+            "source": str(project / "build" / "firmware.elf"),
+            "token": "secret",
+        }
 
     seams = _seams(recorder, binding=SimpleNamespace(project_root=project))
     seams = replace(
@@ -829,8 +1109,12 @@ def test_catalog_stable_failure_is_preserved_and_absolute_roots_are_redacted(
         )
     )
     assert not result.ok
-    assert result.code == "DWARF_INPUT_CHANGED"
-    assert str(project).lower() not in json.dumps(result.to_dict()).lower()
+    assert result.code == "HARDWARE_INTERNAL_ERROR"
+    assert result.message == "Hardware workflow failed"
+    serialized = json.dumps(result.to_dict()).lower()
+    assert str(project).lower() not in serialized
+    assert "secret" not in serialized
+    assert "token" not in serialized
 
 
 def test_handoff_end_closes_the_client_created_by_the_accepted_contract(

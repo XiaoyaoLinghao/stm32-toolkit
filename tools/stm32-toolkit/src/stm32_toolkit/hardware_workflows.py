@@ -8,11 +8,12 @@ project/firmware evidence and remain private to the transient Probe Service.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import os
 import re
 import stat
 from collections.abc import Awaitable, Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -42,8 +43,10 @@ from stm32_toolkit.probe import (
     end_debug_handoff,
     flash_firmware,
 )
-from stm32_toolkit.probe.client import ProbeClient
-from stm32_toolkit.probe.lease import ProbeLeaseManager
+from stm32_toolkit.probe.backend import ProbeBackendError
+from stm32_toolkit.probe.client import ProbeClient, ProbeClientError
+from stm32_toolkit.probe.lease import ProbeLeaseError, ProbeLeaseManager
+from stm32_toolkit.probe.service import ProbeServiceError
 from stm32_toolkit.project_model import ProjectManifestError, ProjectModel, load_project_model
 from stm32_toolkit.result import OperationResult
 
@@ -216,6 +219,36 @@ def _safe_root(value: object, field: str, *, must_exist: bool) -> Path:
     return root
 
 
+def _safe_external_data_root(value: object, project_root: Path) -> Path:
+    """Resolve one machine-owned root without following existing redirects."""
+
+    if not isinstance(value, Path):
+        raise _fail("HARDWARE_INPUT_INVALID", "data root is invalid")
+    try:
+        lexical = value.expanduser().absolute()
+        current = Path(lexical.anchor)
+        components = lexical.parts[1:] if lexical.anchor else lexical.parts
+        for component in components:
+            current /= component
+            try:
+                metadata = os.lstat(current)
+            except FileNotFoundError:
+                break
+            if _redirect(current, metadata) or not stat.S_ISDIR(metadata.st_mode):
+                raise OSError("unsafe data root")
+        canonical = lexical.resolve(strict=False)
+    except (OSError, RuntimeError, ValueError):
+        raise _fail("HARDWARE_INPUT_INVALID", "data root is invalid") from None
+    try:
+        canonical.relative_to(project_root)
+    except ValueError:
+        return canonical
+    raise _fail(
+        "HARDWARE_INPUT_INVALID",
+        "data root must remain outside the project root",
+    )
+
+
 def _prepare(
     request: object,
     expected_type: type[object],
@@ -227,7 +260,9 @@ def _prepare(
     if type(request) is not expected_type:
         raise _fail("HARDWARE_INPUT_INVALID", "Hardware workflow input is invalid")
     project_root = _safe_root(getattr(request, "project_root", None), "project root", must_exist=True)
-    data_root = _safe_root(getattr(request, "data_root", None), "data root", must_exist=False)
+    data_root = _safe_external_data_root(
+        getattr(request, "data_root", None), project_root
+    )
     try:
         session_id = require_safe_session_id(getattr(request, "session_id", None))
         model = load_project_model(project_root)
@@ -265,6 +300,12 @@ def _prepare(
         )
     except (OSError, RuntimeError, TypeError, ValueError):
         raise _fail("HARDWARE_INPUT_INVALID", "Hardware workflow roots are invalid") from None
+    if require_probe:
+        component = "probe-" + hashlib.sha256(probe.encode("utf-8")).hexdigest()[:24]
+        paths = replace(
+            paths,
+            session_root=paths.session_root / "probes" / component,
+        )
     return request, model, paths
 
 
@@ -277,13 +318,25 @@ def _redirect(path: Path, metadata: os.stat_result) -> bool:
 def _ensure_session_root(paths: WorkspacePaths) -> None:
     """Create only the transient session chain, rejecting redirects at each step."""
 
-    chain = (
+    base_session_root = paths.workspace_root / "sessions" / paths.session_id
+    try:
+        suffix = paths.session_root.relative_to(base_session_root)
+    except ValueError:
+        raise _fail(
+            "HARDWARE_RUNTIME_PATH_UNSAFE",
+            "Hardware runtime path is unavailable or unsafe",
+        ) from None
+    chain = [
         paths.data_root,
         paths.data_root / "projects",
         paths.workspace_root,
         paths.workspace_root / "sessions",
-        paths.session_root,
-    )
+        base_session_root,
+    ]
+    current = base_session_root
+    for component in suffix.parts:
+        current /= component
+        chain.append(current)
     try:
         # ``data_root`` may itself contain multiple not-yet-created
         # components.  ``resolve(strict=False)`` in ``WorkspacePaths`` has
@@ -485,7 +538,22 @@ def _public_result(result: object, paths: WorkspacePaths) -> OperationResult[obj
     return OperationResult.success(result.operation, _sanitize(payload.get("data"), roots))
 
 
+_KNOWN_STABLE_EXCEPTIONS = (
+    ProbeBackendError,
+    ProbeClientError,
+    ProbeLeaseError,
+    ProbeServiceError,
+)
+
+
 def _stable_exception_result(operation: str, error: BaseException) -> OperationResult[None]:
+    if not isinstance(error, _KNOWN_STABLE_EXCEPTIONS):
+        return OperationResult.failure(
+            operation,
+            "HARDWARE_INTERNAL_ERROR",
+            "Hardware workflow failed",
+            {},
+        )
     code = getattr(error, "code", None)
     message = getattr(error, "message", None)
     details = getattr(error, "details", {})
