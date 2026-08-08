@@ -403,11 +403,17 @@ def test_protocol_result_snapshots_and_serializes_known_history_and_export_model
     batches = [_history_slice(values)]
     page = HistoryPage.create(batches, next_cursor=None)
     page_result = success("history.query", page)
+    snapshot = page_result.to_dict()
     typed["nested"][0]["value"] = 2
     values.clear()
     batches.clear()
+    object.__setattr__(page, "next_cursor", "9:9")
+    object.__setattr__(page.batches[0], "sequence", 99)
 
     payload = page_result.to_dict()["data"]
+    assert page_result.to_dict() == snapshot
+    assert page_result.data is not page
+    assert page_result.data.batches[0] is not page.batches[0]
     assert payload["valueCount"] == 1
     assert payload["batches"][0]["values"][0]["typedValue"] == {
         "nested": [{"value": 1}]
@@ -418,6 +424,7 @@ def test_protocol_result_snapshots_and_serializes_known_history_and_export_model
     )
     flattened = tuple(flatten_history_page(page_result.data))
     assert flattened[0]["valueOrdinal"] == 0
+    assert flattened[0]["batchValueCount"] == 1
     assert flattened[0]["binding"]["elfSha256"] == "e" * 64
 
     artifact = ExportArtifact(
@@ -456,6 +463,9 @@ def test_history_page_rejects_subclasses_ordinal_gaps_count_mismatch_and_bad_cur
         HistoryPage((first, second), 1, None, 0)
     with pytest.raises(ValueError, match="cursor"):
         HistoryPage.create((first, second), next_cursor="01:0")
+    for cursor in ("1:00", "１:０", "1" * 20 + ":0", f"{2**63}:0"):
+        with pytest.raises(ValueError, match="cursor"):
+            HistoryPage.create((first, second), next_cursor=cursor)
 
     class DerivedSlice(HistoryBatchSlice):
         pass
@@ -539,6 +549,17 @@ def test_history_page_enforces_ten_thousand_value_and_four_mib_exact_budgets() -
     oversized = _history_slice([huge] * 4, batch_value_count=4)
     with pytest.raises(ValueError, match="4 MiB"):
         HistoryPage.create((oversized,), next_cursor=None)
+
+
+def test_flatten_history_page_preserves_batch_value_count_and_value_ordinal() -> None:
+    value = SampleValue(WatchItem.variable("counter"), "OK", typed_value=7)
+    page = HistoryPage.create(
+        (_history_slice([value], start_ordinal=7, batch_value_count=16),),
+        next_cursor="1:7",
+    )
+
+    assert tuple(flatten_history_page(page))[0]["batchValueCount"] == 16
+    assert tuple(flatten_history_page(page))[0]["valueOrdinal"] == 7
 
 
 def test_history_protocol_serializes_ten_thousand_values_without_relaxing_generic_budget() -> None:

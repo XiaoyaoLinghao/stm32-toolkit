@@ -251,7 +251,16 @@ def test_wrong_workspace_batch_invalid_cursor_and_oversized_row_fail_closed(tmp_
             subscriber_drops=0, history_drops=0, deadline_drops=0, values=batch.values,
         )
         assert store.append_batch(foreign).code == "MONITOR_WORKSPACE_MISMATCH"
-        assert store.query_history(HistoryQuery("monitor-1", 0, 2_000_000_000, cursor="bad")).code == "MONITOR_HISTORY_QUERY_INVALID"
+        for cursor in (
+            "bad",
+            "01:000",
+            "１:０",
+            "1" * 20 + ":0",
+            f"{2**63}:0",
+        ):
+            assert store.query_history(
+                HistoryQuery("monitor-1", 0, 2_000_000_000, cursor=cursor)
+            ).code == "MONITOR_HISTORY_QUERY_INVALID"
 
         assert store.append_batch(batch).ok
         monkeypatch.setattr(history_module, "MAX_HISTORY_PAGE_BYTES", 1)
