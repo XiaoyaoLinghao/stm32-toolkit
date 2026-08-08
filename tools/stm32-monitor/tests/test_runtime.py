@@ -61,6 +61,48 @@ MANIFEST = {
 }
 
 
+def _runtime_batch(sequence: int, *, subscriber_drops: int = 0) -> dict[str, object]:
+    from stm32_monitor.models import (
+        ObservationBinding,
+        SampleBatch,
+        SampleValue,
+        WatchItem,
+    )
+
+    binding = ObservationBinding(
+        "a" * 24,
+        "12345678-1234-5678-9234-567812345678",
+        "session-a",
+        "probe-a",
+        "STM32F407VGTx",
+        "stm32f407vg",
+        "b" * 64,
+        "e" * 64,
+        "d" * 64,
+        "c" * 40,
+        False,
+        "flash-1",
+        "lease-1",
+        "f" * 64,
+        None,
+    )
+    return SampleBatch(
+        binding,
+        UUID("12345678-1234-5678-9234-567812345678"),
+        1,
+        UUID("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"),
+        sequence,
+        1_000 + sequence,
+        1_250 + sequence,
+        250,
+        4.0,
+        subscriber_drops,
+        0,
+        0,
+        (SampleValue(WatchItem.variable("counter"), "OK", typed_value=sequence),),
+    ).to_dict()
+
+
 def _project(tmp_path: Path, name: str = "project") -> Path:
     project = tmp_path / name
     (project / "Src").mkdir(parents=True)
@@ -252,9 +294,9 @@ class FakeSampler:
             raise self.close_error
 
     async def subscribe(self):
-        yield {"sequence": 1}
+        yield _runtime_batch(1)
         yield SimpleNamespace(
-            subscriber_drops=3, to_dict=lambda: {"sequence": 2}
+            subscriber_drops=3, to_dict=lambda: _runtime_batch(2, subscriber_drops=3)
         )
 
 
@@ -1102,8 +1144,9 @@ def test_live_broker_emits_initial_events_replays_and_reports_gap(tmp_path: Path
             assert hello["eventId"] < state["eventId"]
             await initial.aclose()
 
-            replay = runtime.live_subscribe(after_event_id=hello["eventId"])
-            assert await take(replay, 1) == [state]
+            published = runtime._publish_heartbeat()
+            replay = runtime.live_subscribe(after_event_id=state["eventId"])
+            assert await take(replay, 1) == [published]
             await replay.aclose()
 
             for _ in range(260):
@@ -1117,6 +1160,135 @@ def test_live_broker_emits_initial_events_replays_and_reports_gap(tmp_path: Path
             await gap_stream.aclose()
         finally:
             await runtime.stop()
+
+    asyncio.run(scenario())
+
+
+def test_fresh_bootstrap_is_private_and_does_not_change_state_revision_or_ring(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        runtime, config, *_ = _protocol_runtime(tmp_path)
+        await runtime.start(config)
+        try:
+            first = runtime.live_subscribe()
+            first_hello = await asyncio.wait_for(anext(first), 1)
+            first_state = await asyncio.wait_for(anext(first), 1)
+            assert tuple(runtime._events) == ()
+            revision = runtime._state_revision
+
+            pending_first = asyncio.create_task(anext(first))
+            second = runtime.live_subscribe()
+            second_hello = await asyncio.wait_for(anext(second), 1)
+            second_state = await asyncio.wait_for(anext(second), 1)
+            await asyncio.sleep(0)
+
+            assert not pending_first.done()
+            assert runtime._state_revision == revision
+            assert tuple(runtime._events) == ()
+            assert [second_hello["type"], second_state["type"]] == ["hello", "state"]
+            assert second_hello["data"]["stateRevision"] == revision
+            assert second_state["data"]["stateRevision"] == revision
+            assert second_state["data"]["gap"] is False
+            assert first_hello["eventId"] < first_state["eventId"] < second_hello["eventId"] < second_state["eventId"]
+
+            await second.aclose()
+            resumed = runtime.live_subscribe(after_event_id=second_state["eventId"])
+            pending_resumed = asyncio.create_task(anext(resumed))
+            await asyncio.sleep(0)
+            assert not pending_resumed.done()
+            published = runtime._publish_heartbeat()
+            assert await asyncio.wait_for(pending_first, 1) == published
+            assert await asyncio.wait_for(pending_resumed, 1) == published
+            await first.aclose()
+            await resumed.aclose()
+        finally:
+            await runtime.stop()
+
+    asyncio.run(scenario())
+
+
+def test_gap_bootstrap_is_private_and_replay_ring_boundaries_are_exact(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        runtime, config, *_ = _protocol_runtime(tmp_path)
+        await runtime.start(config)
+        try:
+            published = [runtime._publish_heartbeat() for _ in range(257)]
+            assert len(runtime._events) == 256
+            assert [event.event_id for event in runtime._events] == list(
+                range(published[1]["eventId"], published[-1]["eventId"] + 1)
+            )
+            revision = runtime._state_revision
+            ring_before = tuple(runtime._events)
+
+            first = runtime.live_subscribe()
+            await asyncio.wait_for(anext(first), 1)
+            await asyncio.wait_for(anext(first), 1)
+            pending_first = asyncio.create_task(anext(first))
+
+            gap = runtime.live_subscribe(after_event_id=published[0]["eventId"])
+            gap_hello = await asyncio.wait_for(anext(gap), 1)
+            gap_state = await asyncio.wait_for(anext(gap), 1)
+            await asyncio.sleep(0)
+            assert not pending_first.done()
+            assert runtime._state_revision == revision
+            assert tuple(runtime._events) == ring_before
+            assert gap_hello["data"]["stateRevision"] == revision
+            assert gap_state["data"]["gap"] is True
+            await gap.aclose()
+
+            gap_resumed = runtime.live_subscribe(after_event_id=gap_state["eventId"])
+            pending_gap_resumed = asyncio.create_task(anext(gap_resumed))
+            await asyncio.sleep(0)
+            assert not pending_gap_resumed.done()
+
+            replay = runtime.live_subscribe(after_event_id=published[1]["eventId"])
+            replayed = [await asyncio.wait_for(anext(replay), 1) for _ in range(255)]
+            assert replayed == published[2:]
+            await replay.aclose()
+
+            next_event = runtime._publish_heartbeat()
+            assert await asyncio.wait_for(pending_first, 1) == next_event
+            assert await asyncio.wait_for(pending_gap_resumed, 1) == next_event
+            await first.aclose()
+            await gap_resumed.aclose()
+        finally:
+            await runtime.stop()
+
+    asyncio.run(scenario())
+
+
+def test_private_bootstrap_anchor_retention_is_bounded_and_cleared_on_stop(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        runtime, config, *_ = _protocol_runtime(tmp_path)
+        await runtime.start(config)
+        old_state = runtime._bootstrap_events(gap=False)[1]
+        recent_state = old_state
+        for _ in range(128):
+            recent_state = runtime._bootstrap_events(gap=False)[1]
+        assert len(runtime._private_anchors) == 256
+        assert tuple(runtime._events) == ()
+
+        expired = runtime.live_subscribe(after_event_id=old_state["eventId"])
+        expired_hello = await asyncio.wait_for(anext(expired), 1)
+        expired_state = await asyncio.wait_for(anext(expired), 1)
+        assert expired_hello["type"] == "hello"
+        assert expired_state["data"]["gap"] is True
+        await expired.aclose()
+
+        recent = runtime.live_subscribe(after_event_id=recent_state["eventId"])
+        pending = asyncio.create_task(anext(recent))
+        await asyncio.sleep(0)
+        assert not pending.done()
+        published = runtime._publish_heartbeat()
+        assert await asyncio.wait_for(pending, 1) == published
+        await recent.aclose()
+        await runtime.stop()
+        assert tuple(runtime._private_anchors) == ()
 
     asyncio.run(scenario())
 
@@ -1152,13 +1324,14 @@ def test_live_broker_publishes_state_after_dispatch_transitions_and_sample_event
             state = await asyncio.wait_for(anext(stream), 1)
             assert state["data"]["status"]["sampling"]["state"] == "RUNNING"
 
-            runtime._publish_sample({"sequence": 2}, service_subscriber_drops=3)
+            batch = _runtime_batch(9)
+            runtime._publish_sample(batch, service_subscriber_drops=3)
             sample = await asyncio.wait_for(anext(stream), 1)
-            while sample["data"].get("serviceSubscriberDrops") != 3:
+            while sample["data"]["batch"]["sequence"] != 9:
                 sample = await asyncio.wait_for(anext(stream), 1)
             assert sample["type"] == "sample"
             assert sample["data"] == {
-                "batch": {"sequence": 2},
+                "batch": batch,
                 "serviceSubscriberDrops": 3,
             }
             assert [state["eventId"], sample["eventId"]] == sorted(

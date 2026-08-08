@@ -29,6 +29,9 @@ _SHA256 = re.compile(r"[0-9a-f]{64}\Z")
 _WORKSPACE_ID = re.compile(r"[0-9a-f]{24}\Z")
 _GIT_SHA = re.compile(r"[0-9a-f]{40}(?:[0-9a-f]{24})?\Z")
 _PROBE_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,255}\Z")
+_UTC_TIMESTAMP = re.compile(
+    r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z\Z"
+)
 
 
 _MAPPING_PROXY = type(MappingProxyType({}))
@@ -492,6 +495,206 @@ class SampleBatch:
         }
 
 
+def _live_mapping(value: object, keys: set[str], label: str) -> Mapping[str, object]:
+    if type(value) not in (dict, _MAPPING_PROXY) or set(value) != keys:
+        raise ValueError(f"{label} is invalid")
+    return cast(Mapping[str, object], value)
+
+
+def _live_count(value: object, label: str, *, positive: bool = False) -> int:
+    minimum = 1 if positive else 0
+    if type(value) is not int or not minimum <= value <= MAX_SIGNED_INT64:
+        raise ValueError(f"{label} is invalid")
+    return value
+
+
+def _live_text(value: object, label: str) -> str:
+    if type(value) is not str or not value or len(value) > 1024 or any(
+        ord(character) < 32 for character in value
+    ):
+        raise ValueError(f"{label} is invalid")
+    return value
+
+
+def _live_utc(value: object, label: str) -> str:
+    if type(value) is not str or _UTC_TIMESTAMP.fullmatch(value) is None:
+        raise ValueError(f"{label} is invalid")
+    try:
+        datetime.strptime(value, "%Y-%m-%dT%H:%M:%S.%fZ")
+    except ValueError:
+        raise ValueError(f"{label} is invalid") from None
+    return value
+
+
+def _validate_live_status(value: object) -> None:
+    status = _live_mapping(
+        value,
+        {
+            "workspaceId", "sessionId", "project", "firmware", "probe",
+            "sampling", "probeConnected", "samplingActive",
+        },
+        "live status",
+    )
+    workspace = _live_text(status["workspaceId"], "workspace ID")
+    if _WORKSPACE_ID.fullmatch(workspace.lower()) is None:
+        raise ValueError("workspace ID is invalid")
+    require_safe_session_id(_live_text(status["sessionId"], "session ID"))
+    project = _live_mapping(
+        status["project"], {"logicalProjectId", "name", "targetDevice"}, "project status"
+    )
+    UUID(_live_text(project["logicalProjectId"], "logical project ID"))
+    _live_text(project["name"], "project name")
+    _live_text(project["targetDevice"], "target device")
+    firmware = status["firmware"]
+    if firmware is not None:
+        document = _live_mapping(
+            firmware,
+            {"buildId", "elfSha256", "inputSnapshotSha256", "gitHead", "gitDirty", "targetDevice"},
+            "firmware status",
+        )
+        FirmwareStatus(
+            cast(str, document["buildId"]),
+            cast(str, document["elfSha256"]),
+            cast(str, document["inputSnapshotSha256"]),
+            cast(str, document["gitHead"]),
+            cast(bool, document["gitDirty"]),
+            cast(str, document["targetDevice"]),
+        )
+    probe = _live_mapping(status["probe"], {"connected", "probeId"}, "probe status")
+    if type(probe["connected"]) is not bool:
+        raise ValueError("probe status is invalid")
+    probe_id = probe["probeId"]
+    if probe_id is not None:
+        ProbeConnectRequest(cast(str, probe_id))
+    if probe["connected"] is not (probe_id is not None):
+        raise ValueError("probe status is inconsistent")
+    sampling = _live_mapping(
+        status["sampling"],
+        {
+            "state", "active", "blockedCode", "groupId", "groupRevision", "runId",
+            "lastSequence", "bindingEpoch", "subscriberDrops", "historyDrops",
+            "deadlineDrops", "serviceDrops",
+        },
+        "sampling status",
+    )
+    state = sampling["state"]
+    if state not in {"IDLE", "STARTING", "RUNNING", "PAUSED", "PAUSED_BLOCKED", "STOPPING"}:
+        raise ValueError("sampling state is invalid")
+    if type(sampling["active"]) is not bool or sampling["active"] is not (
+        state in {"RUNNING", "PAUSED"}
+    ):
+        raise ValueError("sampling active state is invalid")
+    blocked = sampling["blockedCode"]
+    if blocked is not None:
+        _live_text(blocked, "blocked code")
+    for key in ("groupId", "runId"):
+        item = sampling[key]
+        if item is not None:
+            UUID(_live_text(item, key))
+    revision = sampling["groupRevision"]
+    if revision is not None:
+        _live_count(revision, "group revision", positive=True)
+    sequence = sampling["lastSequence"]
+    if sequence is not None:
+        _live_count(sequence, "last sequence")
+    for key in (
+        "bindingEpoch", "subscriberDrops", "historyDrops", "deadlineDrops", "serviceDrops"
+    ):
+        _live_count(sampling[key], key)
+    if type(status["probeConnected"]) is not bool or status["probeConnected"] is not probe["connected"]:
+        raise ValueError("probe connected state is invalid")
+    if type(status["samplingActive"]) is not bool or status["samplingActive"] is not sampling["active"]:
+        raise ValueError("sampling active state is invalid")
+
+
+def _validate_live_batch(value: object) -> None:
+    batch = _live_mapping(
+        value,
+        {
+            "binding", "groupId", "groupRevision", "runId", "sequence",
+            "scheduledUnixNs", "scheduledAtUtc", "capturedUnixNs", "capturedAtUtc",
+            "latencyNs", "actualRateHz", "subscriberDrops", "historyDrops",
+            "deadlineDrops", "values",
+        },
+        "live sample batch",
+    )
+    ObservationBinding.from_dict(
+        _live_mapping(
+            batch["binding"],
+            {
+                "workspaceId", "logicalProjectId", "sessionId", "probeId", "targetDevice",
+                "physicalTarget", "buildId", "elfSha256", "inputSnapshotSha256", "gitHead",
+                "gitDirty", "flashSessionId", "leaseId", "dwarfSha256", "svdSha256",
+            },
+            "sample binding",
+        )
+    )
+    UUID(_live_text(batch["groupId"], "group ID"))
+    UUID(_live_text(batch["runId"], "run ID"))
+    _live_count(batch["groupRevision"], "group revision", positive=True)
+    for key in (
+        "sequence", "scheduledUnixNs", "capturedUnixNs", "latencyNs",
+        "subscriberDrops", "historyDrops", "deadlineDrops",
+    ):
+        _live_count(batch[key], key)
+    scheduled = cast(int, batch["scheduledUnixNs"])
+    captured = cast(int, batch["capturedUnixNs"])
+    if captured < scheduled:
+        raise ValueError("sample capture time is invalid")
+    if batch["scheduledAtUtc"] != unix_ns_to_utc(scheduled) or batch["capturedAtUtc"] != unix_ns_to_utc(captured):
+        raise ValueError("sample UTC evidence is invalid")
+    rate = batch["actualRateHz"]
+    if type(rate) not in (int, float) or not math.isfinite(float(rate)) or rate < 0:
+        raise ValueError("sample rate is invalid")
+    values = batch["values"]
+    if type(values) not in (list, tuple) or len(values) > MAX_SAMPLE_VALUES:
+        raise ValueError("sample values are invalid")
+    for raw in values:
+        item = _live_mapping(
+            raw, {"watch", "status", "typedValue", "code", "definition"}, "sample value"
+        )
+        watch = WatchItem.from_dict(
+            _live_mapping(item["watch"], set(item["watch"]) if type(item["watch"]) in (dict, _MAPPING_PROXY) else set(), "sample watch")
+        )
+        definition = item["definition"]
+        if definition is not None and type(definition) not in (dict, _MAPPING_PROXY):
+            raise TypeError("sample definition is invalid")
+        SampleValue(
+            watch,
+            cast(str, item["status"]),
+            typed_value=item["typedValue"],
+            code=cast(str | None, item["code"]),
+            definition=cast(Mapping[str, object] | None, definition),
+        )
+
+
+def _validate_live_payload(kind: str, value: object) -> Mapping[str, object]:
+    if kind == "hello":
+        payload = _live_mapping(
+            value, {"protocol", "toolkitVersion", "monitorVersion", "stateRevision"}, "hello event"
+        )
+        for key in ("protocol", "toolkitVersion", "monitorVersion"):
+            _live_text(payload[key], key)
+        _live_count(payload["stateRevision"], "state revision")
+        return payload
+    if kind == "state":
+        payload = _live_mapping(value, {"stateRevision", "gap", "status"}, "state event")
+        _live_count(payload["stateRevision"], "state revision")
+        if type(payload["gap"]) is not bool:
+            raise ValueError("state gap is invalid")
+        _validate_live_status(payload["status"])
+        return payload
+    if kind == "sample":
+        payload = _live_mapping(value, {"batch", "serviceSubscriberDrops"}, "sample event")
+        _validate_live_batch(payload["batch"])
+        _live_count(payload["serviceSubscriberDrops"], "service subscriber drops")
+        return payload
+    payload = _live_mapping(value, {"stateRevision", "capturedAtUtc"}, "heartbeat event")
+    _live_count(payload["stateRevision"], "state revision")
+    _live_utc(payload["capturedAtUtc"], "heartbeat timestamp")
+    return payload
+
+
 @dataclass(frozen=True)
 class LiveEvent:
     event_id: int
@@ -503,7 +706,7 @@ class LiveEvent:
             raise ValueError("event ID is invalid")
         if self.kind not in {"hello", "state", "sample", "heartbeat"}:
             raise ValueError("event type is invalid")
-        frozen = _freeze_json(self.data)
+        frozen = _freeze_json(_validate_live_payload(self.kind, self.data))
         if type(frozen) is not _MAPPING_PROXY:
             raise TypeError("event data must be a JSON object")
         object.__setattr__(self, "data", cast(Mapping[str, object], frozen))

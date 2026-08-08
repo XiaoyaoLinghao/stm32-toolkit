@@ -438,7 +438,9 @@ class MonitorRuntime:
         self._service_drops_total = 0
         self._event_id = 0
         self._state_revision = 0
+        self._public_sequence = 0
         self._events: deque[object] = deque(maxlen=_REPLAY_EVENTS)
+        self._private_anchors: deque[tuple[int, int]] = deque(maxlen=_REPLAY_EVENTS)
         self._live_subscribers: set[asyncio.Queue[object]] = set()
         self._heartbeat_task: asyncio.Task[None] | None = None
         self._sample_task: asyncio.Task[None] | None = None
@@ -573,6 +575,7 @@ class MonitorRuntime:
 
         self._event_id += 1
         event = LiveEvent(self._event_id, kind, data)
+        self._public_sequence += 1
         self._events.append(event)
         for queue in tuple(self._live_subscribers):
             if queue.full():
@@ -585,8 +588,17 @@ class MonitorRuntime:
             queue.put_nowait(event)
         return event.to_dict()
 
-    def _hello_event(self) -> dict[str, object]:
-        return self._publish_event(
+    def _private_event(self, kind: str, data: Mapping[str, object]) -> dict[str, object]:
+        from .models import LiveEvent
+
+        self._event_id += 1
+        event = LiveEvent(self._event_id, kind, data)
+        self._private_anchors.append((event.event_id, self._public_sequence))
+        return event.to_dict()
+
+    def _bootstrap_events(self, *, gap: bool) -> tuple[dict[str, object], dict[str, object]]:
+        assert self._paths is not None and self._config is not None
+        hello = self._private_event(
             "hello",
             {
                 "protocol": MONITOR_PROTOCOL_VERSION,
@@ -595,6 +607,15 @@ class MonitorRuntime:
                 "stateRevision": self._state_revision,
             },
         )
+        state = self._private_event(
+            "state",
+            {
+                "stateRevision": self._state_revision,
+                "gap": gap,
+                "status": self._status(self._paths, self._config),
+            },
+        )
+        return hello, state
 
     def _publish_state(
         self, *, gap: bool = False, increment_revision: bool = True
@@ -1086,11 +1107,7 @@ class MonitorRuntime:
         if self._paths is None:
             return
         if after_event_id is None:
-            self._state_revision += 1
-            initial = (
-                self._hello_event(),
-                self._publish_state(increment_revision=False),
-            )
+            initial = self._bootstrap_events(gap=False)
         else:
             retained = tuple(self._events)
             if any(
@@ -1103,11 +1120,24 @@ class MonitorRuntime:
                     if isinstance(event, LiveEvent) and event.event_id > after_event_id
                 )
             else:
-                self._state_revision += 1
-                initial = (
-                    self._hello_event(),
-                    self._publish_state(gap=True, increment_revision=False),
+                anchor = next(
+                    (
+                        sequence
+                        for event_id, sequence in self._private_anchors
+                        if event_id == after_event_id
+                    ),
+                    None,
                 )
+                oldest = self._public_sequence - len(retained) + 1
+                if anchor is not None and anchor >= oldest - 1:
+                    start = max(0, anchor - oldest + 1)
+                    initial = tuple(
+                        event.to_dict()
+                        for event in retained[start:]
+                        if isinstance(event, LiveEvent)
+                    )
+                else:
+                    initial = self._bootstrap_events(gap=True)
         queue: asyncio.Queue[object] = asyncio.Queue(maxsize=_LIVE_QUEUE_EVENTS)
         self._live_subscribers.add(queue)
         try:
@@ -1191,6 +1221,7 @@ class MonitorRuntime:
         self._paths = None
         self._lock = None
         self._config = None
+        self._private_anchors.clear()
         self._closed.set()
         if first_error is not None:
             raise _fail("MONITOR_CLEANUP_FAILED", "Monitor runtime cleanup failed") from None

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import math
+import copy
 from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
@@ -65,15 +66,25 @@ def _binding() -> ObservationBinding:
 
 
 def test_live_event_is_an_immutable_bounded_discriminated_union() -> None:
-    event = LiveEvent(7, "state", {"sampling": {"state": "PAUSED"}})
+    event = LiveEvent(
+        7,
+        "heartbeat",
+        {
+            "stateRevision": 3,
+            "capturedAtUtc": "2026-08-08T01:02:03.000000Z",
+        },
+    )
 
     assert event.to_dict() == {
         "eventId": 7,
-        "type": "state",
-        "data": {"sampling": {"state": "PAUSED"}},
+        "type": "heartbeat",
+        "data": {
+            "stateRevision": 3,
+            "capturedAtUtc": "2026-08-08T01:02:03.000000Z",
+        },
     }
     with pytest.raises(TypeError):
-        event.data["sampling"] = {}  # type: ignore[index]
+        event.data["stateRevision"] = 4  # type: ignore[index]
     for values in (
         (0, "state", {}),
         (1, "unknown", {}),
@@ -82,6 +93,129 @@ def test_live_event_is_an_immutable_bounded_discriminated_union() -> None:
     ):
         with pytest.raises((TypeError, ValueError)):
             LiveEvent(*values)
+
+
+def _live_status() -> dict[str, object]:
+    return {
+        "workspaceId": "c" * 24,
+        "sessionId": "monitor-1",
+        "project": {
+            "logicalProjectId": "33333333-3333-4333-8333-333333333333",
+            "name": "fixture",
+            "targetDevice": "STM32F407VGTx",
+        },
+        "firmware": None,
+        "probe": {"connected": False, "probeId": None},
+        "sampling": {
+            "state": "IDLE",
+            "active": False,
+            "blockedCode": None,
+            "groupId": None,
+            "groupRevision": None,
+            "runId": None,
+            "lastSequence": None,
+            "bindingEpoch": 0,
+            "subscriberDrops": 0,
+            "historyDrops": 0,
+            "deadlineDrops": 0,
+            "serviceDrops": 0,
+        },
+        "probeConnected": False,
+        "samplingActive": False,
+    }
+
+
+def _live_batch() -> dict[str, object]:
+    return SampleBatch(
+        binding=_binding(),
+        group_id=GROUP_ID,
+        group_revision=3,
+        run_id=RUN_ID,
+        sequence=4,
+        scheduled_unix_ns=1_000,
+        captured_unix_ns=1_250,
+        latency_ns=250,
+        actual_rate_hz=4.0,
+        subscriber_drops=1,
+        history_drops=2,
+        deadline_drops=3,
+        values=(SampleValue(WatchItem.variable("counter"), "OK", typed_value=7),),
+    ).to_dict()
+
+
+def test_live_event_exact_payloads_roundtrip_and_snapshot_nested_mutability() -> None:
+    payloads = {
+        "hello": {
+            "protocol": "stm32-toolkit-monitor/1",
+            "toolkitVersion": "0.4.0",
+            "monitorVersion": "0.4.0",
+            "stateRevision": 2,
+        },
+        "state": {"stateRevision": 2, "gap": False, "status": _live_status()},
+        "sample": {"batch": _live_batch(), "serviceSubscriberDrops": 5},
+        "heartbeat": {
+            "stateRevision": 2,
+            "capturedAtUtc": "2026-08-08T01:02:03.123456Z",
+        },
+    }
+    snapshots = {
+        kind: LiveEvent(index, kind, payload).to_dict()
+        for index, (kind, payload) in enumerate(payloads.items(), 1)
+    }
+    payloads["state"]["status"]["sampling"]["state"] = "RUNNING"
+    payloads["sample"]["batch"]["values"][0]["typedValue"] = 99
+
+    assert snapshots["state"]["data"]["status"]["sampling"]["state"] == "IDLE"
+    assert snapshots["sample"]["data"]["batch"]["values"][0]["typedValue"] == 7
+    assert [snapshots[kind]["type"] for kind in payloads] == list(payloads)
+
+
+def test_live_event_rejects_inexact_payloads_for_every_discriminator() -> None:
+    valid = {
+        "hello": {
+            "protocol": "stm32-toolkit-monitor/1",
+            "toolkitVersion": "0.4.0",
+            "monitorVersion": "0.4.0",
+            "stateRevision": 0,
+        },
+        "state": {"stateRevision": 0, "gap": False, "status": _live_status()},
+        "sample": {"batch": _live_batch(), "serviceSubscriberDrops": 0},
+        "heartbeat": {
+            "stateRevision": 0,
+            "capturedAtUtc": "2026-08-08T01:02:03.000000Z",
+        },
+    }
+    for kind, payload in valid.items():
+        missing = dict(payload)
+        missing.pop(next(iter(missing)))
+        extra = dict(payload, unexpected=True)
+        with pytest.raises((TypeError, ValueError)):
+            LiveEvent(1, kind, missing)
+        with pytest.raises((TypeError, ValueError)):
+            LiveEvent(1, kind, extra)
+
+    invalid = (
+        ("hello", valid["hello"] | {"stateRevision": True}),
+        ("hello", valid["hello"] | {"protocol": ""}),
+        ("state", valid["state"] | {"gap": 1}),
+        ("state", valid["state"] | {"stateRevision": -1}),
+        ("state", valid["state"] | {"status": {"probeConnected": False}}),
+        ("sample", valid["sample"] | {"serviceSubscriberDrops": True}),
+        ("sample", valid["sample"] | {"serviceSubscriberDrops": -1}),
+        ("sample", valid["sample"] | {"batch": {"sequence": 1}}),
+        ("heartbeat", valid["heartbeat"] | {"stateRevision": True}),
+        ("heartbeat", valid["heartbeat"] | {"capturedAtUtc": "2026-08-08T01:02:03Z"}),
+        ("heartbeat", valid["heartbeat"] | {"capturedAtUtc": "2026-08-08T01:02:03.000000+00:00"}),
+        ("heartbeat", valid["heartbeat"] | {"capturedAtUtc": "not-a-time"}),
+    )
+    for kind, payload in invalid:
+        with pytest.raises((TypeError, ValueError)):
+            LiveEvent(1, kind, payload)
+
+    capability = copy.deepcopy(valid["sample"])
+    capability["batch"]["values"][0]["typedValue"] = object()
+    with pytest.raises(TypeError):
+        LiveEvent(1, "sample", capability)
 
 
 def _history_slice(
