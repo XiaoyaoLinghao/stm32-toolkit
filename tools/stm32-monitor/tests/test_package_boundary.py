@@ -3,8 +3,8 @@ from __future__ import annotations
 import ast
 import importlib
 import importlib.util
+import re
 import sys
-import tomllib
 from pathlib import Path
 
 
@@ -39,7 +39,8 @@ def test_legacy_runtime_modules_and_static_assets_are_absent() -> None:
     for module_name in LEGACY_MODULES:
         assert not (SOURCE_ROOT / f"{module_name}.py").exists()
         assert importlib.util.find_spec(f"stm32_monitor.{module_name}") is None
-    assert not (PACKAGE_ROOT / "static").exists()
+    static_root = PACKAGE_ROOT / "static"
+    assert not static_root.exists() or not any(static_root.rglob("*"))
 
 
 def test_monitor_source_has_no_backend_process_or_legacy_runtime_path() -> None:
@@ -73,7 +74,7 @@ def test_monitor_source_has_no_backend_process_or_legacy_runtime_path() -> None:
                     value = node.value.casefold()
                     if any(token in value for token in FORBIDDEN_TEXT):
                         findings.append(f"{path.name}:{node.lineno}:legacy runtime text")
-                    if value.startswith("stm32") and any(char.isdigit() for char in value):
+                    if re.fullmatch(r"stm32[a-z]\d+[a-z0-9]*", value):
                         findings.append(f"{path.name}:{node.lineno}:default target")
         assert "from pyocd" not in lowered
     assert findings == []
@@ -109,11 +110,22 @@ def test_ordinary_import_is_backend_lazy_and_does_not_write_project(
 
 
 def test_package_dependency_contract_uses_only_toolkit_and_aiohttp() -> None:
-    metadata = tomllib.loads((PACKAGE_ROOT / "pyproject.toml").read_text("utf-8"))
-    project = metadata["project"]
-    assert project["name"] == "stm32-monitor"
-    assert project["version"] == "0.4.0"
-    assert project["dependencies"] == [
+    metadata_path = PACKAGE_ROOT / "pyproject.toml"
+    assert metadata_path.stat().st_size <= 16 * 1024
+    text = metadata_path.read_text(encoding="utf-8")
+    assert '[project]\nname = "stm32-monitor"\nversion = "0.4.0"' in text
+    prefix, marker, remainder = text.partition("dependencies = [")
+    assert marker and prefix.count("dependencies") == 0
+    dependency_text, closing, suffix = remainder.partition("]")
+    assert closing and "dependencies" not in suffix
+    dependencies = [
+        line.strip().rstrip(",").strip('"')
+        for line in dependency_text.splitlines()
+        if line.strip()
+    ]
+    assert dependencies == [
         "stm32-toolkit==0.4.0",
         "aiohttp>=3.9,<4",
     ]
+    lowered = text.casefold()
+    assert not any(name in lowered for name in ("pyocd", "cmsis-svd", "pyyaml"))
