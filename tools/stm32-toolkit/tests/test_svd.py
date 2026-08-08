@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import os
+import base64
+import hashlib
 import json
 import subprocess
 from dataclasses import replace
@@ -847,6 +849,85 @@ def test_register_catalog_cursor_binding_limits_and_provenance_are_strict(
             limit=1,
         )
     assert changed.value.code == "SVD_PROVENANCE_MISMATCH"
+
+
+def test_register_catalog_rejects_public_sha_offset_forgery_and_continues_without_gaps(
+    tmp_path: Path,
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "device.svd").write_bytes(FIXTURE.read_bytes())
+    binding = _binding(project)
+    selection = select_svd(project, "STM32F429ZITx", (Path("device.svd"),))
+    complete = selection.register_descriptors(binding, project, limit=256)
+    first = selection.register_descriptors(binding, project, limit=2)
+    assert first.next_cursor is not None
+
+    raw = base64.urlsafe_b64decode(
+        first.next_cursor.encode("ascii") + b"=" * (-len(first.next_cursor) % 4)
+    )
+    payload, _signature = raw.rsplit(b".", 1)
+    document = json.loads(payload)
+    document["i"] = document["i"] + 1
+    forged_payload = json.dumps(
+        document, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")
+    old_signature = hashlib.sha256(
+        b"stm32-catalog-v1\0" + forged_payload
+    ).hexdigest().encode("ascii")
+    forged = base64.urlsafe_b64encode(
+        forged_payload + b"." + old_signature
+    ).rstrip(b"=").decode("ascii")
+
+    with pytest.raises(SvdError) as rejected:
+        selection.register_descriptors(binding, project, cursor=forged, limit=2)
+    assert rejected.value.code == "SVD_CURSOR_INVALID"
+
+    second = selection.register_descriptors(
+        binding, project, cursor=first.next_cursor, limit=256
+    )
+    assert [item.selector for item in first.items + second.items] == [
+        item.selector for item in complete.items
+    ]
+
+
+def test_register_catalog_cursor_is_deterministic_per_server_lifetime_and_restart_bound(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "device.svd").write_bytes(FIXTURE.read_bytes())
+    binding = _binding(project)
+    selection = select_svd(project, "STM32F429ZITx", (Path("device.svd"),))
+    first = selection.register_descriptors(binding, project, limit=1)
+    repeated = selection.register_descriptors(binding, project, limit=1)
+    assert first.next_cursor == repeated.next_cursor
+    assert first.next_cursor is not None
+
+    monkeypatch.setattr(svd_module, "_CURSOR_KEY", b"restart-key" * 4, raising=False)
+    with pytest.raises(SvdError) as rejected:
+        selection.register_descriptors(
+            binding, project, cursor=first.next_cursor, limit=1
+        )
+    assert rejected.value.code == "SVD_CURSOR_INVALID"
+
+
+def test_register_catalog_cursor_signature_cannot_collide_with_its_envelope_delimiter(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "device.svd").write_bytes(FIXTURE.read_bytes())
+    binding = _binding(project)
+    selection = select_svd(project, "STM32F429ZITx", (Path("device.svd"),))
+    monkeypatch.setattr(svd_module, "_CURSOR_KEY", (5).to_bytes(4, "big"))
+    first = selection.register_descriptors(binding, project, limit=2)
+    assert first.next_cursor is not None
+
+    second = selection.register_descriptors(
+        binding, project, cursor=first.next_cursor, limit=2
+    )
+    assert second.items
 
 
 def test_register_descriptor_snapshots_mutable_fields_and_rejects_path_names() -> None:

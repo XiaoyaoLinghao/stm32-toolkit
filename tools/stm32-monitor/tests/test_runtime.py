@@ -179,14 +179,32 @@ class FakeObservation:
         self.close_calls += 1
 
     async def list_variables(self, query, cursor, limit):
-        from stm32_monitor.protocol import success
+        from stm32_toolkit.debug.types import CatalogPage, VariableDescriptor
+        from stm32_toolkit.result import OperationResult
 
-        return success("variables.list", {"kind": "variables", "query": query, "cursor": cursor, "limit": limit})
+        return OperationResult.success(
+            "variables.list",
+            CatalogPage(
+                (VariableDescriptor("counter", "uint32_t", "integer", 4, signed=False),),
+                None,
+            ),
+        )
 
     async def list_registers(self, query, cursor, limit):
-        from stm32_monitor.protocol import success
+        from stm32_toolkit.debug.types import CatalogPage, RegisterDescriptor
+        from stm32_toolkit.result import OperationResult
 
-        return success("registers.list", {"kind": "registers", "query": query, "cursor": cursor, "limit": limit})
+        return OperationResult.success(
+            "registers.list",
+            CatalogPage(
+                (
+                    RegisterDescriptor(
+                        "GPIOA.IDR", 32, "read-only", None, 0, None, (), True, False
+                    ),
+                ),
+                None,
+            ),
+        )
 
 
 class FakeSampler:
@@ -203,6 +221,9 @@ class FakeSampler:
         self._subscribers = {}
         self._history_drops_pending = 0
         self._deadline_drops_pending = 0
+        self.subscriber_drops_total = 0
+        self.history_drops_total = 0
+        self.deadline_drops_total = 0
 
     async def start(self, *args, **kwargs):
         from stm32_monitor.protocol import success
@@ -232,7 +253,9 @@ class FakeSampler:
 
     async def subscribe(self):
         yield {"sequence": 1}
-        yield SimpleNamespace(to_dict=lambda: {"sequence": 2})
+        yield SimpleNamespace(
+            subscriber_drops=3, to_dict=lambda: {"sequence": 2}
+        )
 
 
 def _protocol_runtime(
@@ -620,10 +643,8 @@ def test_probe_discovery_status_catalogs_and_connect_are_server_owned(
             registers = await runtime.dispatch(
                 "monitor.catalog.registers", {}, query={"cursor": "opaque"}
             )
-            assert variables.ok and variables.data["kind"] == "variables"
-            assert registers.ok and registers.data["kind"] == "registers"
-            assert variables.data["limit"] == 25
-            assert registers.data["limit"] == 100
+            assert variables.ok and variables.data["items"][0]["selector"] == "counter"
+            assert registers.ok and registers.data["items"][0]["selector"] == "GPIOA.IDR"
             assert (await runtime.dispatch("monitor.probe.connect", {
                 "probeId": "probe-b", "target": "attacker", "expectedBuildId": "f" * 64
             })).code == "MONITOR_REQUEST_INVALID"
@@ -789,11 +810,163 @@ def test_probe_catalog_and_status_failure_boundaries_are_closed_and_bounded(
             sampler._subscribers = {object(): 2}
             sampler._history_drops_pending = 3
             sampler._deadline_drops_pending = 4
-            status = await runtime.dispatch("monitor.status", {})
-            assert status.data["sampling"]["active"] is True
-            assert status.data["sampling"]["lastSequence"] == 4
-            assert status.data["sampling"]["subscriberDrops"] == 2
-            assert status.data["probe"]["probeId"] == "probe-a"
+            sampler.subscriber_drops_total = 7
+            sampler.history_drops_total = 8
+            sampler.deadline_drops_total = 9
+            runtime._service_drops_total = 10
+            for state, active in (
+                ("RUNNING", True),
+                ("PAUSED", True),
+                ("PAUSED_BLOCKED", False),
+            ):
+                sampler.state = state
+                status = await runtime.dispatch("monitor.status", {})
+                sampling = status.data["sampling"]
+                assert sampling["active"] is active
+                assert sampling["lastSequence"] == 4
+                assert sampling["subscriberDrops"] == 7
+                assert sampling["historyDrops"] == 8
+                assert sampling["deadlineDrops"] == 9
+                assert sampling["serviceDrops"] == 10
+                assert status.data["probe"]["probeId"] == "probe-a"
+
+            sampler._history_drops_pending = 0
+            sampler._deadline_drops_pending = 0
+            later = await runtime.dispatch("monitor.status", {})
+            assert later.data["sampling"]["historyDrops"] == 8
+            assert later.data["sampling"]["deadlineDrops"] == 9
+        finally:
+            await runtime.stop()
+
+    asyncio.run(scenario())
+
+
+def test_probe_discovery_validates_exact_public_values_and_the_sixty_four_probe_cap(
+    tmp_path: Path,
+) -> None:
+    from stm32_toolkit.result import OperationResult
+
+    listed = {"probes": ()}
+
+    async def probe_list(_request):
+        return OperationResult.success("stm32_probe_list", listed)
+
+    async def scenario() -> None:
+        runtime, config, *_ = _protocol_runtime(
+            tmp_path, probe_list_factory=probe_list
+        )
+        await runtime.start(config)
+        try:
+            valid = tuple(
+                {
+                    "probeId": f"probe-{index:02d}",
+                    "vendor": "V" * 128,
+                    "product": "ST-LINK/V3",
+                    "boardName": None if index else "B" * 128,
+                }
+                for index in range(64)
+            )
+            listed["probes"] = valid
+            accepted = await runtime.dispatch("monitor.probes.list", {})
+            assert accepted.ok and len(accepted.data["probes"]) == 64
+
+            listed["probes"] = valid + ({
+                "probeId": "probe-64",
+                "vendor": "ST",
+                "product": "LINK",
+                "boardName": None,
+            },)
+            assert (await runtime.dispatch("monitor.probes.list", {})).code == (
+                "MONITOR_PROBE_ENUMERATION_FAILED"
+            )
+
+            malformed = (
+                {"probeId": "../probe", "vendor": "ST", "product": "LINK", "boardName": None},
+                {"probeId": "probe-a", "vendor": "", "product": "LINK", "boardName": None},
+                {"probeId": "probe-a", "vendor": "ST\n", "product": "LINK", "boardName": None},
+                {"probeId": "probe-a", "vendor": "C:\\secret", "product": "LINK", "boardName": None},
+                {"probeId": "probe-a", "vendor": "ST", "product": "/secret", "boardName": None},
+                {"probeId": "probe-a", "vendor": "ST", "product": "LINK", "boardName": "../secret"},
+                {"probeId": "probe-a", "vendor": "V" * 129, "product": "LINK", "boardName": None},
+                {"probeId": "probe-a", "vendor": "ST", "product": "P" * 129, "boardName": None},
+                {"probeId": "probe-a", "vendor": "ST", "product": "LINK", "boardName": "B" * 129},
+            )
+            for item in malformed:
+                listed["probes"] = (item,)
+                result = await runtime.dispatch("monitor.probes.list", {})
+                assert result.code == "MONITOR_PROBE_ENUMERATION_FAILED"
+                assert result.message == "Debug probe enumeration failed"
+        finally:
+            await runtime.stop()
+
+    asyncio.run(scenario())
+
+
+def test_runtime_catalog_accepts_only_exact_typed_pages_and_matching_descriptors(
+    tmp_path: Path,
+) -> None:
+    from stm32_toolkit.debug.types import (
+        CatalogPage,
+        RegisterDescriptor,
+    )
+    from stm32_toolkit.result import OperationResult
+
+    class ForgedPage:
+        calls = 0
+
+        def to_dict(self):
+            self.calls += 1
+            return {"items": [{"address": "C:\\private\\secret"}]}
+
+    async def scenario() -> None:
+        runtime, config, *_tail, observations, _requests = _protocol_runtime(tmp_path)
+        await runtime.start(config)
+        try:
+            assert (await runtime.dispatch(
+                "monitor.probe.connect", {"probeId": "probe-a"}
+            )).ok
+            observation = observations[0]
+            forged = ForgedPage()
+            forged_result = OperationResult.success("variables.list", forged)
+            construction_calls = forged.calls
+
+            async def custom_page(*_args):
+                return forged_result
+
+            observation.list_variables = custom_page
+            rejected = await runtime.dispatch(
+                "monitor.catalog.variables", {}, query={}
+            )
+            assert rejected.code == "MONITOR_PROVENANCE_CHANGED"
+            assert rejected.message == "Monitor catalog response is invalid"
+            assert forged.calls == construction_calls
+
+            async def mapping_page(*_args):
+                return OperationResult.success(
+                    "variables.list",
+                    {"items": [{"address": 0x20000000}], "nextCursor": None},
+                )
+
+            observation.list_variables = mapping_page
+            rejected = await runtime.dispatch(
+                "monitor.catalog.variables", {}, query={}
+            )
+            assert rejected.code == "MONITOR_PROVENANCE_CHANGED"
+
+            wrong = RegisterDescriptor(
+                "GPIOA.IDR", 32, "read-only", None, 0, None, (), True, False
+            )
+
+            async def wrong_descriptor(*_args):
+                return OperationResult.success(
+                    "variables.list", CatalogPage((wrong,), None)
+                )
+
+            observation.list_variables = wrong_descriptor
+            rejected = await runtime.dispatch(
+                "monitor.catalog.variables", {}, query={}
+            )
+            assert rejected.code == "MONITOR_PROVENANCE_CHANGED"
         finally:
             await runtime.stop()
 
@@ -883,6 +1056,8 @@ def test_live_subscription_serializes_mapping_and_model(tmp_path: Path) -> None:
             )
             received = [item async for item in runtime.live_subscribe()]
             assert received == [{"sequence": 1}, {"sequence": 2}]
+            status = await runtime.dispatch("monitor.status", {})
+            assert status.data["sampling"]["serviceDrops"] == 3
         finally:
             await runtime.stop()
 

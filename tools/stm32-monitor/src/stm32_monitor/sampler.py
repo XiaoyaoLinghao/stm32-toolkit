@@ -86,6 +86,9 @@ class MonitorSampler:
         self._last_capture_monotonic_ns: int | None = None
         self._history_drops_pending = 0
         self._deadline_drops_pending = 0
+        self._subscriber_drops_total = 0
+        self._history_drops_total = 0
+        self._deadline_drops_total = 0
         self._reset_deadline = False
         self.state = SamplerState.IDLE
         self.blocked_code: str | None = None
@@ -97,6 +100,24 @@ class MonitorSampler:
             for task in (self._producer_task, self._history_task, self._close_task)
             if task is not None and not task.done()
         )
+
+    @property
+    def subscriber_drops_total(self) -> int:
+        """Subscriber evictions over this sampler object's lifetime."""
+
+        return self._subscriber_drops_total
+
+    @property
+    def history_drops_total(self) -> int:
+        """History enqueue/write failures over this sampler object's lifetime."""
+
+        return self._history_drops_total
+
+    @property
+    def deadline_drops_total(self) -> int:
+        """Skipped scheduling slots over this sampler object's lifetime."""
+
+        return self._deadline_drops_total
 
     async def _get_group(self, group_id: UUID):
         return await asyncio.to_thread(self._groups.get_group, group_id)
@@ -260,6 +281,7 @@ class MonitorSampler:
                 if now >= next_deadline:
                     missed = (now - next_deadline) // interval_ns + 1
                     self._deadline_drops_pending += int(missed)
+                    self._deadline_drops_total += int(missed)
                     next_deadline += int(missed) * interval_ns
         except asyncio.CancelledError:
             raise
@@ -273,11 +295,11 @@ class MonitorSampler:
     def _enqueue_history(self, batch: SampleBatch) -> None:
         queue = self._history_queue
         if queue is None:
-            self._history_drops_pending += 1
+            self._record_history_drop()
             return
         size = self._batch_bytes(batch)
         if queue.full() or size > self._history_queue_limit - self._history_queue_bytes:
-            self._history_drops_pending += 1
+            self._record_history_drop()
             return
         queue.put_nowait((batch, size))
         self._history_queue_bytes += size
@@ -291,6 +313,7 @@ class MonitorSampler:
                     pass
                 else:
                     pending_drops += 1
+                    self._subscriber_drops_total += 1
                     if isinstance(dropped, SampleBatch):
                         pending_drops += dropped.subscriber_drops
             queue.put_nowait(replace(batch, subscriber_drops=pending_drops) if pending_drops else batch)
@@ -309,15 +332,19 @@ class MonitorSampler:
                 try:
                     result = await asyncio.to_thread(self._history.append_batch, batch)
                     if getattr(result, "ok", None) is not True:
-                        self._history_drops_pending += 1
+                        self._record_history_drop()
                 except asyncio.CancelledError:
                     raise
                 except Exception:
-                    self._history_drops_pending += 1
+                    self._record_history_drop()
                 finally:
                     self._history_queue_bytes = max(0, self._history_queue_bytes - size)
             finally:
                 queue.task_done()
+
+    def _record_history_drop(self) -> None:
+        self._history_drops_pending += 1
+        self._history_drops_total += 1
 
     async def pause(self) -> ProtocolResult[dict[str, object]]:
         operation = "sampling.pause"

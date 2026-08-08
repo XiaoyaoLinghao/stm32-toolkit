@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import hashlib
+import hmac
 import base64
 import binascii
 import json
 import os
 import re
+import secrets
 import stat
 import unicodedata
 import xml.etree.ElementTree as ET
@@ -31,6 +33,7 @@ _REPARSE_POINT = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
 _NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_.-]{0,127}$")
 _MAX_CATALOG_PAGE = 256
 _MAX_CATALOG_QUERY = 128
+_CURSOR_KEY = secrets.token_bytes(32)
 
 
 class SvdError(Exception):
@@ -250,7 +253,8 @@ def _cursor_payload(digest: str, query: str, offset: int) -> bytes:
 
 def _encode_cursor(digest: str, query: str, offset: int) -> str:
     payload = _cursor_payload(digest, query, offset)
-    envelope = payload + b"." + hashlib.sha256(b"stm32-catalog-v1\0" + payload).hexdigest().encode("ascii")
+    signature = hmac.new(_CURSOR_KEY, payload, "sha256").hexdigest().encode("ascii")
+    envelope = payload + b"." + signature
     return base64.urlsafe_b64encode(envelope).rstrip(b"=").decode("ascii")
 
 
@@ -263,11 +267,11 @@ def _decode_cursor(value: object, digest: str, query: str) -> int:
         payload, signature = decoded.rsplit(b".", 1)
         if base64.urlsafe_b64encode(decoded).rstrip(b"=") != raw:
             raise ValueError
-        expected = hashlib.sha256(b"stm32-catalog-v1\0" + payload).hexdigest().encode("ascii")
+        expected = hmac.new(_CURSOR_KEY, payload, "sha256").hexdigest().encode("ascii")
         document = json.loads(payload.decode("utf-8"))
         offset = document.get("i")
         if (
-            signature != expected
+            not hmac.compare_digest(signature, expected)
             or set(document) != {"d", "i", "k", "q", "v"}
             or document.get("v") != 1
             or document.get("k") != "registers"

@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import io
 import hashlib
+import hmac
 import base64
 import binascii
 import json
 import os
 import re
+import secrets
 import stat
 import struct
 import unicodedata
@@ -52,6 +54,7 @@ _MAX_ADDRESS = (1 << 64) - 1
 _REPARSE_POINT = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
 _MAX_CATALOG_PAGE = 256
 _MAX_CATALOG_QUERY = 128
+_CURSOR_KEY = secrets.token_bytes(32)
 
 
 def _fail(code: str, message: str) -> DwarfError:
@@ -86,7 +89,8 @@ def _cursor_payload(kind: str, digest: str, query: str, offset: int) -> bytes:
 
 def _encode_cursor(kind: str, digest: str, query: str, offset: int) -> str:
     payload = _cursor_payload(kind, digest, query, offset)
-    envelope = payload + b"." + hashlib.sha256(b"stm32-catalog-v1\0" + payload).hexdigest().encode("ascii")
+    signature = hmac.new(_CURSOR_KEY, payload, "sha256").hexdigest().encode("ascii")
+    envelope = payload + b"." + signature
     return base64.urlsafe_b64encode(envelope).rstrip(b"=").decode("ascii")
 
 
@@ -99,11 +103,11 @@ def _decode_cursor(value: object, kind: str, digest: str, query: str) -> int:
         payload, signature = decoded.rsplit(b".", 1)
         if base64.urlsafe_b64encode(decoded).rstrip(b"=") != raw:
             raise ValueError
-        expected = hashlib.sha256(b"stm32-catalog-v1\0" + payload).hexdigest().encode("ascii")
+        expected = hmac.new(_CURSOR_KEY, payload, "sha256").hexdigest().encode("ascii")
         document = json.loads(payload.decode("utf-8"))
         offset = document.get("i")
         if (
-            signature != expected
+            not hmac.compare_digest(signature, expected)
             or set(document) != {"d", "i", "k", "q", "v"}
             or document.get("v") != 1
             or document.get("k") != kind

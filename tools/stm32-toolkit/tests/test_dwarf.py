@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 import io
+import base64
 import hashlib
 import json
 import struct
@@ -745,6 +746,68 @@ def test_variable_catalog_cursor_is_digest_and_query_bound_and_limits_are_strict
     assert long_query.value.code == "DWARF_QUERY_INVALID"
 
 
+def test_variable_catalog_rejects_public_sha_offset_forgery_and_continues_without_gaps() -> None:
+    binding = _firmware_binding(project_root=TOOL_ROOT)
+    current = DwarfCatalog.from_binding(binding, TOOL_ROOT)
+    complete = current.variable_descriptors(binding, limit=256)
+    first = current.variable_descriptors(binding, limit=2)
+    assert first.next_cursor is not None
+
+    raw = base64.urlsafe_b64decode(
+        first.next_cursor.encode("ascii") + b"=" * (-len(first.next_cursor) % 4)
+    )
+    payload, _signature = raw.rsplit(b".", 1)
+    document = json.loads(payload)
+    document["i"] = document["i"] + 1
+    forged_payload = json.dumps(
+        document, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")
+    old_signature = hashlib.sha256(
+        b"stm32-catalog-v1\0" + forged_payload
+    ).hexdigest().encode("ascii")
+    forged = base64.urlsafe_b64encode(
+        forged_payload + b"." + old_signature
+    ).rstrip(b"=").decode("ascii")
+
+    with pytest.raises(DwarfError) as rejected:
+        current.variable_descriptors(binding, cursor=forged, limit=2)
+    assert rejected.value.code == "DWARF_CURSOR_INVALID"
+
+    second = current.variable_descriptors(binding, cursor=first.next_cursor, limit=256)
+    assert [item.selector for item in first.items + second.items] == [
+        item.selector for item in complete.items
+    ]
+
+
+def test_variable_catalog_cursor_is_deterministic_per_server_lifetime_and_restart_bound(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    binding = _firmware_binding(project_root=TOOL_ROOT)
+    current = DwarfCatalog.from_binding(binding, TOOL_ROOT)
+    first = current.variable_descriptors(binding, limit=1)
+    repeated = current.variable_descriptors(binding, limit=1)
+    assert first.next_cursor == repeated.next_cursor
+    assert first.next_cursor is not None
+
+    monkeypatch.setattr(dwarf_module, "_CURSOR_KEY", b"restart-key" * 4, raising=False)
+    with pytest.raises(DwarfError) as rejected:
+        current.variable_descriptors(binding, cursor=first.next_cursor, limit=1)
+    assert rejected.value.code == "DWARF_CURSOR_INVALID"
+
+
+def test_variable_catalog_cursor_signature_cannot_collide_with_its_envelope_delimiter(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    binding = _firmware_binding(project_root=TOOL_ROOT)
+    current = DwarfCatalog.from_binding(binding, TOOL_ROOT)
+    monkeypatch.setattr(dwarf_module, "_CURSOR_KEY", (11).to_bytes(4, "big"))
+    first = current.variable_descriptors(binding, limit=2)
+    assert first.next_cursor is not None
+
+    second = current.variable_descriptors(binding, cursor=first.next_cursor, limit=2)
+    assert second.items
+
+
 def test_variable_catalog_revalidates_provenance_before_every_page() -> None:
     binding = _firmware_binding(project_root=TOOL_ROOT)
     current = DwarfCatalog.from_binding(binding, TOOL_ROOT)
@@ -795,6 +858,8 @@ def test_variable_descriptor_and_page_snapshot_mutable_inputs_and_reject_paths()
         replace(descriptor, member_names=("../secret",))
     with pytest.raises(ValueError):
         CatalogPage(tuple(descriptor for _ in range(257)), None)
+    with pytest.raises(TypeError):
+        CatalogPage((item for item in (descriptor, {"address": 0x20000000})), None)  # type: ignore[arg-type]
 
 
 def test_real_dwarf_fixture_is_a_valid_cortex_m_firmware_elf(tmp_path: Path) -> None:

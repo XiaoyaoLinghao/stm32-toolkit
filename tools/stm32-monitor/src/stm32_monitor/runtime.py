@@ -7,7 +7,9 @@ import hashlib
 import inspect
 import json
 import os
+import re
 import stat
+import unicodedata
 from collections.abc import AsyncIterator, Callable, Mapping
 from datetime import datetime, timezone
 from pathlib import Path
@@ -21,6 +23,7 @@ from stm32_toolkit.project_model import load_project_model
 from .service import MONITOR_PROTOCOL_VERSION, MonitorEndpoint, MonitorService
 
 _REPARSE_POINT = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+_WINDOWS_ABSOLUTE = re.compile(r"[A-Za-z]:[\\/]")
 
 
 class MonitorRuntimeError(Exception):
@@ -32,6 +35,27 @@ class MonitorRuntimeError(Exception):
 
 def _fail(code: str, message: str) -> MonitorRuntimeError:
     return MonitorRuntimeError(code, message)
+
+
+def _probe_public_text(value: object, *, optional: bool = False) -> str | None:
+    if value is None and optional:
+        return None
+    if type(value) is not str:
+        raise ValueError("probe metadata is invalid")
+    normalized = unicodedata.normalize("NFC", value)
+    portable = normalized.replace("\\", "/")
+    if (
+        not normalized
+        or normalized != value
+        or normalized.strip() != normalized
+        or len(normalized) > 128
+        or any(ord(character) < 32 or ord(character) == 127 for character in normalized)
+        or normalized.startswith(("/", "\\"))
+        or _WINDOWS_ABSOLUTE.match(normalized) is not None
+        or any(component in (".", "..") for component in portable.split("/"))
+    ):
+        raise ValueError("probe metadata is invalid")
+    return normalized
 
 
 def _redirect(path: Path, metadata: os.stat_result) -> bool:
@@ -399,6 +423,7 @@ class MonitorRuntime:
         self._observation: object | None = None
         self._probe_request: object | None = None
         self._binding_epoch = 0
+        self._service_drops_total = 0
         self._endpoint: MonitorEndpoint | object | None = None
         self._runtime_record: Path | None = None
         self._cleanup_task: asyncio.Task[None] | None = None
@@ -536,6 +561,7 @@ class MonitorRuntime:
 
     async def _list_probes(self, operation: str, config, failure, success):
         from stm32_toolkit.hardware_workflows import ProbeListWorkflowRequest
+        from .models import ProbeConnectRequest
 
         request = ProbeListWorkflowRequest(
             config.project_root, config.data_root, config.session_id
@@ -561,16 +587,25 @@ class MonitorRuntime:
             or any(
                 not isinstance(item, Mapping)
                 or set(item) != required
-                or not isinstance(item.get("probeId"), str)
-                or not isinstance(item.get("vendor"), str)
-                or not isinstance(item.get("product"), str)
-                or item.get("boardName") is not None
-                and not isinstance(item.get("boardName"), str)
                 for item in probes
             )
         ):
             return failure(operation, "MONITOR_PROBE_ENUMERATION_FAILED", "Debug probe enumeration failed")
-        ordered = sorted((dict(item) for item in probes), key=lambda item: item["probeId"])
+        try:
+            ordered = sorted(
+                (
+                    {
+                        "probeId": ProbeConnectRequest(item["probeId"]).probe_id,
+                        "vendor": _probe_public_text(item["vendor"]),
+                        "product": _probe_public_text(item["product"]),
+                        "boardName": _probe_public_text(item["boardName"], optional=True),
+                    }
+                    for item in probes
+                ),
+                key=lambda item: item["probeId"],
+            )
+        except (KeyError, TypeError, ValueError):
+            return failure(operation, "MONITOR_PROBE_ENUMERATION_FAILED", "Debug probe enumeration failed")
         if len({item["probeId"] for item in ordered}) != len(ordered):
             return failure(operation, "MONITOR_PROBE_ENUMERATION_FAILED", "Debug probe enumeration failed")
         return success(operation, {"probes": ordered})
@@ -592,12 +627,9 @@ class MonitorRuntime:
         group = getattr(sampler, "_group", None)
         run_id = getattr(sampler, "_run_id", None)
         sequence = getattr(sampler, "_sequence", 0)
-        subscribers = getattr(sampler, "_subscribers", {})
-        subscriber_drops = (
-            sum(value for value in subscribers.values() if type(value) is int and value >= 0)
-            if isinstance(subscribers, Mapping)
-            else 0
-        )
+        def drop_total(name: str) -> int:
+            value = getattr(sampler, name, 0) if sampler is not None else 0
+            return value if type(value) is int and value >= 0 else 0
         return {
             "workspaceId": paths.workspace_id,
             "sessionId": paths.session_id,
@@ -617,10 +649,10 @@ class MonitorRuntime:
                 "runId": None if run_id is None else str(run_id),
                 "lastSequence": sequence - 1 if type(sequence) is int and sequence > 0 else None,
                 "bindingEpoch": self._binding_epoch,
-                "subscriberDrops": subscriber_drops,
-                "historyDrops": max(0, getattr(sampler, "_history_drops_pending", 0)) if sampler is not None else 0,
-                "deadlineDrops": max(0, getattr(sampler, "_deadline_drops_pending", 0)) if sampler is not None else 0,
-                "serviceDrops": 0,
+                "subscriberDrops": drop_total("subscriber_drops_total"),
+                "historyDrops": drop_total("history_drops_total"),
+                "deadlineDrops": drop_total("deadline_drops_total"),
+                "serviceDrops": self._service_drops_total,
             },
             "probeConnected": observation is not None,
             "samplingActive": state in {"RUNNING", "PAUSED"},
@@ -724,6 +756,12 @@ class MonitorRuntime:
                     self._probe_request = request
                 return result
             if operation in {"monitor.catalog.variables", "monitor.catalog.registers"}:
+                from stm32_toolkit.debug.types import (
+                    CatalogPage,
+                    RegisterDescriptor,
+                    VariableDescriptor,
+                )
+
                 _exact(payload, set())
                 allowed = {"query", "cursor", "limit"}
                 if query is None or set(query) - allowed:
@@ -747,9 +785,20 @@ class MonitorRuntime:
                     message = getattr(result, "message", "Monitor catalog request failed")
                     return failure(operation, code, message)
                 data = getattr(result, "data", None)
-                if hasattr(data, "to_dict"):
-                    data = data.to_dict()
-                return success(operation, data)
+                descriptor_type = (
+                    VariableDescriptor
+                    if operation.endswith("variables")
+                    else RegisterDescriptor
+                )
+                if type(data) is not CatalogPage or any(
+                    type(item) is not descriptor_type for item in data.items
+                ):
+                    return failure(
+                        operation,
+                        "MONITOR_PROVENANCE_CHANGED",
+                        "Monitor catalog response is invalid",
+                    )
+                return success(operation, data.to_dict())
             if operation == "monitor.probe.release":
                 _exact(payload, set())
                 release_error = await self._release_probe()
@@ -890,6 +939,9 @@ class MonitorRuntime:
             return
         source = sampler.subscribe()
         async for item in source:
+            drops = getattr(item, "subscriber_drops", 0)
+            if type(drops) is int and drops > 0:
+                self._service_drops_total += drops
             if hasattr(item, "to_dict"):
                 yield item.to_dict()
             elif isinstance(item, Mapping):

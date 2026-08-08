@@ -281,6 +281,7 @@ def test_slow_tick_skips_deadlines_without_bursting(tmp_path: Path) -> None:
             gaps = [right - left for left, right in zip(observation.call_times, observation.call_times[1:])]
             assert all(gap >= 0.24 for gap in gaps)
             assert any(batch.deadline_drops > 0 for batch in batches[1:])
+            assert getattr(sampler, "deadline_drops_total", 0) >= 1
         finally:
             await stream.aclose()
             await sampler.close()
@@ -335,6 +336,9 @@ def test_history_queue_is_nonblocking_bounded_and_reports_drops(tmp_path: Path) 
         try:
             assert observation.calls >= 5
             assert any(batch.history_drops > 0 for batch in batches)
+            total = getattr(sampler, "history_drops_total", 0)
+            assert total >= 1
+            assert total >= sum(batch.history_drops for batch in batches)
         finally:
             release.set()
             await stream.aclose()
@@ -607,6 +611,9 @@ def test_subscriber_drop_evidence_survives_eviction_without_affecting_fast_subsc
             produced = delivered_to_fast[-1].sequence + 1
             assert produced == len(delivered_to_slow) + sum(batch.subscriber_drops for batch in delivered_to_slow)
             assert all(batch.subscriber_drops == 0 for batch in delivered_to_fast)
+            assert getattr(sampler, "subscriber_drops_total", None) == (
+                produced - len(delivered_to_slow)
+            )
         finally:
             await slow.aclose()
             await fast.aclose()

@@ -261,7 +261,7 @@ class CatalogPage:
         if len(items) > 256:
             raise ValueError("catalog page exceeds its item limit")
         if not all(
-            type(item) in (VariableDescriptor, RegisterDescriptor) for item in self.items
+            type(item) in (VariableDescriptor, RegisterDescriptor) for item in items
         ):
             raise TypeError("catalog page items must be an immutable descriptor tuple")
         if self.next_cursor is not None and (
