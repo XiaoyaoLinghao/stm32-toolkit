@@ -700,6 +700,8 @@ class MonitorDatabase:
         busy_timeout_ms: int,
         cancel_event: threading.Event,
     ) -> _T:
+        if cancel_event.is_set():
+            raise StorageFailure("MONITOR_STORAGE_BUSY", "monitor storage is busy")
         try:
             connection = self._open_write(busy_timeout_ms=busy_timeout_ms)
             try:
