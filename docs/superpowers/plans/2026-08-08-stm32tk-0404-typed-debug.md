@@ -44,24 +44,24 @@ UI belong to 0501/0502.
 - Create: `tools/stm32-toolkit/src/stm32_toolkit/debug/firmware.py`
 - Create: `tools/stm32-toolkit/tests/test_debug_firmware.py`
 
-- [ ] Write RED tests for frozen JSON-safe models, stable codes, exact caller
+- [x] Write RED tests for frozen JSON-safe models, stable codes, exact caller
   `buildId`/ELF SHA pins, canonical project roots, bounded identifiers, no
   booleans-as-integers, and portable paths.
-- [ ] Define immutable `DebugBindingRequest`, `DebugFirmwareBinding`, typed
+- [x] Define immutable `DebugBindingRequest`, `DebugFirmwareBinding`, typed
   location/value/read item/report, SVD selection/register evidence, sample
   report, and Fault report contracts. Preserve 64-bit integers losslessly as
   decimal string plus raw hex and bit width; map NaN/Inf to explicit symbolic
   values instead of non-standard JSON numbers.
-- [ ] Implement `bind_debug_firmware(request, client)`. Reuse the complete
+- [x] Implement `bind_debug_firmware(request, client)`. Reuse the complete
   current build-result/identity/Git/input/ELF/MAP/flash chain from 0403 without
   introducing a weaker mtime rule. The current observation session may differ
   from the flash source session, but workspace/probe/target/build/ELF must
   match and both session IDs are recorded.
-- [ ] Bind the exact client endpoint before hardware access, attach the exact
+- [x] Bind the exact client endpoint before hardware access, attach the exact
   probe/target, read every current file-backed segment, and revalidate disk
   evidence after readback. Changed, missing, redirect, partial, or mismatched
   evidence fails closed and writes nothing.
-- [ ] Prove binding is read-only by snapshotting project bytes, names, modes,
+- [x] Prove binding is read-only by snapshotting project bytes, names, modes,
   mtimes, and Git porcelain.
 
 ---
@@ -76,21 +76,21 @@ UI belong to 0501/0502.
 - Create: `tools/stm32-toolkit/tests/fixtures/dwarf/typed.c`
 - Create: `tools/stm32-toolkit/tests/fixtures/dwarf/typed.elf`
 
-- [ ] Write RED tests against a real ELF/DWARF fixture for signed/unsigned
+- [x] Write RED tests against a real ELF/DWARF fixture for signed/unsigned
   8/16/32/64-bit integers, bool, IEEE-754 float32/64, enum known/unknown,
   typedef/const/volatile chains, arrays, nested structures, and pointers shown
   as addresses without implicit dereference.
-- [ ] Implement bounded `DwarfCatalog.from_elf()` using pyelftools DIEs and
+- [x] Implement bounded `DwarfCatalog.from_elf()` using pyelftools DIEs and
   location expressions/lists. `lookup(expression)` accepts only identifiers,
   structure members, and constant in-range array indices; reject calls,
   arithmetic, dynamic indices, casts, and pointer dereference.
-- [ ] Types come only from current DWARF. Never infer type or signedness from
+- [x] Types come only from current DWARF. Never infer type or signedness from
   byte size, symbol section, address, or variable name.
-- [ ] Return stable explicit failures for duplicate/ambiguous symbols,
+- [x] Return stable explicit failures for duplicate/ambiguous symbols,
   optimized-out/register-only/unavailable locations, unsupported expressions,
   bitfields, recursive/incomplete types, malformed/no-DWARF ELF, overflow, and
   addresses outside project-readable memory regions.
-- [ ] Bound ELF size, DIE count/depth, expression length, type size, array
+- [x] Bound ELF size, DIE count/depth, expression length, type size, array
   elements, catalog entries, and decode output before allocation or recursion.
 
 ---
@@ -103,22 +103,22 @@ UI belong to 0501/0502.
 - Create: `tools/stm32-toolkit/tests/test_svd.py`
 - Create: `tools/stm32-toolkit/tests/fixtures/svd/STM32F429-exact.svd`
 
-- [ ] Write RED tests for exact device match, zero/ambiguous/family-only
+- [x] Write RED tests for exact device match, zero/ambiguous/family-only
   rejection, project-relative containment, junction/reparse/permission/size
   failures, and UTF-8/BOM/UTF-16 DTD/ENTITY rejection before XML parsing.
-- [ ] `select_svd(target_device, candidates)` accepts only an explicit bounded
+- [x] `select_svd(target_device, candidates)` accepts only an explicit bounded
   candidate tuple. It performs no ambient pack/network search and never falls
   back to a family-prefix guess. Zero or multiple exact matches return
   `SVD_SELECTION_REQUIRED`.
-- [ ] Parse bounded peripherals, clusters, register arrays, fields,
+- [x] Parse bounded peripherals, clusters, register arrays, fields,
   `derivedFrom`, access, `readAction`, reset metadata, masks, and address
   arithmetic. Reject inheritance cycles, duplicate paths, malformed widths,
   overflow, and addresses outside project-readable regions.
-- [ ] Classify reads: write-only is always denied; read-clear/read-set/modify
+- [x] Classify reads: write-only is always denied; read-clear/read-set/modify
   and unknown side effects require strict
   `acknowledge_access_risk is True` for a single requested read and are never
   eligible for sampling.
-- [ ] Prove all public paths are portable project-relative strings and all
+- [x] Prove all public paths are portable project-relative strings and all
   errors exclude raw exceptions and absolute roots.
 
 ---
@@ -132,21 +132,21 @@ UI belong to 0501/0502.
 - Create: `tools/stm32-toolkit/tests/test_debug_read.py`
 - Create: `tools/stm32-toolkit/tests/test_sampling.py`
 
-- [ ] Write RED tests for bounded variable/register expression counts, adjacent
+- [x] Write RED tests for bounded variable/register expression counts, adjacent
   range merge, no cross-region merge, exact-length checks, split retry after a
   merged block failure, item-scoped errors, and complete binding evidence.
-- [ ] Implement `read_variables()` and `read_registers()` using only catalog
+- [x] Implement `read_variables()` and `read_registers()` using only catalog
   locations or exact SVD addresses. Callers cannot provide raw address/size.
   Merge adjacent reads up to the protocol limit without crossing a memory
   region; if a merged block fails, retry original items independently.
-- [ ] Implement finite `sample_variables()` with applied interval 100–5000 ms,
+- [x] Implement finite `sample_variables()` with applied interval 100–5000 ms,
   bounded sample count/duration/output, monotonic deadline scheduling, no
   catch-up storm, item isolation, and cancellation propagation with no orphan
   task or thread.
-- [ ] Report requested/applied interval, scheduled/actual timestamps, latency,
+- [x] Report requested/applied interval, scheduled/actual timestamps, latency,
   actual rate, deadline misses, dropped samples, and per-item status. Stop on a
   changed firmware binding or lost lease.
-- [ ] Sampling creates no group, database, history file, WebSocket, background
+- [x] Sampling creates no group, database, history file, WebSocket, background
   daemon, or persistent subscription; those are 0501 responsibilities.
 
 ---
@@ -158,16 +158,16 @@ UI belong to 0501/0502.
 - Create: `tools/stm32-toolkit/src/stm32_toolkit/debug/fault.py`
 - Create: `tools/stm32-toolkit/tests/test_fault.py`
 
-- [ ] Write RED tests proving running/sleeping/reset targets return
+- [x] Write RED tests proving running/sleeping/reset targets return
   `FAULT_TARGET_NOT_HALTED` with no halt call. Test already-halted Cortex-M
   register capture, EXC_RETURN MSP/PSP and basic/extended frame selection,
   stack alignment, and partial/unavailable reads.
-- [ ] Read only a fixed allowlist of core and SCB registers/addresses. Decode
+- [x] Read only a fixed allowlist of core and SCB registers/addresses. Decode
   CFSR/HFSR/DFSR/SHCSR and MMFAR/BFAR validity; reject arbitrary caller
   addresses and stack frames outside readable memory.
-- [ ] Symbolize PC/LR against the exact bound ELF. Symbolization failure keeps
+- [x] Symbolize PC/LR against the exact bound ELF. Symbolization failure keeps
   raw register/fault evidence rather than discarding it or guessing.
-- [ ] Bind the report to workspace, current observation session, flash source
+- [x] Bind the report to workspace, current observation session, flash source
   session, lease, probe, target, logical project, build ID, ELF SHA, confirmed
   time, and audit operation. Never resume, reset, write, or mutate project
   files.
@@ -184,16 +184,16 @@ UI belong to 0501/0502.
 - Create: `docs/codex/returns/STM32TK-0404-TYPED-DEBUG/implementation-report.md`
 - Modify: this plan's checkboxes
 
-- [ ] Export public Python contracts without importing PyOCD during ordinary
+- [x] Export public Python contracts without importing PyOCD during ordinary
   package import. Do not add protocol operations unless measured evidence shows
   repeated authenticated reads cannot satisfy the bounded sampling contract.
-- [ ] Run focused tests, full Toolkit pytest with branch coverage at least 90%,
+- [x] Run focused tests, full Toolkit pytest with branch coverage at least 90%,
   every new debug module at least 90%, compileall, `git diff --check`,
   changed-file inventory, no-suppression scan, credential/path leak scan, and
   forbidden write/control/process/network/XML API scan.
-- [ ] Build/install the wheel in a fresh external environment and load the
+- [x] Build/install the wheel in a fresh external environment and load the
   typed debug contracts plus real DWARF/SVD fixtures outside the repository.
-- [ ] Run Windows NTFS path/cancellation/read-only gates. Defer Linux and any
+- [x] Run Windows NTFS path/cancellation/read-only gates. Defer Linux and any
   available real-board non-halting variable/register/Fault smoke honestly to
   0405; fake evidence never closes a physical gate.
 - [ ] Commit product/tests before a separate report commit. Push a Ready PR,
