@@ -5,6 +5,7 @@ import json
 import os
 import stat
 import subprocess
+import threading
 from dataclasses import fields, replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -473,6 +474,95 @@ def test_real_supervisor_pre_start_gate_blocks_post_factory_root_swap(
     assert result.code == "MONITOR_REQUEST_INVALID"
     assert backend.close_calls == 1
     assert len(guard_closes) == 1
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Windows directory handles deny rename")
+def test_real_supervisor_thread_swap_after_identity_check_writes_no_replacement_state(
+    debug_env: DebugEnv, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import stm32_toolkit.monitor_observation as observation
+
+    harness = Harness(debug_env)
+    external_parent = tmp_path / "real-supervisor-thread-parent"
+    external_parent.mkdir()
+    displaced_parent = tmp_path / "real-supervisor-thread-parent-displaced"
+    released_parent = tmp_path / "real-supervisor-thread-parent-released"
+    data_root = external_parent / "data"
+    backend_created = threading.Event()
+    swap_requested = threading.Event()
+    swap_finished = threading.Event()
+    swap_errors: list[BaseException] = []
+    original_verify = observation._DirectoryGuard.verify
+    triggered = False
+
+    def swap_root() -> None:
+        try:
+            if not swap_requested.wait(5):
+                raise TimeoutError("post-factory identity check was not reached")
+            external_parent.rename(displaced_parent)
+            external_parent.mkdir()
+        except BaseException as error:
+            swap_errors.append(error)
+        finally:
+            swap_finished.set()
+
+    thread = threading.Thread(target=swap_root, name="monitor-root-swap")
+    thread.start()
+
+    def verified_then_swap(guard: object) -> None:
+        nonlocal triggered
+        original_verify(guard)
+        if backend_created.is_set() and not triggered:
+            triggered = True
+            swap_requested.set()
+            if not swap_finished.wait(5):
+                raise TimeoutError("root swap did not finish")
+
+    monkeypatch.setattr(observation._DirectoryGuard, "verify", verified_then_swap)
+
+    class Backend:
+        def __init__(self) -> None:
+            self.close_calls = 0
+
+        def close(self) -> None:
+            self.close_calls += 1
+
+    backend = Backend()
+
+    def backend_factory() -> Backend:
+        backend_created.set()
+        return backend
+
+    def real_supervisor_factory(
+        config: object, lease_manager: object, backend_factory: object
+    ) -> ProbeServiceSupervisor:
+        assert isinstance(lease_manager, ProbeLeaseManager)
+        return ProbeServiceSupervisor(
+            config=config,
+            lease_manager=lease_manager,
+            backend_factory=backend_factory,
+        )
+
+    seams = replace(
+        harness.seams(),
+        backend_factory=backend_factory,
+        lease_manager_factory=ProbeLeaseManager,
+        supervisor_factory=real_supervisor_factory,
+    )
+    result = asyncio.run(
+        open_monitor_observation(request(debug_env, data_root), _seams=seams)
+    )
+    thread.join(5)
+    replacement_after = _project_snapshot(external_parent)
+    external_parent.rename(released_parent)
+    displaced_parent.rename(external_parent)
+
+    assert not thread.is_alive()
+    assert swap_errors == []
+    assert triggered is True
+    assert replacement_after == {}
+    assert result.code == "MONITOR_REQUEST_INVALID"
+    assert backend.close_calls == 1
 
 
 def test_posix_directory_creation_uses_directory_descriptors(
