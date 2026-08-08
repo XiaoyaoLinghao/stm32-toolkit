@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from types import TracebackType
 
@@ -28,6 +28,9 @@ class ProbeServiceConfig:
     operation_level: OperationLevel
     session_root: Path
     project_root: Path | None = None
+    _runtime_root_authority: object | None = field(
+        default=None, repr=False, compare=False
+    )
 
 
 class ProbeServiceSupervisor:
@@ -68,6 +71,7 @@ class ProbeServiceSupervisor:
                     session_root=self._config.session_root,
                     project_root=self._config.project_root,
                     handoff_ticket=handoff_ticket,
+                    _runtime_root_authority=self._config._runtime_root_authority,
                 )
                 endpoint = await service.start()
             except BaseException:
@@ -136,6 +140,7 @@ class ProbeServiceSupervisor:
                     workspace_id=self._config.workspace_id,
                     session_id=self._config.session_id,
                     ticket=ticket,
+                    _runtime_root_authority=self._config._runtime_root_authority,
                 )
             )
             return bool(await _await_commit_completion(task))
@@ -149,6 +154,7 @@ class ProbeServiceSupervisor:
                     workspace_id=self._config.workspace_id,
                     session_id=self._config.session_id,
                     ticket=ticket,
+                    _runtime_root_authority=self._config._runtime_root_authority,
                 )
             )
             return bool(await _await_commit_completion(task))

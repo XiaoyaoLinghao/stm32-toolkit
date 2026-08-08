@@ -19,7 +19,7 @@ from aiohttp import web
 from stm32_toolkit import __version__
 
 from .backend import ProbeBackend, ProbeBackendError
-from .lease import ProbeLease, ProbeLeaseManager
+from .lease import ProbeLease, ProbeLeaseManager, _RuntimeRootAuthority
 from .model import OperationLevel, ProbeRequest, ProbeResponse
 from .protocol import (
     MAX_REQUEST_BYTES,
@@ -109,30 +109,84 @@ class ProbeEndpoint:
         }
 
 
-def _write_endpoint(path: Path, endpoint: ProbeEndpoint) -> None:
+def _write_endpoint(
+    path: Path,
+    endpoint: ProbeEndpoint,
+    *,
+    directory_descriptor: int | None = None,
+) -> None:
     payload = json.dumps(
         endpoint.to_record(), sort_keys=True, separators=(",", ":")
     ).encode("utf-8")
     temporary = path.with_name(f".{path.name}.{uuid4().hex}.tmp")
     descriptor = -1
     try:
-        descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        if directory_descriptor is None:
+            descriptor = os.open(
+                temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600
+            )
+        else:
+            descriptor = os.open(
+                temporary.name,
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+                0o600,
+                dir_fd=directory_descriptor,
+            )
         with os.fdopen(descriptor, "wb", closefd=True) as handle:
             descriptor = -1
             handle.write(payload)
             handle.flush()
             os.fsync(handle.fileno())
-        os.replace(temporary, path)
+        if directory_descriptor is None:
+            os.replace(temporary, path)
+        else:
+            os.replace(
+                temporary.name,
+                path.name,
+                src_dir_fd=directory_descriptor,
+                dst_dir_fd=directory_descriptor,
+            )
         if os.name != "nt":
-            os.chmod(path, 0o600)
+            if directory_descriptor is None:
+                os.chmod(path, 0o600)
+            else:
+                os.chmod(path.name, 0o600, dir_fd=directory_descriptor)
     except OSError:
         if descriptor >= 0:
             os.close(descriptor)
         try:
-            temporary.unlink()
+            if directory_descriptor is None:
+                temporary.unlink()
+            else:
+                os.unlink(temporary.name, dir_fd=directory_descriptor)
         except OSError:
             pass
         raise
+
+
+def _read_endpoint_record(
+    path: Path, *, directory_descriptor: int | None = None
+) -> dict[str, object]:
+    if directory_descriptor is None:
+        return json.loads(path.read_text(encoding="utf-8"))
+    descriptor = os.open(path.name, os.O_RDONLY, dir_fd=directory_descriptor)
+    with os.fdopen(descriptor, "rb") as handle:
+        raw = handle.read(16_385)
+    if len(raw) > 16_384:
+        raise ValueError
+    value = json.loads(raw.decode("utf-8"))
+    if not isinstance(value, dict):
+        raise ValueError
+    return value
+
+
+def _unlink_endpoint(
+    path: Path, *, directory_descriptor: int | None = None
+) -> None:
+    if directory_descriptor is None:
+        path.unlink()
+    else:
+        os.unlink(path.name, dir_fd=directory_descriptor)
 
 
 async def _read_bounded_request_body(request: web.Request) -> bytes:
@@ -243,6 +297,7 @@ class ProbeService:
         heartbeat_interval_seconds: float = 5.0,
         body_read_timeout_seconds: float = 2.0,
         handoff_ticket: str | None = None,
+        _runtime_root_authority: _RuntimeRootAuthority | None = None,
     ) -> None:
         self._backend = backend
         self._lease_manager = lease_manager
@@ -260,6 +315,8 @@ class ProbeService:
         self._heartbeat_interval_seconds = heartbeat_interval_seconds
         self._body_read_timeout_seconds = body_read_timeout_seconds
         self._handoff_ticket = handoff_ticket
+        self._runtime_root_authority = _runtime_root_authority
+        self._session_directory_descriptor: int | None = None
         self._runner: web.AppRunner | None = None
         self._lease: ProbeLease | None = None
         self._endpoint: ProbeEndpoint | None = None
@@ -278,9 +335,23 @@ class ProbeService:
     async def start(self) -> ProbeEndpoint:
         if self._endpoint is not None:
             return self._endpoint
-        _ensure_safe_session_root(
-            self._lease_manager.data_root, self._session_root
+        session_directory_descriptor = (
+            None
+            if self._runtime_root_authority is None
+            else self._runtime_root_authority.directory_descriptor(
+                self._session_root
+            )
         )
+        if session_directory_descriptor is None:
+            _ensure_safe_session_root(
+                self._lease_manager.data_root, self._session_root
+            )
+        else:
+            metadata = os.fstat(session_directory_descriptor)
+            if not stat.S_ISDIR(metadata.st_mode):
+                raise ProbeServiceError(
+                    "PROBE_SESSION_UNSAFE", "Probe session path is not a directory"
+                )
         token_bytes = self._token_factory()
         if not isinstance(token_bytes, bytes) or len(token_bytes) != 32:
             raise ValueError("Probe Service token factory must return 32 bytes")
@@ -307,6 +378,7 @@ class ProbeService:
                 operation_level=self._operation_level,
                 health_url=f"http://127.0.0.1:{port}/health",
                 handoff_ticket=self._handoff_ticket,
+                _runtime_root_authority=self._runtime_root_authority,
             )
             record_path = self._session_root / "probe-endpoint.json"
             endpoint = ProbeEndpoint(
@@ -322,7 +394,14 @@ class ProbeService:
                 operation_level=self._operation_level,
                 record_path=record_path,
             )
-            _write_endpoint(record_path, endpoint)
+            if session_directory_descriptor is None:
+                _write_endpoint(record_path, endpoint)
+            else:
+                _write_endpoint(
+                    record_path,
+                    endpoint,
+                    directory_descriptor=session_directory_descriptor,
+                )
         except BaseException:
             async def rollback_start() -> None:
                 try:
@@ -330,7 +409,13 @@ class ProbeService:
                 finally:
                     if endpoint is not None:
                         try:
-                            endpoint.record_path.unlink()
+                            if session_directory_descriptor is None:
+                                _unlink_endpoint(endpoint.record_path)
+                            else:
+                                _unlink_endpoint(
+                                    endpoint.record_path,
+                                    directory_descriptor=session_directory_descriptor,
+                                )
                         except (FileNotFoundError, OSError):
                             pass
                     if lease is not None:
@@ -352,6 +437,7 @@ class ProbeService:
         self._runner = runner
         self._lease = lease
         self._endpoint = endpoint
+        self._session_directory_descriptor = session_directory_descriptor
         self._heartbeat_task = asyncio.create_task(
             self._heartbeat_loop(), name="stm32-toolkit-probe-heartbeat"
         )
@@ -782,10 +868,17 @@ class ProbeService:
         self._endpoint = None
         if endpoint is not None:
             try:
-                current = json.loads(endpoint.record_path.read_text(encoding="utf-8"))
+                current = _read_endpoint_record(
+                    endpoint.record_path,
+                    directory_descriptor=self._session_directory_descriptor,
+                )
                 if current.get("leaseId") == endpoint.lease_id:
-                    endpoint.record_path.unlink()
-            except (FileNotFoundError, OSError, json.JSONDecodeError):
+                    _unlink_endpoint(
+                        endpoint.record_path,
+                        directory_descriptor=self._session_directory_descriptor,
+                    )
+            except (FileNotFoundError, OSError, ValueError, json.JSONDecodeError):
                 pass
+        self._session_directory_descriptor = None
         if first_error is not None:
             raise first_error

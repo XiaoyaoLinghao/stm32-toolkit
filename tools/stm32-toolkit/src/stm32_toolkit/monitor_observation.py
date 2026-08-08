@@ -367,6 +367,24 @@ class _DirectoryGuard:
                 ):
                     raise ValueError
 
+    def directory_descriptor(self, path: Path) -> int | None:
+        if self._windows_handles:
+            try:
+                self.verify()
+            except (OSError, RuntimeError, ValueError):
+                raise MonitorObservationError(
+                    "MONITOR_REQUEST_INVALID", "Monitor data root identity changed"
+                ) from None
+            return None
+        for index, (candidate, _, _) in enumerate(self._identities):
+            if candidate == path:
+                descriptor = self._posix_descriptors[index]
+                metadata = os.fstat(descriptor)
+                if not stat.S_ISDIR(metadata.st_mode):
+                    raise ValueError
+                return descriptor
+        raise ValueError
+
     def close(self) -> None:
         error: BaseException | None = None
         while self._posix_descriptors:
@@ -856,6 +874,7 @@ async def open_monitor_observation(
             operation_level=OperationLevel.OBSERVE,
             session_root=paths.session_root,
             project_root=paths.project_root,
+            _runtime_root_authority=root_guard,
         )
         lease_manager = _seams.lease_manager_factory(paths.data_root)
         _verify_root_guard(root_guard)
