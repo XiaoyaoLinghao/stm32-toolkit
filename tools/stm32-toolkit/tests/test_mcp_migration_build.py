@@ -134,7 +134,7 @@ def _registry_server(tmp_path: Path):
     return create_server(project, tmp_path / "plugin-data", "session-a")
 
 
-def test_server_registers_exactly_seven_project_bound_tools(tmp_path: Path):
+def test_server_registers_exactly_fifteen_project_bound_tools(tmp_path: Path):
     server = _registry_server(tmp_path)
     tools = asyncio.run(server.list_tools())
 
@@ -150,6 +150,14 @@ def test_server_registers_exactly_seven_project_bound_tools(tmp_path: Path):
         "stm32_keil_convert",
         "stm32_project_configure",
         "stm32_build",
+        "stm32_probe_list",
+        "stm32_flash",
+        "stm32_debug_handoff_begin",
+        "stm32_debug_handoff_end",
+        "stm32_variable_read",
+        "stm32_variable_sample",
+        "stm32_register_read",
+        "stm32_fault_analyze",
     }
 
 

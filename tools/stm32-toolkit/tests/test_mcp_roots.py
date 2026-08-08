@@ -277,6 +277,7 @@ def test_injected_context_does_not_add_arguments_to_tool_schemas(tmp_path: Path)
         "stm32_doctor",
         "stm32_project_detect",
         "stm32_project_context",
+        "stm32_probe_list",
     }
     for tool in tools:
         if tool.name in zero_argument_tools:
