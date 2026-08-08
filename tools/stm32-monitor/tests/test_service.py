@@ -226,6 +226,160 @@ def test_bodyless_and_query_routes_reject_extra_input_before_dispatch() -> None:
     asyncio.run(_with_service(scenario))
 
 
+def test_probe_and_catalog_get_routes_are_authenticated_exact_and_bounded() -> None:
+    from stm32_monitor.protocol import failure
+
+    async def scenario(runtime, _service, endpoint) -> None:
+        auth = {"Authorization": f"Bearer {TOKEN_BYTES.hex()}"}
+        async with aiohttp.ClientSession() as client:
+            denied = await client.get(endpoint.url + "/api/v1/probes")
+            probes = await client.get(endpoint.url + "/api/v1/probes", headers=auth)
+            variables = await client.get(
+                endpoint.url + "/api/v1/catalog/variables?query=counter&limit=25",
+                headers=auth,
+            )
+            registers = await client.get(
+                endpoint.url + "/api/v1/catalog/registers?cursor=opaque",
+                headers=auth,
+            )
+            calls_after_valid = len(runtime.calls)
+            bad_body = await client.get(
+                endpoint.url + "/api/v1/catalog/variables",
+                headers=auth,
+                json={},
+            )
+            probes_query = await client.get(
+                endpoint.url + "/api/v1/probes?limit=1", headers=auth
+            )
+            unknown_query = await client.get(
+                endpoint.url + "/api/v1/catalog/variables?unknown=x", headers=auth
+            )
+            duplicate_query = await client.get(
+                endpoint.url + "/api/v1/catalog/registers?limit=1&limit=2",
+                headers=auth,
+            )
+            wrong_method = await client.post(
+                endpoint.url + "/api/v1/probes", headers=auth
+            )
+            runtime.result = failure(
+                "monitor.catalog.variables",
+                "MONITOR_PROVENANCE_CHANGED",
+                "Monitor catalog changed",
+            )
+            changed = await client.get(
+                endpoint.url + "/api/v1/catalog/variables", headers=auth
+            )
+            changed_payload = await changed.json()
+
+        assert denied.status == 401
+        assert [probes.status, variables.status, registers.status] == [200, 200, 200]
+        assert runtime.calls[:3] == [
+            ("monitor.probes.list", {}, None, {}),
+            (
+                "monitor.catalog.variables",
+                {},
+                None,
+                {"query": "counter", "limit": "25"},
+            ),
+            ("monitor.catalog.registers", {}, None, {"cursor": "opaque"}),
+        ]
+        assert [
+            bad_body.status,
+            probes_query.status,
+            unknown_query.status,
+            duplicate_query.status,
+            wrong_method.status,
+        ] == [400, 400, 400, 400, 405]
+        assert len(runtime.calls) == calls_after_valid + 1
+        assert changed.status == 409
+        assert changed_payload["operation"] == "monitor.catalog.variables"
+        assert changed_payload["code"] == "MONITOR_PROVENANCE_CHANGED"
+
+    asyncio.run(_with_service(scenario))
+
+
+def test_group_pages_use_exact_query_grammar_and_fit_actual_http_body(
+    tmp_path,
+) -> None:
+    from stm32_monitor.groups import GroupStore
+    from stm32_monitor.models import WatchItem
+    from stm32_toolkit.paths import WorkspacePaths
+
+    project = tmp_path / "project"
+    project.mkdir()
+    paths = WorkspacePaths.from_roots(
+        tmp_path / "state",
+        project,
+        UUID("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"),
+        "monitor-1",
+    )
+    store = GroupStore(paths)
+    selectors = tuple(
+        WatchItem.variable(f"v{index:04d}" + "界" * 507) for index in range(256)
+    )
+    try:
+        for index in range(16):
+            assert store.create_group(
+                f"G{index:02d}", "d" * 1024, 250, selectors, authorized=True
+            ).ok
+        first_page = store.list_group_page(limit=16)
+        assert first_page.ok and first_page.data.next_cursor is not None
+
+        async def scenario(runtime, _service, endpoint) -> None:
+            auth = {"Authorization": f"Bearer {TOKEN_BYTES.hex()}"}
+            runtime.result = first_page
+            async with aiohttp.ClientSession() as client:
+                response = await client.get(
+                    endpoint.url + "/api/v1/groups?limit=16", headers=auth
+                )
+                body = await response.read()
+                payload = json.loads(body)
+                calls_after_page = len(runtime.calls)
+                unknown = await client.get(
+                    endpoint.url + "/api/v1/groups?unknown=x", headers=auth
+                )
+                duplicate = await client.get(
+                    endpoint.url + "/api/v1/groups?cursor=a&cursor=b", headers=auth
+                )
+
+            assert response.status == 200
+            assert len(body) <= 1024 * 1024
+            assert int(response.headers["Content-Length"]) == len(body)
+            assert 1 <= len(payload["data"]["groups"]) <= 16
+            assert payload["data"]["nextCursor"] == first_page.data.next_cursor
+            assert payload["data"]["revision"] == first_page.data.revision
+            assert runtime.calls[0] == (
+                "monitor.groups.list",
+                {},
+                None,
+                {"limit": "16"},
+            )
+            assert [unknown.status, duplicate.status] == [400, 400]
+            assert len(runtime.calls) == calls_after_page
+
+        asyncio.run(_with_service(scenario))
+    finally:
+        store.close()
+
+
+def test_ordinary_response_actual_body_limit_fails_closed_without_payload_leak() -> None:
+    async def scenario(runtime, _service, endpoint) -> None:
+        auth = {"Authorization": f"Bearer {TOKEN_BYTES.hex()}"}
+        runtime.result = {"secret": "z" * (1024 * 1024)}
+        async with aiohttp.ClientSession() as client:
+            response = await client.get(endpoint.url + "/api/v1/status", headers=auth)
+            body = await response.read()
+            payload = json.loads(body)
+        assert response.status == 500
+        assert len(body) <= 1024 * 1024
+        assert payload["code"] == "MONITOR_INTERNAL_ERROR"
+        assert payload["message"] == "Monitor Service request failed"
+        assert "secret" not in payload["details"]
+        assert b"zzzzzzzz" not in body
+
+    asyncio.run(_with_service(scenario))
+
+
 def test_websocket_is_authenticated_bounded_and_drops_oldest_for_slow_clients() -> None:
     async def scenario(runtime, _service, endpoint) -> None:
         headers = {

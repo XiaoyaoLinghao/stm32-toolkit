@@ -137,6 +137,115 @@ def test_group_and_item_limits_fail_without_partial_writes(tmp_path: Path, monke
         store.close()
 
 
+def test_legal_full_group_graph_lists_and_pages_without_relaxing_generic_json_budget(
+    tmp_path: Path,
+) -> None:
+    from stm32_monitor.models import GroupPage
+    from stm32_monitor.protocol import success
+
+    store = GroupStore(_paths(tmp_path))
+    selectors = tuple(
+        WatchItem.variable(f"v{index:04d}" + "x" * 507) for index in range(256)
+    )
+    try:
+        for index in range(16):
+            created = store.create_group(
+                f"G{index:02d}", "d" * 1024, 250, selectors, authorized=True
+            )
+            assert created.ok
+
+        listed = store.list_groups()
+        assert listed.ok and len(listed.data) == 16
+        assert sum(len(group.items) for group in listed.data) == 4_096
+
+        seen: list[UUID] = []
+        cursor = None
+        while True:
+            result = store.list_group_page(cursor=cursor, limit=16)
+            assert result.ok and type(result.data) is GroupPage
+            page = result.data
+            assert 1 <= len(page.groups) <= 16
+            assert len(
+                json.dumps(
+                    page.to_dict(),
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode("utf-8")
+            ) <= 1024 * 1024 - 4096
+            seen.extend(group.group_id for group in page.groups)
+            cursor = page.next_cursor
+            if cursor is None:
+                break
+        assert seen == [group.group_id for group in listed.data]
+
+        with pytest.raises(ValueError, match="node limit"):
+            success("generic.large", tuple({"value": index} for index in range(10_001)))
+    finally:
+        store.close()
+
+
+def test_group_page_cursor_is_deterministic_revision_bound_and_store_local(
+    tmp_path: Path,
+) -> None:
+    first_paths = _paths(tmp_path / "first")
+    store = GroupStore(first_paths)
+    other = GroupStore(_paths(tmp_path / "other"))
+    try:
+        for name in ("A", "B", "C"):
+            assert _create(store, name).ok
+        first = store.list_group_page(limit=2)
+        repeated = store.list_group_page(limit=2)
+        assert first.ok and repeated.ok
+        assert first.data == repeated.data
+        assert first.data.next_cursor is not None
+
+        continued = store.list_group_page(cursor=first.data.next_cursor, limit=1)
+        assert continued.ok
+        assert [group.name for group in continued.data.groups] == ["C"]
+        assert continued.data.revision == first.data.revision
+
+        forged = first.data.next_cursor[:-1] + (
+            "A" if first.data.next_cursor[-1] != "A" else "B"
+        )
+        for invalid in (
+            forged,
+            first.data.next_cursor + "=",
+        ):
+            rejected = store.list_group_page(cursor=invalid, limit=2)
+            assert not rejected.ok and rejected.code == "MONITOR_REQUEST_INVALID"
+        cross_workspace = other.list_group_page(cursor=first.data.next_cursor, limit=2)
+        assert not cross_workspace.ok and cross_workspace.code == "MONITOR_REQUEST_INVALID"
+
+        with sqlite3.connect(first_paths.monitor_root / "monitor.sqlite3") as connection:
+            connection.execute(
+                "UPDATE watch_groups SET name = ?, name_key = ? WHERE name = ?",
+                ("Z", "z", "A"),
+            )
+        externally_stale = store.list_group_page(
+            cursor=first.data.next_cursor, limit=2
+        )
+        assert not externally_stale.ok
+        assert externally_stale.code == "MONITOR_REQUEST_INVALID"
+
+        assert _create(store, "D").ok
+        stale = store.list_group_page(cursor=first.data.next_cursor, limit=2)
+        assert not stale.ok and stale.code == "MONITOR_REQUEST_INVALID"
+    finally:
+        store.close()
+        other.close()
+
+    reopened = GroupStore(first_paths)
+    try:
+        rejected = reopened.list_group_page(cursor=first.data.next_cursor, limit=2)
+        assert not rejected.ok and rejected.code == "MONITOR_REQUEST_INVALID"
+        for invalid_limit in (0, 17, True, "2"):
+            rejected = reopened.list_group_page(limit=invalid_limit)
+            assert not rejected.ok and rejected.code == "MONITOR_REQUEST_INVALID"
+    finally:
+        reopened.close()
+
+
 def test_import_is_bounded_explicit_atomic_and_conflict_safe(tmp_path: Path) -> None:
     paths = _paths(tmp_path)
     store = GroupStore(paths)

@@ -678,17 +678,18 @@ class MonitorRuntime:
         self._publish_state()
 
     async def _forward_samples(self, sampler: object) -> None:
-        source = sampler.subscribe()
-        async for item in source:
-            drops = getattr(item, "subscriber_drops", 0)
+        source = sampler.subscribe_deliveries()
+        async for delivery in source:
+            drops = getattr(delivery, "subscriber_drops", 0)
             drops = drops if type(drops) is int and drops > 0 else 0
-            self._service_drops_total += drops
+            item = getattr(delivery, "batch", None)
             if hasattr(item, "to_dict"):
                 payload = item.to_dict()
             elif isinstance(item, Mapping):
                 payload = dict(item)
             else:
                 continue
+            self._service_drops_total += drops
             self._publish_sample(payload, service_subscriber_drops=drops)
 
     def record_service_drops(self, count: int) -> None:
@@ -835,7 +836,16 @@ class MonitorRuntime:
                 return await self._list_probes(operation, config, failure, success)
             if operation == "monitor.groups.list":
                 _exact(payload, set())
-                return groups.list_groups()
+                group_query = {} if query is None else query
+                if set(group_query) - {"cursor", "limit"}:
+                    raise ValueError("group query is invalid")
+                group_limit = int(group_query.get("limit", "16"))
+                if not 1 <= group_limit <= 16:
+                    raise ValueError("group query is invalid")
+                return groups.list_group_page(
+                    cursor=group_query.get("cursor"),
+                    limit=group_limit,
+                )
             if operation == "monitor.groups.create":
                 _exact(payload, {"name", "description", "intervalMs", "items", "authorized"})
                 items = tuple(WatchItem.from_dict(item) for item in _mapping_list(payload["items"]))

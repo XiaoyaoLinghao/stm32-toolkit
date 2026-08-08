@@ -255,6 +255,47 @@ def test_monitor_config_canonicalizes_external_roots_without_creating_state(tmp_
     assert not config.data_root.exists()
 
 
+def test_group_page_is_deeply_immutable_bounded_and_address_free() -> None:
+    from stm32_monitor.models import GroupPage
+
+    groups = [
+        WatchGroup.create(
+            "Core",
+            "",
+            250,
+            (WatchItem.variable("counter"),),
+            group_id=GROUP_ID,
+            now=NOW,
+        )
+    ]
+    page = GroupPage(groups, "opaque", "a" * 64)
+    groups.clear()
+
+    assert page.to_dict() == {
+        "groups": [
+            {
+                "groupId": str(GROUP_ID),
+                "name": "Core",
+                "description": "",
+                "intervalMs": 250,
+                "items": [{"kind": "variable", "expression": "counter"}],
+                "revision": 1,
+                "createdAtUtc": "2026-08-08T01:02:03.000000Z",
+                "updatedAtUtc": "2026-08-08T01:02:03.000000Z",
+            }
+        ],
+        "nextCursor": "opaque",
+        "revision": "a" * 64,
+    }
+    assert "address" not in json.dumps(page.to_dict()).casefold()
+    with pytest.raises((TypeError, ValueError)):
+        GroupPage(tuple(page.groups) * 17, None, "a" * 64)
+    with pytest.raises((TypeError, ValueError)):
+        GroupPage(page.groups, "", "a" * 64)
+    with pytest.raises((TypeError, ValueError)):
+        GroupPage(page.groups, None, "not-a-digest")
+
+
 def test_monitor_config_rejects_state_inside_project_and_unsafe_session(tmp_path: Path) -> None:
     project = tmp_path / "project"
     project.mkdir()

@@ -234,7 +234,30 @@ class MonitorService:
         )
         application.router.add_post("/api/v1/auth/bootstrap", self._bootstrap)
         application.router.add_get("/api/v1/status", self._route("monitor.status"))
-        application.router.add_get("/api/v1/groups", self._route("monitor.groups.list"))
+        application.router.add_get(
+            "/api/v1/probes", self._route("monitor.probes.list")
+        )
+        catalog_query = frozenset({"query", "cursor", "limit"})
+        application.router.add_get(
+            "/api/v1/catalog/variables",
+            self._route(
+                "monitor.catalog.variables", query=True, query_fields=catalog_query
+            ),
+        )
+        application.router.add_get(
+            "/api/v1/catalog/registers",
+            self._route(
+                "monitor.catalog.registers", query=True, query_fields=catalog_query
+            ),
+        )
+        application.router.add_get(
+            "/api/v1/groups",
+            self._route(
+                "monitor.groups.list",
+                query=True,
+                query_fields=frozenset({"cursor", "limit"}),
+            ),
+        )
         application.router.add_post("/api/v1/groups", self._route("monitor.groups.create", body=True))
         application.router.add_patch(
             "/api/v1/groups/{resource_id}", self._route("monitor.groups.update", body=True)
@@ -430,7 +453,12 @@ class MonitorService:
         return payload
 
     def _route(
-        self, operation: str, *, body: bool = False, query: bool = False
+        self,
+        operation: str,
+        *,
+        body: bool = False,
+        query: bool = False,
+        query_fields: frozenset[str] | None = None,
     ):
         async def handler(request: web.Request) -> web.Response:
             try:
@@ -449,6 +477,10 @@ class MonitorService:
                     raise _ServiceFailure(
                         "MONITOR_REQUEST_INVALID", "Monitor request is invalid"
                     )
+                if query_fields is not None and set(query_values) - query_fields:
+                    raise _ServiceFailure(
+                        "MONITOR_REQUEST_INVALID", "Monitor request is invalid"
+                    )
                 _reject_overrides(query_values)
                 value = await self._runtime.dispatch(
                     operation,
@@ -458,7 +490,7 @@ class MonitorService:
                 )
                 data, code, message, details = _public_result(operation, value)
                 status = 200 if code == "OK" else 409
-                return _response(
+                response = _response(
                     operation,
                     data=data,
                     code=code,
@@ -466,6 +498,16 @@ class MonitorService:
                     details=details,
                     status=status,
                 )
+                if operation != "monitor.history.query" and len(response.body or b"") > MAX_REQUEST_BYTES:
+                    response = _response(
+                        operation,
+                        code="MONITOR_INTERNAL_ERROR",
+                        message="Monitor Service request failed",
+                        status=500,
+                    )
+                    if len(response.body or b"") > MAX_REQUEST_BYTES:
+                        raise RuntimeError("bounded Monitor error response is oversized")
+                return response
             except _ServiceFailure as error:
                 return _response(
                     operation, code=error.code, message=error.message, status=error.status

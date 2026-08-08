@@ -303,6 +303,34 @@ class WatchGroup:
 
 
 @dataclass(frozen=True)
+class GroupPage:
+    groups: tuple[WatchGroup, ...]
+    next_cursor: str | None
+    revision: str
+
+    def __post_init__(self) -> None:
+        groups = tuple(self.groups)
+        if len(groups) > 16 or any(type(group) is not WatchGroup for group in groups):
+            raise ValueError("group page is invalid")
+        if self.next_cursor is not None and (
+            type(self.next_cursor) is not str
+            or not 1 <= len(self.next_cursor) <= 512
+            or not self.next_cursor.isascii()
+        ):
+            raise ValueError("group page cursor is invalid")
+        if type(self.revision) is not str or _SHA256.fullmatch(self.revision) is None:
+            raise ValueError("group page revision is invalid")
+        object.__setattr__(self, "groups", groups)
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "groups": [group.to_dict() for group in self.groups],
+            "nextCursor": self.next_cursor,
+            "revision": self.revision,
+        }
+
+
+@dataclass(frozen=True)
 class ObservationBinding:
     workspace_id: str
     logical_project_id: str

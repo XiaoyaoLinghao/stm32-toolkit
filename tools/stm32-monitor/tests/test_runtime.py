@@ -166,6 +166,9 @@ class ProtocolStore(FakeStore):
     def list_groups(self):
         return self._result("groups.list")
 
+    def list_group_page(self, *, cursor=None, limit=16):
+        return self._result("groups.list", cursor=cursor, limit=limit)
+
     def create_group(self, *args, **kwargs):
         return self._result("groups.create", *args, **kwargs)
 
@@ -297,6 +300,13 @@ class FakeSampler:
         yield _runtime_batch(1)
         yield SimpleNamespace(
             subscriber_drops=3, to_dict=lambda: _runtime_batch(2, subscriber_drops=3)
+        )
+
+    async def subscribe_deliveries(self):
+        yield SimpleNamespace(batch=_runtime_batch(1), subscriber_drops=0)
+        self.subscriber_drops_total = 7
+        yield SimpleNamespace(
+            batch=_runtime_batch(2, subscriber_drops=7), subscriber_drops=3
         )
 
 
@@ -514,7 +524,28 @@ def test_group_dispatch_is_exact_and_never_accepts_caller_workspace_fields(tmp_p
         await runtime.start(config)
         group_id = "12345678-1234-5678-1234-567812345678"
         try:
-            assert (await runtime.dispatch("monitor.groups.list", {})).ok
+            listed = await runtime.dispatch(
+                "monitor.groups.list",
+                {},
+                query={"cursor": "opaque", "limit": "2"},
+            )
+            assert listed.ok
+            assert groups[0].calls[-1] == (
+                "groups.list",
+                (),
+                {"cursor": "opaque", "limit": 2},
+            )
+            for invalid_query in (
+                {"unknown": "x"},
+                {"limit": "0"},
+                {"limit": "17"},
+                {"limit": "true"},
+            ):
+                rejected_page = await runtime.dispatch(
+                    "monitor.groups.list", {}, query=invalid_query
+                )
+                assert not rejected_page.ok
+                assert rejected_page.code == "MONITOR_REQUEST_INVALID"
             created = await runtime.dispatch(
                 "monitor.groups.create",
                 {
@@ -1118,8 +1149,13 @@ def test_live_subscription_serializes_mapping_and_model(tmp_path: Path) -> None:
                 "state",
             ]
             assert [item["data"]["batch"]["sequence"] for item in samples] == [1, 2]
+            assert [item["data"]["batch"]["subscriberDrops"] for item in samples] == [
+                0,
+                7,
+            ]
             assert [item["data"]["serviceSubscriberDrops"] for item in samples] == [0, 3]
             status = await runtime.dispatch("monitor.status", {})
+            assert status.data["sampling"]["subscriberDrops"] == 7
             assert status.data["sampling"]["serviceDrops"] == 3
             await stream.aclose()
         finally:

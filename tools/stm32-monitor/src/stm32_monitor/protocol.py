@@ -55,6 +55,11 @@ def _known_model_payload(value: object) -> dict[str, object] | None:
 
 def _snapshot_protocol_value(value: object) -> object:
     value_type = type(value)
+    if value_type.__module__ == "stm32_monitor.models" and value_type.__name__ == "GroupPage":
+        from .models import GroupPage
+
+        if value_type is GroupPage:
+            return value
     if value_type.__module__ == "stm32_monitor.history" and value_type.__name__ == "HistoryPage":
         from .history import HistoryPage
 
@@ -64,6 +69,14 @@ def _snapshot_protocol_value(value: object) -> object:
     if payload is not None:
         _freeze_json(payload)
         return value
+    if type(value) is tuple and all(type(item) is WatchGroup for item in value):
+        if (
+            len(value) > 128
+            or any(len(item.items) > 256 for item in value)
+            or sum(len(item.items) for item in value) > 4_096
+        ):
+            raise ValueError("watch group collection exceeds its bounded limits")
+        return tuple(_snapshot_protocol_value(item) for item in value)
     if type(value) in (list, tuple):
         snapshot = tuple(_snapshot_protocol_value(item) for item in value)
         _freeze_json(_serialize_protocol_value(snapshot))
@@ -73,6 +86,11 @@ def _snapshot_protocol_value(value: object) -> object:
 
 def _serialize_protocol_value(value: object) -> object:
     value_type = type(value)
+    if value_type.__module__ == "stm32_monitor.models" and value_type.__name__ == "GroupPage":
+        from .models import GroupPage
+
+        if value_type is GroupPage:
+            return GroupPage.to_dict(value)
     if value_type.__module__ == "stm32_monitor.history" and value_type.__name__ == "HistoryPage":
         from .history import HistoryPage
 

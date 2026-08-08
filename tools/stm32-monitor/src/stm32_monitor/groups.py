@@ -1,5 +1,11 @@
 from __future__ import annotations
 
+import base64
+import binascii
+import hashlib
+import hmac
+import json
+import secrets
 import sqlite3
 import unicodedata
 from datetime import datetime, timezone
@@ -8,7 +14,7 @@ from uuid import UUID
 
 from stm32_toolkit.paths import WorkspacePaths
 
-from .models import WatchGroup, WatchItem
+from .models import GroupPage, WatchGroup, WatchItem
 from .protocol import ProtocolResult, ProtocolViolation, failure, parse_json_object, success
 from .storage import MonitorDatabase, StorageFailure
 
@@ -17,6 +23,8 @@ MAX_GROUPS = 128
 MAX_ITEMS_PER_GROUP = 256
 MAX_TOTAL_ITEMS = 4_096
 MAX_IMPORT_BYTES = 1024 * 1024
+MAX_GROUP_PAGE_GROUPS = 16
+MAX_GROUP_PAGE_BYTES = 1024 * 1024 - 4096
 
 
 def _name_key(name: str) -> str:
@@ -34,6 +42,57 @@ def _public_storage_failure(operation: str, error: StorageFailure) -> ProtocolRe
 class GroupStore:
     def __init__(self, paths: WorkspacePaths) -> None:
         self._database = MonitorDatabase(paths)
+        self._cursor_key = secrets.token_bytes(32)
+
+    @staticmethod
+    def _revision(groups: tuple[WatchGroup, ...]) -> str:
+        payload = json.dumps(
+            [(str(group.group_id), group.revision) for group in groups],
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        return hashlib.sha256(payload).hexdigest()
+
+    def _encode_cursor(self, revision: str, offset: int) -> str:
+        payload = json.dumps(
+            {
+                "i": offset,
+                "r": revision,
+                "v": 1,
+                "w": self._database.paths.workspace_id,
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        signature = hmac.new(self._cursor_key, payload, "sha256").hexdigest().encode("ascii")
+        return base64.urlsafe_b64encode(payload + b"." + signature).rstrip(b"=").decode("ascii")
+
+    def _decode_cursor(self, cursor: object, revision: str) -> int:
+        if type(cursor) is not str or not 1 <= len(cursor) <= 512:
+            raise ValueError("group cursor is invalid")
+        try:
+            raw = cursor.encode("ascii")
+            decoded = base64.urlsafe_b64decode(raw + b"=" * (-len(raw) % 4))
+            if base64.urlsafe_b64encode(decoded).rstrip(b"=") != raw:
+                raise ValueError
+            payload, signature = decoded.rsplit(b".", 1)
+            expected = hmac.new(self._cursor_key, payload, "sha256").hexdigest().encode("ascii")
+            document = json.loads(payload.decode("utf-8"))
+            offset = document.get("i")
+            if (
+                not hmac.compare_digest(signature, expected)
+                or set(document) != {"i", "r", "v", "w"}
+                or document.get("v") != 1
+                or document.get("w") != self._database.paths.workspace_id
+                or document.get("r") != revision
+                or type(offset) is not int
+                or offset < 1
+            ):
+                raise ValueError
+            return offset
+        except (UnicodeError, binascii.Error, json.JSONDecodeError, ValueError):
+            raise ValueError("group cursor is invalid") from None
 
     @staticmethod
     def _load_group(connection: sqlite3.Connection, row: tuple[object, ...]) -> WatchGroup:
@@ -68,6 +127,64 @@ class GroupStore:
                 empty=(),
             )
             return success(operation, groups)
+        except StorageFailure as error:
+            return _public_storage_failure(operation, error)
+
+    def list_group_page(
+        self, *, cursor: str | None = None, limit: int = MAX_GROUP_PAGE_GROUPS
+    ) -> ProtocolResult[GroupPage]:
+        operation = "groups.list"
+        if type(limit) is not int or not 1 <= limit <= MAX_GROUP_PAGE_GROUPS:
+            return failure(operation, "MONITOR_REQUEST_INVALID", "group query is invalid")
+
+        def read(connection: sqlite3.Connection) -> tuple[WatchGroup, ...]:
+            return tuple(
+                self._load_group(connection, row)
+                for row in connection.execute(
+                    "SELECT group_id, name, description, interval_ms, revision, "
+                    "created_at_utc, updated_at_utc FROM watch_groups "
+                    "ORDER BY name_key, group_id"
+                ).fetchall()
+            )
+
+        try:
+            groups = self._database.read(read, empty=())
+            revision = self._revision(groups)
+            offset = 0 if cursor is None else self._decode_cursor(cursor, revision)
+            if offset > len(groups) or (offset == len(groups) and groups):
+                raise ValueError("group cursor is invalid")
+            selected: list[WatchGroup] = []
+            for group in groups[offset : offset + limit]:
+                candidate = selected + [group]
+                next_offset = offset + len(candidate)
+                next_cursor = (
+                    self._encode_cursor(revision, next_offset)
+                    if next_offset < len(groups)
+                    else None
+                )
+                page = GroupPage(tuple(candidate), next_cursor, revision)
+                encoded = json.dumps(
+                    page.to_dict(),
+                    sort_keys=True,
+                ).encode("utf-8")
+                if len(encoded) > MAX_GROUP_PAGE_BYTES:
+                    if not selected:
+                        return failure(
+                            operation,
+                            "MONITOR_GROUP_LIMIT_EXCEEDED",
+                            "watch group exceeds the response limit",
+                        )
+                    break
+                selected.append(group)
+            next_offset = offset + len(selected)
+            next_cursor = (
+                self._encode_cursor(revision, next_offset)
+                if next_offset < len(groups)
+                else None
+            )
+            return success(operation, GroupPage(tuple(selected), next_cursor, revision))
+        except ValueError:
+            return failure(operation, "MONITOR_REQUEST_INVALID", "group query is invalid")
         except StorageFailure as error:
             return _public_storage_failure(operation, error)
 

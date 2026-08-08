@@ -4,7 +4,7 @@ import asyncio
 import json
 import time
 from collections.abc import AsyncIterator, Callable
-from dataclasses import replace
+from dataclasses import dataclass
 from enum import Enum
 from typing import TypeVar
 from uuid import UUID, uuid4
@@ -20,6 +20,12 @@ HISTORY_QUEUE_BYTES = 8 * 1024 * 1024
 _STREAM_END = object()
 _HISTORY_END = object()
 _T = TypeVar("_T")
+
+
+@dataclass(frozen=True)
+class _SubscriberDelivery:
+    batch: SampleBatch
+    subscriber_drops: int
 
 
 class SamplerState(str, Enum):
@@ -86,6 +92,7 @@ class MonitorSampler:
         self._run_id: UUID | None = None
         self._sequence = 0
         self._last_capture_monotonic_ns: int | None = None
+        self._subscriber_drops_pending = 0
         self._history_drops_pending = 0
         self._deadline_drops_pending = 0
         self._subscriber_drops_total = 0
@@ -183,6 +190,7 @@ class MonitorSampler:
             self._run_id = uuid4()
             self._sequence = 0
             self._last_capture_monotonic_ns = None
+            self._subscriber_drops_pending = 0
             self._history_drops_pending = 0
             self._deadline_drops_pending = 0
             self._stop_event = asyncio.Event()
@@ -266,8 +274,10 @@ class MonitorSampler:
                     return
                 captured_monotonic = time.monotonic_ns()
                 captured_unix_ns = time.time_ns()
+                subscriber_drops = self._subscriber_drops_pending
                 history_drops = self._history_drops_pending
                 deadline_drops = self._deadline_drops_pending
+                self._subscriber_drops_pending = 0
                 self._history_drops_pending = 0
                 self._deadline_drops_pending = 0
                 if self._last_capture_monotonic_ns is None:
@@ -286,7 +296,7 @@ class MonitorSampler:
                     captured_unix_ns=max(captured_unix_ns, scheduled_unix_ns),
                     latency_ns=max(0, captured_monotonic - started),
                     actual_rate_hz=actual_rate_hz,
-                    subscriber_drops=0,
+                    subscriber_drops=subscriber_drops,
                     history_drops=history_drops,
                     deadline_drops=deadline_drops,
                     values=outcome.values,
@@ -331,10 +341,11 @@ class MonitorSampler:
                     pass
                 else:
                     pending_drops += 1
+                    self._subscriber_drops_pending += 1
                     self._subscriber_drops_total += 1
-                    if isinstance(dropped, SampleBatch):
+                    if isinstance(dropped, _SubscriberDelivery):
                         pending_drops += dropped.subscriber_drops
-            queue.put_nowait(replace(batch, subscriber_drops=pending_drops) if pending_drops else batch)
+            queue.put_nowait(_SubscriberDelivery(batch, pending_drops))
             self._subscribers[queue] = 0
 
     async def _history_writer(self) -> None:
@@ -450,7 +461,22 @@ class MonitorSampler:
                 item = await queue.get()
                 if item is _STREAM_END:
                     return
-                if isinstance(item, SampleBatch):
+                if isinstance(item, _SubscriberDelivery):
+                    yield item.batch
+        finally:
+            self._subscribers.pop(queue, None)
+
+    async def subscribe_deliveries(self) -> AsyncIterator[_SubscriberDelivery]:
+        queue: asyncio.Queue[object] = asyncio.Queue(maxsize=SUBSCRIBER_QUEUE_BATCHES)
+        self._subscribers[queue] = 0
+        if self.state is SamplerState.CLOSED:
+            queue.put_nowait(_STREAM_END)
+        try:
+            while True:
+                item = await queue.get()
+                if item is _STREAM_END:
+                    return
+                if isinstance(item, _SubscriberDelivery):
                     yield item
         finally:
             self._subscribers.pop(queue, None)

@@ -342,6 +342,80 @@ def test_subscriber_queue_holds_eight_and_drops_oldest(tmp_path: Path) -> None:
     asyncio.run(scenario())
 
 
+def test_subscriber_evictions_enter_the_next_persisted_canonical_batch(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        project = tmp_path / "project"
+        project.mkdir()
+        history = FakeHistory()
+        observation = FakeObservation(_binding(project))
+        sampler = MonitorSampler(observation, FakeGroups(_group()), history)
+        slow = sampler.subscribe()
+        first_pending = asyncio.create_task(_next(slow))
+        await sampler.start(GROUP_ID, expected_revision=1)
+        first = await first_pending
+        deadline = time.monotonic() + 3
+        while observation.calls < 12 and time.monotonic() < deadline:
+            await asyncio.sleep(0.01)
+        while (
+            not any(batch.subscriber_drops > 0 for batch in history.batches)
+            and time.monotonic() < deadline
+        ):
+            await asyncio.sleep(0.01)
+        try:
+            assert first.sequence == 0
+            evidenced = [
+                batch for batch in history.batches if batch.subscriber_drops > 0
+            ]
+            assert evidenced
+            assert evidenced[0].sequence > 8
+            assert sampler.subscriber_drops_total >= evidenced[0].subscriber_drops
+        finally:
+            await slow.aclose()
+            await sampler.close()
+
+    asyncio.run(scenario())
+
+
+def test_fast_and_slow_subscriber_delivery_evidence_is_isolated_from_canonical_batch(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        project = tmp_path / "project"
+        project.mkdir()
+        history = FakeHistory()
+        observation = FakeObservation(_binding(project))
+        sampler = MonitorSampler(observation, FakeGroups(_group()), history)
+        slow = sampler.subscribe_deliveries()
+        fast = sampler.subscribe_deliveries()
+        slow_first = asyncio.create_task(_next(slow))
+        fast_first = asyncio.create_task(_next(fast))
+        await sampler.start(GROUP_ID, expected_revision=1)
+        assert (await slow_first).subscriber_drops == 0
+        assert (await fast_first).subscriber_drops == 0
+
+        fast_drops: list[int] = []
+        for _ in range(12):
+            fast_drops.append((await _next(fast)).subscriber_drops)
+        slow_deliveries = [await _next(slow) for _ in range(8)]
+        slow_delivery = next(
+            delivery for delivery in slow_deliveries if delivery.subscriber_drops > 0
+        )
+        try:
+            assert fast_drops == [0] * 12
+            assert slow_delivery.subscriber_drops > 0
+            assert slow_delivery.batch.sequence > 0
+            assert any(batch.subscriber_drops > 0 for batch in history.batches)
+            assert sampler.subscriber_drops_total >= slow_delivery.subscriber_drops
+        finally:
+            await slow.aclose()
+            await fast.aclose()
+            await sampler.close()
+
+    asyncio.run(scenario())
+
+
 def test_history_queue_is_nonblocking_bounded_and_reports_drops(tmp_path: Path) -> None:
     async def scenario() -> None:
         project = tmp_path / "project"
@@ -625,21 +699,23 @@ def test_subscriber_drop_evidence_survives_eviction_without_affecting_fast_subsc
         project.mkdir()
         observation = FakeObservation(_binding(project))
         sampler = MonitorSampler(observation, FakeGroups(_group()), FakeHistory())
-        slow = sampler.subscribe()
-        fast = sampler.subscribe()
+        slow = sampler.subscribe_deliveries()
+        fast = sampler.subscribe_deliveries()
         slow_first = asyncio.create_task(_next(slow))
         fast_first = asyncio.create_task(_next(fast))
         await sampler.start(GROUP_ID, expected_revision=1)
         delivered_to_slow = [await slow_first]
         delivered_to_fast = [await fast_first]
         try:
-            while delivered_to_fast[-1].sequence < 19:
+            while delivered_to_fast[-1].batch.sequence < 19:
                 delivered_to_fast.append(await _next(fast, 3))
             delivered_to_slow.extend([await _next(slow) for _ in range(8)])
 
-            produced = delivered_to_fast[-1].sequence + 1
-            assert produced == len(delivered_to_slow) + sum(batch.subscriber_drops for batch in delivered_to_slow)
-            assert all(batch.subscriber_drops == 0 for batch in delivered_to_fast)
+            produced = delivered_to_fast[-1].batch.sequence + 1
+            assert produced == len(delivered_to_slow) + sum(
+                delivery.subscriber_drops for delivery in delivered_to_slow
+            )
+            assert all(delivery.subscriber_drops == 0 for delivery in delivered_to_fast)
             assert getattr(sampler, "subscriber_drops_total", None) == (
                 produced - len(delivered_to_slow)
             )
