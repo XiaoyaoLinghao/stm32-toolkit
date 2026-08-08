@@ -196,6 +196,37 @@ def test_opened_and_named_database_identity_must_match(tmp_path: Path, monkeypat
         store.close()
 
 
+def test_replaced_data_root_is_rejected_before_foreign_database_access(tmp_path: Path) -> None:
+    paths = _paths(tmp_path / "victim")
+    _seed_database(paths)
+    foreign_paths = WorkspacePaths.from_roots(
+        tmp_path / "foreign-state",
+        paths.project_root,
+        LOGICAL_ID,
+        "monitor-1",
+    )
+    foreign_store = GroupStore(foreign_paths)
+    try:
+        assert _create(foreign_store, "Foreign").ok
+    finally:
+        foreign_store.close()
+
+    store = GroupStore(paths)
+    original_root = tmp_path / "original-state"
+    paths.data_root.replace(original_root)
+    foreign_paths.data_root.replace(paths.data_root)
+    before = _inventory(paths.monitor_root)
+    try:
+        listed = store.list_groups()
+        mutated = _create(store, "Must Not Land")
+    finally:
+        store.close()
+
+    assert not listed.ok and listed.code == "MONITOR_STORAGE_INVALID"
+    assert not mutated.ok and mutated.code == "MONITOR_STORAGE_INVALID"
+    assert _inventory(paths.monitor_root) == before
+
+
 def test_submit_close_race_is_owned_and_submit_failure_never_leaks_slot(tmp_path: Path, monkeypatch) -> None:
     paths = _paths(tmp_path)
     database = MonitorDatabase(paths)
@@ -269,6 +300,60 @@ def test_try_write_is_deadline_bounded_cancels_queue_and_uses_attempt_busy_timeo
             timeout_ms=50,
         )
     database.close()
+
+
+def test_timed_out_started_write_releases_the_shared_writer_promptly(tmp_path: Path) -> None:
+    database = MonitorDatabase(_paths(tmp_path))
+
+    def seed(connection: sqlite3.Connection) -> None:
+        connection.execute("CREATE TABLE slow_rows(value INTEGER NOT NULL)")
+        connection.executemany(
+            "INSERT INTO slow_rows(value) VALUES (?)",
+            ((value,) for value in range(100)),
+        )
+
+    database.write(seed)
+
+    def slow_read(connection: sqlite3.Connection) -> None:
+        connection.create_function(
+            "monitor_test_delay",
+            1,
+            lambda value: (time.sleep(0.01), value)[1],
+        )
+        connection.execute("SELECT monitor_test_delay(value) FROM slow_rows").fetchall()
+
+    try:
+        with pytest.raises(StorageFailure) as timed_out:
+            database.try_write(slow_read, timeout_ms=20)
+        assert timed_out.value.code == "MONITOR_STORAGE_BUSY"
+        started = time.monotonic()
+        assert database.write(lambda connection: connection.execute("SELECT 1").fetchone()[0]) == 1
+        assert time.monotonic() - started < 0.3
+    finally:
+        database.close()
+
+
+def test_hot_reads_do_not_run_full_quick_check_for_every_connection(tmp_path: Path, monkeypatch) -> None:
+    paths = _paths(tmp_path)
+    _seed_database(paths)
+    database = MonitorDatabase(paths)
+    statements: list[str] = []
+    real_validate = database._validate
+
+    def observed_validate(connection: sqlite3.Connection, **kwargs) -> None:
+        connection.set_trace_callback(statements.append)
+        real_validate(connection, **kwargs)
+
+    monkeypatch.setattr(database, "_validate", observed_validate)
+    try:
+        assert database.read(lambda connection: 1, empty=0) == 1
+        assert database.read(lambda connection: 2, empty=0) == 2
+    finally:
+        database.close()
+
+    assert [statement for statement in statements if "quick_check" in statement] == [
+        "PRAGMA quick_check(1)"
+    ]
 
 
 def test_storage_filesystem_error_boundaries_fail_closed(tmp_path: Path, monkeypatch) -> None:

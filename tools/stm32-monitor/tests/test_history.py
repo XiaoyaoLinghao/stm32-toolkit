@@ -209,6 +209,25 @@ def test_database_plus_wal_hard_stop_prevents_new_batch(tmp_path: Path, monkeypa
         store.close()
 
 
+def test_database_limit_crossing_rolls_back_the_admitted_batch(tmp_path: Path, monkeypatch) -> None:
+    import stm32_monitor.storage as storage_module
+
+    paths = _paths(tmp_path)
+    store = HistoryStore(paths)
+    try:
+        assert store.append_batch(_batch(paths, 1)).ok
+        size_before = store._database._size()
+        monkeypatch.setattr(storage_module, "MAX_DATABASE_BYTES", size_before + 1)
+
+        full = store.append_batch(_batch(paths, 2, value="x" * 100_000))
+        assert not full.ok and full.code == "MONITOR_STORAGE_FULL"
+        page = store.query_history(HistoryQuery("monitor-1", 0, 2_000_000_000))
+        assert page.ok
+        assert [row["sequence"] for row in page.data.values] == [1]
+    finally:
+        store.close()
+
+
 def test_wrong_workspace_batch_invalid_cursor_and_oversized_row_fail_closed(tmp_path: Path, monkeypatch) -> None:
     import stm32_monitor.history as history_module
 
@@ -361,8 +380,7 @@ def test_retention_budget_deadline_and_failure_mapping_are_bounded(tmp_path: Pat
         monkeypatch.setattr(history_module, "RETENTION_AGE_NS", 100_000)
         monkeypatch.setattr(history_module, "RETENTION_LOGICAL_BYTES", 1)
         monkeypatch.setattr(history_module, "RETENTION_DELETE_BATCHES", 1)
-        ticks = iter((0, history_module.RETENTION_TIME_BUDGET_NS))
-        monkeypatch.setattr(history_module.time, "monotonic_ns", lambda: next(ticks))
+        monkeypatch.setattr(history_module.time, "monotonic_ns", lambda: 0)
         retained = store.run_retention(now_ns=10_000)
         assert retained.ok
         assert retained.data["deletedBatches"] == 1
@@ -378,6 +396,61 @@ def test_retention_budget_deadline_and_failure_mapping_are_bounded(tmp_path: Pat
         failed = store.run_retention(now_ns=10_000)
         assert failed.code == "MONITOR_RETENTION_FAILED"
         assert failed.message == "history retention failed"
+    finally:
+        store.close()
+
+
+def test_retention_query_plan_uses_time_index_without_temporary_sort(tmp_path: Path) -> None:
+    paths = _paths(tmp_path)
+    store = HistoryStore(paths)
+    try:
+        assert store.append_batch(_batch(paths, 1, captured_ns=100)).ok
+        plan = store._database.read(
+            lambda connection: connection.execute(
+                "EXPLAIN QUERY PLAN SELECT batch_id FROM history_batches "
+                "WHERE captured_ns < ? ORDER BY captured_ns, batch_id LIMIT ?",
+                (1_000, 101),
+            ).fetchall(),
+            empty=(),
+        )
+        plan_text = " ".join(str(row[3]) for row in plan)
+        assert "history_retention_time" in plan_text
+        assert "TEMP B-TREE" not in plan_text
+    finally:
+        store.close()
+
+
+def test_retention_deadline_aborts_before_mutation(tmp_path: Path, monkeypatch) -> None:
+    import stm32_monitor.history as history_module
+
+    paths = _paths(tmp_path)
+    store = HistoryStore(paths)
+    try:
+        assert store.append_batch(_batch(paths, 1, captured_ns=100)).ok
+        monkeypatch.setattr(history_module, "RETENTION_AGE_NS", 1)
+        ticks = iter((0, history_module.RETENTION_TIME_BUDGET_NS))
+        monkeypatch.setattr(history_module.time, "monotonic_ns", lambda: next(ticks))
+        expired = store.run_retention(now_ns=1_000)
+        assert not expired.ok and expired.code == "MONITOR_STORAGE_BUSY"
+        page = store.query_history(HistoryQuery("monitor-1", 0, 2_000_000_000))
+        assert page.ok and len(page.data.values) == 1
+    finally:
+        store.close()
+
+
+def test_history_integer_binding_failures_map_to_stable_protocol_results(tmp_path: Path) -> None:
+    paths = _paths(tmp_path)
+    store = HistoryStore(paths)
+    try:
+        batch = _batch(paths, 1)
+        object.__setattr__(batch, "sequence", 2**63)
+        appended = store.append_batch(batch)
+        assert not appended.ok and appended.code == "MONITOR_STORAGE_INVALID"
+
+        queried = store.query_history(
+            HistoryQuery("monitor-1", 2**63, 2**63 + 1)
+        )
+        assert not queried.ok and queried.code == "MONITOR_HISTORY_QUERY_INVALID"
     finally:
         store.close()
 

@@ -154,6 +154,42 @@ def test_export_size_and_value_quotas_fail_without_published_directory(tmp_path:
         history.close()
 
 
+@pytest.mark.parametrize("phase", ["data", "manifest"])
+def test_export_exclusive_creation_never_truncates_a_raced_hardlink(
+    tmp_path: Path,
+    monkeypatch,
+    phase: str,
+) -> None:
+    paths = _paths(tmp_path)
+    history = HistoryStore(paths)
+    exporter = HistoryExporter(paths, history)
+    sentinel = tmp_path / f"external-{phase}.txt"
+    sentinel.write_bytes(b"external-sentinel")
+    before = sentinel.read_bytes()
+    try:
+        _append(paths, history)
+        real_stream = exporter._stream_history
+
+        def raced_stream(request: ExportRequest, target: Path):
+            if phase == "data":
+                os.link(sentinel, target)
+                return real_stream(request, target)
+            result = real_stream(request, target)
+            os.link(sentinel, target.parent / "manifest.json")
+            return result
+
+        monkeypatch.setattr(exporter, "_stream_history", raced_stream)
+        result = exporter.create_export(
+            ExportRequest("monitor-1", 0, 1_000, "jsonl"),
+            authorized=True,
+        )
+        assert not result.ok and result.code == "MONITOR_EXPORT_FAILED"
+        assert sentinel.read_bytes() == before
+    finally:
+        exporter.close()
+        history.close()
+
+
 def test_export_replace_failure_is_atomic_and_returns_stable_failure(tmp_path: Path, monkeypatch) -> None:
     import stm32_monitor.exports as exports_module
 
@@ -180,6 +216,8 @@ def test_export_request_rejects_bad_format_range_and_session() -> None:
         ExportRequest("monitor-1", 2, 1, "jsonl")
     with pytest.raises(ValueError):
         ExportRequest("monitor-1", 0, 1, "xlsx")
+    with pytest.raises(ValueError):
+        ExportRequest("monitor-1", 0, 2**63, "jsonl")
 
 
 def test_exporter_constructor_and_create_reject_wrong_public_types(tmp_path: Path) -> None:
@@ -261,6 +299,40 @@ def test_workspace_export_count_and_byte_quotas_are_enforced(tmp_path: Path, mon
         history.close()
 
 
+def test_pending_exports_reserve_workspace_bytes_before_streaming(tmp_path: Path, monkeypatch) -> None:
+    import stm32_monitor.exports as exports_module
+
+    paths = _paths(tmp_path)
+    history = HistoryStore(paths)
+    exporter = HistoryExporter(paths, history)
+    request = ExportRequest("monitor-1", 0, 1_000, "jsonl")
+    monkeypatch.setattr(exports_module, "MAX_EXPORT_BYTES", 100)
+    monkeypatch.setattr(exports_module, "MAX_MANIFEST_BYTES", 10)
+    monkeypatch.setattr(exports_module, "MAX_WORKSPACE_EXPORT_BYTES", 110)
+    try:
+        first = UUID("11111111-1111-4111-8111-111111111111")
+        second = UUID("22222222-2222-4222-8222-222222222222")
+        exporter._reserve_pending(
+            first,
+            request,
+            f"exports/monitor-1/{first}/history.jsonl",
+            f"exports/monitor-1/{first}/manifest.json",
+            "2026-08-08T00:00:00.000000Z",
+        )
+        with pytest.raises(StorageFailure) as full:
+            exporter._reserve_pending(
+                second,
+                request,
+                f"exports/monitor-1/{second}/history.jsonl",
+                f"exports/monitor-1/{second}/manifest.json",
+                "2026-08-08T00:00:01.000000Z",
+            )
+        assert full.value.code == "MONITOR_EXPORT_QUOTA_EXCEEDED"
+    finally:
+        exporter.close()
+        history.close()
+
+
 def test_startup_recovers_atomically_published_pending_export(tmp_path: Path) -> None:
     paths = _paths(tmp_path)
     history = HistoryStore(paths)
@@ -283,6 +355,56 @@ def test_startup_recovers_atomically_published_pending_export(tmp_path: Path) ->
                 "SELECT format FROM export_records WHERE export_id = ?",
                 (str(created.export_id),),
             ).fetchone() == ("jsonl",)
+    finally:
+        if recovered is not None:
+            recovered.close()
+        exporter.close()
+        history.close()
+
+
+def test_recovery_progresses_past_ten_records_and_removes_poison_head(tmp_path: Path) -> None:
+    paths = _paths(tmp_path)
+    history = HistoryStore(paths)
+    exporter = HistoryExporter(paths, history)
+    recovered = None
+    try:
+        _append(paths, history)
+        artifacts = [
+            exporter.create_export(
+                ExportRequest("monitor-1", 0, 1_000, "jsonl"),
+                authorized=True,
+            ).data
+            for _ in range(12)
+        ]
+
+        def make_pending(connection: sqlite3.Connection) -> None:
+            connection.execute("UPDATE export_records SET format = 'PENDING:jsonl'")
+            connection.execute(
+                "INSERT INTO export_records(export_id,session_id,format,relative_data_path,"
+                "relative_manifest_path,sha256,byte_count,value_count,created_at_utc) "
+                "VALUES (?,?,?,?,?,?,?,?,?)",
+                (
+                    "not-a-uuid", "monitor-1", "PENDING:jsonl", "invalid", "invalid",
+                    "0" * 64, 0, 0, "0001-01-01T00:00:00.000000Z",
+                ),
+            )
+
+        exporter._database.write(make_pending)
+        recovered = HistoryExporter(paths, history)
+        assert recovered.get_export(artifacts[-1].export_id).ok
+        pending = recovered._database.read(
+            lambda connection: connection.execute(
+                "SELECT COUNT(*) FROM export_records WHERE format LIKE 'PENDING:%'"
+            ).fetchone()[0],
+            empty=-1,
+        )
+        poison = recovered._database.read(
+            lambda connection: connection.execute(
+                "SELECT COUNT(*) FROM export_records WHERE export_id = 'not-a-uuid'"
+            ).fetchone()[0],
+            empty=-1,
+        )
+        assert pending == 0 and poison == 0
     finally:
         if recovered is not None:
             recovered.close()

@@ -301,6 +301,26 @@ def test_json_values_are_exact_bounded_immutable_snapshots() -> None:
     assert custom.calls == 0
 
 
+def test_json_integer_timestamp_and_binding_boundaries_are_explicitly_bounded() -> None:
+    watch = WatchItem.variable("counter")
+    with pytest.raises(ValueError):
+        SampleValue(watch, "OK", typed_value=10**5000)
+    with pytest.raises(ProtocolViolation):
+        parse_json_object(b'{"value":' + b"9" * 100 + b"}")
+
+    value = SampleValue(watch, "OK", typed_value=1)
+    base = dict(
+        binding=_binding(), group_id=GROUP_ID, group_revision=1, run_id=RUN_ID,
+        sequence=1, scheduled_unix_ns=100, captured_unix_ns=200, latency_ns=100,
+        actual_rate_hz=4.0, subscriber_drops=0, history_drops=0, deadline_drops=0,
+        values=(value,),
+    )
+    with pytest.raises(ValueError, match="binding"):
+        SampleBatch(**(base | {"binding": object()}))
+    with pytest.raises(ValueError):
+        SampleBatch(**(base | {"scheduled_unix_ns": 2**63, "captured_unix_ns": 2**63}))
+
+
 def test_protocol_result_validates_invariants_and_known_models_only() -> None:
     group = WatchGroup.create("G", "", 250, (), group_id=GROUP_ID, now=NOW)
     result = success("groups.list", (group,))
