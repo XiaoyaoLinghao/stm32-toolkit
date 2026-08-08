@@ -17,7 +17,11 @@ from elftools.elf.elffile import ELFFile
 from stm32_toolkit import __version__
 from stm32_toolkit.build.identity import utc_now_rfc3339
 from stm32_toolkit.probe.flash import _load_fresh_firmware
-from stm32_toolkit.probe.handoff import _validate_attachment
+from stm32_toolkit.probe.handoff import (
+    _load_flash_result,
+    _validate_attachment,
+    _validate_flash,
+)
 from stm32_toolkit.probe.model import OperationLevel, PROBE_PROTOCOL_VERSION
 from stm32_toolkit.result import OperationResult
 
@@ -153,6 +157,17 @@ def _current_firmware(root: Path, binding: DebugFirmwareBinding) -> bytes:
             or hashlib.sha256(image).hexdigest() != binding.elf_sha256
         ):
             raise ValueError("firmware binding changed")
+        flash = _load_flash_result(root)
+        _validate_flash(
+            flash,
+            current,
+            probe=binding.probe_id,
+            workspace=binding.workspace_id,
+            session=binding.flash_session_id,
+            target=binding.debug_target,
+        )
+        if flash.get("sessionId") != binding.flash_session_id:
+            raise ValueError("flash session changed")
         return image
     except asyncio.CancelledError:
         raise

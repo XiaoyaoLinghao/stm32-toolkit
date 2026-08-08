@@ -3,6 +3,8 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import io
+import json
+import os
 import struct
 from dataclasses import replace
 from pathlib import Path
@@ -12,6 +14,7 @@ import pytest
 from elftools.elf.elffile import ELFFile
 
 from stm32_toolkit import __version__
+from stm32_toolkit.build.identity import atomic_write_json, utc_now_rfc3339
 import stm32_toolkit.debug.fault as fault_mod
 from stm32_toolkit.debug.fault import FaultAnalysisRequest, analyze_fault
 from stm32_toolkit.debug.model import DebugFirmwareBinding, MemoryRegionBinding
@@ -39,6 +42,35 @@ CORE_REGISTERS = (
 )
 SCB_BASE = 0xE000_ED24
 SCB_LENGTH = 24
+
+
+def _flash_result(binding: DebugFirmwareBinding, verified_bytes: int) -> dict[str, object]:
+    return {
+        "schemaVersion": 1,
+        "status": "success",
+        "code": "OK",
+        "toolkitVersion": __version__,
+        "buildId": binding.build_id,
+        "elfSha256": binding.elf_sha256,
+        "elfSize": binding.elf_size,
+        "targetDevice": binding.target_device,
+        "debugTarget": binding.debug_target,
+        "probeId": binding.probe_id,
+        "workspaceId": binding.workspace_id,
+        "sessionId": binding.flash_session_id,
+        "verifiedBytes": verified_bytes,
+        "backendBytesProgrammed": None,
+        "backendSectorsProgrammed": None,
+        "startedAtUtc": utc_now_rfc3339(),
+        "finishedAtUtc": utc_now_rfc3339(),
+        "flashResultPath": "artifacts/migration/flash-result.json",
+        "elfPath": binding.elf_path,
+        "gitHead": binding.git_head,
+        "gitDirty": binding.git_dirty,
+        "inputSnapshotSha256": binding.input_snapshot_sha256,
+        "operationLevel": "modify",
+        "authorized": True,
+    }
 
 
 def _binding(elf: bytes, project_root: Path) -> DebugFirmwareBinding:
@@ -127,14 +159,17 @@ def _mutate_symbol(
 
 
 def _rebind_elf(fault_env, image: bytes) -> FaultAnalysisRequest:
-    _root, _elf, binding, current, _calls, _client, _request = fault_env
+    root, _elf, binding, current, _calls, _client, _request = fault_env
     digest = hashlib.sha256(image).hexdigest()
     current.elf_data = image
     current.identity["elfSha256"] = digest
     current.identity["elfSize"] = len(image)
-    return FaultAnalysisRequest(
-        replace(binding, elf_sha256=digest, elf_size=len(image))
+    rebound = replace(binding, elf_sha256=digest, elf_size=len(image))
+    atomic_write_json(
+        root / "artifacts" / "migration" / "flash-result.json",
+        _flash_result(rebound, 320),
     )
+    return FaultAnalysisRequest(rebound)
 
 
 class FaultClient:
@@ -244,7 +279,10 @@ def fault_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
             target=SimpleNamespace(device=binding.target_device),
             debug=SimpleNamespace(target=binding.debug_target),
         ),
+        segments=(SimpleNamespace(data=b"x" * 320),),
     )
+    flash_path = root / "artifacts" / "migration" / "flash-result.json"
+    atomic_write_json(flash_path, _flash_result(binding, 320))
     calls = {"load": 0}
 
     def load(_: Path):
@@ -442,6 +480,77 @@ def test_exact_endpoint_and_firmware_binding_are_checked_before_target_access(fa
     assert client.events == []
 
 
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("sessionId", "different-flash-session"),
+        ("workspaceId", "different-workspace"),
+        ("probeId", "different-probe"),
+        ("debugTarget", "stm32f429zi"),
+        ("targetDevice", "STM32F429ZITx"),
+        ("buildId", "9" * 64),
+        ("elfSha256", "8" * 64),
+        ("verifiedBytes", 319),
+    ],
+)
+def test_flash_result_identity_mismatch_fails_before_target_access(
+    fault_env, field: str, value: object
+):
+    root, _elf, binding, _current, _calls, client, request = fault_env
+    document = _flash_result(binding, 320)
+    document[field] = value
+    atomic_write_json(
+        root / "artifacts" / "migration" / "flash-result.json", document
+    )
+
+    result = asyncio.run(analyze_fault(request, client))
+
+    assert result.code == "FAULT_FIRMWARE_CHANGED"
+    assert client.events == []
+
+
+@pytest.mark.parametrize("variant", ["missing", "replaced", "oversize"])
+def test_missing_replaced_or_oversize_flash_result_fails_closed(fault_env, variant: str):
+    root, _elf, _binding, _current, _calls, client, request = fault_env
+    path = root / "artifacts" / "migration" / "flash-result.json"
+    if variant == "missing":
+        path.unlink()
+    elif variant == "replaced":
+        atomic_write_json(path, {})
+    else:
+        path.write_bytes(b" " * (8 * 1024 * 1024 + 1))
+
+    result = asyncio.run(analyze_fault(request, client))
+
+    assert result.code == "FAULT_FIRMWARE_CHANGED"
+    assert client.events == []
+
+
+def test_flash_result_redirect_is_rejected_before_target_access(
+    fault_env, monkeypatch: pytest.MonkeyPatch
+):
+    import stm32_toolkit.probe.handoff as handoff_mod
+
+    root, _elf, _binding, _current, _calls, client, request = fault_env
+    path = root / "artifacts" / "migration" / "flash-result.json"
+    original_lstat = os.lstat
+
+    def redirected(candidate):
+        info = original_lstat(candidate)
+        if Path(candidate) == path:
+            return SimpleNamespace(
+                st_mode=info.st_mode,
+                st_file_attributes=getattr(info, "st_file_attributes", 0) | 0x400,
+            )
+        return info
+
+    monkeypatch.setattr(handoff_mod.os, "lstat", redirected)
+    result = asyncio.run(analyze_fault(request, client))
+
+    assert result.code == "FAULT_FIRMWARE_CHANGED"
+    assert client.events == []
+
+
 def test_exact_attachment_is_checked_before_and_after_capture(fault_env):
     *_rest, client, request = fault_env
     client.resolved_target = "STM32F429ZI"
@@ -495,6 +604,29 @@ def test_identity_change_during_final_halted_check_is_caught_before_publish(faul
 
     assert result.code == "FAULT_FIRMWARE_CHANGED"
     assert calls["load"] == 2
+
+
+def test_flash_result_change_during_final_halted_check_is_caught_before_publish(fault_env):
+    root, _elf, binding, _current, _calls, client, request = fault_env
+    original = client.read_registers
+
+    async def mutate_flash_after_final_register_read(names: tuple[str, ...]):
+        values = await original(names)
+        if client.register_reads == 2:
+            changed = _flash_result(binding, 320)
+            changed["sessionId"] = "successor-flash-session"
+            atomic_write_json(
+                root / "artifacts" / "migration" / "flash-result.json", changed
+            )
+        return values
+
+    client.read_registers = mutate_flash_after_final_register_read
+    result = asyncio.run(analyze_fault(request, client))
+
+    assert result.code == "FAULT_FIRMWARE_CHANGED"
+    assert not any(
+        event[0] in {"halt", "resume", "reset", "write"} for event in client.events
+    )
 
 
 def test_endpoint_change_during_final_halted_check_is_caught_before_publish(fault_env):
