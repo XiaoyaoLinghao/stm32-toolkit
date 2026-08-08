@@ -21,19 +21,63 @@ different implementer and no active PR at initialization.
 
 **Architecture:** One high-level async workflow module constructs canonical
 `WorkspacePaths`, an exact `ProbeLeaseManager`, a `ProbeServiceSupervisor`, and
-one authenticated `ProbeClient`. Each CLI invocation and each MCP hardware
+one authenticated `ProbeClient`. Target and SVD selection come only from the
+current Schema-v2 project model, never a caller override. Each CLI invocation and each MCP hardware
 tool owns its service lifecycle and closes it cancellation-safely. Probe list
 does bounded discovery without opening a target session. Flash uses `MODIFY`;
 attach/read/sample/Fault and both handoff endpoints use `OBSERVE`. Handoff begin
 persists its one-time ticket state before stopping the transient service, so a
 later process can end the handoff only with the same project/workspace/session/
-probe and ticket. No client accepts a raw address, command, environment, token,
+probe and ticket. CLI handoff end means reacquire, verify, consume, and release;
+it does not claim a persistent observation daemon. No client accepts a raw address, target, SVD,
+ELF path, command, environment, token,
 lease, workspace, or project-root override through MCP.
 
 **Release boundary:** This packet completes the 0.4 software surface and bumps
 all shipped components to 0.4.0. A missing physical probe or Linux host does
 not become a fabricated PASS: those gates stay named and open. Monitor group,
 history, storage, HTTP/WebSocket, and UI behavior remain 0501/0502 scope.
+
+---
+
+## Task 0: Close lifecycle and global handoff ownership gaps
+
+**Files:**
+
+- Modify: `tools/stm32-toolkit/src/stm32_toolkit/probe/lease.py`
+- Modify: `tools/stm32-toolkit/src/stm32_toolkit/probe/service.py`
+- Modify: `tools/stm32-toolkit/src/stm32_toolkit/probe/supervisor.py`
+- Modify: `tools/stm32-toolkit/src/stm32_toolkit/probe/client.py`
+- Modify: `tools/stm32-toolkit/src/stm32_toolkit/probe/handoff.py`
+- Modify: `tools/stm32-toolkit/tests/test_probe_lease.py`
+- Modify: `tools/stm32-toolkit/tests/test_probe_service.py`
+- Modify: `tools/stm32-toolkit/tests/test_probe_supervisor.py`
+- Modify: `tools/stm32-toolkit/tests/test_probe_client.py`
+- Modify: `tools/stm32-toolkit/tests/test_debug_handoff.py`
+
+- [ ] Write RED cross-session/process tests proving an externally-owned probe
+  cannot be acquired for flash/read by another workspace or session after the
+  live service lease is released.
+- [ ] Add an atomic probe-registry external-handoff reservation derived from the
+  one-time ticket. Begin converts the current live lease under the existing
+  registry guard before release. Ordinary acquisition sees stable busy;
+  reacquisition requires the exact ticket plus originating workspace/session/
+  probe. Failure/cancellation preserves a retryable reservation; successful end
+  consumes it. Never persist or log the plaintext ticket in the global record.
+- [ ] Preserve crash/stale-owner safety: a dead process cannot erase a durable
+  external reservation, wrong tickets never downgrade it, and replay cannot
+  consume it twice. Path/reparse/descriptor/atomic-write gates apply equally to
+  active and externally-owned records.
+- [ ] Make service stop reject new requests, await every entered backend task
+  (observe and modify) before `backend.close()`, and prove close never runs
+  concurrently with a timed-out/cancelled `to_thread` operation. Cleanup
+  completes before cancellation propagates; cleanup failure retains priority.
+- [ ] Split ProbeClient transport close from the authenticated `probe.close`
+  request. One-shot orchestration closes only its HTTP transport; the supervisor
+  remains the sole backend owner and performs the one backend close.
+- [ ] Define and test CLI/MCP handoff end as reacquire, verify, consume ticket,
+  then release during invocation cleanup. Persistent observing ownership is
+  explicitly deferred to the 0.5 Monitor service.
 
 ---
 
@@ -45,10 +89,10 @@ history, storage, HTTP/WebSocket, and UI behavior remain 0501/0502 scope.
 - Create: `tools/stm32-toolkit/tests/test_hardware_workflows.py`
 
 - [ ] Write RED tests for canonical project/data roots, stable workspace and
-  caller-supplied safe session IDs, exact probe/target/build/ELF pins, operation
+  caller-supplied safe session IDs, exact probe/build/ELF pins, operation
   levels, service/client lifecycle, cancellation cleanup, and no raw exception,
   token, lease, endpoint, or absolute-root leakage.
-- [ ] Build workspace identity only from the current Schema-v2 model and
+- [ ] Build workspace identity, target, and optional SVD path only from the current Schema-v2 model and
   canonical project root. Keep all runtime/session files outside the project;
   reject redirect/reparse components before hardware access.
 - [ ] Implement bounded probe discovery that closes its backend and never opens
@@ -61,8 +105,8 @@ history, storage, HTTP/WebSocket, and UI behavior remain 0501/0502 scope.
   clients only from its exact endpoint, and always close client/service under
   success, stable failure, cancellation, and cleanup failure. Cleanup failure
   must not be hidden by an earlier success.
-- [ ] Require a real `DwarfCatalog.from_binding()` and exact explicit SVD
-  candidates. Callers provide expressions/register paths, never addresses or
+- [ ] Require a real `DwarfCatalog.from_binding()` and the exact project-model
+  SVD path. Callers provide expressions/register paths, never target/SVD/addresses or
   sizes. Handoff end must use the persisted originating session plus one-time
   ticket; it may not steal a busy probe.
 
@@ -79,8 +123,9 @@ history, storage, HTTP/WebSocket, and UI behavior remain 0501/0502 scope.
 - [ ] Write RED grammar tests for `probe list`, `flash`, `debug handoff-begin`,
   `debug handoff-end`, `debug variables`, `debug sample`, `debug registers`,
   and `debug fault` with required `--project`, `--data-root`, `--session-id`,
-  exact probe/target/build/ELF arguments, repeatable expressions/paths, explicit
-  SVD candidates, bounded intervals/count/duration, and strict booleans.
+  exact probe/build/ELF arguments, repeatable expressions/paths,
+  bounded intervals/count/duration, and strict booleans. Target and SVD
+  overrides are grammar errors.
 - [ ] CLI flash and handoff begin require explicit `--authorized`; omitting it
   reaches the workflow as false and can never invoke target modification or
   release ownership. Read/Fault commands expose no control flag.
@@ -114,7 +159,8 @@ history, storage, HTTP/WebSocket, and UI behavior remain 0501/0502 scope.
   Exact `authorized is True` is required for flash and handoff begin; strings,
   integers, null, arrays, and objects never enter an intrusive workflow.
 - [ ] Serialize hardware lifecycle per MCP runtime so concurrent calls cannot
-  overwrite one endpoint/session record or race one supervisor. Cancellation
+  overwrite one endpoint/session record or race one supervisor. Same-probe
+  overlap returns immediate stable busy; different probes may proceed independently. Cancellation
   waits owned cleanup and propagates; a cleanup error has priority over a
   successful tool result.
 - [ ] Return complete `OperationResult.to_dict()` evidence and test partial item
@@ -188,4 +234,3 @@ history, storage, HTTP/WebSocket, and UI behavior remain 0501/0502 scope.
   verify local/remote/PR identity, review the full accepted-base diff in a clean
   detached worktree, merge without deleting the remote branch after every
   non-deferred gate passes, then start STM32TK-0501 immediately.
-
