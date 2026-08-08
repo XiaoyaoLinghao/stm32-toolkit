@@ -4,12 +4,14 @@ import json
 import os
 import subprocess
 import sys
+import threading
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
 
+from stm32_toolkit import __version__
 from stm32_toolkit.probe.lease import (
     ProcessIdentity,
     ProbeBusyError,
@@ -56,7 +58,7 @@ def stale_record(identity: ProcessIdentity = OWNER) -> dict[str, object]:
     return {
         "schemaVersion": 1,
         "protocol": "stm32-toolkit-probe/1",
-        "toolkitVersion": "0.3.0",
+        "toolkitVersion": __version__,
         "probeId": "probe-123",
         "workspaceId": "workspace-a",
         "sessionId": "session-a",
@@ -111,6 +113,441 @@ def test_release_allows_a_successor_and_old_release_is_idempotent(tmp_path: Path
         assert second.lease_id != first.lease_id
     finally:
         second.release()
+
+
+def test_external_handoff_is_digest_bound_retryable_and_consumed_once(
+    tmp_path: Path,
+):
+    data_root = tmp_path / "data"
+    ticket = "ab" * 32
+    first_manager = manager(data_root, OWNER)
+    first = acquire(first_manager)
+
+    first.reserve_external_handoff(ticket)
+    first.release()
+
+    record = json.loads(first.record_path.read_text(encoding="utf-8"))
+    serialized = json.dumps(record, sort_keys=True)
+    assert record["state"] == "externally-owned"
+    assert record["ticketSha256"] == __import__("hashlib").sha256(
+        ticket.encode("ascii")
+    ).hexdigest()
+    assert ticket not in serialized
+
+    successor_manager = manager(
+        data_root,
+        SUCCESSOR,
+        inspected={OWNER.pid: None, SUCCESSOR.pid: SUCCESSOR},
+        health=False,
+    )
+    with pytest.raises(ProbeBusyError):
+        acquire(successor_manager, workspace="workspace-b")
+    with pytest.raises(ProbeBusyError):
+        successor_manager.acquire(
+            probe_id="probe-123",
+            workspace_id="workspace-a",
+            session_id="session-a",
+            operation_level=OperationLevel.OBSERVE,
+            health_url="http://127.0.0.1:43124/health",
+            handoff_ticket="cd" * 32,
+        )
+
+    claimed = successor_manager.acquire(
+        probe_id="probe-123",
+        workspace_id="workspace-a",
+        session_id="session-a",
+        operation_level=OperationLevel.OBSERVE,
+        health_url="http://127.0.0.1:43124/health",
+        handoff_ticket=ticket,
+    )
+    claimed.release()
+    assert json.loads(first.record_path.read_text(encoding="utf-8"))["state"] == (
+        "externally-owned"
+    )
+
+    retry = successor_manager.acquire(
+        probe_id="probe-123",
+        workspace_id="workspace-a",
+        session_id="session-a",
+        operation_level=OperationLevel.OBSERVE,
+        health_url="http://127.0.0.1:43124/health",
+        handoff_ticket=ticket,
+    )
+    retry.consume_external_handoff(ticket)
+    retry.release()
+    assert json.loads(first.record_path.read_text(encoding="utf-8"))["state"] == (
+        "handoff-consumed"
+    )
+    assert successor_manager.finalize_consumed_handoff(
+        probe_id="probe-123",
+        workspace_id="workspace-a",
+        session_id="session-a",
+        ticket=ticket,
+    )
+    assert successor_manager.acknowledge_consumed_handoff(
+        probe_id="probe-123",
+        workspace_id="workspace-a",
+        session_id="session-a",
+        ticket=ticket,
+    )
+    assert json.loads(first.record_path.read_text(encoding="utf-8"))["state"] == (
+        "released"
+    )
+
+    with pytest.raises(ProbeLeaseError) as replay:
+        successor_manager.acquire(
+            probe_id="probe-123",
+            workspace_id="workspace-a",
+            session_id="session-a",
+            operation_level=OperationLevel.OBSERVE,
+            health_url="http://127.0.0.1:43124/health",
+            handoff_ticket=ticket,
+        )
+    assert replay.value.code == "PROBE_HANDOFF_INVALID"
+
+    successor = acquire(successor_manager, workspace="workspace-b")
+    successor.release()
+
+
+def test_external_handoff_claim_requires_the_reserved_operation_level(
+    tmp_path: Path,
+):
+    data_root = tmp_path / "data"
+    ticket = "ad" * 32
+    owner = acquire(manager(data_root, OWNER))
+    owner.reserve_external_handoff(ticket)
+    owner.release()
+
+    claimant = manager(
+        data_root,
+        SUCCESSOR,
+        inspected={OWNER.pid: None, SUCCESSOR.pid: SUCCESSOR},
+    )
+    with pytest.raises(ProbeBusyError) as mismatch:
+        claimant.acquire(
+            probe_id="probe-123",
+            workspace_id="workspace-a",
+            session_id="session-a",
+            operation_level=OperationLevel.MODIFY,
+            health_url="http://127.0.0.1:43124/health",
+            handoff_ticket=ticket,
+        )
+    assert mismatch.value.owner.operation_level is OperationLevel.OBSERVE
+
+    exact = claimant.acquire(
+        probe_id="probe-123",
+        workspace_id="workspace-a",
+        session_id="session-a",
+        operation_level=OperationLevel.OBSERVE,
+        health_url="http://127.0.0.1:43124/health",
+        handoff_ticket=ticket,
+    )
+    exact.release()
+
+
+def test_consumed_ticket_tombstone_survives_successor_release_and_restart(
+    tmp_path: Path,
+):
+    data_root = tmp_path / "data"
+    ticket = "ae" * 32
+    owner = acquire(manager(data_root, OWNER))
+    owner.reserve_external_handoff(ticket)
+    owner.release()
+
+    claimant_manager = manager(
+        data_root,
+        SUCCESSOR,
+        inspected={OWNER.pid: None, SUCCESSOR.pid: SUCCESSOR},
+    )
+    claimant = claimant_manager.acquire(
+        probe_id="probe-123",
+        workspace_id="workspace-a",
+        session_id="session-a",
+        operation_level=OperationLevel.OBSERVE,
+        health_url="http://127.0.0.1:43124/health",
+        handoff_ticket=ticket,
+    )
+    claimant.consume_external_handoff(ticket)
+    claimant.release()
+    assert claimant_manager.finalize_consumed_handoff(
+        probe_id="probe-123",
+        workspace_id="workspace-a",
+        session_id="session-a",
+        ticket=ticket,
+    )
+    assert claimant_manager.acknowledge_consumed_handoff(
+        probe_id="probe-123",
+        workspace_id="workspace-a",
+        session_id="session-a",
+        ticket=ticket,
+    )
+
+    successor = acquire(claimant_manager, workspace="workspace-b")
+    successor.release()
+
+    restarted = manager(
+        data_root,
+        ProcessIdentity(4300, "start-4300", "boot-a"),
+        inspected={SUCCESSOR.pid: None},
+    )
+    assert restarted.acknowledge_consumed_handoff(
+        probe_id="probe-123",
+        workspace_id="workspace-a",
+        session_id="session-a",
+        ticket=ticket,
+    )
+    with pytest.raises(ProbeLeaseError) as replay:
+        restarted.acquire(
+            probe_id="probe-123",
+            workspace_id="workspace-a",
+            session_id="session-a",
+            operation_level=OperationLevel.OBSERVE,
+            health_url="http://127.0.0.1:43125/health",
+            handoff_ticket=ticket,
+        )
+    assert replay.value.code == "PROBE_HANDOFF_INVALID"
+
+
+def test_crashed_external_claim_restores_reservation_instead_of_erasing_it(
+    tmp_path: Path,
+):
+    data_root = tmp_path / "data"
+    ticket = "ef" * 32
+    owner_manager = manager(data_root, OWNER)
+    lease = acquire(owner_manager)
+    lease.reserve_external_handoff(ticket)
+    lease.release()
+
+    claimant = manager(
+        data_root,
+        SUCCESSOR,
+        inspected={OWNER.pid: None, SUCCESSOR.pid: SUCCESSOR},
+        health=False,
+    )
+    claimed = claimant.acquire(
+        probe_id="probe-123",
+        workspace_id="workspace-a",
+        session_id="session-a",
+        operation_level=OperationLevel.OBSERVE,
+        health_url="http://127.0.0.1:43124/health",
+        handoff_ticket=ticket,
+    )
+    claimed._close_locked_handle()
+
+    later = manager(
+        data_root,
+        ProcessIdentity(4300, "start-4300", "boot-a"),
+        inspected={SUCCESSOR.pid: None},
+        health=False,
+    )
+    with pytest.raises(ProbeBusyError):
+        acquire(later, workspace="workspace-b")
+
+    retry = later.acquire(
+        probe_id="probe-123",
+        workspace_id="workspace-a",
+        session_id="session-a",
+        operation_level=OperationLevel.OBSERVE,
+        health_url="http://127.0.0.1:43125/health",
+        handoff_ticket=ticket,
+    )
+    retry.release()
+
+
+def test_external_record_redirect_is_rejected_without_downgrading_reservation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    data_root = tmp_path / "data"
+    ticket = "12" * 32
+    owner_manager = manager(data_root, OWNER)
+    lease = acquire(owner_manager)
+    lease.reserve_external_handoff(ticket)
+    lease.release()
+    record_path = owner_manager.record_path("probe-123")
+    before = record_path.read_bytes()
+
+    import stm32_toolkit.probe.lease as lease_module
+
+    real_redirect = lease_module._is_redirect
+
+    def redirect(path: Path, metadata: os.stat_result) -> bool:
+        return path == record_path or real_redirect(path, metadata)
+
+    monkeypatch.setattr(lease_module, "_is_redirect", redirect)
+    with pytest.raises(ProbeLeaseError) as error:
+        acquire(manager(data_root, SUCCESSOR), workspace="workspace-b")
+
+    assert error.value.code == "PROBE_REGISTRY_UNSAFE"
+    assert record_path.read_bytes() == before
+
+
+def test_external_record_descriptor_identity_swap_fails_closed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    import stm32_toolkit.probe.lease as lease_module
+
+    data_root = tmp_path / "data"
+    owner_manager = manager(data_root, OWNER)
+    lease = acquire(owner_manager)
+    lease.reserve_external_handoff("34" * 32)
+    lease.release()
+    record_path = owner_manager.record_path("probe-123")
+    before = record_path.read_bytes()
+    real_lstat = os.lstat
+    record_lstats = 0
+
+    def replaced(path: object, *args, **kwargs):
+        nonlocal record_lstats
+        metadata = real_lstat(path, *args, **kwargs)
+        if Path(path) == record_path:
+            record_lstats += 1
+            if record_lstats >= 2:
+                return type(
+                    "Changed",
+                    (),
+                    {
+                        "st_mode": metadata.st_mode,
+                        "st_dev": metadata.st_dev,
+                        "st_ino": metadata.st_ino + 1,
+                        "st_file_attributes": getattr(
+                            metadata, "st_file_attributes", 0
+                        ),
+                    },
+                )()
+        return metadata
+
+    monkeypatch.setattr(lease_module.os, "lstat", replaced)
+    with pytest.raises(ProbeLeaseError) as error:
+        acquire(manager(data_root, SUCCESSOR), workspace="workspace-b")
+    assert error.value.code == "PROBE_REGISTRY_UNSAFE"
+    assert record_path.read_bytes() == before
+
+
+def test_external_handoff_transition_guards_are_strict_and_idempotent(
+    tmp_path: Path,
+):
+    data_root = tmp_path / "data"
+    ticket = "56" * 32
+    lease = acquire(manager(data_root, OWNER))
+
+    with pytest.raises(ProbeLeaseError) as malformed:
+        lease.reserve_external_handoff("short")
+    assert malformed.value.code == "PROBE_LEASE_INVALID"
+
+    lease.reserve_external_handoff(ticket)
+    lease.reserve_external_handoff(ticket)
+    with pytest.raises(ProbeLeaseError) as changed:
+        lease.reserve_external_handoff("78" * 32)
+    assert changed.value.code == "PROBE_LEASE_LOST"
+    with pytest.raises(ProbeLeaseError) as wrong_consume:
+        lease.consume_external_handoff("78" * 32)
+    assert wrong_consume.value.code == "PROBE_LEASE_LOST"
+    lease.release()
+
+    with pytest.raises(ProbeLeaseError) as released:
+        lease.reserve_external_handoff(ticket)
+    assert released.value.code == "PROBE_LEASE_LOST"
+    with pytest.raises(ProbeLeaseError) as inactive:
+        lease.consume_external_handoff(ticket)
+    assert inactive.value.code == "PROBE_LEASE_LOST"
+
+    successor_manager = manager(data_root, SUCCESSOR)
+    claimant = successor_manager.acquire(
+        probe_id="probe-123",
+        workspace_id="workspace-a",
+        session_id="session-a",
+        operation_level=OperationLevel.OBSERVE,
+        health_url="http://127.0.0.1:43124/health",
+        handoff_ticket=ticket,
+    )
+    claimant.consume_external_handoff(ticket)
+    claimant.release()
+    assert successor_manager.finalize_consumed_handoff(
+        probe_id="probe-123",
+        workspace_id="workspace-a",
+        session_id="session-a",
+        ticket=ticket,
+    )
+    assert successor_manager.acknowledge_consumed_handoff(
+        probe_id="probe-123",
+        workspace_id="workspace-a",
+        session_id="session-a",
+        ticket=ticket,
+    )
+    ordinary = acquire(successor_manager, workspace="workspace-b")
+    with pytest.raises(ProbeLeaseError) as not_claimed:
+        ordinary.consume_external_handoff(ticket)
+    assert not_claimed.value.code == "PROBE_LEASE_LOST"
+    ordinary.release()
+
+    with pytest.raises(ProbeLeaseError) as invalid_ticket:
+        manager(data_root, OWNER).acquire(
+            probe_id="probe-123",
+            workspace_id="workspace-a",
+            session_id="session-a",
+            operation_level=OperationLevel.OBSERVE,
+            health_url="http://127.0.0.1:43124/health",
+            handoff_ticket="invalid",
+        )
+    assert invalid_ticket.value.code == "PROBE_LEASE_INVALID"
+
+
+def test_late_heartbeat_cannot_overwrite_external_reservation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    import stm32_toolkit.probe.lease as lease_module
+
+    lease = acquire(manager(tmp_path / "data", OWNER))
+    ticket = "9a" * 32
+    entered = threading.Event()
+    release_write = threading.Event()
+    reserve_finished = threading.Event()
+    errors: list[BaseException] = []
+    real_write = lease_module._write_record_path
+
+    def phased_write(path: Path, record: dict[str, object]) -> None:
+        if record.get("heartbeatAtUtc") == "2026-08-07T12:00:01.000000Z":
+            entered.set()
+            release_write.wait(5)
+        real_write(path, record)
+
+    monkeypatch.setattr(lease_module, "_write_record_path", phased_write)
+
+    def heartbeat() -> None:
+        try:
+            lease.heartbeat(utc_now=lambda: NOW + timedelta(seconds=1))
+        except BaseException as error:
+            errors.append(error)
+
+    def reserve() -> None:
+        try:
+            lease.reserve_external_handoff(ticket)
+        except BaseException as error:
+            errors.append(error)
+        finally:
+            reserve_finished.set()
+
+    heartbeat_thread = threading.Thread(target=heartbeat)
+    reserve_thread = threading.Thread(target=reserve)
+    heartbeat_thread.start()
+    assert entered.wait(2)
+    reserve_thread.start()
+    reserve_was_serialized = not reserve_finished.wait(0.2)
+    release_write.set()
+    heartbeat_thread.join(2)
+    reserve_thread.join(2)
+    try:
+        assert reserve_was_serialized
+        assert errors == []
+        record = json.loads(lease.record_path.read_text(encoding="utf-8"))
+        assert record["state"] == "externally-owned"
+        assert record["ticketSha256"] == __import__("hashlib").sha256(
+            ticket.encode("ascii")
+        ).hexdigest()
+    finally:
+        release_write.set()
+        if not lease._released:
+            lease.release()
 
 
 def test_dead_process_and_dead_health_are_reclaimed(tmp_path: Path):
@@ -174,7 +611,7 @@ def test_reused_pid_with_different_start_identity_can_be_reclaimed(tmp_path: Pat
     [
         ("schemaVersion", 2),
         ("protocol", "stm32-toolkit-probe/2"),
-        ("toolkitVersion", "0.4.0"),
+        ("toolkitVersion", "0.5.0"),
     ],
 )
 def test_incompatible_owner_record_is_never_reclaimed(tmp_path: Path, field, value):

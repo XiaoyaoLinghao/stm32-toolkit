@@ -134,7 +134,7 @@ def _registry_server(tmp_path: Path):
     return create_server(project, tmp_path / "plugin-data", "session-a")
 
 
-def test_server_registers_exactly_seven_project_bound_tools(tmp_path: Path):
+def test_server_registers_exactly_fifteen_project_bound_tools(tmp_path: Path):
     server = _registry_server(tmp_path)
     tools = asyncio.run(server.list_tools())
 
@@ -150,6 +150,14 @@ def test_server_registers_exactly_seven_project_bound_tools(tmp_path: Path):
         "stm32_keil_convert",
         "stm32_project_configure",
         "stm32_build",
+        "stm32_probe_list",
+        "stm32_flash",
+        "stm32_debug_handoff_begin",
+        "stm32_debug_handoff_end",
+        "stm32_variable_read",
+        "stm32_variable_sample",
+        "stm32_register_read",
+        "stm32_fault_analyze",
     }
 
 
@@ -492,7 +500,7 @@ def test_end_to_end_fixture_inspect_convert_configure_build(tmp_path: Path, monk
     generated = root / ".stm32-toolkit" / "generated-files.json"
     assert generated.is_file()
     generated_payload = json.loads(generated.read_text(encoding="utf-8"))
-    assert generated_payload["toolVersion"] == "0.3.0"
+    assert generated_payload["toolVersion"] == "0.4.0"
     tasks = json.loads((root / ".vscode" / "tasks.json").read_text(encoding="utf-8"))
     assert [task["label"] for task in tasks["tasks"]] == [
         "STM32 Toolkit: Build Debug",

@@ -6,9 +6,9 @@ if not defined CLAUDE_PLUGIN_DATA (
   exit /b 2
 )
 
-set "STM32_TOOLKIT_RUNTIME=%CLAUDE_PLUGIN_DATA%\runtime\0.3.0\Scripts\python.exe"
+set "STM32_TOOLKIT_RUNTIME=%CLAUDE_PLUGIN_DATA%\runtime\0.4.0\Scripts\python.exe"
 if not exist "%STM32_TOOLKIT_RUNTIME%" (
-  >&2 echo stm32-toolkit-mcp: runtime/0.3.0/Scripts/python.exe is missing under CLAUDE_PLUGIN_DATA. Run /stm32-toolkit:setup-stm32-env, then retry.
+  >&2 echo stm32-toolkit-mcp: runtime/0.4.0/Scripts/python.exe is missing under CLAUDE_PLUGIN_DATA. Run /stm32-toolkit:setup-stm32-env, then retry.
   exit /b 2
 )
 

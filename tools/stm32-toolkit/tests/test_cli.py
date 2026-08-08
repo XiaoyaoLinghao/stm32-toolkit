@@ -14,7 +14,7 @@ def test_version_command_writes_only_the_package_version(capsys):
     assert main(["version"]) == 0
 
     captured = capsys.readouterr()
-    assert captured.out == "0.3.0\n"
+    assert captured.out == "0.4.0\n"
     assert captured.err == ""
 
 

@@ -9,8 +9,31 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-$RuntimeVersion = "0.3.0"
+$RuntimeVersion = "0.4.0"
+$LegacyRuntimeVersion = "0.3.0"
 $ProcessOutputLimit = 65536
+$ProbeValidationScript = @'
+import importlib.metadata as metadata
+import sys
+
+try:
+    try:
+        from packaging.version import Version
+    except ImportError:
+        from pip._vendor.packaging.version import Version
+    import pyocd
+    probe_version = metadata.version("pyocd")
+    parsed_version = Version(probe_version)
+    lower_bound = Version("0.45.1")
+    upper_bound = Version("0.46")
+except Exception:
+    raise SystemExit(2)
+
+if not lower_bound <= parsed_version < upper_bound:
+    raise SystemExit(3)
+
+print(probe_version)
+'@
 
 function Resolve-ClaudePath {
     param([string]$Name, [AllowEmptyString()][string]$Value, [switch]$MustExist)
@@ -147,6 +170,8 @@ function Get-RuntimeEvidence {
     if ($version.status -ne "ok") { $evidence.status = "broken"; $evidence.error = "version check $($version.status): $($version.stderr)".Trim(); return $evidence }
     $evidence.version = ($version.stdout -split "`r?`n")[0].Trim()
     if ($evidence.version -ne $RuntimeVersion) { $evidence.status = "broken"; $evidence.error = "expected toolkit $RuntimeVersion, found $($evidence.version)"; return $evidence }
+    $probeRuntime = Invoke-BoundedProcess $RuntimePython @("-I", "-c", $ProbeValidationScript) 10
+    if ($probeRuntime.status -ne "ok") { $evidence.status = "broken"; $evidence.error = "pyocd runtime validation failed ($($probeRuntime.status))"; return $evidence }
     $doctor = Invoke-BoundedProcess $RuntimePython @("-I", "-m", "stm32_toolkit.cli", "--project-root", $Project, "doctor", "--json") 15
     if ($doctor.status -ne "ok") { $evidence.status = "broken"; $evidence.error = "doctor $($doctor.status): $($doctor.stderr)".Trim(); return $evidence }
     try { $doctorPayload = $doctor.stdout | ConvertFrom-Json } catch { $evidence.status = "broken"; $evidence.error = "doctor returned invalid JSON"; return $evidence }
@@ -205,10 +230,18 @@ try {
     $runtimeParent = Join-Path $resolvedPluginData "runtime"
     $runtime = Join-Path $runtimeParent $RuntimeVersion
     $runtimePython = Join-Path $runtime "Scripts/python.exe"
+    $legacyRuntime = Join-Path $runtimeParent $LegacyRuntimeVersion
+    $legacyRuntimePython = Join-Path $legacyRuntime "Scripts/python.exe"
     $bootstrapPython = Find-BootstrapPython
 
     if ($Mode -eq "Check") {
-        $runtimeEvidence = Get-RuntimeEvidence $runtime $runtimePython $resolvedProjectDir
+        if (Test-Path -LiteralPath $runtime) {
+            $runtimeEvidence = Get-RuntimeEvidence $runtime $runtimePython $resolvedProjectDir
+        } elseif (Test-Path -LiteralPath $legacyRuntime) {
+            $runtimeEvidence = Get-RuntimeEvidence $legacyRuntime $legacyRuntimePython $resolvedProjectDir
+        } else {
+            $runtimeEvidence = Get-RuntimeEvidence $runtime $runtimePython $resolvedProjectDir
+        }
         $result = [ordered]@{
             mode = "CHECK"
             runtime = $runtimeEvidence
@@ -224,8 +257,10 @@ try {
     }
 
     if (-not $bootstrapPython.supported) { throw "Host Python 3.10+ is required to create the managed runtime" }
-    if ($Mode -eq "Bootstrap" -and (Test-Path -LiteralPath $runtime)) { throw "managed runtime path already exists; run Check and authorize Repair if it is broken" }
-    if ($Mode -eq "Repair" -and -not (Test-Path -LiteralPath $runtime)) { throw "managed runtime is missing; authorize Bootstrap instead" }
+    $currentExists = Test-Path -LiteralPath $runtime
+    $legacyExists = Test-Path -LiteralPath $legacyRuntime
+    if ($Mode -eq "Bootstrap" -and ($currentExists -or $legacyExists)) { throw "managed runtime path already exists; run Check and authorize Repair if it is broken" }
+    if ($Mode -eq "Repair" -and -not ($currentExists -or $legacyExists)) { throw "managed runtime is missing; authorize Bootstrap instead" }
     Assert-NoRedirectAncestors "runtime parent" $runtimeParent
     Assert-NotRedirect "managed runtime" $runtime
 
@@ -241,29 +276,33 @@ try {
     Assert-NotRedirect "staging runtime" $staging
     Assert-NotRedirect "staging Scripts" (Join-Path $staging "Scripts")
     Assert-NotRedirect "staging interpreter" $stagingPython
-    Assert-StepOk (Invoke-BoundedProcess $stagingPython @("-I", "-m", "pip", "install", "--disable-pip-version-check", "--no-cache-dir", $package) 300) "toolkit installation"
+    Assert-StepOk (Invoke-BoundedProcess $stagingPython @("-I", "-m", "pip", "install", "--disable-pip-version-check", "--no-cache-dir", "${package}[probe]") 300) "toolkit probe-runtime installation"
     $versionCheck = Invoke-BoundedProcess $stagingPython @("-I", "-m", "stm32_toolkit.cli", "version") 10
     Assert-StepOk $versionCheck "toolkit version validation"
     $installedVersion = ($versionCheck.stdout -split "`r?`n")[0].Trim()
     if ($installedVersion -ne $RuntimeVersion) { throw "expected toolkit $RuntimeVersion, found $installedVersion" }
+    Assert-StepOk (Invoke-BoundedProcess $stagingPython @("-I", "-c", $ProbeValidationScript) 10) "pyocd runtime validation"
     $doctorCheck = Invoke-BoundedProcess $stagingPython @("-I", "-m", "stm32_toolkit.cli", "--project-root", $resolvedProjectDir, "doctor", "--json") 15
     Assert-StepOk $doctorCheck "toolkit doctor validation"
     try { $doctorPayload = $doctorCheck.stdout | ConvertFrom-Json } catch { throw "toolkit doctor returned invalid JSON" }
     if ($doctorPayload.ok -ne $true) { throw "toolkit doctor reported failure" }
 
     $quarantined = $null
+    $quarantineSource = $null
     if ($Mode -eq "Repair") {
         $quarantineRoot = Join-Path $runtimeParent ".quarantine"
         [void][IO.Directory]::CreateDirectory($quarantineRoot)
         Assert-NoRedirectAncestors "quarantine root" $quarantineRoot
-        $quarantined = Join-Path $quarantineRoot ("$RuntimeVersion-" + [DateTime]::UtcNow.ToString("yyyyMMddTHHmmssfffZ") + "-" + [Guid]::NewGuid().ToString("N"))
-        Move-Item -LiteralPath $runtime -Destination $quarantined
+        $quarantineSource = if ($currentExists) { $runtime } else { $legacyRuntime }
+        $quarantineVersion = if ($currentExists) { $RuntimeVersion } else { $LegacyRuntimeVersion }
+        $quarantined = Join-Path $quarantineRoot ("$quarantineVersion-" + [DateTime]::UtcNow.ToString("yyyyMMddTHHmmssfffZ") + "-" + [Guid]::NewGuid().ToString("N"))
+        Move-Item -LiteralPath $quarantineSource -Destination $quarantined
     }
     try {
         Move-Item -LiteralPath $staging -Destination $runtime
         $staging = $null
     } catch {
-        if ($quarantined -and -not (Test-Path -LiteralPath $runtime) -and (Test-Path -LiteralPath $quarantined)) { Move-Item -LiteralPath $quarantined -Destination $runtime }
+        if ($quarantined -and $quarantineSource -and -not (Test-Path -LiteralPath $quarantineSource) -and (Test-Path -LiteralPath $quarantined)) { Move-Item -LiteralPath $quarantined -Destination $quarantineSource }
         throw
     }
     if ((Test-Path -LiteralPath $stagingRoot) -and -not (Get-ChildItem -LiteralPath $stagingRoot -Force | Select-Object -First 1)) { Remove-Item -LiteralPath $stagingRoot -Force }

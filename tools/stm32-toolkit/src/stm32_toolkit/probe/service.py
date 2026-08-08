@@ -49,6 +49,18 @@ async def _await_task_completion(task: asyncio.Task[object]) -> object:
     return result
 
 
+async def _await_commit_completion(task: asyncio.Task[object]) -> object:
+    """Finish a commit task; success wins over late caller cancellation."""
+    while not task.done():
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError:
+            continue
+        except BaseException:
+            break
+    return task.result()
+
+
 class ProbeServiceError(Exception):
     def __init__(self, code: str, message: str) -> None:
         super().__init__(message)
@@ -230,6 +242,7 @@ class ProbeService:
         token_factory: Callable[[], bytes] = lambda: secrets.token_bytes(32),
         heartbeat_interval_seconds: float = 5.0,
         body_read_timeout_seconds: float = 2.0,
+        handoff_ticket: str | None = None,
     ) -> None:
         self._backend = backend
         self._lease_manager = lease_manager
@@ -246,6 +259,7 @@ class ProbeService:
             raise ValueError("Probe Service body read timeout is invalid")
         self._heartbeat_interval_seconds = heartbeat_interval_seconds
         self._body_read_timeout_seconds = body_read_timeout_seconds
+        self._handoff_ticket = handoff_ticket
         self._runner: web.AppRunner | None = None
         self._lease: ProbeLease | None = None
         self._endpoint: ProbeEndpoint | None = None
@@ -292,6 +306,7 @@ class ProbeService:
                 session_id=self._session_id,
                 operation_level=self._operation_level,
                 health_url=f"http://127.0.0.1:{port}/health",
+                handoff_ticket=self._handoff_ticket,
             )
             record_path = self._session_root / "probe-endpoint.json"
             endpoint = ProbeEndpoint(
@@ -349,7 +364,8 @@ class ProbeService:
                 lease = self._lease
                 if lease is None or self._stopping:
                     return
-                await asyncio.to_thread(lease.heartbeat)
+                heartbeat = asyncio.create_task(asyncio.to_thread(lease.heartbeat))
+                await _await_task_completion(heartbeat)
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -442,9 +458,6 @@ class ProbeService:
             if request.operation == "register.read":
                 names = tuple(str(item) for item in request.data["names"])
                 return {"values": dict(self._backend.read_core_registers(names))}
-            if request.operation == "probe.close":
-                self._backend.close()
-                return {"closed": True}
             if request.operation == "flash.program":
                 image = self._read_verified_elf(
                     request.data["elfPath"],
@@ -497,6 +510,28 @@ class ProbeService:
                 )
 
         return wait_for_registered_modifications()
+
+    async def reserve_external_handoff(self, ticket: str) -> None:
+        lease = self._lease
+        if lease is None or self._endpoint is None or self._stopping:
+            raise ProbeServiceError(
+                "PROBE_SERVICE_UNAVAILABLE", "Probe Service is unavailable"
+            )
+        reservation = asyncio.create_task(
+            asyncio.to_thread(lease.reserve_external_handoff, ticket)
+        )
+        await _await_task_completion(reservation)
+
+    async def consume_external_handoff(self, ticket: str) -> None:
+        lease = self._lease
+        if lease is None or self._endpoint is None or self._stopping:
+            raise ProbeServiceError(
+                "PROBE_SERVICE_UNAVAILABLE", "Probe Service is unavailable"
+            )
+        consumption = asyncio.create_task(
+            asyncio.to_thread(lease.consume_external_handoff, ticket)
+        )
+        await _await_commit_completion(consumption)
 
     def _backend_task_finished(self, task: asyncio.Task[object]) -> None:
         self._backend_tasks.discard(task)
@@ -721,14 +756,6 @@ class ProbeService:
         if heartbeat is not None and heartbeat is not caller:
             heartbeat.cancel()
             await asyncio.gather(heartbeat, return_exceptions=True)
-        if self._backend_modify_tasks:
-            await asyncio.gather(
-                *tuple(self._backend_modify_tasks), return_exceptions=True
-            )
-        try:
-            await asyncio.to_thread(self._backend.close)
-        except Exception as error:
-            first_error = error
         if runner is not None:
             try:
                 await runner.cleanup()
@@ -737,16 +764,14 @@ class ProbeService:
                     first_error = error
         if self._backend_tasks:
             await asyncio.gather(*tuple(self._backend_tasks), return_exceptions=True)
-        if endpoint is not None:
-            try:
-                current = json.loads(endpoint.record_path.read_text(encoding="utf-8"))
-                if current.get("leaseId") == endpoint.lease_id:
-                    endpoint.record_path.unlink()
-            except (FileNotFoundError, OSError, json.JSONDecodeError):
-                pass
+        try:
+            await asyncio.to_thread(self._backend.close)
+        except Exception as error:
+            if first_error is None:
+                first_error = error
         if lease is not None:
             try:
-                lease.release()
+                await asyncio.to_thread(lease.release)
             except Exception as error:
                 if first_error is None:
                     first_error = error
@@ -755,5 +780,12 @@ class ProbeService:
         self._runner = None
         self._lease = None
         self._endpoint = None
+        if endpoint is not None:
+            try:
+                current = json.loads(endpoint.record_path.read_text(encoding="utf-8"))
+                if current.get("leaseId") == endpoint.lease_id:
+                    endpoint.record_path.unlink()
+            except (FileNotFoundError, OSError, json.JSONDecodeError):
+                pass
         if first_error is not None:
             raise first_error

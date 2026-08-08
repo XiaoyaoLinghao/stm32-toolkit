@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import argparse
 import sys
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Annotated, Literal
@@ -10,11 +11,29 @@ from urllib.parse import urlsplit
 from urllib.request import url2pathname
 
 from mcp.server.fastmcp import Context, FastMCP
-from pydantic import Field
+from pydantic import Field, StrictBool
 
 from stm32_toolkit.context import build_project_context
 from stm32_toolkit.detection import detect_project
 from stm32_toolkit.doctor import run_doctor
+from stm32_toolkit.hardware_workflows import (
+    FaultWorkflowRequest,
+    FlashWorkflowRequest,
+    HandoffBeginWorkflowRequest,
+    HandoffEndWorkflowRequest,
+    ProbeListWorkflowRequest,
+    RegisterReadWorkflowRequest,
+    VariableReadWorkflowRequest,
+    VariableSampleWorkflowRequest,
+    fault_workflow,
+    flash_workflow,
+    handoff_begin_workflow,
+    handoff_end_workflow,
+    probe_list_workflow,
+    register_read_workflow,
+    variable_read_workflow,
+    variable_sample_workflow,
+)
 from stm32_toolkit.identity import canonical_project_root, new_session_id
 from stm32_toolkit.paths import require_safe_session_id
 from stm32_toolkit.result import OperationResult
@@ -29,10 +48,17 @@ from stm32_toolkit.workflows import (
 _SERVER_NAME = "STM32 Toolkit"
 _SERVER_INSTRUCTIONS = (
     "This server is permanently bound to one project root and exposes "
-    "read-only Keil inspection and planning plus explicitly authorized "
-    "conversion, configuration, and build operations."
+    "read-only inspection, planning, probe discovery, and observation plus "
+    "explicitly authorized conversion, configuration, build, flash, and "
+    "debug handoff operations."
 )
 _CLIENT_ROOTS_TIMEOUT_SECONDS = 5.0
+_DIGEST_PATTERN = r"^[0-9a-f]{64}$"
+_PROBE_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+
+ProbeId = Annotated[str, Field(pattern=_PROBE_PATTERN)]
+Digest = Annotated[str, Field(pattern=_DIGEST_PATTERN)]
+Items = Annotated[list[str], Field(min_length=1, max_length=256)]
 
 
 @dataclass(frozen=True)
@@ -264,6 +290,241 @@ async def tool_build_for_request(
     return tool_build(runtime, preset, clean, timeout_seconds, authorized)
 
 
+async def _hardware_for_request(
+    runtime: ServerRuntime,
+    context: Context | None,
+    operation: str,
+    request: object,
+    workflow: Callable[[object], Awaitable[OperationResult[object]]],
+) -> dict[str, object]:
+    """Run one project-bound hardware workflow after validating client roots."""
+    failure = await _client_roots_failure(runtime, context, operation)
+    if failure is not None:
+        return failure
+    try:
+        result = await workflow(request)
+        if not isinstance(result, OperationResult):
+            raise TypeError("hardware workflow returned an invalid result")
+        return result.to_dict()
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        return OperationResult.failure(
+            operation,
+            "HARDWARE_INTERNAL_ERROR",
+            "Hardware workflow failed",
+            {},
+        ).to_dict()
+
+
+async def tool_probe_list_for_request(
+    runtime: ServerRuntime, context: Context | None
+) -> dict[str, object]:
+    return await _hardware_for_request(
+        runtime,
+        context,
+        "stm32_probe_list",
+        ProbeListWorkflowRequest(runtime.project_root, runtime.data_root, runtime.session_id),
+        probe_list_workflow,
+    )
+
+
+def _authorization_failure(operation: str) -> dict[str, object]:
+    return OperationResult.failure(
+        operation,
+        "AUTHORIZATION_REQUIRED",
+        "Explicit hardware authorization is required",
+        {},
+    ).to_dict()
+
+
+async def tool_flash_for_request(
+    runtime: ServerRuntime,
+    context: Context | None,
+    probe_id: str,
+    expected_build_id: str,
+    expected_elf_sha256: str,
+    authorized: object = False,
+) -> dict[str, object]:
+    operation = "stm32_flash"
+    failure = await _client_roots_failure(runtime, context, operation)
+    if failure is not None:
+        return failure
+    if authorized is not True:
+        return _authorization_failure(operation)
+    return await _hardware_for_request(
+        runtime,
+        None,
+        operation,
+        FlashWorkflowRequest(
+            runtime.project_root,
+            runtime.data_root,
+            runtime.session_id,
+            probe_id,
+            expected_build_id,
+            expected_elf_sha256,
+            True,
+        ),
+        flash_workflow,
+    )
+
+
+async def tool_handoff_begin_for_request(
+    runtime: ServerRuntime,
+    context: Context | None,
+    probe_id: str,
+    expected_build_id: str,
+    expected_elf_sha256: str,
+    authorized: object = False,
+    previous_watch_selection: list[str] | tuple[str, ...] = (),
+) -> dict[str, object]:
+    operation = "stm32_debug_handoff_begin"
+    failure = await _client_roots_failure(runtime, context, operation)
+    if failure is not None:
+        return failure
+    if authorized is not True:
+        return _authorization_failure(operation)
+    return await _hardware_for_request(
+        runtime,
+        None,
+        operation,
+        HandoffBeginWorkflowRequest(
+            runtime.project_root,
+            runtime.data_root,
+            runtime.session_id,
+            probe_id,
+            expected_build_id,
+            expected_elf_sha256,
+            True,
+            tuple(previous_watch_selection),
+        ),
+        handoff_begin_workflow,
+    )
+
+
+async def tool_handoff_end_for_request(
+    runtime: ServerRuntime,
+    context: Context | None,
+    probe_id: str,
+    ticket: str,
+) -> dict[str, object]:
+    return await _hardware_for_request(
+        runtime,
+        context,
+        "stm32_debug_handoff_end",
+        HandoffEndWorkflowRequest(
+            runtime.project_root, runtime.data_root, runtime.session_id, probe_id, ticket
+        ),
+        handoff_end_workflow,
+    )
+
+
+async def tool_variable_read_for_request(
+    runtime: ServerRuntime,
+    context: Context | None,
+    probe_id: str,
+    expected_build_id: str,
+    expected_elf_sha256: str,
+    expressions: list[str] | tuple[str, ...],
+) -> dict[str, object]:
+    return await _hardware_for_request(
+        runtime,
+        context,
+        "stm32_variable_read",
+        VariableReadWorkflowRequest(
+            runtime.project_root,
+            runtime.data_root,
+            runtime.session_id,
+            probe_id,
+            expected_build_id,
+            expected_elf_sha256,
+            tuple(expressions),
+        ),
+        variable_read_workflow,
+    )
+
+
+async def tool_variable_sample_for_request(
+    runtime: ServerRuntime,
+    context: Context | None,
+    probe_id: str,
+    expected_build_id: str,
+    expected_elf_sha256: str,
+    expressions: list[str] | tuple[str, ...],
+    interval_ms: int,
+    count: int | None = None,
+    duration_ms: int | None = None,
+) -> dict[str, object]:
+    return await _hardware_for_request(
+        runtime,
+        context,
+        "stm32_variable_sample",
+        VariableSampleWorkflowRequest(
+            runtime.project_root,
+            runtime.data_root,
+            runtime.session_id,
+            probe_id,
+            expected_build_id,
+            expected_elf_sha256,
+            tuple(expressions),
+            interval_ms,
+            count,
+            duration_ms,
+        ),
+        variable_sample_workflow,
+    )
+
+
+async def tool_register_read_for_request(
+    runtime: ServerRuntime,
+    context: Context | None,
+    probe_id: str,
+    expected_build_id: str,
+    expected_elf_sha256: str,
+    paths: list[str] | tuple[str, ...],
+    acknowledge_access_risk: object = False,
+) -> dict[str, object]:
+    return await _hardware_for_request(
+        runtime,
+        context,
+        "stm32_register_read",
+        RegisterReadWorkflowRequest(
+            runtime.project_root,
+            runtime.data_root,
+            runtime.session_id,
+            probe_id,
+            expected_build_id,
+            expected_elf_sha256,
+            tuple(paths),
+            acknowledge_access_risk,
+        ),
+        register_read_workflow,
+    )
+
+
+async def tool_fault_analyze_for_request(
+    runtime: ServerRuntime,
+    context: Context | None,
+    probe_id: str,
+    expected_build_id: str,
+    expected_elf_sha256: str,
+) -> dict[str, object]:
+    return await _hardware_for_request(
+        runtime,
+        context,
+        "stm32_fault_analyze",
+        FaultWorkflowRequest(
+            runtime.project_root,
+            runtime.data_root,
+            runtime.session_id,
+            probe_id,
+            expected_build_id,
+            expected_elf_sha256,
+        ),
+        fault_workflow,
+    )
+
+
 async def _client_roots_failure(
     runtime: ServerRuntime,
     context: Context | None,
@@ -421,6 +682,128 @@ def create_server(
     ) -> dict[str, object]:
         return await tool_build_for_request(
             runtime, ctx, preset, clean, timeoutSeconds, authorized
+        )
+
+    @mcp.tool(name="stm32_probe_list")
+    async def stm32_probe_list(ctx: Context) -> dict[str, object]:
+        return await tool_probe_list_for_request(runtime, ctx)
+
+    @mcp.tool(name="stm32_flash")
+    async def stm32_flash(
+        ctx: Context,
+        probeId: ProbeId,
+        expectedBuildId: Digest,
+        expectedElfSha256: Digest,
+        authorized: StrictBool = False,
+    ) -> dict[str, object]:
+        return await tool_flash_for_request(
+            runtime,
+            ctx,
+            probeId,
+            expectedBuildId,
+            expectedElfSha256,
+            authorized,
+        )
+
+    @mcp.tool(name="stm32_debug_handoff_begin")
+    async def stm32_debug_handoff_begin(
+        ctx: Context,
+        probeId: ProbeId,
+        expectedBuildId: Digest,
+        expectedElfSha256: Digest,
+        authorized: StrictBool = False,
+        previousWatchSelection: Annotated[list[str], Field(max_length=256)] = [],
+    ) -> dict[str, object]:
+        return await tool_handoff_begin_for_request(
+            runtime,
+            ctx,
+            probeId,
+            expectedBuildId,
+            expectedElfSha256,
+            authorized,
+            previousWatchSelection,
+        )
+
+    @mcp.tool(name="stm32_debug_handoff_end")
+    async def stm32_debug_handoff_end(
+        ctx: Context,
+        probeId: ProbeId,
+        ticket: Digest,
+    ) -> dict[str, object]:
+        return await tool_handoff_end_for_request(runtime, ctx, probeId, ticket)
+
+    @mcp.tool(name="stm32_variable_read")
+    async def stm32_variable_read(
+        ctx: Context,
+        probeId: ProbeId,
+        expectedBuildId: Digest,
+        expectedElfSha256: Digest,
+        expressions: Items,
+    ) -> dict[str, object]:
+        return await tool_variable_read_for_request(
+            runtime,
+            ctx,
+            probeId,
+            expectedBuildId,
+            expectedElfSha256,
+            expressions,
+        )
+
+    @mcp.tool(name="stm32_variable_sample")
+    async def stm32_variable_sample(
+        ctx: Context,
+        probeId: ProbeId,
+        expectedBuildId: Digest,
+        expectedElfSha256: Digest,
+        expressions: Items,
+        intervalMs: Annotated[int, Field(ge=1, le=3_600_000)],
+        count: Annotated[int | None, Field(ge=1, le=10_000)] = None,
+        durationMs: Annotated[int | None, Field(ge=1, le=3_600_000)] = None,
+    ) -> dict[str, object]:
+        return await tool_variable_sample_for_request(
+            runtime,
+            ctx,
+            probeId,
+            expectedBuildId,
+            expectedElfSha256,
+            expressions,
+            intervalMs,
+            count,
+            durationMs,
+        )
+
+    @mcp.tool(name="stm32_register_read")
+    async def stm32_register_read(
+        ctx: Context,
+        probeId: ProbeId,
+        expectedBuildId: Digest,
+        expectedElfSha256: Digest,
+        paths: Items,
+        acknowledgeAccessRisk: StrictBool = False,
+    ) -> dict[str, object]:
+        return await tool_register_read_for_request(
+            runtime,
+            ctx,
+            probeId,
+            expectedBuildId,
+            expectedElfSha256,
+            paths,
+            acknowledgeAccessRisk,
+        )
+
+    @mcp.tool(name="stm32_fault_analyze")
+    async def stm32_fault_analyze(
+        ctx: Context,
+        probeId: ProbeId,
+        expectedBuildId: Digest,
+        expectedElfSha256: Digest,
+    ) -> dict[str, object]:
+        return await tool_fault_analyze_for_request(
+            runtime,
+            ctx,
+            probeId,
+            expectedBuildId,
+            expectedElfSha256,
         )
 
     return mcp

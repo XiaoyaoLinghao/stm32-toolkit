@@ -15,6 +15,7 @@ from pathlib import Path
 import pytest
 from aiohttp import web
 
+from stm32_toolkit import __version__
 from stm32_toolkit.probe.client import ProbeClient, ProbeClientError
 from stm32_toolkit.probe.lease import (
     ProcessIdentity,
@@ -142,7 +143,7 @@ def test_service_binds_loopback_dynamic_port_and_publishes_private_endpoint(tmp_
             assert endpoint.host == "127.0.0.1"
             assert 0 < endpoint.port < 65536
             assert endpoint.protocol == "stm32-toolkit-probe/1"
-            assert endpoint.toolkit_version == "0.3.0"
+            assert endpoint.toolkit_version == __version__
             assert endpoint.workspace_id == "workspace-a"
             assert endpoint.session_id == "session-a"
             assert endpoint.lease_id.startswith("lease-")
@@ -814,7 +815,7 @@ def test_client_lists_attaches_and_reads_without_halting(tmp_path: Path):
             "PROBE_LEASE_LOST",
         ),
         (
-            lambda endpoint: endpoint.with_toolkit_version("0.4.0"),
+            lambda endpoint: endpoint.with_toolkit_version("0.5.0"),
             "PROBE_TOOLKIT_INCOMPATIBLE",
         ),
     ],
@@ -1225,7 +1226,7 @@ def test_cancelled_queued_flash_never_dispatches_later(tmp_path: Path):
             assert await asyncio.to_thread(entered.wait, 2)
             request = ProbeRequest(
                 protocol="stm32-toolkit-probe/1",
-                toolkit_version="0.3.0",
+                toolkit_version=__version__,
                 request_id="request-flash",
                 workspace_id="workspace-a",
                 session_id="session-a",
@@ -1498,31 +1499,39 @@ def test_data_root_parent_redirect_is_rejected_before_session_creation(
     assert not (outside / "plugin-data").exists()
 
 
-def test_stop_interrupts_a_blocked_backend_read_without_external_release(tmp_path: Path):
+def test_stop_rejects_new_requests_and_waits_for_entered_observe_before_close(
+    tmp_path: Path,
+):
     async def scenario():
         backend = fake_backend()
         service = make_service(tmp_path, backend=backend)
         endpoint = await service.start()
         client = ProbeClient(endpoint)
+        rejected = ProbeClient(endpoint)
         entered = __import__("threading").Event()
-        never_released_by_test = __import__("threading").Event()
+        release = __import__("threading").Event()
         await client.attach("probe-a", "STM32F429ZITx")
-        backend.block_next_read(entered=entered, release=never_released_by_test)
+        backend.block_next_read(entered=entered, release=release)
         request = asyncio.create_task(client.read_memory(0x20000000, 4))
         assert await asyncio.to_thread(entered.wait, 2)
+        stopping = asyncio.create_task(service.stop())
+        await asyncio.sleep(0.05)
 
-        await asyncio.wait_for(service.stop(), timeout=2)
+        assert not stopping.done()
+        assert backend.closed is False
+        with pytest.raises(ProbeClientError) as error:
+            await rejected.read_memory(0x20000000, 4)
+        assert error.value.code == "PROBE_SERVICE_UNAVAILABLE"
 
+        release.set()
+        assert await request == b"\x01\x02\x03\x04"
+        await asyncio.wait_for(stopping, timeout=2)
         assert backend.closed is True
-        assert request.done()
-        try:
-            await request
-        except (ProbeClientError, asyncio.CancelledError):
-            pass
-        try:
-            await client.close()
-        except ProbeClientError:
-            pass
+        assert backend.events.index(("read_memory", 0x20000000, 4)) < (
+            backend.events.index(("close",))
+        )
+        await client.close()
+        await rejected.close()
 
     run(scenario())
 
@@ -1543,6 +1552,51 @@ def test_service_refreshes_lease_heartbeat_until_shutdown(tmp_path: Path):
             assert endpoint.record_path.exists()
         finally:
             await service.stop()
+
+    run(scenario())
+
+
+def test_stop_waits_for_entered_native_heartbeat_before_backend_close(
+    tmp_path: Path,
+):
+    async def scenario():
+        backend = fake_backend()
+        service = make_service(
+            tmp_path, backend=backend, heartbeat_interval_seconds=0.01
+        )
+        endpoint = await service.start()
+        lease = service._lease
+        assert lease is not None
+        entered = threading.Event()
+        release = threading.Event()
+        original_heartbeat = lease.heartbeat
+
+        def blocked_heartbeat(*args, **kwargs):
+            entered.set()
+            release.wait(5)
+            return original_heartbeat(*args, **kwargs)
+
+        lease.heartbeat = blocked_heartbeat  # type: ignore[method-assign]
+        assert await asyncio.to_thread(entered.wait, 2)
+        stopping = asyncio.create_task(service.stop())
+        await asyncio.sleep(0.05)
+        try:
+            assert not stopping.done()
+            assert backend.closed is False
+        finally:
+            release.set()
+        await asyncio.wait_for(stopping, 2)
+        assert backend.closed is True
+        record = json.loads(
+            lease_manager(tmp_path / "plugin-data")
+            .record_path("probe-a")
+            .read_text(encoding="utf-8")
+        )
+        assert record == {
+            "schemaVersion": 1,
+            "state": "released",
+            "leaseId": endpoint.lease_id,
+        }
 
     run(scenario())
 
