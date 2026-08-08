@@ -22,6 +22,7 @@ from stm32_toolkit.build.identity import (
 )
 from stm32_toolkit.build.runner import build_result_document
 from stm32_toolkit.debug.dwarf import DwarfCatalog
+from stm32_toolkit.debug import read as read_mod
 from stm32_toolkit.debug.model import DebugFirmwareBinding, MemoryRegionBinding
 from stm32_toolkit.debug.read import (
     RegisterReadRequest,
@@ -549,3 +550,22 @@ def test_invalid_register_request_shapes(debug_env: DebugEnv) -> None:
     )
     for request in invalid:
         assert asyncio.run(read_registers(request, client)).code == "DEBUG_REQUEST_INVALID"
+
+
+def test_debug_read_report_constructor_failures_are_stable(
+    debug_env: DebugEnv, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def invalid_report(*args: object, **kwargs: object) -> object:
+        raise TypeError("raw constructor detail")
+
+    monkeypatch.setattr(read_mod, "DebugReadReport", invalid_report)
+    result = asyncio.run(
+        read_variables(
+            VariableReadRequest(
+                debug_env.binding, debug_env.catalog, ("signed32",)
+            ),
+            debug_env.client(),
+        )
+    )
+    assert result.code == "DEBUG_INTERNAL_ERROR"
+    assert "raw constructor detail" not in str(result.to_dict())

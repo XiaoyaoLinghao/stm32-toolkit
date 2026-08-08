@@ -9,6 +9,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
 from stm32_toolkit.build.identity import utc_now_rfc3339
+from stm32_toolkit.probe.protocol import MAX_READ_BYTES
 from stm32_toolkit.result import OperationResult
 
 from .dwarf import DwarfCatalog
@@ -22,6 +23,12 @@ _MAX_SAMPLE_COUNT = 10_000
 _MAX_DURATION_MS = 3_600_000
 _MAX_OUTPUT_ITEMS = 20_000
 _MAX_EXPRESSIONS = 256
+_MAX_REPORT_NODES = 180_000
+_MAX_REPORT_STRING_CHARS = 3_500_000
+_SAMPLE_BASE_NODES = 14
+_ITEM_WORST_NODES = 26
+_SAMPLE_BASE_CHARS = 256
+_ITEM_BASE_CHARS = 1_024
 
 
 @dataclass(frozen=True)
@@ -92,6 +99,40 @@ def _validated(
         duration_slots,
     )
     if slots < 1 or slots * len(request.expressions) > _MAX_OUTPUT_ITEMS:
+        return None
+    try:
+        request.catalog.revalidate(request.binding)
+        per_sample_chars = _SAMPLE_BASE_CHARS
+        for expression in request.expressions:
+            try:
+                selected = request.catalog.lookup(expression)
+            except Exception:
+                # A stable item error is smaller than this conservative bound.
+                per_sample_chars += _ITEM_BASE_CHARS + len(expression)
+                continue
+            size = selected.byte_size
+            if type(size) is not int or not 1 <= size <= MAX_READ_BYTES:
+                return None
+            bits = size * 8
+            decimal_chars = math.ceil(bits * math.log10(2)) + 2
+            per_sample_chars += (
+                _ITEM_BASE_CHARS
+                + 2 * len(expression)
+                + 6 * len(selected.type.name)
+                + 2
+                + 2 * size
+                + decimal_chars
+            )
+    except Exception:
+        return None
+    worst_nodes = 1 + slots * (
+        _SAMPLE_BASE_NODES + _ITEM_WORST_NODES * len(request.expressions)
+    )
+    worst_chars = slots * per_sample_chars
+    if (
+        worst_nodes > _MAX_REPORT_NODES
+        or worst_chars > _MAX_REPORT_STRING_CHARS
+    ):
         return None
     return request, applied, slots
 
@@ -185,9 +226,8 @@ async def sample_variables(
         )
     else:
         actual_rate = 0.0
-    return OperationResult.success(
-        _OPERATION,
-        SampleReport(
+    try:
+        report = SampleReport(
             typed.binding,
             typed.interval_ms,
             applied_ms,
@@ -195,8 +235,15 @@ async def sample_variables(
             float(actual_rate),
             deadline_misses,
             dropped,
-        ),
-    )
+        )
+        return OperationResult.success(_OPERATION, report)
+    except (TypeError, ValueError):
+        return OperationResult.failure(
+            _OPERATION,
+            "DEBUG_SAMPLE_FAILED",
+            "Finite sampling failed",
+            {},
+        )
 
 
 __all__ = ["SampleVariablesRequest", "sample_variables"]

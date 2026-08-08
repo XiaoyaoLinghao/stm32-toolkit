@@ -4,6 +4,7 @@ import asyncio
 
 import pytest
 
+from stm32_toolkit.debug import sampling as sampling_mod
 from stm32_toolkit.debug.sampling import SampleVariablesRequest, sample_variables
 
 from test_debug_read import Client, DebugEnv, debug_env
@@ -152,6 +153,34 @@ def test_sampling_rejects_unbounded_forged_or_oversized_requests(
     assert client.calls == []
 
 
+def test_sampling_rejects_worst_case_report_budget_before_hardware(
+    debug_env: DebugEnv,
+) -> None:
+    clock = Clock()
+
+    class ForbiddenHardware(TimedClient):
+        async def attach(self, probe_id: str, target: str) -> object:
+            self.attach_count += 1
+            raise AssertionError("oversized sample request reached hardware")
+
+    client = ForbiddenHardware(debug_env, clock)
+    result = asyncio.run(
+        sample_variables(
+            request(
+                debug_env,
+                expressions=("signed32", "unsigned32"),
+                count=10_000,
+            ),
+            client,
+            _monotonic=clock.monotonic,
+            _sleep=clock.sleep,
+        )
+    )
+    assert result.code == "DEBUG_SAMPLE_REQUEST_INVALID"
+    assert client.attach_count == 0
+    assert client.calls == []
+
+
 def test_sampling_propagates_cancellation_without_background_tasks(
     debug_env: DebugEnv, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -272,3 +301,24 @@ def test_sampling_request_is_frozen_and_has_no_raw_address(debug_env: DebugEnv) 
     assert not hasattr(sample, "address")
     with pytest.raises(Exception):
         sample.interval_ms = 10
+
+
+def test_sample_report_constructor_failures_are_stable(
+    debug_env: DebugEnv, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    clock = Clock()
+
+    def invalid_report(*args: object, **kwargs: object) -> object:
+        raise ValueError("raw constructor detail")
+
+    monkeypatch.setattr(sampling_mod, "SampleReport", invalid_report)
+    result = asyncio.run(
+        sample_variables(
+            request(debug_env, count=1),
+            TimedClient(debug_env, clock),
+            _monotonic=clock.monotonic,
+            _sleep=clock.sleep,
+        )
+    )
+    assert result.code == "DEBUG_SAMPLE_FAILED"
+    assert "raw constructor detail" not in str(result.to_dict())
