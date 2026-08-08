@@ -401,6 +401,80 @@ def test_real_supervisor_root_swap_in_backend_factory_writes_no_replacement_stat
     released_parent.rename(external_parent)
 
 
+def test_real_supervisor_pre_start_gate_blocks_post_factory_root_swap(
+    debug_env: DebugEnv, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import stm32_toolkit.monitor_observation as observation
+
+    harness = Harness(debug_env)
+    external_parent = tmp_path / "real-supervisor-pre-start-parent"
+    external_parent.mkdir()
+    displaced_parent = tmp_path / "real-supervisor-pre-start-parent-displaced"
+    released_parent = tmp_path / "real-supervisor-pre-start-parent-released"
+    data_root = external_parent / "data"
+    replacement_before: list[dict[str, tuple[str, bytes | None, int]]] = []
+    guard_closes: list[object] = []
+    original_guard_close = observation._DirectoryGuard.close
+
+    def tracked_guard_close(guard: object) -> None:
+        guard_closes.append(guard)
+        original_guard_close(guard)
+
+    monkeypatch.setattr(observation._DirectoryGuard, "close", tracked_guard_close)
+    if os.name == "nt":
+        handles = iter(range(10_000, 20_000))
+        monkeypatch.setattr(
+            observation, "_windows_directory_handle", lambda path: next(handles)
+        )
+        monkeypatch.setattr(observation, "_close_windows_handle", lambda handle: None)
+
+    class Backend:
+        def __init__(self) -> None:
+            self.close_calls = 0
+
+        def close(self) -> None:
+            self.close_calls += 1
+
+    backend = Backend()
+
+    def swapping_backend_factory() -> Backend:
+        def swap_after_factory_returns() -> None:
+            external_parent.rename(displaced_parent)
+            external_parent.mkdir()
+            replacement_before.append(_project_snapshot(external_parent))
+
+        asyncio.get_running_loop().call_soon(swap_after_factory_returns)
+        return backend
+
+    def real_supervisor_factory(
+        config: object, lease_manager: object, backend_factory: object
+    ) -> ProbeServiceSupervisor:
+        return ProbeServiceSupervisor(
+            config=config,
+            lease_manager=lease_manager,
+            backend_factory=backend_factory,
+        )
+
+    seams = replace(
+        harness.seams(),
+        backend_factory=swapping_backend_factory,
+        lease_manager_factory=ProbeLeaseManager,
+        supervisor_factory=real_supervisor_factory,
+    )
+    result = asyncio.run(
+        open_monitor_observation(request(debug_env, data_root), _seams=seams)
+    )
+    replacement_after = _project_snapshot(external_parent)
+    external_parent.rename(released_parent)
+    displaced_parent.rename(external_parent)
+
+    assert replacement_before == [{}]
+    assert replacement_after == replacement_before[0]
+    assert result.code == "MONITOR_REQUEST_INVALID"
+    assert backend.close_calls == 1
+    assert len(guard_closes) == 1
+
+
 def test_posix_directory_creation_uses_directory_descriptors(
     monkeypatch: pytest.MonkeyPatch
 ) -> None:
