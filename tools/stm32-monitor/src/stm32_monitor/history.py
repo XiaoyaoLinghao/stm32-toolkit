@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 import time
 from collections.abc import Iterator, Mapping as MappingABC, Sequence
@@ -54,6 +55,9 @@ _HISTORY_ROW_FIELDS = {
     "definition",
     "valueOrdinal",
 }
+_HISTORY_CURSOR = re.compile(
+    r"(?:[1-9][0-9]{0,18}):(?:0|[1-9][0-9]{0,18})\Z", re.ASCII
+)
 
 
 @dataclass(frozen=True)
@@ -84,7 +88,7 @@ class HistoryPage:
         if actual_count > MAX_HISTORY_VALUES:
             raise ValueError("history page exceeds the 10,000 value limit")
         if self.next_cursor is not None:
-            _cursor(self.next_cursor, require_canonical=True)
+            _cursor(self.next_cursor)
 
         previous_key: tuple[object, ...] | None = None
         previous_evidence: tuple[object, ...] | None = None
@@ -143,6 +147,14 @@ class HistoryPage:
     def values(self) -> tuple[Mapping[str, object], ...]:
         """Temporary internal compatibility view; public JSON is batch-normalized."""
         return tuple(flatten_history_page(self))
+
+    def immutable_snapshot(self) -> "HistoryPage":
+        return HistoryPage(
+            tuple(batch.immutable_snapshot() for batch in self.batches),
+            self.value_count,
+            self.next_cursor,
+            self.serialized_bytes,
+        )
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -213,20 +225,16 @@ def _encoded_history_page_size(
         candidate = size
 
 
-def _cursor(
-    value: str | None, *, require_canonical: bool = False
-) -> tuple[int, int]:
+def _cursor(value: str | None) -> tuple[int, int]:
     if value is None:
         return 0, -1
-    parts = value.split(":")
-    if len(parts) != 2 or not all(part.isdigit() for part in parts):
+    if type(value) is not str or _HISTORY_CURSOR.fullmatch(value) is None:
         raise ValueError("history cursor is invalid")
+    parts = value.split(":")
     batch_id, ordinal = int(parts[0]), int(parts[1])
     if (
-        batch_id < 1
-        or batch_id > MAX_SIGNED_INT64
+        batch_id > MAX_SIGNED_INT64
         or ordinal > MAX_SIGNED_INT64
-        or (require_canonical and value != f"{batch_id}:{ordinal}")
     ):
         raise ValueError("history cursor is invalid")
     return batch_id, ordinal
@@ -239,7 +247,6 @@ def flatten_history_page(page: HistoryPage) -> Iterator[Mapping[str, object]]:
         payload = batch.to_dict()
         values = cast(list[dict[str, object]], payload.pop("values"))
         start_ordinal = cast(int, payload.pop("startOrdinal"))
-        payload.pop("batchValueCount")
         for offset, value in enumerate(values):
             row = dict(payload)
             row.update(value)

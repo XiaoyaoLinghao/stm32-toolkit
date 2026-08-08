@@ -391,6 +391,17 @@ class SampleValue:
             "definition": None if self.definition is None else _thaw_json(self.definition),
         }
 
+    def immutable_snapshot(self) -> "SampleValue":
+        snapshot = object.__new__(SampleValue)
+        object.__setattr__(
+            snapshot, "watch", WatchItem(self.watch.kind, self.watch.selector)
+        )
+        object.__setattr__(snapshot, "status", self.status)
+        object.__setattr__(snapshot, "typed_value", self.typed_value)
+        object.__setattr__(snapshot, "code", self.code)
+        object.__setattr__(snapshot, "definition", self.definition)
+        return snapshot
+
 
 @dataclass(frozen=True)
 class SampleBatch:
@@ -532,3 +543,23 @@ class HistoryBatchSlice:
             "batchValueCount": self.batch_value_count,
             "values": [value.to_dict() for value in self.values],
         }
+
+    def immutable_snapshot(self) -> "HistoryBatchSlice":
+        values = tuple(value.immutable_snapshot() for value in self.values)
+        return HistoryBatchSlice(
+            binding=ObservationBinding.from_dict(self.binding.to_dict()),
+            group_id=UUID(str(self.group_id)),
+            group_revision=self.group_revision,
+            run_id=UUID(str(self.run_id)),
+            sequence=self.sequence,
+            scheduled_unix_ns=self.scheduled_unix_ns,
+            captured_unix_ns=self.captured_unix_ns,
+            latency_ns=self.latency_ns,
+            actual_rate_hz=self.actual_rate_hz,
+            subscriber_drops=self.subscriber_drops,
+            history_drops=self.history_drops,
+            deadline_drops=self.deadline_drops,
+            start_ordinal=self.start_ordinal,
+            batch_value_count=self.batch_value_count,
+            values=values,
+        )

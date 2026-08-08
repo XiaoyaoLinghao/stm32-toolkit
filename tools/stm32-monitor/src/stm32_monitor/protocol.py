@@ -59,7 +59,7 @@ def _snapshot_protocol_value(value: object) -> object:
         from .history import HistoryPage
 
         if value_type is HistoryPage:
-            return value
+            return HistoryPage.immutable_snapshot(value)
     payload = _known_model_payload(value)
     if payload is not None:
         _freeze_json(payload)
