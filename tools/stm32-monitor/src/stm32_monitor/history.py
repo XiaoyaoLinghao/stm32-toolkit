@@ -77,9 +77,10 @@ class HistoryPage:
     serialized_bytes: int
 
     def __post_init__(self) -> None:
-        batches = tuple(self.batches)
-        if any(type(batch) is not HistoryBatchSlice for batch in batches):
+        supplied_batches = tuple(self.batches)
+        if any(type(batch) is not HistoryBatchSlice for batch in supplied_batches):
             raise ValueError("history page batches are invalid")
+        batches = tuple(batch.immutable_snapshot() for batch in supplied_batches)
         if type(self.value_count) is not int or self.value_count < 0:
             raise ValueError("history page value count is invalid")
         actual_count = sum(len(batch.values) for batch in batches)
@@ -88,7 +89,11 @@ class HistoryPage:
         if actual_count > MAX_HISTORY_VALUES:
             raise ValueError("history page exceeds the 10,000 value limit")
         if self.next_cursor is not None:
-            _cursor(self.next_cursor)
+            _, cursor_ordinal = _cursor(self.next_cursor)
+            if not batches or cursor_ordinal != (
+                batches[-1].start_ordinal + len(batches[-1].values) - 1
+            ):
+                raise ValueError("history cursor does not identify the last returned value")
 
         previous_key: tuple[object, ...] | None = None
         previous_evidence: tuple[object, ...] | None = None
@@ -156,7 +161,7 @@ class HistoryPage:
         ):
             raise TypeError("history page snapshot type is invalid")
         return HistoryPage(
-            tuple(batch.immutable_snapshot() for batch in self.batches),
+            self.batches,
             self.value_count,
             self.next_cursor,
             self.serialized_bytes,

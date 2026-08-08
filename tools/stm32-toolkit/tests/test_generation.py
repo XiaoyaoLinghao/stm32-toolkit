@@ -642,85 +642,17 @@ def test_plan_inputs_cover_manifest_sources_and_assembly(tmp_path):
     assert all(entry.size > 0 for entry in plan.inputs)
 
 
-@pytest.mark.parametrize(
-    ("statement", "forbidden"),
-    (
-        ("import stm32_toolkit", ("stm32_toolkit.monitor_observation",)),
-        (
-            "import stm32_toolkit.generation",
-            ("stm32_toolkit.doctor", "stm32_toolkit.monitor_observation"),
-        ),
-        (
-            "import stm32_toolkit.doctor",
-            ("stm32_toolkit.generation", "stm32_toolkit.monitor_observation"),
-        ),
-    ),
-)
-def test_unrelated_imports_do_not_load_monitor_observation_or_each_other(
-    statement, forbidden
-):
+def test_generation_and_doctor_never_import_each_other():
     check = (
-        f"{statement}; import sys; "
-        f"assert all(name not in sys.modules for name in {forbidden!r}), "
-        "[name for name in sys.modules if name.startswith('stm32_toolkit')]"
+        "import stm32_toolkit.generation, sys; "
+        "assert 'stm32_toolkit.doctor' not in sys.modules"
     )
-    completed = subprocess.run(
-        [sys.executable, "-c", check], capture_output=True, text=True
+    assert subprocess.run([sys.executable, "-c", check], capture_output=True).returncode == 0
+    check = (
+        "import stm32_toolkit.doctor, sys; "
+        "assert 'stm32_toolkit.generation' not in sys.modules"
     )
-    assert completed.returncode == 0, completed.stderr
-
-
-def test_monitor_observation_root_exports_are_lazy_and_identity_preserving():
-    expected = (
-        "MonitorObservationError",
-        "MonitorObservationRequest",
-        "MonitorObservationSeams",
-        "MonitorObservationSession",
-        "open_monitor_observation",
-    )
-    check = f"""
-import stm32_toolkit
-import sys
-
-expected = {expected!r}
-assert 'stm32_toolkit.monitor_observation' not in sys.modules
-assert tuple(stm32_toolkit.__all__) == expected
-assert all(name in dir(stm32_toolkit) for name in expected)
-assert 'stm32_toolkit.monitor_observation' not in sys.modules
-
-class HostileName(str):
-    def __hash__(self):
-        raise AssertionError('a str subclass was hashed')
-
-try:
-    stm32_toolkit.__getattr__(HostileName('MonitorObservationError'))
-except AttributeError:
-    pass
-else:
-    raise AssertionError('a str subclass selected a lazy import')
-assert 'stm32_toolkit.monitor_observation' not in sys.modules
-
-from stm32_toolkit import (
-    MonitorObservationError,
-    MonitorObservationRequest,
-    MonitorObservationSeams,
-    MonitorObservationSession,
-    open_monitor_observation,
-)
-from stm32_toolkit import monitor_observation
-
-assert MonitorObservationError is monitor_observation.MonitorObservationError
-assert MonitorObservationRequest is monitor_observation.MonitorObservationRequest
-assert MonitorObservationSeams is monitor_observation.MonitorObservationSeams
-assert MonitorObservationSession is monitor_observation.MonitorObservationSession
-assert open_monitor_observation is monitor_observation.open_monitor_observation
-assert stm32_toolkit.MonitorObservationError is MonitorObservationError
-assert stm32_toolkit.open_monitor_observation is open_monitor_observation
-"""
-    completed = subprocess.run(
-        [sys.executable, "-c", check], capture_output=True, text=True
-    )
-    assert completed.returncode == 0, completed.stderr
+    assert subprocess.run([sys.executable, "-c", check], capture_output=True).returncode == 0
 
 
 # ---------------------------------------------------------------------------

@@ -470,6 +470,8 @@ def test_history_protocol_snapshot_rejects_forged_current_object_graph(
     )
     batch = _history_slice([sample])
     page = HistoryPage.create((batch,), next_cursor=None)
+    batch = page.batches[0]
+    sample = batch.values[0]
     candidate = page
 
     if forgery == "page-subclass":
@@ -618,6 +620,83 @@ def test_history_page_constructor_enforces_exact_layout_and_slice_order() -> Non
         HistoryPage(too_many, 10_240, None, 0)
     with pytest.raises(TypeError, match="history page"):
         tuple(flatten_history_page(object()))
+
+
+def test_history_page_deep_snapshots_two_slices_from_one_batch() -> None:
+    typed_value = {"nested": [{"value": 7}]}
+    definition = {"type": {"name": "uint32"}}
+    watch = WatchItem.variable("telemetry.counter")
+    sample = SampleValue(
+        watch, "OK", typed_value=typed_value, definition=definition
+    )
+    binding = _binding()
+    batch = SampleBatch(
+        binding=binding,
+        group_id=GROUP_ID,
+        group_revision=3,
+        run_id=RUN_ID,
+        sequence=4,
+        scheduled_unix_ns=1_000,
+        captured_unix_ns=1_250,
+        latency_ns=250,
+        actual_rate_hz=4.0,
+        subscriber_drops=1,
+        history_drops=2,
+        deadline_drops=3,
+        values=(sample, sample),
+    )
+    slice_fields = {
+        field: getattr(batch, field)
+        for field in batch.__dataclass_fields__
+        if field != "values"
+    }
+    first = HistoryBatchSlice(
+        **slice_fields,
+        start_ordinal=0,
+        batch_value_count=2,
+        values=batch.values[:1],
+    )
+    second = HistoryBatchSlice(
+        **slice_fields,
+        start_ordinal=1,
+        batch_value_count=2,
+        values=(sample,),
+    )
+    page = HistoryPage.create((first, second), next_cursor=None)
+    before = page.to_dict()
+
+    typed_value["nested"][0]["value"] = 99
+    definition["type"]["name"] = "tampered"
+    object.__setattr__(watch, "selector", "tampered.watch")
+    object.__setattr__(sample, "typed_value", {"tampered": True})
+    object.__setattr__(binding, "probe_id", "tampered-probe")
+    object.__setattr__(batch, "sequence", 99)
+    object.__setattr__(first, "sequence", 99)
+    object.__setattr__(second, "values", ())
+
+    assert page.to_dict() == before
+    assert page.to_dict()["batches"][0]["binding"]["probeId"] == "probe-serial-1"
+    assert page.to_dict()["batches"][0]["values"][0]["watch"] == {
+        "kind": "variable", "expression": "telemetry.counter"
+    }
+    assert page.to_dict()["batches"][0]["values"][0]["typedValue"] == {
+        "nested": [{"value": 7}]
+    }
+    assert page.to_dict()["batches"][0]["values"][0]["definition"] == {
+        "type": {"name": "uint32"}
+    }
+
+
+def test_history_page_continuation_cursor_identifies_last_returned_ordinal() -> None:
+    value = SampleValue(WatchItem.variable("counter"), "OK", typed_value=1)
+    slice_ = _history_slice([value], start_ordinal=7, batch_value_count=16)
+
+    with pytest.raises(ValueError, match="cursor"):
+        HistoryPage.create((), next_cursor="1:7")
+    with pytest.raises(ValueError, match="cursor"):
+        HistoryPage.create((slice_,), next_cursor="1:8")
+
+    assert HistoryPage.create((slice_,), next_cursor="1:7").next_cursor == "1:7"
 
 
 def test_history_page_enforces_ten_thousand_value_and_four_mib_exact_budgets() -> None:
