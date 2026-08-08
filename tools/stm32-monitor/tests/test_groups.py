@@ -478,3 +478,23 @@ def test_schema_initialization_rolls_back_every_statement_on_failure(tmp_path: P
         assert tables == []
     finally:
         connection.close()
+
+
+def test_semantically_invalid_group_rows_map_to_storage_corrupt(tmp_path: Path) -> None:
+    paths = _paths(tmp_path)
+    store = GroupStore(paths)
+    assert _create(store).ok
+    store.close()
+    connection = sqlite3.connect(paths.monitor_root / "monitor.sqlite3")
+    try:
+        connection.execute("UPDATE watch_groups SET interval_ms = 1")
+        connection.commit()
+    finally:
+        connection.close()
+
+    corrupt = GroupStore(paths)
+    try:
+        listed = corrupt.list_groups()
+        assert not listed.ok and listed.code == "MONITOR_STORAGE_CORRUPT"
+    finally:
+        corrupt.close()
