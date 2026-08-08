@@ -21,6 +21,7 @@ from .auth import (
 from .protocol import ProtocolResult
 
 MONITOR_PROTOCOL_VERSION = "stm32-toolkit-monitor/1"
+MONITOR_VERSION = "0.4.0"
 _FORBIDDEN_KEYS = {
     "workspaceid",
     "projectroot",
@@ -46,6 +47,7 @@ class MonitorEndpoint:
     session_id: str
     protocol: str = MONITOR_PROTOCOL_VERSION
     toolkit_version: str = TOOLKIT_VERSION
+    monitor_version: str = MONITOR_VERSION
 
     @property
     def url(self) -> str:
@@ -75,6 +77,7 @@ def _envelope(
     return {
         "protocol": MONITOR_PROTOCOL_VERSION,
         "toolkitVersion": TOOLKIT_VERSION,
+        "monitorVersion": MONITOR_VERSION,
         "ok": code == "OK",
         "operation": operation,
         "code": code,
@@ -130,6 +133,32 @@ def _reject_overrides(value: object) -> None:
                 pending.append(item)
         elif isinstance(current, list):
             pending.extend(current)
+
+
+def _unique_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    result: dict[str, object] = {}
+    for key, value in pairs:
+        if key in result:
+            raise _ServiceFailure(
+                "MONITOR_REQUEST_INVALID", "Monitor request is invalid"
+            )
+        result[key] = value
+    return result
+
+
+def _reject_constant(_value: str) -> object:
+    raise _ServiceFailure("MONITOR_REQUEST_INVALID", "Monitor request is invalid")
+
+
+def _query_values(request: web.Request) -> dict[str, str]:
+    result: dict[str, str] = {}
+    for key, value in request.query.items():
+        if key in result:
+            raise _ServiceFailure(
+                "MONITOR_REQUEST_INVALID", "Monitor request is invalid"
+            )
+        result[key] = value
+    return result
 
 
 @web.middleware
@@ -317,7 +346,11 @@ class MonitorService:
                 "MONITOR_REQUEST_TOO_LARGE", "Monitor request exceeds its size limit", 413
             )
         try:
-            payload = json.loads(raw.decode("utf-8"))
+            payload = json.loads(
+                raw.decode("utf-8"),
+                object_pairs_hook=_unique_object,
+                parse_constant=_reject_constant,
+            )
         except (UnicodeDecodeError, json.JSONDecodeError):
             raise _ServiceFailure(
                 "MONITOR_REQUEST_INVALID", "Monitor request is invalid"
@@ -342,7 +375,7 @@ class MonitorService:
                         )
                     payload = {}
                 resource_id = request.match_info.get("resource_id")
-                query_values = dict(request.query)
+                query_values = _query_values(request)
                 if query_values and not query:
                     raise _ServiceFailure(
                         "MONITOR_REQUEST_INVALID", "Monitor request is invalid"
@@ -401,11 +434,11 @@ class MonitorService:
             async for item in source:
                 if queue.full():
                     try:
-                        queue.get_nowait()
+                        _evicted, evicted_drops = queue.get_nowait()
                     except asyncio.QueueEmpty:
                         pass
                     else:
-                        dropped += 1
+                        dropped += evicted_drops + 1
                 queue.put_nowait((item, dropped))
                 dropped = 0
 
@@ -456,6 +489,7 @@ class MonitorService:
 
 __all__ = [
     "MONITOR_PROTOCOL_VERSION",
+    "MONITOR_VERSION",
     "MonitorEndpoint",
     "MonitorService",
 ]

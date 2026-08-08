@@ -964,3 +964,26 @@ def test_runtime_lock_rejects_hardlink_redirect_and_descriptor_replacement_witho
     replaced_lock = runtime_module._WorkspaceLock(lock_path)
     with pytest.raises(runtime_module.MonitorRuntimeError):
         replaced_lock.acquire()
+
+
+def test_default_runtime_factories_load_and_existing_lock_content_is_exact(
+    tmp_path: Path,
+) -> None:
+    import stm32_monitor.runtime as runtime_module
+
+    # The production dependency graph must remain importable without test doubles.
+    runtime = runtime_module.MonitorRuntime()
+    assert type(runtime).__name__ == "MonitorRuntime"
+
+    lock_path = tmp_path / "runtime.lock"
+    lock_path.write_bytes(b"\0")
+    lock = runtime_module._WorkspaceLock(lock_path)
+    lock.acquire()
+    lock.release()
+    lock.release()
+
+    for invalid in (b"x", b"\0\0"):
+        lock_path.write_bytes(invalid)
+        with pytest.raises(runtime_module.MonitorRuntimeError) as caught:
+            runtime_module._WorkspaceLock(lock_path).acquire()
+        assert caught.value.code == "MONITOR_RUNTIME_PATH_UNSAFE"

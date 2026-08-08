@@ -36,6 +36,7 @@ async def _serve(config: MonitorConfig, runtime: object, stdout: TextIO) -> int:
                 "accessUrl": endpoint.access_url
                 if hasattr(endpoint, "access_url")
                 else f"{endpoint.url}/#token={endpoint.token}",
+                "monitorVersion": endpoint.monitor_version,
             },
         }
         stdout.write(json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n")

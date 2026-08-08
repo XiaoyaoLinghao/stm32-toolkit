@@ -122,13 +122,55 @@ class _WorkspaceLock:
         self._handle: BinaryIO | None = None
 
     def acquire(self) -> None:
-        handle = self._path.open("a+b")
+        handle: BinaryIO | None = None
+        descriptor = -1
+        created = False
         try:
+            flags = os.O_RDWR | getattr(os, "O_BINARY", 0)
+            try:
+                descriptor = os.open(
+                    self._path, flags | os.O_CREAT | os.O_EXCL, 0o600
+                )
+                created = True
+                before = os.fstat(descriptor)
+            except FileExistsError:
+                before = os.lstat(self._path)
+                self._validate_metadata(before)
+                descriptor = os.open(
+                    self._path, flags | getattr(os, "O_NOFOLLOW", 0)
+                )
+            handle = os.fdopen(descriptor, "r+b", closefd=True)
+            descriptor = -1
+            opened = os.fstat(handle.fileno())
+            after = os.lstat(self._path)
+            expected = self._validate_metadata(before)
+            if self._validate_metadata(opened) != expected or self._validate_metadata(after) != expected:
+                raise _fail(
+                    "MONITOR_RUNTIME_PATH_UNSAFE", "Monitor runtime lock is unsafe"
+                )
             handle.seek(0, os.SEEK_END)
-            if handle.tell() == 0:
+            size = handle.tell()
+            if created and size == 0:
                 handle.write(b"\0")
                 handle.flush()
                 os.fsync(handle.fileno())
+            elif not created and size == 1:
+                handle.seek(0)
+                if handle.read(1) != b"\0":
+                    raise _fail(
+                        "MONITOR_RUNTIME_PATH_UNSAFE", "Monitor runtime lock is unsafe"
+                    )
+            else:
+                raise _fail(
+                    "MONITOR_RUNTIME_PATH_UNSAFE", "Monitor runtime lock is unsafe"
+                )
+            if (
+                self._validate_metadata(os.fstat(handle.fileno())) != expected
+                or self._validate_metadata(os.lstat(self._path)) != expected
+            ):
+                raise _fail(
+                    "MONITOR_RUNTIME_PATH_UNSAFE", "Monitor runtime lock is unsafe"
+                )
             handle.seek(0)
             if os.name == "nt":
                 import msvcrt
@@ -138,10 +180,35 @@ class _WorkspaceLock:
                 import fcntl
 
                 fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            if self._validate_metadata(os.lstat(self._path)) != expected:
+                raise _fail(
+                    "MONITOR_RUNTIME_PATH_UNSAFE", "Monitor runtime lock is unsafe"
+                )
+        except MonitorRuntimeError:
+            if handle is not None:
+                handle.close()
+            elif descriptor >= 0:
+                os.close(descriptor)
+            raise
         except (OSError, BlockingIOError):
-            handle.close()
+            if handle is not None:
+                handle.close()
+            elif descriptor >= 0:
+                os.close(descriptor)
             raise _fail("MONITOR_RUNTIME_BUSY", "A Monitor runtime already owns this workspace") from None
         self._handle = handle
+
+    def _validate_metadata(self, metadata: os.stat_result) -> tuple[int, int]:
+        if (
+            stat.S_ISLNK(metadata.st_mode)
+            or bool(getattr(metadata, "st_file_attributes", 0) & _REPARSE_POINT)
+            or not stat.S_ISREG(metadata.st_mode)
+            or getattr(metadata, "st_nlink", 1) != 1
+        ):
+            raise _fail(
+                "MONITOR_RUNTIME_PATH_UNSAFE", "Monitor runtime lock is unsafe"
+            )
+        return metadata.st_dev, metadata.st_ino
 
     def release(self) -> None:
         handle = self._handle
@@ -196,6 +263,17 @@ async def _call_close(value: object | None) -> None:
             if inspect.isawaitable(result):
                 await result
             return
+
+
+async def _close_independent(values: tuple[object | None, ...]) -> BaseException | None:
+    first_error: BaseException | None = None
+    for value in values:
+        try:
+            await _call_close(value)
+        except BaseException as error:
+            if first_error is None:
+                first_error = error
+    return first_error
 
 
 async def _call(method: Callable[..., object], *args, **kwargs) -> object:
@@ -329,6 +407,10 @@ class MonitorRuntime:
         self._lock = lock
         self._paths = paths
         self._config = config
+        groups: object | None = None
+        history: object | None = None
+        exporter: object | None = None
+        service: object | None = None
         try:
             groups = self._group_store_factory(paths)
             history = self._history_store_factory(paths)
@@ -350,6 +432,7 @@ class MonitorRuntime:
                 or not 1 <= port <= 65_535
                 or getattr(endpoint, "workspace_id", None) != paths.workspace_id
                 or getattr(endpoint, "session_id", None) != paths.session_id
+                or getattr(endpoint, "monitor_version", None) != "0.4.0"
             ):
                 raise ValueError("invalid endpoint")
             record = paths.session_root / "monitor-runtime.json"
@@ -358,6 +441,7 @@ class MonitorRuntime:
                 {
                     "protocol": MONITOR_PROTOCOL_VERSION,
                     "toolkitVersion": TOOLKIT_VERSION,
+                    "monitorVersion": "0.4.0",
                     "host": "127.0.0.1",
                     "port": port,
                     "pid": os.getpid(),
@@ -367,20 +451,44 @@ class MonitorRuntime:
                     "tokenSha256": hashlib.sha256(token.encode("ascii")).hexdigest(),
                 },
             )
-        except BaseException:
+        except BaseException as start_error:
+            async def cleanup_partial() -> None:
+                close_error = await _close_independent(
+                    (service, exporter, history, groups)
+                )
+                lock_error: BaseException | None = None
+                try:
+                    lock.release()
+                except BaseException as error:
+                    lock_error = error
+                if close_error is not None or lock_error is not None:
+                    raise _fail(
+                        "MONITOR_CLEANUP_FAILED", "Monitor runtime cleanup failed"
+                    )
+
+            cleanup = asyncio.create_task(
+                cleanup_partial(), name="stm32-monitor-partial-start-cleanup"
+            )
+            cleanup_error: BaseException | None = None
+            cleanup_cancellation: asyncio.CancelledError | None = None
             try:
-                if "service" in locals():
-                    await _call_close(service)
-                if "exporter" in locals():
-                    await _call_close(exporter)
-                if "history" in locals():
-                    await _call_close(history)
-                if "groups" in locals():
-                    await _call_close(groups)
-            finally:
-                lock.release()
-                self._lock = None
-            raise
+                cleanup_cancellation = await _await_owned(cleanup)
+            except BaseException as error:
+                cleanup_error = error
+            self._lock = None
+            self._paths = None
+            self._config = None
+            if cleanup_error is not None:
+                if not isinstance(cleanup_error, Exception):
+                    raise cleanup_error
+                raise _fail(
+                    "MONITOR_CLEANUP_FAILED", "Monitor runtime cleanup failed"
+                ) from None
+            if isinstance(start_error, asyncio.CancelledError):
+                raise start_error
+            if cleanup_cancellation is not None:
+                raise cleanup_cancellation
+            raise start_error
         self._group_store = groups
         self._history_store = history
         self._exporter = exporter
@@ -477,7 +585,15 @@ class MonitorRuntime:
                     request = self._probe_request
                     if request is None:
                         return failure(operation, "MONITOR_REQUEST_INVALID", "No prior probe request exists")
-                    await self._release_probe()
+                    release_error = await self._release_probe()
+                    if release_error is not None:
+                        if not isinstance(release_error, Exception):
+                            raise release_error
+                        return failure(
+                            operation,
+                            "MONITOR_CLEANUP_FAILED",
+                            "Monitor probe cleanup failed",
+                        )
                 result = await self._connect_probe(
                     operation, config, request, ProtocolResult, failure, success
                 )
@@ -486,7 +602,15 @@ class MonitorRuntime:
                 return result
             if operation == "monitor.probe.release":
                 _exact(payload, set())
-                await self._release_probe()
+                release_error = await self._release_probe()
+                if release_error is not None:
+                    if not isinstance(release_error, Exception):
+                        raise release_error
+                    return failure(
+                        operation,
+                        "MONITOR_CLEANUP_FAILED",
+                        "Monitor probe cleanup failed",
+                    )
                 return success(operation, {"released": True})
             if operation == "monitor.sampling.start":
                 _exact(payload, {"groupId", "expectedRevision"})
@@ -572,12 +696,11 @@ class MonitorRuntime:
         binding = getattr(observation, "binding", None)
         return success(operation, binding.to_dict() if hasattr(binding, "to_dict") else {"connected": True})
 
-    async def _release_probe(self) -> None:
+    async def _release_probe(self) -> BaseException | None:
         sampler, observation = self._sampler, self._observation
         self._sampler = None
         self._observation = None
-        await _call_close(sampler)
-        await _call_close(observation)
+        return await _close_independent((sampler, observation))
 
     async def live_subscribe(self) -> AsyncIterator[dict[str, object]]:
         sampler = self._sampler
