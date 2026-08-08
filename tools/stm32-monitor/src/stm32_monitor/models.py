@@ -392,15 +392,15 @@ class SampleValue:
         }
 
     def immutable_snapshot(self) -> "SampleValue":
-        snapshot = object.__new__(SampleValue)
-        object.__setattr__(
-            snapshot, "watch", WatchItem(self.watch.kind, self.watch.selector)
+        if type(self) is not SampleValue or type(self.watch) is not WatchItem:
+            raise TypeError("sample value snapshot type is invalid")
+        return SampleValue(
+            WatchItem(self.watch.kind, self.watch.selector),
+            self.status,
+            typed_value=self.typed_value,
+            code=self.code,
+            definition=self.definition,
         )
-        object.__setattr__(snapshot, "status", self.status)
-        object.__setattr__(snapshot, "typed_value", self.typed_value)
-        object.__setattr__(snapshot, "code", self.code)
-        object.__setattr__(snapshot, "definition", self.definition)
-        return snapshot
 
 
 @dataclass(frozen=True)
@@ -545,6 +545,15 @@ class HistoryBatchSlice:
         }
 
     def immutable_snapshot(self) -> "HistoryBatchSlice":
+        if (
+            type(self) is not HistoryBatchSlice
+            or type(self.binding) is not ObservationBinding
+            or type(self.group_id) is not UUID
+            or type(self.run_id) is not UUID
+            or type(self.values) is not tuple
+            or any(type(value) is not SampleValue for value in self.values)
+        ):
+            raise TypeError("history batch snapshot type is invalid")
         values = tuple(value.immutable_snapshot() for value in self.values)
         return HistoryBatchSlice(
             binding=ObservationBinding.from_dict(self.binding.to_dict()),

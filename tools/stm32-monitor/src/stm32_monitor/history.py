@@ -149,6 +149,12 @@ class HistoryPage:
         return tuple(flatten_history_page(self))
 
     def immutable_snapshot(self) -> "HistoryPage":
+        if (
+            type(self) is not HistoryPage
+            or type(self.batches) is not tuple
+            or any(type(batch) is not HistoryBatchSlice for batch in self.batches)
+        ):
+            raise TypeError("history page snapshot type is invalid")
         return HistoryPage(
             tuple(batch.immutable_snapshot() for batch in self.batches),
             self.value_count,
