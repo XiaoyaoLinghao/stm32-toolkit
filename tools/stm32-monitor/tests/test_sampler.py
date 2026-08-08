@@ -7,6 +7,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from uuid import UUID
 
+import pytest
+
 from stm32_monitor.models import WatchGroup, WatchItem
 from stm32_monitor.protocol import failure, success
 from stm32_monitor.sampler import MonitorSampler, SamplerState
@@ -87,24 +89,36 @@ class FakeObservation:
 class FakeGroups:
     def __init__(self, group: WatchGroup) -> None:
         self.group = group
+        self.raise_load = False
+        self.missing = False
 
     def get_group(self, group_id: UUID):
+        if self.raise_load:
+            raise RuntimeError("C:\\secret")
+        if self.missing:
+            return failure("groups.get", "MONITOR_GROUP_NOT_FOUND", "not found")
         if group_id != self.group.group_id:
             return failure("groups.get", "MONITOR_GROUP_NOT_FOUND", "not found")
         return success("groups.get", self.group)
 
 
 class FakeHistory:
-    def __init__(self, *, release: threading.Event | None = None) -> None:
+    def __init__(self, *, release: threading.Event | None = None, fail: bool = False, raise_append: bool = False) -> None:
         self.batches = []
         self.release = release
         self.entered = threading.Event()
+        self.fail = fail
+        self.raise_append = raise_append
 
     def append_batch(self, batch):
         self.entered.set()
         if self.release is not None:
             assert self.release.wait(timeout=5)
+        if self.raise_append:
+            raise RuntimeError("C:\\secret")
         self.batches.append(batch)
+        if self.fail:
+            return failure("history.append", "MONITOR_STORAGE_INVALID", "failed")
         return success("history.append", {"stored": True})
 
 
@@ -115,7 +129,7 @@ def _group(*, revision: int = 1, interval_ms: int = 100, items=None) -> WatchGro
         "Core",
         "",
         interval_ms,
-        tuple(items or (WatchItem.variable("counter"),)),
+        tuple(items if items is not None else (WatchItem.variable("counter"),)),
         revision,
         now,
         now,
@@ -124,6 +138,19 @@ def _group(*, revision: int = 1, interval_ms: int = 100, items=None) -> WatchGro
 
 async def _next(stream, timeout: float = 2.0):
     return await asyncio.wait_for(anext(stream), timeout)
+
+
+def test_constructor_rejects_invalid_stores_and_private_queue_limits(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    observation = FakeObservation(_binding(project))
+    with pytest.raises(TypeError, match="stores"):
+        MonitorSampler(observation, object(), object())
+    for value in (True, 0, 129):
+        with pytest.raises(ValueError, match="limits"):
+            MonitorSampler(observation, FakeGroups(_group()), FakeHistory(), _history_queue_batches=value)
+    with pytest.raises(ValueError, match="limits"):
+        MonitorSampler(observation, FakeGroups(_group()), FakeHistory(), _history_queue_bytes=8 * 1024 * 1024 + 1)
 
 
 def test_start_binds_exact_group_revision_and_emits_immutable_batch(tmp_path: Path) -> None:
@@ -165,6 +192,54 @@ def test_start_rejects_stale_revision_missing_group_and_non_integer_revision(tmp
             assert missing.code == "MONITOR_GROUP_NOT_FOUND"
             assert sampler.state is SamplerState.IDLE
         finally:
+            await sampler.close()
+
+    asyncio.run(scenario())
+
+
+def test_start_rejects_load_failure_empty_group_active_run_and_closed_sampler(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        project = tmp_path / "project"
+        project.mkdir()
+        groups = FakeGroups(_group())
+        sampler = MonitorSampler(FakeObservation(_binding(project)), groups, FakeHistory())
+        groups.raise_load = True
+        failed = await sampler.start(GROUP_ID, expected_revision=1)
+        assert failed.code == "MONITOR_STORAGE_INVALID"
+
+        groups.raise_load = False
+        groups.group = _group(items=())
+        empty = await sampler.start(GROUP_ID, expected_revision=1)
+        assert empty.code == "MONITOR_REQUEST_INVALID"
+
+        groups.group = _group()
+        started = await sampler.start(GROUP_ID, expected_revision=1)
+        active = await sampler.start(GROUP_ID, expected_revision=1)
+        assert started.ok and active.code == "MONITOR_GROUP_CONFLICT"
+        await sampler.close()
+        closed = await sampler.start(GROUP_ID, expected_revision=1)
+        assert closed.code == "MONITOR_REQUEST_INVALID"
+
+    asyncio.run(scenario())
+
+
+def test_duplicate_watch_inputs_are_deduplicated_defensively(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        project = tmp_path / "project"
+        project.mkdir()
+        group = _group(items=(WatchItem.variable("counter"),))
+        object.__setattr__(group, "items", (WatchItem.variable("counter"), WatchItem.variable("counter")))
+        observation = FakeObservation(_binding(project))
+        sampler = MonitorSampler(observation, FakeGroups(group), FakeHistory())
+        stream = sampler.subscribe()
+        pending = asyncio.create_task(_next(stream))
+        result = await sampler.start(GROUP_ID, expected_revision=1)
+        batch = await pending
+        try:
+            assert result.ok
+            assert len(batch.values) == 1
+        finally:
+            await stream.aclose()
             await sampler.close()
 
     asyncio.run(scenario())
@@ -313,6 +388,60 @@ def test_group_revision_change_blocks_active_run(tmp_path: Path) -> None:
     asyncio.run(scenario())
 
 
+@pytest.mark.parametrize("mode", ["missing", "raise"])
+def test_group_store_loss_blocks_active_run_without_leaking_details(tmp_path: Path, mode: str) -> None:
+    async def scenario() -> None:
+        project = tmp_path / "project"
+        project.mkdir()
+        groups = FakeGroups(_group())
+        observation = FakeObservation(_binding(project))
+        sampler = MonitorSampler(observation, groups, FakeHistory())
+        await sampler.start(GROUP_ID, expected_revision=1)
+        if mode == "missing":
+            groups.missing = True
+        else:
+            groups.raise_load = True
+        deadline = time.monotonic() + 2
+        while sampler.state is not SamplerState.PAUSED_BLOCKED and time.monotonic() < deadline:
+            await asyncio.sleep(0.02)
+        try:
+            assert sampler.state is SamplerState.PAUSED_BLOCKED
+            assert sampler.blocked_code in {"MONITOR_GROUP_NOT_FOUND", "MONITOR_STORAGE_INVALID"}
+        finally:
+            await sampler.close()
+
+    asyncio.run(scenario())
+
+
+def test_probe_read_block_and_unexpected_adapter_failure_pause_whole_run(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        project = tmp_path / "project"
+        project.mkdir()
+        observation = FakeObservation(_binding(project))
+        sampler = MonitorSampler(observation, FakeGroups(_group()), FakeHistory())
+        sampler._probe.read = lambda watches: asyncio.sleep(0, result=SimpleNamespace(  # type: ignore[method-assign]
+            blocked_code="PROBE_LEASE_LOST", values=()
+        ))
+        await sampler.start(GROUP_ID, expected_revision=1)
+        deadline = time.monotonic() + 2
+        while sampler.state is not SamplerState.PAUSED_BLOCKED and time.monotonic() < deadline:
+            await asyncio.sleep(0.01)
+        assert sampler.blocked_code == "PROBE_LEASE_LOST"
+        await sampler.stop()
+
+        sampler._probe.read = lambda watches: (_ for _ in ()).throw(RuntimeError("secret"))  # type: ignore[method-assign]
+        await sampler.start(GROUP_ID, expected_revision=1)
+        deadline = time.monotonic() + 2
+        while sampler.state is not SamplerState.PAUSED_BLOCKED and time.monotonic() < deadline:
+            await asyncio.sleep(0.01)
+        try:
+            assert sampler.blocked_code == "MONITOR_PROVENANCE_CHANGED"
+        finally:
+            await sampler.close()
+
+    asyncio.run(scenario())
+
+
 def test_pause_resume_stop_and_new_start_create_distinct_runs(tmp_path: Path) -> None:
     async def scenario() -> None:
         project = tmp_path / "project"
@@ -341,6 +470,51 @@ def test_pause_resume_stop_and_new_start_create_distinct_runs(tmp_path: Path) ->
     asyncio.run(scenario())
 
 
+@pytest.mark.parametrize("raise_append", [False, True])
+def test_history_storage_failures_are_counted_without_blocking_sampling(tmp_path: Path, raise_append: bool) -> None:
+    async def scenario() -> None:
+        project = tmp_path / "project"
+        project.mkdir()
+        history = FakeHistory(fail=not raise_append, raise_append=raise_append)
+        sampler = MonitorSampler(FakeObservation(_binding(project)), FakeGroups(_group()), history)
+        stream = sampler.subscribe()
+        await sampler.start(GROUP_ID, expected_revision=1)
+        first = await _next(stream)
+        second = await _next(stream)
+        try:
+            assert first.history_drops == 0
+            assert second.history_drops >= 1
+            assert sampler.state is SamplerState.RUNNING
+        finally:
+            await stream.aclose()
+            await sampler.close()
+
+    asyncio.run(scenario())
+
+
+def test_invalid_lifecycle_calls_and_close_terminate_full_subscriber(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        project = tmp_path / "project"
+        project.mkdir()
+        sampler = MonitorSampler(FakeObservation(_binding(project)), FakeGroups(_group()), FakeHistory())
+        assert not (await sampler.pause()).ok
+        assert not (await sampler.resume()).ok
+        assert (await sampler.stop()).data == {"stopped": False}
+
+        stream = sampler.subscribe()
+        await sampler.start(GROUP_ID, expected_revision=1)
+        while sampler._subscribers and next(iter(sampler._subscribers)).qsize() < 8:
+            await asyncio.sleep(0.02)
+        await sampler.close()
+        with pytest.raises(StopAsyncIteration):
+            while True:
+                await _next(stream)
+        assert not (await sampler.stop()).ok
+        await sampler.close()
+
+    asyncio.run(scenario())
+
+
 def test_repeated_cancellation_cannot_release_close_ownership_early(tmp_path: Path) -> None:
     async def scenario() -> None:
         project = tmp_path / "project"
@@ -354,12 +528,14 @@ def test_repeated_cancellation_cannot_release_close_ownership_early(tmp_path: Pa
         closing = asyncio.create_task(sampler.close())
         await asyncio.sleep(0)
         closing.cancel()
+        await asyncio.sleep(0.05)
+        assert not closing.done()
+        assert sampler.state is not SamplerState.CLOSED
+        release.set()
         try:
             await closing
         except asyncio.CancelledError:
             pass
-        assert sampler.state is not SamplerState.CLOSED
-        release.set()
         await sampler.close()
         assert sampler.state is SamplerState.CLOSED
         assert not sampler.tasks
