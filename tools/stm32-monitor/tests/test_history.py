@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import base64
 import json
 import os
 import sqlite3
+import struct
 from dataclasses import replace
 from hashlib import sha256
 from pathlib import Path
@@ -952,6 +954,62 @@ def test_history_cursor_is_bounded_opaque_and_rejects_legacy_malformed_and_tampe
             assert invalid.code == "MONITOR_HISTORY_QUERY_INVALID"
     finally:
         store.close()
+
+
+def test_history_cursor_rejects_forged_position_with_recomputed_public_checksum(
+    tmp_path: Path,
+) -> None:
+    paths = _paths(tmp_path)
+    store = HistoryStore(paths)
+    try:
+        assert store.append_batch(_batch(paths, 1, captured_ns=100)).ok
+        assert store.append_batch(_batch(paths, 2, captured_ns=200)).ok
+        query = HistoryQuery("monitor-1", 0, 1_000, limit=1)
+        first = store.query_history(query)
+        assert first.ok and first.data.next_cursor is not None
+        encoded = first.data.next_cursor.removeprefix("v1.")
+        payload = base64.urlsafe_b64decode(
+            encoded + "=" * (-len(encoded) % 4)
+        )
+        _, _, filter_digest = struct.unpack(">QQ32s", payload[:48])
+        forged_bound = struct.pack(">QQ32s", 2, 0, filter_digest)
+        public_tag = sha256(forged_bound).digest()[: len(payload) - len(forged_bound)]
+        forged = "v1." + base64.urlsafe_b64encode(
+            forged_bound + public_tag
+        ).rstrip(b"=").decode("ascii")
+
+        resumed = store.query_history(replace(query, cursor=forged))
+
+        assert not resumed.ok
+        assert resumed.code == "MONITOR_HISTORY_QUERY_INVALID"
+    finally:
+        store.close()
+
+
+def test_history_cursor_is_stable_within_store_and_invalid_after_store_restart(
+    tmp_path: Path,
+) -> None:
+    paths = _paths(tmp_path)
+    first_store = HistoryStore(paths)
+    query = HistoryQuery("monitor-1", 0, 1_000, limit=1)
+    try:
+        assert first_store.append_batch(_batch(paths, 1, captured_ns=100)).ok
+        assert first_store.append_batch(_batch(paths, 2, captured_ns=200)).ok
+        first = first_store.query_history(query)
+        repeated = first_store.query_history(query)
+        assert first.ok and first.data.next_cursor is not None
+        assert repeated.ok and repeated.data.next_cursor == first.data.next_cursor
+        cursor = first.data.next_cursor
+    finally:
+        first_store.close()
+
+    restarted_store = HistoryStore(paths)
+    try:
+        resumed = restarted_store.query_history(replace(query, cursor=cursor))
+        assert not resumed.ok
+        assert resumed.code == "MONITOR_HISTORY_QUERY_INVALID"
+    finally:
+        restarted_store.close()
 
 
 @pytest.mark.parametrize(

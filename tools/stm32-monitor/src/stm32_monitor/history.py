@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import base64
+import hmac
 import json
 import re
+import secrets
 import sqlite3
 import struct
 import time
@@ -42,7 +44,7 @@ RETENTION_STORAGE_TIMEOUT_MS = 95
 _LEGACY_HISTORY_CURSOR = re.compile(
     r"(?:[1-9][0-9]{0,18}):(?:0|[1-9][0-9]{0,18})\Z", re.ASCII
 )
-_HISTORY_CURSOR = re.compile(r"v1\.[A-Za-z0-9_-]{86}\Z", re.ASCII)
+_HISTORY_CURSOR = re.compile(r"v1\.[A-Za-z0-9_-]{107}\Z", re.ASCII)
 
 
 class _InvalidHistoryCursor(Exception):
@@ -280,31 +282,47 @@ def _filter_digest(query: HistoryQuery) -> bytes:
     return sha256(canonical).digest()
 
 
-def _encode_cursor(batch_id: int, ordinal: int, filter_digest: bytes) -> str:
+def _encode_cursor(
+    batch_id: int,
+    ordinal: int,
+    filter_digest: bytes,
+    authentication_key: bytes,
+) -> str:
     bound = struct.pack(">QQ32s", batch_id, ordinal, filter_digest)
-    payload = bound + sha256(bound).digest()[:16]
+    payload = bound + hmac.digest(authentication_key, bound, "sha256")
     return "v1." + base64.urlsafe_b64encode(payload).rstrip(b"=").decode("ascii")
 
 
-def _decode_cursor(value: str) -> tuple[int, int, bytes]:
+def _cursor_payload(value: str) -> tuple[int, int, bytes, bytes]:
     if _HISTORY_CURSOR.fullmatch(value) is None:
         raise ValueError("history cursor is invalid")
     try:
+        encoded = value.removeprefix("v1.")
         payload = base64.b64decode(
-            value.removeprefix("v1.") + "==", altchars=b"-_", validate=True
+            encoded + "=" * (-len(encoded) % 4), altchars=b"-_", validate=True
         )
-        batch_id, ordinal, filter_digest, checksum = struct.unpack(
-            ">QQ32s16s", payload
+        batch_id, ordinal, filter_digest, authentication_tag = struct.unpack(
+            ">QQ32s32s", payload
         )
     except (ValueError, struct.error):
         raise ValueError("history cursor is invalid") from None
-    bound = struct.pack(">QQ32s", batch_id, ordinal, filter_digest)
     if (
         batch_id < 1
         or batch_id > MAX_SIGNED_INT64
         or ordinal > MAX_SIGNED_INT64
-        or checksum != sha256(bound).digest()[:16]
     ):
+        raise ValueError("history cursor is invalid")
+    return batch_id, ordinal, filter_digest, authentication_tag
+
+
+def _decode_cursor(
+    value: str,
+    authentication_key: bytes,
+) -> tuple[int, int, bytes]:
+    batch_id, ordinal, filter_digest, actual_tag = _cursor_payload(value)
+    bound = struct.pack(">QQ32s", batch_id, ordinal, filter_digest)
+    expected_tag = hmac.digest(authentication_key, bound, "sha256")
+    if not hmac.compare_digest(actual_tag, expected_tag):
         raise ValueError("history cursor is invalid")
     return batch_id, ordinal, filter_digest
 
@@ -312,12 +330,15 @@ def _decode_cursor(value: str) -> tuple[int, int, bytes]:
 def _cursor(
     value: str | None,
     expected_filter_digest: bytes,
+    authentication_key: bytes,
 ) -> tuple[int, int]:
     if value is None:
         return 0, -1
     if type(value) is not str:
         raise ValueError("history cursor is invalid")
-    batch_id, ordinal, actual_filter_digest = _decode_cursor(value)
+    batch_id, ordinal, actual_filter_digest = _decode_cursor(
+        value, authentication_key
+    )
     if actual_filter_digest != expected_filter_digest:
         raise ValueError("history cursor is invalid")
     return batch_id, ordinal
@@ -327,7 +348,7 @@ def _page_cursor_position(value: str) -> tuple[int, int]:
     if _LEGACY_HISTORY_CURSOR.fullmatch(value) is not None:
         batch, ordinal = value.split(":")
         return int(batch), int(ordinal)
-    batch_id, ordinal, _ = _decode_cursor(value)
+    batch_id, ordinal, _, _ = _cursor_payload(value)
     return batch_id, ordinal
 
 
@@ -541,6 +562,7 @@ class HistoryStore:
     def __init__(self, paths: WorkspacePaths) -> None:
         self._paths = paths
         self._database = MonitorDatabase(paths)
+        self._cursor_key = secrets.token_bytes(32)
 
     def append_batch(self, batch: SampleBatch) -> ProtocolResult[dict[str, object]]:
         operation = "history.append"
@@ -602,8 +624,7 @@ class HistoryStore:
         except StorageFailure as error:
             return _storage_failure(operation, error)
 
-    @staticmethod
-    def _validate_query(query: HistoryQuery) -> tuple[int, int, bytes]:
+    def _validate_query(self, query: HistoryQuery) -> tuple[int, int, bytes]:
         if not isinstance(query, HistoryQuery):
             raise ValueError("history query is invalid")
         if (
@@ -634,7 +655,9 @@ class HistoryStore:
         if query.selector_kind is not None:
             WatchItem(query.selector_kind, cast(str, query.selector))
         filter_digest = _filter_digest(query)
-        cursor_batch, cursor_ordinal = _cursor(query.cursor, filter_digest)
+        cursor_batch, cursor_ordinal = _cursor(
+            query.cursor, filter_digest, self._cursor_key
+        )
         return cursor_batch, cursor_ordinal, filter_digest
 
     def query_history(self, query: HistoryQuery) -> ProtocolResult[HistoryPage]:
@@ -820,7 +843,9 @@ class HistoryStore:
                         or has_later_unfiltered_batch
                     )
                     candidate_cursor = (
-                        _encode_cursor(batch_id, ordinal, filter_digest)
+                        _encode_cursor(
+                            batch_id, ordinal, filter_digest, self._cursor_key
+                        )
                         if candidate_more
                         else None
                     )
@@ -847,7 +872,9 @@ class HistoryStore:
                         selected.append((batch, ordinal, [value], slice_bytes))
                     selected_batch_bytes = candidate_batch_bytes
                     selected_count += 1
-                    last_cursor = _encode_cursor(batch_id, ordinal, filter_digest)
+                    last_cursor = _encode_cursor(
+                        batch_id, ordinal, filter_digest, self._cursor_key
+                    )
                 if more:
                     break
             if not selected:
