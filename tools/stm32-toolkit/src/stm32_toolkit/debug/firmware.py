@@ -224,6 +224,25 @@ async def bind_debug_firmware(
             for region in current.model.memory.regions
             if "r" in region.attributes
         )
+        confirmed_at = utc_now_rfc3339()
+        _endpoint(typed, client)
+        try:
+            final_attachment = await client.attach(typed.probe_id, typed.target)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            raise _fail(
+                "DEBUG_TARGET_MISMATCH",
+                "Connected target changed during debug binding",
+            ) from None
+        _endpoint(typed, client)
+        try:
+            _validate_attachment(final_attachment, typed.probe_id, typed.target)
+        except Exception:
+            raise _fail(
+                "DEBUG_TARGET_MISMATCH",
+                "Connected target changed during debug binding",
+            ) from None
         binding = DebugFirmwareBinding(
             logical_project_id=str(current.model.logical_project_id),
             workspace_id=typed.workspace_id,
@@ -240,7 +259,7 @@ async def bind_debug_firmware(
             input_snapshot_sha256=str(current.identity["inputSnapshotSha256"]),
             git_head=str(current.identity["gitHead"]),
             git_dirty=bool(current.identity["gitDirty"]),
-            confirmed_at_utc=utc_now_rfc3339(),
+            confirmed_at_utc=confirmed_at,
             memory_regions=regions,
             project_root=root,
         )

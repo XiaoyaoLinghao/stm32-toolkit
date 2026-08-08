@@ -109,11 +109,14 @@ class BindingClient:
         self.after_read = None
         self.attach_error: BaseException | None = None
         self.read_error: BaseException | None = None
+        self.on_attach = None
 
     async def attach(self, probe_id: str, target: str) -> ProbeAttachmentEvidence:
         self.events.append(("attach", probe_id, target))
         if self.attach_error is not None:
             raise self.attach_error
+        if callable(self.on_attach):
+            self.on_attach(sum(event[0] == "attach" for event in self.events))
         return ProbeAttachmentEvidence(
             probe_id=probe_id,
             requested_target=target,
@@ -469,6 +472,44 @@ def test_disk_change_during_readback_is_rejected(binding_env):
     result = asyncio.run(bind_debug_firmware(request, client))
     assert result.ok is False
     assert result.code == "DEBUG_FIRMWARE_CHANGED"
+
+
+def test_successor_lease_after_last_segment_read_is_rejected(binding_env):
+    _, _, client, request = binding_env
+    client.after_read = lambda: setattr(client.endpoint, "lease_id", "lease-successor")
+    result = asyncio.run(bind_debug_firmware(request, client))
+    assert result.ok is False
+    assert result.code == "DEBUG_ENDPOINT_MISMATCH"
+
+
+def test_changed_physical_attachment_after_last_segment_read_is_rejected(binding_env):
+    _, _, client, request = binding_env
+    client.after_read = lambda: setattr(client, "resolved_target", "STM32F429ZI")
+    result = asyncio.run(bind_debug_firmware(request, client))
+    assert result.ok is False
+    assert result.code == "DEBUG_TARGET_MISMATCH"
+    assert sum(event[0] == "attach" for event in client.events) == 2
+
+
+def test_confirmation_is_captured_before_final_attach_and_endpoint_is_checked_after_await(
+    binding_env, monkeypatch
+):
+    _, _, client, request = binding_env
+
+    def confirmed() -> str:
+        client.events.append(("confirmed",))
+        return "2026-08-08T01:02:03.000004Z"
+
+    def successor_on_final_attach(call: int) -> None:
+        if call == 2:
+            assert client.events[-2] == ("confirmed",)
+            client.endpoint.lease_id = "lease-successor"
+
+    monkeypatch.setattr(firmware_mod, "utc_now_rfc3339", confirmed)
+    client.on_attach = successor_on_final_attach
+    result = asyncio.run(bind_debug_firmware(request, client))
+    assert result.ok is False
+    assert result.code == "DEBUG_ENDPOINT_MISMATCH"
 
 
 def test_flash_must_match_workspace_probe_target_and_current_firmware(binding_env):
