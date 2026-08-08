@@ -360,15 +360,17 @@ def test_history_page_stops_before_crossing_byte_limit(tmp_path: Path, monkeypat
     paths = _paths(tmp_path)
     store = HistoryStore(paths)
     try:
-        assert store.append_batch(_batch(paths, 1)).ok
-        assert store.append_batch(_batch(paths, 2)).ok
-        row_size = store._database.read(
-            lambda connection: connection.execute(
-                "SELECT payload_bytes FROM history_values ORDER BY batch_id LIMIT 1"
-            ).fetchone()[0],
-            empty=0,
+        for sequence in range(1, 5):
+            assert store.append_batch(_batch(paths, sequence)).ok
+        one_value = store.query_history(
+            HistoryQuery("monitor-1", 0, 2_000_000_000, limit=1)
         )
-        monkeypatch.setattr(history_module, "MAX_HISTORY_PAGE_BYTES", row_size + 1)
+        assert one_value.ok and one_value.data.next_cursor is not None
+        monkeypatch.setattr(
+            history_module,
+            "MAX_HISTORY_PAGE_BYTES",
+            one_value.data.serialized_bytes,
+        )
         page = store.query_history(HistoryQuery("monitor-1", 0, 2_000_000_000))
         assert page.ok and len(page.data.values) == 1 and page.data.next_cursor is not None
     finally:

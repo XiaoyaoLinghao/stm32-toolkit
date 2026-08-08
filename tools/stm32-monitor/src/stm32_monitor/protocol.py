@@ -54,19 +54,15 @@ def _known_model_payload(value: object) -> dict[str, object] | None:
 
 
 def _snapshot_protocol_value(value: object) -> object:
+    value_type = type(value)
+    if value_type.__module__ == "stm32_monitor.history" and value_type.__name__ == "HistoryPage":
+        from .history import HistoryPage
+
+        if value_type is HistoryPage:
+            return value
     payload = _known_model_payload(value)
     if payload is not None:
         _freeze_json(payload)
-        value_type = type(value)
-        if value_type.__module__ == "stm32_monitor.history" and value_type.__name__ == "HistoryPage":
-            from .history import HistoryPage
-
-            if value_type is HistoryPage:
-                rows = tuple(
-                    cast(Mapping[str, object], _freeze_json(row))
-                    for row in value.values
-                )
-                return HistoryPage(rows, value.next_cursor, value.serialized_bytes)
         return value
     if type(value) in (list, tuple):
         snapshot = tuple(_snapshot_protocol_value(item) for item in value)
@@ -76,6 +72,12 @@ def _snapshot_protocol_value(value: object) -> object:
 
 
 def _serialize_protocol_value(value: object) -> object:
+    value_type = type(value)
+    if value_type.__module__ == "stm32_monitor.history" and value_type.__name__ == "HistoryPage":
+        from .history import HistoryPage
+
+        if value_type is HistoryPage:
+            return HistoryPage.to_dict(value)
     payload = _known_model_payload(value)
     if payload is not None:
         return _thaw_json(_freeze_json(payload))

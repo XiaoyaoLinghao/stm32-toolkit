@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import math
+from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 from uuid import UUID
@@ -465,6 +466,52 @@ def test_history_page_rejects_subclasses_ordinal_gaps_count_mismatch_and_bad_cur
     })
     with pytest.raises((TypeError, ValueError), match="batch"):
         HistoryPage.create((derived,), next_cursor=None)
+
+
+def test_history_page_constructor_enforces_exact_layout_and_slice_order() -> None:
+    value = SampleValue(WatchItem.variable("counter"), "OK", typed_value=1)
+    first = _history_slice([value], start_ordinal=0, batch_value_count=3)
+    contiguous = _history_slice([value], start_ordinal=1, batch_value_count=3)
+    valid = HistoryPage.create((first, contiguous), next_cursor="1:1")
+
+    with pytest.raises(ValueError, match="batches"):
+        HistoryPage((object(),), 0, None, 0)
+    with pytest.raises(ValueError, match="value count"):
+        HistoryPage((), False, None, 0)
+    with pytest.raises(ValueError, match="serialized byte count"):
+        HistoryPage(valid.batches, valid.value_count, valid.next_cursor, False)
+    with pytest.raises(ValueError, match="inconsistent"):
+        HistoryPage(
+            valid.batches,
+            valid.value_count,
+            valid.next_cursor,
+            valid.serialized_bytes + 1,
+        )
+
+    gap = _history_slice([value], start_ordinal=2, batch_value_count=3)
+    with pytest.raises(ValueError, match="contiguous"):
+        HistoryPage.create((first, gap), next_cursor=None)
+    changed_evidence = replace(contiguous, actual_rate_hz=5.0)
+    with pytest.raises(ValueError, match="contiguous"):
+        HistoryPage.create((first, changed_evidence), next_cursor=None)
+    middle = _history_slice(
+        [value], start_ordinal=0, batch_value_count=1, sequence=5
+    )
+    with pytest.raises(ValueError, match="contiguous"):
+        HistoryPage.create((first, middle, contiguous), next_cursor=None)
+
+    too_many = tuple(
+        _history_slice(
+            [value] * 256,
+            batch_value_count=256,
+            sequence=sequence,
+        )
+        for sequence in range(40)
+    )
+    with pytest.raises(ValueError, match="10,000"):
+        HistoryPage(too_many, 10_240, None, 0)
+    with pytest.raises(TypeError, match="history page"):
+        tuple(flatten_history_page(object()))
 
 
 def test_history_page_enforces_ten_thousand_value_and_four_mib_exact_budgets() -> None:

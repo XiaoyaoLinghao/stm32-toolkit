@@ -451,3 +451,84 @@ class SampleBatch:
             "deadlineDrops": self.deadline_drops,
             "values": [value.to_dict() for value in self.values],
         }
+
+
+@dataclass(frozen=True)
+class HistoryBatchSlice:
+    binding: ObservationBinding
+    group_id: UUID
+    group_revision: int
+    run_id: UUID
+    sequence: int
+    scheduled_unix_ns: int
+    captured_unix_ns: int
+    latency_ns: int
+    actual_rate_hz: float
+    subscriber_drops: int
+    history_drops: int
+    deadline_drops: int
+    start_ordinal: int
+    batch_value_count: int
+    values: tuple[SampleValue, ...]
+
+    def __post_init__(self) -> None:
+        if type(self.binding) is not ObservationBinding:
+            raise ValueError("history batch binding is invalid")
+        if type(self.group_id) is not UUID or type(self.run_id) is not UUID:
+            raise ValueError("history batch identifiers must be UUIDs")
+        for name in (
+            "group_revision",
+            "sequence",
+            "scheduled_unix_ns",
+            "captured_unix_ns",
+            "latency_ns",
+            "subscriber_drops",
+            "history_drops",
+            "deadline_drops",
+            "start_ordinal",
+            "batch_value_count",
+        ):
+            value = getattr(self, name)
+            minimum = 1 if name in {"group_revision", "batch_value_count"} else 0
+            if type(value) is not int or not minimum <= value <= MAX_SIGNED_INT64:
+                raise ValueError(f"{name} is invalid")
+        if self.captured_unix_ns < self.scheduled_unix_ns:
+            raise ValueError("captured time precedes scheduled time")
+        if (
+            type(self.actual_rate_hz) not in (int, float)
+            or not math.isfinite(float(self.actual_rate_hz))
+            or self.actual_rate_hz < 0
+        ):
+            raise ValueError("actual rate is invalid")
+        values = tuple(self.values)
+        if not values or any(type(value) is not SampleValue for value in values):
+            raise ValueError("history batch values are invalid")
+        if self.batch_value_count > MAX_SAMPLE_VALUES:
+            raise ValueError("history batch value count exceeds the batch limit")
+        if self.start_ordinal + len(values) > self.batch_value_count:
+            raise ValueError("history batch value ordinals are not contiguous")
+        unix_ns_to_utc(self.scheduled_unix_ns)
+        unix_ns_to_utc(self.captured_unix_ns)
+        object.__setattr__(self, "actual_rate_hz", float(self.actual_rate_hz))
+        object.__setattr__(self, "values", values)
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "binding": self.binding.to_dict(),
+            "groupId": str(self.group_id),
+            "groupRevision": self.group_revision,
+            "runId": str(self.run_id),
+            "sequence": self.sequence,
+            "scheduledUnixNs": self.scheduled_unix_ns,
+            "scheduledAtUtc": unix_ns_to_utc(self.scheduled_unix_ns),
+            "capturedUnixNs": self.captured_unix_ns,
+            "capturedAtUtc": unix_ns_to_utc(self.captured_unix_ns),
+            "latencyNs": self.latency_ns,
+            "actualRateHz": self.actual_rate_hz,
+            "subscriberDrops": self.subscriber_drops,
+            "historyDrops": self.history_drops,
+            "deadlineDrops": self.deadline_drops,
+            "startOrdinal": self.start_ordinal,
+            "batchValueCount": self.batch_value_count,
+            "values": [value.to_dict() for value in self.values],
+        }
