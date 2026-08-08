@@ -13,7 +13,7 @@ import pytest
 
 from stm32_monitor.groups import GroupStore
 from stm32_monitor.models import WatchItem
-from stm32_monitor.storage import MonitorDatabase, StorageFailure
+from stm32_monitor.storage import BUSY_TIMEOUT_MS, MonitorDatabase, StorageFailure
 from stm32_toolkit.paths import WorkspacePaths
 
 
@@ -300,6 +300,71 @@ def test_try_write_is_deadline_bounded_cancels_queue_and_uses_attempt_busy_timeo
             timeout_ms=50,
         )
     database.close()
+
+
+def test_try_write_cancelled_before_invoke_skips_open_and_releases_writer(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    database = MonitorDatabase(_paths(tmp_path))
+    assert database.write(lambda connection: connection.execute("SELECT 1").fetchone()[0]) == 1
+    worker_started = threading.Event()
+    release_worker = threading.Event()
+    operation_ran = threading.Event()
+    opened = 0
+    submitted = []
+    original_submit = database._writer.executor.submit
+    original_open = database._open_write
+
+    def delayed_submit(function, *args, **kwargs):
+        def delayed():
+            worker_started.set()
+            assert release_worker.wait(timeout=5)
+            return function(*args, **kwargs)
+
+        future = original_submit(delayed)
+        submitted.append(future)
+        return future
+
+    def observed_open(*, busy_timeout_ms=BUSY_TIMEOUT_MS):
+        nonlocal opened
+        opened += 1
+        return original_open(busy_timeout_ms=busy_timeout_ms)
+
+    monkeypatch.setattr(database._writer.executor, "submit", delayed_submit)
+    monkeypatch.setattr(database, "_open_write", observed_open)
+    try:
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            attempt = executor.submit(
+                database.try_write,
+                lambda connection: operation_ran.set(),
+                timeout_ms=25,
+            )
+            assert worker_started.wait(timeout=5)
+            with pytest.raises(StorageFailure) as raised:
+                attempt.result(timeout=5)
+        assert raised.value.code == "MONITOR_STORAGE_BUSY"
+
+        monkeypatch.setattr(database._writer.executor, "submit", original_submit)
+        release_worker.set()
+        with pytest.raises(StorageFailure) as cancelled:
+            submitted[0].result(timeout=5)
+        assert cancelled.value.code == "MONITOR_STORAGE_BUSY"
+        assert not operation_ran.is_set()
+        assert opened == 0
+        assert submitted[0].done()
+        with database._admission_lock:
+            assert submitted[0] not in database._accepted
+
+        started = time.monotonic()
+        assert database.try_write(
+            lambda connection: connection.execute("SELECT 1").fetchone()[0],
+            timeout_ms=25,
+        ) == 1
+        assert time.monotonic() - started < 0.1
+    finally:
+        release_worker.set()
+        database.close()
 
 
 def test_timed_out_started_write_releases_the_shared_writer_promptly(tmp_path: Path) -> None:
