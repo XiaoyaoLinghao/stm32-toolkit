@@ -676,6 +676,46 @@ def test_ten_thousand_value_query_normalizes_and_serializes_final_page_once(
         store.close()
 
 
+def test_oversized_batch_append_is_rejected_before_mutating_readable_history(
+    tmp_path: Path,
+) -> None:
+    paths = _paths(tmp_path)
+    oversized = replace(
+        _batch(paths, 2),
+        values=tuple(
+            SampleValue(
+                WatchItem.variable(f"counter_{ordinal}"),
+                "OK",
+                typed_value={"type": "text", "value": "x" * 20_000},
+            )
+            for ordinal in range(256)
+        ),
+    )
+    assert len(_compact(oversized.to_dict())) > 4 * 1024 * 1024
+
+    store = HistoryStore(paths)
+    try:
+        first = store.append_batch(_batch(paths, 1))
+        assert first.ok and first.data["batchId"] == 1
+
+        rejected = store.append_batch(oversized)
+        assert not rejected.ok and rejected.code == "MONITOR_REQUEST_INVALID"
+
+        after_rejection = store.query_history(
+            HistoryQuery("monitor-1", 0, 2_000_000_000)
+        )
+        assert after_rejection.ok
+        assert [row["sequence"] for row in flatten_history_page(after_rejection.data)] == [1]
+
+        subsequent = store.append_batch(_batch(paths, 3))
+        assert subsequent.ok and subsequent.data["batchId"] == 2
+        final = store.query_history(HistoryQuery("monitor-1", 0, 2_000_000_000))
+        assert final.ok
+        assert [row["sequence"] for row in flatten_history_page(final.data)] == [1, 3]
+    finally:
+        store.close()
+
+
 def test_missing_history_is_empty_and_does_not_create_database(tmp_path: Path) -> None:
     paths = _paths(tmp_path)
     store = HistoryStore(paths)

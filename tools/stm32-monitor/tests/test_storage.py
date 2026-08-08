@@ -567,6 +567,78 @@ def test_persistent_wal_commit_is_visible_and_revalidated_before_return(
     ]
 
 
+def test_uncertain_persistent_wal_cannot_alias_cached_no_wal_trust(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    import stm32_monitor.storage as storage_module
+
+    paths = _paths(tmp_path)
+    main = _seed_database(paths)
+    database = MonitorDatabase(paths)
+    statements: list[str] = []
+    real_validate = database._validate
+    real_opened_identity = storage_module._opened_identity
+
+    def observed_validate(connection: sqlite3.Connection, **kwargs) -> None:
+        connection.set_trace_callback(statements.append)
+        real_validate(connection, **kwargs)
+
+    monkeypatch.setattr(database, "_validate", observed_validate)
+    writer = sqlite3.connect(main)
+    try:
+        assert database.read(
+            lambda connection: connection.execute(
+                "SELECT COUNT(*) FROM watch_groups"
+            ).fetchone()[0],
+            empty=0,
+        ) == 1
+        assert writer.execute("PRAGMA journal_mode = WAL").fetchone()[0].lower() == "wal"
+        writer.execute("PRAGMA wal_autocheckpoint = 0")
+        writer.execute(
+            "INSERT INTO watch_groups(group_id,name,name_key,description,interval_ms,revision,created_at_utc,updated_at_utc) "
+            "VALUES (?,?,?,?,?,?,?,?)",
+            (
+                "22222222-2222-4222-8222-222222222222",
+                "Uncertain WAL",
+                "uncertain wal",
+                "",
+                250,
+                1,
+                "2026-08-08T00:00:00.000000Z",
+                "2026-08-08T00:00:00.000000Z",
+            ),
+        )
+        writer.commit()
+        wal = main.with_name(main.name + "-wal")
+        assert wal.stat().st_size > 0
+
+        def uncertain_wal_identity(path: Path):
+            identity = real_opened_identity(path)
+            if path == wal:
+                return identity[0], identity[1] + 1, identity[2]
+            return identity
+
+        monkeypatch.setattr(
+            storage_module,
+            "_opened_identity",
+            uncertain_wal_identity,
+        )
+        assert database.read(
+            lambda connection: connection.execute(
+                "SELECT COUNT(*) FROM watch_groups"
+            ).fetchone()[0],
+            empty=0,
+        ) == 2
+    finally:
+        writer.close()
+        database.close()
+
+    quick_checks = [statement for statement in statements if "quick_check" in statement]
+    assert len(quick_checks) >= 2
+    assert set(quick_checks) == {"PRAGMA quick_check(1)"}
+
+
 def test_malformed_database_version_probe_maps_to_storage_corrupt(tmp_path: Path) -> None:
     paths = _paths(tmp_path)
     paths.monitor_root.mkdir(parents=True)
@@ -720,7 +792,9 @@ def test_optional_wal_fingerprint_churn_invalidates_trust_without_failing(
             return real_lstat(path)
 
         monkeypatch.setattr(os, "lstat", vanished)
-        assert database._integrity_fingerprint(files) == main_only
+        vanished_fingerprint = database._integrity_fingerprint(files)
+        assert vanished_fingerprint != main_only
+        assert vanished_fingerprint[-1] == (wal.name, -1, -1, -1, -1)
 
         def replaced(path: Path):
             metadata = real_lstat(path)
@@ -734,7 +808,9 @@ def test_optional_wal_fingerprint_churn_invalidates_trust_without_failing(
             return metadata
 
         monkeypatch.setattr(os, "lstat", replaced)
-        assert database._integrity_fingerprint(files) == main_only
+        replaced_fingerprint = database._integrity_fingerprint(files)
+        assert replaced_fingerprint != main_only
+        assert replaced_fingerprint[-1] == (wal.name, -1, -1, -1, -1)
     finally:
         database.close()
         writer.close()

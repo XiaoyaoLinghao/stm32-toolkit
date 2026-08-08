@@ -491,6 +491,8 @@ class HistoryStore:
                 separators=(",", ":"),
                 allow_nan=False,
             ).encode("utf-8")
+            if len(encoded_batch) > MAX_HISTORY_BATCH_BYTES:
+                raise ValueError("sample batch exceeds the history batch byte limit")
             batch_digest = sha256(encoded_batch).hexdigest()
             rows = tuple(_encode_history_value(value) for value in batch.values)
         except (TypeError, ValueError, OverflowError, UnicodeError, RecursionError):

@@ -17,6 +17,7 @@ SCHEMA_VERSION = 2
 BUSY_TIMEOUT_MS = 250
 MAX_DATABASE_BYTES = 512 * 1024 * 1024
 _T = TypeVar("_T")
+_UNCERTAIN_FILE_IDENTITY = (-1, -1, -1)
 
 _SCHEMA_STATEMENTS = (
     """CREATE TABLE monitor_metadata (
@@ -411,6 +412,7 @@ class MonitorDatabase:
 
     def _inspect_storage_files(self) -> dict[Path, tuple[int, int, int]]:
         identities: dict[Path, tuple[int, int, int]] = {}
+        wal_path = self.path.with_name(self.path.name + "-wal")
         for path in self._storage_files():
             try:
                 named = _identity(path)
@@ -424,17 +426,24 @@ class MonitorDatabase:
             except FileNotFoundError:
                 if path == self.path:
                     raise StorageFailure("MONITOR_STORAGE_INVALID", "monitor storage file changed during inspection")
+                if path == wal_path:
+                    identities[path] = _UNCERTAIN_FILE_IDENTITY
                 continue
             except StorageFailure:
                 if path != self.path:
                     try:
                         _identity(path)
                     except FileNotFoundError:
+                        if path == wal_path:
+                            identities[path] = _UNCERTAIN_FILE_IDENTITY
                         continue
                 raise
             except OSError as error:
                 raise StorageFailure("MONITOR_STORAGE_INVALID", "monitor storage file cannot be inspected") from error
             if named[:2] != opened[:2] or named[:2] != after[:2]:
+                if path == wal_path:
+                    identities[path] = _UNCERTAIN_FILE_IDENTITY
+                    continue
                 if path != self.path:
                     continue
                 raise StorageFailure("MONITOR_STORAGE_INVALID", "monitor storage file changed during inspection")
@@ -446,16 +455,21 @@ class MonitorDatabase:
         files: dict[Path, tuple[int, int, int]],
     ) -> tuple[tuple[str, int, int, int, int], ...]:
         fingerprint: list[tuple[str, int, int, int, int]] = []
+        wal_path = self.path.with_name(self.path.name + "-wal")
         for path, identity in sorted(files.items(), key=lambda item: item[0].name):
             # The shared-memory file is a transient coordination artifact.  The
             # main database and WAL contain the durable bytes whose changes must
             # invalidate cached integrity validation.
-            if path not in {self.path, self.path.with_name(self.path.name + "-wal")}:
+            if path not in {self.path, wal_path}:
+                continue
+            if path == wal_path and identity == _UNCERTAIN_FILE_IDENTITY:
+                fingerprint.append((path.name, -1, -1, -1, -1))
                 continue
             try:
                 metadata = os.lstat(path)
             except FileNotFoundError:
                 if path != self.path:
+                    fingerprint.append((path.name, -1, -1, -1, -1))
                     continue
                 raise StorageFailure(
                     "MONITOR_STORAGE_INVALID",
@@ -470,6 +484,7 @@ class MonitorDatabase:
                 path == self.path and metadata.st_size != identity[2]
             ):
                 if path != self.path:
+                    fingerprint.append((path.name, -1, -1, -1, -1))
                     continue
                 raise StorageFailure(
                     "MONITOR_STORAGE_INVALID",
@@ -487,6 +502,12 @@ class MonitorDatabase:
                 )
             )
         return tuple(fingerprint)
+
+    @staticmethod
+    def _fingerprint_is_certain(
+        fingerprint: tuple[tuple[str, int, int, int, int], ...],
+    ) -> bool:
+        return all(entry[1] >= 0 for entry in fingerprint)
 
     def _size(self, connection: sqlite3.Connection | None = None) -> int:
         total = 0
@@ -828,7 +849,7 @@ class MonitorDatabase:
                     identity_retries=identity_retries - 1,
                 )
             raise StorageFailure("MONITOR_STORAGE_BUSY", "monitor storage is busy")
-        if full_integrity:
+        if full_integrity and self._fingerprint_is_certain(after_fingerprint):
             with self._integrity_lock:
                 self._integrity_identity = after_fingerprint
         return after
@@ -966,6 +987,7 @@ class MonitorDatabase:
                 full_integrity
                 and opening_fingerprint == snapshot_fingerprint
                 and snapshot_fingerprint == closing_fingerprint
+                and self._fingerprint_is_certain(snapshot_fingerprint)
             ):
                 with self._integrity_lock:
                     self._integrity_identity = snapshot_fingerprint
