@@ -11,6 +11,7 @@ from uuid import UUID
 import pytest
 
 from stm32_monitor.models import (
+    LiveEvent,
     MonitorConfig,
     ObservationBinding,
     ProbeConnectRequest,
@@ -61,6 +62,26 @@ def _binding() -> ObservationBinding:
         dwarf_sha256="d" * 64,
         svd_sha256="a" * 64,
     )
+
+
+def test_live_event_is_an_immutable_bounded_discriminated_union() -> None:
+    event = LiveEvent(7, "state", {"sampling": {"state": "PAUSED"}})
+
+    assert event.to_dict() == {
+        "eventId": 7,
+        "type": "state",
+        "data": {"sampling": {"state": "PAUSED"}},
+    }
+    with pytest.raises(TypeError):
+        event.data["sampling"] = {}  # type: ignore[index]
+    for values in (
+        (0, "state", {}),
+        (1, "unknown", {}),
+        (1, "state", []),
+        (1, "sample", {"value": float("nan")}),
+    ):
+        with pytest.raises((TypeError, ValueError)):
+            LiveEvent(*values)
 
 
 def _history_slice(

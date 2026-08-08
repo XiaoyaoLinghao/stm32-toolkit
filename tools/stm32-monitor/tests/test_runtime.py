@@ -1045,7 +1045,7 @@ def test_history_export_status_and_live_dispatch_are_protocol_bounded(tmp_path: 
 
 def test_live_subscription_serializes_mapping_and_model(tmp_path: Path) -> None:
     async def scenario() -> None:
-        runtime, config, *_ = _protocol_runtime(tmp_path)
+        runtime, config, *_tail, samplers, _observations, _requests = _protocol_runtime(tmp_path)
         await runtime.start(config)
         try:
             await runtime.dispatch(
@@ -1054,12 +1054,170 @@ def test_live_subscription_serializes_mapping_and_model(tmp_path: Path) -> None:
                     "probeId": "probe-a",
                 },
             )
-            received = [item async for item in runtime.live_subscribe()]
-            assert received == [{"sequence": 1}, {"sequence": 2}]
+            stream = runtime.live_subscribe()
+            hello = await asyncio.wait_for(anext(stream), 1)
+            connected = await asyncio.wait_for(anext(stream), 1)
+            started = await runtime.dispatch(
+                "monitor.sampling.start",
+                {
+                    "groupId": "12345678-1234-5678-9234-567812345678",
+                    "expectedRevision": 1,
+                },
+            )
+            assert started.ok
+            state = await asyncio.wait_for(anext(stream), 1)
+            samples = [
+                await asyncio.wait_for(anext(stream), 1),
+                await asyncio.wait_for(anext(stream), 1),
+            ]
+            assert [hello["type"], connected["type"], state["type"]] == [
+                "hello",
+                "state",
+                "state",
+            ]
+            assert [item["data"]["batch"]["sequence"] for item in samples] == [1, 2]
+            assert [item["data"]["serviceSubscriberDrops"] for item in samples] == [0, 3]
             status = await runtime.dispatch("monitor.status", {})
             assert status.data["sampling"]["serviceDrops"] == 3
+            await stream.aclose()
         finally:
             await runtime.stop()
+
+    asyncio.run(scenario())
+
+
+def test_live_broker_emits_initial_events_replays_and_reports_gap(tmp_path: Path) -> None:
+    async def take(stream, count):
+        return [await asyncio.wait_for(anext(stream), 1) for _ in range(count)]
+
+    async def scenario() -> None:
+        runtime, config, *_ = _protocol_runtime(tmp_path)
+        await runtime.start(config)
+        try:
+            initial = runtime.live_subscribe()
+            hello, state = await take(initial, 2)
+            assert [hello["type"], state["type"]] == ["hello", "state"]
+            assert hello["data"]["stateRevision"] == state["data"]["stateRevision"]
+            assert state["data"]["status"]["sampling"]["state"] == "IDLE"
+            assert hello["eventId"] < state["eventId"]
+            await initial.aclose()
+
+            replay = runtime.live_subscribe(after_event_id=hello["eventId"])
+            assert await take(replay, 1) == [state]
+            await replay.aclose()
+
+            for _ in range(260):
+                runtime._publish_heartbeat()
+            gap_stream = runtime.live_subscribe(after_event_id=1)
+            gap_hello, gap_state = await take(gap_stream, 2)
+            assert gap_hello["type"] == "hello"
+            assert gap_state["type"] == "state"
+            assert gap_state["data"]["gap"] is True
+            assert gap_state["eventId"] > gap_hello["eventId"]
+            await gap_stream.aclose()
+        finally:
+            await runtime.stop()
+
+    asyncio.run(scenario())
+
+
+def test_live_broker_publishes_state_after_dispatch_transitions_and_sample_events(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        runtime, config, *_tail, samplers, _observations, _requests = _protocol_runtime(tmp_path)
+        await runtime.start(config)
+        try:
+            stream = runtime.live_subscribe()
+            await asyncio.wait_for(anext(stream), 1)
+            await asyncio.wait_for(anext(stream), 1)
+            connected = await runtime.dispatch("monitor.probe.connect", {"probeId": "probe-a"})
+            assert connected.ok
+            event = await asyncio.wait_for(anext(stream), 1)
+            assert event["type"] == "state"
+            assert event["data"]["status"]["probe"]["connected"] is True
+
+            sampler = samplers[0]
+            sampler.state = "RUNNING"
+            sampler._group = SimpleNamespace(
+                group_id=UUID("12345678-1234-5678-9234-567812345678"), revision=4
+            )
+            sampler._run_id = UUID("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+            sampler._sequence = 2
+            started = await runtime.dispatch(
+                "monitor.sampling.start",
+                {"groupId": str(sampler._group.group_id), "expectedRevision": 4},
+            )
+            assert started.ok
+            state = await asyncio.wait_for(anext(stream), 1)
+            assert state["data"]["status"]["sampling"]["state"] == "RUNNING"
+
+            runtime._publish_sample({"sequence": 2}, service_subscriber_drops=3)
+            sample = await asyncio.wait_for(anext(stream), 1)
+            while sample["data"].get("serviceSubscriberDrops") != 3:
+                sample = await asyncio.wait_for(anext(stream), 1)
+            assert sample["type"] == "sample"
+            assert sample["data"] == {
+                "batch": {"sequence": 2},
+                "serviceSubscriberDrops": 3,
+            }
+            assert [state["eventId"], sample["eventId"]] == sorted(
+                [state["eventId"], sample["eventId"]]
+            )
+            await stream.aclose()
+        finally:
+            await runtime.stop()
+
+    asyncio.run(scenario())
+
+
+def test_heartbeat_uses_runtime_clock_and_live_queue_eviction_is_accounted(
+    tmp_path: Path,
+) -> None:
+    from stm32_monitor.runtime import MonitorRuntime
+
+    for interval in (True, 0, 301):
+        with pytest.raises(ValueError, match="heartbeat"):
+            MonitorRuntime(heartbeat_interval_seconds=interval)
+
+    async def scenario() -> None:
+        runtime, config, *_ = _protocol_runtime(tmp_path)
+        runtime._heartbeat_interval_seconds = 0.01
+        assert [item async for item in runtime.live_subscribe()] == []
+        assert runtime._publish_state() == {}
+        for invalid in (0, -1, True):
+            with pytest.raises(ValueError):
+                await anext(runtime.live_subscribe(after_event_id=invalid))
+
+        await runtime.start(config)
+        stream = runtime.live_subscribe()
+        hello = await asyncio.wait_for(anext(stream), 1)
+        state = await asyncio.wait_for(anext(stream), 1)
+        heartbeat = await asyncio.wait_for(anext(stream), 1)
+        try:
+            assert heartbeat["type"] == "heartbeat"
+            assert heartbeat["data"]["stateRevision"] == state["data"]["stateRevision"]
+            assert heartbeat["data"]["capturedAtUtc"].endswith("Z")
+            assert hello["eventId"] < state["eventId"] < heartbeat["eventId"]
+
+            assert runtime._heartbeat_task is not None
+            runtime._heartbeat_task.cancel()
+            await asyncio.gather(runtime._heartbeat_task, return_exceptions=True)
+            runtime._heartbeat_task = None
+            queue = next(iter(runtime._live_subscribers))
+            while not queue.empty():
+                queue.get_nowait()
+            drops_before = runtime._service_drops_total
+            for _ in range(257):
+                runtime._publish_heartbeat()
+            assert runtime._service_drops_total == drops_before + 1
+            runtime.record_service_drops(2)
+            runtime.record_service_drops(0)
+            runtime.record_service_drops(True)
+            assert runtime._service_drops_total == drops_before + 3
+        finally:
+            await runtime.stop()
+            await stream.aclose()
 
     asyncio.run(scenario())
 

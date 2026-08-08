@@ -493,6 +493,30 @@ class SampleBatch:
 
 
 @dataclass(frozen=True)
+class LiveEvent:
+    event_id: int
+    kind: str
+    data: Mapping[str, object]
+
+    def __post_init__(self) -> None:
+        if type(self.event_id) is not int or not 1 <= self.event_id <= MAX_SIGNED_INT64:
+            raise ValueError("event ID is invalid")
+        if self.kind not in {"hello", "state", "sample", "heartbeat"}:
+            raise ValueError("event type is invalid")
+        frozen = _freeze_json(self.data)
+        if type(frozen) is not _MAPPING_PROXY:
+            raise TypeError("event data must be a JSON object")
+        object.__setattr__(self, "data", cast(Mapping[str, object], frozen))
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "eventId": self.event_id,
+            "type": self.kind,
+            "data": _thaw_json(self.data),
+        }
+
+
+@dataclass(frozen=True)
 class HistoryBatchSlice:
     binding: ObservationBinding
     group_id: UUID

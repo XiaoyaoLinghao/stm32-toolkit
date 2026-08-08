@@ -550,10 +550,27 @@ class MonitorService:
     async def _live(self, request: web.Request) -> web.StreamResponse:
         try:
             self._authorize(request)
-            if request.can_read_body or request.query:
+            if request.can_read_body:
                 raise _ServiceFailure(
                     "MONITOR_REQUEST_INVALID", "Monitor request is invalid"
                 )
+            query = _query_values(request)
+            if set(query) - {"afterEventId"}:
+                raise _ServiceFailure(
+                    "MONITOR_REQUEST_INVALID", "Monitor request is invalid"
+                )
+            raw_after = query.get("afterEventId")
+            after_event_id: int | None = None
+            if raw_after is not None:
+                if not raw_after.isascii() or not raw_after.isdecimal():
+                    raise _ServiceFailure(
+                        "MONITOR_REQUEST_INVALID", "Monitor request is invalid"
+                    )
+                after_event_id = int(raw_after)
+                if not 1 <= after_event_id <= (1 << 63) - 1:
+                    raise _ServiceFailure(
+                        "MONITOR_REQUEST_INVALID", "Monitor request is invalid"
+                    )
         except _ServiceFailure as error:
             return _response(
                 "monitor.live", code=error.code, message=error.message, status=error.status
@@ -564,7 +581,7 @@ class MonitorService:
 
         async def produce() -> None:
             dropped = 0
-            source = self._runtime.live_subscribe()
+            source = self._runtime.live_subscribe(after_event_id=after_event_id)
             async for item in source:
                 if queue.full():
                     try:
@@ -573,6 +590,9 @@ class MonitorService:
                         pass
                     else:
                         dropped += evicted_drops + 1
+                        recorder = getattr(self._runtime, "record_service_drops", None)
+                        if callable(recorder):
+                            recorder(1)
                 queue.put_nowait((item, dropped))
                 dropped = 0
 
@@ -581,6 +601,17 @@ class MonitorService:
                 item, dropped = await queue.get()
                 if self._send_delay_seconds:
                     await asyncio.sleep(self._send_delay_seconds)
+                if dropped:
+                    if isinstance(item, Mapping) and item.get("type") == "sample":
+                        item = dict(item)
+                        data = item.get("data")
+                        if isinstance(data, Mapping):
+                            enriched = dict(data)
+                            prior = enriched.get("serviceSubscriberDrops", 0)
+                            if type(prior) is not int or prior < 0:
+                                prior = 0
+                            enriched["serviceSubscriberDrops"] = prior + dropped
+                            item["data"] = enriched
                 await websocket.send_json(
                     _envelope(
                         "monitor.live",

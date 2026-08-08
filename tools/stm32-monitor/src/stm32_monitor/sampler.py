@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import time
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from dataclasses import replace
 from enum import Enum
 from typing import TypeVar
@@ -24,9 +24,11 @@ _T = TypeVar("_T")
 
 class SamplerState(str, Enum):
     IDLE = "IDLE"
+    STARTING = "STARTING"
     RUNNING = "RUNNING"
     PAUSED = "PAUSED"
     PAUSED_BLOCKED = "PAUSED_BLOCKED"
+    STOPPING = "STOPPING"
     CLOSED = "CLOSED"
 
 
@@ -92,6 +94,21 @@ class MonitorSampler:
         self._reset_deadline = False
         self.state = SamplerState.IDLE
         self.blocked_code: str | None = None
+        self._state_listener: Callable[[SamplerState], object] | None = None
+
+    def set_state_listener(self, listener: Callable[[SamplerState], object]) -> None:
+        if not callable(listener):
+            raise TypeError("state listener is invalid")
+        self._state_listener = listener
+
+    def _set_state(self, state: SamplerState) -> None:
+        self.state = state
+        listener = self._state_listener
+        if listener is not None:
+            try:
+                listener(state)
+            except Exception:
+                pass
 
     @property
     def tasks(self) -> tuple[asyncio.Task[None], ...]:
@@ -160,6 +177,7 @@ class MonitorSampler:
                     watches.append(watch)
             if len(watches) > 256:
                 return failure(operation, "MONITOR_GROUP_LIMIT_EXCEEDED", "active watch limit was exceeded")
+            self._set_state(SamplerState.STARTING)
             self._group = group
             self._watches = tuple(watches)
             self._run_id = uuid4()
@@ -173,7 +191,7 @@ class MonitorSampler:
             self._history_queue = asyncio.Queue(maxsize=self._history_queue_batches)
             self._history_queue_bytes = 0
             self.blocked_code = None
-            self.state = SamplerState.RUNNING
+            self._set_state(SamplerState.RUNNING)
             self._history_task = asyncio.create_task(self._history_writer(), name="stm32-monitor-history-writer")
             self._producer_task = asyncio.create_task(self._produce(), name="stm32-monitor-sampler")
             return success(
@@ -208,7 +226,7 @@ class MonitorSampler:
 
     def _block(self, code: str) -> None:
         self.blocked_code = code if isinstance(code, str) and code else "MONITOR_PROVENANCE_CHANGED"
-        self.state = SamplerState.PAUSED_BLOCKED
+        self._set_state(SamplerState.PAUSED_BLOCKED)
         if self._run_gate is not None:
             self._run_gate.clear()
 
@@ -351,7 +369,7 @@ class MonitorSampler:
         async with self._action_lock:
             if self.state is not SamplerState.RUNNING:
                 return failure(operation, self.blocked_code or "MONITOR_REQUEST_INVALID", "sampling cannot be paused")
-            self.state = SamplerState.PAUSED
+            self._set_state(SamplerState.PAUSED)
             if self._run_gate is not None:
                 self._run_gate.clear()
             return success(operation, {"paused": True})
@@ -363,7 +381,7 @@ class MonitorSampler:
                 return failure(operation, self.blocked_code or "MONITOR_PROVENANCE_CHANGED", "sampling is blocked")
             if self.state is not SamplerState.PAUSED:
                 return failure(operation, "MONITOR_REQUEST_INVALID", "sampling is not paused")
-            self.state = SamplerState.RUNNING
+            self._set_state(SamplerState.RUNNING)
             self._reset_deadline = True
             if self._run_gate is not None:
                 self._run_gate.set()
@@ -406,8 +424,9 @@ class MonitorSampler:
                 return failure(operation, "MONITOR_REQUEST_INVALID", "sampler is closed")
             if self.state is SamplerState.IDLE:
                 return success(operation, {"stopped": False})
+            self._set_state(SamplerState.STOPPING)
             await self._stop_run()
-            self.state = SamplerState.IDLE
+            self._set_state(SamplerState.IDLE)
             self.blocked_code = None
             return success(operation, {"stopped": True})
 

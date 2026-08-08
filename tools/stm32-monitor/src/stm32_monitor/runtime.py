@@ -10,6 +10,7 @@ import os
 import re
 import stat
 import unicodedata
+from collections import deque
 from collections.abc import AsyncIterator, Callable, Mapping
 from datetime import datetime, timezone
 from pathlib import Path
@@ -21,6 +22,10 @@ from stm32_toolkit.paths import WorkspacePaths
 from stm32_toolkit.project_model import load_project_model
 
 from .service import MONITOR_PROTOCOL_VERSION, MonitorEndpoint, MonitorService
+
+_LIVE_END = object()
+_REPLAY_EVENTS = 256
+_LIVE_QUEUE_EVENTS = 256
 
 _REPARSE_POINT = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
 _WINDOWS_ABSOLUTE = re.compile(r"[A-Za-z]:[\\/]")
@@ -379,6 +384,7 @@ class MonitorRuntime:
         firmware_status_factory: Callable[[Path], object] = _firmware_status,
         probe_list_factory: Callable[..., object] | None = None,
         service_factory: Callable[..., object] = MonitorService,
+        heartbeat_interval_seconds: float = 15.0,
     ) -> None:
         if group_store_factory is None:
             from .groups import GroupStore
@@ -412,6 +418,12 @@ class MonitorRuntime:
         self._probe_list_factory = probe_list_factory
         self._exporter_factory = exporter_factory
         self._service_factory = service_factory
+        if (
+            type(heartbeat_interval_seconds) not in (int, float)
+            or not 0.01 <= float(heartbeat_interval_seconds) <= 300
+        ):
+            raise ValueError("heartbeat interval is invalid")
+        self._heartbeat_interval_seconds = float(heartbeat_interval_seconds)
         self._paths: WorkspacePaths | None = None
         self._config: object | None = None
         self._lock: _WorkspaceLock | None = None
@@ -424,6 +436,12 @@ class MonitorRuntime:
         self._probe_request: object | None = None
         self._binding_epoch = 0
         self._service_drops_total = 0
+        self._event_id = 0
+        self._state_revision = 0
+        self._events: deque[object] = deque(maxlen=_REPLAY_EVENTS)
+        self._live_subscribers: set[asyncio.Queue[object]] = set()
+        self._heartbeat_task: asyncio.Task[None] | None = None
+        self._sample_task: asyncio.Task[None] | None = None
         self._endpoint: MonitorEndpoint | object | None = None
         self._runtime_record: Path | None = None
         self._cleanup_task: asyncio.Task[None] | None = None
@@ -545,7 +563,110 @@ class MonitorRuntime:
         self._endpoint = endpoint
         self._runtime_record = record
         self._closed.clear()
+        self._heartbeat_task = asyncio.create_task(
+            self._heartbeat_loop(), name="stm32-monitor-heartbeat"
+        )
         return endpoint
+
+    def _publish_event(self, kind: str, data: Mapping[str, object]) -> dict[str, object]:
+        from .models import LiveEvent
+
+        self._event_id += 1
+        event = LiveEvent(self._event_id, kind, data)
+        self._events.append(event)
+        for queue in tuple(self._live_subscribers):
+            if queue.full():
+                try:
+                    queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    pass
+                else:
+                    self._service_drops_total += 1
+            queue.put_nowait(event)
+        return event.to_dict()
+
+    def _hello_event(self) -> dict[str, object]:
+        return self._publish_event(
+            "hello",
+            {
+                "protocol": MONITOR_PROTOCOL_VERSION,
+                "toolkitVersion": TOOLKIT_VERSION,
+                "monitorVersion": "0.4.0",
+                "stateRevision": self._state_revision,
+            },
+        )
+
+    def _publish_state(
+        self, *, gap: bool = False, increment_revision: bool = True
+    ) -> dict[str, object]:
+        if self._paths is None or self._config is None:
+            return {}
+        if increment_revision:
+            self._state_revision += 1
+        return self._publish_event(
+            "state",
+            {
+                "stateRevision": self._state_revision,
+                "gap": gap,
+                "status": self._status(self._paths, self._config),
+            },
+        )
+
+    def _publish_sample(
+        self, batch: Mapping[str, object], *, service_subscriber_drops: int = 0
+    ) -> dict[str, object]:
+        return self._publish_event(
+            "sample",
+            {
+                "batch": dict(batch),
+                "serviceSubscriberDrops": service_subscriber_drops,
+            },
+        )
+
+    def _publish_heartbeat(self) -> dict[str, object]:
+        return self._publish_event(
+            "heartbeat",
+            {
+                "stateRevision": self._state_revision,
+                "capturedAtUtc": datetime.now(timezone.utc).strftime(
+                    "%Y-%m-%dT%H:%M:%S.%fZ"
+                ),
+            },
+        )
+
+    async def _heartbeat_loop(self) -> None:
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + self._heartbeat_interval_seconds
+        while self._paths is not None:
+            await asyncio.sleep(max(0.0, deadline - loop.time()))
+            if self._paths is None:
+                return
+            self._publish_heartbeat()
+            deadline += self._heartbeat_interval_seconds
+            now = loop.time()
+            if deadline <= now:
+                deadline = now + self._heartbeat_interval_seconds
+
+    def _sampler_state_changed(self, _state: object) -> None:
+        self._publish_state()
+
+    async def _forward_samples(self, sampler: object) -> None:
+        source = sampler.subscribe()
+        async for item in source:
+            drops = getattr(item, "subscriber_drops", 0)
+            drops = drops if type(drops) is int and drops > 0 else 0
+            self._service_drops_total += drops
+            if hasattr(item, "to_dict"):
+                payload = item.to_dict()
+            elif isinstance(item, Mapping):
+                payload = dict(item)
+            else:
+                continue
+            self._publish_sample(payload, service_subscriber_drops=drops)
+
+    def record_service_drops(self, count: int) -> None:
+        if type(count) is int and count > 0:
+            self._service_drops_total += count
 
     def _current_firmware(self):
         from .models import FirmwareStatus
@@ -816,11 +937,19 @@ class MonitorRuntime:
                 sampler = self._sampler
                 if sampler is None:
                     return failure(operation, "MONITOR_REQUEST_INVALID", "A probe must be connected")
-                return await _call(
+                if self._sample_task is None or self._sample_task.done():
+                    self._sample_task = asyncio.create_task(
+                        self._forward_samples(sampler),
+                        name="stm32-monitor-live-samples",
+                    )
+                result = await _call(
                     sampler.start,
                     _uuid(payload["groupId"]),
                     expected_revision=_integer(payload["expectedRevision"]),
                 )
+                if getattr(result, "ok", False) and not hasattr(sampler, "set_state_listener"):
+                    self._publish_state()
+                return result
             if operation in {
                 "monitor.sampling.pause",
                 "monitor.sampling.resume",
@@ -831,7 +960,10 @@ class MonitorRuntime:
                 if sampler is None:
                     return failure(operation, "MONITOR_REQUEST_INVALID", "A probe must be connected")
                 action = operation.rsplit(".", 1)[1]
-                return await _call(getattr(sampler, action))
+                result = await _call(getattr(sampler, action))
+                if getattr(result, "ok", False) and not hasattr(sampler, "set_state_listener"):
+                    self._publish_state()
+                return result
             if operation == "monitor.history.query":
                 _exact(payload, set())
                 expected = {"startNs", "endNs"}
@@ -922,30 +1054,73 @@ class MonitorRuntime:
         self._observation = observation
         self._sampler = sampler
         self._binding_epoch += 1
+        listener = getattr(sampler, "set_state_listener", None)
+        if callable(listener):
+            listener(self._sampler_state_changed)
+        self._publish_state()
         binding = getattr(observation, "binding", None)
         return success(operation, binding.to_dict() if hasattr(binding, "to_dict") else {"connected": True})
 
     async def _release_probe(self) -> BaseException | None:
         sampler, observation = self._sampler, self._observation
+        sample_task = self._sample_task
+        self._sample_task = None
+        if sample_task is not None:
+            sample_task.cancel()
+            await asyncio.gather(sample_task, return_exceptions=True)
         self._sampler = None
         self._observation = None
+        if sampler is not None or observation is not None:
+            self._publish_state()
         return await _close_independent((sampler, observation))
 
-    async def live_subscribe(self) -> AsyncIterator[dict[str, object]]:
-        sampler = self._sampler
-        if sampler is None:
-            while self._paths is not None:
-                await asyncio.sleep(3600)
+    async def live_subscribe(
+        self, *, after_event_id: int | None = None
+    ) -> AsyncIterator[dict[str, object]]:
+        from .models import LiveEvent
+
+        if after_event_id is not None and (
+            type(after_event_id) is not int or after_event_id < 1
+        ):
+            raise ValueError("after event ID is invalid")
+        if self._paths is None:
             return
-        source = sampler.subscribe()
-        async for item in source:
-            drops = getattr(item, "subscriber_drops", 0)
-            if type(drops) is int and drops > 0:
-                self._service_drops_total += drops
-            if hasattr(item, "to_dict"):
-                yield item.to_dict()
-            elif isinstance(item, Mapping):
-                yield dict(item)
+        if after_event_id is None:
+            self._state_revision += 1
+            initial = (
+                self._hello_event(),
+                self._publish_state(increment_revision=False),
+            )
+        else:
+            retained = tuple(self._events)
+            if any(
+                isinstance(event, LiveEvent) and event.event_id == after_event_id
+                for event in retained
+            ):
+                initial = tuple(
+                    event.to_dict()
+                    for event in retained
+                    if isinstance(event, LiveEvent) and event.event_id > after_event_id
+                )
+            else:
+                self._state_revision += 1
+                initial = (
+                    self._hello_event(),
+                    self._publish_state(gap=True, increment_revision=False),
+                )
+        queue: asyncio.Queue[object] = asyncio.Queue(maxsize=_LIVE_QUEUE_EVENTS)
+        self._live_subscribers.add(queue)
+        try:
+            for event in initial:
+                yield event
+            while True:
+                event = await queue.get()
+                if event is _LIVE_END:
+                    return
+                if isinstance(event, LiveEvent):
+                    yield event.to_dict()
+        finally:
+            self._live_subscribers.discard(queue)
 
     async def wait_closed(self) -> None:
         await self._closed.wait()
@@ -961,6 +1136,22 @@ class MonitorRuntime:
 
     async def _stop_owned(self) -> None:
         first_error: BaseException | None = None
+        for task in (self._heartbeat_task, self._sample_task):
+            if task is not None:
+                task.cancel()
+        await asyncio.gather(
+            *(task for task in (self._heartbeat_task, self._sample_task) if task is not None),
+            return_exceptions=True,
+        )
+        self._heartbeat_task = None
+        self._sample_task = None
+        for queue in tuple(self._live_subscribers):
+            if queue.full():
+                try:
+                    queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    pass
+            queue.put_nowait(_LIVE_END)
         for value in (
             self._service,
             self._sampler,

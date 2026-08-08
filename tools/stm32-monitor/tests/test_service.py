@@ -20,6 +20,12 @@ class FakeRuntime:
         self.subscribed = asyncio.Event()
         self.result: object | None = None
         self.error: Exception | None = None
+        self.recorded_drops = 0
+        self.drop_recorded = asyncio.Event()
+
+    def record_service_drops(self, count: int) -> None:
+        self.recorded_drops += count
+        self.drop_recorded.set()
 
     async def dispatch(
         self,
@@ -36,7 +42,10 @@ class FakeRuntime:
             return self.result  # type: ignore[return-value]
         return {"operation": operation, "workspaceId": "workspace-a"}
 
-    async def live_subscribe(self) -> AsyncIterator[dict[str, object]]:
+    async def live_subscribe(
+        self, *, after_event_id: int | None = None
+    ) -> AsyncIterator[dict[str, object]]:
+        self.after_event_id = after_event_id
         self.subscribed.set()
         while True:
             item = await self.live_queue.get()
@@ -230,23 +239,70 @@ def test_websocket_is_authenticated_bounded_and_drops_oldest_for_slow_clients() 
             ws = await client.ws_connect(endpoint.url + "/api/v1/live", headers=headers)
             await asyncio.wait_for(runtime.subscribed.wait(), 1)
             for sequence in range(20):
-                await runtime.live_queue.put({"sequence": sequence})
+                await runtime.live_queue.put(
+                    {
+                        "eventId": sequence + 1,
+                        "type": "sample",
+                        "data": {
+                            "batch": {"sequence": sequence},
+                            "serviceSubscriberDrops": 0,
+                        },
+                    }
+                )
+            await asyncio.wait_for(runtime.drop_recorded.wait(), 0.1)
+            assert runtime.recorded_drops > 0
             seen: list[dict[str, object]] = []
             for _ in range(9):
                 frame = await asyncio.wait_for(ws.receive(), 2)
                 assert int(frame.type) == int(aiohttp.WSMsgType.TEXT)
                 message = json.loads(frame.data)
                 seen.append(message)
-                if message["data"]["sequence"] == 19:
+                if message["data"]["data"]["batch"]["sequence"] == 19:
                     break
-            assert seen[-1]["data"]["sequence"] == 19
+            assert seen[-1]["data"]["data"]["batch"]["sequence"] == 19
             assert any(item["details"].get("subscriberDropped", 0) > 0 for item in seen)
             assert len(seen) + sum(
                 item["details"].get("subscriberDropped", 0) for item in seen
             ) == 20
+            assert runtime.recorded_drops == sum(
+                item["details"].get("subscriberDropped", 0) for item in seen
+            )
+            assert any(
+                item["data"]["data"]["serviceSubscriberDrops"] > 0
+                for item in seen
+            )
             await ws.close()
 
-    asyncio.run(_with_service(scenario, send_delay_seconds=0.02))
+    asyncio.run(_with_service(scenario, send_delay_seconds=0.2))
+
+
+def test_websocket_accepts_only_one_bounded_after_event_id() -> None:
+    async def scenario(runtime, _service, endpoint) -> None:
+        headers = {
+            "Authorization": f"Bearer {TOKEN_BYTES.hex()}",
+            "Origin": endpoint.url,
+        }
+        async with aiohttp.ClientSession() as client:
+            ws = await client.ws_connect(
+                endpoint.url + "/api/v1/live?afterEventId=41", headers=headers
+            )
+            await asyncio.wait_for(runtime.subscribed.wait(), 1)
+            assert runtime.after_event_id == 41
+            await ws.close()
+            for query in (
+                "afterEventId=0",
+                "afterEventId=-1",
+                "afterEventId=true",
+                "afterEventId=1&afterEventId=2",
+                "unexpected=1",
+            ):
+                with pytest.raises(aiohttp.WSServerHandshakeError) as denied:
+                    await client.ws_connect(
+                        endpoint.url + "/api/v1/live?" + query, headers=headers
+                    )
+                assert denied.value.status == 400
+
+    asyncio.run(_with_service(scenario))
 
 
 def test_every_route_has_one_exact_method_and_operation_mapping() -> None:

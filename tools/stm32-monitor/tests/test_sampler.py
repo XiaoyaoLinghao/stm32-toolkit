@@ -178,6 +178,35 @@ def test_start_binds_exact_group_revision_and_emits_immutable_batch(tmp_path: Pa
     asyncio.run(scenario())
 
 
+def test_state_listener_observes_every_transition_and_block_never_auto_resumes(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        project = tmp_path / "project"
+        project.mkdir()
+        observation = FakeObservation(_binding(project))
+        observation.block_after = 0
+        sampler = MonitorSampler(observation, FakeGroups(_group()), FakeHistory())
+        seen: list[str] = []
+        sampler.set_state_listener(lambda state: seen.append(state.value))
+
+        started = await sampler.start(GROUP_ID, expected_revision=1)
+        deadline = time.monotonic() + 2
+        while sampler.state is not SamplerState.PAUSED_BLOCKED and time.monotonic() < deadline:
+            await asyncio.sleep(0.01)
+        resumed = await sampler.resume()
+        await sampler.stop()
+        try:
+            assert started.ok
+            assert not resumed.ok
+            assert seen == ["STARTING", "RUNNING", "PAUSED_BLOCKED", "STOPPING", "IDLE"]
+            assert observation.calls == 0
+        finally:
+            await sampler.close()
+
+    asyncio.run(scenario())
+
+
 def test_start_rejects_stale_revision_missing_group_and_non_integer_revision(tmp_path: Path) -> None:
     async def scenario() -> None:
         project = tmp_path / "project"
