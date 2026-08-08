@@ -354,8 +354,9 @@ def test_register_sampling_uses_exact_svd_and_sampling_risk_gate(
                 client,
             )
         )
-        assert rejected.ok is False
-        assert rejected.code == code
+        assert rejected.ok is True
+        assert rejected.data.items[0].status == "error"
+        assert rejected.data.items[0].code == code
 
 
 def test_register_sample_request_is_bounded_and_has_no_raw_override(
@@ -397,7 +398,7 @@ def test_register_sampling_revalidates_svd_and_propagates_cancellation(
             debug_env.client(),
         )
     )
-    assert changed.code == "SVD_PROVENANCE_MISMATCH"
+    assert changed.code == "SVD_INPUT_CHANGED"
     svd_path.write_bytes(original)
 
     class CancelClient(Client):

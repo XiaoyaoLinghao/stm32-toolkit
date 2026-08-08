@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from dataclasses import fields, replace
 from pathlib import Path
 
 import pytest
 
 from stm32_toolkit import __version__
+from stm32_toolkit.build.identity import atomic_write_json
 from stm32_toolkit.debug import read_variables, sample_registers
 from stm32_toolkit.monitor_observation import (
     MonitorObservationError,
@@ -53,6 +55,7 @@ class Supervisor:
         self.registry = registry
         self.endpoint: ProbeEndpoint | None = None
         self.stopped = False
+        self.stop_error: BaseException | None = None
 
     async def start(self) -> ProbeEndpoint:
         probe = self.config.probe_id
@@ -77,6 +80,8 @@ class Supervisor:
         self.stopped = True
         self.registry.pop(self.config.probe_id, None)
         self.endpoint = None
+        if self.stop_error is not None:
+            raise self.stop_error
 
 
 class Harness:
@@ -110,7 +115,13 @@ class Harness:
             workspace_id=request.workspace_id,
             observation_session_id=request.observation_session_id,
             lease_id=request.lease_id,
+            probe_id=request.probe_id,
         )
+        flash_path = self.env.root / "artifacts" / "migration" / "flash-result.json"
+        flash = json.loads(flash_path.read_text(encoding="utf-8"))
+        flash["workspaceId"] = request.workspace_id
+        flash["probeId"] = request.probe_id
+        atomic_write_json(flash_path, flash)
         if self.binding_override is not None:
             binding = self.binding_override(binding)
         return OperationResult.success("stm32_debug_bind", binding)
@@ -208,7 +219,9 @@ def test_invalid_roots_and_identity_fail_before_runtime_creation(
     cases = (
         object(),
         replace(request(debug_env, tmp_path / "data"), project_root="bad"),
+        replace(request(debug_env, tmp_path / "data"), project_root=tmp_path / "missing"),
         replace(request(debug_env, debug_env.root / "inside")),
+        replace(request(debug_env, debug_env.root.parent)),
         replace(request(debug_env, tmp_path / "data"), expected_build_id="bad"),
         replace(request(debug_env, tmp_path / "data"), session_id="../bad"),
     )
@@ -232,6 +245,107 @@ def test_revalidate_rejects_firmware_epoch_change(
         await opened.data.close()
 
     asyncio.run(exercise())
+
+
+def test_open_rejects_forged_binding_identity_before_exposing_session(
+    debug_env: DebugEnv, tmp_path: Path
+) -> None:
+    harness = Harness(debug_env)
+    harness.binding_override = lambda binding: replace(
+        binding, workspace_id="forged-workspace"
+    )
+    result = asyncio.run(
+        open_monitor_observation(
+            request(debug_env, tmp_path / "data"), _seams=harness.seams()
+        )
+    )
+    assert result.code == "MONITOR_FIRMWARE_CHANGED"
+    assert harness.clients[0].closed is True
+    assert harness.supervisors[0].stopped is True
+
+
+def test_optional_svd_and_invalid_provenance_factories(
+    debug_env: DebugEnv, tmp_path: Path
+) -> None:
+    manifest_path = debug_env.root / ".stm32-project.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["debug"].pop("svd", None)
+    manifest_path.write_bytes(
+        (json.dumps(manifest, indent=2) + "\n").encode("utf-8")
+    )
+    harness = Harness(debug_env)
+    opened = asyncio.run(
+        open_monitor_observation(
+            request(debug_env, tmp_path / "data"), _seams=harness.seams()
+        )
+    )
+    assert opened.ok is True
+    assert opened.data.svd is None
+    assert asyncio.run(opened.data.sample_registers(("GPIOA.IDR",))).code == "SVD_SELECTION_REQUIRED"
+    asyncio.run(opened.data.close())
+
+    for field in ("catalog_from_binding", "svd_select"):
+        # Restore exact SVD only for the SVD-factory branch.
+        if field == "svd_select":
+            manifest["debug"]["svd"] = "svd/device.svd"
+            manifest_path.write_bytes(
+                (json.dumps(manifest, indent=2) + "\n").encode("utf-8")
+            )
+        other = Harness(debug_env)
+        seams = replace(other.seams(), **{field: lambda *args, **kwargs: object()})
+        rejected = asyncio.run(
+            open_monitor_observation(
+                request(debug_env, tmp_path / f"data-{field}"), _seams=seams
+            )
+        )
+        assert rejected.code == "MONITOR_PROVENANCE_CHANGED"
+        assert other.supervisors[0].stopped is True
+
+
+def test_revalidate_maps_binding_and_svd_failures(
+    debug_env: DebugEnv, tmp_path: Path
+) -> None:
+    harness = Harness(debug_env)
+
+    async def exercise() -> None:
+        opened = await open_monitor_observation(
+            request(debug_env, tmp_path / "data"), _seams=harness.seams()
+        )
+        session = opened.data
+        harness.bind_result = OperationResult.failure(
+            "stm32_debug_bind", "DEBUG_FIRMWARE_CHANGED", "changed", {}
+        )
+        assert (await session.revalidate()).code == "MONITOR_FIRMWARE_CHANGED"
+        harness.bind_result = OperationResult.success(
+            "stm32_debug_bind",
+            replace(session.binding, input_snapshot_sha256="e" * 64),
+        )
+        assert (await session.revalidate()).code == "MONITOR_FIRMWARE_CHANGED"
+        harness.bind_result = None
+        svd_path = debug_env.root / debug_env.selection.path
+        svd_path.write_bytes(svd_path.read_bytes() + b"changed")
+        assert (await session.revalidate()).code == "MONITOR_PROVENANCE_CHANGED"
+        await session.close()
+
+    asyncio.run(exercise())
+
+
+def test_open_cancellation_awaits_cleanup(debug_env: DebugEnv, tmp_path: Path) -> None:
+    harness = Harness(debug_env)
+    seams = harness.seams()
+
+    async def cancel_bind(request: object, client: object) -> OperationResult:
+        raise asyncio.CancelledError
+
+    seams = replace(seams, bind=cancel_bind)
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(
+            open_monitor_observation(
+                request(debug_env, tmp_path / "data"), _seams=seams
+            )
+        )
+    assert harness.clients[0].closed is True
+    assert harness.supervisors[0].stopped is True
 
 
 def test_cleanup_failure_has_priority_when_open_fails(
@@ -293,3 +407,31 @@ def test_close_cleanup_error_is_stable(debug_env: DebugEnv, tmp_path: Path) -> N
         assert harness.supervisors[0].stopped is True
 
     asyncio.run(exercise())
+
+
+def test_supervisor_cleanup_error_and_cancelled_client_are_stable(
+    debug_env: DebugEnv, tmp_path: Path
+) -> None:
+    async def exercise(error: BaseException, suffix: str) -> None:
+        harness = Harness(debug_env)
+        opened = await open_monitor_observation(
+            request(debug_env, tmp_path / suffix), _seams=harness.seams()
+        )
+        harness.supervisors[0].stop_error = error
+        with pytest.raises(MonitorObservationError) as raised:
+            await opened.data.close()
+        assert raised.value.code == "MONITOR_CLEANUP_FAILED"
+
+    asyncio.run(exercise(RuntimeError("stop secret"), "stop-error"))
+    harness = Harness(debug_env)
+
+    async def cancelled_client() -> None:
+        opened = await open_monitor_observation(
+            request(debug_env, tmp_path / "cancelled-client"), _seams=harness.seams()
+        )
+        harness.clients[0].close_error = asyncio.CancelledError()
+        with pytest.raises(MonitorObservationError):
+            await opened.data.close()
+        assert harness.supervisors[0].stopped is True
+
+    asyncio.run(cancelled_client())
