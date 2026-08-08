@@ -37,20 +37,23 @@ class GroupStore:
 
     @staticmethod
     def _load_group(connection: sqlite3.Connection, row: tuple[object, ...]) -> WatchGroup:
-        item_rows = connection.execute(
-            "SELECT kind, selector FROM group_items WHERE group_id = ? ORDER BY ordinal",
-            (row[0],),
-        ).fetchall()
-        return WatchGroup(
-            group_id=UUID(cast(str, row[0])),
-            name=cast(str, row[1]),
-            description=cast(str, row[2]),
-            interval_ms=cast(int, row[3]),
-            items=tuple(WatchItem(cast(str, kind), cast(str, selector)) for kind, selector in item_rows),
-            revision=cast(int, row[4]),
-            created_at_utc=_parse_utc(cast(str, row[5])),
-            updated_at_utc=_parse_utc(cast(str, row[6])),
-        )
+        try:
+            item_rows = connection.execute(
+                "SELECT kind, selector FROM group_items WHERE group_id = ? ORDER BY ordinal",
+                (row[0],),
+            ).fetchall()
+            return WatchGroup(
+                group_id=UUID(cast(str, row[0])),
+                name=cast(str, row[1]),
+                description=cast(str, row[2]),
+                interval_ms=cast(int, row[3]),
+                items=tuple(WatchItem(cast(str, kind), cast(str, selector)) for kind, selector in item_rows),
+                revision=cast(int, row[4]),
+                created_at_utc=_parse_utc(cast(str, row[5])),
+                updated_at_utc=_parse_utc(cast(str, row[6])),
+            )
+        except (TypeError, ValueError, OverflowError, UnicodeError) as error:
+            raise StorageFailure("MONITOR_STORAGE_CORRUPT", "monitor storage contains invalid group data") from error
 
     def list_groups(self) -> ProtocolResult[tuple[WatchGroup, ...]]:
         operation = "groups.list"
