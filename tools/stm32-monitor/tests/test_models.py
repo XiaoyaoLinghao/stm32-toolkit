@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 from datetime import datetime, timezone
 from pathlib import Path
 from uuid import UUID
@@ -18,6 +19,7 @@ from stm32_monitor.models import (
 )
 from stm32_monitor.protocol import (
     MONITOR_PROTOCOL_VERSION,
+    ProtocolResult,
     ProtocolViolation,
     failure,
     parse_json_object,
@@ -251,3 +253,123 @@ def test_binding_rejects_bad_git_and_non_boolean_dirty_state() -> None:
     payload.pop("leaseId")
     with pytest.raises(ValueError, match="binding"):
         ObservationBinding.from_dict(payload)
+
+
+def test_json_values_are_exact_bounded_immutable_snapshots() -> None:
+    class CustomValue:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def to_dict(self) -> dict[str, object]:
+            self.calls += 1
+            return {"secret": "executed"}
+
+    source = {"nested": [{"value": 1}], "text": "ok"}
+    sample = SampleValue(WatchItem.variable("counter"), "OK", typed_value=source)
+    source["nested"][0]["value"] = 99
+    assert sample.to_dict()["typedValue"] == {
+        "nested": [{"value": 1}],
+        "text": "ok",
+    }
+
+    custom = CustomValue()
+    cyclic: list[object] = []
+    cyclic.append(cyclic)
+    deep: object = None
+    for _ in range(40):
+        deep = [deep]
+    rejected = (
+        b"bytes",
+        {1: "non-string key"},
+        {"Caf\u00e9": 1, "Cafe\u0301": 2},
+        math.nan,
+        math.inf,
+        cyclic,
+        deep,
+        [None] * 10_001,
+        "x" * (1024 * 1024 + 1),
+        custom,
+    )
+    for value in rejected:
+        with pytest.raises((TypeError, ValueError)):
+            SampleValue(WatchItem.variable("counter"), "OK", typed_value=value)
+    assert custom.calls == 0
+
+
+def test_protocol_result_validates_invariants_and_known_models_only() -> None:
+    group = WatchGroup.create("G", "", 250, (), group_id=GROUP_ID, now=NOW)
+    result = success("groups.list", (group,))
+    assert result.data == (group,)
+    assert result.to_dict()["data"] == [group.to_dict()]
+
+    invalid_results = (
+        (1, "groups.list", "OK", "", None),
+        (True, "", "OK", "", None),
+        (True, "groups.list", "BAD", "", None),
+        (True, "groups.list", "OK", "not empty", None),
+        (False, "groups.list", "OK", "failed", None),
+        (False, "groups.list", "MONITOR_FAILED", "", None),
+        (False, "groups.list", "MONITOR_FAILED", "failed", {"unexpected": True}),
+    )
+    for ok, operation, code, message, data in invalid_results:
+        with pytest.raises((TypeError, ValueError)):
+            ProtocolResult(ok, operation, code, message, data)
+    with pytest.raises(ValueError):
+        ProtocolResult(
+            True,
+            "groups.list",
+            "OK",
+            "",
+            None,
+            protocol="another-protocol",
+        )
+
+    class CustomValue:
+        calls = 0
+
+        def to_dict(self) -> dict[str, object]:
+            self.calls += 1
+            return {"unsafe": True}
+
+    custom = CustomValue()
+    with pytest.raises((TypeError, ValueError)):
+        success("custom", custom)
+    assert custom.calls == 0
+
+
+def test_protocol_and_sample_models_reject_nonfinite_oversized_and_xor_states() -> None:
+    watch = WatchItem.variable("counter")
+    for kwargs in (
+        {"status": "OK", "typed_value": 1, "code": "MONITOR_FAILED"},
+        {"status": "ERROR", "typed_value": 1, "code": "MONITOR_FAILED"},
+        {"status": "ERROR", "typed_value": None, "code": None},
+    ):
+        with pytest.raises(ValueError):
+            SampleValue(watch, **kwargs)
+
+    value = SampleValue(watch, "OK", typed_value=1)
+    base = dict(
+        binding=_binding(), group_id=GROUP_ID, group_revision=1, run_id=RUN_ID,
+        sequence=1, scheduled_unix_ns=100, captured_unix_ns=200, latency_ns=100,
+        actual_rate_hz=4.0, subscriber_drops=0, history_drops=0, deadline_drops=0,
+        values=(value,),
+    )
+    for update in (
+        {"actual_rate_hz": math.nan},
+        {"actual_rate_hz": math.inf},
+        {"values": (value,) * 257},
+        {"scheduled_unix_ns": 10**30, "captured_unix_ns": 10**30},
+    ):
+        with pytest.raises(ValueError):
+            SampleBatch(**(base | update))
+
+
+def test_json_parser_rejects_duplicate_normalized_keys_and_nonfinite_numbers() -> None:
+    for document in (
+        b'{"a":1,"a":2}',
+        '{"Caf\u00e9":1,"Cafe\u0301":2}'.encode("utf-8"),
+        b'{"value":NaN}',
+        b'{"value":Infinity}',
+    ):
+        with pytest.raises(ProtocolViolation, match="invalid"):
+            parse_json_object(document)
