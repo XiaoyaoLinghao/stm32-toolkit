@@ -15,6 +15,7 @@ from stm32_toolkit import __version__
 from stm32_toolkit.probe.lease import (
     ProcessIdentity,
     ProbeBusyError,
+    ProbeLease,
     ProbeLeaseError,
     ProbeLeaseManager,
 )
@@ -80,6 +81,63 @@ def write_stale_record(manager_: ProbeLeaseManager, record: dict[str, object]) -
         json.dumps(record, sort_keys=True, separators=(",", ":")).encode("utf-8")
     )
     return path
+
+
+def test_runtime_authority_closes_registry_descriptor_when_guard_open_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    manager_ = manager(tmp_path / "data", OWNER)
+    closed: list[int] = []
+    monkeypatch.setattr(manager_, "_ensure_registry", lambda authority: 701)
+    monkeypatch.setattr(
+        manager_,
+        "_open_guard",
+        lambda *args, **kwargs: (_ for _ in ()).throw(OSError("guard denied")),
+    )
+    monkeypatch.setattr(os, "close", closed.append)
+
+    with pytest.raises(OSError, match="guard denied"):
+        manager_.acquire(
+            probe_id="probe-123",
+            workspace_id="workspace-a",
+            session_id="session-a",
+            operation_level=OperationLevel.OBSERVE,
+            health_url="http://127.0.0.1:43123/health",
+            _runtime_root_authority=object(),  # type: ignore[arg-type]
+        )
+
+    assert closed == [701]
+
+
+def test_runtime_authority_closes_registry_descriptor_when_guard_close_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import stm32_toolkit.probe.lease as lease_module
+
+    class Handle:
+        closed = False
+
+        def close(self) -> None:
+            self.closed = True
+            raise OSError("guard close failed")
+
+    handle = Handle()
+    closed: list[int] = []
+    monkeypatch.setattr(lease_module, "_unlock_handle", lambda value: None)
+    monkeypatch.setattr(os, "close", closed.append)
+    lease = ProbeLease(
+        handle=handle,  # type: ignore[arg-type]
+        record_path=tmp_path / "record.lock",
+        record=stale_record(),
+        owner_identity=OWNER,
+        registry_descriptor=702,
+    )
+
+    with pytest.raises(OSError, match="guard close failed"):
+        lease._close_locked_handle()
+
+    assert handle.closed is True
+    assert closed == [702]
 
 
 def test_two_workspaces_cannot_own_one_probe_and_owner_is_redacted(tmp_path: Path):

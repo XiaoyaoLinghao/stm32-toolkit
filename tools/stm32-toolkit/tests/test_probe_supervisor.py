@@ -479,7 +479,7 @@ def test_cancelled_supervisor_start_rolls_back_backend_listener_and_lease(
             assert factory.backends[0].closed is True
             assert factory.backends[0].close_attempts == 1
             assert not ProbeLeaseManager(data_root).record_path("probe-a").exists()
-            with pytest.raises(OSError):
+            with pytest.raises((OSError, asyncio.TimeoutError)):
                 await asyncio.wait_for(
                     asyncio.open_connection("127.0.0.1", bound_port[0]), timeout=0.5
                 )

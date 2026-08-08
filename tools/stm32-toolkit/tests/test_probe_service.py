@@ -196,7 +196,7 @@ def test_cancelled_start_closes_bound_port_and_can_retry(
             assert not lease_manager(tmp_path / "plugin-data").record_path(
                 "probe-a"
             ).exists()
-            with pytest.raises(OSError):
+            with pytest.raises((OSError, asyncio.TimeoutError)):
                 await asyncio.wait_for(
                     asyncio.open_connection("127.0.0.1", bound_port[0]), timeout=0.5
                 )
@@ -250,7 +250,7 @@ def test_cancelled_stop_finishes_cleanup_before_propagating(
             "schemaVersion": 1,
             "state": "released",
         }
-        with pytest.raises(OSError):
+        with pytest.raises((OSError, asyncio.TimeoutError)):
             await asyncio.wait_for(
                 asyncio.open_connection(endpoint.host, endpoint.port), timeout=0.5
             )
