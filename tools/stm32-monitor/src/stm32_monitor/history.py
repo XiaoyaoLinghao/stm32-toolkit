@@ -42,6 +42,10 @@ _HISTORY_CURSOR = re.compile(
 )
 
 
+class _InvalidHistoryCursor(Exception):
+    pass
+
+
 @dataclass(frozen=True)
 class HistoryQuery:
     session_id: str
@@ -49,6 +53,10 @@ class HistoryQuery:
     end_ns: int
     limit: int = MAX_HISTORY_VALUES
     cursor: str | None = None
+    run_id: UUID | None = None
+    group_id: UUID | None = None
+    selector_kind: str | None = None
+    selector: str | None = None
 
 
 @dataclass(frozen=True)
@@ -555,8 +563,20 @@ class HistoryStore:
             or not isinstance(query.limit, int)
             or isinstance(query.limit, bool)
             or query.limit < 1
+            or (query.run_id is not None and type(query.run_id) is not UUID)
+            or (query.group_id is not None and type(query.group_id) is not UUID)
+            or ((query.selector_kind is None) != (query.selector is None))
+            or (
+                query.selector_kind is not None
+                and (
+                    query.selector_kind not in {"variable", "register"}
+                    or type(query.selector) is not str
+                )
+            )
         ):
             raise ValueError("history query is invalid")
+        if query.selector_kind is not None:
+            WatchItem(query.selector_kind, cast(str, query.selector))
         return _cursor(query.cursor)
 
     def query_history(self, query: HistoryQuery) -> ProtocolResult[HistoryPage]:
@@ -568,22 +588,44 @@ class HistoryStore:
         effective_limit = min(query.limit, MAX_HISTORY_VALUES)
 
         def read(connection: sqlite3.Connection) -> HistoryPage:
+            clauses = [
+                "b.session_id = ?",
+                "b.captured_ns >= ?",
+                "b.captured_ns < ?",
+                "b.batch_id >= ?",
+            ]
+            parameters: list[object] = [
+                query.session_id,
+                query.start_ns,
+                query.end_ns,
+                max(1, cursor_batch),
+            ]
+            if query.run_id is not None:
+                clauses.append("b.run_id = ?")
+                parameters.append(str(query.run_id))
+            if query.selector_kind is not None:
+                clauses.append(
+                    "EXISTS (SELECT 1 FROM history_values AS f "
+                    "WHERE f.batch_id = b.batch_id "
+                    "AND f.selector_kind = ? AND f.selector = ?)"
+                )
+                parameters.extend((query.selector_kind, query.selector))
             records = connection.execute(
-                """
+                f"""
                 SELECT b.batch_id,b.session_id,b.run_id,b.sequence,b.captured_ns,
                        b.payload_json,b.payload_bytes,b.payload_sha256,b.value_count
                 FROM history_batches AS b
-                WHERE b.session_id = ? AND b.captured_ns >= ? AND b.captured_ns < ?
-                  AND b.batch_id >= ?
+                WHERE {' AND '.join(clauses)}
                 ORDER BY b.batch_id
                 """,
-                (query.session_id, query.start_ns, query.end_ns, max(1, cursor_batch)),
+                parameters,
             )
             selected: list[tuple[SampleBatch, int, list[SampleValue], int]] = []
             selected_batch_bytes = 0
             selected_count = 0
             last_cursor: str | None = None
             more = False
+            cursor_validated = query.cursor is None
             while True:
                 record = records.fetchone()
                 if record is None:
@@ -605,6 +647,8 @@ class HistoryStore:
                     sequence=sequence,
                     captured_ns=captured_ns,
                 )
+                if not cursor_validated and batch_id != cursor_batch:
+                    raise _InvalidHistoryCursor
                 indexed = connection.execute(
                     "SELECT ordinal,selector_kind,selector,value_json,value_bytes,value_sha256 "
                     "FROM history_values WHERE batch_id = ? ORDER BY ordinal",
@@ -633,16 +677,58 @@ class HistoryStore:
                         raise _history_corrupt()
                     encoded_value_lengths.append(len(expected_raw))
 
-                has_later_batch = connection.execute(
-                    "SELECT 1 FROM history_batches WHERE session_id = ? "
-                    "AND captured_ns >= ? AND captured_ns < ? AND batch_id > ? LIMIT 1",
-                    (query.session_id, query.start_ns, query.end_ns, batch_id),
-                ).fetchone() is not None
+                if query.group_id is not None and batch.group_id != query.group_id:
+                    if batch_id == cursor_batch and query.cursor is not None:
+                        raise _InvalidHistoryCursor
+                    continue
+
+                has_later_unfiltered_batch = False
+                if query.selector_kind is None and query.group_id is None:
+                    later_clauses = [
+                        "session_id = ?",
+                        "captured_ns >= ?",
+                        "captured_ns < ?",
+                        "batch_id > ?",
+                    ]
+                    later_parameters: list[object] = [
+                        query.session_id,
+                        query.start_ns,
+                        query.end_ns,
+                        batch_id,
+                    ]
+                    if query.run_id is not None:
+                        later_clauses.append("run_id = ?")
+                        later_parameters.append(str(query.run_id))
+                    has_later_unfiltered_batch = connection.execute(
+                        f"SELECT 1 FROM history_batches WHERE "
+                        f"{' AND '.join(later_clauses)} LIMIT 1",
+                        later_parameters,
+                    ).fetchone() is not None
 
                 start = cursor_ordinal + 1 if batch_id == cursor_batch else 0
                 if start < 0 or start > len(batch.values):
                     raise _history_corrupt()
-                for ordinal in range(start, len(batch.values)):
+                if not cursor_validated:
+                    if not 0 <= cursor_ordinal < len(indexed):
+                        raise _InvalidHistoryCursor
+                    cursor_index = indexed[cursor_ordinal]
+                    if query.selector_kind is not None and (
+                        cursor_index[1] != query.selector_kind
+                        or cursor_index[2] != query.selector
+                    ):
+                        raise _InvalidHistoryCursor
+                    cursor_validated = True
+                ordinals = (
+                    range(start, len(batch.values))
+                    if query.selector_kind is None
+                    else (
+                        ordinal
+                        for ordinal in range(start, len(batch.values))
+                        if indexed[ordinal][1] == query.selector_kind
+                        and indexed[ordinal][2] == query.selector
+                    )
+                )
+                for ordinal in ordinals:
                     if selected_count >= effective_limit:
                         more = True
                         break
@@ -670,9 +756,14 @@ class HistoryStore:
                             + slice_bytes
                         )
                     candidate_more = (
-                        ordinal + 1 < len(batch.values) or has_later_batch
+                        query.selector_kind is not None
+                        or query.group_id is not None
+                        or ordinal + 1 < len(batch.values)
+                        or has_later_unfiltered_batch
                     )
-                    candidate_cursor = f"{batch_id}:{ordinal}" if candidate_more else None
+                    candidate_cursor = (
+                        f"{batch_id}:{ordinal}" if candidate_more else None
+                    )
                     if _encoded_history_page_size_from_batch_bytes(
                         candidate_batch_bytes,
                         selected_count + 1,
@@ -680,7 +771,11 @@ class HistoryStore:
                     ) > MAX_HISTORY_PAGE_BYTES:
                         more = True
                         break
-                    if selected and selected[-1][0] is batch:
+                    if (
+                        selected
+                        and selected[-1][0] is batch
+                        and ordinal == selected[-1][1] + len(selected[-1][2])
+                    ):
                         previous_values.append(value)
                         selected[-1] = (
                             previous_batch,
@@ -696,6 +791,8 @@ class HistoryStore:
                 if more:
                     break
             if not selected:
+                if not cursor_validated:
+                    raise _InvalidHistoryCursor
                 if more:
                     raise _history_corrupt()
                 return HistoryPage.create((), next_cursor=None)
@@ -722,6 +819,12 @@ class HistoryStore:
             return success(operation, page)
         except StorageFailure as error:
             return _storage_failure(operation, error)
+        except _InvalidHistoryCursor:
+            return failure(
+                operation,
+                "MONITOR_HISTORY_QUERY_INVALID",
+                "history query is invalid",
+            )
 
     def run_retention(self, *, now_ns: int) -> ProtocolResult[dict[str, object]]:
         operation = "history.retention"

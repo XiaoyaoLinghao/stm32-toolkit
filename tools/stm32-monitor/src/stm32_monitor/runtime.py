@@ -635,22 +635,35 @@ class MonitorRuntime:
                 return await _call(getattr(sampler, action))
             if operation == "monitor.history.query":
                 _exact(payload, set())
-                expected = {"sessionId", "startNs", "endNs"}
-                allowed = expected | {"limit", "cursor"}
+                expected = {"startNs", "endNs"}
+                allowed = expected | {
+                    "limit",
+                    "cursor",
+                    "runId",
+                    "groupId",
+                    "selectorKind",
+                    "selector",
+                }
                 if query is None or set(query) - allowed or not expected.issubset(query):
                     raise ValueError("history query is invalid")
+                if ("selectorKind" in query) != ("selector" in query):
+                    raise ValueError("history selector query is invalid")
                 history_query = HistoryQuery(
-                    query["sessionId"],
+                    paths.session_id,
                     int(query["startNs"]),
                     int(query["endNs"]),
                     limit=int(query.get("limit", "10000")),
                     cursor=query.get("cursor"),
+                    run_id=_uuid(query["runId"]) if "runId" in query else None,
+                    group_id=_uuid(query["groupId"]) if "groupId" in query else None,
+                    selector_kind=query.get("selectorKind"),
+                    selector=query.get("selector"),
                 )
                 return history.query_history(history_query)
             if operation == "monitor.exports.create":
-                _exact(payload, {"sessionId", "startNs", "endNs", "format", "authorized"})
+                _exact(payload, {"startNs", "endNs", "format", "authorized"})
                 request = ExportRequest(
-                    payload["sessionId"],
+                    paths.session_id,
                     _integer(payload["startNs"]),
                     _integer(payload["endNs"]),
                     payload["format"],
@@ -659,6 +672,9 @@ class MonitorRuntime:
             if operation == "monitor.exports.get":
                 _exact(payload, set())
                 return exporter.get_export(_uuid(resource_id))
+            if operation == "monitor.exports.download":
+                _exact(payload, set())
+                return exporter.open_download(_uuid(resource_id))
         except (AttributeError, TypeError, ValueError):
             return failure(operation, "MONITOR_REQUEST_INVALID", "Monitor request is invalid")
         return failure(operation, "MONITOR_REQUEST_INVALID", "Monitor operation is unsupported")

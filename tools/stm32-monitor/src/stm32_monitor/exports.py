@@ -6,6 +6,7 @@ import json
 import os
 import shutil
 import stat
+import tempfile
 import time
 from collections.abc import Mapping
 from contextlib import contextmanager
@@ -17,7 +18,12 @@ from uuid import UUID, uuid4
 
 from stm32_toolkit.paths import WorkspacePaths, require_safe_session_id
 
-from .history import HistoryQuery, HistoryStore, MAX_HISTORY_VALUES
+from .history import (
+    HistoryQuery,
+    HistoryStore,
+    MAX_HISTORY_VALUES,
+    flatten_history_page,
+)
 from .models import MAX_SIGNED_INT64
 from .protocol import MONITOR_PROTOCOL_VERSION, ProtocolResult, failure, success
 from .storage import MonitorDatabase, StorageFailure
@@ -79,6 +85,51 @@ class ExportArtifact:
             "bytes": self.byte_count,
             "valueCount": self.value_count,
         }
+
+
+class ExportDownload:
+    def __init__(
+        self,
+        stream: BinaryIO,
+        *,
+        export_id: UUID,
+        format_name: str,
+        byte_count: int,
+    ) -> None:
+        self._stream = stream
+        self.export_id = export_id
+        self.byte_count = byte_count
+        self.content_type = (
+            "application/x-ndjson" if format_name == "jsonl" else "text/csv"
+        )
+        self.filename = f"history-{export_id}.{format_name}"
+
+    def __repr__(self) -> str:
+        return (
+            f"ExportDownload(export_id={self.export_id!r}, "
+            f"byte_count={self.byte_count!r}, content_type={self.content_type!r}, "
+            f"filename={self.filename!r})"
+        )
+
+    def iter_chunks(self, size: int = 64 * 1024) -> Iterator[bytes]:
+        if type(size) is not int or not 1 <= size <= 1024 * 1024:
+            raise ValueError("download chunk size is invalid")
+        while True:
+            chunk = self._stream.read(size)
+            if not chunk:
+                return
+            yield chunk
+
+    def close(self) -> None:
+        self._stream.close()
+
+
+@dataclass(frozen=True)
+class ExportDownloadResult:
+    ok: bool
+    code: str
+    message: str
+    data: ExportDownload | None
 
 
 def _neutralize(value: object) -> object:
@@ -277,6 +328,60 @@ def _read_regular_limited(path: Path, *, limit: int, keep: bool) -> tuple[bytes 
     return (b"".join(chunks) if chunks is not None else None), total, digest.hexdigest()
 
 
+def _open_verified_regular(path: Path, *, limit: int) -> tuple[BinaryIO, int, str]:
+    parent_identity = _directory_identity(path.parent)
+    before = os.lstat(path)
+    if _redirect(before) or not stat.S_ISREG(before.st_mode) or before.st_nlink != 1:
+        raise ValueError("export artifact is not an independent regular file")
+    if before.st_size > limit:
+        raise ValueError("export artifact exceeds its limit")
+    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(path, flags)
+    snapshot = tempfile.TemporaryFile(mode="w+b")
+    try:
+        opened = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(opened.st_mode)
+            or opened.st_nlink != 1
+            or (before.st_dev, before.st_ino) != (opened.st_dev, opened.st_ino)
+        ):
+            raise ValueError("export artifact identity changed")
+        digest = hashlib.sha256()
+        total = 0
+        while True:
+            chunk = os.read(descriptor, min(64 * 1024, limit + 1 - total))
+            if not chunk:
+                break
+            total += len(chunk)
+            if total > limit:
+                raise ValueError("export artifact exceeds its limit")
+            digest.update(chunk)
+            snapshot.write(chunk)
+        after = os.fstat(descriptor)
+        named_after = os.lstat(path)
+        if (
+            (opened.st_dev, opened.st_ino) != (after.st_dev, after.st_ino)
+            or after.st_size != total
+            or after.st_nlink != 1
+            or _redirect(named_after)
+            or not stat.S_ISREG(named_after.st_mode)
+            or named_after.st_nlink != 1
+            or (named_after.st_dev, named_after.st_ino)
+            != (opened.st_dev, opened.st_ino)
+            or named_after.st_size != total
+            or _directory_identity(path.parent) != parent_identity
+        ):
+            raise ValueError("export artifact changed while verifying")
+        snapshot.flush()
+        snapshot.seek(0)
+        return snapshot, total, digest.hexdigest()
+    except BaseException:
+        snapshot.close()
+        raise
+    finally:
+        os.close(descriptor)
+
+
 def _exact_export_paths(
     monitor_root: Path,
     session_id: str,
@@ -301,13 +406,60 @@ class HistoryExporter:
 
     def _stream_history(self, request: ExportRequest, target: Path) -> tuple[str, int, int]:
         fieldnames = (
-            "capturedUnixNs", "sessionId", "runId", "sequence", "groupId", "groupRevision",
-            "watch", "status", "typedValue", "code", "definition",
+            "binding",
+            "groupId",
+            "groupRevision",
+            "runId",
+            "sequence",
+            "scheduledUnixNs",
+            "scheduledAtUtc",
+            "capturedUnixNs",
+            "capturedAtUtc",
+            "latencyNs",
+            "actualRateHz",
+            "subscriberDrops",
+            "historyDrops",
+            "deadlineDrops",
+            "batchValueCount",
+            "watch",
+            "status",
+            "typedValue",
+            "code",
+            "definition",
+            "valueOrdinal",
         )
         cursor: str | None = None
         value_count = 0
+        pending_key: tuple[object, ...] | None = None
+        pending_evidence: dict[str, object] | None = None
+        pending_values: list[object] = []
+        pending_start = 0
+        pending_next = 0
+        closed_keys: set[tuple[object, ...]] = set()
         with _create_regular_exclusive(target, parent=target.parent) as stream:
             sink = _LimitedHashWriter(stream)
+
+            def flush_jsonl() -> None:
+                nonlocal pending_key, pending_evidence, pending_values
+                if pending_evidence is None:
+                    return
+                record = dict(pending_evidence)
+                record["startOrdinal"] = pending_start
+                record["values"] = pending_values
+                sink.write(
+                    json.dumps(
+                        record,
+                        ensure_ascii=False,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                        allow_nan=False,
+                    ).encode("utf-8")
+                    + b"\n"
+                )
+                pending_key = None
+                pending_evidence = None
+                pending_values = []
+
             csv_writer = None
             if request.format == "csv":
                 csv_writer = csv.DictWriter(
@@ -329,20 +481,74 @@ class HistoryExporter:
                 )
                 if not page.ok or page.data is None:
                     raise StorageFailure(page.code, page.message)
-                for value in page.data.values:
+                for value in flatten_history_page(page.data):
                     if value_count >= MAX_EXPORT_VALUES:
                         raise StorageFailure("MONITOR_EXPORT_TOO_LARGE", "export value limit was exceeded")
                     plain = cast(dict[str, object], _plain(value))
                     if request.format == "jsonl":
-                        sink.write(
-                            json.dumps(
-                                plain,
-                                ensure_ascii=False,
-                                sort_keys=True,
-                                separators=(",", ":"),
-                                allow_nan=False,
-                            ).encode("utf-8") + b"\n"
+                        binding = plain.get("binding")
+                        if not isinstance(binding, Mapping):
+                            raise StorageFailure(
+                                "MONITOR_STORAGE_CORRUPT",
+                                "monitor history is corrupt",
+                            )
+                        key = (
+                            binding.get("workspaceId"),
+                            binding.get("sessionId"),
+                            plain.get("runId"),
+                            plain.get("sequence"),
                         )
+                        ordinal = plain.get("valueOrdinal")
+                        if type(ordinal) is not int:
+                            raise StorageFailure(
+                                "MONITOR_STORAGE_CORRUPT",
+                                "monitor history is corrupt",
+                            )
+                        evidence = {
+                            key_name: item
+                            for key_name, item in plain.items()
+                            if key_name
+                            not in {
+                                "watch",
+                                "status",
+                                "typedValue",
+                                "code",
+                                "definition",
+                                "valueOrdinal",
+                            }
+                        }
+                        exported_value = {
+                            key_name: plain.get(key_name)
+                            for key_name in (
+                                "watch",
+                                "status",
+                                "typedValue",
+                                "code",
+                                "definition",
+                            )
+                        }
+                        if pending_key == key:
+                            if evidence != pending_evidence or ordinal != pending_next:
+                                raise StorageFailure(
+                                    "MONITOR_STORAGE_CORRUPT",
+                                    "monitor history is corrupt",
+                                )
+                            pending_values.append(exported_value)
+                            pending_next += 1
+                        else:
+                            if pending_key is not None:
+                                closed_keys.add(pending_key)
+                                flush_jsonl()
+                            if key in closed_keys:
+                                raise StorageFailure(
+                                    "MONITOR_STORAGE_CORRUPT",
+                                    "monitor history is corrupt",
+                                )
+                            pending_key = key
+                            pending_evidence = evidence
+                            pending_values = [exported_value]
+                            pending_start = ordinal
+                            pending_next = ordinal + 1
                     else:
                         safe = cast(dict[str, object], _neutralize(plain))
                         cast(csv.DictWriter, csv_writer).writerow(
@@ -353,7 +559,7 @@ class HistoryExporter:
                                     sort_keys=True,
                                     separators=(",", ":"),
                                     allow_nan=False,
-                                ) if key in {"watch", "typedValue", "definition"} else safe.get(key)
+                                )
                                 for key in fieldnames
                             }
                         )
@@ -364,6 +570,8 @@ class HistoryExporter:
                 if next_cursor == cursor or not page.data.values:
                     raise StorageFailure("MONITOR_STORAGE_CORRUPT", "monitor history is corrupt")
                 cursor = next_cursor
+            if request.format == "jsonl":
+                flush_jsonl()
             return sink.sha256, sink.byte_count, value_count
 
     def _reserve_pending(
@@ -692,6 +900,44 @@ class HistoryExporter:
             return failure(operation, error.code, error.public_message)
         except (OSError, ValueError, TypeError, UnicodeError, json.JSONDecodeError, RecursionError):
             return failure(operation, "MONITOR_EXPORT_FAILED", "history export is unavailable")
+
+    def open_download(self, export_id: UUID) -> ExportDownloadResult:
+        if not isinstance(export_id, UUID):
+            return ExportDownloadResult(
+                False, "MONITOR_REQUEST_INVALID", "export ID is invalid", None
+            )
+        loaded = self.get_export(export_id)
+        if not loaded.ok or loaded.data is None:
+            return ExportDownloadResult(False, loaded.code, loaded.message, None)
+        artifact = loaded.data
+        stream: BinaryIO | None = None
+        try:
+            stream, byte_count, digest = _open_verified_regular(
+                artifact.data_path, limit=MAX_EXPORT_BYTES
+            )
+            if byte_count != artifact.byte_count or digest != artifact.sha256:
+                raise ValueError("export artifact changed")
+            format_name = artifact.data_path.suffix.removeprefix(".")
+            return ExportDownloadResult(
+                True,
+                "OK",
+                "",
+                ExportDownload(
+                    stream,
+                    export_id=artifact.export_id,
+                    format_name=format_name,
+                    byte_count=byte_count,
+                ),
+            )
+        except (OSError, ValueError, TypeError):
+            if stream is not None:
+                stream.close()
+            return ExportDownloadResult(
+                False,
+                "MONITOR_EXPORT_FAILED",
+                "history export is unavailable",
+                None,
+            )
 
     def close(self) -> None:
         self._database.close()

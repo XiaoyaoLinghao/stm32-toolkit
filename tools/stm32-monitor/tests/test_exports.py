@@ -5,6 +5,8 @@ import hashlib
 import json
 import os
 import sqlite3
+from dataclasses import replace
+from io import BytesIO
 from types import SimpleNamespace
 from pathlib import Path
 from uuid import UUID
@@ -12,8 +14,14 @@ from uuid import UUID
 import pytest
 
 from stm32_monitor.exports import ExportRequest, HistoryExporter
-from stm32_monitor.history import HistoryPage, HistoryStore
-from stm32_monitor.models import ObservationBinding, SampleBatch, SampleValue, WatchItem
+from stm32_monitor.history import HistoryPage, HistoryQuery, HistoryStore
+from stm32_monitor.models import (
+    HistoryBatchSlice,
+    ObservationBinding,
+    SampleBatch,
+    SampleValue,
+    WatchItem,
+)
 from stm32_monitor.protocol import failure, success
 from stm32_monitor.storage import StorageFailure
 from stm32_toolkit.paths import WorkspacePaths
@@ -30,8 +38,8 @@ def _paths(tmp_path: Path) -> WorkspacePaths:
     return WorkspacePaths.from_roots(tmp_path / "state", project, LOGICAL_ID, "monitor-1")
 
 
-def _append(paths: WorkspacePaths, history: HistoryStore, value: object = 7) -> None:
-    binding = ObservationBinding(
+def _binding(paths: WorkspacePaths) -> ObservationBinding:
+    return ObservationBinding(
         workspace_id=paths.workspace_id,
         logical_project_id=str(LOGICAL_ID),
         session_id="monitor-1",
@@ -48,8 +56,11 @@ def _append(paths: WorkspacePaths, history: HistoryStore, value: object = 7) -> 
         dwarf_sha256="d" * 64,
         svd_sha256=None,
     )
+
+
+def _append(paths: WorkspacePaths, history: HistoryStore, value: object = 7) -> None:
     batch = SampleBatch(
-        binding=binding,
+        binding=_binding(paths),
         group_id=GROUP_ID,
         group_revision=1,
         run_id=RUN_ID,
@@ -64,6 +75,526 @@ def _append(paths: WorkspacePaths, history: HistoryStore, value: object = 7) -> 
         values=(SampleValue(WatchItem.variable("counter"), "OK", typed_value={"type": "string", "value": value}),),
     )
     assert history.append_batch(batch).ok
+
+
+def _source_rows(batches: tuple[SampleBatch, ...]) -> list[dict[str, object]]:
+    rows: list[dict[str, object]] = []
+    for batch in batches:
+        payload = batch.to_dict()
+        values = payload.pop("values")
+        for ordinal, value in enumerate(values):
+            row = dict(payload)
+            row["batchValueCount"] = len(values)
+            row.update(value)
+            row["valueOrdinal"] = ordinal
+            rows.append(row)
+    return rows
+
+
+def _batch_slice(batch: SampleBatch) -> HistoryBatchSlice:
+    return HistoryBatchSlice(
+        batch.binding,
+        batch.group_id,
+        batch.group_revision,
+        batch.run_id,
+        batch.sequence,
+        batch.scheduled_unix_ns,
+        batch.captured_unix_ns,
+        batch.latency_ns,
+        batch.actual_rate_hz,
+        batch.subscriber_drops,
+        batch.history_drops,
+        batch.deadline_drops,
+        0,
+        len(batch.values),
+        batch.values,
+    )
+
+
+def _flatten_normalized_jsonl(stream) -> list[dict[str, object]]:
+    rows: list[dict[str, object]] = []
+    for line in stream:
+        batch = json.loads(line)
+        values = batch.pop("values")
+        start_ordinal = batch.pop("startOrdinal")
+        for offset, value in enumerate(values):
+            row = dict(batch)
+            row.update(value)
+            row["valueOrdinal"] = start_ordinal + offset
+            rows.append(row)
+    return rows
+
+
+def test_jsonl_and_csv_exports_losslessly_flatten_normalized_batch_evidence(
+    tmp_path: Path,
+) -> None:
+    paths = _paths(tmp_path)
+    history = HistoryStore(paths)
+    exporter = HistoryExporter(paths, history)
+    first = SampleBatch(
+        binding=_binding(paths),
+        group_id=GROUP_ID,
+        group_revision=2,
+        run_id=RUN_ID,
+        sequence=1,
+        scheduled_unix_ns=100,
+        captured_unix_ns=150,
+        latency_ns=50,
+        actual_rate_hz=10.0,
+        subscriber_drops=1,
+        history_drops=2,
+        deadline_drops=3,
+        values=(
+            SampleValue(
+                WatchItem.variable("counter"),
+                "OK",
+                typed_value={"type": "uint32", "value": 7},
+            ),
+            SampleValue(
+                WatchItem.register("GPIOA.ODR"),
+                "ERROR",
+                code="READ_FAILED",
+                definition={"source": "svd"},
+            ),
+        ),
+    )
+    second = SampleBatch(
+        binding=_binding(paths),
+        group_id=GROUP_ID,
+        group_revision=2,
+        run_id=RUN_ID,
+        sequence=2,
+        scheduled_unix_ns=200,
+        captured_unix_ns=250,
+        latency_ns=50,
+        actual_rate_hz=10.0,
+        subscriber_drops=4,
+        history_drops=5,
+        deadline_drops=6,
+        values=(
+            SampleValue(
+                WatchItem.variable("temperature"),
+                "OK",
+                typed_value={"type": "float", "value": 21.5},
+            ),
+        ),
+    )
+    try:
+        assert history.append_batch(first).ok and history.append_batch(second).ok
+        expected = _source_rows((first, second))
+        jsonl = exporter.create_export(
+            ExportRequest("monitor-1", 0, 1_000, "jsonl"), authorized=True
+        ).data
+        csv_artifact = exporter.create_export(
+            ExportRequest("monitor-1", 0, 1_000, "csv"), authorized=True
+        ).data
+
+        with jsonl.data_path.open("rb") as stream:
+            normalized_records = [json.loads(line) for line in stream]
+            stream.seek(0)
+            actual_jsonl = _flatten_normalized_jsonl(stream)
+        with csv_artifact.data_path.open(encoding="utf-8", newline="") as stream:
+            actual_csv = [
+                {key: json.loads(value) for key, value in row.items()}
+                for row in csv.DictReader(stream)
+            ]
+        assert actual_jsonl == expected
+        assert len(normalized_records) == 2
+        assert [record["startOrdinal"] for record in normalized_records] == [0, 0]
+        assert [len(record["values"]) for record in normalized_records] == [2, 1]
+        assert actual_csv == expected
+        for artifact in (jsonl, csv_artifact):
+            with artifact.data_path.open("rb") as stream:
+                digest = hashlib.sha256()
+                byte_count = 0
+                for chunk in iter(lambda: stream.read(64 * 1024), b""):
+                    digest.update(chunk)
+                    byte_count += len(chunk)
+            manifest = json.loads(artifact.manifest_path.read_text(encoding="utf-8"))
+            assert manifest["sha256"] == digest.hexdigest()
+            assert manifest["bytes"] == byte_count
+            assert manifest["valueCount"] == len(expected)
+    finally:
+        exporter.close()
+        history.close()
+
+
+def test_jsonl_export_streams_one_hundred_thousand_values_without_gaps(
+    tmp_path: Path,
+) -> None:
+    paths = _paths(tmp_path)
+    history = HistoryStore(paths)
+    exporter = HistoryExporter(paths, history)
+    page_number = 0
+
+    def query_history(query):
+        nonlocal page_number
+        expected_cursor = None if page_number == 0 else f"{page_number * 40}:15"
+        assert query.cursor == expected_cursor
+        slices = []
+        remaining = 10_000
+        for offset in range(40):
+            count = min(256, remaining)
+            batch_number = page_number * 40 + offset + 1
+            first_value = page_number * 10_000 + (10_000 - remaining)
+            batch = SampleBatch(
+                binding=_binding(paths),
+                group_id=GROUP_ID,
+                group_revision=1,
+                run_id=RUN_ID,
+                sequence=batch_number,
+                scheduled_unix_ns=batch_number,
+                captured_unix_ns=batch_number,
+                latency_ns=0,
+                actual_rate_hz=1.0,
+                subscriber_drops=0,
+                history_drops=0,
+                deadline_drops=0,
+                values=tuple(
+                    SampleValue(
+                        WatchItem.variable(f"v{ordinal}"),
+                        "OK",
+                        typed_value={"type": "uint32", "value": ordinal},
+                    )
+                    for ordinal in range(first_value, first_value + count)
+                ),
+            )
+            slices.append(_batch_slice(batch))
+            remaining -= count
+        page_number += 1
+        next_cursor = None if page_number == 10 else f"{page_number * 40}:15"
+        return SimpleNamespace(
+            ok=True,
+            data=HistoryPage.create(tuple(slices), next_cursor=next_cursor),
+        )
+
+    try:
+        history.query_history = query_history  # type: ignore[method-assign]
+        result = exporter.create_export(
+            ExportRequest("monitor-1", 0, 1_000_000, "jsonl"), authorized=True
+        )
+        assert result.ok
+        artifact = result.data
+        seen = 0
+        records = 0
+        with artifact.data_path.open("rb") as stream:
+            for line in stream:
+                batch = json.loads(line)
+                start_ordinal = batch.pop("startOrdinal")
+                values = batch.pop("values")
+                records += 1
+                for offset, value in enumerate(values):
+                    assert value["typedValue"]["value"] == seen
+                    assert start_ordinal + offset == seen % 10_000 % 256
+                    seen += 1
+        assert seen == 100_000
+        assert records == 400
+        assert artifact.value_count == 100_000
+        assert artifact.byte_count <= 64 * 1024 * 1024
+        assert page_number == 10
+    finally:
+        exporter.close()
+        history.close()
+
+
+def test_open_download_returns_verified_stream_without_path_or_token_leakage(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    paths = _paths(tmp_path)
+    history = HistoryStore(paths)
+    exporter = HistoryExporter(paths, history)
+    download = None
+    try:
+        _append(paths, history)
+        artifact = exporter.create_export(
+            ExportRequest("monitor-1", 0, 1_000, "jsonl"), authorized=True
+        ).data
+        monkeypatch.setattr(
+            Path,
+            "read_bytes",
+            lambda _path: (_ for _ in ()).throw(AssertionError("artifact read_bytes used")),
+        )
+        opened = exporter.open_download(artifact.export_id)
+        assert opened.ok
+        download = opened.data
+        body = b"".join(download.iter_chunks())
+        assert hashlib.sha256(body).hexdigest() == artifact.sha256
+        assert len(body) == artifact.byte_count
+        assert download.content_type == "application/x-ndjson"
+        assert download.filename == f"history-{artifact.export_id}.jsonl"
+        public = repr(download)
+        assert str(paths.data_root) not in public
+        assert "token" not in public.casefold()
+    finally:
+        if download is not None:
+            download.close()
+        exporter.close()
+        history.close()
+
+
+def test_open_download_stream_is_immutable_after_source_verification(
+    tmp_path: Path,
+) -> None:
+    paths = _paths(tmp_path)
+    history = HistoryStore(paths)
+    exporter = HistoryExporter(paths, history)
+    download = None
+    try:
+        _append(paths, history)
+        artifact = exporter.create_export(
+            ExportRequest("monitor-1", 0, 1_000, "jsonl"), authorized=True
+        ).data
+        with artifact.data_path.open("r+b", buffering=0) as concurrent_writer:
+            opened = exporter.open_download(artifact.export_id)
+            assert opened.ok
+            download = opened.data
+            concurrent_writer.seek(0)
+            concurrent_writer.write(b"x" * artifact.byte_count)
+            concurrent_writer.flush()
+            os.fsync(concurrent_writer.fileno())
+            body = b"".join(download.iter_chunks())
+        assert hashlib.sha256(body).hexdigest() == artifact.sha256
+    finally:
+        if download is not None:
+            download.close()
+        exporter.close()
+        history.close()
+
+
+@pytest.mark.parametrize("tamper", ["data", "manifest", "record", "hardlink"])
+def test_open_download_rejects_tampered_authority_before_yielding_bytes(
+    tmp_path: Path,
+    tamper: str,
+) -> None:
+    paths = _paths(tmp_path)
+    history = HistoryStore(paths)
+    exporter = HistoryExporter(paths, history)
+    try:
+        _append(paths, history)
+        artifact = exporter.create_export(
+            ExportRequest("monitor-1", 0, 1_000, "jsonl"), authorized=True
+        ).data
+        if tamper == "data":
+            artifact.data_path.write_bytes(b"tampered\n")
+        elif tamper == "manifest":
+            artifact.manifest_path.write_text("{}\n", encoding="utf-8")
+        elif tamper == "record":
+            exporter._database.write(
+                lambda connection: connection.execute(
+                    "UPDATE export_records SET sha256 = ? WHERE export_id = ?",
+                    ("0" * 64, str(artifact.export_id)),
+                )
+            )
+        else:
+            os.link(artifact.data_path, artifact.directory / "second-link.jsonl")
+
+        rejected = exporter.open_download(artifact.export_id)
+        assert not rejected.ok and rejected.data is None
+    finally:
+        exporter.close()
+        history.close()
+
+
+def test_open_download_rejects_reparse_and_descriptor_identity_changes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import stm32_monitor.exports as exports_module
+
+    paths = _paths(tmp_path)
+    history = HistoryStore(paths)
+    exporter = HistoryExporter(paths, history)
+    try:
+        _append(paths, history)
+        reparse = exporter.create_export(
+            ExportRequest("monitor-1", 0, 1_000, "jsonl"), authorized=True
+        ).data
+        real_lstat = os.lstat
+
+        def marked_reparse(path):
+            metadata = real_lstat(path)
+            if Path(path) == reparse.data_path:
+                return SimpleNamespace(
+                    **{
+                        name: getattr(metadata, name)
+                        for name in dir(metadata)
+                        if name.startswith("st_")
+                    },
+                    st_file_attributes=getattr(metadata, "st_file_attributes", 0)
+                    | 0x400,
+                )
+            return metadata
+
+        monkeypatch.setattr(exports_module.os, "lstat", marked_reparse)
+        assert not exporter.open_download(reparse.export_id).ok
+        monkeypatch.setattr(exports_module.os, "lstat", real_lstat)
+
+        changed = exporter.create_export(
+            ExportRequest("monitor-1", 0, 1_000, "jsonl"), authorized=True
+        ).data
+        loaded = exporter.get_export(changed.export_id)
+        assert loaded.ok
+        monkeypatch.setattr(exporter, "get_export", lambda _export_id: loaded)
+        real_fstat = os.fstat
+        calls = 0
+
+        def changed_fstat(descriptor: int):
+            nonlocal calls
+            metadata = real_fstat(descriptor)
+            calls += 1
+            if calls != 2:
+                return metadata
+            return SimpleNamespace(
+                st_mode=metadata.st_mode,
+                st_dev=metadata.st_dev,
+                st_ino=metadata.st_ino + 1,
+                st_size=metadata.st_size,
+                st_nlink=metadata.st_nlink,
+            )
+
+        monkeypatch.setattr(exports_module.os, "fstat", changed_fstat)
+        assert not exporter.open_download(changed.export_id).ok
+    finally:
+        exporter.close()
+        history.close()
+
+
+def test_open_download_cannot_cross_workspace_authority(tmp_path: Path) -> None:
+    (tmp_path / "first").mkdir()
+    (tmp_path / "second").mkdir()
+    first_paths = _paths(tmp_path / "first")
+    second_paths = _paths(tmp_path / "second")
+    first_history = HistoryStore(first_paths)
+    second_history = HistoryStore(second_paths)
+    first_exporter = HistoryExporter(first_paths, first_history)
+    second_exporter = HistoryExporter(second_paths, second_history)
+    try:
+        _append(first_paths, first_history)
+        artifact = first_exporter.create_export(
+            ExportRequest("monitor-1", 0, 1_000, "csv"), authorized=True
+        ).data
+        rejected = second_exporter.open_download(artifact.export_id)
+        assert not rejected.ok and rejected.data is None
+    finally:
+        first_exporter.close()
+        second_exporter.close()
+        first_history.close()
+        second_history.close()
+
+
+def test_download_validates_chunks_csv_metadata_and_digest_cleanup(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import stm32_monitor.exports as exports_module
+
+    raw = BytesIO(b"csv")
+    direct = exports_module.ExportDownload(
+        raw,
+        export_id=UUID("55555555-5555-4555-8555-555555555555"),
+        format_name="csv",
+        byte_count=3,
+    )
+    assert direct.content_type == "text/csv"
+    for invalid in (0, 1024 * 1024 + 1, True):
+        with pytest.raises(ValueError):
+            tuple(direct.iter_chunks(invalid))
+    direct.close()
+
+    paths = _paths(tmp_path)
+    history = HistoryStore(paths)
+    exporter = HistoryExporter(paths, history)
+    try:
+        assert not exporter.open_download("not-a-uuid").ok
+        _append(paths, history)
+        artifact = exporter.create_export(
+            ExportRequest("monitor-1", 0, 1_000, "jsonl"), authorized=True
+        ).data
+        loaded = exporter.get_export(artifact.export_id)
+        fake_stream = BytesIO(b"verified")
+        monkeypatch.setattr(exporter, "get_export", lambda _export_id: loaded)
+        monkeypatch.setattr(
+            exports_module,
+            "_open_verified_regular",
+            lambda *_args, **_kwargs: (fake_stream, artifact.byte_count, "0" * 64),
+        )
+        rejected = exporter.open_download(artifact.export_id)
+        assert not rejected.ok and fake_stream.closed
+    finally:
+        exporter.close()
+        history.close()
+
+
+@pytest.mark.parametrize("corruption", ["gap", "reopened"])
+def test_normalized_jsonl_grouping_rejects_noncontiguous_batch_evidence(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    corruption: str,
+) -> None:
+    paths = _paths(tmp_path)
+    history = HistoryStore(paths)
+    exporter = HistoryExporter(paths, history)
+
+    def batch(sequence: int) -> SampleBatch:
+        return SampleBatch(
+            binding=_binding(paths),
+            group_id=GROUP_ID,
+            group_revision=1,
+            run_id=RUN_ID,
+            sequence=sequence,
+            scheduled_unix_ns=sequence,
+            captured_unix_ns=sequence,
+            latency_ns=0,
+            actual_rate_hz=1.0,
+            subscriber_drops=0,
+            history_drops=0,
+            deadline_drops=0,
+            values=tuple(
+                SampleValue(
+                    WatchItem.variable(f"v{ordinal}"),
+                    "OK",
+                    typed_value={"type": "uint32", "value": ordinal},
+                )
+                for ordinal in range(3)
+            ),
+        )
+
+    first = batch(1)
+    second = batch(2)
+
+    def sliced(source: SampleBatch, ordinal: int) -> HistoryBatchSlice:
+        return replace(
+            _batch_slice(source),
+            start_ordinal=ordinal,
+            values=(source.values[ordinal],),
+        )
+
+    if corruption == "gap":
+        pages = [
+            HistoryPage.create((sliced(first, 0),), next_cursor="1:0"),
+            HistoryPage.create((sliced(first, 2),), next_cursor=None),
+        ]
+    else:
+        pages = [
+            HistoryPage.create((sliced(first, 0),), next_cursor="1:0"),
+            HistoryPage.create((sliced(second, 0),), next_cursor="2:0"),
+            HistoryPage.create((sliced(first, 1),), next_cursor=None),
+        ]
+
+    try:
+        monkeypatch.setattr(
+            history,
+            "query_history",
+            lambda _query: SimpleNamespace(ok=True, data=pages.pop(0)),
+        )
+        result = exporter.create_export(
+            ExportRequest("monitor-1", 0, 1_000, "jsonl"), authorized=True
+        )
+        assert not result.ok and result.code == "MONITOR_STORAGE_CORRUPT"
+    finally:
+        exporter.close()
+        history.close()
 
 
 def test_export_requires_exact_authorization_and_uses_server_owned_path(tmp_path: Path) -> None:
@@ -447,6 +978,9 @@ def test_export_propagates_history_failure_and_rejects_stalled_cursor(tmp_path: 
     history = HistoryStore(paths)
     exporter = HistoryExporter(paths, history)
     try:
+        _append(paths, history)
+        source_page = history.query_history(HistoryQuery("monitor-1", 0, 1_000)).data
+        stalled_page = HistoryPage.create(source_page.batches, next_cursor="1:0")
         monkeypatch.setattr(
             history,
             "query_history",
@@ -458,7 +992,7 @@ def test_export_propagates_history_failure_and_rejects_stalled_cursor(tmp_path: 
         monkeypatch.setattr(
             history,
             "query_history",
-            lambda query: success("history.query", HistoryPage((), "1:0", 0)),
+            lambda query: SimpleNamespace(ok=True, data=stalled_page),
         )
         stalled = exporter.create_export(ExportRequest("monitor-1", 0, 1_000, "jsonl"), authorized=True)
         assert stalled.code == "MONITOR_STORAGE_CORRUPT"

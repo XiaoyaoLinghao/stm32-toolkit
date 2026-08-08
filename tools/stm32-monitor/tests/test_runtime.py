@@ -163,6 +163,12 @@ class FakeExporter:
         self.calls.append(("get", export_id, None))
         return success("exports.get", {"exportId": str(export_id)})
 
+    def open_download(self, export_id):
+        from stm32_monitor.protocol import success
+
+        self.calls.append(("download", export_id, None))
+        return success("exports.download", {"exportId": str(export_id)})
+
 
 class FakeObservation:
     def __init__(self, probe_id: str) -> None:
@@ -526,16 +532,18 @@ def test_history_export_status_and_live_dispatch_are_protocol_bounded(tmp_path: 
                 "monitor.history.query",
                 {},
                 query={
-                    "sessionId": "session-a",
                     "startNs": "1",
                     "endNs": "10",
                     "limit": "5",
+                    "runId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+                    "groupId": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+                    "selectorKind": "variable",
+                    "selector": "counter",
                 },
             )
             created = await runtime.dispatch(
                 "monitor.exports.create",
                 {
-                    "sessionId": "session-a",
                     "startNs": 1,
                     "endNs": 10,
                     "format": "jsonl",
@@ -546,14 +554,35 @@ def test_history_export_status_and_live_dispatch_are_protocol_bounded(tmp_path: 
             fetched = await runtime.dispatch(
                 "monitor.exports.get", {}, resource_id=export_id
             )
-            assert history.ok and created.ok and fetched.ok
-            assert histories[0].calls[-1][1][0].limit == 5
-            assert exporters[0].calls[-1][1] == UUID(export_id)
+            downloaded = await runtime.dispatch(
+                "monitor.exports.download", {}, resource_id=export_id
+            )
+            assert history.ok and created.ok and fetched.ok and downloaded.ok
+            query = histories[0].calls[-1][1][0]
+            assert query.session_id == "session-a"
+            assert query.limit == 5
+            assert query.run_id == UUID("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+            assert query.group_id == UUID("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb")
+            assert (query.selector_kind, query.selector) == ("variable", "counter")
+            assert exporters[0].calls[0][1].session_id == "session-a"
+            assert exporters[0].calls[-2][1] == UUID(export_id)
+            assert exporters[0].calls[-1] == ("download", UUID(export_id), None)
             invalid = await runtime.dispatch(
                 "monitor.history.query", {}, query={"startNs": "x"}
             )
+            incomplete_selector = await runtime.dispatch(
+                "monitor.history.query",
+                {},
+                query={"startNs": "1", "endNs": "10", "selector": "counter"},
+            )
+            identity_override = await runtime.dispatch(
+                "monitor.history.query",
+                {},
+                query={"sessionId": "other", "startNs": "1", "endNs": "10"},
+            )
             unsupported = await runtime.dispatch("monitor.unknown", {})
-            assert not invalid.ok and not unsupported.ok
+            assert not invalid.ok and not incomplete_selector.ok
+            assert not identity_override.ok and not unsupported.ok
         finally:
             await runtime.stop()
 

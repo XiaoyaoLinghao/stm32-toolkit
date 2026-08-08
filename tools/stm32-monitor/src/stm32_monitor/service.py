@@ -24,6 +24,7 @@ MONITOR_PROTOCOL_VERSION = "stm32-toolkit-monitor/1"
 MONITOR_VERSION = "0.4.0"
 _FORBIDDEN_KEYS = {
     "workspaceid",
+    "sessionid",
     "projectroot",
     "dataroot",
     "target",
@@ -261,6 +262,9 @@ class MonitorService:
         application.router.add_get(
             "/api/v1/exports/{resource_id}", self._route("monitor.exports.get")
         )
+        application.router.add_get(
+            "/api/v1/exports/{resource_id}/download", self._download
+        )
         application.router.add_get("/api/v1/live", self._live)
 
         runner = web.AppRunner(application, access_log=None)
@@ -477,6 +481,71 @@ class MonitorService:
                 )
 
         return handler
+
+    async def _download(self, request: web.Request) -> web.StreamResponse:
+        operation = "monitor.exports.download"
+        download = None
+        try:
+            self._authorize(request)
+            if request.can_read_body or request.query or "Range" in request.headers:
+                raise _ServiceFailure(
+                    "MONITOR_REQUEST_INVALID", "Monitor request is invalid"
+                )
+            from .exports import ExportDownload, ExportDownloadResult
+
+            value = await self._runtime.dispatch(
+                operation,
+                {},
+                resource_id=request.match_info.get("resource_id"),
+                query={},
+            )
+            if type(value) is ExportDownload:
+                download = value
+            elif type(value) is ExportDownloadResult:
+                if not value.ok or value.data is None:
+                    return _response(
+                        operation,
+                        code=value.code,
+                        message=value.message,
+                        status=409,
+                    )
+                download = value.data
+            else:
+                raise TypeError("runtime returned an unsupported download")
+            response = web.StreamResponse(
+                status=200,
+                headers={
+                    "Content-Type": download.content_type,
+                    "Content-Length": str(download.byte_count),
+                    "Content-Disposition": (
+                        f'attachment; filename="{download.filename}"'
+                    ),
+                },
+            )
+            await response.prepare(request)
+            for chunk in download.iter_chunks():
+                await response.write(chunk)
+            await response.write_eof()
+            return response
+        except _ServiceFailure as error:
+            return _response(
+                operation,
+                code=error.code,
+                message=error.message,
+                status=error.status,
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            return _response(
+                operation,
+                code="MONITOR_INTERNAL_ERROR",
+                message="Monitor Service request failed",
+                status=500,
+            )
+        finally:
+            if download is not None:
+                download.close()
 
     async def _live(self, request: web.Request) -> web.StreamResponse:
         try:

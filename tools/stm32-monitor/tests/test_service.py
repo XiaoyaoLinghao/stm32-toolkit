@@ -3,6 +3,8 @@ from __future__ import annotations
 import asyncio
 import json
 from collections.abc import AsyncIterator
+from io import BytesIO
+from uuid import UUID
 
 import aiohttp
 import pytest
@@ -262,7 +264,7 @@ def test_every_route_has_one_exact_method_and_operation_mapping() -> None:
         ("POST", "/api/v1/sampling/pause", "monitor.sampling.pause", None),
         ("POST", "/api/v1/sampling/resume", "monitor.sampling.resume", None),
         ("POST", "/api/v1/sampling/stop", "monitor.sampling.stop", None),
-        ("GET", "/api/v1/history?sessionId=session-a", "monitor.history.query", None),
+        ("GET", "/api/v1/history?startNs=0&endNs=1", "monitor.history.query", None),
         ("POST", "/api/v1/exports", "monitor.exports.create", None),
         ("GET", "/api/v1/exports/export-a", "monitor.exports.get", "export-a"),
     ]
@@ -286,6 +288,98 @@ def test_every_route_has_one_exact_method_and_operation_mapping() -> None:
                 assert result["operation"] == operation
                 assert runtime.calls[-1][0] == operation
                 assert runtime.calls[-1][2] == resource_id
+
+    asyncio.run(_with_service(scenario))
+
+
+def test_verified_export_download_streams_fixed_public_headers_and_rejects_overrides() -> None:
+    from stm32_monitor.exports import ExportDownload, ExportDownloadResult
+
+    export_id = UUID("12345678-1234-5678-9234-567812345678")
+    body = b'{"value":1}\n'
+
+    async def scenario(runtime, _service, endpoint) -> None:
+        auth = {"Authorization": f"Bearer {TOKEN_BYTES.hex()}"}
+        runtime.result = ExportDownload(
+            BytesIO(body),
+            export_id=export_id,
+            format_name="jsonl",
+            byte_count=len(body),
+        )
+        async with aiohttp.ClientSession() as client:
+            response = await client.get(
+                endpoint.url + f"/api/v1/exports/{export_id}/download",
+                headers=auth,
+            )
+            received = await response.read()
+            runtime.result = ExportDownloadResult(
+                True,
+                "OK",
+                "",
+                ExportDownload(
+                    BytesIO(body),
+                    export_id=export_id,
+                    format_name="jsonl",
+                    byte_count=len(body),
+                ),
+            )
+            wrapped = await client.get(
+                endpoint.url + f"/api/v1/exports/{export_id}/download",
+                headers=auth,
+            )
+            assert await wrapped.read() == body
+            runtime.result = ExportDownloadResult(
+                False, "MONITOR_EXPORT_FAILED", "history export is unavailable", None
+            )
+            unavailable = await client.get(
+                endpoint.url + f"/api/v1/exports/{export_id}/download",
+                headers=auth,
+            )
+            runtime.result = object()
+            invalid_runtime = await client.get(
+                endpoint.url + f"/api/v1/exports/{export_id}/download",
+                headers=auth,
+            )
+            calls_before_rejected_inputs = len(runtime.calls)
+            ranged = await client.get(
+                endpoint.url + f"/api/v1/exports/{export_id}/download",
+                headers={**auth, "Range": "bytes=0-1"},
+            )
+            path_override = await client.get(
+                endpoint.url
+                + f"/api/v1/exports/{export_id}/download?path=C:%5Cprivate%5Cx",
+                headers=auth,
+            )
+            filename_override = await client.get(
+                endpoint.url
+                + f"/api/v1/exports/{export_id}/download?filename=secret.jsonl",
+                headers=auth,
+            )
+
+        assert response.status == 200 and received == body
+        assert wrapped.status == 200
+        assert unavailable.status == 409
+        assert invalid_runtime.status == 500
+        assert response.headers["Content-Type"] == "application/x-ndjson"
+        assert response.headers["Content-Length"] == str(len(body))
+        assert response.headers["Content-Disposition"] == (
+            f'attachment; filename="history-{export_id}.jsonl"'
+        )
+        public_headers = json.dumps(dict(response.headers))
+        assert "C:\\private" not in public_headers
+        assert TOKEN_BYTES.hex() not in public_headers
+        assert [ranged.status, path_override.status, filename_override.status] == [
+            400,
+            400,
+            400,
+        ]
+        assert len(runtime.calls) == calls_before_rejected_inputs
+        assert runtime.calls[0] == (
+            "monitor.exports.download",
+            {},
+            str(export_id),
+            {},
+        )
 
     asyncio.run(_with_service(scenario))
 
@@ -410,7 +504,17 @@ def test_duplicate_query_and_json_object_keys_reject_before_dispatch() -> None:
         async with aiohttp.ClientSession() as client:
             duplicate_query = await client.get(
                 endpoint.url
-                + "/api/v1/history?sessionId=session-a&sessionId=session-b&startNs=0&endNs=1",
+                + "/api/v1/history?startNs=0&startNs=1&endNs=2",
+                headers=headers,
+            )
+            session_override = await client.get(
+                endpoint.url
+                + "/api/v1/history?startNs=0&endNs=1&sessionId=session-b",
+                headers=headers,
+            )
+            workspace_override = await client.get(
+                endpoint.url
+                + "/api/v1/history?startNs=0&endNs=1&workspaceId=workspace-b",
                 headers=headers,
             )
             duplicate_top = await client.post(
@@ -425,9 +529,11 @@ def test_duplicate_query_and_json_object_keys_reject_before_dispatch() -> None:
             )
         assert [
             duplicate_query.status,
+            session_override.status,
+            workspace_override.status,
             duplicate_top.status,
             duplicate_nested.status,
-        ] == [400, 400, 400]
+        ] == [400, 400, 400, 400, 400]
         assert runtime.calls == []
 
     asyncio.run(_with_service(scenario))

@@ -750,6 +750,144 @@ def test_append_and_half_open_query_preserve_full_immutable_evidence(tmp_path: P
         store.close()
 
 
+def test_history_filters_run_group_and_exact_symbolic_selector_with_bound_cursor(
+    tmp_path: Path,
+) -> None:
+    paths = _paths(tmp_path)
+    store = HistoryStore(paths)
+    other_group = UUID("33333333-3333-4333-8333-333333333333")
+    other_run = UUID("44444444-4444-4444-8444-444444444444")
+    try:
+        first = replace(
+            _batch(paths, 1, captured_ns=100),
+            values=(
+                SampleValue(
+                    WatchItem.variable("counter"),
+                    "OK",
+                    typed_value={"type": "uint32", "value": 1},
+                ),
+                SampleValue(
+                    WatchItem.register("GPIOA.ODR"),
+                    "OK",
+                    typed_value={"type": "uint32", "value": 2},
+                ),
+            ),
+        )
+        second = replace(
+            _batch(paths, 2, captured_ns=200),
+            group_id=other_group,
+            values=(
+                SampleValue(
+                    WatchItem.variable("counter"),
+                    "OK",
+                    typed_value={"type": "uint32", "value": 3},
+                ),
+            ),
+        )
+        third = replace(
+            _batch(paths, 1, captured_ns=300),
+            run_id=other_run,
+            values=(
+                SampleValue(
+                    WatchItem.variable("counter"),
+                    "OK",
+                    typed_value={"type": "uint32", "value": 4},
+                ),
+            ),
+        )
+        for batch in (first, second, third):
+            assert store.append_batch(batch).ok
+
+        by_run = store.query_history(
+            HistoryQuery("monitor-1", 0, 1_000, run_id=other_run)
+        )
+        by_group = store.query_history(
+            HistoryQuery("monitor-1", 0, 1_000, group_id=other_group)
+        )
+        by_selector = store.query_history(
+            HistoryQuery(
+                "monitor-1",
+                0,
+                1_000,
+                selector_kind="register",
+                selector="GPIOA.ODR",
+            )
+        )
+        first_page = store.query_history(
+            HistoryQuery(
+                "monitor-1",
+                0,
+                1_000,
+                limit=1,
+                selector_kind="variable",
+                selector="counter",
+            )
+        )
+
+        assert [row["runId"] for row in flatten_history_page(by_run.data)] == [
+            str(other_run)
+        ]
+        assert [row["groupId"] for row in flatten_history_page(by_group.data)] == [
+            str(other_group)
+        ]
+        assert [row["watch"] for row in flatten_history_page(by_selector.data)] == [
+            {"kind": "register", "registerPath": "GPIOA.ODR"}
+        ]
+        assert first_page.ok and first_page.data.next_cursor is not None
+        resumed = store.query_history(
+            HistoryQuery(
+                "monitor-1",
+                0,
+                1_000,
+                cursor=first_page.data.next_cursor,
+                selector_kind="variable",
+                selector="counter",
+            )
+        )
+        assert [row["typedValue"]["value"] for row in flatten_history_page(resumed.data)] == [
+            3,
+            4,
+        ]
+
+        mismatched = store.query_history(
+            HistoryQuery(
+                "monitor-1",
+                0,
+                1_000,
+                cursor=first_page.data.next_cursor,
+                selector_kind="register",
+                selector="GPIOA.ODR",
+            )
+        )
+        assert not mismatched.ok and mismatched.code == "MONITOR_HISTORY_QUERY_INVALID"
+    finally:
+        store.close()
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"run_id": "22222222-2222-4222-8222-222222222222"},
+        {"group_id": "11111111-1111-4111-8111-111111111111"},
+        {"selector_kind": "variable"},
+        {"selector": "counter"},
+        {"selector_kind": "memory", "selector": "counter"},
+    ],
+)
+def test_history_filter_model_rejects_wrong_types_and_incomplete_selector_pair(
+    tmp_path: Path, changes: dict[str, object]
+) -> None:
+    paths = _paths(tmp_path)
+    store = HistoryStore(paths)
+    try:
+        result = store.query_history(
+            replace(HistoryQuery("monitor-1", 0, 1_000), **changes)
+        )
+        assert not result.ok and result.code == "MONITOR_HISTORY_QUERY_INVALID"
+    finally:
+        store.close()
+
+
 def test_history_survives_group_rename_and_delete(tmp_path: Path) -> None:
     paths = _paths(tmp_path)
     groups = GroupStore(paths)
