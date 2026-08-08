@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import os
 import re
@@ -20,6 +21,7 @@ from stm32_toolkit.result import OperationResult
 
 from .flash import _load_fresh_firmware, _verify_segments
 from .model import OperationLevel
+from .service import _await_task_completion
 
 _BEGIN_OPERATION = "stm32_debug_handoff_begin"
 _END_OPERATION = "stm32_debug_handoff_end"
@@ -453,7 +455,13 @@ def _validate_state(value: dict[str, object]) -> dict[str, object]:
     state = value.get("state")
     ticket = value.get("ticketId")
     selection = value.get("previousWatchSelection")
-    if state not in ("paused-for-debug", "externally-owned", "reacquiring", "observing"):
+    if state not in (
+        "paused-for-debug",
+        "externally-owned",
+        "reacquiring",
+        "observing-pending-release",
+        "observing",
+    ):
         raise _fail("HANDOFF_STATE_INVALID", "Debug handoff state is invalid", rule="state")
     if state == "observing":
         if ticket is not None or selection != []:
@@ -539,7 +547,7 @@ def _configuration(config: object, root: Path) -> tuple[str, str, str]:
     if (
         any(not isinstance(value, str) or _IDENTIFIER.fullmatch(value) is None for value in (probe, workspace, session))
         or not root_matches
-        or level_value != OperationLevel.MODIFY.value
+        or level_value != OperationLevel.OBSERVE.value
     ):
         raise _fail("HANDOFF_SUPERVISOR_INVALID", "Probe supervisor configuration is invalid")
     return probe, workspace, session
@@ -554,7 +562,7 @@ def _endpoint(endpoint: object, probe: str, workspace: str, session: str) -> str
         or getattr(endpoint, "session_id", None) != session
         or not isinstance(lease_id, str)
         or _IDENTIFIER.fullmatch(lease_id) is None
-        or getattr(level, "value", level) != OperationLevel.MODIFY.value
+        or getattr(level, "value", level) != OperationLevel.OBSERVE.value
     ):
         raise _fail("HANDOFF_SUPERVISOR_INVALID", "Probe supervisor endpoint is invalid")
     return lease_id
@@ -706,7 +714,13 @@ def _ticket(state: Mapping[str, object], executable: str) -> HandoffTicket:
     )
 
 
-def _prove_released(supervisor: object, probe: str, lease_id: str, endpoint_path: Path | None) -> None:
+def _prove_external_reservation(
+    supervisor: object,
+    probe: str,
+    lease_id: str,
+    ticket: str,
+    endpoint_path: Path | None,
+) -> None:
     if getattr(supervisor, "endpoint", None) is not None:
         raise _fail("HANDOFF_STOP_FAILED", "Probe Service did not stop cleanly")
     if endpoint_path is not None and endpoint_path.exists():
@@ -723,8 +737,19 @@ def _prove_released(supervisor: object, probe: str, lease_id: str, endpoint_path
         )
     except Exception:
         raise _fail("HANDOFF_STOP_FAILED", "Probe lease release could not be proven") from None
-    if record != {"schemaVersion": 1, "state": "released", "leaseId": lease_id}:
-        raise _fail("HANDOFF_STOP_FAILED", "Probe lease release could not be proven")
+    expected_digest = hashlib.sha256(ticket.encode("ascii")).hexdigest()
+    if (
+        record is None
+        or record.get("schemaVersion") != 1
+        or record.get("state") != "externally-owned"
+        or record.get("leaseId") != lease_id
+        or record.get("ticketSha256") != expected_digest
+        or ticket in json.dumps(record, sort_keys=True)
+    ):
+        raise _fail(
+            "HANDOFF_STOP_FAILED",
+            "External probe reservation could not be proven",
+        )
 
 
 async def begin_debug_handoff(
@@ -772,12 +797,29 @@ async def begin_debug_handoff(
                     ):
                         raise _fail("HANDOFF_STATE_CONFLICT", "Another debug handoff is active")
                     if state["state"] == "externally-owned":
-                        _prove_released(
+                        _prove_external_reservation(
                             supervisor,
                             probe,
                             str(state["leaseId"]),
+                            str(state["ticketId"]),
                             session_root / "probe-endpoint.json",
                         )
+                        return OperationResult.success(
+                            _BEGIN_OPERATION, _ticket(state, firmware.elf_path)
+                        )
+                    if (
+                        state["state"] == "paused-for-debug"
+                        and getattr(supervisor, "endpoint", None) is None
+                    ):
+                        _prove_external_reservation(
+                            supervisor,
+                            probe,
+                            str(state["leaseId"]),
+                            str(state["ticketId"]),
+                            session_root / "probe-endpoint.json",
+                        )
+                        state["state"] = "externally-owned"
+                        _write_state(session_root, state)
                         return OperationResult.success(
                             _BEGIN_OPERATION, _ticket(state, firmware.elf_path)
                         )
@@ -878,13 +920,30 @@ async def begin_debug_handoff(
                 stop_cancellation: asyncio.CancelledError | None = None
                 if endpoint is not None:
                     try:
+                        await supervisor.reserve_external_handoff(
+                            str(state["ticketId"])
+                        )
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception:
+                        raise _fail(
+                            "HANDOFF_RESERVATION_FAILED",
+                            "External probe reservation could not be created",
+                        ) from None
+                    try:
                         await supervisor.stop()
                     except asyncio.CancelledError as error:
                         stop_cancellation = error
                     except Exception:
                         raise _fail("HANDOFF_STOP_FAILED", "Probe Service could not be stopped") from None
                 try:
-                    _prove_released(supervisor, probe, str(state["leaseId"]), endpoint_path)
+                    _prove_external_reservation(
+                        supervisor,
+                        probe,
+                        str(state["leaseId"]),
+                        str(state["ticketId"]),
+                        endpoint_path,
+                    )
                     state["state"] = "externally-owned"
                     _write_state(session_root, state)
                 finally:
@@ -897,6 +956,65 @@ async def begin_debug_handoff(
         raise
     except Exception as error:
         return _failure(_BEGIN_OPERATION, error)
+
+
+async def _close_reacquired_ownership(supervisor: object, client: object | None) -> None:
+    async def cleanup() -> None:
+        first_error: Exception | None = None
+        cancellation: asyncio.CancelledError | None = None
+        close = getattr(client, "close", None)
+        if callable(close):
+            try:
+                await close()
+            except asyncio.CancelledError as error:
+                cancellation = error
+            except Exception as error:
+                first_error = error
+        try:
+            await supervisor.stop()
+        except asyncio.CancelledError as error:
+            if cancellation is None:
+                cancellation = error
+        except Exception as error:
+            if first_error is None:
+                first_error = error
+        if first_error is not None:
+            raise first_error
+        if cancellation is not None:
+            raise cancellation
+
+    task = asyncio.create_task(cleanup())
+    await _await_task_completion(task)
+
+
+async def _close_client_transport(client: object) -> None:
+    close = getattr(client, "close", None)
+    if callable(close):
+        task = asyncio.create_task(close())
+        await _await_task_completion(task)
+
+
+async def _finish_consumed_handoff(
+    state: dict[str, object],
+    supervisor: object,
+    ticket: str,
+) -> HandoffRestore | None:
+    selection = tuple(str(item) for item in state["previousWatchSelection"])
+    if state["state"] != "observing-pending-release":
+        if not await supervisor.finalize_consumed_handoff(ticket):
+            return None
+        state["state"] = "observing-pending-release"
+        _write_state(getattr(supervisor, "_config").session_root, state)
+    if not await supervisor.acknowledge_consumed_handoff(ticket):
+        raise _fail(
+            "HANDOFF_REACQUIRE_FAILED",
+            "Consumed handoff ownership could not be released",
+        )
+    state["state"] = "observing"
+    state["ticketId"] = None
+    state["previousWatchSelection"] = []
+    _write_state(getattr(supervisor, "_config").session_root, state)
+    return HandoffRestore(selection)
 
 
 async def end_debug_handoff(
@@ -927,7 +1045,12 @@ async def end_debug_handoff(
                 state = _read_state(session_root)
                 if (
                     state is None
-                    or state.get("state") not in ("externally-owned", "reacquiring")
+                    or state.get("state")
+                    not in (
+                        "externally-owned",
+                        "reacquiring",
+                        "observing-pending-release",
+                    )
                     or not secrets.compare_digest(str(state.get("ticketId", "")), ticket)
                     or not _state_matches(
                         state,
@@ -940,6 +1063,12 @@ async def end_debug_handoff(
                     )
                 ):
                     raise _fail("HANDOFF_TICKET_INVALID", "Debug handoff ticket is invalid")
+                if state["state"] == "observing-pending-release":
+                    restored = await _finish_consumed_handoff(
+                        state, supervisor, ticket
+                    )
+                    assert restored is not None
+                    return OperationResult.success(_END_OPERATION, restored)
                 if state["state"] == "externally-owned":
                     state["state"] = "reacquiring"
                     _write_state(session_root, state)
@@ -963,48 +1092,85 @@ async def end_debug_handoff(
                     session=session,
                     target=str(state["target"]),
                 )
+                restored = await _finish_consumed_handoff(
+                    state, supervisor, ticket
+                )
+                if restored is not None:
+                    return OperationResult.success(_END_OPERATION, restored)
+                claimed = False
+                client: object | None = None
                 try:
-                    endpoint = await supervisor.start()
+                    endpoint = await supervisor.start(handoff_ticket=ticket)
+                    claimed = True
                 except asyncio.CancelledError:
                     raise
                 except Exception:
                     raise _fail("HANDOFF_REACQUIRE_FAILED", "Probe Service could not be reacquired") from None
-                _endpoint(endpoint, probe, workspace, session)
                 try:
-                    client = client_factory(endpoint)
+                    _endpoint(endpoint, probe, workspace, session)
+                    try:
+                        client = client_factory(endpoint)
+                    except Exception:
+                        raise _fail("HANDOFF_REACQUIRE_FAILED", "Probe client could not be created") from None
+                    _validate_client_endpoint(client, endpoint)
+                    attachment = await client.attach(probe, str(state["target"]))
+                    _validate_attachment(attachment, probe, str(state["target"]))
+                    firmware = _load_fresh_firmware(root)
+                    if not _state_matches(
+                        state,
+                        probe=probe,
+                        workspace=workspace,
+                        session=session,
+                        target=str(firmware.model.debug.target),
+                        build_id=str(firmware.identity.get("buildId", "")),
+                        elf_sha=str(firmware.identity.get("elfSha256", "")),
+                    ):
+                        raise _fail("HANDOFF_IDENTITY_MISMATCH", "Firmware identity changed during debug handoff")
+                    flash_result = _load_flash_result(root)
+                    _validate_flash(
+                        flash_result,
+                        firmware,
+                        probe=probe,
+                        workspace=workspace,
+                        session=session,
+                        target=str(state["target"]),
+                    )
+                    await _verify_segments(client, firmware.segments)
+                    selection = tuple(str(item) for item in state["previousWatchSelection"])
+                    await _close_client_transport(client)
+                    client = None
+                    await supervisor.consume_external_handoff(ticket)
+                except BaseException:
+                    if claimed:
+                        try:
+                            await _close_reacquired_ownership(supervisor, client)
+                        except asyncio.CancelledError:
+                            raise
+                        except Exception:
+                            raise _fail(
+                                "HANDOFF_REACQUIRE_FAILED",
+                                "Probe Service cleanup failed after reacquisition",
+                            ) from None
+                    raise
+                try:
+                    await _close_reacquired_ownership(supervisor, client)
+                except asyncio.CancelledError:
+                    raise
                 except Exception:
-                    raise _fail("HANDOFF_REACQUIRE_FAILED", "Probe client could not be created") from None
-                _validate_client_endpoint(client, endpoint)
-                attachment = await client.attach(probe, str(state["target"]))
-                _validate_attachment(attachment, probe, str(state["target"]))
-                firmware = _load_fresh_firmware(root)
-                if not _state_matches(
-                    state,
-                    probe=probe,
-                    workspace=workspace,
-                    session=session,
-                    target=str(firmware.model.debug.target),
-                    build_id=str(firmware.identity.get("buildId", "")),
-                    elf_sha=str(firmware.identity.get("elfSha256", "")),
-                ):
-                    raise _fail("HANDOFF_IDENTITY_MISMATCH", "Firmware identity changed during debug handoff")
-                flash_result = _load_flash_result(root)
-                _validate_flash(
-                    flash_result,
-                    firmware,
-                    probe=probe,
-                    workspace=workspace,
-                    session=session,
-                    target=str(state["target"]),
+                    raise _fail(
+                        "HANDOFF_REACQUIRE_FAILED",
+                        "Probe Service cleanup failed after reacquisition",
+                    ) from None
+                restored = await _finish_consumed_handoff(
+                    state, supervisor, ticket
                 )
-                await _verify_segments(client, firmware.segments)
-                selection = tuple(str(item) for item in state["previousWatchSelection"])
-                state["state"] = "observing"
-                state["ticketId"] = None
-                state["previousWatchSelection"] = []
-                _write_state(session_root, state)
+                if restored is None:
+                    raise _fail(
+                        "HANDOFF_REACQUIRE_FAILED",
+                        "Consumed handoff ownership could not be finalized",
+                    )
                 return OperationResult.success(
-                    _END_OPERATION, HandoffRestore(selection)
+                    _END_OPERATION, restored
                 )
     except asyncio.CancelledError:
         raise

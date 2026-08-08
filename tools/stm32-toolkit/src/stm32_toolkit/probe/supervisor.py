@@ -15,6 +15,7 @@ from .service import (
     ProbeEndpoint,
     ProbeService,
     ProbeServiceError,
+    _await_commit_completion,
     _await_task_completion,
 )
 
@@ -49,7 +50,7 @@ class ProbeServiceSupervisor:
     def endpoint(self) -> ProbeEndpoint | None:
         return self._endpoint
 
-    async def start(self) -> ProbeEndpoint:
+    async def start(self, *, handoff_ticket: str | None = None) -> ProbeEndpoint:
         async with self._lifecycle_lock:
             if self._endpoint is not None:
                 return self._endpoint
@@ -66,6 +67,7 @@ class ProbeServiceSupervisor:
                     operation_level=self._config.operation_level,
                     session_root=self._config.session_root,
                     project_root=self._config.project_root,
+                    handoff_ticket=handoff_ticket,
                 )
                 endpoint = await service.start()
             except BaseException:
@@ -106,6 +108,50 @@ class ProbeServiceSupervisor:
                     "PROBE_SERVICE_UNAVAILABLE", "Probe Service is unavailable"
                 )
             await service.drain_modifications()
+
+    async def reserve_external_handoff(self, ticket: str) -> None:
+        async with self._lifecycle_lock:
+            service = self._service
+            if service is None or self._endpoint is None:
+                raise ProbeServiceError(
+                    "PROBE_SERVICE_UNAVAILABLE", "Probe Service is unavailable"
+                )
+            await service.reserve_external_handoff(ticket)
+
+    async def consume_external_handoff(self, ticket: str) -> None:
+        async with self._lifecycle_lock:
+            service = self._service
+            if service is None or self._endpoint is None:
+                raise ProbeServiceError(
+                    "PROBE_SERVICE_UNAVAILABLE", "Probe Service is unavailable"
+                )
+            await service.consume_external_handoff(ticket)
+
+    async def finalize_consumed_handoff(self, ticket: str) -> bool:
+        async with self._lifecycle_lock:
+            task = asyncio.create_task(
+                asyncio.to_thread(
+                    self._lease_manager.finalize_consumed_handoff,
+                    probe_id=self._config.probe_id,
+                    workspace_id=self._config.workspace_id,
+                    session_id=self._config.session_id,
+                    ticket=ticket,
+                )
+            )
+            return bool(await _await_commit_completion(task))
+
+    async def acknowledge_consumed_handoff(self, ticket: str) -> bool:
+        async with self._lifecycle_lock:
+            task = asyncio.create_task(
+                asyncio.to_thread(
+                    self._lease_manager.acknowledge_consumed_handoff,
+                    probe_id=self._config.probe_id,
+                    workspace_id=self._config.workspace_id,
+                    session_id=self._config.session_id,
+                    ticket=ticket,
+                )
+            )
+            return bool(await _await_commit_completion(task))
 
     async def __aenter__(self) -> ProbeEndpoint:
         return await self.start()

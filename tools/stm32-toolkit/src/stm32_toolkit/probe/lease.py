@@ -6,8 +6,10 @@ import hashlib
 import json
 import os
 import re
+import secrets
 import stat
 import sys
+import threading
 import urllib.request
 import urllib.parse
 from dataclasses import dataclass
@@ -23,7 +25,9 @@ from .model import OperationLevel, ProbeOwnerEvidence
 from .protocol import PROBE_PROTOCOL_VERSION
 
 _IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
+_HANDOFF_TICKET = re.compile(r"^[0-9a-f]{64}$")
 _REPARSE_POINT = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+_REGISTRY_RECORD_LIMIT = 16_384
 
 
 @dataclass(frozen=True)
@@ -197,14 +201,68 @@ def _unlock_handle(handle: BinaryIO) -> None:
 
 
 def _read_record_path(path: Path) -> dict[str, object] | None:
+    descriptor = -1
     try:
-        raw = path.read_bytes().strip()
+        parent = os.lstat(path.parent)
+        if _is_redirect(path.parent, parent) or not stat.S_ISDIR(parent.st_mode):
+            raise ProbeLeaseError(
+                "PROBE_REGISTRY_UNSAFE", "Probe registry record is unsafe"
+            )
+        metadata = os.lstat(path)
     except FileNotFoundError:
         return None
+    except ProbeLeaseError:
+        raise
     except OSError as error:
         raise ProbeLeaseError(
             "PROBE_REGISTRY_UNAVAILABLE", "Probe registry record is unavailable"
         ) from error
+    if _is_redirect(path, metadata) or not stat.S_ISREG(metadata.st_mode):
+        raise ProbeLeaseError(
+            "PROBE_REGISTRY_UNSAFE", "Probe registry record is unsafe"
+        )
+    try:
+        descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_BINARY", 0))
+        opened = os.fstat(descriptor)
+        named = os.lstat(path)
+        if (
+            _is_redirect(path, named)
+            or not stat.S_ISREG(opened.st_mode)
+            or not stat.S_ISREG(named.st_mode)
+            or (opened.st_dev, opened.st_ino) != (named.st_dev, named.st_ino)
+        ):
+            raise ProbeLeaseError(
+                "PROBE_REGISTRY_UNSAFE", "Probe registry record changed during read"
+            )
+        with os.fdopen(descriptor, "rb") as handle:
+            descriptor = -1
+            raw = handle.read(_REGISTRY_RECORD_LIMIT + 1).strip()
+        named_after = os.lstat(path)
+        parent_after = os.lstat(path.parent)
+        if (
+            _is_redirect(path, named_after)
+            or _is_redirect(path.parent, parent_after)
+            or (opened.st_dev, opened.st_ino)
+            != (named_after.st_dev, named_after.st_ino)
+            or (parent.st_dev, parent.st_ino)
+            != (parent_after.st_dev, parent_after.st_ino)
+        ):
+            raise ProbeLeaseError(
+                "PROBE_REGISTRY_UNSAFE", "Probe registry record changed during read"
+            )
+    except ProbeLeaseError:
+        raise
+    except OSError as error:
+        raise ProbeLeaseError(
+            "PROBE_REGISTRY_UNAVAILABLE", "Probe registry record is unavailable"
+        ) from error
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+    if len(raw) > _REGISTRY_RECORD_LIMIT:
+        raise ProbeLeaseError(
+            "PROBE_REGISTRY_UNAVAILABLE", "Probe registry record is invalid"
+        )
     if not raw:
         return None
     try:
@@ -227,13 +285,65 @@ def _write_record_path(path: Path, record: dict[str, object]) -> None:
     temporary = path.with_name(f".{path.name}.{uuid4().hex}.tmp")
     descriptor = -1
     try:
+        parent = os.lstat(path.parent)
+        if _is_redirect(path.parent, parent) or not stat.S_ISDIR(parent.st_mode):
+            raise ProbeLeaseError(
+                "PROBE_REGISTRY_UNSAFE", "Probe registry record is unsafe"
+            )
+        try:
+            destination = os.lstat(path)
+        except FileNotFoundError:
+            destination = None
+        if destination is not None and (
+            _is_redirect(path, destination)
+            or not stat.S_ISREG(destination.st_mode)
+        ):
+            raise ProbeLeaseError(
+                "PROBE_REGISTRY_UNSAFE", "Probe registry record is unsafe"
+            )
         descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         with os.fdopen(descriptor, "wb", closefd=True) as handle:
             descriptor = -1
             handle.write(payload)
             handle.flush()
             os.fsync(handle.fileno())
+        parent_after = os.lstat(path.parent)
+        if (
+            _is_redirect(path.parent, parent_after)
+            or (parent.st_dev, parent.st_ino)
+            != (parent_after.st_dev, parent_after.st_ino)
+        ):
+            raise ProbeLeaseError(
+                "PROBE_REGISTRY_UNSAFE", "Probe registry changed during write"
+            )
+        try:
+            destination_after = os.lstat(path)
+        except FileNotFoundError:
+            destination_after = None
+        if (
+            (destination is None) != (destination_after is None)
+            or (
+                destination is not None
+                and destination_after is not None
+                and (
+                    _is_redirect(path, destination_after)
+                    or (destination.st_dev, destination.st_ino)
+                    != (destination_after.st_dev, destination_after.st_ino)
+                )
+            )
+        ):
+            raise ProbeLeaseError(
+                "PROBE_REGISTRY_UNSAFE", "Probe registry changed during write"
+            )
         os.replace(temporary, path)
+    except ProbeLeaseError:
+        if descriptor >= 0:
+            os.close(descriptor)
+        try:
+            temporary.unlink()
+        except OSError:
+            pass
+        raise
     except OSError as error:
         if descriptor >= 0:
             os.close(descriptor)
@@ -276,6 +386,37 @@ def _validate_record_version(record: dict[str, object]) -> None:
         )
 
 
+def _consumed_handoff_tombstone(
+    record: dict[str, object],
+) -> dict[str, object]:
+    digest = record.get("consumedTicketSha256")
+    if digest is None:
+        return {}
+    probe_id = record.get("consumedProbeId", record.get("probeId"))
+    workspace_id = record.get("consumedWorkspaceId", record.get("workspaceId"))
+    session_id = record.get("consumedSessionId", record.get("sessionId"))
+    if (
+        not isinstance(digest, str)
+        or _HANDOFF_TICKET.fullmatch(digest) is None
+        or not isinstance(probe_id, str)
+        or _IDENTIFIER.fullmatch(probe_id) is None
+        or not isinstance(workspace_id, str)
+        or _IDENTIFIER.fullmatch(workspace_id) is None
+        or not isinstance(session_id, str)
+        or _IDENTIFIER.fullmatch(session_id) is None
+    ):
+        raise ProbeLeaseError(
+            "PROBE_REGISTRY_UNAVAILABLE",
+            "Consumed probe handoff recovery evidence is invalid",
+        )
+    return {
+        "consumedTicketSha256": digest,
+        "consumedProbeId": probe_id,
+        "consumedWorkspaceId": workspace_id,
+        "consumedSessionId": session_id,
+    }
+
+
 class ProbeLease:
     def __init__(
         self,
@@ -284,11 +425,17 @@ class ProbeLease:
         record_path: Path,
         record: dict[str, object],
         owner_identity: ProcessIdentity,
+        external_record: dict[str, object] | None = None,
     ) -> None:
         self._handle = handle
         self.record_path = record_path
         self._record = dict(record)
         self._owner_identity = owner_identity
+        self._external_record = (
+            None if external_record is None else dict(external_record)
+        )
+        self._record_lock = threading.RLock()
+        self._external_consumed = False
         self._released = False
 
     @property
@@ -333,27 +480,84 @@ class ProbeLease:
         return current
 
     def heartbeat(self, *, utc_now: Callable[[], datetime] = _utc_now) -> None:
-        if self._released:
-            raise ProbeLeaseError("PROBE_LEASE_LOST", "Probe lease is not active")
-        current = self._require_current_record()
-        current["heartbeatAtUtc"] = _format_utc(utc_now())
-        _write_record_path(self.record_path, current)
-        self._record = current
+        with self._record_lock:
+            if self._released:
+                raise ProbeLeaseError("PROBE_LEASE_LOST", "Probe lease is not active")
+            current = self._require_current_record()
+            current["heartbeatAtUtc"] = _format_utc(utc_now())
+            _write_record_path(self.record_path, current)
+            self._record = current
+
+    def reserve_external_handoff(self, ticket: str) -> None:
+        if not isinstance(ticket, str) or _HANDOFF_TICKET.fullmatch(ticket) is None:
+            raise ProbeLeaseError(
+                "PROBE_LEASE_INVALID", "External handoff ticket is invalid"
+            )
+        with self._record_lock:
+            if self._released:
+                raise ProbeLeaseError(
+                    "PROBE_LEASE_LOST", "Probe lease is not available for handoff"
+                )
+            current = self._require_current_record()
+            digest = hashlib.sha256(ticket.encode("ascii")).hexdigest()
+            if self._external_record is not None:
+                expected = str(current.get("ticketSha256", ""))
+                if secrets.compare_digest(digest, expected):
+                    return
+                raise ProbeLeaseError(
+                    "PROBE_LEASE_LOST", "Probe lease is not available for handoff"
+                )
+            external = dict(current)
+            external["state"] = "externally-owned"
+            external["ticketSha256"] = digest
+            _write_record_path(self.record_path, external)
+            self._record = external
+            self._external_record = external
+
+    def consume_external_handoff(self, ticket: str) -> None:
+        if not isinstance(ticket, str) or _HANDOFF_TICKET.fullmatch(ticket) is None:
+            raise ProbeLeaseError(
+                "PROBE_LEASE_INVALID", "External handoff ticket is invalid"
+            )
+        with self._record_lock:
+            if self._released or self._external_record is None:
+                raise ProbeLeaseError(
+                    "PROBE_LEASE_LOST", "External handoff claim is not active"
+                )
+            current = self._require_current_record()
+            expected = str(current.get("ticketSha256", ""))
+            actual = hashlib.sha256(ticket.encode("ascii")).hexdigest()
+            if not secrets.compare_digest(actual, expected):
+                raise ProbeLeaseError(
+                    "PROBE_LEASE_LOST", "External handoff claim does not match"
+                )
+            self._external_consumed = True
 
     def release(self) -> None:
-        if self._released:
-            return
-        self._require_current_record()
-        _write_record_path(
-            self.record_path,
-            {
-                "schemaVersion": 1,
-                "state": "released",
-                "leaseId": self.lease_id,
-            },
-        )
-        self._close_locked_handle()
-        self._released = True
+        with self._record_lock:
+            if self._released:
+                return
+            self._require_current_record()
+            if self._external_record is not None and self._external_consumed:
+                consumed = dict(self._external_record)
+                consumed["state"] = "handoff-consumed"
+                consumed["leaseId"] = self.lease_id
+                _write_record_path(self.record_path, consumed)
+            elif self._external_record is not None:
+                _write_record_path(self.record_path, self._external_record)
+            else:
+                released: dict[str, object] = {
+                    "schemaVersion": 1,
+                    "state": "released",
+                    "leaseId": self.lease_id,
+                }
+                released.update(_consumed_handoff_tombstone(self._record))
+                _write_record_path(
+                    self.record_path,
+                    released,
+                )
+            self._close_locked_handle()
+            self._released = True
 
     def __enter__(self) -> "ProbeLease":
         return self
@@ -470,6 +674,7 @@ class ProbeLeaseManager:
         session_id: str,
         operation_level: OperationLevel,
         health_url: str,
+        handoff_ticket: str | None = None,
     ) -> ProbeLease:
         for field_name, value in (
             ("probe_id", probe_id),
@@ -486,6 +691,13 @@ class ProbeLeaseManager:
             raise ProbeLeaseError(
                 "PROBE_LEASE_INVALID", "Probe health endpoint must be loopback-only"
             ) from error
+        if handoff_ticket is not None and (
+            not isinstance(handoff_ticket, str)
+            or _HANDOFF_TICKET.fullmatch(handoff_ticket) is None
+        ):
+            raise ProbeLeaseError(
+                "PROBE_LEASE_INVALID", "External handoff ticket is invalid"
+            )
 
         self._ensure_registry()
         record_path = self.record_path(probe_id)
@@ -496,7 +708,12 @@ class ProbeLeaseManager:
                 _lock_handle(handle)
             except (OSError, BlockingIOError):
                 record = _read_record_path(record_path)
-                if record is None or record.get("state", "active") != "active":
+                if record is None or record.get("state", "active") not in (
+                    "active",
+                    "externally-owned",
+                    "handoff-consumed",
+                    "handoff-finalized",
+                ):
                     raise ProbeLeaseError(
                         "PROBE_REGISTRY_UNAVAILABLE", "Probe owner record is unavailable"
                     )
@@ -504,16 +721,74 @@ class ProbeLeaseManager:
                 raise ProbeBusyError(_owner_from_record(record))
 
             existing = _read_record_path(record_path)
-            if (
+            consumed_tombstone = (
+                {} if existing is None else _consumed_handoff_tombstone(existing)
+            )
+            external_record: dict[str, object] | None = None
+            if existing is not None and existing.get("state") in (
+                "handoff-consumed",
+                "handoff-finalized",
+            ):
+                _validate_record_version(existing)
+                owner = _owner_from_record(existing)
+                _unlock_handle(handle)
+                handle.close()
+                raise ProbeBusyError(owner)
+            if existing is not None and existing.get("state") == "externally-owned":
+                _validate_record_version(existing)
+                if not self._matches_external_handoff(
+                    existing,
+                    probe_id=probe_id,
+                    workspace_id=workspace_id,
+                    session_id=session_id,
+                    operation_level=operation_level,
+                    ticket=handoff_ticket,
+                ):
+                    owner = _owner_from_record(existing)
+                    _unlock_handle(handle)
+                    handle.close()
+                    raise ProbeBusyError(owner)
+                external_record = dict(existing)
+            elif (
                 existing is not None
                 and existing.get("state", "active") == "active"
             ):
                 _validate_record_version(existing)
+                if "ticketSha256" in existing:
+                    if not self._matches_external_handoff(
+                        existing,
+                        probe_id=probe_id,
+                        workspace_id=workspace_id,
+                        session_id=session_id,
+                        operation_level=operation_level,
+                        ticket=handoff_ticket,
+                    ):
+                        owner = _owner_from_record(existing)
+                        _unlock_handle(handle)
+                        handle.close()
+                        raise ProbeBusyError(owner)
+                    external_record = dict(existing)
+                    external_record["state"] = "externally-owned"
+                    external_record["leaseId"] = str(
+                        existing.get("reservationLeaseId", existing["leaseId"])
+                    )
+                    external_record.pop("reservationLeaseId", None)
+                elif handoff_ticket is not None:
+                    owner = _owner_from_record(existing)
+                    _unlock_handle(handle)
+                    handle.close()
+                    raise ProbeBusyError(owner)
                 if self._is_record_owner_live(existing):
                     owner = _owner_from_record(existing)
                     _unlock_handle(handle)
                     handle.close()
                     raise ProbeBusyError(owner)
+
+            if handoff_ticket is not None and external_record is None:
+                raise ProbeLeaseError(
+                    "PROBE_HANDOFF_INVALID",
+                    "External handoff reservation does not match",
+                )
 
             identity = self._current_identity()
             timestamp = _format_utc(self.utc_now())
@@ -534,12 +809,17 @@ class ProbeLeaseManager:
                 "heartbeatAtUtc": timestamp,
                 "state": "active",
             }
+            record.update(consumed_tombstone)
+            if external_record is not None:
+                record["ticketSha256"] = external_record["ticketSha256"]
+                record["reservationLeaseId"] = external_record["leaseId"]
             _write_record_path(record_path, record)
             return ProbeLease(
                 handle=handle,
                 record_path=record_path,
                 record=record,
                 owner_identity=identity,
+                external_record=external_record,
             )
         except Exception:
             if not handle.closed:
@@ -549,3 +829,162 @@ class ProbeLeaseManager:
                     pass
                 handle.close()
             raise
+
+    @staticmethod
+    def _matches_external_handoff(
+        record: dict[str, object],
+        *,
+        probe_id: str,
+        workspace_id: str,
+        session_id: str,
+        operation_level: OperationLevel,
+        ticket: str | None,
+    ) -> bool:
+        return bool(
+            record.get("operationLevel") == operation_level.value
+            and ProbeLeaseManager._matches_handoff_identity(
+                record,
+                probe_id=probe_id,
+                workspace_id=workspace_id,
+                session_id=session_id,
+                ticket=ticket,
+            )
+        )
+
+    @staticmethod
+    def _matches_handoff_identity(
+        record: dict[str, object],
+        *,
+        probe_id: str,
+        workspace_id: str,
+        session_id: str,
+        ticket: str | None,
+    ) -> bool:
+        if ticket is None:
+            return False
+        digest = hashlib.sha256(ticket.encode("ascii")).hexdigest()
+        expected = record.get("ticketSha256")
+        return bool(
+            isinstance(expected, str)
+            and secrets.compare_digest(digest, expected)
+            and record.get("probeId") == probe_id
+            and record.get("workspaceId") == workspace_id
+            and record.get("sessionId") == session_id
+        )
+
+    def finalize_consumed_handoff(
+        self,
+        *,
+        probe_id: str,
+        workspace_id: str,
+        session_id: str,
+        ticket: str,
+    ) -> bool:
+        return self._transition_consumed_handoff(
+            probe_id=probe_id,
+            workspace_id=workspace_id,
+            session_id=session_id,
+            ticket=ticket,
+            acknowledge=False,
+        )
+
+    def acknowledge_consumed_handoff(
+        self,
+        *,
+        probe_id: str,
+        workspace_id: str,
+        session_id: str,
+        ticket: str,
+    ) -> bool:
+        return self._transition_consumed_handoff(
+            probe_id=probe_id,
+            workspace_id=workspace_id,
+            session_id=session_id,
+            ticket=ticket,
+            acknowledge=True,
+        )
+
+    def _transition_consumed_handoff(
+        self,
+        *,
+        probe_id: str,
+        workspace_id: str,
+        session_id: str,
+        ticket: str,
+        acknowledge: bool,
+    ) -> bool:
+        if (
+            not all(
+                _IDENTIFIER.fullmatch(value)
+                for value in (probe_id, workspace_id, session_id)
+            )
+            or _HANDOFF_TICKET.fullmatch(ticket) is None
+        ):
+            raise ProbeLeaseError(
+                "PROBE_LEASE_INVALID", "External handoff identity is invalid"
+            )
+        self._ensure_registry()
+        record_path = self.record_path(probe_id)
+        handle = self._open_guard(record_path.with_suffix(".guard"))
+        try:
+            _lock_handle(handle)
+            record = _read_record_path(record_path)
+            if record is None:
+                return False
+            state = record.get("state")
+            digest = hashlib.sha256(ticket.encode("ascii")).hexdigest()
+            if state == "released":
+                tombstone = _consumed_handoff_tombstone(record)
+                return bool(
+                    acknowledge
+                    and tombstone.get("consumedProbeId") == probe_id
+                    and tombstone.get("consumedWorkspaceId") == workspace_id
+                    and tombstone.get("consumedSessionId") == session_id
+                    and isinstance(tombstone.get("consumedTicketSha256"), str)
+                    and secrets.compare_digest(
+                        digest, str(tombstone["consumedTicketSha256"])
+                    )
+                )
+            if state not in ("handoff-consumed", "handoff-finalized"):
+                return False
+            _validate_record_version(record)
+            if not self._matches_handoff_identity(
+                record,
+                probe_id=probe_id,
+                workspace_id=workspace_id,
+                session_id=session_id,
+                ticket=ticket,
+            ):
+                return False
+            if acknowledge:
+                if state != "handoff-finalized":
+                    return False
+                _write_record_path(
+                    record_path,
+                    {
+                        "schemaVersion": 1,
+                        "state": "released",
+                        "leaseId": str(record["leaseId"]),
+                        "consumedTicketSha256": digest,
+                        "consumedProbeId": probe_id,
+                        "consumedWorkspaceId": workspace_id,
+                        "consumedSessionId": session_id,
+                    },
+                )
+            elif state == "handoff-consumed":
+                finalized = dict(record)
+                finalized["state"] = "handoff-finalized"
+                _write_record_path(record_path, finalized)
+            return True
+        except (OSError, BlockingIOError) as error:
+            raise ProbeLeaseError(
+                "PROBE_REGISTRY_UNAVAILABLE",
+                "Probe handoff record cannot be transitioned",
+            ) from error
+        finally:
+            if not handle.closed:
+                try:
+                    _unlock_handle(handle)
+                except OSError:
+                    pass
+                handle.close()

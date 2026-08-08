@@ -365,10 +365,7 @@ class ProbeClient:
     async def close(self) -> None:
         if self._session is None or self._session.closed:
             return
-        try:
-            await self.request("probe.close", {})
-        finally:
-            await self._session.close()
+        await self._session.close()
 
 
 __all__ = [

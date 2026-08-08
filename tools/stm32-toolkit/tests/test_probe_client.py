@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+from stm32_toolkit import __version__
 from stm32_toolkit.probe.client import (
     ProbeClient,
     ProbeClientError,
@@ -19,7 +20,7 @@ from stm32_toolkit.probe.service import ProbeEndpoint
 def endpoint_record() -> dict[str, object]:
     return {
         "protocol": "stm32-toolkit-probe/1",
-        "toolkitVersion": "0.3.0",
+        "toolkitVersion": __version__,
         "url": "http://127.0.0.1:43123",
         "token": "11" * 32,
         "workspaceId": "workspace-a",
@@ -33,7 +34,7 @@ def endpoint_record() -> dict[str, object]:
 def response_record() -> dict[str, object]:
     return {
         "protocol": "stm32-toolkit-probe/1",
-        "toolkitVersion": "0.3.0",
+        "toolkitVersion": __version__,
         "requestId": "request-a",
         "ok": True,
         "operation": "probe.list",
@@ -47,7 +48,7 @@ def response_record() -> dict[str, object]:
 def test_program_verified_elf_forces_modify_and_validates_telemetry(monkeypatch):
     endpoint = ProbeEndpoint(
         protocol="stm32-toolkit-probe/1",
-        toolkit_version="0.3.0",
+        toolkit_version=__version__,
         host="127.0.0.1",
         port=43123,
         token="11" * 32,
@@ -88,7 +89,7 @@ def test_program_verified_elf_forces_modify_and_validates_telemetry(monkeypatch)
 def test_attach_returns_strict_physical_target_evidence(monkeypatch):
     endpoint = ProbeEndpoint(
         protocol="stm32-toolkit-probe/1",
-        toolkit_version="0.3.0",
+        toolkit_version=__version__,
         host="127.0.0.1",
         port=43123,
         token="11" * 32,
@@ -134,7 +135,7 @@ def test_attach_returns_strict_physical_target_evidence(monkeypatch):
 def test_program_verified_elf_rejects_malformed_telemetry(monkeypatch, response):
     endpoint = ProbeEndpoint(
         protocol="stm32-toolkit-probe/1",
-        toolkit_version="0.3.0",
+        toolkit_version=__version__,
         host="127.0.0.1",
         port=43123,
         token="11" * 32,
@@ -162,7 +163,7 @@ def test_endpoint_loader_rejects_unknown_fields_and_missing_token(tmp_path: Path
         json.dumps(
             {
                 "protocol": "stm32-toolkit-probe/1",
-                "toolkitVersion": "0.3.0",
+                "toolkitVersion": __version__,
                 "url": "http://127.0.0.1:43123",
                 "token": "11" * 32,
                 "workspaceId": "workspace-a",
@@ -208,7 +209,7 @@ def test_endpoint_loader_rejects_non_exact_probe_binding(tmp_path: Path):
     [
         ("protocol", "stm32-toolkit-probe/2"),
         ("protocol", 1),
-        ("toolkitVersion", "0.4.0"),
+        ("toolkitVersion", "0.5.0"),
         ("toolkitVersion", 3),
     ],
 )
@@ -241,7 +242,7 @@ def test_endpoint_loader_accepts_only_exact_ipv4_loopback(url: str, tmp_path: Pa
         json.dumps(
             {
                 "protocol": "stm32-toolkit-probe/1",
-                "toolkitVersion": "0.3.0",
+                "toolkitVersion": __version__,
                 "url": url,
                 "token": "11" * 32,
                 "workspaceId": "workspace-a",
@@ -276,7 +277,7 @@ def test_endpoint_loader_does_not_leak_raw_json_errors(tmp_path: Path):
     ("field", "value"),
     [
         ("protocol", "stm32-toolkit-probe/2"),
-        ("toolkitVersion", "0.4.0"),
+        ("toolkitVersion", "0.5.0"),
         ("requestId", "request-b"),
         ("operation", "memory.read"),
         ("ok", 1),
@@ -311,3 +312,33 @@ def test_response_decoder_rejects_body_over_one_mebibyte_before_json_use():
         _decode_response(raw)
 
     assert error.value.code == "PROBE_RESPONSE_INVALID"
+
+
+def test_close_is_transport_only_and_never_requests_backend_close():
+    endpoint = ProbeEndpoint(
+        protocol="stm32-toolkit-probe/1",
+        toolkit_version=__version__,
+        host="127.0.0.1",
+        port=43123,
+        token="11" * 32,
+        workspace_id="workspace-a",
+        session_id="session-a",
+        lease_id="lease-a",
+    )
+    client = ProbeClient(endpoint)
+    events: list[str] = []
+
+    class Transport:
+        closed = False
+
+        async def close(self):
+            events.append("transport.close")
+            self.closed = True
+
+    client._session = Transport()  # type: ignore[assignment]
+
+    import asyncio
+
+    asyncio.run(client.close())
+
+    assert events == ["transport.close"]

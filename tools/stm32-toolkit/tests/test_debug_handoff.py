@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import os
 import stat
@@ -12,6 +13,8 @@ import pytest
 from stm32_toolkit import __version__
 from stm32_toolkit.build.identity import atomic_write_json, utc_now_rfc3339
 from stm32_toolkit.probe.backend import ProbeAttachmentEvidence
+from stm32_toolkit.probe.backend import ProbeDescriptor
+from stm32_toolkit.probe.client import ProbeClient
 from stm32_toolkit.probe.handoff import (
     CortexDebugAttachContract,
     DebugHandoffRequest,
@@ -21,6 +24,9 @@ from stm32_toolkit.probe.handoff import (
     end_debug_handoff,
 )
 from stm32_toolkit.probe.model import OperationLevel
+from stm32_toolkit.probe.lease import ProbeLeaseManager
+from stm32_toolkit.probe.supervisor import ProbeServiceConfig, ProbeServiceSupervisor
+from fakes.fake_probe import FakeProbeBackend
 from test_build_runner import prepare_project
 from test_flash import _elf_with_flash_segment, _publish_current_debug_build
 
@@ -44,7 +50,7 @@ class FakeSupervisor:
             probe_id="probe-123",
             workspace_id="workspace-a",
             session_id="session-a",
-            operation_level=OperationLevel.MODIFY,
+            operation_level=OperationLevel.OBSERVE,
             session_root=session_root,
             project_root=project,
         )
@@ -57,6 +63,9 @@ class FakeSupervisor:
         self.drain_calls = 0
         self.modifications_allowed = True
         self.modify_attempts: list[bool] = []
+        self.lifecycle_events: list[str] = []
+        self._handoff_ticket_digest: str | None = None
+        self._handoff_consumed = False
         self.start_error: BaseException | None = None
         self.stop_error: BaseException | None = None
         self.stop_error_after_cleanup: BaseException | None = None
@@ -74,7 +83,7 @@ class FakeSupervisor:
             workspace_id="workspace-a",
             session_id="session-a",
             probe_id="probe-123",
-            operation_level=OperationLevel.MODIFY,
+            operation_level=OperationLevel.OBSERVE,
             lease_id="lease-a",
             record_path=self._config.session_root / "probe-endpoint.json",
         )
@@ -89,26 +98,107 @@ class FakeSupervisor:
 
     async def stop(self) -> None:
         self.stop_calls += 1
+        self.lifecycle_events.append("stop")
         if self.stop_error is not None:
             raise self.stop_error
         old = self.endpoint
         self.endpoint = None
         if old is not None:
             old.record_path.unlink(missing_ok=True)
-        atomic_write_json(
-            self._lease_manager.path,
-            {"schemaVersion": 1, "state": "released", "leaseId": "lease-a"},
-        )
+        if self._handoff_ticket_digest is None:
+            record = {"schemaVersion": 1, "state": "released", "leaseId": "lease-a"}
+        elif self._handoff_consumed:
+            record = {
+                "schemaVersion": 1,
+                "state": "handoff-consumed",
+                "leaseId": "lease-a",
+                "ticketSha256": self._handoff_ticket_digest,
+            }
+        else:
+            record = {
+                "schemaVersion": 1,
+                "state": "externally-owned",
+                "leaseId": "lease-a",
+                "ticketSha256": self._handoff_ticket_digest,
+            }
+        atomic_write_json(self._lease_manager.path, record)
         if self.stop_error_after_cleanup is not None:
             raise self.stop_error_after_cleanup
 
-    async def start(self):
+    async def start(self, *, handoff_ticket: str | None = None):
         self.start_calls += 1
+        self.lifecycle_events.append("start")
         if self.start_error is not None:
             raise self.start_error
+        record = json.loads(self._lease_manager.path.read_text(encoding="utf-8"))
+        if record.get("state") == "externally-owned":
+            digest = hashlib.sha256(str(handoff_ticket).encode("ascii")).hexdigest()
+            if handoff_ticket is None or digest != record.get("ticketSha256"):
+                raise RuntimeError("external handoff is busy")
+            self._handoff_ticket_digest = digest
+            self._handoff_consumed = False
         if self.endpoint is None:
             self._activate()
         return self.endpoint
+
+    async def reserve_external_handoff(self, ticket: str) -> None:
+        self.lifecycle_events.append("reserve")
+        self._handoff_ticket_digest = hashlib.sha256(ticket.encode("ascii")).hexdigest()
+        self._handoff_consumed = False
+        atomic_write_json(
+            self._lease_manager.path,
+            {
+                "schemaVersion": 1,
+                "state": "externally-owned",
+                "leaseId": "lease-a",
+                "ticketSha256": self._handoff_ticket_digest,
+            },
+        )
+
+    async def consume_external_handoff(self, ticket: str) -> None:
+        digest = hashlib.sha256(ticket.encode("ascii")).hexdigest()
+        if digest != self._handoff_ticket_digest:
+            raise RuntimeError("wrong ticket")
+        self.lifecycle_events.append("consume")
+        self._handoff_consumed = True
+
+    async def finalize_consumed_handoff(self, ticket: str) -> bool:
+        record = json.loads(self._lease_manager.path.read_text(encoding="utf-8"))
+        digest = hashlib.sha256(ticket.encode("ascii")).hexdigest()
+        if record.get("state") == "handoff-consumed" and record.get(
+            "ticketSha256"
+        ) == digest:
+            record["state"] = "handoff-finalized"
+            atomic_write_json(self._lease_manager.path, record)
+            self.lifecycle_events.append("finalize")
+            return True
+        return record.get("state") == "handoff-finalized" and record.get(
+            "ticketSha256"
+        ) == digest
+
+    async def acknowledge_consumed_handoff(self, ticket: str) -> bool:
+        record = json.loads(self._lease_manager.path.read_text(encoding="utf-8"))
+        digest = hashlib.sha256(ticket.encode("ascii")).hexdigest()
+        if record.get("state") == "handoff-finalized" and record.get(
+            "ticketSha256"
+        ) == digest:
+            atomic_write_json(
+                self._lease_manager.path,
+                {
+                    "schemaVersion": 1,
+                    "state": "released",
+                    "leaseId": str(record["leaseId"]),
+                    "probeId": "probe-123",
+                    "workspaceId": "workspace-a",
+                    "sessionId": "session-a",
+                    "consumedTicketSha256": digest,
+                },
+            )
+            self.lifecycle_events.append("acknowledge")
+            return True
+        return record.get("state") == "released" and record.get(
+            "consumedTicketSha256"
+        ) == digest
 
     async def drain_modifications(self) -> None:
         self.drain_calls += 1
@@ -126,6 +216,7 @@ class FakeClient:
         self.image = image
         self.events: list[tuple[object, ...]] = []
         self.read_error: BaseException | None = None
+        self.close_error: BaseException | None = None
         self.after_read: object | None = None
         self.resolved_part = "STM32F407VG"
 
@@ -146,6 +237,11 @@ class FakeClient:
             self.after_read()
         offset = address - 0x08000000
         return self.image[offset : offset + length]
+
+    async def close(self) -> None:
+        self.events.append(("close",))
+        if self.close_error is not None:
+            raise self.close_error
 
 
 def _flash_result(identity: dict[str, object]) -> dict[str, object]:
@@ -317,6 +413,7 @@ def test_begin_persists_paused_stops_releases_then_marks_external(handoff_env):
     assert ticket is not None
     assert len(ticket.ticket_id) == 64
     assert supervisor.stop_calls == 1
+    assert supervisor.lifecycle_events[-2:] == ["reserve", "stop"]
     assert supervisor.endpoint is None
     assert not (session_root / "probe-endpoint.json").exists()
     document = _state(session_root)
@@ -338,7 +435,79 @@ def test_begin_persists_paused_stops_releases_then_marks_external(handoff_env):
     if os.name != "nt":
         assert stat.S_IMODE((session_root / STATE_NAME).stat().st_mode) == 0o600
     assert [event[0] for event in client.events] == ["attach", "read"]
+    lease_record = json.loads(
+        supervisor._lease_manager.path.read_text(encoding="utf-8")
+    )
+    assert lease_record["state"] == "externally-owned"
+    assert lease_record["ticketSha256"] == hashlib.sha256(
+        ticket.ticket_id.encode("ascii")
+    ).hexdigest()
+    assert ticket.ticket_id not in json.dumps(lease_record)
     assert ticket.ticket_id not in repr(ticket)
+
+
+def test_real_observe_supervisor_completes_begin_and_end_without_modify_lease(
+    tmp_path: Path,
+):
+    project = prepare_project(tmp_path / "project")
+    identity = _publish_current_debug_build(project)
+    atomic_write_json(
+        project / "artifacts" / "migration" / "flash-result.json",
+        _flash_result(identity),
+    )
+    data_root = tmp_path / "plugin-data"
+    session_root = data_root / "projects" / "workspace-a" / "session-a"
+    image = _elf_with_flash_segment()[84 : 84 + 320]
+    backends: list[FakeProbeBackend] = []
+
+    def backend_factory() -> FakeProbeBackend:
+        backend = FakeProbeBackend(
+            probes=(ProbeDescriptor("probe-123", "ST", "ST-LINK", None),),
+            memory={0x08000000: image},
+            registers={},
+        )
+        backends.append(backend)
+        return backend
+
+    supervisor = ProbeServiceSupervisor(
+        config=ProbeServiceConfig(
+            probe_id="probe-123",
+            workspace_id="workspace-a",
+            session_id="session-a",
+            operation_level=OperationLevel.OBSERVE,
+            session_root=session_root,
+            project_root=project,
+        ),
+        lease_manager=ProbeLeaseManager(data_root),
+        backend_factory=backend_factory,
+    )
+    request = DebugHandoffRequest(
+        project,
+        str(identity["buildId"]),
+        str(identity["elfSha256"]),
+        True,
+        ("counter",),
+    )
+
+    async def scenario():
+        endpoint = await supervisor.start()
+        assert endpoint.operation_level is OperationLevel.OBSERVE
+        client = ProbeClient(endpoint)
+        begun = await begin_debug_handoff(request, supervisor, client)
+        assert begun.ok is True
+        ended = await end_debug_handoff(
+            begun.data.ticket_id,
+            supervisor,
+            lambda exact: ProbeClient(exact),
+        )
+        return ended
+
+    ended = asyncio.run(scenario())
+    assert ended.ok is True
+    assert ended.data.previous_watch_selection == ("counter",)
+    assert supervisor.endpoint is None
+    assert len(backends) == 2
+    assert all(backend.closed for backend in backends)
 
 
 def test_begin_drains_modifications_before_final_target_readback(handoff_env):
@@ -365,7 +534,7 @@ def test_begin_drains_modifications_before_final_target_readback(handoff_env):
         ("session_id", "session-other"),
         ("lease_id", "lease-other"),
         ("probe_id", "probe-other"),
-        ("operation_level", OperationLevel.OBSERVE),
+        ("operation_level", OperationLevel.MODIFY),
     ],
 )
 def test_begin_rejects_client_not_bound_to_supervisor_endpoint(
@@ -419,7 +588,7 @@ def test_begin_stop_cancellation_finalizes_external_state_before_propagating(
 
     assert supervisor.endpoint is None
     assert _state(session_root)["state"] == "externally-owned"
-    assert json.loads(supervisor._lease_manager.path.read_text(encoding="utf-8"))["state"] == "released"
+    assert json.loads(supervisor._lease_manager.path.read_text(encoding="utf-8"))["state"] == "externally-owned"
 
 
 def test_begin_cleanup_failure_after_release_stays_paused(handoff_env):
@@ -433,7 +602,8 @@ def test_begin_cleanup_failure_after_release_stays_paused(handoff_env):
     assert supervisor.endpoint is None
     assert _state(session_root)["state"] == "paused-for-debug"
     retry = asyncio.run(begin_debug_handoff(request, supervisor, client))
-    assert retry.code == "HANDOFF_REACQUIRE_REQUIRED"
+    assert retry.ok is True
+    assert _state(session_root)["state"] == "externally-owned"
 
 
 def test_probe_package_exports_handoff_contracts() -> None:
@@ -565,11 +735,27 @@ def test_end_reacquires_revalidates_and_consumes_one_time_ticket(handoff_env):
         "previousWatchSelection": ["counter", "device.state"]
     }
     assert supervisor.start_calls == 1
-    assert [event[0] for event in returned_client[0].events] == ["attach", "read"]
+    assert supervisor.stop_calls == 2
+    assert supervisor.endpoint is None
+    assert supervisor.lifecycle_events[-5:] == [
+        "start",
+        "consume",
+        "stop",
+        "finalize",
+        "acknowledge",
+    ]
+    assert [event[0] for event in returned_client[0].events] == [
+        "attach",
+        "read",
+        "close",
+    ]
     consumed = _state(session_root)
     assert consumed["state"] == "observing"
     assert consumed["ticketId"] is None
     assert consumed["previousWatchSelection"] == []
+    assert json.loads(
+        supervisor._lease_manager.path.read_text(encoding="utf-8")
+    )["state"] == "released"
 
     replay = asyncio.run(end_debug_handoff(ticket.ticket_id, supervisor, factory))
     assert replay.ok is False
@@ -632,6 +818,10 @@ def test_end_start_or_readback_failure_stays_reacquiring_for_retry(handoff_env):
     second = asyncio.run(end_debug_handoff(ticket.ticket_id, supervisor, lambda _: bad))
     assert second.code == "FLASH_VERIFY_FAILED"
     assert _state(session_root)["state"] == "reacquiring"
+    assert supervisor.endpoint is None
+    assert json.loads(
+        supervisor._lease_manager.path.read_text(encoding="utf-8")
+    )["state"] == "externally-owned"
 
     third = asyncio.run(end_debug_handoff(ticket.ticket_id, supervisor, lambda endpoint: FakeClient(endpoint, client.image)))
     assert third.ok is True
@@ -641,13 +831,11 @@ def test_end_start_or_readback_failure_stays_reacquiring_for_retry(handoff_env):
 def test_process_restart_uses_persisted_state_not_python_object_identity(handoff_env):
     project, _, session_root, supervisor, client, request = handoff_env
     ticket = asyncio.run(begin_debug_handoff(request, supervisor, client)).data
+    durable_reservation = supervisor._lease_manager.path.read_bytes()
     restarted = FakeSupervisor(project, session_root)
     restarted.endpoint = None
     (session_root / "probe-endpoint.json").unlink(missing_ok=True)
-    atomic_write_json(
-        restarted._lease_manager.path,
-        {"schemaVersion": 1, "state": "released", "leaseId": "lease-a"},
-    )
+    restarted._lease_manager.path.write_bytes(durable_reservation)
     result = asyncio.run(
         end_debug_handoff(
             ticket.ticket_id,
@@ -1151,16 +1339,11 @@ def test_external_transition_write_failure_requires_reacquire_and_readback(
     assert supervisor.endpoint is None
     assert _state(session_root)["state"] == "paused-for-debug"
 
-    blocked = asyncio.run(begin_debug_handoff(request, supervisor, client))
-    assert blocked.code == "HANDOFF_REACQUIRE_REQUIRED"
-    assert _state(session_root)["state"] == "paused-for-debug"
-
-    asyncio.run(supervisor.start())
-    client.image = b"\x00" * len(client.image)
-    changed = asyncio.run(begin_debug_handoff(request, supervisor, client))
-    assert changed.code == "FLASH_VERIFY_FAILED"
-    assert supervisor.endpoint is not None
-    assert _state(session_root)["state"] == "paused-for-debug"
+    recovered = asyncio.run(begin_debug_handoff(request, supervisor, client))
+    assert recovered.ok is True
+    assert recovered.data.ticket_id == _state(session_root)["ticketId"]
+    assert _state(session_root)["state"] == "externally-owned"
+    assert supervisor.endpoint is None
 
 
 def test_begin_conflicting_selection_does_not_replace_active_ticket(handoff_env):
@@ -1200,7 +1383,7 @@ def test_begin_rejects_invalid_endpoint_or_config_without_hardware(handoff_env):
     endpoint = asyncio.run(begin_debug_handoff(request, supervisor, client))
     assert endpoint.code == "HANDOFF_SUPERVISOR_INVALID"
     supervisor.endpoint.probe_id = "probe-123"
-    supervisor._config.operation_level = OperationLevel.OBSERVE
+    supervisor._config.operation_level = OperationLevel.MODIFY
     config = asyncio.run(begin_debug_handoff(request, supervisor, client))
     assert config.code == "HANDOFF_SUPERVISOR_INVALID"
     assert client.events == []
@@ -1229,3 +1412,99 @@ def test_end_client_factory_failure_is_retryable(handoff_env):
     assert result.code == "HANDOFF_REACQUIRE_FAILED"
     assert _state(session_root)["state"] == "reacquiring"
     assert "private factory detail" not in json.dumps(result.to_dict())
+
+
+def test_end_transport_cleanup_failure_still_releases_retryable_reservation(
+    handoff_env,
+):
+    _, _, session_root, supervisor, client, request = handoff_env
+    ticket = asyncio.run(begin_debug_handoff(request, supervisor, client)).data
+    returned = FakeClient(supervisor._new_endpoint(), client.image)
+    returned.close_error = RuntimeError("private transport cleanup")
+
+    result = asyncio.run(
+        end_debug_handoff(ticket.ticket_id, supervisor, lambda endpoint: returned)
+    )
+
+    assert result.code == "HANDOFF_REACQUIRE_FAILED"
+    assert "private" not in json.dumps(result.to_dict())
+    assert supervisor.endpoint is None
+    assert _state(session_root)["state"] == "reacquiring"
+    assert json.loads(
+        supervisor._lease_manager.path.read_text(encoding="utf-8")
+    )["state"] == "externally-owned"
+
+
+def test_end_transport_cancellation_finishes_release_before_propagating(
+    handoff_env,
+):
+    _, _, session_root, supervisor, client, request = handoff_env
+    ticket = asyncio.run(begin_debug_handoff(request, supervisor, client)).data
+    returned = FakeClient(supervisor._new_endpoint(), client.image)
+    returned.close_error = asyncio.CancelledError()
+
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(
+            end_debug_handoff(ticket.ticket_id, supervisor, lambda endpoint: returned)
+        )
+
+    assert supervisor.endpoint is None
+    assert _state(session_root)["state"] == "reacquiring"
+    assert json.loads(
+        supervisor._lease_manager.path.read_text(encoding="utf-8")
+    )["state"] == "externally-owned"
+
+
+@pytest.mark.parametrize(
+    "failed_state", ["observing-pending-release", "observing"]
+)
+def test_end_state_commit_write_failure_is_restart_recoverable(
+    handoff_env, monkeypatch: pytest.MonkeyPatch, failed_state: str
+):
+    _, _, session_root, supervisor, client, request = handoff_env
+    ticket = asyncio.run(begin_debug_handoff(request, supervisor, client)).data
+    real_replace = os.replace
+    injected = False
+
+    def fail_selected_state(source: object, destination: object):
+        nonlocal injected
+        if Path(destination).name == STATE_NAME and not injected:
+            try:
+                document = json.loads(Path(source).read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                document = {}
+            if document.get("state") == failed_state:
+                injected = True
+                raise PermissionError("private commit path")
+        return real_replace(source, destination)
+
+    monkeypatch.setattr(
+        "stm32_toolkit.probe.handoff.os.replace", fail_selected_state
+    )
+    first = asyncio.run(
+        end_debug_handoff(
+            ticket.ticket_id,
+            supervisor,
+            lambda endpoint: FakeClient(endpoint, client.image),
+        )
+    )
+    assert first.code == "HANDOFF_STATE_UNAVAILABLE"
+    assert injected
+    assert _state(session_root)["state"] in (
+        "reacquiring",
+        "observing-pending-release",
+    )
+
+    restarted = asyncio.run(
+        end_debug_handoff(
+            ticket.ticket_id,
+            supervisor,
+            lambda endpoint: FakeClient(endpoint, client.image),
+        )
+    )
+    assert restarted.ok is True
+    assert restarted.data.previous_watch_selection == ("counter", "device.state")
+    assert _state(session_root)["state"] == "observing"
+    assert json.loads(
+        supervisor._lease_manager.path.read_text(encoding="utf-8")
+    )["state"] == "released"

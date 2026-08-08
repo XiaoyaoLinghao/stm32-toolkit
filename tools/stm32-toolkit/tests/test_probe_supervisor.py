@@ -149,6 +149,175 @@ def test_restart_creates_a_new_backend_endpoint_and_lease(tmp_path: Path) -> Non
     run(scenario())
 
 
+def test_supervisor_external_handoff_claim_requires_ticket_and_consumes_once(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        data_root = tmp_path / "plugin-data"
+        ticket = "ab" * 32
+        first = make_supervisor(data_root, BackendFactory())
+        await first.start()
+        await first.reserve_external_handoff(ticket)
+        await first.stop()
+
+        blocked = make_supervisor(data_root, BackendFactory())
+        with pytest.raises(Exception) as error:
+            await blocked.start()
+        assert getattr(error.value, "code", None) == "PROBE_BUSY"
+
+        wrong = make_supervisor(data_root, BackendFactory())
+        with pytest.raises(Exception) as error:
+            await wrong.start(handoff_ticket="cd" * 32)
+        assert getattr(error.value, "code", None) == "PROBE_BUSY"
+
+        claimant = make_supervisor(data_root, BackendFactory())
+        await claimant.start(handoff_ticket=ticket)
+        await claimant.consume_external_handoff(ticket)
+        await claimant.stop()
+        assert await claimant.finalize_consumed_handoff(ticket)
+        assert await claimant.acknowledge_consumed_handoff(ticket)
+
+        successor = make_supervisor(data_root, BackendFactory())
+        await successor.start()
+        await successor.stop()
+
+    run(scenario())
+
+
+def test_reservation_cancellation_holds_lifecycle_until_native_commit_finishes(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        data_root = tmp_path / "plugin-data"
+        factory = BackendFactory()
+        supervisor = make_supervisor(data_root, factory)
+        endpoint = await supervisor.start()
+        service = supervisor._service
+        assert service is not None and service._lease is not None
+        lease = service._lease
+        entered = __import__("threading").Event()
+        release = __import__("threading").Event()
+        original = lease.reserve_external_handoff
+
+        def blocked(ticket: str) -> None:
+            entered.set()
+            release.wait(5)
+            original(ticket)
+
+        lease.reserve_external_handoff = blocked  # type: ignore[method-assign]
+        reserving = asyncio.create_task(supervisor.reserve_external_handoff("ab" * 32))
+        assert await asyncio.to_thread(entered.wait, 2)
+        reserving.cancel()
+        stopping = asyncio.create_task(supervisor.stop())
+        await asyncio.sleep(0.05)
+        try:
+            assert not stopping.done()
+            assert factory.backends[0].closed is False
+        finally:
+            release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await reserving
+        await stopping
+        record = __import__("json").loads(
+            ProbeLeaseManager(data_root)
+            .record_path("probe-a")
+            .read_text(encoding="utf-8")
+        )
+        assert record["state"] == "externally-owned"
+        assert endpoint.lease_id == record["leaseId"]
+
+    run(scenario())
+
+
+def test_consumption_commit_success_wins_over_late_caller_cancellation(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        data_root = tmp_path / "plugin-data"
+        ticket = "cd" * 32
+        factory = BackendFactory()
+        supervisor = make_supervisor(data_root, factory)
+        await supervisor.start()
+        await supervisor.reserve_external_handoff(ticket)
+        await supervisor.stop()
+        await supervisor.start(handoff_ticket=ticket)
+        service = supervisor._service
+        assert service is not None and service._lease is not None
+        lease = service._lease
+        entered = __import__("threading").Event()
+        release = __import__("threading").Event()
+        original = lease.consume_external_handoff
+
+        def blocked(value: str) -> None:
+            entered.set()
+            release.wait(5)
+            original(value)
+
+        lease.consume_external_handoff = blocked  # type: ignore[method-assign]
+        consuming = asyncio.create_task(supervisor.consume_external_handoff(ticket))
+        assert await asyncio.to_thread(entered.wait, 2)
+        consuming.cancel()
+        stopping = asyncio.create_task(supervisor.stop())
+        await asyncio.sleep(0.05)
+        try:
+            assert not stopping.done()
+        finally:
+            release.set()
+        await consuming
+        await stopping
+        assert await supervisor.finalize_consumed_handoff(ticket)
+        assert await supervisor.acknowledge_consumed_handoff(ticket)
+        record = __import__("json").loads(
+            ProbeLeaseManager(data_root)
+            .record_path("probe-a")
+            .read_text(encoding="utf-8")
+        )
+        assert record["state"] == "released"
+
+    run(scenario())
+
+
+def test_consumption_failure_wins_over_cancellation_and_restores_reservation(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        data_root = tmp_path / "plugin-data"
+        ticket = "ef" * 32
+        supervisor = make_supervisor(data_root, BackendFactory())
+        await supervisor.start()
+        await supervisor.reserve_external_handoff(ticket)
+        await supervisor.stop()
+        await supervisor.start(handoff_ticket=ticket)
+        service = supervisor._service
+        assert service is not None and service._lease is not None
+        lease = service._lease
+        entered = __import__("threading").Event()
+        release = __import__("threading").Event()
+
+        def failed(value: str) -> None:
+            entered.set()
+            release.wait(5)
+            raise RuntimeError("consume commit failed")
+
+        lease.consume_external_handoff = failed  # type: ignore[method-assign]
+        consuming = asyncio.create_task(supervisor.consume_external_handoff(ticket))
+        assert await asyncio.to_thread(entered.wait, 2)
+        consuming.cancel()
+        stopping = asyncio.create_task(supervisor.stop())
+        release.set()
+        with pytest.raises(RuntimeError, match="consume commit failed"):
+            await consuming
+        await stopping
+        record = __import__("json").loads(
+            ProbeLeaseManager(data_root)
+            .record_path("probe-a")
+            .read_text(encoding="utf-8")
+        )
+        assert record["state"] == "externally-owned"
+
+    run(scenario())
+
+
 def test_backend_factory_failure_publishes_no_state_and_can_retry(
     tmp_path: Path,
 ) -> None:
