@@ -5,6 +5,7 @@ import math
 from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
+from types import MappingProxyType
 from uuid import UUID
 
 import pytest
@@ -442,6 +443,76 @@ def test_protocol_result_snapshots_and_serializes_known_history_and_export_model
         ProtocolResult(True, "groups.\x00list", "OK", "", None)
     with pytest.raises(TypeError):
         ProtocolResult(True, "groups.list", "OK", "", None, ())
+
+
+@pytest.mark.parametrize(
+    "forgery",
+    [
+        "batch-subclass",
+        "binding-subclass",
+        "sample-status",
+        "watch-subclass",
+        "nested-json-subclass",
+        "batch-sequence",
+        "binding-dirty-type",
+        "page-count",
+    ],
+)
+def test_history_protocol_snapshot_rejects_forged_current_object_graph(
+    forgery: str,
+) -> None:
+    sample = SampleValue(
+        WatchItem.variable("counter"),
+        "OK",
+        typed_value={"nested": [1]},
+    )
+    batch = _history_slice([sample])
+    page = HistoryPage.create((batch,), next_cursor=None)
+
+    if forgery == "batch-subclass":
+        class DerivedBatch(HistoryBatchSlice):
+            pass
+
+        derived = DerivedBatch(**{
+            field: getattr(batch, field)
+            for field in batch.__dataclass_fields__
+        })
+        object.__setattr__(page, "batches", (derived,))
+    elif forgery == "binding-subclass":
+        class DerivedBinding(ObservationBinding):
+            pass
+
+        binding = batch.binding
+        derived = DerivedBinding(**{
+            field: getattr(binding, field)
+            for field in binding.__dataclass_fields__
+        })
+        object.__setattr__(batch, "binding", derived)
+    elif forgery == "sample-status":
+        object.__setattr__(sample, "status", "NO")
+    elif forgery == "watch-subclass":
+        class DerivedWatch(WatchItem):
+            pass
+
+        object.__setattr__(sample, "watch", DerivedWatch.variable("counter"))
+    elif forgery == "nested-json-subclass":
+        class DerivedList(list):
+            pass
+
+        object.__setattr__(
+            sample,
+            "typed_value",
+            MappingProxyType({"nested": DerivedList([1])}),
+        )
+    elif forgery == "batch-sequence":
+        object.__setattr__(batch, "sequence", -1)
+    elif forgery == "binding-dirty-type":
+        object.__setattr__(batch.binding, "git_dirty", 1)
+    else:
+        object.__setattr__(page, "value_count", 2)
+
+    with pytest.raises((TypeError, ValueError)):
+        success("history.query", page)
 
 
 def test_history_page_rejects_subclasses_ordinal_gaps_count_mismatch_and_bad_cursor() -> None:
