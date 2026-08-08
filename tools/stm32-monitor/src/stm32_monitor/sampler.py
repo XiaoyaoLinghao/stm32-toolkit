@@ -4,7 +4,9 @@ import asyncio
 import json
 import time
 from collections.abc import AsyncIterator
+from dataclasses import replace
 from enum import Enum
+from typing import TypeVar
 from uuid import UUID, uuid4
 
 from .models import SampleBatch, WatchGroup, WatchItem
@@ -17,6 +19,7 @@ HISTORY_QUEUE_BATCHES = 128
 HISTORY_QUEUE_BYTES = 8 * 1024 * 1024
 _STREAM_END = object()
 _HISTORY_END = object()
+_T = TypeVar("_T")
 
 
 class SamplerState(str, Enum):
@@ -27,7 +30,7 @@ class SamplerState(str, Enum):
     CLOSED = "CLOSED"
 
 
-async def _await_owned(task: asyncio.Task[None]) -> asyncio.CancelledError | None:
+async def _await_owned(task: asyncio.Task[_T]) -> tuple[_T, asyncio.CancelledError | None]:
     cancellation: asyncio.CancelledError | None = None
     while not task.done():
         try:
@@ -37,8 +40,7 @@ async def _await_owned(task: asyncio.Task[None]) -> asyncio.CancelledError | Non
                 cancellation = error
         except BaseException:
             break
-    task.result()
-    return cancellation
+    return task.result(), cancellation
 
 
 class MonitorSampler:
@@ -71,17 +73,17 @@ class MonitorSampler:
         self._history_queue_bytes = 0
         self._producer_task: asyncio.Task[None] | None = None
         self._history_task: asyncio.Task[None] | None = None
+        self._stop_task: asyncio.Task[ProtocolResult[dict[str, object]]] | None = None
         self._close_task: asyncio.Task[None] | None = None
         self._stop_event: asyncio.Event | None = None
         self._run_gate: asyncio.Event | None = None
         self._action_lock = asyncio.Lock()
-        self._subscribers: set[asyncio.Queue[object]] = set()
+        self._subscribers: dict[asyncio.Queue[object], int] = {}
         self._group: WatchGroup | None = None
         self._watches: tuple[WatchItem, ...] = ()
         self._run_id: UUID | None = None
         self._sequence = 0
         self._last_capture_monotonic_ns: int | None = None
-        self._subscriber_drops_pending = 0
         self._history_drops_pending = 0
         self._deadline_drops_pending = 0
         self._reset_deadline = False
@@ -142,7 +144,6 @@ class MonitorSampler:
             self._run_id = uuid4()
             self._sequence = 0
             self._last_capture_monotonic_ns = None
-            self._subscriber_drops_pending = 0
             self._history_drops_pending = 0
             self._deadline_drops_pending = 0
             self._stop_event = asyncio.Event()
@@ -226,10 +227,8 @@ class MonitorSampler:
                     return
                 captured_monotonic = time.monotonic_ns()
                 captured_unix_ns = time.time_ns()
-                subscriber_drops = self._subscriber_drops_pending
                 history_drops = self._history_drops_pending
                 deadline_drops = self._deadline_drops_pending
-                self._subscriber_drops_pending = 0
                 self._history_drops_pending = 0
                 self._deadline_drops_pending = 0
                 if self._last_capture_monotonic_ns is None:
@@ -248,7 +247,7 @@ class MonitorSampler:
                     captured_unix_ns=max(captured_unix_ns, scheduled_unix_ns),
                     latency_ns=max(0, captured_monotonic - started),
                     actual_rate_hz=actual_rate_hz,
-                    subscriber_drops=subscriber_drops,
+                    subscriber_drops=0,
                     history_drops=history_drops,
                     deadline_drops=deadline_drops,
                     values=outcome.values,
@@ -284,15 +283,18 @@ class MonitorSampler:
         self._history_queue_bytes += size
 
     def _broadcast(self, batch: SampleBatch) -> None:
-        for queue in tuple(self._subscribers):
+        for queue, pending_drops in tuple(self._subscribers.items()):
             if queue.full():
                 try:
-                    queue.get_nowait()
+                    dropped = queue.get_nowait()
                 except asyncio.QueueEmpty:
                     pass
                 else:
-                    self._subscriber_drops_pending += 1
-            queue.put_nowait(batch)
+                    pending_drops += 1
+                    if isinstance(dropped, SampleBatch):
+                        pending_drops += dropped.subscriber_drops
+            queue.put_nowait(replace(batch, subscriber_drops=pending_drops) if pending_drops else batch)
+            self._subscribers[queue] = 0
 
     async def _history_writer(self) -> None:
         queue = self._history_queue
@@ -370,7 +372,7 @@ class MonitorSampler:
         self._sequence = 0
         self._last_capture_monotonic_ns = None
 
-    async def stop(self) -> ProtocolResult[dict[str, object]]:
+    async def _stop_owned(self) -> ProtocolResult[dict[str, object]]:
         operation = "sampling.stop"
         async with self._action_lock:
             if self.state is SamplerState.CLOSED:
@@ -382,9 +384,19 @@ class MonitorSampler:
             self.blocked_code = None
             return success(operation, {"stopped": True})
 
+    async def stop(self) -> ProtocolResult[dict[str, object]]:
+        task = self._stop_task
+        if task is None or task.done():
+            task = asyncio.create_task(self._stop_owned(), name="stm32-monitor-sampler-stop")
+            self._stop_task = task
+        result, cancellation = await _await_owned(task)
+        if cancellation is not None:
+            raise cancellation
+        return result
+
     async def subscribe(self) -> AsyncIterator[SampleBatch]:
         queue: asyncio.Queue[object] = asyncio.Queue(maxsize=SUBSCRIBER_QUEUE_BATCHES)
-        self._subscribers.add(queue)
+        self._subscribers[queue] = 0
         if self.state is SamplerState.CLOSED:
             queue.put_nowait(_STREAM_END)
         try:
@@ -395,7 +407,7 @@ class MonitorSampler:
                 if isinstance(item, SampleBatch):
                     yield item
         finally:
-            self._subscribers.discard(queue)
+            self._subscribers.pop(queue, None)
 
     async def _close_owned(self) -> None:
         async with self._action_lock:
@@ -415,7 +427,7 @@ class MonitorSampler:
     async def close(self) -> None:
         if self._close_task is None:
             self._close_task = asyncio.create_task(self._close_owned(), name="stm32-monitor-sampler-close")
-        cancellation = await _await_owned(self._close_task)
+        _, cancellation = await _await_owned(self._close_task)
         if cancellation is not None:
             raise cancellation
 

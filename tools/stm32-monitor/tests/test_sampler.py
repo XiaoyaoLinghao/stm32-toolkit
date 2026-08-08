@@ -541,3 +541,75 @@ def test_repeated_cancellation_cannot_release_close_ownership_early(tmp_path: Pa
         assert not sampler.tasks
 
     asyncio.run(scenario())
+
+
+def test_stop_cancellation_waits_for_owned_cleanup_before_propagating(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        project = tmp_path / "project"
+        project.mkdir()
+        release = threading.Event()
+        history = FakeHistory(release=release)
+        sampler = MonitorSampler(FakeObservation(_binding(project)), FakeGroups(_group()), history)
+        await sampler.start(GROUP_ID, expected_revision=1)
+        assert await asyncio.to_thread(history.entered.wait, 2)
+
+        first_stop = asyncio.create_task(sampler.stop())
+        await asyncio.sleep(0)
+        first_stop.cancel()
+        await asyncio.sleep(0.05)
+        second_stop = asyncio.create_task(sampler.stop())
+        await asyncio.sleep(0.05)
+        try:
+            assert not first_stop.done()
+            assert not second_stop.done()
+            release.set()
+            with pytest.raises(asyncio.CancelledError):
+                await first_stop
+            stopped = await second_stop
+            assert stopped.ok and stopped.data == {"stopped": True}
+            assert sampler.state is SamplerState.IDLE
+            assert sampler._history_queue is None and sampler._history_queue_bytes == 0
+            assert not sampler.tasks
+
+            restarted = await sampler.start(GROUP_ID, expected_revision=1)
+            stopped_again = await sampler.stop()
+            assert restarted.ok
+            assert stopped_again.ok and stopped_again.data == {"stopped": True}
+            assert sampler.state is SamplerState.IDLE and not sampler.tasks
+        finally:
+            release.set()
+            try:
+                await sampler.close()
+            except asyncio.CancelledError:
+                pass
+
+    asyncio.run(scenario())
+
+
+def test_subscriber_drop_evidence_survives_eviction_without_affecting_fast_subscriber(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        project = tmp_path / "project"
+        project.mkdir()
+        observation = FakeObservation(_binding(project))
+        sampler = MonitorSampler(observation, FakeGroups(_group()), FakeHistory())
+        slow = sampler.subscribe()
+        fast = sampler.subscribe()
+        slow_first = asyncio.create_task(_next(slow))
+        fast_first = asyncio.create_task(_next(fast))
+        await sampler.start(GROUP_ID, expected_revision=1)
+        delivered_to_slow = [await slow_first]
+        delivered_to_fast = [await fast_first]
+        try:
+            while delivered_to_fast[-1].sequence < 19:
+                delivered_to_fast.append(await _next(fast, 3))
+            delivered_to_slow.extend([await _next(slow) for _ in range(8)])
+
+            produced = delivered_to_fast[-1].sequence + 1
+            assert produced == len(delivered_to_slow) + sum(batch.subscriber_drops for batch in delivered_to_slow)
+            assert all(batch.subscriber_drops == 0 for batch in delivered_to_fast)
+        finally:
+            await slow.aclose()
+            await fast.aclose()
+            await sampler.close()
+
+    asyncio.run(scenario())
