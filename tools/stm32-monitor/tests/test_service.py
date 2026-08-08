@@ -431,3 +431,69 @@ def test_duplicate_query_and_json_object_keys_reject_before_dispatch() -> None:
         assert runtime.calls == []
 
     asyncio.run(_with_service(scenario))
+
+
+def test_repeated_cancellation_of_real_partial_start_waits_for_owned_listener_cleanup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from aiohttp import web
+    from stm32_monitor.service import MonitorService
+
+    site_started = asyncio.Event()
+    cleanup_entered = asyncio.Event()
+    allow_cleanup = asyncio.Event()
+    captured: dict[str, object] = {}
+    original_site_start = web.TCPSite.start
+    original_runner_cleanup = web.AppRunner.cleanup
+
+    async def paused_site_start(site: web.TCPSite) -> None:
+        await original_site_start(site)
+        assert site._server is not None
+        captured["port"] = site._server.sockets[0].getsockname()[1]
+        site_started.set()
+        await asyncio.Future()
+
+    async def paused_cleanup(runner: web.AppRunner) -> None:
+        captured["runner"] = runner
+        cleanup_entered.set()
+        await allow_cleanup.wait()
+        await original_runner_cleanup(runner)
+
+    monkeypatch.setattr(web.TCPSite, "start", paused_site_start)
+    monkeypatch.setattr(web.AppRunner, "cleanup", paused_cleanup)
+    service = MonitorService(
+        FakeRuntime(),
+        workspace_id="workspace-a",
+        session_id="session-a",
+        token_factory=lambda size: TOKEN_BYTES if size == 32 else b"",
+    )
+
+    async def scenario() -> None:
+        starting = asyncio.create_task(service.start())
+        try:
+            await site_started.wait()
+            port = int(captured["port"])
+            reader, writer = await asyncio.open_connection("127.0.0.1", port)
+            writer.close()
+            await writer.wait_closed()
+            del reader
+
+            starting.cancel("first")
+            await cleanup_entered.wait()
+            starting.cancel("second")
+            await asyncio.sleep(0)
+            assert not starting.done()
+            allow_cleanup.set()
+            with pytest.raises(asyncio.CancelledError):
+                await starting
+            with pytest.raises(OSError):
+                await asyncio.open_connection("127.0.0.1", port)
+            assert service.endpoint is None
+        finally:
+            allow_cleanup.set()
+            await asyncio.gather(starting, return_exceptions=True)
+            runner = captured.get("runner")
+            if isinstance(runner, web.AppRunner):
+                await original_runner_cleanup(runner)
+
+    asyncio.run(scenario())
