@@ -291,6 +291,35 @@ def test_external_root_parent_change_never_writes_into_project(
     assert _project_snapshot(debug_env.root) == before
 
 
+def test_external_root_identity_change_fails_before_backend_start(
+    debug_env: DebugEnv, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import stm32_toolkit.monitor_observation as observation
+
+    harness = Harness(debug_env)
+    external_parent = tmp_path / "external-parent-identity"
+    external_parent.mkdir()
+    data_root = external_parent / "data"
+    original = observation._safe_mkdir_chain
+
+    def changed_parent(root: Path, destination: Path) -> None:
+        external_parent.rmdir()
+        external_parent.mkdir()
+        original(root, destination)
+
+    monkeypatch.setattr(observation, "_safe_mkdir_chain", changed_parent)
+    result = asyncio.run(
+        open_monitor_observation(
+            request(debug_env, data_root),
+            _seams=harness.seams(),
+        )
+    )
+
+    assert result.ok is False
+    assert result.code == "MONITOR_REQUEST_INVALID"
+    assert harness.supervisors == []
+
+
 def test_posix_directory_creation_uses_directory_descriptors(
     monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -347,6 +376,27 @@ def test_posix_directory_creation_rejects_non_directory_component(
     with pytest.raises(ValueError):
         observation._safe_mkdir_posix(Path("/external"), Path("/external/data"))
     assert closed == [21, 20]
+
+
+def test_posix_directory_identity_failure_closes_new_descriptor(
+    monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import stm32_toolkit.monitor_observation as observation
+
+    descriptors = iter((30, 31))
+    closed: list[int] = []
+    monkeypatch.setattr(observation.os, "open", lambda *args, **kwargs: next(descriptors))
+    monkeypatch.setattr(observation.os, "mkdir", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        observation.os,
+        "fstat",
+        lambda descriptor: (_ for _ in ()).throw(OSError("identity unavailable")),
+    )
+    monkeypatch.setattr(observation.os, "close", closed.append)
+
+    with pytest.raises(OSError, match="identity"):
+        observation._safe_mkdir_posix(Path("/external"), Path("/external/data"))
+    assert sorted(closed) == [30, 31]
 
 
 def test_revalidate_rejects_firmware_epoch_change(
