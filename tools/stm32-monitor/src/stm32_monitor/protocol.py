@@ -4,7 +4,9 @@ import json
 import re
 import unicodedata
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Generic, Mapping, TypeVar, cast
+from uuid import UUID
 
 from .models import (
     ObservationBinding,
@@ -31,6 +33,38 @@ def _json_text(value: object) -> str:
 
 def _json_bytes(value: object) -> bytes:
     return _json_text(value).encode("utf-8")
+
+
+def _snapshot_watch_group(value: WatchGroup) -> WatchGroup:
+    if (
+        type(value) is not WatchGroup
+        or type(value.group_id) is not UUID
+        or type(value.name) is not str
+        or type(value.description) is not str
+        or type(value.interval_ms) is not int
+        or type(value.items) is not tuple
+        or type(value.revision) is not int
+        or type(value.created_at_utc) is not datetime
+        or type(value.updated_at_utc) is not datetime
+        or any(type(item) is not WatchItem for item in value.items)
+    ):
+        raise ValueError("watch group is invalid")
+    try:
+        items = tuple(
+            dict.fromkeys(WatchItem(item.kind, item.selector) for item in value.items)
+        )
+        return WatchGroup(
+            UUID(str(value.group_id)),
+            value.name,
+            value.description,
+            value.interval_ms,
+            items,
+            value.revision,
+            value.created_at_utc.replace(),
+            value.updated_at_utc.replace(),
+        )
+    except (TypeError, ValueError, OverflowError):
+        raise ValueError("watch group is invalid") from None
 
 
 _CORE_MODEL_SERIALIZERS = {
@@ -63,6 +97,8 @@ def _known_model_payload(value: object) -> dict[str, object] | None:
 
 def _snapshot_protocol_value(value: object) -> object:
     value_type = type(value)
+    if value_type is WatchGroup:
+        return _snapshot_watch_group(value)
     if value_type.__module__ == "stm32_monitor.models" and value_type.__name__ == "GroupPage":
         from .models import GroupPage
 
