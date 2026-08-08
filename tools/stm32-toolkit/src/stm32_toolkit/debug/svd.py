@@ -20,6 +20,8 @@ _MAX_PERIPHERALS = 1_024
 _MAX_CLUSTERS = 4_096
 _MAX_REGISTER_DECLARATIONS = 16_384
 _MAX_FIELDS = 65_536
+_MAX_DERIVED_CHAIN_DEPTH = 256
+_MAX_CLUSTER_NESTING_DEPTH = 64
 _REPARSE_POINT = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
 _NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_.-]{0,127}$")
 
@@ -512,6 +514,7 @@ def _parse_registers(
     paths: set[str],
     prefix: str = "",
     parent_offset: int = 0,
+    cluster_depth: int = 0,
 ) -> None:
     registers: dict[str, ET.Element] = {}
     clusters: dict[str, ET.Element] = {}
@@ -534,113 +537,201 @@ def _parse_registers(
         )
 
     register_cache: dict[str, _RegisterTemplate] = {}
-    register_visiting: set[str] = set()
 
     def resolve_register(name: str) -> _RegisterTemplate:
         cached = register_cache.get(name)
         if cached is not None:
             return cached
-        if name in register_visiting:
-            raise _fail("SVD_XML_INVALID", "SVD derived register cycle is invalid")
-        element = registers.get(name)
-        if element is None:
-            raise _fail("SVD_XML_INVALID", "SVD derived register scope is invalid")
-        register_visiting.add(name)
-        reference = element.attrib.get("derivedFrom")
-        inherited = resolve_register(reference) if reference else None
-        size_bits = _optional_number(element, "size", maximum=1024)
-        if size_bits is None:
-            size_bits = inherited.size_bits if inherited is not None else defaults.size_bits
-        if size_bits not in (8, 16, 32, 64):
-            raise _fail("SVD_XML_INVALID", "SVD register size is unsupported")
-        access = _text(element, "access") or (
-            inherited.access if inherited is not None else defaults.access
-        )
-        read_action = _text(element, "readAction") or (
-            inherited.read_action if inherited is not None else None
-        )
-        fields_container = _child(element, "fields")
-        fields = (
-            _fields(element, size_bits, budget)
-            if fields_container is not None
-            else (inherited.fields if inherited is not None else ())
-        )
-        if any(field.bit_offset + field.bit_width > size_bits for field in fields):
-            raise _fail("SVD_XML_INVALID", "SVD inherited field metadata is invalid")
-        reset_value = _optional_number(
-            element, "resetValue", maximum=(1 << 64) - 1
-        )
-        if reset_value is None:
-            reset_value = (
-                inherited.reset_value if inherited is not None else defaults.reset_value
+        chain: list[tuple[str, ET.Element]] = []
+        chain_names: set[str] = set()
+        current = name
+        inherited: _RegisterTemplate | None = None
+        while current not in register_cache:
+            if current in chain_names:
+                raise _fail("SVD_XML_INVALID", "SVD derived register cycle is invalid")
+            if len(chain) >= _MAX_DERIVED_CHAIN_DEPTH:
+                raise _fail("SVD_SIZE_LIMIT", "SVD derived chain exceeds the limit")
+            element = registers.get(current)
+            if element is None:
+                raise _fail("SVD_XML_INVALID", "SVD derived register scope is invalid")
+            chain.append((current, element))
+            chain_names.add(current)
+            reference = element.attrib.get("derivedFrom")
+            if not reference:
+                break
+            current = reference
+        else:
+            inherited = register_cache[current]
+
+        for current, element in reversed(chain):
+            size_bits = _optional_number(element, "size", maximum=1024)
+            if size_bits is None:
+                size_bits = (
+                    inherited.size_bits if inherited is not None else defaults.size_bits
+                )
+            if size_bits not in (8, 16, 32, 64):
+                raise _fail("SVD_XML_INVALID", "SVD register size is unsupported")
+            access = _text(element, "access") or (
+                inherited.access if inherited is not None else defaults.access
             )
-        reset_mask = _optional_number(
-            element, "resetMask", maximum=(1 << 64) - 1
-        )
-        if reset_mask is None:
-            reset_mask = (
-                inherited.reset_mask if inherited is not None else defaults.reset_mask
+            read_action = _text(element, "readAction") or (
+                inherited.read_action if inherited is not None else None
             )
-        width_mask = (1 << size_bits) - 1
-        if (
-            (reset_value is not None and reset_value & ~width_mask)
-            or (reset_mask is not None and reset_mask & ~width_mask)
-        ):
-            raise _fail("SVD_XML_INVALID", "SVD reset metadata is invalid")
-        template = _RegisterTemplate(
-            size_bits, access, read_action, reset_value, reset_mask, fields
-        )
-        register_visiting.remove(name)
-        register_cache[name] = template
-        return template
+            fields_container = _child(element, "fields")
+            fields = (
+                _fields(element, size_bits, budget)
+                if fields_container is not None
+                else (inherited.fields if inherited is not None else ())
+            )
+            if any(field.bit_offset + field.bit_width > size_bits for field in fields):
+                raise _fail("SVD_XML_INVALID", "SVD inherited field metadata is invalid")
+            reset_value = _optional_number(
+                element, "resetValue", maximum=(1 << 64) - 1
+            )
+            if reset_value is None:
+                reset_value = (
+                    inherited.reset_value
+                    if inherited is not None
+                    else defaults.reset_value
+                )
+            reset_mask = _optional_number(
+                element, "resetMask", maximum=(1 << 64) - 1
+            )
+            if reset_mask is None:
+                reset_mask = (
+                    inherited.reset_mask
+                    if inherited is not None
+                    else defaults.reset_mask
+                )
+            width_mask = (1 << size_bits) - 1
+            if (
+                (reset_value is not None and reset_value & ~width_mask)
+                or (reset_mask is not None and reset_mask & ~width_mask)
+            ):
+                raise _fail("SVD_XML_INVALID", "SVD reset metadata is invalid")
+            inherited = _RegisterTemplate(
+                size_bits, access, read_action, reset_value, reset_mask, fields
+            )
+            register_cache[current] = inherited
+        return register_cache[name]
 
     cluster_cache: dict[str, _ClusterTemplate] = {}
-    cluster_visiting: set[str] = set()
 
     def resolve_cluster(name: str) -> _ClusterTemplate:
         cached = cluster_cache.get(name)
         if cached is not None:
             return cached
-        if name in cluster_visiting:
-            raise _fail("SVD_XML_INVALID", "SVD derived cluster cycle is invalid")
-        element = clusters.get(name)
-        if element is None:
-            raise _fail("SVD_XML_INVALID", "SVD derived cluster scope is invalid")
-        cluster_visiting.add(name)
-        reference = element.attrib.get("derivedFrom")
-        inherited = resolve_cluster(reference) if reference else None
-        cluster_defaults = _overlay_defaults(
-            element, inherited.defaults if inherited is not None else defaults
-        )
-        has_children = any(
-            _local(child) in ("register", "cluster") for child in element
-        )
-        child_container = (
-            element
-            if has_children
-            else (inherited.container if inherited is not None else element)
-        )
-        template = _ClusterTemplate(cluster_defaults, child_container)
-        cluster_visiting.remove(name)
-        cluster_cache[name] = template
-        return template
+        chain: list[tuple[str, ET.Element]] = []
+        chain_names: set[str] = set()
+        current = name
+        inherited: _ClusterTemplate | None = None
+        while current not in cluster_cache:
+            if current in chain_names:
+                raise _fail("SVD_XML_INVALID", "SVD derived cluster cycle is invalid")
+            if len(chain) >= _MAX_DERIVED_CHAIN_DEPTH:
+                raise _fail("SVD_SIZE_LIMIT", "SVD derived chain exceeds the limit")
+            element = clusters.get(current)
+            if element is None:
+                raise _fail("SVD_XML_INVALID", "SVD derived cluster scope is invalid")
+            chain.append((current, element))
+            chain_names.add(current)
+            reference = element.attrib.get("derivedFrom")
+            if not reference:
+                break
+            current = reference
+        else:
+            inherited = cluster_cache[current]
 
-    def count_expansions(scope: ET.Element) -> int:
+        for current, element in reversed(chain):
+            cluster_defaults = _overlay_defaults(
+                element, inherited.defaults if inherited is not None else defaults
+            )
+            has_children = any(
+                _local(child) in ("register", "cluster") for child in element
+            )
+            child_container = (
+                element
+                if has_children
+                else (inherited.container if inherited is not None else element)
+            )
+            inherited = _ClusterTemplate(cluster_defaults, child_container)
+            cluster_cache[current] = inherited
+        return cluster_cache[name]
+
+    def count_expansions(scope: ET.Element, nesting_depth: int) -> int:
+        local_clusters: dict[str, ET.Element] = {}
+        for child in scope:
+            if _local(child) != "cluster":
+                continue
+            child_name = _text(child, "name", required=True)
+            assert child_name is not None
+            if not _valid_name_pattern(child_name) or child_name in local_clusters:
+                raise _fail("SVD_XML_INVALID", "SVD cluster declaration is ambiguous")
+            local_clusters[child_name] = child
+
+        local_cache: dict[str, ET.Element] = {}
+
+        def effective_container(name: str) -> ET.Element:
+            cached_container = local_cache.get(name)
+            if cached_container is not None:
+                return cached_container
+            chain: list[tuple[str, ET.Element]] = []
+            chain_names: set[str] = set()
+            current = name
+            inherited_container: ET.Element | None = None
+            while current not in local_cache:
+                if current in chain_names:
+                    raise _fail("SVD_XML_INVALID", "SVD derived cluster cycle is invalid")
+                if len(chain) >= _MAX_DERIVED_CHAIN_DEPTH:
+                    raise _fail("SVD_SIZE_LIMIT", "SVD derived chain exceeds the limit")
+                element = local_clusters.get(current)
+                if element is None:
+                    raise _fail("SVD_XML_INVALID", "SVD derived cluster scope is invalid")
+                chain.append((current, element))
+                chain_names.add(current)
+                reference = element.attrib.get("derivedFrom")
+                if not reference:
+                    break
+                current = reference
+            else:
+                inherited_container = local_cache[current]
+
+            for current, element in reversed(chain):
+                has_children = any(
+                    _local(grandchild) in ("register", "cluster")
+                    for grandchild in element
+                )
+                inherited_container = (
+                    element
+                    if has_children
+                    else (
+                        inherited_container
+                        if inherited_container is not None
+                        else element
+                    )
+                )
+                local_cache[current] = inherited_container
+            return local_cache[name]
+
         total = 0
         for child in scope:
             kind = _local(child)
             if kind == "register":
                 total += len(_dim_values(child))
             elif kind == "cluster":
+                if nesting_depth >= _MAX_CLUSTER_NESTING_DEPTH:
+                    raise _fail("SVD_SIZE_LIMIT", "SVD cluster nesting exceeds the limit")
                 child_name = _text(child, "name", required=True)
                 assert child_name is not None
-                template = resolve_cluster(child_name)
-                total += len(_dim_values(child)) * count_expansions(template.container)
+                child_container = effective_container(child_name)
+                total += len(_dim_values(child)) * count_expansions(
+                    child_container, nesting_depth + 1
+                )
             if total > _MAX_REGISTERS:
                 return total
         return total
 
-    expected = count_expansions(container)
+    expected = count_expansions(container, cluster_depth)
     if len(result) + expected > _MAX_REGISTERS:
         raise _fail("SVD_SIZE_LIMIT", "SVD register count exceeds the limit")
 
@@ -679,7 +770,7 @@ def _parse_registers(
         template = resolve_cluster(name_pattern)
         cluster_offset = _number(_text(element, "addressOffset"))
         dimensions = _dim_values(element)
-        descendant_count = count_expansions(template.container)
+        descendant_count = count_expansions(template.container, cluster_depth + 1)
         if len(result) + len(dimensions) * descendant_count > _MAX_REGISTERS:
             raise _fail("SVD_SIZE_LIMIT", "SVD register count exceeds the limit")
         for index, delta in dimensions:
@@ -694,6 +785,7 @@ def _parse_registers(
                 paths=paths,
                 prefix=f"{prefix}{expanded}.",
                 parent_offset=parent_offset + cluster_offset + delta,
+                cluster_depth=cluster_depth + 1,
             )
 
 
@@ -728,38 +820,50 @@ def _parse_document(data: bytes, portable_path: str) -> tuple[str, tuple[SvdRegi
         declarations[name] = peripheral
 
     cache: dict[str, _PeripheralTemplate] = {}
-    visiting: set[str] = set()
 
     def resolve(name: str) -> _PeripheralTemplate:
         cached = cache.get(name)
         if cached is not None:
             return cached
-        if name in visiting:
-            raise _fail("SVD_XML_INVALID", "SVD derived peripheral cycle is invalid")
-        element = declarations.get(name)
-        if element is None:
-            raise _fail("SVD_XML_INVALID", "SVD derived peripheral scope is invalid")
-        visiting.add(name)
-        reference = element.attrib.get("derivedFrom")
-        inherited = resolve(reference) if reference else None
-        defaults = _overlay_defaults(
-            element, inherited.defaults if inherited is not None else device_defaults
-        )
-        base = _optional_number(element, "baseAddress", maximum=0xFFFF_FFFF)
-        if base is None:
-            if inherited is None:
-                raise _fail("SVD_XML_INVALID", "SVD peripheral base address is missing")
-            base = inherited.base_address
-        own_container = _child(element, "registers")
-        container = (
-            own_container
-            if own_container is not None
-            else (inherited.container if inherited is not None else None)
-        )
-        template = _PeripheralTemplate(element, defaults, base, container)
-        visiting.remove(name)
-        cache[name] = template
-        return template
+        chain: list[tuple[str, ET.Element]] = []
+        chain_names: set[str] = set()
+        current = name
+        inherited: _PeripheralTemplate | None = None
+        while current not in cache:
+            if current in chain_names:
+                raise _fail("SVD_XML_INVALID", "SVD derived peripheral cycle is invalid")
+            if len(chain) >= _MAX_DERIVED_CHAIN_DEPTH:
+                raise _fail("SVD_SIZE_LIMIT", "SVD derived chain exceeds the limit")
+            element = declarations.get(current)
+            if element is None:
+                raise _fail("SVD_XML_INVALID", "SVD derived peripheral scope is invalid")
+            chain.append((current, element))
+            chain_names.add(current)
+            reference = element.attrib.get("derivedFrom")
+            if not reference:
+                break
+            current = reference
+        else:
+            inherited = cache[current]
+
+        for current, element in reversed(chain):
+            defaults = _overlay_defaults(
+                element, inherited.defaults if inherited is not None else device_defaults
+            )
+            base = _optional_number(element, "baseAddress", maximum=0xFFFF_FFFF)
+            if base is None:
+                if inherited is None:
+                    raise _fail("SVD_XML_INVALID", "SVD peripheral base address is missing")
+                base = inherited.base_address
+            own_container = _child(element, "registers")
+            container = (
+                own_container
+                if own_container is not None
+                else (inherited.container if inherited is not None else None)
+            )
+            inherited = _PeripheralTemplate(element, defaults, base, container)
+            cache[current] = inherited
+        return cache[name]
 
     registers: list[SvdRegister] = []
     paths: set[str] = set()

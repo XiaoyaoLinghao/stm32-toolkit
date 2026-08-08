@@ -587,6 +587,83 @@ def test_forward_peripheral_and_cluster_inheritance_use_local_scope(
     )
 
 
+def test_nested_cluster_local_scope_inheritance_and_arrays_are_supported(
+    tmp_path: Path,
+) -> None:
+    selection = _select_payload(
+        tmp_path,
+        _document(
+            '<registers><cluster><name>TOP%s</name><addressOffset>0x100</addressOffset>'
+            '<dim>2</dim><dimIncrement>0x1000</dimIncrement><size>16</size>'
+            '<access>read-only</access>'
+            '<cluster derivedFrom="INNER_BASE"><name>INNER%s</name><addressOffset>0x40</addressOffset>'
+            '<dim>2</dim><dimIncrement>0x20</dimIncrement></cluster>'
+            '<cluster><name>INNER_BASE</name><addressOffset>0x10</addressOffset><size>8</size>'
+            '<register><name>VALUE%s</name><addressOffset>0</addressOffset>'
+            '<dim>2</dim><dimIncrement>1</dimIncrement></register></cluster>'
+            '</cluster></registers>'
+        ),
+    )
+
+    assert len(selection.registers) == 12
+    inherited = selection.register("GPIOA.TOP1.INNER1.VALUE1")
+    assert (inherited.address, inherited.size_bytes, inherited.access) == (
+        0x40021161,
+        1,
+        "read-only",
+    )
+
+
+def test_cluster_nesting_depth_is_rejected_before_expansion(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setattr(svd_module, "_MAX_CLUSTER_NESTING_DEPTH", 2, raising=False)
+    monkeypatch.setattr(
+        svd_module,
+        "_format_dim_name",
+        lambda *args: (_ for _ in ()).throw(
+            AssertionError("cluster expansion began before nesting validation")
+        ),
+    )
+    payload = _document(
+        '<registers><cluster><name>LEVEL0</name><addressOffset>0</addressOffset>'
+        '<cluster><name>LEVEL1</name><addressOffset>0</addressOffset>'
+        '<cluster><name>LEVEL2</name><addressOffset>0</addressOffset>'
+        '<register><name>VALUE</name><addressOffset>0</addressOffset></register>'
+        '</cluster></cluster></cluster></registers>'
+    )
+
+    with pytest.raises(SvdError) as error:
+        _select_payload(tmp_path, payload)
+    assert error.value.code == "SVD_SIZE_LIMIT"
+
+
+def test_deep_sibling_derived_cluster_chain_has_a_stable_failure(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setattr(
+        svd_module,
+        "_format_dim_name",
+        lambda *args: (_ for _ in ()).throw(
+            AssertionError("cluster expansion began before derived-depth validation")
+        ),
+    )
+    declarations = [
+        f'<cluster derivedFrom="C{index + 1}"><name>C{index}</name>'
+        f'<addressOffset>{index * 4}</addressOffset></cluster>'
+        for index in range(1099)
+    ]
+    declarations.append(
+        '<cluster><name>C1099</name><addressOffset>0</addressOffset>'
+        '<register><name>VALUE</name><addressOffset>0</addressOffset></register></cluster>'
+    )
+    payload = _document(f"<registers>{''.join(declarations)}</registers>")
+
+    with pytest.raises(SvdError) as error:
+        _select_payload(tmp_path, payload)
+    assert error.value.code == "SVD_SIZE_LIMIT"
+
+
 @pytest.mark.parametrize(
     "payload",
     [
