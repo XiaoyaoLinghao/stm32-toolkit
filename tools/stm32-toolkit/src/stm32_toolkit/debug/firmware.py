@@ -214,16 +214,6 @@ async def bind_debug_firmware(
                 "DEBUG_FIRMWARE_CHANGED",
                 "Firmware evidence changed during debug binding",
             )
-        regions = tuple(
-            MemoryRegionBinding(
-                region.name,
-                region.origin,
-                region.length,
-                region.attributes,
-            )
-            for region in current.model.memory.regions
-            if "r" in region.attributes
-        )
         confirmed_at = utc_now_rfc3339()
         _endpoint(typed, client)
         try:
@@ -243,22 +233,39 @@ async def bind_debug_firmware(
                 "DEBUG_TARGET_MISMATCH",
                 "Connected target changed during debug binding",
             ) from None
+        final_firmware = _firmware(root, changed=True)
+        final_flash = _flash(root, final_firmware, typed, changed=True)
+        if not _same_firmware(firmware, final_firmware) or final_flash != flash:
+            raise _fail(
+                "DEBUG_FIRMWARE_CHANGED",
+                "Firmware evidence changed during debug binding",
+            )
+        regions = tuple(
+            MemoryRegionBinding(
+                region.name,
+                region.origin,
+                region.length,
+                region.attributes,
+            )
+            for region in final_firmware.model.memory.regions
+            if "r" in region.attributes
+        )
         binding = DebugFirmwareBinding(
-            logical_project_id=str(current.model.logical_project_id),
+            logical_project_id=str(final_firmware.model.logical_project_id),
             workspace_id=typed.workspace_id,
             observation_session_id=typed.observation_session_id,
-            flash_session_id=str(current_flash["sessionId"]),
+            flash_session_id=str(final_flash["sessionId"]),
             lease_id=typed.lease_id,
             probe_id=typed.probe_id,
-            target_device=current.model.target.device,
+            target_device=final_firmware.model.target.device,
             debug_target=typed.target,
-            build_id=str(current.identity["buildId"]),
-            elf_sha256=str(current.identity["elfSha256"]),
-            elf_size=len(current.elf_data),
-            elf_path=current.elf_path,
-            input_snapshot_sha256=str(current.identity["inputSnapshotSha256"]),
-            git_head=str(current.identity["gitHead"]),
-            git_dirty=bool(current.identity["gitDirty"]),
+            build_id=str(final_firmware.identity["buildId"]),
+            elf_sha256=str(final_firmware.identity["elfSha256"]),
+            elf_size=len(final_firmware.elf_data),
+            elf_path=final_firmware.elf_path,
+            input_snapshot_sha256=str(final_firmware.identity["inputSnapshotSha256"]),
+            git_head=str(final_firmware.identity["gitHead"]),
+            git_dirty=bool(final_firmware.identity["gitDirty"]),
             confirmed_at_utc=confirmed_at,
             memory_regions=regions,
             project_root=root,

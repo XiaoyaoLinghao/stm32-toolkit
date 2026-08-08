@@ -512,6 +512,30 @@ def test_confirmation_is_captured_before_final_attach_and_endpoint_is_checked_af
     assert result.code == "DEBUG_ENDPOINT_MISMATCH"
 
 
+@pytest.mark.parametrize("evidence", ["map", "flash"])
+def test_disk_evidence_changed_during_final_attach_is_rejected(
+    binding_env, evidence: str
+):
+    root, _, client, request = binding_env
+
+    def mutate_on_final_attach(call: int) -> None:
+        if call != 2:
+            return
+        if evidence == "map":
+            path = root / "build" / "arm-debug" / "firmware.map"
+            path.write_bytes(path.read_bytes() + b"changed-during-final-attach")
+        else:
+            path = root / "artifacts" / "migration" / "flash-result.json"
+            document = json.loads(path.read_text(encoding="utf-8"))
+            document["finishedAtUtc"] = "2026-08-08T01:02:03.000004Z"
+            atomic_write_json(path, document)
+
+    client.on_attach = mutate_on_final_attach
+    result = asyncio.run(bind_debug_firmware(request, client))
+    assert result.ok is False
+    assert result.code == "DEBUG_FIRMWARE_CHANGED"
+
+
 def test_flash_must_match_workspace_probe_target_and_current_firmware(binding_env):
     root, identity, client, request = binding_env
     document = _flash_result(identity)
