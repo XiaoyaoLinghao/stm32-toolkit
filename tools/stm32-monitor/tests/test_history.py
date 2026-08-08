@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import sqlite3
+import json
 from pathlib import Path
 from uuid import UUID
 
@@ -9,6 +9,7 @@ import pytest
 from stm32_monitor.groups import GroupStore
 from stm32_monitor.history import HistoryQuery, HistoryStore
 from stm32_monitor.models import ObservationBinding, SampleBatch, SampleValue, WatchGroup, WatchItem
+from stm32_monitor.storage import StorageFailure
 from stm32_toolkit.paths import WorkspacePaths
 
 
@@ -183,10 +184,13 @@ def test_retention_removes_expired_and_budget_excess_in_bounded_chunks(tmp_path:
         for sequence, captured in enumerate((100, 200, 9_500, 9_600, 9_700)):
             assert store.append_batch(_batch(paths, sequence, captured_ns=captured, value="x" * 250)).ok
         retained = store.run_retention(now_ns=10_000)
-        assert retained.ok and retained.data["deletedBatches"] >= 2
+        assert retained.ok and retained.data["deletedBatches"] == 2
+        assert retained.data["moreWork"] is True
+        assert retained.data["earliestCapturedUnixNs"] == 9_500
         page = store.query_history(HistoryQuery("monitor-1", 0, 20_000))
         assert all(row["capturedUnixNs"] >= 9_000 for row in page.data.values)
-        assert retained.data["passes"] >= 1
+        assert len(page.data.values) == 3
+        assert retained.data["passes"] == 1
     finally:
         store.close()
 
@@ -226,7 +230,7 @@ def test_wrong_workspace_batch_invalid_cursor_and_oversized_row_fail_closed(tmp_
 
         assert store.append_batch(batch).ok
         monkeypatch.setattr(history_module, "MAX_HISTORY_PAGE_BYTES", 1)
-        assert store.query_history(HistoryQuery("monitor-1", 0, 2_000_000_000)).code == "MONITOR_HISTORY_LIMIT_EXCEEDED"
+        assert store.query_history(HistoryQuery("monitor-1", 0, 2_000_000_000)).code == "MONITOR_STORAGE_CORRUPT"
     finally:
         store.close()
 
@@ -237,7 +241,194 @@ def test_invalid_retention_and_empty_retention_do_not_create_storage(tmp_path: P
     try:
         assert store.run_retention(now_ns=-1).code == "MONITOR_REQUEST_INVALID"
         result = store.run_retention(now_ns=10_000)
-        assert result.ok and result.data == {"deletedBatches": 0, "logicalBytes": 0, "passes": 0}
+        assert result.ok and result.data == {
+            "deletedBatches": 0,
+            "logicalBytes": 0,
+            "passes": 0,
+            "moreWork": False,
+            "earliestCapturedUnixNs": None,
+        }
         assert not paths.monitor_root.exists()
+    finally:
+        store.close()
+
+
+@pytest.mark.parametrize(
+    "replacement",
+    [
+        b"\xff",
+        b"[]",
+        b'{"actualRateHz":NaN}',
+        7,
+    ],
+)
+def test_corrupt_history_row_never_leaks_json_unicode_or_type_errors(
+    tmp_path: Path,
+    replacement: object,
+) -> None:
+    paths = _paths(tmp_path)
+    store = HistoryStore(paths)
+    try:
+        assert store.append_batch(_batch(paths, 1)).ok
+        store._database.write(
+            lambda connection: connection.execute(
+                "UPDATE history_values SET row_json = ?, payload_bytes = ?",
+                (replacement, len(replacement) if isinstance(replacement, bytes) else 1),
+            )
+        )
+        result = store.query_history(HistoryQuery("monitor-1", 0, 2_000_000_000))
+        assert not result.ok
+        assert result.code == "MONITOR_STORAGE_CORRUPT"
+        assert result.message == "monitor history is corrupt"
+        assert result.details == {}
+    finally:
+        store.close()
+
+
+@pytest.mark.parametrize(
+    ("field", "replacement"),
+    [
+        ("binding", []),
+        ("watch", []),
+        ("status", 1),
+        ("definition", []),
+        ("valueOrdinal", 1),
+        ("scheduledAtUtc", "1970-01-01T00:00:00.000000Z"),
+        ("capturedAtUtc", "1970-01-01T00:00:00.000000Z"),
+        ("actualRateHz", "5.0"),
+    ],
+)
+def test_each_history_model_semantic_mismatch_is_storage_corruption(
+    tmp_path: Path,
+    field: str,
+    replacement: object,
+) -> None:
+    paths = _paths(tmp_path)
+    store = HistoryStore(paths)
+    try:
+        assert store.append_batch(_batch(paths, 1)).ok
+        raw = store._database.read(
+            lambda connection: connection.execute(
+                "SELECT row_json FROM history_values"
+            ).fetchone()[0],
+            empty=None,
+        )
+        decoded = json.loads(bytes(raw).decode("utf-8"))
+        decoded[field] = replacement
+        invalid = json.dumps(decoded, separators=(",", ":")).encode("utf-8")
+        store._database.write(
+            lambda connection: connection.execute(
+                "UPDATE history_values SET row_json = ?, payload_bytes = ?",
+                (invalid, len(invalid)),
+            )
+        )
+        assert store.query_history(
+            HistoryQuery("monitor-1", 0, 2_000_000_000)
+        ).code == "MONITOR_STORAGE_CORRUPT"
+    finally:
+        store.close()
+
+
+def test_history_page_stops_before_crossing_byte_limit(tmp_path: Path, monkeypatch) -> None:
+    import stm32_monitor.history as history_module
+
+    paths = _paths(tmp_path)
+    store = HistoryStore(paths)
+    try:
+        assert store.append_batch(_batch(paths, 1)).ok
+        assert store.append_batch(_batch(paths, 2)).ok
+        row_size = store._database.read(
+            lambda connection: connection.execute(
+                "SELECT payload_bytes FROM history_values ORDER BY batch_id LIMIT 1"
+            ).fetchone()[0],
+            empty=0,
+        )
+        monkeypatch.setattr(history_module, "MAX_HISTORY_PAGE_BYTES", row_size + 1)
+        page = store.query_history(HistoryQuery("monitor-1", 0, 2_000_000_000))
+        assert page.ok and len(page.data.values) == 1 and page.data.next_cursor is not None
+    finally:
+        store.close()
+
+
+def test_retention_budget_deadline_and_failure_mapping_are_bounded(tmp_path: Path, monkeypatch) -> None:
+    import stm32_monitor.history as history_module
+
+    paths = _paths(tmp_path)
+    store = HistoryStore(paths)
+    try:
+        assert store.append_batch(_batch(paths, 1, captured_ns=9_500)).ok
+        assert store.append_batch(_batch(paths, 2, captured_ns=9_600)).ok
+        monkeypatch.setattr(history_module, "RETENTION_AGE_NS", 100_000)
+        monkeypatch.setattr(history_module, "RETENTION_LOGICAL_BYTES", 1)
+        monkeypatch.setattr(history_module, "RETENTION_DELETE_BATCHES", 1)
+        ticks = iter((0, history_module.RETENTION_TIME_BUDGET_NS))
+        monkeypatch.setattr(history_module.time, "monotonic_ns", lambda: next(ticks))
+        retained = store.run_retention(now_ns=10_000)
+        assert retained.ok
+        assert retained.data["deletedBatches"] == 1
+        assert retained.data["moreWork"] is True
+
+        monkeypatch.setattr(
+            store._database,
+            "try_write",
+            lambda operation, timeout_ms: (_ for _ in ()).throw(
+                StorageFailure("MONITOR_RETENTION_FAILED", "internal")
+            ),
+        )
+        failed = store.run_retention(now_ns=10_000)
+        assert failed.code == "MONITOR_RETENTION_FAILED"
+        assert failed.message == "history retention failed"
+    finally:
+        store.close()
+
+
+def test_history_wrong_query_type_and_storage_failure_fail_stably(tmp_path: Path, monkeypatch) -> None:
+    paths = _paths(tmp_path)
+    store = HistoryStore(paths)
+    assert store.query_history(object()).code == "MONITOR_HISTORY_QUERY_INVALID"
+    assert store.append_batch(_batch(paths, 1)).ok
+    monkeypatch.setattr(
+        store._database,
+        "read",
+        lambda operation, empty: (_ for _ in ()).throw(
+            StorageFailure("MONITOR_STORAGE_INVALID", "monitor storage is unavailable")
+        ),
+    )
+    assert store.run_retention(now_ns=10_000).code == "MONITOR_STORAGE_INVALID"
+    store.close()
+
+
+def test_semantically_invalid_and_oversized_history_rows_are_storage_corruption(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    import stm32_monitor.history as history_module
+
+    paths = _paths(tmp_path)
+    store = HistoryStore(paths)
+    try:
+        assert store.append_batch(_batch(paths, 1)).ok
+        raw = store._database.read(
+            lambda connection: connection.execute(
+                "SELECT row_json FROM history_values"
+            ).fetchone()[0],
+            empty=None,
+        )
+        decoded = json.loads(bytes(raw).decode("utf-8"))
+        decoded["groupId"] = "not-a-uuid"
+        invalid = json.dumps(decoded, separators=(",", ":")).encode("utf-8")
+        store._database.write(
+            lambda connection: connection.execute(
+                "UPDATE history_values SET row_json = ?, payload_bytes = ?",
+                (invalid, len(invalid)),
+            )
+        )
+        semantic = store.query_history(HistoryQuery("monitor-1", 0, 2_000_000_000))
+        assert semantic.code == "MONITOR_STORAGE_CORRUPT"
+
+        assert store.append_batch(_batch(paths, 2)).ok
+        monkeypatch.setattr(history_module, "MAX_HISTORY_PAGE_BYTES", 1)
+        oversized = store.query_history(HistoryQuery("monitor-1", 0, 2_000_000_000))
+        assert oversized.code == "MONITOR_STORAGE_CORRUPT"
     finally:
         store.close()
