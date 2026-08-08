@@ -15,6 +15,7 @@ from stm32_toolkit.debug import (
     MemoryRegionBinding,
     TypedValue,
 )
+from stm32_toolkit.debug.types import CatalogPage, VariableDescriptor
 from stm32_toolkit.result import OperationResult
 
 
@@ -91,6 +92,19 @@ class FakeObservation:
             raise RuntimeError("C:\\secret")
         return self.revalidate_result
 
+    async def list_variables(self, query, cursor, limit):
+        descriptor = VariableDescriptor(
+            "counter", "uint32_t", "integer", 4, signed=False
+        )
+        return OperationResult.success(
+            "variables.list", CatalogPage((descriptor,), None)
+        )
+
+    async def list_registers(self, query, cursor, limit):
+        return OperationResult.failure(
+            "registers.list", "SVD_SELECTION_REQUIRED", "missing", {}
+        )
+
 
 def test_probe_session_rejects_invalid_constructor_and_outcome_values(tmp_path: Path) -> None:
     project = tmp_path / "project"
@@ -132,6 +146,35 @@ def test_probe_session_maps_exact_public_observation_evidence(tmp_path: Path) ->
         "dwarfSha256": "e" * 64,
         "svdSha256": "d" * 64,
     }
+
+
+def test_probe_session_catalog_proxy_accepts_only_typed_descriptor_pages(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        project = tmp_path / "project"
+        project.mkdir()
+        observation = FakeObservation(_binding(project))
+        session = ProbeSession(observation)
+
+        variables = await session.list_variables("count", None, 100)
+        registers = await session.list_registers("", None, 100)
+        assert variables.ok is True
+        assert variables.to_dict()["data"]["items"][0]["selector"] == "counter"
+        assert "address" not in str(variables.to_dict()).casefold()
+        assert registers.ok is False and registers.code == "MONITOR_PROVENANCE_CHANGED"
+
+        async def malformed(*_args):
+            return OperationResult.success(
+                "variables.list", {"address": 0x20000000}
+            )
+
+        observation.list_variables = malformed
+        rejected = await session.list_variables("", None, 100)
+        assert rejected.ok is False
+        assert rejected.code == "MONITOR_PROVENANCE_CHANGED"
+
+    asyncio.run(scenario())
 
 
 def test_grouped_reads_use_only_named_public_methods_and_preserve_item_order(tmp_path: Path) -> None:

@@ -15,6 +15,7 @@ import pytest
 from stm32_toolkit import __version__
 from stm32_toolkit.build.identity import atomic_write_json
 from stm32_toolkit.debug import read_variables, sample_registers
+from stm32_toolkit.debug.types import CatalogPage
 from stm32_toolkit.monitor_observation import (
     MonitorObservationError,
     MonitorObservationRequest,
@@ -232,6 +233,62 @@ def test_open_keeps_exact_observe_lease_and_uses_real_typed_provenance(
     asyncio.run(session.close())
     assert harness.clients[0].closed is True
     assert harness.supervisors[0].stopped is True
+
+
+def test_observation_catalog_pages_revalidate_and_expose_only_descriptors(
+    debug_env: DebugEnv, tmp_path: Path
+) -> None:
+    async def scenario() -> None:
+        harness = Harness(debug_env)
+        opened = await open_monitor_observation(
+            request(debug_env, tmp_path / "data"), _seams=harness.seams()
+        )
+        assert opened.ok is True
+        session = opened.data
+        initial_bind_calls = len(harness.bind_calls)
+
+        variables = await session.list_variables("signed", None, 1)
+        registers = await session.list_registers("gpioa", None, 1)
+        assert variables.ok is True and type(variables.data) is CatalogPage
+        assert registers.ok is True and type(registers.data) is CatalogPage
+        assert variables.data.items[0].selector.startswith("signed")
+        assert registers.data.items[0].selector.startswith("GPIOA.")
+        assert len(harness.bind_calls) == initial_bind_calls + 2
+        assert "address" not in json.dumps(variables.data.to_dict()).casefold()
+        assert "address" not in json.dumps(registers.data.to_dict()).casefold()
+        await session.close()
+
+    asyncio.run(scenario())
+
+
+def test_observation_catalog_rejects_invalid_pages_and_missing_svd(
+    debug_env: DebugEnv, tmp_path: Path
+) -> None:
+    async def scenario() -> None:
+        harness = Harness(debug_env)
+        opened = await open_monitor_observation(
+            request(debug_env, tmp_path / "data"), _seams=harness.seams()
+        )
+        session = opened.data
+        invalid = await session.list_variables("", None, 0)
+        assert invalid.ok is False and invalid.code == "DWARF_LIMIT_INVALID"
+        invalid_register = await session.list_registers("", None, 0)
+        assert invalid_register.ok is False and invalid_register.code == "SVD_LIMIT_INVALID"
+        harness.bind_result = OperationResult.failure(
+            "bind", "PROBE_LEASE_LOST", "changed", {}
+        )
+        changed_variables = await session.list_variables("", None, 100)
+        changed_registers = await session.list_registers("", None, 100)
+        assert changed_variables.ok is False
+        assert changed_registers.ok is False
+        assert changed_variables.code == changed_registers.code == "MONITOR_PROVENANCE_CHANGED"
+        harness.bind_result = None
+        session.svd = None
+        missing = await session.list_registers("", None, 100)
+        assert missing.ok is False and missing.code == "SVD_SELECTION_REQUIRED"
+        await session.close()
+
+    asyncio.run(scenario())
 
 
 def test_same_probe_is_busy_while_different_probe_is_isolated(

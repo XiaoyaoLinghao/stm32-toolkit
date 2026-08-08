@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from typing import Iterable
 
 from stm32_toolkit.debug import DebugFirmwareBinding, DebugReadReport
+from stm32_toolkit.debug.types import CatalogPage
 
 from .models import ObservationBinding, SampleValue, WatchItem
 from .protocol import ProtocolResult, failure, success
@@ -49,6 +50,14 @@ def _blocked_code(code: object) -> str | None:
     return None
 
 
+def _catalog_code(code: object) -> str:
+    if isinstance(code, str) and code.endswith(
+        ("QUERY_INVALID", "CURSOR_INVALID", "LIMIT_INVALID")
+    ):
+        return "MONITOR_REQUEST_INVALID"
+    return "MONITOR_PROVENANCE_CHANGED"
+
+
 def _map_binding(observation: object, raw: object) -> ObservationBinding:
     if not isinstance(raw, DebugFirmwareBinding):
         raise ValueError("observation binding is invalid")
@@ -79,11 +88,45 @@ class ProbeSession:
     """Non-owning typed adapter around one public Monitor observation session."""
 
     def __init__(self, observation: object) -> None:
-        for name in ("binding", "catalog", "read_variables", "sample_registers", "revalidate"):
+        for name in (
+            "binding",
+            "catalog",
+            "read_variables",
+            "sample_registers",
+            "revalidate",
+        ):
             if not hasattr(observation, name):
                 raise TypeError("observation session is invalid")
         self._observation = observation
         self.binding = _map_binding(observation, observation.binding)
+
+    async def _list_catalog(
+        self, method_name: str, query: str, cursor: str | None, limit: int
+    ) -> ProtocolResult[object]:
+        operation = "catalog.variables" if method_name == "list_variables" else "catalog.registers"
+        try:
+            result = await getattr(self._observation, method_name)(query, cursor, limit)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            return failure(operation, "MONITOR_PROVENANCE_CHANGED", "Monitor catalog changed")
+        if getattr(result, "ok", None) is not True:
+            code = _catalog_code(getattr(result, "code", None))
+            return failure(operation, code, "Monitor catalog request failed")
+        page = getattr(result, "data", None)
+        if type(page) is not CatalogPage:
+            return failure(operation, "MONITOR_PROVENANCE_CHANGED", "Monitor catalog changed")
+        return success(operation, page.to_dict())
+
+    async def list_variables(
+        self, query: str, cursor: str | None, limit: int
+    ) -> ProtocolResult[object]:
+        return await self._list_catalog("list_variables", query, cursor, limit)
+
+    async def list_registers(
+        self, query: str, cursor: str | None, limit: int
+    ) -> ProtocolResult[object]:
+        return await self._list_catalog("list_registers", query, cursor, limit)
 
     async def _read_group(
         self,

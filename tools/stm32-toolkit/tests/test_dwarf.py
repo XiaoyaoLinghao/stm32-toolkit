@@ -3,6 +3,7 @@ from __future__ import annotations
 import math
 import io
 import hashlib
+import json
 import struct
 from dataclasses import replace
 import shutil
@@ -22,7 +23,13 @@ from stm32_toolkit.debug.dwarf import (
 )
 from stm32_toolkit.debug import dwarf as dwarf_module
 from stm32_toolkit.debug.model import DebugFirmwareBinding, MemoryRegionBinding
-from stm32_toolkit.debug.types import DwarfError, DwarfSelection, DwarfType
+from stm32_toolkit.debug.types import (
+    CatalogPage,
+    DwarfError,
+    DwarfSelection,
+    DwarfType,
+    VariableDescriptor,
+)
 from stm32_toolkit.build.identity import validate_elf
 from stm32_toolkit.project_model import load_project_model
 
@@ -670,6 +677,124 @@ def test_revalidation_requires_the_exact_binding() -> None:
     with pytest.raises(DwarfError) as raised:
         catalog.revalidate(replace(binding, elf_size=binding.elf_size + 1))
     assert raised.value.code == "DWARF_PROVENANCE_MISMATCH"
+
+
+def test_variable_catalog_pages_are_deterministic_searchable_and_address_free() -> None:
+    binding = _firmware_binding(project_root=TOOL_ROOT)
+    current = DwarfCatalog.from_binding(binding, TOOL_ROOT)
+
+    first = current.variable_descriptors(binding, query="  MODE  ", limit=1)
+    assert type(first) is CatalogPage
+    assert len(first.items) == 1
+    assert type(first.items[0]) is VariableDescriptor
+    assert first.items[0].selector == "mode_known"
+    assert first.items[0].kind == "enum"
+    assert first.items[0].enum_values == ((0, "MODE_IDLE"), (7, "MODE_RUN"))
+    assert first.next_cursor is not None
+
+    second = current.variable_descriptors(
+        binding, query="mode", cursor=first.next_cursor, limit=1
+    )
+    assert [item.selector for item in second.items] == ["mode_unknown"]
+    assert second.next_cursor is None
+    payload = first.to_dict()
+    rendered = json.dumps(payload, sort_keys=True)
+    assert "address" not in rendered.casefold()
+    assert str(FIXTURE.resolve()) not in rendered
+    assert str(FIXTURE.resolve()) not in repr(first)
+
+
+def test_variable_catalog_describes_arrays_and_structures_without_capabilities() -> None:
+    binding = _firmware_binding(project_root=TOOL_ROOT)
+    current = DwarfCatalog.from_binding(binding, TOOL_ROOT)
+    page = current.variable_descriptors(binding, limit=256)
+    by_selector = {item.selector: item for item in page.items}
+
+    assert by_selector["values"].element_count == 3
+    assert by_selector["values"].element_kind == "integer"
+    assert by_selector["packet"].member_names == ("tag", "point", "samples")
+    assert by_selector["qualified"].qualifiers == ("const", "volatile")
+    assert "qualified_word_t" in by_selector["qualified"].aliases
+    for descriptor in page.items:
+        assert not hasattr(descriptor, "address")
+        assert not hasattr(descriptor, "path")
+        assert not hasattr(descriptor, "catalog")
+
+
+def test_variable_catalog_cursor_is_digest_and_query_bound_and_limits_are_strict() -> None:
+    binding = _firmware_binding(project_root=TOOL_ROOT)
+    current = DwarfCatalog.from_binding(binding, TOOL_ROOT)
+    page = current.variable_descriptors(binding, limit=1)
+    assert page.next_cursor is not None
+
+    with pytest.raises(DwarfError) as wrong_query:
+        current.variable_descriptors(
+            binding, query="signed", cursor=page.next_cursor, limit=1
+        )
+    assert wrong_query.value.code == "DWARF_CURSOR_INVALID"
+    tampered = page.next_cursor[:-1] + ("A" if page.next_cursor[-1] != "A" else "B")
+    with pytest.raises(DwarfError) as invalid_cursor:
+        current.variable_descriptors(binding, cursor=tampered, limit=1)
+    assert invalid_cursor.value.code == "DWARF_CURSOR_INVALID"
+    for limit in (0, 257, True):
+        with pytest.raises(DwarfError) as invalid_limit:
+            current.variable_descriptors(binding, limit=limit)
+        assert invalid_limit.value.code == "DWARF_LIMIT_INVALID"
+    with pytest.raises(DwarfError) as long_query:
+        current.variable_descriptors(binding, query="x" * 129)
+    assert long_query.value.code == "DWARF_QUERY_INVALID"
+
+
+def test_variable_catalog_revalidates_provenance_before_every_page() -> None:
+    binding = _firmware_binding(project_root=TOOL_ROOT)
+    current = DwarfCatalog.from_binding(binding, TOOL_ROOT)
+    page = current.variable_descriptors(binding, limit=1)
+    assert page.next_cursor is not None
+
+    with pytest.raises(DwarfError) as changed:
+        current.variable_descriptors(
+            replace(binding, elf_sha256="9" * 64),
+            cursor=page.next_cursor,
+            limit=1,
+        )
+    assert changed.value.code == "DWARF_PROVENANCE_MISMATCH"
+
+
+def test_variable_descriptor_and_page_snapshot_mutable_inputs_and_reject_paths() -> None:
+    qualifiers = ["const"]
+    aliases = ["word_t"]
+    enums = [[1, "ONE"]]
+    members = ["field"]
+    descriptor = VariableDescriptor(
+        "counter",
+        "uint32_t",
+        "integer",
+        4,
+        signed=False,
+        qualifiers=qualifiers,  # type: ignore[arg-type]
+        aliases=aliases,  # type: ignore[arg-type]
+        enum_values=enums,  # type: ignore[arg-type]
+        member_names=members,  # type: ignore[arg-type]
+    )
+    items = [descriptor]
+    page = CatalogPage(items, None)  # type: ignore[arg-type]
+    qualifiers.append("volatile")
+    aliases.append("changed")
+    enums[0][1] = "CHANGED"
+    members.append("changed")
+    items.clear()
+
+    assert descriptor.qualifiers == ("const",)
+    assert descriptor.aliases == ("word_t",)
+    assert descriptor.enum_values == ((1, "ONE"),)
+    assert descriptor.member_names == ("field",)
+    assert page.items == (descriptor,)
+    with pytest.raises(ValueError):
+        replace(descriptor, type_name=r"C:\\private\\secret.h")
+    with pytest.raises(ValueError):
+        replace(descriptor, member_names=("../secret",))
+    with pytest.raises(ValueError):
+        CatalogPage(tuple(descriptor for _ in range(257)), None)
 
 
 def test_real_dwarf_fixture_is_a_valid_cortex_m_firmware_elf(tmp_path: Path) -> None:

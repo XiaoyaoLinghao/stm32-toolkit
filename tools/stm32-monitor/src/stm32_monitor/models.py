@@ -28,6 +28,7 @@ MAX_SIGNED_INT64 = (1 << 63) - 1
 _SHA256 = re.compile(r"[0-9a-f]{64}\Z")
 _WORKSPACE_ID = re.compile(r"[0-9a-f]{24}\Z")
 _GIT_SHA = re.compile(r"[0-9a-f]{40}(?:[0-9a-f]{24})?\Z")
+_PROBE_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,255}\Z")
 
 
 _MAPPING_PROXY = type(MappingProxyType({}))
@@ -168,19 +169,46 @@ class MonitorConfig:
 @dataclass(frozen=True)
 class ProbeConnectRequest:
     probe_id: str
-    expected_build_id: str
-    expected_elf_sha256: str
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "probe_id", _require_text(self.probe_id, "probe ID", 256))
-        object.__setattr__(self, "expected_build_id", _require_sha256(self.expected_build_id, "build ID"))
-        object.__setattr__(self, "expected_elf_sha256", _require_sha256(self.expected_elf_sha256, "ELF digest"))
+        value = _require_text(self.probe_id, "probe ID", 256)
+        if _PROBE_ID.fullmatch(value) is None:
+            raise ValueError("probe ID is invalid")
+        object.__setattr__(self, "probe_id", value)
+
+    def to_dict(self) -> dict[str, object]:
+        return {"probeId": self.probe_id}
+
+
+@dataclass(frozen=True)
+class FirmwareStatus:
+    build_id: str
+    elf_sha256: str
+    input_snapshot_sha256: str
+    git_head: str
+    git_dirty: bool
+    target_device: str
+
+    def __post_init__(self) -> None:
+        for name in ("build_id", "elf_sha256", "input_snapshot_sha256"):
+            object.__setattr__(self, name, _require_sha256(getattr(self, name), name))
+        if not isinstance(self.git_head, str) or _GIT_SHA.fullmatch(self.git_head.lower()) is None:
+            raise ValueError("Git HEAD is invalid")
+        object.__setattr__(self, "git_head", self.git_head.lower())
+        if type(self.git_dirty) is not bool:
+            raise ValueError("Git dirty state is invalid")
+        object.__setattr__(
+            self, "target_device", _require_text(self.target_device, "target device", 128)
+        )
 
     def to_dict(self) -> dict[str, object]:
         return {
-            "probeId": self.probe_id,
-            "expectedBuildId": self.expected_build_id,
-            "expectedElfSha256": self.expected_elf_sha256,
+            "buildId": self.build_id,
+            "elfSha256": self.elf_sha256,
+            "inputSnapshotSha256": self.input_snapshot_sha256,
+            "gitHead": self.git_head,
+            "gitDirty": self.git_dirty,
+            "targetDevice": self.target_device,
         }
 
 

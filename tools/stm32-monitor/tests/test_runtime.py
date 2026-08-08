@@ -178,6 +178,16 @@ class FakeObservation:
     async def close(self) -> None:
         self.close_calls += 1
 
+    async def list_variables(self, query, cursor, limit):
+        from stm32_monitor.protocol import success
+
+        return success("variables.list", {"kind": "variables", "query": query, "cursor": cursor, "limit": limit})
+
+    async def list_registers(self, query, cursor, limit):
+        from stm32_monitor.protocol import success
+
+        return success("registers.list", {"kind": "registers", "query": query, "cursor": cursor, "limit": limit})
+
 
 class FakeSampler:
     def __init__(self, observation, groups, history) -> None:
@@ -185,6 +195,14 @@ class FakeSampler:
         self.calls: list[tuple[str, tuple[object, ...], dict[str, object]]] = []
         self.close_calls = 0
         self.close_error: BaseException | None = None
+        self.state = "IDLE"
+        self.blocked_code = None
+        self._group = None
+        self._run_id = None
+        self._sequence = 0
+        self._subscribers = {}
+        self._history_drops_pending = 0
+        self._deadline_drops_pending = 0
 
     async def start(self, *args, **kwargs):
         from stm32_monitor.protocol import success
@@ -217,8 +235,14 @@ class FakeSampler:
         yield SimpleNamespace(to_dict=lambda: {"sequence": 2})
 
 
-def _protocol_runtime(tmp_path: Path, *, observation_factory=None):
-    from stm32_monitor.models import MonitorConfig
+def _protocol_runtime(
+    tmp_path: Path,
+    *,
+    observation_factory=None,
+    firmware_status_factory=None,
+    probe_list_factory=None,
+):
+    from stm32_monitor.models import FirmwareStatus, MonitorConfig
     from stm32_monitor.runtime import MonitorRuntime
     from stm32_toolkit.result import OperationResult
 
@@ -251,6 +275,21 @@ def _protocol_runtime(tmp_path: Path, *, observation_factory=None):
         observations.append(observation)
         return OperationResult.success("monitor.observe.open", observation)
 
+    def default_firmware(_project):
+        return FirmwareStatus("a" * 64, "b" * 64, "d" * 64, "c" * 40, False, "STM32F407VGTx")
+
+    async def default_probe_list(_request):
+        return OperationResult.success(
+            "stm32_probe_list",
+            {
+                "workspaceId": "ignored",
+                "sessionId": "ignored",
+                "probes": [
+                    {"probeId": "probe-a", "vendor": "ST", "product": "ST-LINK", "boardName": None}
+                ],
+            },
+        )
+
     def sampler_factory(*args):
         sampler = FakeSampler(*args)
         samplers.append(sampler)
@@ -262,6 +301,8 @@ def _protocol_runtime(tmp_path: Path, *, observation_factory=None):
         exporter_factory=export_factory,
         sampler_factory=sampler_factory,
         observation_factory=observation_factory or default_observation,
+        firmware_status_factory=firmware_status_factory or default_firmware,
+        probe_list_factory=probe_list_factory or default_probe_list,
         service_factory=lambda *args, **kwargs: _ready_service(*args, **kwargs),
     )
     config = MonitorConfig(project, (tmp_path / "data").resolve(), "session-a")
@@ -473,11 +514,7 @@ def test_probe_and_sampling_lifecycle_uses_only_typed_fixed_inputs(tmp_path: Pat
             _protocol_runtime(tmp_path)
         )
         await runtime.start(config)
-        connect_payload = {
-            "probeId": "probe-a",
-            "expectedBuildId": "a" * 64,
-            "expectedElfSha256": "b" * 64,
-        }
+        connect_payload = {"probeId": "probe-a"}
         try:
             connected = await runtime.dispatch("monitor.probe.connect", connect_payload)
             assert connected.ok and connected.data == {"probeId": "probe-a"}
@@ -513,6 +550,250 @@ def test_probe_and_sampling_lifecycle_uses_only_typed_fixed_inputs(tmp_path: Pat
             assert released.ok and observations[1].close_calls == 1
             unavailable = await runtime.dispatch("monitor.sampling.pause", {})
             assert not unavailable.ok
+        finally:
+            await runtime.stop()
+
+    asyncio.run(scenario())
+
+
+def test_probe_discovery_status_catalogs_and_connect_are_server_owned(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        runtime, config, _groups, _history, _exports, samplers, _observations, requests = (
+            _protocol_runtime(tmp_path)
+        )
+        project_before = {
+            path.relative_to(config.project_root).as_posix(): path.read_bytes()
+            for path in config.project_root.rglob("*")
+            if path.is_file()
+        }
+        await runtime.start(config)
+        try:
+            probes = await runtime.dispatch("monitor.probes.list", {})
+            assert probes.ok and probes.to_dict()["data"] == {
+                "probes": [
+                    {"probeId": "probe-a", "vendor": "ST", "product": "ST-LINK", "boardName": None}
+                ]
+            }
+            status = await runtime.dispatch("monitor.status", {})
+            assert status.ok
+            assert status.data["project"] == {
+                "logicalProjectId": MANIFEST["logicalProjectId"],
+                "name": "monitor-fixture",
+                "targetDevice": "STM32F407VGTx",
+            }
+            assert status.data["firmware"]["buildId"] == "a" * 64
+            assert status.data["probe"] == {"connected": False, "probeId": None}
+            assert status.data["sampling"] == {
+                "state": "IDLE",
+                "active": False,
+                "blockedCode": None,
+                "groupId": None,
+                "groupRevision": None,
+                "runId": None,
+                "lastSequence": None,
+                "bindingEpoch": 0,
+                "subscriberDrops": 0,
+                "historyDrops": 0,
+                "deadlineDrops": 0,
+                "serviceDrops": 0,
+            }
+            assert project_before == {
+                path.relative_to(config.project_root).as_posix(): path.read_bytes()
+                for path in config.project_root.rglob("*")
+                if path.is_file()
+            }
+
+            connected = await runtime.dispatch("monitor.probe.connect", {"probeId": "probe-a"})
+            assert connected.ok
+            request = requests[-1]
+            assert request.expected_build_id == "a" * 64
+            assert request.expected_elf_sha256 == "b" * 64
+            assert not any(
+                hasattr(request, name)
+                for name in ("target", "elf", "svd", "address", "backend", "operation", "workspace")
+            )
+            variables = await runtime.dispatch(
+                "monitor.catalog.variables", {}, query={"query": "counter", "limit": "25"}
+            )
+            registers = await runtime.dispatch(
+                "monitor.catalog.registers", {}, query={"cursor": "opaque"}
+            )
+            assert variables.ok and variables.data["kind"] == "variables"
+            assert registers.ok and registers.data["kind"] == "registers"
+            assert variables.data["limit"] == 25
+            assert registers.data["limit"] == 100
+            assert (await runtime.dispatch("monitor.probe.connect", {
+                "probeId": "probe-b", "target": "attacker", "expectedBuildId": "f" * 64
+            })).code == "MONITOR_REQUEST_INVALID"
+            assert samplers
+        finally:
+            await runtime.stop()
+
+    asyncio.run(scenario())
+
+
+def test_connect_rederives_firmware_and_fails_closed_on_open_race(tmp_path: Path) -> None:
+    from stm32_monitor.models import FirmwareStatus
+    from stm32_monitor.protocol import failure
+
+    statuses = [
+        FirmwareStatus("a" * 64, "b" * 64, "d" * 64, "c" * 40, False, "STM32F407VGTx"),
+        FirmwareStatus("e" * 64, "f" * 64, "1" * 64, "2" * 40, True, "STM32F407VGTx"),
+    ]
+    opened: list[object] = []
+
+    def firmware(_project):
+        return statuses.pop(0)
+
+    async def changed_during_open(request):
+        opened.append(request)
+        return failure("observe", "MONITOR_FIRMWARE_CHANGED", "changed")
+
+    async def scenario() -> None:
+        runtime, config, *_ = _protocol_runtime(
+            tmp_path,
+            observation_factory=changed_during_open,
+            firmware_status_factory=firmware,
+        )
+        await runtime.start(config)
+        try:
+            status = await runtime.dispatch("monitor.status", {})
+            assert status.data["firmware"]["buildId"] == "a" * 64
+            connected = await runtime.dispatch("monitor.probe.connect", {"probeId": "probe-a"})
+            assert connected.code == "MONITOR_FIRMWARE_CHANGED"
+            assert opened[0].expected_build_id == "e" * 64
+            assert opened[0].expected_elf_sha256 == "f" * 64
+        finally:
+            await runtime.stop()
+
+    asyncio.run(scenario())
+
+
+def test_probe_catalog_and_status_failure_boundaries_are_closed_and_bounded(
+    tmp_path: Path,
+) -> None:
+    from stm32_monitor.models import FirmwareStatus
+    from stm32_toolkit.debug.types import CatalogPage, VariableDescriptor
+    from stm32_toolkit.result import OperationResult
+
+    mode = {"probe": "raise", "firmware": False}
+
+    async def probe_list(_request):
+        current = mode["probe"]
+        if current == "raise":
+            raise RuntimeError("USB secret")
+        if current == "failure":
+            return OperationResult.failure(
+                "stm32_probe_list", "PROBE_ENUMERATION_FAILED", "secret", {}
+            )
+        if current == "malformed":
+            return OperationResult.success("stm32_probe_list", {"probes": [{}]})
+        if current == "duplicate":
+            item = {"probeId": "probe-a", "vendor": "ST", "product": "LINK", "boardName": None}
+            return OperationResult.success("stm32_probe_list", {"probes": [item, item]})
+        return OperationResult.success(
+            "stm32_probe_list",
+            {"probes": [{"probeId": "probe-a", "vendor": "ST", "product": "LINK", "boardName": None}]},
+        )
+
+    def firmware(_project):
+        if not mode["firmware"]:
+            raise RuntimeError("missing build")
+        return FirmwareStatus("a" * 64, "b" * 64, "d" * 64, "c" * 40, False, "STM32F407VGTx")
+
+    async def scenario() -> None:
+        runtime, config, _groups, _history, _exports, samplers, observations, _requests = (
+            _protocol_runtime(
+                tmp_path,
+                firmware_status_factory=firmware,
+                probe_list_factory=probe_list,
+            )
+        )
+        assert runtime._current_firmware() is None
+        await runtime.start(config)
+        try:
+            disconnected = await runtime.dispatch(
+                "monitor.catalog.variables", {}, query={}
+            )
+            bad_query = await runtime.dispatch(
+                "monitor.catalog.variables", {}, query={"unknown": "x"}
+            )
+            assert disconnected.code == bad_query.code == "MONITOR_REQUEST_INVALID"
+            for probe_mode in ("raise", "failure", "malformed", "duplicate"):
+                mode["probe"] = probe_mode
+                listed = await runtime.dispatch("monitor.probes.list", {})
+                assert listed.code == "MONITOR_PROBE_ENUMERATION_FAILED"
+
+            mode["probe"] = "good"
+            unknown = await runtime.dispatch(
+                "monitor.probe.connect", {"probeId": "probe-missing"}
+            )
+            assert unknown.code == "MONITOR_REQUEST_INVALID"
+            unavailable = await runtime.dispatch(
+                "monitor.probe.connect", {"probeId": "probe-a"}
+            )
+            assert unavailable.code == "MONITOR_FIRMWARE_CHANGED"
+
+            mode["firmware"] = True
+            connected = await runtime.dispatch(
+                "monitor.probe.connect", {"probeId": "probe-a"}
+            )
+            assert connected.ok
+            observation = observations[0]
+
+            async def invalid_page(*_args):
+                return OperationResult.failure(
+                    "variables.list", "DWARF_LIMIT_INVALID", "invalid", {}
+                )
+
+            observation.list_variables = invalid_page
+            invalid = await runtime.dispatch(
+                "monitor.catalog.variables", {}, query={"limit": "257"}
+            )
+            assert invalid.code == "MONITOR_REQUEST_INVALID"
+
+            async def changed_page(*_args):
+                return OperationResult.failure(
+                    "registers.list", "SVD_INPUT_CHANGED", "changed", {}
+                )
+
+            observation.list_registers = changed_page
+            changed = await runtime.dispatch(
+                "monitor.catalog.registers", {}, query={}
+            )
+            assert changed.code == "MONITOR_PROVENANCE_CHANGED"
+
+            async def typed_page(*_args):
+                descriptor = VariableDescriptor(
+                    "counter", "uint32_t", "integer", 4, signed=False
+                )
+                return OperationResult.success(
+                    "variables.list", CatalogPage((descriptor,), None)
+                )
+
+            observation.list_variables = typed_page
+            page = await runtime.dispatch(
+                "monitor.catalog.variables", {}, query={}
+            )
+            assert page.to_dict()["data"]["items"][0]["selector"] == "counter"
+
+            sampler = samplers[0]
+            sampler.state = "RUNNING"
+            sampler._group = SimpleNamespace(
+                group_id=UUID("12345678-1234-5678-9234-567812345678"), revision=4
+            )
+            sampler._run_id = UUID("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+            sampler._sequence = 5
+            sampler._subscribers = {object(): 2}
+            sampler._history_drops_pending = 3
+            sampler._deadline_drops_pending = 4
+            status = await runtime.dispatch("monitor.status", {})
+            assert status.data["sampling"]["active"] is True
+            assert status.data["sampling"]["lastSequence"] == 4
+            assert status.data["sampling"]["subscriberDrops"] == 2
+            assert status.data["probe"]["probeId"] == "probe-a"
         finally:
             await runtime.stop()
 
@@ -598,8 +879,6 @@ def test_live_subscription_serializes_mapping_and_model(tmp_path: Path) -> None:
                 "monitor.probe.connect",
                 {
                     "probeId": "probe-a",
-                    "expectedBuildId": "a" * 64,
-                    "expectedElfSha256": "b" * 64,
                 },
             )
             received = [item async for item in runtime.live_subscribe()]
@@ -722,11 +1001,7 @@ def test_probe_failures_are_stable_and_do_not_leave_partial_sessions(tmp_path: P
             tmp_path, observation_factory=observation_factory
         )
         await runtime.start(config)
-        payload = {
-            "probeId": "probe-a",
-            "expectedBuildId": "a" * 64,
-            "expectedElfSha256": "b" * 64,
-        }
+        payload = {"probeId": "probe-a"}
         try:
             no_prior = await runtime.dispatch("monitor.probe.reconnect", {})
             malformed = await runtime.dispatch("monitor.probe.connect", payload)
@@ -893,11 +1168,7 @@ def test_sampler_close_failure_still_closes_observation_once_and_allows_reconnec
             _protocol_runtime(tmp_path)
         )
         await runtime.start(config)
-        payload = {
-            "probeId": "probe-a",
-            "expectedBuildId": "a" * 64,
-            "expectedElfSha256": "b" * 64,
-        }
+        payload = {"probeId": "probe-a"}
         try:
             assert (await runtime.dispatch("monitor.probe.connect", payload)).ok
             samplers[0].close_error = RuntimeError("SECRET sampler cleanup")

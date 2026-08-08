@@ -4,10 +4,14 @@ from __future__ import annotations
 
 import io
 import hashlib
+import base64
+import binascii
+import json
 import os
 import re
 import stat
 import struct
+import unicodedata
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from types import MappingProxyType
@@ -25,6 +29,8 @@ from .types import (
     DwarfMember,
     DwarfSelection,
     DwarfType,
+    CatalogPage,
+    VariableDescriptor,
 )
 
 
@@ -44,10 +50,72 @@ _MAX_LOCATION_LIST_ENTRIES = 1024
 _MAX_REGIONS = 64
 _MAX_ADDRESS = (1 << 64) - 1
 _REPARSE_POINT = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+_MAX_CATALOG_PAGE = 256
+_MAX_CATALOG_QUERY = 128
 
 
 def _fail(code: str, message: str) -> DwarfError:
     return DwarfError(code, message)
+
+
+def _catalog_query(value: object) -> str:
+    if not isinstance(value, str):
+        raise _fail("DWARF_QUERY_INVALID", "DWARF catalog query is invalid")
+    normalized = unicodedata.normalize("NFC", value.strip()).casefold()
+    if len(normalized) > _MAX_CATALOG_QUERY or any(
+        ord(character) < 32 or ord(character) == 127 for character in normalized
+    ):
+        raise _fail("DWARF_QUERY_INVALID", "DWARF catalog query is invalid")
+    return normalized
+
+
+def _catalog_limit(value: object) -> int:
+    if type(value) is not int or not 1 <= value <= _MAX_CATALOG_PAGE:
+        raise _fail("DWARF_LIMIT_INVALID", "DWARF catalog limit is invalid")
+    return value
+
+
+def _cursor_payload(kind: str, digest: str, query: str, offset: int) -> bytes:
+    return json.dumps(
+        {"d": digest, "i": offset, "k": kind, "q": query, "v": 1},
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+
+
+def _encode_cursor(kind: str, digest: str, query: str, offset: int) -> str:
+    payload = _cursor_payload(kind, digest, query, offset)
+    envelope = payload + b"." + hashlib.sha256(b"stm32-catalog-v1\0" + payload).hexdigest().encode("ascii")
+    return base64.urlsafe_b64encode(envelope).rstrip(b"=").decode("ascii")
+
+
+def _decode_cursor(value: object, kind: str, digest: str, query: str) -> int:
+    if not isinstance(value, str) or not value or len(value) > 512:
+        raise _fail("DWARF_CURSOR_INVALID", "DWARF catalog cursor is invalid")
+    try:
+        raw = value.encode("ascii")
+        decoded = base64.urlsafe_b64decode(raw + b"=" * (-len(raw) % 4))
+        payload, signature = decoded.rsplit(b".", 1)
+        if base64.urlsafe_b64encode(decoded).rstrip(b"=") != raw:
+            raise ValueError
+        expected = hashlib.sha256(b"stm32-catalog-v1\0" + payload).hexdigest().encode("ascii")
+        document = json.loads(payload.decode("utf-8"))
+        offset = document.get("i")
+        if (
+            signature != expected
+            or set(document) != {"d", "i", "k", "q", "v"}
+            or document.get("v") != 1
+            or document.get("k") != kind
+            or document.get("d") != digest
+            or document.get("q") != query
+            or type(offset) is not int
+            or offset < 1
+        ):
+            raise ValueError
+        return offset
+    except (UnicodeError, binascii.Error, json.JSONDecodeError, ValueError):
+        raise _fail("DWARF_CURSOR_INVALID", "DWARF catalog cursor is invalid") from None
 
 
 def _name(die: object, fallback: str) -> str:
@@ -637,6 +705,73 @@ class DwarfCatalog:
         ):
             raise _fail("DWARF_INPUT_CHANGED", "ELF changed after catalog creation")
         return True
+
+    def variable_descriptors(
+        self,
+        binding: DebugFirmwareBinding,
+        *,
+        query: str = "",
+        cursor: str | None = None,
+        limit: int = 100,
+    ) -> CatalogPage:
+        """Return one revalidated page of display-only variable metadata."""
+
+        self.revalidate(binding)
+        normalized = _catalog_query(query)
+        page_limit = _catalog_limit(limit)
+        offset = 0 if cursor is None else _decode_cursor(
+            cursor, "variables", self.elf_sha256, normalized
+        )
+        descriptors: list[VariableDescriptor] = []
+        for selector in sorted(self._symbols):
+            if normalized and normalized not in selector.casefold():
+                continue
+            symbols = self._symbols[selector]
+            if len(symbols) != 1:
+                continue
+            symbol = symbols[0]
+            if (
+                symbol.dwarf_type is None
+                or symbol.type_error is not None
+                or symbol.address is None
+                or symbol.location_error is not None
+            ):
+                continue
+            try:
+                selected = self.lookup(selector)
+            except DwarfError:
+                continue
+            dwarf_type = selected.type
+            descriptors.append(
+                VariableDescriptor(
+                    selector=selector,
+                    type_name=dwarf_type.name,
+                    kind=dwarf_type.kind,
+                    byte_size=dwarf_type.byte_size,
+                    signed=dwarf_type.signed,
+                    encoding=dwarf_type.encoding,
+                    qualifiers=tuple(dwarf_type.qualifiers),
+                    aliases=tuple(dwarf_type.aliases),
+                    enum_values=tuple(dwarf_type.enum_values),
+                    element_count=dwarf_type.element_count,
+                    element_kind=(
+                        None
+                        if dwarf_type.element_type is None
+                        else dwarf_type.element_type.kind
+                    ),
+                    member_names=tuple(member.name for member in dwarf_type.members),
+                )
+            )
+        if offset > len(descriptors):
+            raise _fail("DWARF_CURSOR_INVALID", "DWARF catalog cursor is invalid")
+        items = tuple(descriptors[offset : offset + page_limit])
+        next_offset = offset + len(items)
+        next_cursor = (
+            _encode_cursor("variables", self.elf_sha256, normalized, next_offset)
+            if next_offset < len(descriptors)
+            else None
+        )
+        return CatalogPage(items, next_cursor)
 
     @staticmethod
     def _validate_debug_sections(

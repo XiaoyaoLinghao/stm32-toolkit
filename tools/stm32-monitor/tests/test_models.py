@@ -14,6 +14,7 @@ from stm32_monitor.models import (
     MonitorConfig,
     ObservationBinding,
     ProbeConnectRequest,
+    FirmwareStatus,
     SampleBatch,
     SampleValue,
     WatchGroup,
@@ -109,17 +110,37 @@ def test_monitor_config_rejects_state_inside_project_and_unsafe_session(tmp_path
         MonitorConfig(project, tmp_path / "state", "../escape")
 
 
-def test_probe_request_requires_exact_nonempty_pins() -> None:
-    request = ProbeConnectRequest("probe-serial-1", "b" * 64, "e" * 64)
-    assert request.to_dict() == {
-        "probeId": "probe-serial-1",
-        "expectedBuildId": "b" * 64,
-        "expectedElfSha256": "e" * 64,
-    }
+def test_probe_request_accepts_only_the_discovered_probe_identity() -> None:
+    request = ProbeConnectRequest("probe-serial-1")
+    assert request.to_dict() == {"probeId": "probe-serial-1"}
+    assert {item.name for item in __import__("dataclasses").fields(request)} == {"probe_id"}
 
-    for values in (("", "b" * 64, "e" * 64), ("p", "bad", "e" * 64), ("p", "b" * 64, "bad")):
+    for values in (("",), ("../probe",), ("p" * 257,)):
         with pytest.raises(ValueError):
             ProbeConnectRequest(*values)
+
+
+def test_firmware_status_is_immutable_validated_and_path_free() -> None:
+    status = FirmwareStatus(
+        build_id="b" * 64,
+        elf_sha256="e" * 64,
+        input_snapshot_sha256="f" * 64,
+        git_head="a" * 40,
+        git_dirty=False,
+        target_device="STM32F407VGTx",
+    )
+    assert status.to_dict() == {
+        "buildId": "b" * 64,
+        "elfSha256": "e" * 64,
+        "inputSnapshotSha256": "f" * 64,
+        "gitHead": "a" * 40,
+        "gitDirty": False,
+        "targetDevice": "STM32F407VGTx",
+    }
+    rendered = json.dumps(status.to_dict()) + repr(status)
+    assert "path" not in rendered.casefold()
+    with pytest.raises(ValueError):
+        replace(status, build_id="bad")
 
 
 def test_watch_item_is_a_bounded_discriminated_union_without_address_field() -> None:

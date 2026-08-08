@@ -17,8 +17,10 @@ from stm32_toolkit.debug import (
     DebugFirmwareBinding,
     DebugReadReport,
     DwarfCatalog,
+    DwarfError,
     RegisterSampleRequest,
     SvdSelection,
+    SvdError,
     VariableReadRequest,
     bind_debug_firmware,
     read_variables,
@@ -753,6 +755,55 @@ class MonitorObservationSession:
         return await self._seams.sample_registers(
             RegisterSampleRequest(self.binding, self.svd, paths), self.client
         )
+
+    async def list_variables(
+        self, query: str, cursor: str | None, limit: int
+    ) -> OperationResult[object]:
+        operation = "stm32_monitor_variables_list"
+        current = await self.revalidate()
+        if not current.ok:
+            return OperationResult.failure(
+                operation, current.code, "Monitor observation changed", {}
+            )
+        try:
+            page = self.catalog.variable_descriptors(
+                self.binding, query=query, cursor=cursor, limit=limit
+            )
+        except DwarfError as error:
+            return OperationResult.failure(
+                operation, error.code, "Variable catalog page is invalid", {}
+            )
+        return OperationResult.success(operation, page)
+
+    async def list_registers(
+        self, query: str, cursor: str | None, limit: int
+    ) -> OperationResult[object]:
+        operation = "stm32_monitor_registers_list"
+        current = await self.revalidate()
+        if not current.ok:
+            return OperationResult.failure(
+                operation, current.code, "Monitor observation changed", {}
+            )
+        if self.svd is None:
+            return OperationResult.failure(
+                operation,
+                "SVD_SELECTION_REQUIRED",
+                "An exact project SVD selection is required",
+                {},
+            )
+        try:
+            page = self.svd.register_descriptors(
+                self.binding,
+                self.binding.project_root,
+                query=query,
+                cursor=cursor,
+                limit=limit,
+            )
+        except SvdError as error:
+            return OperationResult.failure(
+                operation, error.code, "Register catalog page is invalid", {}
+            )
+        return OperationResult.success(operation, page)
 
     async def revalidate(self) -> OperationResult[DebugFirmwareBinding]:
         try:

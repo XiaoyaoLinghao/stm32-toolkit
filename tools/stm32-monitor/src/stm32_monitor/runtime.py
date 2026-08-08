@@ -308,9 +308,24 @@ def _mapping_list(value: object) -> tuple[Mapping[str, object], ...]:
 
 
 def _probe_connect_request(payload: Mapping[str, object], request_type):
-    _exact(payload, {"probeId", "expectedBuildId", "expectedElfSha256"})
-    return request_type(
-        payload["probeId"], payload["expectedBuildId"], payload["expectedElfSha256"]
+    _exact(payload, {"probeId"})
+    return request_type(payload["probeId"])
+
+
+def _firmware_status(project_root: Path):
+    from stm32_toolkit.probe.flash import _load_fresh_firmware
+
+    from .models import FirmwareStatus
+
+    current = _load_fresh_firmware(project_root)
+    identity = current.identity
+    return FirmwareStatus(
+        str(identity["buildId"]),
+        str(identity["elfSha256"]),
+        str(identity["inputSnapshotSha256"]),
+        str(identity["gitHead"]),
+        identity["gitDirty"],
+        str(identity["targetDevice"]),
     )
 
 
@@ -337,6 +352,8 @@ class MonitorRuntime:
         exporter_factory: Callable[[WorkspacePaths, object], object] | None = None,
         sampler_factory: Callable[..., object] | None = None,
         observation_factory: Callable[..., object] | None = None,
+        firmware_status_factory: Callable[[Path], object] = _firmware_status,
+        probe_list_factory: Callable[..., object] | None = None,
         service_factory: Callable[..., object] = MonitorService,
     ) -> None:
         if group_store_factory is None:
@@ -355,6 +372,10 @@ class MonitorRuntime:
             from stm32_toolkit.monitor_observation import open_monitor_observation
 
             observation_factory = open_monitor_observation
+        if probe_list_factory is None:
+            from stm32_toolkit.hardware_workflows import probe_list_workflow
+
+            probe_list_factory = probe_list_workflow
         if exporter_factory is None:
             from .exports import HistoryExporter
 
@@ -363,6 +384,8 @@ class MonitorRuntime:
         self._history_store_factory = history_store_factory
         self._sampler_factory = sampler_factory
         self._observation_factory = observation_factory
+        self._firmware_status_factory = firmware_status_factory
+        self._probe_list_factory = probe_list_factory
         self._exporter_factory = exporter_factory
         self._service_factory = service_factory
         self._paths: WorkspacePaths | None = None
@@ -375,6 +398,7 @@ class MonitorRuntime:
         self._sampler: object | None = None
         self._observation: object | None = None
         self._probe_request: object | None = None
+        self._binding_epoch = 0
         self._endpoint: MonitorEndpoint | object | None = None
         self._runtime_record: Path | None = None
         self._cleanup_task: asyncio.Task[None] | None = None
@@ -498,6 +522,110 @@ class MonitorRuntime:
         self._closed.clear()
         return endpoint
 
+    def _current_firmware(self):
+        from .models import FirmwareStatus
+
+        paths = self._paths
+        if paths is None:
+            return None
+        try:
+            current = self._firmware_status_factory(paths.project_root)
+        except Exception:
+            return None
+        return current if type(current) is FirmwareStatus else None
+
+    async def _list_probes(self, operation: str, config, failure, success):
+        from stm32_toolkit.hardware_workflows import ProbeListWorkflowRequest
+
+        request = ProbeListWorkflowRequest(
+            config.project_root, config.data_root, config.session_id
+        )
+        try:
+            result = await _call(self._probe_list_factory, request)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            return failure(operation, "MONITOR_PROBE_ENUMERATION_FAILED", "Debug probe enumeration failed")
+        if getattr(result, "ok", None) is not True:
+            return failure(
+                operation,
+                "MONITOR_PROBE_ENUMERATION_FAILED",
+                "Debug probe enumeration failed",
+            )
+        data = getattr(result, "data", None)
+        probes = data.get("probes") if isinstance(data, Mapping) else None
+        required = {"probeId", "vendor", "product", "boardName"}
+        if (
+            type(probes) is not tuple
+            or len(probes) > 64
+            or any(
+                not isinstance(item, Mapping)
+                or set(item) != required
+                or not isinstance(item.get("probeId"), str)
+                or not isinstance(item.get("vendor"), str)
+                or not isinstance(item.get("product"), str)
+                or item.get("boardName") is not None
+                and not isinstance(item.get("boardName"), str)
+                for item in probes
+            )
+        ):
+            return failure(operation, "MONITOR_PROBE_ENUMERATION_FAILED", "Debug probe enumeration failed")
+        ordered = sorted((dict(item) for item in probes), key=lambda item: item["probeId"])
+        if len({item["probeId"] for item in ordered}) != len(ordered):
+            return failure(operation, "MONITOR_PROBE_ENUMERATION_FAILED", "Debug probe enumeration failed")
+        return success(operation, {"probes": ordered})
+
+    def _status(self, paths, config) -> dict[str, object]:
+        model = load_project_model(paths.project_root)
+        firmware = self._current_firmware()
+        observation = self._observation
+        raw_binding = getattr(observation, "binding", None)
+        probe_id = getattr(raw_binding, "probe_id", None)
+        if probe_id is None:
+            payload = raw_binding.to_dict() if hasattr(raw_binding, "to_dict") else None
+            probe_id = payload.get("probeId") if isinstance(payload, Mapping) else None
+        sampler = self._sampler
+        raw_state = getattr(sampler, "state", "IDLE") if sampler is not None else "IDLE"
+        state = getattr(raw_state, "value", raw_state)
+        if state not in {"IDLE", "STARTING", "RUNNING", "PAUSED", "PAUSED_BLOCKED", "STOPPING"}:
+            state = "IDLE"
+        group = getattr(sampler, "_group", None)
+        run_id = getattr(sampler, "_run_id", None)
+        sequence = getattr(sampler, "_sequence", 0)
+        subscribers = getattr(sampler, "_subscribers", {})
+        subscriber_drops = (
+            sum(value for value in subscribers.values() if type(value) is int and value >= 0)
+            if isinstance(subscribers, Mapping)
+            else 0
+        )
+        return {
+            "workspaceId": paths.workspace_id,
+            "sessionId": paths.session_id,
+            "project": {
+                "logicalProjectId": str(model.logical_project_id),
+                "name": model.project.name,
+                "targetDevice": model.target.device,
+            },
+            "firmware": None if firmware is None else firmware.to_dict(),
+            "probe": {"connected": observation is not None, "probeId": probe_id},
+            "sampling": {
+                "state": state,
+                "active": state in {"RUNNING", "PAUSED"},
+                "blockedCode": getattr(sampler, "blocked_code", None),
+                "groupId": None if group is None else str(getattr(group, "group_id", "")) or None,
+                "groupRevision": None if group is None else getattr(group, "revision", None),
+                "runId": None if run_id is None else str(run_id),
+                "lastSequence": sequence - 1 if type(sequence) is int and sequence > 0 else None,
+                "bindingEpoch": self._binding_epoch,
+                "subscriberDrops": subscriber_drops,
+                "historyDrops": max(0, getattr(sampler, "_history_drops_pending", 0)) if sampler is not None else 0,
+                "deadlineDrops": max(0, getattr(sampler, "_deadline_drops_pending", 0)) if sampler is not None else 0,
+                "serviceDrops": 0,
+            },
+            "probeConnected": observation is not None,
+            "samplingActive": state in {"RUNNING", "PAUSED"},
+        }
+
     async def dispatch(
         self,
         operation: str,
@@ -521,15 +649,10 @@ class MonitorRuntime:
         try:
             if operation == "monitor.status":
                 _exact(payload, set())
-                return success(
-                    operation,
-                    {
-                        "workspaceId": paths.workspace_id,
-                        "sessionId": paths.session_id,
-                        "probeConnected": self._observation is not None,
-                        "samplingActive": self._sampler is not None,
-                    },
-                )
+                return success(operation, self._status(paths, config))
+            if operation == "monitor.probes.list":
+                _exact(payload, set())
+                return await self._list_probes(operation, config, failure, success)
             if operation == "monitor.groups.list":
                 _exact(payload, set())
                 return groups.list_groups()
@@ -600,6 +723,33 @@ class MonitorRuntime:
                 if initial_connect and result.ok:
                     self._probe_request = request
                 return result
+            if operation in {"monitor.catalog.variables", "monitor.catalog.registers"}:
+                _exact(payload, set())
+                allowed = {"query", "cursor", "limit"}
+                if query is None or set(query) - allowed:
+                    raise ValueError("catalog query is invalid")
+                text_query = query.get("query", "")
+                cursor = query.get("cursor")
+                limit = int(query.get("limit", "100"))
+                observation = self._observation
+                if observation is None:
+                    return failure(operation, "MONITOR_REQUEST_INVALID", "A probe must be connected")
+                method_name = "list_variables" if operation.endswith("variables") else "list_registers"
+                result = await _call(getattr(observation, method_name), text_query, cursor, limit)
+                if getattr(result, "ok", None) is not True:
+                    raw_code = getattr(result, "code", None)
+                    code = (
+                        "MONITOR_REQUEST_INVALID"
+                        if isinstance(raw_code, str)
+                        and raw_code.endswith(("QUERY_INVALID", "CURSOR_INVALID", "LIMIT_INVALID"))
+                        else "MONITOR_PROVENANCE_CHANGED"
+                    )
+                    message = getattr(result, "message", "Monitor catalog request failed")
+                    return failure(operation, code, message)
+                data = getattr(result, "data", None)
+                if hasattr(data, "to_dict"):
+                    data = data.to_dict()
+                return success(operation, data)
             if operation == "monitor.probe.release":
                 _exact(payload, set())
                 release_error = await self._release_probe()
@@ -684,13 +834,26 @@ class MonitorRuntime:
 
         if self._observation is not None:
             return failure(operation, "MONITOR_PROBE_BUSY", "A probe is already connected")
+        listed = await self._list_probes(operation, config, failure, success)
+        if not listed.ok:
+            return listed
+        probes = listed.data.get("probes", []) if isinstance(listed.data, Mapping) else []
+        if request.probe_id not in {item.get("probeId") for item in probes}:
+            return failure(operation, "MONITOR_REQUEST_INVALID", "Probe ID is not currently discovered")
+        firmware = self._current_firmware()
+        if firmware is None:
+            return failure(
+                operation,
+                "MONITOR_FIRMWARE_CHANGED",
+                "Current debug firmware evidence is unavailable",
+            )
         observation_request = MonitorObservationRequest(
             config.project_root,
             config.data_root,
             config.session_id,
             request.probe_id,
-            request.expected_build_id,
-            request.expected_elf_sha256,
+            firmware.build_id,
+            firmware.elf_sha256,
         )
         opened = await _call(self._observation_factory, observation_request)
         if not isinstance(opened, result_type) and not all(
@@ -709,6 +872,7 @@ class MonitorRuntime:
             raise
         self._observation = observation
         self._sampler = sampler
+        self._binding_epoch += 1
         binding = getattr(observation, "binding", None)
         return success(operation, binding.to_dict() if hasattr(binding, "to_dict") else {"connected": True})
 
