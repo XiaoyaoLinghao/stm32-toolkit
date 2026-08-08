@@ -11,7 +11,14 @@ from uuid import UUID
 
 from stm32_toolkit.paths import WorkspacePaths
 
-from .models import ObservationBinding, SampleBatch, SampleValue, WatchItem, unix_ns_to_utc
+from .models import (
+    MAX_SIGNED_INT64,
+    ObservationBinding,
+    SampleBatch,
+    SampleValue,
+    WatchItem,
+    unix_ns_to_utc,
+)
 from .protocol import ProtocolResult, failure, success
 from .storage import MonitorDatabase, StorageFailure
 
@@ -77,7 +84,10 @@ def _cursor(value: str | None) -> tuple[int, int]:
     parts = value.split(":")
     if len(parts) != 2 or not all(part.isdigit() for part in parts):
         raise ValueError("history cursor is invalid")
-    return int(parts[0]), int(parts[1])
+    batch_id, ordinal = int(parts[0]), int(parts[1])
+    if batch_id > MAX_SIGNED_INT64 or ordinal > MAX_SIGNED_INT64:
+        raise ValueError("history cursor is invalid")
+    return batch_id, ordinal
 
 
 def _storage_failure(operation: str, error: StorageFailure) -> ProtocolResult[None]:
@@ -180,20 +190,37 @@ class HistoryStore:
 
     def append_batch(self, batch: SampleBatch) -> ProtocolResult[dict[str, object]]:
         operation = "history.append"
-        if not isinstance(batch, SampleBatch) or batch.binding.workspace_id != self._paths.workspace_id:
+        if type(batch) is not SampleBatch or batch.binding.workspace_id != self._paths.workspace_id:
             return failure(operation, "MONITOR_WORKSPACE_MISMATCH", "sample batch belongs to another workspace")
-        batch_payload = batch.to_dict()
-        encoded_batch = json.dumps(batch_payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
-        rows: list[bytes] = []
-        for ordinal, value in enumerate(batch_payload["values"]):
-            row = {
-                key: item
-                for key, item in batch_payload.items()
-                if key != "values"
-            }
-            row.update(cast(dict[str, object], value))
-            row["valueOrdinal"] = ordinal
-            rows.append(json.dumps(row, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8"))
+        try:
+            batch_payload = batch.to_dict()
+            encoded_batch = json.dumps(
+                batch_payload,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+                allow_nan=False,
+            ).encode("utf-8")
+            rows: list[bytes] = []
+            for ordinal, value in enumerate(batch_payload["values"]):
+                row = {
+                    key: item
+                    for key, item in batch_payload.items()
+                    if key != "values"
+                }
+                row.update(cast(dict[str, object], value))
+                row["valueOrdinal"] = ordinal
+                rows.append(
+                    json.dumps(
+                        row,
+                        ensure_ascii=False,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                        allow_nan=False,
+                    ).encode("utf-8")
+                )
+        except (TypeError, ValueError, OverflowError, UnicodeError, RecursionError):
+            return failure(operation, "MONITOR_REQUEST_INVALID", "sample batch is invalid")
 
         def write(connection: sqlite3.Connection) -> dict[str, object]:
             connection.execute("BEGIN IMMEDIATE")
@@ -234,6 +261,7 @@ class HistoryStore:
             or isinstance(query.end_ns, bool)
             or query.start_ns < 0
             or query.end_ns <= query.start_ns
+            or query.end_ns > MAX_SIGNED_INT64
             or not isinstance(query.limit, int)
             or isinstance(query.limit, bool)
             or query.limit < 1
@@ -315,6 +343,11 @@ class HistoryStore:
         def write(connection: sqlite3.Connection) -> dict[str, object]:
             started_ns = time.monotonic_ns()
             maximum = min(max(1, RETENTION_DELETE_BATCHES), 100)
+
+            def require_budget() -> None:
+                if time.monotonic_ns() - started_ns >= RETENTION_TIME_BUDGET_NS:
+                    raise StorageFailure("MONITOR_STORAGE_BUSY", "monitor storage is busy")
+
             connection.execute("BEGIN IMMEDIATE")
             try:
                 logical_before = connection.execute(
@@ -335,6 +368,7 @@ class HistoryStore:
                         "SELECT batch_id FROM history_batches ORDER BY captured_ns, batch_id LIMIT ?",
                         (maximum + 1,),
                     ).fetchall()
+                require_budget()
                 selected = [row[0] for row in candidates[:maximum]]
                 if any(type(batch_id) is not int or batch_id < 1 for batch_id in selected):
                     raise _history_corrupt()
@@ -343,6 +377,7 @@ class HistoryStore:
                         "DELETE FROM history_batches WHERE batch_id = ?",
                         ((batch_id,) for batch_id in selected),
                     )
+                require_budget()
 
                 logical_after = connection.execute(
                     "SELECT logical_bytes FROM monitor_history_accounting WHERE singleton = 1"

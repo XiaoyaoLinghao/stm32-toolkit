@@ -7,6 +7,7 @@ import threading
 from concurrent.futures import Future, ThreadPoolExecutor, TimeoutError as FutureTimeout
 from dataclasses import dataclass
 from pathlib import Path
+from time import monotonic_ns as _monotonic_ns
 from typing import Callable, TypeVar
 
 from stm32_toolkit.paths import WorkspacePaths
@@ -16,6 +17,7 @@ APPLICATION_ID = 0x53544D4D
 SCHEMA_VERSION = 1
 BUSY_TIMEOUT_MS = 250
 MAX_DATABASE_BYTES = 512 * 1024 * 1024
+INTEGRITY_CHECK_INTERVAL_NS = 60 * 1_000_000_000
 _T = TypeVar("_T")
 
 _SCHEMA_STATEMENTS = (
@@ -58,6 +60,7 @@ _SCHEMA_STATEMENTS = (
         UNIQUE (run_id, sequence)
     )""",
     "CREATE INDEX history_session_time ON history_batches(session_id, captured_ns, batch_id)",
+    "CREATE INDEX history_retention_time ON history_batches(captured_ns, batch_id)",
     """CREATE TABLE history_values (
         batch_id INTEGER NOT NULL REFERENCES history_batches(batch_id) ON DELETE CASCADE,
         ordinal INTEGER NOT NULL,
@@ -105,6 +108,22 @@ class StorageFailure(RuntimeError):
         self.public_message = message
 
 
+class _BoundedConnection(sqlite3.Connection):
+    """Connection whose explicit commits pass the monitor storage admission gate."""
+
+    _monitor_before_commit: Callable[[sqlite3.Connection], None] | None = None
+
+    def commit(self) -> None:
+        callback = self._monitor_before_commit
+        if callback is not None and self.in_transaction:
+            try:
+                callback(self)
+            except BaseException:
+                super().rollback()
+                raise
+        super().commit()
+
+
 def _is_redirect(path: Path) -> bool:
     metadata = os.lstat(path)
     return _metadata_is_redirect(metadata)
@@ -131,8 +150,6 @@ def _opened_identity(path: Path) -> tuple[int, int, int]:
     try:
         with path.open("rb", buffering=0) as stream:
             metadata = os.fstat(stream.fileno())
-    except FileNotFoundError:
-        raise
     except OSError as error:
         raise StorageFailure("MONITOR_STORAGE_INVALID", "monitor storage cannot be opened safely") from error
     if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1:
@@ -148,7 +165,7 @@ def _directory_identity(path: Path) -> tuple[int, int]:
         raise
     except OSError as error:
         raise StorageFailure("MONITOR_STORAGE_INVALID", "monitor storage path cannot be inspected") from error
-    if redirected or _metadata_is_redirect(metadata) or not stat.S_ISDIR(metadata.st_mode):
+    if redirected or not stat.S_ISDIR(metadata.st_mode):
         raise StorageFailure("MONITOR_STORAGE_INVALID", "monitor storage contains an unsafe directory")
     return metadata.st_dev, metadata.st_ino
 
@@ -164,6 +181,16 @@ class MonitorDatabase:
         self._closed = False
         self._admission_lock = threading.RLock()
         self._accepted: set[Future[object]] = set()
+        self._trusted_lock = threading.RLock()
+        self._trusted_failure: StorageFailure | None = None
+        try:
+            self._trusted_directories = list(self._capture_directory_chain(paths.monitor_root))
+        except StorageFailure as error:
+            self._trusted_directories = []
+            self._trusted_failure = error
+        self._integrity_lock = threading.Lock()
+        self._integrity_identity: tuple[int, int] | None = None
+        self._last_integrity_ns = 0
         self._writer_key = str(self.path).casefold()
         with _WRITER_REGISTRY_LOCK:
             writer = _WRITERS.get(self._writer_key)
@@ -177,7 +204,74 @@ class MonitorDatabase:
             writer.references += 1
             self._writer = writer
 
+    def _capture_directory_chain(self, target: Path) -> tuple[tuple[Path, tuple[int, int]], ...]:
+        anchor = self.paths.data_root
+        while True:
+            try:
+                anchor_identity = _directory_identity(anchor)
+                break
+            except FileNotFoundError:
+                parent = anchor.parent
+                anchor = parent
+        snapshot: list[tuple[Path, tuple[int, int]]] = [(anchor, anchor_identity)]
+        current = anchor
+        for part in target.relative_to(anchor).parts:
+            current /= part
+            try:
+                snapshot.append((current, _directory_identity(current)))
+            except FileNotFoundError:
+                break
+        return tuple(snapshot)
+
+    def _revalidate_trusted_directories(self) -> None:
+        with self._trusted_lock:
+            if self._trusted_failure is not None:
+                raise self._trusted_failure
+            for path, identity in self._trusted_directories:
+                try:
+                    current = _directory_identity(path)
+                except FileNotFoundError as error:
+                    raise StorageFailure(
+                        "MONITOR_STORAGE_INVALID", "monitor storage directory changed"
+                    ) from error
+                if current != identity:
+                    raise StorageFailure("MONITOR_STORAGE_INVALID", "monitor storage directory changed")
+
+    def _remember_directory(self, path: Path) -> None:
+        identity = _directory_identity(path)
+        with self._trusted_lock:
+            for known_path, known_identity in self._trusted_directories:
+                if known_path == path:
+                    if known_identity != identity:
+                        raise StorageFailure(
+                            "MONITOR_STORAGE_INVALID", "monitor storage directory changed"
+                        )
+                    return
+            self._trusted_directories.append((path, identity))
+
+    def _adopt_existing_directories(self, target: Path) -> None:
+        self._revalidate_trusted_directories()
+        with self._trusted_lock:
+            current = self._trusted_directories[-1][0]
+        try:
+            relative = target.relative_to(current)
+        except ValueError:
+            try:
+                current.relative_to(target)
+            except ValueError as error:
+                raise StorageFailure(
+                    "MONITOR_STORAGE_INVALID", "monitor storage directory chain is invalid"
+                ) from error
+            return
+        for part in relative.parts:
+            current /= part
+            try:
+                self._remember_directory(current)
+            except FileNotFoundError:
+                break
+
     def _require_path(self, path: Path) -> None:
+        self._revalidate_trusted_directories()
         try:
             self.paths.data_root.relative_to(self.paths.project_root)
         except ValueError:
@@ -263,6 +357,7 @@ class MonitorDatabase:
                             raise StorageFailure("MONITOR_STORAGE_INVALID", "monitor storage has no safe ancestor")
                         current = parent
                 for directory in reversed(missing):
+                    self._revalidate_trusted_directories()
                     snapshot = self._directory_snapshot(directory.parent)
                     self._revalidate_directories(snapshot)
                     try:
@@ -270,8 +365,43 @@ class MonitorDatabase:
                     except OSError as error:
                         raise StorageFailure("MONITOR_STORAGE_INVALID", "monitor storage directory cannot be created") from error
                     self._revalidate_directories(snapshot)
-                    _directory_identity(directory)
+                    self._remember_directory(directory)
+        self._adopt_existing_directories(self.paths.monitor_root)
         self._require_path(self.paths.monitor_root)
+
+    def ensure_directory(self, target: Path) -> None:
+        """Create an owned monitor subdirectory one verified component at a time."""
+        self._ensure_parent()
+        self._require_path(target)
+        try:
+            relative = target.relative_to(self.paths.monitor_root)
+        except ValueError as error:
+            raise StorageFailure(
+                "MONITOR_STORAGE_INVALID", "monitor storage escaped its workspace"
+            ) from error
+        current = self.paths.monitor_root
+        self._remember_directory(current)
+        for part in relative.parts:
+            current /= part
+            self._revalidate_trusted_directories()
+            try:
+                self._remember_directory(current)
+                continue
+            except FileNotFoundError:
+                pass
+            snapshot = self._directory_snapshot(current.parent)
+            self._revalidate_directories(snapshot)
+            try:
+                current.mkdir(mode=0o700, parents=False, exist_ok=False)
+            except FileExistsError:
+                self._remember_directory(current)
+            except OSError as error:
+                raise StorageFailure(
+                    "MONITOR_STORAGE_INVALID", "monitor storage directory cannot be created"
+                ) from error
+            self._revalidate_directories(snapshot)
+            self._remember_directory(current)
+        self._require_path(target)
 
     def _storage_files(self) -> tuple[Path, Path, Path]:
         return tuple(self.path.with_name(self.path.name + suffix) for suffix in ("", "-wal", "-shm"))  # type: ignore[return-value]
@@ -299,7 +429,7 @@ class MonitorDatabase:
             identities[path] = named
         return identities
 
-    def _size(self) -> int:
+    def _size(self, connection: sqlite3.Connection | None = None) -> int:
         total = 0
         for suffix in ("", "-wal"):
             try:
@@ -308,21 +438,47 @@ class MonitorDatabase:
                 pass
             except OSError as error:
                 raise StorageFailure("MONITOR_STORAGE_INVALID", "monitor storage size cannot be inspected") from error
-        return total
+        if connection is None:
+            return total
+        try:
+            page_size = connection.execute("PRAGMA page_size").fetchone()[0]
+            page_count = connection.execute("PRAGMA page_count").fetchone()[0]
+            main_size = self.path.stat().st_size
+            wal_path = self.path.with_name(self.path.name + "-wal")
+            try:
+                wal_size = wal_path.stat().st_size
+            except FileNotFoundError:
+                wal_size = 0
+            projected = max(main_size, page_size * page_count) + wal_size
+            baseline = getattr(connection, "_monitor_change_baseline", connection.total_changes)
+            if connection.total_changes > baseline:
+                projected = max(projected, total + page_size + 24)
+            return max(total, projected)
+        except (OSError, sqlite3.DatabaseError, TypeError, ValueError) as error:
+            raise StorageFailure(
+                "MONITOR_STORAGE_INVALID", "monitor storage size cannot be inspected"
+            ) from error
 
     @staticmethod
     def _configure(connection: sqlite3.Connection, *, busy_timeout_ms: int) -> None:
         connection.execute(f"PRAGMA busy_timeout = {busy_timeout_ms}")
         connection.execute("PRAGMA foreign_keys = ON")
 
-    def _validate(self, connection: sqlite3.Connection, *, before: tuple[int, int, int]) -> None:
+    def _validate(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        before: tuple[int, int, int],
+        full_integrity: bool = True,
+    ) -> None:
         after = _identity(self.path)
         if before[:2] != after[:2]:
             raise StorageFailure("MONITOR_STORAGE_INVALID", "monitor storage changed while it was opened")
         try:
-            row = connection.execute("PRAGMA quick_check(1)").fetchone()
-            if row is None or row[0] != "ok":
-                raise StorageFailure("MONITOR_STORAGE_CORRUPT", "monitor storage failed integrity validation")
+            if full_integrity:
+                row = connection.execute("PRAGMA quick_check(1)").fetchone()
+                if row is None or row[0] != "ok":
+                    raise StorageFailure("MONITOR_STORAGE_CORRUPT", "monitor storage failed integrity validation")
             application_id = connection.execute("PRAGMA application_id").fetchone()[0]
             version = connection.execute("PRAGMA user_version").fetchone()[0]
             if application_id != APPLICATION_ID:
@@ -389,7 +545,20 @@ class MonitorDatabase:
             raise StorageFailure("MONITOR_STORAGE_CORRUPT", "monitor storage cannot be opened") from error
         try:
             self._configure(connection, busy_timeout_ms=busy_timeout_ms)
-            self._validate(connection, before=before)
+            with self._integrity_lock:
+                now_ns = _monotonic_ns()
+                full_integrity = (
+                    self._integrity_identity != before[:2]
+                    or now_ns - self._last_integrity_ns >= INTEGRITY_CHECK_INTERVAL_NS
+                )
+                self._validate(
+                    connection,
+                    before=before,
+                    full_integrity=full_integrity,
+                )
+                if full_integrity:
+                    self._integrity_identity = before[:2]
+                    self._last_integrity_ns = now_ns
         finally:
             connection.close()
         self._revalidate_directories(directory_snapshot)
@@ -457,25 +626,33 @@ class MonitorDatabase:
             connection = sqlite3.connect(
                 self.path,
                 timeout=busy_timeout_ms / 1000,
-                isolation_level=None,
+                isolation_level="DEFERRED",
+                factory=_BoundedConnection,
             )
         except sqlite3.DatabaseError as error:
             raise StorageFailure("MONITOR_STORAGE_CORRUPT", "monitor storage cannot be opened") from error
         try:
             self._configure(connection, busy_timeout_ms=busy_timeout_ms)
+            self._revalidate_trusted_directories()
             if _identity(self.path)[:2] != before[:2]:
                 raise StorageFailure("MONITOR_STORAGE_INVALID", "monitor storage changed while it was opened")
             if not existed:
                 self._initialize(connection)
                 before = _identity(self.path)
-            self._validate(connection, before=before)
+            self._validate(connection, before=before, full_integrity=not existed)
             self._ensure_sidecars()
+            self._revalidate_trusted_directories()
+            if _identity(self.path)[:2] != before[:2]:
+                raise StorageFailure("MONITOR_STORAGE_INVALID", "monitor storage changed while it was opened")
             journal = connection.execute("PRAGMA journal_mode = WAL").fetchone()
             if journal is None or str(journal[0]).lower() != "wal":
                 raise StorageFailure("MONITOR_STORAGE_INVALID", "monitor storage journal mode is invalid")
             self._inspect_storage_files()
             connection.execute("PRAGMA synchronous = FULL")
             connection.execute("PRAGMA wal_autocheckpoint = 256").fetchone()
+            cast_connection = connection
+            cast_connection._monitor_change_baseline = connection.total_changes  # type: ignore[attr-defined]
+            cast_connection._monitor_before_commit = self._before_commit  # type: ignore[attr-defined]
             return connection
         except BaseException:
             connection.close()
@@ -494,7 +671,7 @@ class MonitorDatabase:
             uri = self.path.as_uri() + "?mode=ro&immutable=1"
             connection = sqlite3.connect(uri, uri=True, timeout=BUSY_TIMEOUT_MS / 1000, isolation_level=None)
             self._configure(connection, busy_timeout_ms=BUSY_TIMEOUT_MS)
-            self._validate(connection, before=before)
+            self._validate(connection, before=before, full_integrity=False)
             return operation(connection)
         except StorageFailure:
             raise
@@ -504,15 +681,37 @@ class MonitorDatabase:
             raise StorageFailure("MONITOR_STORAGE_CORRUPT", "monitor storage cannot be read") from error
         except sqlite3.DatabaseError as error:
             raise StorageFailure("MONITOR_STORAGE_CORRUPT", "monitor storage is corrupt") from error
+        except (TypeError, ValueError, OverflowError) as error:
+            raise StorageFailure("MONITOR_STORAGE_CORRUPT", "monitor storage contains invalid data") from error
         finally:
             if "connection" in locals():
                 connection.close()
 
-    def _invoke(self, operation: Callable[[sqlite3.Connection], _T], *, busy_timeout_ms: int) -> _T:
+    def _before_commit(self, connection: sqlite3.Connection) -> None:
+        self._revalidate_trusted_directories()
+        self._inspect_storage_files()
+        if self._size(connection) > MAX_DATABASE_BYTES:
+            raise StorageFailure("MONITOR_STORAGE_FULL", "monitor storage reached its hard size limit")
+
+    def _invoke(
+        self,
+        operation: Callable[[sqlite3.Connection], _T],
+        *,
+        busy_timeout_ms: int,
+        cancel_event: threading.Event,
+    ) -> _T:
         try:
             connection = self._open_write(busy_timeout_ms=busy_timeout_ms)
             try:
+                connection.set_progress_handler(
+                    lambda: 1 if cancel_event.is_set() else 0,
+                    1,
+                )
+                if cancel_event.is_set():
+                    raise StorageFailure("MONITOR_STORAGE_BUSY", "monitor storage is busy")
                 result = operation(connection)
+                if connection.in_transaction:
+                    connection.commit()
                 self._inspect_storage_files()
                 return result
             finally:
@@ -522,28 +721,37 @@ class MonitorDatabase:
         except sqlite3.IntegrityError as error:
             raise StorageFailure("MONITOR_STORAGE_INVALID", "monitor storage rejected the mutation") from error
         except sqlite3.OperationalError as error:
-            if "locked" in str(error).lower() or "busy" in str(error).lower():
+            if (
+                cancel_event.is_set()
+                or "interrupted" in str(error).lower()
+                or "locked" in str(error).lower()
+                or "busy" in str(error).lower()
+            ):
                 raise StorageFailure("MONITOR_STORAGE_BUSY", "monitor storage is busy") from error
             raise StorageFailure("MONITOR_STORAGE_INVALID", "monitor storage mutation failed") from error
         except sqlite3.DatabaseError as error:
             raise StorageFailure("MONITOR_STORAGE_CORRUPT", "monitor storage is corrupt") from error
+        except OverflowError as error:
+            raise StorageFailure("MONITOR_STORAGE_INVALID", "monitor storage rejected the mutation") from error
 
     def _submit(
         self,
         operation: Callable[[sqlite3.Connection], _T],
         *,
         busy_timeout_ms: int,
-    ) -> Future[_T]:
+    ) -> tuple[Future[_T], threading.Event]:
         with self._admission_lock:
             if self._closed:
                 raise StorageFailure("MONITOR_STORAGE_INVALID", "monitor storage is closed")
             if not self._writer.slots.acquire(blocking=False):
                 raise StorageFailure("MONITOR_STORAGE_BUSY", "monitor storage writer queue is full")
             try:
+                cancel_event = threading.Event()
                 future = self._writer.executor.submit(
                     self._invoke,
                     operation,
                     busy_timeout_ms=busy_timeout_ms,
+                    cancel_event=cancel_event,
                 )
             except RuntimeError as error:
                 self._writer.slots.release()
@@ -556,10 +764,10 @@ class MonitorDatabase:
                     self._accepted.discard(done)
 
             future.add_done_callback(complete)
-            return future
+            return future, cancel_event
 
     def write(self, operation: Callable[[sqlite3.Connection], _T]) -> _T:
-        future = self._submit(operation, busy_timeout_ms=BUSY_TIMEOUT_MS)
+        future, _ = self._submit(operation, busy_timeout_ms=BUSY_TIMEOUT_MS)
         return future.result()
 
     def try_write(
@@ -570,12 +778,13 @@ class MonitorDatabase:
     ) -> _T:
         if not isinstance(timeout_ms, int) or isinstance(timeout_ms, bool) or not 1 <= timeout_ms <= BUSY_TIMEOUT_MS:
             raise StorageFailure("MONITOR_STORAGE_INVALID", "monitor storage timeout is invalid")
-        future = self._submit(operation, busy_timeout_ms=timeout_ms)
+        future, cancel_event = self._submit(operation, busy_timeout_ms=timeout_ms)
         def invoke() -> _T:
             return future.result(timeout=timeout_ms / 1000)
         try:
             return invoke()
         except FutureTimeout as error:
+            cancel_event.set()
             future.cancel()
             raise StorageFailure("MONITOR_STORAGE_BUSY", "monitor storage is busy") from error
 

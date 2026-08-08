@@ -23,6 +23,8 @@ MAX_SAMPLE_VALUES = 256
 MAX_JSON_DEPTH = 32
 MAX_JSON_NODES = 10_000
 MAX_JSON_STRING_CHARS = 1024 * 1024
+MIN_SIGNED_INT64 = -(1 << 63)
+MAX_SIGNED_INT64 = (1 << 63) - 1
 _SHA256 = re.compile(r"[0-9a-f]{64}\Z")
 _WORKSPACE_ID = re.compile(r"[0-9a-f]{24}\Z")
 _GIT_SHA = re.compile(r"[0-9a-f]{40}(?:[0-9a-f]{24})?\Z")
@@ -43,7 +45,11 @@ def _freeze_json(value: object) -> object:
         nodes += 1
         if nodes > MAX_JSON_NODES:
             raise ValueError("JSON value exceeds its node limit")
-        if current is None or type(current) is bool or type(current) is int:
+        if current is None or type(current) is bool:
+            return current
+        if type(current) is int:
+            if not MIN_SIGNED_INT64 <= current <= MAX_SIGNED_INT64:
+                raise ValueError("JSON integer exceeds the signed 64-bit limit")
             return current
         if type(current) is float:
             if not math.isfinite(current):
@@ -107,8 +113,8 @@ def _utc_text(value: datetime) -> str:
 
 
 def unix_ns_to_utc(value: int) -> str:
-    if type(value) is not int or value < 0:
-        raise ValueError("Unix nanoseconds must be a non-negative integer")
+    if type(value) is not int or not 0 <= value <= MAX_SIGNED_INT64:
+        raise ValueError("Unix nanoseconds must be a non-negative signed 64-bit integer")
     seconds, nanoseconds = divmod(value, 1_000_000_000)
     try:
         timestamp = datetime.fromtimestamp(seconds, tz=timezone.utc).replace(
@@ -233,7 +239,7 @@ class WatchGroup:
         if len(set(items)) != len(items):
             raise ValueError("group items must be unique")
         object.__setattr__(self, "items", items)
-        if not isinstance(self.revision, int) or isinstance(self.revision, bool) or self.revision < 1:
+        if type(self.revision) is not int or not 1 <= self.revision <= MAX_SIGNED_INT64:
             raise ValueError("revision must be positive")
         _utc_text(self.created_at_utc)
         _utc_text(self.updated_at_utc)
@@ -403,12 +409,14 @@ class SampleBatch:
     values: tuple[SampleValue, ...]
 
     def __post_init__(self) -> None:
+        if type(self.binding) is not ObservationBinding:
+            raise ValueError("batch binding is invalid")
         if not isinstance(self.group_id, UUID) or not isinstance(self.run_id, UUID):
             raise ValueError("batch identifiers must be UUIDs")
         for name in ("group_revision", "sequence", "scheduled_unix_ns", "captured_unix_ns", "latency_ns", "subscriber_drops", "history_drops", "deadline_drops"):
             value = getattr(self, name)
             minimum = 1 if name == "group_revision" else 0
-            if not isinstance(value, int) or isinstance(value, bool) or value < minimum:
+            if type(value) is not int or not minimum <= value <= MAX_SIGNED_INT64:
                 raise ValueError(f"{name} is invalid")
         if self.captured_unix_ns < self.scheduled_unix_ns:
             raise ValueError("captured time precedes scheduled time")

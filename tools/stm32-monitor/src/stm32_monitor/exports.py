@@ -8,15 +8,17 @@ import shutil
 import stat
 import time
 from collections.abc import Mapping
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import BinaryIO, cast
+from typing import BinaryIO, Iterator, cast
 from uuid import UUID, uuid4
 
 from stm32_toolkit.paths import WorkspacePaths, require_safe_session_id
 
 from .history import HistoryQuery, HistoryStore, MAX_HISTORY_VALUES
+from .models import MAX_SIGNED_INT64
 from .protocol import MONITOR_PROTOCOL_VERSION, ProtocolResult, failure, success
 from .storage import MonitorDatabase, StorageFailure
 
@@ -52,6 +54,7 @@ class ExportRequest:
             or isinstance(self.end_ns, bool)
             or self.start_ns < 0
             or self.end_ns <= self.start_ns
+            or self.end_ns > MAX_SIGNED_INT64
         ):
             raise ValueError("export range is invalid")
         if self.format not in {"jsonl", "csv"}:
@@ -144,6 +147,90 @@ def _redirect(metadata: os.stat_result) -> bool:
     return stat.S_ISLNK(metadata.st_mode) or bool(attributes & reparse_flag)
 
 
+def _directory_identity(path: Path) -> tuple[int, int]:
+    metadata = os.lstat(path)
+    if _redirect(metadata) or not stat.S_ISDIR(metadata.st_mode):
+        raise OSError("export parent is unsafe")
+    return metadata.st_dev, metadata.st_ino
+
+
+def _validate_created_file(
+    descriptor: int,
+    path: Path,
+    *,
+    parent: Path,
+    parent_identity: tuple[int, int],
+) -> None:
+    opened = os.fstat(descriptor)
+    named = os.lstat(path)
+    if (
+        not stat.S_ISREG(opened.st_mode)
+        or opened.st_nlink != 1
+        or _redirect(named)
+        or not stat.S_ISREG(named.st_mode)
+        or named.st_nlink != 1
+        or (opened.st_dev, opened.st_ino) != (named.st_dev, named.st_ino)
+        or _directory_identity(parent) != parent_identity
+    ):
+        raise OSError("export artifact identity is unsafe")
+
+
+@contextmanager
+def _create_regular_exclusive(path: Path, *, parent: Path) -> Iterator[BinaryIO]:
+    if path.parent != parent:
+        raise OSError("export artifact parent is invalid")
+    parent_identity = _directory_identity(parent)
+    flags = (
+        os.O_WRONLY
+        | os.O_CREAT
+        | os.O_EXCL
+        | getattr(os, "O_BINARY", 0)
+        | getattr(os, "O_NOINHERIT", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+    )
+    parent_descriptor: int | None = None
+    descriptor: int | None = None
+    try:
+        if os.name == "nt":
+            descriptor = os.open(path, flags, 0o600)
+        else:  # pragma: no cover - exercised by the Linux acceptance gate
+            parent_descriptor = os.open(
+                parent,
+                os.O_RDONLY
+                | getattr(os, "O_DIRECTORY", 0)
+                | getattr(os, "O_NOFOLLOW", 0),
+            )
+            opened_parent = os.fstat(parent_descriptor)
+            if (
+                not stat.S_ISDIR(opened_parent.st_mode)
+                or (opened_parent.st_dev, opened_parent.st_ino) != parent_identity
+            ):
+                raise OSError("export parent identity changed")
+            descriptor = os.open(path.name, flags, 0o600, dir_fd=parent_descriptor)
+        _validate_created_file(
+            descriptor,
+            path,
+            parent=parent,
+            parent_identity=parent_identity,
+        )
+        with os.fdopen(descriptor, "wb", buffering=0) as stream:
+            descriptor = None
+            yield stream
+            stream.flush()
+            os.fsync(stream.fileno())
+            _validate_created_file(
+                stream.fileno(),
+                path,
+                parent=parent,
+                parent_identity=parent_identity,
+            )
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+        if parent_descriptor is not None:
+            os.close(parent_descriptor)
+
+
 def _read_regular_limited(path: Path, *, limit: int, keep: bool) -> tuple[bytes | None, int, str]:
     before = os.lstat(path)
     if _redirect(before) or not stat.S_ISREG(before.st_mode) or before.st_nlink != 1:
@@ -219,7 +306,7 @@ class HistoryExporter:
         )
         cursor: str | None = None
         value_count = 0
-        with target.open("wb") as stream:
+        with _create_regular_exclusive(target, parent=target.parent) as stream:
             sink = _LimitedHashWriter(stream)
             csv_writer = None
             if request.format == "csv":
@@ -277,8 +364,6 @@ class HistoryExporter:
                 if next_cursor == cursor or not page.data.values:
                     raise StorageFailure("MONITOR_STORAGE_CORRUPT", "monitor history is corrupt")
                 cursor = next_cursor
-            stream.flush()
-            os.fsync(stream.fileno())
             return sink.sha256, sink.byte_count, value_count
 
     def _reserve_pending(
@@ -292,16 +377,22 @@ class HistoryExporter:
         def reserve(connection) -> None:
             connection.execute("BEGIN IMMEDIATE")
             try:
-                count, ready_bytes = connection.execute(
-                    "SELECT COUNT(*), COALESCE(SUM(CASE WHEN format NOT LIKE 'PENDING:%' THEN byte_count ELSE 0 END), 0) FROM export_records"
+                count, reserved_bytes = connection.execute(
+                    "SELECT COUNT(*), COALESCE(SUM(CASE WHEN format LIKE 'PENDING:%' "
+                    "THEN byte_count ELSE byte_count + ? END), 0) FROM export_records",
+                    (MAX_MANIFEST_BYTES,),
                 ).fetchone()
-                if count >= MAX_WORKSPACE_EXPORTS or ready_bytes >= MAX_WORKSPACE_EXPORT_BYTES:
+                reservation = MAX_EXPORT_BYTES + MAX_MANIFEST_BYTES
+                if (
+                    count >= MAX_WORKSPACE_EXPORTS
+                    or reserved_bytes + reservation > MAX_WORKSPACE_EXPORT_BYTES
+                ):
                     raise StorageFailure("MONITOR_EXPORT_QUOTA_EXCEEDED", "workspace export quota was exceeded")
                 connection.execute(
                     "INSERT INTO export_records(export_id,session_id,format,relative_data_path,relative_manifest_path,sha256,byte_count,value_count,created_at_utc) VALUES (?,?,?,?,?,?,?,?,?)",
                     (
                         str(export_id), request.session_id, f"PENDING:{request.format}",
-                        relative_data, relative_manifest, "0" * 64, 0, 0, created_at_utc,
+                        relative_data, relative_manifest, "0" * 64, reservation, 0, created_at_utc,
                     ),
                 )
                 connection.commit()
@@ -315,10 +406,12 @@ class HistoryExporter:
         def ready(connection) -> None:
             connection.execute("BEGIN IMMEDIATE")
             try:
-                ready_bytes = connection.execute(
-                    "SELECT COALESCE(SUM(byte_count), 0) FROM export_records WHERE format NOT LIKE 'PENDING:%'"
+                used_bytes = connection.execute(
+                    "SELECT COALESCE(SUM(CASE WHEN format LIKE 'PENDING:%' THEN byte_count "
+                    "ELSE byte_count + ? END), 0) FROM export_records WHERE export_id <> ?",
+                    (MAX_MANIFEST_BYTES, str(artifact.export_id)),
                 ).fetchone()[0]
-                if ready_bytes + artifact.byte_count > MAX_WORKSPACE_EXPORT_BYTES:
+                if used_bytes + artifact.byte_count + MAX_MANIFEST_BYTES > MAX_WORKSPACE_EXPORT_BYTES:
                     raise StorageFailure("MONITOR_EXPORT_QUOTA_EXCEEDED", "workspace export quota was exceeded")
                 cursor = connection.execute(
                     "UPDATE export_records SET format = ?, sha256 = ?, byte_count = ?, value_count = ?, created_at_utc = ? WHERE export_id = ? AND format = ?",
@@ -342,6 +435,17 @@ class HistoryExporter:
             connection.execute(
                 "DELETE FROM export_records WHERE export_id = ? AND format = ?",
                 (str(export_id), pending_format),
+            )
+            connection.commit()
+
+        self._database.write(remove)
+
+    def _delete_pending_row(self, row_id: int) -> None:
+        def remove(connection) -> None:
+            connection.execute("BEGIN IMMEDIATE")
+            connection.execute(
+                "DELETE FROM export_records WHERE rowid = ? AND format LIKE 'PENDING:%'",
+                (row_id,),
             )
             connection.commit()
 
@@ -432,36 +536,52 @@ class HistoryExporter:
         )
         return artifact, format_name, cast(str, created_at_utc)
 
-    def _recover_pending(self) -> None:
+    def _recover_pending(self) -> bool:
         started_ns = time.monotonic_ns()
 
         def read(connection):
             return connection.execute(
-                "SELECT export_id,session_id,format,relative_data_path,relative_manifest_path,sha256,byte_count,value_count,created_at_utc FROM export_records WHERE format LIKE 'PENDING:%' ORDER BY created_at_utc, export_id LIMIT ?",
+                "SELECT rowid,export_id,session_id,format,relative_data_path,relative_manifest_path,sha256,byte_count,value_count,created_at_utc FROM export_records WHERE format LIKE 'PENDING:%' ORDER BY created_at_utc, export_id LIMIT ?",
                 (MAX_RECOVERY_RECORDS,),
             ).fetchall()
 
         try:
             rows = self._database.read(read, empty=())
         except StorageFailure:
-            return
+            return False
         for row in rows:
             if time.monotonic_ns() - started_ns >= RECOVERY_TIME_BUDGET_NS:
                 break
             try:
-                artifact, format_name, created_at_utc = self._validate_record(tuple(row), pending=True)
+                if type(row[0]) is not int or row[0] < 1:
+                    raise ValueError("invalid pending row identity")
+                artifact, format_name, created_at_utc = self._validate_record(tuple(row[1:]), pending=True)
                 self._mark_ready(artifact, format_name, created_at_utc)
             except (StorageFailure, OSError, ValueError, TypeError, json.JSONDecodeError, UnicodeError, RecursionError):
                 try:
-                    export_id = UUID(cast(str, row[0]))
-                    session_id = cast(str, row[1])
-                    pending_format = cast(str, row[2])
-                    self._delete_record(export_id, pending_format)
+                    row_id = cast(int, row[0])
+                    self._delete_pending_row(row_id)
+                    export_id = UUID(cast(str, row[1]))
+                    session_id = cast(str, row[2])
                     session_root = self._paths.monitor_root / "exports" / session_id
                     self._safe_remove_tree(session_root / str(export_id), expected_parent=session_root)
                     self._safe_remove_tree(session_root / f".{export_id}.tmp", expected_parent=session_root)
                 except (StorageFailure, OSError, ValueError, TypeError):
                     continue
+        try:
+            return self._database.read(
+                lambda connection: connection.execute(
+                    "SELECT 1 FROM export_records WHERE format LIKE 'PENDING:%' LIMIT 1"
+                ).fetchone() is not None,
+                empty=False,
+            )
+        except StorageFailure:
+            return False
+
+    def _recover_all_pending(self) -> None:
+        for _ in range(MAX_WORKSPACE_EXPORTS + 1):
+            if not self._recover_pending():
+                return
 
     def create_export(self, request: ExportRequest, *, authorized: object) -> ProtocolResult[ExportArtifact]:
         operation = "exports.create"
@@ -469,6 +589,7 @@ class HistoryExporter:
             return failure(operation, "MONITOR_AUTH_REQUIRED", "explicit authorization is required")
         if not isinstance(request, ExportRequest):
             return failure(operation, "MONITOR_REQUEST_INVALID", "export request is invalid")
+        self._recover_all_pending()
         export_id = uuid4()
         session_root = self._paths.monitor_root / "exports" / request.session_id
         final_root = session_root / str(export_id)
@@ -487,10 +608,15 @@ class HistoryExporter:
                 export_id, request, relative_data, relative_manifest, created_at_utc
             )
             reserved = True
+            self._database.ensure_directory(session_root)
             self._database._require_path(final_root)
-            session_root.mkdir(parents=True, exist_ok=True)
-            self._database._require_path(final_root)
-            temporary_root.mkdir()
+            parent_identity = _directory_identity(session_root)
+            temporary_root.mkdir(mode=0o700, parents=False, exist_ok=False)
+            if _directory_identity(session_root) != parent_identity:
+                raise StorageFailure("MONITOR_STORAGE_INVALID", "monitor storage directory changed")
+            temporary_metadata = os.lstat(temporary_root)
+            if _redirect(temporary_metadata) or not stat.S_ISDIR(temporary_metadata.st_mode):
+                raise StorageFailure("MONITOR_STORAGE_INVALID", "monitor storage contains an unsafe directory")
             digest, byte_count, value_count = self._stream_history(request, data_path)
             manifest = {
                 "protocol": MONITOR_PROTOCOL_VERSION,
@@ -503,15 +629,13 @@ class HistoryExporter:
                 "valueCount": value_count,
                 "createdAtUtc": created_at_utc,
             }
-            with manifest_path.open("wb") as stream:
+            with _create_regular_exclusive(manifest_path, parent=temporary_root) as stream:
                 encoded_manifest = json.dumps(
                     manifest, sort_keys=True, separators=(",", ":"), allow_nan=False
                 ).encode("utf-8") + b"\n"
                 if len(encoded_manifest) > MAX_MANIFEST_BYTES:
                     raise StorageFailure("MONITOR_EXPORT_FAILED", "history export manifest is invalid")
                 stream.write(encoded_manifest)
-                stream.flush()
-                os.fsync(stream.fileno())
             _fsync_directory(temporary_root)
             _replace(temporary_root, final_root)
             published = True
@@ -550,6 +674,7 @@ class HistoryExporter:
         operation = "exports.get"
         if not isinstance(export_id, UUID):
             return failure(operation, "MONITOR_REQUEST_INVALID", "export ID is invalid")
+        self._recover_all_pending()
 
         def read(connection):
             return connection.execute(
