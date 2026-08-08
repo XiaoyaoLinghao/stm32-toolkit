@@ -203,6 +203,7 @@ class MonitorService:
         self._endpoint: MonitorEndpoint | None = None
         self._auth: MonitorAuth | None = None
         self._stop_lock = asyncio.Lock()
+        self._cleanup_task: asyncio.Task[None] | None = None
         self._live_tasks: set[asyncio.Task[object]] = set()
 
     @property
@@ -210,8 +211,18 @@ class MonitorService:
         return self._endpoint
 
     async def start(self) -> MonitorEndpoint:
+        async with self._stop_lock:
+            return await self._start_locked()
+
+    async def _start_locked(self) -> MonitorEndpoint:
         if self._endpoint is not None:
             return self._endpoint
+        if self._runner is not None:
+            cancellation, cleanup_error = await self._cleanup_owned_runner()
+            if cleanup_error is not None:
+                self._raise_cleanup_error(cleanup_error)
+            if cancellation is not None:
+                raise cancellation
         application = web.Application(
             client_max_size=MAX_REQUEST_BYTES,
             middlewares=[_protocol_errors],
@@ -253,6 +264,7 @@ class MonitorService:
         application.router.add_get("/api/v1/live", self._live)
 
         runner = web.AppRunner(application, access_log=None)
+        self._runner = runner
         try:
             await runner.setup()
             site = web.TCPSite(runner, host="127.0.0.1", port=0)
@@ -274,13 +286,66 @@ class MonitorService:
                 self._workspace_id,
                 self._session_id,
             )
-        except BaseException:
-            await runner.cleanup()
-            raise
-        self._runner = runner
+        except BaseException as start_error:
+            cancellation, cleanup_error = await self._cleanup_owned_runner()
+            if cleanup_error is not None:
+                self._raise_cleanup_error(cleanup_error)
+            if isinstance(start_error, asyncio.CancelledError):
+                raise start_error
+            if cancellation is not None:
+                raise cancellation
+            raise start_error
         self._auth = auth
         self._endpoint = endpoint
         return endpoint
+
+    async def _cleanup_runner(self, runner: web.AppRunner) -> None:
+        for task in tuple(self._live_tasks):
+            task.cancel()
+        if self._live_tasks:
+            await asyncio.gather(*tuple(self._live_tasks), return_exceptions=True)
+        await runner.cleanup()
+        self._live_tasks.clear()
+        if self._runner is runner:
+            self._runner = None
+            self._endpoint = None
+            self._auth = None
+
+    async def _cleanup_owned_runner(
+        self,
+    ) -> tuple[asyncio.CancelledError | None, BaseException | None]:
+        runner = self._runner
+        if runner is None:
+            return None, None
+        task = self._cleanup_task
+        if task is None:
+            task = asyncio.create_task(
+                self._cleanup_runner(runner), name="stm32-monitor-service-cleanup"
+            )
+            self._cleanup_task = task
+        cancellation: asyncio.CancelledError | None = None
+        while not task.done():
+            try:
+                await asyncio.shield(task)
+            except asyncio.CancelledError as error:
+                if cancellation is None:
+                    cancellation = error
+            except BaseException:
+                break
+        cleanup_error: BaseException | None = None
+        try:
+            task.result()
+        except BaseException as error:
+            cleanup_error = error
+        if self._cleanup_task is task:
+            self._cleanup_task = None
+        return cancellation, cleanup_error
+
+    @staticmethod
+    def _raise_cleanup_error(error: BaseException) -> None:
+        if not isinstance(error, (Exception, asyncio.CancelledError)):
+            raise error
+        raise RuntimeError("Monitor Service cleanup failed") from None
 
     def _authorize(self, request: web.Request, *, bootstrap: bool = False) -> str:
         auth = self._auth
@@ -474,17 +539,11 @@ class MonitorService:
 
     async def stop(self) -> None:
         async with self._stop_lock:
-            runner = self._runner
-            if runner is None:
-                return
-            for task in tuple(self._live_tasks):
-                task.cancel()
-            if self._live_tasks:
-                await asyncio.gather(*tuple(self._live_tasks), return_exceptions=True)
-            await runner.cleanup()
-            self._runner = None
-            self._endpoint = None
-            self._auth = None
+            cancellation, cleanup_error = await self._cleanup_owned_runner()
+            if cleanup_error is not None:
+                self._raise_cleanup_error(cleanup_error)
+            if cancellation is not None:
+                raise cancellation
 
 
 __all__ = [

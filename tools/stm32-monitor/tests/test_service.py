@@ -497,3 +497,51 @@ def test_repeated_cancellation_of_real_partial_start_waits_for_owned_listener_cl
                 await original_runner_cleanup(runner)
 
     asyncio.run(scenario())
+
+
+def test_partial_start_cleanup_error_has_priority_and_stop_retries_owned_runner(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from aiohttp import web
+    from stm32_monitor.service import MonitorService
+
+    captured: dict[str, int] = {}
+    cleanup_calls = 0
+    original_site_start = web.TCPSite.start
+    original_runner_cleanup = web.AppRunner.cleanup
+
+    async def failing_site_start(site: web.TCPSite) -> None:
+        await original_site_start(site)
+        assert site._server is not None
+        captured["port"] = site._server.sockets[0].getsockname()[1]
+        raise ValueError("SECRET start failure")
+
+    async def fail_first_cleanup(runner: web.AppRunner) -> None:
+        nonlocal cleanup_calls
+        cleanup_calls += 1
+        if cleanup_calls == 1:
+            raise OSError("SECRET cleanup failure")
+        await original_runner_cleanup(runner)
+
+    monkeypatch.setattr(web.TCPSite, "start", failing_site_start)
+    monkeypatch.setattr(web.AppRunner, "cleanup", fail_first_cleanup)
+    service = MonitorService(
+        FakeRuntime(), workspace_id="workspace-a", session_id="session-a"
+    )
+
+    async def scenario() -> None:
+        with pytest.raises(RuntimeError, match="Service cleanup failed") as raised:
+            await service.start()
+        assert "SECRET" not in str(raised.value)
+        port = captured["port"]
+        reader, writer = await asyncio.open_connection("127.0.0.1", port)
+        writer.close()
+        await writer.wait_closed()
+        del reader
+
+        await service.stop()
+        assert cleanup_calls == 2
+        with pytest.raises(OSError):
+            await asyncio.open_connection("127.0.0.1", port)
+
+    asyncio.run(scenario())
