@@ -5,7 +5,12 @@ import asyncio
 import pytest
 
 from stm32_toolkit.debug import sampling as sampling_mod
-from stm32_toolkit.debug.sampling import SampleVariablesRequest, sample_variables
+from stm32_toolkit.debug.sampling import (
+    RegisterSampleRequest,
+    SampleVariablesRequest,
+    sample_registers,
+    sample_variables,
+)
 
 from test_debug_read import Client, DebugEnv, debug_env
 
@@ -322,3 +327,89 @@ def test_sample_report_constructor_failures_are_stable(
     )
     assert result.code == "DEBUG_SAMPLE_FAILED"
     assert "raw constructor detail" not in str(result.to_dict())
+
+
+def test_register_sampling_uses_exact_svd_and_sampling_risk_gate(
+    debug_env: DebugEnv,
+) -> None:
+    client = debug_env.client()
+    safe = asyncio.run(
+        sample_registers(
+            RegisterSampleRequest(
+                debug_env.binding, debug_env.selection, ("GPIOA.IDR",)
+            ),
+            client,
+        )
+    )
+    assert safe.ok is True
+    assert safe.data.items[0].to_dict()["value"]["value"] == 0x12345678
+
+    for path, code in (
+        ("GPIOA.EVENT", "SVD_REGISTER_NOT_SAMPLEABLE"),
+        ("GPIOA.COMMAND", "SVD_REGISTER_WRITE_ONLY"),
+    ):
+        rejected = asyncio.run(
+            sample_registers(
+                RegisterSampleRequest(debug_env.binding, debug_env.selection, (path,)),
+                client,
+            )
+        )
+        assert rejected.ok is False
+        assert rejected.code == code
+
+
+def test_register_sample_request_is_bounded_and_has_no_raw_override(
+    debug_env: DebugEnv,
+) -> None:
+    request = RegisterSampleRequest(
+        debug_env.binding, debug_env.selection, ("GPIOA.IDR",)
+    )
+    assert not hasattr(request, "address")
+    assert not hasattr(request, "acknowledge_access_risk")
+    client = debug_env.client()
+    for invalid in (
+        object(),
+        RegisterSampleRequest(object(), debug_env.selection, ("GPIOA.IDR",)),
+        RegisterSampleRequest(debug_env.binding, object(), ("GPIOA.IDR",)),
+        RegisterSampleRequest(debug_env.binding, debug_env.selection, []),
+        RegisterSampleRequest(debug_env.binding, debug_env.selection, ("GPIOA.IDR",) * 2),
+        RegisterSampleRequest(
+            debug_env.binding,
+            debug_env.selection,
+            tuple(f"GPIOA.R{i}" for i in range(257)),
+        ),
+    ):
+        result = asyncio.run(sample_registers(invalid, client))
+        assert result.code == "DEBUG_SAMPLE_REQUEST_INVALID"
+
+
+def test_register_sampling_revalidates_svd_and_propagates_cancellation(
+    debug_env: DebugEnv,
+) -> None:
+    svd_path = debug_env.root / debug_env.selection.path
+    original = svd_path.read_bytes()
+    svd_path.write_bytes(original + b"changed")
+    changed = asyncio.run(
+        sample_registers(
+            RegisterSampleRequest(
+                debug_env.binding, debug_env.selection, ("GPIOA.IDR",)
+            ),
+            debug_env.client(),
+        )
+    )
+    assert changed.code == "SVD_PROVENANCE_MISMATCH"
+    svd_path.write_bytes(original)
+
+    class CancelClient(Client):
+        async def attach(self, probe_id: str, target: str) -> object:
+            raise asyncio.CancelledError
+
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(
+            sample_registers(
+                RegisterSampleRequest(
+                    debug_env.binding, debug_env.selection, ("GPIOA.IDR",)
+                ),
+                CancelClient(dict(debug_env.memory)),
+            )
+        )
