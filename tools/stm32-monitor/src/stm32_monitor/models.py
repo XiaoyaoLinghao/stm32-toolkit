@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import re
+import math
 import unicodedata
-from collections.abc import Mapping as MappingABC, Sequence
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -18,27 +19,85 @@ MAX_GROUP_NAME_CHARS = 128
 MAX_DESCRIPTION_CHARS = 1024
 MIN_INTERVAL_MS = 100
 MAX_INTERVAL_MS = 5_000
+MAX_SAMPLE_VALUES = 256
+MAX_JSON_DEPTH = 32
+MAX_JSON_NODES = 10_000
+MAX_JSON_STRING_CHARS = 1024 * 1024
 _SHA256 = re.compile(r"[0-9a-f]{64}\Z")
 _WORKSPACE_ID = re.compile(r"[0-9a-f]{24}\Z")
 _GIT_SHA = re.compile(r"[0-9a-f]{40}(?:[0-9a-f]{24})?\Z")
 
 
-def _freeze(value: object) -> object:
-    if isinstance(value, MappingABC):
-        return MappingProxyType({str(key): _freeze(item) for key, item in value.items()})
-    if isinstance(value, (list, tuple)):
-        return tuple(_freeze(item) for item in value)
-    if isinstance(value, (set, frozenset)):
-        raise TypeError("sets are not JSON values")
-    return value
+_MAPPING_PROXY = type(MappingProxyType({}))
 
 
-def _thaw(value: object) -> object:
-    if isinstance(value, MappingABC):
-        return {key: _thaw(item) for key, item in value.items()}
-    if isinstance(value, tuple):
-        return [_thaw(item) for item in value]
-    return value
+def _freeze_json(value: object) -> object:
+    nodes = 0
+    string_chars = 0
+    active: set[int] = set()
+
+    def freeze(current: object, depth: int) -> object:
+        nonlocal nodes, string_chars
+        if depth > MAX_JSON_DEPTH:
+            raise ValueError("JSON value exceeds its depth limit")
+        nodes += 1
+        if nodes > MAX_JSON_NODES:
+            raise ValueError("JSON value exceeds its node limit")
+        if current is None or type(current) is bool or type(current) is int:
+            return current
+        if type(current) is float:
+            if not math.isfinite(current):
+                raise ValueError("JSON number must be finite")
+            return current
+        if type(current) is str:
+            string_chars += len(current)
+            if string_chars > MAX_JSON_STRING_CHARS:
+                raise ValueError("JSON value exceeds its string limit")
+            return current
+        if type(current) in (list, tuple):
+            identity = id(current)
+            if identity in active:
+                raise ValueError("JSON value contains a cycle")
+            active.add(identity)
+            try:
+                return tuple(freeze(item, depth + 1) for item in current)
+            finally:
+                active.remove(identity)
+        if type(current) in (dict, _MAPPING_PROXY):
+            identity = id(current)
+            if identity in active:
+                raise ValueError("JSON value contains a cycle")
+            active.add(identity)
+            result: dict[str, object] = {}
+            try:
+                for key, item in current.items():
+                    if type(key) is not str:
+                        raise TypeError("JSON object keys must be strings")
+                    normalized = unicodedata.normalize("NFC", key)
+                    string_chars += len(normalized)
+                    if string_chars > MAX_JSON_STRING_CHARS:
+                        raise ValueError("JSON value exceeds its string limit")
+                    if normalized in result:
+                        raise ValueError("JSON object keys must be unique after normalization")
+                    result[normalized] = freeze(item, depth + 1)
+            finally:
+                active.remove(identity)
+            return MappingProxyType(result)
+        if type(current) in (set, frozenset):
+            raise TypeError("sets are not JSON values")
+        raise TypeError("value is not an exact JSON value")
+
+    return freeze(value, 0)
+
+
+def _thaw_json(value: object) -> object:
+    if type(value) is _MAPPING_PROXY:
+        return {key: _thaw_json(item) for key, item in value.items()}
+    if type(value) is tuple:
+        return [_thaw_json(item) for item in value]
+    if value is None or type(value) in (bool, int, float, str):
+        return value
+    raise TypeError("value is not a frozen JSON value")
 
 
 def _utc_text(value: datetime) -> str:
@@ -48,10 +107,15 @@ def _utc_text(value: datetime) -> str:
 
 
 def unix_ns_to_utc(value: int) -> str:
-    if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+    if type(value) is not int or value < 0:
         raise ValueError("Unix nanoseconds must be a non-negative integer")
     seconds, nanoseconds = divmod(value, 1_000_000_000)
-    timestamp = datetime.fromtimestamp(seconds, tz=timezone.utc).replace(microsecond=nanoseconds // 1_000)
+    try:
+        timestamp = datetime.fromtimestamp(seconds, tz=timezone.utc).replace(
+            microsecond=nanoseconds // 1_000
+        )
+    except (OSError, OverflowError, ValueError):
+        raise ValueError("Unix nanoseconds are outside the serializable range") from None
     return _utc_text(timestamp)
 
 
@@ -292,23 +356,33 @@ class SampleValue:
     definition: Mapping[str, object] | None = None
 
     def __post_init__(self) -> None:
+        if not isinstance(self.watch, WatchItem):
+            raise ValueError("sample watch is invalid")
         if self.status not in {"OK", "ERROR"}:
             raise ValueError("sample status is invalid")
-        if self.status == "OK" and self.typed_value is None:
-            raise ValueError("successful sample requires a typed value")
-        if self.status == "ERROR" and not self.code:
-            raise ValueError("failed sample requires a code")
-        object.__setattr__(self, "typed_value", _freeze(self.typed_value))
+        if self.status == "OK":
+            if self.typed_value is None:
+                raise ValueError("successful sample requires a typed value")
+            if self.code is not None:
+                raise ValueError("successful sample cannot include an error code")
+        else:
+            if self.typed_value is not None:
+                raise ValueError("failed sample cannot include a typed value")
+            object.__setattr__(self, "code", _require_text(self.code, "sample code", 128))
+        object.__setattr__(self, "typed_value", _freeze_json(self.typed_value))
         if self.definition is not None:
-            object.__setattr__(self, "definition", cast(Mapping[str, object], _freeze(self.definition)))
+            definition = _freeze_json(self.definition)
+            if type(definition) is not _MAPPING_PROXY:
+                raise TypeError("sample definition must be a JSON object")
+            object.__setattr__(self, "definition", cast(Mapping[str, object], definition))
 
     def to_dict(self) -> dict[str, object]:
         return {
             "watch": self.watch.to_dict(),
             "status": self.status,
-            "typedValue": _thaw(self.typed_value),
+            "typedValue": _thaw_json(self.typed_value),
             "code": self.code,
-            "definition": _thaw(self.definition),
+            "definition": None if self.definition is None else _thaw_json(self.definition),
         }
 
 
@@ -338,11 +412,17 @@ class SampleBatch:
                 raise ValueError(f"{name} is invalid")
         if self.captured_unix_ns < self.scheduled_unix_ns:
             raise ValueError("captured time precedes scheduled time")
-        if not isinstance(self.actual_rate_hz, (int, float)) or isinstance(self.actual_rate_hz, bool) or self.actual_rate_hz < 0:
+        if type(self.actual_rate_hz) not in (int, float) or not math.isfinite(
+            float(self.actual_rate_hz)
+        ) or self.actual_rate_hz < 0:
             raise ValueError("actual rate is invalid")
         values = tuple(self.values)
         if not all(isinstance(value, SampleValue) for value in values):
             raise ValueError("sample values are invalid")
+        if len(values) > MAX_SAMPLE_VALUES:
+            raise ValueError("sample values exceed the batch limit")
+        unix_ns_to_utc(self.scheduled_unix_ns)
+        unix_ns_to_utc(self.captured_unix_ns)
         object.__setattr__(self, "values", values)
 
     def to_dict(self) -> dict[str, object]:

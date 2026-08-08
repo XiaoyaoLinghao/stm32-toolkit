@@ -17,6 +17,8 @@ from stm32_monitor.models import (
     WatchGroup,
     WatchItem,
 )
+from stm32_monitor.exports import ExportArtifact
+from stm32_monitor.history import HistoryPage
 from stm32_monitor.protocol import (
     MONITOR_PROTOCOL_VERSION,
     ProtocolResult,
@@ -174,13 +176,16 @@ def test_observation_and_sample_models_are_deeply_immutable_and_json_safe() -> N
 
 def test_protocol_results_are_monitor_versioned_and_details_are_snapshotted() -> None:
     details = {"field": ["name"]}
+    data = {"groups": [{"name": "original"}]}
     bad = failure("groups.create", "MONITOR_REQUEST_INVALID", "invalid request", details)
     details["field"].append("changed")
-    good = success("groups.list", {"groups": []})
+    good = success("groups.list", data)
+    data["groups"][0]["name"] = "changed"
 
     assert bad.protocol == MONITOR_PROTOCOL_VERSION == "stm32-toolkit-monitor/1"
     assert bad.to_dict()["details"] == {"field": ["name"]}
     assert good.ok is True and good.code == "OK"
+    assert good.to_dict()["data"] == {"groups": [{"name": "original"}]}
     json.dumps(bad.to_dict())
 
 
@@ -305,6 +310,8 @@ def test_protocol_result_validates_invariants_and_known_models_only() -> None:
     invalid_results = (
         (1, "groups.list", "OK", "", None),
         (True, "", "OK", "", None),
+        (True, " groups.list ", "OK", "", None),
+        (True, "groups.list", "lowercase", "", None),
         (True, "groups.list", "BAD", "", None),
         (True, "groups.list", "OK", "not empty", None),
         (False, "groups.list", "OK", "failed", None),
@@ -323,6 +330,8 @@ def test_protocol_result_validates_invariants_and_known_models_only() -> None:
             None,
             protocol="another-protocol",
         )
+    with pytest.raises(ValueError):
+        ProtocolResult(True, "groups.list", "OK", "", None, {"warning": "no"})
 
     class CustomValue:
         calls = 0
@@ -335,6 +344,37 @@ def test_protocol_result_validates_invariants_and_known_models_only() -> None:
     with pytest.raises((TypeError, ValueError)):
         success("custom", custom)
     assert custom.calls == 0
+
+
+def test_protocol_result_snapshots_and_serializes_known_history_and_export_models(
+    tmp_path: Path,
+) -> None:
+    row = {"nested": [{"value": 1}]}
+    page = HistoryPage((row,), None, 32)
+    page_result = success("history.query", page)
+    row["nested"][0]["value"] = 2
+    assert page_result.data.values[0]["nested"] == ({"value": 1},)
+    assert page_result.to_dict()["data"] == {
+        "values": [{"nested": [{"value": 1}]}],
+        "nextCursor": None,
+        "serializedBytes": 32,
+    }
+
+    artifact = ExportArtifact(
+        GROUP_ID,
+        tmp_path,
+        tmp_path / "history.jsonl",
+        tmp_path / "manifest.json",
+        "a" * 64,
+        12,
+        1,
+    )
+    assert success("exports.get", artifact).to_dict()["data"] == artifact.to_dict()
+
+    with pytest.raises(ValueError):
+        ProtocolResult(True, "groups.\x00list", "OK", "", None)
+    with pytest.raises(TypeError):
+        ProtocolResult(True, "groups.list", "OK", "", None, ())
 
 
 def test_protocol_and_sample_models_reject_nonfinite_oversized_and_xor_states() -> None:
