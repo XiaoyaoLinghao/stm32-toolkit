@@ -19,4 +19,3 @@ description: Use when a Claude Code user asks to hand a selected STM32 probe to 
 - Never accept a caller-selected target, SVD, ELF path, workspace, endpoint, token, memory location, or access size.
 - Never expose the handoff ticket, service credential, or local runtime path.
 - Never fabricate physical success. Simulated, skipped, deferred, or failed probe evidence remains exactly that.
-

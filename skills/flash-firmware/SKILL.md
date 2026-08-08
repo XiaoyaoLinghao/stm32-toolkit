@@ -20,4 +20,3 @@ description: Use when a Claude Code user asks to discover a probe and flash an i
 - Never accept a caller-selected target, SVD, ELF path, workspace, endpoint, token, or memory location.
 - Never weaken stale-build, dirty-project, lease, or authorization failures.
 - Never fabricate physical success. A skipped, simulated, deferred, or failed hardware gate is not a board PASS.
-

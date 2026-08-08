@@ -12,6 +12,28 @@ $ErrorActionPreference = "Stop"
 $RuntimeVersion = "0.4.0"
 $LegacyRuntimeVersion = "0.3.0"
 $ProcessOutputLimit = 65536
+$ProbeValidationScript = @'
+import importlib.metadata as metadata
+import sys
+
+try:
+    try:
+        from packaging.version import Version
+    except ImportError:
+        from pip._vendor.packaging.version import Version
+    import pyocd
+    probe_version = metadata.version("pyocd")
+    parsed_version = Version(probe_version)
+    lower_bound = Version("0.45.1")
+    upper_bound = Version("0.46")
+except Exception:
+    raise SystemExit(2)
+
+if not lower_bound <= parsed_version < upper_bound:
+    raise SystemExit(3)
+
+print(probe_version)
+'@
 
 function Resolve-ClaudePath {
     param([string]$Name, [AllowEmptyString()][string]$Value, [switch]$MustExist)
@@ -148,6 +170,8 @@ function Get-RuntimeEvidence {
     if ($version.status -ne "ok") { $evidence.status = "broken"; $evidence.error = "version check $($version.status): $($version.stderr)".Trim(); return $evidence }
     $evidence.version = ($version.stdout -split "`r?`n")[0].Trim()
     if ($evidence.version -ne $RuntimeVersion) { $evidence.status = "broken"; $evidence.error = "expected toolkit $RuntimeVersion, found $($evidence.version)"; return $evidence }
+    $probeRuntime = Invoke-BoundedProcess $RuntimePython @("-I", "-c", $ProbeValidationScript) 10
+    if ($probeRuntime.status -ne "ok") { $evidence.status = "broken"; $evidence.error = "pyocd runtime validation failed ($($probeRuntime.status))"; return $evidence }
     $doctor = Invoke-BoundedProcess $RuntimePython @("-I", "-m", "stm32_toolkit.cli", "--project-root", $Project, "doctor", "--json") 15
     if ($doctor.status -ne "ok") { $evidence.status = "broken"; $evidence.error = "doctor $($doctor.status): $($doctor.stderr)".Trim(); return $evidence }
     try { $doctorPayload = $doctor.stdout | ConvertFrom-Json } catch { $evidence.status = "broken"; $evidence.error = "doctor returned invalid JSON"; return $evidence }
@@ -252,11 +276,12 @@ try {
     Assert-NotRedirect "staging runtime" $staging
     Assert-NotRedirect "staging Scripts" (Join-Path $staging "Scripts")
     Assert-NotRedirect "staging interpreter" $stagingPython
-    Assert-StepOk (Invoke-BoundedProcess $stagingPython @("-I", "-m", "pip", "install", "--disable-pip-version-check", "--no-cache-dir", $package) 300) "toolkit installation"
+    Assert-StepOk (Invoke-BoundedProcess $stagingPython @("-I", "-m", "pip", "install", "--disable-pip-version-check", "--no-cache-dir", "${package}[probe]") 300) "toolkit probe-runtime installation"
     $versionCheck = Invoke-BoundedProcess $stagingPython @("-I", "-m", "stm32_toolkit.cli", "version") 10
     Assert-StepOk $versionCheck "toolkit version validation"
     $installedVersion = ($versionCheck.stdout -split "`r?`n")[0].Trim()
     if ($installedVersion -ne $RuntimeVersion) { throw "expected toolkit $RuntimeVersion, found $installedVersion" }
+    Assert-StepOk (Invoke-BoundedProcess $stagingPython @("-I", "-c", $ProbeValidationScript) 10) "pyocd runtime validation"
     $doctorCheck = Invoke-BoundedProcess $stagingPython @("-I", "-m", "stm32_toolkit.cli", "--project-root", $resolvedProjectDir, "doctor", "--json") 15
     Assert-StepOk $doctorCheck "toolkit doctor validation"
     try { $doctorPayload = $doctorCheck.stdout | ConvertFrom-Json } catch { throw "toolkit doctor returned invalid JSON" }

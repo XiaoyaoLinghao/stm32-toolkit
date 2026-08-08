@@ -19,4 +19,3 @@ description: Use when a Claude Code user asks to read or finitely sample typed f
 - This Skill is observation-only. It never writes memory, resumes execution, controls the core, or releases probe ownership.
 - Never accept a caller-selected target, SVD, ELF path, workspace, endpoint, token, memory location, size, or type layout.
 - Never fabricate physical success. A fake, skipped, deferred, or failed gate cannot prove a live-board read.
-
