@@ -213,8 +213,8 @@ class FakeSampler:
 
 def _protocol_runtime(tmp_path: Path, *, observation_factory=None):
     from stm32_monitor.models import MonitorConfig
-    from stm32_monitor.protocol import success
     from stm32_monitor.runtime import MonitorRuntime
+    from stm32_toolkit.result import OperationResult
 
     project = _project(tmp_path)
     groups: list[ProtocolStore] = []
@@ -243,7 +243,7 @@ def _protocol_runtime(tmp_path: Path, *, observation_factory=None):
         requests.append(request)
         observation = FakeObservation(request.probe_id)
         observations.append(observation)
-        return success("monitor.observe.open", observation)
+        return OperationResult.success("monitor.observe.open", observation)
 
     def sampler_factory(*args):
         sampler = FakeSampler(*args)

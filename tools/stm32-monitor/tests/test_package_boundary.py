@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 import ast
-import importlib
 import importlib.util
 import re
+import subprocess
 import sys
 from pathlib import Path
 
@@ -92,20 +92,32 @@ def test_public_models_expose_no_raw_address_override() -> None:
 
 
 def test_ordinary_import_is_backend_lazy_and_does_not_write_project(
-    tmp_path: Path, monkeypatch
+    tmp_path: Path,
 ) -> None:
     project = tmp_path / "project"
     project.mkdir()
-    monkeypatch.chdir(project)
-    for name in tuple(sys.modules):
-        if name == "stm32_monitor" or name.startswith("stm32_monitor."):
-            sys.modules.pop(name)
-    imported = importlib.import_module("stm32_monitor")
-    assert imported.__version__ == "0.4.0"
-    assert not any(
-        name == "pyocd" or name.startswith(("pyocd.", "cmsis_svd.", "yaml."))
-        for name in sys.modules
+    check = """
+import pathlib
+import sys
+sys.path.insert(0, sys.argv[1])
+import stm32_monitor
+
+assert stm32_monitor.__version__ == "0.4.0"
+assert not any(
+    name == "pyocd" or name.startswith(("pyocd.", "cmsis_svd.", "yaml."))
+    for name in sys.modules
+)
+assert tuple(pathlib.Path.cwd().iterdir()) == ()
+"""
+    completed = subprocess.run(
+        [sys.executable, "-I", "-c", check, str(PACKAGE_ROOT / "src")],
+        cwd=project,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
     )
+    assert completed.returncode == 0, completed.stderr
     assert tuple(project.iterdir()) == ()
 
 
