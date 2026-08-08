@@ -18,7 +18,7 @@ from .auth import (
     MonitorAuth,
     MonitorAuthError,
 )
-from .protocol import ProtocolResult
+from .protocol import ProtocolResult, _json_text
 
 MONITOR_PROTOCOL_VERSION = "stm32-toolkit-monitor/1"
 MONITOR_VERSION = "0.4.0"
@@ -100,6 +100,7 @@ def _response(
     return web.json_response(
         _envelope(operation, data=data, code=code, message=message, details=details),
         status=status,
+        dumps=_json_text,
     )
 
 

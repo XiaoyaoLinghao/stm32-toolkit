@@ -310,8 +310,41 @@ class GroupPage:
 
     def __post_init__(self) -> None:
         groups = tuple(self.groups)
-        if len(groups) > 16 or any(type(group) is not WatchGroup for group in groups):
+        if len(groups) > 16:
             raise ValueError("group page is invalid")
+        snapshots: list[WatchGroup] = []
+        for group in groups:
+            if (
+                type(group) is not WatchGroup
+                or type(group.group_id) is not UUID
+                or type(group.name) is not str
+                or type(group.description) is not str
+                or type(group.interval_ms) is not int
+                or type(group.items) is not tuple
+                or type(group.revision) is not int
+                or type(group.created_at_utc) is not datetime
+                or type(group.updated_at_utc) is not datetime
+                or any(type(item) is not WatchItem for item in group.items)
+            ):
+                raise ValueError("group page is invalid")
+            try:
+                items = tuple(
+                    WatchItem(item.kind, item.selector) for item in group.items
+                )
+                snapshots.append(
+                    WatchGroup(
+                        UUID(str(group.group_id)),
+                        group.name,
+                        group.description,
+                        group.interval_ms,
+                        items,
+                        group.revision,
+                        group.created_at_utc.replace(),
+                        group.updated_at_utc.replace(),
+                    )
+                )
+            except (TypeError, ValueError, OverflowError):
+                raise ValueError("group page is invalid") from None
         if self.next_cursor is not None and (
             type(self.next_cursor) is not str
             or not 1 <= len(self.next_cursor) <= 512
@@ -320,7 +353,7 @@ class GroupPage:
             raise ValueError("group page cursor is invalid")
         if type(self.revision) is not str or _SHA256.fullmatch(self.revision) is None:
             raise ValueError("group page revision is invalid")
-        object.__setattr__(self, "groups", groups)
+        object.__setattr__(self, "groups", tuple(snapshots))
 
     def to_dict(self) -> dict[str, object]:
         return {

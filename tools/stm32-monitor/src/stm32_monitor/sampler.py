@@ -323,11 +323,11 @@ class MonitorSampler:
     def _enqueue_history(self, batch: SampleBatch) -> None:
         queue = self._history_queue
         if queue is None:
-            self._record_history_drop()
+            self._record_history_drop(batch)
             return
         size = self._batch_bytes(batch)
         if queue.full() or size > self._history_queue_limit - self._history_queue_bytes:
-            self._record_history_drop()
+            self._record_history_drop(batch)
             return
         queue.put_nowait((batch, size))
         self._history_queue_bytes += size
@@ -359,19 +359,38 @@ class MonitorSampler:
                     return
                 batch, size = item
                 try:
-                    result = await asyncio.to_thread(self._history.append_batch, batch)
-                    if getattr(result, "ok", None) is not True:
-                        self._record_history_drop()
-                except asyncio.CancelledError:
-                    raise
+                    append_task = asyncio.create_task(
+                        asyncio.to_thread(self._history.append_batch, batch),
+                        name="stm32-monitor-history-append",
+                    )
+                    cancellation: asyncio.CancelledError | None = None
+                    while not append_task.done():
+                        try:
+                            await asyncio.shield(append_task)
+                        except asyncio.CancelledError as error:
+                            if cancellation is None:
+                                cancellation = error
+                        except BaseException:
+                            break
+                    try:
+                        result = append_task.result()
+                    except Exception:
+                        self._record_history_drop(batch)
+                    else:
+                        if getattr(result, "ok", None) is not True:
+                            self._record_history_drop(batch)
+                    if cancellation is not None:
+                        raise cancellation
                 except Exception:
-                    self._record_history_drop()
+                    self._record_history_drop(batch)
                 finally:
                     self._history_queue_bytes = max(0, self._history_queue_bytes - size)
             finally:
                 queue.task_done()
 
-    def _record_history_drop(self) -> None:
+    def _record_history_drop(self, batch: SampleBatch | None = None) -> None:
+        if batch is not None:
+            self._subscriber_drops_pending += batch.subscriber_drops
         self._history_drops_pending += 1
         self._history_drops_total += 1
 

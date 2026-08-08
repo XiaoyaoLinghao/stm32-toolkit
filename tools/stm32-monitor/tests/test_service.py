@@ -315,7 +315,7 @@ def test_group_pages_use_exact_query_grammar_and_fit_actual_http_body(
     )
     store = GroupStore(paths)
     selectors = tuple(
-        WatchItem.variable(f"v{index:04d}" + "界" * 507) for index in range(256)
+        WatchItem.variable(f"v{index:04d}" + "😀" * 507) for index in range(256)
     )
     try:
         for index in range(16):

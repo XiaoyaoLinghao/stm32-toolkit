@@ -15,7 +15,14 @@ from uuid import UUID
 from stm32_toolkit.paths import WorkspacePaths
 
 from .models import GroupPage, WatchGroup, WatchItem
-from .protocol import ProtocolResult, ProtocolViolation, failure, parse_json_object, success
+from .protocol import (
+    ProtocolResult,
+    ProtocolViolation,
+    _json_bytes,
+    failure,
+    parse_json_object,
+    success,
+)
 from .storage import MonitorDatabase, StorageFailure
 
 
@@ -163,10 +170,7 @@ class GroupStore:
                     else None
                 )
                 page = GroupPage(tuple(candidate), next_cursor, revision)
-                encoded = json.dumps(
-                    page.to_dict(),
-                    sort_keys=True,
-                ).encode("utf-8")
+                encoded = _json_bytes(page.to_dict())
                 if len(encoded) > MAX_GROUP_PAGE_BYTES:
                     if not selected:
                         return failure(

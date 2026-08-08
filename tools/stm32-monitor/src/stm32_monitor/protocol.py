@@ -25,6 +25,14 @@ _OPERATION = re.compile(r"[a-z][a-z0-9]*(?:\.[a-z][a-z0-9]*)*\Z")
 _CODE = re.compile(r"(?:OK|MONITOR_[A-Z0-9_]+)\Z")
 
 
+def _json_text(value: object) -> str:
+    return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+
+
+def _json_bytes(value: object) -> bytes:
+    return _json_text(value).encode("utf-8")
+
+
 _CORE_MODEL_SERIALIZERS = {
     ProbeConnectRequest: ProbeConnectRequest.to_dict,
     WatchItem: WatchItem.to_dict,
@@ -59,7 +67,7 @@ def _snapshot_protocol_value(value: object) -> object:
         from .models import GroupPage
 
         if value_type is GroupPage:
-            return value
+            return GroupPage(value.groups, value.next_cursor, value.revision)
     if value_type.__module__ == "stm32_monitor.history" and value_type.__name__ == "HistoryPage":
         from .history import HistoryPage
 

@@ -599,6 +599,145 @@ def test_history_storage_failures_are_counted_without_blocking_sampling(tmp_path
     asyncio.run(scenario())
 
 
+@pytest.mark.parametrize("raise_append", [False, True])
+def test_failed_history_appends_carry_subscriber_evidence_once_until_persisted(
+    tmp_path: Path, raise_append: bool
+) -> None:
+    class RecoveringHistory:
+        def __init__(self) -> None:
+            self.failures_remaining = 2
+            self.failed_batches = []
+            self.persisted_batches = []
+            self.first_failure = threading.Event()
+            self.persisted_evidence = threading.Event()
+
+        def append_batch(self, batch):
+            if batch.subscriber_drops > 0 and self.failures_remaining:
+                self.failures_remaining -= 1
+                self.failed_batches.append(batch)
+                self.first_failure.set()
+                if raise_append:
+                    raise RuntimeError("C:\\secret")
+                return failure(
+                    "history.append", "MONITOR_STORAGE_BUSY", "history is busy"
+                )
+            self.persisted_batches.append(batch)
+            if batch.subscriber_drops > 0:
+                self.persisted_evidence.set()
+            return success("history.append", {"stored": True})
+
+    async def scenario() -> None:
+        project = tmp_path / "project"
+        project.mkdir()
+        history = RecoveringHistory()
+        sampler = MonitorSampler(
+            FakeObservation(_binding(project)), FakeGroups(_group()), history
+        )
+        slow = sampler.subscribe()
+        first_pending = asyncio.create_task(_next(slow))
+        await sampler.start(GROUP_ID, expected_revision=1)
+        await first_pending
+        assert await asyncio.to_thread(history.first_failure.wait, 3)
+        await slow.aclose()
+        total_after_close = sampler.subscriber_drops_total
+        assert await asyncio.to_thread(history.persisted_evidence.wait, 3)
+        persisted = next(
+            batch
+            for batch in history.persisted_batches
+            if batch.subscriber_drops > 0
+        )
+        try:
+            assert len(history.failed_batches) == 2
+            assert persisted.subscriber_drops == history.failed_batches[-1].subscriber_drops
+            assert persisted.subscriber_drops == total_after_close
+            assert persisted.history_drops >= 1
+            assert sampler.subscriber_drops_total == total_after_close
+            assert sampler.history_drops_total == 2
+        finally:
+            await sampler.close()
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("persists_after_cancel", [False, True])
+def test_cancelled_history_append_resolves_late_result_before_restoring_evidence(
+    tmp_path: Path, persists_after_cancel: bool
+) -> None:
+    class CancellingHistory:
+        def __init__(self) -> None:
+            self.blocked = False
+            self.entered = threading.Event()
+            self.release = threading.Event()
+            self.persisted_batches = []
+            self.persisted_evidence = threading.Event()
+
+        def append_batch(self, batch):
+            if batch.subscriber_drops > 0 and not self.blocked:
+                self.blocked = True
+                self.entered.set()
+                assert self.release.wait(timeout=5)
+                if not persists_after_cancel:
+                    raise RuntimeError("C:\\secret")
+            self.persisted_batches.append(batch)
+            if batch.subscriber_drops > 0:
+                self.persisted_evidence.set()
+            return success("history.append", {"stored": True})
+
+    async def scenario() -> None:
+        project = tmp_path / "project"
+        project.mkdir()
+        history = CancellingHistory()
+        sampler = MonitorSampler(
+            FakeObservation(_binding(project)), FakeGroups(_group()), history
+        )
+        slow = sampler.subscribe()
+        first_pending = asyncio.create_task(_next(slow))
+        await sampler.start(GROUP_ID, expected_revision=1)
+        await first_pending
+        assert await asyncio.to_thread(history.entered.wait, 3)
+        await slow.aclose()
+        total_after_close = sampler.subscriber_drops_total
+
+        history_task = sampler._history_task
+        assert history_task is not None
+        history_task.cancel()
+        history.release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await history_task
+        sampler._history_task = asyncio.create_task(
+            sampler._history_writer(), name="stm32-monitor-history-writer-replacement"
+        )
+        assert await asyncio.to_thread(history.persisted_evidence.wait, 3)
+        deadline = time.monotonic() + 3
+        while (
+            sum(batch.subscriber_drops for batch in history.persisted_batches)
+            < total_after_close
+            and time.monotonic() < deadline
+        ):
+            await asyncio.sleep(0.01)
+        persisted = next(
+            batch
+            for batch in history.persisted_batches
+            if batch.subscriber_drops > 0
+        )
+        try:
+            assert sum(
+                batch.subscriber_drops for batch in history.persisted_batches
+            ) == total_after_close
+            if persists_after_cancel:
+                assert sampler.history_drops_total == 0
+            else:
+                assert persisted.subscriber_drops == total_after_close
+                assert persisted.history_drops >= 1
+                assert sampler.history_drops_total == 1
+            assert sampler.subscriber_drops_total == total_after_close
+        finally:
+            history.release.set()
+            await sampler.close()
+
+    asyncio.run(scenario())
+
+
 def test_invalid_lifecycle_calls_and_close_terminate_full_subscriber(tmp_path: Path) -> None:
     async def scenario() -> None:
         project = tmp_path / "project"

@@ -296,6 +296,61 @@ def test_group_page_is_deeply_immutable_bounded_and_address_free() -> None:
         GroupPage(page.groups, None, "not-a-digest")
 
 
+def test_group_page_and_protocol_result_detach_the_complete_group_graph() -> None:
+    from stm32_monitor.models import GroupPage
+
+    item = WatchItem.variable("counter")
+    group = WatchGroup.create(
+        "Core", "", 250, (item,), group_id=GROUP_ID, now=NOW
+    )
+    page = GroupPage((group,), "opaque", "a" * 64)
+    page_payload = page.to_dict()
+    page_repr = repr(page)
+    result = success("groups.list", page)
+    result_payload = result.to_dict()
+    result_repr = repr(result.data)
+
+    assert page.groups[0] is not group
+    assert page.groups[0].items[0] is not item
+    assert result.data is not page
+    assert result.data.groups[0] is not page.groups[0]
+    assert result.data.groups[0].items[0] is not page.groups[0].items[0]
+
+    object.__setattr__(item, "selector", "tampered-item")
+    object.__setattr__(group, "name", "Tampered group")
+    object.__setattr__(group, "items", ())
+    assert page.to_dict() == page_payload
+    assert repr(page) == page_repr
+
+    object.__setattr__(page.groups[0].items[0], "selector", "tampered-page-item")
+    object.__setattr__(page.groups[0], "name", "Tampered page group")
+    object.__setattr__(page, "next_cursor", "tampered-page-cursor")
+    assert result.to_dict() == result_payload
+    assert repr(result.data) == result_repr
+
+
+def test_group_page_rejects_model_subclasses_and_forged_nested_items() -> None:
+    from stm32_monitor.models import GroupPage
+
+    class DerivedItem(WatchItem):
+        pass
+
+    derived = DerivedItem.variable("counter")
+    group_with_subclass = WatchGroup.create(
+        "Core", "", 250, (derived,), group_id=GROUP_ID, now=NOW
+    )
+    with pytest.raises(ValueError, match="group page"):
+        GroupPage((group_with_subclass,), None, "a" * 64)
+
+    forged = WatchItem.variable("counter")
+    group_with_forgery = WatchGroup.create(
+        "Core", "", 250, (forged,), group_id=GROUP_ID, now=NOW
+    )
+    object.__setattr__(forged, "kind", "address")
+    with pytest.raises(ValueError, match="group page"):
+        GroupPage((group_with_forgery,), None, "a" * 64)
+
+
 def test_monitor_config_rejects_state_inside_project_and_unsafe_session(tmp_path: Path) -> None:
     project = tmp_path / "project"
     project.mkdir()
