@@ -196,7 +196,7 @@ UI belong to 0501/0502.
 - [x] Run Windows NTFS path/cancellation/read-only gates. Defer Linux and any
   available real-board non-halting variable/register/Fault smoke honestly to
   0405; fake evidence never closes a physical gate.
-- [ ] Commit product/tests before a separate report commit. Push a Ready PR,
+- [x] Commit product/tests before a separate report commit. Push a Ready PR,
   verify local/remote/PR identity, review the full accepted-base diff in a clean
   detached worktree, merge without deleting the remote branch only after all
   non-deferred gates pass.
