@@ -3,9 +3,11 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import stat
 import subprocess
 from dataclasses import fields, replace
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -287,6 +289,64 @@ def test_external_root_parent_change_never_writes_into_project(
     assert result.code == "MONITOR_REQUEST_INVALID"
     assert harness.supervisors == []
     assert _project_snapshot(debug_env.root) == before
+
+
+def test_posix_directory_creation_uses_directory_descriptors(
+    monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import stm32_toolkit.monitor_observation as observation
+
+    opened: list[tuple[object, tuple[object, ...], dict[str, object]]] = []
+    created: list[tuple[object, int]] = []
+    closed: list[int] = []
+    next_descriptor = iter(range(10, 20))
+
+    def fake_open(path: object, *args: object, **kwargs: object) -> int:
+        descriptor = next(next_descriptor)
+        opened.append((path, args, kwargs))
+        return descriptor
+
+    def fake_mkdir(path: object, *, dir_fd: int) -> None:
+        created.append((path, dir_fd))
+        if len(created) == 1:
+            raise FileExistsError
+
+    monkeypatch.setattr(observation.os, "open", fake_open)
+    monkeypatch.setattr(observation.os, "mkdir", fake_mkdir)
+    monkeypatch.setattr(
+        observation.os,
+        "fstat",
+        lambda descriptor: SimpleNamespace(st_mode=stat.S_IFDIR | 0o700),
+    )
+    monkeypatch.setattr(observation.os, "close", closed.append)
+
+    root = Path("/external/data")
+    observation._safe_mkdir_posix(root, root / "sessions" / "monitor")
+
+    assert created
+    assert all("dir_fd" in kwargs for _, _, kwargs in opened[1:])
+    assert len(closed) == len(opened)
+
+
+def test_posix_directory_creation_rejects_non_directory_component(
+    monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import stm32_toolkit.monitor_observation as observation
+
+    descriptors = iter((20, 21))
+    closed: list[int] = []
+    monkeypatch.setattr(observation.os, "open", lambda *args, **kwargs: next(descriptors))
+    monkeypatch.setattr(observation.os, "mkdir", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        observation.os,
+        "fstat",
+        lambda descriptor: SimpleNamespace(st_mode=stat.S_IFREG | 0o600),
+    )
+    monkeypatch.setattr(observation.os, "close", closed.append)
+
+    with pytest.raises(ValueError):
+        observation._safe_mkdir_posix(Path("/external"), Path("/external/data"))
+    assert closed == [21, 20]
 
 
 def test_revalidate_rejects_firmware_epoch_change(

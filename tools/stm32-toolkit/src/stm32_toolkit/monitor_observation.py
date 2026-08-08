@@ -187,26 +187,123 @@ def _disjoint(project: Path, data: Path) -> None:
     raise ValueError
 
 
-def _safe_mkdir_chain(root: Path, destination: Path) -> None:
+def _windows_directory_handle(path: Path) -> int:
+    import ctypes
+    from ctypes import wintypes
+
+    class _FileTime(ctypes.Structure):
+        _fields_ = (("low", wintypes.DWORD), ("high", wintypes.DWORD))
+
+    class _FileInformation(ctypes.Structure):
+        _fields_ = (
+            ("attributes", wintypes.DWORD),
+            ("creation", _FileTime),
+            ("last_access", _FileTime),
+            ("last_write", _FileTime),
+            ("volume_serial", wintypes.DWORD),
+            ("size_high", wintypes.DWORD),
+            ("size_low", wintypes.DWORD),
+            ("links", wintypes.DWORD),
+            ("index_high", wintypes.DWORD),
+            ("index_low", wintypes.DWORD),
+        )
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    create_file = kernel32.CreateFileW
+    create_file.argtypes = (
+        wintypes.LPCWSTR,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.LPVOID,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.HANDLE,
+    )
+    create_file.restype = wintypes.HANDLE
+    handle = create_file(
+        str(path),
+        0x0080,  # FILE_READ_ATTRIBUTES
+        0x0001 | 0x0002,  # share read/write, intentionally not delete/rename
+        None,
+        3,  # OPEN_EXISTING
+        0x02000000 | 0x00200000,  # BACKUP_SEMANTICS | OPEN_REPARSE_POINT
+        None,
+    )
+    invalid = ctypes.c_void_p(-1).value
+    if handle in (None, invalid):
+        raise OSError(ctypes.get_last_error(), "directory handle is unavailable")
+    get_information = kernel32.GetFileInformationByHandle
+    get_information.argtypes = (wintypes.HANDLE, ctypes.POINTER(_FileInformation))
+    get_information.restype = wintypes.BOOL
+    information = _FileInformation()
+    if not get_information(handle, ctypes.byref(information)):
+        error = ctypes.get_last_error()
+        kernel32.CloseHandle(handle)
+        raise OSError(error, "directory identity is unavailable")
+    if not information.attributes & 0x0010 or information.attributes & _REPARSE_POINT:
+        kernel32.CloseHandle(handle)
+        raise OSError("directory is redirected or invalid")
+    return int(handle)
+
+
+def _close_windows_handle(handle: int) -> None:
+    import ctypes
+
+    ctypes.WinDLL("kernel32", use_last_error=True).CloseHandle(handle)
+
+
+def _safe_mkdir_windows(root: Path, destination: Path) -> None:
     relative = destination.relative_to(root)
-    root.mkdir(parents=True, exist_ok=True)
-    current = root
-    for component in (None, *relative.parts):
-        if component is not None:
+    target = root.joinpath(*relative.parts)
+    anchor = Path(target.anchor)
+    handles: list[int] = []
+    current = anchor
+    try:
+        handles.append(_windows_directory_handle(current))
+        components = target.parts[1:] if target.anchor else target.parts
+        for component in components:
             current /= component
-        try:
-            before = os.lstat(current)
-        except FileNotFoundError:
-            before = None
-        if before is not None and (
-            _is_redirect(current, before) or not stat.S_ISDIR(before.st_mode)
-        ):
+            try:
+                current.mkdir()
+            except FileExistsError:
+                pass
+            handles.append(_windows_directory_handle(current))
+        if target != destination:
             raise ValueError
-        current.mkdir(exist_ok=True)
-        after = os.lstat(current)
-        if _is_redirect(current, after) or not stat.S_ISDIR(after.st_mode):
-            raise ValueError
-        current.resolve(strict=True).relative_to(root.resolve(strict=True))
+    finally:
+        for handle in reversed(handles):
+            _close_windows_handle(handle)
+
+
+def _safe_mkdir_posix(root: Path, destination: Path) -> None:
+    relative = destination.relative_to(root)
+    target = root.joinpath(*relative.parts)
+    anchor = Path(target.anchor or ".")
+    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(anchor, flags)
+    try:
+        components = target.parts[1:] if target.anchor else target.parts
+        for component in components:
+            try:
+                os.mkdir(component, dir_fd=descriptor)
+            except FileExistsError:
+                pass
+            next_descriptor = os.open(component, flags, dir_fd=descriptor)
+            metadata = os.fstat(next_descriptor)
+            if not stat.S_ISDIR(metadata.st_mode):
+                os.close(next_descriptor)
+                raise ValueError
+            os.close(descriptor)
+            descriptor = next_descriptor
+    finally:
+        os.close(descriptor)
+
+
+def _safe_mkdir_chain(root: Path, destination: Path) -> None:
+    if os.name == "nt":
+        _safe_mkdir_windows(root, destination)
+    else:
+        _safe_mkdir_posix(root, destination)
 
 
 def _prepare(request: object) -> tuple[MonitorObservationRequest, object, WorkspacePaths]:
@@ -263,6 +360,8 @@ def _endpoint(endpoint: object, paths: WorkspacePaths, probe_id: str) -> None:
 
 
 def _failure_code(code: object) -> str:
+    if code == "MONITOR_REQUEST_INVALID":
+        return code
     if code == "PROBE_BUSY":
         return "MONITOR_PROBE_BUSY"
     if isinstance(code, str) and (
@@ -460,7 +559,13 @@ async def open_monitor_observation(
     session: MonitorObservationSession | None = None
     fatal: BaseException | None = None
     try:
-        _safe_mkdir_chain(paths.data_root, paths.session_root)
+        try:
+            _safe_mkdir_chain(paths.data_root, paths.session_root)
+        except (OSError, RuntimeError, ValueError):
+            raise MonitorObservationError(
+                "MONITOR_REQUEST_INVALID",
+                "Monitor observation runtime root is invalid",
+            ) from None
         config = ProbeServiceConfig(
             probe_id=typed.probe_id,
             workspace_id=paths.workspace_id,
