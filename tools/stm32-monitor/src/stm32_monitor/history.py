@@ -28,6 +28,9 @@ from .storage import MonitorDatabase, StorageFailure
 
 MAX_HISTORY_VALUES = 10_000
 MAX_HISTORY_PAGE_BYTES = 4 * 1024 * 1024
+# A persisted batch must fit within one maximum history response.  Migration
+# checks SQLite's BLOB length against this ceiling before fetching the payload.
+MAX_HISTORY_BATCH_BYTES = MAX_HISTORY_PAGE_BYTES
 RETENTION_AGE_NS = 7 * 24 * 60 * 60 * 1_000_000_000
 RETENTION_LOGICAL_BYTES = 256 * 1024 * 1024
 RETENTION_DELETE_BATCHES = 100
@@ -173,6 +176,30 @@ def _batch_evidence(batch: HistoryBatchSlice) -> tuple[object, ...]:
     )
 
 
+def _history_slice(
+    batch: SampleBatch,
+    start_ordinal: int,
+    values: Sequence[SampleValue],
+) -> HistoryBatchSlice:
+    return HistoryBatchSlice(
+        binding=batch.binding,
+        group_id=batch.group_id,
+        group_revision=batch.group_revision,
+        run_id=batch.run_id,
+        sequence=batch.sequence,
+        scheduled_unix_ns=batch.scheduled_unix_ns,
+        captured_unix_ns=batch.captured_unix_ns,
+        latency_ns=batch.latency_ns,
+        actual_rate_hz=batch.actual_rate_hz,
+        subscriber_drops=batch.subscriber_drops,
+        history_drops=batch.history_drops,
+        deadline_drops=batch.deadline_drops,
+        start_ordinal=start_ordinal,
+        batch_value_count=len(batch.values),
+        values=tuple(values),
+    )
+
+
 def _encoded_history_page_size(
     batches: Sequence[HistoryBatchSlice],
     value_count: int,
@@ -191,6 +218,16 @@ def _encoded_history_page_size(
     )
     if batches:
         batch_bytes += len(batches) - 1
+    return _encoded_history_page_size_from_batch_bytes(
+        batch_bytes, value_count, next_cursor
+    )
+
+
+def _encoded_history_page_size_from_batch_bytes(
+    batch_bytes: int,
+    value_count: int,
+    next_cursor: str | None,
+) -> int:
     fixed_bytes = (
         len(b'{"batches":[')
         + batch_bytes
@@ -278,6 +315,7 @@ def _decode_history_batch(
             raise TypeError("history batch payload types are invalid")
         if (
             not raw
+            or len(raw) > MAX_HISTORY_BATCH_BYTES
             or payload_bytes != len(raw)
             or sha256(raw).hexdigest() != payload_sha256
             or value_count < 0
@@ -416,7 +454,14 @@ def _normalize_v1_batch(
                 batch.values[expected_ordinal]
             )
             normalized.append((expected_ordinal, kind, selector, value_raw, value_digest))
-        return raw, sha256(raw).hexdigest(), tuple(normalized)
+        canonical = json.dumps(
+            batch.to_dict(),
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        ).encode("utf-8")
+        return canonical, sha256(canonical).hexdigest(), tuple(normalized)
     except (
         UnicodeError,
         json.JSONDecodeError,
@@ -532,7 +577,8 @@ class HistoryStore:
                 """,
                 (query.session_id, query.start_ns, query.end_ns, max(1, cursor_batch)),
             )
-            selected: list[HistoryBatchSlice] = []
+            selected: list[tuple[SampleBatch, int, list[SampleValue], int]] = []
+            selected_batch_bytes = 0
             selected_count = 0
             last_cursor: str | None = None
             more = False
@@ -564,6 +610,7 @@ class HistoryStore:
                 ).fetchall()
                 if len(indexed) != len(batch.values):
                     raise _history_corrupt()
+                encoded_value_lengths: list[int] = []
                 for ordinal, index_row in enumerate(indexed):
                     stored_ordinal, kind, selector, value_raw, value_bytes, value_digest = index_row
                     expected_kind, expected_selector, expected_raw, expected_digest = _encode_history_value(
@@ -582,6 +629,7 @@ class HistoryStore:
                         or value_raw != expected_raw
                     ):
                         raise _history_corrupt()
+                    encoded_value_lengths.append(len(expected_raw))
 
                 has_later_batch = connection.execute(
                     "SELECT 1 FROM history_batches WHERE session_id = ? "
@@ -597,70 +645,50 @@ class HistoryStore:
                         more = True
                         break
                     value = batch.values[ordinal]
-                    if selected and _batch_evidence(selected[-1])[:-1] == (
-                        batch.binding,
-                        batch.group_id,
-                        batch.group_revision,
-                        batch.run_id,
-                        batch.sequence,
-                        batch.scheduled_unix_ns,
-                        batch.captured_unix_ns,
-                        batch.latency_ns,
-                        batch.actual_rate_hz,
-                        batch.subscriber_drops,
-                        batch.history_drops,
-                        batch.deadline_drops,
-                    ):
-                        previous = selected[-1]
-                        candidate_slice = HistoryBatchSlice(
-                            binding=previous.binding,
-                            group_id=previous.group_id,
-                            group_revision=previous.group_revision,
-                            run_id=previous.run_id,
-                            sequence=previous.sequence,
-                            scheduled_unix_ns=previous.scheduled_unix_ns,
-                            captured_unix_ns=previous.captured_unix_ns,
-                            latency_ns=previous.latency_ns,
-                            actual_rate_hz=previous.actual_rate_hz,
-                            subscriber_drops=previous.subscriber_drops,
-                            history_drops=previous.history_drops,
-                            deadline_drops=previous.deadline_drops,
-                            start_ordinal=previous.start_ordinal,
-                            batch_value_count=len(batch.values),
-                            values=previous.values + (value,),
+                    if selected and selected[-1][0] is batch:
+                        previous_batch, previous_start, previous_values, previous_bytes = selected[-1]
+                        candidate_batch_bytes = (
+                            selected_batch_bytes
+                            + 1
+                            + encoded_value_lengths[ordinal]
                         )
-                        candidate_batches = (*selected[:-1], candidate_slice)
                     else:
-                        candidate_slice = HistoryBatchSlice(
-                            binding=batch.binding,
-                            group_id=batch.group_id,
-                            group_revision=batch.group_revision,
-                            run_id=batch.run_id,
-                            sequence=batch.sequence,
-                            scheduled_unix_ns=batch.scheduled_unix_ns,
-                            captured_unix_ns=batch.captured_unix_ns,
-                            latency_ns=batch.latency_ns,
-                            actual_rate_hz=batch.actual_rate_hz,
-                            subscriber_drops=batch.subscriber_drops,
-                            history_drops=batch.history_drops,
-                            deadline_drops=batch.deadline_drops,
-                            start_ordinal=ordinal,
-                            batch_value_count=len(batch.values),
-                            values=(value,),
+                        candidate_slice = _history_slice(batch, ordinal, (value,))
+                        slice_bytes = len(
+                            json.dumps(
+                                candidate_slice.to_dict(),
+                                ensure_ascii=False,
+                                separators=(",", ":"),
+                                allow_nan=False,
+                            ).encode("utf-8")
                         )
-                        candidate_batches = (*selected, candidate_slice)
+                        candidate_batch_bytes = (
+                            selected_batch_bytes
+                            + (1 if selected else 0)
+                            + slice_bytes
+                        )
                     candidate_more = (
                         ordinal + 1 < len(batch.values) or has_later_batch
                     )
                     candidate_cursor = f"{batch_id}:{ordinal}" if candidate_more else None
-                    try:
-                        HistoryPage.create(candidate_batches, next_cursor=candidate_cursor)
-                    except ValueError as error:
-                        if "4 MiB" not in str(error):
-                            raise _history_corrupt() from error
+                    if _encoded_history_page_size_from_batch_bytes(
+                        candidate_batch_bytes,
+                        selected_count + 1,
+                        candidate_cursor,
+                    ) > MAX_HISTORY_PAGE_BYTES:
                         more = True
                         break
-                    selected = list(candidate_batches)
+                    if selected and selected[-1][0] is batch:
+                        previous_values.append(value)
+                        selected[-1] = (
+                            previous_batch,
+                            previous_start,
+                            previous_values,
+                            previous_bytes + 1 + encoded_value_lengths[ordinal],
+                        )
+                    else:
+                        selected.append((batch, ordinal, [value], slice_bytes))
+                    selected_batch_bytes = candidate_batch_bytes
                     selected_count += 1
                     last_cursor = f"{batch_id}:{ordinal}"
                 if more:
@@ -669,9 +697,20 @@ class HistoryStore:
                 if more:
                     raise _history_corrupt()
                 return HistoryPage.create((), next_cursor=None)
-            return HistoryPage.create(
-                selected,
-                next_cursor=last_cursor if more else None,
+            next_cursor = last_cursor if more else None
+            final_batches = tuple(
+                _history_slice(batch, start_ordinal, values)
+                for batch, start_ordinal, values, _ in selected
+            )
+            return HistoryPage(
+                final_batches,
+                selected_count,
+                next_cursor,
+                _encoded_history_page_size_from_batch_bytes(
+                    selected_batch_bytes,
+                    selected_count,
+                    next_cursor,
+                ),
             )
 
         try:

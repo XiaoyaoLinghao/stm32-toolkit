@@ -435,6 +435,8 @@ class MonitorDatabase:
             except OSError as error:
                 raise StorageFailure("MONITOR_STORAGE_INVALID", "monitor storage file cannot be inspected") from error
             if named[:2] != opened[:2] or named[:2] != after[:2]:
+                if path != self.path:
+                    continue
                 raise StorageFailure("MONITOR_STORAGE_INVALID", "monitor storage file changed during inspection")
             identities[path] = named
         return identities
@@ -445,20 +447,36 @@ class MonitorDatabase:
     ) -> tuple[tuple[str, int, int, int, int], ...]:
         fingerprint: list[tuple[str, int, int, int, int]] = []
         for path, identity in sorted(files.items(), key=lambda item: item[0].name):
-            if path != self.path:
+            # The shared-memory file is a transient coordination artifact.  The
+            # main database and WAL contain the durable bytes whose changes must
+            # invalidate cached integrity validation.
+            if path not in {self.path, self.path.with_name(self.path.name + "-wal")}:
                 continue
             try:
                 metadata = os.lstat(path)
+            except FileNotFoundError:
+                if path != self.path:
+                    continue
+                raise StorageFailure(
+                    "MONITOR_STORAGE_INVALID",
+                    "monitor storage file cannot be inspected",
+                )
             except OSError as error:
                 raise StorageFailure(
                     "MONITOR_STORAGE_INVALID",
                     "monitor storage file cannot be inspected",
                 ) from error
-            if (metadata.st_dev, metadata.st_ino, metadata.st_size) != identity:
+            if (metadata.st_dev, metadata.st_ino) != identity[:2] or (
+                path == self.path and metadata.st_size != identity[2]
+            ):
+                if path != self.path:
+                    continue
                 raise StorageFailure(
                     "MONITOR_STORAGE_INVALID",
                     "monitor storage file changed during inspection",
                 )
+            if path != self.path and metadata.st_size == 0:
+                continue
             fingerprint.append(
                 (
                     path.name,
@@ -544,7 +562,7 @@ class MonitorDatabase:
             raise StorageFailure("MONITOR_STORAGE_CORRUPT", "monitor storage is corrupt") from error
 
     def _migrate_v1(self, connection: sqlite3.Connection) -> None:
-        from .history import _normalize_v1_batch
+        from .history import MAX_HISTORY_BATCH_BYTES, _normalize_v1_batch
         from .models import MAX_SAMPLE_VALUES
 
         metadata = connection.execute(
@@ -595,7 +613,8 @@ class MonitorDatabase:
         for statement in migration_schema:
             connection.execute(statement)
         batches = connection.execute(
-            "SELECT batch_id,session_id,run_id,sequence,captured_ns,payload_json,payload_bytes "
+            "SELECT batch_id,session_id,run_id,sequence,captured_ns,payload_bytes,"
+            "length(payload_json) "
             "FROM history_batches ORDER BY batch_id"
         )
         while True:
@@ -603,6 +622,22 @@ class MonitorDatabase:
             if batch_row is None:
                 break
             batch_id = batch_row[0]
+            declared_bytes, stored_bytes = batch_row[5:7]
+            if (
+                type(declared_bytes) is not int
+                or type(stored_bytes) is not int
+                or declared_bytes < 1
+                or declared_bytes != stored_bytes
+                or stored_bytes > MAX_HISTORY_BATCH_BYTES
+            ):
+                raise StorageFailure("MONITOR_STORAGE_CORRUPT", "monitor storage is corrupt")
+            payload = connection.execute(
+                "SELECT payload_json FROM history_batches WHERE batch_id = ?",
+                (batch_id,),
+            ).fetchone()
+            if payload is None:
+                raise StorageFailure("MONITOR_STORAGE_CORRUPT", "monitor storage is corrupt")
+            normalized_batch_row = (*batch_row[:5], payload[0], declared_bytes)
             value_cursor = connection.execute(
                 "SELECT ordinal,row_json,payload_bytes FROM history_values "
                 "WHERE batch_id = ? ORDER BY ordinal",
@@ -613,10 +648,10 @@ class MonitorDatabase:
                 raise StorageFailure("MONITOR_STORAGE_CORRUPT", "monitor storage is corrupt")
             encoded_batch, digest, normalized_values = _normalize_v1_batch(
                 workspace_id=self.paths.workspace_id,
-                batch_row=batch_row,
+                batch_row=normalized_batch_row,
                 value_rows=value_rows,
             )
-            original_logical_bytes += batch_row[6] + sum(row[2] for row in value_rows)
+            original_logical_bytes += declared_bytes + sum(row[2] for row in value_rows)
             connection.execute(
                 "INSERT INTO history_batches_v2(batch_id,session_id,run_id,sequence,captured_ns,"
                 "payload_json,payload_bytes,payload_sha256,value_count) VALUES (?,?,?,?,?,?,?,?,?)",
@@ -726,7 +761,7 @@ class MonitorDatabase:
             raise StorageFailure("MONITOR_STORAGE_INVALID", "monitor storage database is missing")
         before_fingerprint = self._integrity_fingerprint(files)
         try:
-            uri = self.path.as_uri() + "?mode=ro&immutable=1"
+            uri = self.path.as_uri() + "?mode=ro"
             connection = sqlite3.connect(
                 uri,
                 uri=True,
@@ -759,8 +794,6 @@ class MonitorDatabase:
                         before=before,
                         full_integrity=full_integrity,
                     )
-                if full_integrity:
-                    self._integrity_identity = before_fingerprint
         except StorageFailure:
             raise
         except sqlite3.DatabaseError as error:
@@ -774,7 +807,20 @@ class MonitorDatabase:
         after = after_files.get(self.path)
         if after is None or before[:2] != after[:2]:
             raise StorageFailure("MONITOR_STORAGE_INVALID", "monitor storage changed during validation")
-        if before_fingerprint != self._integrity_fingerprint(after_files):
+        after_fingerprint = self._integrity_fingerprint(after_files)
+        if before_fingerprint != after_fingerprint:
+            before_main = tuple(
+                item for item in before_fingerprint if item[0] == self.path.name
+            )
+            after_main = tuple(
+                item for item in after_fingerprint if item[0] == self.path.name
+            )
+            # WAL growth is a normal concurrent-writer event.  The validation
+            # above used a consistent SQLite snapshot, so keep the cache stale
+            # and let the next read validate the newer WAL instead of reporting
+            # a false busy result.
+            if before_main == after_main:
+                return after
             if identity_retries > 0:
                 return self._preflight_existing(
                     busy_timeout_ms=busy_timeout_ms,
@@ -782,6 +828,9 @@ class MonitorDatabase:
                     identity_retries=identity_retries - 1,
                 )
             raise StorageFailure("MONITOR_STORAGE_BUSY", "monitor storage is busy")
+        if full_integrity:
+            with self._integrity_lock:
+                self._integrity_identity = after_fingerprint
         return after
 
     def _create_database_file(self) -> tuple[int, int, int]:
@@ -887,11 +936,41 @@ class MonitorDatabase:
             return empty
         before = self._preflight_existing(busy_timeout_ms=BUSY_TIMEOUT_MS)
         try:
-            uri = self.path.as_uri() + "?mode=ro&immutable=1"
+            opening_fingerprint = self._integrity_fingerprint(
+                self._inspect_storage_files()
+            )
+            uri = self.path.as_uri() + "?mode=ro"
             connection = sqlite3.connect(uri, uri=True, timeout=BUSY_TIMEOUT_MS / 1000, isolation_level=None)
             self._configure(connection, busy_timeout_ms=BUSY_TIMEOUT_MS)
-            self._validate(connection, before=before, full_integrity=False)
-            return operation(connection)
+            connection.execute("BEGIN")
+            # Establish one immutable read snapshot before inspecting its WAL
+            # identity, then validate and execute the caller's query within it.
+            connection.execute("PRAGMA user_version").fetchone()
+            snapshot_files = self._inspect_storage_files()
+            snapshot_fingerprint = self._integrity_fingerprint(snapshot_files)
+            with self._integrity_lock:
+                full_integrity = (
+                    self._integrity_identity != snapshot_fingerprint
+                    or opening_fingerprint != snapshot_fingerprint
+                )
+                self._validate(
+                    connection,
+                    before=before,
+                    full_integrity=full_integrity,
+                )
+            result = operation(connection)
+            closing_fingerprint = self._integrity_fingerprint(
+                self._inspect_storage_files()
+            )
+            if (
+                full_integrity
+                and opening_fingerprint == snapshot_fingerprint
+                and snapshot_fingerprint == closing_fingerprint
+            ):
+                with self._integrity_lock:
+                    self._integrity_identity = snapshot_fingerprint
+            connection.rollback()
+            return result
         except StorageFailure:
             raise
         except sqlite3.OperationalError as error:

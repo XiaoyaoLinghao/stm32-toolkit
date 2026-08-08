@@ -11,7 +11,7 @@ from uuid import UUID
 import pytest
 
 from stm32_monitor.groups import GroupStore
-from stm32_monitor.history import HistoryQuery, HistoryStore, flatten_history_page
+from stm32_monitor.history import HistoryPage, HistoryQuery, HistoryStore, flatten_history_page
 from stm32_monitor.models import ObservationBinding, SampleBatch, SampleValue, WatchGroup, WatchItem
 from stm32_monitor.storage import APPLICATION_ID, StorageFailure
 from stm32_toolkit.paths import WorkspacePaths
@@ -336,6 +336,96 @@ def test_reading_v1_history_never_migrates_or_mutates_it(tmp_path: Path) -> None
         connection.close()
 
 
+def test_v1_migration_rejects_oversized_batch_before_loading_payload(
+    tmp_path: Path,
+) -> None:
+    paths = _paths(tmp_path)
+    batch = replace(
+        _batch(paths, 1),
+        values=tuple(
+            SampleValue(
+                WatchItem.variable(f"counter_{ordinal}"),
+                "OK",
+                typed_value={"type": "text", "value": "x" * 20_000},
+            )
+            for ordinal in range(256)
+        ),
+    )
+    database = _create_v1_history_database(paths, (batch,))
+    assert len(_compact(batch.to_dict())) > 4 * 1024 * 1024
+    before = _file_inventory(paths.monitor_root)
+
+    store = HistoryStore(paths)
+    try:
+        result = store.append_batch(_batch(paths, 2))
+        assert not result.ok and result.code == "MONITOR_STORAGE_CORRUPT"
+    finally:
+        store.close()
+
+    assert _file_inventory(paths.monitor_root) == before
+    connection = sqlite3.connect(f"file:{database.as_posix()}?mode=ro", uri=True)
+    try:
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 1
+    finally:
+        connection.close()
+
+
+def test_v1_migration_stores_canonical_batch_bytes_digest_and_accounting(
+    tmp_path: Path,
+) -> None:
+    paths = _paths(tmp_path)
+    batch = _wide_batch(paths, 1, captured_ns=1_000, count=2)
+    database = _create_v1_history_database(paths, (batch,))
+    noncanonical = json.dumps(
+        batch.to_dict(),
+        ensure_ascii=False,
+        sort_keys=False,
+        indent=2,
+        allow_nan=False,
+    ).encode("utf-8")
+    canonical = _compact(batch.to_dict())
+    assert noncanonical != canonical
+    connection = sqlite3.connect(database)
+    try:
+        connection.execute(
+            "UPDATE history_batches SET payload_json = ?, payload_bytes = ?",
+            (noncanonical, len(noncanonical)),
+        )
+        connection.execute(
+            "UPDATE monitor_history_accounting SET logical_bytes = logical_bytes + ?",
+            (len(noncanonical) - len(canonical),),
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+    store = HistoryStore(paths)
+    try:
+        store._database.write(lambda current: None)
+    finally:
+        store.close()
+
+    connection = sqlite3.connect(database)
+    try:
+        raw, byte_count, digest = connection.execute(
+            "SELECT payload_json,payload_bytes,payload_sha256 FROM history_batches"
+        ).fetchone()
+        assert raw == canonical
+        assert byte_count == len(canonical)
+        assert digest == sha256(canonical).hexdigest()
+        logical = connection.execute(
+            "SELECT logical_bytes FROM monitor_history_accounting"
+        ).fetchone()[0]
+        exact = connection.execute(
+            "SELECT SUM(payload_bytes) FROM history_batches"
+        ).fetchone()[0] + connection.execute(
+            "SELECT SUM(value_bytes) FROM history_values"
+        ).fetchone()[0]
+        assert logical == exact
+    finally:
+        connection.close()
+
+
 @pytest.mark.parametrize(
     ("corruption", "expected_code"),
     [
@@ -542,6 +632,46 @@ def test_mid_batch_cursor_resumes_256_values_without_gap_and_decodes_batch_once(
             range(128, 256)
         )
         assert calls == 1
+    finally:
+        store.close()
+
+
+def test_ten_thousand_value_query_normalizes_and_serializes_final_page_once(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    paths = _paths(tmp_path)
+    store = HistoryStore(paths)
+    try:
+        for sequence in range(40):
+            assert store.append_batch(
+                _wide_batch(
+                    paths,
+                    sequence,
+                    captured_ns=1_000 + sequence,
+                    count=250,
+                )
+            ).ok
+
+        calls = 0
+        real_create = HistoryPage.create.__func__
+
+        def observed_create(cls, batches, *, next_cursor):
+            nonlocal calls
+            calls += 1
+            if calls > 3:
+                raise AssertionError("history page was repeatedly normalized")
+            return real_create(cls, batches, next_cursor=next_cursor)
+
+        monkeypatch.setattr(HistoryPage, "create", classmethod(observed_create))
+        result = store.query_history(
+            HistoryQuery("monitor-1", 0, 2_000_000_000, limit=10_000)
+        )
+        assert result.ok
+        assert result.data.value_count == 10_000
+        assert result.data.next_cursor is None
+        assert result.data.serialized_bytes <= 4 * 1024 * 1024
+        assert calls <= 3
     finally:
         store.close()
 

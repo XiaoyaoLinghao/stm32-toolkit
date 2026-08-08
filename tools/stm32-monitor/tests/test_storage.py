@@ -508,6 +508,65 @@ def test_external_file_identity_change_requires_a_new_integrity_check(
     ]
 
 
+def test_persistent_wal_commit_is_visible_and_revalidated_before_return(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    paths = _paths(tmp_path)
+    main = _seed_database(paths)
+    database = MonitorDatabase(paths)
+    statements: list[str] = []
+    real_validate = database._validate
+
+    def observed_validate(connection: sqlite3.Connection, **kwargs) -> None:
+        connection.set_trace_callback(statements.append)
+        real_validate(connection, **kwargs)
+
+    monkeypatch.setattr(database, "_validate", observed_validate)
+    writer = sqlite3.connect(main)
+    try:
+        assert database.read(
+            lambda connection: connection.execute(
+                "SELECT COUNT(*) FROM watch_groups"
+            ).fetchone()[0],
+            empty=0,
+        ) == 1
+        assert writer.execute("PRAGMA journal_mode = WAL").fetchone()[0].lower() == "wal"
+        writer.execute("PRAGMA wal_autocheckpoint = 0")
+        writer.execute(
+            "INSERT INTO watch_groups(group_id,name,name_key,description,interval_ms,revision,created_at_utc,updated_at_utc) "
+            "VALUES (?,?,?,?,?,?,?,?)",
+            (
+                "22222222-2222-4222-8222-222222222222",
+                "WAL Visible",
+                "wal visible",
+                "",
+                250,
+                1,
+                "2026-08-08T00:00:00.000000Z",
+                "2026-08-08T00:00:00.000000Z",
+            ),
+        )
+        writer.commit()
+        wal = main.with_name(main.name + "-wal")
+        assert wal.exists() and wal.stat().st_size > 0
+
+        assert database.read(
+            lambda connection: connection.execute(
+                "SELECT COUNT(*) FROM watch_groups"
+            ).fetchone()[0],
+            empty=0,
+        ) == 2
+    finally:
+        writer.close()
+        database.close()
+
+    assert [statement for statement in statements if "quick_check" in statement] == [
+        "PRAGMA quick_check(1)",
+        "PRAGMA quick_check(1)",
+    ]
+
+
 def test_malformed_database_version_probe_maps_to_storage_corrupt(tmp_path: Path) -> None:
     paths = _paths(tmp_path)
     paths.monitor_root.mkdir(parents=True)
@@ -588,6 +647,97 @@ def test_hot_readers_progress_while_shared_writer_changes_file_identities(
     finally:
         for store in stores:
             store.close()
+
+
+def test_optional_wal_identity_churn_does_not_fail_a_snapshot_read(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    import stm32_monitor.storage as storage_module
+
+    paths = _paths(tmp_path)
+    main = _seed_database(paths)
+    writer = sqlite3.connect(main)
+    database = MonitorDatabase(paths)
+    real_opened_identity = storage_module._opened_identity
+    try:
+        assert writer.execute("PRAGMA journal_mode = WAL").fetchone()[0].lower() == "wal"
+        writer.execute("PRAGMA wal_autocheckpoint = 0")
+        writer.execute(
+            "UPDATE watch_groups SET description = 'visible through a changing WAL'"
+        )
+        writer.commit()
+        wal = main.with_name(main.name + "-wal")
+        assert wal.stat().st_size > 0
+
+        def changing_optional_identity(path: Path):
+            identity = real_opened_identity(path)
+            if path == wal:
+                return identity[0], identity[1] + 1, identity[2]
+            return identity
+
+        monkeypatch.setattr(
+            storage_module,
+            "_opened_identity",
+            changing_optional_identity,
+        )
+        assert database.read(
+            lambda connection: connection.execute(
+                "SELECT description FROM watch_groups"
+            ).fetchone()[0],
+            empty=None,
+        ) == "visible through a changing WAL"
+    finally:
+        database.close()
+        writer.close()
+
+
+def test_optional_wal_fingerprint_churn_invalidates_trust_without_failing(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    from types import SimpleNamespace
+
+    paths = _paths(tmp_path)
+    main = _seed_database(paths)
+    writer = sqlite3.connect(main)
+    database = MonitorDatabase(paths)
+    real_lstat = os.lstat
+    try:
+        assert writer.execute("PRAGMA journal_mode = WAL").fetchone()[0].lower() == "wal"
+        writer.execute("PRAGMA wal_autocheckpoint = 0")
+        writer.execute("UPDATE watch_groups SET description = 'wal fingerprint'")
+        writer.commit()
+        wal = main.with_name(main.name + "-wal")
+        files = database._inspect_storage_files()
+        baseline = database._integrity_fingerprint(files)
+        main_only = tuple(entry for entry in baseline if entry[0] != wal.name)
+        assert len(main_only) + 1 == len(baseline)
+
+        def vanished(path: Path):
+            if path == wal:
+                raise FileNotFoundError(path)
+            return real_lstat(path)
+
+        monkeypatch.setattr(os, "lstat", vanished)
+        assert database._integrity_fingerprint(files) == main_only
+
+        def replaced(path: Path):
+            metadata = real_lstat(path)
+            if path == wal:
+                return SimpleNamespace(
+                    st_dev=metadata.st_dev,
+                    st_ino=metadata.st_ino + 1,
+                    st_size=metadata.st_size,
+                    st_mtime_ns=metadata.st_mtime_ns,
+                )
+            return metadata
+
+        monkeypatch.setattr(os, "lstat", replaced)
+        assert database._integrity_fingerprint(files) == main_only
+    finally:
+        database.close()
+        writer.close()
 
 
 def test_continuous_identity_churn_exhausts_bounded_revalidation_as_busy(
@@ -729,7 +879,7 @@ def test_validation_and_open_failures_are_stable_storage_results(tmp_path: Path,
     real_connect = sqlite3.connect
 
     def broken_connect(database_path, *args, **kwargs):
-        if isinstance(database_path, str) and "immutable=1" in database_path:
+        if isinstance(database_path, str) and database_path.endswith("?mode=ro"):
             raise sqlite3.DatabaseError("secret")
         return real_connect(database_path, *args, **kwargs)
 
