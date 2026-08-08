@@ -350,6 +350,7 @@ def test_every_route_has_one_exact_method_and_operation_mapping() -> None:
 
 def test_verified_export_download_streams_fixed_public_headers_and_rejects_overrides() -> None:
     from stm32_monitor.exports import ExportDownload, ExportDownloadResult
+    from stm32_monitor.protocol import failure
 
     export_id = UUID("12345678-1234-5678-9234-567812345678")
     body = b'{"value":1}\n'
@@ -391,6 +392,16 @@ def test_verified_export_download_streams_fixed_public_headers_and_rejects_overr
                 endpoint.url + f"/api/v1/exports/{export_id}/download",
                 headers=auth,
             )
+            runtime.result = failure(
+                "monitor.exports.download",
+                "MONITOR_REQUEST_INVALID",
+                "Monitor request is invalid",
+            )
+            malformed_uuid = await client.get(
+                endpoint.url + "/api/v1/exports/not-a-uuid/download",
+                headers=auth,
+            )
+            malformed_payload = await malformed_uuid.json()
             runtime.result = object()
             invalid_runtime = await client.get(
                 endpoint.url + f"/api/v1/exports/{export_id}/download",
@@ -415,6 +426,18 @@ def test_verified_export_download_streams_fixed_public_headers_and_rejects_overr
         assert response.status == 200 and received == body
         assert wrapped.status == 200
         assert unavailable.status == 409
+        assert malformed_uuid.status == 409
+        assert malformed_payload == {
+            "protocol": endpoint.protocol,
+            "toolkitVersion": endpoint.toolkit_version,
+            "monitorVersion": endpoint.monitor_version,
+            "ok": False,
+            "operation": "monitor.exports.download",
+            "code": "MONITOR_REQUEST_INVALID",
+            "message": "Monitor request is invalid",
+            "data": None,
+            "details": {},
+        }
         assert invalid_runtime.status == 500
         assert response.headers["Content-Type"] == "application/x-ndjson"
         assert response.headers["Content-Length"] == str(len(body))

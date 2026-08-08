@@ -419,35 +419,43 @@ class HistoryExporter:
         )
         cursor: str | None = None
         value_count = 0
-        pending_key: tuple[object, ...] | None = None
-        pending_evidence: dict[str, object] | None = None
-        pending_values: list[object] = []
-        pending_start = 0
-        pending_next = 0
-        closed_keys: set[tuple[object, ...]] = set()
         with _create_regular_exclusive(target, parent=target.parent) as stream:
             sink = _LimitedHashWriter(stream)
 
-            def flush_jsonl() -> None:
-                nonlocal pending_key, pending_evidence, pending_values
-                if pending_evidence is None:
-                    return
-                record = dict(pending_evidence)
-                record["startOrdinal"] = pending_start
-                record["values"] = pending_values
-                sink.write(
-                    json.dumps(
-                        record,
-                        ensure_ascii=False,
-                        sort_keys=True,
-                        separators=(",", ":"),
-                        allow_nan=False,
-                    ).encode("utf-8")
-                    + b"\n"
+            if request.format == "jsonl":
+                def write_batch(batch) -> None:
+                    nonlocal value_count
+                    plain = batch.to_dict()
+                    values = plain.get("values")
+                    if type(values) is not list:
+                        raise StorageFailure(
+                            "MONITOR_STORAGE_CORRUPT", "monitor history is corrupt"
+                        )
+                    if value_count + len(values) > MAX_EXPORT_VALUES:
+                        raise StorageFailure(
+                            "MONITOR_EXPORT_TOO_LARGE", "export value limit was exceeded"
+                        )
+                    plain["batchValueCount"] = len(values)
+                    plain["startOrdinal"] = 0
+                    sink.write(
+                        json.dumps(
+                            plain,
+                            ensure_ascii=False,
+                            sort_keys=True,
+                            separators=(",", ":"),
+                            allow_nan=False,
+                        ).encode("utf-8")
+                        + b"\n"
+                    )
+                    value_count += len(values)
+
+                streamed = self._history._stream_verified_batches(
+                    HistoryQuery(request.session_id, request.start_ns, request.end_ns),
+                    write_batch,
                 )
-                pending_key = None
-                pending_evidence = None
-                pending_values = []
+                if not streamed.ok or streamed.data != value_count:
+                    raise StorageFailure(streamed.code, streamed.message)
+                return sink.sha256, sink.byte_count, value_count
 
             csv_writer = None
             if request.format == "csv":
@@ -474,83 +482,18 @@ class HistoryExporter:
                     if value_count >= MAX_EXPORT_VALUES:
                         raise StorageFailure("MONITOR_EXPORT_TOO_LARGE", "export value limit was exceeded")
                     plain = cast(dict[str, object], _plain(value))
-                    if request.format == "jsonl":
-                        binding = plain.get("binding")
-                        if not isinstance(binding, Mapping):
-                            raise StorageFailure(
-                                "MONITOR_STORAGE_CORRUPT",
-                                "monitor history is corrupt",
+                    cast(csv.DictWriter, csv_writer).writerow(
+                        {
+                            key: json.dumps(
+                                plain.get(key),
+                                ensure_ascii=False,
+                                sort_keys=True,
+                                separators=(",", ":"),
+                                allow_nan=False,
                             )
-                        key = (
-                            binding.get("workspaceId"),
-                            binding.get("sessionId"),
-                            plain.get("runId"),
-                            plain.get("sequence"),
-                        )
-                        ordinal = plain.get("valueOrdinal")
-                        if type(ordinal) is not int:
-                            raise StorageFailure(
-                                "MONITOR_STORAGE_CORRUPT",
-                                "monitor history is corrupt",
-                            )
-                        evidence = {
-                            key_name: item
-                            for key_name, item in plain.items()
-                            if key_name
-                            not in {
-                                "watch",
-                                "status",
-                                "typedValue",
-                                "code",
-                                "definition",
-                                "valueOrdinal",
-                            }
+                            for key in fieldnames
                         }
-                        exported_value = {
-                            key_name: plain.get(key_name)
-                            for key_name in (
-                                "watch",
-                                "status",
-                                "typedValue",
-                                "code",
-                                "definition",
-                            )
-                        }
-                        if pending_key == key:
-                            if evidence != pending_evidence or ordinal != pending_next:
-                                raise StorageFailure(
-                                    "MONITOR_STORAGE_CORRUPT",
-                                    "monitor history is corrupt",
-                                )
-                            pending_values.append(exported_value)
-                            pending_next += 1
-                        else:
-                            if pending_key is not None:
-                                closed_keys.add(pending_key)
-                                flush_jsonl()
-                            if key in closed_keys:
-                                raise StorageFailure(
-                                    "MONITOR_STORAGE_CORRUPT",
-                                    "monitor history is corrupt",
-                                )
-                            pending_key = key
-                            pending_evidence = evidence
-                            pending_values = [exported_value]
-                            pending_start = ordinal
-                            pending_next = ordinal + 1
-                    else:
-                        cast(csv.DictWriter, csv_writer).writerow(
-                            {
-                                key: json.dumps(
-                                    plain.get(key),
-                                    ensure_ascii=False,
-                                    sort_keys=True,
-                                    separators=(",", ":"),
-                                    allow_nan=False,
-                                )
-                                for key in fieldnames
-                            }
-                        )
+                    )
                     value_count += 1
                 next_cursor = page.data.next_cursor
                 if next_cursor is None:
@@ -558,8 +501,6 @@ class HistoryExporter:
                 if next_cursor == cursor or not page.data.values:
                     raise StorageFailure("MONITOR_STORAGE_CORRUPT", "monitor history is corrupt")
                 cursor = next_cursor
-            if request.format == "jsonl":
-                flush_jsonl()
             return sink.sha256, sink.byte_count, value_count
 
     def _reserve_pending(

@@ -131,4 +131,3 @@ def test_header_budget_is_bounded_before_authentication() -> None:
         "MONITOR_REQUEST_TOO_LARGE",
         431,
     )
-

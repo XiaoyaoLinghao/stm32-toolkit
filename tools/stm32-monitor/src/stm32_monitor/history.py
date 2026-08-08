@@ -7,9 +7,11 @@ import re
 import secrets
 import sqlite3
 import struct
+import threading
 import time
-from collections.abc import Iterator, Mapping as MappingABC, Sequence
-from dataclasses import dataclass
+from collections import OrderedDict
+from collections.abc import Callable, Iterator, Mapping as MappingABC, Sequence
+from dataclasses import dataclass, field
 from hashlib import sha256
 from types import MappingProxyType
 from typing import Mapping, cast
@@ -38,6 +40,7 @@ MAX_HISTORY_BATCH_BYTES = MAX_HISTORY_PAGE_BYTES
 RETENTION_AGE_NS = 7 * 24 * 60 * 60 * 1_000_000_000
 RETENTION_LOGICAL_BYTES = 256 * 1024 * 1024
 RETENTION_DELETE_BATCHES = 100
+RETENTION_DELETE_VALUES = 512
 RETENTION_TIME_BUDGET_NS = 90 * 1_000_000
 RETENTION_STORAGE_TIMEOUT_MS = 95
 
@@ -45,6 +48,16 @@ _LEGACY_HISTORY_CURSOR = re.compile(
     r"(?:[1-9][0-9]{0,18}):(?:0|[1-9][0-9]{0,18})\Z", re.ASCII
 )
 _HISTORY_CURSOR = re.compile(r"v1\.[A-Za-z0-9_-]{107}\Z", re.ASCII)
+_TRUSTED_HISTORY_PAGE = object()
+_VERIFIED_HISTORY_CACHE_BATCHES = 512
+
+
+@dataclass(frozen=True)
+class _VerifiedHistoryBatch:
+    key: tuple[object, ...]
+    batch: SampleBatch
+    indexed: tuple[tuple[object, ...], ...]
+    encoded_value_lengths: tuple[int, ...]
 
 
 class _InvalidHistoryCursor(Exception):
@@ -70,6 +83,9 @@ class HistoryPage:
     value_count: int
     next_cursor: str | None
     serialized_bytes: int
+    _verified_marker: object | None = field(
+        default=None, init=False, repr=False, compare=False
+    )
 
     def __post_init__(self) -> None:
         supplied_batches = tuple(self.batches)
@@ -149,6 +165,9 @@ class HistoryPage:
         return tuple(flatten_history_page(self))
 
     def immutable_snapshot(self) -> "HistoryPage":
+        if self._verified_marker is _TRUSTED_HISTORY_PAGE:
+            object.__setattr__(self, "_verified_marker", None)
+            return self
         if (
             type(self) is not HistoryPage
             or type(self.batches) is not tuple
@@ -213,6 +232,73 @@ def _history_slice(
     )
 
 
+def _verified_history_slice(
+    batch: SampleBatch,
+    start_ordinal: int,
+    values: Sequence[SampleValue],
+) -> HistoryBatchSlice:
+    snapshot = tuple(values)
+    if (
+        type(batch) is not SampleBatch
+        or type(batch.binding) is not ObservationBinding
+        or type(batch.values) is not tuple
+        or type(start_ordinal) is not int
+        or start_ordinal < 0
+        or start_ordinal + len(snapshot) > len(batch.values)
+        or not snapshot
+        or any(type(value) is not SampleValue for value in snapshot)
+        or any(
+            value is not batch.values[start_ordinal + offset]
+            for offset, value in enumerate(snapshot)
+        )
+    ):
+        raise TypeError("verified history slice is invalid")
+    result = object.__new__(HistoryBatchSlice)
+    for name, value in (
+        ("binding", batch.binding),
+        ("group_id", batch.group_id),
+        ("group_revision", batch.group_revision),
+        ("run_id", batch.run_id),
+        ("sequence", batch.sequence),
+        ("scheduled_unix_ns", batch.scheduled_unix_ns),
+        ("captured_unix_ns", batch.captured_unix_ns),
+        ("latency_ns", batch.latency_ns),
+        ("actual_rate_hz", float(batch.actual_rate_hz)),
+        ("subscriber_drops", batch.subscriber_drops),
+        ("history_drops", batch.history_drops),
+        ("deadline_drops", batch.deadline_drops),
+        ("start_ordinal", start_ordinal),
+        ("batch_value_count", len(batch.values)),
+        ("values", snapshot),
+    ):
+        object.__setattr__(result, name, value)
+    return result
+
+
+def _verified_history_page(
+    batches: Sequence[HistoryBatchSlice],
+    *,
+    value_count: int,
+    next_cursor: str | None,
+    serialized_bytes: int,
+) -> HistoryPage:
+    snapshot = tuple(batches)
+    if (
+        any(type(batch) is not HistoryBatchSlice for batch in snapshot)
+        or value_count != sum(len(batch.values) for batch in snapshot)
+        or value_count > MAX_HISTORY_VALUES
+        or (snapshot and serialized_bytes > MAX_HISTORY_PAGE_BYTES)
+    ):
+        raise TypeError("verified history page is invalid")
+    result = object.__new__(HistoryPage)
+    object.__setattr__(result, "batches", snapshot)
+    object.__setattr__(result, "value_count", value_count)
+    object.__setattr__(result, "next_cursor", next_cursor)
+    object.__setattr__(result, "serialized_bytes", serialized_bytes)
+    object.__setattr__(result, "_verified_marker", _TRUSTED_HISTORY_PAGE)
+    return result
+
+
 def _encoded_history_page_size(
     batches: Sequence[HistoryBatchSlice],
     value_count: int,
@@ -265,6 +351,11 @@ def _encoded_history_page_size_from_batch_bytes(
         candidate = size
 
 
+_EMPTY_HISTORY_PAGE_BYTES = _encoded_history_page_size_from_batch_bytes(
+    0, 0, None
+)
+
+
 def _filter_digest(query: HistoryQuery) -> bytes:
     canonical = json.dumps(
         [
@@ -301,6 +392,8 @@ def _cursor_payload(value: str) -> tuple[int, int, bytes, bytes]:
         payload = base64.b64decode(
             encoded + "=" * (-len(encoded) % 4), altchars=b"-_", validate=True
         )
+        if base64.urlsafe_b64encode(payload).rstrip(b"=").decode("ascii") != encoded:
+            raise ValueError("history cursor is invalid")
         batch_id, ordinal, filter_digest, authentication_tag = struct.unpack(
             ">QQ32s32s", payload
         )
@@ -563,6 +656,24 @@ class HistoryStore:
         self._paths = paths
         self._database = MonitorDatabase(paths)
         self._cursor_key = secrets.token_bytes(32)
+        self._verified_cache_lock = threading.Lock()
+        self._verified_cache_snapshot: tuple[tuple[str, int, int, int, int], ...] | None = None
+        self._verified_cache: OrderedDict[tuple[object, ...], _VerifiedHistoryBatch] = OrderedDict()
+
+    def _observed_storage_snapshot(
+        self,
+    ) -> tuple[
+        tuple[tuple[str, int, int, int, int], ...],
+        bool,
+    ] | None:
+        fingerprint = self._database._integrity_fingerprint(  # noqa: SLF001
+            self._database._inspect_storage_files()  # noqa: SLF001
+        )
+        if not self._database._fingerprint_is_certain(fingerprint):  # noqa: SLF001
+            return None
+        with self._database._integrity_lock:  # noqa: SLF001
+            trusted = self._database._integrity_identity == fingerprint  # noqa: SLF001
+        return fingerprint, trusted
 
     def append_batch(self, batch: SampleBatch) -> ProtocolResult[dict[str, object]]:
         operation = "history.append"
@@ -667,8 +778,22 @@ class HistoryStore:
         except ValueError:
             return failure(operation, "MONITOR_HISTORY_QUERY_INVALID", "history query is invalid")
         effective_limit = min(query.limit, MAX_HISTORY_VALUES)
+        observed_snapshot: tuple[tuple[str, int, int, int, int], ...] | None = None
+        pending_cache: list[_VerifiedHistoryBatch] = []
 
         def read(connection: sqlite3.Connection) -> HistoryPage:
+            nonlocal observed_snapshot
+            snapshot = self._observed_storage_snapshot()
+            if snapshot is None:
+                trusted_cache: dict[tuple[object, ...], _VerifiedHistoryBatch] = {}
+            else:
+                observed_snapshot, trusted = snapshot
+                with self._verified_cache_lock:
+                    trusted_cache = (
+                        dict(self._verified_cache)
+                        if trusted and self._verified_cache_snapshot == observed_snapshot
+                        else {}
+                    )
             clauses = [
                 "b.session_id = ?",
                 "b.captured_ns >= ?",
@@ -701,6 +826,7 @@ class HistoryStore:
                 """,
                 parameters,
             )
+            indexed_records: sqlite3.Cursor | None = None
             selected: list[tuple[SampleBatch, int, list[SampleValue], int]] = []
             selected_batch_bytes = 0
             selected_count = 0
@@ -717,74 +843,94 @@ class HistoryStore:
                 ) = record
                 if type(batch_id) is not int or batch_id < 1:
                     raise _history_corrupt()
-                batch = _decode_history_batch(
-                    raw,
-                    payload_bytes,
+                cache_key = (
+                    self._paths.workspace_id,
+                    session_id,
+                    run_id,
+                    batch_id,
                     payload_digest,
                     batch_value_count,
-                    workspace_id=self._paths.workspace_id,
-                    session_id=session_id,
-                    run_id=run_id,
-                    sequence=sequence,
-                    captured_ns=captured_ns,
+                    sequence,
+                    captured_ns,
+                    payload_bytes,
                 )
+                cached = trusted_cache.get(cache_key) if indexed_records is None else None
+                if cached is not None:
+                    batch = cached.batch
+                    indexed = list(cached.indexed)
+                    encoded_value_lengths = list(cached.encoded_value_lengths)
+                else:
+                    if indexed_records is None:
+                        value_parameters = list(parameters)
+                        value_parameters[3] = batch_id
+                        indexed_records = connection.execute(
+                            f"""
+                            SELECT v.batch_id,v.ordinal,v.selector_kind,v.selector,
+                                   v.value_json,v.value_bytes,v.value_sha256
+                            FROM history_values AS v
+                            JOIN history_batches AS b ON b.batch_id = v.batch_id
+                            WHERE {' AND '.join(clauses)}
+                            ORDER BY v.batch_id,v.ordinal
+                            """,
+                            value_parameters,
+                        )
+                    batch = _decode_history_batch(
+                        raw,
+                        payload_bytes,
+                        payload_digest,
+                        batch_value_count,
+                        workspace_id=self._paths.workspace_id,
+                        session_id=session_id,
+                        run_id=run_id,
+                        sequence=sequence,
+                        captured_ns=captured_ns,
+                    )
+                    indexed = []
+                    encoded_value_lengths = []
+                    for ordinal in range(len(batch.values)):
+                        index_row = indexed_records.fetchone()
+                        if index_row is None or len(index_row) != 7:
+                            raise _history_corrupt()
+                        (
+                            indexed_batch_id, stored_ordinal, kind, selector,
+                            value_raw, value_bytes, value_digest,
+                        ) = index_row
+                        expected_kind, expected_selector, expected_raw, expected_digest = _encode_history_value(
+                            batch.values[ordinal]
+                        )
+                        if (
+                            indexed_batch_id != batch_id
+                            or stored_ordinal != ordinal
+                            or kind != expected_kind
+                            or selector != expected_selector
+                            or type(value_raw) is not bytes
+                            or type(value_bytes) is not int
+                            or value_bytes != len(value_raw)
+                            or type(value_digest) is not str
+                            or sha256(value_raw).hexdigest() != value_digest
+                            or value_digest != expected_digest
+                            or value_raw != expected_raw
+                        ):
+                            raise _history_corrupt()
+                        indexed.append(tuple(index_row[1:]))
+                        encoded_value_lengths.append(len(expected_raw))
+                    if observed_snapshot is not None:
+                        pending_cache.append(
+                            _VerifiedHistoryBatch(
+                                cache_key,
+                                batch,
+                                tuple(indexed),
+                                tuple(encoded_value_lengths),
+                            )
+                        )
+
                 if not cursor_validated and batch_id != cursor_batch:
                     raise _InvalidHistoryCursor
-                indexed = connection.execute(
-                    "SELECT ordinal,selector_kind,selector,value_json,value_bytes,value_sha256 "
-                    "FROM history_values WHERE batch_id = ? ORDER BY ordinal",
-                    (batch_id,),
-                ).fetchall()
-                if len(indexed) != len(batch.values):
-                    raise _history_corrupt()
-                encoded_value_lengths: list[int] = []
-                for ordinal, index_row in enumerate(indexed):
-                    stored_ordinal, kind, selector, value_raw, value_bytes, value_digest = index_row
-                    expected_kind, expected_selector, expected_raw, expected_digest = _encode_history_value(
-                        batch.values[ordinal]
-                    )
-                    if (
-                        stored_ordinal != ordinal
-                        or kind != expected_kind
-                        or selector != expected_selector
-                        or type(value_raw) is not bytes
-                        or type(value_bytes) is not int
-                        or value_bytes != len(value_raw)
-                        or type(value_digest) is not str
-                        or sha256(value_raw).hexdigest() != value_digest
-                        or value_digest != expected_digest
-                        or value_raw != expected_raw
-                    ):
-                        raise _history_corrupt()
-                    encoded_value_lengths.append(len(expected_raw))
 
                 if query.group_id is not None and batch.group_id != query.group_id:
                     if batch_id == cursor_batch and query.cursor is not None:
                         raise _InvalidHistoryCursor
                     continue
-
-                has_later_unfiltered_batch = False
-                if query.selector_kind is None and query.group_id is None:
-                    later_clauses = [
-                        "session_id = ?",
-                        "captured_ns >= ?",
-                        "captured_ns < ?",
-                        "batch_id > ?",
-                    ]
-                    later_parameters: list[object] = [
-                        query.session_id,
-                        query.start_ns,
-                        query.end_ns,
-                        batch_id,
-                    ]
-                    if query.run_id is not None:
-                        later_clauses.append("run_id = ?")
-                        later_parameters.append(str(query.run_id))
-                    has_later_unfiltered_batch = connection.execute(
-                        f"SELECT 1 FROM history_batches WHERE "
-                        f"{' AND '.join(later_clauses)} LIMIT 1",
-                        later_parameters,
-                    ).fetchone() is not None
 
                 start = cursor_ordinal + 1 if batch_id == cursor_batch else 0
                 if start < 0 or start > len(batch.values):
@@ -836,26 +982,56 @@ class HistoryStore:
                             + (1 if selected else 0)
                             + slice_bytes
                         )
-                    candidate_more = (
-                        query.selector_kind is not None
-                        or query.group_id is not None
-                        or ordinal + 1 < len(batch.values)
-                        or has_later_unfiltered_batch
+                    # Cursor tokens have one fixed encoded length.  Reserve that
+                    # exact JSON budget while selecting, then authenticate only
+                    # the final returned position once.
+                    candidate_count = selected_count + 1
+                    fixed_bytes = (
+                        len(b'{"batches":[')
+                        + candidate_batch_bytes
+                        + len(b'],"valueCount":')
+                        + len(str(candidate_count).encode("ascii"))
+                        + len(b',"nextCursor":')
+                        + len(b'"v1.')
+                        + 107
+                        + len(b'"')
+                        + len(b',"serializedBytes":')
+                        + len(b"}")
                     )
-                    candidate_cursor = (
-                        _encode_cursor(
-                            batch_id, ordinal, filter_digest, self._cursor_key
-                        )
-                        if candidate_more
-                        else None
+                    candidate_size = fixed_bytes + len(
+                        str(fixed_bytes + 8).encode("ascii")
                     )
-                    if _encoded_history_page_size_from_batch_bytes(
-                        candidate_batch_bytes,
-                        selected_count + 1,
-                        candidate_cursor,
-                    ) > MAX_HISTORY_PAGE_BYTES:
-                        more = True
-                        break
+                    if candidate_size > MAX_HISTORY_PAGE_BYTES:
+                        terminal_without_cursor = False
+                        if (
+                            query.selector_kind is None
+                            and query.group_id is None
+                            and ordinal + 1 == len(batch.values)
+                            and records.fetchone() is None
+                        ):
+                            no_cursor_fixed = (
+                                len(b'{"batches":[')
+                                + candidate_batch_bytes
+                                + len(b'],"valueCount":')
+                                + len(str(candidate_count).encode("ascii"))
+                                + len(b',"nextCursor":null')
+                                + len(b',"serializedBytes":')
+                                + len(b"}")
+                            )
+                            no_cursor_size = no_cursor_fixed + 1
+                            while True:
+                                exact_size = no_cursor_fixed + len(
+                                    str(no_cursor_size).encode("ascii")
+                                )
+                                if exact_size == no_cursor_size:
+                                    break
+                                no_cursor_size = exact_size
+                            terminal_without_cursor = (
+                                no_cursor_size <= MAX_HISTORY_PAGE_BYTES
+                            )
+                        if not terminal_without_cursor:
+                            more = True
+                            break
                     if (
                         selected
                         and selected[-1][0] is batch
@@ -872,37 +1048,69 @@ class HistoryStore:
                         selected.append((batch, ordinal, [value], slice_bytes))
                     selected_batch_bytes = candidate_batch_bytes
                     selected_count += 1
-                    last_cursor = _encode_cursor(
-                        batch_id, ordinal, filter_digest, self._cursor_key
-                    )
+                    last_cursor = f"{batch_id}:{ordinal}"
                 if more:
                     break
+            else:
+                raise AssertionError("unreachable")
+            if record is None and indexed_records is not None and indexed_records.fetchone() is not None:
+                raise _history_corrupt()
             if not selected:
                 if not cursor_validated:
                     raise _InvalidHistoryCursor
                 if more:
                     raise _history_corrupt()
                 return HistoryPage.create((), next_cursor=None)
-            next_cursor = last_cursor if more else None
+            next_cursor = None
+            if more:
+                if last_cursor is None:
+                    raise _history_corrupt()
+                last_batch, last_ordinal = (int(part) for part in last_cursor.split(":"))
+                next_cursor = _encode_cursor(
+                    last_batch, last_ordinal, filter_digest, self._cursor_key
+                )
             final_batches = tuple(
-                _history_slice(batch, start_ordinal, values)
+                _verified_history_slice(batch, start_ordinal, values)
                 for batch, start_ordinal, values, _ in selected
             )
-            return HistoryPage(
-                final_batches,
+            serialized_bytes = _encoded_history_page_size_from_batch_bytes(
+                selected_batch_bytes,
                 selected_count,
                 next_cursor,
-                _encoded_history_page_size_from_batch_bytes(
-                    selected_batch_bytes,
-                    selected_count,
-                    next_cursor,
-                ),
+            )
+            return _verified_history_page(
+                final_batches,
+                value_count=selected_count,
+                next_cursor=next_cursor,
+                serialized_bytes=serialized_bytes,
             )
 
         try:
             page = self._database.read(
-                read, empty=HistoryPage.create((), next_cursor=None)
+                read,
+                empty=_verified_history_page(
+                    (),
+                    value_count=0,
+                    next_cursor=None,
+                    serialized_bytes=_EMPTY_HISTORY_PAGE_BYTES,
+                ),
             )
+            if observed_snapshot is not None:
+                with self._database._integrity_lock:  # noqa: SLF001
+                    stable = self._database._integrity_identity == observed_snapshot  # noqa: SLF001
+                with self._verified_cache_lock:
+                    if stable:
+                        if self._verified_cache_snapshot != observed_snapshot:
+                            self._verified_cache.clear()
+                            self._verified_cache_snapshot = observed_snapshot
+                        for evidence in pending_cache:
+                            self._verified_cache[evidence.key] = evidence
+                            self._verified_cache.move_to_end(evidence.key)
+                        while len(self._verified_cache) > _VERIFIED_HISTORY_CACHE_BATCHES:
+                            self._verified_cache.popitem(last=False)
+                    else:
+                        self._verified_cache.clear()
+                        self._verified_cache_snapshot = None
             return success(operation, page)
         except StorageFailure as error:
             return _storage_failure(operation, error)
@@ -912,6 +1120,114 @@ class HistoryStore:
                 "MONITOR_HISTORY_QUERY_INVALID",
                 "history query is invalid",
             )
+
+    def _stream_verified_batches(
+        self,
+        query: HistoryQuery,
+        callback: Callable[[SampleBatch], None],
+    ) -> ProtocolResult[int]:
+        """Stream exact verified batches for the internal JSONL exporter."""
+        operation = "history.stream"
+        try:
+            cursor_batch, cursor_ordinal, _ = self._validate_query(query)
+            if (
+                cursor_batch != 0
+                or cursor_ordinal != -1
+                or query.limit != MAX_HISTORY_VALUES
+                or query.run_id is not None
+                or query.group_id is not None
+                or query.selector_kind is not None
+                or not callable(callback)
+            ):
+                raise ValueError("history stream query is invalid")
+        except ValueError:
+            return failure(
+                operation,
+                "MONITOR_HISTORY_QUERY_INVALID",
+                "history query is invalid",
+            )
+
+        def read(connection: sqlite3.Connection) -> int:
+            parameters = (query.session_id, query.start_ns, query.end_ns)
+            records = connection.execute(
+                """
+                SELECT batch_id,session_id,run_id,sequence,captured_ns,
+                       payload_json,payload_bytes,payload_sha256,value_count
+                FROM history_batches
+                WHERE session_id = ? AND captured_ns >= ? AND captured_ns < ?
+                ORDER BY batch_id
+                """,
+                parameters,
+            )
+            indexed_records = connection.execute(
+                """
+                SELECT v.batch_id,v.ordinal,v.selector_kind,v.selector,
+                       v.value_json,v.value_bytes,v.value_sha256
+                FROM history_values AS v
+                JOIN history_batches AS b ON b.batch_id = v.batch_id
+                WHERE b.session_id = ? AND b.captured_ns >= ? AND b.captured_ns < ?
+                ORDER BY v.batch_id,v.ordinal
+                """,
+                parameters,
+            )
+            value_count = 0
+            while True:
+                record = records.fetchone()
+                if record is None:
+                    break
+                (
+                    batch_id, session_id, run_id, sequence, captured_ns, raw,
+                    payload_bytes, payload_digest, batch_value_count,
+                ) = record
+                if type(batch_id) is not int or batch_id < 1:
+                    raise _history_corrupt()
+                batch = _decode_history_batch(
+                    raw,
+                    payload_bytes,
+                    payload_digest,
+                    batch_value_count,
+                    workspace_id=self._paths.workspace_id,
+                    session_id=session_id,
+                    run_id=run_id,
+                    sequence=sequence,
+                    captured_ns=captured_ns,
+                )
+                for ordinal, value in enumerate(batch.values):
+                    index_row = indexed_records.fetchone()
+                    if index_row is None or len(index_row) != 7:
+                        raise _history_corrupt()
+                    (
+                        indexed_batch_id, stored_ordinal, kind, selector,
+                        value_raw, value_bytes, value_digest,
+                    ) = index_row
+                    expected_kind, expected_selector, expected_raw, expected_digest = (
+                        _encode_history_value(value)
+                    )
+                    if (
+                        indexed_batch_id != batch_id
+                        or stored_ordinal != ordinal
+                        or kind != expected_kind
+                        or selector != expected_selector
+                        or type(value_raw) is not bytes
+                        or type(value_bytes) is not int
+                        or value_bytes != len(value_raw)
+                        or type(value_digest) is not str
+                        or sha256(value_raw).hexdigest() != value_digest
+                        or value_digest != expected_digest
+                        or value_raw != expected_raw
+                    ):
+                        raise _history_corrupt()
+                callback(batch)
+                value_count += len(batch.values)
+            if indexed_records.fetchone() is not None:
+                raise _history_corrupt()
+            return value_count
+
+        try:
+            count = self._database.read(read, empty=0)
+            return success(operation, count)
+        except StorageFailure as error:
+            return _storage_failure(operation, error)
 
     def run_retention(self, *, now_ns: int) -> ProtocolResult[dict[str, object]]:
         operation = "history.retention"
@@ -950,19 +1266,31 @@ class HistoryStore:
                 if type(logical_before) is not int or logical_before < 0:
                     raise _history_corrupt()
                 expired = connection.execute(
-                    "SELECT batch_id FROM history_batches WHERE captured_ns < ? ORDER BY captured_ns, batch_id LIMIT ?",
+                    "SELECT batch_id,value_count FROM history_batches WHERE captured_ns < ? ORDER BY captured_ns, batch_id LIMIT ?",
                     (cutoff, maximum + 1),
                 ).fetchall()
                 candidates = expired
                 if not candidates and logical_before > RETENTION_LOGICAL_BYTES:
                     candidates = connection.execute(
-                        "SELECT batch_id FROM history_batches ORDER BY captured_ns, batch_id LIMIT ?",
+                        "SELECT batch_id,value_count FROM history_batches ORDER BY captured_ns, batch_id LIMIT ?",
                         (maximum + 1,),
                     ).fetchall()
                 require_budget()
-                selected = [row[0] for row in candidates[:maximum]]
-                if any(type(batch_id) is not int or batch_id < 1 for batch_id in selected):
-                    raise _history_corrupt()
+                selected: list[int] = []
+                selected_values = 0
+                for row in candidates[:maximum]:
+                    if (
+                        len(row) != 2
+                        or type(row[0]) is not int
+                        or row[0] < 1
+                        or type(row[1]) is not int
+                        or row[1] < 0
+                    ):
+                        raise _history_corrupt()
+                    if selected and selected_values + row[1] > RETENTION_DELETE_VALUES:
+                        break
+                    selected.append(row[0])
+                    selected_values += row[1]
                 if selected:
                     connection.executemany(
                         "DELETE FROM history_batches WHERE batch_id = ?",

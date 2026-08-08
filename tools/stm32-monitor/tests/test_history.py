@@ -5,6 +5,8 @@ import json
 import os
 import sqlite3
 import struct
+import threading
+import time
 from dataclasses import replace
 from hashlib import sha256
 from pathlib import Path
@@ -600,6 +602,67 @@ def test_v2_query_rejects_payload_and_sqlite_identity_mismatches(
         result = store.query_history(HistoryQuery(session_id, 0, 2_000_000_000))
         assert not result.ok
         assert result.code == "MONITOR_STORAGE_CORRUPT"
+        streamed = store._stream_verified_batches(
+            HistoryQuery(session_id, 0, 2_000_000_000), lambda _batch: None
+        )
+        assert not streamed.ok and streamed.code == "MONITOR_STORAGE_CORRUPT"
+    finally:
+        store.close()
+
+
+def test_private_verified_stream_rejects_non_export_queries_and_propagates_callback(
+    tmp_path: Path,
+) -> None:
+    paths = _paths(tmp_path)
+    store = HistoryStore(paths)
+    base = HistoryQuery("monitor-1", 0, 2_000_000_000)
+    try:
+        invalid = (
+            replace(base, cursor="1:0"),
+            replace(base, limit=1),
+            replace(base, run_id=RUN_ID),
+            replace(base, group_id=GROUP_ID),
+            replace(base, selector_kind="variable", selector="counter"),
+        )
+        for query in invalid:
+            result = store._stream_verified_batches(query, lambda _batch: None)
+            assert not result.ok and result.code == "MONITOR_HISTORY_QUERY_INVALID"
+        not_callable = store._stream_verified_batches(base, None)  # type: ignore[arg-type]
+        assert not not_callable.ok and not_callable.code == "MONITOR_HISTORY_QUERY_INVALID"
+        empty = store._stream_verified_batches(
+            base,
+            lambda _batch: (_ for _ in ()).throw(AssertionError("empty callback")),
+        )
+        assert empty.ok and empty.data == 0
+
+        assert store.append_batch(_batch(paths, 1)).ok
+        with pytest.raises(RuntimeError, match="callback failed"):
+            store._stream_verified_batches(
+                base,
+                lambda _batch: (_ for _ in ()).throw(RuntimeError("callback failed")),
+            )
+    finally:
+        store.close()
+
+
+def test_private_verified_stream_rejects_unclaimed_value_index_row(tmp_path: Path) -> None:
+    paths = _paths(tmp_path)
+    store = HistoryStore(paths)
+    try:
+        assert store.append_batch(_batch(paths, 1)).ok
+        empty_batch = replace(_batch(paths, 1), values=())
+        raw = _compact(empty_batch.to_dict())
+        store._database.write(
+            lambda connection: connection.execute(
+                "UPDATE history_batches SET payload_json = ?, payload_bytes = ?, "
+                "payload_sha256 = ?, value_count = 0 WHERE batch_id = 1",
+                (raw, len(raw), sha256(raw).hexdigest()),
+            )
+        )
+        result = store._stream_verified_batches(
+            HistoryQuery("monitor-1", 0, 2_000_000_000), lambda _batch: None
+        )
+        assert not result.ok and result.code == "MONITOR_STORAGE_CORRUPT"
     finally:
         store.close()
 
@@ -633,7 +696,7 @@ def test_mid_batch_cursor_resumes_256_values_without_gap_and_decodes_batch_once(
         assert [row["valueOrdinal"] for row in flatten_history_page(second.data)] == list(
             range(128, 256)
         )
-        assert calls == 1
+        assert calls == 0
     finally:
         store.close()
 
@@ -656,6 +719,7 @@ def test_ten_thousand_value_query_normalizes_and_serializes_final_page_once(
             ).ok
 
         calls = 0
+        observed = {"sql": 0, "decode": 0, "encode_value": 0, "cursor": 0, "size": 0}
         real_create = HistoryPage.create.__func__
 
         def observed_create(cls, batches, *, next_cursor):
@@ -666,6 +730,36 @@ def test_ten_thousand_value_query_normalizes_and_serializes_final_page_once(
             return real_create(cls, batches, next_cursor=next_cursor)
 
         monkeypatch.setattr(HistoryPage, "create", classmethod(observed_create))
+        real_read = store._database.read
+
+        class CountingConnection:
+            def __init__(self, connection):
+                self._connection = connection
+
+            def __getattr__(self, name):
+                return getattr(self._connection, name)
+
+            def execute(self, *args, **kwargs):
+                observed["sql"] += 1
+                return self._connection.execute(*args, **kwargs)
+
+        def counted_read(operation, *, empty):
+            return real_read(lambda connection: operation(CountingConnection(connection)), empty=empty)
+
+        monkeypatch.setattr(store._database, "read", counted_read)
+        for name, key in (
+            ("_decode_history_batch", "decode"),
+            ("_encode_history_value", "encode_value"),
+            ("_encode_cursor", "cursor"),
+            ("_encoded_history_page_size_from_batch_bytes", "size"),
+        ):
+            original = getattr(__import__("stm32_monitor.history", fromlist=[name]), name)
+
+            def counted(*args, __original=original, __key=key, **kwargs):
+                observed[__key] += 1
+                return __original(*args, **kwargs)
+
+            monkeypatch.setattr(__import__("stm32_monitor.history", fromlist=[name]), name, counted)
         result = store.query_history(
             HistoryQuery("monitor-1", 0, 2_000_000_000, limit=10_000)
         )
@@ -674,6 +768,176 @@ def test_ten_thousand_value_query_normalizes_and_serializes_final_page_once(
         assert result.data.next_cursor is None
         assert result.data.serialized_bytes <= 4 * 1024 * 1024
         assert calls <= 3
+        assert observed == {
+            "sql": 2,
+            "decode": 40,
+            "encode_value": 10_000,
+            "cursor": 0,
+            "size": 1,
+        }
+        observed.update({key: 0 for key in observed})
+        warm = store.query_history(
+            HistoryQuery("monitor-1", 0, 2_000_000_000, limit=10_000)
+        )
+        assert warm.ok and warm.data == result.data
+        assert observed == {
+            "sql": 1,
+            "decode": 0,
+            "encode_value": 0,
+            "cursor": 0,
+            "size": 1,
+        }
+    finally:
+        store.close()
+
+
+def test_verified_history_cache_is_bounded_and_invalidated_by_append_wal_and_reopen(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    import stm32_monitor.history as history_module
+
+    paths = _paths(tmp_path)
+    store = HistoryStore(paths)
+    calls = {"decode": 0, "encode": 0}
+    real_decode = history_module._decode_history_batch
+    real_encode = history_module._encode_history_value
+
+    def observed_decode(*args, **kwargs):
+        calls["decode"] += 1
+        return real_decode(*args, **kwargs)
+
+    def observed_encode(*args, **kwargs):
+        calls["encode"] += 1
+        return real_encode(*args, **kwargs)
+
+    monkeypatch.setattr(history_module, "_decode_history_batch", observed_decode)
+    monkeypatch.setattr(history_module, "_encode_history_value", observed_encode)
+    try:
+        for sequence in range(513):
+            assert store.append_batch(
+                _batch(paths, sequence, captured_ns=1_000 + sequence)
+            ).ok
+        calls.update(decode=0, encode=0)
+        cold = store.query_history(HistoryQuery("monitor-1", 1_000, 2_000, limit=513))
+        assert cold.ok and cold.data.value_count == 513
+        assert calls == {"decode": 513, "encode": 513}
+
+        calls.update(decode=0, encode=0)
+        evicted = store.query_history(HistoryQuery("monitor-1", 1_000, 1_001))
+        assert evicted.ok and calls == {"decode": 1, "encode": 1}
+        calls.update(decode=0, encode=0)
+        retained = store.query_history(HistoryQuery("monitor-1", 1_512, 1_513))
+        assert retained.ok and calls == {"decode": 0, "encode": 0}
+
+        calls.update(decode=0, encode=0)
+        assert store.append_batch(_batch(paths, 513, captured_ns=1_513)).ok
+        calls.update(decode=0, encode=0)
+        appended = store.query_history(HistoryQuery("monitor-1", 1_512, 1_514))
+        assert appended.ok and appended.data.value_count == 2
+        assert calls == {"decode": 2, "encode": 2}
+
+        calls.update(decode=0, encode=0)
+        external = HistoryStore(paths)
+        database = store._database.path
+        keeper = sqlite3.connect(database)
+        try:
+            wal_path = database.with_name(database.name + "-wal")
+            keeper.execute("PRAGMA journal_mode = WAL").fetchone()
+            keeper.execute("BEGIN")
+            keeper.execute("SELECT COUNT(*) FROM history_batches").fetchone()
+            wal_before = wal_path.stat() if wal_path.exists() else None
+            assert external.append_batch(_batch(paths, 514, captured_ns=1_514)).ok
+            calls.update(decode=0, encode=0)
+            wal_after = wal_path.stat()
+            assert wal_before is None or (
+                wal_after.st_ino,
+                wal_after.st_size,
+                wal_after.st_mtime_ns,
+            ) != (wal_before.st_ino, wal_before.st_size, wal_before.st_mtime_ns)
+            external_commit = store.query_history(HistoryQuery("monitor-1", 1_513, 1_515))
+            assert external_commit.ok and external_commit.data.value_count == 2
+            assert calls == {"decode": 2, "encode": 2}
+        finally:
+            keeper.rollback()
+            keeper.close()
+            external.close()
+    finally:
+        store.close()
+
+    calls.update(decode=0, encode=0)
+    reopened = HistoryStore(paths)
+    try:
+        result = reopened.query_history(HistoryQuery("monitor-1", 1_514, 1_515))
+        assert result.ok and result.data.value_count == 1
+        assert calls == {"decode": 1, "encode": 1}
+    finally:
+        reopened.close()
+
+
+@pytest.mark.parametrize("corruption", ["recomputed_payload", "digest", "index"])
+def test_verified_history_cache_never_hides_committed_payload_or_index_corruption(
+    tmp_path: Path,
+    monkeypatch,
+    corruption: str,
+) -> None:
+    import stm32_monitor.history as history_module
+
+    paths = _paths(tmp_path)
+    store = HistoryStore(paths)
+    real_decode = history_module._decode_history_batch
+    real_encode = history_module._encode_history_value
+    calls = {"decode": 0, "encode": 0}
+
+    def observed_decode(*args, **kwargs):
+        calls["decode"] += 1
+        return real_decode(*args, **kwargs)
+
+    def observed_encode(*args, **kwargs):
+        calls["encode"] += 1
+        return real_encode(*args, **kwargs)
+
+    monkeypatch.setattr(history_module, "_decode_history_batch", observed_decode)
+    monkeypatch.setattr(history_module, "_encode_history_value", observed_encode)
+    try:
+        assert store.append_batch(_batch(paths, 1, captured_ns=1_001)).ok
+        assert store.query_history(HistoryQuery("monitor-1", 1_000, 2_000)).ok
+        calls.update(decode=0, encode=0)
+        assert store.query_history(HistoryQuery("monitor-1", 1_000, 2_000)).ok
+        assert calls == {"decode": 0, "encode": 0}
+
+        database = store._database.path
+        with sqlite3.connect(database) as connection:
+            connection.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+        with sqlite3.connect(database) as connection:
+            connection.execute("PRAGMA journal_mode = WAL").fetchone()
+            if corruption == "recomputed_payload":
+                raw = connection.execute(
+                    "SELECT payload_json FROM history_batches WHERE batch_id = 1"
+                ).fetchone()[0]
+                payload = json.loads(raw)
+                payload["sequence"] = 2
+                changed = _compact(payload)
+                assert len(changed) == len(raw)
+                connection.execute(
+                    "UPDATE history_batches SET payload_json = ?, payload_sha256 = ? "
+                    "WHERE batch_id = 1",
+                    (changed, sha256(changed).hexdigest()),
+                )
+            elif corruption == "digest":
+                connection.execute(
+                    "UPDATE history_values SET value_sha256 = ? WHERE batch_id = 1",
+                    ("0" * 64,),
+                )
+            else:
+                connection.execute(
+                    "UPDATE history_values SET selector = 'countez' WHERE batch_id = 1"
+                )
+            connection.commit()
+
+        result = store.query_history(HistoryQuery("monitor-1", 1_000, 2_000))
+        assert not result.ok and result.code == "MONITOR_STORAGE_CORRUPT"
+        assert calls["decode"] > 0
     finally:
         store.close()
 
@@ -952,6 +1216,36 @@ def test_history_cursor_is_bounded_opaque_and_rejects_legacy_malformed_and_tampe
             invalid = store.query_history(replace(query, cursor=invalid_cursor))
             assert not invalid.ok
             assert invalid.code == "MONITOR_HISTORY_QUERY_INVALID"
+    finally:
+        store.close()
+
+
+def test_history_cursor_rejects_noncanonical_equivalent_padding_bits(tmp_path: Path) -> None:
+    import stm32_monitor.history as history_module
+
+    paths = _paths(tmp_path)
+    store = HistoryStore(paths)
+    query = HistoryQuery("monitor-1", 0, 1_000, limit=1)
+    try:
+        assert store.append_batch(_batch(paths, 1, captured_ns=100)).ok
+        assert store.append_batch(_batch(paths, 2, captured_ns=200)).ok
+        filter_digest = history_module._filter_digest(query)
+        for byte in range(256):
+            key = bytes((byte,)) * 32
+            cursor = history_module._encode_cursor(1, 0, filter_digest, key)
+            if cursor.endswith("A"):
+                store._cursor_key = key
+                break
+        else:
+            raise AssertionError("failed to construct canonical A-suffixed cursor")
+        first = store.query_history(query)
+        assert first.ok and first.data.next_cursor == cursor
+        equivalent = cursor[:-1] + "B"
+        assert base64.urlsafe_b64decode(cursor.removeprefix("v1.") + "=") == (
+            base64.urlsafe_b64decode(equivalent.removeprefix("v1.") + "=")
+        )
+        rejected = store.query_history(replace(query, cursor=equivalent))
+        assert not rejected.ok and rejected.code == "MONITOR_HISTORY_QUERY_INVALID"
     finally:
         store.close()
 
@@ -1410,6 +1704,47 @@ def test_retention_query_plan_uses_time_index_without_temporary_sort(tmp_path: P
         assert "history_retention_time" in plan_text
         assert "TEMP B-TREE" not in plan_text
     finally:
+        store.close()
+
+
+def test_retention_chunks_one_hundred_thousand_values_within_live_deadlines(
+    tmp_path: Path,
+) -> None:
+    paths = _paths(tmp_path)
+    store = HistoryStore(paths)
+    stop = threading.Event()
+    ticks: list[int] = []
+
+    def ticker() -> None:
+        while not stop.wait(0.001):
+            ticks.append(time.perf_counter_ns())
+
+    try:
+        remaining = 100_000
+        sequence = 1
+        while remaining:
+            count = min(256, remaining)
+            assert store.append_batch(
+                _wide_batch(paths, sequence, captured_ns=sequence + 100, count=count)
+            ).ok
+            remaining -= count
+            sequence += 1
+        thread = threading.Thread(target=ticker)
+        thread.start()
+        started = time.perf_counter_ns()
+        retained = store.run_retention(now_ns=10**18)
+        elapsed = (time.perf_counter_ns() - started) / 1_000_000_000
+        stop.set()
+        thread.join(timeout=1)
+        gaps = [(right - left) / 1_000_000 for left, right in zip(ticks, ticks[1:])]
+
+        assert retained.ok
+        assert retained.data["deletedBatches"] == 2
+        assert retained.data["moreWork"] is True
+        assert elapsed < 2
+        assert max(gaps, default=0) < 100
+    finally:
+        stop.set()
         store.close()
 
 

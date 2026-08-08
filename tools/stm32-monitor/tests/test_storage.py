@@ -927,6 +927,96 @@ def test_storage_creation_and_inspection_races_fail_closed(tmp_path: Path, monke
         inspected.close()
 
 
+def test_storage_identity_races_and_metadata_errors_fail_closed(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    import stm32_monitor.storage as storage_module
+
+    paths = _paths(tmp_path)
+    main = _seed_database(paths)
+    writer = sqlite3.connect(main)
+    database = MonitorDatabase(paths)
+    real_identity = storage_module._identity
+    real_opened_identity = storage_module._opened_identity
+    real_lstat = os.lstat
+    try:
+        assert writer.execute("PRAGMA journal_mode = WAL").fetchone()[0].lower() == "wal"
+        writer.execute("PRAGMA wal_autocheckpoint = 0")
+        writer.execute("UPDATE watch_groups SET description = 'identity-race'")
+        writer.commit()
+        wal = main.with_name(main.name + "-wal")
+        assert wal.exists()
+
+        with monkeypatch.context() as raced:
+            wal_identity_calls = 0
+
+            def disappearing_wal_identity(path: Path):
+                nonlocal wal_identity_calls
+                if path != wal:
+                    return real_identity(path)
+                wal_identity_calls += 1
+                if wal_identity_calls == 1:
+                    return real_identity(path)
+                raise FileNotFoundError(path)
+
+            raced.setattr(
+                storage_module,
+                "_opened_identity",
+                lambda path: (_ for _ in ()).throw(FileNotFoundError(path))
+                if path == wal
+                else real_opened_identity(path),
+            )
+            identities = database._inspect_storage_files()
+            assert identities[wal] == storage_module._UNCERTAIN_FILE_IDENTITY
+
+        with monkeypatch.context() as raced:
+            raced.setattr(
+                storage_module,
+                "_opened_identity",
+                lambda path: (_ for _ in ()).throw(
+                    StorageFailure("MONITOR_STORAGE_INVALID", "raced")
+                )
+                if path == wal
+                else real_opened_identity(path),
+            )
+            raced.setattr(
+                storage_module,
+                "_identity",
+                disappearing_wal_identity,
+            )
+            identities = database._inspect_storage_files()
+            assert identities[wal] == storage_module._UNCERTAIN_FILE_IDENTITY
+
+        identities = database._inspect_storage_files()
+        with monkeypatch.context() as raced:
+            raced.setattr(
+                os,
+                "lstat",
+                lambda path: (_ for _ in ()).throw(FileNotFoundError(path))
+                if path == main
+                else real_lstat(path),
+            )
+            with pytest.raises(StorageFailure) as vanished:
+                database._integrity_fingerprint(identities)
+            assert vanished.value.code == "MONITOR_STORAGE_INVALID"
+
+        with monkeypatch.context() as raced:
+            raced.setattr(
+                os,
+                "lstat",
+                lambda path: (_ for _ in ()).throw(PermissionError(path))
+                if path == main
+                else real_lstat(path),
+            )
+            with pytest.raises(StorageFailure) as denied:
+                database._integrity_fingerprint(identities)
+            assert denied.value.code == "MONITOR_STORAGE_INVALID"
+    finally:
+        database.close()
+        writer.close()
+
+
 def test_validation_and_open_failures_are_stable_storage_results(tmp_path: Path, monkeypatch) -> None:
     import stm32_monitor.storage as storage_module
 

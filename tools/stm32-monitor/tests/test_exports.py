@@ -221,55 +221,104 @@ def test_jsonl_and_csv_exports_losslessly_flatten_normalized_batch_evidence(
 
 def test_jsonl_export_streams_one_hundred_thousand_values_without_gaps(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    import stm32_monitor.exports as exports_module
+    import stm32_monitor.history as history_module
+
     paths = _paths(tmp_path)
     history = HistoryStore(paths)
     exporter = HistoryExporter(paths, history)
-    page_number = 0
-
-    def query_history(query):
-        nonlocal page_number
-        expected_cursor = None if page_number == 0 else f"{page_number * 40}:15"
-        assert query.cursor == expected_cursor
-        slices = []
-        remaining = 10_000
-        for offset in range(40):
-            count = min(256, remaining)
-            batch_number = page_number * 40 + offset + 1
-            first_value = page_number * 10_000 + (10_000 - remaining)
-            batch = SampleBatch(
-                binding=_binding(paths),
-                group_id=GROUP_ID,
-                group_revision=1,
-                run_id=RUN_ID,
-                sequence=batch_number,
-                scheduled_unix_ns=batch_number,
-                captured_unix_ns=batch_number,
-                latency_ns=0,
-                actual_rate_hz=1.0,
-                subscriber_drops=0,
-                history_drops=0,
-                deadline_drops=0,
+    batches: list[SampleBatch] = []
+    remaining = 100_000
+    sequence = 1
+    while remaining:
+        count = min(256, remaining)
+        start = (sequence - 1) * 256
+        batches.append(
+            SampleBatch(
+                binding=_binding(paths), group_id=GROUP_ID, group_revision=1,
+                run_id=RUN_ID, sequence=sequence, scheduled_unix_ns=sequence,
+                captured_unix_ns=sequence, latency_ns=0, actual_rate_hz=1.0,
+                subscriber_drops=0, history_drops=0, deadline_drops=0,
                 values=tuple(
                     SampleValue(
-                        WatchItem.variable(f"v{ordinal}"),
-                        "OK",
+                        WatchItem.variable(f"v{ordinal}"), "OK",
                         typed_value={"type": "uint32", "value": ordinal},
                     )
-                    for ordinal in range(first_value, first_value + count)
+                    for ordinal in range(start, start + count)
                 ),
             )
-            slices.append(_batch_slice(batch))
-            remaining -= count
-        page_number += 1
-        next_cursor = None if page_number == 10 else f"{page_number * 40}:15"
-        return SimpleNamespace(
-            ok=True,
-            data=HistoryPage.create(tuple(slices), next_cursor=next_cursor),
         )
+        remaining -= count
+        sequence += 1
+
+    def seed(connection: sqlite3.Connection) -> None:
+        connection.execute("BEGIN IMMEDIATE")
+        for batch in batches:
+            raw = json.dumps(
+                batch.to_dict(), ensure_ascii=False, sort_keys=True,
+                separators=(",", ":"), allow_nan=False,
+            ).encode("utf-8")
+            cursor = connection.execute(
+                "INSERT INTO history_batches(session_id,run_id,sequence,captured_ns,payload_json,"
+                "payload_bytes,payload_sha256,value_count) VALUES (?,?,?,?,?,?,?,?)",
+                ("monitor-1", str(batch.run_id), batch.sequence, batch.captured_unix_ns,
+                 raw, len(raw), hashlib.sha256(raw).hexdigest(), len(batch.values)),
+            )
+            rows = []
+            for ordinal, value in enumerate(batch.values):
+                kind, selector, value_raw, digest = history_module._encode_history_value(value)
+                rows.append((cursor.lastrowid, ordinal, kind, selector, value_raw, len(value_raw), digest))
+            connection.executemany(
+                "INSERT INTO history_values(batch_id,ordinal,selector_kind,selector,value_json,"
+                "value_bytes,value_sha256) VALUES (?,?,?,?,?,?,?)",
+                rows,
+            )
+        connection.commit()
+
+    history._database.write(seed)
+    del batches
+    observed = {"sql": 0, "decode": 0, "value": 0, "query": 0}
+    real_read = history._database.read
+
+    class CountingConnection:
+        def __init__(self, connection):
+            self._connection = connection
+
+        def __getattr__(self, name):
+            return getattr(self._connection, name)
+
+        def execute(self, *args, **kwargs):
+            observed["sql"] += 1
+            return self._connection.execute(*args, **kwargs)
+
+    def counted_read(operation, *, empty):
+        return real_read(lambda connection: operation(CountingConnection(connection)), empty=empty)
+
+    monkeypatch.setattr(history._database, "read", counted_read)
+    for name, key in (("_decode_history_batch", "decode"), ("_encode_history_value", "value")):
+        original = getattr(history_module, name)
+
+        def counted(*args, __original=original, __key=key, **kwargs):
+            observed[__key] += 1
+            return __original(*args, **kwargs)
+
+        monkeypatch.setattr(history_module, name, counted)
+
+    def forbidden_query(_query):
+        observed["query"] += 1
+        raise AssertionError("JSONL export must use one private verified stream")
 
     try:
-        history.query_history = query_history  # type: ignore[method-assign]
+        monkeypatch.setattr(history, "query_history", forbidden_query)
+        monkeypatch.setattr(
+            exports_module,
+            "_plain",
+            lambda _value: (_ for _ in ()).throw(
+                AssertionError("normalized JSONL export must not flatten values")
+            ),
+        )
         result = exporter.create_export(
             ExportRequest("monitor-1", 0, 1_000_000, "jsonl"), authorized=True
         )
@@ -285,13 +334,13 @@ def test_jsonl_export_streams_one_hundred_thousand_values_without_gaps(
                 records += 1
                 for offset, value in enumerate(values):
                     assert value["typedValue"]["value"] == seen
-                    assert start_ordinal + offset == seen % 10_000 % 256
+                    assert start_ordinal + offset == seen % 256
                     seen += 1
         assert seen == 100_000
-        assert records == 400
+        assert records == 391
         assert artifact.value_count == 100_000
         assert artifact.byte_count <= 64 * 1024 * 1024
-        assert page_number == 10
+        assert observed == {"sql": 2, "decode": 391, "value": 100_000, "query": 0}
     finally:
         exporter.close()
         history.close()
@@ -584,8 +633,8 @@ def test_download_validates_chunks_csv_metadata_and_digest_cleanup(
         history.close()
 
 
-@pytest.mark.parametrize("corruption", ["gap", "reopened"])
-def test_normalized_jsonl_grouping_rejects_noncontiguous_batch_evidence(
+@pytest.mark.parametrize("corruption", ["gap", "selector"])
+def test_verified_jsonl_stream_rejects_value_index_corruption_and_cleans_pending(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     corruption: str,
@@ -594,62 +643,45 @@ def test_normalized_jsonl_grouping_rejects_noncontiguous_batch_evidence(
     history = HistoryStore(paths)
     exporter = HistoryExporter(paths, history)
 
-    def batch(sequence: int) -> SampleBatch:
-        return SampleBatch(
-            binding=_binding(paths),
-            group_id=GROUP_ID,
-            group_revision=1,
-            run_id=RUN_ID,
-            sequence=sequence,
-            scheduled_unix_ns=sequence,
-            captured_unix_ns=sequence,
-            latency_ns=0,
-            actual_rate_hz=1.0,
-            subscriber_drops=0,
-            history_drops=0,
-            deadline_drops=0,
+    try:
+        source = SampleBatch(
+            binding=_binding(paths), group_id=GROUP_ID, group_revision=1,
+            run_id=RUN_ID, sequence=1, scheduled_unix_ns=1, captured_unix_ns=1,
+            latency_ns=0, actual_rate_hz=1.0, subscriber_drops=0,
+            history_drops=0, deadline_drops=0,
             values=tuple(
                 SampleValue(
-                    WatchItem.variable(f"v{ordinal}"),
-                    "OK",
+                    WatchItem.variable(f"v{ordinal}"), "OK",
                     typed_value={"type": "uint32", "value": ordinal},
                 )
                 for ordinal in range(3)
             ),
         )
+        assert history.append_batch(source).ok
 
-    first = batch(1)
-    second = batch(2)
+        def corrupt(connection: sqlite3.Connection) -> None:
+            if corruption == "gap":
+                connection.execute(
+                    "UPDATE history_values SET ordinal = 3 WHERE batch_id = 1 AND ordinal = 2"
+                )
+            else:
+                connection.execute(
+                    "UPDATE history_values SET selector = 'forged' "
+                    "WHERE batch_id = 1 AND ordinal = 1"
+                )
 
-    def sliced(source: SampleBatch, ordinal: int) -> HistoryBatchSlice:
-        return replace(
-            _batch_slice(source),
-            start_ordinal=ordinal,
-            values=(source.values[ordinal],),
-        )
-
-    if corruption == "gap":
-        pages = [
-            HistoryPage.create((sliced(first, 0),), next_cursor="1:0"),
-            HistoryPage.create((sliced(first, 2),), next_cursor=None),
-        ]
-    else:
-        pages = [
-            HistoryPage.create((sliced(first, 0),), next_cursor="1:0"),
-            HistoryPage.create((sliced(second, 0),), next_cursor="2:0"),
-            HistoryPage.create((sliced(first, 1),), next_cursor=None),
-        ]
-
-    try:
-        monkeypatch.setattr(
-            history,
-            "query_history",
-            lambda _query: SimpleNamespace(ok=True, data=pages.pop(0)),
-        )
+        history._database.write(corrupt)
         result = exporter.create_export(
             ExportRequest("monitor-1", 0, 1_000, "jsonl"), authorized=True
         )
         assert not result.ok and result.code == "MONITOR_STORAGE_CORRUPT"
+        pending = exporter._database.read(
+            lambda connection: connection.execute(
+                "SELECT COUNT(*) FROM export_records"
+            ).fetchone()[0],
+            empty=0,
+        )
+        assert pending == 0
     finally:
         exporter.close()
         history.close()
@@ -1043,9 +1075,10 @@ def test_export_propagates_history_failure_and_rejects_stalled_cursor(tmp_path: 
         source_page = history.query_history(HistoryQuery("monitor-1", 0, 1_000)).data
         stalled_page = HistoryPage.create(source_page.batches, next_cursor="1:0")
         monkeypatch.setattr(
-            history,
-            "query_history",
-            lambda query: failure("history.query", "MONITOR_STORAGE_CORRUPT", "monitor history is corrupt"),
+            history, "_stream_verified_batches",
+            lambda query, callback: failure(
+                "history.stream", "MONITOR_STORAGE_CORRUPT", "monitor history is corrupt"
+            ),
         )
         corrupt = exporter.create_export(ExportRequest("monitor-1", 0, 1_000, "jsonl"), authorized=True)
         assert corrupt.code == "MONITOR_STORAGE_CORRUPT"
@@ -1055,7 +1088,7 @@ def test_export_propagates_history_failure_and_rejects_stalled_cursor(tmp_path: 
             "query_history",
             lambda query: SimpleNamespace(ok=True, data=stalled_page),
         )
-        stalled = exporter.create_export(ExportRequest("monitor-1", 0, 1_000, "jsonl"), authorized=True)
+        stalled = exporter.create_export(ExportRequest("monitor-1", 0, 1_000, "csv"), authorized=True)
         assert stalled.code == "MONITOR_STORAGE_CORRUPT"
     finally:
         exporter.close()

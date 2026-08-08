@@ -510,6 +510,17 @@ class MonitorService:
                         status=409,
                     )
                 download = value.data
+            elif isinstance(value, ProtocolResult):
+                data, code, message, details = _public_result(operation, value)
+                if code == "OK" or data is not None:
+                    raise TypeError("runtime returned an unsupported download")
+                return _response(
+                    operation,
+                    code=code,
+                    message=message,
+                    details=details,
+                    status=409,
+                )
             else:
                 raise TypeError("runtime returned an unsupported download")
             response = web.StreamResponse(
