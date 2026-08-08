@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
+import subprocess
 from dataclasses import fields, replace
 from pathlib import Path
 
@@ -21,6 +23,31 @@ from stm32_toolkit.probe.protocol import PROBE_PROTOCOL_VERSION
 from stm32_toolkit.probe.service import ProbeEndpoint
 from stm32_toolkit.result import OperationResult
 from test_debug_read import Client, DebugEnv, debug_env
+
+
+def _directory_redirect(link: Path, target: Path) -> None:
+    if os.name != "nt":
+        os.symlink(target, link, target_is_directory=True)
+        return
+    completed = subprocess.run(
+        ["cmd.exe", "/d", "/c", "mklink", "/J", str(link), str(target)],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if completed.returncode != 0:
+        pytest.skip("directory redirection is unavailable on this host")
+
+
+def _project_snapshot(root: Path) -> dict[str, tuple[str, bytes | None, int]]:
+    return {
+        path.relative_to(root).as_posix(): (
+            "file" if path.is_file() else "directory",
+            path.read_bytes() if path.is_file() else None,
+            path.stat().st_mtime_ns,
+        )
+        for path in root.rglob("*")
+    }
 
 
 class StableError(Exception):
@@ -229,6 +256,37 @@ def test_invalid_roots_and_identity_fail_before_runtime_creation(
         result = asyncio.run(open_monitor_observation(invalid, _seams=harness.seams()))
         assert result.code == "MONITOR_REQUEST_INVALID"
     assert harness.supervisors == []
+
+
+def test_external_root_parent_change_never_writes_into_project(
+    debug_env: DebugEnv, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import stm32_toolkit.monitor_observation as observation
+
+    harness = Harness(debug_env)
+    external_parent = tmp_path / "external-parent"
+    external_parent.mkdir()
+    data_root = external_parent / "data"
+    before = _project_snapshot(debug_env.root)
+    original = observation._safe_mkdir_chain
+
+    def changed_parent(root: Path, destination: Path) -> None:
+        external_parent.rmdir()
+        _directory_redirect(external_parent, debug_env.root)
+        original(root, destination)
+
+    monkeypatch.setattr(observation, "_safe_mkdir_chain", changed_parent)
+    result = asyncio.run(
+        open_monitor_observation(
+            request(debug_env, data_root),
+            _seams=harness.seams(),
+        )
+    )
+
+    assert result.ok is False
+    assert result.code == "MONITOR_REQUEST_INVALID"
+    assert harness.supervisors == []
+    assert _project_snapshot(debug_env.root) == before
 
 
 def test_revalidate_rejects_firmware_epoch_change(
