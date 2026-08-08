@@ -9,7 +9,8 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-$RuntimeVersion = "0.3.0"
+$RuntimeVersion = "0.4.0"
+$LegacyRuntimeVersion = "0.3.0"
 $ProcessOutputLimit = 65536
 
 function Resolve-ClaudePath {
@@ -205,10 +206,18 @@ try {
     $runtimeParent = Join-Path $resolvedPluginData "runtime"
     $runtime = Join-Path $runtimeParent $RuntimeVersion
     $runtimePython = Join-Path $runtime "Scripts/python.exe"
+    $legacyRuntime = Join-Path $runtimeParent $LegacyRuntimeVersion
+    $legacyRuntimePython = Join-Path $legacyRuntime "Scripts/python.exe"
     $bootstrapPython = Find-BootstrapPython
 
     if ($Mode -eq "Check") {
-        $runtimeEvidence = Get-RuntimeEvidence $runtime $runtimePython $resolvedProjectDir
+        if (Test-Path -LiteralPath $runtime) {
+            $runtimeEvidence = Get-RuntimeEvidence $runtime $runtimePython $resolvedProjectDir
+        } elseif (Test-Path -LiteralPath $legacyRuntime) {
+            $runtimeEvidence = Get-RuntimeEvidence $legacyRuntime $legacyRuntimePython $resolvedProjectDir
+        } else {
+            $runtimeEvidence = Get-RuntimeEvidence $runtime $runtimePython $resolvedProjectDir
+        }
         $result = [ordered]@{
             mode = "CHECK"
             runtime = $runtimeEvidence
@@ -224,8 +233,10 @@ try {
     }
 
     if (-not $bootstrapPython.supported) { throw "Host Python 3.10+ is required to create the managed runtime" }
-    if ($Mode -eq "Bootstrap" -and (Test-Path -LiteralPath $runtime)) { throw "managed runtime path already exists; run Check and authorize Repair if it is broken" }
-    if ($Mode -eq "Repair" -and -not (Test-Path -LiteralPath $runtime)) { throw "managed runtime is missing; authorize Bootstrap instead" }
+    $currentExists = Test-Path -LiteralPath $runtime
+    $legacyExists = Test-Path -LiteralPath $legacyRuntime
+    if ($Mode -eq "Bootstrap" -and ($currentExists -or $legacyExists)) { throw "managed runtime path already exists; run Check and authorize Repair if it is broken" }
+    if ($Mode -eq "Repair" -and -not ($currentExists -or $legacyExists)) { throw "managed runtime is missing; authorize Bootstrap instead" }
     Assert-NoRedirectAncestors "runtime parent" $runtimeParent
     Assert-NotRedirect "managed runtime" $runtime
 
@@ -252,18 +263,21 @@ try {
     if ($doctorPayload.ok -ne $true) { throw "toolkit doctor reported failure" }
 
     $quarantined = $null
+    $quarantineSource = $null
     if ($Mode -eq "Repair") {
         $quarantineRoot = Join-Path $runtimeParent ".quarantine"
         [void][IO.Directory]::CreateDirectory($quarantineRoot)
         Assert-NoRedirectAncestors "quarantine root" $quarantineRoot
-        $quarantined = Join-Path $quarantineRoot ("$RuntimeVersion-" + [DateTime]::UtcNow.ToString("yyyyMMddTHHmmssfffZ") + "-" + [Guid]::NewGuid().ToString("N"))
-        Move-Item -LiteralPath $runtime -Destination $quarantined
+        $quarantineSource = if ($currentExists) { $runtime } else { $legacyRuntime }
+        $quarantineVersion = if ($currentExists) { $RuntimeVersion } else { $LegacyRuntimeVersion }
+        $quarantined = Join-Path $quarantineRoot ("$quarantineVersion-" + [DateTime]::UtcNow.ToString("yyyyMMddTHHmmssfffZ") + "-" + [Guid]::NewGuid().ToString("N"))
+        Move-Item -LiteralPath $quarantineSource -Destination $quarantined
     }
     try {
         Move-Item -LiteralPath $staging -Destination $runtime
         $staging = $null
     } catch {
-        if ($quarantined -and -not (Test-Path -LiteralPath $runtime) -and (Test-Path -LiteralPath $quarantined)) { Move-Item -LiteralPath $quarantined -Destination $runtime }
+        if ($quarantined -and $quarantineSource -and -not (Test-Path -LiteralPath $quarantineSource) -and (Test-Path -LiteralPath $quarantined)) { Move-Item -LiteralPath $quarantined -Destination $quarantineSource }
         throw
     }
     if ((Test-Path -LiteralPath $stagingRoot) -and -not (Get-ChildItem -LiteralPath $stagingRoot -Force | Select-Object -First 1)) { Remove-Item -LiteralPath $stagingRoot -Force }

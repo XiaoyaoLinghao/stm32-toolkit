@@ -24,7 +24,7 @@ def test_check_reports_broken_runtime_as_structured_evidence(tmp_path: Path):
     project = tmp_path / "project"
     project.mkdir()
     plugin_data = tmp_path / "plugin-data"
-    runtime_python = plugin_data / "runtime" / "0.3.0" / "Scripts" / "python.exe"
+    runtime_python = plugin_data / "runtime" / "0.4.0" / "Scripts" / "python.exe"
     runtime_python.parent.mkdir(parents=True)
     runtime_python.write_bytes(b"not an executable")
 
@@ -44,7 +44,7 @@ def test_partial_runtime_directory_is_broken_and_recommends_repair(tmp_path: Pat
     project = tmp_path / "project"
     project.mkdir()
     plugin_data = tmp_path / "plugin-data"
-    (plugin_data / "runtime" / "0.3.0").mkdir(parents=True)
+    (plugin_data / "runtime" / "0.4.0").mkdir(parents=True)
 
     result = _run_helper("Check", REPO_ROOT, plugin_data, project)
 
@@ -59,7 +59,7 @@ def test_runtime_version_path_file_is_broken_and_recommends_repair(tmp_path: Pat
     project = tmp_path / "project"
     project.mkdir()
     plugin_data = tmp_path / "plugin-data"
-    runtime_path = plugin_data / "runtime" / "0.3.0"
+    runtime_path = plugin_data / "runtime" / "0.4.0"
     runtime_path.parent.mkdir(parents=True)
     runtime_path.write_text("partial", encoding="utf-8")
 
@@ -72,6 +72,55 @@ def test_runtime_version_path_file_is_broken_and_recommends_repair(tmp_path: Pat
     assert payload["runtime"]["directoryPresent"] is False
     assert payload["recommendedMode"] == "Repair"
 
+
+def test_existing_0_3_runtime_requires_repair_and_is_quarantined_before_0_4_promotion(
+    tmp_path: Path,
+):
+    project = tmp_path / "project"
+    project.mkdir()
+    plugin_root = tmp_path / "plugin"
+    package = plugin_root / "tools" / "stm32-toolkit"
+    package.mkdir(parents=True)
+    wheelhouse = tmp_path / "wheelhouse"
+    wheelhouse.mkdir()
+    _write_test_build_backend(wheelhouse)
+    (package / "pyproject.toml").write_text(
+        "[build-system]\nrequires = ['test-build-backend==1.0']\n"
+        "build-backend = 'test_backend'\n",
+        encoding="utf-8",
+    )
+    plugin_data = tmp_path / "plugin-data"
+    legacy = plugin_data / "runtime" / "0.3.0"
+    legacy.mkdir(parents=True)
+    marker = legacy / "legacy-marker.txt"
+    marker.write_text("preserve", encoding="utf-8")
+    environment = _clean_environment()
+    environment["PIP_NO_INDEX"] = "1"
+    environment["PIP_FIND_LINKS"] = str(wheelhouse)
+
+    checked = _run_helper("Check", plugin_root, plugin_data, project, environment=environment)
+
+    assert checked.returncode == 0, checked.stderr
+    payload = json.loads(checked.stdout)
+    assert payload["runtime"]["status"] == "broken"
+    assert payload["runtime"]["path"].endswith("/runtime/0.3.0")
+    assert payload["recommendedMode"] == "Repair"
+    assert not (plugin_data / "runtime" / "0.4.0").exists()
+
+    repaired = _run_helper(
+        "Repair", plugin_root, plugin_data, project,
+        environment=environment, timeout=180,
+    )
+
+    assert repaired.returncode == 0, repaired.stderr
+    repaired_payload = json.loads(repaired.stdout)
+    assert repaired_payload["runtime"]["status"] == "healthy"
+    assert repaired_payload["runtime"]["version"] == "0.4.0"
+    assert not legacy.exists()
+    quarantines = list((plugin_data / "runtime" / ".quarantine").glob("0.3.0-*"))
+    assert len(quarantines) == 1
+    assert (quarantines[0] / marker.name).read_text(encoding="utf-8") == "preserve"
+
 def test_failed_bootstrap_removes_staging_and_never_promotes(tmp_path: Path):
     project = tmp_path / "project"
     project.mkdir()
@@ -82,7 +131,7 @@ def test_failed_bootstrap_removes_staging_and_never_promotes(tmp_path: Path):
     result = _run_helper("Bootstrap", plugin_root, plugin_data, project, timeout=90)
 
     assert result.returncode != 0
-    assert not (plugin_data / "runtime" / "0.3.0").exists()
+    assert not (plugin_data / "runtime" / "0.4.0").exists()
     staging = plugin_data / "runtime" / ".staging"
     assert not staging.exists() or not any(staging.iterdir())
     assert not any(project.iterdir())
@@ -112,7 +161,7 @@ def test_bootstrap_and_repair_are_staged_versioned_and_project_read_only(tmp_pat
         "Bootstrap", plugin_root, plugin_data, project, environment=environment, timeout=180
     )
     assert bootstrap.returncode == 0, bootstrap.stderr
-    runtime = plugin_data / "runtime" / "0.3.0"
+    runtime = plugin_data / "runtime" / "0.4.0"
     assert (runtime / "Scripts" / "python.exe").is_file()
     assert project_marker.read_text(encoding="utf-8") == "unchanged"
     assert not (plugin_data / "runtime" / ".staging").exists() or not any(
@@ -129,7 +178,7 @@ def test_bootstrap_and_repair_are_staged_versioned_and_project_read_only(tmp_pat
     healthy = _run_helper("Check", plugin_root, plugin_data, project, environment=environment)
     assert json.loads(healthy.stdout)["runtime"]["status"] == "healthy"
     quarantine = plugin_data / "runtime" / ".quarantine"
-    assert any(path.name.startswith("0.3.0-") for path in quarantine.iterdir())
+    assert any(path.name.startswith("0.4.0-") for path in quarantine.iterdir())
     assert project_marker.read_text(encoding="utf-8") == "unchanged"
 
 
@@ -161,7 +210,7 @@ def test_bounded_process_drains_both_streams_without_unbounded_retention(tmp_pat
     project = tmp_path / "project"
     project.mkdir()
     plugin_data = tmp_path / "plugin-data"
-    runtime = plugin_data / "runtime" / "0.3.0"
+    runtime = plugin_data / "runtime" / "0.4.0"
     venv.EnvBuilder(with_pip=False).create(runtime)
     package = runtime / "Lib" / "site-packages" / "stm32_toolkit"
     package.mkdir(parents=True)
@@ -211,7 +260,7 @@ def test_bootstrap_installs_declared_build_requirements_in_fresh_venv(tmp_path: 
     assert result.returncode == 0, result.stderr
     payload = json.loads(result.stdout)
     assert payload["runtime"]["status"] == "healthy"
-    assert payload["runtime"]["version"] == "0.3.0"
+    assert payload["runtime"]["version"] == "0.4.0"
 
 
 def test_bootstrap_ignores_hostile_python_path_and_home(tmp_path: Path):
@@ -249,7 +298,7 @@ def test_bootstrap_ignores_hostile_python_path_and_home(tmp_path: Path):
     assert result.returncode == 0, result.stderr
     payload = json.loads(result.stdout)
     assert payload["runtime"]["status"] == "healthy"
-    assert payload["runtime"]["version"] == "0.3.0"
+    assert payload["runtime"]["version"] == "0.4.0"
 
 def test_healthy_check_preserves_drive_root_argument_and_following_doctor_args(tmp_path: Path):
     bootstrap_project = tmp_path / "project"
@@ -337,21 +386,21 @@ import venv
 
 
 def prepare_metadata_for_build_wheel(metadata_directory, config_settings=None):
-    dist = Path(metadata_directory) / 'stm32_toolkit-0.3.0.dist-info'
+    dist = Path(metadata_directory) / 'stm32_toolkit-0.4.0.dist-info'
     dist.mkdir()
-    (dist / 'METADATA').write_text('Metadata-Version: 2.1\\nName: stm32-toolkit\\nVersion: 0.3.0\\n')
+    (dist / 'METADATA').write_text('Metadata-Version: 2.1\\nName: stm32-toolkit\\nVersion: 0.4.0\\n')
     (dist / 'WHEEL').write_text('Wheel-Version: 1.0\\nGenerator: test-backend\\nRoot-Is-Purelib: true\\nTag: py3-none-any\\n')
     return dist.name
 
 
 def build_wheel(wheel_directory, config_settings=None, metadata_directory=None):
-    name = 'stm32_toolkit-0.3.0-py3-none-any.whl'
+    name = 'stm32_toolkit-0.4.0-py3-none-any.whl'
     files = {
-        'stm32_toolkit/__init__.py': "__version__ = '0.3.0'\\n",
-        'stm32_toolkit/cli.py': "import json,sys\\nif sys.argv[1:]==['version']: print('0.3.0')\\nelif 'doctor' in sys.argv:\\n i=sys.argv.index('--project-root'); print(json.dumps({'protocol':'stm32-toolkit/1','ok':True,'data':{'projectRoot':sys.argv[i+1],'argv':sys.argv[1:]}}))\\nelse: raise SystemExit(2)\\n",
-        'stm32_toolkit-0.3.0.dist-info/METADATA': 'Metadata-Version: 2.1\\nName: stm32-toolkit\\nVersion: 0.3.0\\n',
-        'stm32_toolkit-0.3.0.dist-info/WHEEL': 'Wheel-Version: 1.0\\nGenerator: test-backend\\nRoot-Is-Purelib: true\\nTag: py3-none-any\\n',
-        'stm32_toolkit-0.3.0.dist-info/RECORD': '',
+        'stm32_toolkit/__init__.py': "__version__ = '0.4.0'\\n",
+        'stm32_toolkit/cli.py': "import json,sys\\nif sys.argv[1:]==['version']: print('0.4.0')\\nelif 'doctor' in sys.argv:\\n i=sys.argv.index('--project-root'); print(json.dumps({'protocol':'stm32-toolkit/1','ok':True,'data':{'projectRoot':sys.argv[i+1],'argv':sys.argv[1:]}}))\\nelse: raise SystemExit(2)\\n",
+        'stm32_toolkit-0.4.0.dist-info/METADATA': 'Metadata-Version: 2.1\\nName: stm32-toolkit\\nVersion: 0.4.0\\n',
+        'stm32_toolkit-0.4.0.dist-info/WHEEL': 'Wheel-Version: 1.0\\nGenerator: test-backend\\nRoot-Is-Purelib: true\\nTag: py3-none-any\\n',
+        'stm32_toolkit-0.4.0.dist-info/RECORD': '',
     }
     with zipfile.ZipFile(Path(wheel_directory) / name, 'w') as archive:
         for path, content in files.items(): archive.writestr(path, content)

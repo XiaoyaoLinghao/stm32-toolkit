@@ -23,7 +23,7 @@ from stm32_toolkit.probe.protocol import (
 )
 
 
-TOOLKIT_VERSION = "0.3.0"
+TOOLKIT_VERSION = "0.4.0"
 REQUEST_ID = "request-123"
 WORKSPACE_ID = "workspace-123"
 SESSION_ID = "session-123"
@@ -114,7 +114,7 @@ def test_decode_request_returns_an_immutable_typed_snapshot():
     ("field", "value", "code"),
     [
         ("protocol", "stm32-toolkit-probe/2", "PROBE_PROTOCOL_INCOMPATIBLE"),
-        ("toolkitVersion", "0.4.0", "PROBE_TOOLKIT_INCOMPATIBLE"),
+        ("toolkitVersion", "0.3.0", "PROBE_TOOLKIT_INCOMPATIBLE"),
         ("operationLevel", "admin", "PROBE_REQUEST_INVALID"),
         ("operation", "memory.write", "PROBE_REQUEST_INVALID"),
         ("timeoutMs", 0, "PROBE_REQUEST_INVALID"),
@@ -320,7 +320,7 @@ def test_response_encoding_is_deterministic_and_snapshots_payload():
         b'{"code":"OK","data":{"values":[{"address":536870912,"value":"0102"}]},'
         b'"details":{},"message":"","ok":true,"operation":"memory.read",'
         b'"protocol":"stm32-toolkit-probe/1","requestId":"request-123",'
-        b'"toolkitVersion":"0.3.0"}'
+        b'"toolkitVersion":"0.4.0"}'
     )
 
 

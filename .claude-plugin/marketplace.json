@@ -9,7 +9,7 @@
     {
       "name": "stm32-toolkit",
       "source": "./",
-      "description": "Foundation for AI-assisted STM32 development with read-only project detection and environment diagnosis",
+      "description": "STM32 project migration, reproducible builds, probe flashing, and typed debug workflows",
       "homepage": "https://github.com/XiaoyaoLinghao/stm32-toolkit",
       "repository": "https://github.com/XiaoyaoLinghao/stm32-toolkit"
     }

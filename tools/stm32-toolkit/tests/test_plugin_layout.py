@@ -36,15 +36,15 @@ def test_plugin_manifest_uses_standard_skill_discovery_and_version():
     assert plugin == {
         "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
         "name": "stm32-toolkit",
-        "version": "0.3.0",
+        "version": "0.4.0",
         "description": (
             "AI-assisted STM32 development with read-only Keil inspection, "
             "guarded ARMCC-to-GCC conversion, managed GCC/CMake configuration, "
-            "and reproducible builds"
+            "reproducible builds, probe flashing, and typed debugging"
         ),
         "author": {"name": "STM32 Toolkit Team"},
     }
-    assert plugin["version"] == __version__ == "0.3.0"
+    assert plugin["version"] == __version__ == "0.4.0"
 
 
 def test_marketplace_manifest_uses_a_supported_plugin_source():
@@ -135,14 +135,14 @@ def test_launcher_reports_missing_versioned_runtime_without_interpreter_fallback
     assert result.returncode != 0
     assert result.stdout == ""
     assert "/stm32-toolkit:setup-stm32-env" in result.stderr
-    assert "runtime/0.3.0/Scripts/python.exe" in result.stderr.replace("\\", "/")
+    assert "runtime/0.4.0/Scripts/python.exe" in result.stderr.replace("\\", "/")
     assert not marker.exists()
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows cmd.exe launcher")
 def test_launcher_forwards_arguments_and_preserves_runtime_exit_code(tmp_path: Path):
     plugin_data = tmp_path / "plugin data"
-    runtime = plugin_data / "runtime" / "0.3.0"
+    runtime = plugin_data / "runtime" / "0.4.0"
     venv.EnvBuilder(with_pip=False).create(runtime)
     module_root = tmp_path / "stub module"
     package = module_root / "stm32_toolkit"
@@ -197,7 +197,7 @@ def test_setup_skill_has_an_explicit_read_only_check_and_authorized_mutation_con
         "read-only",
         "offline",
         "explicit authorization",
-        "${CLAUDE_PLUGIN_DATA}/runtime/0.3.0",
+        "${CLAUDE_PLUGIN_DATA}/runtime/0.4.0",
         "${CLAUDE_PLUGIN_ROOT}/tools/stm32-toolkit",
         "Host Python 3.10+",
         "ARM GCC",
@@ -229,7 +229,7 @@ def test_setup_skill_has_an_explicit_read_only_check_and_authorized_mutation_con
     assert "pip install pyocd" not in normalized
 
 
-def test_only_foundation_skill_is_discovered_and_follow_on_sources_are_preserved():
+def test_exactly_seven_release_skills_are_discovered_and_follow_on_sources_are_preserved():
     discovered = {
         path.parent.name
         for path in (REPO_ROOT / "skills").glob("*/SKILL.md")
@@ -244,8 +244,51 @@ def test_only_foundation_skill_is_discovered_and_follow_on_sources_are_preserved
         "migrate-keil",
         "configure-stm32-project",
         "build-firmware",
+        "flash-firmware",
+        "debug-firmware",
+        "read-var",
     }
     assert preserved == LEGACY_SKILLS
+
+
+def test_hardware_skills_are_thin_project_bound_mcp_workflows():
+    expected_tools = {
+        "flash-firmware": {"stm32_project_context", "stm32_probe_list", "stm32_flash"},
+        "debug-firmware": {
+            "stm32_project_context",
+            "stm32_probe_list",
+            "stm32_debug_handoff_begin",
+            "stm32_debug_handoff_end",
+            "stm32_register_read",
+            "stm32_fault_analyze",
+        },
+        "read-var": {
+            "stm32_project_context",
+            "stm32_probe_list",
+            "stm32_variable_read",
+            "stm32_variable_sample",
+        },
+    }
+    forbidden = ("raw address", "target override", "SVD override", "physical gate passed")
+
+    for skill_name, tools in expected_tools.items():
+        skill = (REPO_ROOT / "skills" / skill_name / "SKILL.md").read_text(encoding="utf-8")
+        assert skill.startswith(f"---\nname: {skill_name}\n")
+        for tool in tools:
+            assert tool in skill
+        assert "exact probe" in skill.lower()
+        assert "buildId" in skill
+        assert "ELF SHA-256" in skill
+        assert "never fabricate" in skill.lower()
+        for phrase in forbidden:
+            assert phrase.lower() not in skill.lower()
+
+    assert "explicit authorization" in (
+        REPO_ROOT / "skills" / "flash-firmware" / "SKILL.md"
+    ).read_text(encoding="utf-8")
+    assert "explicit authorization" in (
+        REPO_ROOT / "skills" / "debug-firmware" / "SKILL.md"
+    ).read_text(encoding="utf-8")
 
 
 @pytest.mark.skipif(os.name != "nt", reason="PowerShell setup helper")
@@ -280,7 +323,7 @@ def test_setup_helper_uses_explicit_paths_without_ambient_environment(tmp_path: 
     assert result.returncode == 0, result.stderr
     payload = json.loads(result.stdout)
     assert payload["mode"] == "CHECK"
-    assert payload["runtime"]["path"].endswith("/runtime/0.3.0")
+    assert payload["runtime"]["path"].endswith("/runtime/0.4.0")
     assert payload["project"] == project.as_posix()
     assert payload["mutated"] is False
     assert not plugin_data.exists()
@@ -460,21 +503,20 @@ def _project_snapshot(root: Path) -> dict[str, bytes]:
     }
 
 
-def test_unified_0_3_0_runtime_version_across_launcher_setup_and_skill():
-    """Regression: after the bump, no launcher/helper/skill selects 0.2.0."""
+def test_unified_0_4_0_runtime_version_across_launcher_setup_and_skill():
+    """No launcher/helper/Skill selects the obsolete 0.3 runtime."""
     launcher = LAUNCHER.read_text(encoding="utf-8")
     helper = SETUP_HELPER.read_text(encoding="utf-8")
     skill = SETUP_SKILL.read_text(encoding="utf-8")
     manifest = json.loads(PLUGIN_MANIFEST.read_text(encoding="utf-8"))
 
-    assert manifest["version"] == __version__ == "0.3.0"
-    assert "runtime\\0.3.0\\Scripts\\python.exe" in launcher
-    assert "runtime/0.3.0/Scripts/python.exe" in launcher.replace("\\", "/")
-    assert "0.2.0" not in launcher
-    assert '$RuntimeVersion = "0.3.0"' in helper
-    assert "0.2.0" not in helper
-    assert "${CLAUDE_PLUGIN_DATA}/runtime/0.3.0" in skill
-    assert "${CLAUDE_PLUGIN_DATA}/runtime/.staging/0.3.0-<id>" in skill
-    # The only 0.2.0 mention is the required non-current-version evidence.
-    assert "existing `0.2.0` runtime reports `broken`" in skill
-    assert skill.count("0.2.0") == 1
+    assert manifest["version"] == __version__ == "0.4.0"
+    assert "runtime\\0.4.0\\Scripts\\python.exe" in launcher
+    assert "runtime/0.4.0/Scripts/python.exe" in launcher.replace("\\", "/")
+    assert "0.3.0" not in launcher
+    assert '$RuntimeVersion = "0.4.0"' in helper
+    assert "0.3.0" in helper  # legacy-upgrade detection, never current selection
+    assert "${CLAUDE_PLUGIN_DATA}/runtime/0.4.0" in skill
+    assert "${CLAUDE_PLUGIN_DATA}/runtime/.staging/0.4.0-<id>" in skill
+    assert "existing `0.3.0` runtime reports `broken`" in skill
+    assert skill.count("0.3.0") == 1

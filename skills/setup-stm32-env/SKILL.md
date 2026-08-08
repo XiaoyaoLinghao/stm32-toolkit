@@ -7,13 +7,13 @@ description: Use when a Claude Code user asks to check, bootstrap, repair, or di
 
 ## Overview
 
-`/stm32-toolkit:setup-stm32-env` is the Skill-only bootstrap path before the MCP runtime exists. Always start with CHECK. Run Bootstrap or Repair only after explicit authorization for that exact mutation. After the runtime is healthy, the MCP tools expose the Keil inspection, guarded conversion, managed configuration, and build workflows; each new workflow Skill starts with `stm32_project_context`.
+`/stm32-toolkit:setup-stm32-env` is the Skill-only bootstrap path before the MCP runtime exists. Always start with CHECK. Run Bootstrap or Repair only after explicit authorization for that exact mutation. After the runtime is healthy, the MCP tools expose Keil migration, configuration, build, probe flash, handoff, and typed debug workflows; every workflow Skill starts with `stm32_project_context`.
 
 ## Non-negotiable boundaries
 
 - CHECK is read-only and offline with respect to installation. It never creates files, probes hardware, kills unrelated or existing processes, or installs anything. It may terminate only a probe subprocess that CHECK itself started after that probe exceeds its timeout.
 - Never register a second MCP. The plugin-bundled `.mcp.json` starts only after the managed runtime is healthy.
-- The only MCP interpreter is `${CLAUDE_PLUGIN_DATA}/runtime/0.3.0/Scripts/python.exe`; system `python`, `py`, or `uv` is never an MCP fallback.
+- The only MCP interpreter is `${CLAUDE_PLUGIN_DATA}/runtime/0.4.0/Scripts/python.exe`; system `python`, `py`, or `uv` is never an MCP fallback.
 - Host Python 3.10+ is only a bounded bootstrap prerequisite for installing `${CLAUDE_PLUGIN_ROOT}/tools/stm32-toolkit`.
 - ARM GCC, ARM GDB, CMake, Ninja, PyOCD, CubeMX, VS Code extension, and CMSIS-Pack checks are bounded and read-only. Missing tools are reported, never installed.
 - Monitor groups remain user-created; do not probe boards or create presets.
@@ -30,7 +30,7 @@ The helper fails closed before mutation on empty, relative, unresolved, redirect
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File '${CLAUDE_PLUGIN_ROOT}/bin/setup-stm32-env.ps1' -Mode Check -PluginRoot '${CLAUDE_PLUGIN_ROOT}' -PluginData '${CLAUDE_PLUGIN_DATA}' -ProjectDir '${CLAUDE_PROJECT_DIR}'
 ```
 
-CHECK always returns JSON. `runtime.status` is `missing`, `healthy`, or `broken`; it includes exact version/error evidence and `recommendedMode`. A healthy runtime has version `0.3.0` and a successful bounded `-m stm32_toolkit.cli ... doctor --json`. An existing `0.2.0` runtime reports `broken` with the expected-version mismatch and `recommendedMode` `Repair`. Tool version, extension, and pack inventory commands are bounded; timeouts become evidence rather than hangs.
+CHECK always returns JSON. `runtime.status` is `missing`, `healthy`, or `broken`; it includes exact version/error evidence and `recommendedMode`. A healthy runtime has version `0.4.0` and a successful bounded `-m stm32_toolkit.cli ... doctor --json`. An existing `0.3.0` runtime reports `broken` with `recommendedMode` `Repair`; Repair quarantines that runtime before atomically promoting 0.4.0. Tool version, extension, and pack inventory commands are bounded; timeouts become evidence rather than hangs.
 
 ## VS Code extensions (CHECK evidence only)
 
@@ -42,7 +42,7 @@ For `missing`, ask authorization for Bootstrap. For `broken`, ask authorization 
 
 ## MUTATE
 
-Both modes build in a unique `${CLAUDE_PLUGIN_DATA}/runtime/.staging/0.3.0-<id>` directory, install without using the user pip cache, validate exact Toolkit version `0.3.0`, and validate doctor before promotion. Failed safe staging is removed; a staging tree containing redirects is preserved for manual recovery rather than followed.
+Both modes build in a unique `${CLAUDE_PLUGIN_DATA}/runtime/.staging/0.4.0-<id>` directory, install without using the user pip cache, validate exact Toolkit version `0.4.0`, and validate doctor before promotion. Failed safe staging is removed; a staging tree containing redirects is preserved for manual recovery rather than followed.
 
 For an absent runtime, after explicit authorization run:
 
@@ -62,4 +62,4 @@ After mutation, repeat CHECK. Toolchain gaps do not invalidate a healthy plugin 
 
 ## Available workflow handoff
 
-Once CHECK reports `healthy`, hand off to the workflow Skills: `/stm32-toolkit:migrate-keil` (Keil inspection plus guarded conversion), `/stm32-toolkit:configure-stm32-project` (managed GCC/CMake and VS Code configuration), and `/stm32-toolkit:build-firmware` (reproducible builds). Every workflow starts with `stm32_project_context`, shows read-only plans and evidence, and applies only after the user authorizes the exact displayed plan ID.
+Once CHECK reports `healthy`, hand off to one of the six workflow Skills: `/stm32-toolkit:migrate-keil`, `/stm32-toolkit:configure-stm32-project`, `/stm32-toolkit:build-firmware`, `/stm32-toolkit:flash-firmware`, `/stm32-toolkit:debug-firmware`, or `/stm32-toolkit:read-var`. Every workflow starts with `stm32_project_context`, keeps project-derived target/SVD selection authoritative, and requires explicit authorization at every modifying or ownership-release boundary. Monitor groups and persistent observation remain deferred to the 0.5 Monitor service.

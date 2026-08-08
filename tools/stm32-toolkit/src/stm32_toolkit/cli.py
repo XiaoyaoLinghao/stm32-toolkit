@@ -36,7 +36,7 @@ from stm32_toolkit.workflows import (
 )
 
 
-_VERSION = "0.3.0"
+_VERSION = "0.4.0"
 _STDERR_LIMIT = 500
 _HARDWARE_COMMANDS = frozenset({"probe", "flash", "debug", "read", "fault"})
 
