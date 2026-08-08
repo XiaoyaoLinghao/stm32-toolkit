@@ -1,6 +1,10 @@
 from __future__ import annotations
 
 import json
+import os
+import sqlite3
+from dataclasses import replace
+from hashlib import sha256
 from pathlib import Path
 from uuid import UUID
 
@@ -9,7 +13,7 @@ import pytest
 from stm32_monitor.groups import GroupStore
 from stm32_monitor.history import HistoryQuery, HistoryStore, flatten_history_page
 from stm32_monitor.models import ObservationBinding, SampleBatch, SampleValue, WatchGroup, WatchItem
-from stm32_monitor.storage import StorageFailure
+from stm32_monitor.storage import APPLICATION_ID, StorageFailure
 from stm32_toolkit.paths import WorkspacePaths
 
 
@@ -61,6 +65,485 @@ def _batch(paths: WorkspacePaths, sequence: int, *, captured_ns: int | None = No
         deadline_drops=3,
         values=(SampleValue(WatchItem.variable("counter"), "OK", typed_value={"type": "uint32", "value": value}),),
     )
+
+
+def _wide_batch(paths: WorkspacePaths, sequence: int, *, captured_ns: int, count: int) -> SampleBatch:
+    batch = _batch(paths, sequence, captured_ns=captured_ns)
+    return replace(
+        batch,
+        values=tuple(
+            SampleValue(
+                WatchItem.variable(f"counter_{ordinal}"),
+                "OK",
+                typed_value={"type": "uint32", "value": ordinal},
+            )
+            for ordinal in range(count)
+        ),
+    )
+
+
+def _compact(value: object) -> bytes:
+    return json.dumps(
+        value,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    ).encode("utf-8")
+
+
+def _create_v1_history_database(paths: WorkspacePaths, batches: tuple[SampleBatch, ...]) -> Path:
+    paths.monitor_root.mkdir(parents=True)
+    database = paths.monitor_root / "monitor.sqlite3"
+    connection = sqlite3.connect(database)
+    try:
+        connection.executescript(
+            """
+            CREATE TABLE monitor_metadata (
+                singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+                workspace_id TEXT NOT NULL,
+                schema_version INTEGER NOT NULL
+            );
+            CREATE TABLE monitor_history_accounting (
+                singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+                logical_bytes INTEGER NOT NULL CHECK (typeof(logical_bytes) = 'integer' AND logical_bytes >= 0)
+            );
+            INSERT INTO monitor_history_accounting(singleton, logical_bytes) VALUES (1, 0);
+            CREATE TABLE history_batches (
+                batch_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT NOT NULL,
+                run_id TEXT NOT NULL,
+                sequence INTEGER NOT NULL,
+                captured_ns INTEGER NOT NULL,
+                payload_json BLOB NOT NULL,
+                payload_bytes INTEGER NOT NULL,
+                UNIQUE (run_id, sequence)
+            );
+            CREATE INDEX history_session_time ON history_batches(session_id, captured_ns, batch_id);
+            CREATE INDEX history_retention_time ON history_batches(captured_ns, batch_id);
+            CREATE TABLE history_values (
+                batch_id INTEGER NOT NULL REFERENCES history_batches(batch_id) ON DELETE CASCADE,
+                ordinal INTEGER NOT NULL,
+                row_json BLOB NOT NULL,
+                payload_bytes INTEGER NOT NULL,
+                PRIMARY KEY (batch_id, ordinal)
+            );
+            CREATE TRIGGER history_batches_account_insert AFTER INSERT ON history_batches
+              BEGIN UPDATE monitor_history_accounting SET logical_bytes = logical_bytes + NEW.payload_bytes WHERE singleton = 1; END;
+            CREATE TRIGGER history_batches_account_delete AFTER DELETE ON history_batches
+              BEGIN UPDATE monitor_history_accounting SET logical_bytes = logical_bytes - OLD.payload_bytes WHERE singleton = 1; END;
+            CREATE TRIGGER history_values_account_insert AFTER INSERT ON history_values
+              BEGIN UPDATE monitor_history_accounting SET logical_bytes = logical_bytes + NEW.payload_bytes WHERE singleton = 1; END;
+            CREATE TRIGGER history_values_account_delete AFTER DELETE ON history_values
+              BEGIN UPDATE monitor_history_accounting SET logical_bytes = logical_bytes - OLD.payload_bytes WHERE singleton = 1; END;
+            """
+        )
+        connection.execute(
+            "INSERT INTO monitor_metadata(singleton, workspace_id, schema_version) VALUES (1, ?, 1)",
+            (paths.workspace_id,),
+        )
+        for batch in batches:
+            payload = batch.to_dict()
+            encoded_batch = _compact(payload)
+            cursor = connection.execute(
+                "INSERT INTO history_batches(session_id,run_id,sequence,captured_ns,payload_json,payload_bytes) VALUES (?,?,?,?,?,?)",
+                (
+                    batch.binding.session_id,
+                    str(batch.run_id),
+                    batch.sequence,
+                    batch.captured_unix_ns,
+                    encoded_batch,
+                    len(encoded_batch),
+                ),
+            )
+            evidence = {key: value for key, value in payload.items() if key != "values"}
+            rows = []
+            for ordinal, value in enumerate(payload["values"]):
+                row = dict(evidence)
+                row.update(value)
+                row["valueOrdinal"] = ordinal
+                encoded_row = _compact(row)
+                rows.append((cursor.lastrowid, ordinal, encoded_row, len(encoded_row)))
+            connection.executemany(
+                "INSERT INTO history_values(batch_id,ordinal,row_json,payload_bytes) VALUES (?,?,?,?)",
+                rows,
+            )
+        connection.execute(f"PRAGMA application_id = {APPLICATION_ID}")
+        connection.execute("PRAGMA user_version = 1")
+        connection.commit()
+    finally:
+        connection.close()
+    return database
+
+
+def _file_inventory(root: Path) -> dict[str, tuple[bytes, int]]:
+    return {
+        path.name: (path.read_bytes(), os.lstat(path).st_nlink)
+        for path in root.iterdir()
+        if path.is_file()
+    }
+
+
+def _rewrite_v1_payloads(connection: sqlite3.Connection, corruption: str) -> None:
+    batch_raw = connection.execute("SELECT payload_json FROM history_batches").fetchone()[0]
+    batch_payload = json.loads(batch_raw)
+    row_payloads = [
+        (ordinal, json.loads(raw))
+        for ordinal, raw in connection.execute(
+            "SELECT ordinal,row_json FROM history_values ORDER BY ordinal"
+        )
+    ]
+    if corruption == "workspace":
+        batch_payload["binding"]["workspaceId"] = "c" * 24
+        for _, row in row_payloads:
+            row["binding"]["workspaceId"] = "c" * 24
+    elif corruption == "sequence":
+        batch_payload["sequence"] = 99
+        for _, row in row_payloads:
+            row["sequence"] = 99
+    elif corruption == "timestamps":
+        batch_payload["scheduledAtUtc"] = "2000-01-01T00:00:00.000000Z"
+        for _, row in row_payloads:
+            row["scheduledAtUtc"] = "2000-01-01T00:00:00.000000Z"
+    else:
+        raise AssertionError("unknown v1 corruption")
+    encoded_batch = _compact(batch_payload)
+    connection.execute(
+        "UPDATE history_batches SET payload_json = ?, payload_bytes = ?",
+        (encoded_batch, len(encoded_batch)),
+    )
+    for ordinal, row in row_payloads:
+        encoded_row = _compact(row)
+        connection.execute(
+            "UPDATE history_values SET row_json = ?, payload_bytes = ? WHERE ordinal = ?",
+            (encoded_row, len(encoded_row), ordinal),
+        )
+
+
+def test_v1_history_migrates_to_normalized_v2_without_changing_flattened_semantics(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    import stm32_monitor.history as history_module
+
+    paths = _paths(tmp_path)
+    batches = (
+        _wide_batch(paths, 4, captured_ns=400, count=2),
+        _wide_batch(paths, 5, captured_ns=500, count=3),
+    )
+    database = _create_v1_history_database(paths, batches)
+    expected = tuple(
+        (row["sequence"], row["valueOrdinal"], row["watch"])
+        for batch in batches
+        for row in (
+            dict({key: value for key, value in batch.to_dict().items() if key != "values"}, **value, valueOrdinal=ordinal)
+            for ordinal, value in enumerate(batch.to_dict()["values"])
+        )
+    )
+
+    store = HistoryStore(paths)
+    try:
+        store._database.write(lambda connection: None)
+        result = store.query_history(HistoryQuery("monitor-1", 0, 1_000))
+        assert result.ok
+        assert tuple(
+            (row["sequence"], row["valueOrdinal"], row["watch"])
+            for row in flatten_history_page(result.data)
+        ) == expected
+    finally:
+        store.close()
+
+    connection = sqlite3.connect(database)
+    try:
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 2
+        assert connection.execute(
+            "SELECT schema_version FROM monitor_metadata"
+        ).fetchone()[0] == 2
+        assert [row[1] for row in connection.execute("PRAGMA table_info(history_batches)")] == [
+            "batch_id", "session_id", "run_id", "sequence", "captured_ns",
+            "payload_json", "payload_bytes", "payload_sha256", "value_count",
+        ]
+        assert [row[1] for row in connection.execute("PRAGMA table_info(history_values)")] == [
+            "batch_id", "ordinal", "selector_kind", "selector", "value_json",
+            "value_bytes", "value_sha256",
+        ]
+        rows = connection.execute(
+            "SELECT batch_id,ordinal,selector_kind,selector,value_json,value_bytes,value_sha256 "
+            "FROM history_values ORDER BY batch_id,ordinal"
+        ).fetchall()
+        assert [(row[0], row[1], row[2], row[3]) for row in rows] == [
+            (1, 0, "variable", "counter_0"),
+            (1, 1, "variable", "counter_1"),
+            (2, 0, "variable", "counter_0"),
+            (2, 1, "variable", "counter_1"),
+            (2, 2, "variable", "counter_2"),
+        ]
+        assert all(row[5] == len(row[4]) and row[6] == sha256(row[4]).hexdigest() for row in rows)
+        assert all(set(json.loads(row[4])) == {"watch", "status", "typedValue", "code", "definition"} for row in rows)
+        selector_plan = " ".join(
+            str(row[3])
+            for row in connection.execute(
+                "EXPLAIN QUERY PLAN SELECT batch_id,ordinal FROM history_values "
+                "WHERE selector_kind = ? AND selector = ? ORDER BY batch_id,ordinal",
+                ("variable", "counter_1"),
+            )
+        )
+        assert "history_selector_values" in selector_plan
+        assert "TEMP B-TREE" not in selector_plan
+        logical = connection.execute(
+            "SELECT logical_bytes FROM monitor_history_accounting"
+        ).fetchone()[0]
+        exact = connection.execute(
+            "SELECT COALESCE(SUM(payload_bytes),0) FROM history_batches"
+        ).fetchone()[0] + connection.execute(
+            "SELECT COALESCE(SUM(value_bytes),0) FROM history_values"
+        ).fetchone()[0]
+        assert logical == exact
+    finally:
+        connection.close()
+
+    monkeypatch.setattr(history_module, "RETENTION_AGE_NS", 10_000)
+    monkeypatch.setattr(history_module, "RETENTION_LOGICAL_BYTES", 0)
+    monkeypatch.setattr(history_module, "RETENTION_DELETE_BATCHES", 1)
+    store = HistoryStore(paths)
+    try:
+        retained = store.run_retention(now_ns=1_000)
+        assert retained.ok and retained.data["deletedBatches"] == 1
+        remaining = store.query_history(HistoryQuery("monitor-1", 0, 1_000))
+        assert remaining.ok
+        assert [row["sequence"] for row in flatten_history_page(remaining.data)] == [5, 5, 5]
+    finally:
+        store.close()
+
+
+def test_reading_v1_history_never_migrates_or_mutates_it(tmp_path: Path) -> None:
+    paths = _paths(tmp_path)
+    database = _create_v1_history_database(paths, (_batch(paths, 1),))
+    before = _file_inventory(paths.monitor_root)
+
+    store = HistoryStore(paths)
+    try:
+        result = store.query_history(HistoryQuery("monitor-1", 0, 2_000_000_000))
+        assert not result.ok and result.code == "MONITOR_STORAGE_INVALID"
+    finally:
+        store.close()
+
+    assert _file_inventory(paths.monitor_root) == before
+    connection = sqlite3.connect(f"file:{database.as_posix()}?mode=ro", uri=True)
+    try:
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 1
+    finally:
+        connection.close()
+
+
+@pytest.mark.parametrize(
+    ("corruption", "expected_code"),
+    [
+        ("row_ordinal", "MONITOR_STORAGE_CORRUPT"),
+        ("payload_bytes", "MONITOR_STORAGE_CORRUPT"),
+        ("batch_json", "MONITOR_STORAGE_CORRUPT"),
+        ("workspace", "MONITOR_STORAGE_CORRUPT"),
+        ("sequence", "MONITOR_STORAGE_CORRUPT"),
+        ("timestamps", "MONITOR_STORAGE_CORRUPT"),
+        ("metadata_workspace", "MONITOR_WORKSPACE_MISMATCH"),
+        ("metadata_schema", "MONITOR_STORAGE_CORRUPT"),
+        ("application_id", "MONITOR_STORAGE_INVALID"),
+        ("accounting", "MONITOR_STORAGE_CORRUPT"),
+        ("accounting_missing", "MONITOR_STORAGE_CORRUPT"),
+        ("accounting_negative", "MONITOR_STORAGE_CORRUPT"),
+        ("accounting_text", "MONITOR_STORAGE_CORRUPT"),
+        ("metadata_missing", "MONITOR_STORAGE_CORRUPT"),
+        ("excess_rows", "MONITOR_STORAGE_CORRUPT"),
+    ],
+)
+def test_v1_migration_corruption_rolls_back_original_bytes_schema_and_inventory(
+    tmp_path: Path,
+    corruption: str,
+    expected_code: str,
+) -> None:
+    paths = _paths(tmp_path)
+    database = _create_v1_history_database(
+        paths,
+        (_wide_batch(paths, 4, captured_ns=400, count=2),),
+    )
+    connection = sqlite3.connect(database)
+    try:
+        if corruption == "row_ordinal":
+            connection.execute(
+                "UPDATE history_values SET ordinal = 7 WHERE ordinal = 1"
+            )
+        elif corruption == "payload_bytes":
+            connection.execute(
+                "UPDATE history_batches SET payload_bytes = payload_bytes + 1"
+            )
+        elif corruption == "batch_json":
+            connection.execute(
+                "UPDATE history_batches SET payload_json = X'7B7D', payload_bytes = 2"
+            )
+        elif corruption == "metadata_workspace":
+            connection.execute(
+                "UPDATE monitor_metadata SET workspace_id = 'other-workspace'"
+            )
+        elif corruption == "metadata_schema":
+            connection.execute("UPDATE monitor_metadata SET schema_version = 2")
+        elif corruption == "application_id":
+            connection.execute("PRAGMA application_id = 0")
+        elif corruption == "accounting":
+            connection.execute(
+                "UPDATE monitor_history_accounting SET logical_bytes = logical_bytes + 1"
+            )
+        elif corruption == "accounting_missing":
+            connection.execute("DELETE FROM monitor_history_accounting")
+        elif corruption in {"accounting_negative", "accounting_text"}:
+            connection.execute("PRAGMA ignore_check_constraints = ON")
+            connection.execute(
+                "UPDATE monitor_history_accounting SET logical_bytes = ?",
+                (-1 if corruption == "accounting_negative" else "bad",),
+            )
+        elif corruption == "metadata_missing":
+            connection.execute("DELETE FROM monitor_metadata")
+        elif corruption == "excess_rows":
+            row_raw = connection.execute(
+                "SELECT row_json FROM history_values WHERE ordinal = 0"
+            ).fetchone()[0]
+            connection.executemany(
+                "INSERT INTO history_values(batch_id,ordinal,row_json,payload_bytes) VALUES (1,?,?,?)",
+                ((ordinal, row_raw, len(row_raw)) for ordinal in range(2, 257)),
+            )
+        else:
+            _rewrite_v1_payloads(connection, corruption)
+        connection.commit()
+    finally:
+        connection.close()
+    before = _file_inventory(paths.monitor_root)
+
+    store = HistoryStore(paths)
+    try:
+        result = store.append_batch(_batch(paths, 9, captured_ns=900))
+        assert not result.ok
+        assert result.code == expected_code
+    finally:
+        store.close()
+
+    assert _file_inventory(paths.monitor_root) == before
+    connection = sqlite3.connect(f"file:{database.as_posix()}?mode=ro", uri=True)
+    try:
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 1
+        assert [row[1] for row in connection.execute("PRAGMA table_info(history_values)")] == [
+            "batch_id", "ordinal", "row_json", "payload_bytes"
+        ]
+        assert connection.execute("SELECT COUNT(*) FROM history_batches").fetchone()[0] == 1
+        expected_rows = 257 if corruption == "excess_rows" else 2
+        assert connection.execute("SELECT COUNT(*) FROM history_values").fetchone()[0] == expected_rows
+    finally:
+        connection.close()
+
+
+@pytest.mark.parametrize(
+    "corruption",
+    [
+        "batch_length", "batch_digest", "value_length", "value_digest", "value_count",
+        "selector_kind", "selector", "workspace", "session", "run", "sequence",
+        "captured_ns", "scheduled_timestamp", "captured_timestamp", "semantic_payload",
+    ],
+)
+def test_v2_query_rejects_payload_and_sqlite_identity_mismatches(
+    tmp_path: Path,
+    corruption: str,
+) -> None:
+    paths = _paths(tmp_path)
+    store = HistoryStore(paths)
+    try:
+        assert store.append_batch(_batch(paths, 1)).ok
+
+        def corrupt(connection: sqlite3.Connection) -> None:
+            if corruption == "batch_length":
+                connection.execute("UPDATE history_batches SET payload_bytes = payload_bytes + 1")
+            elif corruption == "batch_digest":
+                connection.execute("UPDATE history_batches SET payload_sha256 = ?", ("0" * 64,))
+            elif corruption == "value_length":
+                connection.execute("UPDATE history_values SET value_bytes = value_bytes + 1")
+            elif corruption == "value_digest":
+                connection.execute("UPDATE history_values SET value_sha256 = ?", ("0" * 64,))
+            elif corruption == "value_count":
+                connection.execute("UPDATE history_batches SET value_count = value_count + 1")
+            elif corruption == "selector_kind":
+                connection.execute("UPDATE history_values SET selector_kind = 'register'")
+            elif corruption == "selector":
+                connection.execute("UPDATE history_values SET selector = 'other'")
+            elif corruption == "session":
+                connection.execute("UPDATE history_batches SET session_id = 'other-session'")
+            elif corruption == "run":
+                connection.execute(
+                    "UPDATE history_batches SET run_id = ?",
+                    ("33333333-3333-4333-8333-333333333333",),
+                )
+            elif corruption == "sequence":
+                connection.execute("UPDATE history_batches SET sequence = 2")
+            elif corruption == "captured_ns":
+                connection.execute("UPDATE history_batches SET captured_ns = 999999999")
+            else:
+                raw = connection.execute(
+                    "SELECT payload_json FROM history_batches"
+                ).fetchone()[0]
+                payload = json.loads(raw)
+                if corruption == "workspace":
+                    payload["binding"]["workspaceId"] = "c" * 24
+                elif corruption == "scheduled_timestamp":
+                    payload["scheduledAtUtc"] = "2000-01-01T00:00:00.000000Z"
+                elif corruption == "captured_timestamp":
+                    payload["capturedAtUtc"] = "2000-01-01T00:00:00.000000Z"
+                elif corruption == "semantic_payload":
+                    payload["groupId"] = "not-a-uuid"
+                else:
+                    raise AssertionError("unknown v2 corruption")
+                invalid = _compact(payload)
+                connection.execute(
+                    "UPDATE history_batches SET payload_json = ?, payload_bytes = ?, payload_sha256 = ?",
+                    (invalid, len(invalid), sha256(invalid).hexdigest()),
+                )
+
+        store._database.write(corrupt)
+        session_id = "other-session" if corruption == "session" else "monitor-1"
+        result = store.query_history(HistoryQuery(session_id, 0, 2_000_000_000))
+        assert not result.ok
+        assert result.code == "MONITOR_STORAGE_CORRUPT"
+    finally:
+        store.close()
+
+
+def test_mid_batch_cursor_resumes_256_values_without_gap_and_decodes_batch_once(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    import stm32_monitor.history as history_module
+
+    paths = _paths(tmp_path)
+    store = HistoryStore(paths)
+    try:
+        assert store.append_batch(_wide_batch(paths, 1, captured_ns=1_000, count=256)).ok
+        first = store.query_history(HistoryQuery("monitor-1", 0, 2_000, limit=128))
+        assert first.ok and first.data.next_cursor == "1:127"
+
+        calls = 0
+        real_decode = history_module._decode_history_batch
+
+        def observed_decode(*args, **kwargs):
+            nonlocal calls
+            calls += 1
+            return real_decode(*args, **kwargs)
+
+        monkeypatch.setattr(history_module, "_decode_history_batch", observed_decode)
+        second = store.query_history(
+            HistoryQuery("monitor-1", 0, 2_000, limit=128, cursor=first.data.next_cursor)
+        )
+        assert second.ok and second.data.next_cursor is None
+        assert [row["valueOrdinal"] for row in flatten_history_page(second.data)] == list(
+            range(128, 256)
+        )
+        assert calls == 1
+    finally:
+        store.close()
 
 
 def test_missing_history_is_empty_and_does_not_create_database(tmp_path: Path) -> None:
@@ -306,7 +789,7 @@ def test_corrupt_history_row_never_leaks_json_unicode_or_type_errors(
         assert store.append_batch(_batch(paths, 1)).ok
         store._database.write(
             lambda connection: connection.execute(
-                "UPDATE history_values SET row_json = ?, payload_bytes = ?",
+                "UPDATE history_values SET value_json = ?, value_bytes = ?",
                 (replacement, len(replacement) if isinstance(replacement, bytes) else 1),
             )
         )
@@ -320,20 +803,21 @@ def test_corrupt_history_row_never_leaks_json_unicode_or_type_errors(
 
 
 @pytest.mark.parametrize(
-    ("field", "replacement"),
+    ("location", "field", "replacement"),
     [
-        ("binding", []),
-        ("watch", []),
-        ("status", 1),
-        ("definition", []),
-        ("valueOrdinal", 1),
-        ("scheduledAtUtc", "1970-01-01T00:00:00.000000Z"),
-        ("capturedAtUtc", "1970-01-01T00:00:00.000000Z"),
-        ("actualRateHz", "5.0"),
+        ("batch", "binding", []),
+        ("value", "watch", []),
+        ("value", "status", 1),
+        ("value", "definition", []),
+        ("ordinal", "ordinal", 1),
+        ("batch", "scheduledAtUtc", "1970-01-01T00:00:00.000000Z"),
+        ("batch", "capturedAtUtc", "1970-01-01T00:00:00.000000Z"),
+        ("batch", "actualRateHz", "5.0"),
     ],
 )
 def test_each_history_model_semantic_mismatch_is_storage_corruption(
     tmp_path: Path,
+    location: str,
     field: str,
     replacement: object,
 ) -> None:
@@ -341,21 +825,34 @@ def test_each_history_model_semantic_mismatch_is_storage_corruption(
     store = HistoryStore(paths)
     try:
         assert store.append_batch(_batch(paths, 1)).ok
-        raw = store._database.read(
-            lambda connection: connection.execute(
-                "SELECT row_json FROM history_values"
-            ).fetchone()[0],
-            empty=None,
-        )
-        decoded = json.loads(bytes(raw).decode("utf-8"))
-        decoded[field] = replacement
-        invalid = json.dumps(decoded, separators=(",", ":")).encode("utf-8")
-        store._database.write(
-            lambda connection: connection.execute(
-                "UPDATE history_values SET row_json = ?, payload_bytes = ?",
-                (invalid, len(invalid)),
+        if location == "ordinal":
+            store._database.write(
+                lambda connection: connection.execute(
+                    "UPDATE history_values SET ordinal = ?",
+                    (replacement,),
+                )
             )
-        )
+        else:
+            table, json_column, bytes_column, digest_column = (
+                ("history_batches", "payload_json", "payload_bytes", "payload_sha256")
+                if location == "batch"
+                else ("history_values", "value_json", "value_bytes", "value_sha256")
+            )
+            raw = store._database.read(
+                lambda connection: connection.execute(
+                    f"SELECT {json_column} FROM {table}"
+                ).fetchone()[0],
+                empty=None,
+            )
+            decoded = json.loads(bytes(raw).decode("utf-8"))
+            decoded[field] = replacement
+            invalid = _compact(decoded)
+            store._database.write(
+                lambda connection: connection.execute(
+                    f"UPDATE {table} SET {json_column} = ?, {bytes_column} = ?, {digest_column} = ?",
+                    (invalid, len(invalid), sha256(invalid).hexdigest()),
+                )
+            )
         assert store.query_history(
             HistoryQuery("monitor-1", 0, 2_000_000_000)
         ).code == "MONITOR_STORAGE_CORRUPT"
@@ -382,6 +879,29 @@ def test_history_page_stops_before_crossing_byte_limit(tmp_path: Path, monkeypat
         )
         page = store.query_history(HistoryQuery("monitor-1", 0, 2_000_000_000))
         assert page.ok and len(page.data.values) == 1 and page.data.next_cursor is not None
+    finally:
+        store.close()
+
+
+def test_final_value_uses_exact_no_cursor_page_budget(tmp_path: Path, monkeypatch) -> None:
+    import stm32_monitor.history as history_module
+
+    paths = _paths(tmp_path)
+    store = HistoryStore(paths)
+    try:
+        assert store.append_batch(_batch(paths, 1)).ok
+        exact = store.query_history(HistoryQuery("monitor-1", 0, 2_000_000_000))
+        assert exact.ok and exact.data.next_cursor is None
+        monkeypatch.setattr(
+            history_module,
+            "MAX_HISTORY_PAGE_BYTES",
+            exact.data.serialized_bytes,
+        )
+        bounded = store.query_history(HistoryQuery("monitor-1", 0, 2_000_000_000))
+        assert bounded.ok
+        assert bounded.data.value_count == 1
+        assert bounded.data.next_cursor is None
+        assert bounded.data.serialized_bytes == exact.data.serialized_bytes
     finally:
         store.close()
 
@@ -500,7 +1020,7 @@ def test_semantically_invalid_and_oversized_history_rows_are_storage_corruption(
         assert store.append_batch(_batch(paths, 1)).ok
         raw = store._database.read(
             lambda connection: connection.execute(
-                "SELECT row_json FROM history_values"
+                "SELECT payload_json FROM history_batches"
             ).fetchone()[0],
             empty=None,
         )
@@ -509,8 +1029,8 @@ def test_semantically_invalid_and_oversized_history_rows_are_storage_corruption(
         invalid = json.dumps(decoded, separators=(",", ":")).encode("utf-8")
         store._database.write(
             lambda connection: connection.execute(
-                "UPDATE history_values SET row_json = ?, payload_bytes = ?",
-                (invalid, len(invalid)),
+                "UPDATE history_batches SET payload_json = ?, payload_bytes = ?, payload_sha256 = ?",
+                (invalid, len(invalid), sha256(invalid).hexdigest()),
             )
         )
         semantic = store.query_history(HistoryQuery("monitor-1", 0, 2_000_000_000))

@@ -7,17 +7,15 @@ import threading
 from concurrent.futures import Future, ThreadPoolExecutor, TimeoutError as FutureTimeout
 from dataclasses import dataclass
 from pathlib import Path
-from time import monotonic_ns as _monotonic_ns
 from typing import Callable, TypeVar
 
 from stm32_toolkit.paths import WorkspacePaths
 
 
 APPLICATION_ID = 0x53544D4D
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 BUSY_TIMEOUT_MS = 250
 MAX_DATABASE_BYTES = 512 * 1024 * 1024
-INTEGRITY_CHECK_INTERVAL_NS = 60 * 1_000_000_000
 _T = TypeVar("_T")
 
 _SCHEMA_STATEMENTS = (
@@ -57,6 +55,8 @@ _SCHEMA_STATEMENTS = (
         captured_ns INTEGER NOT NULL,
         payload_json BLOB NOT NULL,
         payload_bytes INTEGER NOT NULL,
+        payload_sha256 TEXT NOT NULL,
+        value_count INTEGER NOT NULL,
         UNIQUE (run_id, sequence)
     )""",
     "CREATE INDEX history_session_time ON history_batches(session_id, captured_ns, batch_id)",
@@ -64,18 +64,22 @@ _SCHEMA_STATEMENTS = (
     """CREATE TABLE history_values (
         batch_id INTEGER NOT NULL REFERENCES history_batches(batch_id) ON DELETE CASCADE,
         ordinal INTEGER NOT NULL,
-        row_json BLOB NOT NULL,
-        payload_bytes INTEGER NOT NULL,
+        selector_kind TEXT NOT NULL,
+        selector TEXT NOT NULL,
+        value_json BLOB NOT NULL,
+        value_bytes INTEGER NOT NULL,
+        value_sha256 TEXT NOT NULL,
         PRIMARY KEY (batch_id, ordinal)
     )""",
+    "CREATE INDEX history_selector_values ON history_values(selector_kind, selector, batch_id, ordinal)",
     """CREATE TRIGGER history_batches_account_insert AFTER INSERT ON history_batches
        BEGIN UPDATE monitor_history_accounting SET logical_bytes = logical_bytes + NEW.payload_bytes WHERE singleton = 1; END""",
     """CREATE TRIGGER history_batches_account_delete AFTER DELETE ON history_batches
        BEGIN UPDATE monitor_history_accounting SET logical_bytes = logical_bytes - OLD.payload_bytes WHERE singleton = 1; END""",
     """CREATE TRIGGER history_values_account_insert AFTER INSERT ON history_values
-       BEGIN UPDATE monitor_history_accounting SET logical_bytes = logical_bytes + NEW.payload_bytes WHERE singleton = 1; END""",
+       BEGIN UPDATE monitor_history_accounting SET logical_bytes = logical_bytes + NEW.value_bytes WHERE singleton = 1; END""",
     """CREATE TRIGGER history_values_account_delete AFTER DELETE ON history_values
-       BEGIN UPDATE monitor_history_accounting SET logical_bytes = logical_bytes - OLD.payload_bytes WHERE singleton = 1; END""",
+       BEGIN UPDATE monitor_history_accounting SET logical_bytes = logical_bytes - OLD.value_bytes WHERE singleton = 1; END""",
     """CREATE TABLE export_records (
         export_id TEXT PRIMARY KEY,
         session_id TEXT NOT NULL,
@@ -189,8 +193,7 @@ class MonitorDatabase:
             self._trusted_directories = []
             self._trusted_failure = error
         self._integrity_lock = threading.Lock()
-        self._integrity_identity: tuple[int, int] | None = None
-        self._last_integrity_ns = 0
+        self._integrity_identity: tuple[tuple[str, int, int, int, int], ...] | None = None
         self._writer_key = str(self.path).casefold()
         with _WRITER_REGISTRY_LOCK:
             writer = _WRITERS.get(self._writer_key)
@@ -422,12 +425,50 @@ class MonitorDatabase:
                 if path == self.path:
                     raise StorageFailure("MONITOR_STORAGE_INVALID", "monitor storage file changed during inspection")
                 continue
+            except StorageFailure:
+                if path != self.path:
+                    try:
+                        _identity(path)
+                    except FileNotFoundError:
+                        continue
+                raise
             except OSError as error:
                 raise StorageFailure("MONITOR_STORAGE_INVALID", "monitor storage file cannot be inspected") from error
             if named[:2] != opened[:2] or named[:2] != after[:2]:
                 raise StorageFailure("MONITOR_STORAGE_INVALID", "monitor storage file changed during inspection")
             identities[path] = named
         return identities
+
+    def _integrity_fingerprint(
+        self,
+        files: dict[Path, tuple[int, int, int]],
+    ) -> tuple[tuple[str, int, int, int, int], ...]:
+        fingerprint: list[tuple[str, int, int, int, int]] = []
+        for path, identity in sorted(files.items(), key=lambda item: item[0].name):
+            if path != self.path:
+                continue
+            try:
+                metadata = os.lstat(path)
+            except OSError as error:
+                raise StorageFailure(
+                    "MONITOR_STORAGE_INVALID",
+                    "monitor storage file cannot be inspected",
+                ) from error
+            if (metadata.st_dev, metadata.st_ino, metadata.st_size) != identity:
+                raise StorageFailure(
+                    "MONITOR_STORAGE_INVALID",
+                    "monitor storage file changed during inspection",
+                )
+            fingerprint.append(
+                (
+                    path.name,
+                    metadata.st_dev,
+                    metadata.st_ino,
+                    metadata.st_size,
+                    metadata.st_mtime_ns,
+                )
+            )
+        return tuple(fingerprint)
 
     def _size(self, connection: sqlite3.Connection | None = None) -> int:
         total = 0
@@ -502,6 +543,146 @@ class MonitorDatabase:
         except sqlite3.DatabaseError as error:
             raise StorageFailure("MONITOR_STORAGE_CORRUPT", "monitor storage is corrupt") from error
 
+    def _migrate_v1(self, connection: sqlite3.Connection) -> None:
+        from .history import _normalize_v1_batch
+        from .models import MAX_SAMPLE_VALUES
+
+        metadata = connection.execute(
+            "SELECT workspace_id, schema_version FROM monitor_metadata WHERE singleton = 1"
+        ).fetchone()
+        if metadata != (self.paths.workspace_id, 1):
+            if metadata is not None and metadata[0] != self.paths.workspace_id:
+                raise StorageFailure(
+                    "MONITOR_WORKSPACE_MISMATCH",
+                    "monitor storage belongs to another workspace",
+                )
+            raise StorageFailure("MONITOR_STORAGE_CORRUPT", "monitor storage is corrupt")
+        accounting = connection.execute(
+            "SELECT logical_bytes FROM monitor_history_accounting WHERE singleton = 1"
+        ).fetchone()
+        if (
+            accounting is None
+            or type(accounting[0]) is not int
+            or accounting[0] < 0
+        ):
+            raise StorageFailure("MONITOR_STORAGE_CORRUPT", "monitor storage is corrupt")
+        original_logical_bytes = 0
+
+        migration_schema = (
+            """CREATE TABLE history_batches_v2 (
+                batch_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT NOT NULL,
+                run_id TEXT NOT NULL,
+                sequence INTEGER NOT NULL,
+                captured_ns INTEGER NOT NULL,
+                payload_json BLOB NOT NULL,
+                payload_bytes INTEGER NOT NULL,
+                payload_sha256 TEXT NOT NULL,
+                value_count INTEGER NOT NULL,
+                UNIQUE (run_id, sequence)
+            )""",
+            """CREATE TABLE history_values_v2 (
+                batch_id INTEGER NOT NULL REFERENCES history_batches_v2(batch_id) ON DELETE CASCADE,
+                ordinal INTEGER NOT NULL,
+                selector_kind TEXT NOT NULL,
+                selector TEXT NOT NULL,
+                value_json BLOB NOT NULL,
+                value_bytes INTEGER NOT NULL,
+                value_sha256 TEXT NOT NULL,
+                PRIMARY KEY (batch_id, ordinal)
+            )""",
+        )
+        for statement in migration_schema:
+            connection.execute(statement)
+        batches = connection.execute(
+            "SELECT batch_id,session_id,run_id,sequence,captured_ns,payload_json,payload_bytes "
+            "FROM history_batches ORDER BY batch_id"
+        )
+        while True:
+            batch_row = batches.fetchone()
+            if batch_row is None:
+                break
+            batch_id = batch_row[0]
+            value_cursor = connection.execute(
+                "SELECT ordinal,row_json,payload_bytes FROM history_values "
+                "WHERE batch_id = ? ORDER BY ordinal",
+                (batch_id,),
+            )
+            value_rows = value_cursor.fetchmany(MAX_SAMPLE_VALUES + 1)
+            if len(value_rows) > MAX_SAMPLE_VALUES:
+                raise StorageFailure("MONITOR_STORAGE_CORRUPT", "monitor storage is corrupt")
+            encoded_batch, digest, normalized_values = _normalize_v1_batch(
+                workspace_id=self.paths.workspace_id,
+                batch_row=batch_row,
+                value_rows=value_rows,
+            )
+            original_logical_bytes += batch_row[6] + sum(row[2] for row in value_rows)
+            connection.execute(
+                "INSERT INTO history_batches_v2(batch_id,session_id,run_id,sequence,captured_ns,"
+                "payload_json,payload_bytes,payload_sha256,value_count) VALUES (?,?,?,?,?,?,?,?,?)",
+                (
+                    batch_id,
+                    batch_row[1],
+                    batch_row[2],
+                    batch_row[3],
+                    batch_row[4],
+                    encoded_batch,
+                    len(encoded_batch),
+                    digest,
+                    len(normalized_values),
+                ),
+            )
+            connection.executemany(
+                "INSERT INTO history_values_v2(batch_id,ordinal,selector_kind,selector,"
+                "value_json,value_bytes,value_sha256) VALUES (?,?,?,?,?,?,?)",
+                (
+                    (batch_id, ordinal, kind, selector, raw, len(raw), value_digest)
+                    for ordinal, kind, selector, raw, value_digest in normalized_values
+                ),
+            )
+
+        if original_logical_bytes != accounting[0]:
+            raise StorageFailure("MONITOR_STORAGE_CORRUPT", "monitor storage is corrupt")
+
+        swap_statements = (
+            "DROP TRIGGER history_batches_account_insert",
+            "DROP TRIGGER history_batches_account_delete",
+            "DROP TRIGGER history_values_account_insert",
+            "DROP TRIGGER history_values_account_delete",
+            "DROP INDEX history_session_time",
+            "DROP INDEX history_retention_time",
+            "DROP TABLE history_values",
+            "DROP TABLE history_batches",
+            "ALTER TABLE history_batches_v2 RENAME TO history_batches",
+            "ALTER TABLE history_values_v2 RENAME TO history_values",
+            "CREATE INDEX history_session_time ON history_batches(session_id, captured_ns, batch_id)",
+            "CREATE INDEX history_retention_time ON history_batches(captured_ns, batch_id)",
+            "CREATE INDEX history_selector_values ON history_values(selector_kind, selector, batch_id, ordinal)",
+            """CREATE TRIGGER history_batches_account_insert AFTER INSERT ON history_batches
+              BEGIN UPDATE monitor_history_accounting SET logical_bytes = logical_bytes + NEW.payload_bytes WHERE singleton = 1; END""",
+            """CREATE TRIGGER history_batches_account_delete AFTER DELETE ON history_batches
+              BEGIN UPDATE monitor_history_accounting SET logical_bytes = logical_bytes - OLD.payload_bytes WHERE singleton = 1; END""",
+            """CREATE TRIGGER history_values_account_insert AFTER INSERT ON history_values
+              BEGIN UPDATE monitor_history_accounting SET logical_bytes = logical_bytes + NEW.value_bytes WHERE singleton = 1; END""",
+            """CREATE TRIGGER history_values_account_delete AFTER DELETE ON history_values
+              BEGIN UPDATE monitor_history_accounting SET logical_bytes = logical_bytes - OLD.value_bytes WHERE singleton = 1; END""",
+        )
+        for statement in swap_statements:
+            connection.execute(statement)
+        logical_bytes = connection.execute(
+            "SELECT COALESCE(SUM(payload_bytes),0) FROM history_batches"
+        ).fetchone()[0] + connection.execute(
+            "SELECT COALESCE(SUM(value_bytes),0) FROM history_values"
+        ).fetchone()[0]
+        connection.execute(
+            "UPDATE monitor_history_accounting SET logical_bytes = ? WHERE singleton = 1",
+            (logical_bytes,),
+        )
+        connection.execute(
+            "UPDATE monitor_metadata SET schema_version = 2 WHERE singleton = 1"
+        )
+        connection.execute("PRAGMA user_version = 2")
+
     def _initialize(self, connection: sqlite3.Connection) -> None:
         connection.execute("BEGIN EXCLUSIVE")
         try:
@@ -520,19 +701,30 @@ class MonitorDatabase:
                 )
                 connection.execute(f"PRAGMA application_id = {APPLICATION_ID}")
                 connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+            elif version == 1:
+                if application_id != APPLICATION_ID:
+                    raise StorageFailure("MONITOR_STORAGE_INVALID", "monitor storage identity is invalid")
+                self._migrate_v1(connection)
             connection.commit()
         except BaseException:
             if connection.in_transaction:
                 connection.rollback()
             raise
 
-    def _preflight_existing(self, *, busy_timeout_ms: int) -> tuple[int, int, int]:
+    def _preflight_existing(
+        self,
+        *,
+        busy_timeout_ms: int,
+        allow_v1: bool = False,
+        identity_retries: int = 2,
+    ) -> tuple[int, int, int]:
         self._require_path(self.path)
         directory_snapshot = self._directory_snapshot(self.path.parent)
         files = self._inspect_storage_files()
         before = files.get(self.path)
         if before is None:
             raise StorageFailure("MONITOR_STORAGE_INVALID", "monitor storage database is missing")
+        before_fingerprint = self._integrity_fingerprint(files)
         try:
             uri = self.path.as_uri() + "?mode=ro&immutable=1"
             connection = sqlite3.connect(
@@ -546,19 +738,35 @@ class MonitorDatabase:
         try:
             self._configure(connection, busy_timeout_ms=busy_timeout_ms)
             with self._integrity_lock:
-                now_ns = _monotonic_ns()
-                full_integrity = (
-                    self._integrity_identity != before[:2]
-                    or now_ns - self._last_integrity_ns >= INTEGRITY_CHECK_INTERVAL_NS
-                )
-                self._validate(
-                    connection,
-                    before=before,
-                    full_integrity=full_integrity,
-                )
+                full_integrity = self._integrity_identity != before_fingerprint
+                version = connection.execute("PRAGMA user_version").fetchone()[0]
+                if allow_v1 and version == 1:
+                    if full_integrity:
+                        row = connection.execute("PRAGMA quick_check(1)").fetchone()
+                        if row is None or row[0] != "ok":
+                            raise StorageFailure(
+                                "MONITOR_STORAGE_CORRUPT",
+                                "monitor storage failed integrity validation",
+                            )
+                    application_id = connection.execute("PRAGMA application_id").fetchone()[0]
+                    if application_id != APPLICATION_ID:
+                        raise StorageFailure(
+                            "MONITOR_STORAGE_INVALID", "monitor storage identity is invalid"
+                        )
+                else:
+                    self._validate(
+                        connection,
+                        before=before,
+                        full_integrity=full_integrity,
+                    )
                 if full_integrity:
-                    self._integrity_identity = before[:2]
-                    self._last_integrity_ns = now_ns
+                    self._integrity_identity = before_fingerprint
+        except StorageFailure:
+            raise
+        except sqlite3.DatabaseError as error:
+            raise StorageFailure(
+                "MONITOR_STORAGE_CORRUPT", "monitor storage is corrupt"
+            ) from error
         finally:
             connection.close()
         self._revalidate_directories(directory_snapshot)
@@ -566,6 +774,14 @@ class MonitorDatabase:
         after = after_files.get(self.path)
         if after is None or before[:2] != after[:2]:
             raise StorageFailure("MONITOR_STORAGE_INVALID", "monitor storage changed during validation")
+        if before_fingerprint != self._integrity_fingerprint(after_files):
+            if identity_retries > 0:
+                return self._preflight_existing(
+                    busy_timeout_ms=busy_timeout_ms,
+                    allow_v1=allow_v1,
+                    identity_retries=identity_retries - 1,
+                )
+            raise StorageFailure("MONITOR_STORAGE_BUSY", "monitor storage is busy")
         return after
 
     def _create_database_file(self) -> tuple[int, int, int]:
@@ -619,7 +835,10 @@ class MonitorDatabase:
         else:
             existed = True
         if existed:
-            before = self._preflight_existing(busy_timeout_ms=busy_timeout_ms)
+            before = self._preflight_existing(
+                busy_timeout_ms=busy_timeout_ms,
+                allow_v1=True,
+            )
         else:
             before = self._create_database_file()
         try:
@@ -636,7 +855,7 @@ class MonitorDatabase:
             self._revalidate_trusted_directories()
             if _identity(self.path)[:2] != before[:2]:
                 raise StorageFailure("MONITOR_STORAGE_INVALID", "monitor storage changed while it was opened")
-            if not existed:
+            if not existed or connection.execute("PRAGMA user_version").fetchone()[0] == 1:
                 self._initialize(connection)
                 before = _identity(self.path)
             self._validate(connection, before=before, full_integrity=not existed)

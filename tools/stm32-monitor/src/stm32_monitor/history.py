@@ -6,6 +6,7 @@ import sqlite3
 import time
 from collections.abc import Iterator, Mapping as MappingABC, Sequence
 from dataclasses import dataclass
+from hashlib import sha256
 from types import MappingProxyType
 from typing import Mapping, cast
 from uuid import UUID
@@ -33,28 +34,6 @@ RETENTION_DELETE_BATCHES = 100
 RETENTION_TIME_BUDGET_NS = 90 * 1_000_000
 RETENTION_STORAGE_TIMEOUT_MS = 95
 
-_HISTORY_ROW_FIELDS = {
-    "binding",
-    "groupId",
-    "groupRevision",
-    "runId",
-    "sequence",
-    "scheduledUnixNs",
-    "scheduledAtUtc",
-    "capturedUnixNs",
-    "capturedAtUtc",
-    "latencyNs",
-    "actualRateHz",
-    "subscriberDrops",
-    "historyDrops",
-    "deadlineDrops",
-    "watch",
-    "status",
-    "typedValue",
-    "code",
-    "definition",
-    "valueOrdinal",
-}
 _HISTORY_CURSOR = re.compile(
     r"(?:[1-9][0-9]{0,18}):(?:0|[1-9][0-9]{0,18})\Z", re.ASCII
 )
@@ -277,56 +256,64 @@ def _history_corrupt() -> StorageFailure:
     return StorageFailure("MONITOR_STORAGE_CORRUPT", "monitor history is corrupt")
 
 
-def _decode_history_row(
+def _decode_history_batch(
     raw: object,
     payload_bytes: object,
+    payload_sha256: object,
+    value_count: object,
     *,
+    workspace_id: str,
     session_id: object,
     run_id: object,
     sequence: object,
     captured_ns: object,
-    ordinal: object,
-) -> tuple[Mapping[str, object], int]:
+) -> SampleBatch:
     try:
-        if type(raw) is not bytes or type(payload_bytes) is not int:
-            raise TypeError("history payload types are invalid")
-        if not raw or payload_bytes != len(raw) or len(raw) > MAX_HISTORY_PAGE_BYTES:
-            raise ValueError("history payload size is invalid")
-        decoded = json.loads(raw.decode("utf-8"), parse_constant=_invalid_json_constant)
-        if type(decoded) is not dict or set(decoded) != _HISTORY_ROW_FIELDS:
-            raise ValueError("history row shape is invalid")
-
-        binding_value = decoded["binding"]
-        watch_value = decoded["watch"]
-        if type(binding_value) is not dict or type(watch_value) is not dict:
-            raise TypeError("history model payload is invalid")
-        status = decoded["status"]
-        code = decoded["code"]
-        definition = decoded["definition"]
-        value_ordinal = decoded["valueOrdinal"]
-        if type(status) is not str or (code is not None and type(code) is not str):
-            raise TypeError("history sample status is invalid")
-        if definition is not None and type(definition) is not dict:
-            raise TypeError("history definition is invalid")
-        if type(value_ordinal) is not int or value_ordinal < 0:
-            raise ValueError("history ordinal is invalid")
         if (
-            decoded["binding"].get("sessionId") != session_id
-            or decoded["runId"] != run_id
-            or decoded["sequence"] != sequence
-            or decoded["capturedUnixNs"] != captured_ns
-            or value_ordinal != ordinal
+            type(raw) is not bytes
+            or type(payload_bytes) is not int
+            or type(payload_sha256) is not str
+            or type(value_count) is not int
         ):
-            raise ValueError("history row does not match its SQLite identity")
-
+            raise TypeError("history batch payload types are invalid")
+        if (
+            not raw
+            or payload_bytes != len(raw)
+            or sha256(raw).hexdigest() != payload_sha256
+            or value_count < 0
+        ):
+            raise ValueError("history batch payload evidence is invalid")
+        decoded = json.loads(raw.decode("utf-8"), parse_constant=_invalid_json_constant)
+        if type(decoded) is not dict or set(decoded) != {
+            "binding", "groupId", "groupRevision", "runId", "sequence",
+            "scheduledUnixNs", "scheduledAtUtc", "capturedUnixNs", "capturedAtUtc",
+            "latencyNs", "actualRateHz", "subscriberDrops", "historyDrops",
+            "deadlineDrops", "values",
+        }:
+            raise ValueError("history batch shape is invalid")
+        binding_value = decoded["binding"]
+        values_value = decoded["values"]
+        if type(binding_value) is not dict or type(values_value) is not list:
+            raise TypeError("history batch model payload is invalid")
+        values: list[SampleValue] = []
+        for value in values_value:
+            if type(value) is not dict or set(value) != {
+                "watch", "status", "typedValue", "code", "definition"
+            }:
+                raise ValueError("history value shape is invalid")
+            watch = value["watch"]
+            if type(watch) is not dict:
+                raise TypeError("history watch payload is invalid")
+            values.append(
+                SampleValue(
+                    WatchItem.from_dict(watch),
+                    cast(str, value["status"]),
+                    typed_value=value["typedValue"],
+                    code=cast(str | None, value["code"]),
+                    definition=cast(Mapping[str, object] | None, value["definition"]),
+                )
+            )
         binding = ObservationBinding.from_dict(binding_value)
-        sample = SampleValue(
-            WatchItem.from_dict(watch_value),
-            status,
-            typed_value=decoded["typedValue"],
-            code=code,
-            definition=definition,
-        )
         batch = SampleBatch(
             binding=binding,
             group_id=UUID(cast(str, decoded["groupId"])),
@@ -340,151 +327,105 @@ def _decode_history_row(
             subscriber_drops=cast(int, decoded["subscriberDrops"]),
             history_drops=cast(int, decoded["historyDrops"]),
             deadline_drops=cast(int, decoded["deadlineDrops"]),
-            values=(sample,),
+            values=tuple(values),
         )
-        if decoded["scheduledAtUtc"] != unix_ns_to_utc(batch.scheduled_unix_ns):
-            raise ValueError("scheduled timestamp is inconsistent")
-        if decoded["capturedAtUtc"] != unix_ns_to_utc(batch.captured_unix_ns):
-            raise ValueError("captured timestamp is inconsistent")
-
-        normalized = batch.to_dict()
-        normalized_value = cast(list[dict[str, object]], normalized.pop("values"))[0]
-        normalized.update(normalized_value)
-        normalized["valueOrdinal"] = value_ordinal
-        if decoded != normalized:
-            raise ValueError("history row does not match its model")
-        return MappingProxyType(decoded), len(raw)
-    except (UnicodeError, json.JSONDecodeError, TypeError, ValueError, OverflowError, OSError, RecursionError) as error:
-        raise _history_corrupt() from error
-
-
-def _slice_from_history_row(
-    decoded: Mapping[str, object],
-    *,
-    ordinal: int,
-    batch_value_count: int,
-) -> HistoryBatchSlice:
-    try:
-        binding_value = decoded["binding"]
-        watch_value = decoded["watch"]
-        if type(binding_value) is not dict or type(watch_value) is not dict:
-            raise TypeError("history model payload is invalid")
-        status = decoded["status"]
-        code = decoded["code"]
-        definition = decoded["definition"]
-        if type(status) is not str or (code is not None and type(code) is not str):
-            raise TypeError("history sample status is invalid")
-        if definition is not None and type(definition) is not dict:
-            raise TypeError("history definition is invalid")
-        sample = SampleValue(
-            WatchItem.from_dict(watch_value),
-            status,
-            typed_value=decoded["typedValue"],
-            code=code,
-            definition=definition,
-        )
-        return HistoryBatchSlice(
-            binding=ObservationBinding.from_dict(binding_value),
-            group_id=UUID(cast(str, decoded["groupId"])),
-            group_revision=cast(int, decoded["groupRevision"]),
-            run_id=UUID(cast(str, decoded["runId"])),
-            sequence=cast(int, decoded["sequence"]),
-            scheduled_unix_ns=cast(int, decoded["scheduledUnixNs"]),
-            captured_unix_ns=cast(int, decoded["capturedUnixNs"]),
-            latency_ns=cast(int, decoded["latencyNs"]),
-            actual_rate_hz=cast(float, decoded["actualRateHz"]),
-            subscriber_drops=cast(int, decoded["subscriberDrops"]),
-            history_drops=cast(int, decoded["historyDrops"]),
-            deadline_drops=cast(int, decoded["deadlineDrops"]),
-            start_ordinal=ordinal,
-            batch_value_count=batch_value_count,
-            values=(sample,),
-        )
-    except (KeyError, TypeError, ValueError, OverflowError, OSError) as error:
-        raise _history_corrupt() from error
-
-
-def _combine_history_slices(
-    rows: Sequence[tuple[int, HistoryBatchSlice]],
-) -> tuple[HistoryBatchSlice, ...]:
-    combined: list[HistoryBatchSlice] = []
-    current_batch_id = -1
-    current: HistoryBatchSlice | None = None
-    values: list[SampleValue] = []
-
-    def finish() -> None:
-        if current is None:
-            return
-        combined.append(
-            HistoryBatchSlice(
-                binding=current.binding,
-                group_id=current.group_id,
-                group_revision=current.group_revision,
-                run_id=current.run_id,
-                sequence=current.sequence,
-                scheduled_unix_ns=current.scheduled_unix_ns,
-                captured_unix_ns=current.captured_unix_ns,
-                latency_ns=current.latency_ns,
-                actual_rate_hz=current.actual_rate_hz,
-                subscriber_drops=current.subscriber_drops,
-                history_drops=current.history_drops,
-                deadline_drops=current.deadline_drops,
-                start_ordinal=current.start_ordinal,
-                batch_value_count=current.batch_value_count,
-                values=tuple(values),
-            )
-        )
-
-    for batch_id, item in rows:
-        if batch_id != current_batch_id:
-            finish()
-            current_batch_id = batch_id
-            current = item
-            values = list(item.values)
-            continue
         if (
-            current is None
-            or _batch_evidence(current) != _batch_evidence(item)
-            or item.start_ordinal != current.start_ordinal + len(values)
+            len(batch.values) != value_count
+            or binding.workspace_id != workspace_id
+            or binding.session_id != session_id
+            or str(batch.run_id) != run_id
+            or batch.sequence != sequence
+            or batch.captured_unix_ns != captured_ns
+            or decoded["scheduledAtUtc"] != unix_ns_to_utc(batch.scheduled_unix_ns)
+            or decoded["capturedAtUtc"] != unix_ns_to_utc(batch.captured_unix_ns)
+            or decoded != batch.to_dict()
         ):
-            raise _history_corrupt()
-        values.extend(item.values)
-    finish()
-    return tuple(combined)
+            raise ValueError("history batch does not match its evidence")
+        return batch
+    except (
+        UnicodeError,
+        json.JSONDecodeError,
+        KeyError,
+        TypeError,
+        ValueError,
+        OverflowError,
+        OSError,
+        RecursionError,
+    ) as error:
+        raise _history_corrupt() from error
 
 
-def _take_history_values(
-    batches: Sequence[HistoryBatchSlice], value_count: int
-) -> tuple[HistoryBatchSlice, ...]:
-    selected: list[HistoryBatchSlice] = []
-    remaining = value_count
-    for batch in batches:
-        if remaining <= 0:
-            break
-        take = min(remaining, len(batch.values))
-        selected.append(
-            HistoryBatchSlice(
-                binding=batch.binding,
-                group_id=batch.group_id,
-                group_revision=batch.group_revision,
-                run_id=batch.run_id,
-                sequence=batch.sequence,
-                scheduled_unix_ns=batch.scheduled_unix_ns,
-                captured_unix_ns=batch.captured_unix_ns,
-                latency_ns=batch.latency_ns,
-                actual_rate_hz=batch.actual_rate_hz,
-                subscriber_drops=batch.subscriber_drops,
-                history_drops=batch.history_drops,
-                deadline_drops=batch.deadline_drops,
-                start_ordinal=batch.start_ordinal,
-                batch_value_count=batch.batch_value_count,
-                values=batch.values[:take],
-            )
+def _encode_history_value(value: SampleValue) -> tuple[str, str, bytes, str]:
+    raw = json.dumps(
+        value.to_dict(),
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    ).encode("utf-8")
+    return value.watch.kind, value.watch.selector, raw, sha256(raw).hexdigest()
+
+
+def _normalize_v1_batch(
+    *,
+    workspace_id: str,
+    batch_row: Sequence[object],
+    value_rows: Sequence[Sequence[object]],
+) -> tuple[bytes, str, tuple[tuple[int, str, str, bytes, str], ...]]:
+    try:
+        batch_id, session_id, run_id, sequence, captured_ns, raw, payload_bytes = batch_row
+        if type(batch_id) is not int or batch_id < 1 or type(raw) is not bytes:
+            raise ValueError("history batch identity is invalid")
+        batch = _decode_history_batch(
+            raw,
+            payload_bytes,
+            sha256(raw).hexdigest(),
+            len(value_rows),
+            workspace_id=workspace_id,
+            session_id=session_id,
+            run_id=run_id,
+            sequence=sequence,
+            captured_ns=captured_ns,
         )
-        remaining -= take
-    if remaining:
-        raise _history_corrupt()
-    return tuple(selected)
+        if len(value_rows) != len(batch.values):
+            raise ValueError("history value count is invalid")
+        evidence = {key: value for key, value in batch.to_dict().items() if key != "values"}
+        normalized: list[tuple[int, str, str, bytes, str]] = []
+        for expected_ordinal, (ordinal, row_raw, row_bytes) in enumerate(value_rows):
+            if (
+                ordinal != expected_ordinal
+                or type(row_raw) is not bytes
+                or type(row_bytes) is not int
+                or not row_raw
+                or row_bytes != len(row_raw)
+                or len(row_raw) > MAX_HISTORY_PAGE_BYTES
+            ):
+                raise ValueError("history row evidence is invalid")
+            decoded = json.loads(
+                row_raw.decode("utf-8"),
+                parse_constant=_invalid_json_constant,
+            )
+            if type(decoded) is not dict:
+                raise ValueError("history row shape is invalid")
+            expected = dict(evidence)
+            expected.update(batch.values[expected_ordinal].to_dict())
+            expected["valueOrdinal"] = expected_ordinal
+            if decoded != expected:
+                raise ValueError("history row does not match canonical batch evidence")
+            kind, selector, value_raw, value_digest = _encode_history_value(
+                batch.values[expected_ordinal]
+            )
+            normalized.append((expected_ordinal, kind, selector, value_raw, value_digest))
+        return raw, sha256(raw).hexdigest(), tuple(normalized)
+    except (
+        UnicodeError,
+        json.JSONDecodeError,
+        TypeError,
+        ValueError,
+        OverflowError,
+        RecursionError,
+    ) as error:
+        raise _history_corrupt() from error
 
 
 class HistoryStore:
@@ -505,24 +446,8 @@ class HistoryStore:
                 separators=(",", ":"),
                 allow_nan=False,
             ).encode("utf-8")
-            rows: list[bytes] = []
-            for ordinal, value in enumerate(batch_payload["values"]):
-                row = {
-                    key: item
-                    for key, item in batch_payload.items()
-                    if key != "values"
-                }
-                row.update(cast(dict[str, object], value))
-                row["valueOrdinal"] = ordinal
-                rows.append(
-                    json.dumps(
-                        row,
-                        ensure_ascii=False,
-                        sort_keys=True,
-                        separators=(",", ":"),
-                        allow_nan=False,
-                    ).encode("utf-8")
-                )
+            batch_digest = sha256(encoded_batch).hexdigest()
+            rows = tuple(_encode_history_value(value) for value in batch.values)
         except (TypeError, ValueError, OverflowError, UnicodeError, RecursionError):
             return failure(operation, "MONITOR_REQUEST_INVALID", "sample batch is invalid")
 
@@ -530,13 +455,27 @@ class HistoryStore:
             connection.execute("BEGIN IMMEDIATE")
             try:
                 cursor = connection.execute(
-                    "INSERT INTO history_batches(session_id,run_id,sequence,captured_ns,payload_json,payload_bytes) VALUES (?,?,?,?,?,?)",
-                    (batch.binding.session_id, str(batch.run_id), batch.sequence, batch.captured_unix_ns, encoded_batch, len(encoded_batch)),
+                    "INSERT INTO history_batches(session_id,run_id,sequence,captured_ns,payload_json,"
+                    "payload_bytes,payload_sha256,value_count) VALUES (?,?,?,?,?,?,?,?)",
+                    (
+                        batch.binding.session_id,
+                        str(batch.run_id),
+                        batch.sequence,
+                        batch.captured_unix_ns,
+                        encoded_batch,
+                        len(encoded_batch),
+                        batch_digest,
+                        len(rows),
+                    ),
                 )
                 batch_id = cursor.lastrowid
                 connection.executemany(
-                    "INSERT INTO history_values(batch_id,ordinal,row_json,payload_bytes) VALUES (?,?,?,?)",
-                    ((batch_id, ordinal, row, len(row)) for ordinal, row in enumerate(rows)),
+                    "INSERT INTO history_values(batch_id,ordinal,selector_kind,selector,value_json,"
+                    "value_bytes,value_sha256) VALUES (?,?,?,?,?,?,?)",
+                    (
+                        (batch_id, ordinal, kind, selector, raw, len(raw), digest)
+                        for ordinal, (kind, selector, raw, digest) in enumerate(rows)
+                    ),
                 )
                 connection.commit()
                 return {"batchId": batch_id, "valueCount": len(rows)}
@@ -584,97 +523,156 @@ class HistoryStore:
         def read(connection: sqlite3.Connection) -> HistoryPage:
             records = connection.execute(
                 """
-                SELECT b.batch_id, v.ordinal, v.row_json, v.payload_bytes,
-                       b.session_id, b.run_id, b.sequence, b.captured_ns,
-                       (SELECT COUNT(*) FROM history_values AS counts
-                        WHERE counts.batch_id = b.batch_id) AS batch_value_count
+                SELECT b.batch_id,b.session_id,b.run_id,b.sequence,b.captured_ns,
+                       b.payload_json,b.payload_bytes,b.payload_sha256,b.value_count
                 FROM history_batches AS b
-                JOIN history_values AS v ON v.batch_id = b.batch_id
                 WHERE b.session_id = ? AND b.captured_ns >= ? AND b.captured_ns < ?
-                  AND (b.batch_id > ? OR (b.batch_id = ? AND v.ordinal > ?))
-                ORDER BY b.batch_id, v.ordinal
-                LIMIT ?
+                  AND b.batch_id >= ?
+                ORDER BY b.batch_id
                 """,
-                (query.session_id, query.start_ns, query.end_ns, cursor_batch, cursor_batch, cursor_ordinal, effective_limit + 1),
-            ).fetchall()
-            if not records:
-                return HistoryPage.create((), next_cursor=None)
-
-            decoded_rows: list[tuple[int, HistoryBatchSlice]] = []
-            for (
-                batch_id,
-                ordinal,
-                raw,
-                payload_bytes,
-                session_id,
-                run_id,
-                sequence,
-                captured_ns,
-                batch_value_count,
-            ) in records[:effective_limit]:
-                if (
-                    type(batch_id) is not int
-                    or batch_id < 1
-                    or type(ordinal) is not int
-                    or ordinal < 0
-                    or type(batch_value_count) is not int
-                    or batch_value_count < 1
-                ):
+                (query.session_id, query.start_ns, query.end_ns, max(1, cursor_batch)),
+            )
+            selected: list[HistoryBatchSlice] = []
+            selected_count = 0
+            last_cursor: str | None = None
+            more = False
+            while True:
+                record = records.fetchone()
+                if record is None:
+                    break
+                (
+                    batch_id, session_id, run_id, sequence, captured_ns, raw,
+                    payload_bytes, payload_digest, batch_value_count,
+                ) = record
+                if type(batch_id) is not int or batch_id < 1:
                     raise _history_corrupt()
-                decoded, _encoded_size = _decode_history_row(
+                batch = _decode_history_batch(
                     raw,
                     payload_bytes,
+                    payload_digest,
+                    batch_value_count,
+                    workspace_id=self._paths.workspace_id,
                     session_id=session_id,
                     run_id=run_id,
                     sequence=sequence,
                     captured_ns=captured_ns,
-                    ordinal=ordinal,
                 )
-                decoded_rows.append(
-                    (
-                        batch_id,
-                        _slice_from_history_row(
-                            decoded,
-                            ordinal=ordinal,
-                            batch_value_count=batch_value_count,
-                        ),
+                indexed = connection.execute(
+                    "SELECT ordinal,selector_kind,selector,value_json,value_bytes,value_sha256 "
+                    "FROM history_values WHERE batch_id = ? ORDER BY ordinal",
+                    (batch_id,),
+                ).fetchall()
+                if len(indexed) != len(batch.values):
+                    raise _history_corrupt()
+                for ordinal, index_row in enumerate(indexed):
+                    stored_ordinal, kind, selector, value_raw, value_bytes, value_digest = index_row
+                    expected_kind, expected_selector, expected_raw, expected_digest = _encode_history_value(
+                        batch.values[ordinal]
                     )
-                )
+                    if (
+                        stored_ordinal != ordinal
+                        or kind != expected_kind
+                        or selector != expected_selector
+                        or type(value_raw) is not bytes
+                        or type(value_bytes) is not int
+                        or value_bytes != len(value_raw)
+                        or type(value_digest) is not str
+                        or sha256(value_raw).hexdigest() != value_digest
+                        or value_digest != expected_digest
+                        or value_raw != expected_raw
+                    ):
+                        raise _history_corrupt()
 
-            batches = _combine_history_slices(decoded_rows)
+                has_later_batch = connection.execute(
+                    "SELECT 1 FROM history_batches WHERE session_id = ? "
+                    "AND captured_ns >= ? AND captured_ns < ? AND batch_id > ? LIMIT 1",
+                    (query.session_id, query.start_ns, query.end_ns, batch_id),
+                ).fetchone() is not None
 
-            def make_page(count: int) -> HistoryPage:
-                next_cursor = None
-                if len(records) > count:
-                    next_cursor = f"{records[count - 1][0]}:{records[count - 1][1]}"
-                return HistoryPage.create(
-                    _take_history_values(batches, count),
-                    next_cursor=next_cursor,
-                )
-
-            try:
-                return make_page(len(decoded_rows))
-            except ValueError as error:
-                if "4 MiB" not in str(error):
-                    raise _history_corrupt() from error
-
-            low = 1
-            high = len(decoded_rows) - 1
-            accepted: HistoryPage | None = None
-            while low <= high:
-                middle = (low + high) // 2
-                try:
-                    candidate = make_page(middle)
-                except ValueError as error:
-                    if "4 MiB" not in str(error):
-                        raise _history_corrupt() from error
-                    high = middle - 1
-                else:
-                    accepted = candidate
-                    low = middle + 1
-            if accepted is None:
-                raise _history_corrupt()
-            return accepted
+                start = cursor_ordinal + 1 if batch_id == cursor_batch else 0
+                if start < 0 or start > len(batch.values):
+                    raise _history_corrupt()
+                for ordinal in range(start, len(batch.values)):
+                    if selected_count >= effective_limit:
+                        more = True
+                        break
+                    value = batch.values[ordinal]
+                    if selected and _batch_evidence(selected[-1])[:-1] == (
+                        batch.binding,
+                        batch.group_id,
+                        batch.group_revision,
+                        batch.run_id,
+                        batch.sequence,
+                        batch.scheduled_unix_ns,
+                        batch.captured_unix_ns,
+                        batch.latency_ns,
+                        batch.actual_rate_hz,
+                        batch.subscriber_drops,
+                        batch.history_drops,
+                        batch.deadline_drops,
+                    ):
+                        previous = selected[-1]
+                        candidate_slice = HistoryBatchSlice(
+                            binding=previous.binding,
+                            group_id=previous.group_id,
+                            group_revision=previous.group_revision,
+                            run_id=previous.run_id,
+                            sequence=previous.sequence,
+                            scheduled_unix_ns=previous.scheduled_unix_ns,
+                            captured_unix_ns=previous.captured_unix_ns,
+                            latency_ns=previous.latency_ns,
+                            actual_rate_hz=previous.actual_rate_hz,
+                            subscriber_drops=previous.subscriber_drops,
+                            history_drops=previous.history_drops,
+                            deadline_drops=previous.deadline_drops,
+                            start_ordinal=previous.start_ordinal,
+                            batch_value_count=len(batch.values),
+                            values=previous.values + (value,),
+                        )
+                        candidate_batches = (*selected[:-1], candidate_slice)
+                    else:
+                        candidate_slice = HistoryBatchSlice(
+                            binding=batch.binding,
+                            group_id=batch.group_id,
+                            group_revision=batch.group_revision,
+                            run_id=batch.run_id,
+                            sequence=batch.sequence,
+                            scheduled_unix_ns=batch.scheduled_unix_ns,
+                            captured_unix_ns=batch.captured_unix_ns,
+                            latency_ns=batch.latency_ns,
+                            actual_rate_hz=batch.actual_rate_hz,
+                            subscriber_drops=batch.subscriber_drops,
+                            history_drops=batch.history_drops,
+                            deadline_drops=batch.deadline_drops,
+                            start_ordinal=ordinal,
+                            batch_value_count=len(batch.values),
+                            values=(value,),
+                        )
+                        candidate_batches = (*selected, candidate_slice)
+                    candidate_more = (
+                        ordinal + 1 < len(batch.values) or has_later_batch
+                    )
+                    candidate_cursor = f"{batch_id}:{ordinal}" if candidate_more else None
+                    try:
+                        HistoryPage.create(candidate_batches, next_cursor=candidate_cursor)
+                    except ValueError as error:
+                        if "4 MiB" not in str(error):
+                            raise _history_corrupt() from error
+                        more = True
+                        break
+                    selected = list(candidate_batches)
+                    selected_count += 1
+                    last_cursor = f"{batch_id}:{ordinal}"
+                if more:
+                    break
+            if not selected:
+                if more:
+                    raise _history_corrupt()
+                return HistoryPage.create((), next_cursor=None)
+            return HistoryPage.create(
+                selected,
+                next_cursor=last_cursor if more else None,
+            )
 
         try:
             page = self._database.read(

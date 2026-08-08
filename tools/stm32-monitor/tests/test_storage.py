@@ -20,6 +20,58 @@ from stm32_toolkit.paths import WorkspacePaths
 LOGICAL_ID = UUID("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
 
 
+def test_fresh_database_uses_normalized_history_schema_v2(tmp_path: Path) -> None:
+    database = MonitorDatabase(_paths(tmp_path))
+    try:
+        version, batch_columns, value_columns = database.write(
+            lambda connection: (
+                connection.execute("PRAGMA user_version").fetchone()[0],
+                [row[1] for row in connection.execute("PRAGMA table_info(history_batches)")],
+                [row[1] for row in connection.execute("PRAGMA table_info(history_values)")],
+            )
+        )
+    finally:
+        database.close()
+
+    assert version == 2
+    assert batch_columns == [
+        "batch_id", "session_id", "run_id", "sequence", "captured_ns",
+        "payload_json", "payload_bytes", "payload_sha256", "value_count",
+    ]
+    assert value_columns == [
+        "batch_id", "ordinal", "selector_kind", "selector", "value_json",
+        "value_bytes", "value_sha256",
+    ]
+
+
+@pytest.mark.parametrize(
+    ("application_id", "version", "expected_code"),
+    [
+        (1, 0, "MONITOR_STORAGE_INVALID"),
+        (0, 99, "MONITOR_STORAGE_VERSION_UNSUPPORTED"),
+        (0, 1, "MONITOR_STORAGE_INVALID"),
+    ],
+)
+def test_initialize_rechecks_sqlite_identity_and_version_inside_exclusive_transaction(
+    tmp_path: Path,
+    application_id: int,
+    version: int,
+    expected_code: str,
+) -> None:
+    database = MonitorDatabase(_paths(tmp_path))
+    connection = sqlite3.connect(":memory:")
+    try:
+        connection.execute(f"PRAGMA application_id = {application_id}")
+        connection.execute(f"PRAGMA user_version = {version}")
+        with pytest.raises(StorageFailure) as rejected:
+            database._initialize(connection)
+        assert rejected.value.code == expected_code
+        assert not connection.in_transaction
+    finally:
+        connection.close()
+        database.close()
+
+
 def _paths(tmp_path: Path, *, logical_id: UUID = LOGICAL_ID) -> WorkspacePaths:
     project = tmp_path / f"project-{logical_id}"
     project.mkdir(parents=True)
@@ -421,6 +473,151 @@ def test_hot_reads_do_not_run_full_quick_check_for_every_connection(tmp_path: Pa
     ]
 
 
+def test_external_file_identity_change_requires_a_new_integrity_check(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    paths = _paths(tmp_path)
+    main = _seed_database(paths)
+    database = MonitorDatabase(paths)
+    statements: list[str] = []
+    real_validate = database._validate
+
+    def observed_validate(connection: sqlite3.Connection, **kwargs) -> None:
+        connection.set_trace_callback(statements.append)
+        real_validate(connection, **kwargs)
+
+    monkeypatch.setattr(database, "_validate", observed_validate)
+    try:
+        assert database.read(lambda connection: 1, empty=0) == 1
+        external = sqlite3.connect(main)
+        try:
+            external.execute(
+                "UPDATE watch_groups SET description = 'externally changed'"
+            )
+            external.commit()
+        finally:
+            external.close()
+        assert database.read(lambda connection: 2, empty=0) == 2
+    finally:
+        database.close()
+
+    assert [statement for statement in statements if "quick_check" in statement] == [
+        "PRAGMA quick_check(1)",
+        "PRAGMA quick_check(1)",
+    ]
+
+
+def test_malformed_database_version_probe_maps_to_storage_corrupt(tmp_path: Path) -> None:
+    paths = _paths(tmp_path)
+    paths.monitor_root.mkdir(parents=True)
+    paths.monitor_root.joinpath("monitor.sqlite3").write_bytes(b"not sqlite")
+    database = MonitorDatabase(paths)
+    try:
+        with pytest.raises(StorageFailure) as corrupt:
+            database.read(lambda connection: None, empty=None)
+        assert corrupt.value.code == "MONITOR_STORAGE_CORRUPT"
+    finally:
+        database.close()
+
+
+def test_identity_change_during_preflight_is_revalidated_before_read(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    paths = _paths(tmp_path)
+    main = _seed_database(paths)
+    database = MonitorDatabase(paths)
+    real_validate = database._validate
+    changed = False
+
+    def change_during_validation(connection: sqlite3.Connection, **kwargs) -> None:
+        nonlocal changed
+        real_validate(connection, **kwargs)
+        if not changed:
+            changed = True
+            external = sqlite3.connect(main)
+            try:
+                external.execute(
+                    "UPDATE watch_groups SET description = 'changed during preflight'"
+                )
+                external.commit()
+            finally:
+                external.close()
+
+    monkeypatch.setattr(database, "_validate", change_during_validation)
+    try:
+        description = database.read(
+            lambda connection: connection.execute(
+                "SELECT description FROM watch_groups"
+            ).fetchone()[0],
+            empty=None,
+        )
+        assert description == "changed during preflight"
+    finally:
+        database.close()
+
+
+def test_hot_readers_progress_while_shared_writer_changes_file_identities(
+    tmp_path: Path,
+) -> None:
+    paths = _paths(tmp_path)
+    stores = [GroupStore(paths) for _ in range(4)]
+    try:
+        with ThreadPoolExecutor(max_workers=8) as executor:
+            mutations = [
+                executor.submit(
+                    stores[index % 4].create_group,
+                    f"Concurrent {index}",
+                    "",
+                    250,
+                    (),
+                    authorized=True,
+                )
+                for index in range(12)
+            ]
+            reads = [
+                executor.submit(stores[index % 4].list_groups)
+                for index in range(24)
+            ]
+        assert [future.result().code for future in mutations] == ["OK"] * 12
+        read_outcomes = [
+            (future.result().code, future.result().message) for future in reads
+        ]
+        assert read_outcomes == [("OK", "")] * 24
+    finally:
+        for store in stores:
+            store.close()
+
+
+def test_continuous_identity_churn_exhausts_bounded_revalidation_as_busy(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    paths = _paths(tmp_path)
+    _seed_database(paths)
+    database = MonitorDatabase(paths)
+    real_fingerprint = database._integrity_fingerprint
+    calls = 0
+
+    def changing_fingerprint(files):
+        nonlocal calls
+        calls += 1
+        fingerprint = real_fingerprint(files)
+        return tuple(
+            (*entry[:-1], entry[-1] + calls)
+            for entry in fingerprint
+        )
+
+    monkeypatch.setattr(database, "_integrity_fingerprint", changing_fingerprint)
+    try:
+        with pytest.raises(StorageFailure) as busy:
+            database.read(lambda connection: 1, empty=0)
+        assert busy.value.code == "MONITOR_STORAGE_BUSY"
+    finally:
+        database.close()
+
+
 def test_storage_filesystem_error_boundaries_fail_closed(tmp_path: Path, monkeypatch) -> None:
     import stm32_monitor.storage as storage_module
 
@@ -675,12 +872,12 @@ def test_history_logical_byte_accounting_is_constant_time_transactional_and_casc
 
         connection.execute("BEGIN IMMEDIATE")
         cursor = connection.execute(
-            "INSERT INTO history_batches(session_id,run_id,sequence,captured_ns,payload_json,payload_bytes) VALUES (?,?,?,?,?,?)",
-            ("session", "run-rollback", 0, 1, b"{}", 10),
+            "INSERT INTO history_batches(session_id,run_id,sequence,captured_ns,payload_json,payload_bytes,payload_sha256,value_count) VALUES (?,?,?,?,?,?,?,?)",
+            ("session", "run-rollback", 0, 1, b"{}", 10, "a" * 64, 1),
         )
         connection.execute(
-            "INSERT INTO history_values(batch_id,ordinal,row_json,payload_bytes) VALUES (?,?,?,?)",
-            (cursor.lastrowid, 0, b"{}", 3),
+            "INSERT INTO history_values(batch_id,ordinal,selector_kind,selector,value_json,value_bytes,value_sha256) VALUES (?,?,?,?,?,?,?)",
+            (cursor.lastrowid, 0, "variable", "counter", b"{}", 3, "b" * 64),
         )
         assert count() == 13
         connection.rollback()
@@ -688,12 +885,15 @@ def test_history_logical_byte_accounting_is_constant_time_transactional_and_casc
 
         connection.execute("BEGIN IMMEDIATE")
         cursor = connection.execute(
-            "INSERT INTO history_batches(session_id,run_id,sequence,captured_ns,payload_json,payload_bytes) VALUES (?,?,?,?,?,?)",
-            ("session", "run-commit", 0, 2, b"{}", 11),
+            "INSERT INTO history_batches(session_id,run_id,sequence,captured_ns,payload_json,payload_bytes,payload_sha256,value_count) VALUES (?,?,?,?,?,?,?,?)",
+            ("session", "run-commit", 0, 2, b"{}", 11, "a" * 64, 2),
         )
         connection.executemany(
-            "INSERT INTO history_values(batch_id,ordinal,row_json,payload_bytes) VALUES (?,?,?,?)",
-            ((cursor.lastrowid, 0, b"{}", 3), (cursor.lastrowid, 1, b"{}", 5)),
+            "INSERT INTO history_values(batch_id,ordinal,selector_kind,selector,value_json,value_bytes,value_sha256) VALUES (?,?,?,?,?,?,?)",
+            (
+                (cursor.lastrowid, 0, "variable", "counter", b"{}", 3, "b" * 64),
+                (cursor.lastrowid, 1, "register", "R0", b"{}", 5, "c" * 64),
+            ),
         )
         connection.commit()
         assert count() == 19
