@@ -36,7 +36,6 @@ MAX_WORKSPACE_EXPORT_BYTES = 512 * 1024 * 1024
 MAX_MANIFEST_BYTES = 16 * 1024
 MAX_RECOVERY_RECORDS = 10
 RECOVERY_TIME_BUDGET_NS = 100 * 1_000_000
-_FORMULA_PREFIXES = ("=", "+", "-", "@", "\t", "\r")
 _replace = os.replace
 _MANIFEST_FIELDS = {
     "protocol", "workspaceId", "sessionId", "exportId", "format",
@@ -130,16 +129,6 @@ class ExportDownloadResult:
     code: str
     message: str
     data: ExportDownload | None
-
-
-def _neutralize(value: object) -> object:
-    if isinstance(value, str):
-        return "'" + value if value.startswith(_FORMULA_PREFIXES) else value
-    if isinstance(value, (list, tuple)):
-        return [_neutralize(item) for item in value]
-    if isinstance(value, Mapping):
-        return {str(key): _neutralize(item) for key, item in value.items()}
-    return value
 
 
 def _plain(value: object) -> object:
@@ -550,11 +539,10 @@ class HistoryExporter:
                             pending_start = ordinal
                             pending_next = ordinal + 1
                     else:
-                        safe = cast(dict[str, object], _neutralize(plain))
                         cast(csv.DictWriter, csv_writer).writerow(
                             {
                                 key: json.dumps(
-                                    safe.get(key),
+                                    plain.get(key),
                                     ensure_ascii=False,
                                     sort_keys=True,
                                     separators=(",", ":"),
@@ -886,13 +874,15 @@ class HistoryExporter:
 
         def read(connection):
             return connection.execute(
-                "SELECT export_id,session_id,format,relative_data_path,relative_manifest_path,sha256,byte_count,value_count,created_at_utc FROM export_records WHERE export_id = ?",
-                (str(export_id),),
+                "SELECT export_id,session_id,format,relative_data_path,relative_manifest_path,sha256,byte_count,value_count,created_at_utc FROM export_records WHERE export_id = ? AND session_id = ?",
+                (str(export_id), self._paths.session_id),
             ).fetchone()
 
         try:
             row = self._database.read(read, empty=None)
             if row is None:
+                return failure(operation, "MONITOR_EXPORT_FAILED", "history export was not found")
+            if row[1] != self._paths.session_id:
                 return failure(operation, "MONITOR_EXPORT_FAILED", "history export was not found")
             artifact, _, _ = self._validate_record(tuple(row), pending=False)
             return success(operation, artifact)

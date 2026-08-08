@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import base64
 import json
 import re
 import sqlite3
+import struct
 import time
 from collections.abc import Iterator, Mapping as MappingABC, Sequence
 from dataclasses import dataclass
@@ -37,9 +39,10 @@ RETENTION_DELETE_BATCHES = 100
 RETENTION_TIME_BUDGET_NS = 90 * 1_000_000
 RETENTION_STORAGE_TIMEOUT_MS = 95
 
-_HISTORY_CURSOR = re.compile(
+_LEGACY_HISTORY_CURSOR = re.compile(
     r"(?:[1-9][0-9]{0,18}):(?:0|[1-9][0-9]{0,18})\Z", re.ASCII
 )
+_HISTORY_CURSOR = re.compile(r"v1\.[A-Za-z0-9_-]{86}\Z", re.ASCII)
 
 
 class _InvalidHistoryCursor(Exception):
@@ -79,7 +82,7 @@ class HistoryPage:
         if actual_count > MAX_HISTORY_VALUES:
             raise ValueError("history page exceeds the 10,000 value limit")
         if self.next_cursor is not None:
-            _, cursor_ordinal = _cursor(self.next_cursor)
+            _, cursor_ordinal = _page_cursor_position(self.next_cursor)
             if not batches or cursor_ordinal != (
                 batches[-1].start_ordinal + len(batches[-1].values) - 1
             ):
@@ -260,18 +263,71 @@ def _encoded_history_page_size_from_batch_bytes(
         candidate = size
 
 
-def _cursor(value: str | None) -> tuple[int, int]:
-    if value is None:
-        return 0, -1
-    if type(value) is not str or _HISTORY_CURSOR.fullmatch(value) is None:
+def _filter_digest(query: HistoryQuery) -> bytes:
+    canonical = json.dumps(
+        [
+            query.start_ns,
+            query.end_ns,
+            str(query.run_id) if query.run_id is not None else None,
+            str(query.group_id) if query.group_id is not None else None,
+            query.selector_kind,
+            query.selector,
+        ],
+        ensure_ascii=False,
+        separators=(",", ":"),
+        allow_nan=False,
+    ).encode("utf-8")
+    return sha256(canonical).digest()
+
+
+def _encode_cursor(batch_id: int, ordinal: int, filter_digest: bytes) -> str:
+    bound = struct.pack(">QQ32s", batch_id, ordinal, filter_digest)
+    payload = bound + sha256(bound).digest()[:16]
+    return "v1." + base64.urlsafe_b64encode(payload).rstrip(b"=").decode("ascii")
+
+
+def _decode_cursor(value: str) -> tuple[int, int, bytes]:
+    if _HISTORY_CURSOR.fullmatch(value) is None:
         raise ValueError("history cursor is invalid")
-    parts = value.split(":")
-    batch_id, ordinal = int(parts[0]), int(parts[1])
+    try:
+        payload = base64.b64decode(
+            value.removeprefix("v1.") + "==", altchars=b"-_", validate=True
+        )
+        batch_id, ordinal, filter_digest, checksum = struct.unpack(
+            ">QQ32s16s", payload
+        )
+    except (ValueError, struct.error):
+        raise ValueError("history cursor is invalid") from None
+    bound = struct.pack(">QQ32s", batch_id, ordinal, filter_digest)
     if (
-        batch_id > MAX_SIGNED_INT64
+        batch_id < 1
+        or batch_id > MAX_SIGNED_INT64
         or ordinal > MAX_SIGNED_INT64
+        or checksum != sha256(bound).digest()[:16]
     ):
         raise ValueError("history cursor is invalid")
+    return batch_id, ordinal, filter_digest
+
+
+def _cursor(
+    value: str | None,
+    expected_filter_digest: bytes,
+) -> tuple[int, int]:
+    if value is None:
+        return 0, -1
+    if type(value) is not str:
+        raise ValueError("history cursor is invalid")
+    batch_id, ordinal, actual_filter_digest = _decode_cursor(value)
+    if actual_filter_digest != expected_filter_digest:
+        raise ValueError("history cursor is invalid")
+    return batch_id, ordinal
+
+
+def _page_cursor_position(value: str) -> tuple[int, int]:
+    if _LEGACY_HISTORY_CURSOR.fullmatch(value) is not None:
+        batch, ordinal = value.split(":")
+        return int(batch), int(ordinal)
+    batch_id, ordinal, _ = _decode_cursor(value)
     return batch_id, ordinal
 
 
@@ -547,7 +603,7 @@ class HistoryStore:
             return _storage_failure(operation, error)
 
     @staticmethod
-    def _validate_query(query: HistoryQuery) -> tuple[int, int]:
+    def _validate_query(query: HistoryQuery) -> tuple[int, int, bytes]:
         if not isinstance(query, HistoryQuery):
             raise ValueError("history query is invalid")
         if (
@@ -577,12 +633,14 @@ class HistoryStore:
             raise ValueError("history query is invalid")
         if query.selector_kind is not None:
             WatchItem(query.selector_kind, cast(str, query.selector))
-        return _cursor(query.cursor)
+        filter_digest = _filter_digest(query)
+        cursor_batch, cursor_ordinal = _cursor(query.cursor, filter_digest)
+        return cursor_batch, cursor_ordinal, filter_digest
 
     def query_history(self, query: HistoryQuery) -> ProtocolResult[HistoryPage]:
         operation = "history.query"
         try:
-            cursor_batch, cursor_ordinal = self._validate_query(query)
+            cursor_batch, cursor_ordinal, filter_digest = self._validate_query(query)
         except ValueError:
             return failure(operation, "MONITOR_HISTORY_QUERY_INVALID", "history query is invalid")
         effective_limit = min(query.limit, MAX_HISTORY_VALUES)
@@ -762,7 +820,9 @@ class HistoryStore:
                         or has_later_unfiltered_batch
                     )
                     candidate_cursor = (
-                        f"{batch_id}:{ordinal}" if candidate_more else None
+                        _encode_cursor(batch_id, ordinal, filter_digest)
+                        if candidate_more
+                        else None
                     )
                     if _encoded_history_page_size_from_batch_bytes(
                         candidate_batch_bytes,
@@ -787,7 +847,7 @@ class HistoryStore:
                         selected.append((batch, ordinal, [value], slice_bytes))
                     selected_batch_bytes = candidate_batch_bytes
                     selected_count += 1
-                    last_cursor = f"{batch_id}:{ordinal}"
+                    last_cursor = _encode_cursor(batch_id, ordinal, filter_digest)
                 if more:
                     break
             if not selected:

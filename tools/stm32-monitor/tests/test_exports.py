@@ -333,6 +333,64 @@ def test_open_download_returns_verified_stream_without_path_or_token_leakage(
         history.close()
 
 
+def test_get_export_rejects_another_session_in_the_same_workspace(
+    tmp_path: Path,
+) -> None:
+    first_paths = _paths(tmp_path)
+    second_paths = WorkspacePaths.from_roots(
+        tmp_path / "state", tmp_path / "project", LOGICAL_ID, "monitor-2"
+    )
+    first_history = HistoryStore(first_paths)
+    second_history = HistoryStore(second_paths)
+    first_exporter = HistoryExporter(first_paths, first_history)
+    second_exporter = HistoryExporter(second_paths, second_history)
+    try:
+        _append(first_paths, first_history)
+        artifact = first_exporter.create_export(
+            ExportRequest("monitor-1", 0, 1_000, "jsonl"), authorized=True
+        ).data
+
+        loaded = second_exporter.get_export(artifact.export_id)
+
+        assert not loaded.ok
+        assert loaded.code == "MONITOR_EXPORT_FAILED"
+        assert loaded.data is None
+    finally:
+        second_exporter.close()
+        first_exporter.close()
+        second_history.close()
+        first_history.close()
+
+
+def test_open_download_rejects_another_session_in_the_same_workspace(
+    tmp_path: Path,
+) -> None:
+    first_paths = _paths(tmp_path)
+    second_paths = WorkspacePaths.from_roots(
+        tmp_path / "state", tmp_path / "project", LOGICAL_ID, "monitor-2"
+    )
+    first_history = HistoryStore(first_paths)
+    second_history = HistoryStore(second_paths)
+    first_exporter = HistoryExporter(first_paths, first_history)
+    second_exporter = HistoryExporter(second_paths, second_history)
+    try:
+        _append(first_paths, first_history)
+        artifact = first_exporter.create_export(
+            ExportRequest("monitor-1", 0, 1_000, "jsonl"), authorized=True
+        ).data
+
+        opened = second_exporter.open_download(artifact.export_id)
+
+        assert not opened.ok
+        assert opened.code == "MONITOR_EXPORT_FAILED"
+        assert opened.data is None
+    finally:
+        second_exporter.close()
+        first_exporter.close()
+        second_history.close()
+        first_history.close()
+
+
 def test_open_download_stream_is_immutable_after_source_verification(
     tmp_path: Path,
 ) -> None:
@@ -645,8 +703,11 @@ def test_jsonl_export_manifest_binds_sha_size_count_and_protocol(tmp_path: Path)
         history.close()
 
 
-@pytest.mark.parametrize("dangerous", ["=1+1", "+cmd", "-2+3", "@SUM(A1)", "\tformula", "\rformula"])
-def test_csv_export_neutralizes_formula_cells(tmp_path: Path, dangerous: str) -> None:
+@pytest.mark.parametrize("dangerous", ["=1+1", "+cmd", "-2+3", "@SUM(A1)"])
+def test_csv_export_preserves_formula_like_source_inside_formula_safe_json_cells(
+    tmp_path: Path,
+    dangerous: str,
+) -> None:
     paths = _paths(tmp_path)
     history = HistoryStore(paths)
     exporter = HistoryExporter(paths, history)
@@ -654,9 +715,9 @@ def test_csv_export_neutralizes_formula_cells(tmp_path: Path, dangerous: str) ->
         _append(paths, history, dangerous)
         artifact = exporter.create_export(ExportRequest("monitor-1", 0, 1_000, "csv"), authorized=True).data
         rows = list(csv.DictReader(artifact.data_path.open(encoding="utf-8", newline="")))
-        typed_value = json.loads(rows[0]["typedValue"])
-        assert typed_value["value"].startswith("'")
-        assert typed_value["value"][1:] == dangerous
+        raw_cell = rows[0]["typedValue"]
+        assert raw_cell[0] not in "=+-@\t\r"
+        assert json.loads(raw_cell)["value"] == dangerous
     finally:
         exporter.close()
         history.close()

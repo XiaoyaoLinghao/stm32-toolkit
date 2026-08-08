@@ -613,7 +613,7 @@ def test_mid_batch_cursor_resumes_256_values_without_gap_and_decodes_batch_once(
     try:
         assert store.append_batch(_wide_batch(paths, 1, captured_ns=1_000, count=256)).ok
         first = store.query_history(HistoryQuery("monitor-1", 0, 2_000, limit=128))
-        assert first.ok and first.data.next_cursor == "1:127"
+        assert first.ok and first.data.next_cursor is not None
 
         calls = 0
         real_decode = history_module._decode_history_batch
@@ -860,6 +860,96 @@ def test_history_filters_run_group_and_exact_symbolic_selector_with_bound_cursor
             )
         )
         assert not mismatched.ok and mismatched.code == "MONITOR_HISTORY_QUERY_INVALID"
+    finally:
+        store.close()
+
+
+@pytest.mark.parametrize(
+    ("source_changes", "resume_changes"),
+    [
+        ({}, {"start_ns": 1}),
+        ({}, {"end_ns": 999}),
+        ({}, {"run_id": None}),
+        ({"run_id": None}, {"run_id": RUN_ID}),
+        ({}, {"group_id": None}),
+        ({"group_id": None}, {"group_id": GROUP_ID}),
+        ({}, {"selector_kind": None, "selector": None}),
+        (
+            {"selector_kind": None, "selector": None},
+            {"selector_kind": "variable", "selector": "counter"},
+        ),
+    ],
+)
+def test_history_cursor_rejects_any_filter_tuple_change_while_row_still_matches(
+    tmp_path: Path,
+    source_changes: dict[str, object],
+    resume_changes: dict[str, object],
+) -> None:
+    paths = _paths(tmp_path)
+    store = HistoryStore(paths)
+    try:
+        assert store.append_batch(_batch(paths, 1, captured_ns=100)).ok
+        assert store.append_batch(_batch(paths, 2, captured_ns=200)).ok
+        source_query = replace(
+            HistoryQuery(
+                "monitor-1",
+                0,
+                1_000,
+                limit=1,
+                run_id=RUN_ID,
+                group_id=GROUP_ID,
+                selector_kind="variable",
+                selector="counter",
+            ),
+            **source_changes,
+        )
+        first = store.query_history(source_query)
+        assert first.ok and first.data.next_cursor is not None
+
+        resumed = store.query_history(
+            replace(
+                source_query,
+                limit=10,
+                cursor=first.data.next_cursor,
+                **resume_changes,
+            )
+        )
+
+        assert not resumed.ok
+        assert resumed.code == "MONITOR_HISTORY_QUERY_INVALID"
+    finally:
+        store.close()
+
+
+def test_history_cursor_is_bounded_opaque_and_rejects_legacy_malformed_and_tampered(
+    tmp_path: Path,
+) -> None:
+    paths = _paths(tmp_path)
+    store = HistoryStore(paths)
+    try:
+        assert store.append_batch(_batch(paths, 1, captured_ns=100)).ok
+        assert store.append_batch(_batch(paths, 2, captured_ns=200)).ok
+        query = HistoryQuery("monitor-1", 0, 1_000, limit=1)
+        first = store.query_history(query)
+        assert first.ok and first.data.next_cursor is not None
+        cursor = first.data.next_cursor
+        assert cursor.startswith("v1.")
+        assert len(cursor.encode("ascii")) <= 128
+        assert ":" not in cursor
+
+        replacement = "A" if cursor[-1] != "A" else "B"
+        position_replacement = "I" if cursor[13] != "I" else "E"
+        invalid_cursors = (
+            "1:0",
+            "v1.",
+            "v2." + cursor.removeprefix("v1."),
+            cursor[:-1] + replacement,
+            cursor[:13] + position_replacement + cursor[14:],
+        )
+        for invalid_cursor in invalid_cursors:
+            invalid = store.query_history(replace(query, cursor=invalid_cursor))
+            assert not invalid.ok
+            assert invalid.code == "MONITOR_HISTORY_QUERY_INVALID"
     finally:
         store.close()
 
