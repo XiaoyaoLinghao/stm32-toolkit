@@ -18,7 +18,7 @@ from stm32_monitor.models import (
     WatchItem,
 )
 from stm32_monitor.exports import ExportArtifact
-from stm32_monitor.history import HistoryPage
+from stm32_monitor.history import HistoryBatchSlice, HistoryPage, flatten_history_page
 from stm32_monitor.protocol import (
     MONITOR_PROTOCOL_VERSION,
     ProtocolResult,
@@ -57,6 +57,34 @@ def _binding() -> ObservationBinding:
         lease_id="lease-1",
         dwarf_sha256="d" * 64,
         svd_sha256="a" * 64,
+    )
+
+
+def _history_slice(
+    values: list[SampleValue],
+    *,
+    start_ordinal: int = 0,
+    batch_value_count: int | None = None,
+    sequence: int = 4,
+) -> HistoryBatchSlice:
+    return HistoryBatchSlice(
+        binding=_binding(),
+        group_id=GROUP_ID,
+        group_revision=3,
+        run_id=RUN_ID,
+        sequence=sequence,
+        scheduled_unix_ns=1_000,
+        captured_unix_ns=1_250,
+        latency_ns=250,
+        actual_rate_hz=4.0,
+        subscriber_drops=1,
+        history_drops=2,
+        deadline_drops=3,
+        start_ordinal=start_ordinal,
+        batch_value_count=(
+            len(values) if batch_value_count is None else batch_value_count
+        ),
+        values=values,
     )
 
 
@@ -369,16 +397,27 @@ def test_protocol_result_validates_invariants_and_known_models_only() -> None:
 def test_protocol_result_snapshots_and_serializes_known_history_and_export_models(
     tmp_path: Path,
 ) -> None:
-    row = {"nested": [{"value": 1}]}
-    page = HistoryPage((row,), None, 32)
+    typed = {"nested": [{"value": 1}]}
+    values = [SampleValue(WatchItem.variable("counter"), "OK", typed_value=typed)]
+    batches = [_history_slice(values)]
+    page = HistoryPage.create(batches, next_cursor=None)
     page_result = success("history.query", page)
-    row["nested"][0]["value"] = 2
-    assert page_result.data.values[0]["nested"] == ({"value": 1},)
-    assert page_result.to_dict()["data"] == {
-        "values": [{"nested": [{"value": 1}]}],
-        "nextCursor": None,
-        "serializedBytes": 32,
+    typed["nested"][0]["value"] = 2
+    values.clear()
+    batches.clear()
+
+    payload = page_result.to_dict()["data"]
+    assert payload["valueCount"] == 1
+    assert payload["batches"][0]["values"][0]["typedValue"] == {
+        "nested": [{"value": 1}]
     }
+    assert set(payload) == {"batches", "valueCount", "nextCursor", "serializedBytes"}
+    assert payload["serializedBytes"] == len(
+        json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    )
+    flattened = tuple(flatten_history_page(page_result.data))
+    assert flattened[0]["valueOrdinal"] == 0
+    assert flattened[0]["binding"]["elfSha256"] == "e" * 64
 
     artifact = ExportArtifact(
         GROUP_ID,
@@ -395,6 +434,100 @@ def test_protocol_result_snapshots_and_serializes_known_history_and_export_model
         ProtocolResult(True, "groups.\x00list", "OK", "", None)
     with pytest.raises(TypeError):
         ProtocolResult(True, "groups.list", "OK", "", None, ())
+
+
+def test_history_page_rejects_subclasses_ordinal_gaps_count_mismatch_and_bad_cursor() -> None:
+    value = SampleValue(WatchItem.variable("counter"), "OK", typed_value=1)
+
+    class DerivedValue(SampleValue):
+        pass
+
+    with pytest.raises((TypeError, ValueError), match="value"):
+        _history_slice(
+            [DerivedValue(WatchItem.variable("counter"), "OK", typed_value=1)]
+        )
+    with pytest.raises(ValueError, match="ordinal"):
+        _history_slice([value, value], start_ordinal=255, batch_value_count=256)
+
+    first = _history_slice([value], start_ordinal=0, batch_value_count=2)
+    second = _history_slice([value], start_ordinal=1, batch_value_count=2)
+    with pytest.raises(ValueError, match="value count"):
+        HistoryPage((first, second), 1, None, 0)
+    with pytest.raises(ValueError, match="cursor"):
+        HistoryPage.create((first, second), next_cursor="01:0")
+
+    class DerivedSlice(HistoryBatchSlice):
+        pass
+
+    derived = DerivedSlice(**{
+        field: getattr(first, field)
+        for field in first.__dataclass_fields__
+    })
+    with pytest.raises((TypeError, ValueError), match="batch"):
+        HistoryPage.create((derived,), next_cursor=None)
+
+
+def test_history_page_enforces_ten_thousand_value_and_four_mib_exact_budgets() -> None:
+    ordinary = SampleValue(
+        WatchItem.variable("counter"),
+        "OK",
+        typed_value={"type": "uint32", "value": 7},
+    )
+    too_many = tuple(
+        _history_slice(
+            [ordinary] * 256,
+            batch_value_count=256,
+            sequence=sequence,
+        )
+        for sequence in range(40)
+    )
+    with pytest.raises(ValueError, match="10,000"):
+        HistoryPage.create(too_many, next_cursor=None)
+
+    huge = SampleValue(
+        WatchItem.variable("counter"),
+        "OK",
+        typed_value="x" * (1024 * 1024),
+    )
+    oversized = _history_slice([huge] * 4, batch_value_count=4)
+    with pytest.raises(ValueError, match="4 MiB"):
+        HistoryPage.create((oversized,), next_cursor=None)
+
+
+def test_history_protocol_serializes_ten_thousand_values_without_relaxing_generic_budget() -> None:
+    slices: list[HistoryBatchSlice] = []
+    remaining = 10_000
+    sequence = 0
+    while remaining:
+        count = min(256, remaining)
+        values = [
+            SampleValue(
+                WatchItem.variable(f"telemetry.channel_{sequence}_{ordinal}"),
+                "OK",
+                typed_value={"type": "uint32", "value": ordinal},
+            )
+            for ordinal in range(count)
+        ]
+        slices.append(
+            _history_slice(
+                values,
+                batch_value_count=256,
+                sequence=sequence,
+            )
+        )
+        remaining -= count
+        sequence += 1
+
+    page = HistoryPage.create(slices, next_cursor="40:15")
+    payload = success("history.query", page).to_dict()["data"]
+    assert payload["valueCount"] == 10_000
+    assert len(
+        json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    ) <= 4 * 1024 * 1024
+    assert sum(len(item["values"]) for item in payload["batches"]) == 10_000
+
+    with pytest.raises(ValueError, match="node limit"):
+        success("generic.result", tuple(range(10_001)))
 
 
 def test_protocol_and_sample_models_reject_nonfinite_oversized_and_xor_states() -> None:

@@ -7,7 +7,7 @@ from uuid import UUID
 import pytest
 
 from stm32_monitor.groups import GroupStore
-from stm32_monitor.history import HistoryQuery, HistoryStore
+from stm32_monitor.history import HistoryQuery, HistoryStore, flatten_history_page
 from stm32_monitor.models import ObservationBinding, SampleBatch, SampleValue, WatchGroup, WatchItem
 from stm32_monitor.storage import StorageFailure
 from stm32_toolkit.paths import WorkspacePaths
@@ -81,8 +81,9 @@ def test_append_and_half_open_query_preserve_full_immutable_evidence(tmp_path: P
         assert store.append_batch(_batch(paths, 1, captured_ns=100)).ok
         assert store.append_batch(_batch(paths, 2, captured_ns=200)).ok
         result = store.query_history(HistoryQuery(session_id="monitor-1", start_ns=100, end_ns=200))
-        assert result.ok and len(result.data.values) == 1
-        row = result.data.values[0]
+        assert result.ok and result.data.value_count == 1
+        assert len(result.data.batches) == 1
+        row = tuple(flatten_history_page(result.data))[0]
         assert row["binding"]["elfSha256"] == "e" * 64
         assert row["groupId"] == str(GROUP_ID)
         assert row["groupRevision"] == 3
@@ -139,6 +140,11 @@ def test_history_paging_caps_values_and_serialized_bytes(tmp_path: Path, monkeyp
         monkeypatch.setattr(history_module, "MAX_HISTORY_PAGE_BYTES", 3_000)
         first = store.query_history(HistoryQuery("monitor-1", 0, 2_000_000_000, limit=10))
         assert first.ok and len(first.data.values) == 2 and first.data.next_cursor is not None
+        first_payload = first.data.to_dict()
+        assert first_payload["serializedBytes"] == len(
+            json.dumps(first_payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        )
+        assert set(first_payload) == {"batches", "valueCount", "nextCursor", "serializedBytes"}
         second = store.query_history(HistoryQuery("monitor-1", 0, 2_000_000_000, limit=10, cursor=first.data.next_cursor))
         assert second.ok and second.data.values[0]["sequence"] > first.data.values[-1]["sequence"]
     finally:
