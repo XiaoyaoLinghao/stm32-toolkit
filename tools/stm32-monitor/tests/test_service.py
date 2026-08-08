@@ -78,6 +78,7 @@ def test_service_binds_dynamic_ipv4_loopback_and_status_is_authenticated() -> No
         assert set(payload) == {
             "protocol",
             "toolkitVersion",
+            "monitorVersion",
             "ok",
             "operation",
             "code",
@@ -86,6 +87,8 @@ def test_service_binds_dynamic_ipv4_loopback_and_status_is_authenticated() -> No
             "details",
         }
         assert payload["protocol"] == "stm32-toolkit-monitor/1"
+        assert payload["monitorVersion"] == "0.4.0"
+        assert endpoint.monitor_version == "0.4.0"
         assert payload["data"]["operation"] == "monitor.status"
         assert runtime.calls[0][0] == "monitor.status"
 
@@ -236,6 +239,9 @@ def test_websocket_is_authenticated_bounded_and_drops_oldest_for_slow_clients() 
                     break
             assert seen[-1]["data"]["sequence"] == 19
             assert any(item["details"].get("subscriberDropped", 0) > 0 for item in seen)
+            assert len(seen) + sum(
+                item["details"].get("subscriberDropped", 0) for item in seen
+            ) == 20
             await ws.close()
 
     asyncio.run(_with_service(scenario, send_delay_seconds=0.02))
@@ -391,5 +397,37 @@ def test_websocket_rejects_client_messages() -> None:
             await ws.send_json({"unexpected": True})
             message = await asyncio.wait_for(ws.receive(), 1)
             assert message.type in {aiohttp.WSMsgType.CLOSE, aiohttp.WSMsgType.CLOSED}
+
+    asyncio.run(_with_service(scenario))
+
+
+def test_duplicate_query_and_json_object_keys_reject_before_dispatch() -> None:
+    async def scenario(runtime, _service, endpoint) -> None:
+        headers = {
+            "Authorization": f"Bearer {TOKEN_BYTES.hex()}",
+            "Content-Type": "application/json",
+        }
+        async with aiohttp.ClientSession() as client:
+            duplicate_query = await client.get(
+                endpoint.url
+                + "/api/v1/history?sessionId=session-a&sessionId=session-b&startNs=0&endNs=1",
+                headers=headers,
+            )
+            duplicate_top = await client.post(
+                endpoint.url + "/api/v1/groups",
+                headers=headers,
+                data=b'{"name":"first","name":"second"}',
+            )
+            duplicate_nested = await client.post(
+                endpoint.url + "/api/v1/groups",
+                headers=headers,
+                data=b'{"items":[{"kind":"variable","expression":"a","expression":"b"}]}',
+            )
+        assert [
+            duplicate_query.status,
+            duplicate_top.status,
+            duplicate_nested.status,
+        ] == [400, 400, 400]
+        assert runtime.calls == []
 
     asyncio.run(_with_service(scenario))

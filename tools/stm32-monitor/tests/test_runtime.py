@@ -3,6 +3,8 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import os
+import stat
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import SimpleNamespace
@@ -76,6 +78,7 @@ class FakeEndpoint:
     token: str = field(default="c" * 64, repr=False)
     workspace_id: str = ""
     session_id: str = ""
+    monitor_version: str = "0.4.0"
 
     @property
     def url(self) -> str:
@@ -175,6 +178,7 @@ class FakeSampler:
         self.inputs = (observation, groups, history)
         self.calls: list[tuple[str, tuple[object, ...], dict[str, object]]] = []
         self.close_calls = 0
+        self.close_error: BaseException | None = None
 
     async def start(self, *args, **kwargs):
         from stm32_monitor.protocol import success
@@ -199,6 +203,8 @@ class FakeSampler:
 
     async def close(self) -> None:
         self.close_calls += 1
+        if self.close_error is not None:
+            raise self.close_error
 
     async def subscribe(self):
         yield {"sequence": 1}
@@ -286,6 +292,7 @@ def test_start_is_project_read_only_and_runtime_record_contains_digest_not_token
         assert record["tokenSha256"] == hashlib.sha256(
             endpoint.token.encode("ascii")
         ).hexdigest()
+        assert record["monitorVersion"] == "0.4.0"
         assert endpoint.token not in runtime.runtime_record.read_text(encoding="utf-8")
         assert endpoint.token not in repr(runtime)
         await runtime.stop()
@@ -777,3 +784,183 @@ def test_wait_closed_and_cleanup_failure_are_owned_and_stable(tmp_path: Path) ->
         assert [item async for item in runtime.live_subscribe()] == []
 
     asyncio.run(scenario())
+
+
+def test_double_cancel_during_partial_start_finishes_all_owned_cleanup_and_unlocks(
+    tmp_path: Path,
+) -> None:
+    from stm32_monitor.models import MonitorConfig
+    from stm32_monitor.runtime import MonitorRuntime
+
+    project = _project(tmp_path)
+    config = MonitorConfig(project, (tmp_path / "data").resolve(), "session-a")
+    start_entered = asyncio.Event()
+    cleanup_entered = asyncio.Event()
+    allow_cleanup = asyncio.Event()
+    closed: list[str] = []
+
+    class ClosingStore(FakeStore):
+        def __init__(self, paths, name):
+            super().__init__(paths)
+            self.name = name
+
+        async def close(self):
+            closed.append(self.name)
+
+    class ClosingExporter:
+        def __init__(self, _paths, _history):
+            pass
+
+        async def close(self):
+            closed.append("exporter")
+
+    class PartialService:
+        async def start(self):
+            start_entered.set()
+            await asyncio.Future()
+
+        async def close(self):
+            cleanup_entered.set()
+            await allow_cleanup.wait()
+            closed.append("service")
+
+    runtime = MonitorRuntime(
+        group_store_factory=lambda paths: ClosingStore(paths, "groups"),
+        history_store_factory=lambda paths: ClosingStore(paths, "history"),
+        exporter_factory=ClosingExporter,
+        sampler_factory=lambda *_args: object(),
+        observation_factory=lambda *_args: object(),
+        service_factory=lambda *_args, **_kwargs: PartialService(),
+    )
+
+    async def scenario() -> None:
+        starting = asyncio.create_task(runtime.start(config))
+        await start_entered.wait()
+        starting.cancel("first")
+        await cleanup_entered.wait()
+        starting.cancel("second")
+        await asyncio.sleep(0)
+        allow_cleanup.set()
+        with pytest.raises(asyncio.CancelledError):
+            await starting
+        assert sorted(closed) == ["exporter", "groups", "history", "service"]
+
+        replacement, replacement_config, *_ = _protocol_runtime(tmp_path / "replacement")
+        # Use the exact same workspace to prove the partial-start lock was released.
+        replacement_config = MonitorConfig(
+            project, config.data_root, config.session_id
+        )
+        await replacement.start(replacement_config)
+        await replacement.stop()
+
+    asyncio.run(scenario())
+
+
+def test_sampler_close_failure_still_closes_observation_once_and_allows_reconnect(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        runtime, config, _groups, _history, _exports, samplers, observations, _requests = (
+            _protocol_runtime(tmp_path)
+        )
+        await runtime.start(config)
+        payload = {
+            "probeId": "probe-a",
+            "expectedBuildId": "a" * 64,
+            "expectedElfSha256": "b" * 64,
+        }
+        try:
+            assert (await runtime.dispatch("monitor.probe.connect", payload)).ok
+            samplers[0].close_error = RuntimeError("SECRET sampler cleanup")
+            released = await runtime.dispatch("monitor.probe.release", {})
+            assert released.ok is False
+            assert released.code == "MONITOR_CLEANUP_FAILED"
+            assert observations[0].close_calls == 1
+            assert samplers[0].close_calls == 1
+            reconnected = await runtime.dispatch("monitor.probe.reconnect", {})
+            assert reconnected.ok is True
+            assert len(observations) == 2
+            assert (await runtime.dispatch("monitor.probe.release", {})).ok
+            assert observations[1].close_calls == 1
+        finally:
+            await runtime.stop()
+
+    asyncio.run(scenario())
+
+
+def test_runtime_lock_rejects_hardlink_redirect_and_descriptor_replacement_without_write(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import stm32_monitor.runtime as runtime_module
+    from stm32_monitor.models import MonitorConfig
+    from stm32_toolkit.paths import WorkspacePaths
+    from stm32_toolkit.project_model import load_project_model
+
+    project = _project(tmp_path)
+    data = (tmp_path / "data").resolve()
+    config = MonitorConfig(project, data, "session-a")
+    model = load_project_model(project)
+    paths = WorkspacePaths.from_roots(
+        data, project, model.logical_project_id, config.session_id
+    )
+    paths.workspace_root.mkdir(parents=True)
+    lock_path = paths.workspace_root / ".monitor-runtime.lock"
+    sentinel = tmp_path / "outside-sentinel.bin"
+    sentinel.write_bytes(b"")
+    os.link(sentinel, lock_path)
+    runtime = runtime_module.MonitorRuntime(
+        group_store_factory=FakeStore,
+        history_store_factory=FakeStore,
+        exporter_factory=FakeExporter,
+        sampler_factory=lambda *_args: object(),
+        observation_factory=lambda *_args: object(),
+        service_factory=lambda *args, **kwargs: _ready_service(*args, **kwargs),
+    )
+    with pytest.raises(runtime_module.MonitorRuntimeError) as hardlink:
+        asyncio.run(runtime.start(config))
+    assert hardlink.value.code == "MONITOR_RUNTIME_PATH_UNSAFE"
+    assert sentinel.read_bytes() == b""
+    lock_path.unlink()
+
+    lock_path.write_bytes(b"x")
+    original_lstat = runtime_module.os.lstat
+
+    def redirected(path):
+        metadata = original_lstat(path)
+        if Path(path) == lock_path:
+            return SimpleNamespace(
+                st_mode=stat.S_IFREG | 0o600,
+                st_dev=metadata.st_dev,
+                st_ino=metadata.st_ino,
+                st_nlink=1,
+                st_file_attributes=0x400,
+            )
+        return metadata
+
+    monkeypatch.setattr(runtime_module.os, "lstat", redirected)
+    redirect_lock = runtime_module._WorkspaceLock(lock_path)
+    with pytest.raises(runtime_module.MonitorRuntimeError):
+        redirect_lock.acquire()
+    monkeypatch.setattr(runtime_module.os, "lstat", original_lstat)
+
+    calls = 0
+
+    def replaced(path):
+        nonlocal calls
+        metadata = original_lstat(path)
+        if Path(path) == lock_path:
+            calls += 1
+            if calls >= 2:
+                return SimpleNamespace(
+                    st_mode=metadata.st_mode,
+                    st_dev=metadata.st_dev,
+                    st_ino=metadata.st_ino + 1,
+                    st_nlink=1,
+                    st_file_attributes=0,
+                )
+        return metadata
+
+    monkeypatch.setattr(runtime_module.os, "lstat", replaced)
+    replaced_lock = runtime_module._WorkspaceLock(lock_path)
+    with pytest.raises(runtime_module.MonitorRuntimeError):
+        replaced_lock.acquire()
