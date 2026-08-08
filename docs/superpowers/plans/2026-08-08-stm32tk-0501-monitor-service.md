@@ -7,7 +7,8 @@
 
 **Module:** `STM32TK-0501-MONITOR-SERVICE`
 
-**Phase:** Codex implementation after the accepted 0.4.0 release
+**Phase:** Local implementation and acceptance complete; remote integration awaits
+explicit user authorization
 
 **Repository:** `https://github.com/XiaoyaoLinghao/stm32-toolkit.git`
 
@@ -18,9 +19,9 @@
 **Specification owner / implementer / reviewer:** Codex / Codex subagents / an
 independent Codex review subagent
 
-**Remote authority:** Codex may push this branch, create and update one Draft PR
-to `master`, mark it ready, and merge after acceptance.  Do not delete the remote
-branch.
+**Remote authority:** None in the final-report phase.  Push, PR creation or
+mutation, ready/merge/close operations, and remote branch deletion each require
+explicit user authorization.
 
 ## Goal
 
@@ -239,14 +240,14 @@ Stable monitor codes include `MONITOR_REQUEST_INVALID`,
 - Create `tools/stm32-toolkit/tests/test_monitor_observation.py`
 - Modify `tools/stm32-toolkit/tests/test_sampling.py`
 
-- [ ] Commit RED tests for exact OBSERVE, no raw overrides, real binding/catalog/SVD,
+- [x] Commit RED tests for exact OBSERVE, no raw overrides, real binding/catalog/SVD,
   side-effect register rejection, same-probe busy, different-probe isolation,
   firmware/provenance changes, cleanup failure, and repeated cancellation.
-- [ ] Implement the public bridge and dedicated safe register sample primitive.
-- [ ] Run Task 1 focused tests plus Probe Service, typed-debug, hardware workflow,
+- [x] Implement the public bridge and dedicated safe register sample primitive.
+- [x] Run Task 1 focused tests plus Probe Service, typed-debug, hardware workflow,
   flash, and handoff adjacent regression tests.
-- [ ] Require branch coverage at least 90% for every new/modified product module.
-- [ ] Commit product and tests without modifying monitor package files.
+- [x] Require branch coverage at least 90% for every new/modified product module.
+- [x] Commit product and tests without modifying monitor package files.
 
 ## Task 2: Immutable models, SQLite groups/history, retention, and export
 
@@ -265,15 +266,15 @@ Stable monitor codes include `MONITOR_REQUEST_INVALID`,
 - Create `tools/stm32-monitor/tests/test_history.py`
 - Create `tools/stm32-monitor/tests/test_exports.py`
 
-- [ ] Commit RED tests for zero default groups, workspace binding, deep immutable
+- [x] Commit RED tests for zero default groups, workspace binding, deep immutable
   JSON-safe models, CAS revisions, every limit, explicit authorization/import,
   corruption/version/redirect/descriptor-swap handling, retention, paging, export
   quotas, and CSV formula protection.
-- [ ] Implement the schema and bounded dedicated writer without exposing database
+- [x] Implement the schema and bounded dedicated writer without exposing database
   paths or accepting workspace IDs.
-- [ ] Run focused tests under simultaneous writers/readers and cancellation.
-- [ ] Require branch coverage at least 90% for every new product module.
-- [ ] Commit product and tests without modifying Toolkit bridge or service files.
+- [x] Run focused tests under simultaneous writers/readers and cancellation.
+- [x] Require branch coverage at least 90% for every new product module.
+- [x] Commit product and tests without modifying Toolkit bridge or service files.
 
 ## Task 3: Single-producer sampler and Probe lifecycle integration
 
@@ -284,14 +285,14 @@ Stable monitor codes include `MONITOR_REQUEST_INVALID`,
 - Create `tools/stm32-monitor/tests/test_probe_session.py`
 - Create `tools/stm32-monitor/tests/test_sampler.py`
 
-- [ ] Commit RED tests for one exact lease, deduplicated reads, typed item errors,
+- [x] Commit RED tests for one exact lease, deduplicated reads, typed item errors,
   monotonic scheduling, no burst, all queue limits/drop counters, stale group
   revision, provenance loss, explicit release/reconnect, and cancellation-safe
   shutdown.
-- [ ] Implement only against the public Task 1 bridge and Task 2 stores.
-- [ ] Prove a slow subscriber and slow SQLite writer cannot block sampling.
-- [ ] Require branch coverage at least 90% for every new product module.
-- [ ] Commit product and tests without modifying Task 1 or Task 2 paths.
+- [x] Implement only against the public Task 1 bridge and Task 2 stores.
+- [x] Prove a slow subscriber and slow SQLite writer cannot block sampling.
+- [x] Require branch coverage at least 90% for every new product module.
+- [x] Commit product and tests without modifying Task 1 or Task 2 paths.
 
 ## Task 4: Authenticated aiohttp runtime, REST/WebSocket protocol, and CLI
 
@@ -307,17 +308,17 @@ Stable monitor codes include `MONITOR_REQUEST_INVALID`,
 - Create `tools/stm32-monitor/tests/test_runtime.py`
 - Create `tools/stm32-monitor/tests/test_cli.py`
 
-- [ ] Commit RED tests for loopback/dynamic-port binding, token secrecy, Bearer and
+- [x] Commit RED tests for loopback/dynamic-port binding, token secrecy, Bearer and
   cookie bootstrap, Host/Origin/peer/DNS-rebinding checks, exact API grammar,
   body/header/message bounds, cross-workspace rejection, WebSocket backpressure,
   runtime locks, and repeated-cancellation shutdown.
-- [ ] Implement `stm32-monitor serve --project --data-root --session-id --json`.
+- [x] Implement `stm32-monitor serve --project --data-root --session-id --json`.
   Do not implement `--open-browser`; that belongs to 0502.
-- [ ] Test two projects and two probes concurrently, same-probe busy behavior,
+- [x] Test two projects and two probes concurrently, same-probe busy behavior,
   listener/record cleanup, no project writes, and no plaintext token in logs,
   exceptions, reprs, records, or test artifacts.
-- [ ] Require branch coverage at least 90% for every new product module.
-- [ ] Commit product and tests without modifying Tasks 1-3 paths.
+- [x] Require branch coverage at least 90% for every new product module.
+- [x] Commit product and tests without modifying Tasks 1-3 paths.
 
 ## Task 5: Remove legacy runtime and integrate the complete service
 
@@ -334,27 +335,29 @@ Stable monitor codes include `MONITOR_REQUEST_INVALID`,
 - Create `docs/codex/returns/STM32TK-0501-MONITOR-SERVICE/implementation-report.md`
 - Update this plan and the phase/roadmap checklists with verified facts only
 
-- [ ] Add import/package-boundary tests proving ordinary Monitor/Toolkit imports do
+- [x] Add import/package-boundary tests proving ordinary Monitor/Toolkit imports do
   not load PyOCD and the Monitor wheel contains no direct backend or old defaults.
-- [ ] Run all 0501 tests, all Probe/typed-debug/hardware regression tests, the full
+- [x] Run all 0501 tests, all Probe/typed-debug/hardware regression tests, the full
   Toolkit suite, and the full Monitor suite with branch coverage at least 90%.
-- [ ] Run `compileall`, `git diff --check`, forbidden API/default/token scans, build
+- [x] Run `compileall`, `git diff --check`, forbidden API/default/token scans, build
   both wheels, install them in a fresh CPython 3.10 and 3.12 environment outside
   the repository, and exercise zero-group CRUD, fake observation, sampling,
   history, export, REST, WebSocket, and cancellation shutdown from the wheels.
-- [ ] Performance gates: 256-value history batch p95 <50 ms; 10,000-value page p95
+- [x] Performance gates: 256-value history batch p95 <50 ms; 10,000-value page p95
   <100 ms; 100,000-value export <5 s and <64 MiB; 100,000-value retention pass <2
   s and no sampler stall >=100 ms; service authentication/status p95 <10 ms.
-- [ ] Windows owner verifies real NTFS junction rejection, SQLite lock/WAL behavior,
-  dynamic loopback binding, and cancellation.  Linux owner verifies the same
-  focused/full suites.  Physical probe tests are deferred to the 0.5 release gate
-  and may not be claimed from software doubles.
-- [ ] Commit the implementation report last.  It records accepted base and code
+- [x] Windows owner verifies real NTFS junction rejection, SQLite lock/WAL behavior,
+  dynamic loopback binding, and cancellation.
+- [ ] **DEFERRED — Linux owner:** verify the same focused/full suites on Linux.
+- [ ] **DEFERRED — 0.5 release-gate physical-board owner:** run physical probe
+  tests; software doubles are not physical-board evidence.
+- [x] Commit the implementation report last.  It records accepted base and code
   head before the report commit, never its own final SHA.
-- [ ] Push the branch, create one Draft PR, independently review the exact
-  accepted-base-to-final-head diff in a fresh clean worktree, correct findings on
-  this same branch, mark ready, merge after `ACCEPTED`, and retain the remote
-  branch.
+- [ ] **REMOTE — not authorized:** push the branch and create or update one Draft
+  PR to `master`; mark ready and merge only after separate explicit authorization,
+  and retain the remote branch.  The exact accepted-base-to-code-head diff has
+  already received local independent whole-branch review and an `ACCEPTED`
+  verdict.
 
 ## Acceptance criteria
 
