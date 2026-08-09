@@ -343,21 +343,30 @@ Stable monitor codes include `MONITOR_REQUEST_INVALID`,
   both wheels, install them in a fresh CPython 3.10 and 3.12 environment outside
   the repository, and exercise zero-group CRUD, fake observation, sampling,
   history, export, REST, WebSocket, and cancellation shutdown from the wheels.
-- [x] Performance gates: 256-value history batch p95 <50 ms; 10,000-value page p95
-  <100 ms; 100,000-value export <5 s and <64 MiB; 100,000-value retention pass <2
-  s and no sampler stall >=100 ms; service authentication/status p95 <10 ms.
+- [ ] **BLOCKED — performance contract:** the previously cited benchmark is
+  ignored and absent from the reviewed commit. At code head
+  `12c8f98df198cd601916ed59c3c81a3ba30aea0e`, its realistic 100,000-value
+  flattened JSONL export returns `MONITOR_EXPORT_TOO_LARGE`; a fresh equivalent
+  CSV diagnostic returns the same code. The committed suite proves lossless
+  20,000-value JSONL pagination, exact 100,000-value JSONL cap cleanup, bounded
+  10,000-value query structure, and retention `<2 s` / ticker `<100 ms`, but it
+  does not durably replace the removed 3-warmup/20-measurement append, query,
+  successful export, and HTTP latency evidence. Do not weaken flattening or the
+  64 MiB production cap to close this gate.
 - [x] Windows owner verifies real NTFS junction rejection, SQLite lock/WAL behavior,
   dynamic loopback binding, and cancellation.
 - [ ] **DEFERRED — Linux owner:** verify the same focused/full suites on Linux.
 - [ ] **DEFERRED — 0.5 release-gate physical-board owner:** run physical probe
   tests; software doubles are not physical-board evidence.
-- [x] Commit the implementation report last.  It records accepted base and code
-  head before the report commit, never its own final SHA.
+- [x] Commit the reconciled implementation report last. It records accepted
+  base and code head before the report commit, never its own final SHA or a
+  moving commit total.
 - [ ] **REMOTE — not authorized:** push the branch and create or update one Draft
   PR to `master`; mark ready and merge only after separate explicit authorization,
-  and retain the remote branch.  The exact accepted-base-to-code-head diff has
-  already received local independent whole-branch review and an `ACCEPTED`
-  verdict.
+  and retain the remote branch. A fresh exact accepted-base-to-final-head
+  independent whole-branch review is still required by the Codex revision plan;
+  the earlier verdict predates the current correction commits and is not
+  final-head acceptance evidence.
 
 ## Acceptance criteria
 
@@ -375,4 +384,5 @@ Stable monitor codes include `MONITOR_REQUEST_INVALID`,
 - The source tree contains no active legacy Monitor runtime path and no direct
   Monitor dependency on PyOCD/CMSIS-SVD/PyYAML.
 - All non-deferred gates pass and the independent review has no remaining P0/P1
-  findings.
+  findings. This criterion is currently open because the performance contract
+  above is blocked and final-head independent review belongs to Task 5.
