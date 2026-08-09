@@ -343,17 +343,17 @@ Stable monitor codes include `MONITOR_REQUEST_INVALID`,
   both wheels, install them in a fresh CPython 3.10 and 3.12 environment outside
   the repository, and exercise zero-group CRUD, fake observation, sampling,
   history, export, REST, WebSocket, and cancellation shutdown from the wheels.
-- [ ] **BLOCKED — performance contract:** the previously cited benchmark is
-  resolved only in part by the user-approved exact 160 MiB production artifact
-  cap. The amendment regression proves realistic lossless 100,000-value JSONL
-  and CSV success below that cap, controlled small-cap overflow cleanup, and
-  exact 512 MiB reservation accounting. An export-only uncached verified-query
-  mode avoids retaining verified batches and reduced measured peak traced memory
-  to 14,937,459 bytes, below the independent 64 MiB gate. The best current
-  untraced create plus verification diagnostic is 5.8381 s, so export `<5 s`
-  remains an open, non-deferred failure. The append p95 is 210.8441 ms against
-  `<50 ms`; its measured SQLite integrity-check bottleneck requires separately
-  approved storage work. The complete named performance gate remains open.
+- [x] **CLOSED — performance contract:** stable product head
+  `4d1bb0cde7391b8d3203254c2bced61a0b7403e4` passes the complete committed
+  three-warmup/twenty-measurement gate: `2 passed in 259.59s`; append p95
+  `32.0928 ms`, query p95 `92.6827 ms`, combined export p95 `4484.7374 ms`,
+  export-only p95 `4162.9681 ms`, and peak traced memory `22,366,608` bytes.
+  The 160 MiB artifact cap, 512 MiB reservation accounting, lossless 100,000-value
+  JSONL/CSV output, controlled overflow cleanup, `<5 s` export, `<50 ms` append,
+  and `<64 MiB` memory gates therefore pass. The earlier `5.8381 s` export and
+  `210.8441 ms` append p95 are superseded historical failures from before the
+  authorized storage/export corrections; they are not current gate status. The
+  pure-code performance blocker is closed.
 - [x] Windows owner verifies real NTFS junction rejection, SQLite lock/WAL behavior,
   dynamic loopback binding, and cancellation.
 - [ ] **DEFERRED — Linux owner:** verify the same focused/full suites on Linux.
@@ -385,5 +385,6 @@ Stable monitor codes include `MONITOR_REQUEST_INVALID`,
 - The source tree contains no active legacy Monitor runtime path and no direct
   Monitor dependency on PyOCD/CMSIS-SVD/PyYAML.
 - All non-deferred gates pass and the independent review has no remaining P0/P1
-  findings. This criterion is currently open because the performance contract
-  above is blocked and final-head independent review belongs to Task 5.
+  findings. This pure-code criterion is satisfied at stable product head
+  `4d1bb0cde7391b8d3203254c2bced61a0b7403e4`; Linux and physical-board evidence
+  remains deferred to the named owners above.
