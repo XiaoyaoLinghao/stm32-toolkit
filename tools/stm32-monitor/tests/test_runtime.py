@@ -652,6 +652,143 @@ def test_probe_and_sampling_lifecycle_uses_only_typed_fixed_inputs(tmp_path: Pat
     asyncio.run(scenario())
 
 
+def test_concurrent_probe_connects_acquire_only_one_observation(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        from stm32_toolkit.result import OperationResult
+
+        entered = asyncio.Event()
+        proceed = asyncio.Event()
+        observations: list[FakeObservation] = []
+
+        async def observation_factory(request):
+            observation = FakeObservation(request.probe_id)
+            observations.append(observation)
+            entered.set()
+            await proceed.wait()
+            return OperationResult.success("monitor.observe.open", observation)
+
+        runtime, config, *_ = _protocol_runtime(
+            tmp_path, observation_factory=observation_factory
+        )
+        await runtime.start(config)
+        first = asyncio.create_task(
+            runtime.dispatch("monitor.probe.connect", {"probeId": "probe-a"})
+        )
+        await entered.wait()
+        second = asyncio.create_task(
+            runtime.dispatch("monitor.probe.connect", {"probeId": "probe-a"})
+        )
+        await asyncio.sleep(0)
+        proceed.set()
+        try:
+            results = await asyncio.gather(first, second)
+            assert sum(result.ok for result in results) == 1
+            rejected = next(result for result in results if not result.ok)
+            assert rejected.code == "MONITOR_PROBE_BUSY"
+            assert len(observations) == 1
+            status = await runtime.dispatch("monitor.status", {})
+            assert status.data["probe"] == {
+                "connected": True,
+                "probeId": "probe-a",
+            }
+            assert (await runtime.dispatch("monitor.probe.release", {})).ok
+            assert observations[0].close_calls == 1
+        finally:
+            proceed.set()
+            await asyncio.gather(first, second, return_exceptions=True)
+            await runtime.stop()
+
+    asyncio.run(scenario())
+
+
+def test_release_cannot_succeed_while_probe_connect_is_in_flight(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        from stm32_toolkit.result import OperationResult
+
+        entered = asyncio.Event()
+        proceed = asyncio.Event()
+        observations: list[FakeObservation] = []
+
+        async def observation_factory(request):
+            observation = FakeObservation(request.probe_id)
+            observations.append(observation)
+            entered.set()
+            await proceed.wait()
+            return OperationResult.success("monitor.observe.open", observation)
+
+        runtime, config, *_ = _protocol_runtime(
+            tmp_path, observation_factory=observation_factory
+        )
+        await runtime.start(config)
+        connecting = asyncio.create_task(
+            runtime.dispatch("monitor.probe.connect", {"probeId": "probe-a"})
+        )
+        await entered.wait()
+        released = await runtime.dispatch("monitor.probe.release", {})
+        proceed.set()
+        try:
+            connected = await connecting
+            assert connected.ok
+            assert not released.ok
+            assert released.code == "MONITOR_PROBE_BUSY"
+            status = await runtime.dispatch("monitor.status", {})
+            assert status.data["probe"] == {
+                "connected": True,
+                "probeId": "probe-a",
+            }
+            assert (await runtime.dispatch("monitor.probe.release", {})).ok
+            assert observations[0].close_calls == 1
+        finally:
+            proceed.set()
+            await asyncio.gather(connecting, return_exceptions=True)
+            await runtime.stop()
+
+    asyncio.run(scenario())
+
+
+def test_connect_cannot_succeed_while_probe_release_is_in_flight(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        release_entered = asyncio.Event()
+        allow_release = asyncio.Event()
+        runtime, config, _groups, _history, _exports, samplers, observations, _requests = (
+            _protocol_runtime(tmp_path)
+        )
+        await runtime.start(config)
+        assert (
+            await runtime.dispatch("monitor.probe.connect", {"probeId": "probe-a"})
+        ).ok
+        sampler = samplers[0]
+
+        async def blocking_close() -> None:
+            sampler.close_calls += 1
+            release_entered.set()
+            await allow_release.wait()
+
+        sampler.close = blocking_close
+        releasing = asyncio.create_task(runtime.dispatch("monitor.probe.release", {}))
+        await release_entered.wait()
+        connected = await runtime.dispatch(
+            "monitor.probe.connect", {"probeId": "probe-a"}
+        )
+        allow_release.set()
+        try:
+            released = await releasing
+            assert released.ok
+            assert not connected.ok
+            assert connected.code == "MONITOR_PROBE_BUSY"
+            assert len(observations) == 1
+            assert observations[0].close_calls == 1
+            assert sampler.close_calls == 1
+            status = await runtime.dispatch("monitor.status", {})
+            assert status.data["probe"] == {"connected": False, "probeId": None}
+        finally:
+            allow_release.set()
+            await asyncio.gather(releasing, return_exceptions=True)
+            await runtime.stop()
+
+    asyncio.run(scenario())
+
+
 def test_probe_discovery_status_catalogs_and_connect_are_server_owned(
     tmp_path: Path,
 ) -> None:

@@ -434,6 +434,7 @@ class MonitorRuntime:
         self._sampler: object | None = None
         self._observation: object | None = None
         self._probe_request: object | None = None
+        self._probe_lifecycle_lock = asyncio.Lock()
         self._binding_epoch = 0
         self._service_drops_total = 0
         self._event_id = 0
@@ -825,7 +826,14 @@ class MonitorRuntime:
         groups = self._group_store
         history = self._history_store
         exporter = self._exporter
-        if paths is None or config is None or groups is None or history is None or exporter is None:
+        if (
+            paths is None
+            or config is None
+            or groups is None
+            or history is None
+            or exporter is None
+            or self._cleanup_task is not None
+        ):
             return failure(operation, "MONITOR_SERVICE_UNAVAILABLE", "Monitor runtime is not started")
         try:
             if operation == "monitor.status":
@@ -898,21 +906,29 @@ class MonitorRuntime:
                     request = self._probe_request
                     if request is None:
                         return failure(operation, "MONITOR_REQUEST_INVALID", "No prior probe request exists")
-                    release_error = await self._release_probe()
-                    if release_error is not None:
-                        if not isinstance(release_error, Exception):
-                            raise release_error
-                        return failure(
-                            operation,
-                            "MONITOR_CLEANUP_FAILED",
-                            "Monitor probe cleanup failed",
-                        )
-                result = await self._connect_probe(
-                    operation, config, request, ProtocolResult, failure, success
-                )
-                if initial_connect and result.ok:
-                    self._probe_request = request
-                return result
+                if self._probe_lifecycle_lock.locked():
+                    return failure(
+                        operation,
+                        "MONITOR_PROBE_BUSY",
+                        "A probe lifecycle transition is already in progress",
+                    )
+                async with self._probe_lifecycle_lock:
+                    if not initial_connect:
+                        release_error = await self._release_probe()
+                        if release_error is not None:
+                            if not isinstance(release_error, Exception):
+                                raise release_error
+                            return failure(
+                                operation,
+                                "MONITOR_CLEANUP_FAILED",
+                                "Monitor probe cleanup failed",
+                            )
+                    result = await self._connect_probe(
+                        operation, config, request, ProtocolResult, failure, success
+                    )
+                    if initial_connect and result.ok:
+                        self._probe_request = request
+                    return result
             if operation in {"monitor.catalog.variables", "monitor.catalog.registers"}:
                 from stm32_toolkit.debug.types import (
                     CatalogPage,
@@ -959,16 +975,23 @@ class MonitorRuntime:
                 return success(operation, data.to_dict())
             if operation == "monitor.probe.release":
                 _exact(payload, set())
-                release_error = await self._release_probe()
-                if release_error is not None:
-                    if not isinstance(release_error, Exception):
-                        raise release_error
+                if self._probe_lifecycle_lock.locked():
                     return failure(
                         operation,
-                        "MONITOR_CLEANUP_FAILED",
-                        "Monitor probe cleanup failed",
+                        "MONITOR_PROBE_BUSY",
+                        "A probe lifecycle transition is already in progress",
                     )
-                return success(operation, {"released": True})
+                async with self._probe_lifecycle_lock:
+                    release_error = await self._release_probe()
+                    if release_error is not None:
+                        if not isinstance(release_error, Exception):
+                            raise release_error
+                        return failure(
+                            operation,
+                            "MONITOR_CLEANUP_FAILED",
+                            "Monitor probe cleanup failed",
+                        )
+                    return success(operation, {"released": True})
             if operation == "monitor.sampling.start":
                 _exact(payload, {"groupId", "expectedRevision"})
                 sampler = self._sampler
@@ -1187,6 +1210,8 @@ class MonitorRuntime:
 
     async def _stop_owned(self) -> None:
         first_error: BaseException | None = None
+        async with self._probe_lifecycle_lock:
+            pass
         for task in (self._heartbeat_task, self._sample_task):
             if task is not None:
                 task.cancel()
