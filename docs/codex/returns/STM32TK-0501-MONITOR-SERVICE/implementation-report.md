@@ -185,28 +185,36 @@ The amendment suite provides these durable assertions:
 - `test_retention_chunks_one_hundred_thousand_values_within_live_deadlines`
   asserts retention `<2 s` and sampler ticker gaps `<100 ms`.
 
-The committed named acceptance command ran on CPython 3.12.13/Windows 11 with
-three warmups and twenty measured runs and passed `2 passed in 306.40s`:
+The committed named acceptance command ran against stable product head
+`4d1bb0cde7391b8d3203254c2bced61a0b7403e4` on CPython 3.12.13/Windows 11 with
+three warmups and twenty measured runs and passed `2 passed in 259.59s`:
 
 - fixture SHA-256
   `8863eb6dcc540e41b945cf60614ab252b2a5b1011045ee55425316e79640a0ce`,
   database 43,974,656 bytes, artifact exactly 121,051,826 bytes;
 - append-256 min/median/p95/max
-  `31.8809/33.22975/35.4072/36.2314 ms` (`<50 ms`);
+  `29.2523/30.2779/32.0928/32.5126 ms` (`<50 ms`);
 - query-10,000 min/median/p95/max
-  `81.6052/85.7886/93.0063/97.8541 ms` (`<100 ms`), serialized size
+  `49.8860/53.50285/92.6827/93.6016 ms` (`<100 ms`), serialized size
   1,431,097 bytes;
-- export-100,000 min/median/p95/max
-  `4426.3112/4532.105/4605.449/4616.638 ms` (`<5 s`), with traced peak
-  22,109,731 bytes (`<64 MiB`);
+- combined export-100,000 min/median/p95/max
+  `3990.9625/4088.3290/4484.7374/4847.6776 ms` (`<5 s`), with traced peak
+  22,357,454 bytes (`<64 MiB`);
 - retention min/median/p95/max
-  `227.0207/233.1193/237.8681/243.6818 ms`, exactly two batches per bounded
-  pass, sampler ticker maximum gap `17.2561 ms`;
-- aiohttp bootstrap p95 `0.4734 ms` and status p95 `0.3955 ms`.
+  `214.1464/220.6511/226.5318/229.5204 ms`, exactly two batches per bounded
+  pass, sampler ticker min/median/p95/max
+  `16.0505/16.16805/16.5337/16.5931 ms`;
+- aiohttp bootstrap min/median/p95/max
+  `0.3784/0.39185/0.4481/0.5074 ms` and status
+  `0.3225/0.34165/0.3681/0.5223 ms`.
 
-The export-only node in the final command passed with min/median/p95/max
-`4379.2962/4434.3619/4520.3302/4682.7776 ms` and traced peak 22,111,239
+The export-only node in the same stable-head command passed with
+min/median/p95/max `3823.6360/3890.3446/4162.9681/4648.0027 ms` and traced peak 22,366,608
 bytes. No performance blocker remains.
+
+The earlier `245dcfe...` performance run (`2 passed in 306.40s`, combined
+export p95 `4605.449 ms`, export-only p95 `4520.3302 ms`) is superseded
+historical evidence and is not claimed as current or final evidence.
 
 Independent review found one validation-to-cache TOCTOU: a fingerprint changed
 after quick-check could have been cached without validation. A deterministic RED
