@@ -3,7 +3,7 @@
 ## 1. Status and ledger
 
 - Module: `STM32TK-0501-MONITOR-SERVICE`
-- Phase: Codex revision Task 6, partial 160 MiB export-cap amendment
+- Phase: Codex revision Task 6, completed 160 MiB performance amendment
 - Specification/architecture owner: Codex
 - Implementation owner for this revision: Codex-created task agents, as authorized
   by `docs/superpowers/plans/2026-08-09-stm32tk-0501-codex-revision.md`
@@ -12,14 +12,14 @@
 - Branch: `codex/STM32TK-0501-MONITOR-SERVICE`
 - Accepted base: `913600f471d8fb0fb5345bdf668ca39ec1faf4d8`
 - Stable code head before this report-only correction commit:
-  `ec4b6b4a95fa09d0826ceaaff7f49045db695f20`
+  `b1e5d1394daf14e1ba8a749ad6721dbaf87bf695`
 - Remote action authorized for Task 6: none
 
 Task 6 does not issue a final review verdict. The user explicitly approved the
-exact 160 MiB production artifact ceiling. Functional 100,000-value JSONL/CSV
-evidence and the separate `<64 MiB` traced-memory gate now pass, but export `<5 s`
-and append p95 `<50 ms` remain open non-deferred failures. A fresh final-head
-independent review also remains assigned to Task 5.
+exact 160 MiB production artifact ceiling and, after disclosure of the bounded
+integrity-trust and batch-static JSONL-prefix risks, explicitly authorized those
+optimizations. Functional, memory, and every named performance gate now pass. A
+fresh final-head acceptance verdict remains assigned to the controller.
 
 No push, PR mutation, ready/merge/close operation, or remote branch deletion was
 performed.
@@ -27,14 +27,14 @@ performed.
 ## 2. Accepted-base-to-code-head scope
 
 `git diff --name-only
-913600f471d8fb0fb5345bdf668ca39ec1faf4d8..ec4b6b4a95fa09d0826ceaaff7f49045db695f20`
-contains 59 paths. They comprise three 0501 plans, one 0501 design, and this
+913600f471d8fb0fb5345bdf668ca39ec1faf4d8..b1e5d1394daf14e1ba8a749ad6721dbaf87bf695`
+contains 60 paths. They comprise three 0501 plans, one 0501 design, and this
 report; Monitor metadata, product modules, legacy deletions, and tests; and the
 bounded Toolkit observation/probe/typed-debug bridge and tests.
 
-`ec4b6b4a95fa09d0826ceaaff7f49045db695f20` is the safe-subset product/docs
-commit that implements and records the exact 160 MiB amendment. This subsequent
-report-only correction does not change that product scope.
+`b1e5d1394daf14e1ba8a749ad6721dbaf87bf695` is the stable product/test head that
+completes the exact 160 MiB amendment. This subsequent report-only correction
+does not change product scope.
 
 The post-review correction commits add these exact behaviors:
 
@@ -46,7 +46,12 @@ The post-review correction commits add these exact behaviors:
   flattened value per JSONL line; and
 - an exact 160 MiB artifact cap within the unchanged 512 MiB workspace quota,
   realistic lossless 100,000-value JSONL/CSV regressions, controlled overflow
-  cleanup, buffered encoding, and an export-only uncached verified query mode.
+  cleanup, bounded buffering, public query pagination with one-page prefetch,
+  batch-static JSONL prefix reuse, and a bounded transient verification cache;
+- per-write path/directory/file/schema/workspace/WAL/size/descriptor checks with
+  validated dev/inode pinning and fingerprint/data-version-bound quick-check
+  amortization; and
+- durable 3-warmup plus 20-measurement performance acceptance tests.
 
 No collaboration app, CI workflow, manifest, validator, browser bundle, second
 backend, or 0502 UI asset was added.
@@ -61,16 +66,17 @@ file, disabled pytest caching, and prevented repository bytecode writes.
 $env:PYTHONPATH='C:\tmp\stm32tk-0501-monitor-service\tools\stm32-monitor\src;C:\tmp\stm32tk-0501-monitor-service\tools\stm32-toolkit\src'
 $env:COVERAGE_FILE='C:\tmp\stm32tk-0501-task4-312-rerun.coverage'
 $env:PYTHONDONTWRITEBYTECODE='1'
-C:\tmp\stm32-toolkit-review-py31213\Scripts\python.exe -m pytest tools\stm32-monitor\tests -q --basetemp C:\tmp\stm32tk-0501-task4-312-basetemp-rerun -p no:cacheprovider --cov=stm32_monitor --cov-branch --cov-report=term --cov-fail-under=90
+C:\tmp\stm32-toolkit-review-py31213\Scripts\python.exe -m pytest tools\stm32-monitor\tests -q --ignore=tools\stm32-monitor\tests\test_performance.py --basetemp C:\tmp\stm32tk-0501-full312-final-basetemp -p no:cacheprovider --cov=stm32_monitor --cov-branch --cov-report=term --cov-fail-under=90
 
 $env:COVERAGE_FILE='C:\tmp\stm32tk-0501-task4-310-12c8f98.coverage'
-C:\tmp\stm32tk-0301-py310\Scripts\python.exe -m pytest tools\stm32-monitor\tests -q --basetemp C:\tmp\stm32tk-0501-task4-310-basetemp -p no:cacheprovider --cov=stm32_monitor --cov-branch --cov-report=term --cov-fail-under=90
+C:\tmp\stm32tk-0301-py310\Scripts\python.exe -m pytest tools\stm32-monitor\tests -q --ignore=tools\stm32-monitor\tests\test_performance.py --basetemp C:\tmp\stm32tk-0501-full310-final-basetemp -p no:cacheprovider --cov=stm32_monitor --cov-branch --cov-report=term --cov-fail-under=90
 ```
 
-- Python 3.12.13: `363 passed in 174.71s`; zero failures, skips, or xfails;
-  total branch-aware coverage `91.25%`.
-- Python 3.10.11: `363 passed in 197.09s`; zero failures, skips, or xfails;
-  total branch-aware coverage `91.26%`.
+- Python 3.12.13: `378 passed in 244.14s`; total branch-aware coverage `91.01%`.
+- Python 3.10.11: `378 passed in 238.60s`; total branch-aware coverage `91.01%`.
+- After the independent-review TOCTOU correction, the exact changed files plus
+  runtime/service direct consumers passed `190 passed in 83.95s`; complete
+  `test_storage.py` separately passed `42 passed in 2.45s`.
 
 | Monitor module | 3.12 coverage | 3.10 coverage |
 | --- | ---: | ---: |
@@ -80,14 +86,14 @@ C:\tmp\stm32tk-0301-py310\Scripts\python.exe -m pytest tools\stm32-monitor\tests
 | `cli.py` | 100% | 100% |
 | `exports.py` | 91% | 91% |
 | `groups.py` | 93% | 93% |
-| `history.py` | 91% | 91% |
+| `history.py` | 90% | 90% |
 | `models.py` | 91% | 91% |
 | `probe_session.py` | 92% | 92% |
 | `protocol.py` | 94% | 94% |
-| `runtime.py` | 91% | 91% |
+| `runtime.py` | 90% | 90% |
 | `sampler.py` | 91% | 91% |
 | `service.py` | 90% | 90% |
-| `storage.py` | 92% | 92% |
+| `storage.py` | 91% | 91% |
 
 Every Monitor product module meets the required 90% branch-aware threshold.
 The first sandboxed 3.12 attempt was invalid because the sandbox denied external
@@ -133,7 +139,7 @@ recorded the existing skip reasons:
 - `test_project_model.py::test_file_symlink_cannot_escape_project_root` — symbolic links unavailable; and
 - `test_project_model.py::test_directory_symlink_parent_cannot_escape_project_root` — symbolic links unavailable.
 
-## 5. Performance amendment and remaining blockers
+## 5. Performance amendment completion
 
 The old report cited
 `.superpowers/sdd/2026-08-08-stm32tk-0501-ui-ready-monitor-contracts/task6_benchmark.py`.
@@ -173,15 +179,34 @@ The amendment suite provides these durable assertions:
 - `test_retention_chunks_one_hundred_thousand_values_within_live_deadlines`
   asserts retention `<2 s` and sampler ticker gaps `<100 ms`.
 
-The representative JSONL artifact is 121,051,826 bytes. After the export-only
-uncached mode, `tracemalloc` measured a 14,937,459-byte peak and zero retained
-verified batches, so the independent `<64 MiB` memory requirement passes. The
-best current untraced create-plus-verification diagnostic is 5.8381 s, above
-`<5 s`. Five untraced pre-buffer/encoder runs ranged from 6.6972 to 6.9388 s.
-The append call-only p95 is 210.8441 ms against `<50 ms`; profiling attributes
-the dominant time to per-write SQLite preflight/integrity work. The export timing
-and append timing failures remain open and non-deferred. The uncommitted complete
-performance candidate is failing and is not presented as durable PASS evidence.
+The committed named acceptance command ran on CPython 3.12.13/Windows 11 with
+three warmups and twenty measured runs and passed `2 passed in 320.66s`:
+
+- fixture SHA-256
+  `8863eb6dcc540e41b945cf60614ab252b2a5b1011045ee55425316e79640a0ce`,
+  database 43,974,656 bytes, artifact exactly 121,051,826 bytes;
+- append-256 min/median/p95/max
+  `27.3045/29.4128/30.3309/30.6097 ms` (`<50 ms`);
+- query-10,000 min/median/p95/max
+  `75.2815/77.1200/78.5969/81.1914 ms` (`<100 ms`), serialized size
+  1,431,097 bytes;
+- export-100,000 min/median/p95/max
+  `4625.4868/4697.96825/4745.2961/4758.9131 ms` (`<5 s`), with traced peak
+  38,766,698 bytes (`<64 MiB`);
+- retention p95 `227.5737 ms`, exactly two batches per bounded pass, sampler
+  ticker maximum gap `16.5801 ms`;
+- aiohttp bootstrap p95 `0.4803 ms` and status p95 `0.4016 ms`.
+
+The separate export-only run also passed with p95 `4669.5824 ms`, maximum
+`4703.1546 ms`, and traced peak 38,773,244 bytes. No performance blocker remains.
+
+Independent review found one validation-to-cache TOCTOU: a fingerprint changed
+after quick-check could have been cached without validation. A deterministic RED
+proved the gap. The final implementation performs WAL/sidecar setup before the
+validation fingerprint, caches only a validation-stable fingerprint, pins the
+first validated main dev/inode, and uses `total_changes` so internally committed
+writes refresh trust while truly read-only `try_write` calls retain their strict
+deadline. The reviewer found no other issue.
 
 ## 6. Wheels and installed-package smoke
 
@@ -220,13 +245,13 @@ did not load PyOCD; and legacy `config`, `elf_parser`, `poller`, `pyocd_session`
 - CPython 3.12 and 3.10 `compileall -q` passed for both product source trees with
   `PYTHONPYCACHEPREFIX` under the external package root.
 - `git diff --check
-  913600f471d8fb0fb5345bdf668ca39ec1faf4d8..ec4b6b4a95fa09d0826ceaaff7f49045db695f20`
+  913600f471d8fb0fb5345bdf668ca39ec1faf4d8..b1e5d1394daf14e1ba8a749ad6721dbaf87bf695`
   passed.
 - Product scans found no direct Monitor PyOCD/CMSIS-SVD/PyYAML import or
   dependency, default group, PyOCD process-kill behavior, non-loopback bind,
   plaintext credential literal, or project-root mutation pattern.
-- Before document edits, `git status --porcelain=v2 --untracked-files=all` was
-  empty; the base-to-code-head inventory contained exactly 59 paths.
+- Before document edits, only the ignored SDD evidence remained outside Git;
+  the base-to-code-head inventory contained exactly 60 paths.
 - A fresh installed-wheel scenario proved project bytes, names, mtimes, modes,
   and Git porcelain unchanged across `groups.list`, start, status, probe connect,
   variable catalog, history query, and stop.
@@ -254,7 +279,8 @@ deferred. No pure-code failure is hidden under a platform deferral.
 - [x] Ignored/absent benchmark PASS claims and stale final acceptance language were removed.
 - [x] Exact 160 MiB cap, 512 MiB quota arithmetic, realistic 100,000-value
   JSONL/CSV losslessness, overflow cleanup, and `<64 MiB` traced memory are proven.
-- [ ] Export `<5 s` and append p95 `<50 ms` remain blocked as detailed above.
+- [x] Export `<5 s`, append p95 `<50 ms`, query, memory, retention/ticker, and
+  aiohttp bootstrap/status named performance gates pass as detailed above.
 - [ ] Fresh final-head independent review and final verdict remain assigned to Task 5.
 - [ ] Linux and physical-board evidence remain deferred to their named owners.
 - [ ] Push/PR/ready/merge/close/delete remains unperformed and requires explicit user authorization.
