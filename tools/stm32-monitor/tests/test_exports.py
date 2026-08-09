@@ -111,23 +111,12 @@ def _batch_slice(batch: SampleBatch) -> HistoryBatchSlice:
     )
 
 
-def _flatten_normalized_jsonl(stream) -> list[dict[str, object]]:
-    rows: list[dict[str, object]] = []
-    for line in stream:
-        batch = json.loads(line)
-        values = batch.pop("values")
-        start_ordinal = batch.pop("startOrdinal")
-        for offset, value in enumerate(values):
-            row = dict(batch)
-            row.update(value)
-            row["valueOrdinal"] = start_ordinal + offset
-            rows.append(row)
-    return rows
-
-
-def test_jsonl_and_csv_exports_losslessly_flatten_normalized_batch_evidence(
+def test_jsonl_and_csv_exports_use_the_same_public_flattened_value_records(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    import stm32_monitor.exports as exports_module
+
     paths = _paths(tmp_path)
     history = HistoryStore(paths)
     exporter = HistoryExporter(paths, history)
@@ -182,6 +171,14 @@ def test_jsonl_and_csv_exports_losslessly_flatten_normalized_batch_evidence(
     try:
         assert history.append_batch(first).ok and history.append_batch(second).ok
         expected = _source_rows((first, second))
+        real_flatten = exports_module.flatten_history_page
+        flattened_pages: list[int] = []
+
+        def observed_flatten(page: HistoryPage):
+            flattened_pages.append(page.value_count)
+            yield from real_flatten(page)
+
+        monkeypatch.setattr(exports_module, "flatten_history_page", observed_flatten)
         jsonl = exporter.create_export(
             ExportRequest("monitor-1", 0, 1_000, "jsonl"), authorized=True
         ).data
@@ -190,19 +187,15 @@ def test_jsonl_and_csv_exports_losslessly_flatten_normalized_batch_evidence(
         ).data
 
         with jsonl.data_path.open("rb") as stream:
-            normalized_records = [json.loads(line) for line in stream]
-            stream.seek(0)
-            actual_jsonl = _flatten_normalized_jsonl(stream)
+            actual_jsonl = [json.loads(line) for line in stream]
         with csv_artifact.data_path.open(encoding="utf-8", newline="") as stream:
             actual_csv = [
                 {key: json.loads(value) for key, value in row.items()}
                 for row in csv.DictReader(stream)
             ]
         assert actual_jsonl == expected
-        assert len(normalized_records) == 2
-        assert [record["startOrdinal"] for record in normalized_records] == [0, 0]
-        assert [len(record["values"]) for record in normalized_records] == [2, 1]
         assert actual_csv == expected
+        assert flattened_pages == [3, 3]
         for artifact in (jsonl, csv_artifact):
             with artifact.data_path.open("rb") as stream:
                 digest = hashlib.sha256()
@@ -219,7 +212,7 @@ def test_jsonl_and_csv_exports_losslessly_flatten_normalized_batch_evidence(
         history.close()
 
 
-def test_jsonl_export_streams_one_hundred_thousand_values_without_gaps(
+def test_jsonl_export_paginates_one_hundred_thousand_flattened_values_without_gaps(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -279,44 +272,34 @@ def test_jsonl_export_streams_one_hundred_thousand_values_without_gaps(
 
     history._database.write(seed)
     del batches
-    observed = {"sql": 0, "decode": 0, "value": 0, "query": 0}
-    real_read = history._database.read
+    queries: list[tuple[int, str | None, int]] = []
+    flattened_pages: list[int] = []
+    real_query = history.query_history
+    real_flatten = exports_module.flatten_history_page
 
-    class CountingConnection:
-        def __init__(self, connection):
-            self._connection = connection
+    def observed_query(query: HistoryQuery):
+        result = real_query(query)
+        if result.ok:
+            queries.append((query.limit, query.cursor, result.data.value_count))
+        return result
 
-        def __getattr__(self, name):
-            return getattr(self._connection, name)
-
-        def execute(self, *args, **kwargs):
-            observed["sql"] += 1
-            return self._connection.execute(*args, **kwargs)
-
-    def counted_read(operation, *, empty):
-        return real_read(lambda connection: operation(CountingConnection(connection)), empty=empty)
-
-    monkeypatch.setattr(history._database, "read", counted_read)
-    for name, key in (("_decode_history_batch", "decode"), ("_encode_history_value", "value")):
-        original = getattr(history_module, name)
-
-        def counted(*args, __original=original, __key=key, **kwargs):
-            observed[__key] += 1
-            return __original(*args, **kwargs)
-
-        monkeypatch.setattr(history_module, name, counted)
-
-    def forbidden_query(_query):
-        observed["query"] += 1
-        raise AssertionError("JSONL export must use one private verified stream")
+    def observed_flatten(page: HistoryPage):
+        flattened_pages.append(page.value_count)
+        yield from real_flatten(page)
 
     try:
-        monkeypatch.setattr(history, "query_history", forbidden_query)
+        monkeypatch.setattr(exports_module, "MAX_EXPORT_BYTES", 256 * 1024 * 1024)
         monkeypatch.setattr(
-            exports_module,
-            "_plain",
-            lambda _value: (_ for _ in ()).throw(
-                AssertionError("normalized JSONL export must not flatten values")
+            history,
+            "query_history",
+            observed_query,
+        )
+        monkeypatch.setattr(exports_module, "flatten_history_page", observed_flatten)
+        monkeypatch.setattr(
+            history,
+            "_stream_verified_batches",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                AssertionError("JSONL export retained the private batch stream")
             ),
         )
         result = exporter.create_export(
@@ -328,19 +311,23 @@ def test_jsonl_export_streams_one_hundred_thousand_values_without_gaps(
         records = 0
         with artifact.data_path.open("rb") as stream:
             for line in stream:
-                batch = json.loads(line)
-                start_ordinal = batch.pop("startOrdinal")
-                values = batch.pop("values")
+                value = json.loads(line)
                 records += 1
-                for offset, value in enumerate(values):
-                    assert value["typedValue"]["value"] == seen
-                    assert start_ordinal + offset == seen % 256
-                    seen += 1
+                assert value["typedValue"]["value"] == seen
+                assert value["batchValueCount"] == min(256, 100_000 - (seen // 256) * 256)
+                assert value["valueOrdinal"] == seen % 256
+                seen += 1
         assert seen == 100_000
-        assert records == 391
+        assert records == 100_000
         assert artifact.value_count == 100_000
-        assert artifact.byte_count <= 64 * 1024 * 1024
-        assert observed == {"sql": 2, "decode": 391, "value": 100_000, "query": 0}
+        assert artifact.byte_count <= exports_module.MAX_EXPORT_BYTES
+        assert len(queries) > 1
+        assert all(limit == history_module.MAX_HISTORY_VALUES for limit, _, _ in queries)
+        assert queries[0][1] is None
+        assert all(cursor is not None for _, cursor, _ in queries[1:])
+        assert max(page_count for _, _, page_count in queries) <= history_module.MAX_HISTORY_VALUES
+        assert flattened_pages == [page_count for _, _, page_count in queries]
+        assert sum(flattened_pages) == 100_000
     finally:
         exporter.close()
         history.close()
@@ -1066,7 +1053,12 @@ def test_get_export_rejects_manifest_shape_recorded_path_and_multiple_links(tmp_
         history.close()
 
 
-def test_export_propagates_history_failure_and_rejects_stalled_cursor(tmp_path: Path, monkeypatch) -> None:
+@pytest.mark.parametrize("format_name", ["jsonl", "csv"])
+def test_export_formats_propagate_history_failure_and_reject_stalled_cursor(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    format_name: str,
+) -> None:
     paths = _paths(tmp_path)
     history = HistoryStore(paths)
     exporter = HistoryExporter(paths, history)
@@ -1075,12 +1067,15 @@ def test_export_propagates_history_failure_and_rejects_stalled_cursor(tmp_path: 
         source_page = history.query_history(HistoryQuery("monitor-1", 0, 1_000)).data
         stalled_page = HistoryPage.create(source_page.batches, next_cursor="1:0")
         monkeypatch.setattr(
-            history, "_stream_verified_batches",
-            lambda query, callback: failure(
-                "history.stream", "MONITOR_STORAGE_CORRUPT", "monitor history is corrupt"
+            history,
+            "query_history",
+            lambda query: failure(
+                "history.query", "MONITOR_STORAGE_CORRUPT", "monitor history is corrupt"
             ),
         )
-        corrupt = exporter.create_export(ExportRequest("monitor-1", 0, 1_000, "jsonl"), authorized=True)
+        corrupt = exporter.create_export(
+            ExportRequest("monitor-1", 0, 1_000, format_name), authorized=True
+        )
         assert corrupt.code == "MONITOR_STORAGE_CORRUPT"
 
         monkeypatch.setattr(
@@ -1088,7 +1083,9 @@ def test_export_propagates_history_failure_and_rejects_stalled_cursor(tmp_path: 
             "query_history",
             lambda query: SimpleNamespace(ok=True, data=stalled_page),
         )
-        stalled = exporter.create_export(ExportRequest("monitor-1", 0, 1_000, "csv"), authorized=True)
+        stalled = exporter.create_export(
+            ExportRequest("monitor-1", 0, 1_000, format_name), authorized=True
+        )
         assert stalled.code == "MONITOR_STORAGE_CORRUPT"
     finally:
         exporter.close()

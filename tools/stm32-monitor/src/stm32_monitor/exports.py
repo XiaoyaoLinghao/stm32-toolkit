@@ -422,41 +422,6 @@ class HistoryExporter:
         with _create_regular_exclusive(target, parent=target.parent) as stream:
             sink = _LimitedHashWriter(stream)
 
-            if request.format == "jsonl":
-                def write_batch(batch) -> None:
-                    nonlocal value_count
-                    plain = batch.to_dict()
-                    values = plain.get("values")
-                    if type(values) is not list:
-                        raise StorageFailure(
-                            "MONITOR_STORAGE_CORRUPT", "monitor history is corrupt"
-                        )
-                    if value_count + len(values) > MAX_EXPORT_VALUES:
-                        raise StorageFailure(
-                            "MONITOR_EXPORT_TOO_LARGE", "export value limit was exceeded"
-                        )
-                    plain["batchValueCount"] = len(values)
-                    plain["startOrdinal"] = 0
-                    sink.write(
-                        json.dumps(
-                            plain,
-                            ensure_ascii=False,
-                            sort_keys=True,
-                            separators=(",", ":"),
-                            allow_nan=False,
-                        ).encode("utf-8")
-                        + b"\n"
-                    )
-                    value_count += len(values)
-
-                streamed = self._history._stream_verified_batches(
-                    HistoryQuery(request.session_id, request.start_ns, request.end_ns),
-                    write_batch,
-                )
-                if not streamed.ok or streamed.data != value_count:
-                    raise StorageFailure(streamed.code, streamed.message)
-                return sink.sha256, sink.byte_count, value_count
-
             csv_writer = None
             if request.format == "csv":
                 csv_writer = csv.DictWriter(
@@ -482,18 +447,30 @@ class HistoryExporter:
                     if value_count >= MAX_EXPORT_VALUES:
                         raise StorageFailure("MONITOR_EXPORT_TOO_LARGE", "export value limit was exceeded")
                     plain = cast(dict[str, object], _plain(value))
-                    cast(csv.DictWriter, csv_writer).writerow(
-                        {
-                            key: json.dumps(
-                                plain.get(key),
+                    if request.format == "jsonl":
+                        sink.write(
+                            json.dumps(
+                                plain,
                                 ensure_ascii=False,
                                 sort_keys=True,
                                 separators=(",", ":"),
                                 allow_nan=False,
-                            )
-                            for key in fieldnames
-                        }
-                    )
+                            ).encode("utf-8")
+                            + b"\n"
+                        )
+                    else:
+                        cast(csv.DictWriter, csv_writer).writerow(
+                            {
+                                key: json.dumps(
+                                    plain.get(key),
+                                    ensure_ascii=False,
+                                    sort_keys=True,
+                                    separators=(",", ":"),
+                                    allow_nan=False,
+                                )
+                                for key in fieldnames
+                            }
+                        )
                     value_count += 1
                 next_cursor = page.data.next_cursor
                 if next_cursor is None:
