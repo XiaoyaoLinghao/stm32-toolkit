@@ -456,8 +456,10 @@ def test_jsonl_export_paginates_flattened_values_under_the_production_cap(
     _seed_numbered_history(paths, history, total_values)
     queries: list[tuple[int, str | None, int]] = []
     flattened_pages: list[int] = []
+    constructed_pages: list[int] = []
     real_query = history._query_history_uncached
     real_flatten = exports_module.flatten_history_page
+    real_page_post_init = HistoryPage.__post_init__
 
     def observed_query(query: HistoryQuery, **kwargs):
         result = real_query(query, **kwargs)
@@ -466,8 +468,14 @@ def test_jsonl_export_paginates_flattened_values_under_the_production_cap(
         return result
 
     def observed_flatten(page: HistoryPage):
+        assert page.serialized_bytes <= 4 * 1024 * 1024
+        assert all(batch._verified_marker is None for batch in page.batches)
         flattened_pages.append(page.value_count)
         yield from real_flatten(page)
+
+    def observed_page_post_init(page: HistoryPage) -> None:
+        real_page_post_init(page)
+        constructed_pages.append(page.value_count)
 
     try:
         monkeypatch.setattr(
@@ -476,6 +484,16 @@ def test_jsonl_export_paginates_flattened_values_under_the_production_cap(
             observed_query,
         )
         monkeypatch.setattr(exports_module, "flatten_history_page", observed_flatten)
+        monkeypatch.setattr(HistoryPage, "__post_init__", observed_page_post_init)
+        monkeypatch.setattr(
+            HistoryPage,
+            "values",
+            property(
+                lambda _page: (_ for _ in ()).throw(
+                    AssertionError("export materialized the compatibility values view")
+                )
+            ),
+        )
         monkeypatch.setattr(
             history,
             "_stream_verified_batches",
@@ -505,11 +523,13 @@ def test_jsonl_export_paginates_flattened_values_under_the_production_cap(
         assert artifact.value_count == total_values
         assert artifact.byte_count <= 64 * 1024 * 1024
         assert len(queries) > 1
-        assert all(limit == history_module.MAX_EXPORT_HISTORY_VALUES for limit, _, _ in queries)
+        assert all(limit == history_module.MAX_HISTORY_VALUES for limit, _, _ in queries)
         assert queries[0][1] is None
         assert all(cursor is not None for _, cursor, _ in queries[1:])
-        assert max(page_count for _, _, page_count in queries) <= history_module.MAX_EXPORT_HISTORY_VALUES
+        assert max(page_count for _, _, page_count in queries) <= history_module.MAX_HISTORY_VALUES
         assert flattened_pages == [page_count for _, _, page_count in queries]
+        assert [count for count in constructed_pages if count] == flattened_pages
+        assert max(constructed_pages) <= history_module.MAX_HISTORY_VALUES
         assert sum(flattened_pages) == total_values
     finally:
         exporter.close()
@@ -582,7 +602,7 @@ def test_realistic_jsonl_and_csv_exports_preserve_all_one_hundred_thousand_value
         for page_counts in query_runs:
             assert len(page_counts) > 1
             assert sum(page_counts) == total_values
-            assert max(page_counts) <= history_module.MAX_EXPORT_HISTORY_VALUES
+            assert max(page_counts) <= history_module.MAX_HISTORY_VALUES
         assert artifacts[0].sha256 != artifacts[1].sha256
     finally:
         exporter.close()

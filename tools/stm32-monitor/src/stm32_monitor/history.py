@@ -21,6 +21,8 @@ from uuid import UUID
 from stm32_toolkit.paths import WorkspacePaths
 
 from .models import (
+    _TRUSTED_HISTORY_SIZE,
+    _TRUSTED_HISTORY_SLICE,
     MAX_SIGNED_INT64,
     HistoryBatchSlice,
     ObservationBinding,
@@ -34,7 +36,6 @@ from .storage import MonitorDatabase, StorageFailure
 
 
 MAX_HISTORY_VALUES = 10_000
-MAX_EXPORT_HISTORY_VALUES = 20_000
 MAX_HISTORY_PAGE_BYTES = 4 * 1024 * 1024
 # A persisted batch must fit within one maximum history response.  Migration
 # checks SQLite's BLOB length against this ceiling before fetching the payload.
@@ -240,6 +241,7 @@ def _verified_history_slice(
     batch: SampleBatch,
     start_ordinal: int,
     values: Sequence[SampleValue],
+    serialized_bytes: int,
 ) -> HistoryBatchSlice:
     snapshot = tuple(values)
     if (
@@ -255,27 +257,33 @@ def _verified_history_slice(
             value is not batch.values[start_ordinal + offset]
             for offset, value in enumerate(snapshot)
         )
+        or type(serialized_bytes) is not int
+        or serialized_bytes < 1
     ):
         raise TypeError("verified history slice is invalid")
-    result = object.__new__(HistoryBatchSlice)
-    for name, value in (
-        ("binding", batch.binding),
-        ("group_id", batch.group_id),
-        ("group_revision", batch.group_revision),
-        ("run_id", batch.run_id),
-        ("sequence", batch.sequence),
-        ("scheduled_unix_ns", batch.scheduled_unix_ns),
-        ("captured_unix_ns", batch.captured_unix_ns),
-        ("latency_ns", batch.latency_ns),
-        ("actual_rate_hz", float(batch.actual_rate_hz)),
-        ("subscriber_drops", batch.subscriber_drops),
-        ("history_drops", batch.history_drops),
-        ("deadline_drops", batch.deadline_drops),
-        ("start_ordinal", start_ordinal),
-        ("batch_value_count", len(batch.values)),
-        ("values", snapshot),
-    ):
-        object.__setattr__(result, name, value)
+    result = HistoryBatchSlice(
+        binding=batch.binding,
+        group_id=batch.group_id,
+        group_revision=batch.group_revision,
+        run_id=batch.run_id,
+        sequence=batch.sequence,
+        scheduled_unix_ns=batch.scheduled_unix_ns,
+        captured_unix_ns=batch.captured_unix_ns,
+        latency_ns=batch.latency_ns,
+        actual_rate_hz=batch.actual_rate_hz,
+        subscriber_drops=batch.subscriber_drops,
+        history_drops=batch.history_drops,
+        deadline_drops=batch.deadline_drops,
+        start_ordinal=start_ordinal,
+        batch_value_count=len(batch.values),
+        values=snapshot,
+    )
+    object.__setattr__(
+        result,
+        "_verified_serialized_bytes",
+        (_TRUSTED_HISTORY_SIZE, serialized_bytes),
+    )
+    object.__setattr__(result, "_verified_marker", _TRUSTED_HISTORY_SLICE)
     return result
 
 
@@ -285,25 +293,16 @@ def _verified_history_page(
     value_count: int,
     next_cursor: str | None,
     serialized_bytes: int,
-    maximum_values: int | None = None,
 ) -> HistoryPage:
-    if maximum_values is None:
-        maximum_values = MAX_HISTORY_VALUES
     snapshot = tuple(batches)
     if (
         any(type(batch) is not HistoryBatchSlice for batch in snapshot)
         or value_count != sum(len(batch.values) for batch in snapshot)
-        or type(maximum_values) is not int
-        or not MAX_HISTORY_VALUES <= maximum_values <= MAX_EXPORT_HISTORY_VALUES
-        or value_count > maximum_values
+        or value_count > MAX_HISTORY_VALUES
         or (snapshot and serialized_bytes > MAX_HISTORY_PAGE_BYTES)
     ):
         raise TypeError("verified history page is invalid")
-    result = object.__new__(HistoryPage)
-    object.__setattr__(result, "batches", snapshot)
-    object.__setattr__(result, "value_count", value_count)
-    object.__setattr__(result, "next_cursor", next_cursor)
-    object.__setattr__(result, "serialized_bytes", serialized_bytes)
+    result = HistoryPage(snapshot, value_count, next_cursor, serialized_bytes)
     object.__setattr__(result, "_verified_marker", _TRUSTED_HISTORY_PAGE)
     return result
 
@@ -313,17 +312,35 @@ def _encoded_history_page_size(
     value_count: int,
     next_cursor: str | None,
 ) -> int:
-    batch_bytes = sum(
-        len(
-            json.dumps(
-                batch.to_dict(),
-                ensure_ascii=False,
-                separators=(",", ":"),
-                allow_nan=False,
-            ).encode("utf-8")
+    verified_sizes: list[int] = []
+    for batch in batches:
+        verified_size = batch._verified_serialized_bytes
+        if (
+            type(verified_size) is not tuple
+            or len(verified_size) != 2
+            or verified_size[0] is not _TRUSTED_HISTORY_SIZE
+            or type(verified_size[1]) is not int
+            or verified_size[1] < 1
+        ):
+            verified_sizes = []
+            break
+        verified_sizes.append(verified_size[1])
+    if verified_sizes:
+        for batch in batches:
+            object.__setattr__(batch, "_verified_serialized_bytes", None)
+        batch_bytes = sum(verified_sizes)
+    else:
+        batch_bytes = sum(
+            len(
+                json.dumps(
+                    batch.to_dict(),
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                    allow_nan=False,
+                ).encode("utf-8")
+            )
+            for batch in batches
         )
-        for batch in batches
-    )
     if batches:
         batch_bytes += len(batches) - 1
     return _encoded_history_page_size_from_batch_bytes(
@@ -340,7 +357,7 @@ def _encoded_history_page_size_from_batch_bytes(
         len(b'{"batches":[')
         + batch_bytes
         + len(b'],"valueCount":')
-        + len(str(value_count).encode("ascii"))
+        + len(str(value_count))
         + len(b',"nextCursor":')
         + len(
             json.dumps(
@@ -354,7 +371,7 @@ def _encoded_history_page_size_from_batch_bytes(
     )
     candidate = fixed_bytes + 1
     while True:
-        size = fixed_bytes + len(str(candidate).encode("ascii"))
+        size = fixed_bytes + len(str(candidate))
         if size == candidate:
             return size
         candidate = size
@@ -483,7 +500,10 @@ def _history_corrupt() -> StorageFailure:
 def _canonical_json_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
     result: dict[str, object] = {}
     for key, value in pairs:
-        if unicodedata.normalize("NFC", key) != key or key in result:
+        if (
+            (not key.isascii() and unicodedata.normalize("NFC", key) != key)
+            or key in result
+        ):
             raise ValueError("history JSON object key is not canonical")
         result[key] = value
     return result
@@ -551,8 +571,11 @@ def _decode_history_batch(
                 code=cast(str | None, value["code"]),
                 definition=cast(Mapping[str, object] | None, value["definition"]),
             )
+            selector_field = (
+                "expression" if sample.watch.kind == "variable" else "registerPath"
+            )
             if (
-                watch != sample.watch.to_dict()
+                watch.get(selector_field) != sample.watch.selector
                 or value["status"] != sample.status
                 or value["code"] != sample.code
             ):
@@ -843,13 +866,11 @@ class HistoryStore:
         query: HistoryQuery,
         *,
         transient_cache: dict[str, object] | None = None,
-        maximum_values: int | None = None,
     ) -> ProtocolResult[HistoryPage]:
         return self._query_history(
             query,
             cache_verified=False,
             transient_cache=transient_cache,
-            maximum_values=maximum_values,
         )
 
     def _query_history(
@@ -858,26 +879,13 @@ class HistoryStore:
         *,
         cache_verified: bool,
         transient_cache: dict[str, object] | None = None,
-        maximum_values: int | None = None,
     ) -> ProtocolResult[HistoryPage]:
         operation = "history.query"
         try:
             cursor_batch, cursor_ordinal, filter_digest = self._validate_query(query)
         except ValueError:
             return failure(operation, "MONITOR_HISTORY_QUERY_INVALID", "history query is invalid")
-        if maximum_values is None:
-            maximum_values = MAX_HISTORY_VALUES
-        if (
-            type(maximum_values) is not int
-            or not MAX_HISTORY_VALUES <= maximum_values <= MAX_EXPORT_HISTORY_VALUES
-            or (cache_verified and maximum_values != MAX_HISTORY_VALUES)
-        ):
-            return failure(
-                operation,
-                "MONITOR_HISTORY_QUERY_INVALID",
-                "history query is invalid",
-            )
-        effective_limit = min(query.limit, maximum_values)
+        effective_limit = min(query.limit, MAX_HISTORY_VALUES)
         observed_snapshot: tuple[tuple[str, int, int, int, int], ...] | None = None
         pending_cache: list[_VerifiedHistoryBatch] = []
 
@@ -945,7 +953,8 @@ class HistoryStore:
             selected: list[tuple[SampleBatch, int, list[SampleValue], int]] = []
             selected_batch_bytes = 0
             selected_count = 0
-            last_cursor: str | None = None
+            last_batch_id: int | None = None
+            last_ordinal: int | None = None
             more = False
             cursor_validated = query.cursor is None
             while True:
@@ -1114,7 +1123,7 @@ class HistoryStore:
                         len(b'{"batches":[')
                         + candidate_batch_bytes
                         + len(b'],"valueCount":')
-                        + len(str(candidate_count).encode("ascii"))
+                        + len(str(candidate_count))
                         + len(b',"nextCursor":')
                         + len(b'"v1.')
                         + 107
@@ -1122,9 +1131,7 @@ class HistoryStore:
                         + len(b',"serializedBytes":')
                         + len(b"}")
                     )
-                    candidate_size = fixed_bytes + len(
-                        str(fixed_bytes + 8).encode("ascii")
-                    )
+                    candidate_size = fixed_bytes + len(str(fixed_bytes + 8))
                     if candidate_size > MAX_HISTORY_PAGE_BYTES:
                         terminal_without_cursor = False
                         if (
@@ -1137,16 +1144,14 @@ class HistoryStore:
                                 len(b'{"batches":[')
                                 + candidate_batch_bytes
                                 + len(b'],"valueCount":')
-                                + len(str(candidate_count).encode("ascii"))
+                                + len(str(candidate_count))
                                 + len(b',"nextCursor":null')
                                 + len(b',"serializedBytes":')
                                 + len(b"}")
                             )
                             no_cursor_size = no_cursor_fixed + 1
                             while True:
-                                exact_size = no_cursor_fixed + len(
-                                    str(no_cursor_size).encode("ascii")
-                                )
+                                exact_size = no_cursor_fixed + len(str(no_cursor_size))
                                 if exact_size == no_cursor_size:
                                     break
                                 no_cursor_size = exact_size
@@ -1172,7 +1177,8 @@ class HistoryStore:
                         selected.append((batch, ordinal, [value], slice_bytes))
                     selected_batch_bytes = candidate_batch_bytes
                     selected_count += 1
-                    last_cursor = f"{batch_id}:{ordinal}"
+                    last_batch_id = batch_id
+                    last_ordinal = ordinal
                 if more:
                     break
             else:
@@ -1187,15 +1193,19 @@ class HistoryStore:
                 return HistoryPage.create((), next_cursor=None)
             next_cursor = None
             if more:
-                if last_cursor is None:
+                if last_batch_id is None or last_ordinal is None:
                     raise _history_corrupt()
-                last_batch, last_ordinal = (int(part) for part in last_cursor.split(":"))
                 next_cursor = _encode_cursor(
-                    last_batch, last_ordinal, filter_digest, self._cursor_key
+                    last_batch_id, last_ordinal, filter_digest, self._cursor_key
                 )
             final_batches = tuple(
-                _verified_history_slice(batch, start_ordinal, values)
-                for batch, start_ordinal, values, _ in selected
+                _verified_history_slice(
+                    batch,
+                    start_ordinal,
+                    values,
+                    serialized_bytes,
+                )
+                for batch, start_ordinal, values, serialized_bytes in selected
             )
             serialized_bytes = _encoded_history_page_size_from_batch_bytes(
                 selected_batch_bytes,
@@ -1207,7 +1217,6 @@ class HistoryStore:
                 value_count=selected_count,
                 next_cursor=next_cursor,
                 serialized_bytes=serialized_bytes,
-                maximum_values=maximum_values,
             )
 
         try:
@@ -1218,7 +1227,6 @@ class HistoryStore:
                     value_count=0,
                     next_cursor=None,
                     serialized_bytes=_EMPTY_HISTORY_PAGE_BYTES,
-                    maximum_values=maximum_values,
                 ),
             )
             if cache_verified and observed_snapshot is not None:

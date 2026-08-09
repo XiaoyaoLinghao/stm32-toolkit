@@ -771,8 +771,9 @@ def test_history_protocol_snapshot_rejects_forged_current_object_graph(
             pass
 
         derived = DerivedBatch(**{
-            field: getattr(batch, field)
-            for field in batch.__dataclass_fields__
+            name: getattr(batch, name)
+            for name, definition in batch.__dataclass_fields__.items()
+            if definition.init
         })
         object.__setattr__(page, "batches", (derived,))
     elif forgery == "binding-subclass":
@@ -851,8 +852,9 @@ def test_history_page_rejects_subclasses_ordinal_gaps_count_mismatch_and_bad_cur
         pass
 
     derived = DerivedSlice(**{
-        field: getattr(first, field)
-        for field in first.__dataclass_fields__
+        name: getattr(first, name)
+        for name, definition in first.__dataclass_fields__.items()
+        if definition.init
     })
     with pytest.raises((TypeError, ValueError), match="batch"):
         HistoryPage.create((derived,), next_cursor=None)

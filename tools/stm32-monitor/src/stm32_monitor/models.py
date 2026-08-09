@@ -29,15 +29,56 @@ _SHA256 = re.compile(r"[0-9a-f]{64}\Z")
 _WORKSPACE_ID = re.compile(r"[0-9a-f]{24}\Z")
 _GIT_SHA = re.compile(r"[0-9a-f]{40}(?:[0-9a-f]{24})?\Z")
 _PROBE_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,255}\Z")
+_CONTROL_TEXT = re.compile(r"[\x00-\x1f]")
 _UTC_TIMESTAMP = re.compile(
     r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z\Z"
 )
 
 
 _MAPPING_PROXY = type(MappingProxyType({}))
+_TRUSTED_HISTORY_SLICE = object()
+_TRUSTED_HISTORY_SIZE = object()
 
 
 def _freeze_json(value: object) -> object:
+    # History decoding commonly supplies shallow JSON objects whose values are
+    # already exact JSON scalars.  Validate that shape in one pass while
+    # retaining the same depth/node/string/numeric and NFC-key invariants.
+    if type(value) is dict:
+        if len(value) + 1 > MAX_JSON_NODES:
+            raise ValueError("JSON value exceeds its node limit")
+        simple_result: dict[str, object] = {}
+        simple_string_chars = 0
+        simple = True
+        for key, item in value.items():
+            if type(key) is not str:
+                raise TypeError("JSON object keys must be strings")
+            normalized = key if key.isascii() else unicodedata.normalize("NFC", key)
+            simple_string_chars += len(normalized)
+            if normalized in simple_result:
+                raise ValueError("JSON object keys must be unique after normalization")
+            if item is None or type(item) is bool:
+                frozen_item = item
+            elif type(item) is int:
+                if not MIN_SIGNED_INT64 <= item <= MAX_SIGNED_INT64:
+                    raise ValueError("JSON integer exceeds the signed 64-bit limit")
+                frozen_item = item
+            elif type(item) is float:
+                if not math.isfinite(item):
+                    raise ValueError("JSON number must be finite")
+                frozen_item = item
+            elif type(item) is str:
+                simple_string_chars += len(item)
+                frozen_item = item
+            else:
+                simple = False
+                break
+            if simple_string_chars > MAX_JSON_STRING_CHARS:
+                raise ValueError("JSON value exceeds its string limit")
+            simple_result[normalized] = frozen_item
+        if simple:
+            return MappingProxyType(simple_result)
+
     nodes = 0
     string_chars = 0
     active: set[int] = set()
@@ -83,7 +124,7 @@ def _freeze_json(value: object) -> object:
                 for key, item in current.items():
                     if type(key) is not str:
                         raise TypeError("JSON object keys must be strings")
-                    normalized = unicodedata.normalize("NFC", key)
+                    normalized = key if key.isascii() else unicodedata.normalize("NFC", key)
                     string_chars += len(normalized)
                     if string_chars > MAX_JSON_STRING_CHARS:
                         raise ValueError("JSON value exceeds its string limit")
@@ -130,9 +171,10 @@ def unix_ns_to_utc(value: int) -> str:
 
 
 def _require_text(value: str, label: str, maximum: int, *, allow_empty: bool = False) -> str:
-    if not isinstance(value, str) or "\x00" in value or any(ord(char) < 32 for char in value):
+    if not isinstance(value, str) or _CONTROL_TEXT.search(value) is not None:
         raise ValueError(f"{label} is invalid")
-    normalized = unicodedata.normalize("NFC", value.strip())
+    stripped = value.strip()
+    normalized = stripped if stripped.isascii() else unicodedata.normalize("NFC", stripped)
     if (not normalized and not allow_empty) or len(normalized) > maximum:
         raise ValueError(f"{label} is invalid")
     return normalized
@@ -797,6 +839,12 @@ class HistoryBatchSlice:
     start_ordinal: int
     batch_value_count: int
     values: tuple[SampleValue, ...]
+    _verified_marker: object | None = field(
+        default=None, init=False, repr=False, compare=False
+    )
+    _verified_serialized_bytes: tuple[object, int] | None = field(
+        default=None, init=False, repr=False, compare=False
+    )
 
     def __post_init__(self) -> None:
         if type(self.binding) is not ObservationBinding:
@@ -861,6 +909,9 @@ class HistoryBatchSlice:
         }
 
     def immutable_snapshot(self) -> "HistoryBatchSlice":
+        if self._verified_marker is _TRUSTED_HISTORY_SLICE:
+            object.__setattr__(self, "_verified_marker", None)
+            return self
         if (
             type(self) is not HistoryBatchSlice
             or type(self.binding) is not ObservationBinding
@@ -870,8 +921,10 @@ class HistoryBatchSlice:
             or any(type(value) is not SampleValue for value in self.values)
         ):
             raise TypeError("history batch snapshot type is invalid")
+        verified_size = self._verified_serialized_bytes
+        object.__setattr__(self, "_verified_serialized_bytes", None)
         values = tuple(value.immutable_snapshot() for value in self.values)
-        return HistoryBatchSlice(
+        result = HistoryBatchSlice(
             binding=ObservationBinding.from_dict(self.binding.to_dict()),
             group_id=UUID(str(self.group_id)),
             group_revision=self.group_revision,
@@ -888,3 +941,12 @@ class HistoryBatchSlice:
             batch_value_count=self.batch_value_count,
             values=values,
         )
+        if (
+            type(verified_size) is tuple
+            and len(verified_size) == 2
+            and verified_size[0] is _TRUSTED_HISTORY_SIZE
+            and type(verified_size[1]) is int
+            and verified_size[1] > 0
+        ):
+            object.__setattr__(result, "_verified_serialized_bytes", verified_size)
+        return result

@@ -17,7 +17,7 @@ import pytest
 
 from stm32_monitor.groups import GroupStore
 from stm32_monitor.history import (
-    MAX_EXPORT_HISTORY_VALUES,
+    MAX_HISTORY_VALUES,
     HistoryPage,
     HistoryQuery,
     HistoryStore,
@@ -802,7 +802,7 @@ def test_ten_thousand_value_query_normalizes_and_serializes_final_page_once(
             "evidence_values": 10_000,
             "encode_value": 0,
             "cursor": 0,
-            "size": 1,
+            "size": 3,
         }
         observed.update({key: 0 for key in observed})
         warm = store.query_history(
@@ -815,7 +815,7 @@ def test_ten_thousand_value_query_normalizes_and_serializes_final_page_once(
             "evidence_values": 0,
             "encode_value": 0,
             "cursor": 0,
-            "size": 1,
+                "size": 3,
         }
     finally:
         store.close()
@@ -976,12 +976,11 @@ def test_export_page_cache_is_bounded_and_invalidated_by_an_owned_append(
                 "monitor-1",
                 0,
                 2_000_000_000,
-                limit=MAX_EXPORT_HISTORY_VALUES,
+                limit=MAX_HISTORY_VALUES,
             ),
             transient_cache=transient_cache,
-            maximum_values=MAX_EXPORT_HISTORY_VALUES,
         )
-        assert first.ok and first.data.value_count == MAX_EXPORT_HISTORY_VALUES
+        assert first.ok and first.data.value_count == MAX_HISTORY_VALUES
         assert first.data.next_cursor is not None
         cached = transient_cache["batches"]
         assert type(cached) is dict and len(cached) == 2
@@ -1004,15 +1003,14 @@ def test_export_page_cache_is_bounded_and_invalidated_by_an_owned_append(
                 "monitor-1",
                 0,
                 2_000_000_000,
-                limit=MAX_EXPORT_HISTORY_VALUES,
+                limit=MAX_HISTORY_VALUES,
                 cursor=first.data.next_cursor,
             ),
             transient_cache=transient_cache,
-            maximum_values=MAX_EXPORT_HISTORY_VALUES,
         )
-        assert second.ok and second.data.value_count == 736
-        assert second.data.next_cursor is None
-        assert decoded == 3
+        assert second.ok and second.data.value_count == MAX_HISTORY_VALUES
+        assert second.data.next_cursor is not None
+        assert decoded == 40
         assert transient_cache["snapshot"] != previous_snapshot
         refreshed = transient_cache["batches"]
         assert type(refreshed) is dict and len(refreshed) == 2

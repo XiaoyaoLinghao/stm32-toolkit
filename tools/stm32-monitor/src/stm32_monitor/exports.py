@@ -19,10 +19,9 @@ from uuid import UUID, uuid4
 from stm32_toolkit.paths import WorkspacePaths, require_safe_session_id
 
 from .history import (
-    MAX_EXPORT_HISTORY_VALUES,
+    MAX_HISTORY_VALUES,
     HistoryQuery,
     HistoryStore,
-    MAX_HISTORY_VALUES,
     flatten_history_page,
 )
 from .models import MAX_SIGNED_INT64
@@ -446,6 +445,7 @@ class HistoryExporter:
             "definition",
             "valueOrdinal",
         )
+        jsonl_dynamic = dict.fromkeys(jsonl_dynamic_fields)
         with _create_regular_exclusive(target, parent=target.parent) as stream:
             sink = _LimitedHashWriter(stream)
             encode_json = json.JSONEncoder(
@@ -470,11 +470,10 @@ class HistoryExporter:
                         request.session_id,
                         request.start_ns,
                         request.end_ns,
-                        limit=MAX_EXPORT_HISTORY_VALUES,
+                        limit=MAX_HISTORY_VALUES,
                         cursor=page_cursor,
                     ),
                     transient_cache=transient_history_cache,
-                    maximum_values=MAX_EXPORT_HISTORY_VALUES,
                 )
 
             with ThreadPoolExecutor(
@@ -487,7 +486,7 @@ class HistoryExporter:
                         raise StorageFailure(page.code, page.message)
                     next_cursor = page.data.next_cursor
                     if next_cursor is not None and (
-                        next_cursor == cursor or not page.data.values
+                        next_cursor == cursor or page.data.value_count == 0
                     ):
                         raise StorageFailure(
                             "MONITOR_STORAGE_CORRUPT",
@@ -519,13 +518,11 @@ class HistoryExporter:
                                 jsonl_static_prefix = (
                                     encode_json(static)[:-1].encode("utf-8") + b","
                                 )
-                            dynamic = {
-                                key: plain[key]
-                                for key in jsonl_dynamic_fields
-                            }
+                            for key in jsonl_dynamic_fields:
+                                jsonl_dynamic[key] = plain[key]
                             jsonl_batch_buffer.extend(jsonl_static_prefix)
                             jsonl_batch_buffer.extend(
-                                encode_json(dynamic)[1:].encode("utf-8")
+                                encode_json(jsonl_dynamic)[1:].encode("utf-8")
                             )
                             jsonl_batch_buffer.append(0x0A)
                         else:
