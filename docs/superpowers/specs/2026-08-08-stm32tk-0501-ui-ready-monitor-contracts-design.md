@@ -213,6 +213,10 @@ remains streamed, quota-bound, crash-recoverable, formula-neutralized for CSV,
 and tied to its manifest SHA-256. Download revalidates database record, manifest,
 path, descriptor identity, size, and digest before sending bytes.
 
+The production artifact ceiling is exactly 160 MiB under the existing 512 MiB
+workspace quota. The artifact ceiling is independent of the 64 MiB peak traced
+memory acceptance gate.
+
 ### 10. 0501 / 0502 boundary
 
 0501 owns the Python service, schema migration, catalog descriptor APIs,
@@ -236,7 +240,7 @@ adds:
   duplicates, or missing evidence.
 - Three warmups plus 20 runs: history query p95 <100 ms on the named fixture.
 - 256-value append p95 <50 ms.
-- 100,000-value export <5 s and peak traced memory <64 MiB.
+- 100,000-value export <5 s, artifact <160 MiB, and peak traced memory <64 MiB.
 - 100,000-value retention pass <2 s and no sampler stall >=100 ms.
 - Real aiohttp bootstrap/status p95 <10 ms.
 - CPython 3.10 and 3.12 full Monitor suites, every new product module branch

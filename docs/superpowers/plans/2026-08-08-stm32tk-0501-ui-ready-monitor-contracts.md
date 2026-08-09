@@ -15,6 +15,9 @@
 - A fresh workspace has zero groups and read/status/catalog operations do not modify the project.
 - History pages contain at most 10,000 values and at most 4 MiB of exact compact `data` JSON.
 - Ordinary request/response and WebSocket message limits remain 1 MiB.
+- Export artifacts are capped at exactly 160 MiB within the existing 512 MiB
+  workspace export quota; peak traced export memory remains independently capped
+  below 64 MiB.
 - Catalog pages contain at most 256 descriptors and never expose raw addresses or absolute paths.
 - Service startup never automatically connects a probe or starts sampling.
 - No new runtime dependency is added in 0501.
@@ -151,6 +154,10 @@ git commit -m "feat(monitor): migrate history storage to schema v2"
 - [ ] **Step 1: Add RED lossless export tests**
 
 Export normalized pages to JSONL and CSV and compare every flattened value/evidence/ordinal with the source batches. Assert 100,000 values produce no gaps or duplicates. Preserve CSV formula neutralization and manifest SHA/size/count evidence.
+
+The realistic 100,000-value JSONL and CSV artifacts must each succeed below the
+exact 160 MiB production cap. A separately controlled small cap proves overflow
+cleanup, and reservation coverage proves the 512 MiB workspace quota accounting.
 
 - [ ] **Step 2: Add RED history filter and download tests**
 

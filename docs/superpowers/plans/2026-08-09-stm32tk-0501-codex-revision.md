@@ -46,3 +46,20 @@ After Tasks 1-3, run the complete monitor test suite with branch coverage on Pyt
 ## Task 5: Whole-branch acceptance review and GitHub submission
 
 No implementation by the controller. Generate a complete accepted-base-to-head review package, use a fresh high-capability reviewer, resolve any load-bearing findings through one reviewed fix wave, rerun required gates, then push the existing branch and update Draft PR #13. Do not merge, close, delete branches, or mark ready without separate user authorization.
+
+## Task 6: Exact 160 MiB export-cap amendment
+
+The user explicitly approved raising the export artifact cap to exactly 160 MiB
+and authorized downstream details to be confirmed autonomously. Preserve the
+existing 512 MiB workspace quota and the separate `<64 MiB` traced-memory gate.
+Prove realistic, lossless 100,000-value JSONL and CSV exports, controlled
+small-cap overflow cleanup, and quota reservation arithmetic. Export may use an
+internal uncached verified history-query mode only if ordinary query caching,
+integrity verification, filter/cursor binding, concurrency, and stable errors
+remain unchanged and every page is still consumed through public
+`flatten_history_page`.
+
+This bounded safe subset may modify `exports.py`, `history.py`, their focused
+tests, and the governing evidence documents. The successful functional and
+memory checks do not close the named performance contract: export `<5 s` and
+append p95 `<50 ms` remain non-deferred blockers until separately verified.

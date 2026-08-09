@@ -8,7 +8,6 @@ import shutil
 import stat
 import tempfile
 import time
-from collections.abc import Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -37,10 +36,11 @@ from .storage import MonitorDatabase, StorageFailure
 
 
 MAX_EXPORT_VALUES = 1_000_000
-MAX_EXPORT_BYTES = 64 * 1024 * 1024
+MAX_EXPORT_BYTES = 160 * 1024 * 1024
 MAX_WORKSPACE_EXPORTS = 100
 MAX_WORKSPACE_EXPORT_BYTES = 512 * 1024 * 1024
 MAX_MANIFEST_BYTES = 16 * 1024
+_WRITE_BUFFER_BYTES = 256 * 1024
 MAX_RECOVERY_RECORDS = 10
 RECOVERY_TIME_BUDGET_NS = 100 * 1_000_000
 _replace = os.replace
@@ -138,14 +138,6 @@ class ExportDownloadResult:
     data: ExportDownload | None
 
 
-def _plain(value: object) -> object:
-    if isinstance(value, Mapping):
-        return {str(key): _plain(item) for key, item in value.items()}
-    if isinstance(value, (list, tuple)):
-        return [_plain(item) for item in value]
-    return value
-
-
 def _invalid_json_constant(_: str) -> object:
     raise ValueError("non-finite JSON number")
 
@@ -154,15 +146,28 @@ class _LimitedHashWriter:
     def __init__(self, stream: BinaryIO) -> None:
         self._stream = stream
         self._digest = hashlib.sha256()
+        self._buffer = bytearray()
         self.byte_count = 0
 
     def write(self, data: bytes) -> None:
         new_size = self.byte_count + len(data)
         if new_size > MAX_EXPORT_BYTES:
             raise StorageFailure("MONITOR_EXPORT_TOO_LARGE", "export byte limit was exceeded")
-        self._stream.write(data)
         self._digest.update(data)
         self.byte_count = new_size
+        if len(self._buffer) + len(data) >= _WRITE_BUFFER_BYTES:
+            if self._buffer:
+                self._stream.write(self._buffer)
+                self._buffer.clear()
+            if len(data) >= _WRITE_BUFFER_BYTES:
+                self._stream.write(data)
+                return
+        self._buffer.extend(data)
+
+    def finish(self) -> None:
+        if self._buffer:
+            self._stream.write(self._buffer)
+            self._buffer.clear()
 
     @property
     def sha256(self) -> str:
@@ -428,6 +433,12 @@ class HistoryExporter:
         value_count = 0
         with _create_regular_exclusive(target, parent=target.parent) as stream:
             sink = _LimitedHashWriter(stream)
+            encode_json = json.JSONEncoder(
+                ensure_ascii=False,
+                check_circular=False,
+                separators=(",", ":"),
+                allow_nan=False,
+            ).encode
 
             csv_writer = None
             if request.format == "csv":
@@ -439,7 +450,7 @@ class HistoryExporter:
                 )
                 csv_writer.writeheader()
             while True:
-                page = self._history.query_history(
+                page = self._history._query_history_uncached(
                     HistoryQuery(
                         request.session_id,
                         request.start_ns,
@@ -453,28 +464,13 @@ class HistoryExporter:
                 for value in flatten_history_page(page.data):
                     if value_count >= MAX_EXPORT_VALUES:
                         raise StorageFailure("MONITOR_EXPORT_TOO_LARGE", "export value limit was exceeded")
-                    plain = cast(dict[str, object], _plain(value))
+                    plain = dict(value)
                     if request.format == "jsonl":
-                        sink.write(
-                            json.dumps(
-                                plain,
-                                ensure_ascii=False,
-                                sort_keys=True,
-                                separators=(",", ":"),
-                                allow_nan=False,
-                            ).encode("utf-8")
-                            + b"\n"
-                        )
+                        sink.write(encode_json(plain).encode("utf-8") + b"\n")
                     else:
                         cast(csv.DictWriter, csv_writer).writerow(
                             {
-                                key: json.dumps(
-                                    plain.get(key),
-                                    ensure_ascii=False,
-                                    sort_keys=True,
-                                    separators=(",", ":"),
-                                    allow_nan=False,
-                                )
+                                key: encode_json(plain.get(key))
                                 for key in fieldnames
                             }
                         )
@@ -485,6 +481,7 @@ class HistoryExporter:
                 if next_cursor == cursor or not page.data.values:
                     raise StorageFailure("MONITOR_STORAGE_CORRUPT", "monitor history is corrupt")
                 cursor = next_cursor
+            sink.finish()
             return sink.sha256, sink.byte_count, value_count
 
     def _reserve_pending(

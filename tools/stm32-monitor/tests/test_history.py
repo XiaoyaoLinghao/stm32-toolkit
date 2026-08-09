@@ -876,6 +876,55 @@ def test_verified_history_cache_is_bounded_and_invalidated_by_append_wal_and_reo
         reopened.close()
 
 
+def test_uncached_verified_query_does_not_retain_batches_and_normal_queries_still_cache(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import stm32_monitor.history as history_module
+
+    paths = _paths(tmp_path)
+    store = HistoryStore(paths)
+    decoded = 0
+    real_decode = history_module._decode_history_batch
+
+    def observed_decode(*args, **kwargs):
+        nonlocal decoded
+        decoded += 1
+        return real_decode(*args, **kwargs)
+
+    monkeypatch.setattr(history_module, "_decode_history_batch", observed_decode)
+    try:
+        for sequence in range(1, 4):
+            assert store.append_batch(
+                _batch(paths, sequence, captured_ns=1_000 + sequence)
+            ).ok
+        decoded = 0
+        uncached = store._query_history_uncached(
+            HistoryQuery("monitor-1", 1_000, 2_000, limit=3)
+        )
+        assert uncached.ok and uncached.data.value_count == 3
+        assert decoded == 3
+        assert store._verified_cache == {}
+
+        decoded = 0
+        cold = store.query_history(
+            HistoryQuery("monitor-1", 1_000, 2_000, limit=3)
+        )
+        assert cold.ok and cold.data == uncached.data
+        assert decoded == 3
+        assert len(store._verified_cache) == 3
+
+        decoded = 0
+        warm = store.query_history(
+            HistoryQuery("monitor-1", 1_000, 2_000, limit=3)
+        )
+        assert warm.ok and warm.data == cold.data
+        assert decoded == 0
+        assert len(store._verified_cache) == 3
+    finally:
+        store.close()
+
+
 @pytest.mark.parametrize("corruption", ["recomputed_payload", "digest", "index"])
 def test_verified_history_cache_never_hides_committed_payload_or_index_corruption(
     tmp_path: Path,

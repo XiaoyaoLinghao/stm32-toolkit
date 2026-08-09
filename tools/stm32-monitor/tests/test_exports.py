@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 import sqlite3
+from collections.abc import Iterable
 from dataclasses import replace
 from io import BytesIO
 from types import SimpleNamespace
@@ -225,20 +226,7 @@ def _seed_numbered_history(
         sequence = 1
         while remaining:
             count = min(256, remaining)
-            start = (sequence - 1) * 256
-            batch = SampleBatch(
-                binding=_binding(paths), group_id=GROUP_ID, group_revision=1,
-                run_id=RUN_ID, sequence=sequence, scheduled_unix_ns=sequence,
-                captured_unix_ns=sequence, latency_ns=0, actual_rate_hz=1.0,
-                subscriber_drops=0, history_drops=0, deadline_drops=0,
-                values=tuple(
-                    SampleValue(
-                        WatchItem.variable(f"v{ordinal}"), "OK",
-                        typed_value={"type": "uint32", "value": ordinal},
-                    )
-                    for ordinal in range(start, start + count)
-                ),
-            )
+            batch = _numbered_batch(paths, sequence, count)
             raw = json.dumps(
                 batch.to_dict(), ensure_ascii=False, sort_keys=True,
                 separators=(",", ":"), allow_nan=False,
@@ -267,6 +255,92 @@ def _seed_numbered_history(
     history._database.write(seed)
 
 
+def _numbered_batch(paths: WorkspacePaths, sequence: int, count: int) -> SampleBatch:
+    start = (sequence - 1) * 256
+    return SampleBatch(
+        binding=_binding(paths), group_id=GROUP_ID, group_revision=1,
+        run_id=RUN_ID, sequence=sequence, scheduled_unix_ns=sequence,
+        captured_unix_ns=sequence, latency_ns=0, actual_rate_hz=1.0,
+        subscriber_drops=0, history_drops=0, deadline_drops=0,
+        values=tuple(
+            SampleValue(
+                WatchItem.variable(f"v{ordinal}"), "OK",
+                typed_value={"type": "uint32", "value": ordinal},
+            )
+            for ordinal in range(start, start + count)
+        ),
+    )
+
+
+def _numbered_source_rows(
+    paths: WorkspacePaths,
+    total_values: int,
+) -> Iterable[dict[str, object]]:
+    remaining = total_values
+    sequence = 1
+    while remaining:
+        count = min(256, remaining)
+        yield from _source_rows((_numbered_batch(paths, sequence, count),))
+        remaining -= count
+        sequence += 1
+
+
+def _digest_numbered_rows(
+    rows: Iterable[dict[str, object]],
+    *,
+    total_values: int,
+) -> tuple[str, dict[str, object], dict[str, object], int]:
+    digest = hashlib.sha256()
+    first: dict[str, object] | None = None
+    last: dict[str, object] | None = None
+    count = 0
+    for row in rows:
+        expected_sequence = count // 256 + 1
+        assert row["sequence"] == expected_sequence
+        assert row["valueOrdinal"] == count % 256
+        assert row["batchValueCount"] == min(
+            256, total_values - (expected_sequence - 1) * 256
+        )
+        assert row["typedValue"] == {"type": "uint32", "value": count}
+        encoded = json.dumps(
+            row,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        ).encode("utf-8")
+        digest.update(len(encoded).to_bytes(8, "big"))
+        digest.update(encoded)
+        if first is None:
+            first = row
+        last = row
+        count += 1
+    assert first is not None and last is not None
+    return digest.hexdigest(), first, last, count
+
+
+def _read_numbered_export(
+    path: Path,
+    *,
+    format_name: str,
+    total_values: int,
+) -> tuple[str, dict[str, object], dict[str, object], int]:
+    if format_name == "jsonl":
+        with path.open("rb") as stream:
+            return _digest_numbered_rows(
+                (json.loads(line) for line in stream),
+                total_values=total_values,
+            )
+    with path.open(encoding="utf-8", newline="") as stream:
+        return _digest_numbered_rows(
+            (
+                {key: json.loads(value) for key, value in row.items()}
+                for row in csv.DictReader(stream)
+            ),
+            total_values=total_values,
+        )
+
+
 def test_jsonl_export_paginates_flattened_values_under_the_production_cap(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -281,7 +355,7 @@ def test_jsonl_export_paginates_flattened_values_under_the_production_cap(
     _seed_numbered_history(paths, history, total_values)
     queries: list[tuple[int, str | None, int]] = []
     flattened_pages: list[int] = []
-    real_query = history.query_history
+    real_query = history._query_history_uncached
     real_flatten = exports_module.flatten_history_page
 
     def observed_query(query: HistoryQuery):
@@ -297,7 +371,7 @@ def test_jsonl_export_paginates_flattened_values_under_the_production_cap(
     try:
         monkeypatch.setattr(
             history,
-            "query_history",
+            "_query_history_uncached",
             observed_query,
         )
         monkeypatch.setattr(exports_module, "flatten_history_page", observed_flatten)
@@ -341,35 +415,39 @@ def test_jsonl_export_paginates_flattened_values_under_the_production_cap(
         history.close()
 
 
-def test_jsonl_export_enforces_production_byte_cap_and_cleans_pending(
+def test_realistic_jsonl_and_csv_exports_preserve_all_one_hundred_thousand_values(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     import stm32_monitor.exports as exports_module
+    import stm32_monitor.history as history_module
 
+    total_values = 100_000
     paths = _paths(tmp_path)
     history = HistoryStore(paths)
     exporter = HistoryExporter(paths, history)
-    _seed_numbered_history(paths, history, 100_000)
-    queried_pages = 0
-    flattened_pages = 0
-    real_query = history.query_history
+    _seed_numbered_history(paths, history, total_values)
+    query_runs: list[list[int]] = []
+    flatten_runs: list[list[int]] = []
+    real_query = history._query_history_uncached
     real_flatten = exports_module.flatten_history_page
 
     def observed_query(query: HistoryQuery):
-        nonlocal queried_pages
         result = real_query(query)
         if result.ok:
-            queried_pages += 1
+            if query.cursor is None:
+                query_runs.append([])
+            query_runs[-1].append(result.data.value_count)
         return result
 
     def observed_flatten(page: HistoryPage):
-        nonlocal flattened_pages
-        flattened_pages += 1
+        if len(flatten_runs) < len(query_runs):
+            flatten_runs.append([])
+        flatten_runs[-1].append(page.value_count)
         yield from real_flatten(page)
 
     try:
-        monkeypatch.setattr(history, "query_history", observed_query)
+        monkeypatch.setattr(history, "_query_history_uncached", observed_query)
         monkeypatch.setattr(exports_module, "flatten_history_page", observed_flatten)
         monkeypatch.setattr(
             history,
@@ -378,20 +456,33 @@ def test_jsonl_export_enforces_production_byte_cap_and_cleans_pending(
                 AssertionError("JSONL export retained the private batch stream")
             ),
         )
-        result = exporter.create_export(
-            ExportRequest("monitor-1", 0, 1_000_000, "jsonl"), authorized=True
+        expected = _digest_numbered_rows(
+            _numbered_source_rows(paths, total_values),
+            total_values=total_values,
         )
-        assert not result.ok and result.code == "MONITOR_EXPORT_TOO_LARGE"
-        assert queried_pages > 1 and flattened_pages == queried_pages
-        export_root = paths.monitor_root / "exports" / "monitor-1"
-        assert not export_root.exists() or list(export_root.iterdir()) == []
-        remaining_records = exporter._database.read(
-            lambda connection: connection.execute(
-                "SELECT COUNT(*) FROM export_records"
-            ).fetchone()[0],
-            empty=-1,
-        )
-        assert remaining_records == 0
+        artifacts = []
+        for format_name in ("jsonl", "csv"):
+            result = exporter.create_export(
+                ExportRequest("monitor-1", 0, 1_000_000, format_name), authorized=True
+            )
+            assert result.ok
+            artifact = result.data
+            artifacts.append(artifact)
+            actual = _read_numbered_export(
+                artifact.data_path,
+                format_name=format_name,
+                total_values=total_values,
+            )
+            assert actual == expected
+            assert artifact.value_count == total_values
+            assert 64 * 1024 * 1024 < artifact.byte_count < 160 * 1024 * 1024
+        assert len(query_runs) == len(flatten_runs) == 2
+        assert query_runs == flatten_runs
+        for page_counts in query_runs:
+            assert len(page_counts) > 1
+            assert sum(page_counts) == total_values
+            assert max(page_counts) <= history_module.MAX_HISTORY_VALUES
+        assert artifacts[0].sha256 != artifacts[1].sha256
     finally:
         exporter.close()
         history.close()
@@ -875,7 +966,10 @@ def test_csv_export_preserves_formula_like_source_inside_formula_safe_json_cells
         history.close()
 
 
-def test_export_size_and_value_quotas_fail_without_published_directory(tmp_path: Path, monkeypatch) -> None:
+def test_export_value_and_controlled_byte_caps_clean_pending_state(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     import stm32_monitor.exports as exports_module
 
     paths = _paths(tmp_path)
@@ -893,6 +987,13 @@ def test_export_size_and_value_quotas_fail_without_published_directory(tmp_path:
         assert not too_large.ok and too_large.code == "MONITOR_EXPORT_TOO_LARGE"
         export_root = paths.monitor_root / "exports" / "monitor-1"
         assert not export_root.exists() or list(export_root.iterdir()) == []
+        remaining_records = exporter._database.read(
+            lambda connection: connection.execute(
+                "SELECT COUNT(*) FROM export_records"
+            ).fetchone()[0],
+            empty=-1,
+        )
+        assert remaining_records == 0
     finally:
         exporter.close()
         history.close()
@@ -1077,6 +1178,59 @@ def test_pending_exports_reserve_workspace_bytes_before_streaming(tmp_path: Path
         history.close()
 
 
+def test_production_pending_reservations_are_bounded_by_the_512_mib_quota(
+    tmp_path: Path,
+) -> None:
+    paths = _paths(tmp_path)
+    history = HistoryStore(paths)
+    exporter = HistoryExporter(paths, history)
+    request = ExportRequest("monitor-1", 0, 1_000, "jsonl")
+    export_ids = tuple(
+        UUID(f"00000000-0000-4000-8000-{ordinal:012d}")
+        for ordinal in range(1, 5)
+    )
+    try:
+        for ordinal, export_id in enumerate(export_ids[:3]):
+            exporter._reserve_pending(
+                export_id,
+                request,
+                f"exports/monitor-1/{export_id}/history.jsonl",
+                f"exports/monitor-1/{export_id}/manifest.json",
+                f"2026-08-08T00:00:0{ordinal}.000000Z",
+            )
+        reservations = exporter._database.read(
+            lambda connection: connection.execute(
+                "SELECT export_id,byte_count FROM export_records ORDER BY export_id"
+            ).fetchall(),
+            empty=(),
+        )
+        assert reservations == [
+            (str(export_id), 160 * 1024 * 1024 + 16 * 1024)
+            for export_id in export_ids[:3]
+        ]
+        assert sum(byte_count for _, byte_count in reservations) < 512 * 1024 * 1024
+
+        rejected = export_ids[3]
+        with pytest.raises(StorageFailure) as full:
+            exporter._reserve_pending(
+                rejected,
+                request,
+                f"exports/monitor-1/{rejected}/history.jsonl",
+                f"exports/monitor-1/{rejected}/manifest.json",
+                "2026-08-08T00:00:03.000000Z",
+            )
+        assert full.value.code == "MONITOR_EXPORT_QUOTA_EXCEEDED"
+        assert exporter._database.read(
+            lambda connection: connection.execute(
+                "SELECT COUNT(*),SUM(byte_count) FROM export_records"
+            ).fetchone(),
+            empty=None,
+        ) == (3, 3 * (160 * 1024 * 1024 + 16 * 1024))
+    finally:
+        exporter.close()
+        history.close()
+
+
 def test_startup_recovers_atomically_published_pending_export(tmp_path: Path) -> None:
     paths = _paths(tmp_path)
     history = HistoryStore(paths)
@@ -1201,7 +1355,7 @@ def test_export_formats_propagate_history_failure_and_reject_stalled_cursor(
         stalled_page = HistoryPage.create(source_page.batches, next_cursor="1:0")
         monkeypatch.setattr(
             history,
-            "query_history",
+            "_query_history_uncached",
             lambda query: failure(
                 "history.query", "MONITOR_STORAGE_CORRUPT", "monitor history is corrupt"
             ),
@@ -1213,7 +1367,7 @@ def test_export_formats_propagate_history_failure_and_reject_stalled_cursor(
 
         monkeypatch.setattr(
             history,
-            "query_history",
+            "_query_history_uncached",
             lambda query: SimpleNamespace(ok=True, data=stalled_page),
         )
         stalled = exporter.create_export(
@@ -1236,7 +1390,7 @@ def test_get_export_enforces_limit_nonfinite_manifest_and_record_digest(tmp_path
         limited = exporter.create_export(ExportRequest("monitor-1", 0, 1_000, "jsonl"), authorized=True).data
         monkeypatch.setattr(exports_module, "MAX_EXPORT_BYTES", limited.byte_count - 1)
         assert exporter.get_export(limited.export_id).code == "MONITOR_EXPORT_FAILED"
-        monkeypatch.setattr(exports_module, "MAX_EXPORT_BYTES", 64 * 1024 * 1024)
+        monkeypatch.setattr(exports_module, "MAX_EXPORT_BYTES", 160 * 1024 * 1024)
 
         nonfinite = exporter.create_export(ExportRequest("monitor-1", 0, 1_000, "jsonl"), authorized=True).data
         manifest_text = nonfinite.manifest_path.read_text(encoding="utf-8")

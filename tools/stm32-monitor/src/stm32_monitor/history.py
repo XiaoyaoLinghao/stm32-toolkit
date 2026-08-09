@@ -774,6 +774,20 @@ class HistoryStore:
         return cursor_batch, cursor_ordinal, filter_digest
 
     def query_history(self, query: HistoryQuery) -> ProtocolResult[HistoryPage]:
+        return self._query_history(query, cache_verified=True)
+
+    def _query_history_uncached(
+        self,
+        query: HistoryQuery,
+    ) -> ProtocolResult[HistoryPage]:
+        return self._query_history(query, cache_verified=False)
+
+    def _query_history(
+        self,
+        query: HistoryQuery,
+        *,
+        cache_verified: bool,
+    ) -> ProtocolResult[HistoryPage]:
         operation = "history.query"
         try:
             cursor_batch, cursor_ordinal, filter_digest = self._validate_query(query)
@@ -786,7 +800,7 @@ class HistoryStore:
         def read(connection: sqlite3.Connection) -> HistoryPage:
             nonlocal observed_snapshot
             snapshot = self._observed_storage_snapshot()
-            if snapshot is None:
+            if snapshot is None or not cache_verified:
                 trusted_cache: dict[tuple[object, ...], _VerifiedHistoryBatch] = {}
             else:
                 observed_snapshot, trusted = snapshot
@@ -916,7 +930,7 @@ class HistoryStore:
                             raise _history_corrupt()
                         indexed.append(tuple(index_row[1:]))
                         encoded_value_lengths.append(len(expected_raw))
-                    if observed_snapshot is not None:
+                    if cache_verified and observed_snapshot is not None:
                         pending_cache.append(
                             _VerifiedHistoryBatch(
                                 cache_key,
@@ -1097,7 +1111,7 @@ class HistoryStore:
                     serialized_bytes=_EMPTY_HISTORY_PAGE_BYTES,
                 ),
             )
-            if observed_snapshot is not None:
+            if cache_verified and observed_snapshot is not None:
                 with self._database._integrity_lock:  # noqa: SLF001
                     stable = self._database._integrity_identity == observed_snapshot  # noqa: SLF001
                 with self._verified_cache_lock:

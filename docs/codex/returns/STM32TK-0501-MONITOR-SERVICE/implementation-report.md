@@ -3,23 +3,23 @@
 ## 1. Status and ledger
 
 - Module: `STM32TK-0501-MONITOR-SERVICE`
-- Phase: Codex revision Task 4, durable evidence reconciliation
+- Phase: Codex revision Task 6, partial 160 MiB export-cap amendment
 - Specification/architecture owner: Codex
 - Implementation owner for this revision: Codex-created task agents, as authorized
   by `docs/superpowers/plans/2026-08-09-stm32tk-0501-codex-revision.md`
-- Evidence implementer: Codex Task 4 agent
+- Evidence implementer: Codex Task 6 agent
 - Final reviewer/verdict owner: Codex Task 5 controller and fresh independent reviewer
 - Branch: `codex/STM32TK-0501-MONITOR-SERVICE`
 - Accepted base: `913600f471d8fb0fb5345bdf668ca39ec1faf4d8`
 - Stable code head before this report commit:
-  `12c8f98df198cd601916ed59c3c81a3ba30aea0e`
-- Remote action authorized for Task 4: none
+  `9fbae498c0eda2c9708bd6a6388c3e3649ed7d8e`
+- Remote action authorized for Task 6: none
 
-Task 4 does not issue a final review verdict. The current evidence cannot support
-`ACCEPTED`: the named successful 100,000-value export performance gate conflicts
-with the corrected flattened export contract and 64 MiB production ceiling, and
-the old detailed benchmark was ignored and absent from the reviewed commit. A
-fresh final-head independent review also remains assigned to Task 5.
+Task 6 does not issue a final review verdict. The user explicitly approved the
+exact 160 MiB production artifact ceiling. Functional 100,000-value JSONL/CSV
+evidence and the separate `<64 MiB` traced-memory gate now pass, but export `<5 s`
+and append p95 `<50 ms` remain open non-deferred failures. A fresh final-head
+independent review also remains assigned to Task 5.
 
 No push, PR mutation, ready/merge/close operation, or remote branch deletion was
 performed.
@@ -40,7 +40,9 @@ The post-review correction commits add these exact behaviors:
   chunking, or storage-busy mapping;
 - JSONL and CSV value flattening through public `flatten_history_page`, with one
   flattened value per JSONL line; and
-- production export byte-cap regression coverage.
+- an exact 160 MiB artifact cap within the unchanged 512 MiB workspace quota,
+  realistic lossless 100,000-value JSONL/CSV regressions, controlled overflow
+  cleanup, buffered encoding, and an export-only uncached verified query mode.
 
 No collaboration app, CI workflow, manifest, validator, browser bundle, second
 backend, or 0502 UI asset was added.
@@ -127,7 +129,7 @@ recorded the existing skip reasons:
 - `test_project_model.py::test_file_symlink_cannot_escape_project_root` — symbolic links unavailable; and
 - `test_project_model.py::test_directory_symlink_parent_cannot_escape_project_root` — symbolic links unavailable.
 
-## 5. Performance reconciliation and blocker
+## 5. Performance amendment and remaining blockers
 
 The old report cited
 `.superpowers/sdd/2026-08-08-stm32tk-0501-ui-ready-monitor-contracts/task6_benchmark.py`.
@@ -135,7 +137,7 @@ The old report cited
 absent from the reviewed commit. Its old min/median/p95/max, fixture, database,
 and memory numbers have therefore been removed from durable acceptance evidence.
 
-A fresh code-head diagnostic ran:
+A fresh pre-amendment diagnostic ran:
 
 ```powershell
 $env:PYTHONPATH='C:\tmp\stm32tk-0501-monitor-service\tools\stm32-monitor\src;C:\tmp\stm32tk-0501-monitor-service\tools\stm32-toolkit\src'
@@ -144,31 +146,38 @@ C:\tmp\stm32-toolkit-review-py31213\Scripts\python.exe .superpowers\sdd\2026-08-
 ```
 
 It failed at its first 100,000-value flattened JSONL export with
-`MONITOR_EXPORT_TOO_LARGE: export byte limit was exceeded`. A permitted candidate
-committed performance test was then tried with CSV instead of JSONL; its first
-realistic 100,000-value flattened CSV export returned the same code after
-`61.01s`. The candidate was discarded, so it is not presented as durable PASS
-evidence and left no worktree artifact.
+`MONITOR_EXPORT_TOO_LARGE: export byte limit was exceeded`. The user then stated
+`批准将导出上限调整为 160 MiB 后续你自主确认就行`, explicitly approving an exact
+160 MiB production artifact ceiling and autonomous downstream confirmation.
 
-The committed suite does provide these durable assertions, all exercised in both
-complete Monitor runs:
+The amendment suite provides these durable assertions:
 
-- `test_jsonl_and_csv_exports_use_the_same_public_flattened_value_records` proves
-  identical flattened value semantics for both formats;
+- the realistic 100,000-value JSONL/CSV regression compares all values and stable
+  evidence by a collision-resistant digest, proves no pagination gaps or
+  duplicates, and produces artifacts greater than 64 MiB but below 160 MiB;
 - `test_jsonl_export_paginates_flattened_values_under_the_production_cap` proves
   lossless 20,000-value JSONL pagination through `flatten_history_page`;
-- `test_jsonl_export_enforces_production_byte_cap_and_cleans_pending` proves a
-  realistic 100,000-value flattened JSONL export returns
-  `MONITOR_EXPORT_TOO_LARGE` and leaves neither artifact nor pending record;
+- the controlled 32-byte-cap regression proves `MONITOR_EXPORT_TOO_LARGE` leaves
+  neither artifact nor pending database record;
+- the production quota regression proves exactly three `160 MiB + 16 KiB`
+  reservations fit within 512 MiB and the fourth is rejected without corrupting
+  the reservation ledger;
+- the uncached verified-query regression proves exports retain no verified batch
+  cache while ordinary cold/warm queries retain their existing cache behavior;
 - `test_ten_thousand_value_query_normalizes_and_serializes_final_page_once`
   proves exact 10,000-value, <=4 MiB bounded query structure; and
 - `test_retention_chunks_one_hundred_thousand_values_within_live_deadlines`
   asserts retention `<2 s` and sampler ticker gaps `<100 ms`.
 
-Consequently the named successful 100,000-value export `<5 s` and `<64 MiB`
-gate is blocked, not deferred. The removed ignored benchmark also leaves no
-durable current 3-warmup/20-measurement append/query/HTTP latency record. Neither
-flattening nor the 64 MiB production ceiling was weakened to manufacture a pass.
+The representative JSONL artifact is 121,051,826 bytes. After the export-only
+uncached mode, `tracemalloc` measured a 14,937,459-byte peak and zero retained
+verified batches, so the independent `<64 MiB` memory requirement passes. The
+best current untraced create-plus-verification diagnostic is 5.8381 s, above
+`<5 s`. Five untraced pre-buffer/encoder runs ranged from 6.6972 to 6.9388 s.
+The append call-only p95 is 210.8441 ms against `<50 ms`; profiling attributes
+the dominant time to per-write SQLite preflight/integrity work. The export timing
+and append timing failures remain open and non-deferred. The uncommitted complete
+performance candidate is failing and is not presented as durable PASS evidence.
 
 ## 6. Wheels and installed-package smoke
 
@@ -228,8 +237,8 @@ did not load PyOCD; and legacy `config`, `elf_parser`, `poller`, `pyocd_session`
 | DEFERRED | Linux owner | Complete Monitor 3.10/3.12, complete Toolkit, package/install, project immutability, SQLite lock/WAL, loopback, and cancellation behavior on Linux. |
 | DEFERRED | 0.5 release-gate physical-board owner | Exact-probe OBSERVE lifecycle, typed DWARF/register sampling, probe isolation/busy behavior, provenance changes, reconnect, and cancellation on a supported physical board/probe. |
 
-The performance conflict is a non-platform blocker and is not deferred. No other
-pure-code failure is hidden under a platform deferral.
+The export and append timing failures are non-platform blockers and are not
+deferred. No pure-code failure is hidden under a platform deferral.
 
 ## 9. Task 4 checklist
 
@@ -239,7 +248,9 @@ pure-code failure is hidden under a platform deferral.
 - [x] Both wheels built, installed fresh on both interpreters, and passed installed smoke/inventory checks.
 - [x] Static, dependency, credential, scope, project-immutability, and locally owned Windows gates passed.
 - [x] Ignored/absent benchmark PASS claims and stale final acceptance language were removed.
-- [ ] Named performance gate is blocked as detailed above.
+- [x] Exact 160 MiB cap, 512 MiB quota arithmetic, realistic 100,000-value
+  JSONL/CSV losslessness, overflow cleanup, and `<64 MiB` traced memory are proven.
+- [ ] Export `<5 s` and append p95 `<50 ms` remain blocked as detailed above.
 - [ ] Fresh final-head independent review and final verdict remain assigned to Task 5.
 - [ ] Linux and physical-board evidence remain deferred to their named owners.
 - [ ] Push/PR/ready/merge/close/delete remains unperformed and requires explicit user authorization.

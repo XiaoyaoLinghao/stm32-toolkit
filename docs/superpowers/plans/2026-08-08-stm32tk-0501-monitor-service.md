@@ -175,7 +175,7 @@ nanoseconds and half-open ranges.  Group rename/delete never deletes history.
 Retention is fixed at 7 days and a 256 MiB logical workspace budget, with a 512
 MiB database-plus-WAL hard stop.  Cleanup is chunked to 100 batches per pass and
 must not block the sampler for 100 ms.  Export is server-owned under
-`monitor/exports/<sessionId>/<exportId>/`, capped at 1,000,000 values and 64 MiB,
+`monitor/exports/<sessionId>/<exportId>/`, capped at 1,000,000 values and 160 MiB,
 written atomically with a SHA-256 manifest; CSV cells beginning with formula
 characters are neutralized.
 
@@ -344,15 +344,16 @@ Stable monitor codes include `MONITOR_REQUEST_INVALID`,
   the repository, and exercise zero-group CRUD, fake observation, sampling,
   history, export, REST, WebSocket, and cancellation shutdown from the wheels.
 - [ ] **BLOCKED — performance contract:** the previously cited benchmark is
-  ignored and absent from the reviewed commit. At code head
-  `12c8f98df198cd601916ed59c3c81a3ba30aea0e`, its realistic 100,000-value
-  flattened JSONL export returns `MONITOR_EXPORT_TOO_LARGE`; a fresh equivalent
-  CSV diagnostic returns the same code. The committed suite proves lossless
-  20,000-value JSONL pagination, exact 100,000-value JSONL cap cleanup, bounded
-  10,000-value query structure, and retention `<2 s` / ticker `<100 ms`, but it
-  does not durably replace the removed 3-warmup/20-measurement append, query,
-  successful export, and HTTP latency evidence. Do not weaken flattening or the
-  64 MiB production cap to close this gate.
+  resolved only in part by the user-approved exact 160 MiB production artifact
+  cap. The amendment regression proves realistic lossless 100,000-value JSONL
+  and CSV success below that cap, controlled small-cap overflow cleanup, and
+  exact 512 MiB reservation accounting. An export-only uncached verified-query
+  mode avoids retaining verified batches and reduced measured peak traced memory
+  to 14,937,459 bytes, below the independent 64 MiB gate. The best current
+  untraced create plus verification diagnostic is 5.8381 s, so export `<5 s`
+  remains an open, non-deferred failure. The append p95 is 210.8441 ms against
+  `<50 ms`; its measured SQLite integrity-check bottleneck requires separately
+  approved storage work. The complete named performance gate remains open.
 - [x] Windows owner verifies real NTFS junction rejection, SQLite lock/WAL behavior,
   dynamic loopback binding, and cancellation.
 - [ ] **DEFERRED — Linux owner:** verify the same focused/full suites on Linux.
