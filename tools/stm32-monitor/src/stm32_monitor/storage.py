@@ -593,24 +593,32 @@ class MonitorDatabase:
                 row = connection.execute("PRAGMA quick_check(1)").fetchone()
                 if row is None or row[0] != "ok":
                     raise StorageFailure("MONITOR_STORAGE_CORRUPT", "monitor storage failed integrity validation")
-            application_id = connection.execute("PRAGMA application_id").fetchone()[0]
-            version = connection.execute("PRAGMA user_version").fetchone()[0]
+            validation = connection.execute(
+                """
+                SELECT
+                    (SELECT application_id FROM pragma_application_id),
+                    (SELECT user_version FROM pragma_user_version),
+                    (SELECT workspace_id FROM monitor_metadata WHERE singleton = 1),
+                    (SELECT logical_bytes FROM monitor_history_accounting WHERE singleton = 1)
+                """
+            ).fetchone()
+            if validation is None or len(validation) != 4:
+                raise StorageFailure(
+                    "MONITOR_STORAGE_CORRUPT",
+                    "monitor storage validation is incomplete",
+                )
+            application_id, version, workspace_id, logical_bytes = validation
             if application_id != APPLICATION_ID:
                 raise StorageFailure("MONITOR_STORAGE_INVALID", "monitor storage identity is invalid")
             if version > SCHEMA_VERSION:
                 raise StorageFailure("MONITOR_STORAGE_VERSION_UNSUPPORTED", "monitor storage version is unsupported")
             if version != SCHEMA_VERSION:
                 raise StorageFailure("MONITOR_STORAGE_INVALID", "monitor storage schema is invalid")
-            metadata = connection.execute("SELECT workspace_id FROM monitor_metadata").fetchone()
-            if metadata is None or metadata[0] != self.paths.workspace_id:
+            if workspace_id != self.paths.workspace_id:
                 raise StorageFailure("MONITOR_WORKSPACE_MISMATCH", "monitor storage belongs to another workspace")
-            accounting = connection.execute(
-                "SELECT logical_bytes FROM monitor_history_accounting WHERE singleton = 1"
-            ).fetchone()
             if (
-                accounting is None
-                or type(accounting[0]) is not int
-                or accounting[0] < 0
+                type(logical_bytes) is not int
+                or logical_bytes < 0
             ):
                 raise StorageFailure("MONITOR_STORAGE_CORRUPT", "monitor storage accounting is invalid")
         except sqlite3.DatabaseError as error:
@@ -827,7 +835,6 @@ class MonitorDatabase:
         except sqlite3.DatabaseError as error:
             raise StorageFailure("MONITOR_STORAGE_CORRUPT", "monitor storage cannot be opened") from error
         try:
-            self._configure(connection, busy_timeout_ms=busy_timeout_ms)
             with self._integrity_lock:
                 full_integrity = self._integrity_identity != before_fingerprint
                 version = connection.execute("PRAGMA user_version").fetchone()[0]
@@ -1018,49 +1025,102 @@ class MonitorDatabase:
     def read(self, operation: Callable[[sqlite3.Connection], _T], *, empty: _T) -> _T:
         self._require_path(self.path)
         try:
-            before = _identity(self.path)
+            _identity(self.path)
         except FileNotFoundError:
             if self._inspect_storage_files():
                 raise StorageFailure("MONITOR_STORAGE_INVALID", "orphan monitor storage sidecar exists")
             return empty
-        before = self._preflight_existing(busy_timeout_ms=BUSY_TIMEOUT_MS)
         try:
-            opening_fingerprint = self._integrity_fingerprint(
-                self._inspect_storage_files()
-            )
-            uri = self.path.as_uri() + "?mode=ro"
-            connection = sqlite3.connect(uri, uri=True, timeout=BUSY_TIMEOUT_MS / 1000, isolation_level=None)
-            self._configure(connection, busy_timeout_ms=BUSY_TIMEOUT_MS)
-            connection.execute("BEGIN")
-            # Establish one immutable read snapshot before inspecting its WAL
-            # identity, then validate and execute the caller's query within it.
-            connection.execute("PRAGMA user_version").fetchone()
-            snapshot_files = self._inspect_storage_files()
-            snapshot_fingerprint = self._integrity_fingerprint(snapshot_files)
-            with self._integrity_lock:
-                full_integrity = (
-                    self._integrity_identity != snapshot_fingerprint
-                    or opening_fingerprint != snapshot_fingerprint
-                )
-                self._validate(
-                    connection,
-                    before=before,
-                    full_integrity=full_integrity,
-                )
-            result = operation(connection)
-            closing_fingerprint = self._integrity_fingerprint(
-                self._inspect_storage_files()
-            )
-            if (
-                full_integrity
-                and opening_fingerprint == snapshot_fingerprint
-                and snapshot_fingerprint == closing_fingerprint
-                and self._fingerprint_is_certain(snapshot_fingerprint)
-            ):
-                with self._integrity_lock:
-                    self._integrity_identity = snapshot_fingerprint
-            connection.rollback()
-            return result
+            for attempt in range(3):
+                directory_snapshot = self._directory_snapshot(self.path.parent)
+                opening_files = self._inspect_storage_files()
+                opening_identity = opening_files.get(self.path)
+                if opening_identity is None:
+                    raise StorageFailure(
+                        "MONITOR_STORAGE_INVALID",
+                        "monitor storage database is missing",
+                    )
+                self._require_validated_main_identity(opening_identity)
+                opening_fingerprint = self._integrity_fingerprint(opening_files)
+                connection: sqlite3.Connection | None = None
+                try:
+                    uri = self.path.as_uri() + "?mode=ro"
+                    connection = sqlite3.connect(
+                        uri,
+                        uri=True,
+                        timeout=BUSY_TIMEOUT_MS / 1000,
+                        isolation_level=None,
+                    )
+                    connection.execute("BEGIN")
+                    # Establish one immutable read snapshot before inspecting its
+                    # WAL identity.  Validation and the caller's query use this
+                    # same connection; a validation-time change restarts both.
+                    connection.execute("PRAGMA user_version").fetchone()
+                    self._revalidate_directories(directory_snapshot)
+                    snapshot_files = self._inspect_storage_files()
+                    snapshot_identity = snapshot_files.get(self.path)
+                    if (
+                        snapshot_identity is None
+                        or opening_identity[:2] != snapshot_identity[:2]
+                    ):
+                        raise StorageFailure(
+                            "MONITOR_STORAGE_INVALID",
+                            "monitor storage changed while it was opened",
+                        )
+                    self._require_validated_main_identity(snapshot_identity)
+                    snapshot_fingerprint = self._integrity_fingerprint(snapshot_files)
+                    with self._integrity_lock:
+                        full_integrity = (
+                            self._integrity_identity != snapshot_fingerprint
+                            or opening_fingerprint != snapshot_fingerprint
+                        )
+                    self._validate(
+                        connection,
+                        before=snapshot_identity,
+                        full_integrity=full_integrity,
+                    )
+                    self._revalidate_directories(directory_snapshot)
+                    validated_files = self._inspect_storage_files()
+                    validated_identity = validated_files.get(self.path)
+                    if (
+                        validated_identity is None
+                        or snapshot_identity[:2] != validated_identity[:2]
+                    ):
+                        raise StorageFailure(
+                            "MONITOR_STORAGE_INVALID",
+                            "monitor storage changed while it was opened",
+                        )
+                    self._require_validated_main_identity(validated_identity)
+                    validated_fingerprint = self._integrity_fingerprint(validated_files)
+                    if snapshot_fingerprint != validated_fingerprint:
+                        if attempt < 2:
+                            continue
+                        raise StorageFailure("MONITOR_STORAGE_BUSY", "monitor storage is busy")
+                    if full_integrity:
+                        self._remember_validated_integrity(
+                            validated_identity,
+                            validated_fingerprint,
+                        )
+                    result = operation(connection)
+                    self._revalidate_directories(directory_snapshot)
+                    closing_files = self._inspect_storage_files()
+                    closing_identity = closing_files.get(self.path)
+                    if (
+                        closing_identity is None
+                        or validated_identity[:2] != closing_identity[:2]
+                    ):
+                        raise StorageFailure(
+                            "MONITOR_STORAGE_INVALID",
+                            "monitor storage changed while it was opened",
+                        )
+                    self._require_validated_main_identity(closing_identity)
+                    self._integrity_fingerprint(closing_files)
+                    connection.rollback()
+                    return result
+                finally:
+                    if connection is not None:
+                        connection.close()
+            raise AssertionError("unreachable")
         except StorageFailure:
             raise
         except sqlite3.OperationalError as error:
@@ -1071,9 +1131,6 @@ class MonitorDatabase:
             raise StorageFailure("MONITOR_STORAGE_CORRUPT", "monitor storage is corrupt") from error
         except (TypeError, ValueError, OverflowError) as error:
             raise StorageFailure("MONITOR_STORAGE_CORRUPT", "monitor storage contains invalid data") from error
-        finally:
-            if "connection" in locals():
-                connection.close()
 
     def _before_commit(self, connection: sqlite3.Connection) -> None:
         self._revalidate_trusted_directories()

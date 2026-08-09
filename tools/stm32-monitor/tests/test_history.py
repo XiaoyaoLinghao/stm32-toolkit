@@ -797,7 +797,9 @@ def test_ten_thousand_value_query_normalizes_and_serializes_final_page_once(
         assert result.data.serialized_bytes <= 4 * 1024 * 1024
         assert calls <= 3
         assert observed == {
-            "sql": 2,
+            # Public cacheable queries fetch batch metadata first, then keep
+            # payload and per-value evidence in independently ordered cursors.
+            "sql": 3,
             "decode": 40,
             "evidence_values": 10_000,
             "encode_value": 0,
@@ -948,6 +950,114 @@ def test_uncached_verified_query_does_not_retain_batches_and_normal_queries_stil
         assert warm.ok and warm.data == cold.data
         assert decoded == 0
         assert len(store._verified_cache) == 3
+    finally:
+        store.close()
+
+
+def test_returned_history_page_cannot_poison_the_verified_batch_cache(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import stm32_monitor.history as history_module
+
+    paths = _paths(tmp_path)
+    store = HistoryStore(paths)
+    decoded = 0
+    real_decode = history_module._decode_history_batch
+
+    def observed_decode(*args, **kwargs):
+        nonlocal decoded
+        decoded += 1
+        return real_decode(*args, **kwargs)
+
+    monkeypatch.setattr(history_module, "_decode_history_batch", observed_decode)
+    value = SampleValue(
+        WatchItem.variable("counter"),
+        "OK",
+        typed_value={
+            "type": "packet",
+            "value": {"items": [7, {"label": "original"}]},
+        },
+        definition={
+            "typeName": "Packet",
+            "fields": [{"name": "items", "kind": "array"}],
+        },
+    )
+    batch = replace(_batch(paths, 1, captured_ns=1_001), values=(value,))
+    original = batch.to_dict()
+    try:
+        assert store.append_batch(batch).ok
+        cold = store.query_history(HistoryQuery("monitor-1", 1_000, 2_000))
+        assert cold.ok and decoded == 1
+
+        cached = next(iter(store._verified_cache.values())).batch
+        returned_slice = cold.data.batches[0]
+        returned_value = returned_slice.values[0]
+        cached_value = cached.values[0]
+
+        assert returned_slice.binding is not cached.binding
+        assert returned_slice.group_id is not cached.group_id
+        assert returned_slice.run_id is not cached.run_id
+        assert returned_value is not cached_value
+        assert returned_value.watch is not cached_value.watch
+
+        with pytest.raises(TypeError):
+            returned_value.typed_value["value"]["items"][0] = 999
+        with pytest.raises(TypeError):
+            returned_value.definition["fields"][0]["name"] = "poisoned"
+
+        object.__setattr__(returned_slice.binding, "probe_id", "poisoned")
+        object.__setattr__(returned_slice.group_id, "int", 0)
+        object.__setattr__(returned_slice.run_id, "int", 0)
+        object.__setattr__(returned_value.watch, "selector", "poisoned")
+        object.__setattr__(returned_value, "typed_value", 999)
+        object.__setattr__(returned_value, "definition", {"poisoned": True})
+
+        assert cached.to_dict() == original
+        decoded = 0
+        warm = store.query_history(HistoryQuery("monitor-1", 1_000, 2_000))
+        assert warm.ok and decoded == 0
+        warm_slice = warm.data.batches[0]
+        assert warm_slice.binding.to_dict() == original["binding"]
+        assert str(warm_slice.group_id) == original["groupId"]
+        assert str(warm_slice.run_id) == original["runId"]
+        assert [item.to_dict() for item in warm_slice.values] == original["values"]
+        assert next(iter(store._verified_cache.values())).batch.to_dict() == original
+
+        transient_cache: dict[str, object] = {}
+        transient = store._query_history_uncached(
+            HistoryQuery("monitor-1", 1_000, 2_000),
+            transient_cache=transient_cache,
+        )
+        assert transient.ok
+        transient_batches = transient_cache["batches"]
+        assert type(transient_batches) is dict
+        transient_cached = next(iter(transient_batches.values())).batch
+        transient_slice = transient.data.batches[0]
+        transient_value = transient_slice.values[0]
+        assert transient_slice.binding is not transient_cached.binding
+        assert transient_slice.group_id is not transient_cached.group_id
+        assert transient_slice.run_id is not transient_cached.run_id
+        assert transient_value is not transient_cached.values[0]
+        assert transient_value.watch is not transient_cached.values[0].watch
+
+        object.__setattr__(transient_slice.binding, "probe_id", "poisoned")
+        object.__setattr__(transient_slice.group_id, "int", 0)
+        object.__setattr__(transient_slice.run_id, "int", 0)
+        object.__setattr__(transient_value.watch, "selector", "poisoned")
+        object.__setattr__(transient_value, "typed_value", 999)
+        object.__setattr__(transient_value, "definition", {"poisoned": True})
+
+        transient_warm = store._query_history_uncached(
+            HistoryQuery("monitor-1", 1_000, 2_000),
+            transient_cache=transient_cache,
+        )
+        assert transient_warm.ok
+        assert transient_cached.to_dict() == original
+        assert transient_warm.data.batches[0].binding.to_dict() == original["binding"]
+        assert [
+            item.to_dict() for item in transient_warm.data.batches[0].values
+        ] == original["values"]
     finally:
         store.close()
 

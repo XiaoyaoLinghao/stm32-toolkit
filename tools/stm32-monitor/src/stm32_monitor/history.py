@@ -37,6 +37,16 @@ from .storage import MonitorDatabase, StorageFailure
 
 MAX_HISTORY_VALUES = 10_000
 MAX_HISTORY_PAGE_BYTES = 4 * 1024 * 1024
+_CURSOR_PAGE_FIXED_BYTES = (
+    len(b'{"batches":[')
+    + len(b'],"valueCount":')
+    + len(b',"nextCursor":')
+    + len(b'"v1.')
+    + 107
+    + len(b'"')
+    + len(b',"serializedBytes":')
+    + len(b"}")
+)
 # A persisted batch must fit within one maximum history response.  Migration
 # checks SQLite's BLOB length against this ceiling before fetching the payload.
 MAX_HISTORY_BATCH_BYTES = MAX_HISTORY_PAGE_BYTES
@@ -63,6 +73,7 @@ class _VerifiedHistoryBatch:
     batch: SampleBatch
     indexed: tuple[tuple[object, ...], ...]
     encoded_value_lengths: tuple[int, ...]
+    encoded_slice_base_bytes: int
 
 
 class _InvalidHistoryCursor(Exception):
@@ -242,30 +253,44 @@ def _verified_history_slice(
     start_ordinal: int,
     values: Sequence[SampleValue],
     serialized_bytes: int,
+    *,
+    isolate_outer: bool = True,
 ) -> HistoryBatchSlice:
-    snapshot = tuple(values)
+    source_values = tuple(values)
     if (
         type(batch) is not SampleBatch
         or type(batch.binding) is not ObservationBinding
         or type(batch.values) is not tuple
         or type(start_ordinal) is not int
         or start_ordinal < 0
-        or start_ordinal + len(snapshot) > len(batch.values)
-        or not snapshot
-        or any(type(value) is not SampleValue for value in snapshot)
+        or start_ordinal + len(source_values) > len(batch.values)
+        or not source_values
+        or any(
+            type(value) is not SampleValue or type(value.watch) is not WatchItem
+            for value in source_values
+        )
         or any(
             value is not batch.values[start_ordinal + offset]
-            for offset, value in enumerate(snapshot)
+            for offset, value in enumerate(source_values)
         )
         or type(serialized_bytes) is not int
         or serialized_bytes < 1
     ):
         raise TypeError("verified history slice is invalid")
+    snapshot = (
+        tuple([_isolated_verified_value(value) for value in source_values])
+        if isolate_outer
+        else source_values
+    )
     result = HistoryBatchSlice(
-        binding=batch.binding,
-        group_id=batch.group_id,
+        binding=(
+            ObservationBinding.from_dict(batch.binding.to_dict())
+            if isolate_outer
+            else batch.binding
+        ),
+        group_id=UUID(int=batch.group_id.int) if isolate_outer else batch.group_id,
         group_revision=batch.group_revision,
-        run_id=batch.run_id,
+        run_id=UUID(int=batch.run_id.int) if isolate_outer else batch.run_id,
         sequence=batch.sequence,
         scheduled_unix_ns=batch.scheduled_unix_ns,
         captured_unix_ns=batch.captured_unix_ns,
@@ -285,6 +310,71 @@ def _verified_history_slice(
     )
     object.__setattr__(result, "_verified_marker", _TRUSTED_HISTORY_SLICE)
     return result
+
+
+def _isolated_verified_value(value: SampleValue) -> SampleValue:
+    """Copy mutable outer model nodes while sharing only frozen JSON leaves."""
+    # Callers validate the complete source sequence once before entering this
+    # hot copy loop.  object.__new__ avoids repeating dataclass allocation
+    # dispatch while the independent dictionaries preserve forged-setattr
+    # isolation from the canonical verified cache.
+    watch = object.__new__(WatchItem)
+    object.__setattr__(watch, "__dict__", value.watch.__dict__.copy())
+    result = object.__new__(SampleValue)
+    fields = value.__dict__.copy()
+    fields["watch"] = watch
+    object.__setattr__(result, "__dict__", fields)
+    return result
+
+
+def _isolated_verified_batch(batch: SampleBatch) -> SampleBatch:
+    if (
+        type(batch) is not SampleBatch
+        or type(batch.binding) is not ObservationBinding
+        or type(batch.values) is not tuple
+        or any(
+            type(value) is not SampleValue or type(value.watch) is not WatchItem
+            for value in batch.values
+        )
+    ):
+        raise TypeError("verified history batch is invalid")
+    return SampleBatch(
+        binding=ObservationBinding.from_dict(batch.binding.to_dict()),
+        group_id=UUID(int=batch.group_id.int),
+        group_revision=batch.group_revision,
+        run_id=UUID(int=batch.run_id.int),
+        sequence=batch.sequence,
+        scheduled_unix_ns=batch.scheduled_unix_ns,
+        captured_unix_ns=batch.captured_unix_ns,
+        latency_ns=batch.latency_ns,
+        actual_rate_hz=batch.actual_rate_hz,
+        subscriber_drops=batch.subscriber_drops,
+        history_drops=batch.history_drops,
+        deadline_drops=batch.deadline_drops,
+        values=tuple([_isolated_verified_value(value) for value in batch.values]),
+    )
+
+
+def _encoded_slice_base_bytes(
+    batch: SampleBatch,
+    encoded_value_lengths: Sequence[int],
+) -> int:
+    """Return exact one-value slice bytes excluding its encoded value."""
+    if not encoded_value_lengths or len(encoded_value_lengths) != len(batch.values):
+        raise TypeError("verified history value lengths are invalid")
+    candidate = _history_slice(batch, 0, (batch.values[0],))
+    encoded = len(
+        json.dumps(
+            candidate.to_dict(),
+            ensure_ascii=False,
+            separators=(",", ":"),
+            allow_nan=False,
+        ).encode("utf-8")
+    )
+    base = encoded - encoded_value_lengths[0]
+    if base < 1:
+        raise TypeError("verified history slice size is invalid")
+    return base
 
 
 def _verified_history_page(
@@ -939,20 +1029,24 @@ class HistoryStore:
                     "AND f.selector_kind = ? AND f.selector = ?)"
                 )
                 parameters.extend((query.selector_kind, query.selector))
+            payload_projection = ",b.payload_json" if not cache_verified else ""
             records = connection.execute(
                 f"""
                 SELECT b.batch_id,b.session_id,b.run_id,b.sequence,b.captured_ns,
-                       b.payload_json,b.payload_bytes,b.payload_sha256,b.value_count
+                       {payload_projection.removeprefix(',') + ',' if payload_projection else ''}
+                       b.payload_bytes,b.payload_sha256,b.value_count
                 FROM history_batches AS b
                 WHERE {' AND '.join(clauses)}
                 ORDER BY b.batch_id
                 """,
                 parameters,
             )
+            payload_records: sqlite3.Cursor | None = None
             indexed_records: sqlite3.Cursor | None = None
             selected: list[tuple[SampleBatch, int, list[SampleValue], int]] = []
             selected_batch_bytes = 0
             selected_count = 0
+            cached_batch_ids: set[int] = set()
             last_batch_id: int | None = None
             last_ordinal: int | None = None
             more = False
@@ -961,10 +1055,17 @@ class HistoryStore:
                 record = records.fetchone()
                 if record is None:
                     break
-                (
-                    batch_id, session_id, run_id, sequence, captured_ns, raw,
-                    payload_bytes, payload_digest, batch_value_count,
-                ) = record
+                if cache_verified:
+                    (
+                        batch_id, session_id, run_id, sequence, captured_ns,
+                        payload_bytes, payload_digest, batch_value_count,
+                    ) = record
+                    raw: object | None = None
+                else:
+                    (
+                        batch_id, session_id, run_id, sequence, captured_ns, raw,
+                        payload_bytes, payload_digest, batch_value_count,
+                    ) = record
                 if type(batch_id) is not int or batch_id < 1:
                     raise _history_corrupt()
                 cache_key = (
@@ -981,12 +1082,24 @@ class HistoryStore:
                 cached = trusted_cache.get(cache_key) if indexed_records is None else None
                 if cached is not None:
                     batch = cached.batch
+                    cached_batch_ids.add(id(batch))
                     indexed = list(cached.indexed)
                     encoded_value_lengths = list(cached.encoded_value_lengths)
+                    encoded_slice_base_bytes = cached.encoded_slice_base_bytes
                 else:
                     if indexed_records is None:
                         value_parameters = list(parameters)
                         value_parameters[3] = batch_id
+                        if cache_verified:
+                            payload_records = connection.execute(
+                                f"""
+                                SELECT b.batch_id,b.payload_json
+                                FROM history_batches AS b
+                                WHERE {' AND '.join(clauses)}
+                                ORDER BY b.batch_id
+                                """,
+                                value_parameters,
+                            )
                         indexed_records = connection.execute(
                             f"""
                             SELECT v.batch_id,v.ordinal,v.selector_kind,v.selector,
@@ -998,6 +1111,20 @@ class HistoryStore:
                             """,
                             value_parameters,
                         )
+                    if cache_verified:
+                        if payload_records is None:
+                            raise _history_corrupt()
+                        payload_row = payload_records.fetchone()
+                        if (
+                            payload_row is None
+                            or len(payload_row) != 2
+                            or payload_row[0] != batch_id
+                            or type(payload_row[1]) is not bytes
+                        ):
+                            raise _history_corrupt()
+                        raw = payload_row[1]
+                    if type(raw) is not bytes:
+                        raise _history_corrupt()
                     decoded_value_evidence: list[tuple[str, str, bytes, str]] = []
                     batch = _decode_history_batch(
                         raw,
@@ -1044,6 +1171,10 @@ class HistoryStore:
                             raise _history_corrupt()
                         indexed.append(tuple(index_row[1:]))
                         encoded_value_lengths.append(len(expected_raw))
+                    encoded_slice_base_bytes = _encoded_slice_base_bytes(
+                        batch,
+                        encoded_value_lengths,
+                    )
                     if (
                         (cache_verified or transient_cache is not None)
                         and observed_snapshot is not None
@@ -1054,6 +1185,7 @@ class HistoryStore:
                                 batch,
                                 tuple(indexed),
                                 tuple(encoded_value_lengths),
+                                encoded_slice_base_bytes,
                             )
                         )
 
@@ -1088,6 +1220,56 @@ class HistoryStore:
                         and indexed[ordinal][2] == query.selector
                     )
                 )
+                if (
+                    query.selector_kind is None
+                    and start < len(batch.values)
+                    and selected_count < effective_limit
+                ):
+                    take = min(
+                        len(batch.values) - start,
+                        effective_limit - selected_count,
+                    )
+                    slice_bytes = (
+                        encoded_slice_base_bytes
+                        - 1
+                        + len(str(start))
+                        + encoded_value_lengths[start]
+                    )
+                    whole_slice_bytes = slice_bytes + sum(
+                        1 + encoded_value_lengths[ordinal]
+                        for ordinal in range(start + 1, start + take)
+                    )
+                    whole_batch_bytes = (
+                        selected_batch_bytes
+                        + (1 if selected else 0)
+                        + whole_slice_bytes
+                    )
+                    whole_count = selected_count + take
+                    whole_fixed_bytes = (
+                        whole_batch_bytes
+                        + _CURSOR_PAGE_FIXED_BYTES
+                        + len(str(whole_count))
+                    )
+                    whole_size = whole_fixed_bytes + len(
+                        str(whole_fixed_bytes + 8)
+                    )
+                    if whole_size <= MAX_HISTORY_PAGE_BYTES:
+                        selected.append(
+                            (
+                                batch,
+                                start,
+                                list(batch.values[start : start + take]),
+                                whole_slice_bytes,
+                            )
+                        )
+                        selected_batch_bytes = whole_batch_bytes
+                        selected_count = whole_count
+                        last_batch_id = batch_id
+                        last_ordinal = start + take - 1
+                        if start + take < len(batch.values):
+                            more = True
+                            break
+                        continue
                 for ordinal in ordinals:
                     if selected_count >= effective_limit:
                         more = True
@@ -1120,16 +1302,9 @@ class HistoryStore:
                     # the final returned position once.
                     candidate_count = selected_count + 1
                     fixed_bytes = (
-                        len(b'{"batches":[')
-                        + candidate_batch_bytes
-                        + len(b'],"valueCount":')
+                        candidate_batch_bytes
+                        + _CURSOR_PAGE_FIXED_BYTES
                         + len(str(candidate_count))
-                        + len(b',"nextCursor":')
-                        + len(b'"v1.')
-                        + 107
-                        + len(b'"')
-                        + len(b',"serializedBytes":')
-                        + len(b"}")
                     )
                     candidate_size = fixed_bytes + len(str(fixed_bytes + 8))
                     if candidate_size > MAX_HISTORY_PAGE_BYTES:
@@ -1183,8 +1358,13 @@ class HistoryStore:
                     break
             else:
                 raise AssertionError("unreachable")
-            if record is None and indexed_records is not None and indexed_records.fetchone() is not None:
-                raise _history_corrupt()
+            if record is None and indexed_records is not None:
+                if indexed_records.fetchone() is not None:
+                    raise _history_corrupt()
+                if cache_verified and (
+                    payload_records is None or payload_records.fetchone() is not None
+                ):
+                    raise _history_corrupt()
             if not selected:
                 if not cursor_validated:
                     raise _InvalidHistoryCursor
@@ -1204,6 +1384,9 @@ class HistoryStore:
                     start_ordinal,
                     values,
                     serialized_bytes,
+                    isolate_outer=(
+                        cache_verified or id(batch) in cached_batch_ids
+                    ),
                 )
                 for batch, start_ordinal, values, serialized_bytes in selected
             )
@@ -1263,8 +1446,14 @@ class HistoryStore:
                         dict[tuple[object, ...], _VerifiedHistoryBatch],
                         cached_batches,
                     )
-                    for evidence in pending_cache:
-                        typed_batches[evidence.key] = evidence
+                    for evidence in pending_cache[-2:]:
+                        typed_batches[evidence.key] = _VerifiedHistoryBatch(
+                            evidence.key,
+                            _isolated_verified_batch(evidence.batch),
+                            evidence.indexed,
+                            evidence.encoded_value_lengths,
+                            evidence.encoded_slice_base_bytes,
+                        )
                     while len(typed_batches) > 2:
                         del typed_batches[next(iter(typed_batches))]
                 else:

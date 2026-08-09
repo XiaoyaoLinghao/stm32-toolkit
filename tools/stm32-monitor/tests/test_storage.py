@@ -604,6 +604,69 @@ def test_hot_reads_do_not_run_full_quick_check_for_every_connection(tmp_path: Pa
     ]
 
 
+def test_read_validates_and_queries_through_one_read_only_connection(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    paths = _paths(tmp_path)
+    _seed_database(paths)
+    database = MonitorDatabase(paths)
+    real_connect = sqlite3.connect
+    read_only_connections = 0
+
+    def observed_connect(database_path, *args, **kwargs):
+        nonlocal read_only_connections
+        if kwargs.get("uri") is True and str(database_path).endswith("?mode=ro"):
+            read_only_connections += 1
+        return real_connect(database_path, *args, **kwargs)
+
+    monkeypatch.setattr(sqlite3, "connect", observed_connect)
+    try:
+        assert database.read(
+            lambda connection: connection.execute("SELECT 1").fetchone()[0],
+            empty=0,
+        ) == 1
+    finally:
+        database.close()
+
+    assert read_only_connections == 1
+
+
+@pytest.mark.parametrize("missing_inspection", [1, 2, 3, 4])
+def test_read_rejects_a_missing_main_file_at_every_snapshot_boundary(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    missing_inspection: int,
+) -> None:
+    paths = _paths(tmp_path)
+    _seed_database(paths)
+    database = MonitorDatabase(paths)
+    real_inspect = database._inspect_storage_files
+    inspections = 0
+    operation_called = False
+
+    def observed_inspect():
+        nonlocal inspections
+        inspections += 1
+        if inspections == missing_inspection:
+            return {}
+        return real_inspect()
+
+    def operation(connection: sqlite3.Connection) -> int:
+        nonlocal operation_called
+        operation_called = True
+        return connection.execute("SELECT 1").fetchone()[0]
+
+    monkeypatch.setattr(database, "_inspect_storage_files", observed_inspect)
+    try:
+        with pytest.raises(StorageFailure) as rejected:
+            database.read(operation, empty=0)
+        assert rejected.value.code == "MONITOR_STORAGE_INVALID"
+        assert operation_called is (missing_inspection == 4)
+    finally:
+        database.close()
+
+
 def test_external_file_identity_change_requires_a_new_integrity_check(
     tmp_path: Path,
     monkeypatch,
@@ -1280,6 +1343,31 @@ def test_read_validation_and_write_open_errors_are_classified(tmp_path: Path, mo
     with pytest.raises(StorageFailure) as quick:
         database._validate(BadQuickCheck(), before=storage_module._identity(main))  # type: ignore[arg-type]
     assert quick.value.code == "MONITOR_STORAGE_CORRUPT"
+
+    class IncompleteValidation:
+        def execute(self, statement):
+            assert "pragma_application_id" in statement
+            return type("EmptyCursor", (), {"fetchone": lambda self: None})()
+
+    with pytest.raises(StorageFailure) as incomplete:
+        database._validate(  # type: ignore[arg-type]
+            IncompleteValidation(),
+            before=storage_module._identity(main),
+            full_integrity=False,
+        )
+    assert incomplete.value.code == "MONITOR_STORAGE_CORRUPT"
+
+    class FailedValidation:
+        def execute(self, statement):
+            raise sqlite3.DatabaseError("broken validation")
+
+    with pytest.raises(StorageFailure) as failed_validation:
+        database._validate(  # type: ignore[arg-type]
+            FailedValidation(),
+            before=storage_module._identity(main),
+            full_integrity=False,
+        )
+    assert failed_validation.value.code == "MONITOR_STORAGE_CORRUPT"
 
     with pytest.raises(StorageFailure) as read_error:
         database.read(
