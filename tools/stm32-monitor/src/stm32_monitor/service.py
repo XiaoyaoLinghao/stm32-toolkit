@@ -8,9 +8,7 @@ from collections.abc import AsyncIterator, Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
-from aiohttp import WSMsgType, web
-
-from stm32_toolkit import __version__ as TOOLKIT_VERSION
+from aiohttp import WSCloseCode, WSMsgType, web
 
 from .auth import (
     MAX_REQUEST_BYTES,
@@ -18,10 +16,13 @@ from .auth import (
     MonitorAuth,
     MonitorAuthError,
 )
-from .protocol import ProtocolResult, _json_text
-
-MONITOR_PROTOCOL_VERSION = "stm32-toolkit-monitor/1"
-MONITOR_VERSION = "0.4.0"
+from .protocol import (
+    MONITOR_PROTOCOL_VERSION,
+    MONITOR_VERSION,
+    TOOLKIT_VERSION,
+    ProtocolResult,
+    _json_text,
+)
 _FORBIDDEN_KEYS = {
     "workspaceid",
     "sessionid",
@@ -666,13 +667,20 @@ class MonitorService:
                                 prior = 0
                             enriched["serviceSubscriberDrops"] = prior + dropped
                             item["data"] = enriched
-                await websocket.send_json(
+                document = _json_text(
                     _envelope(
                         "monitor.live",
                         data=item,
                         details={"subscriberDropped": dropped},
                     )
                 )
+                if len(document.encode("utf-8")) > MAX_REQUEST_BYTES:
+                    await websocket.close(
+                        code=WSCloseCode.MESSAGE_TOO_BIG,
+                        message=b"live event exceeds size limit",
+                    )
+                    return
+                await websocket.send_str(document)
 
         producer = asyncio.create_task(produce(), name="stm32-monitor-live-producer")
         sender = asyncio.create_task(send(), name="stm32-monitor-live-sender")

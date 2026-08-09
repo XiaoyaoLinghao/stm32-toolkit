@@ -652,6 +652,66 @@ def test_probe_and_sampling_lifecycle_uses_only_typed_fixed_inputs(tmp_path: Pat
     asyncio.run(scenario())
 
 
+@pytest.mark.parametrize("action", ["start", "pause", "resume", "stop"])
+def test_sampling_transition_serializes_with_probe_release(
+    tmp_path: Path, action: str
+) -> None:
+    async def scenario() -> None:
+        from stm32_monitor.protocol import success
+
+        runtime, config, _groups, _history, _exports, samplers, observations, _requests = (
+            _protocol_runtime(tmp_path)
+        )
+        await runtime.start(config)
+        assert (
+            await runtime.dispatch("monitor.probe.connect", {"probeId": "probe-a"})
+        ).ok
+        sampler = samplers[0]
+        entered = asyncio.Event()
+        proceed = asyncio.Event()
+
+        async def blocking_transition(*_args, **_kwargs):
+            entered.set()
+            await proceed.wait()
+            return success(f"sampling.{action}", {action: True})
+
+        setattr(sampler, action, blocking_transition)
+        payload = (
+            {
+                "groupId": "12345678-1234-5678-1234-567812345678",
+                "expectedRevision": 1,
+            }
+            if action == "start"
+            else {}
+        )
+        transition = asyncio.create_task(
+            runtime.dispatch(f"monitor.sampling.{action}", payload)
+        )
+        await entered.wait()
+        release = await runtime.dispatch("monitor.probe.release", {})
+        proceed.set()
+        try:
+            result = await transition
+            assert result.ok
+            assert not release.ok and release.code == "MONITOR_PROBE_BUSY"
+            status = await runtime.dispatch("monitor.status", {})
+            assert status.data["probe"] == {
+                "connected": True,
+                "probeId": "probe-a",
+            }
+            assert sampler.close_calls == 0
+            assert observations[0].close_calls == 0
+            assert (await runtime.dispatch("monitor.probe.release", {})).ok
+            assert sampler.close_calls == 1
+            assert observations[0].close_calls == 1
+        finally:
+            proceed.set()
+            await asyncio.gather(transition, return_exceptions=True)
+            await runtime.stop()
+
+    asyncio.run(scenario())
+
+
 def test_concurrent_probe_connects_acquire_only_one_observation(tmp_path: Path) -> None:
     async def scenario() -> None:
         from stm32_toolkit.result import OperationResult

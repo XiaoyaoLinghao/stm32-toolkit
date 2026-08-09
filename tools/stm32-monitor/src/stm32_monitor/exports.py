@@ -25,7 +25,14 @@ from .history import (
     flatten_history_page,
 )
 from .models import MAX_SIGNED_INT64
-from .protocol import MONITOR_PROTOCOL_VERSION, ProtocolResult, failure, success
+from .protocol import (
+    MONITOR_PROTOCOL_VERSION,
+    MONITOR_VERSION,
+    TOOLKIT_VERSION,
+    ProtocolResult,
+    failure,
+    success,
+)
 from .storage import MonitorDatabase, StorageFailure
 
 
@@ -38,8 +45,8 @@ MAX_RECOVERY_RECORDS = 10
 RECOVERY_TIME_BUDGET_NS = 100 * 1_000_000
 _replace = os.replace
 _MANIFEST_FIELDS = {
-    "protocol", "workspaceId", "sessionId", "exportId", "format",
-    "sha256", "bytes", "valueCount", "createdAtUtc",
+    "protocol", "toolkitVersion", "monitorVersion", "workspaceId", "sessionId",
+    "exportId", "format", "sha256", "bytes", "valueCount", "createdAtUtc",
 }
 
 
@@ -621,6 +628,8 @@ class HistoryExporter:
         manifest_value_count = manifest["valueCount"]
         if (
             manifest["protocol"] != MONITOR_PROTOCOL_VERSION
+            or manifest["toolkitVersion"] != TOOLKIT_VERSION
+            or manifest["monitorVersion"] != MONITOR_VERSION
             or manifest["workspaceId"] != self._paths.workspace_id
             or manifest["sessionId"] != session_id
             or manifest["exportId"] != str(export_id)
@@ -734,6 +743,8 @@ class HistoryExporter:
             digest, byte_count, value_count = self._stream_history(request, data_path)
             manifest = {
                 "protocol": MONITOR_PROTOCOL_VERSION,
+                "toolkitVersion": TOOLKIT_VERSION,
+                "monitorVersion": MONITOR_VERSION,
                 "workspaceId": self._paths.workspace_id,
                 "sessionId": request.session_id,
                 "exportId": str(export_id),

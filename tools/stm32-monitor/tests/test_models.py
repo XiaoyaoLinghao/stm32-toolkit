@@ -485,7 +485,17 @@ def test_protocol_results_are_monitor_versioned_and_details_are_snapshotted() ->
     data["groups"][0]["name"] = "changed"
 
     assert bad.protocol == MONITOR_PROTOCOL_VERSION == "stm32-toolkit-monitor/1"
-    assert bad.to_dict()["details"] == {"field": ["name"]}
+    assert bad.to_dict() == {
+        "protocol": "stm32-toolkit-monitor/1",
+        "toolkitVersion": "0.4.0",
+        "monitorVersion": "0.4.0",
+        "ok": False,
+        "operation": "groups.create",
+        "code": "MONITOR_REQUEST_INVALID",
+        "message": "invalid request",
+        "data": None,
+        "details": {"field": ["name"]},
+    }
     assert good.ok is True and good.code == "OK"
     assert good.to_dict()["data"] == {"groups": [{"name": "original"}]}
     json.dumps(bad.to_dict())

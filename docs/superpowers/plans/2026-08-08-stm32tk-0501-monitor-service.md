@@ -7,8 +7,8 @@
 
 **Module:** `STM32TK-0501-MONITOR-SERVICE`
 
-**Phase:** Local implementation and acceptance complete; remote integration awaits
-explicit user authorization
+**Phase:** Final review revision remains open; acceptance and remote integration
+are blocked
 
 **Repository:** `https://github.com/XiaoyaoLinghao/stm32-toolkit.git`
 

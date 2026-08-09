@@ -18,6 +18,7 @@ class FakeRuntime:
         self.calls: list[tuple[str, dict[str, object], str | None, dict[str, str]]] = []
         self.live_queue: asyncio.Queue[object] = asyncio.Queue()
         self.subscribed = asyncio.Event()
+        self.unsubscribed = asyncio.Event()
         self.result: object | None = None
         self.error: Exception | None = None
         self.recorded_drops = 0
@@ -47,12 +48,71 @@ class FakeRuntime:
     ) -> AsyncIterator[dict[str, object]]:
         self.after_event_id = after_event_id
         self.subscribed.set()
-        while True:
-            item = await self.live_queue.get()
-            if item is StopAsyncIteration:
-                return
-            assert isinstance(item, dict)
-            yield item
+        try:
+            while True:
+                item = await self.live_queue.get()
+                if item is StopAsyncIteration:
+                    return
+                assert isinstance(item, dict)
+                yield item
+        finally:
+            self.unsubscribed.set()
+
+
+def _oversized_model_valid_live_event() -> dict[str, object]:
+    from stm32_monitor.auth import MAX_REQUEST_BYTES
+    from stm32_monitor.models import (
+        LiveEvent,
+        ObservationBinding,
+        SampleBatch,
+        SampleValue,
+        WatchItem,
+    )
+
+    binding = ObservationBinding(
+        "a" * 24,
+        "12345678-1234-5678-9234-567812345678",
+        "session-a",
+        "probe-a",
+        "STM32F407VGTx",
+        "stm32f407vg",
+        "b" * 64,
+        "e" * 64,
+        "d" * 64,
+        "c" * 40,
+        False,
+        "flash-1",
+        "lease-1",
+        "f" * 64,
+        None,
+    )
+    batch = SampleBatch(
+        binding,
+        UUID("12345678-1234-5678-9234-567812345678"),
+        1,
+        UUID("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"),
+        1,
+        1_000,
+        1_250,
+        250,
+        4.0,
+        0,
+        0,
+        0,
+        (
+            SampleValue(
+                WatchItem.variable("counter"),
+                "OK",
+                typed_value="SENSITIVE_PAYLOAD_MARKER\n"
+                + "\n" * (MAX_REQUEST_BYTES // 2),
+            ),
+        ),
+    )
+    return LiveEvent(
+        1,
+        "sample",
+        {"batch": batch.to_dict(), "serviceSubscriberDrops": 0},
+    ).to_dict()
 
 
 async def _with_service(action, *, send_delay_seconds: float = 0.0) -> None:
@@ -724,6 +784,33 @@ def test_websocket_rejects_client_messages() -> None:
             await ws.send_json({"unexpected": True})
             message = await asyncio.wait_for(ws.receive(), 1)
             assert message.type in {aiohttp.WSMsgType.CLOSE, aiohttp.WSMsgType.CLOSED}
+
+    asyncio.run(_with_service(scenario))
+
+
+def test_websocket_closes_before_sending_an_oversized_model_valid_live_event() -> None:
+    async def scenario(runtime, _service, endpoint) -> None:
+        from stm32_monitor.auth import MAX_REQUEST_BYTES
+
+        event = _oversized_model_valid_live_event()
+        assert len(json.dumps(event, separators=(",", ":")).encode("utf-8")) > (
+            MAX_REQUEST_BYTES
+        )
+        headers = {
+            "Authorization": f"Bearer {TOKEN_BYTES.hex()}",
+            "Origin": endpoint.url,
+        }
+        async with aiohttp.ClientSession() as client:
+            ws = await client.ws_connect(endpoint.url + "/api/v1/live", headers=headers)
+            await asyncio.wait_for(runtime.subscribed.wait(), 1)
+            await runtime.live_queue.put(event)
+            frame = await asyncio.wait_for(ws.receive(), 2)
+            assert frame.type == aiohttp.WSMsgType.CLOSE
+            assert frame.data == aiohttp.WSCloseCode.MESSAGE_TOO_BIG
+            assert frame.extra == "live event exceeds size limit"
+            assert "SENSITIVE_PAYLOAD_MARKER" not in frame.extra
+            assert TOKEN_BYTES.hex() not in frame.extra
+            await asyncio.wait_for(runtime.unsubscribed.wait(), 1)
 
     asyncio.run(_with_service(scenario))
 

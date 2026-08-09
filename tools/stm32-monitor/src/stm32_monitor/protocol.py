@@ -8,6 +8,8 @@ from datetime import datetime
 from typing import Generic, Mapping, TypeVar, cast
 from uuid import UUID
 
+from stm32_toolkit import __version__ as TOOLKIT_VERSION
+
 from .models import (
     ObservationBinding,
     ProbeConnectRequest,
@@ -21,6 +23,7 @@ from .models import (
 
 
 MONITOR_PROTOCOL_VERSION = "stm32-toolkit-monitor/1"
+MONITOR_VERSION = "0.4.0"
 MAX_PROTOCOL_BYTES = 1024 * 1024
 T = TypeVar("T")
 _OPERATION = re.compile(r"[a-z][a-z0-9]*(?:\.[a-z][a-z0-9]*)*\Z")
@@ -201,6 +204,8 @@ class ProtocolResult(Generic[T]):
     def to_dict(self) -> dict[str, object]:
         return {
             "protocol": self.protocol,
+            "toolkitVersion": TOOLKIT_VERSION,
+            "monitorVersion": MONITOR_VERSION,
             "ok": self.ok,
             "operation": self.operation,
             "code": self.code,

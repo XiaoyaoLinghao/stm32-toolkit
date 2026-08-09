@@ -994,36 +994,50 @@ class MonitorRuntime:
                     return success(operation, {"released": True})
             if operation == "monitor.sampling.start":
                 _exact(payload, {"groupId", "expectedRevision"})
-                sampler = self._sampler
-                if sampler is None:
-                    return failure(operation, "MONITOR_REQUEST_INVALID", "A probe must be connected")
-                if self._sample_task is None or self._sample_task.done():
-                    self._sample_task = asyncio.create_task(
-                        self._forward_samples(sampler),
-                        name="stm32-monitor-live-samples",
+                if self._probe_lifecycle_lock.locked():
+                    return failure(
+                        operation,
+                        "MONITOR_PROBE_BUSY",
+                        "A probe lifecycle transition is already in progress",
                     )
-                result = await _call(
-                    sampler.start,
-                    _uuid(payload["groupId"]),
-                    expected_revision=_integer(payload["expectedRevision"]),
-                )
-                if getattr(result, "ok", False) and not hasattr(sampler, "set_state_listener"):
-                    self._publish_state()
-                return result
+                async with self._probe_lifecycle_lock:
+                    sampler = self._sampler
+                    if sampler is None:
+                        return failure(operation, "MONITOR_REQUEST_INVALID", "A probe must be connected")
+                    if self._sample_task is None or self._sample_task.done():
+                        self._sample_task = asyncio.create_task(
+                            self._forward_samples(sampler),
+                            name="stm32-monitor-live-samples",
+                        )
+                    result = await _call(
+                        sampler.start,
+                        _uuid(payload["groupId"]),
+                        expected_revision=_integer(payload["expectedRevision"]),
+                    )
+                    if getattr(result, "ok", False) and not hasattr(sampler, "set_state_listener"):
+                        self._publish_state()
+                    return result
             if operation in {
                 "monitor.sampling.pause",
                 "monitor.sampling.resume",
                 "monitor.sampling.stop",
             }:
                 _exact(payload, set())
-                sampler = self._sampler
-                if sampler is None:
-                    return failure(operation, "MONITOR_REQUEST_INVALID", "A probe must be connected")
-                action = operation.rsplit(".", 1)[1]
-                result = await _call(getattr(sampler, action))
-                if getattr(result, "ok", False) and not hasattr(sampler, "set_state_listener"):
-                    self._publish_state()
-                return result
+                if self._probe_lifecycle_lock.locked():
+                    return failure(
+                        operation,
+                        "MONITOR_PROBE_BUSY",
+                        "A probe lifecycle transition is already in progress",
+                    )
+                async with self._probe_lifecycle_lock:
+                    sampler = self._sampler
+                    if sampler is None:
+                        return failure(operation, "MONITOR_REQUEST_INVALID", "A probe must be connected")
+                    action = operation.rsplit(".", 1)[1]
+                    result = await _call(getattr(sampler, action))
+                    if getattr(result, "ok", False) and not hasattr(sampler, "set_state_listener"):
+                        self._publish_state()
+                    return result
             if operation == "monitor.history.query":
                 _exact(payload, set())
                 expected = {"startNs", "endNs"}

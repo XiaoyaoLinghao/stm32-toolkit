@@ -759,7 +759,7 @@ def test_export_requires_exact_authorization_and_uses_server_owned_path(tmp_path
         history.close()
 
 
-def test_jsonl_export_manifest_binds_sha_size_count_and_protocol(tmp_path: Path) -> None:
+def test_jsonl_export_manifest_binds_sha_size_count_and_all_runtime_versions(tmp_path: Path) -> None:
     paths = _paths(tmp_path)
     history = HistoryStore(paths)
     exporter = HistoryExporter(paths, history)
@@ -768,7 +768,22 @@ def test_jsonl_export_manifest_binds_sha_size_count_and_protocol(tmp_path: Path)
         artifact = exporter.create_export(ExportRequest("monitor-1", 0, 1_000, "jsonl"), authorized=True).data
         data = artifact.data_path.read_bytes()
         manifest = json.loads(artifact.manifest_path.read_text(encoding="utf-8"))
+        assert set(manifest) == {
+            "protocol",
+            "toolkitVersion",
+            "monitorVersion",
+            "workspaceId",
+            "sessionId",
+            "exportId",
+            "format",
+            "sha256",
+            "bytes",
+            "valueCount",
+            "createdAtUtc",
+        }
         assert manifest["protocol"] == "stm32-toolkit-monitor/1"
+        assert manifest["toolkitVersion"] == "0.4.0"
+        assert manifest["monitorVersion"] == "0.4.0"
         assert manifest["workspaceId"] == paths.workspace_id
         assert manifest["sha256"] == hashlib.sha256(data).hexdigest()
         assert manifest["bytes"] == len(data)
@@ -782,6 +797,60 @@ def test_jsonl_export_manifest_binds_sha_size_count_and_protocol(tmp_path: Path)
             "valueCount": 1,
         }
     finally:
+        exporter.close()
+        history.close()
+
+
+@pytest.mark.parametrize("field", ["toolkitVersion", "monitorVersion"])
+def test_get_export_rejects_tampered_runtime_versions(
+    tmp_path: Path, field: str
+) -> None:
+    paths = _paths(tmp_path)
+    history = HistoryStore(paths)
+    exporter = HistoryExporter(paths, history)
+    try:
+        _append(paths, history)
+        artifact = exporter.create_export(
+            ExportRequest("monitor-1", 0, 1_000, "jsonl"), authorized=True
+        ).data
+        manifest = json.loads(artifact.manifest_path.read_text(encoding="utf-8"))
+        manifest[field] = "9.9.9"
+        artifact.manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+        rejected = exporter.get_export(artifact.export_id)
+        assert not rejected.ok and rejected.code == "MONITOR_EXPORT_FAILED"
+    finally:
+        exporter.close()
+        history.close()
+
+
+def test_recovery_discards_pending_export_with_tampered_monitor_version(
+    tmp_path: Path,
+) -> None:
+    paths = _paths(tmp_path)
+    history = HistoryStore(paths)
+    exporter = HistoryExporter(paths, history)
+    recovered = None
+    try:
+        _append(paths, history)
+        artifact = exporter.create_export(
+            ExportRequest("monitor-1", 0, 1_000, "jsonl"), authorized=True
+        ).data
+        exporter._database.write(
+            lambda connection: connection.execute(
+                "UPDATE export_records SET format = 'PENDING:jsonl' WHERE export_id = ?",
+                (str(artifact.export_id),),
+            )
+        )
+        manifest = json.loads(artifact.manifest_path.read_text(encoding="utf-8"))
+        manifest["monitorVersion"] = "9.9.9"
+        artifact.manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+        recovered = HistoryExporter(paths, history)
+        assert recovered.get_export(artifact.export_id).code == "MONITOR_EXPORT_FAILED"
+        assert not artifact.directory.exists()
+    finally:
+        if recovered is not None:
+            recovered.close()
         exporter.close()
         history.close()
 
