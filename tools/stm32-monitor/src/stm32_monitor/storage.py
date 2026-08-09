@@ -195,6 +195,7 @@ class MonitorDatabase:
             self._trusted_failure = error
         self._integrity_lock = threading.Lock()
         self._integrity_identity: tuple[tuple[str, int, int, int, int], ...] | None = None
+        self._validated_main_identity: tuple[int, int] | None = None
         self._writer_key = str(self.path).casefold()
         with _WRITER_REGISTRY_LOCK:
             writer = _WRITERS.get(self._writer_key)
@@ -509,6 +510,39 @@ class MonitorDatabase:
     ) -> bool:
         return all(entry[1] >= 0 for entry in fingerprint)
 
+    def _require_validated_main_identity(
+        self,
+        identity: tuple[int, int, int],
+    ) -> None:
+        """Reject replacement of a database already validated by this owner."""
+        with self._integrity_lock:
+            if (
+                self._validated_main_identity is not None
+                and self._validated_main_identity != identity[:2]
+            ):
+                raise StorageFailure(
+                    "MONITOR_STORAGE_INVALID",
+                    "monitor storage database was replaced",
+                )
+
+    def _remember_validated_integrity(
+        self,
+        identity: tuple[int, int, int],
+        fingerprint: tuple[tuple[str, int, int, int, int], ...],
+    ) -> None:
+        """Pin the validated main file and remember only a certain fingerprint."""
+        if not self._fingerprint_is_certain(fingerprint):
+            return
+        with self._integrity_lock:
+            if self._validated_main_identity is None:
+                self._validated_main_identity = identity[:2]
+            elif self._validated_main_identity != identity[:2]:
+                raise StorageFailure(
+                    "MONITOR_STORAGE_INVALID",
+                    "monitor storage database was replaced",
+                )
+            self._integrity_identity = fingerprint
+
     def _size(self, connection: sqlite3.Connection | None = None) -> int:
         total = 0
         for suffix in ("", "-wal"):
@@ -780,6 +814,7 @@ class MonitorDatabase:
         before = files.get(self.path)
         if before is None:
             raise StorageFailure("MONITOR_STORAGE_INVALID", "monitor storage database is missing")
+        self._require_validated_main_identity(before)
         before_fingerprint = self._integrity_fingerprint(files)
         try:
             uri = self.path.as_uri() + "?mode=ro"
@@ -849,9 +884,9 @@ class MonitorDatabase:
                     identity_retries=identity_retries - 1,
                 )
             raise StorageFailure("MONITOR_STORAGE_BUSY", "monitor storage is busy")
-        if full_integrity and self._fingerprint_is_certain(after_fingerprint):
-            with self._integrity_lock:
-                self._integrity_identity = after_fingerprint
+        self._require_validated_main_identity(after)
+        if full_integrity:
+            self._remember_validated_integrity(after, after_fingerprint)
         return after
 
     def _create_database_file(self) -> tuple[int, int, int]:
@@ -928,7 +963,6 @@ class MonitorDatabase:
             if not existed or connection.execute("PRAGMA user_version").fetchone()[0] == 1:
                 self._initialize(connection)
                 before = _identity(self.path)
-            self._validate(connection, before=before, full_integrity=not existed)
             self._ensure_sidecars()
             self._revalidate_trusted_directories()
             if _identity(self.path)[:2] != before[:2]:
@@ -936,12 +970,46 @@ class MonitorDatabase:
             journal = connection.execute("PRAGMA journal_mode = WAL").fetchone()
             if journal is None or str(journal[0]).lower() != "wal":
                 raise StorageFailure("MONITOR_STORAGE_INVALID", "monitor storage journal mode is invalid")
-            self._inspect_storage_files()
+            opening_files = self._inspect_storage_files()
+            opening_identity = opening_files.get(self.path)
+            if opening_identity is None:
+                raise StorageFailure(
+                    "MONITOR_STORAGE_INVALID",
+                    "monitor storage database is missing",
+                )
+            self._require_validated_main_identity(opening_identity)
+            opening_fingerprint = self._integrity_fingerprint(opening_files)
+            with self._integrity_lock:
+                full_integrity = self._integrity_identity != opening_fingerprint
+            self._validate(
+                connection,
+                before=before,
+                full_integrity=full_integrity,
+            )
+            self._revalidate_trusted_directories()
+            if _identity(self.path)[:2] != before[:2]:
+                raise StorageFailure("MONITOR_STORAGE_INVALID", "monitor storage changed while it was opened")
+            validated_files = self._inspect_storage_files()
+            validated_identity = validated_files.get(self.path)
+            if validated_identity is None:
+                raise StorageFailure(
+                    "MONITOR_STORAGE_INVALID",
+                    "monitor storage database is missing",
+                )
+            validated_fingerprint = self._integrity_fingerprint(validated_files)
+            if opening_fingerprint == validated_fingerprint:
+                self._remember_validated_integrity(
+                    validated_identity,
+                    validated_fingerprint,
+                )
             connection.execute("PRAGMA synchronous = FULL")
             connection.execute("PRAGMA wal_autocheckpoint = 256").fetchone()
             cast_connection = connection
             cast_connection._monitor_change_baseline = connection.total_changes  # type: ignore[attr-defined]
             cast_connection._monitor_before_commit = self._before_commit  # type: ignore[attr-defined]
+            cast_connection._monitor_data_version = connection.execute(  # type: ignore[attr-defined]
+                "PRAGMA data_version"
+            ).fetchone()[0]
             return connection
         except BaseException:
             connection.close()
@@ -1013,6 +1081,52 @@ class MonitorDatabase:
         if self._size(connection) > MAX_DATABASE_BYTES:
             raise StorageFailure("MONITOR_STORAGE_FULL", "monitor storage reached its hard size limit")
 
+    def _refresh_owned_integrity(self, connection: sqlite3.Connection) -> None:
+        """Trust an owned commit only when no other connection changed its view."""
+        baseline = getattr(connection, "_monitor_data_version", None)
+        if type(baseline) is not int:
+            return
+        # Closing the final SQLite connection can checkpoint and remove its WAL,
+        # which would make the next preflight mistake our own durable commit for
+        # an external change.  Checkpoint explicitly while this connection can
+        # still compare data_version, and cache only a stable, complete result.
+        checkpoint = connection.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+        if (
+            checkpoint is None
+            or len(checkpoint) != 3
+            or checkpoint[0] != 0
+            or checkpoint[1] != checkpoint[2]
+        ):
+            return
+        before_files = self._inspect_storage_files()
+        before_identity = before_files.get(self.path)
+        if before_identity is None:
+            raise StorageFailure(
+                "MONITOR_STORAGE_INVALID",
+                "monitor storage database is missing",
+            )
+        self._require_validated_main_identity(before_identity)
+        before_fingerprint = self._integrity_fingerprint(before_files)
+        current_data_version = connection.execute("PRAGMA data_version").fetchone()[0]
+        after_files = self._inspect_storage_files()
+        after_identity = after_files.get(self.path)
+        if after_identity is None:
+            raise StorageFailure(
+                "MONITOR_STORAGE_INVALID",
+                "monitor storage database is missing",
+            )
+        self._require_validated_main_identity(after_identity)
+        after_fingerprint = self._integrity_fingerprint(after_files)
+        if (
+            current_data_version == baseline
+            and before_identity[:2] == after_identity[:2]
+            and before_fingerprint == after_fingerprint
+        ):
+            self._remember_validated_integrity(
+                after_identity,
+                after_fingerprint,
+            )
+
     def _invoke(
         self,
         operation: Callable[[sqlite3.Connection], _T],
@@ -1032,9 +1146,16 @@ class MonitorDatabase:
                 if cancel_event.is_set():
                     raise StorageFailure("MONITOR_STORAGE_BUSY", "monitor storage is busy")
                 result = operation(connection)
+                baseline = getattr(
+                    connection,
+                    "_monitor_change_baseline",
+                    connection.total_changes,
+                )
+                owned_changes = connection.total_changes > baseline
                 if connection.in_transaction:
                     connection.commit()
-                self._inspect_storage_files()
+                if owned_changes:
+                    self._refresh_owned_integrity(connection)
                 return result
             finally:
                 connection.close()

@@ -450,6 +450,137 @@ def test_timed_out_started_write_releases_the_shared_writer_promptly(tmp_path: P
         database.close()
 
 
+def test_hot_writes_amortize_sql_validation_until_the_storage_fingerprint_changes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    paths = _paths(tmp_path)
+    main = _seed_database(paths)
+    database = MonitorDatabase(paths)
+    statements: list[str] = []
+    real_validate = database._validate
+
+    def observed_validate(connection: sqlite3.Connection, **kwargs) -> None:
+        connection.set_trace_callback(statements.append)
+        real_validate(connection, **kwargs)
+
+    monkeypatch.setattr(database, "_validate", observed_validate)
+    try:
+        def owned_change(connection: sqlite3.Connection, value: int) -> int:
+            connection.execute(
+                "UPDATE watch_groups SET description = ?",
+                (f"owned change {value}",),
+            )
+            connection.commit()
+            return value
+
+        for value in (1, 2, 3):
+            assert database.write(
+                lambda connection, value=value: owned_change(connection, value)
+            ) == value
+        validations_before_change = [
+            statement
+            for statement in statements
+            if "quick_check" in statement
+        ]
+        assert validations_before_change == ["PRAGMA quick_check(1)"]
+
+        with sqlite3.connect(main) as external:
+            external.execute(
+                "UPDATE watch_groups SET description = 'external fingerprint change'"
+            )
+            external.commit()
+        assert database.write(
+            lambda connection: connection.execute(
+                "SELECT description FROM watch_groups"
+            ).fetchone()[0]
+        ) == "external fingerprint change"
+    finally:
+        database.close()
+
+    validations_after_change = [
+        statement
+        for statement in statements
+        if "quick_check" in statement
+    ]
+    assert validations_after_change == [
+        "PRAGMA quick_check(1)",
+        "PRAGMA quick_check(1)",
+    ]
+
+
+def test_hot_write_trust_rejects_a_byte_valid_main_database_replacement(
+    tmp_path: Path,
+) -> None:
+    paths = _paths(tmp_path)
+    main = _seed_database(paths)
+    database = MonitorDatabase(paths)
+    replacement = tmp_path / "replacement.sqlite3"
+    try:
+        assert database.write(
+            lambda connection: connection.execute("SELECT 1").fetchone()[0]
+        ) == 1
+        external = sqlite3.connect(main)
+        try:
+            external.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+        finally:
+            external.close()
+        shutil.copy2(main, replacement)
+        before = replacement.read_bytes()
+        os.replace(replacement, main)
+
+        with pytest.raises(StorageFailure) as rejected:
+            database.write(
+                lambda connection: connection.execute(
+                    "UPDATE watch_groups SET description = 'must not mutate replacement'"
+                )
+            )
+        assert rejected.value.code == "MONITOR_STORAGE_INVALID"
+        assert main.read_bytes() == before
+    finally:
+        database.close()
+
+
+def test_write_does_not_trust_a_fingerprint_changed_after_integrity_validation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    paths = _paths(tmp_path)
+    main = _seed_database(paths)
+    database = MonitorDatabase(paths)
+    statements: list[str] = []
+    real_validate = database._validate
+    changed = False
+
+    def observed_validate(connection: sqlite3.Connection, **kwargs) -> None:
+        nonlocal changed
+        connection.set_trace_callback(statements.append)
+        real_validate(connection, **kwargs)
+        if not changed:
+            changed = True
+            metadata = main.stat()
+            os.utime(
+                main,
+                ns=(metadata.st_atime_ns, metadata.st_mtime_ns + 1_000_000),
+            )
+
+    monkeypatch.setattr(database, "_validate", observed_validate)
+    try:
+        assert database.write(
+            lambda connection: connection.execute("SELECT 1").fetchone()[0]
+        ) == 1
+        assert database.write(
+            lambda connection: connection.execute("SELECT 2").fetchone()[0]
+        ) == 2
+    finally:
+        database.close()
+
+    assert [statement for statement in statements if "quick_check" in statement] == [
+        "PRAGMA quick_check(1)",
+        "PRAGMA quick_check(1)",
+    ]
+
+
 def test_hot_reads_do_not_run_full_quick_check_for_every_connection(tmp_path: Path, monkeypatch) -> None:
     paths = _paths(tmp_path)
     _seed_database(paths)

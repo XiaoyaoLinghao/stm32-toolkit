@@ -8,6 +8,7 @@ import shutil
 import stat
 import tempfile
 import time
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -18,6 +19,7 @@ from uuid import UUID, uuid4
 from stm32_toolkit.paths import WorkspacePaths, require_safe_session_id
 
 from .history import (
+    MAX_EXPORT_HISTORY_VALUES,
     HistoryQuery,
     HistoryStore,
     MAX_HISTORY_VALUES,
@@ -40,7 +42,8 @@ MAX_EXPORT_BYTES = 160 * 1024 * 1024
 MAX_WORKSPACE_EXPORTS = 100
 MAX_WORKSPACE_EXPORT_BYTES = 512 * 1024 * 1024
 MAX_MANIFEST_BYTES = 16 * 1024
-_WRITE_BUFFER_BYTES = 256 * 1024
+_WRITE_BUFFER_BYTES = 4 * 1024 * 1024
+_VERIFY_BUFFER_BYTES = 4 * 1024 * 1024
 MAX_RECOVERY_RECORDS = 10
 RECOVERY_TIME_BUDGET_NS = 100 * 1_000_000
 _replace = os.replace
@@ -149,7 +152,7 @@ class _LimitedHashWriter:
         self._buffer = bytearray()
         self.byte_count = 0
 
-    def write(self, data: bytes) -> None:
+    def write(self, data: bytes | bytearray) -> None:
         new_size = self.byte_count + len(data)
         if new_size > MAX_EXPORT_BYTES:
             raise StorageFailure("MONITOR_EXPORT_TOO_LARGE", "export byte limit was exceeded")
@@ -299,7 +302,7 @@ def _read_regular_limited(path: Path, *, limit: int, keep: bool) -> tuple[bytes 
         if (before.st_dev, before.st_ino) != (opened.st_dev, opened.st_ino):
             raise ValueError("export artifact identity changed")
         while True:
-            chunk = os.read(descriptor, min(64 * 1024, limit + 1 - total))
+            chunk = os.read(descriptor, min(_VERIFY_BUFFER_BYTES, limit + 1 - total))
             if not chunk:
                 break
             total += len(chunk)
@@ -350,7 +353,7 @@ def _open_verified_regular(path: Path, *, limit: int) -> tuple[BinaryIO, int, st
         digest = hashlib.sha256()
         total = 0
         while True:
-            chunk = os.read(descriptor, min(64 * 1024, limit + 1 - total))
+            chunk = os.read(descriptor, min(_VERIFY_BUFFER_BYTES, limit + 1 - total))
             if not chunk:
                 break
             total += len(chunk)
@@ -431,6 +434,18 @@ class HistoryExporter:
         )
         cursor: str | None = None
         value_count = 0
+        jsonl_batch_started = False
+        jsonl_static_prefix = b""
+        jsonl_batch_buffer = bytearray()
+        transient_history_cache: dict[str, object] = {}
+        jsonl_dynamic_fields = (
+            "watch",
+            "status",
+            "typedValue",
+            "code",
+            "definition",
+            "valueOrdinal",
+        )
         with _create_regular_exclusive(target, parent=target.parent) as stream:
             sink = _LimitedHashWriter(stream)
             encode_json = json.JSONEncoder(
@@ -449,38 +464,84 @@ class HistoryExporter:
                     lineterminator="\n",
                 )
                 csv_writer.writeheader()
-            while True:
-                page = self._history._query_history_uncached(
+            def query_page(page_cursor: str | None):
+                return self._history._query_history_uncached(
                     HistoryQuery(
                         request.session_id,
                         request.start_ns,
                         request.end_ns,
-                        limit=MAX_HISTORY_VALUES,
-                        cursor=cursor,
-                    )
+                        limit=MAX_EXPORT_HISTORY_VALUES,
+                        cursor=page_cursor,
+                    ),
+                    transient_cache=transient_history_cache,
+                    maximum_values=MAX_EXPORT_HISTORY_VALUES,
                 )
-                if not page.ok or page.data is None:
-                    raise StorageFailure(page.code, page.message)
-                for value in flatten_history_page(page.data):
-                    if value_count >= MAX_EXPORT_VALUES:
-                        raise StorageFailure("MONITOR_EXPORT_TOO_LARGE", "export value limit was exceeded")
-                    plain = dict(value)
-                    if request.format == "jsonl":
-                        sink.write(encode_json(plain).encode("utf-8") + b"\n")
-                    else:
-                        cast(csv.DictWriter, csv_writer).writerow(
-                            {
-                                key: encode_json(plain.get(key))
-                                for key in fieldnames
-                            }
+
+            with ThreadPoolExecutor(
+                max_workers=1,
+                thread_name_prefix="stm32-monitor-export-read",
+            ) as query_executor:
+                page = query_page(cursor)
+                while True:
+                    if not page.ok or page.data is None:
+                        raise StorageFailure(page.code, page.message)
+                    next_cursor = page.data.next_cursor
+                    if next_cursor is not None and (
+                        next_cursor == cursor or not page.data.values
+                    ):
+                        raise StorageFailure(
+                            "MONITOR_STORAGE_CORRUPT",
+                            "monitor history is corrupt",
                         )
-                    value_count += 1
-                next_cursor = page.data.next_cursor
-                if next_cursor is None:
-                    break
-                if next_cursor == cursor or not page.data.values:
-                    raise StorageFailure("MONITOR_STORAGE_CORRUPT", "monitor history is corrupt")
-                cursor = next_cursor
+                    next_page = (
+                        query_executor.submit(query_page, next_cursor)
+                        if next_cursor is not None
+                        else None
+                    )
+                    for value in flatten_history_page(page.data):
+                        if value_count >= MAX_EXPORT_VALUES:
+                            raise StorageFailure("MONITOR_EXPORT_TOO_LARGE", "export value limit was exceeded")
+                        plain = value
+                        if request.format == "jsonl":
+                            if (
+                                not jsonl_batch_started
+                                or plain["valueOrdinal"] == 0
+                            ):
+                                if jsonl_batch_buffer:
+                                    sink.write(jsonl_batch_buffer)
+                                    jsonl_batch_buffer.clear()
+                                jsonl_batch_started = True
+                                static = {
+                                    key: plain[key]
+                                    for key in fieldnames
+                                    if key not in jsonl_dynamic_fields
+                                }
+                                jsonl_static_prefix = (
+                                    encode_json(static)[:-1].encode("utf-8") + b","
+                                )
+                            dynamic = {
+                                key: plain[key]
+                                for key in jsonl_dynamic_fields
+                            }
+                            jsonl_batch_buffer.extend(jsonl_static_prefix)
+                            jsonl_batch_buffer.extend(
+                                encode_json(dynamic)[1:].encode("utf-8")
+                            )
+                            jsonl_batch_buffer.append(0x0A)
+                        else:
+                            cast(csv.DictWriter, csv_writer).writerow(
+                                {
+                                    key: encode_json(plain.get(key))
+                                    for key in fieldnames
+                                }
+                            )
+                        value_count += 1
+                    if next_page is None:
+                        break
+                    cursor = next_cursor
+                    page = next_page.result()
+            if jsonl_batch_buffer:
+                sink.write(jsonl_batch_buffer)
             sink.finish()
             return sink.sha256, sink.byte_count, value_count
 

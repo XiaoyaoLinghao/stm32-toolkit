@@ -16,7 +16,13 @@ from uuid import UUID
 import pytest
 
 from stm32_monitor.groups import GroupStore
-from stm32_monitor.history import HistoryPage, HistoryQuery, HistoryStore, flatten_history_page
+from stm32_monitor.history import (
+    MAX_EXPORT_HISTORY_VALUES,
+    HistoryPage,
+    HistoryQuery,
+    HistoryStore,
+    flatten_history_page,
+)
 from stm32_monitor.models import ObservationBinding, SampleBatch, SampleValue, WatchGroup, WatchItem
 from stm32_monitor.storage import APPLICATION_ID, StorageFailure
 from stm32_toolkit.paths import WorkspacePaths
@@ -540,6 +546,7 @@ def test_v1_migration_corruption_rolls_back_original_bytes_schema_and_inventory(
         "batch_length", "batch_digest", "value_length", "value_digest", "value_count",
         "selector_kind", "selector", "workspace", "session", "run", "sequence",
         "captured_ns", "scheduled_timestamp", "captured_timestamp", "semantic_payload",
+        "noncanonical_key",
     ],
 )
 def test_v2_query_rejects_payload_and_sqlite_identity_mismatches(
@@ -590,6 +597,8 @@ def test_v2_query_rejects_payload_and_sqlite_identity_mismatches(
                     payload["capturedAtUtc"] = "2000-01-01T00:00:00.000000Z"
                 elif corruption == "semantic_payload":
                     payload["groupId"] = "not-a-uuid"
+                elif corruption == "noncanonical_key":
+                    payload["values"][0]["typedValue"] = {"e\u0301": 1}
                 else:
                     raise AssertionError("unknown v2 corruption")
                 invalid = _compact(payload)
@@ -720,7 +729,14 @@ def test_ten_thousand_value_query_normalizes_and_serializes_final_page_once(
             ).ok
 
         calls = 0
-        observed = {"sql": 0, "decode": 0, "encode_value": 0, "cursor": 0, "size": 0}
+        observed = {
+            "sql": 0,
+            "decode": 0,
+            "evidence_values": 0,
+            "encode_value": 0,
+            "cursor": 0,
+            "size": 0,
+        }
         real_create = HistoryPage.create.__func__
 
         def observed_create(cls, batches, *, next_cursor):
@@ -748,19 +764,30 @@ def test_ten_thousand_value_query_normalizes_and_serializes_final_page_once(
             return real_read(lambda connection: operation(CountingConnection(connection)), empty=empty)
 
         monkeypatch.setattr(store._database, "read", counted_read)
+        history_module = __import__("stm32_monitor.history", fromlist=["history"])
+        real_decode = history_module._decode_history_batch
+
+        def counted_decode(*args, **kwargs):
+            observed["decode"] += 1
+            evidence = kwargs.get("value_evidence")
+            result = real_decode(*args, **kwargs)
+            if evidence is not None:
+                observed["evidence_values"] += len(evidence)
+            return result
+
+        monkeypatch.setattr(history_module, "_decode_history_batch", counted_decode)
         for name, key in (
-            ("_decode_history_batch", "decode"),
             ("_encode_history_value", "encode_value"),
             ("_encode_cursor", "cursor"),
             ("_encoded_history_page_size_from_batch_bytes", "size"),
         ):
-            original = getattr(__import__("stm32_monitor.history", fromlist=[name]), name)
+            original = getattr(history_module, name)
 
             def counted(*args, __original=original, __key=key, **kwargs):
                 observed[__key] += 1
                 return __original(*args, **kwargs)
 
-            monkeypatch.setattr(__import__("stm32_monitor.history", fromlist=[name]), name, counted)
+            monkeypatch.setattr(history_module, name, counted)
         result = store.query_history(
             HistoryQuery("monitor-1", 0, 2_000_000_000, limit=10_000)
         )
@@ -772,7 +799,8 @@ def test_ten_thousand_value_query_normalizes_and_serializes_final_page_once(
         assert observed == {
             "sql": 2,
             "decode": 40,
-            "encode_value": 10_000,
+            "evidence_values": 10_000,
+            "encode_value": 0,
             "cursor": 0,
             "size": 1,
         }
@@ -784,6 +812,7 @@ def test_ten_thousand_value_query_normalizes_and_serializes_final_page_once(
         assert observed == {
             "sql": 1,
             "decode": 0,
+            "evidence_values": 0,
             "encode_value": 0,
             "cursor": 0,
             "size": 1,
@@ -800,45 +829,43 @@ def test_verified_history_cache_is_bounded_and_invalidated_by_append_wal_and_reo
 
     paths = _paths(tmp_path)
     store = HistoryStore(paths)
-    calls = {"decode": 0, "encode": 0}
+    calls = {"decode": 0, "evidence": 0}
     real_decode = history_module._decode_history_batch
-    real_encode = history_module._encode_history_value
 
     def observed_decode(*args, **kwargs):
         calls["decode"] += 1
-        return real_decode(*args, **kwargs)
-
-    def observed_encode(*args, **kwargs):
-        calls["encode"] += 1
-        return real_encode(*args, **kwargs)
+        evidence = kwargs.get("value_evidence")
+        result = real_decode(*args, **kwargs)
+        if evidence is not None:
+            calls["evidence"] += len(evidence)
+        return result
 
     monkeypatch.setattr(history_module, "_decode_history_batch", observed_decode)
-    monkeypatch.setattr(history_module, "_encode_history_value", observed_encode)
     try:
         for sequence in range(513):
             assert store.append_batch(
                 _batch(paths, sequence, captured_ns=1_000 + sequence)
             ).ok
-        calls.update(decode=0, encode=0)
+        calls.update(decode=0, evidence=0)
         cold = store.query_history(HistoryQuery("monitor-1", 1_000, 2_000, limit=513))
         assert cold.ok and cold.data.value_count == 513
-        assert calls == {"decode": 513, "encode": 513}
+        assert calls == {"decode": 513, "evidence": 513}
 
-        calls.update(decode=0, encode=0)
+        calls.update(decode=0, evidence=0)
         evicted = store.query_history(HistoryQuery("monitor-1", 1_000, 1_001))
-        assert evicted.ok and calls == {"decode": 1, "encode": 1}
-        calls.update(decode=0, encode=0)
+        assert evicted.ok and calls == {"decode": 1, "evidence": 1}
+        calls.update(decode=0, evidence=0)
         retained = store.query_history(HistoryQuery("monitor-1", 1_512, 1_513))
-        assert retained.ok and calls == {"decode": 0, "encode": 0}
+        assert retained.ok and calls == {"decode": 0, "evidence": 0}
 
-        calls.update(decode=0, encode=0)
+        calls.update(decode=0, evidence=0)
         assert store.append_batch(_batch(paths, 513, captured_ns=1_513)).ok
-        calls.update(decode=0, encode=0)
+        calls.update(decode=0, evidence=0)
         appended = store.query_history(HistoryQuery("monitor-1", 1_512, 1_514))
         assert appended.ok and appended.data.value_count == 2
-        assert calls == {"decode": 2, "encode": 2}
+        assert calls == {"decode": 2, "evidence": 2}
 
-        calls.update(decode=0, encode=0)
+        calls.update(decode=0, evidence=0)
         external = HistoryStore(paths)
         database = store._database.path
         keeper = sqlite3.connect(database)
@@ -849,7 +876,7 @@ def test_verified_history_cache_is_bounded_and_invalidated_by_append_wal_and_reo
             keeper.execute("SELECT COUNT(*) FROM history_batches").fetchone()
             wal_before = wal_path.stat() if wal_path.exists() else None
             assert external.append_batch(_batch(paths, 514, captured_ns=1_514)).ok
-            calls.update(decode=0, encode=0)
+            calls.update(decode=0, evidence=0)
             wal_after = wal_path.stat()
             assert wal_before is None or (
                 wal_after.st_ino,
@@ -858,7 +885,7 @@ def test_verified_history_cache_is_bounded_and_invalidated_by_append_wal_and_reo
             ) != (wal_before.st_ino, wal_before.st_size, wal_before.st_mtime_ns)
             external_commit = store.query_history(HistoryQuery("monitor-1", 1_513, 1_515))
             assert external_commit.ok and external_commit.data.value_count == 2
-            assert calls == {"decode": 2, "encode": 2}
+            assert calls == {"decode": 2, "evidence": 2}
         finally:
             keeper.rollback()
             keeper.close()
@@ -866,12 +893,12 @@ def test_verified_history_cache_is_bounded_and_invalidated_by_append_wal_and_reo
     finally:
         store.close()
 
-    calls.update(decode=0, encode=0)
+    calls.update(decode=0, evidence=0)
     reopened = HistoryStore(paths)
     try:
         result = reopened.query_history(HistoryQuery("monitor-1", 1_514, 1_515))
         assert result.ok and result.data.value_count == 1
-        assert calls == {"decode": 1, "encode": 1}
+        assert calls == {"decode": 1, "evidence": 1}
     finally:
         reopened.close()
 
@@ -921,6 +948,75 @@ def test_uncached_verified_query_does_not_retain_batches_and_normal_queries_stil
         assert warm.ok and warm.data == cold.data
         assert decoded == 0
         assert len(store._verified_cache) == 3
+    finally:
+        store.close()
+
+
+def test_export_page_cache_is_bounded_and_invalidated_by_an_owned_append(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import stm32_monitor.history as history_module
+
+    paths = _paths(tmp_path)
+    store = HistoryStore(paths)
+    transient_cache: dict[str, object] = {}
+    try:
+        for sequence in range(80):
+            assert store.append_batch(
+                _wide_batch(
+                    paths,
+                    sequence,
+                    captured_ns=1_000 + sequence,
+                    count=256,
+                )
+            ).ok
+        first = store._query_history_uncached(
+            HistoryQuery(
+                "monitor-1",
+                0,
+                2_000_000_000,
+                limit=MAX_EXPORT_HISTORY_VALUES,
+            ),
+            transient_cache=transient_cache,
+            maximum_values=MAX_EXPORT_HISTORY_VALUES,
+        )
+        assert first.ok and first.data.value_count == MAX_EXPORT_HISTORY_VALUES
+        assert first.data.next_cursor is not None
+        cached = transient_cache["batches"]
+        assert type(cached) is dict and len(cached) == 2
+        previous_snapshot = transient_cache["snapshot"]
+
+        assert store.append_batch(
+            _wide_batch(paths, 80, captured_ns=1_080, count=256)
+        ).ok
+        decoded = 0
+        real_decode = history_module._decode_history_batch
+
+        def observed_decode(*args, **kwargs):
+            nonlocal decoded
+            decoded += 1
+            return real_decode(*args, **kwargs)
+
+        monkeypatch.setattr(history_module, "_decode_history_batch", observed_decode)
+        second = store._query_history_uncached(
+            HistoryQuery(
+                "monitor-1",
+                0,
+                2_000_000_000,
+                limit=MAX_EXPORT_HISTORY_VALUES,
+                cursor=first.data.next_cursor,
+            ),
+            transient_cache=transient_cache,
+            maximum_values=MAX_EXPORT_HISTORY_VALUES,
+        )
+        assert second.ok and second.data.value_count == 736
+        assert second.data.next_cursor is None
+        assert decoded == 3
+        assert transient_cache["snapshot"] != previous_snapshot
+        refreshed = transient_cache["batches"]
+        assert type(refreshed) is dict and len(refreshed) == 2
+        assert store._verified_cache == {}
     finally:
         store.close()
 

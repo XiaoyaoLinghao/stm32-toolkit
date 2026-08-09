@@ -9,6 +9,7 @@ import sqlite3
 import struct
 import threading
 import time
+import unicodedata
 from collections import OrderedDict
 from collections.abc import Callable, Iterator, Mapping as MappingABC, Sequence
 from dataclasses import dataclass, field
@@ -33,6 +34,7 @@ from .storage import MonitorDatabase, StorageFailure
 
 
 MAX_HISTORY_VALUES = 10_000
+MAX_EXPORT_HISTORY_VALUES = 20_000
 MAX_HISTORY_PAGE_BYTES = 4 * 1024 * 1024
 # A persisted batch must fit within one maximum history response.  Migration
 # checks SQLite's BLOB length against this ceiling before fetching the payload.
@@ -283,12 +285,17 @@ def _verified_history_page(
     value_count: int,
     next_cursor: str | None,
     serialized_bytes: int,
+    maximum_values: int | None = None,
 ) -> HistoryPage:
+    if maximum_values is None:
+        maximum_values = MAX_HISTORY_VALUES
     snapshot = tuple(batches)
     if (
         any(type(batch) is not HistoryBatchSlice for batch in snapshot)
         or value_count != sum(len(batch.values) for batch in snapshot)
-        or value_count > MAX_HISTORY_VALUES
+        or type(maximum_values) is not int
+        or not MAX_HISTORY_VALUES <= maximum_values <= MAX_EXPORT_HISTORY_VALUES
+        or value_count > maximum_values
         or (snapshot and serialized_bytes > MAX_HISTORY_PAGE_BYTES)
     ):
         raise TypeError("verified history page is invalid")
@@ -473,6 +480,15 @@ def _history_corrupt() -> StorageFailure:
     return StorageFailure("MONITOR_STORAGE_CORRUPT", "monitor history is corrupt")
 
 
+def _canonical_json_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    result: dict[str, object] = {}
+    for key, value in pairs:
+        if unicodedata.normalize("NFC", key) != key or key in result:
+            raise ValueError("history JSON object key is not canonical")
+        result[key] = value
+    return result
+
+
 def _decode_history_batch(
     raw: object,
     payload_bytes: object,
@@ -484,6 +500,7 @@ def _decode_history_batch(
     run_id: object,
     sequence: object,
     captured_ns: object,
+    value_evidence: list[tuple[str, str, bytes, str]] | None = None,
 ) -> SampleBatch:
     try:
         if (
@@ -501,7 +518,11 @@ def _decode_history_batch(
             or value_count < 0
         ):
             raise ValueError("history batch payload evidence is invalid")
-        decoded = json.loads(raw.decode("utf-8"), parse_constant=_invalid_json_constant)
+        decoded = json.loads(
+            raw.decode("utf-8"),
+            parse_constant=_invalid_json_constant,
+            object_pairs_hook=_canonical_json_object,
+        )
         if type(decoded) is not dict or set(decoded) != {
             "binding", "groupId", "groupRevision", "runId", "sequence",
             "scheduledUnixNs", "scheduledAtUtc", "capturedUnixNs", "capturedAtUtc",
@@ -514,6 +535,7 @@ def _decode_history_batch(
         if type(binding_value) is not dict or type(values_value) is not list:
             raise TypeError("history batch model payload is invalid")
         values: list[SampleValue] = []
+        decoded_value_evidence: list[tuple[str, str, bytes, str]] = []
         for value in values_value:
             if type(value) is not dict or set(value) != {
                 "watch", "status", "typedValue", "code", "definition"
@@ -522,15 +544,36 @@ def _decode_history_batch(
             watch = value["watch"]
             if type(watch) is not dict:
                 raise TypeError("history watch payload is invalid")
-            values.append(
-                SampleValue(
-                    WatchItem.from_dict(watch),
-                    cast(str, value["status"]),
-                    typed_value=value["typedValue"],
-                    code=cast(str | None, value["code"]),
-                    definition=cast(Mapping[str, object] | None, value["definition"]),
-                )
+            sample = SampleValue(
+                WatchItem.from_dict(watch),
+                cast(str, value["status"]),
+                typed_value=value["typedValue"],
+                code=cast(str | None, value["code"]),
+                definition=cast(Mapping[str, object] | None, value["definition"]),
             )
+            if (
+                watch != sample.watch.to_dict()
+                or value["status"] != sample.status
+                or value["code"] != sample.code
+            ):
+                raise ValueError("history value is not canonical")
+            values.append(sample)
+            if value_evidence is not None:
+                value_raw = json.dumps(
+                    value,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                    allow_nan=False,
+                ).encode("utf-8")
+                decoded_value_evidence.append(
+                    (
+                        sample.watch.kind,
+                        sample.watch.selector,
+                        value_raw,
+                        sha256(value_raw).hexdigest(),
+                    )
+                )
         binding = ObservationBinding.from_dict(binding_value)
         batch = SampleBatch(
             binding=binding,
@@ -547,6 +590,25 @@ def _decode_history_batch(
             deadline_drops=cast(int, decoded["deadlineDrops"]),
             values=tuple(values),
         )
+        expected_static = {
+            "binding": binding.to_dict(),
+            "groupId": str(batch.group_id),
+            "groupRevision": batch.group_revision,
+            "runId": str(batch.run_id),
+            "sequence": batch.sequence,
+            "scheduledUnixNs": batch.scheduled_unix_ns,
+            "scheduledAtUtc": unix_ns_to_utc(batch.scheduled_unix_ns),
+            "capturedUnixNs": batch.captured_unix_ns,
+            "capturedAtUtc": unix_ns_to_utc(batch.captured_unix_ns),
+            "latencyNs": batch.latency_ns,
+            "actualRateHz": float(batch.actual_rate_hz),
+            "subscriberDrops": batch.subscriber_drops,
+            "historyDrops": batch.history_drops,
+            "deadlineDrops": batch.deadline_drops,
+        }
+        actual_static = {
+            key: item for key, item in decoded.items() if key != "values"
+        }
         if (
             len(batch.values) != value_count
             or binding.workspace_id != workspace_id
@@ -554,11 +616,11 @@ def _decode_history_batch(
             or str(batch.run_id) != run_id
             or batch.sequence != sequence
             or batch.captured_unix_ns != captured_ns
-            or decoded["scheduledAtUtc"] != unix_ns_to_utc(batch.scheduled_unix_ns)
-            or decoded["capturedAtUtc"] != unix_ns_to_utc(batch.captured_unix_ns)
-            or decoded != batch.to_dict()
+            or actual_static != expected_static
         ):
             raise ValueError("history batch does not match its evidence")
+        if value_evidence is not None:
+            value_evidence.extend(decoded_value_evidence)
         return batch
     except (
         UnicodeError,
@@ -779,29 +841,66 @@ class HistoryStore:
     def _query_history_uncached(
         self,
         query: HistoryQuery,
+        *,
+        transient_cache: dict[str, object] | None = None,
+        maximum_values: int | None = None,
     ) -> ProtocolResult[HistoryPage]:
-        return self._query_history(query, cache_verified=False)
+        return self._query_history(
+            query,
+            cache_verified=False,
+            transient_cache=transient_cache,
+            maximum_values=maximum_values,
+        )
 
     def _query_history(
         self,
         query: HistoryQuery,
         *,
         cache_verified: bool,
+        transient_cache: dict[str, object] | None = None,
+        maximum_values: int | None = None,
     ) -> ProtocolResult[HistoryPage]:
         operation = "history.query"
         try:
             cursor_batch, cursor_ordinal, filter_digest = self._validate_query(query)
         except ValueError:
             return failure(operation, "MONITOR_HISTORY_QUERY_INVALID", "history query is invalid")
-        effective_limit = min(query.limit, MAX_HISTORY_VALUES)
+        if maximum_values is None:
+            maximum_values = MAX_HISTORY_VALUES
+        if (
+            type(maximum_values) is not int
+            or not MAX_HISTORY_VALUES <= maximum_values <= MAX_EXPORT_HISTORY_VALUES
+            or (cache_verified and maximum_values != MAX_HISTORY_VALUES)
+        ):
+            return failure(
+                operation,
+                "MONITOR_HISTORY_QUERY_INVALID",
+                "history query is invalid",
+            )
+        effective_limit = min(query.limit, maximum_values)
         observed_snapshot: tuple[tuple[str, int, int, int, int], ...] | None = None
         pending_cache: list[_VerifiedHistoryBatch] = []
 
         def read(connection: sqlite3.Connection) -> HistoryPage:
             nonlocal observed_snapshot
             snapshot = self._observed_storage_snapshot()
-            if snapshot is None or not cache_verified:
+            if snapshot is None:
                 trusted_cache: dict[tuple[object, ...], _VerifiedHistoryBatch] = {}
+            elif not cache_verified and transient_cache is not None:
+                observed_snapshot, trusted = snapshot
+                cached_snapshot = transient_cache.get("snapshot")
+                cached_batches = transient_cache.get("batches")
+                trusted_cache = (
+                    dict(cast(dict[tuple[object, ...], _VerifiedHistoryBatch], cached_batches))
+                    if (
+                        trusted
+                        and cached_snapshot == observed_snapshot
+                        and type(cached_batches) is dict
+                    )
+                    else {}
+                )
+            elif not cache_verified:
+                trusted_cache = {}
             else:
                 observed_snapshot, trusted = snapshot
                 with self._verified_cache_lock:
@@ -890,6 +989,7 @@ class HistoryStore:
                             """,
                             value_parameters,
                         )
+                    decoded_value_evidence: list[tuple[str, str, bytes, str]] = []
                     batch = _decode_history_batch(
                         raw,
                         payload_bytes,
@@ -900,20 +1000,26 @@ class HistoryStore:
                         run_id=run_id,
                         sequence=sequence,
                         captured_ns=captured_ns,
+                        value_evidence=decoded_value_evidence,
                     )
                     indexed = []
                     encoded_value_lengths = []
-                    for ordinal in range(len(batch.values)):
-                        index_row = indexed_records.fetchone()
-                        if index_row is None or len(index_row) != 7:
+                    index_rows = indexed_records.fetchmany(len(batch.values))
+                    if len(index_rows) != len(batch.values):
+                        raise _history_corrupt()
+                    for ordinal, index_row in enumerate(index_rows):
+                        if len(index_row) != 7:
                             raise _history_corrupt()
                         (
                             indexed_batch_id, stored_ordinal, kind, selector,
                             value_raw, value_bytes, value_digest,
                         ) = index_row
-                        expected_kind, expected_selector, expected_raw, expected_digest = _encode_history_value(
-                            batch.values[ordinal]
-                        )
+                        (
+                            expected_kind,
+                            expected_selector,
+                            expected_raw,
+                            expected_digest,
+                        ) = decoded_value_evidence[ordinal]
                         if (
                             indexed_batch_id != batch_id
                             or stored_ordinal != ordinal
@@ -923,14 +1029,16 @@ class HistoryStore:
                             or type(value_bytes) is not int
                             or value_bytes != len(value_raw)
                             or type(value_digest) is not str
-                            or sha256(value_raw).hexdigest() != value_digest
-                            or value_digest != expected_digest
                             or value_raw != expected_raw
+                            or value_digest != expected_digest
                         ):
                             raise _history_corrupt()
                         indexed.append(tuple(index_row[1:]))
                         encoded_value_lengths.append(len(expected_raw))
-                    if cache_verified and observed_snapshot is not None:
+                    if (
+                        (cache_verified or transient_cache is not None)
+                        and observed_snapshot is not None
+                    ):
                         pending_cache.append(
                             _VerifiedHistoryBatch(
                                 cache_key,
@@ -1099,6 +1207,7 @@ class HistoryStore:
                 value_count=selected_count,
                 next_cursor=next_cursor,
                 serialized_bytes=serialized_bytes,
+                maximum_values=maximum_values,
             )
 
         try:
@@ -1109,6 +1218,7 @@ class HistoryStore:
                     value_count=0,
                     next_cursor=None,
                     serialized_bytes=_EMPTY_HISTORY_PAGE_BYTES,
+                    maximum_values=maximum_values,
                 ),
             )
             if cache_verified and observed_snapshot is not None:
@@ -1127,6 +1237,30 @@ class HistoryStore:
                     else:
                         self._verified_cache.clear()
                         self._verified_cache_snapshot = None
+            if transient_cache is not None and observed_snapshot is not None:
+                with self._database._integrity_lock:  # noqa: SLF001
+                    stable = self._database._integrity_identity == observed_snapshot  # noqa: SLF001
+                if stable:
+                    cached_snapshot = transient_cache.get("snapshot")
+                    cached_batches = transient_cache.get("batches")
+                    if (
+                        cached_snapshot != observed_snapshot
+                        or type(cached_batches) is not dict
+                    ):
+                        cached_batches = {}
+                        transient_cache.clear()
+                        transient_cache["snapshot"] = observed_snapshot
+                        transient_cache["batches"] = cached_batches
+                    typed_batches = cast(
+                        dict[tuple[object, ...], _VerifiedHistoryBatch],
+                        cached_batches,
+                    )
+                    for evidence in pending_cache:
+                        typed_batches[evidence.key] = evidence
+                    while len(typed_batches) > 2:
+                        del typed_batches[next(iter(typed_batches))]
+                else:
+                    transient_cache.clear()
             return success(operation, page)
         except StorageFailure as error:
             return _storage_failure(operation, error)
@@ -1197,6 +1331,7 @@ class HistoryStore:
                 ) = record
                 if type(batch_id) is not int or batch_id < 1:
                     raise _history_corrupt()
+                decoded_value_evidence: list[tuple[str, str, bytes, str]] = []
                 batch = _decode_history_batch(
                     raw,
                     payload_bytes,
@@ -1207,18 +1342,25 @@ class HistoryStore:
                     run_id=run_id,
                     sequence=sequence,
                     captured_ns=captured_ns,
+                    value_evidence=decoded_value_evidence,
                 )
+                index_rows = indexed_records.fetchmany(len(batch.values))
+                if len(index_rows) != len(batch.values):
+                    raise _history_corrupt()
                 for ordinal, value in enumerate(batch.values):
-                    index_row = indexed_records.fetchone()
-                    if index_row is None or len(index_row) != 7:
+                    index_row = index_rows[ordinal]
+                    if len(index_row) != 7:
                         raise _history_corrupt()
                     (
                         indexed_batch_id, stored_ordinal, kind, selector,
                         value_raw, value_bytes, value_digest,
                     ) = index_row
-                    expected_kind, expected_selector, expected_raw, expected_digest = (
-                        _encode_history_value(value)
-                    )
+                    (
+                        expected_kind,
+                        expected_selector,
+                        expected_raw,
+                        expected_digest,
+                    ) = decoded_value_evidence[ordinal]
                     if (
                         indexed_batch_id != batch_id
                         or stored_ordinal != ordinal
@@ -1228,9 +1370,8 @@ class HistoryStore:
                         or type(value_bytes) is not int
                         or value_bytes != len(value_raw)
                         or type(value_digest) is not str
-                        or sha256(value_raw).hexdigest() != value_digest
-                        or value_digest != expected_digest
                         or value_raw != expected_raw
+                        or value_digest != expected_digest
                     ):
                         raise _history_corrupt()
                 callback(batch)

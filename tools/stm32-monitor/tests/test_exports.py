@@ -213,6 +213,107 @@ def test_jsonl_and_csv_exports_use_the_same_public_flattened_value_records(
         history.close()
 
 
+def test_jsonl_batch_static_prefix_is_byte_exact_for_adversarial_records(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import stm32_monitor.exports as exports_module
+
+    paths = _paths(tmp_path)
+    history = HistoryStore(paths)
+    exporter = HistoryExporter(paths, history)
+    batch = SampleBatch(
+        binding=_binding(paths),
+        group_id=GROUP_ID,
+        group_revision=7,
+        run_id=RUN_ID,
+        sequence=1,
+        scheduled_unix_ns=100,
+        captured_unix_ns=200,
+        latency_ns=100,
+        actual_rate_hz=0.125,
+        subscriber_drops=1,
+        history_drops=2,
+        deadline_drops=3,
+        values=(
+            SampleValue(
+                WatchItem.variable('quoted["\\雪😀"]'),
+                "OK",
+                typed_value={
+                    "type": "composite",
+                    "value": {
+                        "text": "nul:\u0000 newline:\n tab:\t quote:\" slash:\\ 雪😀",
+                        "items": [None, True, False, -17, 1.25],
+                    },
+                },
+                definition={"source": "DWARF 雪", "nested": {"enabled": True}},
+            ),
+            SampleValue(
+                WatchItem.register("GPIOA.ODR"),
+                "ERROR",
+                code="READ_FAILED",
+                definition={"source": "SVD", "description": "quoted \"value\""},
+            ),
+            SampleValue(
+                WatchItem.variable("empty"),
+                "OK",
+                typed_value={"type": "array", "value": []},
+                definition={},
+            ),
+        ),
+    )
+    encoder = json.JSONEncoder(
+        ensure_ascii=False,
+        check_circular=False,
+        separators=(",", ":"),
+        allow_nan=False,
+    )
+    flattened_rows: list[dict[str, object]] = []
+    real_flatten = exports_module.flatten_history_page
+
+    def observed_flatten(page: HistoryPage):
+        for row in real_flatten(page):
+            flattened_rows.append(dict(row))
+            yield row
+
+    monkeypatch.setattr(exports_module, "flatten_history_page", observed_flatten)
+    batch_static_encodes = 0
+    real_encode = json.JSONEncoder.encode
+
+    def observed_encode(self, value):
+        nonlocal batch_static_encodes
+        if (
+            isinstance(value, dict)
+            and "binding" in value
+            and "watch" not in value
+            and "values" not in value
+        ):
+            batch_static_encodes += 1
+        return real_encode(self, value)
+
+    monkeypatch.setattr(json.JSONEncoder, "encode", observed_encode)
+    try:
+        assert history.append_batch(batch).ok
+        artifact = exporter.create_export(
+            ExportRequest("monitor-1", 0, 1_000, "jsonl"), authorized=True
+        ).data
+        actual_bytes = artifact.data_path.read_bytes()
+        expected_bytes = b"".join(
+            real_encode(encoder, row).encode("utf-8") + b"\n"
+            for row in flattened_rows
+        )
+        assert actual_bytes == expected_bytes
+        assert [json.loads(line) for line in actual_bytes.splitlines()] == list(
+            flattened_rows
+        )
+        assert batch_static_encodes == 1
+        assert artifact.byte_count == len(expected_bytes)
+        assert artifact.sha256 == hashlib.sha256(expected_bytes).hexdigest()
+    finally:
+        exporter.close()
+        history.close()
+
+
 def _seed_numbered_history(
     paths: WorkspacePaths,
     history: HistoryStore,
@@ -348,7 +449,7 @@ def test_jsonl_export_paginates_flattened_values_under_the_production_cap(
     import stm32_monitor.exports as exports_module
     import stm32_monitor.history as history_module
 
-    total_values = 20_000
+    total_values = 20_001
     paths = _paths(tmp_path)
     history = HistoryStore(paths)
     exporter = HistoryExporter(paths, history)
@@ -358,8 +459,8 @@ def test_jsonl_export_paginates_flattened_values_under_the_production_cap(
     real_query = history._query_history_uncached
     real_flatten = exports_module.flatten_history_page
 
-    def observed_query(query: HistoryQuery):
-        result = real_query(query)
+    def observed_query(query: HistoryQuery, **kwargs):
+        result = real_query(query, **kwargs)
         if result.ok:
             queries.append((query.limit, query.cursor, result.data.value_count))
         return result
@@ -404,10 +505,10 @@ def test_jsonl_export_paginates_flattened_values_under_the_production_cap(
         assert artifact.value_count == total_values
         assert artifact.byte_count <= 64 * 1024 * 1024
         assert len(queries) > 1
-        assert all(limit == history_module.MAX_HISTORY_VALUES for limit, _, _ in queries)
+        assert all(limit == history_module.MAX_EXPORT_HISTORY_VALUES for limit, _, _ in queries)
         assert queries[0][1] is None
         assert all(cursor is not None for _, cursor, _ in queries[1:])
-        assert max(page_count for _, _, page_count in queries) <= history_module.MAX_HISTORY_VALUES
+        assert max(page_count for _, _, page_count in queries) <= history_module.MAX_EXPORT_HISTORY_VALUES
         assert flattened_pages == [page_count for _, _, page_count in queries]
         assert sum(flattened_pages) == total_values
     finally:
@@ -432,8 +533,8 @@ def test_realistic_jsonl_and_csv_exports_preserve_all_one_hundred_thousand_value
     real_query = history._query_history_uncached
     real_flatten = exports_module.flatten_history_page
 
-    def observed_query(query: HistoryQuery):
-        result = real_query(query)
+    def observed_query(query: HistoryQuery, **kwargs):
+        result = real_query(query, **kwargs)
         if result.ok:
             if query.cursor is None:
                 query_runs.append([])
@@ -481,7 +582,7 @@ def test_realistic_jsonl_and_csv_exports_preserve_all_one_hundred_thousand_value
         for page_counts in query_runs:
             assert len(page_counts) > 1
             assert sum(page_counts) == total_values
-            assert max(page_counts) <= history_module.MAX_HISTORY_VALUES
+            assert max(page_counts) <= history_module.MAX_EXPORT_HISTORY_VALUES
         assert artifacts[0].sha256 != artifacts[1].sha256
     finally:
         exporter.close()
@@ -1356,7 +1457,7 @@ def test_export_formats_propagate_history_failure_and_reject_stalled_cursor(
         monkeypatch.setattr(
             history,
             "_query_history_uncached",
-            lambda query: failure(
+            lambda query, **_kwargs: failure(
                 "history.query", "MONITOR_STORAGE_CORRUPT", "monitor history is corrupt"
             ),
         )
@@ -1368,7 +1469,7 @@ def test_export_formats_propagate_history_failure_and_reject_stalled_cursor(
         monkeypatch.setattr(
             history,
             "_query_history_uncached",
-            lambda query: SimpleNamespace(ok=True, data=stalled_page),
+            lambda query, **_kwargs: SimpleNamespace(ok=True, data=stalled_page),
         )
         stalled = exporter.create_export(
             ExportRequest("monitor-1", 0, 1_000, format_name), authorized=True
