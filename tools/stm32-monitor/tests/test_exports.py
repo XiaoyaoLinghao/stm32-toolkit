@@ -212,24 +212,21 @@ def test_jsonl_and_csv_exports_use_the_same_public_flattened_value_records(
         history.close()
 
 
-def test_jsonl_export_paginates_one_hundred_thousand_flattened_values_without_gaps(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
+def _seed_numbered_history(
+    paths: WorkspacePaths,
+    history: HistoryStore,
+    total_values: int,
 ) -> None:
-    import stm32_monitor.exports as exports_module
     import stm32_monitor.history as history_module
 
-    paths = _paths(tmp_path)
-    history = HistoryStore(paths)
-    exporter = HistoryExporter(paths, history)
-    batches: list[SampleBatch] = []
-    remaining = 100_000
-    sequence = 1
-    while remaining:
-        count = min(256, remaining)
-        start = (sequence - 1) * 256
-        batches.append(
-            SampleBatch(
+    def seed(connection: sqlite3.Connection) -> None:
+        connection.execute("BEGIN IMMEDIATE")
+        remaining = total_values
+        sequence = 1
+        while remaining:
+            count = min(256, remaining)
+            start = (sequence - 1) * 256
+            batch = SampleBatch(
                 binding=_binding(paths), group_id=GROUP_ID, group_revision=1,
                 run_id=RUN_ID, sequence=sequence, scheduled_unix_ns=sequence,
                 captured_unix_ns=sequence, latency_ns=0, actual_rate_hz=1.0,
@@ -242,13 +239,6 @@ def test_jsonl_export_paginates_one_hundred_thousand_flattened_values_without_ga
                     for ordinal in range(start, start + count)
                 ),
             )
-        )
-        remaining -= count
-        sequence += 1
-
-    def seed(connection: sqlite3.Connection) -> None:
-        connection.execute("BEGIN IMMEDIATE")
-        for batch in batches:
             raw = json.dumps(
                 batch.to_dict(), ensure_ascii=False, sort_keys=True,
                 separators=(",", ":"), allow_nan=False,
@@ -262,16 +252,33 @@ def test_jsonl_export_paginates_one_hundred_thousand_flattened_values_without_ga
             rows = []
             for ordinal, value in enumerate(batch.values):
                 kind, selector, value_raw, digest = history_module._encode_history_value(value)
-                rows.append((cursor.lastrowid, ordinal, kind, selector, value_raw, len(value_raw), digest))
+                rows.append(
+                    (cursor.lastrowid, ordinal, kind, selector, value_raw, len(value_raw), digest)
+                )
             connection.executemany(
                 "INSERT INTO history_values(batch_id,ordinal,selector_kind,selector,value_json,"
                 "value_bytes,value_sha256) VALUES (?,?,?,?,?,?,?)",
                 rows,
             )
+            remaining -= count
+            sequence += 1
         connection.commit()
 
     history._database.write(seed)
-    del batches
+
+
+def test_jsonl_export_paginates_flattened_values_under_the_production_cap(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import stm32_monitor.exports as exports_module
+    import stm32_monitor.history as history_module
+
+    total_values = 20_000
+    paths = _paths(tmp_path)
+    history = HistoryStore(paths)
+    exporter = HistoryExporter(paths, history)
+    _seed_numbered_history(paths, history, total_values)
     queries: list[tuple[int, str | None, int]] = []
     flattened_pages: list[int] = []
     real_query = history.query_history
@@ -288,7 +295,6 @@ def test_jsonl_export_paginates_one_hundred_thousand_flattened_values_without_ga
         yield from real_flatten(page)
 
     try:
-        monkeypatch.setattr(exports_module, "MAX_EXPORT_BYTES", 256 * 1024 * 1024)
         monkeypatch.setattr(
             history,
             "query_history",
@@ -314,20 +320,78 @@ def test_jsonl_export_paginates_one_hundred_thousand_flattened_values_without_ga
                 value = json.loads(line)
                 records += 1
                 assert value["typedValue"]["value"] == seen
-                assert value["batchValueCount"] == min(256, 100_000 - (seen // 256) * 256)
+                assert value["batchValueCount"] == min(
+                    256, total_values - (seen // 256) * 256
+                )
                 assert value["valueOrdinal"] == seen % 256
                 seen += 1
-        assert seen == 100_000
-        assert records == 100_000
-        assert artifact.value_count == 100_000
-        assert artifact.byte_count <= exports_module.MAX_EXPORT_BYTES
+        assert seen == total_values
+        assert records == total_values
+        assert artifact.value_count == total_values
+        assert artifact.byte_count <= 64 * 1024 * 1024
         assert len(queries) > 1
         assert all(limit == history_module.MAX_HISTORY_VALUES for limit, _, _ in queries)
         assert queries[0][1] is None
         assert all(cursor is not None for _, cursor, _ in queries[1:])
         assert max(page_count for _, _, page_count in queries) <= history_module.MAX_HISTORY_VALUES
         assert flattened_pages == [page_count for _, _, page_count in queries]
-        assert sum(flattened_pages) == 100_000
+        assert sum(flattened_pages) == total_values
+    finally:
+        exporter.close()
+        history.close()
+
+
+def test_jsonl_export_enforces_production_byte_cap_and_cleans_pending(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import stm32_monitor.exports as exports_module
+
+    paths = _paths(tmp_path)
+    history = HistoryStore(paths)
+    exporter = HistoryExporter(paths, history)
+    _seed_numbered_history(paths, history, 100_000)
+    queried_pages = 0
+    flattened_pages = 0
+    real_query = history.query_history
+    real_flatten = exports_module.flatten_history_page
+
+    def observed_query(query: HistoryQuery):
+        nonlocal queried_pages
+        result = real_query(query)
+        if result.ok:
+            queried_pages += 1
+        return result
+
+    def observed_flatten(page: HistoryPage):
+        nonlocal flattened_pages
+        flattened_pages += 1
+        yield from real_flatten(page)
+
+    try:
+        monkeypatch.setattr(history, "query_history", observed_query)
+        monkeypatch.setattr(exports_module, "flatten_history_page", observed_flatten)
+        monkeypatch.setattr(
+            history,
+            "_stream_verified_batches",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                AssertionError("JSONL export retained the private batch stream")
+            ),
+        )
+        result = exporter.create_export(
+            ExportRequest("monitor-1", 0, 1_000_000, "jsonl"), authorized=True
+        )
+        assert not result.ok and result.code == "MONITOR_EXPORT_TOO_LARGE"
+        assert queried_pages > 1 and flattened_pages == queried_pages
+        export_root = paths.monitor_root / "exports" / "monitor-1"
+        assert not export_root.exists() or list(export_root.iterdir()) == []
+        remaining_records = exporter._database.read(
+            lambda connection: connection.execute(
+                "SELECT COUNT(*) FROM export_records"
+            ).fetchone()[0],
+            empty=-1,
+        )
+        assert remaining_records == 0
     finally:
         exporter.close()
         history.close()
