@@ -12,7 +12,7 @@
 - Branch: `codex/STM32TK-0501-MONITOR-SERVICE`
 - Accepted base: `913600f471d8fb0fb5345bdf668ca39ec1faf4d8`
 - Stable code head before this report-only correction commit:
-  `b1e5d1394daf14e1ba8a749ad6721dbaf87bf695`
+  `245dcfe5574b55038d5b6bc7f58ac067aa5f55ba`
 - Remote action authorized for Task 6: none
 
 Task 6 does not issue a final review verdict. The user explicitly approved the
@@ -27,12 +27,12 @@ performed.
 ## 2. Accepted-base-to-code-head scope
 
 `git diff --name-only
-913600f471d8fb0fb5345bdf668ca39ec1faf4d8..b1e5d1394daf14e1ba8a749ad6721dbaf87bf695`
+913600f471d8fb0fb5345bdf668ca39ec1faf4d8..245dcfe5574b55038d5b6bc7f58ac067aa5f55ba`
 contains 60 paths. They comprise three 0501 plans, one 0501 design, and this
 report; Monitor metadata, product modules, legacy deletions, and tests; and the
 bounded Toolkit observation/probe/typed-debug bridge and tests.
 
-`b1e5d1394daf14e1ba8a749ad6721dbaf87bf695` is the stable product/test head that
+`245dcfe5574b55038d5b6bc7f58ac067aa5f55ba` is the stable product/test head that
 completes the exact 160 MiB amendment. This subsequent report-only correction
 does not change product scope.
 
@@ -53,6 +53,12 @@ The post-review correction commits add these exact behaviors:
   amortization; and
 - durable 3-warmup plus 20-measurement performance acceptance tests.
 
+The review-fix commit restores the public model boundary: every returned
+`HistoryPage` is constructed normally, is limited to 10,000 values and 4 MiB,
+and is flattened through public pagination. Export never calls the private
+batch stream. A one-use internal proof avoids repeating already completed
+slice/size validation without weakening external deep-copy isolation.
+
 No collaboration app, CI workflow, manifest, validator, browser bundle, second
 backend, or 0502 UI asset was added.
 
@@ -64,19 +70,28 @@ file, disabled pytest caching, and prevented repository bytecode writes.
 
 ```powershell
 $env:PYTHONPATH='C:\tmp\stm32tk-0501-monitor-service\tools\stm32-monitor\src;C:\tmp\stm32tk-0501-monitor-service\tools\stm32-toolkit\src'
-$env:COVERAGE_FILE='C:\tmp\stm32tk-0501-task4-312-rerun.coverage'
-$env:PYTHONDONTWRITEBYTECODE='1'
-C:\tmp\stm32-toolkit-review-py31213\Scripts\python.exe -m pytest tools\stm32-monitor\tests -q --ignore=tools\stm32-monitor\tests\test_performance.py --basetemp C:\tmp\stm32tk-0501-full312-final-basetemp -p no:cacheprovider --cov=stm32_monitor --cov-branch --cov-report=term --cov-fail-under=90
+$env:COVERAGE_FILE='C:\tmp\stm32tk-0501-fix1-full312.coverage'
+$env:PYTHONPYCACHEPREFIX='C:\tmp\stm32tk-0501-fix1-full312-pycache'
+C:\tmp\stm32-toolkit-review-py31213\Scripts\python.exe -m pytest tools\stm32-monitor\tests -q --ignore=tools\stm32-monitor\tests\test_performance.py --basetemp C:\tmp\stm32tk-0501-fix1-full312 -p no:cacheprovider --cov=stm32_monitor --cov-branch --cov-report=term --cov-fail-under=90
 
-$env:COVERAGE_FILE='C:\tmp\stm32tk-0501-task4-310-12c8f98.coverage'
-C:\tmp\stm32tk-0301-py310\Scripts\python.exe -m pytest tools\stm32-monitor\tests -q --ignore=tools\stm32-monitor\tests\test_performance.py --basetemp C:\tmp\stm32tk-0501-full310-final-basetemp -p no:cacheprovider --cov=stm32_monitor --cov-branch --cov-report=term --cov-fail-under=90
+$env:COVERAGE_FILE='C:\tmp\stm32tk-0501-fix1-full310-proof2.coverage'
+$env:PYTHONPYCACHEPREFIX='C:\tmp\stm32tk-0501-fix1-full310-proof2-pycache'
+C:\tmp\stm32tk-0301-py310\Scripts\python.exe -m pytest tools\stm32-monitor\tests -q --ignore=tools\stm32-monitor\tests\test_performance.py --basetemp C:\tmp\stm32tk-0501-fix1-full310-proof2 -p no:cacheprovider --cov=stm32_monitor --cov-branch --cov-report=term --cov-fail-under=90
 ```
 
-- Python 3.12.13: `378 passed in 244.14s`; total branch-aware coverage `91.01%`.
-- Python 3.10.11: `378 passed in 238.60s`; total branch-aware coverage `91.01%`.
-- After the independent-review TOCTOU correction, the exact changed files plus
-  runtime/service direct consumers passed `190 passed in 83.95s`; complete
-  `test_storage.py` separately passed `42 passed in 2.45s`.
+- Python 3.12.13: `379 passed in 214.37s`; total branch-aware coverage `91.00%`.
+- Python 3.10.11: `379 passed in 204.28s`; total branch-aware coverage `91.02%`.
+- The first 3.10 coverage attempt had `378 passed, 1 failed` at the existing
+  25 ms deadline node (total coverage `91.06%`); that node then passed alone and
+  a no-coverage compatibility run passed `379` in `158.45s`, but neither was
+  combined into acceptance evidence. A later full rerun produced a coverage
+  file but lost its terminal summary during context compaction, and a subsequent
+  sandboxed attempt was invalid (`80 passed, 299 errors`) because pytest and
+  coverage could not create `C:\tmp` files. Only the fresh authorized complete
+  `379 passed` run above is the 3.10 coverage PASS.
+- A final extra affected-files/direct-consumer command reached its 300 second
+  outer harness timeout without a test summary and is not cited as PASS; both
+  complete dual-Python suites above cover those files and consumers.
 
 | Monitor module | 3.12 coverage | 3.10 coverage |
 | --- | ---: | ---: |
@@ -86,7 +101,7 @@ C:\tmp\stm32tk-0301-py310\Scripts\python.exe -m pytest tools\stm32-monitor\tests
 | `cli.py` | 100% | 100% |
 | `exports.py` | 91% | 91% |
 | `groups.py` | 93% | 93% |
-| `history.py` | 90% | 90% |
+| `history.py` | 91% | 91% |
 | `models.py` | 91% | 91% |
 | `probe_session.py` | 92% | 92% |
 | `protocol.py` | 94% | 94% |
@@ -96,10 +111,6 @@ C:\tmp\stm32tk-0301-py310\Scripts\python.exe -m pytest tools\stm32-monitor\tests
 | `storage.py` | 91% | 91% |
 
 Every Monitor product module meets the required 90% branch-aware threshold.
-The first sandboxed 3.12 attempt was invalid because the sandbox denied external
-pytest/coverage writes; it produced 284 setup errors and a coverage database
-error. It is not product evidence and was replaced by the successful authorized
-rerun above.
 
 ## 4. Complete Toolkit regression suite
 
@@ -166,7 +177,8 @@ The amendment suite provides these durable assertions:
   evidence by a collision-resistant digest, proves no pagination gaps or
   duplicates, and produces artifacts greater than 64 MiB but below 160 MiB;
 - `test_jsonl_export_paginates_flattened_values_under_the_production_cap` proves
-  lossless 20,000-value JSONL pagination through `flatten_history_page`;
+  a lossless 20,000-value JSONL export over multiple <=10,000-value public pages
+  through `flatten_history_page`;
 - the controlled 32-byte-cap regression proves `MONITOR_EXPORT_TOO_LARGE` leaves
   neither artifact nor pending database record;
 - the production quota regression proves exactly three `160 MiB + 16 KiB`
@@ -180,25 +192,27 @@ The amendment suite provides these durable assertions:
   asserts retention `<2 s` and sampler ticker gaps `<100 ms`.
 
 The committed named acceptance command ran on CPython 3.12.13/Windows 11 with
-three warmups and twenty measured runs and passed `2 passed in 320.66s`:
+three warmups and twenty measured runs and passed `2 passed in 306.40s`:
 
 - fixture SHA-256
   `8863eb6dcc540e41b945cf60614ab252b2a5b1011045ee55425316e79640a0ce`,
   database 43,974,656 bytes, artifact exactly 121,051,826 bytes;
 - append-256 min/median/p95/max
-  `27.3045/29.4128/30.3309/30.6097 ms` (`<50 ms`);
+  `31.8809/33.22975/35.4072/36.2314 ms` (`<50 ms`);
 - query-10,000 min/median/p95/max
-  `75.2815/77.1200/78.5969/81.1914 ms` (`<100 ms`), serialized size
+  `81.6052/85.7886/93.0063/97.8541 ms` (`<100 ms`), serialized size
   1,431,097 bytes;
 - export-100,000 min/median/p95/max
-  `4625.4868/4697.96825/4745.2961/4758.9131 ms` (`<5 s`), with traced peak
-  38,766,698 bytes (`<64 MiB`);
-- retention p95 `227.5737 ms`, exactly two batches per bounded pass, sampler
-  ticker maximum gap `16.5801 ms`;
-- aiohttp bootstrap p95 `0.4803 ms` and status p95 `0.4016 ms`.
+  `4426.3112/4532.105/4605.449/4616.638 ms` (`<5 s`), with traced peak
+  22,109,731 bytes (`<64 MiB`);
+- retention min/median/p95/max
+  `227.0207/233.1193/237.8681/243.6818 ms`, exactly two batches per bounded
+  pass, sampler ticker maximum gap `17.2561 ms`;
+- aiohttp bootstrap p95 `0.4734 ms` and status p95 `0.3955 ms`.
 
-The separate export-only run also passed with p95 `4669.5824 ms`, maximum
-`4703.1546 ms`, and traced peak 38,773,244 bytes. No performance blocker remains.
+The export-only node in the final command passed with min/median/p95/max
+`4379.2962/4434.3619/4520.3302/4682.7776 ms` and traced peak 22,111,239
+bytes. No performance blocker remains.
 
 Independent review found one validation-to-cache TOCTOU: a fingerprint changed
 after quick-check could have been cached without validation. A deterministic RED
@@ -214,14 +228,14 @@ deadline. The reviewer found no other issue.
 head. CPython 3.12 then built both wheels with isolated build requirements:
 
 ```powershell
-C:\Users\ZhangYang\AppData\Roaming\uv\python\cpython-3.12-windows-x86_64-none\python.exe -m pip wheel --no-deps --wheel-dir C:\tmp\stm32tk-0501-task4-package-12c8f98\wheels C:\tmp\stm32tk-0501-task4-package-12c8f98\source\tools\stm32-toolkit
-C:\Users\ZhangYang\AppData\Roaming\uv\python\cpython-3.12-windows-x86_64-none\python.exe -m pip wheel --no-deps --wheel-dir C:\tmp\stm32tk-0501-task4-package-12c8f98\wheels C:\tmp\stm32tk-0501-task4-package-12c8f98\source\tools\stm32-monitor
+C:\Users\ZhangYang\AppData\Roaming\uv\python\cpython-3.12-windows-x86_64-none\python.exe -m pip wheel --no-deps --wheel-dir C:\tmp\stm32tk-0501-fix1-package-245dcfe\wheels C:\tmp\stm32tk-0501-fix1-package-245dcfe\source\tools\stm32-toolkit
+C:\Users\ZhangYang\AppData\Roaming\uv\python\cpython-3.12-windows-x86_64-none\python.exe -m pip wheel --no-deps --wheel-dir C:\tmp\stm32tk-0501-fix1-package-245dcfe\wheels C:\tmp\stm32tk-0501-fix1-package-245dcfe\source\tools\stm32-monitor
 ```
 
 | Wheel | Bytes | SHA-256 |
 | --- | ---: | --- |
-| `stm32_monitor-0.4.0-py3-none-any.whl` | 71,184 | `150b36b55a9410243879d22fd74f44a49cf8b84314d65332c3f498188e9b1b41` |
-| `stm32_toolkit-0.4.0-py3-none-any.whl` | 235,282 | `04639e1367aab63d38e1ad83a8a853ed310e9b6754ae101540207a1692144ce4` |
+| `stm32_monitor-0.4.0-py3-none-any.whl` | 74,099 | `4773c27937ba65ee2ec5841ecb7e365bc216b75fbb9b524a024a5de896db9311` |
+| `stm32_toolkit-0.4.0-py3-none-any.whl` | 235,282 | `ef667431e12546692ef894b5d16341d12bcdf9c51960df3b2d2f736de5ab2237` |
 
 Fresh CPython 3.12.13 and 3.10.11 venvs installed both wheels from an external
 working directory with `pip install --no-index --no-deps`. The same 14 committed
@@ -230,9 +244,8 @@ sampling, immutable history, flattened JSONL/CSV, verified download, dynamic
 REST loopback/status, WebSocket backpressure, probe/runtime dispatch, and
 cancellation cleanup:
 
-- Python 3.12: `14 passed in 7.73s`.
-- Python 3.10: `14 passed in 6.91s` after correcting a test-harness-only missing
-  `tomli` support path; the first launch collected no tests.
+- Python 3.12: `14 passed in 4.13s`.
+- Python 3.10: `14 passed in 5.43s`.
 
 Both imports resolved to their new venv `site-packages`. Each inventory contained
 exactly 37 Monitor and 133 Toolkit distribution records. Monitor `Requires-Dist`
@@ -240,12 +253,19 @@ was exactly `stm32-toolkit==0.4.0` and `aiohttp>=3.9,<4`; root observation expor
 did not load PyOCD; and legacy `config`, `elf_parser`, `poller`, `pyocd_session`,
 `sse_server`, and `svd_parser` modules were absent.
 
+The first build command used a test venv without pip and failed before building;
+the base 3.12 builder then produced the artifacts above. Both fresh product
+installs passed with `--no-index --no-deps`. A combined smoke-dependency install
+timed out after completing 3.12; a separate 3.10 install completed before the
+successful smoke runs. These harness attempts are not product failures and no
+old wheel or source-tree import was used.
+
 ## 7. Static, filesystem, and Windows evidence
 
 - CPython 3.12 and 3.10 `compileall -q` passed for both product source trees with
   `PYTHONPYCACHEPREFIX` under the external package root.
 - `git diff --check
-  913600f471d8fb0fb5345bdf668ca39ec1faf4d8..b1e5d1394daf14e1ba8a749ad6721dbaf87bf695`
+  913600f471d8fb0fb5345bdf668ca39ec1faf4d8..245dcfe5574b55038d5b6bc7f58ac067aa5f55ba`
   passed.
 - Product scans found no direct Monitor PyOCD/CMSIS-SVD/PyYAML import or
   dependency, default group, PyOCD process-kill behavior, non-loopback bind,
@@ -266,10 +286,9 @@ did not load PyOCD; and legacy `config`, `elf_parser`, `poller`, `pyocd_session`
 | DEFERRED | Linux owner | Complete Monitor 3.10/3.12, complete Toolkit, package/install, project immutability, SQLite lock/WAL, loopback, and cancellation behavior on Linux. |
 | DEFERRED | 0.5 release-gate physical-board owner | Exact-probe OBSERVE lifecycle, typed DWARF/register sampling, probe isolation/busy behavior, provenance changes, reconnect, and cancellation on a supported physical board/probe. |
 
-The export and append timing failures are non-platform blockers and are not
-deferred. No pure-code failure is hidden under a platform deferral.
+No pure-code failure is hidden under a platform deferral.
 
-## 9. Task 4 checklist
+## 9. Completion checklist
 
 - [x] Accepted base and stable code head before the report commit are recorded.
 - [x] Complete dual-Python Monitor suites and branch-aware module coverage passed.
