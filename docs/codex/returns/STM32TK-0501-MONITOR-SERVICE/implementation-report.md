@@ -12,8 +12,8 @@
 - Branch: `codex/STM32TK-0501-MONITOR-SERVICE`
 - Accepted base: `913600f471d8fb0fb5345bdf668ca39ec1faf4d8`
 - Stable code head before this report-only correction commit:
-  `245dcfe5574b55038d5b6bc7f58ac067aa5f55ba`
-- Remote action authorized for Task 6: none
+  `4d1bb0cde7391b8d3203254c2bced61a0b7403e4`
+- No remote action was performed while producing this report.
 
 Task 6 does not issue a final review verdict. The user explicitly approved the
 exact 160 MiB production artifact ceiling and, after disclosure of the bounded
@@ -27,13 +27,14 @@ performed.
 ## 2. Accepted-base-to-code-head scope
 
 `git diff --name-only
-913600f471d8fb0fb5345bdf668ca39ec1faf4d8..245dcfe5574b55038d5b6bc7f58ac067aa5f55ba`
+913600f471d8fb0fb5345bdf668ca39ec1faf4d8..4d1bb0cde7391b8d3203254c2bced61a0b7403e4`
 contains 60 paths. They comprise three 0501 plans, one 0501 design, and this
 report; Monitor metadata, product modules, legacy deletions, and tests; and the
 bounded Toolkit observation/probe/typed-debug bridge and tests.
 
-`245dcfe5574b55038d5b6bc7f58ac067aa5f55ba` is the stable product/test head that
-completes the exact 160 MiB amendment. This subsequent report-only correction
+`4d1bb0cde7391b8d3203254c2bced61a0b7403e4` is the stable product/test head that
+completes the exact 160 MiB amendment and both independent-review fix rounds.
+This subsequent report-only correction
 does not change product scope.
 
 The post-review correction commits add these exact behaviors:
@@ -303,3 +304,55 @@ No pure-code failure is hidden under a platform deferral.
 - [ ] Fresh final-head independent review and final verdict remain assigned to Task 5.
 - [ ] Linux and physical-board evidence remain deferred to their named owners.
 - [ ] Push/PR/ready/merge/close/delete remains unperformed and requires explicit user authorization.
+
+## 10. Independent-review fix round 2
+
+Independent review proved that round 1's one-use marker returned `SampleValue`
+and `WatchItem` objects shared with the persistent verified cache. A deterministic
+RED used forged `object.__setattr__` writes to poison the cached value. Stable code
+head `4d1bb0cde7391b8d3203254c2bced61a0b7403e4` now copies every mutable outer
+model node (binding, UUID, sample, and watch) before constructing the normal
+`HistoryBatchSlice`/`HistoryPage`; only mapping-proxy/tuple JSON leaves are shared.
+Persistent and transient cache-poison regressions prove the canonical cache and
+the next warm query retain the original database evidence.
+
+Every public page still uses the normal constructors and remains <=10,000 values
+and <=4 MiB. Export remains public `query_history` pagination followed by
+`flatten_history_page`; the private batch stream is not used. Exact cached slice
+byte accounting was independently checked over 45 adversarial pages including
+escaped text, Unicode, nested data, and multi-digit start ordinals. A single
+read-only transaction now performs snapshot validation and the caller query;
+validation-time file changes close and retry the snapshot at most twice, while
+all directory/main/WAL/SHM, pinned-dev/inode, schema, workspace, accounting, and
+fingerprint-driven `quick_check` checks remain.
+
+Fresh final gates against the stable head:
+
+- affected models/storage/history/exports/groups: `260 passed in 85.11s`;
+- final storage suite: `47 passed in 2.81s`; final history suite:
+  `98 passed in 44.67s`;
+- exact full performance file: `2 passed in 259.59s`; export-only
+  min/median/p95/max `3823.6360/3890.3446/4162.9681/4648.0027 ms`, combined
+  export `3990.9625/4088.3290/4484.7374/4847.6776 ms`, query
+  `49.8860/53.50285/92.6827/93.6016 ms`, append p95 `32.0928 ms`, and peak
+  traced allocation `22,366,608` bytes;
+- Python 3.12.13 full branch gate: `385 passed in 154.28s`, total `90.75%`;
+  Python 3.10.11: `385 passed in 192.14s`, total `90.77%`; every displayed
+  Monitor module is >=90%;
+- dual-Python compileall, `git diff --check`, forbidden private-stream/page-bypass
+  scans, and independent closure review passed.
+
+Exact-head wheels rebuilt from a fresh `git archive`:
+
+| Wheel | Bytes | SHA-256 |
+| --- | ---: | --- |
+| `stm32_monitor-0.4.0-py3-none-any.whl` | 75,798 | `46a7e1e4f71c907871d59fa54fbe34064049a411a97312ae0b122688cfab73d3` |
+| `stm32_toolkit-0.4.0-py3-none-any.whl` | 235,282 | `5d4b11215b7607efbeac09ca9bae18ec214ba37405a2eab3e5da1927f11cd2e0` |
+
+Fresh Python 3.12/3.10 external environments installed both with
+`--no-index --no-deps`. The same 14 installed-wheel smoke nodes passed in
+`6.58s` and `7.57s`; installed Monitor/Toolkit inventories were exactly 37/133
+files, origins were the new site-packages, dependencies were exact, PyOCD stayed
+lazy, and all six legacy modules were absent. Installed Monitor lifecycle and
+Toolkit project/Git immutability gates passed on both interpreters (`2 passed`
+each). No remote action was performed.
