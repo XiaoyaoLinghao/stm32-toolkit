@@ -3,14 +3,21 @@
 from __future__ import annotations
 
 import hashlib
+import hmac
+import base64
+import binascii
+import json
 import os
 import re
+import secrets
 import stat
+import unicodedata
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from .model import DebugFirmwareBinding, MemoryRegionBinding
+from .types import CatalogPage, RegisterDescriptor
 
 _MAX_SVD_BYTES = 8 * 1024 * 1024
 _MAX_CANDIDATES = 32
@@ -24,6 +31,9 @@ _MAX_DERIVED_CHAIN_DEPTH = 256
 _MAX_CLUSTER_NESTING_DEPTH = 64
 _REPARSE_POINT = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
 _NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_.-]{0,127}$")
+_MAX_CATALOG_PAGE = 256
+_MAX_CATALOG_QUERY = 128
+_CURSOR_KEY = secrets.token_bytes(32)
 
 
 class SvdError(Exception):
@@ -160,9 +170,120 @@ class SvdSelection:
         _validate_register_ranges(self.registers, self.readable_regions)
         return True
 
+    def register_descriptors(
+        self,
+        binding: DebugFirmwareBinding,
+        project_root: Path,
+        *,
+        query: str = "",
+        cursor: str | None = None,
+        limit: int = 100,
+    ) -> CatalogPage:
+        """Return one revalidated page of display/read-risk register metadata."""
+
+        self.revalidate(binding, project_root)
+        normalized = _catalog_query(query)
+        page_limit = _catalog_limit(limit)
+        offset = 0 if cursor is None else _decode_cursor(cursor, self.sha256, normalized)
+        matches = tuple(
+            register
+            for register in sorted(self.registers, key=lambda item: item.path)
+            if not normalized or normalized in register.path.casefold()
+        )
+        if offset > len(matches):
+            raise _fail("SVD_CURSOR_INVALID", "SVD catalog cursor is invalid")
+        page = matches[offset : offset + page_limit]
+        items = tuple(
+            RegisterDescriptor(
+                selector=register.path,
+                size_bits=register.size_bytes * 8,
+                access=register.access,
+                read_action=register.read_action,
+                reset_value=register.reset_value,
+                reset_mask=register.reset_mask,
+                fields=tuple(
+                    (field.name, field.bit_offset, field.bit_width)
+                    for field in register.fields
+                ),
+                sampleable=not register.has_read_side_effect
+                and register.access not in ("write-only", "writeOnce"),
+                requires_access_acknowledgement=register.has_read_side_effect
+                and register.access not in ("write-only", "writeOnce"),
+            )
+            for register in page
+        )
+        next_offset = offset + len(items)
+        next_cursor = (
+            _encode_cursor(self.sha256, normalized, next_offset)
+            if next_offset < len(matches)
+            else None
+        )
+        return CatalogPage(items, next_cursor)
+
 
 def _fail(code: str, message: str) -> SvdError:
     return SvdError(code, message)
+
+
+def _catalog_query(value: object) -> str:
+    if not isinstance(value, str):
+        raise _fail("SVD_QUERY_INVALID", "SVD catalog query is invalid")
+    normalized = unicodedata.normalize("NFC", value.strip()).casefold()
+    if len(normalized) > _MAX_CATALOG_QUERY or any(
+        ord(character) < 32 or ord(character) == 127 for character in normalized
+    ):
+        raise _fail("SVD_QUERY_INVALID", "SVD catalog query is invalid")
+    return normalized
+
+
+def _catalog_limit(value: object) -> int:
+    if type(value) is not int or not 1 <= value <= _MAX_CATALOG_PAGE:
+        raise _fail("SVD_LIMIT_INVALID", "SVD catalog limit is invalid")
+    return value
+
+
+def _cursor_payload(digest: str, query: str, offset: int) -> bytes:
+    return json.dumps(
+        {"d": digest, "i": offset, "k": "registers", "q": query, "v": 1},
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+
+
+def _encode_cursor(digest: str, query: str, offset: int) -> str:
+    payload = _cursor_payload(digest, query, offset)
+    signature = hmac.new(_CURSOR_KEY, payload, "sha256").hexdigest().encode("ascii")
+    envelope = payload + b"." + signature
+    return base64.urlsafe_b64encode(envelope).rstrip(b"=").decode("ascii")
+
+
+def _decode_cursor(value: object, digest: str, query: str) -> int:
+    if not isinstance(value, str) or not value or len(value) > 512:
+        raise _fail("SVD_CURSOR_INVALID", "SVD catalog cursor is invalid")
+    try:
+        raw = value.encode("ascii")
+        decoded = base64.urlsafe_b64decode(raw + b"=" * (-len(raw) % 4))
+        payload, signature = decoded.rsplit(b".", 1)
+        if base64.urlsafe_b64encode(decoded).rstrip(b"=") != raw:
+            raise ValueError
+        expected = hmac.new(_CURSOR_KEY, payload, "sha256").hexdigest().encode("ascii")
+        document = json.loads(payload.decode("utf-8"))
+        offset = document.get("i")
+        if (
+            not hmac.compare_digest(signature, expected)
+            or set(document) != {"d", "i", "k", "q", "v"}
+            or document.get("v") != 1
+            or document.get("k") != "registers"
+            or document.get("d") != digest
+            or document.get("q") != query
+            or type(offset) is not int
+            or offset < 1
+        ):
+            raise ValueError
+        return offset
+    except (UnicodeError, binascii.Error, json.JSONDecodeError, ValueError):
+        raise _fail("SVD_CURSOR_INVALID", "SVD catalog cursor is invalid") from None
 
 
 def _redirect(metadata: os.stat_result) -> bool:

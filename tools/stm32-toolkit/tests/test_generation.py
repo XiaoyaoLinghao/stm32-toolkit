@@ -650,7 +650,23 @@ def test_generation_and_doctor_never_import_each_other():
     assert subprocess.run([sys.executable, "-c", check], capture_output=True).returncode == 0
     check = (
         "import stm32_toolkit.doctor, sys; "
-        "assert 'stm32_toolkit.generation' not in sys.modules"
+        "assert 'stm32_toolkit.generation' not in sys.modules; "
+        "assert 'stm32_toolkit.monitor_observation' not in sys.modules"
+    )
+    assert subprocess.run([sys.executable, "-c", check], capture_output=True).returncode == 0
+
+
+def test_monitor_observation_root_exports_remain_lazy_and_compatible():
+    check = (
+        "import stm32_toolkit, sys; "
+        "assert 'stm32_toolkit.monitor_observation' not in sys.modules; "
+        "assert not hasattr(stm32_toolkit, 'not_a_public_export'); "
+        "from stm32_toolkit import (MonitorObservationError, MonitorObservationRequest, "
+        "MonitorObservationSeams, MonitorObservationSession, open_monitor_observation); "
+        "assert 'stm32_toolkit.monitor_observation' in sys.modules; "
+        "assert all(value is not None for value in (MonitorObservationError, "
+        "MonitorObservationRequest, MonitorObservationSeams, MonitorObservationSession, "
+        "open_monitor_observation))"
     )
     assert subprocess.run([sys.executable, "-c", check], capture_output=True).returncode == 0
 

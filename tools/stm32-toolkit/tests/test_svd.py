@@ -1,7 +1,11 @@
 from __future__ import annotations
 
 import os
+import base64
+import hashlib
+import json
 import subprocess
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -9,6 +13,7 @@ import pytest
 
 from stm32_toolkit.debug import svd as svd_module
 from stm32_toolkit.debug.model import DebugFirmwareBinding, MemoryRegionBinding
+from stm32_toolkit.debug.types import CatalogPage, RegisterDescriptor
 from stm32_toolkit.debug.svd import SvdError, SvdSelection, select_svd as _select_svd
 
 
@@ -771,3 +776,174 @@ def test_revalidation_rejects_wrong_root_binding_and_replaced_descriptor(
     with pytest.raises(SvdError) as descriptor_error:
         selection.revalidate(_binding(project), project)
     assert descriptor_error.value.code == "SVD_INPUT_CHANGED"
+
+
+def test_register_catalog_pages_are_searchable_deterministic_and_address_free(
+    tmp_path: Path,
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "device.svd").write_bytes(FIXTURE.read_bytes())
+    binding = _binding(project)
+    selection = select_svd(project, "STM32F429ZITx", (Path("device.svd"),))
+
+    first = selection.register_descriptors(
+        binding, project, query="  gpioa.idr  ", limit=1
+    )
+    assert type(first) is CatalogPage
+    assert len(first.items) == 1
+    descriptor = first.items[0]
+    assert type(descriptor) is RegisterDescriptor
+    assert descriptor.selector == "GPIOA.IDR"
+    assert descriptor.size_bits == 32
+    assert descriptor.access == "read-only"
+    assert descriptor.reset_value == 0
+    assert descriptor.fields[:2] == (("PIN0", 0, 1), ("PIN1", 1, 1))
+    assert first.next_cursor is not None
+
+    second = selection.register_descriptors(
+        binding, project, query="gpioa.idr", cursor=first.next_cursor, limit=1
+    )
+    assert [item.selector for item in second.items] == ["GPIOA.IDR_COPY"]
+    payload = first.to_dict()
+    rendered = json.dumps(payload, sort_keys=True)
+    assert "address" not in rendered.casefold()
+    assert str((project / "device.svd").resolve()) not in rendered
+    assert str((project / "device.svd").resolve()) not in repr(first)
+    assert not hasattr(descriptor, "address")
+    assert not hasattr(descriptor, "path")
+
+
+def test_register_catalog_cursor_binding_limits_and_provenance_are_strict(
+    tmp_path: Path,
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "device.svd").write_bytes(FIXTURE.read_bytes())
+    binding = _binding(project)
+    selection = select_svd(project, "STM32F429ZITx", (Path("device.svd"),))
+    page = selection.register_descriptors(binding, project, limit=1)
+    assert page.next_cursor is not None
+
+    with pytest.raises(SvdError) as wrong_query:
+        selection.register_descriptors(
+            binding, project, query="gpio", cursor=page.next_cursor, limit=1
+        )
+    assert wrong_query.value.code == "SVD_CURSOR_INVALID"
+    tampered = page.next_cursor[:-1] + ("A" if page.next_cursor[-1] != "A" else "B")
+    with pytest.raises(SvdError) as invalid_cursor:
+        selection.register_descriptors(binding, project, cursor=tampered, limit=1)
+    assert invalid_cursor.value.code == "SVD_CURSOR_INVALID"
+    for limit in (0, 257, True):
+        with pytest.raises(SvdError) as invalid_limit:
+            selection.register_descriptors(binding, project, limit=limit)
+        assert invalid_limit.value.code == "SVD_LIMIT_INVALID"
+    with pytest.raises(SvdError) as long_query:
+        selection.register_descriptors(binding, project, query="x" * 129)
+    assert long_query.value.code == "SVD_QUERY_INVALID"
+    with pytest.raises(SvdError) as changed:
+        selection.register_descriptors(
+            replace(binding, target_device="STM32F407VGTx"),
+            project,
+            cursor=page.next_cursor,
+            limit=1,
+        )
+    assert changed.value.code == "SVD_PROVENANCE_MISMATCH"
+
+
+def test_register_catalog_rejects_public_sha_offset_forgery_and_continues_without_gaps(
+    tmp_path: Path,
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "device.svd").write_bytes(FIXTURE.read_bytes())
+    binding = _binding(project)
+    selection = select_svd(project, "STM32F429ZITx", (Path("device.svd"),))
+    complete = selection.register_descriptors(binding, project, limit=256)
+    first = selection.register_descriptors(binding, project, limit=2)
+    assert first.next_cursor is not None
+
+    raw = base64.urlsafe_b64decode(
+        first.next_cursor.encode("ascii") + b"=" * (-len(first.next_cursor) % 4)
+    )
+    payload, _signature = raw.rsplit(b".", 1)
+    document = json.loads(payload)
+    document["i"] = document["i"] + 1
+    forged_payload = json.dumps(
+        document, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")
+    old_signature = hashlib.sha256(
+        b"stm32-catalog-v1\0" + forged_payload
+    ).hexdigest().encode("ascii")
+    forged = base64.urlsafe_b64encode(
+        forged_payload + b"." + old_signature
+    ).rstrip(b"=").decode("ascii")
+
+    with pytest.raises(SvdError) as rejected:
+        selection.register_descriptors(binding, project, cursor=forged, limit=2)
+    assert rejected.value.code == "SVD_CURSOR_INVALID"
+
+    second = selection.register_descriptors(
+        binding, project, cursor=first.next_cursor, limit=256
+    )
+    assert [item.selector for item in first.items + second.items] == [
+        item.selector for item in complete.items
+    ]
+
+
+def test_register_catalog_cursor_is_deterministic_per_server_lifetime_and_restart_bound(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "device.svd").write_bytes(FIXTURE.read_bytes())
+    binding = _binding(project)
+    selection = select_svd(project, "STM32F429ZITx", (Path("device.svd"),))
+    first = selection.register_descriptors(binding, project, limit=1)
+    repeated = selection.register_descriptors(binding, project, limit=1)
+    assert first.next_cursor == repeated.next_cursor
+    assert first.next_cursor is not None
+
+    monkeypatch.setattr(svd_module, "_CURSOR_KEY", b"restart-key" * 4, raising=False)
+    with pytest.raises(SvdError) as rejected:
+        selection.register_descriptors(
+            binding, project, cursor=first.next_cursor, limit=1
+        )
+    assert rejected.value.code == "SVD_CURSOR_INVALID"
+
+
+def test_register_catalog_cursor_signature_cannot_collide_with_its_envelope_delimiter(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "device.svd").write_bytes(FIXTURE.read_bytes())
+    binding = _binding(project)
+    selection = select_svd(project, "STM32F429ZITx", (Path("device.svd"),))
+    monkeypatch.setattr(svd_module, "_CURSOR_KEY", (5).to_bytes(4, "big"))
+    first = selection.register_descriptors(binding, project, limit=2)
+    assert first.next_cursor is not None
+
+    second = selection.register_descriptors(
+        binding, project, cursor=first.next_cursor, limit=2
+    )
+    assert second.items
+
+
+def test_register_descriptor_snapshots_mutable_fields_and_rejects_path_names() -> None:
+    fields = [["PIN0", 0, 1]]
+    descriptor = RegisterDescriptor(
+        "GPIOA.IDR",
+        32,
+        "read-only",
+        None,
+        0,
+        0xFFFF_FFFF,
+        fields,  # type: ignore[arg-type]
+        True,
+        False,
+    )
+    fields[0][0] = "CHANGED"
+    assert descriptor.fields == (("PIN0", 0, 1),)
+    with pytest.raises(ValueError):
+        replace(descriptor, fields=((r"C:\\secret", 0, 1),))

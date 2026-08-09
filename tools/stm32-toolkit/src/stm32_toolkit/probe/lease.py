@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from types import TracebackType
-from typing import BinaryIO, Callable
+from typing import BinaryIO, Callable, Protocol
 from uuid import uuid4
 
 from stm32_toolkit import __version__
@@ -28,6 +28,10 @@ _IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 _HANDOFF_TICKET = re.compile(r"^[0-9a-f]{64}$")
 _REPARSE_POINT = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
 _REGISTRY_RECORD_LIMIT = 16_384
+
+
+class _RuntimeRootAuthority(Protocol):
+    def directory_descriptor(self, path: Path) -> int | None: ...
 
 
 @dataclass(frozen=True)
@@ -170,6 +174,12 @@ def _is_redirect(path: Path, metadata: os.stat_result) -> bool:
     )
 
 
+def _is_redirect_metadata(metadata: os.stat_result) -> bool:
+    return stat.S_ISLNK(metadata.st_mode) or bool(
+        getattr(metadata, "st_file_attributes", 0) & _REPARSE_POINT
+    )
+
+
 def _lock_handle(handle: BinaryIO) -> None:
     handle.seek(0, os.SEEK_END)
     if handle.tell() == 0:
@@ -200,15 +210,31 @@ def _unlock_handle(handle: BinaryIO) -> None:
         fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
 
-def _read_record_path(path: Path) -> dict[str, object] | None:
+def _read_record_path(
+    path: Path, *, directory_descriptor: int | None = None
+) -> dict[str, object] | None:
     descriptor = -1
     try:
-        parent = os.lstat(path.parent)
-        if _is_redirect(path.parent, parent) or not stat.S_ISDIR(parent.st_mode):
+        parent = (
+            os.lstat(path.parent)
+            if directory_descriptor is None
+            else os.fstat(directory_descriptor)
+        )
+        if (
+            (directory_descriptor is None and _is_redirect(path.parent, parent))
+            or _is_redirect_metadata(parent)
+            or not stat.S_ISDIR(parent.st_mode)
+        ):
             raise ProbeLeaseError(
                 "PROBE_REGISTRY_UNSAFE", "Probe registry record is unsafe"
             )
-        metadata = os.lstat(path)
+        metadata = (
+            os.lstat(path)
+            if directory_descriptor is None
+            else os.stat(
+                path.name, dir_fd=directory_descriptor, follow_symlinks=False
+            )
+        )
     except FileNotFoundError:
         return None
     except ProbeLeaseError:
@@ -217,16 +243,34 @@ def _read_record_path(path: Path) -> dict[str, object] | None:
         raise ProbeLeaseError(
             "PROBE_REGISTRY_UNAVAILABLE", "Probe registry record is unavailable"
         ) from error
-    if _is_redirect(path, metadata) or not stat.S_ISREG(metadata.st_mode):
+    if (
+        (directory_descriptor is None and _is_redirect(path, metadata))
+        or _is_redirect_metadata(metadata)
+        or not stat.S_ISREG(metadata.st_mode)
+    ):
         raise ProbeLeaseError(
             "PROBE_REGISTRY_UNSAFE", "Probe registry record is unsafe"
         )
     try:
-        descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_BINARY", 0))
+        if directory_descriptor is None:
+            descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_BINARY", 0))
+        else:
+            descriptor = os.open(
+                path.name,
+                os.O_RDONLY | getattr(os, "O_BINARY", 0),
+                dir_fd=directory_descriptor,
+            )
         opened = os.fstat(descriptor)
-        named = os.lstat(path)
+        named = (
+            os.lstat(path)
+            if directory_descriptor is None
+            else os.stat(
+                path.name, dir_fd=directory_descriptor, follow_symlinks=False
+            )
+        )
         if (
-            _is_redirect(path, named)
+            (directory_descriptor is None and _is_redirect(path, named))
+            or _is_redirect_metadata(named)
             or not stat.S_ISREG(opened.st_mode)
             or not stat.S_ISREG(named.st_mode)
             or (opened.st_dev, opened.st_ino) != (named.st_dev, named.st_ino)
@@ -237,11 +281,23 @@ def _read_record_path(path: Path) -> dict[str, object] | None:
         with os.fdopen(descriptor, "rb") as handle:
             descriptor = -1
             raw = handle.read(_REGISTRY_RECORD_LIMIT + 1).strip()
-        named_after = os.lstat(path)
-        parent_after = os.lstat(path.parent)
+        named_after = (
+            os.lstat(path)
+            if directory_descriptor is None
+            else os.stat(
+                path.name, dir_fd=directory_descriptor, follow_symlinks=False
+            )
+        )
+        parent_after = (
+            os.lstat(path.parent)
+            if directory_descriptor is None
+            else os.fstat(directory_descriptor)
+        )
         if (
-            _is_redirect(path, named_after)
-            or _is_redirect(path.parent, parent_after)
+            (directory_descriptor is None and _is_redirect(path, named_after))
+            or (directory_descriptor is None and _is_redirect(path.parent, parent_after))
+            or _is_redirect_metadata(named_after)
+            or _is_redirect_metadata(parent_after)
             or (opened.st_dev, opened.st_ino)
             != (named_after.st_dev, named_after.st_ino)
             or (parent.st_dev, parent.st_ino)
@@ -278,38 +334,75 @@ def _read_record_path(path: Path) -> dict[str, object] | None:
     return value
 
 
-def _write_record_path(path: Path, record: dict[str, object]) -> None:
+def _write_record_path(
+    path: Path,
+    record: dict[str, object],
+    *,
+    directory_descriptor: int | None = None,
+) -> None:
     payload = json.dumps(
         record, sort_keys=True, separators=(",", ":"), ensure_ascii=True
     ).encode("utf-8")
     temporary = path.with_name(f".{path.name}.{uuid4().hex}.tmp")
     descriptor = -1
     try:
-        parent = os.lstat(path.parent)
-        if _is_redirect(path.parent, parent) or not stat.S_ISDIR(parent.st_mode):
+        parent = (
+            os.lstat(path.parent)
+            if directory_descriptor is None
+            else os.fstat(directory_descriptor)
+        )
+        if (
+            (directory_descriptor is None and _is_redirect(path.parent, parent))
+            or _is_redirect_metadata(parent)
+            or not stat.S_ISDIR(parent.st_mode)
+        ):
             raise ProbeLeaseError(
                 "PROBE_REGISTRY_UNSAFE", "Probe registry record is unsafe"
             )
         try:
-            destination = os.lstat(path)
+            destination = (
+                os.lstat(path)
+                if directory_descriptor is None
+                else os.stat(
+                    path.name,
+                    dir_fd=directory_descriptor,
+                    follow_symlinks=False,
+                )
+            )
         except FileNotFoundError:
             destination = None
         if destination is not None and (
-            _is_redirect(path, destination)
+            (directory_descriptor is None and _is_redirect(path, destination))
+            or _is_redirect_metadata(destination)
             or not stat.S_ISREG(destination.st_mode)
         ):
             raise ProbeLeaseError(
                 "PROBE_REGISTRY_UNSAFE", "Probe registry record is unsafe"
             )
-        descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        if directory_descriptor is None:
+            descriptor = os.open(
+                temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600
+            )
+        else:
+            descriptor = os.open(
+                temporary.name,
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+                0o600,
+                dir_fd=directory_descriptor,
+            )
         with os.fdopen(descriptor, "wb", closefd=True) as handle:
             descriptor = -1
             handle.write(payload)
             handle.flush()
             os.fsync(handle.fileno())
-        parent_after = os.lstat(path.parent)
+        parent_after = (
+            os.lstat(path.parent)
+            if directory_descriptor is None
+            else os.fstat(directory_descriptor)
+        )
         if (
-            _is_redirect(path.parent, parent_after)
+            (directory_descriptor is None and _is_redirect(path.parent, parent_after))
+            or _is_redirect_metadata(parent_after)
             or (parent.st_dev, parent.st_ino)
             != (parent_after.st_dev, parent_after.st_ino)
         ):
@@ -317,7 +410,15 @@ def _write_record_path(path: Path, record: dict[str, object]) -> None:
                 "PROBE_REGISTRY_UNSAFE", "Probe registry changed during write"
             )
         try:
-            destination_after = os.lstat(path)
+            destination_after = (
+                os.lstat(path)
+                if directory_descriptor is None
+                else os.stat(
+                    path.name,
+                    dir_fd=directory_descriptor,
+                    follow_symlinks=False,
+                )
+            )
         except FileNotFoundError:
             destination_after = None
         if (
@@ -326,7 +427,11 @@ def _write_record_path(path: Path, record: dict[str, object]) -> None:
                 destination is not None
                 and destination_after is not None
                 and (
-                    _is_redirect(path, destination_after)
+                    (
+                        directory_descriptor is None
+                        and _is_redirect(path, destination_after)
+                    )
+                    or _is_redirect_metadata(destination_after)
                     or (destination.st_dev, destination.st_ino)
                     != (destination_after.st_dev, destination_after.st_ino)
                 )
@@ -335,12 +440,23 @@ def _write_record_path(path: Path, record: dict[str, object]) -> None:
             raise ProbeLeaseError(
                 "PROBE_REGISTRY_UNSAFE", "Probe registry changed during write"
             )
-        os.replace(temporary, path)
+        if directory_descriptor is None:
+            os.replace(temporary, path)
+        else:
+            os.replace(
+                temporary.name,
+                path.name,
+                src_dir_fd=directory_descriptor,
+                dst_dir_fd=directory_descriptor,
+            )
     except ProbeLeaseError:
         if descriptor >= 0:
             os.close(descriptor)
         try:
-            temporary.unlink()
+            if directory_descriptor is None:
+                temporary.unlink()
+            else:
+                os.unlink(temporary.name, dir_fd=directory_descriptor)
         except OSError:
             pass
         raise
@@ -348,12 +464,36 @@ def _write_record_path(path: Path, record: dict[str, object]) -> None:
         if descriptor >= 0:
             os.close(descriptor)
         try:
-            temporary.unlink()
+            if directory_descriptor is None:
+                temporary.unlink()
+            else:
+                os.unlink(temporary.name, dir_fd=directory_descriptor)
         except OSError:
             pass
         raise ProbeLeaseError(
             "PROBE_REGISTRY_UNAVAILABLE", "Probe registry is unavailable"
         ) from error
+
+
+def _read_authorized_record(
+    path: Path, directory_descriptor: int | None
+) -> dict[str, object] | None:
+    if directory_descriptor is None:
+        return _read_record_path(path)
+    return _read_record_path(path, directory_descriptor=directory_descriptor)
+
+
+def _write_authorized_record(
+    path: Path,
+    record: dict[str, object],
+    directory_descriptor: int | None,
+) -> None:
+    if directory_descriptor is None:
+        _write_record_path(path, record)
+    else:
+        _write_record_path(
+            path, record, directory_descriptor=directory_descriptor
+        )
 
 
 def _owner_from_record(record: dict[str, object]) -> ProbeOwnerEvidence:
@@ -426,6 +566,7 @@ class ProbeLease:
         record: dict[str, object],
         owner_identity: ProcessIdentity,
         external_record: dict[str, object] | None = None,
+        registry_descriptor: int | None = None,
     ) -> None:
         self._handle = handle
         self.record_path = record_path
@@ -437,6 +578,7 @@ class ProbeLease:
         self._record_lock = threading.RLock()
         self._external_consumed = False
         self._released = False
+        self._registry_descriptor = registry_descriptor
 
     @property
     def lease_id(self) -> str:
@@ -447,14 +589,30 @@ class ProbeLease:
         return _owner_from_record(self._record)
 
     def _close_locked_handle(self) -> None:
+        error: BaseException | None = None
         if not self._handle.closed:
             try:
                 _unlock_handle(self._handle)
-            finally:
+            except BaseException as caught:
+                error = caught
+            try:
                 self._handle.close()
+            except BaseException as caught:
+                if error is None:
+                    error = caught
+        if self._registry_descriptor is not None:
+            descriptor = self._registry_descriptor
+            self._registry_descriptor = None
+            try:
+                os.close(descriptor)
+            except BaseException as caught:
+                if error is None:
+                    error = caught
+        if error is not None:
+            raise error
 
     def _require_current_record(self) -> dict[str, object]:
-        current = _read_record_path(self.record_path)
+        current = self._read_record()
         if current is None or current.get("leaseId") != self.lease_id:
             self._close_locked_handle()
             self._released = True
@@ -479,13 +637,30 @@ class ProbeLease:
             )
         return current
 
+    def _read_record(self) -> dict[str, object] | None:
+        if self._registry_descriptor is None:
+            return _read_record_path(self.record_path)
+        return _read_record_path(
+            self.record_path, directory_descriptor=self._registry_descriptor
+        )
+
+    def _write_record(self, record: dict[str, object]) -> None:
+        if self._registry_descriptor is None:
+            _write_record_path(self.record_path, record)
+            return
+        _write_record_path(
+            self.record_path,
+            record,
+            directory_descriptor=self._registry_descriptor,
+        )
+
     def heartbeat(self, *, utc_now: Callable[[], datetime] = _utc_now) -> None:
         with self._record_lock:
             if self._released:
                 raise ProbeLeaseError("PROBE_LEASE_LOST", "Probe lease is not active")
             current = self._require_current_record()
             current["heartbeatAtUtc"] = _format_utc(utc_now())
-            _write_record_path(self.record_path, current)
+            self._write_record(current)
             self._record = current
 
     def reserve_external_handoff(self, ticket: str) -> None:
@@ -510,7 +685,7 @@ class ProbeLease:
             external = dict(current)
             external["state"] = "externally-owned"
             external["ticketSha256"] = digest
-            _write_record_path(self.record_path, external)
+            self._write_record(external)
             self._record = external
             self._external_record = external
 
@@ -542,9 +717,9 @@ class ProbeLease:
                 consumed = dict(self._external_record)
                 consumed["state"] = "handoff-consumed"
                 consumed["leaseId"] = self.lease_id
-                _write_record_path(self.record_path, consumed)
+                self._write_record(consumed)
             elif self._external_record is not None:
-                _write_record_path(self.record_path, self._external_record)
+                self._write_record(self._external_record)
             else:
                 released: dict[str, object] = {
                     "schemaVersion": 1,
@@ -552,10 +727,7 @@ class ProbeLease:
                     "leaseId": self.lease_id,
                 }
                 released.update(_consumed_handoff_tombstone(self._record))
-                _write_record_path(
-                    self.record_path,
-                    released,
-                )
+                self._write_record(released)
             self._close_locked_handle()
             self._released = True
 
@@ -610,7 +782,45 @@ class ProbeLeaseManager:
         for component in reversed((self.data_root, *self.data_root.parents)):
             self._validate_registry_component(component)
 
-    def _ensure_registry(self) -> None:
+    def _ensure_registry(
+        self, runtime_root_authority: _RuntimeRootAuthority | None = None
+    ) -> int | None:
+        root_descriptor = (
+            None
+            if runtime_root_authority is None
+            else runtime_root_authority.directory_descriptor(self.data_root)
+        )
+        if root_descriptor is not None:
+            descriptor = -1
+            try:
+                try:
+                    os.mkdir(self.registry_root.name, dir_fd=root_descriptor)
+                except FileExistsError:
+                    pass
+                descriptor = os.open(
+                    self.registry_root.name,
+                    os.O_RDONLY
+                    | getattr(os, "O_DIRECTORY", 0)
+                    | getattr(os, "O_NOFOLLOW", 0),
+                    dir_fd=root_descriptor,
+                )
+                metadata = os.fstat(descriptor)
+                if not stat.S_ISDIR(metadata.st_mode):
+                    raise ProbeLeaseError(
+                        "PROBE_REGISTRY_UNSAFE",
+                        "Probe registry contains an unsafe redirect",
+                    )
+                return descriptor
+            except ProbeLeaseError:
+                if descriptor >= 0:
+                    os.close(descriptor)
+                raise
+            except OSError as error:
+                if descriptor >= 0:
+                    os.close(descriptor)
+                raise ProbeLeaseError(
+                    "PROBE_REGISTRY_UNAVAILABLE", "Probe registry is unavailable"
+                ) from error
         try:
             self._validate_data_root_chain()
             self.data_root.mkdir(parents=True, exist_ok=True)
@@ -626,10 +836,21 @@ class ProbeLeaseManager:
             raise ProbeLeaseError(
                 "PROBE_REGISTRY_UNAVAILABLE", "Probe registry is unavailable"
             ) from error
+        return None
 
-    def _open_guard(self, path: Path) -> BinaryIO:
+    def _open_guard(
+        self, path: Path, *, directory_descriptor: int | None = None
+    ) -> BinaryIO:
         try:
-            descriptor = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
+            if directory_descriptor is None:
+                descriptor = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
+            else:
+                descriptor = os.open(
+                    path.name,
+                    os.O_RDWR | os.O_CREAT,
+                    0o600,
+                    dir_fd=directory_descriptor,
+                )
             return os.fdopen(descriptor, "r+b", buffering=0)
         except OSError as error:
             raise ProbeLeaseError(
@@ -675,6 +896,7 @@ class ProbeLeaseManager:
         operation_level: OperationLevel,
         health_url: str,
         handoff_ticket: str | None = None,
+        _runtime_root_authority: _RuntimeRootAuthority | None = None,
     ) -> ProbeLease:
         for field_name, value in (
             ("probe_id", probe_id),
@@ -699,15 +921,22 @@ class ProbeLeaseManager:
                 "PROBE_LEASE_INVALID", "External handoff ticket is invalid"
             )
 
-        self._ensure_registry()
+        registry_descriptor = self._ensure_registry(_runtime_root_authority)
         record_path = self.record_path(probe_id)
         guard_path = record_path.with_suffix(".guard")
-        handle = self._open_guard(guard_path)
+        try:
+            handle = self._open_guard(
+                guard_path, directory_descriptor=registry_descriptor
+            )
+        except BaseException:
+            if registry_descriptor is not None:
+                os.close(registry_descriptor)
+            raise
         try:
             try:
                 _lock_handle(handle)
             except (OSError, BlockingIOError):
-                record = _read_record_path(record_path)
+                record = _read_authorized_record(record_path, registry_descriptor)
                 if record is None or record.get("state", "active") not in (
                     "active",
                     "externally-owned",
@@ -720,7 +949,7 @@ class ProbeLeaseManager:
                 _validate_record_version(record)
                 raise ProbeBusyError(_owner_from_record(record))
 
-            existing = _read_record_path(record_path)
+            existing = _read_authorized_record(record_path, registry_descriptor)
             consumed_tombstone = (
                 {} if existing is None else _consumed_handoff_tombstone(existing)
             )
@@ -813,14 +1042,17 @@ class ProbeLeaseManager:
             if external_record is not None:
                 record["ticketSha256"] = external_record["ticketSha256"]
                 record["reservationLeaseId"] = external_record["leaseId"]
-            _write_record_path(record_path, record)
-            return ProbeLease(
+            _write_authorized_record(record_path, record, registry_descriptor)
+            lease = ProbeLease(
                 handle=handle,
                 record_path=record_path,
                 record=record,
                 owner_identity=identity,
                 external_record=external_record,
+                registry_descriptor=registry_descriptor,
             )
+            registry_descriptor = None
+            return lease
         except Exception:
             if not handle.closed:
                 try:
@@ -828,6 +1060,8 @@ class ProbeLeaseManager:
                 except OSError:
                     pass
                 handle.close()
+            if registry_descriptor is not None:
+                os.close(registry_descriptor)
             raise
 
     @staticmethod
@@ -879,6 +1113,7 @@ class ProbeLeaseManager:
         workspace_id: str,
         session_id: str,
         ticket: str,
+        _runtime_root_authority: _RuntimeRootAuthority | None = None,
     ) -> bool:
         return self._transition_consumed_handoff(
             probe_id=probe_id,
@@ -886,6 +1121,7 @@ class ProbeLeaseManager:
             session_id=session_id,
             ticket=ticket,
             acknowledge=False,
+            runtime_root_authority=_runtime_root_authority,
         )
 
     def acknowledge_consumed_handoff(
@@ -895,6 +1131,7 @@ class ProbeLeaseManager:
         workspace_id: str,
         session_id: str,
         ticket: str,
+        _runtime_root_authority: _RuntimeRootAuthority | None = None,
     ) -> bool:
         return self._transition_consumed_handoff(
             probe_id=probe_id,
@@ -902,6 +1139,7 @@ class ProbeLeaseManager:
             session_id=session_id,
             ticket=ticket,
             acknowledge=True,
+            runtime_root_authority=_runtime_root_authority,
         )
 
     def _transition_consumed_handoff(
@@ -912,6 +1150,7 @@ class ProbeLeaseManager:
         session_id: str,
         ticket: str,
         acknowledge: bool,
+        runtime_root_authority: _RuntimeRootAuthority | None,
     ) -> bool:
         if (
             not all(
@@ -923,12 +1162,20 @@ class ProbeLeaseManager:
             raise ProbeLeaseError(
                 "PROBE_LEASE_INVALID", "External handoff identity is invalid"
             )
-        self._ensure_registry()
+        registry_descriptor = self._ensure_registry(runtime_root_authority)
         record_path = self.record_path(probe_id)
-        handle = self._open_guard(record_path.with_suffix(".guard"))
+        try:
+            handle = self._open_guard(
+                record_path.with_suffix(".guard"),
+                directory_descriptor=registry_descriptor,
+            )
+        except BaseException:
+            if registry_descriptor is not None:
+                os.close(registry_descriptor)
+            raise
         try:
             _lock_handle(handle)
-            record = _read_record_path(record_path)
+            record = _read_authorized_record(record_path, registry_descriptor)
             if record is None:
                 return False
             state = record.get("state")
@@ -959,7 +1206,7 @@ class ProbeLeaseManager:
             if acknowledge:
                 if state != "handoff-finalized":
                     return False
-                _write_record_path(
+                _write_authorized_record(
                     record_path,
                     {
                         "schemaVersion": 1,
@@ -970,11 +1217,14 @@ class ProbeLeaseManager:
                         "consumedWorkspaceId": workspace_id,
                         "consumedSessionId": session_id,
                     },
+                    registry_descriptor,
                 )
             elif state == "handoff-consumed":
                 finalized = dict(record)
                 finalized["state"] = "handoff-finalized"
-                _write_record_path(record_path, finalized)
+                _write_authorized_record(
+                    record_path, finalized, registry_descriptor
+                )
             return True
         except (OSError, BlockingIOError) as error:
             raise ProbeLeaseError(
@@ -988,3 +1238,5 @@ class ProbeLeaseManager:
                 except OSError:
                     pass
                 handle.close()
+            if registry_descriptor is not None:
+                os.close(registry_descriptor)

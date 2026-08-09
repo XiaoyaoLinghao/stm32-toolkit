@@ -24,7 +24,12 @@ from .read import (
     read_registers,
     read_variables,
 )
-from .sampling import SampleVariablesRequest, sample_variables
+from .sampling import (
+    RegisterSampleRequest,
+    SampleVariablesRequest,
+    sample_registers,
+    sample_variables,
+)
 from .svd import SvdError, SvdField, SvdRegister, SvdSelection, select_svd
 from .types import DwarfError, DwarfMember, DwarfSelection, DwarfType, DwarfValue
 
@@ -45,6 +50,7 @@ __all__ = [
     "IntegerEvidence",
     "MemoryRegionBinding",
     "RegisterReadRequest",
+    "RegisterSampleRequest",
     "RegisterEvidence",
     "SampleVariablesRequest",
     "SampleReport",
@@ -60,6 +66,7 @@ __all__ = [
     "bind_debug_firmware",
     "read_registers",
     "read_variables",
+    "sample_registers",
     "sample_variables",
     "select_svd",
 ]

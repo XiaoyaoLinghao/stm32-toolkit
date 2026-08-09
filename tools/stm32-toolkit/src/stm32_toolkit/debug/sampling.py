@@ -13,8 +13,17 @@ from stm32_toolkit.probe.protocol import MAX_READ_BYTES
 from stm32_toolkit.result import OperationResult
 
 from .dwarf import DwarfCatalog
-from .model import DebugFirmwareBinding, SampleReport
-from .read import VariableReadRequest, read_variables
+from .model import DebugFirmwareBinding, DebugReadReport, SampleReport, TypedValue
+from .read import (
+    VariableReadRequest,
+    _Resolved,
+    _execute,
+    _fail as _read_fail,
+    _items,
+    _region,
+    read_variables,
+)
+from .svd import SvdError, SvdSelection
 
 _OPERATION = "stm32_debug_sample_variables"
 _MIN_INTERVAL_MS = 100
@@ -29,6 +38,7 @@ _SAMPLE_BASE_NODES = 14
 _ITEM_WORST_NODES = 26
 _SAMPLE_BASE_CHARS = 256
 _ITEM_BASE_CHARS = 1_024
+_REGISTER_SAMPLE_OPERATION = "stm32_debug_sample_registers"
 
 
 @dataclass(frozen=True)
@@ -39,6 +49,13 @@ class SampleVariablesRequest:
     interval_ms: int
     count: int | None = None
     duration_ms: int | None = None
+
+
+@dataclass(frozen=True)
+class RegisterSampleRequest:
+    binding: DebugFirmwareBinding
+    selection: SvdSelection
+    paths: tuple[str, ...]
 
 
 def _invalid() -> OperationResult[None]:
@@ -220,6 +237,7 @@ async def sample_variables(
             {},
         )
 
+
     if len(actual_offsets) > 1 and actual_offsets[-1] > actual_offsets[0]:
         actual_rate = (len(actual_offsets) - 1) / (
             actual_offsets[-1] - actual_offsets[0]
@@ -246,4 +264,83 @@ async def sample_variables(
         )
 
 
-__all__ = ["SampleVariablesRequest", "sample_variables"]
+def _sampled_register(
+    binding: DebugFirmwareBinding, selection: SvdSelection, path: str
+) -> _Resolved:
+    try:
+        register = selection.register(path)
+        register.authorize_read(False, sampling=True)
+    except SvdError as error:
+        raise _read_fail(error.code, "SVD register cannot be sampled") from None
+    region = _region(binding, register.address, register.size_bytes)
+
+    def decode(data: bytes) -> TypedValue:
+        value = int.from_bytes(data, "little", signed=False)
+        bits = register.size_bytes * 8
+        safe_value: object = str(value) if bits > 53 else value
+        return TypedValue(
+            path,
+            f"uint{bits}_register",
+            safe_value,
+            f"0x{value:0{register.size_bytes * 2}x}",
+            bits,
+        )
+
+    return _Resolved(path, register.address, register.size_bytes, region, decode)
+
+
+def _revalidate_sample_selection(
+    selection: SvdSelection, binding: DebugFirmwareBinding
+) -> None:
+    try:
+        selection.revalidate(binding, binding.project_root)
+    except SvdError as error:
+        raise _read_fail(error.code, "SVD selection provenance is invalid") from None
+    except Exception:
+        raise _read_fail(
+            "SVD_PROVENANCE_MISMATCH", "SVD selection provenance is invalid"
+        ) from None
+
+
+async def sample_registers(
+    request: object, client: object
+) -> OperationResult[DebugReadReport]:
+    """Read one bounded register batch using the non-overridable sampling gate."""
+
+    if not isinstance(request, RegisterSampleRequest):
+        return OperationResult.failure(
+            _REGISTER_SAMPLE_OPERATION,
+            "DEBUG_SAMPLE_REQUEST_INVALID",
+            "Register sample request is invalid",
+            {},
+        )
+    try:
+        if (
+            type(request.binding) is not DebugFirmwareBinding
+            or type(request.selection) is not SvdSelection
+        ):
+            raise ValueError
+        paths = _items(request.paths)
+    except Exception:
+        return OperationResult.failure(
+            _REGISTER_SAMPLE_OPERATION,
+            "DEBUG_SAMPLE_REQUEST_INVALID",
+            "Register sample request is invalid",
+            {},
+        )
+    return await _execute(
+        _REGISTER_SAMPLE_OPERATION,
+        request.binding,
+        paths,
+        lambda path: _sampled_register(request.binding, request.selection, path),
+        lambda: _revalidate_sample_selection(request.selection, request.binding),
+        client,
+    )
+
+
+__all__ = [
+    "RegisterSampleRequest",
+    "SampleVariablesRequest",
+    "sample_registers",
+    "sample_variables",
+]
