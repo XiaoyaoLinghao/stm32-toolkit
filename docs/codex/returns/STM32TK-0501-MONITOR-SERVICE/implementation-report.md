@@ -11,8 +11,8 @@
 - Final reviewer/verdict owner: Codex Task 5 controller and fresh independent reviewer
 - Branch: `codex/STM32TK-0501-MONITOR-SERVICE`
 - Accepted base: `913600f471d8fb0fb5345bdf668ca39ec1faf4d8`
-- Stable code head before this report commit:
-  `9fbae498c0eda2c9708bd6a6388c3e3649ed7d8e`
+- Stable code head before this report-only correction commit:
+  `ec4b6b4a95fa09d0826ceaaff7f49045db695f20`
 - Remote action authorized for Task 6: none
 
 Task 6 does not issue a final review verdict. The user explicitly approved the
@@ -27,10 +27,14 @@ performed.
 ## 2. Accepted-base-to-code-head scope
 
 `git diff --name-only
-913600f471d8fb0fb5345bdf668ca39ec1faf4d8..12c8f98df198cd601916ed59c3c81a3ba30aea0e`
+913600f471d8fb0fb5345bdf668ca39ec1faf4d8..ec4b6b4a95fa09d0826ceaaff7f49045db695f20`
 contains 59 paths. They comprise three 0501 plans, one 0501 design, and this
 report; Monitor metadata, product modules, legacy deletions, and tests; and the
 bounded Toolkit observation/probe/typed-debug bridge and tests.
+
+`ec4b6b4a95fa09d0826ceaaff7f49045db695f20` is the safe-subset product/docs
+commit that implements and records the exact 160 MiB amendment. This subsequent
+report-only correction does not change that product scope.
 
 The post-review correction commits add these exact behaviors:
 
@@ -216,7 +220,7 @@ did not load PyOCD; and legacy `config`, `elf_parser`, `poller`, `pyocd_session`
 - CPython 3.12 and 3.10 `compileall -q` passed for both product source trees with
   `PYTHONPYCACHEPREFIX` under the external package root.
 - `git diff --check
-  913600f471d8fb0fb5345bdf668ca39ec1faf4d8..12c8f98df198cd601916ed59c3c81a3ba30aea0e`
+  913600f471d8fb0fb5345bdf668ca39ec1faf4d8..ec4b6b4a95fa09d0826ceaaff7f49045db695f20`
   passed.
 - Product scans found no direct Monitor PyOCD/CMSIS-SVD/PyYAML import or
   dependency, default group, PyOCD process-kill behavior, non-loopback bind,
