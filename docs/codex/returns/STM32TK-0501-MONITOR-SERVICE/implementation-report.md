@@ -66,33 +66,26 @@ backend, or 0502 UI asset was added.
 ## 3. Complete Monitor suites and coverage
 
 Environment: Windows `win32`, CPython 3.12.13 and 3.10.11. Both commands used
-the code-head worktree sources, a repository-external basetemp and coverage data
+stable code head `4d1bb0cde7391b8d3203254c2bced61a0b7403e4`, a
+repository-external basetemp and coverage data
 file, disabled pytest caching, and prevented repository bytecode writes.
 
 ```powershell
 $env:PYTHONPATH='C:\tmp\stm32tk-0501-monitor-service\tools\stm32-monitor\src;C:\tmp\stm32tk-0501-monitor-service\tools\stm32-toolkit\src'
-$env:COVERAGE_FILE='C:\tmp\stm32tk-0501-fix1-full312.coverage'
-$env:PYTHONPYCACHEPREFIX='C:\tmp\stm32tk-0501-fix1-full312-pycache'
-C:\tmp\stm32-toolkit-review-py31213\Scripts\python.exe -m pytest tools\stm32-monitor\tests -q --ignore=tools\stm32-monitor\tests\test_performance.py --basetemp C:\tmp\stm32tk-0501-fix1-full312 -p no:cacheprovider --cov=stm32_monitor --cov-branch --cov-report=term --cov-fail-under=90
+$env:COVERAGE_FILE='C:\tmp\stm32tk-r2-full312b.coverage'
+$env:PYTHONPYCACHEPREFIX='C:\tmp\stm32tk-r2-full312b-pycache'
+C:\tmp\stm32-toolkit-review-py31213\Scripts\python.exe -m pytest tools\stm32-monitor\tests -q --ignore=tools\stm32-monitor\tests\test_performance.py --basetemp C:\tmp\stm32tk-r2-full312b-basetemp -p no:cacheprovider --cov=stm32_monitor --cov-branch --cov-report=term --cov-fail-under=90
 
-$env:COVERAGE_FILE='C:\tmp\stm32tk-0501-fix1-full310-proof2.coverage'
-$env:PYTHONPYCACHEPREFIX='C:\tmp\stm32tk-0501-fix1-full310-proof2-pycache'
-C:\tmp\stm32tk-0301-py310\Scripts\python.exe -m pytest tools\stm32-monitor\tests -q --ignore=tools\stm32-monitor\tests\test_performance.py --basetemp C:\tmp\stm32tk-0501-fix1-full310-proof2 -p no:cacheprovider --cov=stm32_monitor --cov-branch --cov-report=term --cov-fail-under=90
+$env:COVERAGE_FILE='C:\tmp\stm32tk-r2-full310.coverage'
+$env:PYTHONPYCACHEPREFIX='C:\tmp\stm32tk-r2-full310-pycache'
+C:\tmp\stm32tk-0301-py310\Scripts\python.exe -m pytest tools\stm32-monitor\tests -q --ignore=tools\stm32-monitor\tests\test_performance.py --basetemp C:\tmp\stm32tk-r2-full310-basetemp -p no:cacheprovider --cov=stm32_monitor --cov-branch --cov-report=term --cov-fail-under=90
 ```
 
-- Python 3.12.13: `379 passed in 214.37s`; total branch-aware coverage `91.00%`.
-- Python 3.10.11: `379 passed in 204.28s`; total branch-aware coverage `91.02%`.
-- The first 3.10 coverage attempt had `378 passed, 1 failed` at the existing
-  25 ms deadline node (total coverage `91.06%`); that node then passed alone and
-  a no-coverage compatibility run passed `379` in `158.45s`, but neither was
-  combined into acceptance evidence. A later full rerun produced a coverage
-  file but lost its terminal summary during context compaction, and a subsequent
-  sandboxed attempt was invalid (`80 passed, 299 errors`) because pytest and
-  coverage could not create `C:\tmp` files. Only the fresh authorized complete
-  `379 passed` run above is the 3.10 coverage PASS.
-- A final extra affected-files/direct-consumer command reached its 300 second
-  outer harness timeout without a test summary and is not cited as PASS; both
-  complete dual-Python suites above cover those files and consumers.
+- Python 3.12.13: `385 passed in 154.28s`; total branch-aware coverage `90.75%`.
+- Python 3.10.11: `385 passed in 192.14s`; total branch-aware coverage `90.77%`.
+- The earlier `245dcfe...` fix-round-1 runs (`379 passed`, `91.00%/91.02%`)
+  are superseded historical evidence. They are not evidence for the stable
+  product head and are retained only in the round-1 chronology below.
 
 | Monitor module | 3.12 coverage | 3.10 coverage |
 | --- | ---: | ---: |
@@ -102,14 +95,14 @@ C:\tmp\stm32tk-0301-py310\Scripts\python.exe -m pytest tools\stm32-monitor\tests
 | `cli.py` | 100% | 100% |
 | `exports.py` | 91% | 91% |
 | `groups.py` | 93% | 93% |
-| `history.py` | 91% | 91% |
+| `history.py` | 90% | 90% |
 | `models.py` | 91% | 91% |
 | `probe_session.py` | 92% | 92% |
 | `protocol.py` | 94% | 94% |
 | `runtime.py` | 90% | 90% |
 | `sampler.py` | 91% | 91% |
 | `service.py` | 90% | 90% |
-| `storage.py` | 91% | 91% |
+| `storage.py` | 90% | 90% |
 
 Every Monitor product module meets the required 90% branch-aware threshold.
 
@@ -225,18 +218,19 @@ deadline. The reviewer found no other issue.
 
 ## 6. Wheels and installed-package smoke
 
-`git archive` created a clean repository-external source tree from exact code
-head. CPython 3.12 then built both wheels with isolated build requirements:
+`git archive` created a clean repository-external source tree from exact stable
+code head `4d1bb0cde7391b8d3203254c2bced61a0b7403e4`. CPython 3.12 then built both
+wheels with isolated build requirements:
 
 ```powershell
-C:\Users\ZhangYang\AppData\Roaming\uv\python\cpython-3.12-windows-x86_64-none\python.exe -m pip wheel --no-deps --wheel-dir C:\tmp\stm32tk-0501-fix1-package-245dcfe\wheels C:\tmp\stm32tk-0501-fix1-package-245dcfe\source\tools\stm32-toolkit
-C:\Users\ZhangYang\AppData\Roaming\uv\python\cpython-3.12-windows-x86_64-none\python.exe -m pip wheel --no-deps --wheel-dir C:\tmp\stm32tk-0501-fix1-package-245dcfe\wheels C:\tmp\stm32tk-0501-fix1-package-245dcfe\source\tools\stm32-monitor
+C:\Users\ZhangYang\AppData\Roaming\uv\python\cpython-3.12-windows-x86_64-none\python.exe -m pip wheel --no-deps --wheel-dir C:\tmp\stm32tk-0501-fix2-package-4d1bb0c\wheels C:\tmp\stm32tk-0501-fix2-package-4d1bb0c\source\tools\stm32-toolkit
+C:\Users\ZhangYang\AppData\Roaming\uv\python\cpython-3.12-windows-x86_64-none\python.exe -m pip wheel --no-deps --wheel-dir C:\tmp\stm32tk-0501-fix2-package-4d1bb0c\wheels C:\tmp\stm32tk-0501-fix2-package-4d1bb0c\source\tools\stm32-monitor
 ```
 
 | Wheel | Bytes | SHA-256 |
 | --- | ---: | --- |
-| `stm32_monitor-0.4.0-py3-none-any.whl` | 74,099 | `4773c27937ba65ee2ec5841ecb7e365bc216b75fbb9b524a024a5de896db9311` |
-| `stm32_toolkit-0.4.0-py3-none-any.whl` | 235,282 | `ef667431e12546692ef894b5d16341d12bcdf9c51960df3b2d2f736de5ab2237` |
+| `stm32_monitor-0.4.0-py3-none-any.whl` | 75,798 | `46a7e1e4f71c907871d59fa54fbe34064049a411a97312ae0b122688cfab73d3` |
+| `stm32_toolkit-0.4.0-py3-none-any.whl` | 235,282 | `5d4b11215b7607efbeac09ca9bae18ec214ba37405a2eab3e5da1927f11cd2e0` |
 
 Fresh CPython 3.12.13 and 3.10.11 venvs installed both wheels from an external
 working directory with `pip install --no-index --no-deps`. The same 14 committed
@@ -245,8 +239,8 @@ sampling, immutable history, flattened JSONL/CSV, verified download, dynamic
 REST loopback/status, WebSocket backpressure, probe/runtime dispatch, and
 cancellation cleanup:
 
-- Python 3.12: `14 passed in 4.13s`.
-- Python 3.10: `14 passed in 5.43s`.
+- Python 3.12: `14 passed in 6.58s`.
+- Python 3.10: `14 passed in 7.57s`.
 
 Both imports resolved to their new venv `site-packages`. Each inventory contained
 exactly 37 Monitor and 133 Toolkit distribution records. Monitor `Requires-Dist`
@@ -254,19 +248,18 @@ was exactly `stm32-toolkit==0.4.0` and `aiohttp>=3.9,<4`; root observation expor
 did not load PyOCD; and legacy `config`, `elf_parser`, `poller`, `pyocd_session`,
 `sse_server`, and `svd_parser` modules were absent.
 
-The first build command used a test venv without pip and failed before building;
-the base 3.12 builder then produced the artifacts above. Both fresh product
-installs passed with `--no-index --no-deps`. A combined smoke-dependency install
-timed out after completing 3.12; a separate 3.10 install completed before the
-successful smoke runs. These harness attempts are not product failures and no
-old wheel or source-tree import was used.
+Both fresh product installs passed with `--no-index --no-deps`. Installed
+Monitor lifecycle and Toolkit project/Git immutability gates also passed on both
+interpreters (`2 passed` each). The earlier `fix1-package-245dcfe` wheel hashes
+and `4.13s/5.43s` smoke results are superseded historical evidence and are not
+claimed for the stable product head.
 
 ## 7. Static, filesystem, and Windows evidence
 
 - CPython 3.12 and 3.10 `compileall -q` passed for both product source trees with
   `PYTHONPYCACHEPREFIX` under the external package root.
 - `git diff --check
-  913600f471d8fb0fb5345bdf668ca39ec1faf4d8..245dcfe5574b55038d5b6bc7f58ac067aa5f55ba`
+  913600f471d8fb0fb5345bdf668ca39ec1faf4d8..4d1bb0cde7391b8d3203254c2bced61a0b7403e4`
   passed.
 - Product scans found no direct Monitor PyOCD/CMSIS-SVD/PyYAML import or
   dependency, default group, PyOCD process-kill behavior, non-loopback bind,
