@@ -42,7 +42,9 @@ RETENTION_LOGICAL_BYTES = 256 * 1024 * 1024
 RETENTION_DELETE_BATCHES = 100
 RETENTION_DELETE_VALUES = 512
 RETENTION_TIME_BUDGET_NS = 90 * 1_000_000
-RETENTION_STORAGE_TIMEOUT_MS = 95
+# Executor admission and scheduling receive a separate bounded allowance so
+# they cannot consume the retention operation's own cancellation budget.
+RETENTION_STORAGE_TIMEOUT_MS = 2 * (RETENTION_TIME_BUDGET_NS // 1_000_000)
 
 _LEGACY_HISTORY_CURSOR = re.compile(
     r"(?:[1-9][0-9]{0,18}):(?:0|[1-9][0-9]{0,18})\Z", re.ASCII

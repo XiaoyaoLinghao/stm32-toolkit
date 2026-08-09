@@ -7,6 +7,7 @@ import sqlite3
 import struct
 import threading
 import time
+from concurrent.futures import Future, TimeoutError as FutureTimeout
 from dataclasses import replace
 from hashlib import sha256
 from pathlib import Path
@@ -1683,6 +1684,67 @@ def test_retention_budget_deadline_and_failure_mapping_are_bounded(tmp_path: Pat
         failed = store.run_retention(now_ns=10_000)
         assert failed.code == "MONITOR_RETENTION_FAILED"
         assert failed.message == "history retention failed"
+    finally:
+        store.close()
+
+
+def test_retention_caller_timeout_includes_executor_scheduling_margin(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    import stm32_monitor.history as history_module
+
+    paths = _paths(tmp_path)
+    store = HistoryStore(paths)
+    try:
+        assert store.append_batch(_batch(paths, 1, captured_ns=100)).ok
+        assert store.append_batch(_batch(paths, 2, captured_ns=2_000)).ok
+        monkeypatch.setattr(history_module, "RETENTION_AGE_NS", 1_000)
+        monkeypatch.setattr(history_module, "RETENTION_DELETE_BATCHES", 1)
+
+        clock_calls = 0
+
+        def near_budget_clock() -> int:
+            nonlocal clock_calls
+            clock_calls += 1
+            if clock_calls == 1:
+                return 0
+            return history_module.RETENTION_TIME_BUDGET_NS - 1
+
+        monkeypatch.setattr(history_module.time, "monotonic_ns", near_budget_clock)
+        required_timeout_ms = (
+            history_module.RETENTION_TIME_BUDGET_NS // 1_000_000 + 10
+        )
+
+        class ScheduledFuture(Future):
+            def __init__(self, function, args, kwargs) -> None:
+                super().__init__()
+                self._function = function
+                self._args = args
+                self._kwargs = kwargs
+
+            def result(self, timeout=None):
+                if not self.done():
+                    if timeout is not None and timeout * 1_000 < required_timeout_ms:
+                        raise FutureTimeout
+                    try:
+                        result = self._function(*self._args, **self._kwargs)
+                    except BaseException as error:
+                        self.set_exception(error)
+                    else:
+                        self.set_result(result)
+                return super().result(timeout=0)
+
+        def scheduled_submit(function, *args, **kwargs):
+            return ScheduledFuture(function, args, kwargs)
+
+        monkeypatch.setattr(store._database._writer.executor, "submit", scheduled_submit)
+
+        retained = store.run_retention(now_ns=3_000)
+
+        assert retained.ok
+        assert retained.data["deletedBatches"] == 1
+        assert retained.data["earliestCapturedUnixNs"] == 2_000
     finally:
         store.close()
 
