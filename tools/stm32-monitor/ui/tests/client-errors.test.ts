@@ -37,6 +37,42 @@ it("downloadExport rejects missing filename disposition",async()=>{
   expect(result).toEqual({ok:false,code:"MONITOR_DOWNLOAD_INVALID",message:"Download metadata is invalid"});
 });
 
+it("downloadExport falls back to application/octet-stream when Content-Type is absent",async()=>{
+  const responseLike={
+    ok:true,
+    headers:{get:(name:string)=>name==="Content-Disposition"?'attachment; filename="export.csv"':null},
+    blob:async()=>new Blob(["data"]),
+  };
+  const api=createMonitorApi(async()=>responseLike as unknown as Response,"http://monitor.test");
+  const result=await api.downloadExport("e1");
+  expect(result.ok).toBe(true);
+  if(result.ok){expect(result.contentType).toBe("application/octet-stream");expect(result.filename).toBe("export.csv");}
+});
+
+it("downloadExport treats a successful envelope on a failed response as invalid",async()=>{
+  const responseLike={
+    ok:false,
+    headers:{get:()=>null},
+    text:async()=>'{"protocol":"stm32-toolkit-monitor/1","toolkitVersion":"0.4.0","monitorVersion":"0.4.0","ok":true,"operation":"monitor.exports.download","code":"OK","message":"","data":null,"details":{}}',
+  };
+  const api=createMonitorApi(async()=>responseLike as unknown as Response,"http://monitor.test");
+  const result=await api.downloadExport("e1");
+  expect(result.ok).toBe(false);
+  if(!result.ok)expect(result.code).toBe("MONITOR_RESPONSE_INVALID");
+});
+
+it("omits optional history query params when undefined",async()=>{
+  let url="";
+  const api=createMonitorApi(async(input)=>{url=String(input);return new Response('{"protocol":"stm32-toolkit-monitor/1","toolkitVersion":"0.4.0","monitorVersion":"0.4.0","ok":true,"operation":"monitor.history.query","code":"OK","message":"","data":{"batches":[],"valueCount":0,"nextCursor":null,"serializedBytes":0},"details":{}}');},"http://monitor.test");
+  await api.history({startNs:0n,endNs:0n});
+  expect(url).toContain("startNs=0");
+  expect(url).toContain("endNs=0");
+  expect(url).not.toContain("cursor=");
+  expect(url).not.toContain("runId=");
+  expect(url).not.toContain("groupId=");
+  expect(url).not.toContain("limit=");
+});
+
 it("encodes query params for history",async()=>{
   let url="";
   const api=createMonitorApi(async(input)=>{url=String(input);return new Response('{"protocol":"stm32-toolkit-monitor/1","toolkitVersion":"0.4.0","monitorVersion":"0.4.0","ok":true,"operation":"monitor.history.query","code":"OK","message":"","data":{"batches":[],"valueCount":0,"nextCursor":null,"serializedBytes":0},"details":{}}');},"http://monitor.test");

@@ -24,7 +24,7 @@ const variable:VariableDescriptor={selector:"counter",typeName:"int",kind:"int",
 it("CatalogPanel searches variables and adds a watch",async()=>{
   const search=vi.fn(),add=vi.fn();
   render(<CatalogPanel connected bindingEpoch={3n}
-    variables={{kind:"variables",query:"counter",bindingKey:"ws/s/p/3",items:[variable],nextCursor:null}}
+    variables={{kind:"variables",query:"counter",bindingKey:"ws/s/p/3",cursor:null,items:[variable],nextCursor:null}}
     registers={null} onSearch={search} onNext={vi.fn()} onAdd={add}/>);
   await userEvent.type(screen.getByPlaceholderText("symbol or register prefix"),"counter");
   expect(search).toHaveBeenCalledWith("variables","counter");
@@ -43,7 +43,7 @@ it("CatalogPanel renders register descriptors",async()=>{
     resetValue:null,resetMask:null,fields:[],sampleable:true,requiresAccessAcknowledgement:false};
   const add=vi.fn();
   render(<CatalogPanel connected bindingEpoch={3n} variables={null}
-    registers={{kind:"registers",query:"TIM2",bindingKey:"ws/s/p/3",items:[register],nextCursor:null}}
+    registers={{kind:"registers",query:"TIM2",bindingKey:"ws/s/p/3",cursor:null,items:[register],nextCursor:null}}
     onSearch={vi.fn()} onNext={vi.fn()} onAdd={add}/>);
   await userEvent.click(screen.getByRole("tab",{name:"Registers"}));
   await userEvent.type(screen.getByPlaceholderText("symbol or register prefix"),"TIM2");

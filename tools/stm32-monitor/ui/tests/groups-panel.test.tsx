@@ -17,7 +17,7 @@ function props(overrides:Record<string,unknown>={}){
     onCreate:vi.fn(),
     onSave:vi.fn(),
     onDelete:vi.fn(),
-    onReadImport:async()=>({ok:false,code:"MONITOR_IMPORT_INVALID",message:"invalid"}),
+    onReadImport:async():Promise<{ok:true;data:unknown}|{ok:false;code:string;message:string}>=>({ok:false,code:"MONITOR_IMPORT_INVALID",message:"invalid"}),
     onImport:vi.fn(),
     onExport:vi.fn(),
     onRefresh:vi.fn(),

@@ -2,11 +2,12 @@ import {expect,it,vi} from "vitest";
 import {render,screen} from "@testing-library/preact";
 import userEvent from "@testing-library/user-event";
 import {HistoryPanel,flattenHistory,historyInput,inputNs,historyQueryKey} from "../src/components/HistoryPanel";
+import type {HistoryPage} from "../src/api/contract";
 
 const query={startNs:0n,endNs:3000000000n};
-const page={
+const page:HistoryPage={
   batches:[{binding:{workspaceId:"w",logicalProjectId:"p",sessionId:"s",probeId:"pr",targetDevice:"T",physicalTarget:"T",buildId:"b".repeat(64),elfSha256:"e".repeat(64),inputSnapshotSha256:"i".repeat(64),gitHead:"g".repeat(40),gitDirty:false,flashSessionId:"f",leaseId:"l",dwarfSha256:"d".repeat(64),svdSha256:null},
-    groupId:"g",groupRevision:1n,runId:"r",sequence:1n,startOrdinal:0n,batchValueCount:1n,scheduledUnixNs:0n,scheduledAtUtc:"2026-08-10T00:00:00Z",capturedUnixNs:0n,capturedAtUtc:"2026-08-10T00:00:00Z",latencyNs:1n,actualRateHz:1,subscriberDrops:0n,historyDrops:0n,deadlineDrops:0n,serviceDrops:0n,
+    groupId:"g",groupRevision:1n,runId:"r",sequence:1n,startOrdinal:0n,batchValueCount:1n,scheduledUnixNs:0n,scheduledAtUtc:"2026-08-10T00:00:00Z",capturedUnixNs:0n,capturedAtUtc:"2026-08-10T00:00:00Z",latencyNs:1n,actualRateHz:1,subscriberDrops:0n,historyDrops:0n,deadlineDrops:0n,
     values:[{watch:{kind:"variable",expression:"counter"},status:"OK",typedValue:{value:5},code:null,definition:null}]}],
   valueCount:1n,nextCursor:"cursor-2",serializedBytes:1n,
 };
@@ -89,13 +90,13 @@ it("renders flattened rows in a table",()=>{
 });
 
 it("renders register watch rows",()=>{
-  const registerPage={...page,batches:[{...page.batches[0]!,values:[{watch:{kind:"register" as const,registerPath:"TIM2_CNT"},status:"OK",typedValue:{value:7},code:null,definition:null}]}]};
+  const registerPage:HistoryPage={...page,batches:[{...page.batches[0]!,values:[{watch:{kind:"register" as const,registerPath:"TIM2_CNT"},status:"OK" as const,typedValue:{value:7},code:null,definition:null}]}]};
   render(<HistoryPanel query={query} page={registerPage} failure={null} onLoad={vi.fn()} onPage={vi.fn()}/>);
   expect(screen.getByText("TIM2_CNT")).toBeTruthy();
 });
 
 it("renders an error-status history row with its code",()=>{
-  const errorPage={...page,batches:[{...page.batches[0]!,values:[{watch:{kind:"variable" as const,expression:"counter"},status:"ERROR",typedValue:null,code:"SAMPLE_FAILED",definition:null}]}]};
+  const errorPage:HistoryPage={...page,batches:[{...page.batches[0]!,values:[{watch:{kind:"variable" as const,expression:"counter"},status:"ERROR" as const,typedValue:null,code:"SAMPLE_FAILED",definition:null}]}]};
   render(<HistoryPanel query={query} page={errorPage} failure={null} onLoad={vi.fn()} onPage={vi.fn()}/>);
   expect(screen.getByText("SAMPLE_FAILED")).toBeTruthy();
 });
