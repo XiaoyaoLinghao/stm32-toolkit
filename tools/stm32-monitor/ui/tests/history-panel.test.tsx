@@ -93,3 +93,9 @@ it("renders register watch rows",()=>{
   render(<HistoryPanel query={query} page={registerPage} failure={null} onLoad={vi.fn()} onPage={vi.fn()}/>);
   expect(screen.getByText("TIM2_CNT")).toBeTruthy();
 });
+
+it("renders an error-status history row with its code",()=>{
+  const errorPage={...page,batches:[{...page.batches[0]!,values:[{watch:{kind:"variable" as const,expression:"counter"},status:"ERROR",typedValue:null,code:"SAMPLE_FAILED",definition:null}]}]};
+  render(<HistoryPanel query={query} page={errorPage} failure={null} onLoad={vi.fn()} onPage={vi.fn()}/>);
+  expect(screen.getByText("SAMPLE_FAILED")).toBeTruthy();
+});
