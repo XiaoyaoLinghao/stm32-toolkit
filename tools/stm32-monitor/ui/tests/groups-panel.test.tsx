@@ -1,5 +1,5 @@
 import {expect,it,vi} from "vitest";
-import {render,screen} from "@testing-library/preact";
+import {fireEvent,render,screen} from "@testing-library/preact";
 import userEvent from "@testing-library/user-event";
 import {GroupPanel} from "../src/components/GroupPanel";
 import {watchGroup} from "./fixtures";
@@ -113,6 +113,14 @@ it("imports with a successful read and resets the file input",async()=>{
   const file=screen.getByTestId("group-import-file");
   await userEvent.upload(file,new File(['{}'],"groups.json",{type:"application/json"}));
   expect(importFn).toHaveBeenCalledWith({schemaVersion:1,groups:[]});
+});
+
+it("ignores an import change event without a file",()=>{
+  const importFn=vi.fn();
+  render(<GroupPanel {...props({onImport:importFn})}/>);
+  fireEvent.click(screen.getByRole("button",{name:"Import groups"}));
+  fireEvent.change(screen.getByTestId("group-import-file"),{target:{files:[]}});
+  expect(importFn).not.toHaveBeenCalled();
 });
 
 it("shows empty draft for a new group selection",()=>{
