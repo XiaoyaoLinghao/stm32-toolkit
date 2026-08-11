@@ -44,12 +44,25 @@ it("new group creates and saves",async()=>{
   expect(create).toHaveBeenCalled();
 });
 
-it("edits draft name and interval",async()=>{
+it("ignores a non-finite interval input",async()=>{
+  const change=vi.fn();
+  render(<GroupPanel {...props({onDraftChange:change})}/>);
+  const interval=screen.getByLabelText("Interval ms");
+  await userEvent.clear(interval);
+  await userEvent.type(interval,"abc");
+  expect(change).toHaveBeenCalled();
+});
+
+it("edits draft name, description and interval",async()=>{
   const change=vi.fn();
   render(<GroupPanel {...props({onDraftChange:change})}/>);
   const nameInput=screen.getByLabelText("Name");
   await userEvent.clear(nameInput);
   await userEvent.type(nameInput,"Renamed");
+  expect(change).toHaveBeenCalled();
+  const description=screen.getByLabelText("Description");
+  await userEvent.clear(description);
+  await userEvent.type(description,"a motor controller");
   expect(change).toHaveBeenCalled();
   const interval=screen.getByLabelText("Interval ms");
   await userEvent.clear(interval);
@@ -57,11 +70,11 @@ it("edits draft name and interval",async()=>{
   expect(change).toHaveBeenCalled();
 });
 
-it("removes a watch from the draft",async()=>{
+it("removes a register watch from the draft",async()=>{
   const remove=vi.fn();
-  render(<GroupPanel {...props({onRemove:remove})}/>);
+  render(<GroupPanel {...props({draft:{sourceGroupId:"group",expectedRevision:1n,name:"Group",description:"",intervalMs:250,items:[{kind:"register" as const,registerPath:"TIM2_CNT"}]},onRemove:remove})}/>);
   await userEvent.click(screen.getByRole("button",{name:"Remove"}));
-  expect(remove).toHaveBeenCalledWith("variable:counter");
+  expect(remove).toHaveBeenCalledWith("register:TIM2_CNT");
 });
 
 it("saves and deletes the selected group",async()=>{

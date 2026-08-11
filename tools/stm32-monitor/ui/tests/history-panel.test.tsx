@@ -28,8 +28,35 @@ it("historyInput and inputNs round-trip nanoseconds",()=>{
 it("loads edited bounds once",async()=>{
   const load=vi.fn();
   render(<HistoryPanel query={query} page={null} failure={null} onLoad={load} onPage={vi.fn()}/>);
+  const start=screen.getByLabelText("History start"),end=screen.getByLabelText("History end");
+  await userEvent.clear(start);
+  await userEvent.type(start,"2026-08-10T00:00:00.000");
+  await userEvent.clear(end);
+  await userEvent.type(end,"2026-08-10T00:00:01.000");
   await userEvent.click(screen.getByRole("button",{name:"Load history"}));
   expect(load).toHaveBeenCalledTimes(1);
+});
+
+it("does not load an inverted or invalid range",async()=>{
+  const load=vi.fn();
+  render(<HistoryPanel query={query} page={null} failure={null} onLoad={load} onPage={vi.fn()}/>);
+  const start=screen.getByLabelText("History start"),end=screen.getByLabelText("History end");
+  await userEvent.clear(start);
+  await userEvent.type(start,"not-a-date");
+  await userEvent.clear(end);
+  await userEvent.type(end,"also-invalid");
+  await userEvent.click(screen.getByRole("button",{name:"Load history"}));
+  expect(load).not.toHaveBeenCalled();
+});
+
+it("previous page uses the visited cursor stack",async()=>{
+  const pageFn=vi.fn();
+  const {rerender}=render(<HistoryPanel query={query} page={page} failure={null} onLoad={vi.fn()} onPage={pageFn}/>);
+  await userEvent.click(screen.getByRole("button",{name:"Next history page"}));
+  expect(pageFn).toHaveBeenCalledWith("cursor-2");
+  rerender(<HistoryPanel query={{...query,cursor:"cursor-2"}} page={{...page,nextCursor:null}} failure={null} onLoad={vi.fn()} onPage={pageFn}/>);
+  await userEvent.click(screen.getByRole("button",{name:"Previous history page"}));
+  expect(pageFn).toHaveBeenLastCalledWith(undefined);
 });
 
 it("pages next and previous with visited cursor stack",async()=>{
