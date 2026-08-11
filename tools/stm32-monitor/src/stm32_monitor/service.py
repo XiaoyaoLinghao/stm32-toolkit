@@ -23,6 +23,7 @@ from .protocol import (
     ProtocolResult,
     _json_text,
 )
+from .ui_assets import UiAssets
 _FORBIDDEN_KEYS = {
     "workspaceid",
     "sessionid",
@@ -66,6 +67,14 @@ class _ServiceFailure(Exception):
         self.code = code
         self.message = message
         self.status = status
+
+
+def _request_port(request: web.Request) -> int:
+    try:
+        port = int(request.host.rsplit(":", 1)[1])
+        return port
+    except (IndexError, ValueError):
+        return 80
 
 
 def _envelope(
@@ -190,6 +199,8 @@ class MonitorService:
         session_id: str,
         token_factory=None,
         send_delay_seconds: float = 0.0,
+        serve_ui: bool = False,
+        ui_assets_root: object | None = None,
     ) -> None:
         if not isinstance(workspace_id, str) or not workspace_id:
             raise ValueError("Monitor workspace identity is invalid")
@@ -202,6 +213,9 @@ class MonitorService:
         self._session_id = session_id
         self._token_factory = token_factory
         self._send_delay_seconds = float(send_delay_seconds)
+        self._serve_ui = serve_ui
+        self._ui_assets_root = ui_assets_root
+        self._ui_assets: UiAssets | None = None
         self._runner: web.AppRunner | None = None
         self._endpoint: MonitorEndpoint | None = None
         self._auth: MonitorAuth | None = None
@@ -292,6 +306,17 @@ class MonitorService:
         )
         application.router.add_get("/api/v1/live", self._live)
 
+        self._ui_assets: UiAssets | None = None
+        if self._ui_assets_root is not None:
+            self._ui_assets = UiAssets.load(self._ui_assets_root)
+        elif self._serve_ui:
+            self._ui_assets = UiAssets.load()
+        if self._ui_assets is not None:
+            application.router.add_get("/", self._static_index)
+            application.router.add_route("HEAD", "/", self._static_index)
+            application.router.add_get("/assets/{filename}", self._static_asset)
+            application.router.add_route("HEAD", "/assets/{filename}", self._static_asset)
+
         runner = web.AppRunner(application, access_log=None)
         self._runner = runner
         try:
@@ -375,6 +400,21 @@ class MonitorService:
         if not isinstance(error, (Exception, asyncio.CancelledError)):
             raise error
         raise RuntimeError("Monitor Service cleanup failed") from None
+
+    async def _static_index(self, request: web.Request) -> web.Response:
+        assets = self._ui_assets
+        if assets is None:
+            return web.Response(status=404, body=b"")
+        port = _request_port(request)
+        return assets.response("/", port, head=request.method == "HEAD")
+
+    async def _static_asset(self, request: web.Request) -> web.Response:
+        assets = self._ui_assets
+        if assets is None:
+            return web.Response(status=404, body=b"")
+        filename = request.match_info.get("filename", "")
+        port = _request_port(request)
+        return assets.response(f"/assets/{filename}", port, head=request.method == "HEAD")
 
     def _authorize(self, request: web.Request, *, bootstrap: bool = False) -> str:
         auth = self._auth

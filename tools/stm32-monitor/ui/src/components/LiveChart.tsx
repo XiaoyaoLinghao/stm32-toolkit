@@ -16,10 +16,16 @@ export function LiveChart({series,range,onZoom}:LiveChartProps):JSX.Element{
   const hostRef=useRef<HTMLDivElement>(null);
   const chartRef=useRef<echarts.ECharts|null>(null);
   useEffect(()=>{
-    if(hostRef.current===null)return;
-    const chart=echarts.init(hostRef.current);
+    const host=hostRef.current;
+    if(host===null)return;
+    let chart:echarts.ECharts|null=null;
+    try{
+      chart=echarts.init(host);
+    }catch{
+      chart=null;
+    }
     chartRef.current=chart;
-    return()=>{chart.dispose();chartRef.current=null;};
+    return()=>{chart?.dispose();chartRef.current=null;};
   },[]);
   useEffect(()=>{
     const chart=chartRef.current;

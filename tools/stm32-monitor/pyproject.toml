@@ -25,3 +25,6 @@ Homepage = "https://github.com/konbakuyomu/stm32-toolkit"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+stm32_monitor = ["ui_dist/index.html", "ui_dist/.vite/manifest.json", "ui_dist/assets/*"]

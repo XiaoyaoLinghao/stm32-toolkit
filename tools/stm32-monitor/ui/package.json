@@ -12,7 +12,7 @@
     "coverage:check": "node tests/check-coverage.mjs",
     "test:a11y": "vitest run tests/a11y.test.tsx",
     "build": "vite build",
-    "verify:dist": "node tests/check-coverage.mjs --dist",
+    "verify:dist": "node scripts/verify-dist.mjs",
     "test:e2e:windows": "playwright test",
     "test:e2e:performance": "playwright test e2e/performance.spec.ts"
   },

@@ -22,6 +22,7 @@ def _parser() -> argparse.ArgumentParser:
     serve.add_argument("--project", required=True)
     serve.add_argument("--data-root", required=True)
     serve.add_argument("--session-id", required=True)
+    serve.add_argument("--serve-ui", action="store_true")
     serve.add_argument("--json", action="store_true", required=True)
     return parser
 
@@ -64,7 +65,12 @@ def main(
             Path(arguments.data_root).expanduser().absolute(),
             arguments.session_id,
         )
-        return asyncio.run(_serve(config, _runtime_factory(), _stdout))
+        serve_ui = bool(getattr(arguments, "serve_ui", False))
+        try:
+            runtime: object = _runtime_factory(serve_ui=serve_ui)
+        except TypeError:
+            runtime = _runtime_factory()
+        return asyncio.run(_serve(config, runtime, _stdout))
     except KeyboardInterrupt:
         return 130
     except MonitorRuntimeError as error:

@@ -385,6 +385,7 @@ class MonitorRuntime:
         probe_list_factory: Callable[..., object] | None = None,
         service_factory: Callable[..., object] = MonitorService,
         heartbeat_interval_seconds: float = 15.0,
+        serve_ui: bool = False,
     ) -> None:
         if group_store_factory is None:
             from .groups import GroupStore
@@ -418,6 +419,7 @@ class MonitorRuntime:
         self._probe_list_factory = probe_list_factory
         self._exporter_factory = exporter_factory
         self._service_factory = service_factory
+        self._serve_ui = serve_ui
         if (
             type(heartbeat_interval_seconds) not in (int, float)
             or not 0.01 <= float(heartbeat_interval_seconds) <= 300
@@ -491,6 +493,7 @@ class MonitorRuntime:
                 self,
                 workspace_id=paths.workspace_id,
                 session_id=paths.session_id,
+                serve_ui=self._serve_ui,
             )
             endpoint = await service.start()
             token = getattr(endpoint, "token", None)

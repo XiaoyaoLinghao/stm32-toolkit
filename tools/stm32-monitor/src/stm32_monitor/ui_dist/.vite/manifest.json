@@ -1,0 +1,38 @@
+{
+  "_contract-BmpNklp8.js": {
+    "file": "assets/contract-BmpNklp8.js",
+    "name": "contract"
+  },
+  "index.html": {
+    "file": "assets/index-DOFhCd1J.js",
+    "name": "index",
+    "src": "index.html",
+    "isEntry": true,
+    "imports": [
+      "_contract-BmpNklp8.js"
+    ],
+    "dynamicImports": [
+      "node_modules/preact/dist/preact.module.js",
+      "src/app.tsx"
+    ],
+    "css": [
+      "assets/index-ytfcZfPW.css"
+    ]
+  },
+  "node_modules/preact/dist/preact.module.js": {
+    "file": "assets/preact.module-ZOr5Neeu.js",
+    "name": "preact.module",
+    "src": "node_modules/preact/dist/preact.module.js",
+    "isDynamicEntry": true
+  },
+  "src/app.tsx": {
+    "file": "assets/app-DnUyhPQC.js",
+    "name": "app",
+    "src": "src/app.tsx",
+    "isDynamicEntry": true,
+    "imports": [
+      "node_modules/preact/dist/preact.module.js",
+      "_contract-BmpNklp8.js"
+    ]
+  }
+}
