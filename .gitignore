@@ -27,5 +27,12 @@ Thumbs.db
 htmlcov/
 coverage.xml
 
+# STM32TK-0502 monitor UI toolchain outputs
+/tools/stm32-monitor/ui/node_modules/
+/tools/stm32-monitor/ui/coverage/
+/tools/stm32-monitor/ui/test-results/
+/tools/stm32-monitor/ui/playwright-report/
+/tools/stm32-monitor/ui/.vite/
+
 # STM32TK-0305: mandated Python package under the pre-existing global build/ rule
 !tools/stm32-toolkit/src/stm32_toolkit/build/

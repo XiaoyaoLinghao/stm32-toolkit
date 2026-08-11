@@ -1,0 +1,1 @@
+{"extends":"./tsconfig.json","include":["src","e2e","playwright.config.ts"],"exclude":["tests"]}
