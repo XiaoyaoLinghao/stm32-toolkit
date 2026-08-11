@@ -77,6 +77,9 @@ class MonitorAuth:
         authorization: str | None,
         cookie: str | None,
         bootstrap: bool,
+        method: str | None = None,
+        fetch_site: str | None = None,
+        websocket: bool = False,
     ) -> str:
         if peer != self.host:
             raise _error(
@@ -92,14 +95,21 @@ class MonitorAuth:
             raise _error(
                 "MONITOR_ORIGIN_REJECTED", "Monitor Service Origin is invalid", 403
             )
+        if fetch_site not in (None, "same-origin"):
+            raise _error(
+                "MONITOR_ORIGIN_REJECTED", "Monitor Service Origin is invalid", 403
+            )
 
         supplied = authorization or ""
         prefix = "Bearer "
         bearer = supplied[len(prefix) :] if supplied.startswith(prefix) else ""
         bearer_ok = len(bearer) == 64 and secrets.compare_digest(bearer, self.token)
+        proven_same_origin = origin == self.origin or (
+            fetch_site == "same-origin" and method in ("GET", "HEAD")
+        )
         cookie_ok = (
             not bootstrap
-            and origin == self.origin
+            and proven_same_origin
             and isinstance(cookie, str)
             and len(cookie) == 64
             and secrets.compare_digest(cookie, self.token)

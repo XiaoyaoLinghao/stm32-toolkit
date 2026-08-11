@@ -77,6 +77,12 @@ def _request_port(request: web.Request) -> int:
         return 80
 
 
+def _is_websocket(request: web.Request) -> bool:
+    upgrade = request.headers.get("Upgrade", "")
+    connection = request.headers.get("Connection", "")
+    return upgrade.lower() == "websocket" and "upgrade" in connection.lower()
+
+
 def _envelope(
     operation: str,
     *,
@@ -313,9 +319,7 @@ class MonitorService:
             self._ui_assets = UiAssets.load()
         if self._ui_assets is not None:
             application.router.add_get("/", self._static_index)
-            application.router.add_route("HEAD", "/", self._static_index)
             application.router.add_get("/assets/{filename}", self._static_asset)
-            application.router.add_route("HEAD", "/assets/{filename}", self._static_asset)
 
         runner = web.AppRunner(application, access_log=None)
         self._runner = runner
@@ -431,6 +435,9 @@ class MonitorService:
                 authorization=request.headers.get("Authorization"),
                 cookie=request.cookies.get(MONITOR_COOKIE_NAME),
                 bootstrap=bootstrap,
+                method=request.method,
+                fetch_site=request.headers.get("Sec-Fetch-Site"),
+                websocket=_is_websocket(request),
             )
         except MonitorAuthError as error:
             raise _ServiceFailure(error.code, error.message, error.status) from None

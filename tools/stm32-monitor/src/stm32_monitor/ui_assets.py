@@ -22,7 +22,7 @@ from aiohttp import web
 _INDEX_ROUTE = "/"
 _ASSETS_PREFIX = "/assets/"
 _MANIFEST = ".vite/manifest.json"
-_HASH_RE = re.compile(r"^assets/[A-Za-z0-9_-]{8,}\.([a-z0-9]+)$")
+_HASH_RE = re.compile(r"^assets/[A-Za-z0-9_.-]+-[A-Za-z0-9_]{8,}\.([a-z0-9]+)$")
 
 _MIME = {
     ".js": "text/javascript; charset=utf-8",
