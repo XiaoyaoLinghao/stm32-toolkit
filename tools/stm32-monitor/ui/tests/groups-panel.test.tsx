@@ -1,0 +1,101 @@
+import {expect,it,vi} from "vitest";
+import {render,screen} from "@testing-library/preact";
+import userEvent from "@testing-library/user-event";
+import {GroupPanel} from "../src/components/GroupPanel";
+import {watchGroup} from "./fixtures";
+
+const group=watchGroup();
+function props(overrides:Record<string,unknown>={}){
+  return{
+    groups:[group],
+    selectedGroupId:"group",
+    draft:{sourceGroupId:"group",expectedRevision:1n,name:"Group",description:"",intervalMs:250,items:[{kind:"variable" as const,expression:"counter"}]},
+    failure:null,
+    onSelect:vi.fn(),
+    onDraftChange:vi.fn(),
+    onRemove:vi.fn(),
+    onCreate:vi.fn(),
+    onSave:vi.fn(),
+    onDelete:vi.fn(),
+    onReadImport:async()=>({ok:false,code:"MONITOR_IMPORT_INVALID",message:"invalid"}),
+    onImport:vi.fn(),
+    onExport:vi.fn(),
+    onRefresh:vi.fn(),
+    ...overrides,
+  };
+}
+
+it("lists groups and selects one",async()=>{
+  const select=vi.fn();
+  render(<GroupPanel {...props({onSelect:select})}/>);
+  await userEvent.click(screen.getByRole("button",{name:"Group (1)"}));
+  expect(select).toHaveBeenCalledWith("group");
+});
+
+it("new group creates and saves",async()=>{
+  const create=vi.fn(),save=vi.fn();
+  render(<GroupPanel {...props({
+    selectedGroupId:null,
+    draft:{sourceGroupId:null,expectedRevision:null,name:"",description:"",intervalMs:250,items:[]},
+    onCreate:create,onSave:save,
+  })}/>);
+  expect(screen.getByRole("button",{name:"Create group"})).toBeTruthy();
+  await userEvent.click(screen.getByRole("button",{name:"New group"}));
+  expect(create).toHaveBeenCalled();
+});
+
+it("edits draft name and interval",async()=>{
+  const change=vi.fn();
+  render(<GroupPanel {...props({onDraftChange:change})}/>);
+  const nameInput=screen.getByLabelText("Name");
+  await userEvent.clear(nameInput);
+  await userEvent.type(nameInput,"Renamed");
+  expect(change).toHaveBeenCalled();
+  const interval=screen.getByLabelText("Interval ms");
+  await userEvent.clear(interval);
+  await userEvent.type(interval,"500");
+  expect(change).toHaveBeenCalled();
+});
+
+it("removes a watch from the draft",async()=>{
+  const remove=vi.fn();
+  render(<GroupPanel {...props({onRemove:remove})}/>);
+  await userEvent.click(screen.getByRole("button",{name:"Remove"}));
+  expect(remove).toHaveBeenCalledWith("variable:counter");
+});
+
+it("saves and deletes the selected group",async()=>{
+  const save=vi.fn(),del=vi.fn();
+  render(<GroupPanel {...props({onSave:save,onDelete:del})}/>);
+  await userEvent.click(screen.getByRole("button",{name:"Save group"}));
+  expect(save).toHaveBeenCalled();
+  await userEvent.click(screen.getByRole("button",{name:"Delete"}));
+  expect(del).toHaveBeenCalledWith("group");
+});
+
+it("renders failure alert",()=>{
+  render(<GroupPanel {...props({failure:{ok:false,code:"GROUPS_FAILED",message:"cannot save"}})}/>);
+  expect(screen.getByRole("alert")).toHaveTextContent("GROUPS_FAILED");
+});
+
+it("imports a group document and exports groups JSON",async()=>{
+  const importFn=vi.fn();
+  const createObjectURL=vi.spyOn(URL,"createObjectURL").mockReturnValue("blob:url");
+  const click=vi.fn();
+  Object.defineProperty(HTMLAnchorElement.prototype,"click",{value:click,configurable:true});
+  render(<GroupPanel {...props({onImport:importFn})}/>);
+  await userEvent.click(screen.getByRole("button",{name:"Import groups"}));
+  const file=screen.getByTestId("group-import-file");
+  await userEvent.upload(file,new File(['{"schemaVersion":1,"groups":[]}'],"groups.json",{type:"application/json"}));
+  expect(importFn).toHaveBeenCalled();
+  await userEvent.click(screen.getByRole("button",{name:"Export groups JSON"}));
+  expect(click).toHaveBeenCalled();
+  createObjectURL.mockRestore();
+});
+
+it("shows empty draft for a new group selection",()=>{
+  render(<GroupPanel {...props({groups:[],selectedGroupId:null,
+    draft:{sourceGroupId:null,expectedRevision:null,name:"",description:"",intervalMs:250,items:[]}})}/>);
+  expect(screen.queryByRole("button",{name:"Group (1)"})).toBeNull();
+  expect(screen.getByRole("button",{name:"New group"})).toBeTruthy();
+});
