@@ -106,6 +106,15 @@ it("imports a group document and exports groups JSON",async()=>{
   createObjectURL.mockRestore();
 });
 
+it("imports with a successful read and resets the file input",async()=>{
+  const importFn=vi.fn();
+  render(<GroupPanel {...props({onReadImport:async()=>({ok:true,data:{schemaVersion:1,groups:[]}}),onImport:importFn})}/>);
+  await userEvent.click(screen.getByRole("button",{name:"Import groups"}));
+  const file=screen.getByTestId("group-import-file");
+  await userEvent.upload(file,new File(['{}'],"groups.json",{type:"application/json"}));
+  expect(importFn).toHaveBeenCalledWith({schemaVersion:1,groups:[]});
+});
+
 it("shows empty draft for a new group selection",()=>{
   render(<GroupPanel {...props({groups:[],selectedGroupId:null,
     draft:{sourceGroupId:null,expectedRevision:null,name:"",description:"",intervalMs:250,items:[]}})}/>);

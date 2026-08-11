@@ -67,6 +67,16 @@ it("pages next and previous with visited cursor stack",async()=>{
   expect(pageFn).toHaveBeenCalledWith("cursor-2");
 });
 
+it("does not navigate when next is null or visited is empty",async()=>{
+  const pageFn=vi.fn();
+  const {rerender}=render(<HistoryPanel query={{...query,cursor:"cursor-2"}} page={{...page,nextCursor:null}} failure={null} onLoad={vi.fn()} onPage={pageFn}/>);
+  await userEvent.click(screen.getByRole("button",{name:"Next history page"}));
+  expect(pageFn).not.toHaveBeenCalled();
+  rerender(<HistoryPanel query={{...query,cursor:"cursor-2"}} page={page} failure={null} onLoad={vi.fn()} onPage={pageFn}/>);
+  await userEvent.click(screen.getByRole("button",{name:"Previous history page"}));
+  expect(pageFn).not.toHaveBeenCalled();
+});
+
 it("renders failure alert and keeps inputs",()=>{
   render(<HistoryPanel query={query} page={page} failure={{ok:false,code:"HISTORY_FAILED",message:"query failed"}} onLoad={vi.fn()} onPage={vi.fn()}/>);
   expect(screen.getByRole("alert")).toHaveTextContent("HISTORY_FAILED");
@@ -76,4 +86,10 @@ it("renders failure alert and keeps inputs",()=>{
 it("renders flattened rows in a table",()=>{
   render(<HistoryPanel query={query} page={page} failure={null} onLoad={vi.fn()} onPage={vi.fn()}/>);
   expect(screen.getByText("counter")).toBeTruthy();
+});
+
+it("renders register watch rows",()=>{
+  const registerPage={...page,batches:[{...page.batches[0]!,values:[{watch:{kind:"register" as const,registerPath:"TIM2_CNT"},status:"OK",typedValue:{value:7},code:null,definition:null}]}]};
+  render(<HistoryPanel query={query} page={registerPage} failure={null} onLoad={vi.fn()} onPage={vi.fn()}/>);
+  expect(screen.getByText("TIM2_CNT")).toBeTruthy();
 });
