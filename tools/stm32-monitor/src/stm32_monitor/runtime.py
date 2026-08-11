@@ -507,7 +507,7 @@ class MonitorRuntime:
                 or not 1 <= port <= 65_535
                 or getattr(endpoint, "workspace_id", None) != paths.workspace_id
                 or getattr(endpoint, "session_id", None) != paths.session_id
-                or getattr(endpoint, "monitor_version", None) != "0.4.0"
+                or getattr(endpoint, "monitor_version", None) != "0.5.0"
             ):
                 raise ValueError("invalid endpoint")
             record = paths.session_root / "monitor-runtime.json"
@@ -516,7 +516,7 @@ class MonitorRuntime:
                 {
                     "protocol": MONITOR_PROTOCOL_VERSION,
                     "toolkitVersion": TOOLKIT_VERSION,
-                    "monitorVersion": "0.4.0",
+                    "monitorVersion": "0.5.0",
                     "host": "127.0.0.1",
                     "port": port,
                     "pid": os.getpid(),
@@ -607,7 +607,7 @@ class MonitorRuntime:
             {
                 "protocol": MONITOR_PROTOCOL_VERSION,
                 "toolkitVersion": TOOLKIT_VERSION,
-                "monitorVersion": "0.4.0",
+                "monitorVersion": "0.5.0",
                 "stateRevision": self._state_revision,
             },
         )

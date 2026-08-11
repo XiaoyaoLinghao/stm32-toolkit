@@ -102,7 +102,7 @@ import sys
 sys.path.insert(0, sys.argv[1])
 import stm32_monitor
 
-assert stm32_monitor.__version__ == "0.4.0"
+assert stm32_monitor.__version__ == "0.5.0"
 assert not any(
     name == "pyocd" or name.startswith(("pyocd.", "cmsis_svd.", "yaml."))
     for name in sys.modules
@@ -125,7 +125,7 @@ def test_package_dependency_contract_uses_only_toolkit_and_aiohttp() -> None:
     metadata_path = PACKAGE_ROOT / "pyproject.toml"
     assert metadata_path.stat().st_size <= 16 * 1024
     text = metadata_path.read_text(encoding="utf-8")
-    assert '[project]\nname = "stm32-monitor"\nversion = "0.4.0"' in text
+    assert '[project]\nname = "stm32-monitor"\nversion = "0.5.0"' in text
     prefix, marker, remainder = text.partition("dependencies = [")
     assert marker and prefix.count("dependencies") == 0
     dependency_text, closing, suffix = remainder.partition("]")
@@ -136,7 +136,7 @@ def test_package_dependency_contract_uses_only_toolkit_and_aiohttp() -> None:
         if line.strip()
     ]
     assert dependencies == [
-        "stm32-toolkit==0.4.0",
+        "stm32-toolkit==0.5.0",
         "aiohttp>=3.9,<4",
     ]
     lowered = text.casefold()

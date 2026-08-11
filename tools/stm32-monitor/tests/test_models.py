@@ -147,8 +147,8 @@ def test_live_event_exact_payloads_roundtrip_and_snapshot_nested_mutability() ->
     payloads = {
         "hello": {
             "protocol": "stm32-toolkit-monitor/1",
-            "toolkitVersion": "0.4.0",
-            "monitorVersion": "0.4.0",
+            "toolkitVersion": "0.5.0",
+            "monitorVersion": "0.5.0",
             "stateRevision": 2,
         },
         "state": {"stateRevision": 2, "gap": False, "status": _live_status()},
@@ -174,8 +174,8 @@ def test_live_event_rejects_inexact_payloads_for_every_discriminator() -> None:
     valid = {
         "hello": {
             "protocol": "stm32-toolkit-monitor/1",
-            "toolkitVersion": "0.4.0",
-            "monitorVersion": "0.4.0",
+            "toolkitVersion": "0.5.0",
+            "monitorVersion": "0.5.0",
             "stateRevision": 0,
         },
         "state": {"stateRevision": 0, "gap": False, "status": _live_status()},
@@ -487,8 +487,8 @@ def test_protocol_results_are_monitor_versioned_and_details_are_snapshotted() ->
     assert bad.protocol == MONITOR_PROTOCOL_VERSION == "stm32-toolkit-monitor/1"
     assert bad.to_dict() == {
         "protocol": "stm32-toolkit-monitor/1",
-        "toolkitVersion": "0.4.0",
-        "monitorVersion": "0.4.0",
+        "toolkitVersion": "0.5.0",
+        "monitorVersion": "0.5.0",
         "ok": False,
         "operation": "groups.create",
         "code": "MONITOR_REQUEST_INVALID",

@@ -23,7 +23,7 @@ from .models import (
 
 
 MONITOR_PROTOCOL_VERSION = "stm32-toolkit-monitor/1"
-MONITOR_VERSION = "0.4.0"
+MONITOR_VERSION = "0.5.0"
 MAX_PROTOCOL_BYTES = 1024 * 1024
 T = TypeVar("T")
 _OPERATION = re.compile(r"[a-z][a-z0-9]*(?:\.[a-z][a-z0-9]*)*\Z")

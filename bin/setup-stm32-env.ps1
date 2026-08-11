@@ -9,7 +9,7 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-$RuntimeVersion = "0.4.0"
+$RuntimeVersion = "0.5.0"
 $LegacyRuntimeVersion = "0.3.0"
 $ProcessOutputLimit = 65536
 $ProbeValidationScript = @'
