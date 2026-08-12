@@ -379,6 +379,10 @@ try {
     $env:PYTHONPATH = $sourcePath
 
     # --- Monitor inventories, partitions, and coverage ------------------------
+    # The accepted 0501 performance acceptance runs without coverage
+    # instrumentation (its ACCEPTANCE_COMMAND is a plain pytest invocation).
+    # Coverage adds ~2-3x overhead that breaks the timing thresholds, so the
+    # performance tests run in their own no-coverage gate on CPython 3.12.
     $special = @(
         'tools/stm32-monitor/tests/test_auth.py',
         'tools/stm32-monitor/tests/test_service.py',
@@ -387,22 +391,32 @@ try {
         'tools/stm32-monitor/tests/test_package_boundary.py',
         'tools/stm32-monitor/tests/test_performance.py'
     )
+    $specialCore = @(
+        'tools/stm32-monitor/tests/test_auth.py',
+        'tools/stm32-monitor/tests/test_service.py',
+        'tools/stm32-monitor/tests/test_ui_assets.py',
+        'tools/stm32-monitor/tests/test_ui_dist.py',
+        'tools/stm32-monitor/tests/test_package_boundary.py'
+    )
+    $perfOnly = @('tools/stm32-monitor/tests/test_performance.py')
     $ignore = @($special | ForEach-Object { '--ignore=' + $_ })
     $monitorAll310 = Get-0502NodeIds 'collect-monitor-310' $testPython310 @('tools/stm32-monitor/tests') @()
     $monitorAll312 = Get-0502NodeIds 'collect-monitor-312' $testPython312 @('tools/stm32-monitor/tests') @()
     if (@(Compare-Object $monitorAll310 $monitorAll312).Count -ne 0) { throw 'Monitor version inventories differ' }
     $monitorMain = Get-0502NodeIds 'collect-monitor-main-312' $testPython312 @('tools/stm32-monitor/tests') $ignore
-    $monitorSpecial = Get-0502NodeIds 'collect-monitor-special-312' $testPython312 $special @()
-    Assert-0502ExactPartition 'Monitor 3.12' $monitorAll312 @($monitorMain + $monitorSpecial)
+    $monitorSpecial = Get-0502NodeIds 'collect-monitor-special-312' $testPython312 $specialCore @()
+    $monitorPerf = Get-0502NodeIds 'collect-monitor-perf-312' $testPython312 $perfOnly @()
+    Assert-0502ExactPartition 'Monitor 3.12' $monitorAll312 @($monitorMain + $monitorSpecial + $monitorPerf)
 
     # CPython 3.10 runs the complete correctness suite but excludes
     # test_performance.py: the accepted 0501 performance thresholds were
     # calibrated on CPython 3.12 (see the test's ACCEPTANCE_COMMAND). The 3.12
-    # partitions below carry the original performance gate.
+    # gates below carry the original performance gate, uninstrumented.
     Invoke-0502Gate 'python310-monitor-complete' $RepoRoot $testPython310 @('-m', 'pytest', 'tools/stm32-monitor/tests', '--ignore=tools/stm32-monitor/tests/test_performance.py', '-q', '-p', 'no:cacheprovider', '--basetemp', (Join-Path $EvidenceRoot 'bt-monitor-310'))
     $env:COVERAGE_FILE = Join-Path $EvidenceRoot '.coverage-monitor-312'
     Invoke-0502Gate 'python312-monitor-main' $RepoRoot $testPython312 (@('-m', 'pytest', 'tools/stm32-monitor/tests') + $ignore + @('-q', '-p', 'no:cacheprovider', '--cov=stm32_monitor', '--cov-branch', '--cov-report=', '--basetemp', (Join-Path $EvidenceRoot 'bt-monitor-main-312')))
-    Invoke-0502Gate 'python312-monitor-special' $RepoRoot $testPython312 (@('-m', 'pytest') + $special + @('-q', '-s', '-p', 'no:cacheprovider', '--cov=stm32_monitor', '--cov-branch', '--cov-append', '--cov-report=', '--basetemp', (Join-Path $EvidenceRoot 'bt-monitor-special-312')))
+    Invoke-0502Gate 'python312-monitor-special' $RepoRoot $testPython312 (@('-m', 'pytest') + $specialCore + @('-q', '-s', '-p', 'no:cacheprovider', '--cov=stm32_monitor', '--cov-branch', '--cov-append', '--cov-report=', '--basetemp', (Join-Path $EvidenceRoot 'bt-monitor-special-312')))
+    Invoke-0502Gate 'python312-monitor-perf' $RepoRoot $testPython312 (@('-m', 'pytest') + $perfOnly + @('-q', '-s', '-p', 'no:cacheprovider', '--basetemp', (Join-Path $EvidenceRoot 'bt-monitor-perf-312')))
 
     # --- Toolkit sharded coverage ---------------------------------------------
     $toolkitFiles = @(Get-ChildItem -LiteralPath (Join-Path $RepoRoot 'tools\stm32-toolkit\tests') -Filter 'test_*.py' -File | ForEach-Object { $_.FullName.Substring($RepoRoot.Length + 1).Replace('\', '/') } | Sort-Object)

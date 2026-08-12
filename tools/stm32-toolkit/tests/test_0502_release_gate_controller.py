@@ -889,6 +889,7 @@ EXPECTED_GATES = [
     "python310-monitor-complete",
     "python312-monitor-main",
     "python312-monitor-special",
+    "python312-monitor-perf",
     "python312-toolkit-shard-1",
     "python312-toolkit-shard-2",
     "python312-toolkit-shard-3",
