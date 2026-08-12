@@ -238,16 +238,17 @@ function Get-0502NodeIds {
     # --collect-only -q with addopts cleared emits one "path::nodeid" line per
     # test for every package: the toolkit pyproject forces -q (which double -q
     # turns into per-file counts) and the monitor defaults to a structured tree.
+    # Sort is case-sensitive because nodeids are case-sensitive logical ids.
     $result = Invoke-0502Capture $Name $RepoRoot $Python (@('-m', 'pytest') + $Paths + @('--collect-only', '-q', '-o', 'addopts=', '-p', 'no:cacheprovider') + $Extra)
     $lines = $result.Lines
-    return @($lines | ForEach-Object { [string]$_ } | Where-Object { $_ -match '^[^=]+::' } | Sort-Object)
+    return @($lines | ForEach-Object { [string]$_ } | Where-Object { $_ -match '^[^=]+::' } | Sort-Object -CaseSensitive)
 }
 
 function Assert-0502ExactPartition {
     param([string]$Label, [string[]]$All, [string[]]$Assigned)
     if ($All.Count -eq 0) { throw "$Label collection is empty" }
-    if (@($Assigned | Sort-Object -Unique).Count -ne $Assigned.Count) { throw "$Label duplicate nodeid" }
-    if (@(Compare-Object ($All | Sort-Object) ($Assigned | Sort-Object)).Count -ne 0) { throw "$Label omitted or added nodeid" }
+    if (@($Assigned | Sort-Object -Unique -CaseSensitive).Count -ne $Assigned.Count) { throw "$Label duplicate nodeid" }
+    if (@(Compare-Object ($All | Sort-Object -CaseSensitive) ($Assigned | Sort-Object -CaseSensitive) -CaseSensitive).Count -ne 0) { throw "$Label omitted or added nodeid" }
 }
 
 # ---------------------------------------------------------------------------
