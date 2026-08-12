@@ -235,9 +235,10 @@ function Invoke-0502NpmPhase {
 # ---------------------------------------------------------------------------
 function Get-0502NodeIds {
     param([string]$Name, [string]$Python, [string[]]$Paths, [string[]]$Extra)
-    # Without -q, pytest --collect-only prints one "path::nodeid" line per test,
-    # which is what the nodeid filter expects (with -q it prints per-file counts).
-    $result = Invoke-0502Capture $Name $RepoRoot $Python (@('-m', 'pytest') + $Paths + @('--collect-only', '-p', 'no:cacheprovider') + $Extra)
+    # --collect-only -q with addopts cleared emits one "path::nodeid" line per
+    # test for every package: the toolkit pyproject forces -q (which double -q
+    # turns into per-file counts) and the monitor defaults to a structured tree.
+    $result = Invoke-0502Capture $Name $RepoRoot $Python (@('-m', 'pytest') + $Paths + @('--collect-only', '-q', '-o', 'addopts=', '-p', 'no:cacheprovider') + $Extra)
     $lines = $result.Lines
     return @($lines | ForEach-Object { [string]$_ } | Where-Object { $_ -match '^[^=]+::' } | Sort-Object)
 }
