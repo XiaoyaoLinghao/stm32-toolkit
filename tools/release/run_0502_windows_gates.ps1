@@ -367,6 +367,11 @@ try {
         Invoke-0502Gate ('venv-create-' + $minor) $EvidenceRoot $base @('-m', 'venv', $venv)
         $testPython = (Resolve-Path -LiteralPath (Join-Path $venv 'Scripts\python.exe')).Path
         Invoke-0502Gate ('venv-install-' + $minor) $EvidenceRoot $testPython (@('-m', 'pip', 'install', '--no-index', '--find-links', $supportWheelhouse) + $requirements)
+        # The package_boundary tests spawn isolated (-I) python that cannot see
+        # PYTHONPATH, so the project's own stm32_toolkit package must be present
+        # in the venv site-packages. Build it from source, offline, without
+        # dependency resolution (all deps were installed by the requirements).
+        Invoke-0502Gate ('venv-install-toolkit-' + $minor) $EvidenceRoot $testPython @('-m', 'pip', 'install', '--no-index', '--find-links', $supportWheelhouse, '--no-deps', (Join-Path $RepoRoot 'tools\stm32-toolkit'))
         $testPythons[$minor] = $testPython
     }
     $testPython310 = [string]$testPythons['310']
