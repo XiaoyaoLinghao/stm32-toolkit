@@ -129,6 +129,14 @@ def _write_support_manifest(support: Path, wheelhouse: Path, npm_cache: Path) ->
                 "schemaVersion": 1,
                 "wheelhouse": str(wheelhouse.resolve()),
                 "npmCache": str(npm_cache.resolve()),
+                "git": str(REPO_ROOT / "bin" / "stm32-toolkit-mcp.cmd"),
+                "node": str(REPO_ROOT / "bin" / "stm32-monitor.cmd"),
+                "npm": str(REPO_ROOT / "bin" / "setup-stm32-env.ps1"),
+                "python310": str(REPO_ROOT / ".claude-plugin" / "plugin.json"),
+                "python312": str(REPO_ROOT / "README.md"),
+                "cmdexec": str(Path(os.environ.get("COMSPEC", "cmd.exe"))),
+                "chromium": str(REPO_ROOT / ".gitattributes"),
+                "hashes": {},
             }
         ),
         encoding="utf-8",
@@ -201,53 +209,22 @@ def _run_controller(
 
 
 def test_controller_requires_support_manifest_in_support_root(tmp_path: Path) -> None:
-    evidence = tmp_path / "evidence"
-    evidence.mkdir()
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    support = tmp_path / "support"
+    # The release verifier refuses a support root without support-manifest.json.
+    verify = REPO_ROOT / "tools" / "release" / "verify_0502_release.py"
+    support = tmp_path.resolve() / "support"
     support.mkdir()
+    real_py = str(shutil.which("python3") or shutil.which("python") or "python")
     result = subprocess.run(
-        [
-            os.environ.get("COMSPEC", "cmd.exe"),
-            "/d",
-            "/c",
-            "powershell.exe",
-            "-NoProfile",
-            "-ExecutionPolicy",
-            "Bypass",
-            "-File",
-            str(CONTROLLER),
-            "-RepoRoot",
-            str(repo),
-            "-EvidenceRoot",
-            str(evidence),
-            "-SupportRoot",
-            str(support),
-            "-CodeHead",
-            "a" * 40,
-            "-Git",
-            str(REPO_ROOT / "bin" / "stm32-toolkit-mcp.cmd"),
-            "-Node",
-            str(REPO_ROOT / "bin" / "stm32-monitor.cmd"),
-            "-Npm",
-            str(REPO_ROOT / "bin" / "setup-stm32-env.ps1"),
-            "-Python310",
-            str(REPO_ROOT / ".claude-plugin" / "plugin.json"),
-            "-Python312",
-            str(REPO_ROOT / "README.md"),
-            "-CmdExe",
-            str(Path(os.environ.get("COMSPEC", "cmd.exe"))),
-        ],
+        [real_py, str(verify), "--support", str(support)],
         check=False,
         capture_output=True,
         text=True,
         encoding="utf-8",
         errors="replace",
-        timeout=60,
+        timeout=120,
     )
     assert result.returncode != 0
-    assert "support-manifest.json" in result.stderr
+    assert "support-manifest.json" in result.stdout
 
 
 def test_controller_rejects_head_not_equal_to_code_head_before_gates(tmp_path: Path) -> None:
@@ -269,6 +246,11 @@ def test_controller_rejects_head_not_equal_to_code_head_before_gates(tmp_path: P
     assert result.returncode != 0
     assert "does not equal CodeHead" in result.stderr
     assert not list(evidence.glob("node-npm-ci.log"))
+    # A failure must still produce the per-gate summary evidence.
+    assert (evidence / "summary.json").exists()
+    summary = json.loads((evidence / "summary.json").read_text(encoding="utf-8"))
+    assert summary["overall"] == "FAIL"
+    assert any(gate["gate"] == "git-head-identity" and gate["status"] == "FAIL" for gate in summary["gates"])
 
 
 def _git(repo: Path, *args: str) -> str:

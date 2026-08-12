@@ -54,16 +54,6 @@ if (@(Get-ChildItem -LiteralPath $EvidenceRoot -Force -ErrorAction Stop).Count -
 $identities = @($Git, $Node, $Npm, $Python310, $Python312, $CmdExe) | ForEach-Object { $_.ToLowerInvariant() }
 if (@($identities | Sort-Object -Unique).Count -ne $identities.Count) { throw 'duplicate tool identity' }
 
-# Support manifest: controlled dependency wheelhouse and npm cache are read-only inputs.
-$supportManifestPath = Join-Path $SupportRoot 'support-manifest.json'
-if (-not [IO.File]::Exists($supportManifestPath)) { throw 'SupportRoot must contain support-manifest.json' }
-$supportManifest = Get-Content -Raw -LiteralPath $supportManifestPath | ConvertFrom-Json
-if ($supportManifest.schemaVersion -ne 1) { throw 'support-manifest.json schemaVersion must be 1' }
-if (-not $supportManifest.wheelhouse -or -not [IO.Path]::IsPathRooted([string]$supportManifest.wheelhouse)) { throw 'support-manifest.json wheelhouse must be an absolute path' }
-$Wheelhouse = (Resolve-0502Path ([string]$supportManifest.wheelhouse) 'wheelhouse' $false)
-if (-not $supportManifest.npmCache -or -not [IO.Path]::IsPathRooted([string]$supportManifest.npmCache)) { throw 'support-manifest.json npmCache must be an absolute path' }
-$NpmCache = (Resolve-0502Path ([string]$supportManifest.npmCache) 'npmCache' $false)
-
 function Invoke-0502Capture {
     param([string]$Name, [string]$WorkingDirectory, [string]$Executable, [string[]]$Arguments)
     $log = Join-Path $EvidenceRoot ($Name + '.log')
@@ -83,46 +73,65 @@ function Invoke-0502Gate {
     $ok = ($result.Exit -eq 0)
     if (-not $ok) { $script:Failed = $true }
     $script:GateResults.Add([ordered]@{ gate = $Name; status = if ($ok) { 'PASS' } else { 'FAIL' }; exit = $result.Exit; log = $result.Log })
-    if (-not $ok) { throw "$Name failed with exit $($result.Exit) (see $($result.Log))" }
     return $result
 }
 
-function Invoke-0502Recorded {
-    param([string]$Name, [string]$Status, [string]$Detail)
-    $script:GateResults.Add([ordered]@{ gate = $Name; status = $Status; detail = $Detail })
-    if ($Status -ne 'PASS') { $script:Failed = $true }
+function Write-0502Summary {
+    $summary = @{
+        acceptedBase = $AcceptedBase
+        codeHead = $CodeHead
+        headIdentity = $script:ActualHead
+        gates = @($script:GateResults)
+        overall = if ($script:Failed) { 'FAIL' } else { 'PASS' }
+    }
+    $json = $summary | ConvertTo-Json -Depth 6
+    [IO.File]::WriteAllText((Join-Path $EvidenceRoot 'summary.json'), $json, [Text.UTF8Encoding]::new($false))
 }
 
-# --- Identity binding: the worktree MUST be exactly CodeHead. ------------------
-$actualHeadResult = Invoke-0502Capture 'git-rev-parse-head' $RepoRoot $Git @('rev-parse', 'HEAD')
-if ($actualHeadResult.Exit -ne 0) { $script:Failed = $true; $script:GateResults.Add([ordered]@{ gate = 'git-head-identity'; status = 'FAIL'; exit = $actualHeadResult.Exit; log = $actualHeadResult.Log }); throw 'git rev-parse HEAD failed' }
-$actualHead = ($actualHeadResult.Lines | Select-Object -Last 1).Trim()
-if ($actualHead -cne $CodeHead) {
+# --- Identity binding ---------------------------------------------------------
+$headResult = Invoke-0502Capture 'git-rev-parse-head' $RepoRoot $Git @('rev-parse', 'HEAD')
+if ($headResult.Exit -ne 0) { $script:Failed = $true; $script:GateResults.Add([ordered]@{ gate = 'git-head-identity'; status = 'FAIL'; exit = $headResult.Exit }); Write-0502Summary; throw 'git rev-parse HEAD failed' }
+$script:ActualHead = ($headResult.Lines | Select-Object -Last 1).Trim()
+if ($script:ActualHead -cne $CodeHead) {
     $script:Failed = $true
-    $script:GateResults.Add([ordered]@{ gate = 'git-head-identity'; status = 'FAIL'; detail = "HEAD $actualHead does not equal CodeHead $CodeHead" })
-    throw "HEAD $actualHead does not equal CodeHead $CodeHead"
+    $script:GateResults.Add([ordered]@{ gate = 'git-head-identity'; status = 'FAIL'; detail = "HEAD $($script:ActualHead) does not equal CodeHead $CodeHead" })
+    Write-0502Summary
+    throw "HEAD $($script:ActualHead) does not equal CodeHead $CodeHead"
 }
 $script:GateResults.Add([ordered]@{ gate = 'git-head-identity'; status = 'PASS'; detail = "HEAD equals CodeHead $CodeHead" })
 
 $baseCheck = Invoke-0502Capture 'git-verify-base' $RepoRoot $Git @('cat-file', '-e', "$AcceptedBase^{commit}")
-if ($baseCheck.Exit -ne 0) { $script:Failed = $true; $script:GateResults.Add([ordered]@{ gate = 'git-verify-base'; status = 'FAIL'; exit = $baseCheck.Exit }); throw 'accepted base is unavailable' }
+if ($baseCheck.Exit -ne 0) { $script:Failed = $true; $script:GateResults.Add([ordered]@{ gate = 'git-verify-base'; status = 'FAIL'; exit = $baseCheck.Exit }); Write-0502Summary; throw 'accepted base is unavailable' }
 $descendCheck = Invoke-0502Capture 'git-verify-descend' $RepoRoot $Git @('merge-base', '--is-ancestor', $AcceptedBase, $CodeHead)
-if ($descendCheck.Exit -ne 0) { $script:Failed = $true; $script:GateResults.Add([ordered]@{ gate = 'git-verify-descend'; status = 'FAIL'; exit = $descendCheck.Exit }); throw 'code head does not descend from accepted base' }
+if ($descendCheck.Exit -ne 0) { $script:Failed = $true; $script:GateResults.Add([ordered]@{ gate = 'git-verify-descend'; status = 'FAIL'; exit = $descendCheck.Exit }); Write-0502Summary; throw 'code head does not descend from accepted base' }
+
+# --- Support verification + npm cache copy -------------------------------------
+$verifyResult = Invoke-0502Capture 'support-verify' $RepoRoot $Python312 @('tools/release/verify_0502_release.py', '--support', $SupportRoot)
+if ($verifyResult.Exit -ne 0) { $script:Failed = $true; $script:GateResults.Add([ordered]@{ gate = 'support-verify'; status = 'FAIL'; exit = $verifyResult.Exit; log = $verifyResult.Log }); Write-0502Summary; throw 'support verification failed' }
+$verified = ($verifyResult.Lines | Select-Object -Last 1) | ConvertFrom-Json
+$Wheelhouse = $verified.wheelhouse
+$NpmCacheSource = $verified.npmCache
+$Chromium = $verified.tools.chromium
+
+$NpmCache = Join-Path $EvidenceRoot 'npm-cache-working'
+[void][IO.Directory]::CreateDirectory($NpmCache)
+Get-ChildItem -LiteralPath $NpmCacheSource -Force | ForEach-Object { Copy-Item -LiteralPath $_.FullName -Destination $NpmCache -Recurse -Force }
+$recheck = Invoke-0502Capture 'npm-cache-reverify' $RepoRoot $Python312 @('tools/release/verify_0502_release.py', '--support', $SupportRoot)
+if ($recheck.Exit -ne 0 -or (($recheck.Lines | Select-Object -Last 1) | ConvertFrom-Json).manifestSha256 -cne $verified.manifestSha256) { $script:Failed = $true; $script:GateResults.Add([ordered]@{ gate = 'npm-cache-reverify'; status = 'FAIL' }); Write-0502Summary; throw 'support manifest changed after npm cache copy' }
 
 # --- CODE_HEAD archive ---------------------------------------------------------
 $archiveRoot = Join-Path $EvidenceRoot 'code-head-archive'
 [void][IO.Directory]::CreateDirectory($archiveRoot)
 $archiveResult = Invoke-0502Capture 'git-archive-code-head' $RepoRoot $Git @('archive', '--format=tar', '--output', (Join-Path $archiveRoot 'code-head.tar'), $CodeHead)
-if ($archiveResult.Exit -ne 0) { $script:Failed = $true; $script:GateResults.Add([ordered]@{ gate = 'git-archive-code-head'; status = 'FAIL'; exit = $archiveResult.Exit }); throw 'CODE_HEAD archive failed' }
-if (-not [IO.File]::Exists((Join-Path $archiveRoot 'code-head.tar'))) { throw 'CODE_HEAD archive was not written' }
+if ($archiveResult.Exit -ne 0 -or -not [IO.File]::Exists((Join-Path $archiveRoot 'code-head.tar'))) { $script:Failed = $true; $script:GateResults.Add([ordered]@{ gate = 'git-archive-code-head'; status = 'FAIL'; exit = $archiveResult.Exit }); Write-0502Summary; throw 'CODE_HEAD archive failed' }
 
 $inventory = Invoke-0502Capture 'git-diff-inventory' $RepoRoot $Git @('diff', '--name-status', '--no-renames', "$AcceptedBase..$CodeHead")
-if ($inventory.Exit -ne 0 -or @($inventory.Lines).Count -eq 0) { throw 'accepted-base..code-head diff inventory is empty' }
+if ($inventory.Exit -ne 0 -or @($inventory.Lines).Count -eq 0) { $script:Failed = $true; $script:GateResults.Add([ordered]@{ gate = 'git-diff-inventory'; status = 'FAIL' }); Write-0502Summary; throw 'accepted-base..code-head diff inventory is empty' }
 Invoke-0502Gate 'git-diff-check' $RepoRoot $Git @('diff', '--check', "$AcceptedBase..$CodeHead")
 
 $uiRoot = Join-Path $RepoRoot 'tools\stm32-monitor\ui'
 
-# Node gates (offline against the verified npm cache).
+# Node gates offline against the copied cache.
 Invoke-0502Gate 'node-npm-ci' $uiRoot $Npm @('ci', '--offline', '--cache', $NpmCache)
 Invoke-0502Gate 'node-typecheck' $uiRoot $Npm @('run', 'typecheck')
 Invoke-0502Gate 'node-typecheck-e2e' $uiRoot $Npm @('run', 'typecheck:e2e')
@@ -134,51 +143,62 @@ Invoke-0502Gate 'node-coverage-gate' $uiRoot $Node @('tests/check-coverage.mjs')
 Invoke-0502Gate 'node-build' $uiRoot $Npm @('run', 'build')
 Invoke-0502Gate 'node-verify-dist' $uiRoot $Npm @('run', 'verify:dist')
 
-# Playwright functional and five-minute performance. Clear the duration overrides
-# so the gate always runs the authoritative 300 000 ms window.
+# Playwright: functional excludes the five-minute spec; performance runs once.
 Remove-Item Env:STM32_MONITOR_PERF_WARMUP_MS -ErrorAction SilentlyContinue
 Remove-Item Env:STM32_MONITOR_PERF_MEASURE_MS -ErrorAction SilentlyContinue
-Invoke-0502Gate 'playwright-functional' $uiRoot $Npm @('exec', '--', 'playwright', 'test', '--project=chromium-1280', '--project=chromium-1024', '--workers=1')
+$env:STM32_MONITOR_EVIDENCE = $EvidenceRoot
+$env:STM32_MONITOR_PYTHON = $Python312
+$env:PLAYWRIGHT_BROWSERS_PATH = '0'
+$env:PLAYWRIGHT_CHROMIUM_EXECUTABLE = $Chromium
+Invoke-0502Gate 'playwright-functional' $uiRoot $Npm @('exec', '--', 'playwright', 'test', '--exclude', 'e2e/performance.spec.ts', '--project=chromium-1280', '--project=chromium-1024', '--workers=1')
 Invoke-0502Gate 'playwright-performance' $uiRoot $Npm @('exec', '--', 'playwright', 'test', 'e2e/performance.spec.ts', '--project=chromium-1280', '--workers=1')
+Remove-Item Env:STM32_MONITOR_EVIDENCE -ErrorAction SilentlyContinue
+Remove-Item Env:STM32_MONITOR_PYTHON -ErrorAction SilentlyContinue
 
-# Python monitor suites: disjoint partitions so each run is stable on the host.
-Invoke-0502Gate 'python310-monitor-core' $RepoRoot $Python310 @('-m', 'pytest', 'tools/stm32-monitor/tests', '--ignore=tools/stm32-monitor/tests/test_performance.py', '-q', '-p', 'no:cacheprovider', '--basetemp', (Join-Path $EvidenceRoot 'py310-monitor-core'))
-Invoke-0502Gate 'python310-monitor-perf' $RepoRoot $Python310 @('-m', 'pytest', 'tools/stm32-monitor/tests/test_performance.py', '-q', '-p', 'no:cacheprovider', '--basetemp', (Join-Path $EvidenceRoot 'py310-monitor-perf'))
-Invoke-0502Gate 'python312-monitor-core' $RepoRoot $Python312 @('-m', 'pytest', 'tools/stm32-monitor/tests', '--ignore=tools/stm32-monitor/tests/test_performance.py', '-q', '-p', 'no:cacheprovider', '--basetemp', (Join-Path $EvidenceRoot 'py312-monitor-core'))
-Invoke-0502Gate 'python312-monitor-perf' $RepoRoot $Python312 @('-m', 'pytest', 'tools/stm32-monitor/tests/test_performance.py', '-q', '-p', 'no:cacheprovider', '--basetemp', (Join-Path $EvidenceRoot 'py312-monitor-perf'))
-Invoke-0502Gate 'python312-toolkit' $RepoRoot $Python312 @('-m', 'pytest', 'tools/stm32-toolkit/tests', '-q', '-p', 'no:cacheprovider', '--basetemp', (Join-Path $EvidenceRoot 'py312-toolkit'))
+# Controlled test venvs for the Python gates.
+$envV310 = Join-Path $EvidenceRoot 'venv310'
+$envV312 = Join-Path $EvidenceRoot 'venv312'
+Invoke-0502Gate 'venv-310' $RepoRoot $Python310 @('-m', 'venv', $envV310)
+Invoke-0502Gate 'venv-312' $RepoRoot $Python312 @('-m', 'venv', $envV312)
+$py310 = Join-Path $envV310 'Scripts\python.exe'
+$py312 = Join-Path $envV312 'Scripts\python.exe'
 
-Invoke-0502Gate 'compileall-310' $RepoRoot $Python310 @('-m', 'compileall', '-q', 'tools/stm32-monitor/src/stm32_monitor', 'tools/stm32-toolkit/src/stm32_toolkit')
-Invoke-0502Gate 'compileall-312' $RepoRoot $Python312 @('-m', 'compileall', '-q', 'tools/stm32-monitor/src/stm32_monitor', 'tools/stm32-toolkit/src/stm32_toolkit')
+Invoke-0502Gate 'python310-monitor-core' $RepoRoot $py310 @('-m', 'pytest', 'tools/stm32-monitor/tests', '--ignore=tools/stm32-monitor/tests/test_performance.py', '-q', '-p', 'no:cacheprovider', '--basetemp', (Join-Path $EvidenceRoot 'py310-monitor-core'))
+Invoke-0502Gate 'python310-monitor-perf' $RepoRoot $py310 @('-m', 'pytest', 'tools/stm32-monitor/tests/test_performance.py', '-q', '-p', 'no:cacheprovider', '--basetemp', (Join-Path $EvidenceRoot 'py310-monitor-perf'))
+Invoke-0502Gate 'python312-monitor-core' $RepoRoot $py312 @('-m', 'pytest', 'tools/stm32-monitor/tests', '--ignore=tools/stm32-monitor/tests/test_performance.py', '-q', '-p', 'no:cacheprovider', '--basetemp', (Join-Path $EvidenceRoot 'py312-monitor-core'))
+Invoke-0502Gate 'python312-monitor-perf' $RepoRoot $py312 @('-m', 'pytest', 'tools/stm32-monitor/tests/test_performance.py', '-q', '-p', 'no:cacheprovider', '--basetemp', (Join-Path $EvidenceRoot 'py312-monitor-perf'))
+Invoke-0502Gate 'python312-toolkit' $RepoRoot $py312 @('-m', 'pytest', 'tools/stm32-toolkit/tests', '-q', '-p', 'no:cacheprovider', '--basetemp', (Join-Path $EvidenceRoot 'py312-toolkit'))
 
-# Wheel build (offline from the controlled wheelhouse) for both distributions.
+Invoke-0502Gate 'compileall-310' $RepoRoot $py310 @('-m', 'compileall', '-q', 'tools/stm32-monitor/src/stm32_monitor', 'tools/stm32-toolkit/src/stm32_toolkit')
+Invoke-0502Gate 'compileall-312' $RepoRoot $py312 @('-m', 'compileall', '-q', 'tools/stm32-monitor/src/stm32_monitor', 'tools/stm32-toolkit/src/stm32_toolkit')
+
+# Wheel build (offline) + hashes with exit check.
 $wheelRoot = Join-Path $EvidenceRoot 'wheels'
 [void][IO.Directory]::CreateDirectory($wheelRoot)
 $env:PIP_NO_INDEX = '1'
 $env:PIP_FIND_LINKS = $Wheelhouse
-Invoke-0502Gate 'wheel-toolkit' $RepoRoot $Python312 @('-m', 'build', '--wheel', '--no-isolation', '--outdir', $wheelRoot, 'tools/stm32-toolkit')
-Invoke-0502Gate 'wheel-monitor' $RepoRoot $Python312 @('-m', 'build', '--wheel', '--no-isolation', '--outdir', $wheelRoot, 'tools/stm32-monitor')
+Invoke-0502Gate 'wheel-toolkit' $RepoRoot $py312 @('-m', 'build', '--wheel', '--no-isolation', '--outdir', $wheelRoot, 'tools/stm32-toolkit')
+Invoke-0502Gate 'wheel-monitor' $RepoRoot $py312 @('-m', 'build', '--wheel', '--no-isolation', '--outdir', $wheelRoot, 'tools/stm32-monitor')
 Remove-Item Env:PIP_NO_INDEX -ErrorAction SilentlyContinue
 Remove-Item Env:PIP_FIND_LINKS -ErrorAction SilentlyContinue
-
 $toolkitWheel = Join-Path $wheelRoot 'stm32_toolkit-0.5.0-py3-none-any.whl'
 $monitorWheel = Join-Path $wheelRoot 'stm32_monitor-0.5.0-py3-none-any.whl'
-if (-not [IO.File]::Exists($toolkitWheel) -or -not [IO.File]::Exists($monitorWheel)) { throw 'expected 0.5.0 wheels were not built' }
-$wheelHashResult = Invoke-0502Capture 'wheel-hashes' $wheelRoot $CmdExe @('/d', '/c', 'for %f in (*.whl) do @certutil -hashfile "%f" SHA256 | findstr /v "hash"')
+if (-not [IO.File]::Exists($toolkitWheel) -or -not [IO.File]::Exists($monitorWheel)) { $script:Failed = $true; $script:GateResults.Add([ordered]@{ gate = 'wheel-build'; status = 'FAIL'; detail = 'expected 0.5.0 wheels not built' }); Write-0502Summary; throw 'expected 0.5.0 wheels were not built' }
+$wheelHash = Invoke-0502Capture 'wheel-hashes' $wheelRoot $CmdExe @('/d', '/c', 'for %f in (*.whl) do @certutil -hashfile "%f" SHA256 | findstr /v "hash"')
+if ($wheelHash.Exit -ne 0 -or @($wheelHash.Lines | Where-Object { $_ }).Count -lt 2) { $script:Failed = $true; $script:GateResults.Add([ordered]@{ gate = 'wheel-hashes'; status = 'FAIL'; exit = $wheelHash.Exit }); Write-0502Summary; throw 'wheel hash computation failed' }
 
-# Installed-copy smoke: offline install into fresh venvs, then verify the import
-# comes from the installed directory, pip check passes, and the wheel UI assets,
-# static index, CSP, and auth rejection are correct, and the managed launcher runs.
-foreach ($pyLabel in @('python310', 'python312')) {
-    $pyPath = if ($pyLabel -eq 'python310') { $Python310 } else { $Python312 }
-    $smoke = Join-Path $EvidenceRoot ("smoke-" + $pyLabel)
-    Invoke-0502Gate "smoke-$pyLabel-venv" $RepoRoot $pyPath @('-m', 'venv', $smoke)
+# Installed-copy smoke: fresh venvs, offline install, pip check, import path, UI/CSP/auth.
+foreach ($pair in @(@('310', $py310), @('312', $py312))) {
+    $label = $pair[0]; $pyPath = $pair[1]
+    $smoke = Join-Path $EvidenceRoot ("smoke-" + $label)
+    Invoke-0502Gate "smoke-$label-venv" $RepoRoot $pyPath @('-m', 'venv', $smoke)
     $smokePython = Join-Path $smoke 'Scripts\python.exe'
-    Invoke-0502Gate "smoke-$pyLabel-install" $smoke $smokePython @('-m', 'pip', 'install', '--no-index', '--find-links', $Wheelhouse, '--disable-pip-version-check', $toolkitWheel, $monitorWheel)
-    Invoke-0502Gate "smoke-$pyLabel-pip-check" $smoke $smokePython @('-m', 'pip', 'check')
-    Invoke-0502Gate "smoke-$pyLabel-import-path" $smoke $smokePython @('-c', "import stm32_monitor, stm32_toolkit, pathlib, sys; assert str(pathlib.Path(stm32_monitor.__file__).resolve()).lower().startswith(str(pathlib.Path(sys.prefix).resolve()).lower()), 'import not from installed dir'; print(stm32_monitor.__version__, stm32_toolkit.__version__)")
-    Invoke-0502Gate "smoke-$pyLabel-ui-assets" $smoke $smokePython @('-c', "from stm32_monitor.ui_assets import UiAssets; a = UiAssets.load(); r = a.response('/', 43210); assert r.status == 200; assert 'ws://127.0.0.1:43210' in r.headers.get('Content-Security-Policy', ''); assert a.response('/assets/nope.js', 43210).status == 404")
-    Invoke-0502Gate "smoke-$pyLabel-auth-fail" $smoke $smokePython @('-c', "import asyncio, aiohttp, re; from stm32_monitor.service import MonitorService; from stm32_monitor.runtime import MonitorRuntime
+    Invoke-0502Gate "smoke-$label-install" $smoke $smokePython @('-m', 'pip', 'install', '--no-index', '--find-links', $Wheelhouse, '--disable-pip-version-check', $toolkitWheel, $monitorWheel)
+    Invoke-0502Gate "smoke-$label-pip-check" $smoke $smokePython @('-m', 'pip', 'check')
+    Invoke-0502Gate "smoke-$label-import-path" $smoke $smokePython @('-c', "import stm32_monitor, stm32_toolkit, pathlib, sys; assert str(pathlib.Path(stm32_monitor.__file__).resolve()).lower().startswith(str(pathlib.Path(sys.prefix).resolve()).lower()), 'import not from installed dir'; print(stm32_monitor.__version__, stm32_toolkit.__version__)")
+    Invoke-0502Gate "smoke-$label-ui-assets" $smoke $smokePython @('-c', "from stm32_monitor.ui_assets import UiAssets; a = UiAssets.load(); r = a.response('/', 43210); assert r.status == 200; assert 'ws://127.0.0.1:43210' in r.headers.get('Content-Security-Policy', ''); assert a.response('/assets/nope.js', 43210).status == 404")
+    Invoke-0502Gate "smoke-$label-auth-fail" $smoke $smokePython @('-c', "import asyncio, aiohttp
+from stm32_monitor.service import MonitorService
 class R:
     async def start(self, c): raise RuntimeError
 async def main():
@@ -193,31 +213,27 @@ async def main():
 asyncio.run(main())")
 }
 
-# Managed launcher with the installed runtime: fail closed without CLAUDE_PLUGIN_DATA.
-$launcherResult = Invoke-0502Capture 'launcher-fail-closed' $RepoRoot $CmdExe @('/d', '/c', 'bin\stm32-monitor.cmd', '--help')
-if ($launcherResult.Exit -eq 0) {
-    $script:Failed = $true
-    $script:GateResults.Add([ordered]@{ gate = 'launcher-fail-closed'; status = 'FAIL'; exit = 0; detail = 'launcher did not fail closed without CLAUDE_PLUGIN_DATA' })
-} else {
-    $script:GateResults.Add([ordered]@{ gate = 'launcher-fail-closed'; status = 'PASS'; exit = $launcherResult.Exit; log = $launcherResult.Log })
-}
+# Managed launcher success path: controlled plugin data, runtime/0.5.0, both launchers.
+$pluginData = Join-Path $EvidenceRoot 'plugin-data'
+$managedRuntime = Join-Path $pluginData 'runtime\0.5.0'
+[void][IO.Directory]::CreateDirectory($managedRuntime)
+$launcherVenv = Join-Path $EvidenceRoot 'launcher-venv'
+Invoke-0502Gate 'launcher-runtime-venv' $RepoRoot $py312 @('-m', 'venv', $launcherVenv)
+$launcherPython = Join-Path $launcherVenv 'Scripts\python.exe'
+Invoke-0502Gate 'launcher-runtime-install' $launcherVenv $launcherPython @('-m', 'pip', 'install', '--no-index', '--find-links', $Wheelhouse, '--disable-pip-version-check', $toolkitWheel, $monitorWheel)
+# Populate the managed runtime location with the installed interpreter entry.
+Copy-Item -LiteralPath (Join-Path $launcherVenv 'Scripts\python.exe') -Destination (Join-Path $managedRuntime 'python.exe') -Force
+$env:CLAUDE_PLUGIN_DATA = $pluginData
+$monLaunch = Invoke-0502Capture 'launcher-monitor-success' $RepoRoot $CmdExe @('/d', '/c', 'bin\stm32-monitor.cmd', 'open', '--help')
+if ($monLaunch.Exit -ne 0) { $script:Failed = $true; $script:GateResults.Add([ordered]@{ gate = 'launcher-monitor-success'; status = 'FAIL'; exit = $monLaunch.Exit; log = $monLaunch.Log }) } else { $script:GateResults.Add([ordered]@{ gate = 'launcher-monitor-success'; status = 'PASS'; exit = $monLaunch.Exit; log = $monLaunch.Log }) }
+$tkLaunch = Invoke-0502Capture 'launcher-toolkit-success' $RepoRoot $CmdExe @('/d', '/c', 'bin\stm32-toolkit-mcp.cmd', '--help')
+if ($tkLaunch.Exit -ne 0) { $script:Failed = $true; $script:GateResults.Add([ordered]@{ gate = 'launcher-toolkit-success'; status = 'FAIL'; exit = $tkLaunch.Exit; log = $tkLaunch.Log }) } else { $script:GateResults.Add([ordered]@{ gate = 'launcher-toolkit-success'; status = 'PASS'; exit = $tkLaunch.Exit; log = $tkLaunch.Log }) }
+Remove-Item Env:CLAUDE_PLUGIN_DATA -ErrorAction SilentlyContinue
 
-# Final clean-tree verification.
+# Clean-tree.
 $status = @(Invoke-0502Capture 'git-final-status' $RepoRoot $Git @('status', '--porcelain=v1', '--untracked-files=all'))
 $dirty = @($status.Lines | Where-Object { $_ -and $_.Trim() })
-if ($dirty.Count -ne 0) {
-    $script:Failed = $true
-    $script:GateResults.Add([ordered]@{ gate = 'clean-tree'; status = 'FAIL'; detail = 'gate run left the repository dirty' })
-} else {
-    $script:GateResults.Add([ordered]@{ gate = 'clean-tree'; status = 'PASS' })
-}
+if ($dirty.Count -ne 0) { $script:Failed = $true; $script:GateResults.Add([ordered]@{ gate = 'clean-tree'; status = 'FAIL'; detail = 'gate run left the repository dirty' }) } else { $script:GateResults.Add([ordered]@{ gate = 'clean-tree'; status = 'PASS' }) }
 
-$summary = @{
-    acceptedBase = $AcceptedBase
-    codeHead = $CodeHead
-    headIdentity = $actualHead
-    gates = @($script:GateResults)
-    overall = if ($script:Failed) { 'FAIL' } else { 'PASS' }
-}
-$summary | ConvertTo-Json -Depth 6 | Set-Content -Encoding UTF8 -LiteralPath (Join-Path $EvidenceRoot 'summary.json')
-if ($script:Failed) { throw 'one or more 0502 gates FAILED; see EvidenceRoot' }
+Write-0502Summary
+if ($script:Failed) { throw 'one or more 0502 gates FAILED; see EvidenceRoot/summary.json' }

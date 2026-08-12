@@ -291,8 +291,7 @@ def test_named_export_performance_acceptance(tmp_path: Path) -> None:
         exporter.close()
         history.close()
     export_stats = _stats(export_times)
-    # Recalibrated for the CPython 3.10 venv (~5 040 ms p95 on this hardware); 8 000 ms stays bounded.
-    assert export_stats["p95"] < 8_000
+    assert export_stats["p95"] < 5_000
     evidence = {
         "acceptanceCommand": EXPORT_ACCEPTANCE_COMMAND,
         "python": platform.python_version(),
@@ -344,10 +343,7 @@ def test_named_monitor_performance_acceptance(tmp_path: Path) -> None:
     finally:
         history.close()
     append_stats = _stats(append_times)
-    # The 0501 threshold was tuned on the review CPython 3.12 venv; the CPython
-    # 3.10 append path measures ~52 ms p95 on this hardware, so the bound is set
-    # to 100 ms to stay meaningful without being host-specific.
-    assert append_stats["p95"] < 100
+    assert append_stats["p95"] < 50
 
     _restore_database(database, snapshot)
     query_times: list[float] = []
@@ -369,9 +365,7 @@ def test_named_monitor_performance_acceptance(tmp_path: Path) -> None:
     finally:
         history.close()
     query_stats = _stats(query_times)
-    # Same recalibration as the append bound: the CPython 3.10 query path
-    # measures ~114 ms p95 on this hardware, so the bound is 150 ms.
-    assert query_stats["p95"] < 150
+    assert query_stats["p95"] < 100
 
     export_times: list[float] = []
     artifact_sizes: list[int] = []
@@ -414,8 +408,7 @@ def test_named_monitor_performance_acceptance(tmp_path: Path) -> None:
         exporter.close()
         history.close()
     export_stats = _stats(export_times)
-    # Recalibrated for the CPython 3.10 venv (~5 040 ms p95 on this hardware); 8 000 ms stays bounded.
-    assert export_stats["p95"] < 8_000
+    assert export_stats["p95"] < 5_000
 
     retention_times: list[float] = []
     ticker_gaps: list[float] = []
