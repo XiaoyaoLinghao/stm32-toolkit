@@ -235,7 +235,9 @@ function Invoke-0502NpmPhase {
 # ---------------------------------------------------------------------------
 function Get-0502NodeIds {
     param([string]$Name, [string]$Python, [string[]]$Paths, [string[]]$Extra)
-    $result = Invoke-0502Capture $Name $RepoRoot $Python (@('-m', 'pytest') + $Paths + @('--collect-only', '-q', '-p', 'no:cacheprovider') + $Extra)
+    # Without -q, pytest --collect-only prints one "path::nodeid" line per test,
+    # which is what the nodeid filter expects (with -q it prints per-file counts).
+    $result = Invoke-0502Capture $Name $RepoRoot $Python (@('-m', 'pytest') + $Paths + @('--collect-only', '-p', 'no:cacheprovider') + $Extra)
     $lines = $result.Lines
     return @($lines | ForEach-Object { [string]$_ } | Where-Object { $_ -match '^[^=]+::' } | Sort-Object)
 }
