@@ -109,7 +109,7 @@ def test_no_aggregate_echarts_source_import(dist_files: list[Path]) -> None:
 
 
 def test_every_asset_is_content_hashed(dist_files: list[Path]) -> None:
-    asset_re = re.compile(r"^assets/[A-Za-z0-9_.-]+-[A-Za-z0-9_]{8,}\.(js|css|svg|png|jpe?g|webp|woff2)$")
+    asset_re = re.compile(r"^assets/[A-Za-z0-9_.-]+-[A-Za-z0-9_-]{8,}\.(js|css|svg|png|jpe?g|webp|woff2)$")
     for path in dist_files:
         rel = path.relative_to(UI_DIST).as_posix()
         if rel.startswith("assets/"):

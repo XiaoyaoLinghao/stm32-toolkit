@@ -4,23 +4,31 @@ The Playwright browser test spawns this process. It builds a MonitorService
 with a scripted fake runtime and prints the access URL on stdout so the test
 can open the browser at ``/#token=<token>``. Product traffic (bootstrap,
 status, live WebSocket, static assets) stays on the real aiohttp boundary.
+
+A separate loopback control HTTP server (also bound to ``127.0.0.1``) exposes
+the fixture RPC used by Playwright specs: producer start/stop, drop totals,
+sample count, and asset sizes. The control URL is printed on stdout so the
+fixture can drive the runtime without touching the product service.
 """
 
 from __future__ import annotations
 
 import argparse
 import asyncio
+import gzip
 import json
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
+
+from aiohttp import web
 
 from stm32_monitor.protocol import failure, success
 from stm32_monitor.service import MonitorService
 
 _TOOLKIT_VERSION = "0.5.0"
 _MONITOR_VERSION = "0.5.0"
-_SAMPLING_STATES = {"IDLE", "STARTING", "RUNNING", "PAUSED", "PAUSED_BLOCKED", "STOPPING"}
+_DEFAULT_ROWS = 2
 
 
 @dataclass
@@ -47,6 +55,11 @@ class _State:
     active_group_id: str | None = None
     active_run_id: str | None = None
     group_counter: int = 0
+    producer_active: bool = False
+    producer_hz: float = 10.0
+    sample_count: int = 0
+    service_drops_total: int = 0
+    rows: int = _DEFAULT_ROWS
 
     def next_group_id(self) -> str:
         self.group_counter += 1
@@ -67,7 +80,7 @@ def _sampling_status(state: _State) -> dict[str, object]:
         "subscriberDrops": 0,
         "historyDrops": 0,
         "deadlineDrops": 0,
-        "serviceDrops": 0,
+        "serviceDrops": state.service_drops_total,
     }
 
 
@@ -111,6 +124,23 @@ def _group_dict(group: _Group) -> dict[str, object]:
     }
 
 
+def _catalog_item(index: int) -> dict[str, object]:
+    return {
+        "selector": f"v{index}",
+        "typeName": "uint32_t",
+        "kind": "scalar",
+        "byteSize": 4,
+        "signed": False,
+        "encoding": None,
+        "qualifiers": [],
+        "aliases": [],
+        "enumValues": [],
+        "elementCount": None,
+        "elementKind": None,
+        "memberNames": [],
+    }
+
+
 def _debug_binding(state: _State) -> dict[str, object]:
     return {
         "logicalProjectId": state.logical_project_id,
@@ -133,6 +163,10 @@ def _debug_binding(state: _State) -> dict[str, object]:
             {"name": "FLASH", "origin": 0x08000000, "length": 0x10000, "attributes": "rx"}
         ],
     }
+
+
+def _watch(expression: str) -> dict[str, object]:
+    return {"kind": "variable", "expression": expression}
 
 
 async def _dispatch_operation(
@@ -163,36 +197,22 @@ async def _dispatch_operation(
             "revision": "0",
         }
     if operation == "monitor.catalog.variables":
-        all_items = [
-            {
-                "selector": "counter",
-                "typeName": "uint32_t",
-                "kind": "scalar",
-                "byteSize": 4,
-                "signed": False,
-                "encoding": None,
-                "qualifiers": [],
-                "aliases": [],
-                "enumValues": [],
-                "elementCount": None,
-                "elementKind": None,
-                "memberNames": [],
-            },
-            {
-                "selector": "faulty",
-                "typeName": "uint32_t",
-                "kind": "scalar",
-                "byteSize": 4,
-                "signed": False,
-                "encoding": None,
-                "qualifiers": [],
-                "aliases": [],
-                "enumValues": [],
-                "elementCount": None,
-                "elementKind": None,
-                "memberNames": [],
-            },
-        ]
+        counter = {
+            "selector": "counter",
+            "typeName": "uint32_t",
+            "kind": "scalar",
+            "byteSize": 4,
+            "signed": False,
+            "encoding": None,
+            "qualifiers": [],
+            "aliases": [],
+            "enumValues": [],
+            "elementCount": None,
+            "elementKind": None,
+            "memberNames": [],
+        }
+        faulty = dict(counter, selector="faulty")
+        all_items = [counter, faulty, *( _catalog_item(index) for index in range(state.rows))]
         text_query = (query or {}).get("query", "")
         items = (
             [item for item in all_items if item["selector"].startswith(text_query)]
@@ -337,7 +357,7 @@ def _sample_event(state: _State, sequence: int) -> dict[str, object]:
     values: list[dict[str, object]] = []
     for item in items:
         expression = str(item.get("expression", ""))
-        watch: dict[str, object] = {"kind": "variable", "expression": expression}
+        watch = _watch(expression)
         if expression == "faulty":
             values.append(
                 {
@@ -364,6 +384,7 @@ def _sample_event(state: _State, sequence: int) -> dict[str, object]:
                     "definition": None,
                 }
             )
+    state.sample_count += 1
     return {
         "eventId": 100 + sequence,
         "type": "sample",
@@ -379,7 +400,7 @@ def _sample_event(state: _State, sequence: int) -> dict[str, object]:
                 "capturedUnixNs": 0,
                 "capturedAtUtc": "2026-08-10T00:00:00Z",
                 "latencyNs": 0,
-                "actualRateHz": 10.0,
+                "actualRateHz": state.producer_hz,
                 "subscriberDrops": 0,
                 "historyDrops": 0,
                 "deadlineDrops": 0,
@@ -396,7 +417,8 @@ class _FakeRuntime:
         self._live: asyncio.Queue[object] = asyncio.Queue()
 
     def record_service_drops(self, count: int) -> None:
-        pass
+        if type(count) is int and count > 0:
+            self._state.service_drops_total += count
 
     async def dispatch(
         self,
@@ -438,18 +460,98 @@ class _FakeRuntime:
             if self._state.sampling_state == "RUNNING":
                 sequence += 1
                 yield _sample_event(self._state, sequence)
-                await asyncio.sleep(0.2)
+                if self._state.producer_active:
+                    await asyncio.sleep(1.0 / self._state.producer_hz)
+                else:
+                    await asyncio.sleep(0.2)
             else:
-                await asyncio.sleep(0.5)
+                await asyncio.sleep(0.2)
+
+
+def _asset_sizes() -> dict[str, int]:
+    from importlib import resources
+
+    ui = resources.files("stm32_monitor") / "ui_dist"
+    raw = 0
+    js_blobs: list[bytes] = []
+    css_blobs: list[bytes] = []
+    for path in ui.rglob("*"):
+        if path.is_file():
+            blob = path.read_bytes()
+            raw += len(blob)
+            if path.name.endswith(".js"):
+                js_blobs.append(blob)
+            elif path.name.endswith(".css"):
+                css_blobs.append(blob)
+    return {
+        "rawBytes": raw,
+        "gzipJsBytes": sum(len(gzip.compress(blob)) for blob in js_blobs),
+        "gzipCssBytes": sum(len(gzip.compress(blob)) for blob in css_blobs),
+    }
+
+
+async def _control_app(state: _State) -> web.Application:
+    async def start_producer(request: web.Request) -> web.Response:
+        payload = await request.json()
+        state.producer_hz = float(payload.get("hz", 10.0))
+        if not 0.5 <= state.producer_hz <= 100:
+            return web.json_response({"ok": False, "code": "INVALID_HZ"})
+        state.producer_active = True
+        state.sample_count = 0
+        return web.json_response({"ok": True, "active": True, "hz": state.producer_hz})
+
+    async def stop_producer(request: web.Request) -> web.Response:
+        state.producer_active = False
+        return web.json_response({"ok": True, "active": False})
+
+    async def producer_status(request: web.Request) -> web.Response:
+        return web.json_response(
+            {"ok": True, "active": state.producer_active, "hz": state.producer_hz}
+        )
+
+    async def drops(request: web.Request) -> web.Response:
+        return web.json_response(
+            {
+                "ok": True,
+                "drops": {
+                    "subscriber": 0,
+                    "history": 0,
+                    "deadline": 0,
+                    "service": state.service_drops_total,
+                },
+            }
+        )
+
+    async def sample_count(request: web.Request) -> web.Response:
+        return web.json_response({"ok": True, "count": state.sample_count})
+
+    async def assets(request: web.Request) -> web.Response:
+        return web.json_response({"ok": True, "assets": _asset_sizes()})
+
+    async def rows(request: web.Request) -> web.Response:
+        return web.json_response({"ok": True, "rows": state.rows})
+
+    app = web.Application()
+    app.router.add_post("/producer/start", start_producer)
+    app.router.add_post("/producer/stop", stop_producer)
+    app.router.add_get("/producer/status", producer_status)
+    app.router.add_get("/drops", drops)
+    app.router.add_get("/sample-count", sample_count)
+    app.router.add_get("/assets", assets)
+    app.router.add_get("/rows", rows)
+    return app
 
 
 async def _main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--repo", type=Path, required=True)
+    parser.add_argument("--rows", type=int, default=_DEFAULT_ROWS)
     args = parser.parse_args()
     _ = args.repo
+    if not 1 <= args.rows <= 4096:
+        raise SystemExit("rows must be between 1 and 4096")
 
-    state = _State()
+    state = _State(rows=args.rows)
     service = MonitorService(
         _FakeRuntime(state),
         workspace_id=state.workspace_id,
@@ -457,8 +559,13 @@ async def _main() -> int:
         serve_ui=True,
     )
     endpoint = await service.start()
-    access_url = endpoint.access_url
-    payload = {"ok": True, "accessUrl": access_url, "url": endpoint.url}
+    control = await _start_control(state)
+    payload = {
+        "ok": True,
+        "accessUrl": endpoint.access_url,
+        "url": endpoint.url,
+        "controlUrl": control,
+    }
     print(json.dumps(payload, sort_keys=True, separators=(",", ":")))
     sys.stdout.flush()
     try:
@@ -466,6 +573,17 @@ async def _main() -> int:
     finally:
         await service.stop()
     return 0
+
+
+async def _start_control(state: _State) -> str:
+    from aiohttp import web
+
+    runner = web.AppRunner(await _control_app(state), access_log=None)
+    await runner.setup()
+    site = web.TCPSite(runner, host="127.0.0.1", port=0)
+    await site.start()
+    port = int(runner.addresses[0][1])
+    return f"http://127.0.0.1:{port}"
 
 
 if __name__ == "__main__":

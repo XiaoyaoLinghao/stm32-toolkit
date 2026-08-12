@@ -1,88 +1,72 @@
+import {writeFileSync,mkdirSync} from "node:fs";
+import {tmpdir} from "node:os";
+import {resolve} from "node:path";
 import {expect,test,type BrowserContext,type Page} from "@playwright/test";
+import {
+  assertSameServerDrops,
+  collectFiveMinuteMetrics,
+  createGroupViaApi,
+  installSameOriginGuard,
+  selectSeries,
+  typedValues,
+} from "./acceptance";
 import {openMonitor,startMonitor} from "./conftest";
 
-type GuardEvidence={attempts:string[]};
-
-async function installSameOriginGuard(context:BrowserContext,allowed:string):Promise<GuardEvidence>{
-  const base=new URL(allowed);
-  const attempts:string[]=[];
-  await context.route("**/*",async route=>{
-    const url=new URL(route.request().url());
-    if(url.hostname!==base.hostname||url.port!==base.port||url.protocol!==base.protocol){
-      attempts.push(url.origin);
-      await route.abort("blockedbyclient");
-    }else await route.continue();
-  });
-  return{attempts};
+async function navigate(page:Page,monitor:{accessUrl:string}):Promise<void>{
+  await openMonitor(page,monitor.accessUrl);
+  await expect(page.getByLabel("STM32 Monitor")).toBeAttached();
 }
 
-type HeapSample={minute:number;bytes:number};
-
-function heapSlope(samples:readonly HeapSample[]):number{
-  if(samples.length<2)return 0;
-  const xm=samples.reduce((n,x)=>n+x.minute,0)/samples.length;
-  const ym=samples.reduce((n,x)=>n+x.bytes,0)/samples.length;
-  const numerator=samples.reduce((n,x)=>n+(x.minute-xm)*(x.bytes-ym),0);
-  const denominator=samples.reduce((n,x)=>n+(x.minute-xm)**2,0);
-  return denominator===0?0:numerator/denominator/1048576;
-}
-
-test("production fixture stays bounded under a continuous live stream",async({page,context})=>{
-  test.setTimeout(90_000);
-  const monitor=await startMonitor(process.cwd(),process.env.STM32_MONITOR_EVIDENCE??process.cwd());
+test("five-minute production fixture stays bounded",async({page,context})=>{
+  test.setTimeout(600_000);
+  const monitor=await startMonitor(process.cwd(),process.env.STM32_MONITOR_EVIDENCE??process.cwd(),256);
   try{
     const guard=await installSameOriginGuard(context,monitor.url);
-    await openMonitor(page,monitor.accessUrl);
-    await expect(page.getByLabel("STM32 Monitor")).toBeAttached();
+
+    // Create the 256-row group via the API before the page first loads, so the
+    // app's initial groups load includes it and selects it as the first group.
+    const groupId=await createGroupViaApi(monitor,"Perf Watch",256);
+    expect(groupId.length).toBeGreaterThan(0);
+
+    await navigate(page,monitor);
+    await expect(page.getByRole("button",{name:"Perf Watch (256)"})).toBeVisible();
+
     await page.getByRole("button",{name:"Connect",exact:true}).click();
     await expect(page.getByText(/Connected: probe-a/)).toBeVisible();
-
-    await page.getByRole("button",{name:"New group"}).click();
-    for(const expression of ["counter","faulty"]){
-      await page.getByLabel("Search").fill(expression);
-      await expect(page.getByRole("button",{name:"Add to group"})).toBeVisible();
-      await page.getByRole("button",{name:"Add to group"}).click();
-    }
-    await page.getByLabel("Name").fill("Perf Watch");
-    await page.getByRole("button",{name:"Create group"}).click();
     await page.getByRole("button",{name:"Start"}).click();
     await expect(page.getByLabel("Sampling controls").getByRole("status")).toContainText("RUNNING");
 
-    await page.evaluate(()=>{
-      const target=window as unknown as {__longTasks:number[]};
-      target.__longTasks=[];
-      const observer=new PerformanceObserver(list=>{
-        target.__longTasks.push(...list.getEntries().map(entry=>entry.duration));
-      });
-      observer.observe({entryTypes:["longtask"]});
-      (window as unknown as {__observer:PerformanceObserver}).__observer=observer;
+    await selectSeries(page,8);
+
+    const warmupMs=Number(process.env.STM32_MONITOR_PERF_WARMUP_MS??120_000);
+    const measureMs=Number(process.env.STM32_MONITOR_PERF_MEASURE_MS??180_000);
+    const metrics=await collectFiveMinuteMetrics(page,monitor,{
+      warmupMs,
+      measureMs,
+      producer:{hz:10,typedValues:typedValues(256)},
     });
 
-    const table=page.getByRole("region",{name:"Live values"}).getByRole("table");
-    await expect(table).toContainText("counter");
-    const heaps:HeapSample[]=[];
-    const started=Date.now();
-    while(Date.now()-started<10_000){
-      await page.waitForTimeout(1_000);
-      const heap=await page.evaluate(()=>
-        (performance as unknown as {memory?:{usedJSHeapSize:number}}).memory?.usedJSHeapSize??0
-      );
-      heaps.push({minute:(Date.now()-started)/60_000,bytes:heap});
-    }
-
-    const longTasks=await page.evaluate(()=>{
-      const tasks=(window as unknown as {__longTasks:number[]}).__longTasks??[];
-      (window as unknown as {__observer:PerformanceObserver|undefined}).__observer=undefined;
-      return tasks;
-    });
-    const realizedRows=await table.locator("tbody tr").count();
-
-    expect(longTasks.filter(value=>value>=200).length).toBe(0);
-    expect(heapSlope(heaps)).toBeLessThanOrEqual(2);
-    expect(realizedRows).toBeGreaterThan(0);
-    await expect(page.getByLabel("Sampling controls").getByRole("status")).toContainText("RUNNING");
+    expect(metrics.realizedPoints).toBe(4800);
+    expect(metrics.updateP95Ms).toBeLessThanOrEqual(150);
+    expect(metrics.longTasksAtLeast200Ms).toBe(0);
+    expect(metrics.queueGrowth).toBeLessThanOrEqual(0);
+    expect(metrics.heapSlopeMiBPerMinute).toBeLessThanOrEqual(2);
+    assertSameServerDrops(metrics.serverDropsBefore,metrics.serverDropsAfter);
+    // A 10 Hz producer over the 180 s measured window targets ~1800 batches; the
+    // fixture's per-sample serialization overhead yields a sustained rate of
+    // ~9-10 Hz, so the assertion is tolerant rather than exact.
+    expect(BigInt(metrics.sampleCount)).toBeGreaterThanOrEqual(1500n);
+    expect(BigInt(metrics.sampleCount)).toBeLessThanOrEqual(1810n);
+    expect(BigInt(metrics.assetSizes.rawBytes)).toBeGreaterThan(0n);
+    expect(BigInt(metrics.assetSizes.gzipJsBytes)).toBeGreaterThan(0n);
+    expect(BigInt(metrics.assetSizes.gzipCssBytes)).toBeGreaterThan(0n);
     expect(guard.attempts).toEqual([]);
+
+    const evidenceRoot=process.env.STM32_MONITOR_EVIDENCE??resolve(tmpdir(),"stm32-monitor-evidence");
+    const outDir=resolve(evidenceRoot,".performance-evidence");
+    mkdirSync(outDir,{recursive:true});
+    writeFileSync(resolve(outDir,"performance.json"),JSON.stringify(metrics,null,2),"utf-8");
   }finally{
-    monitor.stop();
+    await monitor.stop();
   }
 });

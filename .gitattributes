@@ -1,3 +1,6 @@
 # Committed Vite output must check out byte-identically (LF) regardless of
 # core.autocrlf so that `npm run verify:dist` rebuilds and compares cleanly.
+# The source `ui/index.html` is the verbatim Vite entry; it must also check out
+# as LF so a clean Windows checkout rebuilds byte-identical LF output.
 /tools/stm32-monitor/src/stm32_monitor/ui_dist/** text eol=lf
+/tools/stm32-monitor/ui/index.html text eol=lf

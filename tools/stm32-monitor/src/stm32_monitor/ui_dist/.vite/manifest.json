@@ -4,7 +4,7 @@
     "name": "contract"
   },
   "index.html": {
-    "file": "assets/index-BxMQw6dr.js",
+    "file": "assets/index-CCRAeyKK.js",
     "name": "index",
     "src": "index.html",
     "isEntry": true,
@@ -26,7 +26,7 @@
     "isDynamicEntry": true
   },
   "src/app.tsx": {
-    "file": "assets/app-C3uSAkZm.js",
+    "file": "assets/app-CXOFjTvX.js",
     "name": "app",
     "src": "src/app.tsx",
     "isDynamicEntry": true,

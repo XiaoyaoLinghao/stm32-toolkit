@@ -29,7 +29,8 @@
 |---|---|---|
 | 0.3.0 | `2026-08-04-stm32-toolkit-0.3-project-migration-build.md` | Schema v2, Keil inspect/convert, deterministic GCC/VS Code generation, build and firmware identity |
 | 0.4.0 | `2026-08-04-stm32-toolkit-0.4-probe-debug.md` | Probe leases/service, safe flash, Cortex-Debug handoff, typed variable/register/Fault evidence |
-| 0.5.0–0.6.0 | `2026-08-04-stm32-toolkit-0.5-0.6-monitor-test-diagnostics.md` | Rebuilt Monitor, host/target tests, persistent evidence-backed AI diagnosis |
+| 0.5.0 | `2026-08-10-stm32tk-0502-lean-monitor-ui-design.md` | Rebuilt project-isolated Monitor service and offline UI; unified 0.5.0 release; zero presets; explicit connect/start |
+| 0.6.0 | `2026-08-04-stm32-toolkit-0.5-0.6-monitor-test-diagnostics.md` | Host/target test execution and evidence-driven AI diagnostics (deferred; not started before 0.5.0 acceptance) |
 | 0.7.0–1.0.0 | `2026-08-04-stm32-toolkit-0.7-1.0-creation-acceptance.md` | CubeMX new-project creation and real-board vertical acceptance |
 
 ## Progress Tracking
@@ -87,9 +88,9 @@ Implementation commits must update the detailed task checkbox in the correspondi
 | VS Code/GCC configuration and selected extensions | 0.3 Task 4; 0.7 Task 3 |
 | Build identity and reproducibility | 0.3 Task 5 |
 | Safe probe ownership, flashing, reads, registers, Fault evidence | 0.4 Tasks 1–3 |
-| User-created monitor groups and unchanged monitor capabilities | 0.5–0.6 Tasks 1–2 |
-| Host and real-target test execution | 0.5–0.6 Task 3 |
-| AI hypotheses, autonomous safe observations, debug control, evidence, and fix verification | 0.5–0.6 Task 4 |
+| User-created monitor groups and unchanged monitor capabilities | 0.5 Tasks 1–2 (delivered in 0502) |
+| Host and real-target test execution | 0.6 Task 3 (deferred) |
+| AI hypotheses, autonomous safe observations, debug control, evidence, and fix verification | 0.6 Task 4 (deferred) |
 | From-zero CubeMX project creation without a hand-written MCU matrix | 0.7–1.0 Task 1 |
 | Per-project data isolation, versioning, GitHub-only installation, and upgrades | all phases; 0.7–1.0 Task 3 |
 | Non-skippable real-board vertical proof | 0.7–1.0 Tasks 2 and 4 |

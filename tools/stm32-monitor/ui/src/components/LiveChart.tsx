@@ -30,7 +30,12 @@ export function LiveChart({series,range}:LiveChartProps):JSX.Element{
     const chart=chartRef.current;
     if(chart===null)return;
     const option=buildChartOption(series,range);
+    const started=performance.now();
     chart.setOption(option,{notMerge:true});
+    const durationMs=performance.now()-started;
+    window.dispatchEvent(new CustomEvent("stm32-monitor:chart-update",{detail:{durationMs}}));
+    const realized=series.reduce((n,s)=>n+Math.min(s.points.length,600),0);
+    hostRef.current!.setAttribute("data-chart-realized-points",String(realized));
   },[series,range]);
   return<section className="panel" aria-label="Live chart">
     <h2>Live chart</h2>

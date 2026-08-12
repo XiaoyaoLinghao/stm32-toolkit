@@ -9,7 +9,7 @@
     {
       "name": "stm32-toolkit",
       "source": "./",
-      "description": "STM32 project migration, reproducible builds, probe flashing, and typed debug workflows",
+      "description": "STM32 project migration, reproducible builds, probe flashing, typed debug workflows, and the project-isolated Monitor UI",
       "homepage": "https://github.com/XiaoyaoLinghao/stm32-toolkit",
       "repository": "https://github.com/XiaoyaoLinghao/stm32-toolkit"
     }
