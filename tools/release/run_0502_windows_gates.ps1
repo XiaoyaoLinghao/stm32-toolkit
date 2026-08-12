@@ -411,12 +411,14 @@ try {
     # CPython 3.10 runs the complete correctness suite but excludes
     # test_performance.py: the accepted 0501 performance thresholds were
     # calibrated on CPython 3.12 (see the test's ACCEPTANCE_COMMAND). The 3.12
-    # gates below carry the original performance gate, uninstrumented.
+    # performance gate runs FIRST, before the heavy correctness partitions, so
+    # the acceptance measurement is taken on an unloaded machine exactly as the
+    # original 0501 gate was calibrated.
+    Invoke-0502Gate 'python312-monitor-perf' $RepoRoot $testPython312 (@('-m', 'pytest') + $perfOnly + @('-q', '-s', '-p', 'no:cacheprovider', '--basetemp', (Join-Path $EvidenceRoot 'bt-monitor-perf-312')))
     Invoke-0502Gate 'python310-monitor-complete' $RepoRoot $testPython310 @('-m', 'pytest', 'tools/stm32-monitor/tests', '--ignore=tools/stm32-monitor/tests/test_performance.py', '-q', '-p', 'no:cacheprovider', '--basetemp', (Join-Path $EvidenceRoot 'bt-monitor-310'))
     $env:COVERAGE_FILE = Join-Path $EvidenceRoot '.coverage-monitor-312'
     Invoke-0502Gate 'python312-monitor-main' $RepoRoot $testPython312 (@('-m', 'pytest', 'tools/stm32-monitor/tests') + $ignore + @('-q', '-p', 'no:cacheprovider', '--cov=stm32_monitor', '--cov-branch', '--cov-report=', '--basetemp', (Join-Path $EvidenceRoot 'bt-monitor-main-312')))
     Invoke-0502Gate 'python312-monitor-special' $RepoRoot $testPython312 (@('-m', 'pytest') + $specialCore + @('-q', '-s', '-p', 'no:cacheprovider', '--cov=stm32_monitor', '--cov-branch', '--cov-append', '--cov-report=', '--basetemp', (Join-Path $EvidenceRoot 'bt-monitor-special-312')))
-    Invoke-0502Gate 'python312-monitor-perf' $RepoRoot $testPython312 (@('-m', 'pytest') + $perfOnly + @('-q', '-s', '-p', 'no:cacheprovider', '--basetemp', (Join-Path $EvidenceRoot 'bt-monitor-perf-312')))
 
     # --- Toolkit sharded coverage ---------------------------------------------
     $toolkitFiles = @(Get-ChildItem -LiteralPath (Join-Path $RepoRoot 'tools\stm32-toolkit\tests') -Filter 'test_*.py' -File | ForEach-Object { $_.FullName.Substring($RepoRoot.Length + 1).Replace('\', '/') } | Sort-Object)
