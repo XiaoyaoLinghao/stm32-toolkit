@@ -283,11 +283,7 @@ def _verified_history_slice(
         else source_values
     )
     result = HistoryBatchSlice(
-        binding=(
-            ObservationBinding.from_dict(batch.binding.to_dict())
-            if isolate_outer
-            else batch.binding
-        ),
+        binding=(_isolated_verified_binding(batch.binding) if isolate_outer else batch.binding),
         group_id=UUID(int=batch.group_id.int) if isolate_outer else batch.group_id,
         group_revision=batch.group_revision,
         run_id=UUID(int=batch.run_id.int) if isolate_outer else batch.run_id,
@@ -309,6 +305,19 @@ def _verified_history_slice(
         (_TRUSTED_HISTORY_SIZE, serialized_bytes),
     )
     object.__setattr__(result, "_verified_marker", _TRUSTED_HISTORY_SLICE)
+    return result
+
+
+def _isolated_verified_binding(binding: ObservationBinding) -> ObservationBinding:
+    """Copy the outer binding node while sharing only immutable leaves.
+
+    The accepted binding fields (identifiers, target/build/ELF strings, booleans)
+    are all immutable, so a shallow instance copy gives callers an independent
+    node without re-serializing/rebuilding the model. This is a hot per-batch
+    isolation path (39 slices per 10k-value page).
+    """
+    result = object.__new__(ObservationBinding)
+    object.__setattr__(result, "__dict__", binding.__dict__.copy())
     return result
 
 
@@ -339,7 +348,7 @@ def _isolated_verified_batch(batch: SampleBatch) -> SampleBatch:
     ):
         raise TypeError("verified history batch is invalid")
     return SampleBatch(
-        binding=ObservationBinding.from_dict(batch.binding.to_dict()),
+        binding=_isolated_verified_binding(batch.binding),
         group_id=UUID(int=batch.group_id.int),
         group_revision=batch.group_revision,
         run_id=UUID(int=batch.run_id.int),
