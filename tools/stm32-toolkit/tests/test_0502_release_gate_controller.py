@@ -545,8 +545,8 @@ def recording(tmp_path: Path, launcher_exe: Path) -> dict:
         "npmVersion": "11.16.0",
         "pythonRequirements": [
             "aiohttp==3.12.15", "build==1.3.0", "coverage==7.10.7", "jinja2==3.1.6",
-            "jsonschema==4.25.1", "mcp==1.20.0", "pyelftools==0.32", "pyocd==0.36.0",
-            "pytest==8.4.2", "pytest-cov==7.0.0", "setuptools==80.9.0", "wheel==0.45.1",
+            "jsonschema==4.25.1", "mcp==1.29.0", "pyelftools==0.33", "pyocd==0.45.1",
+            "pytest==8.4.2", "pytest-cov==6.3.0", "setuptools==80.9.0", "wheel==0.45.1",
         ],
         "supportManifestSha256": "1" * 64,
         "supportTreeSha256": "2" * 64,
@@ -902,12 +902,16 @@ EXPECTED_GATES = [
     "wheel-hashes",
     "installed-venv-310",
     "installed-packages-310",
+    "installed-pip-check-310",
     "installed-smoke-310",
+    "installed-http-310",
     "launcher-monitor-310",
     "launcher-toolkit-310",
     "installed-venv-312",
     "installed-packages-312",
+    "installed-pip-check-312",
     "installed-smoke-312",
+    "installed-http-312",
     "launcher-monitor-312",
     "launcher-toolkit-312",
     "launcher-fail-closed-missing-env",
@@ -1266,9 +1270,9 @@ ARTIFACT_NAMES = [
 ]
 ARTIFACT_VERSIONS = {
     "setuptools": "80.9.0", "wheel": "0.45.1", "build": "1.3.0", "pytest": "8.4.2",
-    "pytest-cov": "7.0.0", "coverage": "7.10.7", "aiohttp": "3.12.15",
-    "jsonschema": "4.25.1", "mcp": "1.20.0", "pyelftools": "0.32", "jinja2": "3.1.6",
-    "pyocd": "0.36.0",
+    "pytest-cov": "6.3.0", "coverage": "7.10.7", "aiohttp": "3.12.15",
+    "jsonschema": "4.25.1", "mcp": "1.29.0", "pyelftools": "0.33", "jinja2": "3.1.6",
+    "pyocd": "0.45.1",
 }
 
 
@@ -1485,3 +1489,27 @@ def test_controller_rejects_tool_version_mismatch_before_node_gates(
     summary = json.loads((evidence / "summary.json").read_text(encoding="utf-8"))
     names = [g["gate"] for g in summary["gates"]]
     assert "node-npm-ci" not in names
+
+def test_support_illegal_artifact_version_fails_before_product_gates(
+    tmp_path: Path, recording: dict, fake_repo: Path, launcher_exe: Path,
+) -> None:
+    # The verifier must reject a support root whose python artifact versions
+    # violate the product's dependency ranges.
+    root = tmp_path / "real-support"
+    root.mkdir()
+    try:
+        _build_valid_support_root(root)
+        _make_support_writable(root)
+        manifest_path = root / "support-manifest.json"
+        doc = json.loads(manifest_path.read_text(encoding="utf-8"))
+        doc["pythonArtifacts"]["pyocd"]["version"] = "0.36.0"  # violates pyocd>=0.45.1,<0.46
+        manifest_path.write_text(json.dumps(doc), encoding="utf-8")
+        subprocess.run(["icacls", str(root), "/deny", "*S-1-1-0:(W)"], check=True, capture_output=True)
+        result = _run_mutation_controller(tmp_path, recording, fake_repo, launcher_exe, root)
+        assert result.returncode != 0
+        summary = json.loads((tmp_path / "evidence" / "summary.json").read_text(encoding="utf-8"))
+        names = [g["gate"] for g in summary["gates"]]
+        assert "verify-support-before-copy" in names
+        assert "node-npm-ci" not in names
+    finally:
+        _make_support_writable(root)

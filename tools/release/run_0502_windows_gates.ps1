@@ -395,7 +395,11 @@ try {
     $monitorSpecial = Get-0502NodeIds 'collect-monitor-special-312' $testPython312 $special @()
     Assert-0502ExactPartition 'Monitor 3.12' $monitorAll312 @($monitorMain + $monitorSpecial)
 
-    Invoke-0502Gate 'python310-monitor-complete' $RepoRoot $testPython310 @('-m', 'pytest', 'tools/stm32-monitor/tests', '-q', '-p', 'no:cacheprovider', '--basetemp', (Join-Path $EvidenceRoot 'bt-monitor-310'))
+    # CPython 3.10 runs the complete correctness suite but excludes
+    # test_performance.py: the accepted 0501 performance thresholds were
+    # calibrated on CPython 3.12 (see the test's ACCEPTANCE_COMMAND). The 3.12
+    # partitions below carry the original performance gate.
+    Invoke-0502Gate 'python310-monitor-complete' $RepoRoot $testPython310 @('-m', 'pytest', 'tools/stm32-monitor/tests', '--ignore=tools/stm32-monitor/tests/test_performance.py', '-q', '-p', 'no:cacheprovider', '--basetemp', (Join-Path $EvidenceRoot 'bt-monitor-310'))
     $env:COVERAGE_FILE = Join-Path $EvidenceRoot '.coverage-monitor-312'
     Invoke-0502Gate 'python312-monitor-main' $RepoRoot $testPython312 (@('-m', 'pytest', 'tools/stm32-monitor/tests') + $ignore + @('-q', '-p', 'no:cacheprovider', '--cov=stm32_monitor', '--cov-branch', '--cov-report=', '--basetemp', (Join-Path $EvidenceRoot 'bt-monitor-main-312')))
     Invoke-0502Gate 'python312-monitor-special' $RepoRoot $testPython312 (@('-m', 'pytest') + $special + @('-q', '-s', '-p', 'no:cacheprovider', '--cov=stm32_monitor', '--cov-branch', '--cov-append', '--cov-report=', '--basetemp', (Join-Path $EvidenceRoot 'bt-monitor-special-312')))
@@ -456,8 +460,51 @@ print(json.dumps({os.path.basename(p):{'bytes':os.path.getsize(p),'sha256':hashl
             Invoke-0502Gate ('installed-venv-' + $minor) $EvidenceRoot $base @('-m', 'venv', $runtime)
             $installedPython = (Resolve-Path -LiteralPath (Join-Path $runtime 'Scripts\python.exe')).Path
             Invoke-0502Gate ('installed-packages-' + $minor) $EvidenceRoot $installedPython @('-m', 'pip', 'install', '--no-index', '--find-links', $supportWheelhouse, (Join-Path $wheels 'stm32_toolkit-0.5.0-py3-none-any.whl'), (Join-Path $wheels 'stm32_monitor-0.5.0-py3-none-any.whl'), 'pyocd')
+            Invoke-0502Gate ('installed-pip-check-' + $minor) $EvidenceRoot $installedPython @('-m', 'pip', 'check')
+            # Version + import-path + ui_dist verification. Single-quoted inline
+            # code only (Windows PowerShell 5.1 mangles embedded double quotes).
             $smoke = "import importlib.metadata as m,pathlib,sys;import stm32_monitor,stm32_toolkit;from stm32_monitor.ui_assets import UiAssets;assert m.version('stm32-toolkit')==m.version('stm32-monitor')=='0.5.0';assert pathlib.Path(stm32_monitor.__file__).resolve().is_relative_to(pathlib.Path(sys.prefix).resolve());assert UiAssets.load().find('/') is not None"
             Invoke-0502Gate ('installed-smoke-' + $minor) $EvidenceRoot $installedPython @('-I', '-c', $smoke)
+            # Real HTTP smoke against the installed monitor service: public
+            # homepage 200 + bound-port CSP, unknown asset 404, unauth API reject.
+            $httpScript = Join-Path $EvidenceRoot ('installed-http-' + $minor + '.py')
+            $httpBody = @"
+import asyncio
+import aiohttp
+from stm32_monitor.service import MonitorService
+
+class _Runtime:
+    async def dispatch(self, operation, payload, *, resource_id=None, query=None):
+        return {'operation': operation, 'workspaceId': 'workspace-a'}
+    def record_service_drops(self, count):
+        return None
+    async def live_subscribe(self, *, after_event_id=None):
+        if False:
+            yield {}
+
+async def main():
+    service = MonitorService(_Runtime(), workspace_id='w', session_id='s', serve_ui=True)
+    endpoint = await service.start()
+    try:
+        async with aiohttp.ClientSession() as client:
+            async with client.get(endpoint.url + '/') as resp:
+                assert resp.status == 200, resp.status
+                body = await resp.text()
+                assert '<!doctype' in body.lower() or '<html' in body.lower(), 'homepage is not html'
+                csp = resp.headers.get('Content-Security-Policy', '')
+                assert 'default-src' in csp and 'connect-src' in csp, csp
+                assert 'ws://127.0.0.1' in csp, csp
+            async with client.get(endpoint.url + '/assets/nope.js') as resp:
+                assert resp.status == 404, resp.status
+            async with client.get(endpoint.url + '/api/v1/status') as resp:
+                assert resp.status in (401, 403), resp.status
+    finally:
+        await service.stop()
+
+asyncio.run(main())
+"@
+            [IO.File]::WriteAllText($httpScript, $httpBody, [Text.UTF8Encoding]::new($false))
+            Invoke-0502Gate ('installed-http-' + $minor) $EvidenceRoot $installedPython @('-I', $httpScript)
             $env:CLAUDE_PLUGIN_ROOT = $RepoRoot
             $env:CLAUDE_PLUGIN_DATA = $pluginData
             Invoke-0502Gate ('launcher-monitor-' + $minor) $RepoRoot $CmdExe @('/d', '/c', (Join-Path $RepoRoot 'bin\stm32-monitor.cmd'), '--help')

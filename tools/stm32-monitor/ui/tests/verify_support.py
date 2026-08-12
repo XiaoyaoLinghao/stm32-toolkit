@@ -57,6 +57,34 @@ for name,artifact in artifacts.items():
  try:path.relative_to(artifacts_root)
  except ValueError:raise SystemExit(f"python artifact escapes artifacts: {name}")
  if artifact["path"] not in seen: raise SystemExit(f"python artifact is not hashed: {name}")
+# Every python artifact that is a declared product dependency must satisfy the
+# product's version range (packaging specifiers, minimal PEP 440 tuple compare).
+def _vkey(value: str) -> tuple:
+ return tuple(int(x) for x in re.findall(r"\d+", value))
+def _version_satisfies(version: str, spec: str) -> bool:
+ v=_vkey(version)
+ for part in spec.split(","):
+  part=part.strip()
+  m=re.match(r"^(>=|<=|>|<|==|!=)?\s*v?([0-9][0-9A-Za-z.\-]*)",part)
+  if not m: continue
+  op=m.group(1) or "==";w=_vkey(m.group(2))
+  ok={"<>":lambda a,b:a!=b,"<":lambda a,b:a<b,"<=":lambda a,b:a<=b,">":lambda a,b:a>b,">=":lambda a,b:a>=b,"==":lambda a,b:a==b,"!=":lambda a,b:a!=b}.get(op,lambda a,b:a==b)(v,w)
+  if not ok: return False
+ return True
+here=Path(__file__).resolve();product_specs={}
+for candidate in list(here.parents):
+ toolkit=candidate/"tools/stm32-toolkit/pyproject.toml"
+ monitor=candidate/"tools/stm32-monitor/pyproject.toml"
+ if toolkit.is_file() and monitor.is_file():
+  for path in (monitor,toolkit):
+   text=path.read_text("utf-8")
+   for m in re.finditer(r'"([A-Za-z0-9_.-]+)\s*([<>=!~]+[^"]*)"',text):
+    product_specs[m.group(1).lower().replace("_","-")]=m.group(2).strip()
+  break
+for name,artifact in artifacts.items():
+ spec=product_specs.get(name.lower().replace("_","-"))
+ if spec is not None and not _version_satisfies(str(artifact["version"]),spec):
+  raise SystemExit(f"python artifact version violates product requirement: {name}=={artifact['version']} not in {spec}")
 requirements=[name+"=="+artifacts[name]["version"] for name in sorted(artifacts)]
 for table in ("dependencies","devDependencies"):
  if not doc.get("nodePackages",{}).get(table) or any(re.fullmatch(r"\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?",value) is None for value in doc["nodePackages"][table].values()): raise SystemExit("npm versions are not exact")
