@@ -17,6 +17,7 @@ PLUGIN_MANIFEST = REPO_ROOT / ".claude-plugin" / "plugin.json"
 MARKETPLACE_MANIFEST = REPO_ROOT / ".claude-plugin" / "marketplace.json"
 MCP_CONFIG = REPO_ROOT / ".mcp.json"
 LAUNCHER = REPO_ROOT / "bin" / "stm32-toolkit-mcp.cmd"
+MONITOR_LAUNCHER = REPO_ROOT / "bin" / "stm32-monitor.cmd"
 SETUP_SKILL = REPO_ROOT / "skills" / "setup-stm32-env" / "SKILL.md"
 SETUP_HELPER = REPO_ROOT / "bin" / "setup-stm32-env.ps1"
 FOLLOW_ON_SKILLS = REPO_ROOT / "requirements" / "follow-on-skills"
@@ -180,6 +181,97 @@ def test_launcher_forwards_arguments_and_preserves_runtime_exit_code(tmp_path: P
     assert result.stderr == ""
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows cmd.exe launcher")
+def test_monitor_launcher_reports_missing_environment_without_interpreter_fallback(
+    tmp_path: Path,
+):
+    fake_path = tmp_path / "fake-path"
+    fake_path.mkdir()
+    marker = tmp_path / "fallback-used.txt"
+    for name in ("python.cmd", "py.cmd", "uv.cmd"):
+        (fake_path / name).write_text(
+            f'@echo fallback>"{marker}"\r\n@exit /b 0\r\n',
+            encoding="utf-8",
+        )
+
+    environment = os.environ.copy()
+    environment.pop("CLAUDE_PLUGIN_DATA", None)
+    environment["PATH"] = str(fake_path)
+    result = _run_monitor_launcher(environment, "open", "--help")
+
+    assert result.returncode != 0
+    assert result.stdout == ""
+    assert "stm32-monitor" in result.stderr
+    assert "CLAUDE_PLUGIN_DATA" in result.stderr
+    assert not marker.exists()
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows cmd.exe launcher")
+def test_monitor_launcher_reports_missing_versioned_runtime_without_interpreter_fallback(
+    tmp_path: Path,
+):
+    plugin_data = tmp_path / "plugin data"
+    fake_path = tmp_path / "fake-path"
+    fake_path.mkdir()
+    marker = tmp_path / "fallback-used.txt"
+    for name in ("python.cmd", "py.cmd", "uv.cmd"):
+        (fake_path / name).write_text(
+            f'@echo fallback>"{marker}"\r\n@exit /b 0\r\n',
+            encoding="utf-8",
+        )
+
+    environment = os.environ.copy()
+    environment["CLAUDE_PLUGIN_DATA"] = str(plugin_data)
+    environment["PATH"] = str(fake_path)
+    result = _run_monitor_launcher(environment, "open", "--help")
+
+    assert result.returncode != 0
+    assert result.stdout == ""
+    assert "stm32-monitor" in result.stderr
+    assert "runtime/0.5.0/Scripts/python.exe" in result.stderr.replace("\\", "/")
+    assert not marker.exists()
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows cmd.exe launcher")
+def test_monitor_launcher_forwards_arguments_and_preserves_runtime_exit_code(
+    tmp_path: Path,
+):
+    plugin_data = tmp_path / "plugin data"
+    runtime = plugin_data / "runtime" / "0.5.0"
+    venv.EnvBuilder(with_pip=False).create(runtime)
+    module_root = tmp_path / "stub module"
+    package = module_root / "stm32_monitor"
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_text("", encoding="utf-8")
+    (package / "__main__.py").write_text(
+        "import json, sys\n"
+        "print(json.dumps(sys.argv[1:]))\n"
+        "raise SystemExit(19)\n",
+        encoding="utf-8",
+    )
+
+    environment = os.environ.copy()
+    environment["CLAUDE_PLUGIN_DATA"] = str(plugin_data)
+    environment["PYTHONPATH"] = str(module_root)
+    result = _run_monitor_launcher(
+        environment,
+        "open",
+        "--project",
+        str(tmp_path / "project with spaces"),
+        "--data-root",
+        str(plugin_data),
+    )
+
+    assert result.returncode == 19
+    assert json.loads(result.stdout) == [
+        "open",
+        "--project",
+        str(tmp_path / "project with spaces"),
+        "--data-root",
+        str(plugin_data),
+    ]
+
+
 def test_setup_skill_has_an_explicit_read_only_check_and_authorized_mutation_contract():
     skill = SETUP_SKILL.read_text(encoding="utf-8")
     normalized = skill.replace("\\", "/")
@@ -229,7 +321,7 @@ def test_setup_skill_has_an_explicit_read_only_check_and_authorized_mutation_con
     assert "pip install pyocd" not in normalized
 
 
-def test_exactly_seven_release_skills_are_discovered_and_follow_on_sources_are_preserved():
+def test_exactly_eight_release_skills_are_discovered_and_follow_on_sources_are_preserved():
     discovered = {
         path.parent.name
         for path in (REPO_ROOT / "skills").glob("*/SKILL.md")
@@ -247,8 +339,30 @@ def test_exactly_seven_release_skills_are_discovered_and_follow_on_sources_are_p
         "flash-firmware",
         "debug-firmware",
         "read-var",
+        "stm32-monitor",
     }
     assert preserved == LEGACY_SKILLS
+
+
+def test_monitor_skill_is_thin_explicit_and_launcher_bound():
+    skill = (
+        REPO_ROOT / "skills" / "stm32-monitor" / "SKILL.md"
+    ).read_text(encoding="utf-8")
+
+    assert skill.startswith("---\nname: stm32-monitor\n")
+    assert "stm32_project_context" in skill
+    assert "observation-only" in skill
+    assert "zero presets" in skill
+    assert "never connects a probe or starts sampling automatically" in skill
+    assert "explicit request to open" in skill
+    assert "bin/stm32-monitor.cmd" in skill
+    assert "open --project" in skill
+    assert "--data-root" in skill
+    assert "${CLAUDE_PLUGIN_ROOT}" in skill
+    assert "${CLAUDE_PLUGIN_DATA}" in skill
+    assert "${CLAUDE_PROJECT_DIR}" in skill
+    assert "Never print, persist, copy, or log the fragment URL" in skill
+    assert "explicit page actions" in skill
 
 
 def test_hardware_skills_are_thin_project_bound_mcp_workflows():
@@ -448,6 +562,19 @@ def _run_launcher(environment: dict[str, str], *arguments: str) -> subprocess.Co
     )
 
 
+def _run_monitor_launcher(
+    environment: dict[str, str], *arguments: str
+) -> subprocess.CompletedProcess[str]:
+    command_processor = os.environ.get("COMSPEC", "cmd.exe")
+    return subprocess.run(
+        [command_processor, "/d", "/c", str(MONITOR_LAUNCHER), *arguments],
+        check=False,
+        capture_output=True,
+        text=True,
+        env=environment,
+    )
+
+
 def _environment_without_claude_plugin_paths() -> dict[str, str]:
     environment = os.environ.copy()
     for name in (
@@ -506,6 +633,7 @@ def _project_snapshot(root: Path) -> dict[str, bytes]:
 def test_unified_0_4_0_runtime_version_across_launcher_setup_and_skill():
     """No launcher/helper/Skill selects the obsolete 0.3 runtime."""
     launcher = LAUNCHER.read_text(encoding="utf-8")
+    monitor_launcher = MONITOR_LAUNCHER.read_text(encoding="utf-8")
     helper = SETUP_HELPER.read_text(encoding="utf-8")
     skill = SETUP_SKILL.read_text(encoding="utf-8")
     manifest = json.loads(PLUGIN_MANIFEST.read_text(encoding="utf-8"))
@@ -514,9 +642,17 @@ def test_unified_0_4_0_runtime_version_across_launcher_setup_and_skill():
     assert "runtime\\0.5.0\\Scripts\\python.exe" in launcher
     assert "runtime/0.5.0/Scripts/python.exe" in launcher.replace("\\", "/")
     assert "0.3.0" not in launcher
+    assert "runtime\\0.5.0\\Scripts\\python.exe" in monitor_launcher
+    assert "runtime/0.5.0/Scripts/python.exe" in monitor_launcher.replace("\\", "/")
+    assert "0.3.0" not in monitor_launcher
+    assert " -m stm32_monitor " in monitor_launcher
     assert '$RuntimeVersion = "0.5.0"' in helper
     assert "0.3.0" in helper  # legacy-upgrade detection, never current selection
     assert '"${package}[probe]"' in helper
+    assert "$monitorPackage" in helper
+    assert "MonitorValidationScript" in helper
+    assert "stm32-monitor" in helper
+    assert "ui_dist" in helper
     assert "import pyocd" in helper
     assert '"-I", "-c"' in helper
     assert "${CLAUDE_PLUGIN_DATA}/runtime/0.5.0" in skill

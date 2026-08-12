@@ -1,0 +1,3 @@
+# Committed Vite output must check out byte-identically (LF) regardless of
+# core.autocrlf so that `npm run verify:dist` rebuilds and compares cleanly.
+/tools/stm32-monitor/src/stm32_monitor/ui_dist/** text eol=lf

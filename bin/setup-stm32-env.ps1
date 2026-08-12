@@ -35,6 +35,49 @@ if not lower_bound <= parsed_version < upper_bound:
 print(probe_version)
 '@
 
+$MonitorValidationScript = @'
+import importlib.metadata as metadata
+import json
+from importlib import resources
+
+
+def _file(root, relative):
+    node = root
+    for part in relative.split("/"):
+        if not part:
+            continue
+        node = node.joinpath(part)
+    return node.is_file()
+
+
+try:
+    version = metadata.version("stm32-monitor")
+except Exception:
+    raise SystemExit(2)
+ui = resources.files("stm32_monitor") / "ui_dist"
+if version != "0.5.0":
+    raise SystemExit(3)
+if not _file(ui, "index.html") or not _file(ui, ".vite/manifest.json"):
+    raise SystemExit(4)
+try:
+    manifest = json.loads((ui / ".vite" / "manifest.json").read_text("utf-8"))
+except Exception:
+    raise SystemExit(5)
+assets = []
+for record in manifest.values():
+    if not isinstance(record, dict):
+        continue
+    for field in ("file", "css", "assets"):
+        value = record.get(field)
+        if isinstance(value, str):
+            assets.append(value)
+        elif isinstance(value, list):
+            assets.extend(item for item in value if isinstance(item, str))
+if not assets or not all(_file(ui, name) for name in assets):
+    raise SystemExit(6)
+print(version)
+'@
+
 function Resolve-ClaudePath {
     param([string]$Name, [AllowEmptyString()][string]$Value, [switch]$MustExist)
     if ([string]::IsNullOrWhiteSpace($Value)) { throw "$Name is empty; Claude inline path substitution is required" }
@@ -172,6 +215,8 @@ function Get-RuntimeEvidence {
     if ($evidence.version -ne $RuntimeVersion) { $evidence.status = "broken"; $evidence.error = "expected toolkit $RuntimeVersion, found $($evidence.version)"; return $evidence }
     $probeRuntime = Invoke-BoundedProcess $RuntimePython @("-I", "-c", $ProbeValidationScript) 10
     if ($probeRuntime.status -ne "ok") { $evidence.status = "broken"; $evidence.error = "pyocd runtime validation failed ($($probeRuntime.status))"; return $evidence }
+    $monitorRuntime = Invoke-BoundedProcess $RuntimePython @("-I", "-c", $MonitorValidationScript) 10
+    if ($monitorRuntime.status -ne "ok") { $evidence.status = "broken"; $evidence.error = "stm32-monitor runtime validation failed ($($monitorRuntime.status))"; return $evidence }
     $doctor = Invoke-BoundedProcess $RuntimePython @("-I", "-m", "stm32_toolkit.cli", "--project-root", $Project, "doctor", "--json") 15
     if ($doctor.status -ne "ok") { $evidence.status = "broken"; $evidence.error = "doctor $($doctor.status): $($doctor.stderr)".Trim(); return $evidence }
     try { $doctorPayload = $doctor.stdout | ConvertFrom-Json } catch { $evidence.status = "broken"; $evidence.error = "doctor returned invalid JSON"; return $evidence }
@@ -227,6 +272,8 @@ try {
     Assert-NoRedirectAncestors "PluginData" $resolvedPluginData
     $package = Join-Path $resolvedPluginRoot "tools/stm32-toolkit"
     if (-not (Test-Path -LiteralPath $package -PathType Container)) { throw "PluginRoot does not contain tools/stm32-toolkit" }
+    $monitorPackage = Join-Path $resolvedPluginRoot "tools/stm32-monitor"
+    if (-not (Test-Path -LiteralPath $monitorPackage -PathType Container)) { throw "PluginRoot does not contain tools/stm32-monitor" }
     $runtimeParent = Join-Path $resolvedPluginData "runtime"
     $runtime = Join-Path $runtimeParent $RuntimeVersion
     $runtimePython = Join-Path $runtime "Scripts/python.exe"
@@ -277,11 +324,13 @@ try {
     Assert-NotRedirect "staging Scripts" (Join-Path $staging "Scripts")
     Assert-NotRedirect "staging interpreter" $stagingPython
     Assert-StepOk (Invoke-BoundedProcess $stagingPython @("-I", "-m", "pip", "install", "--disable-pip-version-check", "--no-cache-dir", "${package}[probe]") 300) "toolkit probe-runtime installation"
+    Assert-StepOk (Invoke-BoundedProcess $stagingPython @("-I", "-m", "pip", "install", "--disable-pip-version-check", "--no-cache-dir", $monitorPackage) 300) "monitor runtime installation"
     $versionCheck = Invoke-BoundedProcess $stagingPython @("-I", "-m", "stm32_toolkit.cli", "version") 10
     Assert-StepOk $versionCheck "toolkit version validation"
     $installedVersion = ($versionCheck.stdout -split "`r?`n")[0].Trim()
     if ($installedVersion -ne $RuntimeVersion) { throw "expected toolkit $RuntimeVersion, found $installedVersion" }
     Assert-StepOk (Invoke-BoundedProcess $stagingPython @("-I", "-c", $ProbeValidationScript) 10) "pyocd runtime validation"
+    Assert-StepOk (Invoke-BoundedProcess $stagingPython @("-I", "-c", $MonitorValidationScript) 10) "monitor UI validation"
     $doctorCheck = Invoke-BoundedProcess $stagingPython @("-I", "-m", "stm32_toolkit.cli", "--project-root", $resolvedProjectDir, "doctor", "--json") 15
     Assert-StepOk $doctorCheck "toolkit doctor validation"
     try { $doctorPayload = $doctorCheck.stdout | ConvertFrom-Json } catch { throw "toolkit doctor returned invalid JSON" }

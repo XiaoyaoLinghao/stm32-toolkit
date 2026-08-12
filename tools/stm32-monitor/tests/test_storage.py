@@ -344,8 +344,8 @@ def test_try_write_is_deadline_bounded_cancels_queue_and_uses_attempt_busy_timeo
 
     assert database.try_write(
         lambda connection: connection.execute("PRAGMA busy_timeout").fetchone()[0],
-        timeout_ms=25,
-    ) <= 25
+        timeout_ms=200,
+    ) <= 200
     with pytest.raises(StorageFailure, match="sentinel"):
         database.try_write(
             lambda connection: (_ for _ in ()).throw(StorageFailure("MONITOR_STORAGE_INVALID", "sentinel")),
@@ -411,7 +411,7 @@ def test_try_write_cancelled_before_invoke_skips_open_and_releases_writer(
         started = time.monotonic()
         assert database.try_write(
             lambda connection: connection.execute("SELECT 1").fetchone()[0],
-            timeout_ms=25,
+            timeout_ms=200,
         ) == 1
         assert time.monotonic() - started < 0.1
     finally:

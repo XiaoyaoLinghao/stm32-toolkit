@@ -13,8 +13,8 @@ description: Use when a Claude Code user asks to check, bootstrap, repair, or di
 
 - CHECK is read-only and offline with respect to installation. It never creates files, probes hardware, kills unrelated or existing processes, or installs anything. It may terminate only a probe subprocess that CHECK itself started after that probe exceeds its timeout.
 - Never register a second MCP. The plugin-bundled `.mcp.json` starts only after the managed runtime is healthy.
-- The only MCP interpreter is `${CLAUDE_PLUGIN_DATA}/runtime/0.5.0/Scripts/python.exe`; system `python`, `py`, or `uv` is never an MCP fallback. A healthy runtime includes the local Toolkit `probe` extra and passes an isolated PEP 440 `pyocd` distribution check in the declared `>=0.45.1,<0.46` range.
-- Host Python 3.10+ is only a bounded bootstrap prerequisite for installing `${CLAUDE_PLUGIN_ROOT}/tools/stm32-toolkit`.
+- The only MCP interpreter is `${CLAUDE_PLUGIN_DATA}/runtime/0.5.0/Scripts/python.exe`; system `python`, `py`, or `uv` is never an MCP fallback. A healthy runtime includes the local Toolkit `probe` extra, the exact `stm32-monitor` release with readable UI manifest and static assets, and passes an isolated PEP 440 `pyocd` distribution check in the declared `>=0.45.1,<0.46` range.
+- Host Python 3.10+ is only a bounded bootstrap prerequisite for installing `${CLAUDE_PLUGIN_ROOT}/tools/stm32-toolkit` and `${CLAUDE_PLUGIN_ROOT}/tools/stm32-monitor`.
 - ARM GCC, ARM GDB, CMake, Ninja, PyOCD, CubeMX, VS Code extension, and CMSIS-Pack checks are bounded and read-only. Missing tools are reported, never installed.
 - Monitor groups remain user-created; do not probe boards or create presets.
 
@@ -42,7 +42,7 @@ For `missing`, ask authorization for Bootstrap. For `broken`, ask authorization 
 
 ## MUTATE
 
-Both modes build in a unique `${CLAUDE_PLUGIN_DATA}/runtime/.staging/0.5.0-<id>` directory, install `${CLAUDE_PLUGIN_ROOT}/tools/stm32-toolkit[probe]` without using the user pip cache, validate exact Toolkit version `0.5.0`, validate isolated `pyocd` import and distribution metadata in the declared range, and validate doctor before promotion. Failed safe staging is removed; a staging tree containing redirects is preserved for manual recovery rather than followed.
+Both modes build in a unique `${CLAUDE_PLUGIN_DATA}/runtime/.staging/0.5.0-<id>` directory, install `${CLAUDE_PLUGIN_ROOT}/tools/stm32-toolkit[probe]` and `${CLAUDE_PLUGIN_ROOT}/tools/stm32-monitor` without using the user pip cache, validate exact Toolkit version `0.5.0`, validate the exact `stm32-monitor` version with readable UI manifest and assets, validate isolated `pyocd` import and distribution metadata in the declared range, and validate doctor before promotion. Failed safe staging is removed; a staging tree containing redirects is preserved for manual recovery rather than followed.
 
 For an absent runtime, after explicit authorization run:
 
@@ -62,4 +62,4 @@ After mutation, repeat CHECK. Toolchain gaps do not invalidate a healthy plugin 
 
 ## Available workflow handoff
 
-Once CHECK reports `healthy`, hand off to one of the six workflow Skills: `/stm32-toolkit:migrate-keil`, `/stm32-toolkit:configure-stm32-project`, `/stm32-toolkit:build-firmware`, `/stm32-toolkit:flash-firmware`, `/stm32-toolkit:debug-firmware`, or `/stm32-toolkit:read-var`. Every workflow starts with `stm32_project_context`, keeps project-derived target/SVD selection authoritative, and requires explicit authorization at every modifying or ownership-release boundary. Monitor groups and persistent observation remain deferred to the 0.5 Monitor service.
+Once CHECK reports `healthy`, hand off to one of the eight release Skills: `/stm32-toolkit:migrate-keil`, `/stm32-toolkit:configure-stm32-project`, `/stm32-toolkit:build-firmware`, `/stm32-toolkit:flash-firmware`, `/stm32-toolkit:debug-firmware`, `/stm32-toolkit:read-var`, or `/stm32-toolkit:stm32-monitor`. Every workflow starts with `stm32_project_context`, keeps project-derived target/SVD selection authoritative, and requires explicit authorization at every modifying or ownership-release boundary. The Monitor UI is observation-only: it never connects a probe or starts sampling automatically, and opens only after the user explicitly asks.

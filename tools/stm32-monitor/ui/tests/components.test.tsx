@@ -44,9 +44,8 @@ it("GroupPanel renders draft items and save button is disabled when empty",()=>{
   render(<GroupPanel groups={[group]} selectedGroupId="group"
     draft={{sourceGroupId:"group",expectedRevision:1n,name:"Group",description:"",intervalMs:250,items:[]}}
     failure={null} onSelect={vi.fn()} onDraftChange={vi.fn()} onRemove={vi.fn()}
-    onCreate={vi.fn()} onSave={vi.fn()} onDelete={vi.fn()}
-    onReadImport={async()=>({ok:false,code:"MONITOR_IMPORT_INVALID",message:"invalid"})}
-    onImport={vi.fn()} onExport={vi.fn()} onRefresh={vi.fn()}/>);
+    onNew={vi.fn()} onSave={vi.fn()} onDelete={vi.fn()}
+    onImport={vi.fn()} onExport={vi.fn()}/>);
   expect(screen.getByRole("button",{name:"Group (1)"})).toBeTruthy();
   expect(screen.getByRole("button",{name:"Save group"})).toBeDisabled();
 });

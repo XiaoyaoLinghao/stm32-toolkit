@@ -12,10 +12,10 @@ function err(code:string,message:string){return {ok:false,code,message} as const
 
 function apiOverrides(){
   return{
-    status:vi.fn(async()=>ok({workspaceId:"workspace",sessionId:"session",project:{logicalProjectId:"project",name:"Project",targetDevice:"STM32F407VG"},firmware:null,probe:{connected:false,probeId:null},sampling:{state:"IDLE",active:false,blockedCode:null,groupId:null,groupRevision:null,runId:null,lastSequence:null,bindingEpoch:0n,subscriberDrops:0n,historyDrops:0n,deadlineDrops:0n,serviceDrops:0n},probeConnected:false,samplingActive:false})),
-    probes:vi.fn(async()=>ok({probes:[]})),
+    status:vi.fn(async()=>ok({workspaceId:"workspace",sessionId:"session",project:{logicalProjectId:"project",name:"Project",targetDevice:"STM32F407VG"},firmware:null,probe:{connected:true,probeId:"p1"},sampling:{state:"IDLE",active:false,blockedCode:null,groupId:null,groupRevision:null,runId:null,lastSequence:null,bindingEpoch:0n,subscriberDrops:0n,historyDrops:0n,deadlineDrops:0n,serviceDrops:0n},probeConnected:true,samplingActive:false})),
+    probes:vi.fn(async()=>ok({probes:[{probeId:"p1",vendor:"ST",product:"ST-Link",boardName:null}]})),
     groups:vi.fn(async()=>ok({groups:[],nextCursor:null,revision:"0"})),
-    variables:vi.fn(async()=>ok({items:[],nextCursor:null})),
+    variables:vi.fn(async()=>ok({items:[{selector:"counter",typeName:"int",kind:"int",byteSize:4,signed:true,encoding:null,qualifiers:[],aliases:[],enumValues:[],elementCount:null,elementKind:null,memberNames:[]}],nextCursor:null})),
     registers:vi.fn(async()=>ok({items:[],nextCursor:null})),
     createGroup:vi.fn(async()=>err("UNAVAILABLE","not configured")),
     updateGroup:vi.fn(async()=>err("UNAVAILABLE","not configured")),
@@ -45,6 +45,11 @@ it("App renders a blocking error when a create-group request fails",async()=>{
   render(<App/>);
   await screen.findByText("Project");
   fireEvent.click(screen.getByRole("button",{name:"New group"}));
+  fireEvent.input(screen.getByLabelText("Name"),{target:{value:"Motor"}});
+  fireEvent.input(screen.getByPlaceholderText("symbol or register prefix"),{target:{value:"counter"}});
+  await waitFor(()=>{expect(screen.getByRole("button",{name:"Add to group"})).toBeTruthy();});
+  fireEvent.click(screen.getByRole("button",{name:"Add to group"}));
+  fireEvent.click(screen.getByRole("button",{name:"Create group"}));
   expect(await screen.findByRole("alert")).toHaveTextContent("UNAVAILABLE");
 });
 

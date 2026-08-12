@@ -46,4 +46,3 @@ it("App renders the monitor shell with identity and probe panels after load",asy
   expect(screen.getByLabelText("Catalog")).toBeTruthy();
   expect(screen.getByLabelText("Sampling status")).toBeTruthy();
 });
-

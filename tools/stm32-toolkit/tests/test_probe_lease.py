@@ -669,7 +669,7 @@ def test_reused_pid_with_different_start_identity_can_be_reclaimed(tmp_path: Pat
     [
         ("schemaVersion", 2),
         ("protocol", "stm32-toolkit-probe/2"),
-        ("toolkitVersion", "0.5.0"),
+        ("toolkitVersion", "0.4.0"),
     ],
 )
 def test_incompatible_owner_record_is_never_reclaimed(tmp_path: Path, field, value):

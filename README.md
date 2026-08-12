@@ -2,7 +2,7 @@
 
 [简体中文](README_zh-CN.md) | English
 
-STM32 Toolkit 0.4.0 turns one Keil uVision project into a reproducible ARM GNU/GCC build and an identity-pinned probe/debug workflow. It provides read-only Keil inspection, guarded ARMCC-to-GCC conversion, managed GCC/CMake and VS Code configuration, bounded builds, explicit probe flashing, one-time debugger handoff, typed DWARF/SVD reads, finite sampling, and Fault analysis. It remains the foundation for future AI-assisted STM32 coding, debugging, testing, and monitoring.
+STM32 Toolkit 0.5.0 turns one Keil uVision project into a reproducible ARM GNU/GCC build and an identity-pinned probe/debug workflow. It provides read-only Keil inspection, guarded ARMCC-to-GCC conversion, managed GCC/CMake and VS Code configuration, bounded builds, explicit probe flashing, one-time debugger handoff, typed DWARF/SVD reads, finite sampling, Fault analysis, and an offline project-isolated Monitor UI. It remains the foundation for future AI-assisted STM32 coding, debugging, testing, and monitoring.
 
 ## Install directly from GitHub
 
@@ -20,7 +20,7 @@ claude plugin marketplace update stm32-toolkit
 claude plugin update stm32-toolkit@stm32-toolkit --scope user
 ```
 
-Claude Code discovers the plugin's standard `skills/` directory and bundled `.mcp.json` automatically. Do not copy Skills or register a second MCP server. Version 0.4.0 exposes exactly seven Skills:
+Claude Code discovers the plugin's standard `skills/` directory and bundled `.mcp.json` automatically. Do not copy Skills or register a second MCP server. Version 0.5.0 exposes exactly eight Skills:
 
 - `/stm32-toolkit:setup-stm32-env`
 - `/stm32-toolkit:migrate-keil`
@@ -29,17 +29,28 @@ Claude Code discovers the plugin's standard `skills/` directory and bundled `.mc
 - `/stm32-toolkit:flash-firmware`
 - `/stm32-toolkit:debug-firmware`
 - `/stm32-toolkit:read-var`
+- `/stm32-toolkit:stm32-monitor`
 
-Run `/stm32-toolkit:setup-stm32-env` after installation. CHECK reports the managed runtime as `missing`, `healthy`, or `broken`. An existing 0.3.0 runtime is `broken` with `recommendedMode` `Repair`; after explicit authorization Repair quarantines it before atomically promoting 0.4.0. Host Python 3.10+ is only a bounded bootstrap prerequisite and never an MCP fallback.
+Run `/stm32-toolkit:setup-stm32-env` after installation. CHECK reports the managed runtime as `missing`, `healthy`, or `broken`. An existing 0.3.0 runtime is `broken` with `recommendedMode` `Repair`; after explicit authorization Repair quarantines it before atomically promoting 0.5.0. Host Python 3.10+ is only a bounded bootstrap prerequisite and never an MCP fallback.
 
 ## Automatic project binding and isolation
 
-The bundled MCP configuration binds one server automatically to `${CLAUDE_PROJECT_DIR}`. The launcher uses only `${CLAUDE_PLUGIN_DATA}/runtime/0.4.0/Scripts/python.exe` and never a system interpreter.
+The bundled MCP configuration binds one server automatically to `${CLAUDE_PROJECT_DIR}`. The launcher uses only `${CLAUDE_PLUGIN_DATA}/runtime/0.5.0/Scripts/python.exe` and never a system interpreter.
 
 - `.stm32-project.json` is the shared, version-controlled project configuration.
 - `${CLAUDE_PLUGIN_DATA}/projects/<workspaceId>` contains machine-owned state for one canonical checkout. Separate clones have distinct workspaces and sessions.
 
 The server exposes exactly 15 project-bound tools: `stm32_doctor`, `stm32_project_detect`, `stm32_project_context`, `stm32_keil_inspect`, `stm32_keil_convert`, `stm32_project_configure`, `stm32_build`, `stm32_probe_list`, `stm32_flash`, `stm32_debug_handoff_begin`, `stm32_debug_handoff_end`, `stm32_variable_read`, `stm32_variable_sample`, `stm32_register_read`, and `stm32_fault_analyze`. They do not accept a project root, data root, command, environment, service credential, target override, SVD override, ELF path, or memory address.
+
+## Monitor UI
+
+`/stm32-toolkit:stm32-monitor` is the explicit human path to the project-isolated Monitor UI. It first reads project context, explains that the UI is observation-only with zero presets, and only after the user explicitly asks to open this project's UI does it run the human launcher:
+
+```powershell
+& '${CLAUDE_PLUGIN_ROOT}/bin/stm32-monitor.cmd' open --project '${CLAUDE_PROJECT_DIR}' --data-root '${CLAUDE_PLUGIN_DATA}'
+```
+
+The launcher starts one loopback `127.0.0.1` Monitor service in the foreground and opens its fragment-token URL in the default browser exactly once. It never prints, persists, copies, or logs the access URL. The page starts with zero monitor groups and never connects a probe or starts sampling automatically; connect, group creation, import/export, and sampling start/pause/resume/stop remain explicit page actions. `serve --json` is the machine command and never opens a browser.
 
 ## Workflows and authorization
 
@@ -68,14 +79,19 @@ The first package command is `stm32-toolkit doctor --json`. Doctor reports offli
 
 ## Foundation and follow-on capabilities
 
-### Delivered in version 0.4.0
+### Delivered in version 0.5.0
 
 - validated Schema-v2 projects, per-checkout workspace isolation, Keil inspection, conversion, generation, builds, and firmware identity;
 - cross-process probe leases, identity-pinned flash, one-time external debugger handoff, typed DWARF/SVD reads, finite sampling, and Fault analysis;
-- strict JSON CLI workflows, exactly 15 MCP tools, seven thin Skills, and one managed 0.4.0 runtime.
+- strict JSON CLI workflows, exactly 15 MCP tools, eight thin Skills, and one managed 0.5.0 runtime;
+- an offline Monitor UI served by the same loopback process, explicit human `stm32-monitor open`, verified CSV/JSONL history export, and user group schema JSON import/export.
 
 ### Follow-on work
 
-The 0.4 software surface is complete, but physical probe/board claims require the named real-hardware gates. Linux and physical gates that were not actually run remain deferred rather than fabricated.
+The 0.5 software surface is complete, but physical probe/board claims require the named real-hardware gates. Linux and physical gates that were not actually run remain deferred rather than fabricated.
 
-Monitor groups, history, retention, storage, HTTP/WebSocket service, and UI are 0.5 scope. They remain user-created monitor groups; Toolkit 0.4.0 ships no invented presets. Keil-to-GCC migration remains one-way and never writes back to a Keil project.
+Monitor groups, history, retention, storage, HTTP/WebSocket service, and the UI are user-created monitor groups and project-isolated; the toolkit ships no invented presets. Keil-to-GCC migration remains one-way and never writes back to a Keil project.
+
+### Deferred to 0.6.0
+
+The following remain deferred and are not implemented in 0.5.0: AI-readable snapshot or diagnostic session export and "AI Analyze"; multi-run/group/firmware history overlay, diff, brush, or cross-session comparison; full quality timeline, distribution, per-stage, or halt-impact dashboard; annotations, bookmarks, and diagnostic markers; and host/target test automation. 0.6 implementation does not begin before 0.5.0 acceptance.

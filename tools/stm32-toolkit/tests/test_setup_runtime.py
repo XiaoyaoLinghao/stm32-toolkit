@@ -161,27 +161,9 @@ def test_check_accepts_probe_distribution_in_declared_pep440_range(
     runtime = plugin_data / "runtime" / "0.5.0"
     venv.EnvBuilder(with_pip=True).create(runtime)
     site_packages = runtime / "Lib" / "site-packages"
-    package = site_packages / "stm32_toolkit"
-    package.mkdir(parents=True)
-    (package / "__init__.py").write_text("__version__ = '0.5.0'\n", encoding="utf-8")
-    (package / "cli.py").write_text(
-        "import json,sys\n"
-        "if sys.argv[1:]==['version']: print('0.5.0')\n"
-        "elif 'doctor' in sys.argv: print(json.dumps({'ok':True,'data':{}}))\n"
-        "else: raise SystemExit(2)\n",
-        encoding="utf-8",
-    )
-    probe = site_packages / "pyocd"
-    probe.mkdir()
-    (probe / "__init__.py").write_text(
-        f"__version__ = {probe_version!r}\n", encoding="utf-8"
-    )
-    metadata = site_packages / f"pyocd-{probe_version}.dist-info"
-    metadata.mkdir()
-    (metadata / "METADATA").write_text(
-        f"Metadata-Version: 2.1\nName: pyocd\nVersion: {probe_version}\n",
-        encoding="utf-8",
-    )
+    _install_fake_toolkit(site_packages)
+    _install_fake_monitor(site_packages)
+    _install_fake_probe(site_packages, probe_version)
 
     checked = _run_helper("Check", REPO_ROOT, plugin_data, project)
 
@@ -203,6 +185,7 @@ def test_existing_0_3_runtime_requires_repair_and_is_quarantined_before_0_4_prom
     wheelhouse = tmp_path / "wheelhouse"
     wheelhouse.mkdir()
     _write_test_build_backend(wheelhouse)
+    _write_fake_monitor_package(plugin_root)
     (package / "pyproject.toml").write_text(
         "[build-system]\nrequires = ['test-build-backend==1.0']\n"
         "build-backend = 'test_backend'\n",
@@ -245,6 +228,7 @@ def test_failed_bootstrap_removes_staging_and_never_promotes(tmp_path: Path):
     project.mkdir()
     plugin_root = tmp_path / "plugin"
     (plugin_root / "tools" / "stm32-toolkit").mkdir(parents=True)
+    (plugin_root / "tools" / "stm32-monitor").mkdir(parents=True)
     plugin_data = tmp_path / "plugin-data"
 
     result = _run_helper("Bootstrap", plugin_root, plugin_data, project, timeout=90)
@@ -267,6 +251,7 @@ def test_bootstrap_and_repair_are_staged_versioned_and_project_read_only(tmp_pat
     wheelhouse = tmp_path / "wheelhouse"
     wheelhouse.mkdir()
     _write_test_build_backend(wheelhouse)
+    _write_fake_monitor_package(plugin_root)
     (package / "pyproject.toml").write_text(
         "[build-system]\nrequires = ['test-build-backend==1.0']\nbuild-backend = 'test_backend'\n",
         encoding="utf-8",
@@ -361,6 +346,7 @@ def test_bootstrap_installs_declared_build_requirements_in_fresh_venv(tmp_path: 
     wheelhouse = tmp_path / "wheelhouse"
     wheelhouse.mkdir()
     _write_test_build_backend(wheelhouse)
+    _write_fake_monitor_package(plugin_root)
     (package / "pyproject.toml").write_text(
         "[build-system]\n"
         "requires = ['test-build-backend==1.0']\n"
@@ -403,6 +389,7 @@ def test_bootstrap_ignores_hostile_python_path_and_home(tmp_path: Path):
     wheelhouse = tmp_path / "wheelhouse"
     wheelhouse.mkdir()
     _write_test_build_backend(wheelhouse)
+    _write_fake_monitor_package(plugin_root)
     (package / "pyproject.toml").write_text(
         "[build-system]\nrequires = ['test-build-backend==1.0']\nbuild-backend = 'test_backend'\n",
         encoding="utf-8",
@@ -457,6 +444,7 @@ def test_healthy_check_preserves_drive_root_argument_and_following_doctor_args(t
     wheelhouse = tmp_path / "wheelhouse"
     wheelhouse.mkdir()
     _write_test_build_backend(wheelhouse)
+    _write_fake_monitor_package(plugin_root)
     (package / "pyproject.toml").write_text(
         "[build-system]\nrequires = ['test-build-backend==1.0']\nbuild-backend = 'test_backend'\n",
         encoding="utf-8",
@@ -533,26 +521,46 @@ import zipfile
 import venv
 
 
+def _project():
+    name = Path.cwd().name
+    return "stm32-monitor" if name == "stm32-monitor" else "stm32-toolkit"
+
+
 def prepare_metadata_for_build_wheel(metadata_directory, config_settings=None):
-    dist = Path(metadata_directory) / 'stm32_toolkit-0.5.0.dist-info'
+    name = _project()
+    dist_name = "stm32_monitor" if name == "stm32-monitor" else "stm32_toolkit"
+    dist = Path(metadata_directory) / f"{dist_name}-0.5.0.dist-info"
     dist.mkdir()
-    (dist / 'METADATA').write_text('Metadata-Version: 2.1\\nName: stm32-toolkit\\nVersion: 0.5.0\\nProvides-Extra: probe\\nRequires-Dist: pyocd==0.45.1; extra == "probe"\\n')
+    (dist / 'METADATA').write_text(f'Metadata-Version: 2.1\\nName: {name}\\nVersion: 0.5.0\\nProvides-Extra: probe\\nRequires-Dist: pyocd==0.45.1; extra == "probe"\\n')
     (dist / 'WHEEL').write_text('Wheel-Version: 1.0\\nGenerator: test-backend\\nRoot-Is-Purelib: true\\nTag: py3-none-any\\n')
     return dist.name
 
 
 def build_wheel(wheel_directory, config_settings=None, metadata_directory=None):
-    name = 'stm32_toolkit-0.5.0-py3-none-any.whl'
-    files = {
-        'stm32_toolkit/__init__.py': "__version__ = '0.5.0'\\n",
-        'stm32_toolkit/cli.py': "import json,sys\\nif sys.argv[1:]==['version']: print('0.5.0')\\nelif 'doctor' in sys.argv:\\n i=sys.argv.index('--project-root'); print(json.dumps({'protocol':'stm32-toolkit/1','ok':True,'data':{'projectRoot':sys.argv[i+1],'argv':sys.argv[1:]}}))\\nelse: raise SystemExit(2)\\n",
-        'stm32_toolkit-0.5.0.dist-info/METADATA': 'Metadata-Version: 2.1\\nName: stm32-toolkit\\nVersion: 0.5.0\\nProvides-Extra: probe\\nRequires-Dist: pyocd==0.45.1; extra == "probe"\\n',
-        'stm32_toolkit-0.5.0.dist-info/WHEEL': 'Wheel-Version: 1.0\\nGenerator: test-backend\\nRoot-Is-Purelib: true\\nTag: py3-none-any\\n',
-        'stm32_toolkit-0.5.0.dist-info/RECORD': '',
-    }
-    with zipfile.ZipFile(Path(wheel_directory) / name, 'w') as archive:
+    name = _project()
+    if name == "stm32-monitor":
+        dist_name = 'stm32_monitor-0.5.0-py3-none-any.whl'
+        files = {
+            'stm32_monitor/__init__.py': "__version__ = '0.5.0'\\n",
+            'stm32_monitor/ui_dist/index.html': '<div id="app"></div>\\n',
+            'stm32_monitor/ui_dist/.vite/manifest.json': '{"index.html":{"file":"assets/app-aaaaaaaa.js","css":[]}}\\n',
+            'stm32_monitor/ui_dist/assets/app-aaaaaaaa.js': 'export {}\\n',
+            'stm32_monitor-0.5.0.dist-info/METADATA': 'Metadata-Version: 2.1\\nName: stm32-monitor\\nVersion: 0.5.0\\n',
+            'stm32_monitor-0.5.0.dist-info/WHEEL': 'Wheel-Version: 1.0\\nGenerator: test-backend\\nRoot-Is-Purelib: true\\nTag: py3-none-any\\n',
+            'stm32_monitor-0.5.0.dist-info/RECORD': '',
+        }
+    else:
+        dist_name = 'stm32_toolkit-0.5.0-py3-none-any.whl'
+        files = {
+            'stm32_toolkit/__init__.py': "__version__ = '0.5.0'\\n",
+            'stm32_toolkit/cli.py': "import json,sys\\nif sys.argv[1:]==['version']: print('0.5.0')\\nelif 'doctor' in sys.argv:\\n i=sys.argv.index('--project-root'); print(json.dumps({'protocol':'stm32-toolkit/1','ok':True,'data':{'projectRoot':sys.argv[i+1],'argv':sys.argv[1:]}}))\\nelse: raise SystemExit(2)\\n",
+            'stm32_toolkit-0.5.0.dist-info/METADATA': 'Metadata-Version: 2.1\\nName: stm32-toolkit\\nVersion: 0.5.0\\nProvides-Extra: probe\\nRequires-Dist: pyocd==0.45.1; extra == "probe"\\n',
+            'stm32_toolkit-0.5.0.dist-info/WHEEL': 'Wheel-Version: 1.0\\nGenerator: test-backend\\nRoot-Is-Purelib: true\\nTag: py3-none-any\\n',
+            'stm32_toolkit-0.5.0.dist-info/RECORD': '',
+        }
+    with zipfile.ZipFile(Path(wheel_directory) / dist_name, 'w') as archive:
         for path, content in files.items(): archive.writestr(path, content)
-    return name
+    return dist_name
 """
     wheel = wheelhouse / "test_build_backend-1.0-py3-none-any.whl"
     with zipfile.ZipFile(wheel, "w") as archive:
@@ -578,6 +586,63 @@ def build_wheel(wheel_directory, config_settings=None, metadata_directory=None):
             "Wheel-Version: 1.0\nGenerator: tests\nRoot-Is-Purelib: true\nTag: py3-none-any\n",
         )
         archive.writestr("pyocd-0.45.1.dist-info/RECORD", "")
+
+
+def _write_fake_monitor_package(plugin_root: Path) -> None:
+    monitor_package = plugin_root / "tools" / "stm32-monitor"
+    monitor_package.mkdir(parents=True)
+    (monitor_package / "pyproject.toml").write_text(
+        "[build-system]\nrequires = ['test-build-backend==1.0']\nbuild-backend = 'test_backend'\n",
+        encoding="utf-8",
+    )
+
+
+def _install_fake_monitor(site_packages: Path) -> None:
+    """Install a minimal stm32-monitor 0.5.0 package with readable UI assets."""
+    package = site_packages / "stm32_monitor"
+    ui_dist = package / "ui_dist"
+    (ui_dist / ".vite").mkdir(parents=True)
+    (ui_dist / "assets").mkdir()
+    (package / "__init__.py").write_text("__version__ = '0.5.0'\n", encoding="utf-8")
+    (ui_dist / "index.html").write_text('<div id="app"></div>\n', encoding="utf-8")
+    (ui_dist / ".vite" / "manifest.json").write_text(
+        '{"index.html":{"file":"assets/app-aaaaaaaa.js","css":[]}}\n', encoding="utf-8"
+    )
+    (ui_dist / "assets" / "app-aaaaaaaa.js").write_text("export {}\n", encoding="utf-8")
+    metadata = site_packages / "stm32_monitor-0.5.0.dist-info"
+    metadata.mkdir()
+    (metadata / "METADATA").write_text(
+        "Metadata-Version: 2.1\nName: stm32-monitor\nVersion: 0.5.0\n",
+        encoding="utf-8",
+    )
+
+
+def _install_fake_toolkit(site_packages: Path) -> None:
+    package = site_packages / "stm32_toolkit"
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_text("__version__ = '0.5.0'\n", encoding="utf-8")
+    (package / "cli.py").write_text(
+        "import json,sys\n"
+        "if sys.argv[1:]==['version']: print('0.5.0')\n"
+        "elif 'doctor' in sys.argv: print(json.dumps({'ok':True,'data':{}}))\n"
+        "else: raise SystemExit(2)\n",
+        encoding="utf-8",
+    )
+
+
+def _install_fake_probe(site_packages: Path, probe_version: str) -> None:
+    probe = site_packages / "pyocd"
+    probe.mkdir()
+    (probe / "__init__.py").write_text(
+        f"__version__ = {probe_version!r}\n", encoding="utf-8"
+    )
+    metadata = site_packages / f"pyocd-{probe_version}.dist-info"
+    metadata.mkdir()
+    (metadata / "METADATA").write_text(
+        f"Metadata-Version: 2.1\nName: pyocd\nVersion: {probe_version}\n",
+        encoding="utf-8",
+    )
+
 
 def _run_helper(
     mode: str,

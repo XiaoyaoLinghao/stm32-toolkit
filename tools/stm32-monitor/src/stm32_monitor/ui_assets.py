@@ -14,8 +14,12 @@ import json
 import re
 from dataclasses import dataclass
 from importlib import resources
-from importlib.resources.abc import Traversable
 from typing import Mapping
+
+try:  # Python 3.11+
+    from importlib.resources.abc import Traversable
+except ImportError:  # pragma: no cover - Python 3.9/3.10 path
+    from importlib.abc import Traversable  # type: ignore[no-redef]
 
 from aiohttp import web
 

@@ -815,7 +815,7 @@ def test_client_lists_attaches_and_reads_without_halting(tmp_path: Path):
             "PROBE_LEASE_LOST",
         ),
         (
-            lambda endpoint: endpoint.with_toolkit_version("0.5.0"),
+            lambda endpoint: endpoint.with_toolkit_version("0.4.0"),
             "PROBE_TOOLKIT_INCOMPATIBLE",
         ),
     ],

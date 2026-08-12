@@ -9,7 +9,9 @@ export type MonitorFixture={
   page:Page;
 };
 
-export async function startMonitor(projectRoot:string,evidenceRoot:string):Promise<{url:string;accessUrl:string}>{
+export type MonitorHandle={url:string;accessUrl:string;stop:()=>void};
+
+export async function startMonitor(projectRoot:string,evidenceRoot:string):Promise<MonitorHandle>{
   const repo=resolve("../../..");
   const python=process.env.STM32_MONITOR_PYTHON??"python";
   const child=spawn(python,[resolve("e2e/fake_runtime.py"),"--repo",repo],{
@@ -48,7 +50,7 @@ export async function startMonitor(projectRoot:string,evidenceRoot:string):Promi
   void evidenceRoot;
   void projectRoot;
   (child as ChildProcess & {monitor?:boolean}).monitor=true;
-  return{url:parsed.url,accessUrl:parsed.accessUrl};
+  return{url:parsed.url,accessUrl:parsed.accessUrl,stop:()=>{child.kill();}};
 }
 
 export async function openMonitor(page:Page,accessUrl:string):Promise<void>{
@@ -59,5 +61,7 @@ export async function openMonitor(page:Page,accessUrl:string):Promise<void>{
 export function fixtureToken(accessUrl:string):string{
   const match=/token=([0-9a-f]{64})/.exec(accessUrl);
   if(match===null)throw new Error("access URL lacks a 64-hex token");
-  return match[1];
+  const token=match[1];
+  if(token===undefined)throw new Error("access URL lacks a 64-hex token");
+  return token;
 }

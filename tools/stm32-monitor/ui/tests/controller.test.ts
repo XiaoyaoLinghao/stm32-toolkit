@@ -164,11 +164,11 @@ it("saveGroup succeeds for existing groups",async()=>{
   expect(actions.some(a=>a.type==="groups.loaded")).toBe(true);
 });
 
-it("saveGroup no-ops for new groups without sourceGroupId",async()=>{
+it("saveGroup creates a new group when the draft has no sourceGroupId",async()=>{
   const api=makeApi();
   const {controller,actions}=harness(api);
-  await controller.saveGroup({sourceGroupId:null,expectedRevision:null,name:"",description:"",intervalMs:250,items:[]});
-  expect(actions.some(a=>a.type==="request.started")).toBe(false);
+  await controller.saveGroup({sourceGroupId:null,expectedRevision:null,name:"New",description:"",intervalMs:250,items:[{kind:"variable",expression:"x"}]});
+  expect(actions.some(a=>a.type==="request.started"&&a.scope==="groups.create")).toBe(true);
 });
 
 it("deleteGroup succeeds for existing groups",async()=>{

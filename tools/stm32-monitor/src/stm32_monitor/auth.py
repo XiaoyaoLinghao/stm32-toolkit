@@ -103,12 +103,21 @@ class MonitorAuth:
         supplied = authorization or ""
         prefix = "Bearer "
         bearer = supplied[len(prefix) :] if supplied.startswith(prefix) else ""
-        bearer_ok = len(bearer) == 64 and secrets.compare_digest(bearer, self.token)
-        proven_same_origin = origin == self.origin or (
-            fetch_site == "same-origin" and method in ("GET", "HEAD")
+        bearer_ok = (
+            len(bearer) == 64
+            and secrets.compare_digest(bearer, self.token)
+            and origin == self.origin
         )
+        websocket_ok = (not websocket) or method == "GET"
+        safe_method = method in ("GET", "HEAD")
+        mutation = method in ("POST", "PATCH", "PUT", "DELETE")
+        allowed_method = safe_method or mutation
+        fetch_site_proven = fetch_site == "same-origin" and safe_method
+        origin_proven = origin == self.origin and websocket_ok
+        proven_same_origin = (origin_proven and allowed_method) or fetch_site_proven
         cookie_ok = (
             not bootstrap
+            and websocket_ok
             and proven_same_origin
             and isinstance(cookie, str)
             and len(cookie) == 64

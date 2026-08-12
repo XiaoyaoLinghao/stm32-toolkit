@@ -1,7 +1,6 @@
 import type {JSX} from "preact";
 import {useState} from "preact/hooks";
-import type {RegisterDescriptor,RegisterWatch,VariableDescriptor,VariableWatch,WatchItem} from "../api/contract";
-import {deriveElement,deriveMember} from "../catalog/shallow-selectors";
+import type {RegisterDescriptor,VariableDescriptor,WatchItem} from "../api/contract";
 import type {VariableCatalog,RegisterCatalog,CatalogKind} from "../state/model";
 
 export type CatalogPanelProps={

@@ -114,3 +114,35 @@ def test_every_asset_is_content_hashed(dist_files: list[Path]) -> None:
         rel = path.relative_to(UI_DIST).as_posix()
         if rel.startswith("assets/"):
             assert asset_re.match(rel), f"{rel} is not content-hashed"
+
+
+def test_ui_dist_is_pinned_to_lf_for_reproducible_checkout() -> None:
+    import subprocess
+
+    repo = Path(__file__).resolve().parents[3]
+    attributes = repo / ".gitattributes"
+    assert attributes.is_file(), ".gitattributes is absent"
+    rules = attributes.read_text(encoding="utf-8")
+    assert "ui_dist" in rules and "eol=lf" in rules
+
+    rel = UI_DIST.relative_to(repo).as_posix() + "/"
+    listed = subprocess.run(
+        ["git", "ls-files", "--eol", rel],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.splitlines()
+    assert listed, f"no ui_dist files tracked under {rel}"
+    for line in listed:
+        eol_field = line.split()[0]
+        assert eol_field == "i/lf", f"ui_dist not stored LF in index: {line}"
+
+    checked = subprocess.run(
+        ["git", "check-attr", "eol", "--", UI_DIST.relative_to(repo).as_posix() + "/index.html"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+    assert "eol: lf" in checked

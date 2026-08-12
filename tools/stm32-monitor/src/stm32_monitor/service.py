@@ -69,14 +69,6 @@ class _ServiceFailure(Exception):
         self.status = status
 
 
-def _request_port(request: web.Request) -> int:
-    try:
-        port = int(request.host.rsplit(":", 1)[1])
-        return port
-    except (IndexError, ValueError):
-        return 80
-
-
 def _is_websocket(request: web.Request) -> bool:
     upgrade = request.headers.get("Upgrade", "")
     connection = request.headers.get("Connection", "")
@@ -318,8 +310,8 @@ class MonitorService:
         elif self._serve_ui:
             self._ui_assets = UiAssets.load()
         if self._ui_assets is not None:
-            application.router.add_get("/", self._static_index)
-            application.router.add_get("/assets/{filename}", self._static_asset)
+            application.router.add_get("/", self._static)
+            application.router.add_get("/assets/{asset:.*}", self._static)
 
         runner = web.AppRunner(application, access_log=None)
         self._runner = runner
@@ -405,20 +397,21 @@ class MonitorService:
             raise error
         raise RuntimeError("Monitor Service cleanup failed") from None
 
-    async def _static_index(self, request: web.Request) -> web.Response:
-        assets = self._ui_assets
-        if assets is None:
-            return web.Response(status=404, body=b"")
-        port = _request_port(request)
-        return assets.response("/", port, head=request.method == "HEAD")
-
-    async def _static_asset(self, request: web.Request) -> web.Response:
-        assets = self._ui_assets
-        if assets is None:
-            return web.Response(status=404, body=b"")
-        filename = request.match_info.get("filename", "")
-        port = _request_port(request)
-        return assets.response(f"/assets/{filename}", port, head=request.method == "HEAD")
+    async def _static(self, request: web.Request) -> web.Response:
+        endpoint, auth, assets = self._endpoint, self._auth, self._ui_assets
+        if endpoint is None or auth is None or assets is None:
+            return web.Response(status=503, body=b"")
+        try:
+            auth.require_header_budget(tuple(request.headers.items()))
+        except MonitorAuthError as error:
+            return web.Response(status=error.status, body=b"")
+        origin = request.headers.get("Origin")
+        if request.remote != "127.0.0.1" or request.host != f"127.0.0.1:{endpoint.port}":
+            return web.Response(status=403, body=b"")
+        if origin is not None and origin != endpoint.url:
+            return web.Response(status=403, body=b"")
+        route = "/" if request.path == "/" else "/assets/" + request.match_info["asset"]
+        return assets.response(route, endpoint.port, head=request.method == "HEAD")
 
     def _authorize(self, request: web.Request, *, bootstrap: bool = False) -> str:
         auth = self._auth

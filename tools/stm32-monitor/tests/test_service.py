@@ -4,6 +4,7 @@ import asyncio
 import json
 from collections.abc import AsyncIterator
 from io import BytesIO
+from pathlib import Path
 from uuid import UUID
 
 import aiohttp
@@ -133,13 +134,200 @@ async def _with_service(action, *, send_delay_seconds: float = 0.0) -> None:
         await service.stop()
 
 
+def _write_ui_dist(root: Path) -> Path:
+    assets = root / "assets"
+    assets.mkdir(parents=True)
+    (assets / "index-A1b2C3d4.js").write_bytes(b"console.log(1)")
+    manifest = {"index.html": {"file": "assets/index-A1b2C3d4.js", "css": []}}
+    (root / ".vite").mkdir()
+    (root / ".vite" / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    (root / "index.html").write_text(
+        '<!doctype html><html><body><div id="app"></div>'
+        '<script type="module" src="/assets/index-A1b2C3d4.js"></script></body></html>',
+        encoding="utf-8",
+    )
+    return root
+
+
+async def _with_ui_service(action, ui_root: Path) -> None:
+    from stm32_monitor.service import MonitorService
+
+    runtime = FakeRuntime()
+    service = MonitorService(
+        runtime,
+        workspace_id="workspace-a",
+        session_id="session-a",
+        token_factory=lambda size: TOKEN_BYTES if size == 32 else b"",
+        serve_ui=True,
+        ui_assets_root=ui_root,
+    )
+    endpoint = await service.start()
+    try:
+        await action(runtime, service, endpoint)
+    finally:
+        await service.stop()
+
+
+def test_static_ui_serves_index_and_assets_with_exact_origin(tmp_path: Path) -> None:
+    import aiohttp
+
+    ui_root = _write_ui_dist(tmp_path)
+
+    async def scenario(_runtime, _service, endpoint) -> None:
+        origin = endpoint.url
+        headers = {"Origin": origin, "Host": f"127.0.0.1:{endpoint.port}"}
+        async with aiohttp.ClientSession() as client:
+            index = await client.get(endpoint.url + "/", headers=headers)
+            assert index.status == 200
+            assert b'id="app"' in await index.read()
+            asset = await client.get(
+                endpoint.url + "/assets/index-A1b2C3d4.js", headers=headers
+            )
+            assert asset.status == 200
+            assert await asset.read() == b"console.log(1)"
+
+    asyncio.run(_with_ui_service(scenario, ui_root))
+
+
+def test_static_ui_rejects_wrong_host_and_origin(tmp_path: Path) -> None:
+    import aiohttp
+
+    ui_root = _write_ui_dist(tmp_path)
+
+    async def scenario(_runtime, _service, endpoint) -> None:
+        origin = endpoint.url
+        async with aiohttp.ClientSession() as client:
+            bad_host = await client.get(
+                endpoint.url + "/",
+                headers={"Origin": origin, "Host": "attacker.invalid:9999"},
+            )
+            assert bad_host.status in (403, 404)
+            body = await bad_host.text()
+            assert "attacker" not in body
+            bad_origin = await client.get(
+                endpoint.url + "/",
+                headers={"Origin": "http://attacker.invalid"},
+            )
+            assert bad_origin.status in (403, 404)
+            body2 = await bad_origin.text()
+            assert "attacker" not in body2
+            null_origin = await client.get(
+                endpoint.url + "/", headers={"Origin": "null"}
+            )
+            assert null_origin.status in (403, 404)
+
+    asyncio.run(_with_ui_service(scenario, ui_root))
+
+
+def test_static_ui_csp_uses_bound_port_not_request_host(tmp_path: Path) -> None:
+    import aiohttp
+
+    ui_root = _write_ui_dist(tmp_path)
+
+    async def scenario(_runtime, _service, endpoint) -> None:
+        origin = endpoint.url
+        headers = {"Origin": origin, "Host": f"127.0.0.1:{endpoint.port}"}
+        async with aiohttp.ClientSession() as client:
+            index = await client.get(endpoint.url + "/", headers=headers)
+            csp = index.headers.get("Content-Security-Policy", "")
+            assert f"ws://127.0.0.1:{endpoint.port}" in csp
+            assert "9999" not in csp
+
+    asyncio.run(_with_ui_service(scenario, ui_root))
+
+
+def test_static_ui_unknown_asset_is_404_and_api_never_falls_back(tmp_path: Path) -> None:
+    import aiohttp
+
+    ui_root = _write_ui_dist(tmp_path)
+
+    async def scenario(_runtime, _service, endpoint) -> None:
+        origin = endpoint.url
+        headers = {"Origin": origin}
+        async with aiohttp.ClientSession() as client:
+            unknown = await client.get(
+                endpoint.url + "/assets/nope-NotAHash.js", headers=headers
+            )
+            assert unknown.status == 404
+            api = await client.get(endpoint.url + "/api/v1/status", headers=headers)
+            assert api.status in (401, 403)
+
+    asyncio.run(_with_ui_service(scenario, ui_root))
+
+
+def test_static_ui_rejects_forged_peer_via_request_seam(tmp_path: Path) -> None:
+    from aiohttp.test_utils import make_mocked_request
+
+    ui_root = _write_ui_dist(tmp_path)
+
+    class _FakeTransport:
+        def get_extra_info(self, name: str):
+            if name == "peername":
+                return ("192.0.2.1", 12345)
+            return None
+
+    async def scenario(_runtime, service, endpoint) -> None:
+        request = make_mocked_request(
+            "GET",
+            "/",
+            headers={"Host": f"127.0.0.1:{endpoint.port}"},
+            transport=_FakeTransport(),
+        )
+        assert request.remote == "192.0.2.1"
+        response = await service._static(request)
+        assert response.status == 403
+        assert response.body == b""
+
+    asyncio.run(_with_ui_service(scenario, ui_root))
+
+
+def test_static_ui_rejects_oversized_header_budget(tmp_path: Path) -> None:
+    import aiohttp
+
+    from stm32_monitor.auth import MAX_REQUEST_BYTES
+
+    ui_root = _write_ui_dist(tmp_path)
+
+    async def scenario(_runtime, _service, endpoint) -> None:
+        origin = endpoint.url
+        huge = "x" * (MAX_REQUEST_BYTES + 1)
+        async with aiohttp.ClientSession() as client:
+            response = await client.get(
+                endpoint.url + "/",
+                headers={"Origin": origin, "X-Huge": huge},
+            )
+            assert response.status in (400, 403, 431)
+
+    asyncio.run(_with_ui_service(scenario, ui_root))
+
+
+def test_static_ui_traversal_is_404_without_route_reflection(tmp_path: Path) -> None:
+    import aiohttp
+
+    ui_root = _write_ui_dist(tmp_path)
+
+    async def scenario(_runtime, _service, endpoint) -> None:
+        origin = endpoint.url
+        async with aiohttp.ClientSession() as client:
+            for path in ("/assets/../auth.py", "/assets/%2e%2e/auth.py"):
+                response = await client.get(
+                    endpoint.url + path,
+                    headers={"Origin": origin},
+                )
+                assert response.status in (403, 404)
+                body = await response.text()
+                assert "auth.py" not in body
+
+    asyncio.run(_with_ui_service(scenario, ui_root))
+
+
 def test_service_binds_dynamic_ipv4_loopback_and_status_is_authenticated() -> None:
     async def scenario(runtime, _service, endpoint) -> None:
         assert endpoint.host == "127.0.0.1"
         assert 1 <= endpoint.port <= 65535
         assert endpoint.port != 8888
         assert TOKEN_BYTES.hex() not in repr(endpoint)
-        headers = {"Authorization": f"Bearer {TOKEN_BYTES.hex()}"}
+        headers = {"Authorization": f"Bearer {TOKEN_BYTES.hex()}", "Origin": endpoint.url}
         async with aiohttp.ClientSession() as client:
             denied = await client.get(endpoint.url + "/api/v1/status")
             assert denied.status == 401
@@ -194,10 +382,12 @@ def test_bearer_bootstrap_sets_only_httponly_strict_cookie() -> None:
 
 def test_host_origin_and_forbidden_identity_overrides_fail_closed() -> None:
     async def scenario(runtime, _service, endpoint) -> None:
-        auth = {"Authorization": f"Bearer {TOKEN_BYTES.hex()}"}
+        auth = {"Authorization": f"Bearer {TOKEN_BYTES.hex()}", "Origin": endpoint.url}
+        origin = endpoint.url
         async with aiohttp.ClientSession() as client:
             bad_host = await client.get(
-                endpoint.url + "/api/v1/status", headers={**auth, "Host": "localhost"}
+                endpoint.url + "/api/v1/status",
+                headers={**auth, "Origin": origin, "Host": "localhost"},
             )
             bad_origin = await client.get(
                 endpoint.url + "/api/v1/status",
@@ -205,7 +395,7 @@ def test_host_origin_and_forbidden_identity_overrides_fail_closed() -> None:
             )
             override = await client.post(
                 endpoint.url + "/api/v1/probe/connect",
-                headers=auth,
+                headers={**auth, "Origin": origin},
                 json={
                     "probeId": "probe-a",
                     "expectedBuildId": "a" * 64,
@@ -219,11 +409,69 @@ def test_host_origin_and_forbidden_identity_overrides_fail_closed() -> None:
     asyncio.run(_with_service(scenario))
 
 
+def test_cookie_transport_matrix_over_real_http() -> None:
+    async def scenario(_runtime, _service, endpoint) -> None:
+        origin = endpoint.url
+        token = TOKEN_BYTES.hex()
+        jar = aiohttp.CookieJar(unsafe=True)
+        async with aiohttp.ClientSession(cookie_jar=jar) as client:
+            boot = await client.post(
+                endpoint.url + "/api/v1/auth/bootstrap",
+                headers={"Authorization": f"Bearer {token}", "Origin": origin},
+            )
+            assert boot.status == 200
+
+            safe_get = await client.get(
+                endpoint.url + "/api/v1/status", headers={"Origin": origin}
+            )
+            assert safe_get.status == 200
+
+            get_without_origin = await client.get(endpoint.url + "/api/v1/status")
+            assert get_without_origin.status in (401, 403)
+
+            mutation_without_origin = await client.post(
+                endpoint.url + "/api/v1/groups",
+                headers={"Content-Type": "application/json"},
+                json={"name": "g", "description": "", "intervalMs": 250, "items": []},
+            )
+            assert mutation_without_origin.status in (401, 403)
+
+    asyncio.run(_with_service(scenario))
+
+
+def test_bearer_requires_exact_origin_over_real_http() -> None:
+    async def scenario(_runtime, _service, endpoint) -> None:
+        origin = endpoint.url
+        token = TOKEN_BYTES.hex()
+        async with aiohttp.ClientSession() as client:
+            no_origin = await client.post(
+                endpoint.url + "/api/v1/auth/bootstrap",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+            assert no_origin.status in (401, 403)
+
+            wrong_origin = await client.post(
+                endpoint.url + "/api/v1/auth/bootstrap",
+                headers={
+                    "Authorization": f"Bearer {token}",
+                    "Origin": "http://attacker.invalid",
+                },
+            )
+            assert wrong_origin.status == 403
+
+            exact = await client.post(
+                endpoint.url + "/api/v1/auth/bootstrap",
+                headers={"Authorization": f"Bearer {token}", "Origin": origin},
+            )
+            assert exact.status == 200
+
+    asyncio.run(_with_service(scenario))
+
+
 def test_body_and_route_grammar_are_bounded_and_exact() -> None:
     async def scenario(runtime, _service, endpoint) -> None:
         from stm32_monitor.auth import MAX_REQUEST_BYTES
-
-        auth = {"Authorization": f"Bearer {TOKEN_BYTES.hex()}"}
+        auth = {"Authorization": f"Bearer {TOKEN_BYTES.hex()}", "Origin": endpoint.url}
         async with aiohttp.ClientSession() as client:
             too_large = await client.post(
                 endpoint.url + "/api/v1/groups",
@@ -244,7 +492,7 @@ def test_body_and_route_grammar_are_bounded_and_exact() -> None:
 
 def test_bodyless_and_query_routes_reject_extra_input_before_dispatch() -> None:
     async def scenario(runtime, _service, endpoint) -> None:
-        auth = {"Authorization": f"Bearer {TOKEN_BYTES.hex()}"}
+        auth = {"Authorization": f"Bearer {TOKEN_BYTES.hex()}", "Origin": endpoint.url}
         async with aiohttp.ClientSession() as client:
             bodyless = await client.post(
                 endpoint.url + "/api/v1/probe/release", headers=auth, json={}
@@ -290,7 +538,7 @@ def test_probe_and_catalog_get_routes_are_authenticated_exact_and_bounded() -> N
     from stm32_monitor.protocol import failure
 
     async def scenario(runtime, _service, endpoint) -> None:
-        auth = {"Authorization": f"Bearer {TOKEN_BYTES.hex()}"}
+        auth = {"Authorization": f"Bearer {TOKEN_BYTES.hex()}", "Origin": endpoint.url}
         async with aiohttp.ClientSession() as client:
             denied = await client.get(endpoint.url + "/api/v1/probes")
             probes = await client.get(endpoint.url + "/api/v1/probes", headers=auth)
@@ -386,7 +634,7 @@ def test_group_pages_use_exact_query_grammar_and_fit_actual_http_body(
         assert first_page.ok and first_page.data.next_cursor is not None
 
         async def scenario(runtime, _service, endpoint) -> None:
-            auth = {"Authorization": f"Bearer {TOKEN_BYTES.hex()}"}
+            auth = {"Authorization": f"Bearer {TOKEN_BYTES.hex()}", "Origin": endpoint.url}
             runtime.result = first_page
             async with aiohttp.ClientSession() as client:
                 response = await client.get(
@@ -424,7 +672,7 @@ def test_group_pages_use_exact_query_grammar_and_fit_actual_http_body(
 
 def test_ordinary_response_actual_body_limit_fails_closed_without_payload_leak() -> None:
     async def scenario(runtime, _service, endpoint) -> None:
-        auth = {"Authorization": f"Bearer {TOKEN_BYTES.hex()}"}
+        auth = {"Authorization": f"Bearer {TOKEN_BYTES.hex()}", "Origin": endpoint.url}
         runtime.result = {"secret": "z" * (1024 * 1024)}
         async with aiohttp.ClientSession() as client:
             response = await client.get(endpoint.url + "/api/v1/status", headers=auth)
@@ -540,7 +788,7 @@ def test_every_route_has_one_exact_method_and_operation_mapping() -> None:
     ]
 
     async def scenario(runtime, _service, endpoint) -> None:
-        headers = {"Authorization": f"Bearer {TOKEN_BYTES.hex()}"}
+        headers = {"Authorization": f"Bearer {TOKEN_BYTES.hex()}", "Origin": endpoint.url}
         async with aiohttp.ClientSession() as client:
             for method, path, operation, resource_id in routes:
                 kwargs = {"headers": headers}
@@ -570,7 +818,7 @@ def test_verified_export_download_streams_fixed_public_headers_and_rejects_overr
     body = b'{"value":1}\n'
 
     async def scenario(runtime, _service, endpoint) -> None:
-        auth = {"Authorization": f"Bearer {TOKEN_BYTES.hex()}"}
+        auth = {"Authorization": f"Bearer {TOKEN_BYTES.hex()}", "Origin": endpoint.url}
         runtime.result = ExportDownload(
             BytesIO(body),
             export_id=export_id,
@@ -681,7 +929,7 @@ def test_protocol_results_and_arbitrary_runtime_exceptions_are_bounded() -> None
     from stm32_monitor.protocol import failure, success
 
     async def scenario(runtime, _service, endpoint) -> None:
-        headers = {"Authorization": f"Bearer {TOKEN_BYTES.hex()}"}
+        headers = {"Authorization": f"Bearer {TOKEN_BYTES.hex()}", "Origin": endpoint.url}
         async with aiohttp.ClientSession() as client:
             runtime.result = success("groups.list", {"groups": []})
             good = await client.get(endpoint.url + "/api/v1/groups", headers=headers)
@@ -723,7 +971,7 @@ def test_protocol_results_and_arbitrary_runtime_exceptions_are_bounded() -> None
 
 def test_invalid_json_content_type_and_nested_override_never_dispatch() -> None:
     async def scenario(runtime, _service, endpoint) -> None:
-        auth = {"Authorization": f"Bearer {TOKEN_BYTES.hex()}"}
+        auth = {"Authorization": f"Bearer {TOKEN_BYTES.hex()}", "Origin": endpoint.url}
         async with aiohttp.ClientSession() as client:
             wrong_type = await client.post(
                 endpoint.url + "/api/v1/groups", headers=auth, data=b"{}"
@@ -819,6 +1067,7 @@ def test_duplicate_query_and_json_object_keys_reject_before_dispatch() -> None:
     async def scenario(runtime, _service, endpoint) -> None:
         headers = {
             "Authorization": f"Bearer {TOKEN_BYTES.hex()}",
+            "Origin": endpoint.url,
             "Content-Type": "application/json",
         }
         async with aiohttp.ClientSession() as client:

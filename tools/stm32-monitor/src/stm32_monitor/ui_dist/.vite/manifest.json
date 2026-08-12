@@ -1,15 +1,15 @@
 {
-  "_contract-BmpNklp8.js": {
-    "file": "assets/contract-BmpNklp8.js",
+  "_contract-BPQw5UZt.js": {
+    "file": "assets/contract-BPQw5UZt.js",
     "name": "contract"
   },
   "index.html": {
-    "file": "assets/index-S4L8SDBa.js",
+    "file": "assets/index-BxMQw6dr.js",
     "name": "index",
     "src": "index.html",
     "isEntry": true,
     "imports": [
-      "_contract-BmpNklp8.js"
+      "_contract-BPQw5UZt.js"
     ],
     "dynamicImports": [
       "node_modules/preact/dist/preact.module.js",
@@ -26,13 +26,13 @@
     "isDynamicEntry": true
   },
   "src/app.tsx": {
-    "file": "assets/app-Dj2HPyjj.js",
+    "file": "assets/app-C3uSAkZm.js",
     "name": "app",
     "src": "src/app.tsx",
     "isDynamicEntry": true,
     "imports": [
       "node_modules/preact/dist/preact.module.js",
-      "_contract-BmpNklp8.js"
+      "_contract-BPQw5UZt.js"
     ]
   }
 }

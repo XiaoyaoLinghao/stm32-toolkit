@@ -4,8 +4,8 @@ import {
   type GroupImportDocument,
   type HistoryQuery,
   type MonitorApi,
-  type WatchGroup,
 } from "./api/contract";
+import {parseLossless} from "./api/wire";
 import {openLive} from "./api/live";
 import type {MonitorAction,MonitorState,RequestScope} from "./state/model";
 
@@ -37,7 +37,12 @@ export type Controller={
 
 function parseGroupImport(value:unknown):{ok:true;data:GroupImportDocument}|{ok:false;code:string;message:string}{
   try{return{ok:true,data:groupImportGuard(value)};}
-  catch{return{ok:false,code:"MONITOR_IMPORT_INVALID",message:"Group import document is invalid"};}
+  catch{/* fall through to the in-memory document path */}
+  try{
+    // GroupPanel hands over an already-validated in-memory document whose
+    // numeric fields are plain numbers; re-encode to wire tokens and re-guard.
+    return{ok:true,data:groupImportGuard(parseLossless(JSON.stringify(value)))};
+  }catch{return{ok:false,code:"MONITOR_IMPORT_INVALID",message:"Group import document is invalid"};}
 }
 
 function draftTransfer(draft:GroupDraft):{name:string;description:string;intervalMs:number;items:readonly {kind:"variable";expression:string}[]|readonly {kind:"register";registerPath:string}[]}{
@@ -160,14 +165,22 @@ export function createController(api:MonitorApi,dispatch:(action:MonitorAction)=
       }
     },
     createGroup:async()=>{
-      const id=start("groups.create");
       const draft=getState().groupDraft;
+      if(draft.sourceGroupId!==null)return;
+      const id=start("groups.create");
       const result=await api.createGroup({authorized:true,...draftTransfer(draft)});
       if(result.ok){clear("groups.create",id);await refreshGroupsAfterMutation();}
       else fail("groups.create",id,result.code,result.message);
     },
     saveGroup:async(draft)=>{
-      if(draft.sourceGroupId===null||draft.expectedRevision===null)return;
+      if(draft.sourceGroupId===null){
+        const id=start("groups.create");
+        const result=await api.createGroup({authorized:true,...draftTransfer(draft)});
+        if(result.ok){clear("groups.create",id);await refreshGroupsAfterMutation();}
+        else fail("groups.create",id,result.code,result.message);
+        return;
+      }
+      if(draft.expectedRevision===null)return;
       const id=start("groups.update");
       const result=await api.updateGroup(draft.sourceGroupId,{authorized:true,expectedRevision:draft.expectedRevision,name:draft.name,description:draft.description,intervalMs:draft.intervalMs,items:draft.items});
       if(result.ok){clear("groups.update",id);await refreshGroupsAfterMutation();}

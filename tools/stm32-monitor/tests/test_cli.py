@@ -17,6 +17,27 @@ class FakeEndpoint:
     def url(self) -> str:
         return f"http://{self.host}:{self.port}"
 
+    @property
+    def access_url(self) -> str:
+        return f"{self.url}/#token={self.token}"
+
+
+class RecordingRuntime:
+    def __init__(self, events: list[str]) -> None:
+        self.events = events
+        self.config = None
+
+    async def start(self, config):
+        self.events.append("start")
+        self.config = config
+        return FakeEndpoint()
+
+    async def wait_closed(self) -> None:
+        self.events.append("wait")
+
+    async def stop(self) -> None:
+        self.events.append("stop")
+
 
 class FakeRuntime:
     def __init__(self) -> None:
@@ -200,3 +221,137 @@ def test_cli_maps_keyboard_interrupt_to_130(tmp_path: Path) -> None:
         _stdout=io.StringIO(),
     )
     assert code == 130
+
+
+def test_serve_never_calls_the_browser_opener(tmp_path: Path) -> None:
+    from stm32_monitor.cli import main
+
+    project = (tmp_path / "project").resolve()
+    project.mkdir()
+    opened: list[str] = []
+    runtime = RecordingRuntime([])
+    code = main(
+        [
+            "serve",
+            "--project",
+            str(project),
+            "--data-root",
+            str((tmp_path / "data").resolve()),
+            "--session-id",
+            "session-a",
+            "--json",
+        ],
+        _runtime_factory=lambda: runtime,
+        _browser_open=lambda url: opened.append(url) or True,
+        _stdout=io.StringIO(),
+    )
+    assert code == 0
+    assert opened == []
+
+
+def test_open_starts_then_opens_once_and_cleans_up(tmp_path: Path) -> None:
+    from stm32_monitor.cli import main
+
+    project = (tmp_path / "project").resolve()
+    project.mkdir()
+    events: list[object] = []
+    opened: list[str] = []
+    runtime = RecordingRuntime(events)
+    code = main(
+        ["open", "--project", str(project), "--data-root", str((tmp_path / "data").resolve())],
+        _runtime_factory=lambda: runtime,
+        _browser_open=lambda url: opened.append(url) or True,
+        _stdout=io.StringIO(),
+    )
+    assert code == 0
+    assert opened == ["http://127.0.0.1:45678/#token=" + "d" * 64]
+    assert [item[0] if isinstance(item, tuple) else item for item in events] == [
+        "start",
+        "wait",
+        "stop",
+    ]
+    assert isinstance(runtime.config.session_id, str)
+    assert runtime.config.session_id.startswith("monitor-")
+
+
+def test_open_accepts_an_explicit_session_id(tmp_path: Path) -> None:
+    from stm32_monitor.cli import main
+
+    project = (tmp_path / "project").resolve()
+    project.mkdir()
+    runtime = RecordingRuntime([])
+    code = main(
+        [
+            "open",
+            "--project",
+            str(project),
+            "--data-root",
+            str((tmp_path / "data").resolve()),
+            "--session-id",
+            "explicit-session",
+        ],
+        _runtime_factory=lambda: runtime,
+        _stdout=io.StringIO(),
+    )
+    assert code == 0
+    assert runtime.config.session_id == "explicit-session"
+
+
+def test_open_browser_handoff_failure_stops_runtime_sanitized(tmp_path: Path) -> None:
+    from stm32_monitor.cli import main
+
+    project = (tmp_path / "project").resolve()
+    project.mkdir()
+    events: list[str] = []
+    output = io.StringIO()
+    code = main(
+        ["open", "--project", str(project), "--data-root", str((tmp_path / "data").resolve())],
+        _runtime_factory=lambda: RecordingRuntime(events),
+        _browser_open=lambda url: False,
+        _stdout=output,
+    )
+    assert code == 1
+    assert json.loads(output.getvalue()) == {
+        "ok": False,
+        "code": "MONITOR_BROWSER_FAILED",
+        "message": "Monitor browser handoff failed",
+    }
+    assert events == ["start", "stop"]
+
+
+def test_open_prints_no_access_url_to_stdout(tmp_path: Path) -> None:
+    from stm32_monitor.cli import main
+
+    project = (tmp_path / "project").resolve()
+    project.mkdir()
+    output = io.StringIO()
+    code = main(
+        ["open", "--project", str(project), "--data-root", str((tmp_path / "data").resolve())],
+        _runtime_factory=lambda: RecordingRuntime([]),
+        _browser_open=lambda url: True,
+        _stdout=output,
+    )
+    assert code == 0
+    assert "token" not in output.getvalue()
+    assert "#" not in output.getvalue()
+    assert output.getvalue() == ""
+
+
+def test_open_keyboard_interrupt_returns_130_and_cleans_up(tmp_path: Path) -> None:
+    from stm32_monitor.cli import main
+
+    class InterruptedAfterOpen(FakeRuntime):
+        async def wait_closed(self) -> None:
+            raise KeyboardInterrupt
+
+    project = (tmp_path / "project").resolve()
+    project.mkdir()
+    runtime = InterruptedAfterOpen()
+    code = main(
+        ["open", "--project", str(project), "--data-root", str((tmp_path / "data").resolve())],
+        _runtime_factory=lambda: runtime,
+        _browser_open=lambda url: True,
+        _stdout=io.StringIO(),
+    )
+    assert code == 130
+    assert runtime.stopped is True

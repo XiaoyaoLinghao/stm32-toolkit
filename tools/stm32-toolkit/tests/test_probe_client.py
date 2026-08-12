@@ -209,7 +209,7 @@ def test_endpoint_loader_rejects_non_exact_probe_binding(tmp_path: Path):
     [
         ("protocol", "stm32-toolkit-probe/2"),
         ("protocol", 1),
-        ("toolkitVersion", "0.5.0"),
+        ("toolkitVersion", "0.4.0"),
         ("toolkitVersion", 3),
     ],
 )
@@ -277,7 +277,7 @@ def test_endpoint_loader_does_not_leak_raw_json_errors(tmp_path: Path):
     ("field", "value"),
     [
         ("protocol", "stm32-toolkit-probe/2"),
-        ("toolkitVersion", "0.5.0"),
+        ("toolkitVersion", "0.4.0"),
         ("requestId", "request-b"),
         ("operation", "memory.read"),
         ("ok", 1),

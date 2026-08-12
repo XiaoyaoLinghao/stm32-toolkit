@@ -1,7 +1,6 @@
 import type {JSX} from "preact";
 import {useEffect,useRef} from "preact/hooks";
 import * as echarts from "echarts/core";
-import type {EChartsCoreOption} from "echarts/core";
 import type {DisplaySeries} from "../state/model";
 import type {ZoomRange} from "../chart/zoom";
 import {buildChartOption} from "../chart/echarts";
@@ -12,7 +11,7 @@ export type LiveChartProps={
   onZoom:(range:ZoomRange)=>void|Promise<void>;
 };
 
-export function LiveChart({series,range,onZoom}:LiveChartProps):JSX.Element{
+export function LiveChart({series,range}:LiveChartProps):JSX.Element{
   const hostRef=useRef<HTMLDivElement>(null);
   const chartRef=useRef<echarts.ECharts|null>(null);
   useEffect(()=>{

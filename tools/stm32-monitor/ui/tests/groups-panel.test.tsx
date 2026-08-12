@@ -14,13 +14,11 @@ function props(overrides:Record<string,unknown>={}){
     onSelect:vi.fn(),
     onDraftChange:vi.fn(),
     onRemove:vi.fn(),
-    onCreate:vi.fn(),
+    onNew:vi.fn(),
     onSave:vi.fn(),
     onDelete:vi.fn(),
-    onReadImport:async():Promise<{ok:true;data:unknown}|{ok:false;code:string;message:string}>=>({ok:false,code:"MONITOR_IMPORT_INVALID",message:"invalid"}),
     onImport:vi.fn(),
     onExport:vi.fn(),
-    onRefresh:vi.fn(),
     ...overrides,
   };
 }
@@ -37,7 +35,7 @@ it("new group creates and saves",async()=>{
   render(<GroupPanel {...props({
     selectedGroupId:null,
     draft:{sourceGroupId:null,expectedRevision:null,name:"",description:"",intervalMs:250,items:[]},
-    onCreate:create,onSave:save,
+    onNew:create,onSave:save,
   })}/>);
   expect(screen.getByRole("button",{name:"Create group"})).toBeTruthy();
   await userEvent.click(screen.getByRole("button",{name:"New group"}));
@@ -77,13 +75,28 @@ it("removes a register watch from the draft",async()=>{
   expect(remove).toHaveBeenCalledWith("register:TIM2_CNT");
 });
 
-it("saves and deletes the selected group",async()=>{
-  const save=vi.fn(),del=vi.fn();
-  render(<GroupPanel {...props({onSave:save,onDelete:del})}/>);
+it("saves the selected group",async()=>{
+  const save=vi.fn();
+  render(<GroupPanel {...props({onSave:save})}/>);
   await userEvent.click(screen.getByRole("button",{name:"Save group"}));
   expect(save).toHaveBeenCalled();
+});
+
+it("deletes only after explicit confirmation",async()=>{
+  const del=vi.fn();
+  render(<GroupPanel {...props({onDelete:del})}/>);
   await userEvent.click(screen.getByRole("button",{name:"Delete"}));
+  expect(del).not.toHaveBeenCalled();
+  await userEvent.click(screen.getByRole("button",{name:"Confirm delete"}));
   expect(del).toHaveBeenCalledWith("group");
+});
+
+it("cancelling delete does not call delete",async()=>{
+  const del=vi.fn();
+  render(<GroupPanel {...props({onDelete:del})}/>);
+  await userEvent.click(screen.getByRole("button",{name:"Delete"}));
+  await userEvent.click(screen.getByRole("button",{name:"Cancel"}));
+  expect(del).not.toHaveBeenCalled();
 });
 
 it("renders failure alert",()=>{
@@ -91,28 +104,37 @@ it("renders failure alert",()=>{
   expect(screen.getByRole("alert")).toHaveTextContent("GROUPS_FAILED");
 });
 
-it("imports a group document and exports groups JSON",async()=>{
+it("imports a group document after preview and confirmation",async()=>{
   const importFn=vi.fn();
-  const createObjectURL=vi.spyOn(URL,"createObjectURL").mockReturnValue("blob:url");
-  const click=vi.fn();
-  Object.defineProperty(HTMLAnchorElement.prototype,"click",{value:click,configurable:true});
   render(<GroupPanel {...props({onImport:importFn})}/>);
   await userEvent.click(screen.getByRole("button",{name:"Import groups"}));
   const file=screen.getByTestId("group-import-file");
   await userEvent.upload(file,new File(['{"schemaVersion":1,"groups":[]}'],"groups.json",{type:"application/json"}));
-  expect(importFn).toHaveBeenCalled();
-  await userEvent.click(screen.getByRole("button",{name:"Export groups JSON"}));
-  expect(click).toHaveBeenCalled();
-  createObjectURL.mockRestore();
+  expect(importFn).not.toHaveBeenCalled();
+  const confirm=await screen.findByRole("button",{name:"Confirm import"});
+  await userEvent.click(confirm);
+  expect(importFn).toHaveBeenCalledWith({schemaVersion:1,groups:[]});
 });
 
-it("imports with a successful read and resets the file input",async()=>{
+it("rejects invalid import JSON with an error and no confirmation",async()=>{
   const importFn=vi.fn();
-  render(<GroupPanel {...props({onReadImport:async()=>({ok:true,data:{schemaVersion:1,groups:[]}}),onImport:importFn})}/>);
+  render(<GroupPanel {...props({onImport:importFn})}/>);
   await userEvent.click(screen.getByRole("button",{name:"Import groups"}));
   const file=screen.getByTestId("group-import-file");
-  await userEvent.upload(file,new File(['{}'],"groups.json",{type:"application/json"}));
-  expect(importFn).toHaveBeenCalledWith({schemaVersion:1,groups:[]});
+  await userEvent.upload(file,new File(["not-json"],"bad.json",{type:"application/json"}));
+  expect(screen.queryByRole("button",{name:"Confirm import"})).toBeNull();
+  expect(importFn).not.toHaveBeenCalled();
+});
+
+it("cancels an import preview without sending",async()=>{
+  const importFn=vi.fn();
+  render(<GroupPanel {...props({onImport:importFn})}/>);
+  await userEvent.click(screen.getByRole("button",{name:"Import groups"}));
+  const file=screen.getByTestId("group-import-file");
+  await userEvent.upload(file,new File(['{"schemaVersion":1,"groups":[]}'],"groups.json",{type:"application/json"}));
+  const cancel=await screen.findByRole("button",{name:"Cancel"});
+  await userEvent.click(cancel);
+  expect(importFn).not.toHaveBeenCalled();
 });
 
 it("ignores an import change event without a file",()=>{
@@ -128,4 +150,44 @@ it("shows empty draft for a new group selection",()=>{
     draft:{sourceGroupId:null,expectedRevision:null,name:"",description:"",intervalMs:250,items:[]}})}/>);
   expect(screen.queryByRole("button",{name:"Group (1)"})).toBeNull();
   expect(screen.getByRole("button",{name:"New group"})).toBeTruthy();
+});
+
+it("exports authoritative groups as a blob download on click",async()=>{
+  const created:URL[]=[];
+  const originalCreate=URL.createObjectURL;
+  const originalRevoke=URL.revokeObjectURL;
+  URL.createObjectURL=vi.fn(()=>{const url=new URL("blob:test-export");created.push(url);return url.href;}) as unknown as typeof URL.createObjectURL;
+  URL.revokeObjectURL=vi.fn() as unknown as typeof URL.revokeObjectURL;
+  try{
+    render(<GroupPanel {...props({groups:[watchGroup()]})}/>);
+    await userEvent.click(screen.getByRole("button",{name:"Export groups JSON"}));
+    expect(URL.createObjectURL).toHaveBeenCalledTimes(1);
+    expect(URL.revokeObjectURL).toHaveBeenCalledWith(created[0]!.href);
+  }finally{
+    URL.createObjectURL=originalCreate;
+    URL.revokeObjectURL=originalRevoke;
+  }
+});
+
+it("surfaces an invalid schema before confirmation and hides the preview",async()=>{
+  const importFn=vi.fn();
+  render(<GroupPanel {...props({onImport:importFn})}/>);
+  await userEvent.click(screen.getByRole("button",{name:"Import groups"}));
+  const file=screen.getByTestId("group-import-file");
+  await userEvent.upload(file,new File(['{"schemaVersion":1,"groups":{}}'],"bad-schema.json",{type:"application/json"}));
+  expect(await screen.findByRole("alert")).toHaveTextContent("invalid");
+  expect(screen.queryByRole("button",{name:"Confirm import"})).toBeNull();
+  expect(importFn).not.toHaveBeenCalled();
+});
+
+it("closes the import preview when toggling the import button again",async()=>{
+  const importFn=vi.fn();
+  render(<GroupPanel {...props({onImport:importFn})}/>);
+  await userEvent.click(screen.getByRole("button",{name:"Import groups"}));
+  const file=screen.getByTestId("group-import-file");
+  await userEvent.upload(file,new File(['{"schemaVersion":1,"groups":[]}'],"groups.json",{type:"application/json"}));
+  expect(await screen.findByRole("button",{name:"Confirm import"})).toBeTruthy();
+  await userEvent.click(screen.getByRole("button",{name:"Import groups"}));
+  expect(screen.queryByRole("button",{name:"Confirm import"})).toBeNull();
+  expect(importFn).not.toHaveBeenCalled();
 });

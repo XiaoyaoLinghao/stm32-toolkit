@@ -27,6 +27,9 @@ Thumbs.db
 htmlcov/
 coverage.xml
 
+# STM32TK-0502: local working copies of the reviewed 0502 specification documents
+/.revision-spec/
+
 # STM32TK-0502 monitor UI toolchain outputs
 /tools/stm32-monitor/ui/node_modules/
 /tools/stm32-monitor/ui/coverage/

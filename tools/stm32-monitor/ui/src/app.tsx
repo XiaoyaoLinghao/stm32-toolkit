@@ -9,11 +9,13 @@ import {
   selectedGroup,
 } from "./state/selectors";
 import type {DisplaySeries} from "./state/model";
+import {emptyDraft} from "./state/model";
 import {displayDropTotals} from "./chart/series";
 import {IdentityBar} from "./components/IdentityBar";
 import {ProbePanel} from "./components/ProbePanel";
 import {CatalogPanel} from "./components/CatalogPanel";
 import {GroupPanel} from "./components/GroupPanel";
+import {SamplingControls} from "./components/SamplingControls";
 import {LiveTable} from "./components/LiveTable";
 import {LiveChart} from "./components/LiveChart";
 import {ChartZoomControls} from "./components/ChartZoomControls";
@@ -39,7 +41,6 @@ export function App():JSX.Element{
 
   const series:readonly DisplaySeries[]=chartSeries(state);
   const rows=liveRows(state);
-  const group=selectedGroup(state);
   const status=state.status;
   const drops=displayDropTotals(state.live);
   const currentExportRange=useMemo(()=>{
@@ -70,11 +71,16 @@ export function App():JSX.Element{
       onSelect={(groupId)=>dispatch({type:"group.selected",groupId})}
       onDraftChange={(draft)=>dispatch({type:"group.draft.changed",draft})}
       onRemove={(key)=>dispatch({type:"group.watch.removed",key})}
-      onCreate={()=>controller.createGroup()} onSave={()=>controller.saveGroup(state.groupDraft)}
+      onNew={()=>dispatch({type:"group.draft.changed",draft:emptyDraft})}
+      onSave={()=>controller.saveGroup(state.groupDraft)}
       onDelete={(groupId)=>controller.deleteGroup(groupId)}
-      onReadImport={async()=>({ok:false,code:"MONITOR_IMPORT_INVALID",message:"Group import file is invalid"})}
       onImport={(value)=>controller.importGroups(value)}
-      onExport={()=>controller.refreshGroups()} onRefresh={()=>controller.refreshGroups()}/>
+      onExport={()=>controller.refreshGroups()}/>
+    <SamplingControls status={status.sampling} group={selectedGroup(state)}
+      onStart={(groupId,revision)=>controller.startSampling(groupId,revision)}
+      onPause={()=>controller.pauseSampling()} onResume={()=>controller.resumeSampling()}
+      onStop={()=>controller.stopSampling()}
+      failure={state.failures["sampling.start"]??state.failures["sampling.pause"]??state.failures["sampling.resume"]??state.failures["sampling.stop"]??null}/>
     <LiveTable rows={rows} selectedSeries={[...state.selectedSeries]} onSeriesToggle={(key)=>dispatch({type:"series.toggled",key})}/>
     <LiveChart series={series} range={state.zoom} onZoom={(range)=>dispatch({type:"zoom.changed",action:{type:"zoom.set",start:range.start,end:range.end}})}/>
     <ChartZoomControls range={state.zoom} onAction={(action)=>dispatch({type:"zoom.changed",action})}/>

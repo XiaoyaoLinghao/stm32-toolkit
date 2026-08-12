@@ -1,7 +1,12 @@
 import type {JSX} from "preact";
 import {useRef,useState} from "preact/hooks";
-import type {ApiFailure,GroupDraft,WatchGroup,WatchItem} from "../api/contract";
-import {toGroupImportDocument} from "../state/group-transfer";
+import type {ApiFailure,GroupDraft,GroupImportDocument,WatchGroup,WatchItem} from "../api/contract";
+import {
+  parseGroupImportDocument,
+  previewGroupImport,
+  toGroupImportDocument,
+} from "../state/group-transfer";
+import {parseLossless} from "../api/wire";
 
 export type GroupPanelProps={
   groups:readonly WatchGroup[];
@@ -11,13 +16,11 @@ export type GroupPanelProps={
   onSelect:(groupId:string)=>void|Promise<void>;
   onDraftChange:(draft:GroupDraft)=>void|Promise<void>;
   onRemove:(key:string)=>void|Promise<void>;
-  onCreate:()=>void|Promise<void>;
+  onNew:()=>void|Promise<void>;
   onSave:()=>void|Promise<void>;
   onDelete:(groupId:string)=>void|Promise<void>;
-  onReadImport:()=>Promise<{ok:true;data:unknown}|{ok:false;code:string;message:string}>;
   onImport:(value:unknown)=>void|Promise<void>;
   onExport:()=>void|Promise<void>;
-  onRefresh:()=>void|Promise<void>;
 };
 
 function watchKey(watch:WatchItem):string{
@@ -25,11 +28,49 @@ function watchKey(watch:WatchItem):string{
 }
 
 export function GroupPanel(p:GroupPanelProps):JSX.Element{
-  const [showImport,setShowImport]=useState(false);
+  const [confirmDelete,setConfirmDelete]=useState<string|null>(null);
+  const [importState,setImportState]=useState<"idle"|"preview">("idle");
+  const [importDoc,setImportDoc]=useState<GroupImportDocument|null>(null);
+  const [importError,setImportError]=useState<string|null>(null);
   const fileRef=useRef<HTMLInputElement>(null);
   const isNew=p.draft.sourceGroupId===null;
   const exportDoc=toGroupImportDocument(p.groups);
-  const exportBlob=()=>{const blob=new Blob([JSON.stringify(exportDoc,null,2)],{type:"application/json"});const url=URL.createObjectURL(blob);const anchor=document.createElement("a");anchor.href=url;anchor.download="monitor-groups.json";anchor.click();URL.revokeObjectURL(url);};
+  const exportBlob=()=>{
+    const blob=new Blob([JSON.stringify(exportDoc,null,2)],{type:"application/json"});
+    const url=URL.createObjectURL(blob);
+    const anchor=document.createElement("a");
+    anchor.href=url;anchor.download="monitor-groups.json";anchor.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const readImportFile=async(event:Event):Promise<void>=>{
+    const input=event.currentTarget as HTMLInputElement;
+    const file=input.files?.[0];
+    if(file===undefined)return;
+    const text=await new Promise<string>((resolve,reject)=>{
+      const reader=new FileReader();
+      reader.onload=()=>resolve(reader.result as string);
+      reader.onerror=()=>reject(new Error("read failed"));
+      reader.readAsText(file);
+    });
+    try{
+      let value:unknown;
+      try{value=parseLossless(text);}catch{setImportDoc(null);setImportError("Import file is not valid JSON");return;}
+      const parsed=parseGroupImportDocument(value);
+      if(!parsed.ok){setImportDoc(null);setImportError(parsed.message);return;}
+      setImportDoc(parsed.data);setImportError(null);setImportState("preview");
+    }catch{
+      setImportDoc(null);setImportError("Import file could not be read");
+    }finally{
+      if(fileRef.current!==null)fileRef.current.value="";
+    }
+  };
+
+  const confirmImport=(doc:GroupImportDocument):void=>{
+    void p.onImport(doc);
+    setImportDoc(null);setImportState("idle");
+  };
+  const cancelImport=():void=>{setImportDoc(null);setImportState("idle");setImportError(null);};
 
   return<section className="panel" aria-label="Watch groups">
     <h2>Watch groups</h2>
@@ -37,21 +78,35 @@ export function GroupPanel(p:GroupPanelProps):JSX.Element{
       <li key={group.groupId}>
         <button type="button" aria-pressed={group.groupId===p.selectedGroupId}
           onClick={()=>void p.onSelect(group.groupId)}>{group.name} ({group.items.length})</button>
-        {group.groupId===p.selectedGroupId&&<button type="button" onClick={()=>void p.onDelete(group.groupId)}>Delete</button>}
+        {group.groupId===p.selectedGroupId&&confirmDelete!==group.groupId&&(
+          <button type="button" onClick={()=>setConfirmDelete(group.groupId)}>Delete</button>
+        )}
+        {confirmDelete===group.groupId&&(
+          <>
+            <span>Delete {group.name}?</span>
+            <button type="button" onClick={()=>{void p.onDelete(group.groupId);setConfirmDelete(null);}}>Confirm delete</button>
+            <button type="button" onClick={()=>setConfirmDelete(null)}>Cancel</button>
+          </>
+        )}
       </li>))}</ul>
-    <button type="button" onClick={()=>void p.onCreate()}>New group</button>
+    <button type="button" onClick={()=>void p.onNew()}>New group</button>
     <button type="button" onClick={exportBlob}>Export groups JSON</button>
-    <button type="button" onClick={()=>setShowImport(v=>!v)}>Import groups</button>
-    {showImport&&(
+    <button type="button" onClick={()=>setImportState(v=>v==="idle"?"preview":"idle")}>Import groups</button>
+    {importState!=="idle"&&(
       <div>
         <input ref={fileRef} type="file" accept="application/json" data-testid="group-import-file"
-          onChange={async event=>{
-            const file=event.currentTarget.files?.[0];
-            if(file===undefined)return;
-            const read=await p.onReadImport();
-            void p.onImport(read.ok?read.data:null);
-            if(fileRef.current!==null)fileRef.current.value="";
-          }}/>
+          onChange={readImportFile}/>
+        {importError!==null&&<p role="alert">{importError}</p>}
+        {importDoc!==null&&(()=>{
+          const preview=previewGroupImport(importDoc,p.groups);
+          return(
+            <div>
+              <p>Import {preview.groupCount} groups ({preview.itemCount} watches)?</p>
+              <button type="button" onClick={()=>confirmImport(importDoc)}>Confirm import</button>
+              <button type="button" onClick={cancelImport}>Cancel</button>
+            </div>
+          );
+        })()}
       </div>)}
     <h3>{isNew?"New group":"Edit group"}</h3>
     <label>Name <input value={p.draft.name}
@@ -66,7 +121,7 @@ export function GroupPanel(p:GroupPanelProps):JSX.Element{
         return<tr key={key}><td><code>{item.kind==="variable"?item.expression:item.registerPath}</code></td>
           <td><button type="button" onClick={()=>void p.onRemove(key)}>Remove</button></td></tr>;})}</tbody></table>
     {p.failure!==null&&<p role="alert">{p.failure.code}: {p.failure.message}</p>}
-    <button type="button" onClick={()=>void p.onSave()} disabled={isNew||p.draft.name===""||p.draft.items.length===0}>
+    <button type="button" onClick={()=>void p.onSave()} disabled={p.draft.name===""||p.draft.items.length===0}>
       {isNew?"Create group":"Save group"}
     </button>
   </section>;
