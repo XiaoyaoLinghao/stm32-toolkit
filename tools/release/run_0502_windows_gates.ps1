@@ -17,7 +17,16 @@ $AcceptedBase = 'bd59b3cd3ecd72eebcd08300f6e809ebd38f46aa'
 
 $script:GateResults = [System.Collections.Generic.List[object]]::new()
 $script:Failed = $false
+$script:FirstError = $null
+$script:ActualHead = $null
+$script:SupportManifestSha256 = $null
+$script:SupportTreeSha256 = $null
 
+# ---------------------------------------------------------------------------
+# Entry validation. These failures happen before EvidenceRoot has been proven
+# legal and therefore never claim a summary.json; the gate sequence below is
+# the only place a summary is promised.
+# ---------------------------------------------------------------------------
 function Resolve-0502Path {
     param([string]$Value, [string]$Label, [bool]$Leaf)
     if ([string]::IsNullOrWhiteSpace($Value) -or -not [IO.Path]::IsPathRooted($Value)) { throw "$Label must be rooted" }
@@ -54,15 +63,30 @@ if (@(Get-ChildItem -LiteralPath $EvidenceRoot -Force -ErrorAction Stop).Count -
 $identities = @($Git, $Node, $Npm, $Python310, $Python312, $CmdExe) | ForEach-Object { $_.ToLowerInvariant() }
 if (@($identities | Sort-Object -Unique).Count -ne $identities.Count) { throw 'duplicate tool identity' }
 
+# ---------------------------------------------------------------------------
+# Gate machinery. Invoke-0502Gate records PASS/FAIL and throws on the first
+# nonzero exit so no later product gate ever runs.
+# ---------------------------------------------------------------------------
 function Invoke-0502Capture {
     param([string]$Name, [string]$WorkingDirectory, [string]$Executable, [string[]]$Arguments)
     $log = Join-Path $EvidenceRoot ($Name + '.log')
+    $oldGate = $env:STM32_MONITOR_GATE
+    $env:STM32_MONITOR_GATE = $Name
+    $oldEap = $ErrorActionPreference
+    # Native stderr under Stop would raise a terminating error (e.g. the
+    # fail-closed launcher tests legitimately emit to stderr and exit 2).
+    $ErrorActionPreference = 'Continue'
     Push-Location -LiteralPath $WorkingDirectory
     try {
         $lines = @(& $Executable @Arguments 2>&1)
         $exit = $LASTEXITCODE
     }
-    finally { Pop-Location }
+    finally {
+        Pop-Location
+        $ErrorActionPreference = $oldEap
+        if ($null -eq $oldGate) { Remove-Item Env:STM32_MONITOR_GATE -ErrorAction SilentlyContinue }
+        else { $env:STM32_MONITOR_GATE = $oldGate }
+    }
     $lines | Set-Content -Encoding UTF8 -LiteralPath $log
     return @{ Name = $Name; Exit = $exit; Log = $log; Lines = $lines }
 }
@@ -71,13 +95,35 @@ function Invoke-0502Gate {
     param([string]$Name, [string]$WorkingDirectory, [string]$Executable, [string[]]$Arguments)
     $result = Invoke-0502Capture $Name $WorkingDirectory $Executable $Arguments
     $ok = ($result.Exit -eq 0)
-    if (-not $ok) { $script:Failed = $true }
     $script:GateResults.Add([ordered]@{ gate = $Name; status = if ($ok) { 'PASS' } else { 'FAIL' }; exit = $result.Exit; log = $result.Log })
+    if (-not $ok) {
+        $script:Failed = $true
+        throw "gate $Name failed with exit $($result.Exit)"
+    }
     return $result
 }
 
+function Add-0502Result {
+    param([string]$Name, [bool]$Ok, [string]$Detail)
+    $script:GateResults.Add([ordered]@{ gate = $Name; status = if ($Ok) { 'PASS' } else { 'FAIL' }; detail = $Detail })
+    if (-not $Ok) { throw "gate $Name failed: $Detail" }
+}
+
+# Get-FileHash is not reliably available under Windows PowerShell -File on this
+# machine, so hashing uses the .NET API directly (lowercase hex SHA-256).
+function Get-0502Sha256 {
+    param([string]$Path)
+    $stream = [IO.File]::OpenRead($Path)
+    try {
+        $sha = [Security.Cryptography.SHA256]::Create()
+        $bytes = $sha.ComputeHash($stream)
+        return ([BitConverter]::ToString($bytes).Replace('-', '')).ToLowerInvariant()
+    }
+    finally { $stream.Dispose() }
+}
+
 function Write-0502Summary {
-    $summary = @{
+    $summary = [ordered]@{
         acceptedBase = $AcceptedBase
         codeHead = $CodeHead
         headIdentity = $script:ActualHead
@@ -85,155 +131,409 @@ function Write-0502Summary {
         overall = if ($script:Failed) { 'FAIL' } else { 'PASS' }
     }
     $json = $summary | ConvertTo-Json -Depth 6
-    [IO.File]::WriteAllText((Join-Path $EvidenceRoot 'summary.json'), $json, [Text.UTF8Encoding]::new($false))
+    $target = Join-Path $EvidenceRoot 'summary.json'
+    $temp = Join-Path $EvidenceRoot 'summary.json.tmp'
+    [IO.File]::WriteAllText($temp, $json, [Text.UTF8Encoding]::new($false))
+    if ([IO.File]::Exists($target)) { [IO.File]::Replace($temp, $target, $null) | Out-Null }
+    else { [IO.File]::Move($temp, $target) }
 }
 
-# --- Identity binding ---------------------------------------------------------
-$headResult = Invoke-0502Capture 'git-rev-parse-head' $RepoRoot $Git @('rev-parse', 'HEAD')
-if ($headResult.Exit -ne 0) { $script:Failed = $true; $script:GateResults.Add([ordered]@{ gate = 'git-head-identity'; status = 'FAIL'; exit = $headResult.Exit }); Write-0502Summary; throw 'git rev-parse HEAD failed' }
-$script:ActualHead = ($headResult.Lines | Select-Object -Last 1).Trim()
-if ($script:ActualHead -cne $CodeHead) {
+# ---------------------------------------------------------------------------
+# Raw, trailing-NUL git inventory plumbing.
+# ---------------------------------------------------------------------------
+function Invoke-0502GitRaw {
+    param([string[]]$Arguments)
+    $start = New-Object Diagnostics.ProcessStartInfo
+    $start.FileName = $Git
+    $start.WorkingDirectory = $RepoRoot
+    $start.UseShellExecute = $false
+    $start.RedirectStandardOutput = $true
+    $start.RedirectStandardError = $true
+    $start.CreateNoWindow = $true
+    $start.Arguments = ($Arguments | ForEach-Object { if ($_ -match '\s' -or $_ -eq '') { '"' + $_ + '"' } else { $_ } }) -join ' '
+    $process = New-Object Diagnostics.Process
+    $process.StartInfo = $start
+    if (-not $process.Start()) { throw 'raw git process did not start' }
+    $stderrTask = $process.StandardError.ReadToEndAsync()
+    $memory = New-Object IO.MemoryStream
+    $process.StandardOutput.BaseStream.CopyTo($memory)
+    $process.WaitForExit()
+    $stderr = $stderrTask.Result
+    if ($process.ExitCode -ne 0) { throw ('raw git diff failed: ' + $stderr) }
+    return $memory.ToArray()
+}
+
+function Split-0502NulBytes {
+    param([byte[]]$Bytes)
+    if ($Bytes.Length -eq 0 -or $Bytes[$Bytes.Length - 1] -ne 0) { throw 'raw git inventory requires trailing NUL' }
+    $utf8 = New-Object Text.UTF8Encoding($false, $true)
+    $parts = New-Object Collections.Generic.List[string]
+    $start = 0
+    for ($index = 0; $index -lt $Bytes.Length; $index++) {
+        if ($Bytes[$index] -eq 0) {
+            if ($index -eq $start) { if ($index -ne $Bytes.Length - 1) { throw 'raw git inventory contains an empty interior field' } }
+            else { $parts.Add($utf8.GetString($Bytes, $start, $index - $start)) }
+            $start = $index + 1
+        }
+    }
+    if ($start -ne $Bytes.Length) { throw 'raw NUL stream did not terminate' }
+    return $parts.ToArray()
+}
+
+# ---------------------------------------------------------------------------
+# Controlled support verification. verify_support.py (Task 1) is authoritative;
+# verify_0502_release.py is only the deterministic scope/coverage/static checker.
+# uiRoot/supportVerifier are resolved inside the gate sequence so a HEAD
+# identity failure is reported before any repository-content dependency.
+# ---------------------------------------------------------------------------
+function Assert-0502Support {
+    param([string]$Phase)
+    $lines = Invoke-0502Gate ('verify-support-' + $Phase) $RepoRoot $Python312 @($supportVerifier, '--support', $SupportRoot, '--package', (Join-Path $uiRoot 'package.json'), '--package-lock', (Join-Path $uiRoot 'package-lock.json'))
+    $info = ($lines.Lines | Select-Object -Last 1 | ConvertFrom-Json)
+    if ($script:SupportManifestSha256) {
+        if ([string]$info.supportManifestSha256 -cne $script:SupportManifestSha256 -or [string]$info.supportTreeSha256 -cne $script:SupportTreeSha256) { throw 'support manifest or source tree changed' }
+    }
+    return $info
+}
+
+function New-0502NpmWorkingCache {
+    param([string]$SourceCache)
+    $evidenceItem = Get-Item -LiteralPath $EvidenceRoot -Force
+    if (-not [IO.Path]::IsPathRooted($EvidenceRoot) -or $EvidenceRoot -cne [IO.Path]::GetFullPath($EvidenceRoot) -or ($evidenceItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw 'EvidenceRoot must be an existing canonical non-reparse external directory' }
+    $destination = Join-Path $EvidenceRoot 'npm-cache-working'
+    if (Test-Path -LiteralPath $destination) {
+        $existing = (Resolve-Path -LiteralPath $destination -ErrorAction Stop).Path
+        if ($existing -cne $destination -or ((Get-Item -LiteralPath $existing -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw 'existing npm working cache escapes or redirects' }
+        Remove-Item -LiteralPath $existing -Recurse -Force -ErrorAction Stop
+    }
+    New-Item -ItemType Directory -Path $destination -ErrorAction Stop | Out-Null
+    $rootItem = Get-Item -LiteralPath $destination -Force
+    if (($rootItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or @(Get-ChildItem -LiteralPath $destination -Force).Count -ne 0) { throw 'npm working cache is not a new empty ordinary directory' }
+    Get-ChildItem -LiteralPath $SourceCache -Force | ForEach-Object { Copy-Item -LiteralPath $_.FullName -Destination $destination -Recurse -Force -ErrorAction Stop }
+    $members = @(Get-Item -LiteralPath $destination -Force)
+    $members += @(Get-ChildItem -LiteralPath $destination -Force -Recurse)
+    if (@($members | Where-Object { (($_.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) }).Count -ne 0) { throw 'npm working cache contains a reparse point' }
+    foreach ($member in $members) {
+        $attributes = [IO.FileAttributes]$member.Attributes
+        [IO.File]::SetAttributes($member.FullName, [IO.FileAttributes](([int]$attributes) -band (-bnot [int][IO.FileAttributes]::ReadOnly)))
+    }
+    $members = @(Get-Item -LiteralPath $destination -Force)
+    $members += @(Get-ChildItem -LiteralPath $destination -Force -Recurse)
+    if (@($members | Where-Object { (($_.Attributes -band ([IO.FileAttributes]::ReadOnly -bor [IO.FileAttributes]::ReparsePoint)) -ne 0) }).Count -ne 0) { throw 'npm working cache retains ReadOnly or reparse attributes' }
+    return (Resolve-Path -LiteralPath $destination).Path
+}
+
+function Invoke-0502NpmPhase {
+    param([string]$Name, [string[]]$Arguments)
+    Assert-0502Support ('before-' + $Name) | Out-Null
+    Invoke-0502Gate $Name $uiRoot $Npm $Arguments
+    Assert-0502Support ('after-' + $Name) | Out-Null
+}
+
+# ---------------------------------------------------------------------------
+# Mechanical nodeid inventory and partition checks.
+# ---------------------------------------------------------------------------
+function Get-0502NodeIds {
+    param([string]$Name, [string]$Python, [string[]]$Paths, [string[]]$Extra)
+    $result = Invoke-0502Capture $Name $RepoRoot $Python (@('-m', 'pytest') + $Paths + @('--collect-only', '-q', '-p', 'no:cacheprovider') + $Extra)
+    $lines = $result.Lines
+    return @($lines | ForEach-Object { [string]$_ } | Where-Object { $_ -match '^[^=]+::' } | Sort-Object)
+}
+
+function Assert-0502ExactPartition {
+    param([string]$Label, [string[]]$All, [string[]]$Assigned)
+    if ($All.Count -eq 0) { throw "$Label collection is empty" }
+    if (@($Assigned | Sort-Object -Unique).Count -ne $Assigned.Count) { throw "$Label duplicate nodeid" }
+    if (@(Compare-Object ($All | Sort-Object) ($Assigned | Sort-Object)).Count -ne 0) { throw "$Label omitted or added nodeid" }
+}
+
+# ---------------------------------------------------------------------------
+# Complete gate sequence. EvidenceRoot is legal here, so every failure writes
+# a summary via the finally block.
+# ---------------------------------------------------------------------------
+try {
+    # --- Git identity binding ------------------------------------------------
+    $statusResult = Invoke-0502Capture 'git-status-before' $RepoRoot $Git @('-C', $RepoRoot, 'status', '--porcelain=v1', '--untracked-files=all')
+    $statusLines = $statusResult.Lines
+    if (@($statusLines | Where-Object { $_ -and $_.Trim() }).Count -ne 0) { Add-0502Result 'git-status-before' $false 'repository is dirty at start' }
+    else { Add-0502Result 'git-status-before' $true 'clean' }
+    $headResult = Invoke-0502Capture 'git-head' $RepoRoot $Git @('-C', $RepoRoot, 'rev-parse', 'HEAD')
+    $headLine = ($headResult.Lines | Select-Object -Last 1)
+    $script:ActualHead = [string]$headLine.Trim()
+    if ($script:ActualHead -cne $CodeHead) {
+        Add-0502Result 'git-head-identity' $false "HEAD $script:ActualHead does not equal CodeHead $CodeHead"
+    }
+    else { Add-0502Result 'git-head-identity' $true 'HEAD equals CodeHead' }
+    Invoke-0502Gate 'git-accepted-ancestor' $RepoRoot $Git @('-C', $RepoRoot, 'merge-base', '--is-ancestor', $AcceptedBase, $CodeHead)
+    Invoke-0502Gate 'git-diff-check' $RepoRoot $Git @('-C', $RepoRoot, 'diff', '--check', "$AcceptedBase..$CodeHead")
+
+    $uiRoot = (Resolve-Path -LiteralPath (Join-Path $RepoRoot 'tools\stm32-monitor\ui')).Path
+    $supportVerifier = (Resolve-Path -LiteralPath (Join-Path $RepoRoot 'tools\stm32-monitor\ui\tests\verify_support.py')).Path
+
+    $raw = Invoke-0502GitRaw @('diff', '--name-status', '--no-renames', '-z', "$AcceptedBase..$CodeHead")
+    [IO.File]::WriteAllBytes((Join-Path $EvidenceRoot 'git-diff-inventory.raw'), $raw)
+    $parts = Split-0502NulBytes $raw
+    if (($parts.Count % 2) -ne 0) { throw 'diff inventory is malformed' }
+    $seen = @{}
+    $inventory = @()
+    for ($i = 0; $i -lt $parts.Count; $i += 2) {
+        $change = $parts[$i]
+        $path = $parts[$i + 1]
+        $key = $path.ToLowerInvariant()
+        if ($seen.ContainsKey($key)) { throw 'duplicate diff path' }
+        $seen[$key] = $true
+        $full = Join-Path $RepoRoot $path
+        if ($change -eq 'D') { $inventory += [ordered]@{ status = $change; path = $path; bytes = $null; sha256 = $null } }
+        else {
+            $item = Get-Item -LiteralPath $full
+            $inventory += [ordered]@{ status = $change; path = $path; bytes = $item.Length; sha256 = (Get-0502Sha256 $full) }
+        }
+    }
+    $inventory | ConvertTo-Json -Depth 4 | ForEach-Object { [IO.File]::WriteAllText((Join-Path $EvidenceRoot 'accepted-base-to-code-head-inventory.json'), $_, [Text.UTF8Encoding]::new($false)) }
+    Add-0502Result 'git-diff-inventory' $true "inventory of $($inventory.Count) changed paths written"
+
+    $archiveRoot = Join-Path $EvidenceRoot 'code-head-archive'
+    [void][IO.Directory]::CreateDirectory($archiveRoot)
+    $archiveGate = Invoke-0502Gate 'git-archive-code-head' $RepoRoot $Git @('-C', $RepoRoot, 'archive', '--format=tar', '--output', (Join-Path $archiveRoot 'code-head.tar'), $CodeHead)
+    if (-not [IO.File]::Exists((Join-Path $archiveRoot 'code-head.tar'))) { Add-0502Result 'git-archive-code-head' $false 'archive file missing after git archive' }
+
+    # --- Verified support + npm working cache --------------------------------
+    $supportInfo = Assert-0502Support 'before-copy'
+    $script:SupportManifestSha256 = [string]$supportInfo.supportManifestSha256
+    $script:SupportTreeSha256 = [string]$supportInfo.supportTreeSha256
+    $Wheelhouse = [string]$supportInfo.wheelhouse
+    $Chromium = [string]$supportInfo.browser
+    $auditCache = [bool]$supportInfo.auditCache
+
+    # Node/npm identity: resolved path and SHA-256 must equal the verified
+    # support output before any version gate is attempted.
+    if ((Resolve-Path -LiteralPath $Node).Path -cne [string]$supportInfo.node -or (Resolve-Path -LiteralPath $Npm).Path -cne [string]$supportInfo.npm) { throw 'Node/npm paths differ from verified support' }
+    $nodeHash = Get-0502Sha256 $Node
+    $npmHash = Get-0502Sha256 $Npm
+    if ($nodeHash -cne [string]$supportInfo.nodeSha256 -or $npmHash -cne [string]$supportInfo.npmSha256) { throw 'Node/npm hashes differ from verified support' }
+    $nodeVersionLines = Invoke-0502Gate 'version-node' $RepoRoot $Node @('--version')
+    $nodeVersion = ($nodeVersionLines.Lines | Select-Object -Last 1).Trim()
+    $npmVersionLines = Invoke-0502Gate 'version-npm' $RepoRoot $Npm @('--version')
+    $npmVersion = ($npmVersionLines.Lines | Select-Object -Last 1).Trim()
+    if ($nodeVersion -cne [string]$supportInfo.nodeVersion -or $npmVersion -cne [string]$supportInfo.npmVersion) { throw 'Node/npm versions differ from verified support' }
+
+    $npmWorkingCache = New-0502NpmWorkingCache ([string]$supportInfo.npmCache)
+    Assert-0502Support 'after-copy' | Out-Null
+
+    Invoke-0502Gate 'verify-changed-scope' $RepoRoot $Python312 @('tools/release/verify_0502_release.py', 'scope', '--repo', $RepoRoot, '--inventory', (Join-Path $EvidenceRoot 'accepted-base-to-code-head-inventory.json'))
+
+    $historical = 'requirements/follow-on-skills/stm32-monitor/SKILL.md'
+    $baseBlobResult = Invoke-0502Capture 'historical-skill-base' $RepoRoot $Git @('-C', $RepoRoot, 'rev-parse', ($AcceptedBase + ':' + $historical))
+    $headBlobResult = Invoke-0502Capture 'historical-skill-head' $RepoRoot $Git @('-C', $RepoRoot, 'rev-parse', ($CodeHead + ':' + $historical))
+    $baseBlob = ($baseBlobResult.Lines | Select-Object -Last 1).Trim()
+    $headBlob = ($headBlobResult.Lines | Select-Object -Last 1).Trim()
+    if ($baseBlob -cne $headBlob) { Add-0502Result 'historical-skill-blob' $false 'historical monitor Skill changed' }
+    else { Add-0502Result 'historical-skill-blob' $true $baseBlob }
+
+    $py310Lines = Invoke-0502Gate 'version-python310' $RepoRoot $Python310 @('-c', 'import json,sys;print(json.dumps([sys.version_info[0],sys.version_info[1],sys.executable]))')
+    $py310 = ($py310Lines.Lines | Select-Object -Last 1 | ConvertFrom-Json)
+    $py312Lines = Invoke-0502Gate 'version-python312' $RepoRoot $Python312 @('-c', 'import json,sys;print(json.dumps([sys.version_info[0],sys.version_info[1],sys.executable]))')
+    $py312 = ($py312Lines.Lines | Select-Object -Last 1 | ConvertFrom-Json)
+    if ([int]$py310[0] -ne 3 -or [int]$py310[1] -ne 10 -or [int]$py312[0] -ne 3 -or [int]$py312[1] -ne 12) { throw 'Python version alias detected' }
+    if ([string]$py310[2] -ceq [string]$py312[2]) { throw 'Python 3.10 and 3.12 alias to the same interpreter' }
+
+    # --- Node gates, offline against the working cache only -------------------
+    $env:npm_config_cache = $npmWorkingCache
+    $env:PYTHONDONTWRITEBYTECODE = '1'
+    $env:PYTHONPYCACHEPREFIX = Join-Path $EvidenceRoot 'pycache'
+
+    Invoke-0502NpmPhase 'node-npm-ci' @('ci', '--offline', '--cache', $npmWorkingCache)
+    Invoke-0502Gate 'node-typecheck' $uiRoot $Npm @('run', 'typecheck')
+    Invoke-0502Gate 'node-typecheck-e2e' $uiRoot $Npm @('run', 'typecheck:e2e')
+    Invoke-0502Gate 'node-lint' $uiRoot $Npm @('run', 'lint')
+    Invoke-0502Gate 'node-unit-coverage' $uiRoot $Npm @('run', 'test:coverage')
+    Invoke-0502Gate 'node-coverage-gate' $uiRoot $Npm @('run', 'coverage:check')
+    Invoke-0502Gate 'node-a11y' $uiRoot $Npm @('run', 'test:a11y')
+    Invoke-0502Gate 'node-build' $uiRoot $Npm @('run', 'build')
+    Invoke-0502Gate 'node-verify-dist-1' $uiRoot $Npm @('run', 'verify:dist')
+    Invoke-0502Gate 'node-verify-dist-2' $uiRoot $Npm @('run', 'verify:dist')
+    if (-not $auditCache) { throw 'BLOCKED: verified support has no compatible npm advisory cache' }
+    Invoke-0502NpmPhase 'node-production-audit' @('audit', '--offline', '--cache', $npmWorkingCache, '--omit=dev', '--audit-level=high')
+
+    # --- Fresh test venvs and exact offline dependency install ---------------
+    $supportWheelhouse = [string]$supportInfo.wheelhouse
+    $requirements = @($supportInfo.pythonRequirements | ForEach-Object { [string]$_ })
+    $sourcePath = (Join-Path $RepoRoot 'tools\stm32-monitor\src') + ';' + (Join-Path $RepoRoot 'tools\stm32-toolkit\src')
+    $testPythons = @{}
+    foreach ($entry in @(@('310', $Python310), @('312', $Python312))) {
+        $minor = [string]$entry[0]
+        $base = [string]$entry[1]
+        $venv = Join-Path $EvidenceRoot ('test-' + $minor)
+        Invoke-0502Gate ('venv-create-' + $minor) $EvidenceRoot $base @('-m', 'venv', $venv)
+        $testPython = (Resolve-Path -LiteralPath (Join-Path $venv 'Scripts\python.exe')).Path
+        Invoke-0502Gate ('venv-install-' + $minor) $EvidenceRoot $testPython (@('-m', 'pip', 'install', '--no-index', '--find-links', $supportWheelhouse) + $requirements)
+        $testPythons[$minor] = $testPython
+    }
+    $testPython310 = [string]$testPythons['310']
+    $testPython312 = [string]$testPythons['312']
+    $env:PYTHONPATH = $sourcePath
+
+    # --- Monitor inventories, partitions, and coverage ------------------------
+    $special = @(
+        'tools/stm32-monitor/tests/test_auth.py',
+        'tools/stm32-monitor/tests/test_service.py',
+        'tools/stm32-monitor/tests/test_ui_assets.py',
+        'tools/stm32-monitor/tests/test_ui_dist.py',
+        'tools/stm32-monitor/tests/test_package_boundary.py',
+        'tools/stm32-monitor/tests/test_performance.py'
+    )
+    $ignore = @($special | ForEach-Object { '--ignore=' + $_ })
+    $monitorAll310 = Get-0502NodeIds 'collect-monitor-310' $testPython310 @('tools/stm32-monitor/tests') @()
+    $monitorAll312 = Get-0502NodeIds 'collect-monitor-312' $testPython312 @('tools/stm32-monitor/tests') @()
+    if (@(Compare-Object $monitorAll310 $monitorAll312).Count -ne 0) { throw 'Monitor version inventories differ' }
+    $monitorMain = Get-0502NodeIds 'collect-monitor-main-312' $testPython312 @('tools/stm32-monitor/tests') $ignore
+    $monitorSpecial = Get-0502NodeIds 'collect-monitor-special-312' $testPython312 $special @()
+    Assert-0502ExactPartition 'Monitor 3.12' $monitorAll312 @($monitorMain + $monitorSpecial)
+
+    Invoke-0502Gate 'python310-monitor-complete' $RepoRoot $testPython310 @('-m', 'pytest', 'tools/stm32-monitor/tests', '-q', '-p', 'no:cacheprovider', '--basetemp', (Join-Path $EvidenceRoot 'bt-monitor-310'))
+    $env:COVERAGE_FILE = Join-Path $EvidenceRoot '.coverage-monitor-312'
+    Invoke-0502Gate 'python312-monitor-main' $RepoRoot $testPython312 (@('-m', 'pytest', 'tools/stm32-monitor/tests') + $ignore + @('-q', '-p', 'no:cacheprovider', '--cov=stm32_monitor', '--cov-branch', '--cov-report=', '--basetemp', (Join-Path $EvidenceRoot 'bt-monitor-main-312')))
+    Invoke-0502Gate 'python312-monitor-special' $RepoRoot $testPython312 (@('-m', 'pytest') + $special + @('-q', '-s', '-p', 'no:cacheprovider', '--cov=stm32_monitor', '--cov-branch', '--cov-append', '--cov-report=', '--basetemp', (Join-Path $EvidenceRoot 'bt-monitor-special-312')))
+
+    # --- Toolkit sharded coverage ---------------------------------------------
+    $toolkitFiles = @(Get-ChildItem -LiteralPath (Join-Path $RepoRoot 'tools\stm32-toolkit\tests') -Filter 'test_*.py' -File | ForEach-Object { $_.FullName.Substring($RepoRoot.Length + 1).Replace('\', '/') } | Sort-Object)
+    $env:COVERAGE_FILE = Join-Path $EvidenceRoot '.coverage-toolkit-312'
+    $toolkitAll = Get-0502NodeIds 'collect-toolkit-312' $testPython312 @('tools/stm32-toolkit/tests') @()
+    $assigned = @()
+    for ($shard = 0; $shard -lt 8; $shard++) {
+        $files = @()
+        for ($index = $shard; $index -lt $toolkitFiles.Count; $index += 8) { $files += $toolkitFiles[$index] }
+        if ($files.Count) {
+            $ids = Get-0502NodeIds ('collect-toolkit-shard-' + ($shard + 1)) $testPython312 $files @()
+            $assigned += $ids
+            Invoke-0502Gate ('python312-toolkit-shard-' + ($shard + 1)) $RepoRoot $testPython312 (@('-m', 'pytest') + $files + @('-q', '-p', 'no:cacheprovider', '--cov=stm32_toolkit', '--cov-branch', '--cov-append', '--cov-report=', '--basetemp', (Join-Path $EvidenceRoot ('bt-toolkit-' + ($shard + 1)))))
+        }
+    }
+    Assert-0502ExactPartition 'Toolkit 3.12' $toolkitAll $assigned
+
+    $env:COVERAGE_FILE = Join-Path $EvidenceRoot '.coverage-monitor-312'
+    Invoke-0502Gate 'python312-monitor-coverage-json' $RepoRoot $testPython312 @('-m', 'coverage', 'json', '-o', (Join-Path $EvidenceRoot 'monitor-coverage.json'))
+    $env:COVERAGE_FILE = Join-Path $EvidenceRoot '.coverage-toolkit-312'
+    Invoke-0502Gate 'python312-toolkit-coverage-json' $RepoRoot $testPython312 @('-m', 'coverage', 'json', '-o', (Join-Path $EvidenceRoot 'toolkit-coverage.json'))
+    Invoke-0502Gate 'changed-product-branch-coverage' $RepoRoot $testPython312 @('tools/release/verify_0502_release.py', 'coverage', '--repo', $RepoRoot, '--inventory', (Join-Path $EvidenceRoot 'accepted-base-to-code-head-inventory.json'), '--coverage', (Join-Path $EvidenceRoot 'monitor-coverage.json'), '--coverage', (Join-Path $EvidenceRoot 'toolkit-coverage.json'))
+
+    Invoke-0502Gate 'compileall-310' $RepoRoot $testPython310 @('-m', 'compileall', '-q', 'tools/stm32-monitor/src/stm32_monitor', 'tools/stm32-toolkit/src/stm32_toolkit')
+    Invoke-0502Gate 'compileall-312' $RepoRoot $testPython312 @('-m', 'compileall', '-q', 'tools/stm32-monitor/src/stm32_monitor', 'tools/stm32-toolkit/src/stm32_toolkit')
+
+    # --- Clean-source offline wheels -------------------------------------------
+    $packageRoot = Join-Path $EvidenceRoot 'packages'
+    $wheels = Join-Path $packageRoot 'wheels'
+    New-Item -ItemType Directory -Force -Path $wheels | Out-Null
+    Invoke-0502Gate 'wheel-toolkit' $RepoRoot $testPython312 @('-m', 'pip', 'wheel', '--no-index', '--find-links', $supportWheelhouse, '--no-deps', '--no-build-isolation', '--wheel-dir', $wheels, 'tools/stm32-toolkit')
+    Invoke-0502Gate 'wheel-monitor' $RepoRoot $testPython312 @('-m', 'pip', 'wheel', '--no-index', '--find-links', $supportWheelhouse, '--no-deps', '--no-build-isolation', '--wheel-dir', $wheels, 'tools/stm32-monitor')
+    $wheelNames = @(Get-ChildItem -LiteralPath $wheels -Filter '*.whl' -File | ForEach-Object { $_.Name } | Sort-Object)
+    if (@(Compare-Object $wheelNames @('stm32_monitor-0.5.0-py3-none-any.whl', 'stm32_toolkit-0.5.0-py3-none-any.whl')).Count -ne 0) { throw 'wheel inventory is not exact' }
+    # Inline -c code is unreliable through Windows PowerShell native argument
+    # passing, so the wheel hash script is written to a file and executed.
+    $hashScriptPath = Join-Path $EvidenceRoot 'wheel-hashes.py'
+    $hashScriptBody = @"
+import hashlib,glob,json,os
+print(json.dumps({os.path.basename(p):{'bytes':os.path.getsize(p),'sha256':hashlib.sha256(open(p,'rb').read()).hexdigest()} for p in glob.glob('*.whl')},sort_keys=True))
+"@
+    [IO.File]::WriteAllText($hashScriptPath, $hashScriptBody, [Text.UTF8Encoding]::new($false))
+    $hashLines = Invoke-0502Gate 'wheel-hashes' $wheels $testPython312 @($hashScriptPath)
+    $wheelHashes = ($hashLines.Lines | Select-Object -Last 1 | ConvertFrom-Json)
+    $wheelHashes | ConvertTo-Json -Depth 4 | Set-Content -Encoding UTF8 -LiteralPath (Join-Path $EvidenceRoot 'wheel-hashes.json')
+
+    # --- Installed copies and managed CMD launchers -----------------------------
+    $savedPythonPath = $env:PYTHONPATH
+    Remove-Item Env:PYTHONPATH -ErrorAction SilentlyContinue
+    try {
+        foreach ($minor in @('310', '312')) {
+            $base = if ($minor -eq '310') { $Python310 } else { $Python312 }
+            $pluginData = Join-Path $EvidenceRoot ('installed-' + $minor)
+            $runtime = Join-Path $pluginData 'runtime\0.5.0'
+            Invoke-0502Gate ('installed-venv-' + $minor) $EvidenceRoot $base @('-m', 'venv', $runtime)
+            $installedPython = (Resolve-Path -LiteralPath (Join-Path $runtime 'Scripts\python.exe')).Path
+            Invoke-0502Gate ('installed-packages-' + $minor) $EvidenceRoot $installedPython @('-m', 'pip', 'install', '--no-index', '--find-links', $supportWheelhouse, (Join-Path $wheels 'stm32_toolkit-0.5.0-py3-none-any.whl'), (Join-Path $wheels 'stm32_monitor-0.5.0-py3-none-any.whl'), 'pyocd')
+            $smoke = "import importlib.metadata as m,pathlib,sys;import stm32_monitor,stm32_toolkit;from stm32_monitor.ui_assets import UiAssets;assert m.version('stm32-toolkit')==m.version('stm32-monitor')=='0.5.0';assert pathlib.Path(stm32_monitor.__file__).resolve().is_relative_to(pathlib.Path(sys.prefix).resolve());assert UiAssets.load().find('/') is not None"
+            Invoke-0502Gate ('installed-smoke-' + $minor) $EvidenceRoot $installedPython @('-I', '-c', $smoke)
+            $env:CLAUDE_PLUGIN_ROOT = $RepoRoot
+            $env:CLAUDE_PLUGIN_DATA = $pluginData
+            Invoke-0502Gate ('launcher-monitor-' + $minor) $RepoRoot $CmdExe @('/d', '/c', (Join-Path $RepoRoot 'bin\stm32-monitor.cmd'), '--help')
+            Invoke-0502Gate ('launcher-toolkit-' + $minor) $RepoRoot $CmdExe @('/d', '/c', (Join-Path $RepoRoot 'bin\stm32-toolkit-mcp.cmd'), '--help')
+        }
+    }
+    finally {
+        Remove-Item Env:CLAUDE_PLUGIN_ROOT -ErrorAction SilentlyContinue
+        Remove-Item Env:CLAUDE_PLUGIN_DATA -ErrorAction SilentlyContinue
+        if ($null -ne $savedPythonPath) { $env:PYTHONPATH = $savedPythonPath } else { Remove-Item Env:PYTHONPATH -ErrorAction SilentlyContinue }
+    }
+
+    # Fail-closed launcher behavior (missing env / missing runtime -> exit 2).
+    $missingEnvMon = Invoke-0502Capture 'launcher-missing-env-monitor' $RepoRoot $CmdExe @('/d', '/c', (Join-Path $RepoRoot 'bin\stm32-monitor.cmd'), '--help')
+    $missingEnvTk = Invoke-0502Capture 'launcher-missing-env-toolkit' $RepoRoot $CmdExe @('/d', '/c', (Join-Path $RepoRoot 'bin\stm32-toolkit-mcp.cmd'), '--help')
+    if ($missingEnvMon.Exit -eq 2 -and $missingEnvTk.Exit -eq 2) { Add-0502Result 'launcher-fail-closed-missing-env' $true 'both launchers exit 2 without CLAUDE_PLUGIN_DATA' }
+    else { Add-0502Result 'launcher-fail-closed-missing-env' $false "expected exit 2, got $($missingEnvMon.Exit)/$($missingEnvTk.Exit)" }
+    $emptyPluginData = Join-Path $EvidenceRoot 'empty-plugin-data'
+    New-Item -ItemType Directory -Force -Path $emptyPluginData | Out-Null
+    $env:CLAUDE_PLUGIN_DATA = $emptyPluginData
+    $missingRuntimeMon = Invoke-0502Capture 'launcher-missing-runtime-monitor' $RepoRoot $CmdExe @('/d', '/c', (Join-Path $RepoRoot 'bin\stm32-monitor.cmd'), '--help')
+    $missingRuntimeTk = Invoke-0502Capture 'launcher-missing-runtime-toolkit' $RepoRoot $CmdExe @('/d', '/c', (Join-Path $RepoRoot 'bin\stm32-toolkit-mcp.cmd'), '--help')
+    Remove-Item Env:CLAUDE_PLUGIN_DATA -ErrorAction SilentlyContinue
+    if ($missingRuntimeMon.Exit -eq 2 -and $missingRuntimeTk.Exit -eq 2) { Add-0502Result 'launcher-fail-closed-missing-runtime' $true 'both launchers exit 2 without the versioned runtime' }
+    else { Add-0502Result 'launcher-fail-closed-missing-runtime' $false "expected exit 2, got $($missingRuntimeMon.Exit)/$($missingRuntimeTk.Exit)" }
+
+    # --- Controlled Playwright --------------------------------------------------
+    $env:STM32_MONITOR_PYTHON = $testPython312
+    $env:STM32_MONITOR_EVIDENCE = $EvidenceRoot
+    $env:PLAYWRIGHT_BROWSERS_PATH = '0'
+    $env:STM32_MONITOR_CHROMIUM_EXECUTABLE = $Chromium
+    Remove-Item Env:STM32_MONITOR_PERF_WARMUP_MS -ErrorAction SilentlyContinue
+    Remove-Item Env:STM32_MONITOR_PERF_MEASURE_MS -ErrorAction SilentlyContinue
+    $functionalSpecs = @(Get-ChildItem -LiteralPath (Join-Path $uiRoot 'e2e') -Filter '*.spec.ts' -File | ForEach-Object { $_.Name } | Where-Object { $_ -cne 'performance.spec.ts' } | Sort-Object)
+    Invoke-0502Gate 'playwright-functional' $uiRoot $Npm (@('exec', '--', 'playwright', 'test') + $functionalSpecs + @('--project=chromium-1280', '--project=chromium-1024', '--workers=1'))
+    Invoke-0502Gate 'playwright-performance' $uiRoot $Npm @('exec', '--', 'playwright', 'test', 'performance.spec.ts', '--project=chromium-1280', '--workers=1')
+    Remove-Item Env:STM32_MONITOR_PYTHON -ErrorAction SilentlyContinue
+    Remove-Item Env:STM32_MONITOR_EVIDENCE -ErrorAction SilentlyContinue
+    Remove-Item Env:PLAYWRIGHT_BROWSERS_PATH -ErrorAction SilentlyContinue
+    Remove-Item Env:STM32_MONITOR_CHROMIUM_EXECUTABLE -ErrorAction SilentlyContinue
+
+    $perfJson = Join-Path $EvidenceRoot '.performance-evidence\performance.json'
+    if (-not [IO.File]::Exists($perfJson)) { Add-0502Result 'playwright-performance-evidence' $false 'performance.json missing from EvidenceRoot' }
+    else {
+        $perf = Get-Content -Raw -LiteralPath $perfJson | ConvertFrom-Json
+        $need = @('updateP95Ms', 'realizedPoints', 'longTasksAtLeast200Ms', 'queueGrowth', 'heapSlopeMiBPerMinute')
+        $missing = @($need | Where-Object { $null -eq $perf.$_ })
+        if ($missing.Count -ne 0) { Add-0502Result 'playwright-performance-evidence' $false "performance.json missing fields: $($missing -join ',')" }
+        elseif ([int]$perf.realizedPoints -ne 4800 -or [double]$perf.updateP95Ms -gt 150 -or [int]$perf.longTasksAtLeast200Ms -ne 0 -or [double]$perf.queueGrowth -gt 0 -or [double]$perf.heapSlopeMiBPerMinute -gt 2) { Add-0502Result 'playwright-performance-evidence' $false 'performance thresholds not met' }
+        else { Add-0502Result 'playwright-performance-evidence' $true 'performance.json validated' }
+    }
+
+    # --- Final closure -----------------------------------------------------------
+    Invoke-0502Gate 'release-static-closure' $RepoRoot $testPython312 @('tools/release/verify_0502_release.py', 'static', '--repo', $RepoRoot, '--inventory', (Join-Path $EvidenceRoot 'accepted-base-to-code-head-inventory.json'))
+
+    $trackedRaw = Invoke-0502GitRaw @('ls-files', '-z')
+    $tracked = Split-0502NulBytes $trackedRaw
+    $trackedManifest = @()
+    foreach ($path in $tracked) {
+        $file = Join-Path $RepoRoot $path
+        $trackedManifest += [ordered]@{ path = $path; bytes = (Get-Item -LiteralPath $file).Length; sha256 = (Get-0502Sha256 $file) }
+    }
+    $trackedManifest | ConvertTo-Json -Depth 3 | Set-Content -Encoding UTF8 -LiteralPath (Join-Path $EvidenceRoot 'tracked-byte-manifest.json')
+    Add-0502Result 'tracked-byte-manifest' $true "$($trackedManifest.Count) tracked files hashed"
+
+    Invoke-0502Gate 'git-diff-check-after' $RepoRoot $Git @('-C', $RepoRoot, 'diff', '--check', "$AcceptedBase..$CodeHead")
+    Assert-0502Support 'final' | Out-Null
+    $finalResult = Invoke-0502Capture 'git-status-after' $RepoRoot $Git @('-C', $RepoRoot, 'status', '--porcelain=v1', '--untracked-files=all')
+    $finalLines = $finalResult.Lines
+    if (@($finalLines | Where-Object { $_ -and $_.Trim() }).Count -ne 0) { Add-0502Result 'clean-tree' $false 'repository changed during gates' }
+    else { Add-0502Result 'clean-tree' $true 'clean' }
+}
+catch {
+    if (-not $script:Failed) {
+        $script:GateResults.Add([ordered]@{ gate = 'controller'; status = 'FAIL'; detail = $_.Exception.Message })
+    }
     $script:Failed = $true
-    $script:GateResults.Add([ordered]@{ gate = 'git-head-identity'; status = 'FAIL'; detail = "HEAD $($script:ActualHead) does not equal CodeHead $CodeHead" })
+    $script:FirstError = $_.Exception.Message
+}
+finally {
     Write-0502Summary
-    throw "HEAD $($script:ActualHead) does not equal CodeHead $CodeHead"
-}
-$script:GateResults.Add([ordered]@{ gate = 'git-head-identity'; status = 'PASS'; detail = "HEAD equals CodeHead $CodeHead" })
-
-$baseCheck = Invoke-0502Capture 'git-verify-base' $RepoRoot $Git @('cat-file', '-e', "$AcceptedBase^{commit}")
-if ($baseCheck.Exit -ne 0) { $script:Failed = $true; $script:GateResults.Add([ordered]@{ gate = 'git-verify-base'; status = 'FAIL'; exit = $baseCheck.Exit }); Write-0502Summary; throw 'accepted base is unavailable' }
-$descendCheck = Invoke-0502Capture 'git-verify-descend' $RepoRoot $Git @('merge-base', '--is-ancestor', $AcceptedBase, $CodeHead)
-if ($descendCheck.Exit -ne 0) { $script:Failed = $true; $script:GateResults.Add([ordered]@{ gate = 'git-verify-descend'; status = 'FAIL'; exit = $descendCheck.Exit }); Write-0502Summary; throw 'code head does not descend from accepted base' }
-
-# --- Support verification + npm cache copy -------------------------------------
-$verifyResult = Invoke-0502Capture 'support-verify' $RepoRoot $Python312 @('tools/release/verify_0502_release.py', '--support', $SupportRoot)
-if ($verifyResult.Exit -ne 0) { $script:Failed = $true; $script:GateResults.Add([ordered]@{ gate = 'support-verify'; status = 'FAIL'; exit = $verifyResult.Exit; log = $verifyResult.Log }); Write-0502Summary; throw 'support verification failed' }
-$verified = ($verifyResult.Lines | Select-Object -Last 1) | ConvertFrom-Json
-$Wheelhouse = $verified.wheelhouse
-$NpmCacheSource = $verified.npmCache
-$Chromium = $verified.tools.chromium
-
-$NpmCache = Join-Path $EvidenceRoot 'npm-cache-working'
-[void][IO.Directory]::CreateDirectory($NpmCache)
-Get-ChildItem -LiteralPath $NpmCacheSource -Force | ForEach-Object { Copy-Item -LiteralPath $_.FullName -Destination $NpmCache -Recurse -Force }
-$recheck = Invoke-0502Capture 'npm-cache-reverify' $RepoRoot $Python312 @('tools/release/verify_0502_release.py', '--support', $SupportRoot)
-if ($recheck.Exit -ne 0 -or (($recheck.Lines | Select-Object -Last 1) | ConvertFrom-Json).manifestSha256 -cne $verified.manifestSha256) { $script:Failed = $true; $script:GateResults.Add([ordered]@{ gate = 'npm-cache-reverify'; status = 'FAIL' }); Write-0502Summary; throw 'support manifest changed after npm cache copy' }
-
-# --- CODE_HEAD archive ---------------------------------------------------------
-$archiveRoot = Join-Path $EvidenceRoot 'code-head-archive'
-[void][IO.Directory]::CreateDirectory($archiveRoot)
-$archiveResult = Invoke-0502Capture 'git-archive-code-head' $RepoRoot $Git @('archive', '--format=tar', '--output', (Join-Path $archiveRoot 'code-head.tar'), $CodeHead)
-if ($archiveResult.Exit -ne 0 -or -not [IO.File]::Exists((Join-Path $archiveRoot 'code-head.tar'))) { $script:Failed = $true; $script:GateResults.Add([ordered]@{ gate = 'git-archive-code-head'; status = 'FAIL'; exit = $archiveResult.Exit }); Write-0502Summary; throw 'CODE_HEAD archive failed' }
-
-$inventory = Invoke-0502Capture 'git-diff-inventory' $RepoRoot $Git @('diff', '--name-status', '--no-renames', "$AcceptedBase..$CodeHead")
-if ($inventory.Exit -ne 0 -or @($inventory.Lines).Count -eq 0) { $script:Failed = $true; $script:GateResults.Add([ordered]@{ gate = 'git-diff-inventory'; status = 'FAIL' }); Write-0502Summary; throw 'accepted-base..code-head diff inventory is empty' }
-Invoke-0502Gate 'git-diff-check' $RepoRoot $Git @('diff', '--check', "$AcceptedBase..$CodeHead")
-
-$uiRoot = Join-Path $RepoRoot 'tools\stm32-monitor\ui'
-
-# Node gates offline against the copied cache.
-Invoke-0502Gate 'node-npm-ci' $uiRoot $Npm @('ci', '--offline', '--cache', $NpmCache)
-Invoke-0502Gate 'node-typecheck' $uiRoot $Npm @('run', 'typecheck')
-Invoke-0502Gate 'node-typecheck-e2e' $uiRoot $Npm @('run', 'typecheck:e2e')
-Invoke-0502Gate 'node-lint' $uiRoot $Npm @('run', 'lint')
-Invoke-0502Gate 'node-test' $uiRoot $Npm @('run', 'test')
-Invoke-0502Gate 'node-a11y' $uiRoot $Npm @('run', 'test:a11y')
-Invoke-0502Gate 'node-coverage' $uiRoot $Npm @('exec', 'vitest', 'run', '--coverage')
-Invoke-0502Gate 'node-coverage-gate' $uiRoot $Node @('tests/check-coverage.mjs')
-Invoke-0502Gate 'node-build' $uiRoot $Npm @('run', 'build')
-Invoke-0502Gate 'node-verify-dist' $uiRoot $Npm @('run', 'verify:dist')
-
-# Playwright: functional excludes the five-minute spec; performance runs once.
-Remove-Item Env:STM32_MONITOR_PERF_WARMUP_MS -ErrorAction SilentlyContinue
-Remove-Item Env:STM32_MONITOR_PERF_MEASURE_MS -ErrorAction SilentlyContinue
-$env:STM32_MONITOR_EVIDENCE = $EvidenceRoot
-$env:STM32_MONITOR_PYTHON = $Python312
-$env:PLAYWRIGHT_BROWSERS_PATH = '0'
-$env:PLAYWRIGHT_CHROMIUM_EXECUTABLE = $Chromium
-Invoke-0502Gate 'playwright-functional' $uiRoot $Npm @('exec', '--', 'playwright', 'test', '--exclude', 'e2e/performance.spec.ts', '--project=chromium-1280', '--project=chromium-1024', '--workers=1')
-Invoke-0502Gate 'playwright-performance' $uiRoot $Npm @('exec', '--', 'playwright', 'test', 'e2e/performance.spec.ts', '--project=chromium-1280', '--workers=1')
-Remove-Item Env:STM32_MONITOR_EVIDENCE -ErrorAction SilentlyContinue
-Remove-Item Env:STM32_MONITOR_PYTHON -ErrorAction SilentlyContinue
-
-# Controlled test venvs for the Python gates.
-$envV310 = Join-Path $EvidenceRoot 'venv310'
-$envV312 = Join-Path $EvidenceRoot 'venv312'
-Invoke-0502Gate 'venv-310' $RepoRoot $Python310 @('-m', 'venv', $envV310)
-Invoke-0502Gate 'venv-312' $RepoRoot $Python312 @('-m', 'venv', $envV312)
-$py310 = Join-Path $envV310 'Scripts\python.exe'
-$py312 = Join-Path $envV312 'Scripts\python.exe'
-
-Invoke-0502Gate 'python310-monitor-core' $RepoRoot $py310 @('-m', 'pytest', 'tools/stm32-monitor/tests', '--ignore=tools/stm32-monitor/tests/test_performance.py', '-q', '-p', 'no:cacheprovider', '--basetemp', (Join-Path $EvidenceRoot 'py310-monitor-core'))
-Invoke-0502Gate 'python310-monitor-perf' $RepoRoot $py310 @('-m', 'pytest', 'tools/stm32-monitor/tests/test_performance.py', '-q', '-p', 'no:cacheprovider', '--basetemp', (Join-Path $EvidenceRoot 'py310-monitor-perf'))
-Invoke-0502Gate 'python312-monitor-core' $RepoRoot $py312 @('-m', 'pytest', 'tools/stm32-monitor/tests', '--ignore=tools/stm32-monitor/tests/test_performance.py', '-q', '-p', 'no:cacheprovider', '--basetemp', (Join-Path $EvidenceRoot 'py312-monitor-core'))
-Invoke-0502Gate 'python312-monitor-perf' $RepoRoot $py312 @('-m', 'pytest', 'tools/stm32-monitor/tests/test_performance.py', '-q', '-p', 'no:cacheprovider', '--basetemp', (Join-Path $EvidenceRoot 'py312-monitor-perf'))
-Invoke-0502Gate 'python312-toolkit' $RepoRoot $py312 @('-m', 'pytest', 'tools/stm32-toolkit/tests', '-q', '-p', 'no:cacheprovider', '--basetemp', (Join-Path $EvidenceRoot 'py312-toolkit'))
-
-Invoke-0502Gate 'compileall-310' $RepoRoot $py310 @('-m', 'compileall', '-q', 'tools/stm32-monitor/src/stm32_monitor', 'tools/stm32-toolkit/src/stm32_toolkit')
-Invoke-0502Gate 'compileall-312' $RepoRoot $py312 @('-m', 'compileall', '-q', 'tools/stm32-monitor/src/stm32_monitor', 'tools/stm32-toolkit/src/stm32_toolkit')
-
-# Wheel build (offline) + hashes with exit check.
-$wheelRoot = Join-Path $EvidenceRoot 'wheels'
-[void][IO.Directory]::CreateDirectory($wheelRoot)
-$env:PIP_NO_INDEX = '1'
-$env:PIP_FIND_LINKS = $Wheelhouse
-Invoke-0502Gate 'wheel-toolkit' $RepoRoot $py312 @('-m', 'build', '--wheel', '--no-isolation', '--outdir', $wheelRoot, 'tools/stm32-toolkit')
-Invoke-0502Gate 'wheel-monitor' $RepoRoot $py312 @('-m', 'build', '--wheel', '--no-isolation', '--outdir', $wheelRoot, 'tools/stm32-monitor')
-Remove-Item Env:PIP_NO_INDEX -ErrorAction SilentlyContinue
-Remove-Item Env:PIP_FIND_LINKS -ErrorAction SilentlyContinue
-$toolkitWheel = Join-Path $wheelRoot 'stm32_toolkit-0.5.0-py3-none-any.whl'
-$monitorWheel = Join-Path $wheelRoot 'stm32_monitor-0.5.0-py3-none-any.whl'
-if (-not [IO.File]::Exists($toolkitWheel) -or -not [IO.File]::Exists($monitorWheel)) { $script:Failed = $true; $script:GateResults.Add([ordered]@{ gate = 'wheel-build'; status = 'FAIL'; detail = 'expected 0.5.0 wheels not built' }); Write-0502Summary; throw 'expected 0.5.0 wheels were not built' }
-$wheelHash = Invoke-0502Capture 'wheel-hashes' $wheelRoot $CmdExe @('/d', '/c', 'for %f in (*.whl) do @certutil -hashfile "%f" SHA256 | findstr /v "hash"')
-if ($wheelHash.Exit -ne 0 -or @($wheelHash.Lines | Where-Object { $_ }).Count -lt 2) { $script:Failed = $true; $script:GateResults.Add([ordered]@{ gate = 'wheel-hashes'; status = 'FAIL'; exit = $wheelHash.Exit }); Write-0502Summary; throw 'wheel hash computation failed' }
-
-# Installed-copy smoke: fresh venvs, offline install, pip check, import path, UI/CSP/auth.
-foreach ($pair in @(@('310', $py310), @('312', $py312))) {
-    $label = $pair[0]; $pyPath = $pair[1]
-    $smoke = Join-Path $EvidenceRoot ("smoke-" + $label)
-    Invoke-0502Gate "smoke-$label-venv" $RepoRoot $pyPath @('-m', 'venv', $smoke)
-    $smokePython = Join-Path $smoke 'Scripts\python.exe'
-    Invoke-0502Gate "smoke-$label-install" $smoke $smokePython @('-m', 'pip', 'install', '--no-index', '--find-links', $Wheelhouse, '--disable-pip-version-check', $toolkitWheel, $monitorWheel)
-    Invoke-0502Gate "smoke-$label-pip-check" $smoke $smokePython @('-m', 'pip', 'check')
-    Invoke-0502Gate "smoke-$label-import-path" $smoke $smokePython @('-c', "import stm32_monitor, stm32_toolkit, pathlib, sys; assert str(pathlib.Path(stm32_monitor.__file__).resolve()).lower().startswith(str(pathlib.Path(sys.prefix).resolve()).lower()), 'import not from installed dir'; print(stm32_monitor.__version__, stm32_toolkit.__version__)")
-    Invoke-0502Gate "smoke-$label-ui-assets" $smoke $smokePython @('-c', "from stm32_monitor.ui_assets import UiAssets; a = UiAssets.load(); r = a.response('/', 43210); assert r.status == 200; assert 'ws://127.0.0.1:43210' in r.headers.get('Content-Security-Policy', ''); assert a.response('/assets/nope.js', 43210).status == 404")
-    Invoke-0502Gate "smoke-$label-auth-fail" $smoke $smokePython @('-c', "import asyncio, aiohttp
-from stm32_monitor.service import MonitorService
-class R:
-    async def start(self, c): raise RuntimeError
-async def main():
-    s = MonitorService(R(), workspace_id='w', session_id='s', serve_ui=True)
-    ep = await s.start()
-    async with aiohttp.ClientSession() as cl:
-        async with cl.get(ep.url + '/api/v1/status') as resp:
-            assert resp.status in (401, 403), resp.status
-        async with cl.get(ep.url + '/') as resp:
-            assert resp.status == 200 and 'text/html' in resp.headers.get('Content-Type', '')
-    await s.stop()
-asyncio.run(main())")
 }
 
-# Managed launcher success path: controlled plugin data, runtime/0.5.0, both launchers.
-$pluginData = Join-Path $EvidenceRoot 'plugin-data'
-$managedRuntime = Join-Path $pluginData 'runtime\0.5.0'
-[void][IO.Directory]::CreateDirectory($managedRuntime)
-$launcherVenv = Join-Path $EvidenceRoot 'launcher-venv'
-Invoke-0502Gate 'launcher-runtime-venv' $RepoRoot $py312 @('-m', 'venv', $launcherVenv)
-$launcherPython = Join-Path $launcherVenv 'Scripts\python.exe'
-Invoke-0502Gate 'launcher-runtime-install' $launcherVenv $launcherPython @('-m', 'pip', 'install', '--no-index', '--find-links', $Wheelhouse, '--disable-pip-version-check', $toolkitWheel, $monitorWheel)
-# Populate the managed runtime location with the installed interpreter entry.
-Copy-Item -LiteralPath (Join-Path $launcherVenv 'Scripts\python.exe') -Destination (Join-Path $managedRuntime 'python.exe') -Force
-$env:CLAUDE_PLUGIN_DATA = $pluginData
-$monLaunch = Invoke-0502Capture 'launcher-monitor-success' $RepoRoot $CmdExe @('/d', '/c', 'bin\stm32-monitor.cmd', 'open', '--help')
-if ($monLaunch.Exit -ne 0) { $script:Failed = $true; $script:GateResults.Add([ordered]@{ gate = 'launcher-monitor-success'; status = 'FAIL'; exit = $monLaunch.Exit; log = $monLaunch.Log }) } else { $script:GateResults.Add([ordered]@{ gate = 'launcher-monitor-success'; status = 'PASS'; exit = $monLaunch.Exit; log = $monLaunch.Log }) }
-$tkLaunch = Invoke-0502Capture 'launcher-toolkit-success' $RepoRoot $CmdExe @('/d', '/c', 'bin\stm32-toolkit-mcp.cmd', '--help')
-if ($tkLaunch.Exit -ne 0) { $script:Failed = $true; $script:GateResults.Add([ordered]@{ gate = 'launcher-toolkit-success'; status = 'FAIL'; exit = $tkLaunch.Exit; log = $tkLaunch.Log }) } else { $script:GateResults.Add([ordered]@{ gate = 'launcher-toolkit-success'; status = 'PASS'; exit = $tkLaunch.Exit; log = $tkLaunch.Log }) }
-Remove-Item Env:CLAUDE_PLUGIN_DATA -ErrorAction SilentlyContinue
-
-# Clean-tree.
-$status = @(Invoke-0502Capture 'git-final-status' $RepoRoot $Git @('status', '--porcelain=v1', '--untracked-files=all'))
-$dirty = @($status.Lines | Where-Object { $_ -and $_.Trim() })
-if ($dirty.Count -ne 0) { $script:Failed = $true; $script:GateResults.Add([ordered]@{ gate = 'clean-tree'; status = 'FAIL'; detail = 'gate run left the repository dirty' }) } else { $script:GateResults.Add([ordered]@{ gate = 'clean-tree'; status = 'PASS' }) }
-
-Write-0502Summary
-if ($script:Failed) { throw 'one or more 0502 gates FAILED; see EvidenceRoot/summary.json' }
+if ($script:Failed) { throw "one or more 0502 gates FAILED: $script:FirstError" }
