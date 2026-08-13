@@ -13,6 +13,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -361,7 +362,20 @@ def python_dispatch(tool, args, exe):
             return 0
         return 0
     if args and str(args[0]).endswith("verify_support.py"):
-        emit(json.dumps(CONFIG.get("supportJson", {}), separators=(",", ":")))
+        support_json = CONFIG.get("supportJson", {})
+        browser = Path(support_json.get("browser", ""))
+        expected_browser_sha = CONFIG.get("supportBrowserSha256")
+        if expected_browser_sha and browser.is_file():
+            actual_browser_sha = hashlib.sha256(browser.read_bytes()).hexdigest()
+            if actual_browser_sha != expected_browser_sha:
+                return 1
+        emit(json.dumps(support_json, separators=(",", ":")))
+        if (
+            os.environ.get("ST32_MUTATE_SUPPORT_AFTER_PRECOPY_VERIFY") == "1"
+            and os.environ.get("STM32_MONITOR_GATE")
+            == "verify-support-before-chromium-copy"
+        ):
+            browser.write_bytes(b"mutated-after-precopy-verification")
         return 0
     if any("verify_0502_release.py" in str(a) for a in args):
         script = Path(os.getcwd()) / "tools" / "release" / "verify_0502_release.py"
@@ -585,6 +599,9 @@ def recording(tmp_path: Path, launcher_exe: Path) -> dict:
         "codeHead": "a" * 40,
         "historicalBlob": "b" * 40,
         "supportJson": support_json,
+        "supportBrowserSha256": hashlib.sha256(
+            (support / "chromium" / "chrome.exe").read_bytes()
+        ).hexdigest(),
         "nodeVersion": "v24.18.0",
         "npmVersion": "11.16.0",
         "excludedPaths": [
@@ -949,6 +966,7 @@ EXPECTED_GATES = [
     "launcher-fail-closed-missing-runtime",
     "verify-support-before-chromium-copy",
     "chromium-working-copy",
+    "verify-support-after-chromium-copy",
     "playwright-functional",
     "playwright-performance",
     "playwright-performance-evidence",
@@ -1121,6 +1139,7 @@ def test_support_reverified_before_after_copy_each_npm_phase_and_final(
         "verify-support-before-node-production-audit",
         "verify-support-after-node-production-audit",
         "verify-support-before-chromium-copy",
+        "verify-support-after-chromium-copy",
         "verify-support-final",
     ]
     assert support_gates == expected
@@ -1373,6 +1392,34 @@ def test_playwright_mutates_only_an_exact_verified_evidence_browser_copy(
         gate for gate in summary["gates"] if gate["gate"] == "verify-support-final"
     )["status"] == "PASS"
 
+
+def test_support_mutation_during_chromium_copy_fails_before_playwright(
+    tmp_path: Path, recording: dict, fake_repo: Path, launcher_exe: Path,
+) -> None:
+    evidence = tmp_path / "evidence"
+    result = _run_controller(
+        tmp_path,
+        recording,
+        fake_repo,
+        launcher_exe,
+        evidence=evidence,
+        extra_env={"ST32_MUTATE_SUPPORT_AFTER_PRECOPY_VERIFY": "1"},
+    )
+    assert result.returncode != 0
+    summary = json.loads((evidence / "summary.json").read_text(encoding="utf-8"))
+    assert summary["overall"] == "FAIL"
+    names = [gate["gate"] for gate in summary["gates"]]
+    assert "verify-support-before-chromium-copy" in names
+    assert "chromium-working-copy" in names
+    after_copy = next(
+        gate
+        for gate in summary["gates"]
+        if gate["gate"] == "verify-support-after-chromium-copy"
+    )
+    assert after_copy["status"] == "FAIL"
+    assert "playwright-functional" not in names
+    assert "playwright-performance" not in names
+
 def test_playwright_config_nests_controlled_chromium_in_launch_options(tmp_path: Path) -> None:
     node = shutil.which(os.environ.get("STM32_0502_TEST_NODE", "node"))
     assert node is not None, "Node.js is required to exercise playwright.config.ts"
@@ -1421,8 +1468,11 @@ def test_playwright_config_nests_controlled_chromium_in_launch_options(tmp_path:
     }
 
     helper = CONTROLLER.read_text(encoding="utf-8")
-    # The helper binds the verified support browser to the same variable name.
-    assert "$env:STM32_MONITOR_CHROMIUM_EXECUTABLE = $Chromium" in helper
+    # The helper binds only the verified EvidenceRoot working copy.
+    assert re.search(
+        r"(?m)^\s*\$env:STM32_MONITOR_CHROMIUM_EXECUTABLE\s*=\s*\$ChromiumWorking\s*$",
+        helper,
+    )
 
 
 def test_helper_does_not_use_exclude_flag_and_playwright_performance_runs_once(

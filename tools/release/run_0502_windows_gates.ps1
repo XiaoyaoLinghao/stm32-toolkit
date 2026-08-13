@@ -644,6 +644,11 @@ asyncio.run(main())
     # --- Controlled Playwright --------------------------------------------------
     Assert-0502Support 'before-chromium-copy' | Out-Null
     $ChromiumWorking = New-0502ChromiumWorkingCopy $Chromium
+    # Re-verify the authoritative source after copying and before executing the
+    # working copy.  This closes the interval in which SupportRoot could change
+    # after the pre-copy verification while still producing a self-consistent
+    # (but no longer verified) copy.
+    Assert-0502Support 'after-chromium-copy' | Out-Null
     $env:STM32_MONITOR_PYTHON = $testPython312
     $env:STM32_MONITOR_EVIDENCE = $EvidenceRoot
     $env:PLAYWRIGHT_BROWSERS_PATH = '0'
