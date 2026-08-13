@@ -1069,6 +1069,175 @@ def test_transient_identity_churn_beyond_three_snapshots_retries_until_stable(
         database.close()
 
 
+def test_storage_private_identity_guards_fail_closed(tmp_path: Path, monkeypatch) -> None:
+    import stm32_monitor.storage as storage_module
+
+    paths = _paths(tmp_path)
+    database = MonitorDatabase(paths)
+    trusted_path, trusted_identity = database._trusted_directories[-1]
+    try:
+        monkeypatch.setattr(
+            storage_module,
+            "_directory_identity",
+            lambda path: (trusted_identity[0] + 1, trusted_identity[1])
+            if path == trusted_path
+            else trusted_identity,
+        )
+        with pytest.raises(StorageFailure) as remembered:
+            database._remember_directory(trusted_path)
+        assert remembered.value.code == "MONITOR_STORAGE_INVALID"
+
+        with pytest.raises(StorageFailure) as revalidated:
+            database._revalidate_directories(((trusted_path, trusted_identity),))
+        assert revalidated.value.code == "MONITOR_STORAGE_INVALID"
+    finally:
+        database.close()
+
+
+def test_storage_path_rejects_an_intermediate_regular_file(tmp_path: Path) -> None:
+    paths = _paths(tmp_path)
+    database = MonitorDatabase(paths)
+    blocked = paths.workspace_root / "blocked"
+    paths.workspace_root.mkdir(parents=True)
+    blocked.write_text("not a directory", encoding="utf-8")
+    try:
+        with pytest.raises(StorageFailure) as rejected:
+            database._require_path(blocked / "child")
+        assert rejected.value.code == "MONITOR_STORAGE_INVALID"
+    finally:
+        database.close()
+
+
+def test_storage_path_rejects_an_intermediate_redirect(tmp_path: Path, monkeypatch) -> None:
+    import stm32_monitor.storage as storage_module
+
+    paths = _paths(tmp_path)
+    database = MonitorDatabase(paths)
+    redirected = paths.workspace_root / "redirected"
+    redirected.mkdir(parents=True)
+    redirected_identity = os.lstat(redirected).st_ino
+    real_is_redirect = storage_module._metadata_is_redirect
+    monkeypatch.setattr(
+        storage_module,
+        "_metadata_is_redirect",
+        lambda metadata: metadata.st_ino == redirected_identity or real_is_redirect(metadata),
+    )
+    try:
+        with pytest.raises(StorageFailure) as rejected:
+            database._require_path(redirected / "child")
+        assert rejected.value.code == "MONITOR_STORAGE_INVALID"
+    finally:
+        database.close()
+
+
+def test_storage_pinned_main_identity_cannot_be_replaced(tmp_path: Path) -> None:
+    database = MonitorDatabase(_paths(tmp_path))
+    try:
+        database._remember_validated_integrity((1, 2, 3), (("monitor.sqlite3", 1, 2, 3, 4),))
+        with pytest.raises(StorageFailure) as replaced:
+            database._remember_validated_integrity((1, 3, 3), (("monitor.sqlite3", 1, 3, 3, 4),))
+        assert replaced.value.code == "MONITOR_STORAGE_INVALID"
+    finally:
+        database.close()
+
+
+def test_storage_create_and_preflight_reject_inconsistent_file_sets(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    paths = _paths(tmp_path)
+    _seed_database(paths)
+    database = MonitorDatabase(paths)
+    try:
+        with pytest.raises(StorageFailure) as existing:
+            database._create_database_file()
+        assert existing.value.code == "MONITOR_STORAGE_INVALID"
+
+        monkeypatch.setattr(database, "_inspect_storage_files", lambda: {})
+        with pytest.raises(StorageFailure) as missing:
+            database._preflight_existing(busy_timeout_ms=BUSY_TIMEOUT_MS)
+        assert missing.value.code == "MONITOR_STORAGE_INVALID"
+    finally:
+        database.close()
+
+
+class _StorageCursor:
+    def __init__(self, row) -> None:
+        self._row = row
+
+    def fetchone(self):
+        return self._row
+
+
+class _RefreshConnection:
+    _monitor_data_version = 1
+
+    def execute(self, statement: str) -> _StorageCursor:
+        if statement == "PRAGMA wal_checkpoint(TRUNCATE)":
+            return _StorageCursor((0, 0, 0))
+        if statement == "PRAGMA data_version":
+            return _StorageCursor((1,))
+        raise AssertionError(statement)
+
+
+class _UnusableCheckpointConnection(_RefreshConnection):
+    def execute(self, statement: str) -> _StorageCursor:
+        if statement == "PRAGMA wal_checkpoint(TRUNCATE)":
+            return _StorageCursor((1, 0, 0))
+        return super().execute(statement)
+
+
+def test_owned_integrity_refresh_handles_unusable_or_missing_snapshots(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    paths = _paths(tmp_path)
+    _seed_database(paths)
+    database = MonitorDatabase(paths)
+    try:
+        unusable = _RefreshConnection()
+        unusable._monitor_data_version = None
+        database._refresh_owned_integrity(unusable)
+        database._refresh_owned_integrity(_UnusableCheckpointConnection())
+
+        monkeypatch.setattr(database, "_inspect_storage_files", lambda: {})
+        with pytest.raises(StorageFailure) as missing_before:
+            database._refresh_owned_integrity(_RefreshConnection())
+        assert missing_before.value.code == "MONITOR_STORAGE_INVALID"
+
+        real_inspect = MonitorDatabase._inspect_storage_files.__get__(database)
+        snapshots = iter((real_inspect(), {}))
+        monkeypatch.setattr(database, "_inspect_storage_files", lambda: next(snapshots))
+        with pytest.raises(StorageFailure) as missing_after:
+            database._refresh_owned_integrity(_RefreshConnection())
+        assert missing_after.value.code == "MONITOR_STORAGE_INVALID"
+    finally:
+        database.close()
+
+
+def test_invoke_rechecks_cancellation_after_open(tmp_path: Path, monkeypatch) -> None:
+    database = MonitorDatabase(_paths(tmp_path))
+    cancelled = threading.Event()
+
+    def open_then_cancel(*, busy_timeout_ms: int):
+        assert busy_timeout_ms == BUSY_TIMEOUT_MS
+        connection = sqlite3.connect(":memory:")
+        cancelled.set()
+        return connection
+
+    monkeypatch.setattr(database, "_open_write", open_then_cancel)
+    try:
+        with pytest.raises(StorageFailure) as busy:
+            database._invoke(
+                lambda connection: pytest.fail("cancelled operation ran"),
+                busy_timeout_ms=BUSY_TIMEOUT_MS,
+                cancel_event=cancelled,
+            )
+        assert busy.value.code == "MONITOR_STORAGE_BUSY"
+    finally:
+        database.close()
+
+
 def test_storage_filesystem_error_boundaries_fail_closed(tmp_path: Path, monkeypatch) -> None:
     import stm32_monitor.storage as storage_module
 
