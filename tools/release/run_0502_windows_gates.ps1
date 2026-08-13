@@ -467,10 +467,11 @@ try {
     $monitorMain = Get-0502NodeIds 'collect-monitor-main-312' $testPython312 @('tools/stm32-monitor/tests') $ignore
     $monitorSpecial = Get-0502NodeIds 'collect-monitor-special-312' $testPython312 $specialCore @()
     $monitorPerf = Get-0502NodeIds 'collect-monitor-perf-312' $testPython312 $perfOnly @()
-    $perfMonitorNode = 'tools/stm32-monitor/tests/test_performance.py::test_named_monitor_performance_acceptance'
-    $perfExportNode = 'tools/stm32-monitor/tests/test_performance.py::test_named_export_performance_acceptance'
-    $expectedPerf = @($perfMonitorNode, $perfExportNode) | Sort-Object -CaseSensitive
-    if (@(Compare-Object $expectedPerf ($monitorPerf | Sort-Object -CaseSensitive) -CaseSensitive).Count -ne 0) { throw 'Monitor performance inventory does not match the two named acceptance tests' }
+    $perfMonitorMatches = @($monitorPerf | Where-Object { $_ -cmatch '(^|[\\/])test_performance\.py::test_named_monitor_performance_acceptance$' })
+    $perfExportMatches = @($monitorPerf | Where-Object { $_ -cmatch '(^|[\\/])test_performance\.py::test_named_export_performance_acceptance$' })
+    if ($monitorPerf.Count -ne 2 -or $perfMonitorMatches.Count -ne 1 -or $perfExportMatches.Count -ne 1) { throw 'Monitor performance inventory does not match the two named acceptance tests' }
+    $perfMonitorNode = [string]$perfMonitorMatches[0]
+    $perfExportNode = [string]$perfExportMatches[0]
     Assert-0502ExactPartition 'Monitor 3.12' $monitorAll312 @($monitorMain + $monitorSpecial + $monitorPerf)
 
     # CPython 3.10 runs the complete correctness suite but excludes

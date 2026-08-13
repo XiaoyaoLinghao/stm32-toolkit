@@ -301,9 +301,12 @@ def _collect_nodeids(args):
     nodeids = []
     for rel in sorted(files):
         if rel.endswith("/test_performance.py"):
+            # Real pytest collection uses the monitor pyproject rootdir and
+            # reports these nodeids relative to tools/stm32-monitor.
+            collected_rel = "tests/test_performance.py"
             nodeids.extend([
-                f"{rel}::test_named_export_performance_acceptance",
-                f"{rel}::test_named_monitor_performance_acceptance",
+                f"{collected_rel}::test_named_export_performance_acceptance",
+                f"{collected_rel}::test_named_monitor_performance_acceptance",
             ])
         else:
             nodeids.append(f"{rel}::{Path(rel).stem}_node")
@@ -1242,11 +1245,11 @@ def test_launchers_fail_closed_without_env_and_markers_never_run(
 # ---------------------------------------------------------------------------
 
 PERFORMANCE_EXPORT_NODEID = (
-    "tools/stm32-monitor/tests/test_performance.py::"
+    "tests/test_performance.py::"
     "test_named_export_performance_acceptance"
 )
 PERFORMANCE_MONITOR_NODEID = (
-    "tools/stm32-monitor/tests/test_performance.py::"
+    "tests/test_performance.py::"
     "test_named_monitor_performance_acceptance"
 )
 
