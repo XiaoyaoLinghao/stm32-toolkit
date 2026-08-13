@@ -1219,13 +1219,54 @@ def test_launchers_fail_closed_without_env_and_markers_never_run(
 # Controlled Playwright wiring
 # ---------------------------------------------------------------------------
 
-def test_playwright_config_reads_controlled_chromium_executable() -> None:
-    config = (REPO_ROOT / "tools" / "stm32-monitor" / "ui" / "playwright.config.ts").read_text(encoding="utf-8")
-    assert "STM32_MONITOR_CHROMIUM_EXECUTABLE" in config
-    assert "launchOptions" in config
-    assert "executablePath" in config
+def test_playwright_config_nests_controlled_chromium_in_launch_options(tmp_path: Path) -> None:
+    node = shutil.which(os.environ.get("STM32_0502_TEST_NODE", "node"))
+    assert node is not None, "Node.js is required to exercise playwright.config.ts"
+
+    config_dir = tmp_path / "playwright-config"
+    module_dir = config_dir / "node_modules" / "@playwright" / "test"
+    module_dir.mkdir(parents=True)
+    shutil.copy2(
+        REPO_ROOT / "tools" / "stm32-monitor" / "ui" / "playwright.config.ts",
+        config_dir / "playwright.config.ts",
+    )
+    (config_dir / "package.json").write_text('{"type":"module"}\n', encoding="utf-8")
+    (module_dir / "package.json").write_text(
+        '{"name":"@playwright/test","type":"module","exports":"./index.js"}\n',
+        encoding="utf-8",
+    )
+    (module_dir / "index.js").write_text(
+        "export const devices = {\"Desktop Chrome\": {browserName: \"chromium\"}};\n"
+        "export const defineConfig = config => config;\n",
+        encoding="utf-8",
+    )
+    controlled_browser = tmp_path / "verified chromium.exe"
+    controlled_browser.touch()
+    env = os.environ.copy()
+    env["STM32_MONITOR_CHROMIUM_EXECUTABLE"] = str(controlled_browser.resolve())
+    result = subprocess.run(
+        [
+            node,
+            "--no-warnings",
+            "--input-type=module",
+            "--eval",
+            "import config from './playwright.config.ts';"
+            "process.stdout.write(JSON.stringify(config.use));",
+        ],
+        cwd=config_dir,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert json.loads(result.stdout) == {
+        "browserName": "chromium",
+        "launchOptions": {"executablePath": str(controlled_browser.resolve())},
+    }
+
     helper = CONTROLLER.read_text(encoding="utf-8")
-    assert "STM32_MONITOR_CHROMIUM_EXECUTABLE" in helper
     # The helper binds the verified support browser to the same variable name.
     assert "$env:STM32_MONITOR_CHROMIUM_EXECUTABLE = $Chromium" in helper
 
