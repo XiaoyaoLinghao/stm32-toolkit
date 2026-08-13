@@ -282,23 +282,22 @@ def _verified_history_slice(
         if isolate_outer
         else source_values
     )
-    result = HistoryBatchSlice(
-        binding=(_isolated_verified_binding(batch.binding) if isolate_outer else batch.binding),
-        group_id=UUID(int=batch.group_id.int) if isolate_outer else batch.group_id,
-        group_revision=batch.group_revision,
-        run_id=UUID(int=batch.run_id.int) if isolate_outer else batch.run_id,
-        sequence=batch.sequence,
-        scheduled_unix_ns=batch.scheduled_unix_ns,
-        captured_unix_ns=batch.captured_unix_ns,
-        latency_ns=batch.latency_ns,
-        actual_rate_hz=batch.actual_rate_hz,
-        subscriber_drops=batch.subscriber_drops,
-        history_drops=batch.history_drops,
-        deadline_drops=batch.deadline_drops,
-        start_ordinal=start_ordinal,
-        batch_value_count=len(batch.values),
-        values=snapshot,
-    )
+    result = object.__new__(HistoryBatchSlice)
+    object.__setattr__(result, "binding", _isolated_verified_binding(batch.binding) if isolate_outer else batch.binding)
+    object.__setattr__(result, "group_id", UUID(int=batch.group_id.int) if isolate_outer else batch.group_id)
+    object.__setattr__(result, "group_revision", batch.group_revision)
+    object.__setattr__(result, "run_id", UUID(int=batch.run_id.int) if isolate_outer else batch.run_id)
+    object.__setattr__(result, "sequence", batch.sequence)
+    object.__setattr__(result, "scheduled_unix_ns", batch.scheduled_unix_ns)
+    object.__setattr__(result, "captured_unix_ns", batch.captured_unix_ns)
+    object.__setattr__(result, "latency_ns", batch.latency_ns)
+    object.__setattr__(result, "actual_rate_hz", float(batch.actual_rate_hz))
+    object.__setattr__(result, "subscriber_drops", batch.subscriber_drops)
+    object.__setattr__(result, "history_drops", batch.history_drops)
+    object.__setattr__(result, "deadline_drops", batch.deadline_drops)
+    object.__setattr__(result, "start_ordinal", start_ordinal)
+    object.__setattr__(result, "batch_value_count", len(batch.values))
+    object.__setattr__(result, "values", tuple(snapshot))
     object.__setattr__(
         result,
         "_verified_serialized_bytes",
@@ -330,8 +329,13 @@ def _isolated_verified_value(value: SampleValue) -> SampleValue:
     watch = object.__new__(WatchItem)
     object.__setattr__(watch, "__dict__", value.watch.__dict__.copy())
     result = object.__new__(SampleValue)
-    fields = value.__dict__.copy()
-    fields["watch"] = watch
+    fields = {
+        "watch": watch,
+        "status": value.status,
+        "typed_value": value.typed_value,
+        "code": value.code,
+        "definition": value.definition,
+    }
     object.__setattr__(result, "__dict__", fields)
     return result
 
