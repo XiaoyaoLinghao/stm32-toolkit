@@ -223,6 +223,56 @@ function New-0502NpmWorkingCache {
     return (Resolve-Path -LiteralPath $destination).Path
 }
 
+function Get-0502OrdinaryTreeManifest {
+    param([string]$Root, [string]$Label)
+    $rootItem = Get-Item -LiteralPath $Root -Force -ErrorAction Stop
+    if (-not $rootItem.PSIsContainer -or ($rootItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw "$Label root is not an ordinary directory" }
+    $prefix = $rootItem.FullName.TrimEnd('\') + '\'
+    $entries = [System.Collections.Generic.List[string]]::new()
+    foreach ($item in @(Get-ChildItem -LiteralPath $rootItem.FullName -Force -Recurse -ErrorAction Stop)) {
+        if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw "$Label contains a reparse point" }
+        $relative = $item.FullName.Substring($prefix.Length)
+        if ($item.PSIsContainer) { $entries.Add("D`t$relative") }
+        else { $entries.Add("F`t$relative`t$($item.Length)`t$(Get-0502Sha256 $item.FullName)") }
+    }
+    return @($entries.ToArray() | Sort-Object -CaseSensitive)
+}
+
+function New-0502ChromiumWorkingCopy {
+    param([string]$SourceExecutable)
+    $sourceExecutable = (Resolve-Path -LiteralPath $SourceExecutable -ErrorAction Stop).Path
+    $sourceRoot = (Resolve-Path -LiteralPath ([IO.Path]::GetDirectoryName($sourceExecutable)) -ErrorAction Stop).Path
+    $supportPrefix = $SupportRoot.TrimEnd('\') + '\'
+    $sourcePrefix = $sourceRoot.TrimEnd('\') + '\'
+    if (-not $sourcePrefix.StartsWith($supportPrefix, [StringComparison]::OrdinalIgnoreCase)) { throw 'verified Chromium executable is outside SupportRoot' }
+
+    $destination = Join-Path $EvidenceRoot 'chromium-working'
+    if (Test-Path -LiteralPath $destination) { throw 'Chromium working copy destination already exists' }
+    New-Item -ItemType Directory -Path $destination -ErrorAction Stop | Out-Null
+    $destinationItem = Get-Item -LiteralPath $destination -Force
+    if (($destinationItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or @(Get-ChildItem -LiteralPath $destination -Force).Count -ne 0) { throw 'Chromium working copy is not a new empty ordinary directory' }
+
+    foreach ($child in @(Get-ChildItem -LiteralPath $sourceRoot -Force -ErrorAction Stop)) {
+        Copy-Item -LiteralPath $child.FullName -Destination $destination -Recurse -Force -ErrorAction Stop
+    }
+    $members = @(Get-Item -LiteralPath $destination -Force)
+    $members += @(Get-ChildItem -LiteralPath $destination -Force -Recurse -ErrorAction Stop)
+    foreach ($member in $members) {
+        if (($member.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw 'Chromium working copy contains a reparse point' }
+        $attributes = [IO.FileAttributes]$member.Attributes
+        [IO.File]::SetAttributes($member.FullName, [IO.FileAttributes](([int]$attributes) -band (-bnot [int][IO.FileAttributes]::ReadOnly)))
+    }
+
+    $sourceManifest = @(Get-0502OrdinaryTreeManifest $sourceRoot 'verified Chromium source')
+    $copyManifest = @(Get-0502OrdinaryTreeManifest $destination 'Chromium working copy')
+    if (@(Compare-Object $sourceManifest $copyManifest -CaseSensitive).Count -ne 0) { throw 'Chromium working copy differs from verified source' }
+    $relativeExecutable = $sourceExecutable.Substring($sourcePrefix.Length)
+    $workingExecutable = Join-Path $destination $relativeExecutable
+    if (-not [IO.File]::Exists($workingExecutable)) { throw 'Chromium executable missing from working copy' }
+    Add-0502Result 'chromium-working-copy' $true "exact byte copy at $workingExecutable"
+    return (Resolve-Path -LiteralPath $workingExecutable).Path
+}
+
 function Invoke-0502NpmPhase {
     param([string]$Name, [string[]]$Arguments)
     Assert-0502Support ('before-' + $Name) | Out-Null
@@ -417,6 +467,10 @@ try {
     $monitorMain = Get-0502NodeIds 'collect-monitor-main-312' $testPython312 @('tools/stm32-monitor/tests') $ignore
     $monitorSpecial = Get-0502NodeIds 'collect-monitor-special-312' $testPython312 $specialCore @()
     $monitorPerf = Get-0502NodeIds 'collect-monitor-perf-312' $testPython312 $perfOnly @()
+    $perfMonitorNode = 'tools/stm32-monitor/tests/test_performance.py::test_named_monitor_performance_acceptance'
+    $perfExportNode = 'tools/stm32-monitor/tests/test_performance.py::test_named_export_performance_acceptance'
+    $expectedPerf = @($perfMonitorNode, $perfExportNode) | Sort-Object -CaseSensitive
+    if (@(Compare-Object $expectedPerf ($monitorPerf | Sort-Object -CaseSensitive) -CaseSensitive).Count -ne 0) { throw 'Monitor performance inventory does not match the two named acceptance tests' }
     Assert-0502ExactPartition 'Monitor 3.12' $monitorAll312 @($monitorMain + $monitorSpecial + $monitorPerf)
 
     # CPython 3.10 runs the complete correctness suite but excludes
@@ -425,7 +479,8 @@ try {
     # performance gate runs FIRST, before the heavy correctness partitions, so
     # the acceptance measurement is taken on an unloaded machine exactly as the
     # original 0501 gate was calibrated.
-    Invoke-0502Gate 'python312-monitor-perf' $RepoRoot $testPython312 (@('-m', 'pytest') + $perfOnly + @('-q', '-s', '-p', 'no:cacheprovider', '--basetemp', (Join-Path $EvidenceRoot 'bt-monitor-perf-312')))
+    Invoke-0502Gate 'python312-monitor-perf-monitor' $RepoRoot $testPython312 @('-m', 'pytest', $perfMonitorNode, '-q', '-s', '-p', 'no:cacheprovider', '--basetemp', (Join-Path $EvidenceRoot 'bt-monitor-perf-monitor-312'))
+    Invoke-0502Gate 'python312-monitor-perf-export' $RepoRoot $testPython312 @('-m', 'pytest', $perfExportNode, '-q', '-s', '-p', 'no:cacheprovider', '--basetemp', (Join-Path $EvidenceRoot 'bt-monitor-perf-export-312'))
     Invoke-0502Gate 'python310-monitor-complete' $RepoRoot $testPython310 @('-m', 'pytest', 'tools/stm32-monitor/tests', '--ignore=tools/stm32-monitor/tests/test_performance.py', '-q', '-p', 'no:cacheprovider', '--basetemp', (Join-Path $EvidenceRoot 'bt-monitor-310'))
     $env:COVERAGE_FILE = Join-Path $EvidenceRoot '.coverage-monitor-312'
     Invoke-0502Gate 'python312-monitor-main' $RepoRoot $testPython312 (@('-m', 'pytest', 'tools/stm32-monitor/tests') + $ignore + @('-q', '-p', 'no:cacheprovider', '--cov=stm32_monitor', '--cov-branch', '--cov-report=', '--basetemp', (Join-Path $EvidenceRoot 'bt-monitor-main-312')))
@@ -585,10 +640,12 @@ asyncio.run(main())
     else { Add-0502Result 'launcher-fail-closed-missing-runtime' $false "expected exit 2, got $($missingRuntimeMon.Exit)/$($missingRuntimeTk.Exit)" }
 
     # --- Controlled Playwright --------------------------------------------------
+    Assert-0502Support 'before-chromium-copy' | Out-Null
+    $ChromiumWorking = New-0502ChromiumWorkingCopy $Chromium
     $env:STM32_MONITOR_PYTHON = $testPython312
     $env:STM32_MONITOR_EVIDENCE = $EvidenceRoot
     $env:PLAYWRIGHT_BROWSERS_PATH = '0'
-    $env:STM32_MONITOR_CHROMIUM_EXECUTABLE = $Chromium
+    $env:STM32_MONITOR_CHROMIUM_EXECUTABLE = $ChromiumWorking
     Remove-Item Env:STM32_MONITOR_PERF_WARMUP_MS -ErrorAction SilentlyContinue
     Remove-Item Env:STM32_MONITOR_PERF_MEASURE_MS -ErrorAction SilentlyContinue
     $functionalSpecs = @(Get-ChildItem -LiteralPath (Join-Path $uiRoot 'e2e') -Filter '*.spec.ts' -File | ForEach-Object { $_.Name } | Where-Object { $_ -cne 'performance.spec.ts' } | Sort-Object)

@@ -298,7 +298,16 @@ def _collect_nodeids(args):
             rel = full.relative_to(root).as_posix()
             if rel not in ignores:
                 files.append(rel)
-    return sorted(f"{rel}::{Path(rel).stem}_node" for rel in sorted(files))
+    nodeids = []
+    for rel in sorted(files):
+        if rel.endswith("/test_performance.py"):
+            nodeids.extend([
+                f"{rel}::test_named_export_performance_acceptance",
+                f"{rel}::test_named_monitor_performance_acceptance",
+            ])
+        else:
+            nodeids.append(f"{rel}::{Path(rel).stem}_node")
+    return sorted(nodeids)
 
 
 def python_dispatch(tool, args, exe):
@@ -420,6 +429,12 @@ def dispatch(tool, args, exe):
                     }),
                     encoding="utf-8",
                 )
+        if os.environ.get("ST32_MUTATE_CONTROLLED_BROWSER") == "1" and "playwright" in args:
+            browser = os.environ.get("STM32_MONITOR_CHROMIUM_EXECUTABLE")
+            if browser:
+                generated = Path(browser).parent / "Dictionaries" / "en-US-10-1.bdic"
+                generated.parent.mkdir(parents=True, exist_ok=True)
+                generated.write_bytes(b"generated-browser-dictionary")
         return 0
     if tool == "cmdexec":
         if len(args) >= 3 and args[0] == "/d" and args[1] == "/c":
@@ -536,6 +551,9 @@ def recording(tmp_path: Path, launcher_exe: Path) -> dict:
     (support / "artifacts").mkdir(parents=True)
     (support / "chromium").mkdir(parents=True)
     (support / "chromium" / "chrome.exe").write_bytes(b"chrome")
+    (support / "chromium" / "chrome.dll").write_bytes(b"chrome-dll")
+    (support / "chromium" / "locales").mkdir()
+    (support / "chromium" / "locales" / "en-US.pak").write_bytes(b"locale")
     (support / "npm-cache" / "seed").write_text("seed", encoding="utf-8")
     node_hash = hashlib.sha256(wrappers["node"].read_bytes()).hexdigest()
     npm_hash = hashlib.sha256(wrappers["npm"].read_bytes()).hexdigest()
@@ -894,7 +912,8 @@ EXPECTED_GATES = [
     "venv-create-312",
     "venv-install-312",
     "venv-install-toolkit-312",
-    "python312-monitor-perf",
+    "python312-monitor-perf-monitor",
+    "python312-monitor-perf-export",
     "python310-monitor-complete",
     "python312-monitor-main",
     "python312-monitor-special",
@@ -925,6 +944,8 @@ EXPECTED_GATES = [
     "launcher-toolkit-312",
     "launcher-fail-closed-missing-env",
     "launcher-fail-closed-missing-runtime",
+    "verify-support-before-chromium-copy",
+    "chromium-working-copy",
     "playwright-functional",
     "playwright-performance",
     "playwright-performance-evidence",
@@ -1096,6 +1117,7 @@ def test_support_reverified_before_after_copy_each_npm_phase_and_final(
         "verify-support-after-node-npm-ci",
         "verify-support-before-node-production-audit",
         "verify-support-after-node-production-audit",
+        "verify-support-before-chromium-copy",
         "verify-support-final",
     ]
     assert support_gates == expected
@@ -1218,6 +1240,132 @@ def test_launchers_fail_closed_without_env_and_markers_never_run(
 # ---------------------------------------------------------------------------
 # Controlled Playwright wiring
 # ---------------------------------------------------------------------------
+
+PERFORMANCE_EXPORT_NODEID = (
+    "tools/stm32-monitor/tests/test_performance.py::"
+    "test_named_export_performance_acceptance"
+)
+PERFORMANCE_MONITOR_NODEID = (
+    "tools/stm32-monitor/tests/test_performance.py::"
+    "test_named_monitor_performance_acceptance"
+)
+
+
+def test_named_performance_acceptances_run_in_separate_pytest_processes(
+    tmp_path: Path, recording: dict, fake_repo: Path, launcher_exe: Path,
+) -> None:
+    evidence = tmp_path / "evidence"
+    result = _run_controller(tmp_path, recording, fake_repo, launcher_exe, evidence=evidence)
+    assert result.returncode == 0, result.stdout + result.stderr
+    recs = _records(result.record_file)  # type: ignore[attr-defined]
+
+    monitor = [r for r in recs if r.get("gate") == "python312-monitor-perf-monitor"]
+    export = [r for r in recs if r.get("gate") == "python312-monitor-perf-export"]
+    assert len(monitor) == 1
+    assert len(export) == 1
+    assert PERFORMANCE_MONITOR_NODEID in monitor[0]["argv"]
+    assert PERFORMANCE_EXPORT_NODEID not in monitor[0]["argv"]
+    assert PERFORMANCE_EXPORT_NODEID in export[0]["argv"]
+    assert PERFORMANCE_MONITOR_NODEID not in export[0]["argv"]
+    assert "bt-monitor-perf-monitor-312" in " ".join(monitor[0]["argv"])
+    assert "bt-monitor-perf-export-312" in " ".join(export[0]["argv"])
+    assert not [r for r in recs if r.get("gate") == "python312-monitor-perf"]
+
+
+@pytest.mark.parametrize(
+    "fail_gate,later_gate",
+    [
+        ("python312-monitor-perf-monitor", "python312-monitor-perf-export"),
+        ("python312-monitor-perf-export", "python310-monitor-complete"),
+    ],
+)
+def test_each_named_performance_gate_fails_closed_before_later_gates(
+    tmp_path: Path,
+    recording: dict,
+    fake_repo: Path,
+    launcher_exe: Path,
+    fail_gate: str,
+    later_gate: str,
+) -> None:
+    evidence = tmp_path / "evidence"
+    result = _run_controller(
+        tmp_path,
+        recording,
+        fake_repo,
+        launcher_exe,
+        evidence=evidence,
+        fail_gate=fail_gate,
+    )
+    assert result.returncode != 0
+    summary = json.loads((evidence / "summary.json").read_text(encoding="utf-8"))
+    assert summary["overall"] == "FAIL"
+    names = [gate["gate"] for gate in summary["gates"]]
+    assert names[-1] == fail_gate
+    assert later_gate not in names
+
+
+def test_playwright_mutates_only_an_exact_verified_evidence_browser_copy(
+    tmp_path: Path, recording: dict, fake_repo: Path, launcher_exe: Path,
+) -> None:
+    evidence = tmp_path / "evidence"
+    support_browser = Path(recording["config"]["supportJson"]["browser"])
+    support_browser_root = support_browser.parent
+    source_before = {
+        path.relative_to(support_browser_root).as_posix(): path.read_bytes()
+        for path in support_browser_root.rglob("*")
+        if path.is_file()
+    }
+    result = _run_controller(
+        tmp_path,
+        recording,
+        fake_repo,
+        launcher_exe,
+        evidence=evidence,
+        extra_env={"ST32_MUTATE_CONTROLLED_BROWSER": "1"},
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+
+    recs = _records(result.record_file)  # type: ignore[attr-defined]
+    playwright = [
+        record
+        for record in recs
+        if record.get("gate") in {"playwright-functional", "playwright-performance"}
+    ]
+    assert len(playwright) == 2
+    controlled_paths = {
+        Path(record["STM32_MONITOR_CHROMIUM_EXECUTABLE"]).resolve()
+        for record in playwright
+    }
+    assert len(controlled_paths) == 1
+    controlled_browser = controlled_paths.pop()
+    controlled_browser.relative_to(evidence.resolve())
+    with pytest.raises(ValueError):
+        controlled_browser.relative_to(Path(recording["support"]).resolve())
+    assert controlled_browser.read_bytes() == support_browser.read_bytes()
+
+    copied_root = controlled_browser.parent
+    copied_source = {
+        path.relative_to(copied_root).as_posix(): path.read_bytes()
+        for path in copied_root.rglob("*")
+        if path.is_file() and path.name != "en-US-10-1.bdic"
+    }
+    assert copied_source == source_before
+    assert (
+        copied_root / "Dictionaries" / "en-US-10-1.bdic"
+    ).read_bytes() == b"generated-browser-dictionary"
+    source_after = {
+        path.relative_to(support_browser_root).as_posix(): path.read_bytes()
+        for path in support_browser_root.rglob("*")
+        if path.is_file()
+    }
+    assert source_after == source_before
+    summary = json.loads((evidence / "summary.json").read_text(encoding="utf-8"))
+    assert next(
+        gate for gate in summary["gates"] if gate["gate"] == "chromium-working-copy"
+    )["status"] == "PASS"
+    assert next(
+        gate for gate in summary["gates"] if gate["gate"] == "verify-support-final"
+    )["status"] == "PASS"
 
 def test_playwright_config_nests_controlled_chromium_in_launch_options(tmp_path: Path) -> None:
     node = shutil.which(os.environ.get("STM32_0502_TEST_NODE", "node"))
@@ -1589,7 +1737,12 @@ def test_collect_fail_after_partial_nodeids_stops_run(
     assert entry["exit"] == 1
     # The collect gates precede the Python run gates; a collect failure must
     # prevent every later Python product gate from running.
-    for later in ("python310-monitor-complete", "python312-monitor-perf", "python312-monitor-main"):
+    for later in (
+        "python312-monitor-perf-monitor",
+        "python312-monitor-perf-export",
+        "python310-monitor-complete",
+        "python312-monitor-main",
+    ):
         assert later not in names, f"{later} ran after the collect failure"
     # The collector DID produce nodeids before failing (partial output present).
     recs = _records(result.record_file)  # type: ignore[attr-defined]
