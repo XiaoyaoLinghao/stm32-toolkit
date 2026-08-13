@@ -1031,9 +1031,40 @@ def test_continuous_identity_churn_exhausts_bounded_revalidation_as_busy(
 
     monkeypatch.setattr(database, "_integrity_fingerprint", changing_fingerprint)
     try:
+        started = time.monotonic()
         with pytest.raises(StorageFailure) as busy:
             database.read(lambda connection: 1, empty=0)
         assert busy.value.code == "MONITOR_STORAGE_BUSY"
+        assert time.monotonic() - started < 0.5
+    finally:
+        database.close()
+
+
+def test_transient_identity_churn_beyond_three_snapshots_retries_until_stable(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    paths = _paths(tmp_path)
+    _seed_database(paths)
+    database = MonitorDatabase(paths)
+    real_fingerprint = database._integrity_fingerprint
+    calls = 0
+
+    def transient_fingerprint(files):
+        nonlocal calls
+        calls += 1
+        fingerprint = real_fingerprint(files)
+        if calls <= 9:
+            return tuple(
+                (*entry[:-1], entry[-1] + calls)
+                for entry in fingerprint
+            )
+        return fingerprint
+
+    monkeypatch.setattr(database, "_integrity_fingerprint", transient_fingerprint)
+    try:
+        assert database.read(lambda connection: 1, empty=0) == 1
+        assert calls > 9
     finally:
         database.close()
 

@@ -4,6 +4,7 @@ import os
 import sqlite3
 import stat
 import threading
+import time
 from concurrent.futures import Future, ThreadPoolExecutor, TimeoutError as FutureTimeout
 from dataclasses import dataclass
 from pathlib import Path
@@ -1031,7 +1032,8 @@ class MonitorDatabase:
                 raise StorageFailure("MONITOR_STORAGE_INVALID", "orphan monitor storage sidecar exists")
             return empty
         try:
-            for attempt in range(3):
+            revalidation_deadline = time.monotonic() + BUSY_TIMEOUT_MS / 1000
+            while True:
                 directory_snapshot = self._directory_snapshot(self.path.parent)
                 opening_files = self._inspect_storage_files()
                 opening_identity = opening_files.get(self.path)
@@ -1093,9 +1095,14 @@ class MonitorDatabase:
                     self._require_validated_main_identity(validated_identity)
                     validated_fingerprint = self._integrity_fingerprint(validated_files)
                     if snapshot_fingerprint != validated_fingerprint:
-                        if attempt < 2:
-                            continue
-                        raise StorageFailure("MONITOR_STORAGE_BUSY", "monitor storage is busy")
+                        if time.monotonic() >= revalidation_deadline:
+                            raise StorageFailure("MONITOR_STORAGE_BUSY", "monitor storage is busy")
+                        # Yield to the shared bounded writer before starting a
+                        # fresh immutable snapshot.  A fixed retry count can be
+                        # exhausted by a short burst of valid commits even when
+                        # the storage stabilizes well within the busy timeout.
+                        time.sleep(0)
+                        continue
                     if full_integrity:
                         self._remember_validated_integrity(
                             validated_identity,
@@ -1120,7 +1127,6 @@ class MonitorDatabase:
                 finally:
                     if connection is not None:
                         connection.close()
-            raise AssertionError("unreachable")
         except StorageFailure:
             raise
         except sqlite3.OperationalError as error:
