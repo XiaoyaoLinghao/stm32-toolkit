@@ -133,6 +133,45 @@ def assert_process_reaped(pid: int, timeout_seconds: float = 10.0) -> None:
     raise AssertionError(f"process {pid} is still alive after {timeout_seconds:.1f}s")
 
 
+def install_ready_popen(
+    monkeypatch: pytest.MonkeyPatch,
+    ready_file: Path,
+) -> None:
+    """Delay the product timeout clock until the real child is ready.
+
+    ``run_process`` starts its bounded ``wait`` only after ``Popen`` returns.
+    The proxy therefore preserves the one-second product timeout while making
+    the test prove the intended graceful-to-force escalation instead of
+    occasionally timing out during an instrumented interpreter's startup.
+    """
+    real_popen = subprocess.Popen
+
+    class ReadyPopen(real_popen):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            deadline = time.monotonic() + 10.0
+            while time.monotonic() < deadline:
+                try:
+                    int(ready_file.read_text(encoding="utf-8"))
+                    return
+                except (FileNotFoundError, ValueError):
+                    pass
+                if self.poll() is not None:
+                    raise AssertionError("test child exited before becoming ready")
+                time.sleep(0.01)
+            if os.name == "nt":
+                _real_taskkill_tree(self.pid)
+            else:
+                try:
+                    os.killpg(self.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+            self.wait(timeout=10)
+            raise AssertionError("test child did not become ready")
+
+    monkeypatch.setattr(subprocess, "Popen", ReadyPopen)
+
+
 def _real_taskkill_tree(pid: int) -> bool:
     """Kill the whole child tree via the real ``taskkill`` on Windows.
 
@@ -581,7 +620,10 @@ def test_posix_branch_creates_a_new_session(tmp_path: Path, monkeypatch):
     assert captured["start_new_session"] is True
 
 
-def test_timeout_escalates_to_sigkill_when_sigterm_is_ignored(tmp_path: Path):
+def test_timeout_escalates_to_sigkill_when_sigterm_is_ignored(
+    tmp_path: Path,
+    monkeypatch,
+):
     pid_file = tmp_path / "child.pid"
     code = (
         "import os, signal, time\n"
@@ -590,6 +632,7 @@ def test_timeout_escalates_to_sigkill_when_sigterm_is_ignored(tmp_path: Path):
         "time.sleep(60)\n"
     )
     argv = (PYTHON, "-c", code)
+    install_ready_popen(monkeypatch, pid_file)
     result = run_process(ProcessRequest(argv=argv, cwd=tmp_path, timeout_seconds=1))
     assert result.timed_out is True
     pid = int(pid_file.read_text(encoding="utf-8"))
