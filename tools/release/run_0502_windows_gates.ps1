@@ -498,6 +498,7 @@ print(json.dumps({os.path.basename(p):{'bytes':os.path.getsize(p),'sha256':hashl
             $httpBody = @"
 import asyncio
 import aiohttp
+from urllib.parse import urlsplit
 from stm32_monitor.service import MonitorService
 
 class _Runtime:
@@ -543,7 +544,7 @@ async def main():
                 body = await resp.text()
                 assert '<!doctype' in body.lower() or '<html' in body.lower(), 'homepage is not html'
                 csp = resp.headers.get('Content-Security-Policy', '')
-                port = endpoint.url.port
+                port = urlsplit(endpoint.url).port
                 assert port is not None, 'endpoint has no bound port'
                 require_exact_connect_src(csp, port)
             async with client.get(endpoint.url + '/assets/nope.js') as resp:

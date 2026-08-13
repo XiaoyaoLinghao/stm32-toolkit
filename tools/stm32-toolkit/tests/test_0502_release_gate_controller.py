@@ -1576,6 +1576,82 @@ def _extract_connect_src_checker() -> object:
     return checker
 
 
+def _extract_installed_http_body() -> str:
+    helper = CONTROLLER.read_text(encoding="utf-8")
+    start = helper.index('$httpBody = @"')
+    end = helper.index('"@', start)
+    return helper[start + len('$httpBody = @"'):end]
+
+
+def test_installed_http_smoke_parses_a_string_endpoint_url(monkeypatch) -> None:
+    """The installed service contract returns endpoint.url as a string."""
+    from types import ModuleType, SimpleNamespace
+
+    requests: list[str] = []
+
+    class Response:
+        def __init__(self, status: int, *, body: str = "", csp: str = "") -> None:
+            self.status = status
+            self._body = body
+            self.headers = {"Content-Security-Policy": csp} if csp else {}
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, traceback):
+            return False
+
+        async def text(self) -> str:
+            return self._body
+
+    class ClientSession:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, traceback):
+            return False
+
+        def get(self, url: str) -> Response:
+            requests.append(url)
+            if url.endswith("/assets/nope.js"):
+                return Response(404)
+            if url.endswith("/api/v1/status"):
+                return Response(401)
+            return Response(
+                200,
+                body="<!doctype html>",
+                csp="default-src 'none'; connect-src 'self' ws://127.0.0.1:4321",
+            )
+
+    class MonitorService:
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+
+        async def start(self):
+            return SimpleNamespace(url="http://127.0.0.1:4321")
+
+        async def stop(self) -> None:
+            return None
+
+    aiohttp = ModuleType("aiohttp")
+    aiohttp.ClientSession = ClientSession  # type: ignore[attr-defined]
+    monitor = ModuleType("stm32_monitor")
+    service = ModuleType("stm32_monitor.service")
+    service.MonitorService = MonitorService  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "aiohttp", aiohttp)
+    monkeypatch.setitem(sys.modules, "stm32_monitor", monitor)
+    monkeypatch.setitem(sys.modules, "stm32_monitor.service", service)
+
+    body = _extract_installed_http_body()
+    exec(compile(body, "<installed-http-smoke>", "exec"), {})
+
+    assert requests == [
+        "http://127.0.0.1:4321/",
+        "http://127.0.0.1:4321/assets/nope.js",
+        "http://127.0.0.1:4321/api/v1/status",
+    ]
+
+
 def test_installed_http_smoke_csp_binds_exact_port() -> None:
     require_exact_connect_src = _extract_connect_src_checker()
     port = 4321
