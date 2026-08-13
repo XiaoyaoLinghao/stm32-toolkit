@@ -1270,6 +1270,9 @@ def test_named_performance_acceptances_run_in_separate_pytest_processes(
     assert PERFORMANCE_EXPORT_NODEID not in monitor[0]["argv"]
     assert PERFORMANCE_EXPORT_NODEID in export[0]["argv"]
     assert PERFORMANCE_MONITOR_NODEID not in export[0]["argv"]
+    expected_cwd = str((fake_repo / "tools" / "stm32-monitor").resolve())
+    assert monitor[0]["cwd"] == expected_cwd
+    assert export[0]["cwd"] == expected_cwd
     assert "bt-monitor-perf-monitor-312" in " ".join(monitor[0]["argv"])
     assert "bt-monitor-perf-export-312" in " ".join(export[0]["argv"])
     assert not [r for r in recs if r.get("gate") == "python312-monitor-perf"]

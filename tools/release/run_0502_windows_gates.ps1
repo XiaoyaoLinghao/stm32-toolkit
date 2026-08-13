@@ -329,6 +329,7 @@ try {
     Invoke-0502Gate 'git-diff-check' $RepoRoot $Git @('-C', $RepoRoot, 'diff', '--check', "$AcceptedBase..$CodeHead")
 
     $uiRoot = (Resolve-Path -LiteralPath (Join-Path $RepoRoot 'tools\stm32-monitor\ui')).Path
+    $monitorRoot = (Resolve-Path -LiteralPath (Join-Path $RepoRoot 'tools\stm32-monitor')).Path
     $supportVerifier = (Resolve-Path -LiteralPath (Join-Path $RepoRoot 'tools\stm32-monitor\ui\tests\verify_support.py')).Path
 
     $raw = Invoke-0502GitRaw @('diff', '--name-status', '--no-renames', '-z', "$AcceptedBase..$CodeHead")
@@ -480,8 +481,8 @@ try {
     # performance gate runs FIRST, before the heavy correctness partitions, so
     # the acceptance measurement is taken on an unloaded machine exactly as the
     # original 0501 gate was calibrated.
-    Invoke-0502Gate 'python312-monitor-perf-monitor' $RepoRoot $testPython312 @('-m', 'pytest', $perfMonitorNode, '-q', '-s', '-p', 'no:cacheprovider', '--basetemp', (Join-Path $EvidenceRoot 'bt-monitor-perf-monitor-312'))
-    Invoke-0502Gate 'python312-monitor-perf-export' $RepoRoot $testPython312 @('-m', 'pytest', $perfExportNode, '-q', '-s', '-p', 'no:cacheprovider', '--basetemp', (Join-Path $EvidenceRoot 'bt-monitor-perf-export-312'))
+    Invoke-0502Gate 'python312-monitor-perf-monitor' $monitorRoot $testPython312 @('-m', 'pytest', $perfMonitorNode, '-q', '-s', '-p', 'no:cacheprovider', '--basetemp', (Join-Path $EvidenceRoot 'bt-monitor-perf-monitor-312'))
+    Invoke-0502Gate 'python312-monitor-perf-export' $monitorRoot $testPython312 @('-m', 'pytest', $perfExportNode, '-q', '-s', '-p', 'no:cacheprovider', '--basetemp', (Join-Path $EvidenceRoot 'bt-monitor-perf-export-312'))
     Invoke-0502Gate 'python310-monitor-complete' $RepoRoot $testPython310 @('-m', 'pytest', 'tools/stm32-monitor/tests', '--ignore=tools/stm32-monitor/tests/test_performance.py', '-q', '-p', 'no:cacheprovider', '--basetemp', (Join-Path $EvidenceRoot 'bt-monitor-310'))
     $env:COVERAGE_FILE = Join-Path $EvidenceRoot '.coverage-monitor-312'
     Invoke-0502Gate 'python312-monitor-main' $RepoRoot $testPython312 (@('-m', 'pytest', 'tools/stm32-monitor/tests') + $ignore + @('-q', '-p', 'no:cacheprovider', '--cov=stm32_monitor', '--cov-branch', '--cov-report=', '--basetemp', (Join-Path $EvidenceRoot 'bt-monitor-main-312')))
