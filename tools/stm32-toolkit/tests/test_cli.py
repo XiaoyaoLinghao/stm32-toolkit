@@ -1,6 +1,8 @@
 import json
 from pathlib import Path
 
+import pytest
+
 from stm32_toolkit.cli import main
 from stm32_toolkit.result import OperationResult
 
@@ -457,3 +459,204 @@ def _configured_repo(tmp_path: Path) -> Path:
     from test_build_runner import prepare_project
 
     return prepare_project(tmp_path)
+
+
+# ---------------------------------------------------------------------------
+# internal-error boundaries and hardware failure names
+# ---------------------------------------------------------------------------
+
+
+def _hardware_argv(command: list[str]) -> list[str]:
+    return [
+        *command,
+        "--project",
+        str(Path.cwd()),
+        "--data-root",
+        str(Path.cwd().parent / "data"),
+        "--session-id",
+        "session-a",
+    ]
+
+
+def test_long_internal_error_message_is_truncated(monkeypatch, tmp_path: Path, capsys):
+    def explode(project_root: Path):
+        raise RuntimeError("x" * 1000)
+
+    monkeypatch.setattr("stm32_toolkit.cli.run_doctor", explode)
+
+    assert main(["doctor", "--project-root", str(tmp_path), "--json"]) == 1
+
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "stm32-toolkit: internal error: " in captured.err
+    # 500 x's survive, then an ellipsis is appended in place of the tail.
+    assert "x" * 500 in captured.err
+    assert not captured.err.endswith("x")
+    assert captured.err.rstrip().endswith("...")
+
+
+def test_bounded_int_rejects_non_integer(monkeypatch, tmp_path: Path, capsys):
+    assert main(
+        _hardware_argv(
+            [
+                "read",
+                "sample",
+                "--probe",
+                "probe-a",
+                "--expected-build-id",
+                "b" * 64,
+                "--expected-elf-sha256",
+                "e" * 64,
+                "--expression",
+                "counter",
+                "--interval-ms",
+                "abc",
+            ]
+        )
+    ) == 2
+    assert capsys.readouterr().out == ""
+
+
+def test_authorized_requires_apply_mode(monkeypatch, tmp_path: Path, capsys):
+    root = _keil_repo(tmp_path)
+
+    assert main(
+        ["keil", "convert", "--project", str(root), "--dry-run", "--authorized", "--json"]
+    ) == 2
+    assert capsys.readouterr().out == ""
+
+
+def test_hardware_failures_map_to_stable_operation_names(
+    monkeypatch, tmp_path: Path, capsys
+):
+    root = _keil_repo(tmp_path)
+    data_root = str(root.parent / "data")
+    session_id = "session-a"
+    probe = "probe-a"
+    build_id = "b" * 64
+    elf = "e" * 64
+
+    def explode(*_args, **_kwargs):
+        raise RuntimeError("SECRET hardware failure")
+
+    cases = [
+        (
+            ["probe", "list"],
+            "stm32_probe_list",
+            "stm32_toolkit.cli.probe_list_workflow",
+        ),
+        (
+            [
+                "flash",
+                "--probe", probe,
+                "--expected-build-id", build_id,
+                "--expected-elf-sha256", elf,
+            ],
+            "stm32_flash",
+            "stm32_toolkit.cli.flash_workflow",
+        ),
+        (
+            [
+                "debug", "handoff", "begin",
+                "--probe", probe,
+                "--expected-build-id", build_id,
+                "--expected-elf-sha256", elf,
+            ],
+            "stm32_debug_handoff_begin",
+            "stm32_toolkit.cli.handoff_begin_workflow",
+        ),
+        (
+            ["debug", "handoff", "end", "--probe", probe, "--ticket", "ticket-1"],
+            "stm32_debug_handoff_end",
+            "stm32_toolkit.cli.handoff_end_workflow",
+        ),
+        (
+            [
+                "read", "variable",
+                "--probe", probe,
+                "--expected-build-id", build_id,
+                "--expected-elf-sha256", elf,
+                "--expression", "counter",
+            ],
+            "stm32_variable_read",
+            "stm32_toolkit.cli.variable_read_workflow",
+        ),
+        (
+            [
+                "read", "sample",
+                "--probe", probe,
+                "--expected-build-id", build_id,
+                "--expected-elf-sha256", elf,
+                "--expression", "counter",
+                "--interval-ms", "1000",
+                "--count", "1",
+            ],
+            "stm32_variable_sample",
+            "stm32_toolkit.cli.variable_sample_workflow",
+        ),
+        (
+            [
+                "read", "register",
+                "--probe", probe,
+                "--expected-build-id", build_id,
+                "--expected-elf-sha256", elf,
+                "--path", "GPIOA.IDR",
+            ],
+            "stm32_register_read",
+            "stm32_toolkit.cli.register_read_workflow",
+        ),
+        (
+            [
+                "fault",
+                "--probe", probe,
+                "--expected-build-id", build_id,
+                "--expected-elf-sha256", elf,
+            ],
+            "stm32_fault_analyze",
+            "stm32_toolkit.cli.fault_workflow",
+        ),
+    ]
+
+    for argv, operation, target in cases:
+        monkeypatch.setattr(target, explode)
+        args = [*argv, "--project", str(root), "--data-root", data_root, "--session-id", session_id]
+        assert main(args) == 2, operation
+        captured = capsys.readouterr()
+        assert captured.out, operation
+        payload = json.loads(captured.out)
+        assert payload["operation"] == operation
+        assert payload["code"] == "HARDWARE_INTERNAL_ERROR"
+        assert captured.err == ""
+        assert "SECRET" not in captured.out
+
+
+def test_operation_result_asserts_on_unhandled_command():
+    from types import SimpleNamespace
+
+    from stm32_toolkit.cli import _operation_result
+
+    with pytest.raises(AssertionError):
+        _operation_result(SimpleNamespace(command="bogus"), Path.cwd())
+
+
+def test_main_guard_raises_system_exit_when_run_as_module(monkeypatch, capsys):
+    import runpy
+    import sys
+
+    monkeypatch.setattr(sys, "argv", ["stm32-toolkit", "version"])
+    with pytest.raises(SystemExit) as caught:
+        runpy.run_module("stm32_toolkit.cli", run_name="__main__")
+    assert caught.value.code == 0
+
+
+def test_package_lazy_attributes_and_unknown_attribute_error() -> None:
+    import stm32_toolkit
+    from stm32_toolkit import MonitorObservationRequest, open_monitor_observation
+
+    assert stm32_toolkit.__version__ == "0.5.0"
+    assert callable(MonitorObservationRequest)
+    assert callable(open_monitor_observation)
+    # The lazily imported attribute is cached on the package.
+    assert stm32_toolkit.open_monitor_observation is open_monitor_observation
+    with pytest.raises(AttributeError):
+        stm32_toolkit.no_such_attribute

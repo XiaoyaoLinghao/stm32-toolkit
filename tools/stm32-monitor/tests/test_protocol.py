@@ -6,7 +6,12 @@ from uuid import UUID
 import pytest
 
 from stm32_monitor.models import WatchGroup, WatchItem
-from stm32_monitor.protocol import success
+from stm32_monitor.protocol import (
+    _known_model_payload,
+    _serialize_protocol_value,
+    _snapshot_protocol_value,
+    success,
+)
 
 
 NOW = datetime(2026, 8, 8, 1, 2, 3, tzinfo=timezone.utc)
@@ -81,3 +86,69 @@ def test_group_tuple_results_reject_nested_subclasses_and_forged_values() -> Non
     object.__setattr__(group_with_forgery, "items", [WatchItem.variable("counter")])
     with pytest.raises((TypeError, ValueError)):
         success("groups.list", (group_with_forgery,))
+
+
+def _forged_class(module: str, name: str):
+    """A JSON-encodable lookalike that spoofs a product type's module and name."""
+    forged = type(name, (dict,), {"__module__": module})
+    forged.__name__ = name
+    return forged()
+
+
+def test_known_model_payload_accepts_real_history_page() -> None:
+    from stm32_monitor.history import HistoryPage
+
+    page = HistoryPage.create((), next_cursor=None)
+    assert _known_model_payload(page) == page.to_dict()
+
+
+def test_known_model_payload_accepts_real_export_artifact() -> None:
+    from pathlib import Path
+    from uuid import UUID
+
+    from stm32_monitor.exports import ExportArtifact
+
+    artifact = ExportArtifact(
+        UUID(int=1), Path("/tmp"), Path("/tmp/history.jsonl"),
+        Path("/tmp/history.json"), "a" * 64, 4, 1,
+    )
+    assert _known_model_payload(artifact) == artifact.to_dict()
+
+
+def test_known_model_payload_falls_through_for_forged_history_and_export() -> None:
+    forged_history = _forged_class("stm32_monitor.history", "HistoryPage")
+    forged_export = _forged_class("stm32_monitor.exports", "ExportArtifact")
+    assert _known_model_payload(forged_history) is None
+    assert _known_model_payload(forged_export) is None
+
+
+def test_snapshot_and_serialize_take_the_identity_mismatch_fallthrough() -> None:
+    forged_group = _forged_class("stm32_monitor.models", "GroupPage")
+    forged_history = _forged_class("stm32_monitor.history", "HistoryPage")
+    # Each call exercises the "module/name match but identity differs" fallthrough
+    # in both the snapshot and serialization paths.  Forged values are not exact
+    # JSON value types, so the helpers reject them with TypeError after taking
+    # the identity-mismatch branch.
+    assert _known_model_payload(forged_group) is None
+    with pytest.raises(TypeError):
+        _snapshot_protocol_value(forged_group)
+    with pytest.raises(TypeError):
+        _snapshot_protocol_value(forged_history)
+    with pytest.raises(TypeError):
+        _serialize_protocol_value(forged_group)
+    with pytest.raises(TypeError):
+        _serialize_protocol_value(forged_history)
+
+
+def test_plain_list_and_tuple_payloads_are_snapshotted_not_frozen_in_place() -> None:
+    result = success("example.op", (1, 2, 3))
+    assert result.data == (1, 2, 3)
+    assert result.to_dict()["data"] == [1, 2, 3]
+
+    list_result = success("example.op", [{"a": 1}])
+    assert list_result.to_dict()["data"] == [{"a": 1}]
+
+
+def test_watch_group_collection_exceeding_128_groups_is_rejected() -> None:
+    with pytest.raises(ValueError):
+        success("groups.list", _groups(129, 1))

@@ -316,6 +316,7 @@ def _protocol_runtime(
     observation_factory=None,
     firmware_status_factory=None,
     probe_list_factory=None,
+    sampler_factory=None,
 ):
     from stm32_monitor.models import FirmwareStatus, MonitorConfig
     from stm32_monitor.runtime import MonitorRuntime
@@ -365,8 +366,8 @@ def _protocol_runtime(
             },
         )
 
-    def sampler_factory(*args):
-        sampler = FakeSampler(*args)
+    def sampler_factory_impl(*args):
+        sampler = sampler_factory(*args) if sampler_factory is not None else FakeSampler(*args)
         samplers.append(sampler)
         return sampler
 
@@ -374,7 +375,7 @@ def _protocol_runtime(
         group_store_factory=group_factory,
         history_store_factory=history_factory,
         exporter_factory=export_factory,
-        sampler_factory=sampler_factory,
+        sampler_factory=sampler_factory_impl,
         observation_factory=observation_factory or default_observation,
         firmware_status_factory=firmware_status_factory or default_firmware,
         probe_list_factory=probe_list_factory or default_probe_list,
@@ -2096,3 +2097,345 @@ def test_default_runtime_factories_load_and_existing_lock_content_is_exact(
         with pytest.raises(runtime_module.MonitorRuntimeError) as caught:
             runtime_module._WorkspaceLock(lock_path).acquire()
         assert caught.value.code == "MONITOR_RUNTIME_PATH_UNSAFE"
+
+
+def test_safe_project_rejects_existing_non_directory_root(tmp_path: Path) -> None:
+    from stm32_monitor.runtime import MonitorRuntimeError, _safe_project
+
+    project = _project(tmp_path)
+    regular_file = tmp_path / "plain.txt"
+    regular_file.write_bytes(b"x")
+    with pytest.raises(MonitorRuntimeError):
+        _safe_project(regular_file)
+    assert _safe_project(project) == project
+
+
+def test_probe_list_rejects_non_string_public_text(tmp_path: Path) -> None:
+    from stm32_toolkit.result import OperationResult
+
+    async def bad_probe_list(_request):
+        return OperationResult.success(
+            "stm32_probe_list",
+            {
+                "probes": [
+                    {"probeId": "probe-a", "vendor": 123, "product": "ST", "boardName": None}
+                ]
+            },
+        )
+
+    async def scenario() -> None:
+        runtime, config, *_ = _protocol_runtime(
+            tmp_path, probe_list_factory=bad_probe_list
+        )
+        await runtime.start(config)
+        try:
+            result = await runtime.dispatch("monitor.probes.list", {})
+            assert not result.ok
+            assert result.code == "MONITOR_PROBE_ENUMERATION_FAILED"
+        finally:
+            await runtime.stop()
+
+    asyncio.run(scenario())
+
+
+def test_connect_fails_closed_when_probe_enumeration_fails(tmp_path: Path) -> None:
+    from stm32_toolkit.result import OperationResult
+
+    async def failing_probe_list(_request):
+        return OperationResult.failure("stm32_probe_list", "X", "boom", {})
+
+    async def scenario() -> None:
+        runtime, config, *_ = _protocol_runtime(
+            tmp_path, probe_list_factory=failing_probe_list
+        )
+        await runtime.start(config)
+        try:
+            result = await runtime.dispatch("monitor.probe.connect", {"probeId": "probe-a"})
+            assert not result.ok
+            assert result.code == "MONITOR_PROBE_ENUMERATION_FAILED"
+        finally:
+            await runtime.stop()
+
+    asyncio.run(scenario())
+
+
+def test_status_reads_binding_probe_id_and_normalizes_bogus_sampler_state(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        runtime, config, *_tail, samplers, _obs, _req = _protocol_runtime(tmp_path)
+        await runtime.start(config)
+        try:
+            await runtime.dispatch("monitor.probe.connect", {"probeId": "probe-a"})
+            runtime._observation.binding.probe_id = "probe-b"
+            samplers[0].state = "BOGUS"
+            status = await runtime.dispatch("monitor.status", {})
+            assert status.data["probe"]["probeId"] == "probe-b"
+            assert status.data["sampling"]["state"] == "IDLE"
+        finally:
+            await runtime.stop()
+
+    asyncio.run(scenario())
+
+
+def test_publish_state_without_revision_increment_and_forward_samples_edges(
+    tmp_path: Path,
+) -> None:
+    class ModelBatch:
+        def to_dict(self) -> dict[str, object]:
+            return _runtime_batch(1)
+
+    class EdgeSampler:
+        def __init__(self) -> None:
+            self._sequence = 0
+
+        async def subscribe_deliveries(self):
+            yield SimpleNamespace(batch=ModelBatch(), subscriber_drops=0)
+            yield SimpleNamespace(batch=None, subscriber_drops=0)
+
+    async def scenario() -> None:
+        runtime, config, *_ = _protocol_runtime(tmp_path)
+        await runtime.start(config)
+        try:
+            before = runtime._state_revision
+            event = runtime._publish_state(increment_revision=False)
+            assert runtime._state_revision == before
+            assert event["data"]["stateRevision"] == before
+            await runtime._forward_samples(EdgeSampler())
+        finally:
+            await runtime.stop()
+
+    asyncio.run(scenario())
+
+
+def test_reconnect_and_release_surface_release_errors(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def scenario() -> None:
+        runtime, config, *_ = _protocol_runtime(tmp_path)
+        await runtime.start(config)
+        try:
+            await runtime.dispatch("monitor.probe.connect", {"probeId": "probe-a"})
+
+            async def failing_release():
+                return RuntimeError("SECRET release boom")
+
+            monkeypatch.setattr(runtime, "_release_probe", failing_release)
+            result = await runtime.dispatch("monitor.probe.reconnect", {})
+            assert not result.ok
+            assert result.code == "MONITOR_CLEANUP_FAILED"
+
+            async def cancelled_release():
+                return asyncio.CancelledError()
+
+            monkeypatch.setattr(runtime, "_release_probe", cancelled_release)
+            with pytest.raises(asyncio.CancelledError):
+                await runtime.dispatch("monitor.probe.reconnect", {})
+            with pytest.raises(asyncio.CancelledError):
+                await runtime.dispatch("monitor.probe.release", {})
+        finally:
+            await runtime.stop()
+
+    asyncio.run(scenario())
+
+
+def test_sampling_dispatch_boundaries_locked_no_sampler_and_running_task(
+    tmp_path: Path,
+) -> None:
+    group = {
+        "groupId": "12345678-1234-5678-9234-567812345678",
+        "expectedRevision": 1,
+    }
+
+    async def scenario() -> None:
+        runtime, config, *_ = _protocol_runtime(tmp_path)
+        await runtime.start(config)
+        try:
+            missing = await runtime.dispatch("monitor.sampling.start", group)
+            assert not missing.ok
+            assert missing.code == "MONITOR_REQUEST_INVALID"
+
+            await runtime._probe_lifecycle_lock.acquire()
+            locked = await runtime.dispatch("monitor.sampling.start", group)
+            assert not locked.ok
+            assert locked.code == "MONITOR_PROBE_BUSY"
+            runtime._probe_lifecycle_lock.release()
+
+            await runtime.dispatch("monitor.probe.connect", {"probeId": "probe-a"})
+            started = await runtime.dispatch("monitor.sampling.start", group)
+            assert started.ok
+
+            runtime._sample_task = asyncio.create_task(asyncio.sleep(30))
+            again = await runtime.dispatch("monitor.sampling.start", group)
+            assert again.ok
+            runtime._sample_task.cancel()
+            await asyncio.gather(runtime._sample_task, return_exceptions=True)
+            runtime._sample_task = None
+
+            await runtime._probe_lifecycle_lock.acquire()
+            paused = await runtime.dispatch("monitor.sampling.pause", {})
+            assert not paused.ok
+            assert paused.code == "MONITOR_PROBE_BUSY"
+            runtime._probe_lifecycle_lock.release()
+        finally:
+            await runtime.stop()
+
+    asyncio.run(scenario())
+
+
+def test_connect_invokes_state_listener_and_sampling_skips_manual_publish(
+    tmp_path: Path,
+) -> None:
+    class ListenerSampler:
+        def __init__(self, observation, groups, history) -> None:
+            self.inputs = (observation, groups, history)
+            self.listener = None
+            self.state = "IDLE"
+            self._group = None
+            self._run_id = None
+            self._sequence = 0
+            self.subscriber_drops_total = 0
+            self.history_drops_total = 0
+            self.deadline_drops_total = 0
+
+        def set_state_listener(self, listener) -> None:
+            self.listener = listener
+
+        async def start(self, *_args, **_kwargs):
+            from stm32_monitor.protocol import success
+
+            return success("sampling.start", {"started": True})
+
+        def pause(self):
+            from stm32_monitor.protocol import success
+
+            return success("sampling.pause", {"paused": True})
+
+        async def close(self) -> None:
+            pass
+
+    async def scenario() -> None:
+        runtime, config, *_tail, samplers, _obs, _req = _protocol_runtime(
+            tmp_path, sampler_factory=lambda *args: ListenerSampler(*args)
+        )
+        await runtime.start(config)
+        try:
+            await runtime.dispatch("monitor.probe.connect", {"probeId": "probe-a"})
+            assert samplers[0].listener is not None
+            started = await runtime.dispatch(
+                "monitor.sampling.start",
+                {
+                    "groupId": "12345678-1234-5678-9234-567812345678",
+                    "expectedRevision": 1,
+                },
+            )
+            assert started.ok
+            paused = await runtime.dispatch("monitor.sampling.pause", {})
+            assert paused.ok
+        finally:
+            await runtime.stop()
+
+    asyncio.run(scenario())
+
+
+def test_stop_sends_live_end_to_drained_subscriber(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        runtime, config, *_ = _protocol_runtime(tmp_path)
+        await runtime.start(config)
+        stream = runtime.live_subscribe()
+        await asyncio.wait_for(anext(stream), 1)
+        await asyncio.wait_for(anext(stream), 1)
+        stop_task = asyncio.create_task(runtime.stop())
+        with pytest.raises(StopAsyncIteration):
+            await asyncio.wait_for(anext(stream), 1)
+        await stop_task
+        await stream.aclose()
+
+    asyncio.run(scenario())
+
+
+def test_stop_is_idempotent_and_cleans_unstarted_runtime(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        runtime, _config, *_ = _protocol_runtime(tmp_path)
+        await runtime.stop()
+        await runtime.stop()
+
+    asyncio.run(scenario())
+
+
+def test_stop_reports_first_close_error_after_visiting_all_owned_dependencies(
+    tmp_path: Path,
+) -> None:
+    class FailingClose:
+        def __init__(self, name: str) -> None:
+            self.name = name
+
+        def close(self) -> None:
+            raise RuntimeError(f"{self.name} SECRET close failed")
+
+    async def scenario() -> None:
+        from stm32_monitor.models import MonitorConfig
+        from stm32_monitor.runtime import MonitorRuntime, MonitorRuntimeError
+
+        project = _project(tmp_path)
+        runtime = MonitorRuntime(
+            group_store_factory=lambda paths: FailingClose("groups"),
+            history_store_factory=lambda paths: FailingClose("history"),
+            exporter_factory=FakeExporter,
+            sampler_factory=lambda *_args, **_kwargs: None,
+            observation_factory=lambda *_args, **_kwargs: None,
+            service_factory=lambda *args, **kwargs: _ready_service(*args, **kwargs),
+        )
+        await runtime.start(
+            MonitorConfig(project, (tmp_path / "data").resolve(), "session-a")
+        )
+        with pytest.raises(MonitorRuntimeError) as caught:
+            await runtime.stop()
+        assert caught.value.code == "MONITOR_CLEANUP_FAILED"
+        assert "SECRET" not in caught.value.message
+
+    asyncio.run(scenario())
+
+
+def test_close_independent_collects_first_error_and_continues(tmp_path: Path) -> None:
+    from stm32_monitor.runtime import _close_independent
+
+    async def scenario() -> None:
+        class Fail:
+            async def close(self) -> None:
+                raise RuntimeError("SECRET failure")
+
+        first = await _close_independent((Fail(), Fail()))
+        assert isinstance(first, RuntimeError)
+        assert "SECRET" in str(first)
+
+    asyncio.run(scenario())
+
+
+def test_heartbeat_exits_when_paths_cleared_and_recovers_when_publish_lags(
+    tmp_path: Path,
+) -> None:
+    import time
+
+    async def scenario() -> None:
+        runtime, config, *_ = _protocol_runtime(tmp_path)
+        runtime._heartbeat_interval_seconds = 1.0
+        await runtime.start(config)
+        await asyncio.sleep(0)
+        runtime._paths = None
+        await asyncio.wait_for(runtime._heartbeat_task, 3)
+
+        caught_up, caught_up_config, *_ = _protocol_runtime(tmp_path / "lag")
+        caught_up._heartbeat_interval_seconds = 0.01
+        real_publish = caught_up._publish_heartbeat
+
+        def slow_publish():
+            real_publish()
+            time.sleep(0.05)
+
+        caught_up._publish_heartbeat = slow_publish
+        await caught_up.start(caught_up_config)
+        await asyncio.sleep(0.05)
+        await caught_up.stop()
+
+    asyncio.run(scenario())

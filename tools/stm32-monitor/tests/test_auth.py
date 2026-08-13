@@ -135,6 +135,18 @@ def test_header_budget_is_bounded_before_authentication() -> None:
     )
 
 
+def test_header_budget_rejects_non_utf8_header_bytes() -> None:
+    from stm32_monitor.auth import MonitorAuthError
+
+    auth = _auth()
+    with pytest.raises(MonitorAuthError) as caught:
+        auth.require_header_budget((("X-Name", chr(0xD800)),))
+    assert (caught.value.code, caught.value.status) == (
+        "MONITOR_REQUEST_INVALID",
+        400,
+    )
+
+
 ORIGIN = "http://127.0.0.1:43125"
 
 

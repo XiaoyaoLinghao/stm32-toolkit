@@ -2148,3 +2148,323 @@ def test_semantically_invalid_and_oversized_history_rows_are_storage_corruption(
         assert oversized.code == "MONITOR_STORAGE_CORRUPT"
     finally:
         store.close()
+
+
+def test_verified_slice_iso_batch_and_slice_base_reject_invalid_inputs(
+    tmp_path: Path,
+) -> None:
+    import stm32_monitor.history as history_module
+
+    paths = _paths(tmp_path)
+    batch = _batch(paths, 1)
+    with pytest.raises(TypeError):
+        history_module._verified_history_slice(batch, 0, (), 100)
+    with pytest.raises(TypeError):
+        history_module._verified_history_slice(batch, 0, batch.values, 0)
+    with pytest.raises(TypeError):
+        history_module._isolated_verified_batch("not-a-batch")
+    with pytest.raises(TypeError):
+        history_module._encoded_slice_base_bytes(batch, ())
+    with pytest.raises(TypeError):
+        history_module._encoded_slice_base_bytes(batch, (1, 2))
+    with pytest.raises(TypeError):
+        history_module._encoded_slice_base_bytes(batch, (10**9,))
+
+
+def test_verified_history_page_rejects_mismatched_value_count(tmp_path: Path) -> None:
+    import stm32_monitor.history as history_module
+
+    with pytest.raises(TypeError):
+        history_module._verified_history_page(
+            (), value_count=1, next_cursor=None, serialized_bytes=10
+        )
+
+
+def test_cursor_helpers_reject_invalid_positions_and_types(tmp_path: Path) -> None:
+    import base64
+    import hmac
+    import struct
+
+    import stm32_monitor.history as history_module
+
+    bound = struct.pack(">QQ32s", 0, 0, b"\0" * 32)
+    payload = bound + hmac.digest(b"key", bound, "sha256")
+    zero_batch_cursor = "v1." + base64.urlsafe_b64encode(payload).rstrip(b"=").decode()
+    with pytest.raises(ValueError):
+        history_module._cursor_payload(zero_batch_cursor)
+    with pytest.raises(ValueError):
+        history_module._cursor(123, b"\0" * 32, b"key")
+
+
+def test_decode_history_batch_rejects_wrong_types_and_shapes(tmp_path: Path) -> None:
+    import stm32_monitor.history as history_module
+
+    paths = _paths(tmp_path)
+    batch = _batch(paths, 1, captured_ns=1_000_000_001)
+    raw = json.dumps(
+        batch.to_dict(), ensure_ascii=False, separators=(",", ":")
+    ).encode()
+    good = {
+        "raw": raw,
+        "payload_bytes": len(raw),
+        "payload_sha256": sha256(raw).hexdigest(),
+        "value_count": 1,
+        "workspace_id": paths.workspace_id,
+        "session_id": "monitor-1",
+        "run_id": str(RUN_ID),
+        "sequence": 1,
+        "captured_ns": 1_000_000_001,
+    }
+    with pytest.raises(StorageFailure):
+        history_module._decode_history_batch(
+            b"raw", b"bad", "digest", 1, workspace_id=good["workspace_id"],
+            session_id="monitor-1", run_id=str(RUN_ID), sequence=1, captured_ns=1,
+        )
+
+    payload = json.loads(raw)
+    payload["values"] = [{"watch": {"kind": "variable", "expression": "counter"}}]
+    missing_fields = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode()
+    with pytest.raises(StorageFailure):
+        history_module._decode_history_batch(
+            missing_fields, len(missing_fields), sha256(missing_fields).hexdigest(),
+            value_count=1, **{k: good[k] for k in ("workspace_id", "session_id", "run_id", "sequence", "captured_ns")},
+        )
+
+    payload2 = json.loads(raw)
+    payload2["values"] = [dict(payload2["values"][0], watch="not-a-dict")]
+    watch_not_dict = json.dumps(payload2, ensure_ascii=False, separators=(",", ":")).encode()
+    with pytest.raises(StorageFailure):
+        history_module._decode_history_batch(
+            watch_not_dict, len(watch_not_dict), sha256(watch_not_dict).hexdigest(),
+            value_count=1, **{k: good[k] for k in ("workspace_id", "session_id", "run_id", "sequence", "captured_ns")},
+        )
+
+    payload3 = json.loads(raw)
+    # "e" followed by U+0301 combining acute (non-NFC) so WatchItem normalizes it.
+    nfd_expression = "caf" + chr(0x65) + chr(0x301)
+    payload3["values"] = [
+        dict(
+            payload3["values"][0],
+            watch={"kind": "variable", "expression": nfd_expression},
+        )
+    ]
+    non_canonical = json.dumps(payload3, ensure_ascii=False, separators=(",", ":")).encode()
+    with pytest.raises(StorageFailure):
+        history_module._decode_history_batch(
+            non_canonical, len(non_canonical), sha256(non_canonical).hexdigest(),
+            value_count=1, **{k: good[k] for k in ("workspace_id", "session_id", "run_id", "sequence", "captured_ns")},
+        )
+
+
+def test_normalize_v1_batch_rejects_invalid_evidence(tmp_path: Path) -> None:
+    import stm32_monitor.history as history_module
+
+    paths = _paths(tmp_path)
+    batch = _batch(paths, 1, captured_ns=1_000_000_001)
+    raw = json.dumps(
+        batch.to_dict(), ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    ).encode()
+    decoded = json.loads(raw)
+    evidence = {key: value for key, value in decoded.items() if key != "values"}
+    row = dict(evidence)
+    row.update(decoded["values"][0])
+    row["valueOrdinal"] = 0
+    row_raw = json.dumps(row, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
+    value_rows = ((0, row_raw, len(row_raw)),)
+    batch_row = (1, "monitor-1", str(RUN_ID), 1, 1_000_000_001, raw, len(raw))
+
+    assert history_module._normalize_v1_batch(
+        workspace_id=paths.workspace_id, batch_row=batch_row, value_rows=value_rows
+    )[0] == raw
+
+    with pytest.raises(StorageFailure):
+        history_module._normalize_v1_batch(
+            workspace_id=paths.workspace_id,
+            batch_row=(0, "monitor-1", str(RUN_ID), 1, 1_000_000_001, raw, len(raw)),
+            value_rows=value_rows,
+        )
+    with pytest.raises(StorageFailure):
+        history_module._normalize_v1_batch(
+            workspace_id=paths.workspace_id, batch_row=batch_row, value_rows=()
+        )
+    with pytest.raises(StorageFailure):
+        history_module._normalize_v1_batch(
+            workspace_id=paths.workspace_id,
+            batch_row=batch_row,
+            value_rows=((0, b"[]", 2),),
+        )
+    bad_row = dict(row)
+    bad_row["sequence"] = 99
+    bad_row_raw = json.dumps(bad_row, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
+    with pytest.raises(StorageFailure):
+        history_module._normalize_v1_batch(
+            workspace_id=paths.workspace_id,
+            batch_row=batch_row,
+            value_rows=((0, bad_row_raw, len(bad_row_raw)),),
+        )
+
+
+def test_retention_with_nothing_to_delete_is_an_empty_pass(tmp_path: Path) -> None:
+    paths = _paths(tmp_path)
+    store = HistoryStore(paths)
+    try:
+        assert store.append_batch(_batch(paths, 1, captured_ns=100)).ok
+        evidence = store.run_retention(now_ns=200)
+        assert evidence.ok
+        assert evidence.data["deletedBatches"] == 0
+        assert evidence.data["passes"] == 0
+        assert evidence.data["moreWork"] is False
+    finally:
+        store.close()
+
+
+def test_private_stream_counts_verified_batches(tmp_path: Path) -> None:
+    paths = _paths(tmp_path)
+    store = HistoryStore(paths)
+    try:
+        assert store.append_batch(_batch(paths, 1, captured_ns=100)).ok
+        assert store.append_batch(_batch(paths, 2, captured_ns=200)).ok
+        received: list[object] = []
+        result = store._stream_verified_batches(
+            HistoryQuery("monitor-1", 0, 1_000), received.append
+        )
+        assert result.ok
+        assert result.data == 2
+        assert len(received) == 2
+    finally:
+        store.close()
+
+
+def test_group_filter_cursor_rejects_batch_group_mutation(tmp_path: Path) -> None:
+    from dataclasses import replace as _replace
+
+    paths = _paths(tmp_path)
+    store = HistoryStore(paths)
+    other_group = UUID("33333333-3333-4333-8333-333333333333")
+    try:
+        assert store.append_batch(_batch(paths, 1, captured_ns=100)).ok
+        assert store.append_batch(
+            _replace(_wide_batch(paths, 2, captured_ns=200, count=2), group_id=other_group)
+        ).ok
+        group_query = HistoryQuery("monitor-1", 0, 1_000, group_id=other_group, limit=1)
+        first = store.query_history(group_query)
+        assert first.ok and first.data.next_cursor is not None
+        cursor = first.data.next_cursor
+
+        raw = store._database.read(
+            lambda connection: connection.execute(
+                "SELECT payload_json FROM history_batches WHERE batch_id = 2"
+            ).fetchone()[0],
+            empty=None,
+        )
+        payload = json.loads(raw)
+        payload["groupId"] = str(GROUP_ID)
+        changed = _compact(payload)
+        store._database.write(
+            lambda connection: connection.execute(
+                "UPDATE history_batches SET payload_json = ?, payload_bytes = ?, payload_sha256 = ? "
+                "WHERE batch_id = 2",
+                (changed, len(changed), sha256(changed).hexdigest()),
+            )
+        )
+
+        resumed = store.query_history(replace(group_query, cursor=cursor))
+        assert not resumed.ok
+        assert resumed.code == "MONITOR_HISTORY_QUERY_INVALID"
+    finally:
+        store.close()
+
+
+def test_query_cursor_past_last_batch_is_invalid(tmp_path: Path) -> None:
+    import stm32_monitor.history as history_module
+
+    paths = _paths(tmp_path)
+    store = HistoryStore(paths)
+    try:
+        assert store.append_batch(_batch(paths, 1, captured_ns=100)).ok
+        query = HistoryQuery("monitor-1", 0, 1_000, limit=1)
+        cursor = history_module._encode_cursor(
+            5, 0, history_module._filter_digest(query), store._cursor_key
+        )
+        resumed = store.query_history(replace(query, cursor=cursor))
+        assert not resumed.ok
+        assert resumed.code == "MONITOR_HISTORY_QUERY_INVALID"
+    finally:
+        store.close()
+
+
+def test_stream_rejects_corrupt_batch_identity(tmp_path: Path) -> None:
+    paths = _paths(tmp_path)
+    store = HistoryStore(paths)
+    try:
+        assert store.append_batch(_batch(paths, 1, captured_ns=100)).ok
+        database = store._database.path
+        with sqlite3.connect(database) as connection:
+            connection.execute("PRAGMA foreign_keys = OFF")
+            connection.execute("UPDATE history_batches SET batch_id = 0 WHERE batch_id = 1")
+            connection.execute("UPDATE history_values SET batch_id = 0 WHERE batch_id = 1")
+            connection.commit()
+        received: list[object] = []
+        result = store._stream_verified_batches(
+            HistoryQuery("monitor-1", 0, 1_000), received.append
+        )
+        assert not result.ok
+        assert result.code == "MONITOR_STORAGE_CORRUPT"
+    finally:
+        store.close()
+
+
+def test_retention_rejects_missing_accounting_row(tmp_path: Path) -> None:
+    paths = _paths(tmp_path)
+    store = HistoryStore(paths)
+    try:
+        assert store.append_batch(_batch(paths, 1, captured_ns=100)).ok
+        database = store._database.path
+        with sqlite3.connect(database) as connection:
+            connection.execute("DELETE FROM monitor_history_accounting")
+            connection.commit()
+        evidence = store.run_retention(now_ns=1_000)
+        assert not evidence.ok
+        assert evidence.code == "MONITOR_STORAGE_CORRUPT"
+    finally:
+        store.close()
+
+
+def test_query_rejects_non_bytes_payload_corruption(tmp_path: Path) -> None:
+    paths = _paths(tmp_path)
+    store = HistoryStore(paths)
+    try:
+        assert store.append_batch(_batch(paths, 1, captured_ns=100)).ok
+        database = store._database.path
+        with sqlite3.connect(database) as connection:
+            connection.execute(
+                "UPDATE history_batches SET payload_json = 42 WHERE batch_id = 1"
+            )
+            connection.commit()
+        result = store.query_history(HistoryQuery("monitor-1", 0, 1_000))
+        assert not result.ok
+        assert result.code == "MONITOR_STORAGE_CORRUPT"
+    finally:
+        store.close()
+
+
+def test_cursor_to_deleted_batch_is_rejected(tmp_path: Path) -> None:
+    paths = _paths(tmp_path)
+    store = HistoryStore(paths)
+    try:
+        assert store.append_batch(_batch(paths, 1, captured_ns=100)).ok
+        assert store.append_batch(_batch(paths, 2, captured_ns=200)).ok
+        query = HistoryQuery("monitor-1", 0, 1_000, limit=1)
+        first = store.query_history(query)
+        assert first.ok and first.data.next_cursor is not None
+        database = store._database.path
+        with sqlite3.connect(database) as connection:
+            connection.execute("PRAGMA foreign_keys = OFF")
+            connection.execute("DELETE FROM history_batches WHERE batch_id = 1")
+            connection.execute("DELETE FROM history_values WHERE batch_id = 1")
+            connection.commit()
+        resumed = store.query_history(replace(query, cursor=first.data.next_cursor))
+        assert not resumed.ok
+        assert resumed.code == "MONITOR_HISTORY_QUERY_INVALID"
+    finally:
+        store.close()

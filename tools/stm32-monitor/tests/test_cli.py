@@ -319,6 +319,33 @@ def test_open_browser_handoff_failure_stops_runtime_sanitized(tmp_path: Path) ->
     assert events == ["start", "stop"]
 
 
+def test_open_rejects_an_endpoint_without_a_valid_access_url(tmp_path: Path) -> None:
+    from stm32_monitor.cli import main
+
+    class NoAccessRuntime(RecordingRuntime):
+        async def start(self, config):
+            self.events.append("start")
+            self.config = config
+            return object()  # no access_url attribute -> MONITOR_SERVICE_UNAVAILABLE
+
+    project = (tmp_path / "project").resolve()
+    project.mkdir()
+    events: list[str] = []
+    output = io.StringIO()
+    code = main(
+        ["open", "--project", str(project), "--data-root", str((tmp_path / "data").resolve())],
+        _runtime_factory=lambda: NoAccessRuntime(events),
+        _stdout=output,
+    )
+    assert code == 1
+    assert json.loads(output.getvalue()) == {
+        "ok": False,
+        "code": "MONITOR_SERVICE_UNAVAILABLE",
+        "message": "Monitor Service is unavailable",
+    }
+    assert events == ["start", "stop"]
+
+
 def test_open_prints_no_access_url_to_stdout(tmp_path: Path) -> None:
     from stm32_monitor.cli import main
 

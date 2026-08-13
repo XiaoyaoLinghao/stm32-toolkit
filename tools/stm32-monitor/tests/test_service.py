@@ -116,10 +116,10 @@ def _oversized_model_valid_live_event() -> dict[str, object]:
     ).to_dict()
 
 
-async def _with_service(action, *, send_delay_seconds: float = 0.0) -> None:
+async def _with_service(action, *, send_delay_seconds: float = 0.0, runtime_factory=None) -> None:
     from stm32_monitor.service import MonitorService
 
-    runtime = FakeRuntime()
+    runtime = runtime_factory() if runtime_factory is not None else FakeRuntime()
     service = MonitorService(
         runtime,
         workspace_id="workspace-a",
@@ -1220,3 +1220,328 @@ def test_partial_start_cleanup_error_has_priority_and_stop_retries_owned_runner(
             await asyncio.open_connection("127.0.0.1", port)
 
     asyncio.run(scenario())
+
+
+def test_static_returns_503_before_service_is_started() -> None:
+    from stm32_monitor.service import MonitorService
+
+    async def scenario() -> None:
+        service = MonitorService(
+            FakeRuntime(), workspace_id="workspace-a", session_id="session-a"
+        )
+        response = await service._static(None)
+        assert response.status == 503
+        assert response.body == b""
+
+    asyncio.run(scenario())
+
+
+def test_authorize_rejects_before_service_has_an_auth() -> None:
+    from stm32_monitor.service import MonitorService, _ServiceFailure
+
+    async def scenario() -> None:
+        service = MonitorService(
+            FakeRuntime(), workspace_id="workspace-a", session_id="session-a"
+        )
+        with pytest.raises(_ServiceFailure) as caught:
+            service._authorize(None, bootstrap=True)
+        assert caught.value.code == "MONITOR_SERVICE_UNAVAILABLE"
+
+    asyncio.run(scenario())
+
+
+def test_raise_cleanup_error_rejects_non_exception_base() -> None:
+    from stm32_monitor.service import MonitorService
+
+    with pytest.raises(BaseException) as caught:
+        MonitorService._raise_cleanup_error(BaseException("SECRET boom"))
+    assert "SECRET" in str(caught.value)
+
+
+def test_restart_cleans_owned_runner_before_rebinding() -> None:
+    from stm32_monitor.service import MonitorService
+
+    class FakeRunner:
+        def __init__(self) -> None:
+            self.cleanup_calls = 0
+
+        async def cleanup(self) -> None:
+            self.cleanup_calls += 1
+
+    async def scenario() -> None:
+        service = MonitorService(
+            FakeRuntime(),
+            workspace_id="workspace-a",
+            session_id="session-a",
+            token_factory=lambda size: TOKEN_BYTES if size == 32 else b"",
+        )
+        runner = FakeRunner()
+        service._runner = runner
+        endpoint = await service.start()
+        assert runner.cleanup_calls == 1
+        assert service.endpoint == endpoint
+        await service.stop()
+
+    asyncio.run(scenario())
+
+
+def test_reject_overrides_aborts_huge_payload_before_dispatch() -> None:
+    async def scenario(runtime, _service, endpoint) -> None:
+        headers = {
+            "Authorization": f"Bearer {TOKEN_BYTES.hex()}",
+            "Origin": endpoint.url,
+            "Content-Type": "application/json",
+        }
+        body = json.dumps({"nested": [{"k": index} for index in range(20_010)]}).encode()
+        async with aiohttp.ClientSession() as client:
+            response = await client.post(
+                endpoint.url + "/api/v1/groups", headers=headers, data=body
+            )
+            assert response.status == 400
+            assert runtime.calls == []
+
+    asyncio.run(_with_service(scenario))
+
+
+def test_serve_ui_loads_packaged_dist_when_root_is_omitted() -> None:
+    from stm32_monitor.service import MonitorService
+
+    async def scenario() -> None:
+        runtime = FakeRuntime()
+        service = MonitorService(
+            runtime,
+            workspace_id="workspace-a",
+            session_id="session-a",
+            token_factory=lambda size: TOKEN_BYTES if size == 32 else b"",
+            serve_ui=True,
+        )
+        endpoint = await service.start()
+        try:
+            headers = {
+                "Authorization": f"Bearer {TOKEN_BYTES.hex()}",
+                "Origin": endpoint.url,
+            }
+            async with aiohttp.ClientSession() as client:
+                response = await client.get(endpoint.url + "/", headers=headers)
+                assert response.status == 200
+                assert "text/html" in response.headers["Content-Type"]
+        finally:
+            await service.stop()
+
+    asyncio.run(scenario())
+
+
+def test_live_drops_oldest_when_runtime_has_no_drop_recorder() -> None:
+    class NoRecorderRuntime(FakeRuntime):
+        record_service_drops = None  # type: ignore[assignment]
+
+    async def scenario(runtime, _service, endpoint) -> None:
+        headers = {
+            "Authorization": f"Bearer {TOKEN_BYTES.hex()}",
+            "Origin": endpoint.url,
+        }
+        async with aiohttp.ClientSession() as client:
+            ws = await client.ws_connect(endpoint.url + "/api/v1/live", headers=headers)
+            await asyncio.wait_for(runtime.subscribed.wait(), 1)
+            for sequence in range(20):
+                await runtime.live_queue.put(
+                    {
+                        "eventId": sequence + 1,
+                        "type": "sample",
+                        "data": {
+                            "batch": {"sequence": sequence},
+                            "serviceSubscriberDrops": 0,
+                        },
+                    }
+                )
+            # Produce drains the unbounded source into the bounded send queue;
+            # once the source is empty, the send queue has evicted old frames
+            # without calling a (missing) drop recorder.
+            for _ in range(100):
+                if runtime.live_queue.qsize() == 0:
+                    break
+                await asyncio.sleep(0.01)
+            assert runtime.live_queue.qsize() == 0
+            await ws.close()
+
+    asyncio.run(
+        _with_service(scenario, send_delay_seconds=0.2, runtime_factory=NoRecorderRuntime)
+    )
+
+
+def test_start_failure_with_successful_cleanup_raises_original_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from aiohttp import web
+    from stm32_monitor.service import MonitorService
+
+    async def failing_site_start(_site: web.TCPSite) -> None:
+        raise ValueError("SECRET start boom")
+
+    monkeypatch.setattr(web.TCPSite, "start", failing_site_start)
+    service = MonitorService(
+        FakeRuntime(), workspace_id="workspace-a", session_id="session-a"
+    )
+
+    async def scenario() -> None:
+        with pytest.raises(ValueError, match="SECRET"):
+            await service.start()
+
+    asyncio.run(scenario())
+
+
+def test_start_rejects_wrong_bind_addresses(monkeypatch: pytest.MonkeyPatch) -> None:
+    from aiohttp import web
+    from stm32_monitor.service import MonitorService
+
+    monkeypatch.setattr(
+        web.AppRunner, "addresses", property(lambda self: [("0.0.0.0", 80)])
+    )
+    service = MonitorService(
+        FakeRuntime(), workspace_id="workspace-a", session_id="session-a"
+    )
+
+    async def scenario() -> None:
+        with pytest.raises(RuntimeError):
+            await service.start()
+
+    asyncio.run(scenario())
+
+
+def test_chunked_oversized_body_rejected_before_dispatch() -> None:
+    from stm32_monitor.auth import MAX_REQUEST_BYTES
+
+    async def scenario(runtime, _service, endpoint) -> None:
+        headers = {
+            "Authorization": f"Bearer {TOKEN_BYTES.hex()}",
+            "Origin": endpoint.url,
+            "Content-Type": "application/json",
+        }
+        body = b"x" * (MAX_REQUEST_BYTES + 10)
+        async with aiohttp.ClientSession() as client:
+            response = await client.post(
+                endpoint.url + "/api/v1/groups",
+                headers=headers,
+                data=body,
+                chunked=True,
+            )
+            assert response.status == 413
+            assert runtime.calls == []
+
+    asyncio.run(_with_service(scenario))
+
+
+def test_stop_surfaces_owned_cleanup_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    from aiohttp import web
+    from stm32_monitor.service import MonitorService
+
+    async def failing_cleanup(_runner: web.AppRunner) -> None:
+        raise OSError("SECRET cleanup boom")
+
+    monkeypatch.setattr(web.AppRunner, "cleanup", failing_cleanup)
+    service = MonitorService(
+        FakeRuntime(),
+        workspace_id="workspace-a",
+        session_id="session-a",
+        token_factory=lambda size: TOKEN_BYTES if size == 32 else b"",
+    )
+
+    async def scenario() -> None:
+        await service.start()
+        with pytest.raises(RuntimeError, match="Service cleanup failed") as raised:
+            await service.stop()
+        assert "SECRET" not in str(raised.value)
+
+    asyncio.run(scenario())
+
+
+def test_live_sends_undropped_event_without_enrichment() -> None:
+    async def scenario(runtime, _service, endpoint) -> None:
+        headers = {
+            "Authorization": f"Bearer {TOKEN_BYTES.hex()}",
+            "Origin": endpoint.url,
+        }
+        async with aiohttp.ClientSession() as client:
+            ws = await client.ws_connect(endpoint.url + "/api/v1/live", headers=headers)
+            await asyncio.wait_for(runtime.subscribed.wait(), 1)
+            await runtime.live_queue.put(
+                {
+                    "eventId": 1,
+                    "type": "sample",
+                    "data": {"batch": {"sequence": 0}, "serviceSubscriberDrops": 0},
+                }
+            )
+            frame = await asyncio.wait_for(ws.receive(), 2)
+            assert int(frame.type) == int(aiohttp.WSMsgType.TEXT)
+            message = json.loads(frame.data)
+            assert message["details"] == {"subscriberDropped": 0}
+            assert message["data"]["data"]["serviceSubscriberDrops"] == 0
+            await ws.close()
+
+    asyncio.run(_with_service(scenario))
+
+
+def test_json_constant_in_body_rejected_before_dispatch() -> None:
+    async def scenario(runtime, _service, endpoint) -> None:
+        headers = {
+            "Authorization": f"Bearer {TOKEN_BYTES.hex()}",
+            "Origin": endpoint.url,
+            "Content-Type": "application/json",
+        }
+        async with aiohttp.ClientSession() as client:
+            for body in (b'{"name": NaN}', b'{"name": Infinity}'):
+                response = await client.post(
+                    endpoint.url + "/api/v1/groups", headers=headers, data=body
+                )
+                assert response.status == 400
+        assert runtime.calls == []
+
+    asyncio.run(_with_service(scenario))
+
+
+def test_live_enrichment_skips_non_sample_and_malformed_sample_data() -> None:
+    async def scenario(runtime, _service, endpoint) -> None:
+        headers = {
+            "Authorization": f"Bearer {TOKEN_BYTES.hex()}",
+            "Origin": endpoint.url,
+        }
+        async with aiohttp.ClientSession() as client:
+            ws = await client.ws_connect(endpoint.url + "/api/v1/live", headers=headers)
+            await asyncio.wait_for(runtime.subscribed.wait(), 1)
+            for sequence in range(20):
+                await runtime.live_queue.put(
+                    {
+                        "eventId": sequence + 1,
+                        "type": "sample",
+                        "data": {
+                            "batch": {"sequence": sequence},
+                            "serviceSubscriberDrops": 0,
+                        },
+                    }
+                )
+            await runtime.live_queue.put(
+                {"eventId": 21, "type": "state", "data": {"stateRevision": 1}}
+            )
+            await runtime.live_queue.put(
+                {"eventId": 22, "type": "sample", "data": "not-a-mapping"}
+            )
+            await runtime.live_queue.put(
+                {
+                    "eventId": 23,
+                    "type": "sample",
+                    "data": {"batch": {"sequence": 1}, "serviceSubscriberDrops": "bad"},
+                }
+            )
+            # Let the slow sender process every queued event, then drain the
+            # frames so the socket keeps flowing.
+            await asyncio.sleep(1.5)
+            try:
+                while True:
+                    frame = await asyncio.wait_for(ws.receive(), 0.2)
+                    if int(frame.type) != int(aiohttp.WSMsgType.TEXT):
+                        break
+            except asyncio.TimeoutError:
+                pass
+            await ws.close()
+
+    asyncio.run(_with_service(scenario, send_delay_seconds=0.1))

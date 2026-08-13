@@ -88,3 +88,103 @@ def test_css_is_served(assets: UiAssets) -> None:
     css = assets.response("/assets/index-E5f6G7h8.css", 43125)
     assert css.status == 200
     assert css.headers["Content-Type"] == "text/css; charset=utf-8"
+
+
+def test_load_uses_packaged_ui_dist_when_root_is_omitted() -> None:
+    assets = UiAssets.load()
+    index = assets.response("/", 43125)
+    assert index.status == 200
+    assert index.headers["Content-Type"] == "text/html; charset=utf-8"
+
+
+def _write_manifest(root: Path, manifest: object, *, index: bytes | None = None) -> Path:
+    (root / ".vite").mkdir(parents=True, exist_ok=True)
+    (root / ".vite" / "manifest.json").write_text(
+        json.dumps(manifest), encoding="utf-8"
+    )
+    if index is not None:
+        (root / "index.html").write_bytes(index)
+    return root
+
+
+def test_load_rejects_missing_manifest(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="manifest is absent"):
+        UiAssets.load(tmp_path)
+
+
+def test_load_rejects_non_object_manifest(tmp_path: Path) -> None:
+    root = _write_manifest(tmp_path, [])
+    with pytest.raises(ValueError, match="manifest is invalid"):
+        UiAssets.load(root)
+
+
+def test_load_rejects_missing_index_html(tmp_path: Path) -> None:
+    root = _write_manifest(tmp_path, {"index.html": {"file": "assets/a.js"}})
+    with pytest.raises(ValueError, match="index.html is absent"):
+        UiAssets.load(root)
+
+
+def test_load_skips_non_object_records_and_non_string_items(tmp_path: Path) -> None:
+    assets = tmp_path / "assets"
+    assets.mkdir()
+    (assets / "index-A1b2C3d4.js").write_bytes(b"console.log(1)")
+    manifest = {
+        "broken": [1, 2, 3],
+        "entry": {
+            "file": "assets/index-A1b2C3d4.js",
+            "assets": ["assets/index-A1b2C3d4.js", 42, "assets/other.js"],
+        },
+    }
+    root = _write_manifest(
+        tmp_path, manifest, index=b'<!doctype html><div id="app"></div>'
+    )
+    loaded = UiAssets.load(root)
+    assert loaded.response("/assets/index-A1b2C3d4.js", 43125).status == 200
+    assert loaded.response("/assets/other.js", 43125).status == 404
+
+
+def test_register_ignores_non_asset_names(tmp_path: Path) -> None:
+    manifest = {"entry": {"file": "index.html"}}
+    root = _write_manifest(
+        tmp_path, manifest, index=b'<!doctype html><div id="app"></div>'
+    )
+    loaded = UiAssets.load(root)
+    # Only the literal index route is served; the non-assets/ reference is ignored.
+    assert loaded.response("/", 43125).status == 200
+    assert loaded.response("/index.html", 43125).status == 404
+
+
+def test_register_ignores_unhashed_unknown_extension_and_missing_files(
+    tmp_path: Path,
+) -> None:
+    assets = tmp_path / "assets"
+    assets.mkdir()
+    (assets / "index-A1b2C3d4.js").write_bytes(b"console.log(1)")
+    manifest = {
+        "entry": {
+            "file": "assets/index-A1b2C3d4.js",
+            "css": [
+                "assets/unhashed.css",
+                "assets/index-A1b2C3d4.map",
+                "assets/ghost-A1b2C3d4.js",
+            ],
+        }
+    }
+    root = _write_manifest(
+        tmp_path, manifest, index=b'<!doctype html><div id="app"></div>'
+    )
+    loaded = UiAssets.load(root)
+    assert loaded.response("/assets/index-A1b2C3d4.js", 43125).status == 200
+    for route in (
+        "/assets/unhashed.css",
+        "/assets/index-A1b2C3d4.map",
+        "/assets/ghost-A1b2C3d4.js",
+    ):
+        assert loaded.response(route, 43125).status == 404
+
+
+def test_read_rejects_invalid_paths_and_missing_files(tmp_path: Path) -> None:
+    from stm32_monitor.ui_assets import _read
+
+    assert _read(tmp_path, "assets/\x00file.js") is None
+    assert _read(tmp_path, "assets/absent.js") is None
