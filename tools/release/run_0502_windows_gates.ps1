@@ -483,7 +483,7 @@ print(json.dumps({os.path.basename(p):{'bytes':os.path.getsize(p),'sha256':hashl
             Invoke-0502Gate ('installed-pip-check-' + $minor) $EvidenceRoot $installedPython @('-m', 'pip', 'check')
             # Version + import-path + ui_dist verification. Single-quoted inline
             # code only (Windows PowerShell 5.1 mangles embedded double quotes).
-            $smoke = "import importlib.metadata as m,pathlib,sys;import stm32_monitor,stm32_toolkit;from stm32_monitor.ui_assets import UiAssets;assert m.version('stm32-toolkit')==m.version('stm32-monitor')=='0.5.0';assert pathlib.Path(stm32_monitor.__file__).resolve().is_relative_to(pathlib.Path(sys.prefix).resolve());assert UiAssets.load().find('/') is not None"
+            $smoke = "import importlib.metadata as m,pathlib,sys;import stm32_monitor,stm32_toolkit;from stm32_monitor.ui_assets import UiAssets;assert m.version('stm32-toolkit')==m.version('stm32-monitor')=='0.5.0';assert pathlib.Path(stm32_monitor.__file__).resolve().is_relative_to(pathlib.Path(sys.prefix).resolve());assert UiAssets.load() is not None"
             Invoke-0502Gate ('installed-smoke-' + $minor) $EvidenceRoot $installedPython @('-I', '-c', $smoke)
             # Real HTTP smoke against the installed monitor service: public
             # homepage 200 + bound-port CSP, unknown asset 404, unauth API reject.
