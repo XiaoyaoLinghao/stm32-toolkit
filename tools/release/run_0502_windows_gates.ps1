@@ -509,6 +509,30 @@ class _Runtime:
         if False:
             yield {}
 
+def require_exact_connect_src(csp, port):
+    expected = 'ws://127.0.0.1:' + str(port)
+    found = False
+    for directive in csp.split(';'):
+        directive = directive.strip()
+        if not directive:
+            continue
+        parts = directive.split(None, 1)
+        name = parts[0].lower()
+        if name != 'connect-src':
+            continue
+        tokens = parts[1].split() if len(parts) > 1 else []
+        if expected in tokens:
+            found = True
+        for token in tokens:
+            if (
+                token == '*'
+                or token in ('ws:', 'wss:', 'ws://*', 'wss://*')
+                or token.endswith(':*')
+            ):
+                raise AssertionError('loose connect-src token: ' + token)
+    if not found:
+        raise AssertionError('exact ws origin missing from connect-src: ' + expected)
+
 async def main():
     service = MonitorService(_Runtime(), workspace_id='w', session_id='s', serve_ui=True)
     endpoint = await service.start()
@@ -519,14 +543,9 @@ async def main():
                 body = await resp.text()
                 assert '<!doctype' in body.lower() or '<html' in body.lower(), 'homepage is not html'
                 csp = resp.headers.get('Content-Security-Policy', '')
-                assert 'default-src' in csp and 'connect-src' in csp, csp
                 port = endpoint.url.port
                 assert port is not None, 'endpoint has no bound port'
-                expected_ws = 'ws://127.0.0.1:' + str(port)
-                # The CSP connect-src must bind the exact served port. A wrong,
-                # missing, or wildcard ws origin must fail.
-                assert expected_ws in csp, 'expected ' + expected_ws + ' in connect-src: ' + csp
-                assert 'ws://*' not in csp, 'loose ws origin in CSP: ' + csp
+                require_exact_connect_src(csp, port)
             async with client.get(endpoint.url + '/assets/nope.js') as resp:
                 assert resp.status == 404, resp.status
             async with client.get(endpoint.url + '/api/v1/status') as resp:

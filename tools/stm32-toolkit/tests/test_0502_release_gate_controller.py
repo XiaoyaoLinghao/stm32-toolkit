@@ -1557,41 +1557,57 @@ def test_collect_fail_after_partial_nodeids_stops_run(
     assert collect[0]["tool"] == "venv-310"
 
 
-def test_installed_http_smoke_csp_binds_exact_port() -> None:
-    # The helper's installed HTTP smoke must assert the exact ws origin bound to
-    # the served port, and reject wrong/missing/wildcard origins.
+def _extract_connect_src_checker() -> object:
+    """Extract and compile the actual require_exact_connect_src function from
+    the helper-generated $httpBody, so the test exercises the same code the real
+    installed HTTP smoke runs (no hand-copied duplicate logic)."""
     helper = CONTROLLER.read_text(encoding="utf-8")
     start = helper.index("$httpBody = @\"")
     end = helper.index("\"@", start)
     body = helper[start + len("$httpBody = @\""):end]
-    assert "endpoint.url.port" in body
-    assert "expected_ws = 'ws://127.0.0.1:' + str(port)" in body
-    assert "expected_ws in csp" in body
-    assert "'ws://*' not in csp" in body
-    # Execute the exact-port CSP logic against mock values.
-    check_lines = [
-        "port = endpoint.url.port",
-        "assert port is not None, 'endpoint has no bound port'",
-        "expected_ws = 'ws://127.0.0.1:' + str(port)",
-        "assert expected_ws in csp, 'expected ' + expected_ws + ' in connect-src: ' + csp",
-        "assert 'ws://*' not in csp, 'loose ws origin in CSP: ' + csp",
-    ]
-    namespace = {"endpoint": type("E", (), {"url": type("U", (), {"port": 43210})()})()}
-    namespace["csp"] = "default-src 'none'; connect-src 'self' ws://127.0.0.1:43210"
-    exec("\n".join(check_lines), namespace)  # correct port passes
-    for bad_csp in (
-        "default-src 'none'; connect-src 'self' ws://127.0.0.1:9999",  # wrong port
-        "default-src 'none'; connect-src 'self' ws://127.0.0.1",  # missing port
-        "default-src 'none'; connect-src 'self' ws://127.0.0.1:43210 ws://*",  # wildcard
-        "default-src 'none'; connect-src 'self'",  # no ws origin
-    ):
-        ns = {"endpoint": namespace["endpoint"], "csp": bad_csp}
-        raised = False
+    marker = "def require_exact_connect_src(csp, port):"
+    assert marker in body
+    func_start = body.index(marker)
+    func_end = body.index("async def main():", func_start)
+    namespace: dict = {}
+    exec(compile(body[func_start:func_end], "<csp-checker>", "exec"), namespace)
+    checker = namespace.get("require_exact_connect_src")
+    assert callable(checker), "require_exact_connect_src not defined in $httpBody"
+    return checker
+
+
+def test_installed_http_smoke_csp_binds_exact_port() -> None:
+    require_exact_connect_src = _extract_connect_src_checker()
+    port = 4321
+
+    def ok(csp: str) -> None:
+        require_exact_connect_src(csp, port)
+
+    def bad(csp: str) -> None:
         try:
-            exec("\n".join(check_lines), ns)
+            require_exact_connect_src(csp, port)
         except AssertionError:
-            raised = True
-        assert raised, f"CSP unexpectedly passed: {bad_csp}"
+            return
+        raise AssertionError(f"CSP unexpectedly passed: {csp}")
+
+    # Exact ws token as a complete connect-src source passes.
+    ok("default-src 'none'; connect-src 'self' ws://127.0.0.1:4321; report-uri /r")
+    # Wrong port / prefix collision fails.
+    bad("default-src 'none'; connect-src 'self' ws://127.0.0.1:43210; report-uri /r")
+    bad("default-src 'none'; connect-src 'self' ws://127.0.0.1:43210")
+    # Correct origin only in another directive fails.
+    bad("default-src ws://127.0.0.1:4321; connect-src 'self'; report-uri /r")
+    bad("default-src 'none'; connect-src 'self'; report-uri ws://127.0.0.1:4321")
+    # Missing connect-src fails.
+    bad("default-src 'none'; report-uri /r")
+    # Arbitrary wildcard / loose ws tokens fail.
+    bad("default-src 'none'; connect-src *")
+    bad("default-src 'none'; connect-src ws:")
+    bad("default-src 'none'; connect-src ws://*")
+    bad("default-src 'none'; connect-src ws://127.0.0.1:*")
+    bad("default-src 'none'; connect-src wss://*")
+    # Wrong fixed port fails.
+    bad("default-src 'none'; connect-src 'self' ws://127.0.0.1:9999")
 
 
 def test_monitor_inventory_comparison_is_case_sensitive(
