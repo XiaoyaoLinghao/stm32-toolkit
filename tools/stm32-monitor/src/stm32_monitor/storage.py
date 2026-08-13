@@ -415,11 +415,44 @@ class MonitorDatabase:
     def _inspect_storage_files(self) -> dict[Path, tuple[int, int, int]]:
         identities: dict[Path, tuple[int, int, int]] = {}
         wal_path = self.path.with_name(self.path.name + "-wal")
+
+        def accept_deleting_optional(path: Path) -> bool:
+            """Treat a regular optional sidecar with link-count zero as transient."""
+            try:
+                _identity(path)
+            except FileNotFoundError:
+                if path == wal_path:
+                    identities[path] = _UNCERTAIN_FILE_IDENTITY
+                return True
+            except StorageFailure:
+                pass
+            else:
+                return False
+            try:
+                metadata = os.lstat(path)
+            except FileNotFoundError:
+                if path == wal_path:
+                    identities[path] = _UNCERTAIN_FILE_IDENTITY
+                return True
+            if (
+                _metadata_is_redirect(metadata)
+                or not stat.S_ISREG(metadata.st_mode)
+                or metadata.st_nlink != 0
+            ):
+                return False
+            if path == wal_path:
+                identities[path] = _UNCERTAIN_FILE_IDENTITY
+            return True
+
         for path in self._storage_files():
             try:
                 named = _identity(path)
             except FileNotFoundError:
                 continue
+            except StorageFailure:
+                if path != self.path and accept_deleting_optional(path):
+                    continue
+                raise
             except OSError as error:
                 raise StorageFailure("MONITOR_STORAGE_INVALID", "monitor storage file cannot be inspected") from error
             try:
@@ -432,13 +465,8 @@ class MonitorDatabase:
                     identities[path] = _UNCERTAIN_FILE_IDENTITY
                 continue
             except StorageFailure:
-                if path != self.path:
-                    try:
-                        _identity(path)
-                    except FileNotFoundError:
-                        if path == wal_path:
-                            identities[path] = _UNCERTAIN_FILE_IDENTITY
-                        continue
+                if path != self.path and accept_deleting_optional(path):
+                    continue
                 raise
             except OSError as error:
                 raise StorageFailure("MONITOR_STORAGE_INVALID", "monitor storage file cannot be inspected") from error

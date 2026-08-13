@@ -1010,6 +1010,116 @@ def test_optional_wal_fingerprint_churn_invalidates_trust_without_failing(
         writer.close()
 
 
+@pytest.mark.parametrize("suffix", ["-wal", "-shm"])
+def test_deleting_optional_sidecar_is_treated_as_transient(
+    tmp_path: Path,
+    monkeypatch,
+    suffix: str,
+) -> None:
+    import stm32_monitor.storage as storage_module
+    from types import SimpleNamespace
+
+    paths = _paths(tmp_path)
+    _seed_database(paths)
+    database = MonitorDatabase(paths)
+    sidecar = database.path.with_name(database.path.name + suffix)
+    real_identity = storage_module._identity
+    real_lstat = os.lstat
+
+    def deleting_identity(path: Path):
+        if path == sidecar:
+            raise StorageFailure(
+                "MONITOR_STORAGE_INVALID",
+                "monitor storage is not a private regular file",
+            )
+        return real_identity(path)
+
+    def deleting_metadata(path):
+        if Path(path) == sidecar:
+            metadata = real_lstat(database.path)
+            return SimpleNamespace(
+                st_mode=metadata.st_mode,
+                st_nlink=0,
+                st_file_attributes=0,
+            )
+        return real_lstat(path)
+
+    monkeypatch.setattr(storage_module, "_identity", deleting_identity)
+    monkeypatch.setattr(os, "lstat", deleting_metadata)
+    try:
+        files = database._inspect_storage_files()
+        if suffix == "-wal":
+            assert files[sidecar] == storage_module._UNCERTAIN_FILE_IDENTITY
+        else:
+            assert sidecar not in files
+    finally:
+        database.close()
+
+
+def test_disappearing_optional_shm_is_treated_as_transient(tmp_path: Path, monkeypatch) -> None:
+    import stm32_monitor.storage as storage_module
+
+    paths = _paths(tmp_path)
+    _seed_database(paths)
+    database = MonitorDatabase(paths)
+    shm = database.path.with_name(database.path.name + "-shm")
+    real_identity = storage_module._identity
+    calls = 0
+
+    def disappearing_identity(path: Path):
+        nonlocal calls
+        if path != shm:
+            return real_identity(path)
+        calls += 1
+        if calls == 1:
+            raise StorageFailure("MONITOR_STORAGE_INVALID", "raced")
+        raise FileNotFoundError(path)
+
+    monkeypatch.setattr(storage_module, "_identity", disappearing_identity)
+    try:
+        assert shm not in database._inspect_storage_files()
+    finally:
+        database.close()
+
+
+def test_unsafe_optional_wal_still_fails_closed(tmp_path: Path, monkeypatch) -> None:
+    import stm32_monitor.storage as storage_module
+    from types import SimpleNamespace
+
+    paths = _paths(tmp_path)
+    _seed_database(paths)
+    database = MonitorDatabase(paths)
+    wal = database.path.with_name(database.path.name + "-wal")
+    real_identity = storage_module._identity
+    real_lstat = os.lstat
+
+    def unsafe_identity(path: Path):
+        if path == wal:
+            raise StorageFailure(
+                "MONITOR_STORAGE_INVALID",
+                "monitor storage is not a private regular file",
+            )
+        return real_identity(path)
+
+    def redirected_metadata(path):
+        if Path(path) == wal:
+            return SimpleNamespace(
+                st_mode=storage_module.stat.S_IFLNK,
+                st_nlink=1,
+                st_file_attributes=0,
+            )
+        return real_lstat(path)
+
+    monkeypatch.setattr(storage_module, "_identity", unsafe_identity)
+    monkeypatch.setattr(os, "lstat", redirected_metadata)
+    try:
+        with pytest.raises(StorageFailure) as rejected:
+            database._inspect_storage_files()
+        assert rejected.value.code == "MONITOR_STORAGE_INVALID"
+    finally:
+        database.close()
+
+
 def test_continuous_identity_churn_exhausts_bounded_revalidation_as_busy(
     tmp_path: Path,
     monkeypatch,
@@ -1037,6 +1147,21 @@ def test_continuous_identity_churn_exhausts_bounded_revalidation_as_busy(
         assert busy.value.code == "MONITOR_STORAGE_BUSY"
         assert time.monotonic() - started < 0.5
     finally:
+        database.close()
+
+
+def test_initialize_accepts_the_current_schema_without_migration(tmp_path: Path) -> None:
+    import stm32_monitor.storage as storage_module
+
+    database = MonitorDatabase(_paths(tmp_path))
+    connection = sqlite3.connect(":memory:")
+    try:
+        connection.execute(f"PRAGMA application_id = {storage_module.APPLICATION_ID}")
+        connection.execute(f"PRAGMA user_version = {storage_module.SCHEMA_VERSION}")
+        database._initialize(connection)
+        assert not connection.in_transaction
+    finally:
+        connection.close()
         database.close()
 
 
@@ -1157,6 +1282,24 @@ def test_storage_create_and_preflight_reject_inconsistent_file_sets(
         with pytest.raises(StorageFailure) as missing:
             database._preflight_existing(busy_timeout_ms=BUSY_TIMEOUT_MS)
         assert missing.value.code == "MONITOR_STORAGE_INVALID"
+    finally:
+        database.close()
+
+
+def test_storage_preflight_rejects_a_database_removed_after_validation(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    paths = _paths(tmp_path)
+    _seed_database(paths)
+    database = MonitorDatabase(paths)
+    real_inspect = database._inspect_storage_files
+    inspections = iter((real_inspect(), {}))
+    monkeypatch.setattr(database, "_inspect_storage_files", lambda: next(inspections))
+    try:
+        with pytest.raises(StorageFailure) as removed:
+            database._preflight_existing(busy_timeout_ms=BUSY_TIMEOUT_MS)
+        assert removed.value.code == "MONITOR_STORAGE_INVALID"
     finally:
         database.close()
 
