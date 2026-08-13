@@ -30,6 +30,7 @@ export async function realizedChartPointCount(page:Page):Promise<number>{
 export type InstrumentedWindow=Window&{__monitorUpdates?:number[];__monitorLongTasks?:number[];__monitorLongTaskObserver?:PerformanceObserver;__monitorQueue?:number[]};
 
 export type HeapSample={minute:number;bytes:number};
+type RetainedHeapPage={requestGC:()=>Promise<void>;evaluate:(pageFunction:()=>number)=>Promise<number>};
 
 export type DropEvidence={subscriber:string;history:string;deadline:string;service:string};
 export type AssetEvidence={rawBytes:string;gzipJsBytes:string;gzipCssBytes:string};
@@ -49,6 +50,11 @@ export type PerformanceEvidence={
   warmupMs:number;
   measureMs:number;
 };
+
+export async function sampleRetainedHeap(page:RetainedHeapPage):Promise<number>{
+  await page.requestGC();
+  return page.evaluate(()=>(performance as unknown as {memory?:{usedJSHeapSize:number}}).memory?.usedJSHeapSize??0);
+}
 
 export async function createGroupViaApi(monitor:MonitorHandle,name:string,rows:number):Promise<string>{
   const token=/(?:token=)([0-9a-f]{64})/.exec(monitor.accessUrl)?.[1];
@@ -114,7 +120,7 @@ export async function collectFiveMinuteMetrics(
     const remaining=options.measureMs-(Date.now()-measureStarted);
     await page.waitForTimeout(Math.min(5_000,remaining));
     const elapsed=Date.now()-measureStarted;
-    const heap=await page.evaluate(()=>(performance as unknown as {memory?:{usedJSHeapSize:number}}).memory?.usedJSHeapSize??0);
+    const heap=await sampleRetainedHeap(page);
     const queue=await page.evaluate(()=>(window as unknown as InstrumentedWindow).__monitorQueue?.length??0);
     heaps.push({minute:elapsed/60_000,bytes:heap});
     queues.push(queue);
