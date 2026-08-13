@@ -298,9 +298,7 @@ def _collect_nodeids(args):
             rel = full.relative_to(root).as_posix()
             if rel not in ignores:
                 files.append(rel)
-    for rel in sorted(files):
-        emit(f"{rel}::{Path(rel).stem}_node")
-    return 0
+    return sorted(f"{rel}::{Path(rel).stem}_node" for rel in sorted(files))
 
 
 def python_dispatch(tool, args, exe):
@@ -433,7 +431,17 @@ def dispatch(tool, args, exe):
         return 0
     if tool.startswith("venv-") or tool.startswith("py"):
         if "-m" in args and "pytest" in args:
-            return _collect_nodeids(args) if "--collect-only" in args else 0
+            if "--collect-only" in args:
+                nodeids = _collect_nodeids(args)
+                if CONFIG.get("caseFlake") and tool == "venv-310":
+                    nodeids = [n.upper() for n in nodeids]
+                for n in nodeids:
+                    emit(n)
+                fail_after = os.environ.get("ST32_FAIL_COLLECT_AFTER")
+                if fail_after and os.environ.get("STM32_MONITOR_GATE") == fail_after:
+                    return 1
+                return 0
+            return 0
         return python_dispatch(tool, args, exe)
     return 0
 
@@ -1514,3 +1522,94 @@ def test_support_illegal_artifact_version_fails_before_product_gates(
         assert "node-npm-ci" not in names
     finally:
         _make_support_writable(root)
+
+
+# ---------------------------------------------------------------------------
+# Revision 7: deterministic release-helper regression tests
+# ---------------------------------------------------------------------------
+
+def test_collect_fail_after_partial_nodeids_stops_run(
+    tmp_path: Path, recording: dict, fake_repo: Path, launcher_exe: Path,
+) -> None:
+    # A pytest --collect-only that emits nodeids then exits nonzero must fail
+    # the run closed: no later product gate runs, summary overall=FAIL.
+    evidence = tmp_path / "evidence"
+    result = _run_controller(
+        tmp_path, recording, fake_repo, launcher_exe,
+        evidence=evidence,
+        extra_env={"ST32_FAIL_COLLECT_AFTER": "collect-monitor-310"},
+    )
+    assert result.returncode != 0
+    summary = json.loads((evidence / "summary.json").read_text(encoding="utf-8"))
+    assert summary["overall"] == "FAIL"
+    names = [g["gate"] for g in summary["gates"]]
+    entry = next(g for g in summary["gates"] if g["gate"] == "collect-monitor-310")
+    assert entry["status"] == "FAIL"
+    assert entry["exit"] == 1
+    # The collect gates precede the Python run gates; a collect failure must
+    # prevent every later Python product gate from running.
+    for later in ("python310-monitor-complete", "python312-monitor-perf", "python312-monitor-main"):
+        assert later not in names, f"{later} ran after the collect failure"
+    # The collector DID produce nodeids before failing (partial output present).
+    recs = _records(result.record_file)  # type: ignore[attr-defined]
+    collect = [r for r in recs if r.get("gate") == "collect-monitor-310"]
+    assert collect, "collect-monitor-310 did not run"
+    assert collect[0]["tool"] == "venv-310"
+
+
+def test_installed_http_smoke_csp_binds_exact_port() -> None:
+    # The helper's installed HTTP smoke must assert the exact ws origin bound to
+    # the served port, and reject wrong/missing/wildcard origins.
+    helper = CONTROLLER.read_text(encoding="utf-8")
+    start = helper.index("$httpBody = @\"")
+    end = helper.index("\"@", start)
+    body = helper[start + len("$httpBody = @\""):end]
+    assert "endpoint.url.port" in body
+    assert "expected_ws = 'ws://127.0.0.1:' + str(port)" in body
+    assert "expected_ws in csp" in body
+    assert "'ws://*' not in csp" in body
+    # Execute the exact-port CSP logic against mock values.
+    check_lines = [
+        "port = endpoint.url.port",
+        "assert port is not None, 'endpoint has no bound port'",
+        "expected_ws = 'ws://127.0.0.1:' + str(port)",
+        "assert expected_ws in csp, 'expected ' + expected_ws + ' in connect-src: ' + csp",
+        "assert 'ws://*' not in csp, 'loose ws origin in CSP: ' + csp",
+    ]
+    namespace = {"endpoint": type("E", (), {"url": type("U", (), {"port": 43210})()})()}
+    namespace["csp"] = "default-src 'none'; connect-src 'self' ws://127.0.0.1:43210"
+    exec("\n".join(check_lines), namespace)  # correct port passes
+    for bad_csp in (
+        "default-src 'none'; connect-src 'self' ws://127.0.0.1:9999",  # wrong port
+        "default-src 'none'; connect-src 'self' ws://127.0.0.1",  # missing port
+        "default-src 'none'; connect-src 'self' ws://127.0.0.1:43210 ws://*",  # wildcard
+        "default-src 'none'; connect-src 'self'",  # no ws origin
+    ):
+        ns = {"endpoint": namespace["endpoint"], "csp": bad_csp}
+        raised = False
+        try:
+            exec("\n".join(check_lines), ns)
+        except AssertionError:
+            raised = True
+        assert raised, f"CSP unexpectedly passed: {bad_csp}"
+
+
+def test_monitor_inventory_comparison_is_case_sensitive(
+    tmp_path: Path, recording: dict, fake_repo: Path, launcher_exe: Path,
+) -> None:
+    # Nodeids differing only in case are distinct logical ids; the cross-version
+    # inventory comparison must reject them.
+    config = json.loads(recording["config_file"].read_text(encoding="utf-8"))
+    config["caseFlake"] = True
+    alt_config = tmp_path / "case-config.json"
+    alt_config.write_text(json.dumps(config), encoding="utf-8")
+    evidence = tmp_path / "evidence"
+    result = _run_controller(
+        tmp_path, recording, fake_repo, launcher_exe,
+        evidence=evidence, extra_env={"ST32_CONFIG": str(alt_config)},
+    )
+    assert result.returncode != 0
+    summary = json.loads((evidence / "summary.json").read_text(encoding="utf-8"))
+    assert summary["overall"] == "FAIL"
+    names = [g["gate"] for g in summary["gates"]]
+    assert "python310-monitor-complete" not in names

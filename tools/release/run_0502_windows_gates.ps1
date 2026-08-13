@@ -239,7 +239,14 @@ function Get-0502NodeIds {
     # test for every package: the toolkit pyproject forces -q (which double -q
     # turns into per-file counts) and the monitor defaults to a structured tree.
     # Sort is case-sensitive because nodeids are case-sensitive logical ids.
+    # A nonzero pytest exit (e.g. collection error) must fail the run closed;
+    # partial stdout from a failed collection is never used as inventory.
     $result = Invoke-0502Capture $Name $RepoRoot $Python (@('-m', 'pytest') + $Paths + @('--collect-only', '-q', '-o', 'addopts=', '-p', 'no:cacheprovider') + $Extra)
+    if ($result.Exit -ne 0) {
+        $script:Failed = $true
+        $script:GateResults.Add([ordered]@{ gate = $Name; status = 'FAIL'; exit = $result.Exit; log = $result.Log })
+        throw "gate $Name failed with exit $($result.Exit)"
+    }
     $lines = $result.Lines
     return @($lines | ForEach-Object { [string]$_ } | Where-Object { $_ -match '^[^=]+::' } | Sort-Object -CaseSensitive)
 }
@@ -406,7 +413,7 @@ try {
     $ignore = @($special | ForEach-Object { '--ignore=' + $_ })
     $monitorAll310 = Get-0502NodeIds 'collect-monitor-310' $testPython310 @('tools/stm32-monitor/tests') @()
     $monitorAll312 = Get-0502NodeIds 'collect-monitor-312' $testPython312 @('tools/stm32-monitor/tests') @()
-    if (@(Compare-Object $monitorAll310 $monitorAll312).Count -ne 0) { throw 'Monitor version inventories differ' }
+    if (@(Compare-Object -CaseSensitive $monitorAll310 $monitorAll312).Count -ne 0) { throw 'Monitor version inventories differ' }
     $monitorMain = Get-0502NodeIds 'collect-monitor-main-312' $testPython312 @('tools/stm32-monitor/tests') $ignore
     $monitorSpecial = Get-0502NodeIds 'collect-monitor-special-312' $testPython312 $specialCore @()
     $monitorPerf = Get-0502NodeIds 'collect-monitor-perf-312' $testPython312 $perfOnly @()
@@ -513,7 +520,13 @@ async def main():
                 assert '<!doctype' in body.lower() or '<html' in body.lower(), 'homepage is not html'
                 csp = resp.headers.get('Content-Security-Policy', '')
                 assert 'default-src' in csp and 'connect-src' in csp, csp
-                assert 'ws://127.0.0.1' in csp, csp
+                port = endpoint.url.port
+                assert port is not None, 'endpoint has no bound port'
+                expected_ws = 'ws://127.0.0.1:' + str(port)
+                # The CSP connect-src must bind the exact served port. A wrong,
+                # missing, or wildcard ws origin must fail.
+                assert expected_ws in csp, 'expected ' + expected_ws + ' in connect-src: ' + csp
+                assert 'ws://*' not in csp, 'loose ws origin in CSP: ' + csp
             async with client.get(endpoint.url + '/assets/nope.js') as resp:
                 assert resp.status == 404, resp.status
             async with client.get(endpoint.url + '/api/v1/status') as resp:
