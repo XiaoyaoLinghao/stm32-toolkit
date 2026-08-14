@@ -733,7 +733,12 @@ def fake_repo(tmp_path: Path) -> Path:
     (toolkit_src / "hot.py").write_text("VALUE = 1\n", encoding="utf-8")
     toolkit_tests = repo / "tools" / "stm32-toolkit" / "tests"
     toolkit_tests.mkdir(parents=True)
-    for name in ("test_one", "test_two", "test_three"):
+    for name in (
+        "test_0502_release_gate_controller",
+        "test_one",
+        "test_two",
+        "test_three",
+    ):
         (toolkit_tests / f"{name}.py").write_text("def test_x():\n    pass\n", encoding="utf-8")
     return repo
 
@@ -971,6 +976,7 @@ EXPECTED_GATES = [
     "python310-monitor-complete",
     "python312-monitor-main",
     "python312-monitor-special",
+    "python312-toolkit-controller-contract",
     "python312-toolkit-shard-1",
     "python312-toolkit-shard-2",
     "python312-toolkit-shard-3",
@@ -1010,6 +1016,19 @@ EXPECTED_GATES = [
     "verify-support-final",
     "clean-tree",
 ]
+
+
+def test_controller_contract_is_mandatory_but_does_not_instrument_recorders() -> None:
+    source = CONTROLLER.read_text(encoding="utf-8")
+    assert "$toolkitContractFiles = @('tools/stm32-toolkit/tests/test_0502_release_gate_controller.py')" in source
+    assert "Get-0502NodeIds 'collect-toolkit-controller-contract'" in source
+    match = re.search(
+        r"Invoke-0502Gate 'python312-toolkit-controller-contract'.*?\r?\n",
+        source,
+    )
+    assert match is not None
+    assert "--cov" not in match.group(0)
+    assert "$assigned = @($contractIds)" in source
 
 
 def test_full_success_path_recording(

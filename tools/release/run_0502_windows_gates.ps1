@@ -489,10 +489,19 @@ try {
     Invoke-0502Gate 'python312-monitor-special' $RepoRoot $testPython312 (@('-m', 'pytest') + $specialCore + @('-q', '-s', '-p', 'no:cacheprovider', '--cov=stm32_monitor', '--cov-branch', '--cov-append', '--cov-report=', '--basetemp', (Join-Path $EvidenceRoot 'bt-monitor-special-312')))
 
     # --- Toolkit sharded coverage ---------------------------------------------
-    $toolkitFiles = @(Get-ChildItem -LiteralPath (Join-Path $RepoRoot 'tools\stm32-toolkit\tests') -Filter 'test_*.py' -File | ForEach-Object { $_.FullName.Substring($RepoRoot.Length + 1).Replace('\', '/') } | Sort-Object)
+    $toolkitContractFiles = @('tools/stm32-toolkit/tests/test_0502_release_gate_controller.py')
+    $allToolkitFiles = @(Get-ChildItem -LiteralPath (Join-Path $RepoRoot 'tools\stm32-toolkit\tests') -Filter 'test_*.py' -File | ForEach-Object { $_.FullName.Substring($RepoRoot.Length + 1).Replace('\', '/') } | Sort-Object)
+    if (@(Compare-Object $toolkitContractFiles @($allToolkitFiles | Where-Object { $toolkitContractFiles -contains $_ })).Count -ne 0) { throw 'Toolkit controller contract inventory is missing' }
+    $toolkitFiles = @($allToolkitFiles | Where-Object { $toolkitContractFiles -notcontains $_ })
     $env:COVERAGE_FILE = Join-Path $EvidenceRoot '.coverage-toolkit-312'
     $toolkitAll = Get-0502NodeIds 'collect-toolkit-312' $testPython312 @('tools/stm32-toolkit/tests') @()
-    $assigned = @()
+    # The controller contract launches thousands of recording subprocesses.
+    # Run it as a mandatory correctness gate outside pytest-cov so those
+    # non-product recorder processes cannot inherit subprocess coverage. The
+    # Toolkit product suite below remains fully branch-instrumented.
+    $contractIds = Get-0502NodeIds 'collect-toolkit-controller-contract' $testPython312 $toolkitContractFiles @()
+    Invoke-0502Gate 'python312-toolkit-controller-contract' $RepoRoot $testPython312 (@('-m', 'pytest') + $toolkitContractFiles + @('-q', '-p', 'no:cacheprovider', '--basetemp', (Join-Path $EvidenceRoot 'bt-toolkit-controller-contract')))
+    $assigned = @($contractIds)
     for ($shard = 0; $shard -lt 8; $shard++) {
         $files = @()
         for ($index = $shard; $index -lt $toolkitFiles.Count; $index += 8) { $files += $toolkitFiles[$index] }
