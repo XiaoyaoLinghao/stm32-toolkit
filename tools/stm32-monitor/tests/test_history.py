@@ -23,7 +23,16 @@ from stm32_monitor.history import (
     HistoryStore,
     flatten_history_page,
 )
-from stm32_monitor.models import ObservationBinding, SampleBatch, SampleValue, WatchGroup, WatchItem
+from stm32_monitor.models import (
+    MAX_SAMPLE_VALUES,
+    HistoryBatchSlice,
+    ObservationBinding,
+    SampleBatch,
+    SampleValue,
+    WatchGroup,
+    WatchItem,
+    unix_ns_to_utc,
+)
 from stm32_monitor.storage import APPLICATION_ID, StorageFailure
 from stm32_toolkit.paths import WorkspacePaths
 
@@ -90,6 +99,27 @@ def _wide_batch(paths: WorkspacePaths, sequence: int, *, captured_ns: int, count
             )
             for ordinal in range(count)
         ),
+    )
+
+
+def _history_slice(paths: WorkspacePaths) -> HistoryBatchSlice:
+    batch = _batch(paths, 1, captured_ns=100)
+    return HistoryBatchSlice(
+        binding=batch.binding,
+        group_id=batch.group_id,
+        group_revision=batch.group_revision,
+        run_id=batch.run_id,
+        sequence=batch.sequence,
+        scheduled_unix_ns=batch.scheduled_unix_ns,
+        captured_unix_ns=batch.captured_unix_ns,
+        latency_ns=batch.latency_ns,
+        actual_rate_hz=batch.actual_rate_hz,
+        subscriber_drops=batch.subscriber_drops,
+        history_drops=batch.history_drops,
+        deadline_drops=batch.deadline_drops,
+        start_ordinal=0,
+        batch_value_count=len(batch.values),
+        values=batch.values,
     )
 
 
@@ -2660,5 +2690,178 @@ def test_transient_cache_clears_when_storage_identity_changes_during_read(
 
         assert result.ok and result.data.value_count == 1
         assert transient_cache == {}
+    finally:
+        store.close()
+
+
+@pytest.mark.parametrize(
+    ("invalid_model", "exception", "message"),
+    [
+        (
+            lambda paths: replace(_binding(paths), git_head="not-a-git-sha"),
+            ValueError,
+            "Git HEAD is invalid",
+        ),
+        (
+            lambda paths: replace(_binding(paths), git_dirty=1),
+            ValueError,
+            "Git dirty state is invalid",
+        ),
+        (
+            lambda _paths_value: replace(
+                WatchGroup.create("group", "", 100, (WatchItem.variable("counter"),)),
+                group_id="not-a-uuid",
+            ),
+            ValueError,
+            "group ID must be a UUID",
+        ),
+        (
+            lambda _paths_value: replace(
+                WatchGroup.create("group", "", 100, (WatchItem.variable("counter"),)),
+                items=("not-a-watch",),
+            ),
+            ValueError,
+            "group items are invalid",
+        ),
+        (
+            lambda _paths_value: SampleValue("not-a-watch", "OK", typed_value=1),
+            ValueError,
+            "sample watch is invalid",
+        ),
+        (
+            lambda _paths_value: SampleValue(
+                WatchItem.variable("counter"),
+                "OK",
+                typed_value=1,
+                definition=[],
+            ),
+            TypeError,
+            "sample definition must be a JSON object",
+        ),
+        (
+            lambda _paths_value: SampleValue(
+                WatchItem.variable("counter"),
+                "OK",
+                typed_value={"value": float("nan")},
+            ),
+            ValueError,
+            "JSON number must be finite",
+        ),
+        (
+            lambda _paths_value: unix_ns_to_utc(-1),
+            ValueError,
+            "Unix nanoseconds must be a non-negative signed 64-bit integer",
+        ),
+        (
+            lambda paths: replace(_batch(paths, 1), group_id="not-a-uuid"),
+            ValueError,
+            "batch identifiers must be UUIDs",
+        ),
+        (
+            lambda paths: replace(_history_slice(paths), binding=object()),
+            ValueError,
+            "history batch binding is invalid",
+        ),
+        (
+            lambda paths: replace(_history_slice(paths), run_id="not-a-uuid"),
+            ValueError,
+            "history batch identifiers must be UUIDs",
+        ),
+        (
+            lambda paths: replace(
+                _history_slice(paths),
+                scheduled_unix_ns=101,
+                captured_unix_ns=100,
+            ),
+            ValueError,
+            "captured time precedes scheduled time",
+        ),
+        (
+            lambda paths: replace(_history_slice(paths), actual_rate_hz=-1),
+            ValueError,
+            "actual rate is invalid",
+        ),
+        (
+            lambda paths: replace(
+                _history_slice(paths),
+                batch_value_count=MAX_SAMPLE_VALUES + 1,
+            ),
+            ValueError,
+            "history batch value count exceeds the batch limit",
+        ),
+    ],
+)
+def test_history_related_models_reject_invalid_state(
+    tmp_path: Path,
+    invalid_model,
+    exception: type[Exception],
+    message: str,
+) -> None:
+    with pytest.raises(exception, match=message):
+        invalid_model(_paths(tmp_path))
+
+
+def test_history_trusted_preflight_fails_closed_when_the_main_file_disappears(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import stm32_monitor.storage as storage_module
+
+    paths = _paths(tmp_path)
+    store = HistoryStore(paths)
+    try:
+        assert store.append_batch(_batch(paths, 1, captured_ns=100)).ok
+        assert store.query_history(HistoryQuery("monitor-1", 0, 1_000)).ok
+        assert store._database._integrity_identity is not None
+        database_path = store._database.path
+        real_lstat = storage_module.os.lstat
+
+        def disappearing_lstat(path: Path):
+            if Path(path) == database_path:
+                raise FileNotFoundError(database_path)
+            return real_lstat(path)
+
+        monkeypatch.setattr(storage_module.os, "lstat", disappearing_lstat)
+        with pytest.raises(StorageFailure, match="monitor storage database is missing"):
+            store._database._preflight_existing(
+                busy_timeout_ms=1_000,
+                trusted_hot_path=True,
+            )
+    finally:
+        store.close()
+
+
+def test_history_file_inspection_marks_a_disappearing_wal_as_uncertain(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import stm32_monitor.storage as storage_module
+
+    paths = _paths(tmp_path)
+    store = HistoryStore(paths)
+    try:
+        assert store.append_batch(_batch(paths, 1, captured_ns=100)).ok
+        wal_path = store._database.path.with_name(store._database.path.name + "-wal")
+        real_identity = storage_module._identity
+        real_lstat = storage_module.os.lstat
+
+        def disappearing_identity(path: Path):
+            if path == wal_path:
+                raise StorageFailure(
+                    "MONITOR_STORAGE_INVALID",
+                    "WAL disappeared during identity validation",
+                )
+            return real_identity(path)
+
+        def disappearing_lstat(path: Path):
+            if Path(path) == wal_path:
+                raise FileNotFoundError(wal_path)
+            return real_lstat(path)
+
+        monkeypatch.setattr(storage_module, "_identity", disappearing_identity)
+        monkeypatch.setattr(storage_module.os, "lstat", disappearing_lstat)
+
+        inspected = store._database._inspect_storage_files()
+        assert inspected[wal_path] == (-1, -1, -1)
     finally:
         store.close()
