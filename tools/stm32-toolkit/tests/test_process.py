@@ -401,9 +401,10 @@ def test_crlf_and_bare_cr_are_normalized_to_lf(tmp_path: Path):
 # ---------------------------------------------------------------------------
 
 
-def test_timeout_terminates_and_reaps_the_child(tmp_path: Path):
+def test_timeout_terminates_and_reaps_the_child(tmp_path: Path, monkeypatch):
     pid_file = tmp_path / "child.pid"
     argv = write_pid_child(pid_file)
+    install_ready_popen(monkeypatch, pid_file)
     result = run_process(ProcessRequest(argv=argv, cwd=tmp_path, timeout_seconds=1))
     assert result.timed_out is True
     pid = int(pid_file.read_text(encoding="utf-8"))
@@ -411,7 +412,7 @@ def test_timeout_terminates_and_reaps_the_child(tmp_path: Path):
     assert result.returncode is not None
 
 
-def test_timeout_kills_the_whole_process_tree(tmp_path: Path):
+def test_timeout_kills_the_whole_process_tree(tmp_path: Path, monkeypatch):
     pid_file = tmp_path / "child.pid"
     grand_pid_file = tmp_path / "grand.pid"
     code = (
@@ -421,6 +422,7 @@ def test_timeout_kills_the_whole_process_tree(tmp_path: Path):
         f"open({str(pid_file)!r}, 'w').write(str(os.getpid()))\n"
         "time.sleep(60)\n"
     )
+    install_ready_popen(monkeypatch, pid_file)
     result = run_process(
         ProcessRequest(argv=(PYTHON, "-c", code), cwd=tmp_path, timeout_seconds=1)
     )
