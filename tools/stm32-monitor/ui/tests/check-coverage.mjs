@@ -5,14 +5,22 @@ const root=resolve("src");
 const coveragePath=resolve("coverage/coverage-final.json");
 if(!existsSync(coveragePath))throw new Error("coverage-final.json is absent; run vitest with coverage first");
 const coverage=JSON.parse(readFileSync(coveragePath,"utf8"));
-const normalized=new Map(Object.entries(coverage).map(([path,value])=>[resolve(path),value]));
+const normalized=new Map();
+for(const [path,value] of Object.entries(coverage)){
+  const key=resolve(path).toLowerCase();
+  if(normalized.has(key)){
+    console.error(`${path}: duplicate coverage record`);
+    process.exitCode=1;
+  }
+  normalized.set(key,value);
+}
 const files=[];
 const walk=dir=>{for(const name of readdirSync(dir)){const path=resolve(dir,name),info=statSync(path);
   if(info.isDirectory())walk(path);else if(/\.(?:ts|tsx)$/.test(name)&&!name.endsWith(".d.ts"))files.push(path);}};
 walk(root);
 const failures=[];
 for(const file of files.sort()){
-  const entry=normalized.get(file);
+  const entry=normalized.get(file.toLowerCase());
   if(entry===undefined){failures.push(`${relative(root,file).split(sep).join("/")}: no coverage record`);continue;}
   const counters=Object.values(entry.b).flat();
   const covered=counters.filter(value=>value>0).length;

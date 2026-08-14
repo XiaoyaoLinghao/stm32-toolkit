@@ -13,7 +13,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import BinaryIO, Iterator, cast
+from typing import BinaryIO, Callable, Iterator, cast
 from uuid import UUID, uuid4
 
 from stm32_toolkit.paths import WorkspacePaths, require_safe_session_id
@@ -398,14 +398,79 @@ def _exact_export_paths(
     return relative_data, relative_manifest, monitor_root / relative_data, monitor_root / relative_manifest
 
 
+class _ExportDatabase(MonitorDatabase):
+    """Report only stable, owned export-metadata writes to the history cache."""
+
+    def __init__(
+        self,
+        paths: WorkspacePaths,
+        on_stable_write: Callable[
+            [
+                tuple[tuple[str, int, int, int, int], ...],
+                tuple[int, int, int],
+                tuple[tuple[str, int, int, int, int], ...],
+            ],
+            None,
+        ],
+    ) -> None:
+        super().__init__(paths)
+        self._on_stable_write = on_stable_write
+
+    def write(self, operation):
+        before_write = None
+
+        def observed_operation(connection):
+            nonlocal before_write
+            files = self._inspect_storage_files()
+            fingerprint = self._integrity_fingerprint(files)
+            with self._integrity_lock:
+                if self._integrity_identity == fingerprint:
+                    before_write = fingerprint
+            return operation(connection)
+
+        result = super().write(observed_operation)
+        try:
+            files = self._inspect_storage_files()
+            identity = files.get(self.path)
+            if identity is None:
+                return result
+            fingerprint = self._integrity_fingerprint(files)
+            with self._integrity_lock:
+                trusted = self._integrity_identity == fingerprint
+            if trusted and before_write is not None:
+                self._on_stable_write(before_write, identity, fingerprint)
+        except StorageFailure:
+            # Cache reuse is optional. The next history read observes the
+            # changed fingerprint and validates from storage when rebinding
+            # cannot be proven safe.
+            pass
+        return result
+
+
 class HistoryExporter:
     def __init__(self, paths: WorkspacePaths, history: HistoryStore) -> None:
         if not isinstance(paths, WorkspacePaths) or not isinstance(history, HistoryStore):
             raise TypeError("exporter requires workspace paths and history store")
         self._paths = paths
         self._history = history
-        self._database = MonitorDatabase(paths)
+        self._history_cache: dict[str, object] = {}
+        self._database = _ExportDatabase(paths, self._rebind_history_cache)
         self._recover_pending()
+
+    def _rebind_history_cache(
+        self,
+        before: tuple[tuple[str, int, int, int, int], ...],
+        identity: tuple[int, int, int],
+        fingerprint: tuple[tuple[str, int, int, int, int], ...],
+    ) -> None:
+        if self._history_cache.get("snapshot") != before:
+            return
+        self._history._database._remember_validated_integrity(  # noqa: SLF001
+            identity,
+            fingerprint,
+        )
+        if self._history_cache.get("snapshot") is not None:
+            self._history_cache["snapshot"] = fingerprint
 
     def _stream_history(self, request: ExportRequest, target: Path) -> tuple[str, int, int]:
         fieldnames = (
@@ -436,7 +501,6 @@ class HistoryExporter:
         jsonl_batch_started = False
         jsonl_static_prefix = b""
         jsonl_batch_buffer = bytearray()
-        transient_history_cache: dict[str, object] = {}
         jsonl_dynamic_fields = (
             "watch",
             "status",
@@ -473,7 +537,8 @@ class HistoryExporter:
                         limit=MAX_HISTORY_VALUES,
                         cursor=page_cursor,
                     ),
-                    transient_cache=transient_history_cache,
+                    transient_cache=self._history_cache,
+                    transient_cache_limit=512,
                 )
 
             with ThreadPoolExecutor(
@@ -914,4 +979,5 @@ class HistoryExporter:
             )
 
     def close(self) -> None:
+        self._history_cache.clear()
         self._database.close()

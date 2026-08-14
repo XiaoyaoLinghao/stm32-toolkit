@@ -112,6 +112,66 @@ def _batch_slice(batch: SampleBatch) -> HistoryBatchSlice:
     )
 
 
+def test_repeated_exports_reuse_verified_batches_and_append_invalidates_them(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import stm32_monitor.history as history_module
+
+    paths = _paths(tmp_path)
+    history = HistoryStore(paths)
+    exporter = HistoryExporter(paths, history)
+    _append(paths, history)
+    decoded = 0
+    real_decode = history_module._decode_history_batch
+
+    def observed_decode(*args, **kwargs):
+        nonlocal decoded
+        decoded += 1
+        return real_decode(*args, **kwargs)
+
+    monkeypatch.setattr(history_module, "_decode_history_batch", observed_decode)
+    try:
+        first = exporter.create_export(
+            ExportRequest("monitor-1", 0, 1_000, "jsonl"), authorized=True
+        )
+        assert first.ok and decoded == 1
+        second = exporter.create_export(
+            ExportRequest("monitor-1", 0, 1_000, "jsonl"), authorized=True
+        )
+        assert second.ok and decoded == 1
+
+        appended = SampleBatch(
+            binding=_binding(paths),
+            group_id=GROUP_ID,
+            group_revision=1,
+            run_id=RUN_ID,
+            sequence=2,
+            scheduled_unix_ns=201,
+            captured_unix_ns=202,
+            latency_ns=1,
+            actual_rate_hz=4.0,
+            subscriber_drops=0,
+            history_drops=0,
+            deadline_drops=0,
+            values=(
+                SampleValue(
+                    WatchItem.variable("counter"),
+                    "OK",
+                    typed_value={"type": "string", "value": 8},
+                ),
+            ),
+        )
+        assert history.append_batch(appended).ok
+        third = exporter.create_export(
+            ExportRequest("monitor-1", 0, 1_000, "jsonl"), authorized=True
+        )
+        assert third.ok and decoded == 3
+    finally:
+        exporter.close()
+        history.close()
+
+
 def test_jsonl_and_csv_exports_use_the_same_public_flattened_value_records(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

@@ -257,7 +257,7 @@ class FirmwareStatus:
         }
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class WatchItem:
     kind: str
     selector: str
@@ -487,7 +487,7 @@ class ObservationBinding:
         }
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class SampleValue:
     watch: WatchItem
     status: str

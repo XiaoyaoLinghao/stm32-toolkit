@@ -770,6 +770,8 @@ def test_ten_thousand_value_query_normalizes_and_serializes_final_page_once(
         def counted_decode(*args, **kwargs):
             observed["decode"] += 1
             evidence = kwargs.get("value_evidence")
+            if evidence is None:
+                evidence = kwargs.get("indexed_value_evidence")
             result = real_decode(*args, **kwargs)
             if evidence is not None:
                 observed["evidence_values"] += len(evidence)
@@ -837,6 +839,8 @@ def test_verified_history_cache_is_bounded_and_invalidated_by_append_wal_and_reo
     def observed_decode(*args, **kwargs):
         calls["decode"] += 1
         evidence = kwargs.get("value_evidence")
+        if evidence is None:
+            evidence = kwargs.get("indexed_value_evidence")
         result = real_decode(*args, **kwargs)
         if evidence is not None:
             calls["evidence"] += len(evidence)
@@ -903,6 +907,97 @@ def test_verified_history_cache_is_bounded_and_invalidated_by_append_wal_and_reo
         assert calls == {"decode": 1, "evidence": 1}
     finally:
         reopened.close()
+
+
+def test_verified_history_page_cache_never_publishes_an_older_read_snapshot_after_append(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    paths = _paths(tmp_path)
+    store = HistoryStore(paths)
+    snapshot_established = threading.Event()
+    writer_finished = threading.Event()
+    writer_results = []
+    writer_errors: list[BaseException] = []
+    real_read = store._database.read
+    pause_lock = threading.Lock()
+    pause_next_read = True
+
+    def coordinated_read(operation, *, empty):
+        def paused_operation(connection):
+            nonlocal pause_next_read
+            with pause_lock:
+                should_pause = pause_next_read
+                pause_next_read = False
+            if should_pause:
+                snapshot_established.set()
+                assert writer_finished.wait(10), "owned append did not finish"
+            return operation(connection)
+
+        return real_read(paused_operation, empty=empty)
+
+    def append_after_snapshot() -> None:
+        try:
+            assert snapshot_established.wait(10), "reader did not establish a snapshot"
+            writer_results.append(
+                store.append_batch(_batch(paths, 2, captured_ns=1_002))
+            )
+        except BaseException as error:  # pragma: no cover - asserted in reader thread
+            writer_errors.append(error)
+        finally:
+            writer_finished.set()
+
+    try:
+        assert store.append_batch(_batch(paths, 1, captured_ns=1_001)).ok
+        monkeypatch.setattr(store._database, "read", coordinated_read)
+        writer = threading.Thread(target=append_after_snapshot)
+        writer.start()
+
+        first = store.query_history(HistoryQuery("monitor-1", 1_000, 2_000))
+        writer.join(10)
+        assert not writer.is_alive()
+        assert writer_errors == []
+        assert len(writer_results) == 1 and writer_results[0].ok
+        assert first.ok and first.data.value_count == 1
+
+        refreshed = store.query_history(HistoryQuery("monitor-1", 1_000, 2_000))
+        assert refreshed.ok and refreshed.data.value_count == 2
+    finally:
+        store.close()
+
+
+def test_verified_history_page_cache_requires_one_fingerprint_across_the_read(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    paths = _paths(tmp_path)
+    store = HistoryStore(paths)
+    try:
+        assert store.append_batch(_batch(paths, 1, captured_ns=1_001)).ok
+        initial = store._observed_storage_snapshot()
+        assert initial is not None and initial[1]
+        before = initial[0]
+        changed_tail = (*before[-1][:-1], before[-1][-1] + 1)
+        during = (*before[:-1], changed_tail)
+        observations = 0
+
+        def changing_snapshot():
+            nonlocal observations
+            observations += 1
+            if observations == 1:
+                return before, True
+            with store._database._integrity_lock:
+                store._database._integrity_identity = during
+            return during, True
+
+        monkeypatch.setattr(store, "_observed_storage_snapshot", changing_snapshot)
+        result = store.query_history(HistoryQuery("monitor-1", 1_000, 2_000))
+
+        assert result.ok and result.data.value_count == 1
+        assert store._verified_page_cache is None
+        assert store._verified_cache == {}
+    finally:
+        store.close()
 
 
 def test_uncached_verified_query_does_not_retain_batches_and_normal_queries_still_cache(

@@ -344,7 +344,26 @@ class MonitorDatabase:
                 raise StorageFailure("MONITOR_STORAGE_INVALID", "monitor storage directory changed")
 
     def _ensure_parent(self) -> None:
+        with self._trusted_lock:
+            trusted_parent = any(
+                path == self.paths.monitor_root
+                for path, _identity_value in self._trusted_directories
+            )
+        if trusted_parent:
+            self._revalidate_trusted_directories()
+            return
         self._require_path(self.paths.monitor_root)
+        try:
+            _directory_identity(self.paths.monitor_root)
+        except FileNotFoundError:
+            pass
+        else:
+            with self._trusted_lock:
+                if any(
+                    path == self.paths.monitor_root
+                    for path, _identity_value in self._trusted_directories
+                ):
+                    return
         while True:
             try:
                 _directory_identity(self.paths.monitor_root)
@@ -844,7 +863,56 @@ class MonitorDatabase:
         busy_timeout_ms: int,
         allow_v1: bool = False,
         identity_retries: int = 2,
+        trusted_hot_path: bool = False,
     ) -> tuple[int, int, int]:
+        if trusted_hot_path:
+            with self._integrity_lock:
+                trusted_fingerprint = self._integrity_identity
+            if trusted_fingerprint is not None:
+                quick_fingerprint: list[tuple[str, int, int, int, int]] = []
+                main_identity = None
+                try:
+                    for path in self._storage_files()[:2]:
+                        try:
+                            metadata = os.lstat(path)
+                        except FileNotFoundError:
+                            if path == self.path:
+                                raise
+                            continue
+                        if (
+                            _metadata_is_redirect(metadata)
+                            or not stat.S_ISREG(metadata.st_mode)
+                            or metadata.st_nlink != 1
+                        ):
+                            raise StorageFailure(
+                                "MONITOR_STORAGE_INVALID",
+                                "monitor storage is not a private regular file",
+                            )
+                        if path == self.path:
+                            main_identity = (
+                                metadata.st_dev,
+                                metadata.st_ino,
+                                metadata.st_size,
+                            )
+                        if path != self.path and metadata.st_size == 0:
+                            continue
+                        quick_fingerprint.append(
+                            (
+                                path.name,
+                                metadata.st_dev,
+                                metadata.st_ino,
+                                metadata.st_size,
+                                metadata.st_mtime_ns,
+                            )
+                        )
+                except FileNotFoundError:
+                    quick_fingerprint = []
+                if (
+                    main_identity is not None
+                    and tuple(quick_fingerprint) == trusted_fingerprint
+                ):
+                    self._require_validated_main_identity(main_identity)
+                    return main_identity
         self._require_path(self.path)
         directory_snapshot = self._directory_snapshot(self.path.parent)
         files = self._inspect_storage_files()
@@ -853,6 +921,11 @@ class MonitorDatabase:
             raise StorageFailure("MONITOR_STORAGE_INVALID", "monitor storage database is missing")
         self._require_validated_main_identity(before)
         before_fingerprint = self._integrity_fingerprint(files)
+        with self._integrity_lock:
+            full_integrity = self._integrity_identity != before_fingerprint
+        if not full_integrity:
+            self._revalidate_directories(directory_snapshot)
+            return before
         try:
             uri = self.path.as_uri() + "?mode=ro"
             connection = sqlite3.connect(
@@ -865,7 +938,6 @@ class MonitorDatabase:
             raise StorageFailure("MONITOR_STORAGE_CORRUPT", "monitor storage cannot be opened") from error
         try:
             with self._integrity_lock:
-                full_integrity = self._integrity_identity != before_fingerprint
                 version = connection.execute("PRAGMA user_version").fetchone()[0]
                 if allow_v1 and version == 1:
                     if full_integrity:
@@ -962,8 +1034,6 @@ class MonitorDatabase:
                 named = _identity(sidecar)
                 if named != opened:
                     raise StorageFailure("MONITOR_STORAGE_INVALID", "monitor storage sidecar changed during creation")
-            else:
-                self._inspect_storage_files()
 
     def _open_write(self, *, busy_timeout_ms: int = BUSY_TIMEOUT_MS) -> sqlite3.Connection:
         self._ensure_parent()
@@ -979,6 +1049,7 @@ class MonitorDatabase:
             before = self._preflight_existing(
                 busy_timeout_ms=busy_timeout_ms,
                 allow_v1=True,
+                trusted_hot_path=True,
             )
         else:
             before = self._create_database_file()
@@ -996,14 +1067,18 @@ class MonitorDatabase:
             self._revalidate_trusted_directories()
             if _identity(self.path)[:2] != before[:2]:
                 raise StorageFailure("MONITOR_STORAGE_INVALID", "monitor storage changed while it was opened")
-            if not existed or connection.execute("PRAGMA user_version").fetchone()[0] == 1:
+            stored_version = connection.execute("PRAGMA user_version").fetchone()[0]
+            initialized = not existed or stored_version == 1
+            if initialized:
                 self._initialize(connection)
                 before = _identity(self.path)
             self._ensure_sidecars()
             self._revalidate_trusted_directories()
             if _identity(self.path)[:2] != before[:2]:
                 raise StorageFailure("MONITOR_STORAGE_INVALID", "monitor storage changed while it was opened")
-            journal = connection.execute("PRAGMA journal_mode = WAL").fetchone()
+            journal = connection.execute(
+                "PRAGMA journal_mode = WAL" if initialized else "PRAGMA journal_mode"
+            ).fetchone()
             if journal is None or str(journal[0]).lower() != "wal":
                 raise StorageFailure("MONITOR_STORAGE_INVALID", "monitor storage journal mode is invalid")
             opening_files = self._inspect_storage_files()
@@ -1039,7 +1114,10 @@ class MonitorDatabase:
                     validated_fingerprint,
                 )
             connection.execute("PRAGMA synchronous = FULL")
-            connection.execute("PRAGMA wal_autocheckpoint = 256").fetchone()
+            # Every owned mutation is synchronously checkpointed and verified
+            # by _refresh_owned_integrity. Disable SQLite's page-count trigger
+            # so a commit cannot perform the same checkpoint twice.
+            connection.execute("PRAGMA wal_autocheckpoint = 0").fetchone()
             cast_connection = connection
             cast_connection._monitor_change_baseline = connection.total_changes  # type: ignore[attr-defined]
             cast_connection._monitor_before_commit = self._before_commit  # type: ignore[attr-defined]

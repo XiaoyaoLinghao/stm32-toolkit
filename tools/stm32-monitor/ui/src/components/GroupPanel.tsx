@@ -115,7 +115,7 @@ export function GroupPanel(p:GroupPanelProps):JSX.Element{
       onInput={event=>void p.onDraftChange({...p.draft,description:event.currentTarget.value})}/></label>
     <label>Interval ms <input type="number" min="100" max="5000" step="100" value={String(p.draft.intervalMs)}
       onInput={event=>{const intervalMs=Number(event.currentTarget.value);if(Number.isFinite(intervalMs))void p.onDraftChange({...p.draft,intervalMs});}}/></label>
-    <table><thead><tr><th>Watch</th><th></th></tr></thead>
+    <table><thead><tr><th>Watch</th><th>Actions</th></tr></thead>
       <tbody>{p.draft.items.map(item=>{
         const key=watchKey(item);
         return<tr key={key}><td><code>{item.kind==="variable"?item.expression:item.registerPath}</code></td>
