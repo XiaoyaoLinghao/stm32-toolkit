@@ -50,6 +50,7 @@ PROFILE_KEYS = {
 RESULT_KEYS = {
     "schema",
     "owner",
+    "host",
     "profile",
     "support_manifest",
     "run",
@@ -74,6 +75,17 @@ VERSION_310 = re.compile(r"^3\.10\.\d+$")
 VERSION_312 = re.compile(r"^3\.12\.\d+$")
 VERSION_51 = re.compile(r"^5\.1(?:\.\d+){0,2}$")
 VERSION_NUMBER = re.compile(r"^\d+(?:\.\d+)+$")
+WINDOWS_BUILD = re.compile(r"^\d+$")
+WINDOWS_RESERVED_COMPONENTS = {
+    "con",
+    "prn",
+    "aux",
+    "nul",
+    *(f"com{number}" for number in range(1, 10)),
+    *(f"lpt{number}" for number in range(1, 10)),
+}
+PROFILE_SEED_SCHEMA = "stm32tk-0600-managed-chromium-profile-seed/1"
+PROFILE_MATERIALIZATION_SCHEMA = "stm32tk-0600-managed-chromium-profile-materialization/1"
 
 
 @dataclass(frozen=True)
@@ -111,6 +123,27 @@ def _relative_file(value: object) -> bool:
         return False
     pieces = normalized.split("/")
     return all(piece not in {"", ".", ".."} for piece in pieces)
+
+
+def _windows_relative_evidence_file(value: object) -> bool:
+    """Accept only one non-aliased Windows relative-file spelling."""
+    if not _relative_file(value):
+        return False
+    pieces = str(value).split("/")
+    for piece in pieces:
+        stem = piece.split(".", 1)[0].casefold()
+        if (
+            piece.endswith((".", " "))
+            or stem in WINDOWS_RESERVED_COMPONENTS
+            or any(character in '<>:"\\|?*' or ord(character) < 32 for character in piece)
+        ):
+            return False
+    return True
+
+
+def _windows_evidence_identity(value: str) -> str:
+    """Return the case-insensitive Windows file identity after alias rejection."""
+    return "/".join(piece.casefold() for piece in value.split("/"))
 
 
 def _absolute_windows_path(value: object) -> bool:
@@ -238,11 +271,20 @@ def verify_feasibility(profile: object) -> VerificationResult:
     if not _nonempty(profile["windows_owner"]):
         return _result("FEASIBILITY_CAPABILITY_MISSING")
     host = profile["host"]
-    if not _closed(host, {"platform", "architecture"}):
+    if not _closed(host, {"platform", "architecture", "host_id", "windows_version"}):
         return _result("FEASIBILITY_CAPABILITY_MISSING")
     if host["platform"] != "Windows":
         return _result("FEASIBILITY_FORBIDDEN_EVIDENCE")
-    if host["architecture"] not in {"AMD64", "ARM64"}:
+    windows_version = host["windows_version"]
+    if (
+        host["architecture"] not in {"AMD64", "ARM64"}
+        or not _digest(host["host_id"])
+        or not _closed(windows_version, {"release", "version", "build"})
+        or not _nonempty(windows_version["release"])
+        or VERSION_NUMBER.fullmatch(str(windows_version["version"])) is None
+        or WINDOWS_BUILD.fullmatch(str(windows_version["build"])) is None
+        or not str(windows_version["version"]).endswith("." + str(windows_version["build"]))
+    ):
         return _result("FEASIBILITY_CAPABILITY_MISSING")
     tools = profile["tools"]
     if not _is_mapping(tools) or set(tools) != set(REQUIRED_TOOLS):
@@ -338,6 +380,95 @@ def managed_chromium_version(version_evidence: bytes) -> str:
     return match.group(1)
 
 
+def local_windows_identity() -> dict[str, object]:
+    """Collect the fixed local host identity used by this Windows-only contract."""
+    if os.name != "nt":
+        raise ValueError("Windows host required")
+    import winreg
+
+    with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft\Cryptography") as key:
+        machine_guid, _ = winreg.QueryValueEx(key, "MachineGuid")
+    if not _nonempty(machine_guid):
+        raise ValueError("Windows MachineGuid is unavailable")
+    release, version, _, _ = platform.win32_ver()
+    build = str(version).rsplit(".", 1)[-1]
+    identity = {
+        "platform": "Windows",
+        "architecture": platform.machine().upper().replace("X86_64", "AMD64"),
+        "host_id": hashlib.sha256(str(machine_guid).strip().encode("utf-8")).hexdigest(),
+        "windows_version": {
+            "release": str(release),
+            "version": str(version),
+            "build": build,
+        },
+    }
+    if (
+        identity["architecture"] not in {"AMD64", "ARM64"}
+        or not _nonempty(release)
+        or VERSION_NUMBER.fullmatch(str(version)) is None
+        or WINDOWS_BUILD.fullmatch(build) is None
+    ):
+        raise ValueError("Windows identity is malformed")
+    return identity
+
+
+def _load_managed_profile_seed(
+    root: Path, chromium: Mapping[str, object]
+) -> tuple[Mapping[str, object], bytes]:
+    declared = chromium["managed_profile"]
+    assert isinstance(declared, Mapping)
+    path = _safe_support_path(root, str(declared["seed"]))
+    seed_bytes = path.read_bytes()
+    if hashlib.sha256(seed_bytes).hexdigest() != declared["sha256"]:
+        raise ValueError("managed Chromium profile seed does not match the profile")
+    seed = _read_json(path)
+    if (
+        not _closed(seed, {"schema", "id", "local_state"})
+        or seed["schema"] != PROFILE_SEED_SCHEMA
+        or seed["id"] != declared["id"]
+        or not isinstance(seed["local_state"], str)
+    ):
+        raise ValueError("managed Chromium profile seed is malformed")
+    try:
+        state = json.loads(seed["local_state"])
+    except json.JSONDecodeError as exc:
+        raise ValueError("managed Chromium Local State seed is malformed") from exc
+    if not _is_mapping(state):
+        raise ValueError("managed Chromium Local State seed is malformed")
+    assert isinstance(seed, Mapping)
+    return seed, seed_bytes
+
+
+def _materialize_managed_profile(
+    evidence: Path, chromium: Mapping[str, object], seed: Mapping[str, object]
+) -> bytes:
+    """Materialize the manifest-bound seed before the sole Chromium launch."""
+    declared = chromium["managed_profile"]
+    assert isinstance(declared, Mapping)
+    profile_directory = evidence / "managed-chromium-profile"
+    profile_directory.mkdir()
+    local_state = str(seed["local_state"]).encode("utf-8")
+    (profile_directory / "Local State").write_bytes(local_state)
+    materialization = {
+        "schema": PROFILE_MATERIALIZATION_SCHEMA,
+        "id": declared["id"],
+        "seed": {"path": declared["seed"], "sha256": declared["sha256"]},
+        "profile_path": str(profile_directory),
+        "files": [
+            {
+                "path": "Local State",
+                "bytes": len(local_state),
+                "sha256": hashlib.sha256(local_state).hexdigest(),
+            }
+        ],
+    }
+    binding = _write_json(profile_directory / "stm32tk-0600-seed-binding.json", materialization)
+    evidence_bytes = _write_json(evidence / "chromium-profile-materialization.json", materialization)
+    if binding != evidence_bytes:
+        raise ValueError("managed Chromium profile seed binding changed during materialization")
+    return evidence_bytes
+
+
 def verify_result(
     profile: object,
     manifest: object,
@@ -366,6 +497,8 @@ def verify_result(
     if set(result) != RESULT_KEYS or result.get("schema") != RESULT_SCHEMA:
         return _result("FEASIBILITY_RESULT_INVALID")
     if result["owner"] != profile["windows_owner"]:
+        return _result("FEASIBILITY_RESULT_MISMATCH")
+    if result["host"] != profile["host"]:
         return _result("FEASIBILITY_RESULT_MISMATCH")
     reference = result["profile"]
     if not _closed(reference, {"path", "sha256"}):
@@ -418,6 +551,7 @@ def verify_result(
         "package_tree_sha256",
         "managed_profile_id",
         "managed_profile_path",
+        "managed_profile_seed",
         "version_evidence",
         "blank_page",
         "argv",
@@ -435,6 +569,11 @@ def verify_result(
         or chromium["version"] != declared_chromium["version"]
         or chromium["package_tree_sha256"] != declared_chromium["package_tree_sha256"]
         or chromium["managed_profile_id"] != declared_chromium["managed_profile"]["id"]
+        or chromium["managed_profile_seed"]
+        != {
+            "path": declared_chromium["managed_profile"]["seed"],
+            "sha256": declared_chromium["managed_profile"]["sha256"],
+        }
         or chromium["version_evidence"] != declared_chromium["version_evidence"]
         or chromium["blank_page"] != declared_chromium["blank_page"]["path"]
         or chromium["argv"] != expected_chromium_argv(declared_chromium, support_root, run["evidence_root"])
@@ -451,21 +590,26 @@ def verify_result(
     if hardware["status"] != "PENDING":
         return _result("FEASIBILITY_FORBIDDEN_EVIDENCE")
     evidence = result["evidence"]
-    if not _is_mapping(evidence) or set(evidence) != {"chromium_launch", "chromium_version"}:
+    if not _is_mapping(evidence) or set(evidence) != {
+        "chromium_launch",
+        "chromium_version",
+        "chromium_profile_seed",
+    }:
         return _result("FEASIBILITY_RESULT_INVALID")
     seen_paths: set[str] = set()
     for item in evidence.values():
         if (
             not _closed(item, {"path", "bytes", "sha256"})
-            or not _relative_file(item["path"])
+            or not _windows_relative_evidence_file(item["path"])
             or not _integer(item["bytes"])
             or item["bytes"] < 0
             or not _digest(item["sha256"])
         ):
             return _result("FEASIBILITY_EVIDENCE_PATH_INVALID")
-        if item["path"] in seen_paths:
+        identity = _windows_evidence_identity(str(item["path"]))
+        if identity in seen_paths:
             return _result("FEASIBILITY_EVIDENCE_PATH_INVALID")
-        seen_paths.add(str(item["path"]))
+        seen_paths.add(identity)
     if run["code_head"] != expected_code_head:
         return _result("FEASIBILITY_STALE_RESULT")
     evidence_error = _verify_retained_evidence(result, entries)
@@ -485,6 +629,8 @@ def _sha256_file(path: Path) -> tuple[int, str]:
 
 
 def _evidence_path(root: Path, relative: str) -> Path:
+    if not _windows_relative_evidence_file(relative):
+        raise ValueError("retained evidence path is not a canonical Windows relative file")
     path = root.joinpath(*relative.split("/"))
     if not path.is_file() or _is_reparse(path):
         raise ValueError("retained evidence file is missing or unsafe")
@@ -539,6 +685,48 @@ def _verify_retained_evidence(
         or version_item["sha256"] != expected_version_entry["sha256"]
     ):
         return _result("FEASIBILITY_EVIDENCE_MISMATCH", evidence="chromium_version")
+    seed_item = evidence["chromium_profile_seed"]
+    assert isinstance(seed_item, Mapping)
+    try:
+        seed_binding_bytes = materialized["chromium_profile_seed"].read_bytes()
+        seed_binding = _read_json(materialized["chromium_profile_seed"])
+    except (OSError, ValueError, UnicodeDecodeError, json.JSONDecodeError):
+        return _result("FEASIBILITY_EVIDENCE_INVALID", evidence="chromium_profile_seed")
+    managed_seed = chromium["managed_profile_seed"]
+    assert isinstance(managed_seed, Mapping)
+    profile_path = Path(str(chromium["managed_profile_path"]))
+    if (
+        not _closed(
+            seed_binding, {"schema", "id", "seed", "profile_path", "files"}
+        )
+        or seed_binding["schema"] != PROFILE_MATERIALIZATION_SCHEMA
+        or seed_binding["id"] != chromium["managed_profile_id"]
+        or seed_binding["seed"] != managed_seed
+        or seed_binding["profile_path"] != str(profile_path)
+        or not isinstance(seed_binding["files"], list)
+        or not seed_binding["files"]
+        or not profile_path.is_dir()
+        or _is_reparse(profile_path)
+    ):
+        return _result("FEASIBILITY_EVIDENCE_INVALID", evidence="chromium_profile_seed")
+    binding_path = profile_path / "stm32tk-0600-seed-binding.json"
+    try:
+        if not binding_path.is_file() or _is_reparse(binding_path) or binding_path.read_bytes() != seed_binding_bytes:
+            return _result("FEASIBILITY_EVIDENCE_INVALID", evidence="chromium_profile_seed")
+    except OSError:
+        return _result("FEASIBILITY_EVIDENCE_INVALID", evidence="chromium_profile_seed")
+    for item in seed_binding["files"]:
+        if (
+            not _closed(item, {"path", "bytes", "sha256"})
+            or not _windows_relative_evidence_file(item["path"])
+            or not _integer(item["bytes"])
+            or item["bytes"] < 0
+            or not _digest(item["sha256"])
+        ):
+            return _result("FEASIBILITY_EVIDENCE_INVALID", evidence="chromium_profile_seed")
+        seeded_file = profile_path.joinpath(*str(item["path"]).split("/"))
+        if not seeded_file.is_file() or _is_reparse(seeded_file):
+            return _result("FEASIBILITY_EVIDENCE_INVALID", evidence="chromium_profile_seed")
     return None
 
 
@@ -741,11 +929,9 @@ def _run(args: argparse.Namespace) -> VerificationResult:
         profile, manifest, entries, profile_digest, manifest_digest = _verify_support_root(support, profile_path)
         host = profile["host"]
         assert isinstance(host, Mapping)
-        actual_architecture = platform.machine().upper()
-        if actual_architecture == "X86_64":
-            actual_architecture = "AMD64"
-        if host["architecture"] != actual_architecture:
-            raise ValueError("support profile host architecture does not match this Windows host")
+        actual_host = local_windows_identity()
+        if host != actual_host:
+            raise ValueError("support profile host identity does not match this Windows host")
         evidence.mkdir()
         declared_tools = profile["tools"]
         assert isinstance(declared_tools, Mapping)
@@ -765,6 +951,8 @@ def _run(args: argparse.Namespace) -> VerificationResult:
         chromium_version = managed_chromium_version(version_bytes)
         if chromium_version != chromium["version"]:
             raise ValueError("managed Chromium version evidence does not match the profile")
+        seed, _ = _load_managed_profile_seed(support, chromium)
+        materialization_bytes = _materialize_managed_profile(evidence, chromium, seed)
         launch_argv = expected_chromium_argv(chromium, str(support), str(evidence))
         launch = subprocess.run([str(executable), *launch_argv], capture_output=True, text=True, timeout=30, check=False)
         launch_bytes = _write_json(
@@ -780,6 +968,7 @@ def _run(args: argparse.Namespace) -> VerificationResult:
         result_data: dict[str, object] = {
             "schema": RESULT_SCHEMA,
             "owner": profile["windows_owner"],
+            "host": actual_host,
             "profile": {"path": profile_path.relative_to(support).as_posix(), "sha256": profile_digest},
             "support_manifest": {"sha256": manifest_digest},
             "run": {
@@ -797,6 +986,10 @@ def _run(args: argparse.Namespace) -> VerificationResult:
                 "package_tree_sha256": chromium["package_tree_sha256"],
                 "managed_profile_id": chromium["managed_profile"]["id"],
                 "managed_profile_path": str(evidence / "managed-chromium-profile"),
+                "managed_profile_seed": {
+                    "path": chromium["managed_profile"]["seed"],
+                    "sha256": chromium["managed_profile"]["sha256"],
+                },
                 "version_evidence": chromium["version_evidence"],
                 "blank_page": chromium["blank_page"]["path"],
                 "argv": launch_argv,
@@ -815,6 +1008,11 @@ def _run(args: argparse.Namespace) -> VerificationResult:
                     "path": "chromium-version.txt",
                     "bytes": len(version_bytes),
                     "sha256": hashlib.sha256(version_bytes).hexdigest(),
+                },
+                "chromium_profile_seed": {
+                    "path": "chromium-profile-materialization.json",
+                    "bytes": len(materialization_bytes),
+                    "sha256": hashlib.sha256(materialization_bytes).hexdigest(),
                 },
             },
         }

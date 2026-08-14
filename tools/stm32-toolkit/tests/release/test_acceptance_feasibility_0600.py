@@ -9,6 +9,7 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -17,12 +18,15 @@ RELEASE_DIR = Path(__file__).resolve().parents[3] / "release"
 sys.path.insert(0, str(RELEASE_DIR))
 
 from verify_0600_feasibility import (  # noqa: E402
+    _run,
     expected_chromium_argv,
     managed_chromium_version,
     verify_committed_verifier,
     verify_feasibility,
     verify_result,
 )
+
+import verify_0600_feasibility as feasibility  # noqa: E402
 
 
 def _digest(number: int) -> str:
@@ -32,6 +36,7 @@ def _digest(number: int) -> str:
 VERSION_EVIDENCE = b"""<assembly manifestVersion='1.0'>
   <assemblyIdentity name='141.0.7390.37' version='141.0.7390.37' type='win32'/>
 </assembly>"""
+PROFILE_LOCAL_STATE = '{"profile":{"exit_type":"Normal"}}\n'
 
 
 def _sha256(data: bytes) -> str:
@@ -40,6 +45,150 @@ def _sha256(data: bytes) -> str:
 
 def _test_directory() -> Path:
     return Path(tempfile.mkdtemp(prefix="stm32tk-0600-feasibility-test-", dir=r"C:\tmp"))
+
+
+def _expected_chromium_argv(
+    evidence_root: str, support_root: str = r"C:\tmp\support"
+) -> list[str]:
+    """Hand-derived frozen argv; it intentionally does not call production helpers."""
+    return [
+        "--headless=new",
+        "--disable-gpu",
+        "--no-first-run",
+        "--no-default-browser-check",
+        f"--user-data-dir={evidence_root}\\managed-chromium-profile",
+        "--dump-dom",
+        "file:///" + support_root.replace("\\", "/") + "/feasibility/blank.html",
+    ]
+
+
+def _materialization_bytes(evidence_root: str) -> bytes:
+    local_state = PROFILE_LOCAL_STATE.encode("utf-8")
+    return (
+        json.dumps(
+            {
+                "schema": "stm32tk-0600-managed-chromium-profile-materialization/1",
+                "id": "stm32tk-0600-feasibility",
+                "seed": {
+                    "path": "feasibility/chromium-profile-seed.json",
+                    "sha256": _digest(33),
+                },
+                "profile_path": evidence_root + r"\managed-chromium-profile",
+                "files": [
+                    {
+                        "path": "Local State",
+                        "bytes": len(local_state),
+                        "sha256": _sha256(local_state),
+                    }
+                ],
+            },
+            sort_keys=True,
+        ).encode("utf-8")
+        + b"\n"
+    )
+
+
+def _entry(root: Path, relative: str) -> dict[str, object]:
+    payload = (root / relative).read_bytes()
+    return {"path": relative, "bytes": len(payload), "sha256": _sha256(payload)}
+
+
+def _write_controlled_support(root: Path, profile: dict[str, object]) -> Path:
+    """Build a real, disposable support tree with a controlled local browser executable."""
+    root.mkdir()
+    profile = copy.deepcopy(profile)
+    tools = profile["tools"]
+    chromium = profile["chromium"]
+    fixture = profile["firmware_fixture"]
+    assert isinstance(tools, dict)
+    assert isinstance(chromium, dict)
+    assert isinstance(fixture, dict)
+
+    for name, declared in tools.items():
+        assert isinstance(declared, dict)
+        path = root / str(declared["record"])
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if name == "wheelhouse":
+            record = {
+                "schema": "stm32tk-0600-tool-record/1",
+                "name": name,
+                "version": declared["version"],
+                "path": "wheelhouse",
+            }
+            (root / "wheelhouse").mkdir()
+            (root / "wheelhouse" / "controlled.whl").write_bytes(b"controlled wheel")
+        elif name in {"pyocd", "pyserial"}:
+            record = {
+                "schema": "stm32tk-0600-tool-record/1",
+                "name": name,
+                "version": declared["version"],
+                "python": r"C:\\controlled\\python.exe",
+            }
+        else:
+            record = {
+                "schema": "stm32tk-0600-tool-record/1",
+                "name": name,
+                "version": declared["version"],
+                "executable": r"C:\\controlled\\tool.exe",
+            }
+        path.write_bytes(json.dumps(record, sort_keys=True).encode("utf-8"))
+
+    chrome = root / "chromium" / "chrome.cmd"
+    chrome.parent.mkdir(parents=True)
+    chrome.write_text(
+        "@echo off\r\necho ^<!doctype html^>^<html^>controlled^</html^>\r\nexit /b 0\r\n",
+        encoding="utf-8",
+    )
+    version = root / "chromium" / "chrome-version.manifest"
+    version.write_bytes(VERSION_EVIDENCE)
+    blank = root / "feasibility" / "blank.html"
+    blank.parent.mkdir(parents=True)
+    blank.write_bytes(b"<!doctype html><html><body></body></html>\n")
+    seed = root / "feasibility" / "chromium-profile-seed.json"
+    seed_data = {
+        "schema": "stm32tk-0600-managed-chromium-profile-seed/1",
+        "id": "stm32tk-0600-feasibility",
+        "local_state": PROFILE_LOCAL_STATE,
+    }
+    seed.write_bytes(json.dumps(seed_data, sort_keys=True).encode("utf-8") + b"\n")
+    firmware = root / "firmware" / "feasibility.bin"
+    firmware.parent.mkdir()
+    firmware.write_bytes(b"controlled firmware")
+
+    chromium["executable"] = "chromium/chrome.cmd"
+    chromium["executable_sha256"] = _entry(root, "chromium/chrome.cmd")["sha256"]
+    chromium["version_evidence"] = {
+        "path": "chromium/chrome-version.manifest",
+        "sha256": _entry(root, "chromium/chrome-version.manifest")["sha256"],
+    }
+    chromium["blank_page"] = {
+        "path": "feasibility/blank.html",
+        "sha256": _entry(root, "feasibility/blank.html")["sha256"],
+    }
+    chromium["managed_profile"] = {
+        "id": "stm32tk-0600-feasibility",
+        "seed": "feasibility/chromium-profile-seed.json",
+        "sha256": _entry(root, "feasibility/chromium-profile-seed.json")["sha256"],
+    }
+    package_entries = sorted(
+        [_entry(root, "chromium/chrome.cmd"), _entry(root, "chromium/chrome-version.manifest")],
+        key=lambda entry: str(entry["path"]),
+    )
+    chromium["package_root"] = "chromium"
+    chromium["package_tree_sha256"] = _sha256(
+        json.dumps(package_entries, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    )
+    fixture["bytes"] = len(firmware.read_bytes())
+    fixture["sha256"] = _entry(root, "firmware/feasibility.bin")["sha256"]
+
+    profile_path = root / "feasibility" / "profile.json"
+    profile_path.write_bytes(json.dumps(profile, sort_keys=True).encode("utf-8") + b"\n")
+    entries = [_entry(root, path.relative_to(root).as_posix()) for path in root.rglob("*") if path.is_file()]
+    (root / "support-manifest.json").write_bytes(
+        json.dumps({"schema": "stm32tk-0600-support-manifest/1", "files": entries}, sort_keys=True).encode("utf-8")
+        + b"\n"
+    )
+    return profile_path
 
 
 @pytest.fixture
@@ -59,7 +208,16 @@ def valid_profile() -> dict[str, object]:
     return {
         "schema": "stm32tk-0600-feasibility-profile/1",
         "windows_owner": "Codex",
-        "host": {"platform": "Windows", "architecture": "AMD64"},
+        "host": {
+            "platform": "Windows",
+            "architecture": "AMD64",
+            "host_id": _digest(29),
+            "windows_version": {
+                "release": "11",
+                "version": "10.0.26100",
+                "build": "26100",
+            },
+        },
         "tools": {
             name: {"record": f"tools/{name}.json", "version": version}
             for name, version in versions.items()
@@ -147,6 +305,7 @@ def valid_result(
     result = {
         "schema": "stm32tk-0600-feasibility-result/1",
         "owner": "Codex",
+        "host": copy.deepcopy(profile["host"]),
         "profile": {"path": "feasibility/profile.json", "sha256": _digest(36)},
         "support_manifest": {"sha256": _digest(37)},
         "run": {
@@ -172,11 +331,13 @@ def valid_result(
             "package_tree_sha256": chromium["package_tree_sha256"],
             "managed_profile_id": chromium["managed_profile"]["id"],
             "managed_profile_path": evidence_root + r"\managed-chromium-profile",
+            "managed_profile_seed": {
+                "path": chromium["managed_profile"]["seed"],
+                "sha256": chromium["managed_profile"]["sha256"],
+            },
             "version_evidence": copy.deepcopy(chromium["version_evidence"]),
             "blank_page": chromium["blank_page"]["path"],
-            "argv": expected_chromium_argv(
-                chromium, support_root, evidence_root
-            ),
+            "argv": _expected_chromium_argv(evidence_root),
             "exit_code": 0,
         },
         "firmware_fixture": copy.deepcopy(profile["firmware_fixture"]),
@@ -184,8 +345,9 @@ def valid_result(
         "hardware": {"status": "PENDING"},
         "evidence": {},
     }
+    expected_argv = _expected_chromium_argv(evidence_root)
     launch = {
-        "argv": result["chromium"]["argv"],
+        "argv": expected_argv,
         "exit_code": 0,
         "stderr": "",
         "stdout": "<!doctype html><html><head></head><body></body></html>",
@@ -193,6 +355,14 @@ def valid_result(
     launch_bytes = json.dumps(launch, sort_keys=True).encode("utf-8")
     (evidence_directory / "chromium-launch.json").write_bytes(launch_bytes)
     (evidence_directory / "chromium-version.txt").write_bytes(VERSION_EVIDENCE)
+    profile_directory = evidence_directory / "managed-chromium-profile"
+    profile_directory.mkdir()
+    (profile_directory / "Local State").write_text(PROFILE_LOCAL_STATE, encoding="utf-8")
+    materialization_bytes = _materialization_bytes(evidence_root)
+    (profile_directory / "stm32tk-0600-seed-binding.json").write_bytes(materialization_bytes)
+    (evidence_directory / "chromium-profile-materialization.json").write_bytes(
+        materialization_bytes
+    )
     result["evidence"] = {
         "chromium_launch": {
             "path": "chromium-launch.json",
@@ -203,6 +373,11 @@ def valid_result(
             "path": "chromium-version.txt",
             "bytes": len(VERSION_EVIDENCE),
             "sha256": _sha256(VERSION_EVIDENCE),
+        },
+        "chromium_profile_seed": {
+            "path": "chromium-profile-materialization.json",
+            "bytes": len(materialization_bytes),
+            "sha256": _sha256(materialization_bytes),
         },
     }
     return result
@@ -223,6 +398,24 @@ def test_feasibility_accepts_complete_windows_profile(valid_profile: dict[str, o
 
     assert result.code == "PASS"
     assert result.details["hardware_status"] == "PENDING"
+
+
+def test_feasibility_requires_frozen_nonempty_windows_host_identity(
+    valid_profile: dict[str, object]
+) -> None:
+    """An AMD64 label alone must not allow another Windows machine to reuse this profile."""
+    host = valid_profile["host"]
+    assert isinstance(host, dict)
+    del host["host_id"]
+
+    missing_identifier = verify_feasibility(valid_profile)
+
+    assert missing_identifier.code == "FEASIBILITY_CAPABILITY_MISSING"
+    host["host_id"] = _digest(29)
+    host["windows_version"]["build"] = ""
+    missing_windows_version = verify_feasibility(valid_profile)
+
+    assert missing_windows_version.code == "FEASIBILITY_CAPABILITY_MISSING"
 
 
 @pytest.mark.parametrize(
@@ -270,6 +463,19 @@ def test_managed_chromium_version_uses_assembly_identity_not_xml_manifest_versio
     assert managed_chromium_version(evidence) == "141.0.7390.37"
 
 
+def test_expected_chromium_argv_matches_the_hand_derived_non_product_invocation(
+    valid_profile: dict[str, object], valid_result: dict[str, object]
+) -> None:
+    """A production argv helper change must not silently redefine the launch contract."""
+    chromium = valid_profile["chromium"]
+    assert isinstance(chromium, dict)
+    evidence_root = str(valid_result["run"]["evidence_root"])
+    expected = _expected_chromium_argv(evidence_root)
+
+    assert expected_chromium_argv(chromium, r"C:\tmp\support", evidence_root) == expected
+    assert valid_result["chromium"]["argv"] == expected
+
+
 def test_result_binds_exact_profile_manifest_tools_fixture_and_blank_launch(
     valid_profile: dict[str, object],
     valid_manifest: dict[str, object],
@@ -288,6 +494,29 @@ def test_result_binds_exact_profile_manifest_tools_fixture_and_blank_launch(
 
     assert result.code == "PASS"
     assert result.details["hardware_status"] == "PENDING"
+
+
+def test_result_rejects_a_different_windows_host_even_when_amd64_matches(
+    valid_profile: dict[str, object],
+    valid_manifest: dict[str, object],
+    valid_result: dict[str, object],
+) -> None:
+    """A copied local PASS must bind the support profile's exact host and Windows version."""
+    result_host = valid_result["host"]
+    assert isinstance(result_host, dict)
+    result_host["host_id"] = _digest(30)
+
+    result = verify_result(
+        valid_profile,
+        valid_manifest,
+        valid_result,
+        expected_code_head="a" * 40,
+        expected_profile_sha256=_digest(36),
+        expected_manifest_sha256=_digest(37),
+        support_root=r"C:\tmp\support",
+    )
+
+    assert result.code == "FEASIBILITY_RESULT_MISMATCH"
 
 
 @pytest.mark.parametrize(
@@ -453,6 +682,58 @@ def test_result_rejects_mismatched_local_evidence_bytes(
     assert result.code == "FEASIBILITY_EVIDENCE_MISMATCH"
 
 
+def test_result_requires_materialized_seed_binding_in_the_fresh_profile(
+    valid_profile: dict[str, object],
+    valid_manifest: dict[str, object],
+    valid_result: dict[str, object],
+) -> None:
+    """A declared seed must be retained inside the actual --user-data-dir profile."""
+    profile_directory = Path(valid_result["chromium"]["managed_profile_path"])
+    (profile_directory / "stm32tk-0600-seed-binding.json").unlink()
+
+    result = verify_result(
+        valid_profile,
+        valid_manifest,
+        valid_result,
+        expected_code_head="a" * 40,
+        expected_profile_sha256=_digest(36),
+        expected_manifest_sha256=_digest(37),
+        support_root=r"C:\tmp\support",
+    )
+
+    assert result.code == "FEASIBILITY_EVIDENCE_INVALID"
+
+
+@pytest.mark.parametrize(
+    ("path", "code"),
+    [
+        ("CHROMIUM-LAUNCH.JSON", "FEASIBILITY_EVIDENCE_PATH_INVALID"),
+        ("chromium-version.txt. ", "FEASIBILITY_EVIDENCE_PATH_INVALID"),
+    ],
+)
+def test_result_rejects_windows_casefold_and_trailing_aliases_in_evidence_paths(
+    valid_profile: dict[str, object],
+    valid_manifest: dict[str, object],
+    valid_result: dict[str, object],
+    path: str,
+    code: str,
+) -> None:
+    """Windows aliases cannot make two retained-evidence entries appear distinct."""
+    valid_result["evidence"]["chromium_version"]["path"] = path
+
+    result = verify_result(
+        valid_profile,
+        valid_manifest,
+        valid_result,
+        expected_code_head="a" * 40,
+        expected_profile_sha256=_digest(36),
+        expected_manifest_sha256=_digest(37),
+        support_root=r"C:\tmp\support",
+    )
+
+    assert result.code == code
+
+
 def test_result_rejects_boolean_rtt_channel_and_browser_exit(
     valid_profile: dict[str, object],
     valid_manifest: dict[str, object],
@@ -476,6 +757,57 @@ def test_result_rejects_boolean_rtt_channel_and_browser_exit(
 
     assert profile_result.code == "FEASIBILITY_CAPABILITY_MISSING"
     assert result.code == "FEASIBILITY_RESULT_MISMATCH"
+
+
+def test_collector_materializes_the_bound_seed_and_runs_a_controlled_browser_fixture(
+    valid_profile: dict[str, object], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Collection must retain the seed in the actual profile before a controlled blank launch."""
+    root = _test_directory() / "support"
+    profile_path = _write_controlled_support(root, valid_profile)
+    evidence_root = root.parent / "evidence"
+    host = copy.deepcopy(valid_profile["host"])
+
+    monkeypatch.setattr(
+        feasibility,
+        "verify_committed_verifier",
+        lambda _repo, _script: SimpleNamespace(code="PASS", details={"code_head": "c" * 40}),
+    )
+    monkeypatch.setattr(feasibility, "local_windows_identity", lambda: host)
+    monkeypatch.setattr(
+        feasibility,
+        "_run_tool_version",
+        lambda name, _record: valid_profile["tools"][name]["version"],
+    )
+
+    result = _run(
+        SimpleNamespace(
+            repo=str(Path.cwd()),
+            support=str(root),
+            profile=str(profile_path),
+            evidence=str(evidence_root),
+        )
+    )
+
+    assert result.code == "PASS"
+    collected = json.loads((evidence_root / "result.json").read_text(encoding="utf-8"))
+    assert collected["host"] == host
+    assert collected["chromium"]["argv"] == _expected_chromium_argv(
+        str(evidence_root), str(root)
+    )
+    retained = json.loads(
+        (evidence_root / "chromium-profile-materialization.json").read_text(encoding="utf-8")
+    )
+    assert retained["seed"] == {
+        "path": "feasibility/chromium-profile-seed.json",
+        "sha256": collected["chromium"]["managed_profile_seed"]["sha256"],
+    }
+    assert (evidence_root / "managed-chromium-profile" / "Local State").read_text(
+        encoding="utf-8"
+    ) == PROFILE_LOCAL_STATE
+    assert (
+        evidence_root / "managed-chromium-profile" / "stm32tk-0600-seed-binding.json"
+    ).read_bytes() == (evidence_root / "chromium-profile-materialization.json").read_bytes()
 
 
 def test_verifier_must_match_the_repository_code_head_blob() -> None:
