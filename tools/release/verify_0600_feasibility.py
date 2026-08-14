@@ -323,7 +323,7 @@ def verify_feasibility(profile: object) -> VerificationResult:
         or VERSION_NUMBER.fullmatch(str(chromium["version"])) is None
         or not _relative_file(chromium["package_root"])
         or not _digest(chromium["package_tree_sha256"])
-        or not _closed(chromium["managed_profile"], {"id", "seed", "sha256"})
+        or not _closed(chromium["managed_profile"], {"id", "seed", "sha256", "files"})
         or not _nonempty(chromium["managed_profile"]["id"])
         or not _relative_file(chromium["managed_profile"]["seed"])
         or not _digest(chromium["managed_profile"]["sha256"])
@@ -335,6 +335,23 @@ def verify_feasibility(profile: object) -> VerificationResult:
         or not _digest(chromium["blank_page"]["sha256"])
     ):
         return _result("FEASIBILITY_CAPABILITY_MISSING")
+    seed_files = chromium["managed_profile"]["files"]
+    if not isinstance(seed_files, list) or not seed_files:
+        return _result("FEASIBILITY_CAPABILITY_MISSING")
+    seed_identities: set[str] = set()
+    for item in seed_files:
+        if (
+            not _closed(item, {"path", "bytes", "sha256"})
+            or not _windows_relative_evidence_file(item["path"])
+            or not _integer(item["bytes"])
+            or item["bytes"] < 0
+            or not _digest(item["sha256"])
+        ):
+            return _result("FEASIBILITY_CAPABILITY_MISSING")
+        identity = _windows_evidence_identity(str(item["path"]))
+        if identity in seed_identities:
+            return _result("FEASIBILITY_CAPABILITY_MISSING")
+        seed_identities.add(identity)
     fixture = profile["firmware_fixture"]
     if (
         not _closed(fixture, {"path", "bytes", "sha256"})
@@ -435,6 +452,16 @@ def _load_managed_profile_seed(
         raise ValueError("managed Chromium Local State seed is malformed") from exc
     if not _is_mapping(state):
         raise ValueError("managed Chromium Local State seed is malformed")
+    local_state = str(seed["local_state"]).encode("utf-8")
+    expected_files = [
+        {
+            "path": "Local State",
+            "bytes": len(local_state),
+            "sha256": hashlib.sha256(local_state).hexdigest(),
+        }
+    ]
+    if declared["files"] != expected_files:
+        raise ValueError("managed Chromium profile files do not match the frozen seed")
     assert isinstance(seed, Mapping)
     return seed, seed_bytes
 
@@ -448,19 +475,15 @@ def _materialize_managed_profile(
     profile_directory = evidence / "managed-chromium-profile"
     profile_directory.mkdir()
     local_state = str(seed["local_state"]).encode("utf-8")
-    (profile_directory / "Local State").write_bytes(local_state)
+    local_state_path = profile_directory / "Local State"
+    local_state_path.write_bytes(local_state)
+    local_state_path.chmod(0o444)
     materialization = {
         "schema": PROFILE_MATERIALIZATION_SCHEMA,
         "id": declared["id"],
         "seed": {"path": declared["seed"], "sha256": declared["sha256"]},
         "profile_path": str(profile_directory),
-        "files": [
-            {
-                "path": "Local State",
-                "bytes": len(local_state),
-                "sha256": hashlib.sha256(local_state).hexdigest(),
-            }
-        ],
+        "files": declared["files"],
     }
     binding = _write_json(profile_directory / "stm32tk-0600-seed-binding.json", materialization)
     evidence_bytes = _write_json(evidence / "chromium-profile-materialization.json", materialization)
@@ -612,7 +635,7 @@ def verify_result(
         seen_paths.add(identity)
     if run["code_head"] != expected_code_head:
         return _result("FEASIBILITY_STALE_RESULT")
-    evidence_error = _verify_retained_evidence(result, entries)
+    evidence_error = _verify_retained_evidence(result, entries, profile)
     if evidence_error is not None:
         return evidence_error
     return _result("PASS", hardware_status="PENDING")
@@ -638,7 +661,9 @@ def _evidence_path(root: Path, relative: str) -> Path:
 
 
 def _verify_retained_evidence(
-    result: Mapping[str, object], entries: Mapping[str, Mapping[str, object]]
+    result: Mapping[str, object],
+    entries: Mapping[str, Mapping[str, object]],
+    profile: Mapping[str, object],
 ) -> VerificationResult | None:
     run = result["run"]
     chromium = result["chromium"]
@@ -694,6 +719,10 @@ def _verify_retained_evidence(
         return _result("FEASIBILITY_EVIDENCE_INVALID", evidence="chromium_profile_seed")
     managed_seed = chromium["managed_profile_seed"]
     assert isinstance(managed_seed, Mapping)
+    declared_chromium = profile["chromium"]
+    assert isinstance(declared_chromium, Mapping)
+    declared_profile = declared_chromium["managed_profile"]
+    assert isinstance(declared_profile, Mapping)
     profile_path = Path(str(chromium["managed_profile_path"]))
     if (
         not _closed(
@@ -702,6 +731,7 @@ def _verify_retained_evidence(
         or seed_binding["schema"] != PROFILE_MATERIALIZATION_SCHEMA
         or seed_binding["id"] != chromium["managed_profile_id"]
         or seed_binding["seed"] != managed_seed
+        or seed_binding["files"] != declared_profile["files"]
         or seed_binding["profile_path"] != str(profile_path)
         or not isinstance(seed_binding["files"], list)
         or not seed_binding["files"]
@@ -727,6 +757,12 @@ def _verify_retained_evidence(
         seeded_file = profile_path.joinpath(*str(item["path"]).split("/"))
         if not seeded_file.is_file() or _is_reparse(seeded_file):
             return _result("FEASIBILITY_EVIDENCE_INVALID", evidence="chromium_profile_seed")
+        try:
+            size, digest = _sha256_file(seeded_file)
+        except OSError:
+            return _result("FEASIBILITY_EVIDENCE_INVALID", evidence="chromium_profile_seed")
+        if size != item["bytes"] or digest != item["sha256"]:
+            return _result("FEASIBILITY_EVIDENCE_MISMATCH", evidence="chromium_profile_seed")
     return None
 
 

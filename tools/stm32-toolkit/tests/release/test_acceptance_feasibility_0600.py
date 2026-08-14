@@ -169,6 +169,13 @@ def _write_controlled_support(root: Path, profile: dict[str, object]) -> Path:
         "id": "stm32tk-0600-feasibility",
         "seed": "feasibility/chromium-profile-seed.json",
         "sha256": _entry(root, "feasibility/chromium-profile-seed.json")["sha256"],
+        "files": [
+            {
+                "path": "Local State",
+                "bytes": len(PROFILE_LOCAL_STATE.encode("utf-8")),
+                "sha256": _sha256(PROFILE_LOCAL_STATE.encode("utf-8")),
+            }
+        ],
     }
     package_entries = sorted(
         [_entry(root, "chromium/chrome.cmd"), _entry(root, "chromium/chrome-version.manifest")],
@@ -232,6 +239,13 @@ def valid_profile() -> dict[str, object]:
                 "id": "stm32tk-0600-feasibility",
                 "seed": "feasibility/chromium-profile-seed.json",
                 "sha256": _digest(33),
+                "files": [
+                    {
+                        "path": "Local State",
+                        "bytes": len(PROFILE_LOCAL_STATE.encode("utf-8")),
+                        "sha256": _sha256(PROFILE_LOCAL_STATE.encode("utf-8")),
+                    }
+                ],
             },
             "version_evidence": {
                 "path": "chromium/chrome-version.manifest",
@@ -357,7 +371,7 @@ def valid_result(
     (evidence_directory / "chromium-version.txt").write_bytes(VERSION_EVIDENCE)
     profile_directory = evidence_directory / "managed-chromium-profile"
     profile_directory.mkdir()
-    (profile_directory / "Local State").write_text(PROFILE_LOCAL_STATE, encoding="utf-8")
+    (profile_directory / "Local State").write_bytes(PROFILE_LOCAL_STATE.encode("utf-8"))
     materialization_bytes = _materialization_bytes(evidence_root)
     (profile_directory / "stm32tk-0600-seed-binding.json").write_bytes(materialization_bytes)
     (evidence_directory / "chromium-profile-materialization.json").write_bytes(
@@ -702,6 +716,28 @@ def test_result_requires_materialized_seed_binding_in_the_fresh_profile(
     )
 
     assert result.code == "FEASIBILITY_EVIDENCE_INVALID"
+
+
+def test_result_rejects_seed_content_changed_after_the_browser_launch(
+    valid_profile: dict[str, object],
+    valid_manifest: dict[str, object],
+    valid_result: dict[str, object],
+) -> None:
+    """The retained declaration cannot stand in for the materialized Local State bytes."""
+    profile_directory = Path(valid_result["chromium"]["managed_profile_path"])
+    (profile_directory / "Local State").write_text('{"forged":true}\n', encoding="utf-8")
+
+    result = verify_result(
+        valid_profile,
+        valid_manifest,
+        valid_result,
+        expected_code_head="a" * 40,
+        expected_profile_sha256=_digest(36),
+        expected_manifest_sha256=_digest(37),
+        support_root=r"C:\tmp\support",
+    )
+
+    assert result.code == "FEASIBILITY_EVIDENCE_MISMATCH"
 
 
 @pytest.mark.parametrize(
