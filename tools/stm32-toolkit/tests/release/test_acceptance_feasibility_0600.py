@@ -3,7 +3,11 @@
 from __future__ import annotations
 
 import copy
+import hashlib
+import json
+import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -15,6 +19,7 @@ sys.path.insert(0, str(RELEASE_DIR))
 from verify_0600_feasibility import (  # noqa: E402
     expected_chromium_argv,
     managed_chromium_version,
+    verify_committed_verifier,
     verify_feasibility,
     verify_result,
 )
@@ -22,6 +27,19 @@ from verify_0600_feasibility import (  # noqa: E402
 
 def _digest(number: int) -> str:
     return f"{number:064x}"
+
+
+VERSION_EVIDENCE = b"""<assembly manifestVersion='1.0'>
+  <assemblyIdentity name='141.0.7390.37' version='141.0.7390.37' type='win32'/>
+</assembly>"""
+
+
+def _sha256(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
+def _test_directory() -> Path:
+    return Path(tempfile.mkdtemp(prefix="stm32tk-0600-feasibility-test-", dir=r"C:\tmp"))
 
 
 @pytest.fixture
@@ -59,7 +77,7 @@ def valid_profile() -> dict[str, object]:
             },
             "version_evidence": {
                 "path": "chromium/chrome-version.manifest",
-                "sha256": _digest(40),
+                "sha256": _sha256(VERSION_EVIDENCE),
             },
             "blank_page": {"path": "feasibility/blank.html", "sha256": _digest(34)},
         },
@@ -97,8 +115,8 @@ def valid_manifest(valid_profile: dict[str, object]) -> dict[str, object]:
             {"path": "chromium/chrome.exe", "bytes": 101, "sha256": _digest(31)},
             {
                 "path": "chromium/chrome-version.manifest",
-                "bytes": 105,
-                "sha256": _digest(40),
+                "bytes": len(VERSION_EVIDENCE),
+                "sha256": _sha256(VERSION_EVIDENCE),
             },
             {
                 "path": "feasibility/chromium-profile-seed.json",
@@ -123,9 +141,10 @@ def valid_result(
     chromium = profile["chromium"]
     assert isinstance(tools, dict)
     assert isinstance(chromium, dict)
-    evidence_root = r"C:\tmp\evidence\0600-run"
+    evidence_directory = _test_directory()
+    evidence_root = str(evidence_directory)
     support_root = r"C:\tmp\support"
-    return {
+    result = {
         "schema": "stm32tk-0600-feasibility-result/1",
         "owner": "Codex",
         "profile": {"path": "feasibility/profile.json", "sha256": _digest(36)},
@@ -163,17 +182,30 @@ def valid_result(
         "firmware_fixture": copy.deepcopy(profile["firmware_fixture"]),
         "capabilities": copy.deepcopy(profile["capabilities"]),
         "hardware": {"status": "PENDING"},
-        "evidence": {
-            "chromium_launch": {
-                "path": "chromium-launch.json",
-                "sha256": _digest(38),
-            },
-            "chromium_version": {
-                "path": "chromium-version.txt",
-                "sha256": _digest(39),
-            },
+        "evidence": {},
+    }
+    launch = {
+        "argv": result["chromium"]["argv"],
+        "exit_code": 0,
+        "stderr": "",
+        "stdout": "<!doctype html><html><head></head><body></body></html>",
+    }
+    launch_bytes = json.dumps(launch, sort_keys=True).encode("utf-8")
+    (evidence_directory / "chromium-launch.json").write_bytes(launch_bytes)
+    (evidence_directory / "chromium-version.txt").write_bytes(VERSION_EVIDENCE)
+    result["evidence"] = {
+        "chromium_launch": {
+            "path": "chromium-launch.json",
+            "bytes": len(launch_bytes),
+            "sha256": _sha256(launch_bytes),
+        },
+        "chromium_version": {
+            "path": "chromium-version.txt",
+            "bytes": len(VERSION_EVIDENCE),
+            "sha256": _sha256(VERSION_EVIDENCE),
         },
     }
+    return result
 
 
 def test_feasibility_requires_windows_support_contract(valid_profile: dict[str, object]) -> None:
@@ -365,3 +397,106 @@ def test_result_rejects_cross_profile_before_accepting_a_pass(
     )
 
     assert result.code == "FEASIBILITY_PROFILE_MISMATCH"
+
+
+def test_result_rejects_fabricated_or_non_blank_launch_evidence(
+    valid_profile: dict[str, object],
+    valid_manifest: dict[str, object],
+    valid_result: dict[str, object],
+) -> None:
+    """A PASS requires actual local bytes and a launch record for the declared blank page."""
+    evidence_root = Path(valid_result["run"]["evidence_root"])
+    launch_path = evidence_root / "chromium-launch.json"
+    launch = {
+        "argv": ["--headless=new", "https://example.test"],
+        "exit_code": 0,
+        "stderr": "",
+        "stdout": "<!doctype html><html><body></body></html>",
+    }
+    launch_bytes = json.dumps(launch, sort_keys=True).encode("utf-8")
+    launch_path.write_bytes(launch_bytes)
+    valid_result["evidence"]["chromium_launch"]["bytes"] = len(launch_bytes)
+    valid_result["evidence"]["chromium_launch"]["sha256"] = _sha256(launch_bytes)
+
+    result = verify_result(
+        valid_profile,
+        valid_manifest,
+        valid_result,
+        expected_code_head="a" * 40,
+        expected_profile_sha256=_digest(36),
+        expected_manifest_sha256=_digest(37),
+        support_root=r"C:\tmp\support",
+    )
+
+    assert result.code == "FEASIBILITY_EVIDENCE_INVALID"
+
+
+def test_result_rejects_mismatched_local_evidence_bytes(
+    valid_profile: dict[str, object],
+    valid_manifest: dict[str, object],
+    valid_result: dict[str, object],
+) -> None:
+    """A claimed hash cannot replace rereading the retained local evidence file."""
+    evidence_root = Path(valid_result["run"]["evidence_root"])
+    (evidence_root / "chromium-version.txt").write_text("forged", encoding="utf-8")
+
+    result = verify_result(
+        valid_profile,
+        valid_manifest,
+        valid_result,
+        expected_code_head="a" * 40,
+        expected_profile_sha256=_digest(36),
+        expected_manifest_sha256=_digest(37),
+        support_root=r"C:\tmp\support",
+    )
+
+    assert result.code == "FEASIBILITY_EVIDENCE_MISMATCH"
+
+
+def test_result_rejects_boolean_rtt_channel_and_browser_exit(
+    valid_profile: dict[str, object],
+    valid_manifest: dict[str, object],
+    valid_result: dict[str, object],
+) -> None:
+    """JSON booleans must never satisfy exact integer transport or exit-code fields."""
+    valid_profile["capabilities"]["rtt"]["channel"] = True
+    profile_result = verify_feasibility(valid_profile)
+    valid_profile["capabilities"]["rtt"]["channel"] = 0
+    valid_result["chromium"]["exit_code"] = False
+
+    result = verify_result(
+        valid_profile,
+        valid_manifest,
+        valid_result,
+        expected_code_head="a" * 40,
+        expected_profile_sha256=_digest(36),
+        expected_manifest_sha256=_digest(37),
+        support_root=r"C:\tmp\support",
+    )
+
+    assert profile_result.code == "FEASIBILITY_CAPABILITY_MISSING"
+    assert result.code == "FEASIBILITY_RESULT_MISMATCH"
+
+
+def test_verifier_must_match_the_repository_code_head_blob() -> None:
+    """A copied or edited verifier cannot claim an unrelated repository CodeHead."""
+    repo = _test_directory() / "repo"
+    script = repo / "tools" / "release" / "verify_0600_feasibility.py"
+    script.parent.mkdir(parents=True)
+    script.write_text("trusted\n", encoding="utf-8")
+    for args in (
+        ["init"],
+        ["config", "user.email", "test@example.invalid"],
+        ["config", "user.name", "test"],
+        ["config", "core.autocrlf", "false"],
+        ["add", "."],
+        ["commit", "-m", "fixture"],
+    ):
+        subprocess.run(["git", "-C", str(repo), *args], check=True, capture_output=True)
+
+    trusted = verify_committed_verifier(repo, script)
+    script.write_text("tampered\n", encoding="utf-8")
+    tampered = verify_committed_verifier(repo, script)
+
+    assert trusted.code == "PASS"
+    assert tampered.code == "FEASIBILITY_CODEHEAD_MISMATCH"

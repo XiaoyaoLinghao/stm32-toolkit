@@ -25,6 +25,7 @@ PROFILE_SCHEMA = "stm32tk-0600-feasibility-profile/1"
 MANIFEST_SCHEMA = "stm32tk-0600-support-manifest/1"
 RESULT_SCHEMA = "stm32tk-0600-feasibility-result/1"
 TOOL_RECORD_SCHEMA = "stm32tk-0600-tool-record/1"
+VERIFIER_RELATIVE_PATH = "tools/release/verify_0600_feasibility.py"
 REQUIRED_TOOLS = (
     "python310",
     "python312",
@@ -95,6 +96,10 @@ def _digest(value: object) -> bool:
 
 def _nonempty(value: object) -> bool:
     return isinstance(value, str) and bool(value.strip())
+
+
+def _integer(value: object) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool)
 
 
 def _relative_file(value: object) -> bool:
@@ -190,10 +195,8 @@ def _verify_capabilities(value: object) -> VerificationResult | None:
             return _result("FEASIBILITY_CAPABILITY_MISSING")
         start, size = item["start"], item["size"]
         if (
-            not isinstance(start, int)
-            or isinstance(start, bool)
-            or not isinstance(size, int)
-            or isinstance(size, bool)
+            not _integer(start)
+            or not _integer(size)
             or start < 0
             or size <= 0
         ):
@@ -203,15 +206,13 @@ def _verify_capabilities(value: object) -> VerificationResult | None:
         return _result("FEASIBILITY_CAPABILITY_MISSING")
     address, size = mailbox["address"], mailbox["size"]
     if (
-        not isinstance(address, int)
-        or isinstance(address, bool)
-        or not isinstance(size, int)
-        or isinstance(size, bool)
+        not _integer(address)
+        or not _integer(size)
         or size <= 0
         or not any(start <= address and address + size <= end for start, end in ranges)
     ):
         return _result("FEASIBILITY_CAPABILITY_MISSING")
-    if not _closed(rtt, {"channel"}) or not isinstance(rtt["channel"], int) or not 0 <= rtt["channel"] <= 15:
+    if not _closed(rtt, {"channel"}) or not _integer(rtt["channel"]) or not 0 <= rtt["channel"] <= 15:
         return _result("FEASIBILITY_CAPABILITY_MISSING")
     allowed_baud = {9600, 19200, 38400, 57600, 115200, 230400, 460800, 921600}
     if (
@@ -296,8 +297,7 @@ def verify_feasibility(profile: object) -> VerificationResult:
     if (
         not _closed(fixture, {"path", "bytes", "sha256"})
         or not _relative_file(fixture["path"])
-        or not isinstance(fixture["bytes"], int)
-        or isinstance(fixture["bytes"], bool)
+        or not _integer(fixture["bytes"])
         or fixture["bytes"] < 0
         or not _digest(fixture["sha256"])
     ):
@@ -439,6 +439,7 @@ def verify_result(
         or chromium["blank_page"] != declared_chromium["blank_page"]["path"]
         or chromium["argv"] != expected_chromium_argv(declared_chromium, support_root, run["evidence_root"])
         or chromium["managed_profile_path"] != str(PureWindowsPath(str(run["evidence_root"])) / "managed-chromium-profile")
+        or not _integer(chromium["exit_code"])
         or chromium["exit_code"] != 0
     ):
         return _result("FEASIBILITY_RESULT_MISMATCH")
@@ -454,13 +455,22 @@ def verify_result(
         return _result("FEASIBILITY_RESULT_INVALID")
     seen_paths: set[str] = set()
     for item in evidence.values():
-        if not _closed(item, {"path", "sha256"}) or not _relative_file(item["path"]) or not _digest(item["sha256"]):
+        if (
+            not _closed(item, {"path", "bytes", "sha256"})
+            or not _relative_file(item["path"])
+            or not _integer(item["bytes"])
+            or item["bytes"] < 0
+            or not _digest(item["sha256"])
+        ):
             return _result("FEASIBILITY_EVIDENCE_PATH_INVALID")
         if item["path"] in seen_paths:
             return _result("FEASIBILITY_EVIDENCE_PATH_INVALID")
         seen_paths.add(str(item["path"]))
     if run["code_head"] != expected_code_head:
         return _result("FEASIBILITY_STALE_RESULT")
+    evidence_error = _verify_retained_evidence(result, entries)
+    if evidence_error is not None:
+        return evidence_error
     return _result("PASS", hardware_status="PENDING")
 
 
@@ -472,6 +482,94 @@ def _sha256_file(path: Path) -> tuple[int, str]:
             size += len(chunk)
             digest.update(chunk)
     return size, digest.hexdigest()
+
+
+def _evidence_path(root: Path, relative: str) -> Path:
+    path = root.joinpath(*relative.split("/"))
+    if not path.is_file() or _is_reparse(path):
+        raise ValueError("retained evidence file is missing or unsafe")
+    return path
+
+
+def _verify_retained_evidence(
+    result: Mapping[str, object], entries: Mapping[str, Mapping[str, object]]
+) -> VerificationResult | None:
+    run = result["run"]
+    chromium = result["chromium"]
+    evidence = result["evidence"]
+    assert isinstance(run, Mapping)
+    assert isinstance(chromium, Mapping)
+    assert isinstance(evidence, Mapping)
+    root = Path(str(run["evidence_root"]))
+    if not root.is_dir() or _is_reparse(root):
+        return _result("FEASIBILITY_EVIDENCE_PATH_INVALID")
+    materialized: dict[str, Path] = {}
+    for name, item in evidence.items():
+        assert isinstance(item, Mapping)
+        try:
+            path = _evidence_path(root, str(item["path"]))
+        except (OSError, ValueError):
+            return _result("FEASIBILITY_EVIDENCE_PATH_INVALID")
+        size, digest = _sha256_file(path)
+        if size != item["bytes"] or digest != item["sha256"]:
+            return _result("FEASIBILITY_EVIDENCE_MISMATCH", evidence=name)
+        materialized[name] = path
+    try:
+        launch = _read_json(materialized["chromium_launch"])
+    except (OSError, ValueError, UnicodeDecodeError, json.JSONDecodeError):
+        return _result("FEASIBILITY_EVIDENCE_INVALID", evidence="chromium_launch")
+    if (
+        not _closed(launch, {"argv", "exit_code", "stderr", "stdout"})
+        or launch["argv"] != chromium["argv"]
+        or not _integer(launch["exit_code"])
+        or launch["exit_code"] != 0
+        or not isinstance(launch["stderr"], str)
+        or not isinstance(launch["stdout"], str)
+        or "<html" not in launch["stdout"].casefold()
+    ):
+        return _result("FEASIBILITY_EVIDENCE_INVALID", evidence="chromium_launch")
+    version_evidence = chromium["version_evidence"]
+    assert isinstance(version_evidence, Mapping)
+    expected_version_entry = entries.get(str(version_evidence["path"]))
+    version_item = evidence["chromium_version"]
+    assert isinstance(version_item, Mapping)
+    if (
+        expected_version_entry is None
+        or version_item["bytes"] != expected_version_entry["bytes"]
+        or version_item["sha256"] != expected_version_entry["sha256"]
+    ):
+        return _result("FEASIBILITY_EVIDENCE_MISMATCH", evidence="chromium_version")
+    return None
+
+
+def verify_committed_verifier(repo: Path, script: Path) -> VerificationResult:
+    """Bind this verifier's on-disk bytes to the supplied repository CodeHead."""
+    try:
+        repository = repo.resolve(strict=True)
+        verifier = script.resolve(strict=True)
+        relative = verifier.relative_to(repository).as_posix()
+        if relative != VERIFIER_RELATIVE_PATH:
+            return _result("FEASIBILITY_CODEHEAD_MISMATCH")
+        head = subprocess.run(
+            ["git", "-C", str(repository), "rev-parse", "HEAD"],
+            capture_output=True,
+            timeout=30,
+            check=False,
+        )
+        code_head = head.stdout.decode("ascii", errors="strict").strip()
+        if head.returncode != 0 or HEX40.fullmatch(code_head) is None:
+            return _result("FEASIBILITY_CODEHEAD_MISMATCH")
+        blob = subprocess.run(
+            ["git", "-C", str(repository), "show", f"{code_head}:{relative}"],
+            capture_output=True,
+            timeout=30,
+            check=False,
+        )
+        if blob.returncode != 0 or blob.stdout != verifier.read_bytes():
+            return _result("FEASIBILITY_CODEHEAD_MISMATCH")
+    except (OSError, ValueError, subprocess.SubprocessError, UnicodeDecodeError):
+        return _result("FEASIBILITY_CODEHEAD_MISMATCH")
+    return _result("PASS", code_head=code_head)
 
 
 def _read_json(path: Path) -> object:
@@ -636,6 +734,10 @@ def _run(args: argparse.Namespace) -> VerificationResult:
     if not evidence.parent.is_dir():
         return _result("FEASIBILITY_EVIDENCE_PATH_INVALID", reason="evidence parent is missing")
     try:
+        verifier_binding = verify_committed_verifier(repo, Path(__file__))
+        if verifier_binding.code != "PASS":
+            return verifier_binding
+        code_head = str(verifier_binding.details["code_head"])
         profile, manifest, entries, profile_digest, manifest_digest = _verify_support_root(support, profile_path)
         host = profile["host"]
         assert isinstance(host, Mapping)
@@ -644,10 +746,6 @@ def _run(args: argparse.Namespace) -> VerificationResult:
             actual_architecture = "AMD64"
         if host["architecture"] != actual_architecture:
             raise ValueError("support profile host architecture does not match this Windows host")
-        head = subprocess.run(["git", "-C", str(repo), "rev-parse", "HEAD"], capture_output=True, text=True, timeout=30, check=False)
-        if head.returncode != 0 or HEX40.fullmatch(head.stdout.strip()) is None:
-            raise ValueError("repository CodeHead is unavailable")
-        code_head = head.stdout.strip()
         evidence.mkdir()
         declared_tools = profile["tools"]
         assert isinstance(declared_tools, Mapping)
@@ -710,10 +808,12 @@ def _run(args: argparse.Namespace) -> VerificationResult:
             "evidence": {
                 "chromium_launch": {
                     "path": "chromium-launch.json",
+                    "bytes": len(launch_bytes),
                     "sha256": hashlib.sha256(launch_bytes).hexdigest(),
                 },
                 "chromium_version": {
                     "path": "chromium-version.txt",
+                    "bytes": len(version_bytes),
                     "sha256": hashlib.sha256(version_bytes).hexdigest(),
                 },
             },
