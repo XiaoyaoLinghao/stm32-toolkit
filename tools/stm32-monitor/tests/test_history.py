@@ -2563,3 +2563,102 @@ def test_cursor_to_deleted_batch_is_rejected(tmp_path: Path) -> None:
         assert resumed.code == "MONITOR_HISTORY_QUERY_INVALID"
     finally:
         store.close()
+
+
+def test_decode_rejects_mismatched_index_evidence_count(tmp_path: Path) -> None:
+    import stm32_monitor.history as history_module
+
+    paths = _paths(tmp_path)
+    batch = _batch(paths, 1, captured_ns=100)
+    raw = _compact(batch.to_dict())
+
+    with pytest.raises(StorageFailure):
+        history_module._decode_history_batch(
+            raw,
+            len(raw),
+            sha256(raw).hexdigest(),
+            len(batch.values),
+            workspace_id=paths.workspace_id,
+            session_id=batch.binding.session_id,
+            run_id=str(batch.run_id),
+            sequence=batch.sequence,
+            captured_ns=batch.captured_unix_ns,
+            indexed_value_evidence=(),
+        )
+
+
+@pytest.mark.parametrize("limit", [True, 1, 513])
+def test_uncached_query_rejects_invalid_transient_cache_limits(
+    tmp_path: Path,
+    limit: object,
+) -> None:
+    store = HistoryStore(_paths(tmp_path))
+    try:
+        with pytest.raises(ValueError, match="transient history cache limit is invalid"):
+            store._query_history_uncached(
+                HistoryQuery("monitor-1", 0, 1_000),
+                transient_cache={},
+                transient_cache_limit=limit,
+            )
+    finally:
+        store.close()
+
+
+def test_transient_cache_stays_bounded_across_stable_pagination(tmp_path: Path) -> None:
+    paths = _paths(tmp_path)
+    store = HistoryStore(paths)
+    transient_cache: dict[str, object] = {}
+    try:
+        for sequence in range(1, 4):
+            assert store.append_batch(
+                _batch(paths, sequence, captured_ns=100 + sequence)
+            ).ok
+
+        query = HistoryQuery("monitor-1", 0, 1_000, limit=1)
+        for expected_sequence in range(1, 4):
+            page = store._query_history_uncached(
+                query,
+                transient_cache=transient_cache,
+                transient_cache_limit=2,
+            )
+            assert page.ok
+            assert [batch.sequence for batch in page.data.batches] == [expected_sequence]
+            query = replace(query, cursor=page.data.next_cursor)
+
+        cached = transient_cache["batches"]
+        assert type(cached) is dict
+        assert len(cached) == 2
+    finally:
+        store.close()
+
+
+def test_transient_cache_clears_when_storage_identity_changes_during_read(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    paths = _paths(tmp_path)
+    store = HistoryStore(paths)
+    transient_cache: dict[str, object] = {"stale": object()}
+    try:
+        assert store.append_batch(_batch(paths, 1, captured_ns=100)).ok
+        initial = store._observed_storage_snapshot()
+        assert initial is not None and initial[1]
+        before = initial[0]
+        changed_tail = (*before[-1][:-1], before[-1][-1] + 1)
+        during = (*before[:-1], changed_tail)
+
+        def changing_snapshot():
+            with store._database._integrity_lock:
+                store._database._integrity_identity = during
+            return before, True
+
+        monkeypatch.setattr(store, "_observed_storage_snapshot", changing_snapshot)
+        result = store._query_history_uncached(
+            HistoryQuery("monitor-1", 0, 1_000),
+            transient_cache=transient_cache,
+        )
+
+        assert result.ok and result.data.value_count == 1
+        assert transient_cache == {}
+    finally:
+        store.close()
