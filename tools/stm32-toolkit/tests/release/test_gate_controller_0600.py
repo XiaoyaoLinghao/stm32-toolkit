@@ -24,6 +24,7 @@ RELEASE = REPO / "tools" / "release"
 sys.path.insert(0, str(RELEASE))
 
 import run_0600_gates as gates  # noqa: E402
+import verify_0600_release as release_verifier  # noqa: E402
 from run_0600_gates import (  # noqa: E402
     ControllerError,
     GateRequest,
@@ -237,7 +238,7 @@ def test_gate_result_emits_bounded_metadata_and_stream_hashes(monkeypatch: pytes
         "architecture": platform.machine(),
         "argv": [sys.executable, "-c", "raise SystemExit(0)"],
         "code_head": "a" * 40,
-        "cwd": str(REPO),
+        "cwd": ".",
         "duration_ms": 17,
         "executable": sys.executable,
         "executable_version": platform.python_version(),
@@ -268,6 +269,40 @@ def test_gate_matrix_rejects_every_nonexecuted_node_outcome(outcome: str) -> Non
 
     assert result.status == "FAIL"
     assert result.reason == "NODE_OUTCOME_MISMATCH"
+
+
+def test_gate_matrix_rejects_exit_zero_when_any_exact_node_failed() -> None:
+    """A zero process exit cannot override an exact failed node outcome."""
+    node = "tests::A"
+
+    result = run_gate_matrix(
+        "quick",
+        [_gate("A")],
+        execute=lambda _gate, _env: GateRunOutput(
+            0, b"", b"", (node,), ((node, "failed"),)
+        ),
+    )[0]
+
+    assert (result.status, result.reason) == ("FAIL", "PRODUCT_FAILURE")
+
+
+def test_non_python_executable_metadata_uses_exact_file_digest(tmp_path: Path) -> None:
+    """Non-Python version evidence is an exact executable digest, never a placeholder."""
+    executable = tmp_path / "fixture-tool.exe"
+    executable.write_bytes(b"fixture-tool-version-1")
+    node = "tests::A"
+    gate = GateRequest("A", (str(executable), "--fixture"), REPO, 5, (node,))
+
+    result = run_gate_matrix(
+        "quick",
+        [gate],
+        execute=lambda _gate, _env: GateRunOutput(
+            0, b"", b"", (node,), ((node, "passed"),)
+        ),
+    )[0]
+
+    assert result.metadata["executable"] == str(executable)
+    assert result.metadata["executable_version"] == f"sha256:{_sha(executable.read_bytes())}"
 
 
 def test_real_gate_executor_uses_argv_timeout_and_retains_one_snapshot(tmp_path: Path) -> None:
@@ -900,6 +935,106 @@ def test_shard_verifier_rejects_package_mutation_between_snapshot_and_final_rere
         )
 
 
+def test_shard_verifier_binds_archive_members_to_external_evidence_bytes(
+    tmp_path: Path,
+) -> None:
+    """A self-consistent replacement ZIP cannot substitute different retained bytes."""
+    retained = tmp_path / "retained"
+    substituted = tmp_path / "substituted"
+    retained.mkdir()
+    substituted.mkdir()
+    (retained / "result.json").write_bytes(b"retained\n")
+    (substituted / "result.json").write_bytes(b"substituted\n")
+    package = tmp_path / "shard.zip"
+    binding = _package_binding()
+    reference = create_shard_package(substituted, package, binding)
+
+    with pytest.raises(VerificationError, match="external|retained|member"):
+        verify_shard_package(
+            package,
+            reference,
+            binding,
+            evidence_root=retained,
+        )
+
+
+def test_shard_verifier_rejects_external_evidence_toctou(
+    tmp_path: Path,
+) -> None:
+    """The external snapshot must stay byte-identical through the final reread."""
+    evidence = tmp_path / "evidence"
+    evidence.mkdir()
+    result = evidence / "result.json"
+    result.write_bytes(canonical_json_bytes({"state": "retained"}))
+    package = tmp_path / "shard.zip"
+    binding = _package_binding()
+    reference = create_shard_package(evidence, package, binding)
+
+    with pytest.raises(VerificationError, match="changed"):
+        verify_shard_package(
+            package,
+            reference,
+            binding,
+            evidence_root=evidence,
+            before_final_reread=lambda: result.write_bytes(
+                canonical_json_bytes({"state": "mutated"})
+            ),
+        )
+
+
+def test_shard_verifier_rejects_unexpected_external_file_toctou(tmp_path: Path) -> None:
+    """An excluded local checkpoint cannot make arbitrary late external files invisible."""
+    evidence = tmp_path / "evidence-inventory"
+    evidence.mkdir()
+    result = evidence / "controller-result.json"
+    checkpoint = evidence / "checkpoint.json"
+    result.write_bytes(canonical_json_bytes({"state": "retained"}))
+    checkpoint.write_bytes(canonical_json_bytes({"state": "local-checkpoint"}))
+    package = tmp_path / "inventory.zip"
+    binding = _package_binding()
+    package_paths = ["controller-result.json"]
+    reference = create_shard_package(
+        evidence, package, binding, member_paths=package_paths
+    )
+
+    with pytest.raises(VerificationError, match="changed|unexpected|inventory"):
+        verify_shard_package(
+            package,
+            reference,
+            binding,
+            evidence_root=evidence,
+            expected_paths=package_paths,
+            allowed_external_paths=["checkpoint.json", "controller-result.json"],
+            before_final_reread=lambda: (evidence / "unexpected.txt").write_text(
+                "late mutation", encoding="utf-8"
+            ),
+        )
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"credential": "secret-value"},
+        {"diagnostic_path": r"C:\Users\private\diagnostic.log"},
+    ],
+)
+def test_shard_verifier_rejects_private_or_credential_payload_fields(
+    tmp_path: Path, payload: dict[str, str]
+) -> None:
+    """Safe member names cannot conceal credentials or absolute private paths in payloads."""
+    evidence = tmp_path / "private-evidence"
+    evidence.mkdir()
+    (evidence / "result.json").write_bytes(canonical_json_bytes(payload))
+    package = tmp_path / "private.zip"
+    binding = _package_binding()
+    reference = create_shard_package(evidence, package, binding)
+
+    with pytest.raises(VerificationError, match="private|credential|portable"):
+        verify_shard_package(
+            package, reference, binding, evidence_root=evidence
+        )
+
+
 @pytest.mark.parametrize("mutation", ["bytes", "binding", "extra", "traversal", "casefold", "absolute"])
 def test_shard_verifier_rejects_archive_manifest_and_private_path_discrepancies(
     tmp_path: Path, mutation: str
@@ -1023,20 +1158,86 @@ class FakeHardwareBackend:
 
 
 class HardwareGit:
-    def __init__(self, *, dirty: str = "", head: str = "b" * 40) -> None:
+    def __init__(
+        self, *, dirty: str = "", head: str = "b" * 40,
+        origin: str = "https://github.com/XiaoyaoLinghao/stm32-toolkit.git",
+    ) -> None:
         self.dirty = dirty
         self.head = head
+        self.origin = origin
 
     def __call__(self, args: list[str]) -> str:
         if args == ["rev-parse", "HEAD"]:
             return self.head + "\n"
         if args == ["config", "--get", "remote.origin.url"]:
-            return "https://github.com/XiaoyaoLinghao/stm32-toolkit.git\n"
+            return self.origin + "\n"
         if args == ["status", "--porcelain=v1", "--untracked-files=all"]:
             return self.dirty
         if args[:2] == ["hash-object", "--"] or (args[0] == "rev-parse" and ":" in args[1]):
             return "d" * 40 + "\n"
         raise AssertionError(args)
+
+
+def _hardware_campaign(digest: str = "e" * 64) -> dict[str, object]:
+    return {
+        "schema": "stm32-hardware-campaign-binding/1",
+        "campaign_id": "223e4567-e89b-42d3-a456-426614174000",
+        "sha256": digest,
+        "generator_code_head": "b" * 40,
+        "evidence_owner": "user",
+        "board_revision": "rev-A",
+        "mcu_part": "STM32F446RE",
+        "mcu_uid_hash": "4" * 64,
+        "probe_model": "ST-LINK/V3",
+        "uart_adapter_model": "FT232R",
+        "firmware_0400_sha256": "5" * 64,
+        "firmware_0400_build_id": "firmware-0400-A",
+        "firmware_0600_sha256": "6" * 64,
+        "firmware_0600_build_id": "firmware-0600-A",
+    }
+
+
+def _write_hardware_campaign_input(
+    path: Path, support_profile: Path, firmware_0600: bytes
+) -> Path:
+    firmware_root = path.parent / f"{path.stem}-firmware"
+    firmware_root.mkdir()
+    firmware_0400_path = firmware_root / "firmware-0400.elf"
+    firmware_0600_path = firmware_root / "firmware-0600.elf"
+    firmware_0400_path.write_bytes(b"firmware-0400")
+    firmware_0600_path.write_bytes(firmware_0600)
+
+    def reference(member: Path) -> dict[str, object]:
+        data = member.read_bytes()
+        return {"path": str(member), "bytes": len(data), "sha256": _sha(data)}
+
+    campaign = {
+        "schema": "stm32-hardware-campaign-inputs/1",
+        "campaign_id": "223e4567-e89b-42d3-a456-426614174000",
+        "created_at_utc": "2026-08-15T02:03:04.123456Z",
+        "generator_code_head": "b" * 40,
+        "evidence_owner": "user",
+        "board_id": "board-A",
+        "board_revision": "rev-A",
+        "mcu_part": "STM32F446RE",
+        "mcu_uid_hash": "4" * 64,
+        "probe_model": "ST-LINK/V3",
+        "probe_serial_hash": "a" * 64,
+        "uart_adapter_model": "FT232R",
+        "uart_serial_hash": "c" * 64,
+        "power_identity": "bench-A",
+        "transports": ["mailbox", "rtt", "semihosting", "uart"],
+        "support_profile": reference(support_profile),
+        "support_manifest": reference(support_profile.parents[1] / "support-manifest.json"),
+        "firmware_0400": {
+            **reference(firmware_0400_path), "build_id": "firmware-0400-A"
+        },
+        "firmware_0600": {
+            **reference(firmware_0600_path), "build_id": "firmware-0600-A"
+        },
+    }
+    path.write_bytes(canonical_json_bytes(campaign))
+    return path
 
 
 def _hardware(
@@ -1079,6 +1280,7 @@ def _hardware(
             "board_id": "board-A", "probe_serial_hash": "a" * 64,
             "uart_serial_hash": "c" * 64, "power_identity": "bench-A",
         },
+        hardware_campaign=_hardware_campaign(),
         git_runner=git or HardwareGit(),
         now=lambda: NOW,
         random_bytes=random_bytes,
@@ -1103,7 +1305,9 @@ def test_hardware_rejects_dirty_worktree_and_nonfixed_catalog_before_prepare(
             expected_code_head="a" * 40, controller_code_head="b" * 40,
             final_run_id=RUN_ID, evidence_root=tmp_path / "bad-catalog",
             backend=backend, support_profile=controller.support_profile,
-            hardware_identity=controller.hardware_identity, git_runner=HardwareGit(),
+            hardware_identity=controller.hardware_identity,
+            hardware_campaign=controller.hardware_campaign,
+            git_runner=HardwareGit(),
         )
 
 
@@ -1118,6 +1322,114 @@ def test_hardware_checkpoint_is_recursive_and_action_digest_is_recomputed(tmp_pa
     with pytest.raises(ControllerError, match="digest|checkpoint"):
         controller.execute(prepared["nonce"], "f" * 64, authorized=True)
     assert backend.execute_calls == []
+
+
+def test_hardware_rejects_boolean_counter_even_with_recomputed_digest(tmp_path: Path) -> None:
+    """JSON booleans cannot impersonate integer counters under a self-consistent digest."""
+    controller, backend = _hardware(tmp_path)
+    prepared = controller.prepare()
+    checkpoint = json.loads(controller.checkpoint_path.read_text(encoding="utf-8"))
+    checkpoint["prepared"]["counters"]["control"] = False
+    checkpoint["prepared"]["action_digest"] = controller._digest_for_prepared(
+        checkpoint["prepared"]
+    )
+    controller.checkpoint_path.write_bytes(canonical_json_bytes(checkpoint))
+
+    with pytest.raises(ControllerError, match="prepared|counter"):
+        controller.execute(
+            prepared["nonce"], checkpoint["prepared"]["action_digest"], authorized=True
+        )
+    assert backend.execute_calls == []
+
+
+def test_hardware_authorization_rejects_full_campaign_substitution(tmp_path: Path) -> None:
+    """A changed firmware/campaign digest cannot reuse a prepared hardware authorization."""
+    support_profile = _write_support(tmp_path / "campaign-support")
+    first_input = _write_hardware_campaign_input(
+        tmp_path / "campaign-first.json", support_profile, b"firmware-0600-first"
+    )
+    second_input = _write_hardware_campaign_input(
+        tmp_path / "campaign-second.json", support_profile, b"firmware-0600-second"
+    )
+    _, first_identity, first_campaign = gates.load_hardware_campaign_input(
+        first_input, expected_generator_code_head="b" * 40
+    )
+    _, backend = _hardware(tmp_path)
+    controller = HardwareContractController(
+        contract="0600", repo=REPO, catalog=CATALOG,
+        expected_code_head="a" * 40, controller_code_head="b" * 40,
+        final_run_id=RUN_ID, evidence_root=tmp_path / "hardware-campaign",
+        backend=backend, support_profile=support_profile,
+        hardware_identity=first_identity, hardware_campaign=first_campaign,
+        git_runner=HardwareGit(), now=lambda: NOW,
+        random_bytes=lambda count: bytes(range(count)),
+    )
+    prepared = controller.prepare()
+    _, replacement_identity, replacement_campaign = gates.load_hardware_campaign_input(
+        second_input, expected_generator_code_head="b" * 40
+    )
+    assert replacement_identity == first_identity
+    assert replacement_campaign["firmware_0600_sha256"] != first_campaign["firmware_0600_sha256"]
+
+    replacement = HardwareContractController(
+        contract=controller.contract, repo=controller.repo, catalog=controller.catalog,
+        expected_code_head=controller.expected_code_head,
+        controller_code_head=controller.controller_code_head,
+        final_run_id=controller.final_run_id, evidence_root=controller.evidence_root,
+        backend=backend, support_profile=controller.support_profile,
+        hardware_identity=replacement_identity,
+        hardware_campaign=replacement_campaign,
+        git_runner=HardwareGit(), now=lambda: NOW,
+    )
+    with pytest.raises(ControllerError, match="campaign|binding|digest"):
+        replacement.execute(
+            prepared["nonce"], prepared["action_digest"], authorized=True
+        )
+    assert backend.execute_calls == []
+
+
+def test_hardware_requires_exact_catalog_lock_names_and_canonical_origin(tmp_path: Path) -> None:
+    """Hardware state binds the catalog's exact lock set and exact canonical GitHub URL."""
+    controller, _ = _hardware(tmp_path)
+    assert controller.resource_locks == {
+        "board": "board-A",
+        "evidence-root": str(tmp_path / "hardware-0600"),
+        "probe": "a" * 64,
+        "uart": "c" * 64,
+    }
+
+    variant, backend = _hardware(
+        tmp_path / "variant",
+        git=HardwareGit(origin="https://github.com/XiaoyaoLinghao/stm32-toolkit"),
+    )
+    with pytest.raises(ControllerError, match="origin"):
+        variant.prepare()
+    assert backend.prepare_calls == []
+
+
+def test_hardware_rejects_placeholder_identity_before_backend(tmp_path: Path) -> None:
+    """A public-style reserved placeholder cannot stand in for campaign-bound identity."""
+    backend = FakeHardwareBackend(
+        {
+            "board_id": "reserved-hardware-input", "probe_serial_hash": "0" * 64,
+            "uart_serial_hash": "1" * 64, "power_identity": "reserved-hardware-input",
+            "state": "running",
+        }, [], [], [],
+    )
+    with pytest.raises(ControllerError, match="placeholder|identity"):
+        HardwareContractController(
+            contract="0600", repo=REPO, catalog=CATALOG,
+            expected_code_head="a" * 40, controller_code_head="b" * 40,
+            final_run_id=RUN_ID, evidence_root=tmp_path / "placeholder",
+            backend=backend, support_profile=_write_support(tmp_path / "placeholder-support"),
+            hardware_identity={
+                "board_id": "reserved-hardware-input", "probe_serial_hash": "0" * 64,
+                "uart_serial_hash": "1" * 64, "power_identity": "reserved-hardware-input",
+            },
+            hardware_campaign=_hardware_campaign(),
+            git_runner=HardwareGit(),
+        )
+    assert backend.prepare_calls == []
 
 
 @pytest.mark.parametrize(
@@ -1440,6 +1752,154 @@ def test_candidate_has_only_closed_resume_interface_and_context_cannot_supply_pa
     assert "InvocationContext" not in parameters
 
 
+def test_candidate_resume_executes_only_ledger_repository_runner(tmp_path: Path) -> None:
+    """A copied wrapper cannot redirect resume execution to its sibling replacement runner."""
+    trusted = tmp_path / "trusted"
+    trusted_release = trusted / "tools/release"
+    trusted_release.mkdir(parents=True)
+    for source in (
+        CANDIDATE, PATH_HELPER, RUNNER,
+        RELEASE / "verify_0600_feasibility.py", RELEASE / "verify_0600_release.py",
+    ):
+        (trusted_release / source.name).write_bytes(source.read_bytes())
+    for args in (
+        ["init"], ["config", "user.email", "test@example.invalid"],
+        ["config", "user.name", "test"], ["config", "core.autocrlf", "false"],
+        ["add", "."], ["commit", "-m", "trusted"],
+    ):
+        subprocess.run(["git", "-C", str(trusted), *args], check=True, capture_output=True)
+    head = subprocess.run(
+        ["git", "-C", str(trusted), "rev-parse", "HEAD"], check=True,
+        capture_output=True, text=True,
+    ).stdout.strip()
+    candidate_root = tmp_path / "candidate"
+    candidate_root.mkdir()
+    ledger = candidate_root / "candidate-ledger.json"
+    ledger.write_bytes(canonical_json_bytes({
+        "controller_path": str(trusted_release / CANDIDATE.name),
+        "expected_code_head": head,
+    }))
+    recovery = tmp_path / "recovery.json"
+    recovery.write_bytes(b"{}\n")
+    attacker = tmp_path / "attacker"
+    attacker.mkdir()
+    attacker_wrapper = attacker / CANDIDATE.name
+    attacker_wrapper.write_bytes(CANDIDATE.read_bytes())
+    (attacker / PATH_HELPER.name).write_bytes(PATH_HELPER.read_bytes())
+    sentinel = tmp_path / "attacker-spawned.txt"
+    (attacker / RUNNER.name).write_text(
+        f"from pathlib import Path\nPath({str(sentinel)!r}).write_text('spawned')\n",
+        encoding="utf-8",
+    )
+
+    completed = subprocess.run(
+        [
+            "powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
+            str(attacker_wrapper), "-ResumeCandidateRun", "-CandidateLedger", str(ledger),
+            "-RecoveryRecord", str(recovery),
+        ],
+        capture_output=True, text=True, check=False,
+    )
+    for retained in (trusted / ".git").rglob("*"):
+        if retained.is_file():
+            os.chmod(retained, 0o666)
+
+    assert completed.returncode != 0
+    assert not sentinel.exists()
+
+
+def test_final_resume_executes_only_checkpoint_repository_runner(tmp_path: Path) -> None:
+    """Final resume must spawn the runner beneath the checkpoint-derived trusted worktree."""
+    trusted = tmp_path / "trusted-final"
+    trusted_release = trusted / "tools/release"
+    trusted_release.mkdir(parents=True)
+    for source in (
+        FINAL, PATH_HELPER, RUNNER,
+        RELEASE / "verify_0600_feasibility.py", RELEASE / "verify_0600_release.py",
+    ):
+        (trusted_release / source.name).write_bytes(source.read_bytes())
+    for args in (
+        ["init"], ["config", "user.email", "test@example.invalid"],
+        ["config", "user.name", "test"], ["config", "core.autocrlf", "false"],
+        ["add", "."], ["commit", "-m", "trusted"],
+    ):
+        subprocess.run(["git", "-C", str(trusted), *args], check=True, capture_output=True)
+    head = subprocess.run(
+        ["git", "-C", str(trusted), "rev-parse", "HEAD"], check=True,
+        capture_output=True, text=True,
+    ).stdout.strip()
+    evidence = tmp_path / "final-evidence"
+    evidence.mkdir()
+    checkpoint = evidence / "checkpoint.json"
+    checkpoint.write_bytes(canonical_json_bytes({
+        "controller_path": str(trusted_release / FINAL.name), "code_head": head,
+    }))
+    recovery = tmp_path / "final-recovery.json"
+    recovery.write_bytes(b"{}\n")
+    attacker = tmp_path / "attacker-final"
+    attacker.mkdir()
+    attacker_wrapper = attacker / FINAL.name
+    attacker_wrapper.write_bytes(FINAL.read_bytes())
+    (attacker / PATH_HELPER.name).write_bytes(PATH_HELPER.read_bytes())
+    sentinel = tmp_path / "final-attacker-spawned.txt"
+    (attacker / RUNNER.name).write_text(
+        f"from pathlib import Path\nPath({str(sentinel)!r}).write_text('spawned')\n",
+        encoding="utf-8",
+    )
+
+    completed = subprocess.run(
+        [
+            "powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
+            str(attacker_wrapper), "-ResumeFinalRun", "-FinalCheckpoint", str(checkpoint),
+            "-RecoveryRecord", str(recovery),
+        ],
+        capture_output=True, text=True, check=False,
+    )
+    for retained in (trusted / ".git").rglob("*"):
+        if retained.is_file():
+            os.chmod(retained, 0o666)
+
+    assert completed.returncode != 0
+    assert not sentinel.exists()
+
+
+def test_hardware_selftest_checks_runner_blob_before_spawn(tmp_path: Path) -> None:
+    """Hardware ContractSelfTest cannot load a replacement runner before caller trust."""
+    trusted = tmp_path / "trusted-hardware"
+    trusted_release = trusted / "tools/release"
+    trusted_release.mkdir(parents=True)
+    for source in (
+        HARDWARE, PATH_HELPER, RUNNER, CATALOG,
+        RELEASE / "verify_0600_feasibility.py", RELEASE / "verify_0600_release.py",
+    ):
+        (trusted_release / source.name).write_bytes(source.read_bytes())
+    for args in (
+        ["init"], ["config", "user.email", "test@example.invalid"],
+        ["config", "user.name", "test"], ["config", "core.autocrlf", "false"],
+        ["add", "."], ["commit", "-m", "trusted"],
+    ):
+        subprocess.run(["git", "-C", str(trusted), *args], check=True, capture_output=True)
+    sentinel = tmp_path / "hardware-attacker-spawned.txt"
+    (trusted_release / RUNNER.name).write_text(
+        f"from pathlib import Path\nPath({str(sentinel)!r}).write_text('spawned')\n",
+        encoding="utf-8",
+    )
+
+    completed = subprocess.run(
+        [
+            "powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
+            str(trusted_release / HARDWARE.name), "-ContractSelfTest",
+        ],
+        capture_output=True, text=True, check=False,
+    )
+    for retained in (trusted / ".git").rglob("*"):
+        if retained.is_file():
+            os.chmod(retained, 0o666)
+
+    assert completed.returncode != 0
+    assert not sentinel.exists()
+
+
 def test_hardware_wrapper_closed_interface_rejects_unknown_and_wrong_contract_switches() -> None:
     """Hardware wrapper binding must expose only the authorization/checkpoint contract."""
     completed = _run_powershell(
@@ -1453,6 +1913,7 @@ def test_hardware_wrapper_closed_interface_rejects_unknown_and_wrong_contract_sw
         "ExpectedCodeHead",
         "FinalRunId",
         "EvidenceRoot",
+        "HardwareInput",
         "PrepareAction",
         "ExecuteAction",
         "Nonce",
@@ -1550,13 +2011,25 @@ def test_public_hardware_cli_dispatches_every_validated_mode_to_state_machine(
 
     monkeypatch.setattr(gates, "HardwareContractController", FakeController)
     monkeypatch.setattr(gates, "_git_text", lambda _repo, _args: "b" * 40)
+    campaign_profile = tmp_path / "campaign-support/feasibility/profile.json"
+    campaign_identity = {
+        "board_id": "board-campaign", "probe_serial_hash": "2" * 64,
+        "uart_serial_hash": "3" * 64, "power_identity": "power-campaign",
+    }
+    campaign_binding = _hardware_campaign()
+    monkeypatch.setattr(
+        gates, "load_hardware_campaign_input",
+        lambda _path, **_kwargs: (campaign_profile, campaign_identity, campaign_binding),
+        raising=False,
+    )
     repo = tmp_path / "repo"
     repo.mkdir()
     evidence = tmp_path / "evidence"
     base = [
         "hardware", "--contract", "0600", "--repo", str(repo),
         "--expected-code-head", "a" * 40, "--final-run-id", RUN_ID,
-        "--evidence-root", str(evidence), "--mode", mode,
+        "--evidence-root", str(evidence), "--hardware-input", str(tmp_path / "campaign.json"),
+        "--mode", mode,
     ]
     if mode == "execute":
         base.extend(["--nonce", "c" * 64, "--action-digest", "d" * 64, "--authorized"])
@@ -1566,6 +2039,9 @@ def test_public_hardware_cli_dispatches_every_validated_mode_to_state_machine(
         base.extend(["--checkpoint", str(checkpoint), "--recovery-record", str(recovery)])
 
     assert gates_main(base) == 0
+    assert calls[0][1]["support_profile"] == campaign_profile
+    assert calls[0][1]["hardware_identity"] == campaign_identity
+    assert calls[0][1]["hardware_campaign"] == campaign_binding
     assert calls[1][0] == mode
     assert json.loads(capsys.readouterr().out)["status"] in {"BLOCKED", "PASS", "FRESH_PREPARE_REQUIRED"}
 
@@ -1624,7 +2100,7 @@ def test_terminal_wrapper_schedules_executable_catalog_families_and_verifies_pac
     evidence = tmp_path / "quick-evidence"
     node = "fixture::node"
     command = (
-        sys.executable,
+        "py", "-3.12",
         "-c",
         "import json;print(json.dumps({'schema':'stm32-node-outcome/1','node_id':'fixture::node','outcome':'passed'}))",
     )
@@ -1656,6 +2132,150 @@ def test_terminal_wrapper_schedules_executable_catalog_families_and_verifies_pac
     assert retained["gate_inventory"] == ["FIXTURE-EXECUTABLE"]
     assert retained["gate_results"][0]["status"] == "PASS"
     verify_shard_package(Path(result["package"]["path"]), result["package"], result["binding"])
+
+
+def test_terminal_wrapper_blocks_executable_with_reserved_prerequisite(
+    tmp_path: Path,
+) -> None:
+    """Complete catalog prerequisites survive scheduling and reserved dependencies block bodies."""
+    support_profile = _write_support(tmp_path / "support-prerequisite")
+    evidence = tmp_path / "quick-prerequisite"
+    calls: list[str] = []
+    reserved = GateFamily(
+        family_id="RESERVED", module="STM32TK-0601", matrices=("quick-0601",),
+        owner_class="Codex/local derived agents", platform_class="windows-python",
+        evidence_type="fixture", coverage_context="controller-off", command_argv=(),
+        node_ids=(), prerequisites=(), reserved=True,
+    )
+    executable = GateFamily(
+        family_id="EXECUTABLE", module="STM32TK-0601", matrices=("quick-0601",),
+        owner_class="Codex/local derived agents", platform_class="windows-python",
+        evidence_type="fixture", coverage_context="controller-off",
+        command_argv=("py", "-3.12", "-c", "raise SystemExit(0)"),
+        node_ids=("fixture::node",), prerequisites=("RESERVED",), reserved=False,
+    )
+
+    result = run_wrapper_contract(
+        kind="quick", matrix="quick", module="STM32TK-0601", shard="fixture",
+        run_id=RUN_ID, evidence_root=evidence, expected_code_head="a" * 40,
+        gate_catalog=CATALOG, performance_catalog=RELEASE / "performance_0600.json",
+        support_profile=support_profile, controller_path=QUICK, now=lambda: NOW,
+        catalog_loader=lambda _path: GateCatalog((reserved, executable), ()),
+        verifier_blob_checker=lambda _repo, _head: RELEASE / "verify_0600_release.py",
+        gate_precheck=lambda gate: calls.append(gate.gate_id),
+    )
+
+    retained = json.loads((evidence / "controller-result.json").read_text(encoding="utf-8"))
+    assert result["status"] == "BLOCKED"
+    assert calls == []
+    assert retained["prerequisites"] == [
+        {"gate_id": "RESERVED", "requires": []},
+        {"gate_id": "EXECUTABLE", "requires": ["RESERVED"]},
+    ]
+    assert [(row["gate_id"], row["status"], row["reason"]) for row in retained["gate_results"]] == [
+        ("RESERVED", "BLOCKED", "RESERVED_CATALOG_FAMILY"),
+        ("EXECUTABLE", "BLOCKED", "PREREQUISITE_NOT_PASS"),
+    ]
+
+
+def test_terminal_verifier_derives_row_status_from_exit_and_node_outcomes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A self-consistent package cannot label exit-zero/failed-node evidence PASS."""
+    support_profile = _write_support(tmp_path / "support-terminal-row")
+    evidence = tmp_path / "final-terminal-row"
+    node = "fixture::failed"
+    command = (
+        "py", "-3.12", "-c",
+        "import json;print(json.dumps({'schema':'stm32-node-outcome/1','node_id':'fixture::failed','outcome':'failed'}))",
+    )
+    family = GateFamily(
+        family_id="FIXTURE-FAILED", module="STM32TK-0601", matrices=("final-windows",),
+        owner_class="Codex/local derived agents", platform_class="windows-python",
+        evidence_type="fixture", coverage_context="controller-off", command_argv=command,
+        node_ids=(node,), prerequisites=(), reserved=False,
+    )
+    head = "a" * 40
+    result = run_wrapper_contract(
+        kind="final", matrix="final", module="STM32TK-0601", shard="windows",
+        run_id=RUN_ID, evidence_root=evidence, expected_code_head=head,
+        gate_catalog=CATALOG, performance_catalog=RELEASE / "performance_0600.json",
+        support_profile=support_profile, controller_path=FINAL, now=lambda: NOW,
+        catalog_loader=lambda _path: GateCatalog((family,), ()),
+        verifier_blob_checker=lambda _repo, _head: RELEASE / "verify_0600_release.py",
+        verifier_invoker=lambda _repo, _head, _argv: SimpleNamespace(returncode=0),
+        gate_precheck=lambda _gate: None,
+    )
+    terminal_path = evidence / "controller-result.json"
+    terminal = json.loads(terminal_path.read_text(encoding="utf-8"))
+    assert terminal["gate_results"][0]["metadata"]["exit_code"] == 0
+    assert terminal["gate_results"][0]["metadata"]["node_outcomes"] == [
+        {"node_id": node, "outcome": "failed"}
+    ]
+    terminal["gate_results"][0]["status"] = "PASS"
+    terminal["gate_results"][0]["reason"] = "PASS"
+    terminal["status"] = "PASS"
+    terminal["reason"] = "PASS"
+    terminal["binding"]["status"] = "PASS"
+    terminal_path.write_bytes(canonical_json_bytes(terminal))
+    package_path = Path(result["package"]["path"])
+    package_path.unlink()
+    package_reference = create_shard_package(evidence, package_path, terminal["binding"])
+    package_path.with_name(package_path.name + ".manifest.json").write_bytes(
+        canonical_json_bytes(package_reference)
+    )
+    monkeypatch.setattr(release_verifier, "FROZEN_SUPPORT_PROFILE", support_profile)
+
+    with pytest.raises(VerificationError, match="status|reason|outcome"):
+        release_verifier._verify_terminal_result(
+            terminal_path, expected_head=head, expected_mode="final",
+            catalog=GateCatalog((family,), ()),
+            catalog_sha256=terminal["catalog_sha256"],
+            performance_sha256=terminal["performance_sha256"],
+            support_profile_sha256=None,
+        )
+
+
+def test_terminal_verifier_accepts_all_pass_executable_inventory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An all-PASS executable family derives aggregate PASS/PASS, not a reserved reason."""
+    support_profile = _write_support(tmp_path / "support-terminal-pass")
+    evidence = tmp_path / "final-terminal-pass"
+    node = "fixture::passed"
+    family = GateFamily(
+        family_id="FIXTURE-PASSED", module="STM32TK-0601", matrices=("final-windows",),
+        owner_class="Codex/local derived agents", platform_class="windows-python",
+        evidence_type="fixture", coverage_context="controller-off",
+        command_argv=(
+            "py", "-3.12", "-c",
+            "import json;print(json.dumps({'schema':'stm32-node-outcome/1','node_id':'fixture::passed','outcome':'passed'}))",
+        ),
+        node_ids=(node,), prerequisites=(), reserved=False,
+    )
+    head = "a" * 40
+    run_wrapper_contract(
+        kind="final", matrix="final", module="STM32TK-0601", shard="windows",
+        run_id=RUN_ID, evidence_root=evidence, expected_code_head=head,
+        gate_catalog=CATALOG, performance_catalog=RELEASE / "performance_0600.json",
+        support_profile=support_profile, controller_path=FINAL, now=lambda: NOW,
+        catalog_loader=lambda _path: GateCatalog((family,), ()),
+        verifier_blob_checker=lambda _repo, _head: RELEASE / "verify_0600_release.py",
+        verifier_invoker=lambda _repo, _head, _argv: SimpleNamespace(returncode=0),
+        gate_precheck=lambda _gate: None,
+    )
+    monkeypatch.setattr(release_verifier, "FROZEN_SUPPORT_PROFILE", support_profile)
+    terminal_path = evidence / "controller-result.json"
+    terminal = json.loads(terminal_path.read_text(encoding="utf-8"))
+
+    assert (terminal["status"], terminal["reason"]) == ("PASS", "PASS")
+    assert release_verifier._verify_terminal_result(
+        terminal_path, expected_head=head, expected_mode="final",
+        catalog=GateCatalog((family,), ()),
+        catalog_sha256=terminal["catalog_sha256"],
+        performance_sha256=terminal["performance_sha256"],
+        support_profile_sha256=None,
+    )["status"] == "PASS"
 
 
 def test_terminal_final_wrapper_retains_closed_resume_checkpoint(tmp_path: Path) -> None:
@@ -1698,3 +2318,98 @@ def test_terminal_final_wrapper_retains_closed_resume_checkpoint(tmp_path: Path)
         "resume_count": 0,
         "interruption_event": None,
     }
+
+
+def test_terminal_final_evidence_reopens_complete_support_root_and_freezes_audit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Final verification must revalidate Task 1 support and the closed audit state."""
+    evidence = tmp_path / "final-support-audit"
+    support_profile = _write_support(tmp_path / "support")
+    head = subprocess.run(
+        ["git", "-C", str(REPO), "rev-parse", "HEAD"],
+        capture_output=True, text=True, check=True,
+    ).stdout.strip()
+    run_wrapper_contract(
+        kind="final", matrix="final", module="STM32TK-0601", shard="windows",
+        run_id=RUN_ID, evidence_root=evidence, expected_code_head=head,
+        gate_catalog=CATALOG, performance_catalog=RELEASE / "performance_0600.json",
+        support_profile=support_profile, controller_path=FINAL, now=lambda: NOW,
+        verifier_blob_checker=lambda _repo, _head: RELEASE / "verify_0600_release.py",
+        verifier_invoker=lambda _repo, _head, _argv: SimpleNamespace(returncode=0),
+    )
+    monkeypatch.setattr(release_verifier, "FROZEN_SUPPORT_PROFILE", support_profile, raising=False)
+    checkpoint = evidence / "checkpoint.json"
+    terminal = json.loads((evidence / "controller-result.json").read_text(encoding="utf-8"))
+    assert terminal["audit"] == {
+        "evidence": None,
+        "reason": "AUDIT_GATE_RESERVED",
+        "schema": "stm32-terminal-audit/1",
+        "status": "BLOCKED",
+    }
+    assert release_verifier.verify_final_evidence_file(
+        checkpoint, expected_head=head, readiness=False
+    )["status"] == "PASS"
+
+    unexpected = evidence / "unexpected.txt"
+    with pytest.raises(VerificationError, match="changed|inventory|unexpected"):
+        release_verifier.verify_final_evidence_file(
+            checkpoint, expected_head=head, readiness=False,
+            before_final_reread=lambda: unexpected.write_text(
+                "late mutation", encoding="utf-8"
+            ),
+        )
+    unexpected.unlink()
+
+    with pytest.raises(VerificationError, match="support|manifest|cache|digest"):
+        release_verifier.verify_final_evidence_file(
+            checkpoint, expected_head=head, readiness=False,
+            before_final_reread=lambda: (
+                support_profile.parents[1] / "wheelhouse/package.whl"
+            ).write_bytes(b"mutated"),
+        )
+
+
+@pytest.mark.parametrize("mutation", ["missing", "forged", "nested-extra"])
+def test_terminal_final_audit_is_recursively_closed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mutation: str
+) -> None:
+    """Missing, forged, or open audit records cannot be hidden by a replacement package."""
+    evidence = tmp_path / f"final-audit-{mutation}"
+    support_profile = _write_support(tmp_path / f"support-{mutation}")
+    head = subprocess.run(
+        ["git", "-C", str(REPO), "rev-parse", "HEAD"],
+        capture_output=True, text=True, check=True,
+    ).stdout.strip()
+    result = run_wrapper_contract(
+        kind="final", matrix="final", module="STM32TK-0601", shard="windows",
+        run_id=RUN_ID, evidence_root=evidence, expected_code_head=head,
+        gate_catalog=CATALOG, performance_catalog=RELEASE / "performance_0600.json",
+        support_profile=support_profile, controller_path=FINAL, now=lambda: NOW,
+        verifier_blob_checker=lambda _repo, _head: RELEASE / "verify_0600_release.py",
+        verifier_invoker=lambda _repo, _head, _argv: SimpleNamespace(returncode=0),
+    )
+    monkeypatch.setattr(release_verifier, "FROZEN_SUPPORT_PROFILE", support_profile, raising=False)
+    result_path = evidence / "controller-result.json"
+    terminal = json.loads(result_path.read_text(encoding="utf-8"))
+    if mutation == "missing":
+        terminal.pop("audit")
+    elif mutation == "forged":
+        terminal["audit"] = {
+            "schema": "stm32-terminal-audit/1", "status": "PASS",
+            "reason": "PASS", "evidence": None,
+        }
+    else:
+        terminal["audit"]["extra"] = None
+    result_path.write_bytes(canonical_json_bytes(terminal))
+    package_path = Path(result["package"]["path"])
+    package_path.unlink()
+    reference = create_shard_package(evidence, package_path, result["binding"])
+    package_path.with_name(package_path.name + ".manifest.json").write_bytes(
+        canonical_json_bytes(reference)
+    )
+
+    with pytest.raises(VerificationError, match="audit|closed|terminal"):
+        release_verifier.verify_final_evidence_file(
+            evidence / "checkpoint.json", expected_head=head, readiness=False
+        )

@@ -259,18 +259,32 @@ def _metadata(
     code_head: str,
     started: datetime,
 ) -> dict[str, object]:
+    executable_version = "reserved"
+    if gate.argv:
+        if os.path.normcase(gate.argv[0]) == os.path.normcase(sys.executable):
+            executable_version = platform.python_version()
+        else:
+            executable_path = Path(gate.argv[0])
+            if not executable_path.is_absolute():
+                located = shutil.which(gate.argv[0], path=_safe_controller_env().get("PATH"))
+                if located is None:
+                    raise ControllerError("gate executable identity cannot be resolved")
+                executable_path = Path(located)
+            try:
+                resolved_executable = executable_path.resolve(strict=True)
+                if not resolved_executable.is_file() or resolved_executable.is_symlink():
+                    raise ControllerError("gate executable identity is not a regular file")
+                executable_version = f"sha256:{hashlib.sha256(resolved_executable.read_bytes()).hexdigest()}"
+            except OSError as exc:
+                raise ControllerError("gate executable identity cannot be read") from exc
     return {
         "architecture": platform.machine(),
         "argv": list(gate.argv),
         "code_head": code_head,
-        "cwd": str(gate.cwd),
+        "cwd": ".",
         "duration_ms": output.duration_ms,
         "executable": gate.argv[0] if gate.argv else "reserved",
-        "executable_version": (
-            platform.python_version()
-            if gate.argv and os.path.normcase(gate.argv[0]) == os.path.normcase(sys.executable)
-            else "reserved" if not gate.argv else "catalog-bound"
-        ),
+        "executable_version": executable_version,
         "exit_code": output.exit_code,
         "gate_id": gate.gate_id,
         "node_outcomes": [
@@ -424,6 +438,7 @@ def run_gate_matrix(
     execute: Callable[[GateRequest, dict[str, str]], GateRunOutput],
     precheck: Callable[[GateRequest], None] | None = None,
     postcheck: Callable[[GateRequest], None] | None = None,
+    prerequisite_statuses: Mapping[str, str] | None = None,
     run_id: str = "00000000-0000-4000-8000-000000000000",
     code_head: str = "0" * 40,
     now: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
@@ -433,13 +448,19 @@ def run_gate_matrix(
     ids = [gate.gate_id for gate in gates]
     if len(ids) != len(set(ids)):
         raise ControllerError("duplicate gate id")
-    known = set(ids)
+    initial_statuses = dict(prerequisite_statuses or {})
+    if any(
+        not isinstance(name, str) or not name or status not in {"PASS", "FAIL", "BLOCKED"}
+        for name, status in initial_statuses.items()
+    ):
+        raise ControllerError("external prerequisite status is invalid")
+    known = set(ids) | set(initial_statuses)
     for gate in gates:
         if not set(gate.prerequisites) <= known:
             raise ControllerError("unknown prerequisite")
     validate_resource_locks(gates)
     results: list[GateResult] = []
-    statuses: dict[str, str] = {}
+    statuses: dict[str, str] = initial_statuses
     environment = _safe_controller_env()
     for gate in gates:
         if any(statuses[item] != "PASS" for item in gate.prerequisites):
@@ -500,7 +521,8 @@ def run_gate_matrix(
         if matrix == "final-readiness":
             node_mismatch = False
             outcome_mismatch = False
-        status = "PASS" if output.exit_code == 0 and not node_mismatch else "FAIL"
+        failed_node = any(outcome == "failed" for _, outcome in output.node_outcomes)
+        status = "PASS" if output.exit_code == 0 and not node_mismatch and not failed_node else "FAIL"
         if outcome_mismatch:
             status = "FAIL"
         reason = "NODE_INVENTORY_MISMATCH" if node_mismatch else "NODE_OUTCOME_MISMATCH" if outcome_mismatch else "PASS" if status == "PASS" else "TIMEOUT" if output.timed_out else "PRODUCT_FAILURE"
@@ -871,6 +893,86 @@ def verify_support_root(
     }
 
 
+def load_hardware_campaign_input(
+    path: Path,
+    *,
+    expected_generator_code_head: str,
+    expected_evidence_owner: str = "user",
+) -> tuple[Path, dict[str, str], dict[str, object]]:
+    """Validate the closed 0603 campaign and return its support/identity bindings."""
+    if (
+        not path.is_absolute()
+        or not path.is_file()
+        or path.is_symlink()
+        or str(path) != os.path.abspath(path)
+    ):
+        raise ControllerError("hardware campaign input path is not a canonical regular file")
+    campaign_bytes = path.read_bytes()
+    campaign = _load_json(path)
+    if (
+        not isinstance(campaign, dict)
+        or campaign_bytes != canonical_json_bytes(campaign)
+        or campaign.get("generator_code_head") != expected_generator_code_head
+        or campaign.get("evidence_owner") != expected_evidence_owner
+    ):
+        raise ControllerError("hardware campaign input is not canonical/closed")
+    try:
+        retained = _release_call(
+            "_validate_hardware",
+            campaign,
+            product_0603=expected_generator_code_head,
+            owner=expected_evidence_owner,
+        )
+    except VerificationError as exc:
+        raise ControllerError(str(exc)) from exc
+    if not isinstance(retained, dict):
+        raise ControllerError("hardware campaign retained file snapshot is invalid")
+    support_reference = campaign.get("support_profile")
+    if not isinstance(support_reference, dict) or not isinstance(support_reference.get("path"), str):
+        raise ControllerError("hardware campaign support profile is invalid")
+    support_profile = Path(str(support_reference["path"]))
+    support_binding = verify_support_root(support_profile)
+    manifest_reference = campaign.get("support_manifest")
+    if (
+        not isinstance(manifest_reference, dict)
+        or support_binding["profile"] != {
+            "path": "feasibility/profile.json",
+            "bytes": support_reference.get("bytes"),
+            "sha256": support_reference.get("sha256"),
+        }
+        or support_binding["manifest"] != {
+            "path": "support-manifest.json",
+            "bytes": manifest_reference.get("bytes"),
+            "sha256": manifest_reference.get("sha256"),
+        }
+        or Path(str(manifest_reference.get("path"))) != support_profile.parents[1] / "support-manifest.json"
+    ):
+        raise ControllerError("hardware campaign support references differ from the full support root")
+    if path.read_bytes() != campaign_bytes or any(Path(name).read_bytes() != data for name, data in retained.items()):
+        raise ControllerError("hardware campaign input changed during validation")
+    identity = {
+        name: str(campaign[name])
+        for name in ("board_id", "probe_serial_hash", "uart_serial_hash", "power_identity")
+    }
+    campaign_binding = {
+        "schema": "stm32-hardware-campaign-binding/1",
+        "campaign_id": campaign["campaign_id"],
+        "sha256": hashlib.sha256(campaign_bytes).hexdigest(),
+        "generator_code_head": campaign["generator_code_head"],
+        "evidence_owner": campaign["evidence_owner"],
+        "board_revision": campaign["board_revision"],
+        "mcu_part": campaign["mcu_part"],
+        "mcu_uid_hash": campaign["mcu_uid_hash"],
+        "probe_model": campaign["probe_model"],
+        "uart_adapter_model": campaign["uart_adapter_model"],
+        "firmware_0400_sha256": campaign["firmware_0400"]["sha256"],
+        "firmware_0400_build_id": campaign["firmware_0400"]["build_id"],
+        "firmware_0600_sha256": campaign["firmware_0600"]["sha256"],
+        "firmware_0600_build_id": campaign["firmware_0600"]["build_id"],
+    }
+    return support_profile, identity, campaign_binding
+
+
 def prepare_evidence_root(path: Path) -> Path:
     if not path.is_absolute() or path.exists() or not path.parent.is_dir():
         raise ControllerError("evidence root must be a new canonical absolute path")
@@ -902,6 +1004,7 @@ class HardwareContractController:
         backend: HardwareBackend,
         support_profile: Path,
         hardware_identity: Mapping[str, str],
+        hardware_campaign: Mapping[str, object],
         git_runner: Callable[[list[str]], str] | None = None,
         now: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
         random_bytes: Callable[[int], bytes] = secrets.token_bytes,
@@ -922,15 +1025,54 @@ class HardwareContractController:
         }:
             raise ControllerError("hardware identity is not closed")
         identity = dict(hardware_identity)
+        placeholder_tokens = {"placeholder", "reserved", "unknown", "unset", "fixture", "test"}
         if (
             not isinstance(identity["board_id"], str)
             or not identity["board_id"]
             or not isinstance(identity["power_identity"], str)
             or not identity["power_identity"]
+            or any(
+                token in identity[name].casefold()
+                for name in ("board_id", "power_identity")
+                for token in placeholder_tokens
+            )
             or HEX64.fullmatch(identity["probe_serial_hash"]) is None
             or HEX64.fullmatch(identity["uart_serial_hash"]) is None
+            or identity["probe_serial_hash"] in {"0" * 64, "1" * 64}
+            or identity["uart_serial_hash"] in {"0" * 64, "1" * 64}
         ):
-            raise ControllerError("hardware identity is invalid")
+            raise ControllerError("hardware identity is invalid or placeholder")
+        campaign = dict(hardware_campaign)
+        campaign_keys = {
+            "schema", "campaign_id", "sha256", "generator_code_head", "evidence_owner",
+            "board_revision", "mcu_part", "mcu_uid_hash", "probe_model",
+            "uart_adapter_model", "firmware_0400_sha256", "firmware_0400_build_id",
+            "firmware_0600_sha256", "firmware_0600_build_id",
+        }
+        if (
+            set(campaign) != campaign_keys
+            or campaign["schema"] != "stm32-hardware-campaign-binding/1"
+            or not isinstance(campaign["campaign_id"], str)
+            or UUID.fullmatch(campaign["campaign_id"]) is None
+            or campaign["generator_code_head"] != controller_code_head
+            or campaign["evidence_owner"] != "user"
+            or any(
+                not isinstance(campaign[name], str) or not campaign[name]
+                for name in (
+                    "board_revision", "mcu_part", "probe_model", "uart_adapter_model",
+                    "firmware_0400_build_id", "firmware_0600_build_id",
+                )
+            )
+            or any(
+                not isinstance(campaign[name], str) or HEX64.fullmatch(campaign[name]) is None
+                for name in (
+                    "sha256", "mcu_uid_hash", "firmware_0400_sha256",
+                    "firmware_0600_sha256",
+                )
+            )
+            or campaign["firmware_0400_build_id"] == campaign["firmware_0600_build_id"]
+        ):
+            raise ControllerError("hardware campaign binding is invalid")
         selected_git_runner = git_runner or (lambda args: _git_text(repo, args))
         if selected_git_runner(["rev-parse", "HEAD"]).strip() != controller_code_head:
             raise ControllerError("hardware controller worktree HEAD changed")
@@ -953,6 +1095,7 @@ class HardwareContractController:
         self.backend = backend
         self.support_profile = support_profile
         self.hardware_identity = identity
+        self.hardware_campaign = campaign
         self.git_runner = selected_git_runner
         self.now = now
         self.random_bytes = random_bytes
@@ -965,8 +1108,7 @@ class HardwareContractController:
         self.support_binding = verify_support_root(support_profile)
         self.resource_locks = {
             "board": identity["board_id"],
-            "evidence_root": str(evidence_root),
-            "power": identity["power_identity"],
+            "evidence-root": str(evidence_root),
             "probe": identity["probe_serial_hash"],
             "uart": identity["uart_serial_hash"],
         }
@@ -993,7 +1135,7 @@ class HardwareContractController:
         if self.git_runner(["rev-parse", "HEAD"]).strip() != self.controller_code_head:
             raise ControllerError("hardware controller worktree HEAD changed")
         origin = self.git_runner(["config", "--get", "remote.origin.url"]).strip()
-        if origin.rstrip("/").removesuffix(".git") != "https://github.com/XiaoyaoLinghao/stm32-toolkit":
+        if origin != "https://github.com/XiaoyaoLinghao/stm32-toolkit.git":
             raise ControllerError("hardware controller origin changed")
         if self.git_runner(["status", "--porcelain=v1", "--untracked-files=all"]):
             raise ControllerError("hardware controller worktree is not clean")
@@ -1025,6 +1167,7 @@ class HardwareContractController:
             "catalog_sha256": self.catalog_sha256,
             "support": self.support_binding,
             "hardware_identity": self.hardware_identity,
+            "hardware_campaign": self.hardware_campaign,
             "resource_locks": self.resource_locks,
             "action_inventory": list(self.action_ids),
             "actions": [{"id": item, "state": "pending", "result": None} for item in self.action_ids],
@@ -1059,6 +1202,7 @@ class HardwareContractController:
         bound = (
             "schema", "contract", "final_run_id", "evidence_root", "controller_code_head",
             "tested_code_head", "catalog_sha256", "support", "hardware_identity",
+            "hardware_campaign",
             "resource_locks", "action_inventory",
         )
         if set(value) != set(expected) or any(value[key] != expected[key] for key in bound):
@@ -1129,21 +1273,23 @@ class HardwareContractController:
         if (
             data != canonical_json_bytes(value)
             or not isinstance(value, dict)
-            or set(value) != {"schema", "action", "status", "artifacts", "controller_code_head", "tested_code_head"}
+            or set(value) != {"schema", "action", "status", "artifacts", "controller_code_head", "tested_code_head", "campaign_sha256"}
             or value["schema"] != "stm32-hardware-action-result/1"
             or value["action"] != action_id
             or value["status"] != ("PASS" if action_state == "passed" else "FAIL")
             or value["controller_code_head"] != self.controller_code_head
             or value["tested_code_head"] != self.expected_code_head
+            or value["campaign_sha256"] != self.hardware_campaign["sha256"]
             or not isinstance(value["artifacts"], list)
         ):
             raise ControllerError("hardware result is not closed/dual-CodeHead bound")
         for artifact in value["artifacts"]:
             if (
                 not isinstance(artifact, dict)
-                or set(artifact) != {"path", "bytes", "sha256", "controller_code_head", "tested_code_head"}
+                or set(artifact) != {"path", "bytes", "sha256", "controller_code_head", "tested_code_head", "campaign_sha256"}
                 or artifact["controller_code_head"] != self.controller_code_head
                 or artifact["tested_code_head"] != self.expected_code_head
+                or artifact["campaign_sha256"] != self.hardware_campaign["sha256"]
                 or not isinstance(artifact.get("path"), str)
                 or not artifact["path"]
                 or "\\" in artifact["path"]
@@ -1173,6 +1319,7 @@ class HardwareContractController:
             "expires_at_utc": prepared["expires_at_utc"],
             "prepare_summary": summary,
             "tested_code_head": self.expected_code_head,
+            "campaign_sha256": self.hardware_campaign["sha256"],
         }
         return hashlib.sha256(canonical_json_bytes(digest_input)).hexdigest()
 
@@ -1183,6 +1330,11 @@ class HardwareContractController:
             "action", "nonce", "action_digest", "expires_at_utc", "summary", "counters", "consumed"
         }:
             raise ControllerError("hardware prepared checkpoint is not closed")
+        expected_counters = {
+            "identity_state_read": 1, "control": 0, "modify": 0,
+            "reset": 0, "halt": 0, "write": 0, "flash": 0,
+        }
+        counters = prepared.get("counters") if isinstance(prepared, dict) else None
         if (
             prepared["action"] not in self.action_ids
             or not isinstance(prepared["nonce"], str)
@@ -1196,7 +1348,12 @@ class HardwareContractController:
             or any(prepared["summary"][key] != value for key, value in self.hardware_identity.items())
             or not isinstance(prepared["summary"]["state"], str)
             or not prepared["summary"]["state"]
-            or prepared["counters"] != {"identity_state_read": 1, "control": 0, "modify": 0, "reset": 0, "halt": 0, "write": 0, "flash": 0}
+            or not isinstance(counters, dict)
+            or set(counters) != set(expected_counters)
+            or any(
+                not _exact_integer(counters[name]) or counters[name] != expected
+                for name, expected in expected_counters.items()
+            )
         ):
             raise ControllerError("hardware prepared checkpoint is invalid")
         try:
@@ -1230,7 +1387,18 @@ class HardwareContractController:
             raise ControllerError("hardware contract is complete")
         summary = self.backend.prepare(str(action["id"]))
         expected_counters = {"identity_state_read": 1, "control": 0, "modify": 0, "reset": 0, "halt": 0, "write": 0, "flash": 0}
-        if not isinstance(summary, dict) or set(summary) != {"snapshot", "counters"} or summary["counters"] != expected_counters or not isinstance(summary["snapshot"], dict):
+        if (
+            not isinstance(summary, dict)
+            or set(summary) != {"snapshot", "counters"}
+            or not isinstance(summary["counters"], dict)
+            or set(summary["counters"]) != set(expected_counters)
+            or any(
+                not _exact_integer(summary["counters"][name])
+                or summary["counters"][name] != expected
+                for name, expected in expected_counters.items()
+            )
+            or not isinstance(summary["snapshot"], dict)
+        ):
             raise ControllerError("prepare did not perform exactly one OBSERVE-only snapshot")
         snapshot = summary["snapshot"]
         if (
@@ -1258,6 +1426,7 @@ class HardwareContractController:
             "expires_at_utc": _utc(expires),
             "prepare_summary": summary,
             "tested_code_head": self.expected_code_head,
+            "campaign_sha256": self.hardware_campaign["sha256"],
         }
         digest = hashlib.sha256(canonical_json_bytes(digest_input)).hexdigest()
         checkpoint["prepared"] = {
@@ -1302,9 +1471,10 @@ class HardwareContractController:
         for artifact in body["artifacts"]:
             if (
                 not isinstance(artifact, dict)
-                or set(artifact) != {"path", "bytes", "sha256", "controller_code_head", "tested_code_head"}
+                or set(artifact) != {"path", "bytes", "sha256", "controller_code_head", "tested_code_head", "campaign_sha256"}
                 or artifact["controller_code_head"] != self.controller_code_head
                 or artifact["tested_code_head"] != self.expected_code_head
+                or artifact["campaign_sha256"] != self.hardware_campaign["sha256"]
                 or not isinstance(artifact["path"], str)
                 or not artifact["path"]
                 or "\\" in artifact["path"]
@@ -1329,6 +1499,7 @@ class HardwareContractController:
             "artifacts": body["artifacts"],
             "controller_code_head": self.controller_code_head,
             "tested_code_head": self.expected_code_head,
+            "campaign_sha256": self.hardware_campaign["sha256"],
         }
         result_path = self.evidence_root / f"{action_id}.result.json"
         result_path.write_bytes(canonical_json_bytes(result))
@@ -1496,8 +1667,7 @@ def run_wrapper_contract(
             900,
             family.node_ids,
             prerequisites=tuple(
-                dependency for dependency in family.prerequisites
-                if dependency in {entry.family_id for entry in executable}
+                family.prerequisites
             ),
         )
         for family in executable
@@ -1545,6 +1715,7 @@ def run_wrapper_contract(
         ),
         precheck=immutable_precheck,
         postcheck=immutable_precheck,
+        prerequisite_statuses={family.family_id: "BLOCKED" for family in reserved},
         run_id=run_id,
         code_head=expected_code_head,
         now=now,
@@ -1636,8 +1807,6 @@ def run_wrapper_contract(
         metadata = row["metadata"]
         for reference in metadata["retained_evidence"]:
             evidence_inventory.append(f"gates/{reference['path']}")
-    if kind == "final":
-        evidence_inventory.append("checkpoint.json")
     evidence_inventory.sort(key=lambda item: item.encode("utf-8"))
     controller_result = {
         "schema": "stm32-gate-controller-result/1",
@@ -1655,6 +1824,12 @@ def run_wrapper_contract(
         "catalog_sha256": catalog_digest,
         "performance_sha256": performance_digest,
         "support": support,
+        "audit": {
+            "schema": "stm32-terminal-audit/1",
+            "status": "BLOCKED",
+            "reason": "AUDIT_GATE_RESERVED",
+            "evidence": None,
+        },
         "gate_inventory": inventory,
         "prerequisites": prerequisite_inventory,
         "gate_results": gate_results,
@@ -1686,11 +1861,23 @@ def run_wrapper_contract(
         updated["updated_at_utc"] = _utc(now())
         write_candidate_ledger(candidate_ledger_path, updated, previous=previous)
     package_path = evidence.parent / f"{evidence.name}.shard.zip"
-    package = create_shard_package(evidence, package_path, binding)
+    package = create_shard_package(
+        evidence, package_path, binding, member_paths=evidence_inventory
+    )
     package_path.with_name(package_path.name + ".manifest.json").write_bytes(
         canonical_json_bytes(package)
     )
-    verify_shard_package(package_path, package, binding)
+    verify_shard_package(
+        package_path,
+        package,
+        binding,
+        evidence_root=evidence,
+        expected_paths=evidence_inventory,
+        allowed_external_paths=sorted(
+            evidence_inventory + (["checkpoint.json"] if kind == "final" else []),
+            key=lambda item: item.encode("utf-8"),
+        ),
+    )
     if kind in {"candidate", "final"}:
         arguments = (
             ["candidate-evidence", "--candidate-ledger", str(candidate_ledger_path)]
@@ -1733,6 +1920,7 @@ CONTROLLER_RESULT_KEYS = {
     "catalog_sha256",
     "performance_sha256",
     "support",
+    "audit",
     "gate_inventory",
     "prerequisites",
     "gate_results",
@@ -1803,6 +1991,18 @@ def _validate_controller_checkpoint(value: dict[str, object]) -> None:
             or HEX64.fullmatch(str(reference["sha256"])) is None
         ):
             raise ControllerError("candidate checkpoint support reference is invalid")
+    audit = value["audit"]
+    if (
+        not isinstance(audit, dict)
+        or set(audit) != {"schema", "status", "reason", "evidence"}
+        or audit != {
+            "schema": "stm32-terminal-audit/1",
+            "status": "BLOCKED",
+            "reason": "AUDIT_GATE_RESERVED",
+            "evidence": None,
+        }
+    ):
+        raise ControllerError("candidate checkpoint audit evidence is invalid")
     binding = value["binding"]
     if (
         not isinstance(binding, dict)
@@ -2087,10 +2287,10 @@ def _contract_self_test(kind: str) -> dict[str, object]:
         class FakeBackend:
             def __init__(self) -> None:
                 self.snapshot = {
-                    "board_id": "fixture-board",
+                    "board_id": "NUCLEO-F446RE",
                     "probe_serial_hash": "c" * 64,
                     "uart_serial_hash": "d" * 64,
-                    "power_identity": "fixture-power",
+                    "power_identity": "bench-supply-A",
                     "state": "running",
                 }
                 self.executed: list[str] = []
@@ -2146,10 +2346,24 @@ def _contract_self_test(kind: str) -> dict[str, object]:
                     backend=backend,
                     support_profile=support_profile,
                     hardware_identity={
-                        "board_id": "fixture-board",
+                        "board_id": "NUCLEO-F446RE",
                         "probe_serial_hash": "c" * 64,
                         "uart_serial_hash": "d" * 64,
-                        "power_identity": "fixture-power",
+                        "power_identity": "bench-supply-A",
+                    },
+                    hardware_campaign={
+                        "schema": "stm32-hardware-campaign-binding/1",
+                        "campaign_id": "223e4567-e89b-42d3-a456-426614174000",
+                        "sha256": "e" * 64,
+                        "generator_code_head": "b" * 40,
+                        "evidence_owner": "user",
+                        "board_revision": "rev-A", "mcu_part": "STM32F446RE",
+                        "mcu_uid_hash": "4" * 64, "probe_model": "ST-LINK/V3",
+                        "uart_adapter_model": "FT232R",
+                        "firmware_0400_sha256": "5" * 64,
+                        "firmware_0400_build_id": "firmware-0400-A",
+                        "firmware_0600_sha256": "6" * 64,
+                        "firmware_0600_build_id": "firmware-0600-A",
                     },
                     git_runner=FakeGit(),
                     now=lambda: datetime(2026, 8, 15, tzinfo=timezone.utc),
@@ -2210,6 +2424,7 @@ def _parser() -> argparse.ArgumentParser:
     hardware.add_argument("--expected-code-head", required=True)
     hardware.add_argument("--final-run-id", required=True)
     hardware.add_argument("--evidence-root", required=True)
+    hardware.add_argument("--hardware-input", required=True)
     hardware.add_argument("--mode", choices=("prepare", "execute", "resume"), required=True)
     hardware.add_argument("--nonce")
     hardware.add_argument("--action-digest")
@@ -2300,6 +2515,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                 def execute(self, _action_id: str) -> dict[str, object]:
                     raise ControllerError("reserved hardware action reached a product execute boundary")
 
+            support_profile, hardware_identity, hardware_campaign = load_hardware_campaign_input(
+                Path(args.hardware_input),
+                expected_generator_code_head=controller_head,
+            )
             controller = HardwareContractController(
                 contract=args.contract,
                 repo=repo,
@@ -2309,13 +2528,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                 final_run_id=args.final_run_id,
                 evidence_root=evidence_root,
                 backend=ReservedBackend(),
-                support_profile=Path(r"C:\tmp\stm32tk-0600-support\feasibility\profile.json"),
-                hardware_identity={
-                    "board_id": "reserved-hardware-input",
-                    "probe_serial_hash": "0" * 64,
-                    "uart_serial_hash": "1" * 64,
-                    "power_identity": "reserved-hardware-input",
-                },
+                support_profile=support_profile,
+                hardware_identity=hardware_identity,
+                hardware_campaign=hardware_campaign,
             )
             if args.mode == "prepare":
                 result = controller.prepare_reserved()

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import sys
 from pathlib import Path
@@ -88,6 +89,37 @@ EXPECTED_SOURCE_BINDINGS = {
     ),
 }
 
+EXPECTED_FAMILY_RECORD_SHA256 = (
+    "4c906acd9df70ceb22232c2ad2f8b526295df279baaed2d460d020edb4c3cd14",
+    "9ace3bc4aca6021cb5bcade45c2f17de3a3a2eadc88c63b5e04e9e751477183b",
+    "3f356eaaccab9278254b004859a291b1429193f6e0154f79d97a2833bc42ec15",
+    "22a61556627769a5c4a20fba28f95a737ee218eaafe51a525a8df9d06f281c73",
+    "7a3d8496791cdbb649ba37d658ced135a3dc24752f4f12a71b9c6118623069c0",
+    "5df07d13412ce0f25cd401c46467fb2f136d69efd00b84afb2ac63e12f1beae2",
+    "652dab609b52a588d773c22f96323304b43b6055aa9dee6ec9435ef5a92676ad",
+    "d7baff1ebc507c4a925075004cd1388bd505ae9ab4eb2ba1806280528e7936a3",
+    "c09f9dd956a50b53e9ee10646f8c72a6bf43b1fa4267f4582e67446921998732",
+    "0db981533248f5e31c9cc552d9766d7aeaf60d58dfcf3556ce69500416ba8b54",
+    "904a6583093405ca82dd0c01be6bdea0a514e894d5b64ba3361ba3b80ebae945",
+    "2467f95df820de9d810e9c591db0371c3d2d98a55ab1553cbb9d29339d68e707",
+    "08fb13f7c226385993a3d0636a5405e92005cbb9cd3c688ac14590eb09d2d64b",
+    "1e9123ce76d7077a152b7d23d41baca43b15109d2ec713525546a70803566c06",
+    "0543faf083aaff73d7494d9576fd181c4676910cde69ae9b44cfcb64851ae8e0",
+)
+
+EXPECTED_GATE_RECORD_SHA256 = (
+    "ed1bee5a7edf14974f9cf035ac22a88b6db74caad5e4e5b62108eba872cc59cb",
+    "910de3ce827b80e3997bea83dbfa3e266589a18ebc73909a388a2879759b6ffb",
+    "529208f0ae2df3587b497bcb6f6818fecbacdffa3c869685aaa757b3f1324c2c",
+    "13b5d5255e20dde26749da338217bb0943c2d5c36b1bdee1923512280f29f093",
+    "51932db7d5b09977b8082324cdc0925e14622bf925e2409df02335e2796c28a5",
+    "2d252a94a8b7a1935a79a484cf1e20f3b59451e14d718b4babb70e867430507b",
+    "03a133db57a4d616ccf2e3dd1e26be2d1d64109dc0942f2ac30e623d41694581",
+    "b3892476cd7f2719d7950480737e3f6330606f5f1000c873f1b7b84c09be2403",
+    "47992f3a75feebfec39dab2b74952cfaeea7fdc448149385219cd17159e04067",
+    "575de8621866ab27272f9295465db59907d51c4fb6ea3da2190162ca3a41739a",
+)
+
 
 @pytest.fixture
 def catalog_data() -> dict[str, object]:
@@ -101,6 +133,84 @@ def test_gate_families_and_module_slots_are_frozen() -> None:
     assert catalog.family_ids == EXPECTED_FAMILY_IDS
     assert all(not entry.command_argv for entry in catalog.reserved_entries())
     assert all(not entry.node_ids for entry in catalog.reserved_entries())
+
+
+def test_every_family_and_gate_record_matches_independent_literal_digest(
+    catalog_data: dict[str, object],
+) -> None:
+    """Every scalar, list order, version, binding, timeout, and nested field is literal-bound."""
+    digest = lambda value: hashlib.sha256(
+        json.dumps(value, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+
+    assert tuple(digest(item) for item in catalog_data["families"]) == EXPECTED_FAMILY_RECORD_SHA256
+    assert tuple(digest(item) for item in catalog_data["gates"]) == EXPECTED_GATE_RECORD_SHA256
+
+
+def test_every_semantic_field_of_every_family_rejects_type_correct_mutation(
+    catalog_data: dict[str, object],
+) -> None:
+    """The validator compares every family field for all 15 records, not a sampled row."""
+    mutators = (
+        lambda row: row.__setitem__("id", row["id"] + "-MUTATED"),
+        lambda row: row.__setitem__("module", "STM32TK-9999"),
+        lambda row: row.__setitem__("purpose", "mutated purpose"),
+        lambda row: row.__setitem__("owner_class", "mutated-owner"),
+        lambda row: row.__setitem__("platform_class", "mutated-platform"),
+        lambda row: row.__setitem__("evidence_type", "mutated-evidence"),
+        lambda row: row.__setitem__("coverage_context", "mutated-context"),
+        lambda row: row.__setitem__("matrices", ["mutated-matrix"]),
+        lambda row: row.__setitem__("prerequisites", [] if row["prerequisites"] else ["EVIDENCE-0601"]),
+        lambda row: row.__setitem__("command_argv", ["mutated-tool"]),
+        lambda row: row.__setitem__("node_ids", ["mutated::node"]),
+        lambda row: row.__setitem__("reserved", False),
+        lambda row: row["impact_map"].__setitem__("product_paths", ["mutated/product"]),
+        lambda row: row["impact_map"].__setitem__("test_paths", ["mutated/test"]),
+    )
+    for index in range(15):
+        for mutate in mutators:
+            candidate = copy.deepcopy(catalog_data)
+            mutate(candidate["families"][index])
+            with pytest.raises(CatalogError):
+                validate_catalog_data(candidate, repo=REPO)
+
+
+def test_every_semantic_field_of_every_hardware_gate_rejects_type_correct_mutation(
+    catalog_data: dict[str, object],
+) -> None:
+    """All 10 gates freeze identities, versions, sources, locks, impact, and execution fields."""
+    mutators = (
+        lambda row: row.__setitem__("id", row["id"] + "-MUTATED"),
+        lambda row: row.__setitem__("family_id", "HW-0600-DIAGNOSTIC" if row["family_id"] != "HW-0600-DIAGNOSTIC" else "HW-0600-TRANSPORT"),
+        lambda row: row.__setitem__("contract", "9999"),
+        lambda row: row.__setitem__("phase", "mutated-phase"),
+        lambda row: row.__setitem__("owner_class", "Codex"),
+        lambda row: row.__setitem__("platform_class", "mutated-platform"),
+        lambda row: row.__setitem__("evidence_type", "mutated-evidence"),
+        lambda row: row.__setitem__("coverage_context", "mutated-context"),
+        lambda row: row.__setitem__("matrices", ["mutated-matrix"]),
+        lambda row: row.__setitem__("working_directory", "tools"),
+        lambda row: row.__setitem__("command_argv", ["mutated-tool"]),
+        lambda row: row.__setitem__("required_tools", ["python312==0.0.0"]),
+        lambda row: row.__setitem__("timeout_seconds", 901),
+        lambda row: row.__setitem__("evidence_files", ["mutated.json"]),
+        lambda row: row.__setitem__("node_inventory_source", "mutated.json"),
+        lambda row: row.__setitem__("node_ids", ["mutated::node"]),
+        lambda row: row.__setitem__("prerequisites", [] if row["prerequisites"] else ["STM32TK-HW-0600-MAILBOX"]),
+        lambda row: row["resource_locks"].__setitem__("board", "mutated:board"),
+        lambda row: row["impact_map"].__setitem__("product_paths", ["mutated/product"]),
+        lambda row: row["impact_map"].__setitem__("test_paths", ["mutated/test"]),
+        lambda row: row.__setitem__("source_binding", None if row["source_binding"] is not None else {
+            "claim": "new-0600-catalog-id-for-historical-deferred-behavior",
+            "path": "missing.md", "start_line": 1, "end_line": 1, "sha256": "0" * 64,
+        }),
+    )
+    for index in range(10):
+        for mutate in mutators:
+            candidate = copy.deepcopy(catalog_data)
+            mutate(candidate["gates"][index])
+            with pytest.raises(CatalogError):
+                validate_catalog_data(candidate, repo=REPO)
 
 
 def test_hardware_gate_ids_and_dispatch_sets_are_exact_and_non_executable() -> None:

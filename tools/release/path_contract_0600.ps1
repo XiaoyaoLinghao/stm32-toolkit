@@ -18,7 +18,7 @@ function Assert-FrozenVerifierCaller {
   if ($ExpectedCodeHead -cnotmatch '^[0-9a-f]{40}$') { throw 'ExpectedCodeHead is invalid' }
   $head = (& git.exe -C $Repository rev-parse HEAD 2>$null)
   if ($LASTEXITCODE -ne 0 -or $head -cne $ExpectedCodeHead) { throw 'caller worktree HEAD mismatch' }
-  foreach ($relative in @('tools/release/run_0600_gates.py','tools/release/verify_0600_feasibility.py','tools/release/verify_0600_release.py')) {
+  foreach ($relative in @('tools/release/path_contract_0600.ps1','tools/release/run_0600_gates.py','tools/release/verify_0600_feasibility.py','tools/release/verify_0600_release.py')) {
     $path = Join-Path $Repository ($relative.Replace('/','\'))
     $working = (& git.exe -C $Repository hash-object -- $path 2>$null)
     $committed = (& git.exe -C $Repository rev-parse ($ExpectedCodeHead + ':' + $relative) 2>$null)

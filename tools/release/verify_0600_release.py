@@ -12,7 +12,9 @@ import hashlib
 import json
 import math
 import os
+import platform
 import re
+import shutil
 import stat
 import subprocess
 import sys
@@ -28,6 +30,9 @@ from typing import Callable, Mapping, Sequence
 
 CATALOG_SCHEMA = "stm32-gate-catalog/1"
 PERFORMANCE_SCHEMA = "stm32-performance-catalog/1"
+FROZEN_SUPPORT_PROFILE = Path(
+    r"C:\tmp\stm32tk-0600-support\feasibility\profile.json"
+)
 EXPECTED_FAMILY_IDS = (
     "EVIDENCE-0601",
     "DIAGNOSTICS-0601",
@@ -688,13 +693,23 @@ def _validate_shard_binding(binding: object) -> dict[str, object]:
     return dict(binding)
 
 
-def _evidence_snapshot(root: Path) -> tuple[list[dict[str, object]], dict[str, bytes]]:
+def _evidence_snapshot(
+    root: Path, expected_paths: Sequence[str] | None = None
+) -> tuple[list[dict[str, object]], dict[str, bytes]]:
     members: list[dict[str, object]] = []
     payloads: dict[str, bytes] = {}
     folded: set[str] = set()
-    for path in root.rglob("*"):
-        if path.is_dir() and not path.is_symlink():
-            continue
+    if expected_paths is None:
+        paths = [path for path in root.rglob("*") if not (path.is_dir() and not path.is_symlink())]
+    else:
+        if (
+            not _strings(expected_paths, nonempty=False)
+            or list(expected_paths) != sorted(expected_paths, key=lambda item: item.encode("utf-8"))
+            or len(expected_paths) != len(set(expected_paths))
+        ):
+            raise VerificationError("expected package member inventory is invalid")
+        paths = [root.joinpath(*_safe_relative_path(item).split("/")) for item in expected_paths]
+    for path in paths:
         relative = path.relative_to(root).as_posix()
         _safe_relative_path(relative)
         if relative.casefold() in folded:
@@ -718,14 +733,18 @@ def _zip_info(name: str) -> zipfile.ZipInfo:
 
 
 def create_shard_package(
-    evidence_root: Path, package_path: Path, binding: object
+    evidence_root: Path,
+    package_path: Path,
+    binding: object,
+    *,
+    member_paths: Sequence[str] | None = None,
 ) -> dict[str, object]:
     if not evidence_root.is_absolute() or not evidence_root.is_dir():
         raise VerificationError("evidence root must be an absolute directory")
     if not package_path.is_absolute() or package_path.exists() or not package_path.parent.is_dir():
         raise VerificationError("package output must be a new absolute file")
     frozen_binding = _validate_shard_binding(binding)
-    members, payloads = _evidence_snapshot(evidence_root)
+    members, payloads = _evidence_snapshot(evidence_root, member_paths)
     manifest = {
         "schema": "stm32-local-shard-package/1",
         "binding": frozen_binding,
@@ -744,6 +763,9 @@ def verify_shard_package(
     reference: object,
     expected_binding: object,
     *,
+    evidence_root: Path | None = None,
+    expected_paths: Sequence[str] | None = None,
+    allowed_external_paths: Sequence[str] | None = None,
     before_final_reread: Callable[[], object] | None = None,
 ) -> None:
     if not _closed(reference, PACKAGE_REFERENCE_KEYS):
@@ -755,6 +777,41 @@ def verify_shard_package(
     if reference["bytes"] != len(data) or reference["sha256"] != hashlib.sha256(data).hexdigest():
         raise VerificationError("package bytes or digest mismatch")
     frozen_binding = _validate_shard_binding(expected_binding)
+    external_references: list[dict[str, object]] | None = None
+    external_payloads: dict[str, bytes] | None = None
+    external_full_references: list[dict[str, object]] | None = None
+    external_full_payloads: dict[str, bytes] | None = None
+    if evidence_root is not None:
+        if not evidence_root.is_absolute() or not evidence_root.is_dir():
+            raise VerificationError("external evidence root is not an absolute directory")
+        external_full_references, external_full_payloads = _evidence_snapshot(evidence_root)
+        allowed = list(
+            allowed_external_paths
+            if allowed_external_paths is not None
+            else expected_paths
+            if expected_paths is not None
+            else [str(item["path"]) for item in external_full_references]
+        )
+        if (
+            not _strings(allowed, nonempty=True)
+            or allowed != sorted(allowed, key=lambda item: item.encode("utf-8"))
+            or len(allowed) != len(set(allowed))
+            or [str(item["path"]) for item in external_full_references] != allowed
+        ):
+            raise VerificationError("external evidence inventory contains an unexpected file")
+        selected = list(expected_paths) if expected_paths is not None else allowed
+        if (
+            not _strings(selected, nonempty=True)
+            or selected != sorted(selected, key=lambda item: item.encode("utf-8"))
+            or not set(selected).issubset(allowed)
+        ):
+            raise VerificationError("expected package inventory is not closed")
+        external_references = [
+            item for item in external_full_references if item["path"] in selected
+        ]
+        external_payloads = {
+            name: external_full_payloads[name] for name in selected
+        }
     try:
         archive = zipfile.ZipFile(BytesIO(data))
     except (OSError, zipfile.BadZipFile) as exc:
@@ -792,6 +849,8 @@ def verify_shard_package(
         references = manifest["members"]
         if not isinstance(references, list):
             raise VerificationError("inner member inventory is invalid")
+        if external_references is not None and references != external_references:
+            raise VerificationError("archive members differ from external retained evidence")
         expected_names = [str(item["path"]) for item in references] + ["shard-manifest.json"]
         if names != sorted(expected_names, key=lambda item: item.encode("utf-8")):
             raise VerificationError("archive/manifest member discrepancy")
@@ -806,11 +865,61 @@ def verify_shard_package(
             payload = archive.read(name)
             if item["bytes"] != len(payload) or item["sha256"] != hashlib.sha256(payload).hexdigest():
                 raise VerificationError("inner member bytes or digest mismatch")
+            if external_payloads is not None and external_payloads.get(name) != payload:
+                raise VerificationError("archive member bytes differ from external retained evidence")
+            _validate_portable_package_payload(name, payload)
             seen.add(name)
     if before_final_reread is not None:
         before_final_reread()
     if package_path.read_bytes() != data:
         raise VerificationError("package changed during verification")
+    if evidence_root is not None:
+        final_references, final_payloads = _evidence_snapshot(evidence_root)
+        if (
+            final_references != external_full_references
+            or final_payloads != external_full_payloads
+        ):
+            raise VerificationError("external retained evidence changed during verification")
+
+
+PRIVATE_PATH_PATTERN = re.compile(
+    r"(?:[A-Za-z]:[\\/]|\\\\|/(?:home|Users|tmp|var|private)(?:/|$))"
+)
+SENSITIVE_FIELD_PATTERN = re.compile(
+    r"(?:credential|password|secret|access[_-]?token|api[_-]?key)", re.IGNORECASE
+)
+
+
+def _validate_portable_package_value(value: object) -> None:
+    if isinstance(value, Mapping):
+        for key, member in value.items():
+            if SENSITIVE_FIELD_PATTERN.search(str(key)) is not None:
+                raise VerificationError("package contains a credential field")
+            _validate_portable_package_value(member)
+    elif isinstance(value, list):
+        for member in value:
+            _validate_portable_package_value(member)
+    elif isinstance(value, str) and PRIVATE_PATH_PATTERN.search(value) is not None:
+        raise VerificationError("package contains an absolute private path")
+
+
+def _validate_portable_package_payload(name: str, payload: bytes) -> None:
+    suffix = Path(name).suffix.casefold()
+    if suffix == ".json":
+        try:
+            value = json.loads(payload.decode("utf-8"))
+        except (UnicodeError, json.JSONDecodeError) as exc:
+            raise VerificationError("package JSON payload is unreadable") from exc
+        _validate_portable_package_value(value)
+    elif suffix in {".log", ".txt"}:
+        try:
+            text = payload.decode("utf-8")
+        except UnicodeError as exc:
+            raise VerificationError("package text payload is not UTF-8") from exc
+        if any(PRIVATE_PATH_PATTERN.search(line) is not None for line in text.splitlines()):
+            raise VerificationError("package log contains an absolute private path")
+        if SENSITIVE_FIELD_PATTERN.search(text) is not None:
+            raise VerificationError("package log contains credential-like text")
 
 
 AUDIT_ROOT_KEYS = {
@@ -1782,9 +1891,10 @@ def _mode_input(path_text: str, mode: str) -> object:
 TERMINAL_RESULT_KEYS = {
     "schema", "matrix", "module", "shard", "run_id", "code_head", "status",
     "reason", "product_bodies", "network_access", "remote_git_actions", "resume_count",
-    "catalog_sha256", "performance_sha256", "support", "gate_inventory",
+    "catalog_sha256", "performance_sha256", "support", "audit", "gate_inventory",
     "prerequisites", "gate_results", "evidence_inventory", "binding",
 }
+TERMINAL_AUDIT_KEYS = {"schema", "status", "reason", "evidence"}
 TERMINAL_GATE_RESULT_KEYS = {"gate_id", "status", "reason", "metadata"}
 TERMINAL_METADATA_KEYS = {
     "architecture", "argv", "code_head", "cwd", "duration_ms", "executable",
@@ -1814,7 +1924,7 @@ def _verify_terminal_metadata(
         or value["run_id"] != run_id
         or value["code_head"] != code_head
         or value["argv"] != list(family.command_argv)
-        or not isinstance(value["cwd"], str)
+        or value["cwd"] != "."
         or not isinstance(value["architecture"], str)
         or not isinstance(value["os"], str)
         or not isinstance(value["executable"], str)
@@ -1828,6 +1938,29 @@ def _verify_terminal_metadata(
     ):
         raise VerificationError("terminal gate metadata identity/type is invalid")
     _parse_utc(value["started_at_utc"])
+    expected_executable = family.command_argv[0] if family.command_argv else "reserved"
+    if value["executable"] != expected_executable:
+        raise VerificationError("terminal executable identity differs from catalog argv")
+    if not family.command_argv:
+        expected_version = "reserved"
+    elif os.path.normcase(family.command_argv[0]) == os.path.normcase(sys.executable):
+        expected_version = platform.python_version()
+    else:
+        executable_path = Path(family.command_argv[0])
+        if not executable_path.is_absolute():
+            located = shutil.which(family.command_argv[0], path=os.environ.get("PATH"))
+            if located is None:
+                raise VerificationError("terminal executable cannot be independently resolved")
+            executable_path = Path(located)
+        try:
+            resolved = executable_path.resolve(strict=True)
+            if not _regular_file(resolved):
+                raise VerificationError("terminal executable is not a regular file")
+            expected_version = f"sha256:{hashlib.sha256(resolved.read_bytes()).hexdigest()}"
+        except OSError as exc:
+            raise VerificationError("terminal executable cannot be independently read") from exc
+    if value["executable_version"] != expected_version:
+        raise VerificationError("terminal executable version/bytes are not exact")
     for stream in ("stdout", "stderr"):
         reference = value[stream]
         if (
@@ -1925,6 +2058,22 @@ def _verify_terminal_result(
             raise VerificationError("terminal support reference is invalid")
     if support_profile_sha256 is not None and support["profile"]["sha256"] != support_profile_sha256:
         raise VerificationError("terminal support profile digest differs from owner ledger")
+    try:
+        gates = __import__("run_0600_gates")
+        verified_support = gates.verify_support_root(FROZEN_SUPPORT_PROFILE)
+    except (OSError, ValueError) as exc:
+        raise VerificationError(f"terminal support root failed full revalidation: {exc}") from exc
+    if verified_support != support:
+        raise VerificationError("terminal support binding differs from fully revalidated support root")
+    audit = result["audit"]
+    if (
+        not _closed(audit, TERMINAL_AUDIT_KEYS)
+        or audit["schema"] != "stm32-terminal-audit/1"
+        or audit["status"] != "BLOCKED"
+        or audit["reason"] != "AUDIT_GATE_RESERVED"
+        or audit["evidence"] is not None
+    ):
+        raise VerificationError("terminal audit evidence is not recursively closed")
     evidence_root = checkpoint_path.parent
     catalog_matrix = "final-windows" if expected_mode == "final" else "candidate-0601"
     families = tuple(
@@ -1955,12 +2104,33 @@ def _verify_terminal_result(
             or (family.reserved and (row["status"] != "BLOCKED" or row["reason"] != "RESERVED_CATALOG_FAMILY"))
         ):
             raise VerificationError("terminal gate result state differs from catalog")
+        unexecuted_reason = str(row["reason"]) in {
+            "FINAL_FAIL_FAST", "PRECHECK_FAILED", "PREREQUISITE_NOT_PASS"
+        }
         _verify_terminal_metadata(
             row["metadata"], family=family,
             run_id=str(result["run_id"]), code_head=expected_head,
-            unexecuted=str(row["reason"]) in {"FINAL_FAIL_FAST", "PRECHECK_FAILED"},
+            unexecuted=unexecuted_reason,
         )
         metadata = row["metadata"]
+        if family.reserved:
+            expected_row = ("BLOCKED", "RESERVED_CATALOG_FAMILY")
+        elif row["reason"] == "PRECHECK_FAILED":
+            expected_row = ("FAIL", "PRECHECK_FAILED")
+        elif row["reason"] in {"FINAL_FAIL_FAST", "PREREQUISITE_NOT_PASS"}:
+            expected_row = ("BLOCKED", str(row["reason"]))
+        elif row["reason"] == "POSTCHECK_FAILED":
+            expected_row = ("FAIL", "POSTCHECK_FAILED")
+        elif metadata["timed_out"]:
+            expected_row = ("FAIL", "TIMEOUT")
+        elif metadata["exit_code"] != 0 or any(
+            item["outcome"] == "failed" for item in metadata["node_outcomes"]
+        ):
+            expected_row = ("FAIL", "PRODUCT_FAILURE")
+        else:
+            expected_row = ("PASS", "PASS")
+        if (row["status"], row["reason"]) != expected_row:
+            raise VerificationError("terminal gate status/reason is not derived from exit and outcomes")
         for reference in metadata["retained_evidence"]:
             actual = _file_reference(
                 evidence_root / "gates" / Path(str(reference["path"])),
@@ -1991,7 +2161,12 @@ def _verify_terminal_result(
                 raise VerificationError("terminal process result differs from controller metadata")
         statuses.append(str(row["status"]))
     expected_status = "FAIL" if "FAIL" in statuses else "BLOCKED" if "BLOCKED" in statuses or not families else "PASS"
-    expected_reason = "GATE_FAILURE" if expected_status == "FAIL" else "CATALOG_FAMILIES_RESERVED" if families else "MODULE_FAMILY_MISSING" if expected_status == "BLOCKED" else "PASS"
+    if expected_status == "FAIL":
+        expected_reason = "GATE_FAILURE"
+    elif expected_status == "BLOCKED":
+        expected_reason = "CATALOG_FAMILIES_RESERVED" if families else "MODULE_FAMILY_MISSING"
+    else:
+        expected_reason = "PASS"
     if result["status"] != expected_status or result["reason"] != expected_reason:
         raise VerificationError("terminal aggregate status is not derived from gates")
     executed_count = sum(
@@ -2009,21 +2184,30 @@ def _verify_terminal_result(
         or binding["status"] != expected_status
     ):
         raise VerificationError("terminal shard binding differs from controller result")
-    expected_files = ["controller-result.json"]
+    package_files = ["controller-result.json"]
     for row in rows:
         for reference in row["metadata"]["retained_evidence"]:
-            expected_files.append(f"gates/{reference['path']}")
+            package_files.append(f"gates/{reference['path']}")
+    package_files.sort(key=lambda item: item.encode("utf-8"))
+    if result["evidence_inventory"] != package_files:
+        raise VerificationError("terminal evidence inventory differs from catalog")
+    expected_files = list(package_files)
     if expected_mode == "final":
         expected_files.append("checkpoint.json")
-    expected_files.sort(key=lambda item: item.encode("utf-8"))
-    if result["evidence_inventory"] != expected_files:
-        raise VerificationError("terminal evidence inventory differs from catalog")
+        expected_files.sort(key=lambda item: item.encode("utf-8"))
     references = _reference_list(evidence_root, expected_files)
     verify_gate_evidence(evidence_root, references, expected_paths=expected_files)
     package_path = evidence_root.parent / f"{evidence_root.name}.shard.zip"
     sidecar_path = package_path.with_name(package_path.name + ".manifest.json")
     sidecar_bytes, package_reference = _read_canonical(sidecar_path)
-    verify_shard_package(package_path, package_reference, binding)
+    verify_shard_package(
+        package_path,
+        package_reference,
+        binding,
+        evidence_root=evidence_root,
+        expected_paths=package_files,
+        allowed_external_paths=expected_files,
+    )
     package_bytes = package_path.read_bytes()
     evidence_snapshot = {
         name: evidence_root.joinpath(*name.split("/")).read_bytes()
@@ -2031,15 +2215,24 @@ def _verify_terminal_result(
     }
     if before_final_reread is not None:
         before_final_reread()
+    try:
+        final_support = gates.verify_support_root(FROZEN_SUPPORT_PROFILE)
+    except (OSError, ValueError) as exc:
+        raise VerificationError(f"terminal support root changed during verification: {exc}") from exc
     if (
         checkpoint_path.read_bytes() != checkpoint_bytes
         or sidecar_path.read_bytes() != sidecar_bytes
         or package_path.read_bytes() != package_bytes
     ):
         raise VerificationError("terminal checkpoint/package sidecar changed during verification")
-    for name, data in evidence_snapshot.items():
-        if evidence_root.joinpath(*name.split("/")).read_bytes() != data:
-            raise VerificationError("terminal retained evidence changed during verification")
+    if final_support != verified_support:
+        raise VerificationError("terminal support root changed during verification")
+    final_references, final_payloads = _evidence_snapshot(evidence_root)
+    if (
+        [str(item["path"]) for item in final_references] != expected_files
+        or final_payloads != evidence_snapshot
+    ):
+        raise VerificationError("terminal retained evidence changed during verification")
     return dict(result)
 
 

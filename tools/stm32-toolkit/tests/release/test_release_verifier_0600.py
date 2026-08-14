@@ -946,10 +946,14 @@ def test_candidate_resume_validates_recovery_once_then_uses_only_rederived_verif
         "resume_count": 0,
         "catalog_sha256": ledger["catalog_sha256"],
         "performance_sha256": ledger["performance_sha256"],
-        "support": {
+            "support": {
             "profile": {"path": "feasibility/profile.json", "bytes": 1, "sha256": ledger["support_profile_sha256"]},
-            "manifest": {"path": "support-manifest.json", "bytes": 1, "sha256": "b" * 64},
-        },
+                "manifest": {"path": "support-manifest.json", "bytes": 1, "sha256": "b" * 64},
+            },
+            "audit": {
+                "schema": "stm32-terminal-audit/1", "status": "BLOCKED",
+                "reason": "AUDIT_GATE_RESERVED", "evidence": None,
+            },
         "gate_inventory": [],
         "prerequisites": [],
         "gate_results": [],
