@@ -26,6 +26,28 @@ CONTROLLER = REPO_ROOT / "tools" / "release" / "run_0502_windows_gates.ps1"
 VERIFY = REPO_ROOT / "tools" / "release" / "verify_0502_release.py"
 SUPPORT_VERIFIER = REPO_ROOT / "tools" / "stm32-monitor" / "ui" / "tests" / "verify_support.py"
 ACCEPTED_BASE = "bd59b3cd3ecd72eebcd08300f6e809ebd38f46aa"
+AUTHORITATIVE_0502_DOCS = (
+    "docs/superpowers/specs/2026-08-10-stm32tk-0502-lean-monitor-ui-design.md",
+    "docs/superpowers/plans/2026-08-10-stm32tk-0502-lean-monitor-ui.md",
+    "docs/superpowers/plans/2026-08-10-stm32tk-0502-frontend-core.md",
+    "docs/superpowers/plans/2026-08-10-stm32tk-0502-runtime-release.md",
+    "docs/superpowers/plans/2026-08-10-stm32tk-0502-browser-evidence.md",
+    "docs/superpowers/plans/2026-08-10-stm32tk-0502-monitor-ui-release-rewrite.md",
+)
+REQUIRED_RELEASE_SURFACES = (
+    ".claude-plugin/plugin.json",
+    ".claude-plugin/marketplace.json",
+    "README.md",
+    "README_zh-CN.md",
+    "bin/setup-stm32-env.ps1",
+    "bin/stm32-monitor.cmd",
+    "bin/stm32-toolkit-mcp.cmd",
+    "skills/setup-stm32-env/SKILL.md",
+    "skills/stm32-monitor/SKILL.md",
+    "docs/superpowers/plans/2026-08-04-stm32-toolkit-0.5-0.6-monitor-test-diagnostics.md",
+    "docs/superpowers/plans/2026-08-04-stm32-toolkit-complete-development-roadmap.md",
+    *AUTHORITATIVE_0502_DOCS,
+)
 
 POWERSHELL = os.environ.get("STM32_0502_TEST_POWERSHELL", "powershell.exe")
 
@@ -647,8 +669,20 @@ def fake_repo(tmp_path: Path) -> Path:
     (repo / "bin" / "setup-stm32-env.ps1").write_text("Write-Output 'setup'\n", encoding="utf-8")
     plans = repo / "docs" / "superpowers" / "plans"
     plans.mkdir(parents=True)
-    (plans / "2026-08-04-stm32-toolkit-0.5-0.6-monitor-test-diagnostics.md").write_text("plan", encoding="utf-8")
-    (plans / "2026-08-04-stm32-toolkit-complete-development-roadmap.md").write_text("roadmap", encoding="utf-8")
+    design_reference = "docs/superpowers/specs/2026-08-10-stm32tk-0502-lean-monitor-ui-design.md"
+    rewrite_reference = "docs/superpowers/plans/2026-08-10-stm32tk-0502-monitor-ui-release-rewrite.md"
+    (plans / "2026-08-04-stm32-toolkit-0.5-0.6-monitor-test-diagnostics.md").write_text(
+        design_reference, encoding="utf-8",
+    )
+    (plans / "2026-08-04-stm32-toolkit-complete-development-roadmap.md").write_text(
+        "../specs/2026-08-10-stm32tk-0502-lean-monitor-ui-design.md",
+        encoding="utf-8",
+    )
+    for relative in AUTHORITATIVE_0502_DOCS:
+        target = repo / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        reference = design_reference if relative.endswith("monitor-ui-release-rewrite.md") else rewrite_reference
+        target.write_text(f"# {target.stem}\n{reference}\n", encoding="utf-8")
     (repo / "requirements" / "follow-on-skills" / "stm32-monitor").mkdir(parents=True)
     (repo / "requirements" / "follow-on-skills" / "stm32-monitor" / "SKILL.md").write_text("historical", encoding="utf-8")
     for skill in (
@@ -1117,6 +1151,99 @@ def test_fail_fast_writes_no_log_after_first_failure(
     # node-npm-ci is the last recorded invocation; nothing after it.
     assert "node-npm-ci" in gates
     assert "node-typecheck" not in gates
+
+
+@pytest.mark.parametrize("missing_doc", AUTHORITATIVE_0502_DOCS)
+def test_authoritative_0502_document_set_is_required(
+    tmp_path: Path,
+    recording: dict,
+    fake_repo: Path,
+    launcher_exe: Path,
+    missing_doc: str,
+) -> None:
+    (fake_repo / missing_doc).unlink()
+    evidence = tmp_path / "evidence"
+    result = _run_controller(
+        tmp_path, recording, fake_repo, launcher_exe, evidence=evidence,
+    )
+    assert result.returncode != 0
+    summary = json.loads((evidence / "summary.json").read_text(encoding="utf-8"))
+    assert summary["overall"] == "FAIL"
+    names = [gate["gate"] for gate in summary["gates"]]
+    assert names[-1] == "verify-changed-scope"
+    assert "node-npm-ci" not in names
+    log = (evidence / "verify-changed-scope.log").read_text(encoding="utf-8")
+    assert missing_doc in log
+
+
+def _run_release_verifier(
+    tmp_path: Path,
+    fake_repo: Path,
+    command: str,
+    *,
+    status_by_path: dict[str, str] | None = None,
+) -> subprocess.CompletedProcess[str]:
+    statuses = status_by_path or {}
+    inventory = [
+        {"status": statuses.get(path, "A"), "path": path}
+        for path in REQUIRED_RELEASE_SURFACES
+    ]
+    inventory_path = tmp_path / f"{command}-inventory.json"
+    inventory_path.write_text(json.dumps(inventory), encoding="utf-8")
+    return subprocess.run(
+        [
+            sys.executable,
+            str(VERIFY),
+            command,
+            "--repo",
+            str(fake_repo),
+            "--inventory",
+            str(inventory_path),
+        ],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+
+def test_deleted_authoritative_document_is_not_an_active_scope_surface(
+    tmp_path: Path, fake_repo: Path,
+) -> None:
+    missing_doc = AUTHORITATIVE_0502_DOCS[0]
+    result = _run_release_verifier(
+        tmp_path,
+        fake_repo,
+        "scope",
+        status_by_path={missing_doc: "D"},
+    )
+    assert result.returncode != 0
+    assert missing_doc in result.stderr
+
+
+def test_static_closure_requires_authoritative_document_files(
+    tmp_path: Path, fake_repo: Path,
+) -> None:
+    missing_doc = AUTHORITATIVE_0502_DOCS[-1]
+    (fake_repo / missing_doc).unlink()
+    result = _run_release_verifier(tmp_path, fake_repo, "static")
+    assert result.returncode != 0
+    assert missing_doc in result.stderr
+
+
+def test_static_closure_requires_resolvable_authoritative_document_links(
+    tmp_path: Path, fake_repo: Path,
+) -> None:
+    roadmap = (
+        fake_repo
+        / "docs/superpowers/plans/2026-08-04-stm32-toolkit-complete-development-roadmap.md"
+    )
+    roadmap.write_text(
+        "2026-08-10-stm32tk-0502-lean-monitor-ui-design.md",
+        encoding="utf-8",
+    )
+    result = _run_release_verifier(tmp_path, fake_repo, "static")
+    assert result.returncode != 0
+    assert "../specs/2026-08-10-stm32tk-0502-lean-monitor-ui-design.md" in result.stderr
 
 
 # ---------------------------------------------------------------------------

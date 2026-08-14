@@ -29,7 +29,7 @@
 |---|---|---|
 | 0.3.0 | `2026-08-04-stm32-toolkit-0.3-project-migration-build.md` | Schema v2, Keil inspect/convert, deterministic GCC/VS Code generation, build and firmware identity |
 | 0.4.0 | `2026-08-04-stm32-toolkit-0.4-probe-debug.md` | Probe leases/service, safe flash, Cortex-Debug handoff, typed variable/register/Fault evidence |
-| 0.5.0 | `2026-08-10-stm32tk-0502-lean-monitor-ui-design.md` | Rebuilt project-isolated Monitor service and offline UI; unified 0.5.0 release; zero presets; explicit connect/start |
+| 0.5.0 | `../specs/2026-08-10-stm32tk-0502-lean-monitor-ui-design.md` | Rebuilt project-isolated Monitor service and offline UI; unified 0.5.0 release; zero presets; explicit connect/start |
 | 0.6.0 | `2026-08-04-stm32-toolkit-0.5-0.6-monitor-test-diagnostics.md` | Host/target test execution and evidence-driven AI diagnostics (deferred; not started before 0.5.0 acceptance) |
 | 0.7.0–1.0.0 | `2026-08-04-stm32-toolkit-0.7-1.0-creation-acceptance.md` | CubeMX new-project creation and real-board vertical acceptance |
 

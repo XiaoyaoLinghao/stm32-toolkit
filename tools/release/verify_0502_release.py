@@ -35,6 +35,35 @@ REQUIRED_ACTIVE = {
     "skills/stm32-monitor/SKILL.md",
     "docs/superpowers/plans/2026-08-04-stm32-toolkit-0.5-0.6-monitor-test-diagnostics.md",
     "docs/superpowers/plans/2026-08-04-stm32-toolkit-complete-development-roadmap.md",
+    "docs/superpowers/specs/2026-08-10-stm32tk-0502-lean-monitor-ui-design.md",
+    "docs/superpowers/plans/2026-08-10-stm32tk-0502-lean-monitor-ui.md",
+    "docs/superpowers/plans/2026-08-10-stm32tk-0502-frontend-core.md",
+    "docs/superpowers/plans/2026-08-10-stm32tk-0502-runtime-release.md",
+    "docs/superpowers/plans/2026-08-10-stm32tk-0502-browser-evidence.md",
+    "docs/superpowers/plans/2026-08-10-stm32tk-0502-monitor-ui-release-rewrite.md",
+}
+REQUIRED_REFERENCES = {
+    "docs/superpowers/plans/2026-08-04-stm32-toolkit-complete-development-roadmap.md": (
+        "../specs/2026-08-10-stm32tk-0502-lean-monitor-ui-design.md",
+    ),
+    "docs/superpowers/plans/2026-08-04-stm32-toolkit-0.5-0.6-monitor-test-diagnostics.md": (
+        "docs/superpowers/specs/2026-08-10-stm32tk-0502-lean-monitor-ui-design.md",
+    ),
+    "docs/superpowers/plans/2026-08-10-stm32tk-0502-lean-monitor-ui.md": (
+        "docs/superpowers/plans/2026-08-10-stm32tk-0502-monitor-ui-release-rewrite.md",
+    ),
+    "docs/superpowers/plans/2026-08-10-stm32tk-0502-frontend-core.md": (
+        "docs/superpowers/plans/2026-08-10-stm32tk-0502-monitor-ui-release-rewrite.md",
+    ),
+    "docs/superpowers/plans/2026-08-10-stm32tk-0502-runtime-release.md": (
+        "docs/superpowers/plans/2026-08-10-stm32tk-0502-monitor-ui-release-rewrite.md",
+    ),
+    "docs/superpowers/plans/2026-08-10-stm32tk-0502-browser-evidence.md": (
+        "docs/superpowers/plans/2026-08-10-stm32tk-0502-monitor-ui-release-rewrite.md",
+    ),
+    "docs/superpowers/plans/2026-08-10-stm32tk-0502-monitor-ui-release-rewrite.md": (
+        "docs/superpowers/specs/2026-08-10-stm32tk-0502-lean-monitor-ui-design.md",
+    ),
 }
 # Report path is a legitimate tracked release surface (report-only commits).
 SPECIAL_ALLOWED = {
@@ -88,7 +117,7 @@ def _changed_files(rows: object) -> list[dict[str, object]]:
 def scope(args: argparse.Namespace) -> None:
     repo = Path(args.repo).resolve(strict=True)
     rows = _changed_files(_read(Path(args.inventory)))
-    paths = {row["path"] for row in rows}
+    active_paths = {row["path"] for row in rows if row["status"] != "D"}
     for row in rows:
         path = row["path"]
         status = row["status"]
@@ -101,10 +130,10 @@ def scope(args: argparse.Namespace) -> None:
         )
         if not allowed:
             raise SystemExit(f"out-of-scope changed path: {path}")
-    if not REQUIRED_ACTIVE <= paths:
+    if not REQUIRED_ACTIVE <= active_paths:
         raise SystemExit(
             "required active release surface missing from inventory: "
-            + ", ".join(sorted(REQUIRED_ACTIVE - paths))
+            + ", ".join(sorted(REQUIRED_ACTIVE - active_paths))
         )
     for row in rows:
         name = row["path"]
@@ -210,9 +239,28 @@ def static(args: argparse.Namespace) -> None:
             "active Skill set differs from release contract: "
             + ", ".join(sorted(SKILLS ^ active))
         )
-    inventory = {row["path"] for row in _changed_files(_read(Path(args.inventory)))}
+    rows = _changed_files(_read(Path(args.inventory)))
+    inventory = {row["path"] for row in rows if row["status"] != "D"}
     if not REQUIRED_ACTIVE <= inventory:
         raise SystemExit("active docs/marketplace are absent from inventory")
+    missing_files = sorted(
+        path
+        for path in REQUIRED_ACTIVE
+        if not (repo / path).is_file() or (repo / path).is_symlink()
+    )
+    if missing_files:
+        raise SystemExit(
+            "active release surface is missing or not a regular file: "
+            + ", ".join(missing_files)
+        )
+    for path, references in REQUIRED_REFERENCES.items():
+        text = (repo / path).read_text("utf-8", errors="strict")
+        for reference in references:
+            if reference not in text:
+                raise SystemExit(
+                    f"required release-document reference is missing from {path}: "
+                    f"{reference}"
+                )
     print("static: manifest closure, eight Skills, and active surfaces OK")
 
 
