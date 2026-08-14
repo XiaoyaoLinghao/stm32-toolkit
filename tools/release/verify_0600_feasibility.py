@@ -158,6 +158,7 @@ def _profile_manifest_bindings(
     references: list[tuple[object, object | None]] = [
         (chromium["executable"], chromium["executable_sha256"]),
         (chromium["managed_profile"]["seed"], chromium["managed_profile"]["sha256"]),
+        (chromium["version_evidence"]["path"], chromium["version_evidence"]["sha256"]),
         (chromium["blank_page"]["path"], chromium["blank_page"]["sha256"]),
         (fixture["path"], fixture["sha256"]),
     ]
@@ -268,6 +269,7 @@ def verify_feasibility(profile: object) -> VerificationResult:
             "package_root",
             "package_tree_sha256",
             "managed_profile",
+            "version_evidence",
             "blank_page",
         },
     ):
@@ -282,6 +284,9 @@ def verify_feasibility(profile: object) -> VerificationResult:
         or not _nonempty(chromium["managed_profile"]["id"])
         or not _relative_file(chromium["managed_profile"]["seed"])
         or not _digest(chromium["managed_profile"]["sha256"])
+        or not _closed(chromium["version_evidence"], {"path", "sha256"})
+        or not _relative_file(chromium["version_evidence"]["path"])
+        or not _digest(chromium["version_evidence"]["sha256"])
         or not _closed(chromium["blank_page"], {"path", "sha256"})
         or not _relative_file(chromium["blank_page"]["path"])
         or not _digest(chromium["blank_page"]["sha256"])
@@ -401,6 +406,7 @@ def verify_result(
         "package_tree_sha256",
         "managed_profile_id",
         "managed_profile_path",
+        "version_evidence",
         "blank_page",
         "argv",
         "exit_code",
@@ -417,6 +423,7 @@ def verify_result(
         or chromium["version"] != declared_chromium["version"]
         or chromium["package_tree_sha256"] != declared_chromium["package_tree_sha256"]
         or chromium["managed_profile_id"] != declared_chromium["managed_profile"]["id"]
+        or chromium["version_evidence"] != declared_chromium["version_evidence"]
         or chromium["blank_page"] != declared_chromium["blank_page"]["path"]
         or chromium["argv"] != expected_chromium_argv(declared_chromium, support_root, run["evidence_root"])
         or chromium["managed_profile_path"] != str(PureWindowsPath(str(run["evidence_root"])) / "managed-chromium-profile")
@@ -643,16 +650,17 @@ def _run(args: argparse.Namespace) -> VerificationResult:
         chromium = profile["chromium"]
         assert isinstance(chromium, Mapping)
         executable = _safe_support_path(support, str(chromium["executable"]))
-        version_run = subprocess.run([str(executable), "--version"], capture_output=True, text=True, timeout=30, check=False)
-        if version_run.returncode != 0:
-            raise ValueError("managed Chromium version command failed")
-        version_match = re.search(r"\d+(?:\.\d+)+", version_run.stdout + version_run.stderr)
+        version_evidence = _safe_support_path(support, str(chromium["version_evidence"]["path"]))
+        version_bytes = version_evidence.read_bytes()
+        version_text = version_bytes.decode("utf-8", errors="strict")
+        version_match = re.search(r"\d+(?:\.\d+)+", version_text)
         if version_match is None:
-            raise ValueError("managed Chromium did not report a version")
+            raise ValueError("managed Chromium version evidence is malformed")
         chromium_version = version_match.group(0)
+        if chromium_version != chromium["version"]:
+            raise ValueError("managed Chromium version evidence does not match the profile")
         launch_argv = expected_chromium_argv(chromium, str(support), str(evidence))
         launch = subprocess.run([str(executable), *launch_argv], capture_output=True, text=True, timeout=30, check=False)
-        version_bytes = (version_run.stdout + version_run.stderr).encode("utf-8")
         launch_bytes = _write_json(
             evidence / "chromium-launch.json",
             {
@@ -683,6 +691,7 @@ def _run(args: argparse.Namespace) -> VerificationResult:
                 "package_tree_sha256": chromium["package_tree_sha256"],
                 "managed_profile_id": chromium["managed_profile"]["id"],
                 "managed_profile_path": str(evidence / "managed-chromium-profile"),
+                "version_evidence": chromium["version_evidence"],
                 "blank_page": chromium["blank_page"]["path"],
                 "argv": launch_argv,
                 "exit_code": launch.returncode,

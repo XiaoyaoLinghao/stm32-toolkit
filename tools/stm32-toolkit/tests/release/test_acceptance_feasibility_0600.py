@@ -56,6 +56,10 @@ def valid_profile() -> dict[str, object]:
                 "seed": "feasibility/chromium-profile-seed.json",
                 "sha256": _digest(33),
             },
+            "version_evidence": {
+                "path": "chromium/chrome-version.manifest",
+                "sha256": _digest(40),
+            },
             "blank_page": {"path": "feasibility/blank.html", "sha256": _digest(34)},
         },
         "firmware_fixture": {
@@ -90,6 +94,11 @@ def valid_manifest(valid_profile: dict[str, object]) -> dict[str, object]:
     files.extend(
         [
             {"path": "chromium/chrome.exe", "bytes": 101, "sha256": _digest(31)},
+            {
+                "path": "chromium/chrome-version.manifest",
+                "bytes": 105,
+                "sha256": _digest(40),
+            },
             {
                 "path": "feasibility/chromium-profile-seed.json",
                 "bytes": 102,
@@ -143,6 +152,7 @@ def valid_result(
             "package_tree_sha256": chromium["package_tree_sha256"],
             "managed_profile_id": chromium["managed_profile"]["id"],
             "managed_profile_path": evidence_root + r"\managed-chromium-profile",
+            "version_evidence": copy.deepcopy(chromium["version_evidence"]),
             "blank_page": chromium["blank_page"]["path"],
             "argv": expected_chromium_argv(
                 chromium, support_root, evidence_root
@@ -207,6 +217,17 @@ def test_feasibility_rejects_missing_owner_linux_and_unmanaged_chromium(
     assert result.code == code
 
 
+def test_feasibility_requires_manifest_bound_chromium_version_evidence(
+    valid_profile: dict[str, object]
+) -> None:
+    """A launch alone cannot substitute for the exact managed-browser version proof."""
+    del valid_profile["chromium"]["version_evidence"]
+
+    result = verify_feasibility(valid_profile)
+
+    assert result.code == "FEASIBILITY_CAPABILITY_MISSING"
+
+
 def test_result_binds_exact_profile_manifest_tools_fixture_and_blank_launch(
     valid_profile: dict[str, object],
     valid_manifest: dict[str, object],
@@ -244,6 +265,12 @@ def test_result_binds_exact_profile_manifest_tools_fixture_and_blank_launch(
         ),
         (
             lambda result: result["chromium"]["argv"].append("https://example.test"),
+            "FEASIBILITY_RESULT_MISMATCH",
+        ),
+        (
+            lambda result: result["chromium"]["version_evidence"].__setitem__(
+                "sha256", _digest(97)
+            ),
             "FEASIBILITY_RESULT_MISMATCH",
         ),
         (
