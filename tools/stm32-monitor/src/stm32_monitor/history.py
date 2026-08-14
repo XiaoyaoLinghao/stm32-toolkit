@@ -206,6 +206,14 @@ class HistoryPage:
         }
 
 
+@dataclass(frozen=True)
+class _VerifiedHistoryPageCache:
+    key: tuple[object, ...]
+    snapshot: tuple[tuple[str, int, int, int, int], ...]
+    page: HistoryPage
+    batch_sizes: tuple[int, ...]
+
+
 def _batch_evidence(batch: HistoryBatchSlice) -> tuple[object, ...]:
     return (
         batch.binding,
@@ -337,6 +345,67 @@ def _isolated_verified_value(value: SampleValue) -> SampleValue:
         "definition": value.definition,
     }
     object.__setattr__(result, "__dict__", fields)
+    return result
+
+
+def _isolated_verified_page(
+    page: HistoryPage,
+    batch_sizes: Sequence[int],
+) -> HistoryPage:
+    if (
+        type(page) is not HistoryPage
+        or type(page.batches) is not tuple
+        or len(page.batches) != len(batch_sizes)
+        or any(type(batch) is not HistoryBatchSlice for batch in page.batches)
+        or any(type(size) is not int or size < 1 for size in batch_sizes)
+    ):
+        raise TypeError("verified history page cache is invalid")
+    batches: list[HistoryBatchSlice] = []
+    for batch, serialized_bytes in zip(page.batches, batch_sizes, strict=True):
+        if (
+            type(batch.binding) is not ObservationBinding
+            or type(batch.group_id) is not UUID
+            or type(batch.run_id) is not UUID
+            or type(batch.values) is not tuple
+            or any(
+                type(value) is not SampleValue or type(value.watch) is not WatchItem
+                for value in batch.values
+            )
+        ):
+            raise TypeError("verified history page cache is invalid")
+        clone = object.__new__(HistoryBatchSlice)
+        object.__setattr__(clone, "binding", _isolated_verified_binding(batch.binding))
+        object.__setattr__(clone, "group_id", UUID(int=batch.group_id.int))
+        object.__setattr__(clone, "group_revision", batch.group_revision)
+        object.__setattr__(clone, "run_id", UUID(int=batch.run_id.int))
+        object.__setattr__(clone, "sequence", batch.sequence)
+        object.__setattr__(clone, "scheduled_unix_ns", batch.scheduled_unix_ns)
+        object.__setattr__(clone, "captured_unix_ns", batch.captured_unix_ns)
+        object.__setattr__(clone, "latency_ns", batch.latency_ns)
+        object.__setattr__(clone, "actual_rate_hz", float(batch.actual_rate_hz))
+        object.__setattr__(clone, "subscriber_drops", batch.subscriber_drops)
+        object.__setattr__(clone, "history_drops", batch.history_drops)
+        object.__setattr__(clone, "deadline_drops", batch.deadline_drops)
+        object.__setattr__(clone, "start_ordinal", batch.start_ordinal)
+        object.__setattr__(clone, "batch_value_count", batch.batch_value_count)
+        object.__setattr__(
+            clone,
+            "values",
+            tuple(_isolated_verified_value(value) for value in batch.values),
+        )
+        object.__setattr__(
+            clone,
+            "_verified_serialized_bytes",
+            (_TRUSTED_HISTORY_SIZE, serialized_bytes),
+        )
+        object.__setattr__(clone, "_verified_marker", _TRUSTED_HISTORY_SLICE)
+        batches.append(clone)
+    result = object.__new__(HistoryPage)
+    object.__setattr__(result, "batches", tuple(batches))
+    object.__setattr__(result, "value_count", page.value_count)
+    object.__setattr__(result, "next_cursor", page.next_cursor)
+    object.__setattr__(result, "serialized_bytes", page.serialized_bytes)
+    object.__setattr__(result, "_verified_marker", _TRUSTED_HISTORY_PAGE)
     return result
 
 
@@ -849,6 +918,7 @@ class HistoryStore:
         self._verified_cache_lock = threading.Lock()
         self._verified_cache_snapshot: tuple[tuple[str, int, int, int, int], ...] | None = None
         self._verified_cache: OrderedDict[tuple[object, ...], _VerifiedHistoryBatch] = OrderedDict()
+        self._verified_page_cache: _VerifiedHistoryPageCache | None = None
 
     def _observed_storage_snapshot(
         self,
@@ -989,11 +1059,45 @@ class HistoryStore:
         except ValueError:
             return failure(operation, "MONITOR_HISTORY_QUERY_INVALID", "history query is invalid")
         effective_limit = min(query.limit, MAX_HISTORY_VALUES)
+        page_cache_key = (
+            query.session_id,
+            query.start_ns,
+            query.end_ns,
+            effective_limit,
+            query.cursor,
+            query.run_id,
+            query.group_id,
+            query.selector_kind,
+            query.selector,
+        )
         observed_snapshot: tuple[tuple[str, int, int, int, int], ...] | None = None
         pending_cache: list[_VerifiedHistoryBatch] = []
+        page_batch_sizes: tuple[int, ...] = ()
+
+        if cache_verified:
+            try:
+                before = self._observed_storage_snapshot()
+                with self._verified_cache_lock:
+                    cached_page = self._verified_page_cache
+                if (
+                    before is not None
+                    and before[1]
+                    and cached_page is not None
+                    and cached_page.key == page_cache_key
+                    and cached_page.snapshot == before[0]
+                ):
+                    page = _isolated_verified_page(
+                        cached_page.page,
+                        cached_page.batch_sizes,
+                    )
+                    after = self._observed_storage_snapshot()
+                    if after == before:
+                        return success(operation, page)
+            except StorageFailure as error:
+                return _storage_failure(operation, error)
 
         def read(connection: sqlite3.Connection) -> HistoryPage:
-            nonlocal observed_snapshot
+            nonlocal observed_snapshot, page_batch_sizes
             snapshot = self._observed_storage_snapshot()
             if snapshot is None:
                 trusted_cache: dict[tuple[object, ...], _VerifiedHistoryBatch] = {}
@@ -1408,6 +1512,7 @@ class HistoryStore:
                 selected_count,
                 next_cursor,
             )
+            page_batch_sizes = tuple(item[3] for item in selected)
             return _verified_history_page(
                 final_batches,
                 value_count=selected_count,
@@ -1438,9 +1543,19 @@ class HistoryStore:
                             self._verified_cache.move_to_end(evidence.key)
                         while len(self._verified_cache) > _VERIFIED_HISTORY_CACHE_BATCHES:
                             self._verified_cache.popitem(last=False)
+                        if page_batch_sizes:
+                            self._verified_page_cache = _VerifiedHistoryPageCache(
+                                page_cache_key,
+                                observed_snapshot,
+                                page,
+                                page_batch_sizes,
+                            )
                     else:
                         self._verified_cache.clear()
                         self._verified_cache_snapshot = None
+                        self._verified_page_cache = None
+                if stable and page_batch_sizes:
+                    page = _isolated_verified_page(page, page_batch_sizes)
             if transient_cache is not None and observed_snapshot is not None:
                 with self._database._integrity_lock:  # noqa: SLF001
                     stable = self._database._integrity_identity == observed_snapshot  # noqa: SLF001

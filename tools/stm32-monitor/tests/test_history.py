@@ -812,12 +812,12 @@ def test_ten_thousand_value_query_normalizes_and_serializes_final_page_once(
         )
         assert warm.ok and warm.data == result.data
         assert observed == {
-            "sql": 1,
+            "sql": 0,
             "decode": 0,
             "evidence_values": 0,
             "encode_value": 0,
             "cursor": 0,
-                "size": 3,
+            "size": 0,
         }
     finally:
         store.close()
