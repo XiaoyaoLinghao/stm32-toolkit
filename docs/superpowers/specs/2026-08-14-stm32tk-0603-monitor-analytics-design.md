@@ -6,7 +6,7 @@
 **Accepted base:** the accepted report commit of `STM32TK-0602-DIAGNOSTIC-LOOP`
 **Fixed program base:** `bb6bc5e9ee937e4ce53996b31f25bf1109ffe13f` (`v0.5.0`)
 **Specification owner:** Codex
-**Implementation owner:** OpenClaw, when a work order is authorized
+**Implementation owner:** Codex in the separately authorized 0.6 development conversation
 **Review and acceptance owner:** Codex
 **Remote actions authorized by this document:** none
 
@@ -390,10 +390,13 @@ smoke, not counted as handwritten source.
 ## 16. Performance contract
 
 The reference dataset is eight runs × eight selectors × 10,000 raw samples = 640,000 samples,
-eight directed difference pairs, and no more than 64,000 returned plot points. Tests use at least
-three warmups and ten measured runs under CPython 3.10 and 3.12 without coverage.
+eight directed difference pairs, and no more than 64,000 returned plot points. The common program
+calibration method runs independently under CPython 3.10 and 3.12 without coverage. The following
+values are user-facing design maxima. A provisional result above a maximum requires implementation
+improvement without changing workload or maximum; only within-maximum thresholds may be committed
+as the accepted calibration before optional post-baseline optimization and candidate.
 
-| Operation | Ceiling |
+| Operation | Design maximum |
 |---|---:|
 | complete comparison request | p95 1,000 ms |
 | quality computation | p95 750 ms |
@@ -402,16 +405,22 @@ three warmups and ten measured runs under CPython 3.10 and 3.12 without coverage
 | five-minute retained-heap slope | <=2 MiB/min |
 | five-minute queue growth | 0 |
 
-Each also permits at most 15% regression from its accepted baseline. All 0.5 sampling, history,
-export, UI responsiveness, queue, memory, and five-minute thresholds remain unchanged. The test
-records raw samples, returned points, per-stage durations, CPU, heap/retained heap, GC, queue,
-long tasks, browser, OS, Python, and artifact hashes.
+Each calibrated result must also stay within 15% of its accepted baseline. All 0.5 sampling,
+history, export, UI responsiveness, queue, memory, and five-minute thresholds remain unchanged.
+The five-minute gate retains its accepted continuous warmup/measurement windows and adds a fixed
+analytics interaction cadence. The test records raw samples, returned points, per-stage durations,
+CPU, heap/retained heap, GC, queue, long tasks, browser, OS, Python, and artifact hashes.
 
 ## 17. Candidate and final release matrix
 
-0603 first runs a collect-all candidate matrix containing:
+Before each measured UI/backend hot path, 0603 freezes its exact performance workload and design
+maximum; before candidate it freezes the within-maximum accepted calibration. After every 0603
+product, packaging, browser, and release test exists and before candidate, it fills only its
+reserved catalog families with exact commands and collected nodes and freezes the complete final
+catalog/node/performance digests. It then runs a collect-all candidate containing:
 
-- complete 0601 and 0602 regression/immutability contracts;
+- complete 0601/0602 contract and immutability checks plus regressions selected by the catalog
+  impact map; unchanged real-hardware scenarios are not repeated unless a shared surface changed;
 - Windows/Linux CPython 3.10/3.12 Monitor and Toolkit shards;
 - Node typecheck, lint, unit, branch coverage, build, dist/audit, and deterministic manifest;
 - Chromium functional/security/accessibility/isolation/performance at 1280 and 1024/200%;
@@ -420,11 +429,14 @@ long tasks, browser, OS, Python, and artifact hashes.
 - offline wheels, managed launchers, plugin/Skills/version/docs inventory;
 - source, schema mirror, dependency, expected-path, artifact, and clean-tree checks.
 
-After candidate PASS, ordered preflight runs every final gate individually at the same CodeHead
-and catalog/support digests. The 0603 product CodeHead is then frozen. No optimization, product,
-test, helper, dependency, documentation, Skill, or acceptance correction is allowed without a new
-CodeHead and a new preflight. Exactly one complete fail-fast final matrix is run on the frozen
-CodeHead. A final tracked report is created only after overall PASS and is report-only.
+After candidate PASS, final readiness runs no product test bodies. It verifies the same CodeHead,
+complete catalog/node/performance digests, support/dependency manifests, empty evidence roots,
+tool/browser versions, owner assignments, connected hardware identities, disk/power state, and
+controller self-tests. The 0603 product CodeHead is then frozen. No optimization, product, test,
+helper, dependency, documentation, Skill, or acceptance correction is allowed without a new
+CodeHead and a new candidate/readiness cycle. One logical multi-platform final matrix is run on
+the frozen CodeHead; only the bounded external infrastructure recovery policy applies. A final
+tracked report is created only after reconciliation PASS and is report-only.
 
 Tag creation, push, PR/merge, and remote branch cleanup are separate user-authorized actions and
 are not implied by matrix PASS or this specification.
@@ -441,6 +453,6 @@ are not implied by matrix PASS or this specification.
 6. explicit AI bundles are deterministic, verified, minimally scoped, and never uploaded;
 7. every changed product file meets branch coverage and all absolute/regression thresholds pass;
 8. all 0.5, 0601, 0602, platform, browser, hardware, install, integrity, and inventory gates pass;
-9. one immutable CodeHead passes ordered preflight and exactly one complete final matrix;
+9. one immutable CodeHead passes non-executing readiness and one logical complete final matrix;
 10. the final report-only commit records the evidence, and any remote release action waits for
     explicit user authorization.

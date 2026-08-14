@@ -5,15 +5,17 @@
 **Module:** `STM32TK-0601-TEST-EVIDENCE`
 **Accepted base:** `bb6bc5e9ee937e4ce53996b31f25bf1109ffe13f` (`v0.5.0`)
 **Specification owner:** Codex
-**Implementation owner:** OpenClaw, when a work order is authorized
+**Implementation owner:** Codex in the separately authorized 0.6 development conversation
 **Review and acceptance owner:** Codex
 **Remote actions authorized by this document:** none
 
 ## 1. Objective
 
-Build the immutable evidence foundation and the complete Host/Target testing surface before
-diagnostic or analytics work begins. This module also makes the 0.6 acceptance contract
-executable, so later implementation cannot discover or redefine release gates at the end.
+After the acceptance-feasibility phase proves every external dependency, build the immutable
+evidence foundation and the complete Host/Target testing surface before diagnostic or analytics
+work begins. This module makes the gate schema, stable gate families, evidence contract, and 0601
+exact gates executable; later modules add their exact commands/nodes only inside reserved families
+before their own candidates.
 
 The module is complete only when Project Schema v3, evidence persistence, deterministic
 Host tests, four Target transports, CLI/MCP surfaces, and all quick/candidate/final gate
@@ -30,7 +32,7 @@ controllers are implemented and pass the 0601 candidate matrix.
 - memory-mailbox, RTT, UART, and semihosting Target transports;
 - Probe protocol v2 schema frozen in full, with the testing transport subset implemented;
 - CLI, MCP, and a thin `test-firmware` Skill;
-- frozen 0.6 gate catalog and self-tested matrix controllers;
+- frozen gate schema/families, exact 0601 catalog/nodes, and self-tested matrix controllers;
 - module coverage, performance, security, isolation, offline-install, and real-board evidence.
 
 ### 2.2 Excluded
@@ -66,8 +68,10 @@ tools/stm32-toolkit/src/stm32_toolkit/
 
 skills/test-firmware/SKILL.md
 tools/release/{gates_0600.json,run_0600_quick.ps1,
-               run_0600_candidate.ps1,run_0600_final.ps1,
-               verify_0600_release.py}
+               run_0600_quick.sh,run_0600_candidate.ps1,
+               run_0600_candidate.sh,run_0600_final.ps1,
+               run_0600_final.sh,run_0600_gates.py,
+               performance_0600.json,verify_0600_release.py}
 ```
 
 Tests mirror each package under `tools/stm32-toolkit/tests/`; release-controller tests are
@@ -134,7 +138,11 @@ order into a new database and atomically replaces the old database.
 
 Catalog queries support exact workspace, project, session, build, ELF, operation, and UTC
 range filters with explicit limits from 1 through 1,000. Results are ordered by
-`produced_at_utc, evidence_id`; no raw SQL or wildcard path query is public.
+`produced_at_utc, evidence_id`; no raw SQL or wildcard path query is public. A query returns
+explicitly non-authoritative `EvidenceSummary` rows from the derived catalog and does not rehash
+artifact objects. Any caller that acts on a row must call `get_envelope(evidence_id)`, which
+performs the authoritative manifest/object verification. Catalog performance gates measure only
+summary search; evidence verification has a separate end-to-end workload.
 
 ### 4.4 Garbage collection
 
@@ -273,7 +281,8 @@ run and cannot cover a retry or another transport.
 
 ## 7. Probe protocol v2 boundary
 
-0601 freezes the complete `stm32-toolkit-probe/2` JSON schema so 0602 cannot add an
+After feasibility proves the named backend supports required target transport and debug
+primitives, 0601 freezes the complete `stm32-toolkit-probe/2` JSON schema so 0602 cannot add an
 unreviewed command during implementation. 0601 implements testing operations:
 
 - `target.transport.open`, `target.transport.read`, `target.transport.close`;
@@ -311,9 +320,16 @@ Error codes include `EVIDENCE_INVALID`, `EVIDENCE_CORRUPT`, `EVIDENCE_PATH_UNSAF
 
 ## 9. Acceptance framework
 
-`gates_0600.json` is a schema-validated, stable-ID catalog. Each entry names phase, module,
+`gates_0600.json` is a schema-validated, stable-family catalog. Each entry names phase, module,
 matrix memberships, owner, platform, command argv, working directory, required tools and exact
 versions, timeout, evidence files, node inventory source, coverage context, and prerequisites.
+0601 freezes the schema/families and its own exact entries/nodes. Reserved 0602/0603 families
+declare their purpose, owner role, platform, evidence type, and matrix placement without fictional
+commands or nodes. Each module freezes its performance workload/design maximum before the measured
+hot path, then freezes the accepted calibration after the correct implementation is within that
+maximum and before optional post-baseline optimization. It replaces only its reserved entries with
+complete exact commands and node inventories after all its tests exist and before candidate. The
+final digest freezes at the 0603 candidate CodeHead.
 
 Controllers must:
 
@@ -324,17 +340,44 @@ Controllers must:
 - capture UTC, OS/architecture, absolute executable/version, cwd, argv, exit, duration, bytes,
   SHA-256, and the frozen CodeHead;
 - run independent quick/candidate partitions even after another partition fails;
+- honor catalog resource locks for reference-performance host, board, probe, UART, ports, and
+  evidence roots; parallelize only disjoint resources;
 - enforce dependency ordering without treating blocked dependents as PASS;
 - reject missing/extra/duplicate gate IDs and missing retained evidence;
 - prove each frozen test node is selected and executed exactly once, with no unexpected skip,
   deselection, xfail, or duplicate result;
+- force product frameworks to zero hidden retries and record a deterministic seed; retryable
+  infrastructure recovery is owned only by the top-level candidate/final controller;
 - exclude controller subprocesses from product coverage;
 - verify the worktree is clean before and after every product gate;
 - perform no network or remote Git operation.
 
-The final controller alone is fail-fast, and only after a preflight result proves every final
-gate passed individually at the identical CodeHead, catalog digest, dependency lock digests,
-and support manifest digest.
+Readiness runs no product test body. It proves exact CodeHead, complete final catalog/nodes,
+dependency locks, support manifests, empty evidence roots, tool versions, assigned owners,
+hardware identity/connectivity, disk/power state, and controller self-tests. The final controller
+is fail-fast within each platform shard and implements only the program's bounded
+`RECOVERABLE_INFRA_ERROR` checkpoint/resume policy.
+
+Candidate uses the same enumerated external-event classification and one affected-shard resume at
+the same candidate run ID; it never silently reruns a product node or combines different run IDs.
+A deterministic candidate failure requires a repository correction/new CodeHead, while a repeated
+external interruption is BLOCKED rather than mislabeled as a product failure.
+
+Every candidate/final shard produces a deterministic portable ZIP plus a canonical inner manifest.
+Sorted relative members, normalized metadata, package/member bytes and SHA-256, closed owner/
+platform/run/CodeHead/catalog/lock/support bindings, and absence of credentials/absolute private
+paths are verifier-enforced. A named owner transfers non-aggregator packages through the user-
+designated evidence channel; controller code never opens a network or remote Git connection.
+
+Offline dependency audit is deterministic: the support manifest pins the advisory snapshot and
+npm cache digests; production dependencies require zero vulnerabilities at every severity,
+preserving 0.5; development dependencies require zero high/critical vulnerabilities. Any
+exception must be user-approved and committed before the affected module candidate, with package,
+advisory ID, reachability, expiry, and mitigation. Network audit results are never release evidence.
+The advisory snapshot records source, database/version, generated UTC, and digest and must be no
+older than seven calendar days at candidate/final readiness. A named support owner may refresh only
+that external manifest segment before readiness; controllers stay offline, and the candidate/final
+binds the refreshed digest. Refreshing product dependencies or lockfiles still creates a CodeHead.
 
 ## 10. Test and quality contract
 
@@ -355,23 +398,31 @@ and support manifest digest.
 
 Every changed product Python file must have at least 90% branch coverage in its owning shard.
 Coverage is measured separately for Toolkit product code, Probe product code, and schema/CLI
-adapters. Controller/helper tests run with coverage disabled and cannot raise these totals.
+adapters. The development coverage runner discovers changed/untracked product files relative to
+the current `HEAD`, emits external branch JSON, and validates integer branch counts for each file;
+an aggregate percentage cannot mask a file below 90%. It rejects missing/duplicate/case-folded rows
+and changed product paths absent from coverage output. Controller/helper tests run with coverage disabled and cannot raise
+these totals.
 
 ### 10.2 Performance
 
-Baselines are recorded before the optimized implementation on the named reference host under
-3.10 and 3.12. Gates retain all 0.5 thresholds and add:
+The program calibration method is mandatory on the named reference host under 3.10 and 3.12.
+The following are end-to-end design maxima, not already-calibrated thresholds:
 
-| Operation | Dataset | Ceiling |
+| Operation | Dataset | Design maximum |
 |---|---|---:|
-| ingest existing 1 MiB object | verified object | p95 50 ms |
-| publish envelope | 32 artifacts | p95 50 ms |
-| query catalog | 10,000 manifests, return 100 | p95 100 ms |
-| decode target stream | 10 MiB fragmented stream | 2 s |
-| rebuild catalog | 10,000 manifests | 5 s |
+| publish and authoritatively reload evidence | 1 MiB total, 32 artifacts | p95 500 ms |
+| list derived evidence summaries | 10,000 manifests, return 100 | p95 500 ms |
+| decode stream and publish Target manifest | 10 MiB fragmented stream | 3 s |
+| verify manifests and rebuild catalog | 10,000 manifests | 10 s |
 
-Each additionally permits no more than 15% regression from its accepted baseline. Performance
-runs exclude coverage and antivirus-excluded evidence storage is recorded rather than assumed.
+The correct straightforward implementation is provisionally characterized first. If a calculated
+threshold exceeds a maximum, improve the implementation without changing workload or maximum and
+repeat the characterization. Only a within-maximum result becomes the accepted calibration in
+`performance_0600.json`; it freezes before optional post-baseline optimization and candidate.
+Internal object-copy, canonical-JSON, SQLite, and decoder microbenchmarks are retained as diagnostic
+facts rather than independent release blockers. Performance runs exclude coverage and record
+antivirus/exclusion state rather than assuming it.
 
 ### 10.3 Real-board matrix
 
@@ -382,7 +433,9 @@ terminal counts. Fake backend evidence remains a separate gate and cannot own th
 
 ## 11. Candidate matrix and exit criteria
 
-The 0601 CodeHead is frozen only after ordered preflight passes. Its candidate matrix includes:
+After the exact 0601 inventory commit, a non-executing candidate precheck verifies CodeHead,
+catalog/nodes, support, tools, owners, hardware, and empty evidence roots. The unchanged CodeHead's
+collect-all candidate matrix includes:
 
 - whole accepted-base ancestry, diff, scope, source-hash, and clean-tree audit;
 - Windows and Linux, CPython 3.10/3.12 Toolkit shards;
@@ -390,7 +443,8 @@ The 0601 CodeHead is frozen only after ordered preflight passes. Its candidate m
 - product branch coverage at or above 90%;
 - performance thresholds under both Python versions;
 - offline wheel build/install and managed launcher smoke;
-- controller/verifier self-tests including intentional failure fixtures;
+- controller/verifier self-tests including intentional failure and bounded infrastructure-recovery
+  fixtures;
 - two-workspace concurrent isolation;
 - four real-board transports;
 - all applicable 0.5 regression gates.
@@ -409,6 +463,7 @@ the accepted base for 0602.
 3. Host tests run only discovered exact IDs through argv-safe CTest execution.
 4. Target tests produce identical verified semantics through all four real transports.
 5. Every Target operation binds one MODIFY authorization to exact firmware and target identity.
-6. Probe v2's complete schema and the full 0.6 gate catalog are frozen.
+6. Probe v2's complete schema, the gate schema/families, and exact 0601 gates/nodes are frozen;
+   later module entries remain reserved rather than fabricated.
 7. Coverage, performance, platform, offline-install, integrity, and isolation gates pass.
 8. A report-only commit records the accepted 0601 CodeHead without changing product files.

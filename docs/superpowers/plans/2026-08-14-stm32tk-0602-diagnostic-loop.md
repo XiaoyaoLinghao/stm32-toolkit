@@ -13,9 +13,12 @@
 - Begin at the accepted report commit of `STM32TK-0601-TEST-EVIDENCE`; record its full SHA in the
   work order before implementation.
 - Follow `docs/superpowers/specs/2026-08-14-stm32tk-0602-diagnostic-loop-design.md`.
-- Do not change the frozen evidence/test schemas, Probe v2 operation schema, or gate semantics.
+- Do not change frozen evidence/test schemas, Probe v2, gate schema/families, or 0601 exact entries.
+  Fill only reserved 0602 catalog families and freeze their exact commands/nodes before candidate.
 - Product code cannot edit source, invoke a model/cloud provider, accept a raw hardware command,
   expose arbitrary memory/register writes, or reuse authorization.
+- Real reset/flash/modify acceptance gates stop unless the user authorizes their exact current-task
+  action digests; this plan and prior-module evidence do not transfer authorization.
 - Every changed product Python file must reach at least 90% branch coverage; correctness runs on
   CPython 3.10 and 3.12; every earlier threshold remains unchanged.
 - Preserve external evidence logs and never run release gates in a dirty product worktree.
@@ -29,7 +32,9 @@
 
 - Create: `schemas/diagnostic-session.schema.json`
 - Create: `tools/stm32-toolkit/src/stm32_toolkit/schemas/diagnostic-session.schema.json`
-- Create: `tools/stm32-toolkit/src/stm32_toolkit/diagnostics/{__init__,model,events}.py`
+- Create: `tools/stm32-toolkit/src/stm32_toolkit/diagnostics/__init__.py`
+- Create: `tools/stm32-toolkit/src/stm32_toolkit/diagnostics/model.py`
+- Create: `tools/stm32-toolkit/src/stm32_toolkit/diagnostics/events.py`
 - Create: `tools/stm32-toolkit/tests/test_diagnostic_model.py`
 - Create: `tools/stm32-toolkit/tests/test_diagnostic_events.py`
 
@@ -56,13 +61,13 @@ py -3.12 -m pytest tools/stm32-toolkit/tests/test_diagnostic_model.py tools/stm3
 
 ```powershell
 py -3.10 -m pytest tools/stm32-toolkit/tests/test_diagnostic_model.py tools/stm32-toolkit/tests/test_diagnostic_events.py -q -p no:cacheprovider
-py -3.12 -m pytest tools/stm32-toolkit/tests/test_diagnostic_model.py tools/stm32-toolkit/tests/test_diagnostic_events.py --cov=stm32_toolkit.diagnostics.model --cov=stm32_toolkit.diagnostics.events --cov-branch --cov-report=term-missing --cov-fail-under=90 -q -p no:cacheprovider
+py -3.12 tools/release/run_0600_gates.py dev-coverage --task-id STM32TK-0602-T01 --evidence-root C:\tmp\stm32tk-0602-t01-coverage -- tools/stm32-toolkit/tests/test_diagnostic_model.py tools/stm32-toolkit/tests/test_diagnostic_events.py --cov=stm32_toolkit.diagnostics.model --cov=stm32_toolkit.diagnostics.events -q -p no:cacheprovider
 ```
 
 - [ ] Commit:
 
 ```powershell
-git add schemas/diagnostic-session.schema.json tools/stm32-toolkit/src/stm32_toolkit/schemas/diagnostic-session.schema.json tools/stm32-toolkit/src/stm32_toolkit/diagnostics tools/stm32-toolkit/tests/test_diagnostic_model.py tools/stm32-toolkit/tests/test_diagnostic_events.py
+git add -- schemas/diagnostic-session.schema.json tools/stm32-toolkit/src/stm32_toolkit/schemas/diagnostic-session.schema.json tools/stm32-toolkit/src/stm32_toolkit/diagnostics/__init__.py tools/stm32-toolkit/src/stm32_toolkit/diagnostics/model.py tools/stm32-toolkit/src/stm32_toolkit/diagnostics/events.py tools/stm32-toolkit/tests/test_diagnostic_model.py tools/stm32-toolkit/tests/test_diagnostic_events.py
 git commit -m "feat(STM32TK-0602): define append-only diagnostic events"
 ```
 
@@ -96,7 +101,7 @@ py -3.12 -m pytest tools/stm32-toolkit/tests/test_diagnostic_store.py tools/stm3
 
 ```powershell
 py -3.10 -m pytest tools/stm32-toolkit/tests/test_diagnostic_store.py tools/stm32-toolkit/tests/test_diagnostic_concurrency.py -q -p no:cacheprovider
-py -3.12 -m pytest tools/stm32-toolkit/tests/test_diagnostic_store.py tools/stm32-toolkit/tests/test_diagnostic_concurrency.py --cov=stm32_toolkit.diagnostics.store --cov=stm32_toolkit.diagnostics.session --cov-branch --cov-report=term-missing --cov-fail-under=90 -q -p no:cacheprovider
+py -3.12 tools/release/run_0600_gates.py dev-coverage --task-id STM32TK-0602-T02 --evidence-root C:\tmp\stm32tk-0602-t02-coverage -- tools/stm32-toolkit/tests/test_diagnostic_store.py tools/stm32-toolkit/tests/test_diagnostic_concurrency.py --cov=stm32_toolkit.diagnostics.store --cov=stm32_toolkit.diagnostics.session -q -p no:cacheprovider
 ```
 
 - [ ] Commit:
@@ -131,7 +136,7 @@ py -3.12 -m pytest tools/stm32-toolkit/tests/test_diagnostic_hypotheses.py -q -p
 
 ```powershell
 py -3.10 -m pytest tools/stm32-toolkit/tests/test_diagnostic_hypotheses.py -q -p no:cacheprovider
-py -3.12 -m pytest tools/stm32-toolkit/tests/test_diagnostic_hypotheses.py --cov=stm32_toolkit.diagnostics.hypotheses --cov-branch --cov-report=term-missing --cov-fail-under=90 -q -p no:cacheprovider
+py -3.12 tools/release/run_0600_gates.py dev-coverage --task-id STM32TK-0602-T03 --evidence-root C:\tmp\stm32tk-0602-t03-coverage -- tools/stm32-toolkit/tests/test_diagnostic_hypotheses.py --cov=stm32_toolkit.diagnostics.hypotheses -q -p no:cacheprovider
 ```
 
 - [ ] Commit:
@@ -168,7 +173,7 @@ py -3.12 -m pytest tools/stm32-toolkit/tests/test_observation_plans.py -q -p no:
 
 ```powershell
 py -3.10 -m pytest tools/stm32-toolkit/tests/test_observation_plans.py -q -p no:cacheprovider
-py -3.12 -m pytest tools/stm32-toolkit/tests/test_observation_plans.py --cov=stm32_toolkit.diagnostics.observations --cov=stm32_toolkit.diagnostics.policy --cov-branch --cov-report=term-missing --cov-fail-under=90 -q -p no:cacheprovider
+py -3.12 tools/release/run_0600_gates.py dev-coverage --task-id STM32TK-0602-T04 --evidence-root C:\tmp\stm32tk-0602-t04-coverage -- tools/stm32-toolkit/tests/test_observation_plans.py --cov=stm32_toolkit.diagnostics.observations --cov=stm32_toolkit.diagnostics.policy -q -p no:cacheprovider
 ```
 
 - [ ] Commit:
@@ -185,7 +190,10 @@ git commit -m "feat(STM32TK-0602): execute bounded observation plans"
 - Create: `tools/stm32-toolkit/src/stm32_toolkit/debug/registers.py`
 - Create: `tools/stm32-toolkit/src/stm32_toolkit/debug/logs.py`
 - Modify: `tools/stm32-toolkit/src/stm32_toolkit/debug/fault.py`
-- Modify: `tools/stm32-toolkit/src/stm32_toolkit/probe/{service,client,backend,pyocd_backend}.py`
+- Modify: `tools/stm32-toolkit/src/stm32_toolkit/probe/service.py`
+- Modify: `tools/stm32-toolkit/src/stm32_toolkit/probe/client.py`
+- Modify: `tools/stm32-toolkit/src/stm32_toolkit/probe/backend.py`
+- Modify: `tools/stm32-toolkit/src/stm32_toolkit/probe/pyocd_backend.py`
 - Create: `tools/stm32-toolkit/tests/test_probe_v2_observe.py`
 - Create: `tools/stm32-toolkit/tests/test_debug_logs.py`
 
@@ -207,13 +215,13 @@ py -3.12 -m pytest tools/stm32-toolkit/tests/test_probe_v2_observe.py tools/stm3
 
 ```powershell
 py -3.10 -m pytest tools/stm32-toolkit/tests/test_probe_v2_observe.py tools/stm32-toolkit/tests/test_debug_logs.py tools/stm32-toolkit/tests/test_fault.py tools/stm32-toolkit/tests/test_debug_read.py -q -p no:cacheprovider
-py -3.12 -m pytest tools/stm32-toolkit/tests/test_probe_v2_observe.py tools/stm32-toolkit/tests/test_debug_logs.py tools/stm32-toolkit/tests/test_fault.py tools/stm32-toolkit/tests/test_debug_read.py --cov=stm32_toolkit.debug --cov=stm32_toolkit.probe --cov-branch --cov-report=term-missing --cov-fail-under=90 -q -p no:cacheprovider
+py -3.12 tools/release/run_0600_gates.py dev-coverage --task-id STM32TK-0602-T05 --evidence-root C:\tmp\stm32tk-0602-t05-coverage -- tools/stm32-toolkit/tests/test_probe_v2_observe.py tools/stm32-toolkit/tests/test_debug_logs.py tools/stm32-toolkit/tests/test_fault.py tools/stm32-toolkit/tests/test_debug_read.py --cov=stm32_toolkit.debug --cov=stm32_toolkit.probe -q -p no:cacheprovider
 ```
 
 - [ ] Commit:
 
 ```powershell
-git add tools/stm32-toolkit/src/stm32_toolkit/debug tools/stm32-toolkit/src/stm32_toolkit/probe tools/stm32-toolkit/tests/test_probe_v2_observe.py tools/stm32-toolkit/tests/test_debug_logs.py
+git add -- tools/stm32-toolkit/src/stm32_toolkit/debug/registers.py tools/stm32-toolkit/src/stm32_toolkit/debug/logs.py tools/stm32-toolkit/src/stm32_toolkit/debug/fault.py tools/stm32-toolkit/src/stm32_toolkit/probe/service.py tools/stm32-toolkit/src/stm32_toolkit/probe/client.py tools/stm32-toolkit/src/stm32_toolkit/probe/backend.py tools/stm32-toolkit/src/stm32_toolkit/probe/pyocd_backend.py tools/stm32-toolkit/tests/test_probe_v2_observe.py tools/stm32-toolkit/tests/test_debug_logs.py
 git commit -m "feat(STM32TK-0602): add bounded debug observations"
 ```
 
@@ -224,7 +232,10 @@ git commit -m "feat(STM32TK-0602): add bounded debug observations"
 - Create: `tools/stm32-toolkit/src/stm32_toolkit/debug/control.py`
 - Create: `tools/stm32-toolkit/src/stm32_toolkit/debug/breakpoints.py`
 - Create: `tools/stm32-toolkit/src/stm32_toolkit/diagnostics/actions.py`
-- Modify: `tools/stm32-toolkit/src/stm32_toolkit/probe/{service,client,backend,pyocd_backend}.py`
+- Modify: `tools/stm32-toolkit/src/stm32_toolkit/probe/service.py`
+- Modify: `tools/stm32-toolkit/src/stm32_toolkit/probe/client.py`
+- Modify: `tools/stm32-toolkit/src/stm32_toolkit/probe/backend.py`
+- Modify: `tools/stm32-toolkit/src/stm32_toolkit/probe/pyocd_backend.py`
 - Create: `tools/stm32-toolkit/tests/test_diagnostic_authorization.py`
 - Create: `tools/stm32-toolkit/tests/test_probe_v2_control.py`
 
@@ -250,13 +261,13 @@ py -3.12 -m pytest tools/stm32-toolkit/tests/test_diagnostic_authorization.py to
 
 ```powershell
 py -3.10 -m pytest tools/stm32-toolkit/tests/test_diagnostic_authorization.py tools/stm32-toolkit/tests/test_probe_v2_control.py tools/stm32-toolkit/tests/test_probe_lease.py tools/stm32-toolkit/tests/test_process.py -q -p no:cacheprovider
-py -3.12 -m pytest tools/stm32-toolkit/tests/test_diagnostic_authorization.py tools/stm32-toolkit/tests/test_probe_v2_control.py tools/stm32-toolkit/tests/test_probe_lease.py tools/stm32-toolkit/tests/test_process.py --cov=stm32_toolkit.debug.control --cov=stm32_toolkit.debug.breakpoints --cov=stm32_toolkit.diagnostics.actions --cov=stm32_toolkit.probe --cov-branch --cov-report=term-missing --cov-fail-under=90 -q -p no:cacheprovider
+py -3.12 tools/release/run_0600_gates.py dev-coverage --task-id STM32TK-0602-T06 --evidence-root C:\tmp\stm32tk-0602-t06-coverage -- tools/stm32-toolkit/tests/test_diagnostic_authorization.py tools/stm32-toolkit/tests/test_probe_v2_control.py tools/stm32-toolkit/tests/test_probe_lease.py tools/stm32-toolkit/tests/test_process.py --cov=stm32_toolkit.debug.control --cov=stm32_toolkit.debug.breakpoints --cov=stm32_toolkit.diagnostics.actions --cov=stm32_toolkit.probe -q -p no:cacheprovider
 ```
 
 - [ ] Commit:
 
 ```powershell
-git add tools/stm32-toolkit/src/stm32_toolkit/debug tools/stm32-toolkit/src/stm32_toolkit/diagnostics/actions.py tools/stm32-toolkit/src/stm32_toolkit/probe tools/stm32-toolkit/tests/test_diagnostic_authorization.py tools/stm32-toolkit/tests/test_probe_v2_control.py
+git add -- tools/stm32-toolkit/src/stm32_toolkit/debug/control.py tools/stm32-toolkit/src/stm32_toolkit/debug/breakpoints.py tools/stm32-toolkit/src/stm32_toolkit/diagnostics/actions.py tools/stm32-toolkit/src/stm32_toolkit/probe/service.py tools/stm32-toolkit/src/stm32_toolkit/probe/client.py tools/stm32-toolkit/src/stm32_toolkit/probe/backend.py tools/stm32-toolkit/src/stm32_toolkit/probe/pyocd_backend.py tools/stm32-toolkit/tests/test_diagnostic_authorization.py tools/stm32-toolkit/tests/test_probe_v2_control.py
 git commit -m "feat(STM32TK-0602): authorize bounded debug controls"
 ```
 
@@ -291,7 +302,7 @@ py -3.12 -m pytest tools/stm32-toolkit/tests/test_source_change_declaration.py t
 
 ```powershell
 py -3.10 -m pytest tools/stm32-toolkit/tests/test_source_change_declaration.py tools/stm32-toolkit/tests/test_fix_verification.py tools/stm32-toolkit/tests/test_build_runner.py tools/stm32-toolkit/tests/test_hardware_workflows.py tools/stm32-toolkit/tests/test_monitor_observation.py -q -p no:cacheprovider
-py -3.12 -m pytest tools/stm32-toolkit/tests/test_source_change_declaration.py tools/stm32-toolkit/tests/test_fix_verification.py --cov=stm32_toolkit.diagnostics.verification --cov-branch --cov-report=term-missing --cov-fail-under=90 -q -p no:cacheprovider
+py -3.12 tools/release/run_0600_gates.py dev-coverage --task-id STM32TK-0602-T07 --evidence-root C:\tmp\stm32tk-0602-t07-coverage -- tools/stm32-toolkit/tests/test_source_change_declaration.py tools/stm32-toolkit/tests/test_fix_verification.py --cov=stm32_toolkit.diagnostics.verification -q -p no:cacheprovider
 ```
 
 - [ ] Commit:
@@ -326,7 +337,7 @@ py -3.12 -m pytest tools/stm32-toolkit/tests/test_diagnostic_bundle.py -q -p no:
 
 ```powershell
 py -3.10 -m pytest tools/stm32-toolkit/tests/test_diagnostic_bundle.py -q -p no:cacheprovider
-py -3.12 -m pytest tools/stm32-toolkit/tests/test_diagnostic_bundle.py --cov=stm32_toolkit.diagnostics.bundle --cov-branch --cov-report=term-missing --cov-fail-under=90 -q -p no:cacheprovider
+py -3.12 tools/release/run_0600_gates.py dev-coverage --task-id STM32TK-0602-T08 --evidence-root C:\tmp\stm32tk-0602-t08-coverage -- tools/stm32-toolkit/tests/test_diagnostic_bundle.py --cov=stm32_toolkit.diagnostics.bundle -q -p no:cacheprovider
 ```
 
 - [ ] Commit:
@@ -360,7 +371,7 @@ git commit -m "feat(STM32TK-0602): export verified diagnostic bundles"
 ```powershell
 py -3.12 -m pytest tools/stm32-toolkit/tests/test_diagnostic_cli.py tools/stm32-toolkit/tests/test_diagnostic_mcp.py tools/stm32-toolkit/tests/test_plugin_layout.py -q -p no:cacheprovider
 py -3.10 -m pytest tools/stm32-toolkit/tests/test_diagnostic_cli.py tools/stm32-toolkit/tests/test_diagnostic_mcp.py tools/stm32-toolkit/tests/test_plugin_layout.py -q -p no:cacheprovider
-py -3.12 -m pytest tools/stm32-toolkit/tests/test_diagnostic_cli.py tools/stm32-toolkit/tests/test_diagnostic_mcp.py --cov=stm32_toolkit.cli --cov=stm32_toolkit.mcp_server --cov-branch --cov-report=term-missing --cov-fail-under=90 -q -p no:cacheprovider
+py -3.12 tools/release/run_0600_gates.py dev-coverage --task-id STM32TK-0602-T09 --evidence-root C:\tmp\stm32tk-0602-t09-coverage -- tools/stm32-toolkit/tests/test_diagnostic_cli.py tools/stm32-toolkit/tests/test_diagnostic_mcp.py --cov=stm32_toolkit.cli --cov=stm32_toolkit.mcp_server -q -p no:cacheprovider
 ```
 
 - [ ] Commit:
@@ -370,34 +381,100 @@ git add tools/stm32-toolkit/src/stm32_toolkit/cli.py tools/stm32-toolkit/src/stm
 git commit -m "feat(STM32TK-0602): expose evidence-first diagnostics"
 ```
 
-## Task 10: Lock performance and real-board failed-before/fixed-after acceptance
+## Task 10: Characterize and calibrate diagnostic performance
 
 **Files:**
 
 - Create: `tools/stm32-toolkit/tests/test_diagnostic_performance.py`
+- Modify: `tools/release/performance_0600.json`
+- Modify: `tools/stm32-toolkit/src/stm32_toolkit/diagnostics/events.py`
+- Modify: `tools/stm32-toolkit/src/stm32_toolkit/diagnostics/store.py`
+- Modify: `tools/stm32-toolkit/src/stm32_toolkit/diagnostics/session.py`
+- Modify: `tools/stm32-toolkit/src/stm32_toolkit/diagnostics/bundle.py`
+- Modify: `tools/stm32-toolkit/tests/test_diagnostic_events.py`
+- Modify: `tools/stm32-toolkit/tests/test_diagnostic_store.py`
+- Modify: `tools/stm32-toolkit/tests/test_diagnostic_bundle.py`
+
+- [ ] Add correctness-first end-to-end workloads for append/reload, materialized read, authoritative
+  full-chain verify, and export/reverify at the exact datasets. Do not optimize yet.
+
+- [ ] Calibrate separately on 3.10/3.12 using the common three-batch nearest-rank method and retain
+  raw JSON externally:
+
+```powershell
+py -3.10 tools/release/run_0600_gates.py performance --module STM32TK-0602 --test-file tools/stm32-toolkit/tests/test_diagnostic_performance.py --mode calibrate --output C:\tmp\stm32tk-0602-perf-310.json
+py -3.12 tools/release/run_0600_gates.py performance --module STM32TK-0602 --test-file tools/stm32-toolkit/tests/test_diagnostic_performance.py --mode calibrate --output C:\tmp\stm32tk-0602-perf-312.json
+py -3.12 tools/release/verify_0600_release.py performance-calibration --profile STM32TK-0602 --input C:\tmp\stm32tk-0602-perf-310.json --input C:\tmp\stm32tk-0602-perf-312.json --output tools/release/performance_0600.json
+```
+
+Expected: all calculated absolute thresholds are at/below their design maxima and the environment,
+workload, batch, p95, MAD, and relative-limit calculations verify.
+
+- [ ] The calibration verifier must update `performance_0600.json` atomically only when all
+  calculated thresholds are within their predeclared maxima. On failure it leaves the tracked file
+  byte-identical; improve the implementation without changing workloads or maxima, then repeat the
+  provisional characterization.
+
+- [ ] Commit the performance test and accepted baseline/threshold entries before any optional
+  post-baseline optimization:
+
+```powershell
+git add -- tools/release/performance_0600.json tools/stm32-toolkit/tests/test_diagnostic_performance.py
+git commit -m "test(STM32TK-0602): freeze diagnostic performance"
+```
+
+- [ ] Profile the correct reference and add only necessary local/thread-safe optimizations with
+  event-chain, concurrency, bundle, and corruption regressions. Global GC state is forbidden.
+
+- [ ] Always verify calibrated performance under both Pythons without coverage:
+
+```powershell
+py -3.10 tools/release/run_0600_gates.py performance --module STM32TK-0602 --test-file tools/stm32-toolkit/tests/test_diagnostic_performance.py --mode verify --performance-config tools/release/performance_0600.json --output C:\tmp\stm32tk-0602-perf-verify-310.json
+py -3.12 tools/release/run_0600_gates.py performance --module STM32TK-0602 --test-file tools/stm32-toolkit/tests/test_diagnostic_performance.py --mode verify --performance-config tools/release/performance_0600.json --output C:\tmp\stm32tk-0602-perf-verify-312.json
+```
+
+- [ ] If and only if profiling produced product/test edits, run per-file coverage and commit exact
+  optimized paths. If no optimization is necessary, record that fact externally and do not create
+  an empty commit:
+
+```powershell
+py -3.12 tools/release/run_0600_gates.py dev-coverage --task-id STM32TK-0602-T10 --evidence-root C:\tmp\stm32tk-0602-t10-coverage -- tools/stm32-toolkit/tests/test_diagnostic_events.py tools/stm32-toolkit/tests/test_diagnostic_store.py tools/stm32-toolkit/tests/test_diagnostic_bundle.py --cov=stm32_toolkit.diagnostics -q -p no:cacheprovider
+git add -- tools/stm32-toolkit/src/stm32_toolkit/diagnostics/events.py tools/stm32-toolkit/src/stm32_toolkit/diagnostics/store.py tools/stm32-toolkit/src/stm32_toolkit/diagnostics/session.py tools/stm32-toolkit/src/stm32_toolkit/diagnostics/bundle.py tools/stm32-toolkit/tests/test_diagnostic_events.py tools/stm32-toolkit/tests/test_diagnostic_store.py tools/stm32-toolkit/tests/test_diagnostic_bundle.py
+git commit -m "perf(STM32TK-0602): meet calibrated diagnostic budgets"
+```
+
+## Task 11: Close real-board failed-before/fixed-after acceptance
+
+**Files:**
+
 - Create: `tools/stm32-toolkit/tests/hardware/test_diagnostic_loop_real.py`
-- Add: `tools/stm32-toolkit/tests/fixtures/diagnostic-loop/*`
+- Create: `tools/stm32-toolkit/tests/fixtures/diagnostic-loop/.stm32-project.json`
+- Create: `tools/stm32-toolkit/tests/fixtures/diagnostic-loop/Src/main.c`
+- Create: `tools/stm32-toolkit/tests/fixtures/diagnostic-loop/Tests/test_fault.c`
+- Create: `tools/stm32-toolkit/tests/fixtures/diagnostic-loop/expected-fix.patch`
+- Create: `tools/stm32-toolkit/tests/fixtures/diagnostic-loop/README.md`
 - Modify: `README.md`
 - Modify: `tools/stm32-toolkit/README.md`
 
-- [ ] Record 3.10/3.12 baselines before optimizing and freeze tests for warm verified append p95 <=50 ms,
-  materialized 1,000-event read p95 <=100 ms, 10,000-event chain verify <=1 s, 10 MiB bundle
-  export <=2 s, and <=15% regression. Do not toggle process-global GC state.
-
-- [ ] Add a deterministic real-board faulty fixture and test the nine-step scenario from the spec:
+- [ ] Add a deterministic real-board faulty fixture bound to the feasibility hardware profile and
+  test the nine-step scenario from the spec:
   failed test/Monitor evidence, two hypotheses, observations, authorized halt/breakpoint/step/
   resume/cleanup, external change declaration, separately authorized build/flash/test, new identity,
   passing exact test/assertion, resolved session, and verified bundle.
 
-- [ ] Run complete 0602 affected suites on 3.10/3.12, performance without coverage, security and
-  isolation, offline install, then the real-board scenario. Retain logs outside the worktree.
+- [ ] Run the newly added real-board scenario once before documenting it. Prior tasks already own
+  dual-Python correctness, per-file coverage, and calibrated performance; Task 12 candidate owns
+  the complete affected security/isolation/offline/install regression. Do not rerun unchanged 0601
+  hardware gates unless the frozen impact map selects a shared surface.
 
 ```powershell
-py -3.10 -m pytest tools/stm32-toolkit/tests -q -p no:cacheprovider --basetemp C:\tmp\stm32tk-0602-bt-310
-py -3.12 -m pytest tools/stm32-toolkit/tests -q -p no:cacheprovider --basetemp C:\tmp\stm32tk-0602-bt-312
-py -3.10 -m pytest tools/stm32-toolkit/tests/test_diagnostic_performance.py -q -s -p no:cacheprovider
-py -3.12 -m pytest tools/stm32-toolkit/tests/test_diagnostic_performance.py -q -s -p no:cacheprovider
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/release/run_0600_quick.ps1 -Module STM32TK-0602 -EvidenceRoot C:\tmp\stm32tk-0602-quick
+$env:STM32TK_FEASIBILITY_PROFILE='C:\tmp\stm32tk-0600-support\feasibility\profile.json'
+try {
+  py -3.12 -m pytest tools/stm32-toolkit/tests/hardware/test_diagnostic_loop_real.py -q -p no:cacheprovider
+  if ($LASTEXITCODE -ne 0) { throw 'real diagnostic loop acceptance failed' }
+} finally {
+  Remove-Item Env:STM32TK_FEASIBILITY_PROFILE -ErrorAction SilentlyContinue
+}
 ```
 
 - [ ] Update documentation only after real evidence exists. Document the diagnostic state machine,
@@ -407,33 +484,67 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/release/run_0600_q
 - [ ] Commit:
 
 ```powershell
-git add -- tools/stm32-toolkit/tests/test_diagnostic_performance.py tools/stm32-toolkit/tests/hardware/test_diagnostic_loop_real.py tools/stm32-toolkit/tests/fixtures/diagnostic-loop README.md tools/stm32-toolkit/README.md
+git add -- tools/stm32-toolkit/tests/hardware/test_diagnostic_loop_real.py tools/stm32-toolkit/tests/fixtures/diagnostic-loop/.stm32-project.json tools/stm32-toolkit/tests/fixtures/diagnostic-loop/Src/main.c tools/stm32-toolkit/tests/fixtures/diagnostic-loop/Tests/test_fault.c tools/stm32-toolkit/tests/fixtures/diagnostic-loop/expected-fix.patch tools/stm32-toolkit/tests/fixtures/diagnostic-loop/README.md README.md tools/stm32-toolkit/README.md
 git commit -m "test(STM32TK-0602): close diagnostic loop acceptance"
 ```
 
-## Task 11: Freeze and accept the 0602 CodeHead
+## Task 12: Freeze and accept the 0602 CodeHead
 
 **Files:**
 
+- Modify: `tools/release/gates_0600.json`
+- Modify: `tools/stm32-toolkit/tests/release/test_gate_catalog_0600.py`
 - Create after PASS only: `docs/openclaw/returns/STM32TK-0602-DIAGNOSTIC-LOOP/r001-implementation-report.md`
 
 - [ ] Audit the full 0601 accepted-report-to-current diff and all tracked/untracked, committed/
   uncommitted, and pushed/unpushed state. Verify frozen 0601 schemas/catalog semantics byte-for-
   byte and confirm no arbitrary write/raw command/model/cloud surface exists.
 
-- [ ] Run every candidate gate in ordered preflight, freeze the product CodeHead, then run one
-  collect-all candidate matrix at the same CodeHead/catalog/support digests:
+- [ ] Collect every exact 0602 node after Task 11, replace only reserved 0602 slots with closed
+  argv/owners/platforms/timeouts/evidence/coverage/prerequisites/impact edges, and add mutation tests
+  proving all 0601 entries remain byte-identical and missing/extra/duplicate/renamed/deselected/
+  skip/xfail 0602 nodes fail. Commit the final 0602 test contract before candidate:
 
 ```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/release/run_0600_candidate.ps1 -Module STM32TK-0602 -EvidenceRoot C:\tmp\stm32tk-0602-candidate-<full-codehead>
+py -3.12 -m pytest tools/stm32-toolkit/tests/release/test_gate_catalog_0600.py -q -p no:cacheprovider
+git add -- tools/release/gates_0600.json tools/stm32-toolkit/tests/release/test_gate_catalog_0600.py
+git commit -m "test(STM32TK-0602): freeze exact candidate inventory"
 ```
 
-- [ ] On failure, do not write a report. Any product/test/helper correction creates a new
-  CodeHead and reruns affected gates plus integrity/inventory. After two contract-gap cycles,
-  stop for acceptance-architecture audit.
+- [ ] Generate one `candidateRunId`, then run affected collect-all Windows/Linux shards and the
+  hardware shard selected by the frozen impact map. Each wrapper first runs the non-executing
+  CodeHead/catalog/node/performance/support/tool/owner/hardware/evidence-root precheck and refuses to
+  start a product body if it fails:
 
-- [ ] After overall PASS, reconcile all evidence and create a report whose only change is its
-  return path. Verify `git diff --check` and sole staged path, then commit locally:
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/release/run_0600_candidate.ps1 -Module STM32TK-0602 -Shard windows -CandidateRunId <candidateRunId> -EvidenceRoot C:\tmp\stm32tk-0602-candidate-<candidateRunId>\windows -ExpectedCodeHead <full-codehead> -Catalog tools/release/gates_0600.json -Performance tools/release/performance_0600.json -SupportProfile C:\tmp\stm32tk-0600-support\feasibility\profile.json
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/release/run_0600_candidate.ps1 -Module STM32TK-0602 -Shard hardware -CandidateRunId <candidateRunId> -EvidenceRoot C:\tmp\stm32tk-0602-candidate-<candidateRunId>\hardware -ExpectedCodeHead <full-codehead> -Catalog tools/release/gates_0600.json -Performance tools/release/performance_0600.json -SupportProfile C:\tmp\stm32tk-0600-support\feasibility\profile.json
+```
+
+```bash
+./tools/release/run_0600_candidate.sh --module STM32TK-0602 --shard linux --candidate-run-id <candidateRunId> --evidence-root /tmp/stm32tk-0602-candidate-<candidateRunId>/linux --expected-code-head <full-codehead> --catalog tools/release/gates_0600.json --performance tools/release/performance_0600.json --support-profile /tmp/stm32tk-0600-support/feasibility/profile.json
+```
+
+The Linux owner returns `linux/shard-package.zip` and its SHA-256 through the user-designated
+evidence channel; place it unchanged at
+`C:\tmp\stm32tk-0602-candidate-<candidateRunId>\imports\linux.zip`. No controller performs transfer.
+
+- [ ] On failure, do not write a report. One enumerated external event may resume only its affected
+  shard once at the same candidate run ID/frozen inputs with a reviewer recovery record; retain both
+  attempts. A repeat is BLOCKED. Any deterministic gate failure or product/test/helper correction
+  creates a new CodeHead and reruns affected gates plus integrity/inventory. After two contract-gap
+  cycles, stop for acceptance-architecture audit.
+
+- [ ] After all shards PASS, reconcile their common run ID and exact inventories:
+
+```powershell
+py -3.12 tools/release/verify_0600_release.py candidate-evidence --module STM32TK-0602 --candidate-run-id <candidateRunId> --evidence C:\tmp\stm32tk-0602-candidate-<candidateRunId> --import-shard C:\tmp\stm32tk-0602-candidate-<candidateRunId>\imports\linux.zip --expected-code-head <full-codehead> --catalog tools/release/gates_0600.json --performance tools/release/performance_0600.json --support-profile C:\tmp\stm32tk-0600-support\feasibility\profile.json
+```
+
+  Only after reconciliation PASS create a report whose sole change is its return path. Record
+  accepted base/product CodeHead, `candidateRunId`, per-gate owner/platform/tool/command/result,
+  coverage/performance, recovery attempts if any, and external paths/bytes/SHA-256. Verify
+  `git diff --check` and the staged path, then commit locally:
 
 ```powershell
 git add docs/openclaw/returns/STM32TK-0602-DIAGNOSTIC-LOOP/r001-implementation-report.md

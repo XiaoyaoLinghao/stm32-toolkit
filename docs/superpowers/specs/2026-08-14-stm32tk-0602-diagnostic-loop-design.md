@@ -6,7 +6,7 @@
 **Accepted base:** the accepted report commit of `STM32TK-0601-TEST-EVIDENCE`
 **Fixed program base:** `bb6bc5e9ee937e4ce53996b31f25bf1109ffe13f` (`v0.5.0`)
 **Specification owner:** Codex
-**Implementation owner:** OpenClaw, when a work order is authorized
+**Implementation owner:** Codex in the separately authorized 0.6 development conversation
 **Review and acceptance owner:** Codex
 **Remote actions authorized by this document:** none
 
@@ -353,18 +353,23 @@ step occurs.
 
 ### 13.2 Performance
 
-In addition to unchanged 0.5 and 0601 thresholds:
+In addition to unchanged 0.5 thresholds and accepted 0601 calibrated gates, the following are
+end-to-end design maxima for the program's provisional-characterization and accepted-calibration
+procedure:
 
-| Operation | Dataset | Ceiling |
+| Operation | Dataset | Design maximum |
 |---|---|---:|
-| append diagnostic event | warm verified 10,000-event session | p95 50 ms |
-| read materialized session | 1,000 events, 64 hypotheses | p95 100 ms |
-| verify session chain | 10,000 events | 1 s |
-| export verified bundle | 10 MiB reachable artifacts | 2 s |
+| append and reload diagnostic event | warm verified 10,000-event session | p95 250 ms |
+| read materialized session | 1,000 events, 64 hypotheses | p95 500 ms |
+| authoritatively verify session chain | 10,000 events | 3 s |
+| export and reverify bundle | 10 MiB reachable artifacts | 5 s |
 
-The accepted-baseline regression limit is 15%, measured independently on CPython 3.10 and 3.12
-with the common program method. No global GC state is toggled in a request path; optimizations
-must be local, thread-safe, and covered by concurrent tests.
+If provisional calculated thresholds exceed these maxima, improve the implementation without
+changing workload or maxima and repeat characterization. Only within-maximum baselines and
+thresholds are added atomically to `performance_0600.json`; they freeze before optional
+post-baseline optimization and candidate. The accepted-baseline regression limit is 15%, measured
+independently on CPython 3.10 and 3.12 with the common program method. No global GC state is toggled
+in a request path; optimizations must be local, thread-safe, and covered by concurrent tests.
 
 ### 13.3 Real-board diagnostic scenario
 
@@ -386,12 +391,19 @@ Linux. Fake-backend integration is additional evidence, not a substitute.
 
 ## 14. Candidate matrix and exit criteria
 
-The 0602 candidate matrix runs all 0601 release-contract/integrity gates, complete affected
-Toolkit/Probe regressions, dual Python, platform, coverage, performance, isolation, offline
-installation, bundle security, and the real-board diagnostic scenario. It also verifies that:
+Before implementing each measured hot path, 0602 freezes its exact performance workload and design
+maximum; before candidate it freezes its within-maximum accepted calibration. After all 0602
+product, packaging, and real-hardware tests exist and before candidate, it replaces only
+its reserved catalog entries with exact commands and an exact collected node inventory. The 0602
+candidate matrix runs 0601 release-contract/immutability gates, complete
+affected Toolkit/Probe regressions selected by the catalog impact map, dual Python, platform,
+coverage, performance, isolation, offline installation, bundle security, and the real-board
+diagnostic scenario. Unaffected 0601 real-hardware gates are not repeated unless shared Probe,
+transport, evidence, authorization, packaging, or release-controller code changed. It also
+verifies that:
 
-- `gates_0600.json`, frozen evidence/test schemas, and 0601 public semantics did not change;
-- any allowed catalog addition was already declared by the 0601 final catalog extension slots;
+- the gate schema/families, frozen evidence/test schemas, and 0601 public semantics did not change;
+- exact 0602 entries replaced only their declared reserved families and no new family appeared;
 - no generic write/raw-command/shell/cloud/model surface exists;
 - every CONTROL/MODIFY trace has an exact single-use authorization event;
 - the worktree remains clean and all retained evidence hashes verify.
