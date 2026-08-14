@@ -14,6 +14,7 @@ sys.path.insert(0, str(RELEASE_DIR))
 
 from verify_0600_feasibility import (  # noqa: E402
     expected_chromium_argv,
+    managed_chromium_version,
     verify_feasibility,
     verify_result,
 )
@@ -226,6 +227,15 @@ def test_feasibility_requires_manifest_bound_chromium_version_evidence(
     result = verify_feasibility(valid_profile)
 
     assert result.code == "FEASIBILITY_CAPABILITY_MISSING"
+
+
+def test_managed_chromium_version_uses_assembly_identity_not_xml_manifest_version() -> None:
+    """The browser proof must not mistake XML's manifest format version for Chrome's version."""
+    evidence = b"""<assembly manifestVersion='1.0'>
+      <assemblyIdentity name='141.0.7390.37' version='141.0.7390.37' type='win32'/>
+    </assembly>"""
+
+    assert managed_chromium_version(evidence) == "141.0.7390.37"
 
 
 def test_result_binds_exact_profile_manifest_tools_fixture_and_blank_launch(

@@ -326,6 +326,18 @@ def expected_chromium_argv(
     ]
 
 
+def managed_chromium_version(version_evidence: bytes) -> str:
+    """Extract the exact browser version from its support-owned assembly manifest."""
+    text = version_evidence.decode("utf-8", errors="strict")
+    match = re.search(
+        r"<assemblyIdentity\b[^>]*\bversion=['\"](\d+(?:\.\d+)+)['\"]",
+        text,
+    )
+    if match is None:
+        raise ValueError("managed Chromium version evidence is malformed")
+    return match.group(1)
+
+
 def verify_result(
     profile: object,
     manifest: object,
@@ -652,11 +664,7 @@ def _run(args: argparse.Namespace) -> VerificationResult:
         executable = _safe_support_path(support, str(chromium["executable"]))
         version_evidence = _safe_support_path(support, str(chromium["version_evidence"]["path"]))
         version_bytes = version_evidence.read_bytes()
-        version_text = version_bytes.decode("utf-8", errors="strict")
-        version_match = re.search(r"\d+(?:\.\d+)+", version_text)
-        if version_match is None:
-            raise ValueError("managed Chromium version evidence is malformed")
-        chromium_version = version_match.group(0)
+        chromium_version = managed_chromium_version(version_bytes)
         if chromium_version != chromium["version"]:
             raise ValueError("managed Chromium version evidence does not match the profile")
         launch_argv = expected_chromium_argv(chromium, str(support), str(evidence))
