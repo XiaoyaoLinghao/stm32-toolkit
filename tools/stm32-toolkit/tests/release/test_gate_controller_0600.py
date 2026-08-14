@@ -195,6 +195,61 @@ def test_dependency_failure_blocks_dependent_without_marking_it_pass() -> None:
     assert [item.status for item in results] == ["FAIL", "BLOCKED"]
 
 
+def test_gate_matrix_retains_closed_decision_facts_for_every_control_branch() -> None:
+    """A terminal reason must be derivable without trusting the reason string itself."""
+    bodies: list[str] = []
+    precheck = run_gate_matrix(
+        "candidate",
+        [_gate("PRECHECK")],
+        execute=lambda gate, _env: (
+            bodies.append(gate.gate_id), GateRunOutput(0, b"", b"", (), ())
+        )[1],
+        precheck=lambda _gate: (_ for _ in ()).throw(ControllerError("precheck")),
+    )[0]
+    postcheck = run_gate_matrix(
+        "quick",
+        [_gate("POSTCHECK")],
+        execute=lambda gate, _env: (
+            bodies.append(gate.gate_id),
+            GateRunOutput(
+                0, b"", b"", ("tests::POSTCHECK",),
+                (("tests::POSTCHECK", "passed"),),
+            ),
+        )[1],
+        precheck=lambda _gate: None,
+        postcheck=lambda _gate: (_ for _ in ()).throw(ControllerError("postcheck")),
+    )[0]
+
+    assert bodies == ["POSTCHECK"]
+    assert precheck.metadata["decision"] == {
+        "postcheck": "NOT_RUN", "precheck": "FAIL", "prerequisites": []
+    }
+    assert postcheck.metadata["decision"] == {
+        "postcheck": "FAIL", "precheck": "PASS", "prerequisites": []
+    }
+
+
+def test_gate_matrix_blocks_cross_module_failed_prerequisite_without_body() -> None:
+    """A terminal FAIL owned by another module blocks its dependent before process creation."""
+    bodies: list[str] = []
+    result = run_gate_matrix(
+        "quick",
+        [_gate("DEPENDENT", prerequisites=("CROSS-MODULE",))],
+        execute=lambda gate, _env: (
+            bodies.append(gate.gate_id), GateRunOutput(0, b"", b"", (), ())
+        )[1],
+        prerequisite_statuses={"CROSS-MODULE": "FAIL"},
+    )[0]
+
+    assert bodies == []
+    assert (result.status, result.reason) == ("BLOCKED", "PREREQUISITE_NOT_PASS")
+    assert result.metadata["decision"] == {
+        "postcheck": "NOT_RUN",
+        "precheck": "NOT_RUN",
+        "prerequisites": [{"gate_id": "CROSS-MODULE", "status": "FAIL"}],
+    }
+
+
 def test_product_framework_has_zero_hidden_retries_and_node_inventory_is_exact() -> None:
     """A product failure or duplicate/deselected node must not trigger an implicit retry."""
     calls = 0
@@ -239,6 +294,11 @@ def test_gate_result_emits_bounded_metadata_and_stream_hashes(monkeypatch: pytes
         "argv": [sys.executable, "-c", "raise SystemExit(0)"],
         "code_head": "a" * 40,
         "cwd": ".",
+        "decision": {
+            "postcheck": "NOT_REQUIRED",
+            "precheck": "NOT_REQUIRED",
+            "prerequisites": [],
+        },
         "duration_ms": 17,
         "executable": sys.executable,
         "executable_version": platform.python_version(),
@@ -249,6 +309,7 @@ def test_gate_result_emits_bounded_metadata_and_stream_hashes(monkeypatch: pytes
         "retained_evidence": [],
         "run_id": RUN_ID,
         "seed": "stm32tk-0600:123e4567-e89b-42d3-a456-426614174000:A",
+        "selected_nodes": ["tests::A"],
         "started_at_utc": "2026-08-15T02:03:04.123456Z",
         "stderr": {"bytes": 0, "sha256": _sha(b"")},
         "stdout": {"bytes": 5, "sha256": _sha(b"hello")},
@@ -1015,7 +1076,45 @@ def test_shard_verifier_rejects_unexpected_external_file_toctou(tmp_path: Path) 
     "payload",
     [
         {"credential": "secret-value"},
+        {"password": "password-value"},
+        {"client-secret": "secret-value"},
+        {"ACCESS_TOKEN": "token-value"},
+        {"api.key": "api-value"},
+        {"AUTHORIZATION": "Bearer abc.def"},
+        {"session-cookie": "sid=abc"},
+        {"Private.Key": "private-material"},
+        {"passwd": "opaque-secret-material"},
+        {"auth": "opaque-secret-material"},
+        {"refresh_token": "opaque-secret-material"},
+        {"proxy_auth": "opaque-secret-material"},
+        {"db_passwd": "opaque-secret-material"},
+        {"user_pwd": "opaque-secret-material"},
+        {"proxyAuth": "opaque-secret-material"},
+        {"aws_access_key": "ASIAABCDEFGHIJKLMNOP"},
+        {"github_token": "opaque-secret-material"},
+        {"ciJobToken": "opaque-secret-material"},
+        {"diagnostic": "Bearer abc.def"},
+        {"diagnostic": "Basic YWJjOmRlZg=="},
+        {"diagnostic": "Cookie: sid=abc"},
+        {"diagnostic": "api_key=abc.def"},
+        {"diagnostic": "-----BEGIN PRIVATE KEY-----"},
+        {"diagnostic": "https://user:password@example.invalid/resource"},
+        {"diagnostic": "ghp_abcdefghijklmnopqrstuvwxyz1234567890"},
+        {"diagnostic": "sk-proj-abcdefghijklmnopqrstuvwxyz1234567890"},
+        {"diagnostic": "github_pat_abcdefghijklmnopqrstuvwxyz1234567890"},
+        {"diagnostic": "glpat-abcdefghijklmnopqrstuvwxyz1234567890"},
+        {"diagnostic": "xoxb-1234567890-abcdefghijklmnopqrstuvwxyz"},
+        {"diagnostic": "AKIAABCDEFGHIJKLMNOP"},
+        {"diagnostic": "ASIAABCDEFGHIJKLMNOP"},
+        {"diagnostic": "AIzaabcdefghijklmnopqrstuvwxyz1234567890"},
         {"diagnostic_path": r"C:\Users\private\diagnostic.log"},
+        {"diagnostic_path": r"\\server\private\diagnostic.log"},
+        {"diagnostic_path": "//server/private/diagnostic.log"},
+        {"diagnostic_path": r"\Windows\System32\config"},
+        {"diagnostic_path": "/root/admin/diagnostic.log"},
+        {"diagnostic_path": "/etc/toolkit.conf"},
+        {"diagnostic": ",/etc/passwd"},
+        {"diagnostic": "[/root/private-key]"},
     ],
 )
 def test_shard_verifier_rejects_private_or_credential_payload_fields(
@@ -1033,6 +1132,87 @@ def test_shard_verifier_rejects_private_or_credential_payload_fields(
         verify_shard_package(
             package, reference, binding, evidence_root=evidence
         )
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        b"Authorization: Bearer abc.def\n",
+        b"Basic YWJjOmRlZg==\n",
+        b"Cookie: sid=abc\n",
+        b"api_key=abc.def\n",
+        b"Auth: opaque-secret-material\n",
+        b"refresh_token=opaque-secret-material\n",
+        b"DATABASE_PASSWORD=opaque-secret-material\n",
+        b"AWS_SECRET_ACCESS_KEY=abcdefghijklmnopqrstuvwxyz1234567890ABCD\n",
+        b"PROXY_AUTH=opaque-secret-material\n",
+        b"SERVICE_PASSWD=opaque-secret-material\n",
+        b"GITHUB_TOKEN=opaque-secret-material\n",
+        b"(DATABASE_PASSWORD=opaque-secret-material)\n",
+        b"[AWS_SECRET_ACCESS_KEY=abcdefghijklmnopqrstuvwxyz1234567890ABCD]\n",
+        b"|PROXY_AUTH=opaque-secret-material\n",
+        b"'SERVICE_PASSWD'=opaque-secret-material\n",
+        b"$env:GITHUB_TOKEN=opaque-secret-material\n",
+        b"env:DATABASE_PASSWORD=opaque-secret-material\n",
+        b"config:PROXY_AUTH=opaque-secret-material\n",
+        b"-----BEGIN PRIVATE KEY-----\n",
+        b"https://user:password@example.invalid/resource\n",
+        b"ghp_abcdefghijklmnopqrstuvwxyz1234567890\n",
+        b"sk-proj-abcdefghijklmnopqrstuvwxyz1234567890\n",
+        b"//server/private/diagnostic.log\n",
+        b"\\Windows\\System32\\config\n",
+        b"/root/admin/diagnostic.log\n",
+        b"/etc/toolkit.conf\n",
+        b",/etc/passwd\n",
+        b"[/root/private-key]\n",
+    ],
+)
+def test_shard_verifier_rejects_private_or_credential_text_payloads(
+    tmp_path: Path, payload: bytes
+) -> None:
+    """Text members apply the same path and credential-value policy as JSON strings."""
+    evidence = tmp_path / "private-text-evidence"
+    evidence.mkdir()
+    (evidence / "result.log").write_bytes(payload)
+    package = tmp_path / "private-text.zip"
+    binding = _package_binding()
+    reference = create_shard_package(evidence, package, binding)
+
+    with pytest.raises(VerificationError, match="private|credential|portable"):
+        verify_shard_package(package, reference, binding, evidence_root=evidence)
+
+
+@pytest.mark.parametrize(
+    ("name", "payload"),
+    [
+        (
+            "result.json",
+            canonical_json_bytes({
+                "author": "release-controller",
+                "message": "authorization checks passed",
+                "node_id": "tests/test_cookie_policy.py::test_relative_private_key_name",
+                "path": "gates/result.json",
+            }),
+        ),
+        (
+            "result.log",
+            b"authorization checks passed\nrelative/private_key/report.txt\n"
+            b"tests::test_cookie=value\n",
+        ),
+    ],
+)
+def test_shard_verifier_allows_portable_relative_privacy_words(
+    tmp_path: Path, name: str, payload: bytes
+) -> None:
+    """Privacy vocabulary without a credential value or absolute path remains portable."""
+    evidence = tmp_path / "portable-control"
+    evidence.mkdir()
+    (evidence / name).write_bytes(payload)
+    package = tmp_path / "portable-control.zip"
+    binding = _package_binding()
+    reference = create_shard_package(evidence, package, binding)
+
+    verify_shard_package(package, reference, binding, evidence_root=evidence)
 
 
 @pytest.mark.parametrize("mutation", ["bytes", "binding", "extra", "traversal", "casefold", "absolute"])
@@ -1430,6 +1610,74 @@ def test_hardware_rejects_placeholder_identity_before_backend(tmp_path: Path) ->
             git_runner=HardwareGit(),
         )
     assert backend.prepare_calls == []
+
+
+def test_hardware_caller_trust_precedes_release_verifier_loading(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An untrusted controller blob/HEAD must fail before lazy release-verifier code loads."""
+    backend = FakeHardwareBackend(
+        {
+            "board_id": "board-A", "probe_serial_hash": "a" * 64,
+            "uart_serial_hash": "c" * 64, "power_identity": "bench-A",
+            "state": "running",
+        }, [], [], [],
+    )
+    monkeypatch.setattr(
+        gates,
+        "_release_call",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("release verifier loaded before caller trust")
+        ),
+    )
+
+    with pytest.raises(ControllerError, match="HEAD"):
+        HardwareContractController(
+            contract="0600", repo=REPO, catalog=CATALOG,
+            expected_code_head="a" * 40, controller_code_head="b" * 40,
+            final_run_id=RUN_ID, evidence_root=tmp_path / "untrusted-head",
+            backend=backend, support_profile=_write_support(tmp_path / "trust-support"),
+            hardware_identity={
+                "board_id": "board-A", "probe_serial_hash": "a" * 64,
+                "uart_serial_hash": "c" * 64, "power_identity": "bench-A",
+            },
+            hardware_campaign=_hardware_campaign(),
+            git_runner=HardwareGit(head="c" * 40), now=lambda: NOW,
+        )
+    assert backend.prepare_calls == []
+    assert backend.execute_calls == []
+
+
+@pytest.mark.parametrize(
+    ("field", "placeholder"),
+    [
+        ("board_revision", "fixtureRevision"),
+        ("mcu_part", "reserved-mcu"),
+        ("probe_model", "probeUnset"),
+        ("uart_adapter_model", "test-uart"),
+        ("firmware_0400_build_id", "fixture-build"),
+        ("firmware_0600_build_id", "reservedBuild"),
+    ],
+)
+def test_hardware_controller_rejects_every_projected_campaign_placeholder_before_backend(
+    tmp_path: Path, field: str, placeholder: str
+) -> None:
+    """A forged campaign projection cannot bypass the raw campaign placeholder policy."""
+    valid, backend = _hardware(tmp_path)
+    campaign = copy.deepcopy(valid.hardware_campaign)
+    campaign[field] = placeholder
+
+    with pytest.raises(ControllerError, match="campaign|placeholder|identity"):
+        HardwareContractController(
+            contract="0600", repo=REPO, catalog=CATALOG,
+            expected_code_head="a" * 40, controller_code_head="b" * 40,
+            final_run_id=RUN_ID, evidence_root=tmp_path / f"projected-{field}",
+            backend=backend, support_profile=valid.support_profile,
+            hardware_identity=valid.hardware_identity, hardware_campaign=campaign,
+            git_runner=HardwareGit(), now=lambda: NOW,
+        )
+    assert backend.prepare_calls == []
+    assert backend.execute_calls == []
 
 
 @pytest.mark.parametrize(
@@ -2178,6 +2426,97 @@ def test_terminal_wrapper_blocks_executable_with_reserved_prerequisite(
     ]
 
 
+def test_terminal_wrapper_blocks_cross_module_reserved_prerequisite(
+    tmp_path: Path,
+) -> None:
+    """A requested module cannot discard a reserved prerequisite owned by another module."""
+    support_profile = _write_support(tmp_path / "support-cross-module")
+    evidence = tmp_path / "quick-cross-module"
+    calls: list[str] = []
+    cross_module = GateFamily(
+        family_id="CROSS-MODULE", module="STM32TK-0601", matrices=("quick-0601",),
+        owner_class="Codex/local derived agents", platform_class="windows-python",
+        evidence_type="fixture", coverage_context="controller-off", command_argv=(),
+        node_ids=(), prerequisites=(), reserved=True,
+    )
+    requested = GateFamily(
+        family_id="REQUESTED", module="STM32TK-0602", matrices=("quick-0602",),
+        owner_class="Codex/local derived agents", platform_class="windows-python",
+        evidence_type="fixture", coverage_context="controller-off",
+        command_argv=("py", "-3.12", "-c", "raise SystemExit(0)"),
+        node_ids=("fixture::node",), prerequisites=("CROSS-MODULE",), reserved=False,
+    )
+
+    result = run_wrapper_contract(
+        kind="quick", matrix="quick", module="STM32TK-0602", shard="fixture",
+        run_id=RUN_ID, evidence_root=evidence, expected_code_head="a" * 40,
+        gate_catalog=CATALOG, performance_catalog=RELEASE / "performance_0600.json",
+        support_profile=support_profile, controller_path=QUICK, now=lambda: NOW,
+        catalog_loader=lambda _path: GateCatalog((cross_module, requested), ()),
+        verifier_blob_checker=lambda _repo, _head: RELEASE / "verify_0600_release.py",
+        gate_precheck=lambda gate: calls.append(gate.gate_id),
+    )
+
+    terminal = json.loads((evidence / "controller-result.json").read_text(encoding="utf-8"))
+    assert result["status"] == "BLOCKED"
+    assert calls == []
+    assert [(row["gate_id"], row["status"], row["reason"]) for row in terminal["gate_results"]] == [
+        ("REQUESTED", "BLOCKED", "PREREQUISITE_NOT_PASS")
+    ]
+    assert terminal["gate_results"][0]["metadata"]["decision"]["prerequisites"] == [
+        {"gate_id": "CROSS-MODULE", "status": "BLOCKED"}
+    ]
+
+
+def test_final_reserved_row_fail_fast_prevents_later_executable_and_verifies(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A leading reserved final row must stop a later independent product process."""
+    support_profile = _write_support(tmp_path / "support-final-reserved")
+    evidence = tmp_path / "final-reserved"
+    calls: list[str] = []
+    reserved = GateFamily(
+        family_id="RESERVED", module="STM32TK-0601", matrices=("final-windows",),
+        owner_class="Codex/local derived agents", platform_class="windows-python",
+        evidence_type="fixture", coverage_context="controller-off", command_argv=(),
+        node_ids=(), prerequisites=(), reserved=True,
+    )
+    executable = GateFamily(
+        family_id="EXECUTABLE", module="STM32TK-0601", matrices=("final-windows",),
+        owner_class="Codex/local derived agents", platform_class="windows-python",
+        evidence_type="fixture", coverage_context="controller-off",
+        command_argv=("py", "-3.12", "-c", "raise SystemExit(0)"),
+        node_ids=("fixture::node",), prerequisites=(), reserved=False,
+    )
+    catalog = GateCatalog((reserved, executable), ())
+    head = "a" * 40
+
+    run_wrapper_contract(
+        kind="final", matrix="final", module="STM32TK-0601", shard="windows",
+        run_id=RUN_ID, evidence_root=evidence, expected_code_head=head,
+        gate_catalog=CATALOG, performance_catalog=RELEASE / "performance_0600.json",
+        support_profile=support_profile, controller_path=FINAL, now=lambda: NOW,
+        catalog_loader=lambda _path: catalog,
+        verifier_blob_checker=lambda _repo, _head: RELEASE / "verify_0600_release.py",
+        verifier_invoker=lambda _repo, _head, _argv: SimpleNamespace(returncode=0),
+        gate_precheck=lambda gate: calls.append(gate.gate_id),
+    )
+    terminal_path = evidence / "controller-result.json"
+    terminal = json.loads(terminal_path.read_text(encoding="utf-8"))
+    assert calls == []
+    assert [(row["gate_id"], row["status"], row["reason"]) for row in terminal["gate_results"]] == [
+        ("RESERVED", "BLOCKED", "RESERVED_CATALOG_FAMILY"),
+        ("EXECUTABLE", "BLOCKED", "FINAL_FAIL_FAST"),
+    ]
+    monkeypatch.setattr(release_verifier, "FROZEN_SUPPORT_PROFILE", support_profile)
+    assert release_verifier._verify_terminal_result(
+        terminal_path, expected_head=head, expected_mode="final", catalog=catalog,
+        catalog_sha256=terminal["catalog_sha256"],
+        performance_sha256=terminal["performance_sha256"],
+        support_profile_sha256=None,
+    )["status"] == "BLOCKED"
+
+
 def test_terminal_verifier_derives_row_status_from_exit_and_node_outcomes(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -2236,6 +2575,122 @@ def test_terminal_verifier_derives_row_status_from_exit_and_node_outcomes(
         )
 
 
+@pytest.mark.parametrize(
+    ("case", "forged_reason"),
+    [
+        ("precheck", "PREREQUISITE_NOT_PASS"),
+        ("prerequisite", "FINAL_FAIL_FAST"),
+        ("fail-fast", "PREREQUISITE_NOT_PASS"),
+        ("postcheck", "PRODUCT_FAILURE"),
+    ],
+)
+def test_terminal_verifier_derives_control_reason_from_retained_facts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    case: str,
+    forged_reason: str,
+) -> None:
+    """Changing a claimed control reason cannot change the retained control facts."""
+    support_profile = _write_support(tmp_path / f"support-reason-{case}")
+    evidence = tmp_path / f"final-reason-{case}"
+    failing_node = "fixture::failed"
+    failing_command = (
+        "py", "-3.12", "-c",
+        "import json;print(json.dumps({'schema':'stm32-node-outcome/1','node_id':'fixture::failed','outcome':'failed'}));raise SystemExit(1)",
+    )
+
+    def family(
+        family_id: str,
+        *,
+        command: tuple[str, ...] = failing_command,
+        nodes: tuple[str, ...] = (failing_node,),
+        prerequisites: tuple[str, ...] = (),
+        reserved: bool = False,
+    ) -> GateFamily:
+        return GateFamily(
+            family_id=family_id, module="STM32TK-0601", matrices=("final-windows",),
+            owner_class="Codex/local derived agents", platform_class="windows-python",
+            evidence_type="fixture", coverage_context="controller-off",
+            command_argv=command, node_ids=nodes, prerequisites=prerequisites,
+            reserved=reserved,
+        )
+
+    check_calls: dict[str, int] = {}
+    if case == "precheck":
+        families = (family("TARGET"),)
+        target = 0
+
+        def gate_precheck(_gate: GateRequest) -> None:
+            raise ControllerError("precheck failure")
+
+    elif case == "prerequisite":
+        families = (
+            family("RESERVED", command=(), nodes=(), reserved=True),
+            family("TARGET", prerequisites=("RESERVED",)),
+        )
+        target = 1
+        gate_precheck = lambda _gate: None
+    elif case == "fail-fast":
+        families = (family("FIRST"), family("TARGET"))
+        target = 1
+
+        def gate_precheck(gate: GateRequest) -> None:
+            if gate.gate_id == "FIRST":
+                raise ControllerError("first gate precheck failure")
+
+    else:
+        families = (family("TARGET"),)
+        target = 0
+
+        def gate_precheck(gate: GateRequest) -> None:
+            count = check_calls.get(gate.gate_id, 0)
+            check_calls[gate.gate_id] = count + 1
+            if count == 1:
+                raise ControllerError("postcheck failure")
+
+    catalog = GateCatalog(families, ())
+    result = run_wrapper_contract(
+        kind="final", matrix="final", module="STM32TK-0601", shard="windows",
+        run_id=RUN_ID, evidence_root=evidence, expected_code_head="a" * 40,
+        gate_catalog=CATALOG, performance_catalog=RELEASE / "performance_0600.json",
+        support_profile=support_profile, controller_path=FINAL, now=lambda: NOW,
+        catalog_loader=lambda _path: catalog,
+        verifier_blob_checker=lambda _repo, _head: RELEASE / "verify_0600_release.py",
+        verifier_invoker=lambda _repo, _head, _argv: SimpleNamespace(returncode=0),
+        gate_precheck=gate_precheck,
+    )
+    terminal_path = evidence / "controller-result.json"
+    terminal = json.loads(terminal_path.read_text(encoding="utf-8"))
+    row = terminal["gate_results"][target]
+    row["reason"] = forged_reason
+    if case == "precheck":
+        row["status"] = "BLOCKED"
+        terminal["status"] = "BLOCKED"
+        terminal["reason"] = "CATALOG_FAMILIES_RESERVED"
+        terminal["binding"]["status"] = "BLOCKED"
+    terminal_path.write_bytes(canonical_json_bytes(terminal))
+    package_path = Path(result["package"]["path"])
+    package_path.unlink()
+    package_reference = create_shard_package(
+        evidence,
+        package_path,
+        terminal["binding"],
+        member_paths=terminal["evidence_inventory"],
+    )
+    package_path.with_name(package_path.name + ".manifest.json").write_bytes(
+        canonical_json_bytes(package_reference)
+    )
+    monkeypatch.setattr(release_verifier, "FROZEN_SUPPORT_PROFILE", support_profile)
+
+    with pytest.raises(VerificationError, match="reason|decision|precheck|postcheck|prerequisite|fail-fast"):
+        release_verifier._verify_terminal_result(
+            terminal_path, expected_head="a" * 40, expected_mode="final",
+            catalog=catalog, catalog_sha256=terminal["catalog_sha256"],
+            performance_sha256=terminal["performance_sha256"],
+            support_profile_sha256=None,
+        )
+
+
 def test_terminal_verifier_accepts_all_pass_executable_inventory(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -2276,6 +2731,136 @@ def test_terminal_verifier_accepts_all_pass_executable_inventory(
         performance_sha256=terminal["performance_sha256"],
         support_profile_sha256=None,
     )["status"] == "PASS"
+
+
+@pytest.mark.parametrize(
+    ("emitted_node", "emitted_outcome", "expected_reason"),
+    [
+        ("fixture::unexpected", "passed", "NODE_INVENTORY_MISMATCH"),
+        ("fixture::expected", "skipped", "NODE_OUTCOME_MISMATCH"),
+    ],
+)
+def test_terminal_verifier_accepts_truthful_node_mismatch_failures(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    emitted_node: str,
+    emitted_outcome: str,
+    expected_reason: str,
+) -> None:
+    """Retained selected-node/outcome facts must independently prove mismatch failures."""
+    support_profile = _write_support(tmp_path / f"support-{expected_reason}")
+    evidence = tmp_path / f"final-{expected_reason}"
+    command = (
+        "py", "-3.12", "-c",
+        "import json;print(json.dumps({"
+        f"'schema':'stm32-node-outcome/1','node_id':'{emitted_node}',"
+        f"'outcome':'{emitted_outcome}'"
+        "}))",
+    )
+    family = GateFamily(
+        family_id="FIXTURE-MISMATCH", module="STM32TK-0601",
+        matrices=("final-windows",), owner_class="Codex/local derived agents",
+        platform_class="windows-python", evidence_type="fixture",
+        coverage_context="controller-off", command_argv=command,
+        node_ids=("fixture::expected",), prerequisites=(), reserved=False,
+    )
+    head = "a" * 40
+    run_wrapper_contract(
+        kind="final", matrix="final", module="STM32TK-0601", shard="windows",
+        run_id=RUN_ID, evidence_root=evidence, expected_code_head=head,
+        gate_catalog=CATALOG, performance_catalog=RELEASE / "performance_0600.json",
+        support_profile=support_profile, controller_path=FINAL, now=lambda: NOW,
+        catalog_loader=lambda _path: GateCatalog((family,), ()),
+        verifier_blob_checker=lambda _repo, _head: RELEASE / "verify_0600_release.py",
+        verifier_invoker=lambda _repo, _head, _argv: SimpleNamespace(returncode=0),
+        gate_precheck=lambda _gate: None,
+    )
+    terminal_path = evidence / "controller-result.json"
+    terminal = json.loads(terminal_path.read_text(encoding="utf-8"))
+    assert (terminal["gate_results"][0]["status"], terminal["gate_results"][0]["reason"]) == (
+        "FAIL", expected_reason
+    )
+    monkeypatch.setattr(release_verifier, "FROZEN_SUPPORT_PROFILE", support_profile)
+
+    assert release_verifier._verify_terminal_result(
+        terminal_path, expected_head=head, expected_mode="final",
+        catalog=GateCatalog((family,), ()),
+        catalog_sha256=terminal["catalog_sha256"],
+        performance_sha256=terminal["performance_sha256"],
+        support_profile_sha256=None,
+    )["status"] == "FAIL"
+
+
+def test_terminal_verifier_reparses_retained_stdout_before_deriving_nodes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Mutable metadata/result claims cannot contradict the retained process stdout."""
+    support_profile = _write_support(tmp_path / "support-stdout-reparse")
+    evidence = tmp_path / "final-stdout-reparse"
+    expected_node = "fixture::expected"
+    family = GateFamily(
+        family_id="FIXTURE-STDOUT", module="STM32TK-0601",
+        matrices=("final-windows",), owner_class="Codex/local derived agents",
+        platform_class="windows-python", evidence_type="fixture",
+        coverage_context="controller-off",
+        command_argv=(
+            "py", "-3.12", "-c",
+            "import json;print(json.dumps({'schema':'stm32-node-outcome/1','node_id':'fixture::wrong','outcome':'passed'}))",
+        ),
+        node_ids=(expected_node,), prerequisites=(), reserved=False,
+    )
+    head = "a" * 40
+    result = run_wrapper_contract(
+        kind="final", matrix="final", module="STM32TK-0601", shard="windows",
+        run_id=RUN_ID, evidence_root=evidence, expected_code_head=head,
+        gate_catalog=CATALOG, performance_catalog=RELEASE / "performance_0600.json",
+        support_profile=support_profile, controller_path=FINAL, now=lambda: NOW,
+        catalog_loader=lambda _path: GateCatalog((family,), ()),
+        verifier_blob_checker=lambda _repo, _head: RELEASE / "verify_0600_release.py",
+        verifier_invoker=lambda _repo, _head, _argv: SimpleNamespace(returncode=0),
+        gate_precheck=lambda _gate: None,
+    )
+    terminal_path = evidence / "controller-result.json"
+    terminal = json.loads(terminal_path.read_text(encoding="utf-8"))
+    metadata = terminal["gate_results"][0]["metadata"]
+    forged_outcomes = [{"node_id": expected_node, "outcome": "passed"}]
+    metadata["selected_nodes"] = [expected_node]
+    metadata["node_outcomes"] = forged_outcomes
+    process_path = evidence / "gates" / family.family_id / "result.json"
+    process = json.loads(process_path.read_text(encoding="utf-8"))
+    process["selected_nodes"] = [expected_node]
+    process["node_outcomes"] = forged_outcomes
+    process_bytes = canonical_json_bytes(process)
+    process_path.write_bytes(process_bytes)
+    for reference in metadata["retained_evidence"]:
+        if reference["path"].endswith("/result.json"):
+            reference["bytes"] = len(process_bytes)
+            reference["sha256"] = _sha(process_bytes)
+    terminal["gate_results"][0]["status"] = "PASS"
+    terminal["gate_results"][0]["reason"] = "PASS"
+    terminal["status"] = "PASS"
+    terminal["reason"] = "PASS"
+    terminal["binding"]["status"] = "PASS"
+    terminal_path.write_bytes(canonical_json_bytes(terminal))
+    package_path = Path(result["package"]["path"])
+    package_path.unlink()
+    package_reference = create_shard_package(
+        evidence, package_path, terminal["binding"],
+        member_paths=terminal["evidence_inventory"],
+    )
+    package_path.with_name(package_path.name + ".manifest.json").write_bytes(
+        canonical_json_bytes(package_reference)
+    )
+    monkeypatch.setattr(release_verifier, "FROZEN_SUPPORT_PROFILE", support_profile)
+
+    with pytest.raises(VerificationError, match="stdout|node|outcome"):
+        release_verifier._verify_terminal_result(
+            terminal_path, expected_head=head, expected_mode="final",
+            catalog=GateCatalog((family,), ()),
+            catalog_sha256=terminal["catalog_sha256"],
+            performance_sha256=terminal["performance_sha256"],
+            support_profile_sha256=None,
+        )
 
 
 def test_terminal_final_wrapper_retains_closed_resume_checkpoint(tmp_path: Path) -> None:

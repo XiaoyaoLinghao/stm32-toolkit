@@ -883,24 +883,69 @@ def verify_shard_package(
 
 
 PRIVATE_PATH_PATTERN = re.compile(
-    r"(?:[A-Za-z]:[\\/]|\\\\|/(?:home|Users|tmp|var|private)(?:/|$))"
+    r"(?:[A-Za-z]:[\\/]|(?<![A-Za-z0-9_.:/-])[\\/])"
 )
-SENSITIVE_FIELD_PATTERN = re.compile(
-    r"(?:credential|password|secret|access[_-]?token|api[_-]?key)", re.IGNORECASE
+SENSITIVE_FIELD_NAMES = {
+    "accesskey", "accesstoken", "apikey", "authentication", "authorization",
+    "cookie", "credential", "password", "privatekey", "refreshtoken", "secret",
+    "sessiontoken",
+}
+SENSITIVE_FIELD_ALIASES = {"auth", "oauth", "passwd", "pwd", "token"}
+CREDENTIAL_VALUE_PATTERN = re.compile(
+    r"(?:"
+    r"\b(?:auth|authorization|proxy[-_ ]?authorization|cookie|set[-_ ]?cookie|password|passwd|secret|access[-_ ]?token|refresh[-_ ]?token|api[-_ .]?key|private[-_ .]?key)\s*[:=]"
+    r"|\b(?:bearer|basic)\s+[A-Za-z0-9+/=._~-]{3,}"
+    r"|-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----"
+    r"|[a-z][a-z0-9+.-]*://[^/\s:@]+:[^/\s@]+@"
+    r"|\b(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}"
+    r"|glpat-[A-Za-z0-9_-]{20,}|xox[baprs]-[A-Za-z0-9-]{20,}"
+    r"|(?:AKIA|ASIA)[0-9A-Z]{16}|AIza[A-Za-z0-9_-]{20,}"
+    r"|sk-(?:proj-)?[A-Za-z0-9_-]{20,})\b"
+    r")",
+    re.IGNORECASE,
 )
+CREDENTIAL_ASSIGNMENT_PATTERN = re.compile(
+    r"(?=(?:(?<!:):(?!:)|(?<![A-Za-z0-9_./:-]))(?:\$env:)?[\"']?"
+    r"([A-Za-z][A-Za-z0-9_. -]{0,127})[\"']?\s*(?:=|:(?!:)))",
+    re.MULTILINE,
+)
+
+
+def _sensitive_field(name: object) -> bool:
+    separated = re.sub(r"([a-z0-9])([A-Z])", r"\1 \2", str(name))
+    tokens = tuple(
+        token for token in re.split(r"[^a-z0-9]+", separated.casefold()) if token
+    )
+    normalized = "".join(tokens)
+    return (
+        any(token in SENSITIVE_FIELD_ALIASES for token in tokens)
+        or any(token in normalized for token in SENSITIVE_FIELD_NAMES)
+    )
+
+
+def _validate_portable_string(value: str) -> None:
+    if PRIVATE_PATH_PATTERN.search(value) is not None:
+        raise VerificationError("package contains an absolute private path")
+    if any(
+        _sensitive_field(match.group(1).strip())
+        for match in CREDENTIAL_ASSIGNMENT_PATTERN.finditer(value)
+    ):
+        raise VerificationError("package contains a credential assignment")
+    if CREDENTIAL_VALUE_PATTERN.search(value) is not None:
+        raise VerificationError("package contains a credential value")
 
 
 def _validate_portable_package_value(value: object) -> None:
     if isinstance(value, Mapping):
         for key, member in value.items():
-            if SENSITIVE_FIELD_PATTERN.search(str(key)) is not None:
+            if _sensitive_field(key):
                 raise VerificationError("package contains a credential field")
             _validate_portable_package_value(member)
     elif isinstance(value, list):
         for member in value:
             _validate_portable_package_value(member)
-    elif isinstance(value, str) and PRIVATE_PATH_PATTERN.search(value) is not None:
-        raise VerificationError("package contains an absolute private path")
+    elif isinstance(value, str):
+        _validate_portable_string(value)
 
 
 def _validate_portable_package_payload(name: str, payload: bytes) -> None:
@@ -916,10 +961,7 @@ def _validate_portable_package_payload(name: str, payload: bytes) -> None:
             text = payload.decode("utf-8")
         except UnicodeError as exc:
             raise VerificationError("package text payload is not UTF-8") from exc
-        if any(PRIVATE_PATH_PATTERN.search(line) is not None for line in text.splitlines()):
-            raise VerificationError("package log contains an absolute private path")
-        if SENSITIVE_FIELD_PATTERN.search(text) is not None:
-            raise VerificationError("package log contains credential-like text")
+        _validate_portable_string(text)
 
 
 AUDIT_ROOT_KEYS = {
@@ -1457,7 +1499,15 @@ REPOSITORY_ARTIFACT_KINDS = {
     "lock",
     "software-support",
 }
-PLACEHOLDERS = {"unknown", "none", "n/a", "na", "placeholder", "todo", "tbd"}
+PLACEHOLDERS = {
+    "dummy", "example", "fixture", "n/a", "na", "nil", "none", "null",
+    "placeholder", "redacted", "reserved", "sample", "test", "todo", "tbd",
+    "unknown", "unset",
+}
+PLACEHOLDER_AFFIXES = {
+    "dummy", "example", "fixture", "na", "nil", "none", "null", "placeholder",
+    "redacted", "reserved", "sample", "test", "todo", "tbd", "unknown", "unset",
+}
 
 
 def _read_canonical(path: Path) -> tuple[bytes, object]:
@@ -1539,11 +1589,23 @@ def _validate_source_reference(
 
 
 def _bounded_identity(value: object) -> bool:
+    if not isinstance(value, str):
+        return False
+    normalized = unicodedata.normalize("NFC", value)
+    folded = normalized.casefold()
+    tokens = tuple(item for item in re.split(r"[^a-z0-9]+", folded) if item)
+    compact = "".join(tokens)
     return (
-        isinstance(value, str)
-        and bool(value)
-        and value.casefold() not in PLACEHOLDERS
-        and unicodedata.normalize("NFC", value) == value
+        bool(value)
+        and value == value.strip()
+        and folded not in PLACEHOLDERS
+        and bool(tokens)
+        and not any(token in PLACEHOLDER_AFFIXES for token in tokens)
+        and not any(
+            compact.startswith(token) or compact.endswith(token)
+            for token in PLACEHOLDER_AFFIXES
+        )
+        and normalized == value
         and len(value.encode("utf-8")) <= 256
     )
 
@@ -1578,6 +1640,8 @@ def _validate_hardware(value: object, *, product_0603: str, owner: str) -> dict[
         or UTC_PATTERN.fullmatch(value["created_at_utc"]) is None
         or value["generator_code_head"] != product_0603
         or value["evidence_owner"] != owner
+        or not _bounded_identity(value["evidence_owner"])
+        or not _bounded_identity(owner)
         or value["transports"] != ["mailbox", "rtt", "semihosting", "uart"]
     ):
         raise VerificationError("hardware campaign identity is invalid")
@@ -1898,14 +1962,60 @@ TERMINAL_AUDIT_KEYS = {"schema", "status", "reason", "evidence"}
 TERMINAL_GATE_RESULT_KEYS = {"gate_id", "status", "reason", "metadata"}
 TERMINAL_METADATA_KEYS = {
     "architecture", "argv", "code_head", "cwd", "duration_ms", "executable",
-    "executable_version", "exit_code", "gate_id", "node_outcomes", "os",
-    "retained_evidence", "run_id", "seed", "started_at_utc", "stderr", "stdout",
-    "timed_out",
+    "decision", "executable_version", "exit_code", "gate_id", "node_outcomes", "os",
+    "retained_evidence", "run_id", "seed", "selected_nodes", "started_at_utc",
+    "stderr", "stdout", "timed_out",
 }
+TERMINAL_DECISION_KEYS = {"precheck", "postcheck", "prerequisites"}
+TERMINAL_DECISION_STATES = {"FAIL", "NOT_REQUIRED", "NOT_RUN", "PASS"}
 
 
 def _reference_list(root: Path, paths: Sequence[str]) -> list[dict[str, object]]:
     return [_file_reference(root.joinpath(*name.split("/")), name) for name in paths]
+
+
+def _verify_terminal_decision(
+    value: object, expected_prerequisites: list[dict[str, str]]
+) -> tuple[str, str]:
+    if not _closed(value, TERMINAL_DECISION_KEYS):
+        raise VerificationError("terminal decision facts are not closed")
+    assert isinstance(value, Mapping)
+    precheck, postcheck = value["precheck"], value["postcheck"]
+    if precheck not in TERMINAL_DECISION_STATES or postcheck not in TERMINAL_DECISION_STATES:
+        raise VerificationError("terminal precheck/postcheck fact is invalid")
+    prerequisites = value["prerequisites"]
+    if not isinstance(prerequisites, list):
+        raise VerificationError("terminal prerequisite facts are not an array")
+    for item in prerequisites:
+        if (
+            not _closed(item, {"gate_id", "status"})
+            or not isinstance(item["gate_id"], str)
+            or item["status"] not in {"BLOCKED", "FAIL", "PASS"}
+        ):
+            raise VerificationError("terminal prerequisite fact is not closed")
+    if prerequisites != expected_prerequisites:
+        raise VerificationError("terminal prerequisite facts differ from the complete catalog DAG")
+    return str(precheck), str(postcheck)
+
+
+def _parse_retained_node_outcomes(stdout: bytes) -> list[dict[str, str]]:
+    outcomes: list[dict[str, str]] = []
+    for raw_line in stdout.splitlines():
+        try:
+            value = json.loads(raw_line.decode("utf-8"))
+        except (UnicodeError, json.JSONDecodeError):
+            continue
+        if (
+            isinstance(value, dict)
+            and set(value) == {"schema", "node_id", "outcome"}
+            and value["schema"] == "stm32-node-outcome/1"
+            and isinstance(value["node_id"], str)
+            and isinstance(value["outcome"], str)
+        ):
+            outcomes.append({
+                "node_id": value["node_id"], "outcome": value["outcome"]
+            })
+    return outcomes
 
 
 def _verify_terminal_metadata(
@@ -1971,20 +2081,31 @@ def _verify_terminal_metadata(
             or HEX64.fullmatch(reference["sha256"]) is None
         ):
             raise VerificationError("terminal stream reference is invalid")
+    selected_nodes = value["selected_nodes"]
+    if (
+        not isinstance(selected_nodes, list)
+        or any(not isinstance(node, str) or not node for node in selected_nodes)
+    ):
+        raise VerificationError("terminal selected-node inventory is invalid")
     outcomes = value["node_outcomes"]
     if not isinstance(outcomes, list):
         raise VerificationError("terminal node outcomes are not an array")
-    observed_nodes: list[str] = []
     for outcome in outcomes:
         if (
             not _closed(outcome, {"node_id", "outcome"})
             or not isinstance(outcome["node_id"], str)
-            or outcome["outcome"] not in {"passed", "failed"}
+            or not outcome["node_id"]
+            or not isinstance(outcome["outcome"], str)
+            or not outcome["outcome"]
         ):
             raise VerificationError("terminal node outcome is not closed")
-        observed_nodes.append(str(outcome["node_id"]))
-    if tuple(observed_nodes) != (() if unexecuted else family.node_ids):
-        raise VerificationError("terminal node inventory differs from catalog")
+    if unexecuted and (
+        selected_nodes
+        or outcomes
+        or value["exit_code"] != -1
+        or value["timed_out"] is not False
+    ):
+        raise VerificationError("unexecuted terminal decision/process facts are invalid")
     retained = value["retained_evidence"]
     if not isinstance(retained, list):
         raise VerificationError("terminal retained evidence is not an array")
@@ -2093,6 +2214,7 @@ def _verify_terminal_result(
     if not isinstance(rows, list) or len(rows) != len(families):
         raise VerificationError("terminal gate result inventory is incomplete")
     statuses: list[str] = []
+    complete_statuses = {family.family_id: "BLOCKED" for family in catalog.families}
     for family, row in zip(families, rows):
         if not _closed(row, TERMINAL_GATE_RESULT_KEYS):
             raise VerificationError("terminal gate result is not closed")
@@ -2101,36 +2223,97 @@ def _verify_terminal_result(
             row["gate_id"] != family.family_id
             or row["status"] not in {"PASS", "FAIL", "BLOCKED"}
             or not isinstance(row["reason"], str)
-            or (family.reserved and (row["status"] != "BLOCKED" or row["reason"] != "RESERVED_CATALOG_FAMILY"))
         ):
             raise VerificationError("terminal gate result state differs from catalog")
-        unexecuted_reason = str(row["reason"]) in {
-            "FINAL_FAIL_FAST", "PRECHECK_FAILED", "PREREQUISITE_NOT_PASS"
-        }
-        _verify_terminal_metadata(
-            row["metadata"], family=family,
-            run_id=str(result["run_id"]), code_head=expected_head,
-            unexecuted=unexecuted_reason,
-        )
         metadata = row["metadata"]
+        if not isinstance(metadata, Mapping):
+            raise VerificationError("terminal gate metadata is not an object")
+        expected_prerequisite_facts = [
+            {"gate_id": gate_id, "status": complete_statuses[gate_id]}
+            for gate_id in family.prerequisites
+        ]
+        precheck, postcheck = _verify_terminal_decision(
+            metadata.get("decision"), expected_prerequisite_facts
+        )
+        prerequisite_blocked = any(
+            item["status"] != "PASS" for item in expected_prerequisite_facts
+        )
+        expected_row: tuple[str, str] | None = None
+        unexecuted = False
         if family.reserved:
+            if (precheck, postcheck) != ("NOT_RUN", "NOT_RUN"):
+                raise VerificationError("reserved gate decision facts are invalid")
             expected_row = ("BLOCKED", "RESERVED_CATALOG_FAMILY")
-        elif row["reason"] == "PRECHECK_FAILED":
+            unexecuted = True
+        elif prerequisite_blocked:
+            if (precheck, postcheck) != ("NOT_RUN", "NOT_RUN"):
+                raise VerificationError("blocked prerequisite decision facts are invalid")
+            expected_row = ("BLOCKED", "PREREQUISITE_NOT_PASS")
+            unexecuted = True
+        elif expected_mode == "final" and any(status != "PASS" for status in statuses):
+            if (precheck, postcheck) != ("NOT_RUN", "NOT_RUN"):
+                raise VerificationError("final fail-fast decision facts are invalid")
+            expected_row = ("BLOCKED", "FINAL_FAIL_FAST")
+            unexecuted = True
+        elif precheck == "FAIL":
+            if postcheck != "NOT_RUN":
+                raise VerificationError("failed precheck cannot have a postcheck result")
             expected_row = ("FAIL", "PRECHECK_FAILED")
-        elif row["reason"] in {"FINAL_FAIL_FAST", "PREREQUISITE_NOT_PASS"}:
-            expected_row = ("BLOCKED", str(row["reason"]))
-        elif row["reason"] == "POSTCHECK_FAILED":
+            unexecuted = True
+        elif precheck != "PASS":
+            raise VerificationError("terminal precheck fact does not authorize execution")
+        elif postcheck == "FAIL":
             expected_row = ("FAIL", "POSTCHECK_FAILED")
-        elif metadata["timed_out"]:
-            expected_row = ("FAIL", "TIMEOUT")
-        elif metadata["exit_code"] != 0 or any(
-            item["outcome"] == "failed" for item in metadata["node_outcomes"]
-        ):
-            expected_row = ("FAIL", "PRODUCT_FAILURE")
-        else:
-            expected_row = ("PASS", "PASS")
+        elif postcheck != "PASS":
+            raise VerificationError("terminal postcheck fact is incomplete")
+        _verify_terminal_metadata(
+            metadata, family=family,
+            run_id=str(result["run_id"]), code_head=expected_head,
+            unexecuted=unexecuted,
+        )
+        if not unexecuted:
+            stdout_path = evidence_root / "gates" / family.family_id / "stdout.log"
+            if not _regular_file(stdout_path):
+                raise VerificationError("terminal retained stdout is missing or unsafe")
+            stdout_bytes = stdout_path.read_bytes()
+            if {
+                "bytes": len(stdout_bytes),
+                "sha256": hashlib.sha256(stdout_bytes).hexdigest(),
+            } != metadata["stdout"]:
+                raise VerificationError("terminal retained stdout differs from metadata")
+            parsed_outcomes = _parse_retained_node_outcomes(stdout_bytes)
+            if (
+                parsed_outcomes != metadata["node_outcomes"]
+                or [item["node_id"] for item in parsed_outcomes]
+                != metadata["selected_nodes"]
+            ):
+                raise VerificationError(
+                    "terminal node outcomes differ from independently parsed stdout"
+                )
+        if expected_row is None:
+            selected_nodes = tuple(metadata["selected_nodes"])
+            outcomes = metadata["node_outcomes"]
+            outcome_nodes = tuple(item["node_id"] for item in outcomes)
+            if (
+                len(selected_nodes) != len(set(selected_nodes))
+                or selected_nodes != family.node_ids
+            ):
+                expected_row = ("FAIL", "NODE_INVENTORY_MISMATCH")
+            elif (
+                outcome_nodes != family.node_ids
+                or any(item["outcome"] not in {"passed", "failed"} for item in outcomes)
+            ):
+                expected_row = ("FAIL", "NODE_OUTCOME_MISMATCH")
+            elif metadata["timed_out"]:
+                expected_row = ("FAIL", "TIMEOUT")
+            elif metadata["exit_code"] != 0 or any(
+                item["outcome"] == "failed" for item in metadata["node_outcomes"]
+            ):
+                expected_row = ("FAIL", "PRODUCT_FAILURE")
+            else:
+                expected_row = ("PASS", "PASS")
         if (row["status"], row["reason"]) != expected_row:
-            raise VerificationError("terminal gate status/reason is not derived from exit and outcomes")
+            raise VerificationError("terminal gate status/reason is not derived from decision facts")
         for reference in metadata["retained_evidence"]:
             actual = _file_reference(
                 evidence_root / "gates" / Path(str(reference["path"])),
@@ -2150,16 +2333,18 @@ def _verify_terminal_result(
                 evidence_root / "gates" / family.family_id / "result.json"
             )
             if (
-                not _closed(process_value, {"schema", "exit_code", "duration_ms", "timed_out", "node_outcomes"})
+                not _closed(process_value, {"schema", "exit_code", "duration_ms", "timed_out", "selected_nodes", "node_outcomes"})
                 or process_value["schema"] != "stm32-gate-process-result/1"
                 or process_value["exit_code"] != metadata["exit_code"]
                 or process_value["duration_ms"] != metadata["duration_ms"]
                 or process_value["timed_out"] != metadata["timed_out"]
+                or process_value["selected_nodes"] != metadata["selected_nodes"]
                 or process_value["node_outcomes"] != metadata["node_outcomes"]
                 or not process_bytes
             ):
                 raise VerificationError("terminal process result differs from controller metadata")
         statuses.append(str(row["status"]))
+        complete_statuses[family.family_id] = str(row["status"])
     expected_status = "FAIL" if "FAIL" in statuses else "BLOCKED" if "BLOCKED" in statuses or not families else "PASS"
     if expected_status == "FAIL":
         expected_reason = "GATE_FAILURE"

@@ -467,6 +467,80 @@ def test_source_sidecar_hardware_identity_and_artifact_mutations_fail_before_pas
     assert capsys.readouterr().out == ""
 
 
+@pytest.mark.parametrize(
+    ("field_path", "placeholder"),
+    [
+        (("board_id",), "board-FiXtUrE-v1"),
+        (("board_revision",), "reserved-revision"),
+        (("mcu_part",), "test-mcu"),
+        (("probe_model",), "probeUnset"),
+        (("uart_adapter_model",), "placeholder-uart"),
+        (("power_identity",), "power-tbd"),
+        (("firmware_0400", "build_id"), "fixture-build"),
+        (("firmware_0600", "build_id"), "reservedBuild"),
+        (("board_id",), "redacted-board"),
+        (("board_revision",), "revision-null"),
+        (("mcu_part",), "nil-mcu"),
+        (("probe_model",), "noneProbe"),
+        (("uart_adapter_model",), "adapter-na"),
+        (("power_identity",), "power-redacted"),
+        (("firmware_0400", "build_id"), "null-build"),
+        (("firmware_0600", "build_id"), "buildNil"),
+    ],
+)
+def test_every_bounded_campaign_and_firmware_identity_rejects_placeholders(
+    ledger_fixture: SimpleNamespace,
+    field_path: tuple[str, ...],
+    placeholder: str,
+) -> None:
+    """Every human-readable campaign/build identity must reject normalized placeholders."""
+    hardware = copy.deepcopy(ledger_fixture.hardware)
+    target = hardware
+    for name in field_path[:-1]:
+        target = target[name]
+    target[field_path[-1]] = placeholder
+    hardware_bytes = _write_canonical(ledger_fixture.hardware_path, hardware)
+    ledger = copy.deepcopy(ledger_fixture.ledger)
+    ledger["hardware"] = hardware
+    ledger["hardwareInput"] = {
+        "path": str(ledger_fixture.hardware_path),
+        "bytes": len(hardware_bytes),
+        "sha256": _sha(hardware_bytes),
+    }
+    _write_canonical(ledger_fixture.ledger_path, ledger)
+
+    with pytest.raises(VerificationError, match="identity|placeholder|build"):
+        _verify(ledger_fixture)
+
+
+def test_hardware_campaign_owner_rejects_placeholder_even_when_expected_matches(
+    ledger_fixture: SimpleNamespace,
+) -> None:
+    """Caller-supplied expected owner equality cannot make a placeholder owner valid."""
+    hardware = copy.deepcopy(ledger_fixture.hardware)
+    hardware["evidence_owner"] = "fixture-owner"
+
+    with pytest.raises(VerificationError, match="identity|owner|placeholder"):
+        verifier._validate_hardware(
+            hardware, product_0603=HEADS["0603Product"], owner="fixture-owner"
+        )
+
+
+@pytest.mark.parametrize(
+    "owner",
+    ["redacted-owner", "owner-null", "nilOwner", "owner-none", "owner-na"],
+)
+def test_hardware_campaign_owner_rejects_every_normalized_placeholder_affix(
+    ledger_fixture: SimpleNamespace, owner: str
+) -> None:
+    """Every frozen normalized placeholder token is forbidden in the owner identity."""
+    hardware = copy.deepcopy(ledger_fixture.hardware)
+    hardware["evidence_owner"] = owner
+
+    with pytest.raises(VerificationError, match="identity|owner|placeholder"):
+        verifier._validate_hardware(hardware, product_0603=HEADS["0603Product"], owner=owner)
+
+
 def test_external_hardware_file_rejects_a_reparse_ancestor(
     ledger_fixture: SimpleNamespace, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:

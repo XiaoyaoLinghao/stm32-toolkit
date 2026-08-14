@@ -258,6 +258,7 @@ def _metadata(
     run_id: str,
     code_head: str,
     started: datetime,
+    decision: Mapping[str, object] | None = None,
 ) -> dict[str, object]:
     executable_version = "reserved"
     if gate.argv:
@@ -282,6 +283,9 @@ def _metadata(
         "argv": list(gate.argv),
         "code_head": code_head,
         "cwd": ".",
+        "decision": dict(decision or {
+            "postcheck": "NOT_RUN", "precheck": "NOT_RUN", "prerequisites": []
+        }),
         "duration_ms": output.duration_ms,
         "executable": gate.argv[0] if gate.argv else "reserved",
         "executable_version": executable_version,
@@ -295,10 +299,28 @@ def _metadata(
         "retained_evidence": list(output.retained_evidence),
         "run_id": run_id,
         "seed": f"stm32tk-0600:{run_id}:{gate.gate_id}",
+        "selected_nodes": list(output.selected_nodes),
         "started_at_utc": _utc(started),
         "stderr": {"bytes": len(output.stderr), "sha256": hashlib.sha256(output.stderr).hexdigest()},
         "stdout": {"bytes": len(output.stdout), "sha256": hashlib.sha256(output.stdout).hexdigest()},
         "timed_out": output.timed_out,
+    }
+
+
+def _decision_facts(
+    gate: GateRequest,
+    statuses: Mapping[str, str],
+    *,
+    precheck: str,
+    postcheck: str,
+) -> dict[str, object]:
+    return {
+        "postcheck": postcheck,
+        "precheck": precheck,
+        "prerequisites": [
+            {"gate_id": gate_id, "status": statuses[gate_id]}
+            for gate_id in gate.prerequisites
+        ],
     }
 
 
@@ -386,6 +408,7 @@ def execute_gate_process(
         "exit_code": exit_code,
         "duration_ms": duration_ms,
         "timed_out": timed_out,
+        "selected_nodes": [node_id for node_id, _ in outcomes],
         "node_outcomes": [
             {"node_id": node_id, "outcome": outcome}
             for node_id, outcome in outcomes
@@ -469,21 +492,33 @@ def run_gate_matrix(
                 gate.gate_id,
                 "BLOCKED",
                 "PREREQUISITE_NOT_PASS",
-                _metadata(gate, output, run_id=run_id, code_head=code_head, started=now()),
+                _metadata(
+                    gate, output, run_id=run_id, code_head=code_head, started=now(),
+                    decision=_decision_facts(
+                        gate, statuses, precheck="NOT_RUN", postcheck="NOT_RUN"
+                    ),
+                ),
             )
             results.append(result)
             statuses[gate.gate_id] = result.status
             continue
+        precheck_state = "NOT_REQUIRED"
         if precheck is not None:
             try:
                 precheck(gate)
+                precheck_state = "PASS"
             except Exception as exc:  # external/precondition boundary, converted to evidence
                 output = GateRunOutput(-1, b"", str(exc).encode("utf-8"), (), ())
                 result = GateResult(
                     gate.gate_id,
                     "FAIL",
                     "PRECHECK_FAILED",
-                    _metadata(gate, output, run_id=run_id, code_head=code_head, started=now()),
+                    _metadata(
+                        gate, output, run_id=run_id, code_head=code_head, started=now(),
+                        decision=_decision_facts(
+                            gate, statuses, precheck="FAIL", postcheck="NOT_RUN"
+                        ),
+                    ),
                 )
                 results.append(result)
                 statuses[gate.gate_id] = result.status
@@ -494,19 +529,28 @@ def run_gate_matrix(
             raise ControllerError("matrix precheck is required")
         if matrix == "final-readiness":
             output = GateRunOutput(0, b"", b"", (), ())
+            postcheck_state = "NOT_RUN"
         else:
             output = execute(gate, dict(environment))
             if not isinstance(output, GateRunOutput):
                 raise ControllerError("executor returned an invalid result")
+            postcheck_state = "NOT_REQUIRED"
             if postcheck is not None:
                 try:
                     postcheck(gate)
+                    postcheck_state = "PASS"
                 except Exception:
                     result = GateResult(
                         gate.gate_id,
                         "FAIL",
                         "POSTCHECK_FAILED",
-                        _metadata(gate, output, run_id=run_id, code_head=code_head, started=now()),
+                        _metadata(
+                            gate, output, run_id=run_id, code_head=code_head, started=now(),
+                            decision=_decision_facts(
+                                gate, statuses,
+                                precheck=precheck_state, postcheck="FAIL",
+                            ),
+                        ),
                     )
                     results.append(result)
                     statuses[gate.gate_id] = result.status
@@ -530,7 +574,13 @@ def run_gate_matrix(
             gate.gate_id,
             status,
             reason,
-            _metadata(gate, output, run_id=run_id, code_head=code_head, started=now()),
+            _metadata(
+                gate, output, run_id=run_id, code_head=code_head, started=now(),
+                decision=_decision_facts(
+                    gate, statuses,
+                    precheck=precheck_state, postcheck=postcheck_state,
+                ),
+            ),
         )
         results.append(result)
         statuses[gate.gate_id] = result.status
@@ -1020,22 +1070,22 @@ class HardwareContractController:
         fixed_catalog = (repo / "tools/release/gates_0600.json").resolve()
         if catalog.resolve() != fixed_catalog:
             raise ControllerError("hardware controller requires the fixed catalog")
+        selected_git_runner = git_runner or (lambda args: _git_text(repo, args))
+        if selected_git_runner(["rev-parse", "HEAD"]).strip() != controller_code_head:
+            raise ControllerError("hardware controller worktree HEAD changed")
+        for verifier_relative in (VERIFIER_RELATIVE_PATH, FEASIBILITY_RELATIVE_PATH):
+            working_verifier = selected_git_runner(["hash-object", "--", verifier_relative]).strip()
+            committed_verifier = selected_git_runner(["rev-parse", f"HEAD:{verifier_relative}"]).strip()
+            if working_verifier != committed_verifier or HEX40.fullmatch(working_verifier) is None:
+                raise ControllerError("hardware verifier blob changed")
         if set(hardware_identity) != {
             "board_id", "probe_serial_hash", "uart_serial_hash", "power_identity"
         }:
             raise ControllerError("hardware identity is not closed")
         identity = dict(hardware_identity)
-        placeholder_tokens = {"placeholder", "reserved", "unknown", "unset", "fixture", "test"}
         if (
-            not isinstance(identity["board_id"], str)
-            or not identity["board_id"]
-            or not isinstance(identity["power_identity"], str)
-            or not identity["power_identity"]
-            or any(
-                token in identity[name].casefold()
-                for name in ("board_id", "power_identity")
-                for token in placeholder_tokens
-            )
+            not bool(_release_call("_bounded_identity", identity["board_id"]))
+            or not bool(_release_call("_bounded_identity", identity["power_identity"]))
             or HEX64.fullmatch(identity["probe_serial_hash"]) is None
             or HEX64.fullmatch(identity["uart_serial_hash"]) is None
             or identity["probe_serial_hash"] in {"0" * 64, "1" * 64}
@@ -1057,8 +1107,9 @@ class HardwareContractController:
             or campaign["generator_code_head"] != controller_code_head
             or campaign["evidence_owner"] != "user"
             or any(
-                not isinstance(campaign[name], str) or not campaign[name]
+                not bool(_release_call("_bounded_identity", campaign[name]))
                 for name in (
+                    "evidence_owner",
                     "board_revision", "mcu_part", "probe_model", "uart_adapter_model",
                     "firmware_0400_build_id", "firmware_0600_build_id",
                 )
@@ -1073,14 +1124,6 @@ class HardwareContractController:
             or campaign["firmware_0400_build_id"] == campaign["firmware_0600_build_id"]
         ):
             raise ControllerError("hardware campaign binding is invalid")
-        selected_git_runner = git_runner or (lambda args: _git_text(repo, args))
-        if selected_git_runner(["rev-parse", "HEAD"]).strip() != controller_code_head:
-            raise ControllerError("hardware controller worktree HEAD changed")
-        for verifier_relative in (VERIFIER_RELATIVE_PATH, FEASIBILITY_RELATIVE_PATH):
-            working_verifier = selected_git_runner(["hash-object", "--", verifier_relative]).strip()
-            committed_verifier = selected_git_runner(["rev-parse", f"HEAD:{verifier_relative}"]).strip()
-            if working_verifier != committed_verifier or HEX40.fullmatch(working_verifier) is None:
-                raise ControllerError("hardware verifier blob changed")
         try:
             loaded = load_catalog(catalog)
         except CatalogError as exc:
@@ -1658,7 +1701,15 @@ def run_wrapper_contract(
         if family.module == module and catalog_matrix in family.matrices
     )
     executable = tuple(family for family in families if not family.reserved)
-    reserved = tuple(family for family in families if family.reserved)
+    scheduled_executable = executable
+    if kind == "final":
+        first_reserved = next(
+            (index for index, family in enumerate(families) if family.reserved),
+            len(families),
+        )
+        scheduled_executable = tuple(
+            family for family in families[:first_reserved] if not family.reserved
+        )
     requests = [
         GateRequest(
             family.family_id,
@@ -1670,8 +1721,14 @@ def run_wrapper_contract(
                 family.prerequisites
             ),
         )
-        for family in executable
+        for family in scheduled_executable
     ]
+    requested_ids = {family.family_id for family in scheduled_executable}
+    complete_catalog_statuses = {
+        family.family_id: "BLOCKED"
+        for family in catalog.families
+        if family.family_id not in requested_ids
+    }
     gate_root = evidence / "gates"
     if requests:
         gate_root.mkdir()
@@ -1715,42 +1772,28 @@ def run_wrapper_contract(
         ),
         precheck=immutable_precheck,
         postcheck=immutable_precheck,
-        prerequisite_statuses={family.family_id: "BLOCKED" for family in reserved},
+        prerequisite_statuses=complete_catalog_statuses,
         run_id=run_id,
         code_head=expected_code_head,
         now=now,
     ) if requests else []
-    gate_results = [
-        {
-            "gate_id": result.gate_id,
-            "status": result.status,
-            "reason": result.reason,
-            "metadata": result.metadata,
-        }
-        for result in matrix_results
-    ]
-    completed_ids = {str(item["gate_id"]) for item in gate_results}
-    for family in executable:
-        if family.family_id not in completed_ids:
-            stopped = GateRequest(
-                family.family_id, family.command_argv, repo, 900, family.node_ids,
-                prerequisites=family.prerequisites,
+    matrix_by_id = {result.gate_id: result for result in matrix_results}
+    status_inventory = dict(complete_catalog_statuses)
+    gate_results: list[dict[str, object]] = []
+    for family in families:
+        matrix_result = matrix_by_id.get(family.family_id)
+        if matrix_result is not None:
+            row = {
+                "gate_id": matrix_result.gate_id,
+                "status": matrix_result.status,
+                "reason": matrix_result.reason,
+                "metadata": matrix_result.metadata,
+            }
+        elif family.reserved:
+            blocked_request = GateRequest(
+                family.family_id, (), repo, 900, (), prerequisites=family.prerequisites
             )
-            gate_results.append({
-                "gate_id": family.family_id,
-                "status": "BLOCKED",
-                "reason": "FINAL_FAIL_FAST",
-                "metadata": _metadata(
-                    stopped, GateRunOutput(-1, b"", b"", (), ()),
-                    run_id=run_id, code_head=expected_code_head, started=now(),
-                ),
-            })
-    for family in reserved:
-        blocked_request = GateRequest(
-            family.family_id, (), repo, 900, (), prerequisites=family.prerequisites
-        )
-        gate_results.append(
-            {
+            row = {
                 "gate_id": family.family_id,
                 "status": "BLOCKED",
                 "reason": "RESERVED_CATALOG_FAMILY",
@@ -1760,12 +1803,43 @@ def run_wrapper_contract(
                     run_id=run_id,
                     code_head=expected_code_head,
                     started=now(),
+                    decision=_decision_facts(
+                        blocked_request,
+                        status_inventory,
+                        precheck="NOT_RUN",
+                        postcheck="NOT_RUN",
+                    ),
                 ),
             }
-        )
+        else:
+            stopped = GateRequest(
+                family.family_id, family.command_argv, repo, 900, family.node_ids,
+                prerequisites=family.prerequisites,
+            )
+            prerequisite_blocked = any(
+                status_inventory[item] != "PASS" for item in family.prerequisites
+            )
+            row = {
+                "gate_id": family.family_id,
+                "status": "BLOCKED",
+                "reason": (
+                    "PREREQUISITE_NOT_PASS" if prerequisite_blocked
+                    else "FINAL_FAIL_FAST"
+                ),
+                "metadata": _metadata(
+                    stopped, GateRunOutput(-1, b"", b"", (), ()),
+                    run_id=run_id, code_head=expected_code_head, started=now(),
+                    decision=_decision_facts(
+                        stopped,
+                        status_inventory,
+                        precheck="NOT_RUN",
+                        postcheck="NOT_RUN",
+                    ),
+                ),
+            }
+        gate_results.append(row)
+        status_inventory[family.family_id] = str(row["status"])
     inventory = [family.family_id for family in families]
-    ordered_by_catalog = {name: index for index, name in enumerate(inventory)}
-    gate_results.sort(key=lambda item: ordered_by_catalog[str(item["gate_id"])])
     statuses = [str(item["status"]) for item in gate_results]
     if not families:
         status, reason = "BLOCKED", "MODULE_FAMILY_MISSING"
