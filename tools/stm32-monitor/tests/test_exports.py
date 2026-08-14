@@ -172,6 +172,200 @@ def test_repeated_exports_reuse_verified_batches_and_append_invalidates_them(
         history.close()
 
 
+def test_export_internal_buffer_and_path_guards_cover_all_fail_closed_edges(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import stm32_monitor.exports as exports_module
+
+    stream = BytesIO()
+    writer = exports_module._LimitedHashWriter(stream)
+    writer.write(b"prefix")
+    writer.write(b"x" * exports_module._WRITE_BUFFER_BYTES)
+    assert stream.getvalue().startswith(b"prefix")
+    writer.finish()
+    assert writer.byte_count == len(b"prefix") + exports_module._WRITE_BUFFER_BYTES
+    direct = BytesIO()
+    direct_writer = exports_module._LimitedHashWriter(direct)
+    direct_writer.write(b"y" * exports_module._WRITE_BUFFER_BYTES)
+    assert direct.getvalue() == b"y" * exports_module._WRITE_BUFFER_BYTES
+
+    regular = tmp_path / "regular"
+    regular.write_bytes(b"x")
+    with pytest.raises(OSError, match="parent is unsafe"):
+        exports_module._directory_identity(regular)
+    with pytest.raises(OSError, match="parent is invalid"):
+        with exports_module._create_regular_exclusive(
+            tmp_path / "artifact", parent=tmp_path / "other"
+        ):
+            pass
+
+    descriptor = os.open(regular, os.O_RDONLY)
+    try:
+        real_fstat = exports_module.os.fstat
+        monkeypatch.setattr(
+            exports_module.os,
+            "fstat",
+            lambda value: SimpleNamespace(st_mode=0, st_nlink=1, st_dev=0, st_ino=0)
+            if value == descriptor
+            else real_fstat(value),
+        )
+        with pytest.raises(OSError, match="identity is unsafe"):
+            exports_module._validate_created_file(
+                descriptor,
+                regular,
+                parent=tmp_path,
+                parent_identity=exports_module._directory_identity(tmp_path),
+            )
+    finally:
+        os.close(descriptor)
+
+    oversized = tmp_path / "oversized"
+    oversized.write_bytes(b"xx")
+    with pytest.raises(ValueError, match="exceeds its limit"):
+        exports_module._read_regular_limited(oversized, limit=1, keep=True)
+    with pytest.raises(ValueError, match="exceeds its limit"):
+        exports_module._open_verified_regular(oversized, limit=1)
+    with pytest.raises(ValueError, match="independent regular file"):
+        exports_module._open_verified_regular(tmp_path, limit=1)
+
+
+def test_export_database_skips_callback_for_untrusted_or_missing_identity(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import stm32_monitor.exports as exports_module
+    from stm32_monitor.storage import MonitorDatabase
+
+    paths = _paths(tmp_path)
+    callbacks = []
+    database = exports_module._ExportDatabase(paths, callbacks.append)
+    monkeypatch.setattr(
+        MonitorDatabase,
+        "write",
+        lambda _self, operation: operation(object()),
+    )
+    try:
+        monkeypatch.setattr(database, "_inspect_storage_files", lambda: {})
+        monkeypatch.setattr(database, "_integrity_fingerprint", lambda _files: ())
+        database._integrity_identity = (("untrusted", 0, 0, 0, 0),)
+        assert database.write(lambda _connection: "missing") == "missing"
+
+        identity = (1, 2, 3)
+        monkeypatch.setattr(
+            database,
+            "_inspect_storage_files",
+            lambda: {database.path: identity},
+        )
+        monkeypatch.setattr(
+            database,
+            "_integrity_fingerprint",
+            lambda _files: (("fingerprint", 1, 2, 3, 4),),
+        )
+        database._integrity_identity = (("different", 1, 2, 3, 4),)
+        assert database.write(lambda _connection: "untrusted") == "untrusted"
+        assert callbacks == []
+    finally:
+        database.close()
+
+
+def test_export_cleanup_covers_mismatch_redirect_directory_and_missing_paths(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import stm32_monitor.exports as exports_module
+
+    paths = _paths(tmp_path)
+    history = HistoryStore(paths)
+    exporter = HistoryExporter(paths, history)
+    root = paths.monitor_root / "cleanup"
+    root.mkdir(parents=True)
+    try:
+        mismatched = root / "mismatch"
+        mismatched.mkdir()
+        exporter._safe_remove_tree(mismatched, expected_parent=paths.monitor_root)
+        assert mismatched.is_dir()
+
+        redirected = root / "redirected"
+        redirected.write_bytes(b"cache")
+        monkeypatch.setattr(exports_module, "_redirect", lambda _metadata: True)
+        exporter._safe_remove_tree(redirected, expected_parent=root)
+        assert not redirected.exists()
+
+        monkeypatch.undo()
+        directory = root / "directory"
+        directory.mkdir()
+        (directory / "value").write_bytes(b"x")
+        exporter._safe_remove_tree(directory, expected_parent=root)
+        assert not directory.exists()
+
+        exporter._safe_remove_tree(root / "missing", expected_parent=root)
+    finally:
+        exporter.close()
+        history.close()
+
+
+def test_export_metadata_failure_branches_rollback_and_null_cache_rebind(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import stm32_monitor.exports as exports_module
+
+    paths = _paths(tmp_path)
+    history = HistoryStore(paths)
+    exporter = HistoryExporter(paths, history)
+    artifact = SimpleNamespace(
+        export_id=UUID("33333333-3333-4333-8333-333333333333"),
+        sha256="a" * 64,
+        byte_count=1,
+        value_count=1,
+    )
+
+    class Connection:
+        def __init__(self, used_bytes: int, rowcount: int) -> None:
+            self.used_bytes = used_bytes
+            self.rowcount = rowcount
+            self.rollbacks = 0
+
+        def execute(self, sql: str, _parameters=None):
+            if "SELECT COALESCE" in sql:
+                return SimpleNamespace(fetchone=lambda: (self.used_bytes,))
+            return SimpleNamespace(rowcount=self.rowcount)
+
+        def commit(self) -> None:
+            pass
+
+        def rollback(self) -> None:
+            self.rollbacks += 1
+
+    try:
+        quota = Connection(exports_module.MAX_WORKSPACE_EXPORT_BYTES, 1)
+        monkeypatch.setattr(exporter._database, "write", lambda operation: operation(quota))
+        with pytest.raises(StorageFailure, match="quota"):
+            exporter._mark_ready(artifact, "jsonl", "2026-08-14T00:00:00Z")
+        assert quota.rollbacks == 1
+
+        changed = Connection(0, 0)
+        monkeypatch.setattr(exporter._database, "write", lambda operation: operation(changed))
+        with pytest.raises(StorageFailure, match="state changed"):
+            exporter._mark_ready(artifact, "jsonl", "2026-08-14T00:00:00Z")
+        assert changed.rollbacks == 1
+
+        remembered = []
+        monkeypatch.setattr(
+            history._database,
+            "_remember_validated_integrity",
+            lambda identity, fingerprint: remembered.append((identity, fingerprint)),
+        )
+        exporter._history_cache.clear()
+        exporter._rebind_history_cache(None, (1, 2, 3), ())  # type: ignore[arg-type]
+        assert remembered == [((1, 2, 3), ())]
+        assert exporter._history_cache == {}
+    finally:
+        exporter.close()
+        history.close()
+
+
 def test_jsonl_and_csv_exports_use_the_same_public_flattened_value_records(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
