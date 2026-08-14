@@ -242,6 +242,70 @@ def test_catalog_rejects_changed_historical_paragraph_binding(
         validate_catalog_data(catalog_data, repo=REPO)
 
 
+@pytest.mark.parametrize(
+    ("field", "replacement"),
+    [
+        ("module", "STM32TK-0602"),
+        ("purpose", "different purpose"),
+        ("owner_class", "user"),
+        ("platform_class", "linux-python"),
+        ("evidence_type", "release"),
+        ("coverage_context", "controller-off"),
+        ("matrices", ["candidate-0601"]),
+        ("impact_map", {"product_paths": ["tools/release"], "test_paths": ["tests"]}),
+    ],
+)
+def test_every_family_semantic_field_is_frozen(
+    catalog_data: dict[str, object], field: str, replacement: object
+) -> None:
+    """A well-typed but different family contract must not pass structural validation."""
+    catalog_data["families"][0][field] = replacement
+
+    with pytest.raises(CatalogError):
+        validate_catalog_data(catalog_data, repo=REPO)
+
+
+@pytest.mark.parametrize(
+    ("field", "replacement"),
+    [
+        ("phase", "candidate"),
+        ("owner_class", "Codex"),
+        ("platform_class", "windows-python"),
+        ("evidence_type", "release"),
+        ("coverage_context", "product-evidence"),
+        ("matrices", ["hardware-0600"]),
+        ("working_directory", "tools"),
+        ("required_tools", ["python312"]),
+        ("timeout_seconds", 901),
+        ("evidence_files", ["result.json"]),
+        ("impact_map", {"product_paths": ["tools/release"], "test_paths": ["tests"]}),
+    ],
+)
+def test_every_hardware_gate_semantic_field_is_frozen(
+    catalog_data: dict[str, object], field: str, replacement: object
+) -> None:
+    """A type-correct hardware gate semantic mutation must be rejected."""
+    catalog_data["gates"][0][field] = replacement
+
+    with pytest.raises(CatalogError):
+        validate_catalog_data(catalog_data, repo=REPO)
+
+
+def test_hardware_tools_are_bound_to_exact_frozen_versions(
+    catalog_data: dict[str, object]
+) -> None:
+    """A support tool name without its frozen version is not an executable contract."""
+    catalog_data["gates"][0]["required_tools"] = [
+        "python312==3.12.10",
+        "pyocd==0.45.1",
+    ]
+
+    validate_catalog_data(catalog_data, repo=REPO)
+    catalog_data["gates"][0]["required_tools"] = ["python312", "pyocd==0.45.1"]
+    with pytest.raises(CatalogError):
+        validate_catalog_data(catalog_data, repo=REPO)
+
+
 def test_empty_performance_catalog_schema_is_versioned_and_closed() -> None:
     """Task 2 must not fabricate a workload or accepted calibration before its module exists."""
     profile = load_performance_catalog(PERFORMANCE)

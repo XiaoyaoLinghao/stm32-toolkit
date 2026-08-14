@@ -31,5 +31,7 @@ $EvidenceRoot = ConvertTo-CanonicalAbsolutePath -Path $EvidenceRoot -Name 'Evide
 $GateCatalog = ConvertTo-CanonicalAbsolutePath -Path $GateCatalog -Name 'GateCatalog'
 $PerformanceCatalog = ConvertTo-CanonicalAbsolutePath -Path $PerformanceCatalog -Name 'PerformanceCatalog'
 $SupportProfile = ConvertTo-CanonicalAbsolutePath -Path $SupportProfile -Name 'SupportProfile'
+$repository = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..'))
+Assert-FrozenVerifierCaller -Repository $repository -ExpectedCodeHead $ExpectedCodeHead
 & $python -3.12 $runner wrapper --kind quick --matrix $Matrix --module $Module --shard $Shard --run-id $RunId --evidence-root $EvidenceRoot --expected-code-head $ExpectedCodeHead --gate-catalog $GateCatalog --performance-catalog $PerformanceCatalog --support-profile $SupportProfile
 exit $LASTEXITCODE

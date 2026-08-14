@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import importlib
 import json
 import os
 import platform
@@ -14,25 +15,11 @@ import stat
 import subprocess
 import sys
 import tempfile
+import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable, Mapping, Protocol, Sequence
-
-from verify_0600_release import (
-    CatalogError,
-    VerificationError,
-    canonical_json_bytes,
-    create_candidate_ledger,
-    create_shard_package,
-    load_catalog,
-    load_performance_catalog,
-    reconcile_candidate,
-    validate_candidate_ledger,
-    validate_recovery_record,
-    write_candidate_ledger,
-)
-
 
 KNOWN_MODULES = {"STM32TK-0601", "STM32TK-0602", "STM32TK-0603"}
 HEX40 = re.compile(r"^[0-9a-f]{40}$")
@@ -56,13 +43,113 @@ RECOVERY_KEYS = {
     "checkpoint",
     "interrupted_attempt_digest",
 }
+FROZEN_TOOL_VERSIONS = {
+    "cmake": "4.3.1",
+    "ctest": "4.3.1",
+    "node": "24.18.0",
+    "npm": "11.16.0",
+    "powershell": "5.1.26100.9168",
+    "pyocd": "0.45.1",
+    "pyserial": "3.5",
+    "python310": "3.10.11",
+    "python312": "3.12.10",
+    "wheelhouse": "offline-wheelhouse/1",
+}
+FROZEN_CAPABILITIES = {
+    "mailbox": {"address": 536870912, "size": 4096},
+    "ram": [{"size": 32768, "start": 536870912}],
+    "rtt": {"channel": 0},
+    "semihosting": {"declared": True},
+    "uart": {"baud": 115200, "port": "COM7"},
+}
 
 
 class ControllerError(ValueError):
     """A controller input or retained state failed closed."""
 
 
+class CatalogError(ValueError):
+    """A lazily loaded catalog failed the controller boundary."""
+
+
+class VerificationError(ValueError):
+    """A lazily loaded release input failed the controller boundary."""
+
+
+def canonical_json_bytes(value: object) -> bytes:
+    return (json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n").encode("utf-8")
+
+
+_RELEASE_MODULE: object | None = None
+
+
+def _release_module() -> object:
+    """Load release-verifier code only after the calling path established its blob trust."""
+    global _RELEASE_MODULE
+    if _RELEASE_MODULE is None:
+        _RELEASE_MODULE = importlib.import_module("verify_0600_release")
+    return _RELEASE_MODULE
+
+
+def _release_call(name: str, *args: object, **kwargs: object) -> object:
+    function = getattr(_release_module(), name)
+    try:
+        return function(*args, **kwargs)
+    except ValueError as exc:
+        error = CatalogError if exc.__class__.__name__ == "CatalogError" else VerificationError
+        raise error(str(exc)) from exc
+
+
+def load_catalog(path: Path) -> object:
+    return _release_call("load_catalog", path)
+
+
+def load_performance_catalog(path: Path) -> object:
+    return _release_call("load_performance_catalog", path)
+
+
+def create_candidate_ledger(**kwargs: object) -> dict[str, object]:
+    return _release_call("create_candidate_ledger", **kwargs)  # type: ignore[return-value]
+
+
+def write_candidate_ledger(*args: object, **kwargs: object) -> None:
+    _release_call("write_candidate_ledger", *args, **kwargs)
+
+
+def reconcile_candidate(*args: object, **kwargs: object) -> Path:
+    return _release_call("reconcile_candidate", *args, **kwargs)  # type: ignore[return-value]
+
+
+def validate_candidate_ledger(value: object) -> dict[str, object]:
+    return _release_call("validate_candidate_ledger", value)  # type: ignore[return-value]
+
+
+def validate_recovery_record(*args: object, **kwargs: object) -> dict[str, object]:
+    return _release_call("validate_recovery_record", *args, **kwargs)  # type: ignore[return-value]
+
+
+def create_shard_package(*args: object, **kwargs: object) -> dict[str, object]:
+    return _release_call("create_shard_package", *args, **kwargs)  # type: ignore[return-value]
+
+
+def verify_shard_package(*args: object, **kwargs: object) -> None:
+    _release_call("verify_shard_package", *args, **kwargs)
+
+
 VERIFIER_RELATIVE_PATH = "tools/release/verify_0600_release.py"
+FEASIBILITY_RELATIVE_PATH = "tools/release/verify_0600_feasibility.py"
+FEASIBILITY_REQUIRED_TOOLS = (
+    "python310", "python312", "powershell", "cmake", "ctest", "pyocd",
+    "pyserial", "node", "npm", "wheelhouse",
+)
+_FEASIBILITY_MODULE: object | None = None
+
+
+def _feasibility_module() -> object:
+    global _FEASIBILITY_MODULE
+    if _FEASIBILITY_MODULE is None:
+        _FEASIBILITY_MODULE = importlib.import_module("verify_0600_feasibility")
+    return _FEASIBILITY_MODULE
 
 
 def _git_text(repo: Path, args: list[str]) -> str:
@@ -74,23 +161,27 @@ def _git_text(repo: Path, args: list[str]) -> str:
     return completed.stdout.strip()
 
 
-def _verify_verifier_blob(repo: Path, expected_code_head: str) -> Path:
+def _verify_relative_blob(repo: Path, expected_code_head: str, relative: str) -> Path:
     if HEX40.fullmatch(expected_code_head) is None:
         raise ControllerError("expected CodeHead is invalid")
     try:
         repository = repo.resolve(strict=True)
-        script = repository.joinpath(*VERIFIER_RELATIVE_PATH.split("/"))
+        script = repository.joinpath(*relative.split("/"))
         if not script.is_file() or script.is_symlink():
             raise ControllerError("re-derived verifier is missing or linked")
     except OSError as exc:
         raise ControllerError("repository/verifier path is invalid") from exc
     if _git_text(repository, ["rev-parse", "HEAD"]) != expected_code_head:
         raise ControllerError("worktree HEAD does not match expected CodeHead")
-    committed = _git_text(repository, ["rev-parse", f"{expected_code_head}:{VERIFIER_RELATIVE_PATH}"])
+    committed = _git_text(repository, ["rev-parse", f"{expected_code_head}:{relative}"])
     working = _git_text(repository, ["hash-object", "--", str(script)])
     if HEX40.fullmatch(committed) is None or committed != working:
         raise ControllerError("release verifier working blob does not match CodeHead")
     return script
+
+
+def _verify_verifier_blob(repo: Path, expected_code_head: str) -> Path:
+    return _verify_relative_blob(repo, expected_code_head, VERIFIER_RELATIVE_PATH)
 
 
 def invoke_trusted_verifier(
@@ -130,6 +221,10 @@ class GateRunOutput:
     stdout: bytes
     stderr: bytes
     selected_nodes: tuple[str, ...]
+    node_outcomes: tuple[tuple[str, str], ...]
+    duration_ms: int = 0
+    timed_out: bool = False
+    retained_evidence: tuple[dict[str, object], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -147,12 +242,12 @@ def _utc(value: datetime) -> str:
 
 
 def _safe_controller_env() -> dict[str, str]:
-    result: dict[str, str] = {}
-    for key, value in os.environ.items():
-        upper = key.upper()
-        if upper.startswith(("COVERAGE_", "COV_CORE_")) or upper == "PYTEST_ADDOPTS":
-            continue
-        result[key] = value
+    allowed = {
+        "COMSPEC", "LOCALAPPDATA", "NUMBER_OF_PROCESSORS", "PATH", "PATHEXT",
+        "PROCESSOR_ARCHITECTURE", "SYSTEMDRIVE", "SYSTEMROOT", "TEMP", "TMP", "WINDIR",
+    }
+    result = {key: value for key, value in os.environ.items() if key.upper() in allowed}
+    result.update({"PYTHONHASHSEED": "0", "PYTHONNOUSERSITE": "1", "PYTHONDONTWRITEBYTECODE": "1"})
     return result
 
 
@@ -165,17 +260,147 @@ def _metadata(
     started: datetime,
 ) -> dict[str, object]:
     return {
+        "architecture": platform.machine(),
         "argv": list(gate.argv),
         "code_head": code_head,
         "cwd": str(gate.cwd),
-        "duration_ms": 0,
+        "duration_ms": output.duration_ms,
+        "executable": gate.argv[0] if gate.argv else "reserved",
+        "executable_version": (
+            platform.python_version()
+            if gate.argv and os.path.normcase(gate.argv[0]) == os.path.normcase(sys.executable)
+            else "reserved" if not gate.argv else "catalog-bound"
+        ),
         "exit_code": output.exit_code,
         "gate_id": gate.gate_id,
+        "node_outcomes": [
+            {"node_id": node_id, "outcome": outcome}
+            for node_id, outcome in output.node_outcomes
+        ],
+        "os": platform.system(),
+        "retained_evidence": list(output.retained_evidence),
         "run_id": run_id,
+        "seed": f"stm32tk-0600:{run_id}:{gate.gate_id}",
         "started_at_utc": _utc(started),
         "stderr": {"bytes": len(output.stderr), "sha256": hashlib.sha256(output.stderr).hexdigest()},
         "stdout": {"bytes": len(output.stdout), "sha256": hashlib.sha256(output.stdout).hexdigest()},
+        "timed_out": output.timed_out,
     }
+
+
+def _parse_node_outcomes(stdout: bytes) -> tuple[tuple[str, str], ...]:
+    outcomes: list[tuple[str, str]] = []
+    for raw_line in stdout.splitlines():
+        try:
+            value = json.loads(raw_line.decode("utf-8"))
+        except (UnicodeError, json.JSONDecodeError):
+            continue
+        if (
+            isinstance(value, dict)
+            and set(value) == {"schema", "node_id", "outcome"}
+            and value["schema"] == "stm32-node-outcome/1"
+            and isinstance(value["node_id"], str)
+            and isinstance(value["outcome"], str)
+        ):
+            outcomes.append((value["node_id"], value["outcome"]))
+    return tuple(outcomes)
+
+
+def _terminate_process_tree(process: subprocess.Popen[bytes]) -> None:
+    if process.poll() is not None:
+        return
+    if os.name == "nt":
+        subprocess.run(
+            ["taskkill.exe", "/PID", str(process.pid), "/T", "/F"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        )
+    else:
+        process.kill()
+
+
+def execute_gate_process(
+    gate: GateRequest,
+    environment: dict[str, str],
+    *,
+    evidence_root: Path,
+) -> GateRunOutput:
+    """Execute one catalog argv without a shell and retain one immutable stream/result snapshot."""
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}", gate.gate_id):
+        raise ControllerError("gate id cannot name an evidence directory")
+    if not gate.argv or any(not token or any(character in token for character in "\r\n") for token in gate.argv):
+        raise ControllerError("gate argv is invalid")
+    if not evidence_root.is_absolute() or not evidence_root.is_dir():
+        raise ControllerError("executor evidence root is invalid")
+    gate_root = evidence_root / gate.gate_id
+    gate_root.mkdir()
+    base_environment = _safe_controller_env()
+    child_env = {
+        key: value
+        for key, value in environment.items()
+        if key.upper() in {member.upper() for member in base_environment}
+    }
+    for key, value in base_environment.items():
+        child_env.setdefault(key, value)
+    child_env["STM32TK_TEST_SEED"] = f"stm32tk-0600:{gate.gate_id}"
+    creation_flags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0) if os.name == "nt" else 0
+    started = time.monotonic_ns()
+    process = subprocess.Popen(
+        list(gate.argv),
+        cwd=gate.cwd,
+        env=child_env,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        creationflags=creation_flags,
+        shell=False,
+    )
+    timed_out = False
+    try:
+        stdout, stderr = process.communicate(timeout=gate.timeout_seconds)
+        exit_code = int(process.returncode)
+    except subprocess.TimeoutExpired:
+        timed_out = True
+        _terminate_process_tree(process)
+        stdout, stderr = process.communicate(timeout=10)
+        exit_code = -1
+    duration_ms = max(0, (time.monotonic_ns() - started) // 1_000_000)
+    outcomes = _parse_node_outcomes(stdout)
+    result_value = {
+        "schema": "stm32-gate-process-result/1",
+        "exit_code": exit_code,
+        "duration_ms": duration_ms,
+        "timed_out": timed_out,
+        "node_outcomes": [
+            {"node_id": node_id, "outcome": outcome}
+            for node_id, outcome in outcomes
+        ],
+    }
+    payloads = {
+        "result.json": canonical_json_bytes(result_value),
+        "stderr.log": stderr,
+        "stdout.log": stdout,
+    }
+    retained: list[dict[str, object]] = []
+    for name in sorted(payloads, key=lambda item: item.encode("utf-8")):
+        data = payloads[name]
+        (gate_root / name).write_bytes(data)
+        retained.append({
+            "path": f"{gate.gate_id}/{name}",
+            "bytes": len(data),
+            "sha256": hashlib.sha256(data).hexdigest(),
+        })
+    return GateRunOutput(
+        exit_code,
+        stdout,
+        stderr,
+        tuple(node_id for node_id, _ in outcomes),
+        outcomes,
+        duration_ms=duration_ms,
+        timed_out=timed_out,
+        retained_evidence=tuple(retained),
+    )
 
 
 def validate_resource_locks(gates: Sequence[GateRequest]) -> None:
@@ -198,6 +423,7 @@ def run_gate_matrix(
     *,
     execute: Callable[[GateRequest, dict[str, str]], GateRunOutput],
     precheck: Callable[[GateRequest], None] | None = None,
+    postcheck: Callable[[GateRequest], None] | None = None,
     run_id: str = "00000000-0000-4000-8000-000000000000",
     code_head: str = "0" * 40,
     now: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
@@ -217,7 +443,7 @@ def run_gate_matrix(
     environment = _safe_controller_env()
     for gate in gates:
         if any(statuses[item] != "PASS" for item in gate.prerequisites):
-            output = GateRunOutput(-1, b"", b"", ())
+            output = GateRunOutput(-1, b"", b"", (), ())
             result = GateResult(
                 gate.gate_id,
                 "BLOCKED",
@@ -227,13 +453,11 @@ def run_gate_matrix(
             results.append(result)
             statuses[gate.gate_id] = result.status
             continue
-        if matrix in {"candidate", "final-readiness", "final"}:
-            if precheck is None:
-                raise ControllerError("matrix precheck is required")
+        if precheck is not None:
             try:
                 precheck(gate)
             except Exception as exc:  # external/precondition boundary, converted to evidence
-                output = GateRunOutput(-1, b"", str(exc).encode("utf-8"), ())
+                output = GateRunOutput(-1, b"", str(exc).encode("utf-8"), (), ())
                 result = GateResult(
                     gate.gate_id,
                     "FAIL",
@@ -245,18 +469,41 @@ def run_gate_matrix(
                 if matrix == "final":
                     break
                 continue
+        elif matrix in {"candidate", "final-readiness", "final"}:
+            raise ControllerError("matrix precheck is required")
         if matrix == "final-readiness":
-            output = GateRunOutput(0, b"", b"", gate.expected_nodes)
+            output = GateRunOutput(0, b"", b"", (), ())
         else:
             output = execute(gate, dict(environment))
             if not isinstance(output, GateRunOutput):
                 raise ControllerError("executor returned an invalid result")
-        node_mismatch = (
-            len(output.selected_nodes) != len(set(output.selected_nodes))
-            or output.selected_nodes != gate.expected_nodes
+            if postcheck is not None:
+                try:
+                    postcheck(gate)
+                except Exception:
+                    result = GateResult(
+                        gate.gate_id,
+                        "FAIL",
+                        "POSTCHECK_FAILED",
+                        _metadata(gate, output, run_id=run_id, code_head=code_head, started=now()),
+                    )
+                    results.append(result)
+                    statuses[gate.gate_id] = result.status
+                    if matrix == "final":
+                        break
+                    continue
+        node_mismatch = len(output.selected_nodes) != len(set(output.selected_nodes)) or output.selected_nodes != gate.expected_nodes
+        outcome_mismatch = (
+            tuple(node_id for node_id, _ in output.node_outcomes) != gate.expected_nodes
+            or any(outcome not in {"passed", "failed"} for _, outcome in output.node_outcomes)
         )
+        if matrix == "final-readiness":
+            node_mismatch = False
+            outcome_mismatch = False
         status = "PASS" if output.exit_code == 0 and not node_mismatch else "FAIL"
-        reason = "NODE_INVENTORY_MISMATCH" if node_mismatch else "PASS" if status == "PASS" else "PRODUCT_FAILURE"
+        if outcome_mismatch:
+            status = "FAIL"
+        reason = "NODE_INVENTORY_MISMATCH" if node_mismatch else "NODE_OUTCOME_MISMATCH" if outcome_mismatch else "PASS" if status == "PASS" else "TIMEOUT" if output.timed_out else "PRODUCT_FAILURE"
         result = GateResult(
             gate.gate_id,
             status,
@@ -365,7 +612,7 @@ def run_performance(
         if profile["test_file"] != test.relative_to(repo.resolve()).as_posix() or profile["test_file_sha256"] != test_digest or not isinstance(profile["profile_sha256"], str) or HEX64.fullmatch(profile["profile_sha256"]) is None:
             raise ControllerError("performance workload/config digest mismatch")
         profile_digest = str(profile["profile_sha256"])
-    environment = dict(os.environ)
+    environment = _safe_controller_env()
     environment.update(
         {
             "STM32TK_PERFORMANCE_MODE": mode,
@@ -381,10 +628,11 @@ def run_performance(
     result = _load_json(output)
     if (
         not isinstance(result, dict)
-        or set(result) != {"schema", "mode", "module", "test_file_sha256", "workloads"}
+        or set(result) != {"schema", "mode", "module", "profile_sha256", "test_file_sha256", "workloads"}
         or result["schema"] != "stm32-performance-run/1"
         or result["mode"] != mode
         or result["module"] != module
+        or result["profile_sha256"] != (profile_digest or None)
         or result["test_file_sha256"] != test_digest
         or not isinstance(result["workloads"], list)
     ):
@@ -552,6 +800,7 @@ def verify_support_root(
         raise ControllerError("support manifest is not closed")
     expected_paths: list[str] = []
     first_reads: dict[str, bytes] = {}
+    declared_entries: dict[str, Mapping[str, object]] = {}
     folded: set[str] = set()
     for item in value["files"]:
         if not isinstance(item, dict) or set(item) != {"path", "bytes", "sha256"}:
@@ -567,8 +816,47 @@ def verify_support_root(
         expected_paths.append(relative)
         folded.add(relative.casefold())
         first_reads[relative] = data
+        declared_entries[relative] = item
     if set(members) != set(expected_paths) | {"support-manifest.json"}:
         raise ControllerError("support root has missing or extra entries")
+    profile_value = _load_json(profile)
+    feasibility = _feasibility_module()
+    feasibility_result = feasibility.verify_feasibility(profile_value)
+    if feasibility_result.code != "PASS" or not isinstance(profile_value, Mapping):
+        raise ControllerError("support profile is not the Task 1 feasibility contract")
+    if (
+        profile_value["windows_owner"] != "Codex"
+        or profile_value["capabilities"] != FROZEN_CAPABILITIES
+        or not isinstance(profile_value["tools"], Mapping)
+        or {
+            name: profile_value["tools"][name]["version"]
+            for name in FEASIBILITY_REQUIRED_TOOLS
+        } != FROZEN_TOOL_VERSIONS
+    ):
+        raise ControllerError("support owner/capability/tool versions are not frozen")
+    binding_error = feasibility._profile_manifest_bindings(profile_value, declared_entries)
+    if binding_error is not None:
+        raise ControllerError("support profile references are not manifest-bound")
+    for name in FEASIBILITY_REQUIRED_TOOLS:
+        try:
+            feasibility._tool_record(root, profile_value["tools"][name], name)
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            raise ControllerError("support tool record is not frozen") from exc
+    chromium = profile_value["chromium"]
+    assert isinstance(chromium, Mapping)
+    if (
+        chromium["version"] != "141.0.7390.37"
+        or feasibility._tree_digest(declared_entries, str(chromium["package_root"]))
+        != chromium["package_tree_sha256"]
+    ):
+        raise ControllerError("managed Chromium package/version proof is invalid")
+    version_path = root.joinpath(*str(chromium["version_evidence"]["path"]).split("/"))
+    try:
+        if feasibility.managed_chromium_version(version_path.read_bytes()) != chromium["version"]:
+            raise ControllerError("managed Chromium version evidence mismatches")
+        feasibility._load_managed_profile_seed(root, chromium)
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        raise ControllerError("managed Chromium launch/profile proof is invalid") from exc
     if before_reread is not None:
         before_reread()
     if manifest_path.read_bytes() != manifest_bytes:
@@ -612,6 +900,9 @@ class HardwareContractController:
         final_run_id: str,
         evidence_root: Path,
         backend: HardwareBackend,
+        support_profile: Path,
+        hardware_identity: Mapping[str, str],
+        git_runner: Callable[[list[str]], str] | None = None,
         now: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
         random_bytes: Callable[[int], bytes] = secrets.token_bytes,
     ) -> None:
@@ -623,6 +914,31 @@ class HardwareContractController:
             raise ControllerError("0400 requires a distinct tested product CodeHead")
         if UUID.fullmatch(final_run_id) is None or not evidence_root.is_absolute():
             raise ControllerError("hardware run/root identity is invalid")
+        fixed_catalog = (repo / "tools/release/gates_0600.json").resolve()
+        if catalog.resolve() != fixed_catalog:
+            raise ControllerError("hardware controller requires the fixed catalog")
+        if set(hardware_identity) != {
+            "board_id", "probe_serial_hash", "uart_serial_hash", "power_identity"
+        }:
+            raise ControllerError("hardware identity is not closed")
+        identity = dict(hardware_identity)
+        if (
+            not isinstance(identity["board_id"], str)
+            or not identity["board_id"]
+            or not isinstance(identity["power_identity"], str)
+            or not identity["power_identity"]
+            or HEX64.fullmatch(identity["probe_serial_hash"]) is None
+            or HEX64.fullmatch(identity["uart_serial_hash"]) is None
+        ):
+            raise ControllerError("hardware identity is invalid")
+        selected_git_runner = git_runner or (lambda args: _git_text(repo, args))
+        if selected_git_runner(["rev-parse", "HEAD"]).strip() != controller_code_head:
+            raise ControllerError("hardware controller worktree HEAD changed")
+        for verifier_relative in (VERIFIER_RELATIVE_PATH, FEASIBILITY_RELATIVE_PATH):
+            working_verifier = selected_git_runner(["hash-object", "--", verifier_relative]).strip()
+            committed_verifier = selected_git_runner(["rev-parse", f"HEAD:{verifier_relative}"]).strip()
+            if working_verifier != committed_verifier or HEX40.fullmatch(working_verifier) is None:
+                raise ControllerError("hardware verifier blob changed")
         try:
             loaded = load_catalog(catalog)
         except CatalogError as exc:
@@ -635,10 +951,68 @@ class HardwareContractController:
         self.final_run_id = final_run_id
         self.evidence_root = evidence_root
         self.backend = backend
+        self.support_profile = support_profile
+        self.hardware_identity = identity
+        self.git_runner = selected_git_runner
         self.now = now
         self.random_bytes = random_bytes
         self.action_ids = loaded.hardware_gate_ids(contract)
+        self.actions_reserved = all(
+            not gate.command_argv for gate in loaded.gates if gate.contract == contract
+        )
         self.checkpoint_path = evidence_root / "checkpoint.json"
+        self.catalog_sha256 = hashlib.sha256(catalog.read_bytes()).hexdigest()
+        self.support_binding = verify_support_root(support_profile)
+        self.resource_locks = {
+            "board": identity["board_id"],
+            "evidence_root": str(evidence_root),
+            "power": identity["power_identity"],
+            "probe": identity["probe_serial_hash"],
+            "uart": identity["uart_serial_hash"],
+        }
+
+    def prepare_reserved(self) -> dict[str, object]:
+        """Validate the public path but never synthesize authorization for reserved actions."""
+        self._verify_preconditions()
+        if not self.actions_reserved:
+            raise ControllerError("executable hardware actions require a bound product backend")
+        if self.evidence_root.exists():
+            self._load()
+        elif not self.evidence_root.parent.is_dir():
+            raise ControllerError("hardware evidence parent is unavailable")
+        return {
+            "status": "BLOCKED",
+            "reason": "CATALOG_ACTION_RESERVED",
+            "contract": self.contract,
+            "next_action": self.action_ids[0],
+            "hardware_access": 0,
+        }
+
+    def _verify_preconditions(self) -> None:
+        """Re-establish every immutable input immediately before a backend boundary."""
+        if self.git_runner(["rev-parse", "HEAD"]).strip() != self.controller_code_head:
+            raise ControllerError("hardware controller worktree HEAD changed")
+        origin = self.git_runner(["config", "--get", "remote.origin.url"]).strip()
+        if origin.rstrip("/").removesuffix(".git") != "https://github.com/XiaoyaoLinghao/stm32-toolkit":
+            raise ControllerError("hardware controller origin changed")
+        if self.git_runner(["status", "--porcelain=v1", "--untracked-files=all"]):
+            raise ControllerError("hardware controller worktree is not clean")
+        for relative in (
+            "tools/release/gates_0600.json",
+            "tools/release/path_contract_0600.ps1",
+            "tools/release/run_0600_gates.py",
+            "tools/release/run_0600_hardware.ps1",
+            "tools/release/verify_0600_feasibility.py",
+            "tools/release/verify_0600_release.py",
+        ):
+            working = self.git_runner(["hash-object", "--", relative]).strip()
+            committed = self.git_runner(["rev-parse", f"HEAD:{relative}"]).strip()
+            if HEX40.fullmatch(working) is None or working != committed:
+                raise ControllerError("hardware controller blob changed")
+        if hashlib.sha256(self.catalog.read_bytes()).hexdigest() != self.catalog_sha256:
+            raise ControllerError("hardware catalog changed")
+        if verify_support_root(self.support_profile) != self.support_binding:
+            raise ControllerError("hardware support proof changed")
 
     def _initial(self) -> dict[str, object]:
         return {
@@ -648,6 +1022,10 @@ class HardwareContractController:
             "evidence_root": str(self.evidence_root),
             "controller_code_head": self.controller_code_head,
             "tested_code_head": self.expected_code_head,
+            "catalog_sha256": self.catalog_sha256,
+            "support": self.support_binding,
+            "hardware_identity": self.hardware_identity,
+            "resource_locks": self.resource_locks,
             "action_inventory": list(self.action_ids),
             "actions": [{"id": item, "state": "pending", "result": None} for item in self.action_ids],
             "prepared": None,
@@ -657,13 +1035,18 @@ class HardwareContractController:
         }
 
     def _write(self, value: dict[str, object]) -> None:
-        self.evidence_root.mkdir(parents=False, exist_ok=True)
+        if not self.evidence_root.exists():
+            self.evidence_root.mkdir(parents=False)
+        elif not self.evidence_root.is_dir():
+            raise ControllerError("hardware evidence root is invalid")
         temporary = self.checkpoint_path.with_name("checkpoint.json.tmp")
         temporary.write_bytes(canonical_json_bytes(value))
         os.replace(temporary, self.checkpoint_path)
 
     def _load(self) -> dict[str, object]:
         if not self.checkpoint_path.is_file():
+            if self.evidence_root.exists():
+                raise ControllerError("hardware evidence root exists without a checkpoint")
             return self._initial()
         data = self.checkpoint_path.read_bytes()
         try:
@@ -673,9 +1056,158 @@ class HardwareContractController:
         if data != canonical_json_bytes(value) or not isinstance(value, dict):
             raise ControllerError("hardware checkpoint is not canonical")
         expected = self._initial()
-        if set(value) != set(expected) or any(value[key] != expected[key] for key in ("schema", "contract", "final_run_id", "evidence_root", "controller_code_head", "tested_code_head", "action_inventory")):
+        bound = (
+            "schema", "contract", "final_run_id", "evidence_root", "controller_code_head",
+            "tested_code_head", "catalog_sha256", "support", "hardware_identity",
+            "resource_locks", "action_inventory",
+        )
+        if set(value) != set(expected) or any(value[key] != expected[key] for key in bound):
             raise ControllerError("hardware checkpoint binding mismatch")
+        actions = value["actions"]
+        if not isinstance(actions, list) or len(actions) != len(self.action_ids):
+            raise ControllerError("hardware checkpoint actions are invalid")
+        expected_ids = list(self.action_ids)
+        for index, action in enumerate(actions):
+            if (
+                not isinstance(action, dict)
+                or set(action) != {"id", "state", "result"}
+                or action["id"] != expected_ids[index]
+                or action["state"] not in {"pending", "passed", "failed"}
+                or (action["state"] == "pending" and action["result"] is not None)
+                or (action["state"] != "pending" and not isinstance(action["result"], str))
+            ):
+                raise ControllerError("hardware checkpoint action is not closed")
+            if action["state"] != "pending":
+                if action["result"] != f"{action['id']}.result.json":
+                    raise ControllerError("hardware checkpoint result path is not exact")
+                self._validate_hardware_result_file(
+                    self.evidence_root / str(action["result"]),
+                    str(action["id"]),
+                    str(action["state"]),
+                )
+        states = [str(action["state"]) for action in actions]
+        terminal_seen = False
+        for state in states:
+            if terminal_seen and state != "pending":
+                raise ControllerError("hardware checkpoint action order is invalid")
+            terminal_seen = terminal_seen or state in {"pending", "failed"}
+        used = value["used_nonces"]
+        if (
+            not isinstance(used, list)
+            or any(not isinstance(item, str) or HEX64.fullmatch(item) is None for item in used)
+            or len(set(used)) != len(used)
+        ):
+            raise ControllerError("hardware checkpoint nonces are invalid")
+        history = value["recovery_history"]
+        if not isinstance(history, list) or len(history) > 1:
+            raise ControllerError("hardware checkpoint recovery history is invalid")
+        for item in history:
+            if (
+                not isinstance(item, dict)
+                or set(item) != {"record_sha256", "event", "action"}
+                or HEX64.fullmatch(str(item["record_sha256"])) is None
+                or item["event"] not in RECOVERY_EVENTS
+                or item["action"] not in {"", *self.action_ids}
+            ):
+                raise ControllerError("hardware checkpoint recovery entry is invalid")
+        prepared = value["prepared"]
+        if prepared is not None:
+            self._validate_prepared(prepared, used, actions)
+        complete = value["contract_complete"]
+        if type(complete) is not bool or complete != all(state == "passed" for state in states):
+            raise ControllerError("hardware checkpoint completion is invalid")
         return value
+
+    def _validate_hardware_result_file(
+        self, path: Path, action_id: str, action_state: str
+    ) -> None:
+        try:
+            data = path.read_bytes()
+            value = json.loads(data.decode("utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+            raise ControllerError("hardware result is unreadable") from exc
+        if (
+            data != canonical_json_bytes(value)
+            or not isinstance(value, dict)
+            or set(value) != {"schema", "action", "status", "artifacts", "controller_code_head", "tested_code_head"}
+            or value["schema"] != "stm32-hardware-action-result/1"
+            or value["action"] != action_id
+            or value["status"] != ("PASS" if action_state == "passed" else "FAIL")
+            or value["controller_code_head"] != self.controller_code_head
+            or value["tested_code_head"] != self.expected_code_head
+            or not isinstance(value["artifacts"], list)
+        ):
+            raise ControllerError("hardware result is not closed/dual-CodeHead bound")
+        for artifact in value["artifacts"]:
+            if (
+                not isinstance(artifact, dict)
+                or set(artifact) != {"path", "bytes", "sha256", "controller_code_head", "tested_code_head"}
+                or artifact["controller_code_head"] != self.controller_code_head
+                or artifact["tested_code_head"] != self.expected_code_head
+                or not isinstance(artifact.get("path"), str)
+                or not artifact["path"]
+                or "\\" in artifact["path"]
+                or any(part in {"", ".", ".."} for part in artifact["path"].split("/"))
+            ):
+                raise ControllerError("retained hardware artifact is not dual-CodeHead bound")
+            artifact_path = self.evidence_root.joinpath(*str(artifact["path"]).split("/"))
+            try:
+                artifact_bytes = artifact_path.read_bytes()
+            except OSError as exc:
+                raise ControllerError("retained hardware artifact is missing") from exc
+            if (
+                not _exact_integer(artifact.get("bytes"))
+                or artifact["bytes"] != len(artifact_bytes)
+                or artifact.get("sha256") != hashlib.sha256(artifact_bytes).hexdigest()
+            ):
+                raise ControllerError("retained hardware artifact bytes/digest mismatch")
+
+    def _digest_for_prepared(self, prepared: Mapping[str, object]) -> str:
+        summary = {"snapshot": prepared["summary"], "counters": prepared["counters"]}
+        digest_input = {
+            "action": prepared["action"],
+            "contract": self.contract,
+            "controller_code_head": self.controller_code_head,
+            "final_run_id": self.final_run_id,
+            "nonce": prepared["nonce"],
+            "expires_at_utc": prepared["expires_at_utc"],
+            "prepare_summary": summary,
+            "tested_code_head": self.expected_code_head,
+        }
+        return hashlib.sha256(canonical_json_bytes(digest_input)).hexdigest()
+
+    def _validate_prepared(
+        self, prepared: object, used: object, actions: object
+    ) -> None:
+        if not isinstance(prepared, dict) or set(prepared) != {
+            "action", "nonce", "action_digest", "expires_at_utc", "summary", "counters", "consumed"
+        }:
+            raise ControllerError("hardware prepared checkpoint is not closed")
+        if (
+            prepared["action"] not in self.action_ids
+            or not isinstance(prepared["nonce"], str)
+            or HEX64.fullmatch(prepared["nonce"]) is None
+            or prepared["nonce"] not in used
+            or not isinstance(prepared["action_digest"], str)
+            or HEX64.fullmatch(prepared["action_digest"]) is None
+            or type(prepared["consumed"]) is not bool
+            or not isinstance(prepared["summary"], dict)
+            or set(prepared["summary"]) != {"board_id", "probe_serial_hash", "uart_serial_hash", "power_identity", "state"}
+            or any(prepared["summary"][key] != value for key, value in self.hardware_identity.items())
+            or not isinstance(prepared["summary"]["state"], str)
+            or not prepared["summary"]["state"]
+            or prepared["counters"] != {"identity_state_read": 1, "control": 0, "modify": 0, "reset": 0, "halt": 0, "write": 0, "flash": 0}
+        ):
+            raise ControllerError("hardware prepared checkpoint is invalid")
+        try:
+            datetime.strptime(str(prepared["expires_at_utc"]), UTC)
+        except ValueError as exc:
+            raise ControllerError("hardware prepared expiry is invalid") from exc
+        if prepared["action_digest"] != self._digest_for_prepared(prepared):
+            raise ControllerError("hardware prepared action digest mismatch")
+        matching = [item for item in actions if item["id"] == prepared["action"]]
+        if len(matching) != 1 or matching[0]["state"] != "pending":
+            raise ControllerError("hardware prepared action state is invalid")
 
     def _next_pending(self, checkpoint: dict[str, object]) -> dict[str, object] | None:
         actions = checkpoint["actions"]
@@ -689,6 +1221,7 @@ class HardwareContractController:
         return None
 
     def prepare(self) -> dict[str, str]:
+        self._verify_preconditions()
         checkpoint = self._load()
         if checkpoint["prepared"] is not None:
             raise ControllerError("an action is already prepared")
@@ -699,6 +1232,15 @@ class HardwareContractController:
         expected_counters = {"identity_state_read": 1, "control": 0, "modify": 0, "reset": 0, "halt": 0, "write": 0, "flash": 0}
         if not isinstance(summary, dict) or set(summary) != {"snapshot", "counters"} or summary["counters"] != expected_counters or not isinstance(summary["snapshot"], dict):
             raise ControllerError("prepare did not perform exactly one OBSERVE-only snapshot")
+        snapshot = summary["snapshot"]
+        if (
+            set(snapshot) != {"board_id", "probe_serial_hash", "uart_serial_hash", "power_identity", "state"}
+            or any(snapshot.get(key) != value for key, value in self.hardware_identity.items())
+            or not isinstance(snapshot.get("state"), str)
+            or not snapshot["state"]
+        ):
+            raise ControllerError("prepare hardware identity mismatches the frozen binding")
+        self._verify_preconditions()
         nonce_bytes = self.random_bytes(32)
         if not isinstance(nonce_bytes, bytes) or len(nonce_bytes) != 32:
             raise ControllerError("CSPRNG did not return 32 bytes")
@@ -713,6 +1255,7 @@ class HardwareContractController:
             "controller_code_head": self.controller_code_head,
             "final_run_id": self.final_run_id,
             "nonce": nonce,
+            "expires_at_utc": _utc(expires),
             "prepare_summary": summary,
             "tested_code_head": self.expected_code_head,
         }
@@ -731,6 +1274,7 @@ class HardwareContractController:
         return {"nonce": nonce, "action_digest": digest, "expires_at_utc": _utc(expires), "checkpoint": str(self.checkpoint_path)}
 
     def execute(self, nonce: str, action_digest: str, *, authorized: bool) -> dict[str, object]:
+        self._verify_preconditions()
         checkpoint = self._load()
         prepared = checkpoint["prepared"]
         if not authorized or not isinstance(prepared, dict) or prepared.get("consumed") is not False or nonce != prepared.get("nonce") or action_digest != prepared.get("action_digest"):
@@ -739,8 +1283,10 @@ class HardwareContractController:
             expiry = datetime.strptime(str(prepared["expires_at_utc"]), UTC).replace(tzinfo=timezone.utc)
         except ValueError as exc:
             raise ControllerError("hardware authorization expiry is invalid") from exc
-        if self.now() > expiry:
+        if self.now() >= expiry:
             raise ControllerError("hardware authorization expired")
+        if prepared["action_digest"] != self._digest_for_prepared(prepared):
+            raise ControllerError("hardware authorization digest changed")
         prepared["consumed"] = True
         self._write(checkpoint)
         action_id = str(prepared["action"])
@@ -749,9 +1295,33 @@ class HardwareContractController:
             checkpoint["prepared"] = None
             self._write(checkpoint)
             raise ControllerError("identity/state changed before CONTROL/MODIFY")
+        self._verify_preconditions()
         body = self.backend.execute(action_id)
         if not isinstance(body, dict) or set(body) != {"status", "artifacts"} or body["status"] not in {"PASS", "FAIL"} or not isinstance(body["artifacts"], list):
             raise ControllerError("hardware backend result is invalid")
+        for artifact in body["artifacts"]:
+            if (
+                not isinstance(artifact, dict)
+                or set(artifact) != {"path", "bytes", "sha256", "controller_code_head", "tested_code_head"}
+                or artifact["controller_code_head"] != self.controller_code_head
+                or artifact["tested_code_head"] != self.expected_code_head
+                or not isinstance(artifact["path"], str)
+                or not artifact["path"]
+                or "\\" in artifact["path"]
+                or any(part in {"", ".", ".."} for part in artifact["path"].split("/"))
+                or not isinstance(artifact["bytes"], int)
+                or isinstance(artifact["bytes"], bool)
+                or artifact["bytes"] < 0
+                or HEX64.fullmatch(str(artifact["sha256"])) is None
+            ):
+                raise ControllerError("hardware artifact is not closed and dual-CodeHead bound")
+            artifact_path = self.evidence_root.joinpath(*str(artifact["path"]).split("/"))
+            if not artifact_path.is_file() or artifact_path.is_symlink():
+                raise ControllerError("hardware artifact is missing or linked")
+            artifact_bytes = artifact_path.read_bytes()
+            if artifact["bytes"] != len(artifact_bytes) or artifact["sha256"] != hashlib.sha256(artifact_bytes).hexdigest():
+                raise ControllerError("hardware artifact bytes/digest mismatch")
+        self._verify_preconditions()
         result = {
             "schema": "stm32-hardware-action-result/1",
             "action": action_id,
@@ -776,6 +1346,7 @@ class HardwareContractController:
         return result
 
     def resume(self, checkpoint_path: Path, recovery_record: Path) -> dict[str, str]:
+        self._verify_preconditions()
         if checkpoint_path != self.checkpoint_path or not checkpoint_path.is_absolute() or recovery_record.parent == self.evidence_root:
             raise ControllerError("recovery files must be separate and checkpoint-bound")
         checkpoint_bytes = checkpoint_path.read_bytes()
@@ -812,6 +1383,9 @@ class HardwareContractController:
         if isinstance(prepared, dict):
             checkpoint["prepared"] = None
         history.append({"record_sha256": hashlib.sha256(record_bytes).hexdigest(), "event": record["event"], "action": action_id})
+        self._verify_preconditions()
+        if checkpoint_path.read_bytes() != checkpoint_bytes or recovery_record.read_bytes() != record_bytes:
+            raise ControllerError("hardware retained recovery state changed")
         self._write(checkpoint)
         return {"action": action_id, "status": "FRESH_PREPARE_REQUIRED"}
 
@@ -830,8 +1404,14 @@ def run_wrapper_contract(
     support_profile: Path,
     controller_path: Path,
     now: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
+    catalog_loader: Callable[[Path], object] = load_catalog,
+    performance_loader: Callable[[Path], object] = load_performance_catalog,
+    verifier_blob_checker: Callable[[Path, str], Path] = _verify_verifier_blob,
+    verifier_invoker: Callable[[Path, str, list[str]], object] | None = None,
+    after_first_verifier_check: Callable[[], object] | None = None,
+    gate_precheck: Callable[[GateRequest], None] | None = None,
 ) -> dict[str, object]:
-    """Run the Task-2 terminal wrapper path without activating reserved gates."""
+    """Schedule the catalog matrix, retain all evidence, package it, and verify terminal state."""
     if kind not in {"quick", "candidate", "final"} or matrix != kind:
         raise ControllerError("wrapper kind/matrix mismatch")
     if module not in KNOWN_MODULES or not shard or UUID.fullmatch(run_id) is None or HEX40.fullmatch(expected_code_head) is None:
@@ -844,15 +1424,40 @@ def run_wrapper_contract(
     ):
         if not path.is_absolute() or not path.is_file() or path.is_symlink() or str(path) != os.path.abspath(path):
             raise ControllerError(f"{name} path is not a canonical regular file")
+    repo = controller_path.resolve().parents[2]
+    expected_controller_name = f"run_0600_{kind}.ps1"
+    if (
+        controller_path.resolve() != repo / "tools/release" / expected_controller_name
+        or gate_catalog.resolve() != repo / "tools/release/gates_0600.json"
+        or performance_catalog.resolve() != repo / "tools/release/performance_0600.json"
+    ):
+        raise ControllerError("wrapper controller/catalog/performance paths are not fixed")
+    verifier_blob_checker(repo, expected_code_head)
+    if verifier_blob_checker is _verify_verifier_blob:
+        _verify_relative_blob(repo, expected_code_head, FEASIBILITY_RELATIVE_PATH)
+    if after_first_verifier_check is not None:
+        after_first_verifier_check()
+    verifier_blob_checker(repo, expected_code_head)
+    if verifier_blob_checker is _verify_verifier_blob:
+        _verify_relative_blob(repo, expected_code_head, FEASIBILITY_RELATIVE_PATH)
+    catalog_bytes = gate_catalog.read_bytes()
+    performance_bytes = performance_catalog.read_bytes()
+    support_bytes = support_profile.read_bytes()
     try:
-        catalog = load_catalog(gate_catalog)
-        load_performance_catalog(performance_catalog)
-    except CatalogError as exc:
+        catalog = catalog_loader(gate_catalog)
+        performance_loader(performance_catalog)
+    except ValueError as exc:
         raise ControllerError(str(exc)) from exc
     support = verify_support_root(support_profile)
-    catalog_digest = hashlib.sha256(gate_catalog.read_bytes()).hexdigest()
-    performance_digest = hashlib.sha256(performance_catalog.read_bytes()).hexdigest()
-    support_digest = hashlib.sha256(support_profile.read_bytes()).hexdigest()
+    if (
+        gate_catalog.read_bytes() != catalog_bytes
+        or performance_catalog.read_bytes() != performance_bytes
+        or support_profile.read_bytes() != support_bytes
+    ):
+        raise ControllerError("wrapper immutable input changed during first-use validation")
+    catalog_digest = hashlib.sha256(catalog_bytes).hexdigest()
+    performance_digest = hashlib.sha256(performance_bytes).hexdigest()
+    support_digest = hashlib.sha256(support_bytes).hexdigest()
     candidate_ledger_path: Path | None = None
     candidate_ledger: dict[str, object] | None = None
     if kind == "candidate":
@@ -875,14 +1480,165 @@ def run_wrapper_contract(
         )
         write_candidate_ledger(candidate_ledger_path, candidate_ledger)
     evidence = prepare_evidence_root(evidence_root)
-    reason = "CATALOG_FAMILIES_RESERVED"
-    if kind == "candidate" and candidate_ledger is not None:
-        try:
+    module_suffix = module.rsplit("-", 1)[-1]
+    catalog_matrix = "final-windows" if kind == "final" else f"{kind}-{module_suffix}"
+    families = tuple(
+        family for family in catalog.families
+        if family.module == module and catalog_matrix in family.matrices
+    )
+    executable = tuple(family for family in families if not family.reserved)
+    reserved = tuple(family for family in families if family.reserved)
+    requests = [
+        GateRequest(
+            family.family_id,
+            family.command_argv,
+            repo,
+            900,
+            family.node_ids,
+            prerequisites=tuple(
+                dependency for dependency in family.prerequisites
+                if dependency in {entry.family_id for entry in executable}
+            ),
+        )
+        for family in executable
+    ]
+    gate_root = evidence / "gates"
+    if requests:
+        gate_root.mkdir()
+
+    def immutable_precheck(_gate: GateRequest) -> None:
+        if gate_precheck is not None:
+            gate_precheck(_gate)
+            return
+        if kind == "candidate" and candidate_ledger is not None:
             reconcile_candidate(candidate_ledger)
-        except VerificationError as exc:
-            reason = f"CANDIDATE_PRECHECK_BLOCKED:{exc}"
-    if not any(family.module == module for family in catalog.families):
-        reason = "MODULE_FAMILY_MISSING"
+        else:
+            if _git_text(repo, ["rev-parse", "HEAD"]) != expected_code_head:
+                raise ControllerError("wrapper worktree HEAD changed")
+            if _git_text(repo, ["config", "--get", "remote.origin.url"]).rstrip("/").removesuffix(".git") != "https://github.com/XiaoyaoLinghao/stm32-toolkit":
+                raise ControllerError("wrapper origin changed")
+            if _git_text(repo, ["status", "--porcelain=v1", "--untracked-files=all"]):
+                raise ControllerError("wrapper worktree is dirty")
+            for relative in (
+                f"tools/release/{expected_controller_name}",
+                "tools/release/gates_0600.json",
+                "tools/release/performance_0600.json",
+                "tools/release/run_0600_gates.py",
+                "tools/release/verify_0600_feasibility.py",
+                "tools/release/verify_0600_release.py",
+            ):
+                if _git_text(repo, ["hash-object", "--", relative]) != _git_text(repo, ["rev-parse", f"{expected_code_head}:{relative}"]):
+                    raise ControllerError("wrapper committed blob changed")
+        if (
+            gate_catalog.read_bytes() != catalog_bytes
+            or performance_catalog.read_bytes() != performance_bytes
+            or support_profile.read_bytes() != support_bytes
+            or verify_support_root(support_profile) != support
+        ):
+            raise ControllerError("wrapper readiness input changed")
+
+    matrix_results = run_gate_matrix(
+        matrix,
+        requests,
+        execute=lambda gate, environment: execute_gate_process(
+            gate, environment, evidence_root=gate_root
+        ),
+        precheck=immutable_precheck,
+        postcheck=immutable_precheck,
+        run_id=run_id,
+        code_head=expected_code_head,
+        now=now,
+    ) if requests else []
+    gate_results = [
+        {
+            "gate_id": result.gate_id,
+            "status": result.status,
+            "reason": result.reason,
+            "metadata": result.metadata,
+        }
+        for result in matrix_results
+    ]
+    completed_ids = {str(item["gate_id"]) for item in gate_results}
+    for family in executable:
+        if family.family_id not in completed_ids:
+            stopped = GateRequest(
+                family.family_id, family.command_argv, repo, 900, family.node_ids,
+                prerequisites=family.prerequisites,
+            )
+            gate_results.append({
+                "gate_id": family.family_id,
+                "status": "BLOCKED",
+                "reason": "FINAL_FAIL_FAST",
+                "metadata": _metadata(
+                    stopped, GateRunOutput(-1, b"", b"", (), ()),
+                    run_id=run_id, code_head=expected_code_head, started=now(),
+                ),
+            })
+    for family in reserved:
+        blocked_request = GateRequest(
+            family.family_id, (), repo, 900, (), prerequisites=family.prerequisites
+        )
+        gate_results.append(
+            {
+                "gate_id": family.family_id,
+                "status": "BLOCKED",
+                "reason": "RESERVED_CATALOG_FAMILY",
+                "metadata": _metadata(
+                    blocked_request,
+                    GateRunOutput(-1, b"", b"", (), ()),
+                    run_id=run_id,
+                    code_head=expected_code_head,
+                    started=now(),
+                ),
+            }
+        )
+    inventory = [family.family_id for family in families]
+    ordered_by_catalog = {name: index for index, name in enumerate(inventory)}
+    gate_results.sort(key=lambda item: ordered_by_catalog[str(item["gate_id"])])
+    statuses = [str(item["status"]) for item in gate_results]
+    if not families:
+        status, reason = "BLOCKED", "MODULE_FAMILY_MISSING"
+    elif "FAIL" in statuses:
+        status, reason = "FAIL", "GATE_FAILURE"
+    elif "BLOCKED" in statuses:
+        status, reason = "BLOCKED", "CATALOG_FAMILIES_RESERVED"
+    else:
+        status, reason = "PASS", "PASS"
+    product_bodies = sum(
+        bool(item["metadata"]["retained_evidence"])
+        for item in gate_results
+        if isinstance(item.get("metadata"), dict)
+    )
+    prerequisite_inventory = [
+        {"gate_id": family.family_id, "requires": list(family.prerequisites)}
+        for family in families
+    ]
+    lock_inventory = sorted(
+        {
+            f"{kind}:{identity}"
+            for request in requests
+            for kind, identity in (request.resource_locks or {}).items()
+        },
+        key=lambda item: item.encode("utf-8"),
+    )
+    binding = {
+        "owner": "Codex",
+        "platform": f"windows-{platform.machine().casefold()}",
+        "run_id": run_id,
+        "code_head": expected_code_head,
+        "catalog_sha256": catalog_digest,
+        "locks": lock_inventory,
+        "support_sha256": str(support["manifest"]["sha256"]),
+        "status": status,
+    }
+    evidence_inventory = ["controller-result.json"]
+    for row in gate_results:
+        metadata = row["metadata"]
+        for reference in metadata["retained_evidence"]:
+            evidence_inventory.append(f"gates/{reference['path']}")
+    if kind == "final":
+        evidence_inventory.append("checkpoint.json")
+    evidence_inventory.sort(key=lambda item: item.encode("utf-8"))
     controller_result = {
         "schema": "stm32-gate-controller-result/1",
         "matrix": matrix,
@@ -890,12 +1646,20 @@ def run_wrapper_contract(
         "shard": shard,
         "run_id": run_id,
         "code_head": expected_code_head,
-        "status": "BLOCKED",
+        "status": status,
         "reason": reason,
-        "product_bodies": 0,
+        "product_bodies": product_bodies,
         "network_access": 0,
         "remote_git_actions": 0,
         "resume_count": 0,
+        "catalog_sha256": catalog_digest,
+        "performance_sha256": performance_digest,
+        "support": support,
+        "gate_inventory": inventory,
+        "prerequisites": prerequisite_inventory,
+        "gate_results": gate_results,
+        "evidence_inventory": evidence_inventory,
+        "binding": binding,
     }
     checkpoint = evidence / "controller-result.json"
     checkpoint.write_bytes(canonical_json_bytes(controller_result))
@@ -908,7 +1672,7 @@ def run_wrapper_contract(
                     "code_head": expected_code_head,
                     "controller_path": str(controller_path),
                     "evidence_root": str(evidence),
-                    "state": "blocked",
+                    "state": status.casefold(),
                     "resume_count": 0,
                     "interruption_event": None,
                 }
@@ -918,25 +1682,39 @@ def run_wrapper_contract(
         previous = dict(candidate_ledger)
         updated = dict(candidate_ledger)
         updated["checkpoint"] = str(checkpoint)
-        updated["state"] = "blocked"
+        updated["state"] = status.casefold()
         updated["updated_at_utc"] = _utc(now())
         write_candidate_ledger(candidate_ledger_path, updated, previous=previous)
-    binding = {
-        "owner": "Codex",
-        "platform": f"windows-{platform.machine().casefold()}",
-        "run_id": run_id,
-        "code_head": expected_code_head,
-        "catalog_sha256": catalog_digest,
-        "locks": [],
-        "support_sha256": str(support["manifest"]["sha256"]),
-        "status": "BLOCKED",
-    }
     package_path = evidence.parent / f"{evidence.name}.shard.zip"
     package = create_shard_package(evidence, package_path, binding)
     package_path.with_name(package_path.name + ".manifest.json").write_bytes(
         canonical_json_bytes(package)
     )
-    return {"status": "BLOCKED", "reason": reason, "binding": binding, "package": package}
+    verify_shard_package(package_path, package, binding)
+    if kind in {"candidate", "final"}:
+        arguments = (
+            ["candidate-evidence", "--candidate-ledger", str(candidate_ledger_path)]
+            if kind == "candidate"
+            else ["final-evidence", "--input", str(evidence / "checkpoint.json")]
+        )
+        invoke = verifier_invoker or (
+            lambda selected_repo, head, argv: invoke_trusted_verifier(
+                repo=selected_repo,
+                expected_code_head=head,
+                verifier_args=argv,
+                process_factory=lambda command: subprocess.run(
+                    command,
+                    cwd=selected_repo,
+                    env=_safe_controller_env(),
+                    capture_output=True,
+                    check=False,
+                ),
+            )
+        )
+        child = invoke(repo, expected_code_head, arguments)
+        if getattr(child, "returncode", None) != 0:
+            raise ControllerError("release verifier child failed")
+    return {"status": status, "reason": reason, "binding": binding, "package": package}
 
 
 CONTROLLER_RESULT_KEYS = {
@@ -952,7 +1730,91 @@ CONTROLLER_RESULT_KEYS = {
     "network_access",
     "remote_git_actions",
     "resume_count",
+    "catalog_sha256",
+    "performance_sha256",
+    "support",
+    "gate_inventory",
+    "prerequisites",
+    "gate_results",
+    "evidence_inventory",
+    "binding",
 }
+
+
+def _validate_controller_checkpoint(value: dict[str, object]) -> None:
+    if set(value) != CONTROLLER_RESULT_KEYS:
+        raise ControllerError("candidate checkpoint is not closed")
+    if (
+        value.get("schema") != "stm32-gate-controller-result/1"
+        or value.get("status") not in {"PASS", "FAIL", "BLOCKED"}
+        or not isinstance(value.get("reason"), str)
+        or any(not _exact_integer(value.get(name)) or int(value[name]) < 0 for name in (
+            "product_bodies", "network_access", "remote_git_actions", "resume_count"
+        ))
+        or any(HEX64.fullmatch(str(value.get(name))) is None for name in (
+            "catalog_sha256", "performance_sha256"
+        ))
+        or not isinstance(value.get("gate_inventory"), list)
+        or not isinstance(value.get("prerequisites"), list)
+        or not isinstance(value.get("gate_results"), list)
+        or not isinstance(value.get("evidence_inventory"), list)
+    ):
+        raise ControllerError("candidate checkpoint recursive identity/type (including resume_count) is invalid")
+    inventory = value["gate_inventory"]
+    if (
+        any(not isinstance(item, str) or not item for item in inventory)
+        or len(set(inventory)) != len(inventory)
+    ):
+        raise ControllerError("candidate checkpoint gate inventory is invalid")
+    prerequisites = value["prerequisites"]
+    if any(
+        not isinstance(item, dict)
+        or set(item) != {"gate_id", "requires"}
+        or item["gate_id"] not in inventory
+        or not isinstance(item["requires"], list)
+        or any(member not in inventory for member in item["requires"])
+        for item in prerequisites
+    ):
+        raise ControllerError("candidate checkpoint prerequisites are invalid")
+    rows = value["gate_results"]
+    if (
+        len(rows) != len(inventory)
+        or any(
+            not isinstance(item, dict)
+            or set(item) != {"gate_id", "status", "reason", "metadata"}
+            or item["gate_id"] != inventory[index]
+            or item["status"] not in {"PASS", "FAIL", "BLOCKED"}
+            or not isinstance(item["reason"], str)
+            or not isinstance(item["metadata"], dict)
+            for index, item in enumerate(rows)
+        )
+    ):
+        raise ControllerError("candidate checkpoint gate results are invalid")
+    support = value["support"]
+    if not isinstance(support, dict) or set(support) != {"profile", "manifest"}:
+        raise ControllerError("candidate checkpoint support binding is invalid")
+    for reference in support.values():
+        if (
+            not isinstance(reference, dict)
+            or set(reference) != {"path", "bytes", "sha256"}
+            or not isinstance(reference["path"], str)
+            or not _exact_integer(reference["bytes"])
+            or reference["bytes"] < 0
+            or HEX64.fullmatch(str(reference["sha256"])) is None
+        ):
+            raise ControllerError("candidate checkpoint support reference is invalid")
+    binding = value["binding"]
+    if (
+        not isinstance(binding, dict)
+        or set(binding) != {"owner", "platform", "run_id", "code_head", "catalog_sha256", "locks", "support_sha256", "status"}
+        or binding["run_id"] != value["run_id"]
+        or binding["code_head"] != value["code_head"]
+        or binding["catalog_sha256"] != value["catalog_sha256"]
+        or binding["support_sha256"] != support["manifest"]["sha256"]
+        or binding["status"] != value["status"]
+        or not isinstance(binding["locks"], list)
+    ):
+        raise ControllerError("candidate checkpoint shard binding is invalid")
 
 
 def _canonical_object_file(path: Path) -> tuple[bytes, dict[str, object]]:
@@ -968,6 +1830,20 @@ def _canonical_object_file(path: Path) -> tuple[bytes, dict[str, object]]:
     return data, value
 
 
+def _exact_integer(value: object) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def _successful_child(result: object) -> bool:
+    return _exact_integer(getattr(result, "returncode", None)) and result.returncode == 0
+
+
+def _atomic_json_write(path: Path, value: object) -> None:
+    temporary = path.with_name(path.name + ".tmp")
+    temporary.write_bytes(canonical_json_bytes(value))
+    os.replace(temporary, path)
+
+
 def run_wrapper_resume(
     *,
     kind: str,
@@ -979,7 +1855,13 @@ def run_wrapper_resume(
 ) -> dict[str, object]:
     if kind != "candidate" or candidate_ledger_path is None:
         raise ControllerError("only the closed candidate resume form is available here")
-    _, raw_ledger = _canonical_object_file(candidate_ledger_path)
+    ledger_bytes, raw_ledger = _canonical_object_file(candidate_ledger_path)
+    if verifier_invoker is None:
+        raw_controller = raw_ledger.get("controller_path")
+        raw_head = raw_ledger.get("expected_code_head")
+        if not isinstance(raw_controller, str) or not isinstance(raw_head, str):
+            raise ControllerError("candidate ledger caller identity is invalid")
+        _verify_verifier_blob(Path(raw_controller).parents[2], raw_head)
     try:
         ledger = validate_candidate_ledger(raw_ledger)
     except VerificationError as exc:
@@ -991,9 +1873,8 @@ def run_wrapper_resume(
         raise ControllerError("candidate state is not resume-eligible")
     checkpoint_path = Path(checkpoint_value)
     checkpoint_bytes, checkpoint = _canonical_object_file(checkpoint_path)
-    if set(checkpoint) != CONTROLLER_RESULT_KEYS:
-        raise ControllerError("candidate checkpoint is not closed")
-    if checkpoint.get("resume_count") != 0:
+    _validate_controller_checkpoint(checkpoint)
+    if not _exact_integer(checkpoint.get("resume_count")) or checkpoint.get("resume_count") != 0:
         raise ControllerError("candidate single-resume limit reached")
     if ledger["state"] not in {"blocked", "failed"}:
         raise ControllerError("candidate state is not resume-eligible")
@@ -1003,6 +1884,7 @@ def run_wrapper_resume(
         or checkpoint.get("run_id") != ledger["candidate_run_id"]
         or checkpoint.get("code_head") != ledger["expected_code_head"]
         or checkpoint.get("status") not in {"FAIL", "BLOCKED"}
+        or not all(_exact_integer(checkpoint.get(name)) for name in ("product_bodies", "network_access", "remote_git_actions"))
     ):
         raise ControllerError("candidate checkpoint identity/state mismatch")
     recovery_bytes, recovery = _canonical_object_file(recovery_record_path)
@@ -1022,17 +1904,6 @@ def run_wrapper_resume(
         verifier_path = reconcile_candidate(ledger, git_runner=git_runner)
     except VerificationError as exc:
         raise ControllerError(str(exc)) from exc
-    checkpoint["resume_count"] = 1
-    checkpoint_temp = checkpoint_path.with_name(checkpoint_path.name + ".tmp")
-    checkpoint_temp.write_bytes(canonical_json_bytes(checkpoint))
-    os.replace(checkpoint_temp, checkpoint_path)
-    previous = dict(ledger)
-    ledger["state"] = "running"
-    ledger["updated_at_utc"] = _utc(now())
-    try:
-        write_candidate_ledger(candidate_ledger_path, ledger, previous=previous)
-    except VerificationError as exc:
-        raise ControllerError(str(exc)) from exc
     worktree = Path(str(ledger["controller_path"])).parents[2]
     verifier_args = ["candidate-evidence", "--candidate-ledger", str(candidate_ledger_path)]
     invoker = verifier_invoker or (
@@ -1049,9 +1920,34 @@ def run_wrapper_resume(
             ),
         )
     )
-    invocation_result = invoker(worktree, str(ledger["expected_code_head"]), verifier_args)
     if verifier_path != worktree.joinpath(*VERIFIER_RELATIVE_PATH.split("/")):
         raise ControllerError("candidate reconciliation returned a non-fixed verifier")
+    if (
+        candidate_ledger_path.read_bytes() != ledger_bytes
+        or checkpoint_path.read_bytes() != checkpoint_bytes
+        or recovery_record_path.read_bytes() != recovery_bytes
+    ):
+        raise ControllerError("candidate retained state changed before verifier spawn")
+    invocation_result = invoker(worktree, str(ledger["expected_code_head"]), verifier_args)
+    if not _successful_child(invocation_result):
+        raise ControllerError("candidate verifier child failed")
+    if (
+        candidate_ledger_path.read_bytes() != ledger_bytes
+        or checkpoint_path.read_bytes() != checkpoint_bytes
+        or recovery_record_path.read_bytes() != recovery_bytes
+    ):
+        raise ControllerError("candidate retained state changed during verifier execution")
+    previous = dict(ledger)
+    updated_checkpoint = dict(checkpoint)
+    updated_checkpoint["resume_count"] = 1
+    updated_ledger = dict(ledger)
+    updated_ledger["state"] = "running"
+    updated_ledger["updated_at_utc"] = _utc(now())
+    try:
+        _atomic_json_write(checkpoint_path, updated_checkpoint)
+        write_candidate_ledger(candidate_ledger_path, updated_ledger, previous=previous)
+    except VerificationError as exc:
+        raise ControllerError(str(exc)) from exc
     return {
         "status": "RESUMED",
         "checkpoint": str(checkpoint_path),
@@ -1081,7 +1977,7 @@ def run_final_resume(
     checkpoint_bytes, checkpoint = _canonical_object_file(checkpoint_path)
     if set(checkpoint) != FINAL_CHECKPOINT_KEYS or checkpoint.get("schema") != "stm32-final-checkpoint/1":
         raise ControllerError("final checkpoint is not closed")
-    if checkpoint.get("resume_count") != 0:
+    if not _exact_integer(checkpoint.get("resume_count")) or checkpoint.get("resume_count") != 0:
         raise ControllerError("final single-resume limit reached")
     if (
         checkpoint.get("state") not in {"blocked", "failed"}
@@ -1102,6 +1998,8 @@ def run_final_resume(
         or controller.parent.parent.name != "tools"
     ):
         raise ControllerError("final checkpoint paths are not fixed/root-bound")
+    if verifier_invoker is None:
+        _verify_verifier_blob(controller.parents[2], str(checkpoint["code_head"]))
     recovery_bytes, recovery = _canonical_object_file(recovery_record_path)
     try:
         validate_recovery_record(
@@ -1116,11 +2014,6 @@ def run_final_resume(
         raise ControllerError(str(exc)) from exc
     if checkpoint.get("interruption_event") != recovery.get("event"):
         raise ControllerError("final checkpoint is not bound to the recoverable event")
-    checkpoint["resume_count"] = 1
-    checkpoint["state"] = "running"
-    temporary = checkpoint_path.with_name("checkpoint.json.tmp")
-    temporary.write_bytes(canonical_json_bytes(checkpoint))
-    os.replace(temporary, checkpoint_path)
     worktree = controller.parents[2]
     verifier_args = ["final-evidence", "--input", str(checkpoint_path)]
     invoker = verifier_invoker or (
@@ -1137,7 +2030,17 @@ def run_final_resume(
             ),
         )
     )
+    if checkpoint_path.read_bytes() != checkpoint_bytes or recovery_record_path.read_bytes() != recovery_bytes:
+        raise ControllerError("final retained state changed before verifier spawn")
     invocation_result = invoker(worktree, str(checkpoint["code_head"]), verifier_args)
+    if not _successful_child(invocation_result):
+        raise ControllerError("final verifier child failed")
+    if checkpoint_path.read_bytes() != checkpoint_bytes or recovery_record_path.read_bytes() != recovery_bytes:
+        raise ControllerError("final retained state changed during verifier execution")
+    updated_checkpoint = dict(checkpoint)
+    updated_checkpoint["resume_count"] = 1
+    updated_checkpoint["state"] = "running"
+    _atomic_json_write(checkpoint_path, updated_checkpoint)
     return {
         "status": "RESUMED",
         "checkpoint": str(checkpoint_path),
@@ -1147,28 +2050,49 @@ def run_final_resume(
 
 
 def _contract_self_test(kind: str) -> dict[str, object]:
-    if kind not in {"quick", "hardware"}:
+    if kind not in {"quick", "candidate", "final", "hardware"}:
         raise ControllerError("unknown self-test kind")
-    if kind == "quick":
+    if kind != "hardware":
         fake_calls: list[str] = []
 
         def fake_execute(gate: GateRequest, _environment: dict[str, str]) -> GateRunOutput:
             fake_calls.append(gate.gate_id)
             code = 1 if gate.gate_id == "FAIL" else 0
-            return GateRunOutput(code, b"fake", b"", gate.expected_nodes)
+            outcome = "failed" if code else "passed"
+            return GateRunOutput(
+                code,
+                b"fake",
+                b"",
+                gate.expected_nodes,
+                tuple((node, outcome) for node in gate.expected_nodes),
+            )
 
         fixture = [
             GateRequest("PASS", (sys.executable, "fake"), Path.cwd(), 1, ("fake::pass",)),
             GateRequest("FAIL", (sys.executable, "fake"), Path.cwd(), 1, ("fake::fail",)),
             GateRequest("BLOCKED", (sys.executable, "fake"), Path.cwd(), 1, ("fake::blocked",), prerequisites=("FAIL",)),
         ]
-        states = [item.status for item in run_gate_matrix("quick", fixture, execute=fake_execute)]
-        if states != ["PASS", "FAIL", "BLOCKED"] or fake_calls != ["PASS", "FAIL"]:
-            raise ControllerError("quick self-test transitions failed")
+        states = [
+            item.status for item in run_gate_matrix(
+                kind,
+                fixture,
+                execute=fake_execute,
+                precheck=(lambda _gate: None) if kind in {"candidate", "final"} else None,
+            )
+        ]
+        expected_states = ["PASS", "FAIL"] if kind == "final" else ["PASS", "FAIL", "BLOCKED"]
+        if states != expected_states or fake_calls != ["PASS", "FAIL"]:
+            raise ControllerError(f"{kind} self-test transitions failed")
     else:
         class FakeBackend:
             def __init__(self) -> None:
-                self.snapshot = {"board": "fixture", "state": "running"}
+                self.snapshot = {
+                    "board_id": "fixture-board",
+                    "probe_serial_hash": "c" * 64,
+                    "uart_serial_hash": "d" * 64,
+                    "power_identity": "fixture-power",
+                    "state": "running",
+                }
                 self.executed: list[str] = []
 
             def prepare(self, action_id: str) -> dict[str, object]:
@@ -1187,6 +2111,20 @@ def _contract_self_test(kind: str) -> dict[str, object]:
         root = Path(tempfile.mkdtemp(prefix="stm32tk-0600-hardware-selftest-", dir=r"C:\tmp"))
         try:
             catalog_path = Path(__file__).with_name("gates_0600.json")
+            support_profile = Path(r"C:\tmp\stm32tk-0600-support\feasibility\profile.json")
+            if not support_profile.is_file():
+                raise ControllerError("hardware self-test support fixture is unavailable")
+            class FakeGit:
+                def __call__(self, args: list[str]) -> str:
+                    if args == ["rev-parse", "HEAD"]:
+                        return "b" * 40 + "\n"
+                    if args == ["config", "--get", "remote.origin.url"]:
+                        return "https://github.com/XiaoyaoLinghao/stm32-toolkit.git\n"
+                    if args == ["status", "--porcelain=v1", "--untracked-files=all"]:
+                        return ""
+                    if args[:2] == ["hash-object", "--"] or (args[0] == "rev-parse" and ":" in args[1]):
+                        return "e" * 40 + "\n"
+                    raise ControllerError("hardware self-test received unexpected Git request")
             for contract in ("0400", "0600"):
                 backend = FakeBackend()
                 nonce_counter = 0
@@ -1206,6 +2144,14 @@ def _contract_self_test(kind: str) -> dict[str, object]:
                     final_run_id="123e4567-e89b-42d3-a456-426614174000",
                     evidence_root=root / contract,
                     backend=backend,
+                    support_profile=support_profile,
+                    hardware_identity={
+                        "board_id": "fixture-board",
+                        "probe_serial_hash": "c" * 64,
+                        "uart_serial_hash": "d" * 64,
+                        "power_identity": "fixture-power",
+                    },
+                    git_runner=FakeGit(),
                     now=lambda: datetime(2026, 8, 15, tzinfo=timezone.utc),
                     random_bytes=fake_random,
                 )
@@ -1241,7 +2187,7 @@ def _parser() -> argparse.ArgumentParser:
     coverage.add_argument("--evidence-root", required=True)
     coverage.add_argument("tokens", nargs=argparse.REMAINDER)
     self_test = sub.add_parser("contract-self-test", allow_abbrev=False)
-    self_test.add_argument("--kind", choices=("quick", "hardware"), required=True)
+    self_test.add_argument("--kind", choices=("quick", "candidate", "final", "hardware"), required=True)
     wrapper = sub.add_parser("wrapper", allow_abbrev=False)
     wrapper.add_argument("--kind", choices=("quick", "candidate", "final"), required=True)
     wrapper.add_argument("--matrix", choices=("quick", "candidate", "final"), required=True)
@@ -1258,12 +2204,25 @@ def _parser() -> argparse.ArgumentParser:
     resume.add_argument("--candidate-ledger")
     resume.add_argument("--final-checkpoint")
     resume.add_argument("--recovery-record", required=True)
+    hardware = sub.add_parser("hardware", allow_abbrev=False)
+    hardware.add_argument("--contract", choices=("0400", "0600"), required=True)
+    hardware.add_argument("--repo", required=True)
+    hardware.add_argument("--expected-code-head", required=True)
+    hardware.add_argument("--final-run-id", required=True)
+    hardware.add_argument("--evidence-root", required=True)
+    hardware.add_argument("--mode", choices=("prepare", "execute", "resume"), required=True)
+    hardware.add_argument("--nonce")
+    hardware.add_argument("--action-digest")
+    hardware.add_argument("--authorized", action="store_true")
+    hardware.add_argument("--checkpoint")
+    hardware.add_argument("--recovery-record")
     return parser
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    raw_argv = list(argv) if argv is not None else sys.argv[1:]
     parser = _parser()
-    args = parser.parse_args(argv)
+    args = parser.parse_args(raw_argv)
     try:
         if args.command == "performance":
             result = run_performance(
@@ -1275,6 +2234,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 Path(args.performance_config) if args.performance_config else None,
             )
         elif args.command == "dev-coverage":
+            if "--" not in raw_argv:
+                raise ControllerError("dev-coverage requires a literal -- token separator")
             tokens = list(args.tokens)
             if tokens and tokens[0] == "--":
                 tokens.pop(0)
@@ -1300,6 +2261,68 @@ def main(argv: Sequence[str] | None = None) -> int:
                 support_profile=Path(args.support_profile),
                 controller_path=Path(__file__).with_name(controller_name),
             )
+        elif args.command == "hardware":
+            repo = Path(args.repo)
+            evidence_root = Path(args.evidence_root)
+            if not repo.is_absolute() or not repo.is_dir() or not evidence_root.is_absolute():
+                raise ControllerError("hardware repository/evidence paths must be absolute")
+            controller_head = _git_text(repo, ["rev-parse", "HEAD"])
+            if HEX40.fullmatch(controller_head) is None:
+                raise ControllerError("hardware controller HEAD is invalid")
+            if args.mode == "execute":
+                if (
+                    HEX64.fullmatch(args.nonce or "") is None
+                    or HEX64.fullmatch(args.action_digest or "") is None
+                    or not args.authorized
+                    or args.checkpoint
+                    or args.recovery_record
+                ):
+                    raise ControllerError("hardware execute arguments are not closed")
+            elif args.mode == "resume":
+                if (
+                    not args.checkpoint
+                    or not args.recovery_record
+                    or args.nonce
+                    or args.action_digest
+                    or args.authorized
+                ):
+                    raise ControllerError("hardware resume arguments are not closed")
+            elif any((args.nonce, args.action_digest, args.authorized, args.checkpoint, args.recovery_record)):
+                raise ControllerError("hardware prepare arguments are not closed")
+
+            class ReservedBackend:
+                def prepare(self, _action_id: str) -> dict[str, object]:
+                    raise ControllerError("reserved hardware action reached a product prepare boundary")
+
+                def observe(self, _action_id: str) -> dict[str, str]:
+                    raise ControllerError("reserved hardware action reached a product observe boundary")
+
+                def execute(self, _action_id: str) -> dict[str, object]:
+                    raise ControllerError("reserved hardware action reached a product execute boundary")
+
+            controller = HardwareContractController(
+                contract=args.contract,
+                repo=repo,
+                catalog=repo / "tools/release/gates_0600.json",
+                expected_code_head=args.expected_code_head,
+                controller_code_head=controller_head,
+                final_run_id=args.final_run_id,
+                evidence_root=evidence_root,
+                backend=ReservedBackend(),
+                support_profile=Path(r"C:\tmp\stm32tk-0600-support\feasibility\profile.json"),
+                hardware_identity={
+                    "board_id": "reserved-hardware-input",
+                    "probe_serial_hash": "0" * 64,
+                    "uart_serial_hash": "1" * 64,
+                    "power_identity": "reserved-hardware-input",
+                },
+            )
+            if args.mode == "prepare":
+                result = controller.prepare_reserved()
+            elif args.mode == "execute":
+                result = controller.execute(args.nonce, args.action_digest, authorized=True)
+            else:
+                result = controller.resume(Path(args.checkpoint), Path(args.recovery_record))
         else:
             if args.kind == "candidate":
                 if not args.candidate_ledger or args.final_checkpoint:

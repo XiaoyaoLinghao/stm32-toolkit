@@ -761,6 +761,142 @@ def test_candidate_reconciliation_rederives_only_committed_paths_and_exact_workt
     assert ("status", "--porcelain=v1", "--untracked-files=all") in git.calls
 
 
+def test_candidate_evidence_recursively_verifies_catalog_inventory_package_and_retained_files(
+    tmp_path: Path,
+) -> None:
+    """Candidate PASS is impossible unless the checkpoint, inventory, external files, and ZIP all close."""
+    candidate_root = tmp_path / "candidate-closed"
+    candidate_root.mkdir()
+    evidence = candidate_root / "evidence"
+    head = subprocess.run(
+        ["git", "-C", str(REPO), "rev-parse", "HEAD"],
+        capture_output=True, text=True, check=True,
+    ).stdout.strip()
+    result = gates.run_wrapper_contract(
+        kind="candidate", matrix="candidate", module="STM32TK-0601",
+        shard="release-contract", run_id=RUN_ID, evidence_root=evidence,
+        expected_code_head=head, gate_catalog=RELEASE / "gates_0600.json",
+        performance_catalog=RELEASE / "performance_0600.json",
+        support_profile=Path(r"C:\tmp\stm32tk-0600-support\feasibility\profile.json"),
+        controller_path=RELEASE / "run_0600_candidate.ps1",
+        verifier_blob_checker=lambda _repo, _head: RELEASE / "verify_0600_release.py",
+        verifier_invoker=lambda _repo, _head, _argv: SimpleNamespace(returncode=0),
+        now=lambda: datetime(2026, 8, 15, 2, 3, 4, 123456, tzinfo=timezone.utc),
+    )
+    ledger_path = candidate_root / "candidate-ledger.json"
+
+    verified = verifier.verify_candidate_evidence_file(
+        ledger_path,
+        git_runner=CandidateGit(REPO, head=head),
+    )
+
+    assert verified == {"mode": "candidate-evidence", "status": "PASS"}
+    assert result["status"] == "BLOCKED"
+
+    checkpoint = evidence / "controller-result.json"
+    checkpoint_value = json.loads(checkpoint.read_text(encoding="utf-8"))
+    checkpoint_value["gate_inventory"] = checkpoint_value["gate_inventory"][:-1]
+    checkpoint.write_bytes(canonical_json_bytes(checkpoint_value))
+    with pytest.raises(VerificationError, match="inventory|package|evidence"):
+        verifier.verify_candidate_evidence_file(
+            ledger_path,
+            git_runner=CandidateGit(REPO, head=head),
+        )
+
+
+def test_final_evidence_recursively_binds_checkpoint_and_shard_package(tmp_path: Path) -> None:
+    """Final evidence must bind the final checkpoint to the complete catalog-derived shard."""
+    evidence = tmp_path / "final-closed"
+    head = subprocess.run(
+        ["git", "-C", str(REPO), "rev-parse", "HEAD"],
+        capture_output=True, text=True, check=True,
+    ).stdout.strip()
+    gates.run_wrapper_contract(
+        kind="final", matrix="final", module="STM32TK-0601", shard="windows",
+        run_id=RUN_ID, evidence_root=evidence, expected_code_head=head,
+        gate_catalog=RELEASE / "gates_0600.json",
+        performance_catalog=RELEASE / "performance_0600.json",
+        support_profile=Path(r"C:\tmp\stm32tk-0600-support\feasibility\profile.json"),
+        controller_path=RELEASE / "run_0600_final.ps1",
+        verifier_blob_checker=lambda _repo, _head: RELEASE / "verify_0600_release.py",
+        verifier_invoker=lambda _repo, _head, _argv: SimpleNamespace(returncode=0),
+        now=lambda: datetime(2026, 8, 15, 2, 3, 4, 123456, tzinfo=timezone.utc),
+    )
+    checkpoint = evidence / "checkpoint.json"
+
+    assert verifier.verify_final_evidence_file(
+        checkpoint, expected_head=head, readiness=False
+    ) == {"mode": "final-evidence", "status": "PASS"}
+
+    value = json.loads(checkpoint.read_text(encoding="utf-8"))
+    value["run_id"] = "223e4567-e89b-42d3-a456-426614174000"
+    checkpoint.write_bytes(canonical_json_bytes(value))
+    with pytest.raises(VerificationError, match="checkpoint|evidence|run"):
+        verifier.verify_final_evidence_file(checkpoint, expected_head=head, readiness=False)
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "root-extra", "support-extra", "support-missing", "support-bool",
+        "prerequisite-extra", "result-extra", "metadata-extra", "binding-extra",
+        "inventory-order", "inventory-duplicate", "evidence-extra",
+    ],
+)
+def test_candidate_terminal_schema_rejects_every_nested_shape_and_order_mutation(
+    tmp_path: Path, mutation: str
+) -> None:
+    """Every nested terminal object, array order, duplicate, and exact scalar type fails closed."""
+    candidate_root = tmp_path / "candidate-mutations"
+    candidate_root.mkdir()
+    evidence = candidate_root / "evidence"
+    head = subprocess.run(
+        ["git", "-C", str(REPO), "rev-parse", "HEAD"],
+        capture_output=True, text=True, check=True,
+    ).stdout.strip()
+    gates.run_wrapper_contract(
+        kind="candidate", matrix="candidate", module="STM32TK-0601", shard="release",
+        run_id=RUN_ID, evidence_root=evidence, expected_code_head=head,
+        gate_catalog=RELEASE / "gates_0600.json",
+        performance_catalog=RELEASE / "performance_0600.json",
+        support_profile=Path(r"C:\tmp\stm32tk-0600-support\feasibility\profile.json"),
+        controller_path=RELEASE / "run_0600_candidate.ps1",
+        verifier_blob_checker=lambda _repo, _head: RELEASE / "verify_0600_release.py",
+        verifier_invoker=lambda _repo, _head, _argv: SimpleNamespace(returncode=0),
+    )
+    checkpoint = evidence / "controller-result.json"
+    value = json.loads(checkpoint.read_text(encoding="utf-8"))
+    if mutation == "root-extra":
+        value["extra"] = None
+    elif mutation == "support-extra":
+        value["support"]["extra"] = None
+    elif mutation == "support-missing":
+        value["support"].pop("manifest")
+    elif mutation == "support-bool":
+        value["support"]["profile"]["bytes"] = False
+    elif mutation == "prerequisite-extra":
+        value["prerequisites"][0]["extra"] = None
+    elif mutation == "result-extra":
+        value["gate_results"][0]["extra"] = None
+    elif mutation == "metadata-extra":
+        value["gate_results"][0]["metadata"]["extra"] = None
+    elif mutation == "binding-extra":
+        value["binding"]["extra"] = None
+    elif mutation == "inventory-order":
+        value["gate_inventory"] = list(reversed(value["gate_inventory"]))
+    elif mutation == "inventory-duplicate":
+        value["gate_inventory"].append(value["gate_inventory"][0])
+    else:
+        value["evidence_inventory"].append("extra.json")
+    checkpoint.write_bytes(canonical_json_bytes(value))
+
+    with pytest.raises(VerificationError):
+        verifier.verify_candidate_evidence_file(
+            candidate_root / "candidate-ledger.json",
+            git_runner=CandidateGit(REPO, head=head),
+        )
+
+
 @pytest.mark.parametrize("mutation", ["dirty", "head", "origin", "catalog-hash", "missing", "context-executable"])
 def test_candidate_reconciliation_rejects_dirty_wrong_identity_uncommitted_and_context_paths(
     tmp_path: Path, mutation: str
@@ -808,6 +944,21 @@ def test_candidate_resume_validates_recovery_once_then_uses_only_rederived_verif
         "network_access": 0,
         "remote_git_actions": 0,
         "resume_count": 0,
+        "catalog_sha256": ledger["catalog_sha256"],
+        "performance_sha256": ledger["performance_sha256"],
+        "support": {
+            "profile": {"path": "feasibility/profile.json", "bytes": 1, "sha256": ledger["support_profile_sha256"]},
+            "manifest": {"path": "support-manifest.json", "bytes": 1, "sha256": "b" * 64},
+        },
+        "gate_inventory": [],
+        "prerequisites": [],
+        "gate_results": [],
+        "evidence_inventory": ["controller-result.json"],
+        "binding": {
+            "owner": "Codex", "platform": "windows-amd64", "run_id": RUN_ID,
+            "code_head": "a" * 40, "catalog_sha256": ledger["catalog_sha256"],
+            "locks": [], "support_sha256": "b" * 64, "status": "BLOCKED",
+        },
     }
     checkpoint.write_bytes(canonical_json_bytes(checkpoint_value))
     ledger["checkpoint"] = str(checkpoint)
@@ -820,6 +971,21 @@ def test_candidate_resume_validates_recovery_once_then_uses_only_rederived_verif
     recovery_path.write_bytes(canonical_json_bytes(recovery))
     git = CandidateGit(paths["controller"].parents[2])
     invoked: list[tuple[Path, str, list[str]]] = []
+
+    checkpoint_value["resume_count"] = False
+    checkpoint.write_bytes(canonical_json_bytes(checkpoint_value))
+    recovery["event"] = "RUNNER_LOSS_BEFORE_CHILD_RESULT"
+    recovery["interrupted_attempt_digest"] = _sha(checkpoint.read_bytes())
+    recovery_path.write_bytes(canonical_json_bytes(recovery))
+    with pytest.raises(ControllerError, match="resume_count|single-resume"):
+        run_wrapper_resume(
+            kind="candidate",
+            candidate_ledger_path=ledger_path,
+            recovery_record_path=recovery_path,
+            git_runner=git,
+            verifier_invoker=lambda repo, head, argv: SimpleNamespace(returncode=0),
+        )
+    checkpoint_value["resume_count"] = 0
 
     checkpoint_value["reason"] = "PRODUCT_FAILURE"
     checkpoint.write_bytes(canonical_json_bytes(checkpoint_value))
@@ -837,15 +1003,29 @@ def test_candidate_resume_validates_recovery_once_then_uses_only_rederived_verif
 
     checkpoint_value["reason"] = "HOST_POWER_OR_REBOOT"
     checkpoint.write_bytes(canonical_json_bytes(checkpoint_value))
+    recovery["event"] = "HOST_POWER_OR_REBOOT"
     recovery["interrupted_attempt_digest"] = _sha(checkpoint.read_bytes())
     recovery_path.write_bytes(canonical_json_bytes(recovery))
+
+    ledger_before = ledger_path.read_bytes()
+    checkpoint_before = checkpoint.read_bytes()
+    with pytest.raises(ControllerError, match="verifier child failed"):
+        run_wrapper_resume(
+            kind="candidate",
+            candidate_ledger_path=ledger_path,
+            recovery_record_path=recovery_path,
+            git_runner=git,
+            verifier_invoker=lambda repo, head, argv: SimpleNamespace(returncode=7),
+        )
+    assert ledger_path.read_bytes() == ledger_before
+    assert checkpoint.read_bytes() == checkpoint_before
 
     result = run_wrapper_resume(
         kind="candidate",
         candidate_ledger_path=ledger_path,
         recovery_record_path=recovery_path,
         git_runner=git,
-        verifier_invoker=lambda repo, head, argv: invoked.append((repo, head, argv)),
+        verifier_invoker=lambda repo, head, argv: invoked.append((repo, head, argv)) or SimpleNamespace(returncode=0),
         now=lambda: datetime(2026, 8, 15, 2, 5, tzinfo=timezone.utc),
     )
 
@@ -864,7 +1044,7 @@ def test_candidate_resume_validates_recovery_once_then_uses_only_rederived_verif
             candidate_ledger_path=ledger_path,
             recovery_record_path=recovery_path,
             git_runner=git,
-            verifier_invoker=lambda repo, head, argv: None,
+            verifier_invoker=lambda repo, head, argv: SimpleNamespace(returncode=0),
         )
 
 
@@ -899,10 +1079,34 @@ def test_final_resume_binds_one_run_and_codehead_and_consumes_recovery_once(
     recovery_path.write_bytes(canonical_json_bytes(recovery))
     invoked: list[tuple[Path, str, list[str]]] = []
 
+    checkpoint["resume_count"] = False
+    checkpoint_path.write_bytes(canonical_json_bytes(checkpoint))
+    recovery["interrupted_attempt_digest"] = _sha(checkpoint_path.read_bytes())
+    recovery_path.write_bytes(canonical_json_bytes(recovery))
+    with pytest.raises(ControllerError, match="resume_count|single-resume"):
+        run_final_resume(
+            checkpoint_path=checkpoint_path,
+            recovery_record_path=recovery_path,
+            verifier_invoker=lambda repo, head, argv: SimpleNamespace(returncode=0),
+        )
+    checkpoint["resume_count"] = 0
+    checkpoint_path.write_bytes(canonical_json_bytes(checkpoint))
+    recovery["interrupted_attempt_digest"] = _sha(checkpoint_path.read_bytes())
+    recovery_path.write_bytes(canonical_json_bytes(recovery))
+
+    checkpoint_before = checkpoint_path.read_bytes()
+    with pytest.raises(ControllerError, match="verifier child failed"):
+        run_final_resume(
+            checkpoint_path=checkpoint_path,
+            recovery_record_path=recovery_path,
+            verifier_invoker=lambda repo, head, argv: SimpleNamespace(returncode=3),
+        )
+    assert checkpoint_path.read_bytes() == checkpoint_before
+
     result = run_final_resume(
         checkpoint_path=checkpoint_path,
         recovery_record_path=recovery_path,
-        verifier_invoker=lambda repo, head, argv: invoked.append((repo, head, argv)),
+        verifier_invoker=lambda repo, head, argv: invoked.append((repo, head, argv)) or SimpleNamespace(returncode=0),
     )
 
     assert result["status"] == "RESUMED"
@@ -917,7 +1121,7 @@ def test_final_resume_binds_one_run_and_codehead_and_consumes_recovery_once(
         run_final_resume(
             checkpoint_path=checkpoint_path,
             recovery_record_path=recovery_path,
-            verifier_invoker=lambda repo, head, argv: None,
+            verifier_invoker=lambda repo, head, argv: SimpleNamespace(returncode=0),
         )
 
 
@@ -953,6 +1157,35 @@ def test_caller_mutation_after_cached_check_is_rejected_before_interpreter_spawn
             process_factory=lambda argv: spawned.append(argv),
         )
     assert spawned == []
+
+
+def test_real_wrapper_path_rechecks_verifier_mutation_before_any_evidence(tmp_path: Path) -> None:
+    """The initial wrapper path must reject a whole-file swap before creating evidence or running gates."""
+    repo, script, head = _git_repo_with_verifier(tmp_path)
+    controller = repo / "tools/release/run_0600_quick.ps1"
+    catalog = repo / "tools/release/gates_0600.json"
+    performance = repo / "tools/release/performance_0600.json"
+    controller.write_bytes(b"quick\n")
+    catalog.write_bytes((RELEASE / "gates_0600.json").read_bytes())
+    performance.write_bytes((RELEASE / "performance_0600.json").read_bytes())
+    subprocess.run(["git", "-C", str(repo), "add", "."], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(repo), "commit", "-m", "caller"], check=True, capture_output=True)
+    head = subprocess.run(
+        ["git", "-C", str(repo), "rev-parse", "HEAD"], check=True,
+        capture_output=True, text=True,
+    ).stdout.strip()
+    evidence = tmp_path / "must-not-exist"
+
+    with pytest.raises(ControllerError, match="verifier|blob"):
+        gates.run_wrapper_contract(
+            kind="quick", matrix="quick", module="STM32TK-0601", shard="fixture",
+            run_id=RUN_ID, evidence_root=evidence, expected_code_head=head,
+            gate_catalog=catalog, performance_catalog=performance,
+            support_profile=Path(r"C:\tmp\stm32tk-0600-support\feasibility\profile.json"),
+            controller_path=controller,
+            after_first_verifier_check=lambda: script.write_bytes(b"whole-file-swap\n"),
+        )
+    assert not evidence.exists()
 
 
 def test_loaded_trusted_script_detects_on_disk_mutation_at_first_action_seam(tmp_path: Path) -> None:

@@ -18,6 +18,7 @@ import subprocess
 import sys
 import unicodedata
 import zipfile
+from io import BytesIO
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from fractions import Fraction
@@ -56,6 +57,42 @@ EXPECTED_HARDWARE_GATE_IDS = (
     "STM32TK-HW-0600-SEMIHOSTING",
     "STM32TK-HW-0600-DIAGNOSTIC-CHAIN",
 )
+EXPECTED_FAMILY_VALUES = {
+    "EVIDENCE-0601": ("STM32TK-0601", "evidence model, storage, and canonical verification gates", "Codex/local derived agents", "windows-python", "evidence", "product-evidence", ("quick-0601", "candidate-0601", "final-windows"), (), ("tools/stm32-toolkit/src/stm32_toolkit/evidence",), ("tools/stm32-toolkit/tests",)),
+    "DIAGNOSTICS-0601": ("STM32TK-0601", "host and target diagnostic evidence gates", "Codex/local derived agents", "windows-python", "diagnostics", "product-diagnostics", ("quick-0601", "candidate-0601", "final-windows"), ("EVIDENCE-0601",), ("tools/stm32-toolkit/src/stm32_toolkit",), ("tools/stm32-toolkit/tests",)),
+    "ANALYTICS-0601": ("STM32TK-0601", "coverage and performance evidence gates", "Codex/local derived agents", "windows-python", "analytics", "product-analytics", ("quick-0601", "candidate-0601", "final-windows"), ("EVIDENCE-0601",), ("tools/stm32-toolkit/src/stm32_toolkit",), ("tools/stm32-toolkit/tests",)),
+    "RELEASE-0601": ("STM32TK-0601", "offline release controller and verifier gates", "Codex/local derived agents", "windows-python", "release", "controller-off", ("quick-0601", "candidate-0601", "final-windows"), ("DIAGNOSTICS-0601", "ANALYTICS-0601"), ("tools/release",), ("tools/stm32-toolkit/tests/release",)),
+    "EVIDENCE-0602": ("STM32TK-0602", "diagnostic-loop evidence gates", "Codex/local derived agents", "windows-python", "evidence", "product-evidence", ("quick-0602", "candidate-0602", "final-windows"), ("RELEASE-0601",), ("tools/stm32-toolkit/src/stm32_toolkit",), ("tools/stm32-toolkit/tests",)),
+    "DIAGNOSTICS-0602": ("STM32TK-0602", "diagnostic-loop behavior gates", "Codex/local derived agents", "windows-python", "diagnostics", "product-diagnostics", ("quick-0602", "candidate-0602", "final-windows"), ("EVIDENCE-0602",), ("tools/stm32-toolkit/src/stm32_toolkit",), ("tools/stm32-toolkit/tests",)),
+    "ANALYTICS-0602": ("STM32TK-0602", "diagnostic-loop analytics gates", "Codex/local derived agents", "windows-python", "analytics", "product-analytics", ("quick-0602", "candidate-0602", "final-windows"), ("EVIDENCE-0602",), ("tools/stm32-toolkit/src/stm32_toolkit",), ("tools/stm32-toolkit/tests",)),
+    "RELEASE-0602": ("STM32TK-0602", "diagnostic-loop release gates", "Codex/local derived agents", "windows-python", "release", "controller-off", ("quick-0602", "candidate-0602", "final-windows"), ("DIAGNOSTICS-0602", "ANALYTICS-0602"), ("tools/release",), ("tools/stm32-toolkit/tests/release",)),
+    "EVIDENCE-0603": ("STM32TK-0603", "analytics-product evidence gates", "Codex/local derived agents", "windows-python", "evidence", "product-evidence", ("quick-0603", "candidate-0603", "final-windows"), ("RELEASE-0602",), ("tools/stm32-toolkit/src/stm32_toolkit",), ("tools/stm32-toolkit/tests",)),
+    "DIAGNOSTICS-0603": ("STM32TK-0603", "analytics-product diagnostic gates", "Codex/local derived agents", "windows-python", "diagnostics", "product-diagnostics", ("quick-0603", "candidate-0603", "final-windows"), ("EVIDENCE-0603",), ("tools/stm32-toolkit/src/stm32_toolkit",), ("tools/stm32-toolkit/tests",)),
+    "ANALYTICS-0603": ("STM32TK-0603", "analytics-product quality gates", "Codex/local derived agents", "windows-python", "analytics", "product-analytics", ("quick-0603", "candidate-0603", "final-windows"), ("EVIDENCE-0603",), ("tools/stm32-toolkit/src/stm32_toolkit",), ("tools/stm32-toolkit/tests",)),
+    "RELEASE-0603": ("STM32TK-0603", "final release-ledger gates", "Codex/local derived agents", "windows-python", "release", "controller-off", ("quick-0603", "candidate-0603", "final-windows"), ("DIAGNOSTICS-0603", "ANALYTICS-0603"), ("tools/release",), ("tools/stm32-toolkit/tests/release",)),
+    "HW-0400-DEFERRED": ("STM32TK-0400", "historical 0.4 deferred real-board behaviors", "user", "windows-hardware", "hardware", "controller-off", ("hardware-0400",), ("RELEASE-0603",), ("tools/stm32-toolkit/src/stm32_toolkit/probe",), ("tools/stm32-toolkit/tests",)),
+    "HW-0600-TRANSPORT": ("STM32TK-0600", "0.6 real-board transport gates", "user", "windows-hardware", "hardware", "controller-off", ("hardware-0600",), ("RELEASE-0603",), ("tools/stm32-toolkit/src/stm32_toolkit",), ("tools/stm32-toolkit/tests",)),
+    "HW-0600-DIAGNOSTIC": ("STM32TK-0600", "0.6 real-board diagnostic-chain gate", "user", "windows-hardware", "hardware", "controller-off", ("hardware-0600",), ("HW-0600-TRANSPORT",), ("tools/stm32-toolkit/src/stm32_toolkit",), ("tools/stm32-toolkit/tests",)),
+}
+EXPECTED_SOURCE_BINDING_VALUES = {
+    "STM32TK-HW-0400-PROBE-ATTACH-READ": ("docs/codex/returns/STM32TK-0402-PYOCD-BACKEND/implementation-report.md", 122, 124, "b8cc975899f28e30a466097b7b0934b10faaf285fef670f8e98a806226934a30"),
+    "STM32TK-HW-0400-FLASH-READBACK": ("docs/codex/returns/STM32TK-0403-FLASH-HANDOFF/implementation-report.md", 130, 133, "0ffe0dd5e78aee1899da7b52f19fb6c2c6104af71d28a5ccf02b705e66dd3449"),
+    "STM32TK-HW-0400-HANDOFF-REACQUIRE": ("docs/codex/returns/STM32TK-0403-FLASH-HANDOFF/implementation-report.md", 130, 133, "0ffe0dd5e78aee1899da7b52f19fb6c2c6104af71d28a5ccf02b705e66dd3449"),
+    "STM32TK-HW-0400-TYPED-READ-SAMPLE-FAULT": ("docs/codex/returns/STM32TK-0404-TYPED-DEBUG/implementation-report.md", 138, 140, "9565b2053322f527ccc29b3eba95673d5cc19ada9f653e241c3f10a7e84a4bdf"),
+    "STM32TK-HW-0400-CLI-MCP-WORKFLOWS": ("docs/codex/returns/STM32TK-0405-CLI-MCP-RELEASE/implementation-report.md", 140, 142, "18aef58476244b43784caafa060ee19081ecd9c7af37f81b1f7823fbcdd84f50"),
+}
+EXPECTED_GATE_VALUES = {
+    "STM32TK-HW-0400-PROBE-ATTACH-READ": ("HW-0400-DEFERRED", "0400", ("hardware-0400",), (), ("result.json", "identity-state.json"), ("python312==3.12.10", "pyocd==0.45.1"), ("tools/stm32-toolkit/src/stm32_toolkit/probe",), ("tools/stm32-toolkit/tests/test_pyocd_backend.py",)),
+    "STM32TK-HW-0400-FLASH-READBACK": ("HW-0400-DEFERRED", "0400", ("hardware-0400",), ("STM32TK-HW-0400-PROBE-ATTACH-READ",), ("result.json", "identity-state.json"), ("python312==3.12.10", "pyocd==0.45.1"), ("tools/stm32-toolkit/src/stm32_toolkit/probe",), ("tools/stm32-toolkit/tests/test_flash.py",)),
+    "STM32TK-HW-0400-HANDOFF-REACQUIRE": ("HW-0400-DEFERRED", "0400", ("hardware-0400",), ("STM32TK-HW-0400-FLASH-READBACK",), ("result.json", "identity-state.json"), ("python312==3.12.10", "pyocd==0.45.1"), ("tools/stm32-toolkit/src/stm32_toolkit/probe",), ("tools/stm32-toolkit/tests/test_debug_handoff.py",)),
+    "STM32TK-HW-0400-TYPED-READ-SAMPLE-FAULT": ("HW-0400-DEFERRED", "0400", ("hardware-0400",), ("STM32TK-HW-0400-HANDOFF-REACQUIRE",), ("result.json", "identity-state.json"), ("python312==3.12.10", "pyocd==0.45.1"), ("tools/stm32-toolkit/src/stm32_toolkit",), ("tools/stm32-toolkit/tests/test_debug_read.py", "tools/stm32-toolkit/tests/test_sampling.py", "tools/stm32-toolkit/tests/test_fault.py")),
+    "STM32TK-HW-0400-CLI-MCP-WORKFLOWS": ("HW-0400-DEFERRED", "0400", ("hardware-0400",), ("STM32TK-HW-0400-TYPED-READ-SAMPLE-FAULT",), ("result.json", "identity-state.json"), ("python312==3.12.10", "pyocd==0.45.1"), ("tools/stm32-toolkit/src/stm32_toolkit",), ("tools/stm32-toolkit/tests/test_cli_hardware.py", "tools/stm32-toolkit/tests/test_mcp_hardware.py")),
+    "STM32TK-HW-0600-MAILBOX": ("HW-0600-TRANSPORT", "0600", ("hardware-0600",), (), ("result.json", "raw-events.json"), ("python312==3.12.10", "pyocd==0.45.1"), ("tools/stm32-toolkit/src/stm32_toolkit",), ("tools/stm32-toolkit/tests",)),
+    "STM32TK-HW-0600-RTT": ("HW-0600-TRANSPORT", "0600", ("hardware-0600",), ("STM32TK-HW-0600-MAILBOX",), ("result.json", "raw-events.json"), ("python312==3.12.10", "pyocd==0.45.1"), ("tools/stm32-toolkit/src/stm32_toolkit",), ("tools/stm32-toolkit/tests",)),
+    "STM32TK-HW-0600-UART": ("HW-0600-TRANSPORT", "0600", ("hardware-0600",), ("STM32TK-HW-0600-RTT",), ("result.json", "raw-events.json"), ("python312==3.12.10", "pyserial==3.5"), ("tools/stm32-toolkit/src/stm32_toolkit",), ("tools/stm32-toolkit/tests",)),
+    "STM32TK-HW-0600-SEMIHOSTING": ("HW-0600-TRANSPORT", "0600", ("hardware-0600",), ("STM32TK-HW-0600-UART",), ("result.json", "raw-events.json"), ("python312==3.12.10", "pyocd==0.45.1"), ("tools/stm32-toolkit/src/stm32_toolkit",), ("tools/stm32-toolkit/tests",)),
+    "STM32TK-HW-0600-DIAGNOSTIC-CHAIN": ("HW-0600-DIAGNOSTIC", "0600", ("hardware-0600",), ("STM32TK-HW-0600-MAILBOX", "STM32TK-HW-0600-RTT", "STM32TK-HW-0600-UART", "STM32TK-HW-0600-SEMIHOSTING"), ("result.json", "raw-events.json"), ("python312==3.12.10", "pyocd==0.45.1", "pyserial==3.5"), ("tools/stm32-toolkit/src/stm32_toolkit",), ("tools/stm32-toolkit/tests",)),
+}
 RESOURCE_LOCK_TYPES = (
     "board",
     "evidence-root",
@@ -160,6 +197,11 @@ class SourceBinding:
 class GateFamily:
     family_id: str
     module: str
+    matrices: tuple[str, ...]
+    owner_class: str
+    platform_class: str
+    evidence_type: str
+    coverage_context: str
     command_argv: tuple[str, ...]
     node_ids: tuple[str, ...]
     prerequisites: tuple[str, ...]
@@ -293,10 +335,25 @@ def validate_catalog_data(value: object, *, repo: Path) -> GateCatalog:
             or not isinstance(item["reserved"], bool)
         ):
             raise CatalogError("family field type is invalid")
+        impact = item["impact_map"]
+        assert isinstance(impact, Mapping)
+        semantic = (
+            item["module"], item["purpose"], item["owner_class"],
+            item["platform_class"], item["evidence_type"], item["coverage_context"],
+            tuple(item["matrices"]), tuple(item["prerequisites"]),
+            tuple(impact["product_paths"]), tuple(impact["test_paths"]),
+        )
+        if semantic != EXPECTED_FAMILY_VALUES.get(str(item["id"])):
+            raise CatalogError("family semantic contract is not frozen")
         families.append(
             GateFamily(
                 family_id=str(item["id"]),
                 module=str(item["module"]),
+                matrices=tuple(item["matrices"]),
+                owner_class=str(item["owner_class"]),
+                platform_class=str(item["platform_class"]),
+                evidence_type=str(item["evidence_type"]),
+                coverage_context=str(item["coverage_context"]),
                 command_argv=tuple(item["command_argv"]),
                 node_ids=tuple(item["node_ids"]),
                 prerequisites=tuple(item["prerequisites"]),
@@ -381,6 +438,32 @@ def validate_catalog_data(value: object, *, repo: Path) -> GateCatalog:
             source_binding=binding,
         )
         gates.append(gate)
+
+        impact = item["impact_map"]
+        assert isinstance(impact, Mapping)
+        semantic = (
+            item["family_id"], item["contract"], tuple(item["matrices"]),
+            tuple(item["prerequisites"]), tuple(item["evidence_files"]),
+            tuple(item["required_tools"]), tuple(impact["product_paths"]),
+            tuple(impact["test_paths"]),
+        )
+        if (
+            semantic != EXPECTED_GATE_VALUES.get(str(item["id"]))
+            or item["phase"] != "post-0603-hardware"
+            or item["owner_class"] != "user"
+            or item["platform_class"] != "windows-hardware"
+            or item["evidence_type"] != "hardware"
+            or item["coverage_context"] != "controller-off"
+            or item["working_directory"] != "."
+            or item["timeout_seconds"] != 900
+        ):
+            raise CatalogError("hardware gate semantic contract is not frozen")
+        expected_binding = EXPECTED_SOURCE_BINDING_VALUES.get(str(item["id"]))
+        actual_binding = None if binding is None else (
+            binding.path, binding.start_line, binding.end_line, binding.sha256
+        )
+        if actual_binding != expected_binding:
+            raise CatalogError("hardware gate source binding is not frozen")
 
     gate_ids = tuple(item.gate_id for item in gates)
     if gate_ids != EXPECTED_HARDWARE_GATE_IDS or len(set(gate_ids)) != len(gate_ids):
@@ -511,11 +594,30 @@ def _file_reference(path: Path, display_path: str) -> dict[str, object]:
     return {"path": display_path, "bytes": len(data), "sha256": hashlib.sha256(data).hexdigest()}
 
 
-def verify_gate_evidence(root: Path, references: object) -> None:
+def verify_gate_evidence(
+    root: Path,
+    references: object,
+    *,
+    expected_paths: Sequence[str],
+) -> None:
     if not root.is_absolute() or not root.is_dir() or not isinstance(references, list):
         raise VerificationError("gate evidence root or references are invalid")
+    expected = tuple(_safe_relative_path(item) for item in expected_paths)
+    if not expected or len(expected) != len(set(expected)) or len(expected) != len({item.casefold() for item in expected}):
+        raise VerificationError("catalog evidence inventory is empty or duplicated")
+    actual_files: list[str] = []
+    for path in root.rglob("*"):
+        if path.is_dir() and not path.is_symlink():
+            continue
+        relative = path.relative_to(root).as_posix()
+        if not _regular_file(path):
+            raise VerificationError("gate evidence root contains a linked/special member")
+        actual_files.append(relative)
+    if set(actual_files) != set(expected) or len(actual_files) != len(expected):
+        raise VerificationError("gate evidence root differs from catalog inventory")
     seen: set[str] = set()
     seen_folded: set[str] = set()
+    declared_paths: list[str] = []
     for reference in references:
         if not _closed(reference, {"path", "bytes", "sha256"}):
             raise VerificationError("gate evidence reference is not closed")
@@ -538,8 +640,11 @@ def verify_gate_evidence(root: Path, references: object) -> None:
         actual = _file_reference(member, relative)
         if actual != dict(reference):
             raise VerificationError("gate evidence bytes or digest mismatch")
+        declared_paths.append(relative)
         seen.add(relative)
         seen_folded.add(relative.casefold())
+    if tuple(declared_paths) != expected:
+        raise VerificationError("gate evidence references differ from catalog order/inventory")
 
 
 SHARD_BINDING_KEYS = {
@@ -583,8 +688,9 @@ def _validate_shard_binding(binding: object) -> dict[str, object]:
     return dict(binding)
 
 
-def _evidence_members(root: Path) -> list[dict[str, object]]:
+def _evidence_snapshot(root: Path) -> tuple[list[dict[str, object]], dict[str, bytes]]:
     members: list[dict[str, object]] = []
+    payloads: dict[str, bytes] = {}
     folded: set[str] = set()
     for path in root.rglob("*"):
         if path.is_dir() and not path.is_symlink():
@@ -593,10 +699,14 @@ def _evidence_members(root: Path) -> list[dict[str, object]]:
         _safe_relative_path(relative)
         if relative.casefold() in folded:
             raise VerificationError("case-fold duplicate package member")
-        members.append(_file_reference(path, relative))
+        if not _regular_file(path):
+            raise VerificationError("evidence member is not a regular file")
+        data = path.read_bytes()
+        members.append({"path": relative, "bytes": len(data), "sha256": hashlib.sha256(data).hexdigest()})
+        payloads[relative] = data
         folded.add(relative.casefold())
     members.sort(key=lambda item: str(item["path"]).encode("utf-8"))
-    return members
+    return members, payloads
 
 
 def _zip_info(name: str) -> zipfile.ZipInfo:
@@ -615,13 +725,12 @@ def create_shard_package(
     if not package_path.is_absolute() or package_path.exists() or not package_path.parent.is_dir():
         raise VerificationError("package output must be a new absolute file")
     frozen_binding = _validate_shard_binding(binding)
-    members = _evidence_members(evidence_root)
+    members, payloads = _evidence_snapshot(evidence_root)
     manifest = {
         "schema": "stm32-local-shard-package/1",
         "binding": frozen_binding,
         "members": members,
     }
-    payloads = {str(item["path"]): evidence_root.joinpath(*str(item["path"]).split("/")).read_bytes() for item in members}
     payloads["shard-manifest.json"] = canonical_json_bytes(manifest)
     with zipfile.ZipFile(package_path, "x", compression=zipfile.ZIP_STORED, allowZip64=True) as archive:
         for name in sorted(payloads, key=lambda item: item.encode("utf-8")):
@@ -631,7 +740,11 @@ def create_shard_package(
 
 
 def verify_shard_package(
-    package_path: Path, reference: object, expected_binding: object
+    package_path: Path,
+    reference: object,
+    expected_binding: object,
+    *,
+    before_final_reread: Callable[[], object] | None = None,
 ) -> None:
     if not _closed(reference, PACKAGE_REFERENCE_KEYS):
         raise VerificationError("package reference is not closed")
@@ -643,7 +756,7 @@ def verify_shard_package(
         raise VerificationError("package bytes or digest mismatch")
     frozen_binding = _validate_shard_binding(expected_binding)
     try:
-        archive = zipfile.ZipFile(package_path)
+        archive = zipfile.ZipFile(BytesIO(data))
     except (OSError, zipfile.BadZipFile) as exc:
         raise VerificationError("package is not a ZIP") from exc
     with archive:
@@ -694,6 +807,10 @@ def verify_shard_package(
             if item["bytes"] != len(payload) or item["sha256"] != hashlib.sha256(payload).hexdigest():
                 raise VerificationError("inner member bytes or digest mismatch")
             seen.add(name)
+    if before_final_reread is not None:
+        before_final_reread()
+    if package_path.read_bytes() != data:
+        raise VerificationError("package changed during verification")
 
 
 AUDIT_ROOT_KEYS = {
@@ -1662,6 +1779,380 @@ def _mode_input(path_text: str, mode: str) -> object:
     return _read_canonical(Path(path_text))[1]
 
 
+TERMINAL_RESULT_KEYS = {
+    "schema", "matrix", "module", "shard", "run_id", "code_head", "status",
+    "reason", "product_bodies", "network_access", "remote_git_actions", "resume_count",
+    "catalog_sha256", "performance_sha256", "support", "gate_inventory",
+    "prerequisites", "gate_results", "evidence_inventory", "binding",
+}
+TERMINAL_GATE_RESULT_KEYS = {"gate_id", "status", "reason", "metadata"}
+TERMINAL_METADATA_KEYS = {
+    "architecture", "argv", "code_head", "cwd", "duration_ms", "executable",
+    "executable_version", "exit_code", "gate_id", "node_outcomes", "os",
+    "retained_evidence", "run_id", "seed", "started_at_utc", "stderr", "stdout",
+    "timed_out",
+}
+
+
+def _reference_list(root: Path, paths: Sequence[str]) -> list[dict[str, object]]:
+    return [_file_reference(root.joinpath(*name.split("/")), name) for name in paths]
+
+
+def _verify_terminal_metadata(
+    value: object,
+    *,
+    family: GateFamily,
+    run_id: str,
+    code_head: str,
+    unexecuted: bool,
+) -> None:
+    if not _closed(value, TERMINAL_METADATA_KEYS):
+        raise VerificationError("terminal gate metadata is not closed")
+    assert isinstance(value, Mapping)
+    if (
+        value["gate_id"] != family.family_id
+        or value["run_id"] != run_id
+        or value["code_head"] != code_head
+        or value["argv"] != list(family.command_argv)
+        or not isinstance(value["cwd"], str)
+        or not isinstance(value["architecture"], str)
+        or not isinstance(value["os"], str)
+        or not isinstance(value["executable"], str)
+        or not isinstance(value["executable_version"], str)
+        or not _is_integer(value["duration_ms"])
+        or value["duration_ms"] < 0
+        or not _is_integer(value["exit_code"])
+        or type(value["timed_out"]) is not bool
+        or value["seed"] != f"stm32tk-0600:{run_id}:{family.family_id}"
+        or not isinstance(value["started_at_utc"], str)
+    ):
+        raise VerificationError("terminal gate metadata identity/type is invalid")
+    _parse_utc(value["started_at_utc"])
+    for stream in ("stdout", "stderr"):
+        reference = value[stream]
+        if (
+            not _closed(reference, {"bytes", "sha256"})
+            or not _is_integer(reference["bytes"])
+            or reference["bytes"] < 0
+            or not isinstance(reference["sha256"], str)
+            or HEX64.fullmatch(reference["sha256"]) is None
+        ):
+            raise VerificationError("terminal stream reference is invalid")
+    outcomes = value["node_outcomes"]
+    if not isinstance(outcomes, list):
+        raise VerificationError("terminal node outcomes are not an array")
+    observed_nodes: list[str] = []
+    for outcome in outcomes:
+        if (
+            not _closed(outcome, {"node_id", "outcome"})
+            or not isinstance(outcome["node_id"], str)
+            or outcome["outcome"] not in {"passed", "failed"}
+        ):
+            raise VerificationError("terminal node outcome is not closed")
+        observed_nodes.append(str(outcome["node_id"]))
+    if tuple(observed_nodes) != (() if unexecuted else family.node_ids):
+        raise VerificationError("terminal node inventory differs from catalog")
+    retained = value["retained_evidence"]
+    if not isinstance(retained, list):
+        raise VerificationError("terminal retained evidence is not an array")
+    expected = [] if family.reserved or unexecuted else [
+        f"{family.family_id}/result.json",
+        f"{family.family_id}/stderr.log",
+        f"{family.family_id}/stdout.log",
+    ]
+    if [item.get("path") if isinstance(item, Mapping) else None for item in retained] != expected:
+        raise VerificationError("terminal retained evidence inventory differs from catalog executor")
+    for item in retained:
+        if (
+            not _closed(item, {"path", "bytes", "sha256"})
+            or not _is_integer(item["bytes"])
+            or item["bytes"] < 0
+            or not isinstance(item["sha256"], str)
+            or HEX64.fullmatch(item["sha256"]) is None
+        ):
+            raise VerificationError("terminal retained evidence reference is invalid")
+
+
+def _verify_terminal_result(
+    checkpoint_path: Path,
+    *,
+    expected_head: str,
+    expected_mode: str,
+    catalog: GateCatalog,
+    catalog_sha256: str,
+    performance_sha256: str,
+    support_profile_sha256: str | None,
+    before_final_reread: Callable[[], object] | None = None,
+) -> dict[str, object]:
+    checkpoint_bytes, result = _read_canonical(checkpoint_path)
+    if not _closed(result, TERMINAL_RESULT_KEYS):
+        raise VerificationError("terminal controller result is not closed")
+    assert isinstance(result, Mapping)
+    if (
+        result["schema"] != "stm32-gate-controller-result/1"
+        or result["matrix"] != expected_mode
+        or result["module"] != "STM32TK-0601"
+        or not isinstance(result["shard"], str)
+        or not result["shard"]
+        or result["code_head"] != expected_head
+        or not isinstance(result["run_id"], str)
+        or UUID_PATTERN.fullmatch(result["run_id"]) is None
+        or result["status"] not in {"PASS", "FAIL", "BLOCKED"}
+        or not isinstance(result["reason"], str)
+        or any(not _is_integer(result[name]) or result[name] < 0 for name in (
+            "product_bodies", "network_access", "remote_git_actions", "resume_count"
+        ))
+        or result["network_access"] != 0
+        or result["remote_git_actions"] != 0
+        or result["resume_count"] not in {0, 1}
+        or result["catalog_sha256"] != catalog_sha256
+        or result["performance_sha256"] != performance_sha256
+    ):
+        raise VerificationError("terminal controller identity/status is invalid")
+    support = result["support"]
+    if not _closed(support, {"profile", "manifest"}):
+        raise VerificationError("terminal support binding is not closed")
+    for name, expected_path in (("profile", "feasibility/profile.json"), ("manifest", "support-manifest.json")):
+        reference = support[name]
+        if (
+            not _closed(reference, {"path", "bytes", "sha256"})
+            or reference["path"] != expected_path
+            or not _is_integer(reference["bytes"])
+            or reference["bytes"] < 0
+            or not isinstance(reference["sha256"], str)
+            or HEX64.fullmatch(reference["sha256"]) is None
+        ):
+            raise VerificationError("terminal support reference is invalid")
+    if support_profile_sha256 is not None and support["profile"]["sha256"] != support_profile_sha256:
+        raise VerificationError("terminal support profile digest differs from owner ledger")
+    evidence_root = checkpoint_path.parent
+    catalog_matrix = "final-windows" if expected_mode == "final" else "candidate-0601"
+    families = tuple(
+        family for family in catalog.families
+        if family.module == "STM32TK-0601" and catalog_matrix in family.matrices
+    )
+    inventory = [family.family_id for family in families]
+    if result["gate_inventory"] != inventory:
+        raise VerificationError("terminal gate inventory differs from catalog")
+    expected_prerequisites = [
+        {"gate_id": family.family_id, "requires": list(family.prerequisites)}
+        for family in families
+    ]
+    if result["prerequisites"] != expected_prerequisites:
+        raise VerificationError("terminal prerequisite inventory differs from catalog")
+    rows = result["gate_results"]
+    if not isinstance(rows, list) or len(rows) != len(families):
+        raise VerificationError("terminal gate result inventory is incomplete")
+    statuses: list[str] = []
+    for family, row in zip(families, rows):
+        if not _closed(row, TERMINAL_GATE_RESULT_KEYS):
+            raise VerificationError("terminal gate result is not closed")
+        assert isinstance(row, Mapping)
+        if (
+            row["gate_id"] != family.family_id
+            or row["status"] not in {"PASS", "FAIL", "BLOCKED"}
+            or not isinstance(row["reason"], str)
+            or (family.reserved and (row["status"] != "BLOCKED" or row["reason"] != "RESERVED_CATALOG_FAMILY"))
+        ):
+            raise VerificationError("terminal gate result state differs from catalog")
+        _verify_terminal_metadata(
+            row["metadata"], family=family,
+            run_id=str(result["run_id"]), code_head=expected_head,
+            unexecuted=str(row["reason"]) in {"FINAL_FAIL_FAST", "PRECHECK_FAILED"},
+        )
+        metadata = row["metadata"]
+        for reference in metadata["retained_evidence"]:
+            actual = _file_reference(
+                evidence_root / "gates" / Path(str(reference["path"])),
+                str(reference["path"]),
+            )
+            if actual != reference:
+                raise VerificationError("terminal retained evidence digest differs from metadata")
+        if metadata["retained_evidence"]:
+            for stream in ("stdout", "stderr"):
+                actual_stream = _file_reference(
+                    evidence_root / "gates" / family.family_id / f"{stream}.log",
+                    f"{family.family_id}/{stream}.log",
+                )
+                if {key: actual_stream[key] for key in ("bytes", "sha256")} != metadata[stream]:
+                    raise VerificationError("terminal stream metadata differs from retained log")
+            process_bytes, process_value = _read_canonical(
+                evidence_root / "gates" / family.family_id / "result.json"
+            )
+            if (
+                not _closed(process_value, {"schema", "exit_code", "duration_ms", "timed_out", "node_outcomes"})
+                or process_value["schema"] != "stm32-gate-process-result/1"
+                or process_value["exit_code"] != metadata["exit_code"]
+                or process_value["duration_ms"] != metadata["duration_ms"]
+                or process_value["timed_out"] != metadata["timed_out"]
+                or process_value["node_outcomes"] != metadata["node_outcomes"]
+                or not process_bytes
+            ):
+                raise VerificationError("terminal process result differs from controller metadata")
+        statuses.append(str(row["status"]))
+    expected_status = "FAIL" if "FAIL" in statuses else "BLOCKED" if "BLOCKED" in statuses or not families else "PASS"
+    expected_reason = "GATE_FAILURE" if expected_status == "FAIL" else "CATALOG_FAMILIES_RESERVED" if families else "MODULE_FAMILY_MISSING" if expected_status == "BLOCKED" else "PASS"
+    if result["status"] != expected_status or result["reason"] != expected_reason:
+        raise VerificationError("terminal aggregate status is not derived from gates")
+    executed_count = sum(
+        bool(row["metadata"]["retained_evidence"])
+        for row in rows
+    )
+    if result["product_bodies"] != executed_count:
+        raise VerificationError("terminal product-body count differs from executable catalog")
+    binding = _validate_shard_binding(result["binding"])
+    if (
+        binding["run_id"] != result["run_id"]
+        or binding["code_head"] != expected_head
+        or binding["catalog_sha256"] != catalog_sha256
+        or binding["support_sha256"] != support["manifest"]["sha256"]
+        or binding["status"] != expected_status
+    ):
+        raise VerificationError("terminal shard binding differs from controller result")
+    expected_files = ["controller-result.json"]
+    for row in rows:
+        for reference in row["metadata"]["retained_evidence"]:
+            expected_files.append(f"gates/{reference['path']}")
+    if expected_mode == "final":
+        expected_files.append("checkpoint.json")
+    expected_files.sort(key=lambda item: item.encode("utf-8"))
+    if result["evidence_inventory"] != expected_files:
+        raise VerificationError("terminal evidence inventory differs from catalog")
+    references = _reference_list(evidence_root, expected_files)
+    verify_gate_evidence(evidence_root, references, expected_paths=expected_files)
+    package_path = evidence_root.parent / f"{evidence_root.name}.shard.zip"
+    sidecar_path = package_path.with_name(package_path.name + ".manifest.json")
+    sidecar_bytes, package_reference = _read_canonical(sidecar_path)
+    verify_shard_package(package_path, package_reference, binding)
+    package_bytes = package_path.read_bytes()
+    evidence_snapshot = {
+        name: evidence_root.joinpath(*name.split("/")).read_bytes()
+        for name in expected_files
+    }
+    if before_final_reread is not None:
+        before_final_reread()
+    if (
+        checkpoint_path.read_bytes() != checkpoint_bytes
+        or sidecar_path.read_bytes() != sidecar_bytes
+        or package_path.read_bytes() != package_bytes
+    ):
+        raise VerificationError("terminal checkpoint/package sidecar changed during verification")
+    for name, data in evidence_snapshot.items():
+        if evidence_root.joinpath(*name.split("/")).read_bytes() != data:
+            raise VerificationError("terminal retained evidence changed during verification")
+    return dict(result)
+
+
+def verify_candidate_evidence_file(
+    ledger_path: Path,
+    *,
+    git_runner: Callable[[list[str]], str] | None = None,
+    before_final_reread: Callable[[], object] | None = None,
+) -> dict[str, str]:
+    ledger_bytes, raw_ledger = _read_canonical(ledger_path)
+    ledger = validate_candidate_ledger(raw_ledger)
+    if ledger_path != Path(str(ledger["candidate_root"])) / "candidate-ledger.json":
+        raise VerificationError("candidate ledger path is not wrapper-owned")
+    reconcile_candidate(ledger, git_runner=git_runner)
+    if ledger["state"] not in {"passed", "failed", "blocked"} or ledger["checkpoint"] is None:
+        raise VerificationError("candidate ledger has no terminal checkpoint")
+    checkpoint_path = Path(str(ledger["checkpoint"]))
+    if checkpoint_path != Path(str(ledger["evidence_root"])) / "controller-result.json":
+        raise VerificationError("candidate checkpoint path is not exact")
+    repo = Path(str(ledger["controller_path"])).parents[2]
+    catalog_path = repo / "tools/release/gates_0600.json"
+    performance_path = repo / "tools/release/performance_0600.json"
+    catalog_bytes = catalog_path.read_bytes()
+    performance_bytes = performance_path.read_bytes()
+    if (
+        hashlib.sha256(catalog_bytes).hexdigest() != ledger["catalog_sha256"]
+        or hashlib.sha256(performance_bytes).hexdigest() != ledger["performance_sha256"]
+    ):
+        raise VerificationError("candidate catalog/performance retained digest mismatch")
+    catalog = load_catalog(catalog_path)
+    load_performance_catalog(performance_path)
+    result = _verify_terminal_result(
+        checkpoint_path,
+        expected_head=str(ledger["expected_code_head"]),
+        expected_mode="candidate",
+        catalog=catalog,
+        catalog_sha256=str(ledger["catalog_sha256"]),
+        performance_sha256=str(ledger["performance_sha256"]),
+        support_profile_sha256=str(ledger["support_profile_sha256"]),
+        before_final_reread=before_final_reread,
+    )
+    if str(result["status"]).casefold() != ledger["state"]:
+        raise VerificationError("candidate ledger state differs from terminal result")
+    if (
+        ledger_path.read_bytes() != ledger_bytes
+        or catalog_path.read_bytes() != catalog_bytes
+        or performance_path.read_bytes() != performance_bytes
+    ):
+        raise VerificationError("candidate ledger/catalog/performance changed during verification")
+    return {"mode": "candidate-evidence", "status": "PASS"}
+
+
+def verify_final_evidence_file(
+    checkpoint_path: Path,
+    *,
+    expected_head: str,
+    readiness: bool,
+    before_final_reread: Callable[[], object] | None = None,
+) -> dict[str, str]:
+    checkpoint_bytes, checkpoint = _read_canonical(checkpoint_path)
+    _verify_final_checkpoint(checkpoint, expected_head=expected_head, readiness=readiness)
+    assert isinstance(checkpoint, Mapping)
+    controller = Path(str(checkpoint["controller_path"]))
+    evidence_root = Path(str(checkpoint["evidence_root"]))
+    if checkpoint_path != evidence_root / "checkpoint.json":
+        raise VerificationError("final checkpoint is not exact/evidence-root bound")
+    try:
+        repo = controller.parents[2]
+        if controller.relative_to(repo).as_posix() != "tools/release/run_0600_final.ps1":
+            raise VerificationError("final controller path is not fixed")
+    except (IndexError, ValueError) as exc:
+        raise VerificationError("final controller path is not worktree-bound") from exc
+    result_path = evidence_root / "controller-result.json"
+    _, raw_result = _read_canonical(result_path)
+    if not isinstance(raw_result, Mapping):
+        raise VerificationError("final controller result is invalid")
+    catalog_path = repo / "tools/release/gates_0600.json"
+    performance_path = repo / "tools/release/performance_0600.json"
+    catalog_bytes = catalog_path.read_bytes()
+    performance_bytes = performance_path.read_bytes()
+    catalog_sha256 = hashlib.sha256(catalog_bytes).hexdigest()
+    performance_sha256 = hashlib.sha256(performance_bytes).hexdigest()
+    catalog = load_catalog(catalog_path)
+    load_performance_catalog(performance_path)
+    result = _verify_terminal_result(
+        result_path,
+        expected_head=expected_head,
+        expected_mode="final",
+        catalog=catalog,
+        catalog_sha256=catalog_sha256,
+        performance_sha256=performance_sha256,
+        support_profile_sha256=None,
+        before_final_reread=before_final_reread,
+    )
+    if (
+        checkpoint["run_id"] != result["run_id"]
+        or checkpoint["code_head"] != result["code_head"]
+        or checkpoint["state"] != str(result["status"]).casefold()
+        or (readiness and result["product_bodies"] != 0)
+    ):
+        raise VerificationError("final checkpoint differs from recursively verified evidence")
+    if (
+        checkpoint_path.read_bytes() != checkpoint_bytes
+        or catalog_path.read_bytes() != catalog_bytes
+        or performance_path.read_bytes() != performance_bytes
+    ):
+        raise VerificationError("final checkpoint/catalog/performance changed during verification")
+    return {
+        "mode": "final-readiness" if readiness else "final-evidence",
+        "status": "PASS",
+    }
+
+
 def _verify_final_checkpoint(value: object, *, expected_head: str, readiness: bool) -> dict[str, str]:
     keys = {
         "schema",
@@ -1734,15 +2225,16 @@ def main(argv: Sequence[str] | None = None) -> int:
                 ledger = validate_candidate_ledger(value)
                 if ledger["expected_code_head"] != head:
                     raise VerificationError("candidate ledger CodeHead differs from loaded verifier HEAD")
-                reconcile_candidate(ledger)
-                result = {"mode": "candidate-evidence", "status": "PASS"}
+                result = verify_candidate_evidence_file(Path(args.candidate_ledger))
             elif args.mode == "final-readiness":
-                result = _verify_final_checkpoint(
-                    _mode_input(args.input, args.mode), expected_head=head, readiness=True
+                _mode_input(args.input, args.mode)
+                result = verify_final_evidence_file(
+                    Path(args.input), expected_head=head, readiness=True
                 )
             else:
-                result = _verify_final_checkpoint(
-                    _mode_input(args.input, args.mode), expected_head=head, readiness=False
+                _mode_input(args.input, args.mode)
+                result = verify_final_evidence_file(
+                    Path(args.input), expected_head=head, readiness=False
                 )
     except (VerificationError, OSError, subprocess.SubprocessError) as exc:
         print(str(exc), file=sys.stderr)

@@ -46,8 +46,15 @@ if ($ResumeContract) {
   throw 'checkpoint/recovery inputs are resume-only'
 }
 
-# Deferred catalog entries are intentionally non-executable during the 0601
-# software candidate.  The Python state machine is exercised only by the fake
-# contract self-test until the post-0603 hardware campaign supplies commands.
-Write-Error 'hardware catalog actions are deferred and non-executable in the 0601 software candidate'
-exit 2
+$controllerHead = (& git.exe -C $Repo rev-parse HEAD 2>$null)
+if ($LASTEXITCODE -ne 0 -or $controllerHead -cnotmatch '^[0-9a-f]{40}$') { throw 'hardware controller HEAD is unavailable' }
+Assert-FrozenVerifierCaller -Repository $Repo -ExpectedCodeHead $controllerHead
+$base = @('-3.12',$runner,'hardware','--contract',$Contract,'--repo',$Repo,'--expected-code-head',$ExpectedCodeHead,'--final-run-id',$FinalRunId,'--evidence-root',$EvidenceRoot)
+if ($PrepareAction) {
+  & $python @base --mode prepare
+} elseif ($ExecuteAction) {
+  & $python @base --mode execute --nonce $Nonce --action-digest $ActionDigest --authorized
+} else {
+  & $python @base --mode resume --checkpoint $Checkpoint --recovery-record $RecoveryRecord
+}
+exit $LASTEXITCODE

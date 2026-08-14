@@ -22,7 +22,7 @@ $python = (Get-Command py.exe -ErrorAction Stop).Source
 
 if ($ContractSelfTest) {
   if ($PSBoundParameters.Count -ne 1) { throw 'ContractSelfTest accepts no runner inputs' }
-  & $python -3.12 $runner contract-self-test --kind quick
+  & $python -3.12 $runner contract-self-test --kind candidate
   exit $LASTEXITCODE
 }
 if ($ResumeCandidateRun) {
@@ -30,6 +30,9 @@ if ($ResumeCandidateRun) {
   if ($PSBoundParameters.Count -ne 3) { throw 'candidate resume accepts only its ledger and recovery record' }
   $CandidateLedger = ConvertTo-CanonicalAbsolutePath -Path $CandidateLedger -Name 'CandidateLedger'
   $RecoveryRecord = ConvertTo-CanonicalAbsolutePath -Path $RecoveryRecord -Name 'RecoveryRecord'
+  $ledgerValue = (Get-Content -LiteralPath $CandidateLedger -Raw -Encoding UTF8 | ConvertFrom-Json)
+  $resumeRepository = [System.IO.Path]::GetFullPath((Join-Path ([System.IO.Path]::GetDirectoryName($ledgerValue.controller_path)) '..\..'))
+  Assert-FrozenVerifierCaller -Repository $resumeRepository -ExpectedCodeHead $ledgerValue.expected_code_head
   & $python -3.12 $runner wrapper-resume --kind candidate --candidate-ledger $CandidateLedger --recovery-record $RecoveryRecord
   exit $LASTEXITCODE
 }
@@ -42,5 +45,7 @@ $EvidenceRoot = ConvertTo-CanonicalAbsolutePath -Path $EvidenceRoot -Name 'Evide
 $GateCatalog = ConvertTo-CanonicalAbsolutePath -Path $GateCatalog -Name 'GateCatalog'
 $PerformanceCatalog = ConvertTo-CanonicalAbsolutePath -Path $PerformanceCatalog -Name 'PerformanceCatalog'
 $SupportProfile = ConvertTo-CanonicalAbsolutePath -Path $SupportProfile -Name 'SupportProfile'
+$repository = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..'))
+Assert-FrozenVerifierCaller -Repository $repository -ExpectedCodeHead $ExpectedCodeHead
 & $python -3.12 $runner wrapper --kind candidate --matrix $Matrix --module $Module --shard $Shard --run-id $RunId --evidence-root $EvidenceRoot --expected-code-head $ExpectedCodeHead --gate-catalog $GateCatalog --performance-catalog $PerformanceCatalog --support-profile $SupportProfile
 exit $LASTEXITCODE
