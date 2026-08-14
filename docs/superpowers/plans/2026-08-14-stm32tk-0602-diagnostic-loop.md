@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Deliver an append-only evidence-driven diagnostic state machine, bounded Probe v2 controls, action-specific authorization, and deterministic failed-before/fixed-after verification.
+**Goal:** Deliver an append-only evidence-driven diagnostic state machine, bounded Probe v2 controls, action-specific authorization, and deterministic failed-before/fixed-after software verification on Windows, leaving real-board closure to the post-0603 unified activity.
 
 **Architecture:** Diagnostics materialize immutable hash-chained events that reference 0601 evidence IDs. Probe Service implements the already-frozen v2 debug operations and remains the only hardware boundary. Source changes are externally supplied declarations; Toolkit separately authorizes and records build, flash, test, Monitor assertion, and verification steps.
 
@@ -12,17 +12,57 @@
 
 - Begin at the accepted report commit of `STM32TK-0601-TEST-EVIDENCE`; record its full SHA in the
   work order before implementation.
+- Codex and Codex-derived agents permanently own implementation, review, and acceptance. Do not
+  use OpenClaw branches, attempts, report paths, or handoffs.
 - Follow `docs/superpowers/specs/2026-08-14-stm32tk-0602-diagnostic-loop-design.md`.
 - Do not change frozen evidence/test schemas, Probe v2, gate schema/families, or 0601 exact entries.
   Fill only reserved 0602 catalog families and freeze their exact commands/nodes before candidate.
 - Product code cannot edit source, invoke a model/cloud provider, accept a raw hardware command,
   expose arbitrary memory/register writes, or reuse authorization.
-- Real reset/flash/modify acceptance gates stop unless the user authorizes their exact current-task
-  action digests; this plan and prior-module evidence do not transfer authorization.
+- Prepared CONTROL/MODIFY actions persist a CSPRNG 32-byte nonce encoded as exactly 64 lowercase
+  hex characters, exact action digest, and UTC `expiresAt` no later than five minutes. Prepare
+  performs exactly one OBSERVE identity/state snapshot and no CONTROL/MODIFY; execute rejects any
+  changed identity/state. A live process additionally enforces a monotonic deadline. Success,
+  mismatch, failure, refusal, and timeout close the preparation and require a fresh one.
+- 0602 runs Windows software, fake-backend, replay, and candidate gates only. It has no Linux
+  shard/owner/ZIP/browser handoff and no real-hardware candidate gate.
+- Real reset/flash/modify actions are not authorized by this plan. The mandatory real failed-before/
+  fixed-after scenario runs only in the unified 0.4+0.6 real-hardware activity after the 0603
+  candidate, and final v0.6.0 remains blocked until it passes.
 - Every changed product Python file must reach at least 90% branch coverage; correctness runs on
   CPython 3.10 and 3.12; every earlier threshold remains unchanged.
 - Preserve external evidence logs and never run release gates in a dirty product worktree.
 - No remote operation is authorized; commits in this plan remain local until separate approval.
+
+---
+
+## Task 0: Freeze measured diagnostic workloads before hot-path implementation
+
+**Files:**
+
+- Create: `tools/stm32-toolkit/tests/test_diagnostic_performance.py`
+- Modify: `tools/release/performance_0600.json`
+
+- [ ] Add the exact correctness-first generators and measurements for warm append/reload at 10,000
+  events, materialized read at 1,000 events/64 hypotheses, authoritative 10,000-event verification,
+  and export/reverify with 10 MiB reachable artifacts. Freeze setup/teardown, warm/cold boundary,
+  sample count, three-batch nearest-rank p95/MAD calculation, CPython separation, 15% regression
+  limit, and the spec maxima. Keep collection data-only so it succeeds before the product APIs
+  exist; execution may fail until those APIs are implemented. Neither workload nor maximum may
+  later change to make product code pass.
+
+- [ ] Run the collection/contract test without executing a measured product body:
+
+```powershell
+py -3.12 -m pytest tools/stm32-toolkit/tests/test_diagnostic_performance.py --collect-only -q -p no:cacheprovider
+```
+
+- [ ] Commit the frozen workload contract before Task 1 changes any measured hot path:
+
+```powershell
+git add -- tools/release/performance_0600.json tools/stm32-toolkit/tests/test_diagnostic_performance.py
+git commit -m "test(STM32TK-0602): freeze diagnostic workloads"
+```
 
 ---
 
@@ -38,9 +78,10 @@
 - Create: `tools/stm32-toolkit/tests/test_diagnostic_model.py`
 - Create: `tools/stm32-toolkit/tests/test_diagnostic_events.py`
 
-- [ ] Write failing tests for exact dataclasses/enums, canonical event digest, sequence/revision/
-  previous-digest binding, every legal state edge, every forbidden edge, fresh serialization,
-  UTC/NFC/unknown fields, 1 MiB event and collection limits, and root/package schema equality.
+- [ ] Write failing tests for exact dataclasses/enums, canonical event digest, creation at
+  sequence/revision zero, synchronized later sequence/revision/previous-digest binding, the full
+  state table, terminal `RESOLVED`/`ABANDONED`, fresh serialization, UTC/NFC/unknown fields, 1 MiB
+  event and collection limits, and root/package schema equality.
 
 ```python
 @pytest.mark.parametrize("before,event,after", LEGAL_TRANSITIONS)
@@ -197,10 +238,37 @@ git commit -m "feat(STM32TK-0602): execute bounded observation plans"
 - Create: `tools/stm32-toolkit/tests/test_probe_v2_observe.py`
 - Create: `tools/stm32-toolkit/tests/test_debug_logs.py`
 
-- [ ] Write failing tests for target state, allowlisted registers, declared RAM/peripheral ranges,
-  destructive peripheral denial, <=4 KiB reads, Fault stack bounds, named log channels, 10 MiB/
-  five-minute limits, backpressure, deadline/disconnect cleanup, backend exception redaction, and
-  unknown-field/version/lease/workspace rejection.
+The OBSERVE rows copied from 0601 are:
+
+| Operation | Exact operation arguments | Exact success result |
+|---|---|---|
+| `target.state.read` | `{}` | `{state,reason}` |
+| `target.registers.read` | `{names}` | `{registers:[{name,value,width_bits}]}` |
+| `target.memory.read` | `{address,length}` | `{address,length,data_base64,sha256}` |
+| `target.fault.capture` | `{max_stack_bytes}` | `{fault_registers,stack_artifact,stack_bytes,truncated}` |
+| `target.logs.capture` | `{channel,max_bytes,duration_ms}` | `{channel,artifact,bytes,duration_ms,truncated}` |
+
+- [ ] Load 0601's frozen root and packaged `stm32-toolkit-probe/2` schemas and assert they are
+  byte-identical before writing an adapter. Freeze the exact OBSERVE inventory as
+  `target.state.read`, `target.registers.read`, `target.memory.read`, `target.fault.capture`, and
+  `target.logs.capture`. Copy the 0601 exact request arguments, success results, stable errors,
+  common-envelope fields, unknown-field behavior, and limits into parameterized contract tests;
+  0602 must not edit either schema.
+
+- [ ] Assert every Probe failure is exactly `{code,message,details}` with a code from
+  `PROBE_PROTOCOL_INVALID`, `PROBE_VERSION_MISMATCH`, `PROBE_OPERATION_UNAVAILABLE`,
+  `PROBE_LEASE_INVALID`, `PROBE_AUTHORIZATION_REQUIRED`, `PROBE_AUTHORIZATION_INVALID`,
+  `PROBE_IDENTITY_MISMATCH`, `PROBE_LIMIT_EXCEEDED`, `PROBE_TIMEOUT`, `PROBE_BACKPRESSURE`, or
+  `PROBE_BACKEND_ERROR`; reject partial success and ad-hoc errors.
+
+- [ ] Write failing behavior tests for `target.state.read` with the exact state/reason enums;
+  `target.registers.read` with 1..64 unique profile-allowlisted names and request-order results;
+  `target.memory.read` with 1..4096 bytes inside a declared readable RAM/peripheral region and
+  destructive peripheral denial; `target.fault.capture` with `max_stack_bytes` 0..4096 and exactly
+  `cfsr|hfsr|dfsr|afsr|mmfar|bfar|shcsr|icsr`; and
+  `target.logs.capture` with channel exactly `rtt|uart|semihosting|swo|probe`,
+  `max_bytes` 1..10485760, and `duration_ms` 1..300000. Cover backpressure, deadline/disconnect
+  cleanup, backend exception redaction, and exact version/lease/workspace rejection from 0601.
 
 - [ ] Run RED:
 
@@ -208,8 +276,10 @@ git commit -m "feat(STM32TK-0602): execute bounded observation plans"
 py -3.12 -m pytest tools/stm32-toolkit/tests/test_probe_v2_observe.py tools/stm32-toolkit/tests/test_debug_logs.py -q -p no:cacheprovider
 ```
 
-- [ ] Implement only the frozen OBSERVE operations and backend methods; range-check before the
-  backend call and return bounded typed evidence artifacts.
+- [ ] Implement only those five frozen `target.*` OBSERVE operations and their backend methods.
+  Parse the exact 0601 argument objects and emit the exact 0601 success/error shapes; range-check
+  before the backend call and return bounded typed evidence artifacts. If implementation needs a
+  schema, result, error, or limit change, stop rather than changing Probe v2.
 
 - [ ] Run GREEN under dual Python with affected Fault/read/sample/probe regressions and coverage:
 
@@ -239,13 +309,42 @@ git commit -m "feat(STM32TK-0602): add bounded debug observations"
 - Create: `tools/stm32-toolkit/tests/test_diagnostic_authorization.py`
 - Create: `tools/stm32-toolkit/tests/test_probe_v2_control.py`
 
-- [ ] Write failing mutation tests proving session/revision/workspace/project/target/probe/firmware/
-  state/operation/arguments/expiry are digest-bound; authorization consumes once on success,
-  denial, backend failure, and timeout; replay/retry/rebind fail.
+The CONTROL rows copied from 0601 are:
 
-- [ ] Write failing halt/resume/single-step/temporary-breakpoint tests for legal target states,
-  executable address, eight-breakpoint limit, five-second step timeout, cleanup in every exit,
-  disconnect recovery, reversible restoration, cleanup-required lockout, and no write/raw command.
+| Operation | Exact operation arguments | Exact success result |
+|---|---|---|
+| `target.halt` | `{}` | `{state:"halted",reason}` |
+| `target.resume` | `{}` | `{state:"running"}` |
+| `target.step` | `{}` | `{state:"halted",reason,pc_before,pc_after}` |
+| `target.breakpoint.set` | `{address,kind:"temporary",size}` | `{breakpoint_id,address,kind:"temporary",size}` |
+| `target.breakpoint.clear` | `{breakpoint_id}` | `{breakpoint_id,cleared:true}` |
+
+- [ ] Write failing mutation tests proving the persistent one-time nonce is generated from exactly
+  32 CSPRNG bytes and encoded as exactly 64 lowercase hex characters. Bind nonce, action digest,
+  issued-at UTC, `expiresAt` UTC at most five minutes later, session/revision/workspace/project/
+  target/probe/firmware/state/operation/arguments. Prepare performs exactly one OBSERVE identity/
+  state read with counters exactly `identity_state_read=1`, `control=0`, `modify=0`, `reset=0`,
+  `halt=0`, `write=0`, and `flash=0`; a second observation or any CONTROL/MODIFY fails prepare.
+  Prepare is classified OBSERVE-only and never requests authorization. Execute requires every field and current identity/
+  revision to match, immediately re-observes identity/state, and rejects any change without
+  executing the action. A live process enforces both UTC and monotonic deadlines; restart may use
+  only the persisted UTC deadline and may not extend it. Success, mismatch, refusal, backend
+  failure, and timeout close the prepared action; replay/retry/rebind/later approval fail until
+  re-prepare.
+
+- [ ] Load the same byte-identical 0601 schemas and freeze the exact CONTROL inventory as
+  `target.halt`, `target.resume`, `target.step`, `target.breakpoint.set`, and
+  `target.breakpoint.clear`. Copy their exact 0601 request arguments, success results, stable
+  errors, common-envelope checks, and limits into parameterized tests; 0602 cannot edit the schema.
+
+- [ ] Write failing tests proving `target.halt` and `target.resume` use `{}` arguments and one legal
+  transition; `target.step` uses `{}` arguments, performs exactly one instruction step, and has a
+  five-second maximum; `target.breakpoint.set` creates only a temporary executable breakpoint with
+  size 1, 2, or 4 and at most eight owned breakpoints per session; and
+  `target.breakpoint.clear` clears the exact owned ID. Cover cleanup on every exit, disconnect
+  recovery, reversible restoration, cleanup-required
+  lockout, exact 0601 results/errors, and rejection of writes, raw commands, renamed operations,
+  extra arguments, multi-step counts, and widened limits.
 
 - [ ] Run RED:
 
@@ -253,9 +352,16 @@ git commit -m "feat(STM32TK-0602): add bounded debug observations"
 py -3.12 -m pytest tools/stm32-toolkit/tests/test_diagnostic_authorization.py tools/stm32-toolkit/tests/test_probe_v2_control.py -q -p no:cacheprovider
 ```
 
-- [ ] Implement `prepare_action()` returning exact digest/summary and `execute_action()` requiring
-  current revision plus one authorization. Keep cleanup owned by Probe Service and always record
-  action/cleanup evidence events.
+- [ ] Implement `prepare_action()` to obtain 32 bytes from the platform CSPRNG, encode exactly 64
+  lowercase hex characters, perform exactly one OBSERVE identity/state read, bind that snapshot,
+  and persist/return the nonce/digest/UTC expiry summary without any CONTROL/MODIFY. Implement
+  `execute_action()` to require the exact nonce, digest, current identity/revision, one authorization,
+  and a final OBSERVE recheck equal to the bound snapshot. Record a live monotonic deadline without
+  serializing it as a portable clock value. Atomically close the preparation before returning
+  success, state/identity mismatch, refusal, backend failure, or timeout. Implement only the five
+  canonical `target.*` CONTROL operations above, with exact
+  0601 arguments/results/errors/limits. Keep cleanup owned by Probe Service and always record
+  action/cleanup evidence events; stop rather than modifying Probe v2.
 
 - [ ] Run GREEN on both Pythons with branch coverage and existing probe lease/process tests:
 
@@ -281,7 +387,9 @@ git commit -m "feat(STM32TK-0602): authorize bounded debug controls"
 
 - [ ] Write failing declaration tests for canonical tracked paths, exact diff artifact, complete
   before/after build-input snapshots, changed-path equality, expected revision, unrelated inputs,
-  missing/corrupt artifacts, and proof Toolkit neither writes nor applies a source file.
+  missing/corrupt artifacts, and proof Toolkit neither writes nor applies a source file. The test
+  harness may create a temporary fixture and apply a fixed in-test patch there; assert the source
+  inputs and product worktree remain byte-identical.
 
 - [ ] Write a complete verification truth table: failed-before required, plan frozen before
   declaration, new build/ELF/source identity, separate action authorization chain, exact Host/
@@ -312,17 +420,25 @@ git add tools/stm32-toolkit/src/stm32_toolkit/diagnostics/verification.py tools/
 git commit -m "feat(STM32TK-0602): verify identity-bound firmware fixes"
 ```
 
-## Task 8: Export and verify portable diagnostic bundles
+## Task 8: Export, verify, and atomically import portable diagnostic bundles
 
 **Files:**
 
 - Create: `tools/stm32-toolkit/src/stm32_toolkit/diagnostics/bundle.py`
 - Create: `tools/stm32-toolkit/tests/test_diagnostic_bundle.py`
 
-- [ ] Write failing tests for deterministic repeated ZIP bytes, fixed ordering/times/modes,
-  complete reachability/inventory/hash, 1 GiB and entry limits, corrupt/missing objects, secret/
-  absolute-path/environment redaction, zip-slip, drive/ADS/casefold/duplicate names, symlinks,
-  compression bomb, atomic import, existing same/different session heads, and no partial publish.
+- [ ] Write failing tests for deterministic repeated ZIP bytes, ascending UTF-8 member ordering,
+  DOS epoch timestamps, `0644` modes, DEFLATE level 9, no platform extras, complete reachability/
+  inventory/member hashes, at most 65,536 entries and 1 GiB uncompressed content, corrupt/missing
+  objects, secret/absolute-path/environment redaction, zip-slip, Unicode-normalization, drive/ADS/
+  casefold/duplicate names, links/special files, compression bombs, and no partial publish.
+
+- [ ] Write the two-phase import truth table. `verify_import_bundle(path)` performs no publish and
+  returns the expected whole-bundle digest plus bounded summary. `import_verified_bundle(path,
+  expected_digest, authorization)` re-verifies, requires a fresh destination-bound MODIFY nonce/
+  digest, publishes atomically through public evidence/session APIs, treats the same bundle digest
+  as idempotent, rejects logical-ID/content conflicts, and never edits source, touches hardware,
+  or creates/changes Monitor groups or annotations.
 
 - [ ] Run RED:
 
@@ -330,8 +446,9 @@ git commit -m "feat(STM32TK-0602): verify identity-bound firmware fixes"
 py -3.12 -m pytest tools/stm32-toolkit/tests/test_diagnostic_bundle.py -q -p no:cacheprovider
 ```
 
-- [ ] Implement `export_bundle(session_id, selection, output)` and `verify_import_bundle(path)`;
-  verify every entry and complete graph before importing through public evidence/session APIs.
+- [ ] Implement `export_bundle(session_id, selection, output)`, `verify_import_bundle(path)`, and
+  `import_verified_bundle(path, expected_digest, authorization)` with the exact deterministic
+  encoding, limits, two-phase authorization, conflict, idempotency, and atomicity contracts above.
 
 - [ ] Run GREEN dual Python with coverage:
 
@@ -344,7 +461,7 @@ py -3.12 tools/release/run_0600_gates.py dev-coverage --task-id STM32TK-0602-T08
 
 ```powershell
 git add tools/stm32-toolkit/src/stm32_toolkit/diagnostics/bundle.py tools/stm32-toolkit/tests/test_diagnostic_bundle.py
-git commit -m "feat(STM32TK-0602): export verified diagnostic bundles"
+git commit -m "feat(STM32TK-0602): verify and import diagnostic bundles"
 ```
 
 ## Task 9: Expose diagnostic CLI, MCP, and Skill
@@ -360,11 +477,14 @@ git commit -m "feat(STM32TK-0602): export verified diagnostic bundles"
 
 - [ ] Write failing CLI/MCP tests for every typed surface, expected revision, exact error codes,
   bounded artifact references, prepare/execute authorization dialogue, denial, cross-workspace/
-  session/evidence isolation, response mutation safety, and redaction.
+  session/evidence isolation, response mutation safety, and redaction. Include CLI and MCP bundle
+  verify/import: verify is read-only; import requires its exact expected bundle digest and a fresh
+  destination-bound MODIFY authorization, re-verifies, and returns idempotent/conflict outcomes.
 
 - [ ] Write Skill contract tests requiring reproduce→hypotheses→discriminating observations→
   authorization→declared change→frozen verification and prohibiting “fixed” without deterministic
-  PASS, implicit edits/flash, raw commands, model/cloud code, or stored authorization.
+  PASS, implicit edits/flash, raw commands, model/cloud code, or storing/reusing the user's
+  approval flag. Persisting the prepared nonce/digest/UTC expiry is required and is not approval.
 
 - [ ] Run RED, implement thin adapters/Skill, then run GREEN:
 
@@ -385,7 +505,6 @@ git commit -m "feat(STM32TK-0602): expose evidence-first diagnostics"
 
 **Files:**
 
-- Create: `tools/stm32-toolkit/tests/test_diagnostic_performance.py`
 - Modify: `tools/release/performance_0600.json`
 - Modify: `tools/stm32-toolkit/src/stm32_toolkit/diagnostics/events.py`
 - Modify: `tools/stm32-toolkit/src/stm32_toolkit/diagnostics/store.py`
@@ -395,8 +514,9 @@ git commit -m "feat(STM32TK-0602): expose evidence-first diagnostics"
 - Modify: `tools/stm32-toolkit/tests/test_diagnostic_store.py`
 - Modify: `tools/stm32-toolkit/tests/test_diagnostic_bundle.py`
 
-- [ ] Add correctness-first end-to-end workloads for append/reload, materialized read, authoritative
-  full-chain verify, and export/reverify at the exact datasets. Do not optimize yet.
+- [ ] Verify the Task 0 committed workload contract is byte-identical, then run the exact
+  correctness-first append/reload, materialized-read, authoritative-verification, and export/
+  reverify workloads. Do not alter a workload or design maximum during characterization.
 
 - [ ] Calibrate separately on 3.10/3.12 using the common three-batch nearest-rank method and retain
   raw JSON externally:
@@ -415,12 +535,12 @@ workload, batch, p95, MAD, and relative-limit calculations verify.
   byte-identical; improve the implementation without changing workloads or maxima, then repeat the
   provisional characterization.
 
-- [ ] Commit the performance test and accepted baseline/threshold entries before any optional
-  post-baseline optimization:
+- [ ] Commit only the accepted baseline/threshold entries before any optional post-baseline
+  optimization; the workload test was already committed in Task 0:
 
 ```powershell
-git add -- tools/release/performance_0600.json tools/stm32-toolkit/tests/test_diagnostic_performance.py
-git commit -m "test(STM32TK-0602): freeze diagnostic performance"
+git add -- tools/release/performance_0600.json
+git commit -m "test(STM32TK-0602): calibrate diagnostic performance"
 ```
 
 - [ ] Profile the correct reference and add only necessary local/thread-safe optimizations with
@@ -443,11 +563,11 @@ git add -- tools/stm32-toolkit/src/stm32_toolkit/diagnostics/events.py tools/stm
 git commit -m "perf(STM32TK-0602): meet calibrated diagnostic budgets"
 ```
 
-## Task 11: Close real-board failed-before/fixed-after acceptance
+## Task 11: Close the Windows fake/replay loop and stage deferred hardware inputs
 
 **Files:**
 
-- Create: `tools/stm32-toolkit/tests/hardware/test_diagnostic_loop_real.py`
+- Create: `tools/stm32-toolkit/tests/test_diagnostic_loop_replay.py`
 - Create: `tools/stm32-toolkit/tests/fixtures/diagnostic-loop/.stm32-project.json`
 - Create: `tools/stm32-toolkit/tests/fixtures/diagnostic-loop/Src/main.c`
 - Create: `tools/stm32-toolkit/tests/fixtures/diagnostic-loop/Tests/test_fault.c`
@@ -456,45 +576,46 @@ git commit -m "perf(STM32TK-0602): meet calibrated diagnostic budgets"
 - Modify: `README.md`
 - Modify: `tools/stm32-toolkit/README.md`
 
-- [ ] Add a deterministic real-board faulty fixture bound to the feasibility hardware profile and
-  test the nine-step scenario from the spec:
-  failed test/Monitor evidence, two hypotheses, observations, authorized halt/breakpoint/step/
-  resume/cleanup, external change declaration, separately authorized build/flash/test, new identity,
-  passing exact test/assertion, resolved session, and verified bundle.
+- [ ] Add a deterministic faulty fixture and Windows fake/replay test for the nine-step causal
+  chain: failed Target/Monitor evidence, two hypotheses, register/Fault/log observations, prepared
+  halt/breakpoint/step/resume/cleanup controls, external change declaration, separately prepared
+  build/flash/test evidence, new identity, passing exact test/assertion, resolved session, and
+  verified bundle. No test in this task opens a real probe, resets, flashes, or modifies hardware.
 
-- [ ] Run the newly added real-board scenario once before documenting it. Prior tasks already own
-  dual-Python correctness, per-file coverage, and calibrated performance; Task 12 candidate owns
-  the complete affected security/isolation/offline/install regression. Do not rerun unchanged 0601
-  hardware gates unless the frozen impact map selects a shared surface.
+- [ ] In a fresh temporary copy of the fixture, have the test harness—not Toolkit—apply
+  `expected-fix.patch`; register the resulting snapshots/diff declaration and prove the repository
+  fixture and product worktree remain byte-identical. Preserve deterministic failed-before and
+  fixed-after evidence so the later unified real-hardware activity can reuse the same contract.
+
+- [ ] Run the Windows fake/replay scenario under both Pythons:
 
 ```powershell
-$env:STM32TK_FEASIBILITY_PROFILE='C:\tmp\stm32tk-0600-support\feasibility\profile.json'
-try {
-  py -3.12 -m pytest tools/stm32-toolkit/tests/hardware/test_diagnostic_loop_real.py -q -p no:cacheprovider
-  if ($LASTEXITCODE -ne 0) { throw 'real diagnostic loop acceptance failed' }
-} finally {
-  Remove-Item Env:STM32TK_FEASIBILITY_PROFILE -ErrorAction SilentlyContinue
-}
+py -3.10 -m pytest tools/stm32-toolkit/tests/test_diagnostic_loop_replay.py -q -p no:cacheprovider
+py -3.12 -m pytest tools/stm32-toolkit/tests/test_diagnostic_loop_replay.py -q -p no:cacheprovider
 ```
 
-- [ ] Update documentation only after real evidence exists. Document the diagnostic state machine,
-  evidence reasoning, exact authorization, source-edit boundary, verification truth, bundle limits,
-  and prohibited operations.
+- [ ] Update documentation after fake/replay evidence exists. Document the diagnostic state
+  machine, persistent one-time authorization, source-edit boundary, verification truth, two-phase
+  bundle import, prohibited operations, and the exact `SOFTWARE_COMPLETE_HARDWARE_PENDING` status.
+  State that the unified 0.4+0.6 activity after the 0603 candidate owns the real board run and that
+  final v0.6.0 cannot pass without it.
 
 - [ ] Commit:
 
 ```powershell
-git add -- tools/stm32-toolkit/tests/hardware/test_diagnostic_loop_real.py tools/stm32-toolkit/tests/fixtures/diagnostic-loop/.stm32-project.json tools/stm32-toolkit/tests/fixtures/diagnostic-loop/Src/main.c tools/stm32-toolkit/tests/fixtures/diagnostic-loop/Tests/test_fault.c tools/stm32-toolkit/tests/fixtures/diagnostic-loop/expected-fix.patch tools/stm32-toolkit/tests/fixtures/diagnostic-loop/README.md README.md tools/stm32-toolkit/README.md
-git commit -m "test(STM32TK-0602): close diagnostic loop acceptance"
+git add -- tools/stm32-toolkit/tests/test_diagnostic_loop_replay.py tools/stm32-toolkit/tests/fixtures/diagnostic-loop/.stm32-project.json tools/stm32-toolkit/tests/fixtures/diagnostic-loop/Src/main.c tools/stm32-toolkit/tests/fixtures/diagnostic-loop/Tests/test_fault.c tools/stm32-toolkit/tests/fixtures/diagnostic-loop/expected-fix.patch tools/stm32-toolkit/tests/fixtures/diagnostic-loop/README.md README.md tools/stm32-toolkit/README.md
+git commit -m "test(STM32TK-0602): close Windows diagnostic replay"
 ```
 
-## Task 12: Freeze and accept the 0602 CodeHead
+## Task 12: Freeze the Windows software CodeHead
 
 **Files:**
 
 - Modify: `tools/release/gates_0600.json`
 - Modify: `tools/stm32-toolkit/tests/release/test_gate_catalog_0600.py`
-- Create after PASS only: `docs/openclaw/returns/STM32TK-0602-DIAGNOSTIC-LOOP/r001-implementation-report.md`
+- Modify: `tools/stm32-toolkit/tests/release/test_gate_controller_0600.py`
+- Modify: `tools/stm32-toolkit/tests/release/test_release_verifier_0600.py`
+- Create after PASS only: `docs/codex/returns/STM32TK-0602-DIAGNOSTIC-LOOP/implementation-report.md`
 
 - [ ] Audit the full 0601 accepted-report-to-current diff and all tracked/untracked, committed/
   uncommitted, and pushed/unpushed state. Verify frozen 0601 schemas/catalog semantics byte-for-
@@ -506,50 +627,320 @@ git commit -m "test(STM32TK-0602): close diagnostic loop acceptance"
   skip/xfail 0602 nodes fail. Commit the final 0602 test contract before candidate:
 
 ```powershell
-py -3.12 -m pytest tools/stm32-toolkit/tests/release/test_gate_catalog_0600.py -q -p no:cacheprovider
-git add -- tools/release/gates_0600.json tools/stm32-toolkit/tests/release/test_gate_catalog_0600.py
+py -3.12 -m pytest tools/stm32-toolkit/tests/release/test_gate_catalog_0600.py tools/stm32-toolkit/tests/release/test_gate_controller_0600.py tools/stm32-toolkit/tests/release/test_release_verifier_0600.py -q -p no:cacheprovider
+git add -- tools/release/gates_0600.json tools/stm32-toolkit/tests/release/test_gate_catalog_0600.py tools/stm32-toolkit/tests/release/test_gate_controller_0600.py tools/stm32-toolkit/tests/release/test_release_verifier_0600.py
 git commit -m "test(STM32TK-0602): freeze exact candidate inventory"
 ```
 
-- [ ] Generate one `candidateRunId`, then run affected collect-all Windows/Linux shards and the
-  hardware shard selected by the frozen impact map. Each wrapper first runs the non-executing
-  CodeHead/catalog/node/performance/support/tool/owner/hardware/evidence-root precheck and refuses to
-  start a product body if it fails:
+  The controller test must invoke Windows PowerShell 5.1 and reuse 0601's one frozen
+  `tools/release/path_contract_0600.ps1` implementation of `ConvertTo-CanonicalAbsolutePath`
+  without any newer-runtime-only path API. It accepts only an already-canonical rooted path whose
+  `Path.GetFullPath()` result is ordinal-identical to the input. It rejects null/empty/whitespace,
+  drive-relative and root-relative paths, device/extended/NT aliases, mixed separators, trailing
+  separators, dot segments, and every other normalization mismatch. Mutation tests must also prove
+  recovery and reconciliation never execute a controller/verifier path supplied by the external
+  context or ledger, reject dirty/untracked or wrong-HEAD/wrong-origin worktrees, and reject an
+  actual verifier digest different from the frozen invocation-context digest.
+
+- [ ] Resolve every controller input from the frozen worktree, validate the lowercase 40-hex Git
+  CodeHead, generate one canonical lowercase hyphenated UUID run ID, and create only the external input context
+  named exactly `candidate-invocation-context.json`. The context is outside the new candidate root;
+  caller code must not create or write `candidate-ledger.json`. All controller/script paths are
+  absolute paths resolved beneath the frozen worktree:
 
 ```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/release/run_0600_candidate.ps1 -Module STM32TK-0602 -Shard windows -CandidateRunId <candidateRunId> -EvidenceRoot C:\tmp\stm32tk-0602-candidate-<candidateRunId>\windows -ExpectedCodeHead <full-codehead> -Catalog tools/release/gates_0600.json -Performance tools/release/performance_0600.json -SupportProfile C:\tmp\stm32tk-0600-support\feasibility\profile.json
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/release/run_0600_candidate.ps1 -Module STM32TK-0602 -Shard hardware -CandidateRunId <candidateRunId> -EvidenceRoot C:\tmp\stm32tk-0602-candidate-<candidateRunId>\hardware -ExpectedCodeHead <full-codehead> -Catalog tools/release/gates_0600.json -Performance tools/release/performance_0600.json -SupportProfile C:\tmp\stm32tk-0600-support\feasibility\profile.json
+$module = 'STM32TK-0602'
+$shard = 'windows'
+$repoRoot = (Resolve-Path -LiteralPath '.').Path
+$pathContract = Join-Path $repoRoot 'tools\release\path_contract_0600.ps1'
+. $pathContract
+$repoRoot = ConvertTo-CanonicalAbsolutePath -Path $repoRoot -Name 'repository root'
+$codeHead = (git -C $repoRoot rev-parse --verify 'HEAD^{commit}').Trim().ToLowerInvariant()
+if ($LASTEXITCODE -ne 0 -or $codeHead -cnotmatch '^[0-9a-f]{40}$') {
+  throw 'Git HEAD is not one lowercase 40-hex commit'
+}
+$candidateRunId = [Guid]::NewGuid().ToString('D')
+if ($candidateRunId -cnotmatch '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$') { throw 'candidate run ID is not a canonical lowercase UUID' }
+$shortCodeHead = $codeHead.Substring(0, 12)
+$candidateRoot = ConvertTo-CanonicalAbsolutePath -Path (Join-Path 'C:\tmp' "stm32tk-0602-candidate-$candidateRunId-$shortCodeHead") -Name 'candidate root'
+$windowsEvidence = ConvertTo-CanonicalAbsolutePath -Path (Join-Path $candidateRoot 'windows') -Name 'evidence root'
+$candidateLedgerPath = ConvertTo-CanonicalAbsolutePath -Path (Join-Path $candidateRoot 'candidate-ledger.json') -Name 'candidate ledger'
+$inputRoot = ConvertTo-CanonicalAbsolutePath -Path (Join-Path 'C:\tmp' "stm32tk-0602-candidate-input-$candidateRunId-$shortCodeHead") -Name 'candidate input root'
+if (Test-Path -LiteralPath $inputRoot) { throw 'candidate input root already exists' }
+[IO.Directory]::CreateDirectory($inputRoot) | Out-Null
+$invocationContextPath = ConvertTo-CanonicalAbsolutePath -Path (Join-Path $inputRoot 'candidate-invocation-context.json') -Name 'invocation context'
+$recoveryRecordPath = ConvertTo-CanonicalAbsolutePath -Path (Join-Path $inputRoot 'recovery-record.json') -Name 'recovery record'
+$catalog = ConvertTo-CanonicalAbsolutePath -Path (Join-Path $repoRoot 'tools\release\gates_0600.json') -Name 'catalog'
+$performance = ConvertTo-CanonicalAbsolutePath -Path (Join-Path $repoRoot 'tools\release\performance_0600.json') -Name 'performance contract'
+$supportProfile = ConvertTo-CanonicalAbsolutePath -Path 'C:\tmp\stm32tk-0600-support\feasibility\profile.json' -Name 'support profile'
+$runner = ConvertTo-CanonicalAbsolutePath -Path (Join-Path $repoRoot 'tools\release\run_0600_candidate.ps1') -Name 'candidate controller'
+$verifier = ConvertTo-CanonicalAbsolutePath -Path (Join-Path $repoRoot 'tools\release\verify_0600_release.py') -Name 'release verifier'
+foreach ($frozenPath in @($catalog,$performance,$supportProfile,$runner,$verifier)) {
+  if (-not (Test-Path -LiteralPath $frozenPath -PathType Leaf)) { throw "missing frozen input: $frozenPath" }
+}
+foreach ($repoFile in @($catalog,$performance,$runner,$verifier)) {
+  if (-not $repoFile.StartsWith($repoRoot + [IO.Path]::DirectorySeparatorChar,[StringComparison]::OrdinalIgnoreCase)) {
+    throw "controller input is outside frozen worktree: $repoFile"
+  }
+}
+$invocationContext = [ordered]@{
+  module = $module
+  shard = $shard
+  phase = 'candidate'
+  candidate_run_id = $candidateRunId
+  expected_code_head = $codeHead
+  repo_root = $repoRoot
+  candidate_root = $candidateRoot
+  evidence_root = $windowsEvidence
+  candidate_ledger = $candidateLedgerPath
+  recovery_record = $recoveryRecordPath
+  catalog = $catalog
+  catalog_sha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $catalog).Hash.ToLowerInvariant()
+  performance = $performance
+  performance_sha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $performance).Hash.ToLowerInvariant()
+  support_profile = $supportProfile
+  support_profile_sha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $supportProfile).Hash.ToLowerInvariant()
+  runner = $runner
+  runner_sha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $runner).Hash.ToLowerInvariant()
+  verifier = $verifier
+  verifier_sha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $verifier).Hash.ToLowerInvariant()
+}
+[IO.File]::WriteAllText(
+  $invocationContextPath,
+  (($invocationContext | ConvertTo-Json -Depth 4 -Compress) + [Environment]::NewLine),
+  [Text.UTF8Encoding]::new($false)
+)
+$invocationContextDigest = (Get-FileHash -Algorithm SHA256 -LiteralPath $invocationContextPath).Hash.ToLowerInvariant()
+if (Test-Path -LiteralPath $candidateRoot) { throw 'candidate root must not exist before wrapper invocation' }
 ```
 
-```bash
-./tools/release/run_0600_candidate.sh --module STM32TK-0602 --shard linux --candidate-run-id <candidateRunId> --evidence-root /tmp/stm32tk-0602-candidate-<candidateRunId>/linux --expected-code-head <full-codehead> --catalog tools/release/gates_0600.json --performance tools/release/performance_0600.json --support-profile /tmp/stm32tk-0600-support/feasibility/profile.json
-```
-
-The Linux owner returns `linux/shard-package.zip` and its SHA-256 through the user-designated
-evidence channel; place it unchanged at
-`C:\tmp\stm32tk-0602-candidate-<candidateRunId>\imports\linux.zip`. No controller performs transfer.
-
-- [ ] On failure, do not write a report. One enumerated external event may resume only its affected
-  shard once at the same candidate run ID/frozen inputs with a reviewer recovery record; retain both
-  attempts. A repeat is BLOCKED. Any deterministic gate failure or product/test/helper correction
-  creates a new CodeHead and reruns affected gates plus integrity/inventory. After two contract-gap
-  cycles, stop for acceptance-architecture audit.
-
-- [ ] After all shards PASS, reconcile their common run ID and exact inventories:
+- [ ] Run the Windows-only collect-all candidate with the frozen base variables. The external
+  invocation context is non-authoritative and is not passed as a ledger or controller input. The
+  wrapper alone creates `<candidateRoot>/candidate-ledger.json` with exactly
+  `schema:"stm32-candidate-ledger/1"`, `module:"STM32TK-0602"`,
+  `candidate_run_id`, `expected_code_head`, `controller_path`, `candidate_root`, `evidence_root`,
+  `catalog_sha256`, `performance_sha256`, `support_profile_sha256`, `checkpoint`, `state`,
+  `created_at_utc`, and `updated_at_utc`. The
+  wrapper first runs the non-executing CodeHead/catalog/node/performance/support/tool/owner/
+  evidence-root precheck and refuses to start a product body if it fails. The catalog and precheck
+  must reject any Linux, browser-handoff, ZIP-transfer, or real-hardware node for module 0602:
 
 ```powershell
-py -3.12 tools/release/verify_0600_release.py candidate-evidence --module STM32TK-0602 --candidate-run-id <candidateRunId> --evidence C:\tmp\stm32tk-0602-candidate-<candidateRunId> --import-shard C:\tmp\stm32tk-0602-candidate-<candidateRunId>\imports\linux.zip --expected-code-head <full-codehead> --catalog tools/release/gates_0600.json --performance tools/release/performance_0600.json --support-profile C:\tmp\stm32tk-0600-support\feasibility\profile.json
+& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $runner -Module $module -Shard $shard -CandidateRunId $candidateRunId -EvidenceRoot $windowsEvidence -ExpectedCodeHead $codeHead -Catalog $catalog -Performance $performance -SupportProfile $supportProfile
+$candidateExit = $LASTEXITCODE
+if (-not (Test-Path -LiteralPath $candidateLedgerPath -PathType Leaf)) { throw 'wrapper did not create candidate-ledger.json' }
+if ($candidateExit -ne 0) { throw '0602 Windows candidate stopped; classify before any resume' }
+$terminalLedgerDigest = (Get-FileHash -Algorithm SHA256 -LiteralPath $candidateLedgerPath).Hash.ToLowerInvariant()
+```
+
+- [ ] On failure, do not write a report. Only `RECOVERABLE_INFRA_ERROR` may resume once. The
+  reviewer-authored canonical recovery record contains exactly `classification`, `event`,
+  `reviewer`, `recorded_at_utc`, `run_kind`, `run_id`, `code_head`, `checkpoint`, and
+  `interrupted_attempt_digest`; `event` is exactly one of `HOST_POWER_OR_REBOOT`,
+  `RUNNER_LOSS_BEFORE_CHILD_RESULT`, `PHYSICAL_USB_OR_PROBE_REMOVAL`, or `TARGET_POWER_LOSS`.
+  `run_kind` is exactly `candidate-0602`. Resume uses only the complete closed interface
+  `-ResumeCandidateRun -CandidateLedger <absolute JSON> -RecoveryRecord <absolute JSON>`; the
+  wrapper reconstructs the original base inputs from its ledger and rejects any changed input,
+  completed child result, legacy resume form, orchestration-context-as-ledger form, or second resume:
+
+```powershell
+$candidateLedgerPath = ConvertTo-CanonicalAbsolutePath -Path $candidateLedgerPath -Name 'candidate ledger'
+$recoveryRecordPath = ConvertTo-CanonicalAbsolutePath -Path $recoveryRecordPath -Name 'recovery record'
+$candidateLedger = Get-Content -Raw -LiteralPath $candidateLedgerPath | ConvertFrom-Json
+$recoveryRecord = Get-Content -Raw -LiteralPath $recoveryRecordPath | ConvertFrom-Json
+$requiredRecoveryFields = @('classification','event','reviewer','recorded_at_utc','run_kind','run_id','code_head','checkpoint','interrupted_attempt_digest')
+$actualRecoveryFields = @($recoveryRecord.PSObject.Properties.Name | Sort-Object)
+if ([string]::Join("`n",$actualRecoveryFields) -cne [string]::Join("`n",($requiredRecoveryFields | Sort-Object))) {
+  throw 'recovery record does not contain exactly the canonical fields'
+}
+$recoverableEvents = @('HOST_POWER_OR_REBOOT','RUNNER_LOSS_BEFORE_CHILD_RESULT','PHYSICAL_USB_OR_PROBE_REMOVAL','TARGET_POWER_LOSS')
+$ledgerControllerBootstrap = [string]$candidateLedger.controller_path
+if ([string]::IsNullOrWhiteSpace($ledgerControllerBootstrap) -or
+    $ledgerControllerBootstrap -match '^[A-Za-z]:[^\\/]' -or
+    $ledgerControllerBootstrap -match '^[\\/](?![\\/])' -or
+    $ledgerControllerBootstrap.StartsWith('\\?\') -or
+    $ledgerControllerBootstrap.StartsWith('\\.\') -or
+    $ledgerControllerBootstrap.StartsWith('\??\') -or
+    -not [System.IO.Path]::IsPathRooted($ledgerControllerBootstrap) -or
+    [System.IO.Path]::GetFullPath($ledgerControllerBootstrap) -cne $ledgerControllerBootstrap) {
+  throw 'invalid bootstrap controller path'
+}
+$bootstrapWorktree = Split-Path -Parent (Split-Path -Parent (Split-Path -Parent $ledgerControllerBootstrap))
+$resumeHead = (git -C $bootstrapWorktree rev-parse --verify 'HEAD^{commit}').Trim().ToLowerInvariant()
+if ($LASTEXITCODE -ne 0 -or $resumeHead -cnotmatch '^[0-9a-f]{40}$' -or $resumeHead -cne $codeHead) { throw 'resume worktree HEAD changed' }
+$resumeOrigin = ((git -C $bootstrapWorktree config --get remote.origin.url) | Out-String).Trim()
+if ($LASTEXITCODE -ne 0 -or $resumeOrigin -cne 'https://github.com/XiaoyaoLinghao/stm32-toolkit.git') { throw 'resume worktree origin changed' }
+$resumeStatus = @(git -C $bootstrapWorktree status --porcelain=v1 --untracked-files=all)
+if ($LASTEXITCODE -ne 0 -or $resumeStatus.Count -ne 0) { throw 'resume worktree is not clean' }
+$pathContract = Join-Path $bootstrapWorktree 'tools\release\path_contract_0600.ps1'
+if (-not (Test-Path -LiteralPath $pathContract -PathType Leaf)) { throw 'missing path contract' }
+$pathContractBlob = (git -C $bootstrapWorktree rev-parse "$codeHead`:tools/release/path_contract_0600.ps1").Trim()
+$workingPathContractBlob = (git -C $bootstrapWorktree hash-object -- $pathContract).Trim()
+if ($pathContractBlob -cnotmatch '^[0-9a-f]{40}$' -or $workingPathContractBlob -cne $pathContractBlob) { throw 'path contract is not committed at CodeHead' }
+. $pathContract
+$frozenWorktree = ConvertTo-CanonicalAbsolutePath -Path $bootstrapWorktree -Name 'frozen worktree'
+$checkpointPath = ConvertTo-CanonicalAbsolutePath -Path ([string]$candidateLedger.checkpoint) -Name 'checkpoint'
+$checkpointState = Get-Content -Raw -LiteralPath $checkpointPath | ConvertFrom-Json
+if ($recoveryRecord.classification -cne 'RECOVERABLE_INFRA_ERROR' -or
+    $recoveryRecord.event -cnotin $recoverableEvents -or
+    $recoveryRecord.run_kind -cne 'candidate-0602' -or
+    $recoveryRecord.run_id -cne $candidateRunId -or
+    $recoveryRecord.code_head -cnotmatch '^[0-9a-f]{40}$' -or
+    $recoveryRecord.code_head -cne $codeHead -or
+    $recoveryRecord.interrupted_attempt_digest -cnotmatch '^[0-9a-f]{64}$' -or
+    $recoveryRecord.checkpoint -cne $candidateLedger.checkpoint -or
+    $recoveryRecord.checkpoint -cne $checkpointPath -or
+    $recoveryRecord.interrupted_attempt_digest -cne $checkpointState.interrupted_attempt_digest) {
+  throw 'recovery record does not bind the interrupted candidate attempt'
+}
+$ledgerControllerEvidence = ConvertTo-CanonicalAbsolutePath -Path ([string]$candidateLedger.controller_path) -Name 'ledger controller evidence'
+$derivedResumeController = ConvertTo-CanonicalAbsolutePath -Path (Join-Path $frozenWorktree 'tools\release\run_0600_candidate.ps1') -Name 're-derived resume controller'
+$committedResumeControllerBlob = (git -C $frozenWorktree rev-parse "$codeHead`:tools/release/run_0600_candidate.ps1").Trim()
+$workingResumeControllerBlob = (git -C $frozenWorktree hash-object -- $derivedResumeController).Trim()
+if ($committedResumeControllerBlob -cnotmatch '^[0-9a-f]{40}$' -or $workingResumeControllerBlob -cne $committedResumeControllerBlob) { throw 'resume controller bytes differ from CodeHead' }
+$contextAtResume = Get-Content -Raw -LiteralPath $invocationContextPath | ConvertFrom-Json
+if ((Get-FileHash -Algorithm SHA256 -LiteralPath $invocationContextPath).Hash.ToLowerInvariant() -cne $invocationContextDigest -or
+    $ledgerControllerEvidence -cne $derivedResumeController -or
+    [string]$contextAtResume.runner -cne $derivedResumeController -or
+    (Get-FileHash -Algorithm SHA256 -LiteralPath $derivedResumeController).Hash.ToLowerInvariant() -cne [string]$contextAtResume.runner_sha256) {
+  throw 're-derived resume controller does not match frozen inputs'
+}
+& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $derivedResumeController -ResumeCandidateRun -CandidateLedger $candidateLedgerPath -RecoveryRecord $recoveryRecordPath
+if ($LASTEXITCODE -ne 0) { throw '0602 Windows candidate resume failed' }
+$terminalLedgerDigest = (Get-FileHash -Algorithm SHA256 -LiteralPath $candidateLedgerPath).Hash.ToLowerInvariant()
+```
+
+  A repeat infrastructure interruption is BLOCKED. Any deterministic gate failure or product/test/
+  helper correction creates a new CodeHead and run ID and reruns affected gates plus integrity/
+  inventory. After two contract-gap cycles, stop for acceptance-architecture audit.
+
+  Setup, candidate, optional recovery, and reconciliation run in one Windows PowerShell 5.1
+  process; if an infrastructure restart requires a fresh process, the operator first reloads the
+  verified, CodeHead-bound `path_contract_0600.ps1` before reading any recovery path.
+
+- [ ] After the Windows shard passes, reconcile its exact inventory and require the explicit module
+  outcome `SOFTWARE_COMPLETE_HARDWARE_PENDING`:
+
+```powershell
+$invocationContextPath = ConvertTo-CanonicalAbsolutePath -Path $invocationContextPath -Name 'invocation context'
+$candidateLedgerPath = ConvertTo-CanonicalAbsolutePath -Path $candidateLedgerPath -Name 'candidate ledger'
+$contextAtReconcile = Get-Content -Raw -LiteralPath $invocationContextPath | ConvertFrom-Json
+$ledgerAtReconcile = Get-Content -Raw -LiteralPath $candidateLedgerPath | ConvertFrom-Json
+$currentLedgerDigest = (Get-FileHash -Algorithm SHA256 -LiteralPath $candidateLedgerPath).Hash.ToLowerInvariant()
+$requiredLedgerFields = @('schema','module','candidate_run_id','expected_code_head','controller_path','candidate_root','evidence_root','catalog_sha256','performance_sha256','support_profile_sha256','checkpoint','state','created_at_utc','updated_at_utc')
+$actualLedgerFields = @($ledgerAtReconcile.PSObject.Properties.Name | Sort-Object)
+if ([string]::Join("`n",$actualLedgerFields) -cne [string]::Join("`n",($requiredLedgerFields | Sort-Object))) {
+  throw 'wrapper ledger does not contain exactly the canonical fields'
+}
+if ($currentLedgerDigest -cne $terminalLedgerDigest) { throw 'candidate ledger changed after terminal wrapper result' }
+if ((Get-FileHash -Algorithm SHA256 -LiteralPath $invocationContextPath).Hash.ToLowerInvariant() -cne $invocationContextDigest) {
+  throw 'candidate invocation context changed'
+}
+$ledgerControllerBootstrap = [string]$ledgerAtReconcile.controller_path
+if ([string]::IsNullOrWhiteSpace($ledgerControllerBootstrap) -or
+    $ledgerControllerBootstrap -match '^[A-Za-z]:[^\\/]' -or
+    $ledgerControllerBootstrap -match '^[\\/](?![\\/])' -or
+    $ledgerControllerBootstrap.StartsWith('\\?\') -or
+    $ledgerControllerBootstrap.StartsWith('\\.\') -or
+    $ledgerControllerBootstrap.StartsWith('\??\') -or
+    -not [System.IO.Path]::IsPathRooted($ledgerControllerBootstrap) -or
+    [System.IO.Path]::GetFullPath($ledgerControllerBootstrap) -cne $ledgerControllerBootstrap) {
+  throw 'invalid bootstrap controller path'
+}
+$bootstrapWorktree = Split-Path -Parent (Split-Path -Parent (Split-Path -Parent $ledgerControllerBootstrap))
+$currentHead = (git -C $bootstrapWorktree rev-parse --verify 'HEAD^{commit}').Trim().ToLowerInvariant()
+$expectedBootstrapHead = [string]$ledgerAtReconcile.expected_code_head
+if ($LASTEXITCODE -ne 0 -or $currentHead -cnotmatch '^[0-9a-f]{40}$' -or
+    $expectedBootstrapHead -cnotmatch '^[0-9a-f]{40}$' -or
+    $currentHead -cne $expectedBootstrapHead -or
+    $currentHead -cne [string]$contextAtReconcile.expected_code_head) {
+  throw 'frozen worktree is not at the exact candidate HEAD'
+}
+$currentOrigin = ((git -C $bootstrapWorktree config --get remote.origin.url) | Out-String).Trim()
+if ($LASTEXITCODE -ne 0 -or $currentOrigin -cne 'https://github.com/XiaoyaoLinghao/stm32-toolkit.git') {
+  throw 'frozen worktree origin is not the canonical repository URL'
+}
+$currentStatus = @(git -C $bootstrapWorktree status --porcelain=v1 --untracked-files=all)
+if ($LASTEXITCODE -ne 0 -or $currentStatus.Count -ne 0) { throw 'frozen worktree is not clean' }
+$pathContract = Join-Path $bootstrapWorktree 'tools\release\path_contract_0600.ps1'
+if (-not (Test-Path -LiteralPath $pathContract -PathType Leaf)) { throw 'missing path contract' }
+$pathContractBlob = (git -C $bootstrapWorktree rev-parse "$currentHead`:tools/release/path_contract_0600.ps1").Trim()
+$workingPathContractBlob = (git -C $bootstrapWorktree hash-object -- $pathContract).Trim()
+if ($pathContractBlob -cnotmatch '^[0-9a-f]{40}$' -or $workingPathContractBlob -cne $pathContractBlob) { throw 'path contract is not committed at CodeHead' }
+. $pathContract
+$frozenWorktree = ConvertTo-CanonicalAbsolutePath -Path $bootstrapWorktree -Name 'frozen worktree'
+$fixedPaths = [ordered]@{
+  controller = 'tools/release/run_0600_candidate.ps1'
+  verifier = 'tools/release/verify_0600_release.py'
+  catalog = 'tools/release/gates_0600.json'
+  performance = 'tools/release/performance_0600.json'
+}
+$resolved = @{}
+foreach ($name in $fixedPaths.Keys) {
+  $relative = $fixedPaths[$name]
+  $absolute = ConvertTo-CanonicalAbsolutePath -Path (Join-Path $frozenWorktree ($relative -replace '/', '\')) -Name "re-derived $name"
+  if (-not (Test-Path -LiteralPath $absolute -PathType Leaf)) { throw "missing re-derived $name" }
+  $committedBlob = (git -C $frozenWorktree rev-parse "$currentHead`:$relative").Trim()
+  $workingBlob = (git -C $frozenWorktree hash-object -- $absolute).Trim()
+  if ($committedBlob -cnotmatch '^[0-9a-f]{40}$' -or $workingBlob -cne $committedBlob) { throw "$name bytes differ from CodeHead" }
+  $resolved[$name] = $absolute
+}
+$derivedController = $resolved.controller
+$derivedVerifier = $resolved.verifier
+$derivedCatalog = $resolved.catalog
+$derivedPerformance = $resolved.performance
+$ledgerControllerEvidence = ConvertTo-CanonicalAbsolutePath -Path ([string]$ledgerAtReconcile.controller_path) -Name 'ledger controller evidence'
+$candidateRoot = ConvertTo-CanonicalAbsolutePath -Path ([string]$contextAtReconcile.candidate_root) -Name 'candidate root'
+$supportProfile = ConvertTo-CanonicalAbsolutePath -Path ([string]$contextAtReconcile.support_profile) -Name 'support profile'
+$actualControllerDigest = (Get-FileHash -Algorithm SHA256 -LiteralPath $derivedController).Hash.ToLowerInvariant()
+$actualVerifierDigest = (Get-FileHash -Algorithm SHA256 -LiteralPath $derivedVerifier).Hash.ToLowerInvariant()
+$actualCatalogDigest = (Get-FileHash -Algorithm SHA256 -LiteralPath $derivedCatalog).Hash.ToLowerInvariant()
+$actualPerformanceDigest = (Get-FileHash -Algorithm SHA256 -LiteralPath $derivedPerformance).Hash.ToLowerInvariant()
+$actualSupportDigest = (Get-FileHash -Algorithm SHA256 -LiteralPath $supportProfile).Hash.ToLowerInvariant()
+if ($ledgerAtReconcile.candidate_run_id -cne $contextAtReconcile.candidate_run_id -or
+    $ledgerAtReconcile.schema -cne 'stm32-candidate-ledger/1' -or
+    $ledgerAtReconcile.module -cne 'STM32TK-0602' -or
+    $ledgerAtReconcile.expected_code_head -cne $contextAtReconcile.expected_code_head -or
+    $currentHead -cne $contextAtReconcile.expected_code_head -or
+    [string]$contextAtReconcile.repo_root -cne $frozenWorktree -or
+    $ledgerControllerEvidence -cne $derivedController -or
+    [string]$contextAtReconcile.runner -cne $derivedController -or
+    [string]$contextAtReconcile.verifier -cne $derivedVerifier -or
+    [string]$contextAtReconcile.catalog -cne $derivedCatalog -or
+    [string]$contextAtReconcile.performance -cne $derivedPerformance -or
+    $ledgerAtReconcile.candidate_root -cne $contextAtReconcile.candidate_root -or
+    $ledgerAtReconcile.evidence_root -cne $contextAtReconcile.evidence_root -or
+    $actualControllerDigest -cne [string]$contextAtReconcile.runner_sha256 -or
+    $actualVerifierDigest -cne [string]$contextAtReconcile.verifier_sha256 -or
+    $actualCatalogDigest -cne [string]$contextAtReconcile.catalog_sha256 -or
+    $actualCatalogDigest -cne [string]$ledgerAtReconcile.catalog_sha256 -or
+    $actualPerformanceDigest -cne [string]$contextAtReconcile.performance_sha256 -or
+    $actualPerformanceDigest -cne [string]$ledgerAtReconcile.performance_sha256 -or
+    $actualSupportDigest -cne [string]$contextAtReconcile.support_profile_sha256 -or
+    $actualSupportDigest -cne [string]$ledgerAtReconcile.support_profile_sha256 -or
+    $ledgerAtReconcile.state -cne 'passed') {
+  throw 'wrapper ledger differs from original candidate inputs'
+}
+# The exact ledger has no verifier_sha256 field: verifier binds to the immutable context digest;
+# catalog, performance, and support profile bind to both context and ledger digests above.
+$candidateRunId = [string]$ledgerAtReconcile.candidate_run_id
+$codeHead = [string]$ledgerAtReconcile.expected_code_head
+& py -3.12 $derivedVerifier candidate-evidence --module $module --candidate-run-id $candidateRunId --expected-shards windows --expected-outcome SOFTWARE_COMPLETE_HARDWARE_PENDING --evidence $candidateRoot --expected-code-head $codeHead --catalog $derivedCatalog --performance $derivedPerformance --support-profile $supportProfile
+if ($LASTEXITCODE -ne 0) { throw '0602 candidate evidence reconciliation failed' }
 ```
 
   Only after reconciliation PASS create a report whose sole change is its return path. Record
   accepted base/product CodeHead, `candidateRunId`, per-gate owner/platform/tool/command/result,
-  coverage/performance, recovery attempts if any, and external paths/bytes/SHA-256. Verify
-  `git diff --check` and the staged path, then commit locally:
+  coverage/performance, recovery attempts if any, Windows evidence paths/bytes/SHA-256, the exact
+  `SOFTWARE_COMPLETE_HARDWARE_PENDING` outcome, and the post-0603 unified 0.4+0.6 hardware gate
+  required for final v0.6.0. Do not claim Linux or real-hardware PASS. Verify `git diff --check`
+  and the staged path, then commit locally:
 
 ```powershell
-git add docs/openclaw/returns/STM32TK-0602-DIAGNOSTIC-LOOP/r001-implementation-report.md
+git add docs/codex/returns/STM32TK-0602-DIAGNOSTIC-LOOP/implementation-report.md
 git diff --cached --name-only
 git commit -m "docs(STM32TK-0602): record accepted diagnostic CodeHead"
 ```
 
-Expected: report-only child commit becomes 0603's accepted base. Stop without remote actions.
+Expected: the Codex report-only child commit becomes 0603's accepted base while preserving the
+hardware-pending gate. Stop without remote actions.

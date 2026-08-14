@@ -1,5 +1,10 @@
 # OpenClaw Start Here
 
+> **Retired 2026-08-15:** The user permanently assigned project implementation,
+> implementation testing, review, and acceptance to Codex and its local derived
+> agents. Do not dispatch new work through this procedure. The remaining text is
+> preserved only to interpret historical OpenClaw branches, work orders, and reports.
+
 This repository uses document-based GitHub delivery. Conversation history and files stored only on Codex’s computer are not inputs.
 
 ## Repository contract
