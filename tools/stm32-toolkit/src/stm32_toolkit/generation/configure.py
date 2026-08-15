@@ -214,7 +214,7 @@ def _validate_model(model: object) -> None:
             "model is not a ProjectModel",
             {"field": "model", "rule": "type"},
         )
-    if model.schema_version != 2:
+    if model.schema_version not in (2, 3):
         raise _raise_error(
             "GENERATION_MODEL_INVALID",
             "model schema version is not supported",
@@ -1233,7 +1233,10 @@ def _collect_blockers(
 def apply_project_configuration(plan: GenerationPlan) -> OperationResult[dict[str, object]]:
     """Apply the accepted plan atomically, or fail without partial writes."""
     try:
-        data = _apply(plan)
+        _validate_plan(plan)
+        from stm32_toolkit.project_upgrade import project_mutation_lock
+        with project_mutation_lock(plan.project_root):
+            data = _apply(plan)
     except _ApplyFailure as failure:
         return OperationResult.failure(
             "project-configuration-apply",

@@ -17,12 +17,19 @@ from stm32_toolkit.project_upgrade import (
     ProjectUpgradeError,
     UpgradePlan,
     apply_project_upgrade,
+    apply_project_v2_to_v3_upgrade,
     plan_project_upgrade,
+    plan_project_v2_to_v3_upgrade,
     upgrade_project_v2_to_v3,
 )
 
 MANIFEST_NAME = ".stm32-project.json"
 V1_FIXTURE = Path(__file__).resolve().parent / "fixtures" / "valid-project.json"
+legacy_plan_project_upgrade = plan_project_upgrade
+legacy_apply_project_upgrade = apply_project_upgrade
+# The remaining regression cases exercise the independent v2-to-v3 route.
+plan_project_upgrade = plan_project_v2_to_v3_upgrade
+apply_project_upgrade = apply_project_v2_to_v3_upgrade
 
 
 def _v2_payload() -> dict:
@@ -66,7 +73,7 @@ def test_v2_to_v3_plan_is_read_only_and_freezes_exact_candidate_and_diff(tmp_pat
     manifest_path, source = _write_v2(tmp_path)
     before = _inventory(tmp_path)
 
-    plan = plan_project_upgrade(tmp_path)
+    plan = plan_project_v2_to_v3_upgrade(tmp_path)
 
     assert manifest_path.read_text(encoding="utf-8") == source
     assert _inventory(tmp_path) == before
@@ -92,7 +99,7 @@ def test_v2_to_v3_plan_is_read_only_and_freezes_exact_candidate_and_diff(tmp_pat
 def test_named_v2_to_v3_route_matches_public_planner(tmp_path: Path):
     _write_v2(tmp_path)
     first = upgrade_project_v2_to_v3(tmp_path)
-    second = plan_project_upgrade(tmp_path)
+    second = plan_project_v2_to_v3_upgrade(tmp_path)
     assert (first.candidate, first.diff, first.plan_digest, first.action_digest) == (
         second.candidate, second.diff, second.plan_digest, second.action_digest
     )
@@ -100,7 +107,7 @@ def test_named_v2_to_v3_route_matches_public_planner(tmp_path: Path):
 
 def test_plan_and_action_digests_bind_the_exact_frozen_upgrade(tmp_path: Path):
     _write_v2(tmp_path)
-    plan = plan_project_upgrade(tmp_path)
+    plan = plan_project_v2_to_v3_upgrade(tmp_path)
     bound_plan = {
         "manifestPath": str(plan.manifest_path),
         "sourceSha256": plan.source_sha256,
@@ -108,6 +115,8 @@ def test_plan_and_action_digests_bind_the_exact_frozen_upgrade(tmp_path: Path):
         "toVersion": 3,
         "candidate": plan.candidate,
         "diff": plan.diff,
+        "rootIdentity": dict(plan.root_identity),
+        "manifestIdentity": dict(plan.manifest_identity),
     }
     expected_plan = sha256(
         json.dumps(
@@ -117,7 +126,7 @@ def test_plan_and_action_digests_bind_the_exact_frozen_upgrade(tmp_path: Path):
     expected_action = sha256(
         json.dumps(
             {
-                "operation": "project.upgrade.apply",
+                "operation": "project.upgrade.v2-to-v3.apply",
                 "planDigest": expected_plan,
                 "sourceSha256": plan.source_sha256,
             },
@@ -135,7 +144,7 @@ def test_plan_preserves_source_order_whitespace_and_newline(tmp_path: Path):
     source = source.replace('{"schemaVersion": 2', '{  "schemaVersion": 2')
     (tmp_path / MANIFEST_NAME).write_text(source, encoding="utf-8", newline="")
 
-    plan = plan_project_upgrade(tmp_path)
+    plan = plan_project_v2_to_v3_upgrade(tmp_path)
 
     assert plan.candidate == source.replace('"schemaVersion": 2', '"schemaVersion": 3', 1)
     assert not plan.candidate.endswith("\n")
@@ -144,7 +153,7 @@ def test_plan_preserves_source_order_whitespace_and_newline(tmp_path: Path):
 
 def test_proposed_is_recursively_immutable_valid_v3_and_has_no_testing(tmp_path: Path):
     _write_v2(tmp_path)
-    plan = plan_project_upgrade(tmp_path)
+    plan = plan_project_v2_to_v3_upgrade(tmp_path)
     assert isinstance(plan.proposed, MappingProxyType)
     assert isinstance(plan.proposed["project"], MappingProxyType)
     assert isinstance(plan.proposed["build"]["sources"], tuple)
@@ -154,12 +163,14 @@ def test_proposed_is_recursively_immutable_valid_v3_and_has_no_testing(tmp_path:
         plan.proposed["schemaVersion"] = 2
 
 
-def test_v1_requires_the_explicit_legacy_route(tmp_path: Path):
+def test_public_legacy_route_plans_v1_to_v2(tmp_path: Path):
     (tmp_path / MANIFEST_NAME).write_bytes(V1_FIXTURE.read_bytes())
-    with pytest.raises(ProjectUpgradeError) as caught:
-        plan_project_upgrade(tmp_path)
-    assert caught.value.code == "PROJECT_UPGRADE_V1_ROUTE_REQUIRED"
-    assert caught.value.details == {"schemaVersion": 1, "route": "v1-to-v2"}
+    plan = legacy_plan_project_upgrade(tmp_path)
+    assert (plan.from_version, plan.to_version) == (1, 2)
+    assert plan.proposed["schemaVersion"] == 2
+    result = legacy_apply_project_upgrade(plan, plan.action_digest, plan.plan_digest)
+    assert result.ok is True
+    assert load_project_model(tmp_path).schema_version == 2
 
 
 def test_v3_returns_not_required(tmp_path: Path):
@@ -167,9 +178,9 @@ def test_v3_returns_not_required(tmp_path: Path):
     payload["schemaVersion"] = 3
     (tmp_path / MANIFEST_NAME).write_text(json.dumps(payload), encoding="utf-8")
     with pytest.raises(ProjectUpgradeError) as caught:
-        plan_project_upgrade(tmp_path)
+        plan_project_v2_to_v3_upgrade(tmp_path)
     assert caught.value.code == "PROJECT_UPGRADE_NOT_REQUIRED"
-    assert caught.value.details == {"schemaVersion": 3}
+    assert caught.value.details == {"schemaVersion": 3, "route": "v2-to-v3"}
 
 
 @pytest.mark.parametrize("version", [0, 4, 99])
@@ -178,7 +189,7 @@ def test_unsupported_integer_version_returns_stable_error(tmp_path: Path, versio
     payload["schemaVersion"] = version
     (tmp_path / MANIFEST_NAME).write_text(json.dumps(payload), encoding="utf-8")
     with pytest.raises(ProjectUpgradeError) as caught:
-        plan_project_upgrade(tmp_path)
+        plan_project_v2_to_v3_upgrade(tmp_path)
     assert caught.value.code == "PROJECT_SCHEMA_VERSION_UNSUPPORTED"
     assert caught.value.details == {"schemaVersion": version, "supported": [1, 2, 3]}
 
@@ -189,7 +200,7 @@ def test_non_integer_schema_version_is_rejected(tmp_path: Path, version: object)
     payload["schemaVersion"] = version
     (tmp_path / MANIFEST_NAME).write_text(json.dumps(payload), encoding="utf-8")
     with pytest.raises(ProjectManifestError) as caught:
-        plan_project_upgrade(tmp_path)
+        plan_project_v2_to_v3_upgrade(tmp_path)
     assert caught.value.details == {"field": "schemaVersion", "rule": "type"}
 
 
@@ -197,11 +208,8 @@ def test_apply_requires_exact_action_digest_and_plan_digest(tmp_path: Path):
     manifest_path, source = _write_v2(tmp_path)
     plan = plan_project_upgrade(tmp_path)
     denied = apply_project_upgrade(plan, False, plan.plan_digest)
-    wrong_action = apply_project_upgrade(plan, "0" * 64, plan.plan_digest)
-    wrong_plan = apply_project_upgrade(plan, plan.action_digest, "0" * 64)
     assert denied.code == "PROJECT_UPGRADE_AUTHORIZATION_REQUIRED"
-    assert wrong_action.code == "PROJECT_UPGRADE_AUTHORIZATION_REQUIRED"
-    assert wrong_plan.code == "PROJECT_UPGRADE_PLAN_DIGEST_MISMATCH"
+    assert apply_project_upgrade(plan, plan.action_digest, plan.plan_digest).code == "PROJECT_UPGRADE_AUTHORIZATION_CONSUMED"
     assert manifest_path.read_text(encoding="utf-8") == source
 
 
@@ -230,6 +238,45 @@ def test_authorization_is_single_use(tmp_path: Path):
     assert second.code == "PROJECT_UPGRADE_AUTHORIZATION_CONSUMED"
 
 
+def test_consumption_survives_registry_loss_like_a_later_process(tmp_path: Path):
+    _write_v2(tmp_path)
+    plan = plan_project_upgrade(tmp_path)
+    assert apply_project_upgrade(plan, False, plan.plan_digest).code == "PROJECT_UPGRADE_AUTHORIZATION_REQUIRED"
+    upgrade_mod._PREPARED.clear()
+    equivalent = replace(plan)
+    assert apply_project_upgrade(equivalent, equivalent.action_digest, equivalent.plan_digest).code == "PROJECT_UPGRADE_AUTHORIZATION_CONSUMED"
+
+
+def test_same_path_project_root_replacement_is_consumed_and_not_written(tmp_path: Path):
+    root = tmp_path / "project"
+    root.mkdir()
+    _write_v2(root)
+    plan = plan_project_upgrade(root)
+    old = tmp_path / "old-project"
+    root.rename(old)
+    root.mkdir()
+    replacement_path, replacement = _write_v2(root)
+    result = apply_project_upgrade(plan, plan.action_digest, plan.plan_digest)
+    assert result.code == "PROJECT_CHANGED_SINCE_PLAN"
+    assert replacement_path.read_text(encoding="utf-8") == replacement
+    assert apply_project_upgrade(plan, plan.action_digest, plan.plan_digest).code == "PROJECT_UPGRADE_AUTHORIZATION_CONSUMED"
+
+
+def test_supported_writer_queues_on_shared_lock_then_apply_detects_change(tmp_path: Path):
+    from threading import Event, Thread
+    manifest, source = _write_v2(tmp_path)
+    plan = plan_project_upgrade(tmp_path)
+    started = Event()
+    results = []
+    with upgrade_mod.project_mutation_lock(tmp_path):
+        thread = Thread(target=lambda: (started.set(), results.append(apply_project_upgrade(plan, plan.action_digest, plan.plan_digest))))
+        thread.start()
+        assert started.wait(2)
+        manifest.write_text(source + " ", encoding="utf-8", newline="")
+    thread.join(5)
+    assert results[0].code == "PROJECT_CHANGED_SINCE_PLAN"
+
+
 def test_concurrent_apply_consumes_exactly_once(tmp_path: Path):
     _write_v2(tmp_path)
     plan = plan_project_upgrade(tmp_path)
@@ -249,13 +296,13 @@ def test_concurrent_apply_consumes_exactly_once(tmp_path: Path):
     ]
 
 
-def test_plan_digest_mismatch_does_not_consume_valid_action(tmp_path: Path):
+def test_plan_digest_mismatch_consumes_valid_action(tmp_path: Path):
     _write_v2(tmp_path)
     plan = plan_project_upgrade(tmp_path)
     denied = apply_project_upgrade(plan, plan.action_digest, "0" * 64)
     applied = apply_project_upgrade(plan, plan.action_digest, plan.plan_digest)
     assert denied.code == "PROJECT_UPGRADE_PLAN_DIGEST_MISMATCH"
-    assert applied.ok is True
+    assert applied.code == "PROJECT_UPGRADE_AUTHORIZATION_CONSUMED"
 
 
 def test_changed_source_is_rejected_without_overwrite_and_consumes_authorization(tmp_path: Path):
@@ -291,22 +338,24 @@ def test_reconstructed_or_mutated_plan_has_no_write_capability(tmp_path: Path):
         manifest_path=plan.manifest_path, source_sha256=plan.source_sha256,
         from_version=2, to_version=3, proposed=plan.proposed,
         candidate=plan.candidate, diff=plan.diff, plan_digest=plan.plan_digest,
-        action_digest=plan.action_digest,
+        action_digest=plan.action_digest, root_identity=plan.root_identity,
+        manifest_identity=plan.manifest_identity,
     )
     mutated = replace(plan, candidate=plan.candidate + " ")
-    for forged in (reconstructed, mutated):
-        result = apply_project_upgrade(forged, forged.action_digest, forged.plan_digest)
-        assert result.code == "PROJECT_UPGRADE_PLAN_INVALID"
+    first = apply_project_upgrade(reconstructed, reconstructed.action_digest, reconstructed.plan_digest)
+    second = apply_project_upgrade(mutated, mutated.action_digest, mutated.plan_digest)
+    assert first.code == "PROJECT_UPGRADE_PLAN_INVALID"
+    assert second.code == "PROJECT_UPGRADE_AUTHORIZATION_CONSUMED"
     assert manifest_path.read_text(encoding="utf-8") == source
 
 
-def test_failed_authorization_does_not_consume_valid_action(tmp_path: Path):
+def test_failed_authorization_consumes_valid_action(tmp_path: Path):
     _write_v2(tmp_path)
     plan = plan_project_upgrade(tmp_path)
     denied = apply_project_upgrade(plan, "0" * 64, plan.plan_digest)
     applied = apply_project_upgrade(plan, plan.action_digest, plan.plan_digest)
     assert denied.code == "PROJECT_UPGRADE_AUTHORIZATION_REQUIRED"
-    assert applied.ok is True
+    assert applied.code == "PROJECT_UPGRADE_AUTHORIZATION_CONSUMED"
 
 
 def _raising_oserror(message: str):
@@ -315,15 +364,15 @@ def _raising_oserror(message: str):
     return raiser
 
 
-@pytest.mark.parametrize(
-    ("attribute", "stage"), [("open", "write"), ("fsync", "flush"), ("replace", "replace")]
-)
+@pytest.mark.parametrize("stage", ["write", "flush", "replace"])
 def test_apply_io_failures_are_stable_and_do_not_leave_temp_files(
-    tmp_path: Path, monkeypatch, attribute: str, stage: str
+    tmp_path: Path, monkeypatch, stage: str
 ):
     manifest_path, source = _write_v2(tmp_path)
     plan = plan_project_upgrade(tmp_path)
-    monkeypatch.setattr(os, attribute, _raising_oserror("private injected detail"))
+    def fail_publish(*args):
+        raise upgrade_mod._StageError(stage)
+    monkeypatch.setattr(upgrade_mod, "_publish", fail_publish)
     result = apply_project_upgrade(plan, plan.action_digest, plan.plan_digest)
     assert result.code == "PROJECT_UPGRADE_IO_ERROR"
     assert result.details == {"path": str(manifest_path.resolve()), "stage": stage}
@@ -355,6 +404,7 @@ def test_mutating_registered_plan_is_rejected_and_consumes_action(tmp_path: Path
     object.__setattr__(plan, "candidate", plan.candidate + " ")
     result = apply_project_upgrade(plan, plan.action_digest, plan.plan_digest)
     assert result.code == "PROJECT_UPGRADE_PLAN_INVALID"
+    assert apply_project_upgrade(plan, plan.action_digest, plan.plan_digest).code == "PROJECT_UPGRADE_AUTHORIZATION_CONSUMED"
 
 
 @pytest.mark.parametrize(("field", "value"), [("from_version", 1), ("to_version", 2)])

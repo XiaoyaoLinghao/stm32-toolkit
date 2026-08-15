@@ -176,12 +176,12 @@
           "additionalProperties": false,
           "required": ["buildPreset", "ctestPreset", "labels", "timeout_seconds", "environment"],
           "properties": {
-            "buildPreset": {"type": "string", "minLength": 1},
-            "ctestPreset": {"type": "string", "minLength": 1},
+            "buildPreset": {"type": "string", "minLength": 1, "maxLength": 128, "description": "NFC and the 128 UTF-8 byte limit are enforced by the model layer."},
+            "ctestPreset": {"type": "string", "minLength": 1, "maxLength": 128, "description": "NFC and the 128 UTF-8 byte limit are enforced by the model layer."},
             "labels": {
               "type": "array",
               "maxItems": 32,
-              "items": {"type": "string", "minLength": 1},
+              "items": {"type": "string", "minLength": 1, "maxLength": 128, "description": "NFC and the 128 UTF-8 byte limit are enforced by the model layer."},
               "uniqueItems": true
             },
             "timeout_seconds": {"type": "integer", "minimum": 1, "maximum": 3600},
@@ -196,6 +196,7 @@
                   "items": {
                     "type": "string",
                     "minLength": 1,
+                    "maxLength": 128,
                     "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
                   },
                   "uniqueItems": true
@@ -203,8 +204,8 @@
                 "values": {
                   "type": "object",
                   "maxProperties": 32,
-                  "propertyNames": {"pattern": "^[A-Za-z_][A-Za-z0-9_]*$"},
-                  "additionalProperties": {"type": "string"}
+                  "propertyNames": {"maxLength": 128, "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"},
+                  "additionalProperties": {"type": "string", "maxLength": 4096, "description": "NFC and the 4096 UTF-8 byte limit are enforced by the model layer."}
                 }
               }
             }
@@ -215,7 +216,7 @@
           "additionalProperties": false,
           "required": ["executable", "timeout_seconds", "transport"],
           "properties": {
-            "executable": {"type": "string", "minLength": 1},
+            "executable": {"type": "string", "minLength": 1, "maxLength": 4096, "pattern": "^(?![A-Za-z]:[\\\\/])(?![\\\\/])(?!.*(?:^|[\\\\/])\\.\\.(?:[\\\\/]|$)).+$", "description": "Must resolve within the real canonical workspace; link/reparse containment and UTF-8/NFC checks are enforced by the model layer."},
             "timeout_seconds": {"type": "integer", "minimum": 1, "maximum": 3600},
             "transport": {
               "type": "object",
@@ -270,6 +271,8 @@
                           "port": {
                             "type": "string",
                             "minLength": 1,
+                            "maxLength": 256,
+                            "description": "NFC and the 256 UTF-8 byte limit are enforced by the model layer.",
                             "pattern": "^[^\\u0000-\\u001F\\u007F]+$"
                           },
                           "baud": {

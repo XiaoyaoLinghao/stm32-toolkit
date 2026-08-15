@@ -10,6 +10,9 @@ from stm32_toolkit.project import ProjectManifest, ProjectManifestError
 
 def test_load_valid_project(tmp_path: Path, copy_fixture):
     copy_fixture("valid-project.json", tmp_path / ".stm32-project.json")
+    from stm32_toolkit.project_upgrade import _build_v2
+    path = tmp_path / ".stm32-project.json"
+    path.write_text(json.dumps(_build_v2(json.loads(path.read_text(encoding="utf-8")))), encoding="utf-8")
     (tmp_path / "App").mkdir()
     (tmp_path / "App/main.c").write_text("int main(void) { return 0; }", encoding="utf-8")
 

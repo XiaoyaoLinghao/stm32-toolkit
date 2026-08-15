@@ -263,8 +263,9 @@ def test_probe_list_is_bounded_read_only_and_closes_backend_without_lease(tmp_pa
     assert not data_root.resolve().exists()
 
 
-def test_flash_derives_target_and_workspace_and_uses_modify_with_exact_pins(tmp_path: Path) -> None:
-    project = _project(tmp_path / "project")
+@pytest.mark.parametrize("schema_version", [2, 3])
+def test_flash_derives_target_and_workspace_and_uses_modify_with_exact_pins(tmp_path: Path, schema_version: int) -> None:
+    project = _project(tmp_path / "project", schema_version=schema_version)
     data_root = tmp_path / "data"
     recorder = _Recorder()
 

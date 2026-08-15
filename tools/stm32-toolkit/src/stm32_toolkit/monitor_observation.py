@@ -577,7 +577,7 @@ def _prepare(
     session = require_safe_session_id(request.session_id)
     model = load_project_model(project)
     if (
-        model.schema_version != 2
+        model.schema_version not in (2, 3)
         or model.project_root != project
         or model.debug.backend != "pyocd"
         or not isinstance(model.debug.target, str)

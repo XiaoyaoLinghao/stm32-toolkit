@@ -758,6 +758,12 @@ def test_run_build_requires_valid_managed_configuration(tmp_path: Path):
     assert result.data is None
 
 
+def test_run_build_accepts_schema_v3_managed_configuration(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    root = prepare_project(tmp_path, overrides={"schemaVersion": 3})
+    install_fake_cmake(monkeypatch, tmp_path)
+    assert run_build(BuildRequest(project_root=root, preset="arm-debug")).ok is True
+
+
 def test_run_build_rejects_drifted_generated_file(tmp_path: Path):
     root = prepare_project(tmp_path, git_repo=False)
     (root / "CMakeLists.txt").write_text("# user edit\n", encoding="utf-8")

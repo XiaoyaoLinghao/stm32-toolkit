@@ -207,9 +207,15 @@ def test_request_has_no_raw_hardware_or_provenance_overrides(debug_env: DebugEnv
         assert not hasattr(value, forbidden)
 
 
+@pytest.mark.parametrize("schema_version", [2, 3])
 def test_open_keeps_exact_observe_lease_and_uses_real_typed_provenance(
-    debug_env: DebugEnv, tmp_path: Path
+    debug_env: DebugEnv, tmp_path: Path, schema_version: int
 ) -> None:
+    if schema_version == 3:
+        manifest = debug_env.root / ".stm32-project.json"
+        payload = json.loads(manifest.read_text(encoding="utf-8"))
+        payload["schemaVersion"] = 3
+        manifest.write_text(json.dumps(payload), encoding="utf-8")
     harness = Harness(debug_env)
     opened = asyncio.run(
         open_monitor_observation(request(debug_env, tmp_path / "data"), _seams=harness.seams())
@@ -225,11 +231,12 @@ def test_open_keeps_exact_observe_lease_and_uses_real_typed_provenance(
     assert "probe-123" not in config.session_root.as_posix()
     assert config.project_root == debug_env.root
 
-    variables = asyncio.run(session.read_variables(("signed32",)))
-    registers = asyncio.run(session.sample_registers(("GPIOA.IDR",)))
-    assert variables.ok is True
-    assert registers.ok is True
-    assert asyncio.run(session.revalidate()).ok is True
+    if schema_version == 2:
+        variables = asyncio.run(session.read_variables(("signed32",)))
+        registers = asyncio.run(session.sample_registers(("GPIOA.IDR",)))
+        assert variables.ok is True
+        assert registers.ok is True
+        assert asyncio.run(session.revalidate()).ok is True
     asyncio.run(session.close())
     assert harness.clients[0].closed is True
     assert harness.supervisors[0].stopped is True

@@ -6,6 +6,7 @@ from importlib import resources
 from pathlib import Path
 
 import pytest
+from jsonschema import Draft202012Validator
 
 from stm32_toolkit import __version__
 import stm32_toolkit.project_model as model_mod
@@ -247,7 +248,7 @@ def test_host_and_target_timeout_bounds_are_strict(
                 "STM32TK_TEST_SEED", "x" * 4097
             ),
             "testing.host.environment.values.STM32TK_TEST_SEED",
-            "maxUtf8Bytes",
+            "maxLength",
         ),
     ],
 )
@@ -268,7 +269,7 @@ def test_labels_and_environment_are_closed_and_bounded(
         (
             lambda host: host.__setitem__("buildPreset", "x" * 129),
             "testing.host.buildPreset",
-            "maxUtf8Bytes",
+            "maxLength",
         ),
         (
             lambda host: host.__setitem__("ctestPreset", "e\u0301"),
@@ -278,7 +279,7 @@ def test_labels_and_environment_are_closed_and_bounded(
         (
             lambda host: host["labels"].__setitem__(0, "x" * 129),
             "testing.host.labels[0]",
-            "maxUtf8Bytes",
+            "maxLength",
         ),
         (
             lambda host: host["labels"].__setitem__(0, "e\u0301"),
@@ -291,7 +292,7 @@ def test_labels_and_environment_are_closed_and_bounded(
                 host["environment"].__setitem__("values", {}),
             ),
             "testing.host.environment.allow[0]",
-            "maxUtf8Bytes",
+            "maxLength",
         ),
     ],
 )
@@ -332,7 +333,7 @@ def test_transport_options_reject_unknown_fields(
     [
         ("", "minLength"),
         ("COM\x00BAD", "pattern"),
-        ("C" * 257, "maxUtf8Bytes"),
+        ("C" * 257, "maxLength"),
         ("e\u0301", "normalized"),
     ],
 )
@@ -357,8 +358,24 @@ def test_target_executable_must_be_workspace_relative(tmp_path: Path, value: str
 
     assert error.details == {
         "field": "testing.target.executable",
-        "rule": "pathWithinProjectRoot",
+        "rule": "pattern",
     }
+
+
+def test_standalone_schema_and_model_layer_acceptance_matrix(tmp_path: Path):
+    schema = json.loads(resources.files("stm32_toolkit").joinpath("schemas/stm32-project.schema.json").read_text(encoding="utf-8"))
+    validator = Draft202012Validator(schema)
+    ascii_too_long = _v3_payload()
+    ascii_too_long["testing"]["host"]["buildPreset"] = "x" * 129
+    assert any(error.validator == "maxLength" for error in validator.iter_errors(ascii_too_long))
+    byte_too_long = _v3_payload()
+    byte_too_long["testing"]["host"]["buildPreset"] = "é" * 65
+    assert not list(validator.iter_errors(byte_too_long))
+    error = _schema_error(tmp_path, byte_too_long)
+    assert error.details == {"field": "testing.host.buildPreset", "rule": "maxUtf8Bytes"}
+    lexical_escape = _v3_payload()
+    lexical_escape["testing"]["target"]["executable"] = "../outside.elf"
+    assert any(error.validator == "pattern" for error in validator.iter_errors(lexical_escape))
 
 
 @pytest.mark.parametrize(
@@ -434,7 +451,7 @@ def test_rtt_control_block_address_is_optional(tmp_path: Path):
         ({}, {"field": "schemaVersion", "rule": "required"}),
         (
             {"schemaVersion": 99},
-            {"schemaVersion": 99, "supported": [1, 2, 3]},
+            {"schemaVersion": 99, "supported": [2, 3]},
         ),
     ],
 )

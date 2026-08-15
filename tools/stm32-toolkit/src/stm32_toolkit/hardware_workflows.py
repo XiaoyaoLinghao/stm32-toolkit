@@ -269,7 +269,7 @@ def _prepare(
     except (ProjectManifestError, TypeError, ValueError):
         raise _fail("HARDWARE_INPUT_INVALID", "Hardware workflow input is invalid") from None
     if (
-        model.schema_version != 2
+        model.schema_version not in (2, 3)
         or model.project_root != project_root
         or model.debug.backend != "pyocd"
         or not isinstance(model.debug.target, str)

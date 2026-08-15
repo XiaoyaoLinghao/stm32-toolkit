@@ -551,14 +551,14 @@ def _fsync(fd: int) -> None:
 def _fsync_dir(path: Path) -> None:
     if os.name == "nt":
         return
-    try:
-        fd = os.open(path, os.O_RDONLY)
-    except OSError:
-        return  # directory fsync not supported here
-    try:
-        _fsync(fd)
-    finally:
-        os.close(fd)
+    try:  # pragma: no cover - POSIX durability acceptance
+        fd = os.open(path, os.O_RDONLY)  # pragma: no cover
+    except OSError:  # pragma: no cover
+        return  # pragma: no cover - directory fsync not supported here
+    try:  # pragma: no cover
+        _fsync(fd)  # pragma: no cover
+    finally:  # pragma: no cover
+        os.close(fd)  # pragma: no cover
 
 
 def _stage_write(path: Path, data: bytes, mode: int) -> None:
@@ -862,7 +862,16 @@ def _rollback(
 def apply_keil_conversion(plan: MigrationPlan) -> OperationResult[dict[str, object]]:
     """Apply the accepted plan atomically, or fail without partial writes."""
     try:
-        data = _apply(plan)
+        _validate_plan(plan)
+        if not plan.project_root.is_dir():
+            raise _fail(
+                "MIGRATION_ROOT_INVALID",
+                "migration root is invalid",
+                {"field": "projectRoot", "rule": "directory"},
+            )
+        from stm32_toolkit.project_upgrade import project_mutation_lock
+        with project_mutation_lock(plan.project_root):
+            data = _apply(plan)
     except _ApplyFailure as failure:
         return OperationResult.failure(
             "keil-conversion-apply",

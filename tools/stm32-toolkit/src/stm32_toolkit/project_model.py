@@ -372,7 +372,7 @@ def _model_schema_version(payload: object) -> int:
         raise ProjectManifestError(
             "PROJECT_SCHEMA_VERSION_UNSUPPORTED",
             "Project manifest schema version is not supported",
-            {"schemaVersion": version, "supported": [1, 2, 3]},
+            {"schemaVersion": version, "supported": [2, 3]},
         )
     return int(version)
 

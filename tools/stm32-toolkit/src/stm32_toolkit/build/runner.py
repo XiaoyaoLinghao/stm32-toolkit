@@ -224,7 +224,7 @@ def _require_managed_configuration(root: Path) -> ProjectModel:
         model = load_project_model(root)
     except ProjectManifestError as error:
         raise build_error(BUILD_PROJECT_INVALID, error.message, error.details) from None
-    if model.schema_version != 2:
+    if model.schema_version not in (2, 3):
         raise build_error(
             BUILD_PROJECT_INVALID,
             "project model is invalid",

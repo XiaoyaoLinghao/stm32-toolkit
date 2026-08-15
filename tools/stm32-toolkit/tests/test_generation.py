@@ -702,12 +702,9 @@ def test_schema_v1_model_is_rejected(tmp_path):
         "debug": {"backend": "pyocd", "target": "stm32f407vg"},
     }
     root = write_project(tmp_path / "proj", payload)
-    model = load_project_model(root)
-    assert model.schema_version == 1
-    with pytest.raises(GenerationError) as error:
-        plan_project_configuration(model)
-    assert error.value.code == "GENERATION_MODEL_INVALID"
-    assert error.value.details == {"field": "schemaVersion", "rule": "version"}
+    with pytest.raises(ProjectManifestError) as error:
+        load_project_model(root)
+    assert error.value.code == "PROJECT_SCHEMA_VERSION_UNSUPPORTED"
 
 
 def test_missing_project_root_is_rejected(tmp_path):
@@ -3182,6 +3179,9 @@ def test_apply_rollback_temp_unlink_failure(monkeypatch, tmp_path):
 def test_apply_rollback_created_file_unlink_failure(monkeypatch, tmp_path):
     root = write_project(tmp_path / "proj")
     plan = plan_for(root)
+    from stm32_toolkit.project_upgrade import project_mutation_lock
+    with project_mutation_lock(root):
+        pass
     original = os.unlink
 
     def failing_unlink(path, *args, **kwargs):
@@ -3542,6 +3542,9 @@ def test_apply_real_fsync_error_converts_to_fsync_phase(monkeypatch, tmp_path):
     root = write_project(tmp_path / "proj")
     before = tree_snapshot(root)
     plan = plan_for(root)
+    from stm32_toolkit.project_upgrade import project_mutation_lock
+    with project_mutation_lock(root):
+        pass
 
     def failing_fsync(fd):
         raise OSError("injected fsync failure")

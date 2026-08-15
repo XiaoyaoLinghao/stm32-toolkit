@@ -92,39 +92,14 @@ def _set_path(payload: dict, field: str, value: object) -> None:
         container[parts[-1]] = value
 
 
-def test_v1_load_returns_frozen_compatibility_model(tmp_path: Path):
+def test_v1_load_requires_explicit_upgrade_route(tmp_path: Path):
     manifest_path = _write_manifest(tmp_path, _v1_payload())
     before_bytes = manifest_path.read_bytes()
     before_mtime = manifest_path.stat().st_mtime_ns
 
-    model = load_project_model(tmp_path)
-
-    assert isinstance(model, ProjectModel)
-    assert model.project_root == tmp_path.resolve()
-    assert model.schema_version == 1
-    assert model.logical_project_id == UUID("12345678-1234-5678-1234-567812345678")
-    assert model.project == ProjectInfo(name="firmware", origin="manual")
-    assert model.target == TargetSpec("STM32F429ZGTx", "cortex-m4", None, None, None)
-    assert model.framework == FrameworkSpec(type="spl", version=None)
-    assert model.build == BuildSpec(
-        sources=("App/main.c",),
-        include_paths=(),
-        defines=(),
-        compile_options=(),
-        assembly_sources=(),
-        presets=(),
-        elf="build-fw/firmware.elf",
-    )
-    assert model.memory == MemorySpec(source="manual", regions=())
-    assert model.debug == DebugSpec(backend="pyocd", target="stm32f429zgtx", svd=None)
-    assert model.generation == GenerationSpec(
-        tool="stm32-toolkit",
-        version=__version__,
-        cube_mx_ioc=None,
-        managed_manifest=".stm32-toolkit/generated-files.json",
-        generated_directories=(),
-        user_directories=(),
-    )
+    with pytest.raises(ProjectManifestError) as caught:
+        load_project_model(tmp_path)
+    assert caught.value.code == "PROJECT_SCHEMA_VERSION_UNSUPPORTED"
 
     assert manifest_path.read_bytes() == before_bytes
     assert manifest_path.stat().st_mtime_ns == before_mtime
@@ -139,16 +114,15 @@ def test_v1_load_returns_frozen_compatibility_model(tmp_path: Path):
         ("custom", "manual"),
     ],
 )
-def test_v1_model_maps_origin_to_memory_source(tmp_path: Path, origin: str, expected_source: str):
+def test_v1_origins_all_require_explicit_upgrade_route(tmp_path: Path, origin: str, expected_source: str):
     payload = _v1_payload()
     payload["project"]["origin"] = origin
 
     _write_manifest(tmp_path, payload)
 
-    model = load_project_model(tmp_path)
-    assert model.schema_version == 1
-    assert model.memory.source == expected_source
-    assert model.memory.regions == ()
+    with pytest.raises(ProjectManifestError) as caught:
+        load_project_model(tmp_path)
+    assert caught.value.code == "PROJECT_SCHEMA_VERSION_UNSUPPORTED"
 
 
 def test_v2_load_returns_exact_frozen_model(tmp_path: Path):
@@ -323,14 +297,14 @@ def test_non_integer_schema_version_returns_type_error(tmp_path: Path, bad_versi
 
 def test_unsupported_integer_schema_version_returns_stable_error(tmp_path: Path):
     payload = _v2_payload()
-    payload["schemaVersion"] = 3
+    payload["schemaVersion"] = 4
     _write_manifest(tmp_path, payload)
 
     with pytest.raises(ProjectManifestError) as error:
         load_project_model(tmp_path)
 
     assert error.value.code == "PROJECT_SCHEMA_VERSION_UNSUPPORTED"
-    assert error.value.details == {"schemaVersion": 3, "supported": [1, 2]}
+    assert error.value.details == {"schemaVersion": 4, "supported": [2, 3]}
 
 
 def test_unknown_top_level_property_returns_stable_error(tmp_path: Path):
@@ -826,17 +800,12 @@ def test_nonexistent_in_root_paths_load_safely(tmp_path: Path):
     assert model.generation.user_directories == ("future/user",)
 
 
-def test_project_manifest_load_accepts_v1(tmp_path: Path, copy_fixture):
+def test_project_manifest_load_rejects_v1_without_upgrade(tmp_path: Path, copy_fixture):
     copy_fixture("valid-project.json", tmp_path / ".stm32-project.json")
 
-    manifest = ProjectManifest.load(tmp_path)
-
-    assert manifest.logical_project_id == UUID("12345678-1234-5678-1234-567812345678")
-    assert manifest.target_device == "STM32F429ZGTx"
-    assert manifest.framework_type == "spl"
-    assert manifest.source_paths == (tmp_path / "App/main.c",)
-    assert manifest.assembly_source_paths == ()
-    assert manifest.elf_path == tmp_path / "build-fw/firmware.elf"
+    with pytest.raises(ProjectManifestError) as caught:
+        ProjectManifest.load(tmp_path)
+    assert caught.value.details == {"schemaVersion": 1, "supported": [2, 3]}
 
 
 def test_project_manifest_load_accepts_v2(tmp_path: Path):
@@ -855,7 +824,7 @@ def test_project_manifest_load_accepts_v2(tmp_path: Path):
     assert manifest.elf_path == tmp_path / "build-fw" / "firmware.elf"
 
 
-def test_project_manifest_explicit_v1_schema_path(tmp_path: Path, copy_fixture):
+def test_project_manifest_explicit_v1_schema_still_requires_upgrade(tmp_path: Path, copy_fixture):
     copy_fixture("valid-project.json", tmp_path / ".stm32-project.json")
     schema_path = tmp_path / "schema-v1.json"
     schema_path.write_text(
@@ -865,20 +834,14 @@ def test_project_manifest_explicit_v1_schema_path(tmp_path: Path, copy_fixture):
         encoding="utf-8",
     )
 
-    manifest = ProjectManifest.load(tmp_path, schema_path)
-
-    assert manifest.framework_type == "spl"
+    with pytest.raises(ProjectManifestError) as caught:
+        ProjectManifest.load(tmp_path, schema_path)
+    assert caught.value.details == {"schemaVersion": 1, "supported": [2, 3]}
 
 
 def test_project_manifest_explicit_v2_schema_path(tmp_path: Path):
     _write_manifest(tmp_path, _v2_payload())
-    schema_path = tmp_path / "schema-v2.json"
-    schema_path.write_text(
-        resources.files("stm32_toolkit")
-        .joinpath("schemas/stm32-project.schema.json")
-        .read_text(encoding="utf-8"),
-        encoding="utf-8",
-    )
+    schema_path = _write_explicit_v2_schema(tmp_path)
 
     manifest = ProjectManifest.load(tmp_path, schema_path)
 
@@ -906,12 +869,9 @@ def test_project_manifest_explicit_v1_schema_rejects_v2_manifest(tmp_path: Path)
 
 def _write_explicit_v2_schema(tmp_path: Path) -> Path:
     schema_path = tmp_path / "schema-v2.json"
-    schema_path.write_text(
-        resources.files("stm32_toolkit")
-        .joinpath("schemas/stm32-project.schema.json")
-        .read_text(encoding="utf-8"),
-        encoding="utf-8",
-    )
+    schema = json.loads(resources.files("stm32_toolkit").joinpath("schemas/stm32-project.schema.json").read_text(encoding="utf-8"))
+    schema["properties"]["schemaVersion"]["const"] = 2
+    schema_path.write_text(json.dumps(schema), encoding="utf-8")
     return schema_path
 
 
@@ -996,7 +956,7 @@ def test_compat_loader_otherwise_valid_v1_unsupported_version_returns_unsupporte
         ProjectManifest.load(tmp_path)
 
     assert error.value.code == "PROJECT_SCHEMA_VERSION_UNSUPPORTED"
-    assert error.value.details == {"schemaVersion": 99, "supported": [1, 2]}
+    assert error.value.details == {"schemaVersion": 99, "supported": [2, 3]}
 
 
 def test_compat_loader_list_manifest_returns_object_type_error(tmp_path: Path):
@@ -1086,7 +1046,7 @@ def test_project_manifest_explicit_schema_rejects_unsupported_version(
     tmp_path: Path,
 ):
     payload = _v2_payload()
-    payload["schemaVersion"] = 3
+    payload["schemaVersion"] = 4
     _write_manifest(tmp_path, payload)
     schema_path = _write_explicit_v2_schema(tmp_path)
 
@@ -1094,4 +1054,4 @@ def test_project_manifest_explicit_schema_rejects_unsupported_version(
         ProjectManifest.load(tmp_path, schema_path)
 
     assert error.value.code == "PROJECT_SCHEMA_VERSION_UNSUPPORTED"
-    assert error.value.details == {"schemaVersion": 3, "supported": [1, 2]}
+    assert error.value.details == {"schemaVersion": 4, "supported": [2, 3]}

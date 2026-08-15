@@ -1508,7 +1508,7 @@ def test_manifest_mapping_and_deterministic_uuid(tmp_path):
     assert patch.before_bytes is None
     assert patch.before_sha256 is None
     payload = manifest_json(patch)
-    assert payload["schemaVersion"] == 2
+    assert payload["schemaVersion"] == 3
     expected_uuid = str(uuid.uuid5(UUID_NAMESPACE, "app.uvprojx\nLegacy\nSTM32F429ZGTx"))
     assert payload["logicalProjectId"] == expected_uuid
     assert payload["generatedBy"] == {"tool": "stm32-toolkit", "version": "0.5.0"}

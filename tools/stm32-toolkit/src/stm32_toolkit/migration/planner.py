@@ -3,7 +3,7 @@
 ``plan_keil_conversion`` validates the canonical Git root, revalidates every
 inspection input byte-for-byte, captures read-only Git evidence, re-runs the
 Keil inspection to reject forged/stale findings, applies the token-aware
-source rules, proposes a validated Schema v2 manifest, and assembles an
+source rules, proposes a validated Schema v3 manifest, and assembles an
 immutable ``MigrationPlan`` with deterministic hashes and ordering.  Planning
 never writes, never creates staging, and never mutates Git state.
 """
@@ -417,7 +417,7 @@ def _sanitize_elf_basename(name: str) -> str:
 
 
 def _validate_manifest_payload(root: Path, payload: dict) -> None:
-    """Validate the proposed manifest against the packaged Schema v2 and the
+    """Validate the proposed manifest against the packaged Schema v3 and the
     shared model path rules; failure is MIGRATION_MANIFEST_INVALID, never a
     guessed repair."""
     try:
@@ -438,11 +438,11 @@ def _validate_manifest_payload(root: Path, payload: dict) -> None:
     if first is not None:
         raise _raise(
             "MIGRATION_MANIFEST_INVALID",
-            "proposed manifest does not satisfy Schema v2",
+            "proposed manifest does not satisfy Schema v3",
             {"field": first[0], "rule": first[1]},
         )
     try:
-        validate_model_document(root, payload, 2)
+        validate_model_document(root, payload, 3)
     except ProjectManifestError as error:
         raise _raise(
             "MIGRATION_MANIFEST_INVALID",
@@ -455,8 +455,7 @@ def _validate_manifest_payload(root: Path, payload: dict) -> None:
 
 
 def _manifest_proposal(root: Path, inspection: KeilInspection) -> dict | None:
-    """Deterministic Schema v2 proposal; ``None`` when framework selection is
-    blocked (Schema v2 requires a concrete framework)."""
+    """Deterministic Schema v3 proposal; ``None`` when framework selection is blocked."""
     if inspection.framework not in _ALLOWED_FRAMEWORKS:
         return None
     project_name = (inspection.output.output_name or "").strip()
@@ -488,7 +487,7 @@ def _manifest_proposal(root: Path, inspection: KeilInspection) -> dict | None:
         for region in inspection.memory_regions
     ]
     payload: dict = {
-        "schemaVersion": 2,
+        "schemaVersion": 3,
         "logicalProjectId": str(
             uuid.uuid5(
                 _UUID_NAMESPACE,

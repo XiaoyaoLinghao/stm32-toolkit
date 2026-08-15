@@ -123,7 +123,7 @@ def _valid_schema_v2(project_root: Path) -> bool:
         model = load_project_model(project_root)
     except (ProjectManifestError, OSError, ValueError, TypeError):
         return False
-    return model.schema_version == 2
+    return model.schema_version in (2, 3)
 
 
 def _context_invalid(field: str, path: str | None = None) -> OperationResult[None]:
@@ -311,7 +311,7 @@ def _managed_configuration_evidence(root: Path) -> dict[str, object]:
     digest_ok = True
     try:
         model = load_project_model(root)
-        if model.schema_version == 2:
+        if model.schema_version in (2, 3):
             digest_ok = (
                 model_sha256_for(model) == payload.get("projectManifestSha256")
             )
@@ -357,7 +357,7 @@ def _evidence_fresh(manifest: ProjectManifest, root: Path) -> dict[str, object] 
     """
     try:
         model = load_project_model(root)
-        if model.schema_version != 2:
+        if model.schema_version not in (2, 3):
             return None
         elf_rel = model.build.elf
         if elf_rel is None or not elf_rel.startswith("build/arm-debug/"):

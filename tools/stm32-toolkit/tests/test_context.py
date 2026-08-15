@@ -62,9 +62,15 @@ EMPTY_MANAGED = {
 }
 
 
+@pytest.mark.parametrize("schema_version", [2, 3])
 def test_configured_context_reports_evidence_sections_without_build(
-    configured_project: Path, tmp_path: Path
+    configured_project: Path, tmp_path: Path, schema_version: int
 ):
+    if schema_version == 3:
+        manifest = configured_project / ".stm32-project.json"
+        payload = json.loads(manifest.read_text(encoding="utf-8"))
+        payload["schemaVersion"] = 3
+        manifest.write_text(json.dumps(payload), encoding="utf-8")
     result = build_project_context(configured_project, tmp_path.parent / "data", "session-a")
 
     assert result.to_dict() == {
@@ -102,7 +108,7 @@ def test_configured_context_reports_evidence_sections_without_build(
                 "build": False,
                 "keilInspect": False,
                 "keilConvert": False,
-                "configure": False,
+                "configure": True,
                 "flash": False,
                 "hostTest": False,
                 "targetTest": False,

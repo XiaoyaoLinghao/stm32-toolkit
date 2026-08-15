@@ -38,12 +38,12 @@ class ProjectManifest:
         project_root: Path,
         schema_path: Path | None = None,
     ) -> "ProjectManifest":
-        """Load the resolved-path compatibility view for a v1 or v2 manifest.
+        """Load the resolved-path compatibility view for a v2 or v3 manifest.
 
-        With no explicit schema, v1 and v2 manifests are dispatched to their
+        With no explicit schema, v2 and v3 manifests are dispatched to their
         packaged schemas. With an explicit schema path, the supplied schema
         alone governs schema validation and the payload's integer
-        ``schemaVersion`` (exactly 1 or 2, booleans rejected) selects the
+        ``schemaVersion`` (exactly 2 or 3; booleans rejected) selects the
         supported model. Every project-relative path field is validated for
         canonical-root containment after schema validation in both modes.
         """
@@ -56,6 +56,12 @@ class ProjectManifest:
             version = _model_schema_version(payload)
             schema = _load_schema(schema_path, None)
             _validate_schema(payload, schema, version)
+        if version == 1:
+            raise ProjectManifestError(
+                "PROJECT_SCHEMA_VERSION_UNSUPPORTED",
+                "Schema version 1 requires the explicit upgrade route",
+                {"schemaVersion": 1, "supported": [2, 3]},
+            )
         validate_model_document(root, payload, version)
 
         cache: dict[Path, os.stat_result | None] = {}
@@ -103,14 +109,14 @@ def _compat_dispatch_version(payload: object) -> int:
     """
     payload = _require_manifest_object(payload)
     version = _require_schema_version(payload)
-    if version in (1, 2):
+    if version in (2, 3):
         return int(version)
     first = _packaged_first_schema_error(payload, 1)
     if first is None or first[0] == "schemaVersion":
         raise ProjectManifestError(
             "PROJECT_SCHEMA_VERSION_UNSUPPORTED",
             "Project manifest schema version is not supported",
-            {"schemaVersion": version, "supported": [1, 2]},
+            {"schemaVersion": version, "supported": [2, 3]},
         )
     field, rule = first
     raise ProjectManifestError(

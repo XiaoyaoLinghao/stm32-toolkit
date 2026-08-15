@@ -799,6 +799,9 @@ def test_apply_plan_error_result_surface(tmp_path):
 def test_apply_file_fsync_failure_phase(tmp_path, monkeypatch):
     repo = standard_repo(tmp_path)
     plan = plan_keil_conversion(repo, fixture_inspection(repo))
+    from stm32_toolkit.project_upgrade import project_mutation_lock
+    with project_mutation_lock(repo):
+        pass
 
     def broken_fsync(fd):
         raise OSError(5, "fsync failed")
@@ -812,6 +815,24 @@ def test_apply_file_fsync_failure_phase(tmp_path, monkeypatch):
     assert not (repo / ".stm32-project.json").exists()
     assert not (repo / ".stm32-toolkit").exists()
     assert git_status(repo) == ""
+
+
+@pytest.mark.parametrize("writer", [apply_mod._stage_write, apply_mod._temp_write])
+def test_low_level_writer_removes_partial_file_on_flush_failure(tmp_path, monkeypatch, writer):
+    target = tmp_path / "partial"
+    monkeypatch.setattr(apply_mod, "_fsync", lambda fd: (_ for _ in ()).throw(OSError("fail")))
+    with pytest.raises(OSError):
+        writer(target, b"payload", 0o600)
+    assert not target.exists()
+
+
+def test_public_apply_maps_migration_plan_error_after_lock(tmp_path, monkeypatch):
+    repo = standard_repo(tmp_path)
+    plan = plan_keil_conversion(repo, fixture_inspection(repo))
+    monkeypatch.setattr(apply_mod, "_apply", lambda plan: (_ for _ in ()).throw(MigrationPlanError("MIGRATION_CHANGED", "changed", {"field": "source"})))
+    result = apply_keil_conversion(plan)
+    assert result.code == "MIGRATION_CHANGED"
+    assert result.details == {"field": "source"}
 
 
 def test_apply_staging_prune_failures_are_best_effort(tmp_path, monkeypatch):
