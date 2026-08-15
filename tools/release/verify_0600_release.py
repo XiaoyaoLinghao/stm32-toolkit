@@ -1015,6 +1015,21 @@ def _contains_rooted_private_path(value: str) -> bool:
     )
 
 
+def _contains_uri_userinfo(value: str) -> bool:
+    for scheme in URI_SCHEME_WITH_AUTHORITY_PATTERN.finditer(value):
+        authority_end = scheme.end()
+        while (
+            authority_end < len(value)
+            and value[authority_end] not in "/?#"
+            and not value[authority_end].isspace()
+        ):
+            authority_end += 1
+        userinfo, separator, _ = value[scheme.end():authority_end].rpartition("@")
+        if separator and userinfo:
+            return True
+    return False
+
+
 def _authorization_token_is_credential(scheme: str, token: str) -> bool:
     if scheme.casefold() == "bearer":
         return True
@@ -1042,9 +1057,13 @@ def _validate_portable_string(value: str) -> None:
         for match in CREDENTIAL_ASSIGNMENT_PATTERN.finditer(value)
     ):
         raise VerificationError("package contains a credential assignment")
-    if CREDENTIAL_VALUE_PATTERN.search(value) is not None or any(
-        _authorization_token_is_credential(match.group(1), match.group(2))
-        for match in AUTHORIZATION_SCHEME_PATTERN.finditer(value)
+    if (
+        CREDENTIAL_VALUE_PATTERN.search(value) is not None
+        or _contains_uri_userinfo(value)
+        or any(
+            _authorization_token_is_credential(match.group(1), match.group(2))
+            for match in AUTHORIZATION_SCHEME_PATTERN.finditer(value)
+        )
     ):
         raise VerificationError("package contains a credential value")
 

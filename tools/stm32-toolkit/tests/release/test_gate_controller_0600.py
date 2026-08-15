@@ -1232,6 +1232,52 @@ def test_shard_verifier_rejects_compact_credential_alias_assignments(
         verify_shard_package(package, reference, binding, evidence_root=evidence)
 
 
+def test_shard_verifier_rejects_empty_username_credential_uri(
+    tmp_path: Path,
+) -> None:
+    """A packaged URI with an empty username cannot hide a non-empty password."""
+    evidence = tmp_path / "empty-username-credential-uri"
+    evidence.mkdir()
+    (evidence / "result.log").write_bytes(
+        b"git+path://:password@example.invalid/key\n"
+    )
+    package = tmp_path / "empty-username-credential-uri.zip"
+    binding = _package_binding()
+    reference = create_shard_package(evidence, package, binding)
+
+    with pytest.raises(VerificationError, match="credential"):
+        verify_shard_package(
+            package, reference, binding, evidence_root=evidence
+        )
+
+
+@pytest.mark.parametrize(
+    ("value", "forbidden"),
+    [
+        ("https://:password@example.invalid/key", True),
+        ("https://user:password@example.invalid/key", True),
+        ("https://user@example.invalid/key", True),
+        ("https://user:@example.invalid/key", True),
+        ("https://%75ser@example.invalid/key", True),
+        ("https://:%70assword@example.invalid/key", True),
+        ("git+ssh://user:%70assword@example.invalid/key", True),
+        ("git+path://example.invalid/key", False),
+        ("https://example.invalid/users/user@example.invalid", False),
+        ("https://example.invalid/key?contact=user@example.invalid", False),
+        (r"regex (\d+|\w+)", False),
+    ],
+)
+def test_portable_string_credential_uri_userinfo_is_structural(
+    value: str, forbidden: bool
+) -> None:
+    """Only URI authority userinfo is credential material; path/query text is not."""
+    if forbidden:
+        with pytest.raises(VerificationError, match="credential"):
+            release_verifier._validate_portable_string(value)
+    else:
+        release_verifier._validate_portable_string(value)
+
+
 @pytest.mark.parametrize(
     ("value", "forbidden"),
     [
