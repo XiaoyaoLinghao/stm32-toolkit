@@ -48,6 +48,7 @@ COVERAGE_SUMMARY_EXTENDED_KEYS = COVERAGE_SUMMARY_BASE_KEYS | {
 FROZEN_T12_BASETEMP_TOKEN = r"C:\tmp\stm32tk-0603-package-312"
 _NATIVE_PIPE_ENV = "STM32TK_CONTROLLER_NATIVE_PIPE"
 _ORIGINAL_OPEN = builtins.open
+UNSAFE_RUNNER_STREAM_PLACEHOLDER = b"<UNSAFE_RUNNER_STREAM_REDACTED>\n"
 _TRUSTED_PYTEST_BOOTSTRAP = (
     "import sys;"
     "sys.path.insert(0,sys.argv.pop(1));"
@@ -583,7 +584,9 @@ def _replace_verified_root(value: str, root: Path, token: str) -> tuple[str, boo
     variants = {canonical, canonical.replace("\\", "/"), canonical.replace("/", "\\")}
     changed = False
     for variant in sorted(variants, key=len, reverse=True):
-        pattern = re.compile(re.escape(variant) + r"(?=$|[\\/])", re.IGNORECASE)
+        pattern = re.compile(
+            re.escape(variant) + r"(?=$|[\\/\s:'\"),;])", re.IGNORECASE,
+        )
         value, count = pattern.subn(token, value)
         changed = changed or count > 0
     return value, changed
@@ -1235,6 +1238,72 @@ def _terminate_process_tree(process: subprocess.Popen[bytes]) -> None:
         process.kill()
 
 
+def _portable_failed_runner_stream(
+    raw: bytes, *, repository_root: Path, evidence_root: Path,
+    native_pipe: str | None,
+) -> bytes:
+    """Retain a failed runner stream only when every byte is portable and non-secret."""
+    try:
+        value = raw.decode("utf-8")
+        if native_pipe is not None:
+            prefix = r"\\.\pipe\stm32tk-0600-"
+            if (
+                not native_pipe.startswith(prefix)
+                or re.fullmatch(r"[0-9a-f]{32}", native_pipe[len(prefix):]) is None
+            ):
+                raise ControllerError("native report pipe path is invalid")
+            value = value.replace(native_pipe, "<EVIDENCE_ROOT>/native-results.xml")
+        value = _normalize_known_path(value, repository_root, evidence_root)
+        return value.encode("utf-8")
+    except (ControllerError, UnicodeError):
+        return UNSAFE_RUNNER_STREAM_PLACEHOLDER
+
+
+def _publish_gate_payloads(
+    stack: ExitStack,
+    *,
+    gate_root: Path,
+    gate_id: str,
+    payloads: Mapping[str, bytes],
+    evidence_lock: "_LockedWindowsDirectory",
+    after_gate_root_create: Callable[[Path], object] | None,
+) -> tuple[dict[str, object], ...]:
+    """Publish controller-owned final artifacts only after the child has terminated."""
+    try:
+        gate_root.mkdir()
+    except OSError as exc:
+        raise ControllerError("gate evidence directory must be a new path") from exc
+    if after_gate_root_create is not None:
+        after_gate_root_create(gate_root)
+    try:
+        gate_lock = stack.enter_context(_open_locked_windows_directory(gate_root))
+        stack.enter_context(_create_coverage_lock_sentinel(gate_root))
+    except (OSError, ControllerError) as exc:
+        raise ControllerError("gate evidence directory is a reparse point or changed identity") from exc
+    artifacts: dict[str, _LockedWindowsFile] = {}
+    for name in payloads:
+        try:
+            artifacts[name] = stack.enter_context(_open_locked_windows_file(
+                gate_root / name, create_new=True, write=True,
+            ))
+        except (OSError, ControllerError) as exc:
+            raise ControllerError("gate evidence artifact create-new failed") from exc
+    retained: list[dict[str, object]] = []
+    for name in sorted(payloads, key=lambda item: item.encode("utf-8")):
+        data = payloads[name]
+        _windows_write_locked_file(artifacts[name], data)
+        if _windows_read_locked_file(artifacts[name]) != data:
+            raise ControllerError("gate evidence artifact differs after locked write")
+        retained.append({
+            "path": f"{gate_id}/{name}",
+            "bytes": len(data),
+            "sha256": hashlib.sha256(data).hexdigest(),
+        })
+    _validate_locked_coverage_directory(evidence_lock)
+    _validate_locked_coverage_directory(gate_lock)
+    return tuple(retained)
+
+
 def execute_gate_process(
     gate: GateRequest,
     environment: dict[str, str],
@@ -1310,27 +1379,43 @@ def execute_gate_process(
             exit_code = -1
         duration_ms = max(0, (time.monotonic_ns() - started) // 1_000_000)
         _validate_locked_coverage_directory(evidence_lock)
-        if framework == "opaque":
-            native_report = b""
+        repository_root = Path(__file__).resolve().parents[2]
+        adapter_error: ControllerError | None = None
+        try:
+            if framework == "opaque":
+                native_report = b""
+                outcomes = ()
+            elif report_pipe is None:
+                native_report = stdout
+            else:
+                native_report = report_pipe.finish()
+                if not native_report:
+                    raise ControllerError("native runner report was not created")
+                stdout = _portable_native_stdout(stdout, report_pipe.name)
+            if framework != "opaque":
+                native_report = normalize_native_artifact(
+                    framework,
+                    native_report,
+                    repository_root=repository_root,
+                    evidence_root=evidence_root,
+                )
+                if framework in {"vitest-json", "playwright-json"}:
+                    stdout = native_report
+                outcomes = parse_native_node_outcomes(
+                    framework, native_report, exit_code=exit_code,
+                )
+        except ControllerError as exc:
+            adapter_error = exc
             outcomes = ()
-        elif report_pipe is None:
-            native_report = stdout
-        else:
-            native_report = report_pipe.finish()
-            if not native_report:
-                raise ControllerError("native runner report was not created")
-            stdout = _portable_native_stdout(stdout, report_pipe.name)
-        if framework != "opaque":
-            native_report = normalize_native_artifact(
-                framework,
-                native_report,
-                repository_root=Path(__file__).resolve().parents[2],
-                evidence_root=evidence_root,
+            native_report = b""
+            native_pipe = report_pipe.name if report_pipe is not None else None
+            stdout = _portable_failed_runner_stream(
+                stdout, repository_root=repository_root,
+                evidence_root=evidence_root, native_pipe=native_pipe,
             )
-            if framework in {"vitest-json", "playwright-json"}:
-                stdout = native_report
-            outcomes = parse_native_node_outcomes(
-                framework, native_report, exit_code=exit_code,
+            stderr = _portable_failed_runner_stream(
+                stderr, repository_root=repository_root,
+                evidence_root=evidence_root, native_pipe=native_pipe,
             )
         result_value = {
             "schema": "stm32-gate-process-result/1",
@@ -1350,38 +1435,13 @@ def execute_gate_process(
         }
         if native_name is not None:
             payloads[native_name] = native_report
-        try:
-            gate_root.mkdir()
-        except OSError as exc:
-            raise ControllerError("gate evidence directory must be a new path") from exc
-        if after_gate_root_create is not None:
-            after_gate_root_create(gate_root)
-        try:
-            gate_lock = stack.enter_context(_open_locked_windows_directory(gate_root))
-            stack.enter_context(_create_coverage_lock_sentinel(gate_root))
-        except (OSError, ControllerError) as exc:
-            raise ControllerError("gate evidence directory is a reparse point or changed identity") from exc
-        artifacts: dict[str, _LockedWindowsFile] = {}
-        for name in payloads:
-            try:
-                artifacts[name] = stack.enter_context(_open_locked_windows_file(
-                    gate_root / name, create_new=True, write=True,
-                ))
-            except (OSError, ControllerError) as exc:
-                raise ControllerError("gate evidence artifact create-new failed") from exc
-        retained: list[dict[str, object]] = []
-        for name in sorted(payloads, key=lambda item: item.encode("utf-8")):
-            data = payloads[name]
-            _windows_write_locked_file(artifacts[name], data)
-            if _windows_read_locked_file(artifacts[name]) != data:
-                raise ControllerError("gate evidence artifact differs after locked write")
-            retained.append({
-                "path": f"{gate.gate_id}/{name}",
-                "bytes": len(data),
-                "sha256": hashlib.sha256(data).hexdigest(),
-            })
-        _validate_locked_coverage_directory(evidence_lock)
-        _validate_locked_coverage_directory(gate_lock)
+        retained = _publish_gate_payloads(
+            stack, gate_root=gate_root, gate_id=gate.gate_id,
+            payloads=payloads, evidence_lock=evidence_lock,
+            after_gate_root_create=after_gate_root_create,
+        )
+        if adapter_error is not None:
+            raise adapter_error
         return GateRunOutput(
             exit_code,
             stdout,
@@ -1390,7 +1450,7 @@ def execute_gate_process(
             outcomes,
             duration_ms=duration_ms,
             timed_out=timed_out,
-            retained_evidence=tuple(retained),
+            retained_evidence=retained,
         )
 
 

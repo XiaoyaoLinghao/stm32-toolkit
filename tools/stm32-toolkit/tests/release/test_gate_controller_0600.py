@@ -542,6 +542,144 @@ def test_native_runner_cannot_reverse_hardlink_sink_to_new_external_path(tmp_pat
     assert not outside.exists()
 
 
+def _assert_incomplete_native_failure_artifacts(
+    evidence: Path, gate_id: str, *, exit_code: int,
+) -> tuple[bytes, bytes]:
+    root = evidence / gate_id
+    assert sorted(path.name for path in root.iterdir()) == [
+        "native-results.xml", "result.json", "stderr.log", "stdout.log",
+    ]
+    assert (root / "native-results.xml").read_bytes() == b""
+    result = json.loads((root / "result.json").read_bytes())
+    assert result == {
+        "duration_ms": result["duration_ms"],
+        "exit_code": exit_code,
+        "node_outcomes": [],
+        "schema": "stm32-gate-process-result/1",
+        "selected_nodes": [],
+        "timed_out": False,
+    }
+    assert isinstance(result["duration_ms"], int) and result["duration_ms"] >= 0
+    return (root / "stdout.log").read_bytes(), (root / "stderr.log").read_bytes()
+
+
+def test_native_empty_pipe_failure_is_published_after_child_exit(tmp_path: Path) -> None:
+    """A hard exit before pytest sessionfinish still retains four safe final artifacts."""
+    evidence = tmp_path / "empty-pipe-evidence"
+    evidence.mkdir()
+    script = tmp_path / "test_empty_pipe.py"
+    script.write_text("import os\nos._exit(7)\n", encoding="utf-8")
+    gate = GateRequest(
+        "EMPTY", (sys.executable, "-m", "pytest", str(script), "-q", "-p", "no:cacheprovider"),
+        tmp_path, 30, ("test_empty_pipe::test_never_runs",),
+    )
+
+    with pytest.raises(ControllerError, match="native runner report was not created"):
+        execute_gate_process(gate, {}, evidence_root=evidence)
+
+    stdout, stderr = _assert_incomplete_native_failure_artifacts(evidence, "EMPTY", exit_code=7)
+    release_verifier._validate_portable_package_payload("EMPTY/stdout.log", stdout)
+    release_verifier._validate_portable_package_payload("EMPTY/stderr.log", stderr)
+
+
+def test_native_malformed_report_and_unsafe_streams_publish_only_placeholders(tmp_path: Path) -> None:
+    """Adapter failure retains no credential, foreign path, non-UTF8 byte, or raw malformed native data."""
+    evidence = tmp_path / "unsafe-adapter-evidence"
+    evidence.mkdir()
+    outside = tmp_path / "outside-new.xml"
+    script = tmp_path / "test_unsafe_adapter.py"
+    script.write_text(
+        "import os\n\n"
+        "def test_attack():\n"
+        "    sink = os.environ['STM32TK_CONTROLLER_NATIVE_PIPE']\n"
+        "    with open(sink, 'w', encoding='utf-8') as stream:\n"
+        "        stream.write('<not-junit>ghp_abcdefghijklmnopqrstuvwxyz0123456789</not-junit>')\n"
+        "    os.write(1, b'C:\\\\foreign\\\\private.txt\\n')\n"
+        "    os.write(2, b'ghp_abcdefghijklmnopqrstuvwxyz0123456789\\xff\\n')\n"
+        "    os._exit(9)\n",
+        encoding="utf-8",
+    )
+    gate = GateRequest(
+        "UNSAFE", (sys.executable, "-m", "pytest", str(script), "-q", "-s", "-p", "no:cacheprovider"),
+        tmp_path, 30, ("test_unsafe_adapter::test_attack",),
+    )
+
+    with pytest.raises(ControllerError, match="invalid"):
+        execute_gate_process(gate, {}, evidence_root=evidence)
+
+    stdout, stderr = _assert_incomplete_native_failure_artifacts(evidence, "UNSAFE", exit_code=9)
+    assert stdout == gates.UNSAFE_RUNNER_STREAM_PLACEHOLDER
+    assert stderr == gates.UNSAFE_RUNNER_STREAM_PLACEHOLDER
+    assert not outside.exists()
+    for name in ("stdout.log", "stderr.log", "result.json"):
+        release_verifier._validate_portable_package_payload(
+            f"UNSAFE/{name}", (evidence / "UNSAFE" / name).read_bytes(),
+        )
+
+
+@pytest.mark.parametrize(
+    ("framework", "native_name"),
+    [("ctest", "native-results.txt"), ("vitest", "native-results.json"), ("playwright", "native-results.json")],
+)
+def test_every_native_adapter_failure_publishes_closed_incomplete_artifacts(
+    tmp_path: Path, framework: str, native_name: str,
+) -> None:
+    """Every supported non-pytest adapter takes the same post-child incomplete path."""
+    evidence = tmp_path / f"{framework}-failure-evidence"
+    evidence.mkdir()
+    script = "import os; os.write(1,b'{}'); raise SystemExit(6)"
+    expected_exit = 6
+    if framework == "ctest":
+        executable = shutil.which("ctest")
+        assert executable is not None
+        argv = (executable, "--definitely-invalid")
+        expected_exit = 1
+    elif framework == "vitest":
+        argv = (sys.executable, "-c", script, "vitest")
+    else:
+        argv = (
+            sys.executable, "-c", script, "playwright",
+            "--project=chromium-1280", "--project=chromium-1024",
+        )
+    gate = GateRequest(framework.upper(), argv, tmp_path, 30, ("future::node",))
+
+    with pytest.raises(ControllerError):
+        execute_gate_process(gate, {}, evidence_root=evidence)
+
+    root = evidence / framework.upper()
+    assert sorted(path.name for path in root.iterdir()) == [
+        native_name, "result.json", "stderr.log", "stdout.log",
+    ]
+    assert (root / native_name).read_bytes() == b""
+    result = json.loads((root / "result.json").read_bytes())
+    assert result["exit_code"] == expected_exit
+    assert result["selected_nodes"] == [] and result["node_outcomes"] == []
+    for name in ("result.json", "stderr.log", "stdout.log"):
+        release_verifier._validate_portable_package_payload(
+            f"{framework.upper()}/{name}", (root / name).read_bytes(),
+        )
+
+
+def test_failed_runner_stream_normalizes_only_verified_roots_and_pipe(tmp_path: Path) -> None:
+    evidence = tmp_path / "verified-evidence"
+    evidence.mkdir()
+    pipe = r"\\.\pipe\stm32tk-0600-0123456789abcdef0123456789abcdef"
+    raw = f"{REPO}\n{evidence}\n{pipe}\nordinary\n".encode("utf-8")
+
+    normalized = gates._portable_failed_runner_stream(
+        raw, repository_root=REPO, evidence_root=evidence, native_pipe=pipe,
+    )
+
+    assert normalized == (
+        b"<REPOSITORY_ROOT>\n<EVIDENCE_ROOT>\n"
+        b"<EVIDENCE_ROOT>/native-results.xml\nordinary\n"
+    )
+    assert gates._portable_failed_runner_stream(
+        b"C:\\foreign\\private.txt\n", repository_root=REPO,
+        evidence_root=evidence, native_pipe=pipe,
+    ) == gates.UNSAFE_RUNNER_STREAM_PLACEHOLDER
+
+
 @pytest.mark.skipif(os.name != "nt", reason="Windows reparse contract")
 def test_native_executor_rejects_prepositioned_and_create_race_junctions_without_external_write(
     tmp_path: Path,
