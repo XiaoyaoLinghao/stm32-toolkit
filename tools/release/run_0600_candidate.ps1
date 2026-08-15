@@ -1,13 +1,13 @@
 [CmdletBinding()]
 param(
-  [string]$Matrix,
+  [string]$Matrix = 'candidate',
   [string]$Module,
   [string]$Shard,
-  [string]$RunId,
+  [Alias('CandidateRunId')][string]$RunId,
   [string]$EvidenceRoot,
   [string]$ExpectedCodeHead,
-  [string]$GateCatalog,
-  [string]$PerformanceCatalog,
+  [Alias('Catalog')][string]$GateCatalog,
+  [Alias('Performance')][string]$PerformanceCatalog,
   [string]$SupportProfile,
   [switch]$ContractSelfTest,
   [switch]$ResumeCandidateRun,
@@ -45,6 +45,9 @@ Assert-BootstrapCaller -Repository $bootstrapRepository -ExpectedHead $bootstrap
 
 if ($ContractSelfTest) {
   if ($PSBoundParameters.Count -ne 1) { throw 'ContractSelfTest accepts no runner inputs' }
+  if ($Matrix -cne 'candidate') { throw 'candidate default Matrix contract failed' }
+  $selfParameters = (Get-Command $PSCommandPath).Parameters
+  if ('CandidateRunId' -notin $selfParameters.RunId.Aliases -or 'Catalog' -notin $selfParameters.GateCatalog.Aliases -or 'Performance' -notin $selfParameters.PerformanceCatalog.Aliases) { throw 'candidate planned aliases contract failed' }
   $selfTestRepository = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..'))
   $selfTestHead = (& git.exe -C $selfTestRepository rev-parse HEAD 2>$null)
   if ($LASTEXITCODE -ne 0 -or $selfTestHead -cnotmatch '^[0-9a-f]{40}$') { throw 'self-test caller HEAD is unavailable' }
@@ -65,7 +68,7 @@ if ($ResumeCandidateRun) {
   & $python -3.12 $resumeRunner wrapper-resume --kind candidate --candidate-ledger $CandidateLedger --recovery-record $RecoveryRecord
   exit $LASTEXITCODE
 }
-foreach ($name in @('Matrix','Module','Shard','RunId','EvidenceRoot','ExpectedCodeHead','GateCatalog','PerformanceCatalog','SupportProfile')) {
+foreach ($name in @('Module','Shard','RunId','EvidenceRoot','ExpectedCodeHead','GateCatalog','PerformanceCatalog','SupportProfile')) {
   if (-not $PSBoundParameters.ContainsKey($name)) { throw "$name is required" }
 }
 if ($CandidateLedger -or $RecoveryRecord) { throw 'candidate resume inputs require ResumeCandidateRun' }

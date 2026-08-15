@@ -1747,6 +1747,85 @@ def verify_dependency_audit_input(value: object) -> dict[str, str]:
     return {"mode": "dependency-audit", "status": "PASS"}
 
 
+def parse_npm_audit_v2(value: object) -> dict[str, int]:
+    """Consume only npm 11 audit-report-v2 fields used by the frozen severity policy."""
+    if not isinstance(value, Mapping) or value.get("auditReportVersion") != 2:
+        raise VerificationError("npm audit report version is unsupported")
+    vulnerabilities = value.get("vulnerabilities")
+    metadata = value.get("metadata")
+    if not isinstance(vulnerabilities, Mapping) or not isinstance(metadata, Mapping):
+        raise VerificationError("npm audit report structure is invalid")
+    counts = metadata.get("vulnerabilities")
+    required = ("info", "low", "moderate", "high", "critical", "total")
+    if not isinstance(counts, Mapping) or any(not _is_integer(counts.get(name)) or counts[name] < 0 for name in required):
+        raise VerificationError("npm audit severity counts are invalid")
+    derived = {name: 0 for name in required[:-1]}
+    for item in vulnerabilities.values():
+        if not isinstance(item, Mapping) or item.get("severity") not in derived:
+            raise VerificationError("npm audit vulnerability severity is invalid")
+        derived[str(item["severity"])] += 1
+    if sum(derived.values()) != counts["total"] or any(derived[name] != counts[name] for name in derived):
+        raise VerificationError("npm audit severity summary differs from vulnerability inventory")
+    return {name: int(counts[name]) for name in required}
+
+
+def run_planned_dependency_audit(
+    *, repository: Path, ui_root_text: str, catalog_text: str,
+    support_profile: Path, evidence_root: Path,
+    runner: Callable[[list[str], Path], object] | None = None,
+) -> dict[str, str]:
+    if ui_root_text != "tools/stm32-monitor/ui" or catalog_text != "tools/release/gates_0600.json":
+        raise VerificationError("dependency audit repository paths are not frozen")
+    repo = repository.resolve(strict=True)
+    ui_root = repo.joinpath(*ui_root_text.split("/"))
+    catalog = repo.joinpath(*catalog_text.split("/"))
+    _canonical_absolute(str(support_profile), "dependency audit support profile")
+    _canonical_absolute(str(evidence_root), "dependency audit evidence")
+    for path in (ui_root / "package.json", ui_root / "package-lock.json", catalog, support_profile):
+        _assert_no_reparse_chain(path, allow_absent_leaf=False)
+        if not _regular_file(path):
+            raise VerificationError("dependency audit frozen input is missing/linked/special")
+    _assert_no_reparse_chain(evidence_root, allow_absent_leaf=True)
+    try:
+        evidence_root.mkdir()
+    except FileExistsError as exc:
+        raise VerificationError("dependency audit evidence root already exists") from exc
+    invoke = runner or (
+        lambda argv, cwd: subprocess.run(
+            argv, cwd=cwd, capture_output=True, check=False,
+            env={**os.environ, "npm_config_offline": "true", "npm_config_audit": "true"},
+        )
+    )
+    reports: dict[str, dict[str, int]] = {}
+    for name, extra in (("production", ["--omit=dev"]), ("development", [])):
+        argv = ["npm.cmd", "audit", "--offline", "--json", *extra]
+        child = invoke(argv, ui_root)
+        stdout = getattr(child, "stdout", None)
+        returncode = getattr(child, "returncode", None)
+        if not isinstance(stdout, bytes) or not _is_integer(returncode):
+            raise VerificationError("npm audit runner result is invalid")
+        _create_new_bytes(evidence_root / f"npm-audit-{name}.json", stdout)
+        try:
+            native = json.loads(stdout.decode("utf-8"))
+        except (UnicodeError, json.JSONDecodeError) as exc:
+            raise VerificationError("npm audit native JSON is unreadable") from exc
+        reports[name] = parse_npm_audit_v2(native)
+    production, development = reports["production"], reports["development"]
+    if any(production[name] for name in ("info", "low", "moderate", "high", "critical")):
+        raise VerificationError("dependency production vulnerability policy failed")
+    if development["critical"] or development["high"]:
+        raise VerificationError("dependency development vulnerability policy failed")
+    summary = {"schema": "stm32-npm-audit-native-summary/1", "production": production, "development": development}
+    _create_new_bytes(evidence_root / "dependency-audit-native-summary.json", canonical_json_bytes(summary))
+    try:
+        support = json.loads(support_profile.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise VerificationError("dependency audit support profile is unreadable") from exc
+    if not isinstance(support, Mapping) or "dependency_audit" not in support:
+        raise VerificationError("BLOCKED: support profile lacks pinned dependency advisory/cache inputs")
+    raise VerificationError("BLOCKED: pinned dependency advisory/cache contract is not available")
+
+
 RECOVERY_KEYS = {
     "classification",
     "event",
@@ -1864,7 +1943,7 @@ def validate_candidate_ledger(value: object) -> dict[str, object]:
         _canonical_absolute(checkpoint, "checkpoint")
     if (
         value["schema"] != "stm32-candidate-ledger/1"
-        or value["module"] != "STM32TK-0601"
+        or value["module"] not in {"STM32TK-0601", "STM32TK-0602", "STM32TK-0603"}
         or not isinstance(value["candidate_run_id"], str)
         or UUID_PATTERN.fullmatch(value["candidate_run_id"]) is None
         or not isinstance(value["expected_code_head"], str)
@@ -1896,6 +1975,7 @@ def validate_candidate_ledger(value: object) -> dict[str, object]:
 
 def create_candidate_ledger(
     *,
+    module: str = "STM32TK-0601",
     controller_path: Path,
     candidate_root: Path,
     evidence_root: Path,
@@ -1909,7 +1989,7 @@ def create_candidate_ledger(
     timestamp = now.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
     value = {
         "schema": "stm32-candidate-ledger/1",
-        "module": "STM32TK-0601",
+        "module": module,
         "candidate_run_id": run_id,
         "expected_code_head": expected_code_head,
         "controller_path": str(controller_path),
@@ -2143,7 +2223,35 @@ REPOSITORY_ARTIFACT_KINDS = {
     "spec",
     "plan",
     "lock",
-    "software-support",
+}
+
+FINAL_CONTEXT_KEYS = {
+    "schema", "module", "shard", "candidate_run_id", "code_head",
+    "frozen_worktree", "origin_url", "candidate_root", "evidence_root",
+    "support_profile", "wrapper_ledger", "catalog_sha256", "performance_sha256",
+    "support_profile_sha256", "controller_sha256", "verifier_sha256",
+}
+FINAL_REPOSITORY_ARTIFACTS = {
+    "catalog": (
+        "tools/release/gates_0600.json", "tools/release/performance_0600.json",
+    ),
+    "controller": (
+        "tools/release/path_contract_0600.ps1", "tools/release/run_0600_gates.py",
+        "tools/release/run_0600_quick.ps1", "tools/release/run_0600_candidate.ps1",
+        "tools/release/run_0600_final.ps1", "tools/release/run_0600_hardware.ps1",
+    ),
+    "verifier": (
+        "tools/release/verify_0600_feasibility.py", "tools/release/verify_0600_release.py",
+    ),
+    "spec": tuple(f"docs/superpowers/specs/2026-08-14-stm32tk-060{n}-{suffix}" for n, suffix in (
+        (0, "evidence-diagnostics-program-design.md"), (1, "test-evidence-design.md"),
+        (2, "diagnostic-loop-design.md"), (3, "monitor-analytics-design.md"),
+    )),
+    "plan": tuple(f"docs/superpowers/plans/2026-08-14-stm32tk-060{n}-{suffix}" for n, suffix in (
+        (0, "release-acceptance.md"), (1, "test-evidence.md"),
+        (2, "diagnostic-loop.md"), (3, "monitor-analytics.md"),
+    )),
+    "lock": ("tools/stm32-monitor/ui/package-lock.json",),
 }
 PLACEHOLDERS = {
     "dummy", "example", "fixture", "n/a", "na", "nil", "none", "null",
@@ -2370,7 +2478,7 @@ def _validate_artifact(
     kind, raw_path = item["kind"], item["path"]
     if kind not in allowed_kinds or not isinstance(raw_path, str):
         raise VerificationError("artifact kind/path is invalid")
-    if kind in REPOSITORY_ARTIFACT_KINDS:
+    if kind in REPOSITORY_ARTIFACT_KINDS or (kind == "software-support" and not os.path.isabs(raw_path)):
         path = _repository_artifact_path(repository, raw_path)
     else:
         path = Path(_canonical_absolute(raw_path, "external artifact path"))
@@ -2605,9 +2713,21 @@ def build_parser() -> argparse.ArgumentParser:
     performance.add_argument("--input", required=True, action="append")
     performance.add_argument("--output", required=True, action=_SingleUse)
     audit = sub.add_parser("dependency-audit", allow_abbrev=False)
-    audit.add_argument("--input", required=True, action=_SingleUse)
+    audit.add_argument("--input", action=_SingleUse)
+    for option in ("ui-root", "catalog", "support-profile", "evidence"):
+        audit.add_argument(f"--{option}", action=_SingleUse)
     candidate = sub.add_parser("candidate-evidence", allow_abbrev=False)
-    candidate.add_argument("--candidate-ledger", required=True, action=_SingleUse)
+    candidate.add_argument("--candidate-ledger", action=_SingleUse)
+    for option in ("module", "candidate-run-id", "evidence", "expected-code-head", "catalog", "performance", "support-profile"):
+        candidate.add_argument(f"--{option}", action=_SingleUse)
+    candidate.add_argument("--expected-shards", action=_SingleUse)
+    candidate.add_argument("--expected-outcome", action=_SingleUse)
+    generate = sub.add_parser("final-release-inputs", allow_abbrev=False)
+    for option in ("repo", "candidate-ledger", "invocation-context", "output", "digest-output"):
+        generate.add_argument(f"--{option}", required=True, action=_SingleUse)
+    verify_inputs = sub.add_parser("verify-final-release-inputs", allow_abbrev=False)
+    for option in ("repo", "input", "digest"):
+        verify_inputs.add_argument(f"--{option}", required=True, action=_SingleUse)
     readiness = sub.add_parser("final-readiness", allow_abbrev=False)
     readiness.add_argument("--input", required=True, action=_SingleUse)
     final = sub.add_parser("final-evidence", allow_abbrev=False)
@@ -3143,6 +3263,243 @@ def verify_candidate_evidence_file(
     return {"mode": "candidate-evidence", "status": "PASS"}
 
 
+def verify_candidate_evidence_contract(
+    *, module: str, candidate_run_id: str, evidence: Path,
+    expected_code_head: str, catalog: Path, performance: Path,
+    support_profile: Path, expected_shards: str | None = None,
+    expected_outcome: str | None = None,
+) -> dict[str, str]:
+    if expected_shards not in {None, "windows"}:
+        raise VerificationError("candidate expected shards are invalid")
+    if expected_outcome not in {None, "SOFTWARE_COMPLETE_HARDWARE_PENDING"}:
+        raise VerificationError("candidate expected outcome is invalid")
+    ledger_path = evidence / "candidate-ledger.json"
+    _, raw = _read_canonical(ledger_path)
+    ledger = validate_candidate_ledger(raw)
+    if (
+        ledger["module"] != module
+        or ledger["candidate_run_id"] != candidate_run_id
+        or ledger["candidate_root"] != str(evidence)
+        or ledger["expected_code_head"] != expected_code_head
+        or ledger["catalog_sha256"] != hashlib.sha256(catalog.read_bytes()).hexdigest()
+        or ledger["performance_sha256"] != hashlib.sha256(performance.read_bytes()).hexdigest()
+        or ledger["support_profile_sha256"] != hashlib.sha256(support_profile.read_bytes()).hexdigest()
+    ):
+        raise VerificationError("candidate planned arguments differ from wrapper ledger")
+    verified = verify_candidate_evidence_file(ledger_path)
+    _, raw_terminal = _read_canonical(Path(str(ledger["checkpoint"])))
+    assert isinstance(raw_terminal, Mapping)
+    if expected_shards is not None and (
+        Path(str(ledger["evidence_root"])) != evidence / expected_shards
+        or raw_terminal.get("shard") != expected_shards
+    ):
+        raise VerificationError("candidate expected shard is not ledger/terminal bound")
+    frozen_catalog = load_catalog(catalog)
+    matrix_name = f"candidate-{module.rsplit('-', 1)[-1]}"
+    families = [family for family in frozen_catalog.families if family.module == module and matrix_name in family.matrices]
+    rows = raw_terminal.get("gate_results")
+    if not isinstance(rows, list):
+        raise VerificationError("candidate terminal gate rows are unavailable")
+    by_id = {row.get("gate_id"): row for row in rows if isinstance(row, Mapping)}
+    if any(
+        family.family_id not in by_id
+        or (
+            by_id[family.family_id].get("status") != "PASS"
+            if not family.reserved
+            else by_id[family.family_id].get("status") != "BLOCKED"
+            or by_id[family.family_id].get("reason") != "RESERVED_CATALOG_FAMILY"
+        )
+        for family in families
+    ):
+        raise VerificationError("candidate software/reserved outcome is invalid")
+    derived_outcome = (
+        "SOFTWARE_COMPLETE_HARDWARE_PENDING"
+        if families and any(family.reserved for family in families)
+        else "PASS"
+    )
+    if (
+        derived_outcome == "PASS" and raw_terminal.get("status") != "PASS"
+        or derived_outcome == "SOFTWARE_COMPLETE_HARDWARE_PENDING"
+        and (raw_terminal.get("status") != "BLOCKED" or raw_terminal.get("reason") != "CATALOG_FAMILIES_RESERVED")
+    ):
+        raise VerificationError("candidate terminal status does not match derived outcome")
+    if expected_outcome is not None and expected_outcome != derived_outcome:
+        raise VerificationError("candidate expected outcome differs from derived outcome")
+    return {**verified, "outcome": derived_outcome}
+
+
+def _create_new_bytes(path: Path, data: bytes) -> None:
+    _assert_no_reparse_chain(path, allow_absent_leaf=True)
+    try:
+        with path.open("xb") as stream:
+            stream.write(data)
+            stream.flush()
+            os.fsync(stream.fileno())
+    except FileExistsError as exc:
+        raise VerificationError(f"create-new output exists: {path.name}") from exc
+    _assert_no_reparse_chain(path, allow_absent_leaf=False)
+    if not _regular_file(path):
+        raise VerificationError("create-new output is linked/reparse/special")
+
+
+def _assert_no_reparse_chain(path: Path, *, allow_absent_leaf: bool) -> None:
+    current = path
+    first = True
+    while True:
+        try:
+            metadata = current.lstat()
+        except FileNotFoundError:
+            if first and allow_absent_leaf:
+                current = current.parent
+                first = False
+                continue
+            raise VerificationError("path ancestor is absent")
+        attributes = int(getattr(metadata, "st_file_attributes", 0))
+        if stat.S_ISLNK(metadata.st_mode) or attributes & int(getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)):
+            raise VerificationError("path chain contains a reparse point")
+        if current.parent == current:
+            return
+        current = current.parent
+        first = False
+
+
+def _final_context(path: Path, *, repo: Path, ledger: Mapping[str, object]) -> tuple[bytes, Mapping[str, object]]:
+    data, raw = _read_canonical(path)
+    _read_sidecar(path.with_name(path.name + ".sha256"), data)
+    if not _closed(raw, FINAL_CONTEXT_KEYS):
+        raise VerificationError("candidate invocation context is not closed")
+    assert isinstance(raw, Mapping)
+    if (
+        raw["schema"] != "stm32-candidate-invocation-context/1"
+        or raw["module"] != "STM32TK-0603" or raw["shard"] != "windows"
+        or raw["candidate_run_id"] != ledger["candidate_run_id"]
+        or raw["code_head"] != ledger["expected_code_head"]
+        or raw["frozen_worktree"] != str(repo)
+        or raw["origin_url"] != REPOSITORY_URL
+        or raw["candidate_root"] != ledger["candidate_root"]
+        or raw["evidence_root"] != ledger["evidence_root"]
+        or raw["wrapper_ledger"] != str(Path(str(ledger["candidate_root"])) / "candidate-ledger.json")
+        or raw["catalog_sha256"] != ledger["catalog_sha256"]
+        or raw["performance_sha256"] != ledger["performance_sha256"]
+        or raw["support_profile_sha256"] != ledger["support_profile_sha256"]
+    ):
+        raise VerificationError("candidate invocation context binding is invalid")
+    for name in ("controller_sha256", "verifier_sha256"):
+        if not isinstance(raw[name], str) or HEX64.fullmatch(str(raw[name])) is None:
+            raise VerificationError("candidate invocation context digest is invalid")
+    if (
+        raw["controller_sha256"] != hashlib.sha256((repo / CANDIDATE_CONTROLLER_RELATIVE).read_bytes()).hexdigest()
+        or raw["verifier_sha256"] != hashlib.sha256((repo / VERIFIER_RELATIVE_PATH).read_bytes()).hexdigest()
+    ):
+        raise VerificationError("candidate invocation context fixed tool digest changed")
+    return data, raw
+
+
+def _artifact_record(kind: str, path_text: str, path: Path) -> dict[str, object]:
+    data = path.read_bytes()
+    return {"kind": kind, "path": path_text, "bytes": len(data), "sha256": hashlib.sha256(data).hexdigest()}
+
+
+def generate_final_release_inputs(
+    *, repository: Path, candidate_ledger_path: Path, invocation_context_path: Path,
+    output_path: Path, digest_output_path: Path,
+    git_runner: Callable[[list[str]], str] | None = None,
+) -> dict[str, str]:
+    repo = repository.resolve(strict=True)
+    for name, path in (("repository", repository), ("candidate ledger", candidate_ledger_path),
+                       ("invocation context", invocation_context_path), ("output", output_path),
+                       ("digest output", digest_output_path)):
+        _canonical_absolute(str(path), name)
+    for path in (repository, candidate_ledger_path, invocation_context_path):
+        _assert_no_reparse_chain(path, allow_absent_leaf=False)
+    if digest_output_path != output_path.with_name(output_path.name + ".sha256"):
+        raise VerificationError("final release input digest is not the exact adjacent sidecar")
+    if output_path.exists() or digest_output_path.exists():
+        raise VerificationError("final release input output already exists")
+    ledger_bytes, raw_ledger = _read_canonical(candidate_ledger_path)
+    ledger = validate_candidate_ledger(raw_ledger)
+    if ledger["module"] != "STM32TK-0603" or candidate_ledger_path != Path(str(ledger["candidate_root"])) / "candidate-ledger.json":
+        raise VerificationError("final input candidate ledger identity is invalid")
+    context_bytes, context = _final_context(invocation_context_path, repo=repo, ledger=ledger)
+    context_digest_path = invocation_context_path.with_name(invocation_context_path.name + ".sha256")
+    context_digest_bytes = context_digest_path.read_bytes()
+    catalog = repo / "tools/release/gates_0600.json"
+    performance = repo / "tools/release/performance_0600.json"
+    support = Path(str(context["support_profile"]))
+    verify_candidate_evidence_contract(
+        module="STM32TK-0603", candidate_run_id=str(ledger["candidate_run_id"]),
+        evidence=Path(str(ledger["candidate_root"])), expected_code_head=str(ledger["expected_code_head"]),
+        catalog=catalog, performance=performance, support_profile=support,
+        expected_shards="windows", expected_outcome="SOFTWARE_COMPLETE_HARDWARE_PENDING",
+    )
+    git = git_runner or _default_git(repo)
+    reconcile_candidate(ledger, git_runner=git)
+    reports: dict[str, str] = {}
+    products: dict[str, str] = {}
+    for module in ("0601", "0602"):
+        report = _git_checked(git, ["log", "-1", "--format=%H", "--", REPORT_PATHS[module]]).strip()
+        product = _git_checked(git, ["rev-parse", f"{report}^"]).strip()
+        if HEX40.fullmatch(report) is None or HEX40.fullmatch(product) is None:
+            raise VerificationError("accepted report chain identity is invalid")
+        reports[module], products[module] = report, product
+    artifacts: list[dict[str, object]] = []
+    for kind, relatives in FINAL_REPOSITORY_ARTIFACTS.items():
+        for relative in relatives:
+            path = _repository_artifact_path(repo, relative)
+            artifacts.append(_artifact_record(kind, relative, path))
+    support_manifest = support.parents[1] / "support-manifest.json"
+    for path in (support, support_manifest):
+        if not _regular_file(path):
+            raise VerificationError("software support artifact is missing")
+        artifacts.append(_artifact_record("software-support", str(path), path))
+    artifacts.sort(key=lambda item: (str(item["kind"]).encode("utf-8"), str(item["path"]).encode("utf-8")))
+    value = {
+        "repositoryUrl": REPOSITORY_URL, "programBase": PROGRAM_BASE,
+        "0400Product": PRODUCT_0400, "0400Report": REPORT_0400,
+        "0601Product": products["0601"], "0601Report": reports["0601"],
+        "0602Product": products["0602"], "0602Report": reports["0602"],
+        "0603Product": ledger["expected_code_head"],
+        "governance": {**GOVERNANCE_OWNERS, "remote_state": "local-only; remote actions require explicit user authorization", "remote_actions": [], "bounded_overrides": []},
+        "artifacts": artifacts,
+    }
+    data = canonical_json_bytes(value)
+    _assert_no_reparse_chain(output_path, allow_absent_leaf=True)
+    _assert_no_reparse_chain(digest_output_path, allow_absent_leaf=True)
+    _create_new_bytes(output_path, data)
+    _create_new_bytes(digest_output_path, (hashlib.sha256(data).hexdigest() + "\n").encode("ascii"))
+    verify_final_release_inputs(output_path, digest_output_path, repository=repo, git_runner=git)
+    if (
+        candidate_ledger_path.read_bytes() != ledger_bytes
+        or invocation_context_path.read_bytes() != context_bytes
+        or context_digest_path.read_bytes() != context_digest_bytes
+    ):
+        raise VerificationError("final input source changed during generation")
+    return {"mode": "final-release-inputs", "status": "PASS", "sha256": hashlib.sha256(data).hexdigest()}
+
+
+def verify_final_release_inputs(
+    input_path: Path, digest_path: Path, *, repository: Path,
+    git_runner: Callable[[list[str]], str] | None = None,
+) -> dict[str, str]:
+    if digest_path != input_path.with_name(input_path.name + ".sha256"):
+        raise VerificationError("final release input sidecar path is invalid")
+    data, raw = _read_canonical(input_path)
+    sidecar = _read_sidecar(digest_path, data)
+    if not _closed(raw, SOFTWARE_KEYS):
+        raise VerificationError("final release input root is not closed")
+    assert isinstance(raw, Mapping)
+    if raw["repositoryUrl"] != REPOSITORY_URL or raw["programBase"] != PROGRAM_BASE or raw["0400Product"] != PRODUCT_0400 or raw["0400Report"] != REPORT_0400:
+        raise VerificationError("final release input fixed identity is invalid")
+    _validate_governance(raw["governance"])
+    repo = repository.resolve(strict=True)
+    _validate_git_graph(raw, git_runner or _default_git(repo))
+    retained: dict[str, bytes] = {}
+    _validate_artifacts(raw["artifacts"], repository=repo, allowed_kinds=SOFTWARE_ARTIFACT_KINDS, retained=retained, require_sorted=True)
+    if input_path.read_bytes() != data or digest_path.read_bytes() != sidecar or any(Path(path).read_bytes() != first for path, first in retained.items()):
+        raise VerificationError("final release inputs changed during verification")
+    return {"mode": "verify-final-release-inputs", "status": "PASS"}
+
+
 def verify_final_evidence_file(
     checkpoint_path: Path,
     *,
@@ -3276,13 +3633,57 @@ def main(argv: Sequence[str] | None = None) -> int:
                     args.profile, [Path(raw) for raw in args.input], fixed_output
                 )
             elif args.mode == "dependency-audit":
-                result = verify_dependency_audit_input(_mode_input(args.input, args.mode))
+                if args.input is not None:
+                    if any(getattr(args, name) is not None for name in ("ui_root", "catalog", "support_profile", "evidence")):
+                        raise VerificationError("dependency audit forms may not be mixed")
+                    result = verify_dependency_audit_input(_mode_input(args.input, args.mode))
+                else:
+                    if any(getattr(args, name) is None for name in ("ui_root", "catalog", "support_profile", "evidence")):
+                        raise VerificationError("planned dependency audit form is incomplete")
+                    result = run_planned_dependency_audit(
+                        repository=repository, ui_root_text=args.ui_root, catalog_text=args.catalog,
+                        support_profile=Path(args.support_profile), evidence_root=Path(args.evidence),
+                    )
             elif args.mode == "candidate-evidence":
-                value = _mode_input(args.candidate_ledger, args.mode)
-                ledger = validate_candidate_ledger(value)
-                if ledger["expected_code_head"] != head:
-                    raise VerificationError("candidate ledger CodeHead differs from loaded verifier HEAD")
-                result = verify_candidate_evidence_file(Path(args.candidate_ledger))
+                planned_names = ("module", "candidate_run_id", "evidence", "expected_code_head", "catalog", "performance", "support_profile")
+                if args.candidate_ledger is not None:
+                    if any(getattr(args, name) is not None for name in planned_names + ("expected_shards", "expected_outcome")):
+                        raise VerificationError("candidate evidence forms may not be mixed")
+                    value = _mode_input(args.candidate_ledger, args.mode)
+                    ledger = validate_candidate_ledger(value)
+                    if ledger["expected_code_head"] != head:
+                        raise VerificationError("candidate ledger CodeHead differs from loaded verifier HEAD")
+                    result = verify_candidate_evidence_file(Path(args.candidate_ledger))
+                else:
+                    if any(getattr(args, name) is None for name in planned_names):
+                        raise VerificationError("planned candidate evidence form is incomplete")
+                    for name in ("evidence", "catalog", "performance", "support_profile"):
+                        _canonical_absolute(getattr(args, name), name)
+                    result = verify_candidate_evidence_contract(
+                        module=args.module, candidate_run_id=args.candidate_run_id,
+                        evidence=Path(args.evidence), expected_code_head=args.expected_code_head,
+                        catalog=Path(args.catalog), performance=Path(args.performance),
+                        support_profile=Path(args.support_profile), expected_shards=args.expected_shards,
+                        expected_outcome=args.expected_outcome,
+                    )
+            elif args.mode == "final-release-inputs":
+                for name in ("repo", "candidate_ledger", "invocation_context", "output", "digest_output"):
+                    _canonical_absolute(getattr(args, name), name)
+                if Path(args.repo).resolve(strict=True) != repository.resolve(strict=True):
+                    raise VerificationError("final input repository differs from loaded verifier repository")
+                result = generate_final_release_inputs(
+                    repository=Path(args.repo), candidate_ledger_path=Path(args.candidate_ledger),
+                    invocation_context_path=Path(args.invocation_context), output_path=Path(args.output),
+                    digest_output_path=Path(args.digest_output),
+                )
+            elif args.mode == "verify-final-release-inputs":
+                for name in ("repo", "input", "digest"):
+                    _canonical_absolute(getattr(args, name), name)
+                if Path(args.repo).resolve(strict=True) != repository.resolve(strict=True):
+                    raise VerificationError("final input repository differs from loaded verifier repository")
+                result = verify_final_release_inputs(
+                    Path(args.input), Path(args.digest), repository=Path(args.repo)
+                )
             elif args.mode == "final-readiness":
                 _mode_input(args.input, args.mode)
                 result = verify_final_evidence_file(

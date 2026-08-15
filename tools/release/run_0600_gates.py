@@ -2533,12 +2533,17 @@ def run_wrapper_contract(
     candidate_ledger: dict[str, object] | None = None
     if kind == "candidate":
         candidate_root = evidence_root.parent
-        if not candidate_root.is_dir():
-            raise ControllerError("candidate root must already exist")
+        try:
+            candidate_root.mkdir()
+        except FileExistsError as exc:
+            raise ControllerError("candidate root must be absent for a new attempt") from exc
+        except OSError as exc:
+            raise ControllerError("candidate root create-new failed") from exc
         candidate_ledger_path = candidate_root / "candidate-ledger.json"
         if candidate_ledger_path.exists():
             raise ControllerError("candidate ledger already exists; use the closed resume mode")
         candidate_ledger = create_candidate_ledger(
+            module=module,
             controller_path=controller_path,
             candidate_root=candidate_root,
             evidence_root=evidence_root,
@@ -2811,7 +2816,13 @@ def run_wrapper_contract(
     )
     if kind in {"candidate", "final"}:
         arguments = (
-            ["candidate-evidence", "--candidate-ledger", str(candidate_ledger_path)]
+            [
+                "candidate-evidence", "--module", module,
+                "--candidate-run-id", run_id, "--evidence", str(evidence.parent),
+                "--expected-code-head", expected_code_head,
+                "--catalog", str(gate_catalog), "--performance", str(performance_catalog),
+                "--support-profile", str(support_profile),
+            ]
             if kind == "candidate"
             else ["final-evidence", "--input", str(evidence / "checkpoint.json")]
         )
@@ -3022,7 +3033,7 @@ def run_wrapper_resume(
     try:
         validate_recovery_record(
             recovery,
-            expected_run_kind="candidate-0601",
+            expected_run_kind=f"candidate-{str(ledger['module']).rsplit('-', 1)[-1]}",
             expected_run_id=str(ledger["candidate_run_id"]),
             expected_code_head=str(ledger["expected_code_head"]),
             expected_checkpoint=checkpoint_path,

@@ -837,7 +837,7 @@ def test_candidate_ledger_rejects_extra_missing_relative_and_wrong_types(
     elif mutation == "bool":
         ledger["checkpoint"] = False
     elif mutation == "wrong-module":
-        ledger["module"] = "STM32TK-0602"
+        ledger["module"] = "STM32TK-0604"
     else:
         ledger["checkpoint"] = "checkpoint.json"
 
@@ -889,7 +889,6 @@ def test_candidate_evidence_recursively_verifies_catalog_inventory_package_and_r
 ) -> None:
     """Candidate PASS is impossible unless the checkpoint, inventory, external files, and ZIP all close."""
     candidate_root = tmp_path / "candidate-closed"
-    candidate_root.mkdir()
     evidence = candidate_root / "evidence"
     head = subprocess.run(
         ["git", "-C", str(REPO), "rev-parse", "HEAD"],
@@ -971,7 +970,6 @@ def test_candidate_terminal_schema_rejects_every_nested_shape_and_order_mutation
 ) -> None:
     """Every nested terminal object, array order, duplicate, and exact scalar type fails closed."""
     candidate_root = tmp_path / "candidate-mutations"
-    candidate_root.mkdir()
     evidence = candidate_root / "evidence"
     head = subprocess.run(
         ["git", "-C", str(REPO), "rev-parse", "HEAD"],
@@ -1376,7 +1374,7 @@ def test_verify_release_ledger_rejects_path_normalization_before_path_object_con
     assert capsys.readouterr().out == ""
 
 
-def test_verifier_exposes_only_six_closed_modes() -> None:
+def test_verifier_exposes_only_eight_closed_modes() -> None:
     """Adding an implicit mutation/dispatch mode must change the frozen command surface."""
     parser = verifier.build_parser()
     subparsers = next(action for action in parser._actions if action.dest == "mode")
@@ -1387,7 +1385,252 @@ def test_verifier_exposes_only_six_closed_modes() -> None:
         "final-readiness",
         "final-evidence",
         "verify-release-ledger",
+        "final-release-inputs",
+        "verify-final-release-inputs",
     }
+
+
+def test_frozen_060x_reconciliation_argv_are_accepted_by_closed_parser() -> None:
+    """Exact command names/options are dynamically sourced from all three frozen plans."""
+    plans = tuple((REPO / "docs/superpowers/plans").glob("2026-08-14-stm32tk-060[123]-*.md"))
+    lines = [line for plan in plans for line in plan.read_text(encoding="utf-8").splitlines()]
+    candidate_lines = [line for line in lines if " candidate-evidence " in line]
+    assert len(candidate_lines) == 3
+    parser = verifier.build_parser()
+    for module, extra in (
+        ("STM32TK-0601", []),
+        ("STM32TK-0602", ["--expected-shards", "windows", "--expected-outcome", "SOFTWARE_COMPLETE_HARDWARE_PENDING"]),
+        ("STM32TK-0603", []),
+    ):
+        parser.parse_args([
+            "candidate-evidence", "--module", module,
+            "--candidate-run-id", RUN_ID, *extra,
+            "--evidence", r"C:\tmp\candidate", "--expected-code-head", "a" * 40,
+            "--catalog", r"C:\tmp\catalog.json", "--performance", r"C:\tmp\performance.json",
+            "--support-profile", r"C:\tmp\profile.json",
+        ])
+
+
+def test_frozen_0603_audit_and_final_input_argv_are_accepted_by_closed_parser() -> None:
+    plan = REPO / "docs/superpowers/plans/2026-08-14-stm32tk-0603-monitor-analytics.md"
+    lines = plan.read_text(encoding="utf-8").splitlines()
+    for token in (" dependency-audit ", " final-release-inputs ", " verify-final-release-inputs "):
+        assert sum(token in line for line in lines) == 1
+    parser = verifier.build_parser()
+    parser.parse_args(["dependency-audit", "--ui-root", "tools/stm32-monitor/ui", "--catalog", "tools/release/gates_0600.json", "--support-profile", r"C:\tmp\profile.json", "--evidence", r"C:\tmp\audit"])
+    parser.parse_args(["final-release-inputs", "--repo", str(REPO), "--candidate-ledger", r"C:\tmp\candidate-ledger.json", "--invocation-context", r"C:\tmp\context.json", "--output", r"C:\tmp\final-release-inputs.json", "--digest-output", r"C:\tmp\final-release-inputs.json.sha256"])
+    parser.parse_args(["verify-final-release-inputs", "--repo", str(REPO), "--input", r"C:\tmp\final-release-inputs.json", "--digest", r"C:\tmp\final-release-inputs.json.sha256"])
+
+
+def test_npm_11_audit_parser_consumes_real_zero_vulnerability_fixture() -> None:
+    """Fixture bytes come from the frozen npm 11.16.0 `audit --offline --json` command."""
+    fixture = Path(__file__).parent / "fixtures/npm-audit-v11-zero.json"
+    value = json.loads(fixture.read_text(encoding="utf-8"))
+    assert verifier.parse_npm_audit_v2(value) == {
+        "info": 0, "low": 0, "moderate": 0, "high": 0, "critical": 0, "total": 0,
+    }
+    broken = copy.deepcopy(value)
+    broken["metadata"]["vulnerabilities"]["total"] = 1
+    with pytest.raises(VerificationError, match="summary"):
+        verifier.parse_npm_audit_v2(broken)
+
+
+def test_planned_dependency_audit_runs_native_offline_then_blocks_on_missing_support_pins(tmp_path: Path) -> None:
+    """The frozen argv reaches native npm output, not controller grammar, before the real support blocker."""
+    support = Path(r"C:\tmp\stm32tk-0600-support\feasibility\profile.json")
+    assert support.is_file()
+    evidence = tmp_path / "dependency-audit"
+    with pytest.raises(VerificationError, match="BLOCKED: support profile lacks pinned"):
+        verifier.run_planned_dependency_audit(
+            repository=REPO, ui_root_text="tools/stm32-monitor/ui",
+            catalog_text="tools/release/gates_0600.json", support_profile=support,
+            evidence_root=evidence,
+        )
+    fixture = json.loads((Path(__file__).parent / "fixtures/npm-audit-v11-zero.json").read_text(encoding="utf-8"))
+    for name in ("production", "development"):
+        native = json.loads((evidence / f"npm-audit-{name}.json").read_text(encoding="utf-8"))
+        assert verifier.parse_npm_audit_v2(native) == verifier.parse_npm_audit_v2(fixture)
+    retained = {path.name: path.read_bytes() for path in evidence.iterdir()}
+    with pytest.raises(VerificationError, match="already exists"):
+        verifier.run_planned_dependency_audit(
+            repository=REPO, ui_root_text="tools/stm32-monitor/ui",
+            catalog_text="tools/release/gates_0600.json", support_profile=support,
+            evidence_root=evidence,
+        )
+    assert {path.name: path.read_bytes() for path in evidence.iterdir()} == retained
+
+
+@pytest.mark.parametrize("module", ["STM32TK-0601", "STM32TK-0602", "STM32TK-0603"])
+def test_candidate_ledger_identity_supports_all_frozen_modules(tmp_path: Path, module: str) -> None:
+    controller = tmp_path / "tools/release/run_0600_candidate.ps1"
+    controller.parent.mkdir(parents=True)
+    controller.write_text("# fixture", encoding="utf-8")
+    candidate = tmp_path / "candidate"
+    evidence = candidate / "windows"
+    value = create_candidate_ledger(
+        module=module, controller_path=controller, candidate_root=candidate,
+        evidence_root=evidence, run_id=RUN_ID, expected_code_head="a" * 40,
+        catalog_sha256="b" * 64, performance_sha256="c" * 64,
+        support_profile_sha256="d" * 64, now=datetime.now(timezone.utc),
+    )
+    assert validate_candidate_ledger(value)["module"] == module
+
+
+@pytest.mark.parametrize("mutation", ["wrong-shard", "software-fail", "general-blocked"])
+def test_planned_candidate_reconciliation_rejects_false_software_pending(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mutation: str,
+) -> None:
+    """A general BLOCKED/FAIL or a non-windows result cannot masquerade as deferred hardware."""
+    candidate = tmp_path / "candidate"
+    evidence = candidate / "windows"
+    evidence.mkdir(parents=True)
+    catalog = tmp_path / "catalog.json"
+    performance = tmp_path / "performance.json"
+    support = tmp_path / "support.json"
+    for path, data in ((catalog, b"catalog\n"), (performance, b"performance\n"), (support, b"support\n")):
+        path.write_bytes(data)
+    checkpoint = evidence / "controller-result.json"
+    rows = [
+        {"gate_id": "SOFTWARE", "status": "PASS", "reason": "PASS"},
+        {"gate_id": "HARDWARE", "status": "BLOCKED", "reason": "RESERVED_CATALOG_FAMILY"},
+    ]
+    terminal = {"shard": "windows", "gate_results": rows}
+    if mutation == "wrong-shard":
+        terminal["shard"] = "linux"
+    elif mutation == "software-fail":
+        rows[0].update(status="FAIL", reason="GATE_FAILURE")
+    else:
+        rows[0].update(status="BLOCKED", reason="PREREQUISITE_NOT_PASS")
+    checkpoint.write_bytes(canonical_json_bytes(terminal))
+    ledger = create_candidate_ledger(
+        module="STM32TK-0602", controller_path=tmp_path / "tools/release/run_0600_candidate.ps1",
+        candidate_root=candidate, evidence_root=evidence, run_id=RUN_ID,
+        expected_code_head="a" * 40, catalog_sha256=_sha(catalog.read_bytes()),
+        performance_sha256=_sha(performance.read_bytes()), support_profile_sha256=_sha(support.read_bytes()),
+        now=datetime.now(timezone.utc),
+    )
+    ledger.update(checkpoint=str(checkpoint), state="blocked")
+    (candidate / "candidate-ledger.json").write_bytes(canonical_json_bytes(ledger))
+    families = (
+        SimpleNamespace(family_id="SOFTWARE", module="STM32TK-0602", matrices=("candidate-0602",), reserved=False),
+        SimpleNamespace(family_id="HARDWARE", module="STM32TK-0602", matrices=("candidate-0602",), reserved=True),
+    )
+    monkeypatch.setattr(verifier, "load_catalog", lambda _path: SimpleNamespace(families=families))
+    monkeypatch.setattr(verifier, "verify_candidate_evidence_file", lambda _path: {"mode": "candidate-evidence", "status": "PASS"})
+
+    with pytest.raises(VerificationError):
+        verifier.verify_candidate_evidence_contract(
+            module="STM32TK-0602", candidate_run_id=RUN_ID, evidence=candidate,
+            expected_code_head="a" * 40, catalog=catalog, performance=performance,
+            support_profile=support, expected_shards="windows",
+            expected_outcome="SOFTWARE_COMPLETE_HARDWARE_PENDING",
+        )
+
+
+def test_final_release_inputs_are_canonical_create_new_and_sidecar_bound(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Task 13 generation preserves a first attempt and requires a new output on retry."""
+    candidate = tmp_path / "candidate"
+    evidence = candidate / "windows"
+    evidence.mkdir(parents=True)
+    support = tmp_path / "support/feasibility/profile.json"
+    support.parent.mkdir(parents=True)
+    support.write_bytes(b"profile\n")
+    (support.parents[1] / "support-manifest.json").write_bytes(b"manifest\n")
+    catalog = REPO / "tools/release/gates_0600.json"
+    performance = REPO / "tools/release/performance_0600.json"
+    ledger = create_candidate_ledger(
+        module="STM32TK-0603", controller_path=REPO / "tools/release/run_0600_candidate.ps1",
+        candidate_root=candidate, evidence_root=evidence, run_id=RUN_ID,
+        expected_code_head="5" * 40, catalog_sha256=_sha(catalog.read_bytes()),
+        performance_sha256=_sha(performance.read_bytes()), support_profile_sha256=_sha(support.read_bytes()),
+        now=datetime.now(timezone.utc),
+    )
+    ledger.update(checkpoint=str(evidence / "controller-result.json"), state="blocked")
+    ledger_path = candidate / "candidate-ledger.json"
+    ledger_path.write_bytes(canonical_json_bytes(ledger))
+    context = {
+        "schema": "stm32-candidate-invocation-context/1", "module": "STM32TK-0603", "shard": "windows",
+        "candidate_run_id": RUN_ID, "code_head": "5" * 40, "frozen_worktree": str(REPO),
+        "origin_url": REPOSITORY_URL, "candidate_root": str(candidate), "evidence_root": str(evidence),
+        "support_profile": str(support), "wrapper_ledger": str(ledger_path),
+        "catalog_sha256": _sha(catalog.read_bytes()), "performance_sha256": _sha(performance.read_bytes()),
+        "support_profile_sha256": _sha(support.read_bytes()),
+        "controller_sha256": _sha((REPO / "tools/release/run_0600_candidate.ps1").read_bytes()),
+        "verifier_sha256": _sha((REPO / "tools/release/verify_0600_release.py").read_bytes()),
+    }
+    context_path = tmp_path / "context.json"
+    _write_canonical(context_path, context)
+    monkeypatch.setattr(verifier, "verify_candidate_evidence_contract", lambda **_kwargs: {"status": "PASS"})
+    monkeypatch.setattr(verifier, "reconcile_candidate", lambda *_args, **_kwargs: REPO / "tools/release/verify_0600_release.py")
+    reports = {"0601": "2" * 40, "0602": "4" * 40}
+    products = {"2" * 40: "1" * 40, "4" * 40: "3" * 40}
+    def git(args: list[str]) -> str:
+        if args[:4] == ["log", "-1", "--format=%H", "--"]:
+            return reports["0601" if "0601" in args[4] else "0602"] + "\n"
+        if args[0] == "rev-parse" and args[1].endswith("^"):
+            return products[args[1][:-1]] + "\n"
+        if args[0] in {"cat-file", "merge-base"}:
+            return ""
+        if args[:3] == ["rev-list", "--parents", "-n"]:
+            report = args[4]
+            return f"{report} {products[report]}\n"
+        if args[0] == "diff-tree":
+            return REPORT_PATHS["0601" if args[-1] == reports["0601"] else "0602"] + "\n"
+        raise AssertionError(args)
+    output = tmp_path / "final-release-inputs.json"
+    digest = tmp_path / "final-release-inputs.json.sha256"
+    result = verifier.generate_final_release_inputs(
+        repository=REPO, candidate_ledger_path=ledger_path, invocation_context_path=context_path,
+        output_path=output, digest_output_path=digest, git_runner=git,
+    )
+    assert result["status"] == "PASS"
+    assert digest.read_text(encoding="ascii") == _sha(output.read_bytes()) + "\n"
+    with pytest.raises(VerificationError, match="already exists"):
+        verifier.generate_final_release_inputs(
+            repository=REPO, candidate_ledger_path=ledger_path, invocation_context_path=context_path,
+            output_path=output, digest_output_path=digest, git_runner=git,
+        )
+
+    real_verify = verifier.verify_final_release_inputs
+    monkeypatch.setattr(verifier, "verify_final_release_inputs", lambda *_args, **_kwargs: (_ for _ in ()).throw(VerificationError("late verification")))
+    failed_output = tmp_path / "failed-final-release-inputs.json"
+    failed_digest = tmp_path / "failed-final-release-inputs.json.sha256"
+    with pytest.raises(VerificationError, match="late verification"):
+        verifier.generate_final_release_inputs(
+            repository=REPO, candidate_ledger_path=ledger_path, invocation_context_path=context_path,
+            output_path=failed_output, digest_output_path=failed_digest, git_runner=git,
+        )
+    failed_bytes = failed_output.read_bytes(), failed_digest.read_bytes()
+    monkeypatch.setattr(verifier, "verify_final_release_inputs", real_verify)
+    retry_output = tmp_path / "retry-final-release-inputs.json"
+    retry_digest = tmp_path / "retry-final-release-inputs.json.sha256"
+    verifier.generate_final_release_inputs(
+        repository=REPO, candidate_ledger_path=ledger_path, invocation_context_path=context_path,
+        output_path=retry_output, digest_output_path=retry_digest, git_runner=git,
+    )
+    assert (failed_output.read_bytes(), failed_digest.read_bytes()) == failed_bytes
+    assert retry_output.read_bytes() == failed_output.read_bytes()
+
+
+def test_final_release_output_rejects_junction_parent(tmp_path: Path) -> None:
+    """A canonical spelling through a junction cannot redirect final release output."""
+    real = tmp_path / "real-output"
+    real.mkdir()
+    junction = tmp_path / "output-alias"
+    completed = subprocess.run(
+        ["cmd.exe", "/d", "/c", "mklink", "/J", str(junction), str(real)],
+        capture_output=True, text=True, check=False,
+    )
+    if completed.returncode != 0:
+        pytest.skip(f"junction creation is unavailable: {completed.stderr}")
+    try:
+        with pytest.raises(VerificationError, match="reparse"):
+            verifier._create_new_bytes(junction / "final-release-inputs.json", b"{}\n")
+        assert not (real / "final-release-inputs.json").exists()
+    finally:
+        os.rmdir(junction)
 
 
 def _performance_environment(version: str = "3.12.10") -> dict[str, object]:

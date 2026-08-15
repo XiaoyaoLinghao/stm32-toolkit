@@ -3357,6 +3357,32 @@ def test_candidate_has_only_closed_resume_interface_and_context_cannot_supply_pa
     assert "InvocationContext" not in parameters
 
 
+def test_frozen_candidate_commands_bind_with_planned_aliases_and_default_matrix() -> None:
+    """The three frozen plans must bind through the real PowerShell 5.1 parameter binder."""
+    plans = tuple((REPO / "docs/superpowers/plans").glob("2026-08-14-stm32tk-060[123]-*.md"))
+    command_lines = []
+    for plan in plans:
+        command_lines.extend(
+            line for line in plan.read_text(encoding="utf-8").splitlines()
+            if "run_0600_candidate.ps1" not in line
+            and "-CandidateRunId" in line and "-EvidenceRoot" in line and "-Catalog" in line
+        )
+    assert len(command_lines) == 3
+    script = rf"""
+$tokens=$null;$errors=$null
+$ast=[Management.Automation.Language.Parser]::ParseFile('{CANDIDATE}',[ref]$tokens,[ref]$errors)
+$probe=[scriptblock]::Create($ast.ParamBlock.Extent.Text + "`n[pscustomobject]@{{matrix=`$Matrix;run_id=`$RunId;catalog=`$GateCatalog;performance=`$PerformanceCatalog}}|ConvertTo-Json -Compress")
+& $probe -Module STM32TK-0603 -Shard windows -CandidateRunId 123e4567-e89b-42d3-a456-426614174000 -EvidenceRoot C:\tmp\candidate\windows -ExpectedCodeHead $('a'*40) -Catalog C:\tmp\catalog.json -Performance C:\tmp\performance.json -SupportProfile C:\tmp\profile.json
+"""
+    completed = _run_powershell(script)
+    assert completed.returncode == 0, completed.stderr
+    value = json.loads(completed.stdout)
+    assert value["matrix"] == "candidate"
+    assert value["run_id"] == RUN_ID
+    assert value["catalog"] == r"C:\tmp\catalog.json"
+    assert value["performance"] == r"C:\tmp\performance.json"
+
+
 def test_candidate_resume_executes_only_ledger_repository_runner(tmp_path: Path) -> None:
     """A copied wrapper cannot redirect resume execution to its sibling replacement runner."""
     trusted = tmp_path / "trusted"
@@ -3772,7 +3798,6 @@ def test_terminal_candidate_wrapper_owns_ledger_and_writes_local_shard_package(
 ) -> None:
     """Even BLOCKED candidate termination must atomically retain its own ledger/package."""
     candidate_root = tmp_path / "candidate"
-    candidate_root.mkdir()
     evidence = candidate_root / "evidence"
     support_profile = _write_support(tmp_path / "support")
     code_head = subprocess.run(
@@ -3811,6 +3836,35 @@ def test_terminal_candidate_wrapper_owns_ledger_and_writes_local_shard_package(
     assert package.is_file()
     assert package_manifest.read_bytes() == canonical_json_bytes(result["package"])
     verify_shard_package(package, result["package"], result["binding"])
+
+
+def test_failed_candidate_attempt_is_preserved_and_retry_requires_new_root(tmp_path: Path) -> None:
+    """Create-new candidate lifecycle never deletes or overwrites a failed attempt."""
+    support_profile = _write_support(tmp_path / "support")
+    code_head = subprocess.run(
+        ["git", "-C", str(REPO), "rev-parse", "HEAD"], capture_output=True,
+        text=True, check=True,
+    ).stdout.strip()
+    def run(root: Path, run_id: str, returncode: int) -> object:
+        return run_wrapper_contract(
+            kind="candidate", matrix="candidate", module="STM32TK-0601", shard="windows",
+            run_id=run_id, evidence_root=root / "windows", expected_code_head=code_head,
+            gate_catalog=CATALOG, performance_catalog=RELEASE / "performance_0600.json",
+            support_profile=support_profile, controller_path=RELEASE / "run_0600_candidate.ps1",
+            now=lambda: NOW, verifier_blob_checker=lambda _repo, _head: RELEASE / "verify_0600_release.py",
+            verifier_invoker=lambda _repo, _head, _argv: SimpleNamespace(returncode=returncode),
+        )
+    failed = tmp_path / "candidate-failed"
+    with pytest.raises(ControllerError, match="verifier child failed"):
+        run(failed, RUN_ID, 7)
+    retained = {path.relative_to(failed).as_posix(): path.read_bytes() for path in failed.rglob("*") if path.is_file()}
+    assert "candidate-ledger.json" in retained and "windows/controller-result.json" in retained
+    with pytest.raises(ControllerError, match="must be absent"):
+        run(failed, RUN_ID, 0)
+    assert {path.relative_to(failed).as_posix(): path.read_bytes() for path in failed.rglob("*") if path.is_file()} == retained
+    fresh = tmp_path / "candidate-retry"
+    result = run(fresh, "123e4567-e89b-42d3-a456-426614174001", 0)
+    assert result["status"] == "BLOCKED"
 
 
 def test_terminal_wrapper_schedules_executable_catalog_families_and_verifies_package(
