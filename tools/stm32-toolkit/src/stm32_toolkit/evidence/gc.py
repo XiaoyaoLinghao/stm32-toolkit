@@ -312,9 +312,6 @@ _PREPARED_REGISTRY_LOCK = threading.Lock()
 _PREPARED_BY_PLAN: weakref.WeakKeyDictionary[GcPlan, _PreparedGcPlan] = (
     weakref.WeakKeyDictionary()
 )
-_PREPARED_BY_ACTION: weakref.WeakValueDictionary[
-    tuple[str, str], _PreparedGcPlan
-] = weakref.WeakValueDictionary()
 
 
 def _relative(store: EvidenceStore, path: Path) -> str:
@@ -611,9 +608,11 @@ def _scan_objects(
     return objects, unknown, corrupt
 
 
-def _store_identity(store: EvidenceStore) -> tuple[str, str]:
-    store._ensure_root()
+def _existing_store_identity(store: EvidenceStore) -> tuple[str, str]:
+    """Read an existing canonical store identity without creating any path."""
     info = store._validate_existing_path(store.root)
+    if not stat.S_ISDIR(info.st_mode):
+        raise EvidenceValidationError("evidence root is not a directory")
     canonical_root = os.path.normcase(str(store.root.absolute()))
     store_id = _digest(
         {
@@ -623,6 +622,11 @@ def _store_identity(store: EvidenceStore) -> tuple[str, str]:
         }
     )
     return canonical_root, store_id
+
+
+def _store_identity(store: EvidenceStore) -> tuple[str, str]:
+    store._ensure_root()
+    return _existing_store_identity(store)
 
 
 def put_root(store: EvidenceStore | Path | str, root: RootRecord | Mapping[str, object]) -> Path:
@@ -646,9 +650,8 @@ def put_root(store: EvidenceStore | Path | str, root: RootRecord | Mapping[str, 
         return target
 
 
-def plan_gc(store: EvidenceStore | Path | str) -> GcPlan:
-    """Build a deterministic dry-run plan without modifying the evidence store."""
-    evidence_store = store if isinstance(store, EvidenceStore) else EvidenceStore(store)
+def _plan_gc_locked(evidence_store: EvidenceStore) -> GcPlan:
+    """Build the plan while the caller holds the verified store mutation lock."""
     store_root, store_id = _store_identity(evidence_store)
     snapshot = _snapshot_entries(evidence_store)
     evidence_store._fault("gc.plan.after_snapshot")
@@ -732,31 +735,30 @@ def plan_gc(store: EvidenceStore | Path | str) -> GcPlan:
         plan_digest=plan_digest,
         action_digest=action_digest,
     )
-    key = (store_root, action_digest)
+    prepared = _PreparedGcPlan(
+        store=evidence_store,
+        store_root=store_root,
+        store_id=store_id,
+        plan_digest=plan_digest,
+        action_digest=action_digest,
+        manifest_snapshot_digest=str(values["manifest_snapshot_digest"]),
+        store_snapshot_digest=str(values["store_snapshot_digest"]),
+        bytes_reclaimable=reclaimable,
+        unreachable_objects=unreachable,
+        object_sizes=MappingProxyType({path: objects[path] for path in unreachable}),
+        snapshot_entries=snapshot,
+        canonical_plan=plan.to_json_bytes(),
+    )
     with _PREPARED_REGISTRY_LOCK:
-        prepared = _PREPARED_BY_ACTION.get(key)
-        if prepared is None:
-            prepared = _PreparedGcPlan(
-                store=evidence_store,
-                store_root=store_root,
-                store_id=store_id,
-                plan_digest=plan_digest,
-                action_digest=action_digest,
-                manifest_snapshot_digest=str(values["manifest_snapshot_digest"]),
-                store_snapshot_digest=str(values["store_snapshot_digest"]),
-                bytes_reclaimable=reclaimable,
-                unreachable_objects=unreachable,
-                object_sizes=MappingProxyType(
-                    {path: objects[path] for path in unreachable}
-                ),
-                snapshot_entries=snapshot,
-                canonical_plan=plan.to_json_bytes(),
-            )
-            _PREPARED_BY_ACTION[key] = prepared
-        elif prepared.canonical_plan != plan.to_json_bytes():
-            raise EvidenceValidationError("prepared action collided with a different plan")
         _PREPARED_BY_PLAN[plan] = prepared
     return plan
+
+
+def plan_gc(store: EvidenceStore | Path | str) -> GcPlan:
+    """Build a deterministic dry-run plan after initializing coordination metadata."""
+    evidence_store = store if isinstance(store, EvidenceStore) else EvidenceStore(store)
+    with evidence_store._mutation_lock():
+        return _plan_gc_locked(evidence_store)
 
 
 def _result(
@@ -808,13 +810,38 @@ def _find_prepared(plan: GcPlan) -> tuple[_PreparedGcPlan | None, bool]:
         prepared = _PREPARED_BY_PLAN.get(plan)
         if prepared is not None:
             return prepared, True
-        if not isinstance(plan.store_root, str) or not isinstance(plan.action_digest, str):
+    if (
+        not isinstance(plan.store_root, str)
+        or not isinstance(plan.store_id, str)
+        or not isinstance(plan.plan_digest, str)
+        or not isinstance(plan.action_digest, str)
+    ):
+        return None, False
+    try:
+        store = EvidenceStore(Path(plan.store_root))
+        store_root, store_id = _existing_store_identity(store)
+        if store_root != plan.store_root or store_id != plan.store_id:
             return None, False
-        return _PREPARED_BY_ACTION.get((plan.store_root, plan.action_digest)), False
+        with store._mutation_lock(create=False):
+            store_root, store_id = _existing_store_identity(store)
+            if store_root != plan.store_root or store_id != plan.store_id:
+                return None, False
+            regenerated = _plan_gc_locked(store)
+        with _PREPARED_REGISTRY_LOCK:
+            prepared = _PREPARED_BY_PLAN.get(regenerated)
+        if (
+            prepared is None
+            or prepared.plan_digest != plan.plan_digest
+            or prepared.action_digest != plan.action_digest
+        ):
+            return None, False
+        return prepared, False
+    except (EvidenceValidationError, FileNotFoundError, OSError, TypeError, ValueError):
+        return None, False
 
 
-def _consume_authorization(prepared: _PreparedGcPlan) -> bool:
-    """Atomically redeem an action digest once for this store, across plan instances/processes."""
+def _consume_authorization_locked(prepared: _PreparedGcPlan) -> bool:
+    """Atomically redeem an action while the verified store mutation lock is held."""
     directory = prepared.store._managed_directory("gc-authorizations")
     target = directory / f"{prepared.action_digest}.json"
     payload = canonical_json_bytes(
@@ -1055,8 +1082,54 @@ def apply_gc(plan: GcPlan, authorized: object, expected_plan_digest: object) -> 
     with prepared.consume_lock:
         if prepared.consumed:
             return _result(prepared, False, "GC_AUTHORIZATION_CONSUMED")
+        consumed_now = False
         try:
-            consumed_now = _consume_authorization(prepared)
+            store_root, store_id = _existing_store_identity(prepared.store)
+            if store_root != prepared.store_root or store_id != prepared.store_id:
+                raise EvidenceValidationError("prepared evidence store identity changed")
+            with prepared.store._mutation_lock(create=False):
+                store_root, store_id = _existing_store_identity(prepared.store)
+                if store_root != prepared.store_root or store_id != prepared.store_id:
+                    raise EvidenceValidationError("prepared evidence store identity changed")
+                consumed_now = _consume_authorization_locked(prepared)
+                prepared.consumed = True
+                if not consumed_now:
+                    return _result(prepared, False, "GC_AUTHORIZATION_CONSUMED")
+                if not registered:
+                    return _result(prepared, False, "GC_PLAN_INVALID")
+                try:
+                    current_plan = plan.to_json_bytes()
+                except (
+                    AttributeError,
+                    EvidenceValidationError,
+                    KeyError,
+                    OverflowError,
+                    TypeError,
+                    ValueError,
+                ):
+                    return _result(prepared, False, "GC_PLAN_INVALID")
+                if (
+                    current_plan != prepared.canonical_plan
+                    or plan.plan_digest != prepared.plan_digest
+                    or plan.action_digest != prepared.action_digest
+                ):
+                    return _result(prepared, False, "GC_PLAN_INVALID")
+                if not isinstance(authorized, str) or authorized != prepared.action_digest:
+                    return _result(prepared, False, "GC_AUTHORIZATION_INVALID")
+                if (
+                    not isinstance(expected_plan_digest, str)
+                    or expected_plan_digest != prepared.plan_digest
+                ):
+                    return _result(prepared, False, "GC_PLAN_DIGEST_MISMATCH")
+                try:
+                    return _apply_gc_locked(prepared)
+                except (OSError, EvidenceValidationError) as exc:
+                    return _result(
+                        prepared,
+                        False,
+                        "GC_STORE_CHANGED",
+                        errors=(str(exc),),
+                    )
         except (OSError, EvidenceValidationError) as exc:
             prepared.consumed = True
             return _result(
@@ -1065,40 +1138,6 @@ def apply_gc(plan: GcPlan, authorized: object, expected_plan_digest: object) -> 
                 "GC_AUTHORIZATION_INVALID",
                 errors=(str(exc),),
             )
-        prepared.consumed = True
-    if not consumed_now:
-        return _result(prepared, False, "GC_AUTHORIZATION_CONSUMED")
-    if not registered:
-        return _result(prepared, False, "GC_PLAN_INVALID")
-    try:
-        current_plan = plan.to_json_bytes()
-    except (
-        AttributeError,
-        EvidenceValidationError,
-        KeyError,
-        OverflowError,
-        TypeError,
-        ValueError,
-    ):
-        return _result(prepared, False, "GC_PLAN_INVALID")
-    if (
-        current_plan != prepared.canonical_plan
-        or plan.plan_digest != prepared.plan_digest
-        or plan.action_digest != prepared.action_digest
-    ):
-        return _result(prepared, False, "GC_PLAN_INVALID")
-    if not isinstance(authorized, str) or authorized != prepared.action_digest:
-        return _result(prepared, False, "GC_AUTHORIZATION_INVALID")
-    if (
-        not isinstance(expected_plan_digest, str)
-        or expected_plan_digest != prepared.plan_digest
-    ):
-        return _result(prepared, False, "GC_PLAN_DIGEST_MISMATCH")
-    try:
-        with prepared.store._mutation_lock():
-            return _apply_gc_locked(prepared)
-    except (OSError, EvidenceValidationError) as exc:
-        return _result(prepared, False, "GC_STORE_CHANGED", errors=(str(exc),))
 
 
 __all__ = [

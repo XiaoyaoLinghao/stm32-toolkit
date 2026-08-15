@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import FrozenInstanceError, replace
+import gc as python_gc
 import hashlib
 import json
 import os
@@ -14,6 +15,7 @@ import sys
 import tempfile
 from threading import Event
 import time
+import weakref
 
 import pytest
 
@@ -229,6 +231,19 @@ def test_apply_rejects_non_plan_values_before_authorization(tmp_path):
         apply_gc(object(), "0" * 64, "0" * 64)  # type: ignore[arg-type]
 
 
+def test_exact_authorized_empty_plan_initializes_coordination_and_applies(tmp_path):
+    """A store with no prior publisher still needs a usable globally consumed action."""
+    store = EvidenceStore(tmp_path / "empty-evidence")
+    plan = plan_gc(store)
+
+    result = apply_gc(plan, plan.action_digest, plan.plan_digest)
+
+    assert result.success is True
+    assert result.code == "GC_APPLIED"
+    assert result.deleted_objects == ()
+    assert result.bytes_reclaimed == 0
+
+
 def test_public_gc_plan_is_immutable_and_cannot_rewrite_prepared_results(tmp_path):
     """A caller must not be able to mutate any public field after prepare."""
     store = EvidenceStore(tmp_path / "evidence")
@@ -264,6 +279,214 @@ def test_reconstructed_gc_plan_consumes_but_cannot_execute_prepared_action(tmp_p
     assert forged.retained_objects == (artifact.relative_path,)
     assert retry.code == "GC_AUTHORIZATION_CONSUMED"
     assert _object(store, artifact).exists()
+
+
+def test_reconstructed_plan_consumes_action_after_original_plan_is_collected(tmp_path):
+    """Prepared action identity must outlive its original public plan and persist consumption."""
+    store = EvidenceStore(tmp_path / "evidence")
+    _envelope, artifact = _put(store, tmp_path / "collected-plan.bin", b"collected")
+    original = plan_gc(store)
+    reconstructed = replace(original)
+    action_digest = original.action_digest
+    plan_digest = original.plan_digest
+    retained = original.unreachable_objects
+    del original
+    python_gc.collect()
+
+    rejected = apply_gc(reconstructed, action_digest, plan_digest)
+
+    assert rejected.code == "GC_PLAN_INVALID"
+    assert rejected.action_digest == action_digest
+    assert rejected.plan_digest == plan_digest
+    assert rejected.retained_objects == retained == (artifact.relative_path,)
+    assert _object(store, artifact).exists()
+
+    child = """
+import json
+import sys
+from stm32_toolkit.evidence.gc import apply_gc, plan_gc
+from stm32_toolkit.evidence.store import EvidenceStore
+
+plan = plan_gc(EvidenceStore(sys.argv[1]))
+print(json.dumps(apply_gc(plan, plan.action_digest, plan.plan_digest).to_dict()))
+"""
+    completed = subprocess.run(
+        [sys.executable, "-c", child, str(store.root)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert completed.returncode == 0, completed.stderr or completed.stdout
+    assert json.loads(completed.stdout)["code"] == "GC_AUTHORIZATION_CONSUMED"
+
+    equivalent = plan_gc(store)
+    retry = apply_gc(equivalent, equivalent.action_digest, equivalent.plan_digest)
+    assert retry.code == "GC_AUTHORIZATION_CONSUMED"
+    assert _object(store, artifact).exists()
+
+
+def test_terminal_action_releases_full_prepared_snapshot_after_public_plans_die(tmp_path):
+    """Terminal consumption must not retain Store and full snapshot state for process life."""
+    store = EvidenceStore(tmp_path / "evidence")
+    _envelope, _artifact = _put(store, tmp_path / "released-plan.bin", b"released")
+    original = plan_gc(store)
+    reconstructed = replace(original)
+    prepared_reference = weakref.ref(gc_module._PREPARED_BY_PLAN[original])
+    action_digest = original.action_digest
+    plan_digest = original.plan_digest
+    del original
+    python_gc.collect()
+
+    result = apply_gc(reconstructed, action_digest, plan_digest)
+    assert result.code == "GC_PLAN_INVALID"
+    del reconstructed
+    python_gc.collect()
+
+    assert prepared_reference() is None
+
+
+def test_collected_plan_never_writes_tombstone_into_replacement_store_identity(tmp_path):
+    """A reused path is not the frozen store and must remain entirely unmodified."""
+    store = EvidenceStore(tmp_path / "evidence")
+    _envelope, _artifact = _put(store, tmp_path / "replaced-store.bin", b"replaced")
+    original = plan_gc(store)
+    reconstructed = replace(original)
+    action_digest = original.action_digest
+    plan_digest = original.plan_digest
+    del original
+    python_gc.collect()
+    shutil.rmtree(store.root)
+    store.root.mkdir()
+    marker = store.root / "replacement-marker.txt"
+    marker.write_text("replacement", encoding="utf-8")
+
+    result = apply_gc(reconstructed, action_digest, plan_digest)
+
+    assert result.success is False
+    assert result.code == "GC_PLAN_INVALID"
+    assert marker.read_text(encoding="utf-8") == "replacement"
+    assert sorted(path.name for path in store.root.iterdir()) == [marker.name]
+
+
+def test_unregistered_public_store_path_is_never_created_during_recognition(tmp_path):
+    """Recognition must be read-only until an existing matching store identity is proven."""
+    store = EvidenceStore(tmp_path / "evidence")
+    _envelope, artifact = _put(store, tmp_path / "forged-store-path.bin", b"forged")
+    original = plan_gc(store)
+    outside = tmp_path / "outside" / "nested"
+    forged = replace(original, store_root=str(outside))
+
+    rejected = apply_gc(forged, forged.action_digest, forged.plan_digest)
+
+    assert rejected.code == "GC_PLAN_INVALID"
+    assert not (tmp_path / "outside").exists()
+    applied = apply_gc(original, original.action_digest, original.plan_digest)
+    assert applied.code == "GC_APPLIED"
+    assert applied.deleted_objects == (artifact.relative_path,)
+
+
+def test_unregistered_public_store_file_is_rejected_without_mutation(tmp_path):
+    """A regular file can never be reinterpreted as an evidence store root."""
+    store = EvidenceStore(tmp_path / "evidence")
+    _envelope, _artifact = _put(store, tmp_path / "store-file-plan.bin", b"file")
+    original = plan_gc(store)
+    outside_file = tmp_path / "outside-store-file"
+    outside_file.write_bytes(b"unchanged")
+    forged = replace(original, store_root=str(outside_file))
+
+    rejected = apply_gc(forged, forged.action_digest, forged.plan_digest)
+
+    assert rejected.code == "GC_PLAN_INVALID"
+    assert outside_file.read_bytes() == b"unchanged"
+
+
+def test_root_swap_before_authorization_lock_never_initializes_lock_in_replacement(
+    tmp_path, monkeypatch
+):
+    """A pathname swap between identity read and lock acquisition must perform zero writes."""
+    store = EvidenceStore(tmp_path / "evidence")
+    _envelope, _artifact = _put(store, tmp_path / "lock-swap.bin", b"lock-swap")
+    plan = plan_gc(store)
+    displaced = tmp_path / "displaced-evidence"
+    marker = store.root / "replacement-marker.txt"
+    real_store_identity = gc_module._existing_store_identity
+    calls = 0
+
+    def swap_after_identity(evidence_store):
+        nonlocal calls
+        identity = real_store_identity(evidence_store)
+        calls += 1
+        if calls == 1:
+            evidence_store.root.rename(displaced)
+            evidence_store.root.mkdir()
+            marker.write_text("replacement", encoding="utf-8")
+        return identity
+
+    monkeypatch.setattr(gc_module, "_existing_store_identity", swap_after_identity)
+
+    result = apply_gc(plan, plan.action_digest, plan.plan_digest)
+
+    assert result.success is False
+    assert marker.read_text(encoding="utf-8") == "replacement"
+    assert sorted(path.name for path in store.root.iterdir()) == [marker.name]
+
+
+def test_store_identity_mismatch_while_lock_held_never_writes_tombstone(
+    tmp_path, monkeypatch
+):
+    """The held-lock identity recheck must reject before authorization publication."""
+    store = EvidenceStore(tmp_path / "evidence")
+    _envelope, artifact = _put(store, tmp_path / "held-identity.bin", b"held")
+    plan = plan_gc(store)
+    real_store_identity = gc_module._existing_store_identity
+    calls = 0
+
+    def change_second_identity(evidence_store):
+        nonlocal calls
+        store_root, store_id = real_store_identity(evidence_store)
+        calls += 1
+        return (store_root, store_id) if calls == 1 else (store_root, "0" * 64)
+
+    monkeypatch.setattr(gc_module, "_existing_store_identity", change_second_identity)
+
+    result = apply_gc(plan, plan.action_digest, plan.plan_digest)
+
+    assert result.code == "GC_AUTHORIZATION_INVALID"
+    assert not (store.root / "gc-authorizations").exists()
+    assert _object(store, artifact).exists()
+
+
+def test_root_move_before_public_rederive_never_recreates_original_store_path(
+    tmp_path, monkeypatch
+):
+    """Re-deriving trusted state must stay read-only if the verified root is moved."""
+    store = EvidenceStore(tmp_path / "evidence")
+    _envelope, _artifact = _put(store, tmp_path / "rederive-move.bin", b"move")
+    original = plan_gc(store)
+    reconstructed = replace(original)
+    action_digest = original.action_digest
+    plan_digest = original.plan_digest
+    del original
+    python_gc.collect()
+    moved = tmp_path / "moved-evidence"
+    real_store_identity = gc_module._existing_store_identity
+    calls = 0
+
+    def move_after_identity(evidence_store):
+        nonlocal calls
+        identity = real_store_identity(evidence_store)
+        calls += 1
+        if calls == 1:
+            evidence_store.root.rename(moved)
+        return identity
+
+    monkeypatch.setattr(gc_module, "_existing_store_identity", move_after_identity)
+
+    result = apply_gc(reconstructed, action_digest, plan_digest)
+
+    assert result.code == "GC_PLAN_INVALID"
+    assert moved.exists()
+    assert not store.root.exists()
 
 
 def test_unregistered_plan_with_unidentifiable_action_never_accesses_store(tmp_path):

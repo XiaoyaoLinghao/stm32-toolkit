@@ -109,15 +109,22 @@ class EvidenceStore:
         return current
 
     @contextmanager
-    def _mutation_lock(self):
+    def _mutation_lock(self, *, create: bool = True):
         """Hold the verified store-scoped publisher/collector lock across processes."""
-        self._ensure_root()
+        if create:
+            self._ensure_root()
+        else:
+            root_info = self._validate_existing_path(self.root)
+            if not stat.S_ISDIR(root_info.st_mode):
+                raise EvidenceValidationError("evidence root is not a directory")
         lock_path = self.root / _MUTATION_LOCK_NAME
         try:
             before = self._validate_existing_path(
                 lock_path, regular=True, single_link=True
             )
         except FileNotFoundError:
+            if not create:
+                raise EvidenceValidationError("store mutation lock is not initialized")
             self._atomic_create_new(lock_path, b"\0", phase="mutation-lock")
             before = self._validate_existing_path(
                 lock_path, regular=True, single_link=True
