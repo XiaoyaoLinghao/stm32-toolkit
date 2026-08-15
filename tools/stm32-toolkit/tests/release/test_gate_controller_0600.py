@@ -432,15 +432,15 @@ def test_native_node_outcome_adapters_consume_only_real_runner_business_fields(
     assert gates.parse_native_node_outcomes(framework, raw) == expected
 
 
-def test_windows_playwright_contract_explicitly_disables_retries_and_defers_nonchromium() -> None:
-    """Only Chromium's two frozen Windows viewports may execute in the native adapter."""
+def test_windows_playwright_contract_has_only_two_frozen_chromium_projects() -> None:
+    """The default Windows command cannot enumerate deferred Firefox or WebKit projects."""
     config = (REPO / "tools/stm32-monitor/ui/playwright.config.ts").read_text(encoding="utf-8")
 
     assert "retries: 0" in config
     assert 'name: "chromium-1280"' in config
     assert 'name: "chromium-1024"' in config
-    assert 'name: "firefox-deferred"' in config
-    assert 'name: "webkit-deferred"' in config
+    assert 'name: "firefox-deferred"' not in config
+    assert 'name: "webkit-deferred"' not in config
     assert gates._native_report_argv(
         ("playwright", "test", "--project=chromium-1280", "--project=chromium-1024"),
         REPO,
