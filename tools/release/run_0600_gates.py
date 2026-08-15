@@ -39,6 +39,7 @@ COVERAGE_SUMMARY_EXTENDED_KEYS = COVERAGE_SUMMARY_BASE_KEYS | {
     "percent_statements_covered", "percent_statements_covered_display",
     "percent_branches_covered", "percent_branches_covered_display",
 }
+FROZEN_T12_BASETEMP_TOKEN = r"C:\tmp\stm32tk-0603-package-312"
 HEX40 = re.compile(r"^[0-9a-f]{40}$")
 HEX64 = re.compile(r"^[0-9a-f]{64}$")
 UUID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$")
@@ -900,22 +901,87 @@ def _validate_coverage_basetemp(repo: Path, task_id: str, value: str) -> Path:
         not path.is_absolute()
         or value != str(path)
         or value != os.path.abspath(value)
+        or value != FROZEN_T12_BASETEMP_TOKEN
     ):
-        raise ControllerError("coverage basetemp is not canonical absolute")
-    temporary_root = Path(r"C:\tmp")
+        raise ControllerError("coverage basetemp is not the frozen canonical token")
+    return path
+
+
+def _coverage_path_chain(root: Path, leaf: Path) -> list[Path]:
     try:
-        path.relative_to(temporary_root)
+        relative = leaf.relative_to(root)
     except ValueError as exc:
-        raise ControllerError("coverage basetemp is outside C:\\tmp") from exc
-    if path == temporary_root or path.exists() or not path.parent.is_dir():
-        raise ControllerError("coverage basetemp must be a new path below C:\\tmp")
+        raise ControllerError("coverage attempt path is outside C:\\tmp") from exc
+    chain = [root]
+    for part in relative.parts:
+        chain.append(chain[-1] / part)
+    return chain
+
+
+def _validate_coverage_attempt_location(repo: Path, evidence_root: Path) -> None:
+    """Validate the absent evidence location before create-new claims its name."""
+    temporary_root = Path(r"C:\tmp")
+    if not evidence_root.is_absolute() or str(evidence_root) != os.path.abspath(evidence_root):
+        raise ControllerError("coverage evidence root is not canonical absolute")
+    chain = _coverage_path_chain(temporary_root, evidence_root.parent)
+    if any(not path.is_dir() or _is_reparse(path) for path in chain):
+        raise ControllerError("coverage evidence parent chain contains a reparse point")
+    temporary_resolved = temporary_root.resolve(strict=True)
+    parent_resolved = evidence_root.parent.resolve(strict=True)
     try:
-        path.relative_to(repo.resolve())
+        parent_resolved.relative_to(temporary_resolved)
+    except ValueError as exc:
+        raise ControllerError("coverage evidence parent resolves outside C:\\tmp") from exc
+    candidate_resolved = parent_resolved / evidence_root.name
+    try:
+        candidate_resolved.relative_to(repo.resolve(strict=True))
     except ValueError:
         pass
     else:
-        raise ControllerError("coverage basetemp must be outside the repository")
-    return path
+        raise ControllerError("coverage evidence root must resolve outside the repository")
+
+
+def _verify_coverage_attempt(
+    repo: Path,
+    evidence_root: Path,
+    expected_identity: tuple[str, int, int, int] | None = None,
+) -> tuple[str, int, int, int]:
+    """Bind one coverage run to an unchanged, non-reparse evidence attempt."""
+    temporary_root = Path(r"C:\tmp")
+    chain = _coverage_path_chain(temporary_root, evidence_root)
+    if any(not path.is_dir() or _is_reparse(path) for path in chain):
+        raise ControllerError("coverage evidence chain contains a reparse point")
+    temporary_resolved = temporary_root.resolve(strict=True)
+    evidence_resolved = evidence_root.resolve(strict=True)
+    try:
+        evidence_resolved.relative_to(temporary_resolved)
+    except ValueError as exc:
+        raise ControllerError("coverage evidence root resolves outside C:\\tmp") from exc
+    try:
+        evidence_resolved.relative_to(repo.resolve(strict=True))
+    except ValueError:
+        pass
+    else:
+        raise ControllerError("coverage evidence root must resolve outside the repository")
+    info = evidence_root.stat()
+    identity = (str(evidence_resolved), info.st_dev, info.st_ino, info.st_ctime_ns)
+    if expected_identity is not None and identity != expected_identity:
+        raise ControllerError("coverage evidence root identity changed")
+    return identity
+
+
+def _verify_coverage_attempt_basetemp(evidence_root: Path, basetemp: Path) -> None:
+    """Keep pytest scratch absent and lexically bound to its retained attempt."""
+    if basetemp != evidence_root / "pytest-basetemp" or str(basetemp) != os.path.abspath(basetemp):
+        raise ControllerError("coverage basetemp is not bound to the evidence attempt")
+    try:
+        basetemp.lstat()
+    except FileNotFoundError:
+        pass
+    except OSError as exc:
+        raise ControllerError("coverage basetemp state is unreadable") from exc
+    else:
+        raise ControllerError("coverage basetemp must remain absent before pytest")
 
 
 def _validate_coverage_pytest_tokens(
@@ -1116,9 +1182,20 @@ def run_dev_coverage(
         validated.append(f"--cov={module}")
     if _coverage_configured(os.environ):
         raise ControllerError("dev coverage rejects inherited coverage variables")
+    basetemp_index = validated.index("--basetemp") if "--basetemp" in validated else None
+    _validate_coverage_attempt_location(repo, evidence_root)
     evidence = prepare_evidence_root(evidence_root)
+    basetemp: Path | None = None
+    attempt_identity = _verify_coverage_attempt(repo, evidence)
+    if basetemp_index is not None:
+        basetemp = evidence / "pytest-basetemp"
+        validated[basetemp_index + 1] = str(basetemp)
+        _verify_coverage_attempt_basetemp(evidence, basetemp)
     raw_path = evidence / "coverage-raw.json"
     argv = [sys.executable, "-m", "pytest", *validated, "--cov-branch", f"--cov-report=json:{raw_path}"]
+    if basetemp is not None:
+        _verify_coverage_attempt_basetemp(evidence, basetemp)
+    _verify_coverage_attempt(repo, evidence, attempt_identity)
     return_code = runner(argv, cwd=repo, env=_safe_controller_env())
     if return_code != 0 or not raw_path.is_file():
         raise ControllerError("coverage subprocess failed")
