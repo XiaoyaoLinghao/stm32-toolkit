@@ -600,6 +600,13 @@ def _coverage_git(paths: list[str]):
 
 def _coverage_v7(rows: dict[str, tuple[int, int]]) -> dict[str, object]:
     """Return the closed coverage.py JSON format 3 emitted by the frozen pytest command."""
+    def display(percent: float) -> str:
+        if 0 < percent < 1:
+            return "1"
+        if 99 < percent < 100:
+            return "99"
+        return f"{percent:.0f}"
+
     def summary(covered: int, total: int, statements: int) -> dict[str, object]:
         combined_percent = 100.0 if statements + total == 0 else (statements + covered) * 100.0 / (statements + total)
         branch_percent = 100.0 if total == 0 else covered * 100.0 / total
@@ -607,7 +614,7 @@ def _coverage_v7(rows: dict[str, tuple[int, int]]) -> dict[str, object]:
             "covered_lines": statements,
             "num_statements": statements,
             "percent_covered": combined_percent,
-            "percent_covered_display": f"{combined_percent:.0f}",
+            "percent_covered_display": display(combined_percent),
             "missing_lines": 0,
             "excluded_lines": 0,
             "percent_statements_covered": 100.0,
@@ -617,7 +624,7 @@ def _coverage_v7(rows: dict[str, tuple[int, int]]) -> dict[str, object]:
             "covered_branches": covered,
             "missing_branches": total - covered,
             "percent_branches_covered": branch_percent,
-            "percent_branches_covered_display": f"{branch_percent:.0f}",
+            "percent_branches_covered_display": display(branch_percent),
         }
 
     files: dict[str, object] = {}
@@ -663,6 +670,14 @@ def test_dev_coverage_accepts_native_timestamp_without_fraction() -> None:
     raw = json.loads(fixture.read_text(encoding="utf-8"))
 
     assert gates._validate_coverage_v7(raw)["meta"]["timestamp"] == "2026-08-15T00:00:00"
+
+
+@pytest.mark.parametrize("covered,total", [(1, 1000), (999, 1000)])
+def test_dev_coverage_accepts_native_display_percent_clamping(covered: int, total: int) -> None:
+    """coverage.py prevents nonzero percentages from displaying as 0 or 100 at precision zero."""
+    raw = _coverage_v7({"tools/stm32-toolkit/src/stm32_toolkit/a.py": (covered, total)})
+
+    assert gates._validate_coverage_v7(raw)["files"]
 
 
 @pytest.mark.parametrize(
@@ -877,6 +892,7 @@ def test_dev_coverage_rejects_duplicate_json_object_rows(tmp_path: Path) -> None
         "format",
         "version",
         "branch-disabled",
+        "timestamp-short-fraction",
         "row-missing",
         "row-extra",
         "summary-missing",
@@ -913,6 +929,8 @@ def test_dev_coverage_rejects_mutated_coverage_v7_contract(tmp_path: Path, mutat
             raw["meta"]["version"] = "8.0.0"
         elif mutation == "branch-disabled":
             raw["meta"]["branch_coverage"] = False
+        elif mutation == "timestamp-short-fraction":
+            raw["meta"]["timestamp"] = "2026-08-15T10:08:26.1"
         elif mutation == "row-missing":
             details.pop("functions")
         elif mutation == "row-extra":

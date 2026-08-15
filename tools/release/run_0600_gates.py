@@ -889,7 +889,13 @@ def _coverage_percent(covered_lines: int, statements: int, covered_branches: int
 
 def _validate_coverage_percent(value: object, expected: float, *, display: bool = False) -> None:
     if display:
-        if not isinstance(value, str) or value != f"{expected:.0f}":
+        if 0 < expected < 1:
+            expected_display = "1"
+        elif 99 < expected < 100:
+            expected_display = "99"
+        else:
+            expected_display = f"{expected:.0f}"
+        if not isinstance(value, str) or value != expected_display:
             raise ControllerError("coverage summary display percent is invalid")
         return
     if (
@@ -947,7 +953,7 @@ def _validate_coverage_v7(value: object) -> dict[str, object]:
         or not isinstance(meta["version"], str)
         or re.fullmatch(r"7\.[0-9]+\.[0-9]+", meta["version"]) is None
         or not isinstance(meta["timestamp"], str)
-        or re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]{1,6})?", meta["timestamp"]) is None
+        or re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]{6})?", meta["timestamp"]) is None
         or meta["branch_coverage"] is not True
         or meta["show_contexts"] is not False
     ):
