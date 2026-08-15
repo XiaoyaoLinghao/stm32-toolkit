@@ -241,7 +241,7 @@ def rebuild_catalog(
 ) -> Path:
     """Verify all manifests and atomically replace the complete derived catalog."""
     evidence_store = store if isinstance(store, EvidenceStore) else EvidenceStore(store)
-    evidence_catalog = catalog or EvidenceCatalog(evidence_store)
+    evidence_catalog = EvidenceCatalog(evidence_store) if catalog is None else catalog
     if not isinstance(evidence_catalog, EvidenceCatalog):
         raise EvidenceValidationError("catalog must be an EvidenceCatalog")
     if evidence_catalog.store.root != evidence_store.root:

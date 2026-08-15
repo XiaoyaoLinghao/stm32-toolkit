@@ -235,7 +235,6 @@ class EvidenceStore:
             source_info = self._validate_existing_path(
                 source_path, regular=True, single_link=True
             )
-            self._fault("artifact.second_pass.after_lstat")
             source_descriptor = self._open_readonly(source_path)
             try:
                 opened = os.fstat(source_descriptor)
@@ -245,12 +244,10 @@ class EvidenceStore:
                     raise EvidenceValidationError("source identity changed while it was opened")
                 if opened.st_nlink != 1:
                     raise EvidenceValidationError("second-pass source has a hard link")
-                if (
-                    opened.st_size != source_info.st_size
-                    or opened.st_mtime_ns != source_info.st_mtime_ns
-                ):
-                    raise EvidenceValidationError("source changed between second-pass lstat and open")
-                first_block = True
+                if opened.st_size != source_info.st_size:
+                    raise EvidenceValidationError("source size changed between second-pass lstat and open")
+                if opened.st_mtime_ns != source_info.st_mtime_ns:
+                    raise EvidenceValidationError("source mtime changed between second-pass lstat and open")
                 with os.fdopen(descriptor, "wb") as output:
                     while True:
                         block = os.read(source_descriptor, _COPY_CHUNK)
@@ -261,9 +258,6 @@ class EvidenceStore:
                             raise EvidenceValidationError("artifact exceeds the 2 GiB limit")
                         copied_digest.update(block)
                         output.write(block)
-                        if first_block:
-                            first_block = False
-                            self._fault("artifact.second_pass.after_first_read")
                     output.flush()
                     self._fault("artifact.after_flush")
                     os.fsync(output.fileno())
@@ -271,14 +265,14 @@ class EvidenceStore:
                 after = os.fstat(source_descriptor)
                 if not stat.S_ISREG(after.st_mode):
                     raise EvidenceValidationError("read second-pass source is not a regular file")
-                if (
-                    (after.st_dev, after.st_ino) != (opened.st_dev, opened.st_ino)
-                    or after.st_size != opened.st_size
-                    or after.st_mtime_ns != opened.st_mtime_ns
-                ):
-                    raise EvidenceValidationError("source changed while it was ingested")
+                if (after.st_dev, after.st_ino) != (opened.st_dev, opened.st_ino):
+                    raise EvidenceValidationError("source identity changed while it was ingested")
                 if after.st_nlink != 1:
                     raise EvidenceValidationError("second-pass source acquired a hard link")
+                if after.st_size != opened.st_size:
+                    raise EvidenceValidationError("source size changed while it was ingested")
+                if after.st_mtime_ns != opened.st_mtime_ns:
+                    raise EvidenceValidationError("source mtime changed while it was ingested")
                 if copied_size != size or copied_digest.hexdigest() != actual_digest:
                     raise EvidenceValidationError("source changed between the verified hash and copy")
             finally:

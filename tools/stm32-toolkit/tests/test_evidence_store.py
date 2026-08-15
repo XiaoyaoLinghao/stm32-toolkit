@@ -217,74 +217,157 @@ def test_ingest_detects_real_source_change_between_hash_and_same_directory_copy(
     assert not list(root.rglob(".tmp-*"))
 
 
-def test_second_pass_rejects_real_hardlink_created_between_lstat_and_open(tmp_path):
-    """The opened second-pass source must recheck link count after its lstat snapshot."""
+def _stat_snapshot(info, **changes):
+    values = {
+        "st_dev": info.st_dev,
+        "st_ino": info.st_ino,
+        "st_mode": info.st_mode,
+        "st_nlink": info.st_nlink,
+        "st_size": info.st_size,
+        "st_mtime_ns": info.st_mtime_ns,
+    }
+    values.update(changes)
+    return SimpleNamespace(**values)
+
+
+@pytest.mark.parametrize(
+    ("mutation", "message"),
+    [
+        ("type", "regular file"),
+        ("identity", "identity"),
+        ("hardlink", "hard link"),
+        ("size", "size"),
+        ("mtime", "mtime"),
+    ],
+)
+def test_second_pass_open_snapshot_rejects_before_any_read(tmp_path, monkeypatch, mutation, message):
+    """The exact second source open must reject every lstat race before os.read."""
     source = tmp_path / "source.bin"
-    source.write_bytes(b"second pass lstat-open race")
-    digest = hashlib.sha256(source.read_bytes()).hexdigest()
+    original = b"second pass open snapshot"
+    source.write_bytes(original)
+    digest = hashlib.sha256(original).hexdigest()
     root = tmp_path / "evidence"
-    alias = tmp_path / "lstat-open-alias.bin"
-    injected = []
+    alias = tmp_path / "source-alias.bin"
+    backup = tmp_path / "source-before-replacement.bin"
+    real_open = EvidenceStore._open_readonly
+    real_read = store_module.os.read
+    real_fstat = store_module.os.fstat
+    state = {"source_opens": 0, "second_fd": None, "second_reads": 0, "injections": 0}
 
-    def inject(point: str) -> None:
-        if point == "artifact.second_pass.after_lstat":
-            os.link(source, alias)
-            injected.append(point)
+    def tracked_open(path):
+        if Path(path) == source:
+            state["source_opens"] += 1
+            if state["source_opens"] == 2:
+                if mutation == "hardlink":
+                    os.link(source, alias)
+                elif mutation == "identity":
+                    source.replace(backup)
+                    source.write_bytes(b"replacement source identity")
+                elif mutation == "size":
+                    source.write_bytes(b"replacement with a different source size")
+                elif mutation == "mtime":
+                    info = source.stat()
+                    os.utime(source, ns=(info.st_atime_ns, info.st_mtime_ns + 10_000_000))
+                state["injections"] += 1
+        descriptor = real_open(path)
+        if Path(path) == source and state["source_opens"] == 2:
+            state["second_fd"] = descriptor
+        return descriptor
 
-    with pytest.raises(ValueError, match="hard link"):
-        EvidenceStore(root, fault_injector=inject).ingest_file(
-            source, kind="log", media_type="text/plain"
-        )
+    def tracked_read(descriptor, count):
+        if descriptor == state["second_fd"]:
+            state["second_reads"] += 1
+        return real_read(descriptor, count)
 
-    assert injected == ["artifact.second_pass.after_lstat"]
-    assert source.stat().st_nlink == 2
+    def tracked_fstat(descriptor):
+        info = real_fstat(descriptor)
+        if descriptor == state["second_fd"] and mutation == "type":
+            return _stat_snapshot(info, st_mode=stat.S_IFDIR)
+        return info
+
+    monkeypatch.setattr(EvidenceStore, "_open_readonly", staticmethod(tracked_open))
+    monkeypatch.setattr(store_module.os, "read", tracked_read)
+    monkeypatch.setattr(store_module.os, "fstat", tracked_fstat)
+
+    with pytest.raises(ValueError, match=message):
+        EvidenceStore(root).ingest_file(source, kind="log", media_type="text/plain")
+
+    assert state == {
+        "source_opens": 2,
+        "second_fd": state["second_fd"],
+        "second_reads": 0,
+        "injections": 1,
+    }
     assert not (root / "objects" / "sha256" / digest[:2] / digest).exists()
     assert not list(root.rglob(".tmp-*"))
 
 
-def test_second_pass_rejects_real_size_change_between_lstat_and_open(tmp_path):
-    """The opened second-pass source must still match its lstat size/mtime snapshot."""
+@pytest.mark.parametrize(
+    ("mutation", "message"),
+    [
+        ("type", "regular file"),
+        ("identity", "identity"),
+        ("hardlink", "hard link"),
+        ("size", "size"),
+        ("mtime", "mtime"),
+    ],
+)
+def test_second_pass_post_read_snapshot_rejects_each_mutation(tmp_path, monkeypatch, mutation, message):
+    """The final fstat must name and reject every snapshot mutation before object publication."""
     source = tmp_path / "source.bin"
-    source.write_bytes(b"before lstat-open mutation")
+    original = b"x" * (2 * 1024 * 1024 + 1)
+    source.write_bytes(original)
+    digest = hashlib.sha256(original).hexdigest()
     root = tmp_path / "evidence"
-    injected = []
+    alias = tmp_path / "source-read-alias.bin"
+    real_open = EvidenceStore._open_readonly
+    real_read = store_module.os.read
+    real_fstat = store_module.os.fstat
+    state = {"source_opens": 0, "second_fd": None, "second_reads": 0, "injections": 0}
 
-    def inject(point: str) -> None:
-        if point == "artifact.second_pass.after_lstat":
-            source.write_bytes(b"changed after lstat with a different size")
-            injected.append(point)
+    def tracked_open(path):
+        descriptor = real_open(path)
+        if Path(path) == source:
+            state["source_opens"] += 1
+            if state["source_opens"] == 2:
+                state["second_fd"] = descriptor
+        return descriptor
 
-    with pytest.raises(ValueError, match="lstat and open"):
-        EvidenceStore(root, fault_injector=inject).ingest_file(
-            source, kind="log", media_type="text/plain"
-        )
+    def tracked_read(descriptor, count):
+        block = real_read(descriptor, count)
+        if descriptor == state["second_fd"] and block:
+            state["second_reads"] += 1
+            if state["injections"] == 0:
+                if mutation == "hardlink":
+                    os.link(source, alias)
+                elif mutation == "size":
+                    with source.open("ab") as stream:
+                        stream.write(b"!")
+                elif mutation == "mtime":
+                    info = source.stat()
+                    os.utime(source, ns=(info.st_atime_ns, info.st_mtime_ns + 10_000_000))
+                state["injections"] += 1
+        return block
 
-    assert injected == ["artifact.second_pass.after_lstat"]
-    assert not list((root / "objects").rglob("[0-9a-f]" * 64))
-    assert not list(root.rglob(".tmp-*"))
+    def tracked_fstat(descriptor):
+        info = real_fstat(descriptor)
+        if descriptor == state["second_fd"] and state["injections"]:
+            if mutation == "type":
+                return _stat_snapshot(info, st_mode=stat.S_IFDIR)
+            if mutation == "identity":
+                return _stat_snapshot(info, st_ino=info.st_ino + 1)
+        return info
 
+    monkeypatch.setattr(EvidenceStore, "_open_readonly", staticmethod(tracked_open))
+    monkeypatch.setattr(store_module.os, "read", tracked_read)
+    monkeypatch.setattr(store_module.os, "fstat", tracked_fstat)
 
-def test_second_pass_rejects_real_hardlink_created_during_read(tmp_path):
-    """The final second-pass fstat must reject a hard link created after reading begins."""
-    source = tmp_path / "source.bin"
-    source.write_bytes(b"x" * (2 * 1024 * 1024 + 1))
-    digest = hashlib.sha256(source.read_bytes()).hexdigest()
-    root = tmp_path / "evidence"
-    alias = tmp_path / "read-alias.bin"
-    injected = []
+    with pytest.raises(ValueError, match=message):
+        EvidenceStore(root).ingest_file(source, kind="trace", media_type="application/octet-stream")
 
-    def inject(point: str) -> None:
-        if point == "artifact.second_pass.after_first_read":
-            os.link(source, alias)
-            injected.append(point)
-
-    with pytest.raises(ValueError, match="hard link"):
-        EvidenceStore(root, fault_injector=inject).ingest_file(
-            source, kind="trace", media_type="application/octet-stream"
-        )
-
-    assert injected == ["artifact.second_pass.after_first_read"]
-    assert source.stat().st_nlink == 2
+    assert state["source_opens"] == 2
+    assert state["second_reads"] >= 1
+    assert state["injections"] == 1
     assert not (root / "objects" / "sha256" / digest[:2] / digest).exists()
     assert not list(root.rglob(".tmp-*"))
 

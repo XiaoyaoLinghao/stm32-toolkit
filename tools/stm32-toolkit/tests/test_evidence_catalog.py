@@ -185,6 +185,15 @@ def test_catalog_convenience_methods_preserve_authority_boundary(tmp_path):
         rebuild_catalog(store, other)
 
 
+@pytest.mark.parametrize("invalid_catalog", [False, 0, "", object()])
+def test_rebuild_rejects_every_non_none_non_catalog_value(tmp_path, invalid_catalog):
+    """Falsey caller values must not silently request a newly constructed catalog."""
+    store = EvidenceStore(tmp_path / "evidence")
+
+    with pytest.raises(ValueError, match="EvidenceCatalog"):
+        rebuild_catalog(store, invalid_catalog)
+
+
 def test_public_path_mutation_cannot_redirect_query_outside_store_root(tmp_path):
     """Changing a public path must be rejected or leave query bound to root/catalog.sqlite3."""
     _store, catalog, first, late, tied = _fixture_catalog(tmp_path)
