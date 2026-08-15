@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import builtins
+import binascii
 import ctypes
 import hashlib
 import importlib
@@ -562,6 +564,176 @@ _NATIVE_CREDENTIAL = re.compile(
     r"(?i)(?:authorization\s*[:=]\s*(?:bearer|basic)\s+\S+|"
     r"(?:password|passwd|secret|token|api[-_]?key)\s*[:=]\s*\S+)"
 )
+
+_PORTABLE_ROOT_BOUNDARY = r"(?<![A-Za-z0-9_.*?/-])"
+_PORTABLE_UNC_BOUNDARY = r"(?<![A-Za-z0-9_.:/-])"
+_PORTABLE_DRIVE_PATH = re.compile(_PORTABLE_ROOT_BOUNDARY + r"[A-Za-z]:[\\/]")
+_PORTABLE_UNC_PATH = re.compile(
+    _PORTABLE_UNC_BOUNDARY + r"(?:\\\\|//)[^\\/\s\"'<>|]+[\\/][^\\/\s\"'<>|]+"
+)
+_PORTABLE_UNIX_PATH = re.compile(_PORTABLE_ROOT_BOUNDARY + r"/(?!/)(?=[^\\/\s])")
+_PORTABLE_WINDOWS_PATH = re.compile(_PORTABLE_ROOT_BOUNDARY + r"\\(?!\\)(?=[^\\/\s])")
+_PORTABLE_MULTI_SEPARATOR_PATH = re.compile(
+    _PORTABLE_UNC_BOUNDARY + r"[\\/]{2,}(?=[^\\/\s])"
+)
+_PORTABLE_LABELED_PATH = re.compile(
+    r"(?<![A-Za-z0-9_.-])(?:path|root)\s*(?:=|:)[ \t]*(?:[A-Za-z]:)?[\\/]+",
+    re.IGNORECASE,
+)
+_PORTABLE_FILE_URI = re.compile(r"\bfile:[\\/]+", re.IGNORECASE)
+_PORTABLE_URI_AUTHORITY = re.compile(
+    r"(?<![A-Za-z0-9_+.-])[A-Za-z][A-Za-z0-9+.-]*://"
+)
+_PORTABLE_REGEX_ESCAPE_TOKEN = (
+    r"\\(?:[AbBdDGsSwWZz]|[fnrtv])(?:[+*?]|\{[0-9]+(?:,[0-9]*)?\})?"
+)
+_PORTABLE_REGEX_ESCAPE = re.compile(
+    _PORTABLE_REGEX_ESCAPE_TOKEN + r"(?=$|\\|[\s|$,.;:)\]}])"
+)
+_PORTABLE_REGEX_ESCAPE_SEQUENCE = re.compile(
+    r"(?:" + _PORTABLE_REGEX_ESCAPE_TOKEN + r")+(?=$|[\s|$,.;:)\]}])"
+)
+_PORTABLE_REGEX_ESCAPE_SEQUENCE_END = re.compile(
+    _PORTABLE_ROOT_BOUNDARY + r"(?:" + _PORTABLE_REGEX_ESCAPE_TOKEN + r")+$"
+)
+_PORTABLE_SENSITIVE_NAMES = {
+    "accesskey", "accesstoken", "apikey", "authentication", "authorization",
+    "cookie", "credential", "password", "privatekey", "refreshtoken", "secret",
+    "sessiontoken",
+}
+_PORTABLE_SENSITIVE_ALIASES = {"auth", "oauth", "passwd", "pwd", "token"}
+_PORTABLE_COMPACT_ALIASES = {"githubtoken", "oauthtoken", "proxyauth"}
+_PORTABLE_CREDENTIAL_VALUE = re.compile(
+    r"(?:"
+    r"\b(?:auth|authorization|proxy[-_ ]?authorization|cookie|set[-_ ]?cookie|password|passwd|secret|access[-_ ]?token|refresh[-_ ]?token|api[-_ .]?key|private[-_ .]?key)\s*[:=]"
+    r"|-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----"
+    r"|[a-z][a-z0-9+.-]*://[^/\s:@]+:[^/\s@]+@"
+    r"|\b(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}"
+    r"|glpat-[A-Za-z0-9_-]{20,}|xox[baprs]-[A-Za-z0-9-]{20,}"
+    r"|(?:AKIA|ASIA)[0-9A-Z]{16}|AIza[A-Za-z0-9_-]{20,}"
+    r"|sk-(?:proj-)?[A-Za-z0-9_-]{20,})\b"
+    r")",
+    re.IGNORECASE,
+)
+_PORTABLE_AUTHORIZATION = re.compile(
+    r"\b(basic|bearer)[ \t]+([A-Za-z0-9+/=._~-]+)", re.IGNORECASE
+)
+_PORTABLE_CREDENTIAL_ASSIGNMENT = re.compile(
+    r"(?=(?:(?<!:):(?!:)|(?<![A-Za-z0-9_./:-]))(?:\$env:)?[\"']?"
+    r"([A-Za-z][A-Za-z0-9_. -]{0,127})[\"']?\s*(?:=|:(?!:)))",
+    re.MULTILINE,
+)
+_PORTABLE_COMPACT_ASSIGNMENT = re.compile(
+    r"(?<![A-Za-z0-9])[\"']?"
+    r"(?:github[_. -]*token|oauth[_. -]*token|proxy[_. -]*auth)[\"']?"
+    r"(?![A-Za-z0-9])\s*(?:=|:(?!:))",
+    re.IGNORECASE | re.MULTILINE,
+)
+
+
+def _portable_sensitive_field(name: object) -> bool:
+    separated = re.sub(r"([a-z0-9])([A-Z])", r"\1 \2", str(name))
+    tokens = tuple(
+        token for token in re.split(r"[^a-z0-9]+", separated.casefold()) if token
+    )
+    normalized = "".join(tokens)
+    return (
+        any(token in _PORTABLE_SENSITIVE_ALIASES for token in tokens)
+        or any(token in normalized for token in _PORTABLE_SENSITIVE_NAMES)
+        or normalized in _PORTABLE_COMPACT_ALIASES
+    )
+
+
+def _portable_regex_escape_at(value: str, start: int) -> bool:
+    if _PORTABLE_REGEX_ESCAPE.match(value, start) is not None:
+        return True
+    return (
+        value.startswith(r"\.", start)
+        and _PORTABLE_REGEX_ESCAPE_SEQUENCE_END.search(value[:start]) is not None
+        and _PORTABLE_REGEX_ESCAPE_SEQUENCE.match(value, start + 2) is not None
+    )
+
+
+def _portable_contains_private_path(value: str) -> bool:
+    value = value.replace("<REPOSITORY_ROOT>/", "repository/").replace(
+        "<REPOSITORY_ROOT>\\", "repository/"
+    ).replace("<EVIDENCE_ROOT>/", "evidence/").replace(
+        "<EVIDENCE_ROOT>\\", "evidence/"
+    )
+    stripped = value.strip()
+    if stripped and not stripped.strip("\\/"):
+        return True
+    if any(pattern.search(value) is not None for pattern in (
+        _PORTABLE_DRIVE_PATH, _PORTABLE_UNC_PATH, _PORTABLE_UNIX_PATH,
+        _PORTABLE_MULTI_SEPARATOR_PATH, _PORTABLE_FILE_URI,
+    )):
+        return True
+    uri_schemes = tuple(_PORTABLE_URI_AUTHORITY.finditer(value))
+    for labeled_root in _PORTABLE_LABELED_PATH.finditer(value):
+        if not (
+            labeled_root.start() > 0
+            and value[labeled_root.start() - 1] == "+"
+            and any(
+                scheme.start() < labeled_root.start() and scheme.end() == labeled_root.end()
+                for scheme in uri_schemes
+            )
+        ):
+            return True
+    return any(
+        not _portable_regex_escape_at(value, match.start())
+        for match in _PORTABLE_WINDOWS_PATH.finditer(value)
+    )
+
+
+def _portable_contains_uri_userinfo(value: str) -> bool:
+    for scheme in _PORTABLE_URI_AUTHORITY.finditer(value):
+        authority_end = scheme.end()
+        while (
+            authority_end < len(value)
+            and value[authority_end] not in "/?#"
+            and not value[authority_end].isspace()
+        ):
+            authority_end += 1
+        userinfo, separator, _ = value[scheme.end():authority_end].rpartition("@")
+        if separator and userinfo:
+            return True
+    return False
+
+
+def _portable_authorization_is_credential(scheme: str, token: str) -> bool:
+    if scheme.casefold() == "bearer":
+        return True
+    if scheme.casefold() != "basic":
+        return False
+    unpadded = token.rstrip("=")
+    if not unpadded or "=" in unpadded:
+        return False
+    padded = unpadded + "=" * ((-len(unpadded)) % 4)
+    try:
+        decoded = base64.b64decode(padded, validate=True)
+    except (binascii.Error, ValueError):
+        return False
+    return b":" in decoded and base64.b64encode(decoded).decode("ascii").rstrip("=") == unpadded
+
+
+def validate_portable_text(value: str) -> None:
+    """Single authoritative portable string/credential contract shared with verifier."""
+    if _portable_contains_private_path(value):
+        raise ControllerError("package contains an absolute private path")
+    if _PORTABLE_COMPACT_ASSIGNMENT.search(value) is not None or any(
+        _portable_sensitive_field(match.group(1).strip())
+        for match in _PORTABLE_CREDENTIAL_ASSIGNMENT.finditer(value)
+    ):
+        raise ControllerError("package contains a credential assignment")
+    if (
+        _PORTABLE_CREDENTIAL_VALUE.search(value) is not None
+        or _portable_contains_uri_userinfo(value)
+        or any(
+            _portable_authorization_is_credential(match.group(1), match.group(2))
+            for match in _PORTABLE_AUTHORIZATION.finditer(value)
+        )
+    ):
+        raise ControllerError("package contains a credential value")
 
 
 def _native_portable_string(value: str) -> None:
@@ -1254,6 +1426,7 @@ def _portable_failed_runner_stream(
                 raise ControllerError("native report pipe path is invalid")
             value = value.replace(native_pipe, "<EVIDENCE_ROOT>/native-results.xml")
         value = _normalize_known_path(value, repository_root, evidence_root)
+        validate_portable_text(value)
         return value.encode("utf-8")
     except (ControllerError, UnicodeError):
         return UNSAFE_RUNNER_STREAM_PLACEHOLDER

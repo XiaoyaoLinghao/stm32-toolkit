@@ -617,6 +617,35 @@ def test_native_malformed_report_and_unsafe_streams_publish_only_placeholders(tm
         )
 
 
+def test_native_pure_utf8_credential_stream_uses_verifier_safe_placeholder(tmp_path: Path) -> None:
+    """A valid UTF-8 credential value must not bypass the verifier's portable-text rules."""
+    evidence = tmp_path / "utf8-credential-evidence"
+    evidence.mkdir()
+    script = tmp_path / "test_utf8_credential.py"
+    credential = "ghp_abcdefghijklmnopqrstuvwxyz0123456789"
+    script.write_text(
+        "import os\n\n"
+        "def test_attack():\n"
+        "    sink = os.environ['STM32TK_CONTROLLER_NATIVE_PIPE']\n"
+        "    with open(sink, 'w', encoding='utf-8') as stream:\n"
+        "        stream.write('<not-junit/>')\n"
+        f"    os.write(1, {credential.encode()!r})\n"
+        "    os._exit(10)\n",
+        encoding="utf-8",
+    )
+    gate = GateRequest(
+        "UTF8CRED", (sys.executable, "-m", "pytest", str(script), "-q", "-s", "-p", "no:cacheprovider"),
+        tmp_path, 30, ("test_utf8_credential::test_attack",),
+    )
+
+    with pytest.raises(ControllerError):
+        execute_gate_process(gate, {}, evidence_root=evidence)
+
+    stdout = evidence / "UTF8CRED/stdout.log"
+    assert stdout.read_bytes() == gates.UNSAFE_RUNNER_STREAM_PLACEHOLDER
+    release_verifier._validate_portable_package_payload("UTF8CRED/stdout.log", stdout.read_bytes())
+
+
 @pytest.mark.parametrize(
     ("framework", "native_name"),
     [("ctest", "native-results.txt"), ("vitest", "native-results.json"), ("playwright", "native-results.json")],

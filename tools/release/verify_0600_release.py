@@ -33,7 +33,10 @@ from fractions import Fraction
 from pathlib import Path
 from typing import Callable, Mapping, Sequence
 
-from run_0600_gates import ControllerError, native_node_framework, parse_native_node_outcomes
+from run_0600_gates import (
+    ControllerError, native_node_framework, parse_native_node_outcomes,
+    validate_portable_text,
+)
 
 
 CATALOG_SCHEMA = "stm32-gate-catalog/1"
@@ -1119,22 +1122,10 @@ def _authorization_token_is_credential(scheme: str, token: str) -> bool:
 
 
 def _validate_portable_string(value: str) -> None:
-    if _contains_rooted_private_path(value):
-        raise VerificationError("package contains an absolute private path")
-    if COMPACT_CREDENTIAL_ASSIGNMENT_PATTERN.search(value) is not None or any(
-        _sensitive_field(match.group(1).strip())
-        for match in CREDENTIAL_ASSIGNMENT_PATTERN.finditer(value)
-    ):
-        raise VerificationError("package contains a credential assignment")
-    if (
-        CREDENTIAL_VALUE_PATTERN.search(value) is not None
-        or _contains_uri_userinfo(value)
-        or any(
-            _authorization_token_is_credential(match.group(1), match.group(2))
-            for match in AUTHORIZATION_SCHEME_PATTERN.finditer(value)
-        )
-    ):
-        raise VerificationError("package contains a credential value")
+    try:
+        validate_portable_text(value)
+    except ControllerError as exc:
+        raise VerificationError(str(exc)) from exc
 
 
 def _validate_portable_package_value(value: object) -> None:
