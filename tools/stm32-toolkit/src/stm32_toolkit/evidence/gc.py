@@ -9,9 +9,11 @@ import os
 from pathlib import Path
 import re
 import stat
+import threading
 from types import MappingProxyType
 from typing import Mapping
 from unicodedata import normalize
+import weakref
 
 from .model import EvidenceEnvelope, EvidenceValidationError, canonical_json_bytes
 from .store import EvidenceStore
@@ -41,6 +43,14 @@ def _ordered(values) -> tuple[str, ...]:
 
 def _json_copy(value: object) -> object:
     return json.loads(canonical_json_bytes(value))
+
+
+def _freeze_json(value: object) -> object:
+    if isinstance(value, dict):
+        return MappingProxyType({key: _freeze_json(item) for key, item in value.items()})
+    if isinstance(value, list):
+        return tuple(_freeze_json(item) for item in value)
+    return value
 
 
 def _windows_file_information(handle: int) -> dict[str, int]:
@@ -163,34 +173,40 @@ class RootRecord:
     manifest_id: str
     metadata: Mapping[str, object]
 
+    def __post_init__(self) -> None:
+        if not isinstance(self.root_type, str):
+            raise EvidenceValidationError("root_type must be a string")
+        if self.root_type not in REGISTERED_ROOT_TYPES:
+            raise EvidenceValidationError("root_type is not registered")
+        if (
+            not isinstance(self.root_id, str)
+            or not self.root_id
+            or normalize("NFC", self.root_id) != self.root_id
+            or len(self.root_id.encode("utf-8")) > 64 * 1024
+            or any(ord(character) < 32 or ord(character) == 127 for character in self.root_id)
+            or any(character in self.root_id for character in "/\\:")
+            or self.root_id in {".", ".."}
+        ):
+            raise EvidenceValidationError("root_id is not a canonical path-safe bounded string")
+        if not isinstance(self.manifest_id, str) or _HASH.fullmatch(self.manifest_id) is None:
+            raise EvidenceValidationError("manifest_id must be a lowercase SHA-256")
+        if not isinstance(self.metadata, Mapping):
+            raise EvidenceValidationError("root metadata must be a JSON object")
+        copied = _json_copy(self.metadata)
+        if not isinstance(copied, dict):
+            raise EvidenceValidationError("root metadata must be a JSON object")
+        object.__setattr__(self, "metadata", _freeze_json(copied))
+
     @classmethod
     def from_value(cls, value: object) -> "RootRecord":
         if not isinstance(value, Mapping) or set(value) != _ROOT_FIELDS:
             raise EvidenceValidationError("root record fields are not closed")
-        root_type = value["root_type"]
-        root_id = value["root_id"]
-        manifest_id = value["manifest_id"]
-        metadata = value["metadata"]
-        if not isinstance(root_type, str):
-            raise EvidenceValidationError("root_type must be a string")
-        if root_type not in REGISTERED_ROOT_TYPES:
-            raise EvidenceValidationError("root_type is not registered")
-        for field_name, item in (("root_type", root_type), ("root_id", root_id)):
-            if (
-                not isinstance(item, str)
-                or not item
-                or normalize("NFC", item) != item
-                or len(item.encode("utf-8")) > 64 * 1024
-                or any(ord(character) < 32 or ord(character) == 127 for character in item)
-            ):
-                raise EvidenceValidationError(f"{field_name} is not a canonical bounded string")
-        if not isinstance(manifest_id, str) or _HASH.fullmatch(manifest_id) is None:
-            raise EvidenceValidationError("manifest_id must be a lowercase SHA-256")
-        if not isinstance(metadata, Mapping):
-            raise EvidenceValidationError("root metadata must be a JSON object")
-        copied = _json_copy(metadata)
-        assert isinstance(copied, dict)
-        return cls(root_type, root_id, manifest_id, MappingProxyType(copied))
+        return cls(
+            root_type=value["root_type"],  # type: ignore[arg-type]
+            root_id=value["root_id"],  # type: ignore[arg-type]
+            manifest_id=value["manifest_id"],  # type: ignore[arg-type]
+            metadata=value["metadata"],  # type: ignore[arg-type]
+        )
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -201,9 +217,9 @@ class RootRecord:
         }
 
 
-@dataclass
+@dataclass(frozen=True, eq=False)
 class GcPlan:
-    """Canonical read-only plan plus one in-memory, single-use MODIFY token."""
+    """Immutable canonical dry-run document; prepare authority is held out-of-object."""
 
     store_root: str
     store_id: str
@@ -219,19 +235,6 @@ class GcPlan:
     plan_digest: str
     action_digest: str
     schema: str = field(default=GC_PLAN_SCHEMA, init=False)
-    _store: EvidenceStore = field(repr=False, compare=False, default=None)  # type: ignore[assignment]
-    _object_sizes: Mapping[str, int] = field(repr=False, compare=False, default_factory=dict)
-    _snapshot_entries: tuple[dict[str, object], ...] = field(
-        repr=False, compare=False, default_factory=tuple
-    )
-    _prepared_plan_digest: str = field(repr=False, compare=False, default="")
-    _prepared_action_digest: str = field(repr=False, compare=False, default="")
-    _prepared_store_id: str = field(repr=False, compare=False, default="")
-    _prepared_store: EvidenceStore | None = field(repr=False, compare=False, default=None)
-    _prepared_unreachable_objects: tuple[str, ...] = field(
-        repr=False, compare=False, default_factory=tuple
-    )
-    _consumed: bool = field(repr=False, compare=False, default=False)
 
     def _document_without_digest(self) -> dict[str, object]:
         return {
@@ -285,6 +288,33 @@ class GcResult:
 
     def to_json_bytes(self) -> bytes:
         return canonical_json_bytes(self.to_dict())
+
+
+@dataclass
+class _PreparedGcPlan:
+    store: EvidenceStore
+    store_root: str
+    store_id: str
+    plan_digest: str
+    action_digest: str
+    manifest_snapshot_digest: str
+    store_snapshot_digest: str
+    bytes_reclaimable: int
+    unreachable_objects: tuple[str, ...]
+    object_sizes: Mapping[str, int]
+    snapshot_entries: tuple[dict[str, object], ...]
+    canonical_plan: bytes
+    consumed: bool = False
+    consume_lock: threading.Lock = field(default_factory=threading.Lock)
+
+
+_PREPARED_REGISTRY_LOCK = threading.Lock()
+_PREPARED_BY_PLAN: weakref.WeakKeyDictionary[GcPlan, _PreparedGcPlan] = (
+    weakref.WeakKeyDictionary()
+)
+_PREPARED_BY_ACTION: weakref.WeakValueDictionary[
+    tuple[str, str], _PreparedGcPlan
+] = weakref.WeakValueDictionary()
 
 
 def _relative(store: EvidenceStore, path: Path) -> str:
@@ -488,11 +518,16 @@ def _scan_roots(
 
 
 def _scan_manifests(
-    store: EvidenceStore, entries: tuple[dict[str, object], ...]
+    store: EvidenceStore,
+    entries: tuple[dict[str, object], ...],
+    objects: Mapping[str, int],
 ) -> tuple[dict[str, EvidenceEnvelope], list[str], list[str]]:
     manifests: dict[str, EvidenceEnvelope] = {}
     unknown: list[str] = []
     corrupt: list[str] = []
+    object_snapshot = {
+        relative: (size, Path(relative).name) for relative, size in objects.items()
+    }
     for entry in entries:
         relative = str(entry["path"])
         if relative != "manifests" and not relative.startswith("manifests/"):
@@ -518,7 +553,9 @@ def _scan_manifests(
             manifest_id = name[:-5]
             if str(envelope.evidence_id) != manifest_id:
                 raise EvidenceValidationError("manifest filename does not match its evidence_id")
-            manifests[manifest_id] = envelope
+            manifests[manifest_id] = store._verify_envelope_snapshot(
+                envelope, object_snapshot
+            )
         except (OSError, EvidenceValidationError):
             corrupt.append(relative)
     return manifests, unknown, corrupt
@@ -591,7 +628,8 @@ def _store_identity(store: EvidenceStore) -> tuple[str, str]:
 def put_root(store: EvidenceStore | Path | str, root: RootRecord | Mapping[str, object]) -> Path:
     """Verify and atomically publish one known root under the shared mutation lock."""
     evidence_store = store if isinstance(store, EvidenceStore) else EvidenceStore(store)
-    record = root if isinstance(root, RootRecord) else RootRecord.from_value(root)
+    value = root.to_dict() if isinstance(root, RootRecord) else root
+    record = RootRecord.from_value(value)
     payload = canonical_json_bytes(record.to_dict())
     name = f"{_digest({'root_type': record.root_type, 'root_id': record.root_id})}.json"
     with evidence_store._mutation_lock():
@@ -615,8 +653,12 @@ def plan_gc(store: EvidenceStore | Path | str) -> GcPlan:
     snapshot = _snapshot_entries(evidence_store)
     evidence_store._fault("gc.plan.after_snapshot")
     roots, root_unknown, root_corrupt, conservative = _scan_roots(evidence_store, snapshot)
-    manifests, manifest_unknown, manifest_corrupt = _scan_manifests(evidence_store, snapshot)
     objects, object_unknown, object_corrupt = _scan_objects(evidence_store, snapshot)
+    manifests, manifest_unknown, manifest_corrupt = _scan_manifests(
+        evidence_store, snapshot, objects
+    )
+    if manifest_corrupt:
+        conservative = True
     evidence_store._fault("gc.plan.after_scan")
     if _filtered_snapshot_digest(_snapshot_entries(evidence_store)) != _filtered_snapshot_digest(
         snapshot
@@ -675,7 +717,7 @@ def plan_gc(store: EvidenceStore | Path | str) -> GcPlan:
             "bytes_reclaimable": reclaimable,
         }
     )
-    return GcPlan(
+    plan = GcPlan(
         store_root=store_root,
         store_id=store_id,
         roots=tuple(roots),
@@ -689,19 +731,36 @@ def plan_gc(store: EvidenceStore | Path | str) -> GcPlan:
         store_snapshot_digest=str(values["store_snapshot_digest"]),
         plan_digest=plan_digest,
         action_digest=action_digest,
-        _store=evidence_store,
-        _object_sizes=MappingProxyType({path: objects[path] for path in unreachable}),
-        _snapshot_entries=snapshot,
-        _prepared_plan_digest=plan_digest,
-        _prepared_action_digest=action_digest,
-        _prepared_store_id=store_id,
-        _prepared_store=evidence_store,
-        _prepared_unreachable_objects=unreachable,
     )
+    key = (store_root, action_digest)
+    with _PREPARED_REGISTRY_LOCK:
+        prepared = _PREPARED_BY_ACTION.get(key)
+        if prepared is None:
+            prepared = _PreparedGcPlan(
+                store=evidence_store,
+                store_root=store_root,
+                store_id=store_id,
+                plan_digest=plan_digest,
+                action_digest=action_digest,
+                manifest_snapshot_digest=str(values["manifest_snapshot_digest"]),
+                store_snapshot_digest=str(values["store_snapshot_digest"]),
+                bytes_reclaimable=reclaimable,
+                unreachable_objects=unreachable,
+                object_sizes=MappingProxyType(
+                    {path: objects[path] for path in unreachable}
+                ),
+                snapshot_entries=snapshot,
+                canonical_plan=plan.to_json_bytes(),
+            )
+            _PREPARED_BY_ACTION[key] = prepared
+        elif prepared.canonical_plan != plan.to_json_bytes():
+            raise EvidenceValidationError("prepared action collided with a different plan")
+        _PREPARED_BY_PLAN[plan] = prepared
+    return plan
 
 
 def _result(
-    plan: GcPlan,
+    prepared: _PreparedGcPlan,
     success: bool,
     code: str,
     *,
@@ -712,35 +771,64 @@ def _result(
     return GcResult(
         success=success,
         code=code,
-        plan_digest=plan._prepared_plan_digest or plan.plan_digest,
-        action_digest=plan._prepared_action_digest or plan.action_digest,
+        plan_digest=prepared.plan_digest,
+        action_digest=prepared.action_digest,
         deleted_objects=deleted,
         retained_objects=tuple(
-            path for path in plan._prepared_unreachable_objects if path not in deleted
+            path for path in prepared.unreachable_objects if path not in deleted
         ),
         bytes_reclaimed=bytes_reclaimed,
         errors=errors,
     )
 
 
-def _consume_authorization(plan: GcPlan) -> bool:
+def _unprepared_result(plan: GcPlan) -> GcResult:
+    plan_digest = plan.plan_digest if isinstance(plan.plan_digest, str) else ""
+    action_digest = plan.action_digest if isinstance(plan.action_digest, str) else ""
+    retained = (
+        plan.unreachable_objects
+        if isinstance(plan.unreachable_objects, tuple)
+        and all(isinstance(path, str) for path in plan.unreachable_objects)
+        else ()
+    )
+    return GcResult(
+        success=False,
+        code="GC_PLAN_INVALID",
+        plan_digest=plan_digest,
+        action_digest=action_digest,
+        deleted_objects=(),
+        retained_objects=retained,
+        bytes_reclaimed=0,
+        errors=(),
+    )
+
+
+def _find_prepared(plan: GcPlan) -> tuple[_PreparedGcPlan | None, bool]:
+    with _PREPARED_REGISTRY_LOCK:
+        prepared = _PREPARED_BY_PLAN.get(plan)
+        if prepared is not None:
+            return prepared, True
+        if not isinstance(plan.store_root, str) or not isinstance(plan.action_digest, str):
+            return None, False
+        return _PREPARED_BY_ACTION.get((plan.store_root, plan.action_digest)), False
+
+
+def _consume_authorization(prepared: _PreparedGcPlan) -> bool:
     """Atomically redeem an action digest once for this store, across plan instances/processes."""
-    if plan._prepared_store is None:
-        raise EvidenceValidationError("prepared authorization store is unavailable")
-    directory = plan._prepared_store._managed_directory("gc-authorizations")
-    target = directory / f"{plan._prepared_action_digest}.json"
+    directory = prepared.store._managed_directory("gc-authorizations")
+    target = directory / f"{prepared.action_digest}.json"
     payload = canonical_json_bytes(
         {
-            "action_digest": plan._prepared_action_digest,
-            "plan_digest": plan._prepared_plan_digest,
+            "action_digest": prepared.action_digest,
+            "plan_digest": prepared.plan_digest,
             "state": "consumed",
-            "store_id": plan._prepared_store_id,
+            "store_id": prepared.store_id,
         }
     )
     try:
-        plan._store._validate_existing_path(target, regular=True, single_link=True)
+        prepared.store._validate_existing_path(target, regular=True, single_link=True)
     except FileNotFoundError:
-        return plan._prepared_store._atomic_create_new(
+        return prepared.store._atomic_create_new(
             target, payload, phase="gc-authorization"
         )
     except (OSError, EvidenceValidationError):
@@ -749,7 +837,7 @@ def _consume_authorization(plan: GcPlan) -> bool:
 
 
 def _delete_identity_bound(
-    plan: GcPlan,
+    prepared: _PreparedGcPlan,
     relative: str,
     final_snapshot: tuple[dict[str, object], ...],
 ) -> int:
@@ -763,7 +851,7 @@ def _delete_identity_bound(
     )
     if expected is None:
         raise _GcStoreChanged("planned object disappeared before identity-bound deletion")
-    path = plan._store.root.joinpath(*relative.split("/"))
+    path = prepared.store.root.joinpath(*relative.split("/"))
     try:
         handle = _open_windows_file(path, delete=True)
     except OSError as exc:
@@ -783,7 +871,7 @@ def _delete_identity_bound(
             or opened["attributes"] & (0x00000010 | 0x00000400)
             or any(expected.get(name) != value for name, value in identity.items())
             or opened["size"] != expected.get("size")
-            or opened["size"] != plan._object_sizes[relative]
+            or opened["size"] != prepared.object_sizes[relative]
         ):
             raise _GcStoreChanged("planned object identity changed before deletion")
 
@@ -824,16 +912,21 @@ def _delete_identity_bound(
             raise _GcStoreChanged("planned object changed while its handle was verified")
 
         excluded = frozenset(
-            {*plan.unreachable_objects[: plan.unreachable_objects.index(relative)], relative}
+            {
+                *prepared.unreachable_objects[
+                    : prepared.unreachable_objects.index(relative)
+                ],
+                relative,
+            }
         )
         handle_snapshot = _snapshot_entries(
-            plan._store,
+            prepared.store,
             phase="gc.handle-snapshot",
             excluded=excluded,
         )
         if _filtered_snapshot_digest(
             handle_snapshot, excluded
-        ) != _filtered_snapshot_digest(plan._snapshot_entries, excluded):
+        ) != _filtered_snapshot_digest(prepared.snapshot_entries, excluded):
             raise _GcStoreChanged("evidence store changed while delete handle was held")
 
         class FileDispositionInformation(ctypes.Structure):
@@ -862,49 +955,49 @@ def _delete_identity_bound(
         raise close_error
     if not disposition_set:
         raise OSError("identity-bound deletion was not committed")
-    plan._store._flush_directory(path.parent)
+    prepared.store._flush_directory(path.parent)
     return size
 
 
-def _apply_gc_locked(plan: GcPlan) -> GcResult:
-    plan._store._fault("gc.locked.before_validate")
+def _apply_gc_locked(prepared: _PreparedGcPlan) -> GcResult:
+    prepared.store._fault("gc.locked.before_validate")
     try:
-        current_root, current_store_id = _store_identity(plan._store)
-        current_snapshot = _snapshot_entries(plan._store)
+        current_root, current_store_id = _store_identity(prepared.store)
+        current_snapshot = _snapshot_entries(prepared.store)
     except (OSError, EvidenceValidationError) as exc:
-        return _result(plan, False, "GC_STORE_CHANGED", errors=(str(exc),))
+        return _result(prepared, False, "GC_STORE_CHANGED", errors=(str(exc),))
     if (
-        current_root != plan.store_root
-        or current_store_id != plan.store_id
-        or _filtered_snapshot_digest(current_snapshot) != plan.store_snapshot_digest
+        current_root != prepared.store_root
+        or current_store_id != prepared.store_id
+        or _filtered_snapshot_digest(current_snapshot) != prepared.store_snapshot_digest
     ):
-        return _result(plan, False, "GC_STORE_CHANGED")
+        return _result(prepared, False, "GC_STORE_CHANGED")
 
     deleted: list[str] = []
     reclaimed = 0
-    for relative in plan.unreachable_objects:
+    for relative in prepared.unreachable_objects:
         try:
-            plan._store._fault("gc.before_delete")
-            current_snapshot = _snapshot_entries(plan._store)
+            prepared.store._fault("gc.before_delete")
+            current_snapshot = _snapshot_entries(prepared.store)
             excluded = set(deleted)
             if _filtered_snapshot_digest(current_snapshot, excluded) != _filtered_snapshot_digest(
-                plan._snapshot_entries, excluded
+                prepared.snapshot_entries, excluded
             ):
                 return _result(
-                    plan,
+                    prepared,
                     False,
                     "GC_STORE_CHANGED" if not deleted else "GC_PARTIAL_DELETE",
                     deleted=tuple(deleted),
                     bytes_reclaimed=reclaimed,
                 )
-            plan._store._fault("gc.before_unlink")
+            prepared.store._fault("gc.before_unlink")
             try:
                 final_snapshot = _snapshot_entries(
-                    plan._store, phase="gc.final-snapshot"
+                    prepared.store, phase="gc.final-snapshot"
                 )
             except EvidenceValidationError as exc:
                 return _result(
-                    plan,
+                    prepared,
                     False,
                     "GC_STORE_CHANGED" if not deleted else "GC_PARTIAL_DELETE",
                     deleted=tuple(deleted),
@@ -912,22 +1005,22 @@ def _apply_gc_locked(plan: GcPlan) -> GcResult:
                     errors=(str(exc),),
                 )
             if _filtered_snapshot_digest(final_snapshot, excluded) != _filtered_snapshot_digest(
-                plan._snapshot_entries, excluded
+                prepared.snapshot_entries, excluded
             ):
                 return _result(
-                    plan,
+                    prepared,
                     False,
                     "GC_STORE_CHANGED" if not deleted else "GC_PARTIAL_DELETE",
                     deleted=tuple(deleted),
                     bytes_reclaimed=reclaimed,
                 )
-            size = _delete_identity_bound(plan, relative, final_snapshot)
+            size = _delete_identity_bound(prepared, relative, final_snapshot)
             deleted.append(relative)
             reclaimed += size
-            plan._store._fault("gc.after_delete")
+            prepared.store._fault("gc.after_delete")
         except _GcStoreChanged as exc:
             return _result(
-                plan,
+                prepared,
                 False,
                 "GC_STORE_CHANGED" if not deleted else "GC_PARTIAL_DELETE",
                 deleted=tuple(deleted),
@@ -936,7 +1029,7 @@ def _apply_gc_locked(plan: GcPlan) -> GcResult:
             )
         except (OSError, EvidenceValidationError) as exc:
             return _result(
-                plan,
+                prepared,
                 False,
                 "GC_PARTIAL_DELETE" if deleted else "GC_DELETE_FAILED",
                 deleted=tuple(deleted),
@@ -944,7 +1037,7 @@ def _apply_gc_locked(plan: GcPlan) -> GcResult:
                 errors=(str(exc),),
             )
     return _result(
-        plan,
+        prepared,
         True,
         "GC_APPLIED",
         deleted=tuple(deleted),
@@ -956,32 +1049,29 @@ def apply_gc(plan: GcPlan, authorized: object, expected_plan_digest: object) -> 
     """Consume one exact MODIFY token and delete only still-unreachable verified objects."""
     if not isinstance(plan, GcPlan):
         raise EvidenceValidationError("plan must be a GcPlan")
-    if plan._consumed:
-        return _result(plan, False, "GC_AUTHORIZATION_CONSUMED")
-    if (
-        not isinstance(plan._prepared_action_digest, str)
-        or _HASH.fullmatch(plan._prepared_action_digest) is None
-    ):
-        return _result(plan, False, "GC_PLAN_INVALID")
-    try:
-        consumed_now = _consume_authorization(plan)
-    except (OSError, EvidenceValidationError) as exc:
-        plan._consumed = True
-        return _result(plan, False, "GC_AUTHORIZATION_INVALID", errors=(str(exc),))
-    plan._consumed = True
+    prepared, registered = _find_prepared(plan)
+    if prepared is None:
+        return _unprepared_result(plan)
+    with prepared.consume_lock:
+        if prepared.consumed:
+            return _result(prepared, False, "GC_AUTHORIZATION_CONSUMED")
+        try:
+            consumed_now = _consume_authorization(prepared)
+        except (OSError, EvidenceValidationError) as exc:
+            prepared.consumed = True
+            return _result(
+                prepared,
+                False,
+                "GC_AUTHORIZATION_INVALID",
+                errors=(str(exc),),
+            )
+        prepared.consumed = True
     if not consumed_now:
-        return _result(plan, False, "GC_AUTHORIZATION_CONSUMED")
+        return _result(prepared, False, "GC_AUTHORIZATION_CONSUMED")
+    if not registered:
+        return _result(prepared, False, "GC_PLAN_INVALID")
     try:
-        current_plan_digest = _digest(plan._document_without_digest())
-        current_action_digest = _digest(
-            {
-                "operation": "evidence.gc.apply",
-                "store_id": plan.store_id,
-                "plan_digest": plan.plan_digest,
-                "manifest_snapshot_digest": plan.manifest_snapshot_digest,
-                "bytes_reclaimable": plan.bytes_reclaimable,
-            }
-        )
+        current_plan = plan.to_json_bytes()
     except (
         AttributeError,
         EvidenceValidationError,
@@ -990,20 +1080,25 @@ def apply_gc(plan: GcPlan, authorized: object, expected_plan_digest: object) -> 
         TypeError,
         ValueError,
     ):
-        return _result(plan, False, "GC_PLAN_INVALID")
-    if current_plan_digest != plan.plan_digest or current_action_digest != plan.action_digest:
-        return _result(plan, False, "GC_PLAN_INVALID")
-    if plan._store is not plan._prepared_store:
-        return _result(plan, False, "GC_PLAN_INVALID")
-    if not isinstance(authorized, str) or authorized != plan.action_digest:
-        return _result(plan, False, "GC_AUTHORIZATION_INVALID")
-    if not isinstance(expected_plan_digest, str) or expected_plan_digest != plan.plan_digest:
-        return _result(plan, False, "GC_PLAN_DIGEST_MISMATCH")
+        return _result(prepared, False, "GC_PLAN_INVALID")
+    if (
+        current_plan != prepared.canonical_plan
+        or plan.plan_digest != prepared.plan_digest
+        or plan.action_digest != prepared.action_digest
+    ):
+        return _result(prepared, False, "GC_PLAN_INVALID")
+    if not isinstance(authorized, str) or authorized != prepared.action_digest:
+        return _result(prepared, False, "GC_AUTHORIZATION_INVALID")
+    if (
+        not isinstance(expected_plan_digest, str)
+        or expected_plan_digest != prepared.plan_digest
+    ):
+        return _result(prepared, False, "GC_PLAN_DIGEST_MISMATCH")
     try:
-        with plan._store._mutation_lock():
-            return _apply_gc_locked(plan)
+        with prepared.store._mutation_lock():
+            return _apply_gc_locked(prepared)
     except (OSError, EvidenceValidationError) as exc:
-        return _result(plan, False, "GC_STORE_CHANGED", errors=(str(exc),))
+        return _result(prepared, False, "GC_STORE_CHANGED", errors=(str(exc),))
 
 
 __all__ = [

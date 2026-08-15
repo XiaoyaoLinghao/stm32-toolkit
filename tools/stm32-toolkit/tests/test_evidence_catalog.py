@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
 from pathlib import Path
 import shutil
 import sqlite3
 import tempfile
+from threading import Event
 
 import pytest
 
@@ -169,6 +171,66 @@ def test_rebuild_is_complete_deterministic_and_uses_verified_manifest_reads(tmp_
     object_path.write_bytes(b"corrupt")
     with pytest.raises(ValueError, match="corrupt"):
         rebuild_catalog(store, catalog)
+
+
+def test_old_rebuild_cannot_overwrite_catalog_built_after_manifest_publish(tmp_path):
+    """Rebuild and authoritative publication must share one linearized store mutation order."""
+    store, catalog, _first, _late, _tied = _fixture_catalog(tmp_path)
+    source = tmp_path / "concurrent-catalog.txt"
+    source.write_bytes(b"concurrent-catalog")
+    artifact = store.ingest_file(source, kind="log", media_type="text/plain")
+    new_envelope = EvidenceEnvelope(
+        identity=_identity(workspace="7", build="8", elf="9"),
+        operation="concurrent.catalog",
+        produced_at_utc="2026-08-15T03:00:00.000000Z",
+        parents=(),
+        artifacts=(artifact,),
+        metadata={"marker": "concurrent-catalog"},
+    )
+    old_ready = Event()
+    release_old = Event()
+    publisher_attempted = Event()
+    publisher_finished = Event()
+
+    def pause_old(point: str) -> None:
+        if point == "catalog.before_publish":
+            old_ready.set()
+            assert release_old.wait(timeout=10)
+
+    old_store = EvidenceStore(store.root, fault_injector=pause_old)
+
+    def publish() -> Path:
+        publisher_attempted.set()
+        try:
+            return store.put_envelope(new_envelope)
+        finally:
+            publisher_finished.set()
+
+    try:
+        with ThreadPoolExecutor(max_workers=3) as pool:
+            old_rebuild = pool.submit(
+                rebuild_catalog, old_store, EvidenceCatalog(old_store)
+            )
+            assert old_ready.wait(timeout=10)
+            publisher = pool.submit(publish)
+            assert publisher_attempted.wait(timeout=10)
+            if publisher_finished.wait(timeout=1):
+                newer_rebuild = pool.submit(rebuild_catalog, store, catalog)
+                newer_rebuild.result(timeout=10)
+                release_old.set()
+            else:
+                release_old.set()
+                publisher.result(timeout=10)
+                newer_rebuild = pool.submit(rebuild_catalog, store, catalog)
+            old_rebuild.result(timeout=10)
+            publisher.result(timeout=10)
+            newer_rebuild.result(timeout=10)
+    finally:
+        release_old.set()
+
+    assert catalog.query(operation="concurrent.catalog") == [
+        EvidenceSummary.from_envelope(new_envelope)
+    ]
 
 
 def test_catalog_convenience_methods_preserve_authority_boundary(tmp_path):

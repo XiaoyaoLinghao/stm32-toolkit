@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import FrozenInstanceError, replace
 import hashlib
 import json
 import os
@@ -20,6 +21,7 @@ import stm32_toolkit.evidence.gc as gc_module
 from stm32_toolkit.evidence.gc import (
     REGISTERED_ROOT_TYPES,
     GcPlan,
+    RootRecord,
     apply_gc,
     plan_gc,
     put_root,
@@ -143,10 +145,142 @@ def test_typed_root_publication_is_idempotent_but_never_overwrites_identity(tmp_
         put_root(store, conflict)
 
 
+def test_direct_root_construction_cannot_escape_registry_or_store_root(tmp_path):
+    """Direct dataclass construction must not bypass the same closed path-safe root gate."""
+    store = EvidenceStore(tmp_path / "evidence")
+    envelope, _artifact = _put(store, tmp_path / "root-direct.bin", b"root-direct")
+    outside = tmp_path / "outside-root-registry"
+
+    with pytest.raises(ValueError, match="root_type|registered"):
+        put_root(
+            store,
+            RootRecord(str(outside), "direct", str(envelope.evidence_id), {}),
+        )
+
+    assert not outside.exists()
+
+
+def test_put_root_revalidates_a_mutated_root_record_before_any_store_write(tmp_path):
+    """The publication boundary must not trust a previously validated dataclass instance."""
+    store = EvidenceStore(tmp_path / "evidence")
+    envelope, _artifact = _put(store, tmp_path / "root-mutated.bin", b"root-mutated")
+    outside = tmp_path / "outside-mutated-root"
+    record = RootRecord("test-run", "direct", str(envelope.evidence_id), {})
+    object.__setattr__(record, "root_type", str(outside))
+
+    with pytest.raises(ValueError, match="root_type|registered"):
+        put_root(store, record)
+
+    assert not outside.exists()
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("root_type", "future-root"),
+        ("root_id", "../escape"),
+        ("root_id", "nested/root"),
+        ("root_id", r"nested\root"),
+        ("root_id", "C:/absolute"),
+        ("manifest_id", "A" * 64),
+        ("metadata", []),
+    ],
+)
+def test_direct_and_mapping_roots_share_one_closed_validation(field, value):
+    """Both construction paths must reject the same invalid closed root fields."""
+    values = {
+        "root_type": "test-run",
+        "root_id": "root-01",
+        "manifest_id": "1" * 64,
+        "metadata": {},
+    }
+    values[field] = value
+
+    with pytest.raises(ValueError):
+        RootRecord(**values)
+    with pytest.raises(ValueError):
+        RootRecord.from_value(values)
+
+
+def test_direct_root_freezes_a_canonical_metadata_copy():
+    """Caller mutation cannot rewrite an already constructed root record."""
+    metadata = {"nested": {"value": 1}, "items": [1, {"ok": True}]}
+    direct = RootRecord("test-run", "root-01", "1" * 64, metadata)
+    mapped = RootRecord.from_value(
+        {
+            "root_type": "test-run",
+            "root_id": "root-01",
+            "manifest_id": "1" * 64,
+            "metadata": {"nested": {"value": 1}, "items": [1, {"ok": True}]},
+        }
+    )
+    metadata["nested"]["value"] = 2
+
+    assert direct.to_dict() == mapped.to_dict()
+    with pytest.raises(TypeError):
+        direct.metadata["new"] = True
+    with pytest.raises(TypeError):
+        direct.metadata["items"][0] = 2
+
+
 def test_apply_rejects_non_plan_values_before_authorization(tmp_path):
     """An arbitrary object must not cross the canonical plan authority boundary."""
     with pytest.raises(ValueError, match="GcPlan"):
         apply_gc(object(), "0" * 64, "0" * 64)  # type: ignore[arg-type]
+
+
+def test_public_gc_plan_is_immutable_and_cannot_rewrite_prepared_results(tmp_path):
+    """A caller must not be able to mutate any public field after prepare."""
+    store = EvidenceStore(tmp_path / "evidence")
+    _envelope, artifact = _put(store, tmp_path / "immutable-plan.bin", b"immutable-plan")
+    plan = plan_gc(store)
+
+    with pytest.raises(FrozenInstanceError):
+        plan.bytes_reclaimable = 0
+    with pytest.raises(FrozenInstanceError):
+        plan.unreachable_objects = ()
+
+    result = apply_gc(plan, plan.action_digest, plan.plan_digest)
+    assert result.deleted_objects == (artifact.relative_path,)
+    assert result.bytes_reclaimed == artifact.size_bytes
+
+
+def test_reconstructed_gc_plan_consumes_but_cannot_execute_prepared_action(tmp_path):
+    """Copying every dataclass field must not copy the opaque prepare provenance."""
+    store = EvidenceStore(tmp_path / "evidence")
+    _envelope, artifact = _put(store, tmp_path / "reconstructed-plan.bin", b"reconstructed")
+    original = plan_gc(store)
+    reconstructed = replace(original)
+
+    forged = apply_gc(
+        reconstructed,
+        reconstructed.action_digest,
+        reconstructed.plan_digest,
+    )
+    retry = apply_gc(original, original.action_digest, original.plan_digest)
+
+    assert forged.code == "GC_PLAN_INVALID"
+    assert forged.deleted_objects == ()
+    assert forged.retained_objects == (artifact.relative_path,)
+    assert retry.code == "GC_AUTHORIZATION_CONSUMED"
+    assert _object(store, artifact).exists()
+
+
+def test_unregistered_plan_with_unidentifiable_action_never_accesses_store(tmp_path):
+    """A reconstructed document without registered action provenance is only a dry-run value."""
+    store = EvidenceStore(tmp_path / "evidence")
+    _envelope, artifact = _put(store, tmp_path / "unregistered-plan.bin", b"unregistered")
+    original = plan_gc(store)
+    forged_action = "0" * 64 if original.action_digest != "0" * 64 else "1" * 64
+    unregistered = replace(original, action_digest=forged_action)
+
+    rejected = apply_gc(unregistered, forged_action, unregistered.plan_digest)
+    applied = apply_gc(original, original.action_digest, original.plan_digest)
+
+    assert rejected.code == "GC_PLAN_INVALID"
+    assert rejected.deleted_objects == ()
+    assert applied.code == "GC_APPLIED"
+    assert applied.deleted_objects == (artifact.relative_path,)
 
 
 def test_root_reachability_walks_parent_manifest_graph(tmp_path):
@@ -372,6 +506,57 @@ def test_every_malformed_manifest_shape_is_classified_without_trust(tmp_path):
     assert f"manifests/{mismatch_name}" in plan.corrupt_entries
 
 
+@pytest.mark.parametrize("corruption", ["relative-path", "size"])
+def test_manifest_artifacts_use_store_authoritative_snapshot_validation(
+    tmp_path, corruption
+):
+    """A malformed artifact binding makes even an unrooted scanned manifest conservative."""
+    store = EvidenceStore(tmp_path / "evidence")
+    source = tmp_path / "authoritative-object.bin"
+    source.write_bytes(b"authoritative-object")
+    artifact = store.ingest_file(
+        source, kind="log", media_type="application/octet-stream"
+    )
+    other_source = tmp_path / "other-object.bin"
+    other_source.write_bytes(b"other-object")
+    other = store.ingest_file(
+        other_source, kind="log", media_type="application/octet-stream"
+    )
+    malformed = ArtifactRef(
+        sha256=artifact.sha256,
+        size_bytes=artifact.size_bytes + (1 if corruption == "size" else 0),
+        relative_path=(
+            other.relative_path if corruption == "relative-path" else artifact.relative_path
+        ),
+        kind=artifact.kind,
+        media_type=artifact.media_type,
+    )
+    envelope = EvidenceEnvelope(
+        identity=_identity(),
+        operation="test.malformed-artifact",
+        produced_at_utc="2026-08-15T01:02:03.123456Z",
+        parents=(),
+        artifacts=(malformed,),
+        metadata={"corruption": corruption},
+    )
+    manifests = store.root / "manifests"
+    manifests.mkdir(exist_ok=True)
+    manifest_path = manifests / f"{envelope.evidence_id}.json"
+    manifest_path.write_bytes(envelope.to_json_bytes())
+    if corruption == "relative-path":
+        _root(
+            store,
+            "malformed-artifact.json",
+            _typed_root("test-run", "malformed-artifact", str(envelope.evidence_id)),
+        )
+
+    plan = plan_gc(store)
+
+    assert f"manifests/{envelope.evidence_id}.json" in plan.corrupt_entries
+    assert plan.unreachable_objects == ()
+    assert set(plan.reachable_objects) == {artifact.relative_path, other.relative_path}
+
+
 def test_directory_at_canonical_object_path_is_corrupt_and_retained(tmp_path):
     """Treating a directory as an object could recurse into or delete an attacker-controlled tree."""
     store = EvidenceStore(tmp_path / "evidence")
@@ -456,7 +641,7 @@ def test_every_recognizable_execute_denial_consumes_prepared_action(
     elif denial == "expected-mismatch":
         expected = "0" * 64
     else:
-        plan.bytes_reclaimable += 1
+        object.__setattr__(plan, "bytes_reclaimable", plan.bytes_reclaimable + 1)
 
     first = apply_gc(plan, authorized, expected)
     second = apply_gc(equivalent, equivalent.action_digest, equivalent.plan_digest)
@@ -514,7 +699,11 @@ def test_mutating_public_action_digest_still_consumes_original_prepared_action(t
     invalid = plan_gc(store)
     equivalent = plan_gc(store)
     prepared_action = invalid.action_digest
-    invalid.action_digest = "f" * 64 if prepared_action != "f" * 64 else "e" * 64
+    object.__setattr__(
+        invalid,
+        "action_digest",
+        "f" * 64 if prepared_action != "f" * 64 else "e" * 64,
+    )
 
     first = apply_gc(invalid, invalid.action_digest, invalid.plan_digest)
     second = apply_gc(equivalent, equivalent.action_digest, equivalent.plan_digest)
@@ -531,7 +720,7 @@ def test_non_json_store_id_cannot_prevent_original_action_consumption(tmp_path):
     _envelope, artifact = _put(store, tmp_path / "mutated-store-id.bin", b"mutated-store-id")
     invalid = plan_gc(store)
     equivalent = plan_gc(store)
-    invalid.store_id = object()  # type: ignore[assignment]
+    object.__setattr__(invalid, "store_id", object())
 
     first = apply_gc(invalid, invalid.action_digest, invalid.plan_digest)
     second = apply_gc(equivalent, equivalent.action_digest, equivalent.plan_digest)
@@ -553,7 +742,7 @@ def test_invalid_public_plan_collections_return_canonical_denial(
     _envelope, artifact = _put(store, tmp_path / f"invalid-{field_name}.bin", b"invalid-plan")
     invalid = plan_gc(store)
     equivalent = plan_gc(store)
-    setattr(invalid, field_name, invalid_value)
+    object.__setattr__(invalid, field_name, invalid_value)
 
     first = apply_gc(invalid, invalid.action_digest, invalid.plan_digest)
     second = apply_gc(equivalent, equivalent.action_digest, equivalent.plan_digest)
@@ -570,14 +759,17 @@ def test_rebound_store_handle_cannot_redirect_prepared_execution(tmp_path):
     _envelope, artifact = _put(store, tmp_path / "rebound-store.bin", b"rebound-store")
     invalid = plan_gc(store)
     equivalent = plan_gc(store)
-    invalid._store = EvidenceStore(store.root)
+    outside = EvidenceStore(tmp_path / "outside-store")
+    object.__setattr__(invalid, "_store", outside)
 
     first = apply_gc(invalid, invalid.action_digest, invalid.plan_digest)
     second = apply_gc(equivalent, equivalent.action_digest, equivalent.plan_digest)
 
-    assert first.code == "GC_PLAN_INVALID"
+    assert first.code == "GC_APPLIED"
+    assert first.deleted_objects == (artifact.relative_path,)
     assert second.code == "GC_AUTHORIZATION_CONSUMED"
-    assert _object(store, artifact).exists()
+    assert not _object(store, artifact).exists()
+    assert not outside.root.exists()
 
 
 def test_authorization_is_consumed_once_across_competing_processes(tmp_path):
@@ -646,7 +838,7 @@ def test_mutated_plan_or_action_binding_is_rejected_before_deletion(tmp_path):
     _envelope, artifact = _put(store, tmp_path / "mutated.bin", b"mutated")
     plan = plan_gc(store)
     original_plan_digest = plan.plan_digest
-    plan.bytes_reclaimable += 1
+    object.__setattr__(plan, "bytes_reclaimable", plan.bytes_reclaimable + 1)
 
     result = apply_gc(plan, plan.action_digest, original_plan_digest)
 

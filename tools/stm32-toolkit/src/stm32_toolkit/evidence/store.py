@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from contextlib import contextmanager
 import hashlib
 import os
@@ -274,13 +274,31 @@ class EvidenceStore:
     def _expected_object(self, digest: str) -> tuple[str, Path]:
         directory = self._managed_directory("objects", "sha256", digest[:2])
         self._reject_casefold_collision(directory, digest)
-        relative = f"objects/sha256/{digest[:2]}/{digest}"
+        relative = self._expected_object_relative(digest)
         return relative, directory / digest
 
-    def _verify_artifact(self, artifact: ArtifactRef) -> None:
-        expected_relative, target = self._expected_object(artifact.sha256)
+    @staticmethod
+    def _expected_object_relative(digest: str) -> str:
+        return f"objects/sha256/{digest[:2]}/{digest}"
+
+    def _verify_artifact(
+        self,
+        artifact: ArtifactRef,
+        *,
+        object_snapshot: Mapping[str, tuple[int, str]] | None = None,
+    ) -> None:
+        expected_relative = self._expected_object_relative(artifact.sha256)
         if artifact.relative_path != expected_relative:
             raise EvidenceValidationError("artifact relative_path is not its content-addressed object path")
+        if object_snapshot is not None:
+            observed = object_snapshot.get(expected_relative)
+            if observed is None:
+                raise EvidenceValidationError("artifact object is absent from the verified snapshot")
+            observed_size, observed_digest = observed
+            if observed_size != artifact.size_bytes or observed_digest != artifact.sha256:
+                raise EvidenceValidationError("artifact metadata differs from the verified object")
+            return
+        _relative, target = self._expected_object(artifact.sha256)
         self._hash_file(
             target,
             expected_size=artifact.size_bytes,
@@ -390,14 +408,30 @@ class EvidenceStore:
             media_type=media_type,
         )
 
-    def verify_envelope(self, envelope: EvidenceEnvelope) -> EvidenceEnvelope:
+    def _verify_envelope(
+        self,
+        envelope: EvidenceEnvelope,
+        *,
+        object_snapshot: Mapping[str, tuple[int, str]] | None,
+    ) -> EvidenceEnvelope:
         if not isinstance(envelope, EvidenceEnvelope):
             raise EvidenceValidationError("value is not an EvidenceEnvelope")
         # Reparse the exact canonical bytes so direct objects share the authoritative decoder gate.
         verified = EvidenceEnvelope.from_json_bytes(envelope.to_json_bytes())
         for artifact in verified.artifacts:
-            self._verify_artifact(artifact)
+            self._verify_artifact(artifact, object_snapshot=object_snapshot)
         return verified
+
+    def verify_envelope(self, envelope: EvidenceEnvelope) -> EvidenceEnvelope:
+        return self._verify_envelope(envelope, object_snapshot=None)
+
+    def _verify_envelope_snapshot(
+        self,
+        envelope: EvidenceEnvelope,
+        object_snapshot: Mapping[str, tuple[int, str]],
+    ) -> EvidenceEnvelope:
+        """Apply the authoritative envelope gate to identity-bound GC observations."""
+        return self._verify_envelope(envelope, object_snapshot=object_snapshot)
 
     def put_envelope(self, envelope: EvidenceEnvelope) -> Path:
         with self._mutation_lock():

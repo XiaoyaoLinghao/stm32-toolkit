@@ -247,7 +247,15 @@ def rebuild_catalog(
     if evidence_catalog.store.root != evidence_store.root:
         raise EvidenceValidationError("catalog and evidence store roots must match")
     catalog_path = evidence_catalog._bound_path()
-    evidence_store._ensure_root()
+    with evidence_store._mutation_lock():
+        return _rebuild_catalog_locked(evidence_store, catalog_path)
+
+
+def _rebuild_catalog_locked(
+    evidence_store: EvidenceStore,
+    catalog_path: Path,
+) -> Path:
+    """Build and publish while the caller holds the one store mutation lock."""
 
     summaries = [
         EvidenceSummary.from_envelope(evidence_store.get_envelope(name[:-5]))
