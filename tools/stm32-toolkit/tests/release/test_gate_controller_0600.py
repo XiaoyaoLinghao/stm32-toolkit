@@ -70,6 +70,11 @@ def tmp_path() -> Path:
     try:
         yield root
     finally:
+        for sibling in Path(r"C:\tmp").glob(f"{root.name}-coverage-*"):
+            if sibling.parent.resolve() != Path(r"C:\tmp").resolve() or gates._is_reparse(sibling):
+                raise AssertionError(f"unsafe coverage test cleanup target: {sibling}")
+            if sibling.is_dir():
+                shutil.rmtree(sibling)
         shutil.rmtree(root)
 
 
@@ -598,6 +603,10 @@ def _coverage_git(paths: list[str]):
     return run
 
 
+def _coverage_evidence(tmp_path: Path, name: str = "evidence") -> Path:
+    return Path(r"C:\tmp") / f"{tmp_path.name}-coverage-{name}"
+
+
 def _create_junction(path: Path, target: Path) -> None:
     completed = subprocess.run(
         ["cmd.exe", "/d", "/c", "mklink", "/J", str(path), str(target)],
@@ -692,7 +701,7 @@ def test_dev_coverage_accepts_every_frozen_plan_pytest_shape(
 ) -> None:
     """Every planned 0601/0602/0603 coverage argv reaches pytest, not a controller grammar error."""
     repo = tmp_path / "repo"
-    evidence = tmp_path / "evidence"
+    evidence = _coverage_evidence(tmp_path)
     requested_modules = [token.removeprefix("--cov=") for token in tokens if token.startswith("--cov=")]
     roots = sorted({module.split(".", 1)[0] for module in requested_modules})
     changed: list[str] = []
@@ -717,6 +726,8 @@ def test_dev_coverage_accepts_every_frozen_plan_pytest_shape(
         calls += 1
         assert cwd == repo
         assert argv[:3] == [sys.executable, "-m", "pytest"]
+        if "--basetemp" in argv:
+            Path(argv[argv.index("--basetemp") + 1]).mkdir()
         raw = _coverage_v7({path: (9, 10) for path in changed})
         (evidence / "coverage-raw.json").write_text(json.dumps(raw), encoding="utf-8")
         return 0
@@ -754,7 +765,7 @@ def test_dev_coverage_rejects_invalid_basetemp_before_evidence_creation(
 ) -> None:
     repo = tmp_path / "repo"
     repo.mkdir()
-    evidence = tmp_path / "evidence"
+    evidence = _coverage_evidence(tmp_path)
 
     with pytest.raises(ControllerError):
         run_dev_coverage(repo, "STM32TK-0603-T12", evidence, tokens, _coverage_git([]))
@@ -775,7 +786,7 @@ def test_dev_coverage_rejects_basetemp_for_other_tasks_and_existing_paths(
     existing = tmp_path / "existing-basetemp"
     existing.mkdir()
     for task_id in ("STM32TK-0601-T03", "STM32TK-0603-T12"):
-        evidence = tmp_path / task_id
+        evidence = _coverage_evidence(tmp_path, task_id)
         with pytest.raises(ControllerError):
             run_dev_coverage(
                 repo,
@@ -804,7 +815,7 @@ def test_dev_coverage_rejects_unsafe_absent_basetemp_before_evidence_creation(
         "alias": r"C:\tmp\.\stm32tk-coverage-basetemp",
         "missing-parent": r"C:\tmp\missing-stm32tk-coverage-parent\basetemp",
     }
-    evidence = tmp_path / "evidence"
+    evidence = _coverage_evidence(tmp_path)
 
     with pytest.raises(ControllerError):
         run_dev_coverage(
@@ -840,7 +851,7 @@ def test_dev_coverage_rejects_evidence_parent_junction_before_claiming_root(
     _create_junction(linked_parent, REPO)
     evidence = linked_parent / "must-not-be-created"
     try:
-        with pytest.raises(ControllerError, match="reparse"):
+        with pytest.raises(ControllerError, match="direct child"):
             run_dev_coverage(
                 repo,
                 task_id,
@@ -853,17 +864,8 @@ def test_dev_coverage_rejects_evidence_parent_junction_before_claiming_root(
         os.rmdir(linked_parent)
 
 
-@pytest.mark.parametrize(
-    ("task_id", "extra_tokens"),
-    [
-        ("STM32TK-0603-T01", []),
-        ("STM32TK-0603-T12", ["--basetemp", r"C:\tmp\stm32tk-0603-package-312"]),
-    ],
-)
-def test_dev_coverage_rechecks_attempt_binding_immediately_before_runner(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, task_id: str, extra_tokens: list[str],
-) -> None:
-    """Replacing the claimed evidence parent with a junction must stop before pytest."""
+def test_dev_coverage_rejects_nested_evidence_root_before_claiming_it(tmp_path: Path) -> None:
+    """Frozen coverage roots are unique direct children of C:\\tmp, never deeper paths."""
     repo = tmp_path / "repo"
     test_file = repo / "tools/stm32-monitor/tests/test_package.py"
     product = repo / "tools/stm32-monitor/src/stm32_monitor/package.py"
@@ -871,21 +873,7 @@ def test_dev_coverage_rechecks_attempt_binding_immediately_before_runner(
     product.parent.mkdir(parents=True)
     test_file.write_text("def test_package(): pass\n", encoding="utf-8")
     product.write_text("VALUE = 1\n", encoding="utf-8")
-    evidence = tmp_path / "evidence"
-    replacement = tmp_path / "replacement"
-    replacement.mkdir()
-    original = gates._verify_coverage_attempt
-    checks = 0
-
-    def replace_before_second_check(*args: object, **kwargs: object) -> object:
-        nonlocal checks
-        checks += 1
-        if checks == 2:
-            os.rmdir(evidence)
-            _create_junction(evidence, replacement)
-        return original(*args, **kwargs)
-
-    monkeypatch.setattr(gates, "_verify_coverage_attempt", replace_before_second_check)
+    evidence = tmp_path / "nested-evidence"
     runner_calls = 0
 
     def runner(*_args: object, **_kwargs: object) -> int:
@@ -893,21 +881,218 @@ def test_dev_coverage_rechecks_attempt_binding_immediately_before_runner(
         runner_calls += 1
         return 0
 
+    with pytest.raises(ControllerError, match="direct child"):
+        run_dev_coverage(
+            repo,
+            "STM32TK-0603-T01",
+            evidence,
+            [str(test_file), "--cov=stm32_monitor.package"],
+            _coverage_git([product.relative_to(repo).as_posix()]),
+            runner,
+        )
+
+    assert runner_calls == 0
+    assert not evidence.exists()
+
+
+def test_dev_coverage_win32_directory_identity_uses_volume_and_file_index() -> None:
+    """The retained identity comes from an open Win32 handle, not mutable timestamps."""
+    with gates._open_locked_windows_directory(Path(r"C:\tmp")) as locked:
+        assert locked.path == Path(r"C:\tmp")
+        assert isinstance(locked.volume_serial, int)
+        assert isinstance(locked.file_index, int)
+        assert locked.file_index >= 0
+
+
+def test_dev_coverage_fails_closed_without_windows_locking(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No fallback may silently run coverage without the required Win32 handles."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    evidence = _coverage_evidence(tmp_path)
+    monkeypatch.setattr(gates, "_coverage_windows_available", lambda: False)
+
+    with pytest.raises(ControllerError, match="Windows directory locking"):
+        gates._validate_coverage_attempt_location(repo, evidence)
+
+    assert not evidence.exists()
+
+
+def test_dev_coverage_rejects_prepositioned_root_junction(tmp_path: Path) -> None:
+    """A direct-child name occupied by a junction is rejected as reparse state."""
+    repo = tmp_path / "repo"
+    test_file = repo / "tools/stm32-monitor/tests/test_package.py"
+    product = repo / "tools/stm32-monitor/src/stm32_monitor/package.py"
+    test_file.parent.mkdir(parents=True)
+    product.parent.mkdir(parents=True)
+    test_file.write_text("def test_package(): pass\n", encoding="utf-8")
+    product.write_text("VALUE = 1\n", encoding="utf-8")
+    evidence = _coverage_evidence(tmp_path)
+    replacement = tmp_path / "replacement"
+    replacement.mkdir()
+    _create_junction(evidence, replacement)
     try:
-        with pytest.raises(ControllerError, match="reparse|changed"):
+        with pytest.raises(ControllerError, match="reparse"):
             run_dev_coverage(
                 repo,
-                task_id,
+                "STM32TK-0603-T01",
                 evidence,
-                [str(test_file), "--cov=stm32_monitor.package", *extra_tokens],
+                [str(test_file), "--cov=stm32_monitor.package"],
                 _coverage_git([product.relative_to(repo).as_posix()]),
-                runner,
             )
-        assert checks == 2
-        assert runner_calls == 0
+    finally:
+        os.rmdir(evidence)
+
+
+def test_dev_coverage_rejects_root_replaced_before_handle_open(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A create/open race that substitutes a junction fails before pytest."""
+    repo = tmp_path / "repo"
+    test_file = repo / "tools/stm32-monitor/tests/test_package.py"
+    product = repo / "tools/stm32-monitor/src/stm32_monitor/package.py"
+    test_file.parent.mkdir(parents=True)
+    product.parent.mkdir(parents=True)
+    test_file.write_text("def test_package(): pass\n", encoding="utf-8")
+    product.write_text("VALUE = 1\n", encoding="utf-8")
+    evidence = _coverage_evidence(tmp_path)
+    replacement = tmp_path / "replacement"
+    replacement.mkdir()
+    original_open = gates._open_locked_windows_directory
+    replaced = False
+
+    def replace_before_root_open(path: Path) -> object:
+        nonlocal replaced
+        if path == evidence and not replaced:
+            replaced = True
+            os.rmdir(evidence)
+            _create_junction(evidence, replacement)
+        return original_open(path)
+
+    monkeypatch.setattr(gates, "_open_locked_windows_directory", replace_before_root_open)
+    try:
+        with pytest.raises(ControllerError, match="reparse"):
+            run_dev_coverage(
+                repo,
+                "STM32TK-0603-T01",
+                evidence,
+                [str(test_file), "--cov=stm32_monitor.package"],
+                _coverage_git([product.relative_to(repo).as_posix()]),
+            )
     finally:
         if evidence.exists():
             os.rmdir(evidence)
+
+
+def test_dev_coverage_rejects_target_created_before_root_creation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A competing target created after C:\\tmp is locked still loses create-new."""
+    repo = tmp_path / "repo"
+    test_file = repo / "tools/stm32-monitor/tests/test_package.py"
+    product = repo / "tools/stm32-monitor/src/stm32_monitor/package.py"
+    test_file.parent.mkdir(parents=True)
+    product.parent.mkdir(parents=True)
+    test_file.write_text("def test_package(): pass\n", encoding="utf-8")
+    product.write_text("VALUE = 1\n", encoding="utf-8")
+    evidence = _coverage_evidence(tmp_path)
+    original_validate = gates._validate_coverage_attempt_location
+    validations = 0
+
+    def create_target_before_second_validation(repo_path: Path, root: Path) -> None:
+        nonlocal validations
+        validations += 1
+        if validations == 2:
+            root.mkdir()
+        original_validate(repo_path, root)
+
+    monkeypatch.setattr(gates, "_validate_coverage_attempt_location", create_target_before_second_validation)
+    runner_calls = 0
+
+    def runner(*_args: object, **_kwargs: object) -> int:
+        nonlocal runner_calls
+        runner_calls += 1
+        return 0
+
+    with pytest.raises(ControllerError, match="new path"):
+        run_dev_coverage(
+            repo,
+            "STM32TK-0603-T01",
+            evidence,
+            [str(test_file), "--cov=stm32_monitor.package"],
+            _coverage_git([product.relative_to(repo).as_posix()]),
+            runner,
+        )
+    assert validations == 2
+    assert runner_calls == 0
+
+
+def test_dev_coverage_runner_cannot_replace_locked_root(tmp_path: Path) -> None:
+    """A runner-time replacement is detected before any result is accepted."""
+    repo = tmp_path / "repo"
+    test_file = repo / "tools/stm32-monitor/tests/test_package.py"
+    product = repo / "tools/stm32-monitor/src/stm32_monitor/package.py"
+    test_file.parent.mkdir(parents=True)
+    product.parent.mkdir(parents=True)
+    test_file.write_text("def test_package(): pass\n", encoding="utf-8")
+    product.write_text("VALUE = 1\n", encoding="utf-8")
+    evidence = _coverage_evidence(tmp_path)
+    changed = product.relative_to(repo).as_posix()
+
+    def runner(argv: list[str], **_kwargs: object) -> int:
+        os.rmdir(evidence)
+        evidence.mkdir()
+        return 0
+
+    with pytest.raises(ControllerError, match="changed"):
+        run_dev_coverage(
+            repo,
+            "STM32TK-0603-T01",
+            evidence,
+            [str(test_file), "--cov=stm32_monitor.package"],
+            _coverage_git([changed]),
+            runner,
+        )
+
+
+def test_dev_coverage_raw_read_occurs_while_root_is_locked(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The no-delete root handle spans runner return and coverage JSON parsing."""
+    repo = tmp_path / "repo"
+    test_file = repo / "tools/stm32-monitor/tests/test_package.py"
+    product = repo / "tools/stm32-monitor/src/stm32_monitor/package.py"
+    test_file.parent.mkdir(parents=True)
+    product.parent.mkdir(parents=True)
+    test_file.write_text("def test_package(): pass\n", encoding="utf-8")
+    product.write_text("VALUE = 1\n", encoding="utf-8")
+    evidence = _coverage_evidence(tmp_path)
+    moved = _coverage_evidence(tmp_path, "moved")
+    changed = product.relative_to(repo).as_posix()
+    original_load = gates._load_json
+
+    def load_while_attempting_replace(path: Path) -> object:
+        os.replace(evidence, moved)
+        return original_load(path)
+
+    monkeypatch.setattr(gates, "_load_json", load_while_attempting_replace)
+
+    def runner(_argv: list[str], **_kwargs: object) -> int:
+        (evidence / "coverage-raw.json").write_text(
+            json.dumps(_coverage_v7({changed: (9, 10)})), encoding="utf-8"
+        )
+        return 0
+
+    with pytest.raises(ControllerError):
+        run_dev_coverage(
+            repo,
+            "STM32TK-0603-T01",
+            evidence,
+            [str(test_file), "--cov=stm32_monitor.package"],
+            _coverage_git([changed]),
+            runner,
+        )
 
 
 def test_dev_coverage_t12_failed_attempt_retries_same_frozen_argv_with_new_root(
@@ -928,14 +1113,15 @@ def test_dev_coverage_t12_failed_attempt_retries_same_frozen_argv_with_new_root(
         "--basetemp",
         r"C:\tmp\stm32tk-0603-package-312",
     ]
-    first = tmp_path / "evidence-attempt-1"
-    second = tmp_path / "evidence-attempt-2"
+    first = _coverage_evidence(tmp_path, "attempt-1")
+    second = _coverage_evidence(tmp_path, "attempt-2")
     actual: list[Path] = []
 
     def failing_runner(argv: list[str], **_kwargs: object) -> int:
         scratch = Path(argv[argv.index("--basetemp") + 1])
         actual.append(scratch)
-        assert scratch == first / "pytest-basetemp"
+        assert scratch.parent == first
+        assert re.fullmatch(r"pytest-basetemp-[0-9a-f]{32}", scratch.name)
         scratch.mkdir()
         (first / "coverage-raw.json").write_text("retained failure\n", encoding="utf-8")
         return 1
@@ -948,7 +1134,8 @@ def test_dev_coverage_t12_failed_attempt_retries_same_frozen_argv_with_new_root(
     def successful_runner(argv: list[str], **_kwargs: object) -> int:
         scratch = Path(argv[argv.index("--basetemp") + 1])
         actual.append(scratch)
-        assert scratch == second / "pytest-basetemp"
+        assert scratch.parent == second
+        assert re.fullmatch(r"pytest-basetemp-[0-9a-f]{32}", scratch.name)
         scratch.mkdir()
         (second / "coverage-raw.json").write_text(
             json.dumps(_coverage_v7({changed: (9, 10)})), encoding="utf-8"
@@ -960,9 +1147,9 @@ def test_dev_coverage_t12_failed_attempt_retries_same_frozen_argv_with_new_root(
     )
 
     assert result["task_id"] == "STM32TK-0603-T12"
-    assert actual == [first / "pytest-basetemp", second / "pytest-basetemp"]
+    assert actual[0] != actual[1]
     assert (first / "coverage-raw.json").read_text(encoding="utf-8") == "retained failure\n"
-    assert (first / "pytest-basetemp").is_dir()
+    assert actual[0].is_dir()
 
 
 def test_dev_coverage_preflight_failure_does_not_claim_evidence_root(
@@ -970,7 +1157,7 @@ def test_dev_coverage_preflight_failure_does_not_claim_evidence_root(
 ) -> None:
     repo = tmp_path / "repo"
     repo.mkdir()
-    evidence = tmp_path / "evidence"
+    evidence = _coverage_evidence(tmp_path)
 
     with pytest.raises(ControllerError):
         run_dev_coverage(
@@ -995,7 +1182,7 @@ def test_dev_coverage_failed_execution_preserves_evidence_and_requires_new_root(
     product.write_text("VALUE = 1\n", encoding="utf-8")
     test_file.write_text("def test_model(): pass\n", encoding="utf-8")
     changed = product.relative_to(repo).as_posix()
-    evidence = tmp_path / "evidence-attempt-1"
+    evidence = _coverage_evidence(tmp_path, "attempt-1")
 
     def failing_runner(argv: list[str], *, cwd: Path, env: dict[str, str]) -> int:
         (evidence / "coverage-raw.json").write_text("retained failure\n", encoding="utf-8")
@@ -1012,7 +1199,7 @@ def test_dev_coverage_failed_execution_preserves_evidence_and_requires_new_root(
         )
     assert (evidence / "coverage-raw.json").read_text(encoding="utf-8") == "retained failure\n"
 
-    with pytest.raises(ControllerError, match="new canonical absolute path"):
+    with pytest.raises(ControllerError, match="new path"):
         run_dev_coverage(
             repo,
             "STM32TK-0603-T01",
@@ -1065,7 +1252,7 @@ def test_dev_coverage_discovers_each_changed_product_file_and_requires_90_percen
     test_file.parent.mkdir(parents=True)
     product.write_text("VALUE = 1\n", encoding="utf-8")
     test_file.write_text("def test_changed(): pass\n", encoding="utf-8")
-    evidence = tmp_path / "evidence"
+    evidence = _coverage_evidence(tmp_path)
     changed = product.relative_to(repo).as_posix()
 
     def runner(argv: list[str], *, cwd: Path, env: dict[str, str]) -> int:
@@ -1107,7 +1294,7 @@ def test_dev_coverage_adds_exact_modules_for_changed_package_files(tmp_path: Pat
     model_file.write_text("VALUE = 1\n", encoding="utf-8")
     test_file.write_text("def test_value(): pass\n", encoding="utf-8")
     changed = [init_file.relative_to(repo).as_posix(), model_file.relative_to(repo).as_posix()]
-    evidence = tmp_path / "evidence"
+    evidence = _coverage_evidence(tmp_path)
 
     def runner(argv: list[str], *, cwd: Path, env: dict[str, str]) -> int:
         assert argv.count("--cov=stm32_toolkit.evidence") == 1
@@ -1149,7 +1336,7 @@ def test_dev_coverage_rejects_noncanonical_duplicate_or_unpaired_pytest_flags(
     """Only one exact `-q` and one adjacent `-p no:cacheprovider` pair are allowed."""
     repo = tmp_path / "repo"
     repo.mkdir()
-    evidence = tmp_path / "evidence"
+    evidence = _coverage_evidence(tmp_path)
     runner_calls = 0
 
     def runner(*_args: object, **_kwargs: object) -> int:
@@ -1182,7 +1369,7 @@ def test_dev_coverage_rejects_noncanonical_or_unknown_task_ids_before_side_effec
     """Coverage task IDs are exact, case-sensitive, and limited to known 0.6 modules."""
     repo = tmp_path / "repo"
     repo.mkdir()
-    evidence = tmp_path / "evidence"
+    evidence = _coverage_evidence(tmp_path)
 
     with pytest.raises(ControllerError, match="unknown coverage task"):
         run_dev_coverage(repo, task_id, evidence, ["tests/test_changed.py"])
@@ -1211,7 +1398,7 @@ def test_dev_coverage_rejects_no_change_duplicates_missing_rows_low_file_and_she
         target = repo.joinpath(*path.split("/"))
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text("pass\n", encoding="utf-8")
-    evidence = tmp_path / "evidence"
+    evidence = _coverage_evidence(tmp_path)
 
     def runner(_argv: list[str], *, cwd: Path, env: dict[str, str]) -> int:
         raw = _coverage_v7(rows)
@@ -1232,7 +1419,7 @@ def test_dev_coverage_rejects_duplicate_json_object_rows(tmp_path: Path) -> None
     test_file = repo / "tools" / "stm32-toolkit" / "tests" / "test_a.py"
     test_file.parent.mkdir(parents=True)
     test_file.write_text("def test_a(): pass\n", encoding="utf-8")
-    evidence = tmp_path / "evidence"
+    evidence = _coverage_evidence(tmp_path)
 
     def runner(_argv: list[str], *, cwd: Path, env: dict[str, str]) -> int:
         duplicate = (
@@ -1282,7 +1469,7 @@ def test_dev_coverage_rejects_mutated_coverage_v7_contract(tmp_path: Path, mutat
     test_file.parent.mkdir(parents=True)
     product.write_text("pass\n", encoding="utf-8")
     test_file.write_text("def test_a(): pass\n", encoding="utf-8")
-    evidence = tmp_path / "evidence"
+    evidence = _coverage_evidence(tmp_path)
 
     def runner(_argv: list[str], *, cwd: Path, env: dict[str, str]) -> int:
         raw = _coverage_v7({changed: (9, 10)})

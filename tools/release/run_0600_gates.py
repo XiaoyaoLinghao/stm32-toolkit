@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import ctypes
 import hashlib
 import importlib
 import json
@@ -18,6 +19,7 @@ import sys
 import tempfile
 import time
 import types
+from ctypes import wintypes
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -84,6 +86,40 @@ FROZEN_CAPABILITIES = {
 
 class ControllerError(ValueError):
     """A controller input or retained state failed closed."""
+
+
+class _ByHandleFileInformation(ctypes.Structure):
+    _fields_ = [
+        ("file_attributes", wintypes.DWORD),
+        ("creation_time", wintypes.FILETIME),
+        ("last_access_time", wintypes.FILETIME),
+        ("last_write_time", wintypes.FILETIME),
+        ("volume_serial", wintypes.DWORD),
+        ("file_size_high", wintypes.DWORD),
+        ("file_size_low", wintypes.DWORD),
+        ("number_of_links", wintypes.DWORD),
+        ("file_index_high", wintypes.DWORD),
+        ("file_index_low", wintypes.DWORD),
+    ]
+
+
+class _LockedWindowsDirectory:
+    def __init__(self, path: Path, handle: int, volume_serial: int, file_index: int) -> None:
+        self.path = path
+        self.handle = handle
+        self.volume_serial = volume_serial
+        self.file_index = file_index
+
+    def __enter__(self) -> _LockedWindowsDirectory:
+        return self
+
+    def __exit__(self, *_args: object) -> None:
+        if self.handle:
+            kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+            kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+            kernel32.CloseHandle.restype = wintypes.BOOL
+            kernel32.CloseHandle(wintypes.HANDLE(self.handle))
+            self.handle = 0
 
 
 class CatalogError(ValueError):
@@ -907,72 +943,148 @@ def _validate_coverage_basetemp(repo: Path, task_id: str, value: str) -> Path:
     return path
 
 
-def _coverage_path_chain(root: Path, leaf: Path) -> list[Path]:
-    try:
-        relative = leaf.relative_to(root)
-    except ValueError as exc:
-        raise ControllerError("coverage attempt path is outside C:\\tmp") from exc
-    chain = [root]
-    for part in relative.parts:
-        chain.append(chain[-1] / part)
-    return chain
+def _coverage_windows_available() -> bool:
+    return os.name == "nt"
 
 
 def _validate_coverage_attempt_location(repo: Path, evidence_root: Path) -> None:
-    """Validate the absent evidence location before create-new claims its name."""
+    """Validate the frozen direct-child create-new location before claiming it."""
+    if not _coverage_windows_available():
+        raise ControllerError("development coverage requires Windows directory locking")
     temporary_root = Path(r"C:\tmp")
-    if not evidence_root.is_absolute() or str(evidence_root) != os.path.abspath(evidence_root):
-        raise ControllerError("coverage evidence root is not canonical absolute")
-    chain = _coverage_path_chain(temporary_root, evidence_root.parent)
-    if any(not path.is_dir() or _is_reparse(path) for path in chain):
-        raise ControllerError("coverage evidence parent chain contains a reparse point")
-    temporary_resolved = temporary_root.resolve(strict=True)
-    parent_resolved = evidence_root.parent.resolve(strict=True)
+    if (
+        not evidence_root.is_absolute()
+        or str(evidence_root) != os.path.abspath(evidence_root)
+        or evidence_root.parent != temporary_root
+        or not evidence_root.name
+    ):
+        raise ControllerError("coverage evidence root must be a canonical direct child of C:\\tmp")
+    if not temporary_root.is_dir() or _is_reparse(temporary_root):
+        raise ControllerError("coverage temporary root is a reparse point or unavailable")
     try:
-        parent_resolved.relative_to(temporary_resolved)
-    except ValueError as exc:
-        raise ControllerError("coverage evidence parent resolves outside C:\\tmp") from exc
-    candidate_resolved = parent_resolved / evidence_root.name
+        evidence_root.lstat()
+    except FileNotFoundError:
+        pass
+    except OSError as exc:
+        raise ControllerError("coverage evidence target state is unreadable") from exc
+    else:
+        if _is_reparse(evidence_root):
+            raise ControllerError("coverage evidence target is a reparse point")
+        raise ControllerError("coverage evidence root must be a new path")
     try:
-        candidate_resolved.relative_to(repo.resolve(strict=True))
+        evidence_root.relative_to(repo.resolve(strict=True))
     except ValueError:
         pass
     else:
         raise ControllerError("coverage evidence root must resolve outside the repository")
 
 
-def _verify_coverage_attempt(
-    repo: Path,
-    evidence_root: Path,
-    expected_identity: tuple[str, int, int, int] | None = None,
-) -> tuple[str, int, int, int]:
-    """Bind one coverage run to an unchanged, non-reparse evidence attempt."""
-    temporary_root = Path(r"C:\tmp")
-    chain = _coverage_path_chain(temporary_root, evidence_root)
-    if any(not path.is_dir() or _is_reparse(path) for path in chain):
-        raise ControllerError("coverage evidence chain contains a reparse point")
-    temporary_resolved = temporary_root.resolve(strict=True)
-    evidence_resolved = evidence_root.resolve(strict=True)
-    try:
-        evidence_resolved.relative_to(temporary_resolved)
-    except ValueError as exc:
-        raise ControllerError("coverage evidence root resolves outside C:\\tmp") from exc
-    try:
-        evidence_resolved.relative_to(repo.resolve(strict=True))
-    except ValueError:
-        pass
-    else:
-        raise ControllerError("coverage evidence root must resolve outside the repository")
-    info = evidence_root.stat()
-    identity = (str(evidence_resolved), info.st_dev, info.st_ino, info.st_ctime_ns)
-    if expected_identity is not None and identity != expected_identity:
-        raise ControllerError("coverage evidence root identity changed")
-    return identity
+def _windows_final_path(kernel32: object, handle: int) -> Path:
+    kernel32.GetFinalPathNameByHandleW.argtypes = [
+        wintypes.HANDLE, wintypes.LPWSTR, wintypes.DWORD, wintypes.DWORD,
+    ]
+    kernel32.GetFinalPathNameByHandleW.restype = wintypes.DWORD
+    required = kernel32.GetFinalPathNameByHandleW(wintypes.HANDLE(handle), None, 0, 0)
+    if required == 0:
+        raise ctypes.WinError(ctypes.get_last_error())
+    buffer = ctypes.create_unicode_buffer(required + 1)
+    written = kernel32.GetFinalPathNameByHandleW(wintypes.HANDLE(handle), buffer, len(buffer), 0)
+    if written == 0 or written >= len(buffer):
+        raise ctypes.WinError(ctypes.get_last_error())
+    value = buffer.value
+    if value.startswith("\\\\?\\UNC\\"):
+        value = "\\\\" + value[8:]
+    elif value.startswith("\\\\?\\"):
+        value = value[4:]
+    return Path(value)
 
 
-def _verify_coverage_attempt_basetemp(evidence_root: Path, basetemp: Path) -> None:
-    """Keep pytest scratch absent and lexically bound to its retained attempt."""
-    if basetemp != evidence_root / "pytest-basetemp" or str(basetemp) != os.path.abspath(basetemp):
+def _windows_directory_information(kernel32: object, handle: int) -> _ByHandleFileInformation:
+    kernel32.GetFileInformationByHandle.argtypes = [wintypes.HANDLE, wintypes.LPVOID]
+    kernel32.GetFileInformationByHandle.restype = wintypes.BOOL
+    information = _ByHandleFileInformation()
+    if not kernel32.GetFileInformationByHandle(wintypes.HANDLE(handle), ctypes.byref(information)):
+        raise ctypes.WinError(ctypes.get_last_error())
+    return information
+
+
+def _open_locked_windows_directory(path: Path) -> _LockedWindowsDirectory:
+    """Lock/recheck accidental or injected races; not a same-SID hostile-process boundary."""
+    if not _coverage_windows_available():
+        raise ControllerError("development coverage requires Windows directory locking")
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.CreateFileW.argtypes = [
+        wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, wintypes.LPVOID,
+        wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE,
+    ]
+    kernel32.CreateFileW.restype = wintypes.HANDLE
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel32.CloseHandle.restype = wintypes.BOOL
+    handle = kernel32.CreateFileW(
+        str(path),
+        0x0080,
+        0x00000001 | 0x00000002,
+        None,
+        3,
+        0x00200000 | 0x02000000,
+        None,
+    )
+    invalid = ctypes.c_void_p(-1).value
+    handle_value = handle if isinstance(handle, int) else handle.value
+    if handle_value in (None, invalid):
+        error = ctypes.WinError(ctypes.get_last_error())
+        raise ControllerError("coverage directory handle open failed") from error
+    try:
+        information = _windows_directory_information(kernel32, handle_value)
+        if not information.file_attributes & stat.FILE_ATTRIBUTE_DIRECTORY:
+            raise ControllerError("coverage locked path is not a directory")
+        if information.file_attributes & stat.FILE_ATTRIBUTE_REPARSE_POINT:
+            raise ControllerError("coverage locked directory is a reparse point")
+        final_path = _windows_final_path(kernel32, handle_value)
+        if os.path.normcase(str(final_path)) != os.path.normcase(os.path.abspath(path)):
+            raise ControllerError("coverage locked directory resolves to another path")
+        return _LockedWindowsDirectory(
+            path, handle_value, information.volume_serial,
+            (information.file_index_high << 32) | information.file_index_low,
+        )
+    except BaseException:
+        kernel32.CloseHandle(wintypes.HANDLE(handle_value))
+        raise
+
+
+def _validate_locked_coverage_directory(locked: _LockedWindowsDirectory) -> None:
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    try:
+        information = _windows_directory_information(kernel32, locked.handle)
+        final_path = _windows_final_path(kernel32, locked.handle)
+    except OSError as exc:
+        raise ControllerError("coverage locked directory became unreadable") from exc
+    identity = (
+        information.volume_serial,
+        (information.file_index_high << 32) | information.file_index_low,
+    )
+    if identity != (locked.volume_serial, locked.file_index):
+        raise ControllerError("coverage locked directory identity changed")
+    if (
+        not information.file_attributes & stat.FILE_ATTRIBUTE_DIRECTORY
+        or information.file_attributes & stat.FILE_ATTRIBUTE_REPARSE_POINT
+        or os.path.normcase(str(final_path)) != os.path.normcase(os.path.abspath(locked.path))
+        or not locked.path.is_dir()
+        or _is_reparse(locked.path)
+    ):
+        raise ControllerError("coverage locked directory path changed")
+    with _open_locked_windows_directory(locked.path) as current:
+        if (current.volume_serial, current.file_index) != (locked.volume_serial, locked.file_index):
+            raise ControllerError("coverage locked directory path identity changed")
+
+
+def _verify_coverage_attempt_basetemp(evidence_root: Path, basetemp: Path, *, created: bool) -> None:
+    """Keep high-entropy pytest scratch lexically bound and reject reparse state."""
+    if (
+        basetemp.parent != evidence_root
+        or re.fullmatch(r"pytest-basetemp-[0-9a-f]{32}", basetemp.name) is None
+        or str(basetemp) != os.path.abspath(basetemp)
+    ):
         raise ControllerError("coverage basetemp is not bound to the evidence attempt")
     try:
         basetemp.lstat()
@@ -981,7 +1093,28 @@ def _verify_coverage_attempt_basetemp(evidence_root: Path, basetemp: Path) -> No
     except OSError as exc:
         raise ControllerError("coverage basetemp state is unreadable") from exc
     else:
-        raise ControllerError("coverage basetemp must remain absent before pytest")
+        if not created:
+            raise ControllerError("coverage basetemp must remain absent before pytest")
+        if not basetemp.is_dir() or _is_reparse(basetemp) or basetemp.resolve().parent != evidence_root:
+            raise ControllerError("coverage basetemp result is not a retained private directory")
+        return
+    if created:
+        raise ControllerError("coverage basetemp result is missing")
+
+
+def _validate_coverage_regular_child(evidence_root: Path, path: Path, name: str) -> None:
+    if path != evidence_root / name:
+        raise ControllerError("coverage retained path is not bound to the evidence attempt")
+    try:
+        information = path.lstat()
+    except OSError as exc:
+        raise ControllerError("coverage retained file is missing or unreadable") from exc
+    if not stat.S_ISREG(information.st_mode) or _is_reparse(path) or path.resolve().parent != evidence_root:
+        raise ControllerError("coverage retained output is not a regular bound file")
+
+
+def _validate_coverage_raw_path(evidence_root: Path, raw_path: Path) -> None:
+    _validate_coverage_regular_child(evidence_root, raw_path, "coverage-raw.json")
 
 
 def _validate_coverage_pytest_tokens(
@@ -1184,25 +1317,59 @@ def run_dev_coverage(
         raise ControllerError("dev coverage rejects inherited coverage variables")
     basetemp_index = validated.index("--basetemp") if "--basetemp" in validated else None
     _validate_coverage_attempt_location(repo, evidence_root)
-    evidence = prepare_evidence_root(evidence_root)
+    with _open_locked_windows_directory(Path(r"C:\tmp")) as temporary_lock:
+        _validate_locked_coverage_directory(temporary_lock)
+        _validate_coverage_attempt_location(repo, evidence_root)
+        evidence = prepare_evidence_root(evidence_root)
+        with _open_locked_windows_directory(evidence) as evidence_lock:
+            return _run_locked_dev_coverage(
+                repo, task_id, evidence, validated, changed, basetemp_index,
+                temporary_lock, evidence_lock, runner,
+            )
+
+
+def _run_locked_dev_coverage(
+    repo: Path,
+    task_id: str,
+    evidence: Path,
+    validated: list[str],
+    changed: list[str],
+    basetemp_index: int | None,
+    temporary_lock: _LockedWindowsDirectory,
+    evidence_lock: _LockedWindowsDirectory,
+    runner: Callable[..., int],
+) -> dict[str, object]:
+    _validate_locked_coverage_directory(temporary_lock)
+    _validate_locked_coverage_directory(evidence_lock)
     basetemp: Path | None = None
-    attempt_identity = _verify_coverage_attempt(repo, evidence)
     if basetemp_index is not None:
-        basetemp = evidence / "pytest-basetemp"
+        basetemp = evidence / f"pytest-basetemp-{secrets.token_hex(16)}"
         validated[basetemp_index + 1] = str(basetemp)
-        _verify_coverage_attempt_basetemp(evidence, basetemp)
+        _verify_coverage_attempt_basetemp(evidence, basetemp, created=False)
     raw_path = evidence / "coverage-raw.json"
     argv = [sys.executable, "-m", "pytest", *validated, "--cov-branch", f"--cov-report=json:{raw_path}"]
     if basetemp is not None:
-        _verify_coverage_attempt_basetemp(evidence, basetemp)
-    _verify_coverage_attempt(repo, evidence, attempt_identity)
+        _verify_coverage_attempt_basetemp(evidence, basetemp, created=False)
+    _validate_locked_coverage_directory(temporary_lock)
+    _validate_locked_coverage_directory(evidence_lock)
     return_code = runner(argv, cwd=repo, env=_safe_controller_env())
-    if return_code != 0 or not raw_path.is_file():
+    _validate_locked_coverage_directory(temporary_lock)
+    _validate_locked_coverage_directory(evidence_lock)
+    if basetemp is not None:
+        _verify_coverage_attempt_basetemp(evidence, basetemp, created=True)
+    if return_code != 0:
         raise ControllerError("coverage subprocess failed")
-    raw = _validate_coverage_v7(_load_json(raw_path))
+    _validate_coverage_raw_path(evidence, raw_path)
+    _validate_locked_coverage_directory(temporary_lock)
+    _validate_locked_coverage_directory(evidence_lock)
+    raw = _load_json(raw_path)
+    _validate_locked_coverage_directory(temporary_lock)
+    _validate_locked_coverage_directory(evidence_lock)
+    _validate_coverage_raw_path(evidence, raw_path)
+    parsed = _validate_coverage_v7(raw)
     rows: dict[str, tuple[int, int]] = {}
     folded: set[str] = set()
-    for raw_path_name, details in raw["files"].items():
+    for raw_path_name, details in parsed["files"].items():
         if not isinstance(raw_path_name, str) or not isinstance(details, dict):
             raise ControllerError("coverage row is invalid")
         path = Path(raw_path_name)
@@ -1232,7 +1399,23 @@ def run_dev_coverage(
             raise ControllerError("changed product file is below 90% branch coverage")
         normalized.append({"covered_branches": covered, "num_branches": total, "path": path, "percent": percent})
     result = {"schema": "stm32-dev-branch-coverage/1", "task_id": task_id, "files": normalized}
-    (evidence / "branch-coverage.json").write_bytes(canonical_json_bytes(result))
+    result_path = evidence / "branch-coverage.json"
+    _validate_locked_coverage_directory(evidence_lock)
+    try:
+        result_path.lstat()
+    except FileNotFoundError:
+        pass
+    except OSError as exc:
+        raise ControllerError("coverage normalized result path is unreadable") from exc
+    else:
+        raise ControllerError("coverage normalized result path is not new")
+    try:
+        with result_path.open("xb") as stream:
+            stream.write(canonical_json_bytes(result))
+    except OSError as exc:
+        raise ControllerError("coverage normalized result create-new write failed") from exc
+    _validate_coverage_regular_child(evidence, result_path, "branch-coverage.json")
+    _validate_locked_coverage_directory(evidence_lock)
     return result
 
 
