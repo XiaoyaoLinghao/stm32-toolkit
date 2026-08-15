@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import builtins
 import ctypes
 import hashlib
 import importlib
@@ -17,6 +18,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import types
 import xml.etree.ElementTree as ElementTree
@@ -25,7 +27,7 @@ from ctypes import wintypes
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Callable, Mapping, Protocol, Sequence
+from typing import Callable, IO, Mapping, Protocol, Sequence
 
 KNOWN_MODULES = {"STM32TK-0601", "STM32TK-0602", "STM32TK-0603"}
 COVERAGE_TASK_ID = re.compile(r"(?P<module>STM32TK-[0-9]{4})-T(?:0[1-9]|[1-9][0-9])")
@@ -44,6 +46,15 @@ COVERAGE_SUMMARY_EXTENDED_KEYS = COVERAGE_SUMMARY_BASE_KEYS | {
     "percent_branches_covered", "percent_branches_covered_display",
 }
 FROZEN_T12_BASETEMP_TOKEN = r"C:\tmp\stm32tk-0603-package-312"
+_NATIVE_PIPE_ENV = "STM32TK_CONTROLLER_NATIVE_PIPE"
+_ORIGINAL_OPEN = builtins.open
+_TRUSTED_PYTEST_BOOTSTRAP = (
+    "import sys;"
+    "sys.path.insert(0,sys.argv.pop(1));"
+    "import run_0600_gates as plugin;"
+    "import pytest;"
+    "raise SystemExit(pytest.main(sys.argv[1:],plugins=[plugin]))"
+)
 HEX40 = re.compile(r"^[0-9a-f]{40}$")
 HEX64 = re.compile(r"^[0-9a-f]{64}$")
 UUID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$")
@@ -644,6 +655,12 @@ def normalize_native_artifact(
             return member
 
         return canonical_json_bytes(walk(report))
+    if framework == "ctest-text":
+        try:
+            value = raw.decode("utf-8")
+        except UnicodeError as exc:
+            raise ControllerError("CTest native text is invalid UTF-8") from exc
+        return _normalize_known_path(value, repository_root, evidence_root).encode("utf-8")
     if framework not in {"pytest-junit", "ctest-junit"}:
         raise ControllerError("native artifact normalization framework is unsupported")
     try:
@@ -756,6 +773,53 @@ def _parse_junit_node_outcomes(raw: bytes, framework: str) -> tuple[tuple[str, s
             or skipped + disabled != suite_outcomes.count("skipped")
         ):
             raise ControllerError(f"{framework} native summary counts contradict nodes")
+    return result
+
+
+def _parse_ctest_text_node_outcomes(raw: bytes) -> tuple[tuple[str, str], ...]:
+    try:
+        lines = raw.decode("utf-8").splitlines()
+    except UnicodeError as exc:
+        raise ControllerError("ctest-text native report is invalid UTF-8") from exc
+    row = re.compile(
+        r"^\s*(?P<ordinal>[1-9][0-9]*)/(?P<total>[1-9][0-9]*) Test\s+#(?P<number>[1-9][0-9]*): "
+        r"(?P<name>.+?) \.{3,}\s+(?P<status>Passed|Not Run|Skipped|\*\*\*Failed)\s+"
+        r"(?P<seconds>[0-9]+(?:\.[0-9]+)?) sec$"
+    )
+    outcomes: list[tuple[str, str]] = []
+    totals: set[int] = set()
+    ordinals: list[int] = []
+    for line in lines:
+        match = row.fullmatch(line)
+        if match is None:
+            continue
+        ordinals.append(int(match.group("ordinal")))
+        totals.add(int(match.group("total")))
+        status = match.group("status")
+        outcomes.append((
+            _node_text(match.group("name"), "name"),
+            "failed" if status == "***Failed" else "skipped" if status in {"Not Run", "Skipped"} else "passed",
+        ))
+    result = _unique_native_outcomes(outcomes)
+    if totals != {len(result)} or ordinals != list(range(1, len(result) + 1)):
+        raise ControllerError("ctest-text native rows contradict inventory")
+    summaries = [
+        re.fullmatch(r"(?P<percent>[0-9]+)% tests passed, (?P<failed>[0-9]+) tests failed out of (?P<total>[0-9]+)", line)
+        for line in lines
+    ]
+    summaries = [item for item in summaries if item is not None]
+    if len(summaries) != 1:
+        raise ControllerError("ctest-text native summary is missing or duplicated")
+    summary = summaries[0]
+    failed = sum(outcome == "failed" for _, outcome in result)
+    total = len(result)
+    expected_percent = 0 if total == 0 else (total - failed) * 100 // total
+    if (
+        int(summary.group("failed")) != failed
+        or int(summary.group("total")) != total
+        or int(summary.group("percent")) != expected_percent
+    ):
+        raise ControllerError("ctest-text native summary counts contradict nodes")
     return result
 
 
@@ -890,6 +954,10 @@ def parse_native_node_outcomes(
         outcomes = _parse_junit_node_outcomes(raw, framework)
         _validate_native_exit(framework, outcomes, exit_code)
         return outcomes
+    if framework == "ctest-text":
+        outcomes = _parse_ctest_text_node_outcomes(raw)
+        _validate_native_exit(framework, outcomes, exit_code)
+        return outcomes
     if framework == "vitest-json":
         outcomes = _parse_vitest_node_outcomes(raw)
         _validate_native_exit(framework, outcomes, exit_code)
@@ -917,7 +985,7 @@ def native_node_framework(argv: Sequence[str]) -> str:
     if executable in {"ctest", "ctest.exe"}:
         if "--output-junit" in lowered:
             raise ControllerError("CTest native JUnit sink must be controller-owned")
-        return "ctest-junit"
+        return "ctest-text"
     if any("vitest" in token for token in lowered):
         if any(token.startswith("--reporter") for token in lowered):
             raise ControllerError("Vitest native JSON reporter must be controller-owned")
@@ -932,27 +1000,224 @@ def native_node_framework(argv: Sequence[str]) -> str:
     raise ControllerError("gate executable has no supported native node outcome adapter")
 
 
-def _native_report_argv(argv: Sequence[str], gate_root: Path) -> tuple[str, tuple[str, ...], Path | None]:
+class _WindowsNativePipeSink:
+    """One inbound byte stream with no linkable NTFS directory entry."""
+
+    def __init__(self) -> None:
+        if os.name != "nt":
+            raise ControllerError("native report pipe requires Windows")
+        self.name = rf"\\.\pipe\stm32tk-0600-{secrets.token_hex(16)}"
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.CreateNamedPipeW.argtypes = [
+            wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, wintypes.DWORD,
+            wintypes.DWORD, wintypes.DWORD, wintypes.DWORD, wintypes.LPVOID,
+        ]
+        kernel32.CreateNamedPipeW.restype = wintypes.HANDLE
+        handle = kernel32.CreateNamedPipeW(
+            self.name,
+            0x00000001,  # PIPE_ACCESS_INBOUND
+            0x00000000,  # byte mode, blocking
+            1, 0, 65536, 0, None,
+        )
+        invalid = ctypes.c_void_p(-1).value
+        handle_value = handle if isinstance(handle, int) else handle.value
+        if handle_value in (None, invalid):
+            raise ControllerError("native report pipe create failed") from ctypes.WinError(ctypes.get_last_error())
+        self._handle = handle_value
+        self._data = bytearray()
+        self._error: BaseException | None = None
+        self._finishing = threading.Event()
+        self._thread = threading.Thread(target=self._read, name="stm32tk-native-pipe", daemon=True)
+        self._thread.start()
+
+    def _read(self) -> None:
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.ConnectNamedPipe.argtypes = [wintypes.HANDLE, wintypes.LPVOID]
+        kernel32.ConnectNamedPipe.restype = wintypes.BOOL
+        kernel32.ReadFile.argtypes = [
+            wintypes.HANDLE, wintypes.LPVOID, wintypes.DWORD,
+            ctypes.POINTER(wintypes.DWORD), wintypes.LPVOID,
+        ]
+        kernel32.ReadFile.restype = wintypes.BOOL
+        kernel32.DisconnectNamedPipe.argtypes = [wintypes.HANDLE]
+        kernel32.DisconnectNamedPipe.restype = wintypes.BOOL
+        try:
+            while True:
+                if not kernel32.ConnectNamedPipe(wintypes.HANDLE(self._handle), None):
+                    error = ctypes.get_last_error()
+                    if error != 535:  # ERROR_PIPE_CONNECTED
+                        raise ctypes.WinError(error)
+                connection = bytearray()
+                while True:
+                    buffer = ctypes.create_string_buffer(65536)
+                    read = wintypes.DWORD()
+                    if not kernel32.ReadFile(
+                        wintypes.HANDLE(self._handle), buffer, len(buffer), ctypes.byref(read), None,
+                    ):
+                        error = ctypes.get_last_error()
+                        if error in {109, 232}:  # broken/no data after writer closes
+                            break
+                        raise ctypes.WinError(error)
+                    if read.value == 0:
+                        break
+                    connection.extend(buffer.raw[:read.value])
+                    if len(connection) > 64 * 1024 * 1024:
+                        raise ControllerError("native report pipe exceeded size limit")
+                if connection:
+                    self._data.extend(connection)
+                    break
+                if self._finishing.is_set():
+                    break
+                kernel32.DisconnectNamedPipe(wintypes.HANDLE(self._handle))
+        except BaseException as exc:
+            self._error = exc
+
+    def finish(self) -> bytes:
+        self._finishing.set()
+        self._thread.join(timeout=0.25)
+        if self._thread.is_alive():
+            # If the child never connected, connect and immediately close a writer so
+            # ConnectNamedPipe cannot strand the controller.
+            try:
+                writer = _open_windows_native_pipe_writer(self.name, "wb")
+                writer.close()
+            except (OSError, ControllerError):
+                pass
+        self._thread.join(timeout=10)
+        if self._thread.is_alive():
+            self.close()
+            raise ControllerError("native report pipe did not finish")
+        if self._error is not None:
+            raise ControllerError("native report pipe read failed") from self._error
+        return bytes(self._data)
+
+    def close(self) -> None:
+        if self._handle is not None:
+            handle, self._handle = self._handle, None
+            _close_windows_handle(handle)
+
+    def __enter__(self) -> "_WindowsNativePipeSink":
+        return self
+
+    def __exit__(self, *_exc: object) -> None:
+        if self._thread.is_alive():
+            try:
+                self.finish()
+            except ControllerError:
+                pass
+        self.close()
+
+
+def _open_windows_native_pipe_writer(
+    name: str, mode: str = "w", *, encoding: str | None = None,
+    errors: str | None = None, newline: str | None = None,
+) -> IO[object]:
+    """Open only a controller namespace pipe as a Python file object."""
+    prefix = r"\\.\pipe\stm32tk-0600-"
+    if not name.startswith(prefix) or re.fullmatch(r"[0-9a-f]{32}", name[len(prefix):]) is None:
+        raise ControllerError("native report pipe name is invalid")
+    if mode not in {"w", "wb", "wt"}:
+        raise ControllerError("native report pipe mode is invalid")
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.CreateFileW.argtypes = [
+        wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, wintypes.LPVOID,
+        wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE,
+    ]
+    kernel32.CreateFileW.restype = wintypes.HANDLE
+    kernel32.WaitNamedPipeW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD]
+    kernel32.WaitNamedPipeW.restype = wintypes.BOOL
+    handle = kernel32.CreateFileW(name, 0x40000000, 0, None, 3, 0, None)
+    invalid = ctypes.c_void_p(-1).value
+    handle_value = handle if isinstance(handle, int) else handle.value
+    if handle_value in (None, invalid) and ctypes.get_last_error() == 231:
+        kernel32.WaitNamedPipeW(name, 5000)
+        handle = kernel32.CreateFileW(name, 0x40000000, 0, None, 3, 0, None)
+        handle_value = handle if isinstance(handle, int) else handle.value
+    if handle_value in (None, invalid):
+        raise ControllerError("native report pipe writer open failed") from ctypes.WinError(ctypes.get_last_error())
+    import msvcrt
+    try:
+        fd = msvcrt.open_osfhandle(handle_value, os.O_WRONLY | (os.O_BINARY if "b" in mode else os.O_TEXT))
+    except BaseException:
+        _close_windows_handle(handle_value)
+        raise
+    try:
+        if "b" in mode:
+            return _ORIGINAL_OPEN(fd, mode, closefd=True)
+        return _ORIGINAL_OPEN(fd, mode, encoding=encoding or "utf-8", errors=errors, newline=newline, closefd=True)
+    except BaseException:
+        os.close(fd)
+        raise
+
+
+def pytest_configure(config: object) -> None:
+    """Trusted child adapter: route the exact controller sink through Win32."""
+    sink = os.environ.get(_NATIVE_PIPE_ENV)
+    if sink is None:
+        return
+    original = builtins.open
+
+    def pipe_open(file: object, mode: str = "r", buffering: int = -1,
+                  encoding: str | None = None, errors: str | None = None,
+                  newline: str | None = None, closefd: bool = True,
+                  opener: object | None = None) -> IO[object]:
+        try:
+            value = os.fspath(file)
+        except TypeError:
+            value = None
+        if value == sink:
+            if buffering != -1 or not closefd or opener is not None:
+                raise ControllerError("native report pipe open options are invalid")
+            return _open_windows_native_pipe_writer(
+                sink, mode, encoding=encoding, errors=errors, newline=newline,
+            )
+        return original(file, mode, buffering, encoding, errors, newline, closefd, opener)
+
+    setattr(config, "_stm32tk_original_open", original)
+    builtins.open = pipe_open
+
+
+def pytest_unconfigure(config: object) -> None:
+    original = getattr(config, "_stm32tk_original_open", None)
+    if original is not None:
+        builtins.open = original
+
+
+def _native_report_argv(argv: Sequence[str], sink: str) -> tuple[str, tuple[str, ...], str | None]:
     """Append the single native result sink without changing the frozen product argv."""
     framework = native_node_framework(argv)
     if framework == "pytest-junit":
-        report = gate_root / "native-results.xml"
-        return framework, (f"--junitxml={report}",), report
-    if framework == "ctest-junit":
-        report = gate_root / "native-results.xml"
-        return framework, ("--output-junit", str(report)), report
+        return framework, (f"--junitxml={sink}",), sink
+    if framework == "ctest-text":
+        return framework, (), None
     return framework, ("--reporter=json",), None
 
 
-def _portable_native_stdout(stdout: bytes, native_report: Path) -> bytes:
+def _trusted_pytest_argv(argv: Sequence[str]) -> list[str]:
+    lowered = tuple(token.casefold() for token in argv)
+    positions = [
+        index for index in range(len(lowered) - 1)
+        if lowered[index:index + 2] == ("-m", "pytest")
+    ]
+    if len(positions) != 1:
+        raise ControllerError("trusted pytest adapter requires one -m pytest invocation")
+    index = positions[0]
+    return [
+        *argv[:index], "-I", "-c", _TRUSTED_PYTEST_BOOTSTRAP,
+        str(Path(__file__).resolve().parent), *argv[index + 2:],
+    ]
+
+
+def _portable_native_stdout(stdout: bytes, native_report: str) -> bytes:
     """Redact exactly the controller-created native report pathname from runner chatter."""
-    if not native_report.is_absolute() or native_report.name not in {"native-results.xml", "native-results.json"}:
+    prefix = r"\\.\pipe\stm32tk-0600-"
+    if not native_report.startswith(prefix) or re.fullmatch(r"[0-9a-f]{32}", native_report[len(prefix):]) is None:
         raise ControllerError("native report path is not controller-owned")
     try:
-        needle = str(native_report).encode("utf-8")
+        needle = native_report.encode("utf-8")
     except UnicodeError as exc:
         raise ControllerError("native report path cannot be encoded") from exc
-    return stdout.replace(needle, f"<EVIDENCE_ROOT>/{native_report.name}".encode("ascii"))
+    return stdout.replace(needle, b"<EVIDENCE_ROOT>/native-results.xml")
 
 
 def _terminate_process_tree(process: subprocess.Popen[bytes]) -> None:
@@ -985,47 +1250,28 @@ def execute_gate_process(
         raise ControllerError("executor evidence root is invalid")
     gate_root = evidence_root / gate.gate_id
     try:
-        framework, native_tokens, native_report_path = _native_report_argv(gate.argv, gate_root)
+        framework = native_node_framework(gate.argv)
     except ControllerError:
         if gate.expected_nodes:
             raise
-        framework, native_tokens, native_report_path = "opaque", (), None
+        framework = "opaque"
     native_name = (
         None if framework == "opaque" else
-        "native-results.xml" if framework in {"pytest-junit", "ctest-junit"}
+        "native-results.xml" if framework == "pytest-junit" else
+        "native-results.txt" if framework == "ctest-text"
         else "native-results.json"
     )
     with ExitStack() as stack:
         evidence_lock = stack.enter_context(_open_locked_windows_directory(evidence_root))
         stack.enter_context(_create_coverage_lock_sentinel(evidence_root))
         _validate_locked_coverage_directory(evidence_lock)
-        try:
-            gate_root.mkdir()
-        except OSError as exc:
-            raise ControllerError("gate evidence directory must be a new path") from exc
-        if after_gate_root_create is not None:
-            after_gate_root_create(gate_root)
-        try:
-            gate_lock = stack.enter_context(_open_locked_windows_directory(gate_root))
-            stack.enter_context(_create_coverage_lock_sentinel(gate_root))
-        except (OSError, ControllerError) as exc:
-            raise ControllerError("gate evidence directory is a reparse point or changed identity") from exc
-        artifact_names = ["result.json", "stderr.log", "stdout.log"]
-        if native_name is not None:
-            artifact_names.append(native_name)
-        artifacts: dict[str, _LockedWindowsFile] = {}
-        for name in artifact_names:
-            try:
-                artifacts[name] = stack.enter_context(_open_locked_windows_file(
-                    gate_root / name,
-                    create_new=True,
-                    write=True,
-                    share_write=(name == "native-results.xml"),
-                ))
-            except (OSError, ControllerError) as exc:
-                raise ControllerError("gate evidence artifact create-new failed") from exc
-        _validate_locked_coverage_directory(evidence_lock)
-        _validate_locked_coverage_directory(gate_lock)
+        report_pipe = stack.enter_context(_WindowsNativePipeSink()) if framework == "pytest-junit" else None
+        if report_pipe is not None:
+            framework, native_tokens, native_report_path = _native_report_argv(gate.argv, report_pipe.name)
+        elif framework == "opaque":
+            native_tokens, native_report_path = (), None
+        else:
+            framework, native_tokens, native_report_path = _native_report_argv(gate.argv, "")
         base_environment = _safe_controller_env()
         child_env = {
             key: value
@@ -1035,10 +1281,15 @@ def execute_gate_process(
         for key, value in base_environment.items():
             child_env.setdefault(key, value)
         child_env["STM32TK_TEST_SEED"] = f"stm32tk-0600:{gate.gate_id}"
+        if report_pipe is not None and framework == "pytest-junit":
+            child_env[_NATIVE_PIPE_ENV] = report_pipe.name
+        process_argv = [*gate.argv, *native_tokens]
+        if framework == "pytest-junit":
+            process_argv = _trusted_pytest_argv(process_argv)
         creation_flags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
         started = time.monotonic_ns()
         process = subprocess.Popen(
-            [*gate.argv, *native_tokens],
+            process_argv,
             cwd=gate.cwd,
             env=child_env,
             stdin=subprocess.DEVNULL,
@@ -1058,17 +1309,16 @@ def execute_gate_process(
             exit_code = -1
         duration_ms = max(0, (time.monotonic_ns() - started) // 1_000_000)
         _validate_locked_coverage_directory(evidence_lock)
-        _validate_locked_coverage_directory(gate_lock)
         if framework == "opaque":
             native_report = b""
             outcomes = ()
-        elif native_report_path is None:
+        elif report_pipe is None:
             native_report = stdout
         else:
-            native_report = _windows_read_locked_file(artifacts["native-results.xml"])
+            native_report = report_pipe.finish()
             if not native_report:
                 raise ControllerError("native runner report was not created")
-            stdout = _portable_native_stdout(stdout, native_report_path)
+            stdout = _portable_native_stdout(stdout, report_pipe.name)
         if framework != "opaque":
             native_report = normalize_native_artifact(
                 framework,
@@ -1099,6 +1349,25 @@ def execute_gate_process(
         }
         if native_name is not None:
             payloads[native_name] = native_report
+        try:
+            gate_root.mkdir()
+        except OSError as exc:
+            raise ControllerError("gate evidence directory must be a new path") from exc
+        if after_gate_root_create is not None:
+            after_gate_root_create(gate_root)
+        try:
+            gate_lock = stack.enter_context(_open_locked_windows_directory(gate_root))
+            stack.enter_context(_create_coverage_lock_sentinel(gate_root))
+        except (OSError, ControllerError) as exc:
+            raise ControllerError("gate evidence directory is a reparse point or changed identity") from exc
+        artifacts: dict[str, _LockedWindowsFile] = {}
+        for name in payloads:
+            try:
+                artifacts[name] = stack.enter_context(_open_locked_windows_file(
+                    gate_root / name, create_new=True, write=True,
+                ))
+            except (OSError, ControllerError) as exc:
+                raise ControllerError("gate evidence artifact create-new failed") from exc
         retained: list[dict[str, object]] = []
         for name in sorted(payloads, key=lambda item: item.encode("utf-8")):
             data = payloads[name]
@@ -1722,6 +1991,10 @@ def _windows_write_locked_file(locked: _LockedWindowsFile, data: bytes) -> None:
 
 
 def _load_locked_coverage_json(locked: _LockedWindowsFile) -> object:
+    return _load_coverage_json_bytes(_windows_read_locked_file(locked))
+
+
+def _load_coverage_json_bytes(raw: bytes) -> object:
     def reject_duplicate_keys(pairs: list[tuple[str, object]]) -> dict[str, object]:
         value: dict[str, object] = {}
         for key, item in pairs:
@@ -1730,7 +2003,6 @@ def _load_locked_coverage_json(locked: _LockedWindowsFile) -> object:
             value[key] = item
         return value
 
-    raw = _windows_read_locked_file(locked)
     try:
         return json.loads(raw.decode("utf-8"), object_pairs_hook=reject_duplicate_keys)
     except (UnicodeError, json.JSONDecodeError) as exc:
@@ -2079,11 +2351,10 @@ def _run_locked_dev_coverage(
         basetemp = evidence / f"pytest-basetemp-{secrets.token_hex(16)}"
         validated[basetemp_index + 1] = str(basetemp)
         _verify_coverage_attempt_basetemp(evidence, basetemp, created=False)
-    raw_path = evidence / "coverage-raw.json"
-    with _open_locked_windows_file(raw_path, create_new=True, write=True) as raw_lock:
+    with _WindowsNativePipeSink() as raw_pipe:
         return _complete_locked_dev_coverage(
             repo, task_id, evidence, validated, changed, basetemp,
-            raw_path, raw_lock, temporary_lock, evidence_lock, runner,
+            raw_pipe, temporary_lock, evidence_lock, runner,
         )
 
 
@@ -2094,30 +2365,40 @@ def _complete_locked_dev_coverage(
     validated: list[str],
     changed: list[str],
     basetemp: Path | None,
-    raw_path: Path,
-    raw_lock: _LockedWindowsFile,
+    raw_pipe: _WindowsNativePipeSink,
     temporary_lock: _LockedWindowsDirectory,
     evidence_lock: _LockedWindowsDirectory,
     runner: Callable[..., int],
 ) -> dict[str, object]:
     argv = [
         sys.executable, "-m", "pytest", *validated,
-        "-p", "pytest_cov", "--cov-branch", f"--cov-report=json:{raw_path}",
+        "-p", "pytest_cov", "--cov-branch",
+        f"--cov-report=json:{raw_pipe.name}",
     ]
     if basetemp is not None:
         _verify_coverage_attempt_basetemp(evidence, basetemp, created=False)
     _validate_locked_coverage_directory(temporary_lock)
     _validate_locked_coverage_directory(evidence_lock)
-    return_code = runner(argv, cwd=repo, env=_safe_controller_env())
+    child_env = _safe_controller_env()
+    child_env[_NATIVE_PIPE_ENV] = raw_pipe.name
+    return_code = runner(_trusted_pytest_argv(argv), cwd=repo, env=child_env)
+    raw_bytes = raw_pipe.finish()
     _validate_locked_coverage_directory(temporary_lock)
     _validate_locked_coverage_directory(evidence_lock)
     if basetemp is not None:
         _verify_coverage_attempt_basetemp(evidence, basetemp, created=True)
+    raw_path = evidence / "coverage-raw.json"
+    try:
+        with _open_locked_windows_file(raw_path, create_new=True, write=True) as raw_lock:
+            _windows_write_locked_file(raw_lock, raw_bytes)
+            _validate_locked_coverage_file_path(raw_lock)
+    except ControllerError as exc:
+        raise ControllerError("coverage raw result create-new write failed") from exc
     if return_code != 0:
         raise ControllerError("coverage subprocess failed")
     _validate_locked_coverage_directory(temporary_lock)
     _validate_locked_coverage_directory(evidence_lock)
-    raw = _load_locked_coverage_json(raw_lock)
+    raw = _load_coverage_json_bytes(raw_bytes)
     _validate_locked_coverage_directory(temporary_lock)
     _validate_locked_coverage_directory(evidence_lock)
     _validate_coverage_raw_path(evidence, raw_path)

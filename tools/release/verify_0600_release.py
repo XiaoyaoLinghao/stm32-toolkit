@@ -2931,7 +2931,7 @@ def _verify_terminal_metadata(
         expected = []
     else:
         framework = native_node_framework(family.command_argv)
-        extension = "xml" if framework in {"pytest-junit", "ctest-junit"} else "json"
+        extension = "xml" if framework in {"pytest-junit", "ctest-junit"} else "txt" if framework == "ctest-text" else "json"
         expected = [
         f"{family.family_id}/native-results.{extension}",
         f"{family.family_id}/result.json",
@@ -3097,7 +3097,7 @@ def _verify_terminal_result(
         )
         if not unexecuted:
             framework = native_node_framework(family.command_argv)
-            extension = "xml" if framework in {"pytest-junit", "ctest-junit"} else "json"
+            extension = "xml" if framework in {"pytest-junit", "ctest-junit"} else "txt" if framework == "ctest-text" else "json"
             native_path = evidence_root / "gates" / family.family_id / f"native-results.{extension}"
             if not _regular_file(native_path):
                 raise VerificationError("terminal retained native result is missing or unsafe")

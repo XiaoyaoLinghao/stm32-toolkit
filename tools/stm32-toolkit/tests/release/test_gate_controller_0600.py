@@ -84,6 +84,14 @@ def _sha(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
+def _write_coverage_pipe(argv: list[str], data: str | bytes) -> None:
+    token = next(item for item in argv if item.startswith("--cov-report=json:"))
+    sink = token.removeprefix("--cov-report=json:")
+    mode = "wb" if isinstance(data, bytes) else "w"
+    with gates._open_windows_native_pipe_writer(sink, mode, encoding="utf-8") as stream:
+        stream.write(data)
+
+
 def _native_pytest_command(tmp_path: Path, node_id: str, outcome: str) -> tuple[str, ...]:
     """Build a real pytest node fixture; tests must never emit controller JSONL."""
     _, separator, function = node_id.rpartition("::")
@@ -415,10 +423,32 @@ def test_real_gate_executor_uses_argv_timeout_and_retains_one_snapshot(tmp_path:
     ]
 
 
-def test_native_executor_precreates_and_locks_all_four_artifacts_against_external_write(
+def test_pytest_pipe_adapter_cannot_be_shadowed_from_product_cwd(tmp_path: Path) -> None:
+    """The trusted plugin is imported under isolated bootstrap, never from product cwd."""
+    marker = tmp_path / "shadow-imported.txt"
+    (tmp_path / "run_0600_gates.py").write_text(
+        f"from pathlib import Path\nPath({str(marker)!r}).write_text('bad')\n",
+        encoding="utf-8",
+    )
+    test_file = tmp_path / "test_shadow.py"
+    test_file.write_text("def test_ok(): assert True\n", encoding="utf-8")
+    evidence = tmp_path / "shadow-evidence"
+    evidence.mkdir()
+    gate = GateRequest(
+        "SHADOW", (sys.executable, "-m", "pytest", str(test_file), "-q", "-p", "no:cacheprovider"),
+        tmp_path, 30, ("test_shadow::test_ok",),
+    )
+
+    output = execute_gate_process(gate, {}, evidence_root=evidence)
+
+    assert output.exit_code == 0
+    assert not marker.exists()
+
+
+def test_native_executor_publishes_all_four_artifacts_only_after_child_exit(
     tmp_path: Path,
 ) -> None:
-    """The product child cannot hard-link any retained artifact to an external victim."""
+    """The product child never sees a final artifact directory entry it can hard-link."""
     evidence = tmp_path / "native-locked-evidence"
     evidence.mkdir()
     victims = [tmp_path / f"victim-{index}.txt" for index in range(4)]
@@ -434,22 +464,16 @@ def test_native_executor_precreates_and_locks_all_four_artifacts_against_externa
     script.write_text(
         "import os\nfrom pathlib import Path\n\n"
         "def test_attack(request):\n"
-        "    gate_root = Path(request.config.option.xmlpath).parent\n"
+        f"    gate_root = Path({str(evidence / 'LOCKED')!r})\n"
         f"    pairs = {[(name, str(victim)) for name, victim in pairs]!r}\n"
+        "    assert not gate_root.exists()\n"
         "    for name, victim in pairs:\n"
         "        try:\n"
         "            os.link(victim, gate_root / name)\n"
-        "        except FileExistsError:\n"
+        "        except FileNotFoundError:\n"
         "            pass\n"
         "        else:\n"
-        "            raise AssertionError(f'artifact was not create-new: {name}')\n"
-        "        for attack in (lambda: os.unlink(gate_root / name), lambda: os.rename(gate_root / name, gate_root / (name + '.moved'))):\n"
-        "            try:\n"
-        "                attack()\n"
-        "            except PermissionError:\n"
-        "                pass\n"
-        "            else:\n"
-        "                raise AssertionError(f'artifact allowed delete/rename: {name}')\n",
+        "            raise AssertionError(f'artifact directory existed during child: {name}')\n",
         encoding="utf-8",
     )
     gate = GateRequest(
@@ -465,6 +489,57 @@ def test_native_executor_precreates_and_locks_all_four_artifacts_against_externa
     ]
     for name, victim in pairs:
         assert not os.path.samefile(evidence / "LOCKED" / name, victim)
+
+
+def test_real_ctest_uses_anonymous_stdout_sink_without_final_path_during_child(tmp_path: Path) -> None:
+    """Frozen CTest text crosses the inherited stdout handle; no JUnit pathname is exposed."""
+    fixture = REPO / "tools/stm32-toolkit/tests/release/fixtures/native-outcomes/ctest-pipe"
+    evidence = tmp_path / "ctest-evidence"
+    evidence.mkdir()
+    gate = GateRequest(
+        "CTEST", ("ctest", "--test-dir", str(fixture), "--output-on-failure"),
+        REPO, 30, ("native-pass",),
+    )
+
+    output = execute_gate_process(gate, {}, evidence_root=evidence)
+
+    assert output.exit_code == 0
+    assert output.node_outcomes == (("native-pass", "passed"),)
+    native = evidence / "CTEST/native-results.txt"
+    assert native.is_file()
+    assert str(REPO).encode() not in native.read_bytes()
+    release_verifier._validate_portable_package_payload(str(native), native.read_bytes())
+    assert not (evidence / "CTEST/native-results.xml").exists()
+
+
+def test_native_runner_cannot_reverse_hardlink_sink_to_new_external_path(tmp_path: Path) -> None:
+    """No final native directory entry exists while the child can create a second hard link."""
+    evidence = tmp_path / "native-reverse-link-evidence"
+    evidence.mkdir()
+    outside = tmp_path / "outside-native.xml"
+    script = evidence / "test_native_reverse_link.py"
+    script.write_text(
+        "import os\nfrom pathlib import Path\n\n"
+        "def test_reverse_link(request):\n"
+        "    native = Path(request.config.option.xmlpath)\n"
+        f"    outside = Path({str(outside)!r})\n"
+        "    try:\n"
+        "        os.link(native, outside)\n"
+        "    except FileNotFoundError:\n"
+        "        pass\n",
+        encoding="utf-8",
+    )
+    gate = GateRequest(
+        "REVERSE", (sys.executable, "-m", "pytest", str(script), "-q", "-p", "no:cacheprovider"),
+        REPO, 30, ("test_native_reverse_link::test_reverse_link",),
+    )
+
+    try:
+        execute_gate_process(gate, {}, evidence_root=evidence)
+    except ControllerError:
+        pass
+
+    assert not outside.exists()
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows reparse contract")
@@ -546,6 +621,7 @@ def test_real_node_runners_produce_normalized_portable_native_artifacts(
     [
         ("pytest-8.4.2-junit.xml", "pytest-junit", (("native.pytest_fixture::test_native_pass", "passed"), ("native.pytest_fixture::test_native_fail", "failed"))),
         ("ctest-4.3.1-junit.xml", "ctest-junit", (("native-pass", "passed"), ("native-fail", "failed"))),
+        ("ctest-4.3.1-output.txt", "ctest-text", (("native-pass", "passed"),)),
         ("vitest-4.1.10.json", "vitest-json", (("native pass", "passed"), ("native fail", "failed"))),
         ("playwright-1.56.1-list.json", "playwright-json", (("chromium-1280::native/playwright.fixture.spec.mjs::native list-only", "skipped"),)),
     ],
@@ -557,6 +633,23 @@ def test_native_node_outcome_adapters_consume_only_real_runner_business_fields(
     raw = (REPO / "tools/stm32-toolkit/tests/release/fixtures/native-outcomes" / fixture).read_bytes()
 
     assert gates.parse_native_node_outcomes(framework, raw) == expected
+
+
+@pytest.mark.parametrize(
+    "replacement",
+    [
+        (b"1/1 Test #1", b"2/1 Test #1"),
+        (b"0 tests failed out of 1", b"1 tests failed out of 1"),
+        (b"100% tests passed", b"0% tests passed"),
+    ],
+)
+def test_ctest_text_adapter_rejects_row_summary_contradictions(
+    replacement: tuple[bytes, bytes],
+) -> None:
+    raw = (REPO / "tools/stm32-toolkit/tests/release/fixtures/native-outcomes/ctest-4.3.1-output.txt").read_bytes()
+
+    with pytest.raises(ControllerError, match="ctest-text"):
+        gates.parse_native_node_outcomes("ctest-text", raw.replace(*replacement), exit_code=0)
 
 
 def test_windows_playwright_contract_has_only_two_frozen_chromium_projects() -> None:
@@ -578,9 +671,7 @@ def test_windows_playwright_contract_has_only_two_frozen_chromium_projects() -> 
 
 def test_native_stdout_redacts_only_controller_owned_evidence_result_path(tmp_path: Path) -> None:
     """Raw pytest's JUnit banner is made portable without permitting arbitrary absolute paths."""
-    gate_root = tmp_path / "gates" / "NATIVE"
-    gate_root.mkdir(parents=True)
-    native = gate_root / "native-results.xml"
+    native = r"\\.\pipe\stm32tk-0600-0123456789abcdef0123456789abcdef"
     stdout = (
         f"- generated xml file: {native} -\n"
         "ordinary output\n"
@@ -1110,13 +1201,15 @@ def test_dev_coverage_accepts_every_frozen_plan_pytest_shape(
         nonlocal calls
         calls += 1
         assert cwd == repo
-        assert argv[:3] == [sys.executable, "-m", "pytest"]
+        assert argv[:3] == [sys.executable, "-I", "-c"]
+        assert argv[4] == str(RELEASE)
+        assert "-m" not in argv and "PYTHONPATH" not in env
         assert argv.count("pytest_cov") == 1
         assert argv[argv.index("pytest_cov") - 1] == "-p"
         if "--basetemp" in argv:
             Path(argv[argv.index("--basetemp") + 1]).mkdir()
         raw = _coverage_v7({path: (9, 10) for path in changed})
-        (evidence / "coverage-raw.json").write_text(json.dumps(raw), encoding="utf-8")
+        _write_coverage_pipe(argv, json.dumps(raw))
         return 0
 
     result = run_dev_coverage(
@@ -1455,9 +1548,7 @@ def test_dev_coverage_real_child_cannot_remove_rename_or_unlock_root(tmp_path: P
         assert completed.returncode == 0, completed.stderr
         assert json.loads(completed.stdout) == [145, 5, 32]
         assert not (outside / "escaped.txt").exists()
-        (evidence / "coverage-raw.json").write_text(
-            json.dumps(_coverage_v7({changed: (9, 10)})), encoding="utf-8"
-        )
+        _write_coverage_pipe(_argv, json.dumps(_coverage_v7({changed: (9, 10)})))
         return 0
 
     assert run_dev_coverage(
@@ -1471,10 +1562,8 @@ def test_dev_coverage_real_child_cannot_remove_rename_or_unlock_root(tmp_path: P
     assert not list(evidence.glob(".stm32tk-coverage-lock-*"))
 
 
-def test_dev_coverage_raw_swap_is_blocked_while_same_handle_is_read(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Raw JSON bytes come from the validated no-delete handle, not a reopened path."""
+def test_dev_coverage_raw_is_published_only_after_pipe_is_read(tmp_path: Path) -> None:
+    """The child sees no raw directory entry; controller publishes the captured bytes later."""
     repo = tmp_path / "repo"
     test_file = repo / "tools/stm32-monitor/tests/test_package.py"
     product = repo / "tools/stm32-monitor/src/stm32_monitor/package.py"
@@ -1484,26 +1573,11 @@ def test_dev_coverage_raw_swap_is_blocked_while_same_handle_is_read(
     product.write_text("VALUE = 1\n", encoding="utf-8")
     evidence = _coverage_evidence(tmp_path)
     raw_path = evidence / "coverage-raw.json"
-    moved_raw = evidence / "coverage-raw-moved.json"
     changed = product.relative_to(repo).as_posix()
-    original_read = gates._windows_read_locked_file
-
-    def attempt_swap(locked: object) -> bytes:
-        script = "import json, os, sys\ntry: os.replace(sys.argv[1],sys.argv[2])\nexcept OSError as e: print(json.dumps(e.winerror))\nelse: print('0')\n"
-        completed = subprocess.run(
-            [sys.executable, "-c", script, str(raw_path), str(moved_raw)],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        assert completed.returncode == 0
-        assert json.loads(completed.stdout) == 32
-        return original_read(locked)
-
-    monkeypatch.setattr(gates, "_windows_read_locked_file", attempt_swap)
 
     def runner(_argv: list[str], **_kwargs: object) -> int:
-        raw_path.write_text(json.dumps(_coverage_v7({changed: (9, 10)})), encoding="utf-8")
+        assert not raw_path.exists()
+        _write_coverage_pipe(_argv, json.dumps(_coverage_v7({changed: (9, 10)})))
         return 0
 
     assert run_dev_coverage(
@@ -1514,11 +1588,11 @@ def test_dev_coverage_raw_swap_is_blocked_while_same_handle_is_read(
         _coverage_git([changed]),
         runner,
     )["task_id"] == "STM32TK-0603-T01"
-    assert not moved_raw.exists()
+    assert raw_path.is_file()
 
 
-def test_dev_coverage_runner_cannot_unlink_rename_or_swap_preopened_raw(tmp_path: Path) -> None:
-    """The controller selects and locks the raw object before invoking pytest."""
+def test_dev_coverage_runner_has_no_final_raw_path_to_unlink_rename_or_swap(tmp_path: Path) -> None:
+    """The controller does not expose a linkable final raw object to pytest."""
     repo = tmp_path / "repo"
     test_file = repo / "tools/stm32-monitor/tests/test_package.py"
     product = repo / "tools/stm32-monitor/src/stm32_monitor/package.py"
@@ -1542,7 +1616,6 @@ def test_dev_coverage_runner_cannot_unlink_rename_or_swap_preopened_raw(tmp_path
             " try: op()\n"
             " except OSError as e: codes.append(e.winerror)\n"
             " else: codes.append(0)\n"
-            "if not raw.exists(): os.replace(outside,raw)\n"
             "print(json.dumps(codes))\n"
         )
         completed = subprocess.run(
@@ -1552,8 +1625,9 @@ def test_dev_coverage_runner_cannot_unlink_rename_or_swap_preopened_raw(tmp_path
             check=False,
         )
         assert completed.returncode == 0, completed.stderr
-        assert json.loads(completed.stdout) == [32, 32]
-        raw_path.write_text(json.dumps(_coverage_v7({changed: (9, 10)})), encoding="utf-8")
+        assert json.loads(completed.stdout) == [2, 2]
+        assert outside.is_file()
+        _write_coverage_pipe(_argv, json.dumps(_coverage_v7({changed: (9, 10)})))
         return 0
 
     assert run_dev_coverage(
@@ -1566,6 +1640,38 @@ def test_dev_coverage_runner_cannot_unlink_rename_or_swap_preopened_raw(tmp_path
     )["task_id"] == "STM32TK-0603-T01"
     assert not moved_raw.exists()
     assert outside.is_file()
+
+
+def test_dev_coverage_runner_cannot_reverse_hardlink_raw_to_new_external_path(tmp_path: Path) -> None:
+    """Coverage writes through a sink with no linkable filesystem entry during pytest."""
+    repo = tmp_path / "repo"
+    test_file = repo / "tools/stm32-monitor/tests/test_package.py"
+    product = repo / "tools/stm32-monitor/src/stm32_monitor/package.py"
+    test_file.parent.mkdir(parents=True)
+    product.parent.mkdir(parents=True)
+    test_file.write_text("def test_package(): pass\n", encoding="utf-8")
+    product.write_text("VALUE = 1\n", encoding="utf-8")
+    evidence = _coverage_evidence(tmp_path)
+    raw_path = evidence / "coverage-raw.json"
+    outside = tmp_path / "outside-new-coverage.json"
+    changed = product.relative_to(repo).as_posix()
+
+    def runner(_argv: list[str], **_kwargs: object) -> int:
+        with pytest.raises(FileNotFoundError):
+            os.link(raw_path, outside)
+        _write_coverage_pipe(_argv, json.dumps(_coverage_v7({changed: (9, 10)})))
+        return 0
+
+    try:
+        run_dev_coverage(
+            repo, "STM32TK-0603-T01", evidence,
+            [str(test_file), "--cov=stm32_monitor.package"],
+            _coverage_git([changed]), runner,
+        )
+    except ControllerError:
+        pass
+
+    assert not outside.exists()
 
 
 def test_dev_coverage_real_pytest_cov_writes_preopened_raw(tmp_path: Path) -> None:
@@ -1618,9 +1724,7 @@ def test_dev_coverage_result_preoccupation_is_not_overwritten(tmp_path: Path) ->
     occupied = b"competitor\n"
 
     def runner(_argv: list[str], **_kwargs: object) -> int:
-        (evidence / "coverage-raw.json").write_text(
-            json.dumps(_coverage_v7({changed: (9, 10)})), encoding="utf-8"
-        )
+        _write_coverage_pipe(_argv, json.dumps(_coverage_v7({changed: (9, 10)})))
         (evidence / "branch-coverage.json").write_bytes(occupied)
         return 0
 
@@ -1671,9 +1775,7 @@ def test_dev_coverage_result_swap_is_blocked_until_success_boundary(
     monkeypatch.setattr(gates, "_validate_locked_coverage_file_path", attempt_swap_after_write)
 
     def runner(_argv: list[str], **_kwargs: object) -> int:
-        (evidence / "coverage-raw.json").write_text(
-            json.dumps(_coverage_v7({changed: (9, 10)})), encoding="utf-8"
-        )
+        _write_coverage_pipe(_argv, json.dumps(_coverage_v7({changed: (9, 10)})))
         return 0
 
     assert run_dev_coverage(
@@ -1716,7 +1818,7 @@ def test_dev_coverage_t12_failed_attempt_retries_same_frozen_argv_with_new_root(
         assert scratch.parent == first
         assert re.fullmatch(r"pytest-basetemp-[0-9a-f]{32}", scratch.name)
         scratch.mkdir()
-        (first / "coverage-raw.json").write_text("retained failure\n", encoding="utf-8")
+        _write_coverage_pipe(argv, "retained failure\n")
         return 1
 
     with pytest.raises(ControllerError, match="subprocess failed"):
@@ -1730,9 +1832,7 @@ def test_dev_coverage_t12_failed_attempt_retries_same_frozen_argv_with_new_root(
         assert scratch.parent == second
         assert re.fullmatch(r"pytest-basetemp-[0-9a-f]{32}", scratch.name)
         scratch.mkdir()
-        (second / "coverage-raw.json").write_text(
-            json.dumps(_coverage_v7({changed: (9, 10)})), encoding="utf-8"
-        )
+        _write_coverage_pipe(argv, json.dumps(_coverage_v7({changed: (9, 10)})))
         return 0
 
     result = run_dev_coverage(
@@ -1778,7 +1878,7 @@ def test_dev_coverage_failed_execution_preserves_evidence_and_requires_new_root(
     evidence = _coverage_evidence(tmp_path, "attempt-1")
 
     def failing_runner(argv: list[str], *, cwd: Path, env: dict[str, str]) -> int:
-        (evidence / "coverage-raw.json").write_text("retained failure\n", encoding="utf-8")
+        _write_coverage_pipe(argv, "retained failure\n")
         return 1
 
     with pytest.raises(ControllerError, match="subprocess failed"):
@@ -1849,13 +1949,15 @@ def test_dev_coverage_discovers_each_changed_product_file_and_requires_90_percen
     changed = product.relative_to(repo).as_posix()
 
     def runner(argv: list[str], *, cwd: Path, env: dict[str, str]) -> int:
-        assert argv[:3] == [sys.executable, "-m", "pytest"]
+        assert argv[:3] == [sys.executable, "-I", "-c"]
+        assert argv[4] == str(RELEASE)
+        assert "-m" not in argv and "PYTHONPATH" not in env
         assert str(test_file) in argv
         assert "--cov=stm32_toolkit.changed" in argv
-        assert argv[3:6] == ["-q", "-p", "no:cacheprovider"]
+        assert argv[5:8] == ["-q", "-p", "no:cacheprovider"]
         assert not any(key.startswith(("COVERAGE_", "COV_CORE_")) for key in env)
         raw = _coverage_v7({changed: (9, 10)})
-        (evidence / "coverage-raw.json").write_text(json.dumps(raw), encoding="utf-8")
+        _write_coverage_pipe(argv, json.dumps(raw))
         return 0
 
     result = run_dev_coverage(
@@ -1893,7 +1995,7 @@ def test_dev_coverage_adds_exact_modules_for_changed_package_files(tmp_path: Pat
         assert argv.count("--cov=stm32_toolkit.evidence") == 1
         assert argv.count("--cov=stm32_toolkit.evidence.model") == 1
         raw = _coverage_v7({path: (0, 0) for path in changed})
-        (evidence / "coverage-raw.json").write_text(json.dumps(raw), encoding="utf-8")
+        _write_coverage_pipe(argv, json.dumps(raw))
         return 0
 
     result = run_dev_coverage(
@@ -1995,7 +2097,7 @@ def test_dev_coverage_rejects_no_change_duplicates_missing_rows_low_file_and_she
 
     def runner(_argv: list[str], *, cwd: Path, env: dict[str, str]) -> int:
         raw = _coverage_v7(rows)
-        (evidence / "coverage-raw.json").write_text(json.dumps(raw), encoding="utf-8")
+        _write_coverage_pipe(_argv, json.dumps(raw))
         return 0
 
     with pytest.raises(ControllerError):
@@ -2019,7 +2121,7 @@ def test_dev_coverage_rejects_duplicate_json_object_rows(tmp_path: Path) -> None
             '{"files":{"' + changed + '":{"summary":{"covered_branches":9,"num_branches":10}},'
             '"' + changed + '":{"summary":{"covered_branches":9,"num_branches":10}}}}'
         )
-        (evidence / "coverage-raw.json").write_text(duplicate, encoding="utf-8")
+        _write_coverage_pipe(_argv, duplicate)
         return 0
 
     with pytest.raises(ControllerError):
@@ -2095,7 +2197,7 @@ def test_dev_coverage_rejects_mutated_coverage_v7_contract(tmp_path: Path, mutat
             raw["totals"]["covered_branches"] = 8
         else:
             raw["totals"]["percent_branches_covered_display"] = "91"
-        (evidence / "coverage-raw.json").write_text(json.dumps(raw), encoding="utf-8")
+        _write_coverage_pipe(_argv, json.dumps(raw))
         return 0
 
     with pytest.raises(ControllerError):
