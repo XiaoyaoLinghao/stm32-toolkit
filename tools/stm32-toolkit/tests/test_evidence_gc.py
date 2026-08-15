@@ -16,6 +16,7 @@ import time
 
 import pytest
 
+import stm32_toolkit.evidence.gc as gc_module
 from stm32_toolkit.evidence.gc import (
     REGISTERED_ROOT_TYPES,
     GcPlan,
@@ -260,6 +261,70 @@ def test_unknown_or_malformed_future_root_conservatively_retains_every_object(tm
     assert _object(store, artifact).exists()
 
 
+@pytest.mark.parametrize(
+    "root_type",
+    [[], {}, True, 7, None],
+)
+def test_every_json_type_for_malformed_root_type_fails_closed(tmp_path, root_type):
+    """Unhashable or scalar JSON root types must be reported, never escape as TypeError."""
+    store = EvidenceStore(tmp_path / "evidence")
+    _envelope, artifact = _put(store, tmp_path / "typed-malformed.bin", b"typed-malformed")
+    _root(
+        store,
+        "typed-malformed.json",
+        _typed_root(root_type, "typed-malformed", "0" * 64),
+    )
+
+    plan = plan_gc(store)
+
+    assert plan.unreachable_objects == ()
+    assert artifact.relative_path in plan.reachable_objects
+    assert plan.unknown_entries or plan.corrupt_entries
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        *((field, value) for field in ("root_type", "root_id", "manifest_id") for value in ([], {}, True, 7, None)),
+        *(("metadata", value) for value in ([], True, 7, None, "bad")),
+    ],
+)
+def test_every_root_field_rejects_all_wrong_json_types_without_crashing(
+    tmp_path, field, value
+):
+    """Every closed typed-root field must reject wrong JSON types conservatively."""
+    store = EvidenceStore(tmp_path / "evidence")
+    _envelope, artifact = _put(store, tmp_path / f"wrong-{field}.bin", b"wrong-field")
+    document = _typed_root("test-run", "wrong-field", "0" * 64)
+    document[field] = value
+    _root(store, f"wrong-{field}.json", document)
+
+    plan = plan_gc(store)
+
+    assert plan.unreachable_objects == ()
+    assert artifact.relative_path in plan.reachable_objects
+    assert plan.unknown_entries or plan.corrupt_entries
+
+
+def test_noncanonical_root_json_is_corrupt_and_retains_objects(tmp_path):
+    """Semantically valid but noncanonical root bytes cannot authorize reachability."""
+    store = EvidenceStore(tmp_path / "evidence")
+    _envelope, artifact = _put(store, tmp_path / "noncanonical-root.bin", b"retain")
+    roots = store.root / "roots"
+    roots.mkdir()
+    (roots / "noncanonical.json").write_text(
+        '{"root_type": "test-run", "root_id": "x", '
+        '"manifest_id": "' + "0" * 64 + '", "metadata": {}}',
+        encoding="utf-8",
+    )
+
+    plan = plan_gc(store)
+
+    assert "roots/noncanonical.json" in plan.corrupt_entries
+    assert artifact.relative_path in plan.reachable_objects
+    assert plan.unreachable_objects == ()
+
+
 def test_corrupt_hard_linked_and_unknown_entries_are_reported_and_never_reclaimable(tmp_path):
     """Trusting names without real file verification could unlink corrupt or aliased evidence."""
     store = EvidenceStore(tmp_path / "evidence")
@@ -278,6 +343,33 @@ def test_corrupt_hard_linked_and_unknown_entries_are_reported_and_never_reclaima
     assert any(linked.sha256 in entry for entry in plan.corrupt_entries)
     assert any("not-an-object" in entry for entry in plan.unknown_entries)
     assert plan.bytes_reclaimable == 0
+
+
+def test_every_malformed_manifest_shape_is_classified_without_trust(tmp_path):
+    """Manifest names, type, links, bytes, and embedded identity are all closed."""
+    store = EvidenceStore(tmp_path / "evidence")
+    envelope, _artifact = _put(store, tmp_path / "manifest-shapes.bin", b"manifest-shapes")
+    manifests = store.root / "manifests"
+    linked_name = "1" * 64 + ".json"
+    external = tmp_path / "linked-manifest-source"
+    external.write_bytes(envelope.to_json_bytes())
+    os.link(external, manifests / linked_name)
+    (manifests / "future-name.txt").write_bytes(b"future")
+    directory_name = "2" * 64 + ".json"
+    (manifests / directory_name).mkdir()
+    corrupt_name = "3" * 64 + ".json"
+    (manifests / corrupt_name).write_bytes(b"not-an-envelope")
+    mismatch_name = "4" * 64 + ".json"
+    assert mismatch_name[:-5] != str(envelope.evidence_id)
+    (manifests / mismatch_name).write_bytes(envelope.to_json_bytes())
+
+    plan = plan_gc(store)
+
+    assert f"manifests/{linked_name}" in plan.corrupt_entries
+    assert "manifests/future-name.txt" in plan.unknown_entries
+    assert f"manifests/{directory_name}" in plan.corrupt_entries
+    assert f"manifests/{corrupt_name}" in plan.corrupt_entries
+    assert f"manifests/{mismatch_name}" in plan.corrupt_entries
 
 
 def test_directory_at_canonical_object_path_is_corrupt_and_retained(tmp_path):
@@ -335,6 +427,45 @@ def test_apply_requires_exact_action_digest_and_never_deletes_on_authorization_f
     assert _object(store, artifact).exists()
 
 
+@pytest.mark.parametrize(
+    ("denial", "expected_code"),
+    [
+        ("false", "GC_AUTHORIZATION_INVALID"),
+        ("wrong-type", "GC_AUTHORIZATION_INVALID"),
+        ("wrong-digest", "GC_AUTHORIZATION_INVALID"),
+        ("expected-mismatch", "GC_PLAN_DIGEST_MISMATCH"),
+        ("plan-invalid", "GC_PLAN_INVALID"),
+    ],
+)
+def test_every_recognizable_execute_denial_consumes_prepared_action(
+    tmp_path, denial, expected_code
+):
+    """A denied execute attempt must close its prepared action across equivalent plans."""
+    store = EvidenceStore(tmp_path / "evidence")
+    _envelope, artifact = _put(store, tmp_path / f"denial-{denial}.bin", denial.encode())
+    plan = plan_gc(store)
+    equivalent = plan_gc(store)
+    authorized: object = plan.action_digest
+    expected = plan.plan_digest
+    if denial == "false":
+        authorized = False
+    elif denial == "wrong-type":
+        authorized = 1
+    elif denial == "wrong-digest":
+        authorized = "0" * 64
+    elif denial == "expected-mismatch":
+        expected = "0" * 64
+    else:
+        plan.bytes_reclaimable += 1
+
+    first = apply_gc(plan, authorized, expected)
+    second = apply_gc(equivalent, equivalent.action_digest, equivalent.plan_digest)
+
+    assert first.code == expected_code
+    assert second.code == "GC_AUTHORIZATION_CONSUMED"
+    assert _object(store, artifact).exists()
+
+
 def test_authorization_is_single_use_and_expected_digest_is_exact(tmp_path):
     """Reusing one action digest or changing the expected plan digest could repeat deletion."""
     store = EvidenceStore(tmp_path / "evidence")
@@ -374,6 +505,139 @@ def test_action_digest_cannot_be_reused_through_an_equivalent_plan_instance(tmp_
     assert first.code == "GC_PLAN_DIGEST_MISMATCH"
     assert second.code == "GC_AUTHORIZATION_CONSUMED"
     assert _object(store, artifact).exists()
+
+
+def test_mutating_public_action_digest_still_consumes_original_prepared_action(tmp_path):
+    """Plan mutation cannot redirect the tombstone away from its prepared action."""
+    store = EvidenceStore(tmp_path / "evidence")
+    _envelope, artifact = _put(store, tmp_path / "mutated-action.bin", b"mutated-action")
+    invalid = plan_gc(store)
+    equivalent = plan_gc(store)
+    prepared_action = invalid.action_digest
+    invalid.action_digest = "f" * 64 if prepared_action != "f" * 64 else "e" * 64
+
+    first = apply_gc(invalid, invalid.action_digest, invalid.plan_digest)
+    second = apply_gc(equivalent, equivalent.action_digest, equivalent.plan_digest)
+
+    assert first.code == "GC_PLAN_INVALID"
+    assert first.action_digest == prepared_action
+    assert second.code == "GC_AUTHORIZATION_CONSUMED"
+    assert _object(store, artifact).exists()
+
+
+def test_non_json_store_id_cannot_prevent_original_action_consumption(tmp_path):
+    """The authorization tombstone must use frozen fields before public-plan validation."""
+    store = EvidenceStore(tmp_path / "evidence")
+    _envelope, artifact = _put(store, tmp_path / "mutated-store-id.bin", b"mutated-store-id")
+    invalid = plan_gc(store)
+    equivalent = plan_gc(store)
+    invalid.store_id = object()  # type: ignore[assignment]
+
+    first = apply_gc(invalid, invalid.action_digest, invalid.plan_digest)
+    second = apply_gc(equivalent, equivalent.action_digest, equivalent.plan_digest)
+
+    assert first.code == "GC_PLAN_INVALID"
+    assert second.code == "GC_AUTHORIZATION_CONSUMED"
+    assert _object(store, artifact).exists()
+
+
+@pytest.mark.parametrize(
+    ("field_name", "invalid_value"),
+    [("roots", (object(),)), ("unreachable_objects", object())],
+)
+def test_invalid_public_plan_collections_return_canonical_denial(
+    tmp_path, field_name, invalid_value
+):
+    """Result construction must never revisit public fields already found invalid."""
+    store = EvidenceStore(tmp_path / "evidence")
+    _envelope, artifact = _put(store, tmp_path / f"invalid-{field_name}.bin", b"invalid-plan")
+    invalid = plan_gc(store)
+    equivalent = plan_gc(store)
+    setattr(invalid, field_name, invalid_value)
+
+    first = apply_gc(invalid, invalid.action_digest, invalid.plan_digest)
+    second = apply_gc(equivalent, equivalent.action_digest, equivalent.plan_digest)
+
+    assert first.code == "GC_PLAN_INVALID"
+    assert first.retained_objects == (artifact.relative_path,)
+    assert second.code == "GC_AUTHORIZATION_CONSUMED"
+    assert _object(store, artifact).exists()
+
+
+def test_rebound_store_handle_cannot_redirect_prepared_execution(tmp_path):
+    """A plan must execute only through the exact store instance that prepared its action."""
+    store = EvidenceStore(tmp_path / "evidence")
+    _envelope, artifact = _put(store, tmp_path / "rebound-store.bin", b"rebound-store")
+    invalid = plan_gc(store)
+    equivalent = plan_gc(store)
+    invalid._store = EvidenceStore(store.root)
+
+    first = apply_gc(invalid, invalid.action_digest, invalid.plan_digest)
+    second = apply_gc(equivalent, equivalent.action_digest, equivalent.plan_digest)
+
+    assert first.code == "GC_PLAN_INVALID"
+    assert second.code == "GC_AUTHORIZATION_CONSUMED"
+    assert _object(store, artifact).exists()
+
+
+def test_authorization_is_consumed_once_across_competing_processes(tmp_path):
+    """Exactly one process may redeem and execute one prepared action digest."""
+    store = EvidenceStore(tmp_path / "evidence")
+    _envelope, artifact = _put(
+        store, tmp_path / "process-authorization.bin", b"process-authorization"
+    )
+    release = tmp_path / "authorization-release"
+    child = r"""
+import json
+import sys
+import time
+from pathlib import Path
+from stm32_toolkit.evidence.gc import apply_gc, plan_gc
+from stm32_toolkit.evidence.store import EvidenceStore
+
+root, ready, release = map(Path, sys.argv[1:])
+plan = plan_gc(EvidenceStore(root))
+ready.write_text("ready", encoding="utf-8")
+deadline = time.monotonic() + 10
+while not release.exists() and time.monotonic() < deadline:
+    time.sleep(0.005)
+if not release.exists():
+    raise RuntimeError("authorization race was never released")
+result = apply_gc(plan, plan.action_digest, plan.plan_digest)
+print(json.dumps(result.to_dict()), flush=True)
+"""
+    processes = []
+    ready_paths = []
+    for index in range(2):
+        ready = tmp_path / f"authorization-ready-{index}"
+        ready_paths.append(ready)
+        processes.append(
+            subprocess.Popen(
+                [sys.executable, "-c", child, str(store.root), str(ready), str(release)],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+        )
+    deadline = time.monotonic() + 10
+    while not all(path.exists() for path in ready_paths) and time.monotonic() < deadline:
+        time.sleep(0.005)
+    assert all(path.exists() for path in ready_paths)
+    release.write_text("release", encoding="utf-8")
+    results = []
+    for process in processes:
+        stdout, stderr = process.communicate(timeout=10)
+        assert process.returncode == 0, stderr or stdout
+        results.append(json.loads(stdout))
+
+    assert sorted(result["code"] for result in results) == [
+        "GC_APPLIED",
+        "GC_AUTHORIZATION_CONSUMED",
+    ]
+    applied = next(result for result in results if result["code"] == "GC_APPLIED")
+    assert applied["deleted_objects"] == [artifact.relative_path]
+    assert applied["bytes_reclaimed"] == artifact.size_bytes
+    assert not _object(store, artifact).exists()
 
 
 def test_mutated_plan_or_action_binding_is_rejected_before_deletion(tmp_path):
@@ -482,6 +746,149 @@ def test_concurrent_root_after_snapshot_validation_still_prevents_unlink(tmp_pat
     assert result.success is False
     assert result.code == "GC_STORE_CHANGED"
     assert _object(store, artifact).exists()
+
+
+def test_identity_swap_after_final_snapshot_never_deletes_replacement_object(
+    tmp_path, monkeypatch
+):
+    """Deletion must target the verified handle identity, never a later occupant of its path."""
+    store = EvidenceStore(tmp_path / "evidence")
+    envelope, artifact = _put(store, tmp_path / "identity-race.bin", b"identity-race")
+    plan = plan_gc(store)
+    object_path = _object(store, artifact)
+    original_path = tmp_path / "original-object-outside-store"
+    real_snapshot = gc_module._snapshot_entries
+    swapped = False
+
+    def snapshot_then_swap(evidence_store, *, phase=None, excluded=frozenset()):
+        nonlocal swapped
+        snapshot = real_snapshot(evidence_store, phase=phase, excluded=excluded)
+        if phase == "gc.final-snapshot" and not swapped:
+            object_path.replace(original_path)
+            object_path.write_bytes(b"identity-race")
+            _root(
+                store,
+                "identity-race.json",
+                _typed_root("test-run", "identity-race", str(envelope.evidence_id)),
+            )
+            swapped = True
+        return snapshot
+
+    monkeypatch.setattr(gc_module, "_snapshot_entries", snapshot_then_swap)
+    result = apply_gc(plan, plan.action_digest, plan.plan_digest)
+
+    assert swapped is True
+    assert result.success is False
+    assert result.code == "GC_STORE_CHANGED"
+    assert result.deleted_objects == ()
+    assert result.bytes_reclaimed == 0
+    assert object_path.read_bytes() == b"identity-race"
+
+
+def test_root_only_publish_after_final_snapshot_is_revalidated_with_handle_held(
+    tmp_path, monkeypatch
+):
+    """A late reference must be seen again after the exact delete handle is acquired."""
+    store = EvidenceStore(tmp_path / "evidence")
+    envelope, artifact = _put(store, tmp_path / "root-only-race.bin", b"root-only-race")
+    plan = plan_gc(store)
+    real_snapshot = gc_module._snapshot_entries
+    published = False
+
+    def snapshot_then_publish(evidence_store, *, phase=None, excluded=frozenset()):
+        nonlocal published
+        snapshot = real_snapshot(evidence_store, phase=phase, excluded=excluded)
+        if phase == "gc.final-snapshot" and not published:
+            _root(
+                store,
+                "root-only-race.json",
+                _typed_root("test-run", "root-only-race", str(envelope.evidence_id)),
+            )
+            published = True
+        return snapshot
+
+    monkeypatch.setattr(gc_module, "_snapshot_entries", snapshot_then_publish)
+    result = apply_gc(plan, plan.action_digest, plan.plan_digest)
+
+    assert published is True
+    assert result.code == "GC_STORE_CHANGED"
+    assert result.deleted_objects == ()
+    assert result.bytes_reclaimed == 0
+    assert _object(store, artifact).read_bytes() == b"root-only-race"
+
+
+def test_object_disappearing_after_final_snapshot_fails_closed(tmp_path, monkeypatch):
+    """A stale snapshot cannot authorize deletion when its object no longer opens."""
+    store = EvidenceStore(tmp_path / "evidence")
+    _envelope, artifact = _put(store, tmp_path / "vanish-race.bin", b"vanish-race")
+    plan = plan_gc(store)
+    object_path = _object(store, artifact)
+    moved = tmp_path / "vanished-object-outside-store"
+    real_snapshot = gc_module._snapshot_entries
+
+    def snapshot_then_remove(evidence_store, *, phase=None, excluded=frozenset()):
+        snapshot = real_snapshot(evidence_store, phase=phase, excluded=excluded)
+        if phase == "gc.final-snapshot" and not moved.exists():
+            object_path.replace(moved)
+        return snapshot
+
+    monkeypatch.setattr(gc_module, "_snapshot_entries", snapshot_then_remove)
+    result = apply_gc(plan, plan.action_digest, plan.plan_digest)
+
+    assert result.code == "GC_STORE_CHANGED"
+    assert result.deleted_objects == ()
+    assert result.bytes_reclaimed == 0
+    assert moved.read_bytes() == b"vanish-race"
+
+
+def test_object_bytes_changing_after_final_snapshot_fail_closed(tmp_path, monkeypatch):
+    """The delete handle must hash its own identity again before disposition."""
+    store = EvidenceStore(tmp_path / "evidence")
+    _envelope, artifact = _put(store, tmp_path / "rewrite-race.bin", b"before-bytes")
+    plan = plan_gc(store)
+    object_path = _object(store, artifact)
+    real_snapshot = gc_module._snapshot_entries
+    rewritten = False
+
+    def snapshot_then_rewrite(evidence_store, *, phase=None, excluded=frozenset()):
+        nonlocal rewritten
+        snapshot = real_snapshot(evidence_store, phase=phase, excluded=excluded)
+        if phase == "gc.final-snapshot" and not rewritten:
+            object_path.write_bytes(b"after--bytes")
+            rewritten = True
+        return snapshot
+
+    monkeypatch.setattr(gc_module, "_snapshot_entries", snapshot_then_rewrite)
+    result = apply_gc(plan, plan.action_digest, plan.plan_digest)
+
+    assert rewritten is True
+    assert result.code == "GC_STORE_CHANGED"
+    assert result.deleted_objects == ()
+    assert result.bytes_reclaimed == 0
+    assert object_path.read_bytes() == b"after--bytes"
+
+
+def test_successful_disposition_is_reported_while_an_external_reader_delays_removal(
+    tmp_path,
+):
+    """A committed delete remains progress even while another handle keeps its name pending."""
+    store = EvidenceStore(tmp_path / "evidence")
+    _envelope, artifact = _put(store, tmp_path / "held-reader.bin", b"held-reader")
+    plan = plan_gc(store)
+    object_path = _object(store, artifact)
+    held = gc_module._open_windows_file(object_path)
+    try:
+        result = apply_gc(plan, plan.action_digest, plan.plan_digest)
+        pending_info = object_path.lstat()
+    finally:
+        gc_module._close_windows_handle(held)
+
+    assert pending_info.st_size == artifact.size_bytes
+    assert result.success is True
+    assert result.code == "GC_APPLIED"
+    assert result.deleted_objects == (artifact.relative_path,)
+    assert result.bytes_reclaimed == artifact.size_bytes
+    assert not object_path.exists()
 
 
 def test_root_created_after_absent_roots_enumeration_is_not_missed(tmp_path):

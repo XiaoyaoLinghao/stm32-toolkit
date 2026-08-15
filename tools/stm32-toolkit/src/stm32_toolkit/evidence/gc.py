@@ -27,6 +27,10 @@ _PREFIX = re.compile(r"^[0-9a-f]{2}$")
 _ROOT_FIELDS = {"root_type", "root_id", "manifest_id", "metadata"}
 
 
+class _GcStoreChanged(EvidenceValidationError):
+    """The object selected by the plan no longer has the captured identity."""
+
+
 def _digest(value: object) -> str:
     return hashlib.sha256(canonical_json_bytes(value)).hexdigest()
 
@@ -37,6 +41,117 @@ def _ordered(values) -> tuple[str, ...]:
 
 def _json_copy(value: object) -> object:
     return json.loads(canonical_json_bytes(value))
+
+
+def _windows_file_information(handle: int) -> dict[str, int]:
+    """Return stable Win32 identity/shape fields for an already-open handle."""
+    import ctypes
+    from ctypes import wintypes
+
+    class ByHandleFileInformation(ctypes.Structure):
+        _fields_ = [
+            ("attributes", wintypes.DWORD),
+            ("creation_time", wintypes.FILETIME),
+            ("access_time", wintypes.FILETIME),
+            ("write_time", wintypes.FILETIME),
+            ("volume_serial", wintypes.DWORD),
+            ("size_high", wintypes.DWORD),
+            ("size_low", wintypes.DWORD),
+            ("links", wintypes.DWORD),
+            ("file_index_high", wintypes.DWORD),
+            ("file_index_low", wintypes.DWORD),
+        ]
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    get_information = kernel32.GetFileInformationByHandle
+    get_information.argtypes = [wintypes.HANDLE, ctypes.POINTER(ByHandleFileInformation)]
+    get_information.restype = wintypes.BOOL
+    information = ByHandleFileInformation()
+    if not get_information(handle, ctypes.byref(information)):
+        raise ctypes.WinError(ctypes.get_last_error())
+    return {
+        "attributes": information.attributes,
+        "links": information.links,
+        "size": (information.size_high << 32) | information.size_low,
+        "volume_serial": information.volume_serial,
+        "file_index": (information.file_index_high << 32) | information.file_index_low,
+    }
+
+
+def _open_windows_file(path: Path, *, delete: bool = False) -> int:
+    """Open exactly one path without traversing a final reparse point."""
+    import ctypes
+    from ctypes import wintypes
+
+    generic_read = 0x80000000
+    delete_access = 0x00010000
+    file_read_attributes = 0x00000080
+    file_share_read = 0x00000001
+    file_share_write = 0x00000002
+    file_share_delete = 0x00000004
+    open_existing = 3
+    open_reparse_point = 0x00200000
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    create_file = kernel32.CreateFileW
+    create_file.argtypes = [
+        wintypes.LPCWSTR,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.LPVOID,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.HANDLE,
+    ]
+    create_file.restype = wintypes.HANDLE
+    access = generic_read | file_read_attributes | (delete_access if delete else 0)
+    sharing = file_share_read | file_share_write
+    if not delete:
+        sharing |= file_share_delete
+    handle = create_file(
+        str(path), access, sharing, None, open_existing, open_reparse_point, None
+    )
+    if handle == ctypes.c_void_p(-1).value:
+        raise ctypes.WinError(ctypes.get_last_error())
+    return int(handle)
+
+
+def _close_windows_handle(handle: int) -> None:
+    import ctypes
+    from ctypes import wintypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    close_handle = kernel32.CloseHandle
+    close_handle.argtypes = [wintypes.HANDLE]
+    close_handle.restype = wintypes.BOOL
+    if not close_handle(handle):
+        raise ctypes.WinError(ctypes.get_last_error())
+
+
+def _file_identity_fields(path: Path, info: os.stat_result) -> dict[str, object]:
+    fields: dict[str, object] = {
+        "device": str(info.st_dev),
+        "inode": str(info.st_ino),
+    }
+    if os.name != "nt":  # pragma: no cover - Linux acceptance is intentionally fail closed
+        return fields  # pragma: no cover
+    handle = _open_windows_file(path)
+    try:
+        opened = _windows_file_information(handle)
+        if (
+            opened["links"] != info.st_nlink
+            or opened["size"] != info.st_size
+            or opened["attributes"] & 0x00000400
+        ):
+            raise EvidenceValidationError("file identity changed while it was captured")
+        fields.update(
+            {
+                "volume_serial": str(opened["volume_serial"]),
+                "file_index": str(opened["file_index"]),
+            }
+        )
+        return fields
+    finally:
+        _close_windows_handle(handle)
 
 
 @dataclass(frozen=True)
@@ -56,6 +171,8 @@ class RootRecord:
         root_id = value["root_id"]
         manifest_id = value["manifest_id"]
         metadata = value["metadata"]
+        if not isinstance(root_type, str):
+            raise EvidenceValidationError("root_type must be a string")
         if root_type not in REGISTERED_ROOT_TYPES:
             raise EvidenceValidationError("root_type is not registered")
         for field_name, item in (("root_type", root_type), ("root_id", root_id)):
@@ -105,6 +222,13 @@ class GcPlan:
     _store: EvidenceStore = field(repr=False, compare=False, default=None)  # type: ignore[assignment]
     _object_sizes: Mapping[str, int] = field(repr=False, compare=False, default_factory=dict)
     _snapshot_entries: tuple[dict[str, object], ...] = field(
+        repr=False, compare=False, default_factory=tuple
+    )
+    _prepared_plan_digest: str = field(repr=False, compare=False, default="")
+    _prepared_action_digest: str = field(repr=False, compare=False, default="")
+    _prepared_store_id: str = field(repr=False, compare=False, default="")
+    _prepared_store: EvidenceStore | None = field(repr=False, compare=False, default=None)
+    _prepared_unreachable_objects: tuple[str, ...] = field(
         repr=False, compare=False, default_factory=tuple
     )
     _consumed: bool = field(repr=False, compare=False, default=False)
@@ -168,7 +292,10 @@ def _relative(store: EvidenceStore, path: Path) -> str:
 
 
 def _snapshot_entries(
-    store: EvidenceStore, *, phase: str | None = None
+    store: EvidenceStore,
+    *,
+    phase: str | None = None,
+    excluded: set[str] | frozenset[str] = frozenset(),
 ) -> tuple[dict[str, object], ...]:
     """Snapshot every roots/manifests/objects entry without following links."""
     entries: list[dict[str, object]] = []
@@ -208,6 +335,8 @@ def _snapshot_entries(
             for path in sorted(parent.iterdir(), key=lambda item: item.name.encode("utf-8")):
                 info = path.lstat()
                 relative = _relative(store, path)
+                if relative in excluded:
+                    continue
                 kind = (
                     "link"
                     if stat.S_ISLNK(info.st_mode) or store._is_reparse(info)
@@ -239,6 +368,7 @@ def _snapshot_entries(
                 }
                 if kind == "file" and info.st_nlink == 1:
                     try:
+                        entry.update(_file_identity_fields(path, info))
                         _size, content_digest = store._hash_file(path, single_link=True)
                         entry["content_sha256"] = content_digest
                     except (OSError, EvidenceValidationError) as exc:
@@ -343,9 +473,8 @@ def _scan_roots(
                 raise EvidenceValidationError("root is not canonical JSON")
             root = RootRecord.from_value(document)
         except (OSError, UnicodeError, json.JSONDecodeError, EvidenceValidationError, TypeError, ValueError):
-            if isinstance(document, Mapping) and (
-                document.get("root_type") not in REGISTERED_ROOT_TYPES
-            ):
+            candidate_type = document.get("root_type") if isinstance(document, Mapping) else None
+            if isinstance(candidate_type, str) and candidate_type not in REGISTERED_ROOT_TYPES:
                 unknown.append(relative)
             else:
                 corrupt.append(relative)
@@ -563,6 +692,11 @@ def plan_gc(store: EvidenceStore | Path | str) -> GcPlan:
         _store=evidence_store,
         _object_sizes=MappingProxyType({path: objects[path] for path in unreachable}),
         _snapshot_entries=snapshot,
+        _prepared_plan_digest=plan_digest,
+        _prepared_action_digest=action_digest,
+        _prepared_store_id=store_id,
+        _prepared_store=evidence_store,
+        _prepared_unreachable_objects=unreachable,
     )
 
 
@@ -578,10 +712,12 @@ def _result(
     return GcResult(
         success=success,
         code=code,
-        plan_digest=plan.plan_digest,
-        action_digest=plan.action_digest,
+        plan_digest=plan._prepared_plan_digest or plan.plan_digest,
+        action_digest=plan._prepared_action_digest or plan.action_digest,
         deleted_objects=deleted,
-        retained_objects=tuple(path for path in plan.unreachable_objects if path not in deleted),
+        retained_objects=tuple(
+            path for path in plan._prepared_unreachable_objects if path not in deleted
+        ),
         bytes_reclaimed=bytes_reclaimed,
         errors=errors,
     )
@@ -589,25 +725,145 @@ def _result(
 
 def _consume_authorization(plan: GcPlan) -> bool:
     """Atomically redeem an action digest once for this store, across plan instances/processes."""
-    directory = plan._store._managed_directory("gc-authorizations")
-    target = directory / f"{plan.action_digest}.json"
+    if plan._prepared_store is None:
+        raise EvidenceValidationError("prepared authorization store is unavailable")
+    directory = plan._prepared_store._managed_directory("gc-authorizations")
+    target = directory / f"{plan._prepared_action_digest}.json"
     payload = canonical_json_bytes(
         {
-            "action_digest": plan.action_digest,
-            "plan_digest": plan.plan_digest,
+            "action_digest": plan._prepared_action_digest,
+            "plan_digest": plan._prepared_plan_digest,
             "state": "consumed",
-            "store_id": plan.store_id,
+            "store_id": plan._prepared_store_id,
         }
     )
     try:
         plan._store._validate_existing_path(target, regular=True, single_link=True)
     except FileNotFoundError:
-        return plan._store._atomic_create_new(
+        return plan._prepared_store._atomic_create_new(
             target, payload, phase="gc-authorization"
         )
     except (OSError, EvidenceValidationError):
         return False
     return False
+
+
+def _delete_identity_bound(
+    plan: GcPlan,
+    relative: str,
+    final_snapshot: tuple[dict[str, object], ...],
+) -> int:
+    """Delete the verified Windows file identity without a pathname unlink race."""
+    if os.name != "nt":  # pragma: no cover - Linux acceptance must retain safely
+        raise _GcStoreChanged(  # pragma: no cover
+            "identity-bound evidence deletion is unavailable on this platform"
+        )
+    expected = next(
+        (entry for entry in final_snapshot if entry.get("path") == relative), None
+    )
+    if expected is None:
+        raise _GcStoreChanged("planned object disappeared before identity-bound deletion")
+    path = plan._store.root.joinpath(*relative.split("/"))
+    try:
+        handle = _open_windows_file(path, delete=True)
+    except OSError as exc:
+        raise _GcStoreChanged("planned object could not be opened by identity") from exc
+    disposition_set = False
+    close_error: OSError | None = None
+    try:
+        opened = _windows_file_information(handle)
+        identity = {
+            "volume_serial": str(opened["volume_serial"]),
+            "file_index": str(opened["file_index"]),
+        }
+        if (
+            expected.get("kind") != "file"
+            or expected.get("links") != 1
+            or opened["links"] != 1
+            or opened["attributes"] & (0x00000010 | 0x00000400)
+            or any(expected.get(name) != value for name, value in identity.items())
+            or opened["size"] != expected.get("size")
+            or opened["size"] != plan._object_sizes[relative]
+        ):
+            raise _GcStoreChanged("planned object identity changed before deletion")
+
+        import ctypes
+        from ctypes import wintypes
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        read_file = kernel32.ReadFile
+        read_file.argtypes = [
+            wintypes.HANDLE,
+            wintypes.LPVOID,
+            wintypes.DWORD,
+            ctypes.POINTER(wintypes.DWORD),
+            wintypes.LPVOID,
+        ]
+        read_file.restype = wintypes.BOOL
+        digest = hashlib.sha256()
+        size = 0
+        buffer = ctypes.create_string_buffer(1024 * 1024)
+        count = wintypes.DWORD()
+        while True:
+            if not read_file(handle, buffer, len(buffer), ctypes.byref(count), None):
+                raise ctypes.WinError(ctypes.get_last_error())
+            if count.value == 0:
+                break
+            size += count.value
+            digest.update(buffer.raw[: count.value])
+        after = _windows_file_information(handle)
+        if (
+            after["volume_serial"] != opened["volume_serial"]
+            or after["file_index"] != opened["file_index"]
+            or after["links"] != 1
+            or after["size"] != opened["size"]
+            or after["attributes"] & (0x00000010 | 0x00000400)
+            or size != opened["size"]
+            or digest.hexdigest() != Path(relative).name
+        ):
+            raise _GcStoreChanged("planned object changed while its handle was verified")
+
+        excluded = frozenset(
+            {*plan.unreachable_objects[: plan.unreachable_objects.index(relative)], relative}
+        )
+        handle_snapshot = _snapshot_entries(
+            plan._store,
+            phase="gc.handle-snapshot",
+            excluded=excluded,
+        )
+        if _filtered_snapshot_digest(
+            handle_snapshot, excluded
+        ) != _filtered_snapshot_digest(plan._snapshot_entries, excluded):
+            raise _GcStoreChanged("evidence store changed while delete handle was held")
+
+        class FileDispositionInformation(ctypes.Structure):
+            _fields_ = [("delete_file", wintypes.BOOL)]
+
+        set_information = kernel32.SetFileInformationByHandle
+        set_information.argtypes = [
+            wintypes.HANDLE,
+            ctypes.c_int,
+            wintypes.LPVOID,
+            wintypes.DWORD,
+        ]
+        set_information.restype = wintypes.BOOL
+        disposition = FileDispositionInformation(True)
+        if not set_information(
+            handle, 4, ctypes.byref(disposition), ctypes.sizeof(disposition)
+        ):
+            raise ctypes.WinError(ctypes.get_last_error())
+        disposition_set = True
+    finally:
+        try:
+            _close_windows_handle(handle)
+        except OSError as exc:
+            close_error = exc
+    if close_error is not None:
+        raise close_error
+    if not disposition_set:
+        raise OSError("identity-bound deletion was not committed")
+    plan._store._flush_directory(path.parent)
+    return size
 
 
 def _apply_gc_locked(plan: GcPlan) -> GcResult:
@@ -641,14 +897,6 @@ def _apply_gc_locked(plan: GcPlan) -> GcResult:
                     deleted=tuple(deleted),
                     bytes_reclaimed=reclaimed,
                 )
-            path = plan._store.root.joinpath(*relative.split("/"))
-            size, digest = plan._store._hash_file(
-                path,
-                expected_size=plan._object_sizes[relative],
-                expected_digest=Path(relative).name,
-                single_link=True,
-            )
-            assert size == plan._object_sizes[relative] and digest == Path(relative).name
             plan._store._fault("gc.before_unlink")
             try:
                 final_snapshot = _snapshot_entries(
@@ -673,11 +921,19 @@ def _apply_gc_locked(plan: GcPlan) -> GcResult:
                     deleted=tuple(deleted),
                     bytes_reclaimed=reclaimed,
                 )
-            path.unlink()
-            plan._store._flush_directory(path.parent)
+            size = _delete_identity_bound(plan, relative, final_snapshot)
             deleted.append(relative)
             reclaimed += size
             plan._store._fault("gc.after_delete")
+        except _GcStoreChanged as exc:
+            return _result(
+                plan,
+                False,
+                "GC_STORE_CHANGED" if not deleted else "GC_PARTIAL_DELETE",
+                deleted=tuple(deleted),
+                bytes_reclaimed=reclaimed,
+                errors=(str(exc),),
+            )
         except (OSError, EvidenceValidationError) as exc:
             return _result(
                 plan,
@@ -700,22 +956,13 @@ def apply_gc(plan: GcPlan, authorized: object, expected_plan_digest: object) -> 
     """Consume one exact MODIFY token and delete only still-unreachable verified objects."""
     if not isinstance(plan, GcPlan):
         raise EvidenceValidationError("plan must be a GcPlan")
-    current_plan_digest = _digest(plan._document_without_digest())
-    current_action_digest = _digest(
-        {
-            "operation": "evidence.gc.apply",
-            "store_id": plan.store_id,
-            "plan_digest": plan.plan_digest,
-            "manifest_snapshot_digest": plan.manifest_snapshot_digest,
-            "bytes_reclaimable": plan.bytes_reclaimable,
-        }
-    )
-    if current_plan_digest != plan.plan_digest or current_action_digest != plan.action_digest:
-        return _result(plan, False, "GC_PLAN_INVALID")
     if plan._consumed:
         return _result(plan, False, "GC_AUTHORIZATION_CONSUMED")
-    if not isinstance(authorized, str) or authorized != plan.action_digest:
-        return _result(plan, False, "GC_AUTHORIZATION_INVALID")
+    if (
+        not isinstance(plan._prepared_action_digest, str)
+        or _HASH.fullmatch(plan._prepared_action_digest) is None
+    ):
+        return _result(plan, False, "GC_PLAN_INVALID")
     try:
         consumed_now = _consume_authorization(plan)
     except (OSError, EvidenceValidationError) as exc:
@@ -724,6 +971,32 @@ def apply_gc(plan: GcPlan, authorized: object, expected_plan_digest: object) -> 
     plan._consumed = True
     if not consumed_now:
         return _result(plan, False, "GC_AUTHORIZATION_CONSUMED")
+    try:
+        current_plan_digest = _digest(plan._document_without_digest())
+        current_action_digest = _digest(
+            {
+                "operation": "evidence.gc.apply",
+                "store_id": plan.store_id,
+                "plan_digest": plan.plan_digest,
+                "manifest_snapshot_digest": plan.manifest_snapshot_digest,
+                "bytes_reclaimable": plan.bytes_reclaimable,
+            }
+        )
+    except (
+        AttributeError,
+        EvidenceValidationError,
+        KeyError,
+        OverflowError,
+        TypeError,
+        ValueError,
+    ):
+        return _result(plan, False, "GC_PLAN_INVALID")
+    if current_plan_digest != plan.plan_digest or current_action_digest != plan.action_digest:
+        return _result(plan, False, "GC_PLAN_INVALID")
+    if plan._store is not plan._prepared_store:
+        return _result(plan, False, "GC_PLAN_INVALID")
+    if not isinstance(authorized, str) or authorized != plan.action_digest:
+        return _result(plan, False, "GC_AUTHORIZATION_INVALID")
     if not isinstance(expected_plan_digest, str) or expected_plan_digest != plan.plan_digest:
         return _result(plan, False, "GC_PLAN_DIGEST_MISMATCH")
     try:

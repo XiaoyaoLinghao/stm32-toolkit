@@ -118,6 +118,74 @@ with EvidenceStore(root)._mutation_lock():
     assert acquired.read_text(encoding="utf-8") == "acquired"
 
 
+def test_store_mutation_lock_initializes_once_under_process_contention(tmp_path):
+    """Concurrent first users must converge on one verified kernel lock file."""
+    root = tmp_path / "new-evidence-root"
+    release = tmp_path / "first-lock-release"
+    order = tmp_path / "first-lock-order"
+    child = r"""
+import sys
+import time
+from pathlib import Path
+from stm32_toolkit.evidence.store import EvidenceStore
+
+root, ready, release, order, marker = sys.argv[1:]
+ready_path = Path(ready)
+release_path = Path(release)
+ready_path.write_text("ready", encoding="utf-8")
+deadline = time.monotonic() + 10
+while not release_path.exists() and time.monotonic() < deadline:
+    time.sleep(0.005)
+if not release_path.exists():
+    raise RuntimeError("first-lock race was never released")
+with EvidenceStore(Path(root))._mutation_lock():
+    with Path(order).open("a", encoding="utf-8") as stream:
+        stream.write(marker + "\n")
+        stream.flush()
+    time.sleep(0.03)
+"""
+    processes = []
+    ready_paths = []
+    for index in range(4):
+        ready = tmp_path / f"first-lock-ready-{index}"
+        ready_paths.append(ready)
+        processes.append(
+            subprocess.Popen(
+                [
+                    sys.executable,
+                    "-c",
+                    child,
+                    str(root),
+                    str(ready),
+                    str(release),
+                    str(order),
+                    str(index),
+                ],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+        )
+    deadline = time.monotonic() + 10
+    while not all(path.exists() for path in ready_paths) and time.monotonic() < deadline:
+        time.sleep(0.005)
+    assert all(path.exists() for path in ready_paths)
+    assert not root.exists()
+    release.write_text("release", encoding="utf-8")
+    for process in processes:
+        stdout, stderr = process.communicate(timeout=10)
+        assert process.returncode == 0, stderr or stdout
+
+    lock = root / ".gc-mutation.lock"
+    info = lock.lstat()
+    assert stat.S_ISREG(info.st_mode)
+    assert not EvidenceStore._is_reparse(info)
+    assert info.st_nlink == 1
+    assert info.st_size == 1
+    assert sorted(order.read_text(encoding="utf-8").splitlines()) == ["0", "1", "2", "3"]
+    assert list(root.iterdir()) == [lock]
+
+
 def test_ingest_copies_flushes_publishes_and_returns_verified_reference(tmp_path):
     """Skipping copy/publication verification could admit bytes that differ from the returned digest."""
     source = tmp_path / "source.bin"
