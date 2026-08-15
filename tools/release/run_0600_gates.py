@@ -30,12 +30,14 @@ COVERAGE_ROW_KEYS = {
     "executed_lines", "summary", "missing_lines", "excluded_lines",
     "executed_branches", "missing_branches", "functions", "classes",
 }
-COVERAGE_SUMMARY_KEYS = {
+COVERAGE_SUMMARY_BASE_KEYS = {
     "covered_lines", "num_statements", "percent_covered", "percent_covered_display",
-    "missing_lines", "excluded_lines", "percent_statements_covered",
-    "percent_statements_covered_display", "num_branches", "num_partial_branches",
-    "covered_branches", "missing_branches", "percent_branches_covered",
-    "percent_branches_covered_display",
+    "missing_lines", "excluded_lines", "num_branches", "num_partial_branches",
+    "covered_branches", "missing_branches",
+}
+COVERAGE_SUMMARY_EXTENDED_KEYS = COVERAGE_SUMMARY_BASE_KEYS | {
+    "percent_statements_covered", "percent_statements_covered_display",
+    "percent_branches_covered", "percent_branches_covered_display",
 }
 HEX40 = re.compile(r"^[0-9a-f]{40}$")
 HEX64 = re.compile(r"^[0-9a-f]{64}$")
@@ -880,44 +882,55 @@ def _default_git_runner(repo: Path) -> Callable[[list[str]], list[str]]:
     return run
 
 
-def _validate_coverage_summary(value: object) -> dict[str, object]:
-    if not isinstance(value, dict) or set(value) != COVERAGE_SUMMARY_KEYS:
+def _coverage_percent(covered_lines: int, statements: int, covered_branches: int, branches: int) -> float:
+    denominator = statements + branches
+    return 100.0 if denominator == 0 else (covered_lines + covered_branches) * 100.0 / denominator
+
+
+def _validate_coverage_percent(value: object, expected: float, *, display: bool = False) -> None:
+    if display:
+        if not isinstance(value, str) or value != f"{expected:.0f}":
+            raise ControllerError("coverage summary display percent is invalid")
+        return
+    if (
+        not isinstance(value, (int, float))
+        or isinstance(value, bool)
+        or not math.isfinite(value)
+        or not math.isclose(float(value), expected, rel_tol=1e-12, abs_tol=1e-12)
+    ):
+        raise ControllerError("coverage summary percent is invalid")
+
+
+def _validate_coverage_summary(value: object, *, extended: bool) -> dict[str, object]:
+    expected_keys = COVERAGE_SUMMARY_EXTENDED_KEYS if extended else COVERAGE_SUMMARY_BASE_KEYS
+    if not isinstance(value, dict) or set(value) != expected_keys:
         raise ControllerError("coverage summary is not closed")
     integer_fields = {
         "covered_lines", "num_statements", "missing_lines", "excluded_lines", "num_branches",
         "num_partial_branches", "covered_branches", "missing_branches",
     }
-    percent_fields = {
-        "percent_covered", "percent_statements_covered", "percent_branches_covered",
-    }
-    display_fields = {
-        "percent_covered_display", "percent_statements_covered_display",
-        "percent_branches_covered_display",
-    }
     for field in integer_fields:
         item = value[field]
         if not isinstance(item, int) or isinstance(item, bool) or item < 0:
             raise ControllerError("coverage summary counter is invalid")
-    for field in percent_fields:
-        item = value[field]
-        if (
-            not isinstance(item, (int, float))
-            or isinstance(item, bool)
-            or not math.isfinite(item)
-            or item < 0
-            or item > 100
-        ):
-            raise ControllerError("coverage summary percent is invalid")
-    for field in display_fields:
-        item = value[field]
-        if not isinstance(item, str) or re.fullmatch(r"(?:100|[0-9]{1,2})(?:\.[0-9]+)?", item) is None:
-            raise ControllerError("coverage summary display percent is invalid")
     if value["covered_lines"] + value["missing_lines"] != value["num_statements"]:
         raise ControllerError("coverage line counters are inconsistent")
     if value["covered_branches"] + value["missing_branches"] != value["num_branches"]:
         raise ControllerError("coverage branch counters are inconsistent")
     if value["num_partial_branches"] > value["num_branches"]:
         raise ControllerError("coverage partial branch count is invalid")
+    combined = _coverage_percent(
+        value["covered_lines"], value["num_statements"], value["covered_branches"], value["num_branches"]
+    )
+    _validate_coverage_percent(value["percent_covered"], combined)
+    _validate_coverage_percent(value["percent_covered_display"], combined, display=True)
+    if extended:
+        statements = 100.0 if value["num_statements"] == 0 else value["covered_lines"] * 100.0 / value["num_statements"]
+        branches = 100.0 if value["num_branches"] == 0 else value["covered_branches"] * 100.0 / value["num_branches"]
+        _validate_coverage_percent(value["percent_statements_covered"], statements)
+        _validate_coverage_percent(value["percent_statements_covered_display"], statements, display=True)
+        _validate_coverage_percent(value["percent_branches_covered"], branches)
+        _validate_coverage_percent(value["percent_branches_covered_display"], branches, display=True)
     return value
 
 
@@ -934,7 +947,7 @@ def _validate_coverage_v7(value: object) -> dict[str, object]:
         or not isinstance(meta["version"], str)
         or re.fullmatch(r"7\.[0-9]+\.[0-9]+", meta["version"]) is None
         or not isinstance(meta["timestamp"], str)
-        or re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{6}", meta["timestamp"]) is None
+        or re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]{1,6})?", meta["timestamp"]) is None
         or meta["branch_coverage"] is not True
         or meta["show_contexts"] is not False
     ):
@@ -942,6 +955,9 @@ def _validate_coverage_v7(value: object) -> dict[str, object]:
     files = value["files"]
     if not isinstance(files, dict):
         raise ControllerError("coverage files are invalid")
+    version = tuple(int(part) for part in meta["version"].split("."))
+    extended = version >= (7, 15, 0)
+    summaries: list[dict[str, object]] = []
     for details in files.values():
         if not isinstance(details, dict) or set(details) != COVERAGE_ROW_KEYS:
             raise ControllerError("coverage row is invalid")
@@ -950,8 +966,14 @@ def _validate_coverage_v7(value: object) -> dict[str, object]:
                 raise ControllerError("coverage row list is invalid")
         if not isinstance(details["functions"], dict) or not isinstance(details["classes"], dict):
             raise ControllerError("coverage row detail map is invalid")
-        _validate_coverage_summary(details["summary"])
-    _validate_coverage_summary(value["totals"])
+        summaries.append(_validate_coverage_summary(details["summary"], extended=extended))
+    totals = _validate_coverage_summary(value["totals"], extended=extended)
+    for field in (
+        "covered_lines", "num_statements", "missing_lines", "excluded_lines", "num_branches",
+        "num_partial_branches", "covered_branches", "missing_branches",
+    ):
+        if totals[field] != sum(summary[field] for summary in summaries):
+            raise ControllerError("coverage totals do not match file summaries")
     return value
 
 
@@ -975,6 +997,7 @@ def run_dev_coverage(
     validated: list[str] = []
     seen_quiet = False
     seen_plugin = False
+    seen_coverage: set[str] = set()
     index = 0
     while index < len(pytest_tokens):
         token = pytest_tokens[index]
@@ -997,6 +1020,10 @@ def run_dev_coverage(
             module = token.removeprefix("--cov=")
             if re.fullmatch(r"stm32_toolkit(?:\.[A-Za-z_][A-Za-z0-9_]*)*", module) is None:
                 raise ControllerError("coverage module is invalid")
+            if module in seen_coverage:
+                index += 1
+                continue
+            seen_coverage.add(module)
         elif token.startswith("-"):
             raise ControllerError("coverage option is not allowed")
         else:

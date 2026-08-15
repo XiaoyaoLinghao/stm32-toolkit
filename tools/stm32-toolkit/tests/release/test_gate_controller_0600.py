@@ -600,13 +600,14 @@ def _coverage_git(paths: list[str]):
 
 def _coverage_v7(rows: dict[str, tuple[int, int]]) -> dict[str, object]:
     """Return the closed coverage.py JSON format 3 emitted by the frozen pytest command."""
-    def summary(covered: int, total: int) -> dict[str, object]:
-        percent = 100.0 if total == 0 else covered * 100.0 / total
+    def summary(covered: int, total: int, statements: int) -> dict[str, object]:
+        combined_percent = 100.0 if statements + total == 0 else (statements + covered) * 100.0 / (statements + total)
+        branch_percent = 100.0 if total == 0 else covered * 100.0 / total
         return {
-            "covered_lines": 1,
-            "num_statements": 1,
-            "percent_covered": percent,
-            "percent_covered_display": str(round(percent)),
+            "covered_lines": statements,
+            "num_statements": statements,
+            "percent_covered": combined_percent,
+            "percent_covered_display": f"{combined_percent:.0f}",
             "missing_lines": 0,
             "excluded_lines": 0,
             "percent_statements_covered": 100.0,
@@ -615,15 +616,15 @@ def _coverage_v7(rows: dict[str, tuple[int, int]]) -> dict[str, object]:
             "num_partial_branches": 0,
             "covered_branches": covered,
             "missing_branches": total - covered,
-            "percent_branches_covered": percent,
-            "percent_branches_covered_display": str(round(percent)),
+            "percent_branches_covered": branch_percent,
+            "percent_branches_covered_display": f"{branch_percent:.0f}",
         }
 
     files: dict[str, object] = {}
     for path, (covered, total) in rows.items():
         files[path] = {
             "executed_lines": [1],
-            "summary": summary(covered, total),
+            "summary": summary(covered, total, 1),
             "missing_lines": [],
             "excluded_lines": [],
             "executed_branches": [],
@@ -640,8 +641,28 @@ def _coverage_v7(rows: dict[str, tuple[int, int]]) -> dict[str, object]:
             "show_contexts": False,
         },
         "files": files,
-        "totals": summary(sum(row[0] for row in rows.values()), sum(row[1] for row in rows.values())),
+        "totals": summary(sum(row[0] for row in rows.values()), sum(row[1] for row in rows.values()), len(rows)),
     }
+
+
+@pytest.mark.parametrize("version", ["7.10.7", "7.15.4"])
+def test_dev_coverage_accepts_desensitized_real_format3_fixtures(version: str) -> None:
+    """Frozen/current coverage JSON fixtures retain the exact real tool field shapes."""
+    fixture = Path(__file__).parent / "fixtures" / "coverage" / f"coverage-{version}-format3.json"
+    raw = json.loads(fixture.read_text(encoding="utf-8"))
+
+    parsed = gates._validate_coverage_v7(raw)
+
+    assert parsed["meta"]["version"] == version
+    assert parsed["totals"]["covered_branches"] == 1
+
+
+def test_dev_coverage_accepts_native_timestamp_without_fraction() -> None:
+    """coverage uses datetime.isoformat(), which legitimately omits a zero microsecond fraction."""
+    fixture = Path(__file__).parent / "fixtures" / "coverage" / "coverage-7.10.7-format3.json"
+    raw = json.loads(fixture.read_text(encoding="utf-8"))
+
+    assert gates._validate_coverage_v7(raw)["meta"]["timestamp"] == "2026-08-15T00:00:00"
 
 
 @pytest.mark.parametrize(
@@ -714,7 +735,7 @@ def test_dev_coverage_adds_exact_modules_for_changed_package_files(tmp_path: Pat
         repo,
         "STM32TK-0601-T03",
         evidence,
-        [str(test_file), "--cov=stm32_toolkit.evidence.model", "-q", "-p", "no:cacheprovider"],
+        [str(test_file), "--cov=stm32_toolkit.evidence.model", "--cov=stm32_toolkit.evidence.model", "-q", "-p", "no:cacheprovider"],
         _coverage_git(changed),
         runner,
     )
@@ -860,6 +881,9 @@ def test_dev_coverage_rejects_duplicate_json_object_rows(tmp_path: Path) -> None
         "row-extra",
         "summary-missing",
         "summary-extra",
+        "summary-percent",
+        "totals-counter",
+        "totals-percent",
     ],
 )
 def test_dev_coverage_rejects_mutated_coverage_v7_contract(tmp_path: Path, mutation: str) -> None:
@@ -895,8 +919,14 @@ def test_dev_coverage_rejects_mutated_coverage_v7_contract(tmp_path: Path, mutat
             details["extra"] = None
         elif mutation == "summary-missing":
             details["summary"].pop("missing_branches")
-        else:
+        elif mutation == "summary-extra":
             details["summary"]["extra"] = None
+        elif mutation == "summary-percent":
+            details["summary"]["percent_covered"] = 90.0
+        elif mutation == "totals-counter":
+            raw["totals"]["covered_branches"] = 8
+        else:
+            raw["totals"]["percent_branches_covered_display"] = "91"
         (evidence / "coverage-raw.json").write_text(json.dumps(raw), encoding="utf-8")
         return 0
 
