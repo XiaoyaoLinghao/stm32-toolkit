@@ -1372,13 +1372,15 @@ def _validate_performance_workload_contract(value: object, *, catalog: bool) -> 
         ):
             raise error("performance measurement contract is invalid")
     elif (
-        not _closed(measurement, {"kind", "warmup_seconds", "window_count", "seconds_per_window", "interaction_interval_seconds", "samples_per_window"})
+        not _closed(measurement, {"kind", "warmup_seconds", "measurement_seconds", "batch_count", "batch_duration_seconds", "cadence_seconds", "interaction_order", "samples_per_batch"})
         or measurement["kind"] != "continuous-windows"
         or measurement["warmup_seconds"] != 120
-        or measurement["window_count"] != 3
-        or measurement["seconds_per_window"] != 60
-        or measurement["interaction_interval_seconds"] != 5
-        or measurement["samples_per_window"] != 12
+        or measurement["measurement_seconds"] != 180
+        or measurement["batch_count"] != 3
+        or measurement["batch_duration_seconds"] != 60
+        or measurement["cadence_seconds"] != 5
+        or measurement["interaction_order"] != ["compare", "quality", "marker", "table"]
+        or measurement["samples_per_batch"] != 12
     ):
         raise error("browser performance measurement contract is invalid")
     for field in ("scale", "observation_contract"):
@@ -1510,8 +1512,8 @@ def validate_performance_run(value: object) -> dict[str, object]:
             raise VerificationError("performance workload sample plan differs from the frozen module")
         warmups = workload["warmup_samples"]
         batches = workload["batches"]
-        warmup_count = measurement["warmup_count"] if producer == "python" else expected_warmup
-        samples_per_batch = measurement["samples_per_batch"] if producer == "python" else expected_samples
+        warmup_count = measurement["warmup_count"] if producer == "python" else measurement["warmup_seconds"] // measurement["cadence_seconds"]
+        samples_per_batch = measurement["samples_per_batch"]
         if (
             not isinstance(warmups, list) or len(warmups) != warmup_count
             or any(not _positive_integer(item) for item in warmups)
@@ -1519,8 +1521,12 @@ def validate_performance_run(value: object) -> dict[str, object]:
         ):
             raise VerificationError("performance samples are invalid")
         batch_p95: list[int] = []
+        raw_browser_metrics: list[Mapping[str, object]] = []
         for index, batch in enumerate(batches):
-            if not _closed(batch, {"index", "started_offset_ns", "duration_ns", "samples", "p50", "p95", "max"}):
+            batch_keys = {"index", "started_offset_ns", "duration_ns", "samples", "p50", "p95", "max"}
+            if producer == "browser":
+                batch_keys.add("metrics")
+            if not _closed(batch, batch_keys):
                 raise VerificationError("performance batch is not closed")
             assert isinstance(batch, Mapping)
             samples = batch["samples"]
@@ -1531,6 +1537,29 @@ def validate_performance_run(value: object) -> dict[str, object]:
                 or any(not _positive_integer(item) for item in samples)
             ):
                 raise VerificationError("performance batch samples are invalid")
+            if producer == "browser":
+                if (
+                    batch["started_offset_ns"] != index * 60_000_000_000
+                    or batch["duration_ns"] != 60_000_000_000
+                    or not isinstance(batch["metrics"], list)
+                    or len(batch["metrics"]) != 12
+                ):
+                    raise VerificationError("browser performance batch window is not contiguous")
+                for sample_index, metric in enumerate(batch["metrics"]):
+                    if not _closed(metric, {"offset_ns", "interaction", "duration_ns", "retained_heap_bytes", "queue_depth", "long_task_duration_ns"}):
+                        raise VerificationError("browser performance metric is not closed")
+                    assert isinstance(metric, Mapping)
+                    global_index = index * 12 + sample_index
+                    if (
+                        metric["offset_ns"] != global_index * 5_000_000_000
+                        or metric["interaction"] != ("compare", "quality", "marker", "table")[global_index % 4]
+                        or metric["duration_ns"] != samples[sample_index]
+                        or not _positive_integer(metric["retained_heap_bytes"])
+                        or not _is_integer(metric["queue_depth"]) or metric["queue_depth"] < 0
+                        or not _is_integer(metric["long_task_duration_ns"]) or metric["long_task_duration_ns"] < 0
+                    ):
+                        raise VerificationError("browser performance metric cadence/order/sample binding failed")
+                    raw_browser_metrics.append(metric)
             expected = (_nearest_rank(samples, 1, 2), _nearest_rank(samples, 95, 100), max(samples))
             if (batch["p50"], batch["p95"], batch["max"]) != expected:
                 raise VerificationError("performance batch p50/p95/max mismatch")
@@ -1569,8 +1598,20 @@ def validate_performance_run(value: object) -> dict[str, object]:
             if not _closed(metrics, {"long_tasks_ge_200ms", "retained_heap_slope_bytes_per_minute", "queue_growth"}):
                 raise VerificationError("browser performance metrics are not closed")
             assert isinstance(metrics, Mapping)
+            first_metric = raw_browser_metrics[0]
+            last_metric = raw_browser_metrics[-1]
+            elapsed_ns = last_metric["offset_ns"] - first_metric["offset_ns"]
+            derived_long_tasks = sum(item["long_task_duration_ns"] >= 200_000_000 for item in raw_browser_metrics)
+            derived_heap_slope = (
+                (last_metric["retained_heap_bytes"] - first_metric["retained_heap_bytes"])
+                * 60_000_000_000 // elapsed_ns
+            )
+            derived_queue_growth = last_metric["queue_depth"] - first_metric["queue_depth"]
             if (
-                metrics["long_tasks_ge_200ms"] != 0
+                metrics["long_tasks_ge_200ms"] != derived_long_tasks
+                or metrics["retained_heap_slope_bytes_per_minute"] != derived_heap_slope
+                or metrics["queue_growth"] != derived_queue_growth
+                or metrics["long_tasks_ge_200ms"] != 0
                 or not _is_integer(metrics["retained_heap_slope_bytes_per_minute"])
                 or metrics["retained_heap_slope_bytes_per_minute"] < 0
                 or metrics["retained_heap_slope_bytes_per_minute"] > 2 * 1024 * 1024

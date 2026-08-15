@@ -1505,14 +1505,33 @@ def _browser_performance_run() -> dict[str, object]:
     workload = _performance_workload("browser-analysis-update", 150_000_000, 120, 12)
     workload["kind"] = "browser-latency"
     workload["measurement"] = {
-        "kind": "continuous-windows", "warmup_seconds": 120, "window_count": 3,
-        "seconds_per_window": 60, "interaction_interval_seconds": 5, "samples_per_window": 12,
+        "kind": "continuous-windows", "warmup_seconds": 120, "measurement_seconds": 180,
+        "batch_count": 3, "batch_duration_seconds": 60, "cadence_seconds": 5,
+        "interaction_order": ["compare", "quality", "marker", "table"],
+        "samples_per_batch": 12,
     }
+    workload["warmup_samples"] = [900 + index for index in range(24)]
+    interactions = ("compare", "quality", "marker", "table")
+    for batch_index, batch in enumerate(workload["batches"]):
+        batch["started_offset_ns"] = batch_index * 60_000_000_000
+        batch["duration_ns"] = 60_000_000_000
+        metrics = []
+        for sample_index, duration in enumerate(batch["samples"]):
+            global_index = batch_index * 12 + sample_index
+            metrics.append({
+                "offset_ns": global_index * 5_000_000_000,
+                "interaction": interactions[global_index % 4],
+                "duration_ns": duration,
+                "retained_heap_bytes": 100_000_000 + global_index * 50_000,
+                "queue_depth": 0,
+                "long_task_duration_ns": 0,
+            })
+        batch["metrics"] = metrics
     workload["workload_sha256"] = _fixture_sha({
         key: workload[key] for key in PERFORMANCE_CONTRACT_FIXTURE_KEYS
     })
     workload["browser_metrics"] = {
-        "long_tasks_ge_200ms": 0, "retained_heap_slope_bytes_per_minute": 1_000_000,
+        "long_tasks_ge_200ms": 0, "retained_heap_slope_bytes_per_minute": 600_000,
         "queue_growth": 0,
     }
     value.update({
@@ -1585,6 +1604,36 @@ def test_shared_performance_run_accepts_only_the_closed_browser_producer_shape()
         verifier.validate_performance_run(value)
 
 
+def _rehash_browser_workload(value: dict[str, object]) -> None:
+    workload = value["workloads"][0]
+    workload["workload_sha256"] = _fixture_sha({
+        key: workload[key] for key in PERFORMANCE_CONTRACT_FIXTURE_KEYS
+    })
+
+
+@pytest.mark.parametrize(
+    "mutation", ["gap", "overlap", "short-window", "wrong-order", "cadence-gap", "sample-mismatch"],
+)
+def test_browser_continuous_measurement_rejects_noncontiguous_or_unbound_raw_points(mutation: str) -> None:
+    value = _browser_performance_run()
+    workload = value["workloads"][0]
+    if mutation == "gap":
+        workload["batches"][1]["started_offset_ns"] += 1
+    elif mutation == "overlap":
+        workload["batches"][1]["started_offset_ns"] -= 1
+    elif mutation == "short-window":
+        workload["batches"][0]["duration_ns"] -= 1
+    elif mutation == "wrong-order":
+        workload["measurement"]["interaction_order"] = ["quality", "compare", "marker", "table"]
+        _rehash_browser_workload(value)
+    elif mutation == "cadence-gap":
+        workload["batches"][1]["metrics"][0]["offset_ns"] += 1
+    else:
+        workload["batches"][2]["metrics"][0]["duration_ns"] += 1
+    with pytest.raises(VerificationError, match="browser|batch|measurement"):
+        verifier.validate_performance_run(value)
+
+
 @pytest.mark.parametrize(
     ("field", "bad_value"),
     [("long_tasks_ge_200ms", 1), ("retained_heap_slope_bytes_per_minute", 2 * 1024 * 1024 + 1), ("queue_growth", 1)],
@@ -1592,8 +1641,9 @@ def test_shared_performance_run_accepts_only_the_closed_browser_producer_shape()
 def test_browser_continuous_windows_enforce_zero_and_heap_invariants(field: str, bad_value: int) -> None:
     value = _browser_performance_run()
     assert value["workloads"][0]["measurement"] == {
-        "kind": "continuous-windows", "warmup_seconds": 120, "window_count": 3,
-        "seconds_per_window": 60, "interaction_interval_seconds": 5, "samples_per_window": 12,
+        "kind": "continuous-windows", "warmup_seconds": 120, "measurement_seconds": 180,
+        "batch_count": 3, "batch_duration_seconds": 60, "cadence_seconds": 5,
+        "interaction_order": ["compare", "quality", "marker", "table"], "samples_per_batch": 12,
     }
     value["workloads"][0]["browser_metrics"][field] = bad_value
     with pytest.raises(VerificationError, match="browser performance invariant"):
