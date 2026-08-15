@@ -1425,7 +1425,11 @@ def _portable_failed_runner_stream(
             ):
                 raise ControllerError("native report pipe path is invalid")
             value = value.replace(native_pipe, "<EVIDENCE_ROOT>/native-results.xml")
-        value = _normalize_known_path(value, repository_root, evidence_root)
+        value, _ = _replace_verified_root(value, repository_root, "<REPOSITORY_ROOT>")
+        value, _ = _replace_verified_root(value, evidence_root, "<EVIDENCE_ROOT>")
+        value = value.replace("<REPOSITORY_ROOT>\\", "<REPOSITORY_ROOT>/").replace(
+            "<EVIDENCE_ROOT>\\", "<EVIDENCE_ROOT>/"
+        )
         validate_portable_text(value)
         return value.encode("utf-8")
     except (ControllerError, UnicodeError):

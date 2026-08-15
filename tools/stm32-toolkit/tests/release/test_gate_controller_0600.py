@@ -709,6 +709,20 @@ def test_failed_runner_stream_normalizes_only_verified_roots_and_pipe(tmp_path: 
     ) == gates.UNSAFE_RUNNER_STREAM_PLACEHOLDER
 
 
+def test_failed_runner_stream_retains_portable_https_and_git_https_uris(tmp_path: Path) -> None:
+    """The shared verifier accepts these URIs, so failed-stream handling must retain them."""
+    evidence = tmp_path / "portable-uri-evidence"
+    evidence.mkdir()
+    raw = b"https://example.com/docs\ngit+https://example.com/repo\n"
+    release_verifier._validate_portable_package_payload("URI/stdout.log", raw)
+
+    retained = gates._portable_failed_runner_stream(
+        raw, repository_root=REPO, evidence_root=evidence, native_pipe=None,
+    )
+
+    assert retained == raw
+
+
 @pytest.mark.skipif(os.name != "nt", reason="Windows reparse contract")
 def test_native_executor_rejects_prepositioned_and_create_race_junctions_without_external_write(
     tmp_path: Path,
