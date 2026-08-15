@@ -598,8 +598,12 @@ def _coverage_git(paths: list[str]):
     return run
 
 
+@pytest.mark.parametrize(
+    "task_id",
+    ["STM32TK-0601", "STM32TK-0601-T03", "STM32TK-0602-T01", "STM32TK-0603-T99"],
+)
 def test_dev_coverage_discovers_each_changed_product_file_and_requires_90_percent(
-    tmp_path: Path,
+    tmp_path: Path, task_id: str,
 ) -> None:
     """Aggregate coverage must not hide an individual changed product file below 90%."""
     repo = tmp_path / "repo"
@@ -627,7 +631,7 @@ def test_dev_coverage_discovers_each_changed_product_file_and_requires_90_percen
 
     result = run_dev_coverage(
         repo=repo,
-        task_id="STM32TK-0601",
+        task_id=task_id,
         evidence_root=evidence,
         pytest_tokens=[str(test_file), "--cov=stm32_toolkit.changed"],
         git_runner=_coverage_git([changed]),
@@ -637,7 +641,35 @@ def test_dev_coverage_discovers_each_changed_product_file_and_requires_90_percen
     assert result["files"] == [
         {"covered_branches": 9, "num_branches": 10, "path": changed, "percent": 90}
     ]
+    assert result["task_id"] == task_id
     assert (evidence / "branch-coverage.json").is_file()
+
+
+@pytest.mark.parametrize(
+    "task_id",
+    [
+        "stm32tk-0601-T03",
+        "STM32TK-0601-t03",
+        "STM32TK-0601-T00",
+        "STM32TK-0601-T1",
+        "STM32TK-0601-T001",
+        "STM32TK-0601-T03-extra",
+        "STM32TK-0604-T03",
+        "STM32TK-9999",
+    ],
+)
+def test_dev_coverage_rejects_noncanonical_or_unknown_task_ids_before_side_effects(
+    tmp_path: Path, task_id: str
+) -> None:
+    """Coverage task IDs are exact, case-sensitive, and limited to known 0.6 modules."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    evidence = tmp_path / "evidence"
+
+    with pytest.raises(ControllerError, match="unknown coverage task"):
+        run_dev_coverage(repo, task_id, evidence, ["tests/test_changed.py"])
+
+    assert not evidence.exists()
 
 
 @pytest.mark.parametrize(

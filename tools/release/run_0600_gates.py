@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Callable, Mapping, Protocol, Sequence
 
 KNOWN_MODULES = {"STM32TK-0601", "STM32TK-0602", "STM32TK-0603"}
+COVERAGE_TASK_ID = re.compile(r"(?P<module>STM32TK-[0-9]{4})-T(?:0[1-9]|[1-9][0-9])")
 HEX40 = re.compile(r"^[0-9a-f]{40}$")
 HEX64 = re.compile(r"^[0-9a-f]{64}$")
 UUID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$")
@@ -862,7 +863,10 @@ def run_dev_coverage(
     git_runner: Callable[[list[str]], list[str]] | None = None,
     runner: Callable[..., int] = _default_runner,
 ) -> dict[str, object]:
-    if task_id not in KNOWN_MODULES:
+    scoped_task = COVERAGE_TASK_ID.fullmatch(task_id)
+    if task_id not in KNOWN_MODULES and (
+        scoped_task is None or scoped_task.group("module") not in KNOWN_MODULES
+    ):
         raise ControllerError("unknown coverage task")
     evidence = prepare_evidence_root(evidence_root)
     changed = _changed_product_files(repo, git_runner or _default_git_runner(repo))
