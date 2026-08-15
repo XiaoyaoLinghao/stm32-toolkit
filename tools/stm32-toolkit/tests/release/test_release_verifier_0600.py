@@ -61,6 +61,29 @@ HEADS = {
 REPOSITORY_URL = "https://github.com/XiaoyaoLinghao/stm32-toolkit.git"
 
 
+@pytest.mark.parametrize(
+    ("fixture", "framework", "expected"),
+    [
+        ("pytest-8.4.2-junit.xml", "pytest-junit", [{"node_id": "native.pytest_fixture::test_native_pass", "outcome": "passed"}, {"node_id": "native.pytest_fixture::test_native_fail", "outcome": "failed"}]),
+        ("ctest-4.3.1-junit.xml", "ctest-junit", [{"node_id": "native-pass", "outcome": "passed"}, {"node_id": "native-fail", "outcome": "failed"}]),
+        ("vitest-4.1.10.json", "vitest-json", [{"node_id": "native pass", "outcome": "passed"}, {"node_id": "native fail", "outcome": "failed"}]),
+        ("playwright-1.56.1-list.json", "playwright-json", [{"node_id": "chromium-1280::native/playwright.fixture.spec.mjs::native list-only", "outcome": "skipped"}]),
+    ],
+)
+def test_terminal_verifier_reparses_controller_native_artifacts(
+    fixture: str, framework: str, expected: list[dict[str, str]]
+) -> None:
+    """Final evidence derives nodes from the retained native runner artifact, never stdout JSONL."""
+    raw = (REPO / "tools/stm32-toolkit/tests/release/fixtures/native-outcomes" / fixture).read_bytes()
+
+    assert verifier._parse_retained_native_outcomes(framework, raw) == expected
+
+
+def test_portable_validation_allows_only_the_native_evidence_root_placeholder() -> None:
+    assert verifier._contains_rooted_private_path("<EVIDENCE_ROOT>/native-results.xml") is False
+    assert verifier._contains_rooted_private_path("C:\\Users\\private\\native-results.xml") is True
+
+
 @pytest.fixture
 def tmp_path() -> Path:
     root = Path(tempfile.mkdtemp(prefix="stm32tk-0601-verifier-", dir=r"C:\tmp"))

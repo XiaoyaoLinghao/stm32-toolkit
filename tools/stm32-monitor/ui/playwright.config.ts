@@ -20,6 +20,7 @@ if (controlledChromium !== undefined && controlledChromium.trim().length > 0) {
 
 export default defineConfig({
   testDir: "./e2e",
+  retries: 0,
   use: {browserName: "chromium", launchOptions},
   projects: [
     {name: "chromium-1280", use: {...devices["Desktop Chrome"], viewport: {width: 1280, height: 720}}},

@@ -83,6 +83,15 @@ def _sha(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
+def _native_pytest_command(tmp_path: Path, node_id: str, outcome: str) -> tuple[str, ...]:
+    """Build a real pytest node fixture; tests must never emit controller JSONL."""
+    _, separator, function = node_id.rpartition("::")
+    assert separator and function.isidentifier()
+    expected_outcomes = {"node": "passed", "passed": "passed", "failed": "failed", "unexpected": "passed", "expected": "skipped", "wrong": "passed"}
+    assert expected_outcomes[function] == outcome
+    return ("py", "-3.12", "-m", "pytest", f"tools/stm32-toolkit/tests/release/fixtures/native-outcomes/fixture.py::{function}", "-q", "-p", "no:cacheprovider", "-o", "python_files=*.py", "-o", "python_functions=*")
+
+
 def _gate(
     gate_id: str,
     *,
@@ -373,36 +382,88 @@ def test_non_python_executable_metadata_uses_exact_file_digest(tmp_path: Path) -
 
 
 def test_real_gate_executor_uses_argv_timeout_and_retains_one_snapshot(tmp_path: Path) -> None:
-    """The production executor must parse exact node outcomes and retain its streams/results."""
-    script = tmp_path / "fake_gate.py"
+    """The executor appends pytest's native JUnit sink; controller JSONL is not a protocol."""
+    script = tmp_path / "test_native.py"
     script.write_text(
-        "import json\n"
-        "print(json.dumps({'schema':'stm32-node-outcome/1','node_id':'tests::one','outcome':'passed'}))\n"
-        "print(json.dumps({'schema':'stm32-node-outcome/1','node_id':'tests::two','outcome':'failed'}))\n",
+        "def test_one() -> None:\n    assert True\n\n"
+        "def test_two() -> None:\n    assert False\n",
         encoding="utf-8",
     )
     evidence = tmp_path / "evidence"
     evidence.mkdir()
     gate = GateRequest(
         gate_id="REAL",
-        argv=(sys.executable, str(script)),
+        argv=(sys.executable, "-m", "pytest", str(script), "-q", "-p", "no:cacheprovider"),
         cwd=tmp_path,
         timeout_seconds=5,
-        expected_nodes=("tests::one", "tests::two"),
+        expected_nodes=("test_native::test_one", "test_native::test_two"),
     )
 
     output = execute_gate_process(gate, {}, evidence_root=evidence)
 
-    assert output.exit_code == 0
-    assert output.node_outcomes == (("tests::one", "passed"), ("tests::two", "failed"))
-    assert output.selected_nodes == ("tests::one", "tests::two")
+    assert output.exit_code == 1
+    assert output.node_outcomes == (("test_native::test_one", "passed"), ("test_native::test_two", "failed"))
+    assert output.selected_nodes == ("test_native::test_one", "test_native::test_two")
     assert output.duration_ms >= 0
     assert output.timed_out is False
     assert [item["path"] for item in output.retained_evidence] == [
+        "REAL/native-results.xml",
         "REAL/result.json",
         "REAL/stderr.log",
         "REAL/stdout.log",
     ]
+
+
+@pytest.mark.parametrize(
+    ("fixture", "framework", "expected"),
+    [
+        ("pytest-8.4.2-junit.xml", "pytest-junit", (("native.pytest_fixture::test_native_pass", "passed"), ("native.pytest_fixture::test_native_fail", "failed"))),
+        ("ctest-4.3.1-junit.xml", "ctest-junit", (("native-pass", "passed"), ("native-fail", "failed"))),
+        ("vitest-4.1.10.json", "vitest-json", (("native pass", "passed"), ("native fail", "failed"))),
+        ("playwright-1.56.1-list.json", "playwright-json", (("chromium-1280::native/playwright.fixture.spec.mjs::native list-only", "skipped"),)),
+    ],
+)
+def test_native_node_outcome_adapters_consume_only_real_runner_business_fields(
+    fixture: str, framework: str, expected: tuple[tuple[str, str], ...]
+) -> None:
+    """Sanitized real runner reports, not controller-authored JSONL, define node outcomes."""
+    raw = (REPO / "tools/stm32-toolkit/tests/release/fixtures/native-outcomes" / fixture).read_bytes()
+
+    assert gates.parse_native_node_outcomes(framework, raw) == expected
+
+
+def test_windows_playwright_contract_explicitly_disables_retries_and_defers_nonchromium() -> None:
+    """Only Chromium's two frozen Windows viewports may execute in the native adapter."""
+    config = (REPO / "tools/stm32-monitor/ui/playwright.config.ts").read_text(encoding="utf-8")
+
+    assert "retries: 0" in config
+    assert 'name: "chromium-1280"' in config
+    assert 'name: "chromium-1024"' in config
+    assert 'name: "firefox-deferred"' in config
+    assert 'name: "webkit-deferred"' in config
+    assert gates._native_report_argv(
+        ("playwright", "test", "--project=chromium-1280", "--project=chromium-1024"),
+        REPO,
+    )[0] == "playwright-json"
+    with pytest.raises(ControllerError, match="Chromium"):
+        gates._native_report_argv(("playwright", "test", "--project=firefox-deferred"), REPO)
+
+
+def test_native_stdout_redacts_only_controller_owned_evidence_result_path(tmp_path: Path) -> None:
+    """Raw pytest's JUnit banner is made portable without permitting arbitrary absolute paths."""
+    gate_root = tmp_path / "gates" / "NATIVE"
+    gate_root.mkdir(parents=True)
+    native = gate_root / "native-results.xml"
+    stdout = (
+        f"- generated xml file: {native} -\n"
+        "ordinary output\n"
+        "C:\\Users\\private\\must-remain\n"
+    ).encode("utf-8")
+
+    assert gates._portable_native_stdout(stdout, native) == (
+        b"- generated xml file: <EVIDENCE_ROOT>/native-results.xml -\n"
+        b"ordinary output\nC:\\Users\\private\\must-remain\n"
+    )
 
 
 def test_real_gate_executor_times_out_and_cleans_up(tmp_path: Path) -> None:
@@ -3920,12 +3981,8 @@ def test_terminal_wrapper_schedules_executable_catalog_families_and_verifies_pac
     """An executable family must run from catalog argv and determine PASS instead of a hardcoded BLOCKED."""
     support_profile = _write_support(tmp_path / "support")
     evidence = tmp_path / "quick-evidence"
-    node = "fixture::node"
-    command = (
-        "py", "-3.12",
-        "-c",
-        "import json;print(json.dumps({'schema':'stm32-node-outcome/1','node_id':'fixture::node','outcome':'passed'}))",
-    )
+    node = "tests.release.fixtures.native-outcomes.fixture::node"
+    command = _native_pytest_command(tmp_path, node, "passed")
     family = GateFamily(
         family_id="FIXTURE-EXECUTABLE",
         module="STM32TK-0601",
@@ -4097,11 +4154,8 @@ def test_terminal_verifier_derives_row_status_from_exit_and_node_outcomes(
     """A self-consistent package cannot label exit-zero/failed-node evidence PASS."""
     support_profile = _write_support(tmp_path / "support-terminal-row")
     evidence = tmp_path / "final-terminal-row"
-    node = "fixture::failed"
-    command = (
-        "py", "-3.12", "-c",
-        "import json;print(json.dumps({'schema':'stm32-node-outcome/1','node_id':'fixture::failed','outcome':'failed'}))",
-    )
+    node = "tests.release.fixtures.native-outcomes.fixture::failed"
+    command = _native_pytest_command(tmp_path, node, "failed")
     family = GateFamily(
         family_id="FIXTURE-FAILED", module="STM32TK-0601", matrices=("final-windows",),
         owner_class="Codex/local derived agents", platform_class="windows-python",
@@ -4121,7 +4175,7 @@ def test_terminal_verifier_derives_row_status_from_exit_and_node_outcomes(
     )
     terminal_path = evidence / "controller-result.json"
     terminal = json.loads(terminal_path.read_text(encoding="utf-8"))
-    assert terminal["gate_results"][0]["metadata"]["exit_code"] == 0
+    assert terminal["gate_results"][0]["metadata"]["exit_code"] == 1
     assert terminal["gate_results"][0]["metadata"]["node_outcomes"] == [
         {"node_id": node, "outcome": "failed"}
     ]
@@ -4167,11 +4221,8 @@ def test_terminal_verifier_derives_control_reason_from_retained_facts(
     """Changing a claimed control reason cannot change the retained control facts."""
     support_profile = _write_support(tmp_path / f"support-reason-{case}")
     evidence = tmp_path / f"final-reason-{case}"
-    failing_node = "fixture::failed"
-    failing_command = (
-        "py", "-3.12", "-c",
-        "import json;print(json.dumps({'schema':'stm32-node-outcome/1','node_id':'fixture::failed','outcome':'failed'}));raise SystemExit(1)",
-    )
+    failing_node = "tests.release.fixtures.native-outcomes.fixture::failed"
+    failing_command = _native_pytest_command(tmp_path, failing_node, "failed")
 
     def family(
         family_id: str,
@@ -4271,15 +4322,12 @@ def test_terminal_verifier_accepts_all_pass_executable_inventory(
     """An all-PASS executable family derives aggregate PASS/PASS, not a reserved reason."""
     support_profile = _write_support(tmp_path / "support-terminal-pass")
     evidence = tmp_path / "final-terminal-pass"
-    node = "fixture::passed"
+    node = "tests.release.fixtures.native-outcomes.fixture::passed"
     family = GateFamily(
         family_id="FIXTURE-PASSED", module="STM32TK-0601", matrices=("final-windows",),
         owner_class="Codex/local derived agents", platform_class="windows-python",
         evidence_type="fixture", coverage_context="controller-off",
-        command_argv=(
-            "py", "-3.12", "-c",
-            "import json;print(json.dumps({'schema':'stm32-node-outcome/1','node_id':'fixture::passed','outcome':'passed'}))",
-        ),
+        command_argv=_native_pytest_command(tmp_path, node, "passed"),
         node_ids=(node,), prerequisites=(), reserved=False,
     )
     head = "a" * 40
@@ -4310,8 +4358,8 @@ def test_terminal_verifier_accepts_all_pass_executable_inventory(
 @pytest.mark.parametrize(
     ("emitted_node", "emitted_outcome", "expected_reason"),
     [
-        ("fixture::unexpected", "passed", "NODE_INVENTORY_MISMATCH"),
-        ("fixture::expected", "skipped", "NODE_OUTCOME_MISMATCH"),
+        ("tests.release.fixtures.native-outcomes.fixture::unexpected", "passed", "NODE_INVENTORY_MISMATCH"),
+        ("tests.release.fixtures.native-outcomes.fixture::expected", "skipped", "NODE_OUTCOME_MISMATCH"),
     ],
 )
 def test_terminal_verifier_accepts_truthful_node_mismatch_failures(
@@ -4324,19 +4372,13 @@ def test_terminal_verifier_accepts_truthful_node_mismatch_failures(
     """Retained selected-node/outcome facts must independently prove mismatch failures."""
     support_profile = _write_support(tmp_path / f"support-{expected_reason}")
     evidence = tmp_path / f"final-{expected_reason}"
-    command = (
-        "py", "-3.12", "-c",
-        "import json;print(json.dumps({"
-        f"'schema':'stm32-node-outcome/1','node_id':'{emitted_node}',"
-        f"'outcome':'{emitted_outcome}'"
-        "}))",
-    )
+    command = _native_pytest_command(tmp_path, emitted_node, emitted_outcome)
     family = GateFamily(
         family_id="FIXTURE-MISMATCH", module="STM32TK-0601",
         matrices=("final-windows",), owner_class="Codex/local derived agents",
         platform_class="windows-python", evidence_type="fixture",
         coverage_context="controller-off", command_argv=command,
-        node_ids=("fixture::expected",), prerequisites=(), reserved=False,
+        node_ids=("tests.release.fixtures.native-outcomes.fixture::expected",), prerequisites=(), reserved=False,
     )
     head = "a" * 40
     run_wrapper_contract(
@@ -4371,16 +4413,13 @@ def test_terminal_verifier_reparses_retained_stdout_before_deriving_nodes(
     """Mutable metadata/result claims cannot contradict the retained process stdout."""
     support_profile = _write_support(tmp_path / "support-stdout-reparse")
     evidence = tmp_path / "final-stdout-reparse"
-    expected_node = "fixture::expected"
+    expected_node = "tests.release.fixtures.native-outcomes.fixture::expected"
     family = GateFamily(
         family_id="FIXTURE-STDOUT", module="STM32TK-0601",
         matrices=("final-windows",), owner_class="Codex/local derived agents",
         platform_class="windows-python", evidence_type="fixture",
         coverage_context="controller-off",
-        command_argv=(
-            "py", "-3.12", "-c",
-            "import json;print(json.dumps({'schema':'stm32-node-outcome/1','node_id':'fixture::wrong','outcome':'passed'}))",
-        ),
+            command_argv=_native_pytest_command(tmp_path, "tests.release.fixtures.native-outcomes.fixture::wrong", "passed"),
         node_ids=(expected_node,), prerequisites=(), reserved=False,
     )
     head = "a" * 40

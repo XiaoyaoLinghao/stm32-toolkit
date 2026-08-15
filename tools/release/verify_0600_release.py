@@ -32,6 +32,8 @@ from fractions import Fraction
 from pathlib import Path
 from typing import Callable, Mapping, Sequence
 
+from run_0600_gates import ControllerError, native_node_framework, parse_native_node_outcomes
+
 
 CATALOG_SCHEMA = "stm32-gate-catalog/1"
 PERFORMANCE_SCHEMA = "stm32-performance-catalog/1"
@@ -1044,6 +1046,9 @@ def _portable_regex_escape_at(value: str, start: int) -> bool:
 
 
 def _contains_rooted_private_path(value: str) -> bool:
+    value = value.replace("<EVIDENCE_ROOT>/native-results.xml", "native-results.xml").replace(
+        "<EVIDENCE_ROOT>/native-results.json", "native-results.json"
+    )
     stripped = value.strip()
     if stripped and not stripped.strip("\\/"):
         return True
@@ -2806,24 +2811,14 @@ def _verify_terminal_decision(
     return str(precheck), str(postcheck)
 
 
-def _parse_retained_node_outcomes(stdout: bytes) -> list[dict[str, str]]:
-    outcomes: list[dict[str, str]] = []
-    for raw_line in stdout.splitlines():
-        try:
-            value = json.loads(raw_line.decode("utf-8"))
-        except (UnicodeError, json.JSONDecodeError):
-            continue
-        if (
-            isinstance(value, dict)
-            and set(value) == {"schema", "node_id", "outcome"}
-            and value["schema"] == "stm32-node-outcome/1"
-            and isinstance(value["node_id"], str)
-            and isinstance(value["outcome"], str)
-        ):
-            outcomes.append({
-                "node_id": value["node_id"], "outcome": value["outcome"]
-            })
-    return outcomes
+def _parse_retained_native_outcomes(framework: str, raw: bytes) -> list[dict[str, str]]:
+    try:
+        return [
+            {"node_id": node_id, "outcome": outcome}
+            for node_id, outcome in parse_native_node_outcomes(framework, raw)
+        ]
+    except ControllerError as exc:
+        raise VerificationError("terminal native node artifact is invalid") from exc
 
 
 def _verify_terminal_metadata(
@@ -2917,11 +2912,17 @@ def _verify_terminal_metadata(
     retained = value["retained_evidence"]
     if not isinstance(retained, list):
         raise VerificationError("terminal retained evidence is not an array")
-    expected = [] if family.reserved or unexecuted else [
+    if family.reserved or unexecuted:
+        expected = []
+    else:
+        framework = native_node_framework(family.command_argv)
+        extension = "xml" if framework in {"pytest-junit", "ctest-junit"} else "json"
+        expected = [
+        f"{family.family_id}/native-results.{extension}",
         f"{family.family_id}/result.json",
         f"{family.family_id}/stderr.log",
         f"{family.family_id}/stdout.log",
-    ]
+        ]
     if [item.get("path") if isinstance(item, Mapping) else None for item in retained] != expected:
         raise VerificationError("terminal retained evidence inventory differs from catalog executor")
     for item in retained:
@@ -3080,6 +3081,11 @@ def _verify_terminal_result(
             unexecuted=unexecuted,
         )
         if not unexecuted:
+            framework = native_node_framework(family.command_argv)
+            extension = "xml" if framework in {"pytest-junit", "ctest-junit"} else "json"
+            native_path = evidence_root / "gates" / family.family_id / f"native-results.{extension}"
+            if not _regular_file(native_path):
+                raise VerificationError("terminal retained native result is missing or unsafe")
             stdout_path = evidence_root / "gates" / family.family_id / "stdout.log"
             if not _regular_file(stdout_path):
                 raise VerificationError("terminal retained stdout is missing or unsafe")
@@ -3089,7 +3095,7 @@ def _verify_terminal_result(
                 "sha256": hashlib.sha256(stdout_bytes).hexdigest(),
             } != metadata["stdout"]:
                 raise VerificationError("terminal retained stdout differs from metadata")
-            parsed_outcomes = _parse_retained_node_outcomes(stdout_bytes)
+            parsed_outcomes = _parse_retained_native_outcomes(framework, native_path.read_bytes())
             if (
                 parsed_outcomes != metadata["node_outcomes"]
                 or [item["node_id"] for item in parsed_outcomes]

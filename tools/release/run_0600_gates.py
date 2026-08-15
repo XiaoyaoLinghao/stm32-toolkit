@@ -19,6 +19,7 @@ import sys
 import tempfile
 import time
 import types
+import xml.etree.ElementTree as ElementTree
 from contextlib import ExitStack
 from ctypes import wintypes
 from dataclasses import dataclass
@@ -535,22 +536,175 @@ def _decision_facts(
     }
 
 
-def _parse_node_outcomes(stdout: bytes) -> tuple[tuple[str, str], ...]:
-    outcomes: list[tuple[str, str]] = []
-    for raw_line in stdout.splitlines():
-        try:
-            value = json.loads(raw_line.decode("utf-8"))
-        except (UnicodeError, json.JSONDecodeError):
-            continue
-        if (
-            isinstance(value, dict)
-            and set(value) == {"schema", "node_id", "outcome"}
-            and value["schema"] == "stm32-node-outcome/1"
-            and isinstance(value["node_id"], str)
-            and isinstance(value["outcome"], str)
-        ):
-            outcomes.append((value["node_id"], value["outcome"]))
+def _node_text(value: object, field: str) -> str:
+    if not isinstance(value, str) or not value or "\x00" in value:
+        raise ControllerError(f"native node {field} is invalid")
+    return value
+
+
+def _unique_native_outcomes(outcomes: list[tuple[str, str]]) -> tuple[tuple[str, str], ...]:
+    if not outcomes or len({node_id for node_id, _ in outcomes}) != len(outcomes):
+        raise ControllerError("native node inventory is empty or duplicated")
     return tuple(outcomes)
+
+
+def _parse_junit_node_outcomes(raw: bytes, framework: str) -> tuple[tuple[str, str], ...]:
+    try:
+        root = ElementTree.fromstring(raw)
+    except (ElementTree.ParseError, UnicodeError) as exc:
+        raise ControllerError(f"{framework} native report is invalid XML") from exc
+    if root.tag not in {"testsuite", "testsuites"}:
+        raise ControllerError(f"{framework} native report root is invalid")
+    outcomes: list[tuple[str, str]] = []
+    for testcase in root.iter("testcase"):
+        name = _node_text(testcase.get("name"), "name")
+        classname = testcase.get("classname")
+        node_id = name if framework == "ctest-junit" else f"{_node_text(classname, 'classname')}::{name}"
+        children = {child.tag for child in testcase}
+        status = testcase.get("status")
+        if "failure" in children or "error" in children or status == "fail":
+            outcome = "failed"
+        elif "skipped" in children or status in {"skip", "notrun"}:
+            outcome = "skipped"
+        elif status in {None, "run"}:
+            outcome = "passed"
+        else:
+            raise ControllerError(f"{framework} native testcase status is invalid")
+        outcomes.append((node_id, outcome))
+    return _unique_native_outcomes(outcomes)
+
+
+def _native_json(raw: bytes, framework: str) -> dict[str, object]:
+    try:
+        value = json.loads(raw.decode("utf-8"))
+    except (UnicodeError, json.JSONDecodeError) as exc:
+        raise ControllerError(f"{framework} native report is invalid JSON") from exc
+    if not isinstance(value, dict):
+        raise ControllerError(f"{framework} native report must be an object")
+    return value
+
+
+def _parse_vitest_node_outcomes(raw: bytes) -> tuple[tuple[str, str], ...]:
+    report = _native_json(raw, "vitest-json")
+    tests = report.get("testResults")
+    if not isinstance(tests, list):
+        raise ControllerError("vitest native report testResults is invalid")
+    outcomes: list[tuple[str, str]] = []
+    for suite in tests:
+        if not isinstance(suite, dict) or not isinstance(suite.get("assertionResults"), list):
+            raise ControllerError("vitest native report suite is invalid")
+        for assertion in suite["assertionResults"]:
+            if not isinstance(assertion, dict):
+                raise ControllerError("vitest native assertion is invalid")
+            node_id = _node_text(assertion.get("fullName"), "fullName")
+            status = assertion.get("status")
+            if status not in {"passed", "failed", "skipped", "pending", "todo"}:
+                raise ControllerError("vitest native assertion status is invalid")
+            outcomes.append((node_id, "skipped" if status in {"pending", "todo"} else status))
+    return _unique_native_outcomes(outcomes)
+
+
+def _parse_playwright_node_outcomes(raw: bytes) -> tuple[tuple[str, str], ...]:
+    report = _native_json(raw, "playwright-json")
+    suites = report.get("suites")
+    if not isinstance(suites, list):
+        raise ControllerError("playwright native report suites is invalid")
+    outcomes: list[tuple[str, str]] = []
+
+    def walk(suite: object) -> None:
+        if not isinstance(suite, dict):
+            raise ControllerError("playwright native suite is invalid")
+        file_name = _node_text(suite.get("file"), "file")
+        specs = suite.get("specs", [])
+        children = suite.get("suites", [])
+        if not isinstance(specs, list) or not isinstance(children, list):
+            raise ControllerError("playwright native suite children are invalid")
+        for spec in specs:
+            if not isinstance(spec, dict) or not isinstance(spec.get("tests"), list):
+                raise ControllerError("playwright native spec is invalid")
+            title = _node_text(spec.get("title"), "title")
+            for test in spec["tests"]:
+                if not isinstance(test, dict):
+                    raise ControllerError("playwright native test is invalid")
+                project = _node_text(test.get("projectName"), "projectName")
+                status = test.get("status")
+                results = test.get("results")
+                if not isinstance(results, list) or status not in {"expected", "unexpected", "skipped", "flaky"}:
+                    raise ControllerError("playwright native test status is invalid")
+                if status == "skipped":
+                    outcome = "skipped"
+                elif len(results) == 1 and isinstance(results[0], dict) and results[0].get("status") in {"passed", "failed", "timedOut", "skipped"}:
+                    native = results[0]["status"]
+                    outcome = "failed" if native in {"failed", "timedOut"} else native
+                else:
+                    raise ControllerError("playwright native test result is invalid")
+                outcomes.append((f"{project}::{file_name}::{title}", outcome))
+        for child in children:
+            walk(child)
+
+    for suite in suites:
+        walk(suite)
+    return _unique_native_outcomes(outcomes)
+
+
+def parse_native_node_outcomes(framework: str, raw: bytes) -> tuple[tuple[str, str], ...]:
+    """Map one strictly validated native runner report to the catalog's node inventory."""
+    if framework in {"pytest-junit", "ctest-junit"}:
+        return _parse_junit_node_outcomes(raw, framework)
+    if framework == "vitest-json":
+        return _parse_vitest_node_outcomes(raw)
+    if framework == "playwright-json":
+        return _parse_playwright_node_outcomes(raw)
+    raise ControllerError("native node framework is unsupported")
+
+
+def native_node_framework(argv: Sequence[str]) -> str:
+    """Identify the only accepted native outcome format for a frozen runner argv."""
+    lowered = tuple(token.casefold() for token in argv)
+    if any(lowered[index:index + 2] == ("-m", "pytest") for index in range(len(lowered) - 1)):
+        if any(token.startswith("--junitxml") for token in argv):
+            raise ControllerError("pytest native JUnit sink must be controller-owned")
+        return "pytest-junit"
+    executable = Path(argv[0]).name.casefold()
+    if executable in {"ctest", "ctest.exe"}:
+        if "--output-junit" in lowered:
+            raise ControllerError("CTest native JUnit sink must be controller-owned")
+        return "ctest-junit"
+    if any("vitest" in token for token in lowered):
+        if any(token.startswith("--reporter") for token in lowered):
+            raise ControllerError("Vitest native JSON reporter must be controller-owned")
+        return "vitest-json"
+    if any("playwright" in token for token in lowered):
+        if any(token.startswith("--reporter") for token in lowered):
+            raise ControllerError("Playwright native JSON reporter must be controller-owned")
+        projects = tuple(token.split("=", 1)[1] for token in argv if token.startswith("--project="))
+        if projects != ("chromium-1280", "chromium-1024"):
+            raise ControllerError("Windows Playwright adapter requires only frozen Chromium projects")
+        return "playwright-json"
+    raise ControllerError("gate executable has no supported native node outcome adapter")
+
+
+def _native_report_argv(argv: Sequence[str], gate_root: Path) -> tuple[str, tuple[str, ...], Path | None]:
+    """Append the single native result sink without changing the frozen product argv."""
+    framework = native_node_framework(argv)
+    if framework == "pytest-junit":
+        report = gate_root / "native-results.xml"
+        return framework, (f"--junitxml={report}",), report
+    if framework == "ctest-junit":
+        report = gate_root / "native-results.xml"
+        return framework, ("--output-junit", str(report)), report
+    return framework, ("--reporter=json",), None
+
+
+def _portable_native_stdout(stdout: bytes, native_report: Path) -> bytes:
+    """Redact exactly the controller-created native report pathname from runner chatter."""
+    if not native_report.is_absolute() or native_report.name not in {"native-results.xml", "native-results.json"}:
+        raise ControllerError("native report path is not controller-owned")
+    try:
+        needle = str(native_report).encode("utf-8")
+    except UnicodeError as exc:
+        raise ControllerError("native report path cannot be encoded") from exc
+    return stdout.replace(needle, f"<EVIDENCE_ROOT>/{native_report.name}".encode("ascii"))
 
 
 def _terminate_process_tree(process: subprocess.Popen[bytes]) -> None:
@@ -582,6 +736,12 @@ def execute_gate_process(
         raise ControllerError("executor evidence root is invalid")
     gate_root = evidence_root / gate.gate_id
     gate_root.mkdir()
+    try:
+        framework, native_tokens, native_report_path = _native_report_argv(gate.argv, gate_root)
+    except ControllerError:
+        if gate.expected_nodes:
+            raise
+        framework, native_tokens, native_report_path = "opaque", (), None
     base_environment = _safe_controller_env()
     child_env = {
         key: value
@@ -594,7 +754,7 @@ def execute_gate_process(
     creation_flags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0) if os.name == "nt" else 0
     started = time.monotonic_ns()
     process = subprocess.Popen(
-        list(gate.argv),
+        [*gate.argv, *native_tokens],
         cwd=gate.cwd,
         env=child_env,
         stdin=subprocess.DEVNULL,
@@ -613,7 +773,22 @@ def execute_gate_process(
         stdout, stderr = process.communicate(timeout=10)
         exit_code = -1
     duration_ms = max(0, (time.monotonic_ns() - started) // 1_000_000)
-    outcomes = _parse_node_outcomes(stdout)
+    if framework == "opaque":
+        native_report = b""
+        native_name = None
+        outcomes = ()
+    elif native_report_path is None:
+        native_report = stdout
+        native_name = "native-results.json"
+    else:
+        try:
+            native_report = native_report_path.read_bytes()
+        except OSError as exc:
+            raise ControllerError("native runner report was not created") from exc
+        native_name = native_report_path.name
+        stdout = _portable_native_stdout(stdout, native_report_path)
+    if framework != "opaque":
+        outcomes = parse_native_node_outcomes(framework, native_report)
     result_value = {
         "schema": "stm32-gate-process-result/1",
         "exit_code": exit_code,
@@ -630,6 +805,8 @@ def execute_gate_process(
         "stderr.log": stderr,
         "stdout.log": stdout,
     }
+    if native_name is not None:
+        payloads[native_name] = native_report
     retained: list[dict[str, object]] = []
     for name in sorted(payloads, key=lambda item: item.encode("utf-8")):
         data = payloads[name]
