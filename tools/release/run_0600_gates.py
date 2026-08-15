@@ -849,8 +849,15 @@ def run_performance(
 
 def _changed_product_files(repo: Path, git_runner: Callable[[list[str]], list[str]]) -> list[str]:
     candidates = git_runner(["diff", "--name-only", "--diff-filter=ACMR", "HEAD", "--"]) + git_runner(["ls-files", "--others", "--exclude-standard"])
-    product_prefix = "tools/stm32-toolkit/src/stm32_toolkit/"
-    paths = [item.replace("\\", "/") for item in candidates if item.replace("\\", "/").startswith(product_prefix) and item.casefold().endswith(".py")]
+    product_prefixes = (
+        "tools/stm32-toolkit/src/stm32_toolkit/",
+        "tools/stm32-monitor/src/stm32_monitor/",
+    )
+    normalized = [item.replace("\\", "/") for item in candidates]
+    paths = [
+        item for item in normalized
+        if item.startswith(product_prefixes) and item.casefold().endswith(".py")
+    ]
     if not paths:
         raise ControllerError("no changed product Python file")
     if len(paths) != len(set(paths)) or len(paths) != len({item.casefold() for item in paths}):
@@ -861,15 +868,121 @@ def _changed_product_files(repo: Path, git_runner: Callable[[list[str]], list[st
 
 
 def _coverage_module_for_product_file(relative: str) -> str:
-    prefix = "tools/stm32-toolkit/src/"
-    if not relative.startswith(prefix) or not relative.endswith(".py"):
+    roots = (
+        ("tools/stm32-toolkit/src/", "stm32_toolkit"),
+        ("tools/stm32-monitor/src/", "stm32_monitor"),
+    )
+    matching = [(prefix, package) for prefix, package in roots if relative.startswith(prefix)]
+    if len(matching) != 1 or not relative.endswith(".py"):
         raise ControllerError("changed product module path is invalid")
+    prefix, package = matching[0]
     parts = relative[len(prefix):-3].split("/")
     if parts[-1] == "__init__":
         parts.pop()
-    if not parts or parts[0] != "stm32_toolkit" or any(re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", part) is None for part in parts):
+    if not parts or parts[0] != package or any(re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", part) is None for part in parts):
         raise ControllerError("changed product module path is invalid")
     return ".".join(parts)
+
+
+def _validate_coverage_basetemp(repo: Path, task_id: str, value: str) -> Path:
+    if task_id != "STM32TK-0603-T12":
+        raise ControllerError("coverage basetemp is not allowed for this task")
+    if (
+        not value
+        or any(character in value for character in ";|&><\r\n")
+        or any(character.isspace() for character in value)
+        or "/" in value
+        or re.search(r"(?:^|\\)\.\.?(?:\\|$)", value) is not None
+    ):
+        raise ControllerError("coverage basetemp is invalid")
+    path = Path(value)
+    if (
+        not path.is_absolute()
+        or value != str(path)
+        or value != os.path.abspath(value)
+    ):
+        raise ControllerError("coverage basetemp is not canonical absolute")
+    temporary_root = Path(r"C:\tmp")
+    try:
+        path.relative_to(temporary_root)
+    except ValueError as exc:
+        raise ControllerError("coverage basetemp is outside C:\\tmp") from exc
+    if path == temporary_root or path.exists() or not path.parent.is_dir():
+        raise ControllerError("coverage basetemp must be a new path below C:\\tmp")
+    try:
+        path.relative_to(repo.resolve())
+    except ValueError:
+        pass
+    else:
+        raise ControllerError("coverage basetemp must be outside the repository")
+    return path
+
+
+def _validate_coverage_pytest_tokens(
+    repo: Path, task_id: str, pytest_tokens: Sequence[str]
+) -> list[str]:
+    if not pytest_tokens:
+        raise ControllerError("coverage pytest tokens are missing")
+    validated: list[str] = []
+    seen_quiet = False
+    seen_plugin = False
+    seen_basetemp = False
+    seen_coverage: set[str] = set()
+    index = 0
+    while index < len(pytest_tokens):
+        token = pytest_tokens[index]
+        if not isinstance(token, str) or not token or any(character in token for character in ";|&><\r\n") or any(char.isspace() for char in token):
+            raise ControllerError("coverage shell token is forbidden")
+        if token == "-q":
+            if seen_quiet:
+                raise ControllerError("coverage quiet option is duplicated")
+            seen_quiet = True
+        elif token == "-p":
+            if seen_plugin or index + 1 >= len(pytest_tokens) or pytest_tokens[index + 1] != "no:cacheprovider":
+                raise ControllerError("coverage plugin option is invalid")
+            seen_plugin = True
+            validated.extend((token, "no:cacheprovider"))
+            index += 2
+            continue
+        elif token == "no:cacheprovider":
+            raise ControllerError("coverage plugin value is unpaired")
+        elif token == "--basetemp":
+            if seen_basetemp or index + 1 >= len(pytest_tokens):
+                raise ControllerError("coverage basetemp option is invalid")
+            value = pytest_tokens[index + 1]
+            if not isinstance(value, str):
+                raise ControllerError("coverage basetemp option is invalid")
+            basetemp = _validate_coverage_basetemp(repo, task_id, value)
+            seen_basetemp = True
+            validated.extend((token, str(basetemp)))
+            index += 2
+            continue
+        elif token.startswith("--cov="):
+            module = token.removeprefix("--cov=")
+            if re.fullmatch(r"(?:stm32_toolkit|stm32_monitor)(?:\.[A-Za-z_][A-Za-z0-9_]*)*", module) is None:
+                raise ControllerError("coverage module is invalid")
+            if module in seen_coverage:
+                index += 1
+                continue
+            seen_coverage.add(module)
+        elif token.startswith("-"):
+            raise ControllerError("coverage option is not allowed")
+        else:
+            path = Path(token)
+            if not path.is_absolute():
+                path = repo / path
+            test = _within_repo_file(repo, path)
+            relative = test.relative_to(repo.resolve()).as_posix()
+            test_prefixes = (
+                "tools/stm32-toolkit/tests/",
+                "tools/stm32-monitor/tests/",
+            )
+            if not relative.startswith(test_prefixes) or not test.name.startswith("test_") or test.suffix != ".py":
+                raise ControllerError("coverage test path is invalid")
+            token = str(test)
+        validated.append(token)
+        index += 1
+    return validated
 
 
 def _default_git_runner(repo: Path) -> Callable[[list[str]], list[str]]:
@@ -996,58 +1109,14 @@ def run_dev_coverage(
         scoped_task is None or scoped_task.group("module") not in KNOWN_MODULES
     ):
         raise ControllerError("unknown coverage task")
-    evidence = prepare_evidence_root(evidence_root)
+    validated = _validate_coverage_pytest_tokens(repo, task_id, pytest_tokens)
     changed = _changed_product_files(repo, git_runner or _default_git_runner(repo))
-    if not pytest_tokens:
-        raise ControllerError("coverage pytest tokens are missing")
-    validated: list[str] = []
-    seen_quiet = False
-    seen_plugin = False
-    seen_coverage: set[str] = set()
-    index = 0
-    while index < len(pytest_tokens):
-        token = pytest_tokens[index]
-        if not isinstance(token, str) or not token or any(character in token for character in ";|&><\r\n") or any(char.isspace() for char in token):
-            raise ControllerError("coverage shell token is forbidden")
-        if token == "-q":
-            if seen_quiet:
-                raise ControllerError("coverage quiet option is duplicated")
-            seen_quiet = True
-        elif token == "-p":
-            if seen_plugin or index + 1 >= len(pytest_tokens) or pytest_tokens[index + 1] != "no:cacheprovider":
-                raise ControllerError("coverage plugin option is invalid")
-            seen_plugin = True
-            validated.extend((token, "no:cacheprovider"))
-            index += 2
-            continue
-        elif token == "no:cacheprovider":
-            raise ControllerError("coverage plugin value is unpaired")
-        elif token.startswith("--cov="):
-            module = token.removeprefix("--cov=")
-            if re.fullmatch(r"stm32_toolkit(?:\.[A-Za-z_][A-Za-z0-9_]*)*", module) is None:
-                raise ControllerError("coverage module is invalid")
-            if module in seen_coverage:
-                index += 1
-                continue
-            seen_coverage.add(module)
-        elif token.startswith("-"):
-            raise ControllerError("coverage option is not allowed")
-        else:
-            path = Path(token)
-            if not path.is_absolute():
-                path = repo / path
-            test = _within_repo_file(repo, path)
-            relative = test.relative_to(repo.resolve()).as_posix()
-            if not relative.startswith("tools/stm32-toolkit/tests/") or not test.name.startswith("test_") or test.suffix != ".py":
-                raise ControllerError("coverage test path is invalid")
-            token = str(test)
-        validated.append(token)
-        index += 1
     requested_coverage = {token.removeprefix("--cov=") for token in validated if token.startswith("--cov=")}
     for module in sorted({_coverage_module_for_product_file(path) for path in changed} - requested_coverage):
         validated.append(f"--cov={module}")
     if _coverage_configured(os.environ):
         raise ControllerError("dev coverage rejects inherited coverage variables")
+    evidence = prepare_evidence_root(evidence_root)
     raw_path = evidence / "coverage-raw.json"
     argv = [sys.executable, "-m", "pytest", *validated, "--cov-branch", f"--cov-report=json:{raw_path}"]
     return_code = runner(argv, cwd=repo, env=_safe_controller_env())

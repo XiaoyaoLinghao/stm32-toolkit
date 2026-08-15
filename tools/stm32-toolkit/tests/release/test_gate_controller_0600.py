@@ -652,6 +652,218 @@ def _coverage_v7(rows: dict[str, tuple[int, int]]) -> dict[str, object]:
     }
 
 
+_COVERAGE_PLAN_PATHS = (
+    "docs/superpowers/plans/2026-08-14-stm32tk-0601-test-evidence.md",
+    "docs/superpowers/plans/2026-08-14-stm32tk-0602-diagnostic-loop.md",
+    "docs/superpowers/plans/2026-08-14-stm32tk-0603-monitor-analytics.md",
+)
+
+
+def _frozen_dev_coverage_commands() -> list[tuple[str, list[str]]]:
+    commands: list[tuple[str, list[str]]] = []
+    for relative in _COVERAGE_PLAN_PATHS:
+        for line in (REPO / relative).read_text(encoding="utf-8").splitlines():
+            if " dev-coverage " not in line:
+                continue
+            argv = line.split()
+            task_id = argv[argv.index("--task-id") + 1]
+            commands.append((task_id, argv[argv.index("--") + 1 :]))
+    return commands
+
+
+@pytest.mark.parametrize(
+    ("task_id", "tokens"),
+    _frozen_dev_coverage_commands(),
+    ids=lambda value: value if isinstance(value, str) else None,
+)
+def test_dev_coverage_accepts_every_frozen_plan_pytest_shape(
+    tmp_path: Path, task_id: str, tokens: list[str]
+) -> None:
+    """Every planned 0601/0602/0603 coverage argv reaches pytest, not a controller grammar error."""
+    repo = tmp_path / "repo"
+    evidence = tmp_path / "evidence"
+    requested_modules = [token.removeprefix("--cov=") for token in tokens if token.startswith("--cov=")]
+    roots = sorted({module.split(".", 1)[0] for module in requested_modules})
+    changed: list[str] = []
+    for root in roots:
+        package = "stm32-toolkit" if root == "stm32_toolkit" else "stm32-monitor"
+        relative = f"tools/{package}/src/{root}/contract_fixture.py"
+        product = repo.joinpath(*relative.split("/"))
+        product.parent.mkdir(parents=True, exist_ok=True)
+        product.write_text("VALUE = 1\n", encoding="utf-8")
+        changed.append(relative)
+    for token in tokens:
+        if not token.startswith("tools/"):
+            continue
+        test = repo.joinpath(*token.split("/"))
+        test.parent.mkdir(parents=True, exist_ok=True)
+        test.write_text("def test_contract_fixture(): pass\n", encoding="utf-8")
+
+    calls = 0
+
+    def runner(argv: list[str], *, cwd: Path, env: dict[str, str]) -> int:
+        nonlocal calls
+        calls += 1
+        assert cwd == repo
+        assert argv[:3] == [sys.executable, "-m", "pytest"]
+        raw = _coverage_v7({path: (9, 10) for path in changed})
+        (evidence / "coverage-raw.json").write_text(json.dumps(raw), encoding="utf-8")
+        return 0
+
+    result = run_dev_coverage(
+        repo, task_id, evidence, tokens, _coverage_git(changed), runner
+    )
+
+    assert calls == 1
+    assert result["task_id"] == task_id
+
+
+def test_frozen_dev_coverage_inventory_covers_all_planned_tasks() -> None:
+    """The self-hosting grammar test must not silently omit a frozen coverage command."""
+    assert [task_id for task_id, _ in _frozen_dev_coverage_commands()] == [
+        *(f"STM32TK-0601-T{task:02d}" for task in range(3, 12)),
+        *(f"STM32TK-0602-T{task:02d}" for task in range(1, 11)),
+        *(f"STM32TK-0603-T{task:02d}" for task in range(1, 8)),
+        "STM32TK-0603-T11",
+        "STM32TK-0603-T12",
+    ]
+
+
+@pytest.mark.parametrize(
+    "tokens",
+    [
+        ["--basetemp"],
+        ["--basetemp", "relative"],
+        ["--basetemp", r"C:\tmp\bad;echo"],
+        ["--basetemp", r"C:\tmp\one", "--basetemp", r"C:\tmp\two"],
+    ],
+)
+def test_dev_coverage_rejects_invalid_basetemp_before_evidence_creation(
+    tmp_path: Path, tokens: list[str]
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    evidence = tmp_path / "evidence"
+
+    with pytest.raises(ControllerError):
+        run_dev_coverage(repo, "STM32TK-0603-T12", evidence, tokens, _coverage_git([]))
+
+    assert not evidence.exists()
+
+
+def test_dev_coverage_rejects_basetemp_for_other_tasks_and_existing_paths(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    test_file = repo / "tools/stm32-toolkit/tests/test_a.py"
+    product = repo / "tools/stm32-toolkit/src/stm32_toolkit/a.py"
+    test_file.parent.mkdir(parents=True)
+    product.parent.mkdir(parents=True)
+    test_file.write_text("def test_a(): pass\n", encoding="utf-8")
+    product.write_text("VALUE = 1\n", encoding="utf-8")
+    existing = tmp_path / "existing-basetemp"
+    existing.mkdir()
+    for task_id in ("STM32TK-0601-T03", "STM32TK-0603-T12"):
+        evidence = tmp_path / task_id
+        with pytest.raises(ControllerError):
+            run_dev_coverage(
+                repo,
+                task_id,
+                evidence,
+                [str(test_file), "--cov=stm32_toolkit.a", "--basetemp", str(existing)],
+                _coverage_git([product.relative_to(repo).as_posix()]),
+            )
+        assert not evidence.exists()
+
+
+@pytest.mark.parametrize("case", ["repository", "outside-tmp", "alias", "missing-parent"])
+def test_dev_coverage_rejects_unsafe_absent_basetemp_before_evidence_creation(
+    tmp_path: Path, case: str
+) -> None:
+    repo = tmp_path / "repo"
+    test_file = repo / "tools/stm32-toolkit/tests/test_a.py"
+    product = repo / "tools/stm32-toolkit/src/stm32_toolkit/a.py"
+    test_file.parent.mkdir(parents=True)
+    product.parent.mkdir(parents=True)
+    test_file.write_text("def test_a(): pass\n", encoding="utf-8")
+    product.write_text("VALUE = 1\n", encoding="utf-8")
+    values = {
+        "repository": str(repo / "basetemp"),
+        "outside-tmp": r"C:\Windows\Temp\stm32tk-coverage-basetemp",
+        "alias": r"C:\tmp\.\stm32tk-coverage-basetemp",
+        "missing-parent": r"C:\tmp\missing-stm32tk-coverage-parent\basetemp",
+    }
+    evidence = tmp_path / "evidence"
+
+    with pytest.raises(ControllerError):
+        run_dev_coverage(
+            repo,
+            "STM32TK-0603-T12",
+            evidence,
+            [str(test_file), "--cov=stm32_toolkit.a", "--basetemp", values[case]],
+            _coverage_git([product.relative_to(repo).as_posix()]),
+        )
+
+    assert not evidence.exists()
+
+
+def test_dev_coverage_preflight_failure_does_not_claim_evidence_root(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    evidence = tmp_path / "evidence"
+
+    with pytest.raises(ControllerError):
+        run_dev_coverage(
+            repo,
+            "STM32TK-0603-T01",
+            evidence,
+            ["tools/stm32-monitor/tests/missing.py", "--cov=stm32_monitor.models"],
+            _coverage_git([]),
+        )
+
+    assert not evidence.exists()
+
+
+def test_dev_coverage_failed_execution_preserves_evidence_and_requires_new_root(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    product = repo / "tools/stm32-monitor/src/stm32_monitor/models.py"
+    test_file = repo / "tools/stm32-monitor/tests/test_models.py"
+    product.parent.mkdir(parents=True)
+    test_file.parent.mkdir(parents=True)
+    product.write_text("VALUE = 1\n", encoding="utf-8")
+    test_file.write_text("def test_model(): pass\n", encoding="utf-8")
+    changed = product.relative_to(repo).as_posix()
+    evidence = tmp_path / "evidence-attempt-1"
+
+    def failing_runner(argv: list[str], *, cwd: Path, env: dict[str, str]) -> int:
+        (evidence / "coverage-raw.json").write_text("retained failure\n", encoding="utf-8")
+        return 1
+
+    with pytest.raises(ControllerError, match="subprocess failed"):
+        run_dev_coverage(
+            repo,
+            "STM32TK-0603-T01",
+            evidence,
+            [str(test_file), "--cov=stm32_monitor.models"],
+            _coverage_git([changed]),
+            failing_runner,
+        )
+    assert (evidence / "coverage-raw.json").read_text(encoding="utf-8") == "retained failure\n"
+
+    with pytest.raises(ControllerError, match="new canonical absolute path"):
+        run_dev_coverage(
+            repo,
+            "STM32TK-0603-T01",
+            evidence,
+            [str(test_file), "--cov=stm32_monitor.models"],
+            _coverage_git([changed]),
+        )
+
+
 @pytest.mark.parametrize("version", ["7.10.7", "7.15.4"])
 def test_dev_coverage_accepts_desensitized_real_format3_fixtures(version: str) -> None:
     """Frozen/current coverage JSON fixtures retain the exact real tool field shapes."""
