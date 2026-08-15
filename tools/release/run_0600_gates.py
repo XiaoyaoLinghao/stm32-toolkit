@@ -196,6 +196,10 @@ def load_performance_catalog(path: Path) -> object:
     return _release_call("load_performance_catalog", path)
 
 
+def validate_performance_run(value: object) -> object:
+    return _release_call("validate_performance_run", value)
+
+
 def create_candidate_ledger(**kwargs: object) -> dict[str, object]:
     return _release_call("create_candidate_ledger", **kwargs)  # type: ignore[return-value]
 
@@ -878,16 +882,23 @@ def run_performance(
         if performance_config is not None:
             raise ControllerError("calibration does not accept a performance config")
     else:
-        if performance_config is None or not performance_config.is_absolute() or not performance_config.is_file():
-            raise ControllerError("verify requires an absolute performance config")
-        value = _load_json(performance_config)
-        if not isinstance(value, dict) or set(value) != {"schema", "profiles"} or value["schema"] != "stm32-performance-catalog/1" or not isinstance(value["profiles"], list):
-            raise ControllerError("performance config is not closed")
+        if performance_config is None:
+            raise ControllerError("verify requires the fixed performance config")
+        resolved_config = performance_config.resolve() if performance_config.is_absolute() else (repo / performance_config).resolve()
+        fixed_config = repo / "tools/release/performance_0600.json"
+        if resolved_config != fixed_config.resolve() or not resolved_config.is_file():
+            raise ControllerError("verify requires the fixed performance config")
+        try:
+            value = load_performance_catalog(resolved_config)
+        except (ValueError, OSError) as exc:
+            raise ControllerError("performance config is not closed") from exc
+        assert isinstance(value, dict)
         matching = [item for item in value["profiles"] if isinstance(item, dict) and item.get("module") == module]
-        if len(matching) != 1 or set(matching[0]) != {"module", "test_file", "test_file_sha256", "profile_sha256"}:
+        if len(matching) != 1:
             raise ControllerError("performance profile is missing or duplicated")
         profile = matching[0]
-        if profile["test_file"] != test.relative_to(repo.resolve()).as_posix() or profile["test_file_sha256"] != test_digest or not isinstance(profile["profile_sha256"], str) or HEX64.fullmatch(profile["profile_sha256"]) is None:
+        producers = [item for item in profile["producers"] if item["producer"] == "python"]
+        if len(producers) != 1 or producers[0]["test_file"] != test.relative_to(repo.resolve()).as_posix() or producers[0]["test_file_sha256"] != test_digest:
             raise ControllerError("performance workload/config digest mismatch")
         profile_digest = str(profile["profile_sha256"])
     environment = _safe_controller_env()
@@ -903,19 +914,44 @@ def run_performance(
     return_code = runner([sys.executable, "-m", "pytest", str(test)], cwd=repo, env=environment)
     if return_code != 0 or not output.is_file():
         raise ControllerError("performance test did not produce a successful output")
+    retained = output.read_bytes()
     result = _load_json(output)
     if (
         not isinstance(result, dict)
-        or set(result) != {"schema", "mode", "module", "profile_sha256", "test_file_sha256", "workloads"}
-        or result["schema"] != "stm32-performance-run/1"
         or result["mode"] != mode
         or result["module"] != module
+        or result["producer"] != "python"
         or result["profile_sha256"] != (profile_digest or None)
+        or result["test_file"] != test.relative_to(repo.resolve()).as_posix()
         or result["test_file_sha256"] != test_digest
-        or not isinstance(result["workloads"], list)
     ):
         raise ControllerError("performance output is stale or malformed")
-    return result
+    try:
+        validated = validate_performance_run(result)
+    except ValueError as exc:
+        raise ControllerError("performance output is stale or malformed") from exc
+    if output.read_bytes() != retained:
+        raise ControllerError("performance output changed during validation")
+    assert isinstance(validated, dict)
+    if mode == "verify":
+        runtime_version = validated["environment"]["python_version"]
+        catalog_workloads = {item["id"]: item for item in producers[0]["workloads"]}
+        for workload in validated["workloads"]:
+            accepted = catalog_workloads.get(workload["id"])
+            if accepted is None or accepted["workload_sha256"] != workload["workload_sha256"]:
+                raise ControllerError("performance output workload differs from the accepted profile")
+            calibrations = [
+                item for item in accepted["calibrations"]
+                if item["runtime"] == {"kind": "cpython", "version": runtime_version}
+            ]
+            if (
+                len(calibrations) != 1
+                or workload["accepted_baseline"] != calibrations[0]["baseline"]
+                or workload["absolute_threshold"] != calibrations[0]["absolute_threshold"]
+                or validated["environment_sha256"] != calibrations[0]["environment_sha256"]
+            ):
+                raise ControllerError("performance output thresholds differ from the accepted runtime calibration")
+    return validated
 
 
 def _changed_product_files(repo: Path, git_runner: Callable[[list[str]], list[str]]) -> list[str]:

@@ -4,6 +4,7 @@ import copy
 import hashlib
 import importlib.util
 import json
+import math
 import os
 import shutil
 import stat
@@ -1387,3 +1388,322 @@ def test_verifier_exposes_only_six_closed_modes() -> None:
         "final-evidence",
         "verify-release-ledger",
     }
+
+
+def _performance_environment(version: str = "3.12.10") -> dict[str, object]:
+    return {
+        "schema": "stm32-performance-environment/1",
+        "support_profile_sha256": "a" * 64,
+        "platform": "Windows",
+        "platform_version": "10.0.26200",
+        "architecture": "AMD64",
+        "cpu_model": "AMD Ryzen 7 5800U",
+        "physical_cores": 8,
+        "logical_cores": 16,
+        "memory_bytes": 16 * 1024**3,
+        "storage_model": "NVMe",
+        "power_profile": "balanced",
+        "antivirus_state": "enabled",
+        "python_version": version,
+        "python_executable_sha256": "b" * 64,
+        "gc_enabled": True,
+        "monotonic_clock": "perf_counter_ns",
+        "monotonic_clock_tick_ns": 100,
+    }
+
+
+def _fixture_sha(value: object) -> str:
+    return hashlib.sha256(
+        (json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n").encode()
+    ).hexdigest()
+
+
+def _performance_workload(
+    workload_id: str = "evidence-publish-reload", design_maximum: int = 500_000_000,
+    warmup_count: int = 5, samples_per_batch: int = 30,
+) -> dict[str, object]:
+    batches = []
+    for index, base in enumerate((1000, 1100, 1200)):
+        samples = [base + offset for offset in range(samples_per_batch)]
+        batches.append({
+            "index": index,
+            "started_offset_ns": index * 1_000_000,
+            "duration_ns": 500_000,
+            "samples": samples,
+            "p50": samples[(samples_per_batch + 1) // 2 - 1],
+            "p95": samples[math.ceil(.95 * samples_per_batch) - 1],
+            "max": samples[-1],
+        })
+    contract = {
+        "id": workload_id,
+        "kind": "latency",
+        "unit": "ns",
+        "quantile": "nearest-rank",
+        "design_maximum": design_maximum,
+        "relative_limit_ppm": 150000,
+        "scale": [
+            {"name": "artifact_bytes", "unit": "bytes", "value": 1048576},
+            {"name": "artifact_count", "unit": "count", "value": 32},
+        ],
+        "measurement": {
+            "kind": "sample-batches", "warmup_count": warmup_count,
+            "batch_count": 3, "samples_per_batch": samples_per_batch,
+        },
+        "observation_contract": [
+            {"name": "serialized_bytes", "unit": "bytes"},
+        ],
+    }
+    return {
+        **contract,
+        "workload_sha256": _fixture_sha(contract),
+        "warmup_samples": [900 + index for index in range(warmup_count)],
+        "batches": batches,
+        "observed_p95": batches[1]["p95"],
+        "observed_mad": 100,
+        "accepted_baseline": None,
+        "absolute_threshold": None,
+        "observations": [
+            {"name": "serialized_bytes", "unit": "bytes", "values": [1048576]},
+        ],
+    }
+
+
+def _performance_run(version: str = "3.12.10", module: str = "STM32TK-0601") -> dict[str, object]:
+    environment = _performance_environment(version)
+    specifications = verifier.PERFORMANCE_MODULE_CONTRACTS[module]["python"]
+    test_files = {
+        "STM32TK-0601": "tools/stm32-toolkit/tests/test_evidence_performance.py",
+        "STM32TK-0602": "tools/stm32-toolkit/tests/test_diagnostic_performance.py",
+        "STM32TK-0603": "tools/stm32-monitor/tests/test_analysis_performance.py",
+    }
+    return {
+        "schema": "stm32-performance-run/1",
+        "mode": "calibrate",
+        "module": module,
+        "producer": "python",
+        "environment": environment,
+        "environment_sha256": _fixture_sha(environment),
+        "profile_sha256": None,
+        "test_file": test_files[module],
+        "test_file_sha256": "c" * 64,
+        "workloads": [_performance_workload(*specification) for specification in specifications],
+    }
+
+
+def _browser_performance_run() -> dict[str, object]:
+    value = _performance_run(module="STM32TK-0603")
+    environment = {
+        key: item for key, item in value["environment"].items()
+        if key not in {"python_version", "python_executable_sha256", "gc_enabled"}
+    }
+    environment.update({
+        "schema": "stm32-browser-performance-environment/1",
+        "browser_name": "chromium", "browser_version": "139.0.7258.5",
+        "browser_executable_sha256": "d" * 64, "playwright_version": "1.54.2",
+        "monotonic_clock": "performance.now",
+    })
+    workload = _performance_workload("browser-analysis-update", 150_000_000, 120, 12)
+    workload["kind"] = "browser-latency"
+    workload["measurement"] = {
+        "kind": "continuous-windows", "warmup_seconds": 120, "window_count": 3,
+        "seconds_per_window": 60, "interaction_interval_seconds": 5, "samples_per_window": 12,
+    }
+    workload["workload_sha256"] = _fixture_sha({
+        key: workload[key] for key in PERFORMANCE_CONTRACT_FIXTURE_KEYS
+    })
+    workload["browser_metrics"] = {
+        "long_tasks_ge_200ms": 0, "retained_heap_slope_bytes_per_minute": 1_000_000,
+        "queue_growth": 0,
+    }
+    value.update({
+        "producer": "browser", "environment": environment,
+        "environment_sha256": _fixture_sha(environment),
+        "test_file": "tools/stm32-monitor/ui/e2e/performance.spec.ts",
+        "test_file_sha256": "d" * 64,
+        "workloads": [workload],
+    })
+    return value
+
+
+PERFORMANCE_CONTRACT_FIXTURE_KEYS = {
+    "id", "kind", "unit", "quantile", "design_maximum", "relative_limit_ppm",
+    "scale", "measurement", "observation_contract",
+}
+
+
+def _reserved_performance_catalog(module: str = "STM32TK-0601", *, browser: bool = False) -> dict[str, object]:
+    python_run = _performance_run(module=module)
+    contract_keys = {
+        "id", "kind", "workload_sha256", "unit", "quantile", "design_maximum",
+        "relative_limit_ppm", "scale", "measurement", "observation_contract",
+    }
+    producer = {
+        "producer": "python",
+        "test_file": python_run["test_file"],
+        "test_file_sha256": "c" * 64,
+        "workloads": [
+            {**{key: copy.deepcopy(value) for key, value in workload.items() if key in contract_keys}, "calibrations": []}
+            for workload in python_run["workloads"]
+        ],
+    }
+    producers = [producer]
+    if browser:
+        browser_run = _browser_performance_run()
+        browser_workload = browser_run["workloads"][0]
+        producers.append({
+            "producer": "browser", "test_file": browser_run["test_file"],
+            "test_file_sha256": browser_run["test_file_sha256"],
+            "workloads": [{
+                **{key: copy.deepcopy(browser_workload[key]) for key in contract_keys},
+                "calibrations": [],
+            }],
+        })
+    producers.sort(key=lambda item: item["producer"])
+    without_digest = {"module": module, "producers": producers}
+    return {
+        "schema": "stm32-performance-catalog/1",
+        "profiles": [{**without_digest, "profile_sha256": _fixture_sha(without_digest)}],
+    }
+
+
+def test_shared_performance_run_recomputes_real_batches_and_rejects_wrong_p95() -> None:
+    """Removing raw-batch recomputation would accept a forged release measurement."""
+    valid = _performance_run()
+    assert verifier.validate_performance_run(valid)["producer"] == "python"
+
+    forged = copy.deepcopy(valid)
+    forged["workloads"][0]["batches"][0]["p95"] = 1
+    with pytest.raises(VerificationError, match="p95|batch"):
+        verifier.validate_performance_run(forged)
+
+
+def test_shared_performance_run_accepts_only_the_closed_browser_producer_shape() -> None:
+    value = _browser_performance_run()
+    assert verifier.validate_performance_run(value)["producer"] == "browser"
+    value["environment"]["user_agent"] = "unstable"
+    with pytest.raises(VerificationError, match="environment"):
+        verifier.validate_performance_run(value)
+
+
+@pytest.mark.parametrize(
+    ("field", "bad_value"),
+    [("long_tasks_ge_200ms", 1), ("retained_heap_slope_bytes_per_minute", 2 * 1024 * 1024 + 1), ("queue_growth", 1)],
+)
+def test_browser_continuous_windows_enforce_zero_and_heap_invariants(field: str, bad_value: int) -> None:
+    value = _browser_performance_run()
+    assert value["workloads"][0]["measurement"] == {
+        "kind": "continuous-windows", "warmup_seconds": 120, "window_count": 3,
+        "seconds_per_window": 60, "interaction_interval_seconds": 5, "samples_per_window": 12,
+    }
+    value["workloads"][0]["browser_metrics"][field] = bad_value
+    with pytest.raises(VerificationError, match="browser performance invariant"):
+        verifier.validate_performance_run(value)
+
+
+@pytest.mark.parametrize("mutation", ["missing-workload", "raised-maximum", "wrong-test-file", "browser-on-0601"])
+def test_performance_module_inventory_is_exact(mutation: str) -> None:
+    value = _performance_run()
+    if mutation == "missing-workload":
+        value["workloads"].pop()
+    elif mutation == "raised-maximum":
+        value["workloads"][0]["design_maximum"] += 1
+    elif mutation == "wrong-test-file":
+        value["test_file"] = "tools/stm32-toolkit/tests/test_diagnostic_performance.py"
+    else:
+        value = _browser_performance_run()
+        value["module"] = "STM32TK-0601"
+    with pytest.raises(VerificationError):
+        verifier.validate_performance_run(value)
+
+
+@pytest.mark.parametrize("mutation", ["extra", "bool", "environment-digest", "workload-digest", "runtime"])
+def test_shared_performance_run_is_closed_and_identity_bound(mutation: str) -> None:
+    """Weakening a producer/runtime/digest boundary would mix incomparable calibrations."""
+    value = _performance_run()
+    if mutation == "extra":
+        value["extra"] = None
+    elif mutation == "bool":
+        value["workloads"][0]["design_maximum"] = True
+    elif mutation == "environment-digest":
+        value["environment_sha256"] = "0" * 64
+    elif mutation == "workload-digest":
+        value["workloads"][0]["workload_sha256"] = "0" * 64
+    else:
+        value["environment"]["python_version"] = "3.13.0"
+    with pytest.raises(VerificationError):
+        verifier.validate_performance_run(value)
+
+
+def test_performance_aggregation_requires_dual_python_and_atomically_updates_catalog(tmp_path: Path) -> None:
+    """Accepting one runtime or partially writing on failure would violate the frozen calibration."""
+    catalog = tmp_path / "performance_0600.json"
+    catalog.write_bytes(canonical_json_bytes(_reserved_performance_catalog()))
+    inputs = []
+    for version in ("3.10.11", "3.12.10"):
+        path = tmp_path / f"run-{version}.json"
+        path.write_bytes(canonical_json_bytes(_performance_run(version)))
+        inputs.append(path)
+
+    result = verifier.aggregate_performance_calibration("STM32TK-0601", inputs, catalog)
+
+    assert result == {"mode": "performance-calibration", "profile": "STM32TK-0601", "status": "PASS"}
+    profile = json.loads(catalog.read_text(encoding="utf-8"))["profiles"][0]
+    calibrations = profile["producers"][0]["workloads"][0]["calibrations"]
+    assert [item["runtime"] for item in calibrations] == [
+        {"kind": "cpython", "version": "3.10.11"},
+        {"kind": "cpython", "version": "3.12.10"},
+    ]
+    assert [item["absolute_threshold"] for item in calibrations] == [2200, 2200]
+
+    retained = catalog.read_bytes()
+    with pytest.raises(VerificationError, match="runtime|input"):
+        verifier.aggregate_performance_calibration("STM32TK-0601", inputs[:1], catalog)
+    assert catalog.read_bytes() == retained
+
+
+@pytest.mark.parametrize(
+    ("module", "with_browser", "expected_count"),
+    [("STM32TK-0602", False, 8), ("STM32TK-0603", True, 5)],
+)
+def test_performance_aggregation_closes_each_frozen_module_runtime_set(
+    tmp_path: Path, module: str, with_browser: bool, expected_count: int
+) -> None:
+    catalog = tmp_path / "performance_0600.json"
+    catalog.write_bytes(canonical_json_bytes(_reserved_performance_catalog(module, browser=with_browser)))
+    runs = [_performance_run(version, module) for version in ("3.10.11", "3.12.10")]
+    if with_browser:
+        runs.append(_browser_performance_run())
+    inputs = []
+    for index, run in enumerate(runs):
+        path = tmp_path / f"run-{index}.json"
+        path.write_bytes(canonical_json_bytes(run))
+        inputs.append(path)
+
+    verifier.aggregate_performance_calibration(module, inputs, catalog)
+
+    profile = json.loads(catalog.read_text(encoding="utf-8"))["profiles"][0]
+    assert sum(len(workload["calibrations"]) for producer in profile["producers"] for workload in producer["workloads"]) == expected_count
+
+
+def test_performance_aggregation_initializes_an_empty_catalog_without_a_reserved_profile(tmp_path: Path) -> None:
+    catalog = tmp_path / "performance_0600.json"
+    catalog.write_bytes(canonical_json_bytes({"schema": "stm32-performance-catalog/1", "profiles": []}))
+    inputs = []
+    for version in ("3.10.11", "3.12.10"):
+        path = tmp_path / f"run-{version}.json"
+        path.write_bytes(canonical_json_bytes(_performance_run(version)))
+        inputs.append(path)
+
+    verifier.aggregate_performance_calibration("STM32TK-0601", inputs, catalog)
+
+    loaded = verifier.load_performance_catalog(catalog)
+    assert [profile["module"] for profile in loaded["profiles"]] == ["STM32TK-0601"]
+
+
+def test_performance_calibration_cli_accepts_only_repeated_inputs_with_profile_and_output() -> None:
+    args = verifier.build_parser().parse_args([
+        "performance-calibration", "--profile", "STM32TK-0602",
+        "--input", r"C:\tmp\run-310.json", "--input", r"C:\tmp\run-312.json",
+        "--output", "tools/release/performance_0600.json",
+    ])
+    assert args.input == [r"C:\tmp\run-310.json", r"C:\tmp\run-312.json"]

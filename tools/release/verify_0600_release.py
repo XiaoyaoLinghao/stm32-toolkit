@@ -20,6 +20,7 @@ import shutil
 import stat
 import subprocess
 import sys
+import tempfile
 import unicodedata
 import zipfile
 from io import BytesIO
@@ -524,9 +525,67 @@ def validate_performance_catalog_data(value: object) -> dict[str, object]:
     assert isinstance(value, Mapping)
     if value["schema"] != PERFORMANCE_SCHEMA or not isinstance(value["profiles"], list):
         raise CatalogError("performance catalog identity is invalid")
-    if value["profiles"]:
-        raise CatalogError("Task 2 performance catalog must be empty")
-    return {"profiles": [], "schema": PERFORMANCE_SCHEMA}
+    profiles = value["profiles"]
+    assert isinstance(profiles, list)
+    modules: list[str] = []
+    for profile in profiles:
+        if not _closed(profile, {"module", "profile_sha256", "producers"}):
+            raise CatalogError("performance profile is not closed")
+        assert isinstance(profile, Mapping)
+        module = profile["module"]
+        if module not in {"STM32TK-0601", "STM32TK-0602", "STM32TK-0603"}:
+            raise CatalogError("performance profile module is invalid")
+        if not isinstance(profile["profile_sha256"], str) or HEX64.fullmatch(profile["profile_sha256"]) is None:
+            raise CatalogError("performance profile digest is invalid")
+        producers = profile["producers"]
+        if not isinstance(producers, list) or not producers:
+            raise CatalogError("performance profile producers are invalid")
+        producer_names: list[str] = []
+        for producer in producers:
+            if not _closed(producer, {"producer", "test_file", "test_file_sha256", "workloads"}):
+                raise CatalogError("performance producer is not closed")
+            assert isinstance(producer, Mapping)
+            producer_name = producer["producer"]
+            if producer_name not in {"python", "browser"}:
+                raise CatalogError("performance producer is invalid")
+            if (
+                not isinstance(producer["test_file"], str)
+                or not producer["test_file"]
+                or not isinstance(producer["test_file_sha256"], str)
+                or HEX64.fullmatch(producer["test_file_sha256"]) is None
+                or not isinstance(producer["workloads"], list)
+                or not producer["workloads"]
+            ):
+                raise CatalogError("performance producer identity is invalid")
+            if producer["test_file"] != PERFORMANCE_TEST_FILES.get((str(module), str(producer_name))):
+                raise CatalogError("performance producer test file differs from the frozen module")
+            workload_ids: list[str] = []
+            for workload in producer["workloads"]:
+                _validate_performance_workload_contract(workload, catalog=True)
+                assert isinstance(workload, Mapping)
+                workload_ids.append(str(workload["id"]))
+            if workload_ids != sorted(workload_ids, key=lambda item: item.encode("utf-8")) or len(workload_ids) != len(set(workload_ids)):
+                raise CatalogError("performance workloads are not sorted and unique")
+            expected_workloads = PERFORMANCE_MODULE_CONTRACTS[str(module)].get(str(producer_name))
+            if expected_workloads is None or [
+                (item["id"], item["design_maximum"],
+                 item["measurement"].get("warmup_count", item["measurement"].get("warmup_seconds")),
+                 item["measurement"].get("samples_per_batch", item["measurement"].get("samples_per_window")))
+                for item in producer["workloads"]
+            ] != list(expected_workloads):
+                raise CatalogError("performance workload inventory differs from the frozen module")
+            producer_names.append(str(producer_name))
+        if producer_names != sorted(producer_names, key=lambda item: item.encode("utf-8")) or len(producer_names) != len(set(producer_names)):
+            raise CatalogError("performance producers are not sorted and unique")
+        if producer_names != sorted(PERFORMANCE_MODULE_CONTRACTS[str(module)]):
+            raise CatalogError("performance producer inventory differs from the frozen module")
+        digest_input = {"module": module, "producers": producers}
+        if profile["profile_sha256"] != _performance_digest(digest_input):
+            raise CatalogError("performance profile digest mismatch")
+        modules.append(str(module))
+    if modules != sorted(modules, key=lambda item: item.encode("utf-8")) or len(modules) != len(set(modules)):
+        raise CatalogError("performance profiles are not sorted and unique")
+    return dict(value)
 
 
 def load_performance_catalog(path: Path) -> dict[str, object]:
@@ -1201,6 +1260,419 @@ def calculate_performance_threshold(
     if threshold > design_maximum:
         raise VerificationError("calculated performance threshold exceeds design maximum")
     return {"baseline": baseline, "mad": mad, "absolute_threshold": threshold}
+
+
+PERFORMANCE_RUN_KEYS = {
+    "schema", "mode", "module", "producer", "environment", "environment_sha256",
+    "profile_sha256", "test_file", "test_file_sha256", "workloads",
+}
+PERFORMANCE_CONTRACT_KEYS = {
+    "id", "kind", "unit", "quantile", "design_maximum", "relative_limit_ppm",
+    "scale", "measurement", "observation_contract",
+}
+PERFORMANCE_WORKLOAD_KEYS = PERFORMANCE_CONTRACT_KEYS | {
+    "workload_sha256", "warmup_samples", "batches", "observed_p95", "observed_mad",
+    "accepted_baseline", "absolute_threshold", "observations",
+}
+PERFORMANCE_BROWSER_WORKLOAD_KEYS = PERFORMANCE_WORKLOAD_KEYS | {"browser_metrics"}
+PERFORMANCE_CATALOG_WORKLOAD_KEYS = PERFORMANCE_CONTRACT_KEYS | {
+    "workload_sha256", "calibrations",
+}
+PERFORMANCE_PYTHON_ENV_KEYS = {
+    "schema", "support_profile_sha256", "platform", "platform_version", "architecture",
+    "cpu_model", "physical_cores", "logical_cores", "memory_bytes", "storage_model",
+    "power_profile", "antivirus_state", "python_version", "python_executable_sha256",
+    "gc_enabled", "monotonic_clock", "monotonic_clock_tick_ns",
+}
+PERFORMANCE_BROWSER_ENV_KEYS = {
+    "schema", "support_profile_sha256", "platform", "platform_version", "architecture",
+    "cpu_model", "physical_cores", "logical_cores", "memory_bytes", "storage_model",
+    "power_profile", "antivirus_state", "browser_name", "browser_version",
+    "browser_executable_sha256", "playwright_version", "monotonic_clock",
+    "monotonic_clock_tick_ns",
+}
+PERFORMANCE_MODULE_CONTRACTS = {
+    "STM32TK-0601": {
+        "python": (
+            ("evidence-catalog-rebuild", 10_000_000_000, 3, 20),
+            ("evidence-publish-reload", 500_000_000, 5, 30),
+            ("evidence-summary-list", 500_000_000, 5, 30),
+            ("target-decode-publish", 3_000_000_000, 3, 20),
+        ),
+    },
+    "STM32TK-0602": {
+        "python": (
+            ("diagnostic-append-reload", 250_000_000, 5, 30),
+            ("diagnostic-bundle-export-reverify", 5_000_000_000, 3, 20),
+            ("diagnostic-chain-verify", 3_000_000_000, 3, 20),
+            ("diagnostic-materialized-read", 500_000_000, 5, 30),
+        ),
+    },
+    "STM32TK-0603": {
+        "browser": (("browser-analysis-update", 150_000_000, 120, 12),),
+        "python": (
+            ("analytics-comparison-request", 1_000_000_000, 5, 30),
+            ("analytics-quality-computation", 750_000_000, 5, 30),
+        ),
+    },
+}
+PERFORMANCE_TEST_FILES = {
+    ("STM32TK-0601", "python"): "tools/stm32-toolkit/tests/test_evidence_performance.py",
+    ("STM32TK-0602", "python"): "tools/stm32-toolkit/tests/test_diagnostic_performance.py",
+    ("STM32TK-0603", "python"): "tools/stm32-monitor/tests/test_analysis_performance.py",
+    ("STM32TK-0603", "browser"): "tools/stm32-monitor/ui/e2e/performance.spec.ts",
+}
+
+
+def _performance_digest(value: object) -> str:
+    return hashlib.sha256(canonical_json_bytes(value)).hexdigest()
+
+
+def _positive_integer(value: object) -> bool:
+    return _is_integer(value) and value > 0
+
+
+def _performance_contract(value: Mapping[str, object]) -> dict[str, object]:
+    return {key: value[key] for key in PERFORMANCE_CONTRACT_KEYS}
+
+
+def _validate_performance_workload_contract(value: object, *, catalog: bool) -> None:
+    if catalog:
+        keys = PERFORMANCE_CATALOG_WORKLOAD_KEYS
+    elif isinstance(value, Mapping) and value.get("kind") == "browser-latency":
+        keys = PERFORMANCE_BROWSER_WORKLOAD_KEYS
+    else:
+        keys = PERFORMANCE_WORKLOAD_KEYS
+    error = CatalogError if catalog else VerificationError
+    if not _closed(value, keys):
+        raise error("performance workload is not closed")
+    assert isinstance(value, Mapping)
+    if (
+        not isinstance(value["id"], str) or not value["id"]
+        or value["kind"] not in {"latency", "browser-latency"}
+        or value["unit"] != "ns"
+        or value["quantile"] != "nearest-rank"
+        or not _positive_integer(value["design_maximum"])
+        or value["relative_limit_ppm"] != 150000
+        or not isinstance(value["scale"], list) or not value["scale"]
+        or not isinstance(value["observation_contract"], list)
+        or not isinstance(value["measurement"], Mapping)
+        or not isinstance(value["workload_sha256"], str)
+        or HEX64.fullmatch(value["workload_sha256"]) is None
+    ):
+        raise error("performance workload contract is invalid")
+    measurement = value["measurement"]
+    if value["kind"] == "latency":
+        if (
+            not _closed(measurement, {"kind", "warmup_count", "batch_count", "samples_per_batch"})
+            or measurement["kind"] != "sample-batches"
+            or not _positive_integer(measurement["warmup_count"])
+            or measurement["batch_count"] != 3
+            or not _positive_integer(measurement["samples_per_batch"])
+        ):
+            raise error("performance measurement contract is invalid")
+    elif (
+        not _closed(measurement, {"kind", "warmup_seconds", "window_count", "seconds_per_window", "interaction_interval_seconds", "samples_per_window"})
+        or measurement["kind"] != "continuous-windows"
+        or measurement["warmup_seconds"] != 120
+        or measurement["window_count"] != 3
+        or measurement["seconds_per_window"] != 60
+        or measurement["interaction_interval_seconds"] != 5
+        or measurement["samples_per_window"] != 12
+    ):
+        raise error("browser performance measurement contract is invalid")
+    for field in ("scale", "observation_contract"):
+        names: list[str] = []
+        for item in value[field]:
+            expected = {"name", "unit", "value"} if field == "scale" else {"name", "unit"}
+            if not _closed(item, expected):
+                raise error(f"performance {field} item is not closed")
+            assert isinstance(item, Mapping)
+            if not isinstance(item["name"], str) or not item["name"] or not isinstance(item["unit"], str) or not item["unit"]:
+                raise error(f"performance {field} item is invalid")
+            if field == "scale" and (not _is_integer(item["value"]) or item["value"] < 0):
+                raise error("performance scale value is invalid")
+            names.append(str(item["name"]))
+        if names != sorted(names, key=lambda item: item.encode("utf-8")) or len(names) != len(set(names)):
+            raise error(f"performance {field} is not sorted and unique")
+    if value["workload_sha256"] != _performance_digest(_performance_contract(value)):
+        raise error("performance workload digest mismatch")
+    if catalog:
+        calibrations = value["calibrations"]
+        if not isinstance(calibrations, list):
+            raise CatalogError("performance calibrations are invalid")
+        identities: list[tuple[str, str]] = []
+        for calibration in calibrations:
+            if not _closed(calibration, {"runtime", "environment_sha256", "clock_tick", "batch_p95", "baseline", "mad", "absolute_threshold"}):
+                raise CatalogError("performance calibration is not closed")
+            assert isinstance(calibration, Mapping)
+            runtime = calibration["runtime"]
+            if not _closed(runtime, {"kind", "version"}):
+                raise CatalogError("performance calibration runtime is not closed")
+            assert isinstance(runtime, Mapping)
+            if runtime["kind"] not in {"cpython", "chromium"} or not isinstance(runtime["version"], str) or not runtime["version"]:
+                raise CatalogError("performance calibration runtime is invalid")
+            if not isinstance(calibration["environment_sha256"], str) or HEX64.fullmatch(calibration["environment_sha256"]) is None:
+                raise CatalogError("performance calibration environment digest is invalid")
+            threshold = calculate_performance_threshold(
+                calibration["batch_p95"],
+                clock_tick=calibration["clock_tick"],
+                design_maximum=value["design_maximum"],
+            )
+            if any(calibration[name] != threshold[name] for name in ("baseline", "mad", "absolute_threshold")):
+                raise CatalogError("performance calibration math mismatch")
+            identities.append((str(runtime["kind"]), str(runtime["version"])))
+        if identities != sorted(identities) or len(identities) != len(set(identities)):
+            raise CatalogError("performance calibrations are not sorted and unique")
+
+
+def _nearest_rank(samples: Sequence[int], numerator: int, denominator: int) -> int:
+    ordered = sorted(samples)
+    return ordered[math.ceil(numerator * len(ordered) / denominator) - 1]
+
+
+def validate_performance_run(value: object) -> dict[str, object]:
+    if not _closed(value, PERFORMANCE_RUN_KEYS):
+        raise VerificationError("performance run root is not closed")
+    assert isinstance(value, Mapping)
+    producer = value["producer"]
+    if (
+        value["schema"] != "stm32-performance-run/1"
+        or value["mode"] not in {"calibrate", "verify"}
+        or value["module"] not in {"STM32TK-0601", "STM32TK-0602", "STM32TK-0603"}
+        or producer not in {"python", "browser"}
+        or not isinstance(value["test_file"], str) or not value["test_file"]
+        or not isinstance(value["test_file_sha256"], str) or HEX64.fullmatch(value["test_file_sha256"]) is None
+        or not isinstance(value["workloads"], list) or not value["workloads"]
+    ):
+        raise VerificationError("performance run identity is invalid")
+    if value["mode"] == "calibrate":
+        if value["profile_sha256"] is not None:
+            raise VerificationError("calibration run has a profile digest")
+    elif not isinstance(value["profile_sha256"], str) or HEX64.fullmatch(value["profile_sha256"]) is None:
+        raise VerificationError("verification run profile digest is invalid")
+    if value["test_file"] != PERFORMANCE_TEST_FILES.get((str(value["module"]), str(producer))):
+        raise VerificationError("performance test file differs from the frozen module producer")
+    environment = value["environment"]
+    env_keys = PERFORMANCE_PYTHON_ENV_KEYS if producer == "python" else PERFORMANCE_BROWSER_ENV_KEYS
+    if not _closed(environment, env_keys):
+        raise VerificationError("performance environment is not closed")
+    assert isinstance(environment, Mapping)
+    expected_schema = "stm32-performance-environment/1" if producer == "python" else "stm32-browser-performance-environment/1"
+    if (
+        environment["schema"] != expected_schema
+        or not isinstance(environment["support_profile_sha256"], str)
+        or HEX64.fullmatch(environment["support_profile_sha256"]) is None
+        or not _positive_integer(environment["monotonic_clock_tick_ns"])
+        or environment["monotonic_clock"] not in {"perf_counter_ns", "performance.now"}
+    ):
+        raise VerificationError("performance environment identity is invalid")
+    required_text = (
+        "platform", "platform_version", "architecture", "cpu_model", "storage_model",
+        "power_profile", "antivirus_state",
+    )
+    if any(not isinstance(environment[name], str) or not environment[name] for name in required_text):
+        raise VerificationError("performance environment text field is invalid")
+    if (
+        not _positive_integer(environment["physical_cores"])
+        or not _positive_integer(environment["logical_cores"])
+        or environment["logical_cores"] < environment["physical_cores"]
+        or not _positive_integer(environment["memory_bytes"])
+    ):
+        raise VerificationError("performance environment hardware field is invalid")
+    if producer == "python":
+        if not re.fullmatch(r"3\.(10|12)\.\d+", str(environment["python_version"])):
+            raise VerificationError("performance Python runtime is unsupported")
+        if not isinstance(environment["python_executable_sha256"], str) or HEX64.fullmatch(environment["python_executable_sha256"]) is None:
+            raise VerificationError("performance Python executable digest is invalid")
+    else:
+        if environment["browser_name"] != "chromium" or not isinstance(environment["browser_version"], str) or not environment["browser_version"]:
+            raise VerificationError("performance browser runtime is unsupported")
+        if not isinstance(environment["browser_executable_sha256"], str) or HEX64.fullmatch(environment["browser_executable_sha256"]) is None:
+            raise VerificationError("performance browser executable digest is invalid")
+    if not isinstance(value["environment_sha256"], str) or value["environment_sha256"] != _performance_digest(environment):
+        raise VerificationError("performance environment digest mismatch")
+    expected_workloads = PERFORMANCE_MODULE_CONTRACTS[str(value["module"])].get(str(producer))
+    if expected_workloads is None or len(value["workloads"]) != len(expected_workloads):
+        raise VerificationError("performance workload inventory differs from the frozen module")
+    workload_ids: list[str] = []
+    for workload, expected_workload in zip(value["workloads"], expected_workloads):
+        _validate_performance_workload_contract(workload, catalog=False)
+        assert isinstance(workload, Mapping)
+        if (producer == "python") != (workload["kind"] == "latency"):
+            raise VerificationError("performance workload producer kind mismatch")
+        measurement = workload["measurement"]
+        assert isinstance(measurement, Mapping)
+        expected_id, expected_maximum, expected_warmup, expected_samples = expected_workload
+        if workload["id"] != expected_id or workload["design_maximum"] != expected_maximum:
+            raise VerificationError("performance workload identity/maximum differs from the frozen module")
+        if producer == "python" and (measurement["warmup_count"], measurement["samples_per_batch"]) != (expected_warmup, expected_samples):
+            raise VerificationError("performance workload sample plan differs from the frozen module")
+        warmups = workload["warmup_samples"]
+        batches = workload["batches"]
+        warmup_count = measurement["warmup_count"] if producer == "python" else expected_warmup
+        samples_per_batch = measurement["samples_per_batch"] if producer == "python" else expected_samples
+        if (
+            not isinstance(warmups, list) or len(warmups) != warmup_count
+            or any(not _positive_integer(item) for item in warmups)
+            or not isinstance(batches, list) or len(batches) != 3
+        ):
+            raise VerificationError("performance samples are invalid")
+        batch_p95: list[int] = []
+        for index, batch in enumerate(batches):
+            if not _closed(batch, {"index", "started_offset_ns", "duration_ns", "samples", "p50", "p95", "max"}):
+                raise VerificationError("performance batch is not closed")
+            assert isinstance(batch, Mapping)
+            samples = batch["samples"]
+            if (
+                batch["index"] != index or not _is_integer(batch["started_offset_ns"]) or batch["started_offset_ns"] < 0
+                or not _positive_integer(batch["duration_ns"])
+                or not isinstance(samples, list) or len(samples) != samples_per_batch
+                or any(not _positive_integer(item) for item in samples)
+            ):
+                raise VerificationError("performance batch samples are invalid")
+            expected = (_nearest_rank(samples, 1, 2), _nearest_rank(samples, 95, 100), max(samples))
+            if (batch["p50"], batch["p95"], batch["max"]) != expected:
+                raise VerificationError("performance batch p50/p95/max mismatch")
+            batch_p95.append(expected[1])
+        computed = calculate_performance_threshold(
+            batch_p95,
+            clock_tick=environment["monotonic_clock_tick_ns"],
+            design_maximum=workload["design_maximum"],
+        )
+        if workload["observed_p95"] != computed["baseline"] or workload["observed_mad"] != computed["mad"]:
+            raise VerificationError("performance observed median/MAD mismatch")
+        if value["mode"] == "calibrate":
+            if workload["accepted_baseline"] is not None or workload["absolute_threshold"] is not None:
+                raise VerificationError("calibration run contains accepted thresholds")
+        else:
+            if not _positive_integer(workload["accepted_baseline"]) or not _positive_integer(workload["absolute_threshold"]):
+                raise VerificationError("verification thresholds are invalid")
+            if workload["observed_p95"] > workload["absolute_threshold"] or 20 * (workload["observed_p95"] - workload["accepted_baseline"]) > 3 * workload["accepted_baseline"]:
+                raise VerificationError("performance verification threshold failed")
+        observations = workload["observations"]
+        if not isinstance(observations, list):
+            raise VerificationError("performance observations are invalid")
+        expected_observations = [(item["name"], item["unit"]) for item in workload["observation_contract"]]
+        actual_observations: list[tuple[object, object]] = []
+        for observation in observations:
+            if not _closed(observation, {"name", "unit", "values"}):
+                raise VerificationError("performance observation is not closed")
+            assert isinstance(observation, Mapping)
+            if not isinstance(observation["values"], list) or not observation["values"] or any(not _is_integer(item) or item < 0 for item in observation["values"]):
+                raise VerificationError("performance observation values are invalid")
+            actual_observations.append((observation["name"], observation["unit"]))
+        if actual_observations != expected_observations:
+            raise VerificationError("performance observation contract mismatch")
+        if producer == "browser":
+            metrics = workload["browser_metrics"]
+            if not _closed(metrics, {"long_tasks_ge_200ms", "retained_heap_slope_bytes_per_minute", "queue_growth"}):
+                raise VerificationError("browser performance metrics are not closed")
+            assert isinstance(metrics, Mapping)
+            if (
+                metrics["long_tasks_ge_200ms"] != 0
+                or not _is_integer(metrics["retained_heap_slope_bytes_per_minute"])
+                or metrics["retained_heap_slope_bytes_per_minute"] < 0
+                or metrics["retained_heap_slope_bytes_per_minute"] > 2 * 1024 * 1024
+                or metrics["queue_growth"] != 0
+            ):
+                raise VerificationError("browser performance invariant failed")
+        workload_ids.append(str(workload["id"]))
+    if workload_ids != sorted(workload_ids, key=lambda item: item.encode("utf-8")) or len(workload_ids) != len(set(workload_ids)):
+        raise VerificationError("performance workloads are not sorted and unique")
+    return dict(value)
+
+
+def aggregate_performance_calibration(profile: str, inputs: Sequence[Path], catalog_path: Path) -> dict[str, str]:
+    expected = {
+        "STM32TK-0601": {("python", "3.10"), ("python", "3.12")},
+        "STM32TK-0602": {("python", "3.10"), ("python", "3.12")},
+        "STM32TK-0603": {("python", "3.10"), ("python", "3.12"), ("browser", "chromium")},
+    }
+    if profile not in expected:
+        raise VerificationError("performance profile is unknown")
+    runs = [validate_performance_run(_read_canonical(Path(path))[1]) for path in inputs]
+    identities: set[tuple[str, str]] = set()
+    for run in runs:
+        environment = run["environment"]
+        assert isinstance(environment, Mapping)
+        identity = ("python", ".".join(str(environment["python_version"]).split(".")[:2])) if run["producer"] == "python" else ("browser", str(environment["browser_name"]))
+        identities.add(identity)
+        if run["mode"] != "calibrate" or run["module"] != profile:
+            raise VerificationError("performance input mode/profile mismatch")
+    if len(runs) != len(expected[profile]) or identities != expected[profile]:
+        raise VerificationError("performance input runtime set is incomplete or duplicated")
+    catalog = load_performance_catalog(catalog_path)
+    matches = [item for item in catalog["profiles"] if item["module"] == profile]
+    if len(matches) > 1:
+        raise VerificationError("performance catalog profile is duplicated")
+    if not matches:
+        producers: list[dict[str, object]] = []
+        for producer_name in sorted(PERFORMANCE_MODULE_CONTRACTS[profile]):
+            producer_runs = [item for item in runs if item["producer"] == producer_name]
+            representative = producer_runs[0]
+            if any(
+                item["test_file"] != representative["test_file"]
+                or item["test_file_sha256"] != representative["test_file_sha256"]
+                for item in producer_runs[1:]
+            ):
+                raise VerificationError("performance input test identity differs by runtime")
+            producers.append({
+                "producer": producer_name,
+                "test_file": representative["test_file"],
+                "test_file_sha256": representative["test_file_sha256"],
+                "workloads": [
+                    {**_performance_contract(item), "workload_sha256": item["workload_sha256"], "calibrations": []}
+                    for item in representative["workloads"]
+                ],
+            })
+        target = {"module": profile, "profile_sha256": "0" * 64, "producers": producers}
+        catalog["profiles"].append(target)
+        catalog["profiles"].sort(key=lambda item: item["module"])
+    else:
+        target = matches[0]
+    for producer in target["producers"]:
+        producer_runs = [item for item in runs if item["producer"] == producer["producer"]]
+        for run in producer_runs:
+            if run["test_file"] != producer["test_file"] or run["test_file_sha256"] != producer["test_file_sha256"]:
+                raise VerificationError("performance input test identity mismatch")
+        for workload in producer["workloads"]:
+            calibrations: list[dict[str, object]] = []
+            for run in producer_runs:
+                measured = [item for item in run["workloads"] if item["id"] == workload["id"]]
+                if len(measured) != 1 or measured[0]["workload_sha256"] != workload["workload_sha256"]:
+                    raise VerificationError("performance input workload identity mismatch")
+                item = measured[0]
+                environment = run["environment"]
+                assert isinstance(environment, Mapping)
+                batch_p95 = [batch["p95"] for batch in item["batches"]]
+                calculated = calculate_performance_threshold(batch_p95, clock_tick=environment["monotonic_clock_tick_ns"], design_maximum=workload["design_maximum"])
+                runtime = {"kind": "cpython", "version": environment["python_version"]} if run["producer"] == "python" else {"kind": "chromium", "version": environment["browser_version"]}
+                calibrations.append({"runtime": runtime, "environment_sha256": run["environment_sha256"], "clock_tick": environment["monotonic_clock_tick_ns"], "batch_p95": batch_p95, **calculated})
+            workload["calibrations"] = sorted(calibrations, key=lambda item: (item["runtime"]["kind"], item["runtime"]["version"]))
+    target["profile_sha256"] = _performance_digest({"module": target["module"], "producers": target["producers"]})
+    validate_performance_catalog_data(catalog)
+    encoded = canonical_json_bytes(catalog)
+    temporary: Path | None = None
+    try:
+        descriptor, raw_temporary = tempfile.mkstemp(
+            prefix=f".{catalog_path.name}.", suffix=".tmp", dir=catalog_path.parent
+        )
+        temporary = Path(raw_temporary)
+        with os.fdopen(descriptor, "wb") as stream:
+            stream.write(encoded)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, catalog_path)
+    except OSError as exc:
+        raise VerificationError("performance catalog update failed") from exc
+    finally:
+        if temporary is not None:
+            try:
+                temporary.unlink(missing_ok=True)
+            except OSError:
+                pass
+    return {"mode": "performance-calibration", "profile": profile, "status": "PASS"}
 
 
 def verify_performance_calibration_input(value: object) -> dict[str, object]:
@@ -2088,7 +2560,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="verify_0600_release.py", allow_abbrev=False)
     sub = parser.add_subparsers(dest="mode", required=True)
     performance = sub.add_parser("performance-calibration", allow_abbrev=False)
-    performance.add_argument("--input", required=True, action=_SingleUse)
+    performance.add_argument("--profile", required=True, action=_SingleUse)
+    performance.add_argument("--input", required=True, action="append")
+    performance.add_argument("--output", required=True, action=_SingleUse)
     audit = sub.add_parser("dependency-audit", allow_abbrev=False)
     audit.add_argument("--input", required=True, action=_SingleUse)
     candidate = sub.add_parser("candidate-evidence", allow_abbrev=False)
@@ -2751,8 +3225,14 @@ def main(argv: Sequence[str] | None = None) -> int:
                 script_path=Path(__file__),
             )
             if args.mode == "performance-calibration":
-                result = verify_performance_calibration_input(
-                    _mode_input(args.input, args.mode)
+                for raw in args.input:
+                    _canonical_absolute(raw, "performance calibration input")
+                output = Path(args.output)
+                fixed_output = repository / "tools/release/performance_0600.json"
+                if output.resolve() != fixed_output.resolve():
+                    raise VerificationError("performance calibration output is not the fixed catalog")
+                result = aggregate_performance_calibration(
+                    args.profile, [Path(raw) for raw in args.input], fixed_output
                 )
             elif args.mode == "dependency-audit":
                 result = verify_dependency_audit_input(_mode_input(args.input, args.mode))

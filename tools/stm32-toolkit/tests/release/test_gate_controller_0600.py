@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import math
 import os
 import platform
 import re
@@ -445,10 +446,52 @@ def test_platform_shards_bind_one_logical_final_run_id() -> None:
 @pytest.fixture
 def performance_repo(tmp_path: Path) -> tuple[Path, Path]:
     repo = tmp_path / "repo"
-    test_file = repo / "tools" / "stm32-toolkit" / "tests" / "test_store_performance.py"
+    test_file = repo / "tools" / "stm32-toolkit" / "tests" / "test_evidence_performance.py"
     test_file.parent.mkdir(parents=True)
     test_file.write_text("def test_workload():\n    pass\n", encoding="utf-8")
     return repo, test_file
+
+
+def _performance_payload(test_file: Path, repo: Path) -> dict[str, object]:
+    environment = {
+        "schema": "stm32-performance-environment/1", "support_profile_sha256": "a" * 64,
+        "platform": "Windows", "platform_version": "10", "architecture": "AMD64",
+        "cpu_model": "sanitized", "physical_cores": 8, "logical_cores": 16,
+        "memory_bytes": 16 * 1024**3, "storage_model": "NVMe", "power_profile": "balanced",
+        "antivirus_state": "enabled", "python_version": "3.12.10",
+        "python_executable_sha256": "b" * 64, "gc_enabled": True,
+        "monotonic_clock": "perf_counter_ns", "monotonic_clock_tick_ns": 10,
+    }
+    workloads = []
+    for workload_id, maximum, warmups, samples_per_batch in release_verifier.PERFORMANCE_MODULE_CONTRACTS["STM32TK-0601"]["python"]:
+        contract = {
+            "id": workload_id, "kind": "latency", "unit": "ns", "quantile": "nearest-rank",
+            "design_maximum": maximum, "relative_limit_ppm": 150000,
+            "scale": [{"name": "items", "unit": "count", "value": 1}],
+            "measurement": {"kind": "sample-batches", "warmup_count": warmups, "batch_count": 3, "samples_per_batch": samples_per_batch},
+            "observation_contract": [],
+        }
+        batches = []
+        for index, base in enumerate((100, 110, 120)):
+            samples = [base + offset for offset in range(samples_per_batch)]
+            batches.append({
+                "index": index, "started_offset_ns": index, "duration_ns": 1,
+                "samples": samples, "p50": samples[(samples_per_batch + 1) // 2 - 1],
+                "p95": samples[math.ceil(.95 * samples_per_batch) - 1], "max": samples[-1],
+            })
+        workloads.append({
+            **contract, "workload_sha256": _sha(canonical_json_bytes(contract)),
+            "warmup_samples": [90 + index for index in range(warmups)], "batches": batches,
+            "observed_p95": batches[1]["p95"], "observed_mad": 10,
+            "accepted_baseline": None, "absolute_threshold": None, "observations": [],
+        })
+    return {
+        "schema": "stm32-performance-run/1", "mode": "calibrate", "module": "STM32TK-0601",
+        "producer": "python", "environment": environment,
+        "environment_sha256": _sha(canonical_json_bytes(environment)), "profile_sha256": None,
+        "test_file": test_file.relative_to(repo).as_posix(),
+        "test_file_sha256": _sha(test_file.read_bytes()), "workloads": workloads,
+    }
 
 
 def test_performance_runner_invokes_entire_file_with_current_interpreter_and_isolated_env(
@@ -467,14 +510,7 @@ def test_performance_runner_invokes_entire_file_with_current_interpreter_and_iso
         assert "PYTHONPATH" not in env
         assert "PYTEST_PLUGINS" not in env
         assert "PYTHONSTARTUP" not in env
-        payload = {
-            "schema": "stm32-performance-run/1",
-            "mode": "calibrate",
-            "module": "STM32TK-0601",
-            "profile_sha256": None,
-            "test_file_sha256": _sha(test_file.read_bytes()),
-            "workloads": [],
-        }
+        payload = _performance_payload(test_file, repo)
         output.write_text(json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8")
         return 0
 
@@ -569,27 +605,85 @@ def test_performance_verify_rejects_stale_workload_and_config_digest(
     """Changing the workload file or accepted profile must invalidate verification."""
     repo, test_file = performance_repo
     output = tmp_path / "result.json"
-    config = tmp_path / "performance.json"
-    config.write_text(
-        json.dumps(
-            {
-                "schema": "stm32-performance-catalog/1",
-                "profiles": [
-                    {
-                        "module": "STM32TK-0601",
-                        "test_file": test_file.relative_to(repo).as_posix(),
-                        "test_file_sha256": "0" * 64,
-                        "profile_sha256": "1" * 64,
-                    }
-                ],
-            },
-            sort_keys=True,
-        ),
-        encoding="utf-8",
-    )
+    config = repo / "tools/release/performance_0600.json"
+    config.parent.mkdir(parents=True)
+    run = _performance_payload(test_file, repo)
+    contract_keys = {
+        "id", "kind", "workload_sha256", "unit", "quantile", "design_maximum",
+        "relative_limit_ppm", "scale", "measurement", "observation_contract",
+    }
+    producer = {
+        "producer": "python", "test_file": run["test_file"],
+        "test_file_sha256": "0" * 64,
+        "workloads": [
+            {**{key: workload[key] for key in contract_keys}, "calibrations": []}
+            for workload in run["workloads"]
+        ],
+    }
+    profile_body = {"module": "STM32TK-0601", "producers": [producer]}
+    config.write_bytes(canonical_json_bytes({
+        "schema": "stm32-performance-catalog/1",
+        "profiles": [{**profile_body, "profile_sha256": _sha(canonical_json_bytes(profile_body))}],
+    }))
 
     with pytest.raises(ControllerError, match="digest"):
         run_performance(repo, "STM32TK-0601", test_file, "verify", output, config)
+
+
+def test_performance_verify_accepts_relative_fixed_catalog_and_binds_runtime_thresholds(
+    performance_repo: tuple[Path, Path], tmp_path: Path
+) -> None:
+    repo, test_file = performance_repo
+    catalog = repo / "tools/release/performance_0600.json"
+    catalog.parent.mkdir(parents=True)
+    catalog.write_bytes(canonical_json_bytes({"schema": "stm32-performance-catalog/1", "profiles": []}))
+    inputs = []
+    runs = []
+    for version in ("3.10.11", "3.12.10"):
+        run = _performance_payload(test_file, repo)
+        run["environment"]["python_version"] = version
+        run["environment_sha256"] = _sha(canonical_json_bytes(run["environment"]))
+        path = tmp_path / f"run-{version}.json"
+        path.write_bytes(canonical_json_bytes(run))
+        inputs.append(path)
+        runs.append(run)
+    release_verifier.aggregate_performance_calibration("STM32TK-0601", inputs, catalog)
+    accepted_catalog = json.loads(catalog.read_text(encoding="utf-8"))
+    profile = accepted_catalog["profiles"][0]
+    verified = copy.deepcopy(runs[1])
+    verified["mode"] = "verify"
+    verified["profile_sha256"] = profile["profile_sha256"]
+    accepted_workloads = {item["id"]: item for item in profile["producers"][0]["workloads"]}
+    for workload in verified["workloads"]:
+        calibration = next(
+            item for item in accepted_workloads[workload["id"]]["calibrations"]
+            if item["runtime"]["version"] == "3.12.10"
+        )
+        workload["accepted_baseline"] = calibration["baseline"]
+        workload["absolute_threshold"] = calibration["absolute_threshold"]
+
+    output = tmp_path / "verify.json"
+    def runner(argv: list[str], *, cwd: Path, env: dict[str, str]) -> int:
+        output.write_bytes(canonical_json_bytes(verified))
+        return 0
+
+    result = run_performance(
+        repo, "STM32TK-0601", test_file, "verify", output,
+        Path("tools/release/performance_0600.json"), runner=runner,
+    )
+    assert result["profile_sha256"] == profile["profile_sha256"]
+
+    forged = copy.deepcopy(verified)
+    forged["workloads"][0]["absolute_threshold"] += 10
+    forged_output = tmp_path / "forged.json"
+    def forged_runner(argv: list[str], *, cwd: Path, env: dict[str, str]) -> int:
+        forged_output.write_bytes(canonical_json_bytes(forged))
+        return 0
+    with pytest.raises(ControllerError, match="accepted runtime calibration"):
+        run_performance(
+            repo, "STM32TK-0601", test_file, "verify", forged_output,
+            Path("tools/release/performance_0600.json"), runner=forged_runner,
+        )
 
 
 def _coverage_git(paths: list[str]):
