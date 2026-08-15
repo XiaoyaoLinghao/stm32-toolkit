@@ -115,11 +115,45 @@ class _LockedWindowsDirectory:
 
     def __exit__(self, *_args: object) -> None:
         if self.handle:
-            kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-            kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
-            kernel32.CloseHandle.restype = wintypes.BOOL
-            kernel32.CloseHandle(wintypes.HANDLE(self.handle))
+            _close_windows_handle(self.handle)
             self.handle = 0
+
+
+class _LockedWindowsFile:
+    def __init__(
+        self,
+        path: Path,
+        handle: int,
+        volume_serial: int,
+        file_index: int,
+        *,
+        cleanup: bool = False,
+    ) -> None:
+        self.path = path
+        self.handle = handle
+        self.volume_serial = volume_serial
+        self.file_index = file_index
+        self.cleanup = cleanup
+
+    def __enter__(self) -> _LockedWindowsFile:
+        return self
+
+    def __exit__(self, *_args: object) -> None:
+        cleanup_safe = False
+        if self.handle:
+            try:
+                _validate_locked_coverage_file(self)
+                cleanup_safe = True
+            finally:
+                _close_windows_handle(self.handle)
+                self.handle = 0
+        if self.cleanup:
+            if not cleanup_safe or _is_reparse(self.path) or not self.path.is_file():
+                raise ControllerError("coverage lock sentinel cleanup identity is unsafe")
+            try:
+                self.path.unlink()
+            except OSError as exc:
+                raise ControllerError("coverage lock sentinel cleanup failed") from exc
 
 
 class CatalogError(ValueError):
@@ -1008,6 +1042,162 @@ def _windows_directory_information(kernel32: object, handle: int) -> _ByHandleFi
     return information
 
 
+def _close_windows_handle(handle: int) -> None:
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel32.CloseHandle.restype = wintypes.BOOL
+    if not kernel32.CloseHandle(wintypes.HANDLE(handle)):
+        raise ctypes.WinError(ctypes.get_last_error())
+
+
+def _open_locked_windows_file(
+    path: Path,
+    *,
+    create_new: bool,
+    write: bool,
+    cleanup: bool = False,
+) -> _LockedWindowsFile:
+    if not _coverage_windows_available():
+        raise ControllerError("development coverage requires Windows file locking")
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.CreateFileW.argtypes = [
+        wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, wintypes.LPVOID,
+        wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE,
+    ]
+    kernel32.CreateFileW.restype = wintypes.HANDLE
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel32.CloseHandle.restype = wintypes.BOOL
+    desired_access = 0x80000000 | (0x40000000 if write else 0)
+    handle = kernel32.CreateFileW(
+        str(path),
+        desired_access,
+        0x00000001 | 0x00000002,
+        None,
+        1 if create_new else 3,
+        0x00200000,
+        None,
+    )
+    invalid = ctypes.c_void_p(-1).value
+    handle_value = handle if isinstance(handle, int) else handle.value
+    if handle_value in (None, invalid):
+        error = ctypes.WinError(ctypes.get_last_error())
+        raise ControllerError("coverage file handle open/create failed") from error
+    try:
+        information = _windows_directory_information(kernel32, handle_value)
+        if information.file_attributes & stat.FILE_ATTRIBUTE_DIRECTORY:
+            raise ControllerError("coverage locked file is a directory")
+        if information.file_attributes & stat.FILE_ATTRIBUTE_REPARSE_POINT:
+            raise ControllerError("coverage locked file is a reparse point")
+        if information.number_of_links != 1:
+            raise ControllerError("coverage locked file has multiple hard links")
+        final_path = _windows_final_path(kernel32, handle_value)
+        if os.path.normcase(str(final_path)) != os.path.normcase(os.path.abspath(path)):
+            raise ControllerError("coverage locked file resolves to another path")
+        return _LockedWindowsFile(
+            path, handle_value, information.volume_serial,
+            (information.file_index_high << 32) | information.file_index_low,
+            cleanup=cleanup,
+        )
+    except BaseException:
+        kernel32.CloseHandle(wintypes.HANDLE(handle_value))
+        raise
+
+
+def _validate_locked_coverage_file(locked: _LockedWindowsFile) -> None:
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    try:
+        information = _windows_directory_information(kernel32, locked.handle)
+        final_path = _windows_final_path(kernel32, locked.handle)
+    except OSError as exc:
+        raise ControllerError("coverage locked file became unreadable") from exc
+    identity = (
+        information.volume_serial,
+        (information.file_index_high << 32) | information.file_index_low,
+    )
+    if identity != (locked.volume_serial, locked.file_index):
+        raise ControllerError("coverage locked file identity changed")
+    if (
+        information.file_attributes & (stat.FILE_ATTRIBUTE_DIRECTORY | stat.FILE_ATTRIBUTE_REPARSE_POINT)
+        or information.number_of_links != 1
+        or os.path.normcase(str(final_path)) != os.path.normcase(os.path.abspath(locked.path))
+    ):
+        raise ControllerError("coverage locked file path changed")
+
+
+def _create_coverage_lock_sentinel(root: Path) -> _LockedWindowsFile:
+    # This closes accidental/injected replacement windows; deliberate ACL changes by the
+    # same SID and higher-privilege processes are outside the controller threat model.
+    path = root / f".stm32tk-coverage-lock-{secrets.token_hex(16)}"
+    return _open_locked_windows_file(path, create_new=True, write=True, cleanup=True)
+
+
+def _windows_read_locked_file(locked: _LockedWindowsFile) -> bytes:
+    _validate_locked_coverage_file(locked)
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.GetFileSizeEx.argtypes = [wintypes.HANDLE, ctypes.POINTER(ctypes.c_longlong)]
+    kernel32.GetFileSizeEx.restype = wintypes.BOOL
+    size = ctypes.c_longlong()
+    if not kernel32.GetFileSizeEx(wintypes.HANDLE(locked.handle), ctypes.byref(size)):
+        raise ControllerError("coverage locked file size is unreadable") from ctypes.WinError(ctypes.get_last_error())
+    if size.value < 0 or size.value > 64 * 1024 * 1024:
+        raise ControllerError("coverage locked file size is outside bounds")
+    buffer = ctypes.create_string_buffer(size.value or 1)
+    read = wintypes.DWORD()
+    kernel32.ReadFile.argtypes = [
+        wintypes.HANDLE, wintypes.LPVOID, wintypes.DWORD,
+        ctypes.POINTER(wintypes.DWORD), wintypes.LPVOID,
+    ]
+    kernel32.ReadFile.restype = wintypes.BOOL
+    if not kernel32.ReadFile(
+        wintypes.HANDLE(locked.handle), buffer, size.value, ctypes.byref(read), None
+    ):
+        raise ControllerError("coverage locked file read failed") from ctypes.WinError(ctypes.get_last_error())
+    if read.value != size.value:
+        raise ControllerError("coverage locked file read was incomplete")
+    _validate_locked_coverage_file(locked)
+    return bytes(buffer.raw[:read.value])
+
+
+def _windows_write_locked_file(locked: _LockedWindowsFile, data: bytes) -> None:
+    _validate_locked_coverage_file(locked)
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.WriteFile.argtypes = [
+        wintypes.HANDLE, wintypes.LPCVOID, wintypes.DWORD,
+        ctypes.POINTER(wintypes.DWORD), wintypes.LPVOID,
+    ]
+    kernel32.WriteFile.restype = wintypes.BOOL
+    kernel32.FlushFileBuffers.argtypes = [wintypes.HANDLE]
+    kernel32.FlushFileBuffers.restype = wintypes.BOOL
+    written = wintypes.DWORD()
+    buffer = ctypes.create_string_buffer(data)
+    if not kernel32.WriteFile(
+        wintypes.HANDLE(locked.handle), buffer, len(data), ctypes.byref(written), None
+    ):
+        raise ControllerError("coverage locked result write failed") from ctypes.WinError(ctypes.get_last_error())
+    if written.value != len(data):
+        raise ControllerError("coverage locked result write was incomplete")
+    if not kernel32.FlushFileBuffers(wintypes.HANDLE(locked.handle)):
+        raise ControllerError("coverage locked result flush failed") from ctypes.WinError(ctypes.get_last_error())
+    _validate_locked_coverage_file(locked)
+
+
+def _load_locked_coverage_json(path: Path) -> object:
+    def reject_duplicate_keys(pairs: list[tuple[str, object]]) -> dict[str, object]:
+        value: dict[str, object] = {}
+        for key, item in pairs:
+            if key in value:
+                raise ControllerError("JSON object contains a duplicate key")
+            value[key] = item
+        return value
+
+    with _open_locked_windows_file(path, create_new=False, write=False) as locked:
+        raw = _windows_read_locked_file(locked)
+        try:
+            return json.loads(raw.decode("utf-8"), object_pairs_hook=reject_duplicate_keys)
+        except (UnicodeError, json.JSONDecodeError) as exc:
+            raise ControllerError("coverage JSON input is unreadable") from exc
+
+
 def _open_locked_windows_directory(path: Path) -> _LockedWindowsDirectory:
     """Lock/recheck accidental or injected races; not a same-SID hostile-process boundary."""
     if not _coverage_windows_available():
@@ -1318,14 +1508,18 @@ def run_dev_coverage(
     basetemp_index = validated.index("--basetemp") if "--basetemp" in validated else None
     _validate_coverage_attempt_location(repo, evidence_root)
     with _open_locked_windows_directory(Path(r"C:\tmp")) as temporary_lock:
-        _validate_locked_coverage_directory(temporary_lock)
-        _validate_coverage_attempt_location(repo, evidence_root)
-        evidence = prepare_evidence_root(evidence_root)
-        with _open_locked_windows_directory(evidence) as evidence_lock:
-            return _run_locked_dev_coverage(
-                repo, task_id, evidence, validated, changed, basetemp_index,
-                temporary_lock, evidence_lock, runner,
-            )
+        with _create_coverage_lock_sentinel(temporary_lock.path) as temporary_sentinel:
+            _validate_locked_coverage_file(temporary_sentinel)
+            _validate_locked_coverage_directory(temporary_lock)
+            _validate_coverage_attempt_location(repo, evidence_root)
+            evidence = prepare_evidence_root(evidence_root)
+            with _open_locked_windows_directory(evidence) as evidence_lock:
+                with _create_coverage_lock_sentinel(evidence) as evidence_sentinel:
+                    _validate_locked_coverage_file(evidence_sentinel)
+                    return _run_locked_dev_coverage(
+                        repo, task_id, evidence, validated, changed, basetemp_index,
+                        temporary_lock, evidence_lock, runner,
+                    )
 
 
 def _run_locked_dev_coverage(
@@ -1359,10 +1553,9 @@ def _run_locked_dev_coverage(
         _verify_coverage_attempt_basetemp(evidence, basetemp, created=True)
     if return_code != 0:
         raise ControllerError("coverage subprocess failed")
-    _validate_coverage_raw_path(evidence, raw_path)
     _validate_locked_coverage_directory(temporary_lock)
     _validate_locked_coverage_directory(evidence_lock)
-    raw = _load_json(raw_path)
+    raw = _load_locked_coverage_json(raw_path)
     _validate_locked_coverage_directory(temporary_lock)
     _validate_locked_coverage_directory(evidence_lock)
     _validate_coverage_raw_path(evidence, raw_path)
@@ -1402,17 +1595,9 @@ def _run_locked_dev_coverage(
     result_path = evidence / "branch-coverage.json"
     _validate_locked_coverage_directory(evidence_lock)
     try:
-        result_path.lstat()
-    except FileNotFoundError:
-        pass
-    except OSError as exc:
-        raise ControllerError("coverage normalized result path is unreadable") from exc
-    else:
-        raise ControllerError("coverage normalized result path is not new")
-    try:
-        with result_path.open("xb") as stream:
-            stream.write(canonical_json_bytes(result))
-    except OSError as exc:
+        with _open_locked_windows_file(result_path, create_new=True, write=True) as locked_result:
+            _windows_write_locked_file(locked_result, canonical_json_bytes(result))
+    except ControllerError as exc:
         raise ControllerError("coverage normalized result create-new write failed") from exc
     _validate_coverage_regular_child(evidence, result_path, "branch-coverage.json")
     _validate_locked_coverage_directory(evidence_lock)

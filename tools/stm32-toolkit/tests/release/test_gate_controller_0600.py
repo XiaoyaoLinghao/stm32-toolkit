@@ -1028,38 +1028,8 @@ def test_dev_coverage_rejects_target_created_before_root_creation(
     assert runner_calls == 0
 
 
-def test_dev_coverage_runner_cannot_replace_locked_root(tmp_path: Path) -> None:
-    """A runner-time replacement is detected before any result is accepted."""
-    repo = tmp_path / "repo"
-    test_file = repo / "tools/stm32-monitor/tests/test_package.py"
-    product = repo / "tools/stm32-monitor/src/stm32_monitor/package.py"
-    test_file.parent.mkdir(parents=True)
-    product.parent.mkdir(parents=True)
-    test_file.write_text("def test_package(): pass\n", encoding="utf-8")
-    product.write_text("VALUE = 1\n", encoding="utf-8")
-    evidence = _coverage_evidence(tmp_path)
-    changed = product.relative_to(repo).as_posix()
-
-    def runner(argv: list[str], **_kwargs: object) -> int:
-        os.rmdir(evidence)
-        evidence.mkdir()
-        return 0
-
-    with pytest.raises(ControllerError, match="changed"):
-        run_dev_coverage(
-            repo,
-            "STM32TK-0603-T01",
-            evidence,
-            [str(test_file), "--cov=stm32_monitor.package"],
-            _coverage_git([changed]),
-            runner,
-        )
-
-
-def test_dev_coverage_raw_read_occurs_while_root_is_locked(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """The no-delete root handle spans runner return and coverage JSON parsing."""
+def test_dev_coverage_real_child_cannot_remove_rename_or_unlock_root(tmp_path: Path) -> None:
+    """The held sentinel makes real child-process replacement fail in the Windows kernel."""
     repo = tmp_path / "repo"
     test_file = repo / "tools/stm32-monitor/tests/test_package.py"
     product = repo / "tools/stm32-monitor/src/stm32_monitor/package.py"
@@ -1069,22 +1039,116 @@ def test_dev_coverage_raw_read_occurs_while_root_is_locked(
     product.write_text("VALUE = 1\n", encoding="utf-8")
     evidence = _coverage_evidence(tmp_path)
     moved = _coverage_evidence(tmp_path, "moved")
+    outside = tmp_path / "outside"
+    outside.mkdir()
     changed = product.relative_to(repo).as_posix()
-    original_load = gates._load_json
-
-    def load_while_attempting_replace(path: Path) -> object:
-        os.replace(evidence, moved)
-        return original_load(path)
-
-    monkeypatch.setattr(gates, "_load_json", load_while_attempting_replace)
 
     def runner(_argv: list[str], **_kwargs: object) -> int:
+        sentinels = list(evidence.glob(".stm32tk-coverage-lock-*"))
+        assert len(sentinels) == 1
+        script = (
+            "import json, os, pathlib, sys\n"
+            "root, lock, moved, outside = map(pathlib.Path, sys.argv[1:])\n"
+            "codes=[]\n"
+            "for operation in (lambda: os.rmdir(root), lambda: os.replace(root,moved), lambda: os.remove(lock)):\n"
+            "    try: operation()\n"
+            "    except OSError as exc: codes.append(exc.winerror)\n"
+            "    else: codes.append(0)\n"
+            "if not root.exists():\n"
+            "    os.system(f'cmd.exe /d /c mklink /J \"{root}\" \"{outside}\" >nul')\n"
+            "    (root/'escaped.txt').write_text('escape', encoding='utf-8')\n"
+            "print(json.dumps(codes))\n"
+        )
+        completed = subprocess.run(
+            [sys.executable, "-c", script, str(evidence), str(sentinels[0]), str(moved), str(outside)],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert completed.returncode == 0, completed.stderr
+        assert json.loads(completed.stdout) == [145, 5, 32]
+        assert not (outside / "escaped.txt").exists()
         (evidence / "coverage-raw.json").write_text(
             json.dumps(_coverage_v7({changed: (9, 10)})), encoding="utf-8"
         )
         return 0
 
-    with pytest.raises(ControllerError):
+    assert run_dev_coverage(
+        repo,
+        "STM32TK-0603-T01",
+        evidence,
+        [str(test_file), "--cov=stm32_monitor.package"],
+        _coverage_git([changed]),
+        runner,
+    )["task_id"] == "STM32TK-0603-T01"
+    assert not list(evidence.glob(".stm32tk-coverage-lock-*"))
+
+
+def test_dev_coverage_raw_swap_is_blocked_while_same_handle_is_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Raw JSON bytes come from the validated no-delete handle, not a reopened path."""
+    repo = tmp_path / "repo"
+    test_file = repo / "tools/stm32-monitor/tests/test_package.py"
+    product = repo / "tools/stm32-monitor/src/stm32_monitor/package.py"
+    test_file.parent.mkdir(parents=True)
+    product.parent.mkdir(parents=True)
+    test_file.write_text("def test_package(): pass\n", encoding="utf-8")
+    product.write_text("VALUE = 1\n", encoding="utf-8")
+    evidence = _coverage_evidence(tmp_path)
+    raw_path = evidence / "coverage-raw.json"
+    moved_raw = evidence / "coverage-raw-moved.json"
+    changed = product.relative_to(repo).as_posix()
+    original_read = gates._windows_read_locked_file
+
+    def attempt_swap(locked: object) -> bytes:
+        script = "import json, os, sys\ntry: os.replace(sys.argv[1],sys.argv[2])\nexcept OSError as e: print(json.dumps(e.winerror))\nelse: print('0')\n"
+        completed = subprocess.run(
+            [sys.executable, "-c", script, str(raw_path), str(moved_raw)],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert completed.returncode == 0
+        assert json.loads(completed.stdout) == 32
+        return original_read(locked)
+
+    monkeypatch.setattr(gates, "_windows_read_locked_file", attempt_swap)
+
+    def runner(_argv: list[str], **_kwargs: object) -> int:
+        raw_path.write_text(json.dumps(_coverage_v7({changed: (9, 10)})), encoding="utf-8")
+        return 0
+
+    assert run_dev_coverage(
+        repo,
+        "STM32TK-0603-T01",
+        evidence,
+        [str(test_file), "--cov=stm32_monitor.package"],
+        _coverage_git([changed]),
+        runner,
+    )["task_id"] == "STM32TK-0603-T01"
+    assert not moved_raw.exists()
+
+
+def test_dev_coverage_rejects_raw_hardlink_to_external_file(tmp_path: Path) -> None:
+    """A runner cannot substitute an external file through a non-reparse hardlink."""
+    repo = tmp_path / "repo"
+    test_file = repo / "tools/stm32-monitor/tests/test_package.py"
+    product = repo / "tools/stm32-monitor/src/stm32_monitor/package.py"
+    test_file.parent.mkdir(parents=True)
+    product.parent.mkdir(parents=True)
+    test_file.write_text("def test_package(): pass\n", encoding="utf-8")
+    product.write_text("VALUE = 1\n", encoding="utf-8")
+    evidence = _coverage_evidence(tmp_path)
+    changed = product.relative_to(repo).as_posix()
+    external = tmp_path / "external-raw.json"
+    external.write_text(json.dumps(_coverage_v7({changed: (9, 10)})), encoding="utf-8")
+
+    def runner(_argv: list[str], **_kwargs: object) -> int:
+        os.link(external, evidence / "coverage-raw.json")
+        return 0
+
+    with pytest.raises(ControllerError, match="link|locked file"):
         run_dev_coverage(
             repo,
             "STM32TK-0603-T01",
@@ -1093,6 +1157,39 @@ def test_dev_coverage_raw_read_occurs_while_root_is_locked(
             _coverage_git([changed]),
             runner,
         )
+    assert external.is_file()
+
+
+def test_dev_coverage_result_preoccupation_is_not_overwritten(tmp_path: Path) -> None:
+    """The normalized result is a Win32 CREATE_NEW output and preserves a competitor."""
+    repo = tmp_path / "repo"
+    test_file = repo / "tools/stm32-monitor/tests/test_package.py"
+    product = repo / "tools/stm32-monitor/src/stm32_monitor/package.py"
+    test_file.parent.mkdir(parents=True)
+    product.parent.mkdir(parents=True)
+    test_file.write_text("def test_package(): pass\n", encoding="utf-8")
+    product.write_text("VALUE = 1\n", encoding="utf-8")
+    evidence = _coverage_evidence(tmp_path)
+    changed = product.relative_to(repo).as_posix()
+    occupied = b"competitor\n"
+
+    def runner(_argv: list[str], **_kwargs: object) -> int:
+        (evidence / "coverage-raw.json").write_text(
+            json.dumps(_coverage_v7({changed: (9, 10)})), encoding="utf-8"
+        )
+        (evidence / "branch-coverage.json").write_bytes(occupied)
+        return 0
+
+    with pytest.raises(ControllerError, match="new|create"):
+        run_dev_coverage(
+            repo,
+            "STM32TK-0603-T01",
+            evidence,
+            [str(test_file), "--cov=stm32_monitor.package"],
+            _coverage_git([changed]),
+            runner,
+        )
+    assert (evidence / "branch-coverage.json").read_bytes() == occupied
 
 
 def test_dev_coverage_t12_failed_attempt_retries_same_frozen_argv_with_new_root(
