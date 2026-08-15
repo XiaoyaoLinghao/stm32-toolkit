@@ -1134,6 +1134,24 @@ def test_shard_verifier_rejects_private_or_credential_payload_fields(
         )
 
 
+@pytest.mark.parametrize("alias", ["GITHUBTOKEN", "PROXYAUTH", "OAUTHTOKEN"])
+def test_shard_verifier_rejects_compact_credential_alias_fields(
+    tmp_path: Path, alias: str
+) -> None:
+    """Exact normalized compound aliases cannot hide in JSON field names."""
+    evidence = tmp_path / "compact-alias-field"
+    evidence.mkdir()
+    (evidence / "result.json").write_bytes(
+        canonical_json_bytes({alias: "opaque-secret-material"})
+    )
+    package = tmp_path / "compact-alias-field.zip"
+    binding = _package_binding()
+    reference = create_shard_package(evidence, package, binding)
+
+    with pytest.raises(VerificationError, match="credential"):
+        verify_shard_package(package, reference, binding, evidence_root=evidence)
+
+
 @pytest.mark.parametrize(
     "payload",
     [
@@ -1179,6 +1197,108 @@ def test_shard_verifier_rejects_private_or_credential_text_payloads(
     reference = create_shard_package(evidence, package, binding)
 
     with pytest.raises(VerificationError, match="private|credential|portable"):
+        verify_shard_package(package, reference, binding, evidence_root=evidence)
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        b"GITHUBTOKEN=opaque-secret-material\n",
+        b"PROXYAUTH:opaque-secret-material\n",
+        b"OAUTHTOKEN=opaque-secret-material\n",
+        b"env:GITHUBTOKEN=opaque-secret-material\n",
+        b"config:PROXYAUTH=opaque-secret-material\n",
+        b"'OAUTHTOKEN'=opaque-secret-material\n",
+        b'"GITHUBTOKEN":opaque-secret-material\n',
+        b"$env:PROXYAUTH=opaque-secret-material\n",
+        b"scope:OAUTHTOKEN=opaque-secret-material\n",
+        b"tests::GITHUBTOKEN=opaque-secret-material\n",
+        b"tests::GITHUB_TOKEN=opaque-secret-material\n",
+        b"tests::OAUTH-TOKEN=opaque-secret-material\n",
+    ],
+)
+def test_shard_verifier_rejects_compact_credential_alias_assignments(
+    tmp_path: Path, payload: bytes
+) -> None:
+    """Exact compact aliases remain credentials in every supported assignment form."""
+    evidence = tmp_path / "compact-alias-assignment"
+    evidence.mkdir()
+    (evidence / "result.log").write_bytes(payload)
+    package = tmp_path / "compact-alias-assignment.zip"
+    binding = _package_binding()
+    reference = create_shard_package(evidence, package, binding)
+
+    with pytest.raises(VerificationError, match="credential"):
+        verify_shard_package(package, reference, binding, evidence_root=evidence)
+
+
+@pytest.mark.parametrize(
+    ("payload", "forbidden"),
+    [
+        (b"PASS / FAIL\n", False),
+        (b"PASS /root/private\n", True),
+        (b"ratio 1 / 2\n", False),
+        (b"ratio 1 /etc/toolkit.conf\n", True),
+        (b"regex \\d+\n", False),
+        (b"regex ^\\d+$\n", False),
+        (b"regex \\d+\\s+\\w+\n", False),
+        (b"regex ^\\d+\\s+\\w+$\n", False),
+        (b"regex \\Windows\\System32\\config\n", True),
+        (b"Basic tests passed\n", False),
+        (b"Basic YWJjOmRlZg==\n", True),
+        (b"Basic dXNlcjpwYXNz\n", True),
+        (b"https://example.invalid/result\n", False),
+        (b"ftp://example.invalid/pub/file\n", False),
+        (b"resource-path://example.invalid/pub/file\n", False),
+        (b"square-root://example.invalid/value\n", False),
+        (b"https://user:password@example.invalid/result\n", True),
+        (b"root C:\\\n", True),
+        (b"path:/root/private.log\n", True),
+        (b"path:C:\\Users\\Alice\\secret.txt\n", True),
+        (b"path:\\Windows\\System32\\config\n", True),
+        (b"path://server/share/secret.txt\n", True),
+        (b"path:/\n", True),
+        (b"path:\\\n", True),
+        (b"path=/\n", True),
+        (b"path = /\n", True),
+        (b"root=\\\n", True),
+        (b"///etc/passwd\n", True),
+        (b"path:///root/private.log\n", True),
+        (b"file:////server/share\n", True),
+        (b"////server/share\n", True),
+        (b"//secret.txt\n", True),
+        (b"//root\n", True),
+        (b"/\\private\n", True),
+        (b"/\n", True),
+        (b"\\\n", True),
+        (b"//\n", True),
+        (b"/@private\n", True),
+        (b"/$HOME\n", True),
+        ("/用户\n".encode("utf-8"), True),
+        (b"file:///etc/passwd\n", True),
+        (b"Bearer abc1234\n", True),
+        (b"Bearer abc+123\n", True),
+        (b"Bearer abcdefg\n", True),
+        (b"Bearer 1234567\n", True),
+        (b"Bearer abc123\n", True),
+        (b"Bearer a.b\n", True),
+    ],
+)
+def test_portable_text_grammar_distinguishes_prose_from_rooted_paths_and_credentials(
+    tmp_path: Path, payload: bytes, forbidden: bool
+) -> None:
+    """Root and authorization grammar rejects credentials/paths without flagging prose."""
+    evidence = tmp_path / "portable-grammar"
+    evidence.mkdir()
+    (evidence / "result.log").write_bytes(payload)
+    package = tmp_path / "portable-grammar.zip"
+    binding = _package_binding()
+    reference = create_shard_package(evidence, package, binding)
+
+    if forbidden:
+        with pytest.raises(VerificationError, match="private|credential"):
+            verify_shard_package(package, reference, binding, evidence_root=evidence)
+    else:
         verify_shard_package(package, reference, binding, evidence_root=evidence)
 
 
@@ -1578,12 +1698,19 @@ def test_hardware_requires_exact_catalog_lock_names_and_canonical_origin(tmp_pat
         "uart": "c" * 64,
     }
 
-    variant, backend = _hardware(
-        tmp_path / "variant",
-        git=HardwareGit(origin="https://github.com/XiaoyaoLinghao/stm32-toolkit"),
+    backend = FakeHardwareBackend(
+        {
+            "board_id": "board-A", "probe_serial_hash": "a" * 64,
+            "uart_serial_hash": "c" * 64, "power_identity": "bench-A",
+            "state": "running",
+        }, [], [], [],
     )
     with pytest.raises(ControllerError, match="origin"):
-        variant.prepare()
+        _hardware(
+            tmp_path / "variant",
+            backend=backend,
+            git=HardwareGit(origin="https://github.com/XiaoyaoLinghao/stm32-toolkit"),
+        )
     assert backend.prepare_calls == []
 
 
@@ -1651,12 +1778,12 @@ def test_hardware_caller_trust_precedes_release_verifier_loading(
 @pytest.mark.parametrize(
     ("field", "placeholder"),
     [
-        ("board_revision", "fixtureRevision"),
-        ("mcu_part", "reserved-mcu"),
-        ("probe_model", "probeUnset"),
-        ("uart_adapter_model", "test-uart"),
-        ("firmware_0400_build_id", "fixture-build"),
-        ("firmware_0600_build_id", "reservedBuild"),
+        ("board_revision", "boardFixtureRevA"),
+        ("mcu_part", "mcuReservedPart42"),
+        ("probe_model", "probeUnsetModel2"),
+        ("uart_adapter_model", "uartTestAdapter7"),
+        ("firmware_0400_build_id", "fwReservedBuild42"),
+        ("firmware_0600_build_id", "fwUnsetBuild7"),
     ],
 )
 def test_hardware_controller_rejects_every_projected_campaign_placeholder_before_backend(
@@ -1677,6 +1804,35 @@ def test_hardware_controller_rejects_every_projected_campaign_placeholder_before
             git_runner=HardwareGit(), now=lambda: NOW,
         )
     assert backend.prepare_calls == []
+    assert backend.execute_calls == []
+
+
+@pytest.mark.parametrize(
+    ("field", "placeholder"),
+    [
+        ("board_id", "boardFixtureRevA"),
+        ("power_identity", "benchTestRail4"),
+    ],
+)
+def test_hardware_controller_rejects_embedded_identity_placeholders_before_backend(
+    tmp_path: Path, field: str, placeholder: str
+) -> None:
+    """Projected board/power identities use the same component-aware placeholder rule."""
+    valid, backend = _hardware(tmp_path)
+    identity = copy.deepcopy(valid.hardware_identity)
+    identity[field] = placeholder
+
+    with pytest.raises(ControllerError, match="placeholder|identity"):
+        HardwareContractController(
+            contract="0600", repo=REPO, catalog=CATALOG,
+            expected_code_head="a" * 40, controller_code_head="b" * 40,
+            final_run_id=RUN_ID, evidence_root=tmp_path / f"projected-{field}",
+            backend=backend, support_profile=valid.support_profile,
+            hardware_identity=identity, hardware_campaign=valid.hardware_campaign,
+            git_runner=HardwareGit(), now=lambda: NOW,
+        )
+    assert backend.prepare_calls == []
+    assert backend.observe_calls == []
     assert backend.execute_calls == []
 
 
@@ -2258,7 +2414,21 @@ def test_public_hardware_cli_dispatches_every_validated_mode_to_state_machine(
             return {"status": "FRESH_PREPARE_REQUIRED"}
 
     monkeypatch.setattr(gates, "HardwareContractController", FakeController)
-    monkeypatch.setattr(gates, "_git_text", lambda _repo, _args: "b" * 40)
+
+    def trusted_git(_repo: Path, args: list[str]) -> str:
+        if args == ["rev-parse", "HEAD"]:
+            return "b" * 40
+        if args == ["config", "--get", "remote.origin.url"]:
+            return "https://github.com/XiaoyaoLinghao/stm32-toolkit.git"
+        if args[:2] == ["hash-object", "--"]:
+            relative = args[2]
+            return gates._git_blob_id(REPO.joinpath(*relative.split("/")).read_bytes())
+        if args[0] == "rev-parse" and ":" in args[1]:
+            relative = args[1].split(":", 1)[1]
+            return gates._git_blob_id(REPO.joinpath(*relative.split("/")).read_bytes())
+        raise AssertionError(args)
+
+    monkeypatch.setattr(gates, "_git_text", trusted_git)
     campaign_profile = tmp_path / "campaign-support/feasibility/profile.json"
     campaign_identity = {
         "board_id": "board-campaign", "probe_serial_hash": "2" * 64,
@@ -2270,8 +2440,7 @@ def test_public_hardware_cli_dispatches_every_validated_mode_to_state_machine(
         lambda _path, **_kwargs: (campaign_profile, campaign_identity, campaign_binding),
         raising=False,
     )
-    repo = tmp_path / "repo"
-    repo.mkdir()
+    repo = REPO
     evidence = tmp_path / "evidence"
     base = [
         "hardware", "--contract", "0600", "--repo", str(repo),
@@ -2292,6 +2461,109 @@ def test_public_hardware_cli_dispatches_every_validated_mode_to_state_machine(
     assert calls[0][1]["hardware_campaign"] == campaign_binding
     assert calls[1][0] == mode
     assert json.loads(capsys.readouterr().out)["status"] in {"BLOCKED", "PASS", "FRESH_PREPARE_REQUIRED"}
+
+
+@pytest.mark.parametrize("mode", ["prepare", "execute", "resume"])
+def test_public_hardware_cli_rechecks_caller_blobs_before_campaign_or_backend_access(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+    mode: str,
+) -> None:
+    """A verifier replaced after trust cannot execute or reach campaign/backend state."""
+    events: list[str] = []
+    sentinel = tmp_path / "replacement-verifier-executed.txt"
+    controller_head = "b" * 40
+    trusted_source = b"TRUSTED_SOURCE = True\n"
+    release_path = tmp_path / "verify_0600_release.py"
+    feasibility_path = tmp_path / "verify_0600_feasibility.py"
+    release_path.write_bytes(trusted_source)
+    feasibility_path.write_bytes(trusted_source)
+    trusted_blob = gates._git_blob_id(trusted_source)
+    captured_sources = {
+        gates.VERIFIER_RELATIVE_PATH: (release_path, trusted_source, trusted_blob),
+        gates.FEASIBILITY_RELATIVE_PATH: (feasibility_path, trusted_source, trusted_blob),
+    }
+    trust_calls = 0
+
+    def staged_trust(
+        _repo: Path,
+        _head: str,
+        *,
+        git_runner: object = None,
+        capture_modules: bool = False,
+    ) -> dict[str, tuple[Path, bytes, str]]:
+        del git_runner
+        nonlocal trust_calls
+        trust_calls += 1
+        if capture_modules:
+            return captured_sources
+        if release_path.read_bytes() != trusted_source:
+            raise ControllerError(f"hardware caller blob changed: {gates.VERIFIER_RELATIVE_PATH}")
+        return {}
+
+    real_load = gates._load_verified_hardware_verifiers
+
+    def replace_after_trust(
+        repo: Path,
+        head: str,
+        sources: dict[str, tuple[Path, bytes, str]],
+    ) -> None:
+        events.append("replace")
+        release_path.write_text(
+            "from pathlib import Path\n"
+            f"Path({str(sentinel)!r}).write_text('executed', encoding='utf-8')\n",
+            encoding="utf-8",
+        )
+        real_load(repo, head, sources)
+
+    def campaign_loader(_path: Path, **_kwargs: object) -> tuple[Path, dict[str, str], dict[str, object]]:
+        events.append("campaign")
+        sentinel.write_text("replacement verifier executed", encoding="utf-8")
+        return tmp_path / "support/profile.json", {}, {}
+
+    class BackendSentinel:
+        def __init__(self, **_kwargs: object) -> None:
+            events.append("controller")
+
+        def prepare_reserved(self) -> dict[str, object]:
+            events.append("backend")
+            return {"status": "BLOCKED"}
+
+        def execute(self, *_args: object, **_kwargs: object) -> dict[str, object]:
+            events.append("backend")
+            return {"status": "PASS"}
+
+        def resume(self, *_args: object) -> dict[str, object]:
+            events.append("backend")
+            return {"status": "FRESH_PREPARE_REQUIRED"}
+
+    monkeypatch.setattr(gates, "_git_text", lambda _repo, _args: controller_head)
+    monkeypatch.setattr(gates, "_verify_hardware_caller_trust", staged_trust)
+    monkeypatch.setattr(gates, "_load_verified_hardware_verifiers", replace_after_trust)
+    monkeypatch.setattr(gates, "load_hardware_campaign_input", campaign_loader)
+    monkeypatch.setattr(gates, "HardwareContractController", BackendSentinel)
+    base = [
+        "hardware", "--contract", "0600", "--repo", str(REPO),
+        "--expected-code-head", "a" * 40, "--final-run-id", RUN_ID,
+        "--evidence-root", str(tmp_path / "evidence"),
+        "--hardware-input", str(tmp_path / "campaign.json"), "--mode", mode,
+    ]
+    if mode == "execute":
+        base.extend(["--nonce", "c" * 64, "--action-digest", "d" * 64, "--authorized"])
+    elif mode == "resume":
+        base.extend([
+            "--checkpoint", str(tmp_path / "checkpoint.json"),
+            "--recovery-record", str(tmp_path / "recovery.json"),
+        ])
+
+    assert gates_main(base) == 2
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "blob" in captured.err
+    assert events == ["replace"]
+    assert trust_calls == 2
+    assert not sentinel.exists()
 
 
 def test_terminal_candidate_wrapper_owns_ledger_and_writes_local_shard_package(

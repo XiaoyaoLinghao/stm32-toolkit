@@ -16,6 +16,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import types
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -138,11 +139,19 @@ def verify_shard_package(*args: object, **kwargs: object) -> None:
 
 VERIFIER_RELATIVE_PATH = "tools/release/verify_0600_release.py"
 FEASIBILITY_RELATIVE_PATH = "tools/release/verify_0600_feasibility.py"
+RUNNER_RELATIVE_PATH = "tools/release/run_0600_gates.py"
+HARDWARE_CALLER_RELATIVE_PATHS = (
+    RUNNER_RELATIVE_PATH,
+    FEASIBILITY_RELATIVE_PATH,
+    VERIFIER_RELATIVE_PATH,
+)
+CANONICAL_ORIGIN = "https://github.com/XiaoyaoLinghao/stm32-toolkit.git"
 FEASIBILITY_REQUIRED_TOOLS = (
     "python310", "python312", "powershell", "cmake", "ctest", "pyocd",
     "pyserial", "node", "npm", "wheelhouse",
 )
 _FEASIBILITY_MODULE: object | None = None
+VerifiedModuleSources = dict[str, tuple[Path, bytes, str]]
 
 
 def _feasibility_module() -> object:
@@ -159,6 +168,116 @@ def _git_text(repo: Path, args: list[str]) -> str:
     if completed.returncode != 0:
         raise ControllerError("Git verifier binding check failed")
     return completed.stdout.strip()
+
+
+def _git_blob_id(data: bytes) -> str:
+    header = f"blob {len(data)}\0".encode("ascii")
+    return hashlib.sha1(header + data, usedforsecurity=False).hexdigest()
+
+
+def _verify_hardware_caller_trust(
+    repo: Path,
+    expected_code_head: str,
+    *,
+    git_runner: Callable[[list[str]], str] | None = None,
+    capture_modules: bool = False,
+) -> VerifiedModuleSources:
+    """Bind the loaded public hardware caller before any release-verifier load."""
+    if HEX40.fullmatch(expected_code_head) is None:
+        raise ControllerError("hardware caller CodeHead is invalid")
+    try:
+        repository = repo.resolve(strict=True)
+    except OSError as exc:
+        raise ControllerError("hardware caller repository is invalid") from exc
+    if repo != repository or Path(__file__).resolve() != repository.joinpath(
+        *RUNNER_RELATIVE_PATH.split("/")
+    ):
+        raise ControllerError("hardware caller runner path is not exact")
+    selected_git_runner = git_runner or (lambda args: _git_text(repository, args))
+    if selected_git_runner(["rev-parse", "HEAD"]).strip() != expected_code_head:
+        raise ControllerError("hardware caller HEAD changed")
+    if (
+        selected_git_runner(["config", "--get", "remote.origin.url"]).strip()
+        != CANONICAL_ORIGIN
+    ):
+        raise ControllerError("hardware caller origin changed")
+    captured: VerifiedModuleSources = {}
+    for relative in HARDWARE_CALLER_RELATIVE_PATHS:
+        working = selected_git_runner(["hash-object", "--", relative]).strip()
+        committed = selected_git_runner(
+            ["rev-parse", f"{expected_code_head}:{relative}"]
+        ).strip()
+        if HEX40.fullmatch(working) is None or working != committed:
+            raise ControllerError(f"hardware caller blob changed: {relative}")
+        if capture_modules and relative != RUNNER_RELATIVE_PATH:
+            path = repository.joinpath(*relative.split("/"))
+            source = path.read_bytes()
+            if _git_blob_id(source) != working:
+                raise ControllerError(f"hardware caller blob changed: {relative}")
+            captured[relative] = (path, source, working)
+    return captured
+
+
+def _exec_verified_module(
+    relative: str,
+    source: tuple[Path, bytes, str],
+) -> tuple[object, str, object | None]:
+    path, data, expected_blob = source
+    if _git_blob_id(data) != expected_blob:
+        raise ControllerError(f"hardware caller blob changed: {relative}")
+    module_name = f"_stm32tk_verified_{path.stem}_{expected_blob}"
+    previous = sys.modules.get(module_name)
+    module = types.ModuleType(module_name)
+    module.__file__ = str(path)
+    module.__package__ = ""
+    sys.modules[module_name] = module
+    try:
+        exec(compile(data, str(path), "exec"), module.__dict__)
+    except Exception as exc:
+        if previous is None:
+            sys.modules.pop(module_name, None)
+        else:
+            sys.modules[module_name] = previous
+        raise ControllerError(f"trusted hardware verifier failed to load: {relative}") from exc
+    return module, module_name, previous
+
+
+def _load_verified_hardware_verifiers(
+    repo: Path,
+    expected_code_head: str,
+    sources: VerifiedModuleSources,
+    *,
+    git_runner: Callable[[list[str]], str] | None = None,
+) -> None:
+    """Execute captured verifier bytes, then close the disk-race window."""
+    global _RELEASE_MODULE, _FEASIBILITY_MODULE
+    required = {VERIFIER_RELATIVE_PATH, FEASIBILITY_RELATIVE_PATH}
+    if set(sources) != required:
+        raise ControllerError("hardware caller verifier capture is incomplete")
+    previous_globals = (_RELEASE_MODULE, _FEASIBILITY_MODULE)
+    loaded: list[tuple[str, object | None]] = []
+    try:
+        release, name, previous = _exec_verified_module(
+            VERIFIER_RELATIVE_PATH, sources[VERIFIER_RELATIVE_PATH]
+        )
+        loaded.append((name, previous))
+        feasibility, name, previous = _exec_verified_module(
+            FEASIBILITY_RELATIVE_PATH, sources[FEASIBILITY_RELATIVE_PATH]
+        )
+        loaded.append((name, previous))
+        _verify_hardware_caller_trust(
+            repo, expected_code_head, git_runner=git_runner
+        )
+    except Exception:
+        _RELEASE_MODULE, _FEASIBILITY_MODULE = previous_globals
+        for module_name, previous in reversed(loaded):
+            if previous is None:
+                sys.modules.pop(module_name, None)
+            else:
+                sys.modules[module_name] = previous
+        raise
+    _RELEASE_MODULE = release
+    _FEASIBILITY_MODULE = feasibility
 
 
 def _verify_relative_blob(repo: Path, expected_code_head: str, relative: str) -> Path:
@@ -1071,13 +1190,9 @@ class HardwareContractController:
         if catalog.resolve() != fixed_catalog:
             raise ControllerError("hardware controller requires the fixed catalog")
         selected_git_runner = git_runner or (lambda args: _git_text(repo, args))
-        if selected_git_runner(["rev-parse", "HEAD"]).strip() != controller_code_head:
-            raise ControllerError("hardware controller worktree HEAD changed")
-        for verifier_relative in (VERIFIER_RELATIVE_PATH, FEASIBILITY_RELATIVE_PATH):
-            working_verifier = selected_git_runner(["hash-object", "--", verifier_relative]).strip()
-            committed_verifier = selected_git_runner(["rev-parse", f"HEAD:{verifier_relative}"]).strip()
-            if working_verifier != committed_verifier or HEX40.fullmatch(working_verifier) is None:
-                raise ControllerError("hardware verifier blob changed")
+        _verify_hardware_caller_trust(
+            repo, controller_code_head, git_runner=selected_git_runner
+        )
         if set(hardware_identity) != {
             "board_id", "probe_serial_hash", "uart_serial_hash", "power_identity"
         }:
@@ -2578,6 +2693,13 @@ def main(argv: Sequence[str] | None = None) -> int:
                     raise ControllerError("hardware resume arguments are not closed")
             elif any((args.nonce, args.action_digest, args.authorized, args.checkpoint, args.recovery_record)):
                 raise ControllerError("hardware prepare arguments are not closed")
+
+            verified_sources = _verify_hardware_caller_trust(
+                repo, controller_head, capture_modules=True
+            )
+            _load_verified_hardware_verifiers(
+                repo, controller_head, verified_sources
+            )
 
             class ReservedBackend:
                 def prepare(self, _action_id: str) -> dict[str, object]:

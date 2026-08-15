@@ -8,6 +8,8 @@ validators.
 from __future__ import annotations
 
 import argparse
+import base64
+import binascii
 import hashlib
 import json
 import math
@@ -882,8 +884,33 @@ def verify_shard_package(
             raise VerificationError("external retained evidence changed during verification")
 
 
-PRIVATE_PATH_PATTERN = re.compile(
-    r"(?:[A-Za-z]:[\\/]|(?<![A-Za-z0-9_.:/-])[\\/])"
+ROOTED_PATH_BOUNDARY = r"(?<![A-Za-z0-9_./-])"
+UNC_ROOTED_PATH_BOUNDARY = r"(?<![A-Za-z0-9_.:/-])"
+DRIVE_ROOTED_PATH_PATTERN = re.compile(
+    ROOTED_PATH_BOUNDARY + r"[A-Za-z]:[\\/]"
+)
+UNC_ROOTED_PATH_PATTERN = re.compile(
+    UNC_ROOTED_PATH_BOUNDARY
+    + r"(?:\\\\|//)[^\\/\s\"'<>|]+[\\/][^\\/\s\"'<>|]+"
+)
+UNIX_ROOTED_PATH_PATTERN = re.compile(
+    ROOTED_PATH_BOUNDARY + r"/(?!/)(?=[^\\/\s])"
+)
+WINDOWS_ROOTED_PATH_PATTERN = re.compile(
+    ROOTED_PATH_BOUNDARY + r"\\(?!\\)(?=[^\\/\s])"
+)
+MULTI_SEPARATOR_ROOTED_PATH_PATTERN = re.compile(
+    UNC_ROOTED_PATH_BOUNDARY + r"[\\/]{2,}(?=[^\\/\s])"
+)
+LABELED_ROOTED_PATH_PATTERN = re.compile(
+    r"(?<![A-Za-z0-9_.-])(?:path|root)\s*(?:=|:)[ \t]*"
+    r"(?:[A-Za-z]:)?[\\/]+",
+    re.IGNORECASE,
+)
+FILE_URI_ROOTED_PATH_PATTERN = re.compile(r"\bfile:[\\/]+", re.IGNORECASE)
+REGEX_ESCAPE_PATTERN = re.compile(
+    r"\\(?:[AbBdDGsSwWZz]|[fnrtv])(?:[+*?]|\{[0-9]+(?:,[0-9]*)?\})?"
+    r"(?=$|\\|[\s$,.;:)\]}])"
 )
 SENSITIVE_FIELD_NAMES = {
     "accesskey", "accesstoken", "apikey", "authentication", "authorization",
@@ -891,10 +918,10 @@ SENSITIVE_FIELD_NAMES = {
     "sessiontoken",
 }
 SENSITIVE_FIELD_ALIASES = {"auth", "oauth", "passwd", "pwd", "token"}
+COMPACT_CREDENTIAL_ALIASES = {"githubtoken", "oauthtoken", "proxyauth"}
 CREDENTIAL_VALUE_PATTERN = re.compile(
     r"(?:"
     r"\b(?:auth|authorization|proxy[-_ ]?authorization|cookie|set[-_ ]?cookie|password|passwd|secret|access[-_ ]?token|refresh[-_ ]?token|api[-_ .]?key|private[-_ .]?key)\s*[:=]"
-    r"|\b(?:bearer|basic)\s+[A-Za-z0-9+/=._~-]{3,}"
     r"|-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----"
     r"|[a-z][a-z0-9+.-]*://[^/\s:@]+:[^/\s@]+@"
     r"|\b(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}"
@@ -904,10 +931,19 @@ CREDENTIAL_VALUE_PATTERN = re.compile(
     r")",
     re.IGNORECASE,
 )
+AUTHORIZATION_SCHEME_PATTERN = re.compile(
+    r"\b(basic|bearer)[ \t]+([A-Za-z0-9+/=._~-]+)", re.IGNORECASE
+)
 CREDENTIAL_ASSIGNMENT_PATTERN = re.compile(
     r"(?=(?:(?<!:):(?!:)|(?<![A-Za-z0-9_./:-]))(?:\$env:)?[\"']?"
     r"([A-Za-z][A-Za-z0-9_. -]{0,127})[\"']?\s*(?:=|:(?!:)))",
     re.MULTILINE,
+)
+COMPACT_CREDENTIAL_ASSIGNMENT_PATTERN = re.compile(
+    r"(?<![A-Za-z0-9])[\"']?"
+    r"(?:github[_. -]*token|oauth[_. -]*token|proxy[_. -]*auth)[\"']?"
+    r"(?![A-Za-z0-9])\s*(?:=|:(?!:))",
+    re.IGNORECASE | re.MULTILINE,
 )
 
 
@@ -920,18 +956,63 @@ def _sensitive_field(name: object) -> bool:
     return (
         any(token in SENSITIVE_FIELD_ALIASES for token in tokens)
         or any(token in normalized for token in SENSITIVE_FIELD_NAMES)
+        or normalized in COMPACT_CREDENTIAL_ALIASES
     )
 
 
-def _validate_portable_string(value: str) -> None:
-    if PRIVATE_PATH_PATTERN.search(value) is not None:
-        raise VerificationError("package contains an absolute private path")
+def _contains_rooted_private_path(value: str) -> bool:
+    stripped = value.strip()
+    if stripped and not stripped.strip("\\/"):
+        return True
     if any(
+        pattern.search(value) is not None
+        for pattern in (
+            DRIVE_ROOTED_PATH_PATTERN,
+            UNC_ROOTED_PATH_PATTERN,
+            UNIX_ROOTED_PATH_PATTERN,
+            MULTI_SEPARATOR_ROOTED_PATH_PATTERN,
+            LABELED_ROOTED_PATH_PATTERN,
+            FILE_URI_ROOTED_PATH_PATTERN,
+        )
+    ):
+        return True
+    return any(
+        REGEX_ESCAPE_PATTERN.match(value, match.start()) is None
+        for match in WINDOWS_ROOTED_PATH_PATTERN.finditer(value)
+    )
+
+
+def _authorization_token_is_credential(scheme: str, token: str) -> bool:
+    if scheme.casefold() == "bearer":
+        return True
+    if scheme.casefold() == "basic":
+        unpadded = token.rstrip("=")
+        if not unpadded or "=" in unpadded:
+            return False
+        padded = unpadded + "=" * ((-len(unpadded)) % 4)
+        try:
+            decoded = base64.b64decode(padded, validate=True)
+        except (binascii.Error, ValueError):
+            return False
+        return (
+            b":" in decoded
+            and base64.b64encode(decoded).decode("ascii").rstrip("=") == unpadded
+        )
+    return False
+
+
+def _validate_portable_string(value: str) -> None:
+    if _contains_rooted_private_path(value):
+        raise VerificationError("package contains an absolute private path")
+    if COMPACT_CREDENTIAL_ASSIGNMENT_PATTERN.search(value) is not None or any(
         _sensitive_field(match.group(1).strip())
         for match in CREDENTIAL_ASSIGNMENT_PATTERN.finditer(value)
     ):
         raise VerificationError("package contains a credential assignment")
-    if CREDENTIAL_VALUE_PATTERN.search(value) is not None:
+    if CREDENTIAL_VALUE_PATTERN.search(value) is not None or any(
+        _authorization_token_is_credential(match.group(1), match.group(2))
+        for match in AUTHORIZATION_SCHEME_PATTERN.finditer(value)
+    ):
         raise VerificationError("package contains a credential value")
 
 
@@ -1510,6 +1591,36 @@ PLACEHOLDER_AFFIXES = {
 }
 
 
+def _normalized_identifier_tokens(value: str) -> tuple[str, ...]:
+    """Split an NFC identifier at semantic ASCII word boundaries."""
+    normalized = unicodedata.normalize("NFC", value)
+    coarse = re.findall(r"[a-z]+|[0-9]+", normalized.casefold())
+    semantic = [
+        item.casefold()
+        for item in re.findall(
+            r"[A-Z]+(?=[A-Z][a-z]|[0-9]|$)|[A-Z]?[a-z]+|[A-Z]+|[0-9]+",
+            normalized,
+        )
+    ]
+    component_boundaries = re.sub(
+        r"(?<=[A-Z])(?=[A-Z][a-z])", " ", normalized
+    )
+    component_boundaries = re.sub(
+        r"(?<=[a-z0-9])(?=[A-Z])", " ", component_boundaries
+    )
+    component_boundaries = re.sub(
+        r"(?<=[A-Za-z])(?=[0-9])|(?<=[0-9])(?=[A-Za-z])",
+        " ",
+        component_boundaries,
+    )
+    if re.search(
+        r"(?i)(?<![A-Za-z0-9])n\s*/\s*a(?![A-Za-z0-9])",
+        component_boundaries,
+    ):
+        semantic.append("na")
+    return tuple(dict.fromkeys([*coarse, *semantic]))
+
+
 def _read_canonical(path: Path) -> tuple[bytes, object]:
     try:
         data = path.read_bytes()
@@ -1593,18 +1704,13 @@ def _bounded_identity(value: object) -> bool:
         return False
     normalized = unicodedata.normalize("NFC", value)
     folded = normalized.casefold()
-    tokens = tuple(item for item in re.split(r"[^a-z0-9]+", folded) if item)
-    compact = "".join(tokens)
+    tokens = _normalized_identifier_tokens(normalized)
     return (
         bool(value)
         and value == value.strip()
         and folded not in PLACEHOLDERS
         and bool(tokens)
         and not any(token in PLACEHOLDER_AFFIXES for token in tokens)
-        and not any(
-            compact.startswith(token) or compact.endswith(token)
-            for token in PLACEHOLDER_AFFIXES
-        )
         and normalized == value
         and len(value.encode("utf-8")) <= 256
     )

@@ -541,6 +541,54 @@ def test_hardware_campaign_owner_rejects_every_normalized_placeholder_affix(
         verifier._validate_hardware(hardware, product_0603=HEADS["0603Product"], owner=owner)
 
 
+@pytest.mark.parametrize(
+    ("field_path", "placeholder"),
+    [
+        (("evidence_owner",), "teamReservedOwner42"),
+        (("board_id",), "boardFixtureRevA"),
+        (("board_revision",), "boardTestUnit7"),
+        (("mcu_part",), "mcuUnsetPart2"),
+        (("probe_model",), "probeUnsetModel2"),
+        (("uart_adapter_model",), "uartFixtureAdapter7"),
+        (("power_identity",), "benchTestRail4"),
+        (("firmware_0400", "build_id"), "fwReservedBuild42"),
+        (("firmware_0600", "build_id"), "fwUnsetBuild7"),
+        (("board_id",), "boardN/A"),
+        (("board_id",), "boardN/A42"),
+        (("board_id",), "boardN/ARev"),
+    ],
+)
+def test_every_bounded_identity_rejects_embedded_placeholder_components(
+    ledger_fixture: SimpleNamespace,
+    field_path: tuple[str, ...],
+    placeholder: str,
+) -> None:
+    """Camel, digit, and separator boundaries cannot hide a placeholder component."""
+    hardware = copy.deepcopy(ledger_fixture.hardware)
+    target = hardware
+    for name in field_path[:-1]:
+        target = target[name]
+    target[field_path[-1]] = placeholder
+
+    with pytest.raises(VerificationError, match="identity|owner|placeholder|build"):
+        verifier._validate_hardware(
+            hardware,
+            product_0603=HEADS["0603Product"],
+            owner=str(hardware["evidence_owner"]),
+        )
+
+
+@pytest.mark.parametrize(
+    "identity",
+    ["contest", "testimony", "attestation-unit-7", "protestBoard42"],
+)
+def test_bounded_identity_allows_placeholder_letters_without_word_boundaries(
+    identity: str,
+) -> None:
+    """Letters spelling a placeholder inside an ordinary word are not a component."""
+    assert verifier._bounded_identity(identity)
+
+
 def test_external_hardware_file_rejects_a_reparse_ancestor(
     ledger_fixture: SimpleNamespace, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
