@@ -119,6 +119,37 @@ def test_query_rejects_invalid_typed_filter_values(tmp_path, filters, message):
         catalog.query(**filters)
 
 
+def test_query_rejects_decomposed_nfc_operation_filter(tmp_path):
+    """Canonically equivalent operation spellings must not cross the typed query boundary."""
+    _store, catalog, _first, _late, _tied = _fixture_catalog(tmp_path)
+
+    with pytest.raises(ValueError, match="NFC"):
+        catalog.query(operation="cafe\u0301.test")
+
+
+def test_query_rejects_decomposed_nfc_operation_in_catalog_row(tmp_path):
+    """A forged derived row with decomposed operation text must not become an EvidenceSummary."""
+    _store, catalog, _first, _late, _tied = _fixture_catalog(tmp_path)
+    with closing(sqlite3.connect(catalog.path)) as database:
+        database.execute(
+            "INSERT INTO evidence VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                "7" * 64,
+                "a" * 64,
+                "123e4567-e89b-42d3-a456-426614174000",
+                "session-01",
+                "b" * 64,
+                "c" * 64,
+                "cafe\u0301.test",
+                "2026-08-15T03:00:00.000000Z",
+            ),
+        )
+        database.commit()
+
+    with pytest.raises(ValueError, match="NFC"):
+        catalog.query()
+
+
 def test_rebuild_is_complete_deterministic_and_uses_verified_manifest_reads(tmp_path):
     """Trusting directory names or catalog state could omit evidence or index corrupt objects."""
     store, catalog, first, late, tied = _fixture_catalog(tmp_path)
@@ -152,6 +183,54 @@ def test_catalog_convenience_methods_preserve_authority_boundary(tmp_path):
     other = EvidenceCatalog(tmp_path / "other-root")
     with pytest.raises(ValueError, match="roots"):
         rebuild_catalog(store, other)
+
+
+def test_public_path_mutation_cannot_redirect_query_outside_store_root(tmp_path):
+    """Changing a public path must be rejected or leave query bound to root/catalog.sqlite3."""
+    _store, catalog, first, late, tied = _fixture_catalog(tmp_path)
+    sentinel = tmp_path / "outside-query.sqlite3"
+    shutil.copyfile(catalog.path, sentinel)
+    sentinel_bytes = sentinel.read_bytes()
+    mutated = False
+    try:
+        catalog.path = sentinel
+        mutated = True
+    except (AttributeError, ValueError):
+        pass
+
+    if mutated:
+        with pytest.raises(ValueError, match="bound"):
+            catalog.query()
+    else:
+        assert catalog.query() == [
+            EvidenceSummary.from_envelope(first),
+            *sorted(
+                [EvidenceSummary.from_envelope(late), EvidenceSummary.from_envelope(tied)],
+                key=lambda row: row.evidence_id,
+            ),
+        ]
+    assert sentinel.read_bytes() == sentinel_bytes
+
+
+def test_public_path_mutation_cannot_redirect_rebuild_outside_store_root(tmp_path):
+    """Atomic rebuild must never replace an external path supplied through mutable catalog state."""
+    store, catalog, _first, _late, _tied = _fixture_catalog(tmp_path)
+    sentinel = tmp_path / "outside-rebuild.sqlite3"
+    sentinel.write_bytes(b"external sentinel bytes")
+    sentinel_bytes = sentinel.read_bytes()
+    mutated = False
+    try:
+        catalog.path = sentinel
+        mutated = True
+    except (AttributeError, ValueError):
+        pass
+
+    if mutated:
+        with pytest.raises(ValueError, match="bound"):
+            rebuild_catalog(store, catalog)
+    else:
+        assert rebuild_catalog(store, catalog) == store.root / "catalog.sqlite3"
+    assert sentinel.read_bytes() == sentinel_bytes
 
 
 def test_corrupt_manifest_fails_rebuild_and_preserves_old_catalog(tmp_path):

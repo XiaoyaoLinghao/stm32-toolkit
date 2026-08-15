@@ -217,6 +217,78 @@ def test_ingest_detects_real_source_change_between_hash_and_same_directory_copy(
     assert not list(root.rglob(".tmp-*"))
 
 
+def test_second_pass_rejects_real_hardlink_created_between_lstat_and_open(tmp_path):
+    """The opened second-pass source must recheck link count after its lstat snapshot."""
+    source = tmp_path / "source.bin"
+    source.write_bytes(b"second pass lstat-open race")
+    digest = hashlib.sha256(source.read_bytes()).hexdigest()
+    root = tmp_path / "evidence"
+    alias = tmp_path / "lstat-open-alias.bin"
+    injected = []
+
+    def inject(point: str) -> None:
+        if point == "artifact.second_pass.after_lstat":
+            os.link(source, alias)
+            injected.append(point)
+
+    with pytest.raises(ValueError, match="hard link"):
+        EvidenceStore(root, fault_injector=inject).ingest_file(
+            source, kind="log", media_type="text/plain"
+        )
+
+    assert injected == ["artifact.second_pass.after_lstat"]
+    assert source.stat().st_nlink == 2
+    assert not (root / "objects" / "sha256" / digest[:2] / digest).exists()
+    assert not list(root.rglob(".tmp-*"))
+
+
+def test_second_pass_rejects_real_size_change_between_lstat_and_open(tmp_path):
+    """The opened second-pass source must still match its lstat size/mtime snapshot."""
+    source = tmp_path / "source.bin"
+    source.write_bytes(b"before lstat-open mutation")
+    root = tmp_path / "evidence"
+    injected = []
+
+    def inject(point: str) -> None:
+        if point == "artifact.second_pass.after_lstat":
+            source.write_bytes(b"changed after lstat with a different size")
+            injected.append(point)
+
+    with pytest.raises(ValueError, match="lstat and open"):
+        EvidenceStore(root, fault_injector=inject).ingest_file(
+            source, kind="log", media_type="text/plain"
+        )
+
+    assert injected == ["artifact.second_pass.after_lstat"]
+    assert not list((root / "objects").rglob("[0-9a-f]" * 64))
+    assert not list(root.rglob(".tmp-*"))
+
+
+def test_second_pass_rejects_real_hardlink_created_during_read(tmp_path):
+    """The final second-pass fstat must reject a hard link created after reading begins."""
+    source = tmp_path / "source.bin"
+    source.write_bytes(b"x" * (2 * 1024 * 1024 + 1))
+    digest = hashlib.sha256(source.read_bytes()).hexdigest()
+    root = tmp_path / "evidence"
+    alias = tmp_path / "read-alias.bin"
+    injected = []
+
+    def inject(point: str) -> None:
+        if point == "artifact.second_pass.after_first_read":
+            os.link(source, alias)
+            injected.append(point)
+
+    with pytest.raises(ValueError, match="hard link"):
+        EvidenceStore(root, fault_injector=inject).ingest_file(
+            source, kind="trace", media_type="application/octet-stream"
+        )
+
+    assert injected == ["artifact.second_pass.after_first_read"]
+    assert source.stat().st_nlink == 2
+    assert not (root / "objects" / "sha256" / digest[:2] / digest).exists()
+    assert not list(root.rglob(".tmp-*"))
+
+
 @pytest.mark.parametrize("fault", ["artifact.after_flush", "artifact.after_fsync", "artifact.before_publish"])
 def test_prepublication_flush_and_fsync_faults_leave_no_authoritative_object(tmp_path, fault):
     """A write/flush/fsync crash must not expose a partial content-addressed object."""

@@ -11,6 +11,7 @@ import re
 import sqlite3
 import stat
 import tempfile
+from unicodedata import normalize
 from uuid import UUID
 
 from .model import EvidenceEnvelope, EvidenceValidationError
@@ -39,6 +40,8 @@ CREATE INDEX evidence_search_order ON evidence (produced_at_utc, evidence_id);
 def _string(field_name: str, value: object) -> str:
     if not isinstance(value, str) or not value or len(value.encode("utf-8")) > 64 * 1024:
         raise EvidenceValidationError(f"{field_name} must be a bounded non-empty string")
+    if normalize("NFC", value) != value:
+        raise EvidenceValidationError(f"{field_name} must use NFC")
     if any(ord(character) < 32 or ord(character) == 127 for character in value):
         raise EvidenceValidationError(f"{field_name} contains a control character")
     return value
@@ -124,9 +127,25 @@ class EvidenceSummary:
 class EvidenceCatalog:
     """Read-only query facade over catalog.sqlite3 derived from one EvidenceStore."""
 
+    __slots__ = ("_path", "_store")
+
     def __init__(self, store: EvidenceStore | Path | str) -> None:
-        self.store = store if isinstance(store, EvidenceStore) else EvidenceStore(store)
-        self.path = self.store.root / _CATALOG_NAME
+        self._store = store if isinstance(store, EvidenceStore) else EvidenceStore(store)
+        self._path = self._store.root / _CATALOG_NAME
+
+    @property
+    def store(self) -> EvidenceStore:
+        return self._store
+
+    @property
+    def path(self) -> Path:
+        return self._path
+
+    def _bound_path(self) -> Path:
+        expected = self._store.root / _CATALOG_NAME
+        if self._path != expected:
+            raise EvidenceValidationError("catalog path is not bound to its evidence store root")
+        return expected
 
     def query(
         self,
@@ -175,9 +194,10 @@ class EvidenceCatalog:
             f"{where} ORDER BY produced_at_utc, evidence_id LIMIT ?"
         )
 
+        catalog_path = self._bound_path()
         self.store._reject_casefold_collision(self.store.root, _CATALOG_NAME)
-        self.store._validate_existing_path(self.path, regular=True, single_link=True)
-        uri = self.path.as_uri() + "?mode=ro"
+        self.store._validate_existing_path(catalog_path, regular=True, single_link=True)
+        uri = catalog_path.as_uri() + "?mode=ro"
         try:
             with closing(sqlite3.connect(uri, uri=True)) as database:
                 database.execute("PRAGMA query_only = ON")
@@ -222,8 +242,11 @@ def rebuild_catalog(
     """Verify all manifests and atomically replace the complete derived catalog."""
     evidence_store = store if isinstance(store, EvidenceStore) else EvidenceStore(store)
     evidence_catalog = catalog or EvidenceCatalog(evidence_store)
+    if not isinstance(evidence_catalog, EvidenceCatalog):
+        raise EvidenceValidationError("catalog must be an EvidenceCatalog")
     if evidence_catalog.store.root != evidence_store.root:
         raise EvidenceValidationError("catalog and evidence store roots must match")
+    catalog_path = evidence_catalog._bound_path()
     evidence_store._ensure_root()
 
     summaries = [
@@ -268,12 +291,12 @@ def rebuild_catalog(
         evidence_store._reject_casefold_collision(evidence_store.root, _CATALOG_NAME)
         try:
             evidence_store._validate_existing_path(
-                evidence_catalog.path, regular=True, single_link=True
+                catalog_path, regular=True, single_link=True
             )
         except FileNotFoundError:
             pass
         evidence_store._fault("catalog.before_publish")
-        os.replace(temporary, evidence_catalog.path)
+        os.replace(temporary, catalog_path)
         evidence_store._fault("catalog.after_publish")
         evidence_store._flush_directory(evidence_store.root)
         evidence_store._fault("catalog.after_directory_fsync")
@@ -285,9 +308,9 @@ def rebuild_catalog(
         except FileNotFoundError:
             pass
     evidence_store._validate_existing_path(
-        evidence_catalog.path, regular=True, single_link=True
+        catalog_path, regular=True, single_link=True
     )
-    return evidence_catalog.path
+    return catalog_path
 
 
 __all__ = ["EvidenceCatalog", "EvidenceSummary", "rebuild_catalog"]
