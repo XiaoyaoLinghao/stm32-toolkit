@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from contextlib import contextmanager
 import hashlib
 import os
 from pathlib import Path
@@ -21,6 +22,7 @@ from .model import (
 _HASH = re.compile(r"^[0-9a-f]{64}$")
 _REPARSE_POINT = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
 _COPY_CHUNK = 1024 * 1024
+_MUTATION_LOCK_NAME = ".gc-mutation.lock"
 
 
 class EvidenceStore:
@@ -105,6 +107,74 @@ class EvidenceStore:
                 raise EvidenceValidationError(f"managed path is not a directory: {candidate}")
             current = candidate
         return current
+
+    @contextmanager
+    def _mutation_lock(self):
+        """Hold the verified store-scoped publisher/collector lock across processes."""
+        self._ensure_root()
+        lock_path = self.root / _MUTATION_LOCK_NAME
+        try:
+            before = self._validate_existing_path(
+                lock_path, regular=True, single_link=True
+            )
+        except FileNotFoundError:
+            self._atomic_create_new(lock_path, b"\0", phase="mutation-lock")
+            before = self._validate_existing_path(
+                lock_path, regular=True, single_link=True
+            )
+        flags = (
+            os.O_RDWR
+            | getattr(os, "O_BINARY", 0)
+            | getattr(os, "O_NOFOLLOW", 0)
+        )
+        descriptor = os.open(lock_path, flags, 0o600)
+        locked = False
+        try:
+            opened = os.fstat(descriptor)
+            if not stat.S_ISREG(opened.st_mode) or opened.st_nlink != 1:
+                raise EvidenceValidationError(
+                    "store mutation lock is not a singular regular file"
+                )
+            current = self._validate_existing_path(
+                lock_path, regular=True, single_link=True
+            )
+            if (current.st_dev, current.st_ino) != (opened.st_dev, opened.st_ino):
+                raise EvidenceValidationError("store mutation lock identity changed while opened")
+            if (before.st_dev, before.st_ino) != (
+                opened.st_dev,
+                opened.st_ino,
+            ):
+                raise EvidenceValidationError("store mutation lock identity changed before open")
+            if opened.st_size != 1:
+                raise EvidenceValidationError("store mutation lock has invalid size")
+            os.lseek(descriptor, 0, os.SEEK_SET)
+            if os.name == "nt":
+                import msvcrt
+
+                msvcrt.locking(descriptor, msvcrt.LK_LOCK, 1)
+            else:  # pragma: no cover - exercised by the Linux acceptance owner
+                import fcntl  # pragma: no cover
+
+                fcntl.flock(descriptor, fcntl.LOCK_EX)  # pragma: no cover
+            locked = True
+            current = self._validate_existing_path(
+                lock_path, regular=True, single_link=True
+            )
+            if (current.st_dev, current.st_ino) != (opened.st_dev, opened.st_ino):
+                raise EvidenceValidationError("store mutation lock identity changed while held")
+            yield
+        finally:
+            if locked:
+                os.lseek(descriptor, 0, os.SEEK_SET)
+                if os.name == "nt":
+                    import msvcrt
+
+                    msvcrt.locking(descriptor, msvcrt.LK_UNLCK, 1)
+                else:  # pragma: no cover - exercised by the Linux acceptance owner
+                    import fcntl  # pragma: no cover
+
+                    fcntl.flock(descriptor, fcntl.LOCK_UN)  # pragma: no cover
+            os.close(descriptor)
 
     @staticmethod
     def _open_readonly(path: Path) -> int:
@@ -219,6 +289,10 @@ class EvidenceStore:
         )
 
     def ingest_file(self, source: Path, *, kind: str, media_type: str) -> ArtifactRef:
+        with self._mutation_lock():
+            return self._ingest_file_locked(source, kind=kind, media_type=media_type)
+
+    def _ingest_file_locked(self, source: Path, *, kind: str, media_type: str) -> ArtifactRef:
         source_path = Path(source)
         if not source_path.is_absolute():
             source_path = source_path.absolute()
@@ -326,6 +400,10 @@ class EvidenceStore:
         return verified
 
     def put_envelope(self, envelope: EvidenceEnvelope) -> Path:
+        with self._mutation_lock():
+            return self._put_envelope_locked(envelope)
+
+    def _put_envelope_locked(self, envelope: EvidenceEnvelope) -> Path:
         verified = self.verify_envelope(envelope)
         directory = self._managed_directory("manifests")
         evidence_id = str(verified.evidence_id)

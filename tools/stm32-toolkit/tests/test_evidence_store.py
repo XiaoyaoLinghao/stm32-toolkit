@@ -9,7 +9,9 @@ from pathlib import Path
 import shutil
 import stat
 import subprocess
+import sys
 import tempfile
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -56,6 +58,64 @@ def _envelope(artifact: ArtifactRef, *, operation: str = "test.host") -> Evidenc
 
 def _object_path(root: Path, artifact: ArtifactRef) -> Path:
     return root.joinpath(*artifact.relative_path.split("/"))
+
+
+def test_store_mutation_lock_rejects_alias_and_releases_after_exception(tmp_path):
+    """A linked lock or leaked exceptional lock could bypass or permanently block publishers."""
+    store = EvidenceStore(tmp_path / "evidence")
+    store._ensure_root()
+    lock = store.root / ".gc-mutation.lock"
+    lock.write_bytes(b"\0")
+    alias = tmp_path / "lock-alias"
+    os.link(lock, alias)
+    with pytest.raises(ValueError, match="lock|hard link|singular"):
+        with store._mutation_lock():
+            pass
+
+    alias.unlink()
+    lock.write_bytes(b"wrong-size")
+    with pytest.raises(ValueError, match="invalid size"):
+        with store._mutation_lock():
+            pass
+    lock.write_bytes(b"\0")
+    with pytest.raises(RuntimeError, match="injected"):
+        with store._mutation_lock():
+            raise RuntimeError("injected")
+    with store._mutation_lock():
+        assert lock.stat().st_nlink == 1
+
+
+def test_store_mutation_lock_serializes_an_independent_process(tmp_path):
+    """The lock must be kernel-visible across processes, not only a Python thread mutex."""
+    store = EvidenceStore(tmp_path / "evidence")
+    attempted = tmp_path / "attempted"
+    acquired = tmp_path / "acquired"
+    child = r"""
+import sys
+from pathlib import Path
+from stm32_toolkit.evidence.store import EvidenceStore
+
+root, attempted, acquired = map(Path, sys.argv[1:])
+attempted.write_text("attempted", encoding="utf-8")
+with EvidenceStore(root)._mutation_lock():
+    acquired.write_text("acquired", encoding="utf-8")
+"""
+    with store._mutation_lock():
+        process = subprocess.Popen(
+            [sys.executable, "-c", child, str(store.root), str(attempted), str(acquired)],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        deadline = time.monotonic() + 10
+        while not attempted.exists() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert attempted.exists()
+        assert not acquired.exists()
+
+    stdout, stderr = process.communicate(timeout=10)
+    assert process.returncode == 0, stderr or stdout
+    assert acquired.read_text(encoding="utf-8") == "acquired"
 
 
 def test_ingest_copies_flushes_publishes_and_returns_verified_reference(tmp_path):
