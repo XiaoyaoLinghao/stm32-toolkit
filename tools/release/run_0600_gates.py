@@ -783,7 +783,7 @@ def _parse_ctest_text_node_outcomes(raw: bytes) -> tuple[tuple[str, str], ...]:
         raise ControllerError("ctest-text native report is invalid UTF-8") from exc
     row = re.compile(
         r"^\s*(?P<ordinal>[1-9][0-9]*)/(?P<total>[1-9][0-9]*) Test\s+#(?P<number>[1-9][0-9]*): "
-        r"(?P<name>.+?) \.{3,}\s+(?P<status>Passed|Not Run|Skipped|\*\*\*Failed)\s+"
+        r"(?P<name>.+?) \.{3,}\s*(?P<status>Passed|Not Run|Skipped|\*\*\*Failed)\s+"
         r"(?P<seconds>[0-9]+(?:\.[0-9]+)?) sec$"
     )
     outcomes: list[tuple[str, str]] = []
@@ -813,11 +813,15 @@ def _parse_ctest_text_node_outcomes(raw: bytes) -> tuple[tuple[str, str], ...]:
     summary = summaries[0]
     failed = sum(outcome == "failed" for _, outcome in result)
     total = len(result)
-    expected_percent = 0 if total == 0 else (total - failed) * 100 // total
+    percent_numerator = (total - failed) * 100
+    expected_percents = {
+        percent_numerator // total,
+        math.ceil(percent_numerator / total),
+    }
     if (
         int(summary.group("failed")) != failed
         or int(summary.group("total")) != total
-        or int(summary.group("percent")) != expected_percent
+        or int(summary.group("percent")) not in expected_percents
     ):
         raise ControllerError("ctest-text native summary counts contradict nodes")
     return result

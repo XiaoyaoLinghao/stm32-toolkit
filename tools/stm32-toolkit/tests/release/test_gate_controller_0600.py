@@ -652,6 +652,15 @@ def test_ctest_text_adapter_rejects_row_summary_contradictions(
         gates.parse_native_node_outcomes("ctest-text", raw.replace(*replacement), exit_code=0)
 
 
+def test_ctest_text_adapter_accepts_real_rounded_failure_percentage() -> None:
+    """CTest 4.3.1 displays two of three passing as 67%, not integer-floor 66%."""
+    raw = (REPO / "tools/stm32-toolkit/tests/release/fixtures/native-outcomes/ctest-4.3.1-failure-output.txt").read_bytes()
+
+    assert gates.parse_native_node_outcomes("ctest-text", raw, exit_code=1) == (
+        ("pass-one", "passed"), ("pass-two", "passed"), ("fail-one", "failed"),
+    )
+
+
 def test_windows_playwright_contract_has_only_two_frozen_chromium_projects() -> None:
     """The default Windows command cannot enumerate deferred Firefox or WebKit projects."""
     config = (REPO / "tools/stm32-monitor/ui/playwright.config.ts").read_text(encoding="utf-8")
