@@ -805,39 +805,9 @@ def _unprepared_result(plan: GcPlan) -> GcResult:
     )
 
 
-def _find_prepared(plan: GcPlan) -> tuple[_PreparedGcPlan | None, bool]:
+def _registered_prepared(plan: GcPlan) -> _PreparedGcPlan | None:
     with _PREPARED_REGISTRY_LOCK:
-        prepared = _PREPARED_BY_PLAN.get(plan)
-        if prepared is not None:
-            return prepared, True
-    if (
-        not isinstance(plan.store_root, str)
-        or not isinstance(plan.store_id, str)
-        or not isinstance(plan.plan_digest, str)
-        or not isinstance(plan.action_digest, str)
-    ):
-        return None, False
-    try:
-        store = EvidenceStore(Path(plan.store_root))
-        store_root, store_id = _existing_store_identity(store)
-        if store_root != plan.store_root or store_id != plan.store_id:
-            return None, False
-        with store._mutation_lock(create=False):
-            store_root, store_id = _existing_store_identity(store)
-            if store_root != plan.store_root or store_id != plan.store_id:
-                return None, False
-            regenerated = _plan_gc_locked(store)
-        with _PREPARED_REGISTRY_LOCK:
-            prepared = _PREPARED_BY_PLAN.get(regenerated)
-        if (
-            prepared is None
-            or prepared.plan_digest != plan.plan_digest
-            or prepared.action_digest != plan.action_digest
-        ):
-            return None, False
-        return prepared, False
-    except (EvidenceValidationError, FileNotFoundError, OSError, TypeError, ValueError):
-        return None, False
+        return _PREPARED_BY_PLAN.get(plan)
 
 
 def _consume_authorization_locked(prepared: _PreparedGcPlan) -> bool:
@@ -1072,17 +1042,16 @@ def _apply_gc_locked(prepared: _PreparedGcPlan) -> GcResult:
     )
 
 
-def apply_gc(plan: GcPlan, authorized: object, expected_plan_digest: object) -> GcResult:
-    """Consume one exact MODIFY token and delete only still-unreachable verified objects."""
-    if not isinstance(plan, GcPlan):
-        raise EvidenceValidationError("plan must be a GcPlan")
-    prepared, registered = _find_prepared(plan)
-    if prepared is None:
-        return _unprepared_result(plan)
+def _apply_registered(
+    plan: GcPlan,
+    prepared: _PreparedGcPlan,
+    authorized: object,
+    expected_plan_digest: object,
+) -> GcResult:
+    """Apply an original registered plan under one store mutation lock."""
     with prepared.consume_lock:
         if prepared.consumed:
             return _result(prepared, False, "GC_AUTHORIZATION_CONSUMED")
-        consumed_now = False
         try:
             store_root, store_id = _existing_store_identity(prepared.store)
             if store_root != prepared.store_root or store_id != prepared.store_id:
@@ -1095,8 +1064,6 @@ def apply_gc(plan: GcPlan, authorized: object, expected_plan_digest: object) -> 
                 prepared.consumed = True
                 if not consumed_now:
                     return _result(prepared, False, "GC_AUTHORIZATION_CONSUMED")
-                if not registered:
-                    return _result(prepared, False, "GC_PLAN_INVALID")
                 try:
                     current_plan = plan.to_json_bytes()
                 except (
@@ -1138,6 +1105,66 @@ def apply_gc(plan: GcPlan, authorized: object, expected_plan_digest: object) -> 
                 "GC_AUTHORIZATION_INVALID",
                 errors=(str(exc),),
             )
+
+
+def _apply_reconstructed(plan: GcPlan) -> GcResult:
+    """Recognize and reject an exact copy without trusting its public prepared fields."""
+    if (
+        not isinstance(plan.store_root, str)
+        or not isinstance(plan.store_id, str)
+        or not isinstance(plan.plan_digest, str)
+        or not isinstance(plan.action_digest, str)
+    ):
+        return _unprepared_result(plan)
+    try:
+        store = EvidenceStore(Path(plan.store_root))
+        store_root, store_id = _existing_store_identity(store)
+        if store_root != plan.store_root or store_id != plan.store_id:
+            return _unprepared_result(plan)
+        with store._mutation_lock(create=False):
+            store_root, store_id = _existing_store_identity(store)
+            if store_root != plan.store_root or store_id != plan.store_id:
+                return _unprepared_result(plan)
+            regenerated = _plan_gc_locked(store)
+            prepared = _registered_prepared(regenerated)
+            if prepared is None:
+                return _unprepared_result(plan)
+            try:
+                current_plan = plan.to_json_bytes()
+            except (
+                AttributeError,
+                EvidenceValidationError,
+                KeyError,
+                OverflowError,
+                TypeError,
+                ValueError,
+            ):
+                return _unprepared_result(plan)
+            if (
+                current_plan != prepared.canonical_plan
+                or plan.action_digest != prepared.action_digest
+            ):
+                return _unprepared_result(plan)
+            with prepared.consume_lock:
+                if prepared.consumed:
+                    return _result(prepared, False, "GC_AUTHORIZATION_CONSUMED")
+                consumed_now = _consume_authorization_locked(prepared)
+                prepared.consumed = True
+                if not consumed_now:
+                    return _result(prepared, False, "GC_AUTHORIZATION_CONSUMED")
+                return _result(prepared, False, "GC_PLAN_INVALID")
+    except (EvidenceValidationError, FileNotFoundError, OSError, TypeError, ValueError):
+        return _unprepared_result(plan)
+
+
+def apply_gc(plan: GcPlan, authorized: object, expected_plan_digest: object) -> GcResult:
+    """Consume one exact MODIFY token and delete only still-unreachable verified objects."""
+    if not isinstance(plan, GcPlan):
+        raise EvidenceValidationError("plan must be a GcPlan")
+    prepared = _registered_prepared(plan)
+    if prepared is None:
+        return _apply_reconstructed(plan)
+    return _apply_registered(plan, prepared, authorized, expected_plan_digest)
 
 
 __all__ = [

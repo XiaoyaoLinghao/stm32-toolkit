@@ -301,6 +301,10 @@ def test_reconstructed_plan_consumes_action_after_original_plan_is_collected(tmp
     assert rejected.retained_objects == retained == (artifact.relative_path,)
     assert _object(store, artifact).exists()
 
+    second_copy = replace(reconstructed)
+    consumed = apply_gc(second_copy, action_digest, plan_digest)
+    assert consumed.code == "GC_AUTHORIZATION_CONSUMED"
+
     child = """
 import json
 import sys
@@ -325,24 +329,112 @@ print(json.dumps(apply_gc(plan, plan.action_digest, plan.plan_digest).to_dict())
     assert _object(store, artifact).exists()
 
 
-def test_terminal_action_releases_full_prepared_snapshot_after_public_plans_die(tmp_path):
+def test_changed_public_bytes_never_consume_regenerated_prepared_action(tmp_path):
+    """Digest reuse cannot identify a reconstructed plan whose canonical bytes changed."""
+    store = EvidenceStore(tmp_path / "evidence")
+    _envelope, artifact = _put(store, tmp_path / "changed-public.bin", b"changed")
+    original = plan_gc(store)
+    reconstructed = replace(original)
+    action_digest = original.action_digest
+    plan_digest = original.plan_digest
+    object.__setattr__(
+        reconstructed,
+        "bytes_reclaimable",
+        reconstructed.bytes_reclaimable + 1,
+    )
+    del original
+    python_gc.collect()
+
+    rejected = apply_gc(reconstructed, action_digest, plan_digest)
+
+    assert rejected.code == "GC_PLAN_INVALID"
+    assert not (store.root / "gc-authorizations" / f"{action_digest}.json").exists()
+    equivalent = plan_gc(store)
+    applied = apply_gc(equivalent, equivalent.action_digest, equivalent.plan_digest)
+    assert applied.code == "GC_APPLIED"
+    assert applied.deleted_objects == (artifact.relative_path,)
+
+
+def test_rederive_and_rejection_consumption_are_one_publisher_lock_order(
+    tmp_path, monkeypatch
+):
+    """A queued publisher cannot enter between trusted regeneration and its tombstone."""
+    store = EvidenceStore(tmp_path / "evidence")
+    _envelope, _artifact = _put(store, tmp_path / "one-lock.bin", b"planned")
+    original = plan_gc(store)
+    reconstructed = replace(original)
+    action_digest = original.action_digest
+    plan_digest = original.plan_digest
+    del original
+    python_gc.collect()
+    source = tmp_path / "publisher-after-rederive.bin"
+    source.write_bytes(b"publisher")
+    rederived = Event()
+    release_rederive = Event()
+    publisher_attempted = Event()
+    real_plan_locked = gc_module._plan_gc_locked
+
+    def pause_after_rederive(evidence_store):
+        regenerated = real_plan_locked(evidence_store)
+        rederived.set()
+        assert release_rederive.wait(timeout=10)
+        return regenerated
+
+    def publish():
+        publisher_attempted.set()
+        return store.ingest_file(
+            source,
+            kind="log",
+            media_type="application/octet-stream",
+        )
+
+    monkeypatch.setattr(gc_module, "_plan_gc_locked", pause_after_rederive)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        applying = pool.submit(apply_gc, reconstructed, action_digest, plan_digest)
+        assert rederived.wait(timeout=10)
+        publishing = pool.submit(publish)
+        assert publisher_attempted.wait(timeout=10)
+        assert not publishing.done()
+        release_rederive.set()
+        rejected = applying.result(timeout=10)
+        published = publishing.result(timeout=10)
+
+    tombstone = store.root / "gc-authorizations" / f"{action_digest}.json"
+    published_object = store.root.joinpath(*published.relative_path.split("/"))
+    assert rejected.code == "GC_PLAN_INVALID"
+    assert tombstone.stat().st_mtime_ns <= published_object.stat().st_mtime_ns
+
+
+def test_terminal_action_releases_regenerated_prepared_snapshot(
+    tmp_path, monkeypatch
+):
     """Terminal consumption must not retain Store and full snapshot state for process life."""
     store = EvidenceStore(tmp_path / "evidence")
     _envelope, _artifact = _put(store, tmp_path / "released-plan.bin", b"released")
     original = plan_gc(store)
     reconstructed = replace(original)
-    prepared_reference = weakref.ref(gc_module._PREPARED_BY_PLAN[original])
     action_digest = original.action_digest
     plan_digest = original.plan_digest
     del original
     python_gc.collect()
+    captured_prepared = []
+    real_plan_locked = gc_module._plan_gc_locked
+
+    def capture_regenerated(evidence_store):
+        regenerated = real_plan_locked(evidence_store)
+        captured_prepared.append(gc_module._PREPARED_BY_PLAN[regenerated])
+        return regenerated
+
+    monkeypatch.setattr(gc_module, "_plan_gc_locked", capture_regenerated)
 
     result = apply_gc(reconstructed, action_digest, plan_digest)
     assert result.code == "GC_PLAN_INVALID"
+    assert len(captured_prepared) == 1
+    regenerated_reference = weakref.ref(captured_prepared.pop())
     del reconstructed
     python_gc.collect()
 
-    assert prepared_reference() is None
+    assert regenerated_reference() is None
 
 
 def test_collected_plan_never_writes_tombstone_into_replacement_store_identity(tmp_path):
@@ -364,6 +456,44 @@ def test_collected_plan_never_writes_tombstone_into_replacement_store_identity(t
 
     assert result.success is False
     assert result.code == "GC_PLAN_INVALID"
+    assert marker.read_text(encoding="utf-8") == "replacement"
+    assert sorted(path.name for path in store.root.iterdir()) == [marker.name]
+
+
+def test_collected_plan_with_wrong_typed_store_identity_never_accesses_store(tmp_path):
+    """Malformed public identity cannot enter read-only regeneration after provenance is gone."""
+    store = EvidenceStore(tmp_path / "evidence")
+    _envelope, artifact = _put(store, tmp_path / "wrong-store-id.bin", b"wrong-id")
+    original = plan_gc(store)
+    reconstructed = replace(original)
+    object.__setattr__(reconstructed, "store_id", object())
+    del original
+    python_gc.collect()
+
+    rejected = apply_gc(
+        reconstructed,
+        reconstructed.action_digest,
+        reconstructed.plan_digest,
+    )
+
+    assert rejected.code == "GC_PLAN_INVALID"
+    assert not (store.root / "gc-authorizations").exists()
+    assert _object(store, artifact).exists()
+
+
+def test_registered_plan_never_writes_into_replacement_store_identity(tmp_path):
+    """Exact plan provenance still binds the original directory identity, not its pathname."""
+    store = EvidenceStore(tmp_path / "evidence")
+    _envelope, _artifact = _put(store, tmp_path / "registered-replaced.bin", b"replaced")
+    plan = plan_gc(store)
+    shutil.rmtree(store.root)
+    store.root.mkdir()
+    marker = store.root / "replacement-marker.txt"
+    marker.write_text("replacement", encoding="utf-8")
+
+    result = apply_gc(plan, plan.action_digest, plan.plan_digest)
+
+    assert result.code == "GC_AUTHORIZATION_INVALID"
     assert marker.read_text(encoding="utf-8") == "replacement"
     assert sorted(path.name for path in store.root.iterdir()) == [marker.name]
 
