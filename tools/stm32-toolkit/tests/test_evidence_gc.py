@@ -1134,6 +1134,68 @@ print(apply_gc(plan, plan.action_digest, plan.plan_digest).code, flush=True)
     assert _object(store, artifact).exists()
 
 
+@pytest.mark.parametrize(
+    ("root_name", "ledger_name"),
+    [
+        (".stm32-evidence-gc-ledger", ".stm32-evidence-gc-ledger-alt"),
+        (".STM32-EVIDENCE-GC-LEDGER", ".stm32-evidence-gc-ledger-alt"),
+        (".stm32-evidence-gc-ledger-alt", ".stm32-evidence-gc-ledger"),
+        (".STM32-EVIDENCE-GC-LEDGER-ALT", ".stm32-evidence-gc-ledger"),
+    ],
+)
+def test_ledger_sibling_never_aliases_store_root_and_consumes_after_restore(
+    tmp_path, root_name, ledger_name
+):
+    """A reserved-name store must not receive its own denial tombstone as ledger data."""
+    store = EvidenceStore(tmp_path / root_name)
+    source = tmp_path / "ledger-alias.bin"
+    source.write_bytes(b"ledger-alias")
+    artifact = store.ingest_file(
+        source, kind="log", media_type="application/octet-stream"
+    )
+    plan = plan_gc(store)
+    original_root = tmp_path / "original-store"
+    replacement_root = tmp_path / "replacement-store"
+    store.root.rename(original_root)
+    store.root.mkdir()
+    marker = store.root / "replacement-marker.txt"
+    marker.write_text("replacement", encoding="utf-8")
+
+    denied = apply_gc(plan, plan.action_digest, plan.plan_digest)
+
+    assert denied.code == "GC_AUTHORIZATION_INVALID"
+    assert sorted(path.name for path in store.root.iterdir()) == [marker.name]
+    expected_tombstone = (
+        tmp_path
+        / ledger_name
+        / "actions"
+        / plan.store_id
+        / f"{plan.action_digest}.json"
+    )
+    assert expected_tombstone.is_file()
+    store.root.rename(replacement_root)
+    original_root.rename(store.root)
+    child = r"""
+import sys
+from pathlib import Path
+from stm32_toolkit.evidence.gc import apply_gc, plan_gc
+from stm32_toolkit.evidence.store import EvidenceStore
+
+plan = plan_gc(EvidenceStore(Path(sys.argv[1])))
+print(apply_gc(plan, plan.action_digest, plan.plan_digest).code, flush=True)
+"""
+    completed = subprocess.run(
+        [sys.executable, "-c", child, str(store.root)],
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    )
+    assert completed.returncode == 0, completed.stderr or completed.stdout
+    assert completed.stdout.strip() == "GC_AUTHORIZATION_CONSUMED"
+    assert _object(store, artifact).exists()
+
+
 def test_authorization_ledger_parent_is_identity_pinned_during_first_create(
     tmp_path, monkeypatch
 ):
@@ -1203,6 +1265,14 @@ def test_authorization_parent_guard_rejects_wrong_opened_identity(tmp_path, monk
     with pytest.raises(gc_module.EvidenceValidationError):
         with gc_module._stable_parent_guard(tmp_path, info):
             pytest.fail("mismatched parent guard yielded")
+
+    vanished = tmp_path / "vanished-parent"
+    vanished.mkdir()
+    vanished_info = vanished.lstat()
+    vanished.rmdir()
+    with pytest.raises(OSError):
+        with gc_module._stable_parent_guard(vanished, vanished_info):
+            pytest.fail("vanished parent guard yielded")
 
 
 def test_identity_bound_delete_rejects_missing_and_mismatched_snapshot_targets(tmp_path):

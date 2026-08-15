@@ -28,6 +28,8 @@ REGISTERED_ROOT_TYPES = frozenset(
 _HASH = re.compile(r"^[0-9a-f]{64}$")
 _PREFIX = re.compile(r"^[0-9a-f]{2}$")
 _ROOT_FIELDS = {"root_type", "root_id", "manifest_id", "metadata"}
+_AUTHORIZATION_LEDGER_PRIMARY = ".stm32-evidence-gc-ledger"
+_AUTHORIZATION_LEDGER_SECONDARY = ".stm32-evidence-gc-ledger-alt"
 
 
 class _GcStoreChanged(EvidenceValidationError):
@@ -946,7 +948,20 @@ def _consume_authorization(prepared: _PreparedGcPlan) -> bool:
         }
     )
     with _stable_parent_guard(parent, parent_info):
-        ledger = EvidenceStore(parent / ".stm32-evidence-gc-ledger")
+        root_name = os.path.normcase(prepared.store.root.name)
+        ledger_name = (
+            _AUTHORIZATION_LEDGER_SECONDARY
+            if root_name == os.path.normcase(_AUTHORIZATION_LEDGER_PRIMARY)
+            else _AUTHORIZATION_LEDGER_PRIMARY
+        )
+        ledger_root = parent / ledger_name
+        if os.path.normcase(str(ledger_root.absolute())) == os.path.normcase(
+            str(prepared.store.root.absolute())
+        ):
+            raise EvidenceValidationError(
+                "authorization ledger aliases the evidence store root"
+            )
+        ledger = EvidenceStore(ledger_root)
         with ledger._mutation_lock():
             directory = ledger._managed_directory("actions", prepared.store_id)
             target = directory / f"{prepared.action_digest}.json"
