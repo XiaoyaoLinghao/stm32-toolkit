@@ -1233,6 +1233,51 @@ def test_shard_verifier_rejects_compact_credential_alias_assignments(
 
 
 @pytest.mark.parametrize(
+    ("value", "forbidden"),
+    [
+        ("git+path://example.invalid/key", False),
+        ("path://server/share/secret.txt", True),
+        ("root://server/share/secret.txt", True),
+        ("+path://server/share/secret.txt", True),
+        ("1git+path://server/share/secret.txt", True),
+        ("_git+path://server/share/secret.txt", True),
+        ("git+path://user:password@example.invalid/key", True),
+    ],
+)
+def test_portable_string_plus_uri_scheme_does_not_hide_labeled_roots_or_credentials(
+    value: str, forbidden: bool
+) -> None:
+    """A valid plus-scheme is portable without making bare labels or credentials portable."""
+    if forbidden:
+        with pytest.raises(VerificationError, match="private|credential"):
+            release_verifier._validate_portable_string(value)
+    else:
+        release_verifier._validate_portable_string(value)
+
+
+@pytest.mark.parametrize(
+    ("value", "forbidden"),
+    [
+        (r"regex (\d+|\w+)", False),
+        (r"regex \d+\.\d+", False),
+        (r"regex (\d+|\Windows\System32)", True),
+        (r"regex \d+\.\Windows\System32", True),
+        (r"\Windows\System32\config", True),
+        (r"\.\Windows\System32", True),
+    ],
+)
+def test_portable_string_regex_escapes_do_not_hide_windows_root_relative_paths(
+    value: str, forbidden: bool
+) -> None:
+    """Regex alternation/literal-dot escapes stay portable without admitting rooted paths."""
+    if forbidden:
+        with pytest.raises(VerificationError, match="private"):
+            release_verifier._validate_portable_string(value)
+    else:
+        release_verifier._validate_portable_string(value)
+
+
+@pytest.mark.parametrize(
     ("payload", "forbidden"),
     [
         (b"PASS / FAIL\n", False),

@@ -908,9 +908,21 @@ LABELED_ROOTED_PATH_PATTERN = re.compile(
     re.IGNORECASE,
 )
 FILE_URI_ROOTED_PATH_PATTERN = re.compile(r"\bfile:[\\/]+", re.IGNORECASE)
+URI_SCHEME_WITH_AUTHORITY_PATTERN = re.compile(
+    r"(?<![A-Za-z0-9_+.-])[A-Za-z][A-Za-z0-9+.-]*://"
+)
+REGEX_ESCAPE_TOKEN = (
+    r"\\(?:[AbBdDGsSwWZz]|[fnrtv])"
+    r"(?:[+*?]|\{[0-9]+(?:,[0-9]*)?\})?"
+)
 REGEX_ESCAPE_PATTERN = re.compile(
-    r"\\(?:[AbBdDGsSwWZz]|[fnrtv])(?:[+*?]|\{[0-9]+(?:,[0-9]*)?\})?"
-    r"(?=$|\\|[\s$,.;:)\]}])"
+    REGEX_ESCAPE_TOKEN + r"(?=$|\\|[\s|$,.;:)\]}])"
+)
+REGEX_ESCAPE_SEQUENCE_PATTERN = re.compile(
+    r"(?:" + REGEX_ESCAPE_TOKEN + r")+(?=$|[\s|$,.;:)\]}])"
+)
+REGEX_ESCAPE_SEQUENCE_AT_END_PATTERN = re.compile(
+    ROOTED_PATH_BOUNDARY + r"(?:" + REGEX_ESCAPE_TOKEN + r")+$"
 )
 SENSITIVE_FIELD_NAMES = {
     "accesskey", "accesstoken", "apikey", "authentication", "authorization",
@@ -960,6 +972,16 @@ def _sensitive_field(name: object) -> bool:
     )
 
 
+def _portable_regex_escape_at(value: str, start: int) -> bool:
+    if REGEX_ESCAPE_PATTERN.match(value, start) is not None:
+        return True
+    return (
+        value.startswith(r"\.", start)
+        and REGEX_ESCAPE_SEQUENCE_AT_END_PATTERN.search(value[:start]) is not None
+        and REGEX_ESCAPE_SEQUENCE_PATTERN.match(value, start + 2) is not None
+    )
+
+
 def _contains_rooted_private_path(value: str) -> bool:
     stripped = value.strip()
     if stripped and not stripped.strip("\\/"):
@@ -971,13 +993,24 @@ def _contains_rooted_private_path(value: str) -> bool:
             UNC_ROOTED_PATH_PATTERN,
             UNIX_ROOTED_PATH_PATTERN,
             MULTI_SEPARATOR_ROOTED_PATH_PATTERN,
-            LABELED_ROOTED_PATH_PATTERN,
             FILE_URI_ROOTED_PATH_PATTERN,
         )
     ):
         return True
+    uri_schemes = tuple(URI_SCHEME_WITH_AUTHORITY_PATTERN.finditer(value))
+    for labeled_root in LABELED_ROOTED_PATH_PATTERN.finditer(value):
+        if not (
+            labeled_root.start() > 0
+            and value[labeled_root.start() - 1] == "+"
+            and any(
+                uri_scheme.start() < labeled_root.start()
+                and uri_scheme.end() == labeled_root.end()
+                for uri_scheme in uri_schemes
+            )
+        ):
+            return True
     return any(
-        REGEX_ESCAPE_PATTERN.match(value, match.start()) is None
+        not _portable_regex_escape_at(value, match.start())
         for match in WINDOWS_ROOTED_PATH_PATTERN.finditer(value)
     )
 
