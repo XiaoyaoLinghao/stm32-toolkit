@@ -659,6 +659,10 @@ def test_ctest_text_adapter_accepts_real_rounded_failure_percentage() -> None:
     assert gates.parse_native_node_outcomes("ctest-text", raw, exit_code=1) == (
         ("pass-one", "passed"), ("pass-two", "passed"), ("fail-one", "failed"),
     )
+    with pytest.raises(ControllerError, match="summary counts"):
+        gates.parse_native_node_outcomes(
+            "ctest-text", raw.replace(b"67% tests passed", b"66% tests passed"), exit_code=1,
+        )
 
 
 def test_windows_playwright_contract_has_only_two_frozen_chromium_projects() -> None:

@@ -814,14 +814,11 @@ def _parse_ctest_text_node_outcomes(raw: bytes) -> tuple[tuple[str, str], ...]:
     failed = sum(outcome == "failed" for _, outcome in result)
     total = len(result)
     percent_numerator = (total - failed) * 100
-    expected_percents = {
-        percent_numerator // total,
-        math.ceil(percent_numerator / total),
-    }
+    expected_percent = (2 * percent_numerator + total) // (2 * total)
     if (
         int(summary.group("failed")) != failed
         or int(summary.group("total")) != total
-        or int(summary.group("percent")) not in expected_percents
+        or int(summary.group("percent")) != expected_percent
     ):
         raise ControllerError("ctest-text native summary counts contradict nodes")
     return result
