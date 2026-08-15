@@ -6,6 +6,7 @@ import argparse
 import hashlib
 import importlib
 import json
+import math
 import os
 import platform
 import re
@@ -24,6 +25,18 @@ from typing import Callable, Mapping, Protocol, Sequence
 
 KNOWN_MODULES = {"STM32TK-0601", "STM32TK-0602", "STM32TK-0603"}
 COVERAGE_TASK_ID = re.compile(r"(?P<module>STM32TK-[0-9]{4})-T(?:0[1-9]|[1-9][0-9])")
+COVERAGE_META_KEYS = {"format", "version", "timestamp", "branch_coverage", "show_contexts"}
+COVERAGE_ROW_KEYS = {
+    "executed_lines", "summary", "missing_lines", "excluded_lines",
+    "executed_branches", "missing_branches", "functions", "classes",
+}
+COVERAGE_SUMMARY_KEYS = {
+    "covered_lines", "num_statements", "percent_covered", "percent_covered_display",
+    "missing_lines", "excluded_lines", "percent_statements_covered",
+    "percent_statements_covered_display", "num_branches", "num_partial_branches",
+    "covered_branches", "missing_branches", "percent_branches_covered",
+    "percent_branches_covered_display",
+}
 HEX40 = re.compile(r"^[0-9a-f]{40}$")
 HEX64 = re.compile(r"^[0-9a-f]{64}$")
 UUID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$")
@@ -855,6 +868,81 @@ def _default_git_runner(repo: Path) -> Callable[[list[str]], list[str]]:
     return run
 
 
+def _validate_coverage_summary(value: object) -> dict[str, object]:
+    if not isinstance(value, dict) or set(value) != COVERAGE_SUMMARY_KEYS:
+        raise ControllerError("coverage summary is not closed")
+    integer_fields = {
+        "covered_lines", "num_statements", "missing_lines", "excluded_lines", "num_branches",
+        "num_partial_branches", "covered_branches", "missing_branches",
+    }
+    percent_fields = {
+        "percent_covered", "percent_statements_covered", "percent_branches_covered",
+    }
+    display_fields = {
+        "percent_covered_display", "percent_statements_covered_display",
+        "percent_branches_covered_display",
+    }
+    for field in integer_fields:
+        item = value[field]
+        if not isinstance(item, int) or isinstance(item, bool) or item < 0:
+            raise ControllerError("coverage summary counter is invalid")
+    for field in percent_fields:
+        item = value[field]
+        if (
+            not isinstance(item, (int, float))
+            or isinstance(item, bool)
+            or not math.isfinite(item)
+            or item < 0
+            or item > 100
+        ):
+            raise ControllerError("coverage summary percent is invalid")
+    for field in display_fields:
+        item = value[field]
+        if not isinstance(item, str) or re.fullmatch(r"(?:100|[0-9]{1,2})(?:\.[0-9]+)?", item) is None:
+            raise ControllerError("coverage summary display percent is invalid")
+    if value["covered_lines"] + value["missing_lines"] != value["num_statements"]:
+        raise ControllerError("coverage line counters are inconsistent")
+    if value["covered_branches"] + value["missing_branches"] != value["num_branches"]:
+        raise ControllerError("coverage branch counters are inconsistent")
+    if value["num_partial_branches"] > value["num_branches"]:
+        raise ControllerError("coverage partial branch count is invalid")
+    return value
+
+
+def _validate_coverage_v7(value: object) -> dict[str, object]:
+    if not isinstance(value, dict) or set(value) != {"meta", "files", "totals"}:
+        raise ControllerError("coverage JSON root is invalid")
+    meta = value["meta"]
+    if not isinstance(meta, dict) or set(meta) != COVERAGE_META_KEYS:
+        raise ControllerError("coverage metadata is not closed")
+    if (
+        not isinstance(meta["format"], int)
+        or isinstance(meta["format"], bool)
+        or meta["format"] != 3
+        or not isinstance(meta["version"], str)
+        or re.fullmatch(r"7\.[0-9]+\.[0-9]+", meta["version"]) is None
+        or not isinstance(meta["timestamp"], str)
+        or re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{6}", meta["timestamp"]) is None
+        or meta["branch_coverage"] is not True
+        or meta["show_contexts"] is not False
+    ):
+        raise ControllerError("coverage metadata is invalid")
+    files = value["files"]
+    if not isinstance(files, dict):
+        raise ControllerError("coverage files are invalid")
+    for details in files.values():
+        if not isinstance(details, dict) or set(details) != COVERAGE_ROW_KEYS:
+            raise ControllerError("coverage row is invalid")
+        for field in ("executed_lines", "missing_lines", "excluded_lines", "executed_branches", "missing_branches"):
+            if not isinstance(details[field], list):
+                raise ControllerError("coverage row list is invalid")
+        if not isinstance(details["functions"], dict) or not isinstance(details["classes"], dict):
+            raise ControllerError("coverage row detail map is invalid")
+        _validate_coverage_summary(details["summary"])
+    _validate_coverage_summary(value["totals"])
+    return value
+
+
 def run_dev_coverage(
     repo: Path,
     task_id: str,
@@ -917,13 +1005,11 @@ def run_dev_coverage(
     return_code = runner(argv, cwd=repo, env=_safe_controller_env())
     if return_code != 0 or not raw_path.is_file():
         raise ControllerError("coverage subprocess failed")
-    raw = _load_json(raw_path)
-    if not isinstance(raw, dict) or set(raw) != {"files"} or not isinstance(raw["files"], dict):
-        raise ControllerError("coverage JSON root is invalid")
+    raw = _validate_coverage_v7(_load_json(raw_path))
     rows: dict[str, tuple[int, int]] = {}
     folded: set[str] = set()
     for raw_path_name, details in raw["files"].items():
-        if not isinstance(raw_path_name, str) or not isinstance(details, dict) or set(details) != {"summary"} or not isinstance(details["summary"], dict):
+        if not isinstance(raw_path_name, str) or not isinstance(details, dict):
             raise ControllerError("coverage row is invalid")
         path = Path(raw_path_name)
         if path.is_absolute():
@@ -936,8 +1022,6 @@ def run_dev_coverage(
         if name.casefold() in folded:
             raise ControllerError("coverage row case-fold duplicate")
         summary = details["summary"]
-        if set(summary) != {"covered_branches", "num_branches"}:
-            raise ControllerError("coverage summary is not closed")
         covered, total = summary["covered_branches"], summary["num_branches"]
         if not isinstance(covered, int) or isinstance(covered, bool) or not isinstance(total, int) or isinstance(total, bool) or covered < 0 or total < 0 or covered > total:
             raise ControllerError("coverage branch counts are invalid")

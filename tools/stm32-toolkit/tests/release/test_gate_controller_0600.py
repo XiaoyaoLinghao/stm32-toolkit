@@ -598,6 +598,52 @@ def _coverage_git(paths: list[str]):
     return run
 
 
+def _coverage_v7(rows: dict[str, tuple[int, int]]) -> dict[str, object]:
+    """Return the closed coverage.py JSON format 3 emitted by the frozen pytest command."""
+    def summary(covered: int, total: int) -> dict[str, object]:
+        percent = 100.0 if total == 0 else covered * 100.0 / total
+        return {
+            "covered_lines": 1,
+            "num_statements": 1,
+            "percent_covered": percent,
+            "percent_covered_display": str(round(percent)),
+            "missing_lines": 0,
+            "excluded_lines": 0,
+            "percent_statements_covered": 100.0,
+            "percent_statements_covered_display": "100",
+            "num_branches": total,
+            "num_partial_branches": 0,
+            "covered_branches": covered,
+            "missing_branches": total - covered,
+            "percent_branches_covered": percent,
+            "percent_branches_covered_display": str(round(percent)),
+        }
+
+    files: dict[str, object] = {}
+    for path, (covered, total) in rows.items():
+        files[path] = {
+            "executed_lines": [1],
+            "summary": summary(covered, total),
+            "missing_lines": [],
+            "excluded_lines": [],
+            "executed_branches": [],
+            "missing_branches": [],
+            "functions": {},
+            "classes": {},
+        }
+    return {
+        "meta": {
+            "format": 3,
+            "version": "7.15.4",
+            "timestamp": "2026-08-15T10:08:26.569114",
+            "branch_coverage": True,
+            "show_contexts": False,
+        },
+        "files": files,
+        "totals": summary(sum(row[0] for row in rows.values()), sum(row[1] for row in rows.values())),
+    }
+
+
 @pytest.mark.parametrize(
     "task_id",
     ["STM32TK-0601", "STM32TK-0601-T03", "STM32TK-0602-T01", "STM32TK-0603-T99"],
@@ -622,11 +668,7 @@ def test_dev_coverage_discovers_each_changed_product_file_and_requires_90_percen
         assert "--cov=stm32_toolkit.changed" in argv
         assert argv[3:6] == ["-q", "-p", "no:cacheprovider"]
         assert not any(key.startswith(("COVERAGE_", "COV_CORE_")) for key in env)
-        raw = {
-            "files": {
-                changed: {"summary": {"covered_branches": 9, "num_branches": 10}}
-            }
-        }
+        raw = _coverage_v7({changed: (9, 10)})
         (evidence / "coverage-raw.json").write_text(json.dumps(raw), encoding="utf-8")
         return 0
 
@@ -732,12 +774,7 @@ def test_dev_coverage_rejects_no_change_duplicates_missing_rows_low_file_and_she
     evidence = tmp_path / "evidence"
 
     def runner(_argv: list[str], *, cwd: Path, env: dict[str, str]) -> int:
-        raw = {
-            "files": {
-                path: {"summary": {"covered_branches": covered, "num_branches": total}}
-                for path, (covered, total) in rows.items()
-            }
-        }
+        raw = _coverage_v7(rows)
         (evidence / "coverage-raw.json").write_text(json.dumps(raw), encoding="utf-8")
         return 0
 
@@ -771,6 +808,70 @@ def test_dev_coverage_rejects_duplicate_json_object_rows(tmp_path: Path) -> None
             "STM32TK-0601",
             evidence,
             [str(test_file), "--cov=stm32_toolkit.a"],
+            _coverage_git([changed]),
+            runner,
+        )
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "root-extra",
+        "meta-missing",
+        "meta-extra",
+        "format",
+        "version",
+        "branch-disabled",
+        "row-missing",
+        "row-extra",
+        "summary-missing",
+        "summary-extra",
+    ],
+)
+def test_dev_coverage_rejects_mutated_coverage_v7_contract(tmp_path: Path, mutation: str) -> None:
+    """The public parser accepts only the closed branch-enabled coverage JSON format 3 shape."""
+    repo = tmp_path / "repo"
+    changed = "tools/stm32-toolkit/src/stm32_toolkit/a.py"
+    product = repo.joinpath(*changed.split("/"))
+    test_file = repo / "tools/stm32-toolkit/tests/test_a.py"
+    product.parent.mkdir(parents=True)
+    test_file.parent.mkdir(parents=True)
+    product.write_text("pass\n", encoding="utf-8")
+    test_file.write_text("def test_a(): pass\n", encoding="utf-8")
+    evidence = tmp_path / "evidence"
+
+    def runner(_argv: list[str], *, cwd: Path, env: dict[str, str]) -> int:
+        raw = _coverage_v7({changed: (9, 10)})
+        details = raw["files"][changed]
+        if mutation == "root-extra":
+            raw["extra"] = None
+        elif mutation == "meta-missing":
+            raw["meta"].pop("show_contexts")
+        elif mutation == "meta-extra":
+            raw["meta"]["extra"] = None
+        elif mutation == "format":
+            raw["meta"]["format"] = 2
+        elif mutation == "version":
+            raw["meta"]["version"] = "8.0.0"
+        elif mutation == "branch-disabled":
+            raw["meta"]["branch_coverage"] = False
+        elif mutation == "row-missing":
+            details.pop("functions")
+        elif mutation == "row-extra":
+            details["extra"] = None
+        elif mutation == "summary-missing":
+            details["summary"].pop("missing_branches")
+        else:
+            details["summary"]["extra"] = None
+        (evidence / "coverage-raw.json").write_text(json.dumps(raw), encoding="utf-8")
+        return 0
+
+    with pytest.raises(ControllerError):
+        run_dev_coverage(
+            repo,
+            "STM32TK-0601-T03",
+            evidence,
+            [str(test_file), "--cov=stm32_toolkit.a", "-q", "-p", "no:cacheprovider"],
             _coverage_git([changed]),
             runner,
         )
