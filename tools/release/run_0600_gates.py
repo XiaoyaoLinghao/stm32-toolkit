@@ -873,10 +873,27 @@ def run_dev_coverage(
     if not pytest_tokens:
         raise ControllerError("coverage pytest tokens are missing")
     validated: list[str] = []
-    for token in pytest_tokens:
+    seen_quiet = False
+    seen_plugin = False
+    index = 0
+    while index < len(pytest_tokens):
+        token = pytest_tokens[index]
         if not isinstance(token, str) or not token or any(character in token for character in ";|&><\r\n") or any(char.isspace() for char in token):
             raise ControllerError("coverage shell token is forbidden")
-        if token.startswith("--cov="):
+        if token == "-q":
+            if seen_quiet:
+                raise ControllerError("coverage quiet option is duplicated")
+            seen_quiet = True
+        elif token == "-p":
+            if seen_plugin or index + 1 >= len(pytest_tokens) or pytest_tokens[index + 1] != "no:cacheprovider":
+                raise ControllerError("coverage plugin option is invalid")
+            seen_plugin = True
+            validated.extend((token, "no:cacheprovider"))
+            index += 2
+            continue
+        elif token == "no:cacheprovider":
+            raise ControllerError("coverage plugin value is unpaired")
+        elif token.startswith("--cov="):
             module = token.removeprefix("--cov=")
             if re.fullmatch(r"stm32_toolkit(?:\.[A-Za-z_][A-Za-z0-9_]*)*", module) is None:
                 raise ControllerError("coverage module is invalid")
@@ -892,6 +909,7 @@ def run_dev_coverage(
                 raise ControllerError("coverage test path is invalid")
             token = str(test)
         validated.append(token)
+        index += 1
     if _coverage_configured(os.environ):
         raise ControllerError("dev coverage rejects inherited coverage variables")
     raw_path = evidence / "coverage-raw.json"

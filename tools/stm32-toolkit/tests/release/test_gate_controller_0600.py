@@ -620,6 +620,7 @@ def test_dev_coverage_discovers_each_changed_product_file_and_requires_90_percen
         assert argv[:3] == [sys.executable, "-m", "pytest"]
         assert str(test_file) in argv
         assert "--cov=stm32_toolkit.changed" in argv
+        assert argv[3:6] == ["-q", "-p", "no:cacheprovider"]
         assert not any(key.startswith(("COVERAGE_", "COV_CORE_")) for key in env)
         raw = {
             "files": {
@@ -633,7 +634,7 @@ def test_dev_coverage_discovers_each_changed_product_file_and_requires_90_percen
         repo=repo,
         task_id=task_id,
         evidence_root=evidence,
-        pytest_tokens=[str(test_file), "--cov=stm32_toolkit.changed"],
+        pytest_tokens=["-q", "-p", "no:cacheprovider", str(test_file), "--cov=stm32_toolkit.changed"],
         git_runner=_coverage_git([changed]),
         runner=runner,
     )
@@ -643,6 +644,41 @@ def test_dev_coverage_discovers_each_changed_product_file_and_requires_90_percen
     ]
     assert result["task_id"] == task_id
     assert (evidence / "branch-coverage.json").is_file()
+
+
+@pytest.mark.parametrize(
+    "tokens",
+    [
+        ["-q", "-q"],
+        ["-Q"],
+        ["-p"],
+        ["-p", "other-plugin"],
+        ["-pno:cacheprovider"],
+        ["-P", "no:cacheprovider"],
+        ["-p", "NO:cacheprovider"],
+        ["no:cacheprovider"],
+        ["-p", "no:cacheprovider", "-p", "no:cacheprovider"],
+        ["-p", "no:cacheprovider;echo"],
+    ],
+)
+def test_dev_coverage_rejects_noncanonical_duplicate_or_unpaired_pytest_flags(
+    tmp_path: Path, tokens: list[str]
+) -> None:
+    """Only one exact `-q` and one adjacent `-p no:cacheprovider` pair are allowed."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    evidence = tmp_path / "evidence"
+    runner_calls = 0
+
+    def runner(*_args: object, **_kwargs: object) -> int:
+        nonlocal runner_calls
+        runner_calls += 1
+        return 0
+
+    with pytest.raises(ControllerError):
+        run_dev_coverage(repo, "STM32TK-0601-T03", evidence, tokens, _coverage_git([]), runner)
+
+    assert runner_calls == 0
 
 
 @pytest.mark.parametrize(
