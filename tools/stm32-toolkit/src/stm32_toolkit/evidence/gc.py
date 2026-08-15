@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 import hashlib
 import json
@@ -31,6 +32,13 @@ _ROOT_FIELDS = {"root_type", "root_id", "manifest_id", "metadata"}
 
 class _GcStoreChanged(EvidenceValidationError):
     """The object selected by the plan no longer has the captured identity."""
+
+
+@dataclass(frozen=True)
+class _DeleteOutcome:
+    size: int
+    committed: bool
+    error: str | None = None
 
 
 def _digest(value: object) -> str:
@@ -114,9 +122,9 @@ def _open_windows_file(path: Path, *, delete: bool = False) -> int:
     ]
     create_file.restype = wintypes.HANDLE
     access = generic_read | file_read_attributes | (delete_access if delete else 0)
-    sharing = file_share_read | file_share_write
+    sharing = file_share_read
     if not delete:
-        sharing |= file_share_delete
+        sharing |= file_share_write | file_share_delete
     handle = create_file(
         str(path), access, sharing, None, open_existing, open_reparse_point, None
     )
@@ -135,6 +143,66 @@ def _close_windows_handle(handle: int) -> None:
     close_handle.restype = wintypes.BOOL
     if not close_handle(handle):
         raise ctypes.WinError(ctypes.get_last_error())
+
+
+@contextmanager
+def _stable_parent_guard(parent: Path, expected: os.stat_result):
+    """Pin the existing ledger parent identity while its fixed sibling is accessed."""
+    if os.name != "nt":  # pragma: no cover - unsupported destructive platform
+        raise EvidenceValidationError(
+            "stable authorization ledger parent locking is unavailable"
+        )
+    import ctypes
+    from ctypes import wintypes
+
+    generic_read = 0x80000000
+    file_read_attributes = 0x00000080
+    file_share_read = 0x00000001
+    file_share_write = 0x00000002
+    open_existing = 3
+    open_reparse_point = 0x00200000
+    backup_semantics = 0x02000000
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    create_file = kernel32.CreateFileW
+    create_file.argtypes = [
+        wintypes.LPCWSTR,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.LPVOID,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.HANDLE,
+    ]
+    create_file.restype = wintypes.HANDLE
+    handle = create_file(
+        str(parent),
+        generic_read | file_read_attributes,
+        file_share_read | file_share_write,
+        None,
+        open_existing,
+        open_reparse_point | backup_semantics,
+        None,
+    )
+    if handle == ctypes.c_void_p(-1).value:
+        raise ctypes.WinError(ctypes.get_last_error())
+    handle = int(handle)
+    try:
+        opened = _windows_file_information(handle)
+        current = EvidenceStore._validate_existing_path(parent)
+        if (
+            not stat.S_ISDIR(expected.st_mode)
+            or not stat.S_ISDIR(current.st_mode)
+            or opened["attributes"] & 0x00000400
+            or not opened["attributes"] & 0x00000010
+            or (current.st_dev, current.st_ino) != (expected.st_dev, expected.st_ino)
+            or current.st_ino != opened["file_index"]
+        ):
+            raise EvidenceValidationError(
+                "authorization ledger parent identity changed"
+            )
+        yield
+    finally:
+        _close_windows_handle(handle)
 
 
 def _file_identity_fields(path: Path, info: os.stat_result) -> dict[str, object]:
@@ -225,6 +293,8 @@ class GcPlan:
     store_id: str
     roots: tuple[RootRecord, ...]
     manifest_ids: tuple[str, ...]
+    reachable_manifests: tuple[str, ...]
+    unreachable_manifests: tuple[str, ...]
     reachable_objects: tuple[str, ...]
     unreachable_objects: tuple[str, ...]
     unknown_entries: tuple[str, ...]
@@ -243,6 +313,8 @@ class GcPlan:
             "store_id": self.store_id,
             "roots": [root.to_dict() for root in self.roots],
             "manifest_ids": list(self.manifest_ids),
+            "reachable_manifests": list(self.reachable_manifests),
+            "unreachable_manifests": list(self.unreachable_manifests),
             "reachable_objects": list(self.reachable_objects),
             "unreachable_objects": list(self.unreachable_objects),
             "unknown_entries": list(self.unknown_entries),
@@ -267,6 +339,8 @@ class GcResult:
     code: str
     plan_digest: str
     action_digest: str
+    deleted_manifests: tuple[str, ...]
+    retained_manifests: tuple[str, ...]
     deleted_objects: tuple[str, ...]
     retained_objects: tuple[str, ...]
     bytes_reclaimed: int
@@ -280,6 +354,8 @@ class GcResult:
             "code": self.code,
             "plan_digest": self.plan_digest,
             "action_digest": self.action_digest,
+            "deleted_manifests": list(self.deleted_manifests),
+            "retained_manifests": list(self.retained_manifests),
             "deleted_objects": list(self.deleted_objects),
             "retained_objects": list(self.retained_objects),
             "bytes_reclaimed": self.bytes_reclaimed,
@@ -300,8 +376,9 @@ class _PreparedGcPlan:
     manifest_snapshot_digest: str
     store_snapshot_digest: str
     bytes_reclaimable: int
+    unreachable_manifests: tuple[str, ...]
     unreachable_objects: tuple[str, ...]
-    object_sizes: Mapping[str, int]
+    target_sizes: Mapping[str, int]
     snapshot_entries: tuple[dict[str, object], ...]
     canonical_plan: bytes
     consumed: bool = False
@@ -686,13 +763,32 @@ def _plan_gc_locked(evidence_store: EvidenceStore) -> GcPlan:
     if conservative:
         reachable.update(objects)
 
+    reachable_manifest_ids = (
+        set(manifests) if conservative else set(manifests).intersection(visited_manifests)
+    )
+    reachable_manifests = _ordered(
+        f"manifests/{manifest_id}.json" for manifest_id in reachable_manifest_ids
+    )
+    unreachable_manifests = _ordered(
+        f"manifests/{manifest_id}.json"
+        for manifest_id in manifests
+        if manifest_id not in reachable_manifest_ids
+    )
+
     unknown = _ordered({*root_unknown, *manifest_unknown, *object_unknown})
     corrupt = _ordered({*root_corrupt, *manifest_corrupt, *object_corrupt})
     reachable_known = _ordered(path for path in objects if path in reachable)
     unreachable = _ordered(
         path for path in objects if path not in reachable and path not in corrupt
     )
-    reclaimable = sum(objects[path] for path in unreachable)
+    manifest_sizes = {
+        str(entry["path"]): int(entry["size"])
+        for entry in snapshot
+        if str(entry["path"]).startswith("manifests/") and entry.get("kind") == "file"
+    }
+    reclaimable = sum(objects[path] for path in unreachable) + sum(
+        manifest_sizes[path] for path in unreachable_manifests
+    )
     manifest_entries = tuple(
         entry for entry in snapshot if str(entry["path"]).startswith("manifests/")
     )
@@ -702,6 +798,8 @@ def _plan_gc_locked(evidence_store: EvidenceStore) -> GcPlan:
         "store_id": store_id,
         "roots": [root.to_dict() for root in roots],
         "manifest_ids": list(_ordered(manifests)),
+        "reachable_manifests": list(reachable_manifests),
+        "unreachable_manifests": list(unreachable_manifests),
         "reachable_objects": list(reachable_known),
         "unreachable_objects": list(unreachable),
         "unknown_entries": list(unknown),
@@ -725,6 +823,8 @@ def _plan_gc_locked(evidence_store: EvidenceStore) -> GcPlan:
         store_id=store_id,
         roots=tuple(roots),
         manifest_ids=_ordered(manifests),
+        reachable_manifests=reachable_manifests,
+        unreachable_manifests=unreachable_manifests,
         reachable_objects=reachable_known,
         unreachable_objects=unreachable,
         unknown_entries=unknown,
@@ -744,8 +844,14 @@ def _plan_gc_locked(evidence_store: EvidenceStore) -> GcPlan:
         manifest_snapshot_digest=str(values["manifest_snapshot_digest"]),
         store_snapshot_digest=str(values["store_snapshot_digest"]),
         bytes_reclaimable=reclaimable,
+        unreachable_manifests=unreachable_manifests,
         unreachable_objects=unreachable,
-        object_sizes=MappingProxyType({path: objects[path] for path in unreachable}),
+        target_sizes=MappingProxyType(
+            {
+                **{path: manifest_sizes[path] for path in unreachable_manifests},
+                **{path: objects[path] for path in unreachable},
+            }
+        ),
         snapshot_entries=snapshot,
         canonical_plan=plan.to_json_bytes(),
     )
@@ -767,6 +873,7 @@ def _result(
     code: str,
     *,
     deleted: tuple[str, ...] = (),
+    deleted_manifests: tuple[str, ...] = (),
     bytes_reclaimed: int = 0,
     errors: tuple[str, ...] = (),
 ) -> GcResult:
@@ -775,6 +882,12 @@ def _result(
         code=code,
         plan_digest=prepared.plan_digest,
         action_digest=prepared.action_digest,
+        deleted_manifests=deleted_manifests,
+        retained_manifests=tuple(
+            path
+            for path in prepared.unreachable_manifests
+            if path not in deleted_manifests
+        ),
         deleted_objects=deleted,
         retained_objects=tuple(
             path for path in prepared.unreachable_objects if path not in deleted
@@ -793,11 +906,19 @@ def _unprepared_result(plan: GcPlan) -> GcResult:
         and all(isinstance(path, str) for path in plan.unreachable_objects)
         else ()
     )
+    retained_manifests = (
+        plan.unreachable_manifests
+        if isinstance(plan.unreachable_manifests, tuple)
+        and all(isinstance(path, str) for path in plan.unreachable_manifests)
+        else ()
+    )
     return GcResult(
         success=False,
         code="GC_PLAN_INVALID",
         plan_digest=plan_digest,
         action_digest=action_digest,
+        deleted_manifests=(),
+        retained_manifests=retained_manifests,
         deleted_objects=(),
         retained_objects=retained,
         bytes_reclaimed=0,
@@ -810,10 +931,12 @@ def _registered_prepared(plan: GcPlan) -> _PreparedGcPlan | None:
         return _PREPARED_BY_PLAN.get(plan)
 
 
-def _consume_authorization_locked(prepared: _PreparedGcPlan) -> bool:
-    """Atomically redeem an action while the verified store mutation lock is held."""
-    directory = prepared.store._managed_directory("gc-authorizations")
-    target = directory / f"{prepared.action_digest}.json"
+def _consume_authorization(prepared: _PreparedGcPlan) -> bool:
+    """Redeem through the stable parent-scoped ledger, independent of root replacement."""
+    parent = prepared.store.root.parent
+    parent_info = EvidenceStore._validate_existing_path(parent)
+    if not stat.S_ISDIR(parent_info.st_mode):
+        raise EvidenceValidationError("evidence store parent is not a directory")
     payload = canonical_json_bytes(
         {
             "action_digest": prepared.action_digest,
@@ -822,22 +945,28 @@ def _consume_authorization_locked(prepared: _PreparedGcPlan) -> bool:
             "store_id": prepared.store_id,
         }
     )
-    try:
-        prepared.store._validate_existing_path(target, regular=True, single_link=True)
-    except FileNotFoundError:
-        return prepared.store._atomic_create_new(
-            target, payload, phase="gc-authorization"
-        )
-    except (OSError, EvidenceValidationError):
-        return False
-    return False
+    with _stable_parent_guard(parent, parent_info):
+        ledger = EvidenceStore(parent / ".stm32-evidence-gc-ledger")
+        with ledger._mutation_lock():
+            directory = ledger._managed_directory("actions", prepared.store_id)
+            target = directory / f"{prepared.action_digest}.json"
+            try:
+                ledger._validate_existing_path(target, regular=True, single_link=True)
+            except FileNotFoundError:
+                return ledger._atomic_create_new(
+                    target, payload, phase="gc-authorization"
+                )
+            except (OSError, EvidenceValidationError):
+                return False
+            return False
 
 
 def _delete_identity_bound(
     prepared: _PreparedGcPlan,
     relative: str,
     final_snapshot: tuple[dict[str, object], ...],
-) -> int:
+    excluded_before: set[str],
+) -> _DeleteOutcome:
     """Delete the verified Windows file identity without a pathname unlink race."""
     if os.name != "nt":  # pragma: no cover - Linux acceptance must retain safely
         raise _GcStoreChanged(  # pragma: no cover
@@ -868,7 +997,7 @@ def _delete_identity_bound(
             or opened["attributes"] & (0x00000010 | 0x00000400)
             or any(expected.get(name) != value for name, value in identity.items())
             or opened["size"] != expected.get("size")
-            or opened["size"] != prepared.object_sizes[relative]
+            or opened["size"] != prepared.target_sizes[relative]
         ):
             raise _GcStoreChanged("planned object identity changed before deletion")
 
@@ -904,18 +1033,11 @@ def _delete_identity_bound(
             or after["size"] != opened["size"]
             or after["attributes"] & (0x00000010 | 0x00000400)
             or size != opened["size"]
-            or digest.hexdigest() != Path(relative).name
+            or digest.hexdigest() != expected.get("content_sha256")
         ):
             raise _GcStoreChanged("planned object changed while its handle was verified")
 
-        excluded = frozenset(
-            {
-                *prepared.unreachable_objects[
-                    : prepared.unreachable_objects.index(relative)
-                ],
-                relative,
-            }
-        )
+        excluded = frozenset({*excluded_before, relative})
         handle_snapshot = _snapshot_entries(
             prepared.store,
             phase="gc.handle-snapshot",
@@ -925,6 +1047,34 @@ def _delete_identity_bound(
             handle_snapshot, excluded
         ) != _filtered_snapshot_digest(prepared.snapshot_entries, excluded):
             raise _GcStoreChanged("evidence store changed while delete handle was held")
+
+        set_pointer = kernel32.SetFilePointerEx
+        set_pointer.argtypes = [
+            wintypes.HANDLE,
+            ctypes.c_longlong,
+            ctypes.POINTER(ctypes.c_longlong),
+            wintypes.DWORD,
+        ]
+        set_pointer.restype = wintypes.BOOL
+        position = ctypes.c_longlong()
+        if not set_pointer(handle, 0, ctypes.byref(position), 0):
+            raise ctypes.WinError(ctypes.get_last_error())
+        final_digest = hashlib.sha256()
+        final_size = 0
+        while True:
+            if not read_file(handle, buffer, len(buffer), ctypes.byref(count), None):
+                raise ctypes.WinError(ctypes.get_last_error())
+            if count.value == 0:
+                break
+            final_size += count.value
+            final_digest.update(buffer.raw[: count.value])
+        final_info = _windows_file_information(handle)
+        if (
+            final_info != after
+            or final_size != size
+            or final_digest.hexdigest() != expected.get("content_sha256")
+        ):
+            raise _GcStoreChanged("planned object changed before disposition")
 
         class FileDispositionInformation(ctypes.Structure):
             _fields_ = [("delete_file", wintypes.BOOL)]
@@ -948,12 +1098,16 @@ def _delete_identity_bound(
             _close_windows_handle(handle)
         except OSError as exc:
             close_error = exc
-    if close_error is not None:
-        raise close_error
     if not disposition_set:
+        if close_error is not None:
+            raise close_error
         raise OSError("identity-bound deletion was not committed")
-    prepared.store._flush_directory(path.parent)
-    return size
+    error = str(close_error) if close_error is not None else None
+    try:
+        prepared.store._flush_directory(path.parent)
+    except OSError as exc:
+        error = str(exc) if error is None else f"{error}; {exc}"
+    return _DeleteOutcome(size=size, committed=True, error=error)
 
 
 def _apply_gc_locked(prepared: _PreparedGcPlan) -> GcResult:
@@ -971,20 +1125,23 @@ def _apply_gc_locked(prepared: _PreparedGcPlan) -> GcResult:
         return _result(prepared, False, "GC_STORE_CHANGED")
 
     deleted: list[str] = []
+    deleted_manifests: list[str] = []
     reclaimed = 0
-    for relative in prepared.unreachable_objects:
+    targets = (*prepared.unreachable_manifests, *prepared.unreachable_objects)
+    for relative in targets:
         try:
             prepared.store._fault("gc.before_delete")
             current_snapshot = _snapshot_entries(prepared.store)
-            excluded = set(deleted)
+            excluded = {*deleted_manifests, *deleted}
             if _filtered_snapshot_digest(current_snapshot, excluded) != _filtered_snapshot_digest(
                 prepared.snapshot_entries, excluded
             ):
                 return _result(
                     prepared,
                     False,
-                    "GC_STORE_CHANGED" if not deleted else "GC_PARTIAL_DELETE",
+                    "GC_STORE_CHANGED" if not (deleted or deleted_manifests) else "GC_PARTIAL_DELETE",
                     deleted=tuple(deleted),
+                    deleted_manifests=tuple(deleted_manifests),
                     bytes_reclaimed=reclaimed,
                 )
             prepared.store._fault("gc.before_unlink")
@@ -996,8 +1153,9 @@ def _apply_gc_locked(prepared: _PreparedGcPlan) -> GcResult:
                 return _result(
                     prepared,
                     False,
-                    "GC_STORE_CHANGED" if not deleted else "GC_PARTIAL_DELETE",
+                    "GC_STORE_CHANGED" if not (deleted or deleted_manifests) else "GC_PARTIAL_DELETE",
                     deleted=tuple(deleted),
+                    deleted_manifests=tuple(deleted_manifests),
                     bytes_reclaimed=reclaimed,
                     errors=(str(exc),),
                 )
@@ -1007,20 +1165,36 @@ def _apply_gc_locked(prepared: _PreparedGcPlan) -> GcResult:
                 return _result(
                     prepared,
                     False,
-                    "GC_STORE_CHANGED" if not deleted else "GC_PARTIAL_DELETE",
+                    "GC_STORE_CHANGED" if not (deleted or deleted_manifests) else "GC_PARTIAL_DELETE",
                     deleted=tuple(deleted),
+                    deleted_manifests=tuple(deleted_manifests),
                     bytes_reclaimed=reclaimed,
                 )
-            size = _delete_identity_bound(prepared, relative, final_snapshot)
-            deleted.append(relative)
-            reclaimed += size
+            outcome = _delete_identity_bound(prepared, relative, final_snapshot, excluded)
+            if outcome.committed:
+                if relative.startswith("manifests/"):
+                    deleted_manifests.append(relative)
+                else:
+                    deleted.append(relative)
+                reclaimed += outcome.size
+            if outcome.error is not None:
+                return _result(
+                    prepared,
+                    False,
+                    "GC_PARTIAL_DELETE",
+                    deleted=tuple(deleted),
+                    deleted_manifests=tuple(deleted_manifests),
+                    bytes_reclaimed=reclaimed,
+                    errors=(outcome.error,),
+                )
             prepared.store._fault("gc.after_delete")
         except _GcStoreChanged as exc:
             return _result(
                 prepared,
                 False,
-                "GC_STORE_CHANGED" if not deleted else "GC_PARTIAL_DELETE",
+                "GC_STORE_CHANGED" if not (deleted or deleted_manifests) else "GC_PARTIAL_DELETE",
                 deleted=tuple(deleted),
+                deleted_manifests=tuple(deleted_manifests),
                 bytes_reclaimed=reclaimed,
                 errors=(str(exc),),
             )
@@ -1028,8 +1202,9 @@ def _apply_gc_locked(prepared: _PreparedGcPlan) -> GcResult:
             return _result(
                 prepared,
                 False,
-                "GC_PARTIAL_DELETE" if deleted else "GC_DELETE_FAILED",
+                "GC_PARTIAL_DELETE" if (deleted or deleted_manifests) else "GC_DELETE_FAILED",
                 deleted=tuple(deleted),
+                deleted_manifests=tuple(deleted_manifests),
                 bytes_reclaimed=reclaimed,
                 errors=(str(exc),),
             )
@@ -1038,6 +1213,7 @@ def _apply_gc_locked(prepared: _PreparedGcPlan) -> GcResult:
         True,
         "GC_APPLIED",
         deleted=tuple(deleted),
+        deleted_manifests=tuple(deleted_manifests),
         bytes_reclaimed=reclaimed,
     )
 
@@ -1053,6 +1229,10 @@ def _apply_registered(
         if prepared.consumed:
             return _result(prepared, False, "GC_AUTHORIZATION_CONSUMED")
         try:
+            consumed_now = _consume_authorization(prepared)
+            prepared.consumed = True
+            if not consumed_now:
+                return _result(prepared, False, "GC_AUTHORIZATION_CONSUMED")
             store_root, store_id = _existing_store_identity(prepared.store)
             if store_root != prepared.store_root or store_id != prepared.store_id:
                 raise EvidenceValidationError("prepared evidence store identity changed")
@@ -1060,10 +1240,6 @@ def _apply_registered(
                 store_root, store_id = _existing_store_identity(prepared.store)
                 if store_root != prepared.store_root or store_id != prepared.store_id:
                     raise EvidenceValidationError("prepared evidence store identity changed")
-                consumed_now = _consume_authorization_locked(prepared)
-                prepared.consumed = True
-                if not consumed_now:
-                    return _result(prepared, False, "GC_AUTHORIZATION_CONSUMED")
                 try:
                     current_plan = plan.to_json_bytes()
                 except (
@@ -1148,7 +1324,7 @@ def _apply_reconstructed(plan: GcPlan) -> GcResult:
             with prepared.consume_lock:
                 if prepared.consumed:
                     return _result(prepared, False, "GC_AUTHORIZATION_CONSUMED")
-                consumed_now = _consume_authorization_locked(prepared)
+                consumed_now = _consume_authorization(prepared)
                 prepared.consumed = True
                 if not consumed_now:
                     return _result(prepared, False, "GC_AUTHORIZATION_CONSUMED")

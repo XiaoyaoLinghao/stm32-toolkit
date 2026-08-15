@@ -20,6 +20,7 @@ import weakref
 import pytest
 
 import stm32_toolkit.evidence.gc as gc_module
+from stm32_toolkit.evidence.catalog import EvidenceCatalog, rebuild_catalog
 from stm32_toolkit.evidence.gc import (
     REGISTERED_ROOT_TYPES,
     GcPlan,
@@ -95,6 +96,45 @@ def _typed_root(root_type: str, root_id: str, manifest_id: str, metadata=None):
 
 def _object(store: EvidenceStore, artifact: ArtifactRef) -> Path:
     return store.root.joinpath(*artifact.relative_path.split("/"))
+
+
+def _authorization_ledger_entry(store: EvidenceStore, plan: GcPlan) -> Path:
+    return (
+        store.root.parent
+        / ".stm32-evidence-gc-ledger"
+        / "actions"
+        / plan.store_id
+        / f"{plan.action_digest}.json"
+    )
+
+
+def test_gc_collects_unreachable_manifest_before_object_and_remains_rebuildable(tmp_path):
+    """Collection must never leave an authoritative manifest pointing at a deleted object."""
+    store = EvidenceStore(tmp_path / "evidence")
+    envelope, artifact = _put(store, tmp_path / "orphan.bin", b"orphan")
+    manifest_relative = f"manifests/{envelope.evidence_id}.json"
+    manifest_path = store.root.joinpath(*manifest_relative.split("/"))
+
+    plan = plan_gc(store)
+    expected_bytes = plan.bytes_reclaimable
+    assert plan.unreachable_manifests == (manifest_relative,)
+    result = apply_gc(plan, plan.action_digest, plan.plan_digest)
+
+    assert result.success is True
+    assert result.deleted_manifests == (manifest_relative,)
+    assert result.deleted_objects == (artifact.relative_path,)
+    assert not manifest_path.exists()
+    assert not _object(store, artifact).exists()
+    assert result.bytes_reclaimed == expected_bytes
+    catalog_path = rebuild_catalog(store)
+    assert catalog_path.exists()
+    assert EvidenceCatalog(store).query(operation=envelope.operation) == []
+
+    second = plan_gc(store)
+    assert second.unreachable_manifests == ()
+    assert second.unreachable_objects == ()
+    second_result = apply_gc(second, second.action_digest, second.plan_digest)
+    assert second_result.success is True
 
 
 def test_registered_typed_roots_are_closed_and_shared_objects_follow_reachability(tmp_path):
@@ -249,6 +289,7 @@ def test_public_gc_plan_is_immutable_and_cannot_rewrite_prepared_results(tmp_pat
     store = EvidenceStore(tmp_path / "evidence")
     _envelope, artifact = _put(store, tmp_path / "immutable-plan.bin", b"immutable-plan")
     plan = plan_gc(store)
+    expected_bytes = plan.bytes_reclaimable
 
     with pytest.raises(FrozenInstanceError):
         plan.bytes_reclaimable = 0
@@ -257,7 +298,7 @@ def test_public_gc_plan_is_immutable_and_cannot_rewrite_prepared_results(tmp_pat
 
     result = apply_gc(plan, plan.action_digest, plan.plan_digest)
     assert result.deleted_objects == (artifact.relative_path,)
-    assert result.bytes_reclaimed == artifact.size_bytes
+    assert result.bytes_reclaimed == expected_bytes
 
 
 def test_reconstructed_gc_plan_consumes_but_cannot_execute_prepared_action(tmp_path):
@@ -399,7 +440,7 @@ def test_rederive_and_rejection_consumption_are_one_publisher_lock_order(
         rejected = applying.result(timeout=10)
         published = publishing.result(timeout=10)
 
-    tombstone = store.root / "gc-authorizations" / f"{action_digest}.json"
+    tombstone = _authorization_ledger_entry(store, reconstructed)
     published_object = store.root.joinpath(*published.relative_path.split("/"))
     assert rejected.code == "GC_PLAN_INVALID"
     assert tombstone.stat().st_mtime_ns <= published_object.stat().st_mtime_ns
@@ -705,7 +746,10 @@ def test_canonical_dry_run_and_action_digest_bind_every_frozen_field(tmp_path):
     assert first.to_json_bytes() == second.to_json_bytes()
     assert first.plan_digest == second.plan_digest
     assert first.unreachable_objects == (artifact.relative_path,)
-    assert first.bytes_reclaimable == artifact.size_bytes
+    assert first.bytes_reclaimable == (
+        artifact.size_bytes
+        + (store.root / "manifests" / f"{envelope.evidence_id}.json").stat().st_size
+    )
     bound = {
         "operation": "evidence.gc.apply",
         "store_id": first.store_id,
@@ -1045,6 +1089,182 @@ def test_action_digest_cannot_be_reused_through_an_equivalent_plan_instance(tmp_
     assert _object(store, artifact).exists()
 
 
+def test_store_identity_denial_consumes_stable_ledger_without_touching_replacement(
+    tmp_path,
+):
+    """Same-path replacement cannot receive the token or make the old action reusable."""
+    store = EvidenceStore(tmp_path / "evidence")
+    source = tmp_path / "stable-ledger.bin"
+    source.write_bytes(b"stable-ledger")
+    artifact = store.ingest_file(
+        source, kind="log", media_type="application/octet-stream"
+    )
+    plan = plan_gc(store)
+    original_root = tmp_path / "original-evidence"
+    replacement_root = tmp_path / "replacement-evidence"
+    store.root.rename(original_root)
+    store.root.mkdir()
+    marker = store.root / "replacement-marker.txt"
+    marker.write_text("replacement", encoding="utf-8")
+
+    denied = apply_gc(plan, plan.action_digest, plan.plan_digest)
+
+    assert denied.code == "GC_AUTHORIZATION_INVALID"
+    assert sorted(path.name for path in store.root.iterdir()) == [marker.name]
+    store.root.rename(replacement_root)
+    original_root.rename(store.root)
+    child = r"""
+import sys
+from pathlib import Path
+from stm32_toolkit.evidence.gc import apply_gc, plan_gc
+from stm32_toolkit.evidence.store import EvidenceStore
+
+plan = plan_gc(EvidenceStore(Path(sys.argv[1])))
+print(apply_gc(plan, plan.action_digest, plan.plan_digest).code, flush=True)
+"""
+    completed = subprocess.run(
+        [sys.executable, "-c", child, str(store.root)],
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    )
+    assert completed.returncode == 0, completed.stderr or completed.stdout
+    assert completed.stdout.strip() == "GC_AUTHORIZATION_CONSUMED"
+    assert _object(store, artifact).exists()
+
+
+def test_authorization_ledger_parent_is_identity_pinned_during_first_create(
+    tmp_path, monkeypatch
+):
+    """The parent containing the stable sibling cannot be swapped during consumption."""
+    store = EvidenceStore(tmp_path / "evidence")
+    _envelope, _artifact = _put(
+        store, tmp_path / "parent-guard.bin", b"parent-guard"
+    )
+    plan = plan_gc(store)
+    moved_parent = tmp_path.parent / f"{tmp_path.name}-moved"
+    real_information = gc_module._windows_file_information
+    attempted = False
+
+    def try_parent_swap(handle):
+        nonlocal attempted
+        information = real_information(handle)
+        if not attempted:
+            attempted = True
+            with pytest.raises(PermissionError):
+                tmp_path.rename(moved_parent)
+        return information
+
+    monkeypatch.setattr(gc_module, "_windows_file_information", try_parent_swap)
+    result = apply_gc(plan, plan.action_digest, plan.plan_digest)
+
+    assert attempted is True
+    assert result.code == "GC_APPLIED"
+    assert tmp_path.exists()
+    assert not moved_parent.exists()
+
+
+def test_win32_identity_helpers_fail_closed_on_invalid_handles_and_shapes(
+    tmp_path, monkeypatch
+):
+    """Low-level Win32 failures and shape drift must stay evidence-domain denials."""
+    with pytest.raises(OSError):
+        gc_module._windows_file_information(-1)
+    with pytest.raises(OSError):
+        gc_module._open_windows_file(tmp_path / "absent")
+    with pytest.raises(OSError):
+        gc_module._close_windows_handle(0)
+
+    regular = tmp_path / "identity.bin"
+    regular.write_bytes(b"identity")
+    info = regular.lstat()
+    real_information = gc_module._windows_file_information
+
+    def wrong_shape(handle):
+        result = real_information(handle)
+        return {**result, "links": result["links"] + 1}
+
+    monkeypatch.setattr(gc_module, "_windows_file_information", wrong_shape)
+    with pytest.raises(gc_module.EvidenceValidationError):
+        gc_module._file_identity_fields(regular, info)
+
+
+def test_authorization_parent_guard_rejects_wrong_opened_identity(tmp_path, monkeypatch):
+    """A mismatched opened directory identity cannot authorize ledger writes."""
+    info = tmp_path.lstat()
+    real_information = gc_module._windows_file_information
+
+    def wrong_identity(handle):
+        result = real_information(handle)
+        return {**result, "file_index": result["file_index"] + 1}
+
+    monkeypatch.setattr(gc_module, "_windows_file_information", wrong_identity)
+    with pytest.raises(gc_module.EvidenceValidationError):
+        with gc_module._stable_parent_guard(tmp_path, info):
+            pytest.fail("mismatched parent guard yielded")
+
+
+def test_identity_bound_delete_rejects_missing_and_mismatched_snapshot_targets(tmp_path):
+    """Deletion cannot proceed without the exact planned snapshot entry and shape."""
+    store = EvidenceStore(tmp_path / "evidence")
+    source = tmp_path / "snapshot-target.bin"
+    source.write_bytes(b"snapshot-target")
+    artifact = store.ingest_file(
+        source, kind="log", media_type="application/octet-stream"
+    )
+    plan = plan_gc(store)
+    prepared = gc_module._registered_prepared(plan)
+    assert prepared is not None
+    with pytest.raises(gc_module._GcStoreChanged):
+        gc_module._delete_identity_bound(prepared, artifact.relative_path, (), set())
+
+    snapshot = list(prepared.snapshot_entries)
+    index = next(
+        i for i, entry in enumerate(snapshot) if entry.get("path") == artifact.relative_path
+    )
+    snapshot[index] = {**snapshot[index], "links": 2}
+    with pytest.raises(gc_module._GcStoreChanged):
+        gc_module._delete_identity_bound(
+            prepared, artifact.relative_path, tuple(snapshot), set()
+        )
+
+
+def test_reconstructed_plan_fails_closed_for_missing_or_consumed_regeneration(
+    tmp_path, monkeypatch
+):
+    """Opaque regenerated provenance has explicit missing and already-consumed denials."""
+    store = EvidenceStore(tmp_path / "evidence")
+    original = plan_gc(store)
+    reconstructed = replace(original)
+    monkeypatch.setattr(gc_module, "_registered_prepared", lambda _plan: None)
+    assert (
+        apply_gc(reconstructed, reconstructed.action_digest, reconstructed.plan_digest).code
+        == "GC_PLAN_INVALID"
+    )
+
+    monkeypatch.undo()
+    second_original = plan_gc(store)
+    second_reconstructed = replace(second_original)
+    real_registered = gc_module._registered_prepared
+
+    def mark_regenerated_consumed(candidate):
+        prepared = real_registered(candidate)
+        if prepared is not None:
+            prepared.consumed = True
+        return prepared
+
+    monkeypatch.setattr(gc_module, "_registered_prepared", mark_regenerated_consumed)
+    assert (
+        apply_gc(
+            second_reconstructed,
+            second_reconstructed.action_digest,
+            second_reconstructed.plan_digest,
+        ).code
+        == "GC_AUTHORIZATION_CONSUMED"
+    )
+
+
 def test_mutating_public_action_digest_still_consumes_original_prepared_action(tmp_path):
     """Plan mutation cannot redirect the tombstone away from its prepared action."""
     store = EvidenceStore(tmp_path / "evidence")
@@ -1132,6 +1352,7 @@ def test_authorization_is_consumed_once_across_competing_processes(tmp_path):
         store, tmp_path / "process-authorization.bin", b"process-authorization"
     )
     release = tmp_path / "authorization-release"
+    expected_bytes = plan_gc(store).bytes_reclaimable
     child = r"""
 import json
 import sys
@@ -1181,7 +1402,7 @@ print(json.dumps(result.to_dict()), flush=True)
     ]
     applied = next(result for result in results if result["code"] == "GC_APPLIED")
     assert applied["deleted_objects"] == [artifact.relative_path]
-    assert applied["bytes_reclaimed"] == artifact.size_bytes
+    assert applied["bytes_reclaimed"] == expected_bytes
     assert not _object(store, artifact).exists()
 
 
@@ -1225,19 +1446,24 @@ def test_partial_delete_failure_reports_exact_progress_and_never_claims_success(
         nonlocal calls
         if point == "gc.before_delete":
             calls += 1
-            if calls == 2:
-                raise OSError("injected second delete failure")
+            if calls == 4:
+                raise OSError("injected second object delete failure")
 
     store = EvidenceStore(plain.root, fault_injector=inject)
     plan = plan_gc(store)
+    manifest_bytes = plan.bytes_reclaimable - artifact_one.size_bytes - artifact_two.size_bytes
     result = apply_gc(plan, plan.action_digest, plan.plan_digest)
 
     assert result.success is False
     assert result.code == "GC_PARTIAL_DELETE"
+    assert len(result.deleted_manifests) == 2
     assert len(result.deleted_objects) == 1
-    assert result.bytes_reclaimed in {artifact_one.size_bytes, artifact_two.size_bytes}
+    assert result.bytes_reclaimed in {
+        manifest_bytes + artifact_one.size_bytes,
+        manifest_bytes + artifact_two.size_bytes,
+    }
     assert len([path for path in (_object(store, artifact_one), _object(store, artifact_two)) if path.exists()]) == 1
-    assert result.errors and "second delete failure" in result.errors[0]
+    assert result.errors and "second object delete failure" in result.errors[0]
 
 
 def test_concurrent_new_root_at_delete_boundary_is_detected_and_object_is_retained(tmp_path):
@@ -1413,6 +1639,83 @@ def test_object_bytes_changing_after_final_snapshot_fail_closed(tmp_path, monkey
     assert object_path.read_bytes() == b"after--bytes"
 
 
+def test_write_after_handle_snapshot_is_blocked_or_revalidated_before_disposition(
+    tmp_path, monkeypatch
+):
+    """No byte change after the handle snapshot may cross the disposition boundary."""
+    store = EvidenceStore(tmp_path / "evidence")
+    source = tmp_path / "late-write.bin"
+    source.write_bytes(b"before-late")
+    artifact = store.ingest_file(
+        source, kind="log", media_type="application/octet-stream"
+    )
+    plan = plan_gc(store)
+    object_path = _object(store, artifact)
+    real_snapshot = gc_module._snapshot_entries
+    write_attempted = False
+    write_blocked = False
+
+    def write_after_handle_snapshot(evidence_store, *, phase=None, excluded=frozenset()):
+        nonlocal write_attempted, write_blocked
+        snapshot = real_snapshot(evidence_store, phase=phase, excluded=excluded)
+        if phase == "gc.handle-snapshot" and not write_attempted:
+            write_attempted = True
+            try:
+                object_path.write_bytes(b"after--late")
+            except PermissionError:
+                write_blocked = True
+        return snapshot
+
+    monkeypatch.setattr(gc_module, "_snapshot_entries", write_after_handle_snapshot)
+    result = apply_gc(plan, plan.action_digest, plan.plan_digest)
+
+    assert write_attempted is True
+    assert write_blocked is True
+    assert result.code == "GC_APPLIED"
+    assert result.deleted_objects == (artifact.relative_path,)
+    assert not object_path.exists()
+
+
+def test_committed_disposition_remains_truthful_when_close_reports_error(
+    tmp_path, monkeypatch
+):
+    """A close failure after disposition cannot erase already committed progress."""
+    store = EvidenceStore(tmp_path / "evidence")
+    source = tmp_path / "close-error.bin"
+    source.write_bytes(b"close-error")
+    artifact = store.ingest_file(
+        source, kind="log", media_type="application/octet-stream"
+    )
+    plan = plan_gc(store)
+    expected_bytes = plan.bytes_reclaimable
+    real_close = gc_module._close_windows_handle
+    real_snapshot = gc_module._snapshot_entries
+    armed = False
+
+    def arm_after_handle_snapshot(evidence_store, *, phase=None, excluded=frozenset()):
+        nonlocal armed
+        snapshot = real_snapshot(evidence_store, phase=phase, excluded=excluded)
+        if phase == "gc.handle-snapshot":
+            armed = True
+        return snapshot
+
+    def close_then_error(handle):
+        real_close(handle)
+        if armed:
+            raise OSError("injected close error after committed disposition")
+
+    monkeypatch.setattr(gc_module, "_snapshot_entries", arm_after_handle_snapshot)
+    monkeypatch.setattr(gc_module, "_close_windows_handle", close_then_error)
+    result = apply_gc(plan, plan.action_digest, plan.plan_digest)
+
+    assert result.success is False
+    assert result.code == "GC_PARTIAL_DELETE"
+    assert result.deleted_objects == (artifact.relative_path,)
+    assert result.retained_objects == ()
+    assert result.bytes_reclaimed == expected_bytes
+    assert not _object(store, artifact).exists()
+
+
 def test_successful_disposition_is_reported_while_an_external_reader_delays_removal(
     tmp_path,
 ):
@@ -1420,6 +1723,7 @@ def test_successful_disposition_is_reported_while_an_external_reader_delays_remo
     store = EvidenceStore(tmp_path / "evidence")
     _envelope, artifact = _put(store, tmp_path / "held-reader.bin", b"held-reader")
     plan = plan_gc(store)
+    expected_bytes = plan.bytes_reclaimable
     object_path = _object(store, artifact)
     held = gc_module._open_windows_file(object_path)
     try:
@@ -1432,7 +1736,7 @@ def test_successful_disposition_is_reported_while_an_external_reader_delays_remo
     assert result.success is True
     assert result.code == "GC_APPLIED"
     assert result.deleted_objects == (artifact.relative_path,)
-    assert result.bytes_reclaimed == artifact.size_bytes
+    assert result.bytes_reclaimed == expected_bytes
     assert not object_path.exists()
 
 
