@@ -19,6 +19,7 @@ import sys
 import tempfile
 import time
 import types
+from contextlib import ExitStack
 from ctypes import wintypes
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -2461,7 +2462,7 @@ class HardwareContractController:
         return {"action": action_id, "status": "FRESH_PREPARE_REQUIRED"}
 
 
-def run_wrapper_contract(
+def _run_wrapper_contract_body(
     *,
     kind: str,
     matrix: str,
@@ -2481,6 +2482,8 @@ def run_wrapper_contract(
     verifier_invoker: Callable[[Path, str, list[str]], object] | None = None,
     after_first_verifier_check: Callable[[], object] | None = None,
     gate_precheck: Callable[[GateRequest], None] | None = None,
+    _candidate_lock_ready: Callable[[Path], None] | None = None,
+    _before_candidate_root_create: Callable[[Path], None] | None = None,
 ) -> dict[str, object]:
     """Schedule the catalog matrix, retain all evidence, package it, and verify terminal state."""
     if kind not in {"quick", "candidate", "final"} or matrix != kind:
@@ -2533,12 +2536,16 @@ def run_wrapper_contract(
     candidate_ledger: dict[str, object] | None = None
     if kind == "candidate":
         candidate_root = evidence_root.parent
+        if _before_candidate_root_create is not None:
+            _before_candidate_root_create(candidate_root)
         try:
             candidate_root.mkdir()
         except FileExistsError as exc:
             raise ControllerError("candidate root must be absent for a new attempt") from exc
         except OSError as exc:
             raise ControllerError("candidate root create-new failed") from exc
+        if _candidate_lock_ready is not None:
+            _candidate_lock_ready(candidate_root)
         candidate_ledger_path = candidate_root / "candidate-ledger.json"
         if candidate_ledger_path.exists():
             raise ControllerError("candidate ledger already exists; use the closed resume mode")
@@ -2844,6 +2851,66 @@ def run_wrapper_contract(
         if getattr(child, "returncode", None) != 0:
             raise ControllerError("release verifier child failed")
     return {"status": status, "reason": reason, "binding": binding, "package": package}
+
+
+def _validate_candidate_attempt_location(evidence_root: Path, temporary: Path) -> Path:
+    candidate_root = evidence_root.parent
+    if (
+        not evidence_root.is_absolute()
+        or str(evidence_root) != os.path.abspath(evidence_root)
+        or candidate_root.parent != temporary
+        or not candidate_root.name
+    ):
+        raise ControllerError("candidate root must be a canonical direct child of C:\\tmp")
+    if not temporary.is_dir() or _is_reparse(temporary):
+        raise ControllerError("candidate temporary root is a reparse point or unavailable")
+    try:
+        candidate_root.lstat()
+    except FileNotFoundError:
+        pass
+    except OSError as exc:
+        raise ControllerError("candidate root state is unreadable") from exc
+    else:
+        raise ControllerError("candidate root must be absent for a new attempt")
+    return candidate_root
+
+
+def run_wrapper_contract(
+    *, after_candidate_location_check: Callable[[], object] | None = None,
+    before_candidate_root_create: Callable[[Path], None] | None = None,
+    _candidate_temporary_root: Path = Path(r"C:\tmp"),
+    **kwargs: object,
+) -> dict[str, object]:
+    """Lock candidate create-new roots; ordinary quick/final calls use the common body."""
+    if kwargs.get("kind") != "candidate":
+        return _run_wrapper_contract_body(**kwargs)  # type: ignore[arg-type]
+    evidence_root = kwargs.get("evidence_root")
+    if not isinstance(evidence_root, Path):
+        raise ControllerError("candidate evidence root is invalid")
+    if _candidate_temporary_root != Path(r"C:\tmp") and "PYTEST_CURRENT_TEST" not in os.environ:
+        raise ControllerError("candidate temporary root override is test-only")
+    _validate_candidate_attempt_location(evidence_root, _candidate_temporary_root)
+    with ExitStack() as locks:
+        temporary_lock = locks.enter_context(_open_locked_windows_directory(_candidate_temporary_root))
+        temporary_sentinel = locks.enter_context(_create_coverage_lock_sentinel(_candidate_temporary_root))
+        _validate_locked_coverage_directory(temporary_lock)
+        _validate_locked_coverage_file_path(temporary_sentinel)
+        if after_candidate_location_check is not None:
+            after_candidate_location_check()
+        _validate_candidate_attempt_location(evidence_root, _candidate_temporary_root)
+        _validate_locked_coverage_directory(temporary_lock)
+
+        def lock_candidate(root: Path) -> None:
+            root_lock = locks.enter_context(_open_locked_windows_directory(root))
+            root_sentinel = locks.enter_context(_create_coverage_lock_sentinel(root))
+            _validate_locked_coverage_directory(root_lock)
+            _validate_locked_coverage_file_path(root_sentinel)
+
+        return _run_wrapper_contract_body(
+            _candidate_lock_ready=lock_candidate,
+            _before_candidate_root_create=before_candidate_root_create,
+            **kwargs,  # type: ignore[arg-type]
+        )
 
 
 CONTROLLER_RESULT_KEYS = {

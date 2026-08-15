@@ -11,6 +11,7 @@ import argparse
 import base64
 import binascii
 import hashlib
+import importlib.util
 import json
 import math
 import os
@@ -23,6 +24,7 @@ import sys
 import tempfile
 import unicodedata
 import zipfile
+from contextlib import ExitStack
 from io import BytesIO
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -1773,6 +1775,8 @@ def run_planned_dependency_audit(
     *, repository: Path, ui_root_text: str, catalog_text: str,
     support_profile: Path, evidence_root: Path,
     runner: Callable[[list[str], Path], object] | None = None,
+    after_location_check: Callable[[], object] | None = None,
+    _temporary_root: Path = Path(r"C:\tmp"),
 ) -> dict[str, str]:
     if ui_root_text != "tools/stm32-monitor/ui" or catalog_text != "tools/release/gates_0600.json":
         raise VerificationError("dependency audit repository paths are not frozen")
@@ -1785,45 +1789,56 @@ def run_planned_dependency_audit(
         _assert_no_reparse_chain(path, allow_absent_leaf=False)
         if not _regular_file(path):
             raise VerificationError("dependency audit frozen input is missing/linked/special")
-    _assert_no_reparse_chain(evidence_root, allow_absent_leaf=True)
-    try:
-        evidence_root.mkdir()
-    except FileExistsError as exc:
-        raise VerificationError("dependency audit evidence root already exists") from exc
+    if _temporary_root != Path(r"C:\tmp") and "PYTEST_CURRENT_TEST" not in os.environ:
+        raise VerificationError("dependency audit temporary root override is test-only")
+    _require_direct_child(evidence_root, _temporary_root, "dependency audit evidence root")
     invoke = runner or (
         lambda argv, cwd: subprocess.run(
             argv, cwd=cwd, capture_output=True, check=False,
             env={**os.environ, "npm_config_offline": "true", "npm_config_audit": "true"},
         )
     )
-    reports: dict[str, dict[str, int]] = {}
-    for name, extra in (("production", ["--omit=dev"]), ("development", [])):
-        argv = ["npm.cmd", "audit", "--offline", "--json", *extra]
-        child = invoke(argv, ui_root)
-        stdout = getattr(child, "stdout", None)
-        returncode = getattr(child, "returncode", None)
-        if not isinstance(stdout, bytes) or not _is_integer(returncode):
-            raise VerificationError("npm audit runner result is invalid")
-        _create_new_bytes(evidence_root / f"npm-audit-{name}.json", stdout)
+    with ExitStack() as locks:
+        temporary_lock, _ = _enter_locked_directory(locks, _temporary_root)
+        if after_location_check is not None:
+            after_location_check()
+        secure = _secure_io()
         try:
-            native = json.loads(stdout.decode("utf-8"))
-        except (UnicodeError, json.JSONDecodeError) as exc:
-            raise VerificationError("npm audit native JSON is unreadable") from exc
-        reports[name] = parse_npm_audit_v2(native)
-    production, development = reports["production"], reports["development"]
-    if any(production[name] for name in ("info", "low", "moderate", "high", "critical")):
-        raise VerificationError("dependency production vulnerability policy failed")
-    if development["critical"] or development["high"]:
-        raise VerificationError("dependency development vulnerability policy failed")
-    summary = {"schema": "stm32-npm-audit-native-summary/1", "production": production, "development": development}
-    _create_new_bytes(evidence_root / "dependency-audit-native-summary.json", canonical_json_bytes(summary))
-    try:
-        support = json.loads(support_profile.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
-        raise VerificationError("dependency audit support profile is unreadable") from exc
-    if not isinstance(support, Mapping) or "dependency_audit" not in support:
-        raise VerificationError("BLOCKED: support profile lacks pinned dependency advisory/cache inputs")
-    raise VerificationError("BLOCKED: pinned dependency advisory/cache contract is not available")
+            secure._validate_locked_coverage_directory(temporary_lock)
+            _require_direct_child(evidence_root, _temporary_root, "dependency audit evidence root")
+            evidence_root.mkdir()
+        except (FileExistsError, secure.ControllerError) as exc:
+            raise VerificationError("dependency audit evidence root create-new failed") from exc
+        evidence_lock, _ = _enter_locked_directory(locks, evidence_root)
+        reports: dict[str, dict[str, int]] = {}
+        for name, extra in (("production", ["--omit=dev"]), ("development", [])):
+            argv = ["npm.cmd", "audit", "--offline", "--json", *extra]
+            child = invoke(argv, ui_root)
+            stdout = getattr(child, "stdout", None)
+            returncode = getattr(child, "returncode", None)
+            if not isinstance(stdout, bytes) or not _is_integer(returncode):
+                raise VerificationError("npm audit runner result is invalid")
+            _locked_create(locks, evidence_root / f"npm-audit-{name}.json", stdout)
+            try:
+                native = json.loads(stdout.decode("utf-8"))
+            except (UnicodeError, json.JSONDecodeError) as exc:
+                raise VerificationError("npm audit native JSON is unreadable") from exc
+            reports[name] = parse_npm_audit_v2(native)
+        production, development = reports["production"], reports["development"]
+        if any(production[name] for name in ("info", "low", "moderate", "high", "critical")):
+            raise VerificationError("dependency production vulnerability policy failed")
+        if development["critical"] or development["high"]:
+            raise VerificationError("dependency development vulnerability policy failed")
+        summary = {"schema": "stm32-npm-audit-native-summary/1", "production": production, "development": development}
+        _locked_create(locks, evidence_root / "dependency-audit-native-summary.json", canonical_json_bytes(summary))
+        secure._validate_locked_coverage_directory(evidence_lock)
+        try:
+            support = json.loads(support_profile.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+            raise VerificationError("dependency audit support profile is unreadable") from exc
+        if not isinstance(support, Mapping) or "dependency_audit" not in support:
+            raise VerificationError("BLOCKED: support profile lacks pinned dependency advisory/cache inputs")
+        raise VerificationError("BLOCKED: pinned dependency advisory/cache contract is not available")
 
 
 RECOVERY_KEYS = {
@@ -3328,18 +3343,61 @@ def verify_candidate_evidence_contract(
     return {**verified, "outcome": derived_outcome}
 
 
-def _create_new_bytes(path: Path, data: bytes) -> None:
-    _assert_no_reparse_chain(path, allow_absent_leaf=True)
+def _secure_io() -> object:
+    injected = globals().get("_SECURE_IO_TEST_ADAPTER")
+    if injected is not None:
+        if "PYTEST_CURRENT_TEST" not in os.environ:
+            raise VerificationError("release locking adapter injection is test-only")
+        return injected
+    repo = Path(__file__).resolve().parents[2]
+    controller = repo / "tools/release/run_0600_gates.py"
+    git = _default_git(repo)
+    head = git(["rev-parse", "HEAD"]).strip()
+    if HEX40.fullmatch(head) is None or git(["config", "--get", "remote.origin.url"]).strip() != REPOSITORY_URL:
+        raise VerificationError("release locking controller repository identity failed")
+    committed = git(["rev-parse", f"{head}:tools/release/run_0600_gates.py"]).strip()
+    working = git(["hash-object", "--", str(controller)]).strip()
+    if HEX40.fullmatch(committed) is None or committed != working:
+        raise VerificationError("release locking controller committed blob mismatch")
+    module_name = f"_stm32tk_release_locking_{working}"
+    spec = importlib.util.spec_from_file_location(module_name, controller)
+    if spec is None or spec.loader is None:
+        raise VerificationError("release locking controller cannot be loaded")
+    secure = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = secure
     try:
-        with path.open("xb") as stream:
-            stream.write(data)
-            stream.flush()
-            os.fsync(stream.fileno())
-    except FileExistsError as exc:
-        raise VerificationError(f"create-new output exists: {path.name}") from exc
-    _assert_no_reparse_chain(path, allow_absent_leaf=False)
-    if not _regular_file(path):
-        raise VerificationError("create-new output is linked/reparse/special")
+        spec.loader.exec_module(secure)
+    except BaseException:
+        sys.modules.pop(module_name, None)
+        raise
+    return secure
+
+
+def _require_direct_child(path: Path, parent: Path, name: str) -> None:
+    if not path.is_absolute() or str(path) != os.path.abspath(path) or path.parent != parent or not path.name:
+        raise VerificationError(f"{name} must be a canonical direct child of {parent}")
+
+
+def _enter_locked_directory(stack: ExitStack, path: Path) -> tuple[object, object]:
+    secure = _secure_io()
+    try:
+        directory = stack.enter_context(secure._open_locked_windows_directory(path))
+        sentinel = stack.enter_context(secure._create_coverage_lock_sentinel(path))
+        secure._validate_locked_coverage_directory(directory)
+        secure._validate_locked_coverage_file_path(sentinel)
+        return directory, sentinel
+    except secure.ControllerError as exc:
+        raise VerificationError("release directory lock failed") from exc
+
+
+def _locked_create(stack: ExitStack, path: Path, data: bytes) -> object:
+    secure = _secure_io()
+    try:
+        locked = stack.enter_context(secure._open_locked_windows_file(path, create_new=True, write=True))
+        secure._windows_write_locked_file(locked, data)
+        return locked
+    except secure.ControllerError as exc:
+        raise VerificationError(f"create-new locked output failed: {path.name}") from exc
 
 
 def _assert_no_reparse_chain(path: Path, *, allow_absent_leaf: bool) -> None:
@@ -3400,10 +3458,11 @@ def _artifact_record(kind: str, path_text: str, path: Path) -> dict[str, object]
     return {"kind": kind, "path": path_text, "bytes": len(data), "sha256": hashlib.sha256(data).hexdigest()}
 
 
-def generate_final_release_inputs(
+def _generate_final_release_inputs_body(
     *, repository: Path, candidate_ledger_path: Path, invocation_context_path: Path,
     output_path: Path, digest_output_path: Path,
     git_runner: Callable[[list[str]], str] | None = None,
+    _locks: ExitStack,
 ) -> dict[str, str]:
     repo = repository.resolve(strict=True)
     for name, path in (("repository", repository), ("candidate ledger", candidate_ledger_path),
@@ -3465,8 +3524,8 @@ def generate_final_release_inputs(
     data = canonical_json_bytes(value)
     _assert_no_reparse_chain(output_path, allow_absent_leaf=True)
     _assert_no_reparse_chain(digest_output_path, allow_absent_leaf=True)
-    _create_new_bytes(output_path, data)
-    _create_new_bytes(digest_output_path, (hashlib.sha256(data).hexdigest() + "\n").encode("ascii"))
+    _locked_create(_locks, output_path, data)
+    _locked_create(_locks, digest_output_path, (hashlib.sha256(data).hexdigest() + "\n").encode("ascii"))
     verify_final_release_inputs(output_path, digest_output_path, repository=repo, git_runner=git)
     if (
         candidate_ledger_path.read_bytes() != ledger_bytes
@@ -3475,6 +3534,43 @@ def generate_final_release_inputs(
     ):
         raise VerificationError("final input source changed during generation")
     return {"mode": "final-release-inputs", "status": "PASS", "sha256": hashlib.sha256(data).hexdigest()}
+
+
+def generate_final_release_inputs(
+    *, repository: Path, candidate_ledger_path: Path, invocation_context_path: Path,
+    output_path: Path, digest_output_path: Path,
+    git_runner: Callable[[list[str]], str] | None = None,
+    after_location_check: Callable[[], object] | None = None,
+    _temporary_root: Path = Path(r"C:\tmp"),
+) -> dict[str, str]:
+    if _temporary_root != Path(r"C:\tmp") and "PYTEST_CURRENT_TEST" not in os.environ:
+        raise VerificationError("final input temporary root override is test-only")
+    for parent, name in (
+        (candidate_ledger_path.parent, "candidate root"),
+        (invocation_context_path.parent, "invocation context root"),
+        (output_path.parent, "final output root"),
+    ):
+        _require_direct_child(parent, _temporary_root, name)
+    with ExitStack() as locks:
+        temporary_lock, _ = _enter_locked_directory(locks, _temporary_root)
+        locked_directories: list[object] = []
+        for parent in dict.fromkeys((candidate_ledger_path.parent, invocation_context_path.parent, output_path.parent)):
+            directory, _ = _enter_locked_directory(locks, parent)
+            locked_directories.append(directory)
+        if after_location_check is not None:
+            after_location_check()
+        secure = _secure_io()
+        try:
+            secure._validate_locked_coverage_directory(temporary_lock)
+            for directory in locked_directories:
+                secure._validate_locked_coverage_directory(directory)
+        except secure.ControllerError as exc:
+            raise VerificationError("final input locked parent changed") from exc
+        return _generate_final_release_inputs_body(
+            repository=repository, candidate_ledger_path=candidate_ledger_path,
+            invocation_context_path=invocation_context_path, output_path=output_path,
+            digest_output_path=digest_output_path, git_runner=git_runner, _locks=locks,
+        )
 
 
 def verify_final_release_inputs(

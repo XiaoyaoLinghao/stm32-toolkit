@@ -74,6 +74,12 @@ def tmp_path() -> Path:
         shutil.rmtree(root, onerror=clear_readonly)
 
 
+@pytest.fixture(autouse=True)
+def _trusted_secure_io_adapter(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Direct tests inject the already-imported controller; CLI has no such bypass."""
+    monkeypatch.setattr(verifier, "_SECURE_IO_TEST_ADAPTER", gates, raising=False)
+
+
 def _sha(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
@@ -895,7 +901,7 @@ def test_candidate_evidence_recursively_verifies_catalog_inventory_package_and_r
         capture_output=True, text=True, check=True,
     ).stdout.strip()
     result = gates.run_wrapper_contract(
-        kind="candidate", matrix="candidate", module="STM32TK-0601",
+        kind="candidate", matrix="candidate", module="STM32TK-0601", _candidate_temporary_root=tmp_path,
         shard="release-contract", run_id=RUN_ID, evidence_root=evidence,
         expected_code_head=head, gate_catalog=RELEASE / "gates_0600.json",
         performance_catalog=RELEASE / "performance_0600.json",
@@ -976,7 +982,7 @@ def test_candidate_terminal_schema_rejects_every_nested_shape_and_order_mutation
         capture_output=True, text=True, check=True,
     ).stdout.strip()
     gates.run_wrapper_contract(
-        kind="candidate", matrix="candidate", module="STM32TK-0601", shard="release",
+        kind="candidate", matrix="candidate", module="STM32TK-0601", shard="release", _candidate_temporary_root=tmp_path,
         run_id=RUN_ID, evidence_root=evidence, expected_code_head=head,
         gate_catalog=RELEASE / "gates_0600.json",
         performance_catalog=RELEASE / "performance_0600.json",
@@ -1435,27 +1441,67 @@ def test_npm_11_audit_parser_consumes_real_zero_vulnerability_fixture() -> None:
         verifier.parse_npm_audit_v2(broken)
 
 
+def test_secure_io_loader_allows_unrelated_dirty_product_but_rejects_controller_blob(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Task 12 may be product-dirty; skip-worktree cannot hide changed controller bytes."""
+    monkeypatch.delattr(verifier, "_SECURE_IO_TEST_ADAPTER", raising=False)
+    calls: list[tuple[str, ...]] = []
+    committed = "a" * 40
+    def trusted_git(args: list[str]) -> str:
+        calls.append(tuple(args))
+        if args == ["rev-parse", "HEAD"]:
+            return "b" * 40 + "\n"
+        if args == ["config", "--get", "remote.origin.url"]:
+            return REPOSITORY_URL + "\n"
+        if args[0] == "rev-parse" and ":tools/release/run_0600_gates.py" in args[1]:
+            return committed + "\n"
+        if args[:2] == ["hash-object", "--"]:
+            return committed + "\n"
+        if args[0] == "status":
+            return " M tools/stm32-monitor/src/stm32_monitor/runtime.py\n"
+        raise AssertionError(args)
+    monkeypatch.setattr(verifier, "_default_git", lambda _repo: trusted_git)
+    assert verifier._secure_io().__name__.startswith("_stm32tk_release_locking_")
+    assert not any(call[0] == "status" for call in calls)
+    def tampered_git(args: list[str]) -> str:
+        if args[:2] == ["hash-object", "--"]:
+            return "c" * 40 + "\n"
+        return trusted_git(args)
+    monkeypatch.setattr(verifier, "_default_git", lambda _repo: tampered_git)
+    with pytest.raises(VerificationError, match="committed blob mismatch"):
+        verifier._secure_io()
+
+
 def test_planned_dependency_audit_runs_native_offline_then_blocks_on_missing_support_pins(tmp_path: Path) -> None:
     """The frozen argv reaches native npm output, not controller grammar, before the real support blocker."""
     support = Path(r"C:\tmp\stm32tk-0600-support\feasibility\profile.json")
     assert support.is_file()
     evidence = tmp_path / "dependency-audit"
+    parent_attack: list[int] = []
+    def attack_parent() -> None:
+        moved = tmp_path.with_name(tmp_path.name + "-moved")
+        parent_attack.append(subprocess.run(
+            [sys.executable, "-c", "import os,sys;os.rename(sys.argv[1],sys.argv[2])", str(tmp_path), str(moved)],
+            capture_output=True, check=False,
+        ).returncode)
     with pytest.raises(VerificationError, match="BLOCKED: support profile lacks pinned"):
         verifier.run_planned_dependency_audit(
             repository=REPO, ui_root_text="tools/stm32-monitor/ui",
             catalog_text="tools/release/gates_0600.json", support_profile=support,
-            evidence_root=evidence,
+            evidence_root=evidence, after_location_check=attack_parent, _temporary_root=tmp_path,
         )
+    assert parent_attack == [1]
     fixture = json.loads((Path(__file__).parent / "fixtures/npm-audit-v11-zero.json").read_text(encoding="utf-8"))
     for name in ("production", "development"):
         native = json.loads((evidence / f"npm-audit-{name}.json").read_text(encoding="utf-8"))
         assert verifier.parse_npm_audit_v2(native) == verifier.parse_npm_audit_v2(fixture)
     retained = {path.name: path.read_bytes() for path in evidence.iterdir()}
-    with pytest.raises(VerificationError, match="already exists"):
+    with pytest.raises(VerificationError, match="create-new failed"):
         verifier.run_planned_dependency_audit(
             repository=REPO, ui_root_text="tools/stm32-monitor/ui",
             catalog_text="tools/release/gates_0600.json", support_profile=support,
-            evidence_root=evidence,
+            evidence_root=evidence, _temporary_root=tmp_path,
         )
     assert {path.name: path.read_bytes() for path in evidence.iterdir()} == retained
 
@@ -1560,7 +1606,9 @@ def test_final_release_inputs_are_canonical_create_new_and_sidecar_bound(
         "controller_sha256": _sha((REPO / "tools/release/run_0600_candidate.ps1").read_bytes()),
         "verifier_sha256": _sha((REPO / "tools/release/verify_0600_release.py").read_bytes()),
     }
-    context_path = tmp_path / "context.json"
+    context_root = tmp_path / "context-root"
+    context_root.mkdir()
+    context_path = context_root / "context.json"
     _write_canonical(context_path, context)
     monkeypatch.setattr(verifier, "verify_candidate_evidence_contract", lambda **_kwargs: {"status": "PASS"})
     monkeypatch.setattr(verifier, "reconcile_candidate", lambda *_args, **_kwargs: REPO / "tools/release/verify_0600_release.py")
@@ -1579,58 +1627,61 @@ def test_final_release_inputs_are_canonical_create_new_and_sidecar_bound(
         if args[0] == "diff-tree":
             return REPORT_PATHS["0601" if args[-1] == reports["0601"] else "0602"] + "\n"
         raise AssertionError(args)
-    output = tmp_path / "final-release-inputs.json"
-    digest = tmp_path / "final-release-inputs.json.sha256"
+    output_root = tmp_path / "output-root"
+    output_root.mkdir()
+    output = output_root / "final-release-inputs.json"
+    digest = output_root / "final-release-inputs.json.sha256"
     result = verifier.generate_final_release_inputs(
         repository=REPO, candidate_ledger_path=ledger_path, invocation_context_path=context_path,
-        output_path=output, digest_output_path=digest, git_runner=git,
+        output_path=output, digest_output_path=digest, git_runner=git, _temporary_root=tmp_path,
     )
     assert result["status"] == "PASS"
     assert digest.read_text(encoding="ascii") == _sha(output.read_bytes()) + "\n"
     with pytest.raises(VerificationError, match="already exists"):
         verifier.generate_final_release_inputs(
             repository=REPO, candidate_ledger_path=ledger_path, invocation_context_path=context_path,
-            output_path=output, digest_output_path=digest, git_runner=git,
+            output_path=output, digest_output_path=digest, git_runner=git, _temporary_root=tmp_path,
         )
 
     real_verify = verifier.verify_final_release_inputs
     monkeypatch.setattr(verifier, "verify_final_release_inputs", lambda *_args, **_kwargs: (_ for _ in ()).throw(VerificationError("late verification")))
-    failed_output = tmp_path / "failed-final-release-inputs.json"
-    failed_digest = tmp_path / "failed-final-release-inputs.json.sha256"
+    failed_output = output_root / "failed-final-release-inputs.json"
+    failed_digest = output_root / "failed-final-release-inputs.json.sha256"
     with pytest.raises(VerificationError, match="late verification"):
         verifier.generate_final_release_inputs(
             repository=REPO, candidate_ledger_path=ledger_path, invocation_context_path=context_path,
-            output_path=failed_output, digest_output_path=failed_digest, git_runner=git,
+            output_path=failed_output, digest_output_path=failed_digest, git_runner=git, _temporary_root=tmp_path,
         )
     failed_bytes = failed_output.read_bytes(), failed_digest.read_bytes()
     monkeypatch.setattr(verifier, "verify_final_release_inputs", real_verify)
-    retry_output = tmp_path / "retry-final-release-inputs.json"
-    retry_digest = tmp_path / "retry-final-release-inputs.json.sha256"
+    retry_output = output_root / "retry-final-release-inputs.json"
+    retry_digest = output_root / "retry-final-release-inputs.json.sha256"
     verifier.generate_final_release_inputs(
         repository=REPO, candidate_ledger_path=ledger_path, invocation_context_path=context_path,
-        output_path=retry_output, digest_output_path=retry_digest, git_runner=git,
+        output_path=retry_output, digest_output_path=retry_digest, git_runner=git, _temporary_root=tmp_path,
     )
     assert (failed_output.read_bytes(), failed_digest.read_bytes()) == failed_bytes
     assert retry_output.read_bytes() == failed_output.read_bytes()
-
-
-def test_final_release_output_rejects_junction_parent(tmp_path: Path) -> None:
-    """A canonical spelling through a junction cannot redirect final release output."""
-    real = tmp_path / "real-output"
-    real.mkdir()
-    junction = tmp_path / "output-alias"
-    completed = subprocess.run(
-        ["cmd.exe", "/d", "/c", "mklink", "/J", str(junction), str(real)],
-        capture_output=True, text=True, check=False,
+    attack_output = output_root / "attack-final-release-inputs.json"
+    attack_digest = output_root / "attack-final-release-inputs.json.sha256"
+    external = tmp_path / "external-output"
+    external.mkdir()
+    parent_attack: list[int] = []
+    def attack_parent() -> None:
+        moved = output_root.with_name("output-root-moved")
+        parent_attack.append(subprocess.run(
+            [sys.executable, "-c", "import os,sys;os.rename(sys.argv[1],sys.argv[2])", str(output_root), str(moved)],
+            capture_output=True, check=False,
+        ).returncode)
+    verifier.generate_final_release_inputs(
+        repository=REPO, candidate_ledger_path=ledger_path, invocation_context_path=context_path,
+        output_path=attack_output, digest_output_path=attack_digest, git_runner=git,
+        after_location_check=attack_parent, _temporary_root=tmp_path,
     )
-    if completed.returncode != 0:
-        pytest.skip(f"junction creation is unavailable: {completed.stderr}")
-    try:
-        with pytest.raises(VerificationError, match="reparse"):
-            verifier._create_new_bytes(junction / "final-release-inputs.json", b"{}\n")
-        assert not (real / "final-release-inputs.json").exists()
-    finally:
-        os.rmdir(junction)
+    assert parent_attack == [1]
+    assert list(external.iterdir()) == []
+
+
 
 
 def _performance_environment(version: str = "3.12.10") -> dict[str, object]:

@@ -3809,6 +3809,7 @@ def test_terminal_candidate_wrapper_owns_ledger_and_writes_local_shard_package(
 
     result = run_wrapper_contract(
         kind="candidate",
+        _candidate_temporary_root=tmp_path,
         matrix="candidate",
         module="STM32TK-0601",
         shard="release-contract",
@@ -3847,7 +3848,7 @@ def test_failed_candidate_attempt_is_preserved_and_retry_requires_new_root(tmp_p
     ).stdout.strip()
     def run(root: Path, run_id: str, returncode: int) -> object:
         return run_wrapper_contract(
-            kind="candidate", matrix="candidate", module="STM32TK-0601", shard="windows",
+            kind="candidate", matrix="candidate", module="STM32TK-0601", shard="windows", _candidate_temporary_root=tmp_path,
             run_id=run_id, evidence_root=root / "windows", expected_code_head=code_head,
             gate_catalog=CATALOG, performance_catalog=RELEASE / "performance_0600.json",
             support_profile=support_profile, controller_path=RELEASE / "run_0600_candidate.ps1",
@@ -3865,6 +3866,52 @@ def test_failed_candidate_attempt_is_preserved_and_retry_requires_new_root(tmp_p
     fresh = tmp_path / "candidate-retry"
     result = run(fresh, "123e4567-e89b-42d3-a456-426614174001", 0)
     assert result["status"] == "BLOCKED"
+
+
+def test_candidate_parent_and_create_races_fail_without_external_write(tmp_path: Path) -> None:
+    """Locked temporary/root sentinels close parent replacement and prepositioned junction races."""
+    support_profile = _write_support(tmp_path / "support-race")
+    code_head = subprocess.run(
+        ["git", "-C", str(REPO), "rev-parse", "HEAD"], capture_output=True,
+        text=True, check=True,
+    ).stdout.strip()
+    external = tmp_path / "external"
+    external.mkdir()
+    candidate = tmp_path / "candidate-race"
+    parent_attack: list[int] = []
+    def attack_parent() -> None:
+        moved = tmp_path.with_name(tmp_path.name + "-moved")
+        completed = subprocess.run(
+            [sys.executable, "-c", "import os,sys;os.rename(sys.argv[1],sys.argv[2])", str(tmp_path), str(moved)],
+            capture_output=True, check=False,
+        )
+        parent_attack.append(completed.returncode)
+    result = run_wrapper_contract(
+        kind="candidate", matrix="candidate", module="STM32TK-0601", shard="windows",
+        run_id=RUN_ID, evidence_root=candidate / "windows", expected_code_head=code_head,
+        gate_catalog=CATALOG, performance_catalog=RELEASE / "performance_0600.json",
+        support_profile=support_profile, controller_path=RELEASE / "run_0600_candidate.ps1",
+        verifier_blob_checker=lambda _repo, _head: RELEASE / "verify_0600_release.py",
+        verifier_invoker=lambda _repo, _head, _argv: SimpleNamespace(returncode=0),
+        after_candidate_location_check=attack_parent, _candidate_temporary_root=tmp_path,
+    )
+    assert result["status"] == "BLOCKED" and parent_attack == [1]
+    raced = tmp_path / "candidate-junction-race"
+    def preposition(root: Path) -> None:
+        _create_junction(root, external)
+    with pytest.raises(ControllerError, match="must be absent"):
+        run_wrapper_contract(
+            kind="candidate", matrix="candidate", module="STM32TK-0601", shard="windows",
+            run_id="123e4567-e89b-42d3-a456-426614174002", evidence_root=raced / "windows",
+            expected_code_head=code_head, gate_catalog=CATALOG,
+            performance_catalog=RELEASE / "performance_0600.json", support_profile=support_profile,
+            controller_path=RELEASE / "run_0600_candidate.ps1",
+            verifier_blob_checker=lambda _repo, _head: RELEASE / "verify_0600_release.py",
+            verifier_invoker=lambda _repo, _head, _argv: SimpleNamespace(returncode=0),
+            before_candidate_root_create=preposition, _candidate_temporary_root=tmp_path,
+        )
+    os.rmdir(raced)
+    assert list(external.iterdir()) == []
 
 
 def test_terminal_wrapper_schedules_executable_catalog_families_and_verifies_package(
