@@ -142,9 +142,7 @@ def test_malformed_explicit_schema_returns_stable_schema_error(configured_projec
 def test_packaged_schema_matches_plugin_root_schema():
     package_schema = resources.files("stm32_toolkit").joinpath("schemas/stm32-project.schema.json")
     root_schema = Path(__file__).resolve().parents[3] / "schemas/stm32-project.schema.json"
-    assert json.loads(package_schema.read_text(encoding="utf-8")) == json.loads(
-        root_schema.read_text(encoding="utf-8")
-    )
+    assert package_schema.read_bytes() == root_schema.read_bytes()
 
 
 def test_project_root_file_returns_not_configured_error(tmp_path: Path):

@@ -1,7 +1,8 @@
 """Immutable project model with version-dispatched schema loading.
 
 This module is the project-schema/model layer. It owns the frozen public model
-types, deterministic schema dispatch for Schema v1 and v2, project-relative
+types, deterministic schema dispatch for Schema v2 and v3 (with explicit v1
+compatibility helpers), project-relative
 path validation, and the stable manifest error contract shared with the
 compatibility view in :mod:`stm32_toolkit.project`.
 """
@@ -12,9 +13,13 @@ import json
 import os
 import re
 import stat
+import unicodedata
+from copy import deepcopy
 from dataclasses import dataclass
 from importlib import resources
 from pathlib import Path, PureWindowsPath
+from types import MappingProxyType
+from typing import Mapping
 from uuid import UUID
 
 from jsonschema import Draft202012Validator, FormatChecker
@@ -118,6 +123,66 @@ class GenerationSpec:
 
 
 @dataclass(frozen=True)
+class HostTestConfig:
+    build_preset: str
+    ctest_preset: str
+    labels: tuple[str, ...]
+    timeout_seconds: int
+    environment_allow: tuple[str, ...]
+    environment_values: Mapping[str, str]
+
+
+@dataclass(frozen=True)
+class MemoryMailboxTransportOptions:
+    address: int
+    size: int
+
+
+@dataclass(frozen=True)
+class RttTransportOptions:
+    channel: int
+    control_block_address: int | None
+
+
+@dataclass(frozen=True)
+class UartTransportOptions:
+    port: str
+    baud: int
+
+
+@dataclass(frozen=True)
+class SemihostingTransportOptions:
+    pass
+
+
+TransportOptions = (
+    MemoryMailboxTransportOptions
+    | RttTransportOptions
+    | UartTransportOptions
+    | SemihostingTransportOptions
+)
+
+
+@dataclass(frozen=True)
+class TargetTransportConfig:
+    kind: str
+    options: TransportOptions
+
+
+@dataclass(frozen=True)
+class TargetTestConfig:
+    executable: str
+    timeout_seconds: int
+    transport: TargetTransportConfig
+
+
+@dataclass(frozen=True)
+class TestingConfig:
+    host: HostTestConfig | None
+    target: TargetTestConfig | None
+
+
+@dataclass(frozen=True)
 class ProjectModel:
     project_root: Path
     schema_version: int
@@ -129,18 +194,25 @@ class ProjectModel:
     memory: MemorySpec
     debug: DebugSpec
     generation: GenerationSpec
+    testing: TestingConfig | None
 
 
 def load_project_model(project_root: Path) -> ProjectModel:
-    """Load a v1 or v2 manifest into a frozen model without writing project state.
+    """Load a Schema v2 or v3 manifest into a frozen model without writes.
 
-    Schema v1 manifests produce a normalized compatibility model; schema v2
-    manifests produce the exact model. All project-relative paths are validated
-    for canonical-root containment but are never required to exist.
+    Schema v1 remains available only through the explicit compatibility and
+    legacy-upgrade routes. Project-relative paths are validated for canonical
+    root containment but are never required to exist.
     """
     root = _canonical_root(project_root)
     payload = _load_manifest_json(root / _MANIFEST_NAME)
     version = _model_schema_version(payload)
+    if version == 1:
+        raise ProjectManifestError(
+            "PROJECT_SCHEMA_VERSION_UNSUPPORTED",
+            "Project manifest schema version requires the explicit compatibility route",
+            {"schemaVersion": 1, "supported": [2, 3]},
+        )
     _validate_packaged_schema(payload, version)
     return _build_model(root, payload, version)
 
@@ -195,7 +267,7 @@ def _load_manifest_json(manifest_path: Path) -> object:
 def _load_schema(schema_path: Path | None, version: int | None = None) -> object:
     try:
         if schema_path is None:
-            schema_name = _SCHEMA_V2_NAME if version == 2 else _SCHEMA_V1_NAME
+            schema_name = _SCHEMA_V2_NAME if version in (2, 3) else _SCHEMA_V1_NAME
             schema_text = (
                 resources.files("stm32_toolkit")
                 .joinpath("schemas", schema_name)
@@ -251,10 +323,16 @@ def _packaged_first_schema_error(payload: object, version: int) -> tuple[str, st
 
 
 def _packaged_validator(version: int) -> Draft202012Validator:
-    schema_name = _SCHEMA_V2_NAME if version == 2 else _SCHEMA_V1_NAME
+    schema_name = (
+        f"{_SCHEMA_V2_NAME}:v{version}" if version in (2, 3) else _SCHEMA_V1_NAME
+    )
     validator = _PACKAGED_VALIDATORS.get(schema_name)
     if validator is None:
         schema = _load_schema(None, version)
+        if version == 2 and isinstance(schema, dict):
+            schema = deepcopy(schema)
+            schema["properties"]["schemaVersion"] = {"const": 2}
+            schema["properties"].pop("testing", None)
         Draft202012Validator.check_schema(schema)
         validator = Draft202012Validator(schema, format_checker=FormatChecker())
         _PACKAGED_VALIDATORS[schema_name] = validator
@@ -290,11 +368,11 @@ def _validate_packaged_schema(payload: object, version: int) -> None:
 def _model_schema_version(payload: object) -> int:
     payload = _require_manifest_object(payload)
     version = _require_schema_version(payload)
-    if version not in (1, 2):
+    if version not in (1, 2, 3):
         raise ProjectManifestError(
             "PROJECT_SCHEMA_VERSION_UNSUPPORTED",
             "Project manifest schema version is not supported",
-            {"schemaVersion": version, "supported": [1, 2]},
+            {"schemaVersion": version, "supported": [1, 2, 3]},
         )
     return int(version)
 
@@ -340,7 +418,7 @@ def validate_model_document(root: Path, payload: dict, version: int) -> None:
     _validate_path_field(root, "build.elf", build.get("elf"), cache)
     debug = payload.get("debug") or {}
     _validate_path_field(root, "debug.svd", debug.get("svd"), cache)
-    if version == 2:
+    if version in (2, 3):
         generation = payload["generation"]
         _validate_path_field(
             root, "generation.cubeMxIoc", generation.get("cubeMxIoc"), cache
@@ -355,6 +433,97 @@ def validate_model_document(root: Path, payload: dict, version: int) -> None:
             root, "generation.userDirectories", generation.get("userDirectories"), cache
         )
         _validate_unique_region_names(payload["memory"]["regions"])
+    if version == 3 and isinstance(payload.get("testing"), dict):
+        _validate_testing_document(root, payload["testing"], cache)
+
+
+def _validate_testing_document(
+    root: Path, testing: dict, cache: dict[Path, os.stat_result | None]
+) -> None:
+    host = testing.get("host")
+    if host is not None:
+        _validate_exact_integer(host.get("timeout_seconds"), "testing.host.timeout_seconds")
+        _validate_canonical_string(host.get("buildPreset"), "testing.host.buildPreset", 128)
+        _validate_canonical_string(host.get("ctestPreset"), "testing.host.ctestPreset", 128)
+        for index, label in enumerate(host.get("labels", ())):
+            _validate_canonical_string(label, f"testing.host.labels[{index}]", 128)
+        environment = host["environment"]
+        allow = environment["allow"]
+        for index, name in enumerate(allow):
+            _validate_canonical_string(
+                name, f"testing.host.environment.allow[{index}]", 128
+            )
+        for name, value in environment["values"].items():
+            if name not in set(allow):
+                raise ProjectManifestError(
+                    "PROJECT_SCHEMA_INVALID",
+                    "Project test environment value is not allowlisted",
+                    {
+                        "field": f"testing.host.environment.values.{name}",
+                        "rule": "allowlisted",
+                    },
+                )
+            _validate_canonical_string(
+                value, f"testing.host.environment.values.{name}", 4096
+            )
+    target = testing.get("target")
+    if target is not None:
+        _validate_exact_integer(
+            target.get("timeout_seconds"), "testing.target.timeout_seconds"
+        )
+        _validate_path_field(
+            root, "testing.target.executable", target.get("executable"), cache
+        )
+        transport = target["transport"]
+        kind = transport["kind"]
+        options = transport["options"]
+        if kind == "memory-mailbox":
+            _validate_exact_integer(
+                options["address"], "testing.target.transport.options.address"
+            )
+            _validate_exact_integer(
+                options["size"], "testing.target.transport.options.size"
+            )
+        elif kind == "rtt":
+            _validate_exact_integer(
+                options["channel"], "testing.target.transport.options.channel"
+            )
+            if "controlBlockAddress" in options:
+                _validate_exact_integer(
+                    options["controlBlockAddress"],
+                    "testing.target.transport.options.controlBlockAddress",
+                )
+        elif kind == "uart":
+            _validate_exact_integer(
+                options["baud"], "testing.target.transport.options.baud"
+            )
+            _validate_canonical_string(
+                options["port"], "testing.target.transport.options.port", 256
+            )
+
+
+def _validate_exact_integer(value: object, field: str) -> None:
+    if type(value) is not int:
+        raise ProjectManifestError(
+            "PROJECT_SCHEMA_INVALID",
+            "Project manifest numeric value must be an integer",
+            {"field": field, "rule": "type"},
+        )
+
+
+def _validate_canonical_string(value: str, field: str, max_utf8_bytes: int) -> None:
+    if unicodedata.normalize("NFC", value) != value:
+        raise ProjectManifestError(
+            "PROJECT_SCHEMA_INVALID",
+            "Project manifest string is not NFC-normalized",
+            {"field": field, "rule": "normalized"},
+        )
+    if len(value.encode("utf-8")) > max_utf8_bytes:
+        raise ProjectManifestError(
+            "PROJECT_SCHEMA_INVALID",
+            "Project manifest string exceeds its UTF-8 byte limit",
+            {"field": field, "rule": "maxUtf8Bytes"},
+        )
 
 
 def _validate_path_field(
@@ -534,7 +703,7 @@ def _build_model(root: Path, payload: dict, version: int) -> ProjectModel:
         defines=tuple(build_data.get("defines", ())),
         compile_options=tuple(build_data.get("compileOptions", ())),
         assembly_sources=tuple(build_data.get("assemblySources", ())),
-        presets=tuple(build_data.get("presets", ())) if version == 2 else (),
+        presets=tuple(build_data.get("presets", ())) if version in (2, 3) else (),
         elf=build_data.get("elf"),
     )
     debug_data = payload.get("debug") or {}
@@ -581,6 +750,8 @@ def _build_model(root: Path, payload: dict, version: int) -> ProjectModel:
             user_directories=tuple(generation_data.get("userDirectories", ())),
         )
 
+    testing = _build_testing_config(payload.get("testing")) if version == 3 else None
+
     return ProjectModel(
         project_root=root,
         schema_version=version,
@@ -592,7 +763,52 @@ def _build_model(root: Path, payload: dict, version: int) -> ProjectModel:
         memory=memory,
         debug=debug,
         generation=generation,
+        testing=testing,
     )
+
+
+def _build_testing_config(value: object) -> TestingConfig | None:
+    if not isinstance(value, dict):
+        return None
+    host_data = value.get("host")
+    host = None
+    if isinstance(host_data, dict):
+        environment = host_data["environment"]
+        host = HostTestConfig(
+            build_preset=host_data["buildPreset"],
+            ctest_preset=host_data["ctestPreset"],
+            labels=tuple(host_data["labels"]),
+            timeout_seconds=host_data["timeout_seconds"],
+            environment_allow=tuple(environment["allow"]),
+            environment_values=MappingProxyType(dict(environment["values"])),
+        )
+    target_data = value.get("target")
+    target = None
+    if isinstance(target_data, dict):
+        transport_data = target_data["transport"]
+        kind = transport_data["kind"]
+        options_data = transport_data["options"]
+        if kind == "memory-mailbox":
+            options: TransportOptions = MemoryMailboxTransportOptions(
+                address=options_data["address"], size=options_data["size"]
+            )
+        elif kind == "rtt":
+            options = RttTransportOptions(
+                channel=options_data["channel"],
+                control_block_address=options_data.get("controlBlockAddress"),
+            )
+        elif kind == "uart":
+            options = UartTransportOptions(
+                port=options_data["port"], baud=options_data["baud"]
+            )
+        else:
+            options = SemihostingTransportOptions()
+        target = TargetTestConfig(
+            executable=target_data["executable"],
+            timeout_seconds=target_data["timeout_seconds"],
+            transport=TargetTransportConfig(kind=kind, options=options),
+        )
+    return TestingConfig(host=host, target=target)
 
 
 def _validation_sort_key(error: ValidationError) -> tuple[str, str, str]:
