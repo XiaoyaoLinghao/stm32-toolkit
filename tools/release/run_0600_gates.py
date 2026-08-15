@@ -858,6 +858,18 @@ def _changed_product_files(repo: Path, git_runner: Callable[[list[str]], list[st
     return sorted(paths, key=lambda item: item.encode("utf-8"))
 
 
+def _coverage_module_for_product_file(relative: str) -> str:
+    prefix = "tools/stm32-toolkit/src/"
+    if not relative.startswith(prefix) or not relative.endswith(".py"):
+        raise ControllerError("changed product module path is invalid")
+    parts = relative[len(prefix):-3].split("/")
+    if parts[-1] == "__init__":
+        parts.pop()
+    if not parts or parts[0] != "stm32_toolkit" or any(re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", part) is None for part in parts):
+        raise ControllerError("changed product module path is invalid")
+    return ".".join(parts)
+
+
 def _default_git_runner(repo: Path) -> Callable[[list[str]], list[str]]:
     def run(args: list[str]) -> list[str]:
         completed = subprocess.run(["git", "-C", str(repo), *args], capture_output=True, text=True, check=False)
@@ -998,6 +1010,9 @@ def run_dev_coverage(
             token = str(test)
         validated.append(token)
         index += 1
+    requested_coverage = {token.removeprefix("--cov=") for token in validated if token.startswith("--cov=")}
+    for module in sorted({_coverage_module_for_product_file(path) for path in changed} - requested_coverage):
+        validated.append(f"--cov={module}")
     if _coverage_configured(os.environ):
         raise ControllerError("dev coverage rejects inherited coverage variables")
     raw_path = evidence / "coverage-raw.json"

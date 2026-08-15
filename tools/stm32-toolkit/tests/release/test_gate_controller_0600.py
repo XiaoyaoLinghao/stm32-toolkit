@@ -688,6 +688,40 @@ def test_dev_coverage_discovers_each_changed_product_file_and_requires_90_percen
     assert (evidence / "branch-coverage.json").is_file()
 
 
+def test_dev_coverage_adds_exact_modules_for_changed_package_files(tmp_path: Path) -> None:
+    """A frozen narrow --cov token must not leave another changed Python file unmeasured."""
+    repo = tmp_path / "repo"
+    package = repo / "tools/stm32-toolkit/src/stm32_toolkit/evidence"
+    init_file = package / "__init__.py"
+    model_file = package / "model.py"
+    test_file = repo / "tools/stm32-toolkit/tests/test_evidence.py"
+    package.mkdir(parents=True)
+    test_file.parent.mkdir(parents=True)
+    init_file.write_text("from .model import VALUE\n", encoding="utf-8")
+    model_file.write_text("VALUE = 1\n", encoding="utf-8")
+    test_file.write_text("def test_value(): pass\n", encoding="utf-8")
+    changed = [init_file.relative_to(repo).as_posix(), model_file.relative_to(repo).as_posix()]
+    evidence = tmp_path / "evidence"
+
+    def runner(argv: list[str], *, cwd: Path, env: dict[str, str]) -> int:
+        assert argv.count("--cov=stm32_toolkit.evidence") == 1
+        assert argv.count("--cov=stm32_toolkit.evidence.model") == 1
+        raw = _coverage_v7({path: (0, 0) for path in changed})
+        (evidence / "coverage-raw.json").write_text(json.dumps(raw), encoding="utf-8")
+        return 0
+
+    result = run_dev_coverage(
+        repo,
+        "STM32TK-0601-T03",
+        evidence,
+        [str(test_file), "--cov=stm32_toolkit.evidence.model", "-q", "-p", "no:cacheprovider"],
+        _coverage_git(changed),
+        runner,
+    )
+
+    assert [row["path"] for row in result["files"]] == changed
+
+
 @pytest.mark.parametrize(
     "tokens",
     [
