@@ -265,6 +265,37 @@ def test_direct_envelope_construction_requires_tuple_collections():
         )
 
 
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda payload: payload.__setitem__("parents", tuple(payload["parents"])),
+        lambda payload: payload.__setitem__("artifacts", tuple(payload["artifacts"])),
+        lambda payload: payload.__setitem__("metadata", ("not", "an", "object")),
+        lambda payload: payload.__setitem__("metadata", {"rows": ("not", "a", "JSON", "array")}),
+    ],
+)
+def test_from_dict_rejects_tuple_containers_at_the_json_boundary(valid_envelope_dict, mutate):
+    """Python tuples cannot cross the dictionary/authoritative-JSON boundary."""
+    payload = deepcopy(valid_envelope_dict)
+    mutate(payload)
+    payload["evidence_id"] = calculate_evidence_id(payload)
+
+    with pytest.raises(ValueError):
+        EvidenceEnvelope.from_dict(payload)
+
+
+def test_from_dict_rejects_deep_json_before_python_recursion(valid_envelope_dict):
+    """The non-JSON-container preflight preserves the public depth-limit error."""
+    nested: object = 0
+    for _ in range(1_100):
+        nested = [nested]
+    payload = deepcopy(valid_envelope_dict)
+    payload["metadata"] = {"nested": nested}
+
+    with pytest.raises(ValueError):
+        EvidenceEnvelope.from_dict(payload)
+
+
 def test_direct_envelope_rejects_invalid_identity_artifact_and_oversized_bytes():
     """Constructor-only guards reject malformed frozen members before computing an envelope ID."""
     identity = EvidenceIdentity(

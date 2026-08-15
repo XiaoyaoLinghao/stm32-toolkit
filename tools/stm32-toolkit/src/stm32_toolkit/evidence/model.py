@@ -178,6 +178,21 @@ def _canonical_json_value(value: object) -> object:
     return _copy_json(value, _JsonState())
 
 
+def _reject_tuple_containers(value: object, depth: int = 1) -> None:
+    """Keep Python-only tuples out of dictionary and JSON decoding boundaries."""
+    if depth > MAX_JSON_DEPTH:
+        raise EvidenceValidationError("JSON nesting exceeds the evidence limit")
+    if isinstance(value, tuple):
+        raise EvidenceValidationError("JSON input must not contain tuple containers")
+    if isinstance(value, Mapping):
+        for key, item in value.items():
+            _reject_tuple_containers(key, depth + 1)
+            _reject_tuple_containers(item, depth + 1)
+    elif isinstance(value, list):
+        for item in value:
+            _reject_tuple_containers(item, depth + 1)
+
+
 def canonical_json_bytes(value: object) -> bytes:
     """Return the strict, compact NFC UTF-8 encoding of a JSON-safe value."""
     copied = _canonical_json_value(value)
@@ -362,6 +377,7 @@ class EvidenceEnvelope:
         *,
         metadata_validator: MetadataValidator | None = None,
     ) -> "EvidenceEnvelope":
+        _reject_tuple_containers(value)
         copied = _canonical_json_value(value)
         data = _require_keys(
             copied,
