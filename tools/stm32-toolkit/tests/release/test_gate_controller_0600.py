@@ -726,6 +726,8 @@ def test_dev_coverage_accepts_every_frozen_plan_pytest_shape(
         calls += 1
         assert cwd == repo
         assert argv[:3] == [sys.executable, "-m", "pytest"]
+        assert argv.count("pytest_cov") == 1
+        assert argv[argv.index("pytest_cov") - 1] == "-p"
         if "--basetemp" in argv:
             Path(argv[argv.index("--basetemp") + 1]).mkdir()
         raw = _coverage_v7({path: (9, 10) for path in changed})
@@ -1130,8 +1132,8 @@ def test_dev_coverage_raw_swap_is_blocked_while_same_handle_is_read(
     assert not moved_raw.exists()
 
 
-def test_dev_coverage_rejects_raw_hardlink_to_external_file(tmp_path: Path) -> None:
-    """A runner cannot substitute an external file through a non-reparse hardlink."""
+def test_dev_coverage_runner_cannot_unlink_rename_or_swap_preopened_raw(tmp_path: Path) -> None:
+    """The controller selects and locks the raw object before invoking pytest."""
     repo = tmp_path / "repo"
     test_file = repo / "tools/stm32-monitor/tests/test_package.py"
     product = repo / "tools/stm32-monitor/src/stm32_monitor/package.py"
@@ -1140,24 +1142,81 @@ def test_dev_coverage_rejects_raw_hardlink_to_external_file(tmp_path: Path) -> N
     test_file.write_text("def test_package(): pass\n", encoding="utf-8")
     product.write_text("VALUE = 1\n", encoding="utf-8")
     evidence = _coverage_evidence(tmp_path)
+    raw_path = evidence / "coverage-raw.json"
+    moved_raw = evidence / "coverage-raw-moved.json"
+    outside = tmp_path / "outside-raw.json"
     changed = product.relative_to(repo).as_posix()
-    external = tmp_path / "external-raw.json"
-    external.write_text(json.dumps(_coverage_v7({changed: (9, 10)})), encoding="utf-8")
+    outside.write_text(json.dumps(_coverage_v7({changed: (0, 10)})), encoding="utf-8")
 
     def runner(_argv: list[str], **_kwargs: object) -> int:
-        os.link(external, evidence / "coverage-raw.json")
+        script = (
+            "import json, os, pathlib, sys\n"
+            "raw,moved,outside=map(pathlib.Path,sys.argv[1:])\n"
+            "codes=[]\n"
+            "for op in (lambda: os.remove(raw),lambda: os.replace(raw,moved)):\n"
+            " try: op()\n"
+            " except OSError as e: codes.append(e.winerror)\n"
+            " else: codes.append(0)\n"
+            "if not raw.exists(): os.replace(outside,raw)\n"
+            "print(json.dumps(codes))\n"
+        )
+        completed = subprocess.run(
+            [sys.executable, "-c", script, str(raw_path), str(moved_raw), str(outside)],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert completed.returncode == 0, completed.stderr
+        assert json.loads(completed.stdout) == [32, 32]
+        raw_path.write_text(json.dumps(_coverage_v7({changed: (9, 10)})), encoding="utf-8")
         return 0
 
-    with pytest.raises(ControllerError, match="link|locked file"):
-        run_dev_coverage(
-            repo,
-            "STM32TK-0603-T01",
-            evidence,
-            [str(test_file), "--cov=stm32_monitor.package"],
-            _coverage_git([changed]),
-            runner,
-        )
-    assert external.is_file()
+    assert run_dev_coverage(
+        repo,
+        "STM32TK-0603-T01",
+        evidence,
+        [str(test_file), "--cov=stm32_monitor.package"],
+        _coverage_git([changed]),
+        runner,
+    )["task_id"] == "STM32TK-0603-T01"
+    assert not moved_raw.exists()
+    assert outside.is_file()
+
+
+def test_dev_coverage_real_pytest_cov_writes_preopened_raw(tmp_path: Path) -> None:
+    """The frozen pytest-cov stack can truncate/write the controller's shared raw handle."""
+    pytest.importorskip("pytest_cov")
+    repo = tmp_path / "repo"
+    source_root = repo / "tools/stm32-toolkit/src"
+    product = source_root / "stm32_toolkit/preopened.py"
+    test_file = repo / "tools/stm32-toolkit/tests/test_preopened.py"
+    product.parent.mkdir(parents=True)
+    test_file.parent.mkdir(parents=True)
+    (product.parent / "__init__.py").write_text("", encoding="utf-8")
+    product.write_text(
+        "def classify(value):\n    if value:\n        return 1\n    return 0\n",
+        encoding="utf-8",
+    )
+    test_file.write_text(
+        f"import sys\nsys.path.insert(0, {str(source_root)!r})\n"
+        "from stm32_toolkit.preopened import classify\n"
+        "def test_both_branches():\n    assert classify(True) == 1\n    assert classify(False) == 0\n",
+        encoding="utf-8",
+    )
+    evidence = _coverage_evidence(tmp_path)
+    changed = product.relative_to(repo).as_posix()
+
+    result = run_dev_coverage(
+        repo,
+        "STM32TK-0601-T03",
+        evidence,
+        ["-q", "-p", "no:cacheprovider", str(test_file), "--cov=stm32_toolkit.preopened"],
+        _coverage_git([changed]),
+    )
+
+    assert result["files"] == [
+        {"covered_branches": 2, "num_branches": 2, "path": changed, "percent": 100}
+    ]
 
 
 def test_dev_coverage_result_preoccupation_is_not_overwritten(tmp_path: Path) -> None:
@@ -1190,6 +1249,58 @@ def test_dev_coverage_result_preoccupation_is_not_overwritten(tmp_path: Path) ->
             runner,
         )
     assert (evidence / "branch-coverage.json").read_bytes() == occupied
+
+
+def test_dev_coverage_result_swap_is_blocked_until_success_boundary(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The result handle remains no-delete-shared through its final identity check."""
+    repo = tmp_path / "repo"
+    test_file = repo / "tools/stm32-monitor/tests/test_package.py"
+    product = repo / "tools/stm32-monitor/src/stm32_monitor/package.py"
+    test_file.parent.mkdir(parents=True)
+    product.parent.mkdir(parents=True)
+    test_file.write_text("def test_package(): pass\n", encoding="utf-8")
+    product.write_text("VALUE = 1\n", encoding="utf-8")
+    evidence = _coverage_evidence(tmp_path)
+    result_path = evidence / "branch-coverage.json"
+    moved_result = evidence / "branch-coverage-moved.json"
+    changed = product.relative_to(repo).as_posix()
+    original_validate = gates._validate_locked_coverage_file_path
+    swap_codes: list[int] = []
+
+    def attempt_swap_after_write(locked: object) -> None:
+        path = locked.path
+        if path == result_path and path.exists() and path.stat().st_size > 0 and not swap_codes:
+            script = "import json,os,sys\ntry: os.replace(sys.argv[1],sys.argv[2])\nexcept OSError as e: print(json.dumps(e.winerror))\nelse: print('0')\n"
+            completed = subprocess.run(
+                [sys.executable, "-c", script, str(result_path), str(moved_result)],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            assert completed.returncode == 0
+            swap_codes.append(json.loads(completed.stdout))
+        original_validate(locked)
+
+    monkeypatch.setattr(gates, "_validate_locked_coverage_file_path", attempt_swap_after_write)
+
+    def runner(_argv: list[str], **_kwargs: object) -> int:
+        (evidence / "coverage-raw.json").write_text(
+            json.dumps(_coverage_v7({changed: (9, 10)})), encoding="utf-8"
+        )
+        return 0
+
+    assert run_dev_coverage(
+        repo,
+        "STM32TK-0603-T01",
+        evidence,
+        [str(test_file), "--cov=stm32_monitor.package"],
+        _coverage_git([changed]),
+        runner,
+    )["task_id"] == "STM32TK-0603-T01"
+    assert swap_codes == [32]
+    assert not moved_result.exists()
 
 
 def test_dev_coverage_t12_failed_attempt_retries_same_frozen_argv_with_new_root(

@@ -1124,6 +1124,13 @@ def _validate_locked_coverage_file(locked: _LockedWindowsFile) -> None:
         raise ControllerError("coverage locked file path changed")
 
 
+def _validate_locked_coverage_file_path(locked: _LockedWindowsFile) -> None:
+    _validate_locked_coverage_file(locked)
+    with _open_locked_windows_file(locked.path, create_new=False, write=False) as current:
+        if (current.volume_serial, current.file_index) != (locked.volume_serial, locked.file_index):
+            raise ControllerError("coverage locked file path identity changed")
+
+
 def _create_coverage_lock_sentinel(root: Path) -> _LockedWindowsFile:
     # This closes accidental/injected replacement windows; deliberate ACL changes by the
     # same SID and higher-privilege processes are outside the controller threat model.
@@ -1132,8 +1139,17 @@ def _create_coverage_lock_sentinel(root: Path) -> _LockedWindowsFile:
 
 
 def _windows_read_locked_file(locked: _LockedWindowsFile) -> bytes:
-    _validate_locked_coverage_file(locked)
+    _validate_locked_coverage_file_path(locked)
     kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.SetFilePointerEx.argtypes = [
+        wintypes.HANDLE, ctypes.c_longlong, ctypes.POINTER(ctypes.c_longlong), wintypes.DWORD,
+    ]
+    kernel32.SetFilePointerEx.restype = wintypes.BOOL
+    new_position = ctypes.c_longlong()
+    if not kernel32.SetFilePointerEx(
+        wintypes.HANDLE(locked.handle), 0, ctypes.byref(new_position), 0
+    ) or new_position.value != 0:
+        raise ControllerError("coverage locked file rewind failed") from ctypes.WinError(ctypes.get_last_error())
     kernel32.GetFileSizeEx.argtypes = [wintypes.HANDLE, ctypes.POINTER(ctypes.c_longlong)]
     kernel32.GetFileSizeEx.restype = wintypes.BOOL
     size = ctypes.c_longlong()
@@ -1154,12 +1170,12 @@ def _windows_read_locked_file(locked: _LockedWindowsFile) -> bytes:
         raise ControllerError("coverage locked file read failed") from ctypes.WinError(ctypes.get_last_error())
     if read.value != size.value:
         raise ControllerError("coverage locked file read was incomplete")
-    _validate_locked_coverage_file(locked)
+    _validate_locked_coverage_file_path(locked)
     return bytes(buffer.raw[:read.value])
 
 
 def _windows_write_locked_file(locked: _LockedWindowsFile, data: bytes) -> None:
-    _validate_locked_coverage_file(locked)
+    _validate_locked_coverage_file_path(locked)
     kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
     kernel32.WriteFile.argtypes = [
         wintypes.HANDLE, wintypes.LPCVOID, wintypes.DWORD,
@@ -1178,10 +1194,10 @@ def _windows_write_locked_file(locked: _LockedWindowsFile, data: bytes) -> None:
         raise ControllerError("coverage locked result write was incomplete")
     if not kernel32.FlushFileBuffers(wintypes.HANDLE(locked.handle)):
         raise ControllerError("coverage locked result flush failed") from ctypes.WinError(ctypes.get_last_error())
-    _validate_locked_coverage_file(locked)
+    _validate_locked_coverage_file_path(locked)
 
 
-def _load_locked_coverage_json(path: Path) -> object:
+def _load_locked_coverage_json(locked: _LockedWindowsFile) -> object:
     def reject_duplicate_keys(pairs: list[tuple[str, object]]) -> dict[str, object]:
         value: dict[str, object] = {}
         for key, item in pairs:
@@ -1190,12 +1206,11 @@ def _load_locked_coverage_json(path: Path) -> object:
             value[key] = item
         return value
 
-    with _open_locked_windows_file(path, create_new=False, write=False) as locked:
-        raw = _windows_read_locked_file(locked)
-        try:
-            return json.loads(raw.decode("utf-8"), object_pairs_hook=reject_duplicate_keys)
-        except (UnicodeError, json.JSONDecodeError) as exc:
-            raise ControllerError("coverage JSON input is unreadable") from exc
+    raw = _windows_read_locked_file(locked)
+    try:
+        return json.loads(raw.decode("utf-8"), object_pairs_hook=reject_duplicate_keys)
+    except (UnicodeError, json.JSONDecodeError) as exc:
+        raise ControllerError("coverage JSON input is unreadable") from exc
 
 
 def _open_locked_windows_directory(path: Path) -> _LockedWindowsDirectory:
@@ -1541,7 +1556,30 @@ def _run_locked_dev_coverage(
         validated[basetemp_index + 1] = str(basetemp)
         _verify_coverage_attempt_basetemp(evidence, basetemp, created=False)
     raw_path = evidence / "coverage-raw.json"
-    argv = [sys.executable, "-m", "pytest", *validated, "--cov-branch", f"--cov-report=json:{raw_path}"]
+    with _open_locked_windows_file(raw_path, create_new=True, write=True) as raw_lock:
+        return _complete_locked_dev_coverage(
+            repo, task_id, evidence, validated, changed, basetemp,
+            raw_path, raw_lock, temporary_lock, evidence_lock, runner,
+        )
+
+
+def _complete_locked_dev_coverage(
+    repo: Path,
+    task_id: str,
+    evidence: Path,
+    validated: list[str],
+    changed: list[str],
+    basetemp: Path | None,
+    raw_path: Path,
+    raw_lock: _LockedWindowsFile,
+    temporary_lock: _LockedWindowsDirectory,
+    evidence_lock: _LockedWindowsDirectory,
+    runner: Callable[..., int],
+) -> dict[str, object]:
+    argv = [
+        sys.executable, "-m", "pytest", *validated,
+        "-p", "pytest_cov", "--cov-branch", f"--cov-report=json:{raw_path}",
+    ]
     if basetemp is not None:
         _verify_coverage_attempt_basetemp(evidence, basetemp, created=False)
     _validate_locked_coverage_directory(temporary_lock)
@@ -1555,7 +1593,7 @@ def _run_locked_dev_coverage(
         raise ControllerError("coverage subprocess failed")
     _validate_locked_coverage_directory(temporary_lock)
     _validate_locked_coverage_directory(evidence_lock)
-    raw = _load_locked_coverage_json(raw_path)
+    raw = _load_locked_coverage_json(raw_lock)
     _validate_locked_coverage_directory(temporary_lock)
     _validate_locked_coverage_directory(evidence_lock)
     _validate_coverage_raw_path(evidence, raw_path)
@@ -1597,11 +1635,11 @@ def _run_locked_dev_coverage(
     try:
         with _open_locked_windows_file(result_path, create_new=True, write=True) as locked_result:
             _windows_write_locked_file(locked_result, canonical_json_bytes(result))
+            _validate_locked_coverage_file_path(locked_result)
+            _validate_locked_coverage_directory(evidence_lock)
+            return result
     except ControllerError as exc:
         raise ControllerError("coverage normalized result create-new write failed") from exc
-    _validate_coverage_regular_child(evidence, result_path, "branch-coverage.json")
-    _validate_locked_coverage_directory(evidence_lock)
-    return result
 
 
 def _is_reparse(path: Path) -> bool:
