@@ -12,6 +12,7 @@ import subprocess
 import sys
 import tempfile
 import zipfile
+import xml.etree.ElementTree as ElementTree
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -414,6 +415,132 @@ def test_real_gate_executor_uses_argv_timeout_and_retains_one_snapshot(tmp_path:
     ]
 
 
+def test_native_executor_precreates_and_locks_all_four_artifacts_against_external_write(
+    tmp_path: Path,
+) -> None:
+    """The product child cannot hard-link any retained artifact to an external victim."""
+    evidence = tmp_path / "native-locked-evidence"
+    evidence.mkdir()
+    victims = [tmp_path / f"victim-{index}.txt" for index in range(4)]
+    for index, victim in enumerate(victims):
+        victim.write_bytes(f"outside-{index}".encode("ascii"))
+    script = evidence / "test_native_artifact_attack.py"
+    pairs = [
+        ("native-results.xml", victims[0]),
+        ("result.json", victims[1]),
+        ("stdout.log", victims[2]),
+        ("stderr.log", victims[3]),
+    ]
+    script.write_text(
+        "import os\nfrom pathlib import Path\n\n"
+        "def test_attack(request):\n"
+        "    gate_root = Path(request.config.option.xmlpath).parent\n"
+        f"    pairs = {[(name, str(victim)) for name, victim in pairs]!r}\n"
+        "    for name, victim in pairs:\n"
+        "        try:\n"
+        "            os.link(victim, gate_root / name)\n"
+        "        except FileExistsError:\n"
+        "            pass\n"
+        "        else:\n"
+        "            raise AssertionError(f'artifact was not create-new: {name}')\n"
+        "        for attack in (lambda: os.unlink(gate_root / name), lambda: os.rename(gate_root / name, gate_root / (name + '.moved'))):\n"
+        "            try:\n"
+        "                attack()\n"
+        "            except PermissionError:\n"
+        "                pass\n"
+        "            else:\n"
+        "                raise AssertionError(f'artifact allowed delete/rename: {name}')\n",
+        encoding="utf-8",
+    )
+    gate = GateRequest(
+        "LOCKED", (sys.executable, "-m", "pytest", str(script), "-q", "-p", "no:cacheprovider"),
+        REPO, 30, ("test_native_artifact_attack::test_attack",),
+    )
+
+    output = execute_gate_process(gate, {}, evidence_root=evidence)
+
+    assert output.exit_code == 0
+    assert [victim.read_bytes() for victim in victims] == [
+        b"outside-0", b"outside-1", b"outside-2", b"outside-3",
+    ]
+    for name, victim in pairs:
+        assert not os.path.samefile(evidence / "LOCKED" / name, victim)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows reparse contract")
+def test_native_executor_rejects_prepositioned_and_create_race_junctions_without_external_write(
+    tmp_path: Path,
+) -> None:
+    """A gate directory junction before or immediately after mkdir cannot redirect artifacts."""
+    evidence = tmp_path / "junction-evidence"
+    evidence.mkdir()
+    external = tmp_path / "external"
+    external.mkdir()
+    gate = GateRequest("RACE", (sys.executable, "-c", "raise SystemExit(0)"), REPO, 5, ())
+    prepositioned = evidence / "RACE"
+    _create_junction(prepositioned, external)
+    with pytest.raises(ControllerError, match="gate evidence|reparse|new"):
+        execute_gate_process(gate, {}, evidence_root=evidence)
+    os.rmdir(prepositioned)
+
+    def replace_after_create(gate_root: Path) -> None:
+        os.rmdir(gate_root)
+        _create_junction(gate_root, external)
+
+    with pytest.raises(ControllerError, match="gate evidence|reparse|identity"):
+        execute_gate_process(
+            gate, {}, evidence_root=evidence,
+            after_gate_root_create=replace_after_create,
+        )
+    os.rmdir(evidence / "RACE")
+    assert list(external.iterdir()) == []
+
+
+@pytest.mark.skipif(os.name != "nt", reason="frozen Windows Node runner contract")
+@pytest.mark.parametrize(
+    ("tool", "argv", "expected"),
+    [
+        (
+            "vitest.cmd", ("run", "tests/a11y.test.tsx"),
+            ("UI accessibility scaffold runs in jsdom",),
+        ),
+        (
+            "playwright.cmd",
+            ("test", "e2e/performance.spec.ts", "--list", "--project=chromium-1280", "--project=chromium-1024"),
+            (
+                "chromium-1280::performance.spec.ts::five-minute production fixture stays bounded",
+                "chromium-1024::performance.spec.ts::five-minute production fixture stays bounded",
+            ),
+        ),
+    ],
+)
+def test_real_node_runners_produce_normalized_portable_native_artifacts(
+    tmp_path: Path, tool: str, argv: tuple[str, ...], expected: tuple[str, ...],
+) -> None:
+    """The installed frozen Node tools, not a hand-shaped JSON double, cross the adapter."""
+    ui = REPO / "tools" / "stm32-monitor" / "ui"
+    executable = ui / "node_modules" / ".bin" / tool
+    if not executable.is_file():
+        pytest.fail(f"frozen Node executable is missing: {executable}")
+    evidence = tmp_path / f"real-{tool}"
+    evidence.mkdir()
+    gate = GateRequest(
+        f"REAL-{tool[:-4].upper()}", (str(executable), *argv), ui, 60, expected,
+    )
+
+    output = execute_gate_process(gate, {}, evidence_root=evidence)
+
+    assert output.exit_code == 0
+    assert output.selected_nodes == expected
+    native = evidence / gate.gate_id / "native-results.json"
+    raw = native.read_bytes()
+    assert str(REPO).encode() not in raw and str(evidence).encode() not in raw
+    release_verifier._validate_portable_package_payload(str(native), raw)
+    stdout = evidence / gate.gate_id / "stdout.log"
+    assert stdout.read_bytes() == raw
+    release_verifier._validate_portable_package_payload(str(stdout), stdout.read_bytes())
+
+
 @pytest.mark.parametrize(
     ("fixture", "framework", "expected"),
     [
@@ -464,6 +591,109 @@ def test_native_stdout_redacts_only_controller_owned_evidence_result_path(tmp_pa
         b"- generated xml file: <EVIDENCE_ROOT>/native-results.xml -\n"
         b"ordinary output\nC:\\Users\\private\\must-remain\n"
     )
+
+
+@pytest.mark.parametrize("framework", ["vitest-json", "playwright-json"])
+def test_native_json_artifacts_normalize_only_verified_documented_paths(
+    tmp_path: Path, framework: str,
+) -> None:
+    """Only documented fields below the exact verified roots may become portable tokens."""
+    evidence = tmp_path / "native-evidence"
+    evidence.mkdir()
+    repo_path = REPO.as_posix()
+    evidence_path = evidence.as_posix()
+    vitest = {
+        "numTotalTestSuites": 1, "numPassedTestSuites": 1, "numFailedTestSuites": 0,
+        "numPendingTestSuites": 0, "numTotalTests": 1, "numPassedTests": 1,
+        "numFailedTests": 0, "numPendingTests": 0, "numTodoTests": 0, "success": True,
+        "testResults": [{"name": f"{repo_path}/tools/stm32-monitor/ui/tests/native.test.ts", "status": "passed",
+            "assertionResults": [{"fullName": "native pass", "status": "passed"}]}],
+    }
+    playwright = {
+        "config": {"rootDir": f"{repo_path}/tools/stm32-monitor/ui/e2e", "projects": [
+            {"outputDir": f"{evidence_path}/playwright", "testDir": f"{repo_path}/tools/stm32-monitor/ui/e2e"}
+        ]},
+        "suites": [{"file": "native.spec.ts", "specs": [{"title": "native", "tests": [
+            {"projectName": "chromium-1280", "status": "skipped", "results": []}
+        ]}]}],
+        "errors": [], "stats": {"expected": 0, "skipped": 1, "unexpected": 0, "flaky": 0},
+    }
+    value = vitest if framework == "vitest-json" else playwright
+    raw = json.dumps(value).encode("utf-8")
+
+    normalized = gates.normalize_native_artifact(
+        framework, raw, repository_root=REPO, evidence_root=evidence,
+    )
+
+    assert str(REPO).encode() not in normalized and str(evidence).encode() not in normalized
+    assert b"<REPOSITORY_ROOT>/tools/stm32-monitor/ui" in normalized
+    if framework == "playwright-json":
+        assert b"<EVIDENCE_ROOT>/playwright" in normalized
+    forged = json.dumps({**value, "unknown": f"{repo_path}/secret.txt"}).encode("utf-8")
+    with pytest.raises(ControllerError, match="absolute|portable"):
+        gates.normalize_native_artifact(
+            framework, forged, repository_root=REPO, evidence_root=evidence,
+        )
+    foreign = raw.replace(repo_path.encode(), b"C:/Users/private/foreign")
+    with pytest.raises(ControllerError, match="absolute|portable"):
+        gates.normalize_native_artifact(
+            framework, foreign, repository_root=REPO, evidence_root=evidence,
+        )
+
+
+def test_native_xml_normalizes_known_failure_roots_but_rejects_foreign_paths_and_credentials(
+    tmp_path: Path,
+) -> None:
+    """JUnit failure/output fields may cite verified roots; no other private data is retained."""
+    evidence = tmp_path / "native-evidence"
+    evidence.mkdir()
+    raw = (
+        '<testsuite tests="1" failures="1" errors="0" skipped="0">'
+        '<testcase classname="native" name="failed"><failure message="failed at '
+        f'{REPO.as_posix()}/tool.py">trace {evidence.as_posix()}/raw.log</failure>'
+        '</testcase></testsuite>'
+    ).encode("utf-8")
+
+    normalized = gates.normalize_native_artifact(
+        "pytest-junit", raw, repository_root=REPO, evidence_root=evidence,
+    )
+
+    normalized_root = ElementTree.fromstring(normalized)
+    failure = next(normalized_root.iter("failure"))
+    assert failure.get("message") == "failed at <REPOSITORY_ROOT>/tool.py"
+    assert failure.text == "trace <EVIDENCE_ROOT>/raw.log"
+    for forbidden in (b"C:/Users/private/secret.txt", b"Authorization: Bearer abc.def.ghi"):
+        with pytest.raises(ControllerError, match="absolute|credential|portable"):
+            gates.normalize_native_artifact(
+                "pytest-junit", raw.replace(b"trace ", forbidden + b" trace "),
+                repository_root=REPO, evidence_root=evidence,
+            )
+
+
+@pytest.mark.parametrize(
+    ("framework", "raw"),
+    [
+        ("pytest-junit", b'<testsuite tests="1" failures="1" errors="0" skipped="0"><testcase classname="x" name="ok"/></testsuite>'),
+        ("vitest-json", json.dumps({
+            "numTotalTestSuites": 1, "numPassedTestSuites": 1, "numFailedTestSuites": 0,
+            "numPendingTestSuites": 0, "numTotalTests": 1, "numPassedTests": 1,
+            "numFailedTests": 0, "numPendingTests": 0, "numTodoTests": 0,
+            "success": False, "testResults": [{"status": "passed", "assertionResults": [
+                {"fullName": "ok", "status": "passed"}
+            ]}],
+        }).encode("utf-8")),
+        ("playwright-json", json.dumps({
+            "suites": [{"file": "a.spec.ts", "specs": [{"title": "ok", "tests": [
+                {"projectName": "chromium-1280", "status": "expected", "results": [{"status": "passed"}]}
+            ]}]}], "errors": [{"message": "global failure"}],
+            "stats": {"expected": 1, "skipped": 0, "unexpected": 0, "flaky": 0},
+        }).encode("utf-8")),
+    ],
+)
+def test_native_parser_rejects_summary_node_contradictions(framework: str, raw: bytes) -> None:
+    """A forged native summary cannot contradict the selected node outcomes or process result."""
+    with pytest.raises(ControllerError, match="summary|count|success|error"):
+        gates.parse_native_node_outcomes(framework, raw, exit_code=0)
 
 
 def test_real_gate_executor_times_out_and_cleans_up(tmp_path: Path) -> None:

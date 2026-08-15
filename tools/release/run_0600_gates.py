@@ -542,10 +542,170 @@ def _node_text(value: object, field: str) -> str:
     return value
 
 
+_NATIVE_WINDOWS_PATH = re.compile(r"(?<![A-Za-z0-9_.-])[A-Za-z]:[\\/]")
+_NATIVE_UNC_PATH = re.compile(r"(?<![A-Za-z0-9_.-])[\\/]{2}[^\\/\s]")
+_NATIVE_UNIX_PATH = re.compile(r"(?<![A-Za-z0-9_.*?-])/(?!/)(?=[^/\s])")
+_NATIVE_FILE_URI = re.compile(r"\bfile:[\\/]+", re.IGNORECASE)
+_NATIVE_CREDENTIAL = re.compile(
+    r"(?i)(?:authorization\s*[:=]\s*(?:bearer|basic)\s+\S+|"
+    r"(?:password|passwd|secret|token|api[-_]?key)\s*[:=]\s*\S+)"
+)
+
+
+def _native_portable_string(value: str) -> None:
+    inspected = value.replace("<REPOSITORY_ROOT>/", "repo/").replace(
+        "<EVIDENCE_ROOT>/", "evidence/"
+    )
+    if (
+        _NATIVE_WINDOWS_PATH.search(inspected)
+        or _NATIVE_UNC_PATH.search(inspected)
+        or _NATIVE_UNIX_PATH.search(inspected)
+        or _NATIVE_FILE_URI.search(inspected)
+    ):
+        raise ControllerError("native artifact contains an unrecognized absolute path")
+    if _NATIVE_CREDENTIAL.search(inspected):
+        raise ControllerError("native artifact contains a credential")
+
+
+def _replace_verified_root(value: str, root: Path, token: str) -> tuple[str, bool]:
+    canonical = str(root.resolve(strict=True))
+    variants = {canonical, canonical.replace("\\", "/"), canonical.replace("/", "\\")}
+    changed = False
+    for variant in sorted(variants, key=len, reverse=True):
+        pattern = re.compile(re.escape(variant) + r"(?=$|[\\/])", re.IGNORECASE)
+        value, count = pattern.subn(token, value)
+        changed = changed or count > 0
+    return value, changed
+
+
+def _normalize_known_path(value: str, repository_root: Path, evidence_root: Path) -> str:
+    value, _ = _replace_verified_root(value, repository_root, "<REPOSITORY_ROOT>")
+    value, _ = _replace_verified_root(value, evidence_root, "<EVIDENCE_ROOT>")
+    value = value.replace("<REPOSITORY_ROOT>\\", "<REPOSITORY_ROOT>/").replace(
+        "<EVIDENCE_ROOT>\\", "<EVIDENCE_ROOT>/"
+    )
+    _native_portable_string(value)
+    return value
+
+
+def _documented_native_json_path(framework: str, path: tuple[object, ...]) -> bool:
+    if framework == "vitest-json":
+        return (
+            len(path) == 3 and path[0] == "testResults"
+            and isinstance(path[1], int) and path[2] == "name"
+        )
+    if path in {("config", "configFile"), ("config", "rootDir")}:
+        return True
+    if (
+        len(path) == 4 and path[:2] == ("config", "projects")
+        and isinstance(path[2], int) and path[3] in {"outputDir", "testDir"}
+    ):
+        return True
+    return bool(path and path[-1] == "file" and any(item in {"suites", "specs"} for item in path[:-1]))
+
+
+def normalize_native_artifact(
+    framework: str,
+    raw: bytes,
+    *,
+    repository_root: Path,
+    evidence_root: Path,
+) -> bytes:
+    """Normalize only documented native fields below the two verified local roots."""
+    try:
+        repository_root = repository_root.resolve(strict=True)
+        evidence_root = evidence_root.resolve(strict=True)
+    except OSError as exc:
+        raise ControllerError("native artifact roots are unavailable") from exc
+    if not repository_root.is_dir() or not evidence_root.is_dir():
+        raise ControllerError("native artifact roots are not directories")
+    if framework in {"vitest-json", "playwright-json"}:
+        report = _native_json(raw, framework)
+
+        def walk(member: object, path: tuple[object, ...] = ()) -> object:
+            if isinstance(member, dict):
+                result: dict[str, object] = {}
+                for key, item in member.items():
+                    if not isinstance(key, str):
+                        raise ControllerError("native artifact JSON key is invalid")
+                    result[key] = walk(item, (*path, key))
+                return result
+            if isinstance(member, list):
+                return [walk(item, (*path, index)) for index, item in enumerate(member)]
+            if isinstance(member, str):
+                if _documented_native_json_path(framework, path):
+                    normalized = _normalize_known_path(
+                        member, repository_root, evidence_root
+                    )
+                    if normalized.startswith(("<REPOSITORY_ROOT>/", "<EVIDENCE_ROOT>/")):
+                        normalized = normalized.replace("\\", "/")
+                    return normalized
+                _native_portable_string(member)
+            return member
+
+        return canonical_json_bytes(walk(report))
+    if framework not in {"pytest-junit", "ctest-junit"}:
+        raise ControllerError("native artifact normalization framework is unsupported")
+    try:
+        root = ElementTree.fromstring(raw)
+    except (ElementTree.ParseError, UnicodeError) as exc:
+        raise ControllerError("native XML artifact is invalid") from exc
+    text_tags = {"failure", "error", "skipped", "system-out", "system-err"}
+    for element in root.iter():
+        tag = element.tag.rsplit("}", 1)[-1]
+        for key, value in tuple(element.attrib.items()):
+            if (tag == "testcase" and key == "file") or tag in text_tags:
+                element.attrib[key] = _normalize_known_path(
+                    value, repository_root, evidence_root
+                )
+            else:
+                _native_portable_string(value)
+        for member_name in ("text", "tail"):
+            value = getattr(element, member_name)
+            if not value:
+                continue
+            if tag in text_tags:
+                setattr(
+                    element, member_name,
+                    _normalize_known_path(value, repository_root, evidence_root),
+                )
+            else:
+                _native_portable_string(value)
+    return ElementTree.tostring(root, encoding="utf-8", xml_declaration=True)
+
+
 def _unique_native_outcomes(outcomes: list[tuple[str, str]]) -> tuple[tuple[str, str], ...]:
     if not outcomes or len({node_id for node_id, _ in outcomes}) != len(outcomes):
         raise ControllerError("native node inventory is empty or duplicated")
     return tuple(outcomes)
+
+
+def _native_count(value: object, field: str, *, default: int | None = None) -> int:
+    if value is None and default is not None:
+        return default
+    try:
+        result = int(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError) as exc:
+        raise ControllerError(f"native summary {field} count is invalid") from exc
+    if isinstance(value, bool) or result < 0 or str(result) != str(value):
+        raise ControllerError(f"native summary {field} count is invalid")
+    return result
+
+
+def _validate_native_exit(
+    framework: str,
+    outcomes: tuple[tuple[str, str], ...],
+    exit_code: int | None,
+    *,
+    global_error: bool = False,
+) -> None:
+    if exit_code is None:
+        return
+    if isinstance(exit_code, bool) or not isinstance(exit_code, int):
+        raise ControllerError(f"{framework} native exit code is invalid")
+    native_failure = global_error or any(outcome == "failed" for _, outcome in outcomes)
+    if (exit_code == 0) == native_failure:
+        raise ControllerError(f"{framework} native summary and exit code are inconsistent")
 
 
 def _parse_junit_node_outcomes(raw: bytes, framework: str) -> tuple[tuple[str, str], ...]:
@@ -556,11 +716,12 @@ def _parse_junit_node_outcomes(raw: bytes, framework: str) -> tuple[tuple[str, s
     if root.tag not in {"testsuite", "testsuites"}:
         raise ControllerError(f"{framework} native report root is invalid")
     outcomes: list[tuple[str, str]] = []
-    for testcase in root.iter("testcase"):
+    testcases = [item for item in root.iter() if item.tag.rsplit("}", 1)[-1] == "testcase"]
+    for testcase in testcases:
         name = _node_text(testcase.get("name"), "name")
         classname = testcase.get("classname")
         node_id = name if framework == "ctest-junit" else f"{_node_text(classname, 'classname')}::{name}"
-        children = {child.tag for child in testcase}
+        children = {child.tag.rsplit("}", 1)[-1] for child in testcase}
         status = testcase.get("status")
         if "failure" in children or "error" in children or status == "fail":
             outcome = "failed"
@@ -571,7 +732,31 @@ def _parse_junit_node_outcomes(raw: bytes, framework: str) -> tuple[tuple[str, s
         else:
             raise ControllerError(f"{framework} native testcase status is invalid")
         outcomes.append((node_id, outcome))
-    return _unique_native_outcomes(outcomes)
+    result = _unique_native_outcomes(outcomes)
+    suites = [item for item in root.iter() if item.tag.rsplit("}", 1)[-1] == "testsuite"]
+    if not suites:
+        raise ControllerError(f"{framework} native summary is missing")
+    for suite in suites:
+        suite_cases = [
+            item for item in suite.iter()
+            if item.tag.rsplit("}", 1)[-1] == "testcase"
+        ]
+        suite_outcomes = []
+        for item in suite_cases:
+            index = testcases.index(item)
+            suite_outcomes.append(outcomes[index][1])
+        tests = _native_count(suite.get("tests"), "tests")
+        failures = _native_count(suite.get("failures"), "failures", default=0)
+        errors = _native_count(suite.get("errors"), "errors", default=0)
+        skipped = _native_count(suite.get("skipped"), "skipped", default=0)
+        disabled = _native_count(suite.get("disabled"), "disabled", default=0)
+        if (
+            tests != len(suite_cases)
+            or failures + errors != suite_outcomes.count("failed")
+            or skipped + disabled != suite_outcomes.count("skipped")
+        ):
+            raise ControllerError(f"{framework} native summary counts contradict nodes")
+    return result
 
 
 def _native_json(raw: bytes, framework: str) -> dict[str, object]:
@@ -601,7 +786,35 @@ def _parse_vitest_node_outcomes(raw: bytes) -> tuple[tuple[str, str], ...]:
             if status not in {"passed", "failed", "skipped", "pending", "todo"}:
                 raise ControllerError("vitest native assertion status is invalid")
             outcomes.append((node_id, "skipped" if status in {"pending", "todo"} else status))
-    return _unique_native_outcomes(outcomes)
+    result = _unique_native_outcomes(outcomes)
+    statuses = [outcome for _, outcome in result]
+    expected_counts = {
+        "numTotalTests": len(result),
+        "numPassedTests": statuses.count("passed"),
+        "numFailedTests": statuses.count("failed"),
+        "numPendingTests": statuses.count("skipped"),
+    }
+    for field, expected in expected_counts.items():
+        if _native_count(report.get(field), field) != expected:
+            raise ControllerError("vitest native summary counts contradict nodes")
+    todo = _native_count(report.get("numTodoTests"), "numTodoTests", default=0)
+    if todo > expected_counts["numPendingTests"]:
+        raise ControllerError("vitest native summary todo count contradicts nodes")
+    suite_statuses = [suite.get("status") for suite in tests if isinstance(suite, dict)]
+    suite_total = _native_count(report.get("numTotalTestSuites"), "numTotalTestSuites")
+    suite_passed = _native_count(report.get("numPassedTestSuites"), "numPassedTestSuites")
+    suite_failed = _native_count(report.get("numFailedTestSuites"), "numFailedTestSuites")
+    suite_pending = _native_count(report.get("numPendingTestSuites"), "numPendingTestSuites")
+    if (
+        suite_passed + suite_failed + suite_pending != suite_total
+        or (bool(suite_statuses.count("failed")) != bool(suite_failed))
+    ):
+        raise ControllerError("vitest native summary suite counts contradict nodes")
+    success = report.get("success")
+    expected_success = not statuses.count("failed") and not suite_failed
+    if type(success) is not bool or success is not expected_success:
+        raise ControllerError("vitest native success contradicts node summary")
+    return result
 
 
 def _parse_playwright_node_outcomes(raw: bytes) -> tuple[tuple[str, str], ...]:
@@ -629,7 +842,7 @@ def _parse_playwright_node_outcomes(raw: bytes) -> tuple[tuple[str, str], ...]:
                 project = _node_text(test.get("projectName"), "projectName")
                 status = test.get("status")
                 results = test.get("results")
-                if not isinstance(results, list) or status not in {"expected", "unexpected", "skipped", "flaky"}:
+                if not isinstance(results, list) or status not in {"expected", "unexpected", "skipped"}:
                     raise ControllerError("playwright native test status is invalid")
                 if status == "skipped":
                     outcome = "skipped"
@@ -644,17 +857,52 @@ def _parse_playwright_node_outcomes(raw: bytes) -> tuple[tuple[str, str], ...]:
 
     for suite in suites:
         walk(suite)
-    return _unique_native_outcomes(outcomes)
+    result = _unique_native_outcomes(outcomes)
+    stats = report.get("stats")
+    errors = report.get("errors")
+    if not isinstance(stats, dict) or not isinstance(errors, list):
+        raise ControllerError("playwright native summary is invalid")
+    native_statuses: list[str] = []
+
+    def collect(suite: object) -> None:
+        assert isinstance(suite, dict)
+        for spec in suite.get("specs", []):
+            assert isinstance(spec, dict)
+            for test in spec.get("tests", []):
+                assert isinstance(test, dict)
+                native_statuses.append(str(test.get("status")))
+        for child in suite.get("suites", []):
+            collect(child)
+
+    for suite in suites:
+        collect(suite)
+    for field in ("expected", "unexpected", "skipped", "flaky"):
+        if _native_count(stats.get(field), field) != native_statuses.count(field):
+            raise ControllerError("playwright native summary counts contradict nodes")
+    return result
 
 
-def parse_native_node_outcomes(framework: str, raw: bytes) -> tuple[tuple[str, str], ...]:
+def parse_native_node_outcomes(
+    framework: str, raw: bytes, *, exit_code: int | None = None,
+) -> tuple[tuple[str, str], ...]:
     """Map one strictly validated native runner report to the catalog's node inventory."""
     if framework in {"pytest-junit", "ctest-junit"}:
-        return _parse_junit_node_outcomes(raw, framework)
+        outcomes = _parse_junit_node_outcomes(raw, framework)
+        _validate_native_exit(framework, outcomes, exit_code)
+        return outcomes
     if framework == "vitest-json":
-        return _parse_vitest_node_outcomes(raw)
+        outcomes = _parse_vitest_node_outcomes(raw)
+        _validate_native_exit(framework, outcomes, exit_code)
+        return outcomes
     if framework == "playwright-json":
-        return _parse_playwright_node_outcomes(raw)
+        outcomes = _parse_playwright_node_outcomes(raw)
+        report = _native_json(raw, framework)
+        errors = report.get("errors")
+        _validate_native_exit(
+            framework, outcomes, exit_code,
+            global_error=isinstance(errors, list) and bool(errors),
+        )
+        return outcomes
     raise ControllerError("native node framework is unsupported")
 
 
@@ -726,106 +974,154 @@ def execute_gate_process(
     environment: dict[str, str],
     *,
     evidence_root: Path,
+    after_gate_root_create: Callable[[Path], object] | None = None,
 ) -> GateRunOutput:
     """Execute one catalog argv without a shell and retain one immutable stream/result snapshot."""
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}", gate.gate_id):
         raise ControllerError("gate id cannot name an evidence directory")
     if not gate.argv or any(not token or any(character in token for character in "\r\n") for token in gate.argv):
         raise ControllerError("gate argv is invalid")
-    if not evidence_root.is_absolute() or not evidence_root.is_dir():
+    if os.name != "nt" or not evidence_root.is_absolute() or not evidence_root.is_dir():
         raise ControllerError("executor evidence root is invalid")
     gate_root = evidence_root / gate.gate_id
-    gate_root.mkdir()
     try:
         framework, native_tokens, native_report_path = _native_report_argv(gate.argv, gate_root)
     except ControllerError:
         if gate.expected_nodes:
             raise
         framework, native_tokens, native_report_path = "opaque", (), None
-    base_environment = _safe_controller_env()
-    child_env = {
-        key: value
-        for key, value in environment.items()
-        if key.upper() in {member.upper() for member in base_environment}
-    }
-    for key, value in base_environment.items():
-        child_env.setdefault(key, value)
-    child_env["STM32TK_TEST_SEED"] = f"stm32tk-0600:{gate.gate_id}"
-    creation_flags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0) if os.name == "nt" else 0
-    started = time.monotonic_ns()
-    process = subprocess.Popen(
-        [*gate.argv, *native_tokens],
-        cwd=gate.cwd,
-        env=child_env,
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        creationflags=creation_flags,
-        shell=False,
+    native_name = (
+        None if framework == "opaque" else
+        "native-results.xml" if framework in {"pytest-junit", "ctest-junit"}
+        else "native-results.json"
     )
-    timed_out = False
-    try:
-        stdout, stderr = process.communicate(timeout=gate.timeout_seconds)
-        exit_code = int(process.returncode)
-    except subprocess.TimeoutExpired:
-        timed_out = True
-        _terminate_process_tree(process)
-        stdout, stderr = process.communicate(timeout=10)
-        exit_code = -1
-    duration_ms = max(0, (time.monotonic_ns() - started) // 1_000_000)
-    if framework == "opaque":
-        native_report = b""
-        native_name = None
-        outcomes = ()
-    elif native_report_path is None:
-        native_report = stdout
-        native_name = "native-results.json"
-    else:
+    with ExitStack() as stack:
+        evidence_lock = stack.enter_context(_open_locked_windows_directory(evidence_root))
+        stack.enter_context(_create_coverage_lock_sentinel(evidence_root))
+        _validate_locked_coverage_directory(evidence_lock)
         try:
-            native_report = native_report_path.read_bytes()
+            gate_root.mkdir()
         except OSError as exc:
-            raise ControllerError("native runner report was not created") from exc
-        native_name = native_report_path.name
-        stdout = _portable_native_stdout(stdout, native_report_path)
-    if framework != "opaque":
-        outcomes = parse_native_node_outcomes(framework, native_report)
-    result_value = {
-        "schema": "stm32-gate-process-result/1",
-        "exit_code": exit_code,
-        "duration_ms": duration_ms,
-        "timed_out": timed_out,
-        "selected_nodes": [node_id for node_id, _ in outcomes],
-        "node_outcomes": [
-            {"node_id": node_id, "outcome": outcome}
-            for node_id, outcome in outcomes
-        ],
-    }
-    payloads = {
-        "result.json": canonical_json_bytes(result_value),
-        "stderr.log": stderr,
-        "stdout.log": stdout,
-    }
-    if native_name is not None:
-        payloads[native_name] = native_report
-    retained: list[dict[str, object]] = []
-    for name in sorted(payloads, key=lambda item: item.encode("utf-8")):
-        data = payloads[name]
-        (gate_root / name).write_bytes(data)
-        retained.append({
-            "path": f"{gate.gate_id}/{name}",
-            "bytes": len(data),
-            "sha256": hashlib.sha256(data).hexdigest(),
-        })
-    return GateRunOutput(
-        exit_code,
-        stdout,
-        stderr,
-        tuple(node_id for node_id, _ in outcomes),
-        outcomes,
-        duration_ms=duration_ms,
-        timed_out=timed_out,
-        retained_evidence=tuple(retained),
-    )
+            raise ControllerError("gate evidence directory must be a new path") from exc
+        if after_gate_root_create is not None:
+            after_gate_root_create(gate_root)
+        try:
+            gate_lock = stack.enter_context(_open_locked_windows_directory(gate_root))
+            stack.enter_context(_create_coverage_lock_sentinel(gate_root))
+        except (OSError, ControllerError) as exc:
+            raise ControllerError("gate evidence directory is a reparse point or changed identity") from exc
+        artifact_names = ["result.json", "stderr.log", "stdout.log"]
+        if native_name is not None:
+            artifact_names.append(native_name)
+        artifacts: dict[str, _LockedWindowsFile] = {}
+        for name in artifact_names:
+            try:
+                artifacts[name] = stack.enter_context(_open_locked_windows_file(
+                    gate_root / name,
+                    create_new=True,
+                    write=True,
+                    share_write=(name == "native-results.xml"),
+                ))
+            except (OSError, ControllerError) as exc:
+                raise ControllerError("gate evidence artifact create-new failed") from exc
+        _validate_locked_coverage_directory(evidence_lock)
+        _validate_locked_coverage_directory(gate_lock)
+        base_environment = _safe_controller_env()
+        child_env = {
+            key: value
+            for key, value in environment.items()
+            if key.upper() in {member.upper() for member in base_environment}
+        }
+        for key, value in base_environment.items():
+            child_env.setdefault(key, value)
+        child_env["STM32TK_TEST_SEED"] = f"stm32tk-0600:{gate.gate_id}"
+        creation_flags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+        started = time.monotonic_ns()
+        process = subprocess.Popen(
+            [*gate.argv, *native_tokens],
+            cwd=gate.cwd,
+            env=child_env,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            creationflags=creation_flags,
+            shell=False,
+        )
+        timed_out = False
+        try:
+            stdout, stderr = process.communicate(timeout=gate.timeout_seconds)
+            exit_code = int(process.returncode)
+        except subprocess.TimeoutExpired:
+            timed_out = True
+            _terminate_process_tree(process)
+            stdout, stderr = process.communicate(timeout=10)
+            exit_code = -1
+        duration_ms = max(0, (time.monotonic_ns() - started) // 1_000_000)
+        _validate_locked_coverage_directory(evidence_lock)
+        _validate_locked_coverage_directory(gate_lock)
+        if framework == "opaque":
+            native_report = b""
+            outcomes = ()
+        elif native_report_path is None:
+            native_report = stdout
+        else:
+            native_report = _windows_read_locked_file(artifacts["native-results.xml"])
+            if not native_report:
+                raise ControllerError("native runner report was not created")
+            stdout = _portable_native_stdout(stdout, native_report_path)
+        if framework != "opaque":
+            native_report = normalize_native_artifact(
+                framework,
+                native_report,
+                repository_root=Path(__file__).resolve().parents[2],
+                evidence_root=evidence_root,
+            )
+            if framework in {"vitest-json", "playwright-json"}:
+                stdout = native_report
+            outcomes = parse_native_node_outcomes(
+                framework, native_report, exit_code=exit_code,
+            )
+        result_value = {
+            "schema": "stm32-gate-process-result/1",
+            "exit_code": exit_code,
+            "duration_ms": duration_ms,
+            "timed_out": timed_out,
+            "selected_nodes": [node_id for node_id, _ in outcomes],
+            "node_outcomes": [
+                {"node_id": node_id, "outcome": outcome}
+                for node_id, outcome in outcomes
+            ],
+        }
+        payloads = {
+            "result.json": canonical_json_bytes(result_value),
+            "stderr.log": stderr,
+            "stdout.log": stdout,
+        }
+        if native_name is not None:
+            payloads[native_name] = native_report
+        retained: list[dict[str, object]] = []
+        for name in sorted(payloads, key=lambda item: item.encode("utf-8")):
+            data = payloads[name]
+            _windows_write_locked_file(artifacts[name], data)
+            if _windows_read_locked_file(artifacts[name]) != data:
+                raise ControllerError("gate evidence artifact differs after locked write")
+            retained.append({
+                "path": f"{gate.gate_id}/{name}",
+                "bytes": len(data),
+                "sha256": hashlib.sha256(data).hexdigest(),
+            })
+        _validate_locked_coverage_directory(evidence_lock)
+        _validate_locked_coverage_directory(gate_lock)
+        return GateRunOutput(
+            exit_code,
+            stdout,
+            stderr,
+            tuple(node_id for node_id, _ in outcomes),
+            outcomes,
+            duration_ms=duration_ms,
+            timed_out=timed_out,
+            retained_evidence=tuple(retained),
+        )
 
 
 def validate_resource_locks(gates: Sequence[GateRequest]) -> None:
@@ -1270,6 +1566,7 @@ def _open_locked_windows_file(
     create_new: bool,
     write: bool,
     cleanup: bool = False,
+    share_write: bool = True,
 ) -> _LockedWindowsFile:
     if not _coverage_windows_available():
         raise ControllerError("development coverage requires Windows file locking")
@@ -1285,7 +1582,7 @@ def _open_locked_windows_file(
     handle = kernel32.CreateFileW(
         str(path),
         desired_access,
-        0x00000001 | 0x00000002,
+        0x00000001 | (0x00000002 if share_write else 0),
         None,
         1 if create_new else 3,
         0x00200000,
@@ -1391,6 +1688,15 @@ def _windows_read_locked_file(locked: _LockedWindowsFile) -> bytes:
 def _windows_write_locked_file(locked: _LockedWindowsFile, data: bytes) -> None:
     _validate_locked_coverage_file_path(locked)
     kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.SetFilePointerEx.argtypes = [
+        wintypes.HANDLE, ctypes.c_longlong, ctypes.POINTER(ctypes.c_longlong), wintypes.DWORD,
+    ]
+    kernel32.SetFilePointerEx.restype = wintypes.BOOL
+    new_position = ctypes.c_longlong()
+    if not kernel32.SetFilePointerEx(
+        wintypes.HANDLE(locked.handle), 0, ctypes.byref(new_position), 0
+    ) or new_position.value != 0:
+        raise ControllerError("coverage locked result rewind failed") from ctypes.WinError(ctypes.get_last_error())
     kernel32.WriteFile.argtypes = [
         wintypes.HANDLE, wintypes.LPCVOID, wintypes.DWORD,
         ctypes.POINTER(wintypes.DWORD), wintypes.LPVOID,
@@ -1406,6 +1712,10 @@ def _windows_write_locked_file(locked: _LockedWindowsFile, data: bytes) -> None:
         raise ControllerError("coverage locked result write failed") from ctypes.WinError(ctypes.get_last_error())
     if written.value != len(data):
         raise ControllerError("coverage locked result write was incomplete")
+    kernel32.SetEndOfFile.argtypes = [wintypes.HANDLE]
+    kernel32.SetEndOfFile.restype = wintypes.BOOL
+    if not kernel32.SetEndOfFile(wintypes.HANDLE(locked.handle)):
+        raise ControllerError("coverage locked result truncate failed") from ctypes.WinError(ctypes.get_last_error())
     if not kernel32.FlushFileBuffers(wintypes.HANDLE(locked.handle)):
         raise ControllerError("coverage locked result flush failed") from ctypes.WinError(ctypes.get_last_error())
     _validate_locked_coverage_file_path(locked)

@@ -81,7 +81,23 @@ def test_terminal_verifier_reparses_controller_native_artifacts(
 
 def test_portable_validation_allows_only_the_native_evidence_root_placeholder() -> None:
     assert verifier._contains_rooted_private_path("<EVIDENCE_ROOT>/native-results.xml") is False
+    assert verifier._contains_rooted_private_path("<REPOSITORY_ROOT>/tools/test.py") is False
     assert verifier._contains_rooted_private_path("C:\\Users\\private\\native-results.xml") is True
+    assert verifier._contains_rooted_private_path("<EVIDENCE_ROOT>/C:/Users/private/hidden.txt") is True
+    assert verifier._contains_rooted_private_path("<REPOSITORY_ROOT>/C:\\Users\\private\\hidden.txt") is True
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        b'<testsuite><testcase name="x"><system-out>C:\\Users\\private\\secret.txt</system-out></testcase></testsuite>',
+        b'<testsuite><testcase name="x"><failure message="Authorization: Bearer abc.def.ghi"/></testcase></testsuite>',
+    ],
+)
+def test_portable_package_validation_scans_every_native_xml_string(payload: bytes) -> None:
+    """XML attributes, text, and tails cannot bypass the package path/credential policy."""
+    with pytest.raises(VerificationError, match="path|credential"):
+        verifier._validate_portable_package_payload("GATE/native-results.xml", payload)
 
 
 @pytest.fixture

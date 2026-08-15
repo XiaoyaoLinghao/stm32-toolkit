@@ -24,6 +24,7 @@ import sys
 import tempfile
 import unicodedata
 import zipfile
+import xml.etree.ElementTree as ElementTree
 from contextlib import ExitStack
 from io import BytesIO
 from dataclasses import dataclass
@@ -947,7 +948,7 @@ def verify_shard_package(
             raise VerificationError("external retained evidence changed during verification")
 
 
-ROOTED_PATH_BOUNDARY = r"(?<![A-Za-z0-9_./-])"
+ROOTED_PATH_BOUNDARY = r"(?<![A-Za-z0-9_.*?/-])"
 UNC_ROOTED_PATH_BOUNDARY = r"(?<![A-Za-z0-9_.:/-])"
 DRIVE_ROOTED_PATH_PATTERN = re.compile(
     ROOTED_PATH_BOUNDARY + r"[A-Za-z]:[\\/]"
@@ -1046,8 +1047,10 @@ def _portable_regex_escape_at(value: str, start: int) -> bool:
 
 
 def _contains_rooted_private_path(value: str) -> bool:
-    value = value.replace("<EVIDENCE_ROOT>/native-results.xml", "native-results.xml").replace(
-        "<EVIDENCE_ROOT>/native-results.json", "native-results.json"
+    value = value.replace("<REPOSITORY_ROOT>/", "repository/").replace(
+        "<REPOSITORY_ROOT>\\", "repository/"
+    ).replace("<EVIDENCE_ROOT>/", "evidence/").replace(
+        "<EVIDENCE_ROOT>\\", "evidence/"
     )
     stripped = value.strip()
     if stripped and not stripped.strip("\\/"):
@@ -1161,6 +1164,14 @@ def _validate_portable_package_payload(name: str, payload: bytes) -> None:
         except UnicodeError as exc:
             raise VerificationError("package text payload is not UTF-8") from exc
         _validate_portable_string(text)
+    elif suffix == ".xml":
+        try:
+            root = ElementTree.fromstring(payload)
+        except (ElementTree.ParseError, UnicodeError) as exc:
+            raise VerificationError("package XML payload is unreadable") from exc
+        for element in root.iter():
+            for value in (*element.attrib.values(), element.text or "", element.tail or ""):
+                _validate_portable_string(value)
 
 
 AUDIT_ROOT_KEYS = {
@@ -2811,11 +2822,15 @@ def _verify_terminal_decision(
     return str(precheck), str(postcheck)
 
 
-def _parse_retained_native_outcomes(framework: str, raw: bytes) -> list[dict[str, str]]:
+def _parse_retained_native_outcomes(
+    framework: str, raw: bytes, *, exit_code: int | None = None,
+) -> list[dict[str, str]]:
     try:
         return [
             {"node_id": node_id, "outcome": outcome}
-            for node_id, outcome in parse_native_node_outcomes(framework, raw)
+            for node_id, outcome in parse_native_node_outcomes(
+                framework, raw, exit_code=exit_code,
+            )
         ]
     except ControllerError as exc:
         raise VerificationError("terminal native node artifact is invalid") from exc
@@ -3095,7 +3110,9 @@ def _verify_terminal_result(
                 "sha256": hashlib.sha256(stdout_bytes).hexdigest(),
             } != metadata["stdout"]:
                 raise VerificationError("terminal retained stdout differs from metadata")
-            parsed_outcomes = _parse_retained_native_outcomes(framework, native_path.read_bytes())
+            parsed_outcomes = _parse_retained_native_outcomes(
+                framework, native_path.read_bytes(), exit_code=int(metadata["exit_code"]),
+            )
             if (
                 parsed_outcomes != metadata["node_outcomes"]
                 or [item["node_id"] for item in parsed_outcomes]
