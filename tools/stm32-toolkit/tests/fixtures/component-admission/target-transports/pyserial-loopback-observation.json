@@ -1,0 +1,12 @@
+{
+  "api": "serial.serial_for_url",
+  "bytes_read": 13,
+  "bytes_written": 13,
+  "closed_after_observation": true,
+  "hardware_body_executed": false,
+  "observation": "bounded local loop:// round trip of ST32-loopback",
+  "physical_transport_evidence": false,
+  "result": "PASS",
+  "url": "loop://",
+  "version": "3.5"
+}

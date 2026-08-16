@@ -1,0 +1,9 @@
+{
+  "api": "pyocd.debug.rtt.RTTControlBlock",
+  "hardware_body_executed": false,
+  "module": "pyocd.debug.rtt",
+  "observation": "abstract RTT API imported without session, probe discovery, or target access",
+  "physical_transport_evidence": false,
+  "result": "PASS",
+  "version": "0.45.1"
+}

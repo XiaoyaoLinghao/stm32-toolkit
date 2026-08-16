@@ -1,0 +1,10 @@
+{
+  "api": "pyocd.debug.semihost.SemihostIOHandler",
+  "backend_invoked": false,
+  "hardware_body_executed": false,
+  "host_file_policy": "deny-before-backend",
+  "observation": "deny-capable base I/O API imported without SemihostAgent or debug session",
+  "physical_transport_evidence": false,
+  "result": "PASS",
+  "version": "0.45.1"
+}

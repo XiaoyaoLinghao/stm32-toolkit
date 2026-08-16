@@ -1,0 +1,52 @@
+{
+  "corruption_classes": [
+    "crc",
+    "invalid-sequence",
+    "invalid-utf8",
+    "oversize-before-allocation",
+    "truncated"
+  ],
+  "files": {
+    "corrupt-crc.bin": {
+      "bytes": 27,
+      "sha256": "213f427f04e6cd8c9dd57191b0508887a3b0750a64d39ba6bde5490af2ac7e5e"
+    },
+    "oversize-header.bin": {
+      "bytes": 16,
+      "sha256": "01a166313b7fd9df9c6a63684101c5d955e54c8acf6f50a5028e61b86a0a7c03"
+    },
+    "truncated-frame.bin": {
+      "bytes": 26,
+      "sha256": "7e810e6556fb97e6529ae7a1d26fdc3216e8dd4d607a5c08fafee8710e8c05e8"
+    },
+    "valid-run.bin": {
+      "bytes": 915,
+      "sha256": "035690f9e4afc513b965fc1e700542516465f1f601a18d533ec43ef64bb0f38d"
+    }
+  },
+  "embedded_streams": {
+    "invalid-sequence": {
+      "bytes": 22,
+      "encoding": "hex",
+      "sha256": "5930bfaefd8e060a4e4f3e63a91ff86a35d8b188b069d37c6784d5d4b048018c",
+      "value": "535433320101000001000000020000007b7d3a5bb19c"
+    },
+    "invalid-utf8": {
+      "bytes": 21,
+      "encoding": "hex",
+      "sha256": "8fa30460ccd624b418ffaf5fe09c6fee4d457fc4ca0373a0f96ce42367e7ad5a",
+      "value": "53543332010100000000000001000000ff35ca390d"
+    }
+  },
+  "frame_kinds": {
+    "1": "inventory",
+    "2": "run_start",
+    "3": "case_start",
+    "4": "case_result",
+    "5": "run_end",
+    "6": "log"
+  },
+  "physical_transport_evidence": false,
+  "schema": "stm32tk-target-replay/1",
+  "source": "toolkit-generated-protocol-replay"
+}

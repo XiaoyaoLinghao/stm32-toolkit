@@ -1,0 +1,108 @@
+{
+  "captured_at_utc": "2026-08-16T04:47:30.330244Z",
+  "components": {
+    "pyocd_rtt": {
+      "api_observation": {
+        "argv": ["<PYTHON312>", "-c", "import pyocd; from pyocd.debug.rtt import RTTControlBlock"],
+        "bytes": 293,
+        "exit_code": 0,
+        "path": "pyocd-fake-api-observation.json",
+        "sha256": "728af4f9a7783104bc11fb789e8502888bb819366df3cad9e2c1ac5312c9ee4f"
+      },
+      "license": "Apache-2.0",
+      "license_source": {
+        "bytes": 9144,
+        "member": "pyocd-0.45.1.dist-info/licenses/LICENSE",
+        "sha256": "87edf00eb3adb7b328bbd302d87cf4eda0743f0bc36c60189d52c05e516a0402"
+      },
+      "offline_package": {
+        "bytes": 14789429,
+        "path": "<SUPPORT_ROOT>/wheelhouse/pyocd-0.45.1-py3-none-any.whl",
+        "sha256": "bf3f35d62620f8a0838cd1b2d8c6555308073165093684663c4c1921dae73b30"
+      },
+      "version": "0.45.1",
+      "version_observation": {
+        "argv": ["<PYTHON312>", "-m", "pyocd", "--version"],
+        "bytes": 7,
+        "exit_code": 0,
+        "path": "pyocd-version.txt",
+        "sha256": "403524abcb410ab5cc233a383704f253000609405981deda48bf89517dd50250"
+      }
+    },
+    "pyserial_uart": {
+      "api_observation": {
+        "api_call": "serial.serial_for_url('loop://', baudrate=115200, bytesize=8, parity='N', stopbits=1, timeout=0.5, write_timeout=0.5)",
+        "bytes": 321,
+        "exit_code": 0,
+        "path": "pyserial-loopback-observation.json",
+        "sha256": "eca38c73a7d684ad5b02c5b4cd78eaee64937f29bc908d8d1dd47d278c4e5799"
+      },
+      "license": "BSD-3-Clause",
+      "license_source": {
+        "bytes": 1650,
+        "member": "pyserial-3.5.dist-info/METADATA",
+        "sha256": "42a8ab7e94ef0b7baa7e94cdac65d6b9254c608476f630120c990007bf472943"
+      },
+      "offline_package": {
+        "bytes": 91207,
+        "path": "<SUPPORT_ROOT>/wheelhouse/pyserial-3.5-py3-none-any.whl",
+        "sha256": "9cbfae297ec100e1fc4376089f605e55bb44d8986800a662e74dadeca2f4bcf5"
+      },
+      "version": "3.5",
+      "version_observation": {
+        "argv": ["<PYTHON312>", "-c", "import serial; print(serial.VERSION)"],
+        "bytes": 4,
+        "exit_code": 0,
+        "path": "pyserial-version.txt",
+        "sha256": "a5c0dfc64d745c1bff4a4f6397214178e1597fc224cdb21bb7783e556ed8493f"
+      }
+    },
+    "semihosting_backend": {
+      "api_observation": {
+        "argv": ["<PYTHON312>", "-c", "from pyocd.debug.semihost import SemihostIOHandler"],
+        "bytes": 339,
+        "exit_code": 0,
+        "path": "semihosting-fake-api-observation.json",
+        "sha256": "04c17400faca75b0448a51ae9bd27938d14e7fb8b6da3c0b95dc0702190d44c9"
+      },
+      "backend": "pyocd.debug.semihost.SemihostIOHandler",
+      "host_file_policy": "deny-before-backend",
+      "license": "Apache-2.0",
+      "offline_package_sha256": "bf3f35d62620f8a0838cd1b2d8c6555308073165093684663c4c1921dae73b30",
+      "version": "0.45.1",
+      "version_observation": {
+        "api_call": "import pyocd.debug.semihost.SemihostIOHandler",
+        "bytes": 31,
+        "exit_code": 0,
+        "path": "semihosting-backend-version.txt",
+        "sha256": "39ca73c07453114462e850532fe210c6c43b615957a08960e6a416f76a39b816"
+      }
+    }
+  },
+  "decision": "ADMITTED_SOFTWARE_ONLY",
+  "execution": {
+    "credential_handling": "no credentials accepted or emitted",
+    "failure_policy": "closed error; no silent fallback",
+    "hardware_body_executed": false,
+    "network_access": "denied and not required",
+    "physical_transport_evidence": false,
+    "sanitization": ["Python executable replaced by <PYTHON312>", "support root replaced by <SUPPORT_ROOT>", "no serial number, credential, or user path retained"],
+    "support_profile": {
+      "path": "<SUPPORT_ROOT>/feasibility/profile.json",
+      "sha256": "2b7dda4ef0c7dd5f7da64146271f8285ff37c55563a6c21e47338195d8f42808"
+    }
+  },
+  "integration": {
+    "authorization": "Toolkit retains exact action-digest authorization; Task 8 executes no MODIFY",
+    "cleanup": "all fake and loopback handles close on success, timeout, and disconnect",
+    "concurrency": "one adapter instance owns one injected port; no shared mutable registry",
+    "identity": "Toolkit binds project/workspace/session/firmware/Test/Evidence identity",
+    "mailbox": "read-only BoundedMemoryReader fake in Task 8; Probe v2 production binding deferred to Task 9",
+    "maintenance_avoided": "no second RTT engine, UART stack, semihosting engine, GDB server manager, or probe service",
+    "partial_output": "bounded chunks are returned only after adapter validation",
+    "path_policy": "canonical exact UART port and ELF path; no scanning or guessed path",
+    "performance_cost": "thin synchronous adapters; 14.9 MB pyOCD wheel and 91 KB pyserial wheel already in frozen offline support",
+    "timeout": "absolute monotonic deadlines checked before every external adapter call"
+  },
+  "schema": "stm32tk-component-admission/1"
+}
