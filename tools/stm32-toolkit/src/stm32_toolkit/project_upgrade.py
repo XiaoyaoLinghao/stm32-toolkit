@@ -65,20 +65,23 @@ def project_mutation_lock(project_root:Path)->Iterator[EvidenceStore]:
     root=canonical_project_root(project_root); before=EvidenceStore._validate_existing_path(root.parent)
     guard=_stable_parent_guard(root.parent,before) if os.name=="nt" else nullcontext()
     with guard:
-        selected=None
+        acquired:list[EvidenceStore]=[]
         stack=ExitStack()
         try:
             for ledger in _ledgers(root):
                 try:
                     stack.enter_context(ledger._mutation_lock())
-                    selected=ledger
-                    break
-                except (OSError,EvidenceValidationError):
+                    acquired.append(ledger)
+                except (OSError,EvidenceValidationError) as error:
+                    if acquired:
+                        raise EvidenceValidationError(
+                            "project mutation ledger set is partially unavailable"
+                        ) from error
                     continue
-            if selected is None:raise EvidenceValidationError("project mutation ledgers are unavailable")
+            if not acquired:raise EvidenceValidationError("project mutation ledgers are unavailable")
             current=EvidenceStore._validate_existing_path(root.parent)
             if (current.st_dev,current.st_ino)!=(before.st_dev,before.st_ino):raise EvidenceValidationError("project parent identity changed")
-            yield selected
+            yield acquired[0]
         finally:
             stack.close()
 

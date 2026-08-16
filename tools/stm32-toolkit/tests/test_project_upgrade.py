@@ -5,11 +5,14 @@ import json
 import os
 import subprocess
 import sys
+import time
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from dataclasses import replace
 from hashlib import sha256
 from pathlib import Path
 from types import MappingProxyType
+from threading import Event, Thread
 
 import pytest
 
@@ -681,3 +684,107 @@ def test_rename_exchange_missing_symbol_and_hard_error(tmp_path: Path, monkeypat
     monkeypatch.setattr(upgrade_mod.ctypes, "get_errno", lambda: errno.EPERM)
     with pytest.raises(OSError):
         upgrade_mod._rename_exchange(tmp_path / "a", tmp_path / "b")
+
+
+def test_recovered_primary_waits_for_secondary_held_by_first_caller(tmp_path: Path, monkeypatch):
+    root = tmp_path / "project"
+    root.mkdir()
+    original = upgrade_mod.EvidenceStore._mutation_lock
+    first_inside = Event()
+    release_first = Event()
+    second_inside = Event()
+
+    @contextmanager
+    def flaky_lock(store):
+        if store.root.name == upgrade_mod._LEDGER_A and __import__("threading").current_thread().name == "caller-one":
+            raise EvidenceValidationError("primary temporarily unavailable")
+        with original(store):
+            yield
+
+    monkeypatch.setattr(upgrade_mod.EvidenceStore, "_mutation_lock", flaky_lock)
+
+    def caller_one():
+        with upgrade_mod.project_mutation_lock(root):
+            first_inside.set()
+            assert release_first.wait(5)
+
+    def caller_two():
+        with upgrade_mod.project_mutation_lock(root):
+            second_inside.set()
+
+    first = Thread(target=caller_one, name="caller-one")
+    first.start()
+    assert first_inside.wait(5)
+    second = Thread(target=caller_two, name="caller-two")
+    second.start()
+    entered_while_first_held = second_inside.wait(0.3)
+    release_first.set()
+    first.join(5); second.join(5)
+    assert not entered_while_first_held
+    assert second_inside.is_set()
+
+
+def test_recovered_primary_waits_for_secondary_across_process(tmp_path: Path):
+    root = tmp_path / "project"
+    root.mkdir()
+    primary = tmp_path / upgrade_mod._LEDGER_A
+    primary.write_text("blocked", encoding="utf-8")
+    ready = tmp_path / "child-ready"
+    script = """
+from pathlib import Path
+from stm32_toolkit.project_upgrade import project_mutation_lock
+root=Path(r'''%s''')
+with project_mutation_lock(root):
+    Path(r'''%s''').write_text('entered',encoding='utf-8')
+""" % (root, ready)
+    with upgrade_mod.project_mutation_lock(root):
+        primary.unlink()
+        child = subprocess.Popen([sys.executable, "-c", script])
+        time.sleep(0.4)
+        assert not ready.exists()
+    assert child.wait(10) == 0
+    assert ready.read_text(encoding="utf-8") == "entered"
+
+
+def test_secondary_acquisition_failure_releases_primary_without_entering(tmp_path: Path):
+    root = tmp_path / "project"
+    root.mkdir()
+    secondary = tmp_path / upgrade_mod._LEDGER_B
+    secondary.write_text("blocked", encoding="utf-8")
+    entered = False
+    with pytest.raises(EvidenceValidationError):
+        with upgrade_mod.project_mutation_lock(root):
+            entered = True
+    assert entered is False
+    secondary.unlink()
+    with upgrade_mod.project_mutation_lock(root):
+        entered = True
+    assert entered is True
+
+
+def test_both_available_ledgers_are_held_in_fixed_order(tmp_path: Path, monkeypatch):
+    root = tmp_path / "project"
+    root.mkdir()
+    original = upgrade_mod.EvidenceStore._mutation_lock
+    acquired = []
+    @contextmanager
+    def recording_lock(store):
+        with original(store):
+            acquired.append(store.root.name)
+            yield
+    monkeypatch.setattr(upgrade_mod.EvidenceStore, "_mutation_lock", recording_lock)
+    with upgrade_mod.project_mutation_lock(root):
+        assert acquired == [upgrade_mod._LEDGER_A, upgrade_mod._LEDGER_B]
+
+
+def test_secondary_blocker_fails_stably_and_consumes_recognized_action(tmp_path: Path):
+    root = tmp_path / "project"
+    root.mkdir()
+    _write_v2(root)
+    plan = plan_project_upgrade(root)
+    (tmp_path / upgrade_mod._LEDGER_B).write_text("blocked", encoding="utf-8")
+    first = apply_project_upgrade(plan, plan.action_digest, plan.plan_digest)
+    second = apply_project_upgrade(plan, plan.action_digest, plan.plan_digest)
+    assert first.code == "PROJECT_UPGRADE_INFRA_ERROR"
+    assert second.code == "PROJECT_UPGRADE_AUTHORIZATION_CONSUMED"
+    json.dumps(first.to_dict())
