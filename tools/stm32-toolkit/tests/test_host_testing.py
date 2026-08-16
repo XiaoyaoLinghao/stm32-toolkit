@@ -94,6 +94,11 @@ if (root / "forge-error").exists():
     junit = junit.replace('<failure message="Failed"/>', '<error message="forged"/>')
 if (root / "harmless-text").exists():
     junit = junit.replace('message="Failed"', 'message="harmless diagnostic text"')
+if (root / "unsafe-junit").exists():
+    junit = junit.replace(
+        'message="Failed"',
+        'message="password=ROUND5-PLAINTEXT-SECRET C:\\\\Users\\\\victim\\\\private.txt"',
+    )
 output.write_bytes(junit.encode("utf-8"))
 if (root / "invalid-ctest-text").exists():
     print("not a CTest report")
@@ -361,6 +366,24 @@ def test_stdout_node_facts_reject_self_consistent_forged_junit(task_tmp: Path, f
         runner.run(inventory, ("native-fail", "native-pass"))
 
     assert caught.value.code == "TEST_NATIVE_RESULT_INVALID"
+
+
+def test_rejected_junit_is_validated_before_any_run_artifact_publication(task_tmp: Path):
+    """Rejected raw JUnit bytes never enter evidence, even as a transient artifact."""
+    runner, config, scenario, evidence = _runner(task_tmp)
+    inventory = runner.discover(config, _identity())
+    before = {path.relative_to(evidence) for path in evidence.rglob("*") if path.is_file()}
+    (scenario / "unsafe-junit").write_text("on", encoding="ascii")
+
+    with pytest.raises(ProtocolError) as caught:
+        runner.run(inventory, ("native-fail", "native-pass"))
+
+    assert caught.value.code == "TEST_NATIVE_RESULT_INVALID"
+    after = {path.relative_to(evidence) for path in evidence.rglob("*") if path.is_file()}
+    assert after == before
+    published = b"\n".join(path.read_bytes() for path in evidence.rglob("*") if path.is_file())
+    assert b"ROUND5-PLAINTEXT-SECRET" not in published
+    assert b"private.txt" not in published
 
 
 def test_matching_junit_free_text_cannot_change_public_case_facts(task_tmp: Path):

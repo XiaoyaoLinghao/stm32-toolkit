@@ -11,6 +11,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import types
 import zipfile
 import xml.etree.ElementTree as ElementTree
 from dataclasses import dataclass
@@ -844,6 +845,85 @@ def test_ctest_text_adapter_accepts_real_rounded_failure_percentage() -> None:
         gates.parse_native_node_outcomes(
             "ctest-text", raw.replace(b"67% tests passed", b"66% tests passed"), exit_code=1,
         )
+
+
+def test_ctest_text_adapter_ignores_ambient_product_module_alias(monkeypatch) -> None:
+    """The release controller loads the exact adapter file without importing the product package."""
+    raw = (REPO / "tools/stm32-toolkit/tests/release/fixtures/native-outcomes/ctest-4.3.1-output.txt").read_bytes()
+    called: list[bytes] = []
+    fake = types.ModuleType("stm32_toolkit.testing.native_output")
+    fake.NativeOutputError = RuntimeError
+    fake.parse_ctest_431_text = lambda value: called.append(value) or (("forged", "passed"),)
+    monkeypatch.setitem(sys.modules, "stm32_toolkit", types.ModuleType("stm32_toolkit"))
+    monkeypatch.setitem(sys.modules, "stm32_toolkit.testing", types.ModuleType("stm32_toolkit.testing"))
+    monkeypatch.setitem(sys.modules, "stm32_toolkit.testing.native_output", fake)
+    before = {name for name in sys.modules if name.startswith("stm32_toolkit.testing")}
+    search_path = tuple(sys.path)
+
+    assert gates.parse_native_node_outcomes("ctest-text", raw, exit_code=0) == (
+        ("native-pass", "passed"),
+    )
+    assert called == []
+    assert {name for name in sys.modules if name.startswith("stm32_toolkit.testing")} == before
+    assert tuple(sys.path) == search_path
+    assert not any(name.startswith("_stm32tk_0600_ctest_text_") for name in sys.modules)
+
+
+def test_ctest_text_adapter_does_not_preimport_coverage_target(monkeypatch) -> None:
+    """Loading the controller adapter does not make product coverage depend on import order."""
+    raw = (REPO / "tools/stm32-toolkit/tests/release/fixtures/native-outcomes/ctest-4.3.1-output.txt").read_bytes()
+    for name in tuple(sys.modules):
+        if name.startswith("stm32_toolkit.testing"):
+            monkeypatch.delitem(sys.modules, name, raising=False)
+    before = set(sys.modules)
+
+    assert gates.parse_native_node_outcomes("ctest-text", raw, exit_code=0)
+
+    loaded = set(sys.modules) - before
+    assert not any(name.startswith("stm32_toolkit.testing") for name in loaded)
+    assert not any(name.startswith("_stm32tk_0600_ctest_text_") for name in loaded)
+
+
+def test_ctest_text_adapter_rejects_reparse_path(monkeypatch) -> None:
+    """The fixed product adapter must remain a canonical non-reparse working file."""
+    raw = (REPO / "tools/stm32-toolkit/tests/release/fixtures/native-outcomes/ctest-4.3.1-output.txt").read_bytes()
+    original = gates._is_reparse
+    monkeypatch.setattr(
+        gates, "_is_reparse",
+        lambda path: path.name == "native_output.py" or original(path),
+    )
+
+    with pytest.raises(ControllerError, match="reparse"):
+        gates.parse_native_node_outcomes("ctest-text", raw, exit_code=0)
+
+
+def test_ctest_text_adapter_executes_verified_working_bytes_not_loader_cache(monkeypatch) -> None:
+    """An import loader or stale pyc cannot substitute code for the verified source blob."""
+    raw = (REPO / "tools/stm32-toolkit/tests/release/fixtures/native-outcomes/ctest-4.3.1-output.txt").read_bytes()
+    original = gates.importlib.util.spec_from_file_location
+    loader_called: list[object] = []
+
+    class Loader:
+        @staticmethod
+        def create_module(_spec):
+            return None
+
+        @staticmethod
+        def exec_module(module):
+            loader_called.append(module)
+
+    def controlled_spec(name, location):
+        spec = original(name, location)
+        assert spec is not None
+        spec.loader = Loader()
+        return spec
+
+    monkeypatch.setattr(gates.importlib.util, "spec_from_file_location", controlled_spec)
+
+    assert gates.parse_native_node_outcomes("ctest-text", raw, exit_code=0) == (
+        ("native-pass", "passed"),
+    )
+    assert loader_called == []
 
 
 def test_windows_playwright_contract_has_only_two_frozen_chromium_projects() -> None:

@@ -28,6 +28,7 @@ from ._ctest_junit_bridge import BridgeFrameError, MAX_FRAME_BYTES, decode_frame
 from .native_output import NativeExitMismatch, NativeOutputError, parse_ctest_431_text
 from .model import (
     CASE_STATES,
+    MAX_RUN_STREAM_BYTES,
     TEST_SCHEMA,
     TestCaseResult,
     TestInventory,
@@ -398,6 +399,20 @@ class HostTestRunner:
             config, scratch,
         )
         ended = self._clock()
+        try:
+            native_outcomes = parse_ctest_431_text(stdout_bytes, exit_code=ctest_returncode)
+        except NativeExitMismatch as exc:
+            raise protocol_error("TEST_EXIT_MISMATCH", str(exc)) from exc
+        except NativeOutputError as exc:
+            raise protocol_error("TEST_NATIVE_RESULT_INVALID", str(exc)) from exc
+        if {node for node, _outcome in native_outcomes} != set(selected):
+            raise protocol_error("TEST_NATIVE_RESULT_INVALID", "CTest text inventory contradicts selection")
+        cases = self._parse_junit(
+            junit_bytes, tuple(selected), directory, dict(native_outcomes)
+        )
+        # Raw runner output is published only after every untrusted JUnit byte
+        # has passed bounded decoding, portable-text checks, strict parsing,
+        # and the authoritative native-text/exit/inventory cross-check.
         raw_events = self._collector.write_and_ingest(
             directory, "ctest-junit.xml", junit_bytes,
             kind="test-events", media_type="application/xml",
@@ -410,18 +425,6 @@ class HostTestRunner:
             directory, "ctest-stderr.txt", stderr_bytes,
             kind="test-stderr", media_type="text/plain; charset=utf-8",
         )
-        authoritative_junit = self._collector.evidence_store.root / raw_events.relative_path
-        try:
-            native_outcomes = parse_ctest_431_text(stdout_bytes, exit_code=ctest_returncode)
-        except NativeExitMismatch as exc:
-            raise protocol_error("TEST_EXIT_MISMATCH", str(exc)) from exc
-        except NativeOutputError as exc:
-            raise protocol_error("TEST_NATIVE_RESULT_INVALID", str(exc)) from exc
-        if {node for node, _outcome in native_outcomes} != set(selected):
-            raise protocol_error("TEST_NATIVE_RESULT_INVALID", "CTest text inventory contradicts selection")
-        cases = self._parse_junit(
-            authoritative_junit, tuple(selected), directory, dict(native_outcomes)
-        )
         state = self._run_state(cases)
         return TestRunManifest(
             TEST_SCHEMA, uuid4().hex, "host", state, inventory.identity, None, cases,
@@ -429,7 +432,7 @@ class HostTestRunner:
         )
 
     def _parse_junit(
-        self, path: Path, selected: tuple[str, ...], directory: Path,
+        self, source: bytes | Path, selected: tuple[str, ...], directory: Path,
         authoritative: Mapping[str, str],
     ) -> tuple[TestCaseResult, ...]:
         if (
@@ -441,9 +444,21 @@ class HostTestRunner:
                 "TEST_NATIVE_RESULT_INVALID", "CTest native text inventory is invalid"
             )
         try:
-            root = ElementTree.fromstring(path.read_bytes())
+            raw = source.read_bytes() if isinstance(source, Path) else source
+            if not isinstance(raw, bytes) or len(raw) > MAX_RUN_STREAM_BYTES:
+                raise ValueError("JUnit byte stream is invalid")
+            document = raw.decode("utf-8")
+            self._validate_untrusted_junit_document(document)
+            root = ElementTree.fromstring(document)
         except (OSError, ElementTree.ParseError, UnicodeError) as exc:
             raise protocol_error("TEST_NATIVE_RESULT_INVALID", "CTest JUnit is invalid XML") from exc
+        except (TypeError, ValueError) as exc:
+            raise protocol_error("TEST_NATIVE_RESULT_INVALID", "CTest JUnit is invalid") from exc
+        for element in root.iter():
+            for value in element.attrib.values():
+                self._validate_untrusted_junit_text(value)
+            self._validate_untrusted_junit_text(element.text)
+            self._validate_untrusted_junit_text(element.tail)
         if root.tag.rsplit("}", 1)[-1] not in {"testsuite", "testsuites"}:
             raise protocol_error("TEST_NATIVE_RESULT_INVALID", "CTest JUnit root is invalid")
         nodes = [node for node in root.iter() if node.tag.rsplit("}", 1)[-1] == "testcase"]
@@ -526,6 +541,17 @@ class HostTestRunner:
         if (
             not isinstance(value, str) or len(value.encode("utf-8")) > 1024 * 1024
             or unicodedata.normalize("NFC", value) != value
+            or _UNTRUSTED_CREDENTIAL.search(value) is not None
+            or _UNTRUSTED_PATH.search(value) is not None
+        ):
+            raise protocol_error(
+                "TEST_NATIVE_RESULT_INVALID", "CTest JUnit contains unsafe untrusted text"
+            )
+
+    @staticmethod
+    def _validate_untrusted_junit_document(value: str) -> None:
+        if (
+            unicodedata.normalize("NFC", value) != value
             or _UNTRUSTED_CREDENTIAL.search(value) is not None
             or _UNTRUSTED_PATH.search(value) is not None
         ):

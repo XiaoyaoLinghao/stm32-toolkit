@@ -9,6 +9,7 @@ import binascii
 import ctypes
 import hashlib
 import importlib
+import importlib.util
 import json
 import math
 import os
@@ -955,12 +956,64 @@ def _parse_junit_node_outcomes(raw: bytes, framework: str) -> tuple[tuple[str, s
 def _parse_ctest_text_node_outcomes(raw: bytes) -> tuple[tuple[str, str], ...]:
     # The shared product adapter is the single CTest 4.3.1 text grammar.
     # Exit validation remains at the controller's existing common boundary.
-    from stm32_toolkit.testing.native_output import NativeOutputError, parse_ctest_431_text
+    adapter, native_output_error = _load_ctest_text_adapter()
 
     try:
-        return parse_ctest_431_text(raw)
-    except NativeOutputError as exc:
+        return adapter(raw)
+    except native_output_error as exc:
         raise ControllerError(str(exc)) from exc
+
+
+def _load_ctest_text_adapter() -> tuple[Callable[[bytes], tuple[tuple[str, str], ...]], type[Exception]]:
+    """Load the repository-owned adapter without importing its product package."""
+    try:
+        controller_source = Path(__file__).absolute()
+        controller = controller_source.resolve(strict=True)
+        if controller_source != controller or _is_reparse(controller):
+            raise ControllerError("CTest text adapter controller path is not canonical")
+        repository = controller.parents[2]
+        candidate = repository / "tools/stm32-toolkit/src/stm32_toolkit/testing/native_output.py"
+        adapter_path = candidate.resolve(strict=True)
+        if candidate != adapter_path:
+            raise ControllerError("CTest text adapter path is not canonical")
+        adapter_path.relative_to(repository)
+        for parent in (repository, *adapter_path.parents[:5]):
+            if _is_reparse(parent):
+                raise ControllerError("CTest text adapter path contains a reparse point")
+        path_before = adapter_path.lstat()
+        if not stat.S_ISREG(path_before.st_mode):
+            raise ControllerError("CTest text adapter is not a regular file")
+        if _is_reparse(adapter_path):
+            raise ControllerError("CTest text adapter is a reparse point")
+        with adapter_path.open("rb") as stream:
+            before = os.fstat(stream.fileno())
+            if (before.st_dev, before.st_ino) != (path_before.st_dev, path_before.st_ino):
+                raise ControllerError("CTest text adapter identity is unstable")
+            source = stream.read()
+        digest = hashlib.sha256(source).hexdigest()
+        module_name = f"_stm32tk_0600_ctest_text_{digest[:16]}"
+        spec = importlib.util.spec_from_file_location(module_name, adapter_path)
+        if spec is None or spec.loader is None:
+            raise ControllerError("CTest text adapter cannot be loaded")
+        module = importlib.util.module_from_spec(spec)
+        # Execute the exact bytes read from the verified working-tree handle;
+        # SourceFileLoader must not substitute an ambient module or stale pyc.
+        code = compile(importlib.util.decode_source(source), str(adapter_path), "exec", dont_inherit=True)
+        exec(code, module.__dict__)
+        after = adapter_path.lstat()
+        identity_before = (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns)
+        identity_after = (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns)
+        if identity_before != identity_after or hashlib.sha256(adapter_path.read_bytes()).hexdigest() != digest:
+            raise ControllerError("CTest text adapter changed while loading")
+        adapter = getattr(module, "parse_ctest_431_text", None)
+        error_type = getattr(module, "NativeOutputError", None)
+        if not callable(adapter) or not isinstance(error_type, type) or not issubclass(error_type, Exception):
+            raise ControllerError("CTest text adapter contract is invalid")
+        return adapter, error_type
+    except ControllerError:
+        raise
+    except (OSError, ValueError, ImportError, AttributeError, SyntaxError) as exc:
+        raise ControllerError("CTest text adapter path or module is invalid") from exc
 
 
 def _native_json(raw: bytes, framework: str) -> dict[str, object]:
