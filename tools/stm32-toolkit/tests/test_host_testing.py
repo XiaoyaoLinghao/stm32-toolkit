@@ -31,6 +31,14 @@ from stm32_toolkit.testing.model import (
 
 REPO = Path(__file__).resolve().parents[3]
 JUNIT = REPO / "tools/stm32-toolkit/tests/release/fixtures/native-outcomes/ctest-4.3.1-junit.xml"
+CTEST_TEXT = (
+    "Test project <REPOSITORY_ROOT>/build\n"
+    "    Start 1: native-fail\n"
+    "1/2 Test #1: native-fail ......................***Failed    0.07 sec\n"
+    "    Start 2: native-pass\n"
+    "2/2 Test #2: native-pass ......................   Passed    0.09 sec\n"
+    "50% tests passed, 1 tests failed out of 2\n"
+)
 FAKE_TOOL = r'''
 import json
 import os
@@ -77,8 +85,26 @@ if (root / "timeout").exists():
 if (root / "no-junit").exists():
     raise SystemExit(1)
 output = Path(argv[argv.index("--output-junit") + 1])
-output.write_bytes(Path(os.environ["JUNIT_SOURCE"]).read_bytes())
-print("ctest stdout")
+junit = Path(os.environ["JUNIT_SOURCE"]).read_text(encoding="utf-8")
+if (root / "forge-swap").exists():
+    junit = junit.replace('name="native-pass" classname="native-pass" time="0" status="run"><properties/><system-out></system-out>', 'name="native-pass" classname="native-pass" time="0" status="fail"><failure message="forged"/><properties/><system-out></system-out>')
+    junit = junit.replace('name="native-fail" classname="native-fail" time="0" status="fail"><failure message="Failed"/>', 'name="native-fail" classname="native-fail" time="0" status="run">')
+if (root / "forge-error").exists():
+    junit = junit.replace('failures="1" disabled="0" skipped="0"', 'failures="0" errors="1" disabled="0" skipped="0"')
+    junit = junit.replace('<failure message="Failed"/>', '<error message="forged"/>')
+if (root / "harmless-text").exists():
+    junit = junit.replace('message="Failed"', 'message="harmless diagnostic text"')
+output.write_bytes(junit.encode("utf-8"))
+if (root / "invalid-ctest-text").exists():
+    print("not a CTest report")
+else:
+    print("Test project <REPOSITORY_ROOT>/build")
+    print("    Start 1: native-fail")
+    print("1/2 Test #1: native-fail ......................***Failed    0.07 sec")
+    print("    Start 2: native-pass")
+    name = "native-extra" if (root / "wrong-text-node").exists() else "native-pass"
+    print(f"2/2 Test #2: {name} ......................   Passed    0.09 sec")
+    print("50% tests passed, 1 tests failed out of 2")
 print("ctest stderr", file=sys.stderr)
 raise SystemExit(1)
 '''
@@ -225,8 +251,8 @@ def test_run_selects_exact_ids_parses_ctest_431_junit_and_ingests_every_artifact
     run_argv = calls[3]["argv"]
     assert run_argv[:3] == ["--preset", "host-tests", "--tests-information"]
     assert run_argv[3] == "0,0,0,1,2"
-    assert run_argv[4] == "--output-junit"
-    junit_path = Path(run_argv[5])
+    assert run_argv[4:7] == ["--verbose", "--output-on-failure", "--output-junit"]
+    junit_path = Path(run_argv[7])
     assert junit_path.is_absolute()
     assert REPO not in junit_path.parents
     assert junit_path.name == "ctest-native-junit.xml"
@@ -242,7 +268,7 @@ def test_run_selects_exact_ids_parses_ctest_431_junit_and_ingests_every_artifact
     ]
     assert manifest.transport is None
     assert manifest.stdout is not None and manifest.stderr is not None
-    assert (evidence / manifest.stdout.relative_path).read_text(encoding="utf-8") == "ctest stdout\n"
+    assert (evidence / manifest.stdout.relative_path).read_text(encoding="utf-8") == CTEST_TEXT
     assert (evidence / manifest.stderr.relative_path).read_text(encoding="utf-8") == "ctest stderr\n"
     assert (evidence / manifest.raw_events.relative_path).read_bytes() == JUNIT.read_bytes()
 
@@ -321,6 +347,50 @@ def test_exit_and_junit_disagreement_is_rejected(task_tmp: Path):
         runner.run(inventory, ("native-fail", "native-pass"))
 
     assert caught.value.code == "TEST_EXIT_MISMATCH"
+
+
+@pytest.mark.parametrize("forge", ["forge-swap", "forge-error"])
+def test_stdout_node_facts_reject_self_consistent_forged_junit(task_tmp: Path, forge: str):
+    """A forged JUnit cannot swap or recategorize nodes while preserving aggregate failure."""
+    runner, config, scenario, _evidence = _runner(task_tmp)
+    inventory = runner.discover(config, _identity())
+    (scenario / "authoritative-text").write_text("on", encoding="ascii")
+    (scenario / forge).write_text("on", encoding="ascii")
+
+    with pytest.raises(ProtocolError) as caught:
+        runner.run(inventory, ("native-fail", "native-pass"))
+
+    assert caught.value.code == "TEST_NATIVE_RESULT_INVALID"
+
+
+def test_matching_junit_free_text_cannot_change_public_case_facts(task_tmp: Path):
+    """Safe JUnit prose is retained only as raw evidence and never enters case facts."""
+    runner, config, scenario, _evidence = _runner(task_tmp)
+    inventory = runner.discover(config, _identity())
+    (scenario / "authoritative-text").write_text("on", encoding="ascii")
+    baseline = runner.run(inventory, ("native-fail", "native-pass"))
+    (scenario / "harmless-text").write_text("on", encoding="ascii")
+    forged = runner.run(inventory, ("native-fail", "native-pass"))
+
+    public = lambda manifest: tuple(
+        (case.case_id, case.state, case.duration_ms, case.message, case.stdout, case.stderr)
+        for case in manifest.cases
+    )
+    assert forged.identity == baseline.identity == inventory.identity
+    assert forged.state == baseline.state == "failed"
+    assert public(forged) == public(baseline)
+
+
+@pytest.mark.parametrize("marker", ["invalid-ctest-text", "wrong-text-node"])
+def test_native_text_malformed_or_inventory_mismatch_fails_closed(
+    task_tmp: Path, marker: str,
+):
+    runner, config, scenario, _evidence = _runner(task_tmp)
+    inventory = runner.discover(config, _identity())
+    (scenario / marker).write_text("on", encoding="ascii")
+    with pytest.raises(ProtocolError) as caught:
+        runner.run(inventory, ("native-fail", "native-pass"))
+    assert caught.value.code == "TEST_NATIVE_RESULT_INVALID"
 
 
 def test_artifact_collector_rejects_nonexternal_aliases_and_invalid_paths(
@@ -671,16 +741,15 @@ def test_run_rejects_nonhost_unknown_and_duplicate_selection_before_process(task
         assert caught.value.code == "TEST_CASE_NOT_FOUND"
 
 
-def test_junit_parser_maps_all_ctest_terminal_states_outputs_and_incomplete_case(task_tmp: Path):
-    """CTest JUnit error/timeout/skipped/output and absent selected cases map without invention."""
+def test_junit_parser_cross_checks_states_but_never_promotes_junit_free_text(task_tmp: Path):
+    """JUnit categories/streams are checked but native text alone supplies public facts."""
     runner, _config, _scenario, evidence = _runner(task_tmp)
     directory = runner._collector.new_directory("junit-states")
     path = runner._collector.output_path(directory, "states.xml")
     path.write_text(
         '<?xml version="1.0" encoding="UTF-8"?>'
-        '<testsuite tests="4" failures="1" errors="1" skipped="1">'
-        '<testcase name="error" time="0.001" status="fail"><error message="boom"/></testcase>'
-        '<testcase name="timeout" time="0" status="fail"><failure message="Timeout"/></testcase>'
+        '<testsuite tests="3" failures="1" errors="0" skipped="1">'
+        '<testcase name="failure" time="0.001" status="fail"><failure message="boom"/></testcase>'
         '<testcase name="skip" time="0" status="notrun"><skipped message="disabled"/></testcase>'
         '<testcase name="pass" time="0" status="run"><system-out>out</system-out><system-err>err</system-err></testcase>'
         '</testsuite>',
@@ -688,17 +757,18 @@ def test_junit_parser_maps_all_ctest_terminal_states_outputs_and_incomplete_case
     )
 
     cases = runner._parse_junit(
-        path, ("error", "timeout", "skip", "pass", "missing"), directory
+        path, ("failure", "skip", "pass"), directory,
+        {"failure": "failed", "skip": "skipped", "pass": "passed"},
     )
 
     assert [(case.case_id, case.state) for case in cases] == [
-        ("error", "error"), ("timeout", "timeout"), ("skip", "skipped"),
-        ("pass", "passed"), ("missing", "error"),
+        ("failure", "failed"), ("skip", "skipped"), ("pass", "passed"),
     ]
-    assert cases[0].duration_ms == 1
-    assert cases[3].stdout is not None and cases[3].stderr is not None
-    assert (evidence / cases[3].stdout.relative_path).read_text(encoding="utf-8") == "out"
-    assert cases[4].message == "case ended without a terminal result"
+    assert all(
+        case.duration_ms == 0 and case.message is None
+        and case.stdout is None and case.stderr is None
+        for case in cases
+    )
 
 
 @pytest.mark.parametrize(
@@ -723,7 +793,7 @@ def test_junit_parser_rejects_malformed_root_inventory_status_duration_and_count
     path = runner._collector.output_path(directory, "invalid.xml")
     path.write_text(xml, encoding="utf-8")
     with pytest.raises(ProtocolError):
-        runner._parse_junit(path, ("one",), directory)
+        runner._parse_junit(path, ("one",), directory, {"one": "passed"})
 
 
 def test_junit_duration_summary_and_run_state_boundaries_are_exact():
@@ -753,7 +823,10 @@ def test_junit_counts_are_exact_per_category_and_root_totals_must_match(task_tmp
         path = directory / f"bad-{len(list(directory.iterdir()))}.xml"
         path.write_text(f"<testsuite {attributes}>{base_cases}</testsuite>", encoding="utf-8")
         with pytest.raises(ProtocolError) as caught:
-            runner._parse_junit(path, ("f", "e", "s", "d"), directory)
+            runner._parse_junit(
+                path, ("f", "e", "s", "d"), directory,
+                {"f": "failed", "e": "failed", "s": "skipped", "d": "skipped"},
+            )
         assert caught.value.code == "TEST_NATIVE_RESULT_INVALID"
 
     root = directory / "bad-root.xml"
@@ -763,7 +836,10 @@ def test_junit_counts_are_exact_per_category_and_root_totals_must_match(task_tmp
         f"{base_cases}</testsuite></testsuites>", encoding="utf-8",
     )
     with pytest.raises(ProtocolError) as caught:
-        runner._parse_junit(root, ("f", "e", "s", "d"), directory)
+        runner._parse_junit(
+            root, ("f", "e", "s", "d"), directory,
+            {"f": "failed", "e": "failed", "s": "skipped", "d": "skipped"},
+        )
     assert caught.value.code == "TEST_NATIVE_RESULT_INVALID"
 
 
@@ -779,7 +855,7 @@ def test_junit_case_has_at_most_one_terminal_child(task_tmp: Path):
             encoding="utf-8",
         )
         with pytest.raises(ProtocolError) as caught:
-            runner._parse_junit(path, ("one",), directory)
+            runner._parse_junit(path, ("one",), directory, {"one": "failed"})
         assert caught.value.code == "TEST_NATIVE_RESULT_INVALID"
     passed = CaseResult("p", "passed", "2026-08-16T00:00:00.000000Z", "2026-08-16T00:00:00.000000Z", 0, None, None, None)
     failed = CaseResult("f", "failed", "2026-08-16T00:00:00.000000Z", "2026-08-16T00:00:00.000000Z", 0, None, None, None)
@@ -787,3 +863,80 @@ def test_junit_case_has_at_most_one_terminal_child(task_tmp: Path):
     assert HostTestRunner._run_state((passed,)) == "passed"
     assert HostTestRunner._run_state((failed,)) == "failed"
     assert HostTestRunner._run_state((failed, error)) == "error"
+
+
+@pytest.mark.parametrize(
+    "unsafe",
+    ["password=hunter2", r"C:\Users\victim\secret.txt", "/home/victim/secret.txt"],
+)
+def test_junit_untrusted_text_rejects_credentials_and_absolute_paths(
+    task_tmp: Path, unsafe: str,
+):
+    """Untrusted JUnit prose is retained only when it cannot disclose secrets or host paths."""
+    runner, _config, _scenario, _evidence = _runner(task_tmp)
+    directory = runner._collector.new_directory("junit-unsafe")
+    path = runner._collector.output_path(directory, "unsafe.xml")
+    path.write_text(
+        '<testsuite tests="1" failures="1" errors="0" skipped="0" disabled="0">'
+        f'<testcase name="one" status="fail"><failure message="{unsafe}"/></testcase>'
+        '</testsuite>',
+        encoding="utf-8",
+    )
+    with pytest.raises(ProtocolError) as caught:
+        runner._parse_junit(path, ("one",), directory, {"one": "failed"})
+    assert caught.value.code == "TEST_NATIVE_RESULT_INVALID"
+
+
+@pytest.mark.parametrize("kind", ["nontext", "nonnfc", "overflow"])
+def test_junit_untrusted_text_rejects_nontext_nonnfc_and_overflow(kind: str):
+    value = {"nontext": 1, "nonnfc": "e\u0301", "overflow": "x" * (1024 * 1024 + 1)}[kind]
+    with pytest.raises(ProtocolError):
+        HostTestRunner._validate_untrusted_junit_text(value)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    "authoritative",
+    [1, {}, {"one": "error"}],
+)
+def test_junit_parser_rejects_unbound_native_text_mapping(
+    task_tmp: Path, authoritative,
+):
+    runner, _config, _scenario, _evidence = _runner(task_tmp)
+    directory = runner._collector.new_directory("junit-unbound")
+    path = runner._collector.output_path(directory, "one.xml")
+    path.write_text(
+        '<testsuite tests="1"><testcase name="one" status="run"/></testsuite>',
+        encoding="utf-8",
+    )
+    with pytest.raises(ProtocolError):
+        runner._parse_junit(path, ("one",), directory, authoritative)
+
+
+@pytest.mark.parametrize(
+    ("status", "child"),
+    [("fail", "<skipped/>"), ("skip", "<failure/>"), ("run", "<failure/>")],
+)
+def test_junit_parser_rejects_each_single_terminal_status_contradiction(
+    task_tmp: Path, status: str, child: str,
+):
+    runner, _config, _scenario, _evidence = _runner(task_tmp)
+    directory = runner._collector.new_directory("junit-contradiction")
+    path = runner._collector.output_path(directory, "one.xml")
+    path.write_text(
+        f'<testsuite tests="1"><testcase name="one" status="{status}">{child}</testcase></testsuite>',
+        encoding="utf-8",
+    )
+    with pytest.raises(ProtocolError):
+        runner._parse_junit(path, ("one",), directory, {"one": "failed"})
+
+
+def test_junit_parser_rejects_duplicate_stream_child(task_tmp: Path):
+    runner, _config, _scenario, _evidence = _runner(task_tmp)
+    directory = runner._collector.new_directory("junit-stream-duplicate")
+    path = runner._collector.output_path(directory, "one.xml")
+    path.write_text(
+        '<testsuite tests="1"><testcase name="one" status="run">'
+        '<system-out/><system-out/></testcase></testsuite>', encoding="utf-8",
+    )
+    with pytest.raises(ProtocolError):
+        runner._parse_junit(path, ("one",), directory, {"one": "passed"})

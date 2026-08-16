@@ -16,6 +16,11 @@ from stm32_toolkit.testing._ctest_junit_bridge import (
     decode_frame,
     encode_frame,
 )
+from stm32_toolkit.testing.native_output import (
+    NativeExitMismatch,
+    NativeOutputError,
+    parse_ctest_431_text,
+)
 
 
 NONCE = sha256(b"bridge-test").hexdigest()
@@ -61,6 +66,12 @@ def test_bounded_sink_drains_and_marks_discarded_overflow():
 def test_encode_frame_rejects_invalid_scalar_contract(arguments):
     with pytest.raises(BridgeFrameError):
         encode_frame(*arguments)
+
+
+def test_encode_frame_rejects_stream_overflow(monkeypatch):
+    monkeypatch.setattr(bridge, "MAX_OUTPUT_BYTES", 0)
+    with pytest.raises(BridgeFrameError, match="exceeds"):
+        encode_frame(NONCE, 0, b"x", b"", b"", None)
 
 
 def test_run_ctest_captures_real_exit_streams_and_junit(tmp_path: Path):
@@ -121,3 +132,55 @@ def test_main_returns_transport_failure_without_leaking_exception(tmp_path: Path
         sys.executable, "-c", "pass",
     ]
     assert bridge.main(arguments) == 74
+
+
+def test_shared_ctest_431_adapter_parses_frozen_real_pass_and_failure_outputs():
+    fixture = Path(__file__).parent / "release/fixtures/native-outcomes"
+    passed = (fixture / "ctest-4.3.1-output.txt").read_bytes()
+    failed = (fixture / "ctest-4.3.1-failure-output.txt").read_bytes()
+    assert parse_ctest_431_text(passed, exit_code=0) == (("native-pass", "passed"),)
+    assert parse_ctest_431_text(failed, exit_code=1) == (
+        ("pass-one", "passed"), ("pass-two", "passed"), ("fail-one", "failed"),
+    )
+
+
+def test_shared_ctest_431_adapter_maps_both_native_skip_spellings():
+    raw = (
+        b"1/2 Test #1: skip-one .... Not Run 0.01 sec\n"
+        b"2/2 Test #2: skip-two .... Skipped 0.01 sec\n"
+        b"100% tests passed, 0 tests failed out of 2\n"
+    )
+    assert parse_ctest_431_text(raw, exit_code=0) == (
+        ("skip-one", "skipped"), ("skip-two", "skipped"),
+    )
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        b"",
+        b"\xff",
+        b"2/1 Test #1: one .... Passed 0.01 sec\n100% tests passed, 0 tests failed out of 1\n",
+        b"1/1 Test #1: one .... Passed 0.01 sec\n",
+        b"1/1 Test #1: one .... Passed 0.01 sec\n0% tests passed, 1 tests failed out of 1\n",
+        (
+            "1/1 Test #1: e\u0301 .... Passed 0.01 sec\n"
+            "100% tests passed, 0 tests failed out of 1\n"
+        ).encode("utf-8"),
+    ],
+)
+def test_shared_ctest_431_adapter_rejects_malformed_or_contradictory_text(raw: bytes):
+    with pytest.raises(NativeOutputError):
+        parse_ctest_431_text(raw, exit_code=0)
+
+
+def test_shared_ctest_431_adapter_rejects_invalid_or_contradictory_exit():
+    raw = (
+        b"1/1 Test #1: one .... Passed 0.01 sec\n"
+        b"100% tests passed, 0 tests failed out of 1\n"
+    )
+    assert parse_ctest_431_text(raw) == (("one", "passed"),)
+    with pytest.raises(NativeOutputError, match="exit code"):
+        parse_ctest_431_text(raw, exit_code=True)
+    with pytest.raises(NativeExitMismatch):
+        parse_ctest_431_text(raw, exit_code=1)

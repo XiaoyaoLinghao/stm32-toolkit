@@ -110,7 +110,10 @@ def decode_frame(frame: bytes, expected_nonce: str) -> tuple[int, bytes, bytes, 
 def _run_ctest(argv: tuple[str, ...], cwd: Path, junit_path: Path) -> tuple[int, bytes, bytes, bytes, str | None]:
     stdout = _BoundedSink(MAX_OUTPUT_BYTES)
     stderr = _BoundedSink(MAX_OUTPUT_BYTES)
-    command = (*argv, "--output-junit", str(junit_path))
+    command = (
+        *argv, "--verbose", "--output-on-failure",
+        "--output-junit", str(junit_path),
+    )
     try:
         process = subprocess.Popen(
             command, cwd=str(cwd), stdin=subprocess.DEVNULL,

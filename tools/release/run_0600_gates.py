@@ -31,6 +31,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable, IO, Mapping, Protocol, Sequence
 
+
 KNOWN_MODULES = {"STM32TK-0601", "STM32TK-0602", "STM32TK-0603"}
 COVERAGE_TASK_ID = re.compile(r"(?P<module>STM32TK-[0-9]{4})-T(?:0[1-9]|[1-9][0-9])")
 COVERAGE_META_KEYS = {"format", "version", "timestamp", "branch_coverage", "show_contexts"}
@@ -952,51 +953,14 @@ def _parse_junit_node_outcomes(raw: bytes, framework: str) -> tuple[tuple[str, s
 
 
 def _parse_ctest_text_node_outcomes(raw: bytes) -> tuple[tuple[str, str], ...]:
+    # The shared product adapter is the single CTest 4.3.1 text grammar.
+    # Exit validation remains at the controller's existing common boundary.
+    from stm32_toolkit.testing.native_output import NativeOutputError, parse_ctest_431_text
+
     try:
-        lines = raw.decode("utf-8").splitlines()
-    except UnicodeError as exc:
-        raise ControllerError("ctest-text native report is invalid UTF-8") from exc
-    row = re.compile(
-        r"^\s*(?P<ordinal>[1-9][0-9]*)/(?P<total>[1-9][0-9]*) Test\s+#(?P<number>[1-9][0-9]*): "
-        r"(?P<name>.+?) \.{3,}\s*(?P<status>Passed|Not Run|Skipped|\*\*\*Failed)\s+"
-        r"(?P<seconds>[0-9]+(?:\.[0-9]+)?) sec$"
-    )
-    outcomes: list[tuple[str, str]] = []
-    totals: set[int] = set()
-    ordinals: list[int] = []
-    for line in lines:
-        match = row.fullmatch(line)
-        if match is None:
-            continue
-        ordinals.append(int(match.group("ordinal")))
-        totals.add(int(match.group("total")))
-        status = match.group("status")
-        outcomes.append((
-            _node_text(match.group("name"), "name"),
-            "failed" if status == "***Failed" else "skipped" if status in {"Not Run", "Skipped"} else "passed",
-        ))
-    result = _unique_native_outcomes(outcomes)
-    if totals != {len(result)} or ordinals != list(range(1, len(result) + 1)):
-        raise ControllerError("ctest-text native rows contradict inventory")
-    summaries = [
-        re.fullmatch(r"(?P<percent>[0-9]+)% tests passed, (?P<failed>[0-9]+) tests failed out of (?P<total>[0-9]+)", line)
-        for line in lines
-    ]
-    summaries = [item for item in summaries if item is not None]
-    if len(summaries) != 1:
-        raise ControllerError("ctest-text native summary is missing or duplicated")
-    summary = summaries[0]
-    failed = sum(outcome == "failed" for _, outcome in result)
-    total = len(result)
-    percent_numerator = (total - failed) * 100
-    expected_percent = (2 * percent_numerator + total) // (2 * total)
-    if (
-        int(summary.group("failed")) != failed
-        or int(summary.group("total")) != total
-        or int(summary.group("percent")) != expected_percent
-    ):
-        raise ControllerError("ctest-text native summary counts contradict nodes")
-    return result
+        return parse_ctest_431_text(raw)
+    except NativeOutputError as exc:
+        raise ControllerError(str(exc)) from exc
 
 
 def _native_json(raw: bytes, framework: str) -> dict[str, object]:

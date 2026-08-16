@@ -25,6 +25,7 @@ from stm32_toolkit.project_model import HostTestConfig
 
 from .artifacts import TestArtifactCollector
 from ._ctest_junit_bridge import BridgeFrameError, MAX_FRAME_BYTES, decode_frame
+from .native_output import NativeExitMismatch, NativeOutputError, parse_ctest_431_text
 from .model import (
     CASE_STATES,
     TEST_SCHEMA,
@@ -40,6 +41,15 @@ from .model import (
 
 
 _ENVIRONMENT_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_UNTRUSTED_CREDENTIAL = re.compile(
+    r"(?i)(?:authorization\s*[:=]\s*(?:bearer|basic)\s+\S+|"
+    r"(?:password|passwd|secret|token|api[-_]?key)\s*[:=]\s*\S+)"
+)
+_UNTRUSTED_PATH = re.compile(
+    r"(?i)(?:\bfile:[\\/]+|(?<![A-Za-z0-9_.-])[A-Za-z]:[\\/]|"
+    r"(?<![A-Za-z0-9_.:/-])(?:\\\\|//)[^\\/\s]+[\\/]|"
+    r"(?<![A-Za-z0-9_.*?-])/(?:home|Users|tmp|var|opt|etc)/)"
+)
 
 
 @dataclass(frozen=True)
@@ -401,19 +411,35 @@ class HostTestRunner:
             kind="test-stderr", media_type="text/plain; charset=utf-8",
         )
         authoritative_junit = self._collector.evidence_store.root / raw_events.relative_path
-        cases = self._parse_junit(authoritative_junit, tuple(selected), directory)
+        try:
+            native_outcomes = parse_ctest_431_text(stdout_bytes, exit_code=ctest_returncode)
+        except NativeExitMismatch as exc:
+            raise protocol_error("TEST_EXIT_MISMATCH", str(exc)) from exc
+        except NativeOutputError as exc:
+            raise protocol_error("TEST_NATIVE_RESULT_INVALID", str(exc)) from exc
+        if {node for node, _outcome in native_outcomes} != set(selected):
+            raise protocol_error("TEST_NATIVE_RESULT_INVALID", "CTest text inventory contradicts selection")
+        cases = self._parse_junit(
+            authoritative_junit, tuple(selected), directory, dict(native_outcomes)
+        )
         state = self._run_state(cases)
-        native_failure = state != "passed"
-        if (ctest_returncode == 0) == native_failure:
-            raise protocol_error("TEST_EXIT_MISMATCH", "CTest exit code contradicts JUnit")
         return TestRunManifest(
             TEST_SCHEMA, uuid4().hex, "host", state, inventory.identity, None, cases,
             started, ended, result.duration_ms, stdout, stderr, raw_events,
         )
 
     def _parse_junit(
-        self, path: Path, selected: tuple[str, ...], directory: Path
+        self, path: Path, selected: tuple[str, ...], directory: Path,
+        authoritative: Mapping[str, str],
     ) -> tuple[TestCaseResult, ...]:
+        if (
+            not isinstance(authoritative, Mapping)
+            or set(authoritative) != set(selected)
+            or any(outcome not in {"passed", "failed", "skipped"} for outcome in authoritative.values())
+        ):
+            raise protocol_error(
+                "TEST_NATIVE_RESULT_INVALID", "CTest native text inventory is invalid"
+            )
         try:
             root = ElementTree.fromstring(path.read_bytes())
         except (OSError, ElementTree.ParseError, UnicodeError) as exc:
@@ -422,7 +448,7 @@ class HostTestRunner:
             raise protocol_error("TEST_NATIVE_RESULT_INVALID", "CTest JUnit root is invalid")
         nodes = [node for node in root.iter() if node.tag.rsplit("}", 1)[-1] == "testcase"]
         results: dict[str, TestCaseResult] = {}
-        for index, node in enumerate(nodes):
+        for node in nodes:
             name = node.get("name")
             if not name or name in results or name not in selected:
                 raise protocol_error("TEST_NATIVE_RESULT_INVALID", "CTest JUnit case inventory is invalid")
@@ -469,29 +495,43 @@ class HostTestRunner:
             message = None
             if terminal is not None:
                 message = terminal.get("message") or (terminal.text.strip() if terminal.text else None)
-            stdout = self._case_artifact(children.get("system-out"), directory, index, "stdout")
-            stderr = self._case_artifact(children.get("system-err"), directory, index, "stderr")
-            duration = self._junit_duration(node.get("time"))
-            now = self._clock()
-            results[name] = TestCaseResult(name, state, now, now, duration, message, stdout, stderr)
-        for case_id in selected:
-            if case_id not in results:
-                now = self._clock()
-                results[case_id] = TestCaseResult(
-                    case_id, "error", now, now, 0, "case ended without a terminal result", None, None
+            for value in (
+                message,
+                None if children.get("system-out") is None else children["system-out"].text,
+                None if children.get("system-err") is None else children["system-err"].text,
+            ):
+                self._validate_untrusted_junit_text(value)
+            # JUnit status/counts remain a structural cross-check only. CTest
+            # verbose stdout and exit are the authoritative per-node facts.
+            if authoritative.get(name) != state:
+                raise protocol_error(
+                    "TEST_NATIVE_RESULT_INVALID", "CTest JUnit contradicts native text"
                 )
+            self._junit_duration(node.get("time"))
+            now = self._clock()
+            results[name] = TestCaseResult(
+                name, authoritative[name], now, now, 0, None, None, None
+            )
+        if set(results) != set(selected):
+            raise protocol_error(
+                "TEST_NATIVE_RESULT_INVALID", "CTest JUnit inventory contradicts native text"
+            )
         self._validate_junit_summaries(root, nodes)
         return tuple(results[case_id] for case_id in selected)
 
-    def _case_artifact(
-        self, node: ElementTree.Element | None, directory: Path, index: int, stream: str
-    ) -> ArtifactRef | None:
-        if node is None or not node.text:
-            return None
-        return self._collector.write_and_ingest(
-            directory, f"case-{index}-{stream}.txt", node.text.encode("utf-8"),
-            kind=f"test-case-{stream}", media_type="text/plain; charset=utf-8",
-        )
+    @staticmethod
+    def _validate_untrusted_junit_text(value: str | None) -> None:
+        if value is None:
+            return
+        if (
+            not isinstance(value, str) or len(value.encode("utf-8")) > 1024 * 1024
+            or unicodedata.normalize("NFC", value) != value
+            or _UNTRUSTED_CREDENTIAL.search(value) is not None
+            or _UNTRUSTED_PATH.search(value) is not None
+        ):
+            raise protocol_error(
+                "TEST_NATIVE_RESULT_INVALID", "CTest JUnit contains unsafe untrusted text"
+            )
 
     @staticmethod
     def _junit_duration(value: str | None) -> int:
