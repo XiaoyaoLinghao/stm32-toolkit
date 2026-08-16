@@ -288,22 +288,21 @@ class TestRunManifest:
             raise protocol_error("TEST_PROTOCOL_INVALID", "identity must be EvidenceIdentity")
         if self.transport is not None:
             _string(self.transport, "transport")
-        if not isinstance(self.cases, tuple) or not self.cases or len(self.cases) > MAX_CASES:
+        if not isinstance(self.cases, tuple) or len(self.cases) > MAX_CASES:
             raise protocol_error("TEST_PROTOCOL_INVALID", "cases must be a bounded tuple")
         if not all(isinstance(case, TestCaseResult) for case in self.cases):
             raise protocol_error("TEST_PROTOCOL_INVALID", "cases must contain TestCaseResult")
         ids = [case.case_id for case in self.cases]
         if len(ids) != len(set(ids)):
             raise protocol_error("TEST_DUPLICATE_CASE", "manifest case IDs must be unique")
-        terminal_states = {"passed", "failed", "error", "cancelled"}
         states = {case.state for case in self.cases}
-        if self.state not in terminal_states:
-            raise protocol_error("TEST_EVENT_SEQUENCE_INVALID", "manifest state is not terminal")
-        expected = "error" if states & {"error", "timeout"} else "failed" if "failed" in states else "passed"
-        if self.state == "cancelled":
-            if not states & {"error", "timeout"}:
-                raise protocol_error("TEST_EVENT_SEQUENCE_INVALID", "cancelled manifest lacks an incomplete case")
-        elif self.state != expected:
+        expected = (
+            "error" if states & {"error", "timeout"}
+            else "failed" if "failed" in states
+            else "passed" if states
+            else None
+        )
+        if self.state in {"passed", "failed", "error"} and self.state != expected:
             raise protocol_error("TEST_EVENT_SEQUENCE_INVALID", "manifest state contradicts cases")
         started = _utc(self.started_at_utc, "started_at_utc")
         ended = _utc(self.ended_at_utc, "ended_at_utc")

@@ -46,6 +46,9 @@ with (root / "calls.jsonl").open("a", encoding="utf-8") as stream:
         "mode": mode,
         "argv": argv,
         "environment": sorted(os.environ),
+        "authoritative_junit_before": sorted(
+            str(path) for path in Path(os.environ["RESULTS_ROOT"]).rglob("ctest-junit.xml")
+        ),
     }, ensure_ascii=False) + "\n")
 
 if mode == "cmake":
@@ -71,6 +74,8 @@ if (root / "timeout").exists():
     ])
     (root / "child.pid").write_text(str(child.pid), encoding="ascii")
     time.sleep(30)
+if (root / "no-junit").exists():
+    raise SystemExit(1)
 output = Path(argv[argv.index("--output-junit") + 1])
 output.write_bytes(Path(os.environ["JUNIT_SOURCE"]).read_bytes())
 print("ctest stdout")
@@ -114,10 +119,11 @@ def _runner(tmp_path: Path, *, timeout: int = 5) -> tuple[HostTestRunner, HostTe
         ctest_preset="host-tests",
         labels=(),
         timeout_seconds=timeout,
-        environment_allow=("SystemRoot", "SCENARIO_DIR", "JUNIT_SOURCE", "TEST_TOKEN"),
+        environment_allow=("SystemRoot", "SCENARIO_DIR", "JUNIT_SOURCE", "RESULTS_ROOT", "TEST_TOKEN"),
         environment_values={
             "SCENARIO_DIR": str(scenario),
             "JUNIT_SOURCE": str(JUNIT),
+            "RESULTS_ROOT": str(results),
             "TEST_TOKEN": "allowlisted",
         },
     )
@@ -150,7 +156,7 @@ def test_discover_builds_then_uses_distinct_ctest_preset_and_freezes_real_json(t
     assert inventory.identity == _identity()
     assert all(
         {name.casefold() for name in call["environment"]}
-        == {"systemroot", "junit_source", "scenario_dir", "test_token"}
+        == {"systemroot", "junit_source", "results_root", "scenario_dir", "test_token"}
         for call in calls
     )
     assert runner.discovery_artifact is not None
@@ -223,6 +229,13 @@ def test_run_selects_exact_ids_parses_ctest_431_junit_and_ingests_every_artifact
     junit_path = Path(run_argv[5])
     assert junit_path.is_absolute()
     assert REPO not in junit_path.parents
+    assert junit_path.name == "ctest-native-junit.xml"
+    assert "ctest-bridge-private" in junit_path.parent.name
+    assert calls[3]["authoritative_junit_before"] == []
+    assert not any(
+        path.name == "ctest-junit.xml" and path == junit_path
+        for path in task_tmp.rglob("ctest-junit.xml")
+    )
     assert manifest.state == "failed"
     assert [(case.case_id, case.state) for case in manifest.cases] == [
         ("native-fail", "failed"), ("native-pass", "passed")
@@ -272,6 +285,8 @@ def test_timeout_uses_safe_process_layer_to_cleanup_the_whole_child_tree(task_tm
         runner.run(inventory, ("native-pass",))
 
     assert caught.value.code == "TEST_PROCESS_TIMEOUT"
+    assert "scratch preserved at " in caught.value.message
+    assert Path(caught.value.message.split("scratch preserved at ", 1)[1]).is_dir()
     alive = scenario / "child-alive.txt"
     deadline = time.monotonic() + 3
     while not alive.exists() and time.monotonic() < deadline:
@@ -280,6 +295,19 @@ def test_timeout_uses_safe_process_layer_to_cleanup_the_whole_child_tree(task_tm
     first = alive.stat().st_size
     time.sleep(0.4)
     assert alive.stat().st_size == first
+
+
+def test_bridge_failure_preserves_and_reports_private_scratch(task_tmp: Path):
+    runner, config, scenario, _evidence = _runner(task_tmp)
+    inventory = runner.discover(config, _identity())
+    (scenario / "no-junit").write_text("no-junit", encoding="ascii")
+
+    with pytest.raises(ProtocolError) as caught:
+        runner.run(inventory, ("native-pass",))
+
+    assert caught.value.code == "TEST_PROCESS_ERROR"
+    assert "scratch preserved at " in caught.value.message
+    assert Path(caught.value.message.split("scratch preserved at ", 1)[1]).is_dir()
 
 
 def test_exit_and_junit_disagreement_is_rejected(task_tmp: Path):

@@ -66,6 +66,7 @@ class ProcessRequest:
     max_output_bytes: int = DEFAULT_OUTPUT_BYTES
     max_lines: int = DEFAULT_MAX_LINES
     env: tuple[tuple[str, str], ...] | Mapping[str, str] | None = None
+    inherited_fds: tuple[int, ...] = ()
 
     def __post_init__(self) -> None:
         if not isinstance(self.argv, tuple) or not self.argv:
@@ -87,6 +88,10 @@ class ProcessRequest:
             raise ValueError("max_output_bytes must be an integer in 1..8 MiB")
         if type(self.max_lines) is not int or self.max_lines < 1:
             raise ValueError("max_lines must be a positive integer")
+        if not isinstance(self.inherited_fds, tuple) or any(
+            type(descriptor) is not int or descriptor < 0 for descriptor in self.inherited_fds
+        ) or len(self.inherited_fds) != len(set(self.inherited_fds)):
+            raise ValueError("inherited_fds must be unique nonnegative integers")
         if self.env is None:
             return
         if isinstance(self.env, Mapping):
@@ -271,9 +276,12 @@ def run_process(request: ProcessRequest) -> ProcessResult:
         if request.env is not None:
             kwargs["env"] = dict(request.env)
         if _is_windows:
+            if request.inherited_fds:
+                raise process_error("launch", "inherited file descriptors are unsupported on Windows")
             kwargs["creationflags"] = _CREATE_NEW_PROCESS_GROUP
         else:
             kwargs["start_new_session"] = True
+            kwargs["pass_fds"] = request.inherited_fds
         process = subprocess.Popen(**kwargs)
         threads.append(threading.Thread(target=_drain, args=(process.stdout, stdout_sink), daemon=True))
         threads.append(threading.Thread(target=_drain, args=(process.stderr, stderr_sink), daemon=True))

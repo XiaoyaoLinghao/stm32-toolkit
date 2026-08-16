@@ -7,9 +7,12 @@ from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 import json
+from multiprocessing.connection import Listener
 import os
 from pathlib import Path
 import re
+import sys
+import threading
 import unicodedata
 from typing import cast
 from uuid import uuid4
@@ -21,6 +24,7 @@ from stm32_toolkit.process import ProcessError, ProcessRequest, ProcessResult, r
 from stm32_toolkit.project_model import HostTestConfig
 
 from .artifacts import TestArtifactCollector
+from ._ctest_junit_bridge import BridgeFrameError, MAX_FRAME_BYTES, decode_frame
 from .model import (
     CASE_STATES,
     TEST_SCHEMA,
@@ -136,7 +140,10 @@ class HostTestRunner:
         environment.update(dict(values))
         return environment
 
-    def _execute(self, argv: tuple[str, ...], config: HostTestConfig) -> ProcessResult:
+    def _execute(
+        self, argv: tuple[str, ...], config: HostTestConfig,
+        *, inherited_fds: tuple[int, ...] = (),
+    ) -> ProcessResult:
         environment = self._environment(config)
         try:
             request = ProcessRequest(
@@ -144,6 +151,7 @@ class HostTestRunner:
                 cwd=self.project_root,
                 timeout_seconds=config.timeout_seconds,
                 env=environment,
+                inherited_fds=inherited_fds,
             )
         except (TypeError, ValueError) as exc:
             raise protocol_error("TEST_ENVIRONMENT_INVALID", "test environment is invalid") from exc
@@ -151,6 +159,92 @@ class HostTestRunner:
             return self._process_runner(request)
         except ProcessError as exc:
             raise protocol_error("TEST_PROCESS_ERROR", exc.message) from exc
+
+    def _execute_junit_bridge(
+        self, argv: tuple[str, ...], config: HostTestConfig, scratch: Path,
+    ) -> tuple[ProcessResult, int, bytes, bytes, bytes]:
+        """Run CTest without ever exposing the authoritative JUnit pathname."""
+        nonce = uuid4().hex + uuid4().hex
+        helper = Path(__file__).with_name("_ctest_junit_bridge.py")
+        received: list[bytes] = []
+        failures: list[BaseException] = []
+        inherited_fds: tuple[int, ...] = ()
+        listener = None
+        write_fd = None
+        if sys.platform == "win32":
+            channel = rf"\\.\pipe\stm32tk-ctest-{uuid4().hex}"
+            listener = Listener(channel, family="AF_PIPE", authkey=bytes.fromhex(nonce))
+
+            def receive() -> None:
+                try:
+                    connection = listener.accept()
+                    try:
+                        received.append(connection.recv_bytes(MAX_FRAME_BYTES))
+                    finally:
+                        connection.close()
+                except BaseException as exc:  # transported as one stable Host error below
+                    failures.append(exc)
+        else:
+            read_fd, write_fd = os.pipe()
+            os.set_inheritable(write_fd, True)
+            channel = str(write_fd)
+            inherited_fds = (write_fd,)
+
+            def receive() -> None:
+                data = bytearray()
+                try:
+                    while True:
+                        chunk = os.read(read_fd, 65536)
+                        if not chunk:
+                            break
+                        data.extend(chunk)
+                        if len(data) > MAX_FRAME_BYTES:
+                            raise BridgeFrameError("bridge frame exceeds bound")
+                    received.append(bytes(data))
+                except BaseException as exc:
+                    failures.append(exc)
+                finally:
+                    os.close(read_fd)
+
+        receiver = threading.Thread(target=receive, daemon=True)
+        receiver.start()
+        try:
+            result = self._execute(
+                (
+                    sys.executable, str(helper),
+                    "named-pipe" if sys.platform == "win32" else "fd",
+                    channel, nonce, str(scratch), str(self.project_root), "--", *argv,
+                ),
+                config,
+                inherited_fds=inherited_fds,
+            )
+        finally:
+            if write_fd is not None:
+                os.close(write_fd)
+            if listener is not None and (result.timed_out if "result" in locals() else True):
+                listener.close()
+        receiver.join(timeout=5)
+        if listener is not None:
+            listener.close()
+        if result.timed_out:
+            raise protocol_error(
+                "TEST_PROCESS_TIMEOUT", f"CTest execution timed out; bridge scratch preserved at {scratch}"
+            )
+        if result.returncode != 0 or result.stdout_truncated or result.stderr_truncated:
+            raise protocol_error(
+                "TEST_PROCESS_ERROR", f"CTest bridge failed; scratch preserved at {scratch}"
+            )
+        if receiver.is_alive() or failures or len(received) != 1:
+            raise protocol_error(
+                "TEST_PROCESS_ERROR", f"CTest bridge transport failed; scratch preserved at {scratch}"
+            )
+        try:
+            ctest_returncode, stdout, stderr, junit = decode_frame(received[0], nonce)
+        except BridgeFrameError as exc:
+            raise protocol_error(
+                "TEST_PROCESS_ERROR", f"CTest bridge frame invalid; scratch preserved at {scratch}"
+            ) from exc
+        return result, ctest_returncode, stdout, stderr, junit
 
     @staticmethod
     def _check_process(result: ProcessResult, *, operation: str) -> None:
@@ -284,37 +378,33 @@ class HostTestRunner:
         numbers = sorted(fresh.ordinals[case_id] for case_id in selected)
         selection = "0,0,0," + ",".join(str(number) for number in numbers)
         directory = self._collector.new_directory("ctest-run")
-        junit_path = self._collector.output_path(directory, "ctest-junit.xml")
+        scratch = self._collector.new_directory("ctest-bridge-private")
         started = self._clock()
-        result = self._execute(
+        result, ctest_returncode, stdout_bytes, stderr_bytes, junit_bytes = self._execute_junit_bridge(
             (
                 *self._ctest, "--preset", config.ctest_preset,
                 "--tests-information", selection,
-                "--output-junit", str(junit_path),
             ),
-            config,
+            config, scratch,
         )
-        if result.timed_out:
-            raise protocol_error("TEST_PROCESS_TIMEOUT", "CTest execution timed out")
-        if result.stdout_truncated or result.stderr_truncated:
-            raise protocol_error("TEST_PROCESS_OUTPUT_LIMIT", "CTest execution output exceeded its bound")
         ended = self._clock()
-        raw_events = self._collector.ingest_existing(
-            junit_path, kind="test-events", media_type="application/xml", stream_limit=True
+        raw_events = self._collector.write_and_ingest(
+            directory, "ctest-junit.xml", junit_bytes,
+            kind="test-events", media_type="application/xml",
         )
         stdout = self._collector.write_and_ingest(
-            directory, "ctest-stdout.txt", result.stdout.encode("utf-8"),
+            directory, "ctest-stdout.txt", stdout_bytes,
             kind="test-stdout", media_type="text/plain; charset=utf-8",
         )
         stderr = self._collector.write_and_ingest(
-            directory, "ctest-stderr.txt", result.stderr.encode("utf-8"),
+            directory, "ctest-stderr.txt", stderr_bytes,
             kind="test-stderr", media_type="text/plain; charset=utf-8",
         )
         authoritative_junit = self._collector.evidence_store.root / raw_events.relative_path
         cases = self._parse_junit(authoritative_junit, tuple(selected), directory)
         state = self._run_state(cases)
         native_failure = state != "passed"
-        if (result.returncode == 0) == native_failure:
+        if (ctest_returncode == 0) == native_failure:
             raise protocol_error("TEST_EXIT_MISMATCH", "CTest exit code contradicts JUnit")
         return TestRunManifest(
             TEST_SCHEMA, uuid4().hex, "host", state, inventory.identity, None, cases,

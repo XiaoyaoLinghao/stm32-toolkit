@@ -159,15 +159,7 @@ def test_host_identity_is_exact_and_never_uses_placeholder_firmware_hashes():
 
 @pytest.mark.parametrize(
     ("state", "case_state"),
-    [
-        ("discovered", "passed"),
-        ("running", "passed"),
-        ("passed", "failed"),
-        ("passed", "error"),
-        ("failed", "passed"),
-        ("error", "failed"),
-        ("cancelled", "passed"),
-    ],
+    [("passed", "failed"), ("passed", "error"), ("failed", "passed"), ("error", "failed")],
 )
 def test_direct_manifest_construction_enforces_terminal_case_summary(state: str, case_state: str):
     """Direct construction must not bypass the same terminal summary rules as event assembly."""
@@ -201,6 +193,71 @@ def test_direct_manifest_accepts_only_consistent_terminal_summaries(state: str, 
         cases, UTC_0, UTC_1, 1000, None, None, _artifact(),
     )
     assert manifest.state == state
+
+
+@pytest.mark.parametrize(
+    ("state", "case_states"),
+    [
+        ("discovered", ()),
+        ("running", ()),
+        ("running", ("passed",)),
+        ("passed", ("passed", "skipped")),
+        ("failed", ("passed", "failed")),
+        ("error", ("passed", "timeout")),
+        ("cancelled", ()),
+        ("cancelled", ("passed",)),
+    ],
+)
+def test_manifest_model_and_json_schema_accept_the_same_six_state_shapes(
+    state: str, case_states: tuple[str, ...],
+):
+    """All six public states have one model/schema contract, including partial runs."""
+    cases = tuple(
+        CaseResult(f"case-{index}", item, UTC_0, UTC_1, 1000, None, None, None)
+        for index, item in enumerate(case_states)
+    )
+    manifest = RunManifest(
+        "stm32-test/1", "run-1", "host", state, _identity(), None,
+        cases, UTC_0, UTC_1, 1000, None, None, _artifact(),
+    )
+    schema = json.loads(Path("schemas/stm32-test.schema.json").read_text(encoding="utf-8"))
+    assert not list(Draft202012Validator(schema).iter_errors(manifest.to_dict()))
+
+
+@pytest.mark.parametrize(
+    ("state", "case_states"),
+    [
+        ("passed", ()),
+        ("passed", ("failed",)),
+        ("failed", ()),
+        ("failed", ("failed", "error")),
+        ("error", ()),
+        ("error", ("failed",)),
+    ],
+)
+def test_manifest_model_and_json_schema_reject_the_same_inconsistent_terminal_shapes(
+    state: str, case_states: tuple[str, ...],
+):
+    """Terminal passed/failed/error summaries cannot diverge across Python and JSON."""
+    cases = tuple(
+        CaseResult(f"case-{index}", item, UTC_0, UTC_1, 1000, None, None, None)
+        for index, item in enumerate(case_states)
+    )
+    arguments = (
+        "stm32-test/1", "run-1", "host", state, _identity(), None,
+        cases, UTC_0, UTC_1, 1000, None, None, _artifact(),
+    )
+    with pytest.raises(ProtocolError):
+        RunManifest(*arguments)
+    candidate = {
+        "schema": arguments[0], "run_id": arguments[1], "mode": arguments[2],
+        "state": arguments[3], "identity": arguments[4].to_dict(), "transport": None,
+        "cases": [case.to_dict() for case in cases], "started_at_utc": UTC_0,
+        "ended_at_utc": UTC_1, "duration_ms": 1000, "stdout": None, "stderr": None,
+        "raw_events": _artifact().to_dict(),
+    }
+    schema = json.loads(Path("schemas/stm32-test.schema.json").read_text(encoding="utf-8"))
+    assert list(Draft202012Validator(schema).iter_errors(candidate))
 
 
 def test_frame_schema_binds_each_numeric_kind_to_one_closed_payload():
@@ -377,7 +434,7 @@ def test_schema_mirrors_compile_and_close_every_event_payload():
     assert schema["$defs"]["testCaseResult"]["additionalProperties"] is False
     assert schema["$defs"]["testInventory"]["additionalProperties"] is False
     assert schema["$defs"]["testRunManifest"]["additionalProperties"] is False
-    assert schema["$defs"]["testRunManifest"]["properties"]["cases"]["minItems"] == 1
+    assert schema["$defs"]["testRunManifest"]["properties"]["cases"]["minItems"] == 0
     assert "pattern" in schema["$defs"]["artifact"]["properties"]["relative_path"]
     for kind in ("inventory", "runStart", "caseStart", "caseResult", "runEnd", "log"):
         assert schema["$defs"][f"{kind}Payload"]["additionalProperties"] is False

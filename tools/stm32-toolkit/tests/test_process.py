@@ -91,6 +91,16 @@ def test_process_request_rejects_nonclosed_or_unlaunchable_environment(tmp_path:
         ProcessRequest(argv=(PYTHON, "-c", "pass"), cwd=tmp_path, timeout_seconds=30, env=env)
 
 
+@pytest.mark.parametrize("descriptors", [[1], (True,), (-1,), (3, 3)])
+def test_process_request_rejects_ambiguous_inherited_descriptors(tmp_path: Path, descriptors):
+    """The bridge may pass only an immutable, unique tuple of real POSIX descriptors."""
+    with pytest.raises(ValueError):
+        ProcessRequest(
+            argv=(PYTHON, "-c", "pass"), cwd=tmp_path, timeout_seconds=30,
+            inherited_fds=descriptors,
+        )
+
+
 def write_pid_child(pid_file: Path, code: str = "import time; time.sleep(60)") -> tuple[str, ...]:
     return (
         PYTHON,
