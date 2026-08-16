@@ -54,8 +54,8 @@ software plus hardware final matrix then runs at the frozen CodeHead.
 | Module | Product result | Contract frozen at exit |
 |---|---|---|
 | `STM32TK-0600-ACCEPTANCE-FEASIBILITY` | no product code; verified Windows software/tool support profile and deterministic fake/replay fixture | Windows owner/profile, support inputs, matrix topology; hardware profile remains explicitly pending |
-| `STM32TK-0601-TEST-EVIDENCE` | shared evidence store, Project Schema v3, Host/Target tests, four target transports, 0.6 gate controllers | evidence/test schema, gate schema/families, 0601 exact gates/nodes, coverage boundary, calibrated 0601 performance |
-| `STM32TK-0602-DIAGNOSTIC-LOOP` | append-only diagnostic state machine, Probe protocol v2 debug/log controls, evidence-driven fix verification | diagnostic events, authorization/action digest, debug safety contract |
+| `STM32TK-0601-TEST-EVIDENCE` | shared evidence store, Project Schema v3, Host/Target tests, four target transports, shared 0.6 gate controller and fixed wrappers | evidence/test schema, gate schema/families, 0601 exact gates/nodes, coverage boundary, calibrated 0601 performance |
+| `STM32TK-0602-DIAGNOSTIC-LOOP` | append-only diagnostic state machine, hypotheses/assessment, Probe v2 observation/action binding, evidence-driven fix verification | diagnostic events, source/fix binding, diagnostic action/evidence mapping |
 | `STM32TK-0603-MONITOR-ANALYTICS` | cross-run comparison, quality analytics, annotations/markers, AI bundle, final 0.6 product CodeHead | Monitor storage/history compatibility, analytics API/UI, final release inventory |
 
 The accepted base of each later module is the previous module's report commit. A later
@@ -84,6 +84,39 @@ Toolkit and Monitor remain local-only. No product component calls a cloud model,
 an API key, uploads evidence, or provides an unreviewed automatic code editor. The AI
 client reasons through Skills and MCP; deterministic code validates and records every
 state transition and hardware operation.
+
+### 4.1 Layered implementation sources
+
+This section constrains implementation source and task order; it does not change any public
+protocol, operation, error, limit, transport, platform, evidence, or acceptance requirement in
+this specification.
+
+| Layer | 0.6 responsibility |
+|---|---|
+| L0 external engines | ARM GNU, CMake/Ninja/CTest/JUnit, PyOCD, pyserial, pyelftools, SQLite, aiohttp, Preact, ECharts, Vitest, and Playwright perform their mature execution functions. Their output is always untrusted input to Toolkit. |
+| L1 Toolkit kernel | CLI/MCP/Skills, closed schemas and `OperationResult`, identity, isolation, authorization, lease, Evidence/Test contracts, and controlled adapters remain Toolkit-owned. |
+| L2 STM32 platform | build/ELF/DWARF/SVD, Probe v2, Host/Target test, mailbox/RTT/UART/semihosting, and Monitor history/service compose L0 through L1 policy rather than duplicating an engine. |
+| L3 product/intelligence | 0602 diagnostic reasoning state and 0603 analytics/annotation/bundle/UI additions consume L1/L2 public interfaces. |
+| L4 delivery/acceptance | one shared 0600 controller, verifier, catalog, native-output adapter, managed runtime, audit, performance, candidate, recovery, final, browser, and hardware campaign prove the product. |
+
+The implementation source for the remaining modules is fixed as follows:
+
+- 0601 mailbox uses Probe v2 bounded memory, RTT uses PyOCD RTT, UART uses pinned pyserial, and
+  semihosting uses the frozen debug backend with host-file denial. Toolkit still owns framing,
+  state, identity, authorization, immutable Evidence, and all four public transport contracts.
+- 0601 freezes and implements the complete Probe v2 read/control adapter before 0602. 0602 may
+  call those operations but may not add a second debugger, probe service, GDB-server manager, or
+  backend control kernel.
+- 0603 extends the one existing `monitor.sqlite3`, history/storage/service/WebSocket and
+  Preact/ECharts UI. It may not add a second Monitor or a Serial Studio product path.
+- 0601, 0602, and 0603 add reserved families and exact nodes to the one controller/verifier/
+  catalog. They may not fork module-specific acceptance controllers.
+
+Completed 0.2--0.5 behavior and accepted 0601 Tasks 1--7 are compatibility baselines. A narrow
+adapter may be introduced only behind their existing public contract, with full affected legacy
+regression. No provider may silently regenerate a migrated project, rewrite persisted state,
+change an identity/authorization rule, or fall back to another engine while reporting the same
+operation as successful.
 
 ## 5. Shared evidence contract
 
@@ -226,6 +259,21 @@ Changing an already-frozen module entry creates a new module CodeHead and invali
 module's candidate evidence. Controller/helper/verifier tests never inherit product coverage.
 Coverage acceptance uses integer branch counts for every changed product file; aggregate package
 percentages cannot mask a file below 90%, and missing/duplicate/case-folded coverage rows fail.
+
+Before the first implementation task that depends on a not-yet-proven external component, the
+owning plan must freeze a bounded proof-of-fit. It records the exact version and license, offline
+source, real Windows argv/exit, real sanitized native output, closed parser and error mapping,
+path/credential/network/concurrency/timeout/partial-output safety, identity/Evidence/authorization
+binding, performance/package cost, maintenance benefit, and affected 0.2--0.5 regression. Failure
+rejects the component without relaxing this specification. No proof may create a generic provider
+marketplace, dynamic loader, collaboration platform, CI system, remote scheduler, second runtime,
+or second product control plane.
+
+External test-output fixtures must be produced by the pinned real pytest, CTest, Vitest,
+Playwright, or npm version. A parser validates only the fields the product consumes, but it must
+cross-check native exit code, summary counts, and node outcomes. Hand-written simplified objects
+cannot stand in for a native-tool fixture. Toolkit's own closed protocols remain Toolkit formats
+and must not be mislabeled as native tool output.
 
 | Matrix | Trigger | Behavior | Initial scheduling target |
 |---|---|---|---:|
@@ -376,7 +424,8 @@ nondeterministic ordering. Identical canonical inputs produce byte-identical led
 
 Before 0601 product code, the feasibility matrix records the Codex Windows owner, exact Windows
 reference profile, software tools, browsers, deterministic fake/replay fixture, support manifest,
-and the explicitly pending hardware profile. Acceptance-support verifiers and controllers may be
+and the explicitly pending hardware profile. The shared acceptance-support verifier/controller and
+fixed wrappers may be
 implemented before feasibility PASS because they are the mechanism that proves feasibility; no
 0601 product surface may begin until the Windows software feasibility result passes.
 
@@ -448,6 +497,6 @@ audit before another candidate is created.
 
 | Requirement | Owning specification |
 |---|---|
-| Evidence store, Schema v3, Host/Target runners, transports, gate framework | `2026-08-14-stm32tk-0601-test-evidence-design.md` |
-| Diagnostic state machine, Probe v2 controls, authorization, fix verification | `2026-08-14-stm32tk-0602-diagnostic-loop-design.md` |
+| Evidence store, Schema v3, Host/Target runners, four transports, Probe v2 controls and public authorization client, gate framework | `2026-08-14-stm32tk-0601-test-evidence-design.md` plus the confirmed layered implementation-timing amendment |
+| Diagnostic state machine, hypotheses/assessment, Probe v2 observation/action binding, source/fix verification | `2026-08-14-stm32tk-0602-diagnostic-loop-design.md` |
 | Monitor history v2, comparison, quality, annotations, AI bundle, final release | `2026-08-14-stm32tk-0603-monitor-analytics-design.md` |

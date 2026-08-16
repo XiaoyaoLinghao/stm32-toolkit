@@ -8,6 +8,69 @@
 
 **Tech Stack:** Python 3.10+, jsonschema, MCP SDK, PyOCD, pyelftools, cmsis-svd, aiohttp, CMake 3.22+, Ninja, ARM GNU Toolchain, Unity/CMock, TypeScript, Vite, ECharts, Vitest, Playwright, STM32CubeMX 6.18+ CLI.
 
+## Layered Implementation Boundary
+
+This reconciliation remains a written-plan candidate until the user confirms its exact local
+CodeHead. Before that confirmation, frozen CodeHead
+`a31f997e0be87f6e14ad85b7cd033b4f4073b62f` remains authoritative and no implementation task may
+use this section to change an external product contract or the source/order of Task 8 and later.
+
+Future work is planned by responsibility layer before it is assigned to a release:
+
+| Layer | Ownership | Required implementation rule |
+|---|---|---|
+| L0 external execution engines | ARM GNU Toolchain; CMake/Ninja/CTest/JUnit; PyOCD; pyserial; pyelftools; STM32CubeMX; CMSIS/CMSIS-Pack; SQLite/aiohttp/Preact/ECharts/Vitest/Playwright | Pin, invoke, bound, parse, and verify the engine; do not reproduce its mature compiler, build, debug, serial, device-generation, storage, HTTP, chart, or browser-test internals. |
+| L1 Toolkit kernel | CLI/MCP/Skills, closed schemas and `OperationResult`, project/workspace/session/firmware identity, path/process isolation, authorization, probe lease, Evidence/Test contracts, and controlled adapters | Toolkit remains the sole control plane and public contract owner. External output is untrusted until identity-bound immutable Evidence and verifier acceptance. |
+| L2 STM32 domain platform | project/build/ELF/DWARF/SVD, Probe/flash/memory/register/Fault, Host/Target test, four transports, Monitor sampling/history/service | Implement STM32 semantics as narrow adapters over L0 and L1; do not add a second debugger, build system, Monitor, or test lifecycle. |
+| L3 product and intelligence | Keil migration, Monitor UI, 0602 diagnostic loop, 0603 analytics/annotations/bundles, 0.7 project creation | Implement only user-visible domain behavior not already supplied by L0/L1/L2. |
+| L4 delivery and acceptance | managed runtime/offline package, performance/security/dependency audit, candidate/resume/reconcile/final, browser and physical-hardware acceptance | Reuse one shared 0600 controller, verifier, catalog, and native-output adapter. A gate proves product behavior; it is not another product runtime. |
+
+Completed 0.2--0.5 public behavior and accepted 0601 Tasks 1--7 are compatibility baselines. A
+future adapter may be added behind those contracts, but it may not silently migrate an old project,
+change an identity or authorization rule, rewrite persisted Monitor/Evidence data, or select another
+engine after failure and claim the same operation succeeded.
+
+## Bounded Component Proof-of-Fit
+
+Before coding any not-yet-implemented generic execution capability, its owning task records one
+bounded proof-of-fit with all of the following concrete evidence:
+
+- exact version, LICENSE/NOTICE/SBOM identity, and offline installation source;
+- the real Windows argv and exit code from the frozen environment;
+- a real sanitized native-output fixture plus a closed parser that cross-checks exit, summary, and
+  node outcomes while consuming only business-required fields;
+- path, credential, network, concurrency, timeout, cancellation, crash, and partial-output tests;
+- project/firmware/run identity, authorization, Evidence, and error-code binding;
+- measured performance/package-size cost and the specific unimplemented code and maintenance it
+  eliminates; and
+- the complete affected 0.2--0.5 compatibility regression.
+
+Failure of any proof is a fail-closed rejection of that component, not permission to lower a
+product requirement or add a silent fallback. Do not build a provider marketplace, dynamic loader,
+parallel controller/runtime/product platform, collaboration integration, CI system, or remote
+scheduler as part of this work. Optional remote-lab or simulation providers require their own
+later approved proof and can never satisfy a physical-hardware PASS.
+
+### Reconciled component decisions at this plan CodeHead
+
+| Component | Observed/planned version and license | Decision before further coding |
+|---|---|---|
+| ARM GNU Toolchain | `14.3.1` from STM32CubeCLT 1.22.0; GPL toolchain terms/runtime exceptions must be archived | Adopt existing managed compiler; no compiler implementation. |
+| CMake/CTest and Ninja | CMake/CTest `4.3.1` (BSD-3-Clause), Ninja `1.13.2` (Apache-2.0) | Adopt; preserve real CTest native fixtures and the shared strict adapter. |
+| PyOCD | `0.45.1`, Apache-2.0 | Adopt as the sole local probe execution engine behind Probe v2. |
+| pyserial | `3.5`, BSD | Adopt for the closed UART transport only. |
+| pyelftools | `0.33`, public domain | Adopt for ELF/DWARF parsing and verification. |
+| SQLite/aiohttp | managed CPython SQLite `3.41.2` (3.10) and `3.49.1` (3.12), public domain; aiohttp `3.12.15`/`3.14.3`, Apache-2.0 AND MIT | Adopt existing Monitor stack; the 0.6 package task must select one frozen offline set per supported interpreter. |
+| Preact/ECharts/Vitest/Playwright | `10.29.8` MIT / `6.1.0` Apache-2.0 / `4.1.10` MIT / `1.56.1` Apache-2.0 | Adopt the package-lock versions; Chromium only for current Windows scope. |
+| STM32CubeMX CLI | planned `6.18`; ST proprietary license; executable and offline source absent from the current host | Pending mandatory 0.7 proof-of-fit; Task 1 remains blocked until PASS. |
+| CMSIS-Toolbox/CMSIS-Pack | exact Toolbox version not yet selected; Apache-2.0 upstream; commands absent from the current host | Pending bounded Pack/device/SVD proof; csolution/cbuild/cbridge remain rejected unless a later proof avoids a second project model. |
+| Ceedling and pytest-embedded | not pinned | Reject as defaults; reconsider only for a named CMock/DUT fixture that passes a separate proof. |
+| Serial Studio, OpenHTF, Zephyr Twister | not pinned | Reject from the product core because each duplicates an existing product/test/Monitor lifecycle. |
+| labgrid and Renode | not pinned | Deferred optional providers; neither is a local 1.0 prerequisite and simulation never counts as physical PASS. |
+
+The license labels above are planning identities, not a substitute for the exact LICENSE/NOTICE/
+SBOM and offline-source evidence required by the owning package or proof task.
+
 ## Global Constraints
 
 - Preserve the Toolkit form: one Claude Code user-scope plugin; no cloud service, external database, Codex-only dependency, or copied project Skills.
@@ -95,8 +158,10 @@ Implementation commits must update the detailed task checkbox in the correspondi
 | Build identity and reproducibility | 0.3 Task 5 |
 | Safe probe ownership, flashing, reads, registers, Fault evidence | 0.4 Tasks 1–3 |
 | User-created monitor groups and unchanged monitor capabilities | 0.5 Tasks 1–2 (delivered in 0502) |
-| Host and real-target test execution | 0.6 Task 3 (deferred) |
-| AI hypotheses, autonomous safe observations, debug control, evidence, and fix verification | 0.6 Task 4 (deferred) |
+| Host/Target test, Evidence, transports, and Probe v2 | STM32TK-0601 Tasks 3--13 |
+| AI hypotheses, bounded observations/control, evidence assessment, and fix verification | STM32TK-0602 Tasks 1--12 |
+| Cross-run analytics, quality, annotations, bundles, and Monitor UI | STM32TK-0603 Tasks 1--13 |
+| Shared candidate/final governance and real-hardware reconciliation | STM32TK-0600 release acceptance |
 | From-zero CubeMX project creation without a hand-written MCU matrix | 0.7–1.0 Task 1 |
 | Per-project data isolation, versioning, GitHub-only installation, and upgrades | all phases; 0.7–1.0 Task 3 |
 | Non-skippable real-board vertical proof | 0.7–1.0 Tasks 2 and 4 |

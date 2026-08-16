@@ -32,6 +32,13 @@
   separately authorizes push/PR changes.
 - After two consecutive candidate failures caused by an acceptance-contract gap, stop and audit
   the contract instead of adding another late gate.
+- Tasks 1--7 are accepted implementation history and are not reopened by the layered-integration
+  amendment. The amendment below changes only the implementation source and ordering of Tasks
+  8--13; it does not change any frozen Evidence, Test, Project v3, Host-runner, or gate behavior.
+- The Task 9 timing delta that completes Probe v2 in 0601 becomes effective only after the user
+  confirms the reconciled written-plan CodeHead. Until then, the implementation-timing sentence in
+  the frozen 0601 design remains authoritative; confirmation supersedes that sentence only, not
+  the already frozen Probe v2 public schema, safety levels, or operation set.
 
 ---
 
@@ -621,6 +628,50 @@ git add -- schemas/stm32-test.schema.json tools/stm32-toolkit/src/stm32_toolkit/
 git commit -m "feat(STM32TK-0601): run identity-bound host tests"
 ```
 
+## Mandatory Task 8 precondition: freeze the layered execution boundary
+
+Before editing Task 8 product code, create a reviewable component-admission record in the Task 8
+report and pass it independently. Map the remaining work as follows:
+
+| Remaining task | Layer | Toolkit-owned result | L0 execution source |
+|---|---|---|---|
+| Task 8 | L1/L2 | framing, state machine, transport identity, limits, bounded-memory port, authorization boundary, Evidence | PyOCD RTT, pyserial 3.5, frozen semihosting backend; mailbox execution is wired to Probe v2 in Task 9 |
+| Task 9 | L1/L2 | closed Probe v2 protocol, bounded-memory mailbox binding, lease/identity/authorization, adapter validation, Target runner | existing Probe Service and PyOCD backend |
+| Task 10 | L1/L3 | one CLI/MCP/Skill surface and GC dialogue | no new execution engine |
+| Task 11 | L4 | calibrated performance evidence | the existing shared 0600 controller/verifier |
+| Task 12 | L4 | package and deferred hardware inventory | the existing managed runtime/package path |
+| Task 13 | L4 | exact candidate inventory and acceptance report | the same shared 0600 controller/verifier/catalog |
+
+For PyOCD, pyserial, and the selected semihosting backend, the admission record must contain the
+exact resolved version, license and retained LICENSE/NOTICE source, offline package source and
+digest, and exact Windows version/probe argv, exit code, and sanitized output. Commit the closed
+record as `tools/stm32-toolkit/tests/fixtures/component-admission/target-transports/
+admission-manifest.json`; retain the real installed-component version/probe output as
+`pyocd-version.txt`, `pyserial-version.txt`, and `semihosting-backend-version.txt`, and retain the
+real package API observations as `pyocd-fake-api-observation.json`,
+`pyserial-loopback-observation.json`, and `semihosting-fake-api-observation.json`. The manifest
+binds each file's byte count/SHA-256 to the executable/package digest, argv/API call, exit/result,
+sanitization operation, and UTC capture.
+This precondition is software-only: run the real installed package/backend code against the
+accepted fake/replay target or bounded local loopback. These observations prove package/API fit,
+not native RTT/UART/semihosting transport bytes and not physical support. Toolkit protocol replay
+streams remain separately labeled under `fixtures/target-streams` and must never be presented as
+native-tool output. It must execute no probe, UART
+adapter, board reset, flash, halt, or other hardware body and cannot claim transport support. The
+same adapters later consume and preserve the separately identity-bound real RTT/UART/semihosting
+output in the post-0603 campaign, where parser results are cross-checked with backend status,
+terminal frame, and Test inventory; only that campaign can supply native transport fixtures and
+satisfy hardware PASS.
+It must also test a closed parser/error mapping; canonical path and credential handling;
+network denial; concurrent ownership; timeout, disconnect, partial-output, and cleanup behavior;
+project/workspace/session/firmware/Test/Evidence identity binding; probe lease and exact
+authorization binding; performance and package-size cost; and the amount of not-yet-written code
+and maintenance avoided. It must run the complete 0.2--0.5 regression suite. A failed admission
+record means the component is not admitted and the product requirement remains unchanged; there is
+no silent fallback. Do not use hand-authored approximations of external output. Do not create a
+provider marketplace, dynamic provider loader, second controller, GDB-server manager, or second
+probe service.
+
 ## Task 8: Implement Target framing and transport adapters
 
 **Files:**
@@ -640,6 +691,13 @@ git commit -m "feat(STM32TK-0601): run identity-bound host tests"
 - Create: `tools/stm32-toolkit/tests/fixtures/target-streams/corrupt-crc.bin`
 - Create: `tools/stm32-toolkit/tests/fixtures/target-streams/truncated-frame.bin`
 - Create: `tools/stm32-toolkit/tests/fixtures/target-streams/oversize-header.bin`
+- Create: `tools/stm32-toolkit/tests/fixtures/component-admission/target-transports/admission-manifest.json`
+- Create: `tools/stm32-toolkit/tests/fixtures/component-admission/target-transports/pyocd-version.txt`
+- Create: `tools/stm32-toolkit/tests/fixtures/component-admission/target-transports/pyserial-version.txt`
+- Create: `tools/stm32-toolkit/tests/fixtures/component-admission/target-transports/semihosting-backend-version.txt`
+- Create: `tools/stm32-toolkit/tests/fixtures/component-admission/target-transports/pyocd-fake-api-observation.json`
+- Create: `tools/stm32-toolkit/tests/fixtures/component-admission/target-transports/pyserial-loopback-observation.json`
+- Create: `tools/stm32-toolkit/tests/fixtures/component-admission/target-transports/semihosting-fake-api-observation.json`
 
 - [ ] Write failing frame tests for byte-at-a-time fragmentation, concatenation, strict sequence,
   CRC/magic/version/length/UTF-8 errors, bounded recovery, oversize-before-allocation, 64 MiB run
@@ -652,6 +710,14 @@ git commit -m "feat(STM32TK-0601): run identity-bound host tests"
   bounds and no target writes, RTT channel/RAM bounds, UART exact port/baud/8N1, semihosting host-
   file denial, disconnect cleanup, identity, and `TEST_TRANSPORT_UNAVAILABLE`. Validate only the
   eight baud values and exact profile-declared RAM/mailbox/RTT/UART/probe/semihosting capabilities.
+  Exercise mailbox through an injected closed `BoundedMemoryReader` port whose only production
+  binding is the Probe v2 public client completed in Task 9; Task 8 uses only the deterministic
+  fake reader and cannot claim the production mailbox binding. Exercise RTT only through the
+  admitted PyOCD RTT adapter, UART only through pyserial 3.5, and semihosting only through the
+  admitted frozen debug backend with host-file operations denied before backend execution.
+  Component-admission tests consume the real version/probe/API observations; frame/parser tests
+  consume separately labeled Toolkit replay streams. Neither may claim native physical transport
+  evidence before the post-0603 campaign.
 
 - [ ] Run RED:
 
@@ -660,8 +726,14 @@ py -3.12 -m pytest tools/stm32-toolkit/tests/test_target_protocol.py tools/stm32
 ```
 
 - [ ] Implement the shared incremental decoder and four thin `TargetTransport` adapters. Add
-  `pyserial>=3.5,<4` to the `probe` optional dependency, not the base install, and keep all
-  backend calls behind the protocol interface.
+  `pyserial==3.5` to the `probe` optional dependency, not the base install. The mailbox adapter
+  accepts only the closed read-only `BoundedMemoryReader` port, enforces address/ring/read bounds,
+  and performs no target write; its Task 8 tests inject the deterministic fake reader. RTT uses
+  PyOCD's RTT implementation; UART uses only
+  the closed project port/baud/8N1 configuration; semihosting uses the frozen debug backend and
+  enforces the host-file deny policy. Keep all execution calls behind the closed transport/probe
+  interfaces. Toolkit, not an L0 engine, owns framing, state transitions, identity, authorization,
+  Evidence publication, and public errors.
 
 - [ ] Run GREEN on 3.10/3.12 with branch coverage:
 
@@ -675,7 +747,7 @@ py -3.12 $gateController dev-coverage --task-id STM32TK-0601-T08 --evidence-root
 - [ ] Commit:
 
 ```powershell
-git add -- tools/stm32-toolkit/pyproject.toml tools/stm32-toolkit/src/stm32_toolkit/testing/target.py tools/stm32-toolkit/src/stm32_toolkit/testing/transports/__init__.py tools/stm32-toolkit/src/stm32_toolkit/testing/transports/base.py tools/stm32-toolkit/src/stm32_toolkit/testing/transports/mailbox.py tools/stm32-toolkit/src/stm32_toolkit/testing/transports/rtt.py tools/stm32-toolkit/src/stm32_toolkit/testing/transports/uart.py tools/stm32-toolkit/src/stm32_toolkit/testing/transports/semihosting.py tools/stm32-toolkit/tests/test_target_protocol.py tools/stm32-toolkit/tests/test_target_transports.py tools/stm32-toolkit/tests/fixtures/target-streams/replay-manifest.json tools/stm32-toolkit/tests/fixtures/target-streams/valid-run.bin tools/stm32-toolkit/tests/fixtures/target-streams/corrupt-crc.bin tools/stm32-toolkit/tests/fixtures/target-streams/truncated-frame.bin tools/stm32-toolkit/tests/fixtures/target-streams/oversize-header.bin
+git add -- tools/stm32-toolkit/pyproject.toml tools/stm32-toolkit/src/stm32_toolkit/testing/target.py tools/stm32-toolkit/src/stm32_toolkit/testing/transports/__init__.py tools/stm32-toolkit/src/stm32_toolkit/testing/transports/base.py tools/stm32-toolkit/src/stm32_toolkit/testing/transports/mailbox.py tools/stm32-toolkit/src/stm32_toolkit/testing/transports/rtt.py tools/stm32-toolkit/src/stm32_toolkit/testing/transports/uart.py tools/stm32-toolkit/src/stm32_toolkit/testing/transports/semihosting.py tools/stm32-toolkit/tests/test_target_protocol.py tools/stm32-toolkit/tests/test_target_transports.py tools/stm32-toolkit/tests/fixtures/target-streams/replay-manifest.json tools/stm32-toolkit/tests/fixtures/target-streams/valid-run.bin tools/stm32-toolkit/tests/fixtures/target-streams/corrupt-crc.bin tools/stm32-toolkit/tests/fixtures/target-streams/truncated-frame.bin tools/stm32-toolkit/tests/fixtures/target-streams/oversize-header.bin tools/stm32-toolkit/tests/fixtures/component-admission/target-transports/admission-manifest.json tools/stm32-toolkit/tests/fixtures/component-admission/target-transports/pyocd-version.txt tools/stm32-toolkit/tests/fixtures/component-admission/target-transports/pyserial-version.txt tools/stm32-toolkit/tests/fixtures/component-admission/target-transports/semihosting-backend-version.txt tools/stm32-toolkit/tests/fixtures/component-admission/target-transports/pyocd-fake-api-observation.json tools/stm32-toolkit/tests/fixtures/component-admission/target-transports/pyserial-loopback-observation.json tools/stm32-toolkit/tests/fixtures/component-admission/target-transports/semihosting-fake-api-observation.json
 git commit -m "feat(STM32TK-0601): decode target tests across four transports"
 ```
 
@@ -692,12 +764,13 @@ git commit -m "feat(STM32TK-0601): decode target tests across four transports"
 - Modify: `tools/stm32-toolkit/src/stm32_toolkit/probe/backend.py`
 - Modify: `tools/stm32-toolkit/src/stm32_toolkit/probe/pyocd_backend.py`
 - Modify: `tools/stm32-toolkit/src/stm32_toolkit/testing/target.py`
+- Modify: `tools/stm32-toolkit/tests/test_target_transports.py`
 - Create: `tools/stm32-toolkit/tests/test_probe_protocol_v2.py`
 - Create: `tools/stm32-toolkit/tests/test_target_runner.py`
 
 - [ ] Write failing schema/protocol tests for exact v2 operations and arguments, v1/v2 mismatch,
   unknown fields/operations, same-version requirement, bounded reads/backpressure, lease cleanup,
-  unavailable reserved 0602 operations, and root/packaged schema equality. Cover every exact
+  implemented OBSERVE/CONTROL operations, and root/packaged schema equality. Cover every exact
   request/result/access class/limit in design §7. Cover the implemented transport/identity
   `OBSERVE` operations and exactly the reserved `target.state.read`, `target.halt`, `target.resume`,
   single-instruction/5-second `target.step`, temporary breakpoint set/clear with eight-per-session
@@ -706,12 +779,20 @@ git commit -m "feat(STM32TK-0601): decode target tests across four transports"
   `target.logs.capture` with `rtt|uart|semihosting|swo|probe`, 10 MiB, and 300,000 ms limits. Assert
   every exact success-result field, reject `target.debug.capture`, `target.log.capture`, step counts,
   and every unlisted operation/field. Assert the design §7 common error-code allowlist and exact
-  `{code,message,details}` error object, with no partial success; no 0602 operation may be added
-  without a protocol-version change.
+  `{code,message,details}` error object, with no partial success. All listed read/control operations
+  must have complete Probe Service, public client, and admitted PyOCD backend adapters in 0601;
+  no operation may be deferred to 0602, and no later operation may be added without a
+  protocol-version change.
 
 - [ ] Assert the implementation consumes the exact Windows support board/backend/transport
   capability contract; an identity or capability mismatch fails before lease, flash, or target
   capture. Schema freeze depends on the accepted 0602 requirements, not on hardware feasibility.
+
+- [ ] Add the production mailbox integration test that binds Task 8's `BoundedMemoryReader` port
+  exclusively to the Probe v2 public client's bounded-memory operation. Prove exact request/range/
+  identity propagation, read-only access, deadlines, disconnect cleanup, and rejection of any
+  direct PyOCD/backend object or alternate binding. This is the first point at which the mailbox
+  transport can claim its required production Probe v2 execution path.
 
 - [ ] Write failing Target runner tests proving the MODIFY digest binds every specified field,
   is single-use, rejects stale revision/identity/inventory, flashes through guarded workflow,
@@ -720,32 +801,51 @@ git commit -m "feat(STM32TK-0601): decode target tests across four transports"
   configured target, never resets/halt/flashes/writes or consumes MODIFY authorization, and returns
   `TEST_TRANSPORT_UNAVAILABLE` on firmware/config mismatch.
 
+- [ ] Freeze and test the Probe v2 public authorization client used by later diagnostic callers.
+  Its prepare call generates the persistent 32-byte CSPRNG nonce, exact action digest and <=5-minute
+  UTC expiry, performs exactly one OBSERVE identity/state snapshot and no CONTROL/MODIFY, and binds
+  workspace/project/session/revision/target/probe/firmware/state/operation/arguments. Its execute
+  call consumes one exact authorization, repeats the identity/state check, executes at most one
+  CONTROL action, closes success/refusal/mismatch/failure/timeout, and rejects reuse. Keep the
+  common closed result/error contract; later modules may bind domain events to this interface but
+  may not implement another authorization state machine.
+
 - [ ] Run RED:
 
 ```powershell
 py -3.12 -m pytest tools/stm32-toolkit/tests/test_probe_protocol_v2.py tools/stm32-toolkit/tests/test_target_runner.py -q -p no:cacheprovider
 ```
 
-- [ ] Implement the full closed v2 schema, testing transport service operations, unavailable
-  typed stubs for 0602 operations, client validation, and `TargetTestRunner.prepare/run`.
+- [ ] Implement the full closed v2 schema, testing transport operations and every listed
+  OBSERVE/CONTROL operation through the existing Probe Service, public client, and PyOCD backend;
+  implement client validation, the public authorization prepare/execute interface, and
+  `TargetTestRunner.prepare/run`. Reuse the existing Probe
+  Service/backend/lease boundary and do not create a GDB-server manager, second probe service, or
+  parallel debug-control kernel. PyOCD remains an untrusted execution engine: Toolkit performs
+  range checks, state/identity/lease/authorization validation, bounded result conversion, error
+  mapping, and Evidence publication.
 
 - [ ] Run GREEN on both Pythons and affected Probe/process fake-backend regressions:
 
 ```powershell
-py -3.10 -m pytest tools/stm32-toolkit/tests/test_probe_protocol_v2.py tools/stm32-toolkit/tests/test_target_runner.py tools/stm32-toolkit/tests/test_probe_service.py tools/stm32-toolkit/tests/test_process.py -q -p no:cacheprovider
+py -3.10 -m pytest tools/stm32-toolkit/tests/test_probe_protocol_v2.py tools/stm32-toolkit/tests/test_target_runner.py tools/stm32-toolkit/tests/test_target_transports.py tools/stm32-toolkit/tests/test_probe_service.py tools/stm32-toolkit/tests/test_process.py -q -p no:cacheprovider
 $frozenWorktree = (Resolve-Path -LiteralPath '.').Path
 $gateController = Join-Path $frozenWorktree 'tools\release\run_0600_gates.py'
-py -3.12 $gateController dev-coverage --task-id STM32TK-0601-T09 --evidence-root C:\tmp\stm32tk-0601-t09-coverage -- tools/stm32-toolkit/tests/test_probe_protocol_v2.py tools/stm32-toolkit/tests/test_target_runner.py tools/stm32-toolkit/tests/test_probe_service.py tools/stm32-toolkit/tests/test_process.py --cov=stm32_toolkit.probe --cov=stm32_toolkit.testing.target -q -p no:cacheprovider
+py -3.12 $gateController dev-coverage --task-id STM32TK-0601-T09 --evidence-root C:\tmp\stm32tk-0601-t09-coverage -- tools/stm32-toolkit/tests/test_probe_protocol_v2.py tools/stm32-toolkit/tests/test_target_runner.py tools/stm32-toolkit/tests/test_target_transports.py tools/stm32-toolkit/tests/test_probe_service.py tools/stm32-toolkit/tests/test_process.py --cov=stm32_toolkit.probe --cov=stm32_toolkit.testing.target --cov=stm32_toolkit.testing.transports.mailbox -q -p no:cacheprovider
 ```
 
 - [ ] Commit:
 
 ```powershell
-git add -- schemas/probe-protocol.schema.json tools/stm32-toolkit/src/stm32_toolkit/schemas/probe-protocol.schema.json tools/stm32-toolkit/src/stm32_toolkit/probe/protocol.py tools/stm32-toolkit/src/stm32_toolkit/probe/model.py tools/stm32-toolkit/src/stm32_toolkit/probe/service.py tools/stm32-toolkit/src/stm32_toolkit/probe/client.py tools/stm32-toolkit/src/stm32_toolkit/probe/backend.py tools/stm32-toolkit/src/stm32_toolkit/probe/pyocd_backend.py tools/stm32-toolkit/src/stm32_toolkit/testing/target.py tools/stm32-toolkit/tests/test_probe_protocol_v2.py tools/stm32-toolkit/tests/test_target_runner.py
+git add -- schemas/probe-protocol.schema.json tools/stm32-toolkit/src/stm32_toolkit/schemas/probe-protocol.schema.json tools/stm32-toolkit/src/stm32_toolkit/probe/protocol.py tools/stm32-toolkit/src/stm32_toolkit/probe/model.py tools/stm32-toolkit/src/stm32_toolkit/probe/service.py tools/stm32-toolkit/src/stm32_toolkit/probe/client.py tools/stm32-toolkit/src/stm32_toolkit/probe/backend.py tools/stm32-toolkit/src/stm32_toolkit/probe/pyocd_backend.py tools/stm32-toolkit/src/stm32_toolkit/testing/target.py tools/stm32-toolkit/tests/test_target_transports.py tools/stm32-toolkit/tests/test_probe_protocol_v2.py tools/stm32-toolkit/tests/test_target_runner.py
 git commit -m "feat(STM32TK-0601): authorize identity-bound target runs"
 ```
 
 ## Task 10: Expose CLI/MCP/Skill and evidence GC
+
+Tasks 10--13 must extend only the one controller/verifier/catalog established in Task 2. They must
+not add module-specific controllers or reinterpret external native output with hand-authored
+fixtures.
 
 **Files:**
 

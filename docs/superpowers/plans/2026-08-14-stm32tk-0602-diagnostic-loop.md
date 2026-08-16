@@ -4,7 +4,7 @@
 
 **Goal:** Deliver an append-only evidence-driven diagnostic state machine, bounded Probe v2 controls, action-specific authorization, and deterministic failed-before/fixed-after software verification on Windows, leaving real-board closure to the post-0603 unified activity.
 
-**Architecture:** Diagnostics materialize immutable hash-chained events that reference 0601 evidence IDs. Probe Service implements the already-frozen v2 debug operations and remains the only hardware boundary. Source changes are externally supplied declarations; Toolkit separately authorizes and records build, flash, test, Monitor assertion, and verification steps.
+**Architecture:** Diagnostics materialize immutable hash-chained events that reference 0601 evidence IDs. The accepted 0601 Probe v2 public client is the only diagnostic read/control boundary; its Probe Service, backend adapters, protocol, lease, identity, and authorization implementation are frozen inputs rather than 0602 deliverables. Source changes are externally supplied declarations; Toolkit separately authorizes and records build, flash, test, Monitor assertion, and verification steps.
 
 **Tech Stack:** Python 3.10/3.12, dataclasses, JSON Schema, SHA-256 canonical JSON, pyOCD, aiohttp, pytest/pytest-cov, Hypothesis-style property fixtures where already approved, PowerShell release gates.
 
@@ -33,6 +33,40 @@
   CPython 3.10 and 3.12; every earlier threshold remains unchanged.
 - Preserve external evidence logs and never run release gates in a dirty product worktree.
 - No remote operation is authorized; commits in this plan remain local until separate approval.
+- 0602 is diagnostic-domain L3 work. It may add diagnostic events, hypotheses, observation plans,
+  evidence assessment, action preparation/consumption, source binding, fix verification, bundles,
+  and public diagnostic adapters. It must not create or modify a probe backend, Probe Service,
+  Probe v2 client/protocol/schema, GDB-server manager, debugger engine, or second authorization
+  implementation.
+
+---
+
+## Mandatory pre-implementation gate: layer and component reuse record
+
+Before Task 0, record and independently review this closed mapping:
+
+| 0602 work | Layer | Reused frozen input | New 0602 ownership |
+|---|---|---|---|
+| Tasks 0--2 | L3/L4 | 0601 Evidence and shared performance controller | diagnostic event model, store, recovery, workloads |
+| Tasks 3--4 | L3 | 0601 Evidence APIs and existing build/test/Monitor public APIs | hypotheses, assessment, closed observation plan |
+| Tasks 5--6 | L3 | accepted 0601 Probe v2 public client and authorization contract | diagnostic adapters, action/event binding, error mapping |
+| Tasks 7--9 | L3 | existing build/flash/test/Monitor and one CLI/MCP framework | source declaration, fix truth, bundle, diagnostic surfaces |
+| Tasks 10--12 | L4 | the one 0600 controller/verifier/catalog | calibration, replay, candidate inventory and report |
+
+The record must name every external component reached by the diagnostic loop. For each newly
+proposed component it must include exact version and license, retained offline source/digest,
+actual Windows argv and exit code, a real version-produced sanitized native-output fixture, closed
+parser and error mapping, path/credential/network/concurrency/timeout/partial-output safety,
+identity/Evidence/authorization binding, performance/package cost, maintenance benefit, and the
+complete 0.2--0.5 regression result. Reuse the accepted 0601 PyOCD/Probe v2 admission evidence
+from `tools/stm32-toolkit/tests/fixtures/component-admission/target-transports/
+admission-manifest.json` and its digest-bound installed-version/API observation fixtures instead
+of rerunning or widening its implementation. These are component-fit inputs, not physical native
+transport evidence. This plan admits
+no new 0602 execution component; record that closed outcome. Any later proposal requires a plan
+amendment and the complete gate above before coding. A component that fails any item is not
+admitted, requirements are not reduced, and no silent fallback is allowed. Hand-authored
+approximations of pytest, CTest, PyOCD, Monitor, or other native output are forbidden.
 
 ---
 
@@ -207,8 +241,10 @@ py -3.12 -m pytest tools/stm32-toolkit/tests/test_observation_plans.py -q -p no:
 ```
 
 - [ ] Implement `ObservationPlan.validate()` and `ObservationExecutor.run()` using registered
-  typed handlers for existing build/source/evidence/debug/test/Monitor APIs; every attempted step
-  emits a result event even when blocked or cancelled.
+  typed handlers for existing build/source/evidence/test/Monitor APIs and the accepted 0601 Probe
+  v2 public client. Diagnostic handlers may validate and map the public result but cannot call or
+  modify a backend/service directly; every attempted step emits a result event even when blocked
+  or cancelled.
 
 - [ ] Run GREEN and branch coverage on both interpreters:
 
@@ -224,17 +260,12 @@ git add tools/stm32-toolkit/src/stm32_toolkit/diagnostics/observations.py tools/
 git commit -m "feat(STM32TK-0602): execute bounded observation plans"
 ```
 
-## Task 5: Implement Probe v2 observation reads
+## Task 5: Bind diagnostic observations to the frozen Probe v2 client
 
 **Files:**
 
-- Create: `tools/stm32-toolkit/src/stm32_toolkit/debug/registers.py`
-- Create: `tools/stm32-toolkit/src/stm32_toolkit/debug/logs.py`
-- Modify: `tools/stm32-toolkit/src/stm32_toolkit/debug/fault.py`
-- Modify: `tools/stm32-toolkit/src/stm32_toolkit/probe/service.py`
-- Modify: `tools/stm32-toolkit/src/stm32_toolkit/probe/client.py`
-- Modify: `tools/stm32-toolkit/src/stm32_toolkit/probe/backend.py`
-- Modify: `tools/stm32-toolkit/src/stm32_toolkit/probe/pyocd_backend.py`
+- Create: `tools/stm32-toolkit/src/stm32_toolkit/diagnostics/probe_adapter.py`
+- Modify: `tools/stm32-toolkit/src/stm32_toolkit/diagnostics/observations.py`
 - Create: `tools/stm32-toolkit/tests/test_probe_v2_observe.py`
 - Create: `tools/stm32-toolkit/tests/test_debug_logs.py`
 
@@ -276,36 +307,33 @@ The OBSERVE rows copied from 0601 are:
 py -3.12 -m pytest tools/stm32-toolkit/tests/test_probe_v2_observe.py tools/stm32-toolkit/tests/test_debug_logs.py -q -p no:cacheprovider
 ```
 
-- [ ] Implement only those five frozen `target.*` OBSERVE operations and their backend methods.
-  Parse the exact 0601 argument objects and emit the exact 0601 success/error shapes; range-check
-  before the backend call and return bounded typed evidence artifacts. If implementation needs a
-  schema, result, error, or limit change, stop rather than changing Probe v2.
+- [ ] Implement a diagnostic adapter that calls only those five operations through the accepted
+  0601 Probe v2 public client. Parse the exact 0601 argument objects before the client call, map the
+  exact closed success/error shapes into diagnostic result events, and return bounded Evidence
+  references. Assert the accepted 0601 schema and Probe client/service/backend blobs are unchanged
+  before and after the task. If implementation needs a backend, service, client, schema, result,
+  error, or limit change, stop rather than modifying Probe v2.
 
 - [ ] Run GREEN under dual Python with affected Fault/read/sample/probe regressions and coverage:
 
 ```powershell
 py -3.10 -m pytest tools/stm32-toolkit/tests/test_probe_v2_observe.py tools/stm32-toolkit/tests/test_debug_logs.py tools/stm32-toolkit/tests/test_fault.py tools/stm32-toolkit/tests/test_debug_read.py -q -p no:cacheprovider
-py -3.12 tools/release/run_0600_gates.py dev-coverage --task-id STM32TK-0602-T05 --evidence-root C:\tmp\stm32tk-0602-t05-coverage -- tools/stm32-toolkit/tests/test_probe_v2_observe.py tools/stm32-toolkit/tests/test_debug_logs.py tools/stm32-toolkit/tests/test_fault.py tools/stm32-toolkit/tests/test_debug_read.py --cov=stm32_toolkit.debug --cov=stm32_toolkit.probe -q -p no:cacheprovider
+py -3.12 tools/release/run_0600_gates.py dev-coverage --task-id STM32TK-0602-T05 --evidence-root C:\tmp\stm32tk-0602-t05-coverage -- tools/stm32-toolkit/tests/test_probe_v2_observe.py tools/stm32-toolkit/tests/test_debug_logs.py tools/stm32-toolkit/tests/test_fault.py tools/stm32-toolkit/tests/test_debug_read.py --cov=stm32_toolkit.diagnostics.probe_adapter --cov=stm32_toolkit.diagnostics.observations -q -p no:cacheprovider
 ```
 
 - [ ] Commit:
 
 ```powershell
-git add -- tools/stm32-toolkit/src/stm32_toolkit/debug/registers.py tools/stm32-toolkit/src/stm32_toolkit/debug/logs.py tools/stm32-toolkit/src/stm32_toolkit/debug/fault.py tools/stm32-toolkit/src/stm32_toolkit/probe/service.py tools/stm32-toolkit/src/stm32_toolkit/probe/client.py tools/stm32-toolkit/src/stm32_toolkit/probe/backend.py tools/stm32-toolkit/src/stm32_toolkit/probe/pyocd_backend.py tools/stm32-toolkit/tests/test_probe_v2_observe.py tools/stm32-toolkit/tests/test_debug_logs.py
-git commit -m "feat(STM32TK-0602): add bounded debug observations"
+git add -- tools/stm32-toolkit/src/stm32_toolkit/diagnostics/probe_adapter.py tools/stm32-toolkit/src/stm32_toolkit/diagnostics/observations.py tools/stm32-toolkit/tests/test_probe_v2_observe.py tools/stm32-toolkit/tests/test_debug_logs.py
+git commit -m "feat(STM32TK-0602): bind bounded diagnostic observations"
 ```
 
-## Task 6: Implement exact authorized debug controls
+## Task 6: Bind exact authorized diagnostic controls to frozen Probe v2
 
 **Files:**
 
-- Create: `tools/stm32-toolkit/src/stm32_toolkit/debug/control.py`
-- Create: `tools/stm32-toolkit/src/stm32_toolkit/debug/breakpoints.py`
 - Create: `tools/stm32-toolkit/src/stm32_toolkit/diagnostics/actions.py`
-- Modify: `tools/stm32-toolkit/src/stm32_toolkit/probe/service.py`
-- Modify: `tools/stm32-toolkit/src/stm32_toolkit/probe/client.py`
-- Modify: `tools/stm32-toolkit/src/stm32_toolkit/probe/backend.py`
-- Modify: `tools/stm32-toolkit/src/stm32_toolkit/probe/pyocd_backend.py`
+- Modify: `tools/stm32-toolkit/src/stm32_toolkit/diagnostics/probe_adapter.py`
 - Create: `tools/stm32-toolkit/tests/test_diagnostic_authorization.py`
 - Create: `tools/stm32-toolkit/tests/test_probe_v2_control.py`
 
@@ -319,18 +347,18 @@ The CONTROL rows copied from 0601 are:
 | `target.breakpoint.set` | `{address,kind:"temporary",size}` | `{breakpoint_id,address,kind:"temporary",size}` |
 | `target.breakpoint.clear` | `{breakpoint_id}` | `{breakpoint_id,cleared:true}` |
 
-- [ ] Write failing mutation tests proving the persistent one-time nonce is generated from exactly
-  32 CSPRNG bytes and encoded as exactly 64 lowercase hex characters. Bind nonce, action digest,
-  issued-at UTC, `expiresAt` UTC at most five minutes later, session/revision/workspace/project/
-  target/probe/firmware/state/operation/arguments. Prepare performs exactly one OBSERVE identity/
-  state read with counters exactly `identity_state_read=1`, `control=0`, `modify=0`, `reset=0`,
-  `halt=0`, `write=0`, and `flash=0`; a second observation or any CONTROL/MODIFY fails prepare.
-  Prepare is classified OBSERVE-only and never requests authorization. Execute requires every field and current identity/
-  revision to match, immediately re-observes identity/state, and rejects any change without
-  executing the action. A live process enforces both UTC and monotonic deadlines; restart may use
-  only the persisted UTC deadline and may not extend it. Success, mismatch, refusal, backend
-  failure, and timeout close the prepared action; replay/retry/rebind/later approval fail until
-  re-prepare.
+- [ ] Write failing mutation tests proving the diagnostic adapter delegates nonce generation and
+  enforcement to the accepted 0601 Probe v2 public authorization client. Its returned persistent
+  one-time nonce is exactly 32 CSPRNG bytes encoded as 64 lowercase hex characters; its action
+  digest binds issued-at UTC, `expiresAt` no later than five minutes, session/revision/workspace/
+  project/target/probe/firmware/state/operation/arguments. Assert the public prepare result records
+  exactly one OBSERVE identity/state read with counters `identity_state_read=1`, `control=0`,
+  `modify=0`, `reset=0`, `halt=0`, `write=0`, and `flash=0`. The diagnostic layer persists that
+  result and its session/revision binding but neither generates a nonce nor repeats the snapshot.
+  Execute passes the exact preparation and single authorization to the public client, which
+  immediately re-observes identity/state and rejects change without executing. Assert UTC and live
+  monotonic deadlines, no restart extension, and closure on success, mismatch, refusal, backend
+  failure, or timeout; replay/retry/rebind/later approval requires a fresh public prepare.
 
 - [ ] Load the same byte-identical 0601 schemas and freeze the exact CONTROL inventory as
   `target.halt`, `target.resume`, `target.step`, `target.breakpoint.set`, and
@@ -352,29 +380,30 @@ The CONTROL rows copied from 0601 are:
 py -3.12 -m pytest tools/stm32-toolkit/tests/test_diagnostic_authorization.py tools/stm32-toolkit/tests/test_probe_v2_control.py -q -p no:cacheprovider
 ```
 
-- [ ] Implement `prepare_action()` to obtain 32 bytes from the platform CSPRNG, encode exactly 64
-  lowercase hex characters, perform exactly one OBSERVE identity/state read, bind that snapshot,
-  and persist/return the nonce/digest/UTC expiry summary without any CONTROL/MODIFY. Implement
-  `execute_action()` to require the exact nonce, digest, current identity/revision, one authorization,
-  and a final OBSERVE recheck equal to the bound snapshot. Record a live monotonic deadline without
-  serializing it as a portable clock value. Atomically close the preparation before returning
-  success, state/identity mismatch, refusal, backend failure, or timeout. Implement only the five
-  canonical `target.*` CONTROL operations above, with exact
-  0601 arguments/results/errors/limits. Keep cleanup owned by Probe Service and always record
-  action/cleanup evidence events; stop rather than modifying Probe v2.
+- [ ] Implement diagnostic `prepare_action()` as validation plus one call to the accepted 0601
+  Probe v2 public authorization prepare method; persist its nonce/digest/UTC-expiry/snapshot result
+  with the diagnostic session/revision and emit the diagnostic preparation event. Implement
+  diagnostic `execute_action()` as validation plus one call to the public authorization execute
+  method with the exact preparation and user authorization; map its closed outcome to action and
+  cleanup Evidence events. Do not generate a nonce, observe target state independently, keep a
+  second deadline, consume authorization locally, or call a backend/service. Invoke only the five
+  canonical `target.*` CONTROL operations with exact 0601 arguments/results/errors/limits. Probe
+  Service retains identity recheck, single-use enforcement, backend cleanup, deadline, and atomic
+  closure. Assert all accepted 0601 Probe schema/client/service/backend blobs remain unchanged.
+  Stop rather than modifying Probe v2 or adding a debugger engine.
 
 - [ ] Run GREEN on both Pythons with branch coverage and existing probe lease/process tests:
 
 ```powershell
 py -3.10 -m pytest tools/stm32-toolkit/tests/test_diagnostic_authorization.py tools/stm32-toolkit/tests/test_probe_v2_control.py tools/stm32-toolkit/tests/test_probe_lease.py tools/stm32-toolkit/tests/test_process.py -q -p no:cacheprovider
-py -3.12 tools/release/run_0600_gates.py dev-coverage --task-id STM32TK-0602-T06 --evidence-root C:\tmp\stm32tk-0602-t06-coverage -- tools/stm32-toolkit/tests/test_diagnostic_authorization.py tools/stm32-toolkit/tests/test_probe_v2_control.py tools/stm32-toolkit/tests/test_probe_lease.py tools/stm32-toolkit/tests/test_process.py --cov=stm32_toolkit.debug.control --cov=stm32_toolkit.debug.breakpoints --cov=stm32_toolkit.diagnostics.actions --cov=stm32_toolkit.probe -q -p no:cacheprovider
+py -3.12 tools/release/run_0600_gates.py dev-coverage --task-id STM32TK-0602-T06 --evidence-root C:\tmp\stm32tk-0602-t06-coverage -- tools/stm32-toolkit/tests/test_diagnostic_authorization.py tools/stm32-toolkit/tests/test_probe_v2_control.py tools/stm32-toolkit/tests/test_probe_lease.py tools/stm32-toolkit/tests/test_process.py --cov=stm32_toolkit.diagnostics.actions --cov=stm32_toolkit.diagnostics.probe_adapter -q -p no:cacheprovider
 ```
 
 - [ ] Commit:
 
 ```powershell
-git add -- tools/stm32-toolkit/src/stm32_toolkit/debug/control.py tools/stm32-toolkit/src/stm32_toolkit/debug/breakpoints.py tools/stm32-toolkit/src/stm32_toolkit/diagnostics/actions.py tools/stm32-toolkit/src/stm32_toolkit/probe/service.py tools/stm32-toolkit/src/stm32_toolkit/probe/client.py tools/stm32-toolkit/src/stm32_toolkit/probe/backend.py tools/stm32-toolkit/src/stm32_toolkit/probe/pyocd_backend.py tools/stm32-toolkit/tests/test_diagnostic_authorization.py tools/stm32-toolkit/tests/test_probe_v2_control.py
-git commit -m "feat(STM32TK-0602): authorize bounded debug controls"
+git add -- tools/stm32-toolkit/src/stm32_toolkit/diagnostics/actions.py tools/stm32-toolkit/src/stm32_toolkit/diagnostics/probe_adapter.py tools/stm32-toolkit/tests/test_diagnostic_authorization.py tools/stm32-toolkit/tests/test_probe_v2_control.py
+git commit -m "feat(STM32TK-0602): bind authorized diagnostic controls"
 ```
 
 ## Task 7: Bind external source changes and deterministic verification

@@ -37,6 +37,34 @@
 - 0603 creates no report-only commit; 0600 alone owns the final tracked report.
 - No remote Git action is authorized by this plan.
 
+### Layer and reuse boundary for unimplemented 0603 work
+
+- L0 is the accepted SQLite/aiohttp/Preact/ECharts/Vitest/Playwright/Vite stack. 0603 pins and
+  invokes it; it does not reproduce storage, HTTP/WebSocket, rendering, unit-test, browser-test,
+  or bundling engines.
+- L1 is the existing Toolkit identity/Evidence/Test/authorization contract and the one shared
+  0600 controller, verifier, catalog, performance catalog, and native-output adapter.
+- L2 is the accepted 0.5 `monitor.sqlite3`, HistoryStore, sampling/storage/service/WebSocket and
+  typed Monitor protocol. Task 1 transactionally extends that same database and service; no task
+  creates a second Monitor, database, service, or Serial Studio path.
+- L3 additions are limited to compatibility, alignment, statistics, deterministic decimation,
+  quality/stage/halt analysis, annotations/markers, explicit AI bundles, and incremental UI over
+  the existing Preact/ECharts components.
+- L4 work in Tasks 11--13 reuses the shared 0600 gates. It may fill reserved 0603 catalog entries
+  and exact nodes, but it may not copy or fork a module-specific controller or verifier.
+
+Before a new numeric or UI dependency is added, the owning task must first produce a bounded
+proof-of-fit with exact version/license/offline source, real Windows argv/exit, a real sanitized
+native fixture, closed parser/error mapping, path/credential/network/concurrency/timeout/partial-
+output safety, deterministic rounding, package/performance cost, and full affected 0.5 Monitor
+regression. The default is no new dependency: bounded deterministic algorithms remain local unless
+the proof demonstrates a material reduction in not-yet-written code and maintenance. Failure
+rejects the component without changing any 0603 product requirement.
+
+Existing package locks freeze Preact `10.29.8`, ECharts `6.1.0`, Vitest `4.1.10`, and Playwright
+`1.56.1`; Python support freezes SQLite through the managed interpreter and the accepted aiohttp
+lock. Any version change is a dependency task and new CodeHead, never an ambient update.
+
 ---
 
 ## Task 1: Extend history storage with identity and quality metadata
@@ -569,6 +597,12 @@ git commit -m "feat(STM32TK-0603): annotate and export monitor analysis"
   new test is discoverable. Complete final node collection and catalog/impact-map freeze occurs in
   Task 13, after Task 12 has made the last packaging/version test changes.
 
+- [ ] Capture Vitest `4.1.10` and Playwright `1.56.1` native JSON from the real frozen commands,
+  sanitize only verified repository/evidence-root fields, and run the one shared native-output
+  adapter contract. Cross-check exit code, declared summary, and every required node outcome;
+  reject hand-written simplified fixtures, unknown depended-on fields, absolute/private paths,
+  credentials, retries, partial JSON, and contradictory status/counts.
+
 - [ ] Add a correctness-first Python workload for exactly 640,000 post-expansion scalar
   observations, no more than 64,000 plotted points, and eight directed difference pairs. Use the
   0600 performance helper's frozen three-batch calculation and record every batch sample/MAD.
@@ -763,6 +797,10 @@ git commit -m "chore(STM32TK-0603): prepare version 0.6.0 surfaces"
 - Modify: `tools/stm32-toolkit/tests/release/test_gate_catalog_0600.py`
 - Modify: `tools/stm32-toolkit/tests/release/test_gate_controller_0600.py`
 - Modify: `tools/stm32-toolkit/tests/release/test_release_verifier_0600.py`
+
+This task extends only the existing shared controller, verifier, catalog, path contract, and
+native-output adapter. It must not create a 0603-specific controller, verifier, runtime,
+scheduler, CI job, or evidence format.
 
 - [ ] Audit the complete 0602 accepted-report-to-current diff, all tracked/untracked/committed/
   uncommitted/pushed/unpushed state, frozen 0601/0602 contracts, exact expected paths, package/dist
