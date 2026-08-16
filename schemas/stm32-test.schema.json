@@ -1,0 +1,263 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://stm32-toolkit.dev/schemas/stm32-test.schema.json",
+  "title": "STM32 Toolkit common test protocol",
+  "$ref": "#/$defs/testRunManifest",
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "utc": {
+      "type": "string",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{6}Z$"
+    },
+    "boundedString": {"type": "string", "minLength": 1, "maxLength": 65536},
+    "caseId": {"$ref": "#/$defs/boundedString"},
+    "artifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["sha256", "size_bytes", "relative_path", "kind", "media_type"],
+      "properties": {
+        "sha256": {"$ref": "#/$defs/sha256"},
+        "size_bytes": {"type": "integer", "minimum": 0, "maximum": 2147483648},
+        "relative_path": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512,
+          "description": "The model layer also enforces the 512 UTF-8 byte limit.",
+          "pattern": "^(?!/)(?!.*\\\\)(?!.*//)(?!.*(?:^|/)\\.{1,2}(?:/|$))(?!.*:)(?!.*(?:^|/)(?i:CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\\.|/|$))(?!.*(?:^|/)[^/]*[. ](?:/|$))[^\\u0000-\\u001f\\u007f]+$"
+        },
+        "kind": {"$ref": "#/$defs/boundedString"},
+        "media_type": {"$ref": "#/$defs/boundedString"}
+      }
+    },
+    "identity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "workspace_id", "project_id", "session_id", "build_id", "elf_sha256",
+        "target_device", "input_snapshot_sha256", "git_commit", "git_dirty"
+      ],
+      "properties": {
+        "workspace_id": {"$ref": "#/$defs/sha256"},
+        "project_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+        },
+        "session_id": {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9._-]*$",
+          "maxLength": 65536
+        },
+        "build_id": {"$ref": "#/$defs/sha256"},
+        "elf_sha256": {"$ref": "#/$defs/sha256"},
+        "target_device": {"$ref": "#/$defs/boundedString"},
+        "input_snapshot_sha256": {"$ref": "#/$defs/sha256"},
+        "git_commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+        "git_dirty": {"type": "boolean"}
+      }
+    },
+    "caseState": {"enum": ["passed", "failed", "skipped", "error", "timeout"]},
+    "runState": {
+      "enum": ["discovered", "running", "passed", "failed", "error", "cancelled"]
+    },
+    "caseIds": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 100000,
+      "uniqueItems": true,
+      "items": {"$ref": "#/$defs/caseId"}
+    },
+    "testCaseResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "case_id", "state", "started_at_utc", "ended_at_utc", "duration_ms",
+        "message", "stdout", "stderr"
+      ],
+      "properties": {
+        "case_id": {"$ref": "#/$defs/caseId"},
+        "state": {"$ref": "#/$defs/caseState"},
+        "started_at_utc": {"$ref": "#/$defs/utc"},
+        "ended_at_utc": {"$ref": "#/$defs/utc"},
+        "duration_ms": {"type": "integer", "minimum": 0, "maximum": 9223372036854775807},
+        "message": {
+          "oneOf": [{"type": "null"}, {"$ref": "#/$defs/boundedString"}]
+        },
+        "stdout": {
+          "oneOf": [{"type": "null"}, {"$ref": "#/$defs/artifact"}]
+        },
+        "stderr": {
+          "oneOf": [{"type": "null"}, {"$ref": "#/$defs/artifact"}]
+        }
+      }
+    },
+    "testInventory": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mode", "identity", "case_ids", "inventory_digest", "discovered_at_utc"],
+      "properties": {
+        "mode": {"enum": ["host", "target"]},
+        "identity": {"$ref": "#/$defs/identity"},
+        "case_ids": {"$ref": "#/$defs/caseIds"},
+        "inventory_digest": {"$ref": "#/$defs/sha256"},
+        "discovered_at_utc": {"$ref": "#/$defs/utc"}
+      }
+    },
+    "testRunManifest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema", "run_id", "mode", "state", "identity", "transport", "cases",
+        "started_at_utc", "ended_at_utc", "duration_ms", "stdout", "stderr", "raw_events"
+      ],
+      "properties": {
+        "schema": {"const": "stm32-test/1"},
+        "run_id": {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9._-]*$",
+          "maxLength": 65536
+        },
+        "mode": {"enum": ["host", "target"]},
+        "state": {"$ref": "#/$defs/runState"},
+        "identity": {"$ref": "#/$defs/identity"},
+        "transport": {
+          "oneOf": [{"type": "null"}, {"$ref": "#/$defs/boundedString"}]
+        },
+        "cases": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 100000,
+          "items": {"$ref": "#/$defs/testCaseResult"}
+        },
+        "started_at_utc": {"$ref": "#/$defs/utc"},
+        "ended_at_utc": {"$ref": "#/$defs/utc"},
+        "duration_ms": {"type": "integer", "minimum": 0, "maximum": 9223372036854775807},
+        "stdout": {
+          "oneOf": [{"type": "null"}, {"$ref": "#/$defs/artifact"}]
+        },
+        "stderr": {
+          "oneOf": [{"type": "null"}, {"$ref": "#/$defs/artifact"}]
+        },
+        "raw_events": {
+          "allOf": [
+            {"$ref": "#/$defs/artifact"},
+            {"properties": {"size_bytes": {"maximum": 67108864}}}
+          ]
+        }
+      }
+    },
+    "counts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["passed", "failed", "skipped", "error", "timeout"],
+      "properties": {
+        "passed": {"type": "integer", "minimum": 0, "maximum": 100000},
+        "failed": {"type": "integer", "minimum": 0, "maximum": 100000},
+        "skipped": {"type": "integer", "minimum": 0, "maximum": 100000},
+        "error": {"type": "integer", "minimum": 0, "maximum": 100000},
+        "timeout": {"type": "integer", "minimum": 0, "maximum": 100000}
+      }
+    },
+    "inventoryPayload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mode", "identity", "case_ids", "inventory_digest", "discovered_at_utc"],
+      "properties": {
+        "mode": {"enum": ["host", "target"]},
+        "identity": {"$ref": "#/$defs/identity"},
+        "case_ids": {"$ref": "#/$defs/caseIds"},
+        "inventory_digest": {"$ref": "#/$defs/sha256"},
+        "discovered_at_utc": {"$ref": "#/$defs/utc"}
+      }
+    },
+    "runStartPayload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["run_id", "started_at_utc", "case_ids", "inventory_digest"],
+      "properties": {
+        "run_id": {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9._-]*$",
+          "maxLength": 65536
+        },
+        "started_at_utc": {"$ref": "#/$defs/utc"},
+        "case_ids": {"$ref": "#/$defs/caseIds"},
+        "inventory_digest": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "caseStartPayload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["case_id", "started_at_utc"],
+      "properties": {
+        "case_id": {"$ref": "#/$defs/caseId"},
+        "started_at_utc": {"$ref": "#/$defs/utc"}
+      }
+    },
+    "caseResultPayload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "case_id", "state", "ended_at_utc", "duration_ms", "message", "stdout", "stderr"
+      ],
+      "properties": {
+        "case_id": {"$ref": "#/$defs/caseId"},
+        "state": {"$ref": "#/$defs/caseState"},
+        "ended_at_utc": {"$ref": "#/$defs/utc"},
+        "duration_ms": {"type": "integer", "minimum": 0, "maximum": 9223372036854775807},
+        "message": {
+          "oneOf": [{"type": "null"}, {"$ref": "#/$defs/boundedString"}]
+        },
+        "stdout": {
+          "oneOf": [{"type": "null"}, {"$ref": "#/$defs/artifact"}]
+        },
+        "stderr": {
+          "oneOf": [{"type": "null"}, {"$ref": "#/$defs/artifact"}]
+        }
+      }
+    },
+    "runEndPayload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "state", "ended_at_utc", "duration_ms", "inventory_digest", "build_id",
+        "elf_sha256", "target_device", "counts", "event_stream_digest"
+      ],
+      "properties": {
+        "state": {"enum": ["passed", "failed", "error", "cancelled"]},
+        "ended_at_utc": {"$ref": "#/$defs/utc"},
+        "duration_ms": {"type": "integer", "minimum": 0, "maximum": 9223372036854775807},
+        "inventory_digest": {"$ref": "#/$defs/sha256"},
+        "build_id": {"$ref": "#/$defs/sha256"},
+        "elf_sha256": {"$ref": "#/$defs/sha256"},
+        "target_device": {"$ref": "#/$defs/boundedString"},
+        "counts": {"$ref": "#/$defs/counts"},
+        "event_stream_digest": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "logPayload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["timestamp_utc", "stream", "message"],
+      "properties": {
+        "timestamp_utc": {"$ref": "#/$defs/utc"},
+        "stream": {"enum": ["stdout", "stderr"]},
+        "message": {"$ref": "#/$defs/boundedString"}
+      }
+    },
+    "frame": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["magic", "version", "kind", "flags", "sequence", "payload_length", "payload", "crc32"],
+      "properties": {
+        "magic": {"const": "ST32"},
+        "version": {"const": 1},
+        "kind": {"enum": [1, 2, 3, 4, 5, 6]},
+        "flags": {"const": 0},
+        "sequence": {"type": "integer", "minimum": 0, "maximum": 4294967295},
+        "payload_length": {"type": "integer", "minimum": 0, "maximum": 16384},
+        "payload": {"type": "object"},
+        "crc32": {"type": "integer", "minimum": 0, "maximum": 4294967295}
+      }
+    }
+  }
+}
