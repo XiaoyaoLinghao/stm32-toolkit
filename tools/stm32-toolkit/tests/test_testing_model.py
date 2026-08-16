@@ -76,10 +76,6 @@ def _inventory() -> Inventory:
         identity=_identity(),
         case_ids=("zeta", "éclair"),
         discovered_at_utc=UTC_0,
-        executable_inventory=(
-            {"case_id": "éclair", "command": ["build/éclair.exe"]},
-            {"case_id": "zeta", "command": ["build/zeta.exe", "--unit"]},
-        ),
     )
 
 
@@ -107,10 +103,6 @@ def test_exact_models_states_limits_and_utf8_inventory_order_are_frozen():
     assert inventory.case_ids == ("zeta", "éclair")
     assert inventory.inventory_digest == calculate_inventory_digest(
         "host", inventory.identity, inventory.case_ids,
-        executable_inventory=(
-            {"case_id": "éclair", "command": ["build/éclair.exe"]},
-            {"case_id": "zeta", "command": ["build/zeta.exe", "--unit"]},
-        ),
     )
 
 
@@ -130,11 +122,30 @@ def test_inventory_rejects_duplicates_empty_unsorted_and_unbound_digest():
     assert caught.value.code == "TEST_NO_CASES"
 
 
+def test_inventory_digest_is_uniquely_recomputed_from_visible_fields():
+    """A caller cannot attach an arbitrary digest or hidden executable material to one inventory."""
+    inventory = _inventory()
+    visible_digest = calculate_inventory_digest("host", inventory.identity, inventory.case_ids)
+    assert inventory.inventory_digest == visible_digest
+    with pytest.raises(ProtocolError) as caught:
+        Inventory("host", inventory.identity, inventory.case_ids, "0" * 64, UTC_0)
+    assert caught.value.code == "TEST_INVENTORY_CHANGED"
+
+    target_identity = _identity(target_device="target:board-1")
+    target = create_inventory("target", target_identity, ("case",), UTC_0)
+    assert target.inventory_digest == calculate_inventory_digest(
+        "target", target_identity, ("case",)
+    )
+
+
 def test_host_identity_is_exact_and_never_uses_placeholder_firmware_hashes():
     """Host evidence must identify the real OS/architecture and real inventories."""
     assert host_target_device(system="Windows", architecture="AMD64") == "host:windows/amd64"
     assert host_target_device(system="Linux", architecture="aarch64") == "host:linux/arm64"
     validate_host_identity(_identity(), system="Windows", architecture="AMD64")
+    for arguments in ({"system": 1}, {"architecture": []}):
+        with pytest.raises(ProtocolError):
+            host_target_device(**arguments)  # type: ignore[arg-type]
 
     for identity in (
         _identity(target_device="host:windows/x86"),
@@ -144,6 +155,93 @@ def test_host_identity_is_exact_and_never_uses_placeholder_firmware_hashes():
         with pytest.raises(ProtocolError) as caught:
             validate_host_identity(identity, system="Windows", architecture="AMD64")
         assert caught.value.code == "TEST_IDENTITY_MISMATCH"
+
+
+@pytest.mark.parametrize(
+    ("state", "case_state"),
+    [
+        ("discovered", "passed"),
+        ("running", "passed"),
+        ("passed", "failed"),
+        ("passed", "error"),
+        ("failed", "passed"),
+        ("error", "failed"),
+        ("cancelled", "passed"),
+    ],
+)
+def test_direct_manifest_construction_enforces_terminal_case_summary(state: str, case_state: str):
+    """Direct construction must not bypass the same terminal summary rules as event assembly."""
+    case = CaseResult("one", case_state, UTC_0, UTC_1, 1000, None, None, None)
+    with pytest.raises(ProtocolError) as caught:
+        RunManifest(
+            "stm32-test/1", "run-1", "host", state, _identity(), None,
+            (case,), UTC_0, UTC_1, 1000, None, None, _artifact(),
+        )
+    assert caught.value.code == "TEST_EVENT_SEQUENCE_INVALID"
+
+
+@pytest.mark.parametrize(
+    ("state", "case_states"),
+    [
+        ("passed", ("passed", "skipped")),
+        ("failed", ("passed", "failed")),
+        ("error", ("passed", "error")),
+        ("error", ("timeout",)),
+        ("cancelled", ("error",)),
+    ],
+)
+def test_direct_manifest_accepts_only_consistent_terminal_summaries(state: str, case_states: tuple[str, ...]):
+    """Each terminal run state has one explicit relation to its terminal case states."""
+    cases = tuple(
+        CaseResult(f"case-{index}", case_state, UTC_0, UTC_1, 1000, None, None, None)
+        for index, case_state in enumerate(case_states)
+    )
+    manifest = RunManifest(
+        "stm32-test/1", "run-1", "host", state, _identity(), None,
+        cases, UTC_0, UTC_1, 1000, None, None, _artifact(),
+    )
+    assert manifest.state == state
+
+
+def test_frame_schema_binds_each_numeric_kind_to_one_closed_payload():
+    """A valid payload for one frame kind must be rejected under every other kind."""
+    schema = json.loads(Path("schemas/stm32-test.schema.json").read_text(encoding="utf-8"))
+    validator = Draft202012Validator(schema)
+    frame = {
+        "magic": "ST32", "version": 1, "kind": 3, "flags": 0, "sequence": 0,
+        "payload_length": 1,
+        "payload": {"case_id": "one", "started_at_utc": UTC_0},
+        "crc32": 0,
+    }
+    assert not list(validator.descend(frame, schema["$defs"]["frame"]))
+    assert list(validator.descend({**frame, "kind": 5}, schema["$defs"]["frame"]))
+    assert list(validator.descend({**frame, "kind": 7}, schema["$defs"]["frame"]))
+
+
+@pytest.mark.parametrize("sequence", [True, -1, 1.0])
+def test_event_sequence_is_an_exact_nonnegative_integer(sequence):
+    """Python bool/numeric equality must not admit a non-u32 sequence value."""
+    inventory = create_inventory("target", _identity(target_device="target:board"), ("one",), UTC_0)
+    with pytest.raises(ProtocolError) as caught:
+        assemble_test_run(
+            inventory,
+            ((sequence, "run_start", {
+                "run_id": "run-1", "started_at_utc": UTC_0,
+                "case_ids": ["one"], "inventory_digest": inventory.inventory_digest,
+            }),),
+            exit_code=None, raw_events=_artifact(), transport="rtt",
+        )
+    assert caught.value.code == "TEST_EVENT_SEQUENCE_INVALID"
+
+
+def test_event_kind_type_is_rejected_before_lookup_and_empty_run_end_is_closed():
+    """Unhashable kinds and empty terminal payloads must become stable protocol errors."""
+    with pytest.raises(ProtocolError) as caught:
+        validate_event_payload([], {})  # type: ignore[arg-type]
+    assert caught.value.code == "TEST_EVENT_PAYLOAD_INVALID"
+    with pytest.raises(ProtocolError) as caught:
+        validate_event_payload("run_end", {})
+    assert caught.value.code == "TEST_EVENT_PAYLOAD_INVALID"
 
 
 def test_event_state_machine_records_incomplete_cases_and_rejects_illegal_transitions():
@@ -323,24 +421,31 @@ def test_model_serializers_emit_fresh_json_shapes_with_real_artifact_refs():
     assert serialized["raw_events"] == artifact.to_dict()
 
 
-def test_inventory_digest_rejects_malformed_executable_material_and_identity():
-    """Host command changes are digest material only when their shape exactly matches cases."""
+def test_inventory_digest_rejects_malformed_visible_fields_and_identity():
+    """The canonical digest accepts only the complete visible public field shape."""
     invalid = (
-        ("invalid", _identity(), ("one",), ()),
-        ("host", object(), ("one",), ()),
-        ("host", _identity(), (), ()),
-        ("host", _identity(), ("one", "one"), ()),
-        ("host", _identity(), ("one",), ({"case_id": "one"},)),
-        ("host", _identity(), ("one",), ({"case_id": "one", "command": []},)),
-        ("host", _identity(), ("one",), ({"case_id": "two", "command": ["two.exe"]},)),
+        ("invalid", _identity(), ("one",)),
+        ("host", object(), ("one",)),
+        ("host", _identity(), ()),
+        ("host", _identity(), ("one", "one")),
     )
-    for mode, identity, cases, executables in invalid:
+    for mode, identity, cases in invalid:
         with pytest.raises(ProtocolError):
-            calculate_inventory_digest(
-                mode, identity, cases, executable_inventory=executables
-            )
+            calculate_inventory_digest(mode, identity, cases)
     with pytest.raises(ProtocolError):
         create_inventory("host", _identity(), (1,), UTC_0)
+    with pytest.raises(ProtocolError):
+        calculate_inventory_digest("host", _identity(), 1)  # type: ignore[arg-type]
+
+
+def test_assemble_public_boundary_rejects_nonsequences_and_unbound_artifacts_stably():
+    """Malformed public event streams and artifact bindings never leak Python built-in errors."""
+    inventory = _inventory()
+    for events, raw in ((1, _artifact()), (((0, "log", {}),), object())):
+        with pytest.raises(ProtocolError):
+            assemble_test_run(
+                inventory, events, exit_code=None, raw_events=raw, transport=None  # type: ignore[arg-type]
+            )
 
 
 def test_host_build_and_executable_identity_digests_use_canonical_ordered_inventories():
@@ -361,6 +466,10 @@ def test_host_build_and_executable_identity_digests_use_canonical_ordered_invent
             calculate_host_test_executable_inventory_digest(invalid)
     with pytest.raises(ProtocolError):
         calculate_host_build_inventory_digest("b", "t", ("unit", "unit"), executables)
+    with pytest.raises(ProtocolError):
+        calculate_host_build_inventory_digest("b", "t", 1, executables)  # type: ignore[arg-type]
+    with pytest.raises(ProtocolError):
+        calculate_host_test_executable_inventory_digest(1)  # type: ignore[arg-type]
 
 
 def test_manifest_rejects_every_unbound_or_noncanonical_member():

@@ -257,7 +257,17 @@
         "payload_length": {"type": "integer", "minimum": 0, "maximum": 16384},
         "payload": {"type": "object"},
         "crc32": {"type": "integer", "minimum": 0, "maximum": 4294967295}
-      }
+      },
+      "allOf": [{
+        "oneOf": [
+          {"properties": {"kind": {"const": 1}, "payload": {"$ref": "#/$defs/inventoryPayload"}}, "required": ["kind", "payload"]},
+          {"properties": {"kind": {"const": 2}, "payload": {"$ref": "#/$defs/runStartPayload"}}, "required": ["kind", "payload"]},
+          {"properties": {"kind": {"const": 3}, "payload": {"$ref": "#/$defs/caseStartPayload"}}, "required": ["kind", "payload"]},
+          {"properties": {"kind": {"const": 4}, "payload": {"$ref": "#/$defs/caseResultPayload"}}, "required": ["kind", "payload"]},
+          {"properties": {"kind": {"const": 5}, "payload": {"$ref": "#/$defs/runEndPayload"}}, "required": ["kind", "payload"]},
+          {"properties": {"kind": {"const": 6}, "payload": {"$ref": "#/$defs/logPayload"}}, "required": ["kind", "payload"]}
+        ]
+      }]
     }
   }
 }

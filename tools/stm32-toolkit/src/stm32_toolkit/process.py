@@ -23,6 +23,9 @@ import subprocess
 import sys
 import threading
 import time
+import re
+import unicodedata
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -35,6 +38,9 @@ DEFAULT_MAX_LINES = 20000
 _GRACE_SECONDS = 2.0
 _REAP_SECONDS = 2.0
 _CREATE_NEW_PROCESS_GROUP = 0x00000200
+_ENVIRONMENT_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_MAX_ENVIRONMENT_NAME_BYTES = 128
+_MAX_ENVIRONMENT_VALUE_BYTES = 4096
 
 
 class ProcessError(Exception):
@@ -59,6 +65,7 @@ class ProcessRequest:
     timeout_seconds: int
     max_output_bytes: int = DEFAULT_OUTPUT_BYTES
     max_lines: int = DEFAULT_MAX_LINES
+    env: tuple[tuple[str, str], ...] | Mapping[str, str] | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.argv, tuple) or not self.argv:
@@ -80,6 +87,41 @@ class ProcessRequest:
             raise ValueError("max_output_bytes must be an integer in 1..8 MiB")
         if type(self.max_lines) is not int or self.max_lines < 1:
             raise ValueError("max_lines must be a positive integer")
+        if self.env is None:
+            return
+        if isinstance(self.env, Mapping):
+            members = tuple(self.env.items())
+        elif isinstance(self.env, tuple):
+            members = self.env
+        else:
+            raise ValueError("env must be a closed mapping, tuple, or None")
+        normalized: list[tuple[str, str]] = []
+        folded: set[str] = set()
+        for member in members:
+            if not isinstance(member, tuple) or len(member) != 2:
+                raise ValueError("env entries must be name/value tuples")
+            name, value = member
+            if (
+                not isinstance(name, str)
+                or _ENVIRONMENT_NAME.fullmatch(name) is None
+                or unicodedata.normalize("NFC", name) != name
+                or len(name.encode("utf-8")) > _MAX_ENVIRONMENT_NAME_BYTES
+            ):
+                raise ValueError("env name is invalid")
+            if (
+                not isinstance(value, str)
+                or "\x00" in value
+                or unicodedata.normalize("NFC", value) != value
+                or len(value.encode("utf-8")) > _MAX_ENVIRONMENT_VALUE_BYTES
+            ):
+                raise ValueError("env value is invalid")
+            key = name.casefold()
+            if key in folded:
+                raise ValueError("env names must be case-insensitively unique")
+            folded.add(key)
+            normalized.append((name, value))
+        normalized.sort(key=lambda item: item[0].encode("utf-8"))
+        object.__setattr__(self, "env", tuple(normalized))
 
 
 @dataclass(frozen=True)
@@ -226,6 +268,8 @@ def run_process(request: ProcessRequest) -> ProcessResult:
             "stderr": subprocess.PIPE,
             "shell": False,
         }
+        if request.env is not None:
+            kwargs["env"] = dict(request.env)
         if _is_windows:
             kwargs["creationflags"] = _CREATE_NEW_PROCESS_GROUP
         else:

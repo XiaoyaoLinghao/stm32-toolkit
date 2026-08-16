@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 import json
 import os
 from pathlib import Path
-import threading
+import re
+import unicodedata
 from typing import cast
 from uuid import uuid4
 from xml.etree import ElementTree
@@ -34,7 +35,7 @@ from .model import (
 )
 
 
-_ENVIRONMENT_LOCK = threading.RLock()
+_ENVIRONMENT_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
 @dataclass(frozen=True)
@@ -95,43 +96,61 @@ class HostTestRunner:
     @staticmethod
     def _environment(config: HostTestConfig) -> dict[str, str]:
         if not isinstance(config, HostTestConfig):
-            raise TypeError("config must be HostTestConfig")
-        allowed = set(config.environment_allow)
-        folded = {name.casefold() for name in allowed if isinstance(name, str)}
+            raise protocol_error("TEST_ENVIRONMENT_INVALID", "config must be HostTestConfig")
+        names = config.environment_allow
+        values = config.environment_values
         if (
-            len(allowed) != len(config.environment_allow)
+            not isinstance(names, tuple)
+            or not isinstance(values, Mapping)
+            or not all(isinstance(name, str) for name in names)
+            or not all(isinstance(name, str) for name in values)
+        ):
+            raise protocol_error("TEST_ENVIRONMENT_INVALID", "test environment allowlist is invalid")
+        allowed = set(names)
+        folded = {name.casefold() for name in allowed}
+        if (
+            len(allowed) != len(names)
             or len(folded) != len(allowed)
-            or not set(config.environment_values) <= allowed
-            or not all(isinstance(name, str) and name for name in allowed)
-            or not all(isinstance(value, str) for value in config.environment_values.values())
+            or not set(values) <= allowed
+            or not all(
+                isinstance(name, str)
+                and _ENVIRONMENT_NAME.fullmatch(name) is not None
+                and unicodedata.normalize("NFC", name) == name
+                and len(name.encode("utf-8")) <= 128
+                for name in allowed
+            )
+            or not all(
+                isinstance(value, str)
+                and "\x00" not in value
+                and unicodedata.normalize("NFC", value) == value
+                and len(value.encode("utf-8")) <= 4096
+                for value in values.values()
+            )
         ):
             raise protocol_error("TEST_ENVIRONMENT_INVALID", "test environment allowlist is invalid")
         environment = {
             name: os.environ[name]
-            for name in config.environment_allow
+            for name in names
             if name in os.environ
         }
-        environment.update(dict(config.environment_values))
+        environment.update(dict(values))
         return environment
 
     def _execute(self, argv: tuple[str, ...], config: HostTestConfig) -> ProcessResult:
-        request = ProcessRequest(
-            argv=argv,
-            cwd=self.project_root,
-            timeout_seconds=config.timeout_seconds,
-        )
         environment = self._environment(config)
-        with _ENVIRONMENT_LOCK:
-            original = dict(os.environ)
-            os.environ.clear()
-            os.environ.update(environment)
-            try:
-                return self._process_runner(request)
-            except ProcessError as exc:
-                raise protocol_error("TEST_PROCESS_ERROR", exc.message) from exc
-            finally:
-                os.environ.clear()
-                os.environ.update(original)
+        try:
+            request = ProcessRequest(
+                argv=argv,
+                cwd=self.project_root,
+                timeout_seconds=config.timeout_seconds,
+                env=environment,
+            )
+        except (TypeError, ValueError) as exc:
+            raise protocol_error("TEST_ENVIRONMENT_INVALID", "test environment is invalid") from exc
+        try:
+            return self._process_runner(request)
+        except ProcessError as exc:
+            raise protocol_error("TEST_PROCESS_ERROR", exc.message) from exc
 
     @staticmethod
     def _check_process(result: ProcessResult, *, operation: str) -> None:
@@ -149,13 +168,7 @@ class HostTestRunner:
         )
         self._check_process(build, operation="CMake build")
         discovery = self._discover_only(config, identity)
-        if (
-            identity.build_id != calculate_host_build_inventory_digest(
-                config.build_preset, config.ctest_preset, config.labels, discovery.executables
-            )
-            or identity.elf_sha256
-            != calculate_host_test_executable_inventory_digest(discovery.executables)
-        ):
+        if discovery.inventory.identity != identity:
             raise protocol_error(
                 "TEST_IDENTITY_MISMATCH",
                 "Host identity differs from the canonical build or executable inventory",
@@ -181,15 +194,22 @@ class HostTestRunner:
         except (UnicodeError, json.JSONDecodeError) as exc:
             raise protocol_error("TEST_DISCOVERY_INVALID", "CTest discovery is invalid JSON") from exc
         cases, executables, ordinals = self._parse_discovery(payload, config.labels)
-        inventory = create_inventory(
-            "host", identity, cases, self._clock(), executable_inventory=executables
+        bound_identity = replace(
+            identity,
+            build_id=calculate_host_build_inventory_digest(
+                config.build_preset, config.ctest_preset, config.labels, executables
+            ),
+            elf_sha256=calculate_host_test_executable_inventory_digest(executables),
         )
+        inventory = create_inventory("host", bound_identity, cases, self._clock())
         return _Discovery(inventory, artifact, ordinals, executables)
 
     @staticmethod
     def _parse_discovery(
         payload: object, labels: tuple[str, ...]
     ) -> tuple[tuple[str, ...], tuple[dict[str, object], ...], dict[str, int]]:
+        if not isinstance(labels, tuple) or not all(isinstance(label, str) for label in labels):
+            raise protocol_error("TEST_DISCOVERY_INVALID", "CTest label selection is invalid")
         if not isinstance(payload, dict):
             raise protocol_error("TEST_DISCOVERY_INVALID", "CTest discovery must be an object")
         version = payload.get("version")
@@ -247,7 +267,11 @@ class HostTestRunner:
         if known is None or known[1].inventory != inventory:
             raise protocol_error("TEST_INVENTORY_CHANGED", "inventory was not frozen by this runner")
         config, discovery = known
-        if not isinstance(case_ids, tuple) or len(case_ids) != len(set(case_ids)):
+        if (
+            not isinstance(case_ids, tuple)
+            or not all(isinstance(case_id, str) and case_id for case_id in case_ids)
+            or len(case_ids) != len(set(case_ids))
+        ):
             raise protocol_error("TEST_CASE_NOT_FOUND", "requested case IDs are invalid")
         requested = inventory.case_ids if not case_ids else case_ids
         if any(case_id not in inventory.case_ids for case_id in requested):
@@ -286,7 +310,8 @@ class HostTestRunner:
             directory, "ctest-stderr.txt", result.stderr.encode("utf-8"),
             kind="test-stderr", media_type="text/plain; charset=utf-8",
         )
-        cases = self._parse_junit(junit_path, tuple(selected), directory)
+        authoritative_junit = self._collector.evidence_store.root / raw_events.relative_path
+        cases = self._parse_junit(authoritative_junit, tuple(selected), directory)
         state = self._run_state(cases)
         native_failure = state != "passed"
         if (result.returncode == 0) == native_failure:
@@ -311,15 +336,33 @@ class HostTestRunner:
             name = node.get("name")
             if not name or name in results or name not in selected:
                 raise protocol_error("TEST_NATIVE_RESULT_INVALID", "CTest JUnit case inventory is invalid")
-            children = {child.tag.rsplit("}", 1)[-1]: child for child in node}
+            child_nodes = list(node)
+            children: dict[str, ElementTree.Element] = {}
+            terminals: list[tuple[str, ElementTree.Element]] = []
+            for child in child_nodes:
+                tag = child.tag.rsplit("}", 1)[-1]
+                if tag in {"failure", "error", "skipped"}:
+                    terminals.append((tag, child))
+                elif tag in {"system-out", "system-err"} and tag in children:
+                    raise protocol_error(
+                        "TEST_NATIVE_RESULT_INVALID", "CTest JUnit stream child is duplicated"
+                    )
+                children[tag] = child
+            if len(terminals) > 1:
+                raise protocol_error(
+                    "TEST_NATIVE_RESULT_INVALID", "CTest JUnit case has multiple terminal children"
+                )
             status = node.get("status")
-            terminal = next(
-                (children[tag] for tag in ("failure", "error", "skipped") if tag in children),
-                None,
-            )
-            if "error" in children:
+            terminal_tag, terminal = terminals[0] if terminals else (None, None)
+            if (
+                (status == "fail" and terminal_tag == "skipped")
+                or (status in {"skip", "notrun"} and terminal_tag in {"failure", "error"})
+                or (status in {None, "run"} and terminal_tag in {"failure", "skipped"})
+            ):
+                raise protocol_error("TEST_NATIVE_RESULT_INVALID", "CTest JUnit terminal contradicts status")
+            if terminal_tag == "error":
                 state = "error"
-            elif "failure" in children or status == "fail":
+            elif terminal_tag == "failure" or status == "fail":
                 message_probe = " ".join(
                     value for value in (
                         None if terminal is None else terminal.get("message"),
@@ -327,7 +370,7 @@ class HostTestRunner:
                     ) if value
                 )
                 state = "timeout" if "timeout" in message_probe.casefold() else "failed"
-            elif "skipped" in children or status in {"skip", "notrun"}:
+            elif terminal_tag == "skipped" or status in {"skip", "notrun"}:
                 state = "skipped"
             elif status in {None, "run"}:
                 state = "passed"
@@ -383,31 +426,36 @@ class HostTestRunner:
         suites = [suite for suite in root.iter() if suite.tag.rsplit("}", 1)[-1] == "testsuite"]
         if not suites:
             raise protocol_error("TEST_NATIVE_RESULT_INVALID", "CTest JUnit summary is missing")
-        for suite in suites:
-            suite_nodes = [node for node in suite.iter() if node.tag.rsplit("}", 1)[-1] == "testcase"]
+        def actual_counts(records: list[ElementTree.Element]) -> dict[str, int]:
+            result = {"tests": len(records), "failures": 0, "errors": 0, "skipped": 0, "disabled": 0}
+            for node in records:
+                status = node.get("status")
+                tags = [child.tag.rsplit("}", 1)[-1] for child in node]
+                if "error" in tags:
+                    result["errors"] += 1
+                elif "failure" in tags or status == "fail":
+                    result["failures"] += 1
+                elif "skipped" in tags or status == "skip":
+                    result["skipped"] += 1
+                elif status == "notrun":
+                    result["disabled"] += 1
+            return result
+
+        def declared_counts(container: ElementTree.Element) -> dict[str, int]:
             raw_counts = {
-                field: suite.get(field, None if field == "tests" else "0")
+                field: container.get(field, None if field == "tests" else "0")
                 for field in ("tests", "failures", "errors", "skipped", "disabled")
             }
             if any(raw is None or not raw.isdecimal() for raw in raw_counts.values()):
                 raise protocol_error("TEST_NATIVE_RESULT_INVALID", "CTest JUnit counts are invalid")
-            counts = {field: int(cast(str, raw)) for field, raw in raw_counts.items()}
-            failed = sum(
-                node.get("status") == "fail"
-                or any(child.tag.rsplit("}", 1)[-1] in {"failure", "error"} for child in node)
-                for node in suite_nodes
-            )
-            skipped = sum(
-                node.get("status") in {"skip", "notrun"}
-                or any(child.tag.rsplit("}", 1)[-1] == "skipped" for child in node)
-                for node in suite_nodes
-            )
-            if (
-                counts["tests"] != len(suite_nodes)
-                or counts["failures"] + counts["errors"] != failed
-                or counts["skipped"] + counts["disabled"] != skipped
-            ):
+            return {field: int(cast(str, raw)) for field, raw in raw_counts.items()}
+
+        for suite in suites:
+            suite_nodes = [node for node in suite.iter() if node.tag.rsplit("}", 1)[-1] == "testcase"]
+            if declared_counts(suite) != actual_counts(suite_nodes):
                 raise protocol_error("TEST_NATIVE_RESULT_INVALID", "CTest JUnit counts contradict cases")
+        if root.tag.rsplit("}", 1)[-1] == "testsuites" and declared_counts(root) != actual_counts(nodes):
+            raise protocol_error("TEST_NATIVE_RESULT_INVALID", "CTest JUnit root counts contradict suites")
         if not nodes:
             raise protocol_error("TEST_NO_CASES", "CTest JUnit inventory is empty")
 

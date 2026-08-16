@@ -8,11 +8,13 @@ from dataclasses import replace
 from pathlib import Path
 import sys
 import tempfile
+import threading
 import time
 from xml.etree import ElementTree
 
 import pytest
 
+import stm32_toolkit.testing.artifacts as artifacts_mod
 from stm32_toolkit.evidence import EvidenceIdentity
 from stm32_toolkit.evidence.store import EvidenceStore
 from stm32_toolkit.process import ProcessError, ProcessResult
@@ -159,6 +161,52 @@ def test_discover_builds_then_uses_distinct_ctest_preset_and_freezes_real_json(t
     assert payload["version"] == {"major": 1, "minor": 0}
 
 
+def test_execute_passes_child_only_environment_without_global_mutation(task_tmp: Path):
+    """A blocked Host process must not alter bytes observed by another thread or subprocess."""
+    runner, config, _scenario, _evidence = _runner(task_tmp)
+    entered = threading.Event()
+    release = threading.Event()
+    observed = []
+    before = tuple(os.environ.items())
+
+    def blocking(request):
+        observed.append(request.env)
+        entered.set()
+        assert release.wait(5)
+        return ProcessResult(0, "", "", False, 1, False, False)
+
+    runner._process_runner = blocking
+    worker = threading.Thread(target=runner._execute, args=(("tool",), config))
+    worker.start()
+    assert entered.wait(5)
+    assert tuple(os.environ.items()) == before
+    import subprocess
+    child = subprocess.run(
+        [sys.executable, "-c", "import os,sys;sys.stdout.buffer.write(os.environ.get('SCENARIO_DIR','absent').encode())"],
+        stdout=subprocess.PIPE, check=True,
+    )
+    assert child.stdout == os.environ.get("SCENARIO_DIR", "absent").encode()
+    release.set()
+    worker.join(5)
+    assert not worker.is_alive()
+    assert dict(observed[0]) == runner._environment(config)
+
+
+def test_invalid_host_environment_is_stable_and_never_mutates_process_bytes(task_tmp: Path):
+    """Invalid names fail before the runner or global process environment is touched."""
+    runner, config, _scenario, _evidence = _runner(task_tmp)
+    bad = replace(
+        config,
+        environment_allow=("BAD=NAME",),
+        environment_values={"BAD=NAME": "x"},
+    )
+    before = json.dumps(dict(os.environ), ensure_ascii=False, sort_keys=True).encode("utf-8")
+    with pytest.raises(ProtocolError) as caught:
+        runner._execute(("tool",), bad)
+    assert caught.value.code == "TEST_ENVIRONMENT_INVALID"
+    assert json.dumps(dict(os.environ), ensure_ascii=False, sort_keys=True).encode("utf-8") == before
+
+
 def test_run_selects_exact_ids_parses_ctest_431_junit_and_ingests_every_artifact(task_tmp: Path):
     """The run result is derived from real CTest JUnit and content-addressed stored bytes."""
     runner, config, scenario, evidence = _runner(task_tmp)
@@ -256,8 +304,10 @@ def test_artifact_collector_rejects_nonexternal_aliases_and_invalid_paths(
     evidence = EvidenceStore(task_tmp / "evidence")
     with pytest.raises(TypeError):
         ArtifactCollector("results", evidence, project_root=project)
+    inside = project / "inside"
     with pytest.raises(ProtocolError):
         ArtifactCollector(project / "inside", evidence, project_root=project)
+    assert not inside.exists()
     with pytest.raises(TypeError):
         ArtifactCollector(task_tmp / "results-wrong-store", object(), project_root=project)
 
@@ -282,10 +332,11 @@ def test_artifact_collector_rejects_nonexternal_aliases_and_invalid_paths(
 
     original_fsync = os.fsync
     monkeypatch.setattr(os, "fsync", lambda _descriptor: (_ for _ in ()).throw(OSError("fsync")))
-    with pytest.raises(OSError, match="fsync"):
+    with pytest.raises(ProtocolError) as caught:
         collector.write_and_ingest(
             directory, "fsync.txt", b"bytes", kind="test", media_type="text/plain"
         )
+    assert caught.value.code == "TEST_RESULTS_UNSAFE"
     monkeypatch.setattr(os, "fsync", original_fsync)
 
     with pytest.raises(ProtocolError):
@@ -305,6 +356,164 @@ def test_artifact_collector_rejects_nonexternal_aliases_and_invalid_paths(
             huge, kind="events", media_type="application/octet-stream", stream_limit=True
         )
     assert caught.value.code == "TEST_STREAM_TOO_LARGE"
+
+
+def test_artifact_collector_rejects_directory_alias_before_writing(task_tmp: Path):
+    """A symlinked external root must fail before any child result is created."""
+    project = task_tmp / "project"
+    project.mkdir()
+    real_results = task_tmp / "real-results"
+    real_results.mkdir()
+    alias = task_tmp / "results-alias"
+    import subprocess
+    created = subprocess.run(
+        ["cmd", "/c", "mklink", "/J", str(alias), str(real_results)],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+    )
+    assert created.returncode == 0, created.stderr
+    before = tuple(real_results.iterdir())
+    with pytest.raises(ProtocolError) as caught:
+        ArtifactCollector(alias, EvidenceStore(task_tmp / "evidence"), project_root=project)
+    assert caught.value.code == "TEST_RESULTS_UNSAFE"
+    assert tuple(real_results.iterdir()) == before
+
+    parent_target = task_tmp / "parent-target"
+    parent_target.mkdir()
+    parent_alias = task_tmp / "parent-alias"
+    created = subprocess.run(
+        ["cmd", "/c", "mklink", "/J", str(parent_alias), str(parent_target)],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+    )
+    assert created.returncode == 0, created.stderr
+    before = tuple(parent_target.iterdir())
+    with pytest.raises(ProtocolError) as caught:
+        ArtifactCollector(
+            parent_alias / "must-not-be-created",
+            EvidenceStore(task_tmp / "parent-evidence"),
+            project_root=project,
+        )
+    assert caught.value.code == "TEST_RESULTS_UNSAFE"
+    assert tuple(parent_target.iterdir()) == before
+
+
+def test_artifact_write_detects_child_replacement_during_ingestion(task_tmp: Path, monkeypatch):
+    """Replacing a CREATE_NEW child cannot make different bytes authoritative."""
+    project = task_tmp / "project"
+    project.mkdir()
+    store = EvidenceStore(task_tmp / "evidence")
+    collector = ArtifactCollector(task_tmp / "results", store, project_root=project)
+    directory = collector.new_directory("native")
+    original = store.ingest_file
+
+    def replace_then_ingest(path, *, kind, media_type):
+        displaced = path.with_suffix(".displaced")
+        os.replace(path, displaced)
+        path.write_bytes(b"attacker")
+        return original(path, kind=kind, media_type=media_type)
+
+    monkeypatch.setattr(store, "ingest_file", replace_then_ingest)
+    with pytest.raises(ProtocolError) as caught:
+        collector.write_and_ingest(
+            directory, "result.txt", b"trusted", kind="test", media_type="text/plain"
+        )
+    assert caught.value.code == "TEST_RESULTS_UNSAFE"
+
+
+def test_artifact_windows_handles_fail_closed_on_final_path_and_api_faults(
+    task_tmp: Path, monkeypatch,
+):
+    """Final-path aliases and handle duplication/conversion failures never publish an artifact."""
+    project = task_tmp / "project"
+    project.mkdir()
+    with monkeypatch.context() as scoped:
+        scoped.setattr(artifacts_mod, "_windows_final_path", lambda _handle: task_tmp / "other")
+        with pytest.raises(ProtocolError):
+            ArtifactCollector(task_tmp / "bad-final", EvidenceStore(task_tmp / "e1"), project_root=project)
+
+    collector = ArtifactCollector(task_tmp / "results", EvidenceStore(task_tmp / "e2"), project_root=project)
+    directory = collector.new_directory("native")
+    with monkeypatch.context() as scoped:
+        scoped.setattr(artifacts_mod._kernel32, "DuplicateHandle", lambda *_args: False)
+        with pytest.raises(ProtocolError) as caught:
+            collector.write_and_ingest(directory, "duplicate.txt", b"x", kind="test", media_type="text/plain")
+        assert caught.value.code == "TEST_RESULTS_UNSAFE"
+    with monkeypatch.context() as scoped:
+        scoped.setattr(
+            artifacts_mod.msvcrt, "open_osfhandle",
+            lambda *_args: (_ for _ in ()).throw(OSError("conversion")),
+        )
+        with pytest.raises(ProtocolError) as caught:
+            collector.write_and_ingest(directory, "conversion.txt", b"x", kind="test", media_type="text/plain")
+        assert caught.value.code == "TEST_RESULTS_UNSAFE"
+
+
+def test_artifact_directory_handle_detects_missing_reparse_and_replaced_paths(
+    task_tmp: Path, monkeypatch,
+):
+    """Every use rechecks the registered directory's type, path, and pinned identity."""
+    project = task_tmp / "project"
+    project.mkdir()
+    collector = ArtifactCollector(task_tmp / "results", EvidenceStore(task_tmp / "evidence"), project_root=project)
+    directory = collector.new_directory("native")
+    with pytest.raises(ProtocolError):
+        collector.output_path(collector.results_root / "unregistered", "x")
+
+    with monkeypatch.context() as scoped:
+        scoped.setattr(artifacts_mod.os, "lstat", lambda _path: (_ for _ in ()).throw(OSError("missing")))
+        with pytest.raises(ProtocolError):
+            collector.output_path(directory, "missing.txt")
+    real = os.lstat(directory)
+    from types import SimpleNamespace
+    with monkeypatch.context() as scoped:
+        scoped.setattr(
+            artifacts_mod.os, "lstat",
+            lambda _path: SimpleNamespace(st_mode=real.st_mode, st_file_attributes=0x400),
+        )
+        with pytest.raises(ProtocolError):
+            collector.output_path(directory, "reparse.txt")
+    with monkeypatch.context() as scoped:
+        scoped.setattr(
+            artifacts_mod, "_path_identity",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("identity")),
+        )
+        with pytest.raises(ProtocolError):
+            collector.output_path(directory, "identity-error.txt")
+    with monkeypatch.context() as scoped:
+        scoped.setattr(artifacts_mod, "_path_identity", lambda *_args, **_kwargs: (0, 0, 0))
+        with pytest.raises(ProtocolError):
+            collector.output_path(directory, "replaced.txt")
+
+
+def test_artifact_creation_and_pinned_pre_post_identity_faults_are_stable(
+    task_tmp: Path, monkeypatch,
+):
+    """Create failure and identity changes before/after ingestion are stable closed failures."""
+    project = task_tmp / "project"
+    project.mkdir()
+    collector = ArtifactCollector(task_tmp / "results", EvidenceStore(task_tmp / "evidence"), project_root=project)
+    with monkeypatch.context() as scoped:
+        scoped.setattr(
+            artifacts_mod.tempfile, "mkdtemp",
+            lambda **_kwargs: (_ for _ in ()).throw(OSError("create")),
+        )
+        with pytest.raises(ProtocolError):
+            collector.new_directory("fault")
+
+    directory = collector.new_directory("native")
+    path, handle = collector._open_child(directory, "pre.txt", create=True, write=True)
+    try:
+        before = artifacts_mod._handle_identity(handle)
+        with monkeypatch.context() as scoped:
+            scoped.setattr(artifacts_mod, "_path_identity", lambda *_args, **_kwargs: (0, 0, 0))
+            with pytest.raises(ProtocolError):
+                collector._ingest_pinned(path, handle, kind="test", media_type="text/plain", stream_limit=False)
+        calls = iter((before, (0, 0, 0)))
+        with monkeypatch.context() as scoped:
+            scoped.setattr(artifacts_mod, "_path_identity", lambda *_args, **_kwargs: next(calls))
+            with pytest.raises(ProtocolError):
+                collector._ingest_pinned(path, handle, kind="test", media_type="text/plain", stream_limit=False)
+    finally:
+        artifacts_mod._close_handle(handle)
 
 
 def _discovery_payload() -> dict[str, object]:
@@ -391,7 +600,13 @@ def test_runner_constructor_environment_and_process_failures_are_closed(task_tmp
     config = HostTestConfig("build", "test", (), 1, ("A",), {"A": 1})
     with pytest.raises(ProtocolError):
         HostTestRunner._environment(config)
-    with pytest.raises(TypeError):
+    config = HostTestConfig("build", "test", (), 1, (["A"],), {})
+    with pytest.raises(ProtocolError):
+        HostTestRunner._environment(config)
+    config = HostTestConfig("build", "test", (["unit"],), 1, (), {})
+    with pytest.raises(ProtocolError):
+        HostTestRunner._parse_discovery(_discovery_payload(), config.labels)
+    with pytest.raises(ProtocolError):
         HostTestRunner._environment(object())
 
     def broken(_request):
@@ -422,9 +637,10 @@ def test_run_rejects_nonhost_unknown_and_duplicate_selection_before_process(task
     unknown = create_inventory("host", _identity(), ("one",), "2026-08-16T00:00:00.000000Z")
     with pytest.raises(ProtocolError):
         runner.run(unknown, ("one",))
-    for selection in (["native-pass"], ("native-pass", "native-pass")):
-        with pytest.raises(ProtocolError):
+    for selection in (["native-pass"], ("native-pass", "native-pass"), (["native-pass"],)):
+        with pytest.raises(ProtocolError) as caught:
             runner.run(inventory, selection)
+        assert caught.value.code == "TEST_CASE_NOT_FOUND"
 
 
 def test_junit_parser_maps_all_ctest_terminal_states_outputs_and_incomplete_case(task_tmp: Path):
@@ -490,6 +706,53 @@ def test_junit_duration_summary_and_run_state_boundaries_are_exact():
             HostTestRunner._junit_duration(value)
     with pytest.raises(ProtocolError):
         HostTestRunner._validate_junit_summaries(ElementTree.fromstring("<testsuites/>"), [])
+
+
+def test_junit_counts_are_exact_per_category_and_root_totals_must_match(task_tmp: Path):
+    """Moving a count between failure/error or skipped/disabled must be rejected."""
+    runner, _config, _scenario, _evidence = _runner(task_tmp)
+    directory = runner._collector.new_directory("junit-counts")
+    base_cases = (
+        '<testcase name="f" status="fail"><failure/></testcase>'
+        '<testcase name="e" status="run"><error/></testcase>'
+        '<testcase name="s" status="skip"><skipped/></testcase>'
+        '<testcase name="d" status="notrun"/>'
+    )
+    for attributes in (
+        'tests="4" failures="2" errors="0" skipped="1" disabled="1"',
+        'tests="4" failures="1" errors="1" skipped="2" disabled="0"',
+    ):
+        path = directory / f"bad-{len(list(directory.iterdir()))}.xml"
+        path.write_text(f"<testsuite {attributes}>{base_cases}</testsuite>", encoding="utf-8")
+        with pytest.raises(ProtocolError) as caught:
+            runner._parse_junit(path, ("f", "e", "s", "d"), directory)
+        assert caught.value.code == "TEST_NATIVE_RESULT_INVALID"
+
+    root = directory / "bad-root.xml"
+    root.write_text(
+        '<testsuites tests="99" failures="1" errors="1" skipped="1" disabled="1">'
+        '<testsuite tests="4" failures="1" errors="1" skipped="1" disabled="1">'
+        f"{base_cases}</testsuite></testsuites>", encoding="utf-8",
+    )
+    with pytest.raises(ProtocolError) as caught:
+        runner._parse_junit(root, ("f", "e", "s", "d"), directory)
+    assert caught.value.code == "TEST_NATIVE_RESULT_INVALID"
+
+
+def test_junit_case_has_at_most_one_terminal_child(task_tmp: Path):
+    """Duplicate or mixed terminal children cannot be collapsed by a tag dictionary."""
+    runner, _config, _scenario, _evidence = _runner(task_tmp)
+    directory = runner._collector.new_directory("junit-terminal")
+    for children in ("<failure/><failure/>", "<failure/><error/>", "<skipped/><error/>"):
+        path = directory / f"bad-{len(list(directory.iterdir()))}.xml"
+        path.write_text(
+            '<testsuite tests="1" failures="0" errors="1" skipped="0" disabled="0">'
+            f'<testcase name="one" status="run">{children}</testcase></testsuite>',
+            encoding="utf-8",
+        )
+        with pytest.raises(ProtocolError) as caught:
+            runner._parse_junit(path, ("one",), directory)
+        assert caught.value.code == "TEST_NATIVE_RESULT_INVALID"
     passed = CaseResult("p", "passed", "2026-08-16T00:00:00.000000Z", "2026-08-16T00:00:00.000000Z", 0, None, None, None)
     failed = CaseResult("f", "failed", "2026-08-16T00:00:00.000000Z", "2026-08-16T00:00:00.000000Z", 0, None, None, None)
     error = CaseResult("e", "error", "2026-08-16T00:00:00.000000Z", "2026-08-16T00:00:00.000000Z", 0, None, None, None)

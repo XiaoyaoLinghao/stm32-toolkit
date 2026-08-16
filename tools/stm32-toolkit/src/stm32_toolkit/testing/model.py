@@ -103,31 +103,17 @@ def calculate_inventory_digest(
     mode: str,
     identity: EvidenceIdentity,
     case_ids: Sequence[str],
-    *,
-    executable_inventory: Sequence[Mapping[str, object]] = (),
 ) -> str:
-    """Digest canonical identity, sorted IDs, and Host executable commands."""
+    """Digest only the complete public inventory fields other than the digest/time."""
     if mode not in {"host", "target"} or not isinstance(identity, EvidenceIdentity):
         raise protocol_error("TEST_PROTOCOL_INVALID", "inventory mode or identity is invalid")
+    if not isinstance(case_ids, Sequence) or isinstance(case_ids, (str, bytes)):
+        raise protocol_error("TEST_PROTOCOL_INVALID", "case_ids must be a sequence")
     ordered = tuple(sorted((_string(item, "case_id") for item in case_ids), key=lambda item: item.encode("utf-8")))
     if len(ordered) != len(set(ordered)) or not ordered:
         raise protocol_error("TEST_NO_CASES", "test inventory is empty or duplicated")
-    executables: list[dict[str, object]] = []
-    for item in executable_inventory:
-        if not isinstance(item, Mapping) or set(item) != {"case_id", "command"}:
-            raise protocol_error("TEST_PROTOCOL_INVALID", "executable inventory item is invalid")
-        case_id = _string(item["case_id"], "executable case_id")
-        command = item["command"]
-        if not isinstance(command, (list, tuple)) or not command:
-            raise protocol_error("TEST_PROTOCOL_INVALID", "executable command is invalid")
-        members = [_string(member, "executable command member") for member in command]
-        executables.append({"case_id": case_id, "command": members})
-    executables.sort(key=lambda item: cast(str, item["case_id"]).encode("utf-8"))
-    if executables and [item["case_id"] for item in executables] != list(ordered):
-        raise protocol_error("TEST_PROTOCOL_INVALID", "executable inventory differs from case IDs")
     payload = {
         "case_ids": list(ordered),
-        "executables": executables,
         "identity": identity.to_dict(),
         "mode": mode,
     }
@@ -137,6 +123,10 @@ def calculate_inventory_digest(
 def _canonical_host_executables(
     executable_inventory: Iterable[Mapping[str, object]],
 ) -> list[dict[str, object]]:
+    if not isinstance(executable_inventory, Iterable) or isinstance(
+        executable_inventory, (str, bytes)
+    ):
+        raise protocol_error("TEST_PROTOCOL_INVALID", "Host executable inventory is invalid")
     result: list[dict[str, object]] = []
     for item in executable_inventory:
         if not isinstance(item, Mapping) or set(item) != {"case_id", "command"}:
@@ -162,6 +152,8 @@ def calculate_host_build_inventory_digest(
     executable_inventory: Iterable[Mapping[str, object]],
 ) -> str:
     """Canonical Host ``build_id`` for the CMake build/test inventory."""
+    if not isinstance(labels, Sequence) or isinstance(labels, (str, bytes)):
+        raise protocol_error("TEST_PROTOCOL_INVALID", "Host test labels must be a sequence")
     normalized_labels = tuple(
         sorted((_string(label, "Host test label") for label in labels), key=lambda item: item.encode("utf-8"))
     )
@@ -238,6 +230,9 @@ class TestInventory:
             raise protocol_error("TEST_PROTOCOL_INVALID", "inventory mode or identity is invalid")
         _sorted_case_ids(self.case_ids)
         _hash(self.inventory_digest, "inventory_digest")
+        expected = calculate_inventory_digest(self.mode, self.identity, self.case_ids)
+        if self.inventory_digest != expected:
+            raise protocol_error("TEST_INVENTORY_CHANGED", "inventory digest contradicts visible fields")
         _utc(self.discovered_at_utc, "discovered_at_utc")
 
     def to_dict(self) -> dict[str, object]:
@@ -255,15 +250,13 @@ def create_inventory(
     identity: EvidenceIdentity,
     case_ids: Sequence[str],
     discovered_at_utc: str,
-    *,
-    executable_inventory: Sequence[Mapping[str, object]] = (),
 ) -> TestInventory:
+    if not isinstance(case_ids, Sequence) or isinstance(case_ids, (str, bytes)):
+        raise protocol_error("TEST_PROTOCOL_INVALID", "case_ids must be a sequence")
     ordered = tuple(
         sorted((_string(item, "case_id") for item in case_ids), key=lambda item: item.encode("utf-8"))
     )
-    digest = calculate_inventory_digest(
-        mode, identity, ordered, executable_inventory=executable_inventory
-    )
+    digest = calculate_inventory_digest(mode, identity, ordered)
     return TestInventory(mode, identity, ordered, digest, discovered_at_utc)
 
 
@@ -302,6 +295,16 @@ class TestRunManifest:
         ids = [case.case_id for case in self.cases]
         if len(ids) != len(set(ids)):
             raise protocol_error("TEST_DUPLICATE_CASE", "manifest case IDs must be unique")
+        terminal_states = {"passed", "failed", "error", "cancelled"}
+        states = {case.state for case in self.cases}
+        if self.state not in terminal_states:
+            raise protocol_error("TEST_EVENT_SEQUENCE_INVALID", "manifest state is not terminal")
+        expected = "error" if states & {"error", "timeout"} else "failed" if "failed" in states else "passed"
+        if self.state == "cancelled":
+            if not states & {"error", "timeout"}:
+                raise protocol_error("TEST_EVENT_SEQUENCE_INVALID", "cancelled manifest lacks an incomplete case")
+        elif self.state != expected:
+            raise protocol_error("TEST_EVENT_SEQUENCE_INVALID", "manifest state contradicts cases")
         started = _utc(self.started_at_utc, "started_at_utc")
         ended = _utc(self.ended_at_utc, "ended_at_utc")
         if ended < started:
@@ -333,8 +336,12 @@ class TestRunManifest:
 
 
 def host_target_device(*, system: str | None = None, architecture: str | None = None) -> str:
-    os_name = (platform.system() if system is None else system).casefold()
-    machine = (platform.machine() if architecture is None else architecture).casefold()
+    raw_system = platform.system() if system is None else system
+    raw_architecture = platform.machine() if architecture is None else architecture
+    if not isinstance(raw_system, str) or not isinstance(raw_architecture, str):
+        raise protocol_error("TEST_PROTOCOL_INVALID", "host platform identity is invalid")
+    os_name = raw_system.casefold()
+    machine = raw_architecture.casefold()
     os_name = {"darwin": "macos"}.get(os_name, os_name)
     machine = {
         "x86_64": "amd64", "amd64": "amd64", "aarch64": "arm64",

@@ -46,6 +46,51 @@ PYTHON = sys.executable
 _REAL_POPEN = subprocess.Popen
 
 
+def test_process_request_freezes_closed_child_environment_and_popen_receives_only_it(tmp_path: Path):
+    """Removing child-only env propagation would leak ambient variables into the child."""
+    source = {
+        "SystemRoot": os.environ["SystemRoot"],
+        "STM32TK_ENV_B": "two",
+        "STM32TK_ENV_A": "one",
+    }
+    request = ProcessRequest(
+        argv=(PYTHON, "-c", "import os; print(sorted(os.environ.items()))"),
+        cwd=tmp_path,
+        timeout_seconds=30,
+        env=source,
+    )
+    source["LEAK_AFTER_CONSTRUCTION"] = "bad"
+
+    assert request.env == (
+        ("STM32TK_ENV_A", "one"), ("STM32TK_ENV_B", "two"),
+        ("SystemRoot", os.environ["SystemRoot"]),
+    )
+    with pytest.raises(FrozenInstanceError):
+        request.env = None  # type: ignore[misc]
+    result = run_process(request)
+    assert "STM32TK_ENV_A" in result.stdout
+    assert "LEAK_AFTER_CONSTRUCTION" not in result.stdout
+
+
+@pytest.mark.parametrize(
+    "env",
+    [
+        [("A", "1")],
+        (("DUP", "1"), ("DUP", "2")),
+        (("BAD=NAME", "1"),),
+        (("", "1"),),
+        (("A", "bad\x00value"),),
+        (("X" * 129, "1"),),
+        (("A", "x" * 4097),),
+        (("e\u0301", "1"),),
+    ],
+)
+def test_process_request_rejects_nonclosed_or_unlaunchable_environment(tmp_path: Path, env):
+    """Malformed environment input must fail before subprocess launch."""
+    with pytest.raises(ValueError):
+        ProcessRequest(argv=(PYTHON, "-c", "pass"), cwd=tmp_path, timeout_seconds=30, env=env)
+
+
 def write_pid_child(pid_file: Path, code: str = "import time; time.sleep(60)") -> tuple[str, ...]:
     return (
         PYTHON,

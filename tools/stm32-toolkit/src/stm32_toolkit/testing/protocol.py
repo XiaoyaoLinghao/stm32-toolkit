@@ -73,6 +73,8 @@ def _artifact(value: object, field: str) -> ArtifactRef | None:
 
 def validate_event_payload(kind: str, payload: object) -> dict[str, object]:
     """Validate one decoded JSON payload against its exact event-kind shape."""
+    if not isinstance(kind, str):
+        raise protocol_error("TEST_EVENT_PAYLOAD_INVALID", "event kind is invalid")
     fields = _PAYLOAD_FIELDS.get(kind)
     if fields is None or not isinstance(payload, dict) or set(payload) != fields:
         raise protocol_error("TEST_EVENT_PAYLOAD_INVALID", "event payload fields are invalid")
@@ -169,8 +171,15 @@ def assemble_test_run(
     stderr: ArtifactRef | None = None,
 ) -> TestRunManifest:
     """Apply a complete, sequence-numbered event stream to a frozen inventory."""
-    if not isinstance(inventory, TestInventory) or not events:
+    if (
+        not isinstance(inventory, TestInventory)
+        or not isinstance(events, Sequence)
+        or isinstance(events, (str, bytes))
+        or not events
+    ):
         raise protocol_error("TEST_EVENT_SEQUENCE_INVALID", "event stream is empty or unbound")
+    if not isinstance(raw_events, ArtifactRef):
+        raise protocol_error("TEST_PROTOCOL_INVALID", "raw_events must be an ArtifactRef")
     if exit_code is not None and (type(exit_code) is not int):
         raise protocol_error("TEST_EXIT_MISMATCH", "process exit code is invalid")
     started_cases: dict[str, str] = {}
@@ -182,9 +191,14 @@ def assemble_test_run(
         if not isinstance(event, tuple) or len(event) != 3:
             raise protocol_error("TEST_EVENT_SEQUENCE_INVALID", "event record is invalid")
         sequence, kind, payload = event
-        if sequence != expected_sequence or terminal_seen:
+        if (
+            type(sequence) is not int
+            or not 0 <= sequence <= 0xFFFFFFFF
+            or sequence != expected_sequence
+            or terminal_seen
+        ):
             raise protocol_error("TEST_EVENT_SEQUENCE_INVALID", "event sequence is invalid")
-        value = validate_event_payload(kind, dict(payload))
+        value = validate_event_payload(kind, payload)
         if kind == "run_start":
             if expected_sequence != 0 or run_start is not None:
                 raise protocol_error("TEST_EVENT_SEQUENCE_INVALID", "run_start is duplicated or misplaced")
