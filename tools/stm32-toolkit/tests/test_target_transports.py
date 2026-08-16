@@ -177,9 +177,12 @@ def test_mailbox_wrap_and_counters_are_bounded() -> None:
     assert reader.calls[2][:2] == (0x20000000 + 16, 2)
 
     for producer, consumer in ((0, 1), (4097, 0)):
-        bad = MailboxTransport(FakeMailboxReader(producer, consumer), PROFILE, clock=lambda: 1.0)
+        reader = FakeMailboxReader(producer, consumer)
+        bad = MailboxTransport(reader, PROFILE, clock=lambda: 1.0)
         bad.open(mailbox_config(), 2.0)
         assert_code("TEST_PROTOCOL_INVALID", lambda bad=bad: bad.read(4, 2.0))
+        assert reader.closed
+        assert_code("TEST_TRANSPORT_UNAVAILABLE", bad.identity)
 
 
 @pytest.mark.parametrize("address,size", [(0x1FFFFFFF, 4096), (0x20000000, 32753), (0x20008000, 1), (0x20000000, 0)])
@@ -366,6 +369,21 @@ def test_mailbox_profile_ram_partial_empty_and_local_cursor_fail_closed() -> Non
     assert moved.read(1, 2.0) == b"t"
     moved._reader.header = (5000).to_bytes(8, "little") + (4999).to_bytes(8, "little")
     assert_code("TEST_PROTOCOL_INVALID", lambda: moved.read(1, 2.0))
+    assert moved._reader.closed
+    assert_code("TEST_TRANSPORT_UNAVAILABLE", moved.identity)
+
+    class InvalidAndCloseFailure(FakeMailboxReader):
+        def close(self) -> None:
+            raise OSError("C:\\secret\\credential.txt")
+
+    reader = InvalidAndCloseFailure(producer=4097, consumer=0)
+    invalid = MailboxTransport(reader, PROFILE, clock=lambda: 1.0)
+    invalid.open(mailbox_config(), 2.0)
+    with pytest.raises(ProtocolError) as caught:
+        invalid.read(1, 2.0)
+    assert caught.value.code == "TEST_PROTOCOL_INVALID"
+    assert "secret" not in caught.value.message and "credential" not in caught.value.message
+    assert_code("TEST_TRANSPORT_UNAVAILABLE", invalid.identity)
 
 
 class FaultBackend:

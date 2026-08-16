@@ -94,12 +94,12 @@ class MailboxTransport(TransportBase):
         consumer = int.from_bytes(header[8:], "little")
         target_available = (producer - consumer) & _COUNTER_MASK
         if target_available > self._size:
-            raise protocol_error("TEST_PROTOCOL_INVALID", "mailbox producer/consumer counters exceed the ring")
+            self._invalid_target_output("mailbox producer/consumer counters exceed the ring")
         if self._cursor is None:
             self._cursor = consumer
         available = (producer - self._cursor) & _COUNTER_MASK
         if available > self._size:
-            raise protocol_error("TEST_PROTOCOL_INVALID", "mailbox local cursor is outside the target window")
+            self._invalid_target_output("mailbox local cursor is outside the target window")
         count = min(max_bytes, available)
         if count == 0:
             return b""
@@ -128,3 +128,7 @@ class MailboxTransport(TransportBase):
             self.close()
         except TestProtocolError:
             pass
+
+    def _invalid_target_output(self, message: str) -> None:
+        self._close_quietly()
+        raise protocol_error("TEST_PROTOCOL_INVALID", message)
