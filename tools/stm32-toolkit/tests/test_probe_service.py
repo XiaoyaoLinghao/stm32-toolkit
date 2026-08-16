@@ -8,6 +8,8 @@ import os
 import stat
 import subprocess
 import threading
+import time
+from functools import partial
 from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
@@ -30,6 +32,7 @@ from fakes.fake_probe import FakeProbeBackend
 from stm32_toolkit.probe.backend import (
     FlashBackendReport,
     ProbeBackendError,
+    ProbeAttachmentEvidence,
     ProbeDescriptor,
 )
 from stm32_toolkit.probe.authorization import ControlAuthorizationStore
@@ -39,6 +42,27 @@ from stm32_toolkit.testing.artifacts import TestArtifactCollector as _TestArtifa
 
 NOW = datetime(2026, 8, 7, 12, 0, 0, tzinfo=timezone.utc)
 IDENTITY = ProcessIdentity(4300, "start-4300", "boot-a")
+
+
+class _SpawnedHangingControlBackend:
+    def __init__(self, marker: str) -> None:
+        self.marker = Path(marker)
+
+    def preflight_target_capabilities(self, probe_id, operation_level): return None
+    def list_probes(self): return (ProbeDescriptor("probe-a", "vendor", "product", None),)
+    def open_attach(self, probe_id, target, *, halt_on_connect=False):
+        return ProbeAttachmentEvidence(probe_id, target, target, 1)
+    def target_identity(self):
+        return {"board_id": "board-a", "mcu": "STM32F429ZITx", "target_id": "target-a", "probe_serial_hash": "a" * 64}
+    def target_state(self): return {"state": "halted", "reason": "requested"}
+    def resume(self):
+        time.sleep(2.0)
+        self.marker.write_text("late", encoding="utf-8")
+    def close(self): return None
+
+
+def _spawned_hanging_control_factory(marker: str):
+    return _SpawnedHangingControlBackend(marker)
 
 
 def fake_backend() -> FakeProbeBackend:
@@ -1640,6 +1664,119 @@ def test_heartbeat_lease_loss_closes_service_and_removes_endpoint(tmp_path: Path
         assert service.endpoint is None
         assert not endpoint.record_path.exists()
         await service.stop()
+
+    run(scenario())
+
+
+def test_control_timeout_waits_for_terminal_backend_action_before_response(tmp_path: Path):
+    class DelayedResumeBackend(FakeProbeBackend):
+        def __init__(self) -> None:
+            source = fake_backend()
+            super().__init__(
+                probes=source.list_probes(),
+                memory={0x20000000: b"\x01\x02\x03\x04"},
+                registers={"r0": 7, "pc": 0x08000101},
+            )
+            self.entered = threading.Event()
+            self.release = threading.Event()
+
+        def resume(self) -> None:
+            self.entered.set()
+            self.release.wait(2)
+            super().resume()
+
+        def target_identity(self):
+            return {
+                "board_id": "board-a", "mcu": "STM32F429ZITx",
+                "target_id": "target-a", "probe_serial_hash": "a" * 64,
+            }
+
+        def target_state(self):
+            return {
+                "state": "halted" if self.halted else "running",
+                "reason": "requested",
+            }
+
+    async def scenario() -> None:
+        backend = DelayedResumeBackend()
+        store = ControlAuthorizationStore((tmp_path / "control").absolute())
+        service = make_service(
+            tmp_path, level=OperationLevel.CONTROL, backend=backend,
+            control_authorizations=store,
+        )
+        endpoint = await service.start()
+        client = ProbeClient(endpoint)
+        try:
+            await client.attach("probe-a", "STM32F429ZITx")
+            identity = backend.target_identity()
+            prepared = store.prepare({
+                "workspace_id": "workspace-a", "project_id": "project-a",
+                "session_id": "session-a", "revision": "revision-a",
+                "target": identity,
+                "firmware": {"build_id": "b" * 64, "elf_sha256": "e" * 64},
+                "operation": "target.resume", "arguments": {},
+                "identity_snapshot": identity, "state_snapshot": backend.target_state(),
+            })
+            request = asyncio.create_task(client.request(
+                "target.resume", {"authorization": prepared.action_digest},
+                operation_level=OperationLevel.CONTROL, timeout_ms=10,
+            ))
+            assert await asyncio.to_thread(backend.entered.wait, 1)
+            await asyncio.sleep(0.05)
+            assert not request.done(), "CONTROL returned while its native action was still live"
+            backend.release.set()
+            with pytest.raises(ProbeClientError) as timed_out:
+                await request
+            assert timed_out.value.code == "PROBE_TIMEOUT"
+            assert backend.halted is False
+        finally:
+            backend.release.set()
+            await client.close()
+            await service.stop()
+
+    run(scenario())
+
+
+def test_control_timeout_terminates_owned_worker_before_bounded_response(tmp_path: Path):
+    from stm32_toolkit.probe.worker import ProbeBackendWorker
+
+    async def scenario() -> None:
+        marker = tmp_path / "late-control-action"
+        backend = ProbeBackendWorker(
+            _test_backend_factory=partial(_spawned_hanging_control_factory, str(marker))
+        )
+        store = ControlAuthorizationStore((tmp_path / "worker-control").absolute())
+        service = make_service(
+            tmp_path, level=OperationLevel.CONTROL, backend=backend,
+            control_authorizations=store,
+        )
+        endpoint = await service.start()
+        client = ProbeClient(endpoint)
+        started = time.monotonic()
+        try:
+            await client.attach("probe-a", "STM32F429ZITx")
+            identity = await client.target_identity()
+            state = await client.target_state()
+            prepared = store.prepare({
+                "workspace_id": "workspace-a", "project_id": "project-a",
+                "session_id": "session-a", "revision": "revision-a", "target": identity,
+                "firmware": {"build_id": "b" * 64, "elf_sha256": "e" * 64},
+                "operation": "target.resume", "arguments": {},
+                "identity_snapshot": identity, "state_snapshot": state,
+            })
+            with pytest.raises(ProbeClientError) as timed_out:
+                await client.request(
+                    "target.resume", {"authorization": prepared.action_digest},
+                    operation_level=OperationLevel.CONTROL, timeout_ms=10,
+                )
+            assert timed_out.value.code == "PROBE_TIMEOUT"
+            assert time.monotonic() - started < 4.0
+            assert not backend.is_alive
+            await asyncio.sleep(2.1)
+            assert not marker.exists()
+        finally:
+            await client.close()
+            await service.stop()
 
     run(scenario())
 

@@ -20,7 +20,7 @@ from stm32_toolkit.evidence import ArtifactRef, EvidenceValidationError, canonic
 
 from .backend import FlashBackendReport, ProbeAttachmentEvidence
 from .model import OperationLevel
-from .protocol import PROBE_PROTOCOL_VERSION
+from .protocol import PROBE_PROTOCOL_VERSION, TARGET_ERROR_CODES
 from .service import ProbeEndpoint
 from .authorization import (
     ControlAuthorizationError,
@@ -72,6 +72,15 @@ def _response_error() -> ProbeClientError:
     return ProbeClientError("PROBE_RESPONSE_INVALID", "Probe Service response is invalid")
 
 
+def _closed_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    value: dict[str, object] = {}
+    for key, member in pairs:
+        if key in value:
+            raise ValueError("duplicate response member")
+        value[key] = member
+    return value
+
+
 def _decode_response(
     raw: bytes,
     *,
@@ -81,10 +90,17 @@ def _decode_response(
     if len(raw) > MAX_RESPONSE_BYTES:
         raise _response_error()
     try:
-        payload = json.loads(raw.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        payload = json.loads(
+            raw.decode("utf-8"), object_pairs_hook=_closed_object,
+            parse_constant=lambda value: (_ for _ in ()).throw(ValueError(value)),
+        )
+    except (UnicodeDecodeError, ValueError, json.JSONDecodeError) as error:
         raise _response_error() from error
-    if not isinstance(payload, dict) or set(payload) != _RESPONSE_FIELDS:
+    if (
+        not isinstance(payload, dict)
+        or set(payload) != _RESPONSE_FIELDS
+        or canonical_json_bytes(payload) != raw
+    ):
         raise _response_error()
     if (
         payload["protocol"] != PROBE_PROTOCOL_VERSION
@@ -121,8 +137,16 @@ def _decode_response(
             payload["data"], dict
         ):
             raise _response_error()
-    elif payload["code"] in ("", "OK") or payload["data"] is not None:
-        raise _response_error()
+    else:
+        if payload["code"] in ("", "OK") or payload["data"] is not None:
+            raise _response_error()
+        if (
+            expected_operation is not None
+            and expected_operation.startswith("target.")
+            and not generic_failure
+            and payload["code"] not in TARGET_ERROR_CODES
+        ):
+            raise _response_error()
     return payload
 
 
@@ -460,13 +484,18 @@ class ProbeClient:
             or result.get("reason") != "requested"
             or type(result.get("pc_before")) is not int
             or type(result.get("pc_after")) is not int
+            or not 0 <= result["pc_before"] < 1 << 64
+            or not 0 <= result["pc_after"] < 1 << 64
         ):
             raise _response_error()
         if operation == "target.breakpoint.set" and (
             result.get("kind") != "temporary"
             or type(result.get("address")) is not int
             or type(result.get("size")) is not int
+            or result.get("address") != arguments.get("address")
+            or result.get("size") != arguments.get("size")
             or not isinstance(result.get("breakpoint_id"), str)
+            or _IDENTIFIER.fullmatch(result["breakpoint_id"]) is None
         ):
             raise _response_error()
         if operation == "target.breakpoint.clear" and (
@@ -480,7 +509,15 @@ class ProbeClient:
         data = await self.request("target.memory.read", {"address": address, "length": length}, timeout_ms=timeout_ms)
         self._closed_result(data, {"address", "length", "data_base64", "sha256"})
         raw = self._decode_canonical_base64(data["data_base64"])
-        if data["address"] != address or data["length"] != length or len(raw) != length or sha256(raw).hexdigest() != data["sha256"]:
+        if (
+            type(data["address"]) is not int
+            or type(data["length"]) is not int
+            or data["address"] != address
+            or data["length"] != length
+            or len(raw) != length
+            or not isinstance(data["sha256"], str)
+            or sha256(raw).hexdigest() != data["sha256"]
+        ):
             raise _response_error()
         return raw
 
@@ -511,10 +548,23 @@ class ProbeClient:
             timeout_ms=deadline_ms,
         )
         self._closed_result(data, {"transport_id", "identity"})
-        if not isinstance(data["transport_id"], str) or not isinstance(data["identity"], dict):
+        if (
+            not isinstance(data["transport_id"], str)
+            or _IDENTIFIER.fullmatch(data["transport_id"]) is None
+            or not isinstance(data["identity"], dict)
+        ):
             raise _response_error()
         identity = data["identity"]
-        if set(identity) != {"board_id", "mcu", "target_id", "probe_serial_hash"}:
+        if (
+            set(identity) != {"board_id", "mcu", "target_id", "probe_serial_hash"}
+            or any(
+                not isinstance(identity[field], str) or not identity[field]
+                for field in ("board_id", "mcu", "target_id")
+            )
+            or not isinstance(identity["probe_serial_hash"], str)
+            or len(identity["probe_serial_hash"]) != 64
+            or any(character not in "0123456789abcdef" for character in identity["probe_serial_hash"])
+        ):
             raise _response_error()
         return data
 

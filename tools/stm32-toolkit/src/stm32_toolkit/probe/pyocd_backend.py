@@ -169,6 +169,10 @@ class PyOCDBackend:
             declared = self._target_profile.get("semihosting_runtime")
             if isinstance(declared, Mapping) and set(declared) == {"elf_path", "elf_sha256"}:
                 return {**dict(declared), "host_files": False, **common}
+        if transport == "swo" and set(options) == {"baud"}:
+            return {"baud": options["baud"], **common}
+        if transport == "probe" and not options:
+            return dict(common)
         raise ProbeBackendError("PROBE_PROTOCOL_INVALID", "Target transport configuration is invalid")
 
     def _new_transport(self, transport: str, config: Mapping[str, object], deadline_ms: int) -> object:
@@ -206,7 +210,8 @@ class PyOCDBackend:
             return  # Existing v1 workflows do not opt into Target v2 capabilities.
         allowed = {
             "backend", "probe_id", "board_id", "mcu", "target_id", "ram", "mailbox",
-            "rtt", "uart", "semihosting", "semihosting_runtime", "log_transport",
+            "rtt", "uart", "semihosting", "semihosting_runtime", "swo", "probe",
+            "log_transport",
         }
         if set(profile) - allowed:
             raise ProbeBackendError("PROBE_IDENTITY_MISMATCH", "Target capability profile is not closed")
@@ -214,7 +219,103 @@ class PyOCDBackend:
             raise ProbeBackendError("PROBE_IDENTITY_MISMATCH", "Target backend or probe identity does not match")
         if any(not _valid_identifier(profile.get(key)) for key in ("board_id", "mcu", "target_id")):
             raise ProbeBackendError("PROBE_IDENTITY_MISMATCH", "Target board or MCU identity is invalid")
-        declared_transports = set(profile) & {"mailbox", "rtt", "uart", "semihosting"}
+        ram = profile.get("ram")
+        regions: list[tuple[int, int]] = []
+        if ram is not None:
+            if not isinstance(ram, (list, tuple)) or not ram or len(ram) > 32:
+                raise ProbeBackendError("PROBE_IDENTITY_MISMATCH", "Target RAM profile is invalid")
+            for item in ram:
+                if (
+                    not isinstance(item, Mapping)
+                    or set(item) != {"start", "size"}
+                    or type(item["start"]) is not int
+                    or type(item["size"]) is not int
+                    or item["start"] < 0
+                    or item["size"] <= 0
+                    or item["start"] + item["size"] > 1 << 32
+                ):
+                    raise ProbeBackendError("PROBE_IDENTITY_MISMATCH", "Target RAM profile is invalid")
+                regions.append((item["start"], item["size"]))
+            if regions != sorted(regions) or any(
+                start + size > next_start
+                for (start, size), (next_start, _) in zip(regions, regions[1:])
+            ):
+                raise ProbeBackendError("PROBE_IDENTITY_MISMATCH", "Target RAM profile is invalid")
+
+        def in_ram(address: object, size: object = 1) -> bool:
+            return (
+                type(address) is int and type(size) is int and size > 0
+                and any(start <= address and address + size <= start + length for start, length in regions)
+            )
+
+        mailbox = profile.get("mailbox")
+        if mailbox is not None and (
+            not isinstance(mailbox, Mapping)
+            or set(mailbox) != {"address", "size"}
+            or not in_ram(mailbox.get("address"), mailbox.get("size"))
+            or mailbox.get("size", 0) > 65_536
+        ):
+            raise ProbeBackendError("PROBE_IDENTITY_MISMATCH", "Target mailbox profile is invalid")
+        rtt = profile.get("rtt")
+        if rtt is not None and (
+            not isinstance(rtt, Mapping)
+            or set(rtt) not in ({"channel"}, {"channel", "controlBlockAddress"})
+            or type(rtt.get("channel")) is not int
+            or not 0 <= rtt["channel"] <= 15
+            or ("controlBlockAddress" in rtt and not in_ram(rtt["controlBlockAddress"]))
+            or not regions
+        ):
+            raise ProbeBackendError("PROBE_IDENTITY_MISMATCH", "Target RTT profile is invalid")
+        uart = profile.get("uart")
+        if uart is not None:
+            port = uart.get("port") if isinstance(uart, Mapping) else None
+            if (
+                not isinstance(uart, Mapping)
+                or set(uart) != {"port", "baud"}
+                or not isinstance(port, str)
+                or not 1 <= len(port.encode("utf-8")) <= 256
+                or any(ord(character) < 32 or ord(character) == 127 for character in port)
+                or type(uart.get("baud")) is not int
+                or uart["baud"] not in {9600, 19200, 38400, 57600, 115200, 230400, 460800, 921600}
+            ):
+                raise ProbeBackendError("PROBE_IDENTITY_MISMATCH", "Target UART profile is invalid")
+        semihosting = profile.get("semihosting")
+        runtime = profile.get("semihosting_runtime")
+        if semihosting is not None and (
+            not isinstance(semihosting, Mapping)
+            or dict(semihosting) != {"declared": True}
+        ):
+            raise ProbeBackendError("PROBE_IDENTITY_MISMATCH", "Target semihosting profile is invalid")
+        if runtime is not None:
+            path = runtime.get("elf_path") if isinstance(runtime, Mapping) else None
+            digest = runtime.get("elf_sha256") if isinstance(runtime, Mapping) else None
+            if (
+                semihosting is None
+                or not isinstance(runtime, Mapping)
+                or set(runtime) != {"elf_path", "elf_sha256"}
+                or not isinstance(path, str)
+                or not path
+                or os.path.isabs(path)
+                or ".." in path.replace("\\", "/").split("/")
+                or not isinstance(digest, str)
+                or re.fullmatch(r"[0-9a-f]{64}", digest) is None
+            ):
+                raise ProbeBackendError("PROBE_IDENTITY_MISMATCH", "Target semihosting runtime is invalid")
+        if semihosting is not None and runtime is None:
+            raise ProbeBackendError("PROBE_IDENTITY_MISMATCH", "Target semihosting runtime is missing")
+        swo = profile.get("swo")
+        if swo is not None and (
+            not isinstance(swo, Mapping)
+            or set(swo) != {"baud"}
+            or type(swo.get("baud")) is not int
+            or not 1 <= swo["baud"] <= 50_000_000
+        ):
+            raise ProbeBackendError("PROBE_IDENTITY_MISMATCH", "Target SWO profile is invalid")
+        probe = profile.get("probe")
+        if probe is not None and (not isinstance(probe, Mapping) or bool(probe)):
+            raise ProbeBackendError("PROBE_IDENTITY_MISMATCH", "Target probe log profile is invalid")
+
+        declared_transports = set(profile) & {"mailbox", "rtt", "uart", "semihosting", "swo", "probe"}
         log_transport = profile.get("log_transport")
         if declared_transports or log_transport is not None:
             if self._target_transport_factory is None:
@@ -222,11 +323,14 @@ class PyOCDBackend:
             if not isinstance(log_transport, Mapping) or set(log_transport) != {"kind", "options"}:
                 raise ProbeBackendError("PROBE_IDENTITY_MISMATCH", "Target log transport profile is invalid")
             kind = log_transport.get("kind")
-            if kind not in {"rtt", "uart", "semihosting"} or kind not in declared_transports:
+            if kind not in {"rtt", "uart", "semihosting", "swo", "probe"} or kind not in declared_transports:
                 raise ProbeBackendError("PROBE_IDENTITY_MISMATCH", "Target log transport identity does not match")
             options = log_transport.get("options")
             if not isinstance(options, Mapping):
                 raise ProbeBackendError("PROBE_IDENTITY_MISMATCH", "Target log transport options are invalid")
+            declared_options = {} if kind == "semihosting" else dict(profile[kind])
+            if dict(options) != declared_options:
+                raise ProbeBackendError("PROBE_IDENTITY_MISMATCH", "Target log transport options do not match")
 
     def _enumerate_raw(self) -> tuple[object, ...]:
         try:

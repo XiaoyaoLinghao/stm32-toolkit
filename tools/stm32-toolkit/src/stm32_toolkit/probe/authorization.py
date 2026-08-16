@@ -4,15 +4,19 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from contextlib import contextmanager
 from hashlib import sha256
 import json
+import math
 import os
 from pathlib import Path
 import re
+import stat
 import threading
-from typing import Mapping
+import time
+from typing import Callable, Mapping
 
-from stm32_toolkit.evidence import canonical_json_bytes
+from stm32_toolkit.evidence import EvidenceValidationError, canonical_json_bytes
 from stm32_toolkit.evidence.store import EvidenceStore
 
 
@@ -38,6 +42,7 @@ _BINDING_KEYS = {
 }
 _RECORD_KEYS = _BINDING_KEYS | {"nonce", "prepared_at_utc", "expires_at_utc"}
 _MAX_RECORD_BYTES = 64 * 1024
+_AUTHORITY_VERSION = "stm32-toolkit-control-authority/1"
 
 
 class ControlAuthorizationError(Exception):
@@ -136,11 +141,19 @@ def _closed_binding(binding: Mapping[str, object]) -> dict[str, object]:
 class ControlAuthorizationStore:
     """One persistent create-new ledger shared by client preparation and service consumption."""
 
-    def __init__(self, root: Path) -> None:
+    def __init__(
+        self, root: Path, *, monotonic_clock: Callable[[], float] = time.monotonic
+    ) -> None:
         if not isinstance(root, Path) or not root.is_absolute() or root.parent == root:
             raise TypeError("Control authorization root must be an absolute bounded path")
+        if not callable(monotonic_clock):
+            raise TypeError("Control authorization monotonic clock must be callable")
         self.root = root
+        self._monotonic_clock = monotonic_clock
+        self._live_deadlines: dict[str, float] = {}
+        self._live_lock = threading.Lock()
         self._storage: EvidenceStore | None = None
+        self._authority_storage: EvidenceStore | None = None
         self._storage_lock = threading.Lock()
 
     def _evidence_store(self) -> EvidenceStore:
@@ -155,6 +168,106 @@ class ControlAuthorizationStore:
 
     def _directory(self) -> Path:
         return self._evidence_store()._managed_directory("records")
+
+    def _parent_store(self) -> EvidenceStore:
+        storage = self._authority_storage
+        if storage is None:
+            with self._storage_lock:
+                storage = self._authority_storage
+                if storage is None:
+                    storage = EvidenceStore(self.root.parent)
+                    self._authority_storage = storage
+        return storage
+
+    def _authority_path(self) -> Path:
+        name_digest = sha256(self.root.name.encode("utf-8")).hexdigest()
+        return self.root.parent / f".{name_digest}.control-authority.json"
+
+    @staticmethod
+    def _identity(info: os.stat_result) -> dict[str, str]:
+        # Windows file indices may exceed the canonical JSON safe-integer range.
+        return {"device": str(int(info.st_dev)), "inode": str(int(info.st_ino))}
+
+    def _read_authority(self) -> dict[str, object]:
+        path = self._authority_path()
+        parent_store = self._parent_store()
+        try:
+            before = parent_store._validate_existing_path(path, regular=True, single_link=True)
+            descriptor = parent_store._open_readonly(path)
+            try:
+                opened = os.fstat(descriptor)
+                raw = os.read(descriptor, 4097)
+                if os.read(descriptor, 1) or len(raw) > 4096:
+                    raise ValueError
+            finally:
+                os.close(descriptor)
+            after = parent_store._validate_existing_path(path, regular=True, single_link=True)
+            if (
+                not stat.S_ISREG(opened.st_mode)
+                or opened.st_nlink != 1
+                or (before.st_dev, before.st_ino) != (opened.st_dev, opened.st_ino)
+                or (after.st_dev, after.st_ino) != (opened.st_dev, opened.st_ino)
+                or before.st_size != after.st_size
+                or before.st_mtime_ns != after.st_mtime_ns
+            ):
+                raise ValueError
+            value = json.loads(raw.decode("utf-8"))
+            if (
+                not isinstance(value, dict)
+                or set(value) != {"version", "root_name_sha256", "parent", "root"}
+                or value["version"] != _AUTHORITY_VERSION
+                or value["root_name_sha256"] != sha256(self.root.name.encode("utf-8")).hexdigest()
+                or set(value["parent"]) != {"device", "inode"}
+                or set(value["root"]) != {"device", "inode"}
+                or any(
+                    not isinstance(member, str)
+                    or re.fullmatch(r"[0-9]{1,32}", member) is None
+                    for member in (*value["parent"].values(), *value["root"].values())
+                )
+                or canonical_json_bytes(value) != raw
+            ):
+                raise ValueError
+            return value
+        except (OSError, ValueError, TypeError, UnicodeError, json.JSONDecodeError, EvidenceValidationError) as error:
+            raise ControlAuthorizationError("PROBE_AUTHORIZATION_INVALID", "Authorization authority is invalid") from error
+
+    @contextmanager
+    def _authority_lock(self, *, create: bool):
+        """Pin the parent/root filesystem objects before any authorization I/O."""
+        parent_store = self._parent_store()
+        try:
+            with parent_store._mutation_lock(create=create):
+                storage = self._evidence_store()
+                authority_path = self._authority_path()
+                if create and not authority_path.exists():
+                    storage._ensure_root()
+                    parent_info = parent_store._validate_existing_path(self.root.parent)
+                    root_info = storage._validate_existing_path(self.root)
+                    if not stat.S_ISDIR(parent_info.st_mode) or not stat.S_ISDIR(root_info.st_mode):
+                        raise EvidenceValidationError("authorization authority is not a directory")
+                    payload = canonical_json_bytes({
+                        "version": _AUTHORITY_VERSION,
+                        "root_name_sha256": sha256(self.root.name.encode("utf-8")).hexdigest(),
+                        "parent": self._identity(parent_info),
+                        "root": self._identity(root_info),
+                    })
+                    if not parent_store._atomic_create_new(
+                        authority_path, payload, phase="control-authority-pin"
+                    ):
+                        raise EvidenceValidationError("authorization authority already changed")
+                authority = self._read_authority()
+                parent_info = parent_store._validate_existing_path(self.root.parent)
+                root_info = storage._validate_existing_path(self.root)
+                if (
+                    not stat.S_ISDIR(parent_info.st_mode)
+                    or not stat.S_ISDIR(root_info.st_mode)
+                    or authority["parent"] != self._identity(parent_info)
+                    or authority["root"] != self._identity(root_info)
+                ):
+                    raise EvidenceValidationError("authorization authority identity changed")
+                yield
+        except (OSError, EvidenceValidationError) as error:
+            raise ControlAuthorizationError("PROBE_AUTHORIZATION_INVALID", "Authorization authority is invalid") from error
 
     def _path(self, digest: str, state: str) -> Path:
         if _HASH.fullmatch(digest) is None or state not in {"prepared", "consumed"}:
@@ -198,6 +311,9 @@ class ControlAuthorizationStore:
         import secrets
 
         instant = _utc(now or datetime.now(timezone.utc), "authorization time")
+        started = self._monotonic_clock()
+        if type(started) not in {int, float} or not math.isfinite(started):
+            raise ControlAuthorizationError("PROBE_AUTHORIZATION_INVALID", "Authorization clock is invalid")
         value = _closed_binding(binding)
         nonce = secrets.token_hex(32)
         expires = instant + timedelta(minutes=5)
@@ -210,12 +326,15 @@ class ControlAuthorizationStore:
         payload = canonical_json_bytes(record)
         digest = sha256(payload).hexdigest()
         storage = self._evidence_store()
-        with storage._mutation_lock():
-            created = storage._atomic_create_new(
-                self._path(digest, "prepared"), payload, phase="control-authorization-prepare"
-            )
-            if not created:
-                raise ControlAuthorizationError("PROBE_AUTHORIZATION_INVALID", "Authorization already exists")
+        with self._authority_lock(create=True):
+            with storage._mutation_lock():
+                created = storage._atomic_create_new(
+                    self._path(digest, "prepared"), payload, phase="control-authorization-prepare"
+                )
+                if not created:
+                    raise ControlAuthorizationError("PROBE_AUTHORIZATION_INVALID", "Authorization already exists")
+        with self._live_lock:
+            self._live_deadlines[digest] = float(started) + 300.0
         return PreparedControlAuthorization(digest, nonce, expires, record)
 
     def consume(
@@ -232,31 +351,41 @@ class ControlAuthorizationStore:
     ) -> Mapping[str, object]:
         instant = _utc(now or datetime.now(timezone.utc), "authorization time")
         storage = self._evidence_store()
-        with storage._mutation_lock():
-            record = self._read_prepared(digest)
-            consumed_payload = canonical_json_bytes(
-                {"action_digest": digest, "consumed_at_utc": instant.strftime("%Y-%m-%dT%H:%M:%S.%fZ")}
-            )
-            if not storage._atomic_create_new(
-                self._path(digest, "consumed"),
-                consumed_payload,
-                phase="control-authorization-consume",
-            ):
-                raise ControlAuthorizationError("PROBE_AUTHORIZATION_INVALID", "Authorization is already consumed")
-            prepared_at = _parse_utc(record["prepared_at_utc"])
-            expires_at = _parse_utc(record["expires_at_utc"])
-            if (
-                instant < prepared_at
-                or instant > expires_at
-                or operation != record["operation"]
-                or dict(arguments) != record["arguments"]
-                or workspace_id != record["workspace_id"]
-                or session_id != record["session_id"]
-                or (identity is not None and dict(identity) != record["identity_snapshot"])
-                or (state is not None and dict(state) != record["state_snapshot"])
-            ):
-                raise ControlAuthorizationError("PROBE_AUTHORIZATION_INVALID", "Authorization binding is invalid")
-            return record
+        with self._authority_lock(create=False):
+            with storage._mutation_lock(create=False):
+                record = self._read_prepared(digest)
+                consumed_payload = canonical_json_bytes(
+                    {"action_digest": digest, "consumed_at_utc": instant.strftime("%Y-%m-%dT%H:%M:%S.%fZ")}
+                )
+                if not storage._atomic_create_new(
+                    self._path(digest, "consumed"),
+                    consumed_payload,
+                    phase="control-authorization-consume",
+                ):
+                    raise ControlAuthorizationError("PROBE_AUTHORIZATION_INVALID", "Authorization is already consumed")
+                with self._live_lock:
+                    live_deadline = self._live_deadlines.pop(digest, None)
+                live_now = self._monotonic_clock() if live_deadline is not None else None
+                prepared_at = _parse_utc(record["prepared_at_utc"])
+                expires_at = _parse_utc(record["expires_at_utc"])
+                if (
+                    (live_deadline is not None and (
+                        type(live_now) not in {int, float}
+                        or not math.isfinite(live_now)
+                        or live_now > live_deadline
+                    ))
+                    or
+                    instant < prepared_at
+                    or instant > expires_at
+                    or operation != record["operation"]
+                    or dict(arguments) != record["arguments"]
+                    or workspace_id != record["workspace_id"]
+                    or session_id != record["session_id"]
+                    or (identity is not None and dict(identity) != record["identity_snapshot"])
+                    or (state is not None and dict(state) != record["state_snapshot"])
+                ):
+                    raise ControlAuthorizationError("PROBE_AUTHORIZATION_INVALID", "Authorization binding is invalid")
+                return record
 
 
 __all__ = [

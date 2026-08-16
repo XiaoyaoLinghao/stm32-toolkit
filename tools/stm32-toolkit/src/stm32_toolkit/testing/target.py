@@ -43,6 +43,78 @@ FRAME_CRC_BYTES = 4
 _HEADER = struct.Struct("<4sBBHII")
 _CRC = struct.Struct("<I")
 _COUNT_STATES = ("passed", "failed", "skipped", "error", "timeout")
+_TRANSPORT_KINDS = {
+    "mailbox": "memory-mailbox", "rtt": "rtt", "uart": "uart", "semihosting": "semihosting",
+}
+_TRANSPORT_IDENTITY_FIELDS = {
+    "mailbox": {"probe_id", "target_id", "transport", "config_digest", "address", "ring_size", "ram_bounds"},
+    "rtt": {"probe_id", "target_id", "transport", "config_digest", "channel", "control_block_address", "ram_bounds"},
+    "uart": {"probe_id", "target_id", "transport", "config_digest", "port", "baud", "data_bits", "parity", "stop_bits", "flow_control"},
+    "semihosting": {"probe_id", "target_id", "transport", "config_digest", "elf_path", "elf_sha256", "host_file_policy"},
+}
+
+
+def _closed_project_transport_config(
+    transport: object, config: object
+) -> dict[str, object]:
+    """Validate exactly the Project v3 target transport union."""
+    if transport not in _TRANSPORT_KINDS or not isinstance(config, Mapping) or set(config) != {"kind", "options"}:
+        raise ValueError("Target transport configuration is invalid")
+    if config.get("kind") != _TRANSPORT_KINDS[transport] or not isinstance(config.get("options"), Mapping):
+        raise ValueError("Target transport configuration is invalid")
+    options = dict(config["options"])
+    if transport == "mailbox":
+        if (
+            set(options) != {"address", "size"}
+            or type(options["address"]) is not int
+            or type(options["size"]) is not int
+            or not 0 <= options["address"] <= 0xFFFF_FFFF
+            or not 1 <= options["size"] <= 65_536
+            or options["address"] + options["size"] > 1 << 32
+        ):
+            raise ValueError("Target mailbox configuration is invalid")
+    elif transport == "rtt":
+        if set(options) not in ({"channel"}, {"channel", "controlBlockAddress"}):
+            raise ValueError("Target RTT configuration is invalid")
+        if type(options["channel"]) is not int or not 0 <= options["channel"] <= 15:
+            raise ValueError("Target RTT configuration is invalid")
+        if "controlBlockAddress" in options and (
+            type(options["controlBlockAddress"]) is not int
+            or not 0 <= options["controlBlockAddress"] <= 0xFFFF_FFFF
+        ):
+            raise ValueError("Target RTT configuration is invalid")
+    elif transport == "uart":
+        port = options.get("port")
+        if (
+            set(options) != {"port", "baud"}
+            or not isinstance(port, str)
+            or not 1 <= len(port.encode("utf-8")) <= 256
+            or any(ord(character) < 32 or ord(character) == 127 for character in port)
+            or type(options["baud"]) is not int
+            or options["baud"] not in {9600, 19200, 38400, 57600, 115200, 230400, 460800, 921600}
+        ):
+            raise ValueError("Target UART configuration is invalid")
+    elif options:
+        raise ValueError("Target semihosting configuration is invalid")
+    return {"kind": config["kind"], "options": options}
+
+
+def _closed_transport_identity(value: object, binding: Mapping[str, object]) -> dict[str, str]:
+    transport = binding.get("transport")
+    fields = _TRANSPORT_IDENTITY_FIELDS.get(transport)
+    if not isinstance(value, Mapping) or fields is None or set(value) != fields:
+        raise TargetRunError("TEST_IDENTITY_MISMATCH", "Target transport identity is invalid")
+    result = dict(value)
+    if any(not isinstance(member, str) or not member for member in result.values()):
+        raise TargetRunError("TEST_IDENTITY_MISMATCH", "Target transport identity is invalid")
+    if (
+        result["target_id"] != dict(binding["target"])["target_id"]
+        or result["transport"] != binding["transport"]
+        or len(result["config_digest"]) != 64
+        or any(character not in "0123456789abcdef" for character in result["config_digest"])
+    ):
+        raise TargetRunError("TEST_IDENTITY_MISMATCH", "Target transport identity changed")
+    return result
 
 
 def _closed_json_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
@@ -352,6 +424,8 @@ class TargetRunValidator:
     def finish(self) -> TargetRunSummary:
         if self._terminal is None:
             raise protocol_error("TEST_EVENT_SEQUENCE_INVALID", "target run has no terminal run_end")
+        if self._active_case is not None or self._case_ids != self._selected_cases:
+            raise protocol_error("TEST_EVENT_SEQUENCE_INVALID", "target run did not complete every selected case")
         terminal = self._terminal
         expected_identity = {
             "inventory_digest": self._binding.inventory_digest,
@@ -486,6 +560,10 @@ class TargetTestRunner:
             "prepared_at_utc": instant.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ"),
             "expires_at_utc": expires.strftime("%Y-%m-%dT%H:%M:%S.%fZ"),
         }
+        try:
+            self._validate_prepared_record(full)
+        except ValueError as error:
+            raise TargetRunError("TEST_PROTOCOL_INVALID", "Target run binding is invalid") from error
         digest = sha256(canonical_json_bytes(full)).hexdigest()
         with self._storage._mutation_lock():
             created = self._storage._atomic_create_new(
@@ -576,8 +654,7 @@ class TargetTestRunner:
                 raise ValueError
             if record["transport"] not in {"mailbox", "rtt", "uart", "semihosting"}:
                 raise ValueError
-            if not isinstance(record["transport_config"], Mapping):
-                raise ValueError
+            _closed_project_transport_config(record["transport"], record["transport_config"])
             cases = record["cases"]
             if (
                 not isinstance(cases, list)
@@ -630,14 +707,33 @@ class TargetTestRunner:
                     "TEST_AUTHORIZATION_INVALID",
                     "Target run requires the production guarded flash adapter",
                 )
+            try:
+                transport = self._transport_factory(str(binding["transport"]))
+                if (
+                    not callable(getattr(transport, "open", None))
+                    or not callable(getattr(transport, "identity", None))
+                    or not (
+                        callable(getattr(transport, "read_async", None))
+                        or callable(getattr(transport, "read", None))
+                    )
+                    or not (
+                        callable(getattr(transport, "close_async", None))
+                        or callable(getattr(transport, "close", None))
+                    )
+                ):
+                    raise TypeError
+            except Exception as error:
+                raise TargetRunError(
+                    "TEST_TRANSPORT_UNAVAILABLE", "Configured Target transport is unavailable"
+                ) from error
             await self._flash.run(binding)
             if await self._probe.target_identity() != binding["target"]:
                 raise TargetRunError("TEST_IDENTITY_MISMATCH", "Target identity changed after flash")
-            transport = self._transport_factory(str(binding["transport"]))
             deadline = time.monotonic() + float(binding["timeout_ms"]) / 1000
             opened = transport.open(dict(binding["transport_config"]), deadline)
             if inspect.isawaitable(opened):
                 await opened
+            transport_identity = _closed_transport_identity(transport.identity(), binding)
             raw = bytearray()
             while len(raw) <= MAX_RUN_STREAM_BYTES:
                 reader = getattr(transport, "read_async", transport.read)
@@ -664,6 +760,18 @@ class TargetTestRunner:
                 for frame in frames:
                     validator.accept(frame)
                 validator.finish()
+                expected_cases = tuple(binding["cases"])
+                if (
+                    tuple(frames[0].payload["case_ids"]) != expected_cases
+                    or tuple(frames[1].payload["case_ids"]) != expected_cases
+                    or tuple(
+                        str(frame.payload["case_id"]) for frame in frames if frame.kind == 4
+                    ) != expected_cases
+                    or _closed_transport_identity(transport.identity(), binding) != transport_identity
+                ):
+                    raise TargetRunError(
+                        "TEST_IDENTITY_MISMATCH", "Target inventory, cases, or transport changed"
+                    )
             except TestProtocolError as error:
                 raise TargetRunError(error.code, error.message) from error
             collector = self._collector

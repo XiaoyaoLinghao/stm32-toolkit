@@ -660,12 +660,24 @@ class ProbeService:
                 return {"state": "halted", "reason": state["reason"]}
             if request.operation == "target.resume":
                 self._backend.resume()
+                state = self._closed_target_state(self._backend.target_state())
+                if state["state"] != "running":
+                    raise ProbeBackendError("PROBE_BACKEND_ERROR", "Target resume result is invalid")
                 return {"state": "running"}
             if request.operation == "target.step":
-                before = self._backend.read_core_registers(("pc",))["pc"]
+                before_values = self._backend.read_core_registers(("pc",))
+                if not isinstance(before_values, Mapping) or set(before_values) != {"pc"}:
+                    raise ProbeBackendError("PROBE_BACKEND_ERROR", "Target step result is invalid")
+                before = before_values["pc"]
                 self._backend.step()
-                after = self._backend.read_core_registers(("pc",))["pc"]
+                after_values = self._backend.read_core_registers(("pc",))
+                if not isinstance(after_values, Mapping) or set(after_values) != {"pc"}:
+                    raise ProbeBackendError("PROBE_BACKEND_ERROR", "Target step result is invalid")
+                after = after_values["pc"]
                 if any(type(value) is not int or not 0 <= value < 1 << 64 for value in (before, after)):
+                    raise ProbeBackendError("PROBE_BACKEND_ERROR", "Target step result is invalid")
+                state = self._closed_target_state(self._backend.target_state())
+                if state["state"] != "halted":
                     raise ProbeBackendError("PROBE_BACKEND_ERROR", "Target step result is invalid")
                 return {"state": "halted", "reason": "requested", "pc_before": before, "pc_after": after}
             if request.operation == "target.breakpoint.set":
@@ -728,8 +740,10 @@ class ProbeService:
                 return captured
             if request.operation == "target.logs.capture":
                 captured = dict(self._backend.capture_logs(str(request.data["channel"]), int(request.data["max_bytes"]), int(request.data["duration_ms"])))
+                if set(captured) != {"data", "truncated"}:
+                    raise ProbeBackendError("PROBE_BACKEND_ERROR", "Log capture output is invalid")
                 raw = captured.pop("data")
-                if not isinstance(raw, bytes):
+                if not isinstance(raw, bytes) or len(raw) > request.data["max_bytes"]:
                     raise ProbeBackendError("PROBE_BACKEND_ERROR", "Log capture output is invalid")
                 if type(captured.get("truncated")) is not bool:
                     raise ProbeBackendError("PROBE_BACKEND_ERROR", "Log capture output is invalid")
@@ -754,8 +768,10 @@ class ProbeService:
                 return result
             if request.operation == "target.transport.read":
                 captured = dict(self._backend.read_target_transport(str(request.data["transport_id"]), int(request.data["max_bytes"]), int(request.data["deadline_ms"])))
+                if set(captured) != {"data", "eof"}:
+                    raise ProbeBackendError("PROBE_BACKEND_ERROR", "Target transport output is invalid")
                 raw = captured.pop("data")
-                if not isinstance(raw, bytes):
+                if not isinstance(raw, bytes) or len(raw) > request.data["max_bytes"]:
                     raise ProbeBackendError("PROBE_BACKEND_ERROR", "Target transport output is invalid")
                 if type(captured.get("eof")) is not bool:
                     raise ProbeBackendError("PROBE_BACKEND_ERROR", "Target transport output is invalid")
@@ -768,6 +784,9 @@ class ProbeService:
             raise ProbeBackendError("PROBE_OPERATION_UNSUPPORTED", "Operation is unsupported")
 
         is_modify = request.operation == "flash.program"
+        has_irreversible_native_effect = (
+            is_modify or request.operation_level is OperationLevel.CONTROL
+        )
         if is_modify and self._modifications_draining:
             raise ProbeBackendError(
                 "PROBE_MODIFICATIONS_DRAINING",
@@ -794,8 +813,25 @@ class ProbeService:
             if not entered_backend.is_set():
                 task.cancel()
                 await asyncio.gather(task, return_exceptions=True)
-            elif is_modify and not task.cancelled():
-                return await asyncio.shield(task)
+            elif has_irreversible_native_effect and not task.cancelled():
+                abort = getattr(self._backend, "abort_owned_execution", None)
+                if is_modify and not callable(abort):
+                    # Preserve the accepted in-process guarded-flash commit point:
+                    # once programming entered, its terminal report wins.
+                    return await asyncio.shield(task)
+                if callable(abort):
+                    # The worker terminates only its exact owned child and performs
+                    # a bounded join. The proxy call then reaches a terminal error.
+                    aborting = asyncio.create_task(asyncio.to_thread(abort))
+                    await asyncio.wait_for(asyncio.shield(aborting), timeout=3.0)
+                    await asyncio.wait_for(
+                        asyncio.gather(asyncio.shield(task), return_exceptions=True),
+                        timeout=1.0,
+                    )
+                else:
+                    # Bounded direct fakes are retained only as test seams. Never
+                    # return while an irreversible fake action is still live.
+                    await asyncio.shield(task)
             raise
 
     def drain_modifications(self) -> Coroutine[object, object, None]:
@@ -1037,8 +1073,8 @@ class ProbeService:
             response = ProbeResponse.failure(
                 request.request_id,
                 request.operation,
-                "PROBE_INTERNAL_ERROR",
-                "Probe Service operation failed",
+                "PROBE_BACKEND_ERROR" if request.operation.startswith("target.") else "PROBE_INTERNAL_ERROR",
+                "Probe backend operation failed" if request.operation.startswith("target.") else "Probe Service operation failed",
             )
         return web.Response(body=encode_response(response), content_type="application/json")
 

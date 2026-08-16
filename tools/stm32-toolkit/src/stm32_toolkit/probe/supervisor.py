@@ -9,6 +9,8 @@ from pathlib import Path
 from types import TracebackType
 
 from .backend import ProbeBackend
+from .pyocd_backend import PyOCDBackend
+from .worker import ProbeBackendWorker
 from .authorization import ControlAuthorizationStore
 from .lease import ProbeLeaseManager
 from .model import OperationLevel
@@ -75,7 +77,13 @@ class ProbeServiceSupervisor:
 
             backend: ProbeBackend | None = None
             try:
-                backend = self._backend_factory()
+                # The production PyOCD boundary is always a Toolkit-owned spawned
+                # process. Explicit test seams retain their in-process fake.
+                backend = (
+                    ProbeBackendWorker()
+                    if self._backend_factory is PyOCDBackend
+                    else self._backend_factory()
+                )
                 service = ProbeService(
                     backend=backend,
                     lease_manager=self._lease_manager,
