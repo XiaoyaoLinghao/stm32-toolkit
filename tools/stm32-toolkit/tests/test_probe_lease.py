@@ -58,7 +58,7 @@ def acquire(manager_: ProbeLeaseManager, workspace: str = "workspace-a"):
 def stale_record(identity: ProcessIdentity = OWNER) -> dict[str, object]:
     return {
         "schemaVersion": 1,
-        "protocol": "stm32-toolkit-probe/1",
+        "protocol": "stm32-toolkit-probe/2",
         "toolkitVersion": __version__,
         "probeId": "probe-123",
         "workspaceId": "workspace-a",
@@ -668,7 +668,7 @@ def test_reused_pid_with_different_start_identity_can_be_reclaimed(tmp_path: Pat
     ("field", "value"),
     [
         ("schemaVersion", 2),
-        ("protocol", "stm32-toolkit-probe/2"),
+        ("protocol", "stm32-toolkit-probe/1"),
         ("toolkitVersion", "0.4.0"),
     ],
 )

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import hashlib
 import json
 import os
@@ -24,6 +25,7 @@ from .model import OperationLevel, ProbeRequest, ProbeResponse
 from .protocol import (
     MAX_REQUEST_BYTES,
     PROBE_PROTOCOL_VERSION,
+    TARGET_ERROR_CODES,
     ProbeProtocolError,
     decode_request,
     encode_response,
@@ -327,6 +329,7 @@ class ProbeService:
         self._heartbeat_task: asyncio.Task[None] | None = None
         self._stop_lock = asyncio.Lock()
         self._stopping = False
+        self._consumed_control_authorizations: set[str] = set()
 
     @property
     def endpoint(self) -> ProbeEndpoint | None:
@@ -551,6 +554,62 @@ class ProbeService:
                     request.data["elfSize"],
                 )
                 return self._backend.flash_elf(image).to_dict()
+            if request.operation == "target.identity.read":
+                return dict(self._backend.target_identity())
+            if request.operation == "target.state.read":
+                return dict(self._backend.target_state())
+            if request.operation == "target.halt":
+                self._backend.halt()
+                state = dict(self._backend.target_state())
+                return {"state": "halted", "reason": state["reason"]}
+            if request.operation == "target.resume":
+                self._backend.resume()
+                return {"state": "running"}
+            if request.operation == "target.step":
+                before = self._backend.read_core_registers(("pc",))["pc"]
+                self._backend.step()
+                after = self._backend.read_core_registers(("pc",))["pc"]
+                return {"state": "halted", "reason": "requested", "pc_before": before, "pc_after": after}
+            if request.operation == "target.breakpoint.set":
+                return dict(self._backend.set_temporary_breakpoint(int(request.data["address"]), int(request.data["size"])))
+            if request.operation == "target.breakpoint.clear":
+                return dict(self._backend.clear_temporary_breakpoint(str(request.data["breakpoint_id"])))
+            if request.operation == "target.registers.read":
+                names = tuple(str(item) for item in request.data["names"])
+                values = self._backend.read_core_registers(names)
+                return {"registers": [{"name": name, "value": values[name], "width_bits": 32 if values[name] <= 0xFFFF_FFFF else 64} for name in names]}
+            if request.operation == "target.memory.read":
+                address, length = int(request.data["address"]), int(request.data["length"])
+                raw = self._backend.read_memory(address, length)
+                if len(raw) != length:
+                    raise ProbeBackendError("PROBE_BACKPRESSURE", "Target memory returned partial output")
+                return {"address": address, "length": length, "data_base64": base64.b64encode(raw).decode("ascii"), "sha256": hashlib.sha256(raw).hexdigest()}
+            if request.operation == "target.fault.capture":
+                captured = dict(self._backend.capture_fault(int(request.data["max_stack_bytes"])))
+                stack = captured.pop("stack")
+                if not isinstance(stack, bytes):
+                    raise ProbeBackendError("PROBE_BACKEND_ERROR", "Fault stack output is invalid")
+                captured.update({
+                    "stack_artifact": None if not stack else {"sha256": hashlib.sha256(stack).hexdigest(), "bytes": len(stack), "data_base64": base64.b64encode(stack).decode("ascii")},
+                    "stack_bytes": len(stack),
+                })
+                return captured
+            if request.operation == "target.logs.capture":
+                captured = dict(self._backend.capture_logs(str(request.data["channel"]), int(request.data["max_bytes"]), int(request.data["duration_ms"])))
+                raw = captured.pop("data")
+                if not isinstance(raw, bytes):
+                    raise ProbeBackendError("PROBE_BACKEND_ERROR", "Log capture output is invalid")
+                return {"channel": request.data["channel"], "artifact": {"sha256": hashlib.sha256(raw).hexdigest(), "bytes": len(raw), "data_base64": base64.b64encode(raw).decode("ascii")}, "bytes": len(raw), "duration_ms": request.data["duration_ms"], "truncated": bool(captured["truncated"])}
+            if request.operation == "target.transport.open":
+                return dict(self._backend.open_target_transport(str(request.data["transport"]), request.data["config"], int(request.data["deadline_ms"])))
+            if request.operation == "target.transport.read":
+                captured = dict(self._backend.read_target_transport(str(request.data["transport_id"]), int(request.data["max_bytes"]), int(request.data["deadline_ms"])))
+                raw = captured.pop("data")
+                if not isinstance(raw, bytes):
+                    raise ProbeBackendError("PROBE_BACKEND_ERROR", "Target transport output is invalid")
+                return {"data_base64": base64.b64encode(raw).decode("ascii"), "eof": bool(captured["eof"])}
+            if request.operation == "target.transport.close":
+                return dict(self._backend.close_target_transport(str(request.data["transport_id"])))
             raise ProbeBackendError("PROBE_OPERATION_UNSUPPORTED", "Operation is unsupported")
 
         is_modify = request.operation == "flash.program"
@@ -780,7 +839,9 @@ class ProbeService:
         required_level = (
             OperationLevel.MODIFY
             if request.operation == "flash.program"
-            else OperationLevel.OBSERVE
+            else OperationLevel.CONTROL if request.operation in {
+                "target.halt", "target.resume", "target.step", "target.breakpoint.set", "target.breakpoint.clear"
+            } else OperationLevel.OBSERVE
         )
         if (
             request.operation_level is not required_level
@@ -791,7 +852,12 @@ class ProbeService:
                 "Probe operation does not match the required operation level",
                 request_id=request.request_id,
                 operation=request.operation,
-            )
+        )
+        if required_level is OperationLevel.CONTROL:
+            authorization = str(request.data["authorization"])
+            if authorization in self._consumed_control_authorizations:
+                return self._failure("PROBE_AUTHORIZATION_INVALID", "Control authorization is already consumed", request_id=request.request_id, operation=request.operation)
+            self._consumed_control_authorizations.add(authorization)
         try:
             data = await self._run_backend(request)
             response = ProbeResponse.success(request.request_id, request.operation, data)
@@ -803,12 +869,17 @@ class ProbeService:
                 "Probe backend operation timed out",
             )
         except ProbeBackendError as error:
+            code = error.code
+            message = error.message
+            details = error.details
+            if request.operation.startswith("target.") and code not in TARGET_ERROR_CODES:
+                code, message, details = "PROBE_BACKEND_ERROR", "Probe backend operation failed", {}
             response = ProbeResponse.failure(
                 request.request_id,
                 request.operation,
-                error.code,
-                error.message,
-                error.details,
+                code,
+                message,
+                details,
             )
         except asyncio.CancelledError:
             raise

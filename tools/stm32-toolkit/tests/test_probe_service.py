@@ -25,6 +25,7 @@ from stm32_toolkit.probe.lease import (
 from stm32_toolkit.probe.model import OperationLevel
 from stm32_toolkit.probe.model import ProbeRequest
 from stm32_toolkit.probe.service import ProbeEndpoint, ProbeService, ProbeServiceError
+from stm32_toolkit.probe import service as service_module
 from fakes.fake_probe import FakeProbeBackend
 from stm32_toolkit.probe.backend import (
     FlashBackendReport,
@@ -142,7 +143,7 @@ def test_service_binds_loopback_dynamic_port_and_publishes_private_endpoint(tmp_
         try:
             assert endpoint.host == "127.0.0.1"
             assert 0 < endpoint.port < 65536
-            assert endpoint.protocol == "stm32-toolkit-probe/1"
+            assert endpoint.protocol == "stm32-toolkit-probe/2"
             assert endpoint.toolkit_version == __version__
             assert endpoint.workspace_id == "workspace-a"
             assert endpoint.session_id == "session-a"
@@ -798,9 +799,9 @@ def test_client_lists_attaches_and_reads_without_halting(tmp_path: Path):
         (lambda endpoint: endpoint.with_token(""), "PROBE_AUTH_REQUIRED"),
         (
             lambda endpoint: replace(
-                endpoint, protocol="stm32-toolkit-probe/2"
+                endpoint, protocol="stm32-toolkit-probe/1"
             ),
-            "PROBE_PROTOCOL_INCOMPATIBLE",
+            "PROBE_VERSION_MISMATCH",
         ),
         (
             lambda endpoint: endpoint.with_workspace("workspace-b"),
@@ -1225,7 +1226,7 @@ def test_cancelled_queued_flash_never_dispatches_later(tmp_path: Path):
             first = asyncio.create_task(client.read_memory(0x20000000, 4))
             assert await asyncio.to_thread(entered.wait, 2)
             request = ProbeRequest(
-                protocol="stm32-toolkit-probe/1",
+                protocol="stm32-toolkit-probe/2",
                 toolkit_version=__version__,
                 request_id="request-flash",
                 workspace_id="workspace-a",
@@ -1623,5 +1624,398 @@ def test_heartbeat_lease_loss_closes_service_and_removes_endpoint(tmp_path: Path
         assert service.endpoint is None
         assert not endpoint.record_path.exists()
         await service.stop()
+
+    run(scenario())
+
+@pytest.mark.parametrize(
+    ("heartbeat", "body_timeout"),
+    [(0.0, 2.0), (61.0, 2.0), (5.0, 0.0), (5.0, 31.0)],
+)
+def test_service_constructor_rejects_each_lifecycle_timeout_boundary(
+    tmp_path: Path, heartbeat: float, body_timeout: float
+) -> None:
+    with pytest.raises(ValueError):
+        make_service(
+            tmp_path,
+            heartbeat_interval_seconds=heartbeat,
+            body_read_timeout_seconds=body_timeout,
+        )
+
+
+@pytest.mark.parametrize(
+    ("relative_path", "digest", "size"),
+    [
+        (7, "a" * 64, 1),
+        ("a", "a" * 64, 1),
+        ("/a.elf", "a" * 64, 1),
+        ("a\\b.elf", "a" * 64, 1),
+        ("C:a.elf", "a" * 64, 1),
+        ("a\x1f.elf", "a" * 64, 1),
+        ("a.bin", "a" * 64, 1),
+        ("a//b.elf", "a" * 64, 1),
+        ("a.elf", 7, 1),
+        ("a.elf", "a" * 63, 1),
+        ("a.elf", "A" * 64, 1),
+        ("a.elf", "a" * 64, True),
+        ("a.elf", "a" * 64, 0),
+    ],
+)
+def test_verified_elf_rejects_each_closed_input_boundary(
+    tmp_path: Path, relative_path: object, digest: object, size: object
+) -> None:
+    service = make_service(tmp_path)
+    with pytest.raises(ProbeBackendError) as caught:
+        service._read_verified_elf(relative_path, digest, size)
+    assert caught.value.code == "FIRMWARE_PATH_INVALID"
+
+
+def test_verified_elf_requires_an_exact_project_root(tmp_path: Path) -> None:
+    service = make_service(tmp_path)
+    with pytest.raises(ProbeBackendError) as caught:
+        service._read_verified_elf("a.elf", "a" * 64, 1)
+    assert caught.value.code == "PROBE_PROJECT_ROOT_REQUIRED"
+
+
+def test_unstarted_service_rejects_both_external_handoff_transitions(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        service = make_service(tmp_path)
+        with pytest.raises(ProbeServiceError):
+            await service.reserve_external_handoff("ticket")
+        with pytest.raises(ProbeServiceError):
+            await service.consume_external_handoff("ticket")
+
+    run(scenario())
+
+
+def test_endpoint_record_helpers_cover_plain_path_and_closed_record_shape(tmp_path: Path) -> None:
+    endpoint = ProbeEndpoint(
+        protocol="stm32-toolkit-probe/2",
+        toolkit_version=__version__,
+        host="127.0.0.1",
+        port=1,
+        token="a" * 64,
+        workspace_id="workspace-a",
+        session_id="session-a",
+        lease_id="lease-a",
+        probe_id="probe-a",
+    )
+    path = tmp_path / "endpoint.json"
+    service_module._write_endpoint(path, endpoint)
+    assert service_module._read_endpoint_record(path) == endpoint.to_record()
+    service_module._unlink_endpoint(path)
+    assert not path.exists()
+
+
+def test_bounded_body_rejects_declared_and_streamed_overflow() -> None:
+    class Content:
+        def __init__(self, chunks: list[bytes]):
+            self.chunks = chunks
+
+        async def read(self, maximum: int) -> bytes:
+            return self.chunks.pop(0) if self.chunks else b""
+
+    class Request:
+        def __init__(self, content_length: int | None, chunks: list[bytes]):
+            self.content_length = content_length
+            self.content = Content(chunks)
+
+    async def scenario() -> None:
+        with pytest.raises(service_module.ProbeProtocolError):
+            await service_module._read_bounded_request_body(
+                Request(service_module.MAX_REQUEST_BYTES + 1, [])
+            )
+        with pytest.raises(service_module.ProbeProtocolError):
+            await service_module._read_bounded_request_body(
+                Request(None, [b"x" * (service_module.MAX_REQUEST_BYTES + 1)])
+            )
+
+    run(scenario())
+
+
+def test_request_access_gate_covers_each_closed_security_boundary(tmp_path: Path) -> None:
+    class Request:
+        remote = "127.0.0.1"
+        host = "127.0.0.1:1234"
+        content_type = "application/json"
+
+        def __init__(self) -> None:
+            self.headers: dict[str, str] = {}
+
+    service = make_service(tmp_path)
+    request = Request()
+    assert service._request_access_failure(request) is not None
+    endpoint = ProbeEndpoint(
+        protocol="stm32-toolkit-probe/2", toolkit_version=__version__, host="127.0.0.1",
+        port=1234, token="a" * 64, workspace_id="w", session_id="s", lease_id="l",
+        probe_id="p",
+    )
+    service._endpoint = endpoint
+    service._stopping = True
+    assert service._request_access_failure(request) is not None
+    service._stopping = False
+    request.remote = "192.0.2.1"
+    assert service._request_access_failure(request) is not None
+    request.remote = "127.0.0.1"
+    request.host = "localhost:1234"
+    assert service._request_access_failure(request) is not None
+    request.host = endpoint.url.removeprefix("http://")
+    request.headers["Origin"] = "https://example.invalid"
+    assert service._request_access_failure(request) is not None
+    request.headers["Origin"] = endpoint.url
+    assert service._request_access_failure(request) is not None
+    request.headers["Authorization"] = f"Bearer {endpoint.token}"
+    request.content_type = "text/plain"
+    assert service._request_access_failure(request) is not None
+    request.content_type = "application/json"
+    assert service._request_access_failure(request) is None
+
+
+def test_endpoint_descriptor_reader_rejects_oversize_and_nonobject(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    import io
+
+    values = iter([b"x" * 16_385, b"[]", b'{"leaseId":"lease-a"}'])
+    monkeypatch.setattr(service_module.os, "open", lambda *args, **kwargs: 7)
+    monkeypatch.setattr(
+        service_module.os,
+        "fdopen",
+        lambda descriptor, mode: io.BytesIO(next(values)),
+    )
+    with pytest.raises(ValueError):
+        service_module._read_endpoint_record(tmp_path / "endpoint.json", directory_descriptor=3)
+    with pytest.raises(ValueError):
+        service_module._read_endpoint_record(tmp_path / "endpoint.json", directory_descriptor=3)
+    assert service_module._read_endpoint_record(
+        tmp_path / "endpoint.json", directory_descriptor=3
+    ) == {"leaseId": "lease-a"}
+
+    unlinked: list[tuple[object, ...]] = []
+    monkeypatch.setattr(
+        service_module.os, "unlink", lambda *args, **kwargs: unlinked.append((args, kwargs))
+    )
+    service_module._unlink_endpoint(tmp_path / "endpoint.json", directory_descriptor=3)
+    assert unlinked
+
+
+def test_start_is_idempotent_and_invalid_token_fails_closed(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        (tmp_path / "live").mkdir()
+        service = make_service(tmp_path / "live")
+        endpoint = await service.start()
+        try:
+            assert await service.start() is endpoint
+        finally:
+            await service.stop()
+        (tmp_path / "invalid").mkdir()
+        invalid = make_service(tmp_path / "invalid")
+        invalid._token_factory = lambda: b"short"
+        with pytest.raises(ValueError):
+            await invalid.start()
+
+    run(scenario())
+
+
+def test_stop_preserves_first_cleanup_error_and_still_releases_every_owner(tmp_path: Path) -> None:
+    class Runner:
+        async def cleanup(self) -> None:
+            raise RuntimeError("runner cleanup failed")
+
+    class Lease:
+        lease_id = "lease-a"
+
+        def release(self) -> None:
+            raise RuntimeError("lease release failed")
+
+    async def scenario() -> None:
+        backend = AlwaysFailingCloseBackend()
+        service = make_service(tmp_path, backend=backend)
+        endpoint_path = tmp_path / "missing-endpoint.json"
+        service._runner = Runner()
+        service._lease = Lease()
+        service._endpoint = ProbeEndpoint(
+            protocol="stm32-toolkit-probe/2", toolkit_version=__version__, host="127.0.0.1",
+            port=1, token="a" * 64, lease_id="lease-a", record_path=endpoint_path,
+        )
+        pending = asyncio.create_task(asyncio.sleep(0))
+        service._backend_tasks.add(pending)
+        with pytest.raises(RuntimeError, match="runner cleanup failed"):
+            await service._stop_owned_state(None)
+        assert service.endpoint is None
+        assert backend.close_attempts == 1
+
+    run(scenario())
+
+
+def test_endpoint_writer_uses_descriptor_relative_atomic_replace(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    class Handle:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def write(self, payload: bytes) -> None:
+            assert b'"protocol":"stm32-toolkit-probe/2"' in payload
+
+        def flush(self) -> None:
+            pass
+
+        def fileno(self) -> int:
+            return 7
+
+    calls: list[tuple[object, ...]] = []
+    monkeypatch.setattr(service_module.os, "open", lambda *args, **kwargs: 7)
+    monkeypatch.setattr(service_module.os, "fdopen", lambda *args, **kwargs: Handle())
+    monkeypatch.setattr(service_module.os, "fsync", lambda descriptor: None)
+    monkeypatch.setattr(
+        service_module.os, "replace", lambda *args, **kwargs: calls.append((args, kwargs))
+    )
+    endpoint = ProbeEndpoint(
+        protocol="stm32-toolkit-probe/2", toolkit_version=__version__, host="127.0.0.1",
+        port=1, token="a" * 64,
+    )
+    service_module._write_endpoint(
+        tmp_path / "endpoint.json", endpoint, directory_descriptor=3
+    )
+    assert calls and calls[0][1]["src_dir_fd"] == 3
+
+
+@pytest.mark.parametrize("directory_descriptor", [None, 3])
+def test_endpoint_writer_cleans_partial_descriptor_after_os_failure(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, directory_descriptor: int | None
+) -> None:
+    closed: list[int] = []
+    unlinked: list[tuple[object, ...]] = []
+    monkeypatch.setattr(service_module.os, "open", lambda *args, **kwargs: 7)
+    monkeypatch.setattr(
+        service_module.os,
+        "fdopen",
+        lambda *args, **kwargs: (_ for _ in ()).throw(OSError("write failed")),
+    )
+    monkeypatch.setattr(service_module.os, "close", closed.append)
+    monkeypatch.setattr(
+        service_module.os, "unlink", lambda *args, **kwargs: unlinked.append((args, kwargs))
+    )
+    endpoint = ProbeEndpoint(
+        protocol="stm32-toolkit-probe/2", toolkit_version=__version__, host="127.0.0.1",
+        port=1, token="a" * 64,
+    )
+    with pytest.raises(OSError):
+        service_module._write_endpoint(
+            tmp_path / "endpoint.json",
+            endpoint,
+            directory_descriptor=directory_descriptor,
+        )
+    assert closed == [7]
+    if directory_descriptor is not None:
+        assert unlinked and unlinked[0][1]["dir_fd"] == 3
+
+
+def test_start_rollback_releases_lease_when_endpoint_publish_fails(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    async def scenario() -> None:
+        service = make_service(tmp_path)
+        manager = service._lease_manager
+        monkeypatch.setattr(
+            service_module,
+            "_write_endpoint",
+            lambda *args, **kwargs: (_ for _ in ()).throw(OSError("publish failed")),
+        )
+        with pytest.raises(OSError, match="publish failed"):
+            await service.start()
+        record = json.loads(manager.record_path("probe-a").read_text(encoding="utf-8"))
+        assert record["state"] == "released"
+        assert service.endpoint is None
+
+    run(scenario())
+
+
+def test_stop_keeps_successor_endpoint_record(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        service = make_service(tmp_path)
+        endpoint = await service.start()
+        record = json.loads(endpoint.record_path.read_text(encoding="utf-8"))
+        record["leaseId"] = "successor"
+        endpoint.record_path.write_text(json.dumps(record), encoding="utf-8")
+        await service.stop()
+        assert endpoint.record_path.exists()
+
+    run(scenario())
+
+
+def test_endpoint_writer_applies_posix_mode_for_plain_and_descriptor_paths(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    class Handle:
+        def __enter__(self): return self
+        def __exit__(self, *args): return False
+        def write(self, payload: bytes) -> None: pass
+        def flush(self) -> None: pass
+        def fileno(self) -> int: return 7
+
+    chmod_calls: list[tuple[object, ...]] = []
+    monkeypatch.setattr(service_module.os, "name", "posix")
+    monkeypatch.setattr(service_module.os, "open", lambda *args, **kwargs: 7)
+    monkeypatch.setattr(service_module.os, "fdopen", lambda *args, **kwargs: Handle())
+    monkeypatch.setattr(service_module.os, "fsync", lambda descriptor: None)
+    monkeypatch.setattr(service_module.os, "replace", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        service_module.os, "chmod", lambda *args, **kwargs: chmod_calls.append((args, kwargs))
+    )
+    endpoint = ProbeEndpoint(
+        protocol="stm32-toolkit-probe/2", toolkit_version=__version__, host="127.0.0.1",
+        port=1, token="a" * 64,
+    )
+    service_module._write_endpoint(tmp_path / "plain.json", endpoint)
+    service_module._write_endpoint(
+        tmp_path / "relative.json", endpoint, directory_descriptor=3
+    )
+    assert chmod_calls[0][1] == {}
+    assert chmod_calls[1][1]["dir_fd"] == 3
+
+
+def test_verified_elf_rejects_unsafe_root_parent_and_changed_size(tmp_path: Path) -> None:
+    root_file = tmp_path / "root-file"
+    root_file.write_bytes(b"x")
+    unsafe_root = make_service(tmp_path, project_root=root_file)
+    with pytest.raises(ProbeBackendError) as unsafe:
+        unsafe_root._read_verified_elf("a.elf", hashlib.sha256(b"x").hexdigest(), 1)
+    assert unsafe.value.code == "FIRMWARE_PATH_INVALID"
+
+    root = tmp_path / "project"
+    root.mkdir()
+    (root / "parent").write_bytes(b"not-a-directory")
+    unsafe_parent = make_service(tmp_path, project_root=root)
+    with pytest.raises(ProbeBackendError) as parent:
+        unsafe_parent._read_verified_elf("parent/a.elf", "a" * 64, 1)
+    assert parent.value.code == "FIRMWARE_PATH_INVALID"
+
+    image = root / "app.elf"
+    image.write_bytes(b"image")
+    with pytest.raises(ProbeBackendError) as changed:
+        unsafe_parent._read_verified_elf("app.elf", hashlib.sha256(b"image").hexdigest(), 4)
+    assert changed.value.code == "FIRMWARE_INPUT_CHANGED"
+
+
+def test_stop_records_backend_or_lease_error_when_each_is_first(tmp_path: Path) -> None:
+    class FailingLease:
+        lease_id = "lease-a"
+
+        def release(self) -> None:
+            raise RuntimeError("lease failed")
+
+    async def scenario() -> None:
+        backend_failure = make_service(tmp_path / "backend", backend=AlwaysFailingCloseBackend())
+        with pytest.raises(RuntimeError, match="persistent backend close failure"):
+            await backend_failure._stop_owned_state(None)
+
+        lease_failure = make_service(tmp_path / "lease")
+        lease_failure._lease = FailingLease()
+        with pytest.raises(RuntimeError, match="lease failed"):
+            await lease_failure._stop_owned_state(None)
 
     run(scenario())

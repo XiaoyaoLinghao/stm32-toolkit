@@ -19,7 +19,7 @@ from stm32_toolkit.probe.service import ProbeEndpoint
 
 def endpoint_record() -> dict[str, object]:
     return {
-        "protocol": "stm32-toolkit-probe/1",
+        "protocol": "stm32-toolkit-probe/2",
         "toolkitVersion": __version__,
         "url": "http://127.0.0.1:43123",
         "token": "11" * 32,
@@ -33,7 +33,7 @@ def endpoint_record() -> dict[str, object]:
 
 def response_record() -> dict[str, object]:
     return {
-        "protocol": "stm32-toolkit-probe/1",
+        "protocol": "stm32-toolkit-probe/2",
         "toolkitVersion": __version__,
         "requestId": "request-a",
         "ok": True,
@@ -47,7 +47,7 @@ def response_record() -> dict[str, object]:
 
 def test_program_verified_elf_forces_modify_and_validates_telemetry(monkeypatch):
     endpoint = ProbeEndpoint(
-        protocol="stm32-toolkit-probe/1",
+        protocol="stm32-toolkit-probe/2",
         toolkit_version=__version__,
         host="127.0.0.1",
         port=43123,
@@ -88,7 +88,7 @@ def test_program_verified_elf_forces_modify_and_validates_telemetry(monkeypatch)
 
 def test_attach_returns_strict_physical_target_evidence(monkeypatch):
     endpoint = ProbeEndpoint(
-        protocol="stm32-toolkit-probe/1",
+        protocol="stm32-toolkit-probe/2",
         toolkit_version=__version__,
         host="127.0.0.1",
         port=43123,
@@ -134,7 +134,7 @@ def test_attach_returns_strict_physical_target_evidence(monkeypatch):
 )
 def test_program_verified_elf_rejects_malformed_telemetry(monkeypatch, response):
     endpoint = ProbeEndpoint(
-        protocol="stm32-toolkit-probe/1",
+        protocol="stm32-toolkit-probe/2",
         toolkit_version=__version__,
         host="127.0.0.1",
         port=43123,
@@ -162,7 +162,7 @@ def test_endpoint_loader_rejects_unknown_fields_and_missing_token(tmp_path: Path
     path.write_text(
         json.dumps(
             {
-                "protocol": "stm32-toolkit-probe/1",
+                "protocol": "stm32-toolkit-probe/2",
                 "toolkitVersion": __version__,
                 "url": "http://127.0.0.1:43123",
                 "token": "11" * 32,
@@ -207,7 +207,7 @@ def test_endpoint_loader_rejects_non_exact_probe_binding(tmp_path: Path):
 @pytest.mark.parametrize(
     ("field", "value"),
     [
-        ("protocol", "stm32-toolkit-probe/2"),
+        ("protocol", "stm32-toolkit-probe/1"),
         ("protocol", 1),
         ("toolkitVersion", "0.4.0"),
         ("toolkitVersion", 3),
@@ -241,7 +241,7 @@ def test_endpoint_loader_accepts_only_exact_ipv4_loopback(url: str, tmp_path: Pa
     path.write_text(
         json.dumps(
             {
-                "protocol": "stm32-toolkit-probe/1",
+                "protocol": "stm32-toolkit-probe/2",
                 "toolkitVersion": __version__,
                 "url": url,
                 "token": "11" * 32,
@@ -276,7 +276,7 @@ def test_endpoint_loader_does_not_leak_raw_json_errors(tmp_path: Path):
 @pytest.mark.parametrize(
     ("field", "value"),
     [
-        ("protocol", "stm32-toolkit-probe/2"),
+        ("protocol", "stm32-toolkit-probe/1"),
         ("toolkitVersion", "0.4.0"),
         ("requestId", "request-b"),
         ("operation", "memory.read"),
@@ -316,7 +316,7 @@ def test_response_decoder_rejects_body_over_one_mebibyte_before_json_use():
 
 def test_close_is_transport_only_and_never_requests_backend_close():
     endpoint = ProbeEndpoint(
-        protocol="stm32-toolkit-probe/1",
+        protocol="stm32-toolkit-probe/2",
         toolkit_version=__version__,
         host="127.0.0.1",
         port=43123,

@@ -2,15 +2,22 @@
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from hashlib import sha256
 import json
+from pathlib import Path
+import secrets
+import time
 import struct
 from types import MappingProxyType
 from typing import Mapping
 import zlib
 
 from stm32_toolkit.evidence import canonical_json_bytes
+from stm32_toolkit.probe.client import ProbeClient
+from stm32_toolkit.probe.service import ProbeEndpoint
 from stm32_toolkit.testing.model import (
     EVENT_KINDS,
     MAX_FRAME_PAYLOAD_BYTES,
@@ -352,3 +359,171 @@ class TargetRunValidator:
         if not isinstance(raw_counts, Mapping) or set(raw_counts) != set(_COUNT_STATES) or dict(raw_counts) != self._counts:
             raise protocol_error("TEST_EVENT_SEQUENCE_INVALID", "run_end counts contradict case results")
         return TargetRunSummary(dict(self._counts), self._digest.hexdigest())
+
+
+class TargetRunError(Exception):
+    def __init__(self, code: str, message: str) -> None:
+        super().__init__(message)
+        self.code = code
+        self.message = message
+
+
+@dataclass(frozen=True)
+class PreparedTargetRun:
+    action_digest: str
+    nonce: str
+    expires_at_utc: datetime
+    binding: Mapping[str, object]
+
+
+class TargetTestRunner:
+    """Identity-bound Target test orchestration over guarded flash and closed transports."""
+
+    def __init__(self, evidence_root: Path, probe: object, flash_workflow: object, transport_factory: object) -> None:
+        if not isinstance(evidence_root, Path) or not callable(transport_factory):
+            raise TypeError("Target runner dependencies are invalid")
+        self._root = evidence_root
+        self._probe = probe
+        self._flash = flash_workflow
+        self._transport_factory = transport_factory
+
+    async def prepare(self, *, now: datetime | None = None, **binding: object) -> PreparedTargetRun:
+        required = {
+            "workspace_id", "project_id", "session_id", "revision", "target", "probe_serial_hash",
+            "elf_path", "elf_sha256", "build_id", "inventory_digest", "transport",
+            "transport_config", "cases", "timeout_ms",
+        }
+        if set(binding) != required:
+            raise TargetRunError("TEST_PROTOCOL_INVALID", "Target run binding is not closed")
+        for digest in ("probe_serial_hash", "elf_sha256", "build_id", "inventory_digest"):
+            value = binding[digest]
+            if not isinstance(value, str) or len(value) != 64 or any(c not in "0123456789abcdef" for c in value):
+                raise TargetRunError("TEST_PROTOCOL_INVALID", f"{digest} is invalid")
+        if type(binding["timeout_ms"]) is not int or not 1 <= binding["timeout_ms"] <= 300_000:
+            raise TargetRunError("TEST_PROTOCOL_INVALID", "Target timeout is invalid")
+        instant = now or datetime.now(timezone.utc)
+        if instant.tzinfo is None or instant.utcoffset() is None:
+            raise TargetRunError("TEST_PROTOCOL_INVALID", "Target run time must be UTC aware")
+        nonce = secrets.token_hex(32)
+        expires = instant.astimezone(timezone.utc) + timedelta(minutes=5)
+        full = {**binding, "cases": list(binding["cases"]), "nonce": nonce, "expires_at_utc": expires.strftime("%Y-%m-%dT%H:%M:%S.%fZ")}
+        digest = sha256(canonical_json_bytes(full)).hexdigest()
+        self._root.mkdir(parents=True, exist_ok=True)
+        try:
+            with (self._root / f"{digest}.prepared.json").open("xb") as stream:
+                stream.write(canonical_json_bytes(full))
+        except FileExistsError as error:
+            raise TargetRunError("TEST_AUTHORIZATION_INVALID", "Target authorization already exists") from error
+        return PreparedTargetRun(digest, nonce, expires, full)
+
+    async def run(
+        self, prepared: PreparedTargetRun, authorized_digest: str, *,
+        current_revision: str, current_inventory_digest: str, now: datetime | None = None,
+    ) -> Mapping[str, object]:
+        consumed = self._root / f"{prepared.action_digest}.consumed.json"
+        try:
+            with consumed.open("xb") as stream:
+                stream.write(canonical_json_bytes({"action_digest": prepared.action_digest, "state": "consumed"}))
+        except FileExistsError as error:
+            await self._probe.close()
+            raise TargetRunError("TEST_AUTHORIZATION_INVALID", "Target authorization is already consumed") from error
+        transport = None
+        try:
+            instant = now or datetime.now(timezone.utc)
+            binding = prepared.binding
+            if authorized_digest != prepared.action_digest or instant > prepared.expires_at_utc:
+                raise TargetRunError("TEST_AUTHORIZATION_INVALID", "Exact unexpired Target authorization is required")
+            if current_revision != binding["revision"] or current_inventory_digest != binding["inventory_digest"]:
+                raise TargetRunError("TEST_INVENTORY_CHANGED", "Project revision or inventory changed")
+            identity = await self._probe.target_identity()
+            if identity != binding["target"]:
+                raise TargetRunError("TEST_IDENTITY_MISMATCH", "Target identity changed")
+            await self._flash.run_authorized(**dict(binding))
+            if await self._probe.target_identity() != binding["target"]:
+                raise TargetRunError("TEST_IDENTITY_MISMATCH", "Target identity changed after flash")
+            transport = self._transport_factory(str(binding["transport"]))
+            deadline = time.monotonic() + float(binding["timeout_ms"]) / 1000
+            transport.open(dict(binding["transport_config"]), deadline)
+            raw = bytearray()
+            while len(raw) <= MAX_RUN_STREAM_BYTES:
+                chunk = transport.read(min(65_536, MAX_RUN_STREAM_BYTES + 1 - len(raw)), deadline)
+                if not chunk:
+                    break
+                raw.extend(chunk)
+            if len(raw) > MAX_RUN_STREAM_BYTES:
+                raise TargetRunError("TEST_STREAM_TOO_LARGE", "Target output exceeds the run limit")
+            run_root = self._root / prepared.action_digest
+            run_root.mkdir(exist_ok=False)
+            raw_path = run_root / "target-stream.bin"
+            raw_path.write_bytes(bytes(raw))
+            raw_ref = {"path": raw_path.name, "bytes": len(raw), "sha256": sha256(raw).hexdigest()}
+            test_manifest = {"schema": "stm32-target-test/1", "binding": dict(binding), "raw": raw_ref}
+            (run_root / "test-manifest.json").write_bytes(canonical_json_bytes(test_manifest))
+            evidence_manifest = {"schema": "stm32-target-evidence/1", "test_manifest": "test-manifest.json", "action_digest": prepared.action_digest}
+            (run_root / "evidence-manifest.json").write_bytes(canonical_json_bytes(evidence_manifest))
+            return evidence_manifest
+        finally:
+            if transport is not None:
+                try:
+                    transport.close()
+                except Exception:
+                    pass
+            await self._probe.close()
+
+    async def discover(
+        self, *, transport: str, config: Mapping[str, object], deadline: float,
+        expected_identity: Mapping[str, object],
+    ) -> Mapping[str, object]:
+        active = self._transport_factory(transport)
+        try:
+            identity = await self._probe.target_identity()
+            if identity != dict(expected_identity):
+                raise TargetRunError("TEST_TRANSPORT_UNAVAILABLE", "Configured target identity is unavailable")
+            active.open(config, deadline)
+            raw = active.read(65_536, deadline)
+            if not isinstance(raw, bytes):
+                raise TargetRunError("TEST_TRANSPORT_UNAVAILABLE", "Target discovery output is invalid")
+            transport_identity = active.identity()
+            if transport_identity.get("target_id") != expected_identity.get("target_id"):
+                raise TargetRunError("TEST_TRANSPORT_UNAVAILABLE", "Target transport identity is unavailable")
+            return {"identity": transport_identity, "raw": raw}
+        finally:
+            try:
+                active.close()
+            finally:
+                await self._probe.close()
+
+
+class ProbeV2MemoryReader:
+    """Synchronous bounded mailbox port backed only by a public Probe v2 endpoint."""
+
+    def __init__(self, endpoint: ProbeEndpoint, expected_identity: Mapping[str, object]) -> None:
+        if not isinstance(endpoint, ProbeEndpoint) or endpoint.protocol != "stm32-toolkit-probe/2":
+            raise TypeError("Mailbox production binding requires a Probe v2 endpoint")
+        if set(expected_identity) != {"board_id", "mcu", "target_id", "probe_serial_hash"}:
+            raise TypeError("Mailbox target identity is invalid")
+        self._endpoint = endpoint
+        self._identity = dict(expected_identity)
+        self._closed = False
+
+    def read_memory(self, address: int, size: int, deadline: float) -> bytes:
+        if self._closed or type(address) is not int or type(size) is not int or not 1 <= size <= 4096:
+            raise RuntimeError("Mailbox reader is closed or request is invalid")
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError("Mailbox read deadline elapsed")
+        timeout_ms = max(1, min(300_000, int(remaining * 1000)))
+
+        async def read() -> bytes:
+            client = ProbeClient(self._endpoint)
+            try:
+                if await client.target_identity() != self._identity:
+                    raise RuntimeError("Mailbox target identity changed")
+                return await client.target_memory(address, size, timeout_ms=timeout_ms)
+            finally:
+                await client.close()
+
+        return asyncio.run(read())
+
+    def close(self) -> None:
+        self._closed = True

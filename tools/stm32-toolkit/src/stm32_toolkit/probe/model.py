@@ -11,7 +11,7 @@ from typing import Mapping, cast
 
 from stm32_toolkit import __version__
 
-PROBE_PROTOCOL_VERSION = "stm32-toolkit-probe/1"
+PROBE_PROTOCOL_VERSION = "stm32-toolkit-probe/2"
 _IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 _TIMESTAMP = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z$")
 

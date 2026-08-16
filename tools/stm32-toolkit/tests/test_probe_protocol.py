@@ -32,7 +32,7 @@ LEASE_ID = "lease-123"
 
 def valid_request_dict() -> dict[str, object]:
     return {
-        "protocol": "stm32-toolkit-probe/1",
+        "protocol": "stm32-toolkit-probe/2",
         "toolkitVersion": TOOLKIT_VERSION,
         "requestId": REQUEST_ID,
         "workspaceId": WORKSPACE_ID,
@@ -113,12 +113,12 @@ def test_decode_request_returns_an_immutable_typed_snapshot():
 @pytest.mark.parametrize(
     ("field", "value", "code"),
     [
-        ("protocol", "stm32-toolkit-probe/2", "PROBE_PROTOCOL_INCOMPATIBLE"),
+        ("protocol", "stm32-toolkit-probe/1", "PROBE_VERSION_MISMATCH"),
         ("toolkitVersion", "0.3.0", "PROBE_TOOLKIT_INCOMPATIBLE"),
         ("operationLevel", "admin", "PROBE_REQUEST_INVALID"),
         ("operation", "memory.write", "PROBE_REQUEST_INVALID"),
         ("timeoutMs", 0, "PROBE_REQUEST_INVALID"),
-        ("timeoutMs", 30_001, "PROBE_REQUEST_INVALID"),
+        ("timeoutMs", 300_001, "PROBE_REQUEST_INVALID"),
         ("requestId", "x" * 129, "PROBE_REQUEST_INVALID"),
         ("workspaceId", "../escape", "PROBE_REQUEST_INVALID"),
     ],
@@ -319,7 +319,7 @@ def test_response_encoding_is_deterministic_and_snapshots_payload():
     assert encoded == (
         b'{"code":"OK","data":{"values":[{"address":536870912,"value":"0102"}]},'
         b'"details":{},"message":"","ok":true,"operation":"memory.read",'
-        b'"protocol":"stm32-toolkit-probe/1","requestId":"request-123",'
+        b'"protocol":"stm32-toolkit-probe/2","requestId":"request-123",'
         b'"toolkitVersion":"0.5.0"}'
     )
 

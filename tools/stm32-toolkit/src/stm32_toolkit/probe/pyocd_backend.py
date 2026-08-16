@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import re
+from hashlib import sha256
 from io import BytesIO
 from collections.abc import Iterable, Mapping
 from itertools import islice
@@ -108,6 +109,7 @@ class PyOCDBackend:
         driver: PyOCDDriver | None = None,
         *,
         frequency_hz: int = 1_000_000,
+        target_profile: Mapping[str, object] | None = None,
     ) -> None:
         if (
             isinstance(frequency_hz, bool)
@@ -118,11 +120,16 @@ class PyOCDBackend:
             raise ValueError("PyOCD frequency is invalid")
         self._driver = driver
         self._frequency_hz = frequency_hz
+        self._target_profile = dict(target_profile or {})
         self._session: object | None = None
         self._probe: object | None = None
         self._target: object | None = None
         self._probe_id: str | None = None
         self._target_name: str | None = None
+        self._resolved_part_number: str | None = None
+        self._breakpoints: dict[str, tuple[int, int]] = {}
+        self._next_breakpoint = 1
+        self._transports: dict[str, object] = {}
 
     def _get_driver(self) -> PyOCDDriver:
         driver = self._driver
@@ -316,6 +323,7 @@ class PyOCDBackend:
         self._probe = probe
         self._probe_id = probe_id
         self._target_name = target
+        self._resolved_part_number = part_number
         return ProbeAttachmentEvidence(
             probe_id=probe_id,
             requested_target=target,
@@ -459,6 +467,118 @@ class PyOCDBackend:
     def reset(self) -> None:
         self._control("reset")
 
+    def target_identity(self) -> Mapping[str, object]:
+        self._require_target()
+        if self._probe_id is None or self._target_name is None or self._resolved_part_number is None:
+            raise ProbeBackendError("PROBE_BACKEND_ERROR", "Target identity is unavailable")
+        board_id = self._target_profile.get("board_id", self._target_name)
+        expected_mcu = self._target_profile.get("mcu", self._resolved_part_number)
+        expected_target = self._target_profile.get("target_id", self._target_name)
+        if not all(isinstance(value, str) and value for value in (board_id, expected_mcu, expected_target)):
+            raise ProbeBackendError("PROBE_BACKEND_ERROR", "Target identity contract is invalid")
+        if str(expected_mcu).casefold() != self._resolved_part_number.casefold():
+            raise ProbeBackendError("PROBE_IDENTITY_MISMATCH", "Target MCU identity does not match the profile")
+        return {
+            "board_id": board_id, "mcu": expected_mcu, "target_id": expected_target,
+            "probe_serial_hash": sha256(self._probe_id.encode("utf-8")).hexdigest(),
+        }
+
+    def target_state(self) -> Mapping[str, object]:
+        target = self._require_target()
+        try:
+            state = getattr(target, "get_state")()
+            raw = getattr(state, "name", state)
+        except Exception as error:
+            raise ProbeBackendError("PROBE_BACKEND_ERROR", "Target state is unavailable") from error
+        mapped = {"running": "running", "halted": "halted", "reset": "reset", "lockedup": "faulted"}.get(str(raw).lower())
+        if mapped is None:
+            raise ProbeBackendError("PROBE_BACKEND_ERROR", "Target state is unavailable")
+        reason = "fault" if mapped == "faulted" else "reset" if mapped == "reset" else "requested"
+        return {"state": mapped, "reason": reason}
+
+    def set_temporary_breakpoint(self, address: int, size: int) -> Mapping[str, object]:
+        if type(address) is not int or not 0 <= address <= 0xFFFF_FFFF or size not in (1, 2, 4):
+            raise ProbeBackendError("PROBE_PROTOCOL_INVALID", "Breakpoint request is invalid")
+        if len(self._breakpoints) >= 8:
+            raise ProbeBackendError("PROBE_LIMIT_EXCEEDED", "Temporary breakpoint limit reached")
+        target = self._require_target()
+        try:
+            result = getattr(target, "set_breakpoint")(address)
+        except Exception as error:
+            raise ProbeBackendError("PROBE_BACKEND_ERROR", "Temporary breakpoint could not be set") from error
+        if result is False:
+            raise ProbeBackendError("PROBE_BACKEND_ERROR", "Temporary breakpoint could not be set")
+        breakpoint_id = f"bp-{self._next_breakpoint}"
+        self._next_breakpoint += 1
+        self._breakpoints[breakpoint_id] = (address, size)
+        return {"breakpoint_id": breakpoint_id, "address": address, "kind": "temporary", "size": size}
+
+    def clear_temporary_breakpoint(self, breakpoint_id: str) -> Mapping[str, object]:
+        binding = self._breakpoints.pop(breakpoint_id, None)
+        if binding is None:
+            raise ProbeBackendError("PROBE_PROTOCOL_INVALID", "Temporary breakpoint is unknown")
+        try:
+            getattr(self._require_target(), "remove_breakpoint")(binding[0])
+        except Exception as error:
+            self._breakpoints[breakpoint_id] = binding
+            raise ProbeBackendError("PROBE_BACKEND_ERROR", "Temporary breakpoint could not be cleared") from error
+        return {"breakpoint_id": breakpoint_id, "cleared": True}
+
+    def capture_fault(self, max_stack_bytes: int) -> Mapping[str, object]:
+        if type(max_stack_bytes) is not int or not 0 <= max_stack_bytes <= 4096:
+            raise ProbeBackendError("PROBE_PROTOCOL_INVALID", "Fault capture limit is invalid")
+        names = ("cfsr", "hfsr", "dfsr", "afsr", "mmfar", "bfar", "shcsr", "icsr")
+        values = self.read_core_registers(names)
+        stack = b""
+        if max_stack_bytes:
+            sp = self.read_core_registers(("sp",))["sp"]
+            stack = self.read_memory(sp, max_stack_bytes)
+        return {"fault_registers": dict(values), "stack": stack, "truncated": False}
+
+    def capture_logs(self, channel: str, max_bytes: int, duration_ms: int) -> Mapping[str, object]:
+        if channel not in {"rtt", "uart", "semihosting", "swo", "probe"} or type(max_bytes) is not int or not 1 <= max_bytes <= 10_485_760 or type(duration_ms) is not int or not 1 <= duration_ms <= 300_000:
+            raise ProbeBackendError("PROBE_PROTOCOL_INVALID", "Log capture request is invalid")
+        try:
+            raw = getattr(self._require_target(), "capture_logs")(channel, max_bytes, duration_ms)
+        except Exception as error:
+            raise ProbeBackendError("PROBE_BACKEND_ERROR", "Configured log channel is unavailable") from error
+        if not isinstance(raw, bytes) or len(raw) > max_bytes:
+            raise ProbeBackendError("PROBE_BACKPRESSURE", "Log capture exceeded its bound")
+        return {"data": raw, "truncated": len(raw) == max_bytes}
+
+    def open_target_transport(self, transport: str, config: Mapping[str, object], deadline_ms: int) -> Mapping[str, object]:
+        if transport not in {"mailbox", "rtt", "uart", "semihosting"}:
+            raise ProbeBackendError("PROBE_PROTOCOL_INVALID", "Target transport is invalid")
+        try:
+            handle = getattr(self._require_target(), "open_transport")(transport, dict(config), deadline_ms)
+        except Exception as error:
+            raise ProbeBackendError("PROBE_BACKEND_ERROR", "Target transport is unavailable") from error
+        transport_id = f"transport-{len(self._transports) + 1}"
+        self._transports[transport_id] = handle
+        return {"transport_id": transport_id, "identity": dict(self.target_identity())}
+
+    def read_target_transport(self, transport_id: str, max_bytes: int, deadline_ms: int) -> Mapping[str, object]:
+        handle = self._transports.get(transport_id)
+        if handle is None:
+            raise ProbeBackendError("PROBE_PROTOCOL_INVALID", "Target transport is unknown")
+        try:
+            raw = getattr(handle, "read")(max_bytes, deadline_ms)
+        except Exception as error:
+            raise ProbeBackendError("PROBE_BACKEND_ERROR", "Target transport read failed") from error
+        if not isinstance(raw, bytes) or len(raw) > max_bytes:
+            raise ProbeBackendError("PROBE_BACKPRESSURE", "Target transport returned invalid output")
+        return {"data": raw, "eof": len(raw) == 0}
+
+    def close_target_transport(self, transport_id: str) -> Mapping[str, object]:
+        handle = self._transports.pop(transport_id, None)
+        if handle is None:
+            raise ProbeBackendError("PROBE_PROTOCOL_INVALID", "Target transport is unknown")
+        try:
+            getattr(handle, "close")()
+        except Exception as error:
+            raise ProbeBackendError("PROBE_BACKEND_ERROR", "Target transport cleanup failed") from error
+        return {"transport_id": transport_id, "closed": True}
+
     def flash_elf(self, image: bytes) -> FlashBackendReport:
         if not isinstance(image, bytes) or not 1 <= len(image) <= _MAX_FLASH_BYTES:
             raise ProbeBackendError(
@@ -491,5 +611,13 @@ class PyOCDBackend:
         self._target = None
         self._probe_id = None
         self._target_name = None
+        self._resolved_part_number = None
+        self._breakpoints.clear()
+        transports, self._transports = tuple(self._transports.values()), {}
+        for handle in transports:
+            try:
+                getattr(handle, "close")()
+            except Exception:
+                pass
         if session is not None and probe is not None:
             self._close_external(session, probe)

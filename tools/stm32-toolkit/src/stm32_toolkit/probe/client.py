@@ -3,8 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
+from hashlib import sha256
 import json
 import re
+import secrets
 import urllib.parse
 from pathlib import Path
 from typing import Mapping
@@ -13,6 +17,7 @@ from uuid import uuid4
 import aiohttp
 
 from stm32_toolkit import __version__
+from stm32_toolkit.evidence import canonical_json_bytes
 
 from .backend import FlashBackendReport, ProbeAttachmentEvidence
 from .model import OperationLevel
@@ -354,7 +359,7 @@ class ProbeClient:
         data = await self.request("register.read", {"names": list(names)})
         values = data.get("values")
         if not isinstance(values, dict) or not all(
-            isinstance(name, str) and isinstance(value, int)
+            isinstance(name, str) and type(value) is int
             for name, value in values.items()
         ):
             raise ProbeClientError(
@@ -362,15 +367,193 @@ class ProbeClient:
             )
         return values
 
+    @staticmethod
+    def _closed_result(data: dict[str, object], fields: set[str]) -> dict[str, object]:
+        if set(data) != fields:
+            raise _response_error()
+        return data
+
+    async def target_identity(self) -> dict[str, object]:
+        data = await self.request("target.identity.read", {})
+        self._closed_result(data, {"board_id", "mcu", "target_id", "probe_serial_hash"})
+        if any(not isinstance(data[key], str) or not data[key] for key in data):
+            raise _response_error()
+        return data
+
+    async def target_state(self) -> dict[str, object]:
+        data = await self.request("target.state.read", {})
+        self._closed_result(data, {"state", "reason"})
+        if data["state"] not in {"running", "halted", "reset", "faulted"} or data["reason"] not in {
+            "requested", "breakpoint", "watchpoint", "fault", "exception", "reset"
+        }:
+            raise _response_error()
+        return data
+
+    async def target_control(
+        self, operation: str, arguments: Mapping[str, object], authorization: str
+    ) -> dict[str, object]:
+        if operation not in {
+            "target.halt", "target.resume", "target.step",
+            "target.breakpoint.set", "target.breakpoint.clear",
+        }:
+            raise ProbeClientError("PROBE_PROTOCOL_INVALID", "Target control operation is invalid")
+        return await self.request(
+            operation, {**dict(arguments), "authorization": authorization},
+            operation_level=OperationLevel.CONTROL,
+            timeout_ms=5_000 if operation == "target.step" else 30_000,
+        )
+
+    async def target_memory(self, address: int, length: int, *, timeout_ms: int = 5_000) -> bytes:
+        data = await self.request("target.memory.read", {"address": address, "length": length}, timeout_ms=timeout_ms)
+        self._closed_result(data, {"address", "length", "data_base64", "sha256"})
+        try:
+            encoded = data["data_base64"]
+            if not isinstance(encoded, str):
+                raise ValueError
+            raw = __import__("base64").b64decode(encoded, validate=True)
+        except (ValueError, TypeError) as error:
+            raise _response_error() from error
+        if data["address"] != address or data["length"] != length or len(raw) != length or sha256(raw).hexdigest() != data["sha256"]:
+            raise _response_error()
+        return raw
+
+    async def target_registers(self, names: tuple[str, ...]) -> tuple[dict[str, object], ...]:
+        data = await self.request("target.registers.read", {"names": list(names)})
+        self._closed_result(data, {"registers"})
+        registers = data["registers"]
+        if not isinstance(registers, list) or [item.get("name") for item in registers if isinstance(item, dict)] != list(names):
+            raise _response_error()
+        return tuple(dict(item) for item in registers if isinstance(item, dict))
+
+    async def target_transport_open(self, transport: str, config: Mapping[str, object], deadline_ms: int) -> dict[str, object]:
+        data = await self.request(
+            "target.transport.open", {"transport": transport, "config": dict(config), "deadline_ms": deadline_ms},
+            timeout_ms=deadline_ms,
+        )
+        self._closed_result(data, {"transport_id", "identity"})
+        if not isinstance(data["transport_id"], str) or not isinstance(data["identity"], dict):
+            raise _response_error()
+        return data
+
+    async def target_transport_read(self, transport_id: str, max_bytes: int, deadline_ms: int) -> tuple[bytes, bool]:
+        data = await self.request(
+            "target.transport.read", {"transport_id": transport_id, "max_bytes": max_bytes, "deadline_ms": deadline_ms},
+            timeout_ms=deadline_ms,
+        )
+        self._closed_result(data, {"data_base64", "eof"})
+        try:
+            if type(data["eof"]) is not bool or not isinstance(data["data_base64"], str):
+                raise ValueError
+            raw = __import__("base64").b64decode(data["data_base64"], validate=True)
+        except (ValueError, TypeError) as error:
+            raise _response_error() from error
+        if len(raw) > max_bytes:
+            raise _response_error()
+        return raw, bool(data["eof"])
+
+    async def target_transport_close(self, transport_id: str) -> None:
+        data = await self.request("target.transport.close", {"transport_id": transport_id})
+        self._closed_result(data, {"transport_id", "closed"})
+        if data != {"transport_id": transport_id, "closed": True}:
+            raise _response_error()
+
+    async def target_fault(self, max_stack_bytes: int) -> dict[str, object]:
+        data = await self.request("target.fault.capture", {"max_stack_bytes": max_stack_bytes})
+        self._closed_result(data, {"fault_registers", "stack_artifact", "stack_bytes", "truncated"})
+        registers = data["fault_registers"]
+        if not isinstance(registers, dict) or set(registers) != {"cfsr", "hfsr", "dfsr", "afsr", "mmfar", "bfar", "shcsr", "icsr"}:
+            raise _response_error()
+        return data
+
+    async def target_logs(self, channel: str, max_bytes: int, duration_ms: int) -> dict[str, object]:
+        data = await self.request(
+            "target.logs.capture", {"channel": channel, "max_bytes": max_bytes, "duration_ms": duration_ms},
+            timeout_ms=duration_ms,
+        )
+        self._closed_result(data, {"channel", "artifact", "bytes", "duration_ms", "truncated"})
+        if data["channel"] != channel or data["duration_ms"] != duration_ms or type(data["bytes"]) is not int or not 0 <= data["bytes"] <= max_bytes or type(data["truncated"]) is not bool or not isinstance(data["artifact"], dict):
+            raise _response_error()
+        return data
+
     async def close(self) -> None:
         if self._session is None or self._session.closed:
             return
         await self._session.close()
 
 
+@dataclass(frozen=True)
+class PreparedControlAuthorization:
+    action_digest: str
+    nonce: str
+    expires_at_utc: datetime
+    binding: Mapping[str, object]
+
+
+class ControlAuthorizationClient:
+    """Persistent, exact, single-use authorization around the public Probe client."""
+
+    def __init__(self, ledger_root: Path, probe: object) -> None:
+        self._root = ledger_root
+        self._probe = probe
+
+    async def prepare(self, *, now: datetime | None = None, **binding: object) -> PreparedControlAuthorization:
+        instant = now or datetime.now(timezone.utc)
+        if instant.tzinfo is None or instant.utcoffset() is None:
+            raise ProbeClientError("PROBE_PROTOCOL_INVALID", "Authorization time must be UTC aware")
+        operation = binding.get("operation")
+        arguments = binding.get("arguments")
+        if operation not in {"target.halt", "target.resume", "target.step", "target.breakpoint.set", "target.breakpoint.clear"} or not isinstance(arguments, Mapping):
+            raise ProbeClientError("PROBE_PROTOCOL_INVALID", "Control authorization binding is invalid")
+        identity = await self._probe.target_identity()
+        state = await self._probe.target_state()
+        nonce = secrets.token_hex(32)
+        expires = instant.astimezone(timezone.utc) + timedelta(minutes=5)
+        full = {
+            **binding, "identity_snapshot": identity, "state_snapshot": state,
+            "nonce": nonce, "expires_at_utc": expires.strftime("%Y-%m-%dT%H:%M:%S.%fZ"),
+        }
+        digest = sha256(canonical_json_bytes(full)).hexdigest()
+        self._root.mkdir(parents=True, exist_ok=True)
+        try:
+            with (self._root / f"{digest}.prepared.json").open("xb") as stream:
+                stream.write(canonical_json_bytes(full))
+        except FileExistsError as error:
+            raise ProbeClientError("PROBE_AUTHORIZATION_INVALID", "Authorization already exists") from error
+        return PreparedControlAuthorization(digest, nonce, expires, full)
+
+    async def execute(
+        self, prepared: PreparedControlAuthorization, authorized_digest: str,
+        *, now: datetime | None = None,
+    ) -> dict[str, object]:
+        consumed = self._root / f"{prepared.action_digest}.consumed.json"
+        try:
+            with consumed.open("xb") as stream:
+                stream.write(canonical_json_bytes({"action_digest": prepared.action_digest, "state": "consumed"}))
+        except FileExistsError as error:
+            await self._probe.close()
+            raise ProbeClientError("PROBE_AUTHORIZATION_INVALID", "Authorization is already consumed") from error
+        try:
+            instant = now or datetime.now(timezone.utc)
+            if authorized_digest != prepared.action_digest or instant > prepared.expires_at_utc:
+                raise ProbeClientError("PROBE_AUTHORIZATION_INVALID", "Exact unexpired authorization is required")
+            identity = await self._probe.target_identity()
+            state = await self._probe.target_state()
+            if identity != prepared.binding["identity_snapshot"] or state != prepared.binding["state_snapshot"]:
+                raise ProbeClientError("PROBE_IDENTITY_MISMATCH", "Target identity or state changed")
+            return await self._probe.target_control(
+                str(prepared.binding["operation"]),
+                dict(prepared.binding["arguments"]),
+                prepared.action_digest,
+            )
+        finally:
+            await self._probe.close()
+
+
 __all__ = [
     "PROBE_PROTOCOL_VERSION",
     "ProbeClient",
     "ProbeClientError",
+    "ControlAuthorizationClient",
+    "PreparedControlAuthorization",
     "load_probe_endpoint",
 ]

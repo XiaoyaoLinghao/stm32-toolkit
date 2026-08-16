@@ -10,10 +10,16 @@ import jsonschema
 
 from .model import OperationLevel, ProbeRequest, ProbeResponse
 
-PROBE_PROTOCOL_VERSION = "stm32-toolkit-probe/1"
+PROBE_PROTOCOL_VERSION = "stm32-toolkit-probe/2"
 MAX_REQUEST_BYTES = 65_536
 MAX_READ_BYTES = 65_536
 MAX_BATCH_ITEMS = 256
+TARGET_ERROR_CODES = {
+    "PROBE_PROTOCOL_INVALID", "PROBE_VERSION_MISMATCH", "PROBE_OPERATION_UNAVAILABLE",
+    "PROBE_LEASE_INVALID", "PROBE_AUTHORIZATION_REQUIRED", "PROBE_AUTHORIZATION_INVALID",
+    "PROBE_IDENTITY_MISMATCH", "PROBE_LIMIT_EXCEEDED", "PROBE_TIMEOUT",
+    "PROBE_BACKPRESSURE", "PROBE_BACKEND_ERROR",
+}
 
 
 class ProbeProtocolError(Exception):
@@ -70,6 +76,14 @@ def _validate_operation_data(payload: dict[str, object]) -> None:
                     "Memory read exceeds the target address space",
                     {"field": "data.length", "rule": "addressRange"},
                 )
+    if operation == "target.registers.read":
+        names = data.get("names")
+        if isinstance(names, list) and len({str(item).casefold() for item in names}) != len(names):
+            raise ProbeProtocolError(
+                "PROBE_PROTOCOL_INVALID",
+                "Target register names must be unique without case aliases",
+                {"field": "data.names", "rule": "caseFoldUnique"},
+            )
 
 
 def decode_request(body: bytes, expected_toolkit_version: str) -> ProbeRequest:
@@ -98,7 +112,7 @@ def decode_request(body: bytes, expected_toolkit_version: str) -> ProbeRequest:
 
     if payload.get("protocol") != PROBE_PROTOCOL_VERSION:
         raise ProbeProtocolError(
-            "PROBE_PROTOCOL_INCOMPATIBLE",
+            "PROBE_VERSION_MISMATCH",
             "Probe protocol version is incompatible",
             {"field": "protocol", "rule": "const"},
         )
@@ -113,7 +127,7 @@ def decode_request(body: bytes, expected_toolkit_version: str) -> ProbeRequest:
         jsonschema.Draft202012Validator(_load_schema()).validate(payload)
     except jsonschema.ValidationError as error:
         raise ProbeProtocolError(
-            "PROBE_REQUEST_INVALID",
+            "PROBE_PROTOCOL_INVALID" if str(payload.get("operation", "")).startswith("target.") else "PROBE_REQUEST_INVALID",
             "Probe request does not match the protocol schema",
             _validation_details(error),
         ) from error

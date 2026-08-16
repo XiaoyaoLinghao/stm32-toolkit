@@ -4,8 +4,13 @@ from hashlib import sha256
 import json
 from pathlib import Path
 import struct
+import time
 
 import pytest
+
+from stm32_toolkit.probe.model import OperationLevel
+from stm32_toolkit.probe.service import ProbeEndpoint
+from stm32_toolkit.testing import target as target_module
 
 from stm32_toolkit.testing.model import TestProtocolError as ProtocolError
 from stm32_toolkit.testing.transports import (
@@ -40,6 +45,46 @@ PROFILE = {
     "semihosting": {"declared": True},
 }
 BASE_ID = {"target_id": "stm32:fixture", "probe_id": "probe:fixture"}
+
+
+def test_mailbox_production_reader_uses_only_public_probe_v2(monkeypatch, tmp_path: Path):
+    calls = []
+    identity = {"board_id": "board-a", "mcu": "stm32f407vg", "target_id": "target-a", "probe_serial_hash": "a" * 64}
+
+    class PublicClient:
+        def __init__(self, endpoint): calls.append(("client", endpoint.protocol))
+        async def target_identity(self): calls.append(("identity",)); return dict(identity)
+        async def target_memory(self, address, size, *, timeout_ms): calls.append(("memory", address, size, timeout_ms)); return b"ABCD"
+        async def close(self): calls.append(("close",))
+
+    monkeypatch.setattr(target_module, "ProbeClient", PublicClient)
+    endpoint = ProbeEndpoint(
+        protocol="stm32-toolkit-probe/2", toolkit_version="0.5.0", host="127.0.0.1", port=1,
+        token="0" * 64, workspace_id="workspace-a", session_id="session-a", lease_id="lease-a",
+        probe_id="probe-a", operation_level=OperationLevel.OBSERVE, record_path=tmp_path / "endpoint.json",
+    )
+    reader_type = getattr(target_module, "ProbeV2MemoryReader")
+    reader = reader_type(endpoint, identity)
+    assert reader.read_memory(0x20000000, 4, time.monotonic() + 1) == b"ABCD"
+    assert calls[0:3] == [("client", "stm32-toolkit-probe/2"), ("identity",), ("memory", 0x20000000, 4, calls[2][3])]
+    assert 1 <= calls[2][3] <= 1000
+    assert calls[-1] == ("close",)
+    with pytest.raises(TypeError):
+        reader_type(object(), identity)
+    reader.close()
+    with pytest.raises(RuntimeError):
+        reader.read_memory(0x20000000, 4, time.monotonic() + 1)
+
+    fresh = reader_type(endpoint, identity)
+    with pytest.raises(TimeoutError):
+        fresh.read_memory(0x20000000, 4, time.monotonic() - 1)
+
+    class ChangedClient(PublicClient):
+        async def target_identity(self): return {**identity, "target_id": "changed"}
+    monkeypatch.setattr(target_module, "ProbeClient", ChangedClient)
+    changed = reader_type(endpoint, identity)
+    with pytest.raises(RuntimeError):
+        changed.read_memory(0x20000000, 4, time.monotonic() + 1)
 
 
 def assert_code(code: str, function) -> None:
