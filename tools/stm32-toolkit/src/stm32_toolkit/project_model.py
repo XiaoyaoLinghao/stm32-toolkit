@@ -471,6 +471,9 @@ def _validate_testing_document(
         _validate_exact_integer(
             target.get("timeout_seconds"), "testing.target.timeout_seconds"
         )
+        _validate_canonical_string(
+            target.get("executable"), "testing.target.executable", 4096
+        )
         _validate_path_field(
             root, "testing.target.executable", target.get("executable"), cache
         )

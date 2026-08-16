@@ -2680,6 +2680,31 @@ def test_forged_plan_wrong_type_is_rejected(tmp_path):
     assert result.details == {"rule": "type"}
 
 
+def test_project_mutation_lock_failure_maps_to_stable_generation_result(tmp_path, monkeypatch):
+    from contextlib import contextmanager
+    from stm32_toolkit.evidence.model import EvidenceValidationError
+    import stm32_toolkit.project_upgrade as project_upgrade_mod
+    root = write_project(tmp_path / "proj")
+    plan = plan_for(root)
+    @contextmanager
+    def blocked(root):
+        raise EvidenceValidationError("private lock detail")
+        yield
+    monkeypatch.setattr(project_upgrade_mod, "project_mutation_lock", blocked)
+    result = apply_project_configuration(plan)
+    assert result.code == "GENERATION_APPLY_FAILED"
+    assert result.details == {"phase": "projectMutationLock"}
+    json.dumps(result.to_dict())
+
+
+def test_generation_planner_rejects_unsupported_model_version(tmp_path):
+    root = write_project(tmp_path / "proj")
+    model = replace(load_project_model(root), schema_version=1)
+    with pytest.raises(GenerationError) as caught:
+        plan_project_configuration(model)
+    assert caught.value.details == {"field": "schemaVersion", "rule": "version"}
+
+
 def test_forged_plan_version_is_rejected(tmp_path):
     root = write_project(tmp_path / "proj")
     plan = plan_for(root)

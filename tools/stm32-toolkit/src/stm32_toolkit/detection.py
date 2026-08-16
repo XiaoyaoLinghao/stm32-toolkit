@@ -21,7 +21,7 @@ _ACTION_EXPLANATIONS: dict[ActionId, str] = {
 }
 
 _CONFIGURATION_PREREQUISITE = (
-    "Project configuration requires a valid Schema v2 .stm32-project.json manifest."
+    "Project configuration requires a valid supported .stm32-project.json manifest."
 )
 
 
@@ -63,7 +63,7 @@ def planned_action(action_id: ActionId) -> PlannedAction:
 
 
 def _configuration_prerequisite_action() -> PlannedAction:
-    """The configure action for kinds that lack the Schema v2 prerequisite."""
+    """The configure action for kinds that lack a supported manifest prerequisite."""
     return PlannedAction(
         "configure-project",
         _CONFIGURATION_PREREQUISITE,

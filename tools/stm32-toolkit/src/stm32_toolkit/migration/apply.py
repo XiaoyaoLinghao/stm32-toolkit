@@ -20,6 +20,7 @@ import stat
 from pathlib import Path
 
 from stm32_toolkit import __version__
+from stm32_toolkit.evidence.model import EvidenceValidationError
 from stm32_toolkit.keil import KeilInspection
 from stm32_toolkit.result import OperationResult
 
@@ -551,14 +552,14 @@ def _fsync(fd: int) -> None:
 def _fsync_dir(path: Path) -> None:
     if os.name == "nt":
         return
-    try:  # pragma: no cover - POSIX durability acceptance
-        fd = os.open(path, os.O_RDONLY)  # pragma: no cover
-    except OSError:  # pragma: no cover
-        return  # pragma: no cover - directory fsync not supported here
-    try:  # pragma: no cover
-        _fsync(fd)  # pragma: no cover
-    finally:  # pragma: no cover
-        os.close(fd)  # pragma: no cover
+    try:
+        fd = os.open(path, os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        _fsync(fd)
+    finally:
+        os.close(fd)
 
 
 def _stage_write(path: Path, data: bytes, mode: int) -> None:
@@ -885,5 +886,12 @@ def apply_keil_conversion(plan: MigrationPlan) -> OperationResult[dict[str, obje
             error.code,
             error.message,
             error.details,
+        )
+    except (OSError, EvidenceValidationError):
+        return OperationResult.failure(
+            "keil-conversion-apply",
+            "MIGRATION_APPLY_FAILED",
+            "apply failed",
+            {"phase": "projectMutationLock"},
         )
     return OperationResult.success("keil-conversion-apply", data)

@@ -835,6 +835,41 @@ def test_public_apply_maps_migration_plan_error_after_lock(tmp_path, monkeypatch
     assert result.details == {"field": "source"}
 
 
+def test_project_mutation_lock_failure_maps_to_stable_migration_result(tmp_path, monkeypatch):
+    from contextlib import contextmanager
+    from stm32_toolkit.evidence.model import EvidenceValidationError
+    import stm32_toolkit.project_upgrade as project_upgrade_mod
+    repo = standard_repo(tmp_path)
+    plan = plan_keil_conversion(repo, fixture_inspection(repo))
+    @contextmanager
+    def blocked(root):
+        raise EvidenceValidationError("private lock detail")
+        yield
+    monkeypatch.setattr(project_upgrade_mod, "project_mutation_lock", blocked)
+    result = apply_keil_conversion(plan)
+    assert result.code == "MIGRATION_APPLY_FAILED"
+    assert result.details == {"phase": "projectMutationLock"}
+    json.dumps(result.to_dict())
+
+
+def test_fsync_dir_closes_descriptor_on_supported_host(tmp_path, monkeypatch):
+    events = []
+    monkeypatch.setattr(apply_mod.os, "name", "posix")
+    monkeypatch.setattr(apply_mod.os, "open", lambda path, flags: 41)
+    monkeypatch.setattr(apply_mod, "_fsync", lambda fd: events.append(("fsync", fd)))
+    monkeypatch.setattr(apply_mod.os, "close", lambda fd: events.append(("close", fd)))
+    apply_mod._fsync_dir(tmp_path)
+    assert events == [("fsync", 41), ("close", 41)]
+
+
+def test_fsync_dir_tolerates_unsupported_directory_open(tmp_path, monkeypatch):
+    def blocked(path, flags):
+        raise OSError("unsupported")
+    monkeypatch.setattr(apply_mod.os, "name", "posix")
+    monkeypatch.setattr(apply_mod.os, "open", blocked)
+    apply_mod._fsync_dir(tmp_path)
+
+
 def test_apply_staging_prune_failures_are_best_effort(tmp_path, monkeypatch):
     repo = standard_repo(tmp_path)
     plan = plan_keil_conversion(repo, fixture_inspection(repo))

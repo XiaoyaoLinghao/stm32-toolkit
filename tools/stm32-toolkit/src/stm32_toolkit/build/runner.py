@@ -1,6 +1,6 @@
 """Build orchestration, locking, and stale-output defense (STM32TK-0305).
 
-``run_build`` validates the request and the managed Schema v2 configuration,
+``run_build`` validates the request and the managed supported configuration,
 takes the nonblocking advisory project lock, snapshots exact inputs, collects
 bounded Git evidence, runs the exact fixed-argv ``cmake --preset`` configure
 and ``cmake --build --preset`` (plus ``--clean-first`` only when requested)

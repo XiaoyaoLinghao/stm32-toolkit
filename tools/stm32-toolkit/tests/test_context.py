@@ -620,6 +620,10 @@ def test_context_stale_when_identity_paths_mismatched(tmp_path: Path, monkeypatc
     document["elfPath"] = "build/arm-debug/other.elf"
     document["buildId"] = identity_mod.compute_build_id(document)
     identity_path.write_text(json.dumps(document, indent=2) + "\n", encoding="utf-8")
+    record_path = root / "artifacts" / "migration" / "build-result.json"
+    record = json.loads(record_path.read_text(encoding="utf-8"))
+    record["buildId"] = document["buildId"]
+    record_path.write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")
 
     result = build_project_context(root, tmp_path.parent / "data", "session-a")
 

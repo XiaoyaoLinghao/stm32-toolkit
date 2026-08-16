@@ -110,15 +110,15 @@ def build_project_context(
             "hardware": _hardware_evidence(),
             "capabilities": _capabilities(
                 build_available=_build_ready(build),
-                configure_available=_valid_schema_v2(canonical_root),
+                configure_available=_valid_supported_schema(canonical_root),
             ),
             "recommendedActions": [],
         },
     )
 
 
-def _valid_schema_v2(project_root: Path) -> bool:
-    """True only when a valid Schema v2 project model loads from the root."""
+def _valid_supported_schema(project_root: Path) -> bool:
+    """True when a valid supported project model loads from the root."""
     try:
         model = load_project_model(project_root)
     except (ProjectManifestError, OSError, ValueError, TypeError):
@@ -391,8 +391,6 @@ def _evidence_fresh(manifest: ProjectManifest, root: Path) -> dict[str, object] 
         for field in ("buildId", "gitHead", "gitDirty", "inputSnapshotSha256", "targetDevice", "preset"):
             if record.get(field) != identity_doc.get(field):
                 return None
-        if identity_doc.get("preset") != "arm-debug":
-            return None
         if identity_doc.get("elfPath") != elf_rel or identity_doc.get("mapPath") != map_rel:
             return None
 

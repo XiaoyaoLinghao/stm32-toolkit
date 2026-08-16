@@ -30,6 +30,7 @@ from pathlib import Path
 from jinja2 import Environment, StrictUndefined, UndefinedError
 
 from stm32_toolkit import __version__
+from stm32_toolkit.evidence.model import EvidenceValidationError
 from stm32_toolkit.project_model import ProjectManifestError, ProjectModel, load_project_model
 from stm32_toolkit.result import OperationResult
 
@@ -1250,6 +1251,13 @@ def apply_project_configuration(plan: GenerationPlan) -> OperationResult[dict[st
             error.code,
             error.message,
             error.details,
+        )
+    except (OSError, EvidenceValidationError):
+        return OperationResult.failure(
+            "project-configuration-apply",
+            "GENERATION_APPLY_FAILED",
+            "apply failed",
+            {"phase": "projectMutationLock"},
         )
     return OperationResult.success("project-configuration-apply", data)
 

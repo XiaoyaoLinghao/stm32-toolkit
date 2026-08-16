@@ -13,7 +13,7 @@ CONFIGURE_EXPLANATION = (
     "with a read-only plan and explicit authorization."
 )
 CONFIGURE_PREREQUISITE = (
-    "Project configuration requires a valid Schema v2 .stm32-project.json manifest."
+    "Project configuration requires a valid supported .stm32-project.json manifest."
 )
 CREATE_EXPLANATION = (
     "Project creation is planned but unavailable in this foundation release."

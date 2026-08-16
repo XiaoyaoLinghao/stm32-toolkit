@@ -186,6 +186,7 @@
             },
             "timeout_seconds": {"type": "integer", "minimum": 1, "maximum": 3600},
             "environment": {
+              "description": "The values-to-allow allowlist relationship is enforced by the model layer.",
               "type": "object",
               "additionalProperties": false,
               "required": ["allow", "values"],
@@ -216,7 +217,7 @@
           "additionalProperties": false,
           "required": ["executable", "timeout_seconds", "transport"],
           "properties": {
-            "executable": {"type": "string", "minLength": 1, "maxLength": 4096, "pattern": "^(?![A-Za-z]:[\\\\/])(?![\\\\/])(?!.*(?:^|[\\\\/])\\.\\.(?:[\\\\/]|$)).+$", "description": "Must resolve within the real canonical workspace; link/reparse containment and UTF-8/NFC checks are enforced by the model layer."},
+            "executable": {"type": "string", "minLength": 1, "maxLength": 4096, "pattern": "^(?![A-Za-z]:)(?![\\\\/])(?!.*(?:^|[\\\\/])\\.\\.(?:[\\\\/]|$)).+$", "description": "Must resolve within the real canonical workspace; link/reparse containment and UTF-8/NFC checks are enforced by the model layer."},
             "timeout_seconds": {"type": "integer", "minimum": 1, "maximum": 3600},
             "transport": {
               "type": "object",

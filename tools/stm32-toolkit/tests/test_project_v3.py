@@ -349,7 +349,7 @@ def test_uart_port_has_closed_utf8_string_contract(tmp_path: Path, value: str, r
     }
 
 
-@pytest.mark.parametrize("value", ["../firmware.elf", "/tmp/firmware.elf", "C:/fw.elf"])
+@pytest.mark.parametrize("value", ["../firmware.elf", "/tmp/firmware.elf", "C:/fw.elf", "C:fw.elf"])
 def test_target_executable_must_be_workspace_relative(tmp_path: Path, value: str):
     payload = _v3_payload()
     payload["testing"]["target"]["executable"] = value
@@ -376,6 +376,20 @@ def test_standalone_schema_and_model_layer_acceptance_matrix(tmp_path: Path):
     lexical_escape = _v3_payload()
     lexical_escape["testing"]["target"]["executable"] = "../outside.elf"
     assert any(error.validator == "pattern" for error in validator.iter_errors(lexical_escape))
+    executable_nfc = _v3_payload()
+    executable_nfc["testing"]["target"]["executable"] = "build/e\u0301.elf"
+    assert not list(validator.iter_errors(executable_nfc))
+    assert _schema_error(tmp_path, executable_nfc).details == {
+        "field": "testing.target.executable", "rule": "normalized"
+    }
+    executable_bytes = _v3_payload()
+    executable_bytes["testing"]["target"]["executable"] = "界" * 1366
+    assert not list(validator.iter_errors(executable_bytes))
+    assert _schema_error(tmp_path, executable_bytes).details == {
+        "field": "testing.target.executable", "rule": "maxUtf8Bytes"
+    }
+    environment_schema = schema["properties"]["testing"]["properties"]["host"]["properties"]["environment"]
+    assert "allowlist relationship" in environment_schema["description"]
 
 
 @pytest.mark.parametrize(
