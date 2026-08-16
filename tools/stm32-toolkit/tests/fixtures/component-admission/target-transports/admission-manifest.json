@@ -3,11 +3,11 @@
   "components": {
     "pyocd_rtt": {
       "api_observation": {
-        "argv": ["<PYTHON312>", "-c", "import pyocd; from pyocd.debug.rtt import RTTControlBlock"],
-        "bytes": 293,
+        "argv": ["<PYTHON312>", "-m", "pytest", "tools/stm32-toolkit/tests/test_target_transports.py", "-q", "-k", "real_api_against_bounded_fake_target"],
+        "bytes": 715,
         "exit_code": 0,
         "path": "pyocd-fake-api-observation.json",
-        "sha256": "728af4f9a7783104bc11fb789e8502888bb819366df3cad9e2c1ac5312c9ee4f"
+        "sha256": "aef14d3621abd7712612f3dc92cb510b0835b0a322421afcd7a9fa8a07a0b998"
       },
       "license": "Apache-2.0",
       "license_source": {
@@ -59,11 +59,11 @@
     },
     "semihosting_backend": {
       "api_observation": {
-        "argv": ["<PYTHON312>", "-c", "from pyocd.debug.semihost import SemihostIOHandler"],
-        "bytes": 339,
+        "argv": ["<PYTHON312>", "-m", "pytest", "tools/stm32-toolkit/tests/test_target_transports.py", "-q", "-k", "semihost_adapter_denies_files"],
+        "bytes": 593,
         "exit_code": 0,
         "path": "semihosting-fake-api-observation.json",
-        "sha256": "04c17400faca75b0448a51ae9bd27938d14e7fb8b6da3c0b95dc0702190d44c9"
+        "sha256": "0ff1a97a416cdba2bef9505056eb82bd779fc7fd36e0de3a4dd1a344f18857de"
       },
       "backend": "pyocd.debug.semihost.SemihostIOHandler",
       "host_file_policy": "deny-before-backend",

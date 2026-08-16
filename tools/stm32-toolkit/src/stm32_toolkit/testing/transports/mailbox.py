@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Mapping, Protocol
 
-from stm32_toolkit.testing.model import protocol_error
+from stm32_toolkit.testing.model import TestProtocolError, protocol_error
 from stm32_toolkit.testing.transports.base import (
     Clock,
     TransportBase,
@@ -54,21 +54,26 @@ class MailboxTransport(TransportBase):
         if address != declared["address"] or size != declared["size"] or not range_in_ram(address, _HEADER_BYTES + size, regions):
             raise unavailable("mailbox range is not the profile-declared bounded RAM range")
         self._address, self._size, self._cursor = int(address), int(size), None
-        self._commit_open(identity)
+        self._commit_open({**identity, "address": f"0x{self._address:08x}", "ring_size": str(self._size)})
 
     def _external_read(self, address: int, size: int, deadline: float) -> bytes:
         try:
             data = self._reader.read_memory(address, size, deadline)
         except Exception as exc:
-            self.close()
+            self._close_quietly()
             raise unavailable("mailbox reader disconnected") from exc
         if not isinstance(data, bytes) or len(data) != size:
-            self.close()
+            self._close_quietly()
             raise unavailable("mailbox reader returned partial output")
         return data
 
     def read(self, max_bytes: int, deadline: float) -> bytes:
-        self._begin_read(max_bytes, deadline)
+        try:
+            self._begin_read(max_bytes, deadline)
+        except TestProtocolError as exc:
+            if exc.code == "TEST_TIMEOUT":
+                self._close_quietly()
+            raise
         header = self._external_read(self._address, _HEADER_BYTES, deadline)
         producer = int.from_bytes(header[:8], "little")
         consumer = int.from_bytes(header[8:], "little")
@@ -92,8 +97,19 @@ class MailboxTransport(TransportBase):
         return data
 
     def close(self) -> None:
+        failure: Exception | None = None
         try:
             self._reader.close()
+        except Exception as exc:
+            failure = exc
         finally:
             self._cursor = None
             self._mark_closed()
+        if failure is not None:
+            raise unavailable("mailbox cleanup failed") from failure
+
+    def _close_quietly(self) -> None:
+        try:
+            self.close()
+        except TestProtocolError:
+            pass

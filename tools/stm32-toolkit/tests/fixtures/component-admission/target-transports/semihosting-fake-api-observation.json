@@ -1,9 +1,15 @@
 {
   "api": "pyocd.debug.semihost.SemihostIOHandler",
-  "backend_invoked": false,
+  "adapter": "stm32_toolkit.testing.transports.PyOcdSemihostingAdapter",
+  "backend_invoked": true,
+  "bounded_fake_session": {
+    "buffer_bytes": 16,
+    "captured_prefix": "semi",
+    "host_open_result": -1
+  },
   "hardware_body_executed": false,
   "host_file_policy": "deny-before-backend",
-  "observation": "deny-capable base I/O API imported without SemihostAgent or debug session",
+  "observation": "real SemihostIOHandler subclasses executed through a bounded fake session; host-file denial occurred before any debug backend file operation",
   "physical_transport_evidence": false,
   "result": "PASS",
   "version": "0.45.1"

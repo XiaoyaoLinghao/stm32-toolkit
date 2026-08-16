@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Callable, Mapping, Protocol
 
-from stm32_toolkit.testing.model import protocol_error
+from stm32_toolkit.testing.model import TestProtocolError, protocol_error
 from stm32_toolkit.testing.transports.base import Clock, TransportBase, closed_config, default_clock, unavailable
 
 
@@ -55,30 +55,49 @@ class UartTransport(TransportBase):
                 xonxoff=False, rtscts=False, dsrdtr=False, timeout=0,
             )
         except Exception as exc:
-            self.close()
+            self._close_quietly()
             raise unavailable("pyserial UART port is unavailable") from exc
         if not callable(getattr(self._port, "read", None)) or not callable(getattr(self._port, "close", None)):
-            self.close()
+            self._close_quietly()
             raise unavailable("pyserial returned an invalid UART port")
-        self._commit_open(identity)
+        self._commit_open({
+            **identity, "port": port, "baud": str(baud), "data_bits": "8",
+            "parity": "N", "stop_bits": "1",
+        })
 
     def read(self, max_bytes: int, deadline: float) -> bytes:
-        self._begin_read(max_bytes, deadline)
+        try:
+            self._begin_read(max_bytes, deadline)
+        except TestProtocolError as exc:
+            if exc.code == "TEST_TIMEOUT":
+                self._close_quietly()
+            raise
         assert self._port is not None
         try:
             data = self._port.read(max_bytes)
         except Exception as exc:
-            self.close()
+            self._close_quietly()
             raise unavailable("pyserial UART port disconnected") from exc
         if not isinstance(data, bytes) or len(data) > max_bytes:
-            self.close()
+            self._close_quietly()
             raise unavailable("pyserial UART returned invalid output")
         return data
 
     def close(self) -> None:
+        failure: Exception | None = None
         try:
             if self._port is not None and callable(getattr(self._port, "close", None)):
                 self._port.close()
+        except Exception as exc:
+            failure = exc
         finally:
             self._port = None
             self._mark_closed()
+        if failure is not None:
+            raise unavailable("pyserial UART cleanup failed") from failure
+
+    def _close_quietly(self) -> None:
+        try:
+            self.close()
+        except TestProtocolError:
+            pass

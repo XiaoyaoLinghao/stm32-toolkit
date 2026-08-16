@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from hashlib import sha256
 import json
 import struct
+from types import MappingProxyType
 from typing import Mapping
 import zlib
 
@@ -17,6 +18,7 @@ from stm32_toolkit.testing.model import (
     TestProtocolError,
     protocol_error,
 )
+from stm32_toolkit.testing.protocol import validate_event_payload
 
 
 FRAME_MAGIC = b"ST32"
@@ -39,6 +41,22 @@ def _closed_json_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
 
 def _reject_json_constant(value: str) -> object:
     raise ValueError(f"non-finite JSON constant: {value}")
+
+
+def _deep_freeze(value: object) -> object:
+    if isinstance(value, dict):
+        return MappingProxyType({key: _deep_freeze(member) for key, member in value.items()})
+    if isinstance(value, list):
+        return tuple(_deep_freeze(member) for member in value)
+    return value
+
+
+def _deep_thaw(value: object) -> object:
+    if isinstance(value, Mapping):
+        return {key: _deep_thaw(member) for key, member in value.items()}
+    if isinstance(value, tuple):
+        return [_deep_thaw(member) for member in value]
+    return value
 
 
 @dataclass(frozen=True)
@@ -83,8 +101,9 @@ def encode_frame(kind: int, sequence: int, payload: Mapping[str, object], *, fla
         raise protocol_error("TEST_PROTOCOL_INVALID", "version 1 frame flags must be zero")
     if not isinstance(payload, Mapping):
         raise protocol_error("TEST_PROTOCOL_INVALID", "frame payload must be a JSON object")
+    value = validate_event_payload(EVENT_KINDS[kind], dict(payload))
     try:
-        body = canonical_json_bytes(dict(payload))
+        body = canonical_json_bytes(value)
     except (TypeError, ValueError) as exc:
         raise protocol_error("TEST_PROTOCOL_INVALID", "frame payload is not canonical JSON") from exc
     if len(body) > MAX_FRAME_PAYLOAD_BYTES:
@@ -188,7 +207,8 @@ class TargetFrameDecoder:
                 raise protocol_error("TEST_PROTOCOL_INVALID", "target frame payload is not UTF-8 JSON") from exc
             if not isinstance(payload, dict):
                 raise protocol_error("TEST_PROTOCOL_INVALID", "target frame payload must be a JSON object")
-            frame = TargetFrame(kind, sequence, payload, candidate)
+            value = validate_event_payload(EVENT_KINDS[kind], payload)
+            frame = TargetFrame(kind, sequence, _deep_freeze(value), candidate)
             del self._buffer[:frame_length]
             self._expected_sequence += 1
             self._pending_recovery_error = None
@@ -215,7 +235,9 @@ class TargetRunValidator:
         self._binding = binding
         self._stage = "inventory"
         self._active_case: str | None = None
+        self._inventory_cases: set[str] = set()
         self._case_ids: set[str] = set()
+        self._selected_cases: set[str] = set()
         self._counts = {state: 0 for state in _COUNT_STATES}
         self._digest = sha256()
         self._terminal: Mapping[str, object] | None = None
@@ -230,23 +252,42 @@ class TargetRunValidator:
     def accept(self, frame: TargetFrame) -> None:
         if not isinstance(frame, TargetFrame) or self._terminal is not None:
             raise protocol_error("TEST_EVENT_SEQUENCE_INVALID", "target event occurs after run_end")
+        self._validate_raw_binding(frame)
         payload = frame.payload
         if self._stage == "inventory":
             if frame.kind != 1:
                 raise protocol_error("TEST_EVENT_SEQUENCE_INVALID", "inventory must be first")
             if payload.get("inventory_digest") != self._binding.inventory_digest:
                 raise protocol_error("TEST_IDENTITY_MISMATCH", "inventory digest does not match the run binding")
+            identity = payload.get("identity")
+            if not isinstance(identity, Mapping) or any(
+                identity.get(key) != value for key, value in {
+                    "build_id": self._binding.build_id,
+                    "elf_sha256": self._binding.elf_sha256,
+                    "target_device": self._binding.target_id,
+                }.items()
+            ):
+                raise protocol_error("TEST_IDENTITY_MISMATCH", "inventory identity does not match the run binding")
+            inventory_cases = payload.get("case_ids")
+            assert isinstance(inventory_cases, tuple)
+            self._inventory_cases = set(inventory_cases)
             self._stage = "run_start"
         elif self._stage == "run_start":
             if frame.kind != 2:
                 raise protocol_error("TEST_EVENT_SEQUENCE_INVALID", "run_start must follow inventory")
-            self._check_run_identity(payload)
+            if payload.get("inventory_digest") != self._binding.inventory_digest:
+                raise protocol_error("TEST_IDENTITY_MISMATCH", "run_start inventory does not match the run binding")
+            selected = payload.get("case_ids")
+            assert isinstance(selected, tuple)
+            if any(case_id not in self._inventory_cases for case_id in selected):
+                raise protocol_error("TEST_EVENT_SEQUENCE_INVALID", "run_start names an undiscovered case")
+            self._selected_cases = set(selected)
             self._stage = "running"
         elif frame.kind == 3:
             if self._active_case is not None:
                 raise protocol_error("TEST_EVENT_SEQUENCE_INVALID", "case_start occurs while another case is active")
             case_id = self._string(payload, "case_id")
-            if case_id in self._case_ids:
+            if case_id not in self._selected_cases or case_id in self._case_ids:
                 raise protocol_error("TEST_EVENT_SEQUENCE_INVALID", "case is duplicated")
             self._active_case = case_id
         elif frame.kind == 4:
@@ -258,7 +299,7 @@ class TargetRunValidator:
             self._active_case = None
             self._counts[str(state)] += 1
         elif frame.kind == 6:
-            self._string(payload, "text")
+            self._string(payload, "message")
         elif frame.kind == 5:
             if self._active_case is not None:
                 raise protocol_error("TEST_EVENT_SEQUENCE_INVALID", "run_end occurs while a case is active")
@@ -268,14 +309,30 @@ class TargetRunValidator:
             raise protocol_error("TEST_EVENT_SEQUENCE_INVALID", "target event kind is invalid in the current state")
         self._digest.update(frame.raw_bytes)
 
-    def _check_run_identity(self, payload: Mapping[str, object]) -> None:
-        expected = {
-            "build_id": self._binding.build_id,
-            "elf_sha256": self._binding.elf_sha256,
-            "target_id": self._binding.target_id,
-        }
-        if any(payload.get(key) != value for key, value in expected.items()):
-            raise protocol_error("TEST_IDENTITY_MISMATCH", "run_start identity does not match the run binding")
+    @staticmethod
+    def _validate_raw_binding(frame: TargetFrame) -> None:
+        raw = frame.raw_bytes
+        if not isinstance(raw, bytes) or len(raw) < FRAME_HEADER_BYTES + FRAME_CRC_BYTES:
+            raise protocol_error("TEST_EVENT_PAYLOAD_INVALID", "frame raw bytes are invalid")
+        magic, version, kind, flags, sequence, payload_length = _HEADER.unpack_from(raw)
+        if (
+            magic != FRAME_MAGIC or version != FRAME_VERSION or kind not in EVENT_KINDS or kind != frame.kind
+            or flags != 0 or sequence != frame.sequence
+            or len(raw) != FRAME_HEADER_BYTES + payload_length + FRAME_CRC_BYTES
+            or (_CRC.unpack_from(raw, len(raw) - FRAME_CRC_BYTES)[0] != zlib.crc32(raw[:-FRAME_CRC_BYTES]) & 0xFFFFFFFF)
+        ):
+            raise protocol_error("TEST_EVENT_PAYLOAD_INVALID", "frame metadata contradicts raw bytes")
+        try:
+            decoded = json.loads(
+                raw[FRAME_HEADER_BYTES:-FRAME_CRC_BYTES].decode("utf-8"),
+                object_pairs_hook=_closed_json_object,
+                parse_constant=_reject_json_constant,
+            )
+            validated = validate_event_payload(EVENT_KINDS[kind], decoded)
+        except (UnicodeDecodeError, json.JSONDecodeError, ValueError, TestProtocolError) as exc:
+            raise protocol_error("TEST_EVENT_PAYLOAD_INVALID", "frame payload contradicts raw bytes") from exc
+        if validated != _deep_thaw(frame.payload):
+            raise protocol_error("TEST_EVENT_PAYLOAD_INVALID", "frame payload contradicts raw bytes")
 
     def finish(self) -> TargetRunSummary:
         if self._terminal is None:
@@ -285,13 +342,13 @@ class TargetRunValidator:
             "inventory_digest": self._binding.inventory_digest,
             "build_id": self._binding.build_id,
             "elf_sha256": self._binding.elf_sha256,
-            "target_id": self._binding.target_id,
+            "target_device": self._binding.target_id,
         }
         if any(terminal.get(key) != value for key, value in expected_identity.items()):
             raise protocol_error("TEST_IDENTITY_MISMATCH", "run_end identity does not match the run binding")
         if terminal.get("event_stream_digest") != self._digest.hexdigest():
             raise protocol_error("TEST_EVENT_SEQUENCE_INVALID", "run_end event stream digest is invalid")
         raw_counts = terminal.get("counts")
-        if not isinstance(raw_counts, dict) or set(raw_counts) != set(_COUNT_STATES) or raw_counts != self._counts:
+        if not isinstance(raw_counts, Mapping) or set(raw_counts) != set(_COUNT_STATES) or dict(raw_counts) != self._counts:
             raise protocol_error("TEST_EVENT_SEQUENCE_INVALID", "run_end counts contradict case results")
         return TargetRunSummary(dict(self._counts), self._digest.hexdigest())

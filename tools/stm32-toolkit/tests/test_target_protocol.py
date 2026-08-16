@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 import random
 import struct
+from types import MappingProxyType
 import zlib
 
 import pytest
@@ -32,28 +33,41 @@ H0 = "0" * 64
 H1 = "1" * 64
 H2 = "2" * 64
 TARGET = "stm32:fixture"
+UTC_0 = "2026-08-16T00:00:00.000000Z"
+UTC_1 = "2026-08-16T00:00:01.000000Z"
+
+
+def frozen_schema_payloads() -> dict[int, dict[str, object]]:
+    identity = {
+        "workspace_id": H0,
+        "project_id": "123e4567-e89b-42d3-a456-426614174000",
+        "session_id": "session-0601-t08",
+        "build_id": H1,
+        "elf_sha256": H2,
+        "target_device": TARGET,
+        "input_snapshot_sha256": "3" * 64,
+        "git_commit": "a" * 40,
+        "git_dirty": False,
+    }
+    return {
+        1: {"mode": "target", "identity": identity, "case_ids": ["case.a"], "inventory_digest": H0, "discovered_at_utc": UTC_0},
+        2: {"run_id": "run-1", "started_at_utc": UTC_0, "case_ids": ["case.a"], "inventory_digest": H0},
+        3: {"case_id": "case.a", "started_at_utc": UTC_0},
+        4: {"case_id": "case.a", "state": "passed", "ended_at_utc": UTC_1, "duration_ms": 1000, "message": None, "stdout": None, "stderr": None},
+        5: {"state": "passed", "ended_at_utc": UTC_1, "duration_ms": 1000, "inventory_digest": H0, "build_id": H1, "elf_sha256": H2, "target_device": TARGET, "counts": {"passed": 1, "failed": 0, "skipped": 0, "error": 0, "timeout": 0}, "event_stream_digest": "4" * 64},
+        6: {"timestamp_utc": UTC_0, "stream": "stdout", "message": "line"},
+    }
 
 
 def payloads() -> list[tuple[int, dict[str, object]]]:
-    return [
-        (1, {"case_ids": ["case.a"], "inventory_digest": H0}),
-        (2, {"build_id": H1, "elf_sha256": H2, "target_id": TARGET}),
-        (3, {"case_id": "case.a"}),
-        (4, {"case_id": "case.a", "state": "passed"}),
-        (6, {"text": "ok"}),
-    ]
+    frozen = frozen_schema_payloads()
+    return [(kind, frozen[kind]) for kind in (1, 2, 3, 4, 6)]
 
 
 def valid_run_bytes() -> bytes:
     frames = [encode_frame(kind, sequence, body) for sequence, (kind, body) in enumerate(payloads())]
-    terminal = {
-        "build_id": H1,
-        "counts": {"error": 0, "failed": 0, "passed": 1, "skipped": 0, "timeout": 0},
-        "elf_sha256": H2,
-        "event_stream_digest": sha256(b"".join(frames)).hexdigest(),
-        "inventory_digest": H0,
-        "target_id": TARGET,
-    }
+    terminal = frozen_schema_payloads()[5]
+    terminal["event_stream_digest"] = sha256(b"".join(frames)).hexdigest()
     frames.append(encode_frame(5, len(frames), terminal))
     return b"".join(frames)
 
@@ -65,10 +79,11 @@ def assert_code(code: str, function) -> None:
 
 
 def test_exact_golden_little_endian_header_crc_and_all_kinds() -> None:
-    body = b'{"n":1}'
+    payload = frozen_schema_payloads()[6]
+    body = json.dumps(payload, ensure_ascii=False, separators=(",", ":"), sort_keys=True).encode("utf-8")
     header = b"ST32" + bytes((1, 6)) + b"\x00\x00" + struct.pack("<II", 0x78563412, len(body))
     expected = header + body + struct.pack("<I", zlib.crc32(header + body) & 0xFFFFFFFF)
-    assert encode_frame(6, 0x78563412, {"n": 1}) == expected
+    assert encode_frame(6, 0x78563412, payload) == expected
     assert EVENT_KINDS == {1: "inventory", 2: "run_start", 3: "case_start", 4: "case_result", 5: "run_end", 6: "log"}
     assert FRAME_MAGIC == b"ST32" and FRAME_VERSION == 1
 
@@ -102,11 +117,13 @@ def test_deterministic_property_fragmentation(seed: int) -> None:
 
 
 def test_strict_sequence_kind_flags_and_payload_limits() -> None:
-    assert_code("TEST_EVENT_SEQUENCE_INVALID", lambda: TargetFrameDecoder().feed(encode_frame(1, 1, {"x": 1})))
+    assert_code("TEST_EVENT_SEQUENCE_INVALID", lambda: TargetFrameDecoder().feed(encode_frame(1, 1, frozen_schema_payloads()[1])))
     for kind in (0, 7, 255):
         assert_code("TEST_PROTOCOL_INVALID", lambda kind=kind: encode_frame(kind, 0, {}))
-    assert_code("TEST_PROTOCOL_INVALID", lambda: encode_frame(1, 0, {}, flags=1))
-    assert_code("TEST_FRAME_TOO_LARGE", lambda: encode_frame(1, 0, {"x": "x" * MAX_FRAME_PAYLOAD_BYTES}))
+    assert_code("TEST_PROTOCOL_INVALID", lambda: encode_frame(1, 0, frozen_schema_payloads()[1], flags=1))
+    oversized = frozen_schema_payloads()[6]
+    oversized["message"] = "x" * MAX_FRAME_PAYLOAD_BYTES
+    assert_code("TEST_FRAME_TOO_LARGE", lambda: encode_frame(6, 0, oversized))
 
 
 def test_invalid_version_and_oversize_rejected_before_payload_allocation() -> None:
@@ -121,13 +138,15 @@ def test_invalid_version_and_oversize_rejected_before_payload_allocation() -> No
 
 
 def test_crc_corruption_recovers_only_at_a_complete_valid_boundary() -> None:
-    corrupt = bytearray(encode_frame(1, 0, {"x": 1}))
+    corrupt = bytearray(encode_frame(1, 0, frozen_schema_payloads()[1]))
     corrupt[-1] ^= 0x80
-    valid = encode_frame(1, 0, {"x": 2})
+    valid_payload = frozen_schema_payloads()[1]
+    valid_payload["discovered_at_utc"] = UTC_1
+    valid = encode_frame(1, 0, valid_payload)
     decoder = TargetFrameDecoder()
     frames = decoder.feed(bytes(corrupt) + valid)
     decoder.finish()
-    assert [frame.payload for frame in frames] == [{"x": 2}]
+    assert frames[0].payload["discovered_at_utc"] == UTC_1
     assert decoder.discarded_bytes == len(corrupt)
 
     decoder = TargetFrameDecoder()
@@ -137,7 +156,7 @@ def test_crc_corruption_recovers_only_at_a_complete_valid_boundary() -> None:
 
 def test_magic_recovery_is_bounded_and_records_discarded_bytes() -> None:
     decoder = TargetFrameDecoder(max_discarded_bytes=8)
-    assert decoder.feed(b"junk" + encode_frame(1, 0, {"x": 1}))[0].payload == {"x": 1}
+    assert decoder.feed(b"junk" + encode_frame(1, 0, frozen_schema_payloads()[1]))[0].payload["mode"] == "target"
     assert decoder.discarded_bytes == 4
     assert_code("TEST_FRAME_RECOVERY_LIMIT", lambda: TargetFrameDecoder(max_discarded_bytes=3).feed(b"junkjunk"))
 
@@ -151,7 +170,7 @@ def test_utf8_json_object_and_incomplete_stream_errors() -> None:
         decoder = TargetFrameDecoder()
         assert_code("TEST_PROTOCOL_INVALID", lambda data=data, decoder=decoder: decoder.feed(raw(data)))
     decoder = TargetFrameDecoder()
-    decoder.feed(encode_frame(1, 0, {})[:-1])
+    decoder.feed(encode_frame(1, 0, frozen_schema_payloads()[1])[:-1])
     assert_code("TEST_STREAM_INCOMPLETE", decoder.finish)
 
 
@@ -173,17 +192,18 @@ def test_terminal_digest_counts_and_identity_binding() -> None:
     assert summary.event_stream_digest == sha256(b"".join(frame.raw_bytes for frame in decoder.frames[:-1])).hexdigest()
 
 
-@pytest.mark.parametrize("field", ["inventory_digest", "build_id", "elf_sha256", "target_id", "event_stream_digest", "counts"])
+@pytest.mark.parametrize("field", ["inventory_digest", "build_id", "elf_sha256", "target_device", "event_stream_digest", "counts"])
 def test_terminal_binding_rejects_each_contradiction(field: str) -> None:
     decoder = TargetFrameDecoder()
     frames = list(decoder.feed(valid_run_bytes()))
-    terminal = dict(frames[-1].payload)
-    terminal[field] = ({"passed": 99} if field == "counts" else ("wrong" if field == "target_id" else "f" * 64))
+    terminal = frozen_schema_payloads()[5]
+    terminal["event_stream_digest"] = frames[-1].payload["event_stream_digest"]
+    terminal[field] = ({"passed": 99, "failed": 0, "skipped": 0, "error": 0, "timeout": 0} if field == "counts" else ("wrong" if field == "target_device" else "f" * 64))
     frames[-1] = TargetFrameDecoder().feed(encode_frame(5, 0, terminal))[0]
     validator = TargetRunValidator(TargetRunBinding(H0, H1, H2, TARGET))
     for frame in frames:
         validator.accept(frame)
-    assert_code("TEST_IDENTITY_MISMATCH" if field != "counts" and field != "event_stream_digest" else "TEST_EVENT_SEQUENCE_INVALID", validator.finish)
+    assert_code("TEST_IDENTITY_MISMATCH" if field not in ("counts", "event_stream_digest") else "TEST_EVENT_SEQUENCE_INVALID", validator.finish)
 
 
 def test_state_machine_rejects_duplicate_case_and_events_after_terminal() -> None:
@@ -230,7 +250,7 @@ def test_closed_constructor_encoder_and_decoder_error_paths() -> None:
     for args in (("x", H1, H2, TARGET), (H0, H1, H2, "")):
         assert_code("TEST_PROTOCOL_INVALID", lambda args=args: TargetRunBinding(*args))
     assert_code("TEST_PROTOCOL_INVALID", lambda: encode_frame(1, 0, []))
-    assert_code("TEST_PROTOCOL_INVALID", lambda: encode_frame(1, 0, {"bad": object()}))
+    assert_code("TEST_EVENT_PAYLOAD_INVALID", lambda: encode_frame(1, 0, {"bad": object()}))
     for kwargs in ({"max_stream_bytes": 0}, {"max_stream_bytes": MAX_RUN_STREAM_BYTES + 1}, {"max_discarded_bytes": -1}):
         assert_code("TEST_PROTOCOL_INVALID", lambda kwargs=kwargs: TargetFrameDecoder(**kwargs))
     decoder = TargetFrameDecoder()
@@ -252,13 +272,13 @@ def test_decoder_rejects_crc_valid_unknown_kind_and_flags() -> None:
 
 
 def isolated_frame(kind: int, payload: dict[str, object]) -> TargetFrame:
-    return TargetFrame(kind, 0, payload, encode_frame(kind, 0, payload))
+    return TargetFrameDecoder().feed(encode_frame(kind, 0, payload))[0]
 
 
 def validator_after_start() -> TargetRunValidator:
     validator = TargetRunValidator(TargetRunBinding(H0, H1, H2, TARGET))
-    validator.accept(isolated_frame(1, {"inventory_digest": H0}))
-    validator.accept(isolated_frame(2, {"build_id": H1, "elf_sha256": H2, "target_id": TARGET}))
+    validator.accept(isolated_frame(1, frozen_schema_payloads()[1]))
+    validator.accept(isolated_frame(2, frozen_schema_payloads()[2]))
     return validator
 
 
@@ -266,26 +286,81 @@ def test_validator_closed_state_machine_error_paths() -> None:
     assert_code("TEST_PROTOCOL_INVALID", lambda: TargetRunValidator(object()))
     binding = TargetRunBinding(H0, H1, H2, TARGET)
     assert_code("TEST_EVENT_SEQUENCE_INVALID", lambda: TargetRunValidator(binding).finish())
-    assert_code("TEST_EVENT_SEQUENCE_INVALID", lambda: TargetRunValidator(binding).accept(isolated_frame(2, {})))
-    assert_code("TEST_IDENTITY_MISMATCH", lambda: TargetRunValidator(binding).accept(isolated_frame(1, {"inventory_digest": H1})))
+    assert_code("TEST_EVENT_SEQUENCE_INVALID", lambda: TargetRunValidator(binding).accept(isolated_frame(2, frozen_schema_payloads()[2])))
+    bad_inventory = frozen_schema_payloads()[1]
+    bad_inventory["inventory_digest"] = H1
+    assert_code("TEST_IDENTITY_MISMATCH", lambda: TargetRunValidator(binding).accept(isolated_frame(1, bad_inventory)))
     first = TargetRunValidator(binding)
-    first.accept(isolated_frame(1, {"inventory_digest": H0}))
-    assert_code("TEST_EVENT_SEQUENCE_INVALID", lambda: first.accept(isolated_frame(3, {"case_id": "x"})))
-    assert_code("TEST_IDENTITY_MISMATCH", lambda: first.accept(isolated_frame(2, {"build_id": H0, "elf_sha256": H2, "target_id": TARGET})))
+    first.accept(isolated_frame(1, frozen_schema_payloads()[1]))
+    assert_code("TEST_EVENT_SEQUENCE_INVALID", lambda: first.accept(isolated_frame(3, frozen_schema_payloads()[3])))
+    bad_start = frozen_schema_payloads()[2]
+    bad_start["inventory_digest"] = H1
+    assert_code("TEST_IDENTITY_MISMATCH", lambda: first.accept(isolated_frame(2, bad_start)))
+    undiscovered = frozen_schema_payloads()[2]
+    undiscovered["case_ids"] = ["case.b"]
+    inventory_bound = TargetRunValidator(binding)
+    inventory_bound.accept(isolated_frame(1, frozen_schema_payloads()[1]))
+    assert_code("TEST_EVENT_SEQUENCE_INVALID", lambda: inventory_bound.accept(isolated_frame(2, undiscovered)))
 
     active = validator_after_start()
-    active.accept(isolated_frame(3, {"case_id": "a"}))
-    assert_code("TEST_EVENT_SEQUENCE_INVALID", lambda: active.accept(isolated_frame(3, {"case_id": "b"})))
-    assert_code("TEST_EVENT_SEQUENCE_INVALID", lambda: active.accept(isolated_frame(4, {"case_id": "b", "state": "passed"})))
-    assert_code("TEST_EVENT_SEQUENCE_INVALID", lambda: active.accept(isolated_frame(5, {})))
+    active.accept(isolated_frame(3, frozen_schema_payloads()[3]))
+    assert_code("TEST_EVENT_SEQUENCE_INVALID", lambda: active.accept(isolated_frame(3, frozen_schema_payloads()[3])))
+    wrong_result = frozen_schema_payloads()[4]
+    wrong_result["case_id"] = "case.b"
+    assert_code("TEST_EVENT_SEQUENCE_INVALID", lambda: active.accept(isolated_frame(4, wrong_result)))
+    assert_code("TEST_EVENT_SEQUENCE_INVALID", lambda: active.accept(isolated_frame(5, frozen_schema_payloads()[5])))
 
-    invalid_text = validator_after_start()
-    assert_code("TEST_PROTOCOL_INVALID", lambda: invalid_text.accept(isolated_frame(6, {"text": ""})))
     invalid_kind = validator_after_start()
-    assert_code("TEST_EVENT_SEQUENCE_INVALID", lambda: invalid_kind.accept(isolated_frame(1, {})))
+    assert_code("TEST_EVENT_SEQUENCE_INVALID", lambda: invalid_kind.accept(isolated_frame(1, frozen_schema_payloads()[1])))
 
     duplicate = validator_after_start()
-    duplicate.accept(isolated_frame(3, {"case_id": "a"}))
-    duplicate.accept(isolated_frame(4, {"case_id": "a", "state": "passed"}))
-    assert_code("TEST_EVENT_SEQUENCE_INVALID", lambda: duplicate.accept(isolated_frame(3, {"case_id": "a"})))
+    duplicate.accept(isolated_frame(3, frozen_schema_payloads()[3]))
+    duplicate.accept(isolated_frame(4, frozen_schema_payloads()[4]))
+    assert_code("TEST_EVENT_SEQUENCE_INVALID", lambda: duplicate.accept(isolated_frame(3, frozen_schema_payloads()[3])))
     assert_code("TEST_EVENT_SEQUENCE_INVALID", lambda: duplicate.accept("not-a-frame"))
+
+
+@pytest.mark.parametrize("kind", range(1, 7))
+@pytest.mark.parametrize("mutation", ["missing", "extra", "wrong-type"])
+def test_frame_encoder_reuses_frozen_closed_payload_contract(kind: int, mutation: str) -> None:
+    payload = frozen_schema_payloads()[kind]
+    if mutation == "missing":
+        payload.pop(next(iter(payload)))
+    elif mutation == "extra":
+        payload["extra"] = True
+    else:
+        payload[next(iter(payload))] = None
+    assert_code("TEST_EVENT_PAYLOAD_INVALID", lambda: encode_frame(kind, 0, payload))
+
+
+def test_decoded_payload_is_deeply_immutable_and_bound_to_raw_bytes() -> None:
+    payload = frozen_schema_payloads()[1]
+    frame = TargetFrameDecoder().feed(encode_frame(1, 0, payload))[0]
+    assert isinstance(frame.payload, MappingProxyType)
+    with pytest.raises(TypeError):
+        frame.payload["mode"] = "host"  # type: ignore[index]
+    with pytest.raises((AttributeError, TypeError)):
+        frame.payload["case_ids"].append("mutated")  # type: ignore[union-attr]
+    with pytest.raises(TypeError):
+        frame.payload["identity"]["target_device"] = "mutated"  # type: ignore[index]
+
+    forged_payload = dict(frame.payload)
+    forged_payload["mode"] = "host"
+    forged = TargetFrame(frame.kind, frame.sequence, MappingProxyType(forged_payload), frame.raw_bytes)
+    validator = TargetRunValidator(TargetRunBinding(H0, H1, H2, TARGET))
+    assert_code("TEST_EVENT_PAYLOAD_INVALID", lambda: validator.accept(forged))
+
+    unknown = bytearray(frame.raw_bytes)
+    unknown[5] = 7
+    unknown[-4:] = struct.pack("<I", zlib.crc32(unknown[:-4]) & 0xFFFFFFFF)
+    unknown_frame = TargetFrame(7, frame.sequence, frame.payload, bytes(unknown))
+    assert_code("TEST_EVENT_PAYLOAD_INVALID", lambda: validator.accept(unknown_frame))
+
+
+def test_golden_decoder_uses_all_six_frozen_payload_shapes() -> None:
+    frames = []
+    decoder = TargetFrameDecoder()
+    for sequence, (kind, payload) in enumerate(frozen_schema_payloads().items()):
+        frames.extend(decoder.feed(encode_frame(kind, sequence, payload)))
+    decoder.finish()
+    assert [set(frame.payload) for frame in frames] == [set(value) for value in frozen_schema_payloads().values()]

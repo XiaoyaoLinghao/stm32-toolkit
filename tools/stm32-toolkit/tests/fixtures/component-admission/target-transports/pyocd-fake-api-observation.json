@@ -1,8 +1,20 @@
 {
-  "api": "pyocd.debug.rtt.RTTControlBlock",
+  "api": "pyocd.debug.rtt.GenericRTTControlBlock",
+  "adapter": "stm32_toolkit.testing.transports.PyOcdRttAdapter",
+  "bounded_search": {
+    "address": "0x20000000",
+    "bytes": 32768,
+    "maximum_native_read_bytes": 1024
+  },
+  "fake_target_result": {
+    "actual_control_block_address": "0x20000100",
+    "channel": 0,
+    "payload": "real",
+    "read_offset_write": "0x20000128"
+  },
   "hardware_body_executed": false,
   "module": "pyocd.debug.rtt",
-  "observation": "abstract RTT API imported without session, probe discovery, or target access",
+  "observation": "real GenericRTTControlBlock search/read API executed against one bounded in-memory fake target; no probe discovery, session, hardware, or network access",
   "physical_transport_evidence": false,
   "result": "PASS",
   "version": "0.45.1"

@@ -3,12 +3,15 @@ from __future__ import annotations
 from hashlib import sha256
 import json
 from pathlib import Path
+import struct
 
 import pytest
 
 from stm32_toolkit.testing.model import TestProtocolError as ProtocolError
 from stm32_toolkit.testing.transports import (
     MailboxTransport,
+    PyOcdRttAdapter,
+    PyOcdSemihostingAdapter,
     RttTransport,
     SemihostingTransport,
     UartTransport,
@@ -83,6 +86,9 @@ class FakeRttBackend:
         self.reads.append((max_bytes, deadline))
         return b"rtt"
 
+    def identity(self) -> dict[str, str]:
+        return {"control_block_address": "0x20000100"}
+
     def close(self) -> None:
         self.closed = True
 
@@ -143,7 +149,7 @@ def uart_config(**changes) -> dict[str, object]:
 
 
 def semihost_config(**changes) -> dict[str, object]:
-    result: dict[str, object] = {"elf_path": "C:/fixture/app.elf", "elf_sha256": "a" * 64, "host_files": False, **BASE_ID}
+    result: dict[str, object] = {"elf_path": "C:\\fixture\\app.elf", "elf_sha256": "a" * 64, "host_files": False, **BASE_ID}
     result.update(changes)
     return result
 
@@ -155,7 +161,7 @@ def test_mailbox_is_read_only_bounded_and_identity_bound() -> None:
     assert transport.read(4, 2.0) == b"test"
     assert reader.calls == [(0x20000000, 16, 2.0), (0x20000010, 4, 2.0)]
     assert not hasattr(reader, "write_memory")
-    assert transport.identity() == {"probe_id": "probe:fixture", "target_id": "stm32:fixture", "transport": "mailbox"}
+    assert transport.identity() == {"probe_id": "probe:fixture", "target_id": "stm32:fixture", "transport": "mailbox", "address": "0x20000000", "ring_size": "4096"}
     transport.close()
     assert reader.closed
 
@@ -335,6 +341,7 @@ def test_transport_constructors_reject_non_ports_and_mailbox_write_surface() -> 
     assert_code("TEST_PROTOCOL_INVALID", lambda: RttTransport(object(), PROFILE))
     assert_code("TEST_PROTOCOL_INVALID", lambda: UartTransport(None, PROFILE))
     assert_code("TEST_PROTOCOL_INVALID", lambda: SemihostingTransport(object(), PROFILE))
+    assert_code("TEST_PROTOCOL_INVALID", lambda: RttTransport(FakeSemihostBackend(), PROFILE))
 
 
 def test_mailbox_profile_ram_partial_empty_and_local_cursor_fail_closed() -> None:
@@ -371,6 +378,9 @@ class FaultBackend:
             raise OSError("read")
         return self.invalid if self.invalid is not None else b"ok"
 
+    def identity(self) -> dict[str, str]:
+        return {"control_block_address": "0x20000100"}
+
     def close(self) -> None:
         self.closed = True
 
@@ -398,6 +408,33 @@ def test_rtt_profile_and_control_variants_fail_closed() -> None:
     assert_code("TEST_TRANSPORT_UNAVAILABLE", lambda: RttTransport(FakeRttBackend(), mismatch, clock=lambda: 1.0).open(rtt_config(), 2.0))
     profile = {**PROFILE, "rtt": {"channel": 0, "control_block_address": 0x20000100}}
     assert_code("TEST_TRANSPORT_UNAVAILABLE", lambda: RttTransport(FakeRttBackend(), profile, clock=lambda: 1.0).open(rtt_config(), 2.0))
+
+    class InvalidIdentity(FakeRttBackend):
+        def __init__(self, value: object) -> None:
+            super().__init__()
+            self.value = value
+
+        def identity(self):
+            return {"control_block_address": self.value}
+
+    for value in ("not-hex", "0x1000", None):
+        backend = InvalidIdentity(value)
+        invalid = RttTransport(backend, PROFILE, clock=lambda: 1.0)
+        assert_code("TEST_TRANSPORT_UNAVAILABLE", lambda invalid=invalid: invalid.open(rtt_config(), 2.0))
+        assert backend.closed
+
+    class ReadAndCloseFailure(FakeRttBackend):
+        def read(self, max_bytes: int, deadline: float) -> bytes:
+            raise OSError("disconnect")
+
+        def close(self) -> None:
+            raise OSError("cleanup")
+
+    backend = ReadAndCloseFailure()
+    transport = RttTransport(backend, PROFILE, clock=lambda: 1.0)
+    transport.open(rtt_config(), 2.0)
+    assert_code("TEST_TRANSPORT_UNAVAILABLE", lambda: transport.read(1, 2.0))
+    assert_code("TEST_TRANSPORT_UNAVAILABLE", transport.identity)
 
 
 class FaultSerial(FakeSerial):
@@ -441,3 +478,286 @@ def test_semihost_path_digest_and_capability_shapes_fail_closed() -> None:
     active = SemihostingTransport(FakeSemihostBackend(), PROFILE, clock=lambda: 1.0)
     active.open(semihost_config(), 2.0)
     active.close()
+
+
+def test_transport_identity_binds_exact_effective_configuration() -> None:
+    mailbox = MailboxTransport(FakeMailboxReader(), PROFILE, clock=lambda: 1.0)
+    mailbox.open(mailbox_config(), 2.0)
+    assert mailbox.identity() == {"address": "0x20000000", "probe_id": "probe:fixture", "ring_size": "4096", "target_id": "stm32:fixture", "transport": "mailbox"}
+
+    rtt_backend = FakeRttBackend()
+    rtt_backend.control_block_address = 0x20000100
+    rtt = RttTransport(rtt_backend, PROFILE, clock=lambda: 1.0)
+    rtt.open(rtt_config(), 2.0)
+    assert rtt.identity()["channel"] == "0"
+    assert rtt.identity()["control_block_address"] == "0x20000100"
+
+    uart = UartTransport(FakeSerialFactory(), PROFILE, clock=lambda: 1.0)
+    uart.open(uart_config(), 2.0)
+    assert uart.identity() == {"baud": "115200", "data_bits": "8", "parity": "N", "port": "COM7", "probe_id": "probe:fixture", "stop_bits": "1", "target_id": "stm32:fixture", "transport": "uart"}
+
+    semi = SemihostingTransport(FakeSemihostBackend(), PROFILE, clock=lambda: 1.0)
+    semi.open(semihost_config(elf_path="C:\\fixture\\app.elf"), 2.0)
+    assert semi.identity()["elf_path"] == "C:\\fixture\\app.elf"
+    assert semi.identity()["elf_sha256"] == "a" * 64
+
+
+@pytest.mark.parametrize("path", ["C:/fixture/app.elf", "c:\\fixture\\app.elf", "C:\\fixture\\.\\app.elf", "C:\\fixture\\..\\app.elf", "\\\\?\\C:\\fixture\\app.elf", "C:\\fixture\\name. \\app.elf"])
+def test_semihost_requires_one_canonical_absolute_windows_path(path: str) -> None:
+    backend = FakeSemihostBackend()
+    transport = SemihostingTransport(backend, PROFILE, clock=lambda: 1.0)
+    assert_code("TEST_PROTOCOL_INVALID", lambda: transport.open(semihost_config(elf_path=path), 2.0))
+    assert backend.opened is None
+
+
+def test_timeout_and_close_failures_always_cleanup_and_are_sanitized() -> None:
+    mailbox_backend = FakeMailboxReader()
+    rtt_backend = FakeRttBackend()
+    uart_factory = FakeSerialFactory()
+    semihost_backend = FakeSemihostBackend()
+    for transport, config, backend in [
+        (MailboxTransport(mailbox_backend, PROFILE, clock=lambda: 1.0), mailbox_config(), mailbox_backend),
+        (RttTransport(rtt_backend, PROFILE, clock=lambda: 1.0), rtt_config(), rtt_backend),
+        (UartTransport(uart_factory, PROFILE, clock=lambda: 1.0), uart_config(), uart_factory.port),
+        (SemihostingTransport(semihost_backend, PROFILE, clock=lambda: 1.0), semihost_config(elf_path="C:\\fixture\\app.elf"), semihost_backend),
+    ]:
+        transport.open(config, 2.0)
+        assert_code("TEST_TIMEOUT", lambda transport=transport: transport.read(1, 1.0))
+        assert backend.closed
+        assert_code("TEST_TRANSPORT_UNAVAILABLE", transport.identity)
+
+    class CloseFailure(FakeRttBackend):
+        def close(self) -> None:
+            raise OSError("C:\\secret\\credential.txt")
+    failing = RttTransport(CloseFailure(), PROFILE, clock=lambda: 1.0)
+    failing.open(rtt_config(), 2.0)
+    with pytest.raises(ProtocolError) as caught:
+        failing.close()
+    assert caught.value.code == "TEST_TRANSPORT_UNAVAILABLE"
+    assert "secret" not in caught.value.message and "credential" not in caught.value.message
+
+
+def test_all_transport_cleanup_failures_are_closed_and_sanitized() -> None:
+    class MailboxCloseFailure(FakeMailboxReader):
+        def close(self) -> None:
+            raise OSError("C:\\secret\\credential.txt")
+
+    class SerialCloseFailure(FakeSerial):
+        def close(self) -> None:
+            raise OSError("C:\\secret\\credential.txt")
+
+    class SemihostCloseFailure(FakeSemihostBackend):
+        def close(self) -> None:
+            raise OSError("C:\\secret\\credential.txt")
+
+    cases = [
+        (MailboxTransport(MailboxCloseFailure(), PROFILE, clock=lambda: 1.0), mailbox_config()),
+        (UartTransport(lambda **kwargs: SerialCloseFailure(), PROFILE, clock=lambda: 1.0), uart_config()),
+        (SemihostingTransport(SemihostCloseFailure(), PROFILE, clock=lambda: 1.0), semihost_config()),
+    ]
+    for transport, config in cases:
+        transport.open(config, 2.0)
+        with pytest.raises(ProtocolError) as caught:
+            transport.close()
+        assert caught.value.code == "TEST_TRANSPORT_UNAVAILABLE"
+        assert "secret" not in caught.value.message and "credential" not in caught.value.message
+        assert_code("TEST_TRANSPORT_UNAVAILABLE", transport.identity)
+
+
+def test_concrete_adapters_sanitize_cleanup_failure_during_external_errors() -> None:
+    class ExplodingBlock:
+        def start(self) -> None:
+            raise OSError("C:\\secret\\credential.txt")
+
+    rtt = PyOcdRttAdapter(object(), control_block_factory=lambda *args, **kwargs: ExplodingBlock())
+    with pytest.raises(ProtocolError) as caught:
+        rtt.open(channel=0, control_block_address=None, ram_regions=((0x20000000, 0x8000),), deadline=2.0)
+    assert caught.value.code == "TEST_TRANSPORT_UNAVAILABLE"
+    assert "secret" not in caught.value.message and "credential" not in caught.value.message
+
+
+def test_external_open_failure_wins_over_cleanup_failure() -> None:
+    class FailOpenAndClose(FaultBackend):
+        def __init__(self) -> None:
+            super().__init__(fail_open=True)
+
+        def close(self) -> None:
+            raise OSError("C:\\secret\\credential.txt")
+
+    for transport, config in (
+        (RttTransport(FailOpenAndClose(), PROFILE, clock=lambda: 1.0), rtt_config()),
+        (SemihostingTransport(FailOpenAndClose(), PROFILE, clock=lambda: 1.0), semihost_config()),
+    ):
+        with pytest.raises(ProtocolError) as caught:
+            transport.open(config, 2.0)
+        assert caught.value.code == "TEST_TRANSPORT_UNAVAILABLE"
+        assert "secret" not in caught.value.message and "credential" not in caught.value.message
+
+    class ExplodingSession(FakeSemihostSession):
+        def open(self, **kwargs) -> None:
+            raise OSError("C:\\secret\\credential.txt")
+
+        def close(self) -> None:
+            raise OSError("C:\\secret\\credential.txt")
+
+    semihost = PyOcdSemihostingAdapter(ExplodingSession())
+    with pytest.raises(ProtocolError) as caught:
+        semihost.open(elf_path="C:\\fixture\\app.elf", deadline=2.0)
+    assert caught.value.code == "TEST_TRANSPORT_UNAVAILABLE"
+    assert "secret" not in caught.value.message and "credential" not in caught.value.message
+
+
+class FakeControlBlock:
+    def __init__(self) -> None:
+        self.control_block_address = 0x20000100
+        self.up_channels = [type("Channel", (), {"read": lambda self: b"pyocd-rtt"})()]
+        self.started = False
+
+    def start(self) -> None:
+        self.started = True
+
+
+def test_concrete_pyocd_rtt_adapter_uses_bounded_declared_search() -> None:
+    observed = {}
+    block = FakeControlBlock()
+    def factory(target, *, address, size):
+        observed.update(target=target, address=address, size=size)
+        return block
+    adapter = PyOcdRttAdapter(object(), control_block_factory=factory)
+    adapter.open(channel=0, control_block_address=None, ram_regions=((0x20000000, 0x8000),), deadline=2.0)
+    assert observed["address"] == 0x20000000 and observed["size"] == 0x8000
+    assert block.started and adapter.read(4, 2.0) == b"pyoc"
+    assert adapter.identity() == {"control_block_address": "0x20000100"}
+    adapter.close()
+
+
+def test_concrete_pyocd_rtt_adapter_closes_invalid_and_disconnected_shapes() -> None:
+    adapter = PyOcdRttAdapter(object(), control_block_factory=lambda *args, **kwargs: FakeControlBlock())
+    regions = ((0x20000000, 0x8000),)
+    assert_code("TEST_TRANSPORT_UNAVAILABLE", lambda: adapter.open(channel=0, control_block_address=None, ram_regions=regions + regions, deadline=2.0))
+    assert_code("TEST_TRANSPORT_UNAVAILABLE", lambda: adapter.read(1, 2.0))
+    assert_code("TEST_TRANSPORT_UNAVAILABLE", adapter.identity)
+
+    for actual, channels in ((None, []), (0x1000, [object()]), (0x20000100, [])):
+        block = FakeControlBlock()
+        block.control_block_address = actual
+        block.up_channels = channels
+        invalid = PyOcdRttAdapter(object(), control_block_factory=lambda *args, block=block, **kwargs: block)
+        assert_code("TEST_TRANSPORT_UNAVAILABLE", lambda invalid=invalid: invalid.open(channel=0, control_block_address=0x20000100, ram_regions=regions, deadline=2.0))
+
+    class BrokenChannel:
+        def read(self):
+            raise OSError("disconnect")
+
+    for result in (BrokenChannel(), type("InvalidChannel", (), {"read": lambda self: "bad"})()):
+        block = FakeControlBlock()
+        block.up_channels = [result]
+        broken = PyOcdRttAdapter(object(), control_block_factory=lambda *args, block=block, **kwargs: block)
+        broken.open(channel=0, control_block_address=0x20000100, ram_regions=regions, deadline=2.0)
+        assert_code("TEST_TRANSPORT_UNAVAILABLE", lambda broken=broken: broken.read(1, 2.0))
+        assert_code("TEST_TRANSPORT_UNAVAILABLE", broken.identity)
+
+
+def test_concrete_pyocd_rtt_adapter_runs_real_api_against_bounded_fake_target() -> None:
+    base = 0x20000000
+    memory = bytearray(0x8000)
+    control = base + 0x100
+    buffer = base + 0x200
+    memory[0x100 : 0x100 + 24] = struct.pack("<16sII", b"SEGGER RTT", 1, 0)
+    memory[0x118 : 0x118 + 24] = struct.pack("<IIIIII", 0, buffer, 8, 4, 0, 0)
+    memory[0x200 : 0x204] = b"real"
+
+    class BoundedFakeTarget:
+        def __init__(self) -> None:
+            self.reads: list[tuple[int, int]] = []
+            self.writes: list[tuple[int, int]] = []
+
+        def _offset(self, address: int, size: int) -> int:
+            assert base <= address and address + size <= base + len(memory)
+            return address - base
+
+        def read_memory_block8(self, address: int, size: int):
+            self.reads.append((address, size))
+            offset = self._offset(address, size)
+            return list(memory[offset : offset + size])
+
+        def read_memory_block32(self, address: int, count: int):
+            offset = self._offset(address, count * 4)
+            return list(struct.unpack(f"<{count}I", memory[offset : offset + count * 4]))
+
+        def read32(self, address: int) -> int:
+            return self.read_memory_block32(address, 1)[0]
+
+        def write32(self, address: int, value: int) -> None:
+            self.writes.append((address, value))
+            offset = self._offset(address, 4)
+            memory[offset : offset + 4] = struct.pack("<I", value)
+
+    target = BoundedFakeTarget()
+    adapter = PyOcdRttAdapter(target)
+    adapter.open(channel=0, control_block_address=None, ram_regions=((base, len(memory)),), deadline=2.0)
+    assert adapter.identity() == {"control_block_address": "0x20000100"}
+    assert adapter.read(8, 2.0) == b"real"
+    assert target.reads and max(size for _, size in target.reads) <= 1024
+    assert target.writes == [(control + 24 + 16, 4)]
+    adapter.close()
+
+
+class FakeSemihostSession:
+    def __init__(self) -> None:
+        self.opened = None
+        self.closed = False
+
+    def open(self, *, elf_path, host_io, console, deadline) -> None:
+        self.opened = (elf_path, host_io, console, deadline)
+
+    def poll(self, *, agent, deadline) -> None:
+        self.opened[2].feed(b"semihost")
+
+    def close(self) -> None:
+        self.closed = True
+
+
+def test_concrete_pyocd_semihost_adapter_denies_files_and_bounds_fake_session() -> None:
+    from pyocd.debug.semihost import SemihostIOHandler
+
+    session = FakeSemihostSession()
+    adapter = PyOcdSemihostingAdapter(session, max_buffer_bytes=16)
+    adapter.open(elf_path="C:\\fixture\\app.elf", deadline=2.0)
+    assert isinstance(session.opened[1], SemihostIOHandler)
+    assert isinstance(session.opened[2], SemihostIOHandler)
+    assert session.opened[1].open(0, 0, "r") == -1
+    assert adapter.read(4, 2.0) == b"semi"
+    adapter.close()
+    assert session.closed
+
+
+def test_concrete_pyocd_semihost_adapter_closed_error_and_handler_surfaces() -> None:
+    for session, bound in ((object(), 16), (FakeSemihostSession(), 0), (FakeSemihostSession(), 65537)):
+        assert_code("TEST_PROTOCOL_INVALID", lambda session=session, bound=bound: PyOcdSemihostingAdapter(session, max_buffer_bytes=bound))
+
+    unopened = PyOcdSemihostingAdapter(FakeSemihostSession())
+    assert_code("TEST_TRANSPORT_UNAVAILABLE", lambda: unopened.read(1, 2.0))
+
+    class PollFailure(FakeSemihostSession):
+        def poll(self, *, agent, deadline) -> None:
+            raise OSError("disconnect")
+
+    failed = PyOcdSemihostingAdapter(PollFailure())
+    failed.open(elf_path="C:\\fixture\\app.elf", deadline=2.0)
+    assert_code("TEST_TRANSPORT_UNAVAILABLE", lambda: failed.read(1, 2.0))
+
+    session = FakeSemihostSession()
+    bounded = PyOcdSemihostingAdapter(session, max_buffer_bytes=4)
+    bounded.open(elf_path="C:\\fixture\\app.elf", deadline=2.0)
+    host, console = session.opened[1], session.opened[2]
+    assert host.close(1) == -1
+    assert host.write(1, 0, 4) == 4
+    assert host.read(1, 0, 4) == 4
+    assert host.readc() == 0
+    assert host.istty(1) == 0
+    assert host.seek(1, 0) == -1
+    assert host.flen(1) == -1
+    assert host.remove(0, 0) == -1
+    assert host.rename(0, 0, 0, 0) == -1
+    assert_code("TEST_TRANSPORT_UNAVAILABLE", lambda: console.feed(b"12345"))
