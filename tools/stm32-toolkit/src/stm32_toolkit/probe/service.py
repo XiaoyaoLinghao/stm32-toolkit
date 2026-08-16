@@ -9,7 +9,7 @@ import json
 import os
 import secrets
 import stat
-from collections.abc import Coroutine
+from collections.abc import Coroutine, Mapping
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Callable
@@ -18,8 +18,10 @@ from uuid import uuid4
 from aiohttp import web
 
 from stm32_toolkit import __version__
+from stm32_toolkit.testing.artifacts import TestArtifactCollector
 
 from .backend import ProbeBackend, ProbeBackendError
+from .authorization import ControlAuthorizationError, ControlAuthorizationStore
 from .lease import ProbeLease, ProbeLeaseManager, _RuntimeRootAuthority
 from .model import OperationLevel, ProbeRequest, ProbeResponse
 from .protocol import (
@@ -300,6 +302,8 @@ class ProbeService:
         body_read_timeout_seconds: float = 2.0,
         handoff_ticket: str | None = None,
         _runtime_root_authority: _RuntimeRootAuthority | None = None,
+        control_authorizations: ControlAuthorizationStore | None = None,
+        artifact_collector: TestArtifactCollector | None = None,
     ) -> None:
         self._backend = backend
         self._lease_manager = lease_manager
@@ -318,6 +322,14 @@ class ProbeService:
         self._body_read_timeout_seconds = body_read_timeout_seconds
         self._handoff_ticket = handoff_ticket
         self._runtime_root_authority = _runtime_root_authority
+        if not isinstance(control_authorizations, ControlAuthorizationStore):
+            raise TypeError("Probe Service requires one persistent control authorization store")
+        self._control_authorizations = control_authorizations
+        if artifact_collector is not None and not isinstance(
+            artifact_collector, TestArtifactCollector
+        ):
+            raise TypeError("Probe Service artifact collector is invalid")
+        self._artifact_collector = artifact_collector
         self._session_directory_descriptor: int | None = None
         self._runner: web.AppRunner | None = None
         self._lease: ProbeLease | None = None
@@ -329,7 +341,49 @@ class ProbeService:
         self._heartbeat_task: asyncio.Task[None] | None = None
         self._stop_lock = asyncio.Lock()
         self._stopping = False
-        self._consumed_control_authorizations: set[str] = set()
+
+    def _store_capture(
+        self, data: bytes, *, prefix: str, name: str, kind: str, media_type: str
+    ) -> dict[str, object]:
+        collector = self._artifact_collector
+        if not isinstance(collector, TestArtifactCollector):
+            raise ProbeBackendError(
+                "PROBE_BACKEND_ERROR", "Probe capture Evidence store is unavailable"
+            )
+        try:
+            directory = collector.new_directory(prefix)
+            artifact = collector.write_and_ingest(
+                directory, name, data, kind=kind, media_type=media_type
+            )
+        except Exception as error:
+            raise ProbeBackendError(
+                "PROBE_BACKEND_ERROR", "Probe capture Evidence publication failed"
+            ) from error
+        return artifact.to_dict()
+
+    @staticmethod
+    def _closed_target_identity(value: object) -> dict[str, object]:
+        identity = dict(value) if isinstance(value, Mapping) else {}
+        if (
+            set(identity) != {"board_id", "mcu", "target_id", "probe_serial_hash"}
+            or any(not isinstance(identity[field], str) or not identity[field] for field in ("board_id", "mcu", "target_id"))
+            or not isinstance(identity["probe_serial_hash"], str)
+            or len(identity["probe_serial_hash"]) != 64
+            or any(character not in "0123456789abcdef" for character in identity["probe_serial_hash"])
+        ):
+            raise ProbeBackendError("PROBE_BACKEND_ERROR", "Target identity output is invalid")
+        return identity
+
+    @staticmethod
+    def _closed_target_state(value: object) -> dict[str, object]:
+        state = dict(value) if isinstance(value, Mapping) else {}
+        if (
+            set(state) != {"state", "reason"}
+            or state["state"] not in {"running", "halted", "reset", "faulted"}
+            or state["reason"] not in {"requested", "breakpoint", "watchpoint", "fault", "exception", "reset"}
+        ):
+            raise ProbeBackendError("PROBE_BACKEND_ERROR", "Target state output is invalid")
+        return state
 
     @property
     def endpoint(self) -> ProbeEndpoint | None:
@@ -355,6 +409,20 @@ class ProbeService:
                 raise ProbeServiceError(
                     "PROBE_SESSION_UNSAFE", "Probe session path is not a directory"
                 )
+        preflight = getattr(self._backend, "preflight_target_capabilities", None)
+        if callable(preflight):
+            try:
+                preflight(self._probe_id, self._operation_level)
+            except ProbeBackendError as error:
+                code = error.code if error.code in TARGET_ERROR_CODES else "PROBE_BACKEND_ERROR"
+                raise ProbeServiceError(
+                    code,
+                    error.message if code == error.code else "Probe capability preflight failed",
+                ) from None
+            except Exception:
+                raise ProbeServiceError(
+                    "PROBE_BACKEND_ERROR", "Probe capability preflight failed"
+                ) from None
         token_bytes = self._token_factory()
         if not isinstance(token_bytes, bytes) or len(token_bytes) != 32:
             raise ValueError("Probe Service token factory must return 32 bytes")
@@ -530,6 +598,32 @@ class ProbeService:
 
     async def _run_backend(self, request: ProbeRequest) -> object:
         def invoke() -> object:
+            if request.operation_level is OperationLevel.CONTROL:
+                try:
+                    authorization = self._control_authorizations.consume(
+                        str(request.data["authorization"]),
+                        operation=request.operation,
+                        arguments={
+                            key: value for key, value in request.data.items()
+                            if key != "authorization"
+                        },
+                        workspace_id=request.workspace_id,
+                        session_id=request.session_id,
+                        identity=None,
+                        state=None,
+                    )
+                except ControlAuthorizationError as error:
+                    raise ProbeBackendError(error.code, error.message) from error
+                identity = dict(self._backend.target_identity())
+                state = dict(self._backend.target_state())
+                if (
+                    identity != authorization["identity_snapshot"]
+                    or state != authorization["state_snapshot"]
+                ):
+                    raise ProbeBackendError(
+                        "PROBE_AUTHORIZATION_INVALID",
+                        "Control authorization target binding changed",
+                    )
             if request.operation == "probe.list":
                 return {"probes": [item.to_dict() for item in self._backend.list_probes()]}
             if request.operation == "probe.attach":
@@ -555,12 +649,14 @@ class ProbeService:
                 )
                 return self._backend.flash_elf(image).to_dict()
             if request.operation == "target.identity.read":
-                return dict(self._backend.target_identity())
+                return self._closed_target_identity(self._backend.target_identity())
             if request.operation == "target.state.read":
-                return dict(self._backend.target_state())
+                return self._closed_target_state(self._backend.target_state())
             if request.operation == "target.halt":
                 self._backend.halt()
-                state = dict(self._backend.target_state())
+                state = self._closed_target_state(self._backend.target_state())
+                if state["state"] != "halted":
+                    raise ProbeBackendError("PROBE_BACKEND_ERROR", "Target halt result is invalid")
                 return {"state": "halted", "reason": state["reason"]}
             if request.operation == "target.resume":
                 self._backend.resume()
@@ -569,14 +665,34 @@ class ProbeService:
                 before = self._backend.read_core_registers(("pc",))["pc"]
                 self._backend.step()
                 after = self._backend.read_core_registers(("pc",))["pc"]
+                if any(type(value) is not int or not 0 <= value < 1 << 64 for value in (before, after)):
+                    raise ProbeBackendError("PROBE_BACKEND_ERROR", "Target step result is invalid")
                 return {"state": "halted", "reason": "requested", "pc_before": before, "pc_after": after}
             if request.operation == "target.breakpoint.set":
-                return dict(self._backend.set_temporary_breakpoint(int(request.data["address"]), int(request.data["size"])))
+                result = dict(self._backend.set_temporary_breakpoint(int(request.data["address"]), int(request.data["size"])))
+                if (
+                    set(result) != {"breakpoint_id", "address", "kind", "size"}
+                    or result["address"] != request.data["address"]
+                    or result["size"] != request.data["size"]
+                    or result["kind"] != "temporary"
+                    or not isinstance(result["breakpoint_id"], str)
+                ):
+                    raise ProbeBackendError("PROBE_BACKEND_ERROR", "Target breakpoint result is invalid")
+                return result
             if request.operation == "target.breakpoint.clear":
-                return dict(self._backend.clear_temporary_breakpoint(str(request.data["breakpoint_id"])))
+                result = dict(self._backend.clear_temporary_breakpoint(str(request.data["breakpoint_id"])))
+                if result != {"breakpoint_id": request.data["breakpoint_id"], "cleared": True}:
+                    raise ProbeBackendError("PROBE_BACKEND_ERROR", "Target breakpoint result is invalid")
+                return result
             if request.operation == "target.registers.read":
                 names = tuple(str(item) for item in request.data["names"])
                 values = self._backend.read_core_registers(names)
+                if (
+                    not isinstance(values, Mapping)
+                    or set(values) != set(names)
+                    or any(type(values[name]) is not int or not 0 <= values[name] < 1 << 64 for name in names)
+                ):
+                    raise ProbeBackendError("PROBE_BACKEND_ERROR", "Target register output is invalid")
                 return {"registers": [{"name": name, "value": values[name], "width_bits": 32 if values[name] <= 0xFFFF_FFFF else 64} for name in names]}
             if request.operation == "target.memory.read":
                 address, length = int(request.data["address"]), int(request.data["length"])
@@ -586,11 +702,27 @@ class ProbeService:
                 return {"address": address, "length": length, "data_base64": base64.b64encode(raw).decode("ascii"), "sha256": hashlib.sha256(raw).hexdigest()}
             if request.operation == "target.fault.capture":
                 captured = dict(self._backend.capture_fault(int(request.data["max_stack_bytes"])))
+                if set(captured) != {"fault_registers", "stack", "truncated"}:
+                    raise ProbeBackendError("PROBE_BACKEND_ERROR", "Fault capture output is invalid")
                 stack = captured.pop("stack")
-                if not isinstance(stack, bytes):
+                registers = captured.get("fault_registers")
+                if (
+                    not isinstance(stack, bytes)
+                    or len(stack) > request.data["max_stack_bytes"]
+                    or not isinstance(registers, Mapping)
+                    or set(registers) != {"cfsr", "hfsr", "dfsr", "afsr", "mmfar", "bfar", "shcsr", "icsr"}
+                    or any(type(value) is not int or not 0 <= value <= 0xFFFF_FFFF for value in registers.values())
+                    or type(captured.get("truncated")) is not bool
+                ):
                     raise ProbeBackendError("PROBE_BACKEND_ERROR", "Fault stack output is invalid")
                 captured.update({
-                    "stack_artifact": None if not stack else {"sha256": hashlib.sha256(stack).hexdigest(), "bytes": len(stack), "data_base64": base64.b64encode(stack).decode("ascii")},
+                    "stack_artifact": None if not stack else self._store_capture(
+                        stack,
+                        prefix="fault-stack",
+                        name="fault-stack.bin",
+                        kind="fault-stack",
+                        media_type="application/octet-stream",
+                    ),
                     "stack_bytes": len(stack),
                 })
                 return captured
@@ -599,17 +731,40 @@ class ProbeService:
                 raw = captured.pop("data")
                 if not isinstance(raw, bytes):
                     raise ProbeBackendError("PROBE_BACKEND_ERROR", "Log capture output is invalid")
-                return {"channel": request.data["channel"], "artifact": {"sha256": hashlib.sha256(raw).hexdigest(), "bytes": len(raw), "data_base64": base64.b64encode(raw).decode("ascii")}, "bytes": len(raw), "duration_ms": request.data["duration_ms"], "truncated": bool(captured["truncated"])}
+                if type(captured.get("truncated")) is not bool:
+                    raise ProbeBackendError("PROBE_BACKEND_ERROR", "Log capture output is invalid")
+                return {
+                    "channel": request.data["channel"],
+                    "artifact": self._store_capture(
+                        raw,
+                        prefix="target-logs",
+                        name="target-logs.bin",
+                        kind="target-logs",
+                        media_type="application/octet-stream",
+                    ),
+                    "bytes": len(raw),
+                    "duration_ms": request.data["duration_ms"],
+                    "truncated": captured["truncated"],
+                }
             if request.operation == "target.transport.open":
-                return dict(self._backend.open_target_transport(str(request.data["transport"]), request.data["config"], int(request.data["deadline_ms"])))
+                result = dict(self._backend.open_target_transport(str(request.data["transport"]), request.data["config"], int(request.data["deadline_ms"])))
+                if set(result) != {"transport_id", "identity"} or not isinstance(result["transport_id"], str):
+                    raise ProbeBackendError("PROBE_BACKEND_ERROR", "Target transport result is invalid")
+                result["identity"] = self._closed_target_identity(result["identity"])
+                return result
             if request.operation == "target.transport.read":
                 captured = dict(self._backend.read_target_transport(str(request.data["transport_id"]), int(request.data["max_bytes"]), int(request.data["deadline_ms"])))
                 raw = captured.pop("data")
                 if not isinstance(raw, bytes):
                     raise ProbeBackendError("PROBE_BACKEND_ERROR", "Target transport output is invalid")
-                return {"data_base64": base64.b64encode(raw).decode("ascii"), "eof": bool(captured["eof"])}
+                if type(captured.get("eof")) is not bool:
+                    raise ProbeBackendError("PROBE_BACKEND_ERROR", "Target transport output is invalid")
+                return {"data_base64": base64.b64encode(raw).decode("ascii"), "eof": captured["eof"]}
             if request.operation == "target.transport.close":
-                return dict(self._backend.close_target_transport(str(request.data["transport_id"])))
+                result = dict(self._backend.close_target_transport(str(request.data["transport_id"])))
+                if result != {"transport_id": request.data["transport_id"], "closed": True}:
+                    raise ProbeBackendError("PROBE_BACKEND_ERROR", "Target transport cleanup result is invalid")
+                return result
             raise ProbeBackendError("PROBE_OPERATION_UNSUPPORTED", "Operation is unsupported")
 
         is_modify = request.operation == "flash.program"
@@ -817,22 +972,22 @@ class ProbeService:
             or request.session_id != endpoint.session_id
         ):
             return self._failure(
-                "PROBE_SESSION_MISMATCH",
-                "Probe request does not match the owning session",
+                "PROBE_IDENTITY_MISMATCH" if request.operation.startswith("target.") else "PROBE_SESSION_MISMATCH",
+                "Target request identity does not match" if request.operation.startswith("target.") else "Probe request does not match the owning session",
                 request_id=request.request_id,
                 operation=request.operation,
             )
         if request.lease_id != endpoint.lease_id:
             return self._failure(
-                "PROBE_LEASE_LOST",
-                "Probe request lease is no longer active",
+                "PROBE_LEASE_INVALID" if request.operation.startswith("target.") else "PROBE_LEASE_LOST",
+                "Target request lease is invalid" if request.operation.startswith("target.") else "Probe request lease is no longer active",
                 request_id=request.request_id,
                 operation=request.operation,
             )
         if not self._operation_level.allows(request.operation_level):
             return self._failure(
-                "PROBE_OPERATION_LEVEL_DENIED",
-                "Probe request exceeds the granted operation level",
+                "PROBE_AUTHORIZATION_REQUIRED" if request.operation.startswith("target.") else "PROBE_OPERATION_LEVEL_DENIED",
+                "Target request requires a higher authorization level" if request.operation.startswith("target.") else "Probe request exceeds the granted operation level",
                 request_id=request.request_id,
                 operation=request.operation,
             )
@@ -848,16 +1003,11 @@ class ProbeService:
             or not self._operation_level.allows(required_level)
         ):
             return self._failure(
-                "PROBE_OPERATION_LEVEL_DENIED",
-                "Probe operation does not match the required operation level",
+                "PROBE_AUTHORIZATION_REQUIRED" if request.operation.startswith("target.") else "PROBE_OPERATION_LEVEL_DENIED",
+                "Target operation authorization level is invalid" if request.operation.startswith("target.") else "Probe operation does not match the required operation level",
                 request_id=request.request_id,
                 operation=request.operation,
         )
-        if required_level is OperationLevel.CONTROL:
-            authorization = str(request.data["authorization"])
-            if authorization in self._consumed_control_authorizations:
-                return self._failure("PROBE_AUTHORIZATION_INVALID", "Control authorization is already consumed", request_id=request.request_id, operation=request.operation)
-            self._consumed_control_authorizations.add(authorization)
         try:
             data = await self._run_backend(request)
             response = ProbeResponse.success(request.request_id, request.operation, data)

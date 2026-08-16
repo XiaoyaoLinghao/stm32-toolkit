@@ -180,3 +180,10 @@ class FakeProbeBackend:
         self.attached_target = None
         self.halted = False
         self.closed = True
+    def preflight_target_capabilities(self, probe_id: str, operation_level: object) -> None:
+        if (
+            not isinstance(probe_id, str)
+            or not probe_id
+            or getattr(operation_level, "value", None) not in {"observe", "control", "modify"}
+        ):
+            raise ProbeBackendError("PROBE_IDENTITY_MISMATCH", "Fake Probe identity is invalid")

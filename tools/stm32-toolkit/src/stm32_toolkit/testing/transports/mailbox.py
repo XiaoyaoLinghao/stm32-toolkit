@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 from typing import Mapping, Protocol
 
 from stm32_toolkit.testing.model import TestProtocolError, protocol_error
@@ -111,10 +112,67 @@ class MailboxTransport(TransportBase):
         self._cursor = (self._cursor + count) & _COUNTER_MASK
         return data
 
+    async def _external_read_async(self, address: int, size: int, deadline: float) -> bytes:
+        try:
+            data = self._reader.read_memory(address, size, deadline)
+            if inspect.isawaitable(data):
+                data = await data
+        except Exception as exc:
+            await self._close_quietly_async()
+            raise unavailable("mailbox reader disconnected") from exc
+        if not isinstance(data, bytes) or len(data) != size:
+            await self._close_quietly_async()
+            raise unavailable("mailbox reader returned partial output")
+        return data
+
+    async def read_async(self, max_bytes: int, deadline: float) -> bytes:
+        """Read through either the original sync port or the production async Probe v2 port."""
+        try:
+            self._begin_read(max_bytes, deadline)
+        except TestProtocolError as exc:
+            if exc.code == "TEST_TIMEOUT":
+                await self._close_quietly_async()
+            raise
+        header = await self._external_read_async(self._address, _HEADER_BYTES, deadline)
+        producer = int.from_bytes(header[:8], "little")
+        consumer = int.from_bytes(header[8:], "little")
+        target_available = (producer - consumer) & _COUNTER_MASK
+        if target_available > self._size:
+            await self._invalid_target_output_async("mailbox producer/consumer counters exceed the ring")
+        if self._cursor is None:
+            self._cursor = consumer
+        available = (producer - self._cursor) & _COUNTER_MASK
+        if available > self._size:
+            await self._invalid_target_output_async("mailbox local cursor is outside the target window")
+        count = min(max_bytes, available)
+        if count == 0:
+            return b""
+        offset = self._cursor % self._size
+        first = min(count, self._size - offset)
+        data = await self._external_read_async(self._address + _HEADER_BYTES + offset, first, deadline)
+        if first < count:
+            data += await self._external_read_async(self._address + _HEADER_BYTES, count - first, deadline)
+        self._cursor = (self._cursor + count) & _COUNTER_MASK
+        return data
+
     def close(self) -> None:
         failure: Exception | None = None
         try:
             self._reader.close()
+        except Exception as exc:
+            failure = exc
+        finally:
+            self._cursor = None
+            self._mark_closed()
+        if failure is not None:
+            raise unavailable("mailbox cleanup failed") from failure
+
+    async def close_async(self) -> None:
+        failure: Exception | None = None
+        try:
+            result = self._reader.close()
+            if inspect.isawaitable(result):
+                await result
         except Exception as exc:
             failure = exc
         finally:
@@ -129,6 +187,16 @@ class MailboxTransport(TransportBase):
         except TestProtocolError:
             pass
 
+    async def _close_quietly_async(self) -> None:
+        try:
+            await self.close_async()
+        except TestProtocolError:
+            pass
+
     def _invalid_target_output(self, message: str) -> None:
         self._close_quietly()
+        raise protocol_error("TEST_PROTOCOL_INVALID", message)
+
+    async def _invalid_target_output_async(self, message: str) -> None:
+        await self._close_quietly_async()
         raise protocol_error("TEST_PROTOCOL_INVALID", message)

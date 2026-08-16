@@ -2,20 +2,25 @@
 
 from __future__ import annotations
 
-import asyncio
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from hashlib import sha256
 import json
+import os
 from pathlib import Path
+import inspect
 import secrets
 import time
 import struct
 from types import MappingProxyType
 from typing import Mapping
+from uuid import uuid4
 import zlib
 
-from stm32_toolkit.evidence import canonical_json_bytes
+from stm32_toolkit.evidence import EvidenceEnvelope, EvidenceIdentity, canonical_json_bytes
+from stm32_toolkit.evidence.store import EvidenceStore
+from stm32_toolkit.result import OperationResult
+from stm32_toolkit.testing.artifacts import TestArtifactCollector
 from stm32_toolkit.probe.client import ProbeClient
 from stm32_toolkit.probe.service import ProbeEndpoint
 from stm32_toolkit.testing.model import (
@@ -23,6 +28,9 @@ from stm32_toolkit.testing.model import (
     MAX_FRAME_PAYLOAD_BYTES,
     MAX_RUN_STREAM_BYTES,
     TestProtocolError,
+    TestCaseResult,
+    TestRunManifest,
+    TEST_SCHEMA,
     protocol_error,
 )
 from stm32_toolkit.testing.protocol import validate_event_payload
@@ -376,16 +384,81 @@ class PreparedTargetRun:
     binding: Mapping[str, object]
 
 
+class GuardedTargetFlashAdapter:
+    """Bind Target runs to the existing one-shot guarded flash workflow."""
+
+    def __init__(
+        self,
+        *,
+        project_root: Path,
+        data_root: Path,
+        session_id: str,
+        probe_id: str,
+        workflow: object,
+    ) -> None:
+        if (
+            not isinstance(project_root, Path)
+            or not project_root.is_absolute()
+            or not isinstance(data_root, Path)
+            or not data_root.is_absolute()
+            or not isinstance(session_id, str)
+            or not session_id
+            or not isinstance(probe_id, str)
+            or not probe_id
+            or not callable(workflow)
+        ):
+            raise TypeError("Guarded Target flash adapter configuration is invalid")
+        self._project_root = project_root
+        self._data_root = data_root
+        self._session_id = session_id
+        self._probe_id = probe_id
+        self._workflow = workflow
+
+    async def run(self, binding: Mapping[str, object]) -> None:
+        from stm32_toolkit.hardware_workflows import FlashWorkflowRequest
+
+        if binding.get("session_id") != self._session_id:
+            raise TargetRunError("TEST_IDENTITY_MISMATCH", "Target flash session changed")
+        result = await self._workflow(
+            FlashWorkflowRequest(
+                self._project_root,
+                self._data_root,
+                self._session_id,
+                self._probe_id,
+                str(binding["build_id"]),
+                str(binding["elf_sha256"]),
+                True,
+            )
+        )
+        if not isinstance(result, OperationResult) or not result.ok:
+            raise TargetRunError("TEST_FLASH_FAILED", "Guarded Target flash failed")
+
+
 class TargetTestRunner:
     """Identity-bound Target test orchestration over guarded flash and closed transports."""
 
-    def __init__(self, evidence_root: Path, probe: object, flash_workflow: object, transport_factory: object) -> None:
-        if not isinstance(evidence_root, Path) or not callable(transport_factory):
+    def __init__(
+        self,
+        evidence_root: Path,
+        probe: object,
+        flash_workflow: object,
+        transport_factory: object,
+        *,
+        artifact_collector: TestArtifactCollector | None = None,
+    ) -> None:
+        if (
+            not isinstance(evidence_root, Path)
+            or not evidence_root.is_absolute()
+            or evidence_root.parent == evidence_root
+            or not callable(transport_factory)
+        ):
             raise TypeError("Target runner dependencies are invalid")
         self._root = evidence_root
+        self._storage = EvidenceStore(evidence_root)
         self._probe = probe
         self._flash = flash_workflow
         self._transport_factory = transport_factory
+        self._collector = artifact_collector
 
     async def prepare(self, *, now: datetime | None = None, **binding: object) -> PreparedTargetRun:
         required = {
@@ -406,66 +479,281 @@ class TargetTestRunner:
             raise TargetRunError("TEST_PROTOCOL_INVALID", "Target run time must be UTC aware")
         nonce = secrets.token_hex(32)
         expires = instant.astimezone(timezone.utc) + timedelta(minutes=5)
-        full = {**binding, "cases": list(binding["cases"]), "nonce": nonce, "expires_at_utc": expires.strftime("%Y-%m-%dT%H:%M:%S.%fZ")}
+        full = {
+            **binding,
+            "cases": list(binding["cases"]),
+            "nonce": nonce,
+            "prepared_at_utc": instant.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ"),
+            "expires_at_utc": expires.strftime("%Y-%m-%dT%H:%M:%S.%fZ"),
+        }
         digest = sha256(canonical_json_bytes(full)).hexdigest()
-        self._root.mkdir(parents=True, exist_ok=True)
-        try:
-            with (self._root / f"{digest}.prepared.json").open("xb") as stream:
-                stream.write(canonical_json_bytes(full))
-        except FileExistsError as error:
-            raise TargetRunError("TEST_AUTHORIZATION_INVALID", "Target authorization already exists") from error
+        with self._storage._mutation_lock():
+            created = self._storage._atomic_create_new(
+                self._root / f"{digest}.prepared.json",
+                canonical_json_bytes(full),
+                phase="target-run-prepare",
+            )
+            if not created:
+                raise TargetRunError("TEST_AUTHORIZATION_INVALID", "Target authorization already exists")
         return PreparedTargetRun(digest, nonce, expires, full)
+
+    def _consume_prepared(
+        self, digest: str, *, now: datetime
+    ) -> Mapping[str, object]:
+        if not isinstance(digest, str) or len(digest) != 64 or any(
+            character not in "0123456789abcdef" for character in digest
+        ):
+            raise TargetRunError("TEST_AUTHORIZATION_INVALID", "Target authorization is invalid")
+        with self._storage._mutation_lock():
+            path = self._root / f"{digest}.prepared.json"
+            try:
+                self._storage._validate_existing_path(path, regular=True, single_link=True)
+                descriptor = os.open(
+                    path,
+                    os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0),
+                )
+                try:
+                    payload = os.read(descriptor, 65_537)
+                    if len(payload) > 65_536 or os.read(descriptor, 1):
+                        raise ValueError
+                finally:
+                    os.close(descriptor)
+                record = json.loads(payload.decode("utf-8"))
+                if (
+                    not isinstance(record, dict)
+                    or canonical_json_bytes(record) != payload
+                    or sha256(payload).hexdigest() != digest
+                ):
+                    raise ValueError
+                self._validate_prepared_record(record)
+            except (OSError, ValueError, UnicodeError, json.JSONDecodeError) as error:
+                raise TargetRunError(
+                    "TEST_AUTHORIZATION_INVALID", "Target authorization is unknown or corrupt"
+                ) from error
+            consumed = canonical_json_bytes(
+                {
+                    "action_digest": digest,
+                    "consumed_at_utc": now.strftime("%Y-%m-%dT%H:%M:%S.%fZ"),
+                }
+            )
+            if not self._storage._atomic_create_new(
+                self._root / f"{digest}.consumed.json",
+                consumed,
+                phase="target-run-consume",
+            ):
+                raise TargetRunError(
+                    "TEST_AUTHORIZATION_INVALID", "Target authorization is already consumed"
+                )
+            return record
+
+    @staticmethod
+    def _validate_prepared_record(record: Mapping[str, object]) -> None:
+        required = {
+            "workspace_id", "project_id", "session_id", "revision", "target",
+            "probe_serial_hash", "elf_path", "elf_sha256", "build_id", "inventory_digest",
+            "transport", "transport_config", "cases", "timeout_ms", "nonce",
+            "prepared_at_utc", "expires_at_utc",
+        }
+        try:
+            if set(record) != required:
+                raise ValueError
+            for field in ("workspace_id", "project_id", "session_id", "revision", "elf_path"):
+                if not isinstance(record[field], str) or not record[field]:
+                    raise ValueError
+            for field in ("probe_serial_hash", "elf_sha256", "build_id", "inventory_digest", "nonce"):
+                value = record[field]
+                if not isinstance(value, str) or len(value) != 64 or any(
+                    character not in "0123456789abcdef" for character in value
+                ):
+                    raise ValueError
+            target = record["target"]
+            if (
+                not isinstance(target, Mapping)
+                or set(target) != {"board_id", "mcu", "target_id", "probe_serial_hash"}
+                or any(not isinstance(value, str) or not value for value in target.values())
+                or target["probe_serial_hash"] != record["probe_serial_hash"]
+            ):
+                raise ValueError
+            if record["transport"] not in {"mailbox", "rtt", "uart", "semihosting"}:
+                raise ValueError
+            if not isinstance(record["transport_config"], Mapping):
+                raise ValueError
+            cases = record["cases"]
+            if (
+                not isinstance(cases, list)
+                or not cases
+                or len(cases) > 4096
+                or any(not isinstance(case, str) or not case for case in cases)
+                or len(set(cases)) != len(cases)
+            ):
+                raise ValueError
+            if type(record["timeout_ms"]) is not int or not 1 <= record["timeout_ms"] <= 300_000:
+                raise ValueError
+            prepared = datetime.fromisoformat(str(record["prepared_at_utc"])[:-1] + "+00:00")
+            expires = datetime.fromisoformat(str(record["expires_at_utc"])[:-1] + "+00:00")
+            if (
+                not str(record["prepared_at_utc"]).endswith("Z")
+                or not str(record["expires_at_utc"]).endswith("Z")
+                or prepared.tzinfo is None
+                or expires <= prepared
+                or expires - prepared > timedelta(minutes=5)
+            ):
+                raise ValueError
+        except (KeyError, TypeError, ValueError) as error:
+            raise ValueError("invalid prepared Target run record") from error
 
     async def run(
         self, prepared: PreparedTargetRun, authorized_digest: str, *,
         current_revision: str, current_inventory_digest: str, now: datetime | None = None,
     ) -> Mapping[str, object]:
-        consumed = self._root / f"{prepared.action_digest}.consumed.json"
-        try:
-            with consumed.open("xb") as stream:
-                stream.write(canonical_json_bytes({"action_digest": prepared.action_digest, "state": "consumed"}))
-        except FileExistsError as error:
-            await self._probe.close()
-            raise TargetRunError("TEST_AUTHORIZATION_INVALID", "Target authorization is already consumed") from error
         transport = None
         try:
-            instant = now or datetime.now(timezone.utc)
-            binding = prepared.binding
-            if authorized_digest != prepared.action_digest or instant > prepared.expires_at_utc:
+            instant = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+            if not isinstance(prepared, PreparedTargetRun):
+                raise TargetRunError("TEST_AUTHORIZATION_INVALID", "Target authorization value is invalid")
+            binding = self._consume_prepared(prepared.action_digest, now=instant)
+            try:
+                expires_at = datetime.fromisoformat(
+                    str(binding["expires_at_utc"])[:-1] + "+00:00"
+                )
+            except (KeyError, ValueError, TypeError) as error:
+                raise TargetRunError("TEST_AUTHORIZATION_INVALID", "Target authorization record is invalid") from error
+            if authorized_digest != prepared.action_digest or instant > expires_at:
                 raise TargetRunError("TEST_AUTHORIZATION_INVALID", "Exact unexpired Target authorization is required")
             if current_revision != binding["revision"] or current_inventory_digest != binding["inventory_digest"]:
                 raise TargetRunError("TEST_INVENTORY_CHANGED", "Project revision or inventory changed")
             identity = await self._probe.target_identity()
             if identity != binding["target"]:
                 raise TargetRunError("TEST_IDENTITY_MISMATCH", "Target identity changed")
-            await self._flash.run_authorized(**dict(binding))
+            if not isinstance(self._flash, GuardedTargetFlashAdapter):
+                raise TargetRunError(
+                    "TEST_AUTHORIZATION_INVALID",
+                    "Target run requires the production guarded flash adapter",
+                )
+            await self._flash.run(binding)
             if await self._probe.target_identity() != binding["target"]:
                 raise TargetRunError("TEST_IDENTITY_MISMATCH", "Target identity changed after flash")
             transport = self._transport_factory(str(binding["transport"]))
             deadline = time.monotonic() + float(binding["timeout_ms"]) / 1000
-            transport.open(dict(binding["transport_config"]), deadline)
+            opened = transport.open(dict(binding["transport_config"]), deadline)
+            if inspect.isawaitable(opened):
+                await opened
             raw = bytearray()
             while len(raw) <= MAX_RUN_STREAM_BYTES:
-                chunk = transport.read(min(65_536, MAX_RUN_STREAM_BYTES + 1 - len(raw)), deadline)
+                reader = getattr(transport, "read_async", transport.read)
+                chunk = reader(min(65_536, MAX_RUN_STREAM_BYTES + 1 - len(raw)), deadline)
+                if inspect.isawaitable(chunk):
+                    chunk = await chunk
                 if not chunk:
                     break
                 raw.extend(chunk)
             if len(raw) > MAX_RUN_STREAM_BYTES:
                 raise TargetRunError("TEST_STREAM_TOO_LARGE", "Target output exceeds the run limit")
-            run_root = self._root / prepared.action_digest
-            run_root.mkdir(exist_ok=False)
-            raw_path = run_root / "target-stream.bin"
-            raw_path.write_bytes(bytes(raw))
-            raw_ref = {"path": raw_path.name, "bytes": len(raw), "sha256": sha256(raw).hexdigest()}
-            test_manifest = {"schema": "stm32-target-test/1", "binding": dict(binding), "raw": raw_ref}
-            (run_root / "test-manifest.json").write_bytes(canonical_json_bytes(test_manifest))
-            evidence_manifest = {"schema": "stm32-target-evidence/1", "test_manifest": "test-manifest.json", "action_digest": prepared.action_digest}
-            (run_root / "evidence-manifest.json").write_bytes(canonical_json_bytes(evidence_manifest))
-            return evidence_manifest
+            try:
+                decoder = TargetFrameDecoder()
+                frames = decoder.feed(bytes(raw))
+                decoder.finish()
+                validator = TargetRunValidator(
+                    TargetRunBinding(
+                        str(binding["inventory_digest"]),
+                        str(binding["build_id"]),
+                        str(binding["elf_sha256"]),
+                        str(dict(binding["target"])["target_id"]),
+                    )
+                )
+                for frame in frames:
+                    validator.accept(frame)
+                validator.finish()
+            except TestProtocolError as error:
+                raise TargetRunError(error.code, error.message) from error
+            collector = self._collector
+            if not isinstance(collector, TestArtifactCollector):
+                raise TargetRunError("TEST_EVIDENCE_FAILED", "Target Evidence collector is required")
+            directory = collector.new_directory("target-run")
+            raw_artifact = collector.write_and_ingest(
+                directory,
+                "target-stream.bin",
+                bytes(raw),
+                kind="test-events",
+                media_type="application/vnd.stm32.target-events",
+            )
+            inventory = frames[0].payload
+            run_start = frames[1].payload
+            terminal = frames[-1].payload
+            identity = EvidenceIdentity.from_dict(inventory["identity"])
+            if (
+                identity.workspace_id != binding["workspace_id"]
+                or identity.project_id != binding["project_id"]
+                or identity.session_id != binding["session_id"]
+                or identity.build_id != binding["build_id"]
+                or identity.elf_sha256 != binding["elf_sha256"]
+                or identity.target_device != dict(binding["target"])["target_id"]
+                or identity.input_snapshot_sha256 != binding["inventory_digest"]
+                or identity.git_commit != binding["revision"]
+            ):
+                raise TargetRunError(
+                    "TEST_IDENTITY_MISMATCH", "Target Test and Evidence identities do not match"
+                )
+            case_starts = {
+                str(frame.payload["case_id"]): frame.payload
+                for frame in frames if frame.kind == 3
+            }
+            cases = tuple(
+                TestCaseResult(
+                    str(frame.payload["case_id"]),
+                    str(frame.payload["state"]),
+                    str(case_starts[str(frame.payload["case_id"])]["started_at_utc"]),
+                    str(frame.payload["ended_at_utc"]),
+                    int(frame.payload["duration_ms"]),
+                    frame.payload["message"],
+                    None,
+                    None,
+                )
+                for frame in frames if frame.kind == 4
+            )
+            manifest = TestRunManifest(
+                TEST_SCHEMA,
+                uuid4().hex,
+                "target",
+                str(terminal["state"]),
+                identity,
+                str(binding["transport"]),
+                cases,
+                str(run_start["started_at_utc"]),
+                str(terminal["ended_at_utc"]),
+                int(terminal["duration_ms"]),
+                None,
+                None,
+                raw_artifact,
+            )
+            manifest_artifact = collector.write_and_ingest(
+                directory,
+                "test-manifest.json",
+                canonical_json_bytes(manifest.to_dict()),
+                kind="test-manifest",
+                media_type="application/json",
+            )
+            envelope = EvidenceEnvelope(
+                identity=identity,
+                operation="target-test-run",
+                produced_at_utc=str(terminal["ended_at_utc"]),
+                parents=(),
+                artifacts=(raw_artifact, manifest_artifact),
+                metadata={
+                    "action_digest": prepared.action_digest,
+                    "test_run_id": manifest.run_id,
+                    "test_manifest_sha256": manifest_artifact.sha256,
+                },
+            )
+            collector.evidence_store.put_envelope(envelope)
+            return {"test_manifest": manifest, "evidence": envelope}
         finally:
             if transport is not None:
                 try:
-                    transport.close()
+                    closer = getattr(transport, "close_async", transport.close)
+                    closed = closer()
+                    if inspect.isawaitable(closed):
+                        await closed
                 except Exception:
                     pass
             await self._probe.close()
@@ -479,8 +767,13 @@ class TargetTestRunner:
             identity = await self._probe.target_identity()
             if identity != dict(expected_identity):
                 raise TargetRunError("TEST_TRANSPORT_UNAVAILABLE", "Configured target identity is unavailable")
-            active.open(config, deadline)
-            raw = active.read(65_536, deadline)
+            opened = active.open(config, deadline)
+            if inspect.isawaitable(opened):
+                await opened
+            reader = getattr(active, "read_async", active.read)
+            raw = reader(65_536, deadline)
+            if inspect.isawaitable(raw):
+                raw = await raw
             if not isinstance(raw, bytes):
                 raise TargetRunError("TEST_TRANSPORT_UNAVAILABLE", "Target discovery output is invalid")
             transport_identity = active.identity()
@@ -489,13 +782,16 @@ class TargetTestRunner:
             return {"identity": transport_identity, "raw": raw}
         finally:
             try:
-                active.close()
+                closer = getattr(active, "close_async", active.close)
+                closed = closer()
+                if inspect.isawaitable(closed):
+                    await closed
             finally:
                 await self._probe.close()
 
 
 class ProbeV2MemoryReader:
-    """Synchronous bounded mailbox port backed only by a public Probe v2 endpoint."""
+    """Async bounded mailbox port backed only by a public Probe v2 endpoint."""
 
     def __init__(self, endpoint: ProbeEndpoint, expected_identity: Mapping[str, object]) -> None:
         if not isinstance(endpoint, ProbeEndpoint) or endpoint.protocol != "stm32-toolkit-probe/2":
@@ -506,7 +802,7 @@ class ProbeV2MemoryReader:
         self._identity = dict(expected_identity)
         self._closed = False
 
-    def read_memory(self, address: int, size: int, deadline: float) -> bytes:
+    async def read_memory(self, address: int, size: int, deadline: float) -> bytes:
         if self._closed or type(address) is not int or type(size) is not int or not 1 <= size <= 4096:
             raise RuntimeError("Mailbox reader is closed or request is invalid")
         remaining = deadline - time.monotonic()
@@ -514,16 +810,13 @@ class ProbeV2MemoryReader:
             raise TimeoutError("Mailbox read deadline elapsed")
         timeout_ms = max(1, min(300_000, int(remaining * 1000)))
 
-        async def read() -> bytes:
-            client = ProbeClient(self._endpoint)
-            try:
-                if await client.target_identity() != self._identity:
-                    raise RuntimeError("Mailbox target identity changed")
-                return await client.target_memory(address, size, timeout_ms=timeout_ms)
-            finally:
-                await client.close()
+        client = ProbeClient(self._endpoint)
+        try:
+            if await client.target_identity() != self._identity:
+                raise RuntimeError("Mailbox target identity changed")
+            return await client.target_memory(address, size, timeout_ms=timeout_ms)
+        finally:
+            await client.close()
 
-        return asyncio.run(read())
-
-    def close(self) -> None:
+    async def close(self) -> None:
         self._closed = True

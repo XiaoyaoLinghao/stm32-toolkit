@@ -193,6 +193,22 @@ def test_endpoint_loader_binds_probe_and_granted_operation_level(tmp_path: Path)
     assert endpoint.operation_level is OperationLevel.MODIFY
 
 
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [("token", "bad"), ("workspaceId", ""), ("operationLevel", "invalid")],
+)
+def test_endpoint_loader_rejects_each_closed_credential_and_binding_boundary(
+    field: str, value: object, tmp_path: Path,
+) -> None:
+    record = endpoint_record()
+    record[field] = value
+    path = tmp_path / f"invalid-{field}.json"
+    path.write_bytes(json.dumps(record, sort_keys=True).encode("utf-8"))
+    with pytest.raises(ProbeClientError) as caught:
+        load_probe_endpoint(path)
+    assert caught.value.code == "PROBE_ENDPOINT_INVALID"
+
+
 def test_endpoint_loader_rejects_non_exact_probe_binding(tmp_path: Path):
     record = endpoint_record()
     record["probeId"] = "../probe"
@@ -302,16 +318,30 @@ def test_response_decoder_rejects_unrelated_or_malformed_success(
     assert error.value.code == "PROBE_RESPONSE_INVALID"
 
 
-def test_response_decoder_rejects_body_over_one_mebibyte_before_json_use():
+def test_response_decoder_rejects_body_over_bounded_10_mib_envelope_before_json_use():
     payload = response_record()
-    payload["data"] = {"value": "x" * 1_048_576}
+    payload["data"] = {"value": "x" * (11 * 1_048_576)}
     raw = json.dumps(payload).encode("utf-8")
-    assert len(raw) > 1_048_576
+    assert len(raw) > 11 * 1_048_576
 
     with pytest.raises(ProbeClientError) as error:
         _decode_response(raw)
 
     assert error.value.code == "PROBE_RESPONSE_INVALID"
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        {"ok": False, "code": "OK", "message": "failed", "data": None},
+        {"ok": False, "code": "PROBE_BACKEND_ERROR", "message": "failed", "data": {}},
+    ],
+)
+def test_response_decoder_rejects_internally_contradictory_failure(mutation: dict[str, object]) -> None:
+    payload = {**response_record(), **mutation}
+    with pytest.raises(ProbeClientError) as caught:
+        _decode_response(json.dumps(payload).encode("utf-8"))
+    assert caught.value.code == "PROBE_RESPONSE_INVALID"
 
 
 def test_close_is_transport_only_and_never_requests_backend_close():

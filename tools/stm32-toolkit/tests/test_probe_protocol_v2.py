@@ -64,7 +64,7 @@ def test_v2_schema_mirrors_and_closed_operation_matrix():
 @pytest.mark.parametrize(
     ("operation", "level", "data", "timeout"),
     [
-        ("target.transport.open", "observe", {"transport": "mailbox", "config": {}, "deadline_ms": 1}, 1),
+        ("target.transport.open", "observe", {"transport": "mailbox", "config": {"kind": "memory-mailbox", "options": {"address": 0x20000000, "size": 4096}}, "deadline_ms": 1}, 1),
         ("target.transport.read", "observe", {"transport_id": "transport-a", "max_bytes": 65_536, "deadline_ms": 300_000}, 300_000),
         ("target.transport.close", "observe", {"transport_id": "transport-a"}, 5_000),
         ("target.identity.read", "observe", {}, 5_000),
@@ -119,6 +119,24 @@ def test_v1_is_rejected_before_schema_or_backend_work():
     assert caught.value.code == "PROBE_VERSION_MISMATCH"
 
 
+@pytest.mark.parametrize(
+    ("transport", "config"),
+    [
+        ("mailbox", {}),
+        ("mailbox", {"kind": "rtt", "options": {"channel": 0}}),
+        ("rtt", {"kind": "rtt", "options": {"channel": True}}),
+        ("uart", {"kind": "uart", "options": {"port": "COM3", "baud": 123}}),
+        ("semihosting", {"kind": "semihosting", "options": {"hostFile": True}}),
+    ],
+)
+def test_target_transport_config_is_the_closed_project_v3_union(transport, config):
+    with pytest.raises(ProbeProtocolError) as caught:
+        decode(request("target.transport.open", "observe", {
+            "transport": transport, "config": config, "deadline_ms": 100,
+        }))
+    assert caught.value.code == "PROBE_PROTOCOL_INVALID"
+
+
 def test_canonical_base64_rule_is_strict():
     encoded = base64.b64encode(b"abc").decode("ascii")
     assert base64.b64decode(encoded, validate=True) == b"abc"
@@ -144,46 +162,101 @@ def test_public_client_executes_every_v2_adapter_through_one_service(tmp_path: P
             self.bad_logs = False
             self.bad_transport = False
             self.identity_error = None
+            self.identity_reads = 0
+            self.malformed = ""
         def target_identity(self):
+            self.identity_reads += 1
             if self.identity_error is not None: raise self.identity_error
             return {"board_id": "board-a", "mcu": "stm32f407vg", "target_id": "target-a", "probe_serial_hash": "a" * 64}
-        def target_state(self): return {"state": "halted" if self.halted else "running", "reason": "requested"}
-        def set_temporary_breakpoint(self, address, size): return {"breakpoint_id": "bp-1", "address": address, "kind": "temporary", "size": size}
-        def clear_temporary_breakpoint(self, breakpoint_id): return {"breakpoint_id": breakpoint_id, "cleared": True}
+        def target_state(self):
+            return {"state": "running" if self.malformed == "halt" else "halted" if self.halted else "running", "reason": "requested"}
+        def set_temporary_breakpoint(self, address, size):
+            return {"breakpoint_id": "bp-1", "address": address + (1 if self.malformed == "breakpoint" else 0), "kind": "temporary", "size": size}
+        def clear_temporary_breakpoint(self, breakpoint_id):
+            return {"breakpoint_id": breakpoint_id, "cleared": self.malformed != "clear"}
         def read_memory(self, address, length): return b"x" if self.partial_memory else super().read_memory(address, length)
-        def capture_fault(self, maximum): return {"fault_registers": {name: 0 for name in ("cfsr", "hfsr", "dfsr", "afsr", "mmfar", "bfar", "shcsr", "icsr")}, "stack": "bad" if self.bad_fault else b"" if maximum == 0 else b"abcd", "truncated": False}
-        def capture_logs(self, channel, maximum, duration): return {"data": "bad" if self.bad_logs else b"log", "truncated": False}
-        def open_target_transport(self, transport, config, deadline): return {"transport_id": "transport-1", "identity": self.target_identity()}
-        def read_target_transport(self, transport_id, maximum, deadline): data, self.transport = self.transport, b""; return {"data": "bad" if self.bad_transport else data, "eof": False}
-        def close_target_transport(self, transport_id): return {"transport_id": transport_id, "closed": True}
+        def read_core_registers(self, names):
+            if self.malformed == "register": return {name: True for name in names}
+            return super().read_core_registers(names)
+        def capture_fault(self, maximum):
+            if self.malformed == "fault-shape": return {"stack": b"", "truncated": False}
+            return {"fault_registers": {name: 0 for name in ("cfsr", "hfsr", "dfsr", "afsr", "mmfar", "bfar", "shcsr", "icsr")}, "stack": "bad" if self.bad_fault else b"" if maximum == 0 else b"abcd", "truncated": False}
+        def capture_logs(self, channel, maximum, duration):
+            return {"data": "bad" if self.bad_logs else b"log", "truncated": 1 if self.malformed == "logs-truncated" else False}
+        def open_target_transport(self, transport, config, deadline):
+            return {"transport_id": 1 if self.malformed == "transport-open" else "transport-1", "identity": self.target_identity()}
+        def read_target_transport(self, transport_id, maximum, deadline):
+            data, self.transport = self.transport, b""
+            return {"data": "bad" if self.bad_transport else data, "eof": 1 if self.malformed == "transport-read" else False}
+        def close_target_transport(self, transport_id):
+            return {"transport_id": transport_id, "closed": self.malformed != "transport-close"}
 
     async def scenario():
+        from stm32_toolkit.probe.authorization import ControlAuthorizationStore
+
         backend = Backend()
-        service = make_service(tmp_path, level=OperationLevel.CONTROL, backend=backend)
+        authorizations = ControlAuthorizationStore((tmp_path / "control").absolute())
+        service = make_service(
+            tmp_path,
+            level=OperationLevel.CONTROL,
+            backend=backend,
+            control_authorizations=authorizations,
+        )
         endpoint = await service.start()
         client = ProbeClient(endpoint)
+        def authorize(operation, arguments):
+            identity = backend.target_identity()
+            return authorizations.prepare(
+                {
+                    "workspace_id": "workspace-a", "project_id": "project-a",
+                    "session_id": "session-a", "revision": "rev-a", "target": identity,
+                    "firmware": {"build_id": "b" * 64, "elf_sha256": "e" * 64},
+                    "operation": operation, "arguments": arguments,
+                    "identity_snapshot": identity, "state_snapshot": backend.target_state(),
+                }
+            ).action_digest
         try:
             await client.attach("probe-a", "stm32f407vg")
             assert (await client.target_identity())["target_id"] == "target-a"
             assert (await client.target_state())["state"] == "running"
             assert await client.target_memory(0x20000000, 4) == b"abcd"
             assert (await client.target_registers(("r0", "pc")))[0]["value"] == 7
-            assert (await client.target_control("target.halt", {}, "1" * 64))["state"] == "halted"
-            stepped = await client.target_control("target.step", {}, "3" * 64)
+            identity_reads = backend.identity_reads
+            with pytest.raises(Exception) as unknown:
+                await client.target_control("target.halt", {}, "1" * 64)
+            assert unknown.value.code == "PROBE_AUTHORIZATION_INVALID"
+            assert backend.identity_reads == identity_reads
+            halt = authorize("target.halt", {})
+            assert (await client.target_control("target.halt", {}, halt))["state"] == "halted"
+            stepped = await client.target_control("target.step", {}, authorize("target.step", {}))
             assert stepped["pc_before"] == stepped["pc_after"]
-            bp = await client.target_control("target.breakpoint.set", {"address": 0x08000100, "kind": "temporary", "size": 2}, "4" * 64)
-            assert (await client.target_control("target.breakpoint.clear", {"breakpoint_id": bp["breakpoint_id"]}, "5" * 64))["cleared"] is True
-            assert (await client.target_control("target.resume", {}, "2" * 64)) == {"state": "running"}
+            bp_args = {"address": 0x08000100, "kind": "temporary", "size": 2}
+            bp = await client.target_control("target.breakpoint.set", bp_args, authorize("target.breakpoint.set", bp_args))
+            clear_args = {"breakpoint_id": bp["breakpoint_id"]}
+            assert (await client.target_control("target.breakpoint.clear", clear_args, authorize("target.breakpoint.clear", clear_args)))["cleared"] is True
+            assert (await client.target_control("target.resume", {}, authorize("target.resume", {}))) == {"state": "running"}
             assert (await client.target_registers(("wide",)))[0]["width_bits"] == 64
-            opened = await client.target_transport_open("mailbox", {}, 100)
+            mailbox_config = {"kind": "memory-mailbox", "options": {"address": 0x20000000, "size": 4096}}
+            opened = await client.target_transport_open("mailbox", mailbox_config, 100)
             raw, eof = await client.target_transport_read(opened["transport_id"], 16, 100)
             assert (raw, eof) == (b"xyz", False)
             await client.target_transport_close(opened["transport_id"])
             assert (await client.target_fault(0))["stack_artifact"] is None
-            assert (await client.target_fault(4))["stack_artifact"]["bytes"] == 4
-            assert (await client.target_logs("rtt", 16, 100))["bytes"] == 3
+            stack = (await client.target_fault(4))["stack_artifact"]
+            assert stack == {
+                "sha256": "88d4266fd4e6338d13b845fcf289579d209c897823b9217da3e161936f031589",
+                "size_bytes": 4,
+                "relative_path": f"objects/sha256/88/{'88d4266fd4e6338d13b845fcf289579d209c897823b9217da3e161936f031589'}",
+                "kind": "fault-stack",
+                "media_type": "application/octet-stream",
+            }
+            logs = await client.target_logs("rtt", 16, 100)
+            assert logs["bytes"] == logs["artifact"]["size_bytes"] == 3
+            assert set(logs["artifact"]) == {
+                "sha256", "size_bytes", "relative_path", "kind", "media_type"
+            }
             with pytest.raises(Exception) as reused:
-                await client.target_control("target.halt", {}, "1" * 64)
+                await client.target_control("target.halt", {}, halt)
             assert reused.value.code == "PROBE_AUTHORIZATION_INVALID"
             backend.partial_memory = True
             with pytest.raises(Exception) as partial:
@@ -202,10 +275,36 @@ def test_public_client_executes_every_v2_adapter_through_one_service(tmp_path: P
             backend.bad_logs = False
             backend.transport = b"x"
             backend.bad_transport = True
-            opened = await client.target_transport_open("mailbox", {}, 100)
+            opened = await client.target_transport_open("mailbox", mailbox_config, 100)
             with pytest.raises(Exception) as bad_transport:
                 await client.target_transport_read(opened["transport_id"], 16, 100)
             assert bad_transport.value.code == "PROBE_BACKEND_ERROR"
+            backend.bad_transport = False
+            for malformed, action in (
+                ("halt", lambda: client.target_control("target.halt", {}, authorize("target.halt", {}))),
+                ("register", lambda: client.target_registers(("r0",))),
+                ("breakpoint", lambda: client.target_control("target.breakpoint.set", bp_args, authorize("target.breakpoint.set", bp_args))),
+                ("clear", lambda: client.target_control("target.breakpoint.clear", clear_args, authorize("target.breakpoint.clear", clear_args))),
+                ("fault-shape", lambda: client.target_fault(0)),
+                ("logs-truncated", lambda: client.target_logs("rtt", 16, 100)),
+                ("transport-open", lambda: client.target_transport_open("mailbox", mailbox_config, 100)),
+            ):
+                backend.malformed = malformed
+                with pytest.raises(Exception) as invalid_result:
+                    await action()
+                assert invalid_result.value.code == "PROBE_BACKEND_ERROR"
+                backend.malformed = ""
+            backend.transport = b"x"
+            opened = await client.target_transport_open("mailbox", mailbox_config, 100)
+            backend.malformed = "transport-read"
+            with pytest.raises(Exception) as invalid_read:
+                await client.target_transport_read(opened["transport_id"], 16, 100)
+            assert invalid_read.value.code == "PROBE_BACKEND_ERROR"
+            backend.malformed = "transport-close"
+            with pytest.raises(Exception) as invalid_close:
+                await client.target_transport_close(opened["transport_id"])
+            assert invalid_close.value.code == "PROBE_BACKEND_ERROR"
+            backend.malformed = ""
             from stm32_toolkit.probe.backend import ProbeBackendError
             backend.identity_error = ProbeBackendError(
                 "PRIVATE_BACKEND_CODE", "secret C:/private", {"secret": "value"}
@@ -226,22 +325,40 @@ def test_admitted_pyocd_adapter_exposes_closed_target_operations():
     from fakes.fake_pyocd import FakePyOCDDriver, FakePyOCDProbe, FakePyOCDTarget
     from stm32_toolkit.probe.pyocd_backend import PyOCDBackend
 
-    class Handle:
-        def read(self, maximum, deadline): return b"rtt"
-        def close(self): pass
-
     class Target(FakePyOCDTarget):
         def set_breakpoint(self, address): self.calls.append(("set_breakpoint", address)); return True
         def remove_breakpoint(self, address): self.calls.append(("remove_breakpoint", address))
-        def capture_logs(self, channel, maximum, duration): return b"log"
-        def open_transport(self, transport, config, deadline): return Handle()
+
+    class Channel:
+        def __init__(self): self.values = [b"rtt", b""]
+        def read(self): return self.values.pop(0)
+
+    class Block:
+        def __init__(self):
+            self.up_channels = [Channel()]
+            self.control_block_address = 0x20000000
+        def start(self): pass
+
+    def transport_factory(kind, attached_target, profile):
+        from stm32_toolkit.testing.transports.rtt import PyOcdRttAdapter, RttTransport
+        assert kind == "rtt" and attached_target is target
+        return RttTransport(
+            PyOcdRttAdapter(attached_target, control_block_factory=lambda *args, **kwargs: Block()),
+            profile,
+        )
 
     registers = {name: 0 for name in ("cfsr", "hfsr", "dfsr", "afsr", "mmfar", "bfar", "shcsr", "icsr")}
     registers.update({"sp": 0x20000000, "pc": 0x08000100})
     target = Target(memory={0x20000000: b"abcd"}, registers=registers)
     backend = PyOCDBackend(
         FakePyOCDDriver((FakePyOCDProbe("probe-a"),), target=target),
-        target_profile={"board_id": "board-a", "mcu": "stm32f407vg", "target_id": "target-a"},
+        target_profile={
+            "board_id": "board-a", "mcu": "stm32f407vg", "target_id": "target-a",
+            "ram": [{"start": 0x20000000, "size": 0x10000}],
+            "rtt": {"channel": 0, "control_block_address": 0x20000000},
+            "log_transport": {"kind": "rtt", "options": {"channel": 0, "controlBlockAddress": 0x20000000}},
+        },
+        target_transport_factory=transport_factory,
     )
     backend.open_attach("probe-a", "stm32f407vg")
     assert backend.target_identity()["target_id"] == "target-a"
@@ -249,8 +366,10 @@ def test_admitted_pyocd_adapter_exposes_closed_target_operations():
     breakpoint = backend.set_temporary_breakpoint(0x08000100, 2)
     assert backend.clear_temporary_breakpoint(breakpoint["breakpoint_id"])["cleared"] is True
     assert backend.capture_fault(4)["stack"] == b"abcd"
-    assert backend.capture_logs("rtt", 4, 1)["data"] == b"log"
-    opened = backend.open_target_transport("rtt", {}, 1)
+    assert backend.capture_logs("rtt", 4, 1)["data"] == b"rtt"
+    opened = backend.open_target_transport(
+        "rtt", {"kind": "rtt", "options": {"channel": 0, "controlBlockAddress": 0x20000000}}, 100
+    )
     assert backend.read_target_transport(opened["transport_id"], 4, 1)["data"] == b"rtt"
     assert backend.close_target_transport(opened["transport_id"])["closed"] is True
     backend.close()
@@ -271,7 +390,21 @@ def test_public_client_rejects_malformed_target_success_objects():
         await returns({"state": "sleeping", "reason": "requested"})
         with pytest.raises(ProbeClientError): await client.target_state()
         with pytest.raises(ProbeClientError): await client.target_control("target.reset", {}, "a" * 64)
+        for operation, arguments, value in (
+            ("target.halt", {}, {"state": "running", "reason": "requested"}),
+            ("target.resume", {}, {"state": "halted"}),
+            ("target.step", {}, {"state": "halted", "reason": "requested", "pc_before": True, "pc_after": 2}),
+            ("target.breakpoint.set", {"address": 1, "kind": "temporary", "size": 2},
+             {"breakpoint_id": "bp-1", "address": True, "kind": "temporary", "size": 2}),
+            ("target.breakpoint.clear", {"breakpoint_id": "bp-1"},
+             {"breakpoint_id": "bp-1", "cleared": 1}),
+        ):
+            await returns(value)
+            with pytest.raises(ProbeClientError):
+                await client.target_control(operation, arguments, "a" * 64)
         await returns({"address": 1, "length": 1, "data_base64": "***", "sha256": "0" * 64})
+        with pytest.raises(ProbeClientError): await client.target_memory(1, 1)
+        await returns({"address": 1, "length": 1, "data_base64": "AB==", "sha256": "0" * 64})
         with pytest.raises(ProbeClientError): await client.target_memory(1, 1)
         await returns({"registers": [{"name": "pc", "value": 1, "width_bits": 32}]})
         with pytest.raises(ProbeClientError): await client.target_registers(("r0",))
@@ -282,6 +415,9 @@ def test_public_client_rejects_malformed_target_success_objects():
         await returns({"transport_id": "other", "closed": True})
         with pytest.raises(ProbeClientError): await client.target_transport_close("transport-a")
         await returns({"fault_registers": {}, "stack_artifact": None, "stack_bytes": 0, "truncated": False})
+        with pytest.raises(ProbeClientError): await client.target_fault(0)
+        registers = {name: 0 for name in ("cfsr", "hfsr", "dfsr", "afsr", "mmfar", "bfar", "shcsr", "icsr")}
+        await returns({"fault_registers": registers, "stack_artifact": {"unexpected": True}, "stack_bytes": 0, "truncated": False})
         with pytest.raises(ProbeClientError): await client.target_fault(0)
         await returns({"channel": "rtt", "artifact": {}, "bytes": True, "duration_ms": 1, "truncated": False})
         with pytest.raises(ProbeClientError): await client.target_logs("rtt", 1, 1)
@@ -398,10 +534,13 @@ def test_pyocd_target_adapter_fails_closed_on_limits_identity_and_partial_output
     from stm32_toolkit.probe.pyocd_backend import PyOCDBackend
 
     class Handle:
-        def __init__(self): self.value: object = b"x"; self.fail = False
+        def __init__(self): self.value: object = b"x"; self.fail = False; self.open_fail = False
+        def open(self, config, deadline):
+            if self.open_fail: raise RuntimeError("secret C:/private")
         def read(self, maximum, deadline):
             if self.fail: raise RuntimeError("secret C:/private")
             return self.value
+        def identity(self): return {"target_id": "t", "probe_id": "probe-a", "transport": "rtt"}
         def close(self):
             if self.fail: raise RuntimeError("secret")
 
@@ -412,24 +551,23 @@ def test_pyocd_target_adapter_fails_closed_on_limits_identity_and_partial_output
             super().__init__(memory={0x20000000: b"abcd"}, registers=regs)
             self.break_result: object = True
             self.remove_error = False
-            self.log_value: object = b"x"
             self.handle = Handle()
         def set_breakpoint(self, address):
             if isinstance(self.break_result, Exception): raise self.break_result
             return self.break_result
         def remove_breakpoint(self, address):
             if self.remove_error: raise RuntimeError("secret")
-        def capture_logs(self, channel, maximum, duration):
-            if isinstance(self.log_value, Exception): raise self.log_value
-            return self.log_value
-        def open_transport(self, transport, config, deadline):
-            if config.get("fail"): raise RuntimeError("secret")
-            return self.handle
 
     target = Target()
     backend = PyOCDBackend(
         FakePyOCDDriver((FakePyOCDProbe("probe-a"),), target=target),
-        target_profile={"board_id": "b", "mcu": "stm32f407vg", "target_id": "t"},
+        target_profile={
+            "board_id": "b", "mcu": "stm32f407vg", "target_id": "t",
+            "ram": [{"start": 0x20000000, "size": 0x10000}],
+            "rtt": {"channel": 0},
+            "log_transport": {"kind": "rtt", "options": {"channel": 0}},
+        },
+        target_transport_factory=lambda kind, attached, profile: target.handle,
     )
     backend.open_attach("probe-a", "stm32f407vg")
     target.state = "reset"
@@ -461,16 +599,21 @@ def test_pyocd_target_adapter_fails_closed_on_limits_identity_and_partial_output
     with pytest.raises(ProbeBackendError): backend.capture_fault(1)
     target.memory_error = None
     with pytest.raises(ProbeBackendError): backend.capture_logs("file", 1, 1)
-    target.log_value = "bad"
+    target.handle.value = "bad"
     with pytest.raises(ProbeBackendError): backend.capture_logs("rtt", 1, 1)
-    target.log_value = RuntimeError("secret C:/private")
+    target.handle.fail = True
     with pytest.raises(ProbeBackendError): backend.capture_logs("rtt", 1, 1)
-    target.log_value = b"xx"
+    target.handle.fail = False
+    target.handle.value = b"xx"
     with pytest.raises(ProbeBackendError) as pressure: backend.capture_logs("rtt", 1, 1)
     assert pressure.value.code == "PROBE_BACKPRESSURE"
     with pytest.raises(ProbeBackendError): backend.open_target_transport("bad", {}, 1)
-    with pytest.raises(ProbeBackendError): backend.open_target_transport("rtt", {"fail": True}, 1)
-    opened = backend.open_target_transport("rtt", {}, 1)
+    config = {"kind": "rtt", "options": {"channel": 0}}
+    target.handle.open_fail = True
+    with pytest.raises(ProbeBackendError): backend.open_target_transport("rtt", config, 1)
+    target.handle.open_fail = False
+    target.handle.value = b"x"
+    opened = backend.open_target_transport("rtt", config, 1)
     with pytest.raises(ProbeBackendError): backend.read_target_transport("missing", 1, 1)
     target.handle.fail = True
     with pytest.raises(ProbeBackendError): backend.read_target_transport(opened["transport_id"], 1, 1)
@@ -510,3 +653,84 @@ def test_pyocd_target_adapter_fails_closed_on_limits_identity_and_partial_output
     state_failure.open_attach("probe-a", "stm32f407vg")
     with pytest.raises(ProbeBackendError): state_failure.target_state()
     state_failure.close()
+
+
+def test_pyocd_target_preflight_and_transport_config_are_closed_before_attach():
+    from fakes.fake_pyocd import FakePyOCDDriver, FakePyOCDProbe, FakePyOCDTarget
+    from stm32_toolkit.probe.backend import ProbeBackendError
+    from stm32_toolkit.probe.pyocd_backend import PyOCDBackend
+
+    def rejected(profile, *, factory=lambda *args: object(), probe_id="probe-a", level=OperationLevel.OBSERVE):
+        backend = PyOCDBackend(FakePyOCDDriver(()), target_profile=profile, target_transport_factory=factory)
+        with pytest.raises(ProbeBackendError):
+            backend.preflight_target_capabilities(probe_id, level)
+
+    with pytest.raises(ValueError):
+        PyOCDBackend(target_transport_factory=object())
+    rejected({}, probe_id="bad value")
+    PyOCDBackend(target_profile={}).preflight_target_capabilities("probe-a", OperationLevel.OBSERVE)
+    base = {"board_id": "b", "mcu": "stm32f407vg", "target_id": "t"}
+    rejected({**base, "extra": True})
+    rejected({**base, "backend": "other"})
+    rejected({**base, "board_id": ""})
+    rejected({**base, "rtt": {}, "log_transport": {"kind": "rtt", "options": {}}}, factory=None)
+    rejected({**base, "rtt": {}, "log_transport": []})
+    rejected({**base, "rtt": {}, "log_transport": {"kind": "uart", "options": {}}})
+    rejected({**base, "rtt": {}, "log_transport": {"kind": "rtt", "options": []}})
+    PyOCDBackend(
+        target_profile={**base, "rtt": {}, "log_transport": {"kind": "rtt", "options": {}}},
+        target_transport_factory=lambda *args: object(),
+    ).preflight_target_capabilities("probe-a", OperationLevel.CONTROL)
+
+    class Port:
+        def open(self, config, deadline): self.config = config
+        def read(self, maximum, deadline): return b""
+        def close(self): pass
+        def identity(self): return {}
+
+    target = FakePyOCDTarget()
+    profile = {
+        **base, "ram": [{"start": 0x20000000, "size": 0x1000}],
+        "semihosting_runtime": {"elf_path": "build/app.elf", "elf_sha256": "e" * 64},
+    }
+    backend = PyOCDBackend(
+        FakePyOCDDriver((FakePyOCDProbe("probe-a"),), target=target),
+        target_profile=profile, target_transport_factory=lambda *args: Port(),
+    )
+    detached = PyOCDBackend(target_profile=profile, target_transport_factory=lambda *args: Port())
+    with pytest.raises(ProbeBackendError):
+        detached._runtime_transport_config("rtt", {"kind": "rtt", "options": {"channel": 0}})
+    backend.open_attach("probe-a", "stm32f407vg")
+    saved_target = backend._target_profile.pop("target_id")
+    with pytest.raises(ProbeBackendError):
+        backend._runtime_transport_config("rtt", {"kind": "rtt", "options": {"channel": 0}})
+    backend._target_profile["target_id"] = saved_target
+    saved_semihost = backend._target_profile.pop("semihosting_runtime")
+    with pytest.raises(ProbeBackendError):
+        backend._runtime_transport_config("semihosting", {"kind": "semihosting", "options": {}})
+    backend._target_profile["semihosting_runtime"] = saved_semihost
+    configs = [
+        ("mailbox", {"kind": "memory-mailbox", "options": {"address": 0x20000000, "size": 64}}),
+        ("rtt", {"kind": "rtt", "options": {"channel": 0}}),
+        ("uart", {"kind": "uart", "options": {"port": "COM1", "baud": 115200}}),
+        ("semihosting", {"kind": "semihosting", "options": {}}),
+    ]
+    for kind, config in configs:
+        transport = backend._new_transport(kind, config, 1)
+        assert transport.config["target_id"] == "t"
+    for config in ({}, {"kind": "rtt", "options": []}, {"kind": "uart", "options": {}}):
+        with pytest.raises(ProbeBackendError):
+            backend._runtime_transport_config("rtt", config)
+    for deadline in (True, 0, 300_001):
+        with pytest.raises(ProbeBackendError):
+            backend._new_transport("rtt", {"kind": "rtt", "options": {"channel": 0}}, deadline)
+    backend._target_transport_factory = None
+    with pytest.raises(ProbeBackendError):
+        backend._new_transport("rtt", {"kind": "rtt", "options": {"channel": 0}}, 1)
+    backend._target_transport_factory = lambda *args: object()
+    with pytest.raises(ProbeBackendError):
+        backend._new_transport("rtt", {"kind": "rtt", "options": {"channel": 0}}, 1)
+    backend._target_transport_factory = lambda *args: (_ for _ in ()).throw(RuntimeError("private"))
+    with pytest.raises(ProbeBackendError):
+        backend._new_transport("rtt", {"kind": "rtt", "options": {"channel": 0}}, 1)
+    backend.close()

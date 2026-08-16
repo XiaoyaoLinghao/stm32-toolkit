@@ -11,6 +11,7 @@ from aiohttp import web
 
 from fakes.fake_probe import FakeProbeBackend
 from stm32_toolkit.probe.backend import ProbeDescriptor
+from stm32_toolkit.probe.authorization import ControlAuthorizationStore
 from stm32_toolkit.probe.client import ProbeClient, ProbeClientError
 from stm32_toolkit.probe.lease import ProbeLeaseManager
 from stm32_toolkit.probe.model import OperationLevel
@@ -121,6 +122,54 @@ def test_concurrent_start_and_stop_share_one_owned_lifecycle(tmp_path: Path) -> 
 
         await supervisor.stop()
         assert factory.backends[0].close_attempts == 1
+
+    run(scenario())
+
+
+def test_supervisor_constructor_injects_one_lazy_authorization_store_without_io_or_backend(
+    tmp_path: Path,
+) -> None:
+    data_root = (tmp_path / "plugin-data").absolute()
+    data_root.mkdir()
+    manager = ProbeLeaseManager(data_root)
+    store = ControlAuthorizationStore((tmp_path / "external-authorizations").absolute())
+    config = ProbeServiceConfig(
+        probe_id="probe-a",
+        workspace_id="workspace-a",
+        session_id="session-a",
+        operation_level=OperationLevel.OBSERVE,
+        session_root=data_root / "projects" / "workspace-a" / "sessions" / "session-a",
+        control_authorizations=store,
+    )
+    before = sorted(path.relative_to(tmp_path).as_posix() for path in tmp_path.rglob("*"))
+    factory = BackendFactory()
+    supervisor = ProbeServiceSupervisor(
+        config=config, lease_manager=manager, backend_factory=factory,
+    )
+    after = sorted(path.relative_to(tmp_path).as_posix() for path in tmp_path.rglob("*"))
+    assert after == before
+    assert factory.backends == []
+    assert supervisor.control_authorizations is store
+    assert supervisor.control_authorizations.root == store.root
+
+    async def scenario() -> None:
+        for operation in (
+            supervisor.reserve_external_handoff,
+            supervisor.consume_external_handoff,
+        ):
+            with pytest.raises(ProbeServiceError) as unavailable:
+                await operation("ticket-a")
+            assert unavailable.value.code == "PROBE_SERVICE_UNAVAILABLE"
+        backend_only = RecordingBackend()
+        supervisor._backend = backend_only
+        await supervisor.stop()
+        assert backend_only.close_attempts == 1
+        await supervisor.start()
+        try:
+            assert supervisor._service is not None
+            assert supervisor._service._control_authorizations is store
+        finally:
+            await supervisor.stop()
 
     run(scenario())
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from hashlib import sha256
 import json
 from pathlib import Path
@@ -63,28 +64,85 @@ def test_mailbox_production_reader_uses_only_public_probe_v2(monkeypatch, tmp_pa
         token="0" * 64, workspace_id="workspace-a", session_id="session-a", lease_id="lease-a",
         probe_id="probe-a", operation_level=OperationLevel.OBSERVE, record_path=tmp_path / "endpoint.json",
     )
-    reader_type = getattr(target_module, "ProbeV2MemoryReader")
-    reader = reader_type(endpoint, identity)
-    assert reader.read_memory(0x20000000, 4, time.monotonic() + 1) == b"ABCD"
-    assert calls[0:3] == [("client", "stm32-toolkit-probe/2"), ("identity",), ("memory", 0x20000000, 4, calls[2][3])]
-    assert 1 <= calls[2][3] <= 1000
-    assert calls[-1] == ("close",)
-    with pytest.raises(TypeError):
-        reader_type(object(), identity)
-    reader.close()
-    with pytest.raises(RuntimeError):
-        reader.read_memory(0x20000000, 4, time.monotonic() + 1)
+    async def scenario():
+        reader_type = getattr(target_module, "ProbeV2MemoryReader")
+        reader = reader_type(endpoint, identity)
+        assert await reader.read_memory(0x20000000, 4, time.monotonic() + 1) == b"ABCD"
+        assert calls[0:3] == [("client", "stm32-toolkit-probe/2"), ("identity",), ("memory", 0x20000000, 4, calls[2][3])]
+        assert 1 <= calls[2][3] <= 1000
+        assert calls[-1] == ("close",)
+        with pytest.raises(TypeError):
+            reader_type(object(), identity)
+        await reader.close()
+        with pytest.raises(RuntimeError):
+            await reader.read_memory(0x20000000, 4, time.monotonic() + 1)
 
-    fresh = reader_type(endpoint, identity)
-    with pytest.raises(TimeoutError):
-        fresh.read_memory(0x20000000, 4, time.monotonic() - 1)
+        fresh = reader_type(endpoint, identity)
+        with pytest.raises(TimeoutError):
+            await fresh.read_memory(0x20000000, 4, time.monotonic() - 1)
 
-    class ChangedClient(PublicClient):
-        async def target_identity(self): return {**identity, "target_id": "changed"}
-    monkeypatch.setattr(target_module, "ProbeClient", ChangedClient)
-    changed = reader_type(endpoint, identity)
-    with pytest.raises(RuntimeError):
-        changed.read_memory(0x20000000, 4, time.monotonic() + 1)
+        class ChangedClient(PublicClient):
+            async def target_identity(self): return {**identity, "target_id": "changed"}
+        monkeypatch.setattr(target_module, "ProbeClient", ChangedClient)
+        changed = reader_type(endpoint, identity)
+        with pytest.raises(RuntimeError):
+            await changed.read_memory(0x20000000, 4, time.monotonic() + 1)
+
+    asyncio.run(scenario())
+
+
+def test_mailbox_async_composition_covers_bounded_success_failure_and_cleanup() -> None:
+    async def scenario() -> None:
+        sync_reader = FakeMailboxReader(producer=4, consumer=0, data=b"test")
+        transport = MailboxTransport(sync_reader, PROFILE, clock=lambda: 1.0)
+        transport.open(mailbox_config(), 2.0)
+        assert await transport.read_async(4, 2.0) == b"test"
+        await transport.close_async()
+        assert sync_reader.closed
+
+        class AsyncReader(FakeMailboxReader):
+            async def read_memory(self, address, size, deadline):
+                return super().read_memory(address, size, deadline)
+            async def close(self):
+                self.closed = True
+
+        async_reader = AsyncReader(producer=4100, consumer=4094, data=b"abcdef")
+        wrapped = MailboxTransport(async_reader, PROFILE, clock=lambda: 1.0)
+        wrapped.open(mailbox_config(), 2.0)
+        assert await wrapped.read_async(6, 2.0) == b"abcdef"
+        await wrapped.close_async()
+
+        empty = MailboxTransport(AsyncReader(producer=0, consumer=0, data=b""), PROFILE, clock=lambda: 1.0)
+        empty.open(mailbox_config(), 2.0)
+        assert await empty.read_async(4, 2.0) == b""
+
+        for reader in (
+            AsyncReader(producer=4097, consumer=0),
+            AsyncReader(producer=1, consumer=0, data=b""),
+        ):
+            invalid = MailboxTransport(reader, PROFILE, clock=lambda: 1.0)
+            invalid.open(mailbox_config(), 2.0)
+            with pytest.raises(ProtocolError):
+                await invalid.read_async(4, 2.0)
+            assert reader.closed
+
+        timeout = MailboxTransport(AsyncReader(), PROFILE, clock=lambda: 2.0)
+        timeout.open(mailbox_config(), 3.0)
+        with pytest.raises(ProtocolError) as elapsed:
+            await timeout.read_async(4, 2.0)
+        assert elapsed.value.code == "TEST_TIMEOUT"
+
+        class AsyncCloseFailure(AsyncReader):
+            async def close(self):
+                raise OSError("disconnect")
+
+        closing = MailboxTransport(AsyncCloseFailure(), PROFILE, clock=lambda: 1.0)
+        closing.open(mailbox_config(), 2.0)
+        with pytest.raises(ProtocolError) as cleanup:
+            await closing.close_async()
+        assert cleanup.value.code == "TEST_TRANSPORT_UNAVAILABLE"
+
+    asyncio.run(scenario())
 
 
 def assert_code(code: str, function) -> None:

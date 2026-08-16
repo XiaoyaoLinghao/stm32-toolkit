@@ -62,6 +62,8 @@ class ProbeAttachmentEvidence:
 
 @runtime_checkable
 class ProbeBackend(Protocol):
+    def preflight_target_capabilities(self, probe_id: str, operation_level: object) -> None: ...
+
     def list_probes(self) -> tuple[ProbeDescriptor, ...]: ...
 
     def open_attach(

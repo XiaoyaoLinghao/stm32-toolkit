@@ -9,8 +9,10 @@ from pathlib import Path
 from types import TracebackType
 
 from .backend import ProbeBackend
+from .authorization import ControlAuthorizationStore
 from .lease import ProbeLeaseManager
 from .model import OperationLevel
+from stm32_toolkit.testing.artifacts import TestArtifactCollector
 from .service import (
     ProbeEndpoint,
     ProbeService,
@@ -28,6 +30,12 @@ class ProbeServiceConfig:
     operation_level: OperationLevel
     session_root: Path
     project_root: Path | None = None
+    control_authorizations: ControlAuthorizationStore | None = field(
+        default=None, repr=False, compare=False
+    )
+    artifact_collector: TestArtifactCollector | None = field(
+        default=None, repr=False, compare=False
+    )
     _runtime_root_authority: object | None = field(
         default=None, repr=False, compare=False
     )
@@ -44,6 +52,9 @@ class ProbeServiceSupervisor:
         self._config = config
         self._lease_manager = lease_manager
         self._backend_factory = backend_factory
+        self._control_authorizations = config.control_authorizations or ControlAuthorizationStore(
+            (lease_manager.data_root / "control-authorizations").absolute()
+        )
         self._lifecycle_lock = asyncio.Lock()
         self._backend: ProbeBackend | None = None
         self._service: ProbeService | None = None
@@ -52,6 +63,10 @@ class ProbeServiceSupervisor:
     @property
     def endpoint(self) -> ProbeEndpoint | None:
         return self._endpoint
+
+    @property
+    def control_authorizations(self) -> ControlAuthorizationStore:
+        return self._control_authorizations
 
     async def start(self, *, handoff_ticket: str | None = None) -> ProbeEndpoint:
         async with self._lifecycle_lock:
@@ -72,6 +87,8 @@ class ProbeServiceSupervisor:
                     project_root=self._config.project_root,
                     handoff_ticket=handoff_ticket,
                     _runtime_root_authority=self._config._runtime_root_authority,
+                    control_authorizations=self._control_authorizations,
+                    artifact_collector=self._config.artifact_collector,
                 )
                 endpoint = await service.start()
             except BaseException:

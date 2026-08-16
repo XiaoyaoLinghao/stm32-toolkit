@@ -32,6 +32,9 @@ from stm32_toolkit.probe.backend import (
     ProbeBackendError,
     ProbeDescriptor,
 )
+from stm32_toolkit.probe.authorization import ControlAuthorizationStore
+from stm32_toolkit.evidence.store import EvidenceStore
+from stm32_toolkit.testing.artifacts import TestArtifactCollector as _TestArtifactCollector
 
 
 NOW = datetime(2026, 8, 7, 12, 0, 0, tzinfo=timezone.utc)
@@ -86,12 +89,21 @@ def make_service(
     heartbeat_interval_seconds: float = 5.0,
     body_read_timeout_seconds: float | None = None,
     project_root: Path | None = None,
+    control_authorizations: ControlAuthorizationStore | None = None,
+    artifact_collector: _TestArtifactCollector | None = None,
 ) -> ProbeService:
+    if not tmp_path.exists():
+        tmp_path.mkdir(parents=True)
     configured_data_root = data_root or tmp_path / "plugin-data"
     timeout_options = (
         {"body_read_timeout_seconds": body_read_timeout_seconds}
         if body_read_timeout_seconds is not None
         else {}
+    )
+    collector = artifact_collector or _TestArtifactCollector(
+        (tmp_path / "probe-results").absolute(),
+        EvidenceStore((tmp_path / "probe-evidence").absolute()),
+        project_root=Path(__file__).parents[3],
     )
     return ProbeService(
         backend=backend or fake_backend(),
@@ -105,6 +117,10 @@ def make_service(
         project_root=project_root,
         token_factory=lambda: b"\x11" * 32,
         heartbeat_interval_seconds=heartbeat_interval_seconds,
+        control_authorizations=control_authorizations or ControlAuthorizationStore(
+            (tmp_path / "control-authorizations").absolute()
+        ),
+        artifact_collector=collector,
         **timeout_options,
     )
 
@@ -1624,6 +1640,39 @@ def test_heartbeat_lease_loss_closes_service_and_removes_endpoint(tmp_path: Path
         assert service.endpoint is None
         assert not endpoint.record_path.exists()
         await service.stop()
+
+    run(scenario())
+
+
+def test_target_capability_preflight_fails_before_lease_bind_or_attach(tmp_path: Path) -> None:
+    class PreflightFailure(FakeProbeBackend):
+        def __init__(self) -> None:
+            source = fake_backend()
+            super().__init__(
+                probes=source.list_probes(),
+                memory={0x20000000: b"abcd"},
+                registers={"pc": 0x08000100},
+            )
+            self.preflight_calls = 0
+
+        def preflight_target_capabilities(self, probe_id, operation_level):
+            self.preflight_calls += 1
+            self.events.append(("preflight_target_capabilities", probe_id, operation_level.value))
+            raise ProbeBackendError("PROBE_IDENTITY_MISMATCH", "secret profile path")
+
+    async def scenario() -> None:
+        backend = PreflightFailure()
+        data_root = tmp_path / "plugin-data"
+        service = make_service(tmp_path, backend=backend, data_root=data_root)
+        with pytest.raises(ProbeServiceError) as caught:
+            await service.start()
+        assert caught.value.code == "PROBE_IDENTITY_MISMATCH"
+        assert backend.preflight_calls == 1
+        assert backend.events == [("preflight_target_capabilities", "probe-a", "observe")]
+        assert backend.attached_probe_id is None
+        assert service.endpoint is None
+        assert not list(data_root.rglob("*.owner.json"))
+        assert not list(data_root.rglob("probe-endpoint.json"))
 
     run(scenario())
 

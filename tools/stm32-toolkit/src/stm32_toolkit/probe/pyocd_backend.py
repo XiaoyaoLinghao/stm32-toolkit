@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import os
 import re
+import time
 from hashlib import sha256
 from io import BytesIO
 from collections.abc import Iterable, Mapping
 from itertools import islice
-from typing import Protocol, runtime_checkable
+from typing import Callable, Protocol, runtime_checkable
 
 from .backend import (
     FlashBackendReport,
@@ -110,6 +111,7 @@ class PyOCDBackend:
         *,
         frequency_hz: int = 1_000_000,
         target_profile: Mapping[str, object] | None = None,
+        target_transport_factory: Callable[[str, object, Mapping[str, object]], object] | None = None,
     ) -> None:
         if (
             isinstance(frequency_hz, bool)
@@ -121,6 +123,9 @@ class PyOCDBackend:
         self._driver = driver
         self._frequency_hz = frequency_hz
         self._target_profile = dict(target_profile or {})
+        if target_transport_factory is not None and not callable(target_transport_factory):
+            raise ValueError("Target transport factory is invalid")
+        self._target_transport_factory = target_transport_factory
         self._session: object | None = None
         self._probe: object | None = None
         self._target: object | None = None
@@ -130,6 +135,58 @@ class PyOCDBackend:
         self._breakpoints: dict[str, tuple[int, int]] = {}
         self._next_breakpoint = 1
         self._transports: dict[str, object] = {}
+        self._next_transport = 1
+
+    def _runtime_transport_config(
+        self, transport: str, config: Mapping[str, object]
+    ) -> dict[str, object]:
+        if not isinstance(config, Mapping) or set(config) != {"kind", "options"}:
+            raise ProbeBackendError("PROBE_PROTOCOL_INVALID", "Target transport configuration is invalid")
+        options = config.get("options")
+        expected_kind = "memory-mailbox" if transport == "mailbox" else transport
+        if config.get("kind") != expected_kind or not isinstance(options, Mapping):
+            raise ProbeBackendError("PROBE_PROTOCOL_INVALID", "Target transport configuration is invalid")
+        if self._probe_id is None:
+            raise ProbeBackendError("PROBE_NOT_ATTACHED", "Probe is not attached")
+        target_id = self._target_profile.get("target_id")
+        if not isinstance(target_id, str) or not target_id:
+            raise ProbeBackendError("PROBE_BACKEND_ERROR", "Target transport identity is unavailable")
+        common = {"target_id": target_id, "probe_id": self._probe_id}
+        if transport == "mailbox" and set(options) == {"address", "size"}:
+            return {**dict(options), "ram": self._target_profile.get("ram"), **common}
+        if transport == "rtt" and set(options) in ({"channel"}, {"channel", "controlBlockAddress"}):
+            return {
+                "channel": options["channel"],
+                "control_block_address": options.get("controlBlockAddress"),
+                "ram": self._target_profile.get("ram"),
+                **common,
+            }
+        if transport == "uart" and set(options) == {"port", "baud"}:
+            return {
+                **dict(options), "data_bits": 8, "parity": "N", "stop_bits": 1, **common,
+            }
+        if transport == "semihosting" and not options:
+            declared = self._target_profile.get("semihosting_runtime")
+            if isinstance(declared, Mapping) and set(declared) == {"elf_path", "elf_sha256"}:
+                return {**dict(declared), "host_files": False, **common}
+        raise ProbeBackendError("PROBE_PROTOCOL_INVALID", "Target transport configuration is invalid")
+
+    def _new_transport(self, transport: str, config: Mapping[str, object], deadline_ms: int) -> object:
+        if type(deadline_ms) is not int or not 1 <= deadline_ms <= 300_000:
+            raise ProbeBackendError("PROBE_PROTOCOL_INVALID", "Target transport deadline is invalid")
+        factory = self._target_transport_factory
+        if factory is None:
+            raise ProbeBackendError("PROBE_OPERATION_UNAVAILABLE", "Target transport provider is unavailable")
+        try:
+            port = factory(transport, self._require_target(), self._target_profile)
+            if not all(callable(getattr(port, member, None)) for member in ("open", "read", "close", "identity")):
+                raise TypeError
+            port.open(self._runtime_transport_config(transport, config), time.monotonic() + deadline_ms / 1000)
+            return port
+        except ProbeBackendError:
+            raise
+        except Exception as error:
+            raise ProbeBackendError("PROBE_BACKEND_ERROR", "Target transport is unavailable") from error
 
     def _get_driver(self) -> PyOCDDriver:
         driver = self._driver
@@ -137,6 +194,39 @@ class PyOCDBackend:
             driver = _DefaultPyOCDDriver()
             self._driver = driver
         return driver
+
+    def preflight_target_capabilities(self, probe_id: str, operation_level: object) -> None:
+        """Validate static identity/provider facts without enumerating or attaching hardware."""
+        if not _valid_identifier(probe_id) or getattr(operation_level, "value", None) not in {
+            "observe", "control", "modify"
+        }:
+            raise ProbeBackendError("PROBE_IDENTITY_MISMATCH", "Probe capability identity is invalid")
+        profile = self._target_profile
+        if not profile:
+            return  # Existing v1 workflows do not opt into Target v2 capabilities.
+        allowed = {
+            "backend", "probe_id", "board_id", "mcu", "target_id", "ram", "mailbox",
+            "rtt", "uart", "semihosting", "semihosting_runtime", "log_transport",
+        }
+        if set(profile) - allowed:
+            raise ProbeBackendError("PROBE_IDENTITY_MISMATCH", "Target capability profile is not closed")
+        if profile.get("backend", "pyocd") != "pyocd" or profile.get("probe_id", probe_id) != probe_id:
+            raise ProbeBackendError("PROBE_IDENTITY_MISMATCH", "Target backend or probe identity does not match")
+        if any(not _valid_identifier(profile.get(key)) for key in ("board_id", "mcu", "target_id")):
+            raise ProbeBackendError("PROBE_IDENTITY_MISMATCH", "Target board or MCU identity is invalid")
+        declared_transports = set(profile) & {"mailbox", "rtt", "uart", "semihosting"}
+        log_transport = profile.get("log_transport")
+        if declared_transports or log_transport is not None:
+            if self._target_transport_factory is None:
+                raise ProbeBackendError("PROBE_OPERATION_UNAVAILABLE", "Target transport provider is unavailable")
+            if not isinstance(log_transport, Mapping) or set(log_transport) != {"kind", "options"}:
+                raise ProbeBackendError("PROBE_IDENTITY_MISMATCH", "Target log transport profile is invalid")
+            kind = log_transport.get("kind")
+            if kind not in {"rtt", "uart", "semihosting"} or kind not in declared_transports:
+                raise ProbeBackendError("PROBE_IDENTITY_MISMATCH", "Target log transport identity does not match")
+            options = log_transport.get("options")
+            if not isinstance(options, Mapping):
+                raise ProbeBackendError("PROBE_IDENTITY_MISMATCH", "Target log transport options are invalid")
 
     def _enumerate_raw(self) -> tuple[object, ...]:
         try:
@@ -538,22 +628,42 @@ class PyOCDBackend:
     def capture_logs(self, channel: str, max_bytes: int, duration_ms: int) -> Mapping[str, object]:
         if channel not in {"rtt", "uart", "semihosting", "swo", "probe"} or type(max_bytes) is not int or not 1 <= max_bytes <= 10_485_760 or type(duration_ms) is not int or not 1 <= duration_ms <= 300_000:
             raise ProbeBackendError("PROBE_PROTOCOL_INVALID", "Log capture request is invalid")
+        config = self._target_profile.get("log_transport")
+        port = None
         try:
-            raw = getattr(self._require_target(), "capture_logs")(channel, max_bytes, duration_ms)
+            if not isinstance(config, Mapping) or config.get("kind") != channel:
+                raise ProbeBackendError("PROBE_OPERATION_UNAVAILABLE", "Configured log channel is unavailable")
+            port = self._new_transport(channel, config, duration_ms)
+            deadline = time.monotonic() + duration_ms / 1000
+            output = bytearray()
+            while len(output) < max_bytes:
+                chunk = port.read(min(_MAX_READ_BYTES, max_bytes - len(output)), deadline)
+                if not isinstance(chunk, bytes):
+                    raise TypeError
+                if len(chunk) > max_bytes - len(output):
+                    raise ProbeBackendError("PROBE_BACKPRESSURE", "Log capture exceeded its bound")
+                if not chunk:
+                    break
+                output.extend(chunk)
+            raw = bytes(output)
+        except ProbeBackendError:
+            raise
         except Exception as error:
             raise ProbeBackendError("PROBE_BACKEND_ERROR", "Configured log channel is unavailable") from error
-        if not isinstance(raw, bytes) or len(raw) > max_bytes:
-            raise ProbeBackendError("PROBE_BACKPRESSURE", "Log capture exceeded its bound")
+        finally:
+            if port is not None:
+                try:
+                    port.close()
+                except Exception:
+                    pass
         return {"data": raw, "truncated": len(raw) == max_bytes}
 
     def open_target_transport(self, transport: str, config: Mapping[str, object], deadline_ms: int) -> Mapping[str, object]:
         if transport not in {"mailbox", "rtt", "uart", "semihosting"}:
             raise ProbeBackendError("PROBE_PROTOCOL_INVALID", "Target transport is invalid")
-        try:
-            handle = getattr(self._require_target(), "open_transport")(transport, dict(config), deadline_ms)
-        except Exception as error:
-            raise ProbeBackendError("PROBE_BACKEND_ERROR", "Target transport is unavailable") from error
-        transport_id = f"transport-{len(self._transports) + 1}"
+        handle = self._new_transport(transport, config, deadline_ms)
+        transport_id = f"transport-{self._next_transport}"
+        self._next_transport += 1
         self._transports[transport_id] = handle
         return {"transport_id": transport_id, "identity": dict(self.target_identity())}
 
@@ -562,7 +672,9 @@ class PyOCDBackend:
         if handle is None:
             raise ProbeBackendError("PROBE_PROTOCOL_INVALID", "Target transport is unknown")
         try:
-            raw = getattr(handle, "read")(max_bytes, deadline_ms)
+            if type(max_bytes) is not int or not 1 <= max_bytes <= _MAX_READ_BYTES or type(deadline_ms) is not int or not 1 <= deadline_ms <= 300_000:
+                raise ValueError
+            raw = getattr(handle, "read")(max_bytes, time.monotonic() + deadline_ms / 1000)
         except Exception as error:
             raise ProbeBackendError("PROBE_BACKEND_ERROR", "Target transport read failed") from error
         if not isinstance(raw, bytes) or len(raw) > max_bytes:

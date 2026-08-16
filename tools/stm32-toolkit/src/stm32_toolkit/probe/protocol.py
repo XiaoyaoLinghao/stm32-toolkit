@@ -84,6 +84,21 @@ def _validate_operation_data(payload: dict[str, object]) -> None:
                 "Target register names must be unique without case aliases",
                 {"field": "data.names", "rule": "caseFoldUnique"},
             )
+    if operation == "target.transport.open":
+        transport = data.get("transport")
+        config = data.get("config")
+        expected_kind = {
+            "mailbox": "memory-mailbox",
+            "rtt": "rtt",
+            "uart": "uart",
+            "semihosting": "semihosting",
+        }.get(transport)
+        if not isinstance(config, dict) or config.get("kind") != expected_kind:
+            raise ProbeProtocolError(
+                "PROBE_PROTOCOL_INVALID",
+                "Target transport does not match the Project v3 configuration",
+                {"field": "data.config.kind", "rule": "transportBinding"},
+            )
 
 
 def decode_request(body: bytes, expected_toolkit_version: str) -> ProbeRequest:
