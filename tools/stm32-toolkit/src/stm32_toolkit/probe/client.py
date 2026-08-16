@@ -221,7 +221,9 @@ class ProbeClient:
 
     async def _session_for_request(self) -> aiohttp.ClientSession:
         if self._session is None or self._session.closed:
-            timeout = aiohttp.ClientTimeout(total=31)
+            # The protocol permits a 300-second native operation. Retain one
+            # fixed, bounded five-second envelope for response and cleanup.
+            timeout = aiohttp.ClientTimeout(total=305)
             self._session = aiohttp.ClientSession(timeout=timeout)
         return self._session
 

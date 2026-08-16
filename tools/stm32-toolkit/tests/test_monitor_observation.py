@@ -45,6 +45,106 @@ def _directory_redirect(link: Path, target: Path) -> None:
         pytest.skip("directory redirection is unavailable on this host")
 
 
+def test_monitor_closed_worker_selection_and_path_identity_boundaries(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import stm32_toolkit.monitor_observation as module
+    from stm32_toolkit.probe.supervisor import ProbeServiceConfig
+    from stm32_toolkit.probe.worker import ProbeWorkerConfig
+
+    data = (tmp_path / "data-boundary").absolute()
+    data.mkdir()
+    manager = ProbeLeaseManager(data)
+    config = ProbeServiceConfig(
+        probe_id="probe-a", workspace_id="workspace-a", session_id="session-a",
+        operation_level=OperationLevel.OBSERVE, session_root=data / "session",
+    )
+    production = module._supervisor_factory(config, manager, ProbeWorkerConfig())
+    assert production._worker_config == ProbeWorkerConfig()
+    fake = module._supervisor_factory(config, manager, lambda: object())
+    assert fake._backend_factory is not None
+
+    with pytest.raises(ValueError): module._canonical_root("bad", existing=False)
+    with pytest.raises(ValueError): module._canonical_root(tmp_path / "missing", existing=True)
+    regular = tmp_path / "regular"
+    regular.write_text("x", encoding="utf-8")
+    with pytest.raises(ValueError): module._canonical_root(regular, existing=True)
+    project = tmp_path / "project"
+    project.mkdir()
+    for first, second in ((project, project / "data"), (project / "nested", project)):
+        with pytest.raises(ValueError): module._disjoint(first, second)
+
+    identities = module._ancestor_identities(project)
+    assert identities[-1][0] == project
+    module._verify_ancestor_identities(identities)
+    moved = tmp_path / "project-moved"
+    project.rename(moved)
+    project.mkdir()
+    with pytest.raises(ValueError): module._verify_ancestor_identities(identities)
+    with pytest.raises(ValueError): module._ancestor_identities(regular / "child")
+
+    class ClosingClient:
+        async def close(self): return None
+    class ClosingSupervisor:
+        async def stop(self): return None
+    class ClosingGuard:
+        def close(self): return None
+
+    class FatalClient:
+        async def close(self): raise KeyboardInterrupt
+    class FailingSupervisor:
+        async def stop(self): raise RuntimeError("private")
+    class FailingGuard:
+        def close(self): raise RuntimeError("private")
+    with pytest.raises(KeyboardInterrupt):
+        asyncio.run(module._cleanup_resources(FatalClient(), FailingSupervisor(), FailingGuard()))
+    class FatalSupervisor:
+        async def stop(self): raise KeyboardInterrupt
+    with pytest.raises(KeyboardInterrupt):
+        asyncio.run(module._cleanup_resources(ClosingClient(), FatalSupervisor(), ClosingGuard()))
+    class FatalGuard:
+        def close(self): raise KeyboardInterrupt
+    with pytest.raises(KeyboardInterrupt):
+        asyncio.run(module._cleanup_resources(ClosingClient(), ClosingSupervisor(), FatalGuard()))
+
+    with monkeypatch.context() as scoped:
+        scoped.setattr(module, "_ancestor_identities", lambda path: ())
+        with pytest.raises(ValueError): module._DirectoryGuard.capture(project)
+
+    current = os.lstat(project)
+    guard = object.__new__(module._DirectoryGuard)
+    guard._identities = ((project, int(current.st_dev), int(current.st_ino)),)
+    guard._windows_handles = []
+    guard._posix_descriptors = [73]
+    with monkeypatch.context() as scoped:
+        scoped.setattr(module.os, "fstat", lambda descriptor: current)
+        guard.verify()
+        assert guard.directory_descriptor(project) == 73
+        with pytest.raises(ValueError): guard.directory_descriptor(tmp_path / "absent")
+        invalid = SimpleNamespace(st_mode=stat.S_IFREG, st_dev=current.st_dev, st_ino=current.st_ino)
+        scoped.setattr(module.os, "fstat", lambda descriptor: invalid)
+        with pytest.raises(ValueError): guard.verify()
+        with pytest.raises(ValueError): guard.directory_descriptor(project)
+
+    windows_guard = object.__new__(module._DirectoryGuard)
+    windows_guard._identities = guard._identities
+    windows_guard._windows_handles = [91]
+    windows_guard._posix_descriptors = []
+    assert windows_guard.directory_descriptor(project) is None
+
+    failing_close = object.__new__(module._DirectoryGuard)
+    failing_close._identities = ()
+    failing_close._windows_handles = [91]
+    failing_close._posix_descriptors = [73]
+    with monkeypatch.context() as scoped:
+        scoped.setattr(module.os, "close", lambda descriptor: (_ for _ in ()).throw(RuntimeError("private")))
+        scoped.setattr(module, "_close_windows_handle", lambda handle: (_ for _ in ()).throw(RuntimeError("private")))
+        with pytest.raises(RuntimeError): failing_close.close()
+
+    paths = SimpleNamespace(workspace_id="workspace-a", session_id="session-a")
+    with pytest.raises(MonitorObservationError): module._endpoint(object(), paths, "probe-a")
+
+
 def _project_snapshot(root: Path) -> dict[str, tuple[str, bytes | None, int]]:
     return {
         path.relative_to(root).as_posix(): (
@@ -169,7 +269,7 @@ class Harness:
 
     def seams(self) -> MonitorObservationSeams:
         return MonitorObservationSeams(
-            backend_factory=lambda: object(),
+            _test_backend_factory=lambda: object(),
             lease_manager_factory=lambda root: object(),
             supervisor_factory=self.supervisor,
             client_factory=self.client,
@@ -443,7 +543,7 @@ def test_real_supervisor_root_swap_in_backend_factory_writes_no_replacement_stat
 
     seams = replace(
         harness.seams(),
-        backend_factory=swapping_backend_factory,
+        _test_backend_factory=swapping_backend_factory,
         lease_manager_factory=ProbeLeaseManager,
         supervisor_factory=real_supervisor_factory,
     )
@@ -522,7 +622,7 @@ def test_real_supervisor_pre_start_gate_blocks_post_factory_root_swap(
 
     seams = replace(
         harness.seams(),
-        backend_factory=swapping_backend_factory,
+        _test_backend_factory=swapping_backend_factory,
         lease_manager_factory=ProbeLeaseManager,
         supervisor_factory=real_supervisor_factory,
     )
@@ -609,7 +709,7 @@ def test_real_supervisor_thread_swap_after_identity_check_writes_no_replacement_
 
     seams = replace(
         harness.seams(),
-        backend_factory=backend_factory,
+        _test_backend_factory=backend_factory,
         lease_manager_factory=ProbeLeaseManager,
         supervisor_factory=real_supervisor_factory,
     )

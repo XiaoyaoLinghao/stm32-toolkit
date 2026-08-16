@@ -402,7 +402,11 @@ def test_admitted_pyocd_adapter_exposes_closed_target_operations():
     assert backend.capture_fault(4)["stack"] == b"abcd"
     assert backend.capture_logs("rtt", 4, 1)["data"] == b"rtt"
     opened = backend.open_target_transport(
-        "rtt", {"kind": "rtt", "options": {"channel": 0, "controlBlockAddress": 0x20000000}}, 100
+        "rtt", {
+            "channel": 0, "control_block_address": 0x20000000,
+            "ram": [{"start": 0x20000000, "size": 0x10000}],
+            "target_id": "target-a", "probe_id": "probe-a",
+        }, 100
     )
     assert backend.read_target_transport(opened["transport_id"], 4, 1)["data"] == b"rtt"
     assert backend.close_target_transport(opened["transport_id"])["closed"] is True
@@ -693,7 +697,11 @@ def test_pyocd_target_adapter_fails_closed_on_limits_identity_and_partial_output
     with pytest.raises(ProbeBackendError) as pressure: backend.capture_logs("rtt", 1, 1)
     assert pressure.value.code == "PROBE_BACKPRESSURE"
     with pytest.raises(ProbeBackendError): backend.open_target_transport("bad", {}, 1)
-    config = {"kind": "rtt", "options": {"channel": 0}}
+    config = {
+        "channel": 0, "control_block_address": None,
+        "ram": [{"start": 0x20000000, "size": 0x10000}],
+        "target_id": "t", "probe_id": "probe-a",
+    }
     target.handle.open_fail = True
     with pytest.raises(ProbeBackendError): backend.open_target_transport("rtt", config, 1)
     target.handle.open_fail = False
@@ -788,7 +796,7 @@ def test_pyocd_target_preflight_and_transport_config_are_closed_before_attach():
         ).preflight_target_capabilities("probe-a", OperationLevel.OBSERVE)
     for kind, options, extra in (
         ("uart", {"port": "COM1", "baud": 115200}, {}),
-        ("semihosting", {}, {"semihosting": {"declared": True}, "semihosting_runtime": {"elf_path": "build/app.elf", "elf_sha256": "e" * 64}}),
+        ("semihosting", {}, {"semihosting": {"declared": True}, "semihosting_runtime": {"elf_path": "C:\\fixture\\app.elf", "elf_sha256": "e" * 64}}),
     ):
         declared = {kind: options} if kind != "semihosting" else extra
         PyOCDBackend(
@@ -806,7 +814,7 @@ def test_pyocd_target_preflight_and_transport_config_are_closed_before_attach():
     profile = {
         **base, "ram": [{"start": 0x20000000, "size": 0x1000}],
         "semihosting": {"declared": True},
-        "semihosting_runtime": {"elf_path": "build/app.elf", "elf_sha256": "e" * 64},
+        "semihosting_runtime": {"elf_path": "C:\\fixture\\app.elf", "elf_sha256": "e" * 64},
     }
     backend = PyOCDBackend(
         FakePyOCDDriver((FakePyOCDProbe("probe-a"),), target=target),
@@ -814,21 +822,27 @@ def test_pyocd_target_preflight_and_transport_config_are_closed_before_attach():
     )
     detached = PyOCDBackend(target_profile=profile, target_transport_factory=lambda *args: Port())
     with pytest.raises(ProbeBackendError):
-        detached._runtime_transport_config("rtt", {"kind": "rtt", "options": {"channel": 0}})
+        detached._runtime_transport_config("rtt", {
+            "channel": 0, "control_block_address": None, "ram": profile["ram"],
+            "target_id": "t", "probe_id": "probe-a",
+        })
     backend.open_attach("probe-a", "stm32f407vg")
     saved_target = backend._target_profile.pop("target_id")
     with pytest.raises(ProbeBackendError):
-        backend._runtime_transport_config("rtt", {"kind": "rtt", "options": {"channel": 0}})
+        backend._runtime_transport_config("rtt", {
+            "channel": 0, "control_block_address": None, "ram": profile["ram"],
+            "target_id": "t", "probe_id": "probe-a",
+        })
     backend._target_profile["target_id"] = saved_target
     saved_semihost = backend._target_profile.pop("semihosting_runtime")
     with pytest.raises(ProbeBackendError):
-        backend._runtime_transport_config("semihosting", {"kind": "semihosting", "options": {}})
+        backend._profile_transport_config("semihosting")
     backend._target_profile["semihosting_runtime"] = saved_semihost
     configs = [
-        ("mailbox", {"kind": "memory-mailbox", "options": {"address": 0x20000000, "size": 64}}),
-        ("rtt", {"kind": "rtt", "options": {"channel": 0}}),
-        ("uart", {"kind": "uart", "options": {"port": "COM1", "baud": 115200}}),
-        ("semihosting", {"kind": "semihosting", "options": {}}),
+        ("mailbox", {"address": 0x20000000, "size": 64, "ram": profile["ram"], "target_id": "t", "probe_id": "probe-a"}),
+        ("rtt", {"channel": 0, "control_block_address": None, "ram": profile["ram"], "target_id": "t", "probe_id": "probe-a"}),
+        ("uart", {"port": "COM1", "baud": 115200, "data_bits": 8, "parity": "N", "stop_bits": 1, "target_id": "t", "probe_id": "probe-a"}),
+        ("semihosting", {"elf_path": "C:\\fixture\\app.elf", "elf_sha256": "e" * 64, "host_files": False, "target_id": "t", "probe_id": "probe-a"}),
     ]
     for kind, config in configs:
         transport = backend._new_transport(kind, config, 1)
@@ -838,14 +852,123 @@ def test_pyocd_target_preflight_and_transport_config_are_closed_before_attach():
             backend._runtime_transport_config("rtt", config)
     for deadline in (True, 0, 300_001):
         with pytest.raises(ProbeBackendError):
-            backend._new_transport("rtt", {"kind": "rtt", "options": {"channel": 0}}, deadline)
+            backend._new_transport("rtt", configs[1][1], deadline)
     backend._target_transport_factory = None
     with pytest.raises(ProbeBackendError):
-        backend._new_transport("rtt", {"kind": "rtt", "options": {"channel": 0}}, 1)
+        backend._new_transport("rtt", configs[1][1], 1)
     backend._target_transport_factory = lambda *args: object()
     with pytest.raises(ProbeBackendError):
-        backend._new_transport("rtt", {"kind": "rtt", "options": {"channel": 0}}, 1)
+        backend._new_transport("rtt", configs[1][1], 1)
     backend._target_transport_factory = lambda *args: (_ for _ in ()).throw(RuntimeError("private"))
     with pytest.raises(ProbeBackendError):
-        backend._new_transport("rtt", {"kind": "rtt", "options": {"channel": 0}}, 1)
+        backend._new_transport("rtt", configs[1][1], 1)
+    backend.close()
+
+
+def test_pyocd_public_target_transport_accepts_only_task8_effective_config():
+    from fakes.fake_pyocd import FakePyOCDDriver, FakePyOCDProbe, FakePyOCDTarget
+    from stm32_toolkit.probe.backend import ProbeBackendError
+    from stm32_toolkit.probe.pyocd_backend import PyOCDBackend
+
+    class Port:
+        def open(self, config, deadline): self.config = dict(config)
+        def read(self, maximum, deadline): return b""
+        def close(self): pass
+        def identity(self): return {}
+
+    profile = {
+        "board_id": "b", "mcu": "stm32f407vg", "target_id": "t",
+        "ram": [{"start": 0x20000000, "size": 0x1000}],
+        "mailbox": {"address": 0x20000000, "size": 64},
+    }
+    backend = PyOCDBackend(
+        FakePyOCDDriver((FakePyOCDProbe("probe-a"),), target=FakePyOCDTarget()),
+        target_profile=profile, target_transport_factory=lambda *args: Port(),
+    )
+    backend.open_attach("probe-a", "stm32f407vg")
+    effective = {
+        "address": 0x20000000, "size": 64, "ram": profile["ram"],
+        "target_id": "t", "probe_id": "probe-a",
+    }
+    opened = backend.open_target_transport("mailbox", effective, 1)
+    assert backend._transports[opened["transport_id"]].config == effective
+    with pytest.raises(ProbeBackendError):
+        backend.open_target_transport(
+            "mailbox",
+            {"kind": "memory-mailbox", "options": {"address": 0x20000000, "size": 64}},
+            1,
+        )
+    backend.close()
+
+
+def test_fixed_pyocd_task8_ports_enforce_deadline_output_and_closed_identity(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    from fakes.fake_pyocd import FakePyOCDDriver, FakePyOCDProbe, FakePyOCDTarget
+    from stm32_toolkit.probe import pyocd_backend as module
+    from stm32_toolkit.probe.backend import ProbeBackendError
+
+    class Target:
+        result: object = [1, 2]
+        def read_memory_block8(self, address, size): return self.result
+        def get_target_context(self): return object()
+
+    target = Target()
+    reader = module._AttachedTargetMemoryReader(target)
+    deadline = module.time.monotonic() + 10.0
+    assert reader.read_memory(0, 2, deadline) == b"\x01\x02"
+    for value in ([1], [True, 2], "12"):
+        target.result = value
+        with pytest.raises(RuntimeError): reader.read_memory(0, 2, deadline)
+    monkeypatch.setattr(module.time, "monotonic", lambda: 2.0)
+    with pytest.raises(RuntimeError): reader.read_memory(0, 2, 2.0)
+    reader.close()
+    with pytest.raises(RuntimeError): reader.read_memory(0, 2, 3.0)
+
+    class Agent:
+        instances = []
+        def __init__(self, context, io_handler, console):
+            self.polls = 0; self.cleanups = 0; Agent.instances.append(self)
+        def check_and_handle_semihost_request(self): self.polls += 1
+        def cleanup(self): self.cleanups += 1
+
+    import pyocd.debug.semihost as semihost
+    monkeypatch.setattr(semihost, "SemihostAgent", Agent)
+    monkeypatch.setattr(module.time, "monotonic", lambda: 1.0)
+    session = module._AttachedTargetSemihostSession(target)
+    session.open(elf_path="C:\\fixture\\app.elf", host_io=object(), console=object(), deadline=2.0)
+    with pytest.raises(RuntimeError):
+        session.open(elf_path="C:\\fixture\\app.elf", host_io=object(), console=object(), deadline=2.0)
+    for agent, deadline in ((object(), 2.0), (None, 1.0)):
+        with pytest.raises(RuntimeError): session.poll(agent=agent, deadline=deadline)
+    session.poll(agent=None, deadline=2.0)
+    assert Agent.instances[0].polls == 1
+    session.close(); session.close()
+    assert Agent.instances[0].cleanups == 1
+
+    with pytest.raises(ProbeBackendError):
+        module.admitted_target_transport_factory("dynamic", target, {})
+
+    profile = {
+        "board_id": "b", "mcu": "stm32f407vg", "target_id": "t",
+        "ram": [{"start": 0x20000000, "size": 0x1000}],
+        "rtt": {"channel": 0}, "uart": {"port": "COM3", "baud": 115200},
+        "semihosting": {"declared": True},
+        "semihosting_runtime": {"elf_path": "C:\\fixture\\app.elf", "elf_sha256": "e" * 64},
+    }
+    backend = module.PyOCDBackend(
+        FakePyOCDDriver((FakePyOCDProbe("probe-a"),), target=FakePyOCDTarget()),
+        target_profile=profile, target_transport_factory=lambda *args: object(),
+    )
+    with pytest.raises(ProbeBackendError): backend._profile_transport_config("rtt")
+    backend.open_attach("probe-a", "stm32f407vg")
+    assert backend._profile_transport_config("rtt")["channel"] == 0
+    assert backend._profile_transport_config("uart")["data_bits"] == 8
+    assert backend._profile_transport_config("semihosting")["host_files"] is False
+    backend._target_profile["swo"] = {"baud": 2_000_000}
+    backend._target_profile["probe"] = {}
+    assert backend._profile_transport_config("swo")["baud"] == 2_000_000
+    assert backend._profile_transport_config("probe")["probe_id"] == "probe-a"
+    with pytest.raises(ProbeBackendError): backend._profile_transport_config("mailbox")
+    with pytest.raises(ProbeBackendError): backend._runtime_transport_config("dynamic", {})
     backend.close()

@@ -32,11 +32,11 @@ from stm32_toolkit.probe import (
     OperationLevel,
     ProbeServiceConfig,
     ProbeServiceSupervisor,
-    PyOCDBackend,
 )
 from stm32_toolkit.probe.client import ProbeClient
 from stm32_toolkit.probe.lease import ProbeLeaseManager
 from stm32_toolkit.probe.protocol import PROBE_PROTOCOL_VERSION
+from stm32_toolkit.probe.worker import ProbeWorkerConfig
 from stm32_toolkit.project_model import load_project_model
 from stm32_toolkit.result import OperationResult
 
@@ -67,20 +67,27 @@ class MonitorObservationError(Exception):
 def _supervisor_factory(
     config: ProbeServiceConfig,
     lease_manager: object,
-    backend_factory: Callable[[], object],
+    backend_contract: object,
 ) -> object:
+    if type(backend_contract) is ProbeWorkerConfig:
+        return ProbeServiceSupervisor(
+            config=config,
+            lease_manager=lease_manager,
+            worker_config=backend_contract,
+        )
     return ProbeServiceSupervisor(
         config=config,
         lease_manager=lease_manager,
-        backend_factory=backend_factory,
+        backend_factory=backend_contract,
     )
 
 
 @dataclass(frozen=True)
 class MonitorObservationSeams:
-    backend_factory: Callable[[], object] = PyOCDBackend
+    worker_config: ProbeWorkerConfig = ProbeWorkerConfig()
+    _test_backend_factory: Callable[[], object] | None = None
     lease_manager_factory: Callable[[Path], object] = ProbeLeaseManager
-    supervisor_factory: Callable[[ProbeServiceConfig, object, Callable[[], object]], object] = _supervisor_factory
+    supervisor_factory: Callable[[ProbeServiceConfig, object, object], object] = _supervisor_factory
     client_factory: Callable[[object], object] = ProbeClient
     bind: Callable[[object, object], Awaitable[OperationResult]] = bind_debug_firmware
     catalog_from_binding: Callable[[object], object] = DwarfCatalog.from_binding
@@ -929,11 +936,12 @@ async def open_monitor_observation(
         )
         lease_manager = _seams.lease_manager_factory(paths.data_root)
         _verify_root_guard(root_guard)
-        supervisor = _seams.supervisor_factory(
-            config,
-            lease_manager,
-            _guard_backend_factory(root_guard, _seams.backend_factory),
-        )
+        backend_contract: object = _seams.worker_config
+        if _seams._test_backend_factory is not None:
+            backend_contract = _guard_backend_factory(
+                root_guard, _seams._test_backend_factory
+            )
+        supervisor = _seams.supervisor_factory(config, lease_manager, backend_contract)
         _verify_root_guard(root_guard)
         endpoint = await supervisor.start()
         _verify_root_guard(root_guard)

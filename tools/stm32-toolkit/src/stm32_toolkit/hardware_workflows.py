@@ -38,7 +38,6 @@ from stm32_toolkit.probe import (
     OperationLevel,
     ProbeServiceConfig,
     ProbeServiceSupervisor,
-    PyOCDBackend,
     begin_debug_handoff,
     end_debug_handoff,
     flash_firmware,
@@ -47,6 +46,7 @@ from stm32_toolkit.probe.backend import ProbeBackendError
 from stm32_toolkit.probe.client import ProbeClient, ProbeClientError
 from stm32_toolkit.probe.lease import ProbeLeaseError, ProbeLeaseManager
 from stm32_toolkit.probe.service import ProbeServiceError
+from stm32_toolkit.probe.worker import ProbeBackendWorker, ProbeWorkerConfig
 from stm32_toolkit.project_model import ProjectManifestError, ProjectModel, load_project_model
 from stm32_toolkit.result import OperationResult
 
@@ -160,12 +160,18 @@ class FaultWorkflowRequest:
 def _supervisor_factory(
     config: ProbeServiceConfig,
     lease_manager: object,
-    backend_factory: Callable[[], object],
+    backend_contract: object,
 ) -> ProbeServiceSupervisor:
+    if type(backend_contract) is ProbeWorkerConfig:
+        return ProbeServiceSupervisor(
+            config=config,
+            lease_manager=lease_manager,
+            worker_config=backend_contract,
+        )
     return ProbeServiceSupervisor(
         config=config,
         lease_manager=lease_manager,
-        backend_factory=backend_factory,
+        backend_factory=backend_contract,
     )
 
 
@@ -173,9 +179,10 @@ def _supervisor_factory(
 class HardwareWorkflowSeams:
     """Narrow injectable construction/accepted-contract seams for software gates."""
 
-    backend_factory: Callable[[], object] = PyOCDBackend
+    worker_config: ProbeWorkerConfig = ProbeWorkerConfig()
+    _test_backend_factory: Callable[[], object] | None = None
     lease_manager_factory: Callable[[Path], object] = ProbeLeaseManager
-    supervisor_factory: Callable[[ProbeServiceConfig, object, Callable[[], object]], object] = _supervisor_factory
+    supervisor_factory: Callable[[ProbeServiceConfig, object, object], object] = _supervisor_factory
     client_factory: Callable[[object], object] = ProbeClient
     flash: Callable[[object, object], Awaitable[OperationResult[Any]]] = flash_firmware
     handoff_begin: Callable[[object, object, object], Awaitable[OperationResult[Any]]] = begin_debug_handoff
@@ -397,7 +404,10 @@ def _make_supervisor(
         project_root=paths.project_root,
     )
     lease_manager = seams.lease_manager_factory(paths.data_root)
-    return seams.supervisor_factory(config, lease_manager, seams.backend_factory)
+    backend_contract: object = seams.worker_config
+    if seams._test_backend_factory is not None:
+        backend_contract = seams._test_backend_factory
+    return seams.supervisor_factory(config, lease_manager, backend_contract)
 
 
 def _validate_endpoint(endpoint: object, paths: WorkspacePaths, probe_id: str, level: OperationLevel) -> None:
@@ -640,7 +650,11 @@ async def probe_list_workflow(
     result: OperationResult[object] | None = None
     close_failed = False
     try:
-        backend = _seams.backend_factory()
+        backend = (
+            _seams._test_backend_factory()
+            if _seams._test_backend_factory is not None
+            else ProbeBackendWorker(config=_seams.worker_config)
+        )
         listing = asyncio.create_task(asyncio.to_thread(backend.list_probes))
         listed = await _await_owned(listing)
         cancelled = _merge_cancellation(cancelled, listed.cancellation)

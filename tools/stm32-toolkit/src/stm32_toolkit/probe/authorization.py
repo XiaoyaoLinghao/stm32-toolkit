@@ -274,6 +274,60 @@ class ControlAuthorizationStore:
             raise ControlAuthorizationError("PROBE_AUTHORIZATION_INVALID", "Authorization is invalid")
         return self._directory() / f"{digest}.{state}.json"
 
+    @contextmanager
+    def _pinned_records_directory(self):
+        """Hold the validated records object against replacement through publication."""
+        storage = self._evidence_store()
+        directory = self._directory()
+        handle: object | None = None
+        descriptor: int | None = None
+        try:
+            before = storage._validate_existing_path(directory)
+            if not stat.S_ISDIR(before.st_mode):
+                raise EvidenceValidationError("authorization records path is not a directory")
+            if os.name == "nt":
+                import ctypes
+                from ctypes import wintypes
+
+                create_file = ctypes.WinDLL("kernel32", use_last_error=True).CreateFileW
+                create_file.argtypes = (
+                    wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, wintypes.LPVOID,
+                    wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE,
+                )
+                create_file.restype = wintypes.HANDLE
+                raw_handle = create_file(
+                    str(directory), 0x00000001, 0x00000001 | 0x00000002, None, 3,
+                    0x02000000 | 0x00200000, None,
+                )
+                if raw_handle == wintypes.HANDLE(-1).value:
+                    raise OSError(ctypes.get_last_error(), "authorization directory pin failed")
+                handle = raw_handle
+            else:
+                descriptor = os.open(
+                    directory,
+                    os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0),
+                )
+                opened = os.fstat(descriptor)
+                if (opened.st_dev, opened.st_ino) != (before.st_dev, before.st_ino):
+                    raise EvidenceValidationError("authorization records identity changed")
+            opened_path = storage._validate_existing_path(directory)
+            if (opened_path.st_dev, opened_path.st_ino) != (before.st_dev, before.st_ino):
+                raise EvidenceValidationError("authorization records identity changed")
+            yield directory
+            after = storage._validate_existing_path(directory)
+            if (after.st_dev, after.st_ino) != (before.st_dev, before.st_ino):
+                raise EvidenceValidationError("authorization records identity changed")
+        except (OSError, EvidenceValidationError) as error:
+            raise ControlAuthorizationError(
+                "PROBE_AUTHORIZATION_INVALID", "Authorization directory is invalid"
+            ) from error
+        finally:
+            if descriptor is not None:
+                os.close(descriptor)
+            if handle is not None:
+                import ctypes
+                ctypes.WinDLL("kernel32", use_last_error=True).CloseHandle(handle)
+
     def _read_prepared(self, digest: str) -> dict[str, object]:
         path = self._path(digest, "prepared")
         storage = self._evidence_store()
@@ -328,11 +382,12 @@ class ControlAuthorizationStore:
         storage = self._evidence_store()
         with self._authority_lock(create=True):
             with storage._mutation_lock():
-                created = storage._atomic_create_new(
-                    self._path(digest, "prepared"), payload, phase="control-authorization-prepare"
-                )
-                if not created:
-                    raise ControlAuthorizationError("PROBE_AUTHORIZATION_INVALID", "Authorization already exists")
+                with self._pinned_records_directory():
+                    created = storage._atomic_create_new(
+                        self._path(digest, "prepared"), payload, phase="control-authorization-prepare"
+                    )
+                    if not created:
+                        raise ControlAuthorizationError("PROBE_AUTHORIZATION_INVALID", "Authorization already exists")
         with self._live_lock:
             self._live_deadlines[digest] = float(started) + 300.0
         return PreparedControlAuthorization(digest, nonce, expires, record)
@@ -353,16 +408,17 @@ class ControlAuthorizationStore:
         storage = self._evidence_store()
         with self._authority_lock(create=False):
             with storage._mutation_lock(create=False):
-                record = self._read_prepared(digest)
-                consumed_payload = canonical_json_bytes(
-                    {"action_digest": digest, "consumed_at_utc": instant.strftime("%Y-%m-%dT%H:%M:%S.%fZ")}
-                )
-                if not storage._atomic_create_new(
-                    self._path(digest, "consumed"),
-                    consumed_payload,
-                    phase="control-authorization-consume",
-                ):
-                    raise ControlAuthorizationError("PROBE_AUTHORIZATION_INVALID", "Authorization is already consumed")
+                with self._pinned_records_directory():
+                    record = self._read_prepared(digest)
+                    consumed_payload = canonical_json_bytes(
+                        {"action_digest": digest, "consumed_at_utc": instant.strftime("%Y-%m-%dT%H:%M:%S.%fZ")}
+                    )
+                    if not storage._atomic_create_new(
+                        self._path(digest, "consumed"),
+                        consumed_payload,
+                        phase="control-authorization-consume",
+                    ):
+                        raise ControlAuthorizationError("PROBE_AUTHORIZATION_INVALID", "Authorization is already consumed")
                 with self._live_lock:
                     live_deadline = self._live_deadlines.pop(digest, None)
                 live_now = self._monotonic_clock() if live_deadline is not None else None
@@ -372,11 +428,11 @@ class ControlAuthorizationStore:
                     (live_deadline is not None and (
                         type(live_now) not in {int, float}
                         or not math.isfinite(live_now)
-                        or live_now > live_deadline
+                        or live_now >= live_deadline
                     ))
                     or
                     instant < prepared_at
-                    or instant > expires_at
+                    or instant >= expires_at
                     or operation != record["operation"]
                     or dict(arguments) != record["arguments"]
                     or workspace_id != record["workspace_id"]

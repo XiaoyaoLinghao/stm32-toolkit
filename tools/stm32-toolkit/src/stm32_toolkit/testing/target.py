@@ -34,6 +34,7 @@ from stm32_toolkit.testing.model import (
     protocol_error,
 )
 from stm32_toolkit.testing.protocol import validate_event_payload
+from stm32_toolkit.testing.transports.base import format_ram_bounds, ram_regions
 
 
 FRAME_MAGIC = b"ST32"
@@ -99,6 +100,96 @@ def _closed_project_transport_config(
     return {"kind": config["kind"], "options": options}
 
 
+def _effective_target_transport_config(binding: Mapping[str, object]) -> dict[str, object]:
+    """Compose the exact Task 8 config from frozen project/support/identity inputs."""
+    try:
+        transport = binding["transport"]
+        project = _closed_project_transport_config(transport, binding["transport_config"])
+        support = binding["support_profile"]
+        target = binding["target"]
+        probe_id = binding["probe_serial_hash"]
+        if (
+            not isinstance(support, Mapping)
+            or set(support) - {
+                "backend", "board_id", "mcu", "target_id", "ram", "mailbox", "rtt",
+                "uart", "semihosting", "semihosting_runtime",
+            }
+            or support.get("backend") != "pyocd"
+            or not isinstance(target, Mapping)
+            or any(support.get(key) != target.get(key) for key in ("board_id", "mcu", "target_id"))
+            or not isinstance(probe_id, str)
+            or len(probe_id) != 64
+        ):
+            raise ValueError
+        common = {"target_id": target["target_id"], "probe_id": probe_id}
+        options = dict(project["options"])
+        if transport == "mailbox":
+            regions = ram_regions(support.get("ram"))
+            declared = support.get("mailbox")
+            if not isinstance(declared, Mapping) or dict(declared) != options:
+                raise ValueError
+            return {**options, "ram": [dict(item) for item in support["ram"]], **common}
+        if transport == "rtt":
+            regions = ram_regions(support.get("ram"))
+            declared = support.get("rtt")
+            normalized = {
+                "channel": options["channel"],
+                "control_block_address": options.get("controlBlockAddress"),
+            }
+            if not isinstance(declared, Mapping) or dict(declared) != {
+                key: value for key, value in normalized.items() if value is not None
+            }:
+                raise ValueError
+            return {**normalized, "ram": [dict(item) for item in support["ram"]], **common}
+        if transport == "uart":
+            declared = support.get("uart")
+            if not isinstance(declared, Mapping) or dict(declared) != options:
+                raise ValueError
+            return {**options, "data_bits": 8, "parity": "N", "stop_bits": 1, **common}
+        declared = support.get("semihosting")
+        runtime = support.get("semihosting_runtime")
+        if (
+            dict(declared) != {"declared": True} if isinstance(declared, Mapping) else True
+        ) or (
+            not isinstance(runtime, Mapping)
+            or set(runtime) != {"elf_path", "elf_sha256"}
+            or runtime["elf_sha256"] != binding["elf_sha256"]
+        ):
+            raise ValueError
+        return {**dict(runtime), "host_files": False, **common}
+    except (KeyError, TypeError, ValueError, TestProtocolError) as error:
+        raise ValueError("Target support or transport configuration is invalid") from error
+
+
+def _task8_identity_digest(
+    transport: str, effective: Mapping[str, object], identity: Mapping[str, str]
+) -> str:
+    if transport == "mailbox":
+        payload = {
+            "address": effective["address"], "ring_size": effective["size"],
+            "ram": ram_regions(effective["ram"]),
+        }
+    elif transport == "rtt":
+        actual = int(identity["control_block_address"], 16)
+        payload = {
+            "channel": effective["channel"],
+            "requested_control_block_address": effective["control_block_address"],
+            "actual_control_block_address": actual, "ram": ram_regions(effective["ram"]),
+        }
+    elif transport == "uart":
+        payload = {
+            "port": effective["port"], "baud": effective["baud"], "data_bits": 8,
+            "parity": "N", "stop_bits": 1, "xonxoff": False, "rtscts": False,
+            "dsrdtr": False, "timeout": 0,
+        }
+    else:
+        payload = {
+            "elf_path": effective["elf_path"], "elf_sha256": effective["elf_sha256"],
+            "host_files": False, "profile_declared": True,
+        }
+    return sha256(canonical_json_bytes(payload)).hexdigest()
+
+
 def _closed_transport_identity(value: object, binding: Mapping[str, object]) -> dict[str, str]:
     transport = binding.get("transport")
     fields = _TRANSPORT_IDENTITY_FIELDS.get(transport)
@@ -107,11 +198,18 @@ def _closed_transport_identity(value: object, binding: Mapping[str, object]) -> 
     result = dict(value)
     if any(not isinstance(member, str) or not member for member in result.values()):
         raise TargetRunError("TEST_IDENTITY_MISMATCH", "Target transport identity is invalid")
+    try:
+        effective = _effective_target_transport_config(binding)
+        expected_digest = _task8_identity_digest(transport, effective, result)
+    except (KeyError, TypeError, ValueError) as error:
+        raise TargetRunError("TEST_IDENTITY_MISMATCH", "Target transport identity is invalid") from error
     if (
         result["target_id"] != dict(binding["target"])["target_id"]
+        or result["probe_id"] != effective["probe_id"]
         or result["transport"] != binding["transport"]
         or len(result["config_digest"]) != 64
         or any(character not in "0123456789abcdef" for character in result["config_digest"])
+        or result["config_digest"] != expected_digest
     ):
         raise TargetRunError("TEST_IDENTITY_MISMATCH", "Target transport identity changed")
     return result
@@ -538,7 +636,7 @@ class TargetTestRunner:
         required = {
             "workspace_id", "project_id", "session_id", "revision", "target", "probe_serial_hash",
             "elf_path", "elf_sha256", "build_id", "inventory_digest", "transport",
-            "transport_config", "cases", "timeout_ms",
+            "transport_config", "support_profile", "cases", "timeout_ms",
         }
         if set(binding) != required:
             raise TargetRunError("TEST_PROTOCOL_INVALID", "Target run binding is not closed")
@@ -629,7 +727,7 @@ class TargetTestRunner:
         required = {
             "workspace_id", "project_id", "session_id", "revision", "target",
             "probe_serial_hash", "elf_path", "elf_sha256", "build_id", "inventory_digest",
-            "transport", "transport_config", "cases", "timeout_ms", "nonce",
+            "transport", "transport_config", "support_profile", "cases", "timeout_ms", "nonce",
             "prepared_at_utc", "expires_at_utc",
         }
         try:
@@ -655,6 +753,7 @@ class TargetTestRunner:
             if record["transport"] not in {"mailbox", "rtt", "uart", "semihosting"}:
                 raise ValueError
             _closed_project_transport_config(record["transport"], record["transport_config"])
+            _effective_target_transport_config(record)
             cases = record["cases"]
             if (
                 not isinstance(cases, list)
@@ -695,7 +794,7 @@ class TargetTestRunner:
                 )
             except (KeyError, ValueError, TypeError) as error:
                 raise TargetRunError("TEST_AUTHORIZATION_INVALID", "Target authorization record is invalid") from error
-            if authorized_digest != prepared.action_digest or instant > expires_at:
+            if authorized_digest != prepared.action_digest or instant >= expires_at:
                 raise TargetRunError("TEST_AUTHORIZATION_INVALID", "Exact unexpired Target authorization is required")
             if current_revision != binding["revision"] or current_inventory_digest != binding["inventory_digest"]:
                 raise TargetRunError("TEST_INVENTORY_CHANGED", "Project revision or inventory changed")
@@ -707,6 +806,12 @@ class TargetTestRunner:
                     "TEST_AUTHORIZATION_INVALID",
                     "Target run requires the production guarded flash adapter",
                 )
+            try:
+                effective_transport_config = _effective_target_transport_config(binding)
+            except ValueError as error:
+                raise TargetRunError(
+                    "TEST_TRANSPORT_UNAVAILABLE", "Configured Target support is unavailable"
+                ) from error
             try:
                 transport = self._transport_factory(str(binding["transport"]))
                 if (
@@ -730,7 +835,7 @@ class TargetTestRunner:
             if await self._probe.target_identity() != binding["target"]:
                 raise TargetRunError("TEST_IDENTITY_MISMATCH", "Target identity changed after flash")
             deadline = time.monotonic() + float(binding["timeout_ms"]) / 1000
-            opened = transport.open(dict(binding["transport_config"]), deadline)
+            opened = transport.open(effective_transport_config, deadline)
             if inspect.isawaitable(opened):
                 await opened
             transport_identity = _closed_transport_identity(transport.identity(), binding)

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import base64
 from collections.abc import Callable, Mapping
-from dataclasses import asdict, is_dataclass
+from dataclasses import asdict, dataclass, is_dataclass
 import json
 import multiprocessing
 from multiprocessing.connection import Connection
@@ -50,6 +50,47 @@ _BACKEND_ERROR_CODES = {
 
 class ProbeWorkerError(ProbeBackendError):
     """A closed failure emitted by the owned worker boundary."""
+
+
+@dataclass(frozen=True, init=False)
+class ProbeWorkerConfig:
+    """Closed serializable production construction contract for one PyOCD child."""
+
+    frequency_hz: int
+    target_profile_json: str
+    transport_provider: str
+
+    def __init__(
+        self,
+        *,
+        frequency_hz: int = 1_000_000,
+        target_profile: Mapping[str, object] | None = None,
+        transport_provider: str = "task8",
+    ) -> None:
+        profile_input: object = {} if target_profile is None else target_profile
+        if (
+            type(frequency_hz) is not int
+            or not 100_000 <= frequency_hz <= 50_000_000
+            or transport_provider != "task8"
+            or not isinstance(profile_input, Mapping)
+        ):
+            raise TypeError("Probe worker configuration is invalid")
+        try:
+            profile_json = _canonical_bytes(dict(profile_input)).decode("utf-8")
+            profile = json.loads(profile_json)
+        except (ProbeWorkerError, TypeError, ValueError, UnicodeError, json.JSONDecodeError) as error:
+            raise TypeError("Probe worker configuration is invalid") from error
+        if not isinstance(profile, dict):
+            raise TypeError("Probe worker configuration is invalid")
+        object.__setattr__(self, "frequency_hz", frequency_hz)
+        object.__setattr__(self, "target_profile_json", profile_json)
+        object.__setattr__(self, "transport_provider", transport_provider)
+
+    def target_profile(self) -> dict[str, object]:
+        value = json.loads(self.target_profile_json)
+        if not isinstance(value, dict):
+            raise ProbeWorkerError("PROBE_PROTOCOL_INVALID", "Probe worker configuration is invalid")
+        return value
 
 
 def _canonical_bytes(value: object) -> bytes:
@@ -120,17 +161,27 @@ def _send(connection: Connection, value: Mapping[str, object]) -> None:
     connection.send_bytes(payload)
 
 
-def _worker_main(connection: Connection, backend_factory: Callable[[], object] | None) -> None:
+def _worker_main(
+    connection: Connection,
+    config: ProbeWorkerConfig | None,
+    backend_factory: Callable[[], object] | None,
+) -> None:
     backend: object | None = None
     explicit_close_started = False
     try:
-        if backend_factory is None:
-            from .pyocd_backend import PyOCDBackend
-            backend = PyOCDBackend()
-        else:
+        if backend_factory is not None:
             # The callable is an explicit private test seam passed through Windows spawn;
             # production construction never accepts a module or import string.
             backend = backend_factory()
+        elif type(config) is ProbeWorkerConfig:
+            from .pyocd_backend import PyOCDBackend, admitted_target_transport_factory
+            backend = PyOCDBackend(
+                frequency_hz=config.frequency_hz,
+                target_profile=config.target_profile(),
+                target_transport_factory=admitted_target_transport_factory,
+            )
+        else:
+            raise TypeError("Probe worker configuration is invalid")
         _send(connection, {"version": _VERSION, "ok": True, "pid": os.getpid()})
         while True:
             raw = connection.recv_bytes(_MAX_MESSAGE_BYTES)
@@ -186,12 +237,21 @@ def _worker_main(connection: Connection, backend_factory: Callable[[], object] |
 class ProbeBackendWorker:
     """Synchronous ProbeBackend proxy owning exactly one spawned child process."""
 
-    def __init__(self, *, _test_backend_factory: Callable[[], object] | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        config: ProbeWorkerConfig | None = None,
+        _test_backend_factory: Callable[[], object] | None = None,
+    ) -> None:
+        if (config is None) == (_test_backend_factory is None):
+            raise TypeError("Exactly one production config or private test backend is required")
+        if config is not None and type(config) is not ProbeWorkerConfig:
+            raise TypeError("Probe worker configuration is invalid")
         context = multiprocessing.get_context("spawn")
         parent, child = context.Pipe(duplex=True)
         process = context.Process(
             target=_worker_main,
-            args=(child, _test_backend_factory),
+            args=(child, config, _test_backend_factory),
             name="stm32-toolkit-probe-backend",
             daemon=True,
         )
@@ -238,7 +298,7 @@ class ProbeBackendWorker:
         return value
 
     def call(self, method: str, *args: object, timeout_seconds: float = 30.0, **kwargs: object) -> object:
-        if method not in _METHODS or not 0 < timeout_seconds <= 300:
+        if method not in _METHODS or not 0 < timeout_seconds <= 301:
             raise ProbeWorkerError("PROBE_PROTOCOL_INVALID", "Probe worker request is invalid")
         with self._call_lock:
             if self._closed or not self._process.is_alive():
@@ -332,4 +392,4 @@ class ProbeBackendWorker:
             self.abort_owned_execution()
 
 
-__all__ = ["ProbeBackendWorker", "ProbeWorkerError"]
+__all__ = ["ProbeBackendWorker", "ProbeWorkerConfig", "ProbeWorkerError"]

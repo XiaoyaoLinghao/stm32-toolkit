@@ -14,7 +14,7 @@ import pytest
 from stm32_toolkit.result import OperationResult
 
 from stm32_toolkit.probe import client as probe_client
-from stm32_toolkit.probe.authorization import ControlAuthorizationStore
+from stm32_toolkit.probe.authorization import ControlAuthorizationError, ControlAuthorizationStore
 from stm32_toolkit.testing import target as target_module
 
 ProbeClientError = probe_client.ProbeClientError
@@ -34,6 +34,15 @@ IDENTITY = {
 STATE = {"state": "halted", "reason": "requested"}
 MAILBOX_PROJECT_CONFIG = {
     "kind": "memory-mailbox", "options": {"address": 0x20000000, "size": 4096},
+}
+TARGET_SUPPORT = {
+    "backend": "pyocd", "board_id": "board-a", "mcu": "stm32f407vg",
+    "target_id": "target-a", "ram": [{"start": 0x20000000, "size": 0x10000}],
+    "mailbox": {"address": 0x20000000, "size": 4096},
+    "rtt": {"channel": 0, "control_block_address": 0x20000100},
+    "uart": {"port": "COM3", "baud": 115200},
+    "semihosting": {"declared": True},
+    "semihosting_runtime": {"elf_path": "C:\\fixture\\app.elf", "elf_sha256": "e" * 64},
 }
 
 
@@ -128,18 +137,33 @@ class FakeTransport:
     def __init__(self, chunks: list[bytes]) -> None:
         self.chunks = chunks
         self.calls = []
+        self.config = None
 
-    def open(self, config, deadline): self.calls.append(("open", dict(config), deadline))
+    def open(self, config, deadline):
+        self.config = dict(config)
+        self.calls.append(("open", dict(config), deadline))
     def read(self, maximum, deadline):
         self.calls.append(("read", maximum, deadline))
         return self.chunks.pop(0) if self.chunks else b""
     def close(self): self.calls.append(("close",))
     def identity(self):
-        return {
-            "probe_id": "probe-a", "target_id": "target-a", "transport": "mailbox",
-            "config_digest": "d" * 64, "address": "0x20000000", "ring_size": "4096",
+        config = self.config
+        if not isinstance(config, dict) or not {
+            "address", "size", "ram", "target_id", "probe_id"
+        }.issubset(config):
+          config = {
+            "address": 0x20000000, "size": 4096,
+            "ram": [{"start": 0x20000000, "size": 0x10000}],
+            "target_id": "target-a", "probe_id": "1" * 64,
+          }
+        identity = {
+            "probe_id": str(config["probe_id"]), "target_id": str(config["target_id"]),
+            "transport": "mailbox", "config_digest": "0" * 64,
+            "address": f"0x{int(config['address']):08x}", "ring_size": str(config["size"]),
             "ram_bounds": "0x20000000+0x00010000",
         }
+        identity["config_digest"] = target_module._task8_identity_digest("mailbox", config, identity)
+        return identity
 
 
 def test_target_run_preflights_project_v3_config_and_exact_authorized_cases_before_flash(
@@ -155,7 +179,8 @@ def test_target_run_preflights_project_v3_config_and_exact_authorized_cases_befo
         workspace_id="workspace-a", project_id="project-a", session_id="session-a",
         revision="rev-a", target=IDENTITY, probe_serial_hash="1" * 64,
         elf_path="build/app.elf", elf_sha256="e" * 64, build_id="b" * 64,
-        inventory_digest="a" * 64, transport="mailbox", cases=("suite.case",),
+        inventory_digest="a" * 64, transport="mailbox", support_profile=TARGET_SUPPORT,
+        cases=("suite.case",),
         timeout_ms=1000, now=datetime(2026, 8, 16, tzinfo=timezone.utc),
     )
     with pytest.raises(target_module.TargetRunError) as invalid:
@@ -211,6 +236,7 @@ def test_target_runner_prepare_is_single_use_and_closes_stale_identity(tmp_path:
         revision="rev-a", target=IDENTITY, probe_serial_hash="1" * 64,
         elf_path="build/app.elf", elf_sha256="e" * 64, build_id="b" * 64,
         inventory_digest="a" * 64, transport="mailbox", transport_config=MAILBOX_PROJECT_CONFIG,
+        support_profile=TARGET_SUPPORT,
         cases=("suite.case",), timeout_ms=1_000,
         now=datetime(2026, 8, 16, tzinfo=timezone.utc),
     )
@@ -325,7 +351,8 @@ def test_target_runner_success_persists_three_manifests_and_guarded_flash(tmp_pa
         workspace_id=WORKSPACE_ID, project_id=PROJECT_ID, session_id=SESSION_ID, revision=REVISION,
         target=IDENTITY, probe_serial_hash="1" * 64, elf_path="build/app.elf", elf_sha256="e" * 64,
         build_id="b" * 64, inventory_digest="a" * 64, transport="mailbox",
-        transport_config=MAILBOX_PROJECT_CONFIG, cases=("suite.case",), timeout_ms=1000, now=instant,
+        transport_config=MAILBOX_PROJECT_CONFIG, support_profile=TARGET_SUPPORT,
+        cases=("suite.case",), timeout_ms=1000, now=instant,
     )
     before_deadline = time.monotonic()
     result = await runner.run(
@@ -356,7 +383,8 @@ def test_target_runner_consumes_before_stale_or_denied_run(tmp_path: Path, mutat
     prepared = await runner.prepare(
         workspace_id="workspace-a", project_id="project-a", session_id="session-a", revision="rev-a",
         target=IDENTITY, probe_serial_hash="1" * 64, elf_path="build/app.elf", elf_sha256="e" * 64,
-        build_id="b" * 64, inventory_digest="a" * 64, transport="mailbox", transport_config=MAILBOX_PROJECT_CONFIG,
+        build_id="b" * 64, inventory_digest="a" * 64, transport="mailbox",
+        transport_config=MAILBOX_PROJECT_CONFIG, support_profile=TARGET_SUPPORT,
         cases=("suite.case",), timeout_ms=1000, now=instant,
     )
     with pytest.raises(target_module.TargetRunError) as caught:
@@ -380,7 +408,8 @@ def test_target_runner_prepare_rejects_nonclosed_and_bad_limits(tmp_path: Path):
     common = dict(
         workspace_id="w", project_id="p", session_id="s", revision="r", target=IDENTITY,
         probe_serial_hash="1" * 64, elf_path="a.elf", elf_sha256="e" * 64, build_id="b" * 64,
-        inventory_digest="a" * 64, transport="mailbox", transport_config=MAILBOX_PROJECT_CONFIG, cases=("c",), timeout_ms=True,
+        inventory_digest="a" * 64, transport="mailbox", transport_config=MAILBOX_PROJECT_CONFIG,
+        support_profile=TARGET_SUPPORT, cases=("c",), timeout_ms=True,
     )
     with pytest.raises(target_module.TargetRunError):
       await runner.prepare(now=datetime.now(timezone.utc), **common)
@@ -399,7 +428,8 @@ def test_target_prepared_record_closed_validation_rejects_each_identity_and_limi
       "workspace_id": "w", "project_id": "p", "session_id": "s", "revision": "r",
       "target": IDENTITY, "probe_serial_hash": "1" * 64, "elf_path": "a.elf",
       "elf_sha256": "e" * 64, "build_id": "b" * 64, "inventory_digest": "a" * 64,
-      "transport": "mailbox", "transport_config": MAILBOX_PROJECT_CONFIG, "cases": ["suite.case"],
+      "transport": "mailbox", "transport_config": MAILBOX_PROJECT_CONFIG,
+      "support_profile": TARGET_SUPPORT, "cases": ["suite.case"],
       "timeout_ms": 1, "nonce": "2" * 64,
       "prepared_at_utc": "2026-08-16T00:00:00.000000Z",
       "expires_at_utc": "2026-08-16T00:05:00.000000Z",
@@ -735,6 +765,67 @@ def test_live_control_authorization_uses_monotonic_expiry_when_wall_clock_rolls_
   assert replay.value.code == "PROBE_AUTHORIZATION_INVALID"
 
 
+def test_control_authorization_is_invalid_at_exact_utc_and_monotonic_expiry(
+    tmp_path: Path,
+) -> None:
+  instant = datetime(2026, 8, 16, tzinfo=timezone.utc)
+  clock = [10.0]
+  store = ControlAuthorizationStore(
+      (tmp_path / "control").absolute(), monotonic_clock=lambda: clock[0]
+  )
+  binding = {
+      "workspace_id": "workspace-a", "project_id": "project-a",
+      "session_id": "session-a", "revision": "rev-a", "target": IDENTITY,
+      "firmware": {"build_id": "b" * 64, "elf_sha256": "e" * 64},
+      "operation": "target.resume", "arguments": {},
+      "identity_snapshot": IDENTITY, "state_snapshot": STATE,
+  }
+  utc = store.prepare(binding, now=instant)
+  with pytest.raises(ControlAuthorizationError):
+    store.consume(
+        utc.action_digest, operation="target.resume", arguments={},
+        workspace_id="workspace-a", session_id="session-a",
+        identity=IDENTITY, state=STATE, now=utc.expires_at_utc,
+    )
+
+  monotonic = store.prepare(binding, now=instant)
+  clock[0] = 310.0
+  with pytest.raises(ControlAuthorizationError):
+    store.consume(
+        monotonic.action_digest, operation="target.resume", arguments={},
+        workspace_id="workspace-a", session_id="session-a",
+        identity=IDENTITY, state=STATE, now=instant,
+    )
+
+
+def test_target_run_is_consumed_and_denied_at_exact_expiry_before_flash(tmp_path: Path) -> None:
+  async def scenario() -> None:
+    flash = FakeFlashWorkflow()
+    runner = target_module.TargetTestRunner(
+        (tmp_path / "runs").absolute(), FakeProbeClient(), flash,
+        lambda name: FakeTransport([valid_target_stream(), b""]),
+    )
+    instant = datetime(2026, 8, 16, tzinfo=timezone.utc)
+    prepared = await runner.prepare(
+        workspace_id="workspace-a", project_id="project-a", session_id="session-a",
+        revision="rev-a", target=IDENTITY, probe_serial_hash="1" * 64,
+        elf_path="build/app.elf", elf_sha256="e" * 64, build_id="b" * 64,
+        inventory_digest="a" * 64, transport="mailbox",
+        transport_config=MAILBOX_PROJECT_CONFIG, support_profile=TARGET_SUPPORT,
+        cases=("suite.case",), timeout_ms=1000,
+        now=instant,
+    )
+    with pytest.raises(target_module.TargetRunError) as caught:
+      await runner.run(
+          prepared, prepared.action_digest, current_revision="rev-a",
+          current_inventory_digest="a" * 64, now=prepared.expires_at_utc,
+      )
+    assert caught.value.code == "TEST_AUTHORIZATION_INVALID"
+    assert flash.calls == []
+
+  run(scenario())
+
+
 def test_control_authority_rejects_hardlinked_ledger_and_copied_parent(tmp_path: Path) -> None:
   from stm32_toolkit.probe.authorization import ControlAuthorizationError, ControlAuthorizationStore
 
@@ -772,6 +863,92 @@ def test_control_authority_rejects_hardlinked_ledger_and_copied_parent(tmp_path:
           workspace_id="workspace-a", session_id="session-a", identity=IDENTITY,
           state=STATE, now=instant,
       )
+
+
+def test_control_consume_pins_the_validated_records_directory_through_create_new(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+  instant = datetime(2026, 8, 16, tzinfo=timezone.utc)
+  root = (tmp_path / "control").absolute()
+  store = ControlAuthorizationStore(root)
+  binding = {
+      "workspace_id": "workspace-a", "project_id": "project-a",
+      "session_id": "session-a", "revision": "rev-a", "target": IDENTITY,
+      "firmware": {"build_id": "b" * 64, "elf_sha256": "e" * 64},
+      "operation": "target.resume", "arguments": {},
+      "identity_snapshot": IDENTITY, "state_snapshot": STATE,
+  }
+  prepared = store.prepare(binding, now=instant)
+  original_read = store._read_prepared
+  replacement = root / "records"
+  original = root / "records-original"
+
+  def swap_after_authority_validation(digest: str):
+    try:
+      replacement.rename(original)
+      shutil.copytree(original, replacement)
+    except OSError as error:
+      raise ControlAuthorizationError(
+          "PROBE_AUTHORIZATION_INVALID", "Authorization directory changed"
+      ) from error
+    return original_read(digest)
+
+  monkeypatch.setattr(store, "_read_prepared", swap_after_authority_validation)
+  with pytest.raises(ControlAuthorizationError) as caught:
+    store.consume(
+        prepared.action_digest, operation="target.resume", arguments={},
+        workspace_id="workspace-a", session_id="session-a",
+        identity=IDENTITY, state=STATE, now=instant,
+    )
+  assert caught.value.code == "PROBE_AUTHORIZATION_INVALID"
+  assert not (replacement / f"{prepared.action_digest}.consumed.json").exists()
+
+
+def test_control_directory_pin_rejects_posix_handle_and_named_identity_changes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+  from stm32_toolkit.probe import authorization as module
+
+  root = (tmp_path / "control-pin").absolute()
+  store = ControlAuthorizationStore(root)
+  instant = datetime(2026, 8, 16, tzinfo=timezone.utc)
+  store.prepare({
+      "workspace_id": "workspace-a", "project_id": "project-a",
+      "session_id": "session-a", "revision": "rev-a", "target": IDENTITY,
+      "firmware": {"build_id": "b" * 64, "elf_sha256": "e" * 64},
+      "operation": "target.resume", "arguments": {},
+      "identity_snapshot": IDENTITY, "state_snapshot": STATE,
+  }, now=instant)
+  directory = root / "records"
+  real = os.lstat(directory)
+  storage = store._evidence_store()
+  closed: list[int] = []
+  monkeypatch.setattr(store, "_directory", lambda: directory)
+  monkeypatch.setattr(store, "_evidence_store", lambda: storage)
+  monkeypatch.setattr(storage, "_validate_existing_path", lambda *args, **kwargs: real)
+  monkeypatch.setattr(module.os, "name", "posix")
+  monkeypatch.setattr(module.os, "open", lambda *args, **kwargs: 73)
+  monkeypatch.setattr(module.os, "close", closed.append)
+  monkeypatch.setattr(module.os, "fstat", lambda descriptor: real)
+  with store._pinned_records_directory() as pinned:
+    assert pinned == directory
+  assert closed == [73]
+
+  different = type("Metadata", (), {
+      "st_mode": real.st_mode, "st_dev": real.st_dev, "st_ino": real.st_ino + 1,
+  })()
+  monkeypatch.setattr(module.os, "fstat", lambda descriptor: different)
+  with pytest.raises(ControlAuthorizationError):
+    with store._pinned_records_directory():
+      pass
+
+  for sequence in ((real, different), (real, real, different)):
+    values = iter(sequence)
+    monkeypatch.setattr(storage, "_validate_existing_path", lambda *args, **kwargs: next(values))
+    monkeypatch.setattr(module.os, "fstat", lambda descriptor: real)
+    with pytest.raises(ControlAuthorizationError):
+      with store._pinned_records_directory():
+        pass
 
 
 def test_control_authorization_cross_process_consume_has_one_winner(tmp_path: Path) -> None:
@@ -821,7 +998,8 @@ def test_target_runner_rejects_forged_prepared_value_without_persistent_record(
         "probe_serial_hash": "1" * 64, "elf_path": "build/app.elf",
         "elf_sha256": "e" * 64, "build_id": "b" * 64,
         "inventory_digest": "a" * 64, "transport": "mailbox",
-        "transport_config": MAILBOX_PROJECT_CONFIG, "cases": ["suite.case"], "timeout_ms": 1000,
+        "transport_config": MAILBOX_PROJECT_CONFIG, "support_profile": TARGET_SUPPORT,
+        "cases": ["suite.case"], "timeout_ms": 1000,
         "nonce": "2" * 64, "expires_at_utc": "2026-08-16T00:05:00.000000Z",
     }
     digest = __import__("hashlib").sha256(
@@ -855,6 +1033,7 @@ def test_target_runner_rejects_empty_or_unframed_stream_before_publication(
         revision="rev-a", target=IDENTITY, probe_serial_hash="1" * 64,
         elf_path="build/app.elf", elf_sha256="e" * 64, build_id="b" * 64,
         inventory_digest="a" * 64, transport="mailbox", transport_config=MAILBOX_PROJECT_CONFIG,
+        support_profile=TARGET_SUPPORT,
         cases=("suite.case",), timeout_ms=1000, now=instant,
     )
     with pytest.raises(Exception):
@@ -884,15 +1063,68 @@ def test_closed_transport_identity_rejects_shape_empty_and_changed_values(value,
 @pytest.mark.parametrize(
     "transport,identity",
     [
-        ("mailbox", {"probe_id": "probe-a", "target_id": "target-a", "transport": "mailbox", "config_digest": "d" * 64, "address": "0x20000000", "ring_size": "4096", "ram_bounds": "0x20000000+0x00010000"}),
-        ("rtt", {"probe_id": "probe-a", "target_id": "target-a", "transport": "rtt", "config_digest": "d" * 64, "channel": "0", "control_block_address": "0x20000100", "ram_bounds": "0x20000000+0x00010000"}),
-        ("uart", {"probe_id": "probe-a", "target_id": "target-a", "transport": "uart", "config_digest": "d" * 64, "port": "COM3", "baud": "115200", "data_bits": "8", "parity": "N", "stop_bits": "1", "flow_control": "xonxoff=0,rtscts=0,dsrdtr=0"}),
-        ("semihosting", {"probe_id": "probe-a", "target_id": "target-a", "transport": "semihosting", "config_digest": "d" * 64, "elf_path": "C:\\work\\app.elf", "elf_sha256": "e" * 64, "host_file_policy": "deny"}),
+        ("mailbox", {"probe_id": "1" * 64, "target_id": "target-a", "transport": "mailbox", "config_digest": "0" * 64, "address": "0x20000000", "ring_size": "4096", "ram_bounds": "0x20000000+0x00010000"}),
+        ("rtt", {"probe_id": "1" * 64, "target_id": "target-a", "transport": "rtt", "config_digest": "0" * 64, "channel": "0", "control_block_address": "0x20000100", "ram_bounds": "0x20000000+0x00010000"}),
+        ("uart", {"probe_id": "1" * 64, "target_id": "target-a", "transport": "uart", "config_digest": "0" * 64, "port": "COM3", "baud": "115200", "data_bits": "8", "parity": "N", "stop_bits": "1", "flow_control": "xonxoff=0,rtscts=0,dsrdtr=0"}),
+        ("semihosting", {"probe_id": "1" * 64, "target_id": "target-a", "transport": "semihosting", "config_digest": "0" * 64, "elf_path": "C:\\fixture\\app.elf", "elf_sha256": "e" * 64, "host_file_policy": "deny"}),
     ],
 )
 def test_closed_transport_identity_accepts_each_task8_production_shape(transport, identity):
-  binding = {"target": {"target_id": "target-a"}, "transport": transport}
+  configs = {
+      "mailbox": MAILBOX_PROJECT_CONFIG,
+      "rtt": {"kind": "rtt", "options": {"channel": 0, "controlBlockAddress": 0x20000100}},
+      "uart": {"kind": "uart", "options": {"port": "COM3", "baud": 115200}},
+      "semihosting": {"kind": "semihosting", "options": {}},
+  }
+  binding = {
+      "target": IDENTITY, "probe_serial_hash": "1" * 64,
+      "elf_path": "build/app.elf", "elf_sha256": "e" * 64,
+      "transport": transport, "transport_config": configs[transport],
+      "support_profile": TARGET_SUPPORT,
+  }
+  effective = target_module._effective_target_transport_config(binding)
+  identity["config_digest"] = target_module._task8_identity_digest(
+      transport, effective, identity
+  )
   assert target_module._closed_transport_identity(identity, binding) == identity
+
+
+@pytest.mark.parametrize(
+    "transport,project_config,expected",
+    [
+        ("mailbox", MAILBOX_PROJECT_CONFIG, {"address": 0x20000000, "size": 4096, "ram": TARGET_SUPPORT["ram"], "target_id": "target-a", "probe_id": "1" * 64}),
+        ("rtt", {"kind": "rtt", "options": {"channel": 0, "controlBlockAddress": 0x20000100}}, {"channel": 0, "control_block_address": 0x20000100, "ram": TARGET_SUPPORT["ram"], "target_id": "target-a", "probe_id": "1" * 64}),
+        ("uart", {"kind": "uart", "options": {"port": "COM3", "baud": 115200}}, {"port": "COM3", "baud": 115200, "data_bits": 8, "parity": "N", "stop_bits": 1, "target_id": "target-a", "probe_id": "1" * 64}),
+        ("semihosting", {"kind": "semihosting", "options": {}}, {"elf_path": "C:\\fixture\\app.elf", "elf_sha256": "e" * 64, "host_files": False, "target_id": "target-a", "probe_id": "1" * 64}),
+    ],
+)
+def test_target_builds_each_real_task8_effective_config_from_frozen_inputs(
+    transport, project_config, expected,
+):
+  binding = {
+      "target": IDENTITY, "probe_serial_hash": "1" * 64,
+      "elf_path": "build/app.elf", "elf_sha256": "e" * 64,
+      "transport": transport, "transport_config": project_config,
+      "support_profile": TARGET_SUPPORT,
+  }
+  assert target_module._effective_target_transport_config(binding) == expected
+
+
+def test_target_transport_identity_rejects_a_stable_but_unrecomputed_digest():
+  binding = {
+      "target": IDENTITY, "probe_serial_hash": "1" * 64,
+      "elf_path": "build/app.elf", "elf_sha256": "e" * 64,
+      "transport": "mailbox", "transport_config": MAILBOX_PROJECT_CONFIG,
+      "support_profile": TARGET_SUPPORT,
+  }
+  identity = {
+      "probe_id": "1" * 64, "target_id": "target-a", "transport": "mailbox",
+      "config_digest": "d" * 64, "address": "0x20000000", "ring_size": "4096",
+      "ram_bounds": "0x20000000+0x00010000",
+  }
+  with pytest.raises(target_module.TargetRunError) as caught:
+    target_module._closed_transport_identity(identity, binding)
+  assert caught.value.code == "TEST_IDENTITY_MISMATCH"
 
 
 def test_target_runner_dependency_and_authorization_boundaries_are_closed(tmp_path: Path):

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from functools import partial
 import hashlib
 import subprocess
 import sys
@@ -20,6 +21,7 @@ from stm32_toolkit.probe.supervisor import (
     ProbeServiceSupervisor,
 )
 from stm32_toolkit.probe.service import ProbeServiceError
+from stm32_toolkit.probe.pyocd_backend import PyOCDBackend
 
 
 class RecordingBackend(FakeProbeBackend):
@@ -172,6 +174,53 @@ def test_supervisor_constructor_injects_one_lazy_authorization_store_without_io_
             await supervisor.stop()
 
     run(scenario())
+
+
+def test_supervisor_requires_closed_worker_config_for_configured_pyocd(tmp_path: Path) -> None:
+    data_root = (tmp_path / "plugin-data").absolute()
+    data_root.mkdir()
+    profile = {
+        "backend": "pyocd", "board_id": "board-a", "mcu": "stm32f407vg",
+        "target_id": "target-a", "ram": [{"start": 0x20000000, "size": 0x10000}],
+        "mailbox": {"address": 0x20000000, "size": 4096},
+    }
+    configured = partial(PyOCDBackend, target_profile=profile)
+    supervisor = ProbeServiceSupervisor(
+        config=make_config(data_root), lease_manager=ProbeLeaseManager(data_root),
+        backend_factory=configured,
+    )
+    with pytest.raises(TypeError):
+        run(supervisor.start())
+    assert supervisor.endpoint is None
+
+
+def test_supervisor_closed_worker_constructor_and_start_paths(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from stm32_toolkit.probe import supervisor as module
+    from stm32_toolkit.probe.worker import ProbeWorkerConfig
+
+    data_root = (tmp_path / "plugin-data").absolute()
+    data_root.mkdir()
+    manager = ProbeLeaseManager(data_root)
+    config = make_config(data_root)
+    for kwargs in ({}, {"backend_factory": BackendFactory(), "worker_config": ProbeWorkerConfig()}):
+        with pytest.raises(TypeError):
+            ProbeServiceSupervisor(config=config, lease_manager=manager, **kwargs)
+    with pytest.raises(TypeError):
+        ProbeServiceSupervisor(config=config, lease_manager=manager, worker_config=object())
+
+    backend = RecordingBackend()
+    monkeypatch.setattr(module, "ProbeBackendWorker", lambda *, config: backend)
+    supervisor = ProbeServiceSupervisor(
+        config=config, lease_manager=manager, worker_config=ProbeWorkerConfig()
+    )
+    async def scenario() -> None:
+        endpoint = await supervisor.start()
+        assert endpoint is supervisor.endpoint
+        await supervisor.stop()
+    run(scenario())
+    assert backend.close_attempts == 1
 
 
 def test_restart_creates_a_new_backend_endpoint_and_lease(tmp_path: Path) -> None:

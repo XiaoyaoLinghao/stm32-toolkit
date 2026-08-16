@@ -372,3 +372,22 @@ def test_close_is_transport_only_and_never_requests_backend_close():
     asyncio.run(client.close())
 
     assert events == ["transport.close"]
+
+
+def test_client_transport_timeout_covers_the_300_second_protocol_limit():
+    endpoint = ProbeEndpoint(
+        protocol="stm32-toolkit-probe/2", toolkit_version=__version__,
+        host="127.0.0.1", port=43123, token="11" * 32,
+        workspace_id="workspace-a", session_id="session-a", lease_id="lease-a",
+    )
+    client = ProbeClient(endpoint)
+    import asyncio
+
+    async def scenario():
+        session = await client._session_for_request()
+        try:
+            assert session.timeout.total == 305
+        finally:
+            await client.close()
+
+    asyncio.run(scenario())

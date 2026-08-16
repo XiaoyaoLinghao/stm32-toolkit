@@ -10,7 +10,7 @@ from types import TracebackType
 
 from .backend import ProbeBackend
 from .pyocd_backend import PyOCDBackend
-from .worker import ProbeBackendWorker
+from .worker import ProbeBackendWorker, ProbeWorkerConfig
 from .authorization import ControlAuthorizationStore
 from .lease import ProbeLeaseManager
 from .model import OperationLevel
@@ -49,11 +49,17 @@ class ProbeServiceSupervisor:
         *,
         config: ProbeServiceConfig,
         lease_manager: ProbeLeaseManager,
-        backend_factory: Callable[[], ProbeBackend],
+        backend_factory: Callable[[], ProbeBackend] | None = None,
+        worker_config: ProbeWorkerConfig | None = None,
     ) -> None:
+        if (backend_factory is None) == (worker_config is None):
+            raise TypeError("Exactly one production worker config or private test backend is required")
+        if worker_config is not None and type(worker_config) is not ProbeWorkerConfig:
+            raise TypeError("Probe worker configuration is invalid")
         self._config = config
         self._lease_manager = lease_manager
         self._backend_factory = backend_factory
+        self._worker_config = worker_config
         self._control_authorizations = config.control_authorizations or ControlAuthorizationStore(
             (lease_manager.data_root / "control-authorizations").absolute()
         )
@@ -77,13 +83,14 @@ class ProbeServiceSupervisor:
 
             backend: ProbeBackend | None = None
             try:
-                # The production PyOCD boundary is always a Toolkit-owned spawned
-                # process. Explicit test seams retain their in-process fake.
-                backend = (
-                    ProbeBackendWorker()
-                    if self._backend_factory is PyOCDBackend
-                    else self._backend_factory()
-                )
+                if self._worker_config is not None:
+                    backend = ProbeBackendWorker(config=self._worker_config)
+                else:
+                    assert self._backend_factory is not None
+                    backend = self._backend_factory()
+                    if isinstance(backend, PyOCDBackend):
+                        backend.close()
+                        raise TypeError("PyOCD production backends require a closed worker config")
                 service = ProbeService(
                     backend=backend,
                     lease_manager=self._lease_manager,

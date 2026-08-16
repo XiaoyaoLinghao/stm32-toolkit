@@ -191,7 +191,7 @@ def _seams(
         return await selected_operation(ticket, None)
 
     return HardwareWorkflowSeams(
-        backend_factory=lambda: _Backend(recorder, list_error=list_error),
+        _test_backend_factory=lambda: _Backend(recorder, list_error=list_error),
         lease_manager_factory=lambda data_root: SimpleNamespace(data_root=data_root),
         supervisor_factory=lambda config, lease_manager, backend_factory: _Supervisor(
             config, recorder, stop_error=stop_error
@@ -261,6 +261,62 @@ def test_probe_list_is_bounded_read_only_and_closes_backend_without_lease(tmp_pa
     assert recorder.configs == []
     assert _snapshot(project) == before
     assert not data_root.resolve().exists()
+
+
+def test_closed_production_worker_selection_and_public_boundary_helpers(tmp_path: Path) -> None:
+    from stm32_toolkit.probe.lease import ProbeLeaseManager
+    from stm32_toolkit.probe.supervisor import ProbeServiceConfig, ProbeServiceSupervisor
+    from stm32_toolkit.probe.worker import ProbeWorkerConfig
+
+    project = tmp_path / "project-boundary"
+    project.mkdir()
+    data = (tmp_path / "data-boundary").absolute()
+    data.mkdir()
+    manager = ProbeLeaseManager(data)
+    config = ProbeServiceConfig(
+        probe_id="probe-a", workspace_id="workspace-a", session_id="session-a",
+        operation_level=OperationLevel.OBSERVE, session_root=data / "session",
+    )
+    supervisor = hardware_mod._supervisor_factory(config, manager, ProbeWorkerConfig())
+    assert isinstance(supervisor, ProbeServiceSupervisor)
+    assert supervisor._worker_config == ProbeWorkerConfig()
+
+    for value in (None, "path"):
+        with pytest.raises(hardware_mod._WorkflowFailure):
+            hardware_mod._safe_root(value, "root", must_exist=True)
+        with pytest.raises(hardware_mod._WorkflowFailure):
+            hardware_mod._safe_external_data_root(value, project)
+    regular = tmp_path / "regular-file"
+    regular.write_text("x", encoding="utf-8")
+    with pytest.raises(hardware_mod._WorkflowFailure):
+        hardware_mod._safe_root(regular, "root", must_exist=True)
+
+    paths = SimpleNamespace(
+        project_root=project, data_root=data,
+        workspace_root=data / "workspace", session_root=data / "session",
+        workspace_id="workspace-a", session_id="session-a",
+    )
+    internal = hardware_mod._public_result(object(), paths)
+    assert (internal.ok, internal.code) == (False, "HARDWARE_INTERNAL_ERROR")
+    sanitized = hardware_mod._sanitize(
+        {"token": "secret", "safe": [str(project / "private"), 1]}, (project,)
+    )
+    assert sanitized == {"safe": ["redacted", 1]}
+    stable = hardware_mod._stable_exception_result("operation", RuntimeError("private"))
+    assert stable.code == "HARDWARE_INTERNAL_ERROR"
+    malformed = hardware_mod.ProbeBackendError("bad", "private")
+    assert hardware_mod._stable_exception_result("operation", malformed).code == "HARDWARE_INTERNAL_ERROR"
+    corrupted = OperationResult.failure("operation", "FAIL", "failed", {})
+    object.__setattr__(corrupted, "details", [])
+    assert hardware_mod._public_result(corrupted, paths).details == {}
+
+    captured: list[object] = []
+    seams = HardwareWorkflowSeams(
+        lease_manager_factory=lambda root: object(),
+        supervisor_factory=lambda config, manager, contract: captured.append(contract) or object(),
+    )
+    hardware_mod._make_supervisor(paths, "probe-a", OperationLevel.OBSERVE, seams)
+    assert type(captured[0]) is ProbeWorkerConfig
 
 
 @pytest.mark.parametrize("schema_version", [2, 3])
@@ -814,7 +870,7 @@ def test_real_services_for_different_probes_run_in_parallel_without_endpoint_col
             )
 
         seams = HardwareWorkflowSeams(
-            backend_factory=backend_factory,
+            _test_backend_factory=backend_factory,
             bind=bind,
             read_variables=read,
             catalog_from_binding=lambda binding: "catalog",
@@ -883,7 +939,7 @@ def test_real_service_same_probe_overlap_returns_immediate_busy(
             return OperationResult.success("stm32_variable_read", {})
 
         seams = HardwareWorkflowSeams(
-            backend_factory=backend_factory,
+            _test_backend_factory=backend_factory,
             bind=bind,
             read_variables=read,
             catalog_from_binding=lambda binding: "catalog",
@@ -965,7 +1021,7 @@ def test_probe_list_cancellation_waits_for_enumeration_before_backend_close(
         def close(self) -> None:
             closed_concurrently.append(not exited.is_set())
 
-    seams = HardwareWorkflowSeams(backend_factory=BlockingBackend)
+    seams = HardwareWorkflowSeams(_test_backend_factory=BlockingBackend)
 
     async def scenario() -> None:
         task = asyncio.create_task(
@@ -1011,7 +1067,7 @@ def test_probe_list_repeated_cancellation_waits_for_list_then_owned_close(
         task = asyncio.create_task(
             probe_list_workflow(
                 ProbeListWorkflowRequest(project, tmp_path / "data", "session-a"),
-                _seams=HardwareWorkflowSeams(backend_factory=BlockingBackend),
+                _seams=HardwareWorkflowSeams(_test_backend_factory=BlockingBackend),
             )
         )
         await asyncio.to_thread(list_entered.wait, 1)
@@ -1384,7 +1440,7 @@ def test_probe_list_rejects_unbounded_data_and_reports_close_failure(tmp_path: P
     result = _run(
         probe_list_workflow(
             ProbeListWorkflowRequest(project, tmp_path / "data", "session-a"),
-            _seams=replace(_seams(recorder), backend_factory=lambda: TooManyBackend(recorder)),
+            _seams=replace(_seams(recorder), _test_backend_factory=lambda: TooManyBackend(recorder)),
         )
     )
     assert result.code == "HARDWARE_CLEANUP_FAILED"
@@ -1430,7 +1486,7 @@ def test_fatal_enumeration_exit_closes_backend_then_propagates(tmp_path: Path) -
             probe_list_workflow(
                 ProbeListWorkflowRequest(project, tmp_path / "data", "session-a"),
                 _seams=replace(
-                    _seams(recorder), backend_factory=lambda: FatalBackend(recorder)
+                    _seams(recorder), _test_backend_factory=lambda: FatalBackend(recorder)
                 ),
             )
         )

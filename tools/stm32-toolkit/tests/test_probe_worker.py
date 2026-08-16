@@ -88,6 +88,77 @@ def test_worker_normal_call_and_close_leave_no_owned_process(tmp_path: Path) -> 
     assert pid > 0
 
 
+def test_production_worker_uses_only_closed_serializable_pyocd_and_task8_config() -> None:
+    from stm32_toolkit.probe import worker as module
+    from stm32_toolkit.probe.pyocd_backend import admitted_target_transport_factory
+
+    profile = {
+        "backend": "pyocd", "board_id": "board-a", "mcu": "stm32f407vg",
+        "target_id": "target-a", "ram": [{"start": 0x20000000, "size": 0x10000}],
+        "mailbox": {"address": 0x20000000, "size": 4096},
+        "rtt": {"channel": 0},
+        "log_transport": {"kind": "rtt", "options": {"channel": 0}},
+    }
+    config = module.ProbeWorkerConfig(
+        frequency_hz=1_000_000, target_profile=profile, transport_provider="task8"
+    )
+    assert config.target_profile() == profile
+    target = object()
+    assert {
+        kind: type(admitted_target_transport_factory(kind, target, profile)).__name__
+        for kind in ("mailbox", "rtt", "uart", "semihosting")
+    } == {
+        "mailbox": "MailboxTransport",
+        "rtt": "RttTransport",
+        "uart": "UartTransport",
+        "semihosting": "SemihostingTransport",
+    }
+    worker = ProbeBackendWorker(config=config)
+    try:
+        worker.preflight_target_capabilities("probe-a", OperationLevel.OBSERVE)
+    finally:
+        worker.close()
+    with pytest.raises(TypeError):
+        module.ProbeWorkerConfig(
+            frequency_hz=1_000_000, target_profile=profile,
+            transport_provider=lambda *args: object(),
+        )
+
+
+def test_worker_config_and_direct_production_child_fail_closed() -> None:
+    from stm32_toolkit.probe import worker as module
+
+    for kwargs in (
+        {"frequency_hz": True}, {"frequency_hz": 99_999},
+        {"transport_provider": "dynamic"}, {"target_profile": []},
+        {"target_profile": {"bad": {1}}},
+    ):
+        with pytest.raises(TypeError):
+            module.ProbeWorkerConfig(**kwargs)
+    corrupted = module.ProbeWorkerConfig()
+    object.__setattr__(corrupted, "target_profile_json", "[]")
+    with pytest.raises(ProbeWorkerError):
+        corrupted.target_profile()
+    for kwargs in ({}, {"config": module.ProbeWorkerConfig(), "_test_backend_factory": lambda: object()}, {"config": object()}):
+        with pytest.raises(TypeError):
+            ProbeBackendWorker(**kwargs)
+
+    class EofConnection:
+        def __init__(self): self.sent = []; self.closed = False
+        def send_bytes(self, payload): self.sent.append(module._decode_message(payload))
+        def recv_bytes(self, maximum): raise EOFError
+        def close(self): self.closed = True
+
+    production = EofConnection()
+    module._worker_main(production, module.ProbeWorkerConfig(), None)
+    assert production.sent[0]["ok"] is True
+    assert production.closed is True
+    invalid = EofConnection()
+    module._worker_main(invalid, None, None)
+    assert invalid.sent[-1]["error"]["code"] == "PROBE_BACKEND_ERROR"
+    assert invalid.closed is True
+
+
 def test_worker_flash_ipc_is_bounded_but_not_limited_by_evidence_json_strings(tmp_path: Path) -> None:
     worker = ProbeBackendWorker(
         _test_backend_factory=partial(_factory, "normal", str(tmp_path / "unused"))
@@ -115,6 +186,16 @@ def test_worker_exercises_the_complete_fixed_probe_backend_port(tmp_path: Path) 
     opened = worker.open_target_transport("mailbox", {}, 1)
     assert worker.read_target_transport(opened["transport_id"], 1, 1)["data"] == b"r"
     assert worker.close_target_transport(opened["transport_id"])["closed"] is True
+    worker.close()
+
+
+def test_worker_accepts_the_300_second_transport_and_log_protocol_limit(tmp_path: Path) -> None:
+    worker = ProbeBackendWorker(
+        _test_backend_factory=partial(_factory, "normal", str(tmp_path / "unused"))
+    )
+    assert worker.capture_logs("rtt", 1, 300_000)["data"] == b"l"
+    opened = worker.open_target_transport("mailbox", {}, 300_000)
+    assert worker.read_target_transport(opened["transport_id"], 1, 300_000)["data"] == b"r"
     worker.close()
 
 
@@ -161,17 +242,17 @@ def test_worker_child_dispatch_parser_is_closed_in_process(tmp_path: Path) -> No
         request(2, "target_identity"), request(3, "close"),
     ])
     module._worker_main(
-        connection, partial(_factory, "normal", str(tmp_path / "unused"))
+        connection, None, partial(_factory, "normal", str(tmp_path / "unused"))
     )
     assert [item["ok"] for item in connection.sent] == [True, True, True, True]
     assert connection.sent[2]["result"] == {"worker": "ok"}
     assert connection.closed
 
     invalid = Connection([module._canonical_bytes({"unexpected": True})])
-    module._worker_main(invalid, partial(_factory, "normal", str(tmp_path / "unused")))
+    module._worker_main(invalid, None, partial(_factory, "normal", str(tmp_path / "unused")))
     assert invalid.sent[-1]["error"]["code"] == "PROBE_BACKEND_ERROR"
     private = Connection([request(1, "target_identity")])
-    module._worker_main(private, partial(_factory, "private-error", str(tmp_path / "secret")))
+    module._worker_main(private, None, partial(_factory, "private-error", str(tmp_path / "secret")))
     assert private.sent[-1]["error"] == {
         "code": "PROBE_BACKEND_ERROR", "message": "Probe worker operation failed",
     }
@@ -194,7 +275,7 @@ def test_worker_rejects_invalid_calls_and_is_idempotently_closed(
     worker = ProbeBackendWorker(
         _test_backend_factory=partial(_factory, "normal", str(tmp_path / "unused"))
     )
-    for method, timeout in (("unknown", 1.0), ("target_identity", 0.0), ("target_identity", 301.0)):
+    for method, timeout in (("unknown", 1.0), ("target_identity", 0.0), ("target_identity", 302.0)):
         with pytest.raises(ProbeWorkerError) as invalid:
             worker.call(method, timeout_seconds=timeout)
         assert invalid.value.code == "PROBE_PROTOCOL_INVALID"
@@ -286,7 +367,7 @@ def test_worker_child_closes_backend_once_on_every_nonclose_exit(exit_kind: str)
         "malformed-request": [module._canonical_bytes({"unexpected": True})],
         "eof": [],
     }[exit_kind]
-    module._worker_main(Connection(requests), lambda: backend)
+    module._worker_main(Connection(requests), None, lambda: backend)
     assert backend.close_calls == 1
 
 
@@ -309,7 +390,7 @@ def test_worker_child_does_not_retry_a_failing_explicit_close() -> None:
 
     backend = Backend()
     connection = Connection()
-    module._worker_main(connection, lambda: backend)
+    module._worker_main(connection, None, lambda: backend)
     assert backend.close_calls == 1
     assert connection.sent[-1]["error"] == {
         "code": "PROBE_BACKEND_ERROR", "message": "Probe worker operation failed",
