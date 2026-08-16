@@ -10,6 +10,8 @@ from stm32_toolkit.testing.transports.base import (
     TransportBase,
     closed_config,
     default_clock,
+    effective_identity,
+    format_ram_bounds,
     ram_regions,
     range_in_ram,
     unavailable,
@@ -45,16 +47,29 @@ class MailboxTransport(TransportBase):
         identity = self._begin_open(config, deadline)
         declared = self._profile.get("mailbox") if isinstance(self._profile, Mapping) else None
         declared_ram = self._profile.get("ram") if isinstance(self._profile, Mapping) else None
-        if not isinstance(declared, Mapping) or set(declared) != {"address", "size"} or declared_ram is None:
+        if (
+            not isinstance(declared, Mapping) or set(declared) != {"address", "size"}
+            or type(declared.get("address")) is not int or type(declared.get("size")) is not int
+            or declared_ram is None
+        ):
             raise unavailable("mailbox capability is absent from the support profile")
         regions = ram_regions(config["ram"])
         if regions != ram_regions(declared_ram):
             raise unavailable("mailbox RAM map is not the profile-declared map")
         address, size = config["address"], config["size"]
-        if address != declared["address"] or size != declared["size"] or not range_in_ram(address, _HEADER_BYTES + size, regions):
+        if (
+            type(address) is not int or type(size) is not int
+            or address != declared["address"] or size != declared["size"]
+            or not range_in_ram(address, _HEADER_BYTES + size, regions)
+        ):
             raise unavailable("mailbox range is not the profile-declared bounded RAM range")
         self._address, self._size, self._cursor = int(address), int(size), None
-        self._commit_open({**identity, "address": f"0x{self._address:08x}", "ring_size": str(self._size)})
+        readable = {
+            "address": f"0x{self._address:08x}", "ring_size": str(self._size),
+            "ram_bounds": format_ram_bounds(regions),
+        }
+        effective = {"address": self._address, "ring_size": self._size, "ram": regions}
+        self._commit_open({**effective_identity(identity, effective), **readable})
 
     def _external_read(self, address: int, size: int, deadline: float) -> bytes:
         try:

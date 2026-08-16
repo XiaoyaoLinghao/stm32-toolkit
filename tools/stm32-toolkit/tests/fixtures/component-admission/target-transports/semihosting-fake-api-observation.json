@@ -1,15 +1,19 @@
 {
-  "api": "pyocd.debug.semihost.SemihostIOHandler",
+  "api": "pyocd.debug.semihost.ConsoleIOHandler.write",
   "adapter": "stm32_toolkit.testing.transports.PyOcdSemihostingAdapter",
   "backend_invoked": true,
   "bounded_fake_session": {
     "buffer_bytes": 16,
     "captured_prefix": "semi",
-    "host_open_result": -1
+    "host_open_result": -1,
+    "native_agent_call": "agent.get_data(0x20000000, 8)",
+    "partial_output": "closed-error",
+    "oversize_output": "closed-error",
+    "target_read_error": "closed-error"
   },
   "hardware_body_executed": false,
   "host_file_policy": "deny-before-backend",
-  "observation": "real SemihostIOHandler subclasses executed through a bounded fake session; host-file denial occurred before any debug backend file operation",
+  "observation": "real ConsoleIOHandler.write executed agent.get_data against a bounded fake target agent and captured stdout; partial, oversize, and read failures closed and cleaned up; host-file denial occurred before any debug backend file operation",
   "physical_transport_evidence": false,
   "result": "PASS",
   "version": "0.45.1"

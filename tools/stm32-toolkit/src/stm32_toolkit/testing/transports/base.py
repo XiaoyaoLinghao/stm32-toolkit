@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import math
+from hashlib import sha256
 import time
 from typing import Callable, Mapping, Protocol, Sequence
 
+from stm32_toolkit.evidence import canonical_json_bytes
 from stm32_toolkit.testing.model import protocol_error
 
 
@@ -48,6 +50,15 @@ def identity_from(config: Mapping[str, object], transport: str) -> dict[str, str
     if not isinstance(target_id, str) or not target_id or not isinstance(probe_id, str) or not probe_id:
         raise protocol_error("TEST_PROTOCOL_INVALID", "transport identity is invalid")
     return {"probe_id": probe_id, "target_id": target_id, "transport": transport}
+
+
+def effective_identity(identity: Mapping[str, str], effective: Mapping[str, object]) -> dict[str, str]:
+    """Bind the complete closed effective transport configuration canonically."""
+    return {**identity, "config_digest": sha256(canonical_json_bytes(dict(effective))).hexdigest()}
+
+
+def format_ram_bounds(regions: tuple[tuple[int, int], ...]) -> str:
+    return ",".join(f"0x{start:08x}+0x{size:08x}" for start, size in regions)
 
 
 def ram_regions(value: object) -> tuple[tuple[int, int], ...]:

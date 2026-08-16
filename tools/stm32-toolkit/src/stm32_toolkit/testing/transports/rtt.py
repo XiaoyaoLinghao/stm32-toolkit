@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Callable, Mapping, Protocol
 
 from stm32_toolkit.testing.model import TestProtocolError, protocol_error
-from stm32_toolkit.testing.transports.base import MAX_TRANSPORT_READ_BYTES, Clock, TransportBase, closed_config, default_clock, ram_regions, range_in_ram, unavailable
+from stm32_toolkit.testing.transports.base import MAX_TRANSPORT_READ_BYTES, Clock, TransportBase, closed_config, default_clock, effective_identity, format_ram_bounds, ram_regions, range_in_ram, unavailable
 
 
 class PyOcdRttBackend(Protocol):
@@ -47,6 +47,10 @@ class PyOcdRttAdapter:
         self._actual_address: int | None = None
 
     def open(self, *, channel: int, control_block_address: int | None, ram_regions: tuple[tuple[int, int], ...], deadline: float) -> None:
+        if type(channel) is not int or not 0 <= channel <= 15 or (
+            control_block_address is not None and type(control_block_address) is not int
+        ):
+            raise unavailable("PyOCD RTT configuration is invalid")
         if control_block_address is None:
             if len(ram_regions) != 1:
                 raise unavailable("PyOCD RTT search requires one declared RAM region")
@@ -109,7 +113,12 @@ class RttTransport(TransportBase):
         identity = self._begin_open(config, deadline)
         declared = self._profile.get("rtt") if isinstance(self._profile, Mapping) else None
         declared_ram = self._profile.get("ram") if isinstance(self._profile, Mapping) else None
-        if not isinstance(declared, Mapping) or declared_ram is None or set(declared) not in ({"channel"}, {"channel", "control_block_address"}):
+        if (
+            not isinstance(declared, Mapping) or declared_ram is None
+            or set(declared) not in ({"channel"}, {"channel", "control_block_address"})
+            or type(declared.get("channel")) is not int
+            or ("control_block_address" in declared and type(declared["control_block_address"]) is not int)
+        ):
             raise unavailable("RTT capability is absent from the support profile")
         channel = config["channel"]
         control = config["control_block_address"]
@@ -125,7 +134,11 @@ class RttTransport(TransportBase):
         except Exception as exc:
             self.close()
             raise unavailable("PyOCD RTT backend is unavailable") from exc
-        backend_identity = self._backend.identity()
+        try:
+            backend_identity = self._backend.identity()
+        except Exception as exc:
+            self._close_quietly()
+            raise unavailable("PyOCD RTT control block identity is unavailable") from exc
         actual_text = backend_identity.get("control_block_address")
         try:
             actual = int(actual_text, 16) if isinstance(actual_text, str) else -1
@@ -134,7 +147,15 @@ class RttTransport(TransportBase):
         if not range_in_ram(actual, 1, regions) or (control is not None and actual != control):
             self._close_quietly()
             raise unavailable("PyOCD RTT control block identity is invalid")
-        self._commit_open({**identity, "channel": str(channel), "control_block_address": f"0x{actual:08x}"})
+        readable = {
+            "channel": str(channel), "control_block_address": f"0x{actual:08x}",
+            "ram_bounds": format_ram_bounds(regions),
+        }
+        effective = {
+            "channel": channel, "requested_control_block_address": control,
+            "actual_control_block_address": actual, "ram": regions,
+        }
+        self._commit_open({**effective_identity(identity, effective), **readable})
 
     def read(self, max_bytes: int, deadline: float) -> bytes:
         try:

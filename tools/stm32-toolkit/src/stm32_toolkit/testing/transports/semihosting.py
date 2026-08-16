@@ -5,9 +5,10 @@ from __future__ import annotations
 from pathlib import PureWindowsPath
 import re
 from typing import Mapping, Protocol
+from unicodedata import normalize
 
 from stm32_toolkit.testing.model import TestProtocolError, protocol_error
-from stm32_toolkit.testing.transports.base import Clock, TransportBase, closed_config, default_clock, unavailable
+from stm32_toolkit.testing.transports.base import Clock, TransportBase, closed_config, default_clock, effective_identity, unavailable
 
 
 class SemihostingBackend(Protocol):
@@ -16,20 +17,43 @@ class SemihostingBackend(Protocol):
     def close(self) -> None: ...
 
 
+_WINDOWS_RESERVED = {
+    "CON", "PRN", "AUX", "NUL",
+    *(f"COM{number}" for number in range(1, 10)),
+    *(f"LPT{number}" for number in range(1, 10)),
+}
+_WINDOWS_INVALID = re.compile(r'[<>:"/|?*\x00-\x1f\x7f]')
+
+
 def _canonical_elf_path(value: object) -> str:
-    if not isinstance(value, str) or re.fullmatch(r"[A-Z]:\\[^\r\n]+", value) is None:
+    if not isinstance(value, str) or not value:
+        raise protocol_error("TEST_PROTOCOL_INVALID", "semihosting ELF path is not canonical")
+    try:
+        encoded_length = len(value.encode("utf-8"))
+    except UnicodeEncodeError:
+        raise protocol_error("TEST_PROTOCOL_INVALID", "semihosting ELF path is not canonical") from None
+    if (
+        encoded_length > 32_767
+        or normalize("NFC", value) != value or re.fullmatch(r"[A-Z]:\\[^\r\n]+", value) is None
+    ):
         raise protocol_error("TEST_PROTOCOL_INVALID", "semihosting ELF path is not canonical")
     path = PureWindowsPath(value)
-    members = path.parts[1:]
-    if str(path) != value or not path.is_absolute() or any(
-        member in {".", ".."} or member.rstrip(" .") != member or "~" in member for member in members
+    members = value[3:].split("\\")
+    if (
+        str(path) != value or not path.is_absolute() or any(
+            not member or member in {".", ".."} or member.rstrip(" .") != member
+            or member.casefold() != member or "~" in member or _WINDOWS_INVALID.search(member)
+            or member.split(".", 1)[0].upper() in _WINDOWS_RESERVED
+            for member in members
+        )
     ):
         raise protocol_error("TEST_PROTOCOL_INVALID", "semihosting ELF path is not canonical")
     return value
 
 
 def _semihost_handlers(max_buffer_bytes: int):
-    from pyocd.debug.semihost import SemihostIOHandler
+    from io import BytesIO
+    from pyocd.debug.semihost import ConsoleIOHandler, SemihostIOHandler
 
     class DeniedHostIO(SemihostIOHandler):
         def open(self, fnptr, fnlen, mode):
@@ -62,20 +86,49 @@ def _semihost_handlers(max_buffer_bytes: int):
         def rename(self, oldptr, oldlength, newptr, newlength):
             return -1
 
-    class BoundedConsole(DeniedHostIO):
+    class BoundedSink:
         def __init__(self):
-            super().__init__()
             self.buffer = bytearray()
+            self.expected: int | None = None
 
-        def feed(self, data: bytes) -> None:
-            if not isinstance(data, bytes) or len(self.buffer) + len(data) > max_buffer_bytes:
+        def write(self, data: bytes) -> int:
+            if (
+                not isinstance(data, bytes) or self.expected is None or len(data) != self.expected
+                or len(self.buffer) + len(data) > max_buffer_bytes
+            ):
                 raise unavailable("semihosting console exceeded its bound")
             self.buffer.extend(data)
+            return len(data)
 
         def drain(self, maximum: int) -> bytes:
             result = bytes(self.buffer[:maximum])
             del self.buffer[:maximum]
             return result
+
+        def cleanup(self) -> None:
+            self.expected = None
+            self.buffer.clear()
+
+    class BoundedConsole(ConsoleIOHandler):
+        def __init__(self):
+            self._sink = BoundedSink()
+            super().__init__(BytesIO(), self._sink)
+
+        def write(self, fd: int, ptr: int, length: int) -> int:
+            if type(length) is not int or length < 0 or len(self._sink.buffer) + length > max_buffer_bytes:
+                raise unavailable("semihosting console exceeded its bound")
+            self._sink.expected = length
+            try:
+                return super().write(fd, ptr, length)
+            finally:
+                self._sink.expected = None
+
+        def drain(self, maximum: int) -> bytes:
+            return self._sink.drain(maximum)
+
+        def cleanup(self) -> None:
+            self._sink.cleanup()
+            super().cleanup()
 
     return DeniedHostIO(), BoundedConsole()
 
@@ -119,6 +172,11 @@ class PyOcdSemihostingAdapter:
         except Exception as exc:
             failure = exc
         finally:
+            try:
+                self._host_io.cleanup()
+                self._console.cleanup()
+            except Exception as exc:
+                failure = failure or exc
             self._open = False
         if failure is not None:
             raise unavailable("PyOCD semihosting cleanup failed") from failure
@@ -154,7 +212,14 @@ class SemihostingTransport(TransportBase):
         except Exception as exc:
             self._close_quietly()
             raise unavailable("semihosting backend is unavailable") from exc
-        self._commit_open({**identity, "elf_path": path, "elf_sha256": digest})
+        readable = {
+            "elf_path": path, "elf_sha256": digest, "host_file_policy": "deny",
+        }
+        effective = {
+            "elf_path": path, "elf_sha256": digest, "host_files": False,
+            "profile_declared": True,
+        }
+        self._commit_open({**effective_identity(identity, effective), **readable})
 
     def read(self, max_bytes: int, deadline: float) -> bytes:
         try:

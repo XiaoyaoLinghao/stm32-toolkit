@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Callable, Mapping, Protocol
 
 from stm32_toolkit.testing.model import TestProtocolError, protocol_error
-from stm32_toolkit.testing.transports.base import Clock, TransportBase, closed_config, default_clock, unavailable
+from stm32_toolkit.testing.transports.base import Clock, TransportBase, closed_config, default_clock, effective_identity, unavailable
 
 
 ALLOWED_BAUDS = (9600, 19200, 38400, 57600, 115200, 230400, 460800, 921600)
@@ -40,13 +40,19 @@ class UartTransport(TransportBase):
         config = closed_config(config, {"port", "baud", "data_bits", "parity", "stop_bits", "target_id", "probe_id"})
         identity = self._begin_open(config, deadline)
         declared = self._profile.get("uart") if isinstance(self._profile, Mapping) else None
-        if not isinstance(declared, Mapping) or set(declared) != {"port", "baud"}:
+        if (
+            not isinstance(declared, Mapping) or set(declared) != {"port", "baud"}
+            or not isinstance(declared.get("port"), str) or not declared.get("port")
+            or type(declared.get("baud")) is not int
+        ):
             raise unavailable("UART capability is absent from the support profile")
         port, baud = config["port"], config["baud"]
         if (
             not isinstance(port, str) or not port or type(baud) is not int or baud not in ALLOWED_BAUDS
             or port != declared["port"] or baud != declared["baud"]
-            or config["data_bits"] != 8 or config["parity"] != "N" or config["stop_bits"] != 1
+            or type(config["data_bits"]) is not int or config["data_bits"] != 8
+            or config["parity"] != "N"
+            or type(config["stop_bits"]) is not int or config["stop_bits"] != 1
         ):
             raise unavailable("UART configuration is not the exact profile-declared 8N1 port")
         try:
@@ -60,10 +66,15 @@ class UartTransport(TransportBase):
         if not callable(getattr(self._port, "read", None)) or not callable(getattr(self._port, "close", None)):
             self._close_quietly()
             raise unavailable("pyserial returned an invalid UART port")
-        self._commit_open({
-            **identity, "port": port, "baud": str(baud), "data_bits": "8",
-            "parity": "N", "stop_bits": "1",
-        })
+        readable = {
+            "port": port, "baud": str(baud), "data_bits": "8", "parity": "N",
+            "stop_bits": "1", "flow_control": "xonxoff=0,rtscts=0,dsrdtr=0",
+        }
+        effective = {
+            "port": port, "baud": baud, "data_bits": 8, "parity": "N", "stop_bits": 1,
+            "xonxoff": False, "rtscts": False, "dsrdtr": False, "timeout": 0,
+        }
+        self._commit_open({**effective_identity(identity, effective), **readable})
 
     def read(self, max_bytes: int, deadline: float) -> bytes:
         try:
