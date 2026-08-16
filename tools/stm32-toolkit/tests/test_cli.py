@@ -368,7 +368,7 @@ def test_end_to_end_inspect_convert_configure_build(tmp_path: Path, monkeypatch,
     # stays empty and build-only configuration must still succeed.
     manifest_path = root / ".stm32-project.json"
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    assert manifest["schemaVersion"] == 2
+    assert manifest["schemaVersion"] == 3
     assert manifest["debug"] == {}
 
     # configuration plan -> apply

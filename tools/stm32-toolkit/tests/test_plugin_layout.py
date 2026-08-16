@@ -603,8 +603,9 @@ def _write_configured_project(root: Path) -> None:
     (root / ".stm32-project.json").write_text(
         json.dumps(
             {
-                "schemaVersion": 1,
+                "schemaVersion": 2,
                 "logicalProjectId": LOGICAL_PROJECT_ID,
+                "generatedBy": {"tool": "stm32-toolkit", "version": __version__},
                 "project": {"name": "fixture", "origin": "manual"},
                 "target": {"device": "STM32H743ZI", "core": "cortex-m7"},
                 "framework": {"type": "hal", "version": None},
@@ -614,8 +615,17 @@ def _write_configured_project(root: Path) -> None:
                     "defines": [],
                     "compileOptions": [],
                     "assemblySources": [],
+                    "presets": [],
+                    "elf": "build/firmware.elf",
                 },
+                "memory": {"source": "manual", "regions": []},
                 "debug": {"backend": "pyocd", "target": "stm32h743zi", "svd": None},
+                "generation": {
+                    "cubeMxIoc": None,
+                    "managedManifest": ".stm32-toolkit/generated-files.json",
+                    "generatedDirectories": [],
+                    "userDirectories": [],
+                },
             }
         ),
         encoding="utf-8",

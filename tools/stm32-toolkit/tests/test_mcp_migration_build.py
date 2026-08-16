@@ -481,7 +481,7 @@ def test_end_to_end_fixture_inspect_convert_configure_build(tmp_path: Path, monk
     manifest_path = root / ".stm32-project.json"
     assert manifest_path.is_file()
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    assert manifest["schemaVersion"] == 2
+    assert manifest["schemaVersion"] == 3
     # The generated manifest is used exactly as produced: the debug spec
     # stays empty and build-only configuration must still succeed.
     assert manifest["debug"] == {}
