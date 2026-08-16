@@ -4,3 +4,4 @@
 # as LF so a clean Windows checkout rebuilds byte-identical LF output.
 /tools/stm32-monitor/src/stm32_monitor/ui_dist/** text eol=lf
 /tools/stm32-monitor/ui/index.html text eol=lf
+/tools/stm32-toolkit/tests/release/fixtures/native-outcomes/** text eol=lf

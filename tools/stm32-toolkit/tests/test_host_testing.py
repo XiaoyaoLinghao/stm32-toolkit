@@ -244,6 +244,11 @@ def test_invalid_host_environment_is_stable_and_never_mutates_process_bytes(task
     assert json.dumps(dict(os.environ), ensure_ascii=False, sort_keys=True).encode("utf-8") == before
 
 
+def test_native_outcomes_fixtures_are_lf_bytes():
+    """The fake CTest preserves the tracked JUnit bytes when publishing evidence."""
+    assert b"\r" not in JUNIT.read_bytes()
+
+
 def test_run_selects_exact_ids_parses_ctest_431_junit_and_ingests_every_artifact(task_tmp: Path):
     """The run result is derived from real CTest JUnit and content-addressed stored bytes."""
     runner, config, scenario, evidence = _runner(task_tmp)
