@@ -53,6 +53,11 @@ class ControlAuthorizationError(Exception):
         self.message = message
 
 
+class _ControlAuthorizationStorageError(Exception):
+    def __init__(self, message: str) -> None:
+        super().__init__(message)
+
+
 @dataclass(frozen=True)
 class PreparedControlAuthorization:
     action_digest: str
@@ -268,7 +273,7 @@ class ControlAuthorizationStore:
                             or not stat.S_ISDIR(root_info.st_mode)
                             or not stat.S_ISDIR(records_info.st_mode)
                         ):
-                            raise EvidenceValidationError("authorization authority is not a directory")
+                            raise _ControlAuthorizationStorageError("authorization authority is not a directory")
                         payload = canonical_json_bytes({
                             "version": _AUTHORITY_VERSION,
                             "root_name_sha256": sha256(self.root.name.encode("utf-8")).hexdigest(),
@@ -279,7 +284,7 @@ class ControlAuthorizationStore:
                         if not self._authorization_create_new(
                             authority_path, payload, phase="control-authority-pin"
                         ):
-                            raise EvidenceValidationError("authorization authority already changed")
+                            raise _ControlAuthorizationStorageError("authorization authority already changed")
                     authority = self._read_authority()
                     parent_info = parent_store._validate_existing_path(self.root.parent)
                     root_info = storage._validate_existing_path(self.root)
@@ -293,7 +298,7 @@ class ControlAuthorizationStore:
                         or authority["records"] != self._identity(records_info)
                         or self._identity(root_info) != pinned_root
                     ):
-                        raise EvidenceValidationError("authorization authority identity changed")
+                        raise _ControlAuthorizationStorageError("authorization authority identity changed")
                     with storage._mutation_lock(create=create):
                         locked_root = storage._validate_existing_path(self.root)
                         locked_records = storage._validate_existing_path(records_path)
@@ -301,7 +306,7 @@ class ControlAuthorizationStore:
                             self._identity(locked_root) != pinned_root
                             or authority["records"] != self._identity(locked_records)
                         ):
-                            raise EvidenceValidationError("authorization root changed before lock")
+                            raise _ControlAuthorizationStorageError("authorization root changed before lock")
                         with self._pinned_records_directory(
                             expected_identity=authority["records"]
                         ) as records_descriptor:
@@ -314,10 +319,10 @@ class ControlAuthorizationStore:
                                 or self._identity(final_records) != authority["records"]
                                 or final_authority != authority
                             ):
-                                raise EvidenceValidationError(
+                                raise _ControlAuthorizationStorageError(
                                     "authorization authority changed while locked"
                                 )
-        except (OSError, EvidenceValidationError) as error:
+        except (OSError, EvidenceValidationError, _ControlAuthorizationStorageError) as error:
             raise ControlAuthorizationError("PROBE_AUTHORIZATION_INVALID", "Authorization authority is invalid") from error
 
     @contextmanager
@@ -329,7 +334,7 @@ class ControlAuthorizationStore:
         try:
             before = storage._validate_existing_path(self.root)
             if not stat.S_ISDIR(before.st_mode):
-                raise EvidenceValidationError("authorization root is not a directory")
+                raise _ControlAuthorizationStorageError("authorization root is not a directory")
             if os.name == "nt":
                 import ctypes
                 from ctypes import wintypes
@@ -354,14 +359,14 @@ class ControlAuthorizationStore:
                 )
                 opened = os.fstat(descriptor)
                 if (opened.st_dev, opened.st_ino) != (before.st_dev, before.st_ino):
-                    raise EvidenceValidationError("authorization root identity changed")
+                    raise _ControlAuthorizationStorageError("authorization root identity changed")
             named = storage._validate_existing_path(self.root)
             if (named.st_dev, named.st_ino) != (before.st_dev, before.st_ino):
-                raise EvidenceValidationError("authorization root identity changed")
+                raise _ControlAuthorizationStorageError("authorization root identity changed")
             yield self._identity(before)
             after = storage._validate_existing_path(self.root)
             if (after.st_dev, after.st_ino) != (before.st_dev, before.st_ino):
-                raise EvidenceValidationError("authorization root identity changed")
+                raise _ControlAuthorizationStorageError("authorization root identity changed")
         finally:
             if descriptor is not None:
                 os.close(descriptor)
@@ -393,7 +398,7 @@ class ControlAuthorizationStore:
             temporary = Path(path_name)
         else:
             if target.parent != self._directory():
-                raise EvidenceValidationError("authorization record directory is invalid")
+                raise _ControlAuthorizationStorageError("authorization record directory is invalid")
             descriptor = -1
             flags = (
                 os.O_WRONLY
@@ -413,7 +418,7 @@ class ControlAuthorizationStore:
                 temporary_name = candidate
                 break
             if temporary_name is None:
-                raise EvidenceValidationError("authorization temporary name is unavailable")
+                raise _ControlAuthorizationStorageError("authorization temporary name is unavailable")
 
         def remove_temporary() -> None:
             if directory_descriptor is None:
@@ -459,7 +464,7 @@ class ControlAuthorizationStore:
                 target, directory_descriptor=directory_descriptor
             )
             if published_info.st_size != len(payload):
-                raise EvidenceValidationError("authorization publication size changed")
+                raise _ControlAuthorizationStorageError("authorization publication size changed")
             return True
         finally:
             try:
@@ -476,14 +481,14 @@ class ControlAuthorizationStore:
         if directory_descriptor is None:
             return storage._validate_existing_path(path, regular=True, single_link=True)
         if path.parent != self._directory():
-            raise EvidenceValidationError("authorization record directory is invalid")
+            raise _ControlAuthorizationStorageError("authorization record directory is invalid")
         info = os.stat(
             path.name,
             dir_fd=directory_descriptor,
             follow_symlinks=False,
         )
         if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
-            raise EvidenceValidationError("authorization record is invalid")
+            raise _ControlAuthorizationStorageError("authorization record is invalid")
         return info
 
     def _read_stable_record_bytes(
@@ -496,7 +501,7 @@ class ControlAuthorizationStore:
         """Read one singular record while proving the named object stayed identical."""
         before = self._record_info(path, directory_descriptor=directory_descriptor)
         if before.st_size > maximum:
-            raise EvidenceValidationError("authorization record is too large")
+            raise _ControlAuthorizationStorageError("authorization record is too large")
         flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
         if directory_descriptor is None:
             descriptor = os.open(path, flags)
@@ -512,7 +517,7 @@ class ControlAuthorizationStore:
                 or before.st_size != opened.st_size
                 or before.st_mtime_ns != opened.st_mtime_ns
             ):
-                raise EvidenceValidationError(
+                raise _ControlAuthorizationStorageError(
                     "authorization record identity changed while opened"
                 )
             chunks: list[bytes] = []
@@ -544,7 +549,7 @@ class ControlAuthorizationStore:
             or after_name.st_size != opened.st_size
             or after_name.st_mtime_ns != opened.st_mtime_ns
         ):
-            raise EvidenceValidationError("authorization record identity changed while read")
+            raise _ControlAuthorizationStorageError("authorization record identity changed while read")
         return payload
 
     @contextmanager
@@ -565,7 +570,7 @@ class ControlAuthorizationStore:
                     and self._identity(before) != expected_identity
                 )
             ):
-                raise EvidenceValidationError("authorization records path is not a directory")
+                raise _ControlAuthorizationStorageError("authorization records path is not a directory")
             if os.name == "nt":
                 import ctypes
                 from ctypes import wintypes
@@ -590,15 +595,15 @@ class ControlAuthorizationStore:
                 )
                 opened = os.fstat(descriptor)
                 if (opened.st_dev, opened.st_ino) != (before.st_dev, before.st_ino):
-                    raise EvidenceValidationError("authorization records identity changed")
+                    raise _ControlAuthorizationStorageError("authorization records identity changed")
             opened_path = storage._validate_existing_path(directory)
             if (opened_path.st_dev, opened_path.st_ino) != (before.st_dev, before.st_ino):
-                raise EvidenceValidationError("authorization records identity changed")
+                raise _ControlAuthorizationStorageError("authorization records identity changed")
             yield descriptor
             after = storage._validate_existing_path(directory)
             if (after.st_dev, after.st_ino) != (before.st_dev, before.st_ino):
-                raise EvidenceValidationError("authorization records identity changed")
-        except (OSError, EvidenceValidationError) as error:
+                raise _ControlAuthorizationStorageError("authorization records identity changed")
+        except (OSError, EvidenceValidationError, _ControlAuthorizationStorageError) as error:
             raise ControlAuthorizationError(
                 "PROBE_AUTHORIZATION_INVALID", "Authorization directory is invalid"
             ) from error
@@ -638,6 +643,7 @@ class ControlAuthorizationStore:
             UnicodeError,
             json.JSONDecodeError,
             EvidenceValidationError,
+            _ControlAuthorizationStorageError,
             ControlAuthorizationError,
         ) as error:
             raise ControlAuthorizationError("PROBE_AUTHORIZATION_INVALID", "Authorization is unknown or corrupt") from error

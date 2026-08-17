@@ -1225,33 +1225,38 @@ def test_control_directory_pin_rejects_posix_handle_and_named_identity_changes(
     assert pinned == 73
   assert closed == [73]
 
-  with pytest.raises(ControlAuthorizationError):
+  with pytest.raises(ControlAuthorizationError) as caught:
     with store._pinned_records_directory(
         expected_identity={"device": "0", "inode": "0"}
     ):
       pass
+  assert caught.value.code == "PROBE_AUTHORIZATION_INVALID"
+  assert str(caught.value) == "Authorization directory is invalid"
 
   different = type("Metadata", (), {
       "st_mode": real.st_mode, "st_dev": real.st_dev, "st_ino": real.st_ino + 1,
   })()
   monkeypatch.setattr(module.os, "fstat", lambda descriptor: different)
-  with pytest.raises(ControlAuthorizationError):
+  with pytest.raises(ControlAuthorizationError) as caught:
     with store._pinned_records_directory():
       pass
+  assert caught.value.code == "PROBE_AUTHORIZATION_INVALID"
+  assert str(caught.value) == "Authorization directory is invalid"
 
   for sequence in ((real, different), (real, real, different)):
     values = iter(sequence)
     monkeypatch.setattr(storage, "_validate_existing_path", lambda *args, **kwargs: next(values))
     monkeypatch.setattr(module.os, "fstat", lambda descriptor: real)
-    with pytest.raises(ControlAuthorizationError):
+    with pytest.raises(ControlAuthorizationError) as caught:
       with store._pinned_records_directory():
         pass
+    assert caught.value.code == "PROBE_AUTHORIZATION_INVALID"
+    assert str(caught.value) == "Authorization directory is invalid"
 
 
 def test_control_root_pin_rejects_non_directory_and_posix_identity_changes(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-  from stm32_toolkit.evidence import EvidenceValidationError
   from stm32_toolkit.probe import authorization as module
 
   root = (tmp_path / "control-root-pin").absolute()
@@ -1281,7 +1286,7 @@ def test_control_root_pin_rejects_non_directory_and_posix_identity_changes(
       "st_mode": real.st_mode, "st_dev": real.st_dev, "st_ino": real.st_ino + 1,
   })()
   monkeypatch.setattr(module.os, "fstat", lambda descriptor: different)
-  with pytest.raises(EvidenceValidationError):
+  with pytest.raises(module._ControlAuthorizationStorageError):
     with store._pinned_root_directory():
       pass
 
@@ -1289,7 +1294,7 @@ def test_control_root_pin_rejects_non_directory_and_posix_identity_changes(
   for sequence in ((real, different), (real, real, different)):
     values = iter(sequence)
     monkeypatch.setattr(storage, "_validate_existing_path", lambda *args, **kwargs: next(values))
-    with pytest.raises(EvidenceValidationError):
+    with pytest.raises(module._ControlAuthorizationStorageError):
       with store._pinned_root_directory():
         pass
 
@@ -1297,7 +1302,7 @@ def test_control_root_pin_rejects_non_directory_and_posix_identity_changes(
       "st_mode": 0, "st_dev": real.st_dev, "st_ino": real.st_ino,
   })()
   monkeypatch.setattr(storage, "_validate_existing_path", lambda *args, **kwargs: not_directory)
-  with pytest.raises(EvidenceValidationError):
+  with pytest.raises(module._ControlAuthorizationStorageError):
     with store._pinned_root_directory():
       pass
 
@@ -1977,7 +1982,6 @@ def test_posix_authorization_record_io_is_anchored_to_the_pinned_directory_fd() 
 def test_posix_authorization_record_io_executes_relative_to_pinned_descriptor(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-  from stm32_toolkit.evidence import EvidenceValidationError
   from stm32_toolkit.probe import authorization as module
 
   root = (tmp_path / "posix-record-io").absolute()
@@ -2046,15 +2050,20 @@ def test_posix_authorization_record_io_executes_relative_to_pinned_descriptor(
   )
   assert target.read_bytes() == payload
 
-  with pytest.raises(EvidenceValidationError):
+  with pytest.raises(module._ControlAuthorizationStorageError):
     store._read_stable_record_bytes(
         target, len(payload) - 1, directory_descriptor=pinned_descriptor,
     )
-  with pytest.raises(EvidenceValidationError):
+  with pytest.raises(module._ControlAuthorizationStorageError):
     store._authorization_create_new(
         root / "wrong" / "record.json", b"invalid", phase="posix-wrong-parent",
         directory_descriptor=pinned_descriptor,
     )
+
+  invalid_record = records / "directory-record"
+  invalid_record.mkdir()
+  with pytest.raises(module._ControlAuthorizationStorageError):
+    store._record_info(invalid_record, directory_descriptor=pinned_descriptor)
 
   first_read = True
 
@@ -2066,7 +2075,7 @@ def test_posix_authorization_record_io_executes_relative_to_pinned_descriptor(
     return real_read(descriptor, maximum)
 
   monkeypatch.setattr(module.os, "read", premature_eof)
-  with pytest.raises(EvidenceValidationError):
+  with pytest.raises(module._ControlAuthorizationStorageError):
     store._read_stable_record_bytes(
         target, 1024, directory_descriptor=pinned_descriptor,
     )
@@ -2075,7 +2084,7 @@ def test_posix_authorization_record_io_executes_relative_to_pinned_descriptor(
   collision = records / f".tmp-authorization-{'00' * 16}"
   collision.write_bytes(b"occupied")
   monkeypatch.setattr(module.os, "urandom", lambda size: b"\x00" * size)
-  with pytest.raises(EvidenceValidationError):
+  with pytest.raises(module._ControlAuthorizationStorageError):
     store._authorization_create_new(
         records / "new-record.json", b"payload", phase="posix-temp-exhaustion",
         directory_descriptor=pinned_descriptor,
