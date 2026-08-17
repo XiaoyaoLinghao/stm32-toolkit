@@ -1419,6 +1419,12 @@ class TargetTestRunner:
         expected_identity: Mapping[str, object], expected_firmware: Mapping[str, object],
     ) -> Mapping[str, object]:
         active: object | None = None
+        primary_error: TargetRunError | None = None
+        cleanup_deadline = (
+            deadline
+            if type(deadline) in {int, float} and math.isfinite(deadline)
+            else time.monotonic()
+        )
         try:
             if (
                 type(deadline) not in {int, float}
@@ -1581,16 +1587,36 @@ class TargetTestRunner:
             raise
         except TargetRunError as error:
             if error.code == "TEST_TRANSPORT_UNAVAILABLE":
+                primary_error = error
                 raise
-            raise TargetRunError(
+            primary_error = TargetRunError(
                 "TEST_TRANSPORT_UNAVAILABLE", "Target discovery is unavailable"
-            ) from error
+            )
+            raise primary_error from error
         except Exception as error:
-            raise TargetRunError(
+            primary_error = TargetRunError(
                 "TEST_TRANSPORT_UNAVAILABLE", "Target discovery is unavailable"
-            ) from error
+            )
+            raise primary_error from error
         finally:
-            await self._close_dependencies_required(active, close_probe=True)
+            try:
+                await self._close_dependencies_required(
+                    active,
+                    close_probe=True,
+                    run_deadline=cleanup_deadline,
+                )
+            except TargetRunError as cleanup_error:
+                if cleanup_error.code != "TEST_TRANSPORT_UNAVAILABLE":
+                    cleanup_error = TargetRunError(
+                        "TEST_TRANSPORT_UNAVAILABLE",
+                        "Target discovery cleanup failed",
+                    )
+                if primary_error is None:
+                    raise cleanup_error
+                primary_error.cleanup_notes.append(
+                    "Target cleanup also failed: "
+                    f"{cleanup_error.code}: {cleanup_error.message}"
+                )
 
 
 class ProbeV2MemoryReader:

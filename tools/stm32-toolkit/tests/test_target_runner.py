@@ -2531,6 +2531,143 @@ def test_target_discovery_maps_required_sync_async_cleanup_failure(
   run(scenario())
 
 
+def test_target_discovery_bounds_a_hung_transport_close_and_attempts_probe(
+    tmp_path: Path,
+) -> None:
+  """Discovery must close both dependencies without an external timeout."""
+  class HungTransport(FakeTransport):
+    async def close_async(self):
+      self.calls.append(("close",))
+      await asyncio.Event().wait()
+
+  async def scenario() -> None:
+    active = HungTransport([_r5_inventory_frame()])
+    probe = FakeProbeClient()
+    root = (tmp_path / "hung-transport" / "runs").absolute()
+    runner = target_module.TargetTestRunner(
+        root, probe, FakeFlashWorkflow(), lambda _name: active,
+    )
+    started = time.monotonic()
+
+    with pytest.raises(target_module.TargetRunError) as caught:
+      await asyncio.wait_for(
+          _r5_discover(runner, deadline=time.monotonic() + 0.1), timeout=0.3,
+      )
+
+    assert caught.value.code == "TEST_TRANSPORT_UNAVAILABLE"
+    assert time.monotonic() - started < 0.3
+    assert active.calls[-1] == ("close",)
+    assert probe.closed
+    assert not root.exists()
+
+  run(scenario())
+
+
+def test_target_discovery_bounds_a_hung_probe_close(
+    tmp_path: Path,
+) -> None:
+  """A cooperative probe close is bounded by the discovery deadline."""
+  class HungProbe(FakeProbeClient):
+    async def close(self):
+      self.calls.append(("close",))
+      await asyncio.Event().wait()
+
+  async def scenario() -> None:
+    active = FakeTransport([_r5_inventory_frame()])
+    probe = HungProbe()
+    root = (tmp_path / "hung-probe" / "runs").absolute()
+    runner = target_module.TargetTestRunner(
+        root, probe, FakeFlashWorkflow(), lambda _name: active,
+    )
+    started = time.monotonic()
+
+    with pytest.raises(target_module.TargetRunError) as caught:
+      await asyncio.wait_for(
+          _r5_discover(runner, deadline=time.monotonic() + 0.1), timeout=0.3,
+      )
+
+    assert caught.value.code == "TEST_TRANSPORT_UNAVAILABLE"
+    assert time.monotonic() - started < 0.3
+    assert active.calls[-1] == ("close",)
+    assert probe.calls[-1] == ("close",)
+    assert not root.exists()
+
+  run(scenario())
+
+
+def test_target_discovery_bounds_the_total_cleanup_window_when_both_closes_hang(
+    tmp_path: Path,
+) -> None:
+  """Both discovery dependencies receive one finite post-deadline attempt."""
+  class HungTransport(FakeTransport):
+    async def close_async(self):
+      self.calls.append(("close",))
+      await asyncio.Event().wait()
+
+  class HungProbe(FakeProbeClient):
+    async def close(self):
+      self.calls.append(("close",))
+      await asyncio.Event().wait()
+
+  async def scenario() -> None:
+    active = HungTransport([_r5_inventory_frame()])
+    probe = HungProbe()
+    root = (tmp_path / "both-hung" / "runs").absolute()
+    runner = target_module.TargetTestRunner(
+        root, probe, FakeFlashWorkflow(), lambda _name: active,
+    )
+    started = time.monotonic()
+
+    with pytest.raises(target_module.TargetRunError) as caught:
+      await asyncio.wait_for(
+          _r5_discover(runner, deadline=time.monotonic() + 0.1), timeout=0.3,
+      )
+
+    assert caught.value.code == "TEST_TRANSPORT_UNAVAILABLE"
+    assert time.monotonic() - started < 0.3
+    assert active.calls[-1] == ("close",)
+    assert probe.calls[-1] == ("close",)
+    assert not root.exists()
+
+  run(scenario())
+
+
+def test_target_discovery_retains_its_primary_error_when_cleanup_hangs(
+    tmp_path: Path,
+) -> None:
+  """A required cleanup timeout supplements, never replaces, discovery failure."""
+  class HungTransport(FakeTransport):
+    async def close_async(self):
+      self.calls.append(("close",))
+      await asyncio.Event().wait()
+
+  async def scenario() -> None:
+    active = HungTransport([b""])
+    probe = FakeProbeClient()
+    root = (tmp_path / "primary-error" / "runs").absolute()
+    runner = target_module.TargetTestRunner(
+        root, probe, FakeFlashWorkflow(), lambda _name: active,
+    )
+    started = time.monotonic()
+
+    with pytest.raises(target_module.TargetRunError) as caught:
+      await asyncio.wait_for(
+          _r5_discover(runner, deadline=time.monotonic() + 0.1), timeout=0.3,
+      )
+
+    assert caught.value.code == "TEST_TRANSPORT_UNAVAILABLE"
+    assert any(
+        "Target cleanup also failed: TEST_TRANSPORT_UNAVAILABLE" in note
+        for note in caught.value.cleanup_notes
+    )
+    assert time.monotonic() - started < 0.3
+    assert active.calls[-1] == ("close",)
+    assert probe.closed
+    assert not root.exists()
+
+  run(scenario())
+
+
 @pytest.mark.parametrize("async_close", [False, True])
 def test_target_runner_never_publishes_pass_when_required_close_fails(
     tmp_path: Path, async_close: bool,
@@ -3358,7 +3495,7 @@ def test_target_runner_times_out_a_hung_guarded_flash_without_external_cancel(
         await _r5_prepared_runner(
             tmp_path,
             transport,
-            timeout_ms=5,
+            timeout_ms=100,
             flash_workflow=never_returning_flash,
         )
     )
@@ -3403,7 +3540,7 @@ def test_target_runner_rejects_a_guarded_flash_that_blocks_before_its_first_awai
 
   async def blocked_before_first_await_flash(request):
     flash_calls.append(request)
-    time.sleep(0.03)
+    time.sleep(0.15)
     await asyncio.sleep(0)
     return OperationResult.success("stm32_flash", {"status": "success"})
 
@@ -3413,7 +3550,7 @@ def test_target_runner_rejects_a_guarded_flash_that_blocks_before_its_first_awai
         await _r5_prepared_runner(
             tmp_path,
             transport,
-            timeout_ms=5,
+            timeout_ms=100,
             flash_workflow=blocked_before_first_await_flash,
         )
     )
