@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import asyncio
 import json
+from hashlib import sha256
 from pathlib import Path
 
 import jsonschema
@@ -405,7 +406,7 @@ def test_admitted_pyocd_adapter_exposes_closed_target_operations():
         "rtt", {
             "channel": 0, "control_block_address": 0x20000000,
             "ram": [{"start": 0x20000000, "size": 0x10000}],
-            "target_id": "target-a", "probe_id": "probe-a",
+            "target_id": "target-a", "probe_id": sha256(b"probe-a").hexdigest(),
         }, 100
     )
     assert backend.read_target_transport(opened["transport_id"], 4, 1)["data"] == b"rtt"
@@ -441,6 +442,207 @@ def test_pyocd_swo_and_probe_logs_use_the_admitted_closed_provider_port(channel,
     assert calls[0][0] == "open"
     assert calls[0][1]["target_id"] == "t"
     assert calls[-1] == ("close",)
+    backend.close()
+
+
+@pytest.mark.parametrize(
+    "transport,config",
+    [
+        ("mailbox", {"address": 0x20000000, "size": 64, "ram": [{"start": 0x20000000, "size": 0x1000}]}),
+        ("rtt", {"channel": 0, "control_block_address": None, "ram": [{"start": 0x20000000, "size": 0x1000}]}),
+        ("uart", {"port": "COM3", "baud": 115200, "data_bits": 8, "parity": "N", "stop_bits": 1}),
+        ("semihosting", {"elf_path": "C:\\fixture\\app.elf", "elf_sha256": "e" * 64, "host_files": False}),
+    ],
+)
+def test_pyocd_transport_contract_compares_the_hash_of_the_attached_raw_serial(
+    transport, config,
+):
+    from fakes.fake_pyocd import FakePyOCDDriver, FakePyOCDProbe, FakePyOCDTarget
+    from stm32_toolkit.probe.pyocd_backend import PyOCDBackend
+
+    raw_serial = "066EFF515056805087013719"
+    serial_hash = sha256(raw_serial.encode("utf-8")).hexdigest()
+    opened = []
+
+    class Port:
+        def open(self, value, deadline): opened.append(dict(value))
+        def read(self, maximum, deadline): return b""
+        def identity(self): return {"provider": transport}
+        def close(self): pass
+
+    backend = PyOCDBackend(
+        FakePyOCDDriver((FakePyOCDProbe(raw_serial),), target=FakePyOCDTarget()),
+        target_profile={"target_id": "target-a"},
+        target_transport_factory=lambda *args: Port(),
+    )
+    backend.open_attach(raw_serial, "stm32f407vg")
+    effective = {**config, "target_id": "target-a", "probe_id": serial_hash}
+    result = backend.open_target_transport(transport, effective, 100)
+    assert opened == [effective]
+    assert result["identity"]["probe_serial_hash"] == serial_hash
+    assert raw_serial not in result["identity"].values()
+    backend.close_target_transport(result["transport_id"])
+    backend.close()
+
+
+@pytest.mark.parametrize("channel", ["swo", "probe"])
+def test_admitted_swo_and_probe_adapters_use_only_bounded_frozen_pyocd_apis(channel):
+    from stm32_toolkit.probe.pyocd_backend import admitted_target_transport_factory
+    from stm32_toolkit.probe.worker import ProbeBackendWorker, ProbeWorkerConfig
+
+    calls = []
+
+    class Probe:
+        def swo_start(self, baud): calls.append(("probe.start", baud))
+        def swo_read(self): calls.append(("probe.read",)); return bytearray(b"native")
+        def swo_stop(self): calls.append(("probe.stop",))
+
+    class Session:
+        probe = Probe()
+
+    class Target:
+        session = Session()
+        def trace_start(self): calls.append(("target.start",))
+        def trace_stop(self): calls.append(("target.stop",))
+
+    options = {"baud": 2_000_000} if channel == "swo" else {}
+    profile = {channel: options}
+    adapter = admitted_target_transport_factory(channel, Target(), profile)
+    config = {**options, "target_id": "target-a", "probe_id": "a" * 64}
+    adapter.open(config, float("inf"))
+    assert adapter.read(16, float("inf")) == b"native"
+    adapter.close()
+    assert ("probe.read",) in calls
+    assert calls[-1] == ("probe.stop",)
+    if channel == "swo":
+        assert calls[0] == ("probe.start", 2_000_000)
+        assert ("target.stop",) in calls
+    else:
+        assert not any(call[0].startswith("target.") for call in calls)
+
+    # Exercise the production construction branch too: the serializable worker
+    # configuration must retain the same fixed provider instead of advertising a
+    # channel that only the in-process factory can construct.
+    worker_profile = {
+        "backend": "pyocd", "board_id": "board-a", "mcu": "stm32f407vg",
+        "target_id": "target-a", channel: options,
+        "log_transport": {"kind": channel, "options": options},
+    }
+    worker = ProbeBackendWorker(config=ProbeWorkerConfig(target_profile=worker_profile))
+    try:
+        worker.preflight_target_capabilities("probe-a", OperationLevel.OBSERVE)
+    finally:
+        worker.close()
+
+
+def test_fixed_pyocd_trace_adapters_reject_invalid_deadlines_output_and_partial_start(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    from stm32_toolkit.probe import pyocd_backend as module
+
+    calls = []
+
+    class Probe:
+        output: object = bytearray(b"ok")
+        start_error: Exception | None = None
+        stop_error: Exception | None = None
+        def swo_start(self, baud):
+            calls.append(("probe.start", baud))
+            if self.start_error: raise self.start_error
+        def swo_read(self): calls.append(("probe.read",)); return self.output
+        def swo_stop(self):
+            calls.append(("probe.stop",))
+            if self.stop_error: raise self.stop_error
+
+    probe = Probe()
+
+    class Session:
+        pass
+
+    session = Session()
+    session.probe = probe
+
+    class Target:
+        trace_error: Exception | None = None
+        stop_error: Exception | None = None
+        def __init__(self): self.session = session
+        def trace_start(self):
+            calls.append(("target.start",))
+            if self.trace_error: raise self.trace_error
+        def trace_stop(self):
+            calls.append(("target.stop",))
+            if self.stop_error: raise self.stop_error
+
+    target = Target()
+    monkeypatch.setattr(module.time, "monotonic", lambda: 10.0)
+    for config in (
+        {"baud": True, "target_id": "t", "probe_id": "a" * 64},
+        {"baud": 2_000_000, "target_id": "t", "probe_id": "a" * 64, "extra": True},
+    ):
+        with pytest.raises(RuntimeError):
+            module._PyOCDProbeTracePort(target, configure_target=True).open(config, 11.0)
+    with pytest.raises(RuntimeError):
+        module._PyOCDProbeTracePort(target, configure_target=True).open(
+            {"baud": 2_000_000, "target_id": "t", "probe_id": "a" * 64}, 10.0
+        )
+
+    target.trace_error = RuntimeError("private path")
+    port = module._PyOCDProbeTracePort(target, configure_target=True)
+    with pytest.raises(RuntimeError):
+        port.open({"baud": 2_000_000, "target_id": "t", "probe_id": "a" * 64}, 11.0)
+    assert calls[-2:] == [("target.stop",), ("probe.stop",)]
+    target.trace_error = None
+
+    port = module._PyOCDProbeTracePort(target, configure_target=False)
+    port.open({"target_id": "t", "probe_id": "a" * 64}, 11.0)
+    for output in ("not-bytes", bytearray(b"oversize")):
+        probe.output = output
+        with pytest.raises(RuntimeError): port.read(2, 11.0)
+    with pytest.raises(RuntimeError): port.read(True, 11.0)
+    with pytest.raises(RuntimeError): port.read(1, 10.0)
+    probe.output = bytearray(b"ok")
+    assert port.identity() == {"provider": "pyocd-probe"}
+    port.close()
+    with pytest.raises(RuntimeError): port.identity()
+
+    port = module._PyOCDProbeTracePort(target, configure_target=True)
+    port.open({"baud": 2_000_000, "target_id": "t", "probe_id": "a" * 64}, 11.0)
+    target.stop_error = RuntimeError("private target")
+    probe.stop_error = RuntimeError("private probe")
+    with pytest.raises(RuntimeError): port.close()
+    assert calls[-2:] == [("target.stop",), ("probe.stop",)]
+    port.close()
+
+
+def test_pyocd_log_capture_maps_fixed_trace_cleanup_failure_to_closed_backend_error():
+    from fakes.fake_pyocd import FakePyOCDDriver, FakePyOCDProbe, FakePyOCDTarget
+    from stm32_toolkit.probe.backend import ProbeBackendError
+    from stm32_toolkit.probe.pyocd_backend import PyOCDBackend, admitted_target_transport_factory
+
+    class Probe:
+        def swo_start(self, baud): pass
+        def swo_read(self): return bytearray(b"ok")
+        def swo_stop(self): raise RuntimeError("C:\\private\\credential")
+
+    class Session:
+        probe = Probe()
+
+    class Target(FakePyOCDTarget):
+        session = Session()
+
+    backend = PyOCDBackend(
+        FakePyOCDDriver((FakePyOCDProbe("raw-serial"),), target=Target()),
+        target_profile={
+            "board_id": "b", "mcu": "stm32f407vg", "target_id": "t",
+            "probe": {}, "log_transport": {"kind": "probe", "options": {}},
+        },
+        target_transport_factory=admitted_target_transport_factory,
+    )
+    backend.open_attach("raw-serial", "stm32f407vg")
+    with pytest.raises(ProbeBackendError) as caught:
+        backend.capture_logs("probe", 16, 100)
+    assert caught.value.code == "PROBE_BACKEND_ERROR"
+    assert "private" not in str(caught.value).lower()
     backend.close()
 
 
@@ -700,7 +902,7 @@ def test_pyocd_target_adapter_fails_closed_on_limits_identity_and_partial_output
     config = {
         "channel": 0, "control_block_address": None,
         "ram": [{"start": 0x20000000, "size": 0x10000}],
-        "target_id": "t", "probe_id": "probe-a",
+        "target_id": "t", "probe_id": sha256(b"probe-a").hexdigest(),
     }
     target.handle.open_fail = True
     with pytest.raises(ProbeBackendError): backend.open_target_transport("rtt", config, 1)
@@ -824,14 +1026,14 @@ def test_pyocd_target_preflight_and_transport_config_are_closed_before_attach():
     with pytest.raises(ProbeBackendError):
         detached._runtime_transport_config("rtt", {
             "channel": 0, "control_block_address": None, "ram": profile["ram"],
-            "target_id": "t", "probe_id": "probe-a",
+            "target_id": "t", "probe_id": sha256(b"probe-a").hexdigest(),
         })
     backend.open_attach("probe-a", "stm32f407vg")
     saved_target = backend._target_profile.pop("target_id")
     with pytest.raises(ProbeBackendError):
         backend._runtime_transport_config("rtt", {
             "channel": 0, "control_block_address": None, "ram": profile["ram"],
-            "target_id": "t", "probe_id": "probe-a",
+            "target_id": "t", "probe_id": sha256(b"probe-a").hexdigest(),
         })
     backend._target_profile["target_id"] = saved_target
     saved_semihost = backend._target_profile.pop("semihosting_runtime")
@@ -839,10 +1041,10 @@ def test_pyocd_target_preflight_and_transport_config_are_closed_before_attach():
         backend._profile_transport_config("semihosting")
     backend._target_profile["semihosting_runtime"] = saved_semihost
     configs = [
-        ("mailbox", {"address": 0x20000000, "size": 64, "ram": profile["ram"], "target_id": "t", "probe_id": "probe-a"}),
-        ("rtt", {"channel": 0, "control_block_address": None, "ram": profile["ram"], "target_id": "t", "probe_id": "probe-a"}),
-        ("uart", {"port": "COM1", "baud": 115200, "data_bits": 8, "parity": "N", "stop_bits": 1, "target_id": "t", "probe_id": "probe-a"}),
-        ("semihosting", {"elf_path": "C:\\fixture\\app.elf", "elf_sha256": "e" * 64, "host_files": False, "target_id": "t", "probe_id": "probe-a"}),
+        ("mailbox", {"address": 0x20000000, "size": 64, "ram": profile["ram"], "target_id": "t", "probe_id": sha256(b"probe-a").hexdigest()}),
+        ("rtt", {"channel": 0, "control_block_address": None, "ram": profile["ram"], "target_id": "t", "probe_id": sha256(b"probe-a").hexdigest()}),
+        ("uart", {"port": "COM1", "baud": 115200, "data_bits": 8, "parity": "N", "stop_bits": 1, "target_id": "t", "probe_id": sha256(b"probe-a").hexdigest()}),
+        ("semihosting", {"elf_path": "C:\\fixture\\app.elf", "elf_sha256": "e" * 64, "host_files": False, "target_id": "t", "probe_id": sha256(b"probe-a").hexdigest()}),
     ]
     for kind, config in configs:
         transport = backend._new_transport(kind, config, 1)
@@ -888,7 +1090,7 @@ def test_pyocd_public_target_transport_accepts_only_task8_effective_config():
     backend.open_attach("probe-a", "stm32f407vg")
     effective = {
         "address": 0x20000000, "size": 64, "ram": profile["ram"],
-        "target_id": "t", "probe_id": "probe-a",
+        "target_id": "t", "probe_id": sha256(b"probe-a").hexdigest(),
     }
     opened = backend.open_target_transport("mailbox", effective, 1)
     assert backend._transports[opened["transport_id"]].config == effective
@@ -968,7 +1170,7 @@ def test_fixed_pyocd_task8_ports_enforce_deadline_output_and_closed_identity(
     backend._target_profile["swo"] = {"baud": 2_000_000}
     backend._target_profile["probe"] = {}
     assert backend._profile_transport_config("swo")["baud"] == 2_000_000
-    assert backend._profile_transport_config("probe")["probe_id"] == "probe-a"
+    assert backend._profile_transport_config("probe")["probe_id"] == sha256(b"probe-a").hexdigest()
     with pytest.raises(ProbeBackendError): backend._profile_transport_config("mailbox")
     with pytest.raises(ProbeBackendError): backend._runtime_transport_config("dynamic", {})
     backend.close()

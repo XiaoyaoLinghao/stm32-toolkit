@@ -233,41 +233,104 @@ class ControlAuthorizationStore:
 
     @contextmanager
     def _authority_lock(self, *, create: bool):
-        """Pin the parent/root filesystem objects before any authorization I/O."""
+        """Hold parent authority, the root object, and its mutation lock as one unit."""
         parent_store = self._parent_store()
         try:
             with parent_store._mutation_lock(create=create):
                 storage = self._evidence_store()
-                authority_path = self._authority_path()
-                if create and not authority_path.exists():
+                if create:
                     storage._ensure_root()
+                with self._pinned_root_directory() as pinned_root:
+                    authority_path = self._authority_path()
+                    if create and not authority_path.exists():
+                        parent_info = parent_store._validate_existing_path(self.root.parent)
+                        root_info = storage._validate_existing_path(self.root)
+                        if not stat.S_ISDIR(parent_info.st_mode) or not stat.S_ISDIR(root_info.st_mode):
+                            raise EvidenceValidationError("authorization authority is not a directory")
+                        payload = canonical_json_bytes({
+                            "version": _AUTHORITY_VERSION,
+                            "root_name_sha256": sha256(self.root.name.encode("utf-8")).hexdigest(),
+                            "parent": self._identity(parent_info),
+                            "root": self._identity(root_info),
+                        })
+                        if not parent_store._atomic_create_new(
+                            authority_path, payload, phase="control-authority-pin"
+                        ):
+                            raise EvidenceValidationError("authorization authority already changed")
+                    authority = self._read_authority()
                     parent_info = parent_store._validate_existing_path(self.root.parent)
                     root_info = storage._validate_existing_path(self.root)
-                    if not stat.S_ISDIR(parent_info.st_mode) or not stat.S_ISDIR(root_info.st_mode):
-                        raise EvidenceValidationError("authorization authority is not a directory")
-                    payload = canonical_json_bytes({
-                        "version": _AUTHORITY_VERSION,
-                        "root_name_sha256": sha256(self.root.name.encode("utf-8")).hexdigest(),
-                        "parent": self._identity(parent_info),
-                        "root": self._identity(root_info),
-                    })
-                    if not parent_store._atomic_create_new(
-                        authority_path, payload, phase="control-authority-pin"
+                    if (
+                        not stat.S_ISDIR(parent_info.st_mode)
+                        or not stat.S_ISDIR(root_info.st_mode)
+                        or authority["parent"] != self._identity(parent_info)
+                        or authority["root"] != self._identity(root_info)
+                        or self._identity(root_info) != pinned_root
                     ):
-                        raise EvidenceValidationError("authorization authority already changed")
-                authority = self._read_authority()
-                parent_info = parent_store._validate_existing_path(self.root.parent)
-                root_info = storage._validate_existing_path(self.root)
-                if (
-                    not stat.S_ISDIR(parent_info.st_mode)
-                    or not stat.S_ISDIR(root_info.st_mode)
-                    or authority["parent"] != self._identity(parent_info)
-                    or authority["root"] != self._identity(root_info)
-                ):
-                    raise EvidenceValidationError("authorization authority identity changed")
-                yield
+                        raise EvidenceValidationError("authorization authority identity changed")
+                    with storage._mutation_lock(create=create):
+                        locked_root = storage._validate_existing_path(self.root)
+                        if self._identity(locked_root) != pinned_root:
+                            raise EvidenceValidationError("authorization root changed before lock")
+                        yield storage
+                        final_root = storage._validate_existing_path(self.root)
+                        final_authority = self._read_authority()
+                        if (
+                            self._identity(final_root) != pinned_root
+                            or final_authority != authority
+                        ):
+                            raise EvidenceValidationError("authorization authority changed while locked")
         except (OSError, EvidenceValidationError) as error:
             raise ControlAuthorizationError("PROBE_AUTHORIZATION_INVALID", "Authorization authority is invalid") from error
+
+    @contextmanager
+    def _pinned_root_directory(self):
+        """Hold the original root object against replacement before its lock is opened."""
+        storage = self._evidence_store()
+        handle: object | None = None
+        descriptor: int | None = None
+        try:
+            before = storage._validate_existing_path(self.root)
+            if not stat.S_ISDIR(before.st_mode):
+                raise EvidenceValidationError("authorization root is not a directory")
+            if os.name == "nt":
+                import ctypes
+                from ctypes import wintypes
+
+                create_file = ctypes.WinDLL("kernel32", use_last_error=True).CreateFileW
+                create_file.argtypes = (
+                    wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, wintypes.LPVOID,
+                    wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE,
+                )
+                create_file.restype = wintypes.HANDLE
+                raw_handle = create_file(
+                    str(self.root), 0x00000001, 0x00000001 | 0x00000002, None, 3,
+                    0x02000000 | 0x00200000, None,
+                )
+                if raw_handle == wintypes.HANDLE(-1).value:
+                    raise OSError(ctypes.get_last_error(), "authorization root pin failed")
+                handle = raw_handle
+            else:
+                descriptor = os.open(
+                    self.root,
+                    os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0),
+                )
+                opened = os.fstat(descriptor)
+                if (opened.st_dev, opened.st_ino) != (before.st_dev, before.st_ino):
+                    raise EvidenceValidationError("authorization root identity changed")
+            named = storage._validate_existing_path(self.root)
+            if (named.st_dev, named.st_ino) != (before.st_dev, before.st_ino):
+                raise EvidenceValidationError("authorization root identity changed")
+            yield self._identity(before)
+            after = storage._validate_existing_path(self.root)
+            if (after.st_dev, after.st_ino) != (before.st_dev, before.st_ino):
+                raise EvidenceValidationError("authorization root identity changed")
+        finally:
+            if descriptor is not None:
+                os.close(descriptor)
+            if handle is not None:
+                import ctypes
+                ctypes.WinDLL("kernel32", use_last_error=True).CloseHandle(handle)
 
     def _path(self, digest: str, state: str) -> Path:
         if _HASH.fullmatch(digest) is None or state not in {"prepared", "consumed"}:
@@ -381,13 +444,12 @@ class ControlAuthorizationStore:
         digest = sha256(payload).hexdigest()
         storage = self._evidence_store()
         with self._authority_lock(create=True):
-            with storage._mutation_lock():
-                with self._pinned_records_directory():
-                    created = storage._atomic_create_new(
-                        self._path(digest, "prepared"), payload, phase="control-authorization-prepare"
-                    )
-                    if not created:
-                        raise ControlAuthorizationError("PROBE_AUTHORIZATION_INVALID", "Authorization already exists")
+            with self._pinned_records_directory():
+                created = storage._atomic_create_new(
+                    self._path(digest, "prepared"), payload, phase="control-authorization-prepare"
+                )
+                if not created:
+                    raise ControlAuthorizationError("PROBE_AUTHORIZATION_INVALID", "Authorization already exists")
         with self._live_lock:
             self._live_deadlines[digest] = float(started) + 300.0
         return PreparedControlAuthorization(digest, nonce, expires, record)
@@ -407,18 +469,17 @@ class ControlAuthorizationStore:
         instant = _utc(now or datetime.now(timezone.utc), "authorization time")
         storage = self._evidence_store()
         with self._authority_lock(create=False):
-            with storage._mutation_lock(create=False):
-                with self._pinned_records_directory():
-                    record = self._read_prepared(digest)
-                    consumed_payload = canonical_json_bytes(
-                        {"action_digest": digest, "consumed_at_utc": instant.strftime("%Y-%m-%dT%H:%M:%S.%fZ")}
-                    )
-                    if not storage._atomic_create_new(
-                        self._path(digest, "consumed"),
-                        consumed_payload,
-                        phase="control-authorization-consume",
-                    ):
-                        raise ControlAuthorizationError("PROBE_AUTHORIZATION_INVALID", "Authorization is already consumed")
+            with self._pinned_records_directory():
+                record = self._read_prepared(digest)
+                consumed_payload = canonical_json_bytes(
+                    {"action_digest": digest, "consumed_at_utc": instant.strftime("%Y-%m-%dT%H:%M:%S.%fZ")}
+                )
+                if not storage._atomic_create_new(
+                    self._path(digest, "consumed"),
+                    consumed_payload,
+                    phase="control-authorization-consume",
+                ):
+                    raise ControlAuthorizationError("PROBE_AUTHORIZATION_INVALID", "Authorization is already consumed")
                 with self._live_lock:
                     live_deadline = self._live_deadlines.pop(digest, None)
                 live_now = self._monotonic_clock() if live_deadline is not None else None

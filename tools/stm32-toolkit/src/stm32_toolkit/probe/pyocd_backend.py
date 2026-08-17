@@ -129,6 +129,88 @@ class _AttachedTargetSemihostSession:
             getattr(agent, "cleanup")()
 
 
+class _PyOCDProbeTracePort:
+    """Bounded fixed adapter over PyOCD 0.45 DebugProbe SWO reception."""
+
+    def __init__(self, target: object, *, configure_target: bool) -> None:
+        self._target: object | None = target
+        self._configure_target = configure_target
+        self._probe: object | None = None
+        self._target_started = False
+
+    def open(self, config: Mapping[str, object], deadline: float) -> None:
+        required = {"baud", "target_id", "probe_id"} if self._configure_target else {"target_id", "probe_id"}
+        baud = config.get("baud", 2_000_000) if isinstance(config, Mapping) else None
+        if (
+            self._target is None
+            or not isinstance(config, Mapping)
+            or set(config) != required
+            or type(baud) is not int
+            or not 1 <= baud <= 50_000_000
+            or time.monotonic() >= deadline
+        ):
+            raise RuntimeError("probe trace adapter configuration is invalid")
+        try:
+            session = getattr(self._target, "session")
+            probe = getattr(session, "probe")
+            if not all(callable(getattr(probe, name, None)) for name in ("swo_start", "swo_read", "swo_stop")):
+                raise TypeError
+            self._probe = probe
+            getattr(probe, "swo_start")(baud)
+            if self._configure_target:
+                start = getattr(self._target, "trace_start")
+                if not callable(start):
+                    raise TypeError
+                self._target_started = True
+                start()
+            if time.monotonic() >= deadline:
+                raise TimeoutError
+        except Exception:
+            try:
+                self.close()
+            except Exception:
+                pass
+            raise
+
+    def read(self, maximum: int, deadline: float) -> bytes:
+        if (
+            self._probe is None
+            or type(maximum) is not int
+            or not 1 <= maximum <= _MAX_READ_BYTES
+            or time.monotonic() >= deadline
+        ):
+            raise RuntimeError("probe trace adapter is unavailable")
+        raw = getattr(self._probe, "swo_read")()
+        if time.monotonic() >= deadline or not isinstance(raw, (bytes, bytearray)) or len(raw) > maximum:
+            raise RuntimeError("probe trace adapter returned invalid output")
+        return bytes(raw)
+
+    def identity(self) -> Mapping[str, object]:
+        if self._probe is None:
+            raise RuntimeError("probe trace adapter is unavailable")
+        return {"provider": "pyocd-swo" if self._configure_target else "pyocd-probe"}
+
+    def close(self) -> None:
+        target, probe = self._target, self._probe
+        self._target = None
+        self._probe = None
+        close_error: Exception | None = None
+        if self._target_started and target is not None:
+            self._target_started = False
+            try:
+                getattr(target, "trace_stop")()
+            except Exception as error:
+                close_error = error
+        if probe is not None:
+            try:
+                getattr(probe, "swo_stop")()
+            except Exception as error:
+                if close_error is None:
+                    close_error = error
+        if close_error is not None:
+            raise RuntimeError("probe trace adapter cleanup failed") from close_error
+
+
 def admitted_target_transport_factory(
     transport: str, target: object, profile: Mapping[str, object]
 ) -> object:
@@ -151,6 +233,10 @@ def admitted_target_transport_factory(
     if transport == "semihosting":
         session = _AttachedTargetSemihostSession(target)
         return SemihostingTransport(PyOcdSemihostingAdapter(session), profile)
+    if transport == "swo":
+        return _PyOCDProbeTracePort(target, configure_target=True)
+    if transport == "probe":
+        return _PyOCDProbeTracePort(target, configure_target=False)
     raise ProbeBackendError(
         "PROBE_OPERATION_UNAVAILABLE", "Target transport provider is unavailable"
     )
@@ -205,6 +291,7 @@ class PyOCDBackend:
         self._probe: object | None = None
         self._target: object | None = None
         self._probe_id: str | None = None
+        self._probe_serial_hash: str | None = None
         self._target_name: str | None = None
         self._resolved_part_number: str | None = None
         self._breakpoints: dict[str, tuple[int, int]] = {}
@@ -215,7 +302,7 @@ class PyOCDBackend:
     def _runtime_transport_config(
         self, transport: str, config: Mapping[str, object]
     ) -> dict[str, object]:
-        if self._probe_id is None:
+        if self._probe_serial_hash is None:
             raise ProbeBackendError("PROBE_NOT_ATTACHED", "Probe is not attached")
         target_id = self._target_profile.get("target_id")
         if not isinstance(target_id, str) or not target_id:
@@ -233,19 +320,19 @@ class PyOCDBackend:
             and isinstance(config, Mapping)
             and set(config) == required
             and config.get("target_id") == target_id
-            and config.get("probe_id") == self._probe_id
+            and config.get("probe_id") == self._probe_serial_hash
         ):
             return dict(config)
         raise ProbeBackendError("PROBE_PROTOCOL_INVALID", "Target transport configuration is invalid")
 
     def _profile_transport_config(self, transport: str) -> dict[str, object]:
-        if self._probe_id is None:
+        if self._probe_serial_hash is None:
             raise ProbeBackendError("PROBE_NOT_ATTACHED", "Probe is not attached")
         target_id = self._target_profile.get("target_id")
         declared = self._target_profile.get(transport)
         if not isinstance(target_id, str) or not isinstance(declared, Mapping):
             raise ProbeBackendError("PROBE_BACKEND_ERROR", "Target transport identity is unavailable")
-        common = {"target_id": target_id, "probe_id": self._probe_id}
+        common = {"target_id": target_id, "probe_id": self._probe_serial_hash}
         if transport == "rtt":
             return {
                 "channel": declared.get("channel"),
@@ -612,6 +699,7 @@ class PyOCDBackend:
         self._target = session_target
         self._probe = probe
         self._probe_id = probe_id
+        self._probe_serial_hash = sha256(probe_id.encode("utf-8")).hexdigest()
         self._target_name = target
         self._resolved_part_number = part_number
         return ProbeAttachmentEvidence(
@@ -759,7 +847,7 @@ class PyOCDBackend:
 
     def target_identity(self) -> Mapping[str, object]:
         self._require_target()
-        if self._probe_id is None or self._target_name is None or self._resolved_part_number is None:
+        if self._probe_serial_hash is None or self._target_name is None or self._resolved_part_number is None:
             raise ProbeBackendError("PROBE_BACKEND_ERROR", "Target identity is unavailable")
         board_id = self._target_profile.get("board_id", self._target_name)
         expected_mcu = self._target_profile.get("mcu", self._resolved_part_number)
@@ -770,7 +858,7 @@ class PyOCDBackend:
             raise ProbeBackendError("PROBE_IDENTITY_MISMATCH", "Target MCU identity does not match the profile")
         return {
             "board_id": board_id, "mcu": expected_mcu, "target_id": expected_target,
-            "probe_serial_hash": sha256(self._probe_id.encode("utf-8")).hexdigest(),
+            "probe_serial_hash": self._probe_serial_hash,
         }
 
     def target_state(self) -> Mapping[str, object]:
@@ -849,15 +937,24 @@ class PyOCDBackend:
                 output.extend(chunk)
             raw = bytes(output)
         except ProbeBackendError:
-            raise
-        except Exception as error:
-            raise ProbeBackendError("PROBE_BACKEND_ERROR", "Configured log channel is unavailable") from error
-        finally:
             if port is not None:
                 try:
                     port.close()
                 except Exception:
                     pass
+            raise
+        except Exception as error:
+            if port is not None:
+                try:
+                    port.close()
+                except Exception:
+                    pass
+            raise ProbeBackendError("PROBE_BACKEND_ERROR", "Configured log channel is unavailable") from error
+        assert port is not None
+        try:
+            port.close()
+        except Exception as error:
+            raise ProbeBackendError("PROBE_BACKEND_ERROR", "Configured log channel cleanup failed") from error
         return {"data": raw, "truncated": len(raw) == max_bytes}
 
     def open_target_transport(self, transport: str, config: Mapping[str, object], deadline_ms: int) -> Mapping[str, object]:
@@ -924,6 +1021,7 @@ class PyOCDBackend:
         probe, self._probe = self._probe, None
         self._target = None
         self._probe_id = None
+        self._probe_serial_hash = None
         self._target_name = None
         self._resolved_part_number = None
         self._breakpoints.clear()

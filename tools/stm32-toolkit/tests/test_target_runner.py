@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from hashlib import sha256
 from pathlib import Path
@@ -8,6 +9,7 @@ import os
 import shutil
 import subprocess
 import sys
+import threading
 import time
 
 import pytest
@@ -904,6 +906,198 @@ def test_control_consume_pins_the_validated_records_directory_through_create_new
   assert not (replacement / f"{prepared.action_digest}.consumed.json").exists()
 
 
+def test_control_authority_holds_the_original_root_before_entering_its_mutation_lock(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+  """A copied replacement cannot become authoritative between the two locks."""
+  instant = datetime(2026, 8, 16, tzinfo=timezone.utc)
+  root = (tmp_path / "authority-root-race" / "control").absolute()
+  store = ControlAuthorizationStore(root)
+  binding = {
+      "workspace_id": "workspace-a", "project_id": "project-a",
+      "session_id": "session-a", "revision": "rev-a", "target": IDENTITY,
+      "firmware": {"build_id": "b" * 64, "elf_sha256": "e" * 64},
+      "operation": "target.resume", "arguments": {},
+      "identity_snapshot": IDENTITY, "state_snapshot": STATE,
+  }
+  prepared = store.prepare(binding, now=instant)
+  storage = store._evidence_store()
+  original_mutation_lock = storage._mutation_lock
+  original_root = root.with_name("control-original")
+  attempted: list[str] = []
+
+  @contextmanager
+  def swap_before_root_lock(*, create: bool = True):
+    attempted.append("swapped")
+    root.rename(original_root)
+    shutil.copytree(original_root, root)
+    with original_mutation_lock(create=create):
+      yield
+
+  monkeypatch.setattr(storage, "_mutation_lock", swap_before_root_lock)
+  with pytest.raises(ControlAuthorizationError) as caught:
+    store.consume(
+        prepared.action_digest, operation="target.resume", arguments={},
+        workspace_id="workspace-a", session_id="session-a",
+        identity=IDENTITY, state=STATE, now=instant,
+    )
+  assert attempted == ["swapped"]
+  assert caught.value.code == "PROBE_AUTHORIZATION_INVALID"
+  assert not (root / "records" / f"{prepared.action_digest}.consumed.json").exists()
+  assert not (original_root / "records" / f"{prepared.action_digest}.consumed.json").exists()
+
+
+def test_control_authority_blocks_a_real_cross_process_root_copy_race(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+  instant = datetime(2026, 8, 16, tzinfo=timezone.utc)
+  root = (tmp_path / "authority-process-race" / "control").absolute()
+  store = ControlAuthorizationStore(root)
+  binding = {
+      "workspace_id": "workspace-a", "project_id": "project-a",
+      "session_id": "session-a", "revision": "rev-a", "target": IDENTITY,
+      "firmware": {"build_id": "b" * 64, "elf_sha256": "e" * 64},
+      "operation": "target.resume", "arguments": {},
+      "identity_snapshot": IDENTITY, "state_snapshot": STATE,
+  }
+  prepared = store.prepare(binding, now=instant)
+  original_root = root.with_name("control-original")
+  signal = tmp_path / "race.go"
+  outcome = tmp_path / "race.outcome"
+  script = (
+      "import pathlib,shutil,sys,time\n"
+      "root,original,signal,outcome=map(pathlib.Path,sys.argv[1:])\n"
+      "deadline=time.monotonic()+10\n"
+      "while not signal.exists() and time.monotonic()<deadline: time.sleep(0.005)\n"
+      "try:\n"
+      " root.rename(original); shutil.copytree(original,root); result='swapped'\n"
+      "except OSError:\n"
+      " result='blocked'\n"
+      "outcome.write_text(result,encoding='utf-8')\n"
+  )
+  child = subprocess.Popen([
+      sys.executable, "-c", script, str(root), str(original_root),
+      str(signal), str(outcome),
+  ])
+  original_read_authority = store._read_authority
+  signalled = False
+
+  def read_while_attacker_runs():
+    nonlocal signalled
+    value = original_read_authority()
+    if not signalled:
+      signalled = True
+      signal.write_text("go", encoding="utf-8")
+      deadline = time.monotonic() + 10
+      while not outcome.exists() and time.monotonic() < deadline:
+        time.sleep(0.005)
+      assert outcome.exists()
+    return value
+
+  monkeypatch.setattr(store, "_read_authority", read_while_attacker_runs)
+  consumed = store.consume(
+      prepared.action_digest, operation="target.resume", arguments={},
+      workspace_id="workspace-a", session_id="session-a",
+      identity=IDENTITY, state=STATE, now=instant,
+  )
+  assert consumed["nonce"] == prepared.nonce
+  assert child.wait(timeout=10) == 0
+  assert outcome.read_text(encoding="utf-8") == "blocked"
+  assert not original_root.exists()
+  assert (root / "records" / f"{prepared.action_digest}.consumed.json").is_file()
+
+
+def test_control_authority_blocks_a_real_thread_root_copy_race(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+  instant = datetime(2026, 8, 16, tzinfo=timezone.utc)
+  root = (tmp_path / "authority-thread-race" / "control").absolute()
+  store = ControlAuthorizationStore(root)
+  binding = {
+      "workspace_id": "workspace-a", "project_id": "project-a",
+      "session_id": "session-a", "revision": "rev-a", "target": IDENTITY,
+      "firmware": {"build_id": "b" * 64, "elf_sha256": "e" * 64},
+      "operation": "target.resume", "arguments": {},
+      "identity_snapshot": IDENTITY, "state_snapshot": STATE,
+  }
+  prepared = store.prepare(binding, now=instant)
+  storage = store._evidence_store()
+  original_mutation_lock = storage._mutation_lock
+  original_root = root.with_name("control-original")
+  attack = threading.Event()
+  attempted = threading.Event()
+  outcome: list[str] = []
+
+  def attacker() -> None:
+    assert attack.wait(10)
+    try:
+      root.rename(original_root)
+      shutil.copytree(original_root, root)
+      outcome.append("swapped")
+    except OSError:
+      outcome.append("blocked")
+    finally:
+      attempted.set()
+
+  thread = threading.Thread(target=attacker, name="authorization-root-attacker")
+  thread.start()
+
+  @contextmanager
+  def race_before_root_lock(*, create: bool = True):
+    attack.set()
+    assert attempted.wait(10)
+    with original_mutation_lock(create=create):
+      yield
+
+  monkeypatch.setattr(storage, "_mutation_lock", race_before_root_lock)
+  consumed = store.consume(
+      prepared.action_digest, operation="target.resume", arguments={},
+      workspace_id="workspace-a", session_id="session-a",
+      identity=IDENTITY, state=STATE, now=instant,
+  )
+  thread.join(10)
+  assert not thread.is_alive()
+  assert outcome == ["blocked"]
+  assert consumed["nonce"] == prepared.nonce
+  assert not original_root.exists()
+  assert (root / "records" / f"{prepared.action_digest}.consumed.json").is_file()
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows junction contract")
+def test_control_authority_rejects_a_root_replaced_by_a_real_junction(tmp_path: Path) -> None:
+  instant = datetime(2026, 8, 16, tzinfo=timezone.utc)
+  root = (tmp_path / "authority-junction" / "control").absolute()
+  store = ControlAuthorizationStore(root)
+  binding = {
+      "workspace_id": "workspace-a", "project_id": "project-a",
+      "session_id": "session-a", "revision": "rev-a", "target": IDENTITY,
+      "firmware": {"build_id": "b" * 64, "elf_sha256": "e" * 64},
+      "operation": "target.resume", "arguments": {},
+      "identity_snapshot": IDENTITY, "state_snapshot": STATE,
+  }
+  prepared = store.prepare(binding, now=instant)
+  original = root.with_name("control-original")
+  root.rename(original)
+  created = subprocess.run(
+      ["cmd", "/d", "/c", "mklink", "/J", str(root), str(original)],
+      capture_output=True, text=True, timeout=10, check=False,
+  )
+  if created.returncode != 0:
+    original.rename(root)
+    pytest.skip("junction creation is unavailable")
+  try:
+    with pytest.raises(ControlAuthorizationError):
+      store.consume(
+          prepared.action_digest, operation="target.resume", arguments={},
+          workspace_id="workspace-a", session_id="session-a",
+          identity=IDENTITY, state=STATE, now=instant,
+      )
+    assert not (original / "records" / f"{prepared.action_digest}.consumed.json").exists()
+  finally:
+    os.rmdir(root)
+    original.rename(root)
+
+
 def test_control_directory_pin_rejects_posix_handle_and_named_identity_changes(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -949,6 +1143,116 @@ def test_control_directory_pin_rejects_posix_handle_and_named_identity_changes(
     with pytest.raises(ControlAuthorizationError):
       with store._pinned_records_directory():
         pass
+
+
+def test_control_root_pin_rejects_non_directory_and_posix_identity_changes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+  from stm32_toolkit.evidence import EvidenceValidationError
+  from stm32_toolkit.probe import authorization as module
+
+  root = (tmp_path / "control-root-pin").absolute()
+  store = ControlAuthorizationStore(root)
+  instant = datetime(2026, 8, 16, tzinfo=timezone.utc)
+  store.prepare({
+      "workspace_id": "workspace-a", "project_id": "project-a",
+      "session_id": "session-a", "revision": "rev-a", "target": IDENTITY,
+      "firmware": {"build_id": "b" * 64, "elf_sha256": "e" * 64},
+      "operation": "target.resume", "arguments": {},
+      "identity_snapshot": IDENTITY, "state_snapshot": STATE,
+  }, now=instant)
+  real = os.lstat(root)
+  storage = store._evidence_store()
+  closed: list[int] = []
+  monkeypatch.setattr(store, "_evidence_store", lambda: storage)
+  monkeypatch.setattr(storage, "_validate_existing_path", lambda *args, **kwargs: real)
+  monkeypatch.setattr(module.os, "name", "posix")
+  monkeypatch.setattr(module.os, "open", lambda *args, **kwargs: 79)
+  monkeypatch.setattr(module.os, "close", closed.append)
+  monkeypatch.setattr(module.os, "fstat", lambda descriptor: real)
+  with store._pinned_root_directory() as pinned:
+    assert pinned == store._identity(real)
+  assert closed == [79]
+
+  different = type("Metadata", (), {
+      "st_mode": real.st_mode, "st_dev": real.st_dev, "st_ino": real.st_ino + 1,
+  })()
+  monkeypatch.setattr(module.os, "fstat", lambda descriptor: different)
+  with pytest.raises(EvidenceValidationError):
+    with store._pinned_root_directory():
+      pass
+
+  monkeypatch.setattr(module.os, "fstat", lambda descriptor: real)
+  for sequence in ((real, different), (real, real, different)):
+    values = iter(sequence)
+    monkeypatch.setattr(storage, "_validate_existing_path", lambda *args, **kwargs: next(values))
+    with pytest.raises(EvidenceValidationError):
+      with store._pinned_root_directory():
+        pass
+
+  not_directory = type("Metadata", (), {
+      "st_mode": 0, "st_dev": real.st_dev, "st_ino": real.st_ino,
+  })()
+  monkeypatch.setattr(storage, "_validate_existing_path", lambda *args, **kwargs: not_directory)
+  with pytest.raises(EvidenceValidationError):
+    with store._pinned_root_directory():
+      pass
+
+
+def test_control_authority_rejects_root_drift_before_and_after_locked_publication(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+  instant = datetime(2026, 8, 16, tzinfo=timezone.utc)
+  binding = {
+      "workspace_id": "workspace-a", "project_id": "project-a",
+      "session_id": "session-a", "revision": "rev-a", "target": IDENTITY,
+      "firmware": {"build_id": "b" * 64, "elf_sha256": "e" * 64},
+      "operation": "target.resume", "arguments": {},
+      "identity_snapshot": IDENTITY, "state_snapshot": STATE,
+  }
+
+  before_store = ControlAuthorizationStore((tmp_path / "before" / "control").absolute())
+  before = before_store.prepare(binding, now=instant)
+
+  @contextmanager
+  def wrong_root_pin():
+    yield {"device": "0", "inode": "0"}
+
+  monkeypatch.setattr(before_store, "_pinned_root_directory", wrong_root_pin)
+  with pytest.raises(ControlAuthorizationError):
+    before_store.consume(
+        before.action_digest, operation="target.resume", arguments={},
+        workspace_id="workspace-a", session_id="session-a",
+        identity=IDENTITY, state=STATE, now=instant,
+    )
+  assert not (
+      before_store.root / "records" / f"{before.action_digest}.consumed.json"
+  ).exists()
+
+  after_store = ControlAuthorizationStore((tmp_path / "after" / "control").absolute())
+  after = after_store.prepare(binding, now=instant)
+  original_read = after_store._read_authority
+  reads = 0
+
+  def read_then_drift():
+    nonlocal reads
+    reads += 1
+    authority = original_read()
+    if reads == 2:
+      return {**authority, "root": {"device": "0", "inode": "0"}}
+    return authority
+
+  monkeypatch.setattr(after_store, "_read_authority", read_then_drift)
+  with pytest.raises(ControlAuthorizationError):
+    after_store.consume(
+        after.action_digest, operation="target.resume", arguments={},
+        workspace_id="workspace-a", session_id="session-a",
+        identity=IDENTITY, state=STATE, now=instant,
+    )
+  assert reads == 2
+  assert (
+      after_store.root / "records" / f"{after.action_digest}.consumed.json"
+  ).is_file()
 
 
 def test_control_authorization_cross_process_consume_has_one_winner(tmp_path: Path) -> None:
