@@ -2682,17 +2682,17 @@ def test_forged_plan_wrong_type_is_rejected(tmp_path):
 
 def test_project_mutation_lock_failure_maps_to_stable_generation_result(tmp_path, monkeypatch):
     from contextlib import contextmanager
-    from stm32_toolkit.evidence.model import EvidenceValidationError
     import stm32_toolkit.project_upgrade as project_upgrade_mod
     root = write_project(tmp_path / "proj")
     plan = plan_for(root)
     @contextmanager
     def blocked(root):
-        raise EvidenceValidationError("private lock detail")
+        raise project_upgrade_mod.ProjectMutationLockError("private lock detail")
         yield
     monkeypatch.setattr(project_upgrade_mod, "project_mutation_lock", blocked)
     result = apply_project_configuration(plan)
     assert result.code == "GENERATION_APPLY_FAILED"
+    assert result.message == "apply failed"
     assert result.details == {"phase": "projectMutationLock"}
     json.dumps(result.to_dict())
 

@@ -564,6 +564,21 @@ def test_windows_exchange_restore_fallback_preserves_captured_external_target(tm
     assert manifest.read_bytes() == external
 
 
+def test_windows_exchange_restores_when_project_identity_capture_fails(tmp_path: Path, monkeypatch):
+    path, candidate = tmp_path / "manifest", tmp_path / "candidate"
+    path.write_bytes(b"planned")
+    identity = upgrade_mod._identity(path)
+    candidate.write_bytes(b"candidate")
+    monkeypatch.setattr(
+        upgrade_mod,
+        "_identity",
+        lambda target: (_ for _ in ()).throw(upgrade_mod.ProjectMutationLockError("identity unavailable")),
+    )
+    with pytest.raises(upgrade_mod._SourceChanged):
+        upgrade_mod._exchange_windows(path, candidate, identity, sha256(b"planned").hexdigest())
+    assert path.read_bytes() == b"planned"
+
+
 @pytest.mark.parametrize("origin,source", [("keil-migration", "keil"), ("cubemx", "cubemx"), ("custom", "manual")])
 def test_explicit_v1_route_preserves_origin_mapping(tmp_path: Path, origin: str, source: str):
     payload = json.loads(V1_FIXTURE.read_text(encoding="utf-8"))
@@ -602,6 +617,28 @@ def test_posix_exchange_restores_changed_target(tmp_path: Path, monkeypatch):
     assert path.read_bytes() == b"external"
 
 
+def test_posix_exchange_restores_when_project_identity_capture_fails(tmp_path: Path, monkeypatch):
+    path, candidate = tmp_path / "manifest", tmp_path / "candidate"
+    path.write_bytes(b"planned")
+    identity = upgrade_mod._identity(path)
+    candidate.write_bytes(b"candidate")
+
+    def exchange(left, right):
+        spare = tmp_path / "spare"
+        os.replace(left, spare); os.replace(right, left); os.replace(spare, right)
+        return True
+
+    monkeypatch.setattr(upgrade_mod, "_rename_exchange", exchange)
+    monkeypatch.setattr(
+        upgrade_mod,
+        "_identity",
+        lambda target: (_ for _ in ()).throw(upgrade_mod.ProjectMutationLockError("identity unavailable")),
+    )
+    with pytest.raises(upgrade_mod._SourceChanged):
+        upgrade_mod._exchange_posix(path, candidate, identity, sha256(b"planned").hexdigest())
+    assert path.read_bytes() == b"planned"
+
+
 def test_posix_exchange_fails_closed_when_unavailable(tmp_path: Path, monkeypatch):
     path, candidate = tmp_path / "manifest", tmp_path / "candidate"
     path.write_bytes(b"planned"); candidate.write_bytes(b"candidate")
@@ -635,8 +672,81 @@ def test_consumption_helpers_cover_existing_invalid_and_exhausted_ledgers(tmp_pa
     second.root = tmp_path / "blocked-2"
     monkeypatch.setattr(upgrade_mod, "_is_consumed", lambda root, action: False)
     monkeypatch.setattr(upgrade_mod, "_ledgers", lambda root: (first, second))
-    with pytest.raises(EvidenceValidationError):
+    with pytest.raises(upgrade_mod.ProjectMutationLockError) as caught:
         upgrade_mod._consume(tmp_path, plan, first)
+    assert type(caught.value) is upgrade_mod.ProjectMutationLockError
+    assert not hasattr(caught.value, "code")
+
+
+def test_project_mutation_lock_translates_evidence_validation_error(tmp_path: Path, monkeypatch):
+    root = tmp_path / "project"
+    root.mkdir()
+
+    class Blocked:
+        root = tmp_path / "blocked"
+
+        @contextmanager
+        def _mutation_lock(self):
+            raise EvidenceValidationError("lower-level validation failure")
+            yield
+
+    monkeypatch.setattr(upgrade_mod, "_ledgers", lambda root: (Blocked(),))
+    with pytest.raises(upgrade_mod.ProjectMutationLockError) as caught:
+        with upgrade_mod.project_mutation_lock(root):
+            pass
+    assert type(caught.value) is upgrade_mod.ProjectMutationLockError
+    assert isinstance(caught.value.__cause__, EvidenceValidationError)
+    assert not hasattr(caught.value, "code")
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Win32 project identity boundary")
+def test_project_win32_identity_helpers_translate_os_failures(tmp_path: Path):
+    with pytest.raises(upgrade_mod.ProjectMutationLockError):
+        upgrade_mod._windows_file_information(-1)
+    with pytest.raises(upgrade_mod.ProjectMutationLockError):
+        upgrade_mod._open_windows_file(tmp_path / "absent")
+    with pytest.raises(upgrade_mod.ProjectMutationLockError):
+        upgrade_mod._close_windows_handle(0)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Win32 project identity boundary")
+def test_project_file_identity_shape_drift_uses_project_error(tmp_path: Path, monkeypatch):
+    regular = tmp_path / "identity.bin"
+    regular.write_bytes(b"identity")
+    info = regular.lstat()
+    real_information = upgrade_mod._windows_file_information
+
+    def wrong_shape(handle):
+        result = real_information(handle)
+        return {**result, "links": result["links"] + 1}
+
+    monkeypatch.setattr(upgrade_mod, "_windows_file_information", wrong_shape)
+    with pytest.raises(upgrade_mod.ProjectMutationLockError):
+        upgrade_mod._file_identity_fields(regular, info)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Win32 project identity boundary")
+def test_project_parent_guard_identity_failures_use_project_error(tmp_path: Path, monkeypatch):
+    info = tmp_path.lstat()
+    real_information = upgrade_mod._windows_file_information
+
+    def wrong_identity(handle):
+        result = real_information(handle)
+        return {**result, "file_index": result["file_index"] + 1}
+
+    monkeypatch.setattr(upgrade_mod, "_windows_file_information", wrong_identity)
+    with pytest.raises(upgrade_mod.ProjectMutationLockError):
+        with upgrade_mod._stable_parent_guard(tmp_path, info):
+            pytest.fail("mismatched parent guard yielded")
+
+    monkeypatch.undo()
+    vanished = tmp_path / "vanished-parent"
+    vanished.mkdir()
+    vanished_info = vanished.lstat()
+    vanished.rmdir()
+    with pytest.raises(upgrade_mod.ProjectMutationLockError):
+        with upgrade_mod._stable_parent_guard(vanished, vanished_info):
+            pytest.fail("vanished parent guard yielded")
 
 
 def test_posix_exchange_success_and_restore_failure_branches(tmp_path: Path, monkeypatch):
@@ -752,9 +862,11 @@ def test_secondary_acquisition_failure_releases_primary_without_entering(tmp_pat
     secondary = tmp_path / upgrade_mod._LEDGER_B
     secondary.write_text("blocked", encoding="utf-8")
     entered = False
-    with pytest.raises(EvidenceValidationError):
+    with pytest.raises(upgrade_mod.ProjectMutationLockError) as caught:
         with upgrade_mod.project_mutation_lock(root):
             entered = True
+    assert type(caught.value) is upgrade_mod.ProjectMutationLockError
+    assert not hasattr(caught.value, "code")
     assert entered is False
     secondary.unlink()
     with upgrade_mod.project_mutation_lock(root):
@@ -786,5 +898,26 @@ def test_secondary_blocker_fails_stably_and_consumes_recognized_action(tmp_path:
     first = apply_project_upgrade(plan, plan.action_digest, plan.plan_digest)
     second = apply_project_upgrade(plan, plan.action_digest, plan.plan_digest)
     assert first.code == "PROJECT_UPGRADE_INFRA_ERROR"
+    assert first.message == "Project upgrade infrastructure is unavailable"
+    assert first.details == {"stage": "authorizationLedger"}
     assert second.code == "PROJECT_UPGRADE_AUTHORIZATION_CONSUMED"
     json.dumps(first.to_dict())
+
+
+def test_project_mutation_lock_failure_maps_to_stable_upgrade_result(tmp_path: Path, monkeypatch):
+    root = tmp_path / "project"
+    root.mkdir()
+    _write_v2(root)
+    plan = plan_project_upgrade(root)
+
+    @contextmanager
+    def blocked(project_root):
+        raise upgrade_mod.ProjectMutationLockError("private lock detail")
+        yield
+
+    monkeypatch.setattr(upgrade_mod, "project_mutation_lock", blocked)
+    result = apply_project_upgrade(plan, plan.action_digest, plan.plan_digest)
+    assert result.code == "PROJECT_UPGRADE_INFRA_ERROR"
+    assert result.message == "Project upgrade infrastructure is unavailable"
+    assert result.details == {"stage": "authorizationLedger"}
+    json.dumps(result.to_dict())

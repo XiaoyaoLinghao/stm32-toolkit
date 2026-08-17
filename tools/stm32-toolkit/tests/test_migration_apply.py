@@ -837,17 +837,17 @@ def test_public_apply_maps_migration_plan_error_after_lock(tmp_path, monkeypatch
 
 def test_project_mutation_lock_failure_maps_to_stable_migration_result(tmp_path, monkeypatch):
     from contextlib import contextmanager
-    from stm32_toolkit.evidence.model import EvidenceValidationError
     import stm32_toolkit.project_upgrade as project_upgrade_mod
     repo = standard_repo(tmp_path)
     plan = plan_keil_conversion(repo, fixture_inspection(repo))
     @contextmanager
     def blocked(root):
-        raise EvidenceValidationError("private lock detail")
+        raise project_upgrade_mod.ProjectMutationLockError("private lock detail")
         yield
     monkeypatch.setattr(project_upgrade_mod, "project_mutation_lock", blocked)
     result = apply_keil_conversion(plan)
     assert result.code == "MIGRATION_APPLY_FAILED"
+    assert result.message == "apply failed"
     assert result.details == {"phase": "projectMutationLock"}
     json.dumps(result.to_dict())
 

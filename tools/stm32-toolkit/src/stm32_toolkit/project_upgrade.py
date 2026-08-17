@@ -12,7 +12,6 @@ from types import MappingProxyType
 from typing import Iterator, Mapping, cast
 from uuid import uuid4
 from stm32_toolkit import __version__
-from stm32_toolkit.evidence.gc import _file_identity_fields, _stable_parent_guard
 from stm32_toolkit.evidence.model import EvidenceValidationError, canonical_json_bytes
 from stm32_toolkit.evidence.store import EvidenceStore
 from stm32_toolkit.identity import canonical_project_root
@@ -22,6 +21,9 @@ from stm32_toolkit.result import OperationResult
 class ProjectUpgradeError(Exception):
     def __init__(self, code:str, message:str, details:Mapping[str,object])->None:
         super().__init__(message); self.code=code; self.message=message; self.details=dict(details)
+
+class ProjectMutationLockError(RuntimeError):
+    """A private Project mutation-lock or authorization persistence failure."""
 
 @dataclass(frozen=True)
 class UpgradePlan:
@@ -45,12 +47,108 @@ class _PreparedUpgrade:
 _PREPARED:dict[str,_PreparedUpgrade]={}
 _LEDGER_A=".stm32-project-mutation-ledger"; _LEDGER_B=".stm32-project-mutation-ledger-alt"
 
+def _windows_file_information(handle:int)->dict[str,int]:
+    """Return stable Win32 identity/shape fields for an already-open handle."""
+    from ctypes import wintypes
+    class ByHandleFileInformation(ctypes.Structure):
+        _fields_=[
+            ("attributes",wintypes.DWORD),("creation_time",wintypes.FILETIME),
+            ("access_time",wintypes.FILETIME),("write_time",wintypes.FILETIME),
+            ("volume_serial",wintypes.DWORD),("size_high",wintypes.DWORD),
+            ("size_low",wintypes.DWORD),("links",wintypes.DWORD),
+            ("file_index_high",wintypes.DWORD),("file_index_low",wintypes.DWORD),
+        ]
+    kernel32=ctypes.WinDLL("kernel32",use_last_error=True)
+    get_information=kernel32.GetFileInformationByHandle
+    get_information.argtypes=[wintypes.HANDLE,ctypes.POINTER(ByHandleFileInformation)]
+    get_information.restype=wintypes.BOOL
+    information=ByHandleFileInformation()
+    if not get_information(handle,ctypes.byref(information)):
+        error=ctypes.WinError(ctypes.get_last_error())
+        raise ProjectMutationLockError("project file information is unavailable") from error
+    return {
+        "attributes":information.attributes,"links":information.links,
+        "size":(information.size_high<<32)|information.size_low,
+        "volume_serial":information.volume_serial,
+        "file_index":(information.file_index_high<<32)|information.file_index_low,
+    }
+
+def _open_windows_file(path:Path,*,delete:bool=False)->int:
+    """Open exactly one path without traversing a final reparse point."""
+    from ctypes import wintypes
+    generic_read=0x80000000; delete_access=0x00010000; file_read_attributes=0x00000080
+    file_share_read=0x00000001; file_share_write=0x00000002; file_share_delete=0x00000004
+    open_existing=3; open_reparse_point=0x00200000
+    kernel32=ctypes.WinDLL("kernel32",use_last_error=True); create_file=kernel32.CreateFileW
+    create_file.argtypes=[wintypes.LPCWSTR,wintypes.DWORD,wintypes.DWORD,wintypes.LPVOID,wintypes.DWORD,wintypes.DWORD,wintypes.HANDLE]
+    create_file.restype=wintypes.HANDLE
+    access=generic_read|file_read_attributes|(delete_access if delete else 0)
+    sharing=file_share_read
+    if not delete:sharing|=file_share_write|file_share_delete
+    handle=create_file(str(path),access,sharing,None,open_existing,open_reparse_point,None)
+    if handle==ctypes.c_void_p(-1).value:
+        error=ctypes.WinError(ctypes.get_last_error())
+        raise ProjectMutationLockError("project file could not be opened") from error
+    return int(handle)
+
+def _close_windows_handle(handle:int)->None:
+    from ctypes import wintypes
+    kernel32=ctypes.WinDLL("kernel32",use_last_error=True); close_handle=kernel32.CloseHandle
+    close_handle.argtypes=[wintypes.HANDLE]; close_handle.restype=wintypes.BOOL
+    if not close_handle(handle):
+        error=ctypes.WinError(ctypes.get_last_error())
+        raise ProjectMutationLockError("project file handle could not be closed") from error
+
+@contextmanager
+def _stable_parent_guard(parent:Path,expected:os.stat_result):
+    """Pin the existing ledger parent identity while its fixed sibling is accessed."""
+    if os.name!="nt":  # pragma: no cover - unsupported destructive platform
+        raise ProjectMutationLockError("stable project mutation parent locking is unavailable")
+    from ctypes import wintypes
+    generic_read=0x80000000; file_read_attributes=0x00000080
+    file_share_read=0x00000001; file_share_write=0x00000002
+    open_existing=3; open_reparse_point=0x00200000; backup_semantics=0x02000000
+    kernel32=ctypes.WinDLL("kernel32",use_last_error=True); create_file=kernel32.CreateFileW
+    create_file.argtypes=[wintypes.LPCWSTR,wintypes.DWORD,wintypes.DWORD,wintypes.LPVOID,wintypes.DWORD,wintypes.DWORD,wintypes.HANDLE]
+    create_file.restype=wintypes.HANDLE
+    handle=create_file(str(parent),generic_read|file_read_attributes,file_share_read|file_share_write,None,open_existing,open_reparse_point|backup_semantics,None)
+    if handle==ctypes.c_void_p(-1).value:
+        error=ctypes.WinError(ctypes.get_last_error())
+        raise ProjectMutationLockError("project mutation parent could not be opened") from error
+    handle=int(handle)
+    try:
+        opened=_windows_file_information(handle); current=EvidenceStore._validate_existing_path(parent)
+        if (not stat.S_ISDIR(expected.st_mode) or not stat.S_ISDIR(current.st_mode)
+                or opened["attributes"]&0x00000400 or not opened["attributes"]&0x00000010
+                or (current.st_dev,current.st_ino)!=(expected.st_dev,expected.st_ino)
+                or current.st_ino!=opened["file_index"]):
+            raise ProjectMutationLockError("project mutation parent identity changed")
+        yield
+    finally:_close_windows_handle(handle)
+
+def _file_identity_fields(path:Path,info:os.stat_result)->dict[str,object]:
+    fields:dict[str,object]={"device":str(info.st_dev),"inode":str(info.st_ino)}
+    if os.name!="nt":  # pragma: no cover - Linux acceptance is intentionally fail closed
+        return fields  # pragma: no cover
+    handle=_open_windows_file(path)
+    try:
+        opened=_windows_file_information(handle)
+        if opened["links"]!=info.st_nlink or opened["size"]!=info.st_size or opened["attributes"]&0x00000400:
+            raise ProjectMutationLockError("project file identity changed while it was captured")
+        fields.update({"volume_serial":str(opened["volume_serial"]),"file_index":str(opened["file_index"])})
+        return fields
+    finally:_close_windows_handle(handle)
+
 def _identity(path:Path)->dict[str,object]:
-    info=path.lstat()
-    if stat.S_ISLNK(info.st_mode) or getattr(info,"st_file_attributes",0)&0x400: raise OSError("unsafe identity")
-    if stat.S_ISDIR(info.st_mode):
-        return {"device":str(info.st_dev),"inode":str(info.st_ino)}
-    return _file_identity_fields(path,info)
+    try:
+        info=path.lstat()
+        if stat.S_ISLNK(info.st_mode) or getattr(info,"st_file_attributes",0)&0x400:
+            raise ProjectMutationLockError("project identity is unsafe")
+        if stat.S_ISDIR(info.st_mode):
+            return {"device":str(info.st_dev),"inode":str(info.st_ino)}
+        return _file_identity_fields(path,info)
+    except ProjectMutationLockError:raise
+    except OSError as error:raise ProjectMutationLockError("project identity is unavailable") from error
 
 def _ledgers(root:Path)->tuple[EvidenceStore,...]:
     root_path=os.path.normcase(str(root.absolute()))
@@ -62,28 +160,31 @@ def _ledger(root:Path)->EvidenceStore:
 @contextmanager
 def project_mutation_lock(project_root:Path)->Iterator[EvidenceStore]:
     """Serialize all supported publishers for a canonical project pathname."""
-    root=canonical_project_root(project_root); before=EvidenceStore._validate_existing_path(root.parent)
-    guard=_stable_parent_guard(root.parent,before) if os.name=="nt" else nullcontext()
-    with guard:
-        acquired:list[EvidenceStore]=[]
-        stack=ExitStack()
-        try:
-            for ledger in _ledgers(root):
-                try:
-                    stack.enter_context(ledger._mutation_lock())
-                    acquired.append(ledger)
-                except (OSError,EvidenceValidationError) as error:
-                    if acquired:
-                        raise EvidenceValidationError(
-                            "project mutation ledger set is partially unavailable"
-                        ) from error
-                    continue
-            if not acquired:raise EvidenceValidationError("project mutation ledgers are unavailable")
-            current=EvidenceStore._validate_existing_path(root.parent)
-            if (current.st_dev,current.st_ino)!=(before.st_dev,before.st_ino):raise EvidenceValidationError("project parent identity changed")
-            yield acquired[0]
-        finally:
-            stack.close()
+    try:
+        root=canonical_project_root(project_root); before=EvidenceStore._validate_existing_path(root.parent)
+        guard=_stable_parent_guard(root.parent,before) if os.name=="nt" else nullcontext()
+        with guard:
+            acquired:list[EvidenceStore]=[]; last_error:Exception|None=None
+            stack=ExitStack()
+            try:
+                for ledger in _ledgers(root):
+                    try:
+                        stack.enter_context(ledger._mutation_lock())
+                        acquired.append(ledger)
+                    except (OSError,EvidenceValidationError) as error:
+                        last_error=error
+                        if acquired:
+                            raise ProjectMutationLockError("project mutation ledger set is partially unavailable") from error
+                if not acquired:
+                    raise ProjectMutationLockError("project mutation ledgers are unavailable") from last_error
+                current=EvidenceStore._validate_existing_path(root.parent)
+                if (current.st_dev,current.st_ino)!=(before.st_dev,before.st_ino):
+                    raise ProjectMutationLockError("project mutation parent identity changed")
+                yield acquired[0]
+            finally:stack.close()
+    except ProjectMutationLockError:raise
+    except (OSError,EvidenceValidationError) as error:
+        raise ProjectMutationLockError("project mutation lock is unavailable") from error
 
 def plan_project_upgrade(project_root:Path)->UpgradePlan:
     """Prepare the historical explicit Schema v1-to-v2 route."""
@@ -176,7 +277,7 @@ def _apply(plan:UpgradePlan,authorized:object,expected:object,old:int,new:int)->
             _publish(path,candidate,_thaw(plan.manifest_identity),plan.source_sha256)
     except _SourceChanged as error:return _changed(path,reg.plan.source_sha256,error.observed)
     except _StageError as error: return OperationResult.failure("project.upgrade","PROJECT_UPGRADE_IO_ERROR","Project upgrade I/O error",{"path":str(path),"stage":error.stage})
-    except (OSError,EvidenceValidationError,ProjectManifestError,ProjectUpgradeError): return _infra("authorizationLedger")
+    except (OSError,ProjectMutationLockError,ProjectManifestError,ProjectUpgradeError): return _infra("authorizationLedger")
     return OperationResult.success("project.upgrade",{"path":str(path),"fromVersion":old,"toVersion":new,"sourceSha256":plan.source_sha256,"resultSha256":sha256(plan.candidate.encode()).hexdigest(),"planDigest":plan.plan_digest,"actionDigest":plan.action_digest})
 
 def _consume(root:Path,plan:UpgradePlan,ledger:EvidenceStore)->bool:
@@ -190,7 +291,7 @@ def _consume(root:Path,plan:UpgradePlan,ledger:EvidenceStore)->bool:
             directory=store._managed_directory("actions");target=directory/f"{plan.action_digest}.json"
             return store._atomic_create_new(target,payload,phase="project-upgrade-authorization")
         except (OSError,EvidenceValidationError) as error:last_error=error
-    raise EvidenceValidationError("project mutation authorization could not be persisted") from last_error
+    raise ProjectMutationLockError("project mutation authorization could not be persisted") from last_error
 
 def _is_consumed(root:Path,action_digest:str)->bool:
     if not isinstance(action_digest,str) or re.fullmatch(r"[0-9a-f]{64}",action_digest) is None:
@@ -263,7 +364,7 @@ def _exchange_windows(path:Path,temp:Path,identity:object,source_sha256:str)->No
         captured=_read_current(backup); observed=None if captured is None else sha256(captured).hexdigest()
         matches=isinstance(identity,MappingABC) and observed==source_sha256
         try:matches=matches and _identity(backup)==dict(identity)
-        except OSError:matches=False
+        except (OSError,ProjectMutationLockError):matches=False
         if matches:
             backup.unlink()
             return
@@ -295,7 +396,7 @@ def _exchange_posix(path:Path,temp:Path,identity:object,source_sha256:str)->None
     captured=_read_current(temp); observed=None if captured is None else sha256(captured).hexdigest()
     matches=isinstance(identity,MappingABC) and observed==source_sha256
     try:matches=matches and _identity(temp)==dict(identity)
-    except OSError:matches=False
+    except (OSError,ProjectMutationLockError):matches=False
     if matches:
         temp.unlink();return
     try:

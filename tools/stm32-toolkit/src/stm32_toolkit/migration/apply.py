@@ -20,7 +20,7 @@ import stat
 from pathlib import Path
 
 from stm32_toolkit import __version__
-from stm32_toolkit.evidence.model import EvidenceValidationError
+from stm32_toolkit.project_upgrade import ProjectMutationLockError
 from stm32_toolkit.keil import KeilInspection
 from stm32_toolkit.result import OperationResult
 
@@ -887,7 +887,7 @@ def apply_keil_conversion(plan: MigrationPlan) -> OperationResult[dict[str, obje
             error.message,
             error.details,
         )
-    except (OSError, EvidenceValidationError):
+    except (OSError, ProjectMutationLockError):
         return OperationResult.failure(
             "keil-conversion-apply",
             "MIGRATION_APPLY_FAILED",
