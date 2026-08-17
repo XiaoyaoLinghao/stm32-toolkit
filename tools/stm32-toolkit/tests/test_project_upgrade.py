@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import errno
 import json
 import os
@@ -18,6 +19,7 @@ import pytest
 
 from stm32_toolkit import __version__
 from stm32_toolkit.evidence.model import EvidenceValidationError
+from stm32_toolkit.evidence.store import EvidenceStore
 import stm32_toolkit.project_upgrade as upgrade_mod
 from stm32_toolkit.project_model import ProjectManifestError, load_project_model
 from stm32_toolkit.project_upgrade import (
@@ -75,6 +77,27 @@ def _inventory(root: Path) -> dict[str, tuple[int, int]]:
         for path in sorted(root.rglob("*"))
     }
 
+
+def _raise_real_evidence_validation_from_file_root(root: Path):
+    root.write_text("blocked", encoding="utf-8")
+    return EvidenceStore(root)._managed_directory("managed")
+
+
+def test_no_direct_evidence_validation_construction():
+    tree = ast.parse(Path(__file__).read_text(encoding="utf-8"), filename=__file__)
+    direct_calls = [
+        node.lineno
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and (
+            isinstance(node.func, ast.Name) and node.func.id == "EvidenceValidationError"
+            or isinstance(node.func, ast.Attribute)
+            and node.func.attr == "EvidenceValidationError"
+        )
+    ]
+    assert direct_calls == [], (
+        f"direct EvidenceValidationError calls at lines {direct_calls}"
+    )
 
 def test_v2_to_v3_plan_is_read_only_and_freezes_exact_candidate_and_diff(tmp_path: Path):
     manifest_path, source = _write_v2(tmp_path)
@@ -666,8 +689,10 @@ def test_consumption_helpers_cover_existing_invalid_and_exhausted_ledgers(tmp_pa
 
     class Blocked:
         root = tmp_path / "blocked"
+
         def _managed_directory(self, name):
-            raise EvidenceValidationError("blocked")
+            return _raise_real_evidence_validation_from_file_root(self.root)
+
     first, second = Blocked(), Blocked()
     second.root = tmp_path / "blocked-2"
     monkeypatch.setattr(upgrade_mod, "_is_consumed", lambda root, action: False)
@@ -687,7 +712,7 @@ def test_project_mutation_lock_translates_evidence_validation_error(tmp_path: Pa
 
         @contextmanager
         def _mutation_lock(self):
-            raise EvidenceValidationError("lower-level validation failure")
+            _raise_real_evidence_validation_from_file_root(self.root)
             yield
 
     monkeypatch.setattr(upgrade_mod, "_ledgers", lambda root: (Blocked(),))
@@ -807,7 +832,9 @@ def test_recovered_primary_waits_for_secondary_held_by_first_caller(tmp_path: Pa
     @contextmanager
     def flaky_lock(store):
         if store.root.name == upgrade_mod._LEDGER_A and __import__("threading").current_thread().name == "caller-one":
-            raise EvidenceValidationError("primary temporarily unavailable")
+            _raise_real_evidence_validation_from_file_root(
+                tmp_path / "primary-unavailable"
+            )
         with original(store):
             yield
 
