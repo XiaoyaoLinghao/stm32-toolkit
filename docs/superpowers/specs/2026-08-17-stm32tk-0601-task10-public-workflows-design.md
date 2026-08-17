@@ -436,7 +436,7 @@ the exact five-field `ArtifactRef` defined there; `evidence_id` is the verified 
 
 ## 6. Required narrow prerequisites
 
-Nine gaps in the accepted-base public APIs prevent a correct thin adapter. Each prerequisite is a
+Ten gaps in the accepted-base public APIs prevent a correct thin adapter. Each prerequisite is a
 separate owner-domain unit and commit. None is worked around with exception-text parsing, private
 calls, live-identity self-authorization, or duplicate persistence.
 
@@ -468,6 +468,17 @@ primitives, then preserve the current `PROBE_AUTHORIZATION_INVALID` and downstre
 or message-parsing role. No Evidence implementation, Target runner, Probe service/client/worker,
 ledger format, authorization decision, or wire protocol changes. This is one Probe-authorization
 prerequisite unit and commit.
+
+### 6.0C Project regression exception realism
+
+After T10.P1, three Project regression tests still synthesize the old one-argument
+`EvidenceValidationError` constructor even though their purpose is to verify translation of a
+lower-level EvidenceStore failure. Before section 6.1, replace those synthetic calls in
+`test_project_upgrade.py` with a test helper that causes a real accepted EvidenceStore validation
+failure, such as a managed-directory operation on a file root. The tests continue asserting only
+`ProjectMutationLockError` and Project locking behavior; they do not branch on the Evidence
+constructor signature, code, or text. This is a test-only prerequisite commit, changes no product
+behavior, and keeps T10.1's nine-path Evidence scope closed.
 
 ### 6.1 Machine-readable Evidence failure taxonomy
 
@@ -713,7 +724,7 @@ Required behavior matrices include:
 
 ## 9. Delivery decomposition
 
-The implementation order is mandatory. The two accepted-base dependency corrections must be CLEAN
+The implementation order is mandatory. The three accepted-base dependency corrections must be CLEAN
 before the original numbered units start:
 
 All paths below are repository-relative and exact; a unit may modify no other path.
@@ -728,6 +739,9 @@ All paths below are repository-relative and exact; a unit may modify no other pa
 - **T10.P2 — Probe authorization exception decoupling:** Probe authorization storage ownership
   only. Paths: `tools/stm32-toolkit/src/stm32_toolkit/probe/authorization.py` and
   `tools/stm32-toolkit/tests/test_target_runner.py`.
+- **T10.P3 — Project regression exception realism:** replace three synthetic legacy Evidence
+  constructor calls with a real lower-level EvidenceStore failure; test-only. Path:
+  `tools/stm32-toolkit/tests/test_project_upgrade.py`.
 
 1. **T10.1 — Evidence failure taxonomy:** coded Evidence/GC race errors only. Paths:
    `tools/stm32-toolkit/src/stm32_toolkit/evidence/model.py`,
@@ -831,8 +845,8 @@ All paths below are repository-relative and exact; a unit may modify no other pa
     `skills/test-firmware/SKILL.md` and
     `tools/stm32-toolkit/tests/test_plugin_layout.py`.
 
-Each prerequisite and numbered unit is a separate branch-local commit and review verdict. T10.P1
-must be accepted before T10.P2; T10.1 uses the accepted T10.P2 head as its base. If a unit reveals a
+Each prerequisite and numbered unit is a separate branch-local commit and review verdict. T10.P1,
+T10.P2, and T10.P3 run in that order; T10.1 uses the accepted T10.P3 head as its base. If a unit reveals a
 reproducible defect in a frozen lower-level contract, work stops for a separately scoped owner-domain
 fix; the public adapter is not enlarged to hide it.
 
@@ -851,7 +865,7 @@ fix; the public adapter is not enlarged to hide it.
 
 ## 11. Completion criteria
 
-Task 10 is complete only when both prerequisite corrections and all sixteen numbered units are
+Task 10 is complete only when all three prerequisite corrections and all sixteen numbered units are
 independently accepted, the complete cumulative
 CLI/MCP/Skill affected matrix passes on Python 3.10 and 3.12, every changed product file has at least
 90% branch coverage, the plugin inventory contains the thin Skill, all prior release suites remain
