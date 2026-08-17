@@ -1,6 +1,6 @@
 # STM32TK-0601 Task 10 Public Workflows Design
 
-**Status:** approved after independent review; implementation not started
+**Status:** prerequisite correction after rejected T10.1 candidate; implementation paused
 
 **Accepted base:** `d4b43ff1bf74f7ac5058e93c708bfb49a5371304`
 
@@ -436,9 +436,38 @@ the exact five-field `ArtifactRef` defined there; `evidence_id` is the verified 
 
 ## 6. Required narrow prerequisites
 
-Seven gaps in the accepted-base public APIs prevent a correct thin adapter. Each prerequisite is a
+Nine gaps in the accepted-base public APIs prevent a correct thin adapter. Each prerequisite is a
 separate owner-domain unit and commit. None is worked around with exception-text parsing, private
 calls, live-identity self-authorization, or duplicate persistence.
+
+### 6.0A Project mutation exception ownership
+
+The accepted base makes `project_upgrade.py` construct `EvidenceValidationError` directly and
+borrow private Windows identity helpers from `evidence.gc`. That cross-domain dependency prevents
+the Evidence exception constructor from becoming closed without breaking Project mutation paths.
+Before section 6.1, introduce private Project-domain `ProjectMutationLockError(RuntimeError)` in
+`project_upgrade.py`. Project mutation-lock/authorization persistence failures use that type;
+`apply_project_upgrade`, generation configuration, and migration conversion continue projecting it
+to their existing fixed result codes and details. It is not added to the Task 10 public error table.
+
+`project_upgrade.py` owns the exact safe file/parent identity primitives it needs and no longer
+imports private helpers from `evidence.gc`. Lower-level `EvidenceValidationError` raised by reused
+EvidenceStore path/storage primitives is translated at the Project boundary without inspecting its
+code or text. No Evidence, GC, Project schema, public result, lock order, authorization decision, or
+wire contract changes. This is one Project-domain prerequisite unit and commit.
+
+### 6.0B Probe authorization exception ownership
+
+The accepted base also makes `probe/authorization.py` construct `EvidenceValidationError` directly
+for its CONTROL authorization ledger. Before section 6.1, introduce private
+`_ControlAuthorizationStorageError(Exception)` in that module and migrate every Probe-owned direct
+raise to it. The existing authority-lock, records-directory, and prepared-record boundaries catch
+both this private type and any `EvidenceValidationError` still produced by reused EvidenceStore
+primitives, then preserve the current `PROBE_AUTHORIZATION_INVALID` and downstream
+`TEST_AUTHORIZATION_INVALID` results. The private type has no public code, export, serialization,
+or message-parsing role. No Evidence implementation, Target runner, Probe service/client/worker,
+ledger format, authorization decision, or wire protocol changes. This is one Probe-authorization
+prerequisite unit and commit.
 
 ### 6.1 Machine-readable Evidence failure taxonomy
 
@@ -684,9 +713,21 @@ Required behavior matrices include:
 
 ## 9. Delivery decomposition
 
-The implementation order is mandatory:
+The implementation order is mandatory. The two accepted-base dependency corrections must be CLEAN
+before the original numbered units start:
 
 All paths below are repository-relative and exact; a unit may modify no other path.
+
+- **T10.P1 — Project mutation exception decoupling:** Project-domain ownership only. Paths:
+  `tools/stm32-toolkit/src/stm32_toolkit/project_upgrade.py`,
+  `tools/stm32-toolkit/src/stm32_toolkit/generation/configure.py`,
+  `tools/stm32-toolkit/src/stm32_toolkit/migration/apply.py`,
+  `tools/stm32-toolkit/tests/test_project_upgrade.py`,
+  `tools/stm32-toolkit/tests/test_generation.py`, and
+  `tools/stm32-toolkit/tests/test_migration_apply.py`.
+- **T10.P2 — Probe authorization exception decoupling:** Probe authorization storage ownership
+  only. Paths: `tools/stm32-toolkit/src/stm32_toolkit/probe/authorization.py` and
+  `tools/stm32-toolkit/tests/test_target_runner.py`.
 
 1. **T10.1 — Evidence failure taxonomy:** coded Evidence/GC race errors only. Paths:
    `tools/stm32-toolkit/src/stm32_toolkit/evidence/model.py`,
@@ -790,7 +831,8 @@ All paths below are repository-relative and exact; a unit may modify no other pa
     `skills/test-firmware/SKILL.md` and
     `tools/stm32-toolkit/tests/test_plugin_layout.py`.
 
-Each numbered unit is a separate branch-local commit and review verdict. If a unit reveals a
+Each prerequisite and numbered unit is a separate branch-local commit and review verdict. T10.P1
+must be accepted before T10.P2; T10.1 uses the accepted T10.P2 head as its base. If a unit reveals a
 reproducible defect in a frozen lower-level contract, work stops for a separately scoped owner-domain
 fix; the public adapter is not enlarged to hide it.
 
@@ -809,7 +851,8 @@ fix; the public adapter is not enlarged to hide it.
 
 ## 11. Completion criteria
 
-Task 10 is complete only when all sixteen units are independently accepted, the complete cumulative
+Task 10 is complete only when both prerequisite corrections and all sixteen numbered units are
+independently accepted, the complete cumulative
 CLI/MCP/Skill affected matrix passes on Python 3.10 and 3.12, every changed product file has at least
 90% branch coverage, the plugin inventory contains the thin Skill, all prior release suites remain
 green, the tracked worktree is clean, and no hardware/network/remote access occurred. Completion of
