@@ -744,6 +744,94 @@ def test_manifest_prepublication_faults_leave_no_authoritative_manifest(tmp_path
     assert not list(store.root.rglob(".tmp-*"))
 
 
+def test_late_envelope_commit_does_not_publish_after_its_deadline(tmp_path):
+    """A pre-commit stall must not turn expired Target evidence into a manifest."""
+    source = tmp_path / "source.bin"
+    source.write_bytes(b"deadline-aware manifest")
+    plain_store = EvidenceStore(tmp_path / "evidence")
+    envelope = _envelope(plain_store.ingest_file(source, kind="log", media_type="text/plain"))
+
+    def inject(point: str) -> None:
+        if point == "manifest.before_publish":
+            time.sleep(0.03)
+
+    store = EvidenceStore(plain_store.root, fault_injector=inject)
+    deadline = time.monotonic() + 0.005
+    with pytest.raises(ValueError, match="publication deadline elapsed"):
+        store.put_envelope_before_deadline(envelope, deadline=deadline)
+
+    assert time.monotonic() >= deadline
+    assert not (store.root / "manifests" / f"{envelope.evidence_id}.json").exists()
+
+
+@pytest.mark.parametrize("deadline", ["not-monotonic", float("nan"), float("inf")])
+def test_deadline_aware_envelope_publication_rejects_nonfinite_deadlines(tmp_path, deadline):
+    source = tmp_path / "source.bin"
+    source.write_bytes(b"invalid deadline")
+    store = EvidenceStore(tmp_path / "evidence")
+    envelope = _envelope(store.ingest_file(source, kind="log", media_type="text/plain"))
+
+    with pytest.raises(ValueError, match="deadline is invalid"):
+        store.put_envelope_before_deadline(envelope, deadline=deadline)
+
+    assert not (store.root / "manifests" / f"{envelope.evidence_id}.json").exists()
+
+
+def test_deadline_aware_envelope_publication_keeps_existing_put_semantics(tmp_path):
+    source = tmp_path / "source.bin"
+    source.write_bytes(b"ordinary deadline-aware manifest")
+    store = EvidenceStore(tmp_path / "evidence")
+    envelope = _envelope(store.ingest_file(source, kind="log", media_type="text/plain"))
+
+    manifest = store.put_envelope_before_deadline(envelope, deadline=time.monotonic() + 1.0)
+
+    assert manifest.read_bytes() == envelope.to_json_bytes()
+    assert store.put_envelope(envelope) == manifest
+    assert store.put_envelope_before_deadline(
+        envelope,
+        deadline=time.monotonic() + 1.0,
+    ) == manifest
+
+
+def test_deadline_aware_envelope_publication_verifies_manifest_after_lost_create_race(
+    tmp_path,
+    monkeypatch,
+):
+    source = tmp_path / "source.bin"
+    source.write_bytes(b"manifest race")
+    store = EvidenceStore(tmp_path / "evidence")
+    envelope = _envelope(store.ingest_file(source, kind="log", media_type="text/plain"))
+    original_create_new = store._atomic_create_new
+
+    def create_then_report_lost_race(path, payload, *, phase, before_publish=None):
+        assert original_create_new(
+            path,
+            payload,
+            phase=phase,
+            before_publish=before_publish,
+        )
+        return False
+
+    monkeypatch.setattr(store, "_atomic_create_new", create_then_report_lost_race)
+
+    manifest = store.put_envelope_before_deadline(envelope, deadline=time.monotonic() + 1.0)
+
+    assert manifest.read_bytes() == envelope.to_json_bytes()
+
+
+def test_verify_envelope_snapshot_accepts_verified_metadata(tmp_path):
+    source = tmp_path / "source.bin"
+    source.write_bytes(b"snapshot")
+    store = EvidenceStore(tmp_path / "evidence")
+    artifact = store.ingest_file(source, kind="log", media_type="text/plain")
+    envelope = _envelope(artifact)
+
+    assert store._verify_envelope_snapshot(
+        envelope,
+        {artifact.relative_path: (artifact.size_bytes, artifact.sha256)},
+    ) == envelope
+
+
 def test_manifest_postpublication_fault_leaves_complete_authoritative_bytes(tmp_path):
     """A post-publish crash may retain a complete canonical manifest but never partial JSON."""
     source = tmp_path / "source.bin"

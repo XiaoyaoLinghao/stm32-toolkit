@@ -7,6 +7,7 @@ import base64
 import hashlib
 import json
 import os
+import re
 import secrets
 import stat
 from collections.abc import Coroutine, Mapping
@@ -34,6 +35,7 @@ from .protocol import (
 )
 
 _REPARSE_POINT = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+_TARGET_REGISTER = re.compile(r"^[a-z][a-z0-9_]{0,31}$")
 
 
 async def _await_task_completion(task: asyncio.Task[object]) -> object:
@@ -385,6 +387,85 @@ class ProbeService:
             raise ProbeBackendError("PROBE_BACKEND_ERROR", "Target state output is invalid")
         return state
 
+    def _target_observation_policy(self) -> tuple[tuple[tuple[int, int], ...], frozenset[str]]:
+        provider = getattr(self._backend, "target_observation_policy", None)
+        if not callable(provider):
+            raise ProbeBackendError(
+                "PROBE_OPERATION_UNAVAILABLE", "Target observation policy is unavailable"
+            )
+        policy = provider()
+        if not isinstance(policy, Mapping) or set(policy) != {
+            "readable_regions", "register_allowlist"
+        }:
+            raise ProbeBackendError(
+                "PROBE_BACKEND_ERROR", "Target observation policy is invalid"
+            )
+        raw_regions = policy["readable_regions"]
+        raw_registers = policy["register_allowlist"]
+        if (
+            not isinstance(raw_regions, (list, tuple))
+            or not 1 <= len(raw_regions) <= 32
+            or not isinstance(raw_registers, (list, tuple))
+            or not 1 <= len(raw_registers) <= 64
+        ):
+            raise ProbeBackendError(
+                "PROBE_BACKEND_ERROR", "Target observation policy is invalid"
+            )
+        regions: list[tuple[int, int]] = []
+        for item in raw_regions:
+            if (
+                not isinstance(item, Mapping)
+                or set(item) != {"start", "size"}
+                or type(item["start"]) is not int
+                or type(item["size"]) is not int
+                or item["start"] < 0
+                or item["size"] <= 0
+                or item["start"] + item["size"] > 1 << 32
+            ):
+                raise ProbeBackendError(
+                    "PROBE_BACKEND_ERROR", "Target observation policy is invalid"
+                )
+            regions.append((item["start"], item["size"]))
+        if regions != sorted(regions) or any(
+            start + size > next_start
+            for (start, size), (next_start, _next_size) in zip(regions, regions[1:])
+        ):
+            raise ProbeBackendError(
+                "PROBE_BACKEND_ERROR", "Target observation policy is invalid"
+            )
+        registers = list(raw_registers)
+        if (
+            any(
+                not isinstance(name, str)
+                or _TARGET_REGISTER.fullmatch(name) is None
+                for name in registers
+            )
+            or len(registers) != len(set(registers))
+        ):
+            raise ProbeBackendError(
+                "PROBE_BACKEND_ERROR", "Target observation policy is invalid"
+            )
+        return tuple(regions), frozenset(registers)
+
+    def _authorize_target_memory(self, address: int, length: int) -> None:
+        regions, _registers = self._target_observation_policy()
+        if not any(
+            start <= address and address + length <= start + size
+            for start, size in regions
+        ):
+            raise ProbeBackendError(
+                "PROBE_PROTOCOL_INVALID",
+                "Target memory request is outside the readable profile",
+            )
+
+    def _authorize_target_registers(self, names: tuple[str, ...]) -> None:
+        _regions, registers = self._target_observation_policy()
+        if any(name not in registers for name in names):
+            raise ProbeBackendError(
+                "PROBE_PROTOCOL_INVALID",
+                "Target register request is outside the profile allowlist",
+            )
+
     @property
     def endpoint(self) -> ProbeEndpoint | None:
         return self._endpoint
@@ -698,7 +779,8 @@ class ProbeService:
                 return result
             if request.operation == "target.registers.read":
                 names = tuple(str(item) for item in request.data["names"])
-                values = self._backend.read_core_registers(names)
+                self._authorize_target_registers(names)
+                values = self._backend.target_read_core_registers(names)
                 if (
                     not isinstance(values, Mapping)
                     or set(values) != set(names)
@@ -708,7 +790,8 @@ class ProbeService:
                 return {"registers": [{"name": name, "value": values[name], "width_bits": 32 if values[name] <= 0xFFFF_FFFF else 64} for name in names]}
             if request.operation == "target.memory.read":
                 address, length = int(request.data["address"]), int(request.data["length"])
-                raw = self._backend.read_memory(address, length)
+                self._authorize_target_memory(address, length)
+                raw = self._backend.target_read_memory(address, length)
                 if len(raw) != length:
                     raise ProbeBackendError("PROBE_BACKPRESSURE", "Target memory returned partial output")
                 return {"address": address, "length": length, "data_base64": base64.b64encode(raw).decode("ascii"), "sha256": hashlib.sha256(raw).hexdigest()}

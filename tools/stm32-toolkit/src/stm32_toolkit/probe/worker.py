@@ -30,7 +30,8 @@ _GRACE_SECONDS = 1.0
 _METHODS = {
     "preflight_target_capabilities", "list_probes", "open_attach", "read_memory",
     "read_core_registers", "halt", "resume", "step", "reset", "flash_elf", "close",
-    "target_identity", "target_state", "set_temporary_breakpoint",
+    "target_identity", "target_state", "target_observation_policy", "target_read_memory",
+    "target_read_core_registers", "set_temporary_breakpoint",
     "clear_temporary_breakpoint", "capture_fault", "capture_logs",
     "open_target_transport", "read_target_transport", "close_target_transport",
 }
@@ -375,6 +376,9 @@ class ProbeBackendWorker:
         return FlashBackendReport(**self.call("flash_elf", image, timeout_seconds=300.0))
     def target_identity(self) -> Mapping[str, object]: return self.call("target_identity")
     def target_state(self) -> Mapping[str, object]: return self.call("target_state")
+    def target_observation_policy(self) -> Mapping[str, object]: return self.call("target_observation_policy")
+    def target_read_memory(self, address: int, length: int) -> bytes: return self.call("target_read_memory", address, length)
+    def target_read_core_registers(self, names: tuple[str, ...]) -> Mapping[str, int]: return self.call("target_read_core_registers", names)
     def set_temporary_breakpoint(self, address: int, size: int) -> Mapping[str, object]: return self.call("set_temporary_breakpoint", address, size)
     def clear_temporary_breakpoint(self, breakpoint_id: str) -> Mapping[str, object]: return self.call("clear_temporary_breakpoint", breakpoint_id)
     def capture_fault(self, max_stack_bytes: int) -> Mapping[str, object]: return self.call("capture_fault", max_stack_bytes)

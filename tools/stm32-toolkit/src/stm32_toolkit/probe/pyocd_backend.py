@@ -23,7 +23,9 @@ _MIN_FREQUENCY_HZ = 100_000
 _MAX_FREQUENCY_HZ = 50_000_000
 _MAX_READ_BYTES = 65_536
 _MAX_REGISTER_BATCH = 256
+_MAX_TARGET_REGISTER_ALLOWLIST = 64
 _MAX_FLASH_BYTES = 64 * 1024 * 1024
+_TARGET_REGISTER = re.compile(r"^[a-z][a-z0-9_]{0,31}$")
 
 
 @runtime_checkable
@@ -390,7 +392,7 @@ class PyOCDBackend:
         allowed = {
             "backend", "probe_id", "board_id", "mcu", "target_id", "ram", "mailbox",
             "rtt", "uart", "semihosting", "semihosting_runtime", "swo", "probe",
-            "log_transport",
+            "log_transport", "registers",
         }
         if set(profile) - allowed:
             raise ProbeBackendError("PROBE_IDENTITY_MISMATCH", "Target capability profile is not closed")
@@ -425,6 +427,20 @@ class PyOCDBackend:
             return (
                 type(address) is int and type(size) is int and size > 0
                 and any(start <= address and address + size <= start + length for start, length in regions)
+            )
+
+        registers = profile.get("registers")
+        if registers is not None and (
+            not isinstance(registers, (list, tuple))
+            or not 1 <= len(registers) <= _MAX_TARGET_REGISTER_ALLOWLIST
+            or any(
+                not isinstance(name, str) or _TARGET_REGISTER.fullmatch(name) is None
+                for name in registers
+            )
+            or len(set(registers)) != len(registers)
+        ):
+            raise ProbeBackendError(
+                "PROBE_IDENTITY_MISMATCH", "Target register profile is invalid"
             )
 
         mailbox = profile.get("mailbox")
@@ -715,6 +731,76 @@ class PyOCDBackend:
             raise ProbeBackendError("PROBE_NOT_ATTACHED", "Probe is not attached")
         return target
 
+    def target_observation_policy(self) -> Mapping[str, object]:
+        """Expose only the normalized closed policy; this performs no target I/O."""
+        ram = self._target_profile.get("ram")
+        registers = self._target_profile.get("registers")
+        if (
+            not isinstance(ram, (list, tuple))
+            or not ram
+            or not isinstance(registers, (list, tuple))
+            or not registers
+        ):
+            raise ProbeBackendError(
+                "PROBE_OPERATION_UNAVAILABLE",
+                "Target observation policy is unavailable",
+            )
+        regions: list[dict[str, int]] = []
+        previous_end = -1
+        for item in ram:
+            if (
+                not isinstance(item, Mapping)
+                or set(item) != {"start", "size"}
+                or type(item["start"]) is not int
+                or type(item["size"]) is not int
+                or item["start"] < 0
+                or item["size"] <= 0
+                or item["start"] + item["size"] > 1 << 32
+                or item["start"] < previous_end
+            ):
+                raise ProbeBackendError(
+                    "PROBE_IDENTITY_MISMATCH", "Target observation policy is invalid"
+                )
+            regions.append({"start": item["start"], "size": item["size"]})
+            previous_end = item["start"] + item["size"]
+        names = list(registers)
+        if (
+            not 1 <= len(names) <= _MAX_TARGET_REGISTER_ALLOWLIST
+            or any(
+                not isinstance(name, str) or _TARGET_REGISTER.fullmatch(name) is None
+                for name in names
+            )
+            or len(set(names)) != len(names)
+        ):
+            raise ProbeBackendError(
+                "PROBE_IDENTITY_MISMATCH", "Target observation policy is invalid"
+            )
+        return {
+            "readable_regions": regions,
+            "register_allowlist": names,
+        }
+
+    def _validate_profile_memory_request(self, address: int, length: int) -> None:
+        policy = self.target_observation_policy()
+        if not any(
+            region["start"] <= address
+            and address + length <= region["start"] + region["size"]
+            for region in policy["readable_regions"]
+        ):
+            raise ProbeBackendError(
+                "PROBE_PROTOCOL_INVALID",
+                "Memory read is outside the profile-declared readable region",
+            )
+
+    def _validate_profile_register_names(self, names: tuple[str, ...]) -> None:
+        policy = self.target_observation_policy()
+        allowlist = set(policy["register_allowlist"])
+        if any(name not in allowlist for name in names):
+            raise ProbeBackendError(
+                "PROBE_PROTOCOL_INVALID",
+                "Core register is outside the profile allowlist",
+            )
+
     @staticmethod
     def _validate_memory_request(address: int, length: int) -> None:
         if (
@@ -765,6 +851,12 @@ class PyOCDBackend:
                 "PROBE_PARTIAL_READ", "Memory read did not return exact bytes", details
             )
         return bytes(values)
+
+    def target_read_memory(self, address: int, length: int) -> bytes:
+        """Read through the closed target profile without changing legacy reads."""
+        self._validate_memory_request(address, length)
+        self._validate_profile_memory_request(address, length)
+        return self.read_memory(address, length)
 
     @staticmethod
     def _validate_register_names(names: tuple[str, ...]) -> None:
@@ -821,6 +913,14 @@ class PyOCDBackend:
                 ) from error
             values[name] = result[0]
         return values
+
+    def target_read_core_registers(
+        self, names: tuple[str, ...]
+    ) -> Mapping[str, int]:
+        """Read only profile-allowlisted registers for target operations."""
+        self._validate_register_names(names)
+        self._validate_profile_register_names(names)
+        return self.read_core_registers(names)
 
     def _control(self, operation: str) -> None:
         target = self._require_target()
@@ -906,11 +1006,11 @@ class PyOCDBackend:
         if type(max_stack_bytes) is not int or not 0 <= max_stack_bytes <= 4096:
             raise ProbeBackendError("PROBE_PROTOCOL_INVALID", "Fault capture limit is invalid")
         names = ("cfsr", "hfsr", "dfsr", "afsr", "mmfar", "bfar", "shcsr", "icsr")
-        values = self.read_core_registers(names)
+        values = self.target_read_core_registers(names)
         stack = b""
         if max_stack_bytes:
-            sp = self.read_core_registers(("sp",))["sp"]
-            stack = self.read_memory(sp, max_stack_bytes)
+            sp = self.target_read_core_registers(("sp",))["sp"]
+            stack = self.target_read_memory(sp, max_stack_bytes)
         return {"fault_registers": dict(values), "stack": stack, "truncated": False}
 
     def capture_logs(self, channel: str, max_bytes: int, duration_ms: int) -> Mapping[str, object]:

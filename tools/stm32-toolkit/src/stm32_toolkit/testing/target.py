@@ -2,26 +2,30 @@
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from hashlib import sha256
 import json
-import os
+import math
 from pathlib import Path
 import inspect
 import secrets
 import time
 import struct
 from types import MappingProxyType
-from typing import Mapping
+from typing import AsyncIterator, Callable, Mapping
 from uuid import uuid4
 import zlib
 
 from stm32_toolkit.evidence import EvidenceEnvelope, EvidenceIdentity, canonical_json_bytes
-from stm32_toolkit.evidence.store import EvidenceStore
 from stm32_toolkit.result import OperationResult
 from stm32_toolkit.testing.artifacts import TestArtifactCollector
 from stm32_toolkit.probe.client import ProbeClient
+from stm32_toolkit.probe.authorization import (
+    ControlAuthorizationError,
+    ControlAuthorizationStore,
+)
 from stm32_toolkit.probe.service import ProbeEndpoint
 from stm32_toolkit.testing.model import (
     EVENT_KINDS,
@@ -29,6 +33,7 @@ from stm32_toolkit.testing.model import (
     MAX_RUN_STREAM_BYTES,
     TestProtocolError,
     TestCaseResult,
+    TestInventory,
     TestRunManifest,
     TEST_SCHEMA,
     protocol_error,
@@ -38,6 +43,7 @@ from stm32_toolkit.testing.transports.base import format_ram_bounds, ram_regions
 
 
 FRAME_MAGIC = b"ST32"
+_CLEANUP_ATTEMPT_WINDOW_SECONDS = 0.050
 FRAME_VERSION = 1
 FRAME_HEADER_BYTES = 16
 FRAME_CRC_BYTES = 4
@@ -519,6 +525,10 @@ class TargetRunValidator:
         if validated != _deep_thaw(frame.payload):
             raise protocol_error("TEST_EVENT_PAYLOAD_INVALID", "frame payload contradicts raw bytes")
 
+    @property
+    def is_terminal(self) -> bool:
+        return self._terminal is not None
+
     def finish(self) -> TargetRunSummary:
         if self._terminal is None:
             raise protocol_error("TEST_EVENT_SEQUENCE_INVALID", "target run has no terminal run_end")
@@ -546,6 +556,136 @@ class TargetRunError(Exception):
         super().__init__(message)
         self.code = code
         self.message = message
+        self.cleanup_notes: list[str] = []
+
+
+def _require_before_deadline(
+    *, deadline: float, code: str, message: str
+) -> None:
+    """Reject accepting a Target operation after its absolute deadline."""
+    if time.monotonic() >= deadline:
+        raise TargetRunError(code, message)
+
+
+async def _await_before_deadline(
+    value: object, *, deadline: float, code: str, message: str
+) -> object:
+    if not inspect.isawaitable(value):
+        # A synchronous boundary may have blocked before it returned `value`.
+        # Its completed result is not valid when that operation crossed the
+        # absolute deadline, just as an awaited operation is not.
+        _require_before_deadline(deadline=deadline, code=code, message=message)
+        return value
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        closer = getattr(value, "close", None)
+        if inspect.iscoroutine(value) and callable(closer):
+            closer()
+        raise TargetRunError(code, message)
+    try:
+        result = await asyncio.wait_for(value, timeout=remaining)
+    except asyncio.TimeoutError as error:
+        raise TargetRunError(code, message) from error
+    # An awaitable can block the event-loop thread before it yields, preventing
+    # ``wait_for`` from scheduling its timeout.  Its late completed result is
+    # no more valid than a synchronous call that returned after the deadline.
+    _require_before_deadline(deadline=deadline, code=code, message=message)
+    return result
+
+
+async def _poll_transport_chunks(
+    transport: object,
+    *,
+    deadline: float,
+    maximum_bytes: int,
+    timeout_code: str,
+    timeout_message: str,
+    invalid_code: str,
+    invalid_message: str,
+    too_large_code: str,
+    too_large_message: str,
+    deadline_completes_collection: bool = False,
+    post_read: Callable[[], object] | None = None,
+) -> AsyncIterator[bytes]:
+    """Poll one live transport without treating temporary no-data as EOF.
+
+    Discovery collects one pre-existing inventory from polling ports which have no
+    EOF signal.  Only that read-only collection may finish at its absolute
+    deadline after every in-flight read has returned; execution keeps deadline
+    exhaustion as a failure.
+    """
+    total = 0
+    backoff_seconds = 0.001
+    while total <= maximum_bytes:
+        if time.monotonic() >= deadline:
+            if deadline_completes_collection:
+                return
+            raise TargetRunError(timeout_code, timeout_message)
+        reader = getattr(transport, "read_async", None)
+        if not callable(reader):
+            reader = getattr(transport, "read", None)
+        if not callable(reader):
+            raise TargetRunError(invalid_code, invalid_message)
+        chunk = await _await_before_deadline(
+            reader(min(65_536, maximum_bytes + 1 - total), deadline),
+            deadline=deadline,
+            code=timeout_code,
+            message=timeout_message,
+        )
+        if not isinstance(chunk, bytes):
+            raise TargetRunError(invalid_code, invalid_message)
+        if chunk:
+            if post_read is not None:
+                _require_before_deadline(
+                    deadline=deadline, code=timeout_code, message=timeout_message
+                )
+                await _await_before_deadline(
+                    post_read(), deadline=deadline, code=timeout_code, message=timeout_message
+                )
+            total += len(chunk)
+            if total > maximum_bytes:
+                raise TargetRunError(too_large_code, too_large_message)
+            backoff_seconds = 0.001
+            yield chunk
+            if time.monotonic() >= deadline:
+                if deadline_completes_collection:
+                    return
+                raise TargetRunError(timeout_code, timeout_message)
+            continue
+
+        eof_provider = getattr(transport, "eof", None)
+        if callable(eof_provider):
+            eof = await _await_before_deadline(
+                eof_provider(),
+                deadline=deadline,
+                code=timeout_code,
+                message=timeout_message,
+            )
+            if type(eof) is not bool:
+                raise TargetRunError(invalid_code, invalid_message)
+            if eof:
+                if post_read is not None:
+                    _require_before_deadline(
+                        deadline=deadline, code=timeout_code, message=timeout_message
+                    )
+                    await _await_before_deadline(
+                        post_read(), deadline=deadline, code=timeout_code, message=timeout_message
+                    )
+                return
+        if post_read is not None:
+            _require_before_deadline(
+                deadline=deadline, code=timeout_code, message=timeout_message
+            )
+            await _await_before_deadline(
+                post_read(), deadline=deadline, code=timeout_code, message=timeout_message
+            )
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            if deadline_completes_collection:
+                return
+            raise TargetRunError(timeout_code, timeout_message)
+        await asyncio.sleep(min(backoff_seconds, remaining))
+        backoff_seconds = min(backoff_seconds * 2.0, 0.05)
 
 
 @dataclass(frozen=True)
@@ -589,8 +729,14 @@ class GuardedTargetFlashAdapter:
     async def run(self, binding: Mapping[str, object]) -> None:
         from stm32_toolkit.hardware_workflows import FlashWorkflowRequest
 
-        if binding.get("session_id") != self._session_id:
-            raise TargetRunError("TEST_IDENTITY_MISMATCH", "Target flash session changed")
+        expected_probe_hash = binding.get("probe_serial_hash")
+        if (
+            binding.get("session_id") != self._session_id
+            or not isinstance(expected_probe_hash, str)
+            or len(expected_probe_hash) != 64
+            or sha256(self._probe_id.encode("utf-8")).hexdigest() != expected_probe_hash
+        ):
+            raise TargetRunError("TEST_IDENTITY_MISMATCH", "Target flash identity changed")
         result = await self._workflow(
             FlashWorkflowRequest(
                 self._project_root,
@@ -626,11 +772,106 @@ class TargetTestRunner:
         ):
             raise TypeError("Target runner dependencies are invalid")
         self._root = evidence_root
-        self._storage = EvidenceStore(evidence_root)
+        # Reuse the same stable parent/root/records authority as CONTROL.  The
+        # binding record remains Target-specific, while the filesystem authority
+        # and CREATE_NEW critical section stay one audited implementation.
+        self._authorization_authority = ControlAuthorizationStore(evidence_root)
         self._probe = probe
         self._flash = flash_workflow
         self._transport_factory = transport_factory
         self._collector = artifact_collector
+
+    @staticmethod
+    def _cleanup_attempt_deadline(
+        run_deadline: float | None,
+    ) -> float | None:
+        if run_deadline is None:
+            return None
+        if time.monotonic() < run_deadline:
+            return run_deadline
+        # Every required dependency receives one small cooperative cleanup
+        # attempt even when an earlier closer consumed the run deadline.
+        return time.monotonic() + _CLEANUP_ATTEMPT_WINDOW_SECONDS
+
+    @staticmethod
+    async def _close_transport_required(
+        transport: object, *, deadline: float | None = None
+    ) -> None:
+        try:
+            closer = getattr(transport, "close_async", None)
+            if not callable(closer):
+                closer = getattr(transport, "close", None)
+            if not callable(closer):
+                raise TypeError("Target transport closer is unavailable")
+            closed = closer()
+            if inspect.isawaitable(closed):
+                if deadline is None:
+                    await closed
+                else:
+                    await _await_before_deadline(
+                        closed,
+                        deadline=deadline,
+                        code="TEST_TIMEOUT",
+                        message="Target transport cleanup deadline elapsed",
+                    )
+        except TargetRunError:
+            raise
+        except Exception as error:
+            raise TargetRunError(
+                "TEST_TRANSPORT_UNAVAILABLE", "Target transport cleanup failed"
+            ) from error
+
+    async def _close_probe_required(self, *, deadline: float | None = None) -> None:
+        try:
+            closer = getattr(self._probe, "close", None)
+            if not callable(closer):
+                raise TypeError("Target probe closer is unavailable")
+            closed = closer()
+            if inspect.isawaitable(closed):
+                if deadline is None:
+                    await closed
+                else:
+                    await _await_before_deadline(
+                        closed,
+                        deadline=deadline,
+                        code="TEST_TIMEOUT",
+                        message="Target probe cleanup deadline elapsed",
+                    )
+        except TargetRunError:
+            raise
+        except Exception as error:
+            raise TargetRunError(
+                "TEST_TRANSPORT_UNAVAILABLE", "Target probe cleanup failed"
+            ) from error
+
+    async def _close_dependencies_required(
+        self,
+        transport: object | None,
+        *,
+        close_probe: bool,
+        run_deadline: float | None = None,
+    ) -> None:
+        cleanup_error: TargetRunError | None = None
+        if transport is not None:
+            try:
+                await self._close_transport_required(
+                    transport,
+                    deadline=self._cleanup_attempt_deadline(run_deadline),
+                )
+            except TargetRunError as error:
+                cleanup_error = error
+        if close_probe:
+            try:
+                await self._close_probe_required(
+                    deadline=self._cleanup_attempt_deadline(
+                        run_deadline
+                    )
+                )
+            except TargetRunError as error:
+                if cleanup_error is None:
+                    cleanup_error = error
+        if cleanup_error is not None:
+            raise cleanup_error
 
     async def prepare(self, *, now: datetime | None = None, **binding: object) -> PreparedTargetRun:
         required = {
@@ -663,14 +904,25 @@ class TargetTestRunner:
         except ValueError as error:
             raise TargetRunError("TEST_PROTOCOL_INVALID", "Target run binding is invalid") from error
         digest = sha256(canonical_json_bytes(full)).hexdigest()
-        with self._storage._mutation_lock():
-            created = self._storage._atomic_create_new(
-                self._root / f"{digest}.prepared.json",
-                canonical_json_bytes(full),
-                phase="target-run-prepare",
-            )
-            if not created:
-                raise TargetRunError("TEST_AUTHORIZATION_INVALID", "Target authorization already exists")
+        try:
+            with self._authorization_authority._authority_lock(
+                create=True
+            ) as directory_descriptor:
+                created = self._authorization_authority._authorization_create_new(
+                    self._authorization_authority._path(digest, "prepared"),
+                    canonical_json_bytes(full),
+                    phase="target-run-prepare",
+                    directory_descriptor=directory_descriptor,
+                )
+                if not created:
+                    raise TargetRunError(
+                        "TEST_AUTHORIZATION_INVALID",
+                        "Target authorization already exists",
+                    )
+        except ControlAuthorizationError as error:
+            raise TargetRunError(
+                "TEST_AUTHORIZATION_INVALID", "Target authorization authority is invalid"
+            ) from error
         return PreparedTargetRun(digest, nonce, expires, full)
 
     def _consume_prepared(
@@ -680,20 +932,16 @@ class TargetTestRunner:
             character not in "0123456789abcdef" for character in digest
         ):
             raise TargetRunError("TEST_AUTHORIZATION_INVALID", "Target authorization is invalid")
-        with self._storage._mutation_lock():
-            path = self._root / f"{digest}.prepared.json"
-            try:
-                self._storage._validate_existing_path(path, regular=True, single_link=True)
-                descriptor = os.open(
+        try:
+            with self._authorization_authority._authority_lock(
+                create=False
+            ) as directory_descriptor:
+                path = self._authorization_authority._path(digest, "prepared")
+                payload = self._authorization_authority._read_stable_record_bytes(
                     path,
-                    os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0),
+                    65_536,
+                    directory_descriptor=directory_descriptor,
                 )
-                try:
-                    payload = os.read(descriptor, 65_537)
-                    if len(payload) > 65_536 or os.read(descriptor, 1):
-                        raise ValueError
-                finally:
-                    os.close(descriptor)
                 record = json.loads(payload.decode("utf-8"))
                 if (
                     not isinstance(record, dict)
@@ -702,25 +950,35 @@ class TargetTestRunner:
                 ):
                     raise ValueError
                 self._validate_prepared_record(record)
-            except (OSError, ValueError, UnicodeError, json.JSONDecodeError) as error:
-                raise TargetRunError(
-                    "TEST_AUTHORIZATION_INVALID", "Target authorization is unknown or corrupt"
-                ) from error
-            consumed = canonical_json_bytes(
-                {
-                    "action_digest": digest,
-                    "consumed_at_utc": now.strftime("%Y-%m-%dT%H:%M:%S.%fZ"),
-                }
-            )
-            if not self._storage._atomic_create_new(
-                self._root / f"{digest}.consumed.json",
-                consumed,
-                phase="target-run-consume",
-            ):
-                raise TargetRunError(
-                    "TEST_AUTHORIZATION_INVALID", "Target authorization is already consumed"
+                consumed = canonical_json_bytes(
+                    {
+                        "action_digest": digest,
+                        "consumed_at_utc": now.strftime("%Y-%m-%dT%H:%M:%S.%fZ"),
+                    }
                 )
-            return record
+                if not self._authorization_authority._authorization_create_new(
+                    self._authorization_authority._path(digest, "consumed"),
+                    consumed,
+                    phase="target-run-consume",
+                    directory_descriptor=directory_descriptor,
+                ):
+                    raise TargetRunError(
+                        "TEST_AUTHORIZATION_INVALID",
+                        "Target authorization is already consumed",
+                    )
+                return record
+        except TargetRunError:
+            raise
+        except (
+            OSError,
+            ValueError,
+            UnicodeError,
+            json.JSONDecodeError,
+            ControlAuthorizationError,
+        ) as error:
+            raise TargetRunError(
+                "TEST_AUTHORIZATION_INVALID", "Target authorization is unknown or corrupt"
+            ) from error
 
     @staticmethod
     def _validate_prepared_record(record: Mapping[str, object]) -> None:
@@ -783,6 +1041,10 @@ class TargetTestRunner:
         current_revision: str, current_inventory_digest: str, now: datetime | None = None,
     ) -> Mapping[str, object]:
         transport = None
+        transport_close_attempted = False
+        probe_close_attempted = False
+        primary_error: TargetRunError | None = None
+        deadline: float | None = None
         try:
             instant = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
             if not isinstance(prepared, PreparedTargetRun):
@@ -812,8 +1074,14 @@ class TargetTestRunner:
                 raise TargetRunError(
                     "TEST_TRANSPORT_UNAVAILABLE", "Configured Target support is unavailable"
                 ) from error
+            deadline = time.monotonic() + float(binding["timeout_ms"]) / 1000
             try:
                 transport = self._transport_factory(str(binding["transport"]))
+                _require_before_deadline(
+                    deadline=deadline,
+                    code="TEST_TIMEOUT",
+                    message="Target transport setup deadline elapsed",
+                )
                 if (
                     not callable(getattr(transport, "open", None))
                     or not callable(getattr(transport, "identity", None))
@@ -827,6 +1095,8 @@ class TargetTestRunner:
                     )
                 ):
                     raise TypeError
+            except TargetRunError:
+                raise
             except Exception as error:
                 raise TargetRunError(
                     "TEST_TRANSPORT_UNAVAILABLE", "Configured Target transport is unavailable"
@@ -834,55 +1104,148 @@ class TargetTestRunner:
             await self._flash.run(binding)
             if await self._probe.target_identity() != binding["target"]:
                 raise TargetRunError("TEST_IDENTITY_MISMATCH", "Target identity changed after flash")
-            deadline = time.monotonic() + float(binding["timeout_ms"]) / 1000
+            _require_before_deadline(
+                deadline=deadline,
+                code="TEST_TIMEOUT",
+                message="Target transport open deadline elapsed",
+            )
             opened = transport.open(effective_transport_config, deadline)
-            if inspect.isawaitable(opened):
-                await opened
+            await _await_before_deadline(
+                opened,
+                deadline=deadline,
+                code="TEST_TIMEOUT",
+                message="Target transport open deadline elapsed",
+            )
+            _require_before_deadline(
+                deadline=deadline,
+                code="TEST_TIMEOUT",
+                message="Target transport identity deadline elapsed",
+            )
             transport_identity = _closed_transport_identity(transport.identity(), binding)
+            _require_before_deadline(
+                deadline=deadline,
+                code="TEST_TIMEOUT",
+                message="Target transport identity deadline elapsed",
+            )
             raw = bytearray()
-            while len(raw) <= MAX_RUN_STREAM_BYTES:
-                reader = getattr(transport, "read_async", transport.read)
-                chunk = reader(min(65_536, MAX_RUN_STREAM_BYTES + 1 - len(raw)), deadline)
-                if inspect.isawaitable(chunk):
-                    chunk = await chunk
-                if not chunk:
-                    break
-                raw.extend(chunk)
-            if len(raw) > MAX_RUN_STREAM_BYTES:
-                raise TargetRunError("TEST_STREAM_TOO_LARGE", "Target output exceeds the run limit")
-            try:
-                decoder = TargetFrameDecoder()
-                frames = decoder.feed(bytes(raw))
-                decoder.finish()
-                validator = TargetRunValidator(
-                    TargetRunBinding(
-                        str(binding["inventory_digest"]),
-                        str(binding["build_id"]),
-                        str(binding["elf_sha256"]),
-                        str(dict(binding["target"])["target_id"]),
-                    )
+            decoder = TargetFrameDecoder()
+            validator = TargetRunValidator(
+                TargetRunBinding(
+                    str(binding["inventory_digest"]),
+                    str(binding["build_id"]),
+                    str(binding["elf_sha256"]),
+                    str(dict(binding["target"])["target_id"]),
                 )
-                for frame in frames:
-                    validator.accept(frame)
+            )
+            frames: list[TargetFrame] = []
+            async for chunk in _poll_transport_chunks(
+                transport,
+                deadline=deadline,
+                maximum_bytes=MAX_RUN_STREAM_BYTES,
+                timeout_code="TEST_TIMEOUT",
+                timeout_message="Target output deadline elapsed",
+                invalid_code="TEST_TRANSPORT_UNAVAILABLE",
+                invalid_message="Target transport output is invalid",
+                too_large_code="TEST_STREAM_TOO_LARGE",
+                too_large_message="Target output exceeds the run limit",
+            ):
+                raw.extend(chunk)
+                try:
+                    decoded = decoder.feed(chunk)
+                    for frame in decoded:
+                        validator.accept(frame)
+                except TestProtocolError as error:
+                    raise TargetRunError(error.code, error.message) from error
+                frames.extend(decoded)
+                _require_before_deadline(
+                    deadline=deadline,
+                    code="TEST_TIMEOUT",
+                    message="Target output deadline elapsed",
+                )
+                if validator.is_terminal:
+                    break
+            _require_before_deadline(
+                deadline=deadline,
+                code="TEST_TIMEOUT",
+                message="Target output deadline elapsed",
+            )
+            try:
+                decoder.finish()
                 validator.finish()
+                _require_before_deadline(
+                    deadline=deadline,
+                    code="TEST_TIMEOUT",
+                    message="Target output deadline elapsed",
+                )
+                inventory_payload = _deep_thaw(frames[0].payload)
+                assert isinstance(inventory_payload, dict)
+                run_inventory = TestInventory(
+                    mode=inventory_payload["mode"],
+                    identity=EvidenceIdentity.from_dict(inventory_payload["identity"]),
+                    case_ids=tuple(inventory_payload["case_ids"]),
+                    inventory_digest=inventory_payload["inventory_digest"],
+                    discovered_at_utc=inventory_payload["discovered_at_utc"],
+                )
+                identity = run_inventory.identity
                 expected_cases = tuple(binding["cases"])
+                _require_before_deadline(
+                    deadline=deadline,
+                    code="TEST_TIMEOUT",
+                    message="Target transport identity deadline elapsed",
+                )
+                final_transport_identity = _closed_transport_identity(
+                    transport.identity(), binding
+                )
+                _require_before_deadline(
+                    deadline=deadline,
+                    code="TEST_TIMEOUT",
+                    message="Target transport identity deadline elapsed",
+                )
                 if (
-                    tuple(frames[0].payload["case_ids"]) != expected_cases
+                    run_inventory.mode != "target"
+                    or run_inventory.case_ids != expected_cases
                     or tuple(frames[1].payload["case_ids"]) != expected_cases
                     or tuple(
                         str(frame.payload["case_id"]) for frame in frames if frame.kind == 4
                     ) != expected_cases
-                    or _closed_transport_identity(transport.identity(), binding) != transport_identity
+                    or final_transport_identity != transport_identity
                 ):
                     raise TargetRunError(
                         "TEST_IDENTITY_MISMATCH", "Target inventory, cases, or transport changed"
                     )
+                _require_before_deadline(
+                    deadline=deadline,
+                    code="TEST_TIMEOUT",
+                    message="Target transport identity deadline elapsed",
+                )
+                if (
+                    identity.workspace_id != binding["workspace_id"]
+                    or identity.project_id != binding["project_id"]
+                    or identity.session_id != binding["session_id"]
+                    or identity.build_id != binding["build_id"]
+                    or identity.elf_sha256 != binding["elf_sha256"]
+                    or identity.target_device != dict(binding["target"])["target_id"]
+                    or identity.git_commit != binding["revision"]
+                ):
+                    raise TargetRunError(
+                        "TEST_IDENTITY_MISMATCH", "Target Test and Evidence identities do not match"
+                    )
+                _require_before_deadline(
+                    deadline=deadline,
+                    code="TEST_TIMEOUT",
+                    message="Target output deadline elapsed",
+                )
             except TestProtocolError as error:
                 raise TargetRunError(error.code, error.message) from error
             collector = self._collector
             if not isinstance(collector, TestArtifactCollector):
                 raise TargetRunError("TEST_EVIDENCE_FAILED", "Target Evidence collector is required")
             directory = collector.new_directory("target-run")
+            _require_before_deadline(
+                deadline=deadline,
+                code="TEST_TIMEOUT",
+                message="Target Evidence deadline elapsed",
+            )
             raw_artifact = collector.write_and_ingest(
                 directory,
                 "target-stream.bin",
@@ -890,23 +1253,13 @@ class TargetTestRunner:
                 kind="test-events",
                 media_type="application/vnd.stm32.target-events",
             )
-            inventory = frames[0].payload
+            _require_before_deadline(
+                deadline=deadline,
+                code="TEST_TIMEOUT",
+                message="Target Evidence deadline elapsed",
+            )
             run_start = frames[1].payload
             terminal = frames[-1].payload
-            identity = EvidenceIdentity.from_dict(inventory["identity"])
-            if (
-                identity.workspace_id != binding["workspace_id"]
-                or identity.project_id != binding["project_id"]
-                or identity.session_id != binding["session_id"]
-                or identity.build_id != binding["build_id"]
-                or identity.elf_sha256 != binding["elf_sha256"]
-                or identity.target_device != dict(binding["target"])["target_id"]
-                or identity.input_snapshot_sha256 != binding["inventory_digest"]
-                or identity.git_commit != binding["revision"]
-            ):
-                raise TargetRunError(
-                    "TEST_IDENTITY_MISMATCH", "Target Test and Evidence identities do not match"
-                )
             case_starts = {
                 str(frame.payload["case_id"]): frame.payload
                 for frame in frames if frame.kind == 3
@@ -939,12 +1292,22 @@ class TargetTestRunner:
                 None,
                 raw_artifact,
             )
+            _require_before_deadline(
+                deadline=deadline,
+                code="TEST_TIMEOUT",
+                message="Target Evidence deadline elapsed",
+            )
             manifest_artifact = collector.write_and_ingest(
                 directory,
                 "test-manifest.json",
                 canonical_json_bytes(manifest.to_dict()),
                 kind="test-manifest",
                 media_type="application/json",
+            )
+            _require_before_deadline(
+                deadline=deadline,
+                code="TEST_TIMEOUT",
+                message="Target Evidence deadline elapsed",
             )
             envelope = EvidenceEnvelope(
                 identity=identity,
@@ -954,53 +1317,247 @@ class TargetTestRunner:
                 artifacts=(raw_artifact, manifest_artifact),
                 metadata={
                     "action_digest": prepared.action_digest,
+                    "probe_serial_hash": binding["probe_serial_hash"],
                     "test_run_id": manifest.run_id,
                     "test_manifest_sha256": manifest_artifact.sha256,
+                    "transport_config_digest": transport_identity["config_digest"],
                 },
             )
-            collector.evidence_store.put_envelope(envelope)
+            _require_before_deadline(
+                deadline=deadline,
+                code="TEST_TIMEOUT",
+                message="Target Evidence deadline elapsed",
+            )
+            transport_close_attempted = True
+            await self._close_transport_required(
+                transport,
+                deadline=self._cleanup_attempt_deadline(deadline),
+            )
+            _require_before_deadline(
+                deadline=deadline,
+                code="TEST_TIMEOUT",
+                message="Target cleanup deadline elapsed",
+            )
+            probe_close_attempted = True
+            await self._close_probe_required(
+                deadline=self._cleanup_attempt_deadline(deadline)
+            )
+            _require_before_deadline(
+                deadline=deadline,
+                code="TEST_TIMEOUT",
+                message="Target cleanup deadline elapsed",
+            )
+            try:
+                collector.evidence_store.put_envelope_before_deadline(
+                    envelope, deadline=deadline
+                )
+            except ValueError as error:
+                raise TargetRunError(
+                    "TEST_TIMEOUT", "Target Evidence deadline elapsed"
+                ) from error
+            _require_before_deadline(
+                deadline=deadline,
+                code="TEST_TIMEOUT",
+                message="Target Evidence deadline elapsed",
+            )
             return {"test_manifest": manifest, "evidence": envelope}
-        finally:
-            if transport is not None:
-                try:
-                    closer = getattr(transport, "close_async", transport.close)
-                    closed = closer()
-                    if inspect.isawaitable(closed):
-                        await closed
-                except Exception:
-                    pass
-            await self._probe.close()
-
-    async def discover(
-        self, *, transport: str, config: Mapping[str, object], deadline: float,
-        expected_identity: Mapping[str, object],
-    ) -> Mapping[str, object]:
-        active = self._transport_factory(transport)
-        try:
-            identity = await self._probe.target_identity()
-            if identity != dict(expected_identity):
-                raise TargetRunError("TEST_TRANSPORT_UNAVAILABLE", "Configured target identity is unavailable")
-            opened = active.open(config, deadline)
-            if inspect.isawaitable(opened):
-                await opened
-            reader = getattr(active, "read_async", active.read)
-            raw = reader(65_536, deadline)
-            if inspect.isawaitable(raw):
-                raw = await raw
-            if not isinstance(raw, bytes):
-                raise TargetRunError("TEST_TRANSPORT_UNAVAILABLE", "Target discovery output is invalid")
-            transport_identity = active.identity()
-            if transport_identity.get("target_id") != expected_identity.get("target_id"):
-                raise TargetRunError("TEST_TRANSPORT_UNAVAILABLE", "Target transport identity is unavailable")
-            return {"identity": transport_identity, "raw": raw}
+        except TargetRunError as error:
+            primary_error = error
+            raise
         finally:
             try:
-                closer = getattr(active, "close_async", active.close)
-                closed = closer()
-                if inspect.isawaitable(closed):
-                    await closed
-            finally:
-                await self._probe.close()
+                await self._close_dependencies_required(
+                    transport if not transport_close_attempted else None,
+                    close_probe=not probe_close_attempted,
+                    run_deadline=deadline,
+                )
+            except TargetRunError as cleanup_error:
+                if primary_error is None:
+                    raise
+                primary_error.cleanup_notes.append(
+                    f"Target cleanup also failed: {cleanup_error.code}: {cleanup_error.message}"
+                )
+
+    async def discover(
+        self, *, transport: str, transport_config: Mapping[str, object],
+        support_profile: Mapping[str, object], deadline: float,
+        expected_identity: Mapping[str, object], expected_firmware: Mapping[str, object],
+    ) -> Mapping[str, object]:
+        active: object | None = None
+        try:
+            if (
+                type(deadline) not in {int, float}
+                or not math.isfinite(deadline)
+                or deadline <= time.monotonic()
+                or not isinstance(expected_identity, Mapping)
+                or set(expected_identity)
+                != {"board_id", "mcu", "target_id", "probe_serial_hash"}
+                or any(
+                    not isinstance(expected_identity[field], str)
+                    or not expected_identity[field]
+                    for field in ("board_id", "mcu", "target_id")
+                )
+                or not isinstance(expected_identity["probe_serial_hash"], str)
+                or len(expected_identity["probe_serial_hash"]) != 64
+                or any(
+                    character not in "0123456789abcdef"
+                    for character in expected_identity["probe_serial_hash"]
+                )
+                or not isinstance(expected_firmware, Mapping)
+                or set(expected_firmware)
+                != {"build_id", "elf_sha256", "revision", "inventory_digest"}
+                or not isinstance(expected_firmware["revision"], str)
+                or not expected_firmware["revision"]
+                or any(
+                    not isinstance(expected_firmware[field], str)
+                    or len(expected_firmware[field]) != 64
+                    or any(
+                        character not in "0123456789abcdef"
+                        for character in expected_firmware[field]
+                    )
+                    for field in ("build_id", "elf_sha256", "inventory_digest")
+                )
+            ):
+                raise ValueError("Target discovery binding is invalid")
+            target = dict(expected_identity)
+            firmware = dict(expected_firmware)
+            binding = {
+                "transport": transport,
+                "transport_config": transport_config,
+                "support_profile": support_profile,
+                "target": target,
+                "probe_serial_hash": target["probe_serial_hash"],
+                "elf_sha256": firmware["elf_sha256"],
+            }
+            effective_config = _effective_target_transport_config(binding)
+            _require_before_deadline(
+                deadline=deadline,
+                code="TEST_TRANSPORT_UNAVAILABLE",
+                message="Target discovery deadline elapsed",
+            )
+            active = self._transport_factory(transport)
+            _require_before_deadline(
+                deadline=deadline,
+                code="TEST_TRANSPORT_UNAVAILABLE",
+                message="Target discovery deadline elapsed",
+            )
+            if (
+                not callable(getattr(active, "open", None))
+                or not callable(getattr(active, "identity", None))
+                or not (
+                    callable(getattr(active, "read_async", None))
+                    or callable(getattr(active, "read", None))
+                )
+                or not (
+                    callable(getattr(active, "close_async", None))
+                    or callable(getattr(active, "close", None))
+                )
+            ):
+                raise TypeError("Target discovery transport interface is invalid")
+
+            identity = await _await_before_deadline(
+                self._probe.target_identity(),
+                deadline=deadline,
+                code="TEST_TRANSPORT_UNAVAILABLE",
+                message="Target discovery deadline elapsed",
+            )
+            if identity != target:
+                raise TargetRunError(
+                    "TEST_TRANSPORT_UNAVAILABLE",
+                    "Configured target identity is unavailable",
+                )
+            await _await_before_deadline(
+                active.open(effective_config, deadline),
+                deadline=deadline,
+                code="TEST_TRANSPORT_UNAVAILABLE",
+                message="Target discovery deadline elapsed",
+            )
+            _require_before_deadline(
+                deadline=deadline,
+                code="TEST_TRANSPORT_UNAVAILABLE",
+                message="Target discovery deadline elapsed",
+            )
+            transport_identity = _closed_transport_identity(active.identity(), binding)
+            _require_before_deadline(
+                deadline=deadline,
+                code="TEST_TRANSPORT_UNAVAILABLE",
+                message="Target discovery deadline elapsed",
+            )
+            observed_transport_identity = transport_identity
+
+            def observe_transport_identity() -> None:
+                nonlocal observed_transport_identity
+                observed_transport_identity = _closed_transport_identity(active.identity(), binding)
+
+            decoder = TargetFrameDecoder(max_stream_bytes=65_536)
+            frames: list[TargetFrame] = []
+            raw = bytearray()
+            async for chunk in _poll_transport_chunks(
+                active,
+                deadline=deadline,
+                maximum_bytes=65_536,
+                timeout_code="TEST_TRANSPORT_UNAVAILABLE",
+                timeout_message="Target discovery deadline elapsed",
+                invalid_code="TEST_TRANSPORT_UNAVAILABLE",
+                invalid_message="Target discovery output is invalid",
+                too_large_code="TEST_TRANSPORT_UNAVAILABLE",
+                too_large_message="Target discovery output is too large",
+                deadline_completes_collection=True,
+                post_read=observe_transport_identity,
+            ):
+                raw.extend(chunk)
+                frames.extend(decoder.feed(chunk))
+
+            decoder.finish()
+            if len(frames) != 1 or frames[0].kind != 1:
+                raise TestProtocolError(
+                    "TEST_EVENT_SEQUENCE_INVALID",
+                    "Target discovery must return exactly one inventory frame",
+                )
+            inventory_payload = _deep_thaw(frames[0].payload)
+            assert isinstance(inventory_payload, dict)
+            evidence_identity = EvidenceIdentity.from_dict(inventory_payload["identity"])
+            inventory = TestInventory(
+                mode=inventory_payload["mode"],
+                identity=evidence_identity,
+                case_ids=tuple(inventory_payload["case_ids"]),
+                inventory_digest=inventory_payload["inventory_digest"],
+                discovered_at_utc=inventory_payload["discovered_at_utc"],
+            )
+            if (
+                inventory.mode != "target"
+                or inventory.inventory_digest != firmware["inventory_digest"]
+                or evidence_identity.build_id != firmware["build_id"]
+                or evidence_identity.elf_sha256 != firmware["elf_sha256"]
+                or evidence_identity.git_commit != firmware["revision"]
+                or evidence_identity.target_device != target["target_id"]
+            ):
+                raise TargetRunError(
+                    "TEST_TRANSPORT_UNAVAILABLE", "Configured target firmware is unavailable"
+                )
+            if observed_transport_identity != transport_identity:
+                raise TargetRunError(
+                    "TEST_TRANSPORT_UNAVAILABLE", "Target transport identity changed"
+                )
+            return {
+                "identity": transport_identity,
+                "inventory": inventory.to_dict(),
+                "raw": bytes(raw),
+            }
+        except asyncio.CancelledError:
+            raise
+        except TargetRunError as error:
+            if error.code == "TEST_TRANSPORT_UNAVAILABLE":
+                raise
+            raise TargetRunError(
+                "TEST_TRANSPORT_UNAVAILABLE", "Target discovery is unavailable"
+            ) from error
+        except Exception as error:
+            raise TargetRunError(
+                "TEST_TRANSPORT_UNAVAILABLE", "Target discovery is unavailable"
+            ) from error
+        finally:
+            await self._close_dependencies_required(active, close_probe=True)
 
 
 class ProbeV2MemoryReader:

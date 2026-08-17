@@ -166,6 +166,11 @@ def test_public_client_executes_every_v2_adapter_through_one_service(tmp_path: P
             self.identity_error = None
             self.identity_reads = 0
             self.malformed = ""
+        def target_observation_policy(self):
+            return {
+                "readable_regions": [{"start": 0x20000000, "size": 4}],
+                "register_allowlist": ["pc", "r0", "wide"],
+            }
         def target_identity(self):
             self.identity_reads += 1
             if self.identity_error is not None: raise self.identity_error
@@ -188,6 +193,10 @@ def test_public_client_executes_every_v2_adapter_through_one_service(tmp_path: P
             if self.malformed == "step-register": return {}
             if self.malformed == "register": return {name: True for name in names}
             return super().read_core_registers(names)
+        def target_read_memory(self, address, length):
+            return self.read_memory(address, length)
+        def target_read_core_registers(self, names):
+            return self.read_core_registers(names)
         def capture_fault(self, maximum):
             if self.malformed == "fault-shape": return {"stack": b"", "truncated": False}
             return {"fault_registers": {name: 0 for name in ("cfsr", "hfsr", "dfsr", "afsr", "mmfar", "bfar", "shcsr", "icsr")}, "stack": "bad" if self.bad_fault else b"" if maximum == 0 else b"abcd", "truncated": False}
@@ -390,6 +399,7 @@ def test_admitted_pyocd_adapter_exposes_closed_target_operations():
         target_profile={
             "board_id": "board-a", "mcu": "stm32f407vg", "target_id": "target-a",
             "ram": [{"start": 0x20000000, "size": 0x10000}],
+            "registers": list(registers),
             "rtt": {"channel": 0, "control_block_address": 0x20000000},
             "log_transport": {"kind": "rtt", "options": {"channel": 0, "controlBlockAddress": 0x20000000}},
         },
@@ -401,7 +411,7 @@ def test_admitted_pyocd_adapter_exposes_closed_target_operations():
     breakpoint = backend.set_temporary_breakpoint(0x08000100, 2)
     assert backend.clear_temporary_breakpoint(breakpoint["breakpoint_id"])["cleared"] is True
     assert backend.capture_fault(4)["stack"] == b"abcd"
-    assert backend.capture_logs("rtt", 4, 1)["data"] == b"rtt"
+    assert backend.capture_logs("rtt", 4, 100)["data"] == b"rtt"
     opened = backend.open_target_transport(
         "rtt", {
             "channel": 0, "control_block_address": 0x20000000,
@@ -855,6 +865,10 @@ def test_pyocd_target_adapter_fails_closed_on_limits_identity_and_partial_output
         target_profile={
             "board_id": "b", "mcu": "stm32f407vg", "target_id": "t",
             "ram": [{"start": 0x20000000, "size": 0x10000}],
+            "registers": [
+                "cfsr", "hfsr", "dfsr", "afsr", "mmfar", "bfar",
+                "shcsr", "icsr", "sp", "pc",
+            ],
             "rtt": {"channel": 0},
             "log_transport": {"kind": "rtt", "options": {"channel": 0}},
         },
@@ -1100,6 +1114,162 @@ def test_pyocd_public_target_transport_accepts_only_task8_effective_config():
             {"kind": "memory-mailbox", "options": {"address": 0x20000000, "size": 64}},
             1,
         )
+    backend.close()
+
+
+def test_target_observations_reject_outside_profile_before_backend_read(tmp_path: Path):
+    """A syntactically valid v2 request is still bounded by the closed target profile."""
+    from fakes.fake_probe import FakeProbeBackend
+    from stm32_toolkit.probe.backend import ProbeDescriptor
+    from stm32_toolkit.probe.client import ProbeClient, ProbeClientError
+    from stm32_toolkit.probe.authorization import ControlAuthorizationStore
+    from test_probe_service import make_service
+
+    class PolicyBackend(FakeProbeBackend):
+        def __init__(self) -> None:
+            super().__init__(
+                probes=(ProbeDescriptor("probe-a", "vendor", "product", None),),
+                memory={0x40000000: b"MMIO"},
+                registers={"not_in_profile": 0x1234},
+            )
+
+        def target_observation_policy(self):
+            return {
+                "readable_regions": [{"start": 0x20000000, "size": 0x1000}],
+                "register_allowlist": ["r0", "pc"],
+            }
+
+    async def scenario() -> None:
+        backend = PolicyBackend()
+        service = make_service(
+            tmp_path,
+            level=OperationLevel.OBSERVE,
+            backend=backend,
+            control_authorizations=ControlAuthorizationStore(
+                (tmp_path / "control").absolute()
+            ),
+        )
+        endpoint = await service.start()
+        client = ProbeClient(endpoint)
+        try:
+            await client.attach("probe-a", "stm32f407vg")
+            backend.events.clear()
+            with pytest.raises(ProbeClientError):
+                await client.target_memory(0x40000000, 4)
+            with pytest.raises(ProbeClientError):
+                await client.target_registers(("not_in_profile",))
+            assert not any(
+                event[0] in {"read_memory", "read_core_registers"}
+                for event in backend.events
+            )
+        finally:
+            await client.close()
+            await service.stop()
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize(
+    "case,policy",
+    [
+        ("missing", None),
+        ("not-mapping", []),
+        (
+            "empty-regions",
+            {"readable_regions": [], "register_allowlist": ["pc"]},
+        ),
+        (
+            "invalid-region",
+            {
+                "readable_regions": [{"start": 0x20000000, "size": 0}],
+                "register_allowlist": ["pc"],
+            },
+        ),
+        (
+            "overlapping-regions",
+            {
+                "readable_regions": [
+                    {"start": 0x20000000, "size": 16},
+                    {"start": 0x20000008, "size": 16},
+                ],
+                "register_allowlist": ["pc"],
+            },
+        ),
+        (
+            "invalid-register",
+            {
+                "readable_regions": [{"start": 0x20000000, "size": 16}],
+                "register_allowlist": ["PC"],
+            },
+        ),
+    ],
+)
+def test_probe_service_rejects_malformed_observation_policy_before_target_io(
+    tmp_path: Path, case: str, policy: object,
+) -> None:
+    """The backend cannot widen OBSERVE by returning an open or malformed policy."""
+    from fakes.fake_probe import FakeProbeBackend
+    from stm32_toolkit.probe.backend import ProbeBackendError, ProbeDescriptor
+    from test_probe_service import make_service
+
+    backend = FakeProbeBackend(
+        probes=(ProbeDescriptor("probe-a", "vendor", "product", None),),
+        memory={0x20000000: b"abcd"},
+        registers={"pc": 0x08000100},
+    )
+    if case == "missing":
+        backend.target_observation_policy = None  # type: ignore[attr-defined]
+    else:
+        backend.target_observation_policy = lambda: policy  # type: ignore[attr-defined]
+    service = make_service(tmp_path / case, backend=backend)
+
+    with pytest.raises(ProbeBackendError) as caught:
+        service._target_observation_policy()
+
+    assert caught.value.code in {"PROBE_OPERATION_UNAVAILABLE", "PROBE_BACKEND_ERROR"}
+    assert backend.events == []
+
+
+def test_pyocd_isolates_legacy_reads_from_closed_target_observation_policy():
+    from fakes.fake_pyocd import FakePyOCDDriver, FakePyOCDProbe, FakePyOCDTarget
+    from stm32_toolkit.probe.backend import ProbeBackendError
+    from stm32_toolkit.probe.pyocd_backend import PyOCDBackend
+
+    target = FakePyOCDTarget(
+        memory={0x40000000: b"MMIO"},
+        registers={"not_in_profile": 0x1234},
+    )
+    backend = PyOCDBackend(
+        FakePyOCDDriver((FakePyOCDProbe("probe-a"),), target=target),
+        target_profile={
+            "backend": "pyocd",
+            "board_id": "board-a",
+            "mcu": "stm32f407vg",
+            "target_id": "target-a",
+            "ram": [{"start": 0x20000000, "size": 0x1000}],
+            "registers": ["r0", "pc"],
+        },
+    )
+    backend.preflight_target_capabilities("probe-a", OperationLevel.OBSERVE)
+    backend.open_attach("probe-a", "stm32f407vg")
+    target.calls.clear()
+
+    assert backend.read_memory(0x40000000, 4) == b"MMIO"
+    assert backend.read_core_registers(("not_in_profile",)) == {
+        "not_in_profile": 0x1234
+    }
+    assert target.calls == [
+        ("read_memory_block8", 0x40000000, 4),
+        ("get_state",),
+        ("read_core_registers_raw", ("not_in_profile",)),
+    ]
+    target.calls.clear()
+
+    with pytest.raises(ProbeBackendError):
+        backend.target_read_memory(0x40000000, 4)
+    with pytest.raises(ProbeBackendError):
+        backend.target_read_core_registers(("not_in_profile",))
+    assert target.calls == []
     backend.close()
 
 

@@ -39,8 +39,26 @@ class _WorkerTestBackend:
     def list_probes(self): return (ProbeDescriptor("probe-a", "v", "p", None),)
     def open_attach(self, probe_id, target, *, halt_on_connect=False):
         return ProbeAttachmentEvidence(probe_id, target, target, 1)
-    def read_memory(self, address, length): return b"m" * length
-    def read_core_registers(self, names): return {name: 1 for name in names}
+    def _record_read(self, operation: str) -> None:
+        with self.marker.open("ab") as stream:
+            stream.write((operation + "\n").encode("ascii"))
+    def read_memory(self, address, length):
+        self._record_read(f"legacy-memory:{address}:{length}")
+        return b"m" * length
+    def read_core_registers(self, names):
+        self._record_read("legacy-registers:" + ",".join(names))
+        return {name: 1 for name in names}
+    def target_read_memory(self, address, length):
+        self._record_read(f"target-memory:{address}:{length}")
+        return b"t" * length
+    def target_read_core_registers(self, names):
+        self._record_read("target-registers:" + ",".join(names))
+        return {name: 2 for name in names}
+    def target_observation_policy(self):
+        return {
+            "readable_regions": [{"start": 0x20000000, "size": 4}],
+            "register_allowlist": ["pc"],
+        }
     def halt(self): return None
     def resume(self): return None
     def reset(self): return None
@@ -187,6 +205,53 @@ def test_worker_exercises_the_complete_fixed_probe_backend_port(tmp_path: Path) 
     assert worker.read_target_transport(opened["transport_id"], 1, 1)["data"] == b"r"
     assert worker.close_target_transport(opened["transport_id"])["closed"] is True
     worker.close()
+
+
+def test_spawned_worker_service_isolates_legacy_and_target_observation_reads(
+    tmp_path: Path,
+) -> None:
+    """The production Service/worker boundary preserves both read contracts."""
+    from stm32_toolkit.probe.client import ProbeClient, ProbeClientError
+    from test_probe_service import make_service, run
+
+    async def scenario() -> None:
+        marker = tmp_path / "backend-reads.txt"
+        worker = ProbeBackendWorker(
+            _test_backend_factory=partial(
+                _factory, "normal", str(marker)
+            )
+        )
+        service = make_service(
+            tmp_path / "service", level=OperationLevel.OBSERVE, backend=worker
+        )
+        endpoint = await service.start()
+        client = ProbeClient(endpoint)
+        try:
+            await client.attach("probe-a", "stm32f407vg")
+            assert await client.read_memory(0x40000000, 4) == b"mmmm"
+            assert await client.read_registers(("r1",)) == {"r1": 1}
+            with pytest.raises(ProbeClientError):
+                await client.target_memory(0x40000000, 4)
+            with pytest.raises(ProbeClientError):
+                await client.target_registers(("r1",))
+            assert marker.read_text(encoding="ascii").splitlines() == [
+                "legacy-memory:1073741824:4",
+                "legacy-registers:r1",
+            ]
+            assert await client.target_memory(0x20000000, 4) == b"tttt"
+            assert (await client.target_registers(("pc",)))[0]["value"] == 2
+            assert marker.read_text(encoding="ascii").splitlines() == [
+                "legacy-memory:1073741824:4",
+                "legacy-registers:r1",
+                "target-memory:536870912:4",
+                "target-registers:pc",
+            ]
+        finally:
+            await client.close()
+            await service.stop()
+        assert not worker.is_alive
+
+    run(scenario())
 
 
 def test_worker_accepts_the_300_second_transport_and_log_protocol_limit(tmp_path: Path) -> None:

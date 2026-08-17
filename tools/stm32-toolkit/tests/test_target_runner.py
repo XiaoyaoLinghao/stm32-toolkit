@@ -13,11 +13,13 @@ import threading
 import time
 
 import pytest
+from stm32_toolkit.evidence import EvidenceIdentity
 from stm32_toolkit.result import OperationResult
 
 from stm32_toolkit.probe import client as probe_client
 from stm32_toolkit.probe.authorization import ControlAuthorizationError, ControlAuthorizationStore
 from stm32_toolkit.testing import target as target_module
+from stm32_toolkit.testing.model import calculate_inventory_digest
 
 ProbeClientError = probe_client.ProbeClientError
 
@@ -25,13 +27,15 @@ WORKSPACE_ID = "0" * 64
 PROJECT_ID = "123e4567-e89b-42d3-a456-426614174000"
 SESSION_ID = "session-0601-t09"
 REVISION = "c" * 40
+PROBE_SELECTOR = "probe-a"
+PROBE_HASH = sha256(PROBE_SELECTOR.encode("utf-8")).hexdigest()
 
 
 IDENTITY = {
     "board_id": "board-a",
     "mcu": "stm32f407vg",
     "target_id": "target-a",
-    "probe_serial_hash": "1" * 64,
+    "probe_serial_hash": PROBE_HASH,
 }
 STATE = {"state": "halted", "reason": "requested"}
 MAILBOX_PROJECT_CONFIG = {
@@ -76,27 +80,72 @@ def run(coro):
     return asyncio.run(coro)
 
 
-def valid_target_stream(case_id: str = "suite.case") -> bytes:
-    identity = {
+def release_process_barrier(
+    children: list[subprocess.Popen[bytes]], ready: list[Path], start: Path,
+) -> None:
+    deadline = time.monotonic() + 15
+    while not all(path.exists() for path in ready) and time.monotonic() < deadline:
+      if any(child.poll() is not None for child in children):
+        break
+      time.sleep(0.005)
+    if not all(path.exists() for path in ready):
+      for child in children:
+        if child.poll() is None:
+          child.terminate()
+      for child in children:
+        child.wait(timeout=5)
+      pytest.fail("authorization consumers did not reach the start barrier")
+    start.write_text("go", encoding="utf-8")
+
+
+def _target_evidence_identity(
+    input_snapshot_sha256: str = "9" * 64,
+) -> EvidenceIdentity:
+    return EvidenceIdentity.from_dict({
         "workspace_id": WORKSPACE_ID, "project_id": PROJECT_ID, "session_id": SESSION_ID,
         "build_id": "b" * 64, "elf_sha256": "e" * 64, "target_device": "target-a",
-        "input_snapshot_sha256": "a" * 64, "git_commit": REVISION, "git_dirty": False,
-    }
+        "input_snapshot_sha256": input_snapshot_sha256, "git_commit": REVISION, "git_dirty": False,
+    })
+
+
+def _target_inventory_digest(
+    case_id: str = "suite.case", *, input_snapshot_sha256: str = "9" * 64,
+) -> str:
+    return calculate_inventory_digest(
+        "target", _target_evidence_identity(input_snapshot_sha256), (case_id,)
+    )
+
+
+def _target_stream(
+    case_id: str = "suite.case",
+    *,
+    input_snapshot_sha256: str = "9" * 64,
+    inventory_digest: str | None = None,
+) -> bytes:
+    identity = _target_evidence_identity(input_snapshot_sha256)
+    digest = inventory_digest or calculate_inventory_digest("target", identity, (case_id,))
     bodies = [
-        (1, {"mode": "target", "identity": identity, "case_ids": [case_id], "inventory_digest": "a" * 64, "discovered_at_utc": "2026-08-16T00:00:00.000000Z"}),
-        (2, {"run_id": "run-1", "started_at_utc": "2026-08-16T00:00:00.000000Z", "case_ids": [case_id], "inventory_digest": "a" * 64}),
+        (1, {"mode": "target", "identity": identity.to_dict(), "case_ids": [case_id], "inventory_digest": digest, "discovered_at_utc": "2026-08-16T00:00:00.000000Z"}),
+        (2, {"run_id": "run-1", "started_at_utc": "2026-08-16T00:00:00.000000Z", "case_ids": [case_id], "inventory_digest": digest}),
         (3, {"case_id": case_id, "started_at_utc": "2026-08-16T00:00:00.000000Z"}),
         (4, {"case_id": case_id, "state": "passed", "ended_at_utc": "2026-08-16T00:00:01.000000Z", "duration_ms": 1000, "message": None, "stdout": None, "stderr": None}),
     ]
     frames = [target_module.encode_frame(kind, sequence, body) for sequence, (kind, body) in enumerate(bodies)]
     terminal = {
         "state": "passed", "ended_at_utc": "2026-08-16T00:00:01.000000Z", "duration_ms": 1000,
-        "inventory_digest": "a" * 64, "build_id": "b" * 64, "elf_sha256": "e" * 64,
+        "inventory_digest": digest, "build_id": "b" * 64, "elf_sha256": "e" * 64,
         "target_device": "target-a", "counts": {"passed": 1, "failed": 0, "skipped": 0, "error": 0, "timeout": 0},
         "event_stream_digest": sha256(b"".join(frames)).hexdigest(),
     }
     frames.append(target_module.encode_frame(5, len(frames), terminal))
     return b"".join(frames)
+
+
+def valid_target_stream(case_id: str = "suite.case") -> bytes:
+    return _target_stream(case_id)
+
+
+TARGET_RUN_INVENTORY_DIGEST = _target_inventory_digest()
 
 
 def test_control_prepare_binds_snapshot_and_execute_consumes_before_denial(tmp_path: Path):
@@ -147,6 +196,7 @@ class FakeTransport:
     def read(self, maximum, deadline):
         self.calls.append(("read", maximum, deadline))
         return self.chunks.pop(0) if self.chunks else b""
+    def eof(self): return not self.chunks
     def close(self): self.calls.append(("close",))
     def identity(self):
         config = self.config
@@ -156,7 +206,7 @@ class FakeTransport:
           config = {
             "address": 0x20000000, "size": 4096,
             "ram": [{"start": 0x20000000, "size": 0x10000}],
-            "target_id": "target-a", "probe_id": "1" * 64,
+            "target_id": "target-a", "probe_id": PROBE_HASH,
           }
         identity = {
             "probe_id": str(config["probe_id"]), "target_id": str(config["target_id"]),
@@ -179,7 +229,7 @@ def test_target_run_preflights_project_v3_config_and_exact_authorized_cases_befo
     )
     common = dict(
         workspace_id="workspace-a", project_id="project-a", session_id="session-a",
-        revision="rev-a", target=IDENTITY, probe_serial_hash="1" * 64,
+        revision="rev-a", target=IDENTITY, probe_serial_hash=PROBE_HASH,
         elf_path="build/app.elf", elf_sha256="e" * 64, build_id="b" * 64,
         inventory_digest="a" * 64, transport="mailbox", support_profile=TARGET_SUPPORT,
         cases=("suite.case",),
@@ -211,14 +261,15 @@ def test_target_run_preflights_project_v3_config_and_exact_authorized_cases_befo
         (tmp_path / "wrong-case").absolute(), FakeProbeClient(), flash,
         lambda name: transport,
     )
+    wrong_case_inventory_digest = _target_inventory_digest("other.case")
     prepared = await exact_runner.prepare(
         transport_config={"kind": "memory-mailbox", "options": {"address": 0x20000000, "size": 4096}},
-        **common,
+        **{**common, "inventory_digest": wrong_case_inventory_digest},
     )
     with pytest.raises(target_module.TargetRunError) as mismatch:
       await exact_runner.run(
           prepared, prepared.action_digest, current_revision="rev-a",
-          current_inventory_digest="a" * 64,
+          current_inventory_digest=wrong_case_inventory_digest,
           now=datetime(2026, 8, 16, tzinfo=timezone.utc),
       )
     assert mismatch.value.code == "TEST_IDENTITY_MISMATCH"
@@ -235,7 +286,7 @@ def test_target_runner_prepare_is_single_use_and_closes_stale_identity(tmp_path:
     runner = getattr(target_module, "TargetTestRunner")(tmp_path / "runs", probe, flash, lambda name: transport)
     prepared = await runner.prepare(
         workspace_id="workspace-a", project_id="project-a", session_id="session-a",
-        revision="rev-a", target=IDENTITY, probe_serial_hash="1" * 64,
+        revision="rev-a", target=IDENTITY, probe_serial_hash=PROBE_HASH,
         elf_path="build/app.elf", elf_sha256="e" * 64, build_id="b" * 64,
         inventory_digest="a" * 64, transport="mailbox", transport_config=MAILBOX_PROJECT_CONFIG,
         support_profile=TARGET_SUPPORT,
@@ -260,54 +311,76 @@ def test_discovery_is_read_only_and_never_consumes_modify_authorization(tmp_path
   async def scenario():
     probe = FakeProbeClient()
     flash = FakeFlashWorkflow()
-    transport = FakeTransport([b""])
-    runner = getattr(target_module, "TargetTestRunner")(tmp_path / "runs", probe, flash, lambda name: transport)
-    discovered = await runner.discover(
-        transport="mailbox", config={"target_id": "target-a"}, deadline=1.0,
-        expected_identity=IDENTITY,
+    transport = FakeTransport([_r5_inventory_frame()])
+    root = (tmp_path / "runs").absolute()
+    runner = getattr(target_module, "TargetTestRunner")(root, probe, flash, lambda name: transport)
+    instant = datetime(2026, 8, 16, tzinfo=timezone.utc)
+    prepared = await runner.prepare(
+        workspace_id=WORKSPACE_ID, project_id=PROJECT_ID, session_id=SESSION_ID,
+        revision=REVISION, target=IDENTITY, probe_serial_hash=PROBE_HASH,
+        elf_path="build/app.elf", elf_sha256="e" * 64, build_id="b" * 64,
+        inventory_digest="a" * 64, transport="mailbox",
+        transport_config=MAILBOX_PROJECT_CONFIG, support_profile=TARGET_SUPPORT,
+        cases=("suite.case",), timeout_ms=1000, now=instant,
     )
+    deadline = time.monotonic() + 1.0
+    discovered = await _r5_discover(runner, deadline=deadline)
     assert discovered["identity"]["target_id"] == "target-a"
-    assert transport.calls == [("open", {"target_id": "target-a"}, 1.0), ("read", 65536, 1.0), ("close",)]
+    assert discovered["inventory"]["inventory_digest"] == R5_INVENTORY_DIGEST
+    assert discovered["inventory"]["identity"]["build_id"] == "b" * 64
+    assert discovered["raw"] == _r5_inventory_frame()
+    assert transport.calls[0] == ("open", {
+        "address": 0x20000000, "size": 4096, "ram": TARGET_SUPPORT["ram"],
+        "target_id": "target-a", "probe_id": PROBE_HASH,
+    }, deadline)
+    assert [call[0] for call in transport.calls] == ["open", "read", "read", "close"]
+    assert transport.calls[1] == ("read", 65_536, deadline)
+    assert 0 < transport.calls[2][1] < 65_536
+    assert transport.calls[2][2] == deadline
     assert not flash.calls
+    assert not (root / "records" / f"{prepared.action_digest}.consumed.json").exists()
   run(scenario())
 
 
 def test_discovery_async_transport_composition_rejects_identity_and_nonbytes(tmp_path: Path):
   class AsyncTransport(FakeTransport):
-    def __init__(self, raw=b"inventory", identity=None):
-      super().__init__([])
-      self.raw = raw
-      self.transport_identity = identity or {"target_id": "target-a"}
-    async def open(self, config, deadline): self.calls.append(("open", config, deadline))
-    async def read_async(self, maximum, deadline): self.calls.append(("read", maximum, deadline)); return self.raw
+    def __init__(self, raw=None, identity_mutation=None):
+      super().__init__([_r5_inventory_frame() if raw is None else raw])
+      self.identity_mutation = identity_mutation
+    async def open(self, config, deadline):
+      self.config = dict(config)
+      self.calls.append(("open", dict(config), deadline))
+    async def read_async(self, maximum, deadline): return self.read(maximum, deadline)
     async def close_async(self): self.calls.append(("close",))
-    def identity(self): return self.transport_identity
+    def identity(self):
+      value = super().identity()
+      if self.identity_mutation is not None:
+        value.update(self.identity_mutation)
+      return value
 
   async def scenario():
     active = AsyncTransport()
     runner = target_module.TargetTestRunner(
         (tmp_path / "success").absolute(), FakeProbeClient(), FakeFlashWorkflow(), lambda name: active,
     )
-    assert (await runner.discover(
-        transport="mailbox", config={}, deadline=1.0, expected_identity=IDENTITY,
-    ))["raw"] == b"inventory"
-    assert active.calls == [("open", {}, 1.0), ("read", 65536, 1.0), ("close",)]
+    assert (await _r5_discover(runner))["raw"] == _r5_inventory_frame()
+    assert active.calls[0][0] == "open"
+    assert active.calls[1][0] == "read"
+    assert active.calls[-1] == ("close",)
 
-    for index, probe_identity, raw, transport_identity in (
-        (0, {**IDENTITY, "target_id": "other"}, b"x", {"target_id": "target-a"}),
-        (1, IDENTITY, "not-bytes", {"target_id": "target-a"}),
-        (2, IDENTITY, b"x", {"target_id": "other"}),
+    for index, probe_identity, raw, identity_mutation in (
+        (0, {**IDENTITY, "target_id": "other"}, _r5_inventory_frame(), None),
+        (1, IDENTITY, "not-bytes", None),
+        (2, IDENTITY, _r5_inventory_frame(), {"target_id": "other"}),
     ):
       probe = FakeProbeClient()
       probe.identity = probe_identity
-      invalid = AsyncTransport(raw, transport_identity)
+      invalid = AsyncTransport(raw, identity_mutation)
       candidate = target_module.TargetTestRunner(
           (tmp_path / f"invalid-{index}").absolute(), probe, FakeFlashWorkflow(), lambda name, item=invalid: item,
       )
       with pytest.raises(target_module.TargetRunError) as caught:
-        await candidate.discover(
-            transport="mailbox", config={}, deadline=1.0, expected_identity=IDENTITY,
-        )
+        await _r5_discover(candidate)
       assert caught.value.code == "TEST_TRANSPORT_UNAVAILABLE"
       assert invalid.calls[-1] == ("close",)
   run(scenario())
@@ -351,14 +424,15 @@ def test_target_runner_success_persists_three_manifests_and_guarded_flash(tmp_pa
     instant = datetime.now(timezone.utc)
     prepared = await runner.prepare(
         workspace_id=WORKSPACE_ID, project_id=PROJECT_ID, session_id=SESSION_ID, revision=REVISION,
-        target=IDENTITY, probe_serial_hash="1" * 64, elf_path="build/app.elf", elf_sha256="e" * 64,
-        build_id="b" * 64, inventory_digest="a" * 64, transport="mailbox",
+        target=IDENTITY, probe_serial_hash=PROBE_HASH, elf_path="build/app.elf", elf_sha256="e" * 64,
+        build_id="b" * 64, inventory_digest=TARGET_RUN_INVENTORY_DIGEST, transport="mailbox",
         transport_config=MAILBOX_PROJECT_CONFIG, support_profile=TARGET_SUPPORT,
         cases=("suite.case",), timeout_ms=1000, now=instant,
     )
     before_deadline = time.monotonic()
     result = await runner.run(
-        prepared, prepared.action_digest, current_revision=REVISION, current_inventory_digest="a" * 64, now=instant,
+        prepared, prepared.action_digest, current_revision=REVISION,
+        current_inventory_digest=TARGET_RUN_INVENTORY_DIGEST, now=instant,
     )
     assert isinstance(result["test_manifest"], TestRunManifest)
     assert result["test_manifest"].schema == "stm32-test/1"
@@ -368,6 +442,17 @@ def test_target_runner_success_persists_three_manifests_and_guarded_flash(tmp_pa
     assert evidence_store.get_envelope(str(result["evidence"].evidence_id)) == result["evidence"]
     assert {artifact.kind for artifact in result["evidence"].artifacts} == {"test-events", "test-manifest"}
     assert len(workflow_calls) == 1
+    assert workflow_calls[0].probe_id == PROBE_SELECTOR
+    assert sha256(workflow_calls[0].probe_id.encode("utf-8")).hexdigest() == PROBE_HASH
+    metadata = result["evidence"].metadata
+    assert metadata["action_digest"] == prepared.action_digest
+    assert metadata["probe_serial_hash"] == PROBE_HASH
+    assert metadata["transport_config_digest"] == transport.identity()["config_digest"]
+    manifest_artifact = next(
+        artifact for artifact in result["evidence"].artifacts
+        if artifact.kind == "test-manifest"
+    )
+    assert metadata["test_manifest_sha256"] == manifest_artifact.sha256
     assert transport.calls[0][2] > before_deadline
     assert transport.calls[-1] == ("close",)
     assert probe.closed
@@ -384,7 +469,7 @@ def test_target_runner_consumes_before_stale_or_denied_run(tmp_path: Path, mutat
     instant = datetime(2026, 8, 16, tzinfo=timezone.utc)
     prepared = await runner.prepare(
         workspace_id="workspace-a", project_id="project-a", session_id="session-a", revision="rev-a",
-        target=IDENTITY, probe_serial_hash="1" * 64, elf_path="build/app.elf", elf_sha256="e" * 64,
+        target=IDENTITY, probe_serial_hash=PROBE_HASH, elf_path="build/app.elf", elf_sha256="e" * 64,
         build_id="b" * 64, inventory_digest="a" * 64, transport="mailbox",
         transport_config=MAILBOX_PROJECT_CONFIG, support_profile=TARGET_SUPPORT,
         cases=("suite.case",), timeout_ms=1000, now=instant,
@@ -409,7 +494,7 @@ def test_target_runner_prepare_rejects_nonclosed_and_bad_limits(tmp_path: Path):
       await runner.prepare(now=datetime.now(timezone.utc), extra=True)
     common = dict(
         workspace_id="w", project_id="p", session_id="s", revision="r", target=IDENTITY,
-        probe_serial_hash="1" * 64, elf_path="a.elf", elf_sha256="e" * 64, build_id="b" * 64,
+        probe_serial_hash=PROBE_HASH, elf_path="a.elf", elf_sha256="e" * 64, build_id="b" * 64,
         inventory_digest="a" * 64, transport="mailbox", transport_config=MAILBOX_PROJECT_CONFIG,
         support_profile=TARGET_SUPPORT, cases=("c",), timeout_ms=True,
     )
@@ -428,7 +513,7 @@ def test_target_runner_prepare_rejects_nonclosed_and_bad_limits(tmp_path: Path):
 def test_target_prepared_record_closed_validation_rejects_each_identity_and_limit_boundary():
   valid = {
       "workspace_id": "w", "project_id": "p", "session_id": "s", "revision": "r",
-      "target": IDENTITY, "probe_serial_hash": "1" * 64, "elf_path": "a.elf",
+      "target": IDENTITY, "probe_serial_hash": PROBE_HASH, "elf_path": "a.elf",
       "elf_sha256": "e" * 64, "build_id": "b" * 64, "inventory_digest": "a" * 64,
       "transport": "mailbox", "transport_config": MAILBOX_PROJECT_CONFIG,
       "support_profile": TARGET_SUPPORT, "cases": ["suite.case"],
@@ -689,11 +774,21 @@ def test_control_authorization_store_rejects_every_closed_binding_and_record_bou
     with pytest.raises(ControlAuthorizationError):
       authority_store._read_authority()
 
+  shaped_store = ControlAuthorizationStore((tmp_path / "authority-corrupt-shape" / "control").absolute())
+  shaped_store.prepare(base, now=instant)
+  shaped_authority = dict(shaped_store._read_authority())
+  shaped_authority["records"] = ["device", "inode"]
+  shaped_store._authority_path().write_bytes(canonical_json_bytes(shaped_authority))
+  with pytest.raises(ControlAuthorizationError):
+    shaped_store._read_authority()
+
   changed_store = ControlAuthorizationStore((tmp_path / "authority-create-race" / "control").absolute())
   parent_store = changed_store._parent_store()
   with parent_store._mutation_lock():
     pass
-  monkeypatch.setattr(parent_store, "_atomic_create_new", lambda *args, **kwargs: False)
+  monkeypatch.setattr(
+      changed_store, "_authorization_create_new", lambda *args, **kwargs: False
+  )
   with pytest.raises(ControlAuthorizationError):
     changed_store.prepare(base, now=instant)
 
@@ -810,7 +905,7 @@ def test_target_run_is_consumed_and_denied_at_exact_expiry_before_flash(tmp_path
     instant = datetime(2026, 8, 16, tzinfo=timezone.utc)
     prepared = await runner.prepare(
         workspace_id="workspace-a", project_id="project-a", session_id="session-a",
-        revision="rev-a", target=IDENTITY, probe_serial_hash="1" * 64,
+        revision="rev-a", target=IDENTITY, probe_serial_hash=PROBE_HASH,
         elf_path="build/app.elf", elf_sha256="e" * 64, build_id="b" * 64,
         inventory_digest="a" * 64, transport="mailbox",
         transport_config=MAILBOX_PROJECT_CONFIG, support_profile=TARGET_SUPPORT,
@@ -885,7 +980,9 @@ def test_control_consume_pins_the_validated_records_directory_through_create_new
   replacement = root / "records"
   original = root / "records-original"
 
-  def swap_after_authority_validation(digest: str):
+  def swap_after_authority_validation(
+      digest: str, *, directory_descriptor: int | None = None,
+  ):
     try:
       replacement.rename(original)
       shutil.copytree(original, replacement)
@@ -893,7 +990,7 @@ def test_control_consume_pins_the_validated_records_directory_through_create_new
       raise ControlAuthorizationError(
           "PROBE_AUTHORIZATION_INVALID", "Authorization directory changed"
       ) from error
-    return original_read(digest)
+    return original_read(digest, directory_descriptor=directory_descriptor)
 
   monkeypatch.setattr(store, "_read_prepared", swap_after_authority_validation)
   with pytest.raises(ControlAuthorizationError) as caught:
@@ -1125,8 +1222,14 @@ def test_control_directory_pin_rejects_posix_handle_and_named_identity_changes(
   monkeypatch.setattr(module.os, "close", closed.append)
   monkeypatch.setattr(module.os, "fstat", lambda descriptor: real)
   with store._pinned_records_directory() as pinned:
-    assert pinned == directory
+    assert pinned == 73
   assert closed == [73]
+
+  with pytest.raises(ControlAuthorizationError):
+    with store._pinned_records_directory(
+        expected_identity={"device": "0", "inode": "0"}
+    ):
+      pass
 
   different = type("Metadata", (), {
       "st_mode": real.st_mode, "st_dev": real.st_dev, "st_ino": real.st_ino + 1,
@@ -1269,18 +1372,32 @@ def test_control_authorization_cross_process_consume_has_one_winner(tmp_path: Pa
       "identity_snapshot": IDENTITY, "state_snapshot": STATE,
   }, now=instant)
   script = """
-import json, pathlib, sys
+import json, pathlib, sys, time
 from datetime import datetime, timezone
 from stm32_toolkit.probe.authorization import ControlAuthorizationError, ControlAuthorizationStore
 root=pathlib.Path(sys.argv[1]); digest=sys.argv[2]
 identity=json.loads(sys.argv[3]); state=json.loads(sys.argv[4])
+ready=pathlib.Path(sys.argv[5]); start=pathlib.Path(sys.argv[6])
+ready.write_text('ready', encoding='utf-8')
+deadline=time.monotonic()+15
+while not start.exists() and time.monotonic()<deadline: time.sleep(0.001)
+if not start.exists(): raise SystemExit(4)
 try:
     ControlAuthorizationStore(root).consume(digest, operation='target.resume', arguments={}, workspace_id='workspace-a', session_id='session-a', identity=identity, state=state, now=datetime(2026,8,16,tzinfo=timezone.utc))
 except ControlAuthorizationError:
     raise SystemExit(3)
 """
-  arguments = [str(root), prepared.action_digest, __import__("json").dumps(IDENTITY), __import__("json").dumps(STATE)]
-  children = [subprocess.Popen([sys.executable, "-c", script, *arguments]) for _ in range(2)]
+  start = tmp_path / "control-consume.start"
+  ready = [tmp_path / f"control-consume-{index}.ready" for index in range(2)]
+  base = [
+      str(root), prepared.action_digest, __import__("json").dumps(IDENTITY),
+      __import__("json").dumps(STATE),
+  ]
+  children = [
+      subprocess.Popen([sys.executable, "-c", script, *base, str(path), str(start)])
+      for path in ready
+  ]
+  release_process_barrier(children, ready, start)
   codes = sorted(child.wait(timeout=15) for child in children)
   assert codes == [0, 3]
 
@@ -1299,7 +1416,7 @@ def test_target_runner_rejects_forged_prepared_value_without_persistent_record(
     binding = {
         "workspace_id": "workspace-a", "project_id": "project-a",
         "session_id": "session-a", "revision": "rev-a", "target": IDENTITY,
-        "probe_serial_hash": "1" * 64, "elf_path": "build/app.elf",
+        "probe_serial_hash": PROBE_HASH, "elf_path": "build/app.elf",
         "elf_sha256": "e" * 64, "build_id": "b" * 64,
         "inventory_digest": "a" * 64, "transport": "mailbox",
         "transport_config": MAILBOX_PROJECT_CONFIG, "support_profile": TARGET_SUPPORT,
@@ -1334,7 +1451,7 @@ def test_target_runner_rejects_empty_or_unframed_stream_before_publication(
     instant = datetime(2026, 8, 16, tzinfo=timezone.utc)
     prepared = await runner.prepare(
         workspace_id="workspace-a", project_id="project-a", session_id="session-a",
-        revision="rev-a", target=IDENTITY, probe_serial_hash="1" * 64,
+        revision="rev-a", target=IDENTITY, probe_serial_hash=PROBE_HASH,
         elf_path="build/app.elf", elf_sha256="e" * 64, build_id="b" * 64,
         inventory_digest="a" * 64, transport="mailbox", transport_config=MAILBOX_PROJECT_CONFIG,
         support_profile=TARGET_SUPPORT,
@@ -1367,10 +1484,10 @@ def test_closed_transport_identity_rejects_shape_empty_and_changed_values(value,
 @pytest.mark.parametrize(
     "transport,identity",
     [
-        ("mailbox", {"probe_id": "1" * 64, "target_id": "target-a", "transport": "mailbox", "config_digest": "0" * 64, "address": "0x20000000", "ring_size": "4096", "ram_bounds": "0x20000000+0x00010000"}),
-        ("rtt", {"probe_id": "1" * 64, "target_id": "target-a", "transport": "rtt", "config_digest": "0" * 64, "channel": "0", "control_block_address": "0x20000100", "ram_bounds": "0x20000000+0x00010000"}),
-        ("uart", {"probe_id": "1" * 64, "target_id": "target-a", "transport": "uart", "config_digest": "0" * 64, "port": "COM3", "baud": "115200", "data_bits": "8", "parity": "N", "stop_bits": "1", "flow_control": "xonxoff=0,rtscts=0,dsrdtr=0"}),
-        ("semihosting", {"probe_id": "1" * 64, "target_id": "target-a", "transport": "semihosting", "config_digest": "0" * 64, "elf_path": "C:\\fixture\\app.elf", "elf_sha256": "e" * 64, "host_file_policy": "deny"}),
+        ("mailbox", {"probe_id": PROBE_HASH, "target_id": "target-a", "transport": "mailbox", "config_digest": "0" * 64, "address": "0x20000000", "ring_size": "4096", "ram_bounds": "0x20000000+0x00010000"}),
+        ("rtt", {"probe_id": PROBE_HASH, "target_id": "target-a", "transport": "rtt", "config_digest": "0" * 64, "channel": "0", "control_block_address": "0x20000100", "ram_bounds": "0x20000000+0x00010000"}),
+        ("uart", {"probe_id": PROBE_HASH, "target_id": "target-a", "transport": "uart", "config_digest": "0" * 64, "port": "COM3", "baud": "115200", "data_bits": "8", "parity": "N", "stop_bits": "1", "flow_control": "xonxoff=0,rtscts=0,dsrdtr=0"}),
+        ("semihosting", {"probe_id": PROBE_HASH, "target_id": "target-a", "transport": "semihosting", "config_digest": "0" * 64, "elf_path": "C:\\fixture\\app.elf", "elf_sha256": "e" * 64, "host_file_policy": "deny"}),
     ],
 )
 def test_closed_transport_identity_accepts_each_task8_production_shape(transport, identity):
@@ -1381,7 +1498,7 @@ def test_closed_transport_identity_accepts_each_task8_production_shape(transport
       "semihosting": {"kind": "semihosting", "options": {}},
   }
   binding = {
-      "target": IDENTITY, "probe_serial_hash": "1" * 64,
+      "target": IDENTITY, "probe_serial_hash": PROBE_HASH,
       "elf_path": "build/app.elf", "elf_sha256": "e" * 64,
       "transport": transport, "transport_config": configs[transport],
       "support_profile": TARGET_SUPPORT,
@@ -1396,17 +1513,17 @@ def test_closed_transport_identity_accepts_each_task8_production_shape(transport
 @pytest.mark.parametrize(
     "transport,project_config,expected",
     [
-        ("mailbox", MAILBOX_PROJECT_CONFIG, {"address": 0x20000000, "size": 4096, "ram": TARGET_SUPPORT["ram"], "target_id": "target-a", "probe_id": "1" * 64}),
-        ("rtt", {"kind": "rtt", "options": {"channel": 0, "controlBlockAddress": 0x20000100}}, {"channel": 0, "control_block_address": 0x20000100, "ram": TARGET_SUPPORT["ram"], "target_id": "target-a", "probe_id": "1" * 64}),
-        ("uart", {"kind": "uart", "options": {"port": "COM3", "baud": 115200}}, {"port": "COM3", "baud": 115200, "data_bits": 8, "parity": "N", "stop_bits": 1, "target_id": "target-a", "probe_id": "1" * 64}),
-        ("semihosting", {"kind": "semihosting", "options": {}}, {"elf_path": "C:\\fixture\\app.elf", "elf_sha256": "e" * 64, "host_files": False, "target_id": "target-a", "probe_id": "1" * 64}),
+        ("mailbox", MAILBOX_PROJECT_CONFIG, {"address": 0x20000000, "size": 4096, "ram": TARGET_SUPPORT["ram"], "target_id": "target-a", "probe_id": PROBE_HASH}),
+        ("rtt", {"kind": "rtt", "options": {"channel": 0, "controlBlockAddress": 0x20000100}}, {"channel": 0, "control_block_address": 0x20000100, "ram": TARGET_SUPPORT["ram"], "target_id": "target-a", "probe_id": PROBE_HASH}),
+        ("uart", {"kind": "uart", "options": {"port": "COM3", "baud": 115200}}, {"port": "COM3", "baud": 115200, "data_bits": 8, "parity": "N", "stop_bits": 1, "target_id": "target-a", "probe_id": PROBE_HASH}),
+        ("semihosting", {"kind": "semihosting", "options": {}}, {"elf_path": "C:\\fixture\\app.elf", "elf_sha256": "e" * 64, "host_files": False, "target_id": "target-a", "probe_id": PROBE_HASH}),
     ],
 )
 def test_target_builds_each_real_task8_effective_config_from_frozen_inputs(
     transport, project_config, expected,
 ):
   binding = {
-      "target": IDENTITY, "probe_serial_hash": "1" * 64,
+      "target": IDENTITY, "probe_serial_hash": PROBE_HASH,
       "elf_path": "build/app.elf", "elf_sha256": "e" * 64,
       "transport": transport, "transport_config": project_config,
       "support_profile": TARGET_SUPPORT,
@@ -1416,13 +1533,13 @@ def test_target_builds_each_real_task8_effective_config_from_frozen_inputs(
 
 def test_target_transport_identity_rejects_a_stable_but_unrecomputed_digest():
   binding = {
-      "target": IDENTITY, "probe_serial_hash": "1" * 64,
+      "target": IDENTITY, "probe_serial_hash": PROBE_HASH,
       "elf_path": "build/app.elf", "elf_sha256": "e" * 64,
       "transport": "mailbox", "transport_config": MAILBOX_PROJECT_CONFIG,
       "support_profile": TARGET_SUPPORT,
   }
   identity = {
-      "probe_id": "1" * 64, "target_id": "target-a", "transport": "mailbox",
+      "probe_id": PROBE_HASH, "target_id": "target-a", "transport": "mailbox",
       "config_digest": "d" * 64, "address": "0x20000000", "ring_size": "4096",
       "ram_bounds": "0x20000000+0x00010000",
   }
@@ -1456,3 +1573,1718 @@ def test_target_runner_dependency_and_authorization_boundaries_are_closed(tmp_pa
         now=datetime(2026, 8, 16, tzinfo=timezone.utc),
     ))
   assert forged.value.code == "TEST_AUTHORIZATION_INVALID"
+
+
+R5_EVIDENCE_IDENTITY = EvidenceIdentity.from_dict({
+    "workspace_id": WORKSPACE_ID,
+    "project_id": PROJECT_ID,
+    "session_id": SESSION_ID,
+    "build_id": "b" * 64,
+    "elf_sha256": "e" * 64,
+    "target_device": "target-a",
+    "input_snapshot_sha256": "9" * 64,
+    "git_commit": REVISION,
+    "git_dirty": False,
+})
+R5_INVENTORY_DIGEST = calculate_inventory_digest(
+    "target", R5_EVIDENCE_IDENTITY, ("suite.case",)
+)
+
+
+def _r5_inventory_frame(
+    *,
+    build_id: str = "b" * 64,
+    elf_sha256: str = "e" * 64,
+    revision: str = REVISION,
+    inventory_digest: str | None = None,
+    input_snapshot_sha256: str = "9" * 64,
+    case_ids: tuple[str, ...] = ("suite.case",),
+    target_device: str = "target-a",
+) -> bytes:
+  identity = EvidenceIdentity.from_dict({
+      "workspace_id": WORKSPACE_ID,
+      "project_id": PROJECT_ID,
+      "session_id": SESSION_ID,
+      "build_id": build_id,
+      "elf_sha256": elf_sha256,
+      "target_device": target_device,
+      "input_snapshot_sha256": input_snapshot_sha256,
+      "git_commit": revision,
+      "git_dirty": False,
+  })
+  digest = (
+      calculate_inventory_digest("target", identity, case_ids)
+      if inventory_digest is None
+      else inventory_digest
+  )
+  return target_module.encode_frame(1, 0, {
+      "mode": "target",
+      "identity": identity.to_dict(),
+      "case_ids": list(case_ids),
+      "inventory_digest": digest,
+      "discovered_at_utc": "2026-08-16T00:00:00.000000Z",
+  })
+
+
+async def _r5_authorized_ledger(root: Path):
+  runner = target_module.TargetTestRunner(
+      root, FakeProbeClient(), FakeFlashWorkflow(), lambda name: FakeTransport([]),
+  )
+  instant = datetime(2026, 8, 16, tzinfo=timezone.utc)
+  prepared = await runner.prepare(
+      workspace_id="workspace-a", project_id="project-a", session_id="session-a",
+      revision="rev-a", target=IDENTITY, probe_serial_hash=PROBE_HASH,
+      elf_path="build/app.elf", elf_sha256="e" * 64, build_id="b" * 64,
+      inventory_digest="a" * 64, transport="mailbox",
+      transport_config=MAILBOX_PROJECT_CONFIG, support_profile=TARGET_SUPPORT,
+      cases=("suite.case",), timeout_ms=1000, now=instant,
+  )
+  return runner, prepared, instant
+
+
+async def _r5_discover(runner, **overrides):
+  arguments = {
+      "transport": "mailbox",
+      "transport_config": MAILBOX_PROJECT_CONFIG,
+      "support_profile": TARGET_SUPPORT,
+      "deadline": time.monotonic() + 1.0,
+      "expected_identity": IDENTITY,
+      "expected_firmware": {
+          "build_id": "b" * 64,
+          "elf_sha256": "e" * 64,
+          "revision": REVISION,
+          "inventory_digest": R5_INVENTORY_DIGEST,
+      },
+  }
+  arguments.update(overrides)
+  return await runner.discover(**arguments)
+
+
+@pytest.mark.parametrize("stream_kind", ["empty", "truncated", "extra"])
+def test_target_discovery_rejects_non_inventory_streams_and_closes(
+    tmp_path: Path, stream_kind: str,
+) -> None:
+  """Discovery accepts exactly one complete canonical inventory frame."""
+  async def scenario() -> None:
+    frame = _r5_inventory_frame()
+    streams = {
+        "empty": b"",
+        "truncated": frame[:-1],
+        "extra": frame + frame,
+    }
+    active = FakeTransport([streams[stream_kind]])
+    probe = FakeProbeClient()
+    flash = FakeFlashWorkflow()
+    runner = target_module.TargetTestRunner(
+        (tmp_path / stream_kind / "runs").absolute(),
+        probe,
+        flash,
+        lambda _name: active,
+    )
+
+    with pytest.raises(target_module.TargetRunError) as caught:
+      await _r5_discover(runner)
+
+    assert caught.value.code == "TEST_TRANSPORT_UNAVAILABLE"
+    assert active.calls[-1] == ("close",)
+    assert probe.closed
+    assert flash.calls == []
+
+  run(scenario())
+
+
+def test_target_discovery_rejects_invalid_binding_before_factory_and_closes_probe(
+    tmp_path: Path,
+) -> None:
+  async def scenario() -> None:
+    probe = FakeProbeClient()
+    factory_calls = []
+    runner = target_module.TargetTestRunner(
+        (tmp_path / "runs").absolute(),
+        probe,
+        FakeFlashWorkflow(),
+        lambda name: factory_calls.append(name),
+    )
+
+    with pytest.raises(target_module.TargetRunError) as caught:
+      await _r5_discover(runner, deadline=time.monotonic() - 1.0)
+
+    assert caught.value.code == "TEST_TRANSPORT_UNAVAILABLE"
+    assert factory_calls == []
+    assert probe.closed
+
+  run(scenario())
+
+
+def test_target_discovery_attempts_both_cleanups_when_both_fail(tmp_path: Path) -> None:
+  class FailingTransport(FakeTransport):
+    def close(self):
+      self.calls.append(("close",))
+      raise OSError("simulated-transport-close-failure")
+
+  class FailingProbe(FakeProbeClient):
+    def close(self):
+      self.calls.append(("close",))
+      raise OSError("simulated-probe-close-failure")
+
+  async def scenario() -> None:
+    active = FailingTransport([_r5_inventory_frame()])
+    probe = FailingProbe()
+    runner = target_module.TargetTestRunner(
+        (tmp_path / "runs").absolute(),
+        probe,
+        FakeFlashWorkflow(),
+        lambda _name: active,
+    )
+
+    with pytest.raises(target_module.TargetRunError) as caught:
+      await _r5_discover(runner)
+
+    assert caught.value.code == "TEST_TRANSPORT_UNAVAILABLE"
+    assert active.calls[-1] == ("close",)
+    assert probe.calls[-1] == ("close",)
+
+  run(scenario())
+
+
+async def _r5_prepared_runner(
+    tmp_path: Path,
+    transport: FakeTransport,
+    *,
+    timeout_ms: int = 250,
+    probe: FakeProbeClient | None = None,
+    inventory_digest: str = TARGET_RUN_INVENTORY_DIGEST,
+):
+  from stm32_toolkit.evidence.store import EvidenceStore
+  from stm32_toolkit.testing.artifacts import TestArtifactCollector
+
+  project = tmp_path / "project"
+  project.mkdir(parents=True)
+  evidence_store = EvidenceStore((tmp_path / "evidence").absolute())
+  collector = TestArtifactCollector(
+      (tmp_path / "results").absolute(), evidence_store, project_root=project,
+  )
+  workflow_calls = []
+
+  async def workflow(request):
+    workflow_calls.append(request)
+    return OperationResult.success("stm32_flash", {"status": "success"})
+
+  probe = probe or FakeProbeClient()
+  probe.identity = dict(IDENTITY)
+  flash = target_module.GuardedTargetFlashAdapter(
+      project_root=project,
+      data_root=(tmp_path / "data").absolute(),
+      session_id=SESSION_ID,
+      probe_id=PROBE_SELECTOR,
+      workflow=workflow,
+  )
+  runner = target_module.TargetTestRunner(
+      (tmp_path / "runs").absolute(),
+      probe,
+      flash,
+      lambda name: transport,
+      artifact_collector=collector,
+  )
+  instant = datetime.now(timezone.utc)
+  prepared = await runner.prepare(
+      workspace_id=WORKSPACE_ID,
+      project_id=PROJECT_ID,
+      session_id=SESSION_ID,
+      revision=REVISION,
+      target=IDENTITY,
+      probe_serial_hash=PROBE_HASH,
+      elf_path="build/app.elf",
+      elf_sha256="e" * 64,
+      build_id="b" * 64,
+      inventory_digest=inventory_digest,
+      transport="mailbox",
+      transport_config=MAILBOX_PROJECT_CONFIG,
+      support_profile=TARGET_SUPPORT,
+      cases=("suite.case",),
+      timeout_ms=timeout_ms,
+      now=instant,
+  )
+  return runner, prepared, instant, probe, evidence_store, workflow_calls
+
+
+def test_guarded_flash_rejects_raw_probe_selector_not_bound_to_authorized_hash(tmp_path: Path):
+  workflow_calls = []
+
+  async def workflow(request):
+    workflow_calls.append(request)
+    return OperationResult.success("stm32_flash", {"status": "success"})
+
+  flash = target_module.GuardedTargetFlashAdapter(
+      project_root=tmp_path.absolute(),
+      data_root=(tmp_path / "data").absolute(),
+      session_id=SESSION_ID,
+      probe_id=PROBE_SELECTOR,
+      workflow=workflow,
+  )
+  binding = {
+      "session_id": SESSION_ID,
+      "probe_serial_hash": "1" * 64,
+      "build_id": "b" * 64,
+      "elf_sha256": "e" * 64,
+  }
+  with pytest.raises(target_module.TargetRunError) as caught:
+    run(flash.run(binding))
+  assert caught.value.code == "TEST_IDENTITY_MISMATCH"
+  assert workflow_calls == []
+
+
+def test_target_modify_authority_rejects_a_copied_root_before_replay(tmp_path: Path):
+  async def scenario() -> None:
+    root = (tmp_path / "authority-parent" / "runs").absolute()
+    _runner, prepared, instant = await _r5_authorized_ledger(root)
+    original = root.with_name("runs-original")
+    root.rename(original)
+    shutil.copytree(original, root)
+    copied = target_module.TargetTestRunner(
+        root, FakeProbeClient(), FakeFlashWorkflow(), lambda name: FakeTransport([]),
+    )
+    with pytest.raises(target_module.TargetRunError) as caught:
+      copied._consume_prepared(prepared.action_digest, now=instant)
+    assert caught.value.code == "TEST_AUTHORIZATION_INVALID"
+    assert not (root / "records" / f"{prepared.action_digest}.consumed.json").exists()
+
+  run(scenario())
+
+
+def test_target_modify_authority_rejects_records_snapshot_replay(tmp_path: Path):
+  async def scenario() -> None:
+    root = (tmp_path / "authority-parent" / "runs").absolute()
+    runner, prepared, instant = await _r5_authorized_ledger(root)
+    snapshot = root.with_name("prepared-records-snapshot")
+    shutil.copytree(root / "records", snapshot)
+    assert runner._consume_prepared(prepared.action_digest, now=instant)["nonce"] == prepared.nonce
+
+    consumed_records = root.with_name("consumed-records")
+    (root / "records").rename(consumed_records)
+    shutil.copytree(snapshot, root / "records")
+    replay = target_module.TargetTestRunner(
+        root, FakeProbeClient(), FakeFlashWorkflow(), lambda name: FakeTransport([]),
+    )
+    with pytest.raises(target_module.TargetRunError) as caught:
+      replay._consume_prepared(prepared.action_digest, now=instant)
+    assert caught.value.code == "TEST_AUTHORIZATION_INVALID"
+    assert not (root / "records" / f"{prepared.action_digest}.consumed.json").exists()
+
+  run(scenario())
+
+
+def test_authorization_publication_is_true_create_new_without_rename_overwrite(
+    tmp_path: Path,
+) -> None:
+  store = ControlAuthorizationStore((tmp_path / "control").absolute())
+  storage = store._evidence_store()
+  target = storage._managed_directory("records") / f"{'d' * 64}.consumed.json"
+  target.write_bytes(b"original")
+  assert not store._authorization_create_new(
+      target, b"replacement", phase="authorization-create-new-contract"
+  )
+  assert target.read_bytes() == b"original"
+
+
+def test_control_stable_record_read_rejects_named_open_identity_swap(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+  from stm32_toolkit.probe import authorization as authorization_module
+
+  instant = datetime(2026, 8, 16, tzinfo=timezone.utc)
+  store = ControlAuthorizationStore((tmp_path / "control").absolute())
+  prepared = store.prepare({
+      "workspace_id": "workspace-a", "project_id": "project-a",
+      "session_id": "session-a", "revision": "rev-a", "target": IDENTITY,
+      "firmware": {"build_id": "b" * 64, "elf_sha256": "e" * 64},
+      "operation": "target.resume", "arguments": {},
+      "identity_snapshot": IDENTITY, "state_snapshot": STATE,
+  }, now=instant)
+  path = store._path(prepared.action_digest, "prepared")
+  replacement = path.with_name("replacement.prepared.json")
+  replacement.write_bytes(path.read_bytes())
+  original = path.with_name("original.prepared.json")
+  real_open = authorization_module.os.open
+  swapped = False
+
+  def swap_before_named_open(candidate, flags, *args):
+    nonlocal swapped
+    if Path(candidate) == path and not swapped:
+      swapped = True
+      path.rename(original)
+      replacement.rename(path)
+    return real_open(candidate, flags, *args)
+
+  monkeypatch.setattr(authorization_module.os, "open", swap_before_named_open)
+  with pytest.raises(ControlAuthorizationError) as caught:
+    store._read_prepared(prepared.action_digest)
+  assert swapped
+  assert caught.value.code == "PROBE_AUTHORIZATION_INVALID"
+
+
+def test_control_stable_record_read_rejects_short_read_with_trailing_bytes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+  from stm32_toolkit.probe import authorization as authorization_module
+
+  instant = datetime(2026, 8, 16, tzinfo=timezone.utc)
+  store = ControlAuthorizationStore((tmp_path / "control").absolute())
+  prepared = store.prepare({
+      "workspace_id": "workspace-a", "project_id": "project-a",
+      "session_id": "session-a", "revision": "rev-a", "target": IDENTITY,
+      "firmware": {"build_id": "b" * 64, "elf_sha256": "e" * 64},
+      "operation": "target.resume", "arguments": {},
+      "identity_snapshot": IDENTITY, "state_snapshot": STATE,
+  }, now=instant)
+  path = store._path(prepared.action_digest, "prepared")
+  canonical = path.read_bytes()
+  path.write_bytes(canonical + b"trailing")
+  target_identity = (path.stat().st_dev, path.stat().st_ino)
+  real_read = authorization_module.os.read
+  shortened = False
+
+  def short_read(descriptor: int, maximum: int) -> bytes:
+    nonlocal shortened
+    opened = authorization_module.os.fstat(descriptor)
+    if not shortened and (opened.st_dev, opened.st_ino) == target_identity:
+      shortened = True
+      return real_read(descriptor, len(canonical))
+    return real_read(descriptor, maximum)
+
+  monkeypatch.setattr(authorization_module.os, "read", short_read)
+  with pytest.raises(ControlAuthorizationError) as caught:
+    store._read_prepared(prepared.action_digest)
+  assert shortened
+  assert caught.value.code == "PROBE_AUTHORIZATION_INVALID"
+
+
+def test_posix_authorization_record_io_is_anchored_to_the_pinned_directory_fd() -> None:
+  from inspect import getsource
+
+  create_source = getsource(ControlAuthorizationStore._authorization_create_new)
+  read_source = getsource(ControlAuthorizationStore._read_stable_record_bytes)
+  pin_source = getsource(ControlAuthorizationStore._pinned_records_directory)
+  assert "src_dir_fd=directory_descriptor" in create_source
+  assert "dst_dir_fd=directory_descriptor" in create_source
+  assert "dir_fd=directory_descriptor" in create_source
+  assert "dir_fd=directory_descriptor" in read_source
+  assert "yield descriptor" in pin_source
+
+
+def test_posix_authorization_record_io_executes_relative_to_pinned_descriptor(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+  from stm32_toolkit.evidence import EvidenceValidationError
+  from stm32_toolkit.probe import authorization as module
+
+  root = (tmp_path / "posix-record-io").absolute()
+  records = root / "records"
+  records.mkdir(parents=True)
+  store = ControlAuthorizationStore(root)
+  pinned_descriptor = 987_654
+  real_open, real_stat = module.os.open, module.os.stat
+  real_link, real_unlink = module.os.link, module.os.unlink
+  real_fsync, real_read = module.os.fsync, module.os.read
+  relative_calls: list[tuple[str, str]] = []
+
+  def anchored(path, descriptor):
+    if descriptor == pinned_descriptor:
+      relative_calls.append(("path", os.fspath(path)))
+      return records / os.fspath(path)
+    return path
+
+  def open_anchored(path, flags, mode=0o777, *, dir_fd=None):
+    return real_open(anchored(path, dir_fd), flags, mode)
+
+  def stat_anchored(path, *, dir_fd=None, follow_symlinks=True):
+    return real_stat(
+        anchored(path, dir_fd), follow_symlinks=follow_symlinks
+    )
+
+  def link_anchored(
+      source, target, *, src_dir_fd=None, dst_dir_fd=None, follow_symlinks=True,
+  ):
+    relative_calls.append(("link", f"{src_dir_fd}:{dst_dir_fd}"))
+    return real_link(
+        anchored(source, src_dir_fd), anchored(target, dst_dir_fd),
+        follow_symlinks=follow_symlinks,
+    )
+
+  def unlink_anchored(path, *, dir_fd=None):
+    return real_unlink(anchored(path, dir_fd))
+
+  def fsync_anchored(descriptor):
+    if descriptor != pinned_descriptor:
+      return real_fsync(descriptor)
+    relative_calls.append(("fsync", str(descriptor)))
+    return None
+
+  monkeypatch.setattr(module.os, "open", open_anchored)
+  monkeypatch.setattr(module.os, "stat", stat_anchored)
+  monkeypatch.setattr(module.os, "link", link_anchored)
+  monkeypatch.setattr(module.os, "unlink", unlink_anchored)
+  monkeypatch.setattr(module.os, "fsync", fsync_anchored)
+
+  target = records / f"{'e' * 64}.prepared.json"
+  payload = b"descriptor-relative-payload"
+  assert store._authorization_create_new(
+      target, payload, phase="posix-create-new",
+      directory_descriptor=pinned_descriptor,
+  )
+  assert store._read_stable_record_bytes(
+      target, 1024, directory_descriptor=pinned_descriptor,
+  ) == payload
+  assert ("link", f"{pinned_descriptor}:{pinned_descriptor}") in relative_calls
+  assert ("fsync", str(pinned_descriptor)) in relative_calls
+
+  assert not store._authorization_create_new(
+      target, b"replacement", phase="posix-create-existing",
+      directory_descriptor=pinned_descriptor,
+  )
+  assert target.read_bytes() == payload
+
+  with pytest.raises(EvidenceValidationError):
+    store._read_stable_record_bytes(
+        target, len(payload) - 1, directory_descriptor=pinned_descriptor,
+    )
+  with pytest.raises(EvidenceValidationError):
+    store._authorization_create_new(
+        root / "wrong" / "record.json", b"invalid", phase="posix-wrong-parent",
+        directory_descriptor=pinned_descriptor,
+    )
+
+  first_read = True
+
+  def premature_eof(descriptor: int, maximum: int) -> bytes:
+    nonlocal first_read
+    if first_read:
+      first_read = False
+      return b""
+    return real_read(descriptor, maximum)
+
+  monkeypatch.setattr(module.os, "read", premature_eof)
+  with pytest.raises(EvidenceValidationError):
+    store._read_stable_record_bytes(
+        target, 1024, directory_descriptor=pinned_descriptor,
+    )
+
+  monkeypatch.setattr(module.os, "read", real_read)
+  collision = records / f".tmp-authorization-{'00' * 16}"
+  collision.write_bytes(b"occupied")
+  monkeypatch.setattr(module.os, "urandom", lambda size: b"\x00" * size)
+  with pytest.raises(EvidenceValidationError):
+    store._authorization_create_new(
+        records / "new-record.json", b"payload", phase="posix-temp-exhaustion",
+        directory_descriptor=pinned_descriptor,
+    )
+
+
+def test_target_modify_cross_process_consume_has_exactly_one_winner(
+    tmp_path: Path,
+) -> None:
+  root = (tmp_path / "cross-process" / "runs").absolute()
+  _runner, prepared, _instant = run(_r5_authorized_ledger(root))
+  script = """
+import pathlib, sys, time
+from datetime import datetime, timezone
+from stm32_toolkit.testing.target import TargetRunError, TargetTestRunner
+runner=TargetTestRunner(pathlib.Path(sys.argv[1]), object(), object(), lambda name: object())
+ready=pathlib.Path(sys.argv[3]); start=pathlib.Path(sys.argv[4])
+ready.write_text('ready', encoding='utf-8')
+deadline=time.monotonic()+15
+while not start.exists() and time.monotonic()<deadline: time.sleep(0.001)
+if not start.exists(): raise SystemExit(4)
+try:
+    runner._consume_prepared(sys.argv[2], now=datetime(2026,8,16,tzinfo=timezone.utc))
+except TargetRunError:
+    raise SystemExit(3)
+"""
+  start = tmp_path / "target-consume.start"
+  ready = [tmp_path / f"target-consume-{index}.ready" for index in range(2)]
+  children = [
+      subprocess.Popen([
+          sys.executable, "-c", script, str(root), prepared.action_digest,
+          str(path), str(start),
+      ])
+      for path in ready
+  ]
+  release_process_barrier(children, ready, start)
+  codes = sorted(child.wait(timeout=15) for child in children)
+  assert codes == [0, 3]
+  assert (root / "records" / f"{prepared.action_digest}.consumed.json").is_file()
+
+
+def test_target_modify_same_process_threads_have_exactly_one_winner(
+    tmp_path: Path,
+) -> None:
+  root = (tmp_path / "same-process" / "runs").absolute()
+  _runner, prepared, instant = run(_r5_authorized_ledger(root))
+  barrier = threading.Barrier(2)
+  outcome: list[str] = []
+  outcome_lock = threading.Lock()
+
+  def consume() -> None:
+    runner = target_module.TargetTestRunner(
+        root, object(), object(), lambda name: object()
+    )
+    barrier.wait(timeout=10)
+    try:
+      runner._consume_prepared(prepared.action_digest, now=instant)
+      result = "success"
+    except target_module.TargetRunError as error:
+      result = error.code
+    with outcome_lock:
+      outcome.append(result)
+
+  threads = [threading.Thread(target=consume) for _ in range(2)]
+  for thread in threads:
+    thread.start()
+  for thread in threads:
+    thread.join(timeout=15)
+  assert all(not thread.is_alive() for thread in threads)
+  assert sorted(outcome) == ["TEST_AUTHORIZATION_INVALID", "success"]
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows root pin contract")
+def test_target_modify_blocks_real_cross_process_root_copy_swap(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+  root = (tmp_path / "process-copy-race" / "runs").absolute()
+  runner, prepared, instant = run(_r5_authorized_ledger(root))
+  original_root = root.with_name("runs-original")
+  signal = tmp_path / "copy-race.go"
+  outcome = tmp_path / "copy-race.outcome"
+  script = (
+      "import pathlib,shutil,sys,time\n"
+      "root,original,signal,outcome=map(pathlib.Path,sys.argv[1:])\n"
+      "deadline=time.monotonic()+10\n"
+      "while not signal.exists() and time.monotonic()<deadline: time.sleep(0.005)\n"
+      "try:\n"
+      " root.rename(original); shutil.copytree(original,root); result='swapped'\n"
+      "except OSError:\n"
+      " result='blocked'\n"
+      "outcome.write_text(result,encoding='utf-8')\n"
+  )
+  child = subprocess.Popen([
+      sys.executable, "-c", script, str(root), str(original_root),
+      str(signal), str(outcome),
+  ])
+  authority = runner._authorization_authority
+  real_read_authority = authority._read_authority
+  signalled = False
+
+  def read_while_attacker_runs():
+    nonlocal signalled
+    value = real_read_authority()
+    if not signalled:
+      signalled = True
+      signal.write_text("go", encoding="utf-8")
+      wait_deadline = time.monotonic() + 10
+      while not outcome.exists() and time.monotonic() < wait_deadline:
+        time.sleep(0.005)
+      assert outcome.exists()
+    return value
+
+  monkeypatch.setattr(authority, "_read_authority", read_while_attacker_runs)
+  try:
+    consumed = runner._consume_prepared(prepared.action_digest, now=instant)
+    assert consumed["nonce"] == prepared.nonce
+    assert child.wait(timeout=10) == 0
+  finally:
+    if child.poll() is None:
+      child.terminate()
+      child.wait(timeout=10)
+  assert outcome.read_text(encoding="utf-8") == "blocked"
+  assert not original_root.exists()
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows junction contract")
+@pytest.mark.parametrize("replacement", ["root", "records"])
+def test_target_modify_rejects_real_junction_replacement(
+    tmp_path: Path, replacement: str,
+) -> None:
+  async def scenario() -> None:
+    root = (tmp_path / replacement / "runs").absolute()
+    runner, prepared, instant = await _r5_authorized_ledger(root)
+    target = root if replacement == "root" else root / "records"
+    original = target.with_name(f"{target.name}-original")
+    target.rename(original)
+    created = subprocess.run(
+        ["cmd", "/d", "/c", "mklink", "/J", str(target), str(original)],
+        capture_output=True, text=True, timeout=10, check=False,
+    )
+    if created.returncode != 0:
+      original.rename(target)
+      pytest.skip("junction creation is unavailable")
+    try:
+      with pytest.raises(target_module.TargetRunError) as caught:
+        runner._consume_prepared(prepared.action_digest, now=instant)
+      assert caught.value.code == "TEST_AUTHORIZATION_INVALID"
+      records = original / "records" if replacement == "root" else original
+      assert not (records / f"{prepared.action_digest}.consumed.json").exists()
+    finally:
+      os.rmdir(target)
+      original.rename(target)
+
+  run(scenario())
+
+
+def test_target_runner_polls_transient_empty_reads_until_validated_terminal(tmp_path: Path):
+  async def scenario() -> None:
+    stream = valid_target_stream()
+    transport = FakeTransport([b"", stream[:7], b"", stream[7:], b"unread"])
+    runner, prepared, instant, _probe, _store, _workflow = await _r5_prepared_runner(
+        tmp_path, transport
+    )
+    result = await runner.run(
+        prepared,
+        prepared.action_digest,
+        current_revision=REVISION,
+        current_inventory_digest=TARGET_RUN_INVENTORY_DIGEST,
+        now=instant,
+    )
+    assert result["test_manifest"].state == "passed"
+    reads = [call for call in transport.calls if call[0] == "read"]
+    assert len(reads) == 4
+    assert len({call[2] for call in reads}) == 1
+    assert transport.chunks == [b"unread"]
+
+  run(scenario())
+
+
+def test_target_runner_empty_polling_uses_bounded_backoff_until_absolute_deadline(
+    tmp_path: Path,
+) -> None:
+  class LiveEmptyTransport(FakeTransport):
+    def __init__(self):
+      super().__init__([])
+    def eof(self): return False
+
+  async def scenario() -> None:
+    transport = LiveEmptyTransport()
+    runner, prepared, instant, probe, evidence_store, _workflow = (
+        await _r5_prepared_runner(tmp_path, transport, timeout_ms=30)
+    )
+    started = time.monotonic()
+    with pytest.raises(target_module.TargetRunError) as caught:
+      await runner.run(
+          prepared,
+          prepared.action_digest,
+          current_revision=REVISION,
+          current_inventory_digest=TARGET_RUN_INVENTORY_DIGEST,
+          now=instant,
+      )
+    elapsed = time.monotonic() - started
+    assert caught.value.code == "TEST_TIMEOUT"
+    reads = [call for call in transport.calls if call[0] == "read"]
+    assert 2 <= len(reads) < 20
+    assert len({call[2] for call in reads}) == 1
+    assert elapsed < 1.0
+    assert transport.calls[-1] == ("close",)
+    assert probe.closed
+    manifests = evidence_store.root / "manifests"
+    assert not manifests.exists() or list(manifests.iterdir()) == []
+
+  run(scenario())
+
+
+def test_target_runner_cancels_a_never_resolving_async_read_at_deadline(
+    tmp_path: Path,
+) -> None:
+  class HungReadTransport(FakeTransport):
+    async def read_async(self, maximum, deadline):
+      self.calls.append(("read", maximum, deadline))
+      await asyncio.Event().wait()
+
+  async def scenario() -> None:
+    transport = HungReadTransport([])
+    runner, prepared, instant, probe, _store, _workflow = await _r5_prepared_runner(
+        tmp_path, transport, timeout_ms=30
+    )
+    started = time.monotonic()
+    with pytest.raises(target_module.TargetRunError) as caught:
+      await runner.run(
+          prepared,
+          prepared.action_digest,
+          current_revision=REVISION,
+          current_inventory_digest=TARGET_RUN_INVENTORY_DIGEST,
+          now=instant,
+      )
+    assert caught.value.code == "TEST_TIMEOUT"
+    assert time.monotonic() - started < 1.0
+    assert transport.calls[-1] == ("close",)
+    assert probe.closed
+
+  run(scenario())
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "build", "elf", "revision", "target", "input_snapshot", "case_ids",
+        "inventory_claim", "config_digest", "final_config_digest", "support_config",
+    ],
+)
+def test_target_discovery_maps_every_firmware_config_mismatch_to_unavailable(
+    tmp_path: Path, mutation: str,
+) -> None:
+  class DiscoveryTransport(FakeTransport):
+    def __init__(self, frame: bytes, *, identity_mutation=None, final_mutation=None):
+      super().__init__([frame])
+      self.identity_mutation = identity_mutation
+      self.final_mutation = final_mutation
+      self.identity_calls = 0
+
+    def identity(self):
+      self.identity_calls += 1
+      value = super().identity()
+      mutation_value = (
+          self.final_mutation
+          if self.final_mutation is not None and self.identity_calls > 1
+          else self.identity_mutation
+      )
+      if mutation_value is not None:
+        value.update(mutation_value)
+      return value
+
+  async def scenario() -> None:
+    frame_arguments = {}
+    if mutation == "build": frame_arguments["build_id"] = "f" * 64
+    if mutation == "elf": frame_arguments["elf_sha256"] = "d" * 64
+    if mutation == "revision": frame_arguments["revision"] = "d" * 40
+    if mutation == "target": frame_arguments["target_device"] = "target-b"
+    if mutation == "input_snapshot": frame_arguments["input_snapshot_sha256"] = "8" * 64
+    if mutation == "case_ids": frame_arguments["case_ids"] = ("different.case",)
+    if mutation == "inventory_claim": frame_arguments["inventory_digest"] = "a" * 64
+    frame = _r5_inventory_frame(**frame_arguments)
+    decoded = target_module.TargetFrameDecoder().feed(frame)
+    frame_digest = str(decoded[0].payload["inventory_digest"])
+    expected_firmware = {
+        "build_id": "b" * 64,
+        "elf_sha256": "e" * 64,
+        "revision": REVISION,
+        "inventory_digest": R5_INVENTORY_DIGEST,
+    }
+    if mutation in {"build", "elf", "revision", "target"}:
+      expected_firmware["inventory_digest"] = frame_digest
+    identity_mutation = (
+        {"config_digest": "f" * 64} if mutation == "config_digest" else None
+    )
+    final_mutation = (
+        {"config_digest": "f" * 64}
+        if mutation == "final_config_digest"
+        else None
+    )
+    active = DiscoveryTransport(
+        frame,
+        identity_mutation=identity_mutation,
+        final_mutation=final_mutation,
+    )
+    probe = FakeProbeClient()
+    flash = FakeFlashWorkflow()
+    runner = target_module.TargetTestRunner(
+        (tmp_path / mutation / "runs").absolute(),
+        probe,
+        flash,
+        lambda name: active,
+    )
+    support = TARGET_SUPPORT
+    if mutation == "support_config":
+      support = {
+          **TARGET_SUPPORT,
+          "mailbox": {"address": 0x20000000, "size": 2048},
+      }
+    with pytest.raises(target_module.TargetRunError) as caught:
+      await _r5_discover(
+          runner,
+          support_profile=support,
+          expected_firmware=expected_firmware,
+      )
+    assert caught.value.code == "TEST_TRANSPORT_UNAVAILABLE"
+    assert flash.calls == []
+    assert probe.closed
+    assert {call[0] for call in active.calls} <= {"open", "read", "close"}
+    if mutation != "support_config":
+      assert active.calls[-1] == ("close",)
+
+  run(scenario())
+
+
+@pytest.mark.parametrize(
+    "failure_stage",
+    ["factory", "interface", "probe", "open", "identity", "read", "eof", "final_identity"],
+)
+def test_target_discovery_closes_and_maps_runtime_failures_to_unavailable(
+    tmp_path: Path, failure_stage: str,
+) -> None:
+  class FailingProbe(FakeProbeClient):
+    async def target_identity(self):
+      if failure_stage == "probe":
+        raise OSError("simulated-probe-failure")
+      return await super().target_identity()
+
+  class FailingTransport(FakeTransport):
+    def __init__(self):
+      super().__init__([b"" if failure_stage == "eof" else _r5_inventory_frame()])
+      self.identity_calls = 0
+
+    def open(self, config, deadline):
+      super().open(config, deadline)
+      if failure_stage == "open":
+        raise OSError("simulated-open-failure")
+
+    def identity(self):
+      self.identity_calls += 1
+      if failure_stage == "identity" or (
+          failure_stage == "final_identity" and self.identity_calls > 1
+      ):
+        raise OSError("simulated-identity-failure")
+      return super().identity()
+
+    def read(self, maximum, deadline):
+      if failure_stage == "read":
+        raise OSError("simulated-read-failure")
+      return super().read(maximum, deadline)
+
+    def eof(self):
+      if failure_stage == "eof":
+        raise OSError("simulated-eof-failure")
+      return super().eof()
+
+  class InvalidInterface:
+    def __init__(self): self.calls = []
+    def close(self): self.calls.append(("close",))
+
+  async def scenario() -> None:
+    probe = FailingProbe()
+    active = InvalidInterface() if failure_stage == "interface" else FailingTransport()
+
+    def factory(name):
+      if failure_stage == "factory":
+        raise OSError("simulated-factory-failure")
+      return active
+
+    runner = target_module.TargetTestRunner(
+        (tmp_path / failure_stage / "runs").absolute(),
+        probe,
+        FakeFlashWorkflow(),
+        factory,
+    )
+    with pytest.raises(target_module.TargetRunError) as caught:
+      await _r5_discover(runner, deadline=time.monotonic() + 0.2)
+    assert caught.value.code == "TEST_TRANSPORT_UNAVAILABLE"
+    assert probe.closed
+    if failure_stage != "factory":
+      assert active.calls[-1] == ("close",)
+
+  run(scenario())
+
+
+@pytest.mark.parametrize("owner,async_close", [("transport", False), ("transport", True), ("probe", False), ("probe", True)])
+def test_target_discovery_maps_required_sync_async_cleanup_failure(
+    tmp_path: Path, owner: str, async_close: bool,
+) -> None:
+  class SyncTransportFailure(FakeTransport):
+    def close(self):
+      self.calls.append(("close",))
+      raise OSError("simulated-transport-close-failure")
+
+  class AsyncTransportFailure(FakeTransport):
+    async def close_async(self):
+      self.calls.append(("close",))
+      raise OSError("simulated-transport-close-failure")
+
+  class SyncProbeFailure(FakeProbeClient):
+    def close(self):
+      self.calls.append(("close",))
+      raise OSError("simulated-probe-close-failure")
+
+  class AsyncProbeFailure(FakeProbeClient):
+    async def close(self):
+      self.calls.append(("close",))
+      raise OSError("simulated-probe-close-failure")
+
+  async def scenario() -> None:
+    transport_type = (
+        AsyncTransportFailure if async_close else SyncTransportFailure
+    ) if owner == "transport" else FakeTransport
+    probe_type = (
+        AsyncProbeFailure if async_close else SyncProbeFailure
+    ) if owner == "probe" else FakeProbeClient
+    active = transport_type([_r5_inventory_frame()])
+    probe = probe_type()
+    runner = target_module.TargetTestRunner(
+        (tmp_path / f"{owner}-{async_close}" / "runs").absolute(),
+        probe,
+        FakeFlashWorkflow(),
+        lambda name: active,
+    )
+    with pytest.raises(target_module.TargetRunError) as caught:
+      await _r5_discover(runner)
+    assert caught.value.code == "TEST_TRANSPORT_UNAVAILABLE"
+    assert active.calls[-1] == ("close",)
+    assert probe.calls[-1] == ("close",)
+
+  run(scenario())
+
+
+@pytest.mark.parametrize("async_close", [False, True])
+def test_target_runner_never_publishes_pass_when_required_close_fails(
+    tmp_path: Path, async_close: bool,
+) -> None:
+  class SyncCloseFailure(FakeTransport):
+    def close(self):
+      self.calls.append(("close",))
+      raise OSError("simulated-close-failure")
+
+  class AsyncCloseFailure(FakeTransport):
+    async def close_async(self):
+      self.calls.append(("close",))
+      raise OSError("simulated-close-failure")
+
+  async def scenario() -> None:
+    transport_type = AsyncCloseFailure if async_close else SyncCloseFailure
+    transport = transport_type([valid_target_stream(), b""])
+    runner, prepared, instant, _probe, evidence_store, _workflow = await _r5_prepared_runner(
+        tmp_path, transport
+    )
+    with pytest.raises(target_module.TargetRunError) as caught:
+      await runner.run(
+          prepared,
+          prepared.action_digest,
+          current_revision=REVISION,
+          current_inventory_digest=TARGET_RUN_INVENTORY_DIGEST,
+          now=instant,
+      )
+    assert caught.value.code == "TEST_TRANSPORT_UNAVAILABLE"
+    manifests = evidence_store.root / "manifests"
+    assert not manifests.exists() or list(manifests.iterdir()) == []
+
+  run(scenario())
+
+
+@pytest.mark.parametrize("async_close", [False, True])
+def test_target_runner_never_publishes_pass_when_required_probe_close_fails(
+    tmp_path: Path, async_close: bool,
+) -> None:
+  class SyncProbeCloseFailure(FakeProbeClient):
+    def close(self):
+      self.calls.append(("close",))
+      raise OSError("simulated-probe-close-failure")
+
+  class AsyncProbeCloseFailure(FakeProbeClient):
+    async def close(self):
+      self.calls.append(("close",))
+      raise OSError("simulated-probe-close-failure")
+
+  async def scenario() -> None:
+    probe_type = AsyncProbeCloseFailure if async_close else SyncProbeCloseFailure
+    probe = probe_type()
+    transport = FakeTransport([valid_target_stream(), b""])
+    runner, prepared, instant, _probe, evidence_store, _workflow = await _r5_prepared_runner(
+        tmp_path, transport, probe=probe
+    )
+    with pytest.raises(target_module.TargetRunError) as caught:
+      await runner.run(
+          prepared,
+          prepared.action_digest,
+          current_revision=REVISION,
+          current_inventory_digest=TARGET_RUN_INVENTORY_DIGEST,
+          now=instant,
+      )
+    assert caught.value.code == "TEST_TRANSPORT_UNAVAILABLE"
+    assert transport.calls[-1] == ("close",)
+    assert probe.calls[-1] == ("close",)
+    manifests = evidence_store.root / "manifests"
+    assert not manifests.exists() or list(manifests.iterdir()) == []
+
+  run(scenario())
+
+
+def test_target_run_accepts_a_canonical_inventory_with_an_independent_input_snapshot(
+    tmp_path: Path,
+) -> None:
+  """The inventory digest covers identity fields; it is not the input snapshot digest."""
+  async def scenario() -> None:
+    transport = FakeTransport([valid_target_stream(), b""])
+    runner, prepared, instant, _probe, evidence_store, _workflow = (
+        await _r5_prepared_runner(tmp_path, transport)
+    )
+
+    result = await runner.run(
+        prepared,
+        prepared.action_digest,
+        current_revision=REVISION,
+        current_inventory_digest=TARGET_RUN_INVENTORY_DIGEST,
+        now=instant,
+    )
+
+    assert result["test_manifest"].identity.input_snapshot_sha256 == "9" * 64
+    assert result["evidence"].identity == result["test_manifest"].identity
+    assert evidence_store.get_envelope(result["evidence"].evidence_id) == result["evidence"]
+
+  run(scenario())
+
+
+def test_target_run_rejects_a_digest_that_contradicts_visible_inventory_before_evidence(
+    tmp_path: Path,
+) -> None:
+  async def scenario() -> None:
+    contradictory_digest = "a" * 64
+    transport = FakeTransport([
+        _target_stream(
+            input_snapshot_sha256=contradictory_digest,
+            inventory_digest=contradictory_digest,
+        ),
+        b"",
+    ])
+    runner, prepared, instant, _probe, evidence_store, _workflow = (
+        await _r5_prepared_runner(
+            tmp_path,
+            transport,
+            inventory_digest=contradictory_digest,
+        )
+    )
+
+    with pytest.raises(target_module.TargetRunError) as caught:
+      await runner.run(
+          prepared,
+          prepared.action_digest,
+          current_revision=REVISION,
+          current_inventory_digest=contradictory_digest,
+          now=instant,
+      )
+
+    assert caught.value.code == "TEST_INVENTORY_CHANGED"
+    manifests = evidence_store.root / "manifests"
+    assert not manifests.exists() or list(manifests.iterdir()) == []
+
+  run(scenario())
+
+
+@pytest.mark.parametrize("placement", ["same-chunk", "split-chunk"])
+@pytest.mark.parametrize("suffix_kind", ["complete-frame", "trailing-byte"])
+def test_target_discovery_rejects_extra_complete_or_trailing_bytes_in_any_chunking(
+    tmp_path: Path, placement: str, suffix_kind: str,
+) -> None:
+  async def scenario() -> None:
+    frame = _r5_inventory_frame()
+    suffix = frame if suffix_kind == "complete-frame" else b"x"
+    chunks = [frame + suffix] if placement == "same-chunk" else [frame, suffix]
+    active = FakeTransport(chunks)
+    probe = FakeProbeClient()
+    runner = target_module.TargetTestRunner(
+        (tmp_path / placement / suffix_kind / "runs").absolute(),
+        probe,
+        FakeFlashWorkflow(),
+        lambda _name: active,
+    )
+
+    with pytest.raises(target_module.TargetRunError) as caught:
+      await _r5_discover(runner)
+
+    assert caught.value.code == "TEST_TRANSPORT_UNAVAILABLE"
+    assert active.calls[-1] == ("close",)
+    assert probe.closed
+
+  run(scenario())
+
+
+def test_target_discovery_accepts_one_canonical_inventory_without_eof_at_deadline(
+    tmp_path: Path,
+) -> None:
+  """The four live transports are polling ports, not EOF-delimited streams."""
+  class ProductionShapeTransport(FakeTransport):
+    eof = None
+
+  async def scenario() -> None:
+    frame = _r5_inventory_frame()
+    active = ProductionShapeTransport([frame])
+    probe = FakeProbeClient()
+    runner = target_module.TargetTestRunner(
+        (tmp_path / "no-eof" / "runs").absolute(),
+        probe,
+        FakeFlashWorkflow(),
+        lambda _name: active,
+    )
+
+    discovered = await _r5_discover(
+        runner, deadline=time.monotonic() + 0.03,
+    )
+
+    assert discovered["raw"] == frame
+    assert discovered["inventory"]["inventory_digest"] == R5_INVENTORY_DIGEST
+    reads = [call for call in active.calls if call[0] == "read"]
+    assert 2 <= len(reads) < 20
+    assert active.calls[-1] == ("close",)
+    assert probe.closed
+
+  run(scenario())
+
+
+def test_target_discovery_does_not_complete_at_deadline_with_a_pending_read(
+    tmp_path: Path,
+) -> None:
+  """Deadline collection completion is valid only after every read returned."""
+  class PendingReadTransport(FakeTransport):
+    eof = None
+
+    async def read_async(self, maximum, deadline):
+      self.calls.append(("read", maximum, deadline))
+      if self.chunks:
+        return self.chunks.pop(0)
+      await asyncio.Event().wait()
+
+  async def scenario() -> None:
+    active = PendingReadTransport([_r5_inventory_frame()])
+    probe = FakeProbeClient()
+    runner = target_module.TargetTestRunner(
+        (tmp_path / "pending-read" / "runs").absolute(),
+        probe,
+        FakeFlashWorkflow(),
+        lambda _name: active,
+    )
+
+    with pytest.raises(target_module.TargetRunError) as caught:
+      await _r5_discover(runner, deadline=time.monotonic() + 0.03)
+
+    assert caught.value.code == "TEST_TRANSPORT_UNAVAILABLE"
+    assert len([call for call in active.calls if call[0] == "read"]) == 2
+    assert active.calls[-1] == ("close",)
+    assert probe.closed
+
+  run(scenario())
+
+
+def test_target_transport_poller_rejects_a_port_without_any_read_operation() -> None:
+  """A malformed live port is not silently treated as an empty collection."""
+  async def scenario() -> None:
+    with pytest.raises(target_module.TargetRunError) as caught:
+      async for _chunk in target_module._poll_transport_chunks(
+          object(),
+          deadline=time.monotonic() + 1.0,
+          maximum_bytes=1,
+          timeout_code="TEST_TIMEOUT",
+          timeout_message="deadline elapsed",
+          invalid_code="TEST_TRANSPORT_UNAVAILABLE",
+          invalid_message="port is invalid",
+          too_large_code="TEST_STREAM_TOO_LARGE",
+          too_large_message="stream is too large",
+      ):
+        pytest.fail("invalid port yielded data")
+    assert caught.value.code == "TEST_TRANSPORT_UNAVAILABLE"
+
+  run(scenario())
+
+
+def test_target_discovery_rejects_a_synchronous_read_that_crosses_its_deadline(
+    tmp_path: Path,
+) -> None:
+  """Discovery completion never accepts an inventory from a pending timed-out read."""
+  class DelayedSyncTransport(FakeTransport):
+    eof = None
+
+    def read(self, maximum, deadline):
+      self.calls.append(("read", maximum, deadline))
+      time.sleep(0.03)
+      return self.chunks.pop(0) if self.chunks else b""
+
+  async def scenario() -> None:
+    active = DelayedSyncTransport([_r5_inventory_frame()])
+    probe = FakeProbeClient()
+    runner = target_module.TargetTestRunner(
+        (tmp_path / "delayed-discovery" / "runs").absolute(),
+        probe,
+        FakeFlashWorkflow(),
+        lambda _name: active,
+    )
+
+    with pytest.raises(target_module.TargetRunError) as caught:
+      await _r5_discover(runner, deadline=time.monotonic() + 0.005)
+
+    assert caught.value.code == "TEST_TRANSPORT_UNAVAILABLE"
+    assert active.calls[-1] == ("close",)
+    assert probe.closed
+
+  run(scenario())
+
+
+def test_target_runner_rejects_a_synchronous_read_that_crosses_its_deadline(
+    tmp_path: Path,
+) -> None:
+  """A timed-out synchronous target read cannot publish a terminal PASS."""
+  class DelayedSyncTransport(FakeTransport):
+    def read(self, maximum, deadline):
+      self.calls.append(("read", maximum, deadline))
+      time.sleep(0.03)
+      return self.chunks.pop(0) if self.chunks else b""
+
+  async def scenario() -> None:
+    transport = DelayedSyncTransport([valid_target_stream()])
+    runner, prepared, instant, probe, evidence_store, _workflow = (
+        await _r5_prepared_runner(tmp_path, transport, timeout_ms=5)
+    )
+
+    with pytest.raises(target_module.TargetRunError) as caught:
+      await runner.run(
+          prepared,
+          prepared.action_digest,
+          current_revision=REVISION,
+          current_inventory_digest=TARGET_RUN_INVENTORY_DIGEST,
+          now=instant,
+      )
+
+    assert caught.value.code == "TEST_TIMEOUT"
+    assert transport.calls[-1] == ("close",)
+    assert probe.closed
+    manifests = evidence_store.root / "manifests"
+    assert not manifests.exists() or list(manifests.iterdir()) == []
+
+  run(scenario())
+
+
+def test_target_discovery_rejects_an_async_read_that_blocks_past_its_deadline(
+    tmp_path: Path,
+) -> None:
+  """An event-loop-blocking async read cannot complete discovery after deadline."""
+  class DelayedAsyncTransport(FakeTransport):
+    eof = None
+
+    async def read_async(self, maximum, deadline):
+      self.calls.append(("read_async", maximum, deadline))
+      time.sleep(0.03)
+      return self.chunks.pop(0) if self.chunks else b""
+
+  async def scenario() -> None:
+    active = DelayedAsyncTransport([_r5_inventory_frame()])
+    probe = FakeProbeClient()
+    runner = target_module.TargetTestRunner(
+        (tmp_path / "blocked-async-discovery" / "runs").absolute(),
+        probe,
+        FakeFlashWorkflow(),
+        lambda _name: active,
+    )
+
+    with pytest.raises(target_module.TargetRunError) as caught:
+      await _r5_discover(runner, deadline=time.monotonic() + 0.005)
+
+    assert caught.value.code == "TEST_TRANSPORT_UNAVAILABLE"
+    assert active.calls[-1] == ("close",)
+    assert probe.closed
+
+  run(scenario())
+
+
+def test_target_runner_rejects_an_async_read_that_blocks_past_its_deadline(
+    tmp_path: Path,
+) -> None:
+  """A blocking async target read cannot publish a terminal PASS after deadline."""
+  class DelayedAsyncTransport(FakeTransport):
+    async def read_async(self, maximum, deadline):
+      self.calls.append(("read_async", maximum, deadline))
+      time.sleep(0.03)
+      return self.chunks.pop(0) if self.chunks else b""
+
+  async def scenario() -> None:
+    transport = DelayedAsyncTransport([valid_target_stream()])
+    runner, prepared, instant, probe, evidence_store, _workflow = (
+        await _r5_prepared_runner(tmp_path, transport, timeout_ms=5)
+    )
+
+    with pytest.raises(target_module.TargetRunError) as caught:
+      await runner.run(
+          prepared,
+          prepared.action_digest,
+          current_revision=REVISION,
+          current_inventory_digest=TARGET_RUN_INVENTORY_DIGEST,
+          now=instant,
+      )
+
+    assert caught.value.code == "TEST_TIMEOUT"
+    assert transport.calls[-1] == ("close",)
+    assert probe.closed
+    manifests = evidence_store.root / "manifests"
+    assert not manifests.exists() or list(manifests.iterdir()) == []
+
+  run(scenario())
+
+
+def test_target_runner_rejects_a_post_terminal_identity_that_crosses_deadline(
+    tmp_path: Path,
+) -> None:
+  """RUN cannot publish PASS when final transport binding returns after deadline."""
+  class DelayedFinalIdentityTransport(FakeTransport):
+    def __init__(self, chunks: list[bytes]) -> None:
+      super().__init__(chunks)
+      self.identity_calls = 0
+
+    def identity(self):
+      self.identity_calls += 1
+      if self.identity_calls == 2:
+        time.sleep(0.03)
+      return super().identity()
+
+  async def scenario() -> None:
+    transport = DelayedFinalIdentityTransport([valid_target_stream()])
+    runner, prepared, instant, probe, evidence_store, _workflow = (
+        await _r5_prepared_runner(tmp_path, transport, timeout_ms=5)
+    )
+
+    with pytest.raises(target_module.TargetRunError) as caught:
+      await runner.run(
+          prepared,
+          prepared.action_digest,
+          current_revision=REVISION,
+          current_inventory_digest=TARGET_RUN_INVENTORY_DIGEST,
+          now=instant,
+      )
+
+    assert caught.value.code == "TEST_TIMEOUT"
+    assert transport.calls[-1] == ("close",)
+    assert probe.closed
+    manifests = evidence_store.root / "manifests"
+    assert not manifests.exists() or list(manifests.iterdir()) == []
+
+  run(scenario())
+
+
+def test_target_discovery_uses_only_pre_deadline_identity_snapshots_for_no_eof(
+    tmp_path: Path,
+) -> None:
+  """No-EOF collection may validate bytes late but may not start late identity I/O."""
+  class NoEofIdentitySnapshotTransport(FakeTransport):
+    eof = None
+
+    def __init__(self, chunks: list[bytes]) -> None:
+      super().__init__(chunks)
+      self.collection_deadline: float | None = None
+
+    def identity(self):
+      if (
+          self.collection_deadline is not None
+          and time.monotonic() >= self.collection_deadline
+      ):
+        raise AssertionError("identity started after discovery collection deadline")
+      return super().identity()
+
+  async def scenario() -> None:
+    active = NoEofIdentitySnapshotTransport([_r5_inventory_frame()])
+    probe = FakeProbeClient()
+    runner = target_module.TargetTestRunner(
+        (tmp_path / "snapshot-discovery" / "runs").absolute(),
+        probe,
+        FakeFlashWorkflow(),
+        lambda _name: active,
+    )
+    deadline = time.monotonic() + 0.03
+    active.collection_deadline = deadline
+
+    discovered = await _r5_discover(runner, deadline=deadline)
+
+    assert discovered["inventory"]["case_ids"] == ["suite.case"]
+    assert active.calls[-1] == ("close",)
+    assert probe.closed
+
+  run(scenario())
+
+
+def test_target_runner_rejects_a_validator_that_crosses_its_deadline(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+  """A late pure validator boundary cannot reach Evidence publication."""
+  original_finish = target_module.TargetRunValidator.finish
+
+  def delayed_finish(self):
+    time.sleep(0.03)
+    return original_finish(self)
+
+  monkeypatch.setattr(target_module.TargetRunValidator, "finish", delayed_finish)
+
+  async def scenario() -> None:
+    transport = FakeTransport([valid_target_stream()])
+    runner, prepared, instant, probe, evidence_store, _workflow = (
+        await _r5_prepared_runner(tmp_path, transport, timeout_ms=5)
+    )
+
+    with pytest.raises(target_module.TargetRunError) as caught:
+      await runner.run(
+          prepared,
+          prepared.action_digest,
+          current_revision=REVISION,
+          current_inventory_digest=TARGET_RUN_INVENTORY_DIGEST,
+          now=instant,
+      )
+
+    assert caught.value.code == "TEST_TIMEOUT"
+    assert transport.calls[-1] == ("close",)
+    assert probe.closed
+    assert not (evidence_store.root / "manifests").exists()
+
+  run(scenario())
+
+
+def test_target_runner_rejects_an_evidence_build_that_crosses_its_deadline(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+  """A late artifact write may not advance to manifest publication."""
+  async def scenario() -> None:
+    transport = FakeTransport([valid_target_stream()])
+    runner, prepared, instant, probe, evidence_store, _workflow = (
+        await _r5_prepared_runner(tmp_path, transport, timeout_ms=5)
+    )
+    collector = runner._collector
+    assert isinstance(collector, target_module.TestArtifactCollector)
+    original_write_and_ingest = collector.write_and_ingest
+
+    def delayed_write_and_ingest(*args, **kwargs):
+      artifact = original_write_and_ingest(*args, **kwargs)
+      time.sleep(0.03)
+      return artifact
+
+    monkeypatch.setattr(collector, "write_and_ingest", delayed_write_and_ingest)
+
+    with pytest.raises(target_module.TargetRunError) as caught:
+      await runner.run(
+          prepared,
+          prepared.action_digest,
+          current_revision=REVISION,
+          current_inventory_digest=TARGET_RUN_INVENTORY_DIGEST,
+          now=instant,
+      )
+
+    assert caught.value.code == "TEST_TIMEOUT"
+    assert transport.calls[-1] == ("close",)
+    assert probe.closed
+    assert not (evidence_store.root / "manifests").exists()
+
+  run(scenario())
+
+
+def test_target_runner_rejects_a_cleanup_that_crosses_its_deadline(
+    tmp_path: Path,
+) -> None:
+  """A late successful close does not permit a late PASS envelope."""
+  class DelayedCloseTransport(FakeTransport):
+    def close(self):
+      super().close()
+      time.sleep(0.03)
+
+  async def scenario() -> None:
+    transport = DelayedCloseTransport([valid_target_stream()])
+    runner, prepared, instant, probe, evidence_store, _workflow = (
+        await _r5_prepared_runner(tmp_path, transport, timeout_ms=5)
+    )
+
+    with pytest.raises(target_module.TargetRunError) as caught:
+      await runner.run(
+          prepared,
+          prepared.action_digest,
+          current_revision=REVISION,
+          current_inventory_digest=TARGET_RUN_INVENTORY_DIGEST,
+          now=instant,
+      )
+
+    assert caught.value.code == "TEST_TIMEOUT"
+    assert transport.calls[-1] == ("close",)
+    assert probe.closed
+    assert not (evidence_store.root / "manifests").exists()
+
+  run(scenario())
+
+
+def test_target_runner_preserves_timeout_when_cleanup_also_fails(
+    tmp_path: Path,
+) -> None:
+  """Cleanup failure is recorded by cleanup, but cannot replace the primary timeout."""
+  class DelayedReadTransport(FakeTransport):
+    def read(self, maximum, deadline):
+      self.calls.append(("read", maximum, deadline))
+      time.sleep(0.03)
+      return self.chunks.pop(0) if self.chunks else b""
+
+  class FailingProbe(FakeProbeClient):
+    def close(self):
+      self.calls.append(("close",))
+      self.closed = True
+      raise OSError("simulated-probe-close-failure")
+
+  async def scenario() -> None:
+    transport = DelayedReadTransport([valid_target_stream()])
+    probe = FailingProbe()
+    runner, prepared, instant, prepared_probe, evidence_store, _workflow = (
+        await _r5_prepared_runner(tmp_path, transport, timeout_ms=5, probe=probe)
+    )
+    assert prepared_probe is probe
+
+    with pytest.raises(target_module.TargetRunError) as caught:
+      await runner.run(
+          prepared,
+          prepared.action_digest,
+          current_revision=REVISION,
+          current_inventory_digest=TARGET_RUN_INVENTORY_DIGEST,
+          now=instant,
+      )
+
+    assert caught.value.code == "TEST_TIMEOUT"
+    assert any(
+        "Target cleanup also failed: TEST_TRANSPORT_UNAVAILABLE" in note
+        for note in caught.value.cleanup_notes
+    )
+    assert transport.calls[-1] == ("close",)
+    assert probe.closed
+    assert not (evidence_store.root / "manifests").exists()
+
+  run(scenario())
+
+
+def test_target_runner_bounds_a_hung_async_transport_close_and_attempts_probe_cleanup(
+    tmp_path: Path,
+) -> None:
+  """A cooperative hung transport closer must not require an external timeout."""
+  class HungCloseTransport(FakeTransport):
+    async def close_async(self):
+      self.calls.append(("close",))
+      await asyncio.Event().wait()
+
+  async def scenario() -> None:
+    transport = HungCloseTransport([valid_target_stream()])
+    runner, prepared, instant, probe, evidence_store, _workflow = (
+        await _r5_prepared_runner(tmp_path, transport, timeout_ms=30)
+    )
+    started = time.monotonic()
+
+    with pytest.raises(target_module.TargetRunError) as caught:
+      await asyncio.wait_for(
+          runner.run(
+              prepared,
+              prepared.action_digest,
+              current_revision=REVISION,
+              current_inventory_digest=TARGET_RUN_INVENTORY_DIGEST,
+              now=instant,
+          ),
+          timeout=0.35,
+      )
+
+    assert caught.value.code == "TEST_TIMEOUT"
+    assert time.monotonic() - started < 0.35
+    assert transport.calls[-1] == ("close",)
+    assert probe.closed
+    assert not (evidence_store.root / "manifests").exists()
+
+  run(scenario())
+
+
+def test_target_runner_bounds_a_hung_async_probe_close(
+    tmp_path: Path,
+) -> None:
+  """A cooperative hung probe closer must not require an external timeout."""
+  class HungProbe(FakeProbeClient):
+    async def close(self):
+      self.calls.append(("close",))
+      await asyncio.Event().wait()
+
+  async def scenario() -> None:
+    transport = FakeTransport([valid_target_stream()])
+    probe = HungProbe()
+    runner, prepared, instant, prepared_probe, evidence_store, _workflow = (
+        await _r5_prepared_runner(tmp_path, transport, timeout_ms=30, probe=probe)
+    )
+    assert prepared_probe is probe
+    started = time.monotonic()
+
+    with pytest.raises(target_module.TargetRunError) as caught:
+      await asyncio.wait_for(
+          runner.run(
+              prepared,
+              prepared.action_digest,
+              current_revision=REVISION,
+              current_inventory_digest=TARGET_RUN_INVENTORY_DIGEST,
+              now=instant,
+          ),
+          timeout=0.2,
+      )
+
+    assert caught.value.code == "TEST_TIMEOUT"
+    assert time.monotonic() - started < 0.2
+    assert transport.calls[-1] == ("close",)
+    assert probe.calls[-1] == ("close",)
+    assert not (evidence_store.root / "manifests").exists()
+
+  run(scenario())
+
+
+def test_target_runner_bounds_the_total_cleanup_envelope_when_both_closes_hang(
+    tmp_path: Path,
+) -> None:
+  """Both cooperative closers share a finite two-attempt cleanup upper bound."""
+  class HungCloseTransport(FakeTransport):
+    async def close_async(self):
+      self.calls.append(("close",))
+      await asyncio.Event().wait()
+
+  class HungProbe(FakeProbeClient):
+    async def close(self):
+      self.calls.append(("close",))
+      await asyncio.Event().wait()
+
+  async def scenario() -> None:
+    transport = HungCloseTransport([valid_target_stream()])
+    probe = HungProbe()
+    runner, prepared, instant, prepared_probe, evidence_store, _workflow = (
+        await _r5_prepared_runner(tmp_path, transport, timeout_ms=5, probe=probe)
+    )
+    assert prepared_probe is probe
+    started = time.monotonic()
+
+    with pytest.raises(target_module.TargetRunError) as caught:
+      await asyncio.wait_for(
+          runner.run(
+              prepared,
+              prepared.action_digest,
+              current_revision=REVISION,
+              current_inventory_digest=TARGET_RUN_INVENTORY_DIGEST,
+              now=instant,
+          ),
+          timeout=0.35,
+      )
+
+    assert caught.value.code == "TEST_TIMEOUT"
+    assert time.monotonic() - started < 0.35
+    assert transport.calls[-1] == ("close",)
+    assert probe.calls[-1] == ("close",)
+    assert not (evidence_store.root / "manifests").exists()
+
+  run(scenario())
+
+
+def test_target_runner_rejects_an_envelope_commit_that_crosses_its_deadline(
+    tmp_path: Path,
+) -> None:
+  """The store commit guard prevents a late Target Evidence manifest."""
+  async def scenario() -> None:
+    transport = FakeTransport([valid_target_stream()])
+    runner, prepared, instant, probe, evidence_store, _workflow = (
+        await _r5_prepared_runner(tmp_path, transport, timeout_ms=5)
+    )
+
+    def inject(point: str) -> None:
+      if point == "manifest.before_publish":
+        time.sleep(0.03)
+
+    evidence_store._fault_injector = inject
+    with pytest.raises(target_module.TargetRunError) as caught:
+      await runner.run(
+          prepared,
+          prepared.action_digest,
+          current_revision=REVISION,
+          current_inventory_digest=TARGET_RUN_INVENTORY_DIGEST,
+          now=instant,
+      )
+
+    assert caught.value.code == "TEST_TIMEOUT"
+    assert transport.calls[-1] == ("close",)
+    assert probe.closed
+    assert not (evidence_store.root / "manifests").exists()
+
+  run(scenario())

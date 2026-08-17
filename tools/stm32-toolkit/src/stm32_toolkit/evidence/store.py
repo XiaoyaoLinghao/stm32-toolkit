@@ -10,6 +10,8 @@ from pathlib import Path
 import re
 import stat
 import tempfile
+import math
+import time
 
 from .model import (
     MAX_ARTIFACT_BYTES,
@@ -246,7 +248,14 @@ class EvidenceStore:
         finally:  # pragma: no cover - POSIX-only durability
             os.close(descriptor)  # pragma: no cover - POSIX-only durability
 
-    def _atomic_create_new(self, target: Path, payload: bytes, *, phase: str) -> bool:
+    def _atomic_create_new(
+        self,
+        target: Path,
+        payload: bytes,
+        *,
+        phase: str,
+        before_publish: Callable[[], None] | None = None,
+    ) -> bool:
         """Publish complete bytes without ever replacing an existing authoritative file."""
         descriptor, temporary_name = tempfile.mkstemp(prefix=".tmp-", dir=target.parent)
         temporary = Path(temporary_name)
@@ -257,8 +266,10 @@ class EvidenceStore:
                 stream.flush()
                 self._fault(f"{phase}.after_flush")
                 os.fsync(stream.fileno())
-                self._fault(f"{phase}.after_fsync")
+            self._fault(f"{phase}.after_fsync")
             self._fault(f"{phase}.before_publish")
+            if before_publish is not None:
+                before_publish()
             try:
                 # Windows rename is an atomic create-new operation and never replaces target.
                 os.rename(temporary, target)
@@ -444,21 +455,51 @@ class EvidenceStore:
         with self._mutation_lock():
             return self._put_envelope_locked(envelope)
 
-    def _put_envelope_locked(self, envelope: EvidenceEnvelope) -> Path:
+    def put_envelope_before_deadline(
+        self, envelope: EvidenceEnvelope, *, deadline: float
+    ) -> Path:
+        """Publish one envelope only if the lock-held commit remains before ``deadline``."""
+        if type(deadline) not in {int, float} or not math.isfinite(deadline):
+            raise EvidenceValidationError("evidence envelope deadline is invalid")
+
+        def require_before_deadline() -> None:
+            if time.monotonic() >= deadline:
+                raise EvidenceValidationError("evidence envelope publication deadline elapsed")
+
+        with self._mutation_lock():
+            return self._put_envelope_locked(
+                envelope, before_publish=require_before_deadline
+            )
+
+    def _put_envelope_locked(
+        self,
+        envelope: EvidenceEnvelope,
+        *,
+        before_publish: Callable[[], None] | None = None,
+    ) -> Path:
         verified = self.verify_envelope(envelope)
         directory = self._managed_directory("manifests")
         evidence_id = str(verified.evidence_id)
         self._reject_casefold_collision(directory, f"{evidence_id}.json")
         target = directory / f"{evidence_id}.json"
         payload = verified.to_json_bytes()
+        if before_publish is not None:
+            before_publish()
         try:
             self._validate_existing_path(target, regular=True, single_link=True)
         except FileNotFoundError:
-            created = self._atomic_create_new(target, payload, phase="manifest")
+            created = self._atomic_create_new(
+                target,
+                payload,
+                phase="manifest",
+                before_publish=before_publish,
+            )
             if created:
                 return target
         # A concurrent or pre-existing manifest is reusable only through the full authoritative read.
         self.get_envelope(evidence_id)
+        if before_publish is not None:
+            before_publish()
         return target
 
     def get_envelope(self, evidence_id: str) -> EvidenceEnvelope:
