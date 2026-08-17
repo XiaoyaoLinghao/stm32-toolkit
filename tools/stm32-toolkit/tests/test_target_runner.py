@@ -1754,6 +1754,8 @@ async def _r5_prepared_runner(
     timeout_ms: int = 250,
     probe: FakeProbeClient | None = None,
     inventory_digest: str = TARGET_RUN_INVENTORY_DIGEST,
+    flash_workflow: object | None = None,
+    transport_factory: object | None = None,
 ):
   from stm32_toolkit.evidence.store import EvidenceStore
   from stm32_toolkit.testing.artifacts import TestArtifactCollector
@@ -1777,13 +1779,13 @@ async def _r5_prepared_runner(
       data_root=(tmp_path / "data").absolute(),
       session_id=SESSION_ID,
       probe_id=PROBE_SELECTOR,
-      workflow=workflow,
+      workflow=flash_workflow or workflow,
   )
   runner = target_module.TargetTestRunner(
       (tmp_path / "runs").absolute(),
       probe,
       flash,
-      lambda name: transport,
+      transport_factory or (lambda name: transport),
       artifact_collector=collector,
   )
   instant = datetime.now(timezone.utc)
@@ -2817,13 +2819,13 @@ def test_target_runner_rejects_a_synchronous_read_that_crosses_its_deadline(
   class DelayedSyncTransport(FakeTransport):
     def read(self, maximum, deadline):
       self.calls.append(("read", maximum, deadline))
-      time.sleep(0.03)
+      time.sleep(0.15)
       return self.chunks.pop(0) if self.chunks else b""
 
   async def scenario() -> None:
     transport = DelayedSyncTransport([valid_target_stream()])
     runner, prepared, instant, probe, evidence_store, _workflow = (
-        await _r5_prepared_runner(tmp_path, transport, timeout_ms=5)
+        await _r5_prepared_runner(tmp_path, transport, timeout_ms=100)
     )
 
     with pytest.raises(target_module.TargetRunError) as caught:
@@ -2883,13 +2885,13 @@ def test_target_runner_rejects_an_async_read_that_blocks_past_its_deadline(
   class DelayedAsyncTransport(FakeTransport):
     async def read_async(self, maximum, deadline):
       self.calls.append(("read_async", maximum, deadline))
-      time.sleep(0.03)
+      time.sleep(0.15)
       return self.chunks.pop(0) if self.chunks else b""
 
   async def scenario() -> None:
     transport = DelayedAsyncTransport([valid_target_stream()])
     runner, prepared, instant, probe, evidence_store, _workflow = (
-        await _r5_prepared_runner(tmp_path, transport, timeout_ms=5)
+        await _r5_prepared_runner(tmp_path, transport, timeout_ms=100)
     )
 
     with pytest.raises(target_module.TargetRunError) as caught:
@@ -2922,13 +2924,13 @@ def test_target_runner_rejects_a_post_terminal_identity_that_crosses_deadline(
     def identity(self):
       self.identity_calls += 1
       if self.identity_calls == 2:
-        time.sleep(0.03)
+        time.sleep(0.15)
       return super().identity()
 
   async def scenario() -> None:
     transport = DelayedFinalIdentityTransport([valid_target_stream()])
     runner, prepared, instant, probe, evidence_store, _workflow = (
-        await _r5_prepared_runner(tmp_path, transport, timeout_ms=5)
+        await _r5_prepared_runner(tmp_path, transport, timeout_ms=100)
     )
 
     with pytest.raises(target_module.TargetRunError) as caught:
@@ -2996,7 +2998,7 @@ def test_target_runner_rejects_a_validator_that_crosses_its_deadline(
   original_finish = target_module.TargetRunValidator.finish
 
   def delayed_finish(self):
-    time.sleep(0.03)
+    time.sleep(0.15)
     return original_finish(self)
 
   monkeypatch.setattr(target_module.TargetRunValidator, "finish", delayed_finish)
@@ -3004,7 +3006,7 @@ def test_target_runner_rejects_a_validator_that_crosses_its_deadline(
   async def scenario() -> None:
     transport = FakeTransport([valid_target_stream()])
     runner, prepared, instant, probe, evidence_store, _workflow = (
-        await _r5_prepared_runner(tmp_path, transport, timeout_ms=5)
+        await _r5_prepared_runner(tmp_path, transport, timeout_ms=100)
     )
 
     with pytest.raises(target_module.TargetRunError) as caught:
@@ -3031,7 +3033,7 @@ def test_target_runner_rejects_an_evidence_build_that_crosses_its_deadline(
   async def scenario() -> None:
     transport = FakeTransport([valid_target_stream()])
     runner, prepared, instant, probe, evidence_store, _workflow = (
-        await _r5_prepared_runner(tmp_path, transport, timeout_ms=5)
+        await _r5_prepared_runner(tmp_path, transport, timeout_ms=100)
     )
     collector = runner._collector
     assert isinstance(collector, target_module.TestArtifactCollector)
@@ -3039,7 +3041,7 @@ def test_target_runner_rejects_an_evidence_build_that_crosses_its_deadline(
 
     def delayed_write_and_ingest(*args, **kwargs):
       artifact = original_write_and_ingest(*args, **kwargs)
-      time.sleep(0.03)
+      time.sleep(0.15)
       return artifact
 
     monkeypatch.setattr(collector, "write_and_ingest", delayed_write_and_ingest)
@@ -3068,12 +3070,12 @@ def test_target_runner_rejects_a_cleanup_that_crosses_its_deadline(
   class DelayedCloseTransport(FakeTransport):
     def close(self):
       super().close()
-      time.sleep(0.03)
+      time.sleep(0.15)
 
   async def scenario() -> None:
     transport = DelayedCloseTransport([valid_target_stream()])
     runner, prepared, instant, probe, evidence_store, _workflow = (
-        await _r5_prepared_runner(tmp_path, transport, timeout_ms=5)
+        await _r5_prepared_runner(tmp_path, transport, timeout_ms=100)
     )
 
     with pytest.raises(target_module.TargetRunError) as caught:
@@ -3100,7 +3102,7 @@ def test_target_runner_preserves_timeout_when_cleanup_also_fails(
   class DelayedReadTransport(FakeTransport):
     def read(self, maximum, deadline):
       self.calls.append(("read", maximum, deadline))
-      time.sleep(0.03)
+      time.sleep(0.15)
       return self.chunks.pop(0) if self.chunks else b""
 
   class FailingProbe(FakeProbeClient):
@@ -3113,7 +3115,7 @@ def test_target_runner_preserves_timeout_when_cleanup_also_fails(
     transport = DelayedReadTransport([valid_target_stream()])
     probe = FailingProbe()
     runner, prepared, instant, prepared_probe, evidence_store, _workflow = (
-        await _r5_prepared_runner(tmp_path, transport, timeout_ms=5, probe=probe)
+        await _r5_prepared_runner(tmp_path, transport, timeout_ms=100, probe=probe)
     )
     assert prepared_probe is probe
 
@@ -3232,7 +3234,7 @@ def test_target_runner_bounds_the_total_cleanup_envelope_when_both_closes_hang(
     transport = HungCloseTransport([valid_target_stream()])
     probe = HungProbe()
     runner, prepared, instant, prepared_probe, evidence_store, _workflow = (
-        await _r5_prepared_runner(tmp_path, transport, timeout_ms=5, probe=probe)
+        await _r5_prepared_runner(tmp_path, transport, timeout_ms=100, probe=probe)
     )
     assert prepared_probe is probe
     started = time.monotonic()
@@ -3265,12 +3267,12 @@ def test_target_runner_rejects_an_envelope_commit_that_crosses_its_deadline(
   async def scenario() -> None:
     transport = FakeTransport([valid_target_stream()])
     runner, prepared, instant, probe, evidence_store, _workflow = (
-        await _r5_prepared_runner(tmp_path, transport, timeout_ms=5)
+        await _r5_prepared_runner(tmp_path, transport, timeout_ms=100)
     )
 
     def inject(point: str) -> None:
       if point == "manifest.before_publish":
-        time.sleep(0.03)
+        time.sleep(0.15)
 
     evidence_store._fault_injector = inject
     with pytest.raises(target_module.TargetRunError) as caught:
@@ -3283,6 +3285,496 @@ def test_target_runner_rejects_an_envelope_commit_that_crosses_its_deadline(
       )
 
     assert caught.value.code == "TEST_TIMEOUT"
+    assert transport.calls[-1] == ("close",)
+    assert probe.closed
+    manifests = evidence_store.root / "manifests"
+    assert not manifests.exists() or list(manifests.glob("*.json")) == []
+
+  run(scenario())
+
+
+def test_target_runner_times_out_a_hung_initial_probe_identity_without_external_cancel(
+    tmp_path: Path,
+) -> None:
+  """RUN consumes its authorization but closes a probe whose first identity never resolves."""
+  class HungInitialIdentityProbe(FakeProbeClient):
+    async def target_identity(self):
+      self.calls.append(("identity",))
+      await asyncio.Event().wait()
+
+  async def scenario() -> None:
+    transport = FakeTransport([valid_target_stream()])
+    probe = HungInitialIdentityProbe()
+    runner, prepared, instant, prepared_probe, evidence_store, workflow_calls = (
+        await _r5_prepared_runner(
+            tmp_path, transport, timeout_ms=5, probe=probe,
+        )
+    )
+    assert prepared_probe is probe
+
+    with pytest.raises(target_module.TargetRunError) as caught:
+      await asyncio.wait_for(
+          runner.run(
+              prepared,
+              prepared.action_digest,
+              current_revision=REVISION,
+              current_inventory_digest=TARGET_RUN_INVENTORY_DIGEST,
+              now=instant,
+          ),
+          timeout=0.35,
+      )
+
+    assert caught.value.code == "TEST_TIMEOUT"
+    assert workflow_calls == []
+    assert transport.calls == []
+    assert probe.closed
+    assert not (evidence_store.root / "manifests").exists()
+    with pytest.raises(target_module.TargetRunError) as reused:
+      await runner.run(
+          prepared,
+          prepared.action_digest,
+          current_revision=REVISION,
+          current_inventory_digest=TARGET_RUN_INVENTORY_DIGEST,
+          now=instant,
+      )
+    assert reused.value.code == "TEST_AUTHORIZATION_INVALID"
+
+  run(scenario())
+
+
+def test_target_runner_times_out_a_hung_guarded_flash_without_external_cancel(
+    tmp_path: Path,
+) -> None:
+  """RUN bounds a cooperative flash hang and still attempts both created dependencies."""
+  flash_calls = []
+
+  async def never_returning_flash(request):
+    flash_calls.append(request)
+    await asyncio.Event().wait()
+
+  async def scenario() -> None:
+    transport = FakeTransport([valid_target_stream()])
+    runner, prepared, instant, probe, evidence_store, _workflow = (
+        await _r5_prepared_runner(
+            tmp_path,
+            transport,
+            timeout_ms=5,
+            flash_workflow=never_returning_flash,
+        )
+    )
+    started = time.monotonic()
+
+    with pytest.raises(target_module.TargetRunError) as caught:
+      await asyncio.wait_for(
+          runner.run(
+              prepared,
+              prepared.action_digest,
+              current_revision=REVISION,
+              current_inventory_digest=TARGET_RUN_INVENTORY_DIGEST,
+              now=instant,
+          ),
+          timeout=0.35,
+      )
+
+    assert caught.value.code == "TEST_TIMEOUT"
+    assert time.monotonic() - started < 0.35
+    assert len(flash_calls) == 1
+    assert transport.calls[-1] == ("close",)
+    assert probe.closed
+    assert not (evidence_store.root / "manifests").exists()
+    with pytest.raises(target_module.TargetRunError) as reused:
+      await runner.run(
+          prepared,
+          prepared.action_digest,
+          current_revision=REVISION,
+          current_inventory_digest=TARGET_RUN_INVENTORY_DIGEST,
+          now=instant,
+      )
+    assert reused.value.code == "TEST_AUTHORIZATION_INVALID"
+
+  run(scenario())
+
+
+def test_target_runner_rejects_a_guarded_flash_that_blocks_before_its_first_await(
+    tmp_path: Path,
+) -> None:
+  """A late async flash return cannot start another live identity call or publish PASS."""
+  flash_calls = []
+
+  async def blocked_before_first_await_flash(request):
+    flash_calls.append(request)
+    time.sleep(0.03)
+    await asyncio.sleep(0)
+    return OperationResult.success("stm32_flash", {"status": "success"})
+
+  async def scenario() -> None:
+    transport = FakeTransport([valid_target_stream()])
+    runner, prepared, instant, probe, evidence_store, _workflow = (
+        await _r5_prepared_runner(
+            tmp_path,
+            transport,
+            timeout_ms=5,
+            flash_workflow=blocked_before_first_await_flash,
+        )
+    )
+
+    with pytest.raises(target_module.TargetRunError) as caught:
+      await runner.run(
+          prepared,
+          prepared.action_digest,
+          current_revision=REVISION,
+          current_inventory_digest=TARGET_RUN_INVENTORY_DIGEST,
+          now=instant,
+      )
+
+    assert caught.value.code == "TEST_TIMEOUT"
+    assert len(flash_calls) == 1
+    assert probe.calls == [("identity",), ("close",)]
+    assert transport.calls[-1] == ("close",)
+    assert not (evidence_store.root / "manifests").exists()
+
+  run(scenario())
+
+
+def test_target_runner_keeps_an_authorized_guarded_flash_success_before_deadline(
+    tmp_path: Path,
+) -> None:
+  """The run deadline guard preserves normal one-shot guarded-flash success."""
+  async def scenario() -> None:
+    transport = FakeTransport([valid_target_stream()])
+    runner, prepared, instant, probe, evidence_store, workflow_calls = (
+        await _r5_prepared_runner(tmp_path, transport)
+    )
+
+    result = await runner.run(
+        prepared,
+        prepared.action_digest,
+        current_revision=REVISION,
+        current_inventory_digest=TARGET_RUN_INVENTORY_DIGEST,
+        now=instant,
+    )
+
+    assert result["test_manifest"].state == "passed"
+    assert len(workflow_calls) == 1
+    assert transport.calls[-1] == ("close",)
+    assert probe.closed
+    assert evidence_store.get_envelope(result["evidence"].evidence_id) == result["evidence"]
+
+  run(scenario())
+
+
+def test_target_runner_prefers_timeout_when_initial_identity_raises_after_deadline(
+    tmp_path: Path,
+) -> None:
+  """An initial probe exception after the RUN deadline is a closed timeout, not raw I/O."""
+  class LateInitialIdentityProbe(FakeProbeClient):
+    async def target_identity(self):
+      self.calls.append(("identity",))
+      time.sleep(0.15)
+      raise OSError("late initial identity")
+
+  async def scenario() -> None:
+    transport = FakeTransport([valid_target_stream()])
+    probe = LateInitialIdentityProbe()
+    runner, prepared, instant, prepared_probe, evidence_store, workflow_calls = (
+        await _r5_prepared_runner(
+            tmp_path, transport, timeout_ms=100, probe=probe,
+        )
+    )
+    assert prepared_probe is probe
+
+    with pytest.raises(target_module.TargetRunError) as caught:
+      await runner.run(
+          prepared,
+          prepared.action_digest,
+          current_revision=REVISION,
+          current_inventory_digest=TARGET_RUN_INVENTORY_DIGEST,
+          now=instant,
+      )
+
+    assert caught.value.code == "TEST_TIMEOUT"
+    assert workflow_calls == []
+    assert transport.calls == []
+    assert probe.closed
+    assert not (evidence_store.root / "manifests").exists()
+    with pytest.raises(target_module.TargetRunError) as reused:
+      await runner.run(
+          prepared,
+          prepared.action_digest,
+          current_revision=REVISION,
+          current_inventory_digest=TARGET_RUN_INVENTORY_DIGEST,
+          now=instant,
+      )
+    assert reused.value.code == "TEST_AUTHORIZATION_INVALID"
+
+  run(scenario())
+
+
+def test_target_runner_prefers_timeout_when_guarded_flash_raises_after_deadline(
+    tmp_path: Path,
+) -> None:
+  """A late guarded-flash I/O error cannot replace the authorized RUN timeout."""
+  flash_calls = []
+
+  async def late_flash_failure(request):
+    flash_calls.append(request)
+    time.sleep(0.15)
+    raise OSError("late flash")
+
+  async def scenario() -> None:
+    transport = FakeTransport([valid_target_stream()])
+    runner, prepared, instant, probe, evidence_store, _workflow = (
+        await _r5_prepared_runner(
+            tmp_path,
+            transport,
+            timeout_ms=100,
+            flash_workflow=late_flash_failure,
+        )
+    )
+
+    with pytest.raises(target_module.TargetRunError) as caught:
+      await runner.run(
+          prepared,
+          prepared.action_digest,
+          current_revision=REVISION,
+          current_inventory_digest=TARGET_RUN_INVENTORY_DIGEST,
+          now=instant,
+      )
+
+    assert caught.value.code == "TEST_TIMEOUT"
+    assert len(flash_calls) == 1
+    assert transport.calls[-1] == ("close",)
+    assert probe.closed
+    assert not (evidence_store.root / "manifests").exists()
+
+  run(scenario())
+
+
+def test_target_runner_prefers_timeout_when_post_flash_identity_raises_after_deadline(
+    tmp_path: Path,
+) -> None:
+  """A post-flash identity I/O error after expiry cannot escape the closed protocol."""
+  class LatePostFlashIdentityProbe(FakeProbeClient):
+    async def target_identity(self):
+      self.calls.append(("identity",))
+      if len([call for call in self.calls if call == ("identity",)]) == 2:
+        time.sleep(0.15)
+        raise OSError("late post-flash identity")
+      return dict(self.identity)
+
+  async def scenario() -> None:
+    transport = FakeTransport([valid_target_stream()])
+    probe = LatePostFlashIdentityProbe()
+    runner, prepared, instant, prepared_probe, evidence_store, workflow_calls = (
+        await _r5_prepared_runner(
+            tmp_path, transport, timeout_ms=100, probe=probe,
+        )
+    )
+    assert prepared_probe is probe
+
+    with pytest.raises(target_module.TargetRunError) as caught:
+      await runner.run(
+          prepared,
+          prepared.action_digest,
+          current_revision=REVISION,
+          current_inventory_digest=TARGET_RUN_INVENTORY_DIGEST,
+          now=instant,
+      )
+
+    assert caught.value.code == "TEST_TIMEOUT"
+    assert len(workflow_calls) == 1
+    assert transport.calls[-1] == ("close",)
+    assert probe.closed
+    assert not (evidence_store.root / "manifests").exists()
+
+  run(scenario())
+
+
+def test_target_runner_prefers_timeout_when_factory_raises_after_deadline(
+    tmp_path: Path,
+) -> None:
+  """A synchronous factory failure after expiry maps to the authoritative RUN timeout."""
+  def late_factory(_name):
+    time.sleep(0.15)
+    raise OSError("late factory")
+
+  async def scenario() -> None:
+    transport = FakeTransport([valid_target_stream()])
+    runner, prepared, instant, probe, evidence_store, workflow_calls = (
+        await _r5_prepared_runner(
+            tmp_path,
+            transport,
+            timeout_ms=100,
+            transport_factory=late_factory,
+        )
+    )
+
+    with pytest.raises(target_module.TargetRunError) as caught:
+      await runner.run(
+          prepared,
+          prepared.action_digest,
+          current_revision=REVISION,
+          current_inventory_digest=TARGET_RUN_INVENTORY_DIGEST,
+          now=instant,
+      )
+
+    assert caught.value.code == "TEST_TIMEOUT"
+    assert workflow_calls == []
+    assert transport.calls == []
+    assert probe.closed
+    assert not (evidence_store.root / "manifests").exists()
+
+  run(scenario())
+
+
+@pytest.mark.parametrize("outcome", ["return", "raise"])
+def test_target_runner_prefers_timeout_for_a_late_synchronous_transport_open(
+    tmp_path: Path, outcome: str,
+) -> None:
+  """A synchronous transport open cannot return or raise past the RUN deadline."""
+  class LateOpenTransport(FakeTransport):
+    def open(self, config, deadline):
+      super().open(config, deadline)
+      time.sleep(0.15)
+      if outcome == "raise":
+        raise OSError("late transport open")
+
+  async def scenario() -> None:
+    transport = LateOpenTransport([valid_target_stream()])
+    runner, prepared, instant, probe, evidence_store, workflow_calls = (
+        await _r5_prepared_runner(tmp_path, transport, timeout_ms=100)
+    )
+
+    with pytest.raises(target_module.TargetRunError) as caught:
+      await runner.run(
+          prepared,
+          prepared.action_digest,
+          current_revision=REVISION,
+          current_inventory_digest=TARGET_RUN_INVENTORY_DIGEST,
+          now=instant,
+      )
+
+    assert caught.value.code == "TEST_TIMEOUT"
+    assert len(workflow_calls) == 1
+    assert transport.calls[-1] == ("close",)
+    assert probe.closed
+    assert not (evidence_store.root / "manifests").exists()
+
+  run(scenario())
+
+
+@pytest.mark.parametrize("outcome", ["return", "raise"])
+def test_target_runner_prefers_timeout_for_a_late_synchronous_initial_identity(
+    tmp_path: Path, outcome: str,
+) -> None:
+  """A synchronous initial identity call cannot return or raise after expiry."""
+  class LateInitialIdentityProbe(FakeProbeClient):
+    def target_identity(self):
+      self.calls.append(("identity",))
+      time.sleep(0.15)
+      if outcome == "raise":
+        raise OSError("late initial identity")
+      return dict(self.identity)
+
+  async def scenario() -> None:
+    transport = FakeTransport([valid_target_stream()])
+    probe = LateInitialIdentityProbe()
+    runner, prepared, instant, prepared_probe, evidence_store, workflow_calls = (
+        await _r5_prepared_runner(
+            tmp_path, transport, timeout_ms=100, probe=probe,
+        )
+    )
+    assert prepared_probe is probe
+
+    with pytest.raises(target_module.TargetRunError) as caught:
+      await runner.run(
+          prepared,
+          prepared.action_digest,
+          current_revision=REVISION,
+          current_inventory_digest=TARGET_RUN_INVENTORY_DIGEST,
+          now=instant,
+      )
+
+    assert caught.value.code == "TEST_TIMEOUT"
+    assert workflow_calls == []
+    assert transport.calls == []
+    assert probe.closed
+    assert not (evidence_store.root / "manifests").exists()
+
+  run(scenario())
+
+
+@pytest.mark.parametrize("outcome", ["return", "raise"])
+def test_target_runner_prefers_timeout_for_a_late_synchronous_post_flash_identity(
+    tmp_path: Path, outcome: str,
+) -> None:
+  """A synchronous post-flash identity cannot return or raise after expiry."""
+  class LatePostFlashIdentityProbe(FakeProbeClient):
+    def target_identity(self):
+      self.calls.append(("identity",))
+      if len([call for call in self.calls if call == ("identity",)]) == 2:
+        time.sleep(0.15)
+        if outcome == "raise":
+          raise OSError("late post-flash identity")
+      return dict(self.identity)
+
+  async def scenario() -> None:
+    transport = FakeTransport([valid_target_stream()])
+    probe = LatePostFlashIdentityProbe()
+    runner, prepared, instant, prepared_probe, evidence_store, workflow_calls = (
+        await _r5_prepared_runner(
+            tmp_path, transport, timeout_ms=100, probe=probe,
+        )
+    )
+    assert prepared_probe is probe
+
+    with pytest.raises(target_module.TargetRunError) as caught:
+      await runner.run(
+          prepared,
+          prepared.action_digest,
+          current_revision=REVISION,
+          current_inventory_digest=TARGET_RUN_INVENTORY_DIGEST,
+          now=instant,
+      )
+
+    assert caught.value.code == "TEST_TIMEOUT"
+    assert len(workflow_calls) == 1
+    assert transport.calls[-1] == ("close",)
+    assert probe.closed
+    assert not (evidence_store.root / "manifests").exists()
+
+  run(scenario())
+
+
+@pytest.mark.parametrize("outcome", ["return", "raise"])
+def test_target_runner_prefers_timeout_for_a_late_synchronous_transport_identity(
+    tmp_path: Path, outcome: str,
+) -> None:
+  """A synchronous transport identity cannot return or raise after expiry."""
+  class LateTransportIdentity(FakeTransport):
+    def identity(self):
+      time.sleep(0.15)
+      if outcome == "raise":
+        raise OSError("late transport identity")
+      return super().identity()
+
+  async def scenario() -> None:
+    transport = LateTransportIdentity([valid_target_stream()])
+    runner, prepared, instant, probe, evidence_store, workflow_calls = (
+        await _r5_prepared_runner(tmp_path, transport, timeout_ms=100)
+    )
+
+    with pytest.raises(target_module.TargetRunError) as caught:
+      await runner.run(
+          prepared,
+          prepared.action_digest,
+          current_revision=REVISION,
+          current_inventory_digest=TARGET_RUN_INVENTORY_DIGEST,
+          now=instant,
+      )
+
+    assert caught.value.code == "TEST_TIMEOUT"
+    assert len(workflow_calls) == 1
     assert transport.calls[-1] == ("close",)
     assert probe.closed
     assert not (evidence_store.root / "manifests").exists()

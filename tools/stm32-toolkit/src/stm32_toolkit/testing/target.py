@@ -586,11 +586,32 @@ async def _await_before_deadline(
         result = await asyncio.wait_for(value, timeout=remaining)
     except asyncio.TimeoutError as error:
         raise TargetRunError(code, message) from error
+    except Exception as error:
+        # An awaitable may block the event-loop thread before it raises, so
+        # a late dependency failure must not replace the authorized timeout.
+        _require_before_deadline(deadline=deadline, code=code, message=message)
+        raise
     # An awaitable can block the event-loop thread before it yields, preventing
     # ``wait_for`` from scheduling its timeout.  Its late completed result is
     # no more valid than a synchronous call that returned after the deadline.
     _require_before_deadline(deadline=deadline, code=code, message=message)
     return result
+
+
+async def _invoke_before_deadline(
+    invoke: Callable[[], object], *, deadline: float, code: str, message: str
+) -> object:
+    """Run one live boundary only while its absolute deadline remains valid."""
+    _require_before_deadline(deadline=deadline, code=code, message=message)
+    try:
+        value = invoke()
+    except Exception as error:
+        if time.monotonic() >= deadline:
+            raise TargetRunError(code, message) from error
+        raise
+    return await _await_before_deadline(
+        value, deadline=deadline, code=code, message=message
+    )
 
 
 async def _poll_transport_chunks(
@@ -626,8 +647,8 @@ async def _poll_transport_chunks(
             reader = getattr(transport, "read", None)
         if not callable(reader):
             raise TargetRunError(invalid_code, invalid_message)
-        chunk = await _await_before_deadline(
-            reader(min(65_536, maximum_bytes + 1 - total), deadline),
+        chunk = await _invoke_before_deadline(
+            lambda: reader(min(65_536, maximum_bytes + 1 - total), deadline),
             deadline=deadline,
             code=timeout_code,
             message=timeout_message,
@@ -639,8 +660,8 @@ async def _poll_transport_chunks(
                 _require_before_deadline(
                     deadline=deadline, code=timeout_code, message=timeout_message
                 )
-                await _await_before_deadline(
-                    post_read(), deadline=deadline, code=timeout_code, message=timeout_message
+                await _invoke_before_deadline(
+                    post_read, deadline=deadline, code=timeout_code, message=timeout_message
                 )
             total += len(chunk)
             if total > maximum_bytes:
@@ -655,8 +676,8 @@ async def _poll_transport_chunks(
 
         eof_provider = getattr(transport, "eof", None)
         if callable(eof_provider):
-            eof = await _await_before_deadline(
-                eof_provider(),
+            eof = await _invoke_before_deadline(
+                eof_provider,
                 deadline=deadline,
                 code=timeout_code,
                 message=timeout_message,
@@ -668,16 +689,16 @@ async def _poll_transport_chunks(
                     _require_before_deadline(
                         deadline=deadline, code=timeout_code, message=timeout_message
                     )
-                    await _await_before_deadline(
-                        post_read(), deadline=deadline, code=timeout_code, message=timeout_message
+                    await _invoke_before_deadline(
+                        post_read, deadline=deadline, code=timeout_code, message=timeout_message
                     )
                 return
         if post_read is not None:
             _require_before_deadline(
                 deadline=deadline, code=timeout_code, message=timeout_message
             )
-            await _await_before_deadline(
-                post_read(), deadline=deadline, code=timeout_code, message=timeout_message
+            await _invoke_before_deadline(
+                post_read, deadline=deadline, code=timeout_code, message=timeout_message
             )
         remaining = deadline - time.monotonic()
         if remaining <= 0:
@@ -1058,9 +1079,15 @@ class TargetTestRunner:
                 raise TargetRunError("TEST_AUTHORIZATION_INVALID", "Target authorization record is invalid") from error
             if authorized_digest != prepared.action_digest or instant >= expires_at:
                 raise TargetRunError("TEST_AUTHORIZATION_INVALID", "Exact unexpired Target authorization is required")
+            deadline = time.monotonic() + float(binding["timeout_ms"]) / 1000
             if current_revision != binding["revision"] or current_inventory_digest != binding["inventory_digest"]:
                 raise TargetRunError("TEST_INVENTORY_CHANGED", "Project revision or inventory changed")
-            identity = await self._probe.target_identity()
+            identity = await _invoke_before_deadline(
+                self._probe.target_identity,
+                deadline=deadline,
+                code="TEST_TIMEOUT",
+                message="Target identity deadline elapsed",
+            )
             if identity != binding["target"]:
                 raise TargetRunError("TEST_IDENTITY_MISMATCH", "Target identity changed")
             if not isinstance(self._flash, GuardedTargetFlashAdapter):
@@ -1074,10 +1101,9 @@ class TargetTestRunner:
                 raise TargetRunError(
                     "TEST_TRANSPORT_UNAVAILABLE", "Configured Target support is unavailable"
                 ) from error
-            deadline = time.monotonic() + float(binding["timeout_ms"]) / 1000
             try:
-                transport = self._transport_factory(str(binding["transport"]))
-                _require_before_deadline(
+                transport = await _invoke_before_deadline(
+                    lambda: self._transport_factory(str(binding["transport"])),
                     deadline=deadline,
                     code="TEST_TIMEOUT",
                     message="Target transport setup deadline elapsed",
@@ -1098,20 +1124,30 @@ class TargetTestRunner:
             except TargetRunError:
                 raise
             except Exception as error:
+                _require_before_deadline(
+                    deadline=deadline,
+                    code="TEST_TIMEOUT",
+                    message="Target transport setup deadline elapsed",
+                )
                 raise TargetRunError(
                     "TEST_TRANSPORT_UNAVAILABLE", "Configured Target transport is unavailable"
                 ) from error
-            await self._flash.run(binding)
-            if await self._probe.target_identity() != binding["target"]:
+            await _invoke_before_deadline(
+                lambda: self._flash.run(binding),
+                deadline=deadline,
+                code="TEST_TIMEOUT",
+                message="Target flash deadline elapsed",
+            )
+            identity_after_flash = await _invoke_before_deadline(
+                self._probe.target_identity,
+                deadline=deadline,
+                code="TEST_TIMEOUT",
+                message="Target identity deadline elapsed",
+            )
+            if identity_after_flash != binding["target"]:
                 raise TargetRunError("TEST_IDENTITY_MISMATCH", "Target identity changed after flash")
-            _require_before_deadline(
-                deadline=deadline,
-                code="TEST_TIMEOUT",
-                message="Target transport open deadline elapsed",
-            )
-            opened = transport.open(effective_transport_config, deadline)
-            await _await_before_deadline(
-                opened,
+            await _invoke_before_deadline(
+                lambda: transport.open(effective_transport_config, deadline),
                 deadline=deadline,
                 code="TEST_TIMEOUT",
                 message="Target transport open deadline elapsed",
@@ -1121,11 +1157,14 @@ class TargetTestRunner:
                 code="TEST_TIMEOUT",
                 message="Target transport identity deadline elapsed",
             )
-            transport_identity = _closed_transport_identity(transport.identity(), binding)
-            _require_before_deadline(
-                deadline=deadline,
-                code="TEST_TIMEOUT",
-                message="Target transport identity deadline elapsed",
+            transport_identity = _closed_transport_identity(
+                await _invoke_before_deadline(
+                    transport.identity,
+                    deadline=deadline,
+                    code="TEST_TIMEOUT",
+                    message="Target transport identity deadline elapsed",
+                ),
+                binding,
             )
             raw = bytearray()
             decoder = TargetFrameDecoder()
@@ -1188,18 +1227,14 @@ class TargetTestRunner:
                 )
                 identity = run_inventory.identity
                 expected_cases = tuple(binding["cases"])
-                _require_before_deadline(
-                    deadline=deadline,
-                    code="TEST_TIMEOUT",
-                    message="Target transport identity deadline elapsed",
-                )
                 final_transport_identity = _closed_transport_identity(
-                    transport.identity(), binding
-                )
-                _require_before_deadline(
-                    deadline=deadline,
-                    code="TEST_TIMEOUT",
-                    message="Target transport identity deadline elapsed",
+                    await _invoke_before_deadline(
+                        transport.identity,
+                        deadline=deadline,
+                        code="TEST_TIMEOUT",
+                        message="Target transport identity deadline elapsed",
+                    ),
+                    binding,
                 )
                 if (
                     run_inventory.mode != "target"
@@ -1430,13 +1465,8 @@ class TargetTestRunner:
                 "elf_sha256": firmware["elf_sha256"],
             }
             effective_config = _effective_target_transport_config(binding)
-            _require_before_deadline(
-                deadline=deadline,
-                code="TEST_TRANSPORT_UNAVAILABLE",
-                message="Target discovery deadline elapsed",
-            )
-            active = self._transport_factory(transport)
-            _require_before_deadline(
+            active = await _invoke_before_deadline(
+                lambda: self._transport_factory(transport),
                 deadline=deadline,
                 code="TEST_TRANSPORT_UNAVAILABLE",
                 message="Target discovery deadline elapsed",
@@ -1455,8 +1485,8 @@ class TargetTestRunner:
             ):
                 raise TypeError("Target discovery transport interface is invalid")
 
-            identity = await _await_before_deadline(
-                self._probe.target_identity(),
+            identity = await _invoke_before_deadline(
+                self._probe.target_identity,
                 deadline=deadline,
                 code="TEST_TRANSPORT_UNAVAILABLE",
                 message="Target discovery deadline elapsed",
@@ -1466,8 +1496,8 @@ class TargetTestRunner:
                     "TEST_TRANSPORT_UNAVAILABLE",
                     "Configured target identity is unavailable",
                 )
-            await _await_before_deadline(
-                active.open(effective_config, deadline),
+            await _invoke_before_deadline(
+                lambda: active.open(effective_config, deadline),
                 deadline=deadline,
                 code="TEST_TRANSPORT_UNAVAILABLE",
                 message="Target discovery deadline elapsed",
@@ -1477,11 +1507,14 @@ class TargetTestRunner:
                 code="TEST_TRANSPORT_UNAVAILABLE",
                 message="Target discovery deadline elapsed",
             )
-            transport_identity = _closed_transport_identity(active.identity(), binding)
-            _require_before_deadline(
-                deadline=deadline,
-                code="TEST_TRANSPORT_UNAVAILABLE",
-                message="Target discovery deadline elapsed",
+            transport_identity = _closed_transport_identity(
+                await _invoke_before_deadline(
+                    active.identity,
+                    deadline=deadline,
+                    code="TEST_TRANSPORT_UNAVAILABLE",
+                    message="Target discovery deadline elapsed",
+                ),
+                binding,
             )
             observed_transport_identity = transport_identity
 
