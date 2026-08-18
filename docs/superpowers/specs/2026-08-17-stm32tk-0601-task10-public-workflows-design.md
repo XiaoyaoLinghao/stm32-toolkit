@@ -1,8 +1,11 @@
 # STM32TK-0601 Task 10 Public Workflows Design
 
-**Status:** prerequisite correction after rejected T10.1 candidate; implementation paused
+**Status:** project correction and T10.1 boundary matrix frozen; implementation paused until this
+docs-only correction receives an independent CLEAN review
 
-**Accepted base:** `d4b43ff1bf74f7ac5058e93c708bfb49a5371304`
+**Original Task 10 design base:** `d4b43ff1bf74f7ac5058e93c708bfb49a5371304`
+
+**Project-correction base:** `9db31c12711c1bac40a43a7fbf8427f9aaa93c86`
 
 **Specification owner:** Codex
 
@@ -492,7 +495,10 @@ behavior; expected filesystem failures are wrapped at that boundary rather than 
 `EvidenceValidationError`) with the sole code `GC_STORE_CHANGED`; it is raised only for a mutation
 or identity race during GC plan/apply and is mapped by the GC result boundary. The public workflow
 reads only a typed code and emits the fixed message in section 7; it never parses or returns
-exception text. This is one Evidence error-taxonomy unit and commit.
+exception text. The closed ABI migration and the Store, Catalog, and GC state machines are delivered
+through T10.1a–T10.1k in section 9, not through one combined implementation commit. Their normative
+helper/caller and fault matrix is the
+[Task 10 Evidence boundary matrix](./2026-08-18-stm32tk-0601-task10-evidence-boundary-matrix.md).
 
 ### 6.2 Authoritative Evidence read primitives
 
@@ -692,10 +698,46 @@ never leaves a reusable live transport/probe session.
 
 ## 8. Test strategy
 
-Every implementation unit begins with a focused RED and ends with dual-Python correctness, changed-
-file branch coverage of at least 90%, `git diff --check`, exact allowlist, and a fresh independent
-review. No test uses real hardware, network, remote Git, ambient shell, or a caller-chosen Evidence
-root.
+The normative Evidence state-machine inventory and test ownership are frozen in the
+[Task 10 Evidence boundary matrix](./2026-08-18-stm32tk-0601-task10-evidence-boundary-matrix.md).
+The [project-correction plan](../plans/2026-08-18-stm32tk-0601-task10-project-correction.md)
+records why this order replaces the former patch-and-amend cycle. Every implementation unit uses
+the following fail-fast gate ladder, in this exact order:
+
+1. **Formal RED:** reproduce only the unit's frozen A/B cells against its exact immediate accepted
+   parent, on Python 3.10 and 3.12 except for a matrix-owned platform-only cell.
+2. **Targeted GREEN:** run only the unit's primary state machine and its controls.
+3. **Complete boundary-matrix focused gate:** cover every A/B cell assigned to the unit, retain the
+   named E controls without broadening them, and mechanically reconcile its helper/caller inventory.
+4. **Independent specialist review CLEAN:** a read-only reviewer checks the single state machine,
+   matrix cells, exact allowlist, error priority, and cleanup truth before any broad test suite runs.
+5. **Affected tests and changed-file branch coverage:** the unit's affected suite passes on both
+   Python versions and every changed product file reaches at least 90% branch coverage.
+6. **Complete-diff independent acceptance CLEAN:** a fresh read-only reviewer examines the full
+   immediate-accepted-parent-to-candidate diff and reconciles all retained evidence.
+7. **Dual-Python release suite:** run Python 3.10 and 3.12 release suites serially, only after gates
+   1–6 are CLEAN.
+8. **Read-only final acceptance:** after release, only evidence reconciliation and final read-only
+   acceptance are permitted; reviewers do not expand the active scope.
+
+Any failed stage stops every later, more expensive stage. Any product or test byte change creates a
+new run ID and resets the unit to gate 1; evidence from the previous candidate cannot qualify the
+new bytes. Findings at gates 4 or 6 are not closed by replaying only later gates. If adjacent seams
+are missed in two consecutive review rounds, implementation stops, the complete matrix is reopened,
+and the unit is split again instead of receiving another point amendment. A release failure also
+returns to the unit matrix and Formal RED; no post-release product amendment is allowed.
+
+Each unit uses SHA-bound, unit-private virtual environments, worktrees, temporary roots, JUnit, and
+coverage artifacts. Before tests, the report proves the imported package resolves inside the exact
+candidate worktree. Expensive gates run serially and do not share temporary namespaces. Evidence is
+reported separately as (a) artifact authenticity, (b) exact SHA binding, and (c) acceptance
+eligibility. No test uses real hardware, network, remote Git, ambient shell, or a caller-chosen
+Evidence root.
+
+Windows owns native reparse/file-ID, `msvcrt` lock cleanup, and identity-bound delete evidence.
+Matrix class C POSIX cells may be recorded as `DEFERRED(POSIX)` at a unit's Windows acceptance, but
+the exact local Codex POSIX owner and script in the boundary matrix must provide native PASS before
+cumulative Task 10 acceptance. Windows evidence never signs for POSIX behavior.
 
 Required behavior matrices include:
 
@@ -724,8 +766,28 @@ Required behavior matrices include:
 
 ## 9. Delivery decomposition
 
-The implementation order is mandatory. The three accepted-base dependency corrections must be CLEAN
-before the original numbered units start:
+The implementation order is mandatory and acyclic:
+
+```text
+T10.P1 → T10.P2 → T10.P3 → docs-only correction →
+T10.1a → T10.1b → T10.1c → T10.1d → T10.1e → T10.1f →
+T10.1g → T10.1h → T10.1i → T10.1j → T10.1k → T10.2 → ... → T10.16
+```
+
+The accepted prerequisite lineage is P1
+`c57f17f450f6395367149e3c850b5e77bf38a655`, P2
+`cf8057479b24e7a2e1e3905a98014706994feacc`, and P3/current correction base
+`9db31c12711c1bac40a43a7fbf8427f9aaa93c86`. This docs-only correction modifies exactly this public
+workflow specification plus the boundary matrix and project-correction plan linked in section 8.
+After its own independent CLEAN review, that docs-only commit becomes the implementation base for
+T10.1a. Each later unit starts from its immediate CLEAN parent and creates one independent local
+commit and verdict.
+
+The rejected monolithic audit candidate
+`ee2b153e031e45710cd7da5e60b00757678da07c` is retained outside this lineage as diagnostic and test
+source only. It is not an accepted implementation base, must not be amended, and must not be
+cherry-picked as a whole. Migration bytes are selected and reviewed again inside the exact unit that
+owns them.
 
 All paths below are repository-relative and exact; a unit may modify no other path.
 
@@ -743,23 +805,62 @@ All paths below are repository-relative and exact; a unit may modify no other pa
   constructor calls with a real lower-level EvidenceStore failure; test-only. Path:
   `tools/stm32-toolkit/tests/test_project_upgrade.py`.
 
-1. **T10.1 — Evidence failure taxonomy:** coded Evidence/GC race errors only. Paths:
-   `tools/stm32-toolkit/src/stm32_toolkit/evidence/model.py`,
-   `tools/stm32-toolkit/src/stm32_toolkit/evidence/store.py`,
-   `tools/stm32-toolkit/src/stm32_toolkit/evidence/catalog.py`,
-   `tools/stm32-toolkit/src/stm32_toolkit/evidence/gc.py`,
-   `tools/stm32-toolkit/src/stm32_toolkit/evidence/__init__.py`,
-   `tools/stm32-toolkit/tests/test_evidence_model.py`,
-   `tools/stm32-toolkit/tests/test_evidence_store.py`,
-   `tools/stm32-toolkit/tests/test_evidence_catalog.py`, and
-   `tools/stm32-toolkit/tests/test_evidence_gc.py`.
-2. **T10.2 — Authoritative Evidence reads:** `get_root` and `read_artifact` only. Paths:
+- **T10.1a — typed-error ABI atomic mechanical migration:** introduce/export only the closed typed
+  Evidence codes and independent `GcStoreChangedError`; mechanically migrate all 131 accepted-base
+  Evidence raises plus seven GC store-change raises and their required catches. No I/O state flow,
+  algorithm, schema, public projection, Project, Probe, or publication behavior changes. Exact
+  product paths:
+  `tools/stm32-toolkit/src/stm32_toolkit/evidence/__init__.py`,
+  `tools/stm32-toolkit/src/stm32_toolkit/evidence/model.py`,
+  `tools/stm32-toolkit/src/stm32_toolkit/evidence/store.py`,
+  `tools/stm32-toolkit/src/stm32_toolkit/evidence/catalog.py`, and
+  `tools/stm32-toolkit/src/stm32_toolkit/evidence/gc.py`. Exact test paths:
+  `tools/stm32-toolkit/tests/test_evidence_model.py`,
+  `tools/stm32-toolkit/tests/test_evidence_store.py`,
+  `tools/stm32-toolkit/tests/test_evidence_catalog.py`, and
+  `tools/stm32-toolkit/tests/test_evidence_gc.py`.
+- **T10.1b — Store mutation-lock lifecycle:** one lock acquire/body/release state machine. Product:
+  `tools/stm32-toolkit/src/stm32_toolkit/evidence/store.py`. Test:
+  `tools/stm32-toolkit/tests/test_evidence_store.py`.
+- **T10.1c — Store managed stable-read/hash:** one managed authority O0–O8 state machine. Product:
+  `tools/stm32-toolkit/src/stm32_toolkit/evidence/store.py`. Test:
+  `tools/stm32-toolkit/tests/test_evidence_store.py`.
+- **T10.1d — Store caller-source ingest:** one first-pass/second-pass source state machine; the named
+  publication fault seam remains class E. Product:
+  `tools/stm32-toolkit/src/stm32_toolkit/evidence/store.py`. Test:
+  `tools/stm32-toolkit/tests/test_evidence_store.py`.
+- **T10.1e — Catalog SQLite authoritative query:** one pinned main/WAL/SHM/journal/query/cleanup
+  state machine. Product: `tools/stm32-toolkit/src/stm32_toolkit/evidence/catalog.py`. Test:
+  `tools/stm32-toolkit/tests/test_evidence_catalog.py`.
+- **T10.1f — Catalog rebuild manifest scan/read taxonomy:** only pre-publication enumeration and
+  authoritative manifest reads; the publication/fault seam remains class E. Product:
+  `tools/stm32-toolkit/src/stm32_toolkit/evidence/catalog.py`. Test:
+  `tools/stm32-toolkit/tests/test_evidence_catalog.py`.
+- **T10.1g — root `put_root` existing-read/lost-create taxonomy:** one root read/create race state
+  machine. Product: `tools/stm32-toolkit/src/stm32_toolkit/evidence/gc.py`. Test:
+  `tools/stm32-toolkit/tests/test_evidence_gc.py`.
+- **T10.1h — GC planning/snapshot taxonomy:** one conservative plan/snapshot state machine. Product:
+  `tools/stm32-toolkit/src/stm32_toolkit/evidence/gc.py`. Test:
+  `tools/stm32-toolkit/tests/test_evidence_gc.py`.
+- **T10.1i — GC authorization/ledger taxonomy:** one authorization/CREATE_NEW/cleanup truth state
+  machine. Product: `tools/stm32-toolkit/src/stm32_toolkit/evidence/gc.py`. Test:
+  `tools/stm32-toolkit/tests/test_evidence_gc.py`.
+- **T10.1j — GC identity-bound delete primitive:** one pre-delete/read/delete/commit cleanup state
+  machine. Product: `tools/stm32-toolkit/src/stm32_toolkit/evidence/gc.py`. Test:
+  `tools/stm32-toolkit/tests/test_evidence_gc.py`.
+- **T10.1k — GC apply/progress/outer cleanup:** one apply orchestration and exact committed-progress
+  state machine. It must not change the Store API; if that dependency is insufficient, work stops
+  for a new docs-only prerequisite design unit. Product:
+  `tools/stm32-toolkit/src/stm32_toolkit/evidence/gc.py`. Test:
+  `tools/stm32-toolkit/tests/test_evidence_gc.py`.
+
+- **T10.2 — Authoritative Evidence reads:** `get_root` and `read_artifact` only. Paths:
    `tools/stm32-toolkit/src/stm32_toolkit/evidence/store.py`,
    `tools/stm32-toolkit/src/stm32_toolkit/evidence/gc.py`,
    `tools/stm32-toolkit/src/stm32_toolkit/evidence/__init__.py`,
    `tools/stm32-toolkit/tests/test_evidence_store.py`, and
    `tools/stm32-toolkit/tests/test_evidence_gc.py`.
-3. **T10.3 — Derived catalog freshness lifecycle:** marker/invalidations,
+- **T10.3 — Derived catalog freshness lifecycle:** marker/invalidations,
    `ensure_catalog_fresh`, and no public workflow. Paths:
    `tools/stm32-toolkit/src/stm32_toolkit/evidence/store.py`,
    `tools/stm32-toolkit/src/stm32_toolkit/evidence/catalog.py`,
@@ -768,33 +869,33 @@ All paths below are repository-relative and exact; a unit may modify no other pa
    `tools/stm32-toolkit/tests/test_evidence_store.py`,
    `tools/stm32-toolkit/tests/test_evidence_catalog.py`, and
    `tools/stm32-toolkit/tests/test_evidence_gc.py`.
-4. **T10.4 — Canonical Test manifest deserialization:** model `from_dict()` methods only. Paths:
+- **T10.4 — Canonical Test manifest deserialization:** model `from_dict()` methods only. Paths:
    `tools/stm32-toolkit/src/stm32_toolkit/testing/model.py`,
    `tools/stm32-toolkit/src/stm32_toolkit/testing/__init__.py`, and
    `tools/stm32-toolkit/tests/test_testing_model.py`.
-5. **T10.5 — Shared public workflow context/error contract:** managed workspace/store derivation,
+- **T10.5 — Shared public workflow context/error contract:** managed workspace/store derivation,
    exhaustive section 7 mapping, bounded result emission, and no workflow execution. Paths:
    `tools/stm32-toolkit/src/stm32_toolkit/testing_workflows.py` and
    `tools/stm32-toolkit/tests/test_testing_workflows.py`.
-6. **T10.6 — Evidence verify/list public workflows:** verify plus atomic fresh-query list; no GC or Test
+- **T10.6 — Evidence verify/list public workflows:** verify plus atomic fresh-query list; no GC or Test
    operation. Paths: `tools/stm32-toolkit/src/stm32_toolkit/testing_workflows.py`,
    `tools/stm32-toolkit/src/stm32_toolkit/cli.py`,
    `tools/stm32-toolkit/src/stm32_toolkit/mcp_server.py`,
    `tools/stm32-toolkit/tests/test_testing_cli.py`,
    `tools/stm32-toolkit/tests/test_testing_mcp.py`, and
    `tools/stm32-toolkit/tests/test_testing_workflows.py`.
-7. **T10.7 — Evidence GC public workflows:** dry-run/apply and safe plan/result projections only.
+- **T10.7 — Evidence GC public workflows:** dry-run/apply and safe plan/result projections only.
    Paths: `tools/stm32-toolkit/src/stm32_toolkit/testing_workflows.py`,
    `tools/stm32-toolkit/src/stm32_toolkit/cli.py`,
    `tools/stm32-toolkit/src/stm32_toolkit/mcp_server.py`,
    `tools/stm32-toolkit/tests/test_testing_cli.py`,
    `tools/stm32-toolkit/tests/test_testing_mcp.py`, and
    `tools/stm32-toolkit/tests/test_testing_workflows.py`.
-8. **T10.8 — Test-run Evidence publication bridge:** immutable Host/Target result publication only;
+- **T10.8 — Test-run Evidence publication bridge:** immutable Host/Target result publication only;
    no execution. Paths: `tools/stm32-toolkit/src/stm32_toolkit/testing/publication.py`,
    `tools/stm32-toolkit/src/stm32_toolkit/testing/__init__.py`, and
    `tools/stm32-toolkit/tests/test_testing_publication.py`.
-9. **T10.9 — Host discover/run public workflows:** Host execution and delegation to the accepted
+- **T10.9 — Host discover/run public workflows:** Host execution and delegation to the accepted
    publisher; `testing/host.py` is not modified. Paths:
    `tools/stm32-toolkit/src/stm32_toolkit/testing_workflows.py`,
    `tools/stm32-toolkit/src/stm32_toolkit/cli.py`,
@@ -802,23 +903,23 @@ All paths below are repository-relative and exact; a unit may modify no other pa
    `tools/stm32-toolkit/tests/test_testing_cli.py`,
    `tools/stm32-toolkit/tests/test_testing_mcp.py`, and
    `tools/stm32-toolkit/tests/test_testing_workflows.py`.
-10. **T10.10 — Test show public workflow:** mode-neutral authoritative read/summary and no
+- **T10.10 — Test show public workflow:** mode-neutral authoritative read/summary and no
     execution. Paths: `tools/stm32-toolkit/src/stm32_toolkit/testing_workflows.py`,
     `tools/stm32-toolkit/src/stm32_toolkit/cli.py`,
     `tools/stm32-toolkit/src/stm32_toolkit/mcp_server.py`,
     `tools/stm32-toolkit/tests/test_testing_cli.py`,
     `tools/stm32-toolkit/tests/test_testing_mcp.py`, and
     `tools/stm32-toolkit/tests/test_testing_workflows.py`.
-11. **T10.11 — Verified Target support provider:** section 6.5 provenance only; tests construct
+- **T10.11 — Verified Target support provider:** section 6.5 provenance only; tests construct
     temporary roots and no tracked support fixture is allowed. Paths:
     `tools/stm32-toolkit/src/stm32_toolkit/testing/target_support.py`,
     `tools/stm32-toolkit/src/stm32_toolkit/testing/__init__.py`, and
     `tools/stm32-toolkit/tests/test_target_support.py`.
-12. **T10.12 — Target prepared-handle rehydration:** `load_prepared` only. Paths:
+- **T10.12 — Target prepared-handle rehydration:** `load_prepared` only. Paths:
     `tools/stm32-toolkit/src/stm32_toolkit/testing/target.py`,
     `tools/stm32-toolkit/src/stm32_toolkit/testing/__init__.py`, and
     `tools/stm32-toolkit/tests/test_target_runner.py`.
-13. **T10.13 — Target discover public workflow:** support composition and observation only; no
+- **T10.13 — Target discover public workflow:** support composition and observation only; no
     authorization/flash or lower-level Target/Probe edit. Paths:
     `tools/stm32-toolkit/src/stm32_toolkit/testing_workflows.py`,
     `tools/stm32-toolkit/src/stm32_toolkit/cli.py`,
@@ -826,14 +927,14 @@ All paths below are repository-relative and exact; a unit may modify no other pa
     `tools/stm32-toolkit/tests/test_testing_cli.py`,
     `tools/stm32-toolkit/tests/test_testing_mcp.py`, and
     `tools/stm32-toolkit/tests/test_testing_workflows.py`.
-14. **T10.14 — Target prepare public workflow:** preparation only. Paths:
+- **T10.14 — Target prepare public workflow:** preparation only. Paths:
     `tools/stm32-toolkit/src/stm32_toolkit/testing_workflows.py`,
     `tools/stm32-toolkit/src/stm32_toolkit/cli.py`,
     `tools/stm32-toolkit/src/stm32_toolkit/mcp_server.py`,
     `tools/stm32-toolkit/tests/test_testing_cli.py`,
     `tools/stm32-toolkit/tests/test_testing_mcp.py`, and
     `tools/stm32-toolkit/tests/test_testing_workflows.py`.
-15. **T10.15 — Target execute public workflow:** exact authorized run plus delegation to the
+- **T10.15 — Target execute public workflow:** exact authorized run plus delegation to the
     accepted publisher only. Paths:
     `tools/stm32-toolkit/src/stm32_toolkit/testing_workflows.py`,
     `tools/stm32-toolkit/src/stm32_toolkit/cli.py`,
@@ -841,14 +942,16 @@ All paths below are repository-relative and exact; a unit may modify no other pa
     `tools/stm32-toolkit/tests/test_testing_cli.py`,
     `tools/stm32-toolkit/tests/test_testing_mcp.py`, and
     `tools/stm32-toolkit/tests/test_testing_workflows.py`.
-16. **T10.16 — `test-firmware` Skill:** thin MCP delegation and interpretation only. Paths:
+- **T10.16 — `test-firmware` Skill:** thin MCP delegation and interpretation only. Paths:
     `skills/test-firmware/SKILL.md` and
     `tools/stm32-toolkit/tests/test_plugin_layout.py`.
 
-Each prerequisite and numbered unit is a separate branch-local commit and review verdict. T10.P1,
-T10.P2, and T10.P3 run in that order; T10.1 uses the accepted T10.P3 head as its base. If a unit reveals a
-reproducible defect in a frozen lower-level contract, work stops for a separately scoped owner-domain
-fix; the public adapter is not enlarged to hide it.
+Each prerequisite and delivery unit is a separate branch-local commit and review verdict. A unit
+selects only its boundary-matrix A/B cells. Class C retains its named native evidence owner; class D
+belongs to the later named unit; class E is recorded and does not block. If a unit reveals a stable,
+reproducible defect that directly violates a frozen lower-level contract or causes an actual safety
+or correctness failure, work stops for a separately scoped owner-domain fix. The adapter is not
+enlarged to hide it, and theoretical hardening does not enter the current unit.
 
 ## 10. Explicit non-goals
 
@@ -865,8 +968,9 @@ fix; the public adapter is not enlarged to hide it.
 
 ## 11. Completion criteria
 
-Task 10 is complete only when all three prerequisite corrections and all sixteen numbered units are
-independently accepted, the complete cumulative
+Task 10 is complete only when all three prerequisite corrections, this docs-only correction,
+T10.1a–T10.1k, and T10.2–T10.16 are independently accepted, all class C Evidence has its named
+native PASS, and the complete cumulative
 CLI/MCP/Skill affected matrix passes on Python 3.10 and 3.12, every changed product file has at least
 90% branch coverage, the plugin inventory contains the thin Skill, all prior release suites remain
 green, the tracked worktree is clean, and no hardware/network/remote access occurred. Completion of
