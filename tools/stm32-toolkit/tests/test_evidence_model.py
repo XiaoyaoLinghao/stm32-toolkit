@@ -2,11 +2,19 @@
 
 from __future__ import annotations
 
+import ast
+from collections import Counter
 from copy import deepcopy
 import math
+from pathlib import Path
 
 import pytest
 
+import stm32_toolkit.evidence as evidence_package
+import stm32_toolkit.evidence.catalog as evidence_catalog
+import stm32_toolkit.evidence.gc as evidence_gc
+import stm32_toolkit.evidence.model as evidence_model
+import stm32_toolkit.evidence.store as evidence_store
 from stm32_toolkit.evidence.model import (
     ArtifactRef,
     EvidenceEnvelope,
@@ -426,3 +434,100 @@ def test_metadata_validator_is_explicit_and_does_not_create_a_global_operation_r
     parsed = EvidenceEnvelope.from_dict(valid_envelope_dict, metadata_validator=validator)
     assert parsed.operation == "fixture.test"
     assert received == [("fixture.test", {"a": 1, "\u03b1": "caf\u00e9"})]
+
+
+def test_t10_1a_evidence_validation_error_abi_is_closed_and_requires_two_arguments():
+    """Defaults, open codes, mutable properties, or lossy ValueError behavior break the public ABI."""
+    expected_codes = {
+        "EVIDENCE_INVALID": "EVIDENCE_INVALID",
+        "EVIDENCE_CORRUPT": "EVIDENCE_CORRUPT",
+        "EVIDENCE_PATH_UNSAFE": "EVIDENCE_PATH_UNSAFE",
+        "EVIDENCE_LIMIT_EXCEEDED": "EVIDENCE_LIMIT_EXCEEDED",
+    }
+    assert {
+        name: getattr(evidence_model, name, None) for name in expected_codes
+    } == expected_codes
+
+    error_type = evidence_model.EvidenceValidationError
+    for code in expected_codes.values():
+        error = error_type(code, "closed evidence failure")
+        assert isinstance(error, ValueError)
+        assert error.code == code
+        assert error.message == "closed evidence failure"
+        assert error.args == ("closed evidence failure",)
+        assert str(error) == "closed evidence failure"
+        with pytest.raises(AttributeError):
+            error.code = "EVIDENCE_INVALID"
+        with pytest.raises(AttributeError):
+            error.message = "changed"
+
+    class StringSubclass(str):
+        pass
+
+    for arguments in ((), ("EVIDENCE_INVALID",)):
+        with pytest.raises(TypeError):
+            error_type(*arguments)
+    for code in ("UNKNOWN", 1, StringSubclass("EVIDENCE_INVALID")):
+        with pytest.raises(ValueError, match="unknown evidence validation error code"):
+            error_type(code, "message")
+    for message in (None, 1, StringSubclass("message")):
+        with pytest.raises(TypeError, match="message must be a string"):
+            error_type("EVIDENCE_INVALID", message)
+
+
+def test_t10_1a_evidence_package_exports_exact_typed_error_boundary():
+    """Missing, duplicated, or unrelated package exports would make the ABI incomplete or open."""
+    accepted_exports = [
+        "ArtifactRef",
+        "EvidenceEnvelope",
+        "EvidenceIdentity",
+        "EvidenceValidationError",
+        "calculate_evidence_id",
+        "canonical_json_bytes",
+    ]
+    added_exports = {
+        "EVIDENCE_INVALID",
+        "EVIDENCE_CORRUPT",
+        "EVIDENCE_PATH_UNSAFE",
+        "EVIDENCE_LIMIT_EXCEEDED",
+        "GcStoreChangedError",
+    }
+    assert [
+        name for name in evidence_package.__all__ if name not in added_exports
+    ] == accepted_exports
+    assert Counter(evidence_package.__all__) == Counter(
+        [*accepted_exports, *added_exports]
+    )
+    for name in added_exports:
+        expected_module = evidence_gc if name == "GcStoreChangedError" else evidence_model
+        assert getattr(evidence_package, name) is getattr(expected_module, name)
+
+
+def test_t10_1a_evidence_raise_inventory_is_exact_and_literal():
+    """A missing, extra, reordered-shape, or wrongly classified raise site breaks the frozen ABI map."""
+    expected = {
+        "model.py": (43, {"EVIDENCE_INVALID": 30, "EVIDENCE_CORRUPT": 0, "EVIDENCE_PATH_UNSAFE": 4, "EVIDENCE_LIMIT_EXCEEDED": 9}),
+        "store.py": (42, {"EVIDENCE_INVALID": 6, "EVIDENCE_CORRUPT": 6, "EVIDENCE_PATH_UNSAFE": 27, "EVIDENCE_LIMIT_EXCEEDED": 3}),
+        "catalog.py": (19, {"EVIDENCE_INVALID": 14, "EVIDENCE_CORRUPT": 2, "EVIDENCE_PATH_UNSAFE": 3, "EVIDENCE_LIMIT_EXCEEDED": 0}),
+        "gc.py": (27, {"EVIDENCE_INVALID": 9, "EVIDENCE_CORRUPT": 5, "EVIDENCE_PATH_UNSAFE": 13, "EVIDENCE_LIMIT_EXCEEDED": 0}),
+    }
+    module_paths = {
+        "model.py": Path(evidence_model.__file__),
+        "store.py": Path(evidence_store.__file__),
+        "catalog.py": Path(evidence_catalog.__file__),
+        "gc.py": Path(evidence_gc.__file__),
+    }
+    for name, (call_count, distribution) in expected.items():
+        tree = ast.parse(module_paths[name].read_text(encoding="utf-8"), filename=name)
+        calls = [
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "EvidenceValidationError"
+        ]
+        assert len(calls) == call_count
+        assert all(len(node.args) == 2 and not node.keywords for node in calls)
+        assert all(isinstance(node.args[0], ast.Name) for node in calls)
+        observed = Counter(node.args[0].id for node in calls)
+        assert {code: observed[code] for code in distribution} == distribution

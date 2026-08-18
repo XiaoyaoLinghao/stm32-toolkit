@@ -14,7 +14,13 @@ import tempfile
 from unicodedata import normalize
 from uuid import UUID
 
-from .model import EvidenceEnvelope, EvidenceValidationError
+from .model import (
+    EVIDENCE_CORRUPT,
+    EVIDENCE_INVALID,
+    EVIDENCE_PATH_UNSAFE,
+    EvidenceEnvelope,
+    EvidenceValidationError,
+)
 from .store import EvidenceStore
 
 
@@ -39,18 +45,18 @@ CREATE INDEX evidence_search_order ON evidence (produced_at_utc, evidence_id);
 
 def _string(field_name: str, value: object) -> str:
     if not isinstance(value, str) or not value or len(value.encode("utf-8")) > 64 * 1024:
-        raise EvidenceValidationError(f"{field_name} must be a bounded non-empty string")
+        raise EvidenceValidationError(EVIDENCE_INVALID, f"{field_name} must be a bounded non-empty string")
     if normalize("NFC", value) != value:
-        raise EvidenceValidationError(f"{field_name} must use NFC")
+        raise EvidenceValidationError(EVIDENCE_INVALID, f"{field_name} must use NFC")
     if any(ord(character) < 32 or ord(character) == 127 for character in value):
-        raise EvidenceValidationError(f"{field_name} contains a control character")
+        raise EvidenceValidationError(EVIDENCE_INVALID, f"{field_name} contains a control character")
     return value
 
 
 def _hash(field_name: str, value: object) -> str:
     string = _string(field_name, value)
     if _HASH.fullmatch(string) is None:
-        raise EvidenceValidationError(f"{field_name} must be a lowercase SHA-256")
+        raise EvidenceValidationError(EVIDENCE_INVALID, f"{field_name} must be a lowercase SHA-256")
     return string
 
 
@@ -59,27 +65,27 @@ def _project(value: object) -> str:
     try:
         parsed = UUID(string)
     except ValueError as exc:
-        raise EvidenceValidationError("project_id must be a canonical UUID") from exc
+        raise EvidenceValidationError(EVIDENCE_INVALID, "project_id must be a canonical UUID") from exc
     if str(parsed) != string:
-        raise EvidenceValidationError("project_id must be a lowercase canonical UUID")
+        raise EvidenceValidationError(EVIDENCE_INVALID, "project_id must be a lowercase canonical UUID")
     return string
 
 
 def _session(value: object) -> str:
     string = _string("session_id", value)
     if _SESSION.fullmatch(string) is None:
-        raise EvidenceValidationError("session_id must be lowercase ASCII")
+        raise EvidenceValidationError(EVIDENCE_INVALID, "session_id must be lowercase ASCII")
     return string
 
 
 def _utc(field_name: str, value: object) -> str:
     string = _string(field_name, value)
     if _UTC.fullmatch(string) is None:
-        raise EvidenceValidationError(f"{field_name} must use canonical UTC microseconds")
+        raise EvidenceValidationError(EVIDENCE_INVALID, f"{field_name} must use canonical UTC microseconds")
     try:
         datetime.strptime(string, "%Y-%m-%dT%H:%M:%S.%fZ")
     except ValueError as exc:
-        raise EvidenceValidationError(f"{field_name} is not a valid UTC timestamp") from exc
+        raise EvidenceValidationError(EVIDENCE_INVALID, f"{field_name} is not a valid UTC timestamp") from exc
     return string
 
 
@@ -110,7 +116,7 @@ class EvidenceSummary:
     @classmethod
     def from_envelope(cls, envelope: EvidenceEnvelope) -> "EvidenceSummary":
         if not isinstance(envelope, EvidenceEnvelope):
-            raise EvidenceValidationError("catalog summary source is not an EvidenceEnvelope")
+            raise EvidenceValidationError(EVIDENCE_INVALID, "catalog summary source is not an EvidenceEnvelope")
         identity = envelope.identity
         return cls(
             evidence_id=str(envelope.evidence_id),
@@ -144,7 +150,7 @@ class EvidenceCatalog:
     def _bound_path(self) -> Path:
         expected = self._store.root / _CATALOG_NAME
         if self._path != expected:
-            raise EvidenceValidationError("catalog path is not bound to its evidence store root")
+            raise EvidenceValidationError(EVIDENCE_PATH_UNSAFE, "catalog path is not bound to its evidence store root")
         return expected
 
     def query(
@@ -161,7 +167,7 @@ class EvidenceCatalog:
         limit: int = 100,
     ) -> list[EvidenceSummary]:
         if type(limit) is not int or not 1 <= limit <= 1_000:
-            raise EvidenceValidationError("limit must be an integer from 1 through 1000")
+            raise EvidenceValidationError(EVIDENCE_INVALID, "limit must be an integer from 1 through 1000")
         filters: list[str] = []
         values: list[object] = []
         validators = (
@@ -179,7 +185,7 @@ class EvidenceCatalog:
         start = _utc("produced_at_utc_from", produced_at_utc_from) if produced_at_utc_from is not None else None
         end = _utc("produced_at_utc_to", produced_at_utc_to) if produced_at_utc_to is not None else None
         if start is not None and end is not None and start > end:
-            raise EvidenceValidationError("UTC range start must not be after its end")
+            raise EvidenceValidationError(EVIDENCE_INVALID, "UTC range start must not be after its end")
         if start is not None:
             filters.append("produced_at_utc >= ?")
             values.append(start)
@@ -206,7 +212,7 @@ class EvidenceCatalog:
         except (sqlite3.DatabaseError, TypeError, ValueError) as exc:
             if isinstance(exc, EvidenceValidationError):
                 raise
-            raise EvidenceValidationError("catalog contains corrupt schema or row data") from exc
+            raise EvidenceValidationError(EVIDENCE_CORRUPT, "catalog contains corrupt schema or row data") from exc
 
     def get_envelope(self, evidence_id: str) -> EvidenceEnvelope:
         """Cross the authority boundary explicitly through the store's verified read."""
@@ -223,14 +229,14 @@ def _manifest_names(store: EvidenceStore) -> list[str]:
     for entry in directory.iterdir():
         prior = folded.setdefault(entry.name.casefold(), entry.name)
         if prior != entry.name:
-            raise EvidenceValidationError(
+            raise EvidenceValidationError(EVIDENCE_PATH_UNSAFE,
                 f"manifest directory has a case-fold collision: {prior!r} and {entry.name!r}"
             )
         info = store._validate_existing_path(entry, regular=True, single_link=True)
         if not stat.S_ISREG(info.st_mode):
-            raise EvidenceValidationError(f"manifest entry is not a regular file: {entry}")
+            raise EvidenceValidationError(EVIDENCE_PATH_UNSAFE, f"manifest entry is not a regular file: {entry}")
         if not entry.name.endswith(".json") or _HASH.fullmatch(entry.name[:-5]) is None:
-            raise EvidenceValidationError(f"manifest directory contains an invalid entry: {entry.name}")
+            raise EvidenceValidationError(EVIDENCE_CORRUPT, f"manifest directory contains an invalid entry: {entry.name}")
         names.append(entry.name)
     return sorted(names, key=lambda name: name.encode("utf-8"))
 
@@ -243,9 +249,9 @@ def rebuild_catalog(
     evidence_store = store if isinstance(store, EvidenceStore) else EvidenceStore(store)
     evidence_catalog = EvidenceCatalog(evidence_store) if catalog is None else catalog
     if not isinstance(evidence_catalog, EvidenceCatalog):
-        raise EvidenceValidationError("catalog must be an EvidenceCatalog")
+        raise EvidenceValidationError(EVIDENCE_INVALID, "catalog must be an EvidenceCatalog")
     if evidence_catalog.store.root != evidence_store.root:
-        raise EvidenceValidationError("catalog and evidence store roots must match")
+        raise EvidenceValidationError(EVIDENCE_INVALID, "catalog and evidence store roots must match")
     catalog_path = evidence_catalog._bound_path()
     with evidence_store._mutation_lock():
         return _rebuild_catalog_locked(evidence_store, catalog_path)

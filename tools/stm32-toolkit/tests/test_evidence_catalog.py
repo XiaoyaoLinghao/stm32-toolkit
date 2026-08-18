@@ -429,3 +429,32 @@ def test_query_fails_closed_for_corrupt_or_hard_linked_catalog(tmp_path):
     os.link(catalog.path, alias)
     with pytest.raises(ValueError, match="hard link"):
         catalog.query()
+
+
+def test_t10_1a_catalog_typed_error_samples_preserve_existing_predicates(tmp_path):
+    """Representative Catalog predicates must retain their behavior while gaining literal codes."""
+    with pytest.raises(ValueError) as invalid:
+        EvidenceSummary(
+            evidence_id="not-a-hash",
+            workspace_id="a" * 64,
+            project_id="123e4567-e89b-42d3-a456-426614174000",
+            session_id="session-01",
+            build_id="b" * 64,
+            elf_sha256="c" * 64,
+            operation="test.host",
+            produced_at_utc="2026-08-15T01:02:03.123456Z",
+        )
+    assert invalid.value.code == "EVIDENCE_INVALID"
+
+    store = EvidenceStore(tmp_path / "evidence")
+    store.root.mkdir()
+    catalog = EvidenceCatalog(store)
+    catalog.path.write_bytes(b"not sqlite")
+    with pytest.raises(ValueError) as corrupt:
+        catalog.query()
+    assert corrupt.value.code == "EVIDENCE_CORRUPT"
+
+    catalog._path = tmp_path / "other.sqlite3"
+    with pytest.raises(ValueError) as unsafe:
+        catalog.query()
+    assert unsafe.value.code == "EVIDENCE_PATH_UNSAFE"

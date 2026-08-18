@@ -31,6 +31,20 @@ MAX_ARTIFACT_BYTES = 2 * 1024 * 1024 * 1024
 MAX_JSON_INTEGER = 2**63 - 1
 MIN_JSON_INTEGER = -(2**63)
 
+EVIDENCE_INVALID = "EVIDENCE_INVALID"
+EVIDENCE_CORRUPT = "EVIDENCE_CORRUPT"
+EVIDENCE_PATH_UNSAFE = "EVIDENCE_PATH_UNSAFE"
+EVIDENCE_LIMIT_EXCEEDED = "EVIDENCE_LIMIT_EXCEEDED"
+
+_EVIDENCE_VALIDATION_CODES = frozenset(
+    {
+        EVIDENCE_INVALID,
+        EVIDENCE_CORRUPT,
+        EVIDENCE_PATH_UNSAFE,
+        EVIDENCE_LIMIT_EXCEEDED,
+    }
+)
+
 _HASH = re.compile(r"^[0-9a-f]{64}$")
 _GIT_COMMIT = re.compile(r"^[0-9a-f]{40}$")
 _SESSION_ID = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
@@ -52,6 +66,23 @@ _UNSET_EVIDENCE_ID = object()
 class EvidenceValidationError(ValueError):
     """An evidence record or canonical JSON value failed closed validation."""
 
+    def __init__(self, code: str, message: str) -> None:
+        if type(code) is not str or code not in _EVIDENCE_VALIDATION_CODES:
+            raise ValueError("unknown evidence validation error code")
+        if type(message) is not str:
+            raise TypeError("evidence validation error message must be a string")
+        ValueError.__init__(self, message)
+        self._code = code
+        self._message = message
+
+    @property
+    def code(self) -> str:
+        return self._code
+
+    @property
+    def message(self) -> str:
+        return self._message
+
 
 @dataclass
 class _JsonState:
@@ -59,10 +90,10 @@ class _JsonState:
 
     def visit(self, depth: int) -> None:
         if depth > MAX_JSON_DEPTH:
-            raise EvidenceValidationError("JSON nesting exceeds the evidence limit")
+            raise EvidenceValidationError(EVIDENCE_LIMIT_EXCEEDED, "JSON nesting exceeds the evidence limit")
         self.nodes += 1
         if self.nodes > MAX_JSON_NODES:
-            raise EvidenceValidationError("JSON node count exceeds the evidence limit")
+            raise EvidenceValidationError(EVIDENCE_LIMIT_EXCEEDED, "JSON node count exceeds the evidence limit")
 
 
 def _require_bounded_string(
@@ -73,41 +104,41 @@ def _require_bounded_string(
     allow_controls: bool = False,
 ) -> str:
     if not isinstance(value, str):
-        raise EvidenceValidationError(f"{field} must be a string")
+        raise EvidenceValidationError(EVIDENCE_INVALID, f"{field} must be a string")
     if nonempty and not value:
-        raise EvidenceValidationError(f"{field} must not be empty")
+        raise EvidenceValidationError(EVIDENCE_INVALID, f"{field} must not be empty")
     if normalize("NFC", value) != value:
-        raise EvidenceValidationError(f"{field} must use NFC")
+        raise EvidenceValidationError(EVIDENCE_INVALID, f"{field} must use NFC")
     if len(value.encode("utf-8")) > MAX_STRING_BYTES:
-        raise EvidenceValidationError(f"{field} exceeds the string limit")
+        raise EvidenceValidationError(EVIDENCE_LIMIT_EXCEEDED, f"{field} exceeds the string limit")
     if not allow_controls and any(ord(character) < 32 or ord(character) == 127 for character in value):
-        raise EvidenceValidationError(f"{field} contains a control character")
+        raise EvidenceValidationError(EVIDENCE_INVALID, f"{field} contains a control character")
     return value
 
 
 def _require_hash(field: str, value: object) -> str:
     string = _require_bounded_string(field, value)
     if _HASH.fullmatch(string) is None:
-        raise EvidenceValidationError(f"{field} must be a lowercase SHA-256")
+        raise EvidenceValidationError(EVIDENCE_INVALID, f"{field} must be a lowercase SHA-256")
     return string
 
 
 def _require_integer(field: str, value: object, minimum: int, maximum: int) -> int:
     if type(value) is not int or not minimum <= value <= maximum:
-        raise EvidenceValidationError(f"{field} must be an integer in range")
+        raise EvidenceValidationError(EVIDENCE_INVALID, f"{field} must be an integer in range")
     return cast(int, value)
 
 
 def _require_keys(value: object, expected: set[str], record: str) -> Mapping[str, object]:
     if not isinstance(value, Mapping) or set(value) != expected:
-        raise EvidenceValidationError(f"{record} fields are not closed")
+        raise EvidenceValidationError(EVIDENCE_INVALID, f"{record} fields are not closed")
     return value
 
 
 def _validate_session_id(value: object) -> str:
     session_id = _require_bounded_string("session_id", value)
     if _SESSION_ID.fullmatch(session_id) is None:
-        raise EvidenceValidationError("session_id must be lowercase ASCII")
+        raise EvidenceValidationError(EVIDENCE_INVALID, "session_id must be lowercase ASCII")
     return session_id
 
 
@@ -116,38 +147,38 @@ def _validate_project_id(value: object) -> str:
     try:
         parsed = UUID(project_id)
     except (TypeError, ValueError) as exc:
-        raise EvidenceValidationError("project_id must be a canonical UUID") from exc
+        raise EvidenceValidationError(EVIDENCE_INVALID, "project_id must be a canonical UUID") from exc
     if str(parsed) != project_id:
-        raise EvidenceValidationError("project_id must be a lowercase canonical UUID")
+        raise EvidenceValidationError(EVIDENCE_INVALID, "project_id must be a lowercase canonical UUID")
     return project_id
 
 
 def _validate_utc(value: object) -> str:
     timestamp = _require_bounded_string("produced_at_utc", value)
     if _UTC.fullmatch(timestamp) is None:
-        raise EvidenceValidationError("produced_at_utc must use UTC microseconds")
+        raise EvidenceValidationError(EVIDENCE_INVALID, "produced_at_utc must use UTC microseconds")
     try:
         datetime.strptime(timestamp, "%Y-%m-%dT%H:%M:%S.%fZ")
     except ValueError as exc:
-        raise EvidenceValidationError("produced_at_utc is not a valid UTC timestamp") from exc
+        raise EvidenceValidationError(EVIDENCE_INVALID, "produced_at_utc is not a valid UTC timestamp") from exc
     return timestamp
 
 
 def _validate_relative_path(value: object) -> str:
     path = _require_bounded_string("relative_path", value)
     if len(path.encode("utf-8")) > 512:
-        raise EvidenceValidationError("relative_path exceeds 512 UTF-8 bytes")
+        raise EvidenceValidationError(EVIDENCE_LIMIT_EXCEEDED, "relative_path exceeds 512 UTF-8 bytes")
     if path.startswith(("/", "\\")) or "\\" in path or ":" in path:
-        raise EvidenceValidationError("relative_path is not POSIX-relative")
+        raise EvidenceValidationError(EVIDENCE_PATH_UNSAFE, "relative_path is not POSIX-relative")
     parts = path.split("/")
     if any(not part or part in {".", ".."} for part in parts):
-        raise EvidenceValidationError("relative_path contains an unsafe segment")
+        raise EvidenceValidationError(EVIDENCE_PATH_UNSAFE, "relative_path contains an unsafe segment")
     for part in parts:
         if part.endswith((".", " ")):
-            raise EvidenceValidationError("relative_path has an ambiguous trailing character")
+            raise EvidenceValidationError(EVIDENCE_PATH_UNSAFE, "relative_path has an ambiguous trailing character")
         base = part.split(".", 1)[0].upper()
         if base in _WINDOWS_RESERVED:
-            raise EvidenceValidationError("relative_path uses a reserved Windows name")
+            raise EvidenceValidationError(EVIDENCE_PATH_UNSAFE, "relative_path uses a reserved Windows name")
     return path
 
 
@@ -157,7 +188,7 @@ def _copy_json(value: object, state: _JsonState, depth: int = 1) -> object:
         return value
     if type(value) is int:
         if not MIN_JSON_INTEGER <= value <= MAX_JSON_INTEGER:
-            raise EvidenceValidationError("JSON integer is out of range")
+            raise EvidenceValidationError(EVIDENCE_LIMIT_EXCEEDED, "JSON integer is out of range")
         return value
     if isinstance(value, str):
         return _require_bounded_string("JSON string", value, nonempty=False, allow_controls=True)
@@ -166,12 +197,12 @@ def _copy_json(value: object, state: _JsonState, depth: int = 1) -> object:
         for key, item in value.items():
             key = _require_bounded_string("JSON object key", key, nonempty=False, allow_controls=True)
             if key in copied:
-                raise EvidenceValidationError("duplicate JSON object key")
+                raise EvidenceValidationError(EVIDENCE_INVALID, "duplicate JSON object key")
             copied[key] = _copy_json(item, state, depth + 1)
         return copied
     if isinstance(value, (list, tuple)):
         return [_copy_json(item, state, depth + 1) for item in value]
-    raise EvidenceValidationError("JSON value has an unsupported type")
+    raise EvidenceValidationError(EVIDENCE_INVALID, "JSON value has an unsupported type")
 
 
 def _canonical_json_value(value: object) -> object:
@@ -181,9 +212,9 @@ def _canonical_json_value(value: object) -> object:
 def _reject_tuple_containers(value: object, depth: int = 1) -> None:
     """Keep Python-only tuples out of dictionary and JSON decoding boundaries."""
     if depth > MAX_JSON_DEPTH:
-        raise EvidenceValidationError("JSON nesting exceeds the evidence limit")
+        raise EvidenceValidationError(EVIDENCE_LIMIT_EXCEEDED, "JSON nesting exceeds the evidence limit")
     if isinstance(value, tuple):
-        raise EvidenceValidationError("JSON input must not contain tuple containers")
+        raise EvidenceValidationError(EVIDENCE_INVALID, "JSON input must not contain tuple containers")
     if isinstance(value, Mapping):
         for key, item in value.items():
             _reject_tuple_containers(key, depth + 1)
@@ -217,20 +248,20 @@ def _thaw_json(value: object) -> object:
 
 def _decode_authoritative_json(data: bytes) -> object:
     if not isinstance(data, bytes) or len(data) > MAX_ENVELOPE_BYTES:
-        raise EvidenceValidationError("envelope bytes exceed the evidence limit")
+        raise EvidenceValidationError(EVIDENCE_LIMIT_EXCEEDED, "envelope bytes exceed the evidence limit")
     if data.startswith(b"\xef\xbb\xbf"):
-        raise EvidenceValidationError("authoritative JSON must not include a BOM")
+        raise EvidenceValidationError(EVIDENCE_INVALID, "authoritative JSON must not include a BOM")
 
     def pairs(pairs_value: list[tuple[str, object]]) -> dict[str, object]:
         result: dict[str, object] = {}
         for key, value in pairs_value:
             if key in result:
-                raise EvidenceValidationError("authoritative JSON has duplicate keys")
+                raise EvidenceValidationError(EVIDENCE_INVALID, "authoritative JSON has duplicate keys")
             result[key] = value
         return result
 
     def reject_number(text: str) -> object:
-        raise EvidenceValidationError(f"non-integer JSON number is forbidden: {text}")
+        raise EvidenceValidationError(EVIDENCE_INVALID, f"non-integer JSON number is forbidden: {text}")
 
     try:
         decoded = json.loads(
@@ -240,9 +271,9 @@ def _decode_authoritative_json(data: bytes) -> object:
             parse_constant=reject_number,
         )
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise EvidenceValidationError("authoritative JSON is invalid UTF-8 JSON") from exc
+        raise EvidenceValidationError(EVIDENCE_INVALID, "authoritative JSON is invalid UTF-8 JSON") from exc
     if canonical_json_bytes(decoded) != data:
-        raise EvidenceValidationError("authoritative JSON is not canonical")
+        raise EvidenceValidationError(EVIDENCE_INVALID, "authoritative JSON is not canonical")
     return decoded
 
 
@@ -267,9 +298,9 @@ class EvidenceIdentity:
         _require_bounded_string("target_device", self.target_device)
         _require_hash("input_snapshot_sha256", self.input_snapshot_sha256)
         if _GIT_COMMIT.fullmatch(_require_bounded_string("git_commit", self.git_commit)) is None:
-            raise EvidenceValidationError("git_commit must be a lowercase Git SHA-1")
+            raise EvidenceValidationError(EVIDENCE_INVALID, "git_commit must be a lowercase Git SHA-1")
         if type(self.git_dirty) is not bool:
-            raise EvidenceValidationError("git_dirty must be a JSON boolean")
+            raise EvidenceValidationError(EVIDENCE_INVALID, "git_dirty must be a JSON boolean")
 
     @classmethod
     def from_dict(cls, value: object) -> "EvidenceIdentity":
@@ -340,24 +371,24 @@ class EvidenceEnvelope:
 
     def __post_init__(self) -> None:
         if self.schema != EVIDENCE_SCHEMA:
-            raise EvidenceValidationError("schema must be stm32-evidence/1")
+            raise EvidenceValidationError(EVIDENCE_INVALID, "schema must be stm32-evidence/1")
         if not isinstance(self.identity, EvidenceIdentity):
-            raise EvidenceValidationError("identity must be an EvidenceIdentity")
+            raise EvidenceValidationError(EVIDENCE_INVALID, "identity must be an EvidenceIdentity")
         _require_bounded_string("operation", self.operation)
         _validate_utc(self.produced_at_utc)
         if not isinstance(self.parents, tuple) or not isinstance(self.artifacts, tuple):
-            raise EvidenceValidationError("parents and artifacts must be tuples")
+            raise EvidenceValidationError(EVIDENCE_INVALID, "parents and artifacts must be tuples")
         parents = self.parents
         artifacts = self.artifacts
         if len(parents) > MAX_PARENTS or len(artifacts) > MAX_ARTIFACTS:
-            raise EvidenceValidationError("envelope collection exceeds the evidence limit")
+            raise EvidenceValidationError(EVIDENCE_LIMIT_EXCEEDED, "envelope collection exceeds the evidence limit")
         for parent in parents:
             _require_hash("parent evidence_id", parent)
         if not all(isinstance(artifact, ArtifactRef) for artifact in artifacts):
-            raise EvidenceValidationError("artifacts must be ArtifactRef values")
+            raise EvidenceValidationError(EVIDENCE_INVALID, "artifacts must be ArtifactRef values")
         metadata = _canonical_json_value(self.metadata)
         if not isinstance(metadata, dict):
-            raise EvidenceValidationError("metadata must be a canonical JSON object")
+            raise EvidenceValidationError(EVIDENCE_INVALID, "metadata must be a canonical JSON object")
         object.__setattr__(self, "parents", parents)
         object.__setattr__(self, "artifacts", artifacts)
         object.__setattr__(self, "metadata", cast(Mapping[str, object], _freeze_json(metadata)))
@@ -365,10 +396,10 @@ class EvidenceEnvelope:
         if self.evidence_id is not _UNSET_EVIDENCE_ID:
             _require_hash("evidence_id", self.evidence_id)
             if self.evidence_id != calculated:
-                raise EvidenceValidationError("evidence_id does not match canonical envelope content")
+                raise EvidenceValidationError(EVIDENCE_INVALID, "evidence_id does not match canonical envelope content")
         object.__setattr__(self, "evidence_id", calculated)
         if len(self.to_json_bytes()) > MAX_ENVELOPE_BYTES:
-            raise EvidenceValidationError("envelope JSON exceeds 1 MiB")
+            raise EvidenceValidationError(EVIDENCE_LIMIT_EXCEEDED, "envelope JSON exceeds 1 MiB")
 
     @classmethod
     def from_dict(
@@ -387,7 +418,7 @@ class EvidenceEnvelope:
         parents = data["parents"]
         artifacts = data["artifacts"]
         if not isinstance(parents, list) or not isinstance(artifacts, list):
-            raise EvidenceValidationError("parents and artifacts must be JSON arrays")
+            raise EvidenceValidationError(EVIDENCE_INVALID, "parents and artifacts must be JSON arrays")
         envelope = cls(
             schema=cast(str, data["schema"]),
             evidence_id=data["evidence_id"],
@@ -434,6 +465,6 @@ def calculate_evidence_id(value: EvidenceEnvelope | Mapping[str, object]) -> str
     elif isinstance(value, Mapping):
         payload = cast(dict[str, object], _canonical_json_value(value))
     else:
-        raise EvidenceValidationError("evidence digest input must be an envelope object")
+        raise EvidenceValidationError(EVIDENCE_INVALID, "evidence digest input must be an envelope object")
     payload.pop("evidence_id", None)
     return hashlib.sha256(canonical_json_bytes(payload)).hexdigest()

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import FrozenInstanceError, replace
 import gc as python_gc
@@ -1286,7 +1287,7 @@ def test_identity_bound_delete_rejects_missing_and_mismatched_snapshot_targets(t
     plan = plan_gc(store)
     prepared = gc_module._registered_prepared(plan)
     assert prepared is not None
-    with pytest.raises(gc_module._GcStoreChanged):
+    with pytest.raises(gc_module.GcStoreChangedError):
         gc_module._delete_identity_bound(prepared, artifact.relative_path, (), set())
 
     snapshot = list(prepared.snapshot_entries)
@@ -1294,7 +1295,7 @@ def test_identity_bound_delete_rejects_missing_and_mismatched_snapshot_targets(t
         i for i, entry in enumerate(snapshot) if entry.get("path") == artifact.relative_path
     )
     snapshot[index] = {**snapshot[index], "links": 2}
-    with pytest.raises(gc_module._GcStoreChanged):
+    with pytest.raises(gc_module.GcStoreChangedError):
         gc_module._delete_identity_bound(
             prepared, artifact.relative_path, tuple(snapshot), set()
         )
@@ -2194,3 +2195,35 @@ def test_root_bytes_are_bound_to_the_snapshot_used_for_planning(tmp_path):
     assert forged_artifact.relative_path in plan.reachable_objects
     assert plan.unreachable_objects == ()
     assert "roots/stable.json" in plan.corrupt_entries
+
+
+def test_t10_1a_gc_store_change_type_is_public_separate_and_no_argument():
+    """The GC store-change boundary must be public, separate, fixed-message, and no-argument."""
+    assert hasattr(gc_module, "GcStoreChangedError")
+    error_type = gc_module.GcStoreChangedError
+    assert issubclass(error_type, Exception)
+    assert not issubclass(error_type, gc_module.EvidenceValidationError)
+    assert error_type.code == "GC_STORE_CHANGED"
+    error = error_type()
+    assert error.args == ("evidence store changed during GC",)
+    assert str(error) == "evidence store changed during GC"
+    with pytest.raises(TypeError):
+        error_type("message")
+    assert "GcStoreChangedError" in gc_module.__all__
+
+    tree = ast.parse(Path(gc_module.__file__).read_text(encoding="utf-8"))
+    calls = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "GcStoreChangedError"
+    ]
+    assert len(calls) == 7
+    assert all(not node.args and not node.keywords for node in calls)
+    assert not any(
+        isinstance(node, (ast.Name, ast.ClassDef))
+        and getattr(node, "id", getattr(node, "name", None))
+        == "".join(("_Gc", "StoreChanged"))
+        for node in ast.walk(tree)
+    )

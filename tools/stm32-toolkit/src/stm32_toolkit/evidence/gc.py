@@ -16,7 +16,14 @@ from typing import Mapping
 from unicodedata import normalize
 import weakref
 
-from .model import EvidenceEnvelope, EvidenceValidationError, canonical_json_bytes
+from .model import (
+    EVIDENCE_CORRUPT,
+    EVIDENCE_INVALID,
+    EVIDENCE_PATH_UNSAFE,
+    EvidenceEnvelope,
+    EvidenceValidationError,
+    canonical_json_bytes,
+)
 from .store import EvidenceStore
 
 
@@ -32,8 +39,16 @@ _AUTHORIZATION_LEDGER_PRIMARY = ".stm32-evidence-gc-ledger"
 _AUTHORIZATION_LEDGER_SECONDARY = ".stm32-evidence-gc-ledger-alt"
 
 
-class _GcStoreChanged(EvidenceValidationError):
+GC_STORE_CHANGED_MESSAGE = "evidence store changed during GC"
+
+
+class GcStoreChangedError(Exception):
     """The object selected by the plan no longer has the captured identity."""
+
+    code = "GC_STORE_CHANGED"
+
+    def __init__(self) -> None:
+        Exception.__init__(self, GC_STORE_CHANGED_MESSAGE)
 
 
 @dataclass(frozen=True)
@@ -151,7 +166,7 @@ def _close_windows_handle(handle: int) -> None:
 def _stable_parent_guard(parent: Path, expected: os.stat_result):
     """Pin the existing ledger parent identity while its fixed sibling is accessed."""
     if os.name != "nt":  # pragma: no cover - unsupported destructive platform
-        raise EvidenceValidationError(
+        raise EvidenceValidationError(EVIDENCE_INVALID,
             "stable authorization ledger parent locking is unavailable"
         )
     import ctypes
@@ -199,7 +214,7 @@ def _stable_parent_guard(parent: Path, expected: os.stat_result):
             or (current.st_dev, current.st_ino) != (expected.st_dev, expected.st_ino)
             or current.st_ino != opened["file_index"]
         ):
-            raise EvidenceValidationError(
+            raise EvidenceValidationError(EVIDENCE_PATH_UNSAFE,
                 "authorization ledger parent identity changed"
             )
         yield
@@ -222,7 +237,7 @@ def _file_identity_fields(path: Path, info: os.stat_result) -> dict[str, object]
             or opened["size"] != info.st_size
             or opened["attributes"] & 0x00000400
         ):
-            raise EvidenceValidationError("file identity changed while it was captured")
+            raise EvidenceValidationError(EVIDENCE_PATH_UNSAFE, "file identity changed while it was captured")
         fields.update(
             {
                 "volume_serial": str(opened["volume_serial"]),
@@ -245,9 +260,9 @@ class RootRecord:
 
     def __post_init__(self) -> None:
         if not isinstance(self.root_type, str):
-            raise EvidenceValidationError("root_type must be a string")
+            raise EvidenceValidationError(EVIDENCE_INVALID, "root_type must be a string")
         if self.root_type not in REGISTERED_ROOT_TYPES:
-            raise EvidenceValidationError("root_type is not registered")
+            raise EvidenceValidationError(EVIDENCE_INVALID, "root_type is not registered")
         if (
             not isinstance(self.root_id, str)
             or not self.root_id
@@ -257,20 +272,20 @@ class RootRecord:
             or any(character in self.root_id for character in "/\\:")
             or self.root_id in {".", ".."}
         ):
-            raise EvidenceValidationError("root_id is not a canonical path-safe bounded string")
+            raise EvidenceValidationError(EVIDENCE_INVALID, "root_id is not a canonical path-safe bounded string")
         if not isinstance(self.manifest_id, str) or _HASH.fullmatch(self.manifest_id) is None:
-            raise EvidenceValidationError("manifest_id must be a lowercase SHA-256")
+            raise EvidenceValidationError(EVIDENCE_INVALID, "manifest_id must be a lowercase SHA-256")
         if not isinstance(self.metadata, Mapping):
-            raise EvidenceValidationError("root metadata must be a JSON object")
+            raise EvidenceValidationError(EVIDENCE_INVALID, "root metadata must be a JSON object")
         copied = _json_copy(self.metadata)
         if not isinstance(copied, dict):
-            raise EvidenceValidationError("root metadata must be a JSON object")
+            raise EvidenceValidationError(EVIDENCE_INVALID, "root metadata must be a JSON object")
         object.__setattr__(self, "metadata", _freeze_json(copied))
 
     @classmethod
     def from_value(cls, value: object) -> "RootRecord":
         if not isinstance(value, Mapping) or set(value) != _ROOT_FIELDS:
-            raise EvidenceValidationError("root record fields are not closed")
+            raise EvidenceValidationError(EVIDENCE_INVALID, "root record fields are not closed")
         return cls(
             root_type=value["root_type"],  # type: ignore[arg-type]
             root_id=value["root_id"],  # type: ignore[arg-type]
@@ -489,7 +504,7 @@ def _snapshot_entries(
             != (top_info.st_dev, top_info.st_ino)
             or after_top.st_mtime_ns != top_info.st_mtime_ns
         ):
-            raise EvidenceValidationError(
+            raise EvidenceValidationError(EVIDENCE_PATH_UNSAFE,
                 f"managed directory changed while it was scanned: {top}"
             )
         if phase is not None:
@@ -502,7 +517,7 @@ def _snapshot_entries(
             after = None
         if before is None:
             if after is not None:
-                raise EvidenceValidationError(
+                raise EvidenceValidationError(EVIDENCE_PATH_UNSAFE,
                     f"managed directory appeared while the store was scanned: {top}"
                 )
             continue
@@ -511,14 +526,14 @@ def _snapshot_entries(
             or after.st_mode != before.st_mode
             or after.st_mtime_ns != before.st_mtime_ns
         ):
-            raise EvidenceValidationError(
+            raise EvidenceValidationError(EVIDENCE_PATH_UNSAFE,
                 f"managed directory changed while the store was scanned: {top}"
             )
     for directory, before in directory_states.items():
         try:
             after = directory.lstat()
         except FileNotFoundError as exc:
-            raise EvidenceValidationError(
+            raise EvidenceValidationError(EVIDENCE_PATH_UNSAFE,
                 f"managed directory disappeared while the store was scanned: {directory}"
             ) from exc
         if (
@@ -528,7 +543,7 @@ def _snapshot_entries(
             or (after.st_dev, after.st_ino) != (before.st_dev, before.st_ino)
             or after.st_mtime_ns != before.st_mtime_ns
         ):
-            raise EvidenceValidationError(
+            raise EvidenceValidationError(EVIDENCE_PATH_UNSAFE,
                 f"managed directory changed while the store was scanned: {directory}"
             )
     return tuple(sorted(entries, key=lambda item: str(item["path"]).encode("utf-8")))
@@ -573,10 +588,10 @@ def _scan_roots(
                 len(payload) != entry["size"]
                 or hashlib.sha256(payload).hexdigest() != entry.get("content_sha256")
             ):
-                raise EvidenceValidationError("root bytes differ from the captured snapshot")
+                raise EvidenceValidationError(EVIDENCE_CORRUPT, "root bytes differ from the captured snapshot")
             document = json.loads(payload)
             if canonical_json_bytes(document) != payload:
-                raise EvidenceValidationError("root is not canonical JSON")
+                raise EvidenceValidationError(EVIDENCE_CORRUPT, "root is not canonical JSON")
             root = RootRecord.from_value(document)
         except (OSError, UnicodeError, json.JSONDecodeError, EvidenceValidationError, TypeError, ValueError):
             candidate_type = document.get("root_type") if isinstance(document, Mapping) else None
@@ -624,11 +639,11 @@ def _scan_manifests(
                 len(payload) != entry["size"]
                 or hashlib.sha256(payload).hexdigest() != entry.get("content_sha256")
             ):
-                raise EvidenceValidationError("manifest bytes differ from the captured snapshot")
+                raise EvidenceValidationError(EVIDENCE_CORRUPT, "manifest bytes differ from the captured snapshot")
             envelope = EvidenceEnvelope.from_json_bytes(payload)
             manifest_id = name[:-5]
             if str(envelope.evidence_id) != manifest_id:
-                raise EvidenceValidationError("manifest filename does not match its evidence_id")
+                raise EvidenceValidationError(EVIDENCE_CORRUPT, "manifest filename does not match its evidence_id")
             manifests[manifest_id] = store._verify_envelope_snapshot(
                 envelope, object_snapshot
             )
@@ -691,7 +706,7 @@ def _existing_store_identity(store: EvidenceStore) -> tuple[str, str]:
     """Read an existing canonical store identity without creating any path."""
     info = store._validate_existing_path(store.root)
     if not stat.S_ISDIR(info.st_mode):
-        raise EvidenceValidationError("evidence root is not a directory")
+        raise EvidenceValidationError(EVIDENCE_PATH_UNSAFE, "evidence root is not a directory")
     canonical_root = os.path.normcase(str(store.root.absolute()))
     store_id = _digest(
         {
@@ -725,7 +740,7 @@ def put_root(store: EvidenceStore | Path | str, root: RootRecord | Mapping[str, 
             if evidence_store._atomic_create_new(target, payload, phase="gc-root"):
                 return target
         if target.read_bytes() != payload:
-            raise EvidenceValidationError("root identity already has different canonical bytes")
+            raise EvidenceValidationError(EVIDENCE_CORRUPT, "root identity already has different canonical bytes")
         return target
 
 
@@ -745,7 +760,7 @@ def _plan_gc_locked(evidence_store: EvidenceStore) -> GcPlan:
     if _filtered_snapshot_digest(_snapshot_entries(evidence_store)) != _filtered_snapshot_digest(
         snapshot
     ):
-        raise EvidenceValidationError("evidence store changed while GC planning")
+        raise EvidenceValidationError(EVIDENCE_PATH_UNSAFE, "evidence store changed while GC planning")
 
     reachable: set[str] = set()
     pending_manifests = [root.manifest_id for root in roots]
@@ -938,7 +953,7 @@ def _consume_authorization(prepared: _PreparedGcPlan) -> bool:
     parent = prepared.store.root.parent
     parent_info = EvidenceStore._validate_existing_path(parent)
     if not stat.S_ISDIR(parent_info.st_mode):
-        raise EvidenceValidationError("evidence store parent is not a directory")
+        raise EvidenceValidationError(EVIDENCE_PATH_UNSAFE, "evidence store parent is not a directory")
     payload = canonical_json_bytes(
         {
             "action_digest": prepared.action_digest,
@@ -958,7 +973,7 @@ def _consume_authorization(prepared: _PreparedGcPlan) -> bool:
         if os.path.normcase(str(ledger_root.absolute())) == os.path.normcase(
             str(prepared.store.root.absolute())
         ):
-            raise EvidenceValidationError(
+            raise EvidenceValidationError(EVIDENCE_PATH_UNSAFE,
                 "authorization ledger aliases the evidence store root"
             )
         ledger = EvidenceStore(ledger_root)
@@ -984,19 +999,17 @@ def _delete_identity_bound(
 ) -> _DeleteOutcome:
     """Delete the verified Windows file identity without a pathname unlink race."""
     if os.name != "nt":  # pragma: no cover - Linux acceptance must retain safely
-        raise _GcStoreChanged(  # pragma: no cover
-            "identity-bound evidence deletion is unavailable on this platform"
-        )
+        raise GcStoreChangedError()  # pragma: no cover
     expected = next(
         (entry for entry in final_snapshot if entry.get("path") == relative), None
     )
     if expected is None:
-        raise _GcStoreChanged("planned object disappeared before identity-bound deletion")
+        raise GcStoreChangedError()
     path = prepared.store.root.joinpath(*relative.split("/"))
     try:
         handle = _open_windows_file(path, delete=True)
     except OSError as exc:
-        raise _GcStoreChanged("planned object could not be opened by identity") from exc
+        raise GcStoreChangedError() from exc
     disposition_set = False
     close_error: OSError | None = None
     try:
@@ -1014,7 +1027,7 @@ def _delete_identity_bound(
             or opened["size"] != expected.get("size")
             or opened["size"] != prepared.target_sizes[relative]
         ):
-            raise _GcStoreChanged("planned object identity changed before deletion")
+            raise GcStoreChangedError()
 
         import ctypes
         from ctypes import wintypes
@@ -1050,7 +1063,7 @@ def _delete_identity_bound(
             or size != opened["size"]
             or digest.hexdigest() != expected.get("content_sha256")
         ):
-            raise _GcStoreChanged("planned object changed while its handle was verified")
+            raise GcStoreChangedError()
 
         excluded = frozenset({*excluded_before, relative})
         handle_snapshot = _snapshot_entries(
@@ -1061,7 +1074,7 @@ def _delete_identity_bound(
         if _filtered_snapshot_digest(
             handle_snapshot, excluded
         ) != _filtered_snapshot_digest(prepared.snapshot_entries, excluded):
-            raise _GcStoreChanged("evidence store changed while delete handle was held")
+            raise GcStoreChangedError()
 
         set_pointer = kernel32.SetFilePointerEx
         set_pointer.argtypes = [
@@ -1089,7 +1102,7 @@ def _delete_identity_bound(
             or final_size != size
             or final_digest.hexdigest() != expected.get("content_sha256")
         ):
-            raise _GcStoreChanged("planned object changed before disposition")
+            raise GcStoreChangedError()
 
         class FileDispositionInformation(ctypes.Structure):
             _fields_ = [("delete_file", wintypes.BOOL)]
@@ -1203,7 +1216,7 @@ def _apply_gc_locked(prepared: _PreparedGcPlan) -> GcResult:
                     errors=(outcome.error,),
                 )
             prepared.store._fault("gc.after_delete")
-        except _GcStoreChanged as exc:
+        except GcStoreChangedError as exc:
             return _result(
                 prepared,
                 False,
@@ -1250,11 +1263,11 @@ def _apply_registered(
                 return _result(prepared, False, "GC_AUTHORIZATION_CONSUMED")
             store_root, store_id = _existing_store_identity(prepared.store)
             if store_root != prepared.store_root or store_id != prepared.store_id:
-                raise EvidenceValidationError("prepared evidence store identity changed")
+                raise EvidenceValidationError(EVIDENCE_PATH_UNSAFE, "prepared evidence store identity changed")
             with prepared.store._mutation_lock(create=False):
                 store_root, store_id = _existing_store_identity(prepared.store)
                 if store_root != prepared.store_root or store_id != prepared.store_id:
-                    raise EvidenceValidationError("prepared evidence store identity changed")
+                    raise EvidenceValidationError(EVIDENCE_PATH_UNSAFE, "prepared evidence store identity changed")
                 try:
                     current_plan = plan.to_json_bytes()
                 except (
@@ -1351,7 +1364,7 @@ def _apply_reconstructed(plan: GcPlan) -> GcResult:
 def apply_gc(plan: GcPlan, authorized: object, expected_plan_digest: object) -> GcResult:
     """Consume one exact MODIFY token and delete only still-unreachable verified objects."""
     if not isinstance(plan, GcPlan):
-        raise EvidenceValidationError("plan must be a GcPlan")
+        raise EvidenceValidationError(EVIDENCE_INVALID, "plan must be a GcPlan")
     prepared = _registered_prepared(plan)
     if prepared is None:
         return _apply_reconstructed(plan)
@@ -1362,6 +1375,7 @@ __all__ = [
     "GC_PLAN_SCHEMA",
     "GC_RESULT_SCHEMA",
     "REGISTERED_ROOT_TYPES",
+    "GcStoreChangedError",
     "GcPlan",
     "GcResult",
     "RootRecord",

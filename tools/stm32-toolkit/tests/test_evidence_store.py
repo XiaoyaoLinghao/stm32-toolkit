@@ -887,3 +887,28 @@ def test_manifest_filename_must_match_canonical_payload_id(tmp_path):
 
     with pytest.raises(ValueError, match="name"):
         store.get_envelope(wrong_id)
+
+
+def test_t10_1a_store_typed_error_samples_preserve_existing_predicates(tmp_path, monkeypatch):
+    """Representative Store predicates must retain their behavior while gaining literal codes."""
+    store = EvidenceStore(tmp_path / "evidence")
+    with pytest.raises(ValueError) as invalid:
+        store.get_envelope("../outside")
+    assert invalid.value.code == "EVIDENCE_INVALID"
+
+    source = tmp_path / "sample.bin"
+    source.write_bytes(b"sample")
+    with pytest.raises(ValueError) as corrupt:
+        store_module.EvidenceStore._hash_file(source, expected_digest="0" * 64)
+    assert corrupt.value.code == "EVIDENCE_CORRUPT"
+
+    directory = tmp_path / "directory"
+    directory.mkdir()
+    with pytest.raises(ValueError) as unsafe:
+        store_module.EvidenceStore._validate_existing_path(directory, regular=True)
+    assert unsafe.value.code == "EVIDENCE_PATH_UNSAFE"
+
+    monkeypatch.setattr(store_module, "MAX_ARTIFACT_BYTES", 0)
+    with pytest.raises(ValueError) as exceeded:
+        store_module.EvidenceStore._hash_file(source)
+    assert exceeded.value.code == "EVIDENCE_LIMIT_EXCEEDED"

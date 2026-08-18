@@ -14,6 +14,10 @@ import math
 import time
 
 from .model import (
+    EVIDENCE_CORRUPT,
+    EVIDENCE_INVALID,
+    EVIDENCE_LIMIT_EXCEEDED,
+    EVIDENCE_PATH_UNSAFE,
     MAX_ARTIFACT_BYTES,
     ArtifactRef,
     EvidenceEnvelope,
@@ -67,12 +71,12 @@ class EvidenceStore:
             except FileNotFoundError:
                 raise
             if stat.S_ISLNK(info.st_mode) or cls._is_reparse(info):
-                raise EvidenceValidationError(f"path contains a link or reparse point: {current}")
+                raise EvidenceValidationError(EVIDENCE_PATH_UNSAFE, f"path contains a link or reparse point: {current}")
         info = absolute.lstat()
         if regular and not stat.S_ISREG(info.st_mode):
-            raise EvidenceValidationError(f"path is not a regular file: {absolute}")
+            raise EvidenceValidationError(EVIDENCE_PATH_UNSAFE, f"path is not a regular file: {absolute}")
         if single_link and info.st_nlink != 1:
-            raise EvidenceValidationError(f"managed file has a hard link: {absolute}")
+            raise EvidenceValidationError(EVIDENCE_PATH_UNSAFE, f"managed file has a hard link: {absolute}")
         return info
 
     @staticmethod
@@ -80,7 +84,7 @@ class EvidenceStore:
         folded = name.casefold()
         for child in parent.iterdir():
             if child.name.casefold() == folded and child.name != name:
-                raise EvidenceValidationError(
+                raise EvidenceValidationError(EVIDENCE_PATH_UNSAFE,
                     f"managed path has a case-fold collision: {child.name!r} and {name!r}"
                 )
 
@@ -92,7 +96,7 @@ class EvidenceStore:
             pass
         info = self._validate_existing_path(self.root)
         if not stat.S_ISDIR(info.st_mode):
-            raise EvidenceValidationError("evidence root is not a directory")
+            raise EvidenceValidationError(EVIDENCE_PATH_UNSAFE, "evidence root is not a directory")
 
     def _managed_directory(self, *parts: str) -> Path:
         self._ensure_root()
@@ -106,7 +110,7 @@ class EvidenceStore:
                 pass
             info = self._validate_existing_path(candidate)
             if not stat.S_ISDIR(info.st_mode):
-                raise EvidenceValidationError(f"managed path is not a directory: {candidate}")
+                raise EvidenceValidationError(EVIDENCE_PATH_UNSAFE, f"managed path is not a directory: {candidate}")
             current = candidate
         return current
 
@@ -118,7 +122,7 @@ class EvidenceStore:
         else:
             root_info = self._validate_existing_path(self.root)
             if not stat.S_ISDIR(root_info.st_mode):
-                raise EvidenceValidationError("evidence root is not a directory")
+                raise EvidenceValidationError(EVIDENCE_PATH_UNSAFE, "evidence root is not a directory")
         lock_path = self.root / _MUTATION_LOCK_NAME
         try:
             before = self._validate_existing_path(
@@ -126,7 +130,7 @@ class EvidenceStore:
             )
         except FileNotFoundError:
             if not create:
-                raise EvidenceValidationError("store mutation lock is not initialized")
+                raise EvidenceValidationError(EVIDENCE_CORRUPT, "store mutation lock is not initialized")
             self._atomic_create_new(lock_path, b"\0", phase="mutation-lock")
             before = self._validate_existing_path(
                 lock_path, regular=True, single_link=True
@@ -141,21 +145,21 @@ class EvidenceStore:
         try:
             opened = os.fstat(descriptor)
             if not stat.S_ISREG(opened.st_mode) or opened.st_nlink != 1:
-                raise EvidenceValidationError(
+                raise EvidenceValidationError(EVIDENCE_PATH_UNSAFE,
                     "store mutation lock is not a singular regular file"
                 )
             current = self._validate_existing_path(
                 lock_path, regular=True, single_link=True
             )
             if (current.st_dev, current.st_ino) != (opened.st_dev, opened.st_ino):
-                raise EvidenceValidationError("store mutation lock identity changed while opened")
+                raise EvidenceValidationError(EVIDENCE_PATH_UNSAFE, "store mutation lock identity changed while opened")
             if (before.st_dev, before.st_ino) != (
                 opened.st_dev,
                 opened.st_ino,
             ):
-                raise EvidenceValidationError("store mutation lock identity changed before open")
+                raise EvidenceValidationError(EVIDENCE_PATH_UNSAFE, "store mutation lock identity changed before open")
             if opened.st_size != 1:
-                raise EvidenceValidationError("store mutation lock has invalid size")
+                raise EvidenceValidationError(EVIDENCE_CORRUPT, "store mutation lock has invalid size")
             os.lseek(descriptor, 0, os.SEEK_SET)
             if os.name == "nt":
                 import msvcrt
@@ -170,7 +174,7 @@ class EvidenceStore:
                 lock_path, regular=True, single_link=True
             )
             if (current.st_dev, current.st_ino) != (opened.st_dev, opened.st_ino):
-                raise EvidenceValidationError("store mutation lock identity changed while held")
+                raise EvidenceValidationError(EVIDENCE_PATH_UNSAFE, "store mutation lock identity changed while held")
             yield
         finally:
             if locked:
@@ -201,25 +205,25 @@ class EvidenceStore:
     ) -> tuple[int, str]:
         before = cls._validate_existing_path(path, regular=True, single_link=single_link)
         if before.st_size > MAX_ARTIFACT_BYTES:
-            raise EvidenceValidationError("artifact exceeds the 2 GiB limit")
+            raise EvidenceValidationError(EVIDENCE_LIMIT_EXCEEDED, "artifact exceeds the 2 GiB limit")
         digest = hashlib.sha256()
         size = 0
         descriptor = cls._open_readonly(path)
         try:
             opened = os.fstat(descriptor)
             if (opened.st_dev, opened.st_ino) != (before.st_dev, before.st_ino):
-                raise EvidenceValidationError("file identity changed while it was opened")
+                raise EvidenceValidationError(EVIDENCE_PATH_UNSAFE, "file identity changed while it was opened")
             if not stat.S_ISREG(opened.st_mode):
-                raise EvidenceValidationError("opened path is not a regular file")
+                raise EvidenceValidationError(EVIDENCE_PATH_UNSAFE, "opened path is not a regular file")
             if single_link and opened.st_nlink != 1:
-                raise EvidenceValidationError(f"managed file has a hard link: {path}")
+                raise EvidenceValidationError(EVIDENCE_PATH_UNSAFE, f"managed file has a hard link: {path}")
             while True:
                 block = os.read(descriptor, _COPY_CHUNK)
                 if not block:
                     break
                 size += len(block)
                 if size > MAX_ARTIFACT_BYTES:
-                    raise EvidenceValidationError("artifact exceeds the 2 GiB limit")
+                    raise EvidenceValidationError(EVIDENCE_LIMIT_EXCEEDED, "artifact exceeds the 2 GiB limit")
                 digest.update(block)
             after = os.fstat(descriptor)
             if (
@@ -227,14 +231,14 @@ class EvidenceStore:
                 or after.st_size != opened.st_size
                 or after.st_mtime_ns != opened.st_mtime_ns
             ):
-                raise EvidenceValidationError("file changed while it was read")
+                raise EvidenceValidationError(EVIDENCE_PATH_UNSAFE, "file changed while it was read")
         finally:
             os.close(descriptor)
         actual_digest = digest.hexdigest()
         if expected_size is not None and size != expected_size:
-            raise EvidenceValidationError(f"evidence object is corrupt: size mismatch for {path}")
+            raise EvidenceValidationError(EVIDENCE_CORRUPT, f"evidence object is corrupt: size mismatch for {path}")
         if expected_digest is not None and actual_digest != expected_digest:
-            raise EvidenceValidationError(f"evidence object is corrupt: digest mismatch for {path}")
+            raise EvidenceValidationError(EVIDENCE_CORRUPT, f"evidence object is corrupt: digest mismatch for {path}")
         return size, actual_digest
 
     @staticmethod
@@ -307,14 +311,14 @@ class EvidenceStore:
     ) -> None:
         expected_relative = self._expected_object_relative(artifact.sha256)
         if artifact.relative_path != expected_relative:
-            raise EvidenceValidationError("artifact relative_path is not its content-addressed object path")
+            raise EvidenceValidationError(EVIDENCE_INVALID, "artifact relative_path is not its content-addressed object path")
         if object_snapshot is not None:
             observed = object_snapshot.get(expected_relative)
             if observed is None:
-                raise EvidenceValidationError("artifact object is absent from the verified snapshot")
+                raise EvidenceValidationError(EVIDENCE_CORRUPT, "artifact object is absent from the verified snapshot")
             observed_size, observed_digest = observed
             if observed_size != artifact.size_bytes or observed_digest != artifact.sha256:
-                raise EvidenceValidationError("artifact metadata differs from the verified object")
+                raise EvidenceValidationError(EVIDENCE_INVALID, "artifact metadata differs from the verified object")
             return
         _relative, target = self._expected_object(artifact.sha256)
         self._hash_file(
@@ -349,15 +353,15 @@ class EvidenceStore:
             try:
                 opened = os.fstat(source_descriptor)
                 if not stat.S_ISREG(opened.st_mode):
-                    raise EvidenceValidationError("opened second-pass source is not a regular file")
+                    raise EvidenceValidationError(EVIDENCE_PATH_UNSAFE, "opened second-pass source is not a regular file")
                 if (opened.st_dev, opened.st_ino) != (source_info.st_dev, source_info.st_ino):
-                    raise EvidenceValidationError("source identity changed while it was opened")
+                    raise EvidenceValidationError(EVIDENCE_PATH_UNSAFE, "source identity changed while it was opened")
                 if opened.st_nlink != 1:
-                    raise EvidenceValidationError("second-pass source has a hard link")
+                    raise EvidenceValidationError(EVIDENCE_PATH_UNSAFE, "second-pass source has a hard link")
                 if opened.st_size != source_info.st_size:
-                    raise EvidenceValidationError("source size changed between second-pass lstat and open")
+                    raise EvidenceValidationError(EVIDENCE_PATH_UNSAFE, "source size changed between second-pass lstat and open")
                 if opened.st_mtime_ns != source_info.st_mtime_ns:
-                    raise EvidenceValidationError("source mtime changed between second-pass lstat and open")
+                    raise EvidenceValidationError(EVIDENCE_PATH_UNSAFE, "source mtime changed between second-pass lstat and open")
                 with os.fdopen(descriptor, "wb") as output:
                     while True:
                         block = os.read(source_descriptor, _COPY_CHUNK)
@@ -365,7 +369,7 @@ class EvidenceStore:
                             break
                         copied_size += len(block)
                         if copied_size > MAX_ARTIFACT_BYTES:
-                            raise EvidenceValidationError("artifact exceeds the 2 GiB limit")
+                            raise EvidenceValidationError(EVIDENCE_LIMIT_EXCEEDED, "artifact exceeds the 2 GiB limit")
                         copied_digest.update(block)
                         output.write(block)
                     output.flush()
@@ -374,17 +378,17 @@ class EvidenceStore:
                     self._fault("artifact.after_fsync")
                 after = os.fstat(source_descriptor)
                 if not stat.S_ISREG(after.st_mode):
-                    raise EvidenceValidationError("read second-pass source is not a regular file")
+                    raise EvidenceValidationError(EVIDENCE_PATH_UNSAFE, "read second-pass source is not a regular file")
                 if (after.st_dev, after.st_ino) != (opened.st_dev, opened.st_ino):
-                    raise EvidenceValidationError("source identity changed while it was ingested")
+                    raise EvidenceValidationError(EVIDENCE_PATH_UNSAFE, "source identity changed while it was ingested")
                 if after.st_nlink != 1:
-                    raise EvidenceValidationError("second-pass source acquired a hard link")
+                    raise EvidenceValidationError(EVIDENCE_PATH_UNSAFE, "second-pass source acquired a hard link")
                 if after.st_size != opened.st_size:
-                    raise EvidenceValidationError("source size changed while it was ingested")
+                    raise EvidenceValidationError(EVIDENCE_PATH_UNSAFE, "source size changed while it was ingested")
                 if after.st_mtime_ns != opened.st_mtime_ns:
-                    raise EvidenceValidationError("source mtime changed while it was ingested")
+                    raise EvidenceValidationError(EVIDENCE_PATH_UNSAFE, "source mtime changed while it was ingested")
                 if copied_size != size or copied_digest.hexdigest() != actual_digest:
-                    raise EvidenceValidationError("source changed between the verified hash and copy")
+                    raise EvidenceValidationError(EVIDENCE_PATH_UNSAFE, "source changed between the verified hash and copy")
             finally:
                 os.close(source_descriptor)
         except BaseException:
@@ -433,7 +437,7 @@ class EvidenceStore:
         object_snapshot: Mapping[str, tuple[int, str]] | None,
     ) -> EvidenceEnvelope:
         if not isinstance(envelope, EvidenceEnvelope):
-            raise EvidenceValidationError("value is not an EvidenceEnvelope")
+            raise EvidenceValidationError(EVIDENCE_INVALID, "value is not an EvidenceEnvelope")
         # Reparse the exact canonical bytes so direct objects share the authoritative decoder gate.
         verified = EvidenceEnvelope.from_json_bytes(envelope.to_json_bytes())
         for artifact in verified.artifacts:
@@ -460,11 +464,11 @@ class EvidenceStore:
     ) -> Path:
         """Publish one envelope only if the lock-held commit remains before ``deadline``."""
         if type(deadline) not in {int, float} or not math.isfinite(deadline):
-            raise EvidenceValidationError("evidence envelope deadline is invalid")
+            raise EvidenceValidationError(EVIDENCE_INVALID, "evidence envelope deadline is invalid")
 
         def require_before_deadline() -> None:
             if time.monotonic() >= deadline:
-                raise EvidenceValidationError("evidence envelope publication deadline elapsed")
+                raise EvidenceValidationError(EVIDENCE_INVALID, "evidence envelope publication deadline elapsed")
 
         with self._mutation_lock():
             return self._put_envelope_locked(
@@ -504,7 +508,7 @@ class EvidenceStore:
 
     def get_envelope(self, evidence_id: str) -> EvidenceEnvelope:
         if not isinstance(evidence_id, str) or _HASH.fullmatch(evidence_id) is None:
-            raise EvidenceValidationError("evidence_id must be a lowercase SHA-256")
+            raise EvidenceValidationError(EVIDENCE_INVALID, "evidence_id must be a lowercase SHA-256")
         directory = self._managed_directory("manifests")
         name = f"{evidence_id}.json"
         self._reject_casefold_collision(directory, name)
@@ -514,7 +518,7 @@ class EvidenceStore:
         try:
             info = os.fstat(descriptor)
             if info.st_nlink != 1:
-                raise EvidenceValidationError(f"managed file has a hard link: {path}")
+                raise EvidenceValidationError(EVIDENCE_PATH_UNSAFE, f"managed file has a hard link: {path}")
             with os.fdopen(descriptor, "rb") as stream:
                 payload = stream.read()
             descriptor = -1
@@ -523,7 +527,7 @@ class EvidenceStore:
                 os.close(descriptor)
         envelope = EvidenceEnvelope.from_json_bytes(payload)
         if envelope.evidence_id != evidence_id:
-            raise EvidenceValidationError("manifest name does not match its evidence_id")
+            raise EvidenceValidationError(EVIDENCE_CORRUPT, "manifest name does not match its evidence_id")
         return self.verify_envelope(envelope)
 
 
