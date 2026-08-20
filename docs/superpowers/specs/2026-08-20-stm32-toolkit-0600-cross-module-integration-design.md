@@ -159,6 +159,13 @@ Cross-module references use only stable identifiers: `evidenceId`, `testRunId`,
 `diagnosticSessionId`, `monitorRunId`, `analysisId`, and `fixVerificationId`. Absolute local paths,
 database row numbers, process IDs, and temporary worktree paths are not public relationships.
 
+`workspaceId` is the complete lowercase SHA-256 over the logical project UUID and canonical
+case-folded project root. The historical first-24-hex directory name is a private
+`workspaceStorageKey`, not a second identity. `WorkspacePaths` is the single authority for both:
+all public records, Probe bindings, Evidence identities, Monitor records, and API results use the
+complete `workspaceId`, while `workspaceRoot` continues to use `workspaceStorageKey` so existing
+on-disk directory locations do not move. A component must not reconstruct either value locally.
+
 ### 5.2 Core entities and owners
 
 | Entity | Owner | Contract |

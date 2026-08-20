@@ -437,6 +437,24 @@ git commit -m "feat(testing): compose host test evidence workflow"
 
 **Sol checkpoint:** Review the end-to-end data ownership, fresh-discovery ordering, failure side effects, and exact managed paths.
 
+### Task 4 design correction: one public workspace identity
+
+Implementation review exposed a retained-base mismatch: `WorkspacePaths.workspace_id` used the
+historical 24-hex directory key, while `EvidenceIdentity.workspace_id` requires the complete
+SHA-256. Do not bridge this inside `testing_workflows.py`. Before Task 4 is accepted:
+
+- `compute_workspace_id()` returns the complete lowercase SHA-256;
+- `WorkspacePaths.workspace_id` is that complete public identity;
+- `WorkspacePaths.workspace_storage_key` is the first 24 hex characters and is used only to form
+  `workspace_root`;
+- existing directory layout remains `<data-root>/projects/<workspace_storage_key>`;
+- all existing callers of `workspace.workspace_id` automatically converge on the complete public
+  identity; and
+- tests for identity, paths, context, hardware workflows, and Task 4 prove the distinction.
+
+This is a bounded shared-contract correction discovered by the vertical slice, not a new Gate or a
+new slice. Remove every local workspace-ID hashing helper from Task 4.
+
 ## Task 5: Expose the loop through the CLI
 
 **Product behavior:** A user can discover, run a selected failing Host test, and show its authoritative record using stable JSON CLI commands.
