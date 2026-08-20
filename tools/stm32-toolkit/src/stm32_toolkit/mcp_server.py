@@ -12,10 +12,16 @@ from urllib.parse import urlsplit
 from urllib.request import url2pathname
 
 from mcp.server.fastmcp import Context, FastMCP
-from pydantic import AfterValidator, ConfigDict, Field, StrictBool
+from pydantic import AfterValidator, ConfigDict, Field, StrictBool, StrictInt
 
 from stm32_toolkit.context import build_project_context
 from stm32_toolkit.detection import detect_project
+from stm32_toolkit.diagnostic_workflows import (
+    DiagnosticWorkflowContext,
+    diagnostic_begin,
+    diagnostic_show,
+    diagnostic_start,
+)
 from stm32_toolkit.doctor import run_doctor
 from stm32_toolkit.hardware_workflows import (
     FaultWorkflowRequest,
@@ -64,6 +70,8 @@ _CLIENT_ROOTS_TIMEOUT_SECONDS = 5.0
 _DIGEST_PATTERN = r"^[0-9a-f]{64}$"
 _PROBE_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
 _RUN_ID_PATTERN = r"^[a-z0-9][a-z0-9._-]*$"
+_DIAGNOSTIC_OPERATION_PATTERN = r"^[a-z0-9][a-z0-9._-]{0,127}$"
+_DIAGNOSTIC_SESSION_PATTERN = r"^[0-9a-f]{32}$"
 
 
 def _validate_test_string(value: str) -> str:
@@ -87,6 +95,30 @@ RunId = Annotated[
     ),
     AfterValidator(_validate_test_string),
 ]
+
+
+DiagnosticOperationId = Annotated[
+    str,
+    Field(
+        pattern=_DIAGNOSTIC_OPERATION_PATTERN,
+        min_length=1,
+        max_length=128,
+    ),
+]
+
+
+DiagnosticSessionId = Annotated[
+    str,
+    Field(
+        pattern=_DIAGNOSTIC_SESSION_PATTERN,
+        min_length=32,
+        max_length=32,
+    ),
+]
+
+
+DiagnosticActor = Literal["user", "tool", "ai-client"]
+DiagnosticRevision = Annotated[StrictInt, Field(ge=0, le=10_000)]
 Items = Annotated[list[str], Field(min_length=1, max_length=256)]
 
 
@@ -582,6 +614,66 @@ def _testing_context(runtime: ServerRuntime) -> TestingWorkflowContext:
     )
 
 
+def _diagnostic_context(runtime: ServerRuntime) -> DiagnosticWorkflowContext:
+    return DiagnosticWorkflowContext(
+        project_root=runtime.project_root,
+        data_root=runtime.data_root,
+        session_id=runtime.session_id,
+    )
+
+
+async def tool_diagnostic_start_for_request(
+    runtime: ServerRuntime,
+    context: Context | None,
+    operation_id: DiagnosticOperationId,
+    failed_test_run_id: RunId,
+    actor: DiagnosticActor = "user",
+) -> dict[str, object]:
+    failure = await _client_roots_failure(runtime, context, "diagnostic.start")
+    if failure is not None:
+        return failure
+    return diagnostic_start(
+        _diagnostic_context(runtime),
+        operation_id=operation_id,
+        failed_test_run_id=failed_test_run_id,
+        actor=actor,
+    ).to_dict()
+
+
+async def tool_diagnostic_show_for_request(
+    runtime: ServerRuntime,
+    context: Context | None,
+    diagnostic_session_id: DiagnosticSessionId,
+) -> dict[str, object]:
+    failure = await _client_roots_failure(runtime, context, "diagnostic.show")
+    if failure is not None:
+        return failure
+    return diagnostic_show(
+        _diagnostic_context(runtime),
+        diagnostic_session_id=diagnostic_session_id,
+    ).to_dict()
+
+
+async def tool_diagnostic_begin_for_request(
+    runtime: ServerRuntime,
+    context: Context | None,
+    operation_id: DiagnosticOperationId,
+    diagnostic_session_id: DiagnosticSessionId,
+    expected_revision: DiagnosticRevision,
+    actor: DiagnosticActor = "user",
+) -> dict[str, object]:
+    failure = await _client_roots_failure(runtime, context, "diagnostic.begin")
+    if failure is not None:
+        return failure
+    return diagnostic_begin(
+        _diagnostic_context(runtime),
+        operation_id=operation_id,
+        diagnostic_session_id=diagnostic_session_id,
+        expected_revision=expected_revision,
+        actor=actor,
+    ).to_dict()
+
+
 async def tool_test_host_discover_for_request(
     runtime: ServerRuntime, context: Context | None
 ) -> dict[str, object]:
@@ -913,6 +1005,43 @@ def create_server(
             expectedElfSha256,
         )
 
+    @mcp.tool(name="stm32_diagnostic_start")
+    async def stm32_diagnostic_start(
+        ctx: Context,
+        operationId: DiagnosticOperationId,
+        failedTestRunId: RunId,
+        actor: DiagnosticActor = "user",
+    ) -> dict[str, object]:
+        return await tool_diagnostic_start_for_request(
+            runtime, ctx, operationId, failedTestRunId, actor
+        )
+
+    @mcp.tool(name="stm32_diagnostic_show")
+    async def stm32_diagnostic_show(
+        ctx: Context,
+        diagnosticSessionId: DiagnosticSessionId,
+    ) -> dict[str, object]:
+        return await tool_diagnostic_show_for_request(
+            runtime, ctx, diagnosticSessionId
+        )
+
+    @mcp.tool(name="stm32_diagnostic_begin")
+    async def stm32_diagnostic_begin(
+        ctx: Context,
+        operationId: DiagnosticOperationId,
+        diagnosticSessionId: DiagnosticSessionId,
+        expectedRevision: DiagnosticRevision,
+        actor: DiagnosticActor = "user",
+    ) -> dict[str, object]:
+        return await tool_diagnostic_begin_for_request(
+            runtime,
+            ctx,
+            operationId,
+            diagnosticSessionId,
+            expectedRevision,
+            actor,
+        )
+
     @mcp.tool(name="stm32_test_host_discover")
     async def stm32_test_host_discover(ctx: Context) -> dict[str, object]:
         return await tool_test_host_discover_for_request(runtime, ctx)
@@ -940,6 +1069,9 @@ def create_server(
             "stm32_test_host_discover",
             "stm32_test_host_run",
             "stm32_test_show",
+            "stm32_diagnostic_start",
+            "stm32_diagnostic_show",
+            "stm32_diagnostic_begin",
         ),
     )
 
