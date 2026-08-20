@@ -236,7 +236,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "--case",
         dest="case_ids",
         action=_UniqueCaseAction,
-        required=True,
+        default=(),
     )
 
     show = test_commands.add_parser("show")
@@ -294,7 +294,7 @@ def _add_testing_context(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument("--data-root", required=True, type=Path)
     parser.add_argument("--session-id", required=True)
-    parser.add_argument("--json", action="store_true", required=True)
+    parser.add_argument("--json", action="store_true")
 
 
 def _testing_digest(value: str) -> str:

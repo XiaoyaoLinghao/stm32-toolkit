@@ -110,6 +110,28 @@ def test_run_dispatches_exactly_once_with_digest_and_tuple_cases(
     assert case_ids == ("fails", "other")
 
 
+def test_run_without_cases_dispatches_an_empty_tuple(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    calls: list[tuple[str, ...]] = []
+    result = OperationResult.success("test.host.run", {"run": {"state": "failed"}})
+
+    def run(
+        context: object, *, inventory_digest: str, case_ids: tuple[str, ...]
+    ) -> OperationResult[dict[str, object]]:
+        calls.append(case_ids)
+        return result
+
+    monkeypatch.setattr(cli, "host_test_run", run, raising=False)
+
+    assert cli.main(_run_argv()) == 0
+
+    captured = capsys.readouterr()
+    assert json.loads(captured.out) == result.to_dict()
+    assert captured.err == ""
+    assert calls == [()]
+
+
 def test_show_dispatches_exactly_once_with_run_id(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -136,6 +158,39 @@ def test_show_dispatches_exactly_once_with_run_id(
 
 
 @pytest.mark.parametrize(
+    ("argv", "workflow_name", "operation"),
+    [
+        (_discover_argv(), "host_test_discover", "test.host.discover"),
+        (_run_argv("fails"), "host_test_run", "test.host.run"),
+        (_show_argv(), "test_show", "test.show"),
+    ],
+)
+def test_json_flag_is_optional_for_each_testing_leaf(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    argv: list[str],
+    workflow_name: str,
+    operation: str,
+) -> None:
+    result = OperationResult.success(operation, {"value": "ok"})
+    calls: list[object] = []
+
+    def workflow(*args: object, **kwargs: object) -> OperationResult[dict[str, object]]:
+        calls.append((args, kwargs))
+        return result
+
+    monkeypatch.setattr(cli, workflow_name, workflow, raising=False)
+
+    without_json = [value for value in argv if value != "--json"]
+    assert cli.main(without_json) == 0
+
+    captured = capsys.readouterr()
+    assert json.loads(captured.out) == result.to_dict()
+    assert captured.err == ""
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize(
     "argv",
     [
         ["test", "discover", *CONTEXT_ARGS],
@@ -143,7 +198,6 @@ def test_show_dispatches_exactly_once_with_run_id(
         ["test", "discover", "--mode", "host", "--unknown", "value", *CONTEXT_ARGS],
         _run_argv("fails", "fails"),
         _run_argv("fails", digest="not-a-digest"),
-        ["test", "run", "--mode", "host", "--inventory-digest", DIGEST, *CONTEXT_ARGS],
     ],
 )
 def test_invalid_testing_grammar_rejects_before_workflow_calls(

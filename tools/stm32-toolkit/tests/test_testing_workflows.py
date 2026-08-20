@@ -10,6 +10,7 @@ import pytest
 import stm32_toolkit.testing_workflows as workflows
 from stm32_toolkit.build.model import BuildError
 from stm32_toolkit.evidence import EvidenceValidationError
+from stm32_toolkit.project_model import ProjectManifestError
 from stm32_toolkit.testing.model import TestProtocolError as ProtocolError
 
 
@@ -229,10 +230,36 @@ def test_unconfigured_project_fails_before_runner_construction(
     result = workflows.host_test_discover(context)
 
     assert result.ok is False
-    assert result.code == "PROJECT_NOT_CONFIGURED"
-    assert result.message == "Project is not configured."
+    assert result.code == "PROJECT_TESTING_NOT_CONFIGURED"
+    assert result.message == "Project testing is not configured."
     assert result.details == {}
     assert calls == []
+
+
+def test_project_loading_failures_keep_their_existing_codes(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    context = _context(tmp_path)
+
+    monkeypatch.setattr(
+        workflows,
+        "_load_project_model",
+        lambda _root: (_ for _ in ()).throw(OSError("project unavailable")),
+    )
+    unavailable = workflows.host_test_discover(context)
+    assert unavailable.code == "PROJECT_NOT_CONFIGURED"
+    assert unavailable.message == "Project is not configured."
+
+    monkeypatch.setattr(
+        workflows,
+        "_load_project_model",
+        lambda _root: (_ for _ in ()).throw(
+            ProjectManifestError("PROJECT_JSON_INVALID", "invalid", {})
+        ),
+    )
+    manifest_error = workflows.host_test_discover(context)
+    assert manifest_error.code == "PROJECT_JSON_INVALID"
+    assert manifest_error.message == "Project manifest JSON is invalid."
 
 
 def test_run_rediscovers_and_digest_mismatch_has_no_execution_or_publication(

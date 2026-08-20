@@ -80,6 +80,7 @@ _PUBLIC_MESSAGES = {
     EVIDENCE_PATH_UNSAFE: "Evidence path is unsafe.",
     EVIDENCE_LIMIT_EXCEEDED: "Evidence limit exceeded.",
     "PROJECT_NOT_CONFIGURED": "Project is not configured.",
+    "PROJECT_TESTING_NOT_CONFIGURED": "Project testing is not configured.",
     "PROJECT_JSON_INVALID": "Project manifest JSON is invalid.",
     "PROJECT_SCHEMA_INVALID": "Project manifest schema is invalid.",
     "PROJECT_SCHEMA_VERSION_UNSUPPORTED": "Project manifest schema version is unsupported.",
@@ -169,7 +170,7 @@ def _configured_workspace(context: TestingWorkflowContext) -> tuple[object, Work
         or getattr(model, "testing", None) is None
         or getattr(model.testing, "host", None) is None
     ):
-        raise _WorkflowFailure("PROJECT_NOT_CONFIGURED")
+        raise _WorkflowFailure("PROJECT_TESTING_NOT_CONFIGURED")
     try:
         workspace = WorkspacePaths.from_roots(
             context.data_root,
