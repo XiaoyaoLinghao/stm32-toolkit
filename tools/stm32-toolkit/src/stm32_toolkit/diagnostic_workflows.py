@@ -20,6 +20,7 @@ from stm32_toolkit.diagnostics import (
     DiagnosticSession,
     DiagnosticStore,
     DiagnosticValidationError,
+    EvidenceAssessment,
     ObservationPlan,
     ObservationResult,
     ObservationStep,
@@ -39,6 +40,7 @@ _START_OPERATION = "diagnostic.start"
 _SHOW_OPERATION = "diagnostic.show"
 _BEGIN_OPERATION = "diagnostic.begin"
 _HYPOTHESIS_ADD_OPERATION = "diagnostic.hypothesis.add"
+_HYPOTHESIS_ASSESS_OPERATION = "diagnostic.hypothesis.assess"
 _PLAN_ADD_OPERATION = "diagnostic.plan.add"
 _PLAN_RUN_OPERATION = "diagnostic.plan.run"
 _OPERATION_ID = re.compile(r"^[a-z0-9][a-z0-9._-]{0,127}$")
@@ -144,6 +146,18 @@ def _validate_plan_id(plan_id: object) -> str:
     if not isinstance(plan_id, str) or _PLAN_ID.fullmatch(plan_id) is None:
         raise _WorkflowFailure(DIAGNOSTIC_PLAN_INVALID)
     return plan_id
+
+
+def _validate_hypothesis_id(hypothesis_id: object) -> str:
+    if not isinstance(hypothesis_id, str) or _DIAGNOSTIC_SESSION_ID.fullmatch(hypothesis_id) is None:
+        raise _WorkflowFailure(DIAGNOSTIC_PLAN_INVALID)
+    return hypothesis_id
+
+
+def _validate_step_id(step_id: object) -> str:
+    if not isinstance(step_id, str) or _OPERATION_ID.fullmatch(step_id) is None:
+        raise _WorkflowFailure(DIAGNOSTIC_PLAN_INVALID)
+    return step_id
 
 
 def _make_state(context: DiagnosticWorkflowContext) -> _WorkflowState:
@@ -357,6 +371,102 @@ def _diagnostic_add_hypothesis(
     return OperationResult.success(
         _HYPOTHESIS_ADD_OPERATION,
         {"session": accepted.session.to_dict(), "hypothesis": hypothesis},
+    )
+
+
+def _diagnostic_assess_hypothesis(
+    context: DiagnosticWorkflowContext,
+    *,
+    operation_id: object,
+    diagnostic_session_id: object,
+    expected_revision: object,
+    hypothesis_id: object,
+    plan_id: object,
+    step_id: object,
+    polarity: object,
+    rationale: object,
+    actor: object,
+) -> OperationResult[object]:
+    operation_id = _validate_operation_id(operation_id)
+    diagnostic_session_id = _validate_session_id(diagnostic_session_id)
+    expected_revision = _validate_revision(expected_revision)
+    hypothesis_id = _validate_hypothesis_id(hypothesis_id)
+    plan_id = _validate_plan_id(plan_id)
+    step_id = _validate_step_id(step_id)
+    if not isinstance(polarity, str) or polarity not in {"supports", "refutes"}:
+        raise _WorkflowFailure(DIAGNOSTIC_PLAN_INVALID)
+    actor = _validate_actor(actor)
+    state = _make_state(context)
+    session = _load_bound_session(state, diagnostic_session_id)
+    if session.state != "INVESTIGATING":
+        raise DiagnosticValidationError(DIAGNOSTIC_INVALID_TRANSITION)
+    hypotheses = tuple(item for item in session.hypotheses if item.hypothesis_id == hypothesis_id)
+    plans = tuple(item for item in session.observation_plans if item.plan_id == plan_id)
+    if len(hypotheses) != 1 or len(plans) != 1:
+        raise DiagnosticValidationError(DIAGNOSTIC_PLAN_INVALID)
+    hypothesis = hypotheses[0]
+    plan = plans[0]
+    steps = tuple(item for item in plan.steps if item.step_id == step_id)
+    results = tuple(
+        item
+        for item in session.observation_results
+        if item.plan_id == plan_id and item.step_id == step_id
+    )
+    if len(steps) != 1 or len(results) != 1:
+        raise DiagnosticValidationError(DIAGNOSTIC_PLAN_INVALID)
+    step = steps[0]
+    observation = results[0]
+    if (
+        observation.selector != step.selector
+        or observation.expected_value != step.expected_value
+        or observation.evidence_id != session.failed_evidence_id
+    ):
+        raise DiagnosticValidationError(DIAGNOSTIC_PLAN_INVALID)
+    assessment = EvidenceAssessment.new(
+        hypothesis_id=hypothesis.hypothesis_id,
+        plan_id=plan.plan_id,
+        step_id=step.step_id,
+        evidence_id=observation.evidence_id,
+        selector=observation.selector,
+        observed_value=observation.observed_value,
+        polarity=polarity,
+        rationale=rationale,
+    )
+    assessment_data = assessment.to_dict()
+    event = create_event(
+        diagnostic_session_id=session.diagnostic_session_id,
+        operation_id=operation_id,
+        sequence=session.revision,
+        revision_before=session.revision,
+        event_type="hypothesis.assessed",
+        occurred_at_utc=_new_timestamp(),
+        actor=actor,
+        previous_digest=session.event_head,
+        payload={
+            "request": {
+                "hypothesis_id": hypothesis.hypothesis_id,
+                "plan_id": plan.plan_id,
+                "step_id": step.step_id,
+                "polarity": polarity,
+                "rationale": rationale,
+            },
+            "result": {"assessment": assessment_data},
+        },
+    )
+    accepted = state.diagnostic_store.append(
+        diagnostic_session_id,
+        event,
+        expected_revision=expected_revision,
+    )
+    accepted_payload = accepted.event.to_dict()["payload"]
+    assert isinstance(accepted_payload, dict)
+    accepted_result = accepted_payload["result"]
+    assert isinstance(accepted_result, dict)
+    accepted_assessment = accepted_result["assessment"]
+    assert isinstance(accepted_assessment, dict)
+    return OperationResult.success(
+        _HYPOTHESIS_ASSESS_OPERATION,
+        {"session": accepted.session.to_dict(), "assessment": accepted_assessment},
     )
 
 
@@ -622,6 +732,36 @@ def diagnostic_add_hypothesis(
     )
 
 
+def diagnostic_assess_hypothesis(
+    context: DiagnosticWorkflowContext,
+    *,
+    operation_id: str,
+    diagnostic_session_id: str,
+    expected_revision: int,
+    hypothesis_id: str,
+    plan_id: str,
+    step_id: str,
+    polarity: str,
+    rationale: str,
+    actor: str = "user",
+) -> OperationResult[object]:
+    return _result(
+        _HYPOTHESIS_ASSESS_OPERATION,
+        lambda: _diagnostic_assess_hypothesis(
+            context,
+            operation_id=operation_id,
+            diagnostic_session_id=diagnostic_session_id,
+            expected_revision=expected_revision,
+            hypothesis_id=hypothesis_id,
+            plan_id=plan_id,
+            step_id=step_id,
+            polarity=polarity,
+            rationale=rationale,
+            actor=actor,
+        ),
+    )
+
+
 def diagnostic_add_plan(
     context: DiagnosticWorkflowContext,
     *,
@@ -672,6 +812,7 @@ __all__ = [
     "diagnostic_show",
     "diagnostic_begin",
     "diagnostic_add_hypothesis",
+    "diagnostic_assess_hypothesis",
     "diagnostic_add_plan",
     "diagnostic_run_plan",
 ]

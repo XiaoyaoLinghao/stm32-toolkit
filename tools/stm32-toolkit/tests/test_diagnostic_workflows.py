@@ -16,9 +16,11 @@ import stm32_toolkit.diagnostic_workflows as workflow_module
 from stm32_toolkit.diagnostics import (
     DiagnosticSession,
     DiagnosticStore,
+    EvidenceAssessment,
     Hypothesis,
     ObservationPlan,
     ObservationStep,
+    calculate_assessment_id,
     calculate_plan_digest,
     reduce_event,
 )
@@ -208,6 +210,51 @@ def _failed_case_plan_steps() -> list[dict[str, object]]:
     ]
 
 
+def _prepared_assessment_session(
+    context: DiagnosticWorkflowContext,
+    published: object,
+    *,
+    prefix: str,
+) -> tuple[str, str, str, str]:
+    diagnostic_session_id = _begin_plan_session(context, published, prefix=prefix)
+    first_hypothesis = workflow_module.diagnostic_add_hypothesis(
+        _fresh_context(context),
+        operation_id=f"{prefix}-hypothesis-one",
+        diagnostic_session_id=diagnostic_session_id,
+        expected_revision=2,
+        statement="the failed case is the primary defect",
+    )
+    second_hypothesis = workflow_module.diagnostic_add_hypothesis(
+        _fresh_context(context),
+        operation_id=f"{prefix}-hypothesis-two",
+        diagnostic_session_id=diagnostic_session_id,
+        expected_revision=3,
+        statement="the failed case count is misleading",
+    )
+    plan = workflow_module.diagnostic_add_plan(
+        _fresh_context(context),
+        operation_id=f"{prefix}-plan-add",
+        diagnostic_session_id=diagnostic_session_id,
+        expected_revision=4,
+        steps=_failed_case_plan_steps(),
+    )
+    plan_id = plan.to_dict()["data"]["observation_plan"]["plan_id"]
+    executed = workflow_module.diagnostic_run_plan(
+        _fresh_context(context),
+        operation_id=f"{prefix}-plan-run",
+        diagnostic_session_id=diagnostic_session_id,
+        expected_revision=5,
+        plan_id=plan_id,
+    )
+    assert executed.ok is True
+    return (
+        diagnostic_session_id,
+        first_hypothesis.to_dict()["data"]["hypothesis"]["hypothesis_id"],
+        second_hypothesis.to_dict()["data"]["hypothesis"]["hypothesis_id"],
+        plan_id,
+    )
+
+
 def test_failed_host_run_start_show_begin_survives_fresh_workflow_objects(task_tmp: Path) -> None:
     context, published, _workspace = _make_run(task_tmp)
 
@@ -320,6 +367,619 @@ def test_investigating_session_adds_competing_hypotheses_in_event_order(
         first_hypothesis["hypothesis_id"],
         second_hypothesis["hypothesis_id"],
     ]
+
+
+def test_investigating_session_assesses_two_executed_observations(
+    task_tmp: Path,
+) -> None:
+    context, published, workspace = _make_run(task_tmp)
+    diagnostic_session_id = _begin_plan_session(context, published, prefix="assess")
+    first_hypothesis_result = workflow_module.diagnostic_add_hypothesis(
+        _fresh_context(context),
+        operation_id="assess-hypothesis-one",
+        diagnostic_session_id=diagnostic_session_id,
+        expected_revision=2,
+        statement="the failed case is the primary defect",
+    )
+    second_hypothesis_result = workflow_module.diagnostic_add_hypothesis(
+        _fresh_context(context),
+        operation_id="assess-hypothesis-two",
+        diagnostic_session_id=diagnostic_session_id,
+        expected_revision=3,
+        statement="the failed case count is misleading",
+    )
+    first_hypothesis_id = first_hypothesis_result.to_dict()["data"]["hypothesis"]["hypothesis_id"]
+    second_hypothesis_id = second_hypothesis_result.to_dict()["data"]["hypothesis"]["hypothesis_id"]
+    added_plan = workflow_module.diagnostic_add_plan(
+        _fresh_context(context),
+        operation_id="assess-plan-add",
+        diagnostic_session_id=diagnostic_session_id,
+        expected_revision=4,
+        steps=_failed_case_plan_steps(),
+    )
+    plan_id = added_plan.to_dict()["data"]["observation_plan"]["plan_id"]
+    executed = workflow_module.diagnostic_run_plan(
+        _fresh_context(context),
+        operation_id="assess-plan-run",
+        diagnostic_session_id=diagnostic_session_id,
+        expected_revision=5,
+        plan_id=plan_id,
+    )
+    assert executed.ok is True
+
+    supporting = workflow_module.diagnostic_assess_hypothesis(
+        _fresh_context(context),
+        operation_id="assess-supporting",
+        diagnostic_session_id=diagnostic_session_id,
+        expected_revision=6,
+        hypothesis_id=first_hypothesis_id,
+        plan_id=plan_id,
+        step_id="failed-state",
+        polarity="supports",
+        rationale="the failed case directly supports this hypothesis",
+    )
+    assert supporting.ok is True
+    assert supporting.operation == "diagnostic.hypothesis.assess"
+    supporting_data = supporting.to_dict()["data"]
+    assert set(supporting_data) == {"session", "assessment"}
+    supporting_assessment = supporting_data["assessment"]
+    assert set(supporting_assessment) == {
+        "assessment_id",
+        "hypothesis_id",
+        "plan_id",
+        "step_id",
+        "evidence_id",
+        "selector",
+        "observed_value",
+        "polarity",
+        "rationale",
+    }
+    assert supporting_assessment["hypothesis_id"] == first_hypothesis_id
+    assert supporting_assessment["plan_id"] == plan_id
+    assert supporting_assessment["step_id"] == "failed-state"
+    assert supporting_assessment["evidence_id"] == str(published.envelope.evidence_id)
+    assert supporting_assessment["selector"] == {"kind": "case-state", "case_id": "case-1"}
+    assert supporting_assessment["observed_value"] == "failed"
+    assert supporting_assessment["polarity"] == "supports"
+    assert supporting_assessment["rationale"] == "the failed case directly supports this hypothesis"
+    assert supporting_assessment["assessment_id"] == calculate_assessment_id(
+        {key: value for key, value in supporting_assessment.items() if key != "assessment_id"}
+    )
+
+    refuting = workflow_module.diagnostic_assess_hypothesis(
+        _fresh_context(context),
+        operation_id="assess-refuting",
+        diagnostic_session_id=diagnostic_session_id,
+        expected_revision=7,
+        hypothesis_id=second_hypothesis_id,
+        plan_id=plan_id,
+        step_id="failed-count",
+        polarity="refutes",
+        rationale="the count contradicts this alternative hypothesis",
+    )
+    assert refuting.ok is True
+    refuting_data = refuting.to_dict()["data"]
+    refuting_assessment = refuting_data["assessment"]
+    assert refuting_assessment["hypothesis_id"] == second_hypothesis_id
+    assert refuting_assessment["step_id"] == "failed-count"
+    assert refuting_assessment["selector"] == {"kind": "case-count", "state": "failed"}
+    assert refuting_assessment["observed_value"] == 1
+    assert refuting_assessment["polarity"] == "refutes"
+    assert refuting_assessment["assessment_id"] == calculate_assessment_id(
+        {key: value for key, value in refuting_assessment.items() if key != "assessment_id"}
+    )
+    assert refuting_data["session"]["revision"] == 8
+    assert refuting_data["session"]["hypotheses"][0]["status"] == "open"
+    assert refuting_data["session"]["hypotheses"][0]["confidence_basis"] == "unrated"
+    assert refuting_data["session"]["hypotheses"][0]["supporting"] == [supporting_assessment]
+    assert refuting_data["session"]["hypotheses"][0]["refuting"] == []
+    assert refuting_data["session"]["hypotheses"][1]["supporting"] == []
+    assert refuting_data["session"]["hypotheses"][1]["refuting"] == [refuting_assessment]
+
+    event = json.loads(
+        (
+            workspace.diagnostics_root
+            / "sessions"
+            / diagnostic_session_id
+            / "events"
+            / "00000006.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert event["event_type"] == "hypothesis.assessed"
+    assert event["payload"] == {
+        "request": {
+            "hypothesis_id": first_hypothesis_id,
+            "plan_id": plan_id,
+            "step_id": "failed-state",
+            "polarity": "supports",
+            "rationale": "the failed case directly supports this hypothesis",
+        },
+        "result": {"assessment": supporting_assessment},
+    }
+
+    reloaded = diagnostic_show(
+        _fresh_context(context), diagnostic_session_id=diagnostic_session_id
+    )
+    assert reloaded.ok is True
+    assert reloaded.to_dict()["data"]["session"] == refuting_data["session"]
+    encoded = json.dumps(refuting_data, sort_keys=True)
+    for forbidden in ('"event":', '"appended":', 'workspace_root', 'stdout', 'stderr', 'raw-events.xml'):
+        assert forbidden not in encoded
+    refuting_data["assessment"]["observed_value"] = "mutated"
+    refuting_data["session"]["hypotheses"][0]["status"] = "resolved"
+    assert refuting.to_dict()["data"]["assessment"]["observed_value"] == 1
+    assert refuting.to_dict()["data"]["session"]["hypotheses"][0]["status"] == "open"
+
+
+def test_assessment_retry_and_conflicting_intents_are_store_authoritative(
+    task_tmp: Path,
+) -> None:
+    context, published, workspace = _make_run(task_tmp)
+    diagnostic_session_id, first_hypothesis_id, second_hypothesis_id, plan_id = (
+        _prepared_assessment_session(context, published, prefix="retry-assess")
+    )
+    first = workflow_module.diagnostic_assess_hypothesis(
+        _fresh_context(context),
+        operation_id="retry-assess-operation",
+        diagnostic_session_id=diagnostic_session_id,
+        expected_revision=6,
+        hypothesis_id=first_hypothesis_id,
+        plan_id=plan_id,
+        step_id="failed-state",
+        polarity="supports",
+        rationale="the first observation is direct evidence",
+    )
+    assert first.ok is True
+    first_assessment = first.to_dict()["data"]["assessment"]
+    advanced = workflow_module.diagnostic_add_hypothesis(
+        _fresh_context(context),
+        operation_id="retry-assess-advance",
+        diagnostic_session_id=diagnostic_session_id,
+        expected_revision=7,
+        statement="a later hypothesis does not rewrite observations",
+    )
+    retry = workflow_module.diagnostic_assess_hypothesis(
+        _fresh_context(context),
+        operation_id="retry-assess-operation",
+        diagnostic_session_id=diagnostic_session_id,
+        expected_revision=8,
+        hypothesis_id=first_hypothesis_id,
+        plan_id=plan_id,
+        step_id="failed-state",
+        polarity="supports",
+        rationale="the first observation is direct evidence",
+    )
+    assert retry.ok is True
+    assert retry.to_dict()["data"]["assessment"] == first_assessment
+    assert retry.to_dict()["data"]["session"] == advanced.to_dict()["data"]["session"]
+
+    events_dir = workspace.diagnostics_root / "sessions" / diagnostic_session_id / "events"
+    before = sorted(path.name for path in events_dir.iterdir())
+    conflicts = [
+        {
+            "hypothesis_id": second_hypothesis_id,
+            "plan_id": plan_id,
+            "step_id": "failed-count",
+            "polarity": "supports",
+            "rationale": "different reference intent",
+            "actor": "user",
+        },
+        {
+            "hypothesis_id": first_hypothesis_id,
+            "plan_id": plan_id,
+            "step_id": "failed-state",
+            "polarity": "refutes",
+            "rationale": "different polarity intent",
+            "actor": "tool",
+        },
+        {
+            "hypothesis_id": first_hypothesis_id,
+            "plan_id": plan_id,
+            "step_id": "failed-state",
+            "polarity": "supports",
+            "rationale": "different rationale intent",
+            "actor": "user",
+        },
+    ]
+    for index, candidate in enumerate(conflicts):
+        conflict = workflow_module.diagnostic_assess_hypothesis(
+            _fresh_context(context),
+            operation_id="retry-assess-operation",
+            diagnostic_session_id=diagnostic_session_id,
+            expected_revision=8,
+            **candidate,
+        )
+        assert conflict.ok is False
+        assert conflict.code == "DIAGNOSTIC_OPERATION_CONFLICT", index
+        assert sorted(path.name for path in events_dir.iterdir()) == before
+
+    stale = workflow_module.diagnostic_assess_hypothesis(
+        _fresh_context(context),
+        operation_id="retry-assess-stale",
+        diagnostic_session_id=diagnostic_session_id,
+        expected_revision=7,
+        hypothesis_id=second_hypothesis_id,
+        plan_id=plan_id,
+        step_id="failed-count",
+        polarity="refutes",
+        rationale="a stale caller cannot append",
+    )
+    assert stale.ok is False
+    assert stale.code == "DIAGNOSTIC_REVISION_CONFLICT"
+    assert sorted(path.name for path in events_dir.iterdir()) == before
+
+
+@pytest.mark.parametrize(
+    ("overrides", "code"),
+    [
+        pytest.param({"hypothesis_id": "f" * 32}, "DIAGNOSTIC_PLAN_INVALID", id="hypothesis"),
+        pytest.param({"plan_id": "0" * 64}, "DIAGNOSTIC_PLAN_INVALID", id="plan"),
+        pytest.param({"step_id": "missing-step"}, "DIAGNOSTIC_PLAN_INVALID", id="step"),
+        pytest.param({"polarity": "neutral"}, "DIAGNOSTIC_PLAN_INVALID", id="polarity"),
+        pytest.param({"rationale": ""}, "DIAGNOSTIC_INVALID_EVENT", id="empty-rationale"),
+        pytest.param({"rationale": "x" * (64 * 1024 + 1)}, "DIAGNOSTIC_LIMIT_EXCEEDED", id="large-rationale"),
+        pytest.param({"actor": "robot"}, "DIAGNOSTIC_INVALID_EVENT", id="actor"),
+        pytest.param({"expected_revision": -1}, "DIAGNOSTIC_REVISION_CONFLICT", id="revision"),
+    ],
+)
+def test_assessment_rejects_malformed_references_and_rationale_without_append(
+    task_tmp: Path, overrides: dict[str, object], code: str
+) -> None:
+    context, published, workspace = _make_run(task_tmp)
+    diagnostic_session_id, first_hypothesis_id, _second_hypothesis_id, plan_id = (
+        _prepared_assessment_session(context, published, prefix="invalid-assess")
+    )
+    arguments: dict[str, object] = {
+        "operation_id": "invalid-assess-operation",
+        "diagnostic_session_id": diagnostic_session_id,
+        "expected_revision": 6,
+        "hypothesis_id": first_hypothesis_id,
+        "plan_id": plan_id,
+        "step_id": "failed-state",
+        "polarity": "supports",
+        "rationale": "a valid explicit rationale",
+        "actor": "user",
+    }
+    arguments.update(overrides)
+    events_dir = workspace.diagnostics_root / "sessions" / diagnostic_session_id / "events"
+    before = sorted(path.name for path in events_dir.iterdir())
+    result = workflow_module.diagnostic_assess_hypothesis(
+        _fresh_context(context),
+        operation_id=arguments["operation_id"],  # type: ignore[arg-type]
+        diagnostic_session_id=arguments["diagnostic_session_id"],  # type: ignore[arg-type]
+        expected_revision=arguments["expected_revision"],  # type: ignore[arg-type]
+        hypothesis_id=arguments["hypothesis_id"],  # type: ignore[arg-type]
+        plan_id=arguments["plan_id"],  # type: ignore[arg-type]
+        step_id=arguments["step_id"],  # type: ignore[arg-type]
+        polarity=arguments["polarity"],  # type: ignore[arg-type]
+        rationale=arguments["rationale"],  # type: ignore[arg-type]
+        actor=arguments["actor"],  # type: ignore[arg-type]
+    )
+    assert result.ok is False
+    assert result.code == code
+    assert result.details == {}
+    assert sorted(path.name for path in events_dir.iterdir()) == before
+
+
+def test_assessment_rejects_missing_entities_state_and_result_without_append(
+    task_tmp: Path,
+) -> None:
+    context, published, workspace = _make_run(task_tmp)
+    started = diagnostic_start(
+        _fresh_context(context),
+        operation_id="open-assess-start",
+        failed_test_run_id=published.manifest.run_id,
+    )
+    open_session_id = started.to_dict()["data"]["session"]["diagnostic_session_id"]
+    open_result = workflow_module.diagnostic_assess_hypothesis(
+        _fresh_context(context),
+        operation_id="open-assess-operation",
+        diagnostic_session_id=open_session_id,
+        expected_revision=1,
+        hypothesis_id="0" * 32,
+        plan_id="0" * 64,
+        step_id="step",
+        polarity="supports",
+        rationale="state rejects this before entity resolution",
+    )
+    assert open_result.ok is False
+    assert open_result.code == "DIAGNOSTIC_INVALID_TRANSITION"
+    assert len(
+        tuple((workspace.diagnostics_root / "sessions" / open_session_id / "events").iterdir())
+    ) == 1
+
+    absent = workflow_module.diagnostic_assess_hypothesis(
+        _fresh_context(context),
+        operation_id="absent-assess-operation",
+        diagnostic_session_id="f" * 32,
+        expected_revision=0,
+        hypothesis_id="0" * 32,
+        plan_id="0" * 64,
+        step_id="step",
+        polarity="supports",
+        rationale="the session is absent",
+    )
+    assert absent.ok is False
+    assert absent.code == "DIAGNOSTIC_NOT_FOUND"
+
+    diagnostic_session_id = _begin_plan_session(context, published, prefix="missing-assess")
+    hypothesis = workflow_module.diagnostic_add_hypothesis(
+        _fresh_context(context),
+        operation_id="missing-assess-hypothesis",
+        diagnostic_session_id=diagnostic_session_id,
+        expected_revision=2,
+        statement="a hypothesis without an executed result",
+    )
+    hypothesis_id = hypothesis.to_dict()["data"]["hypothesis"]["hypothesis_id"]
+    added_plan = workflow_module.diagnostic_add_plan(
+        _fresh_context(context),
+        operation_id="missing-assess-plan",
+        diagnostic_session_id=diagnostic_session_id,
+        expected_revision=3,
+        steps=_failed_case_plan_steps(),
+    )
+    plan_id = added_plan.to_dict()["data"]["observation_plan"]["plan_id"]
+    missing_result = workflow_module.diagnostic_assess_hypothesis(
+        _fresh_context(context),
+        operation_id="missing-assess-operation",
+        diagnostic_session_id=diagnostic_session_id,
+        expected_revision=4,
+        hypothesis_id=hypothesis_id,
+        plan_id=plan_id,
+        step_id="failed-state",
+        polarity="supports",
+        rationale="the plan has not executed yet",
+    )
+    assert missing_result.ok is False
+    assert missing_result.code == "DIAGNOSTIC_PLAN_INVALID"
+    assert len(
+        tuple(
+            (workspace.diagnostics_root / "sessions" / diagnostic_session_id / "events").iterdir()
+        )
+    ) == 4
+
+    prepared_id, prepared_hypothesis_id, _second_id, prepared_plan_id = _prepared_assessment_session(
+        context, published, prefix="missing-assess-entity"
+    )
+    before = sorted(
+        path.name
+        for path in (workspace.diagnostics_root / "sessions" / prepared_id / "events").iterdir()
+    )
+    missing_hypothesis = workflow_module.diagnostic_assess_hypothesis(
+        _fresh_context(context),
+        operation_id="missing-assess-hypothesis-operation",
+        diagnostic_session_id=prepared_id,
+        expected_revision=6,
+        hypothesis_id="f" * 32,
+        plan_id=prepared_plan_id,
+        step_id="failed-state",
+        polarity="supports",
+        rationale="the hypothesis does not exist",
+    )
+    assert missing_hypothesis.ok is False
+    assert missing_hypothesis.code == "DIAGNOSTIC_PLAN_INVALID"
+    missing_plan = workflow_module.diagnostic_assess_hypothesis(
+        _fresh_context(context),
+        operation_id="missing-assess-plan-operation",
+        diagnostic_session_id=prepared_id,
+        expected_revision=6,
+        hypothesis_id=prepared_hypothesis_id,
+        plan_id="0" * 64,
+        step_id="failed-state",
+        polarity="supports",
+        rationale="the plan does not exist",
+    )
+    assert missing_plan.ok is False
+    assert missing_plan.code == "DIAGNOSTIC_PLAN_INVALID"
+    missing_step = workflow_module.diagnostic_assess_hypothesis(
+        _fresh_context(context),
+        operation_id="missing-assess-step-operation",
+        diagnostic_session_id=prepared_id,
+        expected_revision=6,
+        hypothesis_id=prepared_hypothesis_id,
+        plan_id=prepared_plan_id,
+        step_id="missing-step",
+        polarity="supports",
+        rationale="the step does not exist",
+    )
+    assert missing_step.ok is False
+    assert missing_step.code == "DIAGNOSTIC_PLAN_INVALID"
+    assert sorted(
+        path.name
+        for path in (workspace.diagnostics_root / "sessions" / prepared_id / "events").iterdir()
+    ) == before
+
+
+def test_assessment_duplicate_and_opposite_side_reuse_are_domain_rejected(
+    task_tmp: Path,
+) -> None:
+    context, published, workspace = _make_run(task_tmp)
+    diagnostic_session_id, first_hypothesis_id, second_hypothesis_id, plan_id = (
+        _prepared_assessment_session(context, published, prefix="duplicate-assess")
+    )
+    first = workflow_module.diagnostic_assess_hypothesis(
+        _fresh_context(context),
+        operation_id="duplicate-assess-first",
+        diagnostic_session_id=diagnostic_session_id,
+        expected_revision=6,
+        hypothesis_id=first_hypothesis_id,
+        plan_id=plan_id,
+        step_id="failed-state",
+        polarity="supports",
+        rationale="one explicit support",
+    )
+    assert first.ok is True
+    first_assessment = first.to_dict()["data"]["assessment"]
+    events_dir = workspace.diagnostics_root / "sessions" / diagnostic_session_id / "events"
+    before = sorted(path.name for path in events_dir.iterdir())
+
+    duplicate = workflow_module.diagnostic_assess_hypothesis(
+        _fresh_context(context),
+        operation_id="duplicate-assess-second",
+        diagnostic_session_id=diagnostic_session_id,
+        expected_revision=7,
+        hypothesis_id=first_hypothesis_id,
+        plan_id=plan_id,
+        step_id="failed-state",
+        polarity="supports",
+        rationale="one explicit support",
+    )
+    assert duplicate.ok is False
+    assert duplicate.code == "DIAGNOSTIC_PLAN_INVALID"
+    assert sorted(path.name for path in events_dir.iterdir()) == before
+
+    opposite = workflow_module.diagnostic_assess_hypothesis(
+        _fresh_context(context),
+        operation_id="duplicate-assess-opposite",
+        diagnostic_session_id=diagnostic_session_id,
+        expected_revision=7,
+        hypothesis_id=first_hypothesis_id,
+        plan_id=plan_id,
+        step_id="failed-state",
+        polarity="refutes",
+        rationale="the same observation refutes this hypothesis",
+    )
+    assert opposite.ok is False
+    assert opposite.code == "DIAGNOSTIC_PLAN_INVALID"
+    assert sorted(path.name for path in events_dir.iterdir()) == before
+
+    other_hypothesis = workflow_module.diagnostic_assess_hypothesis(
+        _fresh_context(context),
+        operation_id="duplicate-assess-other-hypothesis",
+        diagnostic_session_id=diagnostic_session_id,
+        expected_revision=7,
+        hypothesis_id=second_hypothesis_id,
+        plan_id=plan_id,
+        step_id="failed-state",
+        polarity="refutes",
+        rationale="the same evidence is judged against another hypothesis",
+    )
+    assert other_hypothesis.ok is True
+    assert other_hypothesis.to_dict()["data"]["assessment"]["evidence_id"] == first_assessment["evidence_id"]
+    assert other_hypothesis.to_dict()["data"]["session"]["revision"] == 8
+
+
+def test_assessment_collection_limit_rejects_without_persistent_append(
+    task_tmp: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    context, published, workspace = _make_run(task_tmp)
+    diagnostic_session_id, first_hypothesis_id, _second_id, plan_id = (
+        _prepared_assessment_session(context, published, prefix="limit-assess")
+    )
+    stored = DiagnosticStore(
+        workspace.diagnostics_root,
+        EvidenceStore(workspace.workspace_root / "evidence"),
+    ).load(diagnostic_session_id)
+    plan = stored.observation_plans[0]
+    observation = stored.observation_results[0]
+    assessments = tuple(
+        EvidenceAssessment.new(
+            hypothesis_id=first_hypothesis_id,
+            plan_id=plan_id,
+            step_id=observation.step_id,
+            evidence_id=observation.evidence_id,
+            selector=observation.selector,
+            observed_value=observation.observed_value,
+            polarity="supports",
+            rationale=f"bounded assessment {index}",
+        )
+        for index in range(1024)
+    )
+    bounded_hypothesis = Hypothesis(
+        first_hypothesis_id,
+        stored.hypotheses[0].statement,
+        "open",
+        "unrated",
+        assessments,
+        (),
+    )
+    bounded_session = DiagnosticSession(
+        diagnostic_session_id=stored.diagnostic_session_id,
+        revision=stored.revision,
+        state=stored.state,
+        identity=stored.identity,
+        failed_test_run_id=stored.failed_test_run_id,
+        failed_evidence_id=stored.failed_evidence_id,
+        event_head=stored.event_head,
+        hypotheses=(bounded_hypothesis, stored.hypotheses[1]),
+        observation_plans=stored.observation_plans,
+        observation_results=stored.observation_results,
+    )
+
+    class LimitedStore:
+        def __init__(self, session: DiagnosticSession) -> None:
+            self.session = session
+            self.append_calls = 0
+
+        def load(self, _session_id: str) -> DiagnosticSession:
+            return self.session
+
+        def append(self, _session_id: str, event: object, *, expected_revision: int) -> object:
+            self.append_calls += 1
+            return reduce_event(self.session, event)  # type: ignore[arg-type]
+
+    limited_store = LimitedStore(bounded_session)
+    monkeypatch.setattr(
+        workflow_module,
+        "_diagnostic_store_factory",
+        lambda _root, _evidence: limited_store,
+    )
+    events_dir = workspace.diagnostics_root / "sessions" / diagnostic_session_id / "events"
+    before = sorted(path.name for path in events_dir.iterdir())
+    result = workflow_module.diagnostic_assess_hypothesis(
+        _fresh_context(context),
+        operation_id="limit-assess-operation",
+        diagnostic_session_id=diagnostic_session_id,
+        expected_revision=6,
+        hypothesis_id=first_hypothesis_id,
+        plan_id=plan_id,
+        step_id=observation.step_id,
+        polarity="supports",
+        rationale="the additional assessment exceeds the collection limit",
+    )
+    assert result.ok is False
+    assert result.code == "DIAGNOSTIC_LIMIT_EXCEEDED"
+    assert result.details == {}
+    assert limited_store.append_calls == 1
+    assert sorted(path.name for path in events_dir.iterdir()) == before
+
+
+def test_unexpected_assessment_store_failure_propagates(
+    task_tmp: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    context, published, workspace = _make_run(task_tmp)
+    diagnostic_session_id, first_hypothesis_id, _second_id, plan_id = (
+        _prepared_assessment_session(context, published, prefix="unexpected-assess-store")
+    )
+    stored = DiagnosticStore(
+        workspace.diagnostics_root,
+        EvidenceStore(workspace.workspace_root / "evidence"),
+    ).load(diagnostic_session_id)
+
+    class ExplodingStore:
+        def load(self, _session_id: str) -> DiagnosticSession:
+            return stored
+
+        def append(self, *_args: object, **_kwargs: object) -> object:
+            raise RuntimeError("unexpected assessment append failure")
+
+    monkeypatch.setattr(
+        workflow_module,
+        "_diagnostic_store_factory",
+        lambda _root, _evidence: ExplodingStore(),
+    )
+    with pytest.raises(RuntimeError, match="unexpected assessment append failure"):
+        workflow_module.diagnostic_assess_hypothesis(
+            _fresh_context(context),
+            operation_id="unexpected-assess-operation",
+            diagnostic_session_id=diagnostic_session_id,
+            expected_revision=6,
+            hypothesis_id=first_hypothesis_id,
+            plan_id=plan_id,
+            step_id="failed-state",
+            polarity="supports",
+            rationale="the store error must remain visible to programmers",
+        )
 
 
 def test_investigating_session_freezes_failed_run_observation_plan(
