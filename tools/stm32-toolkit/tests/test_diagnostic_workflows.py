@@ -346,6 +346,46 @@ def test_hypothesis_retry_returns_accepted_event_after_session_advances(
     ]
 
 
+def test_hypothesis_stale_revision_conflict_does_not_append(
+    task_tmp: Path,
+) -> None:
+    context, published, workspace = _make_run(task_tmp)
+    started = diagnostic_start(
+        _fresh_context(context),
+        operation_id="stale-hypothesis-start",
+        failed_test_run_id=published.manifest.run_id,
+    )
+    diagnostic_session_id = started.to_dict()["data"]["session"]["diagnostic_session_id"]
+    diagnostic_begin(
+        _fresh_context(context),
+        operation_id="stale-hypothesis-begin",
+        diagnostic_session_id=diagnostic_session_id,
+        expected_revision=1,
+    )
+    accepted = workflow_module.diagnostic_add_hypothesis(
+        _fresh_context(context),
+        operation_id="stale-hypothesis-accepted",
+        diagnostic_session_id=diagnostic_session_id,
+        expected_revision=2,
+        statement="the linker output is incomplete",
+    )
+    assert accepted.ok is True
+
+    events_dir = workspace.diagnostics_root / "sessions" / diagnostic_session_id / "events"
+    before = sorted(path.name for path in events_dir.iterdir())
+    stale = workflow_module.diagnostic_add_hypothesis(
+        _fresh_context(context),
+        operation_id="stale-hypothesis-different-operation",
+        diagnostic_session_id=diagnostic_session_id,
+        expected_revision=2,
+        statement="the case inventory is stale",
+    )
+    assert stale.ok is False
+    assert stale.code == "DIAGNOSTIC_REVISION_CONFLICT"
+    assert stale.details == {}
+    assert sorted(path.name for path in events_dir.iterdir()) == before
+
+
 @pytest.mark.parametrize(
     ("statement", "code", "message"),
     [
