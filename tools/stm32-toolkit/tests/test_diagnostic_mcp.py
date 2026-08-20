@@ -20,6 +20,25 @@ STEP_ID = "step-1"
 STATEMENT = "clock configuration is inconsistent"
 RATIONALE = "the observation matches the hypothesis"
 ACTORS = ["user", "tool", "ai-client"]
+RUN_STATE_STEP = {
+    "step_id": "run-state",
+    "selector": {"kind": "run-state"},
+    "expected_value": "failed",
+    "purpose": "confirm the published run failed",
+}
+CASE_STATE_STEP = {
+    "step_id": "case-state",
+    "selector": {"kind": "case-state", "case_id": "case-1"},
+    "expected_value": "error",
+    "purpose": "confirm the affected case errored",
+}
+CASE_COUNT_STEP = {
+    "step_id": "case-count",
+    "selector": {"kind": "case-count", "state": "failed"},
+    "expected_value": 1,
+    "purpose": "count failed cases in the run",
+}
+PLAN_STEPS = [RUN_STATE_STEP]
 LIFECYCLE_TOOLS = {
     "stm32_diagnostic_start",
     "stm32_diagnostic_show",
@@ -1068,6 +1087,532 @@ def test_registered_hypothesis_tools_are_thin_delegates_with_actor_defaults(
     ],
 )
 def test_registered_hypothesis_tools_reject_invalid_input_before_dispatch(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    tool_name: str,
+    arguments: dict[str, object],
+    helper_name: str,
+):
+    runtime = _runtime(tmp_path)
+    server = create_server(runtime.project_root, runtime.data_root, runtime.session_id)
+    calls: list[object] = []
+
+    async def forbidden(*_args: object, **_kwargs: object) -> dict[str, object]:
+        calls.append(True)
+        return {"unexpected": True}
+
+    monkeypatch.setattr(mcp_mod, helper_name, forbidden, raising=False)
+
+    with pytest.raises(Exception):
+        asyncio.run(server.call_tool(tool_name, arguments))
+    assert calls == []
+
+
+PLAN_TOOLS = {
+    "stm32_diagnostic_plan_add",
+    "stm32_diagnostic_plan_run",
+}
+
+
+def _resolve_schema(schema: dict[str, object], root: dict[str, object]) -> dict[str, object]:
+    reference = schema.get("$ref")
+    if reference is None:
+        return schema
+    assert isinstance(reference, str)
+    prefix = "#/$defs/"
+    assert reference.startswith(prefix)
+    definitions = root.get("$defs")
+    assert isinstance(definitions, dict)
+    resolved = definitions.get(reference[len(prefix) :])
+    assert isinstance(resolved, dict)
+    return resolved
+
+
+def test_plan_tools_have_exact_closed_nested_selector_schemas(tmp_path: Path):
+    schemas = _schemas(tmp_path)
+    assert PLAN_TOOLS <= set(schemas)
+
+    add = schemas["stm32_diagnostic_plan_add"]
+    assert set(add["properties"]) == {
+        "operationId",
+        "diagnosticSessionId",
+        "expectedRevision",
+        "steps",
+        "actor",
+    }
+    assert add["required"] == [
+        "operationId",
+        "diagnosticSessionId",
+        "expectedRevision",
+        "steps",
+    ]
+    assert add["additionalProperties"] is False
+    assert add["properties"]["actor"]["default"] == "user"
+    assert add["properties"]["actor"]["enum"] == ACTORS
+
+    run = schemas["stm32_diagnostic_plan_run"]
+    assert set(run["properties"]) == {
+        "operationId",
+        "diagnosticSessionId",
+        "expectedRevision",
+        "planId",
+        "actor",
+    }
+    assert run["required"] == [
+        "operationId",
+        "diagnosticSessionId",
+        "expectedRevision",
+        "planId",
+    ]
+    assert run["additionalProperties"] is False
+    assert run["properties"]["actor"]["default"] == "tool"
+    assert run["properties"]["actor"]["enum"] == ACTORS
+    assert run["properties"]["planId"]["pattern"] == r"^[0-9a-f]{64}$"
+    assert run["properties"]["planId"]["minLength"] == 64
+    assert run["properties"]["planId"]["maxLength"] == 64
+
+    steps = _resolve_schema(add["properties"]["steps"]["items"], add)
+    assert steps["additionalProperties"] is False
+    assert set(steps["properties"]) == {
+        "step_id",
+        "selector",
+        "expected_value",
+        "purpose",
+    }
+    assert steps["required"] == [
+        "step_id",
+        "selector",
+        "expected_value",
+        "purpose",
+    ]
+    assert add["properties"]["steps"]["minItems"] == 1
+    assert add["properties"]["steps"]["maxItems"] == 64
+    assert steps["properties"]["step_id"]["pattern"] == (
+        r"^[a-z0-9][a-z0-9._-]{0,127}$"
+    )
+    assert steps["properties"]["step_id"]["minLength"] == 1
+    assert steps["properties"]["step_id"]["maxLength"] == 128
+    assert steps["properties"]["purpose"]["minLength"] == 1
+    assert steps["properties"]["purpose"]["maxLength"] == 65_536
+
+    selector = _resolve_schema(steps["properties"]["selector"], add)
+    variants = selector.get("oneOf") or selector.get("anyOf")
+    assert isinstance(variants, list)
+    assert len(variants) == 3
+    variant_schemas = [_resolve_schema(item, add) for item in variants]
+    assert all(item["additionalProperties"] is False for item in variant_schemas)
+    assert {
+        tuple(sorted(item["properties"])) for item in variant_schemas
+    } == {
+        ("kind",),
+        ("case_id", "kind"),
+        ("kind", "state"),
+    }
+    run_state = next(item for item in variant_schemas if set(item["properties"]) == {"kind"})
+    case_state = next(
+        item for item in variant_schemas if set(item["properties"]) == {"kind", "case_id"}
+    )
+    case_count = next(
+        item for item in variant_schemas if set(item["properties"]) == {"kind", "state"}
+    )
+    assert run_state["properties"]["kind"]["const"] == "run-state"
+    assert case_state["properties"]["kind"]["const"] == "case-state"
+    assert case_state["properties"]["case_id"]["minLength"] == 1
+    assert case_state["properties"]["case_id"]["maxLength"] == 65_536
+    assert case_count["properties"]["kind"]["const"] == "case-count"
+    assert case_count["properties"]["state"]["enum"] == [
+        "passed",
+        "failed",
+        "skipped",
+        "error",
+        "timeout",
+    ]
+
+    expected = steps["properties"]["expected_value"]
+    expected_variants = expected.get("anyOf") or expected.get("oneOf")
+    assert isinstance(expected_variants, list)
+    assert any(item.get("type") == "integer" for item in expected_variants)
+    integer = next(item for item in expected_variants if item.get("type") == "integer")
+    assert integer["minimum"] == 0
+    assert integer["maximum"] == 100_000
+
+
+@pytest.mark.parametrize("step", [RUN_STATE_STEP, CASE_STATE_STEP, CASE_COUNT_STEP])
+def test_registered_plan_add_accepts_selector_variants_and_converts_steps(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    step: dict[str, object],
+):
+    runtime = _runtime(tmp_path)
+    server = create_server(runtime.project_root, runtime.data_root, runtime.session_id)
+    calls: list[tuple[object, ...]] = []
+
+    async def helper(*args: object) -> dict[str, object]:
+        calls.append(args)
+        return {"tool": "plan-add"}
+
+    monkeypatch.setattr(mcp_mod, "tool_diagnostic_add_plan_for_request", helper, raising=False)
+
+    _content, result = asyncio.run(
+        server.call_tool(
+            "stm32_diagnostic_plan_add",
+            {
+                "operationId": OPERATION_ID,
+                "diagnosticSessionId": DIAGNOSTIC_SESSION_ID,
+                "expectedRevision": 4,
+                "steps": [step],
+            },
+        )
+    )
+
+    assert result == {"tool": "plan-add"}
+    assert len(calls) == 1
+    assert calls[0][0] == runtime
+    assert calls[0][2:] == (
+        OPERATION_ID,
+        DIAGNOSTIC_SESSION_ID,
+        4,
+        [step],
+        "user",
+    )
+
+
+@pytest.mark.parametrize(
+    ("helper_name", "workflow_name", "operation", "arguments"),
+    [
+        (
+            "tool_diagnostic_add_plan_for_request",
+            "diagnostic_add_plan",
+            "diagnostic.plan.add",
+            {
+                "operation_id": OPERATION_ID,
+                "diagnostic_session_id": DIAGNOSTIC_SESSION_ID,
+                "expected_revision": 4,
+                "steps": PLAN_STEPS,
+                "actor": "ai-client",
+            },
+        ),
+        (
+            "tool_diagnostic_run_plan_for_request",
+            "diagnostic_run_plan",
+            "diagnostic.plan.run",
+            {
+                "operation_id": OPERATION_ID,
+                "diagnostic_session_id": DIAGNOSTIC_SESSION_ID,
+                "expected_revision": 5,
+                "plan_id": PLAN_ID,
+                "actor": "tool",
+            },
+        ),
+    ],
+)
+def test_plan_request_helpers_short_circuit_on_root_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    helper_name: str,
+    workflow_name: str,
+    operation: str,
+    arguments: dict[str, object],
+):
+    runtime = _runtime(tmp_path)
+    helper = _helper(helper_name)
+    calls: list[str] = []
+    failure = OperationResult.failure(
+        operation,
+        "MCP_ROOTS_UNAVAILABLE",
+        "MCP client roots are unavailable",
+        {},
+    ).to_dict()
+
+    async def roots(*_args: object) -> dict[str, object]:
+        calls.append("roots")
+        return failure
+
+    def workflow(*_args: object, **_kwargs: object) -> object:
+        calls.append("workflow")
+        raise AssertionError("workflow must not run after root failure")
+
+    monkeypatch.setattr(mcp_mod, "_client_roots_failure", roots)
+    monkeypatch.setattr(mcp_mod, workflow_name, workflow, raising=False)
+
+    result = asyncio.run(helper(runtime, SimpleNamespace(), **arguments))
+
+    assert result == failure
+    assert calls == ["roots"]
+
+
+@pytest.mark.parametrize(
+    ("helper_name", "workflow_name", "operation", "arguments"),
+    [
+        (
+            "tool_diagnostic_add_plan_for_request",
+            "diagnostic_add_plan",
+            "diagnostic.plan.add",
+            {
+                "operation_id": OPERATION_ID,
+                "diagnostic_session_id": DIAGNOSTIC_SESSION_ID,
+                "expected_revision": 4,
+                "steps": PLAN_STEPS,
+                "actor": "ai-client",
+            },
+        ),
+        (
+            "tool_diagnostic_run_plan_for_request",
+            "diagnostic_run_plan",
+            "diagnostic.plan.run",
+            {
+                "operation_id": OPERATION_ID,
+                "diagnostic_session_id": DIAGNOSTIC_SESSION_ID,
+                "expected_revision": 5,
+                "plan_id": PLAN_ID,
+                "actor": "tool",
+            },
+        ),
+    ],
+)
+def test_plan_request_helpers_call_one_workflow_with_bound_context(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    helper_name: str,
+    workflow_name: str,
+    operation: str,
+    arguments: dict[str, object],
+):
+    runtime = _runtime(tmp_path)
+    helper = _helper(helper_name)
+    calls: list[object] = []
+
+    async def roots(*_args: object) -> None:
+        calls.append("roots")
+        return None
+
+    def workflow(*args: object, **kwargs: object) -> OperationResult[object]:
+        calls.append((args, kwargs))
+        return OperationResult.success(operation, {"received": arguments})
+
+    monkeypatch.setattr(mcp_mod, "_client_roots_failure", roots)
+    monkeypatch.setattr(mcp_mod, workflow_name, workflow, raising=False)
+
+    result = asyncio.run(helper(runtime, None, **arguments))
+
+    assert result == OperationResult.success(
+        operation, {"received": arguments}
+    ).to_dict()
+    assert len(calls) == 2
+    assert calls[0] == "roots"
+    workflow_args, workflow_kwargs = calls[1]
+    assert len(workflow_args) == 1
+    assert workflow_args[0].project_root == runtime.project_root
+    assert workflow_args[0].data_root == runtime.data_root
+    assert workflow_args[0].session_id == runtime.session_id
+    assert workflow_kwargs == arguments
+    assert workflow_kwargs is not arguments
+
+
+@pytest.mark.parametrize(
+    ("helper_name", "workflow_name", "operation", "arguments"),
+    [
+        (
+            "tool_diagnostic_add_plan_for_request",
+            "diagnostic_add_plan",
+            "diagnostic.plan.add",
+            {
+                "operation_id": OPERATION_ID,
+                "diagnostic_session_id": DIAGNOSTIC_SESSION_ID,
+                "expected_revision": 4,
+                "steps": PLAN_STEPS,
+            },
+        ),
+        (
+            "tool_diagnostic_run_plan_for_request",
+            "diagnostic_run_plan",
+            "diagnostic.plan.run",
+            {
+                "operation_id": OPERATION_ID,
+                "diagnostic_session_id": DIAGNOSTIC_SESSION_ID,
+                "expected_revision": 5,
+                "plan_id": PLAN_ID,
+            },
+        ),
+    ],
+)
+def test_plan_request_helpers_preserve_domain_failure_dictionary(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    helper_name: str,
+    workflow_name: str,
+    operation: str,
+    arguments: dict[str, object],
+):
+    runtime = _runtime(tmp_path)
+    helper = _helper(helper_name)
+    failure = OperationResult.failure(
+        operation,
+        "DIAGNOSTIC_PLAN_INVALID",
+        "stable domain message",
+        {"revision": 4},
+    )
+
+    async def roots(*_args: object) -> None:
+        return None
+
+    monkeypatch.setattr(mcp_mod, "_client_roots_failure", roots)
+    monkeypatch.setattr(
+        mcp_mod,
+        workflow_name,
+        lambda *_args, **_kwargs: failure,
+        raising=False,
+    )
+
+    assert asyncio.run(helper(runtime, None, **arguments)) == failure.to_dict()
+
+
+def test_registered_plan_tools_are_thin_delegates_with_application_defaults(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    runtime = _runtime(tmp_path)
+    server = create_server(runtime.project_root, runtime.data_root, runtime.session_id)
+    calls: list[tuple[str, tuple[object, ...]]] = []
+
+    async def add(*args: object) -> dict[str, object]:
+        calls.append(("add", args))
+        return {"tool": "add"}
+
+    async def run(*args: object) -> dict[str, object]:
+        calls.append(("run", args))
+        return {"tool": "run"}
+
+    monkeypatch.setattr(mcp_mod, "tool_diagnostic_add_plan_for_request", add)
+    monkeypatch.setattr(mcp_mod, "tool_diagnostic_run_plan_for_request", run)
+
+    _content, add_result = asyncio.run(
+        server.call_tool(
+            "stm32_diagnostic_plan_add",
+            {
+                "operationId": OPERATION_ID,
+                "diagnosticSessionId": DIAGNOSTIC_SESSION_ID,
+                "expectedRevision": 4,
+                "steps": PLAN_STEPS,
+            },
+        )
+    )
+    _content, run_result = asyncio.run(
+        server.call_tool(
+            "stm32_diagnostic_plan_run",
+            {
+                "operationId": OPERATION_ID,
+                "diagnosticSessionId": DIAGNOSTIC_SESSION_ID,
+                "expectedRevision": 5,
+                "planId": PLAN_ID,
+            },
+        )
+    )
+
+    assert add_result == {"tool": "add"}
+    assert run_result == {"tool": "run"}
+    assert [name for name, _args in calls] == ["add", "run"]
+    assert calls[0][1][0] == runtime
+    assert calls[0][1][2:] == (
+        OPERATION_ID,
+        DIAGNOSTIC_SESSION_ID,
+        4,
+        PLAN_STEPS,
+        "user",
+    )
+    assert calls[1][1][0] == runtime
+    assert calls[1][1][2:] == (
+        OPERATION_ID,
+        DIAGNOSTIC_SESSION_ID,
+        5,
+        PLAN_ID,
+        "tool",
+    )
+
+
+@pytest.mark.parametrize(
+    "bad_steps",
+    [
+        tuple(PLAN_STEPS),
+        [dict(RUN_STATE_STEP, expected_value=1)],
+        [dict(CASE_STATE_STEP, expected_value="running")],
+        [dict(CASE_COUNT_STEP, expected_value=True)],
+        [dict(CASE_COUNT_STEP, expected_value=100_001)],
+        [dict(CASE_COUNT_STEP, expected_value=1.0)],
+        [dict(RUN_STATE_STEP, selector={"kind": "run-state", "extra": True})],
+        [dict(CASE_STATE_STEP, selector={"kind": "case-state", "case_id": ""})],
+        [dict(CASE_STATE_STEP, selector={"kind": "case-state", "case_id": "e\u0301"})],
+        [dict(CASE_COUNT_STEP, selector={"kind": "case-count", "state": "running"})],
+        [dict(RUN_STATE_STEP, purpose="a" * 65_537)],
+        [dict(RUN_STATE_STEP, unknown="reject")],
+        [
+            dict(RUN_STATE_STEP),
+            dict(RUN_STATE_STEP),
+        ],
+    ],
+)
+def test_registered_plan_add_rejects_invalid_nested_input_before_dispatch(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    bad_steps: object,
+):
+    runtime = _runtime(tmp_path)
+    server = create_server(runtime.project_root, runtime.data_root, runtime.session_id)
+    calls: list[object] = []
+
+    async def forbidden(*_args: object, **_kwargs: object) -> dict[str, object]:
+        calls.append(True)
+        return {"unexpected": True}
+
+    monkeypatch.setattr(
+        mcp_mod,
+        "tool_diagnostic_add_plan_for_request",
+        forbidden,
+        raising=False,
+    )
+
+    with pytest.raises(Exception):
+        asyncio.run(
+            server.call_tool(
+                "stm32_diagnostic_plan_add",
+                {
+                    "operationId": OPERATION_ID,
+                    "diagnosticSessionId": DIAGNOSTIC_SESSION_ID,
+                    "expectedRevision": 4,
+                    "steps": bad_steps,
+                },
+            )
+        )
+    assert calls == []
+
+
+@pytest.mark.parametrize(
+    ("tool_name", "arguments", "helper_name"),
+    [
+        (
+            "stm32_diagnostic_plan_add",
+            {
+                "operationId": OPERATION_ID,
+                "diagnosticSessionId": DIAGNOSTIC_SESSION_ID,
+                "expectedRevision": 4,
+                "steps": PLAN_STEPS,
+                "projectRoot": "C:/escape",
+            },
+            "tool_diagnostic_add_plan_for_request",
+        ),
+        (
+            "stm32_diagnostic_plan_run",
+            {
+                "operationId": OPERATION_ID,
+                "diagnosticSessionId": DIAGNOSTIC_SESSION_ID,
+                "expectedRevision": 5,
+                "planId": PLAN_ID,
+                "workspace": "C:/escape",
+            },
+            "tool_diagnostic_run_plan_for_request",
+        ),
+    ],
+)
+def test_registered_plan_tools_reject_forbidden_outer_fields_before_dispatch(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
     tool_name: str,

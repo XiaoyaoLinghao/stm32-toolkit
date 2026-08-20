@@ -12,15 +12,26 @@ from urllib.parse import urlsplit
 from urllib.request import url2pathname
 
 from mcp.server.fastmcp import Context, FastMCP
-from pydantic import AfterValidator, ConfigDict, Field, StrictBool, StrictInt
+from pydantic import (
+    AfterValidator,
+    BaseModel,
+    BeforeValidator,
+    ConfigDict,
+    Field,
+    StrictBool,
+    StrictInt,
+    model_validator,
+)
 
 from stm32_toolkit.context import build_project_context
 from stm32_toolkit.detection import detect_project
 from stm32_toolkit.diagnostic_workflows import (
     DiagnosticWorkflowContext,
+    diagnostic_add_plan,
     diagnostic_add_hypothesis,
     diagnostic_assess_hypothesis,
     diagnostic_begin,
+    diagnostic_run_plan,
     diagnostic_show,
     diagnostic_start,
 )
@@ -152,6 +163,101 @@ DiagnosticStepId = Annotated[
     ),
 ]
 DiagnosticPolarity = Literal["supports", "refutes"]
+
+DiagnosticRunState = Literal[
+    "discovered",
+    "running",
+    "passed",
+    "failed",
+    "error",
+    "cancelled",
+]
+DiagnosticCaseState = Literal["passed", "failed", "skipped", "error", "timeout"]
+DiagnosticCount = Annotated[StrictInt, Field(ge=0, le=100_000)]
+
+
+class DiagnosticRunStateSelector(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal["run-state"]
+
+
+class DiagnosticCaseStateSelector(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal["case-state"]
+    case_id: DiagnosticText
+
+
+class DiagnosticCaseCountSelector(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal["case-count"]
+    state: DiagnosticCaseState
+
+
+DiagnosticSelector = Annotated[
+    DiagnosticRunStateSelector
+    | DiagnosticCaseStateSelector
+    | DiagnosticCaseCountSelector,
+    Field(discriminator="kind"),
+]
+DiagnosticExpectedValue = DiagnosticRunState | DiagnosticCaseState | DiagnosticCount
+
+
+class DiagnosticObservationStep(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    step_id: DiagnosticStepId
+    selector: DiagnosticSelector
+    expected_value: DiagnosticExpectedValue
+    purpose: DiagnosticText
+
+    @model_validator(mode="after")
+    def _validate_expected_value(self) -> "DiagnosticObservationStep":
+        kind = self.selector.kind
+        if kind == "run-state" and self.expected_value not in {
+            "discovered",
+            "running",
+            "passed",
+            "failed",
+            "error",
+            "cancelled",
+        }:
+            raise ValueError("expected value is incompatible with selector")
+        if kind == "case-state" and self.expected_value not in {
+            "passed",
+            "failed",
+            "skipped",
+            "error",
+            "timeout",
+        }:
+            raise ValueError("expected value is incompatible with selector")
+        if kind == "case-count" and type(self.expected_value) is not int:
+            raise ValueError("expected value is incompatible with selector")
+        return self
+
+
+def _reject_plan_steps_tuple(value: object) -> object:
+    if isinstance(value, tuple):
+        raise ValueError("steps must be a JSON array")
+    return value
+
+
+def _unique_diagnostic_step_ids(
+    value: list[DiagnosticObservationStep],
+) -> list[DiagnosticObservationStep]:
+    if len({step.step_id for step in value}) != len(value):
+        raise ValueError("step IDs must be unique")
+    return value
+
+
+DiagnosticPlanSteps = Annotated[
+    list[DiagnosticObservationStep],
+    BeforeValidator(_reject_plan_steps_tuple),
+    Field(min_length=1, max_length=64),
+    AfterValidator(_unique_diagnostic_step_ids),
+]
 Items = Annotated[list[str], Field(min_length=1, max_length=256)]
 
 
@@ -763,6 +869,50 @@ async def tool_diagnostic_assess_hypothesis_for_request(
     ).to_dict()
 
 
+async def tool_diagnostic_add_plan_for_request(
+    runtime: ServerRuntime,
+    context: Context | None,
+    operation_id: DiagnosticOperationId,
+    diagnostic_session_id: DiagnosticSessionId,
+    expected_revision: DiagnosticRevision,
+    steps: list[dict[str, object]],
+    actor: DiagnosticActor = "user",
+) -> dict[str, object]:
+    failure = await _client_roots_failure(runtime, context, "diagnostic.plan.add")
+    if failure is not None:
+        return failure
+    return diagnostic_add_plan(
+        _diagnostic_context(runtime),
+        operation_id=operation_id,
+        diagnostic_session_id=diagnostic_session_id,
+        expected_revision=expected_revision,
+        steps=steps,
+        actor=actor,
+    ).to_dict()
+
+
+async def tool_diagnostic_run_plan_for_request(
+    runtime: ServerRuntime,
+    context: Context | None,
+    operation_id: DiagnosticOperationId,
+    diagnostic_session_id: DiagnosticSessionId,
+    expected_revision: DiagnosticRevision,
+    plan_id: DiagnosticPlanId,
+    actor: DiagnosticActor = "tool",
+) -> dict[str, object]:
+    failure = await _client_roots_failure(runtime, context, "diagnostic.plan.run")
+    if failure is not None:
+        return failure
+    return diagnostic_run_plan(
+        _diagnostic_context(runtime),
+        operation_id=operation_id,
+        diagnostic_session_id=diagnostic_session_id,
+        expected_revision=expected_revision,
+        plan_id=plan_id,
+        actor=actor,
+    ).to_dict()
+
+
 async def tool_test_host_discover_for_request(
     runtime: ServerRuntime, context: Context | None
 ) -> dict[str, object]:
@@ -1177,6 +1327,44 @@ def create_server(
             actor,
         )
 
+    @mcp.tool(name="stm32_diagnostic_plan_add")
+    async def stm32_diagnostic_plan_add(
+        ctx: Context,
+        operationId: DiagnosticOperationId,
+        diagnosticSessionId: DiagnosticSessionId,
+        expectedRevision: DiagnosticRevision,
+        steps: DiagnosticPlanSteps,
+        actor: DiagnosticActor = "user",
+    ) -> dict[str, object]:
+        return await tool_diagnostic_add_plan_for_request(
+            runtime,
+            ctx,
+            operationId,
+            diagnosticSessionId,
+            expectedRevision,
+            [step.model_dump(mode="python") for step in steps],
+            actor,
+        )
+
+    @mcp.tool(name="stm32_diagnostic_plan_run")
+    async def stm32_diagnostic_plan_run(
+        ctx: Context,
+        operationId: DiagnosticOperationId,
+        diagnosticSessionId: DiagnosticSessionId,
+        expectedRevision: DiagnosticRevision,
+        planId: DiagnosticPlanId,
+        actor: DiagnosticActor = "tool",
+    ) -> dict[str, object]:
+        return await tool_diagnostic_run_plan_for_request(
+            runtime,
+            ctx,
+            operationId,
+            diagnosticSessionId,
+            expectedRevision,
+            planId,
+            actor,
+        )
+
     @mcp.tool(name="stm32_test_host_discover")
     async def stm32_test_host_discover(ctx: Context) -> dict[str, object]:
         return await tool_test_host_discover_for_request(runtime, ctx)
@@ -1209,6 +1397,8 @@ def create_server(
             "stm32_diagnostic_begin",
             "stm32_diagnostic_hypothesis_add",
             "stm32_diagnostic_hypothesis_assess",
+            "stm32_diagnostic_plan_add",
+            "stm32_diagnostic_plan_run",
         ),
     )
 
