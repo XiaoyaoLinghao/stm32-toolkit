@@ -3,7 +3,9 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import os
 import re
+import stat
 import sys
 import unicodedata
 from pathlib import Path
@@ -13,8 +15,10 @@ from stm32_toolkit.detection import detect_project
 from stm32_toolkit.diagnostic_workflows import (
     DiagnosticWorkflowContext,
     diagnostic_add_hypothesis,
+    diagnostic_add_plan,
     diagnostic_assess_hypothesis,
     diagnostic_begin,
+    diagnostic_run_plan,
     diagnostic_show,
     diagnostic_start,
 )
@@ -62,6 +66,8 @@ _DIAGNOSTIC_RUN_ID = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
 _DIAGNOSTIC_PLAN_ID = re.compile(r"^[0-9a-f]{64}$")
 _DIAGNOSTIC_ACTORS = ("user", "tool", "ai-client")
 _DIAGNOSTIC_MAX_BYTES = 64 * 1024
+_STEPS_FILE_MAX_BYTES = 1024 * 1024
+_REPARSE_POINT = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
 
 
 class _SafeArgumentParser(argparse.ArgumentParser):
@@ -69,6 +75,28 @@ class _SafeArgumentParser(argparse.ArgumentParser):
 
     def error(self, message: str) -> None:
         self.exit(2, f"{self.prog}: invalid arguments\n")
+
+
+class _StepsFileError(Exception):
+    """Raised when a steps file cannot be safely loaded for the CLI."""
+
+
+class _StepsFileAction(argparse.Action):
+    def __call__(
+        self,
+        parser: argparse.ArgumentParser,
+        namespace: argparse.Namespace,
+        values: Path,
+        option_string: str | None = None,
+    ) -> None:
+        if getattr(namespace, "_steps_file_seen", False):
+            parser.error("duplicate steps file")
+        try:
+            decoded = _read_steps_file(Path(values))
+        except _StepsFileError:
+            parser.error("invalid steps file")
+        setattr(namespace, self.dest, decoded)
+        setattr(namespace, "_steps_file_seen", True)
 
 
 class _UniqueCaseAction(argparse.Action):
@@ -357,6 +385,49 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     _add_testing_context(hypothesis_assess)
 
+    plan = diagnose_commands.add_parser("plan")
+    plan_commands = plan.add_subparsers(dest="plan_command", required=True)
+
+    plan_add = plan_commands.add_parser("add")
+    plan_add.set_defaults(operation="diagnostic.plan.add")
+    plan_add.add_argument("diagnostic_session_id", type=_diagnostic_session_id)
+    plan_add.add_argument(
+        "--operation-id", required=True, type=_diagnostic_operation_id
+    )
+    plan_add.add_argument(
+        "--expected-revision",
+        required=True,
+        type=_bounded_int(0, 10_000),
+    )
+    plan_add.add_argument(
+        "--steps-file",
+        dest="steps",
+        required=True,
+        type=Path,
+        action=_StepsFileAction,
+    )
+    plan_add.add_argument(
+        "--actor", choices=_DIAGNOSTIC_ACTORS, default="user"
+    )
+    _add_testing_context(plan_add)
+
+    plan_run = plan_commands.add_parser("run")
+    plan_run.set_defaults(operation="diagnostic.plan.run")
+    plan_run.add_argument("diagnostic_session_id", type=_diagnostic_session_id)
+    plan_run.add_argument(
+        "--operation-id", required=True, type=_diagnostic_operation_id
+    )
+    plan_run.add_argument(
+        "--expected-revision",
+        required=True,
+        type=_bounded_int(0, 10_000),
+    )
+    plan_run.add_argument("--plan-id", required=True, type=_diagnostic_plan_id)
+    plan_run.add_argument(
+        "--actor", choices=_DIAGNOSTIC_ACTORS, default="tool"
+    )
+    _add_testing_context(plan_run)
+
     return parser
 
 
@@ -454,6 +525,104 @@ def _diagnostic_text(value: str) -> str:
     if not within_limit:
         raise argparse.ArgumentTypeError("invalid diagnostic text")
     return value
+
+
+def _steps_file_is_reparse(info: object) -> bool:
+    return bool(getattr(info, "st_file_attributes", 0) & _REPARSE_POINT)
+
+
+def _steps_file_leaf_identity(info: object) -> tuple[object, ...]:
+    mode = getattr(info, "st_mode")
+    if (
+        _steps_file_is_reparse(info)
+        or stat.S_ISLNK(mode)
+        or not stat.S_ISREG(mode)
+        or getattr(info, "st_nlink") != 1
+    ):
+        raise _StepsFileError
+    return (
+        getattr(info, "st_dev"),
+        getattr(info, "st_ino"),
+        stat.S_IFMT(mode),
+        getattr(info, "st_nlink"),
+        getattr(info, "st_size"),
+    )
+
+
+def _steps_file_parent_identity(info: object) -> tuple[object, ...]:
+    mode = getattr(info, "st_mode")
+    if (
+        _steps_file_is_reparse(info)
+        or stat.S_ISLNK(mode)
+        or not stat.S_ISDIR(mode)
+    ):
+        raise _StepsFileError
+    return (
+        getattr(info, "st_dev"),
+        getattr(info, "st_ino"),
+        stat.S_IFMT(mode),
+    )
+
+
+def _steps_file_parent_snapshot(path: Path) -> tuple[tuple[object, ...], ...]:
+    snapshot: list[tuple[object, ...]] = []
+    for parent in reversed(path.parents):
+        snapshot.append(_steps_file_parent_identity(os.lstat(parent)))
+    return tuple(snapshot)
+
+
+def _reject_json_constant(value: str) -> object:
+    raise ValueError(f"invalid JSON constant: {value}")
+
+
+def _read_steps_file(path: Path) -> object:
+    """Read one bounded JSON value from a stable, non-link regular file."""
+    fd = -1
+    try:
+        absolute = Path(os.path.abspath(os.fspath(path)))
+        parents_before = _steps_file_parent_snapshot(absolute)
+        leaf_before = _steps_file_leaf_identity(os.lstat(absolute))
+        if leaf_before[-1] > _STEPS_FILE_MAX_BYTES:
+            raise _StepsFileError
+
+        flags = os.O_RDONLY | getattr(os, "O_BINARY", 0)
+        flags |= getattr(os, "O_NOFOLLOW", 0)
+        fd = os.open(os.fspath(absolute), flags)
+        leaf_open = _steps_file_leaf_identity(os.fstat(fd))
+        if leaf_open != leaf_before:
+            raise _StepsFileError
+
+        payload = bytearray()
+        while len(payload) <= _STEPS_FILE_MAX_BYTES:
+            remaining = _STEPS_FILE_MAX_BYTES + 1 - len(payload)
+            chunk = os.read(fd, min(64 * 1024, remaining))
+            if not chunk:
+                break
+            payload.extend(chunk)
+            if len(payload) > _STEPS_FILE_MAX_BYTES:
+                raise _StepsFileError
+
+        leaf_after_fd = _steps_file_leaf_identity(os.fstat(fd))
+        if leaf_after_fd != leaf_open:
+            raise _StepsFileError
+        leaf_after_named = _steps_file_leaf_identity(os.lstat(absolute))
+        if leaf_after_named != leaf_before:
+            raise _StepsFileError
+        if _steps_file_parent_snapshot(absolute) != parents_before:
+            raise _StepsFileError
+
+        text = bytes(payload).decode("utf-8", errors="strict")
+        return json.loads(text, parse_constant=_reject_json_constant)
+    except _StepsFileError:
+        raise
+    except (OSError, TypeError, UnicodeError, ValueError, RecursionError):
+        raise _StepsFileError from None
+    finally:
+        if fd >= 0:
+            try:
+                os.close(fd)
+            except OSError:
+                raise _StepsFileError from None
 
 
 def _bounded_int(minimum: int, maximum: int):
@@ -657,6 +826,24 @@ def _operation_result(
                 operation_id=args.operation_id,
                 diagnostic_session_id=args.diagnostic_session_id,
                 expected_revision=args.expected_revision,
+                actor=args.actor,
+            )
+        if args.diagnose_command == "plan":
+            if args.plan_command == "add":
+                return diagnostic_add_plan(
+                    context,
+                    operation_id=args.operation_id,
+                    diagnostic_session_id=args.diagnostic_session_id,
+                    expected_revision=args.expected_revision,
+                    steps=args.steps,
+                    actor=args.actor,
+                )
+            return diagnostic_run_plan(
+                context,
+                operation_id=args.operation_id,
+                diagnostic_session_id=args.diagnostic_session_id,
+                expected_revision=args.expected_revision,
+                plan_id=args.plan_id,
                 actor=args.actor,
             )
         if args.hypothesis_command == "add":

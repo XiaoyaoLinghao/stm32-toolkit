@@ -1,5 +1,7 @@
 import json
+import os
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -20,6 +22,20 @@ CONTEXT_ARGS = [
 DIAGNOSTIC_SESSION_ID = "0123456789abcdef0123456789abcdef"
 HYPOTHESIS_ID = "a" * 32
 PLAN_ID = "b" * 64
+STEPS_VALUE = [
+    {
+        "step_id": "first",
+        "selector": {"kind": "run-state"},
+        "expected_value": "failed",
+        "purpose": "observe the run state",
+    },
+    {
+        "step_id": "second",
+        "selector": {"kind": "case-count", "state": "failed"},
+        "expected_value": 1,
+        "purpose": "count failed cases",
+    },
+]
 
 
 def parse(argv: list[str]):
@@ -145,6 +161,66 @@ def _hypothesis_assess_argv(
     return argv
 
 
+def _plan_add_argv(
+    steps_file: Path,
+    *,
+    session_id: str = DIAGNOSTIC_SESSION_ID,
+    operation_id: str = "plan-add-1",
+    expected_revision: str = "8",
+    actor: str | None = None,
+    json_output: bool = True,
+) -> list[str]:
+    argv = [
+        "diagnose",
+        "plan",
+        "add",
+        session_id,
+        "--operation-id",
+        operation_id,
+        "--expected-revision",
+        expected_revision,
+        "--steps-file",
+        str(steps_file),
+    ]
+    if actor is not None:
+        argv.extend(["--actor", actor])
+    argv.extend(CONTEXT_ARGS if json_output else [value for value in CONTEXT_ARGS if value != "--json"])
+    return argv
+
+
+def _plan_run_argv(
+    *,
+    session_id: str = DIAGNOSTIC_SESSION_ID,
+    operation_id: str = "plan-run-1",
+    expected_revision: str = "9",
+    plan_id: str = PLAN_ID,
+    actor: str | None = None,
+    json_output: bool = True,
+) -> list[str]:
+    argv = [
+        "diagnose",
+        "plan",
+        "run",
+        session_id,
+        "--operation-id",
+        operation_id,
+        "--expected-revision",
+        expected_revision,
+        "--plan-id",
+        plan_id,
+    ]
+    if actor is not None:
+        argv.extend(["--actor", actor])
+    argv.extend(CONTEXT_ARGS if json_output else [value for value in CONTEXT_ARGS if value != "--json"])
+    return argv
+
+
+def _write_steps_file(tmp_path: Path, value: object = STEPS_VALUE) -> Path:
+    path = tmp_path / "steps.json"
+    path.write_text(json.dumps(value, ensure_ascii=False), encoding="utf-8")
+    return path
+
+
 def test_diagnostic_parser_exposes_fixed_operations_defaults_and_context() -> None:
     start = parse(_start_argv())
     assert start.command == "diagnose"
@@ -214,6 +290,43 @@ def test_diagnostic_parser_exposes_fixed_operations_defaults_and_context() -> No
     assert assess.data_root == Path("data-root")
     assert assess.session_id == "toolkit-session"
     assert assess.json is True
+
+
+def test_plan_parser_exposes_exact_operations_defaults_context_and_decoded_steps(
+    tmp_path: Path,
+) -> None:
+    steps_file = _write_steps_file(tmp_path)
+
+    add = parse(_plan_add_argv(steps_file))
+    assert add.command == "diagnose"
+    assert add.diagnose_command == "plan"
+    assert add.plan_command == "add"
+    assert add.operation == "diagnostic.plan.add"
+    assert add.diagnostic_session_id == DIAGNOSTIC_SESSION_ID
+    assert add.operation_id == "plan-add-1"
+    assert add.expected_revision == 8
+    assert add.actor == "user"
+    assert add.steps == STEPS_VALUE
+    assert not hasattr(add, "steps_file")
+    assert add.project_root == Path("project-root")
+    assert add.data_root == Path("data-root")
+    assert add.session_id == "toolkit-session"
+    assert add.json is True
+
+    run = parse(_plan_run_argv())
+    assert run.command == "diagnose"
+    assert run.diagnose_command == "plan"
+    assert run.plan_command == "run"
+    assert run.operation == "diagnostic.plan.run"
+    assert run.diagnostic_session_id == DIAGNOSTIC_SESSION_ID
+    assert run.operation_id == "plan-run-1"
+    assert run.expected_revision == 9
+    assert run.plan_id == PLAN_ID
+    assert run.actor == "tool"
+    assert run.project_root == Path("project-root")
+    assert run.data_root == Path("data-root")
+    assert run.session_id == "toolkit-session"
+    assert run.json is True
 
 
 def test_start_dispatches_once_with_exact_context_keywords_and_json(
@@ -373,6 +486,491 @@ def test_hypothesis_assess_dispatches_once_with_exact_context_keywords_and_json(
         "rationale": "the executed observation matches the hypothesis",
         "actor": "ai-client",
     }
+
+
+def test_plan_add_dispatches_once_with_decoded_steps_and_exact_json(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    steps_file = _write_steps_file(tmp_path)
+    calls: list[tuple[object, dict[str, object]]] = []
+    result = OperationResult.success(
+        "diagnostic.plan.add",
+        {"observation_plan": {"plan_id": PLAN_ID, "steps": STEPS_VALUE}},
+    )
+
+    def add(context: object, **kwargs: object) -> OperationResult[object]:
+        calls.append((context, kwargs))
+        return result
+
+    monkeypatch.setattr(cli, "diagnostic_add_plan", add, raising=False)
+
+    assert cli.main(_plan_add_argv(steps_file, actor="ai-client")) == 0
+
+    captured = capsys.readouterr()
+    assert captured.out == json.dumps(result.to_dict(), ensure_ascii=False, indent=2) + "\n"
+    assert captured.err == ""
+    assert len(calls) == 1
+    context, kwargs = calls[0]
+    assert context == DiagnosticWorkflowContext(
+        Path("project-root"), Path("data-root"), "toolkit-session"
+    )
+    assert kwargs == {
+        "operation_id": "plan-add-1",
+        "diagnostic_session_id": DIAGNOSTIC_SESSION_ID,
+        "expected_revision": 8,
+        "steps": STEPS_VALUE,
+        "actor": "ai-client",
+    }
+    assert str(steps_file) not in captured.out
+
+
+def test_plan_run_dispatches_once_with_default_tool_actor_and_exact_json(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    calls: list[tuple[object, dict[str, object]]] = []
+    result = OperationResult.success(
+        "diagnostic.plan.run",
+        {"observation_results": [{"plan_id": PLAN_ID, "step_id": "first"}]},
+    )
+
+    def run(context: object, **kwargs: object) -> OperationResult[object]:
+        calls.append((context, kwargs))
+        return result
+
+    monkeypatch.setattr(cli, "diagnostic_run_plan", run, raising=False)
+
+    assert cli.main(_plan_run_argv()) == 0
+
+    captured = capsys.readouterr()
+    assert captured.out == json.dumps(result.to_dict(), ensure_ascii=False, indent=2) + "\n"
+    assert captured.err == ""
+    assert len(calls) == 1
+    context, kwargs = calls[0]
+    assert context == DiagnosticWorkflowContext(
+        Path("project-root"), Path("data-root"), "toolkit-session"
+    )
+    assert kwargs == {
+        "operation_id": "plan-run-1",
+        "diagnostic_session_id": DIAGNOSTIC_SESSION_ID,
+        "expected_revision": 9,
+        "plan_id": PLAN_ID,
+        "actor": "tool",
+    }
+
+
+def test_plan_add_json_flag_is_optional_without_changing_result_bytes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    steps_file = _write_steps_file(tmp_path)
+    result = OperationResult.success("diagnostic.plan.add", {"value": "ok"})
+    calls: list[object] = []
+
+    def add(*args: object, **kwargs: object) -> OperationResult[object]:
+        calls.append((args, kwargs))
+        return result
+
+    monkeypatch.setattr(cli, "diagnostic_add_plan", add, raising=False)
+
+    assert cli.main(_plan_add_argv(steps_file)) == 0
+    with_json = capsys.readouterr()
+    assert cli.main(_plan_add_argv(steps_file, json_output=False)) == 0
+    without_json = capsys.readouterr()
+
+    expected = json.dumps(result.to_dict(), ensure_ascii=False, indent=2) + "\n"
+    assert with_json.out == expected
+    assert without_json.out == expected
+    assert with_json.err == without_json.err == ""
+    assert len(calls) == 2
+
+
+def test_plan_run_json_flag_is_optional_without_changing_result_bytes(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    result = OperationResult.success("diagnostic.plan.run", {"value": "ok"})
+    calls: list[object] = []
+
+    def run(*args: object, **kwargs: object) -> OperationResult[object]:
+        calls.append((args, kwargs))
+        return result
+
+    monkeypatch.setattr(cli, "diagnostic_run_plan", run, raising=False)
+
+    assert cli.main(_plan_run_argv()) == 0
+    with_json = capsys.readouterr()
+    assert cli.main(_plan_run_argv(json_output=False)) == 0
+    without_json = capsys.readouterr()
+
+    expected = json.dumps(result.to_dict(), ensure_ascii=False, indent=2) + "\n"
+    assert with_json.out == expected
+    assert without_json.out == expected
+    assert with_json.err == without_json.err == ""
+    assert len(calls) == 2
+
+
+def test_plan_add_domain_failure_keeps_operation_result_json_and_returns_two(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    steps_file = _write_steps_file(tmp_path)
+    result = OperationResult.failure(
+        "diagnostic.plan.add",
+        "DIAGNOSTIC_SESSION_NOT_FOUND",
+        "Diagnostic session was not found.",
+        {},
+    )
+    monkeypatch.setattr(cli, "diagnostic_add_plan", lambda *args, **kwargs: result, raising=False)
+
+    assert cli.main(_plan_add_argv(steps_file)) == 2
+
+    captured = capsys.readouterr()
+    assert captured.out == json.dumps(result.to_dict(), ensure_ascii=False, indent=2) + "\n"
+    assert captured.err == ""
+
+
+def test_plan_run_domain_failure_keeps_operation_result_json_and_returns_two(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    result = OperationResult.failure(
+        "diagnostic.plan.run",
+        "DIAGNOSTIC_PLAN_NOT_FOUND",
+        "Diagnostic plan was not found.",
+        {},
+    )
+    monkeypatch.setattr(cli, "diagnostic_run_plan", lambda *args, **kwargs: result, raising=False)
+
+    assert cli.main(_plan_run_argv()) == 2
+
+    captured = capsys.readouterr()
+    assert captured.out == json.dumps(result.to_dict(), ensure_ascii=False, indent=2) + "\n"
+    assert captured.err == ""
+
+
+def test_unexpected_plan_add_workflow_error_uses_existing_non_hardware_policy(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    steps_file = _write_steps_file(tmp_path)
+
+    def explode(*args: object, **kwargs: object) -> object:
+        raise RuntimeError("plan add adapter exploded")
+
+    monkeypatch.setattr(cli, "diagnostic_add_plan", explode, raising=False)
+
+    assert cli.main(_plan_add_argv(steps_file)) == 1
+
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == "stm32-toolkit: internal error: plan add adapter exploded\n"
+    assert "Traceback" not in captured.err
+
+
+def test_unexpected_plan_run_workflow_error_uses_existing_non_hardware_policy(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    def explode(*args: object, **kwargs: object) -> object:
+        raise RuntimeError("plan run adapter exploded")
+
+    monkeypatch.setattr(cli, "diagnostic_run_plan", explode, raising=False)
+
+    assert cli.main(_plan_run_argv()) == 1
+
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == "stm32-toolkit: internal error: plan run adapter exploded\n"
+    assert "Traceback" not in captured.err
+
+
+def test_invalid_plan_add_grammar_rejects_before_workflow_and_hides_values(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    steps_file = _write_steps_file(tmp_path)
+    calls: list[object] = []
+    monkeypatch.setattr(
+        cli,
+        "diagnostic_add_plan",
+        lambda *args, **kwargs: calls.append((args, kwargs)),
+        raising=False,
+    )
+
+    missing_steps = _plan_add_argv(steps_file)
+    steps_index = missing_steps.index("--steps-file")
+    del missing_steps[steps_index : steps_index + 2]
+    invalid_revision = _plan_add_argv(steps_file)
+    invalid_revision[invalid_revision.index("--expected-revision") + 1] = "not-an-int"
+    negative_revision = _plan_add_argv(steps_file)
+    negative_revision[negative_revision.index("--expected-revision") + 1] = "-1"
+    invalid_actor = _plan_add_argv(steps_file, actor="robot")
+    invalid_operation = _plan_add_argv(steps_file, operation_id="Bad")
+    invalid_session = _plan_add_argv(steps_file, session_id="short")
+    unknown_option = _plan_add_argv(steps_file) + ["--unknown", "secret"]
+
+    for argv in (
+        missing_steps,
+        invalid_revision,
+        negative_revision,
+        invalid_actor,
+        invalid_operation,
+        invalid_session,
+        unknown_option,
+    ):
+        assert cli.main(argv) == 2
+        captured = capsys.readouterr()
+        assert captured.out == ""
+        assert captured.err.endswith("invalid arguments\n")
+        assert "secret" not in captured.err
+        assert calls == []
+
+
+@pytest.mark.parametrize(
+    "case",
+    ["missing", "directory", "oversized", "invalid-utf8", "malformed-json"],
+)
+def test_invalid_steps_files_reject_before_workflow_and_do_not_leak_path(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    case: str,
+) -> None:
+    steps_file = tmp_path / "steps.json"
+    if case == "directory":
+        steps_file.mkdir()
+    elif case == "oversized":
+        steps_file.write_bytes(b"x" * (1024 * 1024 + 1))
+    elif case == "invalid-utf8":
+        steps_file.write_bytes(b"\xff")
+    elif case == "malformed-json":
+        steps_file.write_text("{", encoding="utf-8")
+
+    calls: list[object] = []
+    monkeypatch.setattr(
+        cli,
+        "diagnostic_add_plan",
+        lambda *args, **kwargs: calls.append((args, kwargs)),
+        raising=False,
+    )
+
+    assert cli.main(_plan_add_argv(steps_file)) == 2
+
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err.endswith("invalid arguments\n")
+    assert str(steps_file) not in captured.err
+    assert calls == []
+
+
+def test_duplicate_steps_file_is_generic_error_and_does_not_dispatch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    steps_file = _write_steps_file(tmp_path)
+    calls: list[object] = []
+    monkeypatch.setattr(
+        cli,
+        "diagnostic_add_plan",
+        lambda *args, **kwargs: calls.append((args, kwargs)),
+        raising=False,
+    )
+
+    argv = _plan_add_argv(steps_file)
+    argv.extend(["--steps-file", str(steps_file)])
+    assert cli.main(argv) == 2
+
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err.endswith("invalid arguments\n")
+    assert str(steps_file) not in captured.err
+    assert calls == []
+
+
+def test_unsafe_steps_symlink_is_generic_error_without_dispatch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    target = _write_steps_file(tmp_path)
+    steps_file = tmp_path / "steps-link.json"
+    try:
+        steps_file.symlink_to(target)
+    except (OSError, NotImplementedError):
+        pytest.skip("symlink capability unavailable")
+
+    calls: list[object] = []
+    monkeypatch.setattr(
+        cli,
+        "diagnostic_add_plan",
+        lambda *args, **kwargs: calls.append((args, kwargs)),
+        raising=False,
+    )
+
+    assert cli.main(_plan_add_argv(steps_file)) == 2
+
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err.endswith("invalid arguments\n")
+    assert str(steps_file) not in captured.err
+    assert calls == []
+
+
+def test_unsafe_steps_hardlink_is_generic_error_without_dispatch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    target = _write_steps_file(tmp_path)
+    steps_file = tmp_path / "steps-hardlink.json"
+    try:
+        os.link(target, steps_file)
+    except OSError:
+        pytest.skip("hardlink capability unavailable")
+
+    calls: list[object] = []
+    monkeypatch.setattr(
+        cli,
+        "diagnostic_add_plan",
+        lambda *args, **kwargs: calls.append((args, kwargs)),
+        raising=False,
+    )
+
+    assert cli.main(_plan_add_argv(steps_file)) == 2
+
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err.endswith("invalid arguments\n")
+    assert str(steps_file) not in captured.err
+    assert calls == []
+
+
+def test_reparse_point_steps_file_is_rejected_without_dispatch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    steps_file = _write_steps_file(tmp_path)
+    calls: list[object] = []
+    monkeypatch.setattr(cli, "_steps_file_is_reparse", lambda info: True, raising=False)
+    monkeypatch.setattr(
+        cli,
+        "diagnostic_add_plan",
+        lambda *args, **kwargs: calls.append((args, kwargs)),
+        raising=False,
+    )
+
+    assert cli.main(_plan_add_argv(steps_file)) == 2
+
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err.endswith("invalid arguments\n")
+    assert str(steps_file) not in captured.err
+    assert calls == []
+
+
+def test_steps_file_identity_change_after_open_is_rejected_without_dispatch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    steps_file = _write_steps_file(tmp_path)
+    calls: list[object] = []
+    real_fstat = os.fstat
+    fstat_calls = 0
+
+    def changed_fstat(fd: int):
+        nonlocal fstat_calls
+        fstat_calls += 1
+        info = real_fstat(fd)
+        if fstat_calls == 2:
+            return SimpleNamespace(
+                st_dev=info.st_dev,
+                st_ino=info.st_ino,
+                st_mode=info.st_mode,
+                st_nlink=info.st_nlink,
+                st_size=info.st_size + 1,
+                st_file_attributes=getattr(info, "st_file_attributes", 0),
+            )
+        return info
+
+    monkeypatch.setattr(cli.os, "fstat", changed_fstat)
+    monkeypatch.setattr(
+        cli,
+        "diagnostic_add_plan",
+        lambda *args, **kwargs: calls.append((args, kwargs)),
+        raising=False,
+    )
+
+    assert cli.main(_plan_add_argv(steps_file)) == 2
+
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err.endswith("invalid arguments\n")
+    assert str(steps_file) not in captured.err
+    assert calls == []
+    assert fstat_calls >= 2
+
+
+def test_invalid_plan_run_grammar_rejects_before_workflow_and_hides_values(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    calls: list[object] = []
+    monkeypatch.setattr(
+        cli,
+        "diagnostic_run_plan",
+        lambda *args, **kwargs: calls.append((args, kwargs)),
+        raising=False,
+    )
+
+    invalid_argv = _plan_run_argv(plan_id="not-a-plan-id") + ["--unknown", "secret"]
+    assert cli.main(invalid_argv) == 2
+
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err.endswith("invalid arguments\n")
+    assert "not-a-plan-id" not in captured.err
+    assert "secret" not in captured.err
+    assert calls == []
+
+
+def test_invalid_plan_run_ids_actor_and_revision_reject_before_workflow(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    calls: list[object] = []
+    monkeypatch.setattr(
+        cli,
+        "diagnostic_run_plan",
+        lambda *args, **kwargs: calls.append((args, kwargs)),
+        raising=False,
+    )
+
+    invalid_revision = _plan_run_argv(expected_revision="not-an-int")
+    negative_revision = _plan_run_argv(expected_revision="-1")
+    invalid_actor = _plan_run_argv(actor="robot")
+    invalid_operation = _plan_run_argv(operation_id="Bad")
+    invalid_session = _plan_run_argv(session_id="short")
+
+    for argv in (
+        invalid_revision,
+        negative_revision,
+        invalid_actor,
+        invalid_operation,
+        invalid_session,
+    ):
+        assert cli.main(argv) == 2
+        captured = capsys.readouterr()
+        assert captured.out == ""
+        assert captured.err.endswith("invalid arguments\n")
+        assert calls == []
 
 
 @pytest.mark.parametrize(
