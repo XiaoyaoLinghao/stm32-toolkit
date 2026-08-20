@@ -11,7 +11,7 @@ from urllib.parse import urlsplit
 from urllib.request import url2pathname
 
 from mcp.server.fastmcp import Context, FastMCP
-from pydantic import Field, StrictBool
+from pydantic import AfterValidator, ConfigDict, Field, StrictBool
 
 from stm32_toolkit.context import build_project_context
 from stm32_toolkit.detection import detect_project
@@ -43,6 +43,12 @@ from stm32_toolkit.workflows import (
     convert_keil_workflow,
     inspect_keil_workflow,
 )
+from stm32_toolkit.testing_workflows import (
+    TestingWorkflowContext,
+    host_test_discover,
+    host_test_run,
+    test_show,
+)
 
 
 _SERVER_NAME = "STM32 Toolkit"
@@ -55,10 +61,25 @@ _SERVER_INSTRUCTIONS = (
 _CLIENT_ROOTS_TIMEOUT_SECONDS = 5.0
 _DIGEST_PATTERN = r"^[0-9a-f]{64}$"
 _PROBE_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+_RUN_ID_PATTERN = r"^[a-z0-9][a-z0-9._-]*$"
 
 ProbeId = Annotated[str, Field(pattern=_PROBE_PATTERN)]
 Digest = Annotated[str, Field(pattern=_DIGEST_PATTERN)]
+RunId = Annotated[str, Field(pattern=_RUN_ID_PATTERN)]
 Items = Annotated[list[str], Field(min_length=1, max_length=256)]
+
+
+def _unique_case_ids(value: list[str] | None) -> list[str] | None:
+    if value is not None and len(value) != len(set(value)):
+        raise ValueError("caseIds must be unique")
+    return value
+
+
+UniqueCaseIds = Annotated[
+    list[str] | None,
+    Field(max_length=256),
+    AfterValidator(_unique_case_ids),
+]
 
 
 @dataclass(frozen=True)
@@ -525,6 +546,48 @@ async def tool_fault_analyze_for_request(
     )
 
 
+def _testing_context(runtime: ServerRuntime) -> TestingWorkflowContext:
+    return TestingWorkflowContext(
+        project_root=runtime.project_root,
+        data_root=runtime.data_root,
+        session_id=runtime.session_id,
+    )
+
+
+async def tool_test_host_discover_for_request(
+    runtime: ServerRuntime, context: Context | None
+) -> dict[str, object]:
+    failure = await _client_roots_failure(runtime, context, "test.host.discover")
+    if failure is not None:
+        return failure
+    return host_test_discover(_testing_context(runtime)).to_dict()
+
+
+async def tool_test_host_run_for_request(
+    runtime: ServerRuntime,
+    context: Context | None,
+    inventory_digest: str,
+    case_ids: list[str] | tuple[str, ...] | None = (),
+) -> dict[str, object]:
+    failure = await _client_roots_failure(runtime, context, "test.host.run")
+    if failure is not None:
+        return failure
+    return host_test_run(
+        _testing_context(runtime),
+        inventory_digest=inventory_digest,
+        case_ids=tuple(case_ids or ()),
+    ).to_dict()
+
+
+async def tool_test_show_for_request(
+    runtime: ServerRuntime, context: Context | None, run_id: str
+) -> dict[str, object]:
+    failure = await _client_roots_failure(runtime, context, "test.show")
+    if failure is not None:
+        return failure
+    return test_show(_testing_context(runtime), run_id=run_id).to_dict()
+
+
 async def _client_roots_failure(
     runtime: ServerRuntime,
     context: Context | None,
@@ -620,6 +683,22 @@ def _roots_unavailable(
         "MCP client roots are unavailable",
         {"boundProjectRoot": str(runtime.project_root)},
     ).to_dict()
+
+
+def _close_tool_input_schemas(
+    mcp: FastMCP, names: tuple[str, ...]
+) -> None:
+    """Make the new testing request models reject fields outside their contract."""
+    for name in names:
+        tool = mcp._tool_manager.get_tool(name)
+        if tool is None:
+            raise RuntimeError(f"registered MCP tool is missing: {name}")
+        model = tool.fn_metadata.arg_model
+        model.model_config = ConfigDict(
+            extra="forbid", arbitrary_types_allowed=True
+        )
+        model.model_rebuild(force=True)
+        tool.parameters = model.model_json_schema()
 
 
 def create_server(
@@ -805,6 +884,36 @@ def create_server(
             expectedBuildId,
             expectedElfSha256,
         )
+
+    @mcp.tool(name="stm32_test_host_discover")
+    async def stm32_test_host_discover(ctx: Context) -> dict[str, object]:
+        return await tool_test_host_discover_for_request(runtime, ctx)
+
+    @mcp.tool(name="stm32_test_host_run")
+    async def stm32_test_host_run(
+        ctx: Context,
+        inventoryDigest: Digest,
+        caseIds: UniqueCaseIds = [],
+    ) -> dict[str, object]:
+        return await tool_test_host_run_for_request(
+            runtime, ctx, inventoryDigest, caseIds
+        )
+
+    @mcp.tool(name="stm32_test_show")
+    async def stm32_test_show(
+        ctx: Context,
+        runId: RunId,
+    ) -> dict[str, object]:
+        return await tool_test_show_for_request(runtime, ctx, runId)
+
+    _close_tool_input_schemas(
+        mcp,
+        (
+            "stm32_test_host_discover",
+            "stm32_test_host_run",
+            "stm32_test_show",
+        ),
+    )
 
     return mcp
 

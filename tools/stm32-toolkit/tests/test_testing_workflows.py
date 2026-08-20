@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import json
 from pathlib import Path
 from types import SimpleNamespace
 from uuid import UUID
+import sys
 
 import pytest
 
@@ -11,6 +13,7 @@ import stm32_toolkit.testing_workflows as workflows
 from stm32_toolkit.build.model import BuildError
 from stm32_toolkit.evidence import EvidenceValidationError
 from stm32_toolkit.project_model import ProjectManifestError
+from stm32_toolkit.testing.host import HostTestRunner
 from stm32_toolkit.testing.model import TestProtocolError as ProtocolError
 
 
@@ -506,3 +509,181 @@ def test_show_uses_only_authoritative_repository_projection(
     assert result.ok is True
     assert result.data["authoritative"] is True
     assert calls == ["store", "repository", "load:run-1"]
+
+
+def test_real_host_discover_failed_run_and_durable_show_use_bound_evidence(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    """The MCP-facing workflow survives process objects being discarded."""
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    data_root = tmp_path / "data"
+    context = workflows.TestingWorkflowContext(project_root, data_root, "session-real")
+
+    manifest = {
+        "schemaVersion": 3,
+        "logicalProjectId": str(PROJECT_ID),
+        "generatedBy": {"tool": "stm32-toolkit", "version": "0.6.0"},
+        "project": {"name": "firmware", "origin": "manual"},
+        "target": {"device": "STM32F429ZGTx", "core": "cortex-m4"},
+        "framework": {"type": "spl", "version": None},
+        "build": {
+            "sources": ["App/main.c"], "includePaths": [], "defines": [],
+            "compileOptions": [], "assemblySources": [], "presets": [],
+            "elf": "build-fw/firmware.elf",
+        },
+        "memory": {"source": "manual", "regions": []},
+        "debug": {"backend": "pyocd", "target": "stm32f429zgtx", "svd": None},
+        "generation": {
+            "cubeMxIoc": None,
+            "managedManifest": ".stm32-toolkit/generated-files.json",
+            "generatedDirectories": [],
+            "userDirectories": [],
+        },
+        "testing": {
+            "host": {
+                "buildPreset": "host-build",
+                "ctestPreset": "host-tests",
+                "labels": [],
+                "timeout_seconds": 30,
+                "environment": {
+                    "allow": ["SCENARIO_DIR", "JUNIT_SOURCE", "RESULTS_ROOT"],
+                    "values": {},
+                },
+            },
+            "target": {
+                "executable": "build/test/firmware-tests.elf",
+                "timeout_seconds": 120,
+                "transport": {
+                    "kind": "memory-mailbox",
+                    "options": {"address": 0x20010000, "size": 4096},
+                },
+            },
+        },
+    }
+    scenario = tmp_path / "scenario"
+    scenario.mkdir()
+    script = scenario / "fake-host-tool.py"
+    script.write_text(
+        r'''
+import json
+import os
+from pathlib import Path
+import sys
+
+mode, *argv = sys.argv[1:]
+if mode == "cmake":
+    raise SystemExit(0)
+if "--show-only=json-v1" in argv:
+    print(json.dumps({
+        "backtraceGraph": {"commands": [], "files": [], "nodes": []},
+        "kind": "ctestInfo",
+        "tests": [
+            {"command": ["<REPOSITORY_ROOT>/build/passes.exe"], "name": "passes", "properties": []},
+            {"command": ["<REPOSITORY_ROOT>/build/fails.exe"], "name": "fails", "properties": []},
+        ],
+        "version": {"major": 1, "minor": 0},
+    }))
+    raise SystemExit(0)
+selection = argv[argv.index("--tests-information") + 1]
+output = Path(argv[argv.index("--output-junit") + 1])
+if selection.endswith(",2"):
+    output.write_text(
+        '<testsuite tests="1" failures="1" disabled="0" skipped="0">'
+        '<testcase name="fails" classname="fails" time="0" status="fail">'
+        '<failure message="Failed"/><properties/><system-out></system-out>'
+        '</testcase></testsuite>',
+        encoding="utf-8",
+    )
+    print("Test project <REPOSITORY_ROOT>/build")
+    print("    Start 1: fails")
+    print("1/1 Test #1: fails ......................***Failed    0.01 sec")
+    print("0% tests passed, 1 tests failed out of 1")
+else:
+    raise SystemExit(2)
+print("fake stderr", file=sys.stderr)
+raise SystemExit(1)
+''',
+        encoding="utf-8",
+    )
+    junit_source = scenario / "unused-junit.xml"
+    junit_source.write_text("<testsuite/>", encoding="utf-8")
+    results_root = tmp_path / "results"
+    original_environment = {
+        "SCENARIO_DIR": str(scenario),
+        "JUNIT_SOURCE": str(junit_source),
+        "RESULTS_ROOT": str(results_root),
+    }
+    manifest["testing"]["host"]["environment"]["values"] = original_environment
+    (project_root / ".stm32-project.json").write_text(
+        json.dumps(manifest), encoding="utf-8"
+    )
+    before_project = sorted(
+        (path.relative_to(project_root).as_posix(), path.read_bytes())
+        for path in project_root.rglob("*")
+        if path.is_file()
+    )
+
+    runners: list[HostTestRunner] = []
+
+    def runner_factory(**kwargs: object) -> HostTestRunner:
+        runner = HostTestRunner(
+            **kwargs,
+            cmake_executable=(sys.executable, str(script), "cmake"),
+            ctest_executable=(sys.executable, str(script), "ctest"),
+        )
+        runners.append(runner)
+        return runner
+
+    monkeypatch.setattr(workflows, "_host_runner_factory", runner_factory)
+    monkeypatch.setattr(
+        workflows,
+        "_snapshot_project_inputs",
+        lambda _model: SimpleNamespace(sha256=SNAPSHOT_SHA),
+    )
+    monkeypatch.setattr(
+        workflows,
+        "_git_evidence",
+        lambda _root: SimpleNamespace(head=GIT_HEAD, dirty=False),
+    )
+
+    discovered = workflows.host_test_discover(context)
+    assert discovered.ok is True
+    inventory_data = discovered.to_dict()["data"]["inventory"]
+    assert inventory_data["case_ids"] == ["fails", "passes"]
+    assert len(runners) == 1
+
+    wrong = workflows.host_test_run(
+        context, inventory_digest="0" * 64, case_ids=("fails",)
+    )
+    assert wrong.ok is False
+    assert wrong.code == "TEST_INVENTORY_CHANGED"
+    workspace = workflows.WorkspacePaths.from_roots(
+        data_root, project_root, PROJECT_ID, context.session_id
+    )
+    roots = workspace.workspace_root / "evidence" / "roots"
+    assert not roots.exists() or not any(roots.rglob("*.json"))
+
+    inventory_digest = inventory_data["inventory_digest"]
+    run = workflows.host_test_run(
+        context, inventory_digest=inventory_digest, case_ids=("fails",)
+    )
+    assert run.ok is True
+    run_data = run.to_dict()["data"]
+    assert run_data["run"]["state"] == "failed"
+    assert run_data["run"]["case_counts"] == {
+        "passed": 0, "failed": 1, "skipped": 0, "error": 0, "timeout": 0,
+    }
+    assert len(runners) == 3
+    runners.clear()
+
+    shown = workflows.test_show(context, run_id=run_data["run"]["run_id"])
+    assert shown.ok is True
+    assert shown.to_dict()["data"] == {**run_data, "authoritative": True}
+    assert runners == []
+    after_project = sorted(
+        (path.relative_to(project_root).as_posix(), path.read_bytes())
+        for path in project_root.rglob("*")
+        if path.is_file()
+    )
+    assert after_project == before_project

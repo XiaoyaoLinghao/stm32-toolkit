@@ -46,11 +46,11 @@ def _schemas(tmp_path: Path) -> dict[str, dict[str, object]]:
     return {tool.name: tool.inputSchema for tool in asyncio.run(server.list_tools())}
 
 
-def test_server_registers_exactly_fifteen_tools_including_hardware(tmp_path: Path):
+def test_server_registers_exactly_eighteen_tools_including_hardware(tmp_path: Path):
     """Catches a missing, duplicate, or accidentally exposed MCP operation."""
     schemas = _schemas(tmp_path)
 
-    assert len(schemas) == 15
+    assert len(schemas) == 18
     assert HARDWARE_TOOLS <= set(schemas)
 
 
