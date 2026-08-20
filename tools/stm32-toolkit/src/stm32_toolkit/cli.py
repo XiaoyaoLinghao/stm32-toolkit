@@ -9,6 +9,12 @@ from pathlib import Path
 
 from stm32_toolkit.context import build_project_context
 from stm32_toolkit.detection import detect_project
+from stm32_toolkit.diagnostic_workflows import (
+    DiagnosticWorkflowContext,
+    diagnostic_begin,
+    diagnostic_show,
+    diagnostic_start,
+)
 from stm32_toolkit.doctor import run_doctor
 from stm32_toolkit.hardware_workflows import (
     FaultWorkflowRequest,
@@ -47,6 +53,11 @@ _VERSION = "0.5.0"
 _STDERR_LIMIT = 500
 _HARDWARE_COMMANDS = frozenset({"probe", "flash", "debug", "read", "fault"})
 _TEST_DIGEST = re.compile(r"^[0-9a-f]{64}$")
+_DIAGNOSTIC_OPERATION_ID = re.compile(r"^[a-z0-9][a-z0-9._-]{0,127}$")
+_DIAGNOSTIC_SESSION_ID = re.compile(r"^[0-9a-f]{32}$")
+_DIAGNOSTIC_RUN_ID = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
+_DIAGNOSTIC_ACTORS = ("user", "tool", "ai-client")
+_DIAGNOSTIC_MAX_BYTES = 64 * 1024
 
 
 class _SafeArgumentParser(argparse.ArgumentParser):
@@ -244,6 +255,47 @@ def _build_parser() -> argparse.ArgumentParser:
     _add_testing_context(show)
     show.add_argument("run_id")
 
+    diagnose = commands.add_parser("diagnose")
+    diagnose_commands = diagnose.add_subparsers(
+        dest="diagnose_command", required=True
+    )
+
+    diagnostic_start = diagnose_commands.add_parser("start")
+    diagnostic_start.set_defaults(operation="diagnostic.start")
+    diagnostic_start.add_argument("failed_test_run_id", type=_diagnostic_run_id)
+    diagnostic_start.add_argument(
+        "--operation-id", required=True, type=_diagnostic_operation_id
+    )
+    diagnostic_start.add_argument(
+        "--actor", choices=_DIAGNOSTIC_ACTORS, default="user"
+    )
+    _add_testing_context(diagnostic_start)
+
+    diagnostic_show = diagnose_commands.add_parser("show")
+    diagnostic_show.set_defaults(operation="diagnostic.show")
+    diagnostic_show.add_argument(
+        "diagnostic_session_id", type=_diagnostic_session_id
+    )
+    _add_testing_context(diagnostic_show)
+
+    diagnostic_begin = diagnose_commands.add_parser("begin")
+    diagnostic_begin.set_defaults(operation="diagnostic.begin")
+    diagnostic_begin.add_argument(
+        "diagnostic_session_id", type=_diagnostic_session_id
+    )
+    diagnostic_begin.add_argument(
+        "--operation-id", required=True, type=_diagnostic_operation_id
+    )
+    diagnostic_begin.add_argument(
+        "--expected-revision",
+        required=True,
+        type=_bounded_int(0, 10_000),
+    )
+    diagnostic_begin.add_argument(
+        "--actor", choices=_DIAGNOSTIC_ACTORS, default="user"
+    )
+    _add_testing_context(diagnostic_begin)
+
     return parser
 
 
@@ -300,6 +352,28 @@ def _add_testing_context(parser: argparse.ArgumentParser) -> None:
 def _testing_digest(value: str) -> str:
     if _TEST_DIGEST.fullmatch(value) is None:
         raise argparse.ArgumentTypeError("invalid inventory digest")
+    return value
+
+
+def _diagnostic_operation_id(value: str) -> str:
+    if _DIAGNOSTIC_OPERATION_ID.fullmatch(value) is None:
+        raise argparse.ArgumentTypeError("invalid diagnostic operation id")
+    return value
+
+
+def _diagnostic_session_id(value: str) -> str:
+    if _DIAGNOSTIC_SESSION_ID.fullmatch(value) is None:
+        raise argparse.ArgumentTypeError("invalid diagnostic session id")
+    return value
+
+
+def _diagnostic_run_id(value: str) -> str:
+    try:
+        within_limit = len(value.encode("utf-8")) <= _DIAGNOSTIC_MAX_BYTES
+    except UnicodeEncodeError:
+        within_limit = False
+    if not within_limit or _DIAGNOSTIC_RUN_ID.fullmatch(value) is None:
+        raise argparse.ArgumentTypeError("invalid failed test run id")
     return value
 
 
@@ -482,6 +556,29 @@ def _operation_result(
                 case_ids=args.case_ids,
             )
         return test_show(context, run_id=args.run_id)
+    if args.command == "diagnose":
+        context = DiagnosticWorkflowContext(
+            project_root, args.data_root, args.session_id
+        )
+        if args.diagnose_command == "start":
+            return diagnostic_start(
+                context,
+                operation_id=args.operation_id,
+                failed_test_run_id=args.failed_test_run_id,
+                actor=args.actor,
+            )
+        if args.diagnose_command == "show":
+            return diagnostic_show(
+                context,
+                diagnostic_session_id=args.diagnostic_session_id,
+            )
+        return diagnostic_begin(
+            context,
+            operation_id=args.operation_id,
+            diagnostic_session_id=args.diagnostic_session_id,
+            expected_revision=args.expected_revision,
+            actor=args.actor,
+        )
     if args.command == "build":
         # CLI invocation is the user's explicit process-level action.
         return build_firmware_workflow(
