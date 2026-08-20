@@ -94,6 +94,14 @@ object. Generated IDs and captured results are not part of intent. An authoritat
 finds the accepted operation, compares that intent, and returns its stored result; it does not
 generate a replacement session or hypothesis ID.
 
+`DiagnosticStore.create()` and `DiagnosticStore.append()` return a frozen
+`DiagnosticMutationRecord` containing exactly `session`, `event`, and `appended`. `session` is the
+complete current authoritative session after recovery; `event` is the exact newly appended or
+previously accepted event for that operation ID; `appended` states whether this call created the
+event. This lets workflows return generated entities from the accepted event on a retry even if
+the session has since advanced. `DiagnosticStore.load()` returns only the complete current
+session. No mutable head or separate operation index becomes authoritative.
+
 The managed layout is:
 
 ```text

@@ -75,11 +75,12 @@ py -3.12 -m pytest -q tools/stm32-toolkit/tests/test_diagnostic_model.py tools/s
 
 **Required interfaces:**
 
-- `DiagnosticStore(diagnostics_root, evidence_store)` with `create(event)`, `append(diagnostic_session_id, event, expected_revision)`, and `load(diagnostic_session_id)`.
+- Frozen `DiagnosticMutationRecord(session, event, appended)` with fresh closed JSON projection.
+- `DiagnosticStore(diagnostics_root, evidence_store)` with `create(event)`, `append(diagnostic_session_id, event, expected_revision)`, and `load(diagnostic_session_id)`. Create/append return `DiagnosticMutationRecord`; load returns `DiagnosticSession`.
 - The store derives and validates every managed path, owns one `.diagnostic.lock`, uses the repository's safe atomic/create-new primitives where public, and never follows redirects or accepts multi-link/extra files.
 - Authoritative load enumerates exactly `00000000.json` onward, validates canonical bytes and the whole reducer/hash/revision chain, then verifies or idempotently finishes the matching event artifact, `diagnostic-event` envelope, and revision root.
 - Each checkpoint uses the failed TestRun identity, previous checkpoint plus newly referenced evidence parents, exact metadata, and root ID `<session>.<revision:08d>`.
-- Repeating an accepted identical `operation_id` returns the already materialized revision; different intent returns `DIAGNOSTIC_OPERATION_CONFLICT`.
+- Repeating an accepted identical `operation_id` returns the complete current session plus the exact accepted event with `appended=false`; different intent returns `DIAGNOSTIC_OPERATION_CONFLICT`.
 
 **TDD acceptance:**
 
