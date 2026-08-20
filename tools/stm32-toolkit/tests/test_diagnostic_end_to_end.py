@@ -159,11 +159,6 @@ def _operation_data(result: dict[str, object], operation: str) -> dict[str, obje
     return data
 
 
-def _drop(value: object) -> None:
-    del value
-    gc.collect()
-
-
 def test_registered_fastmcp_failed_host_run_survives_full_diagnostic_replay(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -222,7 +217,8 @@ def test_registered_fastmcp_failed_host_run_survives_full_diagnostic_replay(
     assert len(inventory["case_ids"]) == 2
     inventory_digest = inventory["inventory_digest"]
     assert isinstance(inventory_digest, str)
-    _drop(discovered_result)
+    del inventory, discovered_data, discovered_result
+    gc.collect()
 
     run_result = _call_registered_tool(
         project_root,
@@ -246,7 +242,8 @@ def test_registered_fastmcp_failed_host_run_survives_full_diagnostic_replay(
     assert isinstance(run_id, str)
     assert isinstance(failed_evidence_id, str)
     assert len(failed_evidence_id) == 64
-    _drop(run_result)
+    del run_summary, run_data, run_result
+    gc.collect()
     assert runner_count == 2
 
     start_result = _call_registered_tool(
@@ -266,7 +263,9 @@ def test_registered_fastmcp_failed_host_run_survives_full_diagnostic_replay(
     assert len(diagnostic_session_id) == 32
     session_identity = start_session["identity"]
     assert isinstance(session_identity, dict)
-    _drop(start_result)
+    session_identity_bytes = canonical_diagnostic_json_bytes(session_identity)
+    del session_identity, start_session, start_data, start_result
+    gc.collect()
 
     begin_result = _call_registered_tool(
         project_root,
@@ -280,7 +279,8 @@ def test_registered_fastmcp_failed_host_run_survives_full_diagnostic_replay(
     )
     begin_data = _operation_data(begin_result, "diagnostic.begin")
     assert begin_data["session"]["revision"] == 2
-    _drop(begin_result)
+    del begin_data, begin_result
+    gc.collect()
 
     first_hypothesis_result = _call_registered_tool(
         project_root,
@@ -300,7 +300,8 @@ def test_registered_fastmcp_failed_host_run_survives_full_diagnostic_replay(
     assert isinstance(first_hypothesis, dict)
     first_hypothesis_id = first_hypothesis["hypothesis_id"]
     assert isinstance(first_hypothesis_id, str)
-    _drop(first_hypothesis_result)
+    del first_hypothesis, first_hypothesis_data, first_hypothesis_result
+    gc.collect()
 
     second_hypothesis_result = _call_registered_tool(
         project_root,
@@ -320,7 +321,8 @@ def test_registered_fastmcp_failed_host_run_survives_full_diagnostic_replay(
     assert isinstance(second_hypothesis, dict)
     second_hypothesis_id = second_hypothesis["hypothesis_id"]
     assert isinstance(second_hypothesis_id, str)
-    _drop(second_hypothesis_result)
+    del second_hypothesis, second_hypothesis_data, second_hypothesis_result
+    gc.collect()
 
     steps = [
         {
@@ -354,7 +356,8 @@ def test_registered_fastmcp_failed_host_run_survives_full_diagnostic_replay(
     assert isinstance(plan_id, str)
     assert len(plan_id) == 64
     assert plan["steps"] == steps
-    _drop(plan_result)
+    del plan, plan_data, plan_result, steps
+    gc.collect()
 
     run_plan_result = _call_registered_tool(
         project_root,
@@ -380,7 +383,8 @@ def test_registered_fastmcp_failed_host_run_survives_full_diagnostic_replay(
     assert observation_results[1]["expected_value"] == 1
     assert observation_results[1]["matched"] is True
     assert all(item["evidence_id"] == failed_evidence_id for item in observation_results)
-    _drop(run_plan_result)
+    del observation_results, run_plan_data, run_plan_result
+    gc.collect()
 
     first_assessment_result = _call_registered_tool(
         project_root,
@@ -404,7 +408,8 @@ def test_registered_fastmcp_failed_host_run_survives_full_diagnostic_replay(
     assert isinstance(first_assessment, dict)
     first_assessment_id = first_assessment["assessment_id"]
     assert isinstance(first_assessment_id, str)
-    _drop(first_assessment_result)
+    del first_assessment, first_assessment_data, first_assessment_result
+    gc.collect()
 
     second_assessment_result = _call_registered_tool(
         project_root,
@@ -428,8 +433,10 @@ def test_registered_fastmcp_failed_host_run_survives_full_diagnostic_replay(
     assert isinstance(second_assessment, dict)
     second_assessment_id = second_assessment["assessment_id"]
     assert isinstance(second_assessment_id, str)
-    _drop(second_assessment_result)
+    del second_assessment, second_assessment_data, second_assessment_result
+    gc.collect()
 
+    gc.collect()
     show_result = _call_registered_tool(
         project_root,
         data_root,
@@ -442,7 +449,10 @@ def test_registered_fastmcp_failed_host_run_survives_full_diagnostic_replay(
     assert isinstance(shown_session, dict)
     assert shown_session["revision"] == 8
     assert shown_session["state"] == "INVESTIGATING"
-    assert shown_session["identity"] == session_identity
+    assert (
+        canonical_diagnostic_json_bytes(shown_session["identity"])
+        == session_identity_bytes
+    )
     assert shown_session["failed_evidence_id"] == failed_evidence_id
     hypotheses = shown_session["hypotheses"]
     plans = shown_session["observation_plans"]
@@ -465,7 +475,8 @@ def test_registered_fastmcp_failed_host_run_survives_full_diagnostic_replay(
         for hypothesis in hypotheses
         for assessment in hypothesis["supporting"] + hypothesis["refuting"]
     )
-    _drop(show_result)
+    del shown_results, plans, hypotheses, shown_session, show_data, show_result
+    gc.collect()
 
     workspace = WorkspacePaths.from_roots(
         data_root, project_root, PROJECT_ID, SESSION_ID
@@ -517,7 +528,10 @@ def test_registered_fastmcp_failed_host_run_survives_full_diagnostic_replay(
             expected_parents.append(failed_evidence_id)
         assert checkpoint_envelope.parents == tuple(expected_parents)
         assert checkpoint_envelope.operation == "diagnostic-event"
-        assert checkpoint_envelope.identity.to_dict() == session_identity
+        assert (
+            canonical_diagnostic_json_bytes(checkpoint_envelope.identity.to_dict())
+            == session_identity_bytes
+        )
         assert checkpoint_envelope.metadata == {
             "diagnostic_session_id": diagnostic_session_id,
             "sequence": sequence,
@@ -544,7 +558,10 @@ def test_registered_fastmcp_failed_host_run_survives_full_diagnostic_replay(
     assert failed_root.metadata == {"mode": "host", "state": "failed"}
     assert failed_envelope.operation == "host-test-run"
     assert failed_envelope.parents == ()
-    assert failed_envelope.identity.to_dict() == session_identity
+    assert (
+        canonical_diagnostic_json_bytes(failed_envelope.identity.to_dict())
+        == session_identity_bytes
+    )
     assert {artifact.kind for artifact in failed_envelope.artifacts} == {
         "test-manifest",
         "test-events",
