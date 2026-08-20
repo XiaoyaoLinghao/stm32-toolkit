@@ -676,7 +676,11 @@ class DiagnosticStore:
                     if event.operation_id in workspace_create_operations:
                         _raise(DIAGNOSTIC_CHAIN_CORRUPT)
                     workspace_create_operations.add(event.operation_id)
-                if event.operation_id == operation_id and found is None:
+                if (
+                    event.operation_id == operation_id
+                    and (session_id is not None or event.event_type == "session.created")
+                    and found is None
+                ):
                     found = session, event
         return found
 

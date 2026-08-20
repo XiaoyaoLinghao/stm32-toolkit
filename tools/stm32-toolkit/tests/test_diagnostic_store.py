@@ -499,6 +499,24 @@ def test_create_retry_validates_every_workspace_session_before_returning(tmp_pat
     assert {path.name: path.read_bytes() for path in roots_directory.glob("*.json")} == root_bytes
 
 
+def test_create_operation_scope_ignores_later_event_operation_ids(tmp_path: Path) -> None:
+    evidence = EvidenceStore(tmp_path / "evidence")
+    failed_evidence_id = _failed_evidence(evidence, tmp_path)
+    store = DiagnosticStore(tmp_path / "diagnostics", evidence)
+    created_a = _created(failed_evidence_id)
+    store.create(created_a)
+    shared_operation = _started(created_a, operation_id="shared-operation")
+    store.append(SID, shared_operation, expected_revision=1)
+
+    session_b = "e" * 32
+    created_b = _created_for(session_b, "shared-operation", failed_evidence_id)
+    record = store.create(created_b)
+
+    assert record.appended is True
+    assert store.load(SID).revision == 2
+    assert store.load(session_b).revision == 1
+
+
 def test_session_limit_is_checked_without_creating_a_new_session(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     evidence = EvidenceStore(tmp_path / "evidence")
     failed_evidence_id = _failed_evidence(evidence, tmp_path)
