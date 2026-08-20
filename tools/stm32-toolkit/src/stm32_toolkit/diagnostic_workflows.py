@@ -14,6 +14,7 @@ from stm32_toolkit.diagnostics import (
     DIAGNOSTIC_EVIDENCE_MISSING,
     DIAGNOSTIC_IDENTITY_MISMATCH,
     DIAGNOSTIC_INVALID_EVENT,
+    DIAGNOSTIC_INVALID_TRANSITION,
     DIAGNOSTIC_REVISION_CONFLICT,
     DiagnosticSession,
     DiagnosticStore,
@@ -32,6 +33,7 @@ from stm32_toolkit.testing.publication import TestRunRepository
 _START_OPERATION = "diagnostic.start"
 _SHOW_OPERATION = "diagnostic.show"
 _BEGIN_OPERATION = "diagnostic.begin"
+_HYPOTHESIS_ADD_OPERATION = "diagnostic.hypothesis.add"
 _OPERATION_ID = re.compile(r"^[a-z0-9][a-z0-9._-]{0,127}$")
 _RUN_ID = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
 _DIAGNOSTIC_SESSION_ID = re.compile(r"^[0-9a-f]{32}$")
@@ -69,6 +71,7 @@ _evidence_store_factory = EvidenceStore
 _diagnostic_store_factory = DiagnosticStore
 _repository_factory = TestRunRepository
 _session_id_factory = lambda: secrets.token_hex(16)
+_hypothesis_id_factory = lambda: secrets.token_hex(16)
 _utc_now = lambda: datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
 
 
@@ -222,6 +225,13 @@ def _new_session_id() -> str:
     return value
 
 
+def _new_hypothesis_id() -> str:
+    value = _hypothesis_id_factory()
+    if not isinstance(value, str) or _DIAGNOSTIC_SESSION_ID.fullmatch(value) is None:
+        raise DiagnosticValidationError(DIAGNOSTIC_INVALID_EVENT)
+    return value
+
+
 def _new_timestamp() -> str:
     value = _utc_now()
     if not isinstance(value, str) or _UTC.fullmatch(value) is None:
@@ -279,6 +289,63 @@ def _diagnostic_begin(
     return OperationResult.success(_BEGIN_OPERATION, {"session": accepted.session.to_dict()})
 
 
+def _diagnostic_add_hypothesis(
+    context: DiagnosticWorkflowContext,
+    *,
+    operation_id: object,
+    diagnostic_session_id: object,
+    expected_revision: object,
+    statement: object,
+    actor: object,
+) -> OperationResult[object]:
+    operation_id = _validate_operation_id(operation_id)
+    diagnostic_session_id = _validate_session_id(diagnostic_session_id)
+    expected_revision = _validate_revision(expected_revision)
+    actor = _validate_actor(actor)
+    state = _make_state(context)
+    session = _load_bound_session(state, diagnostic_session_id)
+    if session.state != "INVESTIGATING":
+        raise DiagnosticValidationError(DIAGNOSTIC_INVALID_TRANSITION)
+    event = create_event(
+        diagnostic_session_id=session.diagnostic_session_id,
+        operation_id=operation_id,
+        sequence=session.revision,
+        revision_before=session.revision,
+        event_type="hypothesis.added",
+        occurred_at_utc=_new_timestamp(),
+        actor=actor,
+        previous_digest=session.event_head,
+        payload={
+            "request": {"statement": statement},
+            "result": {
+                "hypothesis": {
+                    "hypothesis_id": _new_hypothesis_id(),
+                    "statement": statement,
+                    "status": "open",
+                    "confidence_basis": "unrated",
+                    "supporting": [],
+                    "refuting": [],
+                }
+            },
+        },
+    )
+    accepted = state.diagnostic_store.append(
+        diagnostic_session_id,
+        event,
+        expected_revision=expected_revision,
+    )
+    accepted_payload = accepted.event.to_dict()["payload"]
+    assert isinstance(accepted_payload, dict)
+    accepted_result = accepted_payload["result"]
+    assert isinstance(accepted_result, dict)
+    hypothesis = accepted_result["hypothesis"]
+    assert isinstance(hypothesis, dict)
+    return OperationResult.success(
+        _HYPOTHESIS_ADD_OPERATION,
+        {"session": accepted.session.to_dict(), "hypothesis": hypothesis},
+    )
+
+
 def diagnostic_start(
     context: DiagnosticWorkflowContext,
     *,
@@ -328,9 +395,32 @@ def diagnostic_begin(
     )
 
 
+def diagnostic_add_hypothesis(
+    context: DiagnosticWorkflowContext,
+    *,
+    operation_id: str,
+    diagnostic_session_id: str,
+    expected_revision: int,
+    statement: str,
+    actor: str = "user",
+) -> OperationResult[object]:
+    return _result(
+        _HYPOTHESIS_ADD_OPERATION,
+        lambda: _diagnostic_add_hypothesis(
+            context,
+            operation_id=operation_id,
+            diagnostic_session_id=diagnostic_session_id,
+            expected_revision=expected_revision,
+            statement=statement,
+            actor=actor,
+        ),
+    )
+
+
 __all__ = [
     "DiagnosticWorkflowContext",
     "diagnostic_start",
     "diagnostic_show",
     "diagnostic_begin",
+    "diagnostic_add_hypothesis",
 ]

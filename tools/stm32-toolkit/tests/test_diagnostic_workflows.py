@@ -3,6 +3,7 @@ from __future__ import annotations
 import gc
 import hashlib
 import json
+from dataclasses import replace
 from pathlib import Path
 import shutil
 import tempfile
@@ -12,6 +13,7 @@ from uuid import UUID
 import pytest
 
 import stm32_toolkit.diagnostic_workflows as workflow_module
+from stm32_toolkit.diagnostics import DiagnosticSession, DiagnosticStore, Hypothesis, reduce_event
 from stm32_toolkit.evidence import EVIDENCE_CORRUPT, EvidenceIdentity, EvidenceValidationError
 from stm32_toolkit.evidence.store import EvidenceStore
 from stm32_toolkit.paths import WorkspacePaths
@@ -203,6 +205,502 @@ def test_failed_host_run_start_show_begin_survives_fresh_workflow_objects(task_t
     )
     assert reloaded.ok is True
     assert reloaded.to_dict()["data"]["session"] == begun.to_dict()["data"]["session"]
+
+
+def test_investigating_session_adds_competing_hypotheses_in_event_order(
+    task_tmp: Path,
+) -> None:
+    context, published, _workspace = _make_run(task_tmp)
+    started = diagnostic_start(
+        _fresh_context(context),
+        operation_id="hypothesis-start",
+        failed_test_run_id=published.manifest.run_id,
+    )
+    diagnostic_session_id = started.to_dict()["data"]["session"]["diagnostic_session_id"]
+    diagnostic_begin(
+        _fresh_context(context),
+        operation_id="hypothesis-begin",
+        diagnostic_session_id=diagnostic_session_id,
+        expected_revision=1,
+    )
+
+    first = workflow_module.diagnostic_add_hypothesis(
+        _fresh_context(context),
+        operation_id="hypothesis-one",
+        diagnostic_session_id=diagnostic_session_id,
+        expected_revision=2,
+        statement="the host build emits an incompatible object",
+    )
+    assert first.ok is True
+    assert first.operation == "diagnostic.hypothesis.add"
+    assert set(first.to_dict()["data"]) == {"session", "hypothesis"}
+    first_hypothesis = first.to_dict()["data"]["hypothesis"]
+    assert set(first_hypothesis) == {
+        "hypothesis_id",
+        "statement",
+        "status",
+        "confidence_basis",
+        "supporting",
+        "refuting",
+    }
+    assert first_hypothesis["statement"] == "the host build emits an incompatible object"
+    assert first_hypothesis["status"] == "open"
+    assert first_hypothesis["confidence_basis"] == "unrated"
+    assert first_hypothesis["supporting"] == []
+    assert first_hypothesis["refuting"] == []
+
+    second = workflow_module.diagnostic_add_hypothesis(
+        _fresh_context(context),
+        operation_id="hypothesis-two",
+        diagnostic_session_id=diagnostic_session_id,
+        expected_revision=3,
+        statement="the test selector observes the wrong case",
+        actor="ai-client",
+    )
+    assert second.ok is True
+    second_hypothesis = second.to_dict()["data"]["hypothesis"]
+    assert second_hypothesis["statement"] == "the test selector observes the wrong case"
+    assert second_hypothesis["hypothesis_id"] != first_hypothesis["hypothesis_id"]
+
+    shown = diagnostic_show(
+        _fresh_context(context), diagnostic_session_id=diagnostic_session_id
+    )
+    assert shown.ok is True
+    session = shown.to_dict()["data"]["session"]
+    assert session["revision"] == 4
+    assert [item["hypothesis_id"] for item in session["hypotheses"]] == [
+        first_hypothesis["hypothesis_id"],
+        second_hypothesis["hypothesis_id"],
+    ]
+
+
+def test_hypothesis_retry_returns_accepted_event_after_session_advances(
+    task_tmp: Path,
+) -> None:
+    context, published, workspace = _make_run(task_tmp)
+    started = diagnostic_start(
+        _fresh_context(context),
+        operation_id="retry-hypothesis-start",
+        failed_test_run_id=published.manifest.run_id,
+    )
+    diagnostic_session_id = started.to_dict()["data"]["session"]["diagnostic_session_id"]
+    diagnostic_begin(
+        _fresh_context(context),
+        operation_id="retry-hypothesis-begin",
+        diagnostic_session_id=diagnostic_session_id,
+        expected_revision=1,
+    )
+    first = workflow_module.diagnostic_add_hypothesis(
+        _fresh_context(context),
+        operation_id="retry-hypothesis-one",
+        diagnostic_session_id=diagnostic_session_id,
+        expected_revision=2,
+        statement="the linker output is incomplete",
+    )
+    first_hypothesis = first.to_dict()["data"]["hypothesis"]
+    advanced = workflow_module.diagnostic_add_hypothesis(
+        _fresh_context(context),
+        operation_id="retry-hypothesis-two",
+        diagnostic_session_id=diagnostic_session_id,
+        expected_revision=3,
+        statement="the case inventory is stale",
+    )
+
+    retry = workflow_module.diagnostic_add_hypothesis(
+        _fresh_context(context),
+        operation_id="retry-hypothesis-one",
+        diagnostic_session_id=diagnostic_session_id,
+        expected_revision=3,
+        statement="the linker output is incomplete",
+    )
+    assert retry.ok is True
+    assert retry.to_dict()["data"]["hypothesis"] == first_hypothesis
+    assert retry.to_dict()["data"]["session"] == advanced.to_dict()["data"]["session"]
+
+    conflicting_statement = workflow_module.diagnostic_add_hypothesis(
+        _fresh_context(context),
+        operation_id="retry-hypothesis-one",
+        diagnostic_session_id=diagnostic_session_id,
+        expected_revision=4,
+        statement="a different explanation",
+    )
+    assert conflicting_statement.ok is False
+    assert conflicting_statement.code == "DIAGNOSTIC_OPERATION_CONFLICT"
+    conflicting_actor = workflow_module.diagnostic_add_hypothesis(
+        _fresh_context(context),
+        operation_id="retry-hypothesis-one",
+        diagnostic_session_id=diagnostic_session_id,
+        expected_revision=4,
+        statement="the linker output is incomplete",
+        actor="tool",
+    )
+    assert conflicting_actor.ok is False
+    assert conflicting_actor.code == "DIAGNOSTIC_OPERATION_CONFLICT"
+
+    events_dir = workspace.diagnostics_root / "sessions" / diagnostic_session_id / "events"
+    assert sorted(path.name for path in events_dir.iterdir()) == [
+        "00000000.json",
+        "00000001.json",
+        "00000002.json",
+        "00000003.json",
+    ]
+
+
+@pytest.mark.parametrize(
+    ("statement", "code", "message"),
+    [
+        pytest.param(
+            "", "DIAGNOSTIC_INVALID_EVENT", "event/model/operation intent is invalid", id="empty"
+        ),
+        pytest.param(
+            123, "DIAGNOSTIC_INVALID_EVENT", "event/model/operation intent is invalid", id="non-string"
+        ),
+        pytest.param(
+            "x" * (64 * 1024 + 1),
+            "DIAGNOSTIC_LIMIT_EXCEEDED",
+            "a diagnostic collection or byte limit is exceeded",
+            id="over-limit",
+        ),
+    ],
+)
+def test_hypothesis_statement_limits_use_closed_failures(
+    task_tmp: Path, statement: object, code: str, message: str
+) -> None:
+    context, published, _workspace = _make_run(task_tmp)
+    started = diagnostic_start(
+        _fresh_context(context),
+        operation_id="statement-limit-start",
+        failed_test_run_id=published.manifest.run_id,
+    )
+    diagnostic_session_id = started.to_dict()["data"]["session"]["diagnostic_session_id"]
+    diagnostic_begin(
+        _fresh_context(context),
+        operation_id="statement-limit-begin",
+        diagnostic_session_id=diagnostic_session_id,
+        expected_revision=1,
+    )
+
+    result = workflow_module.diagnostic_add_hypothesis(
+        _fresh_context(context),
+        operation_id="statement-limit-add",
+        diagnostic_session_id=diagnostic_session_id,
+        expected_revision=2,
+        statement=statement,  # type: ignore[arg-type]
+    )
+
+    assert result.ok is False
+    assert result.code == code
+    assert result.message == message
+    assert result.details == {}
+    public = json.dumps(result.to_dict(), sort_keys=True)
+    assert "x" * 128 not in public
+    shown = diagnostic_show(
+        _fresh_context(context), diagnostic_session_id=diagnostic_session_id
+    )
+    assert shown.to_dict()["data"]["session"]["revision"] == 2
+    assert shown.to_dict()["data"]["session"]["hypotheses"] == []
+
+
+def test_hypothesis_requires_investigating_and_valid_request_shape(task_tmp: Path) -> None:
+    context, published, _workspace = _make_run(task_tmp)
+    started = diagnostic_start(
+        _fresh_context(context),
+        operation_id="validation-start",
+        failed_test_run_id=published.manifest.run_id,
+    )
+    diagnostic_session_id = started.to_dict()["data"]["session"]["diagnostic_session_id"]
+
+    open_result = workflow_module.diagnostic_add_hypothesis(
+        _fresh_context(context),
+        operation_id="open-hypothesis",
+        diagnostic_session_id=diagnostic_session_id,
+        expected_revision=1,
+        statement="not yet investigating",
+    )
+    assert open_result.ok is False
+    assert open_result.code == "DIAGNOSTIC_INVALID_TRANSITION"
+    assert open_result.details == {}
+
+    diagnostic_begin(
+        _fresh_context(context),
+        operation_id="validation-begin",
+        diagnostic_session_id=diagnostic_session_id,
+        expected_revision=1,
+    )
+    invalid_requests = [
+        {
+            "operation_id": "bad id",
+            "diagnostic_session_id": diagnostic_session_id,
+            "expected_revision": 2,
+            "statement": "valid statement",
+            "actor": "user",
+            "code": "DIAGNOSTIC_INVALID_EVENT",
+        },
+        {
+            "operation_id": "bad-actor",
+            "diagnostic_session_id": diagnostic_session_id,
+            "expected_revision": 2,
+            "statement": "valid statement",
+            "actor": "robot",
+            "code": "DIAGNOSTIC_INVALID_EVENT",
+        },
+        {
+            "operation_id": "bad-session",
+            "diagnostic_session_id": "not-a-session",
+            "expected_revision": 2,
+            "statement": "valid statement",
+            "actor": "user",
+            "code": "DIAGNOSTIC_INVALID_EVENT",
+        },
+        {
+            "operation_id": "bad-revision",
+            "diagnostic_session_id": diagnostic_session_id,
+            "expected_revision": -1,
+            "statement": "valid statement",
+            "actor": "user",
+            "code": "DIAGNOSTIC_REVISION_CONFLICT",
+        },
+    ]
+    for request in invalid_requests:
+        result = workflow_module.diagnostic_add_hypothesis(
+            _fresh_context(context),
+            operation_id=request["operation_id"],
+            diagnostic_session_id=request["diagnostic_session_id"],
+            expected_revision=request["expected_revision"],
+            statement=request["statement"],
+            actor=request["actor"],
+        )
+        assert result.ok is False
+        assert result.code == request["code"]
+        assert result.details == {}
+
+    shown = diagnostic_show(
+        _fresh_context(context), diagnostic_session_id=diagnostic_session_id
+    )
+    assert shown.to_dict()["data"]["session"]["revision"] == 2
+    assert shown.to_dict()["data"]["session"]["hypotheses"] == []
+
+
+def test_hypothesis_rejects_wrong_session_and_identity_bindings(
+    task_tmp: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    context, published, workspace = _make_run(task_tmp)
+    started = diagnostic_start(
+        _fresh_context(context),
+        operation_id="binding-start",
+        failed_test_run_id=published.manifest.run_id,
+    )
+    diagnostic_session_id = started.to_dict()["data"]["session"]["diagnostic_session_id"]
+    diagnostic_begin(
+        _fresh_context(context),
+        operation_id="binding-begin",
+        diagnostic_session_id=diagnostic_session_id,
+        expected_revision=1,
+    )
+
+    missing = workflow_module.diagnostic_add_hypothesis(
+        _fresh_context(context),
+        operation_id="missing-session",
+        diagnostic_session_id="f" * 32,
+        expected_revision=2,
+        statement="missing session",
+    )
+    assert missing.ok is False
+    assert missing.code == "DIAGNOSTIC_NOT_FOUND"
+
+    wrong_model = SimpleNamespace(
+        schema_version=3,
+        logical_project_id=UUID("87654321-4321-8765-4321-876543218765"),
+    )
+    monkeypatch.setattr(workflow_module, "_load_project_model", lambda _root: wrong_model)
+    monkeypatch.setattr(
+        workflow_module,
+        "_workspace_paths_factory",
+        lambda *_args: workspace,
+    )
+    wrong_project = workflow_module.diagnostic_add_hypothesis(
+        _fresh_context(context),
+        operation_id="wrong-project",
+        diagnostic_session_id=diagnostic_session_id,
+        expected_revision=2,
+        statement="wrong project",
+    )
+    assert wrong_project.ok is False
+    assert wrong_project.code == "DIAGNOSTIC_IDENTITY_MISMATCH"
+
+    monkeypatch.setattr(
+        workflow_module,
+        "_load_project_model",
+        lambda _root: SimpleNamespace(schema_version=3, logical_project_id=PROJECT_ID),
+    )
+    monkeypatch.setattr(
+        workflow_module,
+        "_workspace_paths_factory",
+        lambda *_args: replace(workspace, workspace_id="f" * 64),
+    )
+    wrong_workspace = workflow_module.diagnostic_add_hypothesis(
+        _fresh_context(context),
+        operation_id="wrong-workspace",
+        diagnostic_session_id=diagnostic_session_id,
+        expected_revision=2,
+        statement="wrong workspace",
+    )
+    assert wrong_workspace.ok is False
+    assert wrong_workspace.code == "DIAGNOSTIC_IDENTITY_MISMATCH"
+
+    monkeypatch.undo()
+    shown = diagnostic_show(
+        _fresh_context(context), diagnostic_session_id=diagnostic_session_id
+    )
+    assert shown.to_dict()["data"]["session"]["revision"] == 2
+    assert shown.to_dict()["data"]["session"]["hypotheses"] == []
+
+
+def test_hypothesis_result_is_closed_json_snapshot(task_tmp: Path) -> None:
+    context, published, _workspace = _make_run(task_tmp)
+    started = diagnostic_start(
+        _fresh_context(context),
+        operation_id="snapshot-hypothesis-start",
+        failed_test_run_id=published.manifest.run_id,
+    )
+    diagnostic_session_id = started.to_dict()["data"]["session"]["diagnostic_session_id"]
+    diagnostic_begin(
+        _fresh_context(context),
+        operation_id="snapshot-hypothesis-begin",
+        diagnostic_session_id=diagnostic_session_id,
+        expected_revision=1,
+    )
+    result = workflow_module.diagnostic_add_hypothesis(
+        _fresh_context(context),
+        operation_id="snapshot-hypothesis-add",
+        diagnostic_session_id=diagnostic_session_id,
+        expected_revision=2,
+        statement="the test command selected an old binary",
+    )
+
+    encoded = json.dumps(result.to_dict(), sort_keys=True)
+    assert '"event":' not in encoded
+    assert '"appended":' not in encoded
+    assert '"workspace_root":' not in encoded
+    assert '"stdout":' not in encoded
+    public = result.to_dict()
+    public["data"]["hypothesis"]["statement"] = "mutated"
+    public["data"]["session"]["hypotheses"][0]["statement"] = "mutated"
+    assert result.to_dict()["data"]["hypothesis"]["statement"] == "the test command selected an old binary"
+    assert result.to_dict()["data"]["session"]["hypotheses"][0]["statement"] == "the test command selected an old binary"
+
+
+def test_hypothesis_collection_limit_rejects_257th_without_append(
+    task_tmp: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    context, published, workspace = _make_run(task_tmp)
+    started = diagnostic_start(
+        _fresh_context(context),
+        operation_id="limit-hypothesis-start",
+        failed_test_run_id=published.manifest.run_id,
+    )
+    diagnostic_session_id = started.to_dict()["data"]["session"]["diagnostic_session_id"]
+    diagnostic_begin(
+        _fresh_context(context),
+        operation_id="limit-hypothesis-begin",
+        diagnostic_session_id=diagnostic_session_id,
+        expected_revision=1,
+    )
+
+    stored = DiagnosticStore(
+        workspace.diagnostics_root,
+        EvidenceStore(workspace.workspace_root / "evidence"),
+    ).load(diagnostic_session_id)
+    full_hypotheses = tuple(
+        Hypothesis(f"{index:032x}", f"bounded hypothesis {index}", "open", "unrated", (), ())
+        for index in range(256)
+    )
+    bounded_session = DiagnosticSession(
+        diagnostic_session_id=stored.diagnostic_session_id,
+        revision=stored.revision,
+        state=stored.state,
+        identity=stored.identity,
+        failed_test_run_id=stored.failed_test_run_id,
+        failed_evidence_id=stored.failed_evidence_id,
+        event_head=stored.event_head,
+        hypotheses=full_hypotheses,
+        observation_plans=(),
+        observation_results=(),
+    )
+
+    class LimitedStore:
+        def __init__(self, session: DiagnosticSession) -> None:
+            self.session = session
+            self.append_calls = 0
+
+        def load(self, _session_id: str) -> DiagnosticSession:
+            return self.session
+
+        def append(self, _session_id: str, event: object, *, expected_revision: int) -> object:
+            self.append_calls += 1
+            return reduce_event(self.session, event)  # type: ignore[arg-type]
+
+    limited_store = LimitedStore(bounded_session)
+    monkeypatch.setattr(
+        workflow_module,
+        "_diagnostic_store_factory",
+        lambda _root, _evidence: limited_store,
+    )
+
+    rejected = workflow_module.diagnostic_add_hypothesis(
+        _fresh_context(context),
+        operation_id="limit-hypothesis-256",
+        diagnostic_session_id=diagnostic_session_id,
+        expected_revision=258,
+        statement="the 257th hypothesis must not be stored",
+    )
+    assert rejected.ok is False
+    assert rejected.code == "DIAGNOSTIC_LIMIT_EXCEEDED"
+    assert rejected.details == {}
+    assert limited_store.append_calls == 1
+    assert len(bounded_session.hypotheses) == 256
+    events_dir = workspace.diagnostics_root / "sessions" / diagnostic_session_id / "events"
+    assert len(tuple(events_dir.iterdir())) == 2
+
+
+def test_unexpected_hypothesis_append_failure_is_not_remapped(
+    task_tmp: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    context, published, workspace = _make_run(task_tmp)
+    started = diagnostic_start(
+        _fresh_context(context),
+        operation_id="unexpected-hypothesis-start",
+        failed_test_run_id=published.manifest.run_id,
+    )
+    diagnostic_session_id = started.to_dict()["data"]["session"]["diagnostic_session_id"]
+    diagnostic_begin(
+        _fresh_context(context),
+        operation_id="unexpected-hypothesis-begin",
+        diagnostic_session_id=diagnostic_session_id,
+        expected_revision=1,
+    )
+
+    class ExplodingStore:
+        def __init__(self, root: Path, evidence: EvidenceStore) -> None:
+            self.delegate = DiagnosticStore(root, evidence)
+
+        def load(self, session_id: str) -> DiagnosticSession:
+            return self.delegate.load(session_id)
+
+        def append(self, *_args: object, **_kwargs: object) -> object:
+            raise RuntimeError("unexpected append failure")
+
+    monkeypatch.setattr(workflow_module, "_diagnostic_store_factory", ExplodingStore)
+    with pytest.raises(RuntimeError, match="unexpected append failure"):
+        workflow_module.diagnostic_add_hypothesis(
+            _fresh_context(context),
+            operation_id="unexpected-hypothesis-add",
+            diagnostic_session_id=diagnostic_session_id,
+            expected_revision=2,
+            statement="this error must propagate",
+        )
+    events_dir = workspace.diagnostics_root / "sessions" / diagnostic_session_id / "events"
+    assert len(tuple(events_dir.iterdir())) == 2
 
 
 def test_start_and_begin_retries_are_store_authoritative(task_tmp: Path) -> None:
