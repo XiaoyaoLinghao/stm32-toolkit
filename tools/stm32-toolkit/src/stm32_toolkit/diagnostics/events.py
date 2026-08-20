@@ -5,6 +5,8 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import cast
 
+from stm32_toolkit.evidence import EvidenceIdentity
+
 from .model import (
     DIAGNOSTIC_INVALID_EVENT,
     DIAGNOSTIC_INVALID_TRANSITION,
@@ -14,7 +16,6 @@ from .model import (
     DiagnosticSession,
     DiagnosticValidationError,
     EvidenceAssessment,
-    EvidenceIdentity,
     Hypothesis,
     ObservationPlan,
     ObservationResult,
@@ -187,7 +188,8 @@ def _reduce_plan_executed(session: DiagnosticSession, event: DiagnosticEvent) ->
     assert isinstance(values, list)
     decoded = tuple(ObservationResult.from_value(item) for item in values)
     if len(decoded) != len(plan.steps) or any(
-        item.plan_id != plan.plan_id or item.step_id != plan.steps[index].step_id
+        item.evidence_id != session.failed_evidence_id
+        or item.plan_id != plan.plan_id or item.step_id != plan.steps[index].step_id
         or item.selector != plan.steps[index].selector
         or item.expected_value != plan.steps[index].expected_value
         for index, item in enumerate(decoded)

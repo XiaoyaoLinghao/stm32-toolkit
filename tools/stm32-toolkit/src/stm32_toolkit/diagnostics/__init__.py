@@ -20,7 +20,6 @@ from .model import (
     DiagnosticSession,
     DiagnosticValidationError,
     EvidenceAssessment,
-    EvidenceIdentity,
     EVENT_TYPES,
     Hypothesis,
     ObservationPlan,
@@ -39,7 +38,7 @@ __all__ = [
     "DIAGNOSTIC_IDENTITY_MISMATCH", "DIAGNOSTIC_INVALID_EVENT", "DIAGNOSTIC_INVALID_TRANSITION",
     "DIAGNOSTIC_LIMIT_EXCEEDED", "DIAGNOSTIC_NOT_FOUND", "DIAGNOSTIC_OPERATION_CONFLICT", "DIAGNOSTIC_PLAN_INVALID",
     "DIAGNOSTIC_REVISION_CONFLICT", "DIAGNOSTIC_SCHEMA", "DiagnosticEvent", "DiagnosticSession",
-    "DiagnosticValidationError", "EvidenceAssessment", "EvidenceIdentity", "EVENT_TYPES", "Hypothesis",
+    "DiagnosticValidationError", "EvidenceAssessment", "EVENT_TYPES", "Hypothesis",
     "ObservationPlan", "ObservationResult", "ObservationStep", "RUN_STATES", "STATES", "calculate_assessment_id",
     "calculate_event_digest", "calculate_plan_digest", "canonical_diagnostic_json_bytes", "create_event", "reduce_event",
 ]

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pytest
 
+from stm32_toolkit.evidence import EvidenceIdentity
 from stm32_toolkit.diagnostics import (
     DIAGNOSTIC_INVALID_EVENT,
     DIAGNOSTIC_INVALID_TRANSITION,
@@ -9,8 +10,9 @@ from stm32_toolkit.diagnostics import (
     DiagnosticEvent,
     DiagnosticSession,
     DiagnosticValidationError,
-    EvidenceIdentity,
     calculate_event_digest,
+    calculate_assessment_id,
+    calculate_plan_digest,
     create_event,
     reduce_event,
 )
@@ -52,6 +54,141 @@ def _event(
     )
 
 
+def _canonical_payloads() -> list[tuple[str, dict[str, object], dict[str, object]]]:
+    step = {
+        "step_id": "failed-state",
+        "selector": {"kind": "run-state"},
+        "expected_value": "failed",
+        "purpose": "observe the failed run",
+    }
+    plan_fields = {"diagnostic_session_id": SID, "created_revision": 3, "steps": [step]}
+    plan_id = calculate_plan_digest(plan_fields)
+    hypothesis_id = "2" * 32
+    assessment_content = {
+        "hypothesis_id": hypothesis_id,
+        "plan_id": plan_id,
+        "step_id": "failed-state",
+        "evidence_id": "0" * 64,
+        "selector": {"kind": "run-state"},
+        "observed_value": "failed",
+        "polarity": "supports",
+        "rationale": "supports",
+    }
+    return [
+        (
+            "session.created",
+            {"failed_test_run_id": "run-1"},
+            {"failed_evidence_id": "0" * 64, "identity": IDENTITY.to_dict()},
+        ),
+        ("investigation.started", {}, {}),
+        (
+            "hypothesis.added",
+            {"statement": "the host test failed"},
+            {
+                "hypothesis": {
+                    "hypothesis_id": hypothesis_id,
+                    "statement": "the host test failed",
+                    "status": "open",
+                    "confidence_basis": "unrated",
+                    "supporting": [],
+                    "refuting": [],
+                }
+            },
+        ),
+        (
+            "observation.plan_added",
+            {"steps": [step]},
+            {"observation_plan": {**plan_fields, "plan_id": plan_id, "digest": plan_id}},
+        ),
+        (
+            "observation.plan_executed",
+            {"plan_id": plan_id},
+            {
+                "observation_results": [
+                    {
+                        "plan_id": plan_id,
+                        "step_id": "failed-state",
+                        "evidence_id": "0" * 64,
+                        "selector": {"kind": "run-state"},
+                        "observed_value": "failed",
+                        "expected_value": "failed",
+                        "matched": True,
+                    }
+                ]
+            },
+        ),
+        (
+            "hypothesis.assessed",
+            {
+                "hypothesis_id": hypothesis_id,
+                "plan_id": plan_id,
+                "step_id": "failed-state",
+                "polarity": "supports",
+                "rationale": "supports",
+            },
+            {"assessment": {"assessment_id": calculate_assessment_id(assessment_content), **assessment_content}},
+        ),
+    ]
+
+
+def _session_with_plan() -> tuple[DiagnosticSession, str, dict[str, object], DiagnosticEvent]:
+    created = _event(
+        sequence=0,
+        event_type="session.created",
+        request={"failed_test_run_id": "run-1"},
+        result={"failed_evidence_id": "0" * 64, "identity": IDENTITY.to_dict()},
+    )
+    session = reduce_event(None, created)
+    started = _event(
+        sequence=1,
+        event_type="investigation.started",
+        request={},
+        result={},
+        previous_digest=created.digest,
+    )
+    session = reduce_event(session, started)
+    step = {
+        "step_id": "failed-state",
+        "selector": {"kind": "run-state"},
+        "expected_value": "failed",
+        "purpose": "observe the failed run",
+    }
+    plan_fields = {"diagnostic_session_id": SID, "created_revision": 3, "steps": [step]}
+    plan_id = calculate_plan_digest(plan_fields)
+    plan_event = _event(
+        sequence=2,
+        event_type="observation.plan_added",
+        request={"steps": [step]},
+        result={"observation_plan": {**plan_fields, "plan_id": plan_id, "digest": plan_id}},
+        previous_digest=started.digest,
+    )
+    return reduce_event(session, plan_event), plan_id, step, plan_event
+
+
+def _session_with_executed_plan() -> tuple[DiagnosticSession, str, dict[str, object], DiagnosticEvent]:
+    session, plan_id, step, plan_event = _session_with_plan()
+    execute = _event(
+        sequence=3,
+        event_type="observation.plan_executed",
+        request={"plan_id": plan_id},
+        result={
+            "observation_results": [
+                {
+                    "plan_id": plan_id,
+                    "step_id": "failed-state",
+                    "evidence_id": "0" * 64,
+                    "selector": {"kind": "run-state"},
+                    "observed_value": "failed",
+                    "expected_value": "failed",
+                    "matched": True,
+                }
+            ]
+        },
+        previous_digest=plan_event.digest,
+    )
+    return reduce_event(session, execute), plan_id, step, execute
+
+
 def test_session_created_and_investigation_started_reduce_revisions() -> None:
     created = _event(
         sequence=0,
@@ -78,17 +215,69 @@ def test_session_created_and_investigation_started_reduce_revisions() -> None:
     assert session.event_head == started.digest
 
 
-def test_all_event_payloads_are_closed_and_event_round_trip_is_canonical() -> None:
-    event = _event(
+@pytest.mark.parametrize("event_type,event_request,event_result", _canonical_payloads())
+def test_all_event_payloads_are_closed_and_event_round_trip_is_canonical(
+    event_type: str, event_request: dict[str, object], event_result: dict[str, object]
+) -> None:
+    event = _event(sequence=0, event_type=event_type, request=event_request, result=event_result)
+    assert DiagnosticEvent.from_value(event.to_dict()) == event
+    bad_top_level = {**event.to_dict(), "unknown": True}
+    with pytest.raises(DiagnosticValidationError) as error:
+        DiagnosticEvent.from_value(bad_top_level)
+    assert error.value.code == DIAGNOSTIC_INVALID_EVENT
+    for side in ("request", "result"):
+        changed = event.to_dict()
+        changed_payload = dict(changed["payload"])
+        changed_side = dict(changed_payload[side])
+        changed_side["unknown"] = True
+        changed_payload[side] = changed_side
+        changed["payload"] = changed_payload
+        with pytest.raises(DiagnosticValidationError) as error:
+            DiagnosticEvent.from_value(changed)
+        assert error.value.code == DIAGNOSTIC_INVALID_EVENT
+
+
+def test_changed_digest_and_previous_link_fail_with_invalid_event() -> None:
+    created = _event(
         sequence=0,
         event_type="session.created",
         request={"failed_test_run_id": "run-1"},
         result={"failed_evidence_id": "0" * 64, "identity": IDENTITY.to_dict()},
     )
-    assert DiagnosticEvent.from_value(event.to_dict()) == event
+    changed = created.to_dict()
+    changed["digest"] = ("a" if created.digest[0] != "a" else "b") * 64
     with pytest.raises(DiagnosticValidationError) as error:
-        DiagnosticEvent.from_value({**event.to_dict(), "unknown": True})
+        DiagnosticEvent.from_value(changed)
     assert error.value.code == DIAGNOSTIC_INVALID_EVENT
+
+    session = reduce_event(None, created)
+    bad_link = _event(
+        sequence=1,
+        event_type="investigation.started",
+        request={},
+        result={},
+        previous_digest="0" * 64,
+    )
+    with pytest.raises(DiagnosticValidationError) as error:
+        reduce_event(session, bad_link)
+    assert error.value.code == DIAGNOSTIC_INVALID_EVENT
+
+
+def test_plan_and_assessment_digest_corruption_is_rejected_with_plan_invalid() -> None:
+    cases = (_canonical_payloads()[3], _canonical_payloads()[5])
+    for event_type, request, result in cases:
+        corrupted = dict(result)
+        if event_type == "observation.plan_added":
+            plan = dict(corrupted["observation_plan"])
+            plan["digest"] = ("a" if plan["digest"][0] != "a" else "b") * 64
+            corrupted["observation_plan"] = plan
+        else:
+            assessment = dict(corrupted["assessment"])
+            assessment["assessment_id"] = ("a" if assessment["assessment_id"][0] != "a" else "b") * 64
+            corrupted["assessment"] = assessment
+        with pytest.raises(DiagnosticValidationError) as error:
+            _event(sequence=0, event_type=event_type, request=request, result=corrupted)
+        assert error.value.code == DIAGNOSTIC_PLAN_INVALID
 
 
 def test_event_sequence_and_transition_links_fail_closed() -> None:
@@ -130,6 +319,134 @@ def test_event_sequence_and_transition_links_fail_closed() -> None:
     with pytest.raises(DiagnosticValidationError) as error:
         reduce_event(session, bad_transition)
     assert error.value.code == DIAGNOSTIC_INVALID_TRANSITION
+
+
+@pytest.mark.parametrize("mode", ["missing-plan", "missing-step", "cross-linked"])
+def test_plan_execution_rejects_missing_or_cross_linked_results(mode: str) -> None:
+    session, plan_id, step, plan_event = _session_with_plan()
+    if mode == "missing-plan":
+        request_plan_id = "1" * 64
+        results: list[dict[str, object]] = []
+    else:
+        request_plan_id = plan_id
+        result_selector = {"kind": "run-state"} if mode == "missing-step" else {
+            "kind": "case-state",
+            "case_id": "other-case",
+        }
+        results = [
+            {
+                "plan_id": plan_id,
+                "step_id": "other-step" if mode == "missing-step" else step["step_id"],
+                "evidence_id": "0" * 64,
+                "selector": result_selector,
+                "observed_value": "failed",
+                "expected_value": "failed",
+                "matched": True,
+            }
+        ]
+    event = _event(
+        sequence=session.revision,
+        event_type="observation.plan_executed",
+        request={"plan_id": request_plan_id},
+        result={"observation_results": results},
+        previous_digest=plan_event.digest,
+    )
+    with pytest.raises(DiagnosticValidationError) as error:
+        reduce_event(session, event)
+    assert error.value.code == DIAGNOSTIC_PLAN_INVALID
+
+
+def test_plan_execution_rejects_evidence_unrelated_to_failed_test_run() -> None:
+    session, plan_id, step, plan_event = _session_with_plan()
+    event = _event(
+        sequence=session.revision,
+        event_type="observation.plan_executed",
+        request={"plan_id": plan_id},
+        result={
+            "observation_results": [
+                {
+                    "plan_id": plan_id,
+                    "step_id": step["step_id"],
+                    "evidence_id": "1" * 64,
+                    "selector": step["selector"],
+                    "observed_value": "failed",
+                    "expected_value": "failed",
+                    "matched": True,
+                }
+            ]
+        },
+        previous_digest=plan_event.digest,
+    )
+    with pytest.raises(DiagnosticValidationError) as error:
+        reduce_event(session, event)
+    assert error.value.code == DIAGNOSTIC_PLAN_INVALID
+
+
+def test_reducer_rejects_missing_hypothesis_and_duplicate_hypothesis_id() -> None:
+    session, plan_id, step, execute = _session_with_executed_plan()
+    content = {
+        "hypothesis_id": "3" * 32,
+        "plan_id": plan_id,
+        "step_id": step["step_id"],
+        "evidence_id": "0" * 64,
+        "selector": step["selector"],
+        "observed_value": "failed",
+        "polarity": "supports",
+        "rationale": "supports",
+    }
+    assessment = {"assessment_id": calculate_assessment_id(content), **content}
+    missing = _event(
+        sequence=session.revision,
+        event_type="hypothesis.assessed",
+        request={k: content[k] for k in ("hypothesis_id", "plan_id", "step_id", "polarity", "rationale")},
+        result={"assessment": assessment},
+        previous_digest=execute.digest,
+    )
+    with pytest.raises(DiagnosticValidationError) as error:
+        reduce_event(session, missing)
+    assert error.value.code == DIAGNOSTIC_PLAN_INVALID
+
+    # The duplicate check is exercised against a session that already contains the ID.
+    investigated = reduce_event(None, _event(
+        sequence=0,
+        event_type="session.created",
+        request={"failed_test_run_id": "run-1"},
+        result={"failed_evidence_id": "0" * 64, "identity": IDENTITY.to_dict()},
+    ))
+    investigated = reduce_event(investigated, _event(
+        sequence=1,
+        event_type="investigation.started",
+        request={},
+        result={},
+        previous_digest=investigated.event_head,
+    ))
+    add = _event(
+        sequence=2,
+        event_type="hypothesis.added",
+        request={"statement": "same"},
+        result={
+            "hypothesis": {
+                "hypothesis_id": "4" * 32,
+                "statement": "same",
+                "status": "open",
+                "confidence_basis": "unrated",
+                "supporting": [],
+                "refuting": [],
+            }
+        },
+        previous_digest=investigated.event_head,
+    )
+    first = reduce_event(investigated, add)
+    duplicate = _event(
+        sequence=first.revision,
+        event_type="hypothesis.added",
+        request={"statement": "same"},
+        result=add.to_dict()["payload"]["result"],
+        previous_digest=first.event_head,
+    )
+    with pytest.raises(DiagnosticValidationError) as error:
+        reduce_event(first, duplicate)
+    assert error.value.code == DIAGNOSTIC_PLAN_INVALID
 
 
 def test_plan_result_digest_and_opposite_polarity_are_checked_by_reducer() -> None:
@@ -181,7 +498,7 @@ def test_plan_result_digest_and_opposite_polarity_are_checked_by_reducer() -> No
                 {
                     "plan_id": digest,
                     "step_id": "failed-state",
-                    "evidence_id": "1" * 64,
+                    "evidence_id": "0" * 64,
                     "selector": {"kind": "run-state"},
                     "observed_value": "failed",
                     "expected_value": "failed",
@@ -212,7 +529,7 @@ def test_plan_result_digest_and_opposite_polarity_are_checked_by_reducer() -> No
         "hypothesis_id": hypothesis["hypothesis_id"],
         "plan_id": digest,
         "step_id": "failed-state",
-        "evidence_id": "1" * 64,
+        "evidence_id": "0" * 64,
         "selector": {"kind": "run-state"},
         "observed_value": "failed",
         "polarity": "supports",

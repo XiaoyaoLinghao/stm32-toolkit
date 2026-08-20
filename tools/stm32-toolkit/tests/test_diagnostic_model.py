@@ -5,11 +5,12 @@ from hashlib import sha256
 
 import pytest
 
+from stm32_toolkit.evidence import EvidenceIdentity
 from stm32_toolkit.diagnostics import (
     DIAGNOSTIC_INVALID_EVENT,
     DIAGNOSTIC_LIMIT_EXCEEDED,
+    DIAGNOSTIC_PLAN_INVALID,
     EvidenceAssessment,
-    EvidenceIdentity,
     Hypothesis,
     ObservationPlan,
     ObservationResult,
@@ -66,7 +67,7 @@ def test_closed_models_round_trip_with_fresh_json_containers() -> None:
     result = ObservationResult(
         plan_id=plan.plan_id,
         step_id=step.step_id,
-        evidence_id="1" * 64,
+        evidence_id="0" * 64,
         selector=step.selector,
         observed_value="failed",
         expected_value="failed",
@@ -114,6 +115,33 @@ def test_closed_models_round_trip_with_fresh_json_containers() -> None:
         session.revision = 5  # type: ignore[misc]
 
 
+def test_materialized_session_rejects_observation_evidence_not_from_failed_run() -> None:
+    plan = _plan()
+    result = ObservationResult(
+        plan_id=plan.plan_id,
+        step_id=plan.steps[0].step_id,
+        evidence_id="1" * 64,
+        selector=plan.steps[0].selector,
+        observed_value="failed",
+        expected_value="failed",
+        matched=True,
+    )
+    with pytest.raises(DiagnosticValidationError) as error:
+        DiagnosticSession(
+            diagnostic_session_id=plan.diagnostic_session_id,
+            revision=4,
+            state="INVESTIGATING",
+            identity=IDENTITY,
+            failed_test_run_id="run-1",
+            failed_evidence_id="0" * 64,
+            event_head="3" * 64,
+            hypotheses=(),
+            observation_plans=(plan,),
+            observation_results=(result,),
+        )
+    assert error.value.code == DIAGNOSTIC_PLAN_INVALID
+
+
 def test_plan_and_assessment_hashes_bind_canonical_content() -> None:
     plan = _plan()
     assert plan.plan_id == plan.digest
@@ -130,17 +158,17 @@ def test_plan_and_assessment_hashes_bind_canonical_content() -> None:
 
 
 @pytest.mark.parametrize(
-    "value",
+    "value,expected_code",
     [
-        {"kind": "run-state", "extra": True},
-        {"kind": "case-state"},
-        {"kind": "case-count", "state": "unknown"},
+        ({"kind": "run-state", "extra": True}, DIAGNOSTIC_INVALID_EVENT),
+        ({"kind": "case-state"}, DIAGNOSTIC_INVALID_EVENT),
+        ({"kind": "case-count", "state": "unknown"}, DIAGNOSTIC_PLAN_INVALID),
     ],
 )
-def test_invalid_selectors_are_closed_and_stable(value: dict[str, object]) -> None:
+def test_invalid_selectors_are_closed_and_stable(value: dict[str, object], expected_code: str) -> None:
     with pytest.raises(DiagnosticValidationError) as error:
         ObservationStep("step", value, "failed", "purpose")
-    assert error.value.code in {DIAGNOSTIC_INVALID_EVENT, DIAGNOSTIC_LIMIT_EXCEEDED, "DIAGNOSTIC_PLAN_INVALID"}
+    assert error.value.code == expected_code
     assert error.value.message == str(error.value)
 
 
@@ -159,3 +187,98 @@ def test_unknown_model_fields_and_tuple_json_are_rejected() -> None:
 
     with pytest.raises(DiagnosticValidationError):
         canonical_diagnostic_json_bytes({"tuple": (1, 2)})
+
+
+@pytest.mark.parametrize(
+    "factory,expected_code",
+    [
+        (
+            lambda: DiagnosticSession(
+                "g" * 32,
+                1,
+                "OPEN",
+                IDENTITY,
+                "run-1",
+                "0" * 64,
+                "1" * 64,
+                (),
+                (),
+                (),
+            ),
+            DIAGNOSTIC_INVALID_EVENT,
+        ),
+        (lambda: ObservationStep("BAD", {"kind": "run-state"}, "failed", "purpose"), DIAGNOSTIC_INVALID_EVENT),
+        (lambda: Hypothesis("g" * 32, "statement", "open", "unrated", (), ()), DIAGNOSTIC_INVALID_EVENT),
+        (
+            lambda: ObservationPlan("g" * 64, "f" * 32, 1, (_step(),), "g" * 64),
+            DIAGNOSTIC_INVALID_EVENT,
+        ),
+    ],
+)
+def test_invalid_ids_fail_with_exact_codes(factory, expected_code: str) -> None:
+    with pytest.raises(DiagnosticValidationError) as error:
+        factory()
+    assert error.value.code == expected_code
+
+
+@pytest.mark.parametrize(
+    "factory",
+    [
+        lambda: ObservationStep("step", {"kind": "run-state"}, "failed", "x" * (64 * 1024 + 1)),
+        lambda: Hypothesis("1" * 32, "x" * (64 * 1024 + 1), "open", "unrated", (), ()),
+        lambda: EvidenceAssessment.new(
+            hypothesis_id="1" * 32,
+            plan_id="2" * 64,
+            step_id="step",
+            evidence_id="3" * 64,
+            selector={"kind": "run-state"},
+            observed_value="failed",
+            polarity="supports",
+            rationale="x" * (64 * 1024 + 1),
+        ),
+    ],
+)
+def test_statement_and_purpose_byte_bounds_are_fixed(factory) -> None:
+    with pytest.raises(DiagnosticValidationError) as error:
+        factory()
+    assert error.value.code == DIAGNOSTIC_LIMIT_EXCEEDED
+
+
+def test_plan_and_assessment_collection_bounds_are_fixed() -> None:
+    steps = tuple(
+        ObservationStep(f"step-{index}", {"kind": "run-state"}, "failed", "purpose")
+        for index in range(65)
+    )
+    with pytest.raises(DiagnosticValidationError) as error:
+        ObservationPlan("0" * 64, "f" * 32, 1, steps, "0" * 64)
+    assert error.value.code == DIAGNOSTIC_LIMIT_EXCEEDED
+
+    assessment = EvidenceAssessment.new(
+        hypothesis_id="1" * 32,
+        plan_id="2" * 64,
+        step_id="step",
+        evidence_id="3" * 64,
+        selector={"kind": "run-state"},
+        observed_value="failed",
+        polarity="supports",
+        rationale="rationale",
+    )
+    with pytest.raises(DiagnosticValidationError) as error:
+        Hypothesis("1" * 32, "statement", "open", "unrated", (assessment,) * 1025, ())
+    assert error.value.code == DIAGNOSTIC_LIMIT_EXCEEDED
+
+    hypotheses = tuple(Hypothesis(f"{index:032x}", "statement", "open", "unrated", (), ()) for index in range(257))
+    with pytest.raises(DiagnosticValidationError) as error:
+        DiagnosticSession(
+            "f" * 32,
+            1,
+            "INVESTIGATING",
+            IDENTITY,
+            "run-1",
+            "0" * 64,
+            "3" * 64,
+            hypotheses,
+            (),
+            (),
+        )
+    assert error.value.code == DIAGNOSTIC_LIMIT_EXCEEDED

@@ -706,6 +706,8 @@ class DiagnosticSession:
             _fail(DIAGNOSTIC_PLAN_INVALID)
         results: dict[tuple[str, str], ObservationResult] = {}
         for item in self.observation_results:
+            if item.evidence_id != evidence_id:
+                _fail(DIAGNOSTIC_PLAN_INVALID)
             plan = plans.get(item.plan_id)
             if plan is None or item.step_id not in {step.step_id for step in plan.steps}:
                 _fail(DIAGNOSTIC_PLAN_INVALID)
