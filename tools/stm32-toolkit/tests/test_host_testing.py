@@ -15,7 +15,7 @@ from xml.etree import ElementTree
 import pytest
 
 import stm32_toolkit.testing.artifacts as artifacts_mod
-from stm32_toolkit.evidence import EvidenceIdentity
+from stm32_toolkit.evidence import EvidenceIdentity, EvidenceIdentityContext
 from stm32_toolkit.evidence.store import EvidenceStore
 from stm32_toolkit.process import ProcessError, ProcessResult
 from stm32_toolkit.project_model import HostTestConfig
@@ -25,6 +25,8 @@ from stm32_toolkit.testing.model import (
     TestCaseResult as CaseResult,
     TestProtocolError as ProtocolError,
     create_inventory,
+    calculate_host_build_inventory_digest,
+    calculate_host_test_executable_inventory_digest,
     host_target_device,
 )
 
@@ -132,6 +134,19 @@ def _identity() -> EvidenceIdentity:
     )
 
 
+def _identity_context() -> EvidenceIdentityContext:
+    identity = _identity()
+    return EvidenceIdentityContext(
+        workspace_id=identity.workspace_id,
+        project_id=identity.project_id,
+        session_id=identity.session_id,
+        target_device=identity.target_device,
+        input_snapshot_sha256=identity.input_snapshot_sha256,
+        git_commit=identity.git_commit,
+        git_dirty=identity.git_dirty,
+    )
+
+
 @pytest.fixture
 def task_tmp() -> Path:
     """Use a fresh C:\\tmp direct child; the default pytest root has a stale denied ACL."""
@@ -196,6 +211,38 @@ def test_discover_builds_then_uses_distinct_ctest_preset_and_freezes_real_json(t
     payload = json.loads(discovery_object.read_text(encoding="utf-8"))
     assert payload["kind"] == "ctestInfo"
     assert payload["version"] == {"major": 1, "minor": 0}
+
+
+def test_context_discovery_derives_host_hashes_and_full_identity_stays_fail_closed(task_tmp: Path):
+    """Discovery owns Host digests while a fully bound identity still requires exact equality."""
+    runner, config, _scenario, _evidence = _runner(task_tmp)
+    context = _identity_context()
+    inventory = runner.discover(config, context)
+    executables = (
+        {
+            "case_id": "native-pass",
+            "command": ["<REPOSITORY_ROOT>/build/native-pass.exe"],
+        },
+        {
+            "case_id": "native-fail",
+            "command": ["<REPOSITORY_ROOT>/build/native-fail.exe"],
+        },
+    )
+
+    assert inventory.identity.workspace_id == context.workspace_id
+    assert inventory.identity.project_id == context.project_id
+    assert inventory.identity.session_id == context.session_id
+    assert inventory.identity.target_device == context.target_device
+    assert inventory.identity.input_snapshot_sha256 == context.input_snapshot_sha256
+    assert inventory.identity.git_commit == context.git_commit
+    assert inventory.identity.git_dirty == context.git_dirty
+    assert inventory.identity.build_id == calculate_host_build_inventory_digest(
+        config.build_preset, config.ctest_preset, config.labels, executables
+    )
+    assert inventory.identity.elf_sha256 == calculate_host_test_executable_inventory_digest(executables)
+
+    with pytest.raises(ProtocolError, match="Host identity differs"):
+        runner.discover(config, replace(inventory.identity, build_id="1" * 64))
 
 
 def test_execute_passes_child_only_environment_without_global_mutation(task_tmp: Path):

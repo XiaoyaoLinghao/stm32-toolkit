@@ -19,6 +19,7 @@ from stm32_toolkit.evidence.model import (
     ArtifactRef,
     EvidenceEnvelope,
     EvidenceIdentity,
+    EvidenceIdentityContext,
     MAX_ARTIFACTS,
     MAX_ENVELOPE_BYTES,
     MAX_JSON_INTEGER,
@@ -146,6 +147,62 @@ def test_identity_rejects_noncanonical_id_hash_or_boolean(field, value):
 
     with pytest.raises(ValueError):
         EvidenceIdentity.from_dict(identity)
+
+
+def test_identity_context_binds_only_runner_owned_hashes():
+    """A caller-owned identity context binds the two Host digests supplied by discovery."""
+    context = EvidenceIdentityContext(
+        workspace_id="a" * 64,
+        project_id="12345678-1234-5678-1234-567812345678",
+        session_id="session-1",
+        target_device="host:windows/amd64",
+        input_snapshot_sha256="b" * 64,
+        git_commit="c" * 40,
+        git_dirty=False,
+    )
+
+    identity = context.bind(build_id="d" * 64, elf_sha256="e" * 64)
+
+    assert identity == EvidenceIdentity(
+        workspace_id="a" * 64,
+        project_id="12345678-1234-5678-1234-567812345678",
+        session_id="session-1",
+        build_id="d" * 64,
+        elf_sha256="e" * 64,
+        target_device="host:windows/amd64",
+        input_snapshot_sha256="b" * 64,
+        git_commit="c" * 40,
+        git_dirty=False,
+    )
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("workspace_id", "A" * 64),
+        ("project_id", "123e4567-e89b-42d3-a456-426614174000".upper()),
+        ("session_id", "Session-1"),
+        ("target_device", ""),
+        ("input_snapshot_sha256", "B" * 64),
+        ("git_commit", "C" * 40),
+        ("git_dirty", 0),
+    ],
+)
+def test_identity_context_rejects_noncanonical_shared_fields(field, value):
+    """Context validation must remain closed for every field shared with EvidenceIdentity."""
+    context = {
+        "workspace_id": HASH_A,
+        "project_id": "123e4567-e89b-42d3-a456-426614174000",
+        "session_id": "session-01",
+        "target_device": "host:windows/amd64",
+        "input_snapshot_sha256": HASH_D,
+        "git_commit": HASH_E,
+        "git_dirty": False,
+    }
+    context[field] = value
+
+    with pytest.raises(ValueError):
+        EvidenceIdentityContext(**context)
 
 
 @pytest.mark.parametrize(
@@ -481,6 +538,7 @@ def test_t10_1a_evidence_package_exports_exact_typed_error_boundary():
         "ArtifactRef",
         "EvidenceEnvelope",
         "EvidenceIdentity",
+        "EvidenceIdentityContext",
         "EvidenceValidationError",
         "calculate_evidence_id",
         "canonical_json_bytes",

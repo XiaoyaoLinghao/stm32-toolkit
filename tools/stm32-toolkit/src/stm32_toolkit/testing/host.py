@@ -18,7 +18,7 @@ from typing import cast
 from uuid import uuid4
 from xml.etree import ElementTree
 
-from stm32_toolkit.evidence import ArtifactRef, EvidenceIdentity
+from stm32_toolkit.evidence import ArtifactRef, EvidenceIdentity, EvidenceIdentityContext
 from stm32_toolkit.evidence.store import EvidenceStore
 from stm32_toolkit.process import ProcessError, ProcessRequest, ProcessResult, run_process
 from stm32_toolkit.project_model import HostTestConfig
@@ -266,14 +266,21 @@ class HostTestRunner:
         if result.returncode != 0:
             raise protocol_error("TEST_PROCESS_FAILED", f"{operation} exited nonzero")
 
-    def discover(self, config: HostTestConfig, identity: EvidenceIdentity) -> TestInventory:
-        validate_host_identity(identity)
+    def discover(
+        self,
+        config: HostTestConfig,
+        identity: EvidenceIdentity | EvidenceIdentityContext,
+    ) -> TestInventory:
+        if isinstance(identity, EvidenceIdentity):
+            validate_host_identity(identity)
+        elif not isinstance(identity, EvidenceIdentityContext):
+            validate_host_identity(identity)
         build = self._execute(
             (*self._cmake, "--build", "--preset", config.build_preset), config
         )
         self._check_process(build, operation="CMake build")
         discovery = self._discover_only(config, identity)
-        if discovery.inventory.identity != identity:
+        if isinstance(identity, EvidenceIdentity) and discovery.inventory.identity != identity:
             raise protocol_error(
                 "TEST_IDENTITY_MISMATCH",
                 "Host identity differs from the canonical build or executable inventory",
@@ -282,7 +289,11 @@ class HostTestRunner:
         self.discovery_artifact = discovery.artifact
         return discovery.inventory
 
-    def _discover_only(self, config: HostTestConfig, identity: EvidenceIdentity) -> _Discovery:
+    def _discover_only(
+        self,
+        config: HostTestConfig,
+        identity: EvidenceIdentity | EvidenceIdentityContext,
+    ) -> _Discovery:
         result = self._execute(
             (*self._ctest, "--preset", config.ctest_preset, "--show-only=json-v1"),
             config,
@@ -299,13 +310,15 @@ class HostTestRunner:
         except (UnicodeError, json.JSONDecodeError) as exc:
             raise protocol_error("TEST_DISCOVERY_INVALID", "CTest discovery is invalid JSON") from exc
         cases, executables, ordinals = self._parse_discovery(payload, config.labels)
-        bound_identity = replace(
-            identity,
-            build_id=calculate_host_build_inventory_digest(
-                config.build_preset, config.ctest_preset, config.labels, executables
-            ),
-            elf_sha256=calculate_host_test_executable_inventory_digest(executables),
+        build_id = calculate_host_build_inventory_digest(
+            config.build_preset, config.ctest_preset, config.labels, executables
         )
+        elf_sha256 = calculate_host_test_executable_inventory_digest(executables)
+        if isinstance(identity, EvidenceIdentityContext):
+            bound_identity = identity.bind(build_id=build_id, elf_sha256=elf_sha256)
+        else:
+            bound_identity = replace(identity, build_id=build_id, elf_sha256=elf_sha256)
+        validate_host_identity(bound_identity)
         inventory = create_inventory("host", bound_identity, cases, self._clock())
         return _Discovery(inventory, artifact, ordinals, executables)
 

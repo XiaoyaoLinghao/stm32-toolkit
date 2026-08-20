@@ -277,6 +277,28 @@ def _decode_authoritative_json(data: bytes) -> object:
     return decoded
 
 
+def _validate_identity_shared_fields(
+    *,
+    workspace_id: object,
+    project_id: object,
+    session_id: object,
+    target_device: object,
+    input_snapshot_sha256: object,
+    git_commit: object,
+    git_dirty: object,
+) -> None:
+    """Validate the caller-owned fields shared by complete identities and contexts."""
+    _require_hash("workspace_id", workspace_id)
+    _validate_project_id(project_id)
+    _validate_session_id(session_id)
+    _require_bounded_string("target_device", target_device)
+    _require_hash("input_snapshot_sha256", input_snapshot_sha256)
+    if _GIT_COMMIT.fullmatch(_require_bounded_string("git_commit", git_commit)) is None:
+        raise EvidenceValidationError(EVIDENCE_INVALID, "git_commit must be a lowercase Git SHA-1")
+    if type(git_dirty) is not bool:
+        raise EvidenceValidationError(EVIDENCE_INVALID, "git_dirty must be a JSON boolean")
+
+
 @dataclass(frozen=True)
 class EvidenceIdentity:
     workspace_id: str
@@ -290,17 +312,17 @@ class EvidenceIdentity:
     git_dirty: bool
 
     def __post_init__(self) -> None:
-        _require_hash("workspace_id", self.workspace_id)
-        _validate_project_id(self.project_id)
-        _validate_session_id(self.session_id)
+        _validate_identity_shared_fields(
+            workspace_id=self.workspace_id,
+            project_id=self.project_id,
+            session_id=self.session_id,
+            target_device=self.target_device,
+            input_snapshot_sha256=self.input_snapshot_sha256,
+            git_commit=self.git_commit,
+            git_dirty=self.git_dirty,
+        )
         _require_hash("build_id", self.build_id)
         _require_hash("elf_sha256", self.elf_sha256)
-        _require_bounded_string("target_device", self.target_device)
-        _require_hash("input_snapshot_sha256", self.input_snapshot_sha256)
-        if _GIT_COMMIT.fullmatch(_require_bounded_string("git_commit", self.git_commit)) is None:
-            raise EvidenceValidationError(EVIDENCE_INVALID, "git_commit must be a lowercase Git SHA-1")
-        if type(self.git_dirty) is not bool:
-            raise EvidenceValidationError(EVIDENCE_INVALID, "git_dirty must be a JSON boolean")
 
     @classmethod
     def from_dict(cls, value: object) -> "EvidenceIdentity":
@@ -326,6 +348,43 @@ class EvidenceIdentity:
             "git_commit": self.git_commit,
             "git_dirty": self.git_dirty,
         }
+
+
+@dataclass(frozen=True)
+class EvidenceIdentityContext:
+    """Caller-owned identity fields that Host discovery completes with its digests."""
+
+    workspace_id: str
+    project_id: str
+    session_id: str
+    target_device: str
+    input_snapshot_sha256: str
+    git_commit: str
+    git_dirty: bool
+
+    def __post_init__(self) -> None:
+        _validate_identity_shared_fields(
+            workspace_id=self.workspace_id,
+            project_id=self.project_id,
+            session_id=self.session_id,
+            target_device=self.target_device,
+            input_snapshot_sha256=self.input_snapshot_sha256,
+            git_commit=self.git_commit,
+            git_dirty=self.git_dirty,
+        )
+
+    def bind(self, *, build_id: str, elf_sha256: str) -> EvidenceIdentity:
+        return EvidenceIdentity(
+            workspace_id=self.workspace_id,
+            project_id=self.project_id,
+            session_id=self.session_id,
+            build_id=build_id,
+            elf_sha256=elf_sha256,
+            target_device=self.target_device,
+            input_snapshot_sha256=self.input_snapshot_sha256,
+            git_dirty=self.git_dirty,
+            git_commit=self.git_commit,
+        )
 
 
 @dataclass(frozen=True)
