@@ -22,7 +22,9 @@
 - The primary agent reviews the complete task-start-to-task-head diff, tests the public behavior independently, and either accepts the task or returns one bounded correction brief to the same implementer.
 - Do not create nested implementation agents or recursively split a task. If a task cannot stay within its stated product boundary, stop and revise this plan or the frozen design.
 - Each accepted task ends in one local commit. A documentation-only primary-agent correction is allowed only before implementation starts; product corrections remain Luna-owned.
-- Use CPython 3.12 only. Run commands from `tools/stm32-toolkit` with `$env:PYTHONPATH='src'` unless the command says otherwise.
+- Use CPython 3.12 only. Run commands from the repository root with
+  `$env:PYTHONPATH=(Resolve-Path 'tools/stm32-toolkit/src').Path`; existing tests load root
+  `schemas/` fixtures by relative path.
 - Do not run release suites, coverage, Node, browser, packaging, Linux, hardware, or Python 3.10 checks unless the changed code crosses one of the explicit risk triggers in the final section.
 
 ## Task 1: Closed diagnostic domain and event reducer
@@ -56,7 +58,7 @@
 **Verify:**
 
 ```powershell
-py -3.12 -m pytest -q tests/test_diagnostic_model.py tests/test_diagnostic_events.py
+py -3.12 -m pytest -q tools/stm32-toolkit/tests/test_diagnostic_model.py tools/stm32-toolkit/tests/test_diagnostic_events.py
 ```
 
 **Commit:** `feat(diagnostics): add closed event domain`
@@ -89,7 +91,7 @@ py -3.12 -m pytest -q tests/test_diagnostic_model.py tests/test_diagnostic_event
 **Verify:**
 
 ```powershell
-py -3.12 -m pytest -q tests/test_diagnostic_model.py tests/test_diagnostic_events.py tests/test_diagnostic_store.py tests/test_evidence_store.py tests/test_evidence_gc.py
+py -3.12 -m pytest -q tools/stm32-toolkit/tests/test_diagnostic_model.py tools/stm32-toolkit/tests/test_diagnostic_events.py tools/stm32-toolkit/tests/test_diagnostic_store.py tools/stm32-toolkit/tests/test_evidence_store.py tools/stm32-toolkit/tests/test_evidence_gc.py
 ```
 
 **Commit:** `feat(diagnostics): persist evidence-linked sessions`
@@ -123,7 +125,7 @@ py -3.12 -m pytest -q tests/test_diagnostic_model.py tests/test_diagnostic_event
 **Verify:**
 
 ```powershell
-py -3.12 -m pytest -q tests/test_diagnostic_workflows.py tests/test_testing_workflows.py tests/test_testing_publication.py
+py -3.12 -m pytest -q tools/stm32-toolkit/tests/test_diagnostic_workflows.py tools/stm32-toolkit/tests/test_testing_workflows.py tools/stm32-toolkit/tests/test_testing_publication.py
 ```
 
 **Commit:** `feat(diagnostics): start failed-run investigations`
@@ -152,7 +154,7 @@ py -3.12 -m pytest -q tests/test_diagnostic_workflows.py tests/test_testing_work
 **Verify:**
 
 ```powershell
-py -3.12 -m pytest -q tests/test_diagnostic_workflows.py -k "hypothesis or start or begin"
+py -3.12 -m pytest -q tools/stm32-toolkit/tests/test_diagnostic_workflows.py -k "hypothesis or start or begin"
 ```
 
 **Commit:** `feat(diagnostics): record competing hypotheses`
@@ -182,7 +184,7 @@ py -3.12 -m pytest -q tests/test_diagnostic_workflows.py -k "hypothesis or start
 **Verify:**
 
 ```powershell
-py -3.12 -m pytest -q tests/test_diagnostic_workflows.py -k "plan or observation"
+py -3.12 -m pytest -q tools/stm32-toolkit/tests/test_diagnostic_workflows.py -k "plan or observation"
 ```
 
 **Commit:** `feat(diagnostics): execute failed-run observations`
@@ -211,7 +213,7 @@ py -3.12 -m pytest -q tests/test_diagnostic_workflows.py -k "plan or observation
 **Verify:**
 
 ```powershell
-py -3.12 -m pytest -q tests/test_diagnostic_workflows.py -k "assess or hypothesis"
+py -3.12 -m pytest -q tools/stm32-toolkit/tests/test_diagnostic_workflows.py -k "assess or hypothesis"
 ```
 
 **Commit:** `feat(diagnostics): assess hypothesis evidence`
@@ -243,7 +245,7 @@ py -3.12 -m pytest -q tests/test_diagnostic_workflows.py -k "assess or hypothesi
 **Verify:**
 
 ```powershell
-py -3.12 -m pytest -q tests/test_diagnostic_cli.py tests/test_testing_cli.py tests/test_cli.py
+py -3.12 -m pytest -q tools/stm32-toolkit/tests/test_diagnostic_cli.py tools/stm32-toolkit/tests/test_testing_cli.py tools/stm32-toolkit/tests/test_cli.py
 ```
 
 **Commit:** `feat(cli): expose failed-run diagnostics`
@@ -275,7 +277,7 @@ py -3.12 -m pytest -q tests/test_diagnostic_cli.py tests/test_testing_cli.py tes
 **Verify:**
 
 ```powershell
-py -3.12 -m pytest -q tests/test_diagnostic_mcp.py tests/test_diagnostic_end_to_end.py tests/test_testing_mcp.py tests/test_mcp_server.py
+py -3.12 -m pytest -q tools/stm32-toolkit/tests/test_diagnostic_mcp.py tools/stm32-toolkit/tests/test_diagnostic_end_to_end.py tools/stm32-toolkit/tests/test_testing_mcp.py tools/stm32-toolkit/tests/test_mcp_server.py
 ```
 
 **Commit:** `feat(mcp): expose diagnostic investigation`
@@ -288,24 +290,24 @@ Run from `tools/stm32-toolkit` on CPython 3.12:
 
 ```powershell
 py -3.12 -m pytest -q `
-  tests/test_diagnostic_model.py `
-  tests/test_diagnostic_events.py `
-  tests/test_diagnostic_store.py `
-  tests/test_diagnostic_workflows.py `
-  tests/test_diagnostic_cli.py `
-  tests/test_diagnostic_mcp.py `
-  tests/test_diagnostic_end_to_end.py `
-  tests/test_testing_model.py `
-  tests/test_testing_publication.py `
-  tests/test_testing_workflows.py `
-  tests/test_testing_cli.py `
-  tests/test_testing_mcp.py `
-  tests/test_evidence_model.py `
-  tests/test_evidence_store.py `
-  tests/test_evidence_gc.py `
-  tests/test_paths.py `
-  tests/test_cli.py `
-  tests/test_mcp_server.py
+  tools/stm32-toolkit/tests/test_diagnostic_model.py `
+  tools/stm32-toolkit/tests/test_diagnostic_events.py `
+  tools/stm32-toolkit/tests/test_diagnostic_store.py `
+  tools/stm32-toolkit/tests/test_diagnostic_workflows.py `
+  tools/stm32-toolkit/tests/test_diagnostic_cli.py `
+  tools/stm32-toolkit/tests/test_diagnostic_mcp.py `
+  tools/stm32-toolkit/tests/test_diagnostic_end_to_end.py `
+  tools/stm32-toolkit/tests/test_testing_model.py `
+  tools/stm32-toolkit/tests/test_testing_publication.py `
+  tools/stm32-toolkit/tests/test_testing_workflows.py `
+  tools/stm32-toolkit/tests/test_testing_cli.py `
+  tools/stm32-toolkit/tests/test_testing_mcp.py `
+  tools/stm32-toolkit/tests/test_evidence_model.py `
+  tools/stm32-toolkit/tests/test_evidence_store.py `
+  tools/stm32-toolkit/tests/test_evidence_gc.py `
+  tools/stm32-toolkit/tests/test_paths.py `
+  tools/stm32-toolkit/tests/test_cli.py `
+  tools/stm32-toolkit/tests/test_mcp_server.py
 ```
 
 Then run `git diff --check`, verify the original feature worktree is clean, and record test counts and any platform skip. Do not create VS-03 automatically.
