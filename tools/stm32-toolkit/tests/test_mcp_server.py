@@ -90,7 +90,7 @@ def test_runtime_validates_a_generated_session_before_creating_data(
     assert not data_root.exists()
 
 
-def test_server_registers_exactly_the_twenty_one_project_bound_tools(tmp_path: Path):
+def test_server_registers_exactly_the_twenty_three_project_bound_tools(tmp_path: Path):
     """Catches a registration exposing a root override or an extra tool."""
     project = tmp_path / "project"
     project.mkdir()
@@ -124,6 +124,8 @@ def test_server_registers_exactly_the_twenty_one_project_bound_tools(tmp_path: P
         "stm32_diagnostic_start",
         "stm32_diagnostic_show",
         "stm32_diagnostic_begin",
+        "stm32_diagnostic_hypothesis_add",
+        "stm32_diagnostic_hypothesis_assess",
     }
     zero_argument_tools = {
         "stm32_doctor",

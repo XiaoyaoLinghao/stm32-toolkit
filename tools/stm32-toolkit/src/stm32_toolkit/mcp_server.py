@@ -18,6 +18,8 @@ from stm32_toolkit.context import build_project_context
 from stm32_toolkit.detection import detect_project
 from stm32_toolkit.diagnostic_workflows import (
     DiagnosticWorkflowContext,
+    diagnostic_add_hypothesis,
+    diagnostic_assess_hypothesis,
     diagnostic_begin,
     diagnostic_show,
     diagnostic_start,
@@ -72,6 +74,7 @@ _PROBE_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
 _RUN_ID_PATTERN = r"^[a-z0-9][a-z0-9._-]*$"
 _DIAGNOSTIC_OPERATION_PATTERN = r"^[a-z0-9][a-z0-9._-]{0,127}$"
 _DIAGNOSTIC_SESSION_PATTERN = r"^[0-9a-f]{32}$"
+_DIAGNOSTIC_PLAN_PATTERN = r"^[0-9a-f]{64}$"
 
 
 def _validate_test_string(value: str) -> str:
@@ -119,6 +122,36 @@ DiagnosticSessionId = Annotated[
 
 DiagnosticActor = Literal["user", "tool", "ai-client"]
 DiagnosticRevision = Annotated[StrictInt, Field(ge=0, le=10_000)]
+DiagnosticText = Annotated[
+    str,
+    Field(min_length=1, max_length=MAX_STRING_BYTES),
+    AfterValidator(_validate_test_string),
+]
+DiagnosticHypothesisId = Annotated[
+    str,
+    Field(
+        pattern=_DIAGNOSTIC_SESSION_PATTERN,
+        min_length=32,
+        max_length=32,
+    ),
+]
+DiagnosticPlanId = Annotated[
+    str,
+    Field(
+        pattern=_DIAGNOSTIC_PLAN_PATTERN,
+        min_length=64,
+        max_length=64,
+    ),
+]
+DiagnosticStepId = Annotated[
+    str,
+    Field(
+        pattern=_DIAGNOSTIC_OPERATION_PATTERN,
+        min_length=1,
+        max_length=128,
+    ),
+]
+DiagnosticPolarity = Literal["supports", "refutes"]
 Items = Annotated[list[str], Field(min_length=1, max_length=256)]
 
 
@@ -674,6 +707,62 @@ async def tool_diagnostic_begin_for_request(
     ).to_dict()
 
 
+async def tool_diagnostic_add_hypothesis_for_request(
+    runtime: ServerRuntime,
+    context: Context | None,
+    operation_id: DiagnosticOperationId,
+    diagnostic_session_id: DiagnosticSessionId,
+    expected_revision: DiagnosticRevision,
+    statement: DiagnosticText,
+    actor: DiagnosticActor = "user",
+) -> dict[str, object]:
+    failure = await _client_roots_failure(
+        runtime, context, "diagnostic.hypothesis.add"
+    )
+    if failure is not None:
+        return failure
+    return diagnostic_add_hypothesis(
+        _diagnostic_context(runtime),
+        operation_id=operation_id,
+        diagnostic_session_id=diagnostic_session_id,
+        expected_revision=expected_revision,
+        statement=statement,
+        actor=actor,
+    ).to_dict()
+
+
+async def tool_diagnostic_assess_hypothesis_for_request(
+    runtime: ServerRuntime,
+    context: Context | None,
+    operation_id: DiagnosticOperationId,
+    diagnostic_session_id: DiagnosticSessionId,
+    expected_revision: DiagnosticRevision,
+    hypothesis_id: DiagnosticHypothesisId,
+    plan_id: DiagnosticPlanId,
+    step_id: DiagnosticStepId,
+    polarity: DiagnosticPolarity,
+    rationale: DiagnosticText,
+    actor: DiagnosticActor = "user",
+) -> dict[str, object]:
+    failure = await _client_roots_failure(
+        runtime, context, "diagnostic.hypothesis.assess"
+    )
+    if failure is not None:
+        return failure
+    return diagnostic_assess_hypothesis(
+        _diagnostic_context(runtime),
+        operation_id=operation_id,
+        diagnostic_session_id=diagnostic_session_id,
+        expected_revision=expected_revision,
+        hypothesis_id=hypothesis_id,
+        plan_id=plan_id,
+        step_id=step_id,
+        polarity=polarity,
+        rationale=rationale,
+        actor=actor,
+    ).to_dict()
+
+
 async def tool_test_host_discover_for_request(
     runtime: ServerRuntime, context: Context | None
 ) -> dict[str, object]:
@@ -1042,6 +1131,52 @@ def create_server(
             actor,
         )
 
+    @mcp.tool(name="stm32_diagnostic_hypothesis_add")
+    async def stm32_diagnostic_hypothesis_add(
+        ctx: Context,
+        operationId: DiagnosticOperationId,
+        diagnosticSessionId: DiagnosticSessionId,
+        expectedRevision: DiagnosticRevision,
+        statement: DiagnosticText,
+        actor: DiagnosticActor = "user",
+    ) -> dict[str, object]:
+        return await tool_diagnostic_add_hypothesis_for_request(
+            runtime,
+            ctx,
+            operationId,
+            diagnosticSessionId,
+            expectedRevision,
+            statement,
+            actor,
+        )
+
+    @mcp.tool(name="stm32_diagnostic_hypothesis_assess")
+    async def stm32_diagnostic_hypothesis_assess(
+        ctx: Context,
+        operationId: DiagnosticOperationId,
+        diagnosticSessionId: DiagnosticSessionId,
+        expectedRevision: DiagnosticRevision,
+        hypothesisId: DiagnosticHypothesisId,
+        planId: DiagnosticPlanId,
+        stepId: DiagnosticStepId,
+        polarity: DiagnosticPolarity,
+        rationale: DiagnosticText,
+        actor: DiagnosticActor = "user",
+    ) -> dict[str, object]:
+        return await tool_diagnostic_assess_hypothesis_for_request(
+            runtime,
+            ctx,
+            operationId,
+            diagnosticSessionId,
+            expectedRevision,
+            hypothesisId,
+            planId,
+            stepId,
+            polarity,
+            rationale,
+            actor,
+        )
+
     @mcp.tool(name="stm32_test_host_discover")
     async def stm32_test_host_discover(ctx: Context) -> dict[str, object]:
         return await tool_test_host_discover_for_request(runtime, ctx)
@@ -1072,6 +1207,8 @@ def create_server(
             "stm32_diagnostic_start",
             "stm32_diagnostic_show",
             "stm32_diagnostic_begin",
+            "stm32_diagnostic_hypothesis_add",
+            "stm32_diagnostic_hypothesis_assess",
         ),
     )
 
