@@ -19,6 +19,7 @@ import weakref
 from .model import (
     EVIDENCE_CORRUPT,
     EVIDENCE_INVALID,
+    EVIDENCE_LIMIT_EXCEEDED,
     EVIDENCE_PATH_UNSAFE,
     EvidenceEnvelope,
     EvidenceValidationError,
@@ -69,6 +70,13 @@ def _ordered(values) -> tuple[str, ...]:
 
 def _json_copy(value: object) -> object:
     return json.loads(canonical_json_bytes(value))
+
+
+def _canonical_root_bytes(value: Mapping[str, object]) -> bytes:
+    payload = canonical_json_bytes(value)
+    if len(payload) > MAX_ENVELOPE_BYTES:
+        raise EvidenceValidationError(EVIDENCE_LIMIT_EXCEEDED, "root bytes exceed the evidence limit")
+    return payload
 
 
 def _freeze_json(value: object) -> object:
@@ -285,6 +293,7 @@ class RootRecord:
         if not isinstance(copied, dict):
             raise EvidenceValidationError(EVIDENCE_INVALID, "root metadata must be a JSON object")
         object.__setattr__(self, "metadata", _freeze_json(copied))
+        _canonical_root_bytes(self.to_dict())
 
     @classmethod
     def from_value(cls, value: object) -> "RootRecord":
@@ -732,7 +741,7 @@ def put_root(store: EvidenceStore | Path | str, root: RootRecord | Mapping[str, 
     evidence_store = store if isinstance(store, EvidenceStore) else EvidenceStore(store)
     value = root.to_dict() if isinstance(root, RootRecord) else root
     record = RootRecord.from_value(value)
-    payload = canonical_json_bytes(record.to_dict())
+    payload = _canonical_root_bytes(record.to_dict())
     name = f"{_digest({'root_type': record.root_type, 'root_id': record.root_id})}.json"
     with evidence_store._mutation_lock():
         evidence_store.get_envelope(record.manifest_id)
@@ -764,9 +773,16 @@ def get_root(store: EvidenceStore | Path | str, root_type: str, root_id: str) ->
         document = json.loads(payload.decode("utf-8"))
         if canonical_json_bytes(document) != payload:
             raise EvidenceValidationError(EVIDENCE_CORRUPT, "root is not canonical JSON")
-        record = RootRecord.from_value(document)
     except (UnicodeError, json.JSONDecodeError) as exc:
         raise EvidenceValidationError(EVIDENCE_CORRUPT, "root is not canonical JSON") from exc
+    except EvidenceValidationError as exc:
+        if exc.code == EVIDENCE_CORRUPT:
+            raise
+        raise EvidenceValidationError(EVIDENCE_CORRUPT, "root stored bytes are corrupt") from exc
+    try:
+        record = RootRecord.from_value(document)
+    except EvidenceValidationError as exc:
+        raise EvidenceValidationError(EVIDENCE_CORRUPT, "root stored record is corrupt") from exc
     if record.root_type != root_type or record.root_id != root_id:
         raise EvidenceValidationError(EVIDENCE_CORRUPT, "root payload does not match its exact key")
     return record

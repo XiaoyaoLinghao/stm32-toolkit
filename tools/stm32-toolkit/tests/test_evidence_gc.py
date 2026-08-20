@@ -232,6 +232,43 @@ def test_get_root_rejects_oversize_root_before_json_validation(tmp_path):
     assert limit_failure.value.code == EVIDENCE_LIMIT_EXCEEDED
 
 
+def test_put_root_rejects_oversize_canonical_record_before_write(tmp_path):
+    """Typed root publication must share the bounded root bytes accepted by reads."""
+    store = EvidenceStore(tmp_path / "evidence")
+    envelope, _artifact = _put(store, tmp_path / "root-publish-oversize.bin", b"root-publish-oversize")
+    metadata = {f"chunk-{index}": "x" * 60_000 for index in range(20)}
+    document = _typed_root(
+        "test-run",
+        "oversize-publication",
+        str(envelope.evidence_id),
+        metadata,
+    )
+
+    with pytest.raises(EvidenceValidationError) as limit_failure:
+        put_root(store, document)
+
+    assert limit_failure.value.code == EVIDENCE_LIMIT_EXCEEDED
+    assert not (store.root / "roots").exists()
+
+
+def test_get_root_maps_invalid_canonical_stored_record_to_corrupt(tmp_path):
+    """A canonical root with invalid typed fields is stored-byte corruption, not caller input."""
+    store = EvidenceStore(tmp_path / "evidence")
+    envelope, _artifact = _put(store, tmp_path / "root-invalid-stored.bin", b"root-invalid-stored")
+    root = RootRecord("test-run", "invalid-stored", str(envelope.evidence_id), {})
+    path = put_root(store, root)
+    path.write_bytes(
+        canonical_json_bytes(
+            _typed_root("test-run", "invalid-stored", "not-a-sha256", {})
+        )
+    )
+
+    with pytest.raises(EvidenceValidationError) as corrupt_failure:
+        gc_module.get_root(store, "test-run", "invalid-stored")
+
+    assert corrupt_failure.value.code == EVIDENCE_CORRUPT
+
+
 @pytest.mark.parametrize(
     ("root_type", "root_id"),
     [
