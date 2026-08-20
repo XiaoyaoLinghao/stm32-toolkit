@@ -22,6 +22,7 @@ from .model import (
     EVIDENCE_PATH_UNSAFE,
     EvidenceEnvelope,
     EvidenceValidationError,
+    MAX_ENVELOPE_BYTES,
     canonical_json_bytes,
 )
 from .store import EvidenceStore
@@ -752,10 +753,13 @@ def get_root(store: EvidenceStore | Path | str, root_type: str, root_id: str) ->
     evidence_store = store if isinstance(store, EvidenceStore) else EvidenceStore(store)
     root_type, root_id = _validate_root_key(root_type, root_id)
     name = f"{_digest({'root_type': root_type, 'root_id': root_id})}.json"
-    path = evidence_store._existing_managed_path(
-        "roots", root_type, name, regular=True, single_link=True,
-    )
-    payload = evidence_store._read_file_bytes(path)
+    try:
+        path = evidence_store._existing_managed_path(
+            "roots", root_type, name, regular=True, single_link=True,
+        )
+        payload = evidence_store._read_file_bytes(path, maximum_bytes=MAX_ENVELOPE_BYTES)
+    except FileNotFoundError as exc:
+        raise EvidenceValidationError(EVIDENCE_CORRUPT, "evidence root is absent") from exc
     try:
         document = json.loads(payload.decode("utf-8"))
         if canonical_json_bytes(document) != payload:

@@ -28,6 +28,7 @@ from .model import (
 _HASH = re.compile(r"^[0-9a-f]{64}$")
 _REPARSE_POINT = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
 _COPY_CHUNK = 1024 * 1024
+MAX_EVIDENCE_READ_BYTES = 64 * 1024 * 1024
 _MUTATION_LOCK_NAME = ".gc-mutation.lock"
 
 
@@ -611,16 +612,21 @@ class EvidenceStore:
         if not isinstance(artifact, ArtifactRef):
             raise EvidenceValidationError(EVIDENCE_INVALID, "artifact must be an ArtifactRef")
         verified = ArtifactRef.from_dict(artifact.to_dict())
-        if type(maximum_bytes) is not int or not 0 <= maximum_bytes <= MAX_ARTIFACT_BYTES:
+        if type(maximum_bytes) is not int or not 1 <= maximum_bytes <= MAX_EVIDENCE_READ_BYTES:
             raise EvidenceValidationError(EVIDENCE_INVALID, "maximum_bytes is invalid")
         expected_relative = self._expected_object_relative(verified.sha256)
         if verified.relative_path != expected_relative:
             raise EvidenceValidationError(EVIDENCE_INVALID, "artifact relative_path is not its content-addressed object path")
-        target = self._existing_managed_path(
-            "objects", "sha256", verified.sha256[:2], verified.sha256,
-            regular=True, single_link=True,
-        )
-        payload = self._read_file_bytes(target, maximum_bytes=maximum_bytes)
+        if verified.size_bytes > maximum_bytes:
+            raise EvidenceValidationError(EVIDENCE_LIMIT_EXCEEDED, "artifact size exceeds maximum_bytes")
+        try:
+            target = self._existing_managed_path(
+                "objects", "sha256", verified.sha256[:2], verified.sha256,
+                regular=True, single_link=True,
+            )
+            payload = self._read_file_bytes(target, maximum_bytes=maximum_bytes)
+        except FileNotFoundError as exc:
+            raise EvidenceValidationError(EVIDENCE_CORRUPT, "evidence artifact object is absent") from exc
         if len(payload) != verified.size_bytes:
             raise EvidenceValidationError(EVIDENCE_CORRUPT, f"evidence object is corrupt: size mismatch for {target}")
         if hashlib.sha256(payload).hexdigest() != verified.sha256:

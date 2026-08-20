@@ -719,8 +719,31 @@ def test_read_artifact_rejects_digest_size_and_missing_object(tmp_path):
     assert size_failure.value.code == EVIDENCE_CORRUPT
 
     object_path.unlink()
-    with pytest.raises(FileNotFoundError):
+    with pytest.raises(EvidenceValidationError) as missing_failure:
         store.read_artifact(artifact, maximum_bytes=1024)
+    assert missing_failure.value.code == EVIDENCE_CORRUPT
+
+
+def test_read_artifact_rejects_declared_oversize_before_opening_object(tmp_path, monkeypatch):
+    """A declared artifact larger than the read cap must fail before any object open."""
+    payload = b"declared artifact size"
+    source = tmp_path / "source.bin"
+    source.write_bytes(payload)
+    store = EvidenceStore(tmp_path / "evidence")
+    artifact = store.ingest_file(source, kind="log", media_type="text/plain")
+    opened = False
+
+    def fail_if_opened(path):
+        nonlocal opened
+        opened = True
+        raise AssertionError(f"object was opened before size rejection: {path}")
+
+    monkeypatch.setattr(store_module.EvidenceStore, "_open_readonly", fail_if_opened)
+    forged_size = replace(artifact, size_bytes=artifact.size_bytes + 1)
+    with pytest.raises(EvidenceValidationError) as limit_failure:
+        store.read_artifact(forged_size, maximum_bytes=artifact.size_bytes)
+    assert limit_failure.value.code == EVIDENCE_LIMIT_EXCEEDED
+    assert opened is False
 
 
 def test_read_artifact_rejects_links_and_invalid_maximum(tmp_path):
@@ -740,7 +763,7 @@ def test_read_artifact_rejects_links_and_invalid_maximum(tmp_path):
     finally:
         alias.unlink()
 
-    for maximum_bytes in (-1, True, "1024", store_module.MAX_ARTIFACT_BYTES + 1):
+    for maximum_bytes in (0, store_module.MAX_EVIDENCE_READ_BYTES + 1, True, "1024"):
         with pytest.raises(EvidenceValidationError) as limit_failure:
             store.read_artifact(artifact, maximum_bytes=maximum_bytes)  # type: ignore[arg-type]
         assert limit_failure.value.code == EVIDENCE_INVALID
@@ -807,8 +830,9 @@ def test_read_artifact_miss_does_not_initialize_store_directories(tmp_path):
         media_type="text/plain",
     )
 
-    with pytest.raises(FileNotFoundError):
+    with pytest.raises(EvidenceValidationError) as missing_failure:
         EvidenceStore(root).read_artifact(artifact, maximum_bytes=1024)
+    assert missing_failure.value.code == EVIDENCE_CORRUPT
     assert not root.exists()
 
 

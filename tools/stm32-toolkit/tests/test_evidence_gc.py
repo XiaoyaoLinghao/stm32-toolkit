@@ -33,9 +33,12 @@ from stm32_toolkit.evidence.gc import (
 )
 from stm32_toolkit.evidence.model import (
     ArtifactRef,
+    EVIDENCE_CORRUPT,
+    EVIDENCE_LIMIT_EXCEEDED,
     EvidenceEnvelope,
     EvidenceIdentity,
     EvidenceValidationError,
+    MAX_ENVELOPE_BYTES,
     canonical_json_bytes,
 )
 from stm32_toolkit.evidence.store import EvidenceStore
@@ -208,10 +211,25 @@ def test_get_root_missing_does_not_create_store_state(tmp_path):
     root = tmp_path / "missing-evidence"
     assert not root.exists()
 
-    with pytest.raises(FileNotFoundError):
+    with pytest.raises(EvidenceValidationError) as missing_failure:
         gc_module.get_root(root, "test-run", "missing")
 
+    assert missing_failure.value.code == EVIDENCE_CORRUPT
     assert not root.exists()
+
+
+def test_get_root_rejects_oversize_root_before_json_validation(tmp_path):
+    """Root reads use the bounded authoritative JSON limit before parsing bytes."""
+    store = EvidenceStore(tmp_path / "evidence")
+    envelope, _artifact = _put(store, tmp_path / "root-oversize.bin", b"root-oversize")
+    root = RootRecord("test-run", "oversize", str(envelope.evidence_id), {})
+    path = put_root(store, root)
+    path.write_bytes(b"x" * (MAX_ENVELOPE_BYTES + 1))
+
+    with pytest.raises(EvidenceValidationError) as limit_failure:
+        gc_module.get_root(store, "test-run", "oversize")
+
+    assert limit_failure.value.code == EVIDENCE_LIMIT_EXCEEDED
 
 
 @pytest.mark.parametrize(
