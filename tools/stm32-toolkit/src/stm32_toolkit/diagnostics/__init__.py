@@ -1,6 +1,7 @@
 """Closed in-memory VS-02 diagnostic values and event reducer."""
 
 from .events import create_event, reduce_event
+from .store import DiagnosticMutationRecord, DiagnosticStore
 from .model import (
     ACTORS,
     CASE_STATES,
@@ -41,4 +42,5 @@ __all__ = [
     "DiagnosticValidationError", "EvidenceAssessment", "EVENT_TYPES", "Hypothesis",
     "ObservationPlan", "ObservationResult", "ObservationStep", "RUN_STATES", "STATES", "calculate_assessment_id",
     "calculate_event_digest", "calculate_plan_digest", "canonical_diagnostic_json_bytes", "create_event", "reduce_event",
+    "DiagnosticMutationRecord", "DiagnosticStore",
 ]
