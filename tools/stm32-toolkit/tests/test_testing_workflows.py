@@ -653,17 +653,18 @@ raise SystemExit(1)
     assert inventory_data["case_ids"] == ["fails", "passes"]
     assert len(runners) == 1
 
-    wrong = workflows.host_test_run(
-        context, inventory_digest="0" * 64, case_ids=("fails",)
-    )
-    assert wrong.ok is False
-    assert wrong.code == "TEST_INVENTORY_CHANGED"
     workspace = workflows.WorkspacePaths.from_roots(
         data_root, project_root, PROJECT_ID, context.session_id
     )
     roots = workspace.workspace_root / "evidence" / "roots"
     manifests = workspace.workspace_root / "evidence" / "manifests"
     manifests_before = tuple(sorted(path.name for path in manifests.glob("*.json")))
+
+    wrong = workflows.host_test_run(
+        context, inventory_digest="0" * 64, case_ids=("fails",)
+    )
+    assert wrong.ok is False
+    assert wrong.code == "TEST_INVENTORY_CHANGED"
     assert not roots.exists() or not any(roots.rglob("*.json"))
     assert tuple(sorted(path.name for path in manifests.glob("*.json"))) == manifests_before
 
