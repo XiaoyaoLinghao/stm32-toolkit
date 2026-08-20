@@ -9,6 +9,7 @@ import re
 
 from stm32_toolkit.evidence import (
     EVIDENCE_CORRUPT,
+    EVIDENCE_LIMIT_EXCEEDED,
     ArtifactRef,
     EvidenceEnvelope,
     EvidenceValidationError,
@@ -31,20 +32,17 @@ _HOST_OPERATION = "host-test-run"
 _TERMINAL_STATES = frozenset({"passed", "failed", "error"})
 _CASE_COUNT_STATES = ("passed", "failed", "skipped", "error", "timeout")
 _ENVELOPE_METADATA = {"test_run_id", "test_manifest_sha256", "inventory_digest"}
-_ROOT_METADATA = {"mode", "state"}
 
 
 def _publication_invalid(message: str, error: BaseException | None = None) -> None:
-    failure = protocol_error("TEST_PUBLICATION_INVALID", message)
+    failure = protocol_error("TEST_PROTOCOL_INVALID", message)
     if error is None:
         raise failure
     raise failure from error
 
 
-def _publication_conflict(message: str, error: BaseException | None = None) -> None:
-    failure = protocol_error("TEST_PUBLICATION_CONFLICT", message)
-    if error is None:
-        raise failure
+def _evidence_commit_failure(message: str, error: BaseException) -> None:
+    failure = EvidenceValidationError(EVIDENCE_CORRUPT, message)
     raise failure from error
 
 
@@ -144,8 +142,10 @@ def _decode_manifest_bytes(payload: bytes) -> TestRunManifest:
         if canonical_json_bytes(manifest.to_dict()) != payload:
             _corrupt("stored test manifest is not canonical JSON")
         return manifest
-    except EvidenceValidationError:
-        raise
+    except EvidenceValidationError as exc:
+        if exc.code == EVIDENCE_LIMIT_EXCEEDED:
+            raise
+        _corrupt("stored test manifest is corrupt", exc)
     except TestProtocolError as exc:
         _corrupt("stored test manifest is invalid", exc)
     except (UnicodeError, json.JSONDecodeError, TypeError, ValueError) as exc:
@@ -196,14 +196,25 @@ class TestRunPublisher:
     ) -> PublishedTestRun:
         verified = _host_manifest(manifest)
         inventory_digest = _hash(inventory_digest, "inventory_digest")
-        directory = self._collector.new_directory("test-manifest")
-        manifest_artifact = self._collector.write_and_ingest(
-            directory,
-            "test-run-manifest.json",
-            canonical_json_bytes(verified.to_dict()),
-            kind="test-manifest",
-            media_type="application/json",
-        )
+        payload = canonical_json_bytes(verified.to_dict())
+        if len(payload) > MAX_EVIDENCE_READ_BYTES:
+            raise EvidenceValidationError(
+                EVIDENCE_LIMIT_EXCEEDED,
+                "canonical test manifest exceeds the authoritative read limit",
+            )
+        try:
+            directory = self._collector.new_directory("test-manifest")
+            manifest_artifact = self._collector.write_and_ingest(
+                directory,
+                "test-run-manifest.json",
+                payload,
+                kind="test-manifest",
+                media_type="application/json",
+            )
+        except EvidenceValidationError:
+            raise
+        except OSError as exc:
+            _evidence_commit_failure("Host manifest artifact publication failed", exc)
         artifacts = (
             manifest_artifact,
             verified.raw_events,
@@ -225,8 +236,10 @@ class TestRunPublisher:
         )
         try:
             self.evidence_store.put_envelope(envelope)
-        except (OSError, ValueError) as exc:
-            _publication_conflict("Host envelope publication failed", exc)
+        except EvidenceValidationError:
+            raise
+        except OSError as exc:
+            _evidence_commit_failure("Host envelope publication failed", exc)
         root = RootRecord(
             "test-run",
             verified.run_id,
@@ -235,8 +248,10 @@ class TestRunPublisher:
         )
         try:
             put_root(self.evidence_store, root)
-        except (OSError, ValueError) as exc:
-            _publication_conflict("Host root publication failed", exc)
+        except EvidenceValidationError:
+            raise
+        except OSError as exc:
+            _evidence_commit_failure("Host root publication failed", exc)
         return PublishedTestRun(verified, manifest_artifact, envelope, root)
 
 
@@ -306,7 +321,7 @@ class TestRunRepository:
                 _corrupt("stored root metadata contradicts the Host manifest")
             return PublishedTestRun(manifest, manifest_artifact, envelope, root)
         except EvidenceValidationError as exc:
-            if exc.code == EVIDENCE_CORRUPT:
+            if exc.code in {EVIDENCE_CORRUPT, EVIDENCE_LIMIT_EXCEEDED}:
                 raise
             _corrupt("stored Host TestRun is corrupt", exc)
         except (OSError, TypeError, ValueError) as exc:

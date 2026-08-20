@@ -16,6 +16,7 @@ from stm32_toolkit.evidence import (
     EvidenceValidationError,
     canonical_json_bytes,
 )
+from stm32_toolkit.evidence.model import MAX_JSON_DEPTH, MAX_JSON_NODES
 
 
 TEST_SCHEMA = "stm32-test/1"
@@ -91,16 +92,22 @@ def _artifact(value: object, field: str, *, nullable: bool = True) -> ArtifactRe
 
 
 def _reject_json_tuples(value: object) -> None:
-    """Reject Python-only tuple containers before decoding a JSON-shaped record."""
-    if isinstance(value, tuple):
-        raise protocol_error("TEST_PROTOCOL_INVALID", "JSON input must not contain tuple containers")
-    if isinstance(value, Mapping):
-        for key, item in value.items():
-            _reject_json_tuples(key)
-            _reject_json_tuples(item)
-    elif isinstance(value, list):
-        for item in value:
-            _reject_json_tuples(item)
+    """Reject tuple containers with the shared bounded JSON traversal budget."""
+    pending: list[tuple[object, int]] = [(value, 1)]
+    nodes = 0
+    while pending:
+        current, depth = pending.pop()
+        nodes += 1
+        if depth > MAX_JSON_DEPTH or nodes > MAX_JSON_NODES:
+            raise protocol_error("TEST_PROTOCOL_INVALID", "JSON input exceeds the evidence limits")
+        if isinstance(current, tuple):
+            raise protocol_error("TEST_PROTOCOL_INVALID", "JSON input must not contain tuple containers")
+        if isinstance(current, Mapping):
+            for key, item in current.items():
+                pending.append((key, depth + 1))
+                pending.append((item, depth + 1))
+        elif isinstance(current, list):
+            pending.extend((item, depth + 1) for item in current)
 
 
 def _sorted_case_ids(case_ids: object, *, allow_empty: bool = False) -> tuple[str, ...]:

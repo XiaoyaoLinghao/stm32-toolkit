@@ -15,13 +15,15 @@ import pytest
 from stm32_toolkit.evidence import (
     EVIDENCE_CORRUPT,
     EVIDENCE_INVALID,
+    EVIDENCE_LIMIT_EXCEEDED,
+    EVIDENCE_PATH_UNSAFE,
     EvidenceEnvelope,
     EvidenceIdentity,
     EvidenceValidationError,
     canonical_json_bytes,
 )
 from stm32_toolkit.evidence.gc import RootRecord
-from stm32_toolkit.evidence.store import EvidenceStore
+from stm32_toolkit.evidence.store import MAX_EVIDENCE_READ_BYTES, EvidenceStore
 from stm32_toolkit.testing.model import (
     TestCaseResult as CaseResult,
     TestRunManifest as RunManifest,
@@ -33,6 +35,7 @@ from stm32_toolkit.testing.publication import (
     TestRunPublisher as Publisher,
     TestRunRepository as Repository,
 )
+import stm32_toolkit.testing.publication as publication_module
 
 
 UTC_0 = "2026-08-20T00:00:00.000000Z"
@@ -163,8 +166,13 @@ def test_publication_rejects_non_host_or_incomplete_manifest(task_tmp: Path):
         replace(manifest, stdout=None),
         replace(manifest, stderr=None),
     ):
-        with pytest.raises(ProtocolError):
+        with pytest.raises(ProtocolError) as invalid:
             publisher.publish_host(candidate, inventory_digest=inventory.inventory_digest)
+        assert invalid.value.code == "TEST_PROTOCOL_INVALID"
+
+    with pytest.raises(ProtocolError) as invalid_inventory:
+        publisher.publish_host(manifest, inventory_digest="not-a-digest")
+    assert invalid_inventory.value.code == "TEST_PROTOCOL_INVALID"
 
 
 @pytest.mark.parametrize("state", ["passed", "failed", "error"])
@@ -188,10 +196,95 @@ def test_publication_stops_on_root_conflict_without_replacing_existing_root(task
     root_path = next(root_bytes)
     original = root_path.read_bytes()
 
-    with pytest.raises(ProtocolError):
+    with pytest.raises(EvidenceValidationError) as conflict:
         publisher.publish_host(manifest, inventory_digest="1" * 64)
 
+    assert conflict.value.code == EVIDENCE_CORRUPT
     assert root_path.read_bytes() == original
+
+
+@pytest.mark.parametrize("phase", ["ingest", "envelope", "root"])
+def test_publication_preserves_typed_evidence_commit_failures(
+    task_tmp: Path, monkeypatch: pytest.MonkeyPatch, phase: str,
+):
+    """Commit failures keep their Evidence-domain code instead of becoming Test codes."""
+    store, manifest, inventory = _fixture(task_tmp)
+    publisher = _publisher(task_tmp, store)
+    failure = EvidenceValidationError(EVIDENCE_PATH_UNSAFE, "injected commit failure")
+    if phase == "ingest":
+        def fail_ingest(*_args, **_kwargs):
+            raise failure
+
+        monkeypatch.setattr(publisher._collector, "write_and_ingest", fail_ingest)
+    elif phase == "envelope":
+        def fail_envelope(_envelope):
+            raise failure
+
+        monkeypatch.setattr(store, "put_envelope", fail_envelope)
+    else:
+        def fail_root(_store, _root):
+            raise failure
+
+        monkeypatch.setattr(publication_module, "put_root", fail_root)
+
+    with pytest.raises(EvidenceValidationError) as caught:
+        publisher.publish_host(manifest, inventory_digest=inventory.inventory_digest)
+
+    assert caught.value.code == EVIDENCE_PATH_UNSAFE
+
+
+@pytest.mark.parametrize("phase", ["ingest", "envelope", "root"])
+def test_publication_maps_unexpected_commit_oserror_to_evidence_corrupt(
+    task_tmp: Path, monkeypatch: pytest.MonkeyPatch, phase: str,
+):
+    """Unexpected filesystem commit failures use the existing Evidence corruption code."""
+    store, manifest, inventory = _fixture(task_tmp)
+    publisher = _publisher(task_tmp, store)
+    if phase == "ingest":
+        def fail_ingest(*_args, **_kwargs):
+            raise OSError("injected manifest I/O failure")
+
+        monkeypatch.setattr(publisher._collector, "write_and_ingest", fail_ingest)
+    elif phase == "envelope":
+        def fail_envelope(_envelope):
+            raise OSError("injected envelope I/O failure")
+
+        monkeypatch.setattr(store, "put_envelope", fail_envelope)
+    else:
+        def fail_root(_store, _root):
+            raise OSError("injected root I/O failure")
+
+        monkeypatch.setattr(publication_module, "put_root", fail_root)
+
+    with pytest.raises(EvidenceValidationError) as caught:
+        publisher.publish_host(manifest, inventory_digest=inventory.inventory_digest)
+
+    assert caught.value.code == EVIDENCE_CORRUPT
+
+
+def test_publication_rejects_oversized_manifest_before_collector_write(
+    task_tmp: Path, monkeypatch: pytest.MonkeyPatch,
+):
+    """The publisher and repository share the bounded canonical manifest read contract."""
+    store, manifest, inventory = _fixture(task_tmp)
+    publisher = _publisher(task_tmp, store)
+
+    class OversizedPayload:
+        def __len__(self) -> int:
+            return MAX_EVIDENCE_READ_BYTES + 1
+
+    oversized = OversizedPayload()
+    monkeypatch.setattr(publication_module, "canonical_json_bytes", lambda _value: oversized)
+    monkeypatch.setattr(
+        publisher._collector, "new_directory",
+        lambda _prefix: pytest.fail("collector directory was created before size rejection"),
+    )
+
+    with pytest.raises(EvidenceValidationError) as failure:
+        publisher.publish_host(manifest, inventory_digest=inventory.inventory_digest)
+
+    assert failure.value.code == EVIDENCE_LIMIT_EXCEEDED
+    assert not (store.root / "manifests").exists()
 
 
 @pytest.mark.parametrize("contradiction", ["root", "envelope", "manifest", "digest"])
@@ -248,3 +341,77 @@ def test_repository_preserves_malformed_run_id_as_caller_input_error(task_tmp: P
         Repository(store).load("invalid/run-id")
 
     assert invalid.value.code == EVIDENCE_INVALID
+
+
+@pytest.mark.parametrize("field, bad_value", [
+    ("identity", {"workspace_id": "bad"}),
+    ("raw_events", {"bad": True}),
+])
+def test_repository_maps_stored_malformed_nested_identity_or_artifact_to_corrupt(
+    task_tmp: Path, monkeypatch: pytest.MonkeyPatch,
+    field: str, bad_value: object,
+):
+    """Canonical stored manifests with malformed nested records are stored corruption."""
+    store, manifest, inventory = _fixture(task_tmp)
+    published = _publisher(task_tmp, store).publish_host(
+        manifest, inventory_digest=inventory.inventory_digest
+    )
+    malformed_manifest = deepcopy(manifest.to_dict())
+    malformed_manifest[field] = bad_value
+    payload = canonical_json_bytes(malformed_manifest)
+    original_read = store.read_artifact
+
+    def read_manifest(artifact, *, maximum_bytes):
+        if artifact == published.manifest_artifact:
+            return payload
+        return original_read(artifact, maximum_bytes=maximum_bytes)
+
+    monkeypatch.setattr(store, "read_artifact", read_manifest)
+    with pytest.raises(EvidenceValidationError) as failure:
+        Repository(store).load(manifest.run_id)
+
+    assert failure.value.code == EVIDENCE_CORRUPT
+
+
+def test_decode_manifest_maps_typed_evidence_validation_to_corrupt(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """The stored-byte decoder never leaks a non-limit Evidence validation code."""
+    typed_failure = EvidenceValidationError(EVIDENCE_PATH_UNSAFE, "stored nested artifact is unsafe")
+
+    def fail_decode(_cls, _value):
+        raise typed_failure
+
+    monkeypatch.setattr(
+        publication_module.TestRunManifest,
+        "from_dict",
+        classmethod(fail_decode),
+    )
+
+    with pytest.raises(EvidenceValidationError) as failure:
+        publication_module._decode_manifest_bytes(b"{}")
+
+    assert failure.value.code == EVIDENCE_CORRUPT
+
+
+def test_repository_preserves_explicit_manifest_read_limit(
+    task_tmp: Path, monkeypatch: pytest.MonkeyPatch,
+):
+    """An explicit authoritative read limit remains a limit, not stored corruption."""
+    store, manifest, inventory = _fixture(task_tmp)
+    published = _publisher(task_tmp, store).publish_host(
+        manifest, inventory_digest=inventory.inventory_digest
+    )
+
+    def limited_read(_artifact, *, maximum_bytes):
+        raise EvidenceValidationError(
+            EVIDENCE_LIMIT_EXCEEDED,
+            f"read cap {maximum_bytes} reached",
+        )
+
+    monkeypatch.setattr(store, "read_artifact", limited_read)
+    with pytest.raises(EvidenceValidationError) as failure:
+        Repository(store).load(manifest.run_id)
+
+    assert failure.value.code == EVIDENCE_LIMIT_EXCEEDED
+    assert published.manifest_artifact.size_bytes < MAX_EVIDENCE_READ_BYTES

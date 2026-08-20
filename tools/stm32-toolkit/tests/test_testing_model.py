@@ -522,6 +522,28 @@ def test_manifest_from_dict_rejects_closed_nested_and_terminal_corruption(mutate
         RunManifest.from_dict(value)
 
 
+def test_manifest_from_dict_bounds_deep_extra_container_without_recursion_error():
+    """A caller-owned JSON shape cannot exhaust the Python call stack before rejection."""
+    artifact = _artifact()
+    case = CaseResult("one", "failed", UTC_0, UTC_1, 1000, "failure", artifact, None)
+    manifest = RunManifest(
+        "stm32-test/1", "run-1", "host", "failed", _identity(), None,
+        (case,), UTC_0, UTC_1, 1000, artifact, None, artifact,
+    )
+    value = manifest.to_dict()
+    cursor: dict[str, object] = {}
+    value["extra"] = cursor
+    for _ in range(2_000):
+        nested: dict[str, object] = {}
+        cursor["nested"] = nested
+        cursor = nested
+
+    with pytest.raises(ProtocolError) as failure:
+        RunManifest.from_dict(value)
+
+    assert failure.value.code == "TEST_PROTOCOL_INVALID"
+
+
 def test_inventory_digest_rejects_malformed_visible_fields_and_identity():
     """The canonical digest accepts only the complete visible public field shape."""
     invalid = (
