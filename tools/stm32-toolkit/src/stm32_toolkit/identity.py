@@ -14,7 +14,7 @@ def compute_workspace_id(logical_project_id: UUID, project_root: Path) -> str:
     """Derive a stable workspace identifier for one logical project clone."""
     canonical = str(canonical_project_root(project_root)).replace("\\", "/").casefold()
     value = f"{logical_project_id}\0{canonical}".encode("utf-8")
-    return sha256(value).hexdigest()[:24]
+    return sha256(value).hexdigest()
 
 
 def new_session_id() -> str:

@@ -348,8 +348,11 @@ def test_flash_derives_target_and_workspace_and_uses_modify_with_exact_pins(tmp_
     assert request.expected_elf_sha256 == ELF_SHA
     assert request.authorized is True
     assert recorder.events == ["supervisor.start", "operation", "client.close", "supervisor.stop"]
-    assert (data_root / "projects" / config.workspace_id / "sessions" / "flash-session").is_dir()
-    assert not (data_root / "projects" / config.workspace_id / "monitor").exists()
+    workspace_storage_key = compute_workspace_id(
+        UUID("12345678-1234-5678-1234-567812345678"), project
+    )[:24]
+    assert (data_root / "projects" / workspace_storage_key / "sessions" / "flash-session").is_dir()
+    assert not (data_root / "projects" / workspace_storage_key / "monitor").exists()
 
 
 @pytest.mark.parametrize("authorized", [False, "true", 1, None, [], {}])

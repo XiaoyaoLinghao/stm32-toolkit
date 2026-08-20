@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from hashlib import sha256
 from pathlib import Path
 import re
 
@@ -13,7 +12,6 @@ from stm32_toolkit.build.identity import (
     git_evidence,
     snapshot_project_inputs,
 )
-from stm32_toolkit.build.model import BuildError
 from stm32_toolkit.evidence import (
     EVIDENCE_CORRUPT,
     EVIDENCE_INVALID,
@@ -120,7 +118,9 @@ _TEST_CODE_MAP = {
 
 
 def _failure(operation: str, code: str) -> OperationResult[None]:
-    public_code = code if code in _PUBLIC_MESSAGES else "TEST_PROTOCOL_INVALID"
+    if code not in _PUBLIC_MESSAGES:
+        raise RuntimeError(f"unknown public workflow code: {code}")
+    public_code = code
     return OperationResult.failure(
         operation,
         public_code,
@@ -131,13 +131,6 @@ def _failure(operation: str, code: str) -> OperationResult[None]:
 
 def _project_failure(operation: str, error: BaseException) -> OperationResult[None]:
     code = getattr(error, "code", "PROJECT_NOT_CONFIGURED")
-    if code not in {
-        "PROJECT_NOT_CONFIGURED",
-        "PROJECT_JSON_INVALID",
-        "PROJECT_SCHEMA_INVALID",
-        "PROJECT_SCHEMA_VERSION_UNSUPPORTED",
-    }:
-        code = "PROJECT_NOT_CONFIGURED"
     return _failure(operation, code)
 
 
@@ -159,17 +152,6 @@ def _exception_result(operation: str, error: BaseException) -> OperationResult[N
         return _test_failure(operation, error)
     if isinstance(error, ProjectManifestError):
         return _project_failure(operation, error)
-    if isinstance(error, BuildError):
-        # Input/Git identity cannot be established for this application
-        # context; the public boundary intentionally does not expose build
-        # domain details or their paths.
-        return _failure(operation, "TEST_IDENTITY_MISMATCH")
-    if isinstance(error, (OSError, ValueError, TypeError)):
-        return _failure(operation, "PROJECT_NOT_CONFIGURED")
-    if isinstance(error, RuntimeError):
-        # A native execution failure without a lower-level typed reason is
-        # still a stable public test execution failure.
-        return _failure(operation, "TEST_EXECUTION_FAILED")
     raise error
 
 
@@ -180,7 +162,7 @@ def _configured_workspace(context: TestingWorkflowContext) -> tuple[object, Work
         model = _load_project_model(context.project_root)
     except ProjectManifestError:
         raise
-    except (AttributeError, OSError, TypeError, ValueError) as error:
+    except (OSError, ValueError) as error:
         raise _WorkflowFailure("PROJECT_NOT_CONFIGURED") from error
     if (
         getattr(model, "schema_version", None) != 3
@@ -196,7 +178,7 @@ def _configured_workspace(context: TestingWorkflowContext) -> tuple[object, Work
             context.session_id,
         )
         workspace.ensure()
-    except (AttributeError, OSError, TypeError, ValueError) as error:
+    except (OSError, ValueError) as error:
         raise _WorkflowFailure("PROJECT_NOT_CONFIGURED") from error
     return model, workspace
 
@@ -209,22 +191,17 @@ def _make_state(
     model, workspace = _configured_workspace(context)
     identity: EvidenceIdentityContext | None = None
     if with_identity:
-        try:
-            snapshot: InputSnapshot = _snapshot_project_inputs(model)
-            git: GitEvidence = _git_evidence(context.project_root)
-            identity = EvidenceIdentityContext(
-                workspace_id=_workspace_identity_id(workspace, model.logical_project_id),
-                project_id=str(model.logical_project_id),
-                session_id=workspace.session_id,
-                target_device=host_target_device(),
-                input_snapshot_sha256=snapshot.sha256,
-                git_commit=git.head,
-                git_dirty=git.dirty,
-            )
-        except (EvidenceValidationError, TestProtocolError, BuildError):
-            raise
-        except (AttributeError, OSError, TypeError, ValueError) as error:
-            raise _WorkflowFailure("PROJECT_NOT_CONFIGURED") from error
+        snapshot: InputSnapshot = _snapshot_project_inputs(model)
+        git: GitEvidence = _git_evidence(context.project_root)
+        identity = EvidenceIdentityContext(
+            workspace_id=workspace.workspace_id,
+            project_id=str(model.logical_project_id),
+            session_id=workspace.session_id,
+            target_device=host_target_device(),
+            input_snapshot_sha256=snapshot.sha256,
+            git_commit=git.head,
+            git_dirty=git.dirty,
+        )
     evidence_store = _evidence_store_factory(workspace.workspace_root / "evidence")
     return _WorkflowState(
         model=model,
@@ -234,22 +211,6 @@ def _make_state(
         evidence_store=evidence_store,
         results_root=workspace.session_root / "test-results",
     )
-
-
-def _workspace_identity_id(workspace: WorkspacePaths, logical_project_id: object) -> str:
-    """Return the complete identity digest for a managed workspace.
-
-    The existing path allocator retains a 24-character directory key.  The
-    Evidence identity schema uses complete SHA-256 identifiers, so recover the
-    same allocator input without changing the managed directory name.  A
-    complete workspace ID supplied by a future path implementation is retained
-    verbatim.
-    """
-    workspace_id = workspace.workspace_id
-    if _DIGEST.fullmatch(workspace_id) is not None:
-        return workspace_id
-    canonical = str(workspace.project_root).replace("\\", "/").casefold()
-    return sha256(f"{logical_project_id}\0{canonical}".encode("utf-8")).hexdigest()
 
 
 def _runner(state: _WorkflowState) -> object:

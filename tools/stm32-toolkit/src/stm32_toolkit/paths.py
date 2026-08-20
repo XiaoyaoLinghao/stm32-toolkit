@@ -36,6 +36,7 @@ class WorkspacePaths:
     project_root: Path
     data_root: Path
     workspace_id: str
+    workspace_storage_key: str
     session_id: str
     workspace_root: Path
     monitor_root: Path
@@ -56,12 +57,14 @@ class WorkspacePaths:
         canonical_data = data_root.expanduser().resolve(strict=False)
         resolved_session_id = require_safe_session_id(session_id if session_id is not None else new_session_id())
         workspace_id = compute_workspace_id(logical_project_id, canonical_project)
-        workspace_root = canonical_data / "projects" / workspace_id
+        workspace_storage_key = workspace_id[:24]
+        workspace_root = canonical_data / "projects" / workspace_storage_key
 
         return cls(
             project_root=canonical_project,
             data_root=canonical_data,
             workspace_id=workspace_id,
+            workspace_storage_key=workspace_storage_key,
             session_id=resolved_session_id,
             workspace_root=workspace_root,
             monitor_root=workspace_root / "monitor",

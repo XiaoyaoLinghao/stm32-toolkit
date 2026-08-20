@@ -187,14 +187,16 @@ def test_host_discover_run_and_show_compose_the_frozen_public_shapes(
     assert runners[0].calls == ["discover"]
     assert runners[1].calls == ["discover", "run"]
     assert identities[0].project_id == str(PROJECT_ID)
+    workspace = workflows.WorkspacePaths.from_roots(
+        context.data_root, context.project_root, PROJECT_ID, context.session_id
+    )
+    assert identities[0].workspace_id == workspace.workspace_id
+    assert len(identities[0].workspace_id) == 64
     assert identities[0].session_id == context.session_id
     assert identities[0].input_snapshot_sha256 == SNAPSHOT_SHA
     assert identities[0].git_commit == GIT_HEAD
     assert identities[0].git_dirty is False
 
-    workspace = workflows.WorkspacePaths.from_roots(
-        context.data_root, context.project_root, PROJECT_ID, context.session_id
-    )
     assert stores[0].root == workspace.workspace_root / "evidence"
     assert publishers[0].results_root == workspace.session_root / "test-results"
     assert (context.project_root / ".stm32-project.json").read_bytes() == b"project-before"
@@ -338,6 +340,18 @@ def test_unknown_cases_do_not_publish_and_typed_errors_use_fixed_projection(
     assert result.message == "Test execution failed."
     assert result.details == {}
 
+    class UnknownRunner(Runner):
+        def run(self, inventory: object, case_ids: tuple[str, ...]) -> _FakeManifest:
+            raise ProtocolError("TEST_UNKNOWN", r"secret C:\\Users\\victim\\private.txt")
+
+    monkeypatch.setattr(workflows, "_host_runner_factory", UnknownRunner)
+    with pytest.raises(RuntimeError):
+        workflows.host_test_run(
+            context,
+            inventory_digest=inventory.inventory_digest,
+            case_ids=("fails",),
+        )
+
 
 def test_evidence_typed_error_and_snapshot_error_do_not_leak_text(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
@@ -351,11 +365,8 @@ def test_evidence_typed_error_and_snapshot_error_do_not_leak_text(
             BuildError("BUILD_INPUT_INVALID", r"secret C:\\Users\\victim\\project", {})
         ),
     )
-    result = workflows.host_test_discover(context)
-    assert result.ok is False
-    assert result.code == "TEST_IDENTITY_MISMATCH"
-    assert result.message == "Test identity does not match."
-    assert result.details == {}
+    with pytest.raises(BuildError):
+        workflows.host_test_discover(context)
 
     _install_context_seams(monkeypatch, context.project_root)
 
@@ -392,6 +403,49 @@ def test_evidence_typed_error_and_snapshot_error_do_not_leak_text(
     assert result.code == "EVIDENCE_CORRUPT"
     assert result.message == "Evidence is corrupt."
     assert result.details == {}
+
+
+@pytest.mark.parametrize(
+    "error_factory",
+    [
+        lambda: ValueError(r"secret C:\\Users\\victim\\publisher"),
+        lambda: BuildError("BUILD_FAILED", r"secret C:\\Users\\victim\\publisher", {}),
+    ],
+)
+def test_publisher_programming_errors_propagate_without_result(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    error_factory,
+):
+    context = _context(tmp_path)
+    _install_context_seams(monkeypatch, context.project_root)
+
+    class Runner:
+        def __init__(self, **kwargs: object) -> None:
+            self.discovery_artifact = SimpleNamespace(to_dict=lambda: DISCOVERY)
+
+        def discover(self, config: object, identity: object) -> _FakeInventory:
+            return _FakeInventory()
+
+        def run(self, inventory: object, case_ids: tuple[str, ...]) -> _FakeManifest:
+            return _FakeManifest()
+
+    class Publisher:
+        def __init__(self, *args: object) -> None:
+            pass
+
+        def publish_host(self, *args: object, **kwargs: object) -> _FakePublished:
+            raise error_factory()
+
+    monkeypatch.setattr(workflows, "_host_runner_factory", Runner)
+    monkeypatch.setattr(workflows, "_publisher_factory", Publisher)
+
+    with pytest.raises((ValueError, BuildError)):
+        workflows.host_test_run(
+            context,
+            inventory_digest=_FakeInventory().inventory_digest,
+            case_ids=("fails",),
+        )
 
 
 def test_show_uses_only_authoritative_repository_projection(

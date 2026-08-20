@@ -119,7 +119,15 @@ def test_configured_context_reports_evidence_sections_without_build(
         },
         "details": {},
     }
-    assert (tmp_path.parent / "data" / "projects" / result.data["workspace"]["workspaceId"] / "sessions" / "session-a").is_dir()
+    workspace_id = result.data["workspace"]["workspaceId"]
+    assert (
+        tmp_path.parent
+        / "data"
+        / "projects"
+        / workspace_id[:24]
+        / "sessions"
+        / "session-a"
+    ).is_dir()
 
 
 def test_keil_context_stays_read_only_and_reports_inspection_capabilities(

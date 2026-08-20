@@ -37,7 +37,10 @@ def test_workspace_paths_are_namespaced(tmp_path: Path):
     paths = WorkspacePaths.from_roots(data, project, PROJECT_ID, "session-1")
     paths.ensure()
 
+    assert len(paths.workspace_id) == 64
+    assert paths.workspace_storage_key == paths.workspace_id[:24]
     assert paths.workspace_root.parent.name == "projects"
+    assert paths.workspace_root.name == paths.workspace_storage_key
     assert paths.session_root.parent.name == "sessions"
     assert paths.session_root.name == "session-1"
     assert all(
@@ -95,7 +98,7 @@ def test_workspace_paths_reject_data_root_component_redirect(tmp_path: Path):
 
     with pytest.raises(ValueError, match="outside plugin data root"):
         paths.ensure()
-    assert not (redirected / paths.workspace_id / "monitor").exists()
+    assert not (redirected / paths.workspace_storage_key / "monitor").exists()
 
 
 def test_workspace_paths_reject_redirect_into_another_workspace_without_writes(

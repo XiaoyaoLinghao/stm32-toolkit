@@ -12,7 +12,8 @@ def test_workspace_id_is_stable_for_same_root(tmp_path: Path):
     second = compute_workspace_id(PROJECT_ID, tmp_path / ".")
 
     assert first == second
-    assert len(first) == 24
+    assert len(first) == 64
+    assert first == first.lower()
 
 
 def test_workspace_id_changes_for_second_clone(tmp_path: Path):
