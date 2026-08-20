@@ -1,0 +1,201 @@
+import json
+from pathlib import Path
+
+import pytest
+
+from stm32_toolkit import cli
+from stm32_toolkit.result import OperationResult
+
+
+CONTEXT_ARGS = [
+    "--project",
+    "project-root",
+    "--data-root",
+    "data-root",
+    "--session-id",
+    "session-a",
+    "--json",
+]
+DIGEST = "a" * 64
+
+
+def parse(argv: list[str]):
+    return cli._build_parser().parse_args(argv)
+
+
+def _discover_argv() -> list[str]:
+    return ["test", "discover", "--mode", "host", *CONTEXT_ARGS]
+
+
+def _run_argv(*case_ids: str, digest: str = DIGEST) -> list[str]:
+    argv = [
+        "test",
+        "run",
+        "--mode",
+        "host",
+        "--inventory-digest",
+        digest,
+    ]
+    for case_id in case_ids:
+        argv.extend(["--case", case_id])
+    return [*argv, *CONTEXT_ARGS]
+
+
+def _show_argv(run_id: str = "run-1") -> list[str]:
+    return ["test", "show", run_id, *CONTEXT_ARGS]
+
+
+def test_testing_parser_exposes_fixed_operations_and_run_shape() -> None:
+    assert parse(_discover_argv()).operation == "test.host.discover"
+
+    run = parse(_run_argv("fails"))
+    assert run.operation == "test.host.run"
+    assert run.case_ids == ("fails",)
+
+    show = parse(_show_argv())
+    assert show.operation == "test.show"
+    assert show.run_id == "run-1"
+
+
+def test_discover_dispatches_exactly_once_and_writes_one_json_result(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    calls: list[object] = []
+    result = OperationResult.success("test.host.discover", {"inventory": {"caseIds": []}})
+
+    def discover(context: object) -> OperationResult[dict[str, object]]:
+        calls.append(context)
+        return result
+
+    monkeypatch.setattr(cli, "host_test_discover", discover, raising=False)
+
+    assert cli.main(_discover_argv()) == 0
+
+    captured = capsys.readouterr()
+    assert captured.out == json.dumps(result.to_dict(), ensure_ascii=False, indent=2) + "\n"
+    assert json.loads(captured.out) == result.to_dict()
+    assert captured.err == ""
+    assert len(calls) == 1
+    context = calls[0]
+    assert context.project_root == Path("project-root")
+    assert context.data_root == Path("data-root")
+    assert context.session_id == "session-a"
+
+
+def test_run_dispatches_exactly_once_with_digest_and_tuple_cases(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    calls: list[tuple[object, str, tuple[str, ...]]] = []
+    result = OperationResult.success("test.host.run", {"run": {"state": "failed"}})
+
+    def run(
+        context: object, *, inventory_digest: str, case_ids: tuple[str, ...]
+    ) -> OperationResult[dict[str, object]]:
+        calls.append((context, inventory_digest, case_ids))
+        return result
+
+    monkeypatch.setattr(cli, "host_test_run", run, raising=False)
+
+    assert cli.main(_run_argv("fails", "other")) == 0
+
+    captured = capsys.readouterr()
+    assert json.loads(captured.out) == result.to_dict()
+    assert captured.err == ""
+    assert len(calls) == 1
+    context, digest, case_ids = calls[0]
+    assert context.project_root == Path("project-root")
+    assert context.data_root == Path("data-root")
+    assert context.session_id == "session-a"
+    assert digest == DIGEST
+    assert case_ids == ("fails", "other")
+
+
+def test_show_dispatches_exactly_once_with_run_id(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    calls: list[tuple[object, str]] = []
+    result = OperationResult.success("test.show", {"run": {"run_id": "run-1"}})
+
+    def show(context: object, *, run_id: str) -> OperationResult[dict[str, object]]:
+        calls.append((context, run_id))
+        return result
+
+    monkeypatch.setattr(cli, "test_show", show, raising=False)
+
+    assert cli.main(_show_argv()) == 0
+
+    captured = capsys.readouterr()
+    assert json.loads(captured.out) == result.to_dict()
+    assert captured.err == ""
+    assert len(calls) == 1
+    context, run_id = calls[0]
+    assert context.project_root == Path("project-root")
+    assert context.data_root == Path("data-root")
+    assert context.session_id == "session-a"
+    assert run_id == "run-1"
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["test", "discover", *CONTEXT_ARGS],
+        ["test", "discover", "--mode", "target", *CONTEXT_ARGS],
+        ["test", "discover", "--mode", "host", "--unknown", "value", *CONTEXT_ARGS],
+        _run_argv("fails", "fails"),
+        _run_argv("fails", digest="not-a-digest"),
+        ["test", "run", "--mode", "host", "--inventory-digest", DIGEST, *CONTEXT_ARGS],
+    ],
+)
+def test_invalid_testing_grammar_rejects_before_workflow_calls(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    argv: list[str],
+) -> None:
+    calls: list[str] = []
+    for name in ("host_test_discover", "host_test_run", "test_show"):
+        monkeypatch.setattr(
+            cli,
+            name,
+            lambda *args, _name=name, **kwargs: calls.append(_name),
+            raising=False,
+        )
+
+    assert cli.main(argv) == 2
+
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err.endswith("invalid arguments\n")
+    assert calls == []
+
+
+def test_testing_failure_result_keeps_operation_result_json_projection(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    result = OperationResult.failure(
+        "test.show",
+        "EVIDENCE_CORRUPT",
+        "Evidence is corrupt.",
+        {},
+    )
+    monkeypatch.setattr(cli, "test_show", lambda *args, **kwargs: result, raising=False)
+
+    assert cli.main(_show_argv()) == 2
+
+    captured = capsys.readouterr()
+    assert captured.out == json.dumps(result.to_dict(), ensure_ascii=False, indent=2) + "\n"
+    assert captured.err == ""
+
+
+def test_unexpected_testing_error_uses_existing_non_hardware_stderr_policy(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    def explode(*args: object, **kwargs: object) -> object:
+        raise RuntimeError("testing adapter exploded")
+
+    monkeypatch.setattr(cli, "host_test_run", explode, raising=False)
+
+    assert cli.main(_run_argv("fails")) == 1
+
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == "stm32-toolkit: internal error: testing adapter exploded\n"

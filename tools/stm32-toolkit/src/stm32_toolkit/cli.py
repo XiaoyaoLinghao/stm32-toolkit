@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -28,6 +29,12 @@ from stm32_toolkit.hardware_workflows import (
     variable_sample_workflow,
 )
 from stm32_toolkit.result import OperationResult
+from stm32_toolkit.testing_workflows import (
+    TestingWorkflowContext,
+    host_test_discover,
+    host_test_run,
+    test_show,
+)
 from stm32_toolkit.workflows import (
     build_firmware_workflow,
     configure_project_workflow,
@@ -39,6 +46,7 @@ from stm32_toolkit.workflows import (
 _VERSION = "0.5.0"
 _STDERR_LIMIT = 500
 _HARDWARE_COMMANDS = frozenset({"probe", "flash", "debug", "read", "fault"})
+_TEST_DIGEST = re.compile(r"^[0-9a-f]{64}$")
 
 
 class _SafeArgumentParser(argparse.ArgumentParser):
@@ -46,6 +54,20 @@ class _SafeArgumentParser(argparse.ArgumentParser):
 
     def error(self, message: str) -> None:
         self.exit(2, f"{self.prog}: invalid arguments\n")
+
+
+class _UniqueCaseAction(argparse.Action):
+    def __call__(
+        self,
+        parser: argparse.ArgumentParser,
+        namespace: argparse.Namespace,
+        values: str,
+        option_string: str | None = None,
+    ) -> None:
+        current = tuple(getattr(namespace, self.dest, ()) or ())
+        if values in current:
+            parser.error("duplicate test case")
+        setattr(namespace, self.dest, (*current, values))
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -197,6 +219,31 @@ def _build_parser() -> argparse.ArgumentParser:
     fault = commands.add_parser("fault")
     _add_hardware_context(fault, probe=True, pins=True)
 
+    test = commands.add_parser("test")
+    test_commands = test.add_subparsers(dest="test_command", required=True)
+
+    discover = test_commands.add_parser("discover")
+    discover.set_defaults(operation="test.host.discover")
+    _add_testing_context(discover)
+    discover.add_argument("--mode", choices=["host"], required=True)
+
+    run = test_commands.add_parser("run")
+    run.set_defaults(operation="test.host.run")
+    _add_testing_context(run)
+    run.add_argument("--mode", choices=["host"], required=True)
+    run.add_argument("--inventory-digest", required=True, type=_testing_digest)
+    run.add_argument(
+        "--case",
+        dest="case_ids",
+        action=_UniqueCaseAction,
+        required=True,
+    )
+
+    show = test_commands.add_parser("show")
+    show.set_defaults(operation="test.show")
+    _add_testing_context(show)
+    show.add_argument("run_id")
+
     return parser
 
 
@@ -237,6 +284,25 @@ def _add_hardware_context(
     parser.add_argument("--json", action="store_true")
 
 
+def _add_testing_context(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--project",
+        "--project-root",
+        dest="project_root",
+        required=True,
+        type=Path,
+    )
+    parser.add_argument("--data-root", required=True, type=Path)
+    parser.add_argument("--session-id", required=True)
+    parser.add_argument("--json", action="store_true", required=True)
+
+
+def _testing_digest(value: str) -> str:
+    if _TEST_DIGEST.fullmatch(value) is None:
+        raise argparse.ArgumentTypeError("invalid inventory digest")
+    return value
+
+
 def _bounded_int(minimum: int, maximum: int):
     def convert(value: str) -> int:
         try:
@@ -262,6 +328,8 @@ def _add_dry_run_apply(parser: argparse.ArgumentParser) -> None:
 
 def _validate_cli_modes(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
     """Reject grammar violations that argparse cannot express alone."""
+    if args.command == "test":
+        return
     if args.command == "read" and args.read_command == "sample":
         if args.count is None and args.duration_ms is None:
             parser.error("sample requires --count or --duration-ms")
@@ -399,6 +467,21 @@ def _operation_result(
             plan_id=args.plan_id,
             authorized=args.authorized,
         )
+    if args.command == "test":
+        context = TestingWorkflowContext(
+            project_root=project_root,
+            data_root=args.data_root,
+            session_id=args.session_id,
+        )
+        if args.test_command == "discover":
+            return host_test_discover(context)
+        if args.test_command == "run":
+            return host_test_run(
+                context,
+                inventory_digest=args.inventory_digest,
+                case_ids=args.case_ids,
+            )
+        return test_show(context, run_id=args.run_id)
     if args.command == "build":
         # CLI invocation is the user's explicit process-level action.
         return build_firmware_workflow(
