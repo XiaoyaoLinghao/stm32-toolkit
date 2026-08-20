@@ -5,12 +5,15 @@ import asyncio
 import json
 import re
 import sys
+import unicodedata
 from pathlib import Path
 
 from stm32_toolkit.context import build_project_context
 from stm32_toolkit.detection import detect_project
 from stm32_toolkit.diagnostic_workflows import (
     DiagnosticWorkflowContext,
+    diagnostic_add_hypothesis,
+    diagnostic_assess_hypothesis,
     diagnostic_begin,
     diagnostic_show,
     diagnostic_start,
@@ -56,6 +59,7 @@ _TEST_DIGEST = re.compile(r"^[0-9a-f]{64}$")
 _DIAGNOSTIC_OPERATION_ID = re.compile(r"^[a-z0-9][a-z0-9._-]{0,127}$")
 _DIAGNOSTIC_SESSION_ID = re.compile(r"^[0-9a-f]{32}$")
 _DIAGNOSTIC_RUN_ID = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
+_DIAGNOSTIC_PLAN_ID = re.compile(r"^[0-9a-f]{64}$")
 _DIAGNOSTIC_ACTORS = ("user", "tool", "ai-client")
 _DIAGNOSTIC_MAX_BYTES = 64 * 1024
 
@@ -296,6 +300,63 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     _add_testing_context(diagnostic_begin)
 
+    hypothesis = diagnose_commands.add_parser("hypothesis")
+    hypothesis_commands = hypothesis.add_subparsers(
+        dest="hypothesis_command", required=True
+    )
+
+    hypothesis_add = hypothesis_commands.add_parser("add")
+    hypothesis_add.set_defaults(operation="diagnostic.hypothesis.add")
+    hypothesis_add.add_argument(
+        "diagnostic_session_id", type=_diagnostic_session_id
+    )
+    hypothesis_add.add_argument(
+        "--operation-id", required=True, type=_diagnostic_operation_id
+    )
+    hypothesis_add.add_argument(
+        "--expected-revision",
+        required=True,
+        type=_bounded_int(0, 10_000),
+    )
+    hypothesis_add.add_argument("--statement", required=True, type=_diagnostic_text)
+    hypothesis_add.add_argument(
+        "--actor", choices=_DIAGNOSTIC_ACTORS, default="user"
+    )
+    _add_testing_context(hypothesis_add)
+
+    hypothesis_assess = hypothesis_commands.add_parser("assess")
+    hypothesis_assess.set_defaults(operation="diagnostic.hypothesis.assess")
+    hypothesis_assess.add_argument(
+        "diagnostic_session_id", type=_diagnostic_session_id
+    )
+    hypothesis_assess.add_argument(
+        "--operation-id", required=True, type=_diagnostic_operation_id
+    )
+    hypothesis_assess.add_argument(
+        "--expected-revision",
+        required=True,
+        type=_bounded_int(0, 10_000),
+    )
+    hypothesis_assess.add_argument(
+        "--hypothesis-id", required=True, type=_diagnostic_session_id
+    )
+    hypothesis_assess.add_argument(
+        "--plan-id", required=True, type=_diagnostic_plan_id
+    )
+    hypothesis_assess.add_argument(
+        "--step-id", required=True, type=_diagnostic_operation_id
+    )
+    hypothesis_assess.add_argument(
+        "--polarity", required=True, choices=["supports", "refutes"]
+    )
+    hypothesis_assess.add_argument(
+        "--rationale", required=True, type=_diagnostic_text
+    )
+    hypothesis_assess.add_argument(
+        "--actor", choices=_DIAGNOSTIC_ACTORS, default="user"
+    )
+    _add_testing_context(hypothesis_assess)
+
     return parser
 
 
@@ -374,6 +435,24 @@ def _diagnostic_run_id(value: str) -> str:
         within_limit = False
     if not within_limit or _DIAGNOSTIC_RUN_ID.fullmatch(value) is None:
         raise argparse.ArgumentTypeError("invalid failed test run id")
+    return value
+
+
+def _diagnostic_plan_id(value: str) -> str:
+    if _DIAGNOSTIC_PLAN_ID.fullmatch(value) is None:
+        raise argparse.ArgumentTypeError("invalid diagnostic plan id")
+    return value
+
+
+def _diagnostic_text(value: str) -> str:
+    if not value or unicodedata.normalize("NFC", value) != value:
+        raise argparse.ArgumentTypeError("invalid diagnostic text")
+    try:
+        within_limit = len(value.encode("utf-8")) <= _DIAGNOSTIC_MAX_BYTES
+    except UnicodeEncodeError:
+        within_limit = False
+    if not within_limit:
+        raise argparse.ArgumentTypeError("invalid diagnostic text")
     return value
 
 
@@ -572,11 +651,33 @@ def _operation_result(
                 context,
                 diagnostic_session_id=args.diagnostic_session_id,
             )
-        return diagnostic_begin(
+        if args.diagnose_command == "begin":
+            return diagnostic_begin(
+                context,
+                operation_id=args.operation_id,
+                diagnostic_session_id=args.diagnostic_session_id,
+                expected_revision=args.expected_revision,
+                actor=args.actor,
+            )
+        if args.hypothesis_command == "add":
+            return diagnostic_add_hypothesis(
+                context,
+                operation_id=args.operation_id,
+                diagnostic_session_id=args.diagnostic_session_id,
+                expected_revision=args.expected_revision,
+                statement=args.statement,
+                actor=args.actor,
+            )
+        return diagnostic_assess_hypothesis(
             context,
             operation_id=args.operation_id,
             diagnostic_session_id=args.diagnostic_session_id,
             expected_revision=args.expected_revision,
+            hypothesis_id=args.hypothesis_id,
+            plan_id=args.plan_id,
+            step_id=args.step_id,
+            polarity=args.polarity,
+            rationale=args.rationale,
             actor=args.actor,
         )
     if args.command == "build":
