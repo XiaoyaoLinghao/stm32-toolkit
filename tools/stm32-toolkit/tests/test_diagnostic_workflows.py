@@ -13,7 +13,15 @@ from uuid import UUID
 import pytest
 
 import stm32_toolkit.diagnostic_workflows as workflow_module
-from stm32_toolkit.diagnostics import DiagnosticSession, DiagnosticStore, Hypothesis, reduce_event
+from stm32_toolkit.diagnostics import (
+    DiagnosticSession,
+    DiagnosticStore,
+    Hypothesis,
+    ObservationPlan,
+    ObservationStep,
+    calculate_plan_digest,
+    reduce_event,
+)
 from stm32_toolkit.evidence import EVIDENCE_CORRUPT, EvidenceIdentity, EvidenceValidationError
 from stm32_toolkit.evidence.store import EvidenceStore
 from stm32_toolkit.paths import WorkspacePaths
@@ -160,6 +168,45 @@ def _fresh_context(context: DiagnosticWorkflowContext) -> DiagnosticWorkflowCont
     )
 
 
+def _begin_plan_session(
+    context: DiagnosticWorkflowContext,
+    published: object,
+    *,
+    prefix: str,
+) -> str:
+    started = diagnostic_start(
+        _fresh_context(context),
+        operation_id=f"{prefix}-start",
+        failed_test_run_id=published.manifest.run_id,
+    )
+    diagnostic_session_id = started.to_dict()["data"]["session"]["diagnostic_session_id"]
+    begun = diagnostic_begin(
+        _fresh_context(context),
+        operation_id=f"{prefix}-begin",
+        diagnostic_session_id=diagnostic_session_id,
+        expected_revision=1,
+    )
+    assert begun.ok is True
+    return diagnostic_session_id
+
+
+def _failed_case_plan_steps() -> list[dict[str, object]]:
+    return [
+        {
+            "step_id": "failed-state",
+            "selector": {"kind": "case-state", "case_id": "case-1"},
+            "expected_value": "failed",
+            "purpose": "bind the failed case state",
+        },
+        {
+            "step_id": "failed-count",
+            "selector": {"kind": "case-count", "state": "failed"},
+            "expected_value": 1,
+            "purpose": "bind the failed case count",
+        },
+    ]
+
+
 def test_failed_host_run_start_show_begin_survives_fresh_workflow_objects(task_tmp: Path) -> None:
     context, published, _workspace = _make_run(task_tmp)
 
@@ -272,6 +319,725 @@ def test_investigating_session_adds_competing_hypotheses_in_event_order(
         first_hypothesis["hypothesis_id"],
         second_hypothesis["hypothesis_id"],
     ]
+
+
+def test_investigating_session_freezes_failed_run_observation_plan(
+    task_tmp: Path,
+) -> None:
+    context, published, workspace = _make_run(task_tmp)
+    started = diagnostic_start(
+        _fresh_context(context),
+        operation_id="plan-start",
+        failed_test_run_id=published.manifest.run_id,
+    )
+    diagnostic_session_id = started.to_dict()["data"]["session"]["diagnostic_session_id"]
+    diagnostic_begin(
+        _fresh_context(context),
+        operation_id="plan-begin",
+        diagnostic_session_id=diagnostic_session_id,
+        expected_revision=1,
+    )
+    result = workflow_module.diagnostic_add_plan(
+        _fresh_context(context),
+        operation_id="plan-add",
+        diagnostic_session_id=diagnostic_session_id,
+        expected_revision=2,
+        steps=_failed_case_plan_steps(),
+    )
+    assert result.ok is True
+    assert result.operation == "diagnostic.plan.add"
+    public = result.to_dict()
+    assert set(public["data"]) == {"session", "observation_plan"}
+    plan = public["data"]["observation_plan"]
+    assert set(plan) == {
+        "plan_id",
+        "diagnostic_session_id",
+        "created_revision",
+        "steps",
+        "digest",
+    }
+    assert plan["diagnostic_session_id"] == diagnostic_session_id
+    assert plan["created_revision"] == 3
+    assert plan["steps"] == _failed_case_plan_steps()
+    expected_digest = calculate_plan_digest(
+        {
+            "diagnostic_session_id": diagnostic_session_id,
+            "created_revision": 3,
+            "steps": _failed_case_plan_steps(),
+        }
+    )
+    assert plan["plan_id"] == expected_digest
+    assert plan["digest"] == expected_digest
+    assert public["data"]["session"]["revision"] == 3
+    assert public["data"]["session"]["observation_plans"] == [plan]
+    event = json.loads(
+        (
+            workspace.diagnostics_root
+            / "sessions"
+            / diagnostic_session_id
+            / "events"
+            / "00000002.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert event["event_type"] == "observation.plan_added"
+    assert event["payload"] == {
+        "request": {"steps": _failed_case_plan_steps()},
+        "result": {"observation_plan": plan},
+    }
+
+    encoded = json.dumps(public, sort_keys=True)
+    assert '"event":' not in encoded
+    assert '"appended":' not in encoded
+    assert '"workspace_root":' not in encoded
+    assert '"stdout":' not in encoded
+    public["data"]["observation_plan"]["steps"][0]["purpose"] = "mutated"
+    public["data"]["session"]["observation_plans"][0]["steps"][0]["purpose"] = "mutated"
+    assert result.to_dict()["data"]["observation_plan"]["steps"][0]["purpose"] == "bind the failed case state"
+    assert (
+        result.to_dict()["data"]["session"]["observation_plans"][0]["steps"][0]["purpose"]
+        == "bind the failed case state"
+    )
+
+
+def test_plan_resolves_run_state_and_does_not_compare_expected_value(
+    task_tmp: Path,
+) -> None:
+    context, published, _workspace = _make_run(task_tmp)
+    diagnostic_session_id = _begin_plan_session(context, published, prefix="run-state-plan")
+    result = workflow_module.diagnostic_add_plan(
+        _fresh_context(context),
+        operation_id="run-state-plan-add",
+        diagnostic_session_id=diagnostic_session_id,
+        expected_revision=2,
+        steps=[
+            {
+                "step_id": "run-state",
+                "selector": {"kind": "run-state"},
+                "expected_value": "passed",
+                "purpose": "compare the original run state later",
+            }
+        ],
+    )
+    assert result.ok is True
+    assert result.to_dict()["data"]["observation_plan"]["steps"][0]["expected_value"] == "passed"
+
+
+def test_plan_retry_returns_accepted_plan_after_session_advances(
+    task_tmp: Path,
+) -> None:
+    context, published, workspace = _make_run(task_tmp)
+    diagnostic_session_id = _begin_plan_session(context, published, prefix="retry-plan")
+    steps = _failed_case_plan_steps()
+    first = workflow_module.diagnostic_add_plan(
+        _fresh_context(context),
+        operation_id="retry-plan-add",
+        diagnostic_session_id=diagnostic_session_id,
+        expected_revision=2,
+        steps=steps,
+    )
+    first_plan = first.to_dict()["data"]["observation_plan"]
+    advanced = workflow_module.diagnostic_add_hypothesis(
+        _fresh_context(context),
+        operation_id="retry-plan-advance",
+        diagnostic_session_id=diagnostic_session_id,
+        expected_revision=3,
+        statement="the failed case remains the authoritative signal",
+    )
+    retry = workflow_module.diagnostic_add_plan(
+        _fresh_context(context),
+        operation_id="retry-plan-add",
+        diagnostic_session_id=diagnostic_session_id,
+        expected_revision=3,
+        steps=steps,
+    )
+    assert retry.ok is True
+    assert retry.to_dict()["data"]["observation_plan"] == first_plan
+    assert retry.to_dict()["data"]["session"] == advanced.to_dict()["data"]["session"]
+
+    conflicting_steps = [dict(item) for item in steps]
+    conflicting_steps[0] = {**conflicting_steps[0], "purpose": "different intent"}
+    conflict = workflow_module.diagnostic_add_plan(
+        _fresh_context(context),
+        operation_id="retry-plan-add",
+        diagnostic_session_id=diagnostic_session_id,
+        expected_revision=4,
+        steps=conflicting_steps,
+    )
+    assert conflict.ok is False
+    assert conflict.code == "DIAGNOSTIC_OPERATION_CONFLICT"
+    actor_conflict = workflow_module.diagnostic_add_plan(
+        _fresh_context(context),
+        operation_id="retry-plan-add",
+        diagnostic_session_id=diagnostic_session_id,
+        expected_revision=4,
+        steps=steps,
+        actor="tool",
+    )
+    assert actor_conflict.ok is False
+    assert actor_conflict.code == "DIAGNOSTIC_OPERATION_CONFLICT"
+
+    before = sorted(
+        path.name
+        for path in (
+            workspace.diagnostics_root / "sessions" / diagnostic_session_id / "events"
+        ).iterdir()
+    )
+    stale = workflow_module.diagnostic_add_plan(
+        _fresh_context(context),
+        operation_id="retry-plan-stale",
+        diagnostic_session_id=diagnostic_session_id,
+        expected_revision=3,
+        steps=steps,
+    )
+    assert stale.ok is False
+    assert stale.code == "DIAGNOSTIC_REVISION_CONFLICT"
+    assert sorted(
+        path.name
+        for path in (
+            workspace.diagnostics_root / "sessions" / diagnostic_session_id / "events"
+        ).iterdir()
+    ) == before
+
+
+@pytest.mark.parametrize(
+    ("steps", "code"),
+    [
+        pytest.param([], "DIAGNOSTIC_PLAN_INVALID", id="empty"),
+        pytest.param((), "DIAGNOSTIC_INVALID_EVENT", id="tuple"),
+        pytest.param(
+            [
+                {
+                    "step_id": "unknown-selector",
+                    "selector": {"kind": "unknown"},
+                    "expected_value": "failed",
+                    "purpose": "invalid selector",
+                }
+            ],
+            "DIAGNOSTIC_PLAN_INVALID",
+            id="unknown-selector",
+        ),
+        pytest.param(
+            [
+                {
+                    "step_id": "extra-selector",
+                    "selector": {"kind": "run-state", "extra": True},
+                    "expected_value": "failed",
+                    "purpose": "extra selector field",
+                }
+            ],
+            "DIAGNOSTIC_INVALID_EVENT",
+            id="extra-selector-field",
+        ),
+        pytest.param(
+            [
+                {
+                    "step_id": "extra-step",
+                    "selector": {"kind": "run-state"},
+                    "expected_value": "failed",
+                    "purpose": "extra step field",
+                    "unexpected": True,
+                }
+            ],
+            "DIAGNOSTIC_INVALID_EVENT",
+            id="extra-step-field",
+        ),
+        pytest.param(
+            [
+                {
+                    "step_id": "duplicate",
+                    "selector": {"kind": "run-state"},
+                    "expected_value": "failed",
+                    "purpose": "first duplicate",
+                },
+                {
+                    "step_id": "duplicate",
+                    "selector": {"kind": "case-count", "state": "failed"},
+                    "expected_value": 1,
+                    "purpose": "second duplicate",
+                },
+            ],
+            "DIAGNOSTIC_PLAN_INVALID",
+            id="duplicate-step",
+        ),
+        pytest.param(
+            [
+                {
+                    "step_id": "missing-case",
+                    "selector": {"kind": "case-state", "case_id": "missing"},
+                    "expected_value": "failed",
+                    "purpose": "missing case",
+                }
+            ],
+            "DIAGNOSTIC_PLAN_INVALID",
+            id="missing-case",
+        ),
+        pytest.param(
+            [
+                {
+                    "step_id": "wrong-run-value",
+                    "selector": {"kind": "run-state"},
+                    "expected_value": 1,
+                    "purpose": "wrong expected type",
+                }
+            ],
+            "DIAGNOSTIC_PLAN_INVALID",
+            id="wrong-run-value",
+        ),
+        pytest.param(
+            [
+                {
+                    "step_id": "wrong-count-value",
+                    "selector": {"kind": "case-count", "state": "failed"},
+                    "expected_value": "1",
+                    "purpose": "wrong expected type",
+                }
+            ],
+            "DIAGNOSTIC_PLAN_INVALID",
+            id="wrong-count-value",
+        ),
+    ],
+)
+def test_plan_rejects_invalid_steps_without_append(
+    task_tmp: Path, steps: object, code: str
+) -> None:
+    context, published, workspace = _make_run(task_tmp)
+    diagnostic_session_id = _begin_plan_session(context, published, prefix="invalid-plan")
+    events_dir = workspace.diagnostics_root / "sessions" / diagnostic_session_id / "events"
+    before = sorted(path.name for path in events_dir.iterdir())
+    result = workflow_module.diagnostic_add_plan(
+        _fresh_context(context),
+        operation_id="invalid-plan-add",
+        diagnostic_session_id=diagnostic_session_id,
+        expected_revision=2,
+        steps=steps,  # type: ignore[arg-type]
+    )
+    assert result.ok is False
+    assert result.code == code
+    assert result.details == {}
+    assert sorted(path.name for path in events_dir.iterdir()) == before
+
+
+def test_plan_rejects_more_than_64_steps_without_append(task_tmp: Path) -> None:
+    context, published, workspace = _make_run(task_tmp)
+    diagnostic_session_id = _begin_plan_session(context, published, prefix="step-limit-plan")
+    steps = [
+        {
+            "step_id": f"step-{index}",
+            "selector": {"kind": "run-state"},
+            "expected_value": "failed",
+            "purpose": "bounded plan step",
+        }
+        for index in range(65)
+    ]
+    result = workflow_module.diagnostic_add_plan(
+        _fresh_context(context),
+        operation_id="step-limit-plan-add",
+        diagnostic_session_id=diagnostic_session_id,
+        expected_revision=2,
+        steps=steps,
+    )
+    assert result.ok is False
+    assert result.code == "DIAGNOSTIC_LIMIT_EXCEEDED"
+    assert len(
+        tuple(
+            (
+                workspace.diagnostics_root
+                / "sessions"
+                / diagnostic_session_id
+                / "events"
+            ).iterdir()
+        )
+    ) == 2
+
+
+@pytest.mark.parametrize("failure", ["test-run", "evidence"])
+def test_plan_maps_missing_or_damaged_test_run_to_evidence_missing(
+    task_tmp: Path, monkeypatch: pytest.MonkeyPatch, failure: str
+) -> None:
+    context, published, workspace = _make_run(task_tmp)
+    diagnostic_session_id = _begin_plan_session(context, published, prefix=f"missing-plan-{failure}")
+
+    class BrokenRepository:
+        def load(self, _run_id: str) -> object:
+            if failure == "test-run":
+                raise ProtocolError("TEST_PROTOCOL_INVALID", "damaged test run")
+            raise EvidenceValidationError(EVIDENCE_CORRUPT, "damaged evidence")
+
+    monkeypatch.setattr(workflow_module, "_repository_factory", lambda _evidence: BrokenRepository())
+    events_dir = workspace.diagnostics_root / "sessions" / diagnostic_session_id / "events"
+    result = workflow_module.diagnostic_add_plan(
+        _fresh_context(context),
+        operation_id=f"missing-plan-add-{failure}",
+        diagnostic_session_id=diagnostic_session_id,
+        expected_revision=2,
+        steps=_failed_case_plan_steps(),
+    )
+    assert result.ok is False
+    assert result.code == "DIAGNOSTIC_EVIDENCE_MISSING"
+    assert result.details == {}
+    assert sorted(path.name for path in events_dir.iterdir()) == [
+        "00000000.json",
+        "00000001.json",
+    ]
+
+
+def test_unexpected_plan_repository_failure_propagates(
+    task_tmp: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    context, published, _workspace = _make_run(task_tmp)
+    diagnostic_session_id = _begin_plan_session(context, published, prefix="unexpected-load-plan")
+
+    class Repository:
+        def __init__(self, _store: EvidenceStore) -> None:
+            pass
+
+        def load(self, _run_id: str) -> object:
+            raise RuntimeError("unexpected plan repository failure")
+
+    monkeypatch.setattr(workflow_module, "_repository_factory", Repository)
+    with pytest.raises(RuntimeError, match="unexpected plan repository failure"):
+        workflow_module.diagnostic_add_plan(
+            _fresh_context(context),
+            operation_id="unexpected-load-plan-add",
+            diagnostic_session_id=diagnostic_session_id,
+            expected_revision=2,
+            steps=_failed_case_plan_steps(),
+        )
+
+
+def test_plan_maps_changed_evidence_id_to_identity_mismatch(
+    task_tmp: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    context, published, workspace = _make_run(task_tmp)
+    diagnostic_session_id = _begin_plan_session(context, published, prefix="changed-evidence-plan")
+
+    class ChangedEvidenceRepository:
+        def load(self, _run_id: str) -> object:
+            return SimpleNamespace(
+                manifest=published.manifest,
+                envelope=SimpleNamespace(
+                    evidence_id="f" * 64,
+                    identity=published.envelope.identity,
+                ),
+            )
+
+    monkeypatch.setattr(
+        workflow_module,
+        "_repository_factory",
+        lambda _evidence: ChangedEvidenceRepository(),
+    )
+    result = workflow_module.diagnostic_add_plan(
+        _fresh_context(context),
+        operation_id="changed-evidence-plan-add",
+        diagnostic_session_id=diagnostic_session_id,
+        expected_revision=2,
+        steps=_failed_case_plan_steps(),
+    )
+    assert result.ok is False
+    assert result.code == "DIAGNOSTIC_IDENTITY_MISMATCH"
+    assert result.details == {}
+    assert len(
+        tuple(
+            (
+                workspace.diagnostics_root
+                / "sessions"
+                / diagnostic_session_id
+                / "events"
+            ).iterdir()
+        )
+    ) == 2
+
+
+def test_plan_maps_changed_test_run_identity_to_identity_mismatch(
+    task_tmp: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    context, published, workspace = _make_run(task_tmp)
+    diagnostic_session_id = _begin_plan_session(context, published, prefix="changed-identity-plan")
+    changed_identity = replace(published.manifest.identity, build_id="f" * 64)
+
+    class ChangedIdentityRepository:
+        def load(self, _run_id: str) -> object:
+            return SimpleNamespace(
+                manifest=replace(published.manifest, identity=changed_identity),
+                envelope=SimpleNamespace(
+                    evidence_id=str(published.envelope.evidence_id),
+                    identity=changed_identity,
+                ),
+            )
+
+    monkeypatch.setattr(
+        workflow_module,
+        "_repository_factory",
+        lambda _evidence: ChangedIdentityRepository(),
+    )
+    result = workflow_module.diagnostic_add_plan(
+        _fresh_context(context),
+        operation_id="changed-identity-plan-add",
+        diagnostic_session_id=diagnostic_session_id,
+        expected_revision=2,
+        steps=_failed_case_plan_steps(),
+    )
+    assert result.ok is False
+    assert result.code == "DIAGNOSTIC_IDENTITY_MISMATCH"
+    assert result.details == {}
+    assert len(
+        tuple(
+            (
+                workspace.diagnostics_root
+                / "sessions"
+                / diagnostic_session_id
+                / "events"
+            ).iterdir()
+        )
+    ) == 2
+
+
+def test_plan_rejects_nonfailed_test_run_before_append(
+    task_tmp: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    context, published, workspace = _make_run(task_tmp)
+    diagnostic_session_id = _begin_plan_session(context, published, prefix="wrong-state-plan")
+
+    class WrongStateRepository:
+        def load(self, _run_id: str) -> object:
+            return SimpleNamespace(
+                manifest=replace(published.manifest, mode="target"),
+                envelope=published.envelope,
+            )
+
+    monkeypatch.setattr(
+        workflow_module,
+        "_repository_factory",
+        lambda _evidence: WrongStateRepository(),
+    )
+    result = workflow_module.diagnostic_add_plan(
+        _fresh_context(context),
+        operation_id="wrong-state-plan-add",
+        diagnostic_session_id=diagnostic_session_id,
+        expected_revision=2,
+        steps=_failed_case_plan_steps(),
+    )
+    assert result.ok is False
+    assert result.code == "DIAGNOSTIC_INVALID_EVENT"
+    assert len(
+        tuple(
+            (
+                workspace.diagnostics_root
+                / "sessions"
+                / diagnostic_session_id
+                / "events"
+            ).iterdir()
+        )
+    ) == 2
+
+
+def test_plan_rejects_open_session_without_append(task_tmp: Path) -> None:
+    context, published, workspace = _make_run(task_tmp)
+    started = diagnostic_start(
+        _fresh_context(context),
+        operation_id="open-plan-start",
+        failed_test_run_id=published.manifest.run_id,
+    )
+    diagnostic_session_id = started.to_dict()["data"]["session"]["diagnostic_session_id"]
+    result = workflow_module.diagnostic_add_plan(
+        _fresh_context(context),
+        operation_id="open-plan-add",
+        diagnostic_session_id=diagnostic_session_id,
+        expected_revision=1,
+        steps=_failed_case_plan_steps(),
+    )
+    assert result.ok is False
+    assert result.code == "DIAGNOSTIC_INVALID_TRANSITION"
+    assert len(
+        tuple(
+            (
+                workspace.diagnostics_root
+                / "sessions"
+                / diagnostic_session_id
+                / "events"
+            ).iterdir()
+        )
+    ) == 1
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "code"),
+    [
+        pytest.param({"operation_id": "Bad"}, "DIAGNOSTIC_INVALID_EVENT", id="operation"),
+        pytest.param({"actor": "robot"}, "DIAGNOSTIC_INVALID_EVENT", id="actor"),
+        pytest.param({"expected_revision": -1}, "DIAGNOSTIC_REVISION_CONFLICT", id="revision"),
+        pytest.param(
+            {"diagnostic_session_id": "not-a-session"},
+            "DIAGNOSTIC_INVALID_EVENT",
+            id="session-id",
+        ),
+        pytest.param(
+            {"diagnostic_session_id": "f" * 32},
+            "DIAGNOSTIC_NOT_FOUND",
+            id="missing-session",
+        ),
+    ],
+)
+def test_plan_rejects_malformed_public_inputs(
+    task_tmp: Path, kwargs: dict[str, object], code: str
+) -> None:
+    context, published, _workspace = _make_run(task_tmp)
+    diagnostic_session_id = _begin_plan_session(context, published, prefix="malformed-plan")
+    arguments: dict[str, object] = {
+        "operation_id": "valid-plan-add",
+        "diagnostic_session_id": diagnostic_session_id,
+        "expected_revision": 2,
+        "steps": _failed_case_plan_steps(),
+        "actor": "user",
+    }
+    arguments.update(kwargs)
+    result = workflow_module.diagnostic_add_plan(
+        _fresh_context(context),
+        operation_id=arguments["operation_id"],  # type: ignore[arg-type]
+        diagnostic_session_id=arguments["diagnostic_session_id"],  # type: ignore[arg-type]
+        expected_revision=arguments["expected_revision"],  # type: ignore[arg-type]
+        steps=arguments["steps"],  # type: ignore[arg-type]
+        actor=arguments["actor"],  # type: ignore[arg-type]
+    )
+    assert result.ok is False
+    assert result.code == code
+    assert result.details == {}
+
+
+def test_plan_collection_limit_rejects_65th_plan_without_persistent_append(
+    task_tmp: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    context, published, workspace = _make_run(task_tmp)
+    diagnostic_session_id = _begin_plan_session(context, published, prefix="plan-limit")
+    stored = DiagnosticStore(
+        workspace.diagnostics_root,
+        EvidenceStore(workspace.workspace_root / "evidence"),
+    ).load(diagnostic_session_id)
+    plans: list[ObservationPlan] = []
+    for index in range(64):
+        step = ObservationStep(
+            f"bounded-{index}",
+            {"kind": "run-state"},
+            "failed",
+            "bounded plan",
+        )
+        fields = {
+            "diagnostic_session_id": diagnostic_session_id,
+            "created_revision": index + 3,
+            "steps": [step.to_dict()],
+        }
+        digest = calculate_plan_digest(fields)
+        plans.append(
+            ObservationPlan(
+                digest,
+                diagnostic_session_id,
+                index + 3,
+                (step,),
+                digest,
+            )
+        )
+    bounded_session = DiagnosticSession(
+        diagnostic_session_id=stored.diagnostic_session_id,
+        revision=stored.revision,
+        state=stored.state,
+        identity=stored.identity,
+        failed_test_run_id=stored.failed_test_run_id,
+        failed_evidence_id=stored.failed_evidence_id,
+        event_head=stored.event_head,
+        hypotheses=(),
+        observation_plans=tuple(plans),
+        observation_results=(),
+    )
+
+    class LimitedStore:
+        def __init__(self, session: DiagnosticSession) -> None:
+            self.session = session
+            self.append_calls = 0
+
+        def load(self, _session_id: str) -> DiagnosticSession:
+            return self.session
+
+        def append(self, _session_id: str, event: object, *, expected_revision: int) -> object:
+            self.append_calls += 1
+            return reduce_event(self.session, event)  # type: ignore[arg-type]
+
+    limited_store = LimitedStore(bounded_session)
+    monkeypatch.setattr(
+        workflow_module,
+        "_diagnostic_store_factory",
+        lambda _root, _evidence: limited_store,
+    )
+    result = workflow_module.diagnostic_add_plan(
+        _fresh_context(context),
+        operation_id="plan-limit-add",
+        diagnostic_session_id=diagnostic_session_id,
+        expected_revision=2,
+        steps=[
+            {
+                "step_id": "overflow",
+                "selector": {"kind": "run-state"},
+                "expected_value": "failed",
+                "purpose": "overflow plan",
+            }
+        ],
+    )
+    assert result.ok is False
+    assert result.code == "DIAGNOSTIC_LIMIT_EXCEEDED"
+    assert result.details == {}
+    assert limited_store.append_calls == 1
+    assert len(bounded_session.observation_plans) == 64
+    assert len(
+        tuple(
+            (
+                workspace.diagnostics_root
+                / "sessions"
+                / diagnostic_session_id
+                / "events"
+            ).iterdir()
+        )
+    ) == 2
+
+
+def test_unexpected_plan_append_failure_propagates(
+    task_tmp: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    context, published, workspace = _make_run(task_tmp)
+    diagnostic_session_id = _begin_plan_session(context, published, prefix="unexpected-plan")
+    stored = DiagnosticStore(
+        workspace.diagnostics_root,
+        EvidenceStore(workspace.workspace_root / "evidence"),
+    ).load(diagnostic_session_id)
+
+    class ExplodingStore:
+        def load(self, _session_id: str) -> DiagnosticSession:
+            return stored
+
+        def append(self, *_args: object, **_kwargs: object) -> object:
+            raise RuntimeError("unexpected plan append failure")
+
+    monkeypatch.setattr(
+        workflow_module,
+        "_diagnostic_store_factory",
+        lambda _root, _evidence: ExplodingStore(),
+    )
+    with pytest.raises(RuntimeError, match="unexpected plan append failure"):
+        workflow_module.diagnostic_add_plan(
+            _fresh_context(context),
+            operation_id="unexpected-plan-add",
+            diagnostic_session_id=diagnostic_session_id,
+            expected_revision=2,
+            steps=_failed_case_plan_steps(),
+        )
+    assert len(
+        tuple(
+            (
+                workspace.diagnostics_root
+                / "sessions"
+                / diagnostic_session_id
+                / "events"
+            ).iterdir()
+        )
+    ) == 2
 
 
 def test_hypothesis_retry_returns_accepted_event_after_session_advances(

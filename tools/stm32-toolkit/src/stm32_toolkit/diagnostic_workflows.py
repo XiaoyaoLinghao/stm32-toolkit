@@ -15,10 +15,14 @@ from stm32_toolkit.diagnostics import (
     DIAGNOSTIC_IDENTITY_MISMATCH,
     DIAGNOSTIC_INVALID_EVENT,
     DIAGNOSTIC_INVALID_TRANSITION,
+    DIAGNOSTIC_PLAN_INVALID,
     DIAGNOSTIC_REVISION_CONFLICT,
     DiagnosticSession,
     DiagnosticStore,
     DiagnosticValidationError,
+    ObservationPlan,
+    ObservationStep,
+    calculate_plan_digest,
     create_event,
 )
 from stm32_toolkit.evidence import EvidenceValidationError
@@ -34,6 +38,7 @@ _START_OPERATION = "diagnostic.start"
 _SHOW_OPERATION = "diagnostic.show"
 _BEGIN_OPERATION = "diagnostic.begin"
 _HYPOTHESIS_ADD_OPERATION = "diagnostic.hypothesis.add"
+_PLAN_ADD_OPERATION = "diagnostic.plan.add"
 _OPERATION_ID = re.compile(r"^[a-z0-9][a-z0-9._-]{0,127}$")
 _RUN_ID = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
 _DIAGNOSTIC_SESSION_ID = re.compile(r"^[0-9a-f]{32}$")
@@ -346,6 +351,124 @@ def _diagnostic_add_hypothesis(
     )
 
 
+def _load_bound_failed_run(state: _WorkflowState, session: DiagnosticSession) -> object:
+    published = _load_failed_run(state, session.failed_test_run_id)
+    manifest = getattr(published, "manifest", None)
+    envelope = getattr(published, "envelope", None)
+    if (
+        manifest is None
+        or envelope is None
+        or getattr(manifest, "mode", None) != "host"
+        or getattr(manifest, "state", None) != "failed"
+    ):
+        raise DiagnosticValidationError(DIAGNOSTIC_INVALID_EVENT)
+    if getattr(envelope, "evidence_id", None) != session.failed_evidence_id:
+        raise _WorkflowFailure(DIAGNOSTIC_IDENTITY_MISMATCH)
+    if (
+        getattr(manifest, "identity", None) != session.identity
+        or getattr(envelope, "identity", None) != session.identity
+    ):
+        raise _WorkflowFailure(DIAGNOSTIC_IDENTITY_MISMATCH)
+    return manifest
+
+
+def _observation_plan(
+    session: DiagnosticSession,
+    steps: object,
+) -> ObservationPlan:
+    if not isinstance(steps, list):
+        raise DiagnosticValidationError(DIAGNOSTIC_INVALID_EVENT)
+    decoded_steps = tuple(ObservationStep.from_value(item) for item in steps)
+    fields = {
+        "diagnostic_session_id": session.diagnostic_session_id,
+        "created_revision": session.revision + 1,
+        "steps": [step.to_dict() for step in decoded_steps],
+    }
+    digest = calculate_plan_digest(fields)
+    return ObservationPlan(
+        plan_id=digest,
+        diagnostic_session_id=session.diagnostic_session_id,
+        created_revision=session.revision + 1,
+        steps=decoded_steps,
+        digest=digest,
+    )
+
+
+def _resolve_observation_selector(manifest: object, step: ObservationStep) -> object:
+    selector = step.selector
+    kind = selector["kind"]
+    if kind == "run-state":
+        return getattr(manifest, "state")
+    if kind == "case-state":
+        case_id = selector["case_id"]
+        matches = tuple(
+            case for case in getattr(manifest, "cases") if getattr(case, "case_id", None) == case_id
+        )
+        if len(matches) != 1:
+            raise DiagnosticValidationError(DIAGNOSTIC_PLAN_INVALID)
+        return getattr(matches[0], "state")
+    if kind == "case-count":
+        state = selector["state"]
+        return sum(
+            getattr(case, "state", None) == state
+            for case in getattr(manifest, "cases")
+        )
+    raise DiagnosticValidationError(DIAGNOSTIC_PLAN_INVALID)
+
+
+def _diagnostic_add_plan(
+    context: DiagnosticWorkflowContext,
+    *,
+    operation_id: object,
+    diagnostic_session_id: object,
+    expected_revision: object,
+    steps: object,
+    actor: object,
+) -> OperationResult[object]:
+    operation_id = _validate_operation_id(operation_id)
+    diagnostic_session_id = _validate_session_id(diagnostic_session_id)
+    expected_revision = _validate_revision(expected_revision)
+    actor = _validate_actor(actor)
+    state = _make_state(context)
+    session = _load_bound_session(state, diagnostic_session_id)
+    if session.state != "INVESTIGATING":
+        raise DiagnosticValidationError(DIAGNOSTIC_INVALID_TRANSITION)
+    manifest = _load_bound_failed_run(state, session)
+    plan = _observation_plan(session, steps)
+    for step in plan.steps:
+        _resolve_observation_selector(manifest, step)
+    plan_data = plan.to_dict()
+    event = create_event(
+        diagnostic_session_id=session.diagnostic_session_id,
+        operation_id=operation_id,
+        sequence=session.revision,
+        revision_before=session.revision,
+        event_type="observation.plan_added",
+        occurred_at_utc=_new_timestamp(),
+        actor=actor,
+        previous_digest=session.event_head,
+        payload={
+            "request": {"steps": plan_data["steps"]},
+            "result": {"observation_plan": plan_data},
+        },
+    )
+    accepted = state.diagnostic_store.append(
+        diagnostic_session_id,
+        event,
+        expected_revision=expected_revision,
+    )
+    accepted_payload = accepted.event.to_dict()["payload"]
+    assert isinstance(accepted_payload, dict)
+    accepted_result = accepted_payload["result"]
+    assert isinstance(accepted_result, dict)
+    observation_plan = accepted_result["observation_plan"]
+    assert isinstance(observation_plan, dict)
+    return OperationResult.success(
+        _PLAN_ADD_OPERATION,
+        {"session": accepted.session.to_dict(), "observation_plan": observation_plan},
+    )
+
+
 def diagnostic_start(
     context: DiagnosticWorkflowContext,
     *,
@@ -417,10 +540,33 @@ def diagnostic_add_hypothesis(
     )
 
 
+def diagnostic_add_plan(
+    context: DiagnosticWorkflowContext,
+    *,
+    operation_id: str,
+    diagnostic_session_id: str,
+    expected_revision: int,
+    steps: list[object],
+    actor: str = "user",
+) -> OperationResult[object]:
+    return _result(
+        _PLAN_ADD_OPERATION,
+        lambda: _diagnostic_add_plan(
+            context,
+            operation_id=operation_id,
+            diagnostic_session_id=diagnostic_session_id,
+            expected_revision=expected_revision,
+            steps=steps,
+            actor=actor,
+        ),
+    )
+
+
 __all__ = [
     "DiagnosticWorkflowContext",
     "diagnostic_start",
     "diagnostic_show",
     "diagnostic_begin",
     "diagnostic_add_hypothesis",
+    "diagnostic_add_plan",
 ]
