@@ -10,7 +10,12 @@ import re
 import unicodedata
 from typing import Iterable, Literal, Mapping, Sequence, cast
 
-from stm32_toolkit.evidence import ArtifactRef, EvidenceIdentity, canonical_json_bytes
+from stm32_toolkit.evidence import (
+    ArtifactRef,
+    EvidenceIdentity,
+    EvidenceValidationError,
+    canonical_json_bytes,
+)
 
 
 TEST_SCHEMA = "stm32-test/1"
@@ -83,6 +88,19 @@ def _artifact(value: object, field: str, *, nullable: bool = True) -> ArtifactRe
     if not isinstance(value, ArtifactRef):
         raise protocol_error("TEST_PROTOCOL_INVALID", f"{field} must be an ArtifactRef")
     return value
+
+
+def _reject_json_tuples(value: object) -> None:
+    """Reject Python-only tuple containers before decoding a JSON-shaped record."""
+    if isinstance(value, tuple):
+        raise protocol_error("TEST_PROTOCOL_INVALID", "JSON input must not contain tuple containers")
+    if isinstance(value, Mapping):
+        for key, item in value.items():
+            _reject_json_tuples(key)
+            _reject_json_tuples(item)
+    elif isinstance(value, list):
+        for item in value:
+            _reject_json_tuples(item)
 
 
 def _sorted_case_ids(case_ids: object, *, allow_empty: bool = False) -> tuple[str, ...]:
@@ -204,6 +222,28 @@ class TestCaseResult:
         _artifact(self.stdout, "stdout")
         _artifact(self.stderr, "stderr")
 
+    @classmethod
+    def from_dict(cls, value: object) -> "TestCaseResult":
+        _reject_json_tuples(value)
+        if not isinstance(value, Mapping) or set(value) != {
+            "case_id", "state", "started_at_utc", "ended_at_utc", "duration_ms",
+            "message", "stdout", "stderr",
+        }:
+            raise protocol_error("TEST_PROTOCOL_INVALID", "TestCaseResult fields are not closed")
+        data = dict(value)
+        try:
+            stdout = None if data["stdout"] is None else ArtifactRef.from_dict(data["stdout"])
+            stderr = None if data["stderr"] is None else ArtifactRef.from_dict(data["stderr"])
+            return cls(
+                data["case_id"], data["state"], data["started_at_utc"],
+                data["ended_at_utc"], data["duration_ms"], data["message"],
+                stdout, stderr,
+            )
+        except TestProtocolError:
+            raise
+        except (TypeError, ValueError, EvidenceValidationError) as exc:
+            raise protocol_error("TEST_PROTOCOL_INVALID", "TestCaseResult is invalid") from exc
+
     def to_dict(self) -> dict[str, object]:
         return {
             "case_id": self.case_id,
@@ -315,6 +355,34 @@ class TestRunManifest:
         assert raw is not None
         if raw.size_bytes > MAX_RUN_STREAM_BYTES:
             raise protocol_error("TEST_STREAM_TOO_LARGE", "raw event stream exceeds 64 MiB")
+
+    @classmethod
+    def from_dict(cls, value: object) -> "TestRunManifest":
+        _reject_json_tuples(value)
+        if not isinstance(value, Mapping) or set(value) != {
+            "schema", "run_id", "mode", "state", "identity", "transport", "cases",
+            "started_at_utc", "ended_at_utc", "duration_ms", "stdout", "stderr", "raw_events",
+        }:
+            raise protocol_error("TEST_PROTOCOL_INVALID", "TestRunManifest fields are not closed")
+        data = dict(value)
+        cases = data["cases"]
+        if not isinstance(cases, list):
+            raise protocol_error("TEST_PROTOCOL_INVALID", "cases must be a JSON array")
+        try:
+            identity = EvidenceIdentity.from_dict(data["identity"])
+            decoded_cases = tuple(TestCaseResult.from_dict(item) for item in cases)
+            stdout = None if data["stdout"] is None else ArtifactRef.from_dict(data["stdout"])
+            stderr = None if data["stderr"] is None else ArtifactRef.from_dict(data["stderr"])
+            raw_events = ArtifactRef.from_dict(data["raw_events"])
+            return cls(
+                data["schema"], data["run_id"], data["mode"], data["state"], identity,
+                data["transport"], decoded_cases, data["started_at_utc"],
+                data["ended_at_utc"], data["duration_ms"], stdout, stderr, raw_events,
+            )
+        except TestProtocolError:
+            raise
+        except (TypeError, ValueError, EvidenceValidationError) as exc:
+            raise protocol_error("TEST_PROTOCOL_INVALID", "TestRunManifest is invalid") from exc
 
     def to_dict(self) -> dict[str, object]:
         return {

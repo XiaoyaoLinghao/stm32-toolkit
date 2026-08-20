@@ -478,6 +478,50 @@ def test_model_serializers_emit_fresh_json_shapes_with_real_artifact_refs():
     assert serialized["raw_events"] == artifact.to_dict()
 
 
+def test_manifest_and_case_from_dict_round_trip_through_canonical_json():
+    """JSON-shaped manifests reconstruct the frozen nested models without changing bytes."""
+    artifact = _artifact()
+    case = CaseResult("one", "failed", UTC_0, UTC_1, 1000, "failure", artifact, None)
+    manifest = RunManifest(
+        "stm32-test/1", "run-1", "host", "failed", _identity(), "ctest",
+        (case,), UTC_0, UTC_1, 1000, artifact, None, artifact,
+    )
+
+    restored = RunManifest.from_dict(manifest.to_dict())
+
+    assert restored == manifest
+    assert isinstance(restored.cases[0], CaseResult)
+    assert canonical_json_bytes(restored.to_dict()) == canonical_json_bytes(manifest.to_dict())
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda value: value.__setitem__("extra", True),
+        lambda value: value.pop("raw_events"),
+        lambda value: value.__setitem__("cases", tuple(value["cases"])),
+        lambda value: value.__setitem__("identity", {"bad": True}),
+        lambda value: value["cases"][0].__setitem__("stdout", {"bad": True}),
+        lambda value: value["cases"].append(value["cases"][0]),
+        lambda value: value.__setitem__("state", "passed"),
+        lambda value: value.__setitem__("duration_ms", True),
+    ],
+)
+def test_manifest_from_dict_rejects_closed_nested_and_terminal_corruption(mutate):
+    """Deserialization must not widen the constructor invariants at the JSON boundary."""
+    artifact = _artifact()
+    case = CaseResult("one", "failed", UTC_0, UTC_1, 1000, "failure", artifact, None)
+    manifest = RunManifest(
+        "stm32-test/1", "run-1", "host", "failed", _identity(), None,
+        (case,), UTC_0, UTC_1, 1000, artifact, None, artifact,
+    )
+    value = deepcopy(manifest.to_dict())
+    mutate(value)
+
+    with pytest.raises(ProtocolError):
+        RunManifest.from_dict(value)
+
+
 def test_inventory_digest_rejects_malformed_visible_fields_and_identity():
     """The canonical digest accepts only the complete visible public field shape."""
     invalid = (

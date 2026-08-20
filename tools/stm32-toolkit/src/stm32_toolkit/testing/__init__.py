@@ -19,6 +19,7 @@ from .model import (
     host_target_device,
     validate_host_identity,
 )
+from .publication import PublishedTestRun, TestRunPublisher, TestRunRepository
 from .protocol import assemble_test_run, validate_event_payload
 
 __all__ = [
@@ -33,6 +34,9 @@ __all__ = [
     "TestInventory",
     "TestProtocolError",
     "TestRunManifest",
+    "PublishedTestRun",
+    "TestRunPublisher",
+    "TestRunRepository",
     "assemble_test_run",
     "calculate_host_build_inventory_digest",
     "calculate_host_test_executable_inventory_digest",
