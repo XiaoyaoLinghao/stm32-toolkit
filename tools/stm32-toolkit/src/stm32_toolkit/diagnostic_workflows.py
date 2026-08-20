@@ -21,6 +21,7 @@ from stm32_toolkit.diagnostics import (
     DiagnosticStore,
     DiagnosticValidationError,
     ObservationPlan,
+    ObservationResult,
     ObservationStep,
     calculate_plan_digest,
     create_event,
@@ -39,9 +40,11 @@ _SHOW_OPERATION = "diagnostic.show"
 _BEGIN_OPERATION = "diagnostic.begin"
 _HYPOTHESIS_ADD_OPERATION = "diagnostic.hypothesis.add"
 _PLAN_ADD_OPERATION = "diagnostic.plan.add"
+_PLAN_RUN_OPERATION = "diagnostic.plan.run"
 _OPERATION_ID = re.compile(r"^[a-z0-9][a-z0-9._-]{0,127}$")
 _RUN_ID = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
 _DIAGNOSTIC_SESSION_ID = re.compile(r"^[0-9a-f]{32}$")
+_PLAN_ID = re.compile(r"^[0-9a-f]{64}$")
 _UTC = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z$")
 
 
@@ -135,6 +138,12 @@ def _validate_revision(expected_revision: object) -> int:
     if type(expected_revision) is not int or expected_revision < 0:
         raise _WorkflowFailure(DIAGNOSTIC_REVISION_CONFLICT)
     return expected_revision
+
+
+def _validate_plan_id(plan_id: object) -> str:
+    if not isinstance(plan_id, str) or _PLAN_ID.fullmatch(plan_id) is None:
+        raise _WorkflowFailure(DIAGNOSTIC_PLAN_INVALID)
+    return plan_id
 
 
 def _make_state(context: DiagnosticWorkflowContext) -> _WorkflowState:
@@ -469,6 +478,79 @@ def _diagnostic_add_plan(
     )
 
 
+def _diagnostic_run_plan(
+    context: DiagnosticWorkflowContext,
+    *,
+    operation_id: object,
+    diagnostic_session_id: object,
+    expected_revision: object,
+    plan_id: object,
+    actor: object,
+) -> OperationResult[object]:
+    operation_id = _validate_operation_id(operation_id)
+    diagnostic_session_id = _validate_session_id(diagnostic_session_id)
+    expected_revision = _validate_revision(expected_revision)
+    plan_id = _validate_plan_id(plan_id)
+    actor = _validate_actor(actor)
+    state = _make_state(context)
+    session = _load_bound_session(state, diagnostic_session_id)
+    if session.state != "INVESTIGATING":
+        raise DiagnosticValidationError(DIAGNOSTIC_INVALID_TRANSITION)
+    matching_plans = tuple(plan for plan in session.observation_plans if plan.plan_id == plan_id)
+    if len(matching_plans) != 1:
+        raise DiagnosticValidationError(DIAGNOSTIC_PLAN_INVALID)
+    plan = matching_plans[0]
+    manifest = _load_bound_failed_run(state, session)
+    observation_results_list: list[ObservationResult] = []
+    for step in plan.steps:
+        observed = _resolve_observation_selector(manifest, step)
+        observation_results_list.append(
+            ObservationResult(
+                plan_id=plan.plan_id,
+                step_id=step.step_id,
+                evidence_id=session.failed_evidence_id,
+                selector=step.selector,
+                observed_value=observed,
+                expected_value=step.expected_value,
+                matched=observed == step.expected_value,
+            )
+        )
+    observation_results = tuple(observation_results_list)
+    result_data = [item.to_dict() for item in observation_results]
+    event = create_event(
+        diagnostic_session_id=session.diagnostic_session_id,
+        operation_id=operation_id,
+        sequence=session.revision,
+        revision_before=session.revision,
+        event_type="observation.plan_executed",
+        occurred_at_utc=_new_timestamp(),
+        actor=actor,
+        previous_digest=session.event_head,
+        payload={
+            "request": {"plan_id": plan.plan_id},
+            "result": {"observation_results": result_data},
+        },
+    )
+    accepted = state.diagnostic_store.append(
+        diagnostic_session_id,
+        event,
+        expected_revision=expected_revision,
+    )
+    accepted_payload = accepted.event.to_dict()["payload"]
+    assert isinstance(accepted_payload, dict)
+    accepted_result = accepted_payload["result"]
+    assert isinstance(accepted_result, dict)
+    accepted_observation_results = accepted_result["observation_results"]
+    assert isinstance(accepted_observation_results, list)
+    return OperationResult.success(
+        _PLAN_RUN_OPERATION,
+        {
+            "session": accepted.session.to_dict(),
+            "observation_results": accepted_observation_results,
+        },
+    )
+
+
 def diagnostic_start(
     context: DiagnosticWorkflowContext,
     *,
@@ -562,6 +644,28 @@ def diagnostic_add_plan(
     )
 
 
+def diagnostic_run_plan(
+    context: DiagnosticWorkflowContext,
+    *,
+    operation_id: str,
+    diagnostic_session_id: str,
+    expected_revision: int,
+    plan_id: str,
+    actor: str = "tool",
+) -> OperationResult[object]:
+    return _result(
+        _PLAN_RUN_OPERATION,
+        lambda: _diagnostic_run_plan(
+            context,
+            operation_id=operation_id,
+            diagnostic_session_id=diagnostic_session_id,
+            expected_revision=expected_revision,
+            plan_id=plan_id,
+            actor=actor,
+        ),
+    )
+
+
 __all__ = [
     "DiagnosticWorkflowContext",
     "diagnostic_start",
@@ -569,4 +673,5 @@ __all__ = [
     "diagnostic_begin",
     "diagnostic_add_hypothesis",
     "diagnostic_add_plan",
+    "diagnostic_run_plan",
 ]
