@@ -20,6 +20,7 @@ import weakref
 
 import pytest
 
+import stm32_toolkit.evidence as evidence_package
 import stm32_toolkit.evidence.gc as gc_module
 from stm32_toolkit.evidence.catalog import EvidenceCatalog, rebuild_catalog
 from stm32_toolkit.evidence.gc import (
@@ -34,6 +35,7 @@ from stm32_toolkit.evidence.model import (
     ArtifactRef,
     EvidenceEnvelope,
     EvidenceIdentity,
+    EvidenceValidationError,
     canonical_json_bytes,
 )
 from stm32_toolkit.evidence.store import EvidenceStore
@@ -186,6 +188,74 @@ def test_typed_root_publication_is_idempotent_but_never_overwrites_identity(tmp_
     )
     with pytest.raises(ValueError, match="different canonical bytes"):
         put_root(store, conflict)
+
+
+def test_get_root_loads_one_exact_authoritative_root_without_catalog_inference(tmp_path):
+    """An exact root key returns its canonical record through either store input form."""
+    store = EvidenceStore(tmp_path / "evidence")
+    envelope, _artifact = _put(store, tmp_path / "root-read.bin", b"root-read")
+    root = RootRecord("test-run", "run-1", str(envelope.evidence_id), {"source": "test"})
+    put_root(store, root)
+
+    assert hasattr(gc_module, "get_root")
+    assert evidence_package.get_root is gc_module.get_root
+    assert gc_module.get_root(store, "test-run", "run-1") == root
+    assert gc_module.get_root(store.root, "test-run", "run-1") == root
+
+
+def test_get_root_missing_does_not_create_store_state(tmp_path):
+    """A root miss is a read-only failure and cannot initialize the requested store path."""
+    root = tmp_path / "missing-evidence"
+    assert not root.exists()
+
+    with pytest.raises(FileNotFoundError):
+        gc_module.get_root(root, "test-run", "missing")
+
+    assert not root.exists()
+
+
+@pytest.mark.parametrize(
+    ("root_type", "root_id"),
+    [
+        ("future-root", "run-1"),
+        ("test-run", "../escape"),
+        ("test-run", "e\u0301"),
+    ],
+)
+def test_get_root_rejects_unsafe_key_without_creating_store_state(tmp_path, root_type, root_id):
+    """Root key normalization is closed before any filesystem path can be selected."""
+    root = tmp_path / "unsafe-evidence"
+
+    with pytest.raises(EvidenceValidationError):
+        gc_module.get_root(root, root_type, root_id)
+
+    assert not root.exists()
+
+
+def test_get_root_rejects_noncanonical_payload_key_and_casefold_collision(tmp_path):
+    """Canonical bytes, exact key binding, and case-fold uniqueness are all authoritative gates."""
+    store = EvidenceStore(tmp_path / "evidence")
+    envelope, _artifact = _put(store, tmp_path / "root-integrity.bin", b"root-integrity")
+    root = RootRecord("test-run", "run-integrity", str(envelope.evidence_id), {})
+    path = put_root(store, root)
+    canonical = path.read_bytes()
+
+    path.write_bytes(canonical + b"\n")
+    with pytest.raises(EvidenceValidationError):
+        gc_module.get_root(store, "test-run", "run-integrity")
+
+    mismatch = RootRecord("test-run", "other-root", str(envelope.evidence_id), {})
+    path.write_bytes(canonical_json_bytes(mismatch.to_dict()))
+    with pytest.raises(EvidenceValidationError, match="root"):
+        gc_module.get_root(store, "test-run", "run-integrity")
+
+    path.write_bytes(canonical)
+    temporary = path.with_name(".casefold-temporary.json")
+    path.rename(temporary)
+    collision = path.with_name(path.name.upper())
+    temporary.rename(collision)
+    with pytest.raises(EvidenceValidationError, match="case-fold"):
+        gc_module.get_root(store, "test-run", "run-integrity")
 
 
 def test_direct_root_construction_cannot_escape_registry_or_store_root(tmp_path):

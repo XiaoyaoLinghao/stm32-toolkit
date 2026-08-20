@@ -114,6 +114,31 @@ class EvidenceStore:
             current = candidate
         return current
 
+    def _existing_managed_path(
+        self,
+        *parts: str,
+        regular: bool = False,
+        single_link: bool = False,
+    ) -> Path:
+        """Resolve one existing managed path without creating any store component."""
+        root_info = self._validate_existing_path(self.root)
+        if not stat.S_ISDIR(root_info.st_mode):
+            raise EvidenceValidationError(EVIDENCE_PATH_UNSAFE, "evidence root is not a directory")
+        current = self.root
+        final_index = len(parts) - 1
+        for index, part in enumerate(parts):
+            self._reject_casefold_collision(current, part)
+            candidate = current / part
+            info = self._validate_existing_path(
+                candidate,
+                regular=regular and index == final_index,
+                single_link=single_link and index == final_index,
+            )
+            if index != final_index and not stat.S_ISDIR(info.st_mode):
+                raise EvidenceValidationError(EVIDENCE_PATH_UNSAFE, f"managed path is not a directory: {candidate}")
+            current = candidate
+        return current
+
     @contextmanager
     def _mutation_lock(self, *, create: bool = True):
         """Hold the verified store-scoped publisher/collector lock across processes."""
@@ -193,6 +218,57 @@ class EvidenceStore:
     def _open_readonly(path: Path) -> int:
         flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
         return os.open(path, flags)
+
+    @classmethod
+    def _read_file_bytes(cls, path: Path, *, maximum_bytes: int | None = None) -> bytes:
+        """Read one regular singular file while binding bytes to its open identity."""
+        if maximum_bytes is not None and (
+            type(maximum_bytes) is not int or maximum_bytes < 0
+        ):
+            raise EvidenceValidationError(EVIDENCE_INVALID, "maximum_bytes must be a non-negative integer")
+        before = cls._validate_existing_path(path, regular=True, single_link=True)
+        descriptor = cls._open_readonly(path)
+        try:
+            opened = os.fstat(descriptor)
+            if (opened.st_dev, opened.st_ino) != (before.st_dev, before.st_ino):
+                raise EvidenceValidationError(EVIDENCE_PATH_UNSAFE, "file identity changed while it was opened")
+            if not stat.S_ISREG(opened.st_mode):
+                raise EvidenceValidationError(EVIDENCE_PATH_UNSAFE, "opened path is not a regular file")
+            if opened.st_nlink != 1:
+                raise EvidenceValidationError(EVIDENCE_PATH_UNSAFE, f"managed file has a hard link: {path}")
+
+            payload = bytearray()
+            while True:
+                if maximum_bytes is None:
+                    read_size = _COPY_CHUNK
+                else:
+                    read_size = min(_COPY_CHUNK, maximum_bytes + 1 - len(payload))
+                    if read_size <= 0:
+                        raise EvidenceValidationError(EVIDENCE_LIMIT_EXCEEDED, "read exceeds maximum_bytes")
+                block = os.read(descriptor, read_size)
+                if not block:
+                    break
+                payload.extend(block)
+                if maximum_bytes is not None and len(payload) > maximum_bytes:
+                    raise EvidenceValidationError(EVIDENCE_LIMIT_EXCEEDED, "read exceeds maximum_bytes")
+
+            after = os.fstat(descriptor)
+            if (
+                (after.st_dev, after.st_ino) != (opened.st_dev, opened.st_ino)
+                or after.st_size != opened.st_size
+                or after.st_mtime_ns != opened.st_mtime_ns
+            ):
+                raise EvidenceValidationError(EVIDENCE_PATH_UNSAFE, "file changed while it was read")
+            after_path = cls._validate_existing_path(path, regular=True, single_link=True)
+            if (
+                (after_path.st_dev, after_path.st_ino) != (opened.st_dev, opened.st_ino)
+                or after_path.st_size != after.st_size
+                or after_path.st_mtime_ns != after.st_mtime_ns
+            ):
+                raise EvidenceValidationError(EVIDENCE_PATH_UNSAFE, "file path changed while it was read")
+            return bytes(payload)
+        finally:
+            os.close(descriptor)
 
     @classmethod
     def _hash_file(
@@ -529,6 +605,27 @@ class EvidenceStore:
         if envelope.evidence_id != evidence_id:
             raise EvidenceValidationError(EVIDENCE_CORRUPT, "manifest name does not match its evidence_id")
         return self.verify_envelope(envelope)
+
+    def read_artifact(self, artifact: ArtifactRef, *, maximum_bytes: int) -> bytes:
+        """Read exact immutable object bytes after path, size, and SHA-256 verification."""
+        if not isinstance(artifact, ArtifactRef):
+            raise EvidenceValidationError(EVIDENCE_INVALID, "artifact must be an ArtifactRef")
+        verified = ArtifactRef.from_dict(artifact.to_dict())
+        if type(maximum_bytes) is not int or not 0 <= maximum_bytes <= MAX_ARTIFACT_BYTES:
+            raise EvidenceValidationError(EVIDENCE_INVALID, "maximum_bytes is invalid")
+        expected_relative = self._expected_object_relative(verified.sha256)
+        if verified.relative_path != expected_relative:
+            raise EvidenceValidationError(EVIDENCE_INVALID, "artifact relative_path is not its content-addressed object path")
+        target = self._existing_managed_path(
+            "objects", "sha256", verified.sha256[:2], verified.sha256,
+            regular=True, single_link=True,
+        )
+        payload = self._read_file_bytes(target, maximum_bytes=maximum_bytes)
+        if len(payload) != verified.size_bytes:
+            raise EvidenceValidationError(EVIDENCE_CORRUPT, f"evidence object is corrupt: size mismatch for {target}")
+        if hashlib.sha256(payload).hexdigest() != verified.sha256:
+            raise EvidenceValidationError(EVIDENCE_CORRUPT, f"evidence object is corrupt: digest mismatch for {target}")
+        return payload
 
 
 __all__ = ["EvidenceStore"]

@@ -78,6 +78,22 @@ def _freeze_json(value: object) -> object:
     return value
 
 
+def _validate_root_key(root_type: object, root_id: object) -> tuple[str, str]:
+    if not isinstance(root_type, str) or root_type not in REGISTERED_ROOT_TYPES:
+        raise EvidenceValidationError(EVIDENCE_INVALID, "root_type is not registered")
+    if (
+        not isinstance(root_id, str)
+        or not root_id
+        or normalize("NFC", root_id) != root_id
+        or len(root_id.encode("utf-8")) > 64 * 1024
+        or any(ord(character) < 32 or ord(character) == 127 for character in root_id)
+        or any(character in root_id for character in "/\\:")
+        or root_id in {".", ".."}
+    ):
+        raise EvidenceValidationError(EVIDENCE_INVALID, "root_id is not a canonical path-safe bounded string")
+    return root_type, root_id
+
+
 def _windows_file_information(handle: int) -> dict[str, int]:
     """Return stable Win32 identity/shape fields for an already-open handle."""
     import ctypes
@@ -259,20 +275,7 @@ class RootRecord:
     metadata: Mapping[str, object]
 
     def __post_init__(self) -> None:
-        if not isinstance(self.root_type, str):
-            raise EvidenceValidationError(EVIDENCE_INVALID, "root_type must be a string")
-        if self.root_type not in REGISTERED_ROOT_TYPES:
-            raise EvidenceValidationError(EVIDENCE_INVALID, "root_type is not registered")
-        if (
-            not isinstance(self.root_id, str)
-            or not self.root_id
-            or normalize("NFC", self.root_id) != self.root_id
-            or len(self.root_id.encode("utf-8")) > 64 * 1024
-            or any(ord(character) < 32 or ord(character) == 127 for character in self.root_id)
-            or any(character in self.root_id for character in "/\\:")
-            or self.root_id in {".", ".."}
-        ):
-            raise EvidenceValidationError(EVIDENCE_INVALID, "root_id is not a canonical path-safe bounded string")
+        _validate_root_key(self.root_type, self.root_id)
         if not isinstance(self.manifest_id, str) or _HASH.fullmatch(self.manifest_id) is None:
             raise EvidenceValidationError(EVIDENCE_INVALID, "manifest_id must be a lowercase SHA-256")
         if not isinstance(self.metadata, Mapping):
@@ -742,6 +745,27 @@ def put_root(store: EvidenceStore | Path | str, root: RootRecord | Mapping[str, 
         if target.read_bytes() != payload:
             raise EvidenceValidationError(EVIDENCE_CORRUPT, "root identity already has different canonical bytes")
         return target
+
+
+def get_root(store: EvidenceStore | Path | str, root_type: str, root_id: str) -> RootRecord:
+    """Load one exact canonical root without creating store state."""
+    evidence_store = store if isinstance(store, EvidenceStore) else EvidenceStore(store)
+    root_type, root_id = _validate_root_key(root_type, root_id)
+    name = f"{_digest({'root_type': root_type, 'root_id': root_id})}.json"
+    path = evidence_store._existing_managed_path(
+        "roots", root_type, name, regular=True, single_link=True,
+    )
+    payload = evidence_store._read_file_bytes(path)
+    try:
+        document = json.loads(payload.decode("utf-8"))
+        if canonical_json_bytes(document) != payload:
+            raise EvidenceValidationError(EVIDENCE_CORRUPT, "root is not canonical JSON")
+        record = RootRecord.from_value(document)
+    except (UnicodeError, json.JSONDecodeError) as exc:
+        raise EvidenceValidationError(EVIDENCE_CORRUPT, "root is not canonical JSON") from exc
+    if record.root_type != root_type or record.root_id != root_id:
+        raise EvidenceValidationError(EVIDENCE_CORRUPT, "root payload does not match its exact key")
+    return record
 
 
 def _plan_gc_locked(evidence_store: EvidenceStore) -> GcPlan:
@@ -1380,6 +1404,7 @@ __all__ = [
     "GcResult",
     "RootRecord",
     "apply_gc",
+    "get_root",
     "plan_gc",
     "put_root",
 ]

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
 import hashlib
 import os
 from pathlib import Path
@@ -16,7 +17,16 @@ from types import SimpleNamespace
 
 import pytest
 
-from stm32_toolkit.evidence.model import ArtifactRef, EvidenceEnvelope, EvidenceIdentity
+from stm32_toolkit.evidence.model import (
+    EVIDENCE_CORRUPT,
+    EVIDENCE_INVALID,
+    EVIDENCE_LIMIT_EXCEEDED,
+    EVIDENCE_PATH_UNSAFE,
+    ArtifactRef,
+    EvidenceEnvelope,
+    EvidenceIdentity,
+    EvidenceValidationError,
+)
 import stm32_toolkit.evidence.store as store_module
 from stm32_toolkit.evidence.store import EvidenceStore
 
@@ -672,6 +682,134 @@ def test_put_and_get_envelope_verify_canonical_manifest_id_path_size_and_hash(tm
     _object_path(store.root, artifact).write_bytes(b"substituted bytes")
     with pytest.raises(ValueError, match="corrupt"):
         store.get_envelope(str(envelope.evidence_id))
+
+
+def test_read_artifact_returns_verified_bytes_and_enforces_bound(tmp_path):
+    """An exact artifact read returns only bytes that fit its caller-supplied limit."""
+    payload = b"authoritative artifact bytes"
+    source = tmp_path / "source.bin"
+    source.write_bytes(payload)
+    store = EvidenceStore(tmp_path / "evidence")
+    artifact = store.ingest_file(source, kind="log", media_type="text/plain")
+
+    assert store.read_artifact(artifact, maximum_bytes=1024) == payload
+    with pytest.raises(EvidenceValidationError) as failure:
+        store.read_artifact(artifact, maximum_bytes=len(payload) - 1)
+    assert failure.value.code == EVIDENCE_LIMIT_EXCEEDED
+
+
+def test_read_artifact_rejects_digest_size_and_missing_object(tmp_path):
+    """Substitution, forged size metadata, and absence cannot become authoritative reads."""
+    payload = b"artifact integrity"
+    source = tmp_path / "source.bin"
+    source.write_bytes(payload)
+    store = EvidenceStore(tmp_path / "evidence")
+    artifact = store.ingest_file(source, kind="log", media_type="text/plain")
+    object_path = _object_path(store.root, artifact)
+
+    object_path.write_bytes(b"substituted artifact")
+    with pytest.raises(EvidenceValidationError) as digest_failure:
+        store.read_artifact(artifact, maximum_bytes=1024)
+    assert digest_failure.value.code == EVIDENCE_CORRUPT
+
+    object_path.write_bytes(payload)
+    forged_size = replace(artifact, size_bytes=artifact.size_bytes + 1)
+    with pytest.raises(EvidenceValidationError) as size_failure:
+        store.read_artifact(forged_size, maximum_bytes=1024)
+    assert size_failure.value.code == EVIDENCE_CORRUPT
+
+    object_path.unlink()
+    with pytest.raises(FileNotFoundError):
+        store.read_artifact(artifact, maximum_bytes=1024)
+
+
+def test_read_artifact_rejects_links_and_invalid_maximum(tmp_path):
+    """Managed links and unbounded or ill-typed limits cannot redirect or exhaust a read."""
+    payload = b"linked artifact"
+    source = tmp_path / "source.bin"
+    source.write_bytes(payload)
+    store = EvidenceStore(tmp_path / "evidence")
+    artifact = store.ingest_file(source, kind="log", media_type="text/plain")
+    object_path = _object_path(store.root, artifact)
+    alias = tmp_path / "object-alias.bin"
+    os.link(object_path, alias)
+    try:
+        with pytest.raises(EvidenceValidationError) as link_failure:
+            store.read_artifact(artifact, maximum_bytes=1024)
+        assert link_failure.value.code == EVIDENCE_PATH_UNSAFE
+    finally:
+        alias.unlink()
+
+    for maximum_bytes in (-1, True, "1024", store_module.MAX_ARTIFACT_BYTES + 1):
+        with pytest.raises(EvidenceValidationError) as limit_failure:
+            store.read_artifact(artifact, maximum_bytes=maximum_bytes)  # type: ignore[arg-type]
+        assert limit_failure.value.code == EVIDENCE_INVALID
+
+
+def test_read_artifact_rejects_redirected_object_path(tmp_path):
+    """A managed object path redirected to outside bytes must remain unreadable."""
+    payload = b"redirected artifact"
+    source = tmp_path / "source.bin"
+    source.write_bytes(payload)
+    store = EvidenceStore(tmp_path / "evidence")
+    artifact = store.ingest_file(source, kind="log", media_type="text/plain")
+    object_path = _object_path(store.root, artifact)
+    outside = tmp_path / "outside.bin"
+    outside.write_bytes(payload)
+    object_path.unlink()
+    try:
+        os.symlink(outside, object_path)
+    except OSError:
+        pytest.skip("this host does not permit file symlink creation")
+
+    try:
+        with pytest.raises(EvidenceValidationError) as redirect_failure:
+            store.read_artifact(artifact, maximum_bytes=1024)
+        assert redirect_failure.value.code == EVIDENCE_PATH_UNSAFE
+    finally:
+        object_path.unlink(missing_ok=True)
+
+
+def test_read_artifact_rejects_read_time_mutation(tmp_path, monkeypatch):
+    """Bytes changed after the verified open must not be returned as immutable evidence."""
+    payload = b"read-time mutation source"
+    source = tmp_path / "source.bin"
+    source.write_bytes(payload)
+    store = EvidenceStore(tmp_path / "evidence")
+    artifact = store.ingest_file(source, kind="log", media_type="text/plain")
+    object_path = _object_path(store.root, artifact)
+    real_read = store_module.os.read
+    mutated = False
+
+    def read_then_mutate(descriptor, count):
+        nonlocal mutated
+        block = real_read(descriptor, count)
+        if not mutated:
+            object_path.write_bytes(b"mutated after read with a different size")
+            mutated = True
+        return block
+
+    monkeypatch.setattr(store_module.os, "read", read_then_mutate)
+    with pytest.raises(EvidenceValidationError, match="changed") as failure:
+        store.read_artifact(artifact, maximum_bytes=1024)
+    assert failure.value.code == EVIDENCE_PATH_UNSAFE
+
+
+def test_read_artifact_miss_does_not_initialize_store_directories(tmp_path):
+    """An absent object read must not create an evidence root or managed directories."""
+    root = tmp_path / "missing-evidence"
+    digest = hashlib.sha256(b"missing object").hexdigest()
+    artifact = ArtifactRef(
+        sha256=digest,
+        size_bytes=len(b"missing object"),
+        relative_path=f"objects/sha256/{digest[:2]}/{digest}",
+        kind="log",
+        media_type="text/plain",
+    )
+
+    with pytest.raises(FileNotFoundError):
+        EvidenceStore(root).read_artifact(artifact, maximum_bytes=1024)
+    assert not root.exists()
 
 
 def test_verify_rejects_non_envelope_and_non_content_addressed_artifact_path(tmp_path):

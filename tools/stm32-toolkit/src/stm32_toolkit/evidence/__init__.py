@@ -1,6 +1,6 @@
 """Immutable canonical evidence records (STM32TK-0601)."""
 
-from .gc import GcStoreChangedError
+from .gc import GcStoreChangedError, get_root
 from .model import (
     EVIDENCE_CORRUPT,
     EVIDENCE_INVALID,
