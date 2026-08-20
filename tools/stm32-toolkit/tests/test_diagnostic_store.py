@@ -6,12 +6,15 @@ import os
 from pathlib import Path
 import shutil
 import tempfile
+import threading
+import time
 
 import pytest
 
 from stm32_toolkit.diagnostics import (
     DIAGNOSTIC_CHAIN_CORRUPT,
     DIAGNOSTIC_EVIDENCE_MISSING,
+    DIAGNOSTIC_LIMIT_EXCEEDED,
     DIAGNOSTIC_REVISION_CONFLICT,
     DIAGNOSTIC_OPERATION_CONFLICT,
     DiagnosticEvent,
@@ -25,8 +28,9 @@ from stm32_toolkit.evidence import (
     EvidenceEnvelope,
     EvidenceIdentity,
 )
-from stm32_toolkit.evidence.gc import get_root
+from stm32_toolkit.evidence.gc import RootRecord, get_root, put_root
 from stm32_toolkit.evidence.store import EvidenceStore
+import stm32_toolkit.diagnostics.store as store_module
 
 
 IDENTITY = EvidenceIdentity(
@@ -99,6 +103,23 @@ def _created(failed_evidence_id: str = FAILED_EVIDENCE_ID) -> DiagnosticEvent:
         request={"failed_test_run_id": "run-1"},
         result={"failed_evidence_id": failed_evidence_id, "identity": IDENTITY.to_dict()},
         operation_id="create-op",
+    )
+
+
+def _created_for(session_id: str, operation_id: str, failed_evidence_id: str) -> DiagnosticEvent:
+    return create_event(
+        diagnostic_session_id=session_id,
+        operation_id=operation_id,
+        sequence=0,
+        revision_before=0,
+        event_type="session.created",
+        occurred_at_utc=UTC,
+        actor="user",
+        previous_digest=None,
+        payload={
+            "request": {"failed_test_run_id": "run-1"},
+            "result": {"failed_evidence_id": failed_evidence_id, "identity": IDENTITY.to_dict()},
+        },
     )
 
 
@@ -391,3 +412,151 @@ def test_concurrent_appends_serialize_one_revision(tmp_path: Path) -> None:
     assert len(successes) == 1
     assert len(failures) == 1
     assert failures[0].code == DIAGNOSTIC_REVISION_CONFLICT
+
+
+def test_store_waits_for_lock_before_inspecting_prepublication_session_layout(tmp_path: Path) -> None:
+    evidence = EvidenceStore(tmp_path / "evidence")
+    failed_evidence_id = _failed_evidence(evidence, tmp_path)
+    prepared = threading.Event()
+    release = threading.Event()
+    paused = True
+
+    def inject(point: str) -> None:
+        nonlocal paused
+        if point == "session.after_prepare" and paused:
+            paused = False
+            prepared.set()
+            assert release.wait(timeout=10)
+
+    first_store = DiagnosticStore(tmp_path / "diagnostics", evidence, fault_injector=inject)
+    created = _created(failed_evidence_id)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        first = pool.submit(first_store.create, created)
+        assert prepared.wait(timeout=10)
+        second = pool.submit(
+            DiagnosticStore(tmp_path / "diagnostics", EvidenceStore(evidence.root)).load,
+            SID,
+        )
+        time.sleep(0.2)
+        assert not second.done()
+        release.set()
+        assert first.result(timeout=10).session.revision == 1
+        assert second.result(timeout=10).revision == 1
+
+
+def test_create_retry_validates_every_workspace_session_before_returning(tmp_path: Path) -> None:
+    evidence = EvidenceStore(tmp_path / "evidence")
+    failed_evidence_id = _failed_evidence(evidence, tmp_path)
+    store = DiagnosticStore(tmp_path / "diagnostics", evidence)
+    first_sid = "e" * 32
+    first = _created_for(first_sid, "workspace-create", failed_evidence_id)
+    second_sid = SID
+    store.create(first)
+
+    # Construct a canonical later session through the public Evidence APIs, but
+    # give its session.created event the earlier workspace operation ID.
+    duplicate = _created_for(second_sid, first.operation_id, failed_evidence_id)
+    second_events_dir = tmp_path / "diagnostics" / "sessions" / second_sid / "events"
+    second_events_dir.mkdir(parents=True)
+    second_event_path = second_events_dir / "00000000.json"
+    second_event_path.write_bytes(canonical_diagnostic_json_bytes(duplicate.to_dict()))
+    artifact = evidence.ingest_file(second_event_path, kind="diagnostic-event", media_type="application/json")
+    envelope = EvidenceEnvelope(
+        identity=IDENTITY,
+        operation="diagnostic-event",
+        produced_at_utc=duplicate.occurred_at_utc,
+        parents=(failed_evidence_id,),
+        artifacts=(artifact,),
+        metadata={
+            "diagnostic_session_id": second_sid,
+            "sequence": 0,
+            "revision": 1,
+            "event_digest": duplicate.digest,
+        },
+    )
+    evidence.put_envelope(envelope)
+    put_root(
+        evidence,
+        RootRecord(
+            root_type="diagnostic-session",
+            root_id=f"{second_sid}.00000001",
+            manifest_id=str(envelope.evidence_id),
+            metadata={
+                "diagnostic_session_id": second_sid,
+                "revision": 1,
+                "state": "OPEN",
+                "event_digest": duplicate.digest,
+            },
+        ),
+    )
+    event_bytes = second_event_path.read_bytes()
+    roots_directory = evidence.root / "roots" / "diagnostic-session"
+    root_bytes = {path.name: path.read_bytes() for path in roots_directory.glob("*.json")}
+    with pytest.raises(DiagnosticValidationError) as error:
+        store.create(first)
+    assert error.value.code == DIAGNOSTIC_CHAIN_CORRUPT
+    assert second_event_path.read_bytes() == event_bytes
+    assert {path.name: path.read_bytes() for path in roots_directory.glob("*.json")} == root_bytes
+
+
+def test_session_limit_is_checked_without_creating_a_new_session(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    evidence = EvidenceStore(tmp_path / "evidence")
+    failed_evidence_id = _failed_evidence(evidence, tmp_path)
+    store = DiagnosticStore(tmp_path / "diagnostics", evidence)
+    store.create(_created(failed_evidence_id))
+    monkeypatch.setattr(store_module, "_MAX_SESSIONS", 1)
+    second_sid = "e" * 32
+    events_dir = tmp_path / "diagnostics" / "sessions" / SID / "events"
+    event_bytes = {path.name: path.read_bytes() for path in events_dir.glob("*.json")}
+    roots_directory = evidence.root / "roots" / "diagnostic-session"
+    root_bytes = {path.name: path.read_bytes() for path in roots_directory.glob("*.json")}
+    with pytest.raises(DiagnosticValidationError) as error:
+        store.create(_created_for(second_sid, "second-create", failed_evidence_id))
+    assert error.value.code == DIAGNOSTIC_LIMIT_EXCEEDED
+    assert not (tmp_path / "diagnostics" / "sessions" / second_sid).exists()
+    assert {path.name: path.read_bytes() for path in events_dir.glob("*.json")} == event_bytes
+    assert {path.name: path.read_bytes() for path in roots_directory.glob("*.json")} == root_bytes
+    assert store.load(SID).revision == 1
+
+
+def test_event_limit_is_checked_without_creating_a_new_event(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    evidence = EvidenceStore(tmp_path / "evidence")
+    failed_evidence_id = _failed_evidence(evidence, tmp_path)
+    store = DiagnosticStore(tmp_path / "diagnostics", evidence)
+    created = _created(failed_evidence_id)
+    store.create(created)
+    monkeypatch.setattr(store_module, "MAX_EVENTS", 1)
+    started = _started(created, operation_id="limit-begin")
+    roots_directory = evidence.root / "roots" / "diagnostic-session"
+    root_bytes = {path.name: path.read_bytes() for path in roots_directory.glob("*.json")}
+    events_dir = tmp_path / "diagnostics" / "sessions" / SID / "events"
+    event_bytes = {path.name: path.read_bytes() for path in events_dir.glob("*.json")}
+    with pytest.raises(DiagnosticValidationError) as error:
+        store.append(SID, started, expected_revision=1)
+    assert error.value.code == DIAGNOSTIC_LIMIT_EXCEEDED
+    assert sorted(path.name for path in events_dir.iterdir()) == ["00000000.json"]
+    assert {path.name: path.read_bytes() for path in events_dir.glob("*.json")} == event_bytes
+    assert {path.name: path.read_bytes() for path in roots_directory.glob("*.json")} == root_bytes
+    assert store.load(SID).revision == 1
+
+
+def test_event_redirect_is_rejected_without_root_mutation(tmp_path: Path) -> None:
+    evidence = EvidenceStore(tmp_path / "evidence")
+    failed_evidence_id = _failed_evidence(evidence, tmp_path)
+    store = DiagnosticStore(tmp_path / "diagnostics", evidence)
+    store.create(_created(failed_evidence_id))
+    event_path = tmp_path / "diagnostics" / "sessions" / SID / "events" / "00000000.json"
+    redirect_target = tmp_path / "redirect-target.json"
+    redirect_target.write_bytes(event_path.read_bytes())
+    try:
+        event_path.unlink()
+        os.symlink(redirect_target, event_path)
+    except (OSError, NotImplementedError) as error:
+        pytest.skip(f"Windows symlink creation unavailable: {error}")
+    roots_directory = evidence.root / "roots" / "diagnostic-session"
+    root_bytes = {path.name: path.read_bytes() for path in roots_directory.glob("*.json")}
+    with pytest.raises(DiagnosticValidationError) as error:
+        store.load(SID)
+    assert error.value.code == DIAGNOSTIC_CHAIN_CORRUPT
+    assert event_path.is_symlink()
+    assert {path.name: path.read_bytes() for path in roots_directory.glob("*.json")} == root_bytes

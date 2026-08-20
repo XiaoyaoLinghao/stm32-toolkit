@@ -247,7 +247,7 @@ class DiagnosticStore:
             _raise(DIAGNOSTIC_CHAIN_CORRUPT)
         return lock
 
-    def _validate_root_layout(self, *, create: bool) -> None:
+    def _validate_root_primitives(self, *, create: bool) -> None:
         if create:
             self._ensure_root()
         else:
@@ -263,10 +263,10 @@ class DiagnosticStore:
         if create:
             self._ensure_lock_file()
             sessions = self.diagnostics_root / _SESSIONS_NAME
-            if not sessions.exists():
-                self._mkdir_checked(sessions)
-            else:
+            try:
                 self._require_directory(sessions)
+            except FileNotFoundError:
+                self._mkdir_checked(sessions)
         else:
             lock = self.diagnostics_root / _LOCK_NAME
             sessions = self.diagnostics_root / _SESSIONS_NAME
@@ -275,6 +275,9 @@ class DiagnosticStore:
                 self._require_directory(sessions)
             except FileNotFoundError:
                 _raise(DIAGNOSTIC_CHAIN_CORRUPT)
+
+    def _validate_root_layout(self, *, create: bool) -> None:
+        self._validate_root_primitives(create=create)
         self._validate_sessions_layout()
 
     def _validate_sessions_layout(self) -> tuple[str, ...]:
@@ -341,7 +344,10 @@ class DiagnosticStore:
 
     @contextmanager
     def _store_lock(self, *, create: bool):
-        self._validate_root_layout(create=create)
+        # Only the immutable root/lock/sessions container shape may be
+        # inspected before acquiring the lock. Session and event children can
+        # be temporarily incomplete while another writer is publishing one.
+        self._validate_root_primitives(create=create)
         lock_path = self.diagnostics_root / _LOCK_NAME
         before = self._regular_single(lock_path)
         flags = os.O_RDWR | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
@@ -374,6 +380,7 @@ class DiagnosticStore:
             held = self._regular_single(lock_path)
             if (held.st_dev, held.st_ino) != (opened.st_dev, opened.st_ino):
                 _raise(DIAGNOSTIC_CHAIN_CORRUPT)
+            self._validate_root_layout(create=False)
             yield
         except OSError:
             _raise(DIAGNOSTIC_CHAIN_CORRUPT)
@@ -660,6 +667,7 @@ class DiagnosticStore:
             else self._validate_sessions_layout()
         )
         workspace_create_operations: set[str] = set()
+        found: tuple[DiagnosticSession, DiagnosticEvent] | None = None
         for current_session_id in session_ids:
             assert current_session_id is not None
             session, events = self._load_chain_locked(current_session_id)
@@ -668,9 +676,9 @@ class DiagnosticStore:
                     if event.operation_id in workspace_create_operations:
                         _raise(DIAGNOSTIC_CHAIN_CORRUPT)
                     workspace_create_operations.add(event.operation_id)
-                if event.operation_id == operation_id:
-                    return session, event
-        return None
+                if event.operation_id == operation_id and found is None:
+                    found = session, event
+        return found
 
     def _validate_session_id(self, value: object) -> str:
         if not isinstance(value, str) or _SESSION_ID.fullmatch(value) is None:
@@ -698,6 +706,7 @@ class DiagnosticStore:
             provisional = reduce_event(None, event)
             self._validate_referenced_evidence(event, provisional)
             events_dir = self._prepare_session_directories(session_id)
+            self._fault("session.after_prepare")
             path = events_dir / "00000000.json"
             self._write_event_new(path, event)
             self._fault("event.after_create")
