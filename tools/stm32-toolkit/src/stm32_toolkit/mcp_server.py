@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import argparse
 import sys
+import unicodedata
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -62,11 +63,39 @@ _CLIENT_ROOTS_TIMEOUT_SECONDS = 5.0
 _DIGEST_PATTERN = r"^[0-9a-f]{64}$"
 _PROBE_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
 _RUN_ID_PATTERN = r"^[a-z0-9][a-z0-9._-]*$"
+_TEST_MAX_CASES = 100_000
+_TEST_MAX_STRING_BYTES = 65_536
+
+
+def _validate_test_string(value: str) -> str:
+    if (
+        not value
+        or unicodedata.normalize("NFC", value) != value
+        or len(value.encode("utf-8")) > _TEST_MAX_STRING_BYTES
+    ):
+        raise ValueError("test string must be non-empty, NFC, and within 65536 UTF-8 bytes")
+    return value
+
 
 ProbeId = Annotated[str, Field(pattern=_PROBE_PATTERN)]
 Digest = Annotated[str, Field(pattern=_DIGEST_PATTERN)]
-RunId = Annotated[str, Field(pattern=_RUN_ID_PATTERN)]
+RunId = Annotated[
+    str,
+    Field(
+        pattern=_RUN_ID_PATTERN,
+        min_length=1,
+        max_length=_TEST_MAX_STRING_BYTES,
+    ),
+    AfterValidator(_validate_test_string),
+]
 Items = Annotated[list[str], Field(min_length=1, max_length=256)]
+
+
+CaseId = Annotated[
+    str,
+    Field(min_length=1, max_length=_TEST_MAX_STRING_BYTES),
+    AfterValidator(_validate_test_string),
+]
 
 
 def _unique_case_ids(value: list[str] | None) -> list[str] | None:
@@ -76,8 +105,8 @@ def _unique_case_ids(value: list[str] | None) -> list[str] | None:
 
 
 UniqueCaseIds = Annotated[
-    list[str] | None,
-    Field(max_length=256),
+    list[CaseId] | None,
+    Field(max_length=_TEST_MAX_CASES),
     AfterValidator(_unique_case_ids),
 ]
 

@@ -565,7 +565,7 @@ def test_t10_1a_evidence_raise_inventory_is_exact_and_literal():
     """A missing, extra, reordered-shape, or wrongly classified raise site breaks the frozen ABI map."""
     expected = {
         "model.py": (43, {"EVIDENCE_INVALID": 30, "EVIDENCE_CORRUPT": 0, "EVIDENCE_PATH_UNSAFE": 4, "EVIDENCE_LIMIT_EXCEEDED": 9}),
-        "store.py": (42, {"EVIDENCE_INVALID": 6, "EVIDENCE_CORRUPT": 6, "EVIDENCE_PATH_UNSAFE": 27, "EVIDENCE_LIMIT_EXCEEDED": 3}),
+        "store.py": (59, {"EVIDENCE_INVALID": 10, "EVIDENCE_CORRUPT": 9, "EVIDENCE_PATH_UNSAFE": 34, "EVIDENCE_LIMIT_EXCEEDED": 6}),
         "catalog.py": (19, {"EVIDENCE_INVALID": 14, "EVIDENCE_CORRUPT": 2, "EVIDENCE_PATH_UNSAFE": 3, "EVIDENCE_LIMIT_EXCEEDED": 0}),
         "gc.py": (27, {"EVIDENCE_INVALID": 9, "EVIDENCE_CORRUPT": 5, "EVIDENCE_PATH_UNSAFE": 13, "EVIDENCE_LIMIT_EXCEEDED": 0}),
     }

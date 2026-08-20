@@ -49,10 +49,15 @@ def test_testing_tools_have_closed_project_bound_schemas(tmp_path: Path):
     assert run_schema["required"] == ["inventoryDigest"]
     assert run_schema["properties"]["caseIds"]["default"] == []
     assert run_schema["additionalProperties"] is False
+    case_schema = run_schema["properties"]["caseIds"]["anyOf"][0]
+    assert case_schema["maxItems"] == 100_000
+    assert case_schema["items"]["minLength"] == 1
+    assert case_schema["items"]["maxLength"] == 65_536
 
     show_schema = schemas["stm32_test_show"]
     assert set(show_schema["properties"]) == {"runId"}
     assert show_schema["required"] == ["runId"]
+    assert show_schema["properties"]["runId"]["maxLength"] == 65_536
     assert show_schema["additionalProperties"] is False
 
     forbidden = {
@@ -252,4 +257,79 @@ def test_registered_host_run_rejects_repeated_case_ids_before_workflow(
                 "stm32_test_host_run",
                 {"inventoryDigest": "a" * 64, "caseIds": ["fails", "fails"]},
             )
+        )
+
+
+@pytest.mark.parametrize(
+    "case_ids",
+    [
+        [""],
+        ["e\u0301"],
+        ["é" * 32_769],
+    ],
+)
+def test_registered_host_run_rejects_noncanonical_case_ids_before_workflow(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, case_ids: list[str]
+):
+    runtime = _runtime(tmp_path)
+    server = create_server(runtime.project_root, runtime.data_root, runtime.session_id)
+
+    async def accepted(*_args: object, **_kwargs: object) -> dict[str, object]:
+        return {"tool": "run"}
+
+    monkeypatch.setattr(mcp_mod, "tool_test_host_run_for_request", accepted)
+
+    with pytest.raises(Exception):
+        asyncio.run(
+            server.call_tool(
+                "stm32_test_host_run",
+                {"inventoryDigest": "a" * 64, "caseIds": case_ids},
+            )
+        )
+
+
+def test_registered_host_run_accepts_the_product_case_limit(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    runtime = _runtime(tmp_path)
+    server = create_server(runtime.project_root, runtime.data_root, runtime.session_id)
+    observed: list[list[str]] = []
+
+    async def accepted(
+        _runtime: object,
+        _context: object,
+        _inventory_digest: str,
+        case_ids: list[str],
+    ) -> dict[str, object]:
+        observed.append(case_ids)
+        return {"tool": "run"}
+
+    monkeypatch.setattr(mcp_mod, "tool_test_host_run_for_request", accepted)
+    case_ids = [f"case-{index}" for index in range(257)]
+
+    _content, result = asyncio.run(
+        server.call_tool(
+            "stm32_test_host_run",
+            {"inventoryDigest": "a" * 64, "caseIds": case_ids},
+        )
+    )
+
+    assert result == {"tool": "run"}
+    assert observed == [case_ids]
+
+
+def test_registered_show_enforces_the_product_run_id_length(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    runtime = _runtime(tmp_path)
+    server = create_server(runtime.project_root, runtime.data_root, runtime.session_id)
+
+    async def accepted(*_args: object, **_kwargs: object) -> dict[str, object]:
+        return {"tool": "show"}
+
+    monkeypatch.setattr(mcp_mod, "tool_test_show_for_request", accepted)
+
+    with pytest.raises(Exception):
+        asyncio.run(
+            server.call_tool("stm32_test_show", {"runId": "a" * 65_537})
         )

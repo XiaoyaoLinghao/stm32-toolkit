@@ -662,7 +662,10 @@ raise SystemExit(1)
         data_root, project_root, PROJECT_ID, context.session_id
     )
     roots = workspace.workspace_root / "evidence" / "roots"
+    manifests = workspace.workspace_root / "evidence" / "manifests"
+    manifests_before = tuple(sorted(path.name for path in manifests.glob("*.json")))
     assert not roots.exists() or not any(roots.rglob("*.json"))
+    assert tuple(sorted(path.name for path in manifests.glob("*.json"))) == manifests_before
 
     inventory_digest = inventory_data["inventory_digest"]
     run = workflows.host_test_run(
