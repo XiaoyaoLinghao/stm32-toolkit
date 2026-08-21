@@ -17,6 +17,16 @@ from .analysis import (
     DiagnosticMarker,
     analyze_monitor_windows,
 )
+from .analysis_workflows import (
+    ANALYSIS_WORKFLOW_INVALID,
+    ENVIRONMENT_FAILURE,
+    EVIDENCE_INTEGRITY_FAILURE,
+    INCOMPATIBLE_IDENTITY,
+    OPERATION_CONFLICT,
+    AnalysisPublication,
+    AnalysisWorkflowError,
+    compare_monitor_runs,
+)
 from .models import MonitorConfig, ProbeConnectRequest, WatchGroup, WatchItem
 from .protocol import MONITOR_PROTOCOL_VERSION, ProtocolResult
 from .replay import (
@@ -51,6 +61,14 @@ __all__ = [
     "AnalysisResult",
     "DiagnosticMarker",
     "analyze_monitor_windows",
+    "ANALYSIS_WORKFLOW_INVALID",
+    "ENVIRONMENT_FAILURE",
+    "EVIDENCE_INTEGRITY_FAILURE",
+    "INCOMPATIBLE_IDENTITY",
+    "OPERATION_CONFLICT",
+    "AnalysisPublication",
+    "AnalysisWorkflowError",
+    "compare_monitor_runs",
     "MonitorConfig",
     "ProbeConnectRequest",
     "ProtocolResult",
