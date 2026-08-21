@@ -236,6 +236,8 @@ workflow. This prevents a temporary duplicate firmware-bridge type from becoming
 
 ### 3.4 SourceChangeDeclaration and VerificationPlan (0602)
 
+Their schemas are `stm32-source-change-declaration/1` and `stm32-verification-plan/1`.
+
 ```text
 SourceChangeDeclaration
   declaration_id
@@ -243,6 +245,7 @@ SourceChangeDeclaration
   before_build_id, before_elf_sha256
   after_build_id, after_elf_sha256
   changed_paths               sorted project-relative paths, 1..128
+  diff_evidence_id            Evidence envelope containing the diff artifact
   diff_artifact               existing Evidence ArtifactRef
   claimed_hypothesis_ids      1..16 existing hypothesis IDs
   validation_plan_id          verification plan ID
@@ -251,8 +254,12 @@ VerificationPlan
   verification_plan_id
   diagnostic_session_id
   failed_before_run_id
+  failed_before_evidence_id
   fixed_after_run_id
+  fixed_after_evidence_id
+  source_change_declaration_id
   required_analysis_ids       bounded tuple, non-empty in VS-03
+  required_analysis_evidence_ids parallel bounded tuple
   required_monitor_quality    "VALID"
   expected_changed            true
   plan_digest
@@ -260,11 +267,15 @@ VerificationPlan
 
 The declaration records facts supplied by the caller; Toolkit does not edit or inspect source to
 invent them. Exact project-relative paths are retained, while absolute paths are rejected from
-public output. The diff artifact must already exist in EvidenceStore and its digest is immutable.
+public output. The diff artifact must already belong to the exact `diff_evidence_id` envelope and
+its digest is immutable. VerificationPlan run/evidence and analysis/evidence tuples are parallel,
+closed and unique; the plan binds the exact source-change declaration it verifies. These envelope
+IDs, not catalog search results or bare artifact paths, become DiagnosticStore checkpoint parents.
 
 ### 3.5 DiagnosticMarker and deterministic bundle (0603/0602 boundary)
 
-`DiagnosticMarker` contains marker ID, analysis ID/evidence ID, diagnostic session ID, one existing
+`DiagnosticMarker`/`DiagnosticMarkerRef` uses schema `stm32-diagnostic-marker/1` and contains marker
+ID, analysis ID/evidence ID, diagnostic session ID, one existing
 hypothesis ID, polarity (`supports` or `refutes`), a closed label, and bounded rationale. 0603
 creates the marker payload and publishes it as Evidence. The caller then invokes the 0602 public
 `diagnostic_attach_marker` operation; only that operation appends `analysis.marker_attached`.
@@ -304,6 +315,11 @@ A trustworthy fixed-after test that still fails or an analysis that validly cont
 `FAILED`. Missing, damaged, degraded/invalid, or untrusted mandatory evidence is `INCONCLUSIVE`.
 Caller cancellation is `CANCELLED`. Only `PASSED` transitions the session to `RESOLVED`.
 
+The status/reason pairing is closed: `PASSED/VERIFICATION_PASSED`; `FAILED` with
+`FIXED_TEST_FAILED` or `ANALYSIS_CONTRADICTED`; `INCONCLUSIVE` with
+`MANDATORY_EVIDENCE_MISSING`, `MANDATORY_EVIDENCE_CORRUPT`, or `ANALYSIS_NOT_VALID`; and
+`CANCELLED/CALLER_CANCELLED`. Incompatible identity is rejected before a FixVerification exists.
+
 ## 4. Diagnostic events and state transitions
 
 VS-02's accepted events remain byte-compatible. The session model is extended with source changes,
@@ -318,7 +334,11 @@ verification.completed PASS  VERIFYING     -> RESOLVED
 verification.completed else  VERIFYING     -> INVESTIGATING
 ```
 
-Each event is checkpointed through the existing DiagnosticStore/Evidence root chain. Invalid
+Each event is checkpointed through the existing DiagnosticStore/Evidence root chain. Legacy
+sessions/events retain their exact old canonical fields and bytes: the extended session fields are
+serialized only after the first new event, while the loader accepts exactly the legacy or extended
+shape. New checkpoint parents are appended after the previous checkpoint parent in stable payload
+order and never change parent ordering for old events. Invalid
 transition, stale revision, operation conflict, or missing referenced Evidence appends nothing.
 Failed or inconclusive attempts remain visible after the session returns to `INVESTIGATING`.
 

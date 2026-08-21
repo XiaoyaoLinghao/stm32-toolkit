@@ -220,7 +220,36 @@ py -3.12 -m pytest -q tools/stm32-monitor/tests/test_analysis.py tools/stm32-mon
 
 **Commit:** `feat(monitor): compare bounded replay windows`
 
-## Task 6: Extend the diagnostic event domain and lifecycle
+## Task 6A: Freeze fix-verification value objects
+
+**Product behavior:** Callers can construct, round-trip and digest the four closed immutable values
+used at the 0602/0603 boundary without changing any existing diagnostic session or event bytes.
+
+**Files:**
+
+- Modify: `tools/stm32-toolkit/src/stm32_toolkit/diagnostics/model.py`
+- Modify: `tools/stm32-toolkit/src/stm32_toolkit/diagnostics/__init__.py`
+- Create: `tools/stm32-toolkit/tests/test_fix_verification_model.py`
+
+**Required interfaces:**
+
+- Frozen `SourceChangeDeclaration`, `VerificationPlan`, `DiagnosticMarkerRef`, and
+  `FixVerification` with the corrected design envelope references, exact closed states/reasons and
+  canonical IDs/digests.
+- Diff, failed/fixed TestRun and required analysis references always pair domain IDs with exact
+  Evidence envelope IDs. ArtifactRef alone is never accepted as a checkpoint authority.
+- Project-relative changed paths and every tuple are canonical, bounded, ordered and unique.
+- Existing DiagnosticSession/Event construction, serialization and canonical bytes remain exact.
+
+**TDD verify:**
+
+```powershell
+py -3.12 -m pytest -q tools/stm32-toolkit/tests/test_fix_verification_model.py tools/stm32-toolkit/tests/test_diagnostic_model.py
+```
+
+**Commit:** `feat(diagnostics): freeze fix verification values`
+
+## Task 6B: Extend the diagnostic event domain and lifecycle
 
 **Product behavior:** Existing sessions reload unchanged while new append-only events materialize
 source changes, verification plans, markers, attempts and final FixVerifications.
@@ -230,16 +259,13 @@ source changes, verification plans, markers, attempts and final FixVerifications
 - Modify: `tools/stm32-toolkit/src/stm32_toolkit/diagnostics/model.py`
 - Modify: `tools/stm32-toolkit/src/stm32_toolkit/diagnostics/events.py`
 - Modify: `tools/stm32-toolkit/src/stm32_toolkit/diagnostics/store.py`
-- Modify: `tools/stm32-toolkit/src/stm32_toolkit/diagnostics/__init__.py`
-- Create: `tools/stm32-toolkit/tests/test_fix_verification_model.py`
 - Create: `tools/stm32-toolkit/tests/test_fix_verification_events.py`
 
 **Required interfaces:**
 
-- Frozen `SourceChangeDeclaration`, `VerificationPlan`, `DiagnosticMarkerRef`, and
-  `FixVerification`, with exact design states/reason codes and canonical IDs/digests.
 - Extend session states to `FIX_PROPOSED`, `VERIFYING`, `RESOLVED`, and `ABANDONED`, and retain all
-  previous states/events/bytes.
+  previous states/events/bytes. Legacy session serialization remains byte-identical; extended
+  fields appear only after the first new event.
 - Implement the five new event types and transitions from the design. `PASSED` alone resolves;
   other completed results return to `INVESTIGATING` while attempts remain.
 - Store checkpoints include every new immutable Evidence reference as a parent. Old chains reload;
@@ -248,7 +274,7 @@ source changes, verification plans, markers, attempts and final FixVerifications
 **TDD verify:**
 
 ```powershell
-py -3.12 -m pytest -q tools/stm32-toolkit/tests/test_fix_verification_model.py tools/stm32-toolkit/tests/test_fix_verification_events.py tools/stm32-toolkit/tests/test_diagnostic_model.py tools/stm32-toolkit/tests/test_diagnostic_events.py tools/stm32-toolkit/tests/test_diagnostic_store.py
+py -3.12 -m pytest -q tools/stm32-toolkit/tests/test_fix_verification_events.py tools/stm32-toolkit/tests/test_fix_verification_model.py tools/stm32-toolkit/tests/test_diagnostic_model.py tools/stm32-toolkit/tests/test_diagnostic_events.py tools/stm32-toolkit/tests/test_diagnostic_store.py
 ```
 
 **Commit:** `feat(diagnostics): add fix verification lifecycle`
