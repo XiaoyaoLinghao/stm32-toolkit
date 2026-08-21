@@ -183,7 +183,7 @@ AnalysisResult
   analysis_id                 canonical digest
   request_digest              canonical digest
   before_run_id, after_run_id stable references
-  identity                    shared project/target lineage
+  identity                    exact AnalysisLineage value
   quality                     "VALID" | "DEGRADED" | "INVALID"
   conclusion                  "COMPLETED" | "INCONCLUSIVE"
   reason_code                 closed code
@@ -193,6 +193,22 @@ AnalysisResult
   delta_first/last            finite number or null
   changed                     boolean or null
 ```
+
+`AnalysisLineage` uses schema `stm32-monitor-analysis-lineage/1` and has the exact closed fields
+`origin_workspace_id`, `import_workspace_id`, `logical_project_id`, `target_device`,
+`before_input_snapshot_sha256`, `before_build_id`, `before_elf_sha256`,
+`after_input_snapshot_sha256`, `after_build_id`, `after_elf_sha256`, and nullable
+`source_change_declaration_id`. The workspace/project/target fields must be equal across both run
+references. The before/after firmware triples are copied exactly from those references. The
+declaration ID is null only when both triples are identical; when a triple differs it is non-null
+and the publication workflow must validate the exact Task 6 `SourceChangeDeclaration` bridge.
+
+The authoritative `AnalysisResult` retains all pure `AnalysisComputation` fields, including
+`aligned_position_count` and `excluded_position_count`; the abbreviated list above is not a license
+to discard them. `analysis_id` is SHA-256 of the canonical closed result fields excluding
+`analysis_id`. `AnalysisEvidenceRef` has exact closed schema
+`stm32-monitor-analysis-evidence-ref/1` and fields `analysis_id` plus `evidence_id`. Neither the
+result nor the marker payload embeds the Evidence ID that contains itself.
 
 `AnalysisResult` is the canonical derived payload and therefore never embeds the ID of the
 Evidence envelope that contains it; doing so would create a content-addressing cycle. Publication

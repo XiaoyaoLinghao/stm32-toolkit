@@ -305,7 +305,37 @@ py -3.12 -m pytest -q tools/stm32-toolkit/tests/test_fix_verification_events.py 
 
 **Commit:** `feat(diagnostics): persist verification evidence parents`
 
-## Task 5B: Publish analysis, marker and deterministic bundle
+## Task 5B1: Freeze authoritative analysis publication values
+
+**Product behavior:** A validated request/computation/lineage becomes a closed, canonical
+AnalysisResult, and marker payloads and Evidence references cross the 0603/0602 boundary without a
+content-addressing cycle.
+
+**Files:**
+
+- Modify: `tools/stm32-monitor/src/stm32_monitor/analysis.py`
+- Modify: `tools/stm32-monitor/src/stm32_monitor/__init__.py`
+- Modify: `tools/stm32-monitor/tests/test_analysis.py`
+
+**Required interfaces:**
+
+- Add exact `AnalysisLineage`, `AnalysisResult`, `AnalysisEvidenceRef`, and `DiagnosticMarker`
+  values from the corrected design; all are closed, canonical, immutable and fail closed.
+- Result and marker IDs are canonical digests excluding only their own ID field. Payloads never
+  self-embed their containing Evidence envelope ID.
+- Result construction requires an exact `AnalysisRequest`, exact `AnalysisComputation` with the
+  same request digest, and exact lineage; no History/Evidence lookup or publication occurs here.
+- Existing AnalysisRequest/AnalysisComputation bytes and pure comparison behavior remain exact.
+
+**TDD verify:**
+
+```powershell
+py -3.12 -m pytest -q tools/stm32-monitor/tests/test_analysis.py tools/stm32-monitor/tests/test_replay.py
+```
+
+**Commit:** `feat(monitor): freeze analysis publication values`
+
+## Task 5B2: Publish analysis, marker and deterministic bundle
 
 **Product behavior:** Compatible History windows produce one published AnalysisResult, marker
 payload and byte-deterministic bundle; incompatible identity publishes nothing derived.
@@ -313,15 +343,13 @@ payload and byte-deterministic bundle; incompatible identity publishes nothing d
 **Files:**
 
 - Create: `tools/stm32-monitor/src/stm32_monitor/analysis_workflows.py`
-- Modify: `tools/stm32-monitor/src/stm32_monitor/analysis.py`
 - Modify: `tools/stm32-monitor/src/stm32_monitor/__init__.py`
 - Create: `tools/stm32-monitor/tests/test_analysis_workflows.py`
-- Modify: `tools/stm32-monitor/tests/test_analysis.py`
 
 **Required interfaces:**
 
-- Frozen authoritative `AnalysisResult`, `AnalysisEvidenceRef`, `DiagnosticMarker` and published
-  `DiagnosticMarkerRef` use the corrected design boundary; no payload self-embeds its Evidence ID.
+- Use the frozen Task 5B1 values and publish the Toolkit `DiagnosticMarkerRef`; no payload
+  self-embeds its Evidence ID.
 - `compare_monitor_runs(...)` queries only public HistoryStore pages, validates any firmware change
   only through the Task 6 `SourceChangeDeclaration`, and publishes canonical AnalysisResult and
   marker Evidence through an injected EvidenceStore.
