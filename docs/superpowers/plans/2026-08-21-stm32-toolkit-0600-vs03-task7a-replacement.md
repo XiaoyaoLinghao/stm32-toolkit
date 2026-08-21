@@ -18,17 +18,24 @@ TestRunRepository, DiagnosticStore, OperationResult, pytest.
 
 ## Global Constraints
 
-- Accepted product base: `9ff0f727f5997cf0ffd92c7272ffeb4e1153fccb`.
-- Approved design/plan head: `baf1d0fd1777cada60e547a8f1a636f648ab3514`.
+- Initial accepted product base: `9ff0f727f5997cf0ffd92c7272ffeb4e1153fccb`.
+- Task 2 accepted product head: `76e68b1fa7a747bbda502cca496c9c996345155d`.
+- The Task 3 implementation dispatch base is the clean plan-amendment commit recorded with its full
+  SHA in the generated SDD brief and ledger before Luna starts.
+- Approved design includes explicit durable `failed_run_mode`; Target diagnostic start calls pass
+  `failed_run_mode="target"` and later operations consume the stored session value.
 - Replacement branch/worktree: `codex/STM32TK-0600-VS03-VERIFY-REWRITE2` at
   `C:\tmp\stm32tk-vs03-task7-rewrite2`.
-- Replacement implementer: unassigned pending explicit user authorization to transfer ownership.
+- Replacement implementer: `/root/vs03_task7a_replacement`, user-authorized
+  `gpt-5.6-luna` at reasoning effort `max` for Tasks 1-3.
 - Previous implementer owns only the preserved rejected heads `efc26e81294977a64a710038a7a62b76e2fc6f4e`
   and `d3413df297bbb61344cdbe72931e078a6a2b7ca8`; neither is an implementation base.
 - No push, PR mutation, merge, close, remote branch operation, physical hardware action, Python
   3.10 work, packaging, release matrix, CI or new dispatch automation.
-- Use only the four files named below. If another product file is required, stop and return the
-  exact interface blocker.
+- Task 3 may modify only `diagnostic_workflows.py` and
+  `test_fix_verification_workflows.py`. Tasks 1-2 and the explicit-mode correction are accepted
+  dependencies and must not be rewritten. If another product file is required, stop and return
+  the exact interface blocker.
 
 ---
 
@@ -158,7 +165,8 @@ py -3.12 -m pytest -q --basetemp C:/tmp/pytest-vs03-7a-authority `
 
 - [ ] **Step 1: Write one complete failing public-path test.** After Task 2, create a real diff
   ArtifactRef/envelope and `SourceChangeDeclaration`, publish closed analysis and marker Evidence,
-  then call the four new operations. Construct producer IDs by these exact equations:
+  start the Target diagnostic with `failed_run_mode="target"`, then call the four new operations.
+  Construct producer IDs by these exact equations:
 
 ```python
 analysis_id = sha256(canonical_json_bytes({k: v for k, v in analysis.items()
@@ -181,8 +189,9 @@ marker["marker_id"] = marker_id
   absent analysis root, wrong analysis unsigned ID, foreign analysis identity, or declaration/run
   lineage mismatch. Assert the named public failure and byte-identical session revision/events/roots.
 
-- [ ] **Step 3: Run RED.** Expected failures on the clean base are missing public operations; the
-  rejected `d3413df2...` must additionally fail genuine marker/analysis validation negatives.
+- [ ] **Step 3: Run RED.** At dispatch base
+  `76e68b1fa7a747bbda502cca496c9c996345155d`, expected failures are the missing four public
+  operations. Do not run or copy either rejected branch.
 
 - [ ] **Step 4: Implement preflight and one-append workflows.** Toolkit must not import Monitor.
   Reload root, envelope and sole artifact for analysis/marker; require exact closed field sets,
@@ -200,10 +209,11 @@ py -3.12 -m pytest -q --basetemp C:/tmp/pytest-vs03-7a-final `
   tools/stm32-toolkit/tests/test_fix_verification_workflows.py `
   tools/stm32-toolkit/tests/test_diagnostic_workflows.py `
   tools/stm32-toolkit/tests/test_target_replay_workflows.py
-git diff --check baf1d0fd1777cada60e547a8f1a636f648ab3514..HEAD
+git diff --check 76e68b1fa7a747bbda502cca496c9c996345155d..HEAD
 ```
 
-  Expected: all tests pass; only the four authorized files differ; no `.superpowers`, adapter,
+  Expected: all tests pass. Use the full implementation dispatch-base SHA from the SDD brief to
+  confirm only the two Task 3 authorized files differ; no `.superpowers`, model, event, adapter,
   Monitor, release or remote change exists.
 
 - [ ] **Step 6: Commit once.**
@@ -211,18 +221,13 @@ git diff --check baf1d0fd1777cada60e547a8f1a636f648ab3514..HEAD
 ```powershell
 git add -- `
   tools/stm32-toolkit/src/stm32_toolkit/diagnostic_workflows.py `
-  tools/stm32-toolkit/src/stm32_toolkit/diagnostics/model.py `
-  tools/stm32-toolkit/tests/test_fix_verification_model.py `
   tools/stm32-toolkit/tests/test_fix_verification_workflows.py
 git commit -m "feat(diagnostics): prepare replay fix verification"
 ```
 
 ## Sol Acceptance
 
-Sol reviews `baf1d0fd1777cada60e547a8f1a636f648ab3514..final-head` in a new detached clean
+Sol reviews `9ff0f727f5997cf0ffd92c7272ffeb4e1153fccb..final-head` in a new detached clean
 worktree, runs the complete Task 7A suite plus an independent public replay probe, and returns
 `ACCEPTED`, `REVISION_REQUIRED`, or `REWRITE_REQUIRED`. The implementer cannot approve its own diff.
 Task 7B, adapters, VS-04, release matrices, hardware and remote operations remain out of scope.
-
-Execution is intentionally suspended until the user explicitly authorizes transferring Task 7A
-implementation ownership to a new Luna/max agent.
