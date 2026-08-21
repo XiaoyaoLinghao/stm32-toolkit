@@ -47,3 +47,21 @@ bytes must remain unchanged.
 5. Run CPython 3.12 with short basetemps: the new contract tests, Monitor replay/analysis tests,
    Toolkit fix-verification tests, and `git diff --check`. Commit once and report full SHA and
    working-tree state. Sol then reviews dispatch-base-to-head and reruns only this focused set.
+
+## Conformance evidence reset after two non-convergent test rounds
+
+The product accept set passed an independent fully re-signed corpus, but two tracked-test revisions
+still allowed a second invariant to reject selected cases. Stop per-case patching and apply this
+single isolation design to the corpus:
+
+- every non-digest candidate is fully re-signed after mutation;
+- document/batch binding and selector vocabulary are synchronized whenever they are not the target;
+- boolean-as-integer uses an unbound count such as `subscriberDrops`, never sequence;
+- document UUID and positive group revision mutate every batch consistently;
+- reference canonical UUID uses `group_id`, which is not coupled to operation/run identity;
+- a table records each target rule and its coherence transformation;
+- an explicit sensitivity oracle (or equivalent assertion) proves that removing only the named
+  target predicate leaves all remaining structural/relational/digest constraints satisfied.
+
+This reset authorizes one test-only replacement of the affected corpus. It does not authorize a
+third product parser change or any additional validation layer.
