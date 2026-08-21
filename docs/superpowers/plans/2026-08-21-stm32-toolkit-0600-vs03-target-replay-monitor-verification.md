@@ -411,10 +411,11 @@ py -3.12 -m pytest -q tools/stm32-monitor/tests/test_analysis_workflows.py tools
 
 **Commit:** `feat(monitor): export deterministic analysis bundle`
 
-## Task 7: Execute source-change and verification workflows
+## Task 7A: Prepare a replay verification checkpoint
 
-**Product behavior:** A caller binds an external source change, freezes/starts a verification,
-attaches a Monitor marker, completes a FixVerification, and reloads the authoritative conclusion.
+**Product behavior:** A caller opens diagnostics from a failed Target replay, binds an external
+source change, freezes/starts a verification and attaches every required genuine Monitor marker.
+Fresh reload exposes one authoritative `VERIFYING` checkpoint ready for completion.
 
 **Files:**
 
@@ -426,23 +427,52 @@ attaches a Monitor marker, completes a FixVerification, and reloads the authorit
 **Required interfaces:**
 
 - `diagnostic_declare_source_change`, `diagnostic_add_verification_plan`,
-  `diagnostic_start_verification`, `diagnostic_attach_marker`,
-  `diagnostic_complete_verification`, and `diagnostic_show_verification`.
+  `diagnostic_start_verification`, and `diagnostic_attach_marker`.
 - Generalize `diagnostic_start` from Host-only to authoritative failed Host or failed Target replay;
   reject physical/unknown Target records in VS-03.
 - Validate TestRuns only through TestRunRepository and analysis/marker only through EvidenceStore.
   Toolkit must not import Monitor; it consumes exact closed canonical analysis and marker JSON
   through their root/envelope/artifact contracts. The bundle is not a completion input. Enforce
   exact inventory/case/project/source/build/ELF lineage and plan digest.
-- Derive PASSED/FAILED/INCONCLUSIVE from evidence; callers cannot select a successful status.
-- Derive completion time from the fixed-after TestRun. Require one attached marker for every
-  required analysis/evidence pair, and canonicalize the pair list together rather than sorting the
-  two parallel tuples independently.
-- Retry is idempotent. Any contradiction creates no partial event; only PASSED resolves.
+- Require one genuine marker for every required analysis/evidence pair, and canonicalize the pair
+  list together rather than sorting the two parallel tuples independently. Apply the exact unsigned
+  ID versus full-artifact digest equations and marker payload/ref projection from design 3.7.
+- Retry is idempotent. Any contradiction creates no partial event.
 - Preserve existing Host behavior; accept only failed, replay, explicitly non-physical Target
   TestRuns at diagnostic start. Keep Target, Monitor and Diagnostic session IDs independent.
-- Freeze the six signatures, operation names, returned projections and error-classification rules
-  from design section 3.7; do not invent a new adapter, bundle field, platform matrix or Gate.
+- Freeze the four preparation signatures, operation names, returned projections and
+  error-classification rules from design section 3.7; do not invent a new adapter, bundle field,
+  platform matrix or Gate.
+
+**TDD verify:**
+
+```powershell
+py -3.12 -m pytest -q tools/stm32-toolkit/tests/test_fix_verification_model.py tools/stm32-toolkit/tests/test_fix_verification_workflows.py tools/stm32-toolkit/tests/test_diagnostic_workflows.py tools/stm32-toolkit/tests/test_target_replay_workflows.py
+```
+
+**Commit:** `feat(diagnostics): prepare replay fix verification`
+
+## Task 7B: Complete and reload the replay verification
+
+**Product behavior:** A caller completes the active checkpoint without selecting its outcome;
+Toolkit reloads all mandatory Evidence, derives one deterministic FixVerification, applies the
+frozen state transition, and shows the complete authoritative history.
+
+**Files:**
+
+- Modify: `tools/stm32-toolkit/src/stm32_toolkit/diagnostic_workflows.py`
+- Modify: `tools/stm32-toolkit/tests/test_fix_verification_workflows.py`
+
+**Required interfaces and behavior:**
+
+- Implement `diagnostic_complete_verification` and `diagnostic_show_verification` with the exact
+  signatures, operation names and result projections in design 3.7.
+- Reload failed/fixed TestRuns, declaration, each closed analysis payload and its already-attached
+  marker before the sole append. Enforce the exact unsigned ID/full artifact hash distinction.
+- Derive completion time from fixed-after TestRun and derive PASSED/FAILED/INCONCLUSIVE/CANCELLED
+  using the frozen priority. Only PASSED resolves; retry returns the same conclusion.
+- Missing/corrupt mandatory Evidence becomes the named INCONCLUSIVE conclusion; incompatible
+  identity and environment failure append nothing. Keep Host and Task 7A behavior compatible.
 
 **TDD verify:**
 
@@ -450,7 +480,7 @@ attaches a Monitor marker, completes a FixVerification, and reloads the authorit
 py -3.12 -m pytest -q tools/stm32-toolkit/tests/test_fix_verification_workflows.py tools/stm32-toolkit/tests/test_diagnostic_workflows.py tools/stm32-toolkit/tests/test_target_replay_workflows.py
 ```
 
-**Commit:** `feat(diagnostics): execute replay fix verification`
+**Commit:** `feat(diagnostics): complete replay fix verification`
 
 ## Task 8: Thin CLI and MCP projections
 

@@ -441,8 +441,32 @@ through `monitor-analysis/<analysis_id>`, requires the exact root and envelope, 
 payload fields needed by the frozen contract, including exact before/after run IDs, identity,
 `quality`, `conclusion`, and `changed`. A marker is reloaded in the same way through
 `diagnostic-marker/<marker_id>`, operation/kind `diagnostic-marker`, schema
-`stm32-diagnostic-marker/1`, and must reproduce every field of the supplied
-`DiagnosticMarkerRef`. This closed-Evidence projection is the only 0603-to-0602 dependency.
+`stm32-diagnostic-marker/1`, and must reproduce the supplied `DiagnosticMarkerRef` projection by
+the exact unequal-schema/ref-only rule below. This closed-Evidence projection is the only
+0603-to-0602 dependency.
+
+The two producer IDs are digests of unsigned projections, not artifact digests. Toolkit therefore
+uses these exact validation equations instead of equating either ID to the full artifact SHA:
+
+```text
+analysis_id = sha256(canonical JSON(analysis payload without analysis_id))
+marker_id   = sha256(canonical JSON(marker payload without marker_id))
+artifact.sha256 = sha256(the complete canonical payload bytes, including its ID)
+```
+
+The analysis payload has the exact Monitor `AnalysisResult.to_dict()` field set. Its `identity`
+object has schema `stm32-monitor-analysis-lineage/1` and exact origin/import workspace, logical
+project, target, before/after input snapshot, build, ELF and declaration fields. Those values must
+equal the failed/fixed TestRun identities and the SourceChangeDeclaration bridge; Monitor and
+Target run/session IDs remain separate and are not compared.
+
+The marker payload schema is `stm32-diagnostic-marker/1`; the supplied ref schema is
+`stm32-diagnostic-marker-ref/1`. Comparison deliberately excludes those unequal schema values and
+the ref-only `marker_evidence_id`. It requires equality of marker ID, analysis ID/evidence ID,
+diagnostic session ID, hypothesis ID, polarity, label and rationale. The marker envelope ID equals
+`marker_evidence_id`, its sole parent is the analysis Evidence ID, and its identity/metadata agree
+with the reloaded analysis envelope. A full marker payload must never be compared directly with a
+marker ref dictionary.
 
 The public workflow signatures are:
 
