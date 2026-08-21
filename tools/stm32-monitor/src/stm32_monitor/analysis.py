@@ -9,6 +9,7 @@ import math
 from types import MappingProxyType
 import unicodedata
 from typing import cast
+from uuid import UUID
 
 from .models import ObservationBinding, SampleBatch, SampleValue, WatchItem
 from .replay import MonitorReplayError, MonitorRunRef, canonical_replay_json_bytes
@@ -16,6 +17,10 @@ from .replay import MonitorReplayError, MonitorRunRef, canonical_replay_json_byt
 
 ANALYSIS_REQUEST_SCHEMA = "stm32-monitor-analysis-request/1"
 ANALYSIS_COMPUTATION_SCHEMA = "stm32-monitor-analysis-computation/1"
+ANALYSIS_LINEAGE_SCHEMA = "stm32-monitor-analysis-lineage/1"
+ANALYSIS_RESULT_SCHEMA = "stm32-monitor-analysis/1"
+ANALYSIS_EVIDENCE_REF_SCHEMA = "stm32-monitor-analysis-evidence-ref/1"
+DIAGNOSTIC_MARKER_SCHEMA = "stm32-diagnostic-marker/1"
 ANALYSIS_REQUEST_INVALID = "ANALYSIS_REQUEST_INVALID"
 MAX_ANALYSIS_BATCHES = 1024
 MAX_ANALYSIS_VALUES = 10_000
@@ -83,6 +88,65 @@ _STAT_NAMES = (
     "delta_first",
     "delta_last",
 )
+_LINEAGE_FIELDS = frozenset(
+    {
+        "schema",
+        "origin_workspace_id",
+        "import_workspace_id",
+        "logical_project_id",
+        "target_device",
+        "before_input_snapshot_sha256",
+        "before_build_id",
+        "before_elf_sha256",
+        "after_input_snapshot_sha256",
+        "after_build_id",
+        "after_elf_sha256",
+        "source_change_declaration_id",
+    }
+)
+_RESULT_FIELDS = frozenset(
+    {
+        "schema",
+        "analysis_id",
+        "request_digest",
+        "before_run_id",
+        "after_run_id",
+        "identity",
+        "quality",
+        "conclusion",
+        "reason_code",
+        "aligned_position_count",
+        "aligned_pair_count",
+        "excluded_position_count",
+        "before_first",
+        "before_last",
+        "before_min",
+        "before_max",
+        "after_first",
+        "after_last",
+        "after_min",
+        "after_max",
+        "delta_first",
+        "delta_last",
+        "changed",
+    }
+)
+_EVIDENCE_REF_FIELDS = frozenset({"schema", "analysis_id", "evidence_id"})
+_MARKER_FIELDS = frozenset(
+    {
+        "schema",
+        "marker_id",
+        "analysis_id",
+        "analysis_evidence_id",
+        "diagnostic_session_id",
+        "hypothesis_id",
+        "polarity",
+        "label",
+        "rationale",
+    }
+)
+_MARKER_POLARITIES = frozenset({"supports", "refutes"})
+_MARKER_LABELS = frozenset({"change-observed", "no-change-observed", "analysis-inconclusive"})
 
 
 class AnalysisError(ValueError):
@@ -164,6 +228,26 @@ def _finite_number(value: object, label: str) -> float | int:
     if type(value) is float and not math.isfinite(value):
         _fail(f"{label} is invalid")
     return cast(float | int, value)
+
+
+def _uuid_text(value: object, label: str) -> str:
+    if type(value) is not str:
+        _fail(f"{label} is invalid")
+    try:
+        parsed = UUID(value)
+    except (TypeError, ValueError):
+        _fail(f"{label} is invalid")
+    if str(parsed) != value:
+        _fail(f"{label} is invalid")
+    return value
+
+
+def _diagnostic_hash(value: object, label: str) -> str:
+    if type(value) is not str or len(value) != 32 or any(
+        character not in "0123456789abcdef" for character in value
+    ):
+        _fail(f"{label} is invalid")
+    return cast(str, value)
 
 
 @dataclass(frozen=True, slots=True)
@@ -386,6 +470,468 @@ class AnalysisComputation:
             "delta_first": self.delta_first,
             "delta_last": self.delta_last,
             "changed": self.changed,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class AnalysisLineage:
+    schema: str
+    origin_workspace_id: str
+    import_workspace_id: str
+    logical_project_id: str
+    target_device: str
+    before_input_snapshot_sha256: str
+    before_build_id: str
+    before_elf_sha256: str
+    after_input_snapshot_sha256: str
+    after_build_id: str
+    after_elf_sha256: str
+    source_change_declaration_id: str | None
+
+    def __post_init__(self) -> None:
+        if type(self.schema) is not str or self.schema != ANALYSIS_LINEAGE_SCHEMA:
+            _fail("analysis lineage schema is invalid")
+        _hash(self.origin_workspace_id, "origin workspace ID")
+        _hash(self.import_workspace_id, "import workspace ID")
+        _uuid_text(self.logical_project_id, "logical project ID")
+        _text(self.target_device, "target device")
+        for field_name in (
+            "before_input_snapshot_sha256",
+            "before_build_id",
+            "before_elf_sha256",
+            "after_input_snapshot_sha256",
+            "after_build_id",
+            "after_elf_sha256",
+        ):
+            _hash(getattr(self, field_name), field_name)
+        before = (
+            self.before_input_snapshot_sha256,
+            self.before_build_id,
+            self.before_elf_sha256,
+        )
+        after = (
+            self.after_input_snapshot_sha256,
+            self.after_build_id,
+            self.after_elf_sha256,
+        )
+        if before == after:
+            if self.source_change_declaration_id is not None:
+                _fail("identical firmware cannot carry a source declaration")
+        elif self.source_change_declaration_id is None:
+            _fail("changed firmware requires a source declaration")
+        else:
+            _hash(self.source_change_declaration_id, "source change declaration ID")
+
+    @classmethod
+    def new(
+        cls,
+        *,
+        before_run: MonitorRunRef,
+        after_run: MonitorRunRef,
+        source_change_declaration_id: str | None,
+    ) -> "AnalysisLineage":
+        if type(before_run) is not MonitorRunRef or type(after_run) is not MonitorRunRef:
+            _fail("analysis lineage run references are invalid")
+        if (
+            before_run.origin_workspace_id != after_run.origin_workspace_id
+            or before_run.import_workspace_id != after_run.import_workspace_id
+            or before_run.logical_project_id != after_run.logical_project_id
+            or before_run.target_device != after_run.target_device
+        ):
+            _fail("analysis lineage identities are incompatible")
+        return cls(
+            schema=ANALYSIS_LINEAGE_SCHEMA,
+            origin_workspace_id=before_run.origin_workspace_id,
+            import_workspace_id=before_run.import_workspace_id,
+            logical_project_id=before_run.logical_project_id,
+            target_device=before_run.target_device,
+            before_input_snapshot_sha256=before_run.input_snapshot_sha256,
+            before_build_id=before_run.build_id,
+            before_elf_sha256=before_run.elf_sha256,
+            after_input_snapshot_sha256=after_run.input_snapshot_sha256,
+            after_build_id=after_run.build_id,
+            after_elf_sha256=after_run.elf_sha256,
+            source_change_declaration_id=source_change_declaration_id,
+        )
+
+    @classmethod
+    def from_value(cls, value: object) -> "AnalysisLineage":
+        if type(value) is cls:
+            return value
+        if type(value) is not dict or set(value) != _LINEAGE_FIELDS:
+            _fail("analysis lineage fields are not closed")
+        _reject_tuples(value)
+        try:
+            return cls(**value)
+        except AnalysisError:
+            raise
+        except (TypeError, ValueError, OverflowError) as error:
+            raise AnalysisError(ANALYSIS_REQUEST_INVALID, "analysis lineage is invalid") from error
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "schema": self.schema,
+            "origin_workspace_id": self.origin_workspace_id,
+            "import_workspace_id": self.import_workspace_id,
+            "logical_project_id": self.logical_project_id,
+            "target_device": self.target_device,
+            "before_input_snapshot_sha256": self.before_input_snapshot_sha256,
+            "before_build_id": self.before_build_id,
+            "before_elf_sha256": self.before_elf_sha256,
+            "after_input_snapshot_sha256": self.after_input_snapshot_sha256,
+            "after_build_id": self.after_build_id,
+            "after_elf_sha256": self.after_elf_sha256,
+            "source_change_declaration_id": self.source_change_declaration_id,
+        }
+
+
+def _result_computation(value: "AnalysisResult") -> AnalysisComputation:
+    return AnalysisComputation(
+        schema=ANALYSIS_COMPUTATION_SCHEMA,
+        request_digest=value.request_digest,
+        quality=value.quality,
+        conclusion=value.conclusion,
+        reason_code=value.reason_code,
+        aligned_position_count=value.aligned_position_count,
+        aligned_pair_count=value.aligned_pair_count,
+        excluded_position_count=value.excluded_position_count,
+        before_first=value.before_first,
+        before_last=value.before_last,
+        before_min=value.before_min,
+        before_max=value.before_max,
+        after_first=value.after_first,
+        after_last=value.after_last,
+        after_min=value.after_min,
+        after_max=value.after_max,
+        delta_first=value.delta_first,
+        delta_last=value.delta_last,
+        changed=value.changed,
+    )
+
+
+def _result_unsigned(value: "AnalysisResult") -> dict[str, object]:
+    return {
+        "schema": value.schema,
+        "request_digest": value.request_digest,
+        "before_run_id": value.before_run_id,
+        "after_run_id": value.after_run_id,
+        "identity": value.identity.to_dict(),
+        "quality": value.quality,
+        "conclusion": value.conclusion,
+        "reason_code": value.reason_code,
+        "aligned_position_count": value.aligned_position_count,
+        "aligned_pair_count": value.aligned_pair_count,
+        "excluded_position_count": value.excluded_position_count,
+        "before_first": value.before_first,
+        "before_last": value.before_last,
+        "before_min": value.before_min,
+        "before_max": value.before_max,
+        "after_first": value.after_first,
+        "after_last": value.after_last,
+        "after_min": value.after_min,
+        "after_max": value.after_max,
+        "delta_first": value.delta_first,
+        "delta_last": value.delta_last,
+        "changed": value.changed,
+    }
+
+
+def _result_from_values(
+    *,
+    request: AnalysisRequest,
+    computation: AnalysisComputation,
+    lineage: AnalysisLineage,
+) -> "AnalysisResult":
+    unsigned = {
+        "schema": ANALYSIS_RESULT_SCHEMA,
+        "request_digest": request.request_digest,
+        "before_run_id": request.before_run.run_ref_sha256,
+        "after_run_id": request.after_run.run_ref_sha256,
+        "identity": lineage.to_dict(),
+        "quality": computation.quality,
+        "conclusion": computation.conclusion,
+        "reason_code": computation.reason_code,
+        "aligned_position_count": computation.aligned_position_count,
+        "aligned_pair_count": computation.aligned_pair_count,
+        "excluded_position_count": computation.excluded_position_count,
+        "before_first": computation.before_first,
+        "before_last": computation.before_last,
+        "before_min": computation.before_min,
+        "before_max": computation.before_max,
+        "after_first": computation.after_first,
+        "after_last": computation.after_last,
+        "after_min": computation.after_min,
+        "after_max": computation.after_max,
+        "delta_first": computation.delta_first,
+        "delta_last": computation.delta_last,
+        "changed": computation.changed,
+    }
+    analysis_id = sha256(canonical_replay_json_bytes(unsigned)).hexdigest()
+    return AnalysisResult(
+        schema=ANALYSIS_RESULT_SCHEMA,
+        analysis_id=analysis_id,
+        request_digest=request.request_digest,
+        before_run_id=request.before_run.run_ref_sha256,
+        after_run_id=request.after_run.run_ref_sha256,
+        identity=lineage,
+        quality=computation.quality,
+        conclusion=computation.conclusion,
+        reason_code=computation.reason_code,
+        aligned_position_count=computation.aligned_position_count,
+        aligned_pair_count=computation.aligned_pair_count,
+        excluded_position_count=computation.excluded_position_count,
+        before_first=computation.before_first,
+        before_last=computation.before_last,
+        before_min=computation.before_min,
+        before_max=computation.before_max,
+        after_first=computation.after_first,
+        after_last=computation.after_last,
+        after_min=computation.after_min,
+        after_max=computation.after_max,
+        delta_first=computation.delta_first,
+        delta_last=computation.delta_last,
+        changed=computation.changed,
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class AnalysisResult:
+    schema: str
+    analysis_id: str
+    request_digest: str
+    before_run_id: str
+    after_run_id: str
+    identity: AnalysisLineage
+    quality: str
+    conclusion: str
+    reason_code: str
+    aligned_position_count: int
+    aligned_pair_count: int
+    excluded_position_count: int
+    before_first: float | int | None
+    before_last: float | int | None
+    before_min: float | int | None
+    before_max: float | int | None
+    after_first: float | int | None
+    after_last: float | int | None
+    after_min: float | int | None
+    after_max: float | int | None
+    delta_first: float | int | None
+    delta_last: float | int | None
+    changed: bool | None
+
+    def __post_init__(self) -> None:
+        if type(self.schema) is not str or self.schema != ANALYSIS_RESULT_SCHEMA:
+            _fail("analysis result schema is invalid")
+        _hash(self.analysis_id, "analysis ID")
+        _hash(self.request_digest, "request digest")
+        _hash(self.before_run_id, "before run ID")
+        _hash(self.after_run_id, "after run ID")
+        if type(self.identity) is not AnalysisLineage:
+            _fail("analysis result lineage is invalid")
+        _result_computation(self)
+        try:
+            expected = sha256(canonical_replay_json_bytes(_result_unsigned(self))).hexdigest()
+        except (TypeError, ValueError, OverflowError, MonitorReplayError) as error:
+            raise AnalysisError(ANALYSIS_REQUEST_INVALID, "analysis result is invalid") from error
+        if self.analysis_id != expected:
+            _fail("analysis ID is invalid")
+
+    @classmethod
+    def new(
+        cls,
+        *,
+        request: AnalysisRequest,
+        computation: AnalysisComputation,
+        lineage: AnalysisLineage,
+    ) -> "AnalysisResult":
+        if type(request) is not AnalysisRequest:
+            _fail("analysis result request is invalid")
+        if type(computation) is not AnalysisComputation:
+            _fail("analysis result computation is invalid")
+        if type(lineage) is not AnalysisLineage:
+            _fail("analysis result lineage is invalid")
+        if computation.request_digest != request.request_digest:
+            _fail("analysis result request digest does not match")
+        expected_lineage = AnalysisLineage.new(
+            before_run=request.before_run,
+            after_run=request.after_run,
+            source_change_declaration_id=lineage.source_change_declaration_id,
+        )
+        if expected_lineage != lineage:
+            _fail("analysis result lineage does not match request")
+        return _result_from_values(request=request, computation=computation, lineage=lineage)
+
+    @classmethod
+    def from_value(cls, value: object) -> "AnalysisResult":
+        if type(value) is cls:
+            return value
+        if type(value) is not dict or set(value) != _RESULT_FIELDS:
+            _fail("analysis result fields are not closed")
+        _reject_tuples(value)
+        try:
+            return cls(
+                schema=value["schema"],
+                analysis_id=value["analysis_id"],
+                request_digest=value["request_digest"],
+                before_run_id=value["before_run_id"],
+                after_run_id=value["after_run_id"],
+                identity=AnalysisLineage.from_value(value["identity"]),
+                **{
+                    field_name: value[field_name]
+                    for field_name in _STAT_NAMES + _INTEGER_STAT_NAMES + ("quality", "conclusion", "reason_code", "changed")
+                },
+            )
+        except AnalysisError:
+            raise
+        except (TypeError, ValueError, OverflowError) as error:
+            raise AnalysisError(ANALYSIS_REQUEST_INVALID, "analysis result is invalid") from error
+
+    def to_dict(self) -> dict[str, object]:
+        unsigned = _result_unsigned(self)
+        return {
+            "schema": unsigned.pop("schema"),
+            "analysis_id": self.analysis_id,
+            **unsigned,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class AnalysisEvidenceRef:
+    schema: str
+    analysis_id: str
+    evidence_id: str
+
+    def __post_init__(self) -> None:
+        if type(self.schema) is not str or self.schema != ANALYSIS_EVIDENCE_REF_SCHEMA:
+            _fail("analysis evidence reference schema is invalid")
+        _hash(self.analysis_id, "analysis ID")
+        _hash(self.evidence_id, "evidence ID")
+
+    @classmethod
+    def new(cls, *, analysis_id: str, evidence_id: str) -> "AnalysisEvidenceRef":
+        return cls(ANALYSIS_EVIDENCE_REF_SCHEMA, analysis_id, evidence_id)
+
+    @classmethod
+    def from_value(cls, value: object) -> "AnalysisEvidenceRef":
+        if type(value) is cls:
+            return value
+        if type(value) is not dict or set(value) != _EVIDENCE_REF_FIELDS:
+            _fail("analysis evidence reference fields are not closed")
+        _reject_tuples(value)
+        try:
+            return cls(**value)
+        except AnalysisError:
+            raise
+        except (TypeError, ValueError, OverflowError) as error:
+            raise AnalysisError(ANALYSIS_REQUEST_INVALID, "analysis evidence reference is invalid") from error
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "schema": self.schema,
+            "analysis_id": self.analysis_id,
+            "evidence_id": self.evidence_id,
+        }
+
+
+def _marker_unsigned(value: "DiagnosticMarker") -> dict[str, object]:
+    return {
+        "schema": value.schema,
+        "analysis_id": value.analysis_id,
+        "analysis_evidence_id": value.analysis_evidence_id,
+        "diagnostic_session_id": value.diagnostic_session_id,
+        "hypothesis_id": value.hypothesis_id,
+        "polarity": value.polarity,
+        "label": value.label,
+        "rationale": value.rationale,
+    }
+
+
+@dataclass(frozen=True, slots=True)
+class DiagnosticMarker:
+    schema: str
+    marker_id: str
+    analysis_id: str
+    analysis_evidence_id: str
+    diagnostic_session_id: str
+    hypothesis_id: str
+    polarity: str
+    label: str
+    rationale: str
+
+    def __post_init__(self) -> None:
+        if type(self.schema) is not str or self.schema != DIAGNOSTIC_MARKER_SCHEMA:
+            _fail("diagnostic marker schema is invalid")
+        _hash(self.marker_id, "marker ID")
+        _hash(self.analysis_id, "analysis ID")
+        _hash(self.analysis_evidence_id, "analysis evidence ID")
+        _diagnostic_hash(self.diagnostic_session_id, "diagnostic session ID")
+        _diagnostic_hash(self.hypothesis_id, "hypothesis ID")
+        if type(self.polarity) is not str or self.polarity not in _MARKER_POLARITIES:
+            _fail("diagnostic marker polarity is invalid")
+        if type(self.label) is not str or self.label not in _MARKER_LABELS:
+            _fail("diagnostic marker label is invalid")
+        _text(self.rationale, "diagnostic marker rationale", maximum=4096)
+        try:
+            expected = sha256(canonical_replay_json_bytes(_marker_unsigned(self))).hexdigest()
+        except (TypeError, ValueError, OverflowError, MonitorReplayError) as error:
+            raise AnalysisError(ANALYSIS_REQUEST_INVALID, "diagnostic marker is invalid") from error
+        if self.marker_id != expected:
+            _fail("marker ID is invalid")
+
+    @classmethod
+    def new(
+        cls,
+        *,
+        analysis_id: str,
+        analysis_evidence_id: str,
+        diagnostic_session_id: str,
+        hypothesis_id: str,
+        polarity: str,
+        label: str,
+        rationale: str,
+    ) -> "DiagnosticMarker":
+        unsigned = {
+            "schema": DIAGNOSTIC_MARKER_SCHEMA,
+            "analysis_id": analysis_id,
+            "analysis_evidence_id": analysis_evidence_id,
+            "diagnostic_session_id": diagnostic_session_id,
+            "hypothesis_id": hypothesis_id,
+            "polarity": polarity,
+            "label": label,
+            "rationale": rationale,
+        }
+        try:
+            marker_id = sha256(canonical_replay_json_bytes(unsigned)).hexdigest()
+        except (TypeError, ValueError, OverflowError, MonitorReplayError) as error:
+            raise AnalysisError(ANALYSIS_REQUEST_INVALID, "diagnostic marker is invalid") from error
+        return cls(marker_id=marker_id, **unsigned)
+
+    @classmethod
+    def from_value(cls, value: object) -> "DiagnosticMarker":
+        if type(value) is cls:
+            return value
+        if type(value) is not dict or set(value) != _MARKER_FIELDS:
+            _fail("diagnostic marker fields are not closed")
+        _reject_tuples(value)
+        try:
+            return cls(**value)
+        except AnalysisError:
+            raise
+        except (TypeError, ValueError, OverflowError) as error:
+            raise AnalysisError(ANALYSIS_REQUEST_INVALID, "diagnostic marker is invalid") from error
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "schema": self.schema,
+            "marker_id": self.marker_id,
+            "analysis_id": self.analysis_id,
+            "analysis_evidence_id": self.analysis_evidence_id,
+            "diagnostic_session_id": self.diagnostic_session_id,
+            "hypothesis_id": self.hypothesis_id,
+            "polarity": self.polarity,
+            "label": self.label,
+            "rationale": self.rationale,
         }
 
 
@@ -627,10 +1173,18 @@ def analyze_monitor_windows(
 
 __all__ = [
     "ANALYSIS_COMPUTATION_SCHEMA",
+    "ANALYSIS_EVIDENCE_REF_SCHEMA",
+    "ANALYSIS_LINEAGE_SCHEMA",
     "ANALYSIS_REQUEST_INVALID",
     "ANALYSIS_REQUEST_SCHEMA",
+    "ANALYSIS_RESULT_SCHEMA",
+    "DIAGNOSTIC_MARKER_SCHEMA",
     "AnalysisComputation",
+    "AnalysisEvidenceRef",
     "AnalysisError",
+    "AnalysisLineage",
     "AnalysisRequest",
+    "AnalysisResult",
+    "DiagnosticMarker",
     "analyze_monitor_windows",
 ]

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import builtins
 import json
-from dataclasses import replace
+from dataclasses import fields, replace
 from hashlib import sha256
 from pathlib import Path
 from uuid import UUID
@@ -13,8 +13,12 @@ import stm32_monitor.analysis as analysis_module
 from stm32_monitor.analysis import (
     ANALYSIS_REQUEST_INVALID,
     AnalysisComputation,
+    AnalysisEvidenceRef,
     AnalysisError,
+    AnalysisLineage,
     AnalysisRequest,
+    AnalysisResult,
+    DiagnosticMarker,
     analyze_monitor_windows,
 )
 from stm32_monitor.models import MAX_SIGNED_INT64, SampleBatch, SampleValue, WatchItem
@@ -522,3 +526,295 @@ def test_analysis_error_is_bounded_and_stable() -> None:
     assert len(error.message) <= 256
     with pytest.raises(ValueError):
         AnalysisError("OTHER", "bad")
+
+
+def test_authoritative_analysis_values_round_trip_and_derive_closed_ids(tmp_path: Path) -> None:
+    _, _, _, before, after, before_ref, after_ref = _case(tmp_path)
+    request = _request(before_ref, after_ref)
+    computation = analyze_monitor_windows(request, before, after)
+    lineage = AnalysisLineage.new(
+        before_run=before_ref,
+        after_run=after_ref,
+        source_change_declaration_id="d" * 64,
+    )
+    result = AnalysisResult.new(request=request, computation=computation, lineage=lineage)
+    evidence_ref = AnalysisEvidenceRef.new(
+        analysis_id=result.analysis_id,
+        evidence_id="e" * 64,
+    )
+    marker = DiagnosticMarker.new(
+        analysis_id=result.analysis_id,
+        analysis_evidence_id=evidence_ref.evidence_id,
+        diagnostic_session_id="f" * 32,
+        hypothesis_id="1" * 32,
+        polarity="supports",
+        label="change-observed",
+        rationale="the changed values support the hypothesis",
+    )
+    assert AnalysisLineage.from_value(lineage.to_dict()) == lineage
+    assert AnalysisResult.from_value(result.to_dict()) == result
+    assert AnalysisEvidenceRef.from_value(evidence_ref.to_dict()) == evidence_ref
+    assert DiagnosticMarker.from_value(marker.to_dict()) == marker
+    assert "evidence_id" not in result.to_dict()
+
+
+def _authoritative_case(tmp_path: Path):
+    _, _, _, before, after, before_ref, after_ref = _case(tmp_path)
+    request = _request(before_ref, after_ref)
+    computation = analyze_monitor_windows(request, before, after)
+    lineage = AnalysisLineage.new(
+        before_run=before_ref,
+        after_run=after_ref,
+        source_change_declaration_id="d" * 64,
+    )
+    return request, computation, lineage, AnalysisResult.new(
+        request=request,
+        computation=computation,
+        lineage=lineage,
+    )
+
+
+def test_authoritative_dataclass_field_order_and_exact_payload_shapes(tmp_path: Path) -> None:
+    request, computation, lineage, result = _authoritative_case(tmp_path)
+    evidence = AnalysisEvidenceRef.new(analysis_id=result.analysis_id, evidence_id="e" * 64)
+    marker = DiagnosticMarker.new(
+        analysis_id=result.analysis_id,
+        analysis_evidence_id=evidence.evidence_id,
+        diagnostic_session_id="f" * 32,
+        hypothesis_id="1" * 32,
+        polarity="supports",
+        label="change-observed",
+        rationale="changed",
+    )
+    assert tuple(item.name for item in fields(AnalysisLineage)) == (
+        "schema", "origin_workspace_id", "import_workspace_id", "logical_project_id", "target_device",
+        "before_input_snapshot_sha256", "before_build_id", "before_elf_sha256",
+        "after_input_snapshot_sha256", "after_build_id", "after_elf_sha256", "source_change_declaration_id",
+    )
+    assert tuple(item.name for item in fields(AnalysisResult)) == (
+        "schema", "analysis_id", "request_digest", "before_run_id", "after_run_id", "identity",
+        "quality", "conclusion", "reason_code", "aligned_position_count", "aligned_pair_count",
+        "excluded_position_count", "before_first", "before_last", "before_min", "before_max",
+        "after_first", "after_last", "after_min", "after_max", "delta_first", "delta_last", "changed",
+    )
+    assert tuple(item.name for item in fields(AnalysisEvidenceRef)) == (
+        "schema", "analysis_id", "evidence_id",
+    )
+    assert tuple(item.name for item in fields(DiagnosticMarker)) == (
+        "schema", "marker_id", "analysis_id", "analysis_evidence_id", "diagnostic_session_id",
+        "hypothesis_id", "polarity", "label", "rationale",
+    )
+    assert set(result.to_dict()) == {
+        "schema", "analysis_id", "request_digest", "before_run_id", "after_run_id", "identity",
+        "quality", "conclusion", "reason_code", "aligned_position_count", "aligned_pair_count",
+        "excluded_position_count", "before_first", "before_last", "before_min", "before_max",
+        "after_first", "after_last", "after_min", "after_max", "delta_first", "delta_last", "changed",
+    }
+    assert set(lineage.to_dict()) == {
+        "schema", "origin_workspace_id", "import_workspace_id", "logical_project_id", "target_device",
+        "before_input_snapshot_sha256", "before_build_id", "before_elf_sha256",
+        "after_input_snapshot_sha256", "after_build_id", "after_elf_sha256", "source_change_declaration_id",
+    }
+    assert request.request_digest == computation.request_digest
+    assert result.before_run_id == request.before_run.run_ref_sha256
+    assert result.after_run_id == request.after_run.run_ref_sha256
+    unsigned_result = result.to_dict()
+    analysis_id = unsigned_result.pop("analysis_id")
+    assert analysis_id == sha256(canonical_replay_json_bytes(unsigned_result)).hexdigest()
+    unsigned_marker = marker.to_dict()
+    marker_id = unsigned_marker.pop("marker_id")
+    assert marker_id == sha256(canonical_replay_json_bytes(unsigned_marker)).hexdigest()
+
+
+def test_lineage_identical_firmware_allows_no_declaration_and_changed_requires_one(tmp_path: Path) -> None:
+    paths, _, _, _, _, before_ref, after_ref = _case(tmp_path)
+    identical_after = _ref_with(
+        after_ref,
+        origin_workspace_id=before_ref.origin_workspace_id,
+        import_workspace_id=before_ref.import_workspace_id,
+        logical_project_id=before_ref.logical_project_id,
+        target_device=before_ref.target_device,
+        input_snapshot_sha256=before_ref.input_snapshot_sha256,
+        build_id=before_ref.build_id,
+        elf_sha256=before_ref.elf_sha256,
+    )
+    identical = AnalysisLineage.new(
+        before_run=before_ref,
+        after_run=identical_after,
+        source_change_declaration_id=None,
+    )
+    assert identical.source_change_declaration_id is None
+    with pytest.raises(AnalysisError):
+        AnalysisLineage.new(
+            before_run=before_ref,
+            after_run=identical_after,
+            source_change_declaration_id="d" * 64,
+        )
+    _ = paths
+
+
+@pytest.mark.parametrize("firmware_field", [
+    "input_snapshot_sha256", "build_id", "elf_sha256",
+])
+def test_lineage_copies_each_changed_firmware_field_and_requires_declaration(
+    tmp_path: Path, firmware_field: str
+) -> None:
+    _, _, _, _, _, before_ref, after_ref = _case(tmp_path)
+    values = {
+        "input_snapshot_sha256": before_ref.input_snapshot_sha256,
+        "build_id": before_ref.build_id,
+        "elf_sha256": before_ref.elf_sha256,
+    }
+    values[firmware_field] = "f" * 64
+    changed_after = _ref_with(after_ref, **values)
+    lineage = AnalysisLineage.new(
+        before_run=before_ref,
+        after_run=changed_after,
+        source_change_declaration_id="d" * 64,
+    )
+    assert getattr(lineage, f"after_{firmware_field}") == "f" * 64
+
+
+@pytest.mark.parametrize("scope_field,scope_value", [
+    ("origin_workspace_id", "f" * 64),
+    ("import_workspace_id", "f" * 64),
+    ("logical_project_id", "123e4567-e89b-42d3-a456-426614174001"),
+    ("target_device", "host:other"),
+])
+def test_lineage_rejects_each_mismatched_shared_scope(
+    tmp_path: Path, scope_field: str, scope_value: str
+) -> None:
+    _, _, _, _, _, before_ref, after_ref = _case(tmp_path)
+    with pytest.raises(AnalysisError):
+        AnalysisLineage.new(
+            before_run=before_ref,
+            after_run=_ref_with(after_ref, **{scope_field: scope_value}),
+            source_change_declaration_id="d" * 64,
+        )
+
+
+@pytest.mark.parametrize("quality", ["VALID", "DEGRADED", "INVALID"])
+def test_result_preserves_all_computation_qualities(tmp_path: Path, quality: str) -> None:
+    paths, before_document, after_document, before, after, before_ref, _ = _case(tmp_path)
+    if quality == "INVALID":
+        after = tuple(_replace_counter(batch, batch.values[0].typed_value["value"], value_type="int32") for batch in after)
+    elif quality == "DEGRADED":
+        before = before + (
+            replace(before[-1], sequence=2, scheduled_unix_ns=before[-1].scheduled_unix_ns + 1_000_000,
+                    captured_unix_ns=before[-1].captured_unix_ns + 1_000_000),
+        )
+        after = after + (
+            _replace_counter(
+                replace(after[-1], sequence=2, scheduled_unix_ns=after[-1].scheduled_unix_ns + 1_000_000,
+                        captured_unix_ns=after[-1].captured_unix_ns + 1_000_000),
+                "not numeric",
+            ),
+        )
+    after_ref = _with_reference(after_document, paths, after)
+    before_ref = _with_reference(before_document, paths, before)
+    request = _request(before_ref, after_ref)
+    computation = analyze_monitor_windows(request, before, after)
+    lineage = AnalysisLineage.new(
+        before_run=before_ref, after_run=after_ref, source_change_declaration_id="d" * 64,
+    )
+    result = AnalysisResult.new(request=request, computation=computation, lineage=lineage)
+    assert result.quality == quality
+    assert result.conclusion == computation.conclusion
+
+
+def test_result_requires_request_digest_and_exact_lineage_binding(tmp_path: Path) -> None:
+    request, computation, lineage, result = _authoritative_case(tmp_path)
+    with pytest.raises(AnalysisError):
+        AnalysisResult.new(
+            request=request,
+            computation=replace(computation, request_digest="e" * 64),
+            lineage=lineage,
+        )
+    with pytest.raises(AnalysisError):
+        AnalysisResult.new(
+            request=request,
+            computation=computation,
+            lineage=replace(lineage, target_device="host:other"),
+        )
+    tampered = result.to_dict()
+    tampered["analysis_id"] = "0" * 64
+    with pytest.raises(AnalysisError):
+        AnalysisResult.from_value(tampered)
+
+
+@pytest.mark.parametrize("label", ["change-observed", "no-change-observed", "analysis-inconclusive"])
+def test_marker_labels_ids_nfc_bounds_and_no_generic_evidence_field(tmp_path: Path, label: str) -> None:
+    _, _, _, result = _authoritative_case(tmp_path)
+    marker = DiagnosticMarker.new(
+        analysis_id=result.analysis_id,
+        analysis_evidence_id="e" * 64,
+        diagnostic_session_id="f" * 32,
+        hypothesis_id="1" * 32,
+        polarity="refutes" if label == "no-change-observed" else "supports",
+        label=label,
+        rationale="é",
+    )
+    assert len(marker.marker_id) == 64
+    assert len(marker.diagnostic_session_id) == 32
+    assert len(marker.hypothesis_id) == 32
+    assert "evidence_id" not in marker.to_dict()
+    changed = marker.to_dict()
+    changed["rationale"] = "different"
+    with pytest.raises(AnalysisError):
+        DiagnosticMarker.from_value(changed)
+    with pytest.raises(AnalysisError):
+        replace(marker, rationale="e\u0301")
+    with pytest.raises(AnalysisError):
+        replace(marker, rationale="x" * 4097)
+
+
+@pytest.mark.parametrize("kind", ["lineage", "result", "evidence", "marker"])
+def test_authoritative_values_reject_subclasses_tuples_and_unknown_fields(tmp_path: Path, kind: str) -> None:
+    _, _, lineage, result = _authoritative_case(tmp_path)
+    value = {
+        "lineage": lineage,
+        "result": result,
+        "evidence": AnalysisEvidenceRef.new(analysis_id=result.analysis_id, evidence_id="e" * 64),
+        "marker": DiagnosticMarker.new(
+            analysis_id=result.analysis_id, analysis_evidence_id="e" * 64,
+            diagnostic_session_id="f" * 32, hypothesis_id="1" * 32,
+            polarity="supports", label="change-observed", rationale="x",
+        ),
+    }[kind]
+    cls = type(value)
+    subclass = type(f"{kind.title()}Subclass", (cls,), {})
+    instance = subclass(*(getattr(value, item.name) for item in fields(cls)))
+    with pytest.raises(AnalysisError):
+        cls.from_value(instance)
+    unknown = value.to_dict()
+    unknown["unknown"] = True
+    with pytest.raises(AnalysisError):
+        cls.from_value(unknown)
+    tuple_payload = value.to_dict()
+    tuple_payload[next(iter(tuple_payload))] = ("tuple",)
+    with pytest.raises(AnalysisError):
+        cls.from_value(tuple_payload)
+
+
+def test_authoritative_values_reject_malformed_numeric_and_id_fields(tmp_path: Path) -> None:
+    _, _, lineage, result = _authoritative_case(tmp_path)
+    lineage_payload = lineage.to_dict()
+    lineage_payload["target_device"] = "\u0000"
+    with pytest.raises(AnalysisError):
+        AnalysisLineage.from_value(lineage_payload)
+    evidence = AnalysisEvidenceRef.new(analysis_id=result.analysis_id, evidence_id="e" * 64).to_dict()
+    evidence["analysis_id"] = "A" * 64
+    with pytest.raises(AnalysisError):
+        AnalysisEvidenceRef.from_value(evidence)
+    marker = DiagnosticMarker.new(
+        analysis_id=result.analysis_id, analysis_evidence_id="e" * 64,
+        diagnostic_session_id="f" * 32, hypothesis_id="1" * 32,
+        polarity="supports", label="change-observed", rationale="x",
+    ).to_dict()
+    marker["hypothesis_id"] = "1" * 31
+    with pytest.raises(AnalysisError):
+        DiagnosticMarker.from_value(marker)
+    result_payload = result.to_dict()
+    result_payload["aligned_pair_count"] = True
+    with pytest.raises(AnalysisError):
+        AnalysisResult.from_value(result_payload)
