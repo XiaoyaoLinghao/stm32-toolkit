@@ -265,6 +265,13 @@ VerificationPlan
   plan_digest
 ```
 
+`verification_plan_id` is an independently allocated immutable 64-hex identifier, chosen before
+the declaration is frozen; it is not the plan digest. `plan_digest` hashes the complete canonical
+plan fields including that ID and the resulting declaration ID. This breaks the otherwise
+impossible circular equation between `SourceChangeDeclaration.validation_plan_id` and
+`VerificationPlan.source_change_declaration_id`. FixVerification binds both ID and digest and never
+requires their bytes to be equal.
+
 The declaration records facts supplied by the caller; Toolkit does not edit or inspect source to
 invent them. Exact project-relative paths are retained, while absolute paths are rejected from
 public output. The diff artifact must already belong to the exact `diff_evidence_id` envelope and
