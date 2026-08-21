@@ -32,6 +32,7 @@ from stm32_monitor.replay import (
 from stm32_toolkit.diagnostics import DiagnosticMarkerRef, SourceChangeDeclaration
 from stm32_toolkit.evidence import ArtifactRef, EvidenceEnvelope, EvidenceIdentity
 from stm32_toolkit.evidence.gc import get_root, plan_gc
+from stm32_toolkit.evidence.model import canonical_json_bytes
 from stm32_toolkit.evidence.store import EvidenceStore
 from stm32_toolkit.paths import WorkspacePaths
 from stm32_toolkit.testing.model import TestCaseResult, TestRunManifest
@@ -315,6 +316,17 @@ def _evidence_tree(evidence: EvidenceStore) -> dict[str, bytes]:
     }
 
 
+def _monitor_ref_root_path(evidence: EvidenceStore, operation_id: str) -> Path:
+    roots = tuple((evidence.root / "roots" / "monitor-run-ref").glob("*.json"))
+    assert len(roots) == 2
+    for path in roots:
+        if get_root(evidence, "monitor-run-ref", operation_id).to_dict() == json.loads(
+            path.read_text(encoding="utf-8")
+        ):
+            return path
+    raise AssertionError("monitor reference root was not found")
+
+
 def _publish(
     paths: WorkspacePaths,
     evidence: EvidenceStore,
@@ -431,6 +443,37 @@ def test_publication_fields_identity_and_transcript_metadata_are_exact(tmp_path:
     assert analysis_root.metadata["import_workspace_id"] == paths.workspace_id
     assert analysis_root.metadata["execution_source"] == "replay"
     assert analysis_root.metadata["physical_transport_evidence"] is False
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    ("missing-root", "missing-manifest", "corrupt-artifact", "contradictory-root"),
+)
+def test_compare_validates_complete_monitor_reference_authority_before_history(
+    tmp_path: Path, mutation: str
+) -> None:
+    paths = _paths(tmp_path)
+    evidence, before, after = _ingest_pair(paths)
+    declaration = _declaration(tmp_path, evidence, before, after)
+    root_path = _monitor_ref_root_path(evidence, before.operation_id)
+    ref_root = get_root(evidence, "monitor-run-ref", before.operation_id)
+    if mutation == "missing-root":
+        root_path.unlink()
+    elif mutation == "missing-manifest":
+        (evidence.root / "manifests" / f"{ref_root.manifest_id}.json").unlink()
+    elif mutation == "corrupt-artifact":
+        envelope = evidence.get_envelope(ref_root.manifest_id)
+        (evidence.root / envelope.artifacts[0].relative_path).write_bytes(b"corrupt-ref")
+    else:
+        payload = json.loads(root_path.read_text(encoding="utf-8"))
+        payload["metadata"]["run_ref_sha256"] = "0" * 64
+        root_path.write_bytes(canonical_json_bytes(payload))
+    before_tree = _evidence_tree(evidence)
+
+    with pytest.raises(AnalysisWorkflowError) as error:
+        _publish(paths, evidence, before, after, declaration)
+    assert error.value.code == EVIDENCE_INTEGRITY_FAILURE
+    assert _evidence_tree(evidence) == before_tree
 
 
 def test_insufficient_pairs_are_published_as_retained_inconclusive_result(tmp_path: Path) -> None:

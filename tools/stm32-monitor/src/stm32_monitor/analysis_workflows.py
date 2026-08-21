@@ -43,6 +43,10 @@ from .history import (
 from .models import ObservationBinding, SampleBatch, unix_ns_to_utc
 from .protocol import ProtocolResult
 from .replay import (
+    MONITOR_RUN_REF_ARTIFACT_KIND,
+    MONITOR_RUN_REF_OPERATION,
+    MONITOR_RUN_REF_ROOT_TYPE,
+    MONITOR_RUN_REF_SCHEMA,
     MONITOR_REPLAY_EXECUTION_SOURCE,
     MONITOR_REPLAY_IMPORT_OPERATION,
     MonitorReplayDocument,
@@ -377,7 +381,77 @@ def _validate_transcript(
         raise AssertionError from error
     if projected_digests != reference.projected_batch_sha256s:
         _fail(EVIDENCE_INTEGRITY_FAILURE, "replay projected batch digests contradict the run reference")
+    _validate_reference_authority(evidence_store, reference, envelope)
     return envelope
+
+
+def _validate_reference_authority(
+    evidence_store: EvidenceStore,
+    reference: MonitorRunRef,
+    transcript_envelope: EvidenceEnvelope,
+) -> None:
+    expected_metadata = {
+        "operation_id": reference.operation_id,
+        "run_ref_sha256": reference.run_ref_sha256,
+        "fixture_sha256": reference.fixture_sha256,
+        "scenario_role": reference.scenario_role,
+        "origin_workspace_id": reference.origin_workspace_id,
+        "import_workspace_id": reference.import_workspace_id,
+        "execution_source": MONITOR_REPLAY_EXECUTION_SOURCE,
+        "physical_transport_evidence": False,
+    }
+    try:
+        root = _load_root(evidence_store, MONITOR_RUN_REF_ROOT_TYPE, reference.operation_id)
+        if (
+            root.root_type != MONITOR_RUN_REF_ROOT_TYPE
+            or root.root_id != reference.operation_id
+            or set(root.metadata) != set(expected_metadata)
+            or dict(root.metadata) != expected_metadata
+        ):
+            _fail(EVIDENCE_INTEGRITY_FAILURE, "replay reference root is inconsistent")
+        envelope = evidence_store.get_envelope(root.manifest_id)
+        if (
+            root.manifest_id != str(envelope.evidence_id)
+            or envelope.operation != MONITOR_RUN_REF_OPERATION
+            or envelope.parents != (str(transcript_envelope.evidence_id),)
+            or len(envelope.artifacts) != 1
+            or dict(envelope.metadata) != expected_metadata
+            or envelope.identity != _identity_for_ref(reference)
+            or envelope.produced_at_utc != transcript_envelope.produced_at_utc
+        ):
+            _fail(EVIDENCE_INTEGRITY_FAILURE, "replay reference envelope is inconsistent")
+        artifact = envelope.artifacts[0]
+        if artifact.kind != MONITOR_RUN_REF_ARTIFACT_KIND or artifact.media_type != "application/json":
+            _fail(EVIDENCE_INTEGRITY_FAILURE, "replay reference artifact is inconsistent")
+        raw = evidence_store.read_artifact(
+            artifact,
+            maximum_bytes=MAX_EVIDENCE_READ_BYTES,
+        )
+        expected_raw = canonical_replay_json_bytes(reference.to_dict())
+        if raw != expected_raw:
+            _fail(EVIDENCE_INTEGRITY_FAILURE, "replay reference artifact differs from its reference")
+        decoded = json.loads(raw.decode("utf-8"))
+        try:
+            stored = MonitorRunRef.from_value(decoded)
+        except MonitorReplayError as error:
+            _fail(EVIDENCE_INTEGRITY_FAILURE, "replay reference artifact is invalid")
+            raise AssertionError from error
+        if stored != reference or stored.schema != MONITOR_RUN_REF_SCHEMA:
+            _fail(EVIDENCE_INTEGRITY_FAILURE, "replay reference artifact contradicts its reference")
+    except AnalysisWorkflowError:
+        raise
+    except FileNotFoundError as error:
+        _fail(EVIDENCE_INTEGRITY_FAILURE, "replay reference Evidence is absent")
+        raise AssertionError from error
+    except (EvidenceValidationError, MonitorReplayError, UnicodeError, json.JSONDecodeError, TypeError, ValueError) as error:
+        _fail(EVIDENCE_INTEGRITY_FAILURE, "replay reference Evidence is corrupt")
+        raise AssertionError from error
+    except OSError as error:
+        _fail(ENVIRONMENT_FAILURE, "replay reference Evidence could not be read")
+        raise AssertionError from error
+    except Exception as error:
+        _fail(ENVIRONMENT_FAILURE, "replay reference Evidence could not be read")
+        raise AssertionError from error
 
 
 def _validate_diff_evidence(

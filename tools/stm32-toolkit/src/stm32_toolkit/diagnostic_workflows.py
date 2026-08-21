@@ -113,6 +113,27 @@ _MONITOR_BINDING_FIELDS = frozenset(
         "gitDirty", "flashSessionId", "leaseId", "dwarfSha256", "svdSha256",
     }
 )
+_MONITOR_REF_FIELDS = frozenset(
+    {
+        "schema", "operation_id", "scenario_role", "execution_source",
+        "physical_transport_evidence", "origin_workspace_id", "import_workspace_id",
+        "logical_project_id", "origin_session_id", "projected_session_id",
+        "origin_run_id", "projected_run_id", "target_device", "probe_id",
+        "physical_target", "build_id", "elf_sha256", "input_snapshot_sha256",
+        "git_head", "git_dirty", "flash_session_id", "lease_id", "dwarf_sha256",
+        "svd_sha256", "group_id", "group_revision", "start_sequence",
+        "end_sequence_exclusive", "start_captured_unix_ns",
+        "end_captured_unix_ns_exclusive", "fixture_sha256",
+        "projected_batch_sha256s", "transcript_evidence_id", "run_ref_sha256",
+    }
+)
+_MONITOR_REF_METADATA_FIELDS = frozenset(
+    {
+        "operation_id", "run_ref_sha256", "fixture_sha256", "scenario_role",
+        "origin_workspace_id", "import_workspace_id", "execution_source",
+        "physical_transport_evidence",
+    }
+)
 _MAX_REPLAY_JSON_DEPTH = 32
 _MAX_REPLAY_JSON_NODES = 10_000
 _MAX_REPLAY_JSON_STRING_CHARS = 1_048_576
@@ -930,7 +951,7 @@ def _read_transcript_parent(
     evidence_id: str,
     run: object,
     expected_role: str,
-) -> EvidenceEnvelope:
+) -> tuple[EvidenceEnvelope, dict[str, object]]:
     try:
         run_identity = getattr(run, "identity", run)
         envelope = state.evidence_store.get_envelope(evidence_id)
@@ -1039,12 +1060,321 @@ def _read_transcript_parent(
             for batch in batches
         ):
             raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
-        return envelope
+        reference = _read_monitor_reference_authority(
+            state,
+            operation_id=operation_id,
+            expected_role=expected_role,
+            run_identity=run_identity,
+            transcript_root=root,
+            transcript_envelope=envelope,
+            transcript_metadata=metadata,
+            transcript_document=decoded,
+            transcript_binding=binding,
+            transcript_batches=batches,
+        )
+        return envelope, reference
     except _WorkflowFailure:
         raise
     except FileNotFoundError as error:
         raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE) from error
-    except (EvidenceValidationError, UnicodeError, json.JSONDecodeError, TypeError, ValueError, OverflowError) as error:
+    except EvidenceValidationError as error:
+        code = _ENVIRONMENT_FAILURE if _has_provider_os_error(error) else _EVIDENCE_INTEGRITY_FAILURE
+        raise _WorkflowFailure(code) from error
+    except (UnicodeError, json.JSONDecodeError, TypeError, ValueError, OverflowError) as error:
+        raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE) from error
+    except OSError as error:
+        raise _WorkflowFailure(_ENVIRONMENT_FAILURE) from error
+
+
+def _read_monitor_reference_authority(
+    state: _WorkflowState,
+    *,
+    operation_id: str,
+    expected_role: str,
+    run_identity: object,
+    transcript_root: object,
+    transcript_envelope: EvidenceEnvelope,
+    transcript_metadata: dict[str, object],
+    transcript_document: dict[str, object],
+    transcript_binding: dict[str, object],
+    transcript_batches: list[object],
+) -> dict[str, object]:
+    """Load and independently validate the closed MonitorRunRef projection.
+
+    The Toolkit deliberately keeps this parser local: importing Monitor here
+    would make the Target diagnostic boundary depend on the producer package.
+    """
+    try:
+        reference_root = get_root(
+            state.evidence_store,
+            "monitor-run-ref",
+            operation_id,
+        )
+        root_metadata = dict(reference_root.metadata)
+        if (
+            reference_root.root_type != "monitor-run-ref"
+            or reference_root.root_id != operation_id
+            or set(root_metadata) != _MONITOR_REF_METADATA_FIELDS
+            or root_metadata["operation_id"] != operation_id
+            or root_metadata["fixture_sha256"] != transcript_metadata["fixture_sha256"]
+            or root_metadata["scenario_role"] != expected_role
+            or root_metadata["origin_workspace_id"] != transcript_binding["workspaceId"]
+            or root_metadata["import_workspace_id"] != state.workspace.workspace_id
+            or root_metadata["execution_source"] != "replay"
+            or root_metadata["physical_transport_evidence"] is not False
+        ):
+            raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
+        _hash_value(root_metadata["run_ref_sha256"])
+        reference_envelope = state.evidence_store.get_envelope(reference_root.manifest_id)
+        if (
+            reference_root.manifest_id != str(reference_envelope.evidence_id)
+            or reference_envelope.operation != "monitor-run-ref"
+            or reference_envelope.parents != (str(transcript_envelope.evidence_id),)
+            or len(reference_envelope.artifacts) != 1
+            or dict(reference_envelope.metadata) != root_metadata
+            or reference_envelope.produced_at_utc != transcript_envelope.produced_at_utc
+        ):
+            raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
+        artifact = reference_envelope.artifacts[0]
+        if artifact.kind != "monitor-run-ref" or artifact.media_type != "application/json":
+            raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
+        raw = state.evidence_store.read_artifact(
+            artifact,
+            maximum_bytes=MAX_EVIDENCE_READ_BYTES,
+        )
+        if (
+            artifact.size_bytes != len(raw)
+            or artifact.sha256 != hashlib.sha256(raw).hexdigest()
+        ):
+            raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
+        decoded = _decode_replay_json(raw)
+        if not isinstance(decoded, dict) or _canonical_replay_json_bytes(decoded) != raw:
+            raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
+        reference = _require_exact_mapping(decoded, _MONITOR_REF_FIELDS)
+
+        if (
+            reference["schema"] != "stm32-monitor-run-ref/1"
+            or reference["operation_id"] != operation_id
+            or reference["scenario_role"] != expected_role
+            or reference["execution_source"] != "replay"
+            or reference["physical_transport_evidence"] is not False
+            or reference["run_ref_sha256"] != root_metadata["run_ref_sha256"]
+            or reference["fixture_sha256"] != transcript_metadata["fixture_sha256"]
+        ):
+            raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
+
+        try:
+            if str(UUID(operation_id)) != operation_id:
+                raise ValueError("operation_id is not canonical")
+        except (TypeError, ValueError) as error:
+            raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE) from error
+
+        expected_reference = {
+            "origin_workspace_id": transcript_binding["workspaceId"],
+            "import_workspace_id": state.workspace.workspace_id,
+            "logical_project_id": transcript_binding["logicalProjectId"],
+            "origin_session_id": transcript_binding["sessionId"],
+            "projected_session_id": state.workspace.session_id,
+            "origin_run_id": transcript_metadata["origin_run_id"],
+            "projected_run_id": transcript_metadata["projected_run_id"],
+            "target_device": transcript_binding["targetDevice"],
+            "probe_id": transcript_binding["probeId"],
+            "physical_target": transcript_binding["physicalTarget"],
+            "build_id": transcript_binding["buildId"],
+            "elf_sha256": transcript_binding["elfSha256"],
+            "input_snapshot_sha256": transcript_binding["inputSnapshotSha256"],
+            "git_head": transcript_binding["gitHead"],
+            "git_dirty": transcript_binding["gitDirty"],
+            "flash_session_id": transcript_binding["flashSessionId"],
+            "lease_id": transcript_binding["leaseId"],
+            "dwarf_sha256": transcript_binding["dwarfSha256"],
+            "svd_sha256": transcript_binding["svdSha256"],
+        }
+        if any(reference[key] != value for key, value in expected_reference.items()):
+            raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
+        if (
+            reference["logical_project_id"] != str(state.model.logical_project_id)
+            or reference["origin_workspace_id"] != getattr(run_identity, "workspace_id", None)
+            or reference["logical_project_id"] != getattr(run_identity, "project_id", None)
+        ):
+            raise _WorkflowFailure(_INCOMPATIBLE_IDENTITY)
+
+        for key in (
+            "origin_workspace_id", "import_workspace_id",
+            "fixture_sha256", "build_id", "elf_sha256", "input_snapshot_sha256",
+            "dwarf_sha256", "transcript_evidence_id", "run_ref_sha256",
+        ):
+            _hash_value(reference[key])
+        try:
+            if str(UUID(str(reference["logical_project_id"]))) != reference["logical_project_id"]:
+                raise ValueError("logical_project_id is not canonical")
+        except (TypeError, ValueError) as error:
+            raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE) from error
+        if reference["svd_sha256"] is not None:
+            _hash_value(reference["svd_sha256"])
+        if not isinstance(reference["git_head"], str) or re.fullmatch(r"[0-9a-f]{40}", reference["git_head"]) is None:
+            raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
+        if type(reference["git_dirty"]) is not bool:
+            raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
+        for key in (
+            "origin_session_id", "projected_session_id", "target_device", "probe_id",
+            "physical_target", "flash_session_id", "lease_id", "scenario_role",
+        ):
+            if not isinstance(reference[key], str) or not reference[key]:
+                raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
+        try:
+            require_safe_session_id(reference["origin_session_id"])
+            require_safe_session_id(reference["projected_session_id"])
+        except (TypeError, ValueError) as error:
+            raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE) from error
+        if (
+            reference["probe_id"] != "replay:probe-v2"
+            or reference["physical_target"] != "replay:non-physical"
+            or reference["flash_session_id"] != "replay:no-flash"
+            or reference["lease_id"] != "replay:no-lease"
+        ):
+            raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
+        for key in ("origin_run_id", "projected_run_id", "group_id"):
+            try:
+                if str(UUID(str(reference[key]))) != reference[key]:
+                    raise ValueError(f"{key} is not canonical")
+            except (TypeError, ValueError) as error:
+                raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE) from error
+        if (
+            reference["origin_run_id"] != operation_id
+            or reference["projected_run_id"] != reference["origin_run_id"]
+        ):
+            raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
+        for key in (
+            "group_revision", "start_sequence", "end_sequence_exclusive",
+            "start_captured_unix_ns", "end_captured_unix_ns_exclusive",
+        ):
+            value = reference[key]
+            if type(value) is not int or isinstance(value, bool) or value < 0:
+                raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
+        if (
+            reference["group_revision"] < 1
+            or reference["end_sequence_exclusive"] <= reference["start_sequence"]
+            or reference["end_captured_unix_ns_exclusive"] <= reference["start_captured_unix_ns"]
+        ):
+            raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
+
+        expected_transcript_identity = {
+            "workspace_id": reference["origin_workspace_id"],
+            "project_id": reference["logical_project_id"],
+            "session_id": reference["origin_session_id"],
+            "build_id": reference["build_id"],
+            "elf_sha256": reference["elf_sha256"],
+            "target_device": reference["target_device"],
+            "input_snapshot_sha256": reference["input_snapshot_sha256"],
+            "git_commit": reference["git_head"],
+            "git_dirty": reference["git_dirty"],
+        }
+        if any(
+            getattr(reference_envelope.identity, key, None) != value
+            for key, value in expected_transcript_identity.items()
+        ):
+            raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
+        if reference["transcript_evidence_id"] != str(transcript_envelope.evidence_id):
+            raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
+
+        if (
+            transcript_root.root_type != "monitor-run"
+            or transcript_root.root_id != operation_id
+            or transcript_root.manifest_id != str(transcript_envelope.evidence_id)
+            or dict(transcript_root.metadata)
+            != {
+                "fixture_sha256": reference["fixture_sha256"],
+                "run_ref_sha256": reference["run_ref_sha256"],
+                "origin_workspace_id": reference["origin_workspace_id"],
+                "import_workspace_id": reference["import_workspace_id"],
+                "execution_source": "replay",
+                "physical_transport_evidence": False,
+            }
+        ):
+            raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
+
+        if (
+            hashlib.sha256(
+                _canonical_replay_json_bytes(
+                    {key: value for key, value in transcript_document.items() if key != "fixture_sha256"}
+                )
+            ).hexdigest()
+            != reference["fixture_sha256"]
+        ):
+            raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
+
+        group_id = transcript_batches[0].get("groupId")
+        group_revision = transcript_batches[0].get("groupRevision")
+        start_sequence = transcript_batches[0].get("sequence")
+        end_sequence_exclusive = transcript_batches[-1].get("sequence")
+        start_captured = transcript_batches[0].get("capturedUnixNs")
+        end_captured_exclusive = transcript_batches[-1].get("capturedUnixNs")
+        if (
+            not isinstance(group_id, str)
+            or not isinstance(group_revision, int)
+            or isinstance(group_revision, bool)
+            or not isinstance(start_sequence, int)
+            or isinstance(start_sequence, bool)
+            or not isinstance(end_sequence_exclusive, int)
+            or isinstance(end_sequence_exclusive, bool)
+            or not isinstance(start_captured, int)
+            or isinstance(start_captured, bool)
+            or not isinstance(end_captured_exclusive, int)
+            or isinstance(end_captured_exclusive, bool)
+            or reference["group_id"] != group_id
+            or reference["group_revision"] != group_revision
+            or reference["start_sequence"] != start_sequence
+            or reference["end_sequence_exclusive"] != end_sequence_exclusive + 1
+            or reference["start_captured_unix_ns"] != start_captured
+            or reference["end_captured_unix_ns_exclusive"] != end_captured_exclusive + 1
+        ):
+            raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
+        if any(
+            not isinstance(batch, dict)
+            or batch.get("groupId") != group_id
+            or batch.get("groupRevision") != group_revision
+            or batch.get("sequence") != start_sequence + index
+            or batch.get("runId") != reference["origin_run_id"]
+            for index, batch in enumerate(transcript_batches)
+        ):
+            raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
+
+        projected_digests = reference["projected_batch_sha256s"]
+        if not isinstance(projected_digests, list) or len(projected_digests) != len(transcript_batches):
+            raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
+        if any(
+            not isinstance(digest, str) or re.fullmatch(r"[0-9a-f]{64}", digest) is None
+            for digest in projected_digests
+        ):
+            raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
+        projected_binding = dict(transcript_binding)
+        projected_binding["workspaceId"] = reference["import_workspace_id"]
+        projected_binding["sessionId"] = reference["projected_session_id"]
+        calculated_digests: list[str] = []
+        for batch in transcript_batches:
+            if not isinstance(batch, dict):
+                raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
+            projected_batch = dict(batch)
+            projected_batch["binding"] = projected_binding
+            calculated_digests.append(
+                hashlib.sha256(_canonical_replay_json_bytes(projected_batch)).hexdigest()
+            )
+        if projected_digests != calculated_digests:
+            raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
+
+        unsigned = {key: value for key, value in reference.items() if key != "run_ref_sha256"}
+        if hashlib.sha256(_canonical_replay_json_bytes(unsigned)).hexdigest() != reference["run_ref_sha256"]:
+            raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
+        return reference
+    except _WorkflowFailure:
+        raise
+    except FileNotFoundError as error:
+        raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE) from error
+    except EvidenceValidationError as error:
+        code = _ENVIRONMENT_FAILURE if _has_provider_os_error(error) else _EVIDENCE_INTEGRITY_FAILURE
+        raise _WorkflowFailure(code) from error
+    except (UnicodeError, json.JSONDecodeError, TypeError, ValueError, OverflowError) as error:
         raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE) from error
     except OSError as error:
         raise _WorkflowFailure(_ENVIRONMENT_FAILURE) from error
@@ -1134,18 +1464,23 @@ def _validate_analysis(
         raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
     if envelope.parents[2] != declaration.diff_evidence_id:
         raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
-    before_transcript = _read_transcript_parent(
+    before_transcript, before_reference = _read_transcript_parent(
         state,
         evidence_id=envelope.parents[0],
         run=before_identity,
         expected_role="failed-before",
     )
-    after_transcript = _read_transcript_parent(
+    after_transcript, after_reference = _read_transcript_parent(
         state,
         evidence_id=envelope.parents[1],
         run=after_identity,
         expected_role="fixed-after",
     )
+    if (
+        analysis.get("before_run_id") != before_reference["run_ref_sha256"]
+        or analysis.get("after_run_id") != after_reference["run_ref_sha256"]
+    ):
+        raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
     if before_transcript.identity.session_id != after_transcript.identity.session_id:
         raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
     if envelope.identity != after_transcript.identity:

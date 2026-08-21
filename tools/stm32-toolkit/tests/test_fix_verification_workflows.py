@@ -10,6 +10,9 @@ from uuid import UUID
 
 import pytest
 
+from stm32_monitor.analysis import AnalysisRequest
+from stm32_monitor.analysis_workflows import compare_monitor_runs
+from stm32_monitor.replay import ingest_monitor_replay
 import stm32_toolkit.diagnostic_workflows as diagnostic_workflows
 import stm32_toolkit.testing_workflows as testing_workflows
 from stm32_toolkit.diagnostic_workflows import (
@@ -36,7 +39,7 @@ from stm32_toolkit.evidence import (
     EvidenceValidationError,
     canonical_json_bytes,
 )
-from stm32_toolkit.evidence.gc import RootRecord, put_root
+from stm32_toolkit.evidence.gc import RootRecord, get_root, put_root
 from stm32_toolkit.evidence.store import EvidenceStore
 from stm32_toolkit.paths import WorkspacePaths
 from stm32_toolkit.testing.publication import TestRunRepository
@@ -45,6 +48,10 @@ from stm32_toolkit.testing.replay import load_target_replay_fixture
 
 FIXTURES = Path(__file__).parent / "fixtures" / "vs03" / "target"
 PROJECT_ID = UUID("123e4567-e89b-42d3-a456-426614174000")
+MONITOR_OPERATION_IDS = {
+    "failed-before": "33333333-3333-4333-8333-333333333333",
+    "fixed-after": "44444444-4444-4444-8444-444444444444",
+}
 
 
 def _producer_canonical_json_bytes(value: object) -> bytes:
@@ -154,6 +161,94 @@ def _target_test_run_root(workspace: WorkspacePaths) -> Path:
     return roots[0]
 
 
+def _monitor_ref_root_path(workspace: WorkspacePaths, operation_id: str) -> Path:
+    roots = tuple((workspace.workspace_root / "evidence" / "roots" / "monitor-run-ref").glob("*.json"))
+    for path in roots:
+        if json.loads(path.read_text(encoding="utf-8"))["root_id"] == operation_id:
+            return path
+    raise AssertionError(f"monitor-run-ref root is absent: {operation_id}")
+
+
+def _replace_monitor_reference_authority(
+    tmp_path: Path,
+    workspace: WorkspacePaths,
+    operation_id: str,
+    mutate,
+) -> None:
+    evidence = EvidenceStore(workspace.workspace_root / "evidence")
+    root = get_root(evidence, "monitor-run-ref", operation_id)
+    envelope = evidence.get_envelope(root.manifest_id)
+    payload = json.loads(
+        evidence.read_artifact(envelope.artifacts[0], maximum_bytes=1_000_000).decode("utf-8")
+    )
+    mutate(payload)
+    unsigned = {key: value for key, value in payload.items() if key != "run_ref_sha256"}
+    payload["run_ref_sha256"] = hashlib.sha256(
+        _producer_canonical_json_bytes(unsigned)
+    ).hexdigest()
+    raw = _producer_canonical_json_bytes(payload)
+    source = tmp_path / f"mutated-monitor-ref-{operation_id}.json"
+    source.write_bytes(raw)
+    artifact = evidence.ingest_file(source, kind="monitor-run-ref", media_type="application/json")
+    identity = EvidenceIdentity(
+        workspace_id=payload["origin_workspace_id"],
+        project_id=payload["logical_project_id"],
+        session_id=payload["origin_session_id"],
+        build_id=payload["build_id"],
+        elf_sha256=payload["elf_sha256"],
+        target_device=payload["target_device"],
+        input_snapshot_sha256=payload["input_snapshot_sha256"],
+        git_commit=payload["git_head"],
+        git_dirty=payload["git_dirty"],
+    )
+    metadata = {
+        "operation_id": payload["operation_id"],
+        "run_ref_sha256": payload["run_ref_sha256"],
+        "fixture_sha256": payload["fixture_sha256"],
+        "scenario_role": payload["scenario_role"],
+        "origin_workspace_id": payload["origin_workspace_id"],
+        "import_workspace_id": payload["import_workspace_id"],
+        "execution_source": "replay",
+        "physical_transport_evidence": False,
+    }
+    replacement = EvidenceEnvelope(
+        identity=identity,
+        operation="monitor-run-ref",
+        produced_at_utc=envelope.produced_at_utc,
+        parents=(payload["transcript_evidence_id"],),
+        artifacts=(artifact,),
+        metadata=metadata,
+    )
+    evidence.put_envelope(replacement)
+    _monitor_ref_root_path(workspace, operation_id).unlink()
+    put_root(
+        evidence,
+        RootRecord(
+            root_type="monitor-run-ref",
+            root_id=operation_id,
+            manifest_id=str(replacement.evidence_id),
+            metadata=metadata,
+        ),
+    )
+
+
+def _swap_monitor_reference_authority(
+    workspace: WorkspacePaths, before_operation_id: str, after_operation_id: str
+) -> None:
+    evidence = EvidenceStore(workspace.workspace_root / "evidence")
+    after_root = get_root(evidence, "monitor-run-ref", after_operation_id)
+    _monitor_ref_root_path(workspace, before_operation_id).unlink()
+    put_root(
+        evidence,
+        RootRecord(
+            root_type="monitor-run-ref",
+            root_id=before_operation_id,
+            manifest_id=after_root.manifest_id,
+            metadata=dict(after_root.metadata),
+        ),
+    )
+
+
 def _verification_checkpoint_inputs(
     tmp_path: Path,
     workspace: WorkspacePaths,
@@ -184,6 +279,72 @@ def _verification_checkpoint_inputs(
         metadata={"kind": "source-change-diff"},
     )
     evidence.put_envelope(diff_envelope)
+    if (
+        analysis_mutation is None
+        and monitor_session_overrides is None
+        and analysis_session_id is None
+    ):
+        monitor_fixture_dir = Path(__file__).parents[2] / "stm32-monitor" / "tests" / "fixtures" / "vs03"
+        monitor_before = ingest_monitor_replay(
+            workspace,
+            evidence,
+            MONITOR_OPERATION_IDS["failed-before"],
+            monitor_fixture_dir / "failed-before.json",
+        )
+        monitor_after = ingest_monitor_replay(
+            workspace,
+            evidence,
+            MONITOR_OPERATION_IDS["fixed-after"],
+            monitor_fixture_dir / "fixed-after.json",
+        )
+        declaration = SourceChangeDeclaration.new(
+            before_source_sha256=before.manifest.identity.input_snapshot_sha256,
+            after_source_sha256=after.manifest.identity.input_snapshot_sha256,
+            before_build_id=before.manifest.identity.build_id,
+            before_elf_sha256=before.manifest.identity.elf_sha256,
+            after_build_id=after.manifest.identity.build_id,
+            after_elf_sha256=after.manifest.identity.elf_sha256,
+            changed_paths=("src/main.c",),
+            diff_evidence_id=str(diff_envelope.evidence_id),
+            diff_artifact=diff_artifact,
+            claimed_hypothesis_ids=(hypothesis_id,),
+            validation_plan_id="b" * 64,
+        )
+        publication = compare_monitor_runs(
+            workspace,
+            evidence,
+            AnalysisRequest(
+                schema="stm32-monitor-analysis-request/1",
+                before_run=monitor_before,
+                after_run=monitor_after,
+                selector_kind="variable",
+                selector="counter",
+                alignment="run-relative",
+                minimum_valid_pairs=2,
+            ),
+            session_id,
+            hypothesis_id,
+            "supports",
+            "the replayed analysis observed the declared source change",
+            declaration,
+        )
+        plan = VerificationPlan.new(
+            verification_plan_id="b" * 64,
+            diagnostic_session_id=session_id,
+            failed_before_run_id="vs03-failed-before",
+            failed_before_evidence_id=str(before.envelope.evidence_id),
+            source_change_declaration_id=declaration.declaration_id,
+            fixed_after_run_id="vs03-fixed-after",
+            fixed_after_evidence_id=str(after.envelope.evidence_id),
+            required_analysis_ids=(publication.analysis_result.analysis_id,),
+            required_analysis_evidence_ids=(publication.analysis_evidence_ref.evidence_id,),
+            required_monitor_quality=publication.analysis_result.quality,
+            expected_changed=True,
+        )
+        marker_ref = publication.diagnostic_marker_ref
+        if marker_hypothesis_id != hypothesis_id:
+            marker_ref = replace(marker_ref, hypothesis_id=marker_hypothesis_id)
+        return declaration, plan, marker_ref
     transcript_paths = {
         "failed-before": Path(__file__).parents[2] / "stm32-monitor" / "tests" / "fixtures" / "vs03" / "failed-before.json",
         "fixed-after": Path(__file__).parents[2] / "stm32-monitor" / "tests" / "fixtures" / "vs03" / "fixed-after.json",
@@ -1115,6 +1276,23 @@ def test_target_replay_prepares_and_reloads_fix_verification_checkpoint(
     declaration, plan, marker_ref = _verification_checkpoint_inputs(
         tmp_path, workspace, session_id, hypothesis_id
     )
+    monitor_evidence = EvidenceStore(workspace.workspace_root / "evidence")
+    analysis_envelope = monitor_evidence.get_envelope(marker_ref.analysis_evidence_id)
+    analysis_payload = json.loads(
+        monitor_evidence.read_artifact(
+            analysis_envelope.artifacts[0], maximum_bytes=1_000_000
+        ).decode("utf-8")
+    )
+    assert analysis_payload["before_run_id"] == get_root(
+        monitor_evidence,
+        "monitor-run-ref",
+        MONITOR_OPERATION_IDS["failed-before"],
+    ).metadata["run_ref_sha256"]
+    assert analysis_payload["after_run_id"] == get_root(
+        monitor_evidence,
+        "monitor-run-ref",
+        MONITOR_OPERATION_IDS["fixed-after"],
+    ).metadata["run_ref_sha256"]
     analysis_envelope = EvidenceStore(workspace.workspace_root / "evidence").get_envelope(
         marker_ref.analysis_evidence_id
     )
@@ -1187,6 +1365,67 @@ def test_target_replay_prepares_and_reloads_fix_verification_checkpoint(
         diagnostic_marker_ref=marker_ref,
     )
     assert retry.to_dict() == attached.to_dict()
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    ("digest-only", "swapped", "binding", "window", "group", "batch-digest"),
+)
+def test_target_replay_plan_requires_complete_monitor_reference_authority(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, mutation: str
+) -> None:
+    diagnostic_context, session_id, workspace, declaration, plan, _marker_ref = (
+        _prepared_checkpoint_for_plan(monkeypatch, tmp_path)
+    )
+    before_operation_id = MONITOR_OPERATION_IDS["failed-before"]
+    if mutation == "digest-only":
+        _monitor_ref_root_path(workspace, before_operation_id).unlink()
+    elif mutation == "swapped":
+        _swap_monitor_reference_authority(
+            workspace,
+            before_operation_id,
+            MONITOR_OPERATION_IDS["fixed-after"],
+        )
+    elif mutation == "binding":
+        _replace_monitor_reference_authority(
+            tmp_path,
+            workspace,
+            before_operation_id,
+            lambda payload: payload.update(target_device="stm32:swapped-device"),
+        )
+    elif mutation == "window":
+        _replace_monitor_reference_authority(
+            tmp_path,
+            workspace,
+            before_operation_id,
+            lambda payload: payload.update(start_sequence=1, end_sequence_exclusive=2),
+        )
+    elif mutation == "group":
+        _replace_monitor_reference_authority(
+            tmp_path,
+            workspace,
+            before_operation_id,
+            lambda payload: payload.update(group_id="22222222-2222-4222-8222-222222222222"),
+        )
+    else:
+        _replace_monitor_reference_authority(
+            tmp_path,
+            workspace,
+            before_operation_id,
+            lambda payload: payload["projected_batch_sha256s"].__setitem__(0, "0" * 64),
+        )
+    before = _authority_snapshot(workspace)
+    result = diagnostic_add_verification_plan(
+        _fresh_diagnostic_context(diagnostic_context),
+        operation_id=f"diagnostic.verification-plan.add.monitor-ref-{mutation}",
+        diagnostic_session_id=session_id,
+        expected_revision=4,
+        verification_plan=plan,
+    )
+    after = _authority_snapshot(workspace)
+    assert result.ok is False
+    assert result.code == "EVIDENCE_INTEGRITY_FAILURE"
+    assert after == before
 
 
 @pytest.mark.parametrize(
