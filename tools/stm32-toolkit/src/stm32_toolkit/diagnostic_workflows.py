@@ -48,6 +48,9 @@ _RUN_ID = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
 _DIAGNOSTIC_SESSION_ID = re.compile(r"^[0-9a-f]{32}$")
 _PLAN_ID = re.compile(r"^[0-9a-f]{64}$")
 _UTC = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z$")
+_INCOMPATIBLE_IDENTITY = "INCOMPATIBLE_IDENTITY"
+_ENVIRONMENT_FAILURE = "ENVIRONMENT_FAILURE"
+_EVIDENCE_INTEGRITY_FAILURE = "EVIDENCE_INTEGRITY_FAILURE"
 
 
 @dataclass(frozen=True)
@@ -85,7 +88,17 @@ _hypothesis_id_factory = lambda: secrets.token_hex(16)
 _utc_now = lambda: datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
 
 
+_AUTHORITY_MESSAGES = {
+    _INCOMPATIBLE_IDENTITY: "Target replay identity is incompatible.",
+    _ENVIRONMENT_FAILURE: "Target replay environment failed.",
+    _EVIDENCE_INTEGRITY_FAILURE: "Target replay evidence failed integrity validation.",
+}
+
+
 def _failure(operation: str, code: str) -> OperationResult[None]:
+    authority_message = _AUTHORITY_MESSAGES.get(code)
+    if authority_message is not None:
+        return OperationResult.failure(operation, code, authority_message, {})
     error = DiagnosticValidationError(code)
     return OperationResult.failure(operation, error.code, error.message, {})
 
@@ -193,11 +206,108 @@ def _require_identity(state: _WorkflowState, identity: object) -> None:
         raise DiagnosticValidationError(DIAGNOSTIC_IDENTITY_MISMATCH)
 
 
-def _load_failed_run(state: _WorkflowState, failed_test_run_id: str) -> object:
+def _load_failed_run(
+    state: _WorkflowState,
+    failed_test_run_id: str,
+    *,
+    target_hint: bool = False,
+) -> object:
     try:
         return state.repository.load(failed_test_run_id)
-    except (EvidenceValidationError, TestProtocolError, OSError, TypeError, ValueError, KeyError, IndexError) as error:
-        raise _WorkflowFailure(DIAGNOSTIC_EVIDENCE_MISSING) from error
+    except OSError as error:
+        code = _ENVIRONMENT_FAILURE if target_hint else DIAGNOSTIC_EVIDENCE_MISSING
+        raise _WorkflowFailure(code) from error
+    except (
+        EvidenceValidationError,
+        TestProtocolError,
+        TypeError,
+        ValueError,
+        KeyError,
+        IndexError,
+    ) as error:
+        code = _EVIDENCE_INTEGRITY_FAILURE if target_hint else DIAGNOSTIC_EVIDENCE_MISSING
+        raise _WorkflowFailure(code) from error
+
+
+def _validate_target_authority(
+    state: _WorkflowState,
+    published: object,
+    failed_test_run_id: str,
+    *,
+    expected_identity: object | None,
+) -> object:
+    manifest = getattr(published, "manifest", None)
+    envelope = getattr(published, "envelope", None)
+    root = getattr(published, "root", None)
+    identity = getattr(manifest, "identity", None)
+    if expected_identity is not None and identity != expected_identity:
+        raise _WorkflowFailure(_INCOMPATIBLE_IDENTITY)
+    if (
+        getattr(manifest, "run_id", None) != failed_test_run_id
+        or getattr(manifest, "mode", None) != "target"
+        or getattr(manifest, "state", None) != "failed"
+        or getattr(manifest, "transport", None) != "replay"
+        or identity is None
+        or getattr(envelope, "identity", None) != identity
+        or getattr(envelope, "operation", None) != "target-test-replay"
+        or getattr(root, "manifest_id", None) != getattr(envelope, "evidence_id", None)
+    ):
+        raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
+    expected_root_metadata = {
+        "mode": "target",
+        "state": "failed",
+        "execution_source": "replay",
+        "physical_transport_evidence": False,
+        "origin_workspace_id": identity.workspace_id,
+        "import_workspace_id": state.workspace.workspace_id,
+    }
+    if (
+        identity.workspace_id == state.workspace.workspace_id
+        or getattr(root, "metadata", None) != expected_root_metadata
+    ):
+        raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
+    return manifest
+
+
+def _load_authoritative_run(
+    state: _WorkflowState,
+    failed_test_run_id: str,
+    *,
+    expected_identity: object | None = None,
+    target_hint: bool = False,
+) -> object:
+    published = _load_failed_run(
+        state,
+        failed_test_run_id,
+        target_hint=target_hint,
+    )
+    manifest = getattr(published, "manifest", None)
+    if getattr(manifest, "mode", None) == "target":
+        if getattr(getattr(published, "envelope", None), "operation", None) == "host-test-run":
+            raise DiagnosticValidationError(DIAGNOSTIC_INVALID_EVENT)
+        _validate_target_authority(
+            state,
+            published,
+            failed_test_run_id,
+            expected_identity=expected_identity,
+        )
+        return published
+    if expected_identity is None:
+        identity = getattr(manifest, "identity", None)
+        _require_identity(state, identity)
+    else:
+        _require_identity(state, expected_identity)
+        if (
+            getattr(manifest, "identity", None) != expected_identity
+            or getattr(getattr(published, "envelope", None), "identity", None) != expected_identity
+        ):
+            raise _WorkflowFailure(DIAGNOSTIC_IDENTITY_MISMATCH)
+    if (
+        getattr(manifest, "mode", None) != "host"
+        or getattr(manifest, "state", None) != "failed"
+    ):
+        raise DiagnosticValidationError(DIAGNOSTIC_INVALID_EVENT)
+    return published
 
 
 def _session_data(session: DiagnosticSession, *, authoritative: bool = False) -> dict[str, object]:
@@ -218,12 +328,9 @@ def _diagnostic_start(
     failed_test_run_id = _validate_run_id(failed_test_run_id)
     actor = _validate_actor(actor)
     state = _make_state(context)
-    published = _load_failed_run(state, failed_test_run_id)
+    published = _load_authoritative_run(state, failed_test_run_id)
     manifest = getattr(published, "manifest")
-    if getattr(manifest, "mode", None) != "host" or getattr(manifest, "state", None) != "failed":
-        raise DiagnosticValidationError(DIAGNOSTIC_INVALID_EVENT)
     identity = getattr(manifest, "identity")
-    _require_identity(state, identity)
     envelope = getattr(published, "envelope")
     event = create_event(
         diagnostic_session_id=_new_session_id(),
@@ -269,7 +376,13 @@ def _new_timestamp() -> str:
 
 def _load_bound_session(state: _WorkflowState, diagnostic_session_id: str) -> DiagnosticSession:
     session = state.diagnostic_store.load(diagnostic_session_id)
-    _require_identity(state, session.identity)
+    target_hint = session.identity.workspace_id != state.workspace.workspace_id
+    _load_authoritative_run(
+        state,
+        session.failed_test_run_id,
+        expected_identity=session.identity,
+        target_hint=target_hint,
+    )
     return session
 
 
@@ -471,24 +584,17 @@ def _diagnostic_assess_hypothesis(
 
 
 def _load_bound_failed_run(state: _WorkflowState, session: DiagnosticSession) -> object:
-    published = _load_failed_run(state, session.failed_test_run_id)
-    manifest = getattr(published, "manifest", None)
+    target_hint = session.identity.workspace_id != state.workspace.workspace_id
+    published = _load_authoritative_run(
+        state,
+        session.failed_test_run_id,
+        expected_identity=session.identity,
+        target_hint=target_hint,
+    )
     envelope = getattr(published, "envelope", None)
-    if (
-        manifest is None
-        or envelope is None
-        or getattr(manifest, "mode", None) != "host"
-        or getattr(manifest, "state", None) != "failed"
-    ):
-        raise DiagnosticValidationError(DIAGNOSTIC_INVALID_EVENT)
     if getattr(envelope, "evidence_id", None) != session.failed_evidence_id:
         raise _WorkflowFailure(DIAGNOSTIC_IDENTITY_MISMATCH)
-    if (
-        getattr(manifest, "identity", None) != session.identity
-        or getattr(envelope, "identity", None) != session.identity
-    ):
-        raise _WorkflowFailure(DIAGNOSTIC_IDENTITY_MISMATCH)
-    return manifest
+    return getattr(published, "manifest")
 
 
 def _observation_plan(
