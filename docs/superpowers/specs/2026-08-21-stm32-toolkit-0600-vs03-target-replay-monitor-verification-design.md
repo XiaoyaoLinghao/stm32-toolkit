@@ -332,7 +332,8 @@ import workspace/session is only the local History query location and never repl
 `stm32_toolkit.evidence.gc.REGISTERED_ROOT_TYPES` remains the single authoritative root-type
 registry: it statically includes `monitor-analysis` and `diagnostic-marker`. Monitor imports must
 not mutate that Toolkit registry at process runtime. Repository attributes pin the canonical VS-03
-JSON replay fixtures to LF so a clean Windows checkout preserves the accepted fixture bytes.
+Monitor JSON and Target replay JSON/HEX fixtures to LF so a clean Windows checkout preserves the
+accepted fixture bytes.
 Each transcript parent is also cross-checked against its run reference: every binding field,
 group/revision, exact captured window, and every projected batch digest must agree with the
 canonical transcript projection. Valid transcript and History objects that contradict each other
@@ -372,11 +373,15 @@ export_analysis_bundle(
 ) -> tuple[bytes, AnalysisBundleRef]
 ```
 
-It reloads both runs through public `TestRunRepository.load`: failed-before is a failed Target
-replay TestRun whose identity equals the before-run origin identity; fixed-after is the equivalent
-passed TestRun for the after-run identity. Both roots retain replay/non-physical labels and the
-current import workspace. The operation revalidates the request, publication Evidence, marker,
-transcripts and declaration before mutation, then publishes an envelope/root
+It reloads both runs through public `TestRunRepository.load` using their valid public string IDs;
+the exporter adds no UUID-only restriction. Failed-before is a failed Target replay TestRun and
+fixed-after is the equivalent passed TestRun. Each TestRun identity equals its Monitor run on
+origin workspace, project, source/build/ELF, target and git fields. Target-test and Monitor capture
+sessions remain their separate authoritative session domains and are not compared to each other;
+the two Target TestRuns must share their own origin session. Both roots retain exact
+replay/non-physical labels, origin workspace and the current import workspace. The operation
+revalidates the request, both transcript publications, the analysis and marker
+root/envelope/canonical artifact bytes, declaration and TestRuns before mutation, then publishes an envelope/root
 `monitor-analysis-bundle/<bundle_id>`. `bundle_id` and the sole artifact SHA-256 equal the canonical
 byte digest; artifact kind is `monitor-analysis-bundle` and media type is `application/json`.
 Ordered parents are before/after transcript Evidence, analysis Evidence, marker Evidence, and
