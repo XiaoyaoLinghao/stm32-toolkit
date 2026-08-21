@@ -942,6 +942,43 @@ class DiagnosticStore:
             self._ensure_checkpoint_locked(event, session, after, path)
             return DiagnosticMutationRecord(after, event, True)
 
+    def resolve_operation(
+        self,
+        diagnostic_session_id: str,
+        operation_id: str,
+        *,
+        event_type: str,
+        actor: str,
+        request: Mapping[str, object],
+    ) -> DiagnosticMutationRecord | None:
+        """Resolve one operation intent and return its current authoritative session."""
+
+        session_id = self._validate_session_id(diagnostic_session_id)
+        if not isinstance(operation_id, str) or not operation_id:
+            _raise(DIAGNOSTIC_INVALID_EVENT)
+        if not isinstance(event_type, str) or not event_type:
+            _raise(DIAGNOSTIC_INVALID_EVENT)
+        if not isinstance(actor, str) or not actor:
+            _raise(DIAGNOSTIC_INVALID_EVENT)
+        if not isinstance(request, Mapping):
+            _raise(DIAGNOSTIC_INVALID_EVENT)
+        try:
+            request_bytes = canonical_diagnostic_json_bytes(request)
+        except (TypeError, ValueError, OverflowError, UnicodeError):
+            _raise(DIAGNOSTIC_INVALID_EVENT)
+        try:
+            self._existing(self.diagnostics_root)
+        except FileNotFoundError:
+            _raise(DIAGNOSTIC_NOT_FOUND)
+        with self._store_lock(create=False):
+            found = self._find_operation_locked(operation_id, session_id=session_id)
+            if found is None:
+                return None
+            session, accepted = found
+            if _intent(accepted) != (event_type, actor, request_bytes):
+                _raise(DIAGNOSTIC_OPERATION_CONFLICT)
+            return DiagnosticMutationRecord(session, accepted, False)
+
     def load(self, diagnostic_session_id: str) -> DiagnosticSession:
         session_id = self._validate_session_id(diagnostic_session_id)
         try:

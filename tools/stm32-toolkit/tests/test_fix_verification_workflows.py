@@ -957,6 +957,94 @@ def _prepared_checkpoint_for_attach(
     return diagnostic_context, session_id, workspace, declaration, plan, marker_ref
 
 
+def _prepared_cross_state_operations(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> tuple[
+    DiagnosticWorkflowContext,
+    str,
+    WorkspacePaths,
+    SourceChangeDeclaration,
+    VerificationPlan,
+    DiagnosticMarkerRef,
+    object,
+    object,
+    object,
+    object,
+]:
+    diagnostic_context, session_id, _failed_replay, workspace = _replay_and_open_session(
+        monkeypatch, tmp_path
+    )
+    testing_context = testing_workflows.TestingWorkflowContext(
+        diagnostic_context.project_root,
+        diagnostic_context.data_root,
+        diagnostic_context.session_id,
+    )
+    fixed_replay = testing_workflows.target_replay_run(
+        testing_context,
+        "vs03-fixed-after",
+        FIXTURES / "fixed-after.json",
+        FIXTURES / "fixed-after.hex",
+    )
+    assert fixed_replay.ok is True
+    shown = diagnostic_show(
+        _fresh_diagnostic_context(diagnostic_context), diagnostic_session_id=session_id
+    )
+    assert shown.ok is True
+    hypothesis_id = shown.data["session"]["hypotheses"][0]["hypothesis_id"]
+    declaration, plan, marker_ref = _verification_checkpoint_inputs(
+        tmp_path, workspace, session_id, hypothesis_id
+    )
+    declared = diagnostic_declare_source_change(
+        _fresh_diagnostic_context(diagnostic_context),
+        operation_id="diagnostic.source-change.declare",
+        diagnostic_session_id=session_id,
+        expected_revision=3,
+        source_change_declaration=declaration,
+        actor="user",
+    )
+    assert declared.ok is True
+    planned = diagnostic_add_verification_plan(
+        _fresh_diagnostic_context(diagnostic_context),
+        operation_id="diagnostic.verification-plan.add",
+        diagnostic_session_id=session_id,
+        expected_revision=4,
+        verification_plan=plan,
+        actor="user",
+    )
+    assert planned.ok is True
+    started = diagnostic_start_verification(
+        _fresh_diagnostic_context(diagnostic_context),
+        operation_id="diagnostic.verification.start",
+        diagnostic_session_id=session_id,
+        expected_revision=5,
+        verification_plan_id=plan.verification_plan_id,
+        actor="tool",
+    )
+    assert started.ok is True
+    attached = diagnostic_attach_marker(
+        _fresh_diagnostic_context(diagnostic_context),
+        operation_id="diagnostic.marker.attach",
+        diagnostic_session_id=session_id,
+        expected_revision=6,
+        diagnostic_marker_ref=marker_ref,
+        actor="tool",
+    )
+    assert attached.ok is True
+    return (
+        diagnostic_context,
+        session_id,
+        workspace,
+        declaration,
+        plan,
+        marker_ref,
+        declared,
+        planned,
+        started,
+        attached,
+    )
+
+
 def _prepare_durable_bound_operation(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -1034,6 +1122,206 @@ def _prepare_durable_bound_operation(
         return diagnostic_context, session_id, workspace, request
 
     raise AssertionError(f"unknown durable bound operation: {operation}")
+
+
+def test_task7a_mutations_retry_after_later_state_with_exact_or_conflicting_intent(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    (
+        diagnostic_context,
+        session_id,
+        workspace,
+        declaration,
+        plan,
+        marker_ref,
+        declared,
+        planned,
+        started,
+        attached,
+    ) = _prepared_cross_state_operations(monkeypatch, tmp_path)
+
+    changed_declaration = SourceChangeDeclaration.new(
+        before_source_sha256=declaration.before_source_sha256,
+        after_source_sha256=declaration.after_source_sha256,
+        before_build_id=declaration.before_build_id,
+        before_elf_sha256=declaration.before_elf_sha256,
+        after_build_id=declaration.after_build_id,
+        after_elf_sha256=declaration.after_elf_sha256,
+        changed_paths=tuple(
+            sorted((*declaration.changed_paths, "src/durable-retry-change.c"))
+        ),
+        diff_evidence_id=declaration.diff_evidence_id,
+        diff_artifact=declaration.diff_artifact,
+        claimed_hypothesis_ids=declaration.claimed_hypothesis_ids,
+        validation_plan_id=declaration.validation_plan_id,
+    )
+    changed_plan = VerificationPlan.new(
+        verification_plan_id="e" * 64,
+        diagnostic_session_id=plan.diagnostic_session_id,
+        failed_before_run_id=plan.failed_before_run_id,
+        failed_before_evidence_id=plan.failed_before_evidence_id,
+        source_change_declaration_id=plan.source_change_declaration_id,
+        fixed_after_run_id=plan.fixed_after_run_id,
+        fixed_after_evidence_id=plan.fixed_after_evidence_id,
+        required_analysis_ids=plan.required_analysis_ids,
+        required_analysis_evidence_ids=plan.required_analysis_evidence_ids,
+        required_monitor_quality=plan.required_monitor_quality,
+        expected_changed=plan.expected_changed,
+    )
+    changed_marker = DiagnosticMarkerRef.new(
+        marker_id="d" * 64,
+        marker_evidence_id=marker_ref.marker_evidence_id,
+        analysis_id=marker_ref.analysis_id,
+        analysis_evidence_id=marker_ref.analysis_evidence_id,
+        diagnostic_session_id=marker_ref.diagnostic_session_id,
+        hypothesis_id=marker_ref.hypothesis_id,
+        polarity=marker_ref.polarity,
+        label=marker_ref.label,
+        rationale=marker_ref.rationale + " changed",
+    )
+    cases = {
+        "declaration": {
+            "operation_id": "diagnostic.source-change.declare",
+            "expected_revision": 3,
+            "actor": "user",
+            "request": declaration,
+            "changed_request": changed_declaration,
+            "original": declared,
+            "output_key": "source_change_declaration",
+        },
+        "plan": {
+            "operation_id": "diagnostic.verification-plan.add",
+            "expected_revision": 4,
+            "actor": "user",
+            "request": plan,
+            "changed_request": changed_plan,
+            "original": planned,
+            "output_key": "verification_plan",
+        },
+        "verification-start": {
+            "operation_id": "diagnostic.verification.start",
+            "expected_revision": 5,
+            "actor": "tool",
+            "request": plan.verification_plan_id,
+            "changed_request": "e" * 64,
+            "original": started,
+            "output_key": "verification_plan_id",
+        },
+        "marker": {
+            "operation_id": "diagnostic.marker.attach",
+            "expected_revision": 6,
+            "actor": "tool",
+            "request": marker_ref,
+            "changed_request": changed_marker,
+            "original": attached,
+            "output_key": "diagnostic_marker_ref",
+        },
+    }
+
+    def invoke(
+        name: str,
+        *,
+        operation_id: str,
+        expected_revision: int,
+        actor: str,
+        request: object,
+    ) -> object:
+        context = _fresh_diagnostic_context(diagnostic_context)
+        if name == "declaration":
+            return diagnostic_declare_source_change(
+                context,
+                operation_id=operation_id,
+                diagnostic_session_id=session_id,
+                expected_revision=expected_revision,
+                source_change_declaration=request,
+                actor=actor,
+            )
+        if name == "plan":
+            return diagnostic_add_verification_plan(
+                context,
+                operation_id=operation_id,
+                diagnostic_session_id=session_id,
+                expected_revision=expected_revision,
+                verification_plan=request,
+                actor=actor,
+            )
+        if name == "verification-start":
+            return diagnostic_start_verification(
+                context,
+                operation_id=operation_id,
+                diagnostic_session_id=session_id,
+                expected_revision=expected_revision,
+                verification_plan_id=request,
+                actor=actor,
+            )
+        if name == "marker":
+            return diagnostic_attach_marker(
+                context,
+                operation_id=operation_id,
+                diagnostic_session_id=session_id,
+                expected_revision=expected_revision,
+                diagnostic_marker_ref=request,
+                actor=actor,
+            )
+        raise AssertionError(f"unknown operation: {name}")
+
+    final_session = attached.data["session"]
+    for name, case in cases.items():
+        before = _authority_snapshot(workspace)
+        retry = invoke(
+            name,
+            operation_id=case["operation_id"],
+            expected_revision=case["expected_revision"],
+            actor=case["actor"],
+            request=case["request"],
+        )
+        after = _authority_snapshot(workspace)
+        assert retry.ok is True
+        assert retry.data["session"] == final_session
+        assert retry.data[case["output_key"]] == case["original"].data[case["output_key"]]
+        assert after == before
+
+    for name, case in cases.items():
+        before = _authority_snapshot(workspace)
+        conflict = invoke(
+            name,
+            operation_id=case["operation_id"],
+            expected_revision=case["expected_revision"],
+            actor="ai-client",
+            request=case["request"],
+        )
+        after = _authority_snapshot(workspace)
+        assert conflict.ok is False
+        assert conflict.code == "DIAGNOSTIC_OPERATION_CONFLICT"
+        assert after == before
+
+    for name, case in cases.items():
+        before = _authority_snapshot(workspace)
+        conflict = invoke(
+            name,
+            operation_id=case["operation_id"],
+            expected_revision=case["expected_revision"],
+            actor=case["actor"],
+            request=case["changed_request"],
+        )
+        after = _authority_snapshot(workspace)
+        assert conflict.ok is False
+        assert conflict.code == "DIAGNOSTIC_OPERATION_CONFLICT"
+        assert after == before
+
+    for name, case in cases.items():
+        before = _authority_snapshot(workspace)
+        conflict = invoke(
+            name,
+            operation_id=f"fresh.stale.{name}",
+            expected_revision=case["expected_revision"],
+            actor=case["actor"],
+            request=case["request"],
+        )
+        after = _authority_snapshot(workspace)
+        assert conflict.ok is False
+        assert conflict.code == "DIAGNOSTIC_REVISION_CONFLICT"
+        assert after == before
 
 
 def test_target_replay_diagnostic_session_reloads_with_origin_authority(

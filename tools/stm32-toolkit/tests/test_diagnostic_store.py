@@ -411,6 +411,45 @@ def test_append_retry_returns_accepted_event_after_session_advanced(tmp_path: Pa
     assert error.value.code == DIAGNOSTIC_OPERATION_CONFLICT
 
 
+def test_resolve_operation_returns_current_session_for_exact_intent_and_conflicts_changes(
+    tmp_path: Path,
+) -> None:
+    evidence = EvidenceStore(tmp_path / "evidence")
+    failed_evidence_id = _failed_evidence(evidence, tmp_path)
+    store = DiagnosticStore(tmp_path / "diagnostics", evidence)
+    created = _created(failed_evidence_id)
+    store.create(created)
+    started = _started(created)
+    store.append(SID, started, expected_revision=1)
+
+    resolved = store.resolve_operation(
+        SID,
+        started.operation_id,
+        event_type=started.event_type,
+        actor=started.actor,
+        request={},
+    )
+    assert resolved is not None
+    assert resolved.appended is False
+    assert resolved.event == started
+    assert resolved.session.revision == 2
+
+    for event_type, actor, request in (
+        (started.event_type, "tool", {}),
+        ("hypothesis.added", started.actor, {}),
+        (started.event_type, started.actor, {"changed": True}),
+    ):
+        with pytest.raises(DiagnosticValidationError) as error:
+            store.resolve_operation(
+                SID,
+                started.operation_id,
+                event_type=event_type,
+                actor=actor,
+                request=request,
+            )
+        assert error.value.code == DIAGNOSTIC_OPERATION_CONFLICT
+
+
 @pytest.mark.parametrize("expected_revision", [0, 2])
 def test_stale_or_future_revision_appends_nothing(tmp_path: Path, expected_revision: int) -> None:
     evidence = EvidenceStore(tmp_path / "evidence")

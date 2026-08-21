@@ -22,6 +22,7 @@ from stm32_toolkit.diagnostics import (
     DIAGNOSTIC_INVALID_TRANSITION,
     DIAGNOSTIC_PLAN_INVALID,
     DIAGNOSTIC_REVISION_CONFLICT,
+    DiagnosticMutationRecord,
     DiagnosticSession,
     DiagnosticMarkerRef,
     DiagnosticStore,
@@ -506,6 +507,59 @@ def _load_bound_session(
         expected_identity=session.identity,
     )
     return session
+
+
+def _resolve_operation_retry(
+    state: _WorkflowState,
+    session: DiagnosticSession,
+    *,
+    operation_id: str,
+    expected_revision: int,
+    event_type: str,
+    actor: str,
+    request: Mapping[str, object],
+) -> DiagnosticMutationRecord | None:
+    try:
+        accepted = state.diagnostic_store.resolve_operation(
+            session.diagnostic_session_id,
+            operation_id,
+            event_type=event_type,
+            actor=actor,
+            request=request,
+        )
+    except DiagnosticValidationError as error:
+        if session.failed_run_mode == "target":
+            if error.code == DIAGNOSTIC_EVIDENCE_MISSING:
+                code = (
+                    _ENVIRONMENT_FAILURE
+                    if _has_provider_os_error(error)
+                    else _EVIDENCE_INTEGRITY_FAILURE
+                )
+                raise _WorkflowFailure(code) from error
+            if error.code == DIAGNOSTIC_IDENTITY_MISMATCH:
+                raise _WorkflowFailure(_INCOMPATIBLE_IDENTITY) from error
+        raise
+    if accepted is None:
+        if expected_revision != session.revision:
+            raise DiagnosticValidationError(DIAGNOSTIC_REVISION_CONFLICT)
+        return None
+    return accepted
+
+
+def _retry_operation_data(
+    accepted: DiagnosticMutationRecord,
+    *,
+    output_key: str,
+    request_key: str,
+) -> dict[str, object]:
+    payload = accepted.event.to_dict()["payload"]
+    assert isinstance(payload, dict)
+    request = payload["request"]
+    assert isinstance(request, dict)
+    return {
+        "session": accepted.session.to_dict(),
+        output_key: request[request_key],
+    }
 
 
 def _diagnostic_show(
@@ -1483,8 +1537,27 @@ def _diagnostic_declare_source_change(
     expected_revision = _validate_revision(expected_revision)
     actor = _validate_actor(actor)
     declaration = SourceChangeDeclaration.from_value(source_change_declaration)
+    declaration_data = declaration.to_dict()
     state = _make_state(context)
     session = _load_bound_session(state, diagnostic_session_id)
+    retry = _resolve_operation_retry(
+        state,
+        session,
+        operation_id=operation_id,
+        expected_revision=expected_revision,
+        event_type="source_change.declared",
+        actor=actor,
+        request={"source_change_declaration": declaration_data},
+    )
+    if retry is not None:
+        return OperationResult.success(
+            _SOURCE_CHANGE_DECLARE_OPERATION,
+            _retry_operation_data(
+                retry,
+                output_key="source_change_declaration",
+                request_key="source_change_declaration",
+            ),
+        )
     if session.state not in {"INVESTIGATING", "FIX_PROPOSED"}:
         raise DiagnosticValidationError(DIAGNOSTIC_INVALID_TRANSITION)
     failed = _load_target_run(
@@ -1502,7 +1575,6 @@ def _diagnostic_declare_source_change(
         for item in session.source_change_declarations
     ):
         raise DiagnosticValidationError(DIAGNOSTIC_PLAN_INVALID)
-    declaration_data = declaration.to_dict()
     event = create_event(
         diagnostic_session_id=session.diagnostic_session_id,
         operation_id=operation_id,
@@ -1543,8 +1615,27 @@ def _diagnostic_add_verification_plan(
     expected_revision = _validate_revision(expected_revision)
     actor = _validate_actor(actor)
     plan = VerificationPlan.from_value(verification_plan)
+    plan_data = plan.to_dict()
     state = _make_state(context)
     session = _load_bound_session(state, diagnostic_session_id)
+    retry = _resolve_operation_retry(
+        state,
+        session,
+        operation_id=operation_id,
+        expected_revision=expected_revision,
+        event_type="verification.plan_added",
+        actor=actor,
+        request={"verification_plan": plan_data},
+    )
+    if retry is not None:
+        return OperationResult.success(
+            _VERIFICATION_PLAN_ADD_OPERATION,
+            _retry_operation_data(
+                retry,
+                output_key="verification_plan",
+                request_key="verification_plan",
+            ),
+        )
     if session.state != "FIX_PROPOSED":
         raise DiagnosticValidationError(DIAGNOSTIC_INVALID_TRANSITION)
     declarations = tuple(
@@ -1599,7 +1690,6 @@ def _diagnostic_add_verification_plan(
             analysis_id,
             analysis_evidence_id,
         )
-    plan_data = plan.to_dict()
     event = create_event(
         diagnostic_session_id=session.diagnostic_session_id,
         operation_id=operation_id,
@@ -1642,6 +1732,24 @@ def _diagnostic_start_verification(
     actor = _validate_actor(actor)
     state = _make_state(context)
     session = _load_bound_session(state, diagnostic_session_id)
+    retry = _resolve_operation_retry(
+        state,
+        session,
+        operation_id=operation_id,
+        expected_revision=expected_revision,
+        event_type="verification.started",
+        actor=actor,
+        request={"verification_plan_id": verification_plan_id},
+    )
+    if retry is not None:
+        return OperationResult.success(
+            _VERIFICATION_START_OPERATION,
+            _retry_operation_data(
+                retry,
+                output_key="verification_plan_id",
+                request_key="verification_plan_id",
+            ),
+        )
     if session.state not in {"FIX_PROPOSED", "VERIFYING"}:
         raise DiagnosticValidationError(DIAGNOSTIC_INVALID_TRANSITION)
     plans = tuple(
@@ -1688,8 +1796,27 @@ def _diagnostic_attach_marker(
     expected_revision = _validate_revision(expected_revision)
     actor = _validate_actor(actor)
     marker = DiagnosticMarkerRef.from_value(diagnostic_marker_ref)
+    marker_data = marker.to_dict()
     state = _make_state(context)
     session = _load_bound_session(state, diagnostic_session_id)
+    retry = _resolve_operation_retry(
+        state,
+        session,
+        operation_id=operation_id,
+        expected_revision=expected_revision,
+        event_type="analysis.marker_attached",
+        actor=actor,
+        request={"diagnostic_marker_ref": marker_data},
+    )
+    if retry is not None:
+        return OperationResult.success(
+            _MARKER_ATTACH_OPERATION,
+            _retry_operation_data(
+                retry,
+                output_key="diagnostic_marker_ref",
+                request_key="diagnostic_marker_ref",
+            ),
+        )
     if session.state != "VERIFYING":
         raise DiagnosticValidationError(DIAGNOSTIC_INVALID_TRANSITION)
     if session.active_verification_plan_id is None:
@@ -1760,7 +1887,6 @@ def _diagnostic_attach_marker(
         marker,
         analysis_identity=analysis_envelope.identity,
     )
-    marker_data = marker.to_dict()
     event = create_event(
         diagnostic_session_id=session.diagnostic_session_id,
         operation_id=operation_id,
