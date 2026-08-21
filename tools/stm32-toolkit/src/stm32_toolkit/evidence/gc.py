@@ -32,7 +32,7 @@ from .store import EvidenceStore
 GC_PLAN_SCHEMA = "stm32-evidence-gc-plan/1"
 GC_RESULT_SCHEMA = "stm32-evidence-gc-result/1"
 REGISTERED_ROOT_TYPES = frozenset(
-    {"test-run", "diagnostic-session", "bundle", "annotation"}
+    {"test-run", "diagnostic-session", "bundle", "annotation", "monitor-run"}
 )
 _HASH = re.compile(r"^[0-9a-f]{64}$")
 _PREFIX = re.compile(r"^[0-9a-f]{2}$")

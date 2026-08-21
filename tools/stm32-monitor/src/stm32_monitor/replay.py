@@ -14,7 +14,8 @@ from pathlib import Path
 from typing import cast
 from uuid import UUID
 
-from stm32_toolkit.evidence import EvidenceEnvelope, EvidenceIdentity, EvidenceValidationError
+from stm32_toolkit.evidence import ArtifactRef, EvidenceEnvelope, EvidenceIdentity, EvidenceValidationError
+from stm32_toolkit.evidence.gc import RootRecord, get_root, put_root
 from stm32_toolkit.evidence.store import EvidenceStore
 from stm32_toolkit.paths import WorkspacePaths, require_safe_session_id
 
@@ -38,6 +39,7 @@ MONITOR_REPLAY_PROBE_ID = "replay:probe-v2"
 MONITOR_REPLAY_PHYSICAL_TARGET = "replay:non-physical"
 MONITOR_REPLAY_FLASH_SESSION_ID = "replay:no-flash"
 MONITOR_REPLAY_LEASE_ID = "replay:no-lease"
+MONITOR_RUN_ROOT_TYPE = "monitor-run"
 MAX_REPLAY_DOCUMENT_BYTES = 1024 * 1024
 MAX_REPLAY_BATCHES = 1024
 MAX_REPLAY_JSON_DEPTH = 32
@@ -139,6 +141,26 @@ _EVIDENCE_METADATA_FIELDS = frozenset(
         "execution_source",
         "physical_transport_evidence",
     }
+)
+_ROOT_METADATA_FIELDS = frozenset(
+    {
+        "fixture_sha256",
+        "run_ref_sha256",
+        "origin_workspace_id",
+        "import_workspace_id",
+        "execution_source",
+        "physical_transport_evidence",
+    }
+)
+_INTEGER_BATCH_FIELDS = (
+    "groupRevision",
+    "sequence",
+    "scheduledUnixNs",
+    "capturedUnixNs",
+    "latencyNs",
+    "subscriberDrops",
+    "historyDrops",
+    "deadlineDrops",
 )
 
 
@@ -320,6 +342,10 @@ def _parse_batch(value: object) -> SampleBatch:
         _fail(MONITOR_REPLAY_INVALID, "replay batch fields are not closed")
     if type(value["values"]) is not list:
         _fail(MONITOR_REPLAY_INVALID, "replay batch values are invalid")
+    if any(type(value[field_name]) is not int for field_name in _INTEGER_BATCH_FIELDS):
+        _fail(MONITOR_REPLAY_INVALID, "replay batch integer fields are not canonical")
+    if type(value["actualRateHz"]) is not float:
+        _fail(MONITOR_REPLAY_INVALID, "replay batch rate must be a canonical float")
     binding = _parse_binding(value["binding"])
     try:
         batch = SampleBatch(
@@ -656,7 +682,7 @@ def _decode_document_bytes(raw: bytes) -> dict[str, object]:
         canonical = canonical_replay_json_bytes(decoded)
     except MonitorReplayError:
         _fail(EVIDENCE_INTEGRITY_FAILURE, "replay document is not canonical JSON")
-    if raw != canonical + b"\n":
+    if raw not in (canonical, canonical + b"\n"):
         _fail(EVIDENCE_INTEGRITY_FAILURE, "replay document is not canonical JSON")
     if type(decoded) is not dict:
         _fail(EVIDENCE_INTEGRITY_FAILURE, "replay document must be a JSON object")
@@ -758,6 +784,135 @@ def _make_reference(
     return MonitorRunRef.from_value(payload)
 
 
+def _expected_transcript_envelope(
+    raw: bytes,
+    document: MonitorReplayDocument,
+    paths: WorkspacePaths,
+    operation_id: str,
+) -> EvidenceEnvelope:
+    digest = hashlib.sha256(raw).hexdigest()
+    artifact = ArtifactRef(
+        sha256=digest,
+        size_bytes=len(raw),
+        relative_path=f"objects/sha256/{digest[:2]}/{digest}",
+        kind="monitor-replay-transcript",
+        media_type="application/json",
+    )
+    metadata = {
+        "operation_id": operation_id,
+        "scenario_role": document.scenario_role,
+        "origin_workspace_id": document.binding.workspace_id,
+        "import_workspace_id": paths.workspace_id,
+        "origin_run_id": str(document.batches[0].run_id),
+        "projected_run_id": str(document.batches[0].run_id),
+        "fixture_sha256": document.fixture_sha256,
+        "execution_source": MONITOR_REPLAY_EXECUTION_SOURCE,
+        "physical_transport_evidence": False,
+    }
+    if set(metadata) != _EVIDENCE_METADATA_FIELDS:
+        _fail(EVIDENCE_INTEGRITY_FAILURE, "replay Evidence metadata is not closed")
+    try:
+        identity = EvidenceIdentity(
+            workspace_id=document.binding.workspace_id,
+            project_id=document.binding.logical_project_id,
+            session_id=document.binding.session_id,
+            build_id=document.binding.build_id,
+            elf_sha256=document.binding.elf_sha256,
+            target_device=document.binding.target_device,
+            input_snapshot_sha256=document.binding.input_snapshot_sha256,
+            git_commit=document.binding.git_head,
+            git_dirty=document.binding.git_dirty,
+        )
+        return EvidenceEnvelope(
+            identity=identity,
+            operation=MONITOR_REPLAY_IMPORT_OPERATION,
+            produced_at_utc=unix_ns_to_utc(document.batches[0].captured_unix_ns),
+            parents=(),
+            artifacts=(artifact,),
+            metadata=metadata,
+        )
+    except EvidenceValidationError as error:
+        raise MonitorReplayError(
+            EVIDENCE_INTEGRITY_FAILURE,
+            "replay Evidence identity is invalid",
+        ) from error
+
+
+def _expected_root(reference: MonitorRunRef) -> RootRecord:
+    metadata = {
+        "fixture_sha256": reference.fixture_sha256,
+        "run_ref_sha256": reference.run_ref_sha256,
+        "origin_workspace_id": reference.origin_workspace_id,
+        "import_workspace_id": reference.import_workspace_id,
+        "execution_source": MONITOR_REPLAY_EXECUTION_SOURCE,
+        "physical_transport_evidence": False,
+    }
+    if set(metadata) != _ROOT_METADATA_FIELDS:
+        _fail(EVIDENCE_INTEGRITY_FAILURE, "monitor run root metadata is not closed")
+    try:
+        return RootRecord(
+            root_type=MONITOR_RUN_ROOT_TYPE,
+            root_id=reference.operation_id,
+            manifest_id=reference.transcript_evidence_id,
+            metadata=metadata,
+        )
+    except EvidenceValidationError as error:
+        raise MonitorReplayError(
+            EVIDENCE_INTEGRITY_FAILURE,
+            "monitor run root is invalid",
+        ) from error
+
+
+def _load_monitor_root(
+    evidence_store: EvidenceStore,
+    operation_id: str,
+) -> RootRecord | None:
+    try:
+        return get_root(evidence_store, MONITOR_RUN_ROOT_TYPE, operation_id)
+    except EvidenceValidationError as error:
+        if error.message == "evidence root is absent":
+            return None
+        raise MonitorReplayError(
+            EVIDENCE_INTEGRITY_FAILURE,
+            "monitor run root is corrupt",
+        ) from error
+    except Exception as error:
+        raise MonitorReplayError(
+            ENVIRONMENT_FAILURE,
+            "monitor run root could not be read",
+        ) from error
+
+
+def _validate_existing_root(
+    root: RootRecord,
+    expected_root: RootRecord,
+    expected_envelope: EvidenceEnvelope,
+    raw: bytes,
+    evidence_store: EvidenceStore,
+) -> None:
+    if root.to_dict() != expected_root.to_dict():
+        _fail(OPERATION_CONFLICT, "operation root has a different intent")
+    try:
+        envelope = evidence_store.get_envelope(root.manifest_id)
+        if envelope.to_dict() != expected_envelope.to_dict():
+            raise ValueError("transcript envelope differs from the operation root")
+        if len(envelope.artifacts) != 1:
+            raise ValueError("transcript envelope artifact set is invalid")
+        captured = evidence_store.read_artifact(
+            envelope.artifacts[0],
+            maximum_bytes=MAX_REPLAY_DOCUMENT_BYTES,
+        )
+        if captured != raw:
+            raise ValueError("transcript artifact bytes differ from the operation root")
+    except MonitorReplayError:
+        raise
+    except Exception as error:
+        raise MonitorReplayError(
+            EVIDENCE_INTEGRITY_FAILURE,
+            "monitor run transcript evidence is corrupt",
+        ) from error
+
+
 def _load_existing_batches(history: HistoryStore, paths: WorkspacePaths, run_id: UUID) -> tuple[SampleBatch, ...]:
     result = history.query_history(
         HistoryQuery(
@@ -806,9 +961,7 @@ def _load_existing_batches(history: HistoryStore, paths: WorkspacePaths, run_id:
 
 def _publish_transcript(
     raw: bytes,
-    document: MonitorReplayDocument,
-    paths: WorkspacePaths,
-    operation_id: str,
+    expected_envelope: EvidenceEnvelope,
     evidence_store: EvidenceStore,
 ) -> str:
     try:
@@ -820,40 +973,13 @@ def _publish_transcript(
                 kind="monitor-replay-transcript",
                 media_type="application/json",
             )
-        identity = EvidenceIdentity(
-            workspace_id=document.binding.workspace_id,
-            project_id=document.binding.logical_project_id,
-            session_id=document.binding.session_id,
-            build_id=document.binding.build_id,
-            elf_sha256=document.binding.elf_sha256,
-            target_device=document.binding.target_device,
-            input_snapshot_sha256=document.binding.input_snapshot_sha256,
-            git_commit=document.binding.git_head,
-            git_dirty=document.binding.git_dirty,
-        )
-        metadata = {
-            "operation_id": operation_id,
-            "scenario_role": document.scenario_role,
-            "origin_workspace_id": document.binding.workspace_id,
-            "import_workspace_id": paths.workspace_id,
-            "origin_run_id": str(document.batches[0].run_id),
-            "projected_run_id": str(document.batches[0].run_id),
-            "fixture_sha256": document.fixture_sha256,
-            "execution_source": MONITOR_REPLAY_EXECUTION_SOURCE,
-            "physical_transport_evidence": False,
-        }
-        if set(metadata) != _EVIDENCE_METADATA_FIELDS:
-            raise ValueError("replay Evidence metadata is not closed")
-        envelope = EvidenceEnvelope(
-            identity=identity,
-            operation=MONITOR_REPLAY_IMPORT_OPERATION,
-            produced_at_utc=unix_ns_to_utc(document.batches[0].captured_unix_ns),
-            parents=(),
-            artifacts=(artifact,),
-            metadata=metadata,
-        )
-        evidence_store.put_envelope(envelope)
-        return str(envelope.evidence_id)
+        if artifact != expected_envelope.artifacts[0]:
+            raise EvidenceValidationError(
+                "EVIDENCE_CORRUPT",
+                "transcript artifact identity differs from the expected source",
+            )
+        evidence_store.put_envelope(expected_envelope)
+        return str(expected_envelope.evidence_id)
     except MonitorReplayError:
         raise
     except Exception as error:
@@ -881,35 +1007,70 @@ def ingest_monitor_replay(
         _fail(MONITOR_REPLAY_INVALID, "operation_id does not match the frozen replay run")
     try:
         projected = _project_batches(document, paths)
-    except MonitorReplayError:
-        raise
-    history = HistoryStore(paths)
-    try:
-        existing = _load_existing_batches(history, paths, projected[0].run_id)
-        if existing and existing != projected:
-            _fail(OPERATION_CONFLICT, "operation already has a different history window")
-        transcript_evidence_id = _publish_transcript(
+        if sum(len(batch.values) for batch in projected) > MAX_HISTORY_VALUES:
+            _fail(EVIDENCE_INTEGRITY_FAILURE, "replay history window exceeds its value limit")
+        expected_envelope = _expected_transcript_envelope(
             raw,
             document,
             paths,
             operation,
-            evidence_store,
         )
-        reference = _make_reference(
-            document,
-            paths,
-            operation,
-            projected,
-            transcript_evidence_id,
-        )
-        if existing:
+        try:
+            reference = _make_reference(
+                document,
+                paths,
+                operation,
+                projected,
+                str(expected_envelope.evidence_id),
+            )
+        except MonitorReplayError as error:
+            raise MonitorReplayError(
+                EVIDENCE_INTEGRITY_FAILURE,
+                "replay reference window is invalid",
+            ) from error
+        expected_root = _expected_root(reference)
+    except MonitorReplayError:
+        raise
+    try:
+        root = _load_monitor_root(evidence_store, operation)
+        history = HistoryStore(paths)
+    except MonitorReplayError:
+        raise
+    except Exception as error:
+        raise MonitorReplayError(ENVIRONMENT_FAILURE, "monitor replay storage failed") from error
+    try:
+        if root is not None:
+            _validate_existing_root(
+                root,
+                expected_root,
+                expected_envelope,
+                raw,
+                evidence_store,
+            )
+        existing = _load_existing_batches(history, paths, projected[0].run_id)
+        if root is None:
+            if existing:
+                _fail(OPERATION_CONFLICT, "operation history exists without its authoritative root")
+            _publish_transcript(raw, expected_envelope, evidence_store)
+            try:
+                put_root(evidence_store, expected_root)
+            except EvidenceValidationError as error:
+                if error.message == "root identity already has different canonical bytes":
+                    _fail(OPERATION_CONFLICT, "operation root changed before publication")
+                raise MonitorReplayError(
+                    ENVIRONMENT_FAILURE,
+                    "monitor run root publication failed",
+                ) from error
+        elif existing:
+            if existing != projected:
+                _fail(OPERATION_CONFLICT, "operation history does not match its authoritative root")
             return reference
-        for batch in projected:
-            result = history.append_batch(batch)
-            if not result.ok:
-                if result.code == "MONITOR_STORAGE_INVALID":
-                    _fail(OPERATION_CONFLICT, "operation history changed before append")
-                _fail(ENVIRONMENT_FAILURE, "monitor history append failed")
+
+        result = history.append_batches(projected)
+        if not result.ok:
+            if result.code == "MONITOR_STORAGE_INVALID":
+                _fail(OPERATION_CONFLICT, "operation history changed before append")
+            _fail(ENVIRONMENT_FAILURE, "monitor history append failed")
         return reference
     except MonitorReplayError:
         raise

@@ -4,7 +4,7 @@ import builtins
 import copy
 import json
 import os
-from dataclasses import fields
+from dataclasses import fields, replace
 from hashlib import sha256
 from pathlib import Path
 from uuid import UUID
@@ -12,7 +12,8 @@ from uuid import UUID
 import pytest
 
 from stm32_monitor.history import HistoryQuery, HistoryStore
-from stm32_monitor.models import ObservationBinding, SampleBatch
+from stm32_monitor.models import MAX_SIGNED_INT64, ObservationBinding, SampleBatch
+from stm32_monitor.protocol import ProtocolResult
 from stm32_monitor.replay import (
     MONITOR_REPLAY_SCHEMA,
     MonitorReplayDocument,
@@ -22,7 +23,9 @@ from stm32_monitor.replay import (
     ingest_monitor_replay,
 )
 from stm32_toolkit.evidence.store import EvidenceStore
+from stm32_toolkit.evidence.gc import get_root, plan_gc
 from stm32_toolkit.paths import WorkspacePaths
+from stm32_toolkit.testing.replay import load_target_replay_fixture
 
 
 FIXTURES = Path(__file__).parent / "fixtures" / "vs03"
@@ -64,36 +67,40 @@ def _operation(role: str) -> str:
 
 
 def _history_batches(paths: WorkspacePaths, run_id: UUID):
-    result = HistoryStore(paths).query_history(
-        HistoryQuery(
-            session_id=paths.session_id,
-            start_ns=0,
-            end_ns=(1 << 63) - 1,
-            run_id=run_id,
-            limit=10_000,
+    history = HistoryStore(paths)
+    try:
+        result = history.query_history(
+            HistoryQuery(
+                session_id=paths.session_id,
+                start_ns=0,
+                end_ns=(1 << 63) - 1,
+                run_id=run_id,
+                limit=10_000,
+            )
         )
-    )
-    assert result.ok, result.to_dict()
-    assert result.data is not None
-    assert result.data.next_cursor is None
-    return tuple(
-        SampleBatch(
-            binding=batch.binding,
-            group_id=batch.group_id,
-            group_revision=batch.group_revision,
-            run_id=batch.run_id,
-            sequence=batch.sequence,
-            scheduled_unix_ns=batch.scheduled_unix_ns,
-            captured_unix_ns=batch.captured_unix_ns,
-            latency_ns=batch.latency_ns,
-            actual_rate_hz=batch.actual_rate_hz,
-            subscriber_drops=batch.subscriber_drops,
-            history_drops=batch.history_drops,
-            deadline_drops=batch.deadline_drops,
-            values=batch.values,
+        assert result.ok, result.to_dict()
+        assert result.data is not None
+        assert result.data.next_cursor is None
+        return tuple(
+            SampleBatch(
+                binding=batch.binding,
+                group_id=batch.group_id,
+                group_revision=batch.group_revision,
+                run_id=batch.run_id,
+                sequence=batch.sequence,
+                scheduled_unix_ns=batch.scheduled_unix_ns,
+                captured_unix_ns=batch.captured_unix_ns,
+                latency_ns=batch.latency_ns,
+                actual_rate_hz=batch.actual_rate_hz,
+                subscriber_drops=batch.subscriber_drops,
+                history_drops=batch.history_drops,
+                deadline_drops=batch.deadline_drops,
+                values=batch.values,
+            )
+            for batch in result.data.batches
         )
-        for batch in result.data.batches
-    )
+    finally:
+        history.close()
 
 
 def _rewrite_document(
@@ -156,6 +163,22 @@ def test_replay_fixtures_are_canonical_closed_documents_and_share_scope() -> Non
     assert before.binding.elf_sha256 != after.binding.elf_sha256
     assert before.binding.input_snapshot_sha256 != after.binding.input_snapshot_sha256
     assert before.binding.git_head != after.binding.git_head
+
+    target_fixtures = Path(__file__).parents[2] / "stm32-toolkit" / "tests" / "fixtures" / "vs03" / "target"
+    for role, monitor_document in (("failed-before", before), ("fixed-after", after)):
+        target_fixture = load_target_replay_fixture(
+            target_fixtures / f"{role}.json",
+            target_fixtures / f"{role}.hex",
+        )
+        target_identity = target_fixture.descriptor.identity
+        assert monitor_document.binding.logical_project_id == target_identity.project_id
+        assert monitor_document.binding.workspace_id == target_identity.workspace_id
+        assert monitor_document.binding.target_device == target_identity.target_device
+        assert monitor_document.binding.build_id == target_identity.build_id
+        assert monitor_document.binding.elf_sha256 == target_identity.elf_sha256
+        assert monitor_document.binding.input_snapshot_sha256 == target_identity.input_snapshot_sha256
+        assert monitor_document.binding.git_head == target_identity.git_commit
+        assert monitor_document.binding.git_dirty == target_identity.git_dirty
 
     for role, document in (("failed-before", before), ("fixed-after", after)):
         raw = _raw_fixture(role)
@@ -228,6 +251,29 @@ def test_ingest_preserves_origin_transcript_and_projects_only_workspace_session(
     assert reference.fixture_sha256 == document.fixture_sha256
     assert reference.transcript_evidence_id
     assert len(reference.projected_batch_sha256s) == len(document.batches)
+
+    root = get_root(evidence, "monitor-run", reference.operation_id)
+    assert root.root_type == "monitor-run"
+    assert root.root_id == reference.operation_id
+    assert root.manifest_id == reference.transcript_evidence_id
+    assert set(root.metadata) == {
+        "fixture_sha256",
+        "run_ref_sha256",
+        "origin_workspace_id",
+        "import_workspace_id",
+        "execution_source",
+        "physical_transport_evidence",
+    }
+    assert root.metadata == {
+        "fixture_sha256": reference.fixture_sha256,
+        "run_ref_sha256": reference.run_ref_sha256,
+        "origin_workspace_id": reference.origin_workspace_id,
+        "import_workspace_id": reference.import_workspace_id,
+        "execution_source": "replay",
+        "physical_transport_evidence": False,
+    }
+    plan = plan_gc(evidence)
+    assert f"manifests/{root.manifest_id}.json" in plan.reachable_manifests
 
     envelope = evidence.get_envelope(reference.transcript_evidence_id)
     assert envelope.operation == "monitor-replay-import"
@@ -341,6 +387,20 @@ def test_exact_retry_is_idempotent_and_different_intent_conflicts_without_append
     assert retried == first
     assert _history_batches(paths, RUN_IDS["failed-before"]) == before_batches
 
+    origin_only_conflict = _rewrite_document(
+        tmp_path,
+        "failed-before",
+        lambda payload: (
+            payload["binding"].update({"workspaceId": "d" * 64}),
+            [batch["binding"].update({"workspaceId": "d" * 64}) for batch in payload["batches"]],
+        ),
+        "origin-only-conflicting.json",
+    )
+    with pytest.raises(MonitorReplayError) as origin_error:
+        ingest_monitor_replay(paths, evidence, operation, origin_only_conflict)
+    assert origin_error.value.code == "OPERATION_CONFLICT"
+    assert _history_batches(paths, RUN_IDS["failed-before"]) == before_batches
+
     conflicting = _rewrite_document(
         tmp_path,
         "failed-before",
@@ -410,7 +470,114 @@ def test_malformed_fixture_digest_operation_mismatch_and_unknown_fields_fail_sta
     _assert_no_history(paths, RUN_IDS["failed-before"])
 
 
-def test_document_parser_rejects_tuples_subclasses_and_noncanonical_json() -> None:
+def test_canonical_replay_document_without_final_lf_is_accepted(tmp_path: Path) -> None:
+    paths = _paths(tmp_path)
+    no_lf = tmp_path / "no-final-lf.json"
+    no_lf.write_bytes(_raw_fixture("failed-before")[:-1])
+
+    reference = ingest_monitor_replay(
+        paths, _evidence(paths), _operation("failed-before"), no_lf
+    )
+
+    assert reference.operation_id == _operation("failed-before")
+    envelope = _evidence(paths).get_envelope(reference.transcript_evidence_id)
+    assert _evidence(paths).read_artifact(envelope.artifacts[0], maximum_bytes=2 * 1024 * 1024) == no_lf.read_bytes()
+
+
+def test_integer_actual_rate_is_not_a_canonical_float(tmp_path: Path) -> None:
+    paths = _paths(tmp_path)
+    source = _rewrite_document(
+        tmp_path,
+        "failed-before",
+        lambda payload: [batch.update({"actualRateHz": 1000}) for batch in payload["batches"]],
+        "integer-rate.json",
+    )
+
+    with pytest.raises(MonitorReplayError) as error:
+        ingest_monitor_replay(paths, _evidence(paths), _operation("failed-before"), source)
+    assert error.value.code == "EVIDENCE_INTEGRITY_FAILURE"
+    _assert_no_history(paths, RUN_IDS["failed-before"])
+    assert not _evidence(paths).root.exists()
+
+
+def test_max_int64_reference_window_fails_before_any_mutation(tmp_path: Path) -> None:
+    paths = _paths(tmp_path)
+    source = _rewrite_document(
+        tmp_path,
+        "failed-before",
+        lambda payload: (
+            payload["batches"][0].update({"sequence": MAX_SIGNED_INT64 - 1}),
+            payload["batches"][1].update({"sequence": MAX_SIGNED_INT64}),
+        ),
+        "max-int64-window.json",
+    )
+
+    with pytest.raises(MonitorReplayError) as error:
+        ingest_monitor_replay(paths, _evidence(paths), _operation("failed-before"), source)
+    assert error.value.code == "EVIDENCE_INTEGRITY_FAILURE"
+    _assert_no_history(paths, RUN_IDS["failed-before"])
+    assert not _evidence(paths).root.exists()
+
+
+def test_root_missing_with_preexisting_projected_history_is_a_conflict(tmp_path: Path) -> None:
+    paths = _paths(tmp_path)
+    evidence = _evidence(paths)
+    document = _document("failed-before")
+    projected = tuple(
+        replace(
+            batch,
+            binding=replace(
+                batch.binding,
+                workspace_id=paths.workspace_id,
+                session_id=paths.session_id,
+            ),
+        )
+        for batch in document.batches
+    )
+    history = HistoryStore(paths)
+    try:
+        for batch in projected:
+            assert history.append_batch(batch).ok
+    finally:
+        history.close()
+
+    with pytest.raises(MonitorReplayError) as error:
+        ingest_monitor_replay(paths, evidence, _operation("failed-before"), _fixture("failed-before"))
+    assert error.value.code == "OPERATION_CONFLICT"
+    assert not evidence.root.exists()
+
+
+def test_exact_root_without_history_recovers_with_one_atomic_append(tmp_path: Path, monkeypatch) -> None:
+    paths = _paths(tmp_path)
+    evidence = _evidence(paths)
+    failure = ProtocolResult(
+        ok=False,
+        operation="history.appendbatches",
+        code="MONITOR_STORAGE_BUSY",
+        message="monitor storage is busy",
+        data=None,
+    )
+
+    def fail_append(self, batches):
+        return failure
+
+    monkeypatch.setattr(HistoryStore, "append_batches", fail_append, raising=False)
+    with pytest.raises(MonitorReplayError) as error:
+        ingest_monitor_replay(paths, evidence, _operation("failed-before"), _fixture("failed-before"))
+    assert error.value.code == "ENVIRONMENT_FAILURE"
+    root = get_root(evidence, "monitor-run", _operation("failed-before"))
+    assert root.root_id == _operation("failed-before")
+    assert _history_batches(paths, RUN_IDS["failed-before"]) == ()
+
+    monkeypatch.undo()
+    recovered = ingest_monitor_replay(
+        paths, evidence, _operation("failed-before"), _fixture("failed-before")
+    )
+    assert recovered.transcript_evidence_id == root.manifest_id
+    assert _history_batches(paths, RUN_IDS["failed-before"])
+
+
+def test_document_parser_rejects_tuples_subclasses_and_noncanonical_json(tmp_path: Path) -> None:
     payload = json.loads(_raw_fixture("failed-before")[:-1].decode("utf-8"))
     with pytest.raises(MonitorReplayError) as tuple_error:
         MonitorReplayDocument.from_value({**payload, "batches": tuple(payload["batches"])})
@@ -433,8 +600,17 @@ def test_document_parser_rejects_tuples_subclasses_and_noncanonical_json() -> No
         MonitorReplayDocument.from_value(subclass)
     assert subclass_error.value.code == "MONITOR_REPLAY_INVALID"
 
-    path = Path("noncanonical.json")
-    assert path.name == "noncanonical.json"
+    paths = _paths(tmp_path)
+    noncanonical = tmp_path / "noncanonical.json"
+    noncanonical.write_bytes(_raw_fixture("failed-before") + b"\n")
+    with pytest.raises(MonitorReplayError) as noncanonical_error:
+        ingest_monitor_replay(
+            paths,
+            _evidence(paths),
+            _operation("failed-before"),
+            noncanonical,
+        )
+    assert noncanonical_error.value.code == "EVIDENCE_INTEGRITY_FAILURE"
 
 
 def test_unsafe_symlink_and_hardlink_sources_are_rejected_before_append(tmp_path: Path) -> None:
