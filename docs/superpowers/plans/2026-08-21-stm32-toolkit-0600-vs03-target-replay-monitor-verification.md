@@ -381,6 +381,8 @@ reloadable immutable bundle root for identical inputs.
 
 **Files:**
 
+- Modify: `tools/stm32-toolkit/src/stm32_toolkit/evidence/gc.py`
+- Modify: `tools/stm32-toolkit/tests/test_evidence_gc.py`
 - Modify: `tools/stm32-monitor/src/stm32_monitor/analysis_workflows.py`
 - Modify: `tools/stm32-monitor/src/stm32_monitor/__init__.py`
 - Modify: `tools/stm32-monitor/tests/test_analysis_workflows.py`
@@ -388,9 +390,12 @@ reloadable immutable bundle root for identical inputs.
 **Required interfaces:**
 
 - Implement the exact bundle/digest table and `AnalysisBundleRef` from the design.
+- Use the exact seven-argument `export_analysis_bundle(...)` signature and deterministic after-run
+  captured time; statically register `monitor-analysis-bundle` in Toolkit GC.
 - `export_analysis_bundle(...)` revalidates all request/publication/declaration/TestRun references,
-  emits canonical bytes, ingests the exact artifact and publishes/reloads the deterministic
-  envelope/root without self-reference.
+  including failed Target replay before/passed Target replay after identity, emits canonical bytes,
+  ingests the exact artifact and publishes/reloads the deterministic envelope/root with the exact
+  closed metadata and no self-reference.
 - Identical calls are byte/ref idempotent; missing exact checkpoint parts repair, conflicts fail
   without overwriting; no absolute path, credential, mutable database key or physical claim leaks.
 

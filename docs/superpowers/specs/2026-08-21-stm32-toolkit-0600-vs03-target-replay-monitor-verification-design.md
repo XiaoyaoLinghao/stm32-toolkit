@@ -356,12 +356,40 @@ The exact bundle schema is `stm32-monitor-analysis-bundle/1` with fields, in can
 `analysis-evidence`, `diagnostic-marker`, `marker-evidence`, followed by
 `source-change-declaration` only when present. Each entry is exactly `{role, sha256}`.
 
-`export_analysis_bundle(...)` revalidates the request/publication/declaration bindings, returns the
-canonical bytes plus a frozen `AnalysisBundleRef(schema, bundle_id, evidence_id, artifact)`, and
-publishes an envelope/root `monitor-analysis-bundle/<bundle_id>`. `bundle_id` and the artifact
-SHA-256 equal the canonical byte digest. Ordered parents are before/after transcript Evidence,
-analysis Evidence, marker Evidence, and declaration diff Evidence when present. The bundle payload
-does not contain its own bundle/evidence reference, so no content-addressing cycle exists.
+`AnalysisBundleRef` is frozen and slotted, uses schema
+`stm32-monitor-analysis-bundle-ref/1`, and has the exact fields `schema`, `bundle_id`, `evidence_id`,
+and `artifact`. The public operation is:
+
+```python
+export_analysis_bundle(
+    paths: WorkspacePaths,
+    evidence_store: EvidenceStore,
+    request: AnalysisRequest,
+    publication: AnalysisPublication,
+    failed_before_test_run_id: str,
+    fixed_after_test_run_id: str,
+    source_change_declaration: SourceChangeDeclaration | None = None,
+) -> tuple[bytes, AnalysisBundleRef]
+```
+
+It reloads both runs through public `TestRunRepository.load`: failed-before is a failed Target
+replay TestRun whose identity equals the before-run origin identity; fixed-after is the equivalent
+passed TestRun for the after-run identity. Both roots retain replay/non-physical labels and the
+current import workspace. The operation revalidates the request, publication Evidence, marker,
+transcripts and declaration before mutation, then publishes an envelope/root
+`monitor-analysis-bundle/<bundle_id>`. `bundle_id` and the sole artifact SHA-256 equal the canonical
+byte digest; artifact kind is `monitor-analysis-bundle` and media type is `application/json`.
+Ordered parents are before/after transcript Evidence, analysis Evidence, marker Evidence, and
+declaration diff Evidence when present. Identity is the after-run origin identity and
+`produced_at_utc = unix_ns_to_utc(after.end_captured_unix_ns_exclusive - 1)`.
+
+Envelope and root use the same exact metadata fields: `bundle_id`, `analysis_id`,
+`failed_before_test_run_id`, `fixed_after_test_run_id`, `source_change_declaration_id`,
+`origin_workspace_id`, `import_workspace_id`, `origin_session_id`, `execution_source`, and
+`physical_transport_evidence`. The last two values are `replay` and false. Toolkit's static GC
+registry is the sole authority and includes `monitor-analysis-bundle`; Monitor never registers it
+at import time. The bundle payload does not contain its own bundle/evidence reference, so no
+content-addressing cycle exists.
 
 ### 3.6 FixVerification (0602)
 
