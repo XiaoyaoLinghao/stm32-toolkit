@@ -542,6 +542,16 @@ the manifest origin workspace. The DiagnosticSession retains that origin identit
 Monitor, and Diagnostic session identifiers remain separate authority domains and are never
 compared for equality.
 
+Every later diagnostic operation, including the existing `diagnostic_begin` and
+`diagnostic_show`, reloads the session's `failed_run_id` before applying identity authority. Host
+sessions retain the existing exact local-workspace rule. For a Target session, the reloaded
+TestRun must still be Target/replay/failed/non-physical, its manifest identity must equal the
+DiagnosticSession identity, its root `origin_workspace_id` must equal that identity, and its root
+`import_workspace_id` must equal the current WorkspacePaths ID. Only project/target/source facts
+are compared across those objects; origin workspace is never required to equal import workspace.
+This is the common session-load rule for begin, hypothesis, plan, marker and show, not a special
+case used only while creating the session.
+
 ## 4. Diagnostic events and state transitions
 
 VS-02's accepted events remain byte-compatible. The session model is extended with source changes,
