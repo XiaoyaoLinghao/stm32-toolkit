@@ -1134,18 +1134,22 @@ def _validate_analysis(
         raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
     if envelope.parents[2] != declaration.diff_evidence_id:
         raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
-    _read_transcript_parent(
+    before_transcript = _read_transcript_parent(
         state,
         evidence_id=envelope.parents[0],
         run=before_identity,
         expected_role="failed-before",
     )
-    _read_transcript_parent(
+    after_transcript = _read_transcript_parent(
         state,
         evidence_id=envelope.parents[1],
         run=after_identity,
         expected_role="fixed-after",
     )
+    if before_transcript.identity.session_id != after_transcript.identity.session_id:
+        raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
+    if envelope.identity != after_transcript.identity:
+        raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
     if set(analysis) != _ANALYSIS_FIELDS:
         raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
     if analysis["schema"] != _ANALYSIS_SCHEMA or analysis["analysis_id"] != analysis_id:

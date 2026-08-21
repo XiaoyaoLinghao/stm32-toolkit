@@ -161,6 +161,8 @@ def _verification_checkpoint_inputs(
     hypothesis_id: str,
     marker_hypothesis_id: str | None = None,
     analysis_mutation: str | None = None,
+    monitor_session_overrides: dict[str, str] | None = None,
+    analysis_session_id: str | None = None,
 ) -> tuple[SourceChangeDeclaration, VerificationPlan, DiagnosticMarkerRef]:
     marker_hypothesis_id = hypothesis_id if marker_hypothesis_id is None else marker_hypothesis_id
     evidence = EvidenceStore(workspace.workspace_root / "evidence")
@@ -188,9 +190,26 @@ def _verification_checkpoint_inputs(
     }
 
     def publish_transcript(run: object, role: str) -> EvidenceEnvelope:
-        raw = transcript_paths[role].read_bytes()
-        document = json.loads(raw.decode("utf-8"))
+        document = json.loads(transcript_paths[role].read_text(encoding="utf-8"))
         binding = document["binding"]
+        monitor_session_id = (monitor_session_overrides or {}).get(role)
+        if monitor_session_id is not None:
+            binding = dict(binding)
+            binding["sessionId"] = monitor_session_id
+            document["binding"] = binding
+            document["batches"] = [
+                dict(batch, binding=dict(binding))
+                for batch in document["batches"]
+            ]
+            unsigned_document = {
+                key: value for key, value in document.items() if key != "fixture_sha256"
+            }
+            document["fixture_sha256"] = hashlib.sha256(
+                _producer_canonical_json_bytes(unsigned_document)
+            ).hexdigest()
+            raw = _producer_canonical_json_bytes(document) + b"\n"
+        else:
+            raw = transcript_paths[role].read_bytes()
         monitor_run_id = str(document["batches"][0]["runId"])
         monitor_identity = EvidenceIdentity(
             workspace_id=binding["workspaceId"],
@@ -354,8 +373,13 @@ def _verification_checkpoint_inputs(
     analysis_artifact = evidence.ingest_file(
         analysis_path, kind="monitor-analysis", media_type="application/json"
     )
+    analysis_identity = (
+        after_transcript.identity
+        if analysis_session_id is None
+        else replace(after_transcript.identity, session_id=analysis_session_id)
+    )
     analysis_envelope = EvidenceEnvelope(
-        identity=after_transcript.identity,
+        identity=analysis_identity,
         operation="monitor-analysis",
         produced_at_utc="2026-08-21T12:01:00.000000Z",
         parents=(
@@ -371,7 +395,7 @@ def _verification_checkpoint_inputs(
             "source_change_declaration_id": declaration.declaration_id,
             "origin_workspace_id": after.manifest.identity.workspace_id,
             "import_workspace_id": workspace.workspace_id,
-            "origin_session_id": after_transcript.identity.session_id,
+            "origin_session_id": analysis_identity.session_id,
             "execution_source": "replay",
             "physical_transport_evidence": False,
         },
@@ -390,7 +414,7 @@ def _verification_checkpoint_inputs(
                 "source_change_declaration_id": declaration.declaration_id,
                 "origin_workspace_id": after.manifest.identity.workspace_id,
                 "import_workspace_id": workspace.workspace_id,
-                "origin_session_id": after_transcript.identity.session_id,
+                "origin_session_id": analysis_identity.session_id,
                 "execution_source": "replay",
                 "physical_transport_evidence": False,
             },
@@ -418,7 +442,7 @@ def _verification_checkpoint_inputs(
         marker_path, kind="diagnostic-marker", media_type="application/json"
     )
     marker_envelope = EvidenceEnvelope(
-        identity=analysis_envelope.identity,
+        identity=analysis_identity,
         operation="diagnostic-marker",
         produced_at_utc="2026-08-21T12:02:00.000000Z",
         parents=(str(analysis_envelope.evidence_id),),
@@ -481,8 +505,12 @@ def _verification_checkpoint_inputs(
     return declaration, plan, marker_ref
 
 
-def _prepared_checkpoint_for_attach(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+def _prepared_checkpoint_for_plan(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    *,
+    monitor_session_overrides: dict[str, str] | None = None,
+    analysis_session_id: str | None = None,
 ) -> tuple[DiagnosticWorkflowContext, str, WorkspacePaths, SourceChangeDeclaration, VerificationPlan, DiagnosticMarkerRef]:
     diagnostic_context, session_id, _failed_replay, workspace = _replay_and_open_session(
         monkeypatch, tmp_path
@@ -505,7 +533,12 @@ def _prepared_checkpoint_for_attach(
     assert shown.ok is True
     hypothesis_id = shown.data["session"]["hypotheses"][0]["hypothesis_id"]
     declaration, plan, marker_ref = _verification_checkpoint_inputs(
-        tmp_path, workspace, session_id, hypothesis_id
+        tmp_path,
+        workspace,
+        session_id,
+        hypothesis_id,
+        monitor_session_overrides=monitor_session_overrides,
+        analysis_session_id=analysis_session_id,
     )
     assert diagnostic_declare_source_change(
         _fresh_diagnostic_context(diagnostic_context),
@@ -514,6 +547,29 @@ def _prepared_checkpoint_for_attach(
         expected_revision=3,
         source_change_declaration=declaration,
     ).ok is True
+    return diagnostic_context, session_id, workspace, declaration, plan, marker_ref
+
+
+def _prepared_checkpoint_for_attach(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    *,
+    monitor_session_overrides: dict[str, str] | None = None,
+    analysis_session_id: str | None = None,
+) -> tuple[DiagnosticWorkflowContext, str, WorkspacePaths, SourceChangeDeclaration, VerificationPlan, DiagnosticMarkerRef]:
+    (
+        diagnostic_context,
+        session_id,
+        workspace,
+        declaration,
+        plan,
+        marker_ref,
+    ) = _prepared_checkpoint_for_plan(
+        monkeypatch,
+        tmp_path,
+        monitor_session_overrides=monitor_session_overrides,
+        analysis_session_id=analysis_session_id,
+    )
     assert diagnostic_add_verification_plan(
         _fresh_diagnostic_context(diagnostic_context),
         operation_id="diagnostic.verification-plan.add",
@@ -1133,6 +1189,51 @@ def test_target_replay_prepares_and_reloads_fix_verification_checkpoint(
     assert retry.to_dict() == attached.to_dict()
 
 
+@pytest.mark.parametrize(
+    ("mutation", "monitor_session_overrides", "analysis_session_id"),
+    (
+        (
+            "transcript-session-mismatch",
+            {"failed-before": "vs03-monitor-before-only"},
+            None,
+        ),
+        ("analysis-identity-session-mismatch", None, "vs03-monitor-third"),
+    ),
+)
+def test_target_replay_rejects_monitor_producer_pair_mismatch_without_mutation(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    mutation: str,
+    monitor_session_overrides: dict[str, str] | None,
+    analysis_session_id: str | None,
+) -> None:
+    (
+        diagnostic_context,
+        session_id,
+        workspace,
+        _declaration,
+        plan,
+        _marker_ref,
+    ) = _prepared_checkpoint_for_plan(
+        monkeypatch,
+        tmp_path,
+        monitor_session_overrides=monitor_session_overrides,
+        analysis_session_id=analysis_session_id,
+    )
+    before = _authority_snapshot(workspace)
+    result = diagnostic_add_verification_plan(
+        _fresh_diagnostic_context(diagnostic_context),
+        operation_id=f"diagnostic.verification-plan.add.{mutation}",
+        diagnostic_session_id=session_id,
+        expected_revision=4,
+        verification_plan=plan,
+    )
+    after = _authority_snapshot(workspace)
+    assert result.ok is False
+    assert result.code == "EVIDENCE_INTEGRITY_FAILURE"
+    assert after == before
+
+
 def test_target_replay_declaration_rejects_rehashed_before_lineage_without_mutation(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -1469,6 +1570,8 @@ def test_target_replay_attach_fail_closed_matrix_preserves_complete_authority(
         root_type: str,
         root_id: str,
         payload: bytes,
+        parents: tuple[str, ...] | None = None,
+        metadata: dict[str, object] | None = None,
     ) -> tuple[EvidenceEnvelope, RootRecord, ArtifactRef]:
         digest = hashlib.sha256(payload).hexdigest()
         artifact = ArtifactRef(
@@ -1482,15 +1585,15 @@ def test_target_replay_attach_fail_closed_matrix_preserves_complete_authority(
             identity=envelope.identity,
             operation=envelope.operation,
             produced_at_utc=envelope.produced_at_utc,
-            parents=envelope.parents,
+            parents=envelope.parents if parents is None else parents,
             artifacts=(artifact,),
-            metadata=envelope.metadata,
+            metadata=envelope.metadata if metadata is None else metadata,
         )
         root = RootRecord(
             root_type=root_type,
             root_id=root_id,
             manifest_id=str(view.evidence_id),
-            metadata=dict(envelope.metadata),
+            metadata=dict(view.metadata),
         )
         view_envelopes[str(view.evidence_id)] = view
         view_roots[(root_type, root_id)] = root
@@ -1519,6 +1622,7 @@ def test_target_replay_attach_fail_closed_matrix_preserves_complete_authority(
         marker_payload = original_read_artifact(
             evidence, marker_envelope.artifacts[0], maximum_bytes=1_000_000
         )
+        wrong_marker_id: str | None = None
         if mutation == "corrupt-artifact":
             tampered_marker_payload = b"not-json"
         else:
@@ -1526,21 +1630,27 @@ def test_target_replay_attach_fail_closed_matrix_preserves_complete_authority(
             if mutation == "extra-marker-field":
                 payload["extra"] = True
             elif mutation == "wrong-unsigned-marker-id":
-                payload["marker_id"] = "0" * 64
+                wrong_marker_id = "0" * 64
+                payload["marker_id"] = wrong_marker_id
             else:
                 tampered_marker_payload = b" {" + marker_payload.strip()[1:-1] + b" }"
             if mutation != "noncanonical-artifact":
                 tampered_marker_payload = _producer_canonical_json_bytes(payload)
 
         if mutation != "corrupt-artifact":
-            view, _root, _artifact = install_artifact_view(
+            marker_id_for_view = marker_ref.marker_id if wrong_marker_id is None else wrong_marker_id
+            view, marker_root, _artifact = install_artifact_view(
                 marker_envelope,
                 root_type="diagnostic-marker",
-                root_id=marker_ref.marker_id,
+                root_id=marker_id_for_view,
                 payload=tampered_marker_payload,
+                metadata={
+                    **marker_envelope.metadata,
+                    "marker_id": marker_id_for_view,
+                },
             )
             marker_input = DiagnosticMarkerRef.new(
-                marker_id=marker_ref.marker_id,
+                marker_id=marker_id_for_view,
                 marker_evidence_id=str(view.evidence_id),
                 analysis_id=marker_ref.analysis_id,
                 analysis_evidence_id=marker_ref.analysis_evidence_id,
@@ -1550,6 +1660,19 @@ def test_target_replay_attach_fail_closed_matrix_preserves_complete_authority(
                 label=marker_ref.label,
                 rationale=marker_ref.rationale,
             )
+            marker_payload_view = json.loads(tampered_marker_payload.decode("utf-8"))
+            marker_unsigned_view = {
+                key: value for key, value in marker_payload_view.items() if key != "marker_id"
+            }
+            assert marker_payload_view["marker_id"] == marker_id_for_view
+            assert marker_input.marker_id == marker_id_for_view
+            assert marker_root.root_id == marker_id_for_view
+            assert marker_root.manifest_id == str(view.evidence_id)
+            assert view.artifacts[0].sha256 == hashlib.sha256(tampered_marker_payload).hexdigest()
+            if mutation == "wrong-unsigned-marker-id":
+                assert hashlib.sha256(
+                    _producer_canonical_json_bytes(marker_unsigned_view)
+                ).hexdigest() != marker_id_for_view
 
         def tampered_read_artifact(
             store: EvidenceStore, artifact: object, *, maximum_bytes: int
@@ -1566,14 +1689,33 @@ def test_target_replay_attach_fail_closed_matrix_preserves_complete_authority(
             evidence, analysis_envelope.artifacts[0], maximum_bytes=1_000_000
         )
         payload = json.loads(analysis_payload.decode("utf-8"))
-        payload["analysis_id"] = "0" * 64
+        wrong_analysis_id = "0" * 64
+        payload["analysis_id"] = wrong_analysis_id
         tampered_analysis_payload = _producer_canonical_json_bytes(payload)
-        view, _root, _artifact = install_artifact_view(
+        analysis_view, analysis_root, _artifact = install_artifact_view(
             analysis_envelope,
             root_type="monitor-analysis",
-            root_id=marker_ref.analysis_id,
+            root_id=wrong_analysis_id,
             payload=tampered_analysis_payload,
+            metadata={
+                **analysis_envelope.metadata,
+                "analysis_id": wrong_analysis_id,
+            },
         )
+        wrong_analysis_evidence_id = str(analysis_view.evidence_id)
+        analysis_payload_view = json.loads(tampered_analysis_payload.decode("utf-8"))
+        analysis_unsigned_view = {
+            key: value for key, value in analysis_payload_view.items() if key != "analysis_id"
+        }
+        assert analysis_payload_view["analysis_id"] == wrong_analysis_id
+        assert analysis_root.root_id == wrong_analysis_id
+        assert analysis_root.manifest_id == wrong_analysis_evidence_id
+        assert analysis_view.artifacts[0].sha256 == hashlib.sha256(
+            tampered_analysis_payload
+        ).hexdigest()
+        assert hashlib.sha256(
+            _producer_canonical_json_bytes(analysis_unsigned_view)
+        ).hexdigest() != wrong_analysis_id
         stored_state = diagnostic_workflows._make_state(
             _fresh_diagnostic_context(diagnostic_context)
         )
@@ -1588,8 +1730,8 @@ def test_target_replay_attach_fail_closed_matrix_preserves_complete_authority(
             source_change_declaration_id=original_plan.source_change_declaration_id,
             fixed_after_run_id=original_plan.fixed_after_run_id,
             fixed_after_evidence_id=original_plan.fixed_after_evidence_id,
-            required_analysis_ids=original_plan.required_analysis_ids,
-            required_analysis_evidence_ids=(str(view.evidence_id),),
+            required_analysis_ids=(wrong_analysis_id,),
+            required_analysis_evidence_ids=(wrong_analysis_evidence_id,),
             required_monitor_quality=original_plan.required_monitor_quality,
             expected_changed=original_plan.expected_changed,
         )
@@ -1604,23 +1746,71 @@ def test_target_replay_attach_fail_closed_matrix_preserves_complete_authority(
             return original_load(store, requested_session_id)
 
         monkeypatch.setattr(diagnostic_workflows.DiagnosticStore, "load", tampered_load)
+        marker_payload = json.loads(
+            original_read_artifact(
+                evidence, marker_envelope.artifacts[0], maximum_bytes=1_000_000
+            ).decode("utf-8")
+        )
+        marker_payload["analysis_id"] = wrong_analysis_id
+        marker_payload["analysis_evidence_id"] = wrong_analysis_evidence_id
+        marker_unsigned = {
+            key: value for key, value in marker_payload.items() if key != "marker_id"
+        }
+        wrong_marker_id = hashlib.sha256(
+            _producer_canonical_json_bytes(marker_unsigned)
+        ).hexdigest()
+        marker_payload["marker_id"] = wrong_marker_id
+        tampered_marker_payload = _producer_canonical_json_bytes(marker_payload)
+        marker_view, marker_root, _artifact = install_artifact_view(
+            marker_envelope,
+            root_type="diagnostic-marker",
+            root_id=wrong_marker_id,
+            payload=tampered_marker_payload,
+            parents=(wrong_analysis_evidence_id,),
+            metadata={
+                **marker_envelope.metadata,
+                "marker_id": wrong_marker_id,
+                "analysis_id": wrong_analysis_id,
+                "analysis_evidence_id": wrong_analysis_evidence_id,
+            },
+        )
         marker_input = DiagnosticMarkerRef.new(
-            marker_id=marker_ref.marker_id,
-            marker_evidence_id=marker_ref.marker_evidence_id,
-            analysis_id=marker_ref.analysis_id,
-            analysis_evidence_id=str(view.evidence_id),
+            marker_id=wrong_marker_id,
+            marker_evidence_id=str(marker_view.evidence_id),
+            analysis_id=wrong_analysis_id,
+            analysis_evidence_id=wrong_analysis_evidence_id,
             diagnostic_session_id=marker_ref.diagnostic_session_id,
             hypothesis_id=marker_ref.hypothesis_id,
             polarity=marker_ref.polarity,
             label=marker_ref.label,
             rationale=marker_ref.rationale,
         )
+        marker_payload_view = json.loads(tampered_marker_payload.decode("utf-8"))
+        assert marker_payload_view["analysis_id"] == wrong_analysis_id
+        assert marker_payload_view["analysis_evidence_id"] == wrong_analysis_evidence_id
+        assert marker_payload_view["marker_id"] == wrong_marker_id
+        assert marker_input.marker_id == wrong_marker_id
+        assert marker_input.analysis_id == wrong_analysis_id
+        assert marker_input.analysis_evidence_id == wrong_analysis_evidence_id
+        assert marker_root.root_id == wrong_marker_id
+        assert marker_root.manifest_id == str(marker_view.evidence_id)
+        assert marker_view.parents == (wrong_analysis_evidence_id,)
+        assert marker_view.artifacts[0].sha256 == hashlib.sha256(
+            tampered_marker_payload
+        ).hexdigest()
+        assert hashlib.sha256(
+            _producer_canonical_json_bytes(
+                {key: value for key, value in marker_payload_view.items() if key != "marker_id"}
+            )
+        ).hexdigest() == wrong_marker_id
 
         def tampered_read_artifact(
             store: EvidenceStore, artifact: object, *, maximum_bytes: int
         ) -> bytes:
-            if artifact == view.artifacts[0]:
+            if artifact == analysis_view.artifacts[0]:
                 return tampered_analysis_payload
+            if artifact == marker_view.artifacts[0]:
+                return tampered_marker_payload
             return original_read_artifact(store, artifact, maximum_bytes=maximum_bytes)
 
         monkeypatch.setattr(EvidenceStore, "read_artifact", tampered_read_artifact)
