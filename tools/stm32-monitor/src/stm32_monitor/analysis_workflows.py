@@ -22,6 +22,7 @@ from stm32_toolkit.evidence import (
 from stm32_toolkit.evidence.gc import RootRecord, get_root, put_root
 from stm32_toolkit.evidence.store import EvidenceStore, MAX_EVIDENCE_READ_BYTES
 from stm32_toolkit.paths import WorkspacePaths
+from stm32_toolkit.testing.publication import TestRunRepository
 
 from .analysis import (
     AnalysisError,
@@ -72,6 +73,10 @@ _MONITOR_ANALYSIS_OPERATION = "monitor-analysis"
 _DIAGNOSTIC_MARKER_OPERATION = "diagnostic-marker"
 _MONITOR_ANALYSIS_ROOT = "monitor-analysis"
 _DIAGNOSTIC_MARKER_ROOT = "diagnostic-marker"
+_ANALYSIS_BUNDLE_OPERATION = "monitor-analysis-bundle"
+_ANALYSIS_BUNDLE_ROOT = "monitor-analysis-bundle"
+_ANALYSIS_BUNDLE_SCHEMA = "stm32-monitor-analysis-bundle/1"
+_ANALYSIS_BUNDLE_REF_SCHEMA = "stm32-monitor-analysis-bundle-ref/1"
 _REPLAY_ROLES = {"failed-before", "fixed-after"}
 
 class AnalysisWorkflowError(ValueError):
@@ -130,6 +135,43 @@ class AnalysisPublication:
             or marker_ref.rationale != marker.rationale
         ):
             _fail(ANALYSIS_WORKFLOW_INVALID, "diagnostic marker reference does not match marker")
+
+
+@dataclass(frozen=True, slots=True)
+class AnalysisBundleRef:
+    schema: str
+    bundle_id: str
+    evidence_id: str
+    artifact: ArtifactRef
+
+    def __post_init__(self) -> None:
+        if (type(self.schema) is not str or self.schema != _ANALYSIS_BUNDLE_REF_SCHEMA
+                or type(self.bundle_id) is not str or _HASH.fullmatch(self.bundle_id) is None):
+            _fail(ANALYSIS_WORKFLOW_INVALID, "analysis bundle reference is invalid")
+        if (type(self.evidence_id) is not str or _HASH.fullmatch(self.evidence_id) is None
+                or type(self.artifact) is not ArtifactRef):
+            _fail(ANALYSIS_WORKFLOW_INVALID, "analysis bundle reference is invalid")
+        if (self.artifact.sha256 != self.bundle_id or self.artifact.kind != _ANALYSIS_BUNDLE_ROOT
+                or self.artifact.media_type != "application/json"):
+            _fail(ANALYSIS_WORKFLOW_INVALID, "analysis bundle artifact is invalid")
+
+    def to_dict(self) -> dict[str, object]:
+        return {"schema": self.schema, "bundle_id": self.bundle_id,
+                "evidence_id": self.evidence_id, "artifact": self.artifact.to_dict()}
+
+    @classmethod
+    def from_value(cls, value: object) -> "AnalysisBundleRef":
+        if type(value) is not dict or set(value) != {"schema", "bundle_id", "evidence_id", "artifact"}:
+            _fail(ANALYSIS_WORKFLOW_INVALID, "analysis bundle reference is invalid")
+        try:
+            return cls(schema=value["schema"], bundle_id=value["bundle_id"],
+                       evidence_id=value["evidence_id"],
+                       artifact=ArtifactRef.from_dict(value["artifact"]))
+        except AnalysisWorkflowError:
+            raise
+        except Exception as error:
+            _fail(ANALYSIS_WORKFLOW_INVALID, "analysis bundle reference is invalid")
+            raise AssertionError from error
 
 
 def _fail(code: str, message: str) -> None:
@@ -908,6 +950,127 @@ def compare_monitor_runs(
         kind="diagnostic-marker",
     )
     return AnalysisPublication(result, analysis_ref, marker, marker_ref)
+
+
+def export_analysis_bundle(
+    paths: WorkspacePaths,
+    evidence_store: EvidenceStore,
+    request: AnalysisRequest,
+    publication: AnalysisPublication,
+    failed_before_test_run_id: str,
+    fixed_after_test_run_id: str,
+    source_change_declaration: SourceChangeDeclaration | None = None,
+) -> tuple[bytes, AnalysisBundleRef]:
+    """Export one deterministic, rooted projection of an accepted replay analysis."""
+    if type(publication) is not AnalysisPublication:
+        _fail(ANALYSIS_WORKFLOW_INVALID, "analysis publication is invalid")
+    if type(failed_before_test_run_id) is not str or type(fixed_after_test_run_id) is not str:
+        _fail(ANALYSIS_WORKFLOW_INVALID, "test run IDs are invalid")
+    try:
+        UUID(failed_before_test_run_id)
+        UUID(fixed_after_test_run_id)
+    except (TypeError, ValueError):
+        _fail(ANALYSIS_WORKFLOW_INVALID, "test run IDs are invalid")
+    marker = publication.diagnostic_marker
+    before, after, lineage = _validate_inputs(
+        paths, evidence_store, request,
+        marker.diagnostic_session_id, marker.hypothesis_id,
+        marker.polarity, marker.rationale, source_change_declaration,
+    )
+    if before.scenario_role != "failed-before":
+        _fail(INCOMPATIBLE_IDENTITY, "failed-before replay identity is invalid")
+    if after.scenario_role != "fixed-after":
+        _fail(INCOMPATIBLE_IDENTITY, "fixed-after replay identity is invalid")
+    if publication.analysis_result.request_digest != request.request_digest:
+        _fail(INCOMPATIBLE_IDENTITY, "analysis request does not match publication")
+    if publication.analysis_result.lineage != lineage:
+        _fail(INCOMPATIBLE_IDENTITY, "analysis lineage does not match publication")
+    if publication.analysis_evidence_ref.analysis_id != publication.analysis_result.analysis_id:
+        _fail(INCOMPATIBLE_IDENTITY, "analysis evidence does not match publication")
+    if marker.analysis_id != publication.analysis_result.analysis_id:
+        _fail(INCOMPATIBLE_IDENTITY, "diagnostic marker does not match publication")
+    if source_change_declaration is not None:
+        _validate_diff_evidence(evidence_store, source_change_declaration, after)
+    before_transcript = _validate_transcript(evidence_store, before)
+    after_transcript = _validate_transcript(evidence_store, after)
+
+    try:
+        repository = TestRunRepository(evidence_store)
+        before_test = repository.load(failed_before_test_run_id)
+        after_test = repository.load(fixed_after_test_run_id)
+    except AnalysisWorkflowError:
+        raise
+    except (OSError, PermissionError) as error:
+        _fail(ENVIRONMENT_FAILURE, "test run evidence could not be read")
+        raise AssertionError from error
+    except Exception as error:
+        _fail(EVIDENCE_INTEGRITY_FAILURE, "test run evidence is absent or corrupt")
+        raise AssertionError from error
+    for loaded, reference, state, run_id in (
+        (before_test, before, "failed", failed_before_test_run_id),
+        (after_test, after, "passed", fixed_after_test_run_id),
+    ):
+        manifest = loaded.manifest
+        if (manifest.run_id != run_id or manifest.mode != "target" or manifest.transport != "replay"
+                or manifest.state != state or manifest.identity != _identity_for_ref(reference)):
+            _fail(INCOMPATIBLE_IDENTITY, "TestRun does not match replay reference")
+
+    digest_table = [
+        {"role": "before-run-ref", "sha256": before.run_ref_sha256},
+        {"role": "after-run-ref", "sha256": after.run_ref_sha256},
+        {"role": "before-transcript-evidence", "sha256": before.transcript_evidence_id},
+        {"role": "after-transcript-evidence", "sha256": after.transcript_evidence_id},
+        {"role": "analysis-request", "sha256": request.request_digest},
+        {"role": "analysis-result", "sha256": publication.analysis_result.analysis_id},
+        {"role": "analysis-evidence", "sha256": publication.analysis_evidence_ref.evidence_id},
+        {"role": "diagnostic-marker", "sha256": marker.marker_id},
+        {"role": "marker-evidence", "sha256": publication.diagnostic_marker_ref.marker_evidence_id},
+    ]
+    if source_change_declaration is not None:
+        digest_table.append({"role": "source-change-declaration", "sha256": source_change_declaration.declaration_id})
+    payload_document = {
+        "schema": _ANALYSIS_BUNDLE_SCHEMA,
+        "before_run": before.to_dict(),
+        "after_run": after.to_dict(),
+        "analysis_request": request.to_dict(),
+        "analysis_result": publication.analysis_result.to_dict(),
+        "analysis_evidence_ref": publication.analysis_evidence_ref.to_dict(),
+        "diagnostic_marker": marker.to_dict(),
+        "diagnostic_marker_ref": publication.diagnostic_marker_ref.to_dict(),
+        "failed_before_test_run_id": failed_before_test_run_id,
+        "fixed_after_test_run_id": fixed_after_test_run_id,
+        "source_change_declaration_id": None if source_change_declaration is None else source_change_declaration.declaration_id,
+        "digest_table": digest_table,
+    }
+    try:
+        payload = canonical_replay_json_bytes(payload_document)
+        bundle_id = sha256(payload).hexdigest()
+        artifact = _artifact_for_payload(payload, kind=_ANALYSIS_BUNDLE_ROOT)
+        metadata = {
+            "bundle_id": bundle_id, "analysis_id": publication.analysis_result.analysis_id,
+            "failed_before_test_run_id": failed_before_test_run_id,
+            "fixed_after_test_run_id": fixed_after_test_run_id,
+            "source_change_declaration_id": None if source_change_declaration is None else source_change_declaration.declaration_id,
+            "origin_workspace_id": after.origin_workspace_id, "import_workspace_id": after.import_workspace_id,
+            "origin_session_id": after.origin_session_id, "execution_source": "replay",
+            "physical_transport_evidence": False,
+        }
+        envelope = EvidenceEnvelope(
+            identity=_identity_for_ref(after), operation=_ANALYSIS_BUNDLE_OPERATION,
+            produced_at_utc=unix_ns_to_utc(after.end_captured_unix_ns_exclusive - 1),
+            parents=(before_transcript.evidence_id, after_transcript.evidence_id,
+                     publication.analysis_evidence_ref.evidence_id,
+                     publication.diagnostic_marker_ref.marker_evidence_id,
+                     *(() if source_change_declaration is None else (source_change_declaration.diff_evidence_id,))),
+            artifacts=(artifact,), metadata=metadata,
+        )
+        root = RootRecord(_ANALYSIS_BUNDLE_ROOT, bundle_id, str(envelope.evidence_id), metadata)
+    except (EvidenceValidationError, ValueError, TypeError, OverflowError) as error:
+        _fail(ANALYSIS_WORKFLOW_INVALID, "analysis bundle values are invalid")
+        raise AssertionError from error
+    _preflight_checkpoint(evidence_store, root, envelope)
+    _publish_checkpoint(evidence_store, root, envelope, payload, filename="analysis-bundle.json", kind=_ANALYSIS_BUNDLE_ROOT)
+    return payload, AnalysisBundleRef(_ANALYSIS_BUNDLE_REF_SCHEMA, bundle_id, str(envelope.evidence_id), artifact)
 
 
 __all__ = [

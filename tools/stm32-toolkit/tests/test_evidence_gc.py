@@ -170,11 +170,12 @@ def test_registered_typed_roots_are_closed_and_shared_objects_follow_reachabilit
             "monitor-run",
             "monitor-analysis",
             "diagnostic-marker",
+            "monitor-analysis-bundle",
         }
     )
     assert [set(root.to_dict()) for root in plan.roots] == [
         {"root_type", "root_id", "manifest_id", "metadata"}
-    ] * 7
+        ] * 8
     assert plan.reachable_objects == tuple(
         sorted(
             {shared.relative_path, kept_own.relative_path, dropped_own.relative_path},

@@ -13,9 +13,11 @@ import stm32_monitor.analysis_workflows as workflows
 from stm32_monitor.analysis import AnalysisRequest
 from stm32_monitor.analysis import analyze_monitor_windows
 from stm32_monitor.analysis_workflows import (
+    AnalysisBundleRef,
     AnalysisPublication,
     AnalysisWorkflowError,
     compare_monitor_runs,
+    export_analysis_bundle,
 )
 from stm32_monitor.history import HistoryQuery, HistoryPage, HistoryStore
 from stm32_monitor.models import HistoryBatchSlice, SampleBatch
@@ -31,6 +33,21 @@ from stm32_toolkit.evidence import ArtifactRef, EvidenceEnvelope, EvidenceIdenti
 from stm32_toolkit.evidence.gc import get_root, plan_gc
 from stm32_toolkit.evidence.store import EvidenceStore
 from stm32_toolkit.paths import WorkspacePaths
+
+
+def test_analysis_bundle_ref_is_closed_and_content_addressed():
+    payload = b'{"schema":"stm32-monitor-analysis-bundle/1"}'
+    digest = sha256(payload).hexdigest()
+    artifact = ArtifactRef(
+        sha256=digest, size_bytes=len(payload),
+        relative_path=f"objects/sha256/{digest[:2]}/{digest}",
+        kind="monitor-analysis-bundle", media_type="application/json",
+    )
+    ref = AnalysisBundleRef("stm32-monitor-analysis-bundle-ref/1", digest, "a" * 64, artifact)
+    assert ref.to_dict()["artifact"] == artifact.to_dict()
+    assert AnalysisBundleRef.from_value(ref.to_dict()) == ref
+    with pytest.raises(AnalysisWorkflowError):
+        AnalysisBundleRef("stm32-monitor-analysis-bundle-ref/1", "A" * 64, "a" * 64, artifact)
 
 
 FIXTURES = Path(__file__).parent / "fixtures" / "vs03"

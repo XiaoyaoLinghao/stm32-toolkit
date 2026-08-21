@@ -40,6 +40,7 @@ REGISTERED_ROOT_TYPES = frozenset(
         "monitor-run",
         "monitor-analysis",
         "diagnostic-marker",
+        "monitor-analysis-bundle",
     }
 )
 _HASH = re.compile(r"^[0-9a-f]{64}$")

@@ -24,8 +24,10 @@ from .analysis_workflows import (
     INCOMPATIBLE_IDENTITY,
     OPERATION_CONFLICT,
     AnalysisPublication,
+    AnalysisBundleRef,
     AnalysisWorkflowError,
     compare_monitor_runs,
+    export_analysis_bundle,
 )
 from .models import MonitorConfig, ProbeConnectRequest, WatchGroup, WatchItem
 from .protocol import MONITOR_PROTOCOL_VERSION, ProtocolResult
@@ -67,8 +69,10 @@ __all__ = [
     "INCOMPATIBLE_IDENTITY",
     "OPERATION_CONFLICT",
     "AnalysisPublication",
+    "AnalysisBundleRef",
     "AnalysisWorkflowError",
     "compare_monitor_runs",
+    "export_analysis_bundle",
     "MonitorConfig",
     "ProbeConnectRequest",
     "ProtocolResult",
