@@ -274,11 +274,17 @@ IDs, not catalog search results or bare artifact paths, become DiagnosticStore c
 
 ### 3.5 DiagnosticMarker and deterministic bundle (0603/0602 boundary)
 
-`DiagnosticMarker`/`DiagnosticMarkerRef` uses schema `stm32-diagnostic-marker/1` and contains marker
-ID, analysis ID/evidence ID, diagnostic session ID, one existing
+`DiagnosticMarker` uses schema `stm32-diagnostic-marker/1` and contains marker ID, analysis
+ID/evidence ID, diagnostic session ID, one existing
 hypothesis ID, polarity (`supports` or `refutes`), a closed label, and bounded rationale. 0603
 creates the marker payload and publishes it as Evidence. The caller then invokes the 0602 public
 `diagnostic_attach_marker` operation; only that operation appends `analysis.marker_attached`.
+
+Publication returns a separate `DiagnosticMarkerRef` with schema
+`stm32-diagnostic-marker-ref/1`: it snapshots the marker fields and additionally pairs
+`marker_id` with `marker_evidence_id`. The published marker payload never embeds its own envelope ID.
+The attach event stores this ref, and its checkpoint parents include marker Evidence followed by
+analysis Evidence in first-seen order.
 
 The analysis bundle is canonical JSON, not a platform-dependent archive. It contains a version,
 the two MonitorRunRefs, AnalysisResult, marker, referenced TestRun IDs, SourceChangeDeclaration ID,

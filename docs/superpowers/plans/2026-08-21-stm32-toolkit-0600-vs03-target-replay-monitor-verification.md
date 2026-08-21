@@ -294,8 +294,8 @@ payload and byte-deterministic bundle; incompatible identity publishes nothing d
 
 **Required interfaces:**
 
-- Frozen authoritative `AnalysisResult`, `AnalysisEvidenceRef` and `DiagnosticMarker` use the
-  corrected design boundary; AnalysisResult never self-embeds its Evidence ID.
+- Frozen authoritative `AnalysisResult`, `AnalysisEvidenceRef`, `DiagnosticMarker` and published
+  `DiagnosticMarkerRef` use the corrected design boundary; no payload self-embeds its Evidence ID.
 - `compare_monitor_runs(...)` queries only public HistoryStore pages, validates any firmware change
   only through the Task 6 `SourceChangeDeclaration`, and publishes canonical AnalysisResult and
   marker Evidence through an injected EvidenceStore.
