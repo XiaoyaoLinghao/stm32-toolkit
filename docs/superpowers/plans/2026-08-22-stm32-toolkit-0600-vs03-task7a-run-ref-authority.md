@@ -61,4 +61,3 @@ packaging, Python 3.10, release Gate, or remote operation.
 Review dispatch-base-to-head in a fresh detached worktree. Required evidence is the four focused
 test files plus `git diff --check`. Do not run a release matrix. A finding returns to the same Luna
 owner; no remote action is authorized.
-

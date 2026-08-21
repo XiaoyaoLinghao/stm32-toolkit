@@ -66,4 +66,3 @@ In a new detached clean worktree, review the complete accepted base
 `9ff0f727f5997cf0ffd92c7272ffeb4e1153fccb` through final head, run the Task 7A four-file suite,
 the affected Monitor replay/analysis tests, `git diff --check`, and one real producer-to-fresh-
 diagnostic public probe. No release-level matrix or remote operation is authorized.
-
