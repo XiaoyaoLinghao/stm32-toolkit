@@ -33,9 +33,13 @@ from .model import (
     DIAGNOSTIC_REVISION_CONFLICT,
     MAX_EVENT_BYTES,
     MAX_EVENTS,
+    DiagnosticMarkerRef,
     DiagnosticEvent,
     DiagnosticSession,
     DiagnosticValidationError,
+    FixVerification,
+    SourceChangeDeclaration,
+    VerificationPlan,
     canonical_diagnostic_json_bytes,
 )
 
@@ -58,6 +62,22 @@ def _raise(code: str) -> NoReturn:
 
 def _same_identity(left: EvidenceIdentity, right: EvidenceIdentity) -> bool:
     return left.to_dict() == right.to_dict()
+
+
+def _same_scope(left: EvidenceIdentity, right: EvidenceIdentity) -> bool:
+    return (
+        left.workspace_id == right.workspace_id
+        and left.project_id == right.project_id
+        and left.target_device == right.target_device
+    )
+
+
+def _same_after_identity(identity: EvidenceIdentity, declaration: SourceChangeDeclaration) -> bool:
+    return (
+        identity.input_snapshot_sha256 == declaration.after_source_sha256
+        and identity.build_id == declaration.after_build_id
+        and identity.elf_sha256 == declaration.after_elf_sha256
+    )
 
 
 def _is_reparse(info: os.stat_result) -> bool:
@@ -92,6 +112,46 @@ def _event_references(event: DiagnosticEvent) -> tuple[str, ...]:
         assessment = result["assessment"]
         assert isinstance(assessment, dict)
         references.append(cast(str, assessment["evidence_id"]))
+    elif event.event_type == "source_change.declared":
+        request = payload["request"]
+        assert isinstance(request, dict)
+        declaration = SourceChangeDeclaration.from_value(request["source_change_declaration"])
+        references.append(declaration.diff_evidence_id)
+    elif event.event_type == "verification.plan_added":
+        request = payload["request"]
+        assert isinstance(request, dict)
+        plan = VerificationPlan.from_value(request["verification_plan"])
+        references.extend(
+            (
+                plan.failed_before_evidence_id,
+                plan.fixed_after_evidence_id,
+                *plan.required_analysis_evidence_ids,
+            )
+        )
+    elif event.event_type == "analysis.marker_attached":
+        request = payload["request"]
+        assert isinstance(request, dict)
+        marker = DiagnosticMarkerRef.from_value(request["diagnostic_marker_ref"])
+        references.extend((marker.marker_evidence_id, marker.analysis_evidence_id))
+    elif event.event_type == "verification.completed":
+        request = payload["request"]
+        assert isinstance(request, dict)
+        verification = FixVerification.from_value(request["fix_verification"])
+        references.extend(
+            (
+                verification.failed_before_evidence_id,
+                verification.fixed_after_evidence_id,
+                *verification.analysis_evidence_ids,
+            )
+        )
+    if event.event_type in {
+        "source_change.declared",
+        "verification.plan_added",
+        "verification.started",
+        "analysis.marker_attached",
+        "verification.completed",
+    }:
+        return tuple(dict.fromkeys(references))
     return tuple(sorted(set(references)))
 
 
@@ -508,13 +568,137 @@ class DiagnosticStore:
         return session, tuple(events)
 
     def _validate_referenced_evidence(self, event: DiagnosticEvent, session: DiagnosticSession) -> None:
-        for evidence_id in _event_references(event):
+        references = _event_references(event)
+        new_event = event.event_type in {
+            "source_change.declared",
+            "verification.plan_added",
+            "verification.started",
+            "analysis.marker_attached",
+            "verification.completed",
+        }
+        if not new_event:
+            for evidence_id in references:
+                try:
+                    envelope = self.evidence_store.get_envelope(evidence_id)
+                except (EvidenceValidationError, OSError, ValueError):
+                    _raise(DIAGNOSTIC_EVIDENCE_MISSING)
+                if not _same_identity(envelope.identity, session.identity):
+                    _raise(DIAGNOSTIC_IDENTITY_MISMATCH)
+            return
+
+        envelopes: dict[str, EvidenceEnvelope] = {}
+        for evidence_id in references:
             try:
                 envelope = self.evidence_store.get_envelope(evidence_id)
             except (EvidenceValidationError, OSError, ValueError):
                 _raise(DIAGNOSTIC_EVIDENCE_MISSING)
+            envelopes[evidence_id] = envelope
+
+        payload = event.to_dict()["payload"]
+        assert isinstance(payload, dict)
+        request = payload["request"]
+        assert isinstance(request, dict)
+
+        def require_scope(envelope: EvidenceEnvelope) -> None:
+            if not _same_scope(envelope.identity, session.identity):
+                _raise(DIAGNOSTIC_IDENTITY_MISMATCH)
+
+        def require_after(envelope: EvidenceEnvelope, declaration: SourceChangeDeclaration) -> None:
+            require_scope(envelope)
+            if not _same_after_identity(envelope.identity, declaration):
+                _raise(DIAGNOSTIC_IDENTITY_MISMATCH)
+
+        def require_failed(envelope: EvidenceEnvelope) -> None:
             if not _same_identity(envelope.identity, session.identity):
                 _raise(DIAGNOSTIC_IDENTITY_MISMATCH)
+
+        if event.event_type == "source_change.declared":
+            declaration = SourceChangeDeclaration.from_value(request["source_change_declaration"])
+            envelope = envelopes[declaration.diff_evidence_id]
+            require_scope(envelope)
+            if declaration.diff_artifact not in envelope.artifacts:
+                _raise(DIAGNOSTIC_EVIDENCE_MISSING)
+            return
+
+        if event.event_type == "verification.plan_added":
+            plan = VerificationPlan.from_value(request["verification_plan"])
+            declaration = next(
+                (
+                    item
+                    for item in session.source_change_declarations
+                    if item.declaration_id == plan.source_change_declaration_id
+                ),
+                None,
+            )
+            if declaration is None:
+                _raise(DIAGNOSTIC_CHAIN_CORRUPT)
+            require_failed(envelopes[plan.failed_before_evidence_id])
+            require_after(envelopes[plan.fixed_after_evidence_id], declaration)
+            for evidence_id in plan.required_analysis_evidence_ids:
+                require_after(envelopes[evidence_id], declaration)
+            return
+
+        if event.event_type == "verification.started":
+            return
+
+        if event.event_type == "analysis.marker_attached":
+            marker = DiagnosticMarkerRef.from_value(request["diagnostic_marker_ref"])
+            plan = next(
+                (
+                    item
+                    for item in session.verification_plans
+                    if item.verification_plan_id == session.active_verification_plan_id
+                ),
+                None,
+            )
+            if plan is None or (marker.analysis_id, marker.analysis_evidence_id) not in zip(
+                plan.required_analysis_ids,
+                plan.required_analysis_evidence_ids,
+            ):
+                _raise(DIAGNOSTIC_PLAN_INVALID)
+            declaration = next(
+                (
+                    item
+                    for item in session.source_change_declarations
+                    if item.validation_plan_id == plan.verification_plan_id
+                ),
+                None,
+            )
+            if declaration is None:
+                _raise(DIAGNOSTIC_CHAIN_CORRUPT)
+            require_after(envelopes[marker.marker_evidence_id], declaration)
+            require_after(envelopes[marker.analysis_evidence_id], declaration)
+            return
+
+        verification = FixVerification.from_value(request["fix_verification"])
+        plan = next(
+            (
+                item
+                for item in session.verification_plans
+                if item.verification_plan_id == verification.verification_plan_id
+            ),
+            None,
+        )
+        if plan is None:
+            _raise(DIAGNOSTIC_PLAN_INVALID)
+        declaration = next(
+            (
+                item
+                for item in session.source_change_declarations
+                if item.declaration_id == plan.source_change_declaration_id
+            ),
+            None,
+        )
+        if declaration is None:
+            _raise(DIAGNOSTIC_CHAIN_CORRUPT)
+        if tuple(zip(verification.analysis_ids, verification.analysis_evidence_ids)) != tuple(
+            zip(plan.required_analysis_ids, plan.required_analysis_evidence_ids)
+        ):
+            _raise(DIAGNOSTIC_PLAN_INVALID)
+        require_failed(envelopes[verification.failed_before_evidence_id])
+        require_after(envelopes[verification.fixed_after_evidence_id], declaration)
+        for evidence_id in verification.analysis_evidence_ids:
+            require_after(envelopes[evidence_id], declaration)
 
     def _checkpoint_expected(
         self,

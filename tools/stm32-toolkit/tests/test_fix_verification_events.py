@@ -1,9 +1,13 @@
 from __future__ import annotations
 
-import pytest
 from dataclasses import replace
+from pathlib import Path
+
+import pytest
 
 from stm32_toolkit.diagnostics import (
+    DIAGNOSTIC_EVIDENCE_MISSING,
+    DIAGNOSTIC_IDENTITY_MISMATCH,
     DIAGNOSTIC_INVALID_EVENT,
     DIAGNOSTIC_INVALID_TRANSITION,
     DIAGNOSTIC_PLAN_INVALID,
@@ -23,7 +27,10 @@ from stm32_toolkit.diagnostics import (
     create_event,
     reduce_event,
 )
-from stm32_toolkit.evidence import ArtifactRef, EvidenceIdentity
+from stm32_toolkit.diagnostics.store import DiagnosticStore
+from stm32_toolkit.evidence import ArtifactRef, EvidenceEnvelope, EvidenceIdentity
+from stm32_toolkit.evidence.gc import get_root
+from stm32_toolkit.evidence.store import EvidenceStore
 
 
 IDENTITY = EvidenceIdentity(
@@ -69,7 +76,7 @@ def _event(
     )
 
 
-def _source(plan_id: str = PLAN_ID) -> SourceChangeDeclaration:
+def _source(plan_id: str = PLAN_ID, *, diff_artifact: ArtifactRef | None = None, diff_evidence_id: str | None = None) -> SourceChangeDeclaration:
     return SourceChangeDeclaration.new(
         before_source_sha256="7" * 64,
         after_source_sha256="8" * 64,
@@ -78,43 +85,62 @@ def _source(plan_id: str = PLAN_ID) -> SourceChangeDeclaration:
         after_build_id="b" * 64,
         after_elf_sha256="c" * 64,
         changed_paths=("src/main.c",),
-        diff_evidence_id="d" * 64,
-        diff_artifact=ArtifactRef(
-            sha256="e" * 64,
-            size_bytes=12,
-            relative_path="changes.diff",
-            kind="source-diff",
-            media_type="text/x-diff",
+        diff_evidence_id="d" * 64 if diff_evidence_id is None else diff_evidence_id,
+        diff_artifact=(
+            ArtifactRef(
+                sha256="e" * 64,
+                size_bytes=12,
+                relative_path="changes.diff",
+                kind="source-diff",
+                media_type="text/x-diff",
+            )
+            if diff_artifact is None
+            else diff_artifact
         ),
         claimed_hypothesis_ids=(HYPOTHESIS_ID,),
         validation_plan_id=plan_id,
     )
 
 
-def _plan(source: SourceChangeDeclaration | None = None, plan_id: str = PLAN_ID) -> VerificationPlan:
+def _plan(
+    source: SourceChangeDeclaration | None = None,
+    plan_id: str = PLAN_ID,
+    *,
+    failed_before_evidence_id: str = "0" * 64,
+    fixed_after_evidence_id: str = "1" * 64,
+    required_analysis_ids: tuple[str, ...] = ANALYSIS_IDS,
+    required_analysis_evidence_ids: tuple[str, ...] = ANALYSIS_EVIDENCE_IDS,
+) -> VerificationPlan:
     declaration = _source(plan_id) if source is None else source
     return VerificationPlan.new(
         verification_plan_id=plan_id,
         diagnostic_session_id=SID,
         failed_before_run_id="run-1",
-        failed_before_evidence_id="0" * 64,
+        failed_before_evidence_id=failed_before_evidence_id,
         source_change_declaration_id=declaration.declaration_id,
         fixed_after_run_id="run-2",
-        fixed_after_evidence_id="1" * 64,
-        required_analysis_ids=ANALYSIS_IDS,
-        required_analysis_evidence_ids=ANALYSIS_EVIDENCE_IDS,
+        fixed_after_evidence_id=fixed_after_evidence_id,
+        required_analysis_ids=required_analysis_ids,
+        required_analysis_evidence_ids=required_analysis_evidence_ids,
         required_monitor_quality="VALID",
         expected_changed=True,
     )
 
 
-def _marker(plan: VerificationPlan | None = None) -> DiagnosticMarkerRef:
+def _marker(
+    plan: VerificationPlan | None = None,
+    *,
+    marker_id: str = "6" * 64,
+    marker_evidence_id: str = "7" * 64,
+    analysis_id: str = ANALYSIS_IDS[0],
+    analysis_evidence_id: str = ANALYSIS_EVIDENCE_IDS[0],
+) -> DiagnosticMarkerRef:
     _ = plan
     return DiagnosticMarkerRef.new(
-        marker_id="6" * 64,
-        marker_evidence_id="7" * 64,
-        analysis_id=ANALYSIS_IDS[0],
-        analysis_evidence_id=ANALYSIS_EVIDENCE_IDS[0],
+        marker_id=marker_id,
+        marker_evidence_id=marker_evidence_id,
+        analysis_id=analysis_id,
+        analysis_evidence_id=analysis_evidence_id,
         diagnostic_session_id=SID,
         hypothesis_id=HYPOTHESIS_ID,
         polarity="supports",
@@ -143,12 +169,12 @@ def _fix(plan: VerificationPlan | None = None, *, status: str = "PASSED", reason
     )
 
 
-def _created() -> tuple[DiagnosticSession, DiagnosticEvent]:
+def _created(failed_evidence_id: str = "0" * 64) -> tuple[DiagnosticSession, DiagnosticEvent]:
     event = _event(
         sequence=0,
         event_type="session.created",
         request={"failed_test_run_id": "run-1"},
-        result={"failed_evidence_id": "0" * 64, "identity": IDENTITY.to_dict()},
+        result={"failed_evidence_id": failed_evidence_id, "identity": IDENTITY.to_dict()},
     )
     return reduce_event(None, event), event
 
@@ -214,6 +240,188 @@ def _verifying() -> tuple[DiagnosticSession, SourceChangeDeclaration, Verificati
         previous_digest=previous.digest,
     )
     return reduce_event(session, started), source, plan, started
+
+
+def _publish_fixture_envelope(
+    store: EvidenceStore,
+    root: Path,
+    *,
+    identity: EvidenceIdentity,
+    label: str,
+    artifact: bool = False,
+) -> tuple[str, ArtifactRef | None]:
+    artifacts: tuple[ArtifactRef, ...] = ()
+    artifact_ref: ArtifactRef | None = None
+    if artifact:
+        path = root / f"{label}.diff"
+        path.write_bytes(f"fixture-{label}".encode("ascii"))
+        artifact_ref = store.ingest_file(path, kind="source-diff", media_type="text/x-diff")
+        artifacts = (artifact_ref,)
+    envelope = EvidenceEnvelope(
+        identity=identity,
+        operation="diagnostic-fixture",
+        produced_at_utc=UTC,
+        parents=(),
+        artifacts=artifacts,
+        metadata={"fixture": label},
+    )
+    store.put_envelope(envelope)
+    return str(envelope.evidence_id), artifact_ref
+
+
+def _persisted_fixture(tmp_path: Path, **identity_overrides: EvidenceIdentity) -> dict[str, object]:
+    evidence = EvidenceStore(tmp_path / "evidence")
+    after_identity = replace(IDENTITY, input_snapshot_sha256="8" * 64)
+    identities = {
+        "diff": IDENTITY,
+        "fixed": after_identity,
+        "analysis": after_identity,
+        "marker": after_identity,
+    }
+    identities.update(identity_overrides)
+    failed_id, _ = _publish_fixture_envelope(evidence, tmp_path, identity=IDENTITY, label="failed")
+    diff_id, diff_artifact = _publish_fixture_envelope(
+        evidence,
+        tmp_path,
+        identity=identities["diff"],
+        label="diff",
+        artifact=True,
+    )
+    assert diff_artifact is not None
+    fixed_id, _ = _publish_fixture_envelope(evidence, tmp_path, identity=identities["fixed"], label="fixed")
+    analysis_one_id, _ = _publish_fixture_envelope(
+        evidence,
+        tmp_path,
+        identity=identities["analysis"],
+        label="analysis-one",
+    )
+    analysis_two_id, _ = _publish_fixture_envelope(
+        evidence,
+        tmp_path,
+        identity=identities["analysis"],
+        label="analysis-two",
+    )
+    marker_id, _ = _publish_fixture_envelope(
+        evidence,
+        tmp_path,
+        identity=identities["marker"],
+        label="marker",
+    )
+    store = DiagnosticStore(tmp_path / "diagnostics", evidence)
+    created_session, created = _created(failed_id)
+    store.create(created)
+    started = _event(
+        sequence=created_session.revision,
+        event_type="investigation.started",
+        request={},
+        result={},
+        previous_digest=created.digest,
+    )
+    store.append(SID, started, expected_revision=1)
+    hypothesis = _event(
+        sequence=2,
+        event_type="hypothesis.added",
+        request={"statement": "the source fix changes the monitor value"},
+        result={
+            "hypothesis": {
+                "hypothesis_id": HYPOTHESIS_ID,
+                "statement": "the source fix changes the monitor value",
+                "status": "open",
+                "confidence_basis": "unrated",
+                "supporting": [],
+                "refuting": [],
+            }
+        },
+        previous_digest=started.digest,
+    )
+    store.append(SID, hypothesis, expected_revision=2)
+    source = _source(diff_artifact=diff_artifact, diff_evidence_id=diff_id)
+    plan = _plan(
+        source,
+        failed_before_evidence_id=failed_id,
+        fixed_after_evidence_id=fixed_id,
+        required_analysis_evidence_ids=(analysis_one_id, analysis_two_id),
+    )
+    marker = _marker(plan, marker_evidence_id=marker_id, analysis_evidence_id=analysis_one_id)
+    verification = _fix(plan)
+    return {
+        "evidence": evidence,
+        "store": store,
+        "failed_id": failed_id,
+        "diff_id": diff_id,
+        "fixed_id": fixed_id,
+        "analysis_ids": (analysis_one_id, analysis_two_id),
+        "marker_id": marker_id,
+        "source": source,
+        "plan": plan,
+        "marker": marker,
+        "verification": verification,
+        "session": store.load(SID),
+    }
+
+
+def _append_new_lifecycle(fixture: dict[str, object]) -> DiagnosticSession:
+    store = fixture["store"]
+    assert isinstance(store, DiagnosticStore)
+    session = fixture["session"]
+    assert isinstance(session, DiagnosticSession)
+    source = fixture["source"]
+    plan = fixture["plan"]
+    marker = fixture["marker"]
+    verification = fixture["verification"]
+    assert isinstance(source, SourceChangeDeclaration)
+    assert isinstance(plan, VerificationPlan)
+    assert isinstance(marker, DiagnosticMarkerRef)
+    assert isinstance(verification, FixVerification)
+    declared = _event(
+        sequence=session.revision,
+        event_type="source_change.declared",
+        request={"source_change_declaration": source.to_dict()},
+        result={"declaration_id": source.declaration_id},
+        previous_digest=session.event_head,
+    )
+    session = store.append(SID, declared, expected_revision=session.revision).session
+    added = _event(
+        sequence=session.revision,
+        event_type="verification.plan_added",
+        request={"verification_plan": plan.to_dict()},
+        result={"verification_plan_id": plan.verification_plan_id, "plan_digest": plan.plan_digest},
+        previous_digest=session.event_head,
+    )
+    session = store.append(SID, added, expected_revision=session.revision).session
+    started = _event(
+        sequence=session.revision,
+        event_type="verification.started",
+        request={"verification_plan_id": plan.verification_plan_id},
+        result={"verification_plan_id": plan.verification_plan_id},
+        previous_digest=session.event_head,
+    )
+    session = store.append(SID, started, expected_revision=session.revision).session
+    attached = _event(
+        sequence=session.revision,
+        event_type="analysis.marker_attached",
+        request={"diagnostic_marker_ref": marker.to_dict()},
+        result={"marker_id": marker.marker_id},
+        previous_digest=session.event_head,
+    )
+    session = store.append(SID, attached, expected_revision=session.revision).session
+    completed = _event(
+        sequence=session.revision,
+        event_type="verification.completed",
+        request={"fix_verification": verification.to_dict()},
+        result={
+            "fix_verification_id": verification.fix_verification_id,
+            "status": verification.status,
+            "reason_code": verification.reason_code,
+        },
+        previous_digest=session.event_head,
+    )
+    return store.append(SID, completed, expected_revision=session.revision).session
+
+
+def _checkpoint_parents(evidence: EvidenceStore, revision: int) -> tuple[str, ...]:
+    root = get_root(evidence, "diagnostic-session", f"{SID}.{revision:08d}")
+    return evidence.get_envelope(root.manifest_id).parents
 
 
 def test_new_lifecycle_reduces_and_extended_session_round_trips() -> None:
@@ -667,3 +875,204 @@ def test_completion_result_status_and_reason_are_closed_and_terminal_states_reje
         with pytest.raises(DiagnosticValidationError) as error:
             reduce_event(terminal, later)
         assert error.value.code == DIAGNOSTIC_INVALID_TRANSITION
+
+
+def test_store_checkpoints_all_new_parent_orders_and_reloads(tmp_path: Path) -> None:
+    fixture = _persisted_fixture(tmp_path)
+    store = fixture["store"]
+    evidence = fixture["evidence"]
+    assert isinstance(store, DiagnosticStore)
+    assert isinstance(evidence, EvidenceStore)
+    final = _append_new_lifecycle(fixture)
+    assert final.state == "RESOLVED"
+    previous = get_root(evidence, "diagnostic-session", f"{SID}.00000003").manifest_id
+    failed_id = fixture["failed_id"]
+    diff_id = fixture["diff_id"]
+    fixed_id = fixture["fixed_id"]
+    analysis_ids = fixture["analysis_ids"]
+    marker_id = fixture["marker_id"]
+    assert isinstance(failed_id, str)
+    assert isinstance(diff_id, str)
+    assert isinstance(fixed_id, str)
+    assert isinstance(analysis_ids, tuple)
+    assert isinstance(marker_id, str)
+    assert _checkpoint_parents(evidence, 4) == (previous, diff_id)
+    previous = get_root(evidence, "diagnostic-session", f"{SID}.00000004").manifest_id
+    assert _checkpoint_parents(evidence, 5) == (previous, failed_id, fixed_id, *analysis_ids)
+    previous = get_root(evidence, "diagnostic-session", f"{SID}.00000005").manifest_id
+    assert _checkpoint_parents(evidence, 6) == (previous,)
+    previous = get_root(evidence, "diagnostic-session", f"{SID}.00000006").manifest_id
+    assert _checkpoint_parents(evidence, 7) == (previous, marker_id, analysis_ids[0])
+    previous = get_root(evidence, "diagnostic-session", f"{SID}.00000007").manifest_id
+    assert _checkpoint_parents(evidence, 8) == (previous, failed_id, fixed_id, *analysis_ids)
+    reloaded = DiagnosticStore(tmp_path / "diagnostics", EvidenceStore(evidence.root)).load(SID)
+    assert reloaded.to_dict() == final.to_dict()
+
+
+@pytest.mark.parametrize("role", ["diff", "fixed", "analysis", "marker"])
+def test_store_rejects_new_parent_wrong_scope_before_append(tmp_path: Path, role: str) -> None:
+    wrong = replace(IDENTITY, workspace_id="f" * 64)
+    fixture = _persisted_fixture(tmp_path, **{role: wrong})
+    store = fixture["store"]
+    assert isinstance(store, DiagnosticStore)
+    session = fixture["session"]
+    assert isinstance(session, DiagnosticSession)
+    source = fixture["source"]
+    plan = fixture["plan"]
+    marker = fixture["marker"]
+    assert isinstance(source, SourceChangeDeclaration)
+    assert isinstance(plan, VerificationPlan)
+    assert isinstance(marker, DiagnosticMarkerRef)
+    declared = _event(
+        sequence=session.revision,
+        event_type="source_change.declared",
+        request={"source_change_declaration": source.to_dict()},
+        result={"declaration_id": source.declaration_id},
+        previous_digest=session.event_head,
+    )
+    if role == "diff":
+        with pytest.raises(DiagnosticValidationError) as error:
+            store.append(SID, declared, expected_revision=session.revision)
+        assert error.value.code == DIAGNOSTIC_IDENTITY_MISMATCH
+        assert store.load(SID).revision == session.revision
+        return
+    session = store.append(SID, declared, expected_revision=session.revision).session
+    added = _event(
+        sequence=session.revision,
+        event_type="verification.plan_added",
+        request={"verification_plan": plan.to_dict()},
+        result={"verification_plan_id": plan.verification_plan_id, "plan_digest": plan.plan_digest},
+        previous_digest=session.event_head,
+    )
+    if role in {"fixed", "analysis"}:
+        with pytest.raises(DiagnosticValidationError) as error:
+            store.append(SID, added, expected_revision=session.revision)
+        assert error.value.code == DIAGNOSTIC_IDENTITY_MISMATCH
+        assert store.load(SID).revision == session.revision
+        return
+    session = store.append(SID, added, expected_revision=session.revision).session
+    started = _event(
+        sequence=session.revision,
+        event_type="verification.started",
+        request={"verification_plan_id": plan.verification_plan_id},
+        result={"verification_plan_id": plan.verification_plan_id},
+        previous_digest=session.event_head,
+    )
+    session = store.append(SID, started, expected_revision=session.revision).session
+    attached = _event(
+        sequence=session.revision,
+        event_type="analysis.marker_attached",
+        request={"diagnostic_marker_ref": marker.to_dict()},
+        result={"marker_id": marker.marker_id},
+        previous_digest=session.event_head,
+    )
+    with pytest.raises(DiagnosticValidationError) as error:
+        store.append(SID, attached, expected_revision=session.revision)
+    assert error.value.code == DIAGNOSTIC_IDENTITY_MISMATCH
+    assert store.load(SID).revision == session.revision
+
+
+def test_store_requires_exact_declared_diff_artifact_before_append(tmp_path: Path) -> None:
+    fixture = _persisted_fixture(tmp_path)
+    store = fixture["store"]
+    session = fixture["session"]
+    source = fixture["source"]
+    diff_id = fixture["diff_id"]
+    assert isinstance(store, DiagnosticStore)
+    assert isinstance(session, DiagnosticSession)
+    assert isinstance(source, SourceChangeDeclaration)
+    assert isinstance(diff_id, str)
+    wrong_artifact = ArtifactRef(
+        sha256="f" * 64,
+        size_bytes=7,
+        relative_path="other.diff",
+        kind="source-diff",
+        media_type="text/x-diff",
+    )
+    wrong_source = _source(diff_artifact=wrong_artifact, diff_evidence_id=diff_id)
+    event = _event(
+        sequence=session.revision,
+        event_type="source_change.declared",
+        request={"source_change_declaration": wrong_source.to_dict()},
+        result={"declaration_id": wrong_source.declaration_id},
+        previous_digest=session.event_head,
+    )
+    with pytest.raises(DiagnosticValidationError) as error:
+        store.append(SID, event, expected_revision=session.revision)
+    assert error.value.code == DIAGNOSTIC_EVIDENCE_MISSING
+    assert store.load(SID).revision == session.revision
+
+
+@pytest.mark.parametrize("corrupt", [False, True])
+def test_store_rejects_missing_or_corrupt_new_parent_without_append(tmp_path: Path, corrupt: bool) -> None:
+    fixture = _persisted_fixture(tmp_path)
+    store = fixture["store"]
+    evidence = fixture["evidence"]
+    session = fixture["session"]
+    source = fixture["source"]
+    plan = fixture["plan"]
+    fixed_id = fixture["fixed_id"]
+    assert isinstance(store, DiagnosticStore)
+    assert isinstance(evidence, EvidenceStore)
+    assert isinstance(session, DiagnosticSession)
+    assert isinstance(source, SourceChangeDeclaration)
+    assert isinstance(plan, VerificationPlan)
+    assert isinstance(fixed_id, str)
+    manifest = evidence.root / "manifests" / f"{fixed_id}.json"
+    if corrupt:
+        manifest.write_bytes(b"{}")
+    else:
+        manifest.unlink()
+    declared = _event(
+        sequence=session.revision,
+        event_type="source_change.declared",
+        request={"source_change_declaration": source.to_dict()},
+        result={"declaration_id": source.declaration_id},
+        previous_digest=session.event_head,
+    )
+    session = store.append(SID, declared, expected_revision=session.revision).session
+    added = _event(
+        sequence=session.revision,
+        event_type="verification.plan_added",
+        request={"verification_plan": plan.to_dict()},
+        result={"verification_plan_id": plan.verification_plan_id, "plan_digest": plan.plan_digest},
+        previous_digest=session.event_head,
+    )
+    with pytest.raises(DiagnosticValidationError) as error:
+        store.append(SID, added, expected_revision=session.revision)
+    assert error.value.code == DIAGNOSTIC_EVIDENCE_MISSING
+    assert store.load(SID).revision == session.revision
+
+
+def test_new_event_checkpoint_repairs_after_interrupted_event_publication(tmp_path: Path) -> None:
+    fixture = _persisted_fixture(tmp_path)
+    evidence = fixture["evidence"]
+    session = fixture["session"]
+    source = fixture["source"]
+    assert isinstance(evidence, EvidenceStore)
+    assert isinstance(session, DiagnosticSession)
+    assert isinstance(source, SourceChangeDeclaration)
+    event = _event(
+        sequence=session.revision,
+        event_type="source_change.declared",
+        request={"source_change_declaration": source.to_dict()},
+        result={"declaration_id": source.declaration_id},
+        previous_digest=session.event_head,
+    )
+    fired = False
+
+    def inject(point: str) -> None:
+        nonlocal fired
+        if point == "event.after_publish" and not fired:
+            fired = True
+            raise RuntimeError("interrupted")
+
+    crashing = DiagnosticStore(tmp_path / "diagnostics", evidence, fault_injector=inject)
+    event_path = tmp_path / "diagnostics" / "sessions" / SID / "events" / "00000003.json"
+    with pytest.raises(RuntimeError, match="interrupted"):
+        crashing.append(SID, event, expected_revision=session.revision)
+    event_bytes = event_path.read_bytes()
+    recovered = DiagnosticStore(tmp_path / "diagnostics", EvidenceStore(evidence.root))
+    assert recovered.load(SID).revision == 4
+    assert event_path.read_bytes() == event_bytes
+    assert _checkpoint_parents(evidence, 4)[-1] == fixture["diff_id"]
