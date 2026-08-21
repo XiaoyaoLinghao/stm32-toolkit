@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from hashlib import sha256
 from pathlib import Path
 
@@ -130,7 +131,7 @@ def test_target_replay_publisher_exposes_the_public_publication_entrypoint():
 
 def test_target_replay_publishes_origin_manifest_and_import_metadata(tmp_path: Path):
     fixture, store, project_root, results_root, descriptor, manifest = _bundle(
-        tmp_path, name="failed-before", operation_id="replay-before"
+        tmp_path, name="failed-before", operation_id="vs03-failed-before"
     )
     publish = getattr(Publisher, "publish_target_replay", None)
     assert callable(publish)
@@ -201,7 +202,7 @@ def test_target_replay_publishes_origin_manifest_and_import_metadata(tmp_path: P
 
 def test_target_replay_retry_is_idempotent_and_conflict_is_stable(tmp_path: Path):
     fixture, store, project_root, results_root, descriptor, manifest = _bundle(
-        tmp_path, name="failed-before", operation_id="replay-idempotent"
+        tmp_path, name="failed-before", operation_id="vs03-failed-before"
     )
     publisher = Publisher(store, project_root, results_root)
     first = publisher.publish_target_replay(manifest, descriptor, IMPORT_WORKSPACE_ID)
@@ -212,11 +213,17 @@ def test_target_replay_retry_is_idempotent_and_conflict_is_stable(tmp_path: Path
     assert retry.envelope.evidence_id == first.envelope.evidence_id
     assert retry.public_data() == first.public_data()
 
-    _fixed_fixture, _fixed_store, _fixed_project, _fixed_results, fixed_descriptor, fixed_manifest = _bundle(
-        tmp_path / "conflict", name="fixed-after", operation_id=manifest.run_id
+    alternate_import = sha256(b"alternate-import-workspace").hexdigest()
+    _alternate_fixture, _alternate_store, _alternate_project, _alternate_results, alternate_descriptor, alternate_manifest = _bundle(
+        tmp_path / "conflict",
+        name="failed-before",
+        operation_id=manifest.run_id,
+        import_workspace_id=alternate_import,
     )
     with pytest.raises(EvidenceValidationError) as conflict:
-        publisher.publish_target_replay(fixed_manifest, fixed_descriptor, IMPORT_WORKSPACE_ID)
+        publisher.publish_target_replay(
+            alternate_manifest, alternate_descriptor, alternate_import
+        )
     assert conflict.value.code == "EVIDENCE_CORRUPT"
     assert Repository(store).load(manifest.run_id).envelope.evidence_id == first.envelope.evidence_id
 
@@ -229,7 +236,7 @@ def test_target_replay_publication_rejects_invalid_import_identity(
     tmp_path: Path, bad_import: str
 ):
     _fixture_value, store, project_root, results_root, descriptor, manifest = _bundle(
-        tmp_path, name="failed-before", operation_id="replay-invalid-import"
+        tmp_path, name="failed-before", operation_id="vs03-failed-before"
     )
     with pytest.raises(Exception):
         Publisher(store, project_root, results_root).publish_target_replay(
@@ -242,7 +249,7 @@ def test_target_replay_publication_preserves_origin_and_import_identity_alias(tm
     fixture, store, project_root, results_root, descriptor, manifest = _bundle(
         tmp_path,
         name="failed-before",
-        operation_id="replay-alias",
+        operation_id="vs03-failed-before",
         import_workspace_id=alias_workspace_id,
     )
     published = Publisher(store, project_root, results_root).publish_target_replay(
@@ -255,3 +262,48 @@ def test_target_replay_publication_preserves_origin_and_import_identity_alias(tm
     assert published.root.metadata["import_workspace_id"] == alias_workspace_id
     assert published.public_data()["execution_source"] == "replay"
     assert published.public_data()["physical_transport_evidence"] is False
+
+
+def test_target_replay_publication_rejects_manifest_run_id_mismatch_before_root(
+    tmp_path: Path,
+):
+    _fixture_value, store, project_root, results_root, descriptor, manifest = _bundle(
+        tmp_path, name="failed-before", operation_id="vs03-failed-before"
+    )
+    mismatched = replace(manifest, run_id="caller-selected-run")
+
+    with pytest.raises(EvidenceValidationError) as failure:
+        Publisher(store, project_root, results_root).publish_target_replay(
+            mismatched, descriptor, IMPORT_WORKSPACE_ID
+        )
+
+    assert failure.value.code == "EVIDENCE_CORRUPT"
+    assert not (store.root / "roots" / "test-run").exists() or not any(
+        (store.root / "roots" / "test-run").glob("*.json")
+    )
+
+
+def test_target_replay_publication_rejects_raw_events_mismatch_before_root(
+    tmp_path: Path,
+):
+    _fixture_value, store, project_root, results_root, descriptor, manifest = _bundle(
+        tmp_path, name="failed-before", operation_id="vs03-failed-before"
+    )
+    wrong_source = project_root / "wrong-target-events.bin"
+    wrong_source.write_bytes(b"not-the-decoded-target-stream")
+    wrong_raw_events = store.ingest_file(
+        wrong_source,
+        kind="test-events",
+        media_type="application/vnd.stm32.target-events",
+    )
+    mismatched = replace(manifest, raw_events=wrong_raw_events)
+
+    with pytest.raises(EvidenceValidationError) as failure:
+        Publisher(store, project_root, results_root).publish_target_replay(
+            mismatched, descriptor, IMPORT_WORKSPACE_ID
+        )
+
+    assert failure.value.code == "EVIDENCE_CORRUPT"
+    assert not (store.root / "roots" / "test-run").exists() or not any(
+        (store.root / "roots" / "test-run").glob("*.json")
+    )

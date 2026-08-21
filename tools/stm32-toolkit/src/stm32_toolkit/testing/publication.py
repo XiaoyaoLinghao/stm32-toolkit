@@ -212,13 +212,38 @@ def _target_manifest_matches_stream(
     except (KeyError, StopIteration, TypeError, ValueError, TestProtocolError) as exc:
         _corrupt("Target replay stream cannot produce a manifest projection", exc)
     if (
-        manifest.cases != expected_cases
+        manifest.run_id != run_start.payload.get("run_id")
+        or manifest.cases != expected_cases
         or manifest.state != terminal.payload.get("state")
         or manifest.started_at_utc != run_start.payload.get("started_at_utc")
         or manifest.ended_at_utc != terminal.payload.get("ended_at_utc")
         or manifest.duration_ms != terminal.payload.get("duration_ms")
     ):
         _corrupt("Target replay manifest contradicts its decoded stream")
+
+
+def _target_raw_events_match_stream(
+    evidence_store: EvidenceStore,
+    raw_events: ArtifactRef,
+    descriptor: TargetReplayDescriptor,
+    stream_bytes: bytes,
+) -> None:
+    """Ensure the publisher cannot root a manifest whose raw bytes are detached."""
+    if (
+        raw_events.sha256 != descriptor.stream.sha256
+        or raw_events.size_bytes != descriptor.stream.size_bytes
+    ):
+        _corrupt("Target replay raw event artifact contradicts its descriptor stream")
+    try:
+        stored_bytes = evidence_store.read_artifact(
+            raw_events, maximum_bytes=MAX_EVIDENCE_READ_BYTES
+        )
+    except EvidenceValidationError as exc:
+        if exc.code in {EVIDENCE_CORRUPT, EVIDENCE_LIMIT_EXCEEDED}:
+            raise
+        _corrupt("Target replay raw event artifact is invalid", exc)
+    if stored_bytes != stream_bytes:
+        _corrupt("Target replay raw event bytes contradict the descriptor stream")
 
 
 def _target_parent(
@@ -512,6 +537,9 @@ class TestRunPublisher:
         if verified.state != descriptor.expected_terminal_state:
             _corrupt("Target replay manifest state contradicts its descriptor")
         _target_manifest_matches_stream(verified, _frames)
+        _target_raw_events_match_stream(
+            self.evidence_store, verified.raw_events, descriptor, _stream_bytes
+        )
         descriptor_evidence_id = str(parent.evidence_id)
         intent_digest = _target_intent_digest(
             verified, descriptor_evidence_id, import_workspace_id
@@ -649,7 +677,7 @@ class TestRunRepository:
             parent = self.evidence_store.get_envelope(descriptor_evidence_id)
         except EvidenceValidationError as exc:
             _corrupt("stored Target replay descriptor parent is absent", exc)
-        _parent, descriptor, stream_ref, stream_bytes, _frames = _target_parent(
+        _parent, descriptor, _stream_ref, stream_bytes, _frames = _target_parent(
             self.evidence_store,
             parent,
             import_workspace_id=import_workspace_id,
@@ -695,18 +723,11 @@ class TestRunRepository:
         if manifest.state != descriptor.expected_terminal_state:
             _corrupt("stored Target replay manifest state contradicts its descriptor")
         _target_manifest_matches_stream(manifest, _frames)
-        if manifest.raw_events.sha256 != descriptor.stream.sha256 or manifest.raw_events.size_bytes != descriptor.stream.size_bytes:
-            _corrupt("stored Target replay event stream contradicts its descriptor")
+        _target_raw_events_match_stream(
+            self.evidence_store, manifest.raw_events, descriptor, stream_bytes
+        )
         if len(envelope.artifacts) != 2 or envelope.artifacts != (manifest_artifact, manifest.raw_events):
             _corrupt("stored Target replay envelope artifact membership is invalid")
-        try:
-            raw_bytes = self.evidence_store.read_artifact(
-                manifest.raw_events, maximum_bytes=MAX_EVIDENCE_READ_BYTES
-            )
-        except EvidenceValidationError:
-            raise
-        if raw_bytes != stream_bytes or stream_ref.sha256 != manifest.raw_events.sha256:
-            _corrupt("stored Target replay event bytes contradict the descriptor stream")
         if envelope.identity != manifest.identity:
             _corrupt("stored Target replay envelope identity contradicts the manifest")
         if envelope.produced_at_utc != manifest.ended_at_utc:
