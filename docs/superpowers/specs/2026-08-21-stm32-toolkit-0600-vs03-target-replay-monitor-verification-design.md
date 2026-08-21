@@ -54,6 +54,23 @@ TestRun is valid only when all four statements agree:
 
 Any contradiction is `EVIDENCE_INTEGRITY_FAILURE`. Replay can never satisfy a physical claim.
 
+#### Portable replay import identity
+
+`workspaceId` includes the canonical local project root, so a frozen replay's recorded
+`EvidenceIdentity.workspace_id` cannot equal every machine's local workspace ID. Replay import
+therefore has two explicit, non-interchangeable identities:
+
+- `originIdentity` is the immutable identity recorded in the replay descriptor and Target frames.
+  It remains the TestRunManifest identity and the authority for before/after causal compatibility.
+- `importWorkspaceId` is the complete current `WorkspacePaths.workspace_id` whose EvidenceStore or
+  Monitor store owns the imported objects. It is storage/audit provenance, not an execution claim.
+
+The public replay result, Evidence metadata/root, MonitorRunRef, AnalysisResult, marker, bundle, and
+FixVerification expose both IDs plus `execution_source="replay"` and
+`physical_transport_evidence=false`. They never replace the origin ID with the import ID and never
+describe import as a physical execution in the local workspace. A caller that needs current-local
+physical identity must use VS-04.
+
 ### 2.2 Module ownership without import cycles
 
 - 0601 (`stm32_toolkit.testing`) owns replay descriptor validation, Target frame execution,
@@ -97,15 +114,19 @@ stream_format                "stm32-target-frame/1"
 expected_terminal_state      "failed" | "passed"
 ```
 
-The descriptor is published before execution with operation `target-replay-input`. The replay
+The descriptor is published before execution with operation `target-replay-input`. Its `identity`
+is the recorded `originIdentity`; publication metadata additionally binds the current complete
+`importWorkspaceId`. The replay
 workflow verifies the supplied regular, single-link, non-redirect fixture, exact byte count and
 digest, descriptor identity, and expected terminal state. It runs the existing Target decoder and
 runner without creating a Probe service, transport device, authorization, or hardware lease.
 
 `target_replay_run(context, operation_id, descriptor_file, stream_file)` is idempotent by operation
-intent and returns a normal public TestRun record plus `execution_source="replay"` and
-`physical_transport_evidence=false`. `TestRunRepository.load()` accepts existing Host records and
-the new replay Target record; it validates the correct closed envelope shape for each.
+intent and returns a normal public TestRun record plus `origin_workspace_id`,
+`import_workspace_id`, `execution_source="replay"`, and `physical_transport_evidence=false`.
+The TestRunManifest retains the recorded origin identity exactly; its enclosing Evidence/root bind
+the current import workspace separately. `TestRunRepository.load()` accepts existing Host records
+and the new replay Target record; it validates the correct closed envelope shape for each.
 
 ### 3.2 MonitorReplayWindow and MonitorRunRef (0603)
 
@@ -121,14 +142,20 @@ batches                      [SampleBatch, ...]
 fixture_sha256               sha256 over the document without this field
 ```
 
-It represents a frozen read-only Probe v2 observation transcript. Ingestion validates the complete
-binding and batch chain, requires replay labeling, then uses the public `HistoryStore.append_batch`
-path. It never calls `open_monitor_observation`, ProbeService, or an OBSERVE/MODIFY backend.
+It represents a frozen read-only Probe v2 observation transcript. Its binding is the recorded
+origin binding. Ingestion first publishes the unchanged canonical transcript as imported replay
+Evidence. It then creates a deterministic local replay projection for HistoryStore: only
+`workspace_id` and `session_id` become the current import values, while firmware/source/target,
+sample values, timestamps, ordering, and transcript digest remain bound to the origin. The replay
+projection uses an explicit replay probe/physical-target/flash/lease vocabulary and cannot be
+created by the live physical observation path. Ingestion validates the complete origin binding and
+batch chain, requires replay labeling, then uses the public `HistoryStore.append_batch` path. It
+never calls `open_monitor_observation`, ProbeService, or an OBSERVE/MODIFY backend.
 
-`MonitorRunRef` contains workspace ID, Monitor session/run IDs, firmware identity fields already in
-`ObservationBinding`, the half-open sequence/time window, fixture digest, ordered batch digests,
-source `replay`, and scenario role. Repeating an identical ingestion returns the same reference;
-same operation with different intent fails.
+`MonitorRunRef` contains `origin_workspace_id`, `import_workspace_id`, origin and projected Monitor
+session/run IDs, firmware identity fields, the half-open sequence/time window, fixture digest,
+ordered batch digests, source `replay`, the false physical flag, and scenario role. Repeating an
+identical ingestion returns the same reference; same operation with different intent fails.
 
 ### 3.3 AnalysisRequest and AnalysisResult (0603)
 
@@ -164,7 +191,9 @@ relative nanoseconds, and preserves input order. `VALID` requires the requested 
 all paired samples `ok`; recoverable missing/error samples produce `DEGRADED`; no trustworthy pair
 produces `INVALID` plus `INCONCLUSIVE`. No interpolation or identity guessing is permitted.
 
-Project, workspace, target device, selector, and declared firmware lineage must be compatible.
+Origin project/workspace, import workspace, target device, selector, and declared firmware lineage
+must be compatible. The before and after inputs must have the same origin and import workspace IDs;
+an origin ID is never compared to an import ID.
 Before and after build/ELF digests may differ only when the supplied SourceChangeDeclaration names
 those exact before/after firmware identities. A compare request without that declaration requires
 identical firmware. Incompatible identity returns `INCOMPATIBLE_IDENTITY` before derived Evidence is
