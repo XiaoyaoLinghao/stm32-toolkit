@@ -84,6 +84,49 @@ def _redigest_reference(reference: dict[str, object]) -> None:
     reference["run_ref_sha256"] = hashlib.sha256(_raw_canonical_json_bytes(unsigned)).hexdigest()
 
 
+def _document_digest(document: dict[str, object]) -> str:
+    unsigned = {key: value for key, value in document.items() if key != "fixture_sha256"}
+    return hashlib.sha256(_raw_canonical_json_bytes(unsigned)).hexdigest()
+
+
+def _reference_digest(reference: dict[str, object]) -> str:
+    unsigned = {key: value for key, value in reference.items() if key != "run_ref_sha256"}
+    return hashlib.sha256(_raw_canonical_json_bytes(unsigned)).hexdigest()
+
+
+def _document_bindings(document: dict[str, object]) -> list[dict[str, object]]:
+    return [
+        document["binding"],
+        *[batch["binding"] for batch in document["batches"]],
+    ]
+
+
+def _set_binding_field(document: dict[str, object], field: str, value: object) -> None:
+    for binding in _document_bindings(document):
+        binding[field] = deepcopy(value)
+
+
+def _remove_binding_field(document: dict[str, object], field: str) -> None:
+    for binding in _document_bindings(document):
+        binding.pop(field)
+
+
+def _replace_first_selector_in_all_batches(
+    document: dict[str, object], replacement: str
+) -> None:
+    source_watch = document["batches"][0]["values"][0]["watch"]
+    field = _selector_key(source_watch)
+    original = source_watch[field]
+    replaced = 0
+    for batch in document["batches"]:
+        for sample in batch["values"]:
+            watch = sample["watch"]
+            if _selector_key(watch) == field and watch[field] == original:
+                watch[field] = replacement
+                replaced += 1
+    assert replaced >= 2
+
+
 def _deep_json(depth: int) -> object:
     value: object = None
     for _ in range(depth):
@@ -99,70 +142,79 @@ def _document_mutations(document: dict[str, object]) -> dict[str, dict[str, obje
 
     value = fresh()
     value["unexpected"] = True
+    _redigest_document(value)
     cases["document-extra"] = value
 
     value = fresh()
     value.pop("batches")
+    _redigest_document(value)
     cases["document-missing"] = value
 
     value = fresh()
-    value["binding"]["unexpected"] = True
+    _set_binding_field(value, "unexpected", True)
+    _redigest_document(value)
     cases["binding-extra"] = value
 
     value = fresh()
-    value["binding"].pop("workspaceId")
+    _remove_binding_field(value, "workspaceId")
+    _redigest_document(value)
     cases["binding-missing"] = value
 
     value = fresh()
     value["batches"][0]["unexpected"] = True
+    _redigest_document(value)
     cases["batch-extra"] = value
 
     value = fresh()
     value["batches"][0].pop("values")
+    _redigest_document(value)
     cases["batch-missing"] = value
 
     value = fresh()
     value["batches"][0]["values"][0]["unexpected"] = True
+    _redigest_document(value)
     cases["sample-extra"] = value
 
     value = fresh()
     value["batches"][0]["values"][0].pop("status")
+    _redigest_document(value)
     cases["sample-missing"] = value
 
     value = fresh()
     watch = value["batches"][0]["values"][0]["watch"]
     watch["unexpected"] = True
+    _redigest_document(value)
     cases["watch-extra"] = value
 
     value = fresh()
     watch = value["batches"][0]["values"][0]["watch"]
     watch.pop(_selector_key(watch))
+    _redigest_document(value)
     cases["watch-missing"] = value
 
     value = fresh()
-    watch = value["batches"][0]["values"][0]["watch"]
-    watch[_selector_key(watch)] = f" {watch[_selector_key(watch)]}"
+    _replace_first_selector_in_all_batches(value, " counter")
     _redigest_document(value)
     cases["selector-whitespace"] = value
 
     value = fresh()
-    watch = value["batches"][0]["values"][0]["watch"]
-    watch[_selector_key(watch)] = "e\u0301"
+    _replace_first_selector_in_all_batches(value, "e\u0301")
     _redigest_document(value)
     cases["selector-nfc"] = value
 
     value = fresh()
-    watch = value["batches"][0]["values"][0]["watch"]
-    watch[_selector_key(watch)] = "bad\u0000selector"
+    _replace_first_selector_in_all_batches(value, "bad\u0000selector")
     _redigest_document(value)
     cases["selector-control"] = value
 
     value = fresh()
     value["batches"][0]["sequence"] = True
+    _redigest_document(value)
     cases["bool-as-int"] = value
 
     value = fresh()
     value["batches"][0]["actualRateHz"] = 1
+    _redigest_document(value)
     cases["integer-rate"] = value
 
     value = fresh()
@@ -177,7 +229,8 @@ def _document_mutations(document: dict[str, object]) -> dict[str, dict[str, obje
     cases["uuid"] = value
 
     value = fresh()
-    value["binding"]["buildId"] = "g" * 64
+    _set_binding_field(value, "buildId", "g" * 64)
+    _redigest_document(value)
     cases["hash"] = value
 
     value = fresh()
@@ -220,14 +273,17 @@ def _reference_mutations(reference: dict[str, object]) -> dict[str, dict[str, ob
 
     value = fresh()
     value["unexpected"] = True
+    _redigest_reference(value)
     cases["reference-extra"] = value
 
     value = fresh()
     value.pop("projected_batch_sha256s")
+    _redigest_reference(value)
     cases["reference-missing"] = value
 
     value = fresh()
     value["projected_batch_sha256s"] = ["bad"]
+    _redigest_reference(value)
     cases["projected-digest-list"] = value
 
     value = fresh()
@@ -236,15 +292,18 @@ def _reference_mutations(reference: dict[str, object]) -> dict[str, dict[str, ob
 
     value = fresh()
     value["group_revision"] = 0
+    _redigest_reference(value)
     cases["reference-range"] = value
 
     value = fresh()
     value["build_id"] = "g" * 64
+    _redigest_reference(value)
     cases["reference-hash"] = value
 
     value = fresh()
     origin_run_id = value["origin_run_id"]
     value["origin_run_id"] = f"{origin_run_id[:-1]}A"
+    _redigest_reference(value)
     cases["reference-uuid"] = value
 
     value = fresh()
@@ -292,7 +351,25 @@ def test_shared_and_monitor_reject_the_same_document_wire_mutations(
     case_name: str,
 ) -> None:
     contract = _contract()
-    candidate = _document_mutations(_document("failed-before"))[case_name]
+    source = _document("failed-before")
+    candidate = _document_mutations(source)[case_name]
+    if case_name != "fixture-digest":
+        assert candidate["fixture_sha256"] == _document_digest(candidate)
+        assert candidate["fixture_sha256"] != source["fixture_sha256"]
+    if case_name in {"binding-extra", "binding-missing", "hash"}:
+        assert all(batch["binding"] == candidate["binding"] for batch in candidate["batches"])
+    if case_name in {"selector-whitespace", "selector-nfc", "selector-control"}:
+        source_watch = source["batches"][0]["values"][0]["watch"]
+        selector_field = _selector_key(source_watch)
+        selector_kind = source_watch["kind"]
+        projected = [
+            sample["watch"][selector_field]
+            for batch in candidate["batches"]
+            for sample in batch["values"]
+            if sample["watch"]["kind"] == selector_kind
+        ]
+        assert len(projected) >= 2
+        assert set(projected) == {projected[0]}
     before = deepcopy(candidate)
     with pytest.raises(MonitorReplayError):
         MonitorReplayDocument.from_value(candidate)
@@ -309,6 +386,9 @@ def test_shared_and_monitor_reject_the_same_reference_wire_mutations(
     contract = _contract()
     reference = _reference(tmp_path, role)
     for case_name, candidate in _reference_mutations(reference).items():
+        if case_name not in {"unsigned-ref-digest", "reference-fixture-digest"}:
+            assert candidate["run_ref_sha256"] == _reference_digest(candidate)
+            assert candidate["run_ref_sha256"] != reference["run_ref_sha256"]
         before = deepcopy(candidate)
         try:
             MonitorRunRef.from_value(candidate)
