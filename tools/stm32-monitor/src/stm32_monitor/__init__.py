@@ -1,5 +1,14 @@
 """Project-isolated monitoring service for STM32 Toolkit."""
 
+from .analysis import (
+    ANALYSIS_COMPUTATION_SCHEMA,
+    ANALYSIS_REQUEST_INVALID,
+    ANALYSIS_REQUEST_SCHEMA,
+    AnalysisComputation,
+    AnalysisError,
+    AnalysisRequest,
+    analyze_monitor_windows,
+)
 from .models import MonitorConfig, ProbeConnectRequest, WatchGroup, WatchItem
 from .protocol import MONITOR_PROTOCOL_VERSION, ProtocolResult
 from .replay import (
@@ -19,6 +28,13 @@ __version__ = "0.5.0"
 
 __all__ = [
     "MONITOR_PROTOCOL_VERSION",
+    "ANALYSIS_COMPUTATION_SCHEMA",
+    "ANALYSIS_REQUEST_INVALID",
+    "ANALYSIS_REQUEST_SCHEMA",
+    "AnalysisComputation",
+    "AnalysisError",
+    "AnalysisRequest",
+    "analyze_monitor_windows",
     "MonitorConfig",
     "ProbeConnectRequest",
     "ProtocolResult",

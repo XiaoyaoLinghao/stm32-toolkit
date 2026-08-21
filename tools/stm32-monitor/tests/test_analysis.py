@@ -1,0 +1,407 @@
+from __future__ import annotations
+
+import builtins
+import json
+from dataclasses import replace
+from hashlib import sha256
+from pathlib import Path
+from uuid import UUID
+
+import pytest
+
+from stm32_monitor.analysis import (
+    ANALYSIS_REQUEST_INVALID,
+    AnalysisComputation,
+    AnalysisError,
+    AnalysisRequest,
+    analyze_monitor_windows,
+)
+from stm32_monitor.models import MAX_SIGNED_INT64, SampleBatch, SampleValue, WatchItem
+from stm32_monitor.replay import (
+    MonitorReplayDocument,
+    MonitorRunRef,
+    _make_reference,
+    _project_batches,
+    canonical_replay_json_bytes,
+)
+from stm32_toolkit.paths import WorkspacePaths
+
+
+FIXTURES = Path(__file__).parent / "fixtures" / "vs03"
+PROJECT_ID = UUID("123e4567-e89b-42d3-a456-426614174000")
+RUN_IDS = {
+    "failed-before": UUID("33333333-3333-4333-8333-333333333333"),
+    "fixed-after": UUID("44444444-4444-4444-8444-444444444444"),
+}
+COUNTER = WatchItem.variable("counter")
+
+
+def _paths(tmp_path: Path) -> WorkspacePaths:
+    project = tmp_path / "project"
+    project.mkdir()
+    return WorkspacePaths.from_roots(tmp_path / "state", project, PROJECT_ID, "analysis-import")
+
+
+def _document(role: str) -> MonitorReplayDocument:
+    raw = (FIXTURES / f"{role}.json").read_bytes()
+    return MonitorReplayDocument.from_value(json.loads(raw.rstrip(b"\n").decode("utf-8")))
+
+
+def _reference(
+    document: MonitorReplayDocument,
+    paths: WorkspacePaths,
+    batches: tuple[SampleBatch, ...],
+) -> MonitorRunRef:
+    return _make_reference(
+        document,
+        paths,
+        str(RUN_IDS[document.scenario_role]),
+        batches,
+        "a" * 64,
+    )
+
+
+def _case(tmp_path: Path):
+    paths = _paths(tmp_path)
+    before_document = _document("failed-before")
+    after_document = _document("fixed-after")
+    before = _project_batches(before_document, paths)
+    after = _project_batches(after_document, paths)
+    return (
+        paths,
+        before_document,
+        after_document,
+        before,
+        after,
+        _reference(before_document, paths, before),
+        _reference(after_document, paths, after),
+    )
+
+
+def _request(before: MonitorRunRef, after: MonitorRunRef, *, minimum: int = 2) -> AnalysisRequest:
+    return AnalysisRequest(
+        schema="stm32-monitor-analysis-request/1",
+        before_run=before,
+        after_run=after,
+        selector_kind="variable",
+        selector="counter",
+        alignment="run-relative",
+        minimum_valid_pairs=minimum,
+    )
+
+
+def _replace_counter(
+    batch: SampleBatch,
+    value: object,
+    *,
+    status: str = "OK",
+    value_type: str = "uint32",
+) -> SampleBatch:
+    values = tuple(
+        replace(
+            sample,
+            status=status,
+            typed_value=None if status == "ERROR" else {"type": value_type, "value": value},
+            code="SAMPLE_ERROR" if status == "ERROR" else None,
+        )
+        if sample.watch == COUNTER
+        else sample
+        for sample in batch.values
+    )
+    return replace(batch, values=values)
+
+
+def _with_reference(
+    document: MonitorReplayDocument,
+    paths: WorkspacePaths,
+    batches: tuple[SampleBatch, ...],
+) -> MonitorRunRef:
+    return _reference(document, paths, batches)
+
+
+def _ref_with(reference: MonitorRunRef, **changes: object) -> MonitorRunRef:
+    payload = reference.to_dict()
+    payload.update(changes)
+    unsigned = dict(payload)
+    unsigned.pop("run_ref_sha256")
+    payload["run_ref_sha256"] = sha256(canonical_replay_json_bytes(unsigned)).hexdigest()
+    return MonitorRunRef.from_value(payload)
+
+
+def test_request_and_computation_are_closed_canonical_values(tmp_path: Path) -> None:
+    _, _, _, before, after, before_ref, after_ref = _case(tmp_path)
+    request = _request(before_ref, after_ref)
+
+    assert request.request_digest == sha256(
+        canonical_replay_json_bytes(request.to_dict())
+    ).hexdigest()
+    round_trip = AnalysisRequest.from_value(request.to_dict())
+    assert round_trip == request
+    copied = request.to_dict()
+    copied["before_run"]["operation_id"] = "0" * 36
+    assert request.before_run.operation_id != copied["before_run"]["operation_id"]
+
+    result = analyze_monitor_windows(request, before, after)
+    assert result.schema == "stm32-monitor-analysis-computation/1"
+    assert result.request_digest == request.request_digest
+    assert AnalysisComputation.from_value(result.to_dict()) == result
+    assert "analysis_id" not in result.to_dict()
+    assert "evidence_id" not in result.to_dict()
+
+
+def test_changed_window_is_valid_and_exactly_aligned(tmp_path: Path) -> None:
+    _, _, _, before, after, before_ref, after_ref = _case(tmp_path)
+    result = analyze_monitor_windows(_request(before_ref, after_ref), before, after)
+
+    assert result.quality == "VALID"
+    assert result.conclusion == "COMPLETED"
+    assert result.reason_code == "VALUES_CHANGED"
+    assert result.aligned_position_count == 2
+    assert result.aligned_pair_count == 2
+    assert result.excluded_position_count == 0
+    assert result.before_first == 10
+    assert result.before_last == 11
+    assert result.before_min == 10
+    assert result.before_max == 11
+    assert result.after_first == 15
+    assert result.after_last == 16
+    assert result.after_min == 15
+    assert result.after_max == 16
+    assert result.delta_first == 5
+    assert result.delta_last == 5
+    assert result.changed is True
+
+
+def test_identical_window_is_unchanged(tmp_path: Path) -> None:
+    paths, _, after_document, before, after, before_ref, _ = _case(tmp_path)
+    unchanged_after = tuple(
+        _replace_counter(batch, before[index].values[0].typed_value["value"])
+        for index, batch in enumerate(after)
+    )
+    after_ref = _with_reference(after_document, paths, unchanged_after)
+    result = analyze_monitor_windows(_request(before_ref, after_ref), before, unchanged_after)
+
+    assert result.quality == "VALID"
+    assert result.reason_code == "VALUES_UNCHANGED"
+    assert result.changed is False
+    assert result.delta_first == 0
+    assert result.delta_last == 0
+
+
+def test_run_relative_alignment_never_interpolates_or_uses_capture_time(tmp_path: Path) -> None:
+    paths, _, after_document, before, after, before_ref, _ = _case(tmp_path)
+    shifted = tuple(
+        replace(
+            batch,
+            scheduled_unix_ns=batch.scheduled_unix_ns + (500 if batch.sequence else 0),
+            captured_unix_ns=batch.captured_unix_ns + (500 if batch.sequence else 0),
+        )
+        for batch in after
+    )
+    after_ref = _with_reference(after_document, paths, shifted)
+    result = analyze_monitor_windows(_request(before_ref, after_ref), before, shifted)
+
+    assert result.aligned_position_count == 3
+    assert result.aligned_pair_count == 1
+    assert result.excluded_position_count == 2
+    assert result.quality == "INVALID"
+    assert result.conclusion == "INCONCLUSIVE"
+    assert result.reason_code == "INSUFFICIENT_VALID_PAIRS"
+    assert result.changed is None
+    assert result.before_first is None
+    assert result.after_max is None
+
+
+def test_missing_error_and_invalid_samples_are_degraded_when_minimum_is_met(tmp_path: Path) -> None:
+    paths, before_document, after_document, before, after, before_ref, _ = _case(tmp_path)
+    before_three = before + (
+        replace(
+            before[-1],
+            sequence=2,
+            scheduled_unix_ns=before[-1].scheduled_unix_ns + 1_000_000,
+            captured_unix_ns=before[-1].captured_unix_ns + 1_000_000,
+        ),
+    )
+    after_three = after + (
+        _replace_counter(
+            replace(
+                after[-1],
+                sequence=2,
+                scheduled_unix_ns=after[-1].scheduled_unix_ns + 1_000_000,
+                captured_unix_ns=after[-1].captured_unix_ns + 1_000_000,
+            ),
+            "not numeric",
+        ),
+    )
+    after_three = after_three[:-1] + (_replace_counter(after_three[-1], 17, status="ERROR"),)
+    before_ref = _with_reference(before_document, paths, before_three)
+    after_ref = _with_reference(after_document, paths, after_three)
+    result = analyze_monitor_windows(
+        _request(before_ref, after_ref), before_three, after_three
+    )
+
+    assert result.quality == "DEGRADED"
+    assert result.conclusion == "COMPLETED"
+    assert result.reason_code == "VALUES_CHANGED_WITH_EXCLUSIONS"
+    assert result.aligned_position_count == 3
+    assert result.aligned_pair_count == 2
+    assert result.excluded_position_count == 1
+
+
+@pytest.mark.parametrize("bad_value", ("text", True))
+def test_nonnumeric_and_boolean_values_are_excluded(tmp_path: Path, bad_value: object) -> None:
+    paths, _, after_document, before, after, before_ref, _ = _case(tmp_path)
+    invalid = tuple(_replace_counter(batch, bad_value) for batch in after)
+    after_ref = _with_reference(after_document, paths, invalid)
+    result = analyze_monitor_windows(_request(before_ref, after_ref), before, invalid)
+
+    assert result.quality == "INVALID"
+    assert result.reason_code == "INSUFFICIENT_VALID_PAIRS"
+    assert result.aligned_pair_count == 0
+    assert result.before_first is None
+    assert result.changed is None
+
+
+@pytest.mark.parametrize("bad_value", (float("nan"), float("inf")))
+def test_nonfinite_typed_values_are_rejected_before_analysis(tmp_path: Path, bad_value: float) -> None:
+    _, _, _, _, after, _, _ = _case(tmp_path)
+    with pytest.raises(ValueError):
+        _replace_counter(after[0], bad_value)
+
+
+def test_selector_missing_duplicate_and_type_mismatch_are_excluded(tmp_path: Path) -> None:
+    paths, _, after_document, before, after, before_ref, _ = _case(tmp_path)
+    missing = tuple(
+        replace(batch, values=tuple(sample for sample in batch.values if sample.watch != COUNTER))
+        if batch.sequence == 0
+        else batch
+        for batch in after
+    )
+    duplicate = tuple(
+        replace(batch, values=batch.values + (batch.values[0],))
+        if batch.sequence == 1
+        else batch
+        for batch in missing
+    )
+    mismatch = tuple(
+        _replace_counter(batch, batch.values[0].typed_value["value"], value_type="int32")
+        if batch.sequence == 1
+        else batch
+        for batch in duplicate
+    )
+    after_ref = _with_reference(after_document, paths, mismatch)
+    result = analyze_monitor_windows(_request(before_ref, after_ref), before, mismatch)
+
+    assert result.aligned_position_count == 2
+    assert result.aligned_pair_count == 0
+    assert result.excluded_position_count == 2
+    assert result.quality == "INVALID"
+    assert result.changed is None
+
+
+def test_insufficient_zero_and_one_pair_return_null_statistics(tmp_path: Path) -> None:
+    paths, _, after_document, before, after, before_ref, _ = _case(tmp_path)
+    shifted = tuple(
+        _replace_counter(batch, batch.values[0].typed_value["value"], value_type="int32")
+        for batch in after
+    )
+    zero_ref = _with_reference(after_document, paths, shifted)
+    zero = analyze_monitor_windows(_request(before_ref, zero_ref), before, shifted)
+    assert zero.aligned_pair_count == 0
+    assert zero.before_min is None and zero.after_max is None and zero.delta_last is None
+
+    one = tuple(
+        _replace_counter(batch, batch.values[0].typed_value["value"], value_type="int32")
+        if batch.sequence == 1
+        else batch
+        for batch in after
+    )
+    one_ref = _with_reference(after_document, paths, one)
+    one_result = analyze_monitor_windows(_request(before_ref, one_ref), before, one)
+    assert one_result.aligned_pair_count == 1
+    assert one_result.quality == "INVALID"
+    assert one_result.before_first is None
+    assert one_result.changed is None
+
+
+def test_invalid_request_ref_batch_digest_identity_and_limits_fail_closed(tmp_path: Path) -> None:
+    paths, _, after_document, before, after, before_ref, after_ref = _case(tmp_path)
+    request = _request(before_ref, after_ref)
+    payload = request.to_dict()
+    payload["minimum_valid_pairs"] = True
+    with pytest.raises(AnalysisError) as request_error:
+        AnalysisRequest.from_value(payload)
+    assert request_error.value.code == ANALYSIS_REQUEST_INVALID
+
+    wrong_ref = _ref_with(after_ref, import_workspace_id="f" * 64)
+    with pytest.raises(AnalysisError) as identity_error:
+        analyze_monitor_windows(_request(before_ref, wrong_ref), before, after)
+    assert identity_error.value.code == ANALYSIS_REQUEST_INVALID
+
+    wrong_digest = _ref_with(
+        after_ref,
+        projected_batch_sha256s=["0" * 64, *after_ref.projected_batch_sha256s[1:]],
+    )
+    with pytest.raises(AnalysisError) as digest_error:
+        analyze_monitor_windows(_request(before_ref, wrong_digest), before, after)
+    assert digest_error.value.code == ANALYSIS_REQUEST_INVALID
+
+    wrong_batch = replace(
+        after[0],
+        binding=replace(after[0].binding, workspace_id="e" * 64),
+    )
+    with pytest.raises(AnalysisError) as batch_error:
+        analyze_monitor_windows(_request(before_ref, after_ref), before, (wrong_batch, after[1]))
+    assert batch_error.value.code == ANALYSIS_REQUEST_INVALID
+
+    with pytest.raises(AnalysisError):
+        analyze_monitor_windows(request, [], after)
+    with pytest.raises(AnalysisError):
+        analyze_monitor_windows(request, before, tuple(before) + (before[0],) * 1023)
+
+    missing_timestamp = after[0]
+    object.__setattr__(missing_timestamp, "scheduled_unix_ns", None)
+    with pytest.raises(AnalysisError):
+        analyze_monitor_windows(request, before, (missing_timestamp, after[1]))
+
+
+def test_closed_types_subclasses_and_no_io(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _, _, _, before, after, before_ref, after_ref = _case(tmp_path)
+    request = _request(before_ref, after_ref)
+
+    class RequestSubclass(AnalysisRequest):
+        pass
+
+    with pytest.raises(AnalysisError):
+        AnalysisRequest.from_value(
+            RequestSubclass(
+                request.schema,
+                request.before_run,
+                request.after_run,
+                request.selector_kind,
+                request.selector,
+                request.alignment,
+                request.minimum_valid_pairs,
+            )
+        )
+
+    class BatchTuple(tuple[SampleBatch, ...]):
+        pass
+
+    with pytest.raises(AnalysisError):
+        analyze_monitor_windows(request, BatchTuple(before), after)
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("analysis attempted I/O")
+
+    monkeypatch.setattr(builtins, "open", forbidden)
+    result = analyze_monitor_windows(request, before, after)
+    assert result.aligned_pair_count == 2
+
+
+def test_analysis_error_is_bounded_and_stable() -> None:
+    error = AnalysisError(ANALYSIS_REQUEST_INVALID, "x" * 40)
+    assert error.code == ANALYSIS_REQUEST_INVALID
+    assert len(error.message) <= 256
+    with pytest.raises(ValueError):
+        AnalysisError("OTHER", "bad")
