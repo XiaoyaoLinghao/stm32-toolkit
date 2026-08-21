@@ -536,17 +536,53 @@ the pairs by analysis ID and then unzipping them; the two tuple positions must n
 independently.
 
 `diagnostic_start` retains the accepted Host behavior and additionally accepts only an
-authoritative failed Target replay. Its TestRun root must state `mode=target`, `state=failed`,
+authoritative failed Target replay. Its public application-service input is extended with the
+closed `failed_run_mode` value `host|target`. The default is `host`, so every accepted VS-02 Host
+call, event and result remains byte-compatible; a Target caller must pass `target` explicitly.
+The declared mode is routing intent, not evidence authority: after loading, the TestRun manifest
+must have the same mode or the operation fails before creating a DiagnosticStore event.
+
+```python
+diagnostic_start(
+    context: DiagnosticWorkflowContext,
+    *,
+    operation_id: str,
+    failed_test_run_id: str,
+    failed_run_mode: Literal["host", "target"] = "host",
+    actor: str = "user",
+) -> OperationResult[object]
+```
+
+An invalid mode is `DIAGNOSTIC_INVALID_EVENT`. The omitted/default Host path retains the existing
+Host loader and returns the existing `DIAGNOSTIC_INVALID_EVENT` when the loaded record is not a
+failed Host run. An explicitly declared Target mode that loads a Host record is
+`EVIDENCE_INTEGRITY_FAILURE`. All three contradictions are rejected with zero DiagnosticStore
+mutation.
+
+For `failed_run_mode=target`, a missing or corrupt immutable TestRun is
+`EVIDENCE_INTEGRITY_FAILURE`, provider or filesystem unavailability is `ENVIRONMENT_FAILURE`, and
+an identity contradiction is `INCOMPATIBLE_IDENTITY`. Those classifications are selected from the
+explicit request even when the root itself cannot be read; they must never be inferred from root
+metadata, target-device spelling, or whether origin and import workspace IDs happen to differ.
+The authoritative Target root, when readable, must state `mode=target`, `state=failed`,
 `execution_source=replay`, `physical_transport_evidence=false`, the current import workspace, and
 the manifest origin workspace. The DiagnosticSession retains that origin identity. Target,
 Monitor, and Diagnostic session identifiers remain separate authority domains and are never
 compared for equality.
 
+The accepted mode is durably bound by `session.created` and reduced into
+`DiagnosticSession.failed_run_mode`. A historical `session.created` event and serialized session
+without the field decode as `host`; newly created Host events and public session dictionaries omit
+the default field and therefore preserve their accepted bytes. A Target `session.created` request
+and serialized session include `failed_run_mode=target`. Event validation accepts only the exact
+legacy Host shape or the exact Target extension, and `_advance` carries the value unchanged.
+
 Every later diagnostic operation, including the existing `diagnostic_begin` and
-`diagnostic_show`, reloads the session's `failed_run_id` before applying identity authority. Host
-sessions retain the existing exact local-workspace rule. For a Target session, the reloaded
-TestRun must still be Target/replay/failed/non-physical, its manifest identity must equal the
-DiagnosticSession identity, its root `origin_workspace_id` must equal that identity, and its root
+`diagnostic_show`, reloads the session's `failed_run_id` before applying identity authority and
+selects failure semantics from the durable `failed_run_mode`. Host sessions retain the existing
+exact local-workspace rule and result bytes. For a Target session, the reloaded TestRun must still
+be Target/replay/failed/non-physical, its manifest identity must equal the DiagnosticSession
+identity, its root `origin_workspace_id` must equal that identity, and its root
 `import_workspace_id` must equal the current WorkspacePaths ID. Only project/target/source facts
 are compared across those objects; origin workspace is never required to equal import workspace.
 This is the common session-load rule for begin, hypothesis, plan, marker and show, not a special
@@ -566,9 +602,12 @@ verification.completed PASS  VERIFYING     -> RESOLVED
 verification.completed else  VERIFYING     -> INVESTIGATING
 ```
 
-The five event payloads retain the existing exact `{request,result}` envelope:
+The five new event payloads retain the existing exact `{request,result}` envelope. The mode-binding
+extension uses the following two closed `session.created` shapes alongside them:
 
 ```text
+session.created Host      request {failed_test_run_id}; result {failed_evidence_id,identity}
+session.created Target    request {failed_test_run_id,failed_run_mode="target"}; result {failed_evidence_id,identity}
 source_change.declared   request {source_change_declaration}; result {declaration_id}
 verification.plan_added  request {verification_plan}; result {verification_plan_id,plan_digest}
 verification.started     request {verification_plan_id}; result {verification_plan_id}
