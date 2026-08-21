@@ -21,7 +21,8 @@ OperationResult, argparse/FastMCP, pytest.
 **Frozen design:**
 `docs/superpowers/specs/2026-08-21-stm32-toolkit-0600-vs03-target-replay-monitor-verification-design.md`
 
-**Frozen design commit:** `dc304de6ef1d7efbdabe06ae37ec96a859615f84`
+**Frozen design commits:** base `dc304de6ef1d7efbdabe06ae37ec96a859615f84`; portable replay
+identity clarification `69a37196280f034a236053b42f7338711faebc18`.
 
 **Plan-start SHA:** `dc304de6ef1d7efbdabe06ae37ec96a859615f84`
 
@@ -125,13 +126,16 @@ Target runner, publishes a replay-labeled TestRun, and reloads it authoritativel
 
 **Required interfaces:**
 
-- `TestRunPublisher.publish_target_replay(manifest, descriptor_envelope)` publishes operation
+- `TestRunPublisher.publish_target_replay(manifest, descriptor_envelope, import_workspace_id)`
+  publishes operation
   `target-test-replay`, one descriptor parent, closed metadata and a `test-run` root whose metadata
-  includes mode/state/execution source/non-physical flag.
+  includes mode/state/execution source/non-physical flag plus distinct origin/import workspace IDs.
 - `TestRunRepository.load()` dispatches by envelope operation and preserves the current Host path
   byte-for-byte while validating the replay Target path independently.
 - `target_replay_run(context, operation_id, descriptor_file, stream_file)` uses the existing Target
-  decoder/runner, is idempotent by exact intent, and returns public execution/non-physical labels.
+  decoder/validator without `TargetTestRunner` or Probe, is idempotent by exact intent, and returns
+  public execution/non-physical plus origin/import identity labels. The frozen origin identity stays
+  in the TestRunManifest; it is not required to equal the current import workspace ID.
 - Damage, expected-state contradiction, wrong scope/identity, operation conflict, and publication
   interruption fail closed or recover idempotently as specified; no Probe or authorization object
   is created.
@@ -159,9 +163,13 @@ HistoryStore, returning a durable MonitorRunRef without touching Probe services.
 **Required interfaces:**
 
 - Frozen `MonitorReplayDocument` and `MonitorRunRef` with closed canonical projections/digests.
-- `ingest_monitor_replay(paths, operation_id, document_file)` validates replay/non-physical labels,
-  complete 64-hex workspace identity, binding, monotonic batch chain, scenario role and fixture
-  digest before calling only `HistoryStore.append_batch`.
+- `ingest_monitor_replay(paths, evidence_store, operation_id, document_file)` validates
+  replay/non-physical labels, complete 64-hex recorded origin identity, binding, monotonic batch
+  chain, scenario role and fixture digest; publishes the unchanged origin transcript as Evidence;
+  then creates a deterministic local replay projection and calls only `HistoryStore.append_batch`.
+- Projection replaces only workspace/session storage identity, keeps firmware/source/target and all
+  samples/times, and uses explicit replay probe/physical-target/flash/lease values. MonitorRunRef
+  exposes both origin and import workspace IDs and the origin transcript digest.
 - Failed-before and fixed-after fixtures share project/target/selector/time grid and use the exact
   firmware identities declared by the corresponding Target descriptors.
 - Identical retry returns the same reference. Conflict, partial/corrupt fixture, duplicate or
@@ -323,8 +331,9 @@ and fresh-object reload; named negatives prove fail-closed identity and insuffic
   publish/attach marker and bundle, freeze/start/complete verification, then discard all objects.
 - Reload TestRuns, replay descriptors, Monitor windows/history, AnalysisResult, marker, bundle,
   DiagnosticSession events/checkpoints/roots and FixVerification from fresh objects. Assert exact
-  replay/non-physical labels, VALID/COMPLETED/changed analysis, byte-identical bundle, PASSED and
-  RESOLVED, and unchanged project tree.
+  replay/non-physical labels, distinct stable origin/import workspace IDs at every derived public
+  boundary, VALID/COMPLETED/changed analysis, byte-identical bundle, PASSED and RESOLVED, and
+  unchanged project tree.
 - Incompatible project or undeclared firmware returns `INCOMPATIBLE_IDENTITY`, appends nothing and
   leaves session revision/input digests unchanged.
 - Compatible insufficient pairs retain `INVALID/INCONCLUSIVE`, produce
