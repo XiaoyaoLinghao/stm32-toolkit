@@ -8,8 +8,10 @@ from typing import cast
 from uuid import UUID
 
 import pytest
+import stm32_monitor.analysis_workflows as workflows
 
 from stm32_monitor.analysis import AnalysisRequest
+from stm32_monitor.analysis import analyze_monitor_windows
 from stm32_monitor.analysis_workflows import (
     AnalysisPublication,
     AnalysisWorkflowError,
@@ -523,3 +525,65 @@ def test_import_workspace_and_role_contradictions_fail_before_publication(tmp_pa
         _publish(paths, evidence, before, wrong_role, declaration)
     assert role_error.value.code == "INCOMPATIBLE_IDENTITY"
     assert _evidence_tree(evidence) == before_tree
+
+
+def test_transcript_run_reference_group_contradiction_is_rejected_before_derived_mutation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    paths = _paths(tmp_path)
+    evidence, before, after = _ingest_pair(paths)
+    declaration = _declaration(tmp_path, evidence, before, after)
+    original_request = _request(before, after)
+    before_batches = _history_batches(paths, UUID(before.projected_run_id))
+    after_batches = _history_batches(paths, UUID(after.projected_run_id))
+    valid_computation = analyze_monitor_windows(original_request, before_batches, after_batches)
+
+    payload = before.to_dict()
+    payload["group_revision"] = before.group_revision + 1
+    unsigned = dict(payload)
+    unsigned.pop("run_ref_sha256")
+    payload["run_ref_sha256"] = sha256(canonical_replay_json_bytes(unsigned)).hexdigest()
+    contradictory_before = MonitorRunRef.from_value(payload)
+    root_file = None
+    for candidate in (evidence.root / "roots" / "monitor-run").glob("*.json"):
+        candidate_payload = json.loads(candidate.read_bytes().decode("utf-8"))
+        if candidate_payload["metadata"]["fixture_sha256"] == before.fixture_sha256:
+            root_file = candidate
+            break
+    assert root_file is not None
+    root_payload = json.loads(root_file.read_bytes().decode("utf-8"))
+    root_payload["metadata"]["run_ref_sha256"] = contradictory_before.run_ref_sha256
+    root_file.write_bytes(canonical_replay_json_bytes(root_payload))
+
+    monkeypatch.setattr(workflows, "analyze_monitor_windows", lambda *args: valid_computation)
+    before_tree = _evidence_tree(evidence)
+    with pytest.raises(AnalysisWorkflowError) as error:
+        _publish(paths, evidence, contradictory_before, after, declaration)
+    assert error.value.code == "EVIDENCE_INTEGRITY_FAILURE"
+    assert _evidence_tree(evidence) == before_tree
+    assert not (evidence.root / "roots" / "monitor-analysis").exists()
+
+
+def test_derived_provider_exception_is_bounded_and_exact_artifact_prefix_retries(
+    tmp_path: Path,
+) -> None:
+    paths = _paths(tmp_path)
+    evidence, before, after = _ingest_pair(paths)
+    declaration = _declaration(tmp_path, evidence, before, after)
+    state = {"enabled": True}
+
+    def fail_after_artifact_publish(point: str) -> None:
+        if state["enabled"] and point == "artifact.after_publish":
+            raise RuntimeError("provider-private-secret")
+
+    faulty = EvidenceStore(evidence.root, fault_injector=fail_after_artifact_publish)
+    with pytest.raises(AnalysisWorkflowError) as error:
+        _publish(paths, faulty, before, after, declaration)
+    assert error.value.code == "ENVIRONMENT_FAILURE"
+    assert "provider-private-secret" not in str(error.value)
+    assert not (evidence.root / "roots" / "monitor-analysis").exists()
+
+    state["enabled"] = False
+    repaired = _publish(paths, faulty, before, after, declaration)
+    assert repaired.analysis_result.quality == "VALID"
+    assert get_root(evidence, "monitor-analysis", repaired.analysis_result.analysis_id)

@@ -162,11 +162,19 @@ def test_registered_typed_roots_are_closed_and_shared_objects_follow_reachabilit
     plan = plan_gc(store)
 
     assert REGISTERED_ROOT_TYPES == frozenset(
-        {"test-run", "diagnostic-session", "bundle", "annotation", "monitor-run"}
+        {
+            "test-run",
+            "diagnostic-session",
+            "bundle",
+            "annotation",
+            "monitor-run",
+            "monitor-analysis",
+            "diagnostic-marker",
+        }
     )
     assert [set(root.to_dict()) for root in plan.roots] == [
         {"root_type", "root_id", "manifest_id", "metadata"}
-    ] * 5
+    ] * 7
     assert plan.reachable_objects == tuple(
         sorted(
             {shared.relative_path, kept_own.relative_path, dropped_own.relative_path},

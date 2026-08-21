@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import json
 from hashlib import sha256
 from pathlib import Path
@@ -19,7 +19,6 @@ from stm32_toolkit.evidence import (
     EvidenceIdentity,
     EvidenceValidationError,
 )
-from stm32_toolkit.evidence import gc as _evidence_gc
 from stm32_toolkit.evidence.gc import RootRecord, get_root, put_root
 from stm32_toolkit.evidence.store import EvidenceStore, MAX_EVIDENCE_READ_BYTES
 from stm32_toolkit.paths import WorkspacePaths
@@ -74,15 +73,6 @@ _DIAGNOSTIC_MARKER_OPERATION = "diagnostic-marker"
 _MONITOR_ANALYSIS_ROOT = "monitor-analysis"
 _DIAGNOSTIC_MARKER_ROOT = "diagnostic-marker"
 _REPLAY_ROLES = {"failed-before", "fixed-after"}
-
-# The evidence GC registry is deliberately closed at the Toolkit layer.  These two
-# roots are the only derived roots owned by this bounded publication boundary; add
-# them before constructing RootRecord values so the existing authoritative root
-# validation/GC machinery handles them exactly like the pre-registered roots.
-_evidence_gc.REGISTERED_ROOT_TYPES = frozenset(
-    (*_evidence_gc.REGISTERED_ROOT_TYPES, _MONITOR_ANALYSIS_ROOT, _DIAGNOSTIC_MARKER_ROOT)
-)
-
 
 class AnalysisWorkflowError(ValueError):
     """One stable, bounded error at the analysis publication boundary."""
@@ -277,25 +267,71 @@ def _validate_transcript(
         raise AssertionError from error
     if raw not in (canonical, canonical + b"\n"):
         _fail(EVIDENCE_INTEGRITY_FAILURE, "replay transcript artifact is not canonical")
+    expected_binding = {
+        "workspaceId": reference.origin_workspace_id,
+        "logicalProjectId": reference.logical_project_id,
+        "sessionId": reference.origin_session_id,
+        "probeId": reference.probe_id,
+        "targetDevice": reference.target_device,
+        "physicalTarget": reference.physical_target,
+        "buildId": reference.build_id,
+        "elfSha256": reference.elf_sha256,
+        "inputSnapshotSha256": reference.input_snapshot_sha256,
+        "gitHead": reference.git_head,
+        "gitDirty": reference.git_dirty,
+        "flashSessionId": reference.flash_session_id,
+        "leaseId": reference.lease_id,
+        "dwarfSha256": reference.dwarf_sha256,
+        "svdSha256": reference.svd_sha256,
+    }
+    batches = document.batches
     if (
         document.source != "toolkit-generated-probe-v2-replay"
         or document.physical_transport_evidence is not False
         or document.scenario_role != reference.scenario_role
         or document.fixture_sha256 != reference.fixture_sha256
-        or document.binding.workspace_id != reference.origin_workspace_id
-        or document.binding.logical_project_id != reference.logical_project_id
-        or document.binding.session_id != reference.origin_session_id
-        or document.binding.target_device != reference.target_device
-        or document.binding.build_id != reference.build_id
-        or document.binding.elf_sha256 != reference.elf_sha256
-        or document.binding.input_snapshot_sha256 != reference.input_snapshot_sha256
-        or document.binding.git_head != reference.git_head
-        or document.binding.git_dirty is not reference.git_dirty
-        or tuple(str(batch.run_id) for batch in document.batches) != (reference.origin_run_id,) * len(document.batches)
-        or tuple(batch.sequence for batch in document.batches)
+        or document.binding.to_dict() != expected_binding
+        or not batches
+        or tuple(str(batch.run_id) for batch in batches) != (reference.origin_run_id,) * len(batches)
+        or tuple(batch.sequence for batch in batches)
         != tuple(range(reference.start_sequence, reference.end_sequence_exclusive))
+        or batches[0].group_id != UUID(reference.group_id)
+        or any(batch.group_revision != reference.group_revision for batch in batches)
+        or batches[0].captured_unix_ns != reference.start_captured_unix_ns
+        or batches[-1].captured_unix_ns + 1 != reference.end_captured_unix_ns_exclusive
     ):
         _fail(EVIDENCE_INTEGRITY_FAILURE, "replay transcript does not match its run reference")
+    try:
+        projected_binding = ObservationBinding(
+            workspace_id=reference.import_workspace_id,
+            logical_project_id=reference.logical_project_id,
+            session_id=reference.projected_session_id,
+            probe_id=reference.probe_id,
+            target_device=reference.target_device,
+            physical_target=reference.physical_target,
+            build_id=reference.build_id,
+            elf_sha256=reference.elf_sha256,
+            input_snapshot_sha256=reference.input_snapshot_sha256,
+            git_head=reference.git_head,
+            git_dirty=reference.git_dirty,
+            flash_session_id=reference.flash_session_id,
+            lease_id=reference.lease_id,
+            dwarf_sha256=reference.dwarf_sha256,
+            svd_sha256=reference.svd_sha256,
+        )
+        projected_digests = tuple(
+            sha256(
+                canonical_replay_json_bytes(
+                    replace(batch, binding=projected_binding).to_dict()
+                )
+            ).hexdigest()
+            for batch in batches
+        )
+    except (TypeError, ValueError, OverflowError, MonitorReplayError) as error:
+        _fail(EVIDENCE_INTEGRITY_FAILURE, "replay projected batch identity is invalid")
+        raise AssertionError from error
+    if projected_digests != reference.projected_batch_sha256s:
+        _fail(EVIDENCE_INTEGRITY_FAILURE, "replay projected batch digests contradict the run reference")
     return envelope
 
 
@@ -691,6 +727,9 @@ def _preflight_checkpoint(
     except EvidenceValidationError as error:
         _fail(EVIDENCE_INTEGRITY_FAILURE, "derived Evidence preflight failed")
         raise AssertionError from error
+    except Exception as error:
+        _fail(ENVIRONMENT_FAILURE, "derived Evidence preflight failed")
+        raise AssertionError from error
 
 
 def _publish_checkpoint(
@@ -730,6 +769,9 @@ def _publish_checkpoint(
         _fail(EVIDENCE_INTEGRITY_FAILURE, "derived Evidence publication failed")
         raise AssertionError from error
     except OSError as error:
+        _fail(ENVIRONMENT_FAILURE, "derived Evidence publication failed")
+        raise AssertionError from error
+    except Exception as error:
         _fail(ENVIRONMENT_FAILURE, "derived Evidence publication failed")
         raise AssertionError from error
 
