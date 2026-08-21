@@ -53,7 +53,20 @@ diagnostic_start(
 - [ ] **Step 1: Freeze legacy Host bytes and Target session round-trip in model tests.** Add focused tests that construct a legacy Host `DiagnosticSession` without the new argument and assert its existing dictionary exactly omits `failed_run_mode`. Construct the same session with `failed_run_mode="target"`, assert the top-level dictionary contains exactly that additional field, and assert `DiagnosticSession.from_value(session.to_dict()) == session`.
 
 ```python
-host = DiagnosticSession(...existing arguments...)
+from dataclasses import replace
+
+host = DiagnosticSession(
+    diagnostic_session_id="f" * 32,
+    revision=1,
+    state="OPEN",
+    identity=IDENTITY,
+    failed_test_run_id="run-1",
+    failed_evidence_id="0" * 64,
+    event_head="3" * 64,
+    hypotheses=(),
+    observation_plans=(),
+    observation_results=(),
+)
 host_wire = host.to_dict()
 assert "failed_run_mode" not in host_wire
 assert DiagnosticSession.from_value(host_wire) == host
