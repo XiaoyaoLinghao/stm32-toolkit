@@ -821,6 +821,60 @@ def _publish_checkpoint(
         raise AssertionError from error
 
 
+def _validate_published_derived(
+    evidence_store: EvidenceStore,
+    *,
+    root_type: str,
+    root_id: str,
+    expected_envelope: EvidenceEnvelope,
+    payload: bytes,
+) -> None:
+    """Validate an upstream derived checkpoint without repairing or adopting it."""
+    root = _load_root(evidence_store, root_type, root_id)
+    expected_root = RootRecord(root_type, root_id, str(expected_envelope.evidence_id), dict(expected_envelope.metadata))
+    if root.to_dict() != expected_root.to_dict():
+        _fail(EVIDENCE_INTEGRITY_FAILURE, "upstream derived root contradicts publication")
+    try:
+        envelope = evidence_store.get_envelope(str(expected_envelope.evidence_id))
+        if envelope.to_dict() != expected_envelope.to_dict():
+            _fail(EVIDENCE_INTEGRITY_FAILURE, "upstream derived envelope is corrupt")
+        if len(envelope.artifacts) != 1:
+            _fail(EVIDENCE_INTEGRITY_FAILURE, "upstream derived artifact is invalid")
+        actual = evidence_store.read_artifact(envelope.artifacts[0], maximum_bytes=MAX_EVIDENCE_READ_BYTES)
+    except AnalysisWorkflowError:
+        raise
+    except FileNotFoundError as error:
+        _fail(EVIDENCE_INTEGRITY_FAILURE, "upstream derived Evidence is absent")
+        raise AssertionError from error
+    except EvidenceValidationError as error:
+        _fail(EVIDENCE_INTEGRITY_FAILURE, "upstream derived Evidence is corrupt")
+        raise AssertionError from error
+    except OSError as error:
+        _fail(ENVIRONMENT_FAILURE, "upstream derived Evidence could not be read")
+        raise AssertionError from error
+    except Exception as error:
+        _fail(ENVIRONMENT_FAILURE, "upstream derived Evidence could not be read")
+        raise AssertionError from error
+    if actual != payload:
+        _fail(EVIDENCE_INTEGRITY_FAILURE, "upstream derived artifact bytes differ")
+
+
+def _test_identity_matches_reference(manifest: object, reference: MonitorRunRef) -> bool:
+    identity = getattr(manifest, "identity", None)
+    if not isinstance(identity, EvidenceIdentity):
+        return False
+    return (
+        identity.workspace_id == reference.origin_workspace_id
+        and str(identity.project_id) == reference.logical_project_id
+        and identity.build_id == reference.build_id
+        and identity.elf_sha256 == reference.elf_sha256
+        and identity.target_device == reference.target_device
+        and identity.input_snapshot_sha256 == reference.input_snapshot_sha256
+        and identity.git_commit == reference.git_head
+        and identity.git_dirty == reference.git_dirty
+    )
+
+
 def compare_monitor_runs(
     paths: WorkspacePaths,
     evidence_store: EvidenceStore,
@@ -966,11 +1020,6 @@ def export_analysis_bundle(
         _fail(ANALYSIS_WORKFLOW_INVALID, "analysis publication is invalid")
     if type(failed_before_test_run_id) is not str or type(fixed_after_test_run_id) is not str:
         _fail(ANALYSIS_WORKFLOW_INVALID, "test run IDs are invalid")
-    try:
-        UUID(failed_before_test_run_id)
-        UUID(fixed_after_test_run_id)
-    except (TypeError, ValueError):
-        _fail(ANALYSIS_WORKFLOW_INVALID, "test run IDs are invalid")
     marker = publication.diagnostic_marker
     before, after, lineage = _validate_inputs(
         paths, evidence_store, request,
@@ -994,6 +1043,42 @@ def export_analysis_bundle(
     before_transcript = _validate_transcript(evidence_store, before)
     after_transcript = _validate_transcript(evidence_store, after)
 
+    analysis_payload = canonical_replay_json_bytes(publication.analysis_result.to_dict())
+    analysis_artifact = _artifact_for_payload(analysis_payload, kind=_MONITOR_ANALYSIS_ROOT)
+    analysis_metadata = _analysis_metadata(
+        publication.analysis_result, before, after, source_change_declaration
+    )
+    try:
+        analysis_envelope = EvidenceEnvelope(
+            identity=_identity_for_ref(after), operation=_MONITOR_ANALYSIS_OPERATION,
+            produced_at_utc=unix_ns_to_utc(after.end_captured_unix_ns_exclusive - 1),
+            parents=(before_transcript.evidence_id, after_transcript.evidence_id,
+                     *(() if source_change_declaration is None else (source_change_declaration.diff_evidence_id,))),
+            artifacts=(analysis_artifact,), metadata=analysis_metadata,
+        )
+        marker_payload = canonical_replay_json_bytes(marker.to_dict())
+        marker_artifact = _artifact_for_payload(marker_payload, kind=_DIAGNOSTIC_MARKER_ROOT)
+        marker_metadata = _marker_metadata(marker, publication.analysis_evidence_ref.evidence_id, after)
+        marker_envelope = EvidenceEnvelope(
+            identity=_identity_for_ref(after), operation=_DIAGNOSTIC_MARKER_OPERATION,
+            produced_at_utc=analysis_envelope.produced_at_utc,
+            parents=(publication.analysis_evidence_ref.evidence_id,),
+            artifacts=(marker_artifact,), metadata=marker_metadata,
+        )
+    except (EvidenceValidationError, ValueError, TypeError, OverflowError) as error:
+        _fail(EVIDENCE_INTEGRITY_FAILURE, "upstream derived Evidence is invalid")
+        raise AssertionError from error
+    _validate_published_derived(
+        evidence_store, root_type=_MONITOR_ANALYSIS_ROOT,
+        root_id=publication.analysis_result.analysis_id,
+        expected_envelope=analysis_envelope, payload=analysis_payload,
+    )
+    _validate_published_derived(
+        evidence_store, root_type=_DIAGNOSTIC_MARKER_ROOT,
+        root_id=marker.marker_id,
+        expected_envelope=marker_envelope, payload=marker_payload,
+    )
+
     try:
         repository = TestRunRepository(evidence_store)
         before_test = repository.load(failed_before_test_run_id)
@@ -1012,8 +1097,18 @@ def export_analysis_bundle(
     ):
         manifest = loaded.manifest
         if (manifest.run_id != run_id or manifest.mode != "target" or manifest.transport != "replay"
-                or manifest.state != state or manifest.identity != _identity_for_ref(reference)):
+                or manifest.state != state or not _test_identity_matches_reference(manifest, reference)):
             _fail(INCOMPATIBLE_IDENTITY, "TestRun does not match replay reference")
+        expected_target_root = {
+            "mode": "target", "state": state, "execution_source": "replay",
+            "physical_transport_evidence": False,
+            "origin_workspace_id": reference.origin_workspace_id,
+            "import_workspace_id": paths.workspace_id,
+        }
+        if loaded.root.metadata != expected_target_root:
+            _fail(INCOMPATIBLE_IDENTITY, "TestRun root metadata does not match replay reference")
+    if before_test.manifest.identity.session_id != after_test.manifest.identity.session_id:
+        _fail(INCOMPATIBLE_IDENTITY, "Target TestRuns do not share a session")
 
     digest_table = [
         {"role": "before-run-ref", "sha256": before.run_ref_sha256},

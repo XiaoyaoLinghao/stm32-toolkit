@@ -8,4 +8,6 @@
 /tools/stm32-toolkit/tests/fixtures/component-admission/target-transports/** text eol=lf
 /tools/stm32-toolkit/tests/fixtures/target-streams/*.json text eol=lf
 /tools/stm32-toolkit/tests/fixtures/target-streams/*.bin -text
+/tools/stm32-toolkit/tests/fixtures/vs03/target/*.json text eol=lf
+/tools/stm32-toolkit/tests/fixtures/vs03/target/*.hex text eol=lf
 /tools/stm32-monitor/tests/fixtures/vs03/*.json text eol=lf
