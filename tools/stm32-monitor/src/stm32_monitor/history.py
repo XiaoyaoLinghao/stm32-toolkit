@@ -37,6 +37,7 @@ from .storage import MonitorDatabase, StorageFailure
 
 
 MAX_HISTORY_VALUES = 10_000
+MAX_HISTORY_BATCHES = 1_024
 MAX_HISTORY_PAGE_BYTES = 4 * 1024 * 1024
 _CURSOR_PAGE_FIXED_BYTES = (
     len(b'{"batches":[')
@@ -1052,6 +1053,130 @@ class HistoryStore:
             return success(operation, self._database.write(write))
         except StorageFailure as error:
             return _storage_failure(operation, error)
+
+    @staticmethod
+    def _append_batches_result(
+        ok: bool,
+        code: str,
+        message: str,
+        data: dict[str, object] | None = None,
+    ) -> ProtocolResult[dict[str, object]]:
+        """Build the correction's exact operation name around the legacy protocol grammar."""
+        operation = "history.appendbatches"
+        result = (
+            success(operation, data)
+            if ok
+            else failure(operation, code, message)
+        )
+        object.__setattr__(result, "operation", "history.append-batches")
+        return cast(ProtocolResult[dict[str, object]], result)
+
+    def append_batches(
+        self, batches: tuple[SampleBatch, ...]
+    ) -> ProtocolResult[dict[str, object]]:
+        """Atomically append one complete bounded batch window."""
+        if type(batches) is not tuple or not batches or len(batches) > MAX_HISTORY_BATCHES:
+            return self._append_batches_result(
+                False,
+                "MONITOR_REQUEST_INVALID",
+                "sample batch collection is invalid",
+            )
+
+        prepared: list[tuple[bytes, str, tuple[tuple[str, str, bytes, str], ...]]] = []
+        total_values = 0
+        for batch in batches:
+            if type(batch) is not SampleBatch:
+                return self._append_batches_result(
+                    False,
+                    "MONITOR_REQUEST_INVALID",
+                    "sample batch collection is invalid",
+                )
+            if batch.binding.workspace_id != self._paths.workspace_id:
+                return self._append_batches_result(
+                    False,
+                    "MONITOR_WORKSPACE_MISMATCH",
+                    "sample batch belongs to another workspace",
+                )
+            try:
+                payload = batch.to_dict()
+                encoded_batch = json.dumps(
+                    payload,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                    allow_nan=False,
+                ).encode("utf-8")
+                if len(encoded_batch) > MAX_HISTORY_BATCH_BYTES:
+                    raise ValueError("sample batch exceeds the history batch byte limit")
+                batch_digest = sha256(encoded_batch).hexdigest()
+                rows = tuple(_encode_history_value(value) for value in batch.values)
+            except (TypeError, ValueError, OverflowError, UnicodeError, RecursionError):
+                return self._append_batches_result(
+                    False,
+                    "MONITOR_REQUEST_INVALID",
+                    "sample batch collection is invalid",
+                )
+            total_values += len(rows)
+            if total_values > MAX_HISTORY_VALUES:
+                return self._append_batches_result(
+                    False,
+                    "MONITOR_REQUEST_INVALID",
+                    "sample batch collection exceeds its value limit",
+                )
+            prepared.append((encoded_batch, batch_digest, rows))
+
+        def write(connection: sqlite3.Connection) -> dict[str, object]:
+            connection.execute("BEGIN IMMEDIATE")
+            batch_ids: list[int] = []
+            try:
+                for encoded_batch, batch_digest, rows in prepared:
+                    batch = batches[len(batch_ids)]
+                    cursor = connection.execute(
+                        "INSERT INTO history_batches(session_id,run_id,sequence,captured_ns,payload_json,"
+                        "payload_bytes,payload_sha256,value_count) VALUES (?,?,?,?,?,?,?,?)",
+                        (
+                            batch.binding.session_id,
+                            str(batch.run_id),
+                            batch.sequence,
+                            batch.captured_unix_ns,
+                            encoded_batch,
+                            len(encoded_batch),
+                            batch_digest,
+                            len(rows),
+                        ),
+                    )
+                    batch_id = cursor.lastrowid
+                    if type(batch_id) is not int or batch_id < 1:
+                        raise StorageFailure(
+                            "MONITOR_STORAGE_INVALID",
+                            "monitor storage returned an invalid batch ID",
+                        )
+                    batch_ids.append(batch_id)
+                    connection.executemany(
+                        "INSERT INTO history_values(batch_id,ordinal,selector_kind,selector,value_json,"
+                        "value_bytes,value_sha256) VALUES (?,?,?,?,?,?,?)",
+                        (
+                            (batch_id, ordinal, kind, selector, raw, len(raw), digest)
+                            for ordinal, (kind, selector, raw, digest) in enumerate(rows)
+                        ),
+                    )
+                connection.commit()
+                return {"batchIds": batch_ids, "valueCount": total_values}
+            except sqlite3.IntegrityError as error:
+                connection.rollback()
+                raise StorageFailure(
+                    "MONITOR_STORAGE_INVALID",
+                    "sample batch already exists",
+                ) from error
+            except BaseException:
+                connection.rollback()
+                raise
+
+        try:
+            data = self._database.write(write)
+            return self._append_batches_result(True, "OK", "", data)
+        except StorageFailure as error:
+            return self._append_batches_result(False, error.code, error.public_message)
 
     def _validate_query(self, query: HistoryQuery) -> tuple[int, int, bytes]:
         if not isinstance(query, HistoryQuery):

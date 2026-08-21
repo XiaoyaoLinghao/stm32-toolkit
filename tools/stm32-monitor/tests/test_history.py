@@ -1790,6 +1790,77 @@ def test_duplicate_batch_is_rejected_without_duplicate_values(tmp_path: Path) ->
         store.close()
 
 
+def test_append_batches_commits_one_exact_result_for_the_complete_window(tmp_path: Path) -> None:
+    paths = _paths(tmp_path)
+    store = HistoryStore(paths)
+    try:
+        batches = (
+            _batch(paths, 1, captured_ns=1_001),
+            _batch(paths, 2, captured_ns=1_002),
+        )
+        result = store.append_batches(batches)
+
+        assert result.ok
+        assert result.operation == "history.append-batches"
+        assert result.data["batchIds"] == (1, 2)
+        assert result.data["valueCount"] == 2
+        assert result.to_dict()["data"] == {"batchIds": [1, 2], "valueCount": 2}
+        page = store.query_history(HistoryQuery("monitor-1", 0, 2_000_000_000))
+        assert page.ok
+        assert [row["sequence"] for row in page.data.values] == [1, 2]
+    finally:
+        store.close()
+
+
+def test_append_batches_rolls_back_every_batch_on_a_second_batch_conflict(
+    tmp_path: Path,
+) -> None:
+    paths = _paths(tmp_path)
+    store = HistoryStore(paths)
+    try:
+        first = _batch(paths, 1, captured_ns=1_001)
+        assert store.append_batch(first).ok
+
+        result = store.append_batches(
+            (first, _batch(paths, 2, captured_ns=1_002))
+        )
+
+        assert not result.ok
+        assert result.operation == "history.append-batches"
+        assert result.code == "MONITOR_STORAGE_INVALID"
+        page = store.query_history(HistoryQuery("monitor-1", 0, 2_000_000_000))
+        assert page.ok
+        assert [row["sequence"] for row in page.data.values] == [1]
+    finally:
+        store.close()
+
+
+def test_append_batches_rejects_non_tuple_empty_foreign_and_over_limit_inputs(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import stm32_monitor.history as history_module
+
+    paths = _paths(tmp_path)
+    store = HistoryStore(paths)
+    try:
+        batch = _batch(paths, 1, captured_ns=1_001)
+        assert store.append_batches([batch]).code == "MONITOR_REQUEST_INVALID"
+        assert store.append_batches(()).code == "MONITOR_REQUEST_INVALID"
+
+        foreign_project = tmp_path / "foreign-project"
+        foreign_project.mkdir()
+        foreign_paths = WorkspacePaths.from_roots(
+            tmp_path / "foreign-state", foreign_project, LOGICAL_ID, "monitor-1"
+        )
+        assert store.append_batches((_batch(foreign_paths, 1),)).code == "MONITOR_WORKSPACE_MISMATCH"
+
+        monkeypatch.setattr(history_module, "MAX_HISTORY_BATCHES", 1, raising=False)
+        assert store.append_batches((batch, _batch(paths, 2, captured_ns=1_002))).code == "MONITOR_REQUEST_INVALID"
+    finally:
+        store.close()
+
+
 def test_retention_removes_expired_and_budget_excess_in_bounded_chunks(tmp_path: Path, monkeypatch) -> None:
     import stm32_monitor.history as history_module
 
