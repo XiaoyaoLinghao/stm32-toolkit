@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -11,6 +12,7 @@ import math
 import re
 import secrets
 from typing import Callable, Literal, cast
+import unicodedata
 from uuid import UUID
 
 from stm32_toolkit.diagnostics import (
@@ -38,7 +40,6 @@ from stm32_toolkit.evidence import (
     ArtifactRef,
     EvidenceEnvelope,
     EvidenceValidationError,
-    canonical_json_bytes,
     get_root,
 )
 from stm32_toolkit.evidence.store import MAX_EVIDENCE_READ_BYTES
@@ -112,16 +113,89 @@ _MONITOR_BINDING_FIELDS = frozenset(
         "gitDirty", "flashSessionId", "leaseId", "dwarfSha256", "svdSha256",
     }
 )
+_MAX_REPLAY_JSON_DEPTH = 32
+_MAX_REPLAY_JSON_NODES = 10_000
+_MAX_REPLAY_JSON_STRING_CHARS = 1_048_576
+_MAX_REPLAY_JSON_INTEGER = (1 << 63) - 1
+_MIN_REPLAY_JSON_INTEGER = -(1 << 63)
+
+
+def _copy_replay_json(
+    value: object,
+    *,
+    depth: int = 0,
+    state: list[int] | None = None,
+) -> object:
+    counters = state if state is not None else [0, 0]
+    if depth > _MAX_REPLAY_JSON_DEPTH:
+        raise ValueError("replay JSON exceeds its depth limit")
+    counters[0] += 1
+    if counters[0] > _MAX_REPLAY_JSON_NODES:
+        raise ValueError("replay JSON exceeds its node limit")
+    if value is None or type(value) is bool:
+        return value
+    if type(value) is int:
+        if not _MIN_REPLAY_JSON_INTEGER <= value <= _MAX_REPLAY_JSON_INTEGER:
+            raise ValueError("replay JSON integer is out of range")
+        return value
+    if type(value) is float:
+        if not math.isfinite(value):
+            raise ValueError("replay JSON number is not finite")
+        return value
+    if type(value) is str:
+        counters[1] += len(value)
+        if counters[1] > _MAX_REPLAY_JSON_STRING_CHARS:
+            raise ValueError("replay JSON string data exceeds its limit")
+        if unicodedata.normalize("NFC", value) != value:
+            raise ValueError("replay JSON strings must use NFC")
+        value.encode("utf-8")
+        return value
+    if isinstance(value, tuple):
+        raise ValueError("replay JSON must not contain tuple containers")
+    if isinstance(value, Mapping):
+        copied: dict[str, object] = {}
+        for key, item in value.items():
+            if type(key) is not str:
+                raise ValueError("replay JSON object keys must be strings")
+            if unicodedata.normalize("NFC", key) != key:
+                raise ValueError("replay JSON object keys must use NFC")
+            if key in copied:
+                raise ValueError("replay JSON object keys must be unique")
+            copied[key] = _copy_replay_json(item, depth=depth + 1, state=counters)
+        return copied
+    if isinstance(value, list):
+        return [_copy_replay_json(item, depth=depth + 1, state=counters) for item in value]
+    raise ValueError("replay JSON contains an unsupported value")
 
 
 def _canonical_replay_json_bytes(value: object) -> bytes:
+    copied = _copy_replay_json(value)
     return json.dumps(
-        value,
+        copied,
         ensure_ascii=False,
         sort_keys=True,
         separators=(",", ":"),
         allow_nan=False,
     ).encode("utf-8")
+
+
+def _decode_replay_json(payload: bytes) -> object:
+    def pairs(items: list[tuple[object, object]]) -> dict[str, object]:
+        result: dict[str, object] = {}
+        for key, item in items:
+            if type(key) is not str or key in result:
+                raise ValueError("replay JSON object keys must be unique strings")
+            result[key] = item
+        return result
+
+    def reject_constant(value: str) -> object:
+        raise ValueError(f"replay JSON constant is not valid: {value}")
+
+    return json.loads(
+        payload.decode("utf-8"),
+        object_pairs_hook=pairs,
+        parse_constant=reject_constant,
+    )
 
 
 @dataclass(frozen=True)
@@ -836,7 +910,7 @@ def _read_json_evidence(
             or artifact.sha256 != hashlib.sha256(payload).hexdigest()
         ):
             raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
-        decoded = json.loads(payload.decode("utf-8"))
+        decoded = _decode_replay_json(payload)
         if not isinstance(decoded, dict) or _canonical_replay_json_bytes(decoded) != payload:
             raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
         return root, envelope, artifact, payload, cast(dict[str, object], decoded)
@@ -922,7 +996,7 @@ def _read_transcript_parent(
         if artifact.size_bytes != len(raw) or artifact.sha256 != hashlib.sha256(raw).hexdigest():
             raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
         body = raw[:-1] if raw.endswith(b"\n") else raw
-        decoded = json.loads(body.decode("utf-8"))
+        decoded = _decode_replay_json(body)
         canonical = _canonical_replay_json_bytes(decoded)
         if not isinstance(decoded, dict) or raw not in (
             canonical, canonical + b"\n"
@@ -952,6 +1026,8 @@ def _read_transcript_parent(
             "gitDirty": run_identity.git_dirty,
         }
         if any(binding.get(key) != value for key, value in expected_binding.items()):
+            raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
+        if binding.get("sessionId") != envelope.identity.session_id:
             raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
         batches = decoded["batches"]
         if not isinstance(batches, list) or not batches:
@@ -1025,7 +1101,7 @@ def _validate_analysis(
     after: object,
     analysis_id: str,
     analysis_evidence_id: str,
-) -> None:
+) -> EvidenceEnvelope:
     _root, envelope, _artifact, _payload, analysis = _read_json_evidence(
         state,
         root_type=_ANALYSIS_ROOT,
@@ -1048,7 +1124,7 @@ def _validate_analysis(
         "source_change_declaration_id": declaration.declaration_id,
         "origin_workspace_id": after_identity.workspace_id,
         "import_workspace_id": state.workspace.workspace_id,
-        "origin_session_id": after_identity.session_id,
+        "origin_session_id": envelope.identity.session_id,
         "execution_source": "replay",
         "physical_transport_evidence": False,
     }
@@ -1161,6 +1237,7 @@ def _validate_analysis(
         or analysis["delta_last"] != expected_delta_last
     ):
         raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
+    return envelope
 
 
 def _validate_marker(
@@ -1170,6 +1247,7 @@ def _validate_marker(
     before: object,
     after: object,
     marker: DiagnosticMarkerRef,
+    analysis_identity: object,
 ) -> None:
     _root, envelope, _artifact, _payload, payload = _read_json_evidence(
         state,
@@ -1178,16 +1256,15 @@ def _validate_marker(
         operation=_MARKER_OPERATION,
         kind=_MARKER_ROOT,
     )
-    after_identity = getattr(after, "identity", None)
-    if envelope.identity != after_identity:
+    if envelope.identity != analysis_identity:
         raise _WorkflowFailure(_INCOMPATIBLE_IDENTITY)
     expected_metadata = {
         "marker_id": marker.marker_id,
         "analysis_id": marker.analysis_id,
         "analysis_evidence_id": marker.analysis_evidence_id,
-        "origin_workspace_id": after_identity.workspace_id,
+        "origin_workspace_id": analysis_identity.workspace_id,
         "import_workspace_id": state.workspace.workspace_id,
-        "origin_session_id": after_identity.session_id,
+        "origin_session_id": analysis_identity.session_id,
         "execution_source": "replay",
         "physical_transport_evidence": False,
     }
@@ -1201,8 +1278,8 @@ def _validate_marker(
         raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
     unsigned = {key: value for key, value in payload.items() if key != "marker_id"}
     try:
-        calculated_marker_id = hashlib.sha256(canonical_json_bytes(unsigned)).hexdigest()
-    except (EvidenceValidationError, TypeError, ValueError, OverflowError, UnicodeError) as error:
+        calculated_marker_id = hashlib.sha256(_canonical_replay_json_bytes(unsigned)).hexdigest()
+    except (TypeError, ValueError, OverflowError, UnicodeError) as error:
         raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE) from error
     if calculated_marker_id != marker.marker_id:
         raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
@@ -1492,7 +1569,7 @@ def _diagnostic_attach_marker(
         or str(getattr(after, "envelope").evidence_id) != plan.fixed_after_evidence_id
     ):
         raise _WorkflowFailure(_INCOMPATIBLE_IDENTITY)
-    _validate_analysis(
+    analysis_envelope = _validate_analysis(
         state,
         session,
         declaration,
@@ -1509,6 +1586,7 @@ def _diagnostic_attach_marker(
         getattr(before, "manifest"),
         getattr(after, "manifest"),
         marker,
+        analysis_identity=analysis_envelope.identity,
     )
     marker_data = marker.to_dict()
     event = create_event(
