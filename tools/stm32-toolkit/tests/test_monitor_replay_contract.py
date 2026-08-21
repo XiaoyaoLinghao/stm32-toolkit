@@ -111,6 +111,11 @@ def _remove_binding_field(document: dict[str, object], field: str) -> None:
         binding.pop(field)
 
 
+def _set_batch_field(document: dict[str, object], field: str, value: object) -> None:
+    for batch in document["batches"]:
+        batch[field] = deepcopy(value)
+
+
 def _replace_first_selector_in_all_batches(
     document: dict[str, object], replacement: str
 ) -> None:
@@ -132,6 +137,94 @@ def _deep_json(depth: int) -> object:
     for _ in range(depth):
         value = {"nested": value}
     return value
+
+
+def _assert_bool_target_isolated(
+    source: dict[str, object], candidate: dict[str, object]
+) -> None:
+    assert candidate["batches"][0]["subscriberDrops"] is True
+    assert candidate["batches"][1]["subscriberDrops"] == source["batches"][1]["subscriberDrops"]
+    restored = deepcopy(candidate)
+    restored["batches"][0]["subscriberDrops"] = source["batches"][0]["subscriberDrops"]
+    restored["fixture_sha256"] = source["fixture_sha256"]
+    assert restored == source
+
+
+def _assert_group_id_target_isolated(
+    source: dict[str, object], candidate: dict[str, object]
+) -> None:
+    replacement = candidate["batches"][0]["groupId"]
+    assert replacement != source["batches"][0]["groupId"]
+    assert all(batch["groupId"] == replacement for batch in candidate["batches"])
+    restored = deepcopy(candidate)
+    for index, batch in enumerate(restored["batches"]):
+        batch["groupId"] = source["batches"][index]["groupId"]
+    restored["fixture_sha256"] = source["fixture_sha256"]
+    assert restored == source
+
+
+def _assert_group_revision_target_isolated(
+    source: dict[str, object], candidate: dict[str, object]
+) -> None:
+    replacement = candidate["batches"][0]["groupRevision"]
+    assert replacement != source["batches"][0]["groupRevision"]
+    assert all(batch["groupRevision"] == replacement for batch in candidate["batches"])
+    restored = deepcopy(candidate)
+    for index, batch in enumerate(restored["batches"]):
+        batch["groupRevision"] = source["batches"][index]["groupRevision"]
+    restored["fixture_sha256"] = source["fixture_sha256"]
+    assert restored == source
+
+
+def _assert_reference_group_id_target_isolated(
+    source: dict[str, object], candidate: dict[str, object]
+) -> None:
+    assert candidate["group_id"] != source["group_id"]
+    assert candidate["operation_id"] == source["operation_id"]
+    assert candidate["origin_run_id"] == source["origin_run_id"]
+    assert candidate["projected_run_id"] == source["projected_run_id"]
+    restored = deepcopy(candidate)
+    restored["group_id"] = source["group_id"]
+    restored["run_ref_sha256"] = source["run_ref_sha256"]
+    assert restored == source
+
+
+_DOCUMENT_TARGET_TABLE = {
+    "bool-as-int": {
+        "target": "subscriberDrops must reject bool-as-int",
+        "coherence": "change only batch zero's unbound subscriberDrops count",
+        "oracle": _assert_bool_target_isolated,
+    },
+    "uuid": {
+        "target": "groupId must be a valid UUID",
+        "coherence": "apply one replacement groupId to every batch",
+        "oracle": _assert_group_id_target_isolated,
+    },
+    "range": {
+        "target": "groupRevision must remain positive",
+        "coherence": "apply one replacement groupRevision to every batch",
+        "oracle": _assert_group_revision_target_isolated,
+    },
+}
+
+_REFERENCE_TARGET_TABLE = {
+    "reference-uuid": {
+        "target": "group_id must be a valid UUID",
+        "coherence": "change only group_id and preserve operation/run identity",
+        "oracle": _assert_reference_group_id_target_isolated,
+    },
+}
+
+
+def _run_target_sensitivity_oracle(
+    table: dict[str, dict[str, object]],
+    case_name: str,
+    source: dict[str, object],
+    candidate: dict[str, object],
+) -> None:
+    row = table.get(case_name)
+    if row is not None:
+        row["oracle"](source, candidate)
 
 
 def _document_mutations(document: dict[str, object]) -> dict[str, dict[str, object]]:
@@ -208,7 +301,7 @@ def _document_mutations(document: dict[str, object]) -> dict[str, dict[str, obje
     cases["selector-control"] = value
 
     value = fresh()
-    value["batches"][0]["sequence"] = True
+    value["batches"][0]["subscriberDrops"] = True
     _redigest_document(value)
     cases["bool-as-int"] = value
 
@@ -224,7 +317,7 @@ def _document_mutations(document: dict[str, object]) -> dict[str, dict[str, obje
 
     value = fresh()
     group_id = value["batches"][0]["groupId"]
-    value["batches"][0]["groupId"] = f"{group_id[:-1]}A"
+    _set_batch_field(value, "groupId", f"{group_id[:-1]}A")
     _redigest_document(value)
     cases["uuid"] = value
 
@@ -234,7 +327,7 @@ def _document_mutations(document: dict[str, object]) -> dict[str, dict[str, obje
     cases["hash"] = value
 
     value = fresh()
-    value["batches"][0]["groupRevision"] = 0
+    _set_batch_field(value, "groupRevision", 0)
     _redigest_document(value)
     cases["range"] = value
 
@@ -301,8 +394,8 @@ def _reference_mutations(reference: dict[str, object]) -> dict[str, dict[str, ob
     cases["reference-hash"] = value
 
     value = fresh()
-    origin_run_id = value["origin_run_id"]
-    value["origin_run_id"] = f"{origin_run_id[:-1]}A"
+    group_id = value["group_id"]
+    value["group_id"] = f"{group_id[:-1]}A"
     _redigest_reference(value)
     cases["reference-uuid"] = value
 
@@ -356,6 +449,12 @@ def test_shared_and_monitor_reject_the_same_document_wire_mutations(
     if case_name != "fixture-digest":
         assert candidate["fixture_sha256"] == _document_digest(candidate)
         assert candidate["fixture_sha256"] != source["fixture_sha256"]
+    _run_target_sensitivity_oracle(
+        _DOCUMENT_TARGET_TABLE,
+        case_name,
+        source,
+        candidate,
+    )
     if case_name in {"binding-extra", "binding-missing", "hash"}:
         assert all(batch["binding"] == candidate["binding"] for batch in candidate["batches"])
     if case_name in {"selector-whitespace", "selector-nfc", "selector-control"}:
@@ -389,6 +488,12 @@ def test_shared_and_monitor_reject_the_same_reference_wire_mutations(
         if case_name not in {"unsigned-ref-digest", "reference-fixture-digest"}:
             assert candidate["run_ref_sha256"] == _reference_digest(candidate)
             assert candidate["run_ref_sha256"] != reference["run_ref_sha256"]
+        _run_target_sensitivity_oracle(
+            _REFERENCE_TARGET_TABLE,
+            case_name,
+            reference,
+            candidate,
+        )
         before = deepcopy(candidate)
         try:
             MonitorRunRef.from_value(candidate)
