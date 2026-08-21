@@ -342,6 +342,9 @@ publication; incompatible identity publishes nothing derived.
 
 **Files:**
 
+- Modify: `.gitattributes`
+- Modify: `tools/stm32-toolkit/src/stm32_toolkit/evidence/gc.py`
+- Modify: `tools/stm32-toolkit/tests/test_evidence_gc.py`
 - Create: `tools/stm32-monitor/src/stm32_monitor/analysis_workflows.py`
 - Modify: `tools/stm32-monitor/src/stm32_monitor/__init__.py`
 - Create: `tools/stm32-monitor/tests/test_analysis_workflows.py`
@@ -350,6 +353,9 @@ publication; incompatible identity publishes nothing derived.
 
 - Use the frozen Task 5B1 values and publish the Toolkit `DiagnosticMarkerRef`; no payload
   self-embeds its Evidence ID.
+- Register `monitor-analysis` and `diagnostic-marker` statically in the Toolkit GC root registry;
+  Monitor import must not mutate the process-global Toolkit registry. Pin VS-03 canonical JSON
+  fixtures to LF for byte-identical clean Windows checkouts.
 - `compare_monitor_runs(...)` queries only public HistoryStore pages, validates any firmware change
   only through the Task 6 `SourceChangeDeclaration`, and publishes canonical AnalysisResult and
   marker Evidence through an injected EvidenceStore.

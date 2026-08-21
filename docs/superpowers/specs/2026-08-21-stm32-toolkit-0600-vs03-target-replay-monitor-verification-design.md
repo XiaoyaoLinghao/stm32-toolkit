@@ -329,6 +329,10 @@ artifacts and roots are content-addressed and idempotent; an exact partial publi
 while different bytes at the same root are an operation conflict. Evidence identity is the exact
 after-run **origin** workspace/project/origin-session/source/build/ELF/target/git identity; the
 import workspace/session is only the local History query location and never replaces provenance.
+`stm32_toolkit.evidence.gc.REGISTERED_ROOT_TYPES` remains the single authoritative root-type
+registry: it statically includes `monitor-analysis` and `diagnostic-marker`. Monitor imports must
+not mutate that Toolkit registry at process runtime. Repository attributes pin the canonical VS-03
+JSON replay fixtures to LF so a clean Windows checkout preserves the accepted fixture bytes.
 Identity or
 declaration incompatibility occurs before any derived artifact, envelope or root publication.
 
