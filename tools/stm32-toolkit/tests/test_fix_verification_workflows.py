@@ -957,6 +957,85 @@ def _prepared_checkpoint_for_attach(
     return diagnostic_context, session_id, workspace, declaration, plan, marker_ref
 
 
+def _prepare_durable_bound_operation(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    operation: str,
+) -> tuple[DiagnosticWorkflowContext, str, WorkspacePaths, dict[str, object]]:
+    if operation in {"show", "begin", "hypothesis"}:
+        diagnostic_context, session_id, _replay, workspace = _replay_and_open_session(
+            monkeypatch, tmp_path
+        )
+        if operation == "show":
+            request = {"diagnostic_session_id": session_id}
+        elif operation == "begin":
+            request = {
+                "operation_id": "durable-begin",
+                "diagnostic_session_id": session_id,
+                "expected_revision": 3,
+            }
+        else:
+            request = {
+                "operation_id": "durable-hypothesis",
+                "diagnostic_session_id": session_id,
+                "expected_revision": 3,
+                "statement": "the durable target authority remains required",
+            }
+        return diagnostic_context, session_id, workspace, request
+
+    if operation in {"declaration", "plan"}:
+        (
+            diagnostic_context,
+            session_id,
+            workspace,
+            declaration,
+            plan,
+            _marker_ref,
+        ) = _prepared_checkpoint_for_plan(monkeypatch, tmp_path)
+        if operation == "declaration":
+            request = {
+                "operation_id": "durable-declaration",
+                "diagnostic_session_id": session_id,
+                "expected_revision": 4,
+                "source_change_declaration": declaration,
+            }
+        else:
+            request = {
+                "operation_id": "durable-plan",
+                "diagnostic_session_id": session_id,
+                "expected_revision": 4,
+                "verification_plan": plan,
+            }
+        return diagnostic_context, session_id, workspace, request
+
+    if operation in {"verification-start", "marker"}:
+        (
+            diagnostic_context,
+            session_id,
+            workspace,
+            _declaration,
+            plan,
+            marker_ref,
+        ) = _prepared_checkpoint_for_attach(monkeypatch, tmp_path)
+        if operation == "verification-start":
+            request = {
+                "operation_id": "durable-verification-start",
+                "diagnostic_session_id": session_id,
+                "expected_revision": 5,
+                "verification_plan_id": plan.verification_plan_id,
+            }
+        else:
+            request = {
+                "operation_id": "durable-marker",
+                "diagnostic_session_id": session_id,
+                "expected_revision": 6,
+                "diagnostic_marker_ref": marker_ref,
+            }
+        return diagnostic_context, session_id, workspace, request
+
+    raise AssertionError(f"unknown durable bound operation: {operation}")
+
+
 def test_target_replay_diagnostic_session_reloads_with_origin_authority(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -1156,6 +1235,93 @@ def test_target_replay_start_missing_published_root_is_integrity_failure_without
     after = _authority_snapshot(workspace)
     assert started.ok is False
     assert started.code == "EVIDENCE_INTEGRITY_FAILURE"
+    assert after == before
+
+
+@pytest.mark.parametrize("operation", ("show", "begin", "hypothesis", "declaration", "plan", "verification-start", "marker"))
+@pytest.mark.parametrize(
+    ("failure", "expected_code"),
+    (
+        ("missing", "EVIDENCE_INTEGRITY_FAILURE"),
+        ("corrupt", "EVIDENCE_INTEGRITY_FAILURE"),
+        ("provider", "ENVIRONMENT_FAILURE"),
+        ("identity", "INCOMPATIBLE_IDENTITY"),
+    ),
+)
+def test_target_bound_operations_project_durable_mode_failures_without_mutation(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    operation: str,
+    failure: str,
+    expected_code: str,
+) -> None:
+    diagnostic_context, session_id, workspace, request = _prepare_durable_bound_operation(
+        monkeypatch, tmp_path, operation
+    )
+    shown = diagnostic_show(
+        _fresh_diagnostic_context(diagnostic_context), diagnostic_session_id=session_id
+    )
+    assert shown.ok is True
+    failed_evidence_id = shown.data["session"]["failed_evidence_id"]
+    manifest_path = workspace.workspace_root / "evidence" / "manifests" / f"{failed_evidence_id}.json"
+
+    if failure == "missing":
+        manifest_path.unlink()
+    elif failure == "corrupt":
+        manifest_path.write_bytes(b"{}")
+    elif failure == "provider":
+        original_get_envelope = EvidenceStore.get_envelope
+
+        def provider_failure(self: EvidenceStore, evidence_id: str) -> object:
+            if evidence_id == failed_evidence_id:
+                raise OSError("durable Evidence provider unavailable")
+            return original_get_envelope(self, evidence_id)
+
+        monkeypatch.setattr(EvidenceStore, "get_envelope", provider_failure)
+    elif failure == "identity":
+        original_get_envelope = EvidenceStore.get_envelope
+        evidence = EvidenceStore(workspace.workspace_root / "evidence")
+        original_envelope = original_get_envelope(evidence, failed_evidence_id)
+        foreign_envelope = EvidenceEnvelope(
+            identity=replace(
+                original_envelope.identity,
+                project_id="ffffffff-ffff-4fff-8fff-ffffffffffff",
+            ),
+            operation=original_envelope.operation,
+            produced_at_utc=original_envelope.produced_at_utc,
+            parents=original_envelope.parents,
+            artifacts=original_envelope.artifacts,
+            metadata=original_envelope.metadata,
+        )
+        evidence.put_envelope(foreign_envelope)
+        foreign_evidence_id = str(foreign_envelope.evidence_id)
+
+        def foreign_identity(self: EvidenceStore, evidence_id: str) -> object:
+            if evidence_id != failed_evidence_id:
+                return original_get_envelope(self, evidence_id)
+            return original_get_envelope(self, foreign_evidence_id)
+
+        monkeypatch.setattr(EvidenceStore, "get_envelope", foreign_identity)
+    else:
+        raise AssertionError(f"unknown failure: {failure}")
+
+    before = _authority_snapshot(workspace)
+    callers = {
+        "show": diagnostic_show,
+        "begin": diagnostic_begin,
+        "hypothesis": diagnostic_add_hypothesis,
+        "declaration": diagnostic_declare_source_change,
+        "plan": diagnostic_add_verification_plan,
+        "verification-start": diagnostic_start_verification,
+        "marker": diagnostic_attach_marker,
+    }
+    result = callers[operation](
+        _fresh_diagnostic_context(diagnostic_context),
+        **request,
+    )
+    after = _authority_snapshot(workspace)
+    assert result.ok is False
+    assert result.code == expected_code
     assert after == before
 
 

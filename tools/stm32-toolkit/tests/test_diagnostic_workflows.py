@@ -914,6 +914,9 @@ def test_assessment_collection_limit_rejects_without_persistent_append(
         def load(self, _session_id: str) -> DiagnosticSession:
             return self.session
 
+        def load_creation_intent(self, _session_id: str) -> str:
+            return "host"
+
         def append(self, _session_id: str, event: object, *, expected_revision: int) -> object:
             self.append_calls += 1
             return reduce_event(self.session, event)  # type: ignore[arg-type]
@@ -959,6 +962,9 @@ def test_unexpected_assessment_store_failure_propagates(
     class ExplodingStore:
         def load(self, _session_id: str) -> DiagnosticSession:
             return stored
+
+        def load_creation_intent(self, _session_id: str) -> str:
+            return "host"
 
         def append(self, *_args: object, **_kwargs: object) -> object:
             raise RuntimeError("unexpected assessment append failure")
@@ -1623,6 +1629,9 @@ def test_unexpected_plan_run_store_failure_propagates(
         def load(self, _session_id: str) -> DiagnosticSession:
             return stored
 
+        def load_creation_intent(self, _session_id: str) -> str:
+            return "host"
+
         def append(self, *_args: object, **_kwargs: object) -> object:
             raise RuntimeError("unexpected plan run append failure")
 
@@ -2176,6 +2185,9 @@ def test_plan_collection_limit_rejects_65th_plan_without_persistent_append(
         def load(self, _session_id: str) -> DiagnosticSession:
             return self.session
 
+        def load_creation_intent(self, _session_id: str) -> str:
+            return "host"
+
         def append(self, _session_id: str, event: object, *, expected_revision: int) -> object:
             self.append_calls += 1
             return reduce_event(self.session, event)  # type: ignore[arg-type]
@@ -2230,6 +2242,9 @@ def test_unexpected_plan_append_failure_propagates(
     class ExplodingStore:
         def load(self, _session_id: str) -> DiagnosticSession:
             return stored
+
+        def load_creation_intent(self, _session_id: str) -> str:
+            return "host"
 
         def append(self, *_args: object, **_kwargs: object) -> object:
             raise RuntimeError("unexpected plan append failure")
@@ -2661,6 +2676,9 @@ def test_hypothesis_collection_limit_rejects_257th_without_append(
         def load(self, _session_id: str) -> DiagnosticSession:
             return self.session
 
+        def load_creation_intent(self, _session_id: str) -> str:
+            return "host"
+
         def append(self, _session_id: str, event: object, *, expected_revision: int) -> object:
             self.append_calls += 1
             return reduce_event(self.session, event)  # type: ignore[arg-type]
@@ -2711,6 +2729,9 @@ def test_unexpected_hypothesis_append_failure_is_not_remapped(
 
         def load(self, session_id: str) -> DiagnosticSession:
             return self.delegate.load(session_id)
+
+        def load_creation_intent(self, session_id: str) -> str:
+            return self.delegate.load_creation_intent(session_id)
 
         def append(self, *_args: object, **_kwargs: object) -> object:
             raise RuntimeError("unexpected append failure")

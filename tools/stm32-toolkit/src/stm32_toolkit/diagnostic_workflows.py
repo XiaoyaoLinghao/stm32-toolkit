@@ -480,35 +480,22 @@ def _new_timestamp() -> str:
     return value
 
 
-def _stored_session_is_target(state: _WorkflowState, diagnostic_session_id: str) -> bool:
-    event_path = (
-        state.workspace.diagnostics_root
-        / "sessions"
-        / diagnostic_session_id
-        / "events"
-        / "00000000.json"
-    )
-    try:
-        document = json.loads(event_path.read_bytes().decode("utf-8"))
-        payload = document.get("payload")
-        request = payload.get("request") if isinstance(payload, dict) else None
-        return isinstance(request, dict) and request.get("failed_run_mode") == "target"
-    except (OSError, UnicodeError, json.JSONDecodeError, TypeError, ValueError, AttributeError):
-        return False
-
-
 def _load_bound_session(
     state: _WorkflowState,
     diagnostic_session_id: str,
-    *,
-    target_projection: bool = False,
 ) -> DiagnosticSession:
+    mode = state.diagnostic_store.load_creation_intent(diagnostic_session_id)
     try:
         session = state.diagnostic_store.load(diagnostic_session_id)
     except DiagnosticValidationError as error:
-        if target_projection and _stored_session_is_target(state, diagnostic_session_id):
+        if mode == "target":
             if error.code == DIAGNOSTIC_EVIDENCE_MISSING:
-                raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE) from error
+                code = (
+                    _ENVIRONMENT_FAILURE
+                    if _has_provider_os_error(error)
+                    else _EVIDENCE_INTEGRITY_FAILURE
+                )
+                raise _WorkflowFailure(code) from error
             if error.code == DIAGNOSTIC_IDENTITY_MISMATCH:
                 raise _WorkflowFailure(_INCOMPATIBLE_IDENTITY) from error
         raise
@@ -1497,7 +1484,7 @@ def _diagnostic_declare_source_change(
     actor = _validate_actor(actor)
     declaration = SourceChangeDeclaration.from_value(source_change_declaration)
     state = _make_state(context)
-    session = _load_bound_session(state, diagnostic_session_id, target_projection=True)
+    session = _load_bound_session(state, diagnostic_session_id)
     if session.state not in {"INVESTIGATING", "FIX_PROPOSED"}:
         raise DiagnosticValidationError(DIAGNOSTIC_INVALID_TRANSITION)
     failed = _load_target_run(
@@ -1557,7 +1544,7 @@ def _diagnostic_add_verification_plan(
     actor = _validate_actor(actor)
     plan = VerificationPlan.from_value(verification_plan)
     state = _make_state(context)
-    session = _load_bound_session(state, diagnostic_session_id, target_projection=True)
+    session = _load_bound_session(state, diagnostic_session_id)
     if session.state != "FIX_PROPOSED":
         raise DiagnosticValidationError(DIAGNOSTIC_INVALID_TRANSITION)
     declarations = tuple(
@@ -1654,7 +1641,7 @@ def _diagnostic_start_verification(
     verification_plan_id = _validate_plan_id(verification_plan_id)
     actor = _validate_actor(actor)
     state = _make_state(context)
-    session = _load_bound_session(state, diagnostic_session_id, target_projection=True)
+    session = _load_bound_session(state, diagnostic_session_id)
     if session.state not in {"FIX_PROPOSED", "VERIFYING"}:
         raise DiagnosticValidationError(DIAGNOSTIC_INVALID_TRANSITION)
     plans = tuple(
@@ -1702,7 +1689,7 @@ def _diagnostic_attach_marker(
     actor = _validate_actor(actor)
     marker = DiagnosticMarkerRef.from_value(diagnostic_marker_ref)
     state = _make_state(context)
-    session = _load_bound_session(state, diagnostic_session_id, target_projection=True)
+    session = _load_bound_session(state, diagnostic_session_id)
     if session.state != "VERIFYING":
         raise DiagnosticValidationError(DIAGNOSTIC_INVALID_TRANSITION)
     if session.active_verification_plan_id is None:

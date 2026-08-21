@@ -106,6 +106,16 @@ def _created(failed_evidence_id: str = FAILED_EVIDENCE_ID) -> DiagnosticEvent:
     )
 
 
+def _created_target(failed_evidence_id: str = FAILED_EVIDENCE_ID) -> DiagnosticEvent:
+    return _event(
+        sequence=0,
+        event_type="session.created",
+        request={"failed_test_run_id": "run-1", "failed_run_mode": "target"},
+        result={"failed_evidence_id": failed_evidence_id, "identity": IDENTITY.to_dict()},
+        operation_id="create-op",
+    )
+
+
 def _created_for(session_id: str, operation_id: str, failed_evidence_id: str) -> DiagnosticEvent:
     return create_event(
         diagnostic_session_id=session_id,
@@ -269,6 +279,41 @@ def test_load_absent_is_read_only_and_missing_evidence_is_typed(tmp_path: Path) 
     with pytest.raises(DiagnosticValidationError) as error:
         store.create(_created())
     assert error.value.code == DIAGNOSTIC_EVIDENCE_MISSING
+
+
+def test_creation_intent_query_is_bounded_and_does_not_dereference_evidence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    evidence = EvidenceStore(tmp_path / "evidence")
+    failed_evidence_id = _failed_evidence(evidence, tmp_path)
+    store = DiagnosticStore(tmp_path / "diagnostics", evidence)
+    store.create(_created_target(failed_evidence_id))
+
+    def forbidden_evidence_read(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("creation intent must not dereference Evidence")
+
+    monkeypatch.setattr(evidence, "get_envelope", forbidden_evidence_read)
+    assert store.load_creation_intent(SID) == "target"
+
+
+def test_load_preserves_provider_oserror_as_evidence_missing_cause(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    evidence = EvidenceStore(tmp_path / "evidence")
+    failed_evidence_id = _failed_evidence(evidence, tmp_path)
+    store = DiagnosticStore(tmp_path / "diagnostics", evidence)
+    store.create(_created(failed_evidence_id))
+
+    def provider_failure(*_args: object, **_kwargs: object) -> object:
+        raise OSError("Evidence provider unavailable")
+
+    monkeypatch.setattr(evidence, "get_envelope", provider_failure)
+    with pytest.raises(DiagnosticValidationError) as error:
+        store.load(SID)
+    assert error.value.code == DIAGNOSTIC_EVIDENCE_MISSING
+    cause = error.value.__cause__
+    assert isinstance(cause, OSError)
+    assert str(cause) == "Evidence provider unavailable"
 
 
 def test_append_retry_returns_accepted_event_after_session_advanced(tmp_path: Path) -> None:

@@ -10,7 +10,7 @@ import os
 from pathlib import Path
 import re
 import stat
-from typing import NoReturn, cast
+from typing import Literal, NoReturn, cast
 
 from stm32_toolkit.evidence import (
     EVIDENCE_LIMIT_EXCEEDED,
@@ -580,8 +580,8 @@ class DiagnosticStore:
             for evidence_id in references:
                 try:
                     envelope = self.evidence_store.get_envelope(evidence_id)
-                except (EvidenceValidationError, OSError, ValueError):
-                    _raise(DIAGNOSTIC_EVIDENCE_MISSING)
+                except (EvidenceValidationError, OSError, ValueError) as error:
+                    raise DiagnosticValidationError(DIAGNOSTIC_EVIDENCE_MISSING) from error
                 if not _same_identity(envelope.identity, session.identity):
                     _raise(DIAGNOSTIC_IDENTITY_MISMATCH)
             return
@@ -590,8 +590,8 @@ class DiagnosticStore:
         for evidence_id in references:
             try:
                 envelope = self.evidence_store.get_envelope(evidence_id)
-            except (EvidenceValidationError, OSError, ValueError):
-                _raise(DIAGNOSTIC_EVIDENCE_MISSING)
+            except (EvidenceValidationError, OSError, ValueError) as error:
+                raise DiagnosticValidationError(DIAGNOSTIC_EVIDENCE_MISSING) from error
             envelopes[evidence_id] = envelope
 
         payload = event.to_dict()["payload"]
@@ -951,6 +951,44 @@ class DiagnosticStore:
             _raise(DIAGNOSTIC_CHAIN_CORRUPT)
         with self._store_lock(create=False):
             return self._load_chain_locked(session_id)[0]
+
+    def load_creation_intent(self, diagnostic_session_id: str) -> Literal["host", "target"]:
+        """Read the canonical session-created mode without dereferencing Evidence."""
+
+        session_id = self._validate_session_id(diagnostic_session_id)
+        try:
+            info = self._existing(self.diagnostics_root)
+        except FileNotFoundError:
+            _raise(DIAGNOSTIC_NOT_FOUND)
+        if not stat.S_ISDIR(info.st_mode):
+            _raise(DIAGNOSTIC_CHAIN_CORRUPT)
+        with self._store_lock(create=False):
+            events_dir = self._session_events_directory(session_id)
+            paths = self._event_paths(events_dir)
+            if not paths:
+                _raise(DIAGNOSTIC_CHAIN_CORRUPT)
+            event = self._read_event_file(paths[0])
+            if (
+                event.diagnostic_session_id != session_id
+                or event.sequence != 0
+                or event.revision_before != 0
+                or event.event_type != "session.created"
+                or event.previous_digest is not None
+            ):
+                _raise(DIAGNOSTIC_CHAIN_CORRUPT)
+            payload = event.to_dict()["payload"]
+            if not isinstance(payload, dict):
+                _raise(DIAGNOSTIC_CHAIN_CORRUPT)
+            request = payload.get("request")
+            if not isinstance(request, dict) or set(request) not in (
+                {"failed_test_run_id"},
+                {"failed_test_run_id", "failed_run_mode"},
+            ):
+                _raise(DIAGNOSTIC_CHAIN_CORRUPT)
+            mode = request.get("failed_run_mode", "host")
+            if mode not in {"host", "target"}:
+                _raise(DIAGNOSTIC_CHAIN_CORRUPT)
+            return cast(Literal["host", "target"], mode)
 
 
 __all__ = ["DiagnosticMutationRecord", "DiagnosticStore"]
