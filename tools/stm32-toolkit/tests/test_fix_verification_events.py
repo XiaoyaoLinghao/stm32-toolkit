@@ -424,6 +424,22 @@ def _checkpoint_parents(evidence: EvidenceStore, revision: int) -> tuple[str, ..
     return evidence.get_envelope(root.manifest_id).parents
 
 
+def _tree_bytes(root: Path) -> dict[str, bytes]:
+    return {
+        str(path.relative_to(root)): path.read_bytes()
+        for path in sorted(root.rglob("*"))
+        if path.is_file()
+    }
+
+
+def _storage_snapshot(fixture: dict[str, object]) -> tuple[dict[str, bytes], dict[str, bytes]]:
+    store = fixture["store"]
+    evidence = fixture["evidence"]
+    assert isinstance(store, DiagnosticStore)
+    assert isinstance(evidence, EvidenceStore)
+    return _tree_bytes(store.diagnostics_root), _tree_bytes(evidence.root)
+
+
 def test_new_lifecycle_reduces_and_extended_session_round_trips() -> None:
     session, source, plan, previous = _verifying()
     marker = _marker(plan)
@@ -931,9 +947,11 @@ def test_store_rejects_new_parent_wrong_scope_before_append(tmp_path: Path, role
         previous_digest=session.event_head,
     )
     if role == "diff":
+        before_tree = _storage_snapshot(fixture)
         with pytest.raises(DiagnosticValidationError) as error:
             store.append(SID, declared, expected_revision=session.revision)
         assert error.value.code == DIAGNOSTIC_IDENTITY_MISMATCH
+        assert _storage_snapshot(fixture) == before_tree
         assert store.load(SID).revision == session.revision
         return
     session = store.append(SID, declared, expected_revision=session.revision).session
@@ -997,9 +1015,11 @@ def test_store_requires_exact_declared_diff_artifact_before_append(tmp_path: Pat
         result={"declaration_id": wrong_source.declaration_id},
         previous_digest=session.event_head,
     )
+    before_tree = _storage_snapshot(fixture)
     with pytest.raises(DiagnosticValidationError) as error:
         store.append(SID, event, expected_revision=session.revision)
     assert error.value.code == DIAGNOSTIC_EVIDENCE_MISSING
+    assert _storage_snapshot(fixture) == before_tree
     assert store.load(SID).revision == session.revision
 
 
@@ -1038,9 +1058,11 @@ def test_store_rejects_missing_or_corrupt_new_parent_without_append(tmp_path: Pa
         result={"verification_plan_id": plan.verification_plan_id, "plan_digest": plan.plan_digest},
         previous_digest=session.event_head,
     )
+    before_tree = _storage_snapshot(fixture)
     with pytest.raises(DiagnosticValidationError) as error:
         store.append(SID, added, expected_revision=session.revision)
     assert error.value.code == DIAGNOSTIC_EVIDENCE_MISSING
+    assert _storage_snapshot(fixture) == before_tree
     assert store.load(SID).revision == session.revision
 
 
@@ -1076,3 +1098,22 @@ def test_new_event_checkpoint_repairs_after_interrupted_event_publication(tmp_pa
     assert recovered.load(SID).revision == 4
     assert event_path.read_bytes() == event_bytes
     assert _checkpoint_parents(evidence, 4)[-1] == fixture["diff_id"]
+
+
+def test_store_deduplicates_duplicate_new_parent_ids_in_first_seen_order(tmp_path: Path) -> None:
+    fixture = _persisted_fixture(tmp_path)
+    evidence = fixture["evidence"]
+    plan = fixture["plan"]
+    analysis_ids = fixture["analysis_ids"]
+    assert isinstance(evidence, EvidenceStore)
+    assert isinstance(plan, VerificationPlan)
+    assert isinstance(analysis_ids, tuple)
+    assert isinstance(analysis_ids[0], str)
+    fixture["marker"] = _marker(
+        plan,
+        marker_evidence_id=analysis_ids[0],
+        analysis_evidence_id=analysis_ids[0],
+    )
+    assert _append_new_lifecycle(fixture).state == "RESOLVED"
+    previous = get_root(evidence, "diagnostic-session", f"{SID}.00000006").manifest_id
+    assert _checkpoint_parents(evidence, 7) == (previous, analysis_ids[0])
