@@ -445,6 +445,35 @@ def test_publication_fields_identity_and_transcript_metadata_are_exact(tmp_path:
     assert analysis_root.metadata["physical_transport_evidence"] is False
 
 
+def test_analysis_publication_has_exact_closed_wire_round_trip(tmp_path: Path) -> None:
+    paths = _paths(tmp_path)
+    evidence, before, after = _ingest_pair(paths)
+    declaration = _declaration(tmp_path, evidence, before, after)
+    publication = _publish(paths, evidence, before, after, declaration)
+
+    wire = publication.to_dict()
+    assert set(wire) == {
+        "analysis_result",
+        "analysis_evidence_ref",
+        "diagnostic_marker",
+        "diagnostic_marker_ref",
+    }
+    assert AnalysisPublication.from_value(wire) == publication
+
+    with pytest.raises(AnalysisWorkflowError) as error:
+        AnalysisPublication.from_value({**wire, "unexpected": None})
+    assert error.value.code == "ANALYSIS_WORKFLOW_INVALID"
+
+    forged = dict(wire)
+    forged["diagnostic_marker_ref"] = {
+        **publication.diagnostic_marker_ref.to_dict(),
+        "rationale": "contradictory",
+    }
+    with pytest.raises(AnalysisWorkflowError) as error:
+        AnalysisPublication.from_value(forged)
+    assert error.value.code == "ANALYSIS_WORKFLOW_INVALID"
+
+
 @pytest.mark.parametrize(
     "mutation",
     ("missing-root", "missing-manifest", "corrupt-artifact", "contradictory-root"),

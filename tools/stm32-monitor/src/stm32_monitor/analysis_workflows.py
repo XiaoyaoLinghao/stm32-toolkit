@@ -111,6 +111,45 @@ class AnalysisPublication:
     diagnostic_marker: DiagnosticMarker
     diagnostic_marker_ref: DiagnosticMarkerRef
 
+    def to_dict(self) -> dict[str, object]:
+        """Return the one closed wire projection owned by Monitor analysis."""
+
+        return {
+            "analysis_result": self.analysis_result.to_dict(),
+            "analysis_evidence_ref": self.analysis_evidence_ref.to_dict(),
+            "diagnostic_marker": self.diagnostic_marker.to_dict(),
+            "diagnostic_marker_ref": self.diagnostic_marker_ref.to_dict(),
+        }
+
+    @classmethod
+    def from_value(cls, value: object) -> "AnalysisPublication":
+        if type(value) is cls:
+            return value
+        if type(value) is not dict or set(value) != {
+            "analysis_result",
+            "analysis_evidence_ref",
+            "diagnostic_marker",
+            "diagnostic_marker_ref",
+        }:
+            _fail(ANALYSIS_WORKFLOW_INVALID, "analysis publication is invalid")
+        try:
+            publication = cls(
+                analysis_result=AnalysisResult.from_value(value["analysis_result"]),
+                analysis_evidence_ref=AnalysisEvidenceRef.from_value(
+                    value["analysis_evidence_ref"]
+                ),
+                diagnostic_marker=DiagnosticMarker.from_value(value["diagnostic_marker"]),
+                diagnostic_marker_ref=DiagnosticMarkerRef.from_value(
+                    value["diagnostic_marker_ref"]
+                ),
+            )
+        except AnalysisWorkflowError:
+            raise
+        except Exception as error:
+            _fail(ANALYSIS_WORKFLOW_INVALID, "analysis publication is invalid")
+            raise AssertionError from error
+        return publication
+
     def __post_init__(self) -> None:
         if type(self.analysis_result) is not AnalysisResult:
             _fail(ANALYSIS_WORKFLOW_INVALID, "analysis result is invalid")
@@ -1252,7 +1291,9 @@ __all__ = [
     "ENVIRONMENT_FAILURE",
     "INCOMPATIBLE_IDENTITY",
     "OPERATION_CONFLICT",
+    "AnalysisBundleRef",
     "AnalysisPublication",
     "AnalysisWorkflowError",
     "compare_monitor_runs",
+    "export_analysis_bundle",
 ]

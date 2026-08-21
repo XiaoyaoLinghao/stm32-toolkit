@@ -27,7 +27,10 @@ MONITOR_VERSION = "0.5.0"
 MAX_PROTOCOL_BYTES = 1024 * 1024
 T = TypeVar("T")
 _OPERATION = re.compile(r"[a-z][a-z0-9]*(?:\.[a-z][a-z0-9]*)*\Z")
-_CODE = re.compile(r"(?:OK|MONITOR_[A-Z0-9_]+)\Z")
+_CODE = re.compile(
+    r"(?:OK|MONITOR_[A-Z0-9_]+|ANALYSIS_WORKFLOW_INVALID|"
+    r"INCOMPATIBLE_IDENTITY|EVIDENCE_INTEGRITY_FAILURE|ENVIRONMENT_FAILURE)\Z"
+)
 
 
 def _json_text(value: object) -> str:
