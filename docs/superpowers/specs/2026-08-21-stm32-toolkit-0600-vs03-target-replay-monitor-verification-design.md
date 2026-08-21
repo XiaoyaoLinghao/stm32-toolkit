@@ -327,7 +327,9 @@ the declaration diff Evidence ID, when present, as ordered parents. Marker Evide
 `diagnostic-marker/<marker_id>` with analysis Evidence as its sole parent. Both canonical payload
 artifacts and roots are content-addressed and idempotent; an exact partial publication is repaired,
 while different bytes at the same root are an operation conflict. Evidence identity is the exact
-after-run import workspace/project/session/source/build/ELF/target/git identity. Identity or
+after-run **origin** workspace/project/origin-session/source/build/ELF/target/git identity; the
+import workspace/session is only the local History query location and never replaces provenance.
+Identity or
 declaration incompatibility occurs before any derived artifact, envelope or root publication.
 
 The analysis bundle is canonical JSON, not a platform-dependent archive. It contains a version,
