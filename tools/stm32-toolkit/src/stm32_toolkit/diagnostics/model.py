@@ -11,7 +11,7 @@ from types import MappingProxyType
 from typing import Literal, NoReturn, cast
 from unicodedata import normalize
 
-from stm32_toolkit.evidence import EvidenceIdentity, EvidenceValidationError
+from stm32_toolkit.evidence import ArtifactRef, EvidenceIdentity, EvidenceValidationError
 from stm32_toolkit.evidence import canonical_json_bytes as _evidence_canonical_json_bytes
 
 
@@ -27,6 +27,11 @@ DIAGNOSTIC_EVIDENCE_MISSING = "DIAGNOSTIC_EVIDENCE_MISSING"
 DIAGNOSTIC_IDENTITY_MISMATCH = "DIAGNOSTIC_IDENTITY_MISMATCH"
 DIAGNOSTIC_PLAN_INVALID = "DIAGNOSTIC_PLAN_INVALID"
 DIAGNOSTIC_OPERATION_CONFLICT = "DIAGNOSTIC_OPERATION_CONFLICT"
+
+SOURCE_CHANGE_DECLARATION_SCHEMA = "stm32-source-change-declaration/1"
+VERIFICATION_PLAN_SCHEMA = "stm32-verification-plan/1"
+DIAGNOSTIC_MARKER_SCHEMA = "stm32-diagnostic-marker-ref/1"
+FIX_VERIFICATION_SCHEMA = "stm32-fix-verification/1"
 
 DIAGNOSTIC_CODES = frozenset(
     {
@@ -973,12 +978,1154 @@ class DiagnosticEvent:
         }
 
 
+_SOURCE_CHANGE_FIELDS = {
+    "schema", "declaration_id", "before_source_sha256", "after_source_sha256",
+    "before_build_id", "before_elf_sha256", "after_build_id", "after_elf_sha256",
+    "changed_paths", "diff_evidence_id", "diff_artifact", "claimed_hypothesis_ids",
+    "validation_plan_id",
+}
+_VERIFICATION_PLAN_FIELDS = {
+    "schema", "verification_plan_id", "diagnostic_session_id", "failed_before_run_id",
+    "failed_before_evidence_id", "source_change_declaration_id", "fixed_after_run_id",
+    "fixed_after_evidence_id", "required_analysis_ids", "required_analysis_evidence_ids",
+    "required_monitor_quality", "expected_changed", "plan_digest",
+}
+_DIAGNOSTIC_MARKER_FIELDS = {
+    "schema", "marker_id", "marker_evidence_id", "analysis_id", "analysis_evidence_id", "diagnostic_session_id",
+    "hypothesis_id", "polarity", "label", "rationale",
+}
+_FIX_VERIFICATION_FIELDS = {
+    "schema", "fix_verification_id", "diagnostic_session_id", "failed_before_run_id",
+    "failed_before_evidence_id", "source_change_declaration_id", "fixed_after_run_id",
+    "fixed_after_evidence_id", "verification_plan_id", "verification_plan_digest",
+    "analysis_ids", "analysis_evidence_ids", "executed_operation_ids", "status", "reason_code",
+    "completed_at_utc",
+}
+_MARKER_LABELS = {"change-observed", "no-change-observed", "analysis-inconclusive"}
+_FIX_REASONS = {
+    "PASSED": {"VERIFICATION_PASSED"},
+    "FAILED": {"FIXED_TEST_FAILED", "ANALYSIS_CONTRADICTED"},
+    "INCONCLUSIVE": {
+        "MANDATORY_EVIDENCE_MISSING", "MANDATORY_EVIDENCE_CORRUPT", "ANALYSIS_NOT_VALID",
+    },
+    "CANCELLED": {"CALLER_CANCELLED"},
+}
+
+
+def _closed_mapping(value: object, expected: set[str]) -> dict[str, object]:
+    if type(value) is not dict or set(value) != expected:
+        _fail(DIAGNOSTIC_INVALID_EVENT)
+    return cast(dict[str, object], value)
+
+
+def _closed_text(value: object, *, limit: int = MAX_STRING_BYTES) -> str:
+    if type(value) is not str:
+        _fail(DIAGNOSTIC_INVALID_EVENT)
+    return _string(value, limit=limit)
+
+
+def _closed_schema(value: object, expected: str) -> str:
+    schema = _closed_text(value, limit=128)
+    if schema != expected:
+        _fail(DIAGNOSTIC_INVALID_EVENT)
+    return expected
+
+
+def _closed_hash(value: object) -> str:
+    if type(value) is not str:
+        _fail(DIAGNOSTIC_INVALID_EVENT)
+    return _hash(value)
+
+
+def _closed_hex_id(value: object) -> str:
+    if type(value) is not str:
+        _fail(DIAGNOSTIC_INVALID_EVENT)
+    return _hex_id(value)
+
+
+def _closed_safe_id(value: object) -> str:
+    if type(value) is not str:
+        _fail(DIAGNOSTIC_INVALID_EVENT)
+    return _safe_id(value)
+
+
+def _closed_run_id(value: object) -> str:
+    if type(value) is not str:
+        _fail(DIAGNOSTIC_INVALID_EVENT)
+    return _run_id(value)
+
+
+def _closed_utc(value: object) -> str:
+    if type(value) is not str:
+        _fail(DIAGNOSTIC_INVALID_EVENT)
+    return _utc(value)
+
+
+def _closed_bool(value: object) -> bool:
+    if type(value) is not bool:
+        _fail(DIAGNOSTIC_INVALID_EVENT)
+    return cast(bool, value)
+
+
+def _closed_tuple(value: object, *, minimum: int, maximum: int) -> tuple[object, ...]:
+    if type(value) is not tuple:
+        _fail(DIAGNOSTIC_INVALID_EVENT)
+    if len(value) > maximum:
+        _fail(DIAGNOSTIC_LIMIT_EXCEEDED)
+    if len(value) < minimum:
+        _fail(DIAGNOSTIC_INVALID_EVENT)
+    return cast(tuple[object, ...], value)
+
+
+def _closed_wire_list(value: object, *, minimum: int, maximum: int) -> list[object]:
+    if type(value) is not list:
+        _fail(DIAGNOSTIC_INVALID_EVENT)
+    if len(value) > maximum:
+        _fail(DIAGNOSTIC_LIMIT_EXCEEDED)
+    if len(value) < minimum:
+        _fail(DIAGNOSTIC_INVALID_EVENT)
+    return cast(list[object], value)
+
+
+def _artifact_snapshot(value: object) -> ArtifactRef:
+    if isinstance(value, ArtifactRef):
+        raw = value.to_dict()
+    elif type(value) is dict:
+        raw = value
+    else:
+        _fail(DIAGNOSTIC_INVALID_EVENT)
+    try:
+        artifact = ArtifactRef.from_dict(raw)
+    except EvidenceValidationError as error:
+        if error.code == "EVIDENCE_LIMIT_EXCEEDED":
+            _fail(DIAGNOSTIC_LIMIT_EXCEEDED)
+        _fail(DIAGNOSTIC_INVALID_EVENT)
+    except (TypeError, ValueError, OverflowError):
+        _fail(DIAGNOSTIC_INVALID_EVENT)
+    if type(artifact) is not ArtifactRef:
+        _fail(DIAGNOSTIC_INVALID_EVENT)
+    return artifact
+
+
+def _path_text(value: object) -> str:
+    path = _closed_text(value, limit=4096)
+    if path.startswith(("/", "\\")) or "\\" in path or ":" in path or path.endswith("/"):
+        _fail(DIAGNOSTIC_INVALID_EVENT)
+    parts = path.split("/")
+    if any(not part or part in {".", ".."} for part in parts):
+        _fail(DIAGNOSTIC_INVALID_EVENT)
+    for part in parts:
+        try:
+            if len(part.encode("utf-8")) > 255:
+                _fail(DIAGNOSTIC_LIMIT_EXCEEDED)
+        except UnicodeEncodeError:
+            _fail(DIAGNOSTIC_INVALID_EVENT)
+    return path
+
+
+def _path_tuple(value: object) -> tuple[str, ...]:
+    paths = _closed_tuple(value, minimum=1, maximum=128)
+    normalized = tuple(_path_text(path) for path in paths)
+    total_bytes = sum(len(path.encode("utf-8")) for path in normalized)
+    if total_bytes > 4096:
+        _fail(DIAGNOSTIC_LIMIT_EXCEEDED)
+    if len(set(normalized)) != len(normalized):
+        _fail(DIAGNOSTIC_INVALID_EVENT)
+    if normalized != tuple(sorted(normalized, key=lambda path: path.encode("utf-8"))):
+        _fail(DIAGNOSTIC_INVALID_EVENT)
+    return normalized
+
+
+def _wire_path_tuple(value: object) -> tuple[str, ...]:
+    paths = _closed_wire_list(value, minimum=1, maximum=128)
+    return _path_tuple(tuple(paths))
+
+
+def _hash_tuple(value: object, *, maximum: int, minimum: int = 1) -> tuple[str, ...]:
+    values = _closed_tuple(value, minimum=minimum, maximum=maximum)
+    normalized = tuple(_closed_hash(item) for item in values)
+    if len(set(normalized)) != len(normalized):
+        _fail(DIAGNOSTIC_INVALID_EVENT)
+    if normalized != tuple(sorted(normalized)):
+        _fail(DIAGNOSTIC_INVALID_EVENT)
+    return normalized
+
+
+def _wire_hash_tuple(value: object, *, maximum: int, minimum: int = 1) -> tuple[str, ...]:
+    items = _closed_wire_list(value, minimum=minimum, maximum=maximum)
+    return _hash_tuple(tuple(items), maximum=maximum, minimum=minimum)
+
+
+def _parallel_hash_tuples(
+    values: object,
+    evidence_values: object,
+    *,
+    maximum: int = 16,
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    ids = _hash_tuple(values, maximum=maximum)
+    evidence_ids = _hash_tuple_preserve_order(evidence_values, maximum=maximum)
+    if len(ids) != len(evidence_ids):
+        _fail(DIAGNOSTIC_INVALID_EVENT)
+    return ids, evidence_ids
+
+
+def _wire_parallel_hash_tuples(
+    values: object,
+    evidence_values: object,
+    *,
+    maximum: int = 16,
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    ids = _wire_hash_tuple(values, maximum=maximum)
+    evidence_ids = _wire_hash_tuple_preserve_order(evidence_values, maximum=maximum)
+    if len(ids) != len(evidence_ids):
+        _fail(DIAGNOSTIC_INVALID_EVENT)
+    return ids, evidence_ids
+
+
+def _hash_tuple_preserve_order(
+    value: object,
+    *,
+    maximum: int,
+    minimum: int = 1,
+) -> tuple[str, ...]:
+    values = _closed_tuple(value, minimum=minimum, maximum=maximum)
+    normalized = tuple(_closed_hash(item) for item in values)
+    if len(set(normalized)) != len(normalized):
+        _fail(DIAGNOSTIC_INVALID_EVENT)
+    return normalized
+
+
+def _wire_hash_tuple_preserve_order(
+    value: object,
+    *,
+    maximum: int,
+    minimum: int = 1,
+) -> tuple[str, ...]:
+    items = _closed_wire_list(value, minimum=minimum, maximum=maximum)
+    return _hash_tuple_preserve_order(tuple(items), maximum=maximum, minimum=minimum)
+
+
+def _hypothesis_tuple(value: object) -> tuple[str, ...]:
+    values = _closed_tuple(value, minimum=1, maximum=16)
+    normalized = tuple(_closed_hex_id(item) for item in values)
+    if len(set(normalized)) != len(normalized):
+        _fail(DIAGNOSTIC_INVALID_EVENT)
+    if normalized != tuple(sorted(normalized)):
+        _fail(DIAGNOSTIC_INVALID_EVENT)
+    return normalized
+
+
+def _wire_hypothesis_tuple(value: object) -> tuple[str, ...]:
+    items = _closed_wire_list(value, minimum=1, maximum=16)
+    return _hypothesis_tuple(tuple(items))
+
+
+def _operation_tuple(value: object) -> tuple[str, ...]:
+    operations = _closed_tuple(value, minimum=1, maximum=64)
+    normalized = tuple(_closed_safe_id(item) for item in operations)
+    if len(set(normalized)) != len(normalized):
+        _fail(DIAGNOSTIC_INVALID_EVENT)
+    return normalized
+
+
+def _wire_operation_tuple(value: object) -> tuple[str, ...]:
+    operations = _closed_wire_list(value, minimum=1, maximum=64)
+    return _operation_tuple(tuple(operations))
+
+
+def _digest_payload(value: dict[str, object]) -> str:
+    return hashlib.sha256(canonical_diagnostic_json_bytes(value)).hexdigest()
+
+
+def _source_change_payload(
+    *,
+    schema: object,
+    before_source_sha256: object,
+    after_source_sha256: object,
+    before_build_id: object,
+    before_elf_sha256: object,
+    after_build_id: object,
+    after_elf_sha256: object,
+    changed_paths: object,
+    diff_evidence_id: object,
+    diff_artifact: object,
+    claimed_hypothesis_ids: object,
+    validation_plan_id: object,
+) -> dict[str, object]:
+    normalized_schema = _closed_schema(schema, SOURCE_CHANGE_DECLARATION_SCHEMA)
+    before_source = _closed_hash(before_source_sha256)
+    after_source = _closed_hash(after_source_sha256)
+    if before_source == after_source:
+        _fail(DIAGNOSTIC_INVALID_EVENT)
+    paths = _path_tuple(changed_paths)
+    hypotheses = _hypothesis_tuple(claimed_hypothesis_ids)
+    artifact = _artifact_snapshot(diff_artifact)
+    return {
+        "schema": normalized_schema,
+        "before_source_sha256": before_source,
+        "after_source_sha256": after_source,
+        "before_build_id": _closed_hash(before_build_id),
+        "before_elf_sha256": _closed_hash(before_elf_sha256),
+        "after_build_id": _closed_hash(after_build_id),
+        "after_elf_sha256": _closed_hash(after_elf_sha256),
+        "changed_paths": list(paths),
+        "diff_evidence_id": _closed_hash(diff_evidence_id),
+        "diff_artifact": artifact.to_dict(),
+        "claimed_hypothesis_ids": list(hypotheses),
+        "validation_plan_id": _closed_hash(validation_plan_id),
+    }
+
+
+def _source_change_payload_from_value(value: object) -> dict[str, object]:
+    if type(value) is SourceChangeDeclaration:
+        return _source_change_payload(
+            schema=value.schema,
+            before_source_sha256=value.before_source_sha256,
+            after_source_sha256=value.after_source_sha256,
+            before_build_id=value.before_build_id,
+            before_elf_sha256=value.before_elf_sha256,
+            after_build_id=value.after_build_id,
+            after_elf_sha256=value.after_elf_sha256,
+            changed_paths=value.changed_paths,
+            diff_evidence_id=value.diff_evidence_id,
+            diff_artifact=value.diff_artifact,
+            claimed_hypothesis_ids=value.claimed_hypothesis_ids,
+            validation_plan_id=value.validation_plan_id,
+        )
+    if isinstance(value, SourceChangeDeclaration):
+        _fail(DIAGNOSTIC_INVALID_EVENT)
+    _reject_tuples(value)
+    data = _closed_mapping(value, _SOURCE_CHANGE_FIELDS)
+    paths = _wire_path_tuple(data["changed_paths"])
+    hypotheses = _wire_hypothesis_tuple(data["claimed_hypothesis_ids"])
+    return _source_change_payload(
+        schema=data["schema"],
+        before_source_sha256=data["before_source_sha256"],
+        after_source_sha256=data["after_source_sha256"],
+        before_build_id=data["before_build_id"],
+        before_elf_sha256=data["before_elf_sha256"],
+        after_build_id=data["after_build_id"],
+        after_elf_sha256=data["after_elf_sha256"],
+        changed_paths=paths,
+        diff_evidence_id=data["diff_evidence_id"],
+        diff_artifact=data["diff_artifact"],
+        claimed_hypothesis_ids=hypotheses,
+        validation_plan_id=data["validation_plan_id"],
+    )
+
+
+def calculate_source_change_declaration_id(value: object) -> str:
+    return _digest_payload(_source_change_payload_from_value(value))
+
+
+@dataclass(frozen=True)
+class SourceChangeDeclaration:
+    schema: str
+    declaration_id: str
+    before_source_sha256: str
+    after_source_sha256: str
+    before_build_id: str
+    before_elf_sha256: str
+    after_build_id: str
+    after_elf_sha256: str
+    changed_paths: tuple[str, ...]
+    diff_evidence_id: str
+    diff_artifact: ArtifactRef
+    claimed_hypothesis_ids: tuple[str, ...]
+    validation_plan_id: str
+
+    def __post_init__(self) -> None:
+        payload = _source_change_payload(
+            schema=self.schema,
+            before_source_sha256=self.before_source_sha256,
+            after_source_sha256=self.after_source_sha256,
+            before_build_id=self.before_build_id,
+            before_elf_sha256=self.before_elf_sha256,
+            after_build_id=self.after_build_id,
+            after_elf_sha256=self.after_elf_sha256,
+            changed_paths=self.changed_paths,
+            diff_evidence_id=self.diff_evidence_id,
+            diff_artifact=self.diff_artifact,
+            claimed_hypothesis_ids=self.claimed_hypothesis_ids,
+            validation_plan_id=self.validation_plan_id,
+        )
+        declaration_id = _closed_hash(self.declaration_id)
+        if declaration_id != _digest_payload(payload):
+            _fail(DIAGNOSTIC_INVALID_EVENT)
+        object.__setattr__(self, "schema", payload["schema"])
+        for field_name in (
+            "before_source_sha256", "after_source_sha256", "before_build_id", "before_elf_sha256",
+            "after_build_id", "after_elf_sha256", "diff_evidence_id", "validation_plan_id",
+        ):
+            object.__setattr__(self, field_name, payload[field_name])
+        object.__setattr__(self, "changed_paths", tuple(cast(list[str], payload["changed_paths"])))
+        object.__setattr__(self, "diff_artifact", _artifact_snapshot(payload["diff_artifact"]))
+        object.__setattr__(
+            self,
+            "claimed_hypothesis_ids",
+            tuple(cast(list[str], payload["claimed_hypothesis_ids"])),
+        )
+        object.__setattr__(self, "declaration_id", declaration_id)
+
+    @classmethod
+    def new(
+        cls,
+        *,
+        before_source_sha256: str,
+        after_source_sha256: str,
+        before_build_id: str,
+        before_elf_sha256: str,
+        after_build_id: str,
+        after_elf_sha256: str,
+        changed_paths: tuple[str, ...],
+        diff_evidence_id: str,
+        diff_artifact: ArtifactRef,
+        claimed_hypothesis_ids: tuple[str, ...],
+        validation_plan_id: str,
+    ) -> "SourceChangeDeclaration":
+        payload = _source_change_payload(
+            schema=SOURCE_CHANGE_DECLARATION_SCHEMA,
+            before_source_sha256=before_source_sha256,
+            after_source_sha256=after_source_sha256,
+            before_build_id=before_build_id,
+            before_elf_sha256=before_elf_sha256,
+            after_build_id=after_build_id,
+            after_elf_sha256=after_elf_sha256,
+            changed_paths=changed_paths,
+            diff_evidence_id=diff_evidence_id,
+            diff_artifact=diff_artifact,
+            claimed_hypothesis_ids=claimed_hypothesis_ids,
+            validation_plan_id=validation_plan_id,
+        )
+        return cls(
+            payload["schema"],
+            _digest_payload(payload),
+            payload["before_source_sha256"],
+            payload["after_source_sha256"],
+            payload["before_build_id"],
+            payload["before_elf_sha256"],
+            payload["after_build_id"],
+            payload["after_elf_sha256"],
+            tuple(cast(list[str], payload["changed_paths"])),
+            payload["diff_evidence_id"],
+            _artifact_snapshot(payload["diff_artifact"]),
+            tuple(cast(list[str], payload["claimed_hypothesis_ids"])),
+            payload["validation_plan_id"],
+        )
+
+    @classmethod
+    def from_value(cls, value: object) -> "SourceChangeDeclaration":
+        if type(value) is cls:
+            return value
+        if isinstance(value, cls):
+            _fail(DIAGNOSTIC_INVALID_EVENT)
+        payload = _source_change_payload_from_value(value)
+        data = _closed_mapping(value, _SOURCE_CHANGE_FIELDS)
+        return cls(
+            data["schema"],
+            data["declaration_id"],
+            payload["before_source_sha256"],
+            payload["after_source_sha256"],
+            payload["before_build_id"],
+            payload["before_elf_sha256"],
+            payload["after_build_id"],
+            payload["after_elf_sha256"],
+            tuple(cast(list[str], payload["changed_paths"])),
+            payload["diff_evidence_id"],
+            _artifact_snapshot(payload["diff_artifact"]),
+            tuple(cast(list[str], payload["claimed_hypothesis_ids"])),
+            payload["validation_plan_id"],
+        )
+
+    def to_dict(self) -> dict[str, object]:
+        payload = _source_change_payload_from_value(self)
+        payload["declaration_id"] = self.declaration_id
+        return {"schema": payload["schema"], "declaration_id": payload["declaration_id"],
+                "before_source_sha256": payload["before_source_sha256"],
+                "after_source_sha256": payload["after_source_sha256"],
+                "before_build_id": payload["before_build_id"], "before_elf_sha256": payload["before_elf_sha256"],
+                "after_build_id": payload["after_build_id"], "after_elf_sha256": payload["after_elf_sha256"],
+                "changed_paths": list(cast(list[str], payload["changed_paths"])),
+                "diff_evidence_id": payload["diff_evidence_id"],
+                "diff_artifact": dict(cast(dict[str, object], payload["diff_artifact"])),
+                "claimed_hypothesis_ids": list(cast(list[str], payload["claimed_hypothesis_ids"])),
+                "validation_plan_id": payload["validation_plan_id"]}
+
+
+def _verification_plan_payload(
+    *,
+    schema: object,
+    diagnostic_session_id: object,
+    failed_before_run_id: object,
+    failed_before_evidence_id: object,
+    source_change_declaration_id: object,
+    fixed_after_run_id: object,
+    fixed_after_evidence_id: object,
+    required_analysis_ids: object,
+    required_analysis_evidence_ids: object,
+    required_monitor_quality: object,
+    expected_changed: object,
+) -> dict[str, object]:
+    normalized_schema = _closed_schema(schema, VERIFICATION_PLAN_SCHEMA)
+    failed_run = _closed_run_id(failed_before_run_id)
+    fixed_run = _closed_run_id(fixed_after_run_id)
+    failed_evidence = _closed_hash(failed_before_evidence_id)
+    fixed_evidence = _closed_hash(fixed_after_evidence_id)
+    if failed_run == fixed_run or failed_evidence == fixed_evidence:
+        _fail(DIAGNOSTIC_INVALID_EVENT)
+    analysis_ids, analysis_evidence_ids = _parallel_hash_tuples(
+        required_analysis_ids,
+        required_analysis_evidence_ids,
+    )
+    if required_monitor_quality != "VALID" or type(required_monitor_quality) is not str:
+        _fail(DIAGNOSTIC_INVALID_EVENT)
+    if type(expected_changed) is not bool or expected_changed is not True:
+        _fail(DIAGNOSTIC_INVALID_EVENT)
+    return {
+        "schema": normalized_schema,
+        "diagnostic_session_id": _closed_hex_id(diagnostic_session_id),
+        "failed_before_run_id": failed_run,
+        "failed_before_evidence_id": failed_evidence,
+        "source_change_declaration_id": _closed_hash(source_change_declaration_id),
+        "fixed_after_run_id": fixed_run,
+        "fixed_after_evidence_id": fixed_evidence,
+        "required_analysis_ids": list(analysis_ids),
+        "required_analysis_evidence_ids": list(analysis_evidence_ids),
+        "required_monitor_quality": "VALID",
+        "expected_changed": True,
+    }
+
+
+def _verification_plan_payload_from_value(value: object) -> dict[str, object]:
+    if type(value) is VerificationPlan:
+        return _verification_plan_payload(
+            schema=value.schema,
+            diagnostic_session_id=value.diagnostic_session_id,
+            failed_before_run_id=value.failed_before_run_id,
+            failed_before_evidence_id=value.failed_before_evidence_id,
+            source_change_declaration_id=value.source_change_declaration_id,
+            fixed_after_run_id=value.fixed_after_run_id,
+            fixed_after_evidence_id=value.fixed_after_evidence_id,
+            required_analysis_ids=value.required_analysis_ids,
+            required_analysis_evidence_ids=value.required_analysis_evidence_ids,
+            required_monitor_quality=value.required_monitor_quality,
+            expected_changed=value.expected_changed,
+        )
+    if isinstance(value, VerificationPlan):
+        _fail(DIAGNOSTIC_INVALID_EVENT)
+    _reject_tuples(value)
+    data = _closed_mapping(value, _VERIFICATION_PLAN_FIELDS)
+    analysis_ids, evidence_ids = _wire_parallel_hash_tuples(
+        data["required_analysis_ids"],
+        data["required_analysis_evidence_ids"],
+    )
+    return _verification_plan_payload(
+        schema=data["schema"],
+        diagnostic_session_id=data["diagnostic_session_id"],
+        failed_before_run_id=data["failed_before_run_id"],
+        failed_before_evidence_id=data["failed_before_evidence_id"],
+        source_change_declaration_id=data["source_change_declaration_id"],
+        fixed_after_run_id=data["fixed_after_run_id"],
+        fixed_after_evidence_id=data["fixed_after_evidence_id"],
+        required_analysis_ids=analysis_ids,
+        required_analysis_evidence_ids=evidence_ids,
+        required_monitor_quality=data["required_monitor_quality"],
+        expected_changed=data["expected_changed"],
+    )
+
+
+def calculate_verification_plan_digest(value: object) -> str:
+    return _digest_payload(_verification_plan_payload_from_value(value))
+
+
+@dataclass(frozen=True)
+class VerificationPlan:
+    schema: str
+    verification_plan_id: str
+    diagnostic_session_id: str
+    failed_before_run_id: str
+    failed_before_evidence_id: str
+    source_change_declaration_id: str
+    fixed_after_run_id: str
+    fixed_after_evidence_id: str
+    required_analysis_ids: tuple[str, ...]
+    required_analysis_evidence_ids: tuple[str, ...]
+    required_monitor_quality: str
+    expected_changed: bool
+    plan_digest: str
+
+    def __post_init__(self) -> None:
+        payload = _verification_plan_payload(
+            schema=self.schema,
+            diagnostic_session_id=self.diagnostic_session_id,
+            failed_before_run_id=self.failed_before_run_id,
+            failed_before_evidence_id=self.failed_before_evidence_id,
+            source_change_declaration_id=self.source_change_declaration_id,
+            fixed_after_run_id=self.fixed_after_run_id,
+            fixed_after_evidence_id=self.fixed_after_evidence_id,
+            required_analysis_ids=self.required_analysis_ids,
+            required_analysis_evidence_ids=self.required_analysis_evidence_ids,
+            required_monitor_quality=self.required_monitor_quality,
+            expected_changed=self.expected_changed,
+        )
+        plan_id = _closed_hash(self.verification_plan_id)
+        digest = _closed_hash(self.plan_digest)
+        calculated = _digest_payload(payload)
+        if plan_id != calculated or digest != calculated:
+            _fail(DIAGNOSTIC_INVALID_EVENT)
+        object.__setattr__(self, "schema", payload["schema"])
+        for field_name in (
+            "diagnostic_session_id", "failed_before_run_id", "failed_before_evidence_id",
+            "source_change_declaration_id", "fixed_after_run_id", "fixed_after_evidence_id",
+            "required_monitor_quality", "expected_changed",
+        ):
+            object.__setattr__(self, field_name, payload[field_name])
+        object.__setattr__(self, "required_analysis_ids", tuple(cast(list[str], payload["required_analysis_ids"])))
+        object.__setattr__(
+            self,
+            "required_analysis_evidence_ids",
+            tuple(cast(list[str], payload["required_analysis_evidence_ids"])),
+        )
+        object.__setattr__(self, "verification_plan_id", plan_id)
+        object.__setattr__(self, "plan_digest", digest)
+
+    @classmethod
+    def new(
+        cls,
+        *,
+        diagnostic_session_id: str,
+        failed_before_run_id: str,
+        failed_before_evidence_id: str,
+        source_change_declaration_id: str,
+        fixed_after_run_id: str,
+        fixed_after_evidence_id: str,
+        required_analysis_ids: tuple[str, ...],
+        required_analysis_evidence_ids: tuple[str, ...],
+        required_monitor_quality: str,
+        expected_changed: bool,
+    ) -> "VerificationPlan":
+        payload = _verification_plan_payload(
+            schema=VERIFICATION_PLAN_SCHEMA,
+            diagnostic_session_id=diagnostic_session_id,
+            failed_before_run_id=failed_before_run_id,
+            failed_before_evidence_id=failed_before_evidence_id,
+            source_change_declaration_id=source_change_declaration_id,
+            fixed_after_run_id=fixed_after_run_id,
+            fixed_after_evidence_id=fixed_after_evidence_id,
+            required_analysis_ids=required_analysis_ids,
+            required_analysis_evidence_ids=required_analysis_evidence_ids,
+            required_monitor_quality=required_monitor_quality,
+            expected_changed=expected_changed,
+        )
+        digest = _digest_payload(payload)
+        return cls(
+            payload["schema"],
+            digest,
+            payload["diagnostic_session_id"],
+            payload["failed_before_run_id"],
+            payload["failed_before_evidence_id"],
+            payload["source_change_declaration_id"],
+            payload["fixed_after_run_id"],
+            payload["fixed_after_evidence_id"],
+            tuple(cast(list[str], payload["required_analysis_ids"])),
+            tuple(cast(list[str], payload["required_analysis_evidence_ids"])),
+            payload["required_monitor_quality"],
+            payload["expected_changed"],
+            digest,
+        )
+
+    @classmethod
+    def from_value(cls, value: object) -> "VerificationPlan":
+        if type(value) is cls:
+            return value
+        if isinstance(value, cls):
+            _fail(DIAGNOSTIC_INVALID_EVENT)
+        payload = _verification_plan_payload_from_value(value)
+        data = _closed_mapping(value, _VERIFICATION_PLAN_FIELDS)
+        return cls(
+            data["schema"],
+            data["verification_plan_id"],
+            payload["diagnostic_session_id"],
+            payload["failed_before_run_id"],
+            payload["failed_before_evidence_id"],
+            payload["source_change_declaration_id"],
+            payload["fixed_after_run_id"],
+            payload["fixed_after_evidence_id"],
+            tuple(cast(list[str], payload["required_analysis_ids"])),
+            tuple(cast(list[str], payload["required_analysis_evidence_ids"])),
+            payload["required_monitor_quality"],
+            payload["expected_changed"],
+            data["plan_digest"],
+        )
+
+    def to_dict(self) -> dict[str, object]:
+        payload = _verification_plan_payload_from_value(self)
+        payload["verification_plan_id"] = self.verification_plan_id
+        payload["plan_digest"] = self.plan_digest
+        return {
+            "schema": payload["schema"],
+            "verification_plan_id": payload["verification_plan_id"],
+            "diagnostic_session_id": payload["diagnostic_session_id"],
+            "failed_before_run_id": payload["failed_before_run_id"],
+            "failed_before_evidence_id": payload["failed_before_evidence_id"],
+            "source_change_declaration_id": payload["source_change_declaration_id"],
+            "fixed_after_run_id": payload["fixed_after_run_id"],
+            "fixed_after_evidence_id": payload["fixed_after_evidence_id"],
+            "required_analysis_ids": list(cast(list[str], payload["required_analysis_ids"])),
+            "required_analysis_evidence_ids": list(cast(list[str], payload["required_analysis_evidence_ids"])),
+            "required_monitor_quality": payload["required_monitor_quality"],
+            "expected_changed": payload["expected_changed"],
+            "plan_digest": payload["plan_digest"],
+        }
+
+
+def _marker_payload(
+    *,
+    schema: object,
+    marker_evidence_id: object,
+    analysis_id: object,
+    analysis_evidence_id: object,
+    diagnostic_session_id: object,
+    hypothesis_id: object,
+    polarity: object,
+    label: object,
+    rationale: object,
+) -> dict[str, object]:
+    normalized_schema = _closed_schema(schema, DIAGNOSTIC_MARKER_SCHEMA)
+    polarity_value = _closed_text(polarity, limit=32)
+    if polarity_value not in {"supports", "refutes"}:
+        _fail(DIAGNOSTIC_INVALID_EVENT)
+    label_value = _closed_text(label, limit=64)
+    if label_value not in _MARKER_LABELS:
+        _fail(DIAGNOSTIC_INVALID_EVENT)
+    return {
+        "schema": normalized_schema,
+        "marker_evidence_id": _closed_hash(marker_evidence_id),
+        "analysis_id": _closed_hash(analysis_id),
+        "analysis_evidence_id": _closed_hash(analysis_evidence_id),
+        "diagnostic_session_id": _closed_hex_id(diagnostic_session_id),
+        "hypothesis_id": _closed_hex_id(hypothesis_id),
+        "polarity": polarity_value,
+        "label": label_value,
+        "rationale": _closed_text(rationale, limit=4096),
+    }
+
+
+def _marker_payload_from_value(value: object) -> dict[str, object]:
+    if type(value) is DiagnosticMarkerRef:
+        return _marker_payload(
+            schema=value.schema,
+            marker_evidence_id=value.marker_evidence_id,
+            analysis_id=value.analysis_id,
+            analysis_evidence_id=value.analysis_evidence_id,
+            diagnostic_session_id=value.diagnostic_session_id,
+            hypothesis_id=value.hypothesis_id,
+            polarity=value.polarity,
+            label=value.label,
+            rationale=value.rationale,
+        )
+    if isinstance(value, DiagnosticMarkerRef):
+        _fail(DIAGNOSTIC_INVALID_EVENT)
+    _reject_tuples(value)
+    data = _closed_mapping(value, _DIAGNOSTIC_MARKER_FIELDS)
+    return _marker_payload(
+        schema=data["schema"],
+        marker_evidence_id=data["marker_evidence_id"],
+        analysis_id=data["analysis_id"],
+        analysis_evidence_id=data["analysis_evidence_id"],
+        diagnostic_session_id=data["diagnostic_session_id"],
+        hypothesis_id=data["hypothesis_id"],
+        polarity=data["polarity"],
+        label=data["label"],
+        rationale=data["rationale"],
+    )
+
+
+@dataclass(frozen=True)
+class DiagnosticMarkerRef:
+    schema: str
+    marker_id: str
+    marker_evidence_id: str
+    analysis_id: str
+    analysis_evidence_id: str
+    diagnostic_session_id: str
+    hypothesis_id: str
+    polarity: str
+    label: str
+    rationale: str
+
+    def __post_init__(self) -> None:
+        payload = _marker_payload(
+            schema=self.schema,
+            marker_evidence_id=self.marker_evidence_id,
+            analysis_id=self.analysis_id,
+            analysis_evidence_id=self.analysis_evidence_id,
+            diagnostic_session_id=self.diagnostic_session_id,
+            hypothesis_id=self.hypothesis_id,
+            polarity=self.polarity,
+            label=self.label,
+            rationale=self.rationale,
+        )
+        marker_id = _closed_hash(self.marker_id)
+        object.__setattr__(self, "schema", payload["schema"])
+        object.__setattr__(self, "marker_id", marker_id)
+        for field_name in (
+            "marker_evidence_id", "analysis_id", "analysis_evidence_id", "diagnostic_session_id",
+            "hypothesis_id", "polarity", "label", "rationale",
+        ):
+            object.__setattr__(self, field_name, payload[field_name])
+
+    @classmethod
+    def new(
+        cls,
+        *,
+        marker_id: str,
+        marker_evidence_id: str,
+        analysis_id: str,
+        analysis_evidence_id: str,
+        diagnostic_session_id: str,
+        hypothesis_id: str,
+        polarity: str,
+        label: str,
+        rationale: str,
+    ) -> "DiagnosticMarkerRef":
+        return cls(
+            DIAGNOSTIC_MARKER_SCHEMA,
+            marker_id,
+            marker_evidence_id,
+            analysis_id,
+            analysis_evidence_id,
+            diagnostic_session_id,
+            hypothesis_id,
+            polarity,
+            label,
+            rationale,
+        )
+
+    @classmethod
+    def from_value(cls, value: object) -> "DiagnosticMarkerRef":
+        if type(value) is cls:
+            return value
+        if isinstance(value, cls):
+            _fail(DIAGNOSTIC_INVALID_EVENT)
+        _reject_tuples(value)
+        data = _closed_mapping(value, _DIAGNOSTIC_MARKER_FIELDS)
+        payload = _marker_payload_from_value(value)
+        return cls(
+            data["schema"],
+            data["marker_id"],
+            payload["marker_evidence_id"],
+            payload["analysis_id"],
+            payload["analysis_evidence_id"],
+            payload["diagnostic_session_id"],
+            payload["hypothesis_id"],
+            payload["polarity"],
+            payload["label"],
+            payload["rationale"],
+        )
+
+    def to_dict(self) -> dict[str, object]:
+        payload = _marker_payload_from_value(self)
+        return {
+            "schema": payload["schema"],
+            "marker_id": self.marker_id,
+            "marker_evidence_id": payload["marker_evidence_id"],
+            "analysis_id": payload["analysis_id"],
+            "analysis_evidence_id": payload["analysis_evidence_id"],
+            "diagnostic_session_id": payload["diagnostic_session_id"],
+            "hypothesis_id": payload["hypothesis_id"],
+            "polarity": payload["polarity"],
+            "label": payload["label"],
+            "rationale": payload["rationale"],
+        }
+
+
+def _fix_verification_payload(
+    *,
+    schema: object,
+    diagnostic_session_id: object,
+    failed_before_run_id: object,
+    failed_before_evidence_id: object,
+    source_change_declaration_id: object,
+    fixed_after_run_id: object,
+    fixed_after_evidence_id: object,
+    verification_plan_id: object,
+    verification_plan_digest: object,
+    analysis_ids: object,
+    analysis_evidence_ids: object,
+    executed_operation_ids: object,
+    status: object,
+    reason_code: object,
+    completed_at_utc: object,
+) -> dict[str, object]:
+    normalized_schema = _closed_schema(schema, FIX_VERIFICATION_SCHEMA)
+    failed_run = _closed_run_id(failed_before_run_id)
+    fixed_run = _closed_run_id(fixed_after_run_id)
+    failed_evidence = _closed_hash(failed_before_evidence_id)
+    fixed_evidence = _closed_hash(fixed_after_evidence_id)
+    if failed_run == fixed_run or failed_evidence == fixed_evidence:
+        _fail(DIAGNOSTIC_INVALID_EVENT)
+    normalized_plan_id = _closed_hash(verification_plan_id)
+    normalized_plan_digest = _closed_hash(verification_plan_digest)
+    if normalized_plan_id != normalized_plan_digest:
+        _fail(DIAGNOSTIC_INVALID_EVENT)
+    normalized_status = _closed_text(status, limit=32)
+    allowed_reasons = _FIX_REASONS.get(normalized_status)
+    if allowed_reasons is None:
+        _fail(DIAGNOSTIC_INVALID_EVENT)
+    normalized_reason = _closed_text(reason_code, limit=64)
+    if normalized_reason not in allowed_reasons:
+        _fail(DIAGNOSTIC_INVALID_EVENT)
+    analysis, analysis_evidence = _parallel_hash_tuples(analysis_ids, analysis_evidence_ids)
+    operations = _operation_tuple(executed_operation_ids)
+    return {
+        "schema": normalized_schema,
+        "diagnostic_session_id": _closed_hex_id(diagnostic_session_id),
+        "failed_before_run_id": failed_run,
+        "failed_before_evidence_id": failed_evidence,
+        "source_change_declaration_id": _closed_hash(source_change_declaration_id),
+        "fixed_after_run_id": fixed_run,
+        "fixed_after_evidence_id": fixed_evidence,
+        "verification_plan_id": normalized_plan_id,
+        "verification_plan_digest": normalized_plan_digest,
+        "analysis_ids": list(analysis),
+        "analysis_evidence_ids": list(analysis_evidence),
+        "executed_operation_ids": list(operations),
+        "status": normalized_status,
+        "reason_code": normalized_reason,
+        "completed_at_utc": _closed_utc(completed_at_utc),
+    }
+
+
+def _fix_verification_payload_from_value(value: object) -> dict[str, object]:
+    if type(value) is FixVerification:
+        return _fix_verification_payload(
+            schema=value.schema,
+            diagnostic_session_id=value.diagnostic_session_id,
+            failed_before_run_id=value.failed_before_run_id,
+            failed_before_evidence_id=value.failed_before_evidence_id,
+            source_change_declaration_id=value.source_change_declaration_id,
+            fixed_after_run_id=value.fixed_after_run_id,
+            fixed_after_evidence_id=value.fixed_after_evidence_id,
+            verification_plan_id=value.verification_plan_id,
+            verification_plan_digest=value.verification_plan_digest,
+            analysis_ids=value.analysis_ids,
+            analysis_evidence_ids=value.analysis_evidence_ids,
+            executed_operation_ids=value.executed_operation_ids,
+            status=value.status,
+            reason_code=value.reason_code,
+            completed_at_utc=value.completed_at_utc,
+        )
+    if isinstance(value, FixVerification):
+        _fail(DIAGNOSTIC_INVALID_EVENT)
+    _reject_tuples(value)
+    data = _closed_mapping(value, _FIX_VERIFICATION_FIELDS)
+    analysis_ids, analysis_evidence_ids = _wire_parallel_hash_tuples(
+        data["analysis_ids"],
+        data["analysis_evidence_ids"],
+    )
+    executed_operations = _wire_operation_tuple(data["executed_operation_ids"])
+    return _fix_verification_payload(
+        schema=data["schema"],
+        diagnostic_session_id=data["diagnostic_session_id"],
+        failed_before_run_id=data["failed_before_run_id"],
+        failed_before_evidence_id=data["failed_before_evidence_id"],
+        source_change_declaration_id=data["source_change_declaration_id"],
+        fixed_after_run_id=data["fixed_after_run_id"],
+        fixed_after_evidence_id=data["fixed_after_evidence_id"],
+        verification_plan_id=data["verification_plan_id"],
+        verification_plan_digest=data["verification_plan_digest"],
+        analysis_ids=analysis_ids,
+        analysis_evidence_ids=analysis_evidence_ids,
+        executed_operation_ids=executed_operations,
+        status=data["status"],
+        reason_code=data["reason_code"],
+        completed_at_utc=data["completed_at_utc"],
+    )
+
+
+def calculate_fix_verification_id(value: object) -> str:
+    return _digest_payload(_fix_verification_payload_from_value(value))
+
+
+@dataclass(frozen=True)
+class FixVerification:
+    schema: str
+    fix_verification_id: str
+    diagnostic_session_id: str
+    failed_before_run_id: str
+    failed_before_evidence_id: str
+    source_change_declaration_id: str
+    fixed_after_run_id: str
+    fixed_after_evidence_id: str
+    verification_plan_id: str
+    verification_plan_digest: str
+    analysis_ids: tuple[str, ...]
+    analysis_evidence_ids: tuple[str, ...]
+    executed_operation_ids: tuple[str, ...]
+    status: str
+    reason_code: str
+    completed_at_utc: str
+
+    def __post_init__(self) -> None:
+        payload = _fix_verification_payload(
+            schema=self.schema,
+            diagnostic_session_id=self.diagnostic_session_id,
+            failed_before_run_id=self.failed_before_run_id,
+            failed_before_evidence_id=self.failed_before_evidence_id,
+            source_change_declaration_id=self.source_change_declaration_id,
+            fixed_after_run_id=self.fixed_after_run_id,
+            fixed_after_evidence_id=self.fixed_after_evidence_id,
+            verification_plan_id=self.verification_plan_id,
+            verification_plan_digest=self.verification_plan_digest,
+            analysis_ids=self.analysis_ids,
+            analysis_evidence_ids=self.analysis_evidence_ids,
+            executed_operation_ids=self.executed_operation_ids,
+            status=self.status,
+            reason_code=self.reason_code,
+            completed_at_utc=self.completed_at_utc,
+        )
+        fix_id = _closed_hash(self.fix_verification_id)
+        calculated = _digest_payload(payload)
+        if fix_id != calculated:
+            _fail(DIAGNOSTIC_INVALID_EVENT)
+        object.__setattr__(self, "schema", payload["schema"])
+        for field_name in (
+            "diagnostic_session_id", "failed_before_run_id", "failed_before_evidence_id",
+            "source_change_declaration_id", "fixed_after_run_id", "fixed_after_evidence_id",
+            "verification_plan_id", "verification_plan_digest", "status", "reason_code",
+            "completed_at_utc",
+        ):
+            object.__setattr__(self, field_name, payload[field_name])
+        object.__setattr__(self, "analysis_ids", tuple(cast(list[str], payload["analysis_ids"])))
+        object.__setattr__(
+            self,
+            "analysis_evidence_ids",
+            tuple(cast(list[str], payload["analysis_evidence_ids"])),
+        )
+        object.__setattr__(
+            self,
+            "executed_operation_ids",
+            tuple(cast(list[str], payload["executed_operation_ids"])),
+        )
+        object.__setattr__(self, "fix_verification_id", fix_id)
+
+    @classmethod
+    def new(
+        cls,
+        *,
+        diagnostic_session_id: str,
+        failed_before_run_id: str,
+        failed_before_evidence_id: str,
+        source_change_declaration_id: str,
+        fixed_after_run_id: str,
+        fixed_after_evidence_id: str,
+        verification_plan_id: str,
+        verification_plan_digest: str,
+        analysis_ids: tuple[str, ...],
+        analysis_evidence_ids: tuple[str, ...],
+        executed_operation_ids: tuple[str, ...],
+        status: str,
+        reason_code: str,
+        completed_at_utc: str,
+    ) -> "FixVerification":
+        payload = _fix_verification_payload(
+            schema=FIX_VERIFICATION_SCHEMA,
+            diagnostic_session_id=diagnostic_session_id,
+            failed_before_run_id=failed_before_run_id,
+            failed_before_evidence_id=failed_before_evidence_id,
+            source_change_declaration_id=source_change_declaration_id,
+            fixed_after_run_id=fixed_after_run_id,
+            fixed_after_evidence_id=fixed_after_evidence_id,
+            verification_plan_id=verification_plan_id,
+            verification_plan_digest=verification_plan_digest,
+            analysis_ids=analysis_ids,
+            analysis_evidence_ids=analysis_evidence_ids,
+            executed_operation_ids=executed_operation_ids,
+            status=status,
+            reason_code=reason_code,
+            completed_at_utc=completed_at_utc,
+        )
+        fix_id = _digest_payload(payload)
+        return cls(
+            payload["schema"],
+            fix_id,
+            payload["diagnostic_session_id"],
+            payload["failed_before_run_id"],
+            payload["failed_before_evidence_id"],
+            payload["source_change_declaration_id"],
+            payload["fixed_after_run_id"],
+            payload["fixed_after_evidence_id"],
+            payload["verification_plan_id"],
+            payload["verification_plan_digest"],
+            tuple(cast(list[str], payload["analysis_ids"])),
+            tuple(cast(list[str], payload["analysis_evidence_ids"])),
+            tuple(cast(list[str], payload["executed_operation_ids"])),
+            payload["status"],
+            payload["reason_code"],
+            payload["completed_at_utc"],
+        )
+
+    @classmethod
+    def from_value(cls, value: object) -> "FixVerification":
+        if type(value) is cls:
+            return value
+        if isinstance(value, cls):
+            _fail(DIAGNOSTIC_INVALID_EVENT)
+        payload = _fix_verification_payload_from_value(value)
+        data = _closed_mapping(value, _FIX_VERIFICATION_FIELDS)
+        return cls(
+            data["schema"],
+            data["fix_verification_id"],
+            payload["diagnostic_session_id"],
+            payload["failed_before_run_id"],
+            payload["failed_before_evidence_id"],
+            payload["source_change_declaration_id"],
+            payload["fixed_after_run_id"],
+            payload["fixed_after_evidence_id"],
+            payload["verification_plan_id"],
+            payload["verification_plan_digest"],
+            tuple(cast(list[str], payload["analysis_ids"])),
+            tuple(cast(list[str], payload["analysis_evidence_ids"])),
+            tuple(cast(list[str], payload["executed_operation_ids"])),
+            payload["status"],
+            payload["reason_code"],
+            payload["completed_at_utc"],
+        )
+
+    def to_dict(self) -> dict[str, object]:
+        payload = _fix_verification_payload_from_value(self)
+        return {
+            "schema": payload["schema"],
+            "fix_verification_id": self.fix_verification_id,
+            "diagnostic_session_id": payload["diagnostic_session_id"],
+            "failed_before_run_id": payload["failed_before_run_id"],
+            "failed_before_evidence_id": payload["failed_before_evidence_id"],
+            "source_change_declaration_id": payload["source_change_declaration_id"],
+            "fixed_after_run_id": payload["fixed_after_run_id"],
+            "fixed_after_evidence_id": payload["fixed_after_evidence_id"],
+            "verification_plan_id": payload["verification_plan_id"],
+            "verification_plan_digest": payload["verification_plan_digest"],
+            "analysis_ids": list(cast(list[str], payload["analysis_ids"])),
+            "analysis_evidence_ids": list(cast(list[str], payload["analysis_evidence_ids"])),
+            "executed_operation_ids": list(cast(list[str], payload["executed_operation_ids"])),
+            "status": payload["status"],
+            "reason_code": payload["reason_code"],
+            "completed_at_utc": payload["completed_at_utc"],
+        }
+
+
 __all__ = [
     "ACTORS", "CASE_STATES", "DIAGNOSTIC_CODES", "DIAGNOSTIC_EVIDENCE_MISSING", "DIAGNOSTIC_CHAIN_CORRUPT",
     "DIAGNOSTIC_IDENTITY_MISMATCH", "DIAGNOSTIC_INVALID_EVENT", "DIAGNOSTIC_INVALID_TRANSITION",
     "DIAGNOSTIC_LIMIT_EXCEEDED", "DIAGNOSTIC_NOT_FOUND", "DIAGNOSTIC_OPERATION_CONFLICT", "DIAGNOSTIC_PLAN_INVALID",
-    "DIAGNOSTIC_REVISION_CONFLICT", "DIAGNOSTIC_SCHEMA", "DiagnosticEvent", "DiagnosticSession",
+    "DIAGNOSTIC_REVISION_CONFLICT", "DIAGNOSTIC_SCHEMA", "DIAGNOSTIC_MARKER_SCHEMA",
+    "SOURCE_CHANGE_DECLARATION_SCHEMA", "VERIFICATION_PLAN_SCHEMA", "FIX_VERIFICATION_SCHEMA",
+    "DiagnosticEvent", "DiagnosticSession", "DiagnosticMarkerRef", "FixVerification",
+    "SourceChangeDeclaration", "VerificationPlan",
     "DiagnosticValidationError", "EvidenceAssessment", "EvidenceIdentity", "EVENT_TYPES", "Hypothesis",
     "ObservationPlan", "ObservationResult", "ObservationStep", "RUN_STATES", "STATES",
-    "calculate_assessment_id", "calculate_event_digest", "calculate_plan_digest", "canonical_diagnostic_json_bytes",
+    "calculate_assessment_id", "calculate_event_digest", "calculate_plan_digest",
+    "calculate_fix_verification_id", "calculate_source_change_declaration_id",
+    "calculate_verification_plan_digest", "canonical_diagnostic_json_bytes",
 ]
