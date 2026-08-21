@@ -674,10 +674,12 @@ def _completion_outcome(
                 environment=environment,
             )
         except _WorkflowFailure as error:
-            if error.code == _ENVIRONMENT_FAILURE:
-                environment = True
-            else:
+            if error.code in {_INCOMPATIBLE_IDENTITY, _ENVIRONMENT_FAILURE}:
+                raise
+            if error.code == _EVIDENCE_INTEGRITY_FAILURE:
                 corrupt = True
+            else:
+                raise
 
     markers = {
         (marker.analysis_id, marker.analysis_evidence_id): marker
@@ -716,10 +718,12 @@ def _completion_outcome(
                 environment=environment,
             )
         except _WorkflowFailure as error:
-            if error.code == _ENVIRONMENT_FAILURE:
-                environment = True
-            else:
+            if error.code in {_INCOMPATIBLE_IDENTITY, _ENVIRONMENT_FAILURE}:
+                raise
+            if error.code == _EVIDENCE_INTEGRITY_FAILURE:
                 corrupt = True
+            else:
+                raise
 
     if environment:
         raise _WorkflowFailure(_ENVIRONMENT_FAILURE)
@@ -836,6 +840,11 @@ def _diagnostic_complete_verification(
         plan,
         expected_identity=session.identity,
     )
+    if (
+        str(getattr(before, "envelope").evidence_id) != plan.failed_before_evidence_id
+        or str(getattr(after, "envelope").evidence_id) != plan.fixed_after_evidence_id
+    ):
+        raise _WorkflowFailure(_INCOMPATIBLE_IDENTITY)
     _validate_declaration_lineage(
         declaration,
         before_identity=getattr(before, "manifest").identity,

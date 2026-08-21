@@ -1810,6 +1810,131 @@ def test_task7b_completion_invalid_analysis_has_deterministic_inconclusive_resul
     assert completed.data["session"]["state"] == "INVESTIGATING"
 
 
+def _install_completion_identity_view(
+    monkeypatch: pytest.MonkeyPatch,
+    workspace: WorkspacePaths,
+    marker_ref: DiagnosticMarkerRef,
+    kind: str,
+) -> None:
+    evidence = EvidenceStore(workspace.workspace_root / "evidence")
+    original_get_envelope = EvidenceStore.get_envelope
+    if kind == "analysis":
+        evidence_id = marker_ref.analysis_evidence_id
+    else:
+        assert kind == "marker"
+        evidence_id = marker_ref.marker_evidence_id
+    envelope = evidence.get_envelope(evidence_id)
+    foreign_envelope = copy.copy(envelope)
+    object.__setattr__(
+        foreign_envelope,
+        "identity",
+        replace(envelope.identity, workspace_id="f" * 64),
+    )
+    envelope_views = {evidence_id: foreign_envelope}
+
+    def view_get_envelope(store: EvidenceStore, requested_id: str) -> EvidenceEnvelope:
+        if requested_id in envelope_views:
+            return envelope_views[requested_id]
+        return original_get_envelope(store, requested_id)
+
+    monkeypatch.setattr(EvidenceStore, "get_envelope", view_get_envelope)
+
+
+def test_task7b_completion_rejects_rebound_fixed_after_evidence_without_mutation(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    (
+        diagnostic_context,
+        session_id,
+        workspace,
+        _declaration,
+        _plan,
+        _marker_ref,
+        _declared,
+        _planned,
+        _started,
+        _attached,
+    ) = _prepared_cross_state_operations(monkeypatch, tmp_path)
+    real_repository_factory = diagnostic_workflows._repository_factory
+
+    class ReboundFixedAfterRepository:
+        def __init__(self, evidence_store: EvidenceStore) -> None:
+            self._repository = real_repository_factory(evidence_store)
+
+        def load(self, run_id: str) -> object:
+            published = self._repository.load(run_id)
+            if run_id != "vs03-fixed-after":
+                return published
+            metadata = dict(published.envelope.metadata)
+            metadata["operation_intent_sha256"] = "0" * 64
+            rebound_envelope = EvidenceEnvelope(
+                identity=published.envelope.identity,
+                operation=published.envelope.operation,
+                produced_at_utc=published.envelope.produced_at_utc,
+                parents=published.envelope.parents,
+                artifacts=published.envelope.artifacts,
+                metadata=metadata,
+            )
+            rebound_root = replace(
+                published.root,
+                manifest_id=str(rebound_envelope.evidence_id),
+            )
+            return replace(
+                published,
+                envelope=rebound_envelope,
+                root=rebound_root,
+            )
+
+    monkeypatch.setattr(
+        diagnostic_workflows,
+        "_repository_factory",
+        lambda evidence_store: ReboundFixedAfterRepository(evidence_store),
+    )
+    before = _authority_snapshot(workspace)
+    result = diagnostic_complete_verification(
+        _fresh_diagnostic_context(diagnostic_context),
+        operation_id="complete.rebound-fixed-after",
+        diagnostic_session_id=session_id,
+        expected_revision=7,
+        executed_operation_ids=["target-test.vs03"],
+    )
+    after = _authority_snapshot(workspace)
+    assert result.ok is False
+    assert result.code == "INCOMPATIBLE_IDENTITY"
+    assert after == before
+
+
+@pytest.mark.parametrize("kind", ("analysis", "marker"))
+def test_task7b_completion_rejects_analysis_or_marker_identity_without_mutation(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, kind: str
+) -> None:
+    (
+        diagnostic_context,
+        session_id,
+        workspace,
+        _declaration,
+        _plan,
+        marker_ref,
+        _declared,
+        _planned,
+        _started,
+        _attached,
+    ) = _prepared_cross_state_operations(monkeypatch, tmp_path)
+    _install_completion_identity_view(monkeypatch, workspace, marker_ref, kind)
+    before = _authority_snapshot(workspace)
+    result = diagnostic_complete_verification(
+        _fresh_diagnostic_context(diagnostic_context),
+        operation_id=f"complete.identity.{kind}",
+        diagnostic_session_id=session_id,
+        expected_revision=7,
+        executed_operation_ids=["target-test.vs03"],
+    )
+    after = _authority_snapshot(workspace)
+    assert result.ok is False
+    assert result.code == "INCOMPATIBLE_IDENTITY"
+    assert after == before
+
+
 def test_target_replay_diagnostic_session_reloads_with_origin_authority(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
