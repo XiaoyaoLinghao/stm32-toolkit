@@ -75,6 +75,7 @@ def test_frozen_stream_pair_shares_case_scope_but_declares_distinct_firmware_ide
     assert before.descriptor.identity.project_id == after.descriptor.identity.project_id
     assert before.descriptor.identity.session_id == after.descriptor.identity.session_id
     assert before.descriptor.identity.target_device == after.descriptor.identity.target_device
+    assert before.descriptor.identity.input_snapshot_sha256 != after.descriptor.identity.input_snapshot_sha256
     assert before.descriptor.identity.build_id != after.descriptor.identity.build_id
     assert before.descriptor.identity.elf_sha256 != after.descriptor.identity.elf_sha256
     assert before.descriptor.identity.git_commit != after.descriptor.identity.git_commit
@@ -103,11 +104,68 @@ def test_frozen_stream_pair_shares_case_scope_but_declares_distinct_firmware_ide
     assert after_frames[-1].payload["state"] == "passed"
 
     for fixture in (before, after):
+        assert fixture.descriptor.stream.kind == "target-replay-stream"
+        assert fixture.descriptor.stream.media_type == "application/octet-stream"
+        assert fixture.descriptor.stream.relative_path == f"{fixture.descriptor.scenario_role}.bin"
+        hex_source = FIXTURES / f"{fixture.descriptor.scenario_role}.hex"
+        assert hex_source.suffix == ".hex"
+        assert hex_source.name != fixture.descriptor.stream.relative_path
         assert fixture.stream_bytes == bytes.fromhex(
-            (FIXTURES / f"{fixture.descriptor.scenario_role}.hex").read_text(encoding="ascii")
+            hex_source.read_text(encoding="ascii")
         )
         assert fixture.descriptor.stream.size_bytes == len(fixture.stream_bytes)
         assert fixture.descriptor.stream.sha256 == sha256(fixture.stream_bytes).hexdigest()
+
+        inventory_identity = before_frames[0].payload["identity"] if fixture is before else after_frames[0].payload["identity"]
+        assert inventory_identity == fixture.descriptor.identity.to_dict()
+        terminal = before_frames[-1].payload if fixture is before else after_frames[-1].payload
+        assert {
+            key: terminal[key]
+            for key in ("build_id", "elf_sha256", "target_device")
+        } == {
+            key: fixture.descriptor.identity.to_dict()[key]
+            for key in ("build_id", "elf_sha256", "target_device")
+        }
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    (
+        ("relative_path", "failed-before.hex"),
+        ("media_type", "text/plain"),
+    ),
+)
+def test_descriptor_rejects_non_binary_stream_artifact_contract(field: str, value: str):
+    descriptor = _fixture("failed-before").descriptor
+    payload = descriptor.to_dict()
+    payload["stream"] = {**payload["stream"], field: value}
+    payload["replay_id"] = calculate_replay_id(payload)
+
+    with pytest.raises(ProtocolError):
+        TargetReplayDescriptor.from_value(payload)
+
+
+def test_from_value_does_not_shortcut_descriptor_subclass():
+    descriptor = _fixture("failed-before").descriptor
+
+    class DescriptorSubclass(TargetReplayDescriptor):
+        pass
+
+    subclass = DescriptorSubclass(
+        **{field.name: getattr(descriptor, field.name) for field in fields(TargetReplayDescriptor)}
+    )
+    with pytest.raises(ProtocolError):
+        TargetReplayDescriptor.from_value(subclass)
+
+
+def test_fixture_loader_rejects_binary_artifact_path_as_hex_input(tmp_path: Path):
+    descriptor = tmp_path / "failed-before.json"
+    binary_artifact_path = tmp_path / "failed-before.bin"
+    descriptor.write_bytes((FIXTURES / descriptor.name).read_bytes())
+    binary_artifact_path.write_bytes((FIXTURES / "failed-before.hex").read_bytes())
+
+    with pytest.raises(ProtocolError):
+        load_target_replay_fixture(descriptor, binary_artifact_path)
 
 
 def test_fixture_loader_rejects_digest_size_hex_and_file_type_tampering(tmp_path: Path):

@@ -119,8 +119,16 @@ class TargetReplayDescriptor:
         if not isinstance(self.identity, EvidenceIdentity):
             _replay_error("TEST_REPLAY_INVALID", "identity must be an EvidenceIdentity")
         _hash(self.inventory_digest, "inventory_digest")
-        if not isinstance(self.stream, ArtifactRef) or self.stream.kind != TARGET_REPLAY_STREAM_KIND:
-            _replay_error("TEST_REPLAY_INVALID", "stream must be a target-replay-stream ArtifactRef")
+        if (
+            not isinstance(self.stream, ArtifactRef)
+            or self.stream.kind != TARGET_REPLAY_STREAM_KIND
+            or self.stream.media_type != "application/octet-stream"
+            or not self.stream.relative_path.endswith(".bin")
+        ):
+            _replay_error(
+                "TEST_REPLAY_INVALID",
+                "stream must be a target-replay-stream binary ArtifactRef",
+            )
         if self.stream_format != TARGET_REPLAY_STREAM_FORMAT:
             _replay_error("TEST_REPLAY_INVALID", "stream_format must be stm32-target-frame/1")
         if self.expected_terminal_state not in _TERMINAL_STATES:
@@ -138,7 +146,7 @@ class TargetReplayDescriptor:
     def from_value(cls, value: object) -> "TargetReplayDescriptor":
         """Parse one JSON-shaped closed descriptor without accepting extra fields."""
 
-        if isinstance(value, cls):
+        if type(value) is cls:
             return value
         _reject_tuples(value)
         if not isinstance(value, Mapping) or set(value) != _DESCRIPTOR_FIELDS:
@@ -315,12 +323,21 @@ def load_target_replay_fixture(
         maximum_bytes=MAX_REPLAY_DESCRIPTOR_BYTES,
         label="descriptor",
     )
+    descriptor = TargetReplayDescriptor.from_value(_decode_json(descriptor_bytes))
+    try:
+        stream_path = Path(stream_file)
+    except TypeError as error:
+        _replay_error("TEST_REPLAY_FIXTURE_INVALID", "hex stream path is invalid", error)
+    if stream_path.suffix != ".hex" or stream_path.name == descriptor.stream.relative_path:
+        _replay_error(
+            "TEST_REPLAY_FIXTURE_INVALID",
+            "hex stream input must be a distinct .hex source, not the binary artifact",
+        )
     stream_text_bytes = _read_fixture_file(
-        stream_file,
+        stream_path,
         maximum_bytes=min(MAX_REPLAY_HEX_BYTES, max_stream_bytes * 3 + 2),
         label="hex stream",
     )
-    descriptor = TargetReplayDescriptor.from_value(_decode_json(descriptor_bytes))
     stream_bytes = _decode_hex_stream(stream_text_bytes, maximum_bytes=max_stream_bytes)
     artifact = descriptor.stream
     if artifact.size_bytes != len(stream_bytes):
