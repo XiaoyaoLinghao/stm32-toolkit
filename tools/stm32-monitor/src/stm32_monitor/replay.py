@@ -1010,6 +1010,11 @@ def _validate_existing_reference_root(
             raise ValueError("reference artifact differs from the operation reference")
     except MonitorReplayError:
         raise
+    except FileNotFoundError as error:
+        raise MonitorReplayError(
+            EVIDENCE_INTEGRITY_FAILURE,
+            "monitor run reference Evidence is absent",
+        ) from error
     except OSError as error:
         raise MonitorReplayError(
             ENVIRONMENT_FAILURE,
@@ -1080,6 +1085,26 @@ def _validate_existing_root(
             raise ValueError("transcript artifact bytes differ from the operation root")
     except MonitorReplayError:
         raise
+    except FileNotFoundError as error:
+        raise MonitorReplayError(
+            EVIDENCE_INTEGRITY_FAILURE,
+            "monitor run transcript Evidence is absent",
+        ) from error
+    except OSError as error:
+        raise MonitorReplayError(
+            ENVIRONMENT_FAILURE,
+            "monitor run transcript Evidence provider failed",
+        ) from error
+    except EvidenceValidationError as error:
+        if _has_non_missing_os_error(error):
+            raise MonitorReplayError(
+                ENVIRONMENT_FAILURE,
+                "monitor run transcript Evidence provider failed",
+            ) from error
+        raise MonitorReplayError(
+            EVIDENCE_INTEGRITY_FAILURE,
+            "monitor run transcript evidence is corrupt",
+        ) from error
     except Exception as error:
         raise MonitorReplayError(
             EVIDENCE_INTEGRITY_FAILURE,
@@ -1160,6 +1185,50 @@ def _publish_transcript(
         raise MonitorReplayError(ENVIRONMENT_FAILURE, "replay Evidence publication failed") from error
 
 
+def _resolve_reference_root_race(
+    evidence_store: EvidenceStore,
+    expected_root: RootRecord,
+) -> None:
+    try:
+        winner = get_root(
+            evidence_store,
+            expected_root.root_type,
+            expected_root.root_id,
+        )
+    except FileNotFoundError as error:
+        raise MonitorReplayError(
+            ENVIRONMENT_FAILURE,
+            "reference root disappeared during publication",
+        ) from error
+    except EvidenceValidationError as error:
+        if error.message == "evidence root is absent":
+            raise MonitorReplayError(
+                ENVIRONMENT_FAILURE,
+                "reference root disappeared during publication",
+            ) from error
+        raise MonitorReplayError(
+            EVIDENCE_INTEGRITY_FAILURE,
+            "reference root winner is corrupt",
+        ) from error
+    except OSError as error:
+        raise MonitorReplayError(
+            ENVIRONMENT_FAILURE,
+            "reference root winner could not be read",
+        ) from error
+    except Exception as error:
+        if _has_non_missing_os_error(error):
+            raise MonitorReplayError(
+                ENVIRONMENT_FAILURE,
+                "reference root winner could not be read",
+            ) from error
+        raise MonitorReplayError(
+            EVIDENCE_INTEGRITY_FAILURE,
+            "reference root winner is corrupt",
+        ) from error
+    if winner.to_dict() != expected_root.to_dict():
+        _fail(OPERATION_CONFLICT, "operation reference root changed before publication")
+
+
 def _publish_reference(
     reference: MonitorRunRef,
     expected_envelope: EvidenceEnvelope,
@@ -1186,7 +1255,8 @@ def _publish_reference(
             put_root(evidence_store, expected_root)
         except EvidenceValidationError as error:
             if error.message == "root identity already has different canonical bytes":
-                _fail(OPERATION_CONFLICT, "operation reference root changed before publication")
+                _resolve_reference_root_race(evidence_store, expected_root)
+                return
             raise
     except MonitorReplayError:
         raise
@@ -1273,6 +1343,11 @@ def ingest_monitor_replay(
     try:
         root = _load_monitor_root(evidence_store, operation)
         reference_root = _load_monitor_reference_root(evidence_store, operation)
+        if root is None and reference_root is not None:
+            _fail(
+                EVIDENCE_INTEGRITY_FAILURE,
+                "monitor run reference exists without its transcript root",
+            )
         history = HistoryStore(paths)
     except MonitorReplayError:
         raise
