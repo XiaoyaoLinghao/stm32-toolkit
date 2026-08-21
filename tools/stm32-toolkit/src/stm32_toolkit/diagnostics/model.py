@@ -1088,10 +1088,12 @@ def _closed_wire_list(value: object, *, minimum: int, maximum: int) -> list[obje
 
 
 def _artifact_snapshot(value: object) -> ArtifactRef:
-    if isinstance(value, ArtifactRef):
+    if type(value) is ArtifactRef:
         raw = value.to_dict()
     elif type(value) is dict:
         raw = value
+    elif isinstance(value, ArtifactRef):
+        _fail(DIAGNOSTIC_INVALID_EVENT)
     else:
         _fail(DIAGNOSTIC_INVALID_EVENT)
     try:
@@ -1100,7 +1102,9 @@ def _artifact_snapshot(value: object) -> ArtifactRef:
         if error.code == "EVIDENCE_LIMIT_EXCEEDED":
             _fail(DIAGNOSTIC_LIMIT_EXCEEDED)
         _fail(DIAGNOSTIC_INVALID_EVENT)
-    except (TypeError, ValueError, OverflowError):
+    except (TypeError, ValueError, OverflowError, UnicodeError, RecursionError):
+        _fail(DIAGNOSTIC_INVALID_EVENT)
+    except Exception:
         _fail(DIAGNOSTIC_INVALID_EVENT)
     if type(artifact) is not ArtifactRef:
         _fail(DIAGNOSTIC_INVALID_EVENT)

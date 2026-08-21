@@ -142,6 +142,37 @@ def test_new_round_trip_fresh_containers_frozen_and_artifact_snapshot() -> None:
     assert type(source.diff_artifact) is ArtifactRef
 
 
+def test_artifact_subclass_is_rejected_without_provider_exception_leak() -> None:
+    class ExplodingArtifactRef(ArtifactRef):
+        def to_dict(self) -> dict[str, object]:
+            raise RuntimeError("provider-controlled failure")
+
+    malicious = ExplodingArtifactRef(
+        sha256=ARTIFACT.sha256,
+        size_bytes=ARTIFACT.size_bytes,
+        relative_path=ARTIFACT.relative_path,
+        kind=ARTIFACT.kind,
+        media_type=ARTIFACT.media_type,
+    )
+    _expect_invalid(lambda: SourceChangeDeclaration.new(
+        before_source_sha256="8" * 64,
+        after_source_sha256="9" * 64,
+        before_build_id="a" * 64,
+        before_elf_sha256="b" * 64,
+        after_build_id="c" * 64,
+        after_elf_sha256="d" * 64,
+        changed_paths=("src/main.c", "src/monitor.c"),
+        diff_evidence_id="e" * 64,
+        diff_artifact=malicious,
+        claimed_hypothesis_ids=HYPOTHESIS_IDS,
+        validation_plan_id=PLAN_ID,
+    ))
+
+    wire = _source().to_dict()
+    wire["diff_artifact"] = malicious
+    _expect_invalid(lambda: SourceChangeDeclaration.from_value(wire))
+
+
 def test_source_plan_fix_bind_without_digest_fixed_point() -> None:
     plan_id = "e" * 64
     source = _source(plan_id)
