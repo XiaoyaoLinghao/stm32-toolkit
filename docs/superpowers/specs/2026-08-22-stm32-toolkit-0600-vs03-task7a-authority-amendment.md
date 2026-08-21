@@ -121,3 +121,29 @@ one independent real public-path probe.
    original accepted product plus current session without a new event. Reuse each ID with changed
    intent and receive stable conflict; use a fresh stale ID and receive revision conflict.
 
+## 5. Stop-loss amendment: one shared replay wire authority
+
+Two consecutive Toolkit-only attempts to reproduce the Monitor replay parser did not converge.
+The first omitted closed batch/sample shapes; the second still accepted a whitespace-normalized
+selector that the producer rejected. Adding another local field check would preserve two competing
+authorities and violate the 0.6 governance stop-loss rule.
+
+The canonical wire validation for `stm32-monitor-replay/1` and
+`stm32-monitor-run-ref/1` therefore moves to one dependency-neutral 0600 contract module in the
+Toolkit base package. It owns JSON bounds, exact field sets, primitive types, NFC/control/strip
+rules, UUID/hash/time/range rules, binding/batch/sample/watch normalization, open bounded JSON
+values for `typedValue` and `definition`, batch-chain invariants, fixture digest, projected batch
+digest vocabulary, and unsigned run-reference digest. A successful validator returns the exact
+canonical wire projection; it never guesses, repairs, or normalizes caller bytes.
+
+Monitor replay construction must call this shared validator before materializing Monitor domain
+objects, and its public `from_value` paths must accept exactly the same wire set. Toolkit diagnostic
+consumption must call the same validator, then independently enforce Evidence/root/transcript,
+current-import, TestRun lineage, and before/after role relationships. Toolkit still does not import
+the Monitor package, and the shared wire module imports neither Monitor nor diagnostic workflows.
+
+The shared validator is the sole authority for wire shape. Monitor domain models remain the sole
+authority for live History behavior, and diagnostic workflows remain the sole authority for
+cross-Evidence authorization. Existing canonical replay fixtures and persisted reference artifacts
+remain byte-compatible; no Evidence migration is required. Producer-invalid but self-consistently
+re-signed bytes must fail identically at both producer and consumer before any mutation.
