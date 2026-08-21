@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 from dataclasses import replace
 import hashlib
 import json
@@ -43,6 +44,16 @@ from stm32_toolkit.testing.replay import load_target_replay_fixture
 
 FIXTURES = Path(__file__).parent / "fixtures" / "vs03" / "target"
 PROJECT_ID = UUID("123e4567-e89b-42d3-a456-426614174000")
+
+
+def _producer_canonical_json_bytes(value: object) -> bytes:
+    return json.dumps(
+        value,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    ).encode("utf-8")
 
 
 def _install_model(
@@ -147,7 +158,10 @@ def _verification_checkpoint_inputs(
     workspace: WorkspacePaths,
     session_id: str,
     hypothesis_id: str,
+    marker_hypothesis_id: str | None = None,
+    analysis_mutation: str | None = None,
 ) -> tuple[SourceChangeDeclaration, VerificationPlan, DiagnosticMarkerRef]:
+    marker_hypothesis_id = hypothesis_id if marker_hypothesis_id is None else marker_hypothesis_id
     evidence = EvidenceStore(workspace.workspace_root / "evidence")
     repository = TestRunRepository(evidence)
     before = repository.load("vs03-failed-before")
@@ -167,6 +181,61 @@ def _verification_checkpoint_inputs(
         metadata={"kind": "source-change-diff"},
     )
     evidence.put_envelope(diff_envelope)
+    transcript_paths = {
+        "failed-before": Path(__file__).parents[2] / "stm32-monitor" / "tests" / "fixtures" / "vs03" / "failed-before.json",
+        "fixed-after": Path(__file__).parents[2] / "stm32-monitor" / "tests" / "fixtures" / "vs03" / "fixed-after.json",
+    }
+
+    def publish_transcript(run: object, role: str) -> EvidenceEnvelope:
+        raw = transcript_paths[role].read_bytes()
+        document = json.loads(raw.decode("utf-8"))
+        monitor_run_id = str(document["batches"][0]["runId"])
+        source = tmp_path / f"{role}-monitor-transcript.json"
+        source.write_bytes(raw)
+        artifact = evidence.ingest_file(
+            source, kind="monitor-replay-transcript", media_type="application/json"
+        )
+        operation_id = monitor_run_id
+        metadata = {
+            "operation_id": operation_id,
+            "scenario_role": role,
+            "origin_workspace_id": run.manifest.identity.workspace_id,
+            "import_workspace_id": workspace.workspace_id,
+            "origin_run_id": monitor_run_id,
+            "projected_run_id": monitor_run_id,
+            "fixture_sha256": document["fixture_sha256"],
+            "execution_source": "replay",
+            "physical_transport_evidence": False,
+        }
+        envelope = EvidenceEnvelope(
+            identity=run.manifest.identity,
+            operation="monitor-replay-import",
+            produced_at_utc="2026-08-21T12:00:30.000000Z",
+            parents=(),
+            artifacts=(artifact,),
+            metadata=metadata,
+        )
+        evidence.put_envelope(envelope)
+        put_root(
+            evidence,
+            RootRecord(
+                root_type="monitor-run",
+                root_id=operation_id,
+                manifest_id=str(envelope.evidence_id),
+                metadata={
+                    "fixture_sha256": document["fixture_sha256"],
+                    "run_ref_sha256": "a" * 64,
+                    "origin_workspace_id": run.manifest.identity.workspace_id,
+                    "import_workspace_id": workspace.workspace_id,
+                    "execution_source": "replay",
+                    "physical_transport_evidence": False,
+                },
+            ),
+        )
+        return envelope
+
+    before_transcript = publish_transcript(before, "failed-before")
+    after_transcript = publish_transcript(after, "fixed-after")
     plan_id = "b" * 64
     declaration = SourceChangeDeclaration.new(
         before_source_sha256=before.manifest.identity.input_snapshot_sha256,
@@ -220,11 +289,37 @@ def _verification_checkpoint_inputs(
         "delta_last": 1,
         "changed": True,
     }
-    analysis["analysis_id"] = hashlib.sha256(
-        canonical_json_bytes({key: value for key, value in analysis.items() if key != "analysis_id"})
-    ).hexdigest()
+    if analysis_mutation == "exclusions":
+        analysis.update(
+            aligned_position_count=3,
+            aligned_pair_count=2,
+            excluded_position_count=1,
+            reason_code="VALUES_CHANGED_WITH_EXCLUSIONS",
+        )
+    elif analysis_mutation == "reason":
+        analysis["reason_code"] = "VALUES_CHANGED_WITH_EXCLUSIONS"
+    elif analysis_mutation == "ordering":
+        analysis.update(before_min=5, before_max=5)
+    elif analysis_mutation == "oversized-count":
+        analysis.update(
+            aligned_position_count=2049,
+            aligned_pair_count=2,
+            excluded_position_count=2047,
+            reason_code="VALUES_CHANGED_WITH_EXCLUSIONS",
+        )
+    elif analysis_mutation == "overflow":
+        analysis.update(before_first=1e308, after_first=-1e308, delta_first=0)
+    analysis_unsigned = {key: value for key, value in analysis.items() if key != "analysis_id"}
+    try:
+        analysis_unsigned_bytes = canonical_json_bytes(analysis_unsigned)
+    except EvidenceValidationError:
+        analysis_unsigned_bytes = _producer_canonical_json_bytes(analysis_unsigned)
+    analysis["analysis_id"] = hashlib.sha256(analysis_unsigned_bytes).hexdigest()
     analysis_path = tmp_path / "analysis.json"
-    analysis_bytes = canonical_json_bytes(analysis)
+    try:
+        analysis_bytes = canonical_json_bytes(analysis)
+    except EvidenceValidationError:
+        analysis_bytes = _producer_canonical_json_bytes(analysis)
     analysis_path.write_bytes(analysis_bytes)
     analysis_artifact = evidence.ingest_file(
         analysis_path, kind="monitor-analysis", media_type="application/json"
@@ -234,8 +329,8 @@ def _verification_checkpoint_inputs(
         operation="monitor-analysis",
         produced_at_utc="2026-08-21T12:01:00.000000Z",
         parents=(
-            str(before.envelope.evidence_id),
-            str(after.envelope.evidence_id),
+            str(before_transcript.evidence_id),
+            str(after_transcript.evidence_id),
             str(diff_envelope.evidence_id),
         ),
         artifacts=(analysis_artifact,),
@@ -278,7 +373,7 @@ def _verification_checkpoint_inputs(
         "analysis_id": analysis["analysis_id"],
         "analysis_evidence_id": str(analysis_envelope.evidence_id),
         "diagnostic_session_id": session_id,
-        "hypothesis_id": hypothesis_id,
+        "hypothesis_id": marker_hypothesis_id,
         "polarity": "supports",
         "label": "change-observed",
         "rationale": "the replayed analysis observed the declared source change",
@@ -348,12 +443,62 @@ def _verification_checkpoint_inputs(
         analysis_id=str(analysis["analysis_id"]),
         analysis_evidence_id=str(analysis_envelope.evidence_id),
         diagnostic_session_id=session_id,
-        hypothesis_id=hypothesis_id,
+        hypothesis_id=marker_hypothesis_id,
         polarity="supports",
         label="change-observed",
         rationale="the replayed analysis observed the declared source change",
     )
     return declaration, plan, marker_ref
+
+
+def _prepared_checkpoint_for_attach(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> tuple[DiagnosticWorkflowContext, str, WorkspacePaths, SourceChangeDeclaration, VerificationPlan, DiagnosticMarkerRef]:
+    diagnostic_context, session_id, _failed_replay, workspace = _replay_and_open_session(
+        monkeypatch, tmp_path
+    )
+    testing_context = testing_workflows.TestingWorkflowContext(
+        diagnostic_context.project_root,
+        diagnostic_context.data_root,
+        diagnostic_context.session_id,
+    )
+    fixed_replay = testing_workflows.target_replay_run(
+        testing_context,
+        "vs03-fixed-after",
+        FIXTURES / "fixed-after.json",
+        FIXTURES / "fixed-after.hex",
+    )
+    assert fixed_replay.ok is True
+    shown = diagnostic_show(
+        _fresh_diagnostic_context(diagnostic_context), diagnostic_session_id=session_id
+    )
+    assert shown.ok is True
+    hypothesis_id = shown.data["session"]["hypotheses"][0]["hypothesis_id"]
+    declaration, plan, marker_ref = _verification_checkpoint_inputs(
+        tmp_path, workspace, session_id, hypothesis_id
+    )
+    assert diagnostic_declare_source_change(
+        _fresh_diagnostic_context(diagnostic_context),
+        operation_id="diagnostic.source-change.declare",
+        diagnostic_session_id=session_id,
+        expected_revision=3,
+        source_change_declaration=declaration,
+    ).ok is True
+    assert diagnostic_add_verification_plan(
+        _fresh_diagnostic_context(diagnostic_context),
+        operation_id="diagnostic.verification-plan.add",
+        diagnostic_session_id=session_id,
+        expected_revision=4,
+        verification_plan=plan,
+    ).ok is True
+    assert diagnostic_start_verification(
+        _fresh_diagnostic_context(diagnostic_context),
+        operation_id="diagnostic.verification.start",
+        diagnostic_session_id=session_id,
+        expected_revision=5,
+        verification_plan_id=plan.verification_plan_id,
+    ).ok is True
+    return diagnostic_context, session_id, workspace, declaration, plan, marker_ref
 
 
 def test_target_replay_diagnostic_session_reloads_with_origin_authority(
@@ -947,3 +1092,436 @@ def test_target_replay_prepares_and_reloads_fix_verification_checkpoint(
         diagnostic_marker_ref=marker_ref,
     )
     assert retry.to_dict() == attached.to_dict()
+
+
+def test_target_replay_declaration_rejects_rehashed_before_lineage_without_mutation(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    diagnostic_context, session_id, _failed_replay, workspace = _replay_and_open_session(
+        monkeypatch, tmp_path
+    )
+    testing_context = testing_workflows.TestingWorkflowContext(
+        diagnostic_context.project_root,
+        diagnostic_context.data_root,
+        diagnostic_context.session_id,
+    )
+    fixed_replay = testing_workflows.target_replay_run(
+        testing_context,
+        "vs03-fixed-after",
+        FIXTURES / "fixed-after.json",
+        FIXTURES / "fixed-after.hex",
+    )
+    assert fixed_replay.ok is True
+    shown = diagnostic_show(
+        _fresh_diagnostic_context(diagnostic_context), diagnostic_session_id=session_id
+    )
+    assert shown.ok is True
+    hypothesis_id = shown.data["session"]["hypotheses"][0]["hypothesis_id"]
+    declaration, _plan, _marker = _verification_checkpoint_inputs(
+        tmp_path, workspace, session_id, hypothesis_id
+    )
+    wrong_before = SourceChangeDeclaration.new(
+        before_source_sha256="f" * 64,
+        after_source_sha256=declaration.after_source_sha256,
+        before_build_id=declaration.before_build_id,
+        before_elf_sha256=declaration.before_elf_sha256,
+        after_build_id=declaration.after_build_id,
+        after_elf_sha256=declaration.after_elf_sha256,
+        changed_paths=declaration.changed_paths,
+        diff_evidence_id=declaration.diff_evidence_id,
+        diff_artifact=declaration.diff_artifact,
+        claimed_hypothesis_ids=declaration.claimed_hypothesis_ids,
+        validation_plan_id=declaration.validation_plan_id,
+    )
+    before = _authority_snapshot(workspace)
+    result = diagnostic_declare_source_change(
+        _fresh_diagnostic_context(diagnostic_context),
+        operation_id="diagnostic.source-change.declare.wrong-before",
+        diagnostic_session_id=session_id,
+        expected_revision=3,
+        source_change_declaration=wrong_before,
+    )
+    after = _authority_snapshot(workspace)
+    assert result.ok is False
+    assert result.code == "INCOMPATIBLE_IDENTITY"
+    assert after == before
+
+
+def test_target_replay_plan_rejects_rehashed_after_lineage_without_mutation(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    diagnostic_context, session_id, _failed_replay, workspace = _replay_and_open_session(
+        monkeypatch, tmp_path
+    )
+    testing_context = testing_workflows.TestingWorkflowContext(
+        diagnostic_context.project_root,
+        diagnostic_context.data_root,
+        diagnostic_context.session_id,
+    )
+    assert testing_workflows.target_replay_run(
+        testing_context,
+        "vs03-fixed-after",
+        FIXTURES / "fixed-after.json",
+        FIXTURES / "fixed-after.hex",
+    ).ok is True
+    shown = diagnostic_show(
+        _fresh_diagnostic_context(diagnostic_context), diagnostic_session_id=session_id
+    )
+    assert shown.ok is True
+    hypothesis_id = shown.data["session"]["hypotheses"][0]["hypothesis_id"]
+    declaration, plan, _marker = _verification_checkpoint_inputs(
+        tmp_path, workspace, session_id, hypothesis_id
+    )
+    wrong_after = SourceChangeDeclaration.new(
+        before_source_sha256=declaration.before_source_sha256,
+        after_source_sha256="e" * 64,
+        before_build_id=declaration.before_build_id,
+        before_elf_sha256=declaration.before_elf_sha256,
+        after_build_id=declaration.after_build_id,
+        after_elf_sha256=declaration.after_elf_sha256,
+        changed_paths=declaration.changed_paths,
+        diff_evidence_id=declaration.diff_evidence_id,
+        diff_artifact=declaration.diff_artifact,
+        claimed_hypothesis_ids=declaration.claimed_hypothesis_ids,
+        validation_plan_id=declaration.validation_plan_id,
+    )
+    wrong_plan = VerificationPlan.new(
+        verification_plan_id=plan.verification_plan_id,
+        diagnostic_session_id=plan.diagnostic_session_id,
+        failed_before_run_id=plan.failed_before_run_id,
+        failed_before_evidence_id=plan.failed_before_evidence_id,
+        source_change_declaration_id=wrong_after.declaration_id,
+        fixed_after_run_id=plan.fixed_after_run_id,
+        fixed_after_evidence_id=plan.fixed_after_evidence_id,
+        required_analysis_ids=plan.required_analysis_ids,
+        required_analysis_evidence_ids=plan.required_analysis_evidence_ids,
+        required_monitor_quality=plan.required_monitor_quality,
+        expected_changed=plan.expected_changed,
+    )
+    declared = diagnostic_declare_source_change(
+        _fresh_diagnostic_context(diagnostic_context),
+        operation_id="diagnostic.source-change.declare.wrong-after",
+        diagnostic_session_id=session_id,
+        expected_revision=3,
+        source_change_declaration=wrong_after,
+    )
+    assert declared.ok is True
+    before = _authority_snapshot(workspace)
+    result = diagnostic_add_verification_plan(
+        _fresh_diagnostic_context(diagnostic_context),
+        operation_id="diagnostic.verification-plan.add.wrong-after",
+        diagnostic_session_id=session_id,
+        expected_revision=4,
+        verification_plan=wrong_plan,
+    )
+    after = _authority_snapshot(workspace)
+    assert result.ok is False
+    assert result.code == "INCOMPATIBLE_IDENTITY"
+    assert after == before
+
+
+def test_target_replay_attach_rejects_same_identity_nontranscript_analysis_parent(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    diagnostic_context, session_id, workspace, _declaration, _plan, marker_ref = (
+        _prepared_checkpoint_for_attach(monkeypatch, tmp_path)
+    )
+    evidence = EvidenceStore(workspace.workspace_root / "evidence")
+    failed = TestRunRepository(evidence).load("vs03-failed-before")
+    original_get_envelope = EvidenceStore.get_envelope
+
+    def tampered_get_envelope(
+        store: EvidenceStore, evidence_id: str
+    ) -> EvidenceEnvelope:
+        envelope = original_get_envelope(store, evidence_id)
+        if evidence_id != marker_ref.analysis_evidence_id:
+            return envelope
+        tampered = copy.copy(envelope)
+        object.__setattr__(
+            tampered,
+            "parents",
+            (str(failed.envelope.evidence_id), envelope.parents[1], envelope.parents[2]),
+        )
+        return tampered
+
+    monkeypatch.setattr(EvidenceStore, "get_envelope", tampered_get_envelope)
+    before = _authority_snapshot(workspace)
+    result = diagnostic_attach_marker(
+        _fresh_diagnostic_context(diagnostic_context),
+        operation_id="diagnostic.marker.attach.wrong-parent",
+        diagnostic_session_id=session_id,
+        expected_revision=6,
+        diagnostic_marker_ref=marker_ref,
+    )
+    after = _authority_snapshot(workspace)
+    assert result.ok is False
+    assert result.code == "EVIDENCE_INTEGRITY_FAILURE"
+    assert after == before
+
+
+def test_target_replay_attach_rejects_unclaimed_marker_hypothesis_without_mutation(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    diagnostic_context, session_id, _failed_replay, workspace = _replay_and_open_session(
+        monkeypatch, tmp_path
+    )
+    shown = diagnostic_show(
+        _fresh_diagnostic_context(diagnostic_context), diagnostic_session_id=session_id
+    )
+    assert shown.ok is True
+    claimed_hypothesis_id = shown.data["session"]["hypotheses"][0]["hypothesis_id"]
+    second = diagnostic_add_hypothesis(
+        _fresh_diagnostic_context(diagnostic_context),
+        operation_id="diagnostic.hypothesis.add.second",
+        diagnostic_session_id=session_id,
+        expected_revision=3,
+        statement="a second existing hypothesis is not claimed by the source change",
+    )
+    assert second.ok is True
+    unclaimed_hypothesis_id = second.data["hypothesis"]["hypothesis_id"]
+    testing_context = testing_workflows.TestingWorkflowContext(
+        diagnostic_context.project_root,
+        diagnostic_context.data_root,
+        diagnostic_context.session_id,
+    )
+    assert testing_workflows.target_replay_run(
+        testing_context,
+        "vs03-fixed-after",
+        FIXTURES / "fixed-after.json",
+        FIXTURES / "fixed-after.hex",
+    ).ok is True
+    declaration, plan, marker_ref = _verification_checkpoint_inputs(
+        tmp_path,
+        workspace,
+        session_id,
+        claimed_hypothesis_id,
+        marker_hypothesis_id=unclaimed_hypothesis_id,
+    )
+    assert diagnostic_declare_source_change(
+        _fresh_diagnostic_context(diagnostic_context),
+        operation_id="diagnostic.source-change.declare.unclaimed",
+        diagnostic_session_id=session_id,
+        expected_revision=4,
+        source_change_declaration=declaration,
+    ).ok is True
+    assert diagnostic_add_verification_plan(
+        _fresh_diagnostic_context(diagnostic_context),
+        operation_id="diagnostic.verification-plan.add.unclaimed",
+        diagnostic_session_id=session_id,
+        expected_revision=5,
+        verification_plan=plan,
+    ).ok is True
+    assert diagnostic_start_verification(
+        _fresh_diagnostic_context(diagnostic_context),
+        operation_id="diagnostic.verification.start.unclaimed",
+        diagnostic_session_id=session_id,
+        expected_revision=6,
+        verification_plan_id=plan.verification_plan_id,
+    ).ok is True
+    before = _authority_snapshot(workspace)
+    result = diagnostic_attach_marker(
+        _fresh_diagnostic_context(diagnostic_context),
+        operation_id="diagnostic.marker.attach.unclaimed",
+        diagnostic_session_id=session_id,
+        expected_revision=7,
+        diagnostic_marker_ref=marker_ref,
+    )
+    after = _authority_snapshot(workspace)
+    assert result.ok is False
+    assert result.code == "DIAGNOSTIC_PLAN_INVALID"
+    assert after == before
+
+
+@pytest.mark.parametrize("analysis_mutation", ("exclusions", "reason", "ordering", "oversized-count", "overflow"))
+def test_target_replay_plan_rejects_impossible_valid_analysis_semantics_without_mutation(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, analysis_mutation: str
+) -> None:
+    diagnostic_context, session_id, _failed_replay, workspace = _replay_and_open_session(
+        monkeypatch, tmp_path
+    )
+    testing_context = testing_workflows.TestingWorkflowContext(
+        diagnostic_context.project_root,
+        diagnostic_context.data_root,
+        diagnostic_context.session_id,
+    )
+    assert testing_workflows.target_replay_run(
+        testing_context,
+        "vs03-fixed-after",
+        FIXTURES / "fixed-after.json",
+        FIXTURES / "fixed-after.hex",
+    ).ok is True
+    shown = diagnostic_show(
+        _fresh_diagnostic_context(diagnostic_context), diagnostic_session_id=session_id
+    )
+    assert shown.ok is True
+    hypothesis_id = shown.data["session"]["hypotheses"][0]["hypothesis_id"]
+    declaration, plan, _marker = _verification_checkpoint_inputs(
+        tmp_path,
+        workspace,
+        session_id,
+        hypothesis_id,
+        analysis_mutation=analysis_mutation,
+    )
+    assert diagnostic_declare_source_change(
+        _fresh_diagnostic_context(diagnostic_context),
+        operation_id=f"diagnostic.source-change.declare.{analysis_mutation}",
+        diagnostic_session_id=session_id,
+        expected_revision=3,
+        source_change_declaration=declaration,
+    ).ok is True
+    before = _authority_snapshot(workspace)
+    result = diagnostic_add_verification_plan(
+        _fresh_diagnostic_context(diagnostic_context),
+        operation_id=f"diagnostic.verification-plan.add.{analysis_mutation}",
+        diagnostic_session_id=session_id,
+        expected_revision=4,
+        verification_plan=plan,
+    )
+    after = _authority_snapshot(workspace)
+    assert result.ok is False
+    assert result.code == "EVIDENCE_INTEGRITY_FAILURE"
+    assert after == before
+
+
+@pytest.mark.parametrize(
+    ("mutation", "expected_code"),
+    (
+        ("payload-ref-schema", "DIAGNOSTIC_INVALID_EVENT"),
+        ("extra-marker-field", "EVIDENCE_INTEGRITY_FAILURE"),
+        ("wrong-unsigned-marker-id", "EVIDENCE_INTEGRITY_FAILURE"),
+        ("wrong-marker-envelope-id", "EVIDENCE_INTEGRITY_FAILURE"),
+        ("wrong-operation", "EVIDENCE_INTEGRITY_FAILURE"),
+        ("wrong-kind-media", "EVIDENCE_INTEGRITY_FAILURE"),
+        ("corrupt-artifact", "EVIDENCE_INTEGRITY_FAILURE"),
+        ("noncanonical-artifact", "EVIDENCE_INTEGRITY_FAILURE"),
+        ("absent-analysis-root", "EVIDENCE_INTEGRITY_FAILURE"),
+        ("wrong-analysis-unsigned-id", "EVIDENCE_INTEGRITY_FAILURE"),
+        ("foreign-analysis-identity", "INCOMPATIBLE_IDENTITY"),
+    ),
+)
+def test_target_replay_attach_fail_closed_matrix_preserves_complete_authority(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    mutation: str,
+    expected_code: str,
+) -> None:
+    diagnostic_context, session_id, workspace, _declaration, _plan, marker_ref = (
+        _prepared_checkpoint_for_attach(monkeypatch, tmp_path)
+    )
+    evidence = EvidenceStore(workspace.workspace_root / "evidence")
+    original_get_envelope = EvidenceStore.get_envelope
+    original_read_artifact = EvidenceStore.read_artifact
+    marker_envelope = evidence.get_envelope(marker_ref.marker_evidence_id)
+    analysis_envelope = evidence.get_envelope(marker_ref.analysis_evidence_id)
+
+    marker_input: object = marker_ref
+    if mutation == "payload-ref-schema":
+        marker_input = dict(marker_ref.to_dict())
+        marker_input["schema"] = "stm32-diagnostic-marker/1"
+    elif mutation == "wrong-marker-envelope-id":
+        marker_input = DiagnosticMarkerRef.new(
+            marker_id=marker_ref.marker_id,
+            marker_evidence_id="0" * 64,
+            analysis_id=marker_ref.analysis_id,
+            analysis_evidence_id=marker_ref.analysis_evidence_id,
+            diagnostic_session_id=marker_ref.diagnostic_session_id,
+            hypothesis_id=marker_ref.hypothesis_id,
+            polarity=marker_ref.polarity,
+            label=marker_ref.label,
+            rationale=marker_ref.rationale,
+        )
+    elif mutation in {"extra-marker-field", "wrong-unsigned-marker-id", "corrupt-artifact", "noncanonical-artifact"}:
+        marker_payload = original_read_artifact(
+            evidence, marker_envelope.artifacts[0], maximum_bytes=1_000_000
+        )
+        if mutation == "corrupt-artifact":
+            tampered_marker_payload = b"not-json"
+        else:
+            payload = json.loads(marker_payload.decode("utf-8"))
+            if mutation == "extra-marker-field":
+                payload["extra"] = True
+            elif mutation == "wrong-unsigned-marker-id":
+                payload["marker_id"] = "0" * 64
+            else:
+                tampered_marker_payload = b" {" + marker_payload.strip()[1:-1] + b" }"
+            if mutation != "noncanonical-artifact":
+                tampered_marker_payload = _producer_canonical_json_bytes(payload)
+
+        def tampered_read_artifact(
+            store: EvidenceStore, artifact: object, *, maximum_bytes: int
+        ) -> bytes:
+            if artifact == marker_envelope.artifacts[0]:
+                return tampered_marker_payload
+            return original_read_artifact(store, artifact, maximum_bytes=maximum_bytes)
+
+        monkeypatch.setattr(EvidenceStore, "read_artifact", tampered_read_artifact)
+    elif mutation == "wrong-analysis-unsigned-id":
+        analysis_payload = original_read_artifact(
+            evidence, analysis_envelope.artifacts[0], maximum_bytes=1_000_000
+        )
+        payload = json.loads(analysis_payload.decode("utf-8"))
+        payload["analysis_id"] = "0" * 64
+        tampered_analysis_payload = _producer_canonical_json_bytes(payload)
+
+        def tampered_read_artifact(
+            store: EvidenceStore, artifact: object, *, maximum_bytes: int
+        ) -> bytes:
+            if artifact == analysis_envelope.artifacts[0]:
+                return tampered_analysis_payload
+            return original_read_artifact(store, artifact, maximum_bytes=maximum_bytes)
+
+        monkeypatch.setattr(EvidenceStore, "read_artifact", tampered_read_artifact)
+    elif mutation == "absent-analysis-root":
+        original_get_root = diagnostic_workflows.get_root
+
+        def absent_analysis_root(store: EvidenceStore, root_type: str, root_id: str) -> RootRecord:
+            if root_type == "monitor-analysis" and root_id == marker_ref.analysis_id:
+                raise EvidenceValidationError(EVIDENCE_CORRUPT, "analysis root is absent")
+            return original_get_root(store, root_type, root_id)
+
+        monkeypatch.setattr(diagnostic_workflows, "get_root", absent_analysis_root)
+    elif mutation in {"wrong-operation", "wrong-kind-media", "foreign-analysis-identity"}:
+        target_id = marker_ref.marker_evidence_id if mutation != "foreign-analysis-identity" else marker_ref.analysis_evidence_id
+        target_seen = False
+
+        def tampered_get_envelope(store: EvidenceStore, evidence_id: str) -> EvidenceEnvelope:
+            nonlocal target_seen
+            envelope = original_get_envelope(store, evidence_id)
+            if evidence_id != target_id:
+                return envelope
+            if mutation == "foreign-analysis-identity" and not target_seen:
+                target_seen = True
+                return envelope
+            tampered = copy.copy(envelope)
+            if mutation == "wrong-operation":
+                object.__setattr__(tampered, "operation", "wrong-operation")
+            elif mutation == "wrong-kind-media":
+                artifact = copy.copy(envelope.artifacts[0])
+                object.__setattr__(artifact, "kind", "wrong-kind")
+                object.__setattr__(artifact, "media_type", "text/plain")
+                object.__setattr__(tampered, "artifacts", (artifact,))
+            else:
+                identity = replace(envelope.identity, workspace_id="f" * 64)
+                object.__setattr__(tampered, "identity", identity)
+            return tampered
+
+        monkeypatch.setattr(EvidenceStore, "get_envelope", tampered_get_envelope)
+
+    before = (
+        _tree_snapshot(workspace.workspace_root / "evidence"),
+        _tree_snapshot(workspace.diagnostics_root),
+    )
+    result = diagnostic_attach_marker(
+        _fresh_diagnostic_context(diagnostic_context),
+        operation_id=f"diagnostic.marker.attach.matrix.{mutation}",
+        diagnostic_session_id=session_id,
+        expected_revision=6,
+        diagnostic_marker_ref=marker_input,  # type: ignore[arg-type]
+    )
+    after = (
+        _tree_snapshot(workspace.workspace_root / "evidence"),
+        _tree_snapshot(workspace.diagnostics_root),
+    )
+    assert result.ok is False
+    assert result.code == expected_code
+    assert after == before

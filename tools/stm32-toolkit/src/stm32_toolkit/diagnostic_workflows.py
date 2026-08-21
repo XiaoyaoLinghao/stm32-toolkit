@@ -11,6 +11,7 @@ import math
 import re
 import secrets
 from typing import Callable, Literal, cast
+from uuid import UUID
 
 from stm32_toolkit.diagnostics import (
     ACTORS,
@@ -98,6 +99,29 @@ _MARKER_FIELDS = frozenset(
         "hypothesis_id", "polarity", "label", "rationale",
     }
 )
+_MONITOR_TRANSCRIPT_FIELDS = frozenset(
+    {
+        "schema", "source", "physical_transport_evidence", "scenario_role", "binding",
+        "batches", "fixture_sha256",
+    }
+)
+_MONITOR_BINDING_FIELDS = frozenset(
+    {
+        "workspaceId", "logicalProjectId", "sessionId", "probeId", "targetDevice",
+        "physicalTarget", "buildId", "elfSha256", "inputSnapshotSha256", "gitHead",
+        "gitDirty", "flashSessionId", "leaseId", "dwarfSha256", "svdSha256",
+    }
+)
+
+
+def _canonical_replay_json_bytes(value: object) -> bytes:
+    return json.dumps(
+        value,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    ).encode("utf-8")
 
 
 @dataclass(frozen=True)
@@ -449,8 +473,38 @@ def _new_timestamp() -> str:
     return value
 
 
-def _load_bound_session(state: _WorkflowState, diagnostic_session_id: str) -> DiagnosticSession:
-    session = state.diagnostic_store.load(diagnostic_session_id)
+def _stored_session_is_target(state: _WorkflowState, diagnostic_session_id: str) -> bool:
+    event_path = (
+        state.workspace.diagnostics_root
+        / "sessions"
+        / diagnostic_session_id
+        / "events"
+        / "00000000.json"
+    )
+    try:
+        document = json.loads(event_path.read_bytes().decode("utf-8"))
+        payload = document.get("payload")
+        request = payload.get("request") if isinstance(payload, dict) else None
+        return isinstance(request, dict) and request.get("failed_run_mode") == "target"
+    except (OSError, UnicodeError, json.JSONDecodeError, TypeError, ValueError, AttributeError):
+        return False
+
+
+def _load_bound_session(
+    state: _WorkflowState,
+    diagnostic_session_id: str,
+    *,
+    target_projection: bool = False,
+) -> DiagnosticSession:
+    try:
+        session = state.diagnostic_store.load(diagnostic_session_id)
+    except DiagnosticValidationError as error:
+        if target_projection and _stored_session_is_target(state, diagnostic_session_id):
+            if error.code == DIAGNOSTIC_EVIDENCE_MISSING:
+                raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE) from error
+            if error.code == DIAGNOSTIC_IDENTITY_MISMATCH:
+                raise _WorkflowFailure(_INCOMPATIBLE_IDENTITY) from error
+        raise
     _load_authoritative_run(
         state,
         session.failed_test_run_id,
@@ -683,6 +737,16 @@ def _same_scope(left: object, right: object) -> bool:
     )
 
 
+def _same_replay_identity(left: object, right: object) -> bool:
+    return all(
+        getattr(left, field, None) == getattr(right, field, None)
+        for field in (
+            "workspace_id", "project_id", "build_id", "elf_sha256", "target_device",
+            "input_snapshot_sha256", "git_commit", "git_dirty",
+        )
+    )
+
+
 def _load_target_run(
     state: _WorkflowState,
     run_id: str,
@@ -721,6 +785,26 @@ def _load_target_run(
     return published
 
 
+def _validate_declaration_lineage(
+    declaration: SourceChangeDeclaration,
+    *,
+    before_identity: object,
+    after_identity: object | None = None,
+) -> None:
+    if (
+        declaration.before_source_sha256 != getattr(before_identity, "input_snapshot_sha256", None)
+        or declaration.before_build_id != getattr(before_identity, "build_id", None)
+        or declaration.before_elf_sha256 != getattr(before_identity, "elf_sha256", None)
+    ):
+        raise _WorkflowFailure(_INCOMPATIBLE_IDENTITY)
+    if after_identity is not None and (
+        declaration.after_source_sha256 != getattr(after_identity, "input_snapshot_sha256", None)
+        or declaration.after_build_id != getattr(after_identity, "build_id", None)
+        or declaration.after_elf_sha256 != getattr(after_identity, "elf_sha256", None)
+    ):
+        raise _WorkflowFailure(_INCOMPATIBLE_IDENTITY)
+
+
 def _read_json_evidence(
     state: _WorkflowState,
     *,
@@ -753,9 +837,133 @@ def _read_json_evidence(
         ):
             raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
         decoded = json.loads(payload.decode("utf-8"))
-        if not isinstance(decoded, dict) or canonical_json_bytes(decoded) != payload:
+        if not isinstance(decoded, dict) or _canonical_replay_json_bytes(decoded) != payload:
             raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
         return root, envelope, artifact, payload, cast(dict[str, object], decoded)
+    except _WorkflowFailure:
+        raise
+    except FileNotFoundError as error:
+        raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE) from error
+    except (EvidenceValidationError, UnicodeError, json.JSONDecodeError, TypeError, ValueError, OverflowError) as error:
+        raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE) from error
+    except OSError as error:
+        raise _WorkflowFailure(_ENVIRONMENT_FAILURE) from error
+
+
+def _read_transcript_parent(
+    state: _WorkflowState,
+    *,
+    evidence_id: str,
+    run: object,
+    expected_role: str,
+) -> EvidenceEnvelope:
+    try:
+        run_identity = getattr(run, "identity", run)
+        envelope = state.evidence_store.get_envelope(evidence_id)
+        metadata = dict(envelope.metadata)
+        expected_metadata_fields = {
+            "operation_id", "scenario_role", "origin_workspace_id", "import_workspace_id",
+            "origin_run_id", "projected_run_id", "fixture_sha256", "execution_source",
+            "physical_transport_evidence",
+        }
+        if (
+            envelope.operation != "monitor-replay-import"
+            or envelope.parents
+            or len(envelope.artifacts) != 1
+            or set(metadata) != expected_metadata_fields
+            or metadata["scenario_role"] != expected_role
+            or metadata["origin_workspace_id"] != getattr(run_identity, "workspace_id", None)
+            or metadata["import_workspace_id"] != state.workspace.workspace_id
+            or metadata["execution_source"] != "replay"
+            or metadata["physical_transport_evidence"] is not False
+            or not _same_replay_identity(envelope.identity, run_identity)
+        ):
+            raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
+        operation_id = metadata["operation_id"]
+        if not isinstance(operation_id, str) or not operation_id:
+            raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
+        try:
+            operation_uuid = UUID(operation_id)
+            origin_run_uuid = UUID(str(metadata["origin_run_id"]))
+            projected_run_uuid = UUID(str(metadata["projected_run_id"]))
+        except (AttributeError, TypeError, ValueError) as error:
+            raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE) from error
+        if (
+            str(operation_uuid) != operation_id
+            or origin_run_uuid != operation_uuid
+            or projected_run_uuid != origin_run_uuid
+        ):
+            raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
+        root = get_root(state.evidence_store, "monitor-run", operation_id)
+        root_metadata = dict(root.metadata)
+        expected_root_fields = {
+            "fixture_sha256", "run_ref_sha256", "origin_workspace_id", "import_workspace_id",
+            "execution_source", "physical_transport_evidence",
+        }
+        if (
+            root.root_id != operation_id
+            or root.manifest_id != str(envelope.evidence_id)
+            or set(root_metadata) != expected_root_fields
+            or root_metadata["fixture_sha256"] != metadata["fixture_sha256"]
+            or root_metadata["origin_workspace_id"] != metadata["origin_workspace_id"]
+            or root_metadata["import_workspace_id"] != metadata["import_workspace_id"]
+            or root_metadata["execution_source"] != "replay"
+            or root_metadata["physical_transport_evidence"] is not False
+        ):
+            raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
+        _hash_value(metadata["fixture_sha256"])
+        _hash_value(root_metadata["run_ref_sha256"])
+        artifact = envelope.artifacts[0]
+        if artifact.kind != "monitor-replay-transcript" or artifact.media_type != "application/json":
+            raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
+        raw = state.evidence_store.read_artifact(
+            artifact, maximum_bytes=MAX_EVIDENCE_READ_BYTES
+        )
+        if artifact.size_bytes != len(raw) or artifact.sha256 != hashlib.sha256(raw).hexdigest():
+            raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
+        body = raw[:-1] if raw.endswith(b"\n") else raw
+        decoded = json.loads(body.decode("utf-8"))
+        canonical = _canonical_replay_json_bytes(decoded)
+        if not isinstance(decoded, dict) or raw not in (
+            canonical, canonical + b"\n"
+        ):
+            raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
+        if set(decoded) != _MONITOR_TRANSCRIPT_FIELDS:
+            raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
+        if (
+            decoded["schema"] != "stm32-monitor-replay/1"
+            or decoded["source"] != "toolkit-generated-probe-v2-replay"
+            or decoded["scenario_role"] != expected_role
+            or decoded["fixture_sha256"] != metadata["fixture_sha256"]
+            or decoded["physical_transport_evidence"] is not False
+        ):
+            raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
+        binding = decoded["binding"]
+        if not isinstance(binding, dict) or set(binding) != _MONITOR_BINDING_FIELDS:
+            raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
+        expected_binding = {
+            "workspaceId": run_identity.workspace_id,
+            "logicalProjectId": run_identity.project_id,
+            "targetDevice": run_identity.target_device,
+            "buildId": run_identity.build_id,
+            "elfSha256": run_identity.elf_sha256,
+            "inputSnapshotSha256": run_identity.input_snapshot_sha256,
+            "gitHead": run_identity.git_commit,
+            "gitDirty": run_identity.git_dirty,
+        }
+        if any(binding.get(key) != value for key, value in expected_binding.items()):
+            raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
+        batches = decoded["batches"]
+        if not isinstance(batches, list) or not batches:
+            raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
+        if any(
+            not isinstance(batch, dict)
+            or batch.get("runId") != metadata["origin_run_id"]
+            or batch.get("binding") != binding
+            for batch in batches
+        ):
+            raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
+        return envelope
     except _WorkflowFailure:
         raise
     except FileNotFoundError as error:
@@ -831,7 +1039,7 @@ def _validate_analysis(
     before_identity = getattr(before, "identity", None)
     if not isinstance(after_identity, object) or not isinstance(before_identity, object):
         raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
-    if envelope.identity != after_identity:
+    if not _same_replay_identity(envelope.identity, after_identity):
         raise _WorkflowFailure(_INCOMPATIBLE_IDENTITY)
     expected_metadata = {
         "analysis_id": analysis_id,
@@ -850,23 +1058,30 @@ def _validate_analysis(
         raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
     if envelope.parents[2] != declaration.diff_evidence_id:
         raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
-    for parent_id, expected in zip(envelope.parents[:2], (before_identity, after_identity)):
-        try:
-            parent = state.evidence_store.get_envelope(parent_id)
-        except FileNotFoundError as error:
-            raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE) from error
-        except EvidenceValidationError as error:
-            raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE) from error
-        except OSError as error:
-            raise _WorkflowFailure(_ENVIRONMENT_FAILURE) from error
-        if parent.identity != expected:
-            raise _WorkflowFailure(_INCOMPATIBLE_IDENTITY)
+    _read_transcript_parent(
+        state,
+        evidence_id=envelope.parents[0],
+        run=before_identity,
+        expected_role="failed-before",
+    )
+    _read_transcript_parent(
+        state,
+        evidence_id=envelope.parents[1],
+        run=after_identity,
+        expected_role="fixed-after",
+    )
     if set(analysis) != _ANALYSIS_FIELDS:
         raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
     if analysis["schema"] != _ANALYSIS_SCHEMA or analysis["analysis_id"] != analysis_id:
         raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
     unsigned = {key: value for key, value in analysis.items() if key != "analysis_id"}
-    if hashlib.sha256(canonical_json_bytes(unsigned)).hexdigest() != analysis_id:
+    try:
+        calculated_analysis_id = hashlib.sha256(
+            _canonical_replay_json_bytes(unsigned)
+        ).hexdigest()
+    except (TypeError, ValueError, OverflowError, UnicodeError) as error:
+        raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE) from error
+    if calculated_analysis_id != analysis_id:
         raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
     for field in ("request_digest", "before_run_id", "after_run_id"):
         _hash_value(analysis[field])
@@ -896,18 +1111,24 @@ def _validate_analysis(
         or analysis["quality"] != "VALID"
         or analysis["conclusion"] != "COMPLETED"
         or analysis["changed"] is not True
-        or analysis["reason_code"] not in {
-            "VALUES_CHANGED", "VALUES_CHANGED_WITH_EXCLUSIONS",
-        }
+        or analysis["reason_code"] != "VALUES_CHANGED"
     ):
         raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
     for field in ("aligned_position_count", "aligned_pair_count", "excluded_position_count"):
         value = analysis[field]
-        if type(value) is not int or value < 0:
+        if type(value) is not int or isinstance(value, bool) or not 0 <= value <= 2048:
             raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
-    if analysis["aligned_pair_count"] < 2 or analysis["aligned_pair_count"] > analysis["aligned_position_count"]:
+    if (
+        analysis["aligned_position_count"] < 1
+        or analysis["aligned_pair_count"] < 2
+        or analysis["aligned_pair_count"] > analysis["aligned_position_count"]
+    ):
         raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
-    if analysis["excluded_position_count"] != analysis["aligned_position_count"] - analysis["aligned_pair_count"]:
+    if (
+        analysis["excluded_position_count"]
+        != analysis["aligned_position_count"] - analysis["aligned_pair_count"]
+        or analysis["excluded_position_count"] != 0
+    ):
         raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
     numeric_fields = (
         "before_first", "before_last", "before_min", "before_max", "after_first", "after_last",
@@ -919,9 +1140,25 @@ def _validate_analysis(
             type(value) is float and not math.isfinite(value)
         ):
             raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
+    try:
+        for prefix in ("before", "after"):
+            minimum = analysis[f"{prefix}_min"]
+            first = analysis[f"{prefix}_first"]
+            last = analysis[f"{prefix}_last"]
+            maximum = analysis[f"{prefix}_max"]
+            if not (minimum <= first <= maximum and minimum <= last <= maximum):
+                raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
+        expected_delta_first = analysis["after_first"] - analysis["before_first"]
+        expected_delta_last = analysis["after_last"] - analysis["before_last"]
+    except _WorkflowFailure:
+        raise
+    except (TypeError, ValueError, OverflowError) as error:
+        raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE) from error
     if (
-        analysis["delta_first"] != analysis["after_first"] - analysis["before_first"]
-        or analysis["delta_last"] != analysis["after_last"] - analysis["before_last"]
+        (type(expected_delta_first) is float and not math.isfinite(expected_delta_first))
+        or (type(expected_delta_last) is float and not math.isfinite(expected_delta_last))
+        or analysis["delta_first"] != expected_delta_first
+        or analysis["delta_last"] != expected_delta_last
     ):
         raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
 
@@ -963,7 +1200,11 @@ def _validate_marker(
     if payload["marker_id"] != marker.marker_id:
         raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
     unsigned = {key: value for key, value in payload.items() if key != "marker_id"}
-    if hashlib.sha256(canonical_json_bytes(unsigned)).hexdigest() != marker.marker_id:
+    try:
+        calculated_marker_id = hashlib.sha256(canonical_json_bytes(unsigned)).hexdigest()
+    except (EvidenceValidationError, TypeError, ValueError, OverflowError, UnicodeError) as error:
+        raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE) from error
+    if calculated_marker_id != marker.marker_id:
         raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
     expected_shared = {
         "marker_id": marker.marker_id,
@@ -994,9 +1235,18 @@ def _diagnostic_declare_source_change(
     actor = _validate_actor(actor)
     declaration = SourceChangeDeclaration.from_value(source_change_declaration)
     state = _make_state(context)
-    session = _load_bound_session(state, diagnostic_session_id)
+    session = _load_bound_session(state, diagnostic_session_id, target_projection=True)
     if session.state not in {"INVESTIGATING", "FIX_PROPOSED"}:
         raise DiagnosticValidationError(DIAGNOSTIC_INVALID_TRANSITION)
+    failed = _load_target_run(
+        state,
+        session.failed_test_run_id,
+        expected_state="failed",
+        expected_identity=session.identity,
+    )
+    _validate_declaration_lineage(
+        declaration, before_identity=getattr(failed, "manifest").identity
+    )
     _read_diff_evidence(state, session, declaration)
     if session.state == "FIX_PROPOSED" and not any(
         item.declaration_id == declaration.declaration_id
@@ -1045,7 +1295,7 @@ def _diagnostic_add_verification_plan(
     actor = _validate_actor(actor)
     plan = VerificationPlan.from_value(verification_plan)
     state = _make_state(context)
-    session = _load_bound_session(state, diagnostic_session_id)
+    session = _load_bound_session(state, diagnostic_session_id, target_projection=True)
     if session.state != "FIX_PROPOSED":
         raise DiagnosticValidationError(DIAGNOSTIC_INVALID_TRANSITION)
     declarations = tuple(
@@ -1074,6 +1324,11 @@ def _diagnostic_add_verification_plan(
         plan.fixed_after_run_id,
         expected_state="passed",
         expected_identity=session.identity,
+    )
+    _validate_declaration_lineage(
+        declaration,
+        before_identity=getattr(before, "manifest").identity,
+        after_identity=getattr(after, "manifest").identity,
     )
     if (
         str(getattr(before, "envelope").evidence_id) != plan.failed_before_evidence_id
@@ -1137,7 +1392,7 @@ def _diagnostic_start_verification(
     verification_plan_id = _validate_plan_id(verification_plan_id)
     actor = _validate_actor(actor)
     state = _make_state(context)
-    session = _load_bound_session(state, diagnostic_session_id)
+    session = _load_bound_session(state, diagnostic_session_id, target_projection=True)
     if session.state not in {"FIX_PROPOSED", "VERIFYING"}:
         raise DiagnosticValidationError(DIAGNOSTIC_INVALID_TRANSITION)
     plans = tuple(
@@ -1185,7 +1440,7 @@ def _diagnostic_attach_marker(
     actor = _validate_actor(actor)
     marker = DiagnosticMarkerRef.from_value(diagnostic_marker_ref)
     state = _make_state(context)
-    session = _load_bound_session(state, diagnostic_session_id)
+    session = _load_bound_session(state, diagnostic_session_id, target_projection=True)
     if session.state != "VERIFYING":
         raise DiagnosticValidationError(DIAGNOSTIC_INVALID_TRANSITION)
     if session.active_verification_plan_id is None:
@@ -1206,6 +1461,8 @@ def _diagnostic_attach_marker(
     if len(declarations) != 1:
         raise DiagnosticValidationError(DIAGNOSTIC_PLAN_INVALID)
     declaration = declarations[0]
+    if marker.hypothesis_id not in declaration.claimed_hypothesis_ids:
+        raise DiagnosticValidationError(DIAGNOSTIC_PLAN_INVALID)
     if not any(
         marker.analysis_id == analysis_id and marker.analysis_evidence_id == evidence_id
         for analysis_id, evidence_id in zip(
@@ -1224,6 +1481,11 @@ def _diagnostic_attach_marker(
         plan.fixed_after_run_id,
         expected_state="passed",
         expected_identity=session.identity,
+    )
+    _validate_declaration_lineage(
+        declaration,
+        before_identity=getattr(before, "manifest").identity,
+        after_identity=getattr(after, "manifest").identity,
     )
     if (
         str(getattr(before, "envelope").evidence_id) != plan.failed_before_evidence_id
