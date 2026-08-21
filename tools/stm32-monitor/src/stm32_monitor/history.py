@@ -1054,49 +1054,21 @@ class HistoryStore:
         except StorageFailure as error:
             return _storage_failure(operation, error)
 
-    @staticmethod
-    def _append_batches_result(
-        ok: bool,
-        code: str,
-        message: str,
-        data: dict[str, object] | None = None,
-    ) -> ProtocolResult[dict[str, object]]:
-        """Build the correction's exact operation name around the legacy protocol grammar."""
-        operation = "history.appendbatches"
-        result = (
-            success(operation, data)
-            if ok
-            else failure(operation, code, message)
-        )
-        object.__setattr__(result, "operation", "history.append-batches")
-        return cast(ProtocolResult[dict[str, object]], result)
-
     def append_batches(
         self, batches: tuple[SampleBatch, ...]
     ) -> ProtocolResult[dict[str, object]]:
         """Atomically append one complete bounded batch window."""
+        operation = "history.appendbatches"
         if type(batches) is not tuple or not batches or len(batches) > MAX_HISTORY_BATCHES:
-            return self._append_batches_result(
-                False,
-                "MONITOR_REQUEST_INVALID",
-                "sample batch collection is invalid",
-            )
+            return failure(operation, "MONITOR_REQUEST_INVALID", "sample batch collection is invalid")
 
         prepared: list[tuple[bytes, str, tuple[tuple[str, str, bytes, str], ...]]] = []
         total_values = 0
         for batch in batches:
             if type(batch) is not SampleBatch:
-                return self._append_batches_result(
-                    False,
-                    "MONITOR_REQUEST_INVALID",
-                    "sample batch collection is invalid",
-                )
+                return failure(operation, "MONITOR_REQUEST_INVALID", "sample batch collection is invalid")
             if batch.binding.workspace_id != self._paths.workspace_id:
-                return self._append_batches_result(
-                    False,
-                    "MONITOR_WORKSPACE_MISMATCH",
-                    "sample batch belongs to another workspace",
-                )
+                return failure(operation, "MONITOR_WORKSPACE_MISMATCH", "sample batch belongs to another workspace")
             try:
                 payload = batch.to_dict()
                 encoded_batch = json.dumps(
@@ -1111,15 +1083,11 @@ class HistoryStore:
                 batch_digest = sha256(encoded_batch).hexdigest()
                 rows = tuple(_encode_history_value(value) for value in batch.values)
             except (TypeError, ValueError, OverflowError, UnicodeError, RecursionError):
-                return self._append_batches_result(
-                    False,
-                    "MONITOR_REQUEST_INVALID",
-                    "sample batch collection is invalid",
-                )
+                return failure(operation, "MONITOR_REQUEST_INVALID", "sample batch collection is invalid")
             total_values += len(rows)
             if total_values > MAX_HISTORY_VALUES:
-                return self._append_batches_result(
-                    False,
+                return failure(
+                    operation,
                     "MONITOR_REQUEST_INVALID",
                     "sample batch collection exceeds its value limit",
                 )
@@ -1174,9 +1142,9 @@ class HistoryStore:
 
         try:
             data = self._database.write(write)
-            return self._append_batches_result(True, "OK", "", data)
+            return success(operation, data)
         except StorageFailure as error:
-            return self._append_batches_result(False, error.code, error.public_message)
+            return _storage_failure(operation, error)
 
     def _validate_query(self, query: HistoryQuery) -> tuple[int, int, bytes]:
         if not isinstance(query, HistoryQuery):

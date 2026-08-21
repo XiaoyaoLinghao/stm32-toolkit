@@ -1801,7 +1801,7 @@ def test_append_batches_commits_one_exact_result_for_the_complete_window(tmp_pat
         result = store.append_batches(batches)
 
         assert result.ok
-        assert result.operation == "history.append-batches"
+        assert result.operation == "history.appendbatches"
         assert result.data["batchIds"] == (1, 2)
         assert result.data["valueCount"] == 2
         assert result.to_dict()["data"] == {"batchIds": [1, 2], "valueCount": 2}
@@ -1819,18 +1819,19 @@ def test_append_batches_rolls_back_every_batch_on_a_second_batch_conflict(
     store = HistoryStore(paths)
     try:
         first = _batch(paths, 1, captured_ns=1_001)
-        assert store.append_batch(first).ok
+        existing_second = _batch(paths, 2, captured_ns=1_002)
+        assert store.append_batch(existing_second).ok
 
         result = store.append_batches(
-            (first, _batch(paths, 2, captured_ns=1_002))
+            (first, existing_second)
         )
 
         assert not result.ok
-        assert result.operation == "history.append-batches"
+        assert result.operation == "history.appendbatches"
         assert result.code == "MONITOR_STORAGE_INVALID"
         page = store.query_history(HistoryQuery("monitor-1", 0, 2_000_000_000))
         assert page.ok
-        assert [row["sequence"] for row in page.data.values] == [1]
+        assert [row["sequence"] for row in page.data.values] == [2]
     finally:
         store.close()
 
@@ -1848,6 +1849,11 @@ def test_append_batches_rejects_non_tuple_empty_foreign_and_over_limit_inputs(
         assert store.append_batches([batch]).code == "MONITOR_REQUEST_INVALID"
         assert store.append_batches(()).code == "MONITOR_REQUEST_INVALID"
 
+        class BatchTuple(tuple[SampleBatch, ...]):
+            pass
+
+        assert store.append_batches(BatchTuple((batch,))).code == "MONITOR_REQUEST_INVALID"
+
         foreign_project = tmp_path / "foreign-project"
         foreign_project.mkdir()
         foreign_paths = WorkspacePaths.from_roots(
@@ -1856,6 +1862,10 @@ def test_append_batches_rejects_non_tuple_empty_foreign_and_over_limit_inputs(
         assert store.append_batches((_batch(foreign_paths, 1),)).code == "MONITOR_WORKSPACE_MISMATCH"
 
         monkeypatch.setattr(history_module, "MAX_HISTORY_BATCHES", 1, raising=False)
+        assert store.append_batches((batch, _batch(paths, 2, captured_ns=1_002))).code == "MONITOR_REQUEST_INVALID"
+
+        monkeypatch.setattr(history_module, "MAX_HISTORY_BATCHES", 1_024, raising=False)
+        monkeypatch.setattr(history_module, "MAX_HISTORY_VALUES", 1, raising=False)
         assert store.append_batches((batch, _batch(paths, 2, captured_ns=1_002))).code == "MONITOR_REQUEST_INVALID"
     finally:
         store.close()
