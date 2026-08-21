@@ -24,6 +24,7 @@ from stm32_monitor.replay import (
 )
 from stm32_toolkit.evidence.store import EvidenceStore
 from stm32_toolkit.evidence.gc import get_root, plan_gc
+from stm32_toolkit.evidence.model import canonical_json_bytes
 from stm32_toolkit.paths import WorkspacePaths
 from stm32_toolkit.testing.replay import load_target_replay_fixture
 
@@ -121,6 +122,20 @@ def _rewrite_document(
 
 def _assert_no_history(paths: WorkspacePaths, run_id: UUID) -> None:
     assert _history_batches(paths, run_id) == ()
+
+
+def _root_path(evidence: EvidenceStore, root_type: str) -> Path:
+    files = tuple((evidence.root / "roots" / root_type).glob("*.json"))
+    assert len(files) == 1
+    return files[0]
+
+
+def _manifest_path(evidence: EvidenceStore, evidence_id: str) -> Path:
+    return evidence.root / "manifests" / f"{evidence_id}.json"
+
+
+def _object_path(evidence: EvidenceStore, relative_path: str) -> Path:
+    return evidence.root.joinpath(*relative_path.split("/"))
 
 
 def test_replay_fixtures_are_canonical_closed_documents_and_share_scope() -> None:
@@ -275,6 +290,51 @@ def test_ingest_preserves_origin_transcript_and_projects_only_workspace_session(
     plan = plan_gc(evidence)
     assert f"manifests/{root.manifest_id}.json" in plan.reachable_manifests
 
+    ref_root = get_root(evidence, "monitor-run-ref", reference.operation_id)
+    assert ref_root.root_type == "monitor-run-ref"
+    assert ref_root.root_id == reference.operation_id
+    assert ref_root.manifest_id != root.manifest_id
+    assert set(ref_root.metadata) == {
+        "operation_id",
+        "run_ref_sha256",
+        "fixture_sha256",
+        "scenario_role",
+        "origin_workspace_id",
+        "import_workspace_id",
+        "execution_source",
+        "physical_transport_evidence",
+    }
+    assert ref_root.metadata == {
+        "operation_id": reference.operation_id,
+        "run_ref_sha256": reference.run_ref_sha256,
+        "fixture_sha256": reference.fixture_sha256,
+        "scenario_role": reference.scenario_role,
+        "origin_workspace_id": reference.origin_workspace_id,
+        "import_workspace_id": reference.import_workspace_id,
+        "execution_source": "replay",
+        "physical_transport_evidence": False,
+    }
+    ref_envelope = evidence.get_envelope(ref_root.manifest_id)
+    assert ref_envelope.operation == "monitor-run-ref"
+    assert ref_envelope.parents == (reference.transcript_evidence_id,)
+    assert ref_envelope.identity.workspace_id == document.binding.workspace_id
+    assert ref_envelope.identity.project_id == document.binding.logical_project_id
+    assert ref_envelope.identity.session_id == document.binding.session_id
+    assert ref_envelope.identity.build_id == document.binding.build_id
+    assert ref_envelope.identity.elf_sha256 == document.binding.elf_sha256
+    assert ref_envelope.identity.input_snapshot_sha256 == document.binding.input_snapshot_sha256
+    assert ref_envelope.identity.git_commit == document.binding.git_head
+    assert ref_envelope.identity.git_dirty is False
+    assert set(ref_envelope.metadata) == set(ref_root.metadata)
+    assert ref_envelope.metadata == ref_root.metadata
+    assert len(ref_envelope.artifacts) == 1
+    assert ref_envelope.artifacts[0].kind == "monitor-run-ref"
+    assert ref_envelope.artifacts[0].media_type == "application/json"
+    ref_bytes = evidence.read_artifact(ref_envelope.artifacts[0], maximum_bytes=2 * 1024 * 1024)
+    assert ref_bytes == canonical_replay_json_bytes(reference.to_dict())
+    assert MonitorRunRef.from_value(json.loads(ref_bytes.decode("utf-8"))) == reference
+    assert f"manifests/{ref_root.manifest_id}.json" in plan.reachable_manifests
+
     envelope = evidence.get_envelope(reference.transcript_evidence_id)
     assert envelope.operation == "monitor-replay-import"
     assert set(envelope.metadata) == {
@@ -382,10 +442,18 @@ def test_exact_retry_is_idempotent_and_different_intent_conflicts_without_append
     operation = _operation("failed-before")
     first = ingest_monitor_replay(paths, evidence, operation, _fixture("failed-before"))
     before_batches = _history_batches(paths, RUN_IDS["failed-before"])
+    ref_root = get_root(evidence, "monitor-run-ref", operation)
+    ref_envelope = evidence.get_envelope(ref_root.manifest_id)
+    before_ref_root = _root_path(evidence, "monitor-run-ref").read_bytes()
+    before_ref_manifest = _manifest_path(evidence, ref_root.manifest_id).read_bytes()
+    before_ref_artifact = _object_path(evidence, ref_envelope.artifacts[0].relative_path).read_bytes()
 
     retried = ingest_monitor_replay(paths, evidence, operation, _fixture("failed-before"))
     assert retried == first
     assert _history_batches(paths, RUN_IDS["failed-before"]) == before_batches
+    assert _root_path(evidence, "monitor-run-ref").read_bytes() == before_ref_root
+    assert _manifest_path(evidence, ref_root.manifest_id).read_bytes() == before_ref_manifest
+    assert _object_path(evidence, ref_envelope.artifacts[0].relative_path).read_bytes() == before_ref_artifact
 
     origin_only_conflict = _rewrite_document(
         tmp_path,
@@ -567,6 +635,8 @@ def test_exact_root_without_history_recovers_with_one_atomic_append(tmp_path: Pa
     assert error.value.code == "ENVIRONMENT_FAILURE"
     root = get_root(evidence, "monitor-run", _operation("failed-before"))
     assert root.root_id == _operation("failed-before")
+    ref_root = get_root(evidence, "monitor-run-ref", _operation("failed-before"))
+    assert ref_root.root_id == _operation("failed-before")
     assert _history_batches(paths, RUN_IDS["failed-before"]) == ()
 
     monkeypatch.undo()
@@ -574,7 +644,97 @@ def test_exact_root_without_history_recovers_with_one_atomic_append(tmp_path: Pa
         paths, evidence, _operation("failed-before"), _fixture("failed-before")
     )
     assert recovered.transcript_evidence_id == root.manifest_id
+    assert get_root(evidence, "monitor-run-ref", _operation("failed-before")).manifest_id == ref_root.manifest_id
     assert _history_batches(paths, RUN_IDS["failed-before"])
+
+
+def test_legacy_transcript_root_and_complete_history_repair_missing_reference_authority(tmp_path: Path) -> None:
+    paths = _paths(tmp_path)
+    evidence = _evidence(paths)
+    operation = _operation("failed-before")
+    first = ingest_monitor_replay(paths, evidence, operation, _fixture("failed-before"))
+    old_root_path = _root_path(evidence, "monitor-run")
+    old_root_bytes = old_root_path.read_bytes()
+    transcript_envelope_path = _manifest_path(evidence, first.transcript_evidence_id)
+    transcript_envelope_bytes = transcript_envelope_path.read_bytes()
+    history_before = _history_batches(paths, RUN_IDS["failed-before"])
+    ref_root = get_root(evidence, "monitor-run-ref", operation)
+    ref_envelope = evidence.get_envelope(ref_root.manifest_id)
+    ref_root_path = _root_path(evidence, "monitor-run-ref")
+    ref_artifact_path = _object_path(evidence, ref_envelope.artifacts[0].relative_path)
+
+    ref_root_path.unlink()
+    _manifest_path(evidence, ref_root.manifest_id).unlink()
+    ref_artifact_path.unlink()
+
+    repaired = ingest_monitor_replay(paths, evidence, operation, _fixture("failed-before"))
+    assert repaired == first
+    assert _root_path(evidence, "monitor-run").read_bytes() == old_root_bytes
+    assert transcript_envelope_path.read_bytes() == transcript_envelope_bytes
+    assert _history_batches(paths, RUN_IDS["failed-before"]) == history_before
+    repaired_root = get_root(evidence, "monitor-run-ref", operation)
+    assert repaired_root.to_dict() == ref_root.to_dict()
+    repaired_envelope = evidence.get_envelope(repaired_root.manifest_id)
+    assert evidence.read_artifact(
+        repaired_envelope.artifacts[0], maximum_bytes=2 * 1024 * 1024
+    ) == canonical_replay_json_bytes(repaired.to_dict())
+
+
+def test_conflicting_reference_root_fails_before_history_mutation(tmp_path: Path) -> None:
+    paths = _paths(tmp_path)
+    evidence = _evidence(paths)
+    operation = _operation("failed-before")
+    first = ingest_monitor_replay(paths, evidence, operation, _fixture("failed-before"))
+    before_batches = _history_batches(paths, RUN_IDS["failed-before"])
+    ref_root_path = _root_path(evidence, "monitor-run-ref")
+    conflicting = json.loads(ref_root_path.read_bytes().decode("utf-8"))
+    conflicting["metadata"]["run_ref_sha256"] = "0" * 64
+    ref_root_path.write_bytes(canonical_json_bytes(conflicting))
+
+    with pytest.raises(MonitorReplayError) as error:
+        ingest_monitor_replay(paths, evidence, operation, _fixture("failed-before"))
+    assert error.value.code == "OPERATION_CONFLICT"
+    assert _history_batches(paths, RUN_IDS["failed-before"]) == before_batches
+    assert first.run_ref_sha256 != "0" * 64
+
+
+def test_corrupt_reference_artifact_fails_before_history_mutation(tmp_path: Path) -> None:
+    paths = _paths(tmp_path)
+    evidence = _evidence(paths)
+    operation = _operation("failed-before")
+    first = ingest_monitor_replay(paths, evidence, operation, _fixture("failed-before"))
+    before_batches = _history_batches(paths, RUN_IDS["failed-before"])
+    ref_root = get_root(evidence, "monitor-run-ref", operation)
+    ref_envelope = evidence.get_envelope(ref_root.manifest_id)
+    _object_path(evidence, ref_envelope.artifacts[0].relative_path).write_bytes(b"not-canonical-ref")
+
+    with pytest.raises(MonitorReplayError) as error:
+        ingest_monitor_replay(paths, evidence, operation, _fixture("failed-before"))
+    assert error.value.code == "EVIDENCE_INTEGRITY_FAILURE"
+    assert _history_batches(paths, RUN_IDS["failed-before"]) == before_batches
+    assert first.transcript_evidence_id == get_root(evidence, "monitor-run", operation).manifest_id
+
+
+def test_reference_provider_failure_is_environment_error_without_history_mutation(tmp_path: Path, monkeypatch) -> None:
+    paths = _paths(tmp_path)
+    evidence = _evidence(paths)
+    operation = _operation("failed-before")
+    first = ingest_monitor_replay(paths, evidence, operation, _fixture("failed-before"))
+    before_batches = _history_batches(paths, RUN_IDS["failed-before"])
+    ref_root = get_root(evidence, "monitor-run-ref", operation)
+    original_get_envelope = evidence.get_envelope
+
+    def fail_reference_provider(evidence_id: str):
+        if evidence_id == ref_root.manifest_id:
+            raise OSError("reference provider unavailable")
+        return original_get_envelope(evidence_id)
+
+    monkeypatch.setattr(evidence, "get_envelope", fail_reference_provider)
+    with pytest.raises(MonitorReplayError) as error:
+        ingest_monitor_replay(paths, evidence, operation, _fixture("failed-before"))
+    assert error.value.code == "ENVIRONMENT_FAILURE"
+    assert _history_batches(paths, RUN_IDS["failed-before"]) == before_batches
+    assert first.run_ref_sha256 == get_root(evidence, "monitor-run-ref", operation).metadata["run_ref_sha256"]
 
 
 def test_document_parser_rejects_tuples_subclasses_and_noncanonical_json(tmp_path: Path) -> None:

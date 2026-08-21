@@ -38,6 +38,7 @@ REGISTERED_ROOT_TYPES = frozenset(
         "bundle",
         "annotation",
         "monitor-run",
+        "monitor-run-ref",
         "monitor-analysis",
         "diagnostic-marker",
         "monitor-analysis-bundle",

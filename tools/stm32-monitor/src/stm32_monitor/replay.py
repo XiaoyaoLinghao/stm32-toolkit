@@ -40,6 +40,9 @@ MONITOR_REPLAY_PHYSICAL_TARGET = "replay:non-physical"
 MONITOR_REPLAY_FLASH_SESSION_ID = "replay:no-flash"
 MONITOR_REPLAY_LEASE_ID = "replay:no-lease"
 MONITOR_RUN_ROOT_TYPE = "monitor-run"
+MONITOR_RUN_REF_ROOT_TYPE = "monitor-run-ref"
+MONITOR_RUN_REF_OPERATION = "monitor-run-ref"
+MONITOR_RUN_REF_ARTIFACT_KIND = "monitor-run-ref"
 MAX_REPLAY_DOCUMENT_BYTES = 1024 * 1024
 MAX_REPLAY_BATCHES = 1024
 MAX_REPLAY_JSON_DEPTH = 32
@@ -146,6 +149,18 @@ _ROOT_METADATA_FIELDS = frozenset(
     {
         "fixture_sha256",
         "run_ref_sha256",
+        "origin_workspace_id",
+        "import_workspace_id",
+        "execution_source",
+        "physical_transport_evidence",
+    }
+)
+_REFERENCE_ROOT_METADATA_FIELDS = frozenset(
+    {
+        "operation_id",
+        "run_ref_sha256",
+        "fixture_sha256",
+        "scenario_role",
         "origin_workspace_id",
         "import_workspace_id",
         "execution_source",
@@ -863,6 +878,165 @@ def _expected_root(reference: MonitorRunRef) -> RootRecord:
         ) from error
 
 
+def _reference_metadata(reference: MonitorRunRef) -> dict[str, object]:
+    metadata = {
+        "operation_id": reference.operation_id,
+        "run_ref_sha256": reference.run_ref_sha256,
+        "fixture_sha256": reference.fixture_sha256,
+        "scenario_role": reference.scenario_role,
+        "origin_workspace_id": reference.origin_workspace_id,
+        "import_workspace_id": reference.import_workspace_id,
+        "execution_source": MONITOR_REPLAY_EXECUTION_SOURCE,
+        "physical_transport_evidence": False,
+    }
+    if set(metadata) != _REFERENCE_ROOT_METADATA_FIELDS:
+        _fail(EVIDENCE_INTEGRITY_FAILURE, "monitor run reference metadata is not closed")
+    return metadata
+
+
+def _expected_reference_envelope(
+    reference: MonitorRunRef,
+    transcript_envelope: EvidenceEnvelope,
+) -> EvidenceEnvelope:
+    raw = canonical_replay_json_bytes(reference.to_dict())
+    digest = hashlib.sha256(raw).hexdigest()
+    artifact = ArtifactRef(
+        sha256=digest,
+        size_bytes=len(raw),
+        relative_path=f"objects/sha256/{digest[:2]}/{digest}",
+        kind=MONITOR_RUN_REF_ARTIFACT_KIND,
+        media_type="application/json",
+    )
+    metadata = _reference_metadata(reference)
+    try:
+        return EvidenceEnvelope(
+            identity=transcript_envelope.identity,
+            operation=MONITOR_RUN_REF_OPERATION,
+            produced_at_utc=transcript_envelope.produced_at_utc,
+            parents=(reference.transcript_evidence_id,),
+            artifacts=(artifact,),
+            metadata=metadata,
+        )
+    except EvidenceValidationError as error:
+        raise MonitorReplayError(
+            EVIDENCE_INTEGRITY_FAILURE,
+            "monitor run reference Evidence is invalid",
+        ) from error
+
+
+def _expected_reference_root(
+    reference: MonitorRunRef,
+    reference_envelope: EvidenceEnvelope,
+) -> RootRecord:
+    metadata = _reference_metadata(reference)
+    try:
+        return RootRecord(
+            root_type=MONITOR_RUN_REF_ROOT_TYPE,
+            root_id=reference.operation_id,
+            manifest_id=str(reference_envelope.evidence_id),
+            metadata=metadata,
+        )
+    except EvidenceValidationError as error:
+        raise MonitorReplayError(
+            EVIDENCE_INTEGRITY_FAILURE,
+            "monitor run reference root is invalid",
+        ) from error
+
+
+def _load_monitor_reference_root(
+    evidence_store: EvidenceStore,
+    operation_id: str,
+) -> RootRecord | None:
+    try:
+        return get_root(evidence_store, MONITOR_RUN_REF_ROOT_TYPE, operation_id)
+    except EvidenceValidationError as error:
+        if error.message == "evidence root is absent":
+            return None
+        raise MonitorReplayError(
+            EVIDENCE_INTEGRITY_FAILURE,
+            "monitor run reference root is corrupt",
+        ) from error
+    except Exception as error:
+        raise MonitorReplayError(
+            ENVIRONMENT_FAILURE,
+            "monitor run reference root could not be read",
+        ) from error
+
+
+def _has_non_missing_os_error(error: BaseException) -> bool:
+    seen: set[int] = set()
+    current: BaseException | None = error
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if isinstance(current, OSError) and not isinstance(current, FileNotFoundError):
+            return True
+        current = current.__cause__ or current.__context__
+    return False
+
+
+def _validate_existing_reference_root(
+    root: RootRecord,
+    expected_root: RootRecord,
+    expected_envelope: EvidenceEnvelope,
+    reference: MonitorRunRef,
+    evidence_store: EvidenceStore,
+) -> None:
+    if root.to_dict() != expected_root.to_dict():
+        _fail(OPERATION_CONFLICT, "operation reference root has a different intent")
+    try:
+        envelope = evidence_store.get_envelope(root.manifest_id)
+        if envelope.to_dict() != expected_envelope.to_dict():
+            raise ValueError("reference envelope differs from the operation reference root")
+        if envelope.parents != (reference.transcript_evidence_id,):
+            raise ValueError("reference envelope parent is not the transcript Evidence")
+        if len(envelope.artifacts) != 1:
+            raise ValueError("reference envelope artifact set is invalid")
+        artifact = envelope.artifacts[0]
+        if artifact.kind != MONITOR_RUN_REF_ARTIFACT_KIND or artifact.media_type != "application/json":
+            raise ValueError("reference envelope artifact descriptor is invalid")
+        captured = evidence_store.read_artifact(
+            artifact,
+            maximum_bytes=MAX_REPLAY_DOCUMENT_BYTES,
+        )
+        expected_bytes = canonical_replay_json_bytes(reference.to_dict())
+        if captured != expected_bytes:
+            raise ValueError("reference artifact bytes differ from the operation reference")
+        try:
+            decoded = json.loads(captured.decode("utf-8"))
+            stored = MonitorRunRef.from_value(decoded)
+        except MonitorReplayError as error:
+            raise ValueError("reference artifact is not a complete canonical MonitorRunRef") from error
+        if stored.to_dict() != reference.to_dict():
+            raise ValueError("reference artifact differs from the operation reference")
+    except MonitorReplayError:
+        raise
+    except OSError as error:
+        raise MonitorReplayError(
+            ENVIRONMENT_FAILURE,
+            "monitor run reference Evidence provider failed",
+        ) from error
+    except EvidenceValidationError as error:
+        if _has_non_missing_os_error(error):
+            raise MonitorReplayError(
+                ENVIRONMENT_FAILURE,
+                "monitor run reference Evidence provider failed",
+            ) from error
+        raise MonitorReplayError(
+            EVIDENCE_INTEGRITY_FAILURE,
+            "monitor run reference Evidence is corrupt",
+        ) from error
+    except Exception as error:
+        if _has_non_missing_os_error(error):
+            raise MonitorReplayError(
+                ENVIRONMENT_FAILURE,
+                "monitor run reference Evidence provider failed",
+            ) from error
+        raise MonitorReplayError(
+            EVIDENCE_INTEGRITY_FAILURE,
+            "monitor run reference Evidence is corrupt",
+        ) from error
+
+
 def _load_monitor_root(
     evidence_store: EvidenceStore,
     operation_id: str,
@@ -986,6 +1160,63 @@ def _publish_transcript(
         raise MonitorReplayError(ENVIRONMENT_FAILURE, "replay Evidence publication failed") from error
 
 
+def _publish_reference(
+    reference: MonitorRunRef,
+    expected_envelope: EvidenceEnvelope,
+    expected_root: RootRecord,
+    evidence_store: EvidenceStore,
+) -> None:
+    raw = canonical_replay_json_bytes(reference.to_dict())
+    try:
+        with tempfile.TemporaryDirectory(prefix="stm32-monitor-replay-ref-") as directory:
+            source = Path(directory) / "run-ref.json"
+            source.write_bytes(raw)
+            artifact = evidence_store.ingest_file(
+                source,
+                kind=MONITOR_RUN_REF_ARTIFACT_KIND,
+                media_type="application/json",
+            )
+        if artifact != expected_envelope.artifacts[0]:
+            raise EvidenceValidationError(
+                "EVIDENCE_CORRUPT",
+                "reference artifact identity differs from the expected reference",
+            )
+        evidence_store.put_envelope(expected_envelope)
+        try:
+            put_root(evidence_store, expected_root)
+        except EvidenceValidationError as error:
+            if error.message == "root identity already has different canonical bytes":
+                _fail(OPERATION_CONFLICT, "operation reference root changed before publication")
+            raise
+    except MonitorReplayError:
+        raise
+    except OSError as error:
+        raise MonitorReplayError(
+            ENVIRONMENT_FAILURE,
+            "monitor run reference Evidence provider failed",
+        ) from error
+    except EvidenceValidationError as error:
+        if _has_non_missing_os_error(error):
+            raise MonitorReplayError(
+                ENVIRONMENT_FAILURE,
+                "monitor run reference Evidence provider failed",
+            ) from error
+        raise MonitorReplayError(
+            EVIDENCE_INTEGRITY_FAILURE,
+            "monitor run reference Evidence publication is corrupt",
+        ) from error
+    except Exception as error:
+        if _has_non_missing_os_error(error):
+            raise MonitorReplayError(
+                ENVIRONMENT_FAILURE,
+                "monitor run reference Evidence provider failed",
+            ) from error
+        raise MonitorReplayError(
+            ENVIRONMENT_FAILURE,
+            "monitor run reference Evidence publication failed",
+        ) from error
+
+
 def ingest_monitor_replay(
     paths: WorkspacePaths,
     evidence_store: EvidenceStore,
@@ -1029,10 +1260,19 @@ def ingest_monitor_replay(
                 "replay reference window is invalid",
             ) from error
         expected_root = _expected_root(reference)
+        expected_reference_envelope = _expected_reference_envelope(
+            reference,
+            expected_envelope,
+        )
+        expected_reference_root = _expected_reference_root(
+            reference,
+            expected_reference_envelope,
+        )
     except MonitorReplayError:
         raise
     try:
         root = _load_monitor_root(evidence_store, operation)
+        reference_root = _load_monitor_reference_root(evidence_store, operation)
         history = HistoryStore(paths)
     except MonitorReplayError:
         raise
@@ -1045,6 +1285,14 @@ def ingest_monitor_replay(
                 expected_root,
                 expected_envelope,
                 raw,
+                evidence_store,
+            )
+        if reference_root is not None:
+            _validate_existing_reference_root(
+                reference_root,
+                expected_reference_root,
+                expected_reference_envelope,
+                reference,
                 evidence_store,
             )
         existing = _load_existing_batches(history, paths, projected[0].run_id)
@@ -1061,9 +1309,17 @@ def ingest_monitor_replay(
                     ENVIRONMENT_FAILURE,
                     "monitor run root publication failed",
                 ) from error
-        elif existing:
-            if existing != projected:
-                _fail(OPERATION_CONFLICT, "operation history does not match its authoritative root")
+        elif existing and existing != projected:
+            _fail(OPERATION_CONFLICT, "operation history does not match its authoritative root")
+
+        if reference_root is None:
+            _publish_reference(
+                reference,
+                expected_reference_envelope,
+                expected_reference_root,
+                evidence_store,
+            )
+        if existing:
             return reference
 
         result = history.append_batches(projected)
@@ -1094,6 +1350,9 @@ __all__ = [
     "MONITOR_REPLAY_PROBE_ID",
     "MONITOR_REPLAY_SCHEMA",
     "MONITOR_REPLAY_SOURCE",
+    "MONITOR_RUN_REF_ARTIFACT_KIND",
+    "MONITOR_RUN_REF_OPERATION",
+    "MONITOR_RUN_REF_ROOT_TYPE",
     "MONITOR_RUN_REF_SCHEMA",
     "MonitorReplayDocument",
     "MonitorReplayError",
