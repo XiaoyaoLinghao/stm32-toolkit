@@ -587,3 +587,28 @@ def test_derived_provider_exception_is_bounded_and_exact_artifact_prefix_retries
     repaired = _publish(paths, faulty, before, after, declaration)
     assert repaired.analysis_result.quality == "VALID"
     assert get_root(evidence, "monitor-analysis", repaired.analysis_result.analysis_id)
+
+
+def test_transcript_artifact_io_failure_is_environment_error_without_derived_mutation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    paths = _paths(tmp_path)
+    evidence, before, after = _ingest_pair(paths)
+    declaration = _declaration(tmp_path, evidence, before, after)
+    before_tree = _evidence_tree(evidence)
+    original_read = EvidenceStore.read_artifact
+
+    def fail_transcript_read(
+        store: EvidenceStore, artifact: ArtifactRef, *, maximum_bytes: int
+    ) -> bytes:
+        if artifact.kind == "monitor-replay-transcript":
+            raise OSError("provider-private-secret")
+        return original_read(store, artifact, maximum_bytes=maximum_bytes)
+
+    monkeypatch.setattr(EvidenceStore, "read_artifact", fail_transcript_read)
+    with pytest.raises(AnalysisWorkflowError) as error:
+        _publish(paths, evidence, before, after, declaration)
+    assert error.value.code == "ENVIRONMENT_FAILURE"
+    assert "provider-private-secret" not in str(error.value)
+    assert _evidence_tree(evidence) == before_tree
+    assert not (evidence.root / "roots" / "monitor-analysis").exists()

@@ -259,8 +259,11 @@ def _validate_transcript(
         decoded = json.loads(body.decode("utf-8"))
         document = MonitorReplayDocument.from_value(decoded)
         canonical = canonical_replay_json_bytes(document.to_dict())
-    except (EvidenceValidationError, MonitorReplayError, UnicodeError, json.JSONDecodeError, TypeError, ValueError, OSError) as error:
+    except (EvidenceValidationError, MonitorReplayError, UnicodeError, json.JSONDecodeError, TypeError, ValueError) as error:
         _fail(EVIDENCE_INTEGRITY_FAILURE, "replay transcript artifact is corrupt")
+        raise AssertionError from error
+    except OSError as error:
+        _fail(ENVIRONMENT_FAILURE, "replay transcript artifact could not be read")
         raise AssertionError from error
     except Exception as error:
         _fail(ENVIRONMENT_FAILURE, "replay transcript artifact could not be read")
