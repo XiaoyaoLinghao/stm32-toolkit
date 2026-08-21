@@ -12,7 +12,11 @@ import pytest
 
 from stm32_monitor.analysis import AnalysisRequest
 from stm32_monitor.analysis_workflows import compare_monitor_runs
-from stm32_monitor.replay import ingest_monitor_replay
+from stm32_monitor.replay import (
+    MonitorReplayError,
+    MonitorReplayDocument,
+    ingest_monitor_replay,
+)
 import stm32_toolkit.diagnostic_workflows as diagnostic_workflows
 import stm32_toolkit.testing_workflows as testing_workflows
 from stm32_toolkit.diagnostic_workflows import (
@@ -169,6 +173,14 @@ def _monitor_ref_root_path(workspace: WorkspacePaths, operation_id: str) -> Path
     raise AssertionError(f"monitor-run-ref root is absent: {operation_id}")
 
 
+def _evidence_root_path(workspace: WorkspacePaths, root_type: str, root_id: str) -> Path:
+    roots = tuple((workspace.workspace_root / "evidence" / "roots" / root_type).glob("*.json"))
+    for path in roots:
+        if json.loads(path.read_text(encoding="utf-8"))["root_id"] == root_id:
+            return path
+    raise AssertionError(f"{root_type} root is absent: {root_id}")
+
+
 def _replace_monitor_reference_authority(
     tmp_path: Path,
     workspace: WorkspacePaths,
@@ -246,6 +258,198 @@ def _swap_monitor_reference_authority(
             manifest_id=after_root.manifest_id,
             metadata=dict(after_root.metadata),
         ),
+    )
+
+
+def _replace_monitor_transcript_and_analysis(
+    tmp_path: Path,
+    workspace: WorkspacePaths,
+    operation_id: str,
+    marker_ref: DiagnosticMarkerRef,
+    plan: VerificationPlan,
+    extra_kind: str,
+) -> VerificationPlan:
+    evidence = EvidenceStore(workspace.workspace_root / "evidence")
+    transcript_root = get_root(evidence, "monitor-run", operation_id)
+    transcript_envelope = evidence.get_envelope(transcript_root.manifest_id)
+    transcript_document = json.loads(
+        evidence.read_artifact(
+            transcript_envelope.artifacts[0], maximum_bytes=1_000_000
+        ).decode("utf-8")
+    )
+    batch = transcript_document["batches"][0]
+    if extra_kind == "batch":
+        batch["unexpected"] = True
+    elif extra_kind == "sample":
+        batch["values"][0]["unexpected"] = True
+    elif extra_kind == "typed":
+        batch["values"][0]["typedValue"] = None
+    else:
+        assert extra_kind == "watch"
+        batch["values"][0]["watch"]["unexpected"] = True
+    unsigned_document = {
+        key: value for key, value in transcript_document.items() if key != "fixture_sha256"
+    }
+    transcript_document["fixture_sha256"] = hashlib.sha256(
+        _producer_canonical_json_bytes(unsigned_document)
+    ).hexdigest()
+    transcript_raw = _producer_canonical_json_bytes(transcript_document)
+    transcript_source = tmp_path / f"extra-{extra_kind}-monitor-transcript.json"
+    transcript_source.write_bytes(transcript_raw)
+    transcript_artifact = evidence.ingest_file(
+        transcript_source,
+        kind="monitor-replay-transcript",
+        media_type="application/json",
+    )
+    transcript_metadata = dict(transcript_envelope.metadata)
+    transcript_metadata["fixture_sha256"] = transcript_document["fixture_sha256"]
+    replacement_transcript = EvidenceEnvelope(
+        identity=transcript_envelope.identity,
+        operation=transcript_envelope.operation,
+        produced_at_utc=transcript_envelope.produced_at_utc,
+        parents=(),
+        artifacts=(transcript_artifact,),
+        metadata=transcript_metadata,
+    )
+    evidence.put_envelope(replacement_transcript)
+
+    reference_root = get_root(evidence, "monitor-run-ref", operation_id)
+    reference_envelope = evidence.get_envelope(reference_root.manifest_id)
+    reference = json.loads(
+        evidence.read_artifact(
+            reference_envelope.artifacts[0], maximum_bytes=1_000_000
+        ).decode("utf-8")
+    )
+    reference["fixture_sha256"] = transcript_document["fixture_sha256"]
+    reference["transcript_evidence_id"] = str(replacement_transcript.evidence_id)
+    projected_binding = dict(transcript_document["binding"])
+    projected_binding["workspaceId"] = reference["import_workspace_id"]
+    projected_binding["sessionId"] = reference["projected_session_id"]
+    reference["projected_batch_sha256s"] = [
+        hashlib.sha256(
+            _producer_canonical_json_bytes(
+                {**batch_value, "binding": projected_binding}
+            )
+        ).hexdigest()
+        for batch_value in transcript_document["batches"]
+    ]
+    unsigned_reference = {
+        key: value for key, value in reference.items() if key != "run_ref_sha256"
+    }
+    reference["run_ref_sha256"] = hashlib.sha256(
+        _producer_canonical_json_bytes(unsigned_reference)
+    ).hexdigest()
+    reference_raw = _producer_canonical_json_bytes(reference)
+    reference_source = tmp_path / f"extra-{extra_kind}-monitor-ref.json"
+    reference_source.write_bytes(reference_raw)
+    reference_artifact = evidence.ingest_file(
+        reference_source,
+        kind="monitor-run-ref",
+        media_type="application/json",
+    )
+    reference_metadata = dict(reference_envelope.metadata)
+    reference_metadata.update(
+        {
+            "fixture_sha256": reference["fixture_sha256"],
+            "run_ref_sha256": reference["run_ref_sha256"],
+        }
+    )
+    replacement_reference = EvidenceEnvelope(
+        identity=reference_envelope.identity,
+        operation=reference_envelope.operation,
+        produced_at_utc=reference_envelope.produced_at_utc,
+        parents=(str(replacement_transcript.evidence_id),),
+        artifacts=(reference_artifact,),
+        metadata=reference_metadata,
+    )
+    evidence.put_envelope(replacement_reference)
+
+    monitor_root_metadata = dict(transcript_root.metadata)
+    monitor_root_metadata.update(
+        {
+            "fixture_sha256": reference["fixture_sha256"],
+            "run_ref_sha256": reference["run_ref_sha256"],
+        }
+    )
+    replacement_transcript_root = RootRecord(
+        root_type="monitor-run",
+        root_id=operation_id,
+        manifest_id=str(replacement_transcript.evidence_id),
+        metadata=monitor_root_metadata,
+    )
+    replacement_reference_root = RootRecord(
+        root_type="monitor-run-ref",
+        root_id=operation_id,
+        manifest_id=str(replacement_reference.evidence_id),
+        metadata=reference_metadata,
+    )
+    _evidence_root_path(workspace, "monitor-run", operation_id).unlink()
+    _monitor_ref_root_path(workspace, operation_id).unlink()
+    put_root(evidence, replacement_transcript_root)
+    put_root(evidence, replacement_reference_root)
+
+    analysis_root = get_root(evidence, "monitor-analysis", marker_ref.analysis_id)
+    analysis_envelope = evidence.get_envelope(analysis_root.manifest_id)
+    analysis = json.loads(
+        evidence.read_artifact(
+            analysis_envelope.artifacts[0], maximum_bytes=1_000_000
+        ).decode("utf-8")
+    )
+    analysis["before_run_id"] = reference["run_ref_sha256"]
+    unsigned_analysis = {
+        key: value for key, value in analysis.items() if key != "analysis_id"
+    }
+    analysis["analysis_id"] = hashlib.sha256(
+        _producer_canonical_json_bytes(unsigned_analysis)
+    ).hexdigest()
+    analysis_raw = _producer_canonical_json_bytes(analysis)
+    analysis_source = tmp_path / f"extra-{extra_kind}-analysis.json"
+    analysis_source.write_bytes(analysis_raw)
+    analysis_artifact = evidence.ingest_file(
+        analysis_source,
+        kind="monitor-analysis",
+        media_type="application/json",
+    )
+    analysis_metadata = dict(analysis_envelope.metadata)
+    analysis_metadata.update(
+        {
+            "analysis_id": analysis["analysis_id"],
+            "before_run_id": analysis["before_run_id"],
+        }
+    )
+    replacement_analysis = EvidenceEnvelope(
+        identity=analysis_envelope.identity,
+        operation=analysis_envelope.operation,
+        produced_at_utc=analysis_envelope.produced_at_utc,
+        parents=(
+            str(replacement_transcript.evidence_id),
+            analysis_envelope.parents[1],
+            analysis_envelope.parents[2],
+        ),
+        artifacts=(analysis_artifact,),
+        metadata=analysis_metadata,
+    )
+    evidence.put_envelope(replacement_analysis)
+    replacement_analysis_root = RootRecord(
+        root_type="monitor-analysis",
+        root_id=analysis["analysis_id"],
+        manifest_id=str(replacement_analysis.evidence_id),
+        metadata=analysis_metadata,
+    )
+    _evidence_root_path(workspace, "monitor-analysis", marker_ref.analysis_id).unlink()
+    put_root(evidence, replacement_analysis_root)
+    return VerificationPlan.new(
+        verification_plan_id=plan.verification_plan_id,
+        diagnostic_session_id=plan.diagnostic_session_id,
+        failed_before_run_id=plan.failed_before_run_id,
+        failed_before_evidence_id=plan.failed_before_evidence_id,
+        source_change_declaration_id=plan.source_change_declaration_id,
+        fixed_after_run_id=plan.fixed_after_run_id,
+        fixed_after_evidence_id=plan.fixed_after_evidence_id,
+        required_analysis_ids=(analysis["analysis_id"],),
+        required_analysis_evidence_ids=(str(replacement_analysis.evidence_id),),
+        required_monitor_quality=plan.required_monitor_quality,
+        expected_changed=plan.expected_changed,
     )
 
 
@@ -1418,6 +1622,51 @@ def test_target_replay_plan_requires_complete_monitor_reference_authority(
     result = diagnostic_add_verification_plan(
         _fresh_diagnostic_context(diagnostic_context),
         operation_id=f"diagnostic.verification-plan.add.monitor-ref-{mutation}",
+        diagnostic_session_id=session_id,
+        expected_revision=4,
+        verification_plan=plan,
+    )
+    after = _authority_snapshot(workspace)
+    assert result.ok is False
+    assert result.code == "EVIDENCE_INTEGRITY_FAILURE"
+    assert after == before
+
+
+@pytest.mark.parametrize("extra_kind", ("batch", "sample", "typed", "watch"))
+def test_target_replay_rejects_nonclosed_monitor_projection_fields_without_mutation(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    extra_kind: str,
+) -> None:
+    diagnostic_context, session_id, workspace, declaration, plan, marker_ref = (
+        _prepared_checkpoint_for_plan(monkeypatch, tmp_path)
+    )
+    plan = _replace_monitor_transcript_and_analysis(
+        tmp_path,
+        workspace,
+        MONITOR_OPERATION_IDS["failed-before"],
+        marker_ref,
+        plan,
+        extra_kind,
+    )
+    evidence = EvidenceStore(workspace.workspace_root / "evidence")
+    transcript_root = get_root(
+        evidence,
+        "monitor-run",
+        MONITOR_OPERATION_IDS["failed-before"],
+    )
+    transcript_envelope = evidence.get_envelope(transcript_root.manifest_id)
+    transcript_payload = json.loads(
+        evidence.read_artifact(
+            transcript_envelope.artifacts[0], maximum_bytes=1_000_000
+        ).decode("utf-8")
+    )
+    with pytest.raises(MonitorReplayError):
+        MonitorReplayDocument.from_value(transcript_payload)
+    before = _authority_snapshot(workspace)
+    result = diagnostic_add_verification_plan(
+        _fresh_diagnostic_context(diagnostic_context),
+        operation_id=f"diagnostic.verification-plan.add.extra-{extra_kind}",
         diagnostic_session_id=session_id,
         expected_revision=4,
         verification_plan=plan,

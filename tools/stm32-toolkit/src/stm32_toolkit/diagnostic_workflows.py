@@ -113,6 +113,19 @@ _MONITOR_BINDING_FIELDS = frozenset(
         "gitDirty", "flashSessionId", "leaseId", "dwarfSha256", "svdSha256",
     }
 )
+_MONITOR_BATCH_FIELDS = frozenset(
+    {
+        "binding", "groupId", "groupRevision", "runId", "sequence",
+        "scheduledUnixNs", "scheduledAtUtc", "capturedUnixNs", "capturedAtUtc",
+        "latencyNs", "actualRateHz", "subscriberDrops", "historyDrops",
+        "deadlineDrops", "values",
+    }
+)
+_MONITOR_SAMPLE_FIELDS = frozenset(
+    {"watch", "status", "typedValue", "code", "definition"}
+)
+_MONITOR_VARIABLE_WATCH_FIELDS = frozenset({"kind", "expression"})
+_MONITOR_REGISTER_WATCH_FIELDS = frozenset({"kind", "registerPath"})
 _MONITOR_REF_FIELDS = frozenset(
     {
         "schema", "operation_id", "scenario_role", "execution_source",
@@ -945,6 +958,199 @@ def _read_json_evidence(
         raise _WorkflowFailure(_ENVIRONMENT_FAILURE) from error
 
 
+def _monitor_text(value: object, *, maximum: int = 256) -> str:
+    if (
+        not isinstance(value, str)
+        or not value
+        or len(value) > maximum
+        or any(ord(character) < 32 for character in value)
+    ):
+        raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
+    return value
+
+
+def _monitor_int(value: object, *, positive: bool = False) -> int:
+    minimum = 1 if positive else 0
+    if (
+        type(value) is not int
+        or isinstance(value, bool)
+        or not minimum <= value <= _MAX_REPLAY_JSON_INTEGER
+    ):
+        raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
+    return value
+
+
+def _monitor_uuid(value: object) -> str:
+    if not isinstance(value, str):
+        raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
+    try:
+        if str(UUID(value)) != value:
+            raise ValueError("UUID is not canonical")
+    except (TypeError, ValueError) as error:
+        raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE) from error
+    return value
+
+
+def _monitor_unix_ns_to_utc(value: object) -> str:
+    nanoseconds = _monitor_int(value)
+    seconds, remainder = divmod(nanoseconds, 1_000_000_000)
+    try:
+        timestamp = datetime.fromtimestamp(seconds, tz=timezone.utc).replace(
+            microsecond=remainder // 1_000
+        )
+    except (OSError, OverflowError, ValueError) as error:
+        raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE) from error
+    return timestamp.strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+
+
+def _validate_monitor_binding(binding: object) -> dict[str, object]:
+    if not isinstance(binding, dict) or set(binding) != _MONITOR_BINDING_FIELDS:
+        raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
+    copied = cast(dict[str, object], binding)
+    for field in (
+        "workspaceId", "buildId", "elfSha256", "inputSnapshotSha256", "dwarfSha256",
+    ):
+        _hash_value(copied[field])
+    if copied["svdSha256"] is not None:
+        _hash_value(copied["svdSha256"])
+    try:
+        if str(UUID(str(copied["logicalProjectId"]))) != copied["logicalProjectId"]:
+            raise ValueError("logical project ID is not canonical")
+        require_safe_session_id(copied["sessionId"])
+    except (TypeError, ValueError) as error:
+        raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE) from error
+    for field in (
+        "probeId", "targetDevice", "physicalTarget", "flashSessionId", "leaseId",
+    ):
+        _monitor_text(copied[field])
+    if not isinstance(copied["gitHead"], str) or re.fullmatch(r"[0-9a-f]{40}", copied["gitHead"]) is None:
+        raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
+    if type(copied["gitDirty"]) is not bool:
+        raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
+    if (
+        copied["probeId"] != "replay:probe-v2"
+        or copied["physicalTarget"] != "replay:non-physical"
+        or copied["flashSessionId"] != "replay:no-flash"
+        or copied["leaseId"] != "replay:no-lease"
+    ):
+        raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
+    return copied
+
+
+def _validate_monitor_watch(value: object) -> dict[str, object]:
+    if not isinstance(value, dict):
+        raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
+    kind = value.get("kind")
+    if kind == "variable":
+        if set(value) != _MONITOR_VARIABLE_WATCH_FIELDS:
+            raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
+        _monitor_text(value["expression"], maximum=512)
+    elif kind == "register":
+        if set(value) != _MONITOR_REGISTER_WATCH_FIELDS:
+            raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
+        _monitor_text(value["registerPath"], maximum=512)
+    else:
+        raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
+    return value
+
+
+def _validate_monitor_sample(value: object) -> dict[str, object]:
+    if not isinstance(value, dict) or set(value) != _MONITOR_SAMPLE_FIELDS:
+        raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
+    sample = cast(dict[str, object], value)
+    _validate_monitor_watch(sample["watch"])
+    status = sample["status"]
+    if status not in {"OK", "ERROR"}:
+        raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
+    typed_value = sample["typedValue"]
+    code = sample["code"]
+    if status == "OK":
+        if typed_value is None or code is not None:
+            raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
+    else:
+        if typed_value is not None or not isinstance(code, str):
+            raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
+        _monitor_text(code, maximum=128)
+    definition = sample["definition"]
+    if definition is not None and not isinstance(definition, dict):
+        raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
+    return sample
+
+
+def _validate_monitor_batch(value: object, binding: dict[str, object]) -> dict[str, object]:
+    if not isinstance(value, dict) or set(value) != _MONITOR_BATCH_FIELDS:
+        raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
+    batch = cast(dict[str, object], value)
+    if batch["binding"] != binding:
+        raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
+    _monitor_uuid(batch["groupId"])
+    _monitor_uuid(batch["runId"])
+    _monitor_int(batch["groupRevision"], positive=True)
+    for field in (
+        "sequence", "scheduledUnixNs", "capturedUnixNs", "latencyNs",
+        "subscriberDrops", "historyDrops", "deadlineDrops",
+    ):
+        _monitor_int(batch[field])
+    if batch["capturedUnixNs"] < batch["scheduledUnixNs"]:
+        raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
+    if (
+        batch["scheduledAtUtc"] != _monitor_unix_ns_to_utc(batch["scheduledUnixNs"])
+        or batch["capturedAtUtc"] != _monitor_unix_ns_to_utc(batch["capturedUnixNs"])
+    ):
+        raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
+    actual_rate = batch["actualRateHz"]
+    if type(actual_rate) is not float or not math.isfinite(actual_rate) or actual_rate < 0:
+        raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
+    values = batch["values"]
+    if not isinstance(values, list) or not values or len(values) > 256:
+        raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
+    for sample in values:
+        _validate_monitor_sample(sample)
+    return batch
+
+
+def _validate_monitor_transcript_projection(
+    document: dict[str, object],
+    binding: dict[str, object],
+) -> list[dict[str, object]]:
+    batches = document.get("batches")
+    if not isinstance(batches, list) or not batches or len(batches) > 1024:
+        raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
+    parsed = [
+        _validate_monitor_batch(batch, binding)
+        for batch in batches
+    ]
+    first = parsed[0]
+    first_group = first["groupId"]
+    first_revision = first["groupRevision"]
+    first_run = first["runId"]
+    selectors = [sample["watch"] for sample in first["values"]]
+    if len({_canonical_replay_json_bytes(item) for item in selectors}) != len(selectors):
+        raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
+    previous_scheduled: int | None = None
+    previous_captured: int | None = None
+    for index, batch in enumerate(parsed):
+        if (
+            batch["groupId"] != first_group
+            or batch["groupRevision"] != first_revision
+            or batch["runId"] != first_run
+            or batch["sequence"] != first["sequence"] + index
+        ):
+            raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
+        current_selectors = [sample["watch"] for sample in batch["values"]]
+        if current_selectors != selectors:
+            raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
+        scheduled = cast(int, batch["scheduledUnixNs"])
+        captured = cast(int, batch["capturedUnixNs"])
+        if previous_scheduled is not None and scheduled <= previous_scheduled:
+            raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
+        if previous_captured is not None and captured <= previous_captured:
+            raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
+        previous_scheduled = scheduled
+        previous_captured = captured
+    return parsed
+
+
 def _read_transcript_parent(
     state: _WorkflowState,
     *,
@@ -1034,8 +1240,7 @@ def _read_transcript_parent(
         ):
             raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
         binding = decoded["binding"]
-        if not isinstance(binding, dict) or set(binding) != _MONITOR_BINDING_FIELDS:
-            raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
+        binding = _validate_monitor_binding(binding)
         expected_binding = {
             "workspaceId": run_identity.workspace_id,
             "logicalProjectId": run_identity.project_id,
@@ -1050,9 +1255,7 @@ def _read_transcript_parent(
             raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
         if binding.get("sessionId") != envelope.identity.session_id:
             raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
-        batches = decoded["batches"]
-        if not isinstance(batches, list) or not batches:
-            raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
+        batches = _validate_monitor_transcript_projection(decoded, binding)
         if any(
             not isinstance(batch, dict)
             or batch.get("runId") != metadata["origin_run_id"]
