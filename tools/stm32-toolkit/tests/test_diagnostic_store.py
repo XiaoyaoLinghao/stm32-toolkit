@@ -450,6 +450,33 @@ def test_resolve_operation_returns_current_session_for_exact_intent_and_conflict
         assert error.value.code == DIAGNOSTIC_OPERATION_CONFLICT
 
 
+def test_resolve_accepted_operation_reloads_without_evidence_authority(
+    tmp_path: Path,
+) -> None:
+    evidence = EvidenceStore(tmp_path / "evidence")
+    failed_evidence_id = _failed_evidence(evidence, tmp_path)
+    store = DiagnosticStore(tmp_path / "diagnostics", evidence)
+    created = _created(failed_evidence_id)
+    store.create(created)
+    started = _started(created, operation_id="completion-op")
+    accepted = store.append(SID, started, expected_revision=1)
+    checkpoint = get_root(evidence, "diagnostic-session", f"{SID}.00000002")
+    checkpoint_envelope = evidence.get_envelope(checkpoint.manifest_id)
+    checkpoint_artifact = evidence.root.joinpath(*checkpoint_envelope.artifacts[0].relative_path.split("/"))
+    checkpoint_artifact.unlink()
+
+    resolved = store.resolve_accepted_operation(
+        SID,
+        started.operation_id,
+        event_type=started.event_type,
+        actor=started.actor,
+    )
+    assert resolved is not None
+    assert resolved.appended is False
+    assert resolved.event == accepted.event == started
+    assert resolved.session.revision == 2
+
+
 @pytest.mark.parametrize("expected_revision", [0, 2])
 def test_stale_or_future_revision_appends_nothing(tmp_path: Path, expected_revision: int) -> None:
     evidence = EvidenceStore(tmp_path / "evidence")

@@ -539,7 +539,10 @@ class DiagnosticStore:
         return paths
 
     def _load_chain_locked(
-        self, session_id: str
+        self,
+        session_id: str,
+        *,
+        validate_evidence: bool = True,
     ) -> tuple[DiagnosticSession, tuple[DiagnosticEvent, ...]]:
         events_dir = self._session_events_directory(session_id)
         paths = self._event_paths(events_dir)
@@ -561,8 +564,9 @@ class DiagnosticStore:
             except DiagnosticValidationError:
                 _raise(DIAGNOSTIC_CHAIN_CORRUPT)
             assert session is not None
-            self._validate_referenced_evidence(event, session)
-            self._ensure_checkpoint_locked(event, before, session, path)
+            if validate_evidence:
+                self._validate_referenced_evidence(event, session)
+                self._ensure_checkpoint_locked(event, before, session, path)
             events.append(event)
         if session is None:
             _raise(DIAGNOSTIC_CHAIN_CORRUPT)
@@ -845,6 +849,7 @@ class DiagnosticStore:
         operation_id: str,
         *,
         session_id: str | None = None,
+        validate_evidence: bool = True,
     ) -> tuple[DiagnosticSession, DiagnosticEvent] | None:
         session_ids = (
             (session_id,)
@@ -855,7 +860,10 @@ class DiagnosticStore:
         found: tuple[DiagnosticSession, DiagnosticEvent] | None = None
         for current_session_id in session_ids:
             assert current_session_id is not None
-            session, events = self._load_chain_locked(current_session_id)
+            session, events = self._load_chain_locked(
+                current_session_id,
+                validate_evidence=validate_evidence,
+            )
             for event in events:
                 if event.event_type == "session.created":
                     if event.operation_id in workspace_create_operations:
@@ -978,6 +986,51 @@ class DiagnosticStore:
             if _intent(accepted) != (event_type, actor, request_bytes):
                 _raise(DIAGNOSTIC_OPERATION_CONFLICT)
             return DiagnosticMutationRecord(session, accepted, False)
+
+    def resolve_accepted_operation(
+        self,
+        diagnostic_session_id: str,
+        operation_id: str,
+        *,
+        event_type: str,
+        actor: str,
+    ) -> DiagnosticMutationRecord | None:
+        """Resolve one accepted operation without dereferencing Evidence."""
+
+        session_id = self._validate_session_id(diagnostic_session_id)
+        if not isinstance(operation_id, str) or not operation_id:
+            _raise(DIAGNOSTIC_INVALID_EVENT)
+        if not isinstance(event_type, str) or not event_type:
+            _raise(DIAGNOSTIC_INVALID_EVENT)
+        if not isinstance(actor, str) or not actor:
+            _raise(DIAGNOSTIC_INVALID_EVENT)
+        try:
+            self._existing(self.diagnostics_root)
+        except FileNotFoundError:
+            _raise(DIAGNOSTIC_NOT_FOUND)
+        with self._store_lock(create=False):
+            found = self._find_operation_locked(
+                operation_id,
+                session_id=session_id,
+                validate_evidence=False,
+            )
+            if found is None:
+                return None
+            session, accepted = found
+            if accepted.event_type != event_type or accepted.actor != actor:
+                _raise(DIAGNOSTIC_OPERATION_CONFLICT)
+            return DiagnosticMutationRecord(session, accepted, False)
+
+    def load_durable(self, diagnostic_session_id: str) -> DiagnosticSession:
+        """Load the diagnostic chain without dereferencing referenced Evidence."""
+
+        session_id = self._validate_session_id(diagnostic_session_id)
+        try:
+            self._existing(self.diagnostics_root)
+        except FileNotFoundError:
+            _raise(DIAGNOSTIC_NOT_FOUND)
+        with self._store_lock(create=False):
+            return self._load_chain_locked(session_id, validate_evidence=False)[0]
 
     def load(self, diagnostic_session_id: str) -> DiagnosticSession:
         session_id = self._validate_session_id(diagnostic_session_id)

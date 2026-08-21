@@ -25,8 +25,10 @@ from stm32_toolkit.diagnostic_workflows import (
     diagnostic_add_verification_plan,
     diagnostic_attach_marker,
     diagnostic_begin,
+    diagnostic_complete_verification,
     diagnostic_declare_source_change,
     diagnostic_show,
+    diagnostic_show_verification,
     diagnostic_start,
     diagnostic_start_verification,
 )
@@ -558,8 +560,25 @@ def _verification_checkpoint_inputs(
         "failed-before": Path(__file__).parents[2] / "stm32-monitor" / "tests" / "fixtures" / "vs03" / "failed-before.json",
         "fixed-after": Path(__file__).parents[2] / "stm32-monitor" / "tests" / "fixtures" / "vs03" / "fixed-after.json",
     }
+    monitor_references: dict[str, object] = {}
 
     def publish_transcript(run: object, role: str) -> EvidenceEnvelope:
+        if (
+            analysis_mutation in {"unchanged", "invalid"}
+            and monitor_session_overrides is None
+            and analysis_session_id is None
+        ):
+            reference = ingest_monitor_replay(
+                workspace,
+                evidence,
+                MONITOR_OPERATION_IDS[role],
+                transcript_paths[role],
+            )
+            monitor_references[role] = reference
+            transcript_root = get_root(
+                evidence, "monitor-run", MONITOR_OPERATION_IDS[role]
+            )
+            return evidence.get_envelope(transcript_root.manifest_id)
         document = json.loads(transcript_paths[role].read_text(encoding="utf-8"))
         binding = document["binding"]
         monitor_session_id = (monitor_session_overrides or {}).get(role)
@@ -657,8 +676,16 @@ def _verification_checkpoint_inputs(
         "schema": "stm32-monitor-analysis/1",
         "analysis_id": "",
         "request_digest": "1" * 64,
-        "before_run_id": str(before.envelope.evidence_id),
-        "after_run_id": str(after.envelope.evidence_id),
+        "before_run_id": (
+            str(getattr(monitor_references["failed-before"], "run_ref_sha256"))
+            if "failed-before" in monitor_references
+            else str(before.envelope.evidence_id)
+        ),
+        "after_run_id": (
+            str(getattr(monitor_references["fixed-after"], "run_ref_sha256"))
+            if "fixed-after" in monitor_references
+            else str(after.envelope.evidence_id)
+        ),
         "identity": {
             "schema": "stm32-monitor-analysis-lineage/1",
             "origin_workspace_id": after.manifest.identity.workspace_id,
@@ -723,6 +750,37 @@ def _verification_checkpoint_inputs(
             after_max=1 << 63,
             delta_first=0,
             delta_last=0,
+        )
+    elif analysis_mutation == "unchanged":
+        analysis.update(
+            after_first=1,
+            after_last=1,
+            after_min=1,
+            after_max=1,
+            delta_first=0,
+            delta_last=0,
+            changed=False,
+            reason_code="VALUES_UNCHANGED",
+        )
+    elif analysis_mutation == "invalid":
+        analysis.update(
+            quality="INVALID",
+            conclusion="INCONCLUSIVE",
+            reason_code="INSUFFICIENT_VALID_PAIRS",
+            aligned_position_count=1,
+            aligned_pair_count=0,
+            excluded_position_count=1,
+            before_first=None,
+            before_last=None,
+            before_min=None,
+            before_max=None,
+            after_first=None,
+            after_last=None,
+            after_min=None,
+            after_max=None,
+            delta_first=None,
+            delta_last=None,
+            changed=None,
         )
     elif analysis_mutation == "nfc":
         analysis["identity"]["target_device"] = "stm32:e\u0301"  # type: ignore[index]
@@ -1322,6 +1380,434 @@ def test_task7a_mutations_retry_after_later_state_with_exact_or_conflicting_inte
         assert conflict.ok is False
         assert conflict.code == "DIAGNOSTIC_REVISION_CONFLICT"
         assert after == before
+
+
+def test_task7b_completion_pass_show_and_evidence_independent_exact_retry(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    (
+        diagnostic_context,
+        session_id,
+        workspace,
+        _declaration,
+        _plan,
+        _marker_ref,
+        _declared,
+        _planned,
+        _started,
+        attached,
+    ) = _prepared_cross_state_operations(monkeypatch, tmp_path)
+    assert attached.data["session"]["revision"] == 7
+
+    completed = diagnostic_complete_verification(
+        _fresh_diagnostic_context(diagnostic_context),
+        operation_id="diagnostic.verification.complete",
+        diagnostic_session_id=session_id,
+        expected_revision=7,
+        executed_operation_ids=["target-test.vs03"],
+    )
+    assert completed.ok is True
+    assert completed.operation == "diagnostic.verification.complete"
+    verification = completed.data["fix_verification"]
+    assert verification["status"] == "PASSED"
+    assert verification["reason_code"] == "VERIFICATION_PASSED"
+    fixed = TestRunRepository(EvidenceStore(workspace.workspace_root / "evidence")).load(
+        "vs03-fixed-after"
+    )
+    assert verification["completed_at_utc"] == fixed.manifest.ended_at_utc
+    assert completed.data["session"]["state"] == "RESOLVED"
+
+    shown = diagnostic_show_verification(
+        _fresh_diagnostic_context(diagnostic_context), diagnostic_session_id=session_id
+    )
+    assert shown.ok is True
+    assert shown.operation == "diagnostic.verification.show"
+    assert shown.data["authoritative"] is True
+    assert shown.data["session"] == completed.data["session"]
+    assert shown.data["fix_verifications"] == (verification,)
+
+    before = _authority_snapshot(workspace)
+    with monkeypatch.context() as isolated:
+        isolated.setattr(
+            diagnostic_workflows,
+            "_load_bound_session",
+            lambda *_args, **_kwargs: pytest.fail("exact completion retry dereferenced Evidence"),
+        )
+        retry = diagnostic_complete_verification(
+            _fresh_diagnostic_context(diagnostic_context),
+            operation_id="diagnostic.verification.complete",
+            diagnostic_session_id=session_id,
+            expected_revision=7,
+            executed_operation_ids=["target-test.vs03"],
+        )
+    assert retry.ok is True
+    assert retry.data["session"] == completed.data["session"]
+    assert retry.data["fix_verification"] == verification
+    assert _authority_snapshot(workspace) == before
+
+    for kwargs in (
+        {"actor": "ai-client"},
+        {"executed_operation_ids": ["target-test.other"]},
+        {"cancelled": True},
+    ):
+        before = _authority_snapshot(workspace)
+        conflict = diagnostic_complete_verification(
+            _fresh_diagnostic_context(diagnostic_context),
+            operation_id="diagnostic.verification.complete",
+            diagnostic_session_id=session_id,
+            expected_revision=7,
+            executed_operation_ids=kwargs.pop("executed_operation_ids", ["target-test.vs03"]),
+            cancelled=kwargs.pop("cancelled", False),
+            actor=kwargs.pop("actor", "tool"),
+        )
+        assert conflict.ok is False
+        assert conflict.code == "DIAGNOSTIC_OPERATION_CONFLICT"
+        assert _authority_snapshot(workspace) == before
+
+    before = _authority_snapshot(workspace)
+    stale = diagnostic_complete_verification(
+        _fresh_diagnostic_context(diagnostic_context),
+        operation_id="diagnostic.verification.complete.new",
+        diagnostic_session_id=session_id,
+        expected_revision=7,
+        executed_operation_ids=["target-test.vs03"],
+    )
+    assert stale.ok is False
+    assert stale.code == "DIAGNOSTIC_REVISION_CONFLICT"
+    assert _authority_snapshot(workspace) == before
+
+
+def test_task7b_completion_deterministic_outcome_priority_and_zero_mutation(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    for name in ("corrupt", "failed-fixed", "cancelled"):
+        (tmp_path / name).mkdir()
+    (
+        diagnostic_context,
+        session_id,
+        workspace,
+        _declaration,
+        _plan,
+        _marker_ref,
+    ) = _prepared_checkpoint_for_attach(monkeypatch, tmp_path)
+    missing_marker = diagnostic_complete_verification(
+        _fresh_diagnostic_context(diagnostic_context),
+        operation_id="complete.missing-marker",
+        diagnostic_session_id=session_id,
+        expected_revision=6,
+        executed_operation_ids=["target-test.vs03"],
+    )
+    assert missing_marker.ok is True
+    assert missing_marker.data["fix_verification"]["status"] == "INCONCLUSIVE"
+    assert missing_marker.data["fix_verification"]["reason_code"] == "MANDATORY_EVIDENCE_MISSING"
+    assert missing_marker.data["session"]["state"] == "INVESTIGATING"
+
+    (
+        diagnostic_context,
+        session_id,
+        workspace,
+        _declaration,
+        _plan,
+        marker_ref,
+        _declared,
+        _planned,
+        _started,
+        _attached,
+    ) = _prepared_cross_state_operations(monkeypatch, tmp_path / "corrupt")
+    analysis_root = _evidence_root_path(workspace, "monitor-analysis", marker_ref.analysis_id)
+    analysis_root.write_bytes(b"{}")
+    corrupt_analysis = diagnostic_complete_verification(
+        _fresh_diagnostic_context(diagnostic_context),
+        operation_id="complete.corrupt-analysis",
+        diagnostic_session_id=session_id,
+        expected_revision=7,
+        executed_operation_ids=["target-test.vs03"],
+    )
+    assert corrupt_analysis.ok is True
+    assert corrupt_analysis.data["fix_verification"]["status"] == "INCONCLUSIVE"
+    assert corrupt_analysis.data["fix_verification"]["reason_code"] == "MANDATORY_EVIDENCE_CORRUPT"
+    assert corrupt_analysis.data["session"]["state"] == "INVESTIGATING"
+
+    (
+        diagnostic_context,
+        session_id,
+        workspace,
+        _declaration,
+        _plan,
+        _marker_ref,
+        _declared,
+        _planned,
+        _started,
+        _attached,
+    ) = _prepared_cross_state_operations(monkeypatch, tmp_path / "failed-fixed")
+    real_repository_factory = diagnostic_workflows._repository_factory
+
+    class FailedFixedRepository:
+        def __init__(self, evidence_store: EvidenceStore) -> None:
+            self._repository = real_repository_factory(evidence_store)
+
+        def load(self, run_id: str) -> object:
+            published = self._repository.load(run_id)
+            if run_id != "vs03-fixed-after":
+                return published
+            manifest = replace(
+                published.manifest,
+                state="failed",
+                cases=(replace(published.manifest.cases[0], state="failed"),),
+            )
+            root = replace(
+                published.root,
+                metadata={**dict(published.root.metadata), "state": "failed"},
+            )
+            return replace(published, manifest=manifest, root=root)
+
+    with monkeypatch.context() as isolated:
+        isolated.setattr(
+            diagnostic_workflows,
+            "_repository_factory",
+            lambda evidence_store: FailedFixedRepository(evidence_store),
+        )
+        failed_fixed = diagnostic_complete_verification(
+            _fresh_diagnostic_context(diagnostic_context),
+            operation_id="complete.failed-fixed",
+            diagnostic_session_id=session_id,
+            expected_revision=7,
+            executed_operation_ids=["target-test.vs03"],
+        )
+    assert failed_fixed.ok is True
+    assert failed_fixed.data["fix_verification"]["status"] == "FAILED"
+    assert failed_fixed.data["fix_verification"]["reason_code"] == "FIXED_TEST_FAILED"
+    assert failed_fixed.data["session"]["state"] == "INVESTIGATING"
+
+    (
+        diagnostic_context,
+        session_id,
+        _workspace,
+        _declaration,
+        _plan,
+        _marker_ref,
+        _declared,
+        _planned,
+        _started,
+        _attached,
+    ) = _prepared_cross_state_operations(monkeypatch, tmp_path / "cancelled")
+    cancelled = diagnostic_complete_verification(
+        _fresh_diagnostic_context(diagnostic_context),
+        operation_id="complete.cancelled",
+        diagnostic_session_id=session_id,
+        expected_revision=7,
+        executed_operation_ids=["target-test.vs03"],
+        cancelled=True,
+    )
+    assert cancelled.ok is True
+    assert cancelled.data["fix_verification"]["status"] == "CANCELLED"
+    assert cancelled.data["fix_verification"]["reason_code"] == "CALLER_CANCELLED"
+    assert cancelled.data["session"]["state"] == "INVESTIGATING"
+
+
+def test_task7b_plan_accepts_trustworthy_failed_fixed_after_for_completion(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    (
+        diagnostic_context,
+        session_id,
+        _failed_replay,
+        workspace,
+    ) = _replay_and_open_session(monkeypatch, tmp_path)
+    testing_context = testing_workflows.TestingWorkflowContext(
+        diagnostic_context.project_root,
+        diagnostic_context.data_root,
+        diagnostic_context.session_id,
+    )
+    assert testing_workflows.target_replay_run(
+        testing_context,
+        "vs03-fixed-after",
+        FIXTURES / "fixed-after.json",
+        FIXTURES / "fixed-after.hex",
+    ).ok is True
+    shown = diagnostic_show(
+        _fresh_diagnostic_context(diagnostic_context), diagnostic_session_id=session_id
+    )
+    hypothesis_id = shown.data["session"]["hypotheses"][0]["hypothesis_id"]
+    declaration, plan, _marker_ref = _verification_checkpoint_inputs(
+        tmp_path, workspace, session_id, hypothesis_id
+    )
+    assert diagnostic_declare_source_change(
+        _fresh_diagnostic_context(diagnostic_context),
+        operation_id="diagnostic.source-change.declare",
+        diagnostic_session_id=session_id,
+        expected_revision=3,
+        source_change_declaration=declaration,
+    ).ok is True
+
+    real_repository_factory = diagnostic_workflows._repository_factory
+
+    class FailedFixedRepository:
+        def __init__(self, evidence_store: EvidenceStore) -> None:
+            self._repository = real_repository_factory(evidence_store)
+
+        def load(self, run_id: str) -> object:
+            published = self._repository.load(run_id)
+            if run_id != "vs03-fixed-after":
+                return published
+            return replace(
+                published,
+                manifest=replace(
+                    published.manifest,
+                    state="failed",
+                    cases=(replace(published.manifest.cases[0], state="failed"),),
+                ),
+                root=replace(
+                    published.root,
+                    metadata={**dict(published.root.metadata), "state": "failed"},
+                ),
+            )
+
+    with monkeypatch.context() as isolated:
+        isolated.setattr(
+            diagnostic_workflows,
+            "_repository_factory",
+            lambda evidence_store: FailedFixedRepository(evidence_store),
+        )
+        planned = diagnostic_add_verification_plan(
+            _fresh_diagnostic_context(diagnostic_context),
+            operation_id="diagnostic.verification-plan.add.failed-fixed",
+            diagnostic_session_id=session_id,
+            expected_revision=4,
+            verification_plan=plan,
+        )
+    assert planned.ok is True
+    assert planned.data["verification_plan"]["fixed_after_run_id"] == "vs03-fixed-after"
+
+
+def test_task7b_completion_valid_analysis_contradiction_has_deterministic_failure(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    diagnostic_context, session_id, _failed_replay, workspace = _replay_and_open_session(
+        monkeypatch, tmp_path
+    )
+    testing_context = testing_workflows.TestingWorkflowContext(
+        diagnostic_context.project_root,
+        diagnostic_context.data_root,
+        diagnostic_context.session_id,
+    )
+    assert testing_workflows.target_replay_run(
+        testing_context,
+        "vs03-fixed-after",
+        FIXTURES / "fixed-after.json",
+        FIXTURES / "fixed-after.hex",
+    ).ok is True
+    shown = diagnostic_show(
+        _fresh_diagnostic_context(diagnostic_context), diagnostic_session_id=session_id
+    )
+    hypothesis_id = shown.data["session"]["hypotheses"][0]["hypothesis_id"]
+    declaration, plan, marker_ref = _verification_checkpoint_inputs(
+        tmp_path, workspace, session_id, hypothesis_id, analysis_mutation="unchanged"
+    )
+    assert diagnostic_declare_source_change(
+        _fresh_diagnostic_context(diagnostic_context),
+        operation_id="diagnostic.source-change.declare",
+        diagnostic_session_id=session_id,
+        expected_revision=3,
+        source_change_declaration=declaration,
+    ).ok is True
+    assert diagnostic_add_verification_plan(
+        _fresh_diagnostic_context(diagnostic_context),
+        operation_id="diagnostic.verification-plan.add",
+        diagnostic_session_id=session_id,
+        expected_revision=4,
+        verification_plan=plan,
+    ).ok is True
+    assert diagnostic_start_verification(
+        _fresh_diagnostic_context(diagnostic_context),
+        operation_id="diagnostic.verification.start",
+        diagnostic_session_id=session_id,
+        expected_revision=5,
+        verification_plan_id=plan.verification_plan_id,
+    ).ok is True
+    assert diagnostic_attach_marker(
+        _fresh_diagnostic_context(diagnostic_context),
+        operation_id="diagnostic.marker.attach",
+        diagnostic_session_id=session_id,
+        expected_revision=6,
+        diagnostic_marker_ref=marker_ref,
+    ).ok is True
+    completed = diagnostic_complete_verification(
+        _fresh_diagnostic_context(diagnostic_context),
+        operation_id="complete.contradicted-analysis",
+        diagnostic_session_id=session_id,
+        expected_revision=7,
+        executed_operation_ids=["target-test.vs03"],
+    )
+    assert completed.ok is True
+    assert completed.data["fix_verification"]["status"] == "FAILED"
+    assert completed.data["fix_verification"]["reason_code"] == "ANALYSIS_CONTRADICTED"
+    assert completed.data["session"]["state"] == "INVESTIGATING"
+
+
+def test_task7b_completion_invalid_analysis_has_deterministic_inconclusive_result(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    diagnostic_context, session_id, _failed_replay, workspace = _replay_and_open_session(
+        monkeypatch, tmp_path
+    )
+    testing_context = testing_workflows.TestingWorkflowContext(
+        diagnostic_context.project_root,
+        diagnostic_context.data_root,
+        diagnostic_context.session_id,
+    )
+    assert testing_workflows.target_replay_run(
+        testing_context,
+        "vs03-fixed-after",
+        FIXTURES / "fixed-after.json",
+        FIXTURES / "fixed-after.hex",
+    ).ok is True
+    shown = diagnostic_show(
+        _fresh_diagnostic_context(diagnostic_context), diagnostic_session_id=session_id
+    )
+    hypothesis_id = shown.data["session"]["hypotheses"][0]["hypothesis_id"]
+    declaration, plan, marker_ref = _verification_checkpoint_inputs(
+        tmp_path, workspace, session_id, hypothesis_id, analysis_mutation="invalid"
+    )
+    assert diagnostic_declare_source_change(
+        _fresh_diagnostic_context(diagnostic_context),
+        operation_id="diagnostic.source-change.declare",
+        diagnostic_session_id=session_id,
+        expected_revision=3,
+        source_change_declaration=declaration,
+    ).ok is True
+    assert diagnostic_add_verification_plan(
+        _fresh_diagnostic_context(diagnostic_context),
+        operation_id="diagnostic.verification-plan.add",
+        diagnostic_session_id=session_id,
+        expected_revision=4,
+        verification_plan=plan,
+    ).ok is True
+    assert diagnostic_start_verification(
+        _fresh_diagnostic_context(diagnostic_context),
+        operation_id="diagnostic.verification.start",
+        diagnostic_session_id=session_id,
+        expected_revision=5,
+        verification_plan_id=plan.verification_plan_id,
+    ).ok is True
+    assert diagnostic_attach_marker(
+        _fresh_diagnostic_context(diagnostic_context),
+        operation_id="diagnostic.marker.attach",
+        diagnostic_session_id=session_id,
+        expected_revision=6,
+        diagnostic_marker_ref=marker_ref,
+    ).ok is True
+    completed = diagnostic_complete_verification(
+        _fresh_diagnostic_context(diagnostic_context),
+        operation_id="complete.invalid-analysis",
+        diagnostic_session_id=session_id,
+        expected_revision=7,
+        executed_operation_ids=["target-test.vs03"],
+    )
+    assert completed.ok is True
+    assert completed.data["fix_verification"]["status"] == "INCONCLUSIVE"
+    assert completed.data["fix_verification"]["reason_code"] == "ANALYSIS_NOT_VALID"
+    assert completed.data["session"]["state"] == "INVESTIGATING"
 
 
 def test_target_replay_diagnostic_session_reloads_with_origin_authority(
