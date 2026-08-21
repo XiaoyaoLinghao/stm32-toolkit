@@ -157,7 +157,11 @@ HistoryStore, returning a durable MonitorRunRef without touching Probe services.
 
 - Create: `tools/stm32-monitor/src/stm32_monitor/replay.py`
 - Modify: `tools/stm32-monitor/src/stm32_monitor/__init__.py`
+- Modify: `tools/stm32-monitor/src/stm32_monitor/history.py`
+- Modify: `tools/stm32-toolkit/src/stm32_toolkit/evidence/gc.py`
 - Create: `tools/stm32-monitor/tests/test_replay.py`
+- Modify: `tools/stm32-monitor/tests/test_history.py`
+- Modify: `tools/stm32-toolkit/tests/test_evidence_gc.py`
 - Add text fixtures under: `tools/stm32-monitor/tests/fixtures/vs03/`
 
 **Required interfaces:**
@@ -170,6 +174,9 @@ HistoryStore, returning a durable MonitorRunRef without touching Probe services.
 - Projection replaces only workspace/session storage identity, keeps firmware/source/target and all
   samples/times, and uses explicit replay probe/physical-target/flash/lease values. MonitorRunRef
   exposes both origin and import workspace IDs and the origin transcript digest.
+- One `monitor-run` Evidence root binds operation ID to the exact transcript/ref intent. Projection
+  equality alone never establishes idempotency. `HistoryStore.append_batches()` validates and
+  commits the complete bounded replay window in one transaction, preserving `append_batch()`.
 - Failed-before and fixed-after fixtures share project/target/selector/time grid and use the exact
   firmware identities declared by the corresponding Target descriptors.
 - Identical retry returns the same reference. Conflict, partial/corrupt fixture, duplicate or
@@ -178,7 +185,7 @@ HistoryStore, returning a durable MonitorRunRef without touching Probe services.
 **TDD verify:**
 
 ```powershell
-py -3.12 -m pytest -q tools/stm32-monitor/tests/test_replay.py tools/stm32-monitor/tests/test_history.py tools/stm32-monitor/tests/test_models.py
+py -3.12 -m pytest -q tools/stm32-monitor/tests/test_replay.py tools/stm32-monitor/tests/test_history.py tools/stm32-monitor/tests/test_models.py tools/stm32-toolkit/tests/test_evidence_gc.py
 ```
 
 **Commit:** `feat(monitor): ingest replay observation windows`

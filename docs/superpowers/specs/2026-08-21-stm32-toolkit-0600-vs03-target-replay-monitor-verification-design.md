@@ -157,6 +157,15 @@ session/run IDs, firmware identity fields, the half-open sequence/time window, f
 ordered batch digests, source `replay`, the false physical flag, and scenario role. Repeating an
 identical ingestion returns the same reference; same operation with different intent fails.
 
+The durable operation authority is one immutable Evidence root of type `monitor-run`, keyed by the
+frozen origin run UUID. It points to the unchanged transcript Evidence envelope and binds the
+fixture/ref intent digest plus origin/import identity. History rows alone are never allowed to
+define or adopt an operation intent because the local projection deliberately removes origin
+workspace/session identity. Ingestion publishes the expected envelope/root before History mutation,
+then uses one public atomic `HistoryStore.append_batches()` transaction. An exact root with absent
+History is a recoverable interrupted attempt; a missing/different root with pre-existing History,
+a partial window, or different intent is a conflict. A failed batch transaction appends no subset.
+
 ### 3.3 AnalysisRequest and AnalysisResult (0603)
 
 VS-03 supports one bounded scalar selector per comparison. It deliberately does not introduce a
