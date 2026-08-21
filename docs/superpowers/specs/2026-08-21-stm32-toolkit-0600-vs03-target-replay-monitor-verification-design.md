@@ -206,7 +206,9 @@ and the publication workflow must validate the exact Task 6 `SourceChangeDeclara
 The authoritative `AnalysisResult` retains all pure `AnalysisComputation` fields, including
 `aligned_position_count` and `excluded_position_count`; the abbreviated list above is not a license
 to discard them. `analysis_id` is SHA-256 of the canonical closed result fields excluding
-`analysis_id`. `AnalysisEvidenceRef` has exact closed schema
+`analysis_id`. `before_run_id` and `after_run_id` are the respective immutable
+`MonitorRunRef.run_ref_sha256` values, not mutable History keys or projected UUID aliases.
+`AnalysisEvidenceRef` has exact closed schema
 `stm32-monitor-analysis-evidence-ref/1` and fields `analysis_id` plus `evidence_id`. Neither the
 result nor the marker payload embeds the Evidence ID that contains itself.
 
