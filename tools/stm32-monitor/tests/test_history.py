@@ -1749,7 +1749,7 @@ def test_history_paging_caps_values_and_serialized_bytes(tmp_path: Path, monkeyp
         for sequence in range(5):
             assert store.append_batch(_batch(paths, sequence, value="x" * 80)).ok
         monkeypatch.setattr(history_module, "MAX_HISTORY_VALUES", 2)
-        monkeypatch.setattr(history_module, "MAX_HISTORY_PAGE_BYTES", 3_000)
+        monkeypatch.setattr(history_module, "MAX_HISTORY_PAGE_BYTES", 3_200)
         first = store.query_history(HistoryQuery("monitor-1", 0, 2_000_000_000, limit=10))
         assert first.ok and len(first.data.values) == 2 and first.data.next_cursor is not None
         first_payload = first.data.to_dict()
@@ -1853,7 +1853,7 @@ def test_wrong_workspace_batch_invalid_cursor_and_oversized_row_fail_closed(tmp_
     store = HistoryStore(paths)
     try:
         wrong = _binding(paths).to_dict()
-        wrong["workspaceId"] = "c" * 24
+        wrong["workspaceId"] = "c" * 64
         batch = _batch(paths, 1)
         foreign = SampleBatch(
             binding=ObservationBinding.from_dict(wrong), group_id=batch.group_id,

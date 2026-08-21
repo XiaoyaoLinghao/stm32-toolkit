@@ -71,7 +71,7 @@ def _oversized_model_valid_live_event() -> dict[str, object]:
     )
 
     binding = ObservationBinding(
-        "a" * 24,
+        "a" * 64,
         "12345678-1234-5678-9234-567812345678",
         "session-a",
         "probe-a",

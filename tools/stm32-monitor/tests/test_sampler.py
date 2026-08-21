@@ -28,7 +28,7 @@ GROUP_ID = UUID("11111111-1111-4111-8111-111111111111")
 def _binding(project: Path) -> DebugFirmwareBinding:
     return DebugFirmwareBinding(
         logical_project_id="22222222-2222-4222-8222-222222222222",
-        workspace_id="a" * 24,
+        workspace_id="a" * 64,
         observation_session_id="monitor-1",
         flash_session_id="flash-1",
         lease_id="lease-1",
