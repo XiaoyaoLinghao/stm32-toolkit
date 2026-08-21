@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import argparse
+import os
+import re
+import stat
 import sys
 import unicodedata
 from collections.abc import Awaitable, Callable
@@ -27,13 +30,19 @@ from stm32_toolkit.context import build_project_context
 from stm32_toolkit.detection import detect_project
 from stm32_toolkit.diagnostic_workflows import (
     DiagnosticWorkflowContext,
+    diagnostic_add_verification_plan,
     diagnostic_add_plan,
     diagnostic_add_hypothesis,
     diagnostic_assess_hypothesis,
+    diagnostic_attach_marker,
     diagnostic_begin,
+    diagnostic_complete_verification,
+    diagnostic_declare_source_change,
     diagnostic_run_plan,
     diagnostic_show,
+    diagnostic_show_verification,
     diagnostic_start,
+    diagnostic_start_verification,
 )
 from stm32_toolkit.doctor import run_doctor
 from stm32_toolkit.hardware_workflows import (
@@ -67,8 +76,10 @@ from stm32_toolkit.testing_workflows import (
     TestingWorkflowContext,
     host_test_discover,
     host_test_run,
+    target_replay_run,
     test_show,
 )
+from stm32_toolkit.evidence.model import MAX_ARTIFACT_BYTES
 from stm32_toolkit.testing.model import MAX_CASES, MAX_STRING_BYTES
 
 
@@ -86,6 +97,8 @@ _RUN_ID_PATTERN = r"^[a-z0-9][a-z0-9._-]*$"
 _DIAGNOSTIC_OPERATION_PATTERN = r"^[a-z0-9][a-z0-9._-]{0,127}$"
 _DIAGNOSTIC_SESSION_PATTERN = r"^[0-9a-f]{32}$"
 _DIAGNOSTIC_PLAN_PATTERN = r"^[0-9a-f]{64}$"
+_PORTABLE_PATH_MAX_BYTES = 4096
+_REPARSE_POINT = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
 
 
 def _validate_test_string(value: str) -> str:
@@ -163,6 +176,115 @@ DiagnosticStepId = Annotated[
     ),
 ]
 DiagnosticPolarity = Literal["supports", "refutes"]
+
+
+def _validate_portable_project_path(value: str) -> str:
+    """Validate the wire spelling of a project-relative file path."""
+    if (
+        not value
+        or unicodedata.normalize("NFC", value) != value
+        or "\\" in value
+        or ":" in value
+        or value.startswith("/")
+        or any(ord(character) < 32 or ord(character) == 127 for character in value)
+    ):
+        raise ValueError("path must be a portable project-relative path")
+    try:
+        if len(value.encode("utf-8")) > _PORTABLE_PATH_MAX_BYTES:
+            raise ValueError("path must be a portable project-relative path")
+    except UnicodeEncodeError:
+        raise ValueError("path must be a portable project-relative path") from None
+    parts = value.split("/")
+    if any(not part or part in {".", ".."} for part in parts):
+        raise ValueError("path must be a portable project-relative path")
+    return value
+
+
+ProjectRelativePath = Annotated[
+    str,
+    Field(min_length=1, max_length=_PORTABLE_PATH_MAX_BYTES),
+    AfterValidator(_validate_portable_project_path),
+]
+
+
+def _reject_json_tuple(value: object) -> object:
+    if isinstance(value, tuple):
+        raise ValueError("JSON arrays must not be tuples")
+    return value
+
+
+JsonArray = Annotated[list[object], BeforeValidator(_reject_json_tuple)]
+
+
+class DiagnosticArtifactInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    sha256: Digest
+    size_bytes: Annotated[StrictInt, Field(ge=0, le=MAX_ARTIFACT_BYTES)]
+    relative_path: DiagnosticText
+    kind: DiagnosticText
+    media_type: DiagnosticText
+
+
+class SourceChangeDeclarationInput(BaseModel):
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    schema_: Literal["stm32-source-change-declaration/1"] = Field(
+        alias="schema"
+    )
+    declaration_id: Digest
+    before_source_sha256: Digest
+    after_source_sha256: Digest
+    before_build_id: Digest
+    before_elf_sha256: Digest
+    after_build_id: Digest
+    after_elf_sha256: Digest
+    changed_paths: Annotated[list[DiagnosticText], BeforeValidator(_reject_json_tuple), Field(min_length=1, max_length=128)]
+    diff_evidence_id: Digest
+    diff_artifact: DiagnosticArtifactInput
+    claimed_hypothesis_ids: Annotated[
+        list[DiagnosticHypothesisId],
+        BeforeValidator(_reject_json_tuple),
+        Field(min_length=1, max_length=16),
+    ]
+    validation_plan_id: Digest
+
+
+class VerificationPlanInput(BaseModel):
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    schema_: Literal["stm32-verification-plan/1"] = Field(alias="schema")
+    verification_plan_id: Digest
+    diagnostic_session_id: DiagnosticSessionId
+    failed_before_run_id: RunId
+    failed_before_evidence_id: Digest
+    source_change_declaration_id: Digest
+    fixed_after_run_id: RunId
+    fixed_after_evidence_id: Digest
+    required_analysis_ids: Annotated[
+        list[Digest], BeforeValidator(_reject_json_tuple), Field(min_length=1, max_length=16)
+    ]
+    required_analysis_evidence_ids: Annotated[
+        list[Digest], BeforeValidator(_reject_json_tuple), Field(min_length=1, max_length=16)
+    ]
+    required_monitor_quality: Literal["VALID"]
+    expected_changed: StrictBool
+    plan_digest: Digest
+
+
+class DiagnosticMarkerInput(BaseModel):
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    schema_: Literal["stm32-diagnostic-marker-ref/1"] = Field(alias="schema")
+    marker_id: Digest
+    marker_evidence_id: Digest
+    analysis_id: Digest
+    analysis_evidence_id: Digest
+    diagnostic_session_id: DiagnosticSessionId
+    hypothesis_id: DiagnosticHypothesisId
+    polarity: DiagnosticPolarity
+    label: Literal["change-observed", "no-change-observed", "analysis-inconclusive"]
+    rationale: Annotated[str, Field(min_length=1, max_length=4096), AfterValidator(_validate_test_string)]
 
 DiagnosticRunState = Literal[
     "discovered",
@@ -759,6 +881,200 @@ def _diagnostic_context(runtime: ServerRuntime) -> DiagnosticWorkflowContext:
         data_root=runtime.data_root,
         session_id=runtime.session_id,
     )
+
+
+class _ProjectPathError(ValueError):
+    """A caller path did not satisfy the MCP project-file boundary."""
+
+
+def _path_component_is_link_or_reparse(info: object) -> bool:
+    mode = getattr(info, "st_mode", 0)
+    return stat.S_ISLNK(mode) or bool(getattr(info, "st_file_attributes", 0) & _REPARSE_POINT)
+
+
+def _resolve_project_relative_file(runtime: ServerRuntime, value: str) -> Path:
+    """Resolve one existing regular project file without following links."""
+    try:
+        normalized = _validate_portable_project_path(value)
+        parts = normalized.split("/")
+        candidate = runtime.project_root
+        for index, part in enumerate(parts):
+            candidate = candidate / part
+            info = os.lstat(candidate)
+            if _path_component_is_link_or_reparse(info):
+                raise _ProjectPathError
+            mode = getattr(info, "st_mode", 0)
+            if index < len(parts) - 1 and not stat.S_ISDIR(mode):
+                raise _ProjectPathError
+            if index == len(parts) - 1 and not stat.S_ISREG(mode):
+                raise _ProjectPathError
+        resolved = candidate.resolve(strict=True)
+        resolved.relative_to(runtime.project_root)
+        return resolved
+    except _ProjectPathError:
+        raise
+    except (OSError, RuntimeError, TypeError, ValueError) as error:
+        raise _ProjectPathError from error
+
+
+def _adapter_failure(operation: str, code: str, message: str) -> dict[str, object]:
+    return OperationResult.failure(operation, code, message, {}).to_dict()
+
+
+def _nested_model_data(value: object) -> object:
+    if isinstance(value, BaseModel):
+        return value.model_dump(mode="python", by_alias=True)
+    return value
+
+
+async def tool_test_target_replay_for_request(
+    runtime: ServerRuntime,
+    context: Context | None,
+    operation_id: DiagnosticOperationId,
+    descriptor_path: ProjectRelativePath,
+    stream_path: ProjectRelativePath,
+) -> dict[str, object]:
+    operation = "test.target.replay"
+    failure = await _client_roots_failure(runtime, context, operation)
+    if failure is not None:
+        return failure
+    try:
+        descriptor_file = _resolve_project_relative_file(runtime, descriptor_path)
+        stream_file = _resolve_project_relative_file(runtime, stream_path)
+    except _ProjectPathError:
+        return _adapter_failure(operation, "EVIDENCE_PATH_UNSAFE", "Evidence path is unsafe.")
+    return target_replay_run(
+        _testing_context(runtime),
+        operation_id=operation_id,
+        descriptor_file=descriptor_file,
+        stream_file=stream_file,
+    ).to_dict()
+
+
+async def tool_diagnostic_declare_source_change_for_request(
+    runtime: ServerRuntime,
+    context: Context | None,
+    operation_id: DiagnosticOperationId,
+    diagnostic_session_id: DiagnosticSessionId,
+    expected_revision: DiagnosticRevision,
+    source_change_declaration: SourceChangeDeclarationInput,
+    actor: DiagnosticActor = "user",
+) -> dict[str, object]:
+    failure = await _client_roots_failure(runtime, context, "diagnostic.source-change.declare")
+    if failure is not None:
+        return failure
+    return diagnostic_declare_source_change(
+        _diagnostic_context(runtime),
+        operation_id=operation_id,
+        diagnostic_session_id=diagnostic_session_id,
+        expected_revision=expected_revision,
+        source_change_declaration=_nested_model_data(source_change_declaration),
+        actor=actor,
+    ).to_dict()
+
+
+async def tool_diagnostic_add_verification_plan_for_request(
+    runtime: ServerRuntime,
+    context: Context | None,
+    operation_id: DiagnosticOperationId,
+    diagnostic_session_id: DiagnosticSessionId,
+    expected_revision: DiagnosticRevision,
+    verification_plan: VerificationPlanInput,
+    actor: DiagnosticActor = "user",
+) -> dict[str, object]:
+    failure = await _client_roots_failure(runtime, context, "diagnostic.verification-plan.add")
+    if failure is not None:
+        return failure
+    return diagnostic_add_verification_plan(
+        _diagnostic_context(runtime),
+        operation_id=operation_id,
+        diagnostic_session_id=diagnostic_session_id,
+        expected_revision=expected_revision,
+        verification_plan=_nested_model_data(verification_plan),
+        actor=actor,
+    ).to_dict()
+
+
+async def tool_diagnostic_start_verification_for_request(
+    runtime: ServerRuntime,
+    context: Context | None,
+    operation_id: DiagnosticOperationId,
+    diagnostic_session_id: DiagnosticSessionId,
+    expected_revision: DiagnosticRevision,
+    verification_plan_id: DiagnosticPlanId,
+    actor: DiagnosticActor = "tool",
+) -> dict[str, object]:
+    failure = await _client_roots_failure(runtime, context, "diagnostic.verification.start")
+    if failure is not None:
+        return failure
+    return diagnostic_start_verification(
+        _diagnostic_context(runtime),
+        operation_id=operation_id,
+        diagnostic_session_id=diagnostic_session_id,
+        expected_revision=expected_revision,
+        verification_plan_id=verification_plan_id,
+        actor=actor,
+    ).to_dict()
+
+
+async def tool_diagnostic_attach_marker_for_request(
+    runtime: ServerRuntime,
+    context: Context | None,
+    operation_id: DiagnosticOperationId,
+    diagnostic_session_id: DiagnosticSessionId,
+    expected_revision: DiagnosticRevision,
+    diagnostic_marker_ref: DiagnosticMarkerInput,
+    actor: DiagnosticActor = "tool",
+) -> dict[str, object]:
+    failure = await _client_roots_failure(runtime, context, "diagnostic.marker.attach")
+    if failure is not None:
+        return failure
+    return diagnostic_attach_marker(
+        _diagnostic_context(runtime),
+        operation_id=operation_id,
+        diagnostic_session_id=diagnostic_session_id,
+        expected_revision=expected_revision,
+        diagnostic_marker_ref=_nested_model_data(diagnostic_marker_ref),
+        actor=actor,
+    ).to_dict()
+
+
+async def tool_diagnostic_complete_verification_for_request(
+    runtime: ServerRuntime,
+    context: Context | None,
+    operation_id: DiagnosticOperationId,
+    diagnostic_session_id: DiagnosticSessionId,
+    expected_revision: DiagnosticRevision,
+    executed_operation_ids: list[DiagnosticOperationId],
+    cancelled: StrictBool = False,
+    actor: DiagnosticActor = "tool",
+) -> dict[str, object]:
+    failure = await _client_roots_failure(runtime, context, "diagnostic.verification.complete")
+    if failure is not None:
+        return failure
+    return diagnostic_complete_verification(
+        _diagnostic_context(runtime),
+        operation_id=operation_id,
+        diagnostic_session_id=diagnostic_session_id,
+        expected_revision=expected_revision,
+        executed_operation_ids=executed_operation_ids,
+        cancelled=cancelled,
+        actor=actor,
+    ).to_dict()
+
+
+async def tool_diagnostic_show_verification_for_request(
+    runtime: ServerRuntime,
+    context: Context | None,
+    diagnostic_session_id: DiagnosticSessionId,
+) -> dict[str, object]:
+    failure = await _client_roots_failure(runtime, context, "diagnostic.verification.show")
+    if failure is not None:
+        return failure
+    return diagnostic_show_verification(
+        _diagnostic_context(runtime),
+        diagnostic_session_id=diagnostic_session_id,
+    ).to_dict()
 
 
 async def tool_diagnostic_start_for_request(
@@ -1365,6 +1681,125 @@ def create_server(
             actor,
         )
 
+    @mcp.tool(name="stm32_test_target_replay")
+    async def stm32_test_target_replay(
+        ctx: Context,
+        operationId: DiagnosticOperationId,
+        descriptorPath: ProjectRelativePath,
+        streamPath: ProjectRelativePath,
+    ) -> dict[str, object]:
+        return await tool_test_target_replay_for_request(
+            runtime, ctx, operationId, descriptorPath, streamPath
+        )
+
+    @mcp.tool(name="stm32_diagnostic_source_change_declare")
+    async def stm32_diagnostic_source_change_declare(
+        ctx: Context,
+        operationId: DiagnosticOperationId,
+        diagnosticSessionId: DiagnosticSessionId,
+        expectedRevision: DiagnosticRevision,
+        sourceChangeDeclaration: SourceChangeDeclarationInput,
+        actor: DiagnosticActor = "user",
+    ) -> dict[str, object]:
+        return await tool_diagnostic_declare_source_change_for_request(
+            runtime,
+            ctx,
+            operationId,
+            diagnosticSessionId,
+            expectedRevision,
+            sourceChangeDeclaration,
+            actor,
+        )
+
+    @mcp.tool(name="stm32_diagnostic_verification_plan_add")
+    async def stm32_diagnostic_verification_plan_add(
+        ctx: Context,
+        operationId: DiagnosticOperationId,
+        diagnosticSessionId: DiagnosticSessionId,
+        expectedRevision: DiagnosticRevision,
+        verificationPlan: VerificationPlanInput,
+        actor: DiagnosticActor = "user",
+    ) -> dict[str, object]:
+        return await tool_diagnostic_add_verification_plan_for_request(
+            runtime,
+            ctx,
+            operationId,
+            diagnosticSessionId,
+            expectedRevision,
+            verificationPlan,
+            actor,
+        )
+
+    @mcp.tool(name="stm32_diagnostic_verification_start")
+    async def stm32_diagnostic_verification_start(
+        ctx: Context,
+        operationId: DiagnosticOperationId,
+        diagnosticSessionId: DiagnosticSessionId,
+        expectedRevision: DiagnosticRevision,
+        verificationPlanId: DiagnosticPlanId,
+        actor: DiagnosticActor = "tool",
+    ) -> dict[str, object]:
+        return await tool_diagnostic_start_verification_for_request(
+            runtime,
+            ctx,
+            operationId,
+            diagnosticSessionId,
+            expectedRevision,
+            verificationPlanId,
+            actor,
+        )
+
+    @mcp.tool(name="stm32_diagnostic_marker_attach")
+    async def stm32_diagnostic_marker_attach(
+        ctx: Context,
+        operationId: DiagnosticOperationId,
+        diagnosticSessionId: DiagnosticSessionId,
+        expectedRevision: DiagnosticRevision,
+        diagnosticMarkerRef: DiagnosticMarkerInput,
+        actor: DiagnosticActor = "tool",
+    ) -> dict[str, object]:
+        return await tool_diagnostic_attach_marker_for_request(
+            runtime,
+            ctx,
+            operationId,
+            diagnosticSessionId,
+            expectedRevision,
+            diagnosticMarkerRef,
+            actor,
+        )
+
+    @mcp.tool(name="stm32_diagnostic_verification_complete")
+    async def stm32_diagnostic_verification_complete(
+        ctx: Context,
+        operationId: DiagnosticOperationId,
+        diagnosticSessionId: DiagnosticSessionId,
+        expectedRevision: DiagnosticRevision,
+        executedOperationIds: Annotated[
+            list[DiagnosticOperationId], Field(min_length=1, max_length=64)
+        ],
+        cancelled: StrictBool = False,
+        actor: DiagnosticActor = "tool",
+    ) -> dict[str, object]:
+        return await tool_diagnostic_complete_verification_for_request(
+            runtime,
+            ctx,
+            operationId,
+            diagnosticSessionId,
+            expectedRevision,
+            executedOperationIds,
+            cancelled,
+            actor,
+        )
+
+    @mcp.tool(name="stm32_diagnostic_verification_show")
+    async def stm32_diagnostic_verification_show(
+        ctx: Context,
+        diagnosticSessionId: DiagnosticSessionId,
+    ) -> dict[str, object]:
+        return await tool_diagnostic_show_verification_for_request(
+            runtime, ctx, diagnosticSessionId
+        )
+
     @mcp.tool(name="stm32_test_host_discover")
     async def stm32_test_host_discover(ctx: Context) -> dict[str, object]:
         return await tool_test_host_discover_for_request(runtime, ctx)
@@ -1392,6 +1827,7 @@ def create_server(
             "stm32_test_host_discover",
             "stm32_test_host_run",
             "stm32_test_show",
+            "stm32_test_target_replay",
             "stm32_diagnostic_start",
             "stm32_diagnostic_show",
             "stm32_diagnostic_begin",
@@ -1399,6 +1835,12 @@ def create_server(
             "stm32_diagnostic_hypothesis_assess",
             "stm32_diagnostic_plan_add",
             "stm32_diagnostic_plan_run",
+            "stm32_diagnostic_source_change_declare",
+            "stm32_diagnostic_verification_plan_add",
+            "stm32_diagnostic_verification_start",
+            "stm32_diagnostic_marker_attach",
+            "stm32_diagnostic_verification_complete",
+            "stm32_diagnostic_verification_show",
         ),
     )
 

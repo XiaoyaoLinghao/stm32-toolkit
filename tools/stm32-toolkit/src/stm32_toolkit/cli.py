@@ -17,10 +17,16 @@ from stm32_toolkit.diagnostic_workflows import (
     diagnostic_add_hypothesis,
     diagnostic_add_plan,
     diagnostic_assess_hypothesis,
+    diagnostic_add_verification_plan,
     diagnostic_begin,
+    diagnostic_attach_marker,
+    diagnostic_complete_verification,
+    diagnostic_declare_source_change,
     diagnostic_run_plan,
     diagnostic_show,
+    diagnostic_show_verification,
     diagnostic_start,
+    diagnostic_start_verification,
 )
 from stm32_toolkit.doctor import run_doctor
 from stm32_toolkit.hardware_workflows import (
@@ -46,6 +52,7 @@ from stm32_toolkit.testing_workflows import (
     TestingWorkflowContext,
     host_test_discover,
     host_test_run,
+    target_replay_run,
     test_show,
 )
 from stm32_toolkit.workflows import (
@@ -287,6 +294,13 @@ def _build_parser() -> argparse.ArgumentParser:
     _add_testing_context(show)
     show.add_argument("run_id")
 
+    replay = test_commands.add_parser("replay")
+    replay.set_defaults(operation="test.target.replay")
+    _add_testing_context(replay)
+    replay.add_argument("--operation-id", required=True, type=_diagnostic_operation_id)
+    replay.add_argument("--descriptor-file", required=True, type=Path)
+    replay.add_argument("--stream-file", required=True, type=Path)
+
     diagnose = commands.add_parser("diagnose")
     diagnose_commands = diagnose.add_subparsers(
         dest="diagnose_command", required=True
@@ -428,6 +442,123 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     _add_testing_context(plan_run)
 
+    source_change = diagnose_commands.add_parser("source-change")
+    source_change_commands = source_change.add_subparsers(
+        dest="source_change_command", required=True
+    )
+    source_change_declare = source_change_commands.add_parser("declare")
+    source_change_declare.set_defaults(operation="diagnostic.source-change.declare")
+    source_change_declare.add_argument(
+        "diagnostic_session_id", type=_diagnostic_session_id
+    )
+    source_change_declare.add_argument(
+        "--operation-id", required=True, type=_diagnostic_operation_id
+    )
+    source_change_declare.add_argument(
+        "--expected-revision", required=True, type=_bounded_int(0, 10_000)
+    )
+    source_change_declare.add_argument(
+        "--declaration-file", required=True, type=Path, action=_StepsFileAction
+    )
+    source_change_declare.add_argument(
+        "--actor", choices=_DIAGNOSTIC_ACTORS, default="user"
+    )
+    _add_diagnostic_tool_context(source_change_declare)
+
+    verification_plan = diagnose_commands.add_parser("verification-plan")
+    verification_plan_commands = verification_plan.add_subparsers(
+        dest="verification_plan_command", required=True
+    )
+    verification_plan_add = verification_plan_commands.add_parser("add")
+    verification_plan_add.set_defaults(operation="diagnostic.verification-plan.add")
+    verification_plan_add.add_argument(
+        "diagnostic_session_id", type=_diagnostic_session_id
+    )
+    verification_plan_add.add_argument(
+        "--operation-id", required=True, type=_diagnostic_operation_id
+    )
+    verification_plan_add.add_argument(
+        "--expected-revision", required=True, type=_bounded_int(0, 10_000)
+    )
+    verification_plan_add.add_argument(
+        "--plan-file", required=True, type=Path, action=_StepsFileAction
+    )
+    verification_plan_add.add_argument(
+        "--actor", choices=_DIAGNOSTIC_ACTORS, default="user"
+    )
+    _add_diagnostic_tool_context(verification_plan_add)
+
+    verification = diagnose_commands.add_parser("verification")
+    verification_commands = verification.add_subparsers(
+        dest="verification_command", required=True
+    )
+    verification_start = verification_commands.add_parser("start")
+    verification_start.set_defaults(operation="diagnostic.verification.start")
+    verification_start.add_argument(
+        "diagnostic_session_id", type=_diagnostic_session_id
+    )
+    verification_start.add_argument(
+        "--operation-id", required=True, type=_diagnostic_operation_id
+    )
+    verification_start.add_argument(
+        "--expected-revision", required=True, type=_bounded_int(0, 10_000)
+    )
+    verification_start.add_argument(
+        "--verification-plan-id", required=True, type=_diagnostic_plan_id
+    )
+    verification_start.add_argument(
+        "--actor", choices=_DIAGNOSTIC_ACTORS, default="tool"
+    )
+    _add_diagnostic_tool_context(verification_start)
+
+    verification_complete = verification_commands.add_parser("complete")
+    verification_complete.set_defaults(operation="diagnostic.verification.complete")
+    verification_complete.add_argument(
+        "diagnostic_session_id", type=_diagnostic_session_id
+    )
+    verification_complete.add_argument(
+        "--operation-id", required=True, type=_diagnostic_operation_id
+    )
+    verification_complete.add_argument(
+        "--expected-revision", required=True, type=_bounded_int(0, 10_000)
+    )
+    verification_complete.add_argument(
+        "--executed-operation-id",
+        dest="executed_operation_ids",
+        action="append",
+        required=True,
+        type=_diagnostic_operation_id,
+    )
+    verification_complete.add_argument("--cancelled", action="store_true")
+    verification_complete.add_argument(
+        "--actor", choices=_DIAGNOSTIC_ACTORS, default="tool"
+    )
+    _add_diagnostic_tool_context(verification_complete)
+
+    verification_show = verification_commands.add_parser("show")
+    verification_show.set_defaults(operation="diagnostic.verification.show")
+    verification_show.add_argument(
+        "diagnostic_session_id", type=_diagnostic_session_id
+    )
+    _add_diagnostic_tool_context(verification_show)
+
+    marker = diagnose_commands.add_parser("marker")
+    marker_commands = marker.add_subparsers(dest="marker_command", required=True)
+    marker_attach = marker_commands.add_parser("attach")
+    marker_attach.set_defaults(operation="diagnostic.marker.attach")
+    marker_attach.add_argument("diagnostic_session_id", type=_diagnostic_session_id)
+    marker_attach.add_argument(
+        "--operation-id", required=True, type=_diagnostic_operation_id
+    )
+    marker_attach.add_argument(
+        "--expected-revision", required=True, type=_bounded_int(0, 10_000)
+    )
+    marker_attach.add_argument(
+        "--marker-file", required=True, type=Path, action=_StepsFileAction
+    )
+    marker_attach.add_argument("--actor", choices=_DIAGNOSTIC_ACTORS, default="tool")
+    _add_diagnostic_tool_context(marker_attach)
+
     return parser
 
 
@@ -478,6 +609,25 @@ def _add_testing_context(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument("--data-root", required=True, type=Path)
     parser.add_argument("--session-id", required=True)
+    parser.add_argument("--json", action="store_true")
+
+
+def _add_diagnostic_tool_context(parser: argparse.ArgumentParser) -> None:
+    """Add the explicit Toolkit-session roots used by verification callers."""
+    parser.add_argument(
+        "--project",
+        "--project-root",
+        dest="project_root",
+        required=True,
+        type=Path,
+    )
+    parser.add_argument("--data-root", required=True, type=Path)
+    parser.add_argument(
+        "--tool-session-id",
+        "--session-id",
+        dest="session_id",
+        required=True,
+    )
     parser.add_argument("--json", action="store_true")
 
 
@@ -803,6 +953,13 @@ def _operation_result(
                 inventory_digest=args.inventory_digest,
                 case_ids=args.case_ids,
             )
+        if args.test_command == "replay":
+            return target_replay_run(
+                context,
+                operation_id=args.operation_id,
+                descriptor_file=args.descriptor_file,
+                stream_file=args.stream_file,
+            )
         return test_show(context, run_id=args.run_id)
     if args.command == "diagnose":
         context = DiagnosticWorkflowContext(
@@ -844,6 +1001,57 @@ def _operation_result(
                 diagnostic_session_id=args.diagnostic_session_id,
                 expected_revision=args.expected_revision,
                 plan_id=args.plan_id,
+                actor=args.actor,
+            )
+        if args.diagnose_command == "source-change":
+            return diagnostic_declare_source_change(
+                context,
+                operation_id=args.operation_id,
+                diagnostic_session_id=args.diagnostic_session_id,
+                expected_revision=args.expected_revision,
+                source_change_declaration=args.declaration_file,
+                actor=args.actor,
+            )
+        if args.diagnose_command == "verification-plan":
+            return diagnostic_add_verification_plan(
+                context,
+                operation_id=args.operation_id,
+                diagnostic_session_id=args.diagnostic_session_id,
+                expected_revision=args.expected_revision,
+                verification_plan=args.plan_file,
+                actor=args.actor,
+            )
+        if args.diagnose_command == "verification":
+            if args.verification_command == "start":
+                return diagnostic_start_verification(
+                    context,
+                    operation_id=args.operation_id,
+                    diagnostic_session_id=args.diagnostic_session_id,
+                    expected_revision=args.expected_revision,
+                    verification_plan_id=args.verification_plan_id,
+                    actor=args.actor,
+                )
+            if args.verification_command == "complete":
+                return diagnostic_complete_verification(
+                    context,
+                    operation_id=args.operation_id,
+                    diagnostic_session_id=args.diagnostic_session_id,
+                    expected_revision=args.expected_revision,
+                    executed_operation_ids=args.executed_operation_ids,
+                    cancelled=args.cancelled,
+                    actor=args.actor,
+                )
+            return diagnostic_show_verification(
+                context,
+                diagnostic_session_id=args.diagnostic_session_id,
+            )
+        if args.diagnose_command == "marker":
+            return diagnostic_attach_marker(
+                context,
+                operation_id=args.operation_id,
+                diagnostic_session_id=args.diagnostic_session_id,
+                expected_revision=args.expected_revision,
+                diagnostic_marker_ref=args.marker_file,
                 actor=args.actor,
             )
         if args.hypothesis_command == "add":
