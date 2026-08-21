@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from dataclasses import replace
+import hashlib
+import json
 from pathlib import Path
 from types import SimpleNamespace
 from uuid import UUID
@@ -12,13 +14,30 @@ import stm32_toolkit.testing_workflows as testing_workflows
 from stm32_toolkit.diagnostic_workflows import (
     DiagnosticWorkflowContext,
     diagnostic_add_hypothesis,
+    diagnostic_add_verification_plan,
+    diagnostic_attach_marker,
     diagnostic_begin,
+    diagnostic_declare_source_change,
     diagnostic_show,
     diagnostic_start,
+    diagnostic_start_verification,
 )
-from stm32_toolkit.evidence import EVIDENCE_CORRUPT, EvidenceValidationError
+from stm32_toolkit.diagnostics import (
+    DiagnosticMarkerRef,
+    SourceChangeDeclaration,
+    VerificationPlan,
+)
+from stm32_toolkit.evidence import (
+    EVIDENCE_CORRUPT,
+    EvidenceEnvelope,
+    EvidenceIdentity,
+    EvidenceValidationError,
+    canonical_json_bytes,
+)
+from stm32_toolkit.evidence.gc import RootRecord, put_root
 from stm32_toolkit.evidence.store import EvidenceStore
 from stm32_toolkit.paths import WorkspacePaths
+from stm32_toolkit.testing.publication import TestRunRepository
 from stm32_toolkit.testing.replay import load_target_replay_fixture
 
 
@@ -121,6 +140,220 @@ def _target_test_run_root(workspace: WorkspacePaths) -> Path:
     roots = tuple((workspace.workspace_root / "evidence" / "roots" / "test-run").glob("*.json"))
     assert len(roots) == 1
     return roots[0]
+
+
+def _verification_checkpoint_inputs(
+    tmp_path: Path,
+    workspace: WorkspacePaths,
+    session_id: str,
+    hypothesis_id: str,
+) -> tuple[SourceChangeDeclaration, VerificationPlan, DiagnosticMarkerRef]:
+    evidence = EvidenceStore(workspace.workspace_root / "evidence")
+    repository = TestRunRepository(evidence)
+    before = repository.load("vs03-failed-before")
+    after = repository.load("vs03-fixed-after")
+
+    diff_path = tmp_path / "source-change.diff"
+    diff_path.write_bytes(b"--- a/src/main.c\n+++ b/src/main.c\n@@ -1 +1 @@\n-old\n+new\n")
+    diff_artifact = evidence.ingest_file(
+        diff_path, kind="source-diff", media_type="text/x-diff"
+    )
+    diff_envelope = EvidenceEnvelope(
+        identity=before.envelope.identity,
+        operation="diagnostic-source-change",
+        produced_at_utc="2026-08-21T12:00:00.000000Z",
+        parents=(),
+        artifacts=(diff_artifact,),
+        metadata={"kind": "source-change-diff"},
+    )
+    evidence.put_envelope(diff_envelope)
+    plan_id = "b" * 64
+    declaration = SourceChangeDeclaration.new(
+        before_source_sha256=before.manifest.identity.input_snapshot_sha256,
+        after_source_sha256=after.manifest.identity.input_snapshot_sha256,
+        before_build_id=before.manifest.identity.build_id,
+        before_elf_sha256=before.manifest.identity.elf_sha256,
+        after_build_id=after.manifest.identity.build_id,
+        after_elf_sha256=after.manifest.identity.elf_sha256,
+        changed_paths=("src/main.c",),
+        diff_evidence_id=str(diff_envelope.evidence_id),
+        diff_artifact=diff_artifact,
+        claimed_hypothesis_ids=(hypothesis_id,),
+        validation_plan_id=plan_id,
+    )
+
+    analysis: dict[str, object] = {
+        "schema": "stm32-monitor-analysis/1",
+        "analysis_id": "",
+        "request_digest": "1" * 64,
+        "before_run_id": str(before.envelope.evidence_id),
+        "after_run_id": str(after.envelope.evidence_id),
+        "identity": {
+            "schema": "stm32-monitor-analysis-lineage/1",
+            "origin_workspace_id": after.manifest.identity.workspace_id,
+            "import_workspace_id": workspace.workspace_id,
+            "logical_project_id": str(PROJECT_ID),
+            "target_device": after.manifest.identity.target_device,
+            "before_input_snapshot_sha256": before.manifest.identity.input_snapshot_sha256,
+            "before_build_id": before.manifest.identity.build_id,
+            "before_elf_sha256": before.manifest.identity.elf_sha256,
+            "after_input_snapshot_sha256": after.manifest.identity.input_snapshot_sha256,
+            "after_build_id": after.manifest.identity.build_id,
+            "after_elf_sha256": after.manifest.identity.elf_sha256,
+            "source_change_declaration_id": declaration.declaration_id,
+        },
+        "quality": "VALID",
+        "conclusion": "COMPLETED",
+        "reason_code": "VALUES_CHANGED",
+        "aligned_position_count": 2,
+        "aligned_pair_count": 2,
+        "excluded_position_count": 0,
+        "before_first": 1,
+        "before_last": 1,
+        "before_min": 1,
+        "before_max": 1,
+        "after_first": 2,
+        "after_last": 2,
+        "after_min": 2,
+        "after_max": 2,
+        "delta_first": 1,
+        "delta_last": 1,
+        "changed": True,
+    }
+    analysis["analysis_id"] = hashlib.sha256(
+        canonical_json_bytes({key: value for key, value in analysis.items() if key != "analysis_id"})
+    ).hexdigest()
+    analysis_path = tmp_path / "analysis.json"
+    analysis_bytes = canonical_json_bytes(analysis)
+    analysis_path.write_bytes(analysis_bytes)
+    analysis_artifact = evidence.ingest_file(
+        analysis_path, kind="monitor-analysis", media_type="application/json"
+    )
+    analysis_envelope = EvidenceEnvelope(
+        identity=after.envelope.identity,
+        operation="monitor-analysis",
+        produced_at_utc="2026-08-21T12:01:00.000000Z",
+        parents=(
+            str(before.envelope.evidence_id),
+            str(after.envelope.evidence_id),
+            str(diff_envelope.evidence_id),
+        ),
+        artifacts=(analysis_artifact,),
+        metadata={
+            "analysis_id": analysis["analysis_id"],
+            "before_run_id": analysis["before_run_id"],
+            "after_run_id": analysis["after_run_id"],
+            "source_change_declaration_id": declaration.declaration_id,
+            "origin_workspace_id": after.manifest.identity.workspace_id,
+            "import_workspace_id": workspace.workspace_id,
+            "origin_session_id": after.manifest.identity.session_id,
+            "execution_source": "replay",
+            "physical_transport_evidence": False,
+        },
+    )
+    evidence.put_envelope(analysis_envelope)
+    put_root(
+        evidence,
+        RootRecord(
+            root_type="monitor-analysis",
+            root_id=str(analysis["analysis_id"]),
+            manifest_id=str(analysis_envelope.evidence_id),
+            metadata={
+                "analysis_id": analysis["analysis_id"],
+                "before_run_id": analysis["before_run_id"],
+                "after_run_id": analysis["after_run_id"],
+                "source_change_declaration_id": declaration.declaration_id,
+                "origin_workspace_id": after.manifest.identity.workspace_id,
+                "import_workspace_id": workspace.workspace_id,
+                "origin_session_id": after.manifest.identity.session_id,
+                "execution_source": "replay",
+                "physical_transport_evidence": False,
+            },
+        ),
+    )
+
+    marker: dict[str, object] = {
+        "schema": "stm32-diagnostic-marker/1",
+        "marker_id": "",
+        "analysis_id": analysis["analysis_id"],
+        "analysis_evidence_id": str(analysis_envelope.evidence_id),
+        "diagnostic_session_id": session_id,
+        "hypothesis_id": hypothesis_id,
+        "polarity": "supports",
+        "label": "change-observed",
+        "rationale": "the replayed analysis observed the declared source change",
+    }
+    marker["marker_id"] = hashlib.sha256(
+        canonical_json_bytes({key: value for key, value in marker.items() if key != "marker_id"})
+    ).hexdigest()
+    marker_path = tmp_path / "marker.json"
+    marker_bytes = canonical_json_bytes(marker)
+    marker_path.write_bytes(marker_bytes)
+    marker_artifact = evidence.ingest_file(
+        marker_path, kind="diagnostic-marker", media_type="application/json"
+    )
+    marker_envelope = EvidenceEnvelope(
+        identity=after.envelope.identity,
+        operation="diagnostic-marker",
+        produced_at_utc="2026-08-21T12:02:00.000000Z",
+        parents=(str(analysis_envelope.evidence_id),),
+        artifacts=(marker_artifact,),
+        metadata={
+            "marker_id": marker["marker_id"],
+            "analysis_id": analysis["analysis_id"],
+            "analysis_evidence_id": str(analysis_envelope.evidence_id),
+            "origin_workspace_id": after.manifest.identity.workspace_id,
+            "import_workspace_id": workspace.workspace_id,
+            "origin_session_id": after.manifest.identity.session_id,
+            "execution_source": "replay",
+            "physical_transport_evidence": False,
+        },
+    )
+    evidence.put_envelope(marker_envelope)
+    put_root(
+        evidence,
+        RootRecord(
+            root_type="diagnostic-marker",
+            root_id=str(marker["marker_id"]),
+            manifest_id=str(marker_envelope.evidence_id),
+            metadata={
+                "marker_id": marker["marker_id"],
+                "analysis_id": analysis["analysis_id"],
+                "analysis_evidence_id": str(analysis_envelope.evidence_id),
+                "origin_workspace_id": after.manifest.identity.workspace_id,
+                "import_workspace_id": workspace.workspace_id,
+                "origin_session_id": after.manifest.identity.session_id,
+                "execution_source": "replay",
+                "physical_transport_evidence": False,
+            },
+        ),
+    )
+
+    plan = VerificationPlan.new(
+        verification_plan_id=plan_id,
+        diagnostic_session_id=session_id,
+        failed_before_run_id="vs03-failed-before",
+        failed_before_evidence_id=str(before.envelope.evidence_id),
+        source_change_declaration_id=declaration.declaration_id,
+        fixed_after_run_id="vs03-fixed-after",
+        fixed_after_evidence_id=str(after.envelope.evidence_id),
+        required_analysis_ids=(str(analysis["analysis_id"]),),
+        required_analysis_evidence_ids=(str(analysis_envelope.evidence_id),),
+        required_monitor_quality="VALID",
+        expected_changed=True,
+    )
+    marker_ref = DiagnosticMarkerRef.new(
+        marker_id=str(marker["marker_id"]),
+        marker_evidence_id=str(marker_envelope.evidence_id),
+        analysis_id=str(analysis["analysis_id"]),
+        analysis_evidence_id=str(analysis_envelope.evidence_id),
+        diagnostic_session_id=session_id,
+        hypothesis_id=hypothesis_id,
+        polarity="supports",
+        label="change-observed",
+        rationale="the replayed analysis observed the declared source change",
+    )
+    return declaration, plan, marker_ref
 
 
 def test_target_replay_diagnostic_session_reloads_with_origin_authority(
@@ -623,3 +856,94 @@ def test_target_replay_authority_rejects_foreign_or_contradictory_records_withou
     assert shown.ok is False
     assert shown.code == expected_code
     assert after == before
+
+
+def test_target_replay_prepares_and_reloads_fix_verification_checkpoint(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    diagnostic_context, session_id, _failed_replay, workspace = _replay_and_open_session(
+        monkeypatch, tmp_path
+    )
+    testing_context = testing_workflows.TestingWorkflowContext(
+        diagnostic_context.project_root,
+        diagnostic_context.data_root,
+        diagnostic_context.session_id,
+    )
+    fixed_replay = testing_workflows.target_replay_run(
+        testing_context,
+        "vs03-fixed-after",
+        FIXTURES / "fixed-after.json",
+        FIXTURES / "fixed-after.hex",
+    )
+    assert fixed_replay.ok is True
+    shown = diagnostic_show(
+        _fresh_diagnostic_context(diagnostic_context), diagnostic_session_id=session_id
+    )
+    assert shown.ok is True
+    hypothesis_id = shown.data["session"]["hypotheses"][0]["hypothesis_id"]
+    declaration, plan, marker_ref = _verification_checkpoint_inputs(
+        tmp_path, workspace, session_id, hypothesis_id
+    )
+    evidence_before = _tree_snapshot(workspace.workspace_root / "evidence")
+
+    declared = diagnostic_declare_source_change(
+        _fresh_diagnostic_context(diagnostic_context),
+        operation_id="diagnostic.source-change.declare",
+        diagnostic_session_id=session_id,
+        expected_revision=3,
+        source_change_declaration=declaration,
+    )
+    assert declared.ok is True
+    added = diagnostic_add_verification_plan(
+        _fresh_diagnostic_context(diagnostic_context),
+        operation_id="diagnostic.verification-plan.add",
+        diagnostic_session_id=session_id,
+        expected_revision=4,
+        verification_plan=plan,
+    )
+    assert added.ok is True
+    started = diagnostic_start_verification(
+        _fresh_diagnostic_context(diagnostic_context),
+        operation_id="diagnostic.verification.start",
+        diagnostic_session_id=session_id,
+        expected_revision=5,
+        verification_plan_id=plan.verification_plan_id,
+    )
+    assert started.ok is True
+    attached = diagnostic_attach_marker(
+        _fresh_diagnostic_context(diagnostic_context),
+        operation_id="diagnostic.marker.attach",
+        diagnostic_session_id=session_id,
+        expected_revision=6,
+        diagnostic_marker_ref=marker_ref,
+    )
+    assert attached.ok is True
+    assert attached.data["session"]["state"] == "VERIFYING"
+    assert attached.data["diagnostic_marker_ref"] == marker_ref.to_dict()
+    evidence_after = dict(_tree_snapshot(workspace.workspace_root / "evidence"))
+    assert all(evidence_after.get(path) == payload for path, payload in evidence_before)
+
+    reloaded = diagnostic_show(
+        _fresh_diagnostic_context(diagnostic_context), diagnostic_session_id=session_id
+    )
+    assert reloaded.ok is True
+    reloaded_session = reloaded.data["session"]
+    assert reloaded_session["state"] == "VERIFYING"
+    assert json.loads(canonical_json_bytes(reloaded_session["source_change_declarations"])) == [
+        declaration.to_dict()
+    ]
+    assert json.loads(canonical_json_bytes(reloaded_session["verification_plans"])) == [
+        plan.to_dict()
+    ]
+    assert json.loads(canonical_json_bytes(reloaded_session["diagnostic_marker_refs"])) == [
+        marker_ref.to_dict()
+    ]
+
+    retry = diagnostic_attach_marker(
+        _fresh_diagnostic_context(diagnostic_context),
+        operation_id="diagnostic.marker.attach",
+        diagnostic_session_id=session_id,
+        expected_revision=6,
+        diagnostic_marker_ref=marker_ref,
+    )
+    assert retry.to_dict() == attached.to_dict()

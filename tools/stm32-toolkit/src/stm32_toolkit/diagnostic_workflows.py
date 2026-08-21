@@ -5,6 +5,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+import hashlib
+import json
+import math
 import re
 import secrets
 from typing import Callable, Literal, cast
@@ -18,16 +21,26 @@ from stm32_toolkit.diagnostics import (
     DIAGNOSTIC_PLAN_INVALID,
     DIAGNOSTIC_REVISION_CONFLICT,
     DiagnosticSession,
+    DiagnosticMarkerRef,
     DiagnosticStore,
     DiagnosticValidationError,
     EvidenceAssessment,
     ObservationPlan,
     ObservationResult,
     ObservationStep,
+    SourceChangeDeclaration,
+    VerificationPlan,
     calculate_plan_digest,
     create_event,
 )
-from stm32_toolkit.evidence import EvidenceValidationError
+from stm32_toolkit.evidence import (
+    ArtifactRef,
+    EvidenceEnvelope,
+    EvidenceValidationError,
+    canonical_json_bytes,
+    get_root,
+)
+from stm32_toolkit.evidence.store import MAX_EVIDENCE_READ_BYTES
 from stm32_toolkit.evidence.store import EvidenceStore
 from stm32_toolkit.paths import WorkspacePaths, require_safe_session_id
 from stm32_toolkit.project_model import ProjectManifestError, load_project_model
@@ -43,6 +56,10 @@ _HYPOTHESIS_ADD_OPERATION = "diagnostic.hypothesis.add"
 _HYPOTHESIS_ASSESS_OPERATION = "diagnostic.hypothesis.assess"
 _PLAN_ADD_OPERATION = "diagnostic.plan.add"
 _PLAN_RUN_OPERATION = "diagnostic.plan.run"
+_SOURCE_CHANGE_DECLARE_OPERATION = "diagnostic.source-change.declare"
+_VERIFICATION_PLAN_ADD_OPERATION = "diagnostic.verification-plan.add"
+_VERIFICATION_START_OPERATION = "diagnostic.verification.start"
+_MARKER_ATTACH_OPERATION = "diagnostic.marker.attach"
 _OPERATION_ID = re.compile(r"^[a-z0-9][a-z0-9._-]{0,127}$")
 _RUN_ID = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
 _DIAGNOSTIC_SESSION_ID = re.compile(r"^[0-9a-f]{32}$")
@@ -51,6 +68,36 @@ _UTC = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z$")
 _INCOMPATIBLE_IDENTITY = "INCOMPATIBLE_IDENTITY"
 _ENVIRONMENT_FAILURE = "ENVIRONMENT_FAILURE"
 _EVIDENCE_INTEGRITY_FAILURE = "EVIDENCE_INTEGRITY_FAILURE"
+
+_TARGET_REPLAY_OPERATION = "target-test-replay"
+_ANALYSIS_OPERATION = "monitor-analysis"
+_MARKER_OPERATION = "diagnostic-marker"
+_ANALYSIS_ROOT = "monitor-analysis"
+_MARKER_ROOT = "diagnostic-marker"
+_ANALYSIS_SCHEMA = "stm32-monitor-analysis/1"
+_ANALYSIS_LINEAGE_SCHEMA = "stm32-monitor-analysis-lineage/1"
+_MARKER_SCHEMA = "stm32-diagnostic-marker/1"
+_ANALYSIS_FIELDS = frozenset(
+    {
+        "schema", "analysis_id", "request_digest", "before_run_id", "after_run_id", "identity",
+        "quality", "conclusion", "reason_code", "aligned_position_count", "aligned_pair_count",
+        "excluded_position_count", "before_first", "before_last", "before_min", "before_max",
+        "after_first", "after_last", "after_min", "after_max", "delta_first", "delta_last", "changed",
+    }
+)
+_ANALYSIS_IDENTITY_FIELDS = frozenset(
+    {
+        "schema", "origin_workspace_id", "import_workspace_id", "logical_project_id", "target_device",
+        "before_input_snapshot_sha256", "before_build_id", "before_elf_sha256",
+        "after_input_snapshot_sha256", "after_build_id", "after_elf_sha256", "source_change_declaration_id",
+    }
+)
+_MARKER_FIELDS = frozenset(
+    {
+        "schema", "marker_id", "analysis_id", "analysis_evidence_id", "diagnostic_session_id",
+        "hypothesis_id", "polarity", "label", "rationale",
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -623,6 +670,608 @@ def _load_bound_failed_run(state: _WorkflowState, session: DiagnosticSession) ->
     return getattr(published, "manifest")
 
 
+def _hash_value(value: object) -> str:
+    if not isinstance(value, str) or re.fullmatch(r"[0-9a-f]{64}", value) is None:
+        raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
+    return value
+
+
+def _same_scope(left: object, right: object) -> bool:
+    return all(
+        getattr(left, field, None) == getattr(right, field, None)
+        for field in ("workspace_id", "project_id", "session_id", "target_device")
+    )
+
+
+def _load_target_run(
+    state: _WorkflowState,
+    run_id: str,
+    *,
+    expected_state: Literal["failed", "passed"],
+    expected_identity: object | None = None,
+) -> object:
+    published = _load_failed_run(state, run_id, failed_run_mode="target")
+    manifest = getattr(published, "manifest", None)
+    envelope = getattr(published, "envelope", None)
+    root = getattr(published, "root", None)
+    identity = getattr(manifest, "identity", None)
+    if identity is None or identity.project_id != str(state.model.logical_project_id):
+        raise _WorkflowFailure(_INCOMPATIBLE_IDENTITY)
+    if expected_identity is not None and not _same_scope(identity, expected_identity):
+        raise _WorkflowFailure(_INCOMPATIBLE_IDENTITY)
+    expected_metadata = {
+        "mode": "target",
+        "state": expected_state,
+        "execution_source": "replay",
+        "physical_transport_evidence": False,
+        "origin_workspace_id": identity.workspace_id,
+        "import_workspace_id": state.workspace.workspace_id,
+    }
+    if (
+        getattr(manifest, "run_id", None) != run_id
+        or getattr(manifest, "mode", None) != "target"
+        or getattr(manifest, "state", None) != expected_state
+        or getattr(manifest, "transport", None) != "replay"
+        or getattr(envelope, "identity", None) != identity
+        or getattr(envelope, "operation", None) != _TARGET_REPLAY_OPERATION
+        or getattr(root, "manifest_id", None) != getattr(envelope, "evidence_id", None)
+        or getattr(root, "metadata", None) != expected_metadata
+    ):
+        raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
+    return published
+
+
+def _read_json_evidence(
+    state: _WorkflowState,
+    *,
+    root_type: str,
+    root_id: str,
+    operation: str,
+    kind: str,
+) -> tuple[object, EvidenceEnvelope, ArtifactRef, bytes, dict[str, object]]:
+    try:
+        root = get_root(state.evidence_store, root_type, root_id)
+        envelope = state.evidence_store.get_envelope(root.manifest_id)
+        if (
+            root.root_type != root_type
+            or root.root_id != root_id
+            or root.manifest_id != str(envelope.evidence_id)
+            or root.metadata != envelope.metadata
+            or envelope.operation != operation
+            or len(envelope.artifacts) != 1
+        ):
+            raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
+        artifact = envelope.artifacts[0]
+        if artifact.kind != kind or artifact.media_type != "application/json":
+            raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
+        payload = state.evidence_store.read_artifact(
+            artifact, maximum_bytes=MAX_EVIDENCE_READ_BYTES
+        )
+        if (
+            artifact.size_bytes != len(payload)
+            or artifact.sha256 != hashlib.sha256(payload).hexdigest()
+        ):
+            raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
+        decoded = json.loads(payload.decode("utf-8"))
+        if not isinstance(decoded, dict) or canonical_json_bytes(decoded) != payload:
+            raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
+        return root, envelope, artifact, payload, cast(dict[str, object], decoded)
+    except _WorkflowFailure:
+        raise
+    except FileNotFoundError as error:
+        raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE) from error
+    except (EvidenceValidationError, UnicodeError, json.JSONDecodeError, TypeError, ValueError, OverflowError) as error:
+        raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE) from error
+    except OSError as error:
+        raise _WorkflowFailure(_ENVIRONMENT_FAILURE) from error
+
+
+def _read_diff_evidence(
+    state: _WorkflowState,
+    session: DiagnosticSession,
+    declaration: SourceChangeDeclaration,
+) -> None:
+    try:
+        envelope = state.evidence_store.get_envelope(declaration.diff_evidence_id)
+        if (
+            envelope.operation != "diagnostic-source-change"
+            or envelope.parents
+            or len(envelope.artifacts) != 1
+            or envelope.metadata != {"kind": "source-change-diff"}
+            or not _same_scope(envelope.identity, session.identity)
+            or envelope.artifacts[0] != declaration.diff_artifact
+            or declaration.diff_artifact.kind != "source-diff"
+            or declaration.diff_artifact.media_type != "text/x-diff"
+        ):
+            raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
+        payload = state.evidence_store.read_artifact(
+            declaration.diff_artifact, maximum_bytes=MAX_EVIDENCE_READ_BYTES
+        )
+        if (
+            len(payload) != declaration.diff_artifact.size_bytes
+            or hashlib.sha256(payload).hexdigest() != declaration.diff_artifact.sha256
+        ):
+            raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
+    except _WorkflowFailure:
+        raise
+    except FileNotFoundError as error:
+        raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE) from error
+    except EvidenceValidationError as error:
+        raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE) from error
+    except OSError as error:
+        raise _WorkflowFailure(_ENVIRONMENT_FAILURE) from error
+
+
+def _require_exact_mapping(value: object, fields: frozenset[str]) -> dict[str, object]:
+    if not isinstance(value, dict) or set(value) != fields:
+        raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
+    return cast(dict[str, object], value)
+
+
+def _validate_analysis(
+    state: _WorkflowState,
+    session: DiagnosticSession,
+    declaration: SourceChangeDeclaration,
+    plan: VerificationPlan,
+    before: object,
+    after: object,
+    analysis_id: str,
+    analysis_evidence_id: str,
+) -> None:
+    _root, envelope, _artifact, _payload, analysis = _read_json_evidence(
+        state,
+        root_type=_ANALYSIS_ROOT,
+        root_id=analysis_id,
+        operation=_ANALYSIS_OPERATION,
+        kind=_ANALYSIS_ROOT,
+    )
+    if str(envelope.evidence_id) != analysis_evidence_id:
+        raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
+    after_identity = getattr(after, "identity", None)
+    before_identity = getattr(before, "identity", None)
+    if not isinstance(after_identity, object) or not isinstance(before_identity, object):
+        raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
+    if envelope.identity != after_identity:
+        raise _WorkflowFailure(_INCOMPATIBLE_IDENTITY)
+    expected_metadata = {
+        "analysis_id": analysis_id,
+        "before_run_id": analysis.get("before_run_id"),
+        "after_run_id": analysis.get("after_run_id"),
+        "source_change_declaration_id": declaration.declaration_id,
+        "origin_workspace_id": after_identity.workspace_id,
+        "import_workspace_id": state.workspace.workspace_id,
+        "origin_session_id": after_identity.session_id,
+        "execution_source": "replay",
+        "physical_transport_evidence": False,
+    }
+    if dict(envelope.metadata) != expected_metadata:
+        raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
+    if envelope.parents != tuple(envelope.parents) or len(envelope.parents) != 3:
+        raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
+    if envelope.parents[2] != declaration.diff_evidence_id:
+        raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
+    for parent_id, expected in zip(envelope.parents[:2], (before_identity, after_identity)):
+        try:
+            parent = state.evidence_store.get_envelope(parent_id)
+        except FileNotFoundError as error:
+            raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE) from error
+        except EvidenceValidationError as error:
+            raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE) from error
+        except OSError as error:
+            raise _WorkflowFailure(_ENVIRONMENT_FAILURE) from error
+        if parent.identity != expected:
+            raise _WorkflowFailure(_INCOMPATIBLE_IDENTITY)
+    if set(analysis) != _ANALYSIS_FIELDS:
+        raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
+    if analysis["schema"] != _ANALYSIS_SCHEMA or analysis["analysis_id"] != analysis_id:
+        raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
+    unsigned = {key: value for key, value in analysis.items() if key != "analysis_id"}
+    if hashlib.sha256(canonical_json_bytes(unsigned)).hexdigest() != analysis_id:
+        raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
+    for field in ("request_digest", "before_run_id", "after_run_id"):
+        _hash_value(analysis[field])
+    identity = _require_exact_mapping(analysis["identity"], _ANALYSIS_IDENTITY_FIELDS)
+    if (
+        identity["schema"] != _ANALYSIS_LINEAGE_SCHEMA
+        or identity["origin_workspace_id"] != after_identity.workspace_id
+        or identity["import_workspace_id"] != state.workspace.workspace_id
+        or identity["logical_project_id"] != str(state.model.logical_project_id)
+        or identity["target_device"] != after_identity.target_device
+        or identity["source_change_declaration_id"] != declaration.declaration_id
+        or identity["before_input_snapshot_sha256"] != before_identity.input_snapshot_sha256
+        or identity["before_build_id"] != before_identity.build_id
+        or identity["before_elf_sha256"] != before_identity.elf_sha256
+        or identity["after_input_snapshot_sha256"] != after_identity.input_snapshot_sha256
+        or identity["after_build_id"] != after_identity.build_id
+        or identity["after_elf_sha256"] != after_identity.elf_sha256
+    ):
+        raise _WorkflowFailure(_INCOMPATIBLE_IDENTITY)
+    for field in (
+        "origin_workspace_id", "import_workspace_id", "before_input_snapshot_sha256", "before_build_id",
+        "before_elf_sha256", "after_input_snapshot_sha256", "after_build_id", "after_elf_sha256",
+    ):
+        _hash_value(identity[field])
+    if (
+        analysis["quality"] != plan.required_monitor_quality
+        or analysis["quality"] != "VALID"
+        or analysis["conclusion"] != "COMPLETED"
+        or analysis["changed"] is not True
+        or analysis["reason_code"] not in {
+            "VALUES_CHANGED", "VALUES_CHANGED_WITH_EXCLUSIONS",
+        }
+    ):
+        raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
+    for field in ("aligned_position_count", "aligned_pair_count", "excluded_position_count"):
+        value = analysis[field]
+        if type(value) is not int or value < 0:
+            raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
+    if analysis["aligned_pair_count"] < 2 or analysis["aligned_pair_count"] > analysis["aligned_position_count"]:
+        raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
+    if analysis["excluded_position_count"] != analysis["aligned_position_count"] - analysis["aligned_pair_count"]:
+        raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
+    numeric_fields = (
+        "before_first", "before_last", "before_min", "before_max", "after_first", "after_last",
+        "after_min", "after_max", "delta_first", "delta_last",
+    )
+    for field in numeric_fields:
+        value = analysis[field]
+        if type(value) not in (int, float) or isinstance(value, bool) or (
+            type(value) is float and not math.isfinite(value)
+        ):
+            raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
+    if (
+        analysis["delta_first"] != analysis["after_first"] - analysis["before_first"]
+        or analysis["delta_last"] != analysis["after_last"] - analysis["before_last"]
+    ):
+        raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
+
+
+def _validate_marker(
+    state: _WorkflowState,
+    session: DiagnosticSession,
+    declaration: SourceChangeDeclaration,
+    before: object,
+    after: object,
+    marker: DiagnosticMarkerRef,
+) -> None:
+    _root, envelope, _artifact, _payload, payload = _read_json_evidence(
+        state,
+        root_type=_MARKER_ROOT,
+        root_id=marker.marker_id,
+        operation=_MARKER_OPERATION,
+        kind=_MARKER_ROOT,
+    )
+    after_identity = getattr(after, "identity", None)
+    if envelope.identity != after_identity:
+        raise _WorkflowFailure(_INCOMPATIBLE_IDENTITY)
+    expected_metadata = {
+        "marker_id": marker.marker_id,
+        "analysis_id": marker.analysis_id,
+        "analysis_evidence_id": marker.analysis_evidence_id,
+        "origin_workspace_id": after_identity.workspace_id,
+        "import_workspace_id": state.workspace.workspace_id,
+        "origin_session_id": after_identity.session_id,
+        "execution_source": "replay",
+        "physical_transport_evidence": False,
+    }
+    if dict(envelope.metadata) != expected_metadata or envelope.parents != (marker.analysis_evidence_id,):
+        raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
+    if str(envelope.evidence_id) != marker.marker_evidence_id:
+        raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
+    if set(payload) != _MARKER_FIELDS or payload["schema"] != _MARKER_SCHEMA:
+        raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
+    if payload["marker_id"] != marker.marker_id:
+        raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
+    unsigned = {key: value for key, value in payload.items() if key != "marker_id"}
+    if hashlib.sha256(canonical_json_bytes(unsigned)).hexdigest() != marker.marker_id:
+        raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
+    expected_shared = {
+        "marker_id": marker.marker_id,
+        "analysis_id": marker.analysis_id,
+        "analysis_evidence_id": marker.analysis_evidence_id,
+        "diagnostic_session_id": marker.diagnostic_session_id,
+        "hypothesis_id": marker.hypothesis_id,
+        "polarity": marker.polarity,
+        "label": marker.label,
+        "rationale": marker.rationale,
+    }
+    if {key: payload[key] for key in expected_shared} != expected_shared:
+        raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
+
+
+def _diagnostic_declare_source_change(
+    context: DiagnosticWorkflowContext,
+    *,
+    operation_id: object,
+    diagnostic_session_id: object,
+    expected_revision: object,
+    source_change_declaration: object,
+    actor: object,
+) -> OperationResult[object]:
+    operation_id = _validate_operation_id(operation_id)
+    diagnostic_session_id = _validate_session_id(diagnostic_session_id)
+    expected_revision = _validate_revision(expected_revision)
+    actor = _validate_actor(actor)
+    declaration = SourceChangeDeclaration.from_value(source_change_declaration)
+    state = _make_state(context)
+    session = _load_bound_session(state, diagnostic_session_id)
+    if session.state not in {"INVESTIGATING", "FIX_PROPOSED"}:
+        raise DiagnosticValidationError(DIAGNOSTIC_INVALID_TRANSITION)
+    _read_diff_evidence(state, session, declaration)
+    if session.state == "FIX_PROPOSED" and not any(
+        item.declaration_id == declaration.declaration_id
+        for item in session.source_change_declarations
+    ):
+        raise DiagnosticValidationError(DIAGNOSTIC_PLAN_INVALID)
+    declaration_data = declaration.to_dict()
+    event = create_event(
+        diagnostic_session_id=session.diagnostic_session_id,
+        operation_id=operation_id,
+        sequence=session.revision,
+        revision_before=session.revision,
+        event_type="source_change.declared",
+        occurred_at_utc=_new_timestamp(),
+        actor=actor,
+        previous_digest=session.event_head,
+        payload={
+            "request": {"source_change_declaration": declaration_data},
+            "result": {"declaration_id": declaration.declaration_id},
+        },
+    )
+    accepted = state.diagnostic_store.append(
+        diagnostic_session_id, event, expected_revision=expected_revision
+    )
+    return OperationResult.success(
+        _SOURCE_CHANGE_DECLARE_OPERATION,
+        {
+            "session": accepted.session.to_dict(),
+            "source_change_declaration": declaration_data,
+        },
+    )
+
+
+def _diagnostic_add_verification_plan(
+    context: DiagnosticWorkflowContext,
+    *,
+    operation_id: object,
+    diagnostic_session_id: object,
+    expected_revision: object,
+    verification_plan: object,
+    actor: object,
+) -> OperationResult[object]:
+    operation_id = _validate_operation_id(operation_id)
+    diagnostic_session_id = _validate_session_id(diagnostic_session_id)
+    expected_revision = _validate_revision(expected_revision)
+    actor = _validate_actor(actor)
+    plan = VerificationPlan.from_value(verification_plan)
+    state = _make_state(context)
+    session = _load_bound_session(state, diagnostic_session_id)
+    if session.state != "FIX_PROPOSED":
+        raise DiagnosticValidationError(DIAGNOSTIC_INVALID_TRANSITION)
+    declarations = tuple(
+        item
+        for item in session.source_change_declarations
+        if item.declaration_id == plan.source_change_declaration_id
+    )
+    if (
+        len(declarations) != 1
+        or plan.diagnostic_session_id != session.diagnostic_session_id
+        or plan.failed_before_run_id != session.failed_test_run_id
+        or plan.failed_before_evidence_id != session.failed_evidence_id
+        or plan.verification_plan_id != declarations[0].validation_plan_id
+    ):
+        raise DiagnosticValidationError(DIAGNOSTIC_PLAN_INVALID)
+    declaration = declarations[0]
+    _read_diff_evidence(state, session, declaration)
+    before = _load_target_run(
+        state,
+        plan.failed_before_run_id,
+        expected_state="failed",
+        expected_identity=session.identity,
+    )
+    after = _load_target_run(
+        state,
+        plan.fixed_after_run_id,
+        expected_state="passed",
+        expected_identity=session.identity,
+    )
+    if (
+        str(getattr(before, "envelope").evidence_id) != plan.failed_before_evidence_id
+        or str(getattr(after, "envelope").evidence_id) != plan.fixed_after_evidence_id
+    ):
+        raise _WorkflowFailure(_INCOMPATIBLE_IDENTITY)
+    if len(plan.required_analysis_ids) == 0:
+        raise DiagnosticValidationError(DIAGNOSTIC_PLAN_INVALID)
+    for analysis_id, analysis_evidence_id in zip(
+        plan.required_analysis_ids, plan.required_analysis_evidence_ids
+    ):
+        _validate_analysis(
+            state,
+            session,
+            declaration,
+            plan,
+            getattr(before, "manifest"),
+            getattr(after, "manifest"),
+            analysis_id,
+            analysis_evidence_id,
+        )
+    plan_data = plan.to_dict()
+    event = create_event(
+        diagnostic_session_id=session.diagnostic_session_id,
+        operation_id=operation_id,
+        sequence=session.revision,
+        revision_before=session.revision,
+        event_type="verification.plan_added",
+        occurred_at_utc=_new_timestamp(),
+        actor=actor,
+        previous_digest=session.event_head,
+        payload={
+            "request": {"verification_plan": plan_data},
+            "result": {
+                "verification_plan_id": plan.verification_plan_id,
+                "plan_digest": plan.plan_digest,
+            },
+        },
+    )
+    accepted = state.diagnostic_store.append(
+        diagnostic_session_id, event, expected_revision=expected_revision
+    )
+    return OperationResult.success(
+        _VERIFICATION_PLAN_ADD_OPERATION,
+        {"session": accepted.session.to_dict(), "verification_plan": plan_data},
+    )
+
+
+def _diagnostic_start_verification(
+    context: DiagnosticWorkflowContext,
+    *,
+    operation_id: object,
+    diagnostic_session_id: object,
+    expected_revision: object,
+    verification_plan_id: object,
+    actor: object,
+) -> OperationResult[object]:
+    operation_id = _validate_operation_id(operation_id)
+    diagnostic_session_id = _validate_session_id(diagnostic_session_id)
+    expected_revision = _validate_revision(expected_revision)
+    verification_plan_id = _validate_plan_id(verification_plan_id)
+    actor = _validate_actor(actor)
+    state = _make_state(context)
+    session = _load_bound_session(state, diagnostic_session_id)
+    if session.state not in {"FIX_PROPOSED", "VERIFYING"}:
+        raise DiagnosticValidationError(DIAGNOSTIC_INVALID_TRANSITION)
+    plans = tuple(
+        item
+        for item in session.verification_plans
+        if item.verification_plan_id == verification_plan_id
+    )
+    if len(plans) != 1:
+        raise DiagnosticValidationError(DIAGNOSTIC_PLAN_INVALID)
+    event = create_event(
+        diagnostic_session_id=session.diagnostic_session_id,
+        operation_id=operation_id,
+        sequence=session.revision,
+        revision_before=session.revision,
+        event_type="verification.started",
+        occurred_at_utc=_new_timestamp(),
+        actor=actor,
+        previous_digest=session.event_head,
+        payload={
+            "request": {"verification_plan_id": verification_plan_id},
+            "result": {"verification_plan_id": verification_plan_id},
+        },
+    )
+    accepted = state.diagnostic_store.append(
+        diagnostic_session_id, event, expected_revision=expected_revision
+    )
+    return OperationResult.success(
+        _VERIFICATION_START_OPERATION,
+        {"session": accepted.session.to_dict(), "verification_plan_id": verification_plan_id},
+    )
+
+
+def _diagnostic_attach_marker(
+    context: DiagnosticWorkflowContext,
+    *,
+    operation_id: object,
+    diagnostic_session_id: object,
+    expected_revision: object,
+    diagnostic_marker_ref: object,
+    actor: object,
+) -> OperationResult[object]:
+    operation_id = _validate_operation_id(operation_id)
+    diagnostic_session_id = _validate_session_id(diagnostic_session_id)
+    expected_revision = _validate_revision(expected_revision)
+    actor = _validate_actor(actor)
+    marker = DiagnosticMarkerRef.from_value(diagnostic_marker_ref)
+    state = _make_state(context)
+    session = _load_bound_session(state, diagnostic_session_id)
+    if session.state != "VERIFYING":
+        raise DiagnosticValidationError(DIAGNOSTIC_INVALID_TRANSITION)
+    if session.active_verification_plan_id is None:
+        raise DiagnosticValidationError(DIAGNOSTIC_PLAN_INVALID)
+    plans = tuple(
+        item
+        for item in session.verification_plans
+        if item.verification_plan_id == session.active_verification_plan_id
+    )
+    if len(plans) != 1:
+        raise DiagnosticValidationError(DIAGNOSTIC_PLAN_INVALID)
+    plan = plans[0]
+    declarations = tuple(
+        item
+        for item in session.source_change_declarations
+        if item.declaration_id == plan.source_change_declaration_id
+    )
+    if len(declarations) != 1:
+        raise DiagnosticValidationError(DIAGNOSTIC_PLAN_INVALID)
+    declaration = declarations[0]
+    if not any(
+        marker.analysis_id == analysis_id and marker.analysis_evidence_id == evidence_id
+        for analysis_id, evidence_id in zip(
+            plan.required_analysis_ids, plan.required_analysis_evidence_ids
+        )
+    ):
+        raise DiagnosticValidationError(DIAGNOSTIC_PLAN_INVALID)
+    before = _load_target_run(
+        state,
+        plan.failed_before_run_id,
+        expected_state="failed",
+        expected_identity=session.identity,
+    )
+    after = _load_target_run(
+        state,
+        plan.fixed_after_run_id,
+        expected_state="passed",
+        expected_identity=session.identity,
+    )
+    if (
+        str(getattr(before, "envelope").evidence_id) != plan.failed_before_evidence_id
+        or str(getattr(after, "envelope").evidence_id) != plan.fixed_after_evidence_id
+    ):
+        raise _WorkflowFailure(_INCOMPATIBLE_IDENTITY)
+    _validate_analysis(
+        state,
+        session,
+        declaration,
+        plan,
+        getattr(before, "manifest"),
+        getattr(after, "manifest"),
+        marker.analysis_id,
+        marker.analysis_evidence_id,
+    )
+    _validate_marker(
+        state,
+        session,
+        declaration,
+        getattr(before, "manifest"),
+        getattr(after, "manifest"),
+        marker,
+    )
+    marker_data = marker.to_dict()
+    event = create_event(
+        diagnostic_session_id=session.diagnostic_session_id,
+        operation_id=operation_id,
+        sequence=session.revision,
+        revision_before=session.revision,
+        event_type="analysis.marker_attached",
+        occurred_at_utc=_new_timestamp(),
+        actor=actor,
+        previous_digest=session.event_head,
+        payload={
+            "request": {"diagnostic_marker_ref": marker_data},
+            "result": {"marker_id": marker.marker_id},
+        },
+    )
+    accepted = state.diagnostic_store.append(
+        diagnostic_session_id, event, expected_revision=expected_revision
+    )
+    return OperationResult.success(
+        _MARKER_ATTACH_OPERATION,
+        {"session": accepted.session.to_dict(), "diagnostic_marker_ref": marker_data},
+    )
+
+
 def _observation_plan(
     session: DiagnosticSession,
     steps: object,
@@ -793,6 +1442,94 @@ def _diagnostic_run_plan(
     )
 
 
+def diagnostic_declare_source_change(
+    context: DiagnosticWorkflowContext,
+    *,
+    operation_id: str,
+    diagnostic_session_id: str,
+    expected_revision: int,
+    source_change_declaration: SourceChangeDeclaration | dict[str, object],
+    actor: str = "user",
+) -> OperationResult[object]:
+    return _result(
+        _SOURCE_CHANGE_DECLARE_OPERATION,
+        lambda: _diagnostic_declare_source_change(
+            context,
+            operation_id=operation_id,
+            diagnostic_session_id=diagnostic_session_id,
+            expected_revision=expected_revision,
+            source_change_declaration=source_change_declaration,
+            actor=actor,
+        ),
+    )
+
+
+def diagnostic_add_verification_plan(
+    context: DiagnosticWorkflowContext,
+    *,
+    operation_id: str,
+    diagnostic_session_id: str,
+    expected_revision: int,
+    verification_plan: VerificationPlan | dict[str, object],
+    actor: str = "user",
+) -> OperationResult[object]:
+    return _result(
+        _VERIFICATION_PLAN_ADD_OPERATION,
+        lambda: _diagnostic_add_verification_plan(
+            context,
+            operation_id=operation_id,
+            diagnostic_session_id=diagnostic_session_id,
+            expected_revision=expected_revision,
+            verification_plan=verification_plan,
+            actor=actor,
+        ),
+    )
+
+
+def diagnostic_start_verification(
+    context: DiagnosticWorkflowContext,
+    *,
+    operation_id: str,
+    diagnostic_session_id: str,
+    expected_revision: int,
+    verification_plan_id: str,
+    actor: str = "tool",
+) -> OperationResult[object]:
+    return _result(
+        _VERIFICATION_START_OPERATION,
+        lambda: _diagnostic_start_verification(
+            context,
+            operation_id=operation_id,
+            diagnostic_session_id=diagnostic_session_id,
+            expected_revision=expected_revision,
+            verification_plan_id=verification_plan_id,
+            actor=actor,
+        ),
+    )
+
+
+def diagnostic_attach_marker(
+    context: DiagnosticWorkflowContext,
+    *,
+    operation_id: str,
+    diagnostic_session_id: str,
+    expected_revision: int,
+    diagnostic_marker_ref: DiagnosticMarkerRef | dict[str, object],
+    actor: str = "tool",
+) -> OperationResult[object]:
+    return _result(
+        _MARKER_ATTACH_OPERATION,
+        lambda: _diagnostic_attach_marker(
+            context,
+            operation_id=operation_id,
+            diagnostic_session_id=diagnostic_session_id,
+            expected_revision=expected_revision,
+            diagnostic_marker_ref=diagnostic_marker_ref,
+            actor=actor,
+        ),
+    )
+
+
 def diagnostic_start(
     context: DiagnosticWorkflowContext,
     *,
@@ -949,4 +1686,8 @@ __all__ = [
     "diagnostic_assess_hypothesis",
     "diagnostic_add_plan",
     "diagnostic_run_plan",
+    "diagnostic_declare_source_change",
+    "diagnostic_add_verification_plan",
+    "diagnostic_start_verification",
+    "diagnostic_attach_marker",
 ]
