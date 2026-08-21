@@ -192,8 +192,30 @@ AnalysisResult
   after_first/last/min/max    finite number or null
   delta_first/last            finite number or null
   changed                     boolean or null
-  evidence_id                 published analysis Evidence
 ```
+
+`AnalysisResult` is the canonical derived payload and therefore never embeds the ID of the
+Evidence envelope that contains it; doing so would create a content-addressing cycle. Publication
+returns a separate frozen `AnalysisEvidenceRef(analysis_id, evidence_id)`. Markers and verification
+plans carry both IDs where they cross the 0603/0602 boundary.
+
+The reusable pure algorithm returns an `AnalysisComputation` containing only alignment quality,
+conclusion, reason, counts, statistics and `changed`; it does not assert firmware authorization or
+carry an analysis/Evidence ID. After Task 6 freezes `SourceChangeDeclaration`, the application
+workflow validates identity and firmware authorization, then combines the request, computation and
+validated lineage into `AnalysisResult`. Thus an unvalidated computation can never masquerade as a
+published cross-firmware conclusion.
+
+For VS-03 the request is exactly two `MonitorRunRef` values, one exact `WatchItem` identity,
+`alignment="run-relative"`, and `minimum_valid_pairs` in `2..10000`. The pure comparison input is
+two exact non-empty bounded `SampleBatch` tuples already loaded for those references. An `OK`
+sample is trustworthy only when its closed typed value is exactly `{type, value}`, the type text is
+equal across the pair, and `value` is a finite non-boolean integer or float. The aligned-pair count
+counts trustworthy pairs only. A completed comparison is `VALID` when every aligned position is
+trustworthy and `DEGRADED` when the requested minimum is met but positions were missing or excluded;
+otherwise it is `INVALID/INCONCLUSIVE`. Closed reason codes are `VALUES_CHANGED`,
+`VALUES_UNCHANGED`, `VALUES_CHANGED_WITH_EXCLUSIONS`, `VALUES_UNCHANGED_WITH_EXCLUSIONS`, and
+`INSUFFICIENT_VALID_PAIRS`. Inconclusive results expose null statistics and `changed=null`.
 
 Run-relative alignment subtracts each run's first scheduled timestamp, matches samples at identical
 relative nanoseconds, and preserves input order. `VALID` requires the requested minimum pairs and
@@ -207,6 +229,10 @@ Before and after build/ELF digests may differ only when the supplied SourceChang
 those exact before/after firmware identities. A compare request without that declaration requires
 identical firmware. Incompatible identity returns `INCOMPATIBLE_IDENTITY` before derived Evidence is
 published.
+
+The implementation sequence freezes the pure comparison computation first, then the 0602
+`SourceChangeDeclaration`, and only then the authoritative `AnalysisResult` plus History/Evidence
+workflow. This prevents a temporary duplicate firmware-bridge type from becoming a second authority.
 
 ### 3.4 SourceChangeDeclaration and VerificationPlan (0602)
 

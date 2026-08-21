@@ -190,40 +190,35 @@ py -3.12 -m pytest -q tools/stm32-monitor/tests/test_replay.py tools/stm32-monit
 
 **Commit:** `feat(monitor): ingest replay observation windows`
 
-## Task 5: Compare windows and publish analysis, marker and bundle
+## Task 5A: Freeze bounded run-relative comparison
 
-**Product behavior:** Compatible windows produce one bounded AnalysisResult, marker payload and
-byte-deterministic bundle; insufficient input is explicit and incompatible identity publishes
-nothing derived.
+**Product behavior:** Two already-loaded compatible replay windows produce one deterministic,
+closed AnalysisComputation without storage or publication side effects; insufficient input is explicit.
 
 **Files:**
 
 - Create: `tools/stm32-monitor/src/stm32_monitor/analysis.py`
-- Create: `tools/stm32-monitor/src/stm32_monitor/analysis_workflows.py`
 - Modify: `tools/stm32-monitor/src/stm32_monitor/__init__.py`
 - Create: `tools/stm32-monitor/tests/test_analysis.py`
-- Create: `tools/stm32-monitor/tests/test_analysis_workflows.py`
 
 **Required interfaces:**
 
-- Frozen `AnalysisRequest`, `AnalysisResult`, and `DiagnosticMarker` with design fields and closed
-  reason codes.
+- Frozen `AnalysisRequest` and non-authoritative `AnalysisComputation` with exact closed quality,
+  conclusion and reason codes. The computation carries no firmware authorization, analysis ID or
+  Evidence ID.
 - Run-relative exact-timestamp alignment for one exact scalar selector; no interpolation.
-- `compare_monitor_runs(...)` queries only public HistoryStore pages, enforces source-change
-  firmware bridge, and publishes canonical AnalysisResult/marker Evidence through an injected
-  EvidenceStore.
-- `export_analysis_bundle(...)` returns byte-identical canonical JSON and an immutable artifact for
-  identical inputs.
-- Insufficient pairs create retained `INVALID/INCONCLUSIVE`; incompatible identity returns stable
-  failure before analysis/marker/bundle publication.
+- `analyze_monitor_windows(...)` accepts two exact non-empty bounded SampleBatch tuples, validates
+  them against the two MonitorRunRefs, and performs no storage, Evidence, diagnostic or clock I/O.
+- Trustworthy pairs require exact selector/type identity and finite non-boolean numeric values.
+  Insufficient pairs return deterministic `INVALID/INCONCLUSIVE` with null statistics.
 
 **TDD verify:**
 
 ```powershell
-py -3.12 -m pytest -q tools/stm32-monitor/tests/test_analysis.py tools/stm32-monitor/tests/test_analysis_workflows.py tools/stm32-monitor/tests/test_replay.py tools/stm32-monitor/tests/test_history.py
+py -3.12 -m pytest -q tools/stm32-monitor/tests/test_analysis.py tools/stm32-monitor/tests/test_replay.py tools/stm32-monitor/tests/test_models.py
 ```
 
-**Commit:** `feat(monitor): publish bounded replay analysis`
+**Commit:** `feat(monitor): compare bounded replay windows`
 
 ## Task 6: Extend the diagnostic event domain and lifecycle
 
@@ -257,6 +252,39 @@ py -3.12 -m pytest -q tools/stm32-toolkit/tests/test_fix_verification_model.py t
 ```
 
 **Commit:** `feat(diagnostics): add fix verification lifecycle`
+
+## Task 5B: Publish analysis, marker and deterministic bundle
+
+**Product behavior:** Compatible History windows produce one published AnalysisResult, marker
+payload and byte-deterministic bundle; incompatible identity publishes nothing derived.
+
+**Files:**
+
+- Create: `tools/stm32-monitor/src/stm32_monitor/analysis_workflows.py`
+- Modify: `tools/stm32-monitor/src/stm32_monitor/analysis.py`
+- Modify: `tools/stm32-monitor/src/stm32_monitor/__init__.py`
+- Create: `tools/stm32-monitor/tests/test_analysis_workflows.py`
+- Modify: `tools/stm32-monitor/tests/test_analysis.py`
+
+**Required interfaces:**
+
+- Frozen authoritative `AnalysisResult`, `AnalysisEvidenceRef` and `DiagnosticMarker` use the
+  corrected design boundary; AnalysisResult never self-embeds its Evidence ID.
+- `compare_monitor_runs(...)` queries only public HistoryStore pages, validates any firmware change
+  only through the Task 6 `SourceChangeDeclaration`, and publishes canonical AnalysisResult and
+  marker Evidence through an injected EvidenceStore.
+- `export_analysis_bundle(...)` returns byte-identical canonical JSON and an immutable artifact for
+  identical inputs.
+- Insufficient pairs publish retained `INVALID/INCONCLUSIVE`; incompatible identity returns stable
+  `INCOMPATIBLE_IDENTITY` before analysis, marker or bundle publication.
+
+**TDD verify:**
+
+```powershell
+py -3.12 -m pytest -q tools/stm32-monitor/tests/test_analysis_workflows.py tools/stm32-monitor/tests/test_analysis.py tools/stm32-monitor/tests/test_replay.py tools/stm32-monitor/tests/test_history.py
+```
+
+**Commit:** `feat(monitor): publish bounded replay analysis`
 
 ## Task 7: Execute source-change and verification workflows
 
