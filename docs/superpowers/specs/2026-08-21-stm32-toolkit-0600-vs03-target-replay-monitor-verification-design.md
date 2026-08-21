@@ -311,10 +311,45 @@ Publication returns a separate `DiagnosticMarkerRef` with schema
 The attach event stores this ref, and its checkpoint parents include marker Evidence followed by
 analysis Evidence in first-seen order.
 
+The public comparison operation is
+`compare_monitor_runs(paths, evidence_store, request, diagnostic_session_id, hypothesis_id,
+polarity, rationale, source_change_declaration=None)`. It accepts exact base types. It reads both
+windows only through paged public `HistoryStore.query_history` calls bounded by each run reference,
+reconstructs only complete batches, and calls the pure comparison. Changed firmware requires the
+exact declaration before/after source/build/ELF bridge and the named hypothesis in its claimed
+set; identical firmware requires no declaration. Scope, replay/non-physical labels, run windows,
+batch digests and selector vocabulary are validated before derived publication.
+
+The return is a frozen `AnalysisPublication` containing exact `analysis_result`,
+`analysis_evidence_ref`, `diagnostic_marker`, and Toolkit `diagnostic_marker_ref`. Analysis
+Evidence is rooted as `monitor-analysis/<analysis_id>` and has the two transcript Evidence IDs plus
+the declaration diff Evidence ID, when present, as ordered parents. Marker Evidence is rooted as
+`diagnostic-marker/<marker_id>` with analysis Evidence as its sole parent. Both canonical payload
+artifacts and roots are content-addressed and idempotent; an exact partial publication is repaired,
+while different bytes at the same root are an operation conflict. Evidence identity is the exact
+after-run import workspace/project/session/source/build/ELF/target/git identity. Identity or
+declaration incompatibility occurs before any derived artifact, envelope or root publication.
+
 The analysis bundle is canonical JSON, not a platform-dependent archive. It contains a version,
 the two MonitorRunRefs, AnalysisResult, marker, referenced TestRun IDs, SourceChangeDeclaration ID,
 and an ordered digest table. It contains no absolute path, raw credential, mutable database key, or
 physical claim. Canonical byte ordering makes repeated export byte-identical.
+
+The exact bundle schema is `stm32-monitor-analysis-bundle/1` with fields, in canonical object form:
+`schema`, `before_run`, `after_run`, `analysis_request`, `analysis_result`,
+`analysis_evidence_ref`, `diagnostic_marker`, `diagnostic_marker_ref`,
+`failed_before_test_run_id`, `fixed_after_test_run_id`, `source_change_declaration_id`, and
+`digest_table`. The ordered digest roles are `before-run-ref`, `after-run-ref`,
+`before-transcript-evidence`, `after-transcript-evidence`, `analysis-request`, `analysis-result`,
+`analysis-evidence`, `diagnostic-marker`, `marker-evidence`, followed by
+`source-change-declaration` only when present. Each entry is exactly `{role, sha256}`.
+
+`export_analysis_bundle(...)` revalidates the request/publication/declaration bindings, returns the
+canonical bytes plus a frozen `AnalysisBundleRef(schema, bundle_id, evidence_id, artifact)`, and
+publishes an envelope/root `monitor-analysis-bundle/<bundle_id>`. `bundle_id` and the artifact
+SHA-256 equal the canonical byte digest. Ordered parents are before/after transcript Evidence,
+analysis Evidence, marker Evidence, and declaration diff Evidence when present. The bundle payload
+does not contain its own bundle/evidence reference, so no content-addressing cycle exists.
 
 ### 3.6 FixVerification (0602)
 

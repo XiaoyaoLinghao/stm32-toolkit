@@ -335,10 +335,10 @@ py -3.12 -m pytest -q tools/stm32-monitor/tests/test_analysis.py tools/stm32-mon
 
 **Commit:** `feat(monitor): freeze analysis publication values`
 
-## Task 5B2: Publish analysis, marker and deterministic bundle
+## Task 5B2: Compare History and publish analysis plus marker
 
-**Product behavior:** Compatible History windows produce one published AnalysisResult, marker
-payload and byte-deterministic bundle; incompatible identity publishes nothing derived.
+**Product behavior:** Compatible History windows produce one reloadable AnalysisResult and marker
+publication; incompatible identity publishes nothing derived.
 
 **Files:**
 
@@ -353,18 +353,44 @@ payload and byte-deterministic bundle; incompatible identity publishes nothing d
 - `compare_monitor_runs(...)` queries only public HistoryStore pages, validates any firmware change
   only through the Task 6 `SourceChangeDeclaration`, and publishes canonical AnalysisResult and
   marker Evidence through an injected EvidenceStore.
-- `export_analysis_bundle(...)` returns byte-identical canonical JSON and an immutable artifact for
-  identical inputs.
 - Insufficient pairs publish retained `INVALID/INCONCLUSIVE`; incompatible identity returns stable
-  `INCOMPATIBLE_IDENTITY` before analysis, marker or bundle publication.
+  `INCOMPATIBLE_IDENTITY` before analysis or marker publication.
 
 **TDD verify:**
 
 ```powershell
-py -3.12 -m pytest -q tools/stm32-monitor/tests/test_analysis_workflows.py tools/stm32-monitor/tests/test_analysis.py tools/stm32-monitor/tests/test_replay.py tools/stm32-monitor/tests/test_history.py
+py -3.12 -m pytest -q tools/stm32-monitor/tests/test_analysis_workflows.py tools/stm32-monitor/tests/test_analysis.py tools/stm32-monitor/tests/test_history.py
 ```
 
 **Commit:** `feat(monitor): publish bounded replay analysis`
+
+## Task 5B3: Export deterministic rooted analysis bundle
+
+**Product behavior:** One accepted publication exports byte-identical canonical bundle bytes and a
+reloadable immutable bundle root for identical inputs.
+
+**Files:**
+
+- Modify: `tools/stm32-monitor/src/stm32_monitor/analysis_workflows.py`
+- Modify: `tools/stm32-monitor/src/stm32_monitor/__init__.py`
+- Modify: `tools/stm32-monitor/tests/test_analysis_workflows.py`
+
+**Required interfaces:**
+
+- Implement the exact bundle/digest table and `AnalysisBundleRef` from the design.
+- `export_analysis_bundle(...)` revalidates all request/publication/declaration/TestRun references,
+  emits canonical bytes, ingests the exact artifact and publishes/reloads the deterministic
+  envelope/root without self-reference.
+- Identical calls are byte/ref idempotent; missing exact checkpoint parts repair, conflicts fail
+  without overwriting; no absolute path, credential, mutable database key or physical claim leaks.
+
+**TDD verify:**
+
+```powershell
+py -3.12 -m pytest -q tools/stm32-monitor/tests/test_analysis_workflows.py tools/stm32-monitor/tests/test_analysis.py tools/stm32-monitor/tests/test_replay.py
+```
+
+**Commit:** `feat(monitor): export deterministic analysis bundle`
 
 ## Task 7: Execute source-change and verification workflows
 
