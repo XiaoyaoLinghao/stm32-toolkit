@@ -347,6 +347,32 @@ verification.completed PASS  VERIFYING     -> RESOLVED
 verification.completed else  VERIFYING     -> INVESTIGATING
 ```
 
+The five event payloads retain the existing exact `{request,result}` envelope:
+
+```text
+source_change.declared   request {source_change_declaration}; result {declaration_id}
+verification.plan_added  request {verification_plan}; result {verification_plan_id,plan_digest}
+verification.started     request {verification_plan_id}; result {verification_plan_id}
+analysis.marker_attached request {diagnostic_marker_ref}; result {marker_id}
+verification.completed   request {fix_verification}; result {fix_verification_id,status,reason_code}
+```
+
+The extended session adds exact tuples `source_change_declarations`, `verification_plans`,
+`diagnostic_marker_refs`, `fix_verifications`, plus nullable `active_verification_plan_id`. These
+fields are omitted only for a legacy session that has never accepted a new event. The source change
+must name existing hypotheses; its validation plan ID must equal the subsequently added plan ID.
+The plan must bind that declaration and the session; start selects one stored plan. A marker must
+bind an existing hypothesis and one required analysis/evidence pair in the active plan. Completion
+must exactly repeat the active plan's declaration, run/evidence, plan digest, and analysis/evidence
+tuples. IDs are unique in their collections. Completion clears the active plan; only PASSED resolves.
+
+Evidence identity validation is role-specific. The failed TestRun remains exactly equal to the
+session EvidenceIdentity. Every new parent must retain the same workspace, project and target
+device. The source-change diff envelope must contain the exact declared ArtifactRef. Fixed TestRun,
+analysis and marker parents additionally bind the declaration's after source/build/ELF identity;
+the analysis/marker relationship is checked through their exact domain/evidence pairs. This is a
+closed relaxation for declared firmware change, not a general cross-identity bypass.
+
 Each event is checkpointed through the existing DiagnosticStore/Evidence root chain. Legacy
 sessions/events retain their exact old canonical fields and bytes: the extended session fields are
 serialized only after the first new event, while the loader accepts exactly the legacy or extended

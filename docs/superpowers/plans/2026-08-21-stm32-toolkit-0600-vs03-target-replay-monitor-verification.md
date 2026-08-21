@@ -270,6 +270,8 @@ source changes, verification plans, markers, attempts and final FixVerifications
   other completed results return to `INVESTIGATING` while attempts remain.
 - Store checkpoints include every new immutable Evidence reference as a parent. Old chains reload;
   invalid transitions, missing evidence, stale revision, or conflict append nothing.
+- Store validation keeps exact failed-run identity and applies only the design's closed declared
+  after-firmware scope to diff/fixed/analysis/marker Evidence; no generic identity relaxation.
 
 **TDD verify:**
 
