@@ -212,6 +212,17 @@ def _require_identity(state: _WorkflowState, identity: object) -> None:
         raise DiagnosticValidationError(DIAGNOSTIC_IDENTITY_MISMATCH)
 
 
+def _has_provider_os_error(error: BaseException) -> bool:
+    seen: set[int] = set()
+    current: BaseException | None = error
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if isinstance(current, OSError) and not isinstance(current, FileNotFoundError):
+            return True
+        current = current.__cause__ or current.__context__
+    return False
+
+
 def _load_failed_run(
     state: _WorkflowState,
     failed_test_run_id: str,
@@ -235,6 +246,8 @@ def _load_failed_run(
         KeyError,
         IndexError,
     ) as error:
+        if target_mode and _has_provider_os_error(error):
+            raise _WorkflowFailure(_ENVIRONMENT_FAILURE) from error
         code = _EVIDENCE_INTEGRITY_FAILURE if target_mode else DIAGNOSTIC_EVIDENCE_MISSING
         raise _WorkflowFailure(code) from error
 

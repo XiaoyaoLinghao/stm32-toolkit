@@ -17,6 +17,7 @@ from stm32_toolkit.diagnostic_workflows import (
     diagnostic_start,
 )
 from stm32_toolkit.evidence import EVIDENCE_CORRUPT, EvidenceValidationError
+from stm32_toolkit.evidence.store import EvidenceStore
 from stm32_toolkit.paths import WorkspacePaths
 from stm32_toolkit.testing.replay import load_target_replay_fixture
 
@@ -251,6 +252,44 @@ def test_target_replay_start_classifies_repository_failures(
     after = _authority_snapshot(workspace)
     assert started.ok is False
     assert started.code == expected_code
+    assert after == before
+
+
+def test_target_replay_real_repository_provider_failure_is_environment_failure(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    testing_context, diagnostic_context = _contexts(tmp_path)
+    _install_model(monkeypatch)
+    replay = testing_workflows.target_replay_run(
+        testing_context,
+        "vs03-failed-before",
+        FIXTURES / "failed-before.json",
+        FIXTURES / "failed-before.hex",
+    )
+    assert replay.ok is True
+    workspace = WorkspacePaths.from_roots(
+        diagnostic_context.data_root,
+        diagnostic_context.project_root,
+        PROJECT_ID,
+        diagnostic_context.session_id,
+    )
+
+    def provider_failure(
+        _store: EvidenceStore, _artifact: object, *, maximum_bytes: int
+    ) -> bytes:
+        raise OSError("evidence provider is unavailable")
+
+    monkeypatch.setattr(EvidenceStore, "read_artifact", provider_failure)
+    before = _authority_snapshot(workspace)
+    started = diagnostic_start(
+        _fresh_diagnostic_context(diagnostic_context),
+        operation_id="diagnostic.start.target-provider-real",
+        failed_test_run_id="vs03-failed-before",
+        failed_run_mode="target",
+    )
+    after = _authority_snapshot(workspace)
+    assert started.ok is False
+    assert started.code == "ENVIRONMENT_FAILURE"
     assert after == before
 
 
