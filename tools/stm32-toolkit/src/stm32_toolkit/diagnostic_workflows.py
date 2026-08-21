@@ -28,6 +28,7 @@ from stm32_toolkit.diagnostics import (
     create_event,
 )
 from stm32_toolkit.evidence import EvidenceValidationError
+from stm32_toolkit.evidence.gc import get_root
 from stm32_toolkit.evidence.store import EvidenceStore
 from stm32_toolkit.paths import WorkspacePaths, require_safe_session_id
 from stm32_toolkit.project_model import ProjectManifestError, load_project_model
@@ -214,6 +215,9 @@ def _load_failed_run(
 ) -> object:
     try:
         return state.repository.load(failed_test_run_id)
+    except FileNotFoundError as error:
+        code = _EVIDENCE_INTEGRITY_FAILURE if target_hint else DIAGNOSTIC_EVIDENCE_MISSING
+        raise _WorkflowFailure(code) from error
     except OSError as error:
         code = _ENVIRONMENT_FAILURE if target_hint else DIAGNOSTIC_EVIDENCE_MISSING
         raise _WorkflowFailure(code) from error
@@ -240,14 +244,17 @@ def _validate_target_authority(
     envelope = getattr(published, "envelope", None)
     root = getattr(published, "root", None)
     identity = getattr(manifest, "identity", None)
-    if expected_identity is not None and identity != expected_identity:
+    if identity is None:
+        raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
+    if (
+        expected_identity is not None and identity != expected_identity
+    ) or identity.project_id != str(state.model.logical_project_id):
         raise _WorkflowFailure(_INCOMPATIBLE_IDENTITY)
     if (
         getattr(manifest, "run_id", None) != failed_test_run_id
         or getattr(manifest, "mode", None) != "target"
         or getattr(manifest, "state", None) != "failed"
         or getattr(manifest, "transport", None) != "replay"
-        or identity is None
         or getattr(envelope, "identity", None) != identity
         or getattr(envelope, "operation", None) != "target-test-replay"
         or getattr(root, "manifest_id", None) != getattr(envelope, "evidence_id", None)
@@ -261,12 +268,17 @@ def _validate_target_authority(
         "origin_workspace_id": identity.workspace_id,
         "import_workspace_id": state.workspace.workspace_id,
     }
-    if (
-        identity.workspace_id == state.workspace.workspace_id
-        or getattr(root, "metadata", None) != expected_root_metadata
-    ):
+    if getattr(root, "metadata", None) != expected_root_metadata:
         raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
     return manifest
+
+
+def _target_run_root_hint(state: _WorkflowState, failed_test_run_id: str) -> bool:
+    try:
+        root = get_root(state.evidence_store, "test-run", failed_test_run_id)
+    except (EvidenceValidationError, OSError, TypeError, ValueError):
+        return False
+    return root.metadata.get("mode") == "target"
 
 
 def _load_authoritative_run(
@@ -274,8 +286,10 @@ def _load_authoritative_run(
     failed_test_run_id: str,
     *,
     expected_identity: object | None = None,
-    target_hint: bool = False,
+    target_hint: bool | None = None,
 ) -> object:
+    if target_hint is None:
+        target_hint = _target_run_root_hint(state, failed_test_run_id)
     published = _load_failed_run(
         state,
         failed_test_run_id,
