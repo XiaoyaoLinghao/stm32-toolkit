@@ -403,7 +403,7 @@ class DiagnosticStore:
             _raise(DIAGNOSTIC_CHAIN_CORRUPT)
 
     @contextmanager
-    def _store_lock(self, *, create: bool):
+    def _store_lock(self, *, create: bool, validate_layout: bool = True):
         # Only the immutable root/lock/sessions container shape may be
         # inspected before acquiring the lock. Session and event children can
         # be temporarily incomplete while another writer is publishing one.
@@ -440,7 +440,8 @@ class DiagnosticStore:
             held = self._regular_single(lock_path)
             if (held.st_dev, held.st_ino) != (opened.st_dev, opened.st_ino):
                 _raise(DIAGNOSTIC_CHAIN_CORRUPT)
-            self._validate_root_layout(create=False)
+            if validate_layout:
+                self._validate_root_layout(create=False)
             yield
         except OSError:
             _raise(DIAGNOSTIC_CHAIN_CORRUPT)
@@ -962,12 +963,9 @@ class DiagnosticStore:
             _raise(DIAGNOSTIC_NOT_FOUND)
         if not stat.S_ISDIR(info.st_mode):
             _raise(DIAGNOSTIC_CHAIN_CORRUPT)
-        with self._store_lock(create=False):
+        with self._store_lock(create=False, validate_layout=False):
             events_dir = self._session_events_directory(session_id)
-            paths = self._event_paths(events_dir)
-            if not paths:
-                _raise(DIAGNOSTIC_CHAIN_CORRUPT)
-            event = self._read_event_file(paths[0])
+            event = self._read_event_file(events_dir / "00000000.json")
             if (
                 event.diagnostic_session_id != session_id
                 or event.sequence != 0

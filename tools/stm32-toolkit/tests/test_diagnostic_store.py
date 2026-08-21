@@ -296,6 +296,65 @@ def test_creation_intent_query_is_bounded_and_does_not_dereference_evidence(
     assert store.load_creation_intent(SID) == "target"
 
 
+def test_creation_intent_query_does_not_touch_later_events_or_other_sessions(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    evidence = EvidenceStore(tmp_path / "evidence")
+    failed_evidence_id = _failed_evidence(evidence, tmp_path)
+    store = DiagnosticStore(tmp_path / "diagnostics", evidence)
+    created = _created_target(failed_evidence_id)
+    store.create(created)
+    store.append(SID, _started(created), expected_revision=1)
+
+    other_sid = "a" * 32
+    store.create(
+        _created_for(
+            other_sid,
+            "other-create-op",
+            failed_evidence_id,
+        )
+    )
+
+    events_dir = tmp_path / "diagnostics" / "sessions" / SID / "events"
+    later_event = events_dir / "00000001.json"
+    other_events_dir = tmp_path / "diagnostics" / "sessions" / other_sid / "events"
+    other_event = other_events_dir / "00000000.json"
+    original_existing = DiagnosticStore._existing
+    original_children = DiagnosticStore._children
+    original_read_event_file = DiagnosticStore._read_event_file
+    existing_touches: list[Path] = []
+    children_touches: list[Path] = []
+    read_touches: list[Path] = []
+
+    def tracking_existing(cls: type[DiagnosticStore], path: Path) -> os.stat_result:
+        if path == later_event or other_sid in path.parts:
+            existing_touches.append(path)
+        return original_existing(path)
+
+    def tracking_children(parent: Path) -> list[Path]:
+        if parent in {events_dir, other_events_dir}:
+            children_touches.append(parent)
+        return original_children(parent)
+
+    def tracking_read_event_file(cls: type[DiagnosticStore], path: Path) -> DiagnosticEvent:
+        if path in {later_event, other_event}:
+            read_touches.append(path)
+        return original_read_event_file(path)
+
+    monkeypatch.setattr(DiagnosticStore, "_existing", classmethod(tracking_existing))
+    monkeypatch.setattr(DiagnosticStore, "_children", staticmethod(tracking_children))
+    monkeypatch.setattr(
+        DiagnosticStore,
+        "_read_event_file",
+        classmethod(tracking_read_event_file),
+    )
+
+    assert store.load_creation_intent(SID) == "target"
+    assert existing_touches == []
+    assert children_touches == []
+    assert read_touches == []
+
+
 def test_load_preserves_provider_oserror_as_evidence_missing_cause(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
