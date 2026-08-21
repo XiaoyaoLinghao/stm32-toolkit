@@ -356,6 +356,10 @@ publication; incompatible identity publishes nothing derived.
 - Register `monitor-analysis` and `diagnostic-marker` statically in the Toolkit GC root registry;
   Monitor import must not mutate the process-global Toolkit registry. Pin VS-03 canonical JSON
   fixtures to LF for byte-identical clean Windows checkouts.
+- Cross-check each canonical transcript against every run-ref binding field, group/revision, exact
+  captured window, and projected batch digest before derived mutation. Map ordinary Evidence write
+  provider exceptions to stable `ENVIRONMENT_FAILURE` and make any exact retained prefix repairable
+  without exposing provider exception text.
 - `compare_monitor_runs(...)` queries only public HistoryStore pages, validates any firmware change
   only through the Task 6 `SourceChangeDeclaration`, and publishes canonical AnalysisResult and
   marker Evidence through an injected EvidenceStore.

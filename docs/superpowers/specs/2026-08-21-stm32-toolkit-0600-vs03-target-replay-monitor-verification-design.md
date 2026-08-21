@@ -333,6 +333,12 @@ import workspace/session is only the local History query location and never repl
 registry: it statically includes `monitor-analysis` and `diagnostic-marker`. Monitor imports must
 not mutate that Toolkit registry at process runtime. Repository attributes pin the canonical VS-03
 JSON replay fixtures to LF so a clean Windows checkout preserves the accepted fixture bytes.
+Each transcript parent is also cross-checked against its run reference: every binding field,
+group/revision, exact captured window, and every projected batch digest must agree with the
+canonical transcript projection. Valid transcript and History objects that contradict each other
+are an Evidence-integrity failure, not two independently acceptable inputs. Provider exceptions at
+derived publication map to a stable `ENVIRONMENT_FAILURE`; an exact immutable prefix may remain
+and must be repairable on retry, while provider exception text is never exposed.
 Identity or
 declaration incompatibility occurs before any derived artifact, envelope or root publication.
 
