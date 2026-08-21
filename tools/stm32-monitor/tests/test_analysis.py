@@ -8,6 +8,7 @@ from pathlib import Path
 from uuid import UUID
 
 import pytest
+import stm32_monitor.analysis as analysis_module
 
 from stm32_monitor.analysis import (
     ANALYSIS_REQUEST_INVALID,
@@ -34,6 +35,7 @@ RUN_IDS = {
     "fixed-after": UUID("44444444-4444-4444-8444-444444444444"),
 }
 COUNTER = WatchItem.variable("counter")
+REGISTER = WatchItem.register("r0")
 
 
 def _paths(tmp_path: Path) -> WorkspacePaths:
@@ -212,6 +214,50 @@ def test_run_relative_alignment_never_interpolates_or_uses_capture_time(tmp_path
     assert result.after_max is None
 
 
+def test_captured_timestamp_shift_does_not_change_scheduled_alignment(tmp_path: Path) -> None:
+    paths, _, after_document, before, after, before_ref, _ = _case(tmp_path)
+    shifted = tuple(
+        replace(batch, captured_unix_ns=batch.captured_unix_ns + 500)
+        for batch in after
+    )
+    after_ref = _with_reference(after_document, paths, shifted)
+    result = analyze_monitor_windows(_request(before_ref, after_ref), before, shifted)
+
+    assert result.quality == "VALID"
+    assert result.aligned_position_count == 2
+    assert result.aligned_pair_count == 2
+    assert result.excluded_position_count == 0
+
+
+def test_selector_vocabulary_mismatch_is_rejected_before_comparison(tmp_path: Path) -> None:
+    paths, _, after_document, before, after, before_ref, _ = _case(tmp_path)
+    no_register = tuple(
+        replace(batch, values=tuple(sample for sample in batch.values if sample.watch != REGISTER))
+        for batch in after
+    )
+    after_ref = _with_reference(after_document, paths, no_register)
+
+    with pytest.raises(AnalysisError) as error:
+        analyze_monitor_windows(_request(before_ref, after_ref), before, no_register)
+    assert error.value.code == ANALYSIS_REQUEST_INVALID
+
+
+def test_same_selector_with_different_typed_type_is_excluded(tmp_path: Path) -> None:
+    paths, _, after_document, before, after, before_ref, _ = _case(tmp_path)
+    different_type = tuple(
+        _replace_counter(batch, batch.values[0].typed_value["value"], value_type="int32")
+        for batch in after
+    )
+    after_ref = _with_reference(after_document, paths, different_type)
+    result = analyze_monitor_windows(_request(before_ref, after_ref), before, different_type)
+
+    assert result.aligned_position_count == 2
+    assert result.aligned_pair_count == 0
+    assert result.excluded_position_count == 2
+    assert result.quality == "INVALID"
+    assert result.reason_code == "INSUFFICIENT_VALID_PAIRS"
+
+
 def test_missing_error_and_invalid_samples_are_degraded_when_minimum_is_met(tmp_path: Path) -> None:
     paths, before_document, after_document, before, after, before_ref, _ = _case(tmp_path)
     before_three = before + (
@@ -322,6 +368,77 @@ def test_insufficient_zero_and_one_pair_return_null_statistics(tmp_path: Path) -
     assert one_result.quality == "INVALID"
     assert one_result.before_first is None
     assert one_result.changed is None
+
+
+def test_total_value_limit_is_distinct_from_batch_count_limit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    paths, _, after_document, before, after, before_ref, _ = _case(tmp_path)
+    after_ref = _with_reference(after_document, paths, after)
+    monkeypatch.setattr(analysis_module, "MAX_ANALYSIS_VALUES", 3)
+
+    with pytest.raises(AnalysisError) as error:
+        analyze_monitor_windows(_request(before_ref, after_ref), before, after)
+    assert error.value.code == ANALYSIS_REQUEST_INVALID
+
+
+def _assert_invalid_computation(payload: dict[str, object]) -> None:
+    with pytest.raises(AnalysisError):
+        AnalysisComputation(**payload)
+    with pytest.raises(AnalysisError):
+        AnalysisComputation.from_value(payload)
+
+
+def test_computation_rejects_impossible_counts_statistics_and_deltas(tmp_path: Path) -> None:
+    paths, _, after_document, before, after, before_ref, after_ref = _case(tmp_path)
+    changed = analyze_monitor_windows(_request(before_ref, after_ref), before, after)
+
+    zero_positions = changed.to_dict()
+    zero_positions.update(
+        quality="INVALID",
+        conclusion="INCONCLUSIVE",
+        reason_code="INSUFFICIENT_VALID_PAIRS",
+        aligned_position_count=0,
+        aligned_pair_count=0,
+        excluded_position_count=0,
+        before_first=None,
+        before_last=None,
+        before_min=None,
+        before_max=None,
+        after_first=None,
+        after_last=None,
+        after_min=None,
+        after_max=None,
+        delta_first=None,
+        delta_last=None,
+        changed=None,
+    )
+    _assert_invalid_computation(zero_positions)
+
+    one_pair = changed.to_dict()
+    one_pair.update(aligned_position_count=1, aligned_pair_count=1, excluded_position_count=0)
+    _assert_invalid_computation(one_pair)
+
+    bad_order = changed.to_dict()
+    bad_order["before_min"] = bad_order["before_first"] + 1
+    _assert_invalid_computation(bad_order)
+
+    bad_delta = changed.to_dict()
+    bad_delta["delta_first"] = 0
+    _assert_invalid_computation(bad_delta)
+
+    unchanged_after = tuple(
+        _replace_counter(batch, before[index].values[0].typed_value["value"])
+        for index, batch in enumerate(after)
+    )
+    unchanged_ref = _with_reference(after_document, paths, unchanged_after)
+    unchanged = analyze_monitor_windows(
+        _request(before_ref, unchanged_ref), before, unchanged_after
+    )
+    assert unchanged.changed is False
+    bad_unchanged = unchanged.to_dict()
+    bad_unchanged["after_first"] = bad_unchanged["after_first"] + 1
+    _assert_invalid_computation(bad_unchanged)
 
 
 def test_invalid_request_ref_batch_digest_identity_and_limits_fail_closed(tmp_path: Path) -> None:

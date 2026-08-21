@@ -279,6 +279,8 @@ class AnalysisComputation:
             value = getattr(self, field_name)
             if type(value) is not int or isinstance(value, bool) or not 0 <= value <= MAX_ANALYSIS_POSITIONS:
                 _fail(f"{field_name} is invalid")
+        if self.aligned_position_count < 1:
+            _fail("aligned position count is invalid")
         if self.aligned_pair_count > self.aligned_position_count:
             _fail("analysis pair count is invalid")
         if self.excluded_position_count != self.aligned_position_count - self.aligned_pair_count:
@@ -293,7 +295,7 @@ class AnalysisComputation:
             if any(getattr(self, field_name) is not None for field_name in _STAT_NAMES) or self.changed is not None:
                 _fail("inconclusive analysis must not expose statistics")
         else:
-            if self.conclusion != "COMPLETED" or self.aligned_pair_count == 0 or self.changed is None:
+            if self.conclusion != "COMPLETED" or self.aligned_pair_count < 2 or self.changed is None:
                 _fail("completed analysis state is invalid")
             excluded = self.excluded_position_count > 0
             changed = self.changed
@@ -310,6 +312,40 @@ class AnalysisComputation:
                 _fail("analysis reason does not match its state")
             if any(getattr(self, field_name) is None for field_name in _STAT_NAMES):
                 _fail("completed analysis must expose all statistics")
+            for prefix in ("before", "after"):
+                first = cast(float | int, getattr(self, f"{prefix}_first"))
+                last = cast(float | int, getattr(self, f"{prefix}_last"))
+                minimum = cast(float | int, getattr(self, f"{prefix}_min"))
+                maximum = cast(float | int, getattr(self, f"{prefix}_max"))
+                try:
+                    ordered = minimum <= first <= maximum and minimum <= last <= maximum
+                except (TypeError, ValueError, OverflowError):
+                    _fail(f"{prefix} statistics are not ordered")
+                if not ordered:
+                    _fail(f"{prefix} statistics are not ordered")
+            try:
+                expected_delta_first = self.after_first - self.before_first
+                expected_delta_last = self.after_last - self.before_last
+            except (TypeError, ValueError, OverflowError):
+                _fail("analysis deltas are invalid")
+            if (
+                type(expected_delta_first) is float
+                and not math.isfinite(expected_delta_first)
+            ) or (
+                type(expected_delta_last) is float
+                and not math.isfinite(expected_delta_last)
+            ):
+                _fail("analysis deltas are invalid")
+            if (
+                self.delta_first != expected_delta_first
+                or self.delta_last != expected_delta_last
+            ):
+                _fail("analysis deltas are inconsistent")
+            if not self.changed and any(
+                getattr(self, f"before_{field}") != getattr(self, f"after_{field}")
+                for field in ("first", "last", "min", "max")
+            ):
+                _fail("unchanged analysis statistics are inconsistent")
             if self.quality == "VALID" and excluded:
                 _fail("valid analysis cannot contain exclusions")
             if self.quality == "DEGRADED" and not excluded:
