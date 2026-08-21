@@ -26,7 +26,7 @@ MAX_JSON_STRING_CHARS = 1024 * 1024
 MIN_SIGNED_INT64 = -(1 << 63)
 MAX_SIGNED_INT64 = (1 << 63) - 1
 _SHA256 = re.compile(r"[0-9a-f]{64}\Z")
-_WORKSPACE_ID = re.compile(r"[0-9a-f]{24}\Z")
+_WORKSPACE_ID = re.compile(r"[0-9a-f]{64}\Z")
 _GIT_SHA = re.compile(r"[0-9a-f]{40}(?:[0-9a-f]{24})?\Z")
 _PROBE_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,255}\Z")
 _CONTROL_TEXT = re.compile(r"[\x00-\x1f]")
@@ -424,9 +424,8 @@ class ObservationBinding:
     svd_sha256: str | None
 
     def __post_init__(self) -> None:
-        if not isinstance(self.workspace_id, str) or _WORKSPACE_ID.fullmatch(self.workspace_id.lower()) is None:
+        if not isinstance(self.workspace_id, str) or _WORKSPACE_ID.fullmatch(self.workspace_id) is None:
             raise ValueError("workspace ID is invalid")
-        object.__setattr__(self, "workspace_id", self.workspace_id.lower())
         UUID(self.logical_project_id)
         object.__setattr__(self, "session_id", require_safe_session_id(self.session_id))
         for field_name in ("probe_id", "target_device", "physical_target", "flash_session_id", "lease_id"):
@@ -639,7 +638,7 @@ def _validate_live_status(value: object) -> None:
         "live status",
     )
     workspace = _live_text(status["workspaceId"], "workspace ID")
-    if _WORKSPACE_ID.fullmatch(workspace.lower()) is None:
+    if _WORKSPACE_ID.fullmatch(workspace) is None:
         raise ValueError("workspace ID is invalid")
     require_safe_session_id(_live_text(status["sessionId"], "session ID"))
     project = _live_mapping(

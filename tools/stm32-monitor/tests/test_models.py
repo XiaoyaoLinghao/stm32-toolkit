@@ -32,6 +32,7 @@ from stm32_monitor.protocol import (
     parse_json_object,
     success,
 )
+from stm32_toolkit.paths import WorkspacePaths
 
 
 NOW = datetime(2026, 8, 8, 1, 2, 3, tzinfo=timezone.utc)
@@ -47,7 +48,7 @@ def _config(tmp_path: Path) -> MonitorConfig:
 
 def _binding() -> ObservationBinding:
     return ObservationBinding(
-        workspace_id="c" * 24,
+        workspace_id="c" * 64,
         logical_project_id="33333333-3333-4333-8333-333333333333",
         session_id="monitor-1",
         probe_id="probe-serial-1",
@@ -97,7 +98,7 @@ def test_live_event_is_an_immutable_bounded_discriminated_union() -> None:
 
 def _live_status() -> dict[str, object]:
     return {
-        "workspaceId": "c" * 24,
+        "workspaceId": "c" * 64,
         "sessionId": "monitor-1",
         "project": {
             "logicalProjectId": "33333333-3333-4333-8333-333333333333",
@@ -392,6 +393,53 @@ def test_firmware_status_is_immutable_validated_and_path_free() -> None:
     assert "path" not in rendered.casefold()
     with pytest.raises(ValueError):
         replace(status, build_id="bad")
+
+
+def test_observation_binding_round_trips_complete_workspace_id_without_using_storage_key(
+    tmp_path: Path,
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    logical_project_id = UUID("33333333-3333-4333-8333-333333333333")
+    paths = WorkspacePaths.from_roots(
+        tmp_path / "state",
+        project,
+        logical_project_id,
+        "monitor-1",
+    )
+    binding = ObservationBinding(
+        workspace_id=paths.workspace_id,
+        logical_project_id=str(logical_project_id),
+        session_id=paths.session_id,
+        probe_id="probe-serial-1",
+        target_device="STM32F407VGTx",
+        physical_target="stm32f407vg",
+        build_id="b" * 64,
+        elf_sha256="e" * 64,
+        input_snapshot_sha256="f" * 64,
+        git_head="a" * 40,
+        git_dirty=False,
+        flash_session_id="flash-1",
+        lease_id="lease-1",
+        dwarf_sha256="d" * 64,
+        svd_sha256="a" * 64,
+    )
+
+    assert len(paths.workspace_id) == 64
+    assert paths.workspace_storage_key == paths.workspace_id[:24]
+    assert paths.workspace_storage_key != paths.workspace_id
+    assert paths.workspace_root == paths.data_root / "projects" / paths.workspace_storage_key
+    assert ObservationBinding.from_dict(binding.to_dict()) == binding
+    assert binding.to_dict()["workspaceId"] == paths.workspace_id
+
+    with pytest.raises(ValueError, match="workspace ID is invalid"):
+        ObservationBinding.from_dict(
+            binding.to_dict() | {"workspaceId": paths.workspace_storage_key}
+        )
+    with pytest.raises(ValueError, match="workspace ID is invalid"):
+        ObservationBinding.from_dict(
+            binding.to_dict() | {"workspaceId": paths.workspace_id.upper()}
+        )
 
 
 def test_watch_item_is_a_bounded_discriminated_union_without_address_field() -> None:
