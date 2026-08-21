@@ -11,9 +11,9 @@
 ## Global Constraints
 
 - Accepted product base for complete-diff review: `a854d839ff6dedf3b4ad13d9b41d72e6b00d6777`.
-- Correction worktree start: `1509aa1e256a9f1e272537494fd27e379c8e9797`; commits `8ec120bc...` and `0ac69cc1...` remain review candidates, not accepted product bases.
-- Approved design authority: `docs/superpowers/specs/2026-08-21-stm32-toolkit-0600-vs03-target-replay-monitor-verification-design.md` at `1509aa1e...`.
-- One existing `gpt-5.6-luna` implementer at reasoning effort `max` owns all product and implementation-test edits in this plan; GPT-5.6-sol independently reviews `a854d839...` through the final code head.
+- Correction worktree start: `1509aa1e256a9f1e272537494fd27e379c8e9797`; commits `8ec120bc203982c908a217ad4333bcdaed4cb200` and `0ac69cc1e48c4f537d0792213260847e2b87ed73` remain review candidates, not accepted product bases.
+- Approved design authority: `docs/superpowers/specs/2026-08-21-stm32-toolkit-0600-vs03-target-replay-monitor-verification-design.md` at `1509aa1e256a9f1e272537494fd27e379c8e9797`.
+- One existing `gpt-5.6-luna` implementer at reasoning effort `max` owns all product and implementation-test edits in this plan; GPT-5.6-sol independently reviews `a854d839ff6dedf3b4ad13d9b41d72e6b00d6777` through the final code head.
 - No push, PR mutation, merge, close, remote branch deletion, hardware access, Python 3.10 work, Task 3 operation, Monitor change, CLI change, or MCP change is authorized.
 - Preserve the exact legacy Host `session.created` event, `DiagnosticSession.to_dict()`, default call signature behavior, and `OperationResult` bytes.
 - A Target caller must explicitly pass `failed_run_mode="target"`; no code may infer mode from root metadata, target-device spelling, or workspace equality.
@@ -82,14 +82,20 @@ Also assert explicit serialized `failed_run_mode="host"`, an unknown value, and 
 
 ```python
 target_created = create_event(
-    ...,
+    diagnostic_session_id="f" * 32,
+    operation_id="diagnostic.start.target",
+    sequence=0,
+    revision_before=0,
     event_type="session.created",
+    occurred_at_utc="2026-08-21T00:00:00.000000Z",
+    actor="user",
+    previous_digest=None,
     payload={
         "request": {
             "failed_test_run_id": "vs03-failed-before",
             "failed_run_mode": "target",
         },
-        "result": {"failed_evidence_id": evidence_id, "identity": identity.to_dict()},
+        "result": {"failed_evidence_id": "0" * 64, "identity": IDENTITY.to_dict()},
     },
 )
 target_session = reduce_event(None, target_created)
@@ -135,7 +141,7 @@ py -3.12 -m pytest -q --basetemp C:/tmp/pytest-vs03-task2-mode-model-green `
 
 - [ ] **Step 6: Freeze public workflow routing with real authority failures.** Update every Target call in `test_fix_verification_workflows.py` to pass `failed_run_mode="target"`. Add the following public-path regressions and snapshot DiagnosticStore events plus Evidence roots before the operation under test:
 
-1. Delete the actual published Target `test-run` root before `diagnostic_start(..., failed_run_mode="target")`; expect `EVIDENCE_INTEGRITY_FAILURE` and zero DiagnosticStore mutation.
+1. Delete the actual published Target `test-run` root before calling `diagnostic_start` with `failed_run_mode="target"`; expect `EVIDENCE_INTEGRITY_FAILURE` and zero DiagnosticStore mutation.
 2. Make the Target repository raise a non-`FileNotFoundError` `OSError` at start; expect `ENVIRONMENT_FAILURE` without needing a readable root hint.
 3. Create a legal origin/import alias Target session, delete its actual `test-run` root, then call a fresh `diagnostic_show`; expect `EVIDENCE_INTEGRITY_FAILURE` and zero mutation, proving the durable session mode is used.
 4. Make the default Host repository raise `EvidenceValidationError(EVIDENCE_CORRUPT, "corrupt")`; assert `ok is False`, code `DIAGNOSTIC_EVIDENCE_MISSING`, message `required TestRun evidence is absent or damaged`, and empty details, matching the existing VS-02 tests.
