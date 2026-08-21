@@ -700,17 +700,17 @@ class DiagnosticSession:
         run_id = _run_id(self.failed_test_run_id)
         evidence_id = _hash(self.failed_evidence_id)
         event_head = _hash(self.event_head)
-        if type(self.hypotheses) is not tuple or type(self.observation_plans) is not tuple or type(self.observation_results) is not tuple:
+        if not isinstance(self.hypotheses, tuple) or not isinstance(self.observation_plans, tuple) or not isinstance(self.observation_results, tuple):
             _fail(DIAGNOSTIC_INVALID_EVENT)
         if len(self.hypotheses) > MAX_HYPOTHESES or len(self.observation_plans) > MAX_PLANS:
             _fail(DIAGNOSTIC_LIMIT_EXCEEDED)
         if len(self.observation_results) > MAX_RESULTS:
             _fail(DIAGNOSTIC_LIMIT_EXCEEDED)
-        if not all(type(item) is Hypothesis for item in self.hypotheses):
+        if not all(isinstance(item, Hypothesis) for item in self.hypotheses):
             _fail(DIAGNOSTIC_INVALID_EVENT)
-        if not all(type(item) is ObservationPlan for item in self.observation_plans):
+        if not all(isinstance(item, ObservationPlan) for item in self.observation_plans):
             _fail(DIAGNOSTIC_INVALID_EVENT)
-        if not all(type(item) is ObservationResult for item in self.observation_results):
+        if not all(isinstance(item, ObservationResult) for item in self.observation_results):
             _fail(DIAGNOSTIC_INVALID_EVENT)
         if len({item.hypothesis_id for item in self.hypotheses}) != len(self.hypotheses):
             _fail(DIAGNOSTIC_PLAN_INVALID)
@@ -803,16 +803,6 @@ class DiagnosticSession:
                 )
             ):
                 _fail(DIAGNOSTIC_PLAN_INVALID)
-            if active_plan_id is not None:
-                active_plan = plans.get(active_plan_id)
-                if active_plan is None or not any(
-                    marker.analysis_id == analysis_id and marker.analysis_evidence_id == evidence_id
-                    for analysis_id, evidence_id in zip(
-                        active_plan.required_analysis_ids,
-                        active_plan.required_analysis_evidence_ids,
-                    )
-                ):
-                    _fail(DIAGNOSTIC_PLAN_INVALID)
         for verification in self.fix_verifications:
             plan = plans.get(verification.verification_plan_id)
             declaration = declarations.get(verification.source_change_declaration_id)

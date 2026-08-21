@@ -12,8 +12,13 @@ from stm32_toolkit.diagnostics import (
     DiagnosticSession,
     DiagnosticValidationError,
     FixVerification,
+    Hypothesis,
+    ObservationPlan,
+    ObservationResult,
+    ObservationStep,
     SourceChangeDeclaration,
     VerificationPlan,
+    calculate_plan_digest,
     canonical_diagnostic_json_bytes,
     create_event,
     reduce_event,
@@ -35,8 +40,11 @@ IDENTITY = EvidenceIdentity(
 SID = "f" * 32
 HYPOTHESIS_ID = "1" * 32
 PLAN_ID = "2" * 64
+RETRY_PLAN_ID = "9" * 64
 ANALYSIS_IDS = ("3" * 64, "4" * 64)
 ANALYSIS_EVIDENCE_IDS = ("5" * 64, "6" * 64)
+RETRY_ANALYSIS_IDS = ("a" * 64, "b" * 64)
+RETRY_ANALYSIS_EVIDENCE_IDS = ("c" * 64, "d" * 64)
 UTC = "2026-08-21T12:00:00.000000Z"
 
 
@@ -417,6 +425,206 @@ def test_completion_must_bind_active_plan_and_all_identity_fields() -> None:
             },
             previous_digest=previous.digest,
         )
+
+    separately_valid = _fix(plan)
+    separately_valid = FixVerification.new(
+        diagnostic_session_id="0" * 32,
+        failed_before_run_id=separately_valid.failed_before_run_id,
+        failed_before_evidence_id=separately_valid.failed_before_evidence_id,
+        source_change_declaration_id=separately_valid.source_change_declaration_id,
+        fixed_after_run_id=separately_valid.fixed_after_run_id,
+        fixed_after_evidence_id=separately_valid.fixed_after_evidence_id,
+        verification_plan_id=separately_valid.verification_plan_id,
+        verification_plan_digest=separately_valid.verification_plan_digest,
+        analysis_ids=separately_valid.analysis_ids,
+        analysis_evidence_ids=separately_valid.analysis_evidence_ids,
+        executed_operation_ids=separately_valid.executed_operation_ids,
+        status=separately_valid.status,
+        reason_code=separately_valid.reason_code,
+        completed_at_utc=separately_valid.completed_at_utc,
+    )
+    valid_binding_event = _event(
+        sequence=session.revision,
+        event_type="verification.completed",
+        request={"fix_verification": separately_valid.to_dict()},
+        result={
+            "fix_verification_id": separately_valid.fix_verification_id,
+            "status": separately_valid.status,
+            "reason_code": separately_valid.reason_code,
+        },
+        previous_digest=previous.digest,
+    )
+    with pytest.raises(DiagnosticValidationError) as error:
+        reduce_event(session, valid_binding_event)
+    assert error.value.code == DIAGNOSTIC_PLAN_INVALID
+
+
+def test_failed_attempt_allows_new_plan_while_retaining_historical_marker() -> None:
+    session, source, plan, previous = _verifying()
+    marker = _marker(plan)
+    attached = _event(
+        sequence=session.revision,
+        event_type="analysis.marker_attached",
+        request={"diagnostic_marker_ref": marker.to_dict()},
+        result={"marker_id": marker.marker_id},
+        previous_digest=previous.digest,
+    )
+    verifying = reduce_event(session, attached)
+    failed = _fix(plan, status="FAILED", reason="FIXED_TEST_FAILED")
+    completed = _event(
+        sequence=verifying.revision,
+        event_type="verification.completed",
+        request={"fix_verification": failed.to_dict()},
+        result={
+            "fix_verification_id": failed.fix_verification_id,
+            "status": failed.status,
+            "reason_code": failed.reason_code,
+        },
+        previous_digest=attached.digest,
+    )
+    investigating = reduce_event(verifying, completed)
+
+    retry_source = _source(RETRY_PLAN_ID)
+    declared = _event(
+        sequence=investigating.revision,
+        event_type="source_change.declared",
+        request={"source_change_declaration": retry_source.to_dict()},
+        result={"declaration_id": retry_source.declaration_id},
+        previous_digest=completed.digest,
+    )
+    proposed = reduce_event(investigating, declared)
+    retry_plan = VerificationPlan.new(
+        verification_plan_id=RETRY_PLAN_ID,
+        diagnostic_session_id=SID,
+        failed_before_run_id="run-1",
+        failed_before_evidence_id="0" * 64,
+        source_change_declaration_id=retry_source.declaration_id,
+        fixed_after_run_id="run-2",
+        fixed_after_evidence_id="1" * 64,
+        required_analysis_ids=RETRY_ANALYSIS_IDS,
+        required_analysis_evidence_ids=RETRY_ANALYSIS_EVIDENCE_IDS,
+        required_monitor_quality="VALID",
+        expected_changed=True,
+    )
+    added = _event(
+        sequence=proposed.revision,
+        event_type="verification.plan_added",
+        request={"verification_plan": retry_plan.to_dict()},
+        result={"verification_plan_id": retry_plan.verification_plan_id, "plan_digest": retry_plan.plan_digest},
+        previous_digest=declared.digest,
+    )
+    proposed = reduce_event(proposed, added)
+    started = _event(
+        sequence=proposed.revision,
+        event_type="verification.started",
+        request={"verification_plan_id": retry_plan.verification_plan_id},
+        result={"verification_plan_id": retry_plan.verification_plan_id},
+        previous_digest=added.digest,
+    )
+    retrying = reduce_event(proposed, started)
+    assert retrying.state == "VERIFYING"
+    assert retrying.active_verification_plan_id == RETRY_PLAN_ID
+    assert retrying.diagnostic_marker_refs == (marker,)
+    assert retrying.fix_verifications == (failed,)
+    assert retrying.source_change_declarations == (source, retry_source)
+    assert retrying.verification_plans == (plan, retry_plan)
+
+
+def test_plan_add_requires_session_failed_run_and_evidence_pair_before_mutation() -> None:
+    session, previous = _investigating_with_hypothesis()
+    source = _source()
+    declared = _event(
+        sequence=session.revision,
+        event_type="source_change.declared",
+        request={"source_change_declaration": source.to_dict()},
+        result={"declaration_id": source.declaration_id},
+        previous_digest=previous.digest,
+    )
+    proposed = reduce_event(session, declared)
+    wrong_pair = VerificationPlan.new(
+        verification_plan_id=PLAN_ID,
+        diagnostic_session_id=SID,
+        failed_before_run_id="run-other",
+        failed_before_evidence_id="2" * 64,
+        source_change_declaration_id=source.declaration_id,
+        fixed_after_run_id="run-2",
+        fixed_after_evidence_id="1" * 64,
+        required_analysis_ids=ANALYSIS_IDS,
+        required_analysis_evidence_ids=ANALYSIS_EVIDENCE_IDS,
+        required_monitor_quality="VALID",
+        expected_changed=True,
+    )
+    event = _event(
+        sequence=proposed.revision,
+        event_type="verification.plan_added",
+        request={"verification_plan": wrong_pair.to_dict()},
+        result={"verification_plan_id": wrong_pair.verification_plan_id, "plan_digest": wrong_pair.plan_digest},
+        previous_digest=declared.digest,
+    )
+    with pytest.raises(DiagnosticValidationError) as error:
+        reduce_event(proposed, event)
+    assert error.value.code == DIAGNOSTIC_PLAN_INVALID
+    assert proposed.verification_plans == ()
+
+
+def test_legacy_subclasses_and_tuple_subclasses_remain_constructor_compatible() -> None:
+    class LegacyHypothesis(Hypothesis):
+        pass
+
+    class LegacyObservationPlan(ObservationPlan):
+        pass
+
+    class LegacyObservationResult(ObservationResult):
+        pass
+
+    class LegacyTuple(tuple):
+        pass
+
+    step = ObservationStep(
+        step_id="failed-state",
+        selector={"kind": "run-state"},
+        expected_value="failed",
+        purpose="bind the original failed run",
+    )
+    plan_fields = {"diagnostic_session_id": SID, "created_revision": 3, "steps": [step.to_dict()]}
+    plan_id = calculate_plan_digest(plan_fields)
+    plan = LegacyObservationPlan(
+        plan_id=plan_id,
+        diagnostic_session_id=SID,
+        created_revision=3,
+        steps=(step,),
+        digest=plan_id,
+    )
+    result = LegacyObservationResult(
+        plan_id=plan_id,
+        step_id=step.step_id,
+        evidence_id="0" * 64,
+        selector=step.selector,
+        observed_value="failed",
+        expected_value="failed",
+        matched=True,
+    )
+    hypothesis = LegacyHypothesis(
+        hypothesis_id=HYPOTHESIS_ID,
+        statement="the source fix changes the monitor value",
+        status="open",
+        confidence_basis="unrated",
+        supporting=(),
+        refuting=(),
+    )
+    session = DiagnosticSession(
+        diagnostic_session_id=SID,
+        revision=1,
+        state="INVESTIGATING",
+        identity=IDENTITY,
+        failed_test_run_id="run-1",
+        failed_evidence_id="0" * 64,
+        event_head="a" * 64,
+        hypotheses=LegacyTuple((hypothesis,)),
+        observation_plans=LegacyTuple((plan,)),
+        observation_results=LegacyTuple((result,)),
+    )
+    assert session.hypotheses == (hypothesis,)
 
 
 def test_completion_result_status_and_reason_are_closed_and_terminal_states_reject_events() -> None:

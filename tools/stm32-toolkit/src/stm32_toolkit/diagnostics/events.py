@@ -335,6 +335,8 @@ def _reduce_verification_plan_added(session: DiagnosticSession, event: Diagnosti
     if (
         declaration is None
         or plan.diagnostic_session_id != session.diagnostic_session_id
+        or plan.failed_before_run_id != session.failed_test_run_id
+        or plan.failed_before_evidence_id != session.failed_evidence_id
         or plan.verification_plan_id != declaration.validation_plan_id
     ):
         _fail(DIAGNOSTIC_PLAN_INVALID)
