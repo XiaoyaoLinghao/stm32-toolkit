@@ -12,7 +12,6 @@ import math
 import re
 import secrets
 from typing import Callable, Literal, cast
-import unicodedata
 from uuid import UUID
 
 from stm32_toolkit.diagnostics import (
@@ -45,6 +44,17 @@ from stm32_toolkit.evidence import (
 from stm32_toolkit.evidence.store import MAX_EVIDENCE_READ_BYTES
 from stm32_toolkit.evidence.store import EvidenceStore
 from stm32_toolkit.paths import WorkspacePaths, require_safe_session_id
+from stm32_toolkit.monitor_replay_contract import (
+    MONITOR_REPLAY_EXECUTION_SOURCE,
+    MONITOR_REPLAY_SCHEMA,
+    MONITOR_REPLAY_SOURCE,
+    MONITOR_RUN_REF_SCHEMA,
+    ReplayContractError,
+    canonical_replay_json_bytes as _shared_canonical_replay_json_bytes,
+    decode_canonical_json_bytes,
+    validate_replay_document,
+    validate_run_reference,
+)
 from stm32_toolkit.project_model import ProjectManifestError, load_project_model
 from stm32_toolkit.result import OperationResult
 from stm32_toolkit.testing.model import TestProtocolError
@@ -100,46 +110,6 @@ _MARKER_FIELDS = frozenset(
         "hypothesis_id", "polarity", "label", "rationale",
     }
 )
-_MONITOR_TRANSCRIPT_FIELDS = frozenset(
-    {
-        "schema", "source", "physical_transport_evidence", "scenario_role", "binding",
-        "batches", "fixture_sha256",
-    }
-)
-_MONITOR_BINDING_FIELDS = frozenset(
-    {
-        "workspaceId", "logicalProjectId", "sessionId", "probeId", "targetDevice",
-        "physicalTarget", "buildId", "elfSha256", "inputSnapshotSha256", "gitHead",
-        "gitDirty", "flashSessionId", "leaseId", "dwarfSha256", "svdSha256",
-    }
-)
-_MONITOR_BATCH_FIELDS = frozenset(
-    {
-        "binding", "groupId", "groupRevision", "runId", "sequence",
-        "scheduledUnixNs", "scheduledAtUtc", "capturedUnixNs", "capturedAtUtc",
-        "latencyNs", "actualRateHz", "subscriberDrops", "historyDrops",
-        "deadlineDrops", "values",
-    }
-)
-_MONITOR_SAMPLE_FIELDS = frozenset(
-    {"watch", "status", "typedValue", "code", "definition"}
-)
-_MONITOR_VARIABLE_WATCH_FIELDS = frozenset({"kind", "expression"})
-_MONITOR_REGISTER_WATCH_FIELDS = frozenset({"kind", "registerPath"})
-_MONITOR_REF_FIELDS = frozenset(
-    {
-        "schema", "operation_id", "scenario_role", "execution_source",
-        "physical_transport_evidence", "origin_workspace_id", "import_workspace_id",
-        "logical_project_id", "origin_session_id", "projected_session_id",
-        "origin_run_id", "projected_run_id", "target_device", "probe_id",
-        "physical_target", "build_id", "elf_sha256", "input_snapshot_sha256",
-        "git_head", "git_dirty", "flash_session_id", "lease_id", "dwarf_sha256",
-        "svd_sha256", "group_id", "group_revision", "start_sequence",
-        "end_sequence_exclusive", "start_captured_unix_ns",
-        "end_captured_unix_ns_exclusive", "fixture_sha256",
-        "projected_batch_sha256s", "transcript_evidence_id", "run_ref_sha256",
-    }
-)
 _MONITOR_REF_METADATA_FIELDS = frozenset(
     {
         "operation_id", "run_ref_sha256", "fixture_sha256", "scenario_role",
@@ -147,89 +117,18 @@ _MONITOR_REF_METADATA_FIELDS = frozenset(
         "physical_transport_evidence",
     }
 )
-_MAX_REPLAY_JSON_DEPTH = 32
-_MAX_REPLAY_JSON_NODES = 10_000
-_MAX_REPLAY_JSON_STRING_CHARS = 1_048_576
-_MAX_REPLAY_JSON_INTEGER = (1 << 63) - 1
-_MIN_REPLAY_JSON_INTEGER = -(1 << 63)
-
-
-def _copy_replay_json(
-    value: object,
-    *,
-    depth: int = 0,
-    state: list[int] | None = None,
-) -> object:
-    counters = state if state is not None else [0, 0]
-    if depth > _MAX_REPLAY_JSON_DEPTH:
-        raise ValueError("replay JSON exceeds its depth limit")
-    counters[0] += 1
-    if counters[0] > _MAX_REPLAY_JSON_NODES:
-        raise ValueError("replay JSON exceeds its node limit")
-    if value is None or type(value) is bool:
-        return value
-    if type(value) is int:
-        if not _MIN_REPLAY_JSON_INTEGER <= value <= _MAX_REPLAY_JSON_INTEGER:
-            raise ValueError("replay JSON integer is out of range")
-        return value
-    if type(value) is float:
-        if not math.isfinite(value):
-            raise ValueError("replay JSON number is not finite")
-        return value
-    if type(value) is str:
-        counters[1] += len(value)
-        if counters[1] > _MAX_REPLAY_JSON_STRING_CHARS:
-            raise ValueError("replay JSON string data exceeds its limit")
-        if unicodedata.normalize("NFC", value) != value:
-            raise ValueError("replay JSON strings must use NFC")
-        value.encode("utf-8")
-        return value
-    if isinstance(value, tuple):
-        raise ValueError("replay JSON must not contain tuple containers")
-    if isinstance(value, Mapping):
-        copied: dict[str, object] = {}
-        for key, item in value.items():
-            if type(key) is not str:
-                raise ValueError("replay JSON object keys must be strings")
-            if unicodedata.normalize("NFC", key) != key:
-                raise ValueError("replay JSON object keys must use NFC")
-            if key in copied:
-                raise ValueError("replay JSON object keys must be unique")
-            copied[key] = _copy_replay_json(item, depth=depth + 1, state=counters)
-        return copied
-    if isinstance(value, list):
-        return [_copy_replay_json(item, depth=depth + 1, state=counters) for item in value]
-    raise ValueError("replay JSON contains an unsupported value")
-
-
 def _canonical_replay_json_bytes(value: object) -> bytes:
-    copied = _copy_replay_json(value)
-    return json.dumps(
-        copied,
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-        allow_nan=False,
-    ).encode("utf-8")
+    try:
+        return _shared_canonical_replay_json_bytes(value)
+    except ReplayContractError as error:
+        raise ValueError(str(error)) from error
 
 
 def _decode_replay_json(payload: bytes) -> object:
-    def pairs(items: list[tuple[object, object]]) -> dict[str, object]:
-        result: dict[str, object] = {}
-        for key, item in items:
-            if type(key) is not str or key in result:
-                raise ValueError("replay JSON object keys must be unique strings")
-            result[key] = item
-        return result
-
-    def reject_constant(value: str) -> object:
-        raise ValueError(f"replay JSON constant is not valid: {value}")
-
-    return json.loads(
-        payload.decode("utf-8"),
-        object_pairs_hook=pairs,
-        parse_constant=reject_constant,
-    )
+    try:
+        return decode_canonical_json_bytes(payload, require_object=False)
+    except ReplayContractError as error:
+        raise ValueError(str(error)) from error
 
 
 @dataclass(frozen=True)
@@ -958,199 +857,6 @@ def _read_json_evidence(
         raise _WorkflowFailure(_ENVIRONMENT_FAILURE) from error
 
 
-def _monitor_text(value: object, *, maximum: int = 256) -> str:
-    if (
-        not isinstance(value, str)
-        or not value
-        or len(value) > maximum
-        or any(ord(character) < 32 for character in value)
-    ):
-        raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
-    return value
-
-
-def _monitor_int(value: object, *, positive: bool = False) -> int:
-    minimum = 1 if positive else 0
-    if (
-        type(value) is not int
-        or isinstance(value, bool)
-        or not minimum <= value <= _MAX_REPLAY_JSON_INTEGER
-    ):
-        raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
-    return value
-
-
-def _monitor_uuid(value: object) -> str:
-    if not isinstance(value, str):
-        raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
-    try:
-        if str(UUID(value)) != value:
-            raise ValueError("UUID is not canonical")
-    except (TypeError, ValueError) as error:
-        raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE) from error
-    return value
-
-
-def _monitor_unix_ns_to_utc(value: object) -> str:
-    nanoseconds = _monitor_int(value)
-    seconds, remainder = divmod(nanoseconds, 1_000_000_000)
-    try:
-        timestamp = datetime.fromtimestamp(seconds, tz=timezone.utc).replace(
-            microsecond=remainder // 1_000
-        )
-    except (OSError, OverflowError, ValueError) as error:
-        raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE) from error
-    return timestamp.strftime("%Y-%m-%dT%H:%M:%S.%fZ")
-
-
-def _validate_monitor_binding(binding: object) -> dict[str, object]:
-    if not isinstance(binding, dict) or set(binding) != _MONITOR_BINDING_FIELDS:
-        raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
-    copied = cast(dict[str, object], binding)
-    for field in (
-        "workspaceId", "buildId", "elfSha256", "inputSnapshotSha256", "dwarfSha256",
-    ):
-        _hash_value(copied[field])
-    if copied["svdSha256"] is not None:
-        _hash_value(copied["svdSha256"])
-    try:
-        if str(UUID(str(copied["logicalProjectId"]))) != copied["logicalProjectId"]:
-            raise ValueError("logical project ID is not canonical")
-        require_safe_session_id(copied["sessionId"])
-    except (TypeError, ValueError) as error:
-        raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE) from error
-    for field in (
-        "probeId", "targetDevice", "physicalTarget", "flashSessionId", "leaseId",
-    ):
-        _monitor_text(copied[field])
-    if not isinstance(copied["gitHead"], str) or re.fullmatch(r"[0-9a-f]{40}", copied["gitHead"]) is None:
-        raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
-    if type(copied["gitDirty"]) is not bool:
-        raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
-    if (
-        copied["probeId"] != "replay:probe-v2"
-        or copied["physicalTarget"] != "replay:non-physical"
-        or copied["flashSessionId"] != "replay:no-flash"
-        or copied["leaseId"] != "replay:no-lease"
-    ):
-        raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
-    return copied
-
-
-def _validate_monitor_watch(value: object) -> dict[str, object]:
-    if not isinstance(value, dict):
-        raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
-    kind = value.get("kind")
-    if kind == "variable":
-        if set(value) != _MONITOR_VARIABLE_WATCH_FIELDS:
-            raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
-        _monitor_text(value["expression"], maximum=512)
-    elif kind == "register":
-        if set(value) != _MONITOR_REGISTER_WATCH_FIELDS:
-            raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
-        _monitor_text(value["registerPath"], maximum=512)
-    else:
-        raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
-    return value
-
-
-def _validate_monitor_sample(value: object) -> dict[str, object]:
-    if not isinstance(value, dict) or set(value) != _MONITOR_SAMPLE_FIELDS:
-        raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
-    sample = cast(dict[str, object], value)
-    _validate_monitor_watch(sample["watch"])
-    status = sample["status"]
-    if status not in {"OK", "ERROR"}:
-        raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
-    typed_value = sample["typedValue"]
-    code = sample["code"]
-    if status == "OK":
-        if typed_value is None or code is not None:
-            raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
-    else:
-        if typed_value is not None or not isinstance(code, str):
-            raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
-        _monitor_text(code, maximum=128)
-    definition = sample["definition"]
-    if definition is not None and not isinstance(definition, dict):
-        raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
-    return sample
-
-
-def _validate_monitor_batch(value: object, binding: dict[str, object]) -> dict[str, object]:
-    if not isinstance(value, dict) or set(value) != _MONITOR_BATCH_FIELDS:
-        raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
-    batch = cast(dict[str, object], value)
-    if batch["binding"] != binding:
-        raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
-    _monitor_uuid(batch["groupId"])
-    _monitor_uuid(batch["runId"])
-    _monitor_int(batch["groupRevision"], positive=True)
-    for field in (
-        "sequence", "scheduledUnixNs", "capturedUnixNs", "latencyNs",
-        "subscriberDrops", "historyDrops", "deadlineDrops",
-    ):
-        _monitor_int(batch[field])
-    if batch["capturedUnixNs"] < batch["scheduledUnixNs"]:
-        raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
-    if (
-        batch["scheduledAtUtc"] != _monitor_unix_ns_to_utc(batch["scheduledUnixNs"])
-        or batch["capturedAtUtc"] != _monitor_unix_ns_to_utc(batch["capturedUnixNs"])
-    ):
-        raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
-    actual_rate = batch["actualRateHz"]
-    if type(actual_rate) is not float or not math.isfinite(actual_rate) or actual_rate < 0:
-        raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
-    values = batch["values"]
-    if not isinstance(values, list) or not values or len(values) > 256:
-        raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
-    for sample in values:
-        _validate_monitor_sample(sample)
-    return batch
-
-
-def _validate_monitor_transcript_projection(
-    document: dict[str, object],
-    binding: dict[str, object],
-) -> list[dict[str, object]]:
-    batches = document.get("batches")
-    if not isinstance(batches, list) or not batches or len(batches) > 1024:
-        raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
-    parsed = [
-        _validate_monitor_batch(batch, binding)
-        for batch in batches
-    ]
-    first = parsed[0]
-    first_group = first["groupId"]
-    first_revision = first["groupRevision"]
-    first_run = first["runId"]
-    selectors = [sample["watch"] for sample in first["values"]]
-    if len({_canonical_replay_json_bytes(item) for item in selectors}) != len(selectors):
-        raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
-    previous_scheduled: int | None = None
-    previous_captured: int | None = None
-    for index, batch in enumerate(parsed):
-        if (
-            batch["groupId"] != first_group
-            or batch["groupRevision"] != first_revision
-            or batch["runId"] != first_run
-            or batch["sequence"] != first["sequence"] + index
-        ):
-            raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
-        current_selectors = [sample["watch"] for sample in batch["values"]]
-        if current_selectors != selectors:
-            raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
-        scheduled = cast(int, batch["scheduledUnixNs"])
-        captured = cast(int, batch["capturedUnixNs"])
-        if previous_scheduled is not None and scheduled <= previous_scheduled:
-            raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
-        if previous_captured is not None and captured <= previous_captured:
-            raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
-        previous_scheduled = scheduled
-        previous_captured = captured
-    return parsed
-
-
 def _read_transcript_parent(
     state: _WorkflowState,
     *,
@@ -1229,18 +935,19 @@ def _read_transcript_parent(
             canonical, canonical + b"\n"
         ):
             raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
-        if set(decoded) != _MONITOR_TRANSCRIPT_FIELDS:
-            raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
+        try:
+            decoded = validate_replay_document(decoded)
+        except ReplayContractError as error:
+            raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE) from error
         if (
-            decoded["schema"] != "stm32-monitor-replay/1"
-            or decoded["source"] != "toolkit-generated-probe-v2-replay"
+            decoded["schema"] != MONITOR_REPLAY_SCHEMA
+            or decoded["source"] != MONITOR_REPLAY_SOURCE
             or decoded["scenario_role"] != expected_role
             or decoded["fixture_sha256"] != metadata["fixture_sha256"]
             or decoded["physical_transport_evidence"] is not False
         ):
             raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
-        binding = decoded["binding"]
-        binding = _validate_monitor_binding(binding)
+        binding = cast(dict[str, object], decoded["binding"])
         expected_binding = {
             "workspaceId": run_identity.workspace_id,
             "logicalProjectId": run_identity.project_id,
@@ -1255,7 +962,7 @@ def _read_transcript_parent(
             raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
         if binding.get("sessionId") != envelope.identity.session_id:
             raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
-        batches = _validate_monitor_transcript_projection(decoded, binding)
+        batches = cast(list[object], decoded["batches"])
         if any(
             not isinstance(batch, dict)
             or batch.get("runId") != metadata["origin_run_id"]
@@ -1302,11 +1009,7 @@ def _read_monitor_reference_authority(
     transcript_binding: dict[str, object],
     transcript_batches: list[object],
 ) -> dict[str, object]:
-    """Load and independently validate the closed MonitorRunRef projection.
-
-    The Toolkit deliberately keeps this parser local: importing Monitor here
-    would make the Target diagnostic boundary depend on the producer package.
-    """
+    """Load the shared wire projection, then validate Toolkit-side authority bindings."""
     try:
         reference_root = get_root(
             state.evidence_store,
@@ -1353,10 +1056,13 @@ def _read_monitor_reference_authority(
         decoded = _decode_replay_json(raw)
         if not isinstance(decoded, dict) or _canonical_replay_json_bytes(decoded) != raw:
             raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
-        reference = _require_exact_mapping(decoded, _MONITOR_REF_FIELDS)
+        try:
+            reference = validate_run_reference(decoded)
+        except ReplayContractError as error:
+            raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE) from error
 
         if (
-            reference["schema"] != "stm32-monitor-run-ref/1"
+            reference["schema"] != MONITOR_RUN_REF_SCHEMA
             or reference["operation_id"] != operation_id
             or reference["scenario_role"] != expected_role
             or reference["execution_source"] != "replay"
@@ -1401,66 +1107,6 @@ def _read_monitor_reference_authority(
             or reference["logical_project_id"] != getattr(run_identity, "project_id", None)
         ):
             raise _WorkflowFailure(_INCOMPATIBLE_IDENTITY)
-
-        for key in (
-            "origin_workspace_id", "import_workspace_id",
-            "fixture_sha256", "build_id", "elf_sha256", "input_snapshot_sha256",
-            "dwarf_sha256", "transcript_evidence_id", "run_ref_sha256",
-        ):
-            _hash_value(reference[key])
-        try:
-            if str(UUID(str(reference["logical_project_id"]))) != reference["logical_project_id"]:
-                raise ValueError("logical_project_id is not canonical")
-        except (TypeError, ValueError) as error:
-            raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE) from error
-        if reference["svd_sha256"] is not None:
-            _hash_value(reference["svd_sha256"])
-        if not isinstance(reference["git_head"], str) or re.fullmatch(r"[0-9a-f]{40}", reference["git_head"]) is None:
-            raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
-        if type(reference["git_dirty"]) is not bool:
-            raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
-        for key in (
-            "origin_session_id", "projected_session_id", "target_device", "probe_id",
-            "physical_target", "flash_session_id", "lease_id", "scenario_role",
-        ):
-            if not isinstance(reference[key], str) or not reference[key]:
-                raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
-        try:
-            require_safe_session_id(reference["origin_session_id"])
-            require_safe_session_id(reference["projected_session_id"])
-        except (TypeError, ValueError) as error:
-            raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE) from error
-        if (
-            reference["probe_id"] != "replay:probe-v2"
-            or reference["physical_target"] != "replay:non-physical"
-            or reference["flash_session_id"] != "replay:no-flash"
-            or reference["lease_id"] != "replay:no-lease"
-        ):
-            raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
-        for key in ("origin_run_id", "projected_run_id", "group_id"):
-            try:
-                if str(UUID(str(reference[key]))) != reference[key]:
-                    raise ValueError(f"{key} is not canonical")
-            except (TypeError, ValueError) as error:
-                raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE) from error
-        if (
-            reference["origin_run_id"] != operation_id
-            or reference["projected_run_id"] != reference["origin_run_id"]
-        ):
-            raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
-        for key in (
-            "group_revision", "start_sequence", "end_sequence_exclusive",
-            "start_captured_unix_ns", "end_captured_unix_ns_exclusive",
-        ):
-            value = reference[key]
-            if type(value) is not int or isinstance(value, bool) or value < 0:
-                raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
-        if (
-            reference["group_revision"] < 1
-            or reference["end_sequence_exclusive"] <= reference["start_sequence"]
-            or reference["end_captured_unix_ns_exclusive"] <= reference["start_captured_unix_ns"]
-        ):
-            raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
 
         expected_transcript_identity = {
             "workspace_id": reference["origin_workspace_id"],
@@ -1566,9 +1212,6 @@ def _read_monitor_reference_authority(
         if projected_digests != calculated_digests:
             raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
 
-        unsigned = {key: value for key, value in reference.items() if key != "run_ref_sha256"}
-        if hashlib.sha256(_canonical_replay_json_bytes(unsigned)).hexdigest() != reference["run_ref_sha256"]:
-            raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
         return reference
     except _WorkflowFailure:
         raise

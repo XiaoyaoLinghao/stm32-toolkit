@@ -284,6 +284,11 @@ def _replace_monitor_transcript_and_analysis(
         batch["values"][0]["unexpected"] = True
     elif extra_kind == "typed":
         batch["values"][0]["typedValue"] = None
+    elif extra_kind == "whitespace":
+        for batch_value in transcript_document["batches"]:
+            watch = batch_value["values"][0]["watch"]
+            selector_key = "expression" if watch["kind"] == "variable" else "registerPath"
+            watch[selector_key] = f" {watch[selector_key]} "
     else:
         assert extra_kind == "watch"
         batch["values"][0]["watch"]["unexpected"] = True
@@ -1667,6 +1672,49 @@ def test_target_replay_rejects_nonclosed_monitor_projection_fields_without_mutat
     result = diagnostic_add_verification_plan(
         _fresh_diagnostic_context(diagnostic_context),
         operation_id=f"diagnostic.verification-plan.add.extra-{extra_kind}",
+        diagnostic_session_id=session_id,
+        expected_revision=4,
+        verification_plan=plan,
+    )
+    after = _authority_snapshot(workspace)
+    assert result.ok is False
+    assert result.code == "EVIDENCE_INTEGRITY_FAILURE"
+    assert after == before
+
+
+def test_target_replay_rejects_self_consistent_whitespace_selector_without_mutation(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    diagnostic_context, session_id, workspace, declaration, plan, marker_ref = (
+        _prepared_checkpoint_for_plan(monkeypatch, tmp_path)
+    )
+    plan = _replace_monitor_transcript_and_analysis(
+        tmp_path,
+        workspace,
+        MONITOR_OPERATION_IDS["failed-before"],
+        marker_ref,
+        plan,
+        "whitespace",
+    )
+    evidence = EvidenceStore(workspace.workspace_root / "evidence")
+    transcript_root = get_root(
+        evidence,
+        "monitor-run",
+        MONITOR_OPERATION_IDS["failed-before"],
+    )
+    transcript_envelope = evidence.get_envelope(transcript_root.manifest_id)
+    transcript_payload = json.loads(
+        evidence.read_artifact(
+            transcript_envelope.artifacts[0], maximum_bytes=1_000_000
+        ).decode("utf-8")
+    )
+    with pytest.raises(MonitorReplayError):
+        MonitorReplayDocument.from_value(transcript_payload)
+    before = _authority_snapshot(workspace)
+    result = diagnostic_add_verification_plan(
+        _fresh_diagnostic_context(diagnostic_context),
+        operation_id="diagnostic.verification-plan.add.whitespace-selector",
         diagnostic_session_id=session_id,
         expected_revision=4,
         verification_plan=plan,

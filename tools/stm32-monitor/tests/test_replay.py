@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import builtins
 import copy
+import importlib
 import json
 import os
 from dataclasses import fields, replace
@@ -205,6 +206,18 @@ def test_replay_fixtures_are_canonical_closed_documents_and_share_scope() -> Non
         copied["batches"][0]["values"][0]["typedValue"]["value"] = -1
         assert document.binding.workspace_id != copied["binding"]["workspaceId"]
         assert document.batches[0].values[0].typed_value["value"] != -1
+
+
+def test_replay_parser_and_shared_contract_use_identical_wire_bytes() -> None:
+    try:
+        contract = importlib.import_module("stm32_toolkit.monitor_replay_contract")
+    except ModuleNotFoundError:
+        pytest.fail("shared replay wire contract is not implemented")
+    payload = json.loads(_raw_fixture("failed-before")[:-1].decode("utf-8"))
+    before = copy.deepcopy(payload)
+    assert contract.validate_replay_document(payload) == payload
+    assert canonical_replay_json_bytes(payload) == contract.canonical_replay_json_bytes(payload)
+    assert payload == before
 
 
 def test_monitor_run_ref_has_exact_closed_fields_and_round_trips_digest() -> None:

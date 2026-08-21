@@ -2,11 +2,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
 from dataclasses import dataclass, replace
 import hashlib
-import json
-import math
 import re
 import tempfile
 import unicodedata
@@ -16,6 +13,23 @@ from uuid import UUID
 
 from stm32_toolkit.evidence import ArtifactRef, EvidenceEnvelope, EvidenceIdentity, EvidenceValidationError
 from stm32_toolkit.evidence.gc import RootRecord, get_root, put_root
+from stm32_toolkit.monitor_replay_contract import (
+    MAX_REPLAY_BATCHES,
+    MAX_REPLAY_DOCUMENT_BYTES,
+    MONITOR_REPLAY_EXECUTION_SOURCE,
+    MONITOR_REPLAY_FLASH_SESSION_ID,
+    MONITOR_REPLAY_LEASE_ID,
+    MONITOR_REPLAY_PHYSICAL_TARGET,
+    MONITOR_REPLAY_PROBE_ID,
+    MONITOR_REPLAY_SCHEMA,
+    MONITOR_REPLAY_SOURCE,
+    MONITOR_RUN_REF_SCHEMA,
+    ReplayContractError,
+    canonical_replay_json_bytes as _contract_canonical_replay_json_bytes,
+    decode_canonical_json_bytes,
+    validate_replay_document,
+    validate_run_reference,
+)
 from stm32_toolkit.evidence.store import EvidenceStore
 from stm32_toolkit.paths import WorkspacePaths, require_safe_session_id
 
@@ -30,24 +44,11 @@ from .models import (
 )
 
 
-MONITOR_REPLAY_SCHEMA = "stm32-monitor-replay/1"
-MONITOR_REPLAY_SOURCE = "toolkit-generated-probe-v2-replay"
-MONITOR_RUN_REF_SCHEMA = "stm32-monitor-run-ref/1"
 MONITOR_REPLAY_IMPORT_OPERATION = "monitor-replay-import"
-MONITOR_REPLAY_EXECUTION_SOURCE = "replay"
-MONITOR_REPLAY_PROBE_ID = "replay:probe-v2"
-MONITOR_REPLAY_PHYSICAL_TARGET = "replay:non-physical"
-MONITOR_REPLAY_FLASH_SESSION_ID = "replay:no-flash"
-MONITOR_REPLAY_LEASE_ID = "replay:no-lease"
 MONITOR_RUN_ROOT_TYPE = "monitor-run"
 MONITOR_RUN_REF_ROOT_TYPE = "monitor-run-ref"
 MONITOR_RUN_REF_OPERATION = "monitor-run-ref"
 MONITOR_RUN_REF_ARTIFACT_KIND = "monitor-run-ref"
-MAX_REPLAY_DOCUMENT_BYTES = 1024 * 1024
-MAX_REPLAY_BATCHES = 1024
-MAX_REPLAY_JSON_DEPTH = 32
-MAX_REPLAY_JSON_NODES = 10_000
-MAX_REPLAY_JSON_STRING_CHARS = 1024 * 1024
 
 MONITOR_REPLAY_INVALID = "MONITOR_REPLAY_INVALID"
 EVIDENCE_INTEGRITY_FAILURE = "EVIDENCE_INTEGRITY_FAILURE"
@@ -64,37 +65,6 @@ _ERROR_CODES = frozenset(
 _ROLES = frozenset({"failed-before", "fixed-after"})
 _SHA256 = re.compile(r"[0-9a-f]{64}\Z")
 _GIT_SHA = re.compile(r"[0-9a-f]{40}\Z")
-_DOCUMENT_FIELDS = frozenset(
-    {
-        "schema",
-        "source",
-        "physical_transport_evidence",
-        "scenario_role",
-        "binding",
-        "batches",
-        "fixture_sha256",
-    }
-)
-_BATCH_FIELDS = frozenset(
-    {
-        "binding",
-        "groupId",
-        "groupRevision",
-        "runId",
-        "sequence",
-        "scheduledUnixNs",
-        "scheduledAtUtc",
-        "capturedUnixNs",
-        "capturedAtUtc",
-        "latencyNs",
-        "actualRateHz",
-        "subscriberDrops",
-        "historyDrops",
-        "deadlineDrops",
-        "values",
-    }
-)
-_SAMPLE_FIELDS = frozenset({"watch", "status", "typedValue", "code", "definition"})
 _REF_FIELDS = (
     "schema",
     "operation_id",
@@ -131,7 +101,6 @@ _REF_FIELDS = (
     "transcript_evidence_id",
     "run_ref_sha256",
 )
-_REF_FIELD_SET = frozenset(_REF_FIELDS)
 _EVIDENCE_METADATA_FIELDS = frozenset(
     {
         "operation_id",
@@ -167,16 +136,6 @@ _REFERENCE_ROOT_METADATA_FIELDS = frozenset(
         "physical_transport_evidence",
     }
 )
-_INTEGER_BATCH_FIELDS = (
-    "groupRevision",
-    "sequence",
-    "scheduledUnixNs",
-    "capturedUnixNs",
-    "latencyNs",
-    "subscriberDrops",
-    "historyDrops",
-    "deadlineDrops",
-)
 
 
 class MonitorReplayError(ValueError):
@@ -204,73 +163,14 @@ def _fail(code: str, message: str) -> None:
     raise MonitorReplayError(code, message)
 
 
-@dataclass
-class _JsonBudget:
-    nodes: int = 0
-    string_chars: int = 0
-
-
-def _json_copy(value: object, *, depth: int = 0, budget: _JsonBudget | None = None) -> object:
-    state = budget if budget is not None else _JsonBudget()
-    if depth > MAX_REPLAY_JSON_DEPTH:
-        _fail(MONITOR_REPLAY_INVALID, "replay JSON exceeds its depth limit")
-    state.nodes += 1
-    if state.nodes > MAX_REPLAY_JSON_NODES:
-        _fail(MONITOR_REPLAY_INVALID, "replay JSON exceeds its node limit")
-    if value is None or type(value) is bool:
-        return value
-    if type(value) is int:
-        if not -(1 << 63) <= value <= MAX_SIGNED_INT64:
-            _fail(MONITOR_REPLAY_INVALID, "replay JSON integer is out of range")
-        return value
-    if type(value) is float:
-        if not math.isfinite(value):
-            _fail(MONITOR_REPLAY_INVALID, "replay JSON number is not finite")
-        return value
-    if type(value) is str:
-        state.string_chars += len(value)
-        if state.string_chars > MAX_REPLAY_JSON_STRING_CHARS:
-            _fail(MONITOR_REPLAY_INVALID, "replay JSON string data exceeds its limit")
-        if unicodedata.normalize("NFC", value) != value:
-            _fail(MONITOR_REPLAY_INVALID, "replay JSON strings must use NFC")
-        try:
-            value.encode("utf-8")
-        except UnicodeEncodeError:
-            _fail(MONITOR_REPLAY_INVALID, "replay JSON contains invalid Unicode")
-        return value
-    if isinstance(value, tuple):
-        _fail(MONITOR_REPLAY_INVALID, "replay JSON must not contain tuple containers")
-    if isinstance(value, Mapping):
-        copied: dict[str, object] = {}
-        for key, item in value.items():
-            if type(key) is not str:
-                _fail(MONITOR_REPLAY_INVALID, "replay JSON object keys must be strings")
-            if unicodedata.normalize("NFC", key) != key:
-                _fail(MONITOR_REPLAY_INVALID, "replay JSON object keys must use NFC")
-            if key in copied:
-                _fail(MONITOR_REPLAY_INVALID, "replay JSON object keys must be unique")
-            copied[key] = _json_copy(item, depth=depth + 1, budget=state)
-        return copied
-    if isinstance(value, list):
-        return [_json_copy(item, depth=depth + 1, budget=state) for item in value]
-    _fail(MONITOR_REPLAY_INVALID, "replay JSON contains an unsupported value")
-
-
 def canonical_replay_json_bytes(value: object) -> bytes:
     """Return the bounded canonical JSON bytes used by replay digests."""
 
     if type(value) is MonitorReplayDocument or type(value) is MonitorRunRef:
         value = value.to_dict()
-    copied = _json_copy(value)
     try:
-        return json.dumps(
-            copied,
-            ensure_ascii=False,
-            sort_keys=True,
-            separators=(",", ":"),
-            allow_nan=False,
-        ).encode("utf-8")
-    except (TypeError, UnicodeError, ValueError, OverflowError) as error:
+        return _contract_canonical_replay_json_bytes(value)
+    except ReplayContractError as error:
         raise MonitorReplayError(MONITOR_REPLAY_INVALID, "replay JSON is not canonical") from error
 
 
@@ -306,84 +206,54 @@ def _require_text(value: object, label: str, *, code: str = MONITOR_REPLAY_INVAL
     return value
 
 
-def _reject_tuples(value: object) -> None:
-    if isinstance(value, tuple):
-        _fail(MONITOR_REPLAY_INVALID, "replay JSON must not contain tuple containers")
-    if isinstance(value, Mapping):
-        for key, item in value.items():
-            _reject_tuples(key)
-            _reject_tuples(item)
-    elif isinstance(value, list):
-        for item in value:
-            _reject_tuples(item)
-
-
 def _parse_binding(value: object) -> ObservationBinding:
-    if type(value) is not dict:
-        _fail(MONITOR_REPLAY_INVALID, "replay binding is invalid")
     try:
-        binding = ObservationBinding.from_dict(value)
+        binding = ObservationBinding.from_dict(cast(dict[str, object], value))
     except (TypeError, ValueError, OverflowError) as error:
         raise MonitorReplayError(MONITOR_REPLAY_INVALID, "replay binding is invalid") from error
-    if type(binding) is not ObservationBinding:
-        _fail(MONITOR_REPLAY_INVALID, "replay binding is invalid")
     return binding
 
 
 def _parse_sample(value: object) -> SampleValue:
-    if type(value) is not dict or set(value) != _SAMPLE_FIELDS:
-        _fail(MONITOR_REPLAY_INVALID, "replay sample fields are not closed")
-    watch_value = value["watch"]
-    if type(watch_value) is not dict:
-        _fail(MONITOR_REPLAY_INVALID, "replay sample watch is invalid")
     try:
+        sample_value = cast(dict[str, object], value)
+        watch_value = cast(dict[str, object], sample_value["watch"])
         watch = WatchItem.from_dict(watch_value)
         sample = SampleValue(
             watch=watch,
-            status=cast(str, value["status"]),
-            typed_value=value["typedValue"],
-            code=cast(str | None, value["code"]),
-            definition=cast(Mapping[str, object] | None, value["definition"]),
+            status=cast(str, sample_value["status"]),
+            typed_value=sample_value["typedValue"],
+            code=cast(str | None, sample_value["code"]),
+            definition=cast(dict[str, object] | None, sample_value["definition"]),
         )
     except (TypeError, ValueError, OverflowError) as error:
         raise MonitorReplayError(MONITOR_REPLAY_INVALID, "replay sample is invalid") from error
-    if type(sample) is not SampleValue or sample.to_dict() != value:
-        _fail(MONITOR_REPLAY_INVALID, "replay sample is not canonical")
     return sample
 
 
 def _parse_batch(value: object) -> SampleBatch:
-    if type(value) is not dict or set(value) != _BATCH_FIELDS:
-        _fail(MONITOR_REPLAY_INVALID, "replay batch fields are not closed")
-    if type(value["values"]) is not list:
-        _fail(MONITOR_REPLAY_INVALID, "replay batch values are invalid")
-    if any(type(value[field_name]) is not int for field_name in _INTEGER_BATCH_FIELDS):
-        _fail(MONITOR_REPLAY_INVALID, "replay batch integer fields are not canonical")
-    if type(value["actualRateHz"]) is not float:
-        _fail(MONITOR_REPLAY_INVALID, "replay batch rate must be a canonical float")
-    binding = _parse_binding(value["binding"])
+    batch_value = cast(dict[str, object], value)
+    binding = _parse_binding(batch_value["binding"])
     try:
         batch = SampleBatch(
             binding=binding,
-            group_id=UUID(cast(str, value["groupId"])),
-            group_revision=cast(int, value["groupRevision"]),
-            run_id=UUID(cast(str, value["runId"])),
-            sequence=cast(int, value["sequence"]),
-            scheduled_unix_ns=cast(int, value["scheduledUnixNs"]),
-            captured_unix_ns=cast(int, value["capturedUnixNs"]),
-            latency_ns=cast(int, value["latencyNs"]),
-            actual_rate_hz=cast(float, value["actualRateHz"]),
-            subscriber_drops=cast(int, value["subscriberDrops"]),
-            history_drops=cast(int, value["historyDrops"]),
-            deadline_drops=cast(int, value["deadlineDrops"]),
-            values=tuple(_parse_sample(item) for item in value["values"]),
+            group_id=UUID(cast(str, batch_value["groupId"])),
+            group_revision=cast(int, batch_value["groupRevision"]),
+            run_id=UUID(cast(str, batch_value["runId"])),
+            sequence=cast(int, batch_value["sequence"]),
+            scheduled_unix_ns=cast(int, batch_value["scheduledUnixNs"]),
+            captured_unix_ns=cast(int, batch_value["capturedUnixNs"]),
+            latency_ns=cast(int, batch_value["latencyNs"]),
+            actual_rate_hz=cast(float, batch_value["actualRateHz"]),
+            subscriber_drops=cast(int, batch_value["subscriberDrops"]),
+            history_drops=cast(int, batch_value["historyDrops"]),
+            deadline_drops=cast(int, batch_value["deadlineDrops"]),
+            values=tuple(_parse_sample(item) for item in cast(list[object], batch_value["values"])),
         )
     except MonitorReplayError:
         raise
     except (TypeError, ValueError, OverflowError) as error:
         raise MonitorReplayError(MONITOR_REPLAY_INVALID, "replay batch is invalid") from error
-    if type(batch) is not SampleBatch or batch.to_dict() != value:
-        _fail(MONITOR_REPLAY_INVALID, "replay batch is not canonical")
     return batch
 
 
@@ -466,23 +336,21 @@ class MonitorReplayDocument:
     def from_value(cls, value: object) -> "MonitorReplayDocument":
         if type(value) is cls:
             return value
-        _reject_tuples(value)
-        if not isinstance(value, Mapping) or set(value) != _DOCUMENT_FIELDS:
-            _fail(MONITOR_REPLAY_INVALID, "replay document fields are not closed")
-        if type(value["batches"]) is not list:
-            _fail(MONITOR_REPLAY_INVALID, "replay document batches must be a JSON array")
-        binding = _parse_binding(value["binding"])
         try:
-            batches = tuple(_parse_batch(item) for item in value["batches"])
+            wire = validate_replay_document(value)
+            binding = _parse_binding(wire["binding"])
+            batches = tuple(_parse_batch(item) for item in cast(list[object], wire["batches"]))
             document = cls(
-                schema=cast(str, value["schema"]),
-                source=cast(str, value["source"]),
-                physical_transport_evidence=cast(bool, value["physical_transport_evidence"]),
-                scenario_role=cast(str, value["scenario_role"]),
+                schema=cast(str, wire["schema"]),
+                source=cast(str, wire["source"]),
+                physical_transport_evidence=cast(bool, wire["physical_transport_evidence"]),
+                scenario_role=cast(str, wire["scenario_role"]),
                 binding=binding,
                 batches=batches,
-                fixture_sha256=cast(str, value["fixture_sha256"]),
+                fixture_sha256=cast(str, wire["fixture_sha256"]),
             )
+        except ReplayContractError as error:
+            raise MonitorReplayError(MONITOR_REPLAY_INVALID, "replay document failed closed validation") from error
         except MonitorReplayError:
             raise
         except (TypeError, ValueError, OverflowError) as error:
@@ -606,22 +474,20 @@ class MonitorRunRef:
     def from_value(cls, value: object) -> "MonitorRunRef":
         if type(value) is cls:
             return value
-        _reject_tuples(value)
-        if not isinstance(value, Mapping) or set(value) != _REF_FIELD_SET:
-            _fail(MONITOR_REPLAY_INVALID, "monitor run reference fields are not closed")
-        if type(value["projected_batch_sha256s"]) is not list:
-            _fail(MONITOR_REPLAY_INVALID, "projected batch digests must be a JSON array")
         try:
+            wire = validate_run_reference(value)
             return cls(
                 **{
                     field_name: (
-                        tuple(value[field_name])
+                        tuple(wire[field_name])
                         if field_name == "projected_batch_sha256s"
-                        else value[field_name]
+                        else wire[field_name]
                     )
                     for field_name in _REF_FIELDS
                 }
             )
+        except ReplayContractError as error:
+            raise MonitorReplayError(MONITOR_REPLAY_INVALID, "monitor run reference failed closed validation") from error
         except MonitorReplayError:
             raise
         except (TypeError, ValueError, OverflowError) as error:
@@ -667,41 +533,18 @@ class MonitorRunRef:
 
 
 def _decode_document_bytes(raw: bytes) -> dict[str, object]:
-    if type(raw) is not bytes or not raw or len(raw) > MAX_REPLAY_DOCUMENT_BYTES:
-        _fail(EVIDENCE_INTEGRITY_FAILURE, "replay document exceeds its bounded input limit")
-    if raw.startswith(b"\xef\xbb\xbf"):
-        _fail(EVIDENCE_INTEGRITY_FAILURE, "replay document must not contain a BOM")
-
-    def pairs(items: list[tuple[str, object]]) -> dict[str, object]:
-        result: dict[str, object] = {}
-        for key, item in items:
-            if key in result:
-                _fail(EVIDENCE_INTEGRITY_FAILURE, "replay document has duplicate JSON keys")
-            result[key] = item
-        return result
-
-    def reject_constant(_: str) -> object:
-        _fail(EVIDENCE_INTEGRITY_FAILURE, "replay document has a non-finite JSON number")
-
     try:
-        decoded = json.loads(
-            raw.decode("utf-8"),
-            object_pairs_hook=pairs,
-            parse_constant=reject_constant,
+        decoded = decode_canonical_json_bytes(
+            raw,
+            allow_final_lf=True,
+            require_object=True,
         )
-    except MonitorReplayError:
-        raise
-    except (UnicodeDecodeError, json.JSONDecodeError, ValueError):
-        _fail(EVIDENCE_INTEGRITY_FAILURE, "replay document is not valid UTF-8 JSON")
-    try:
-        canonical = canonical_replay_json_bytes(decoded)
-    except MonitorReplayError:
-        _fail(EVIDENCE_INTEGRITY_FAILURE, "replay document is not canonical JSON")
-    if raw not in (canonical, canonical + b"\n"):
-        _fail(EVIDENCE_INTEGRITY_FAILURE, "replay document is not canonical JSON")
-    if type(decoded) is not dict:
-        _fail(EVIDENCE_INTEGRITY_FAILURE, "replay document must be a JSON object")
-    return decoded
+    except ReplayContractError as error:
+        raise MonitorReplayError(
+            EVIDENCE_INTEGRITY_FAILURE,
+            "replay document failed closed JSON validation",
+        ) from error
+    return cast(dict[str, object], decoded)
 
 
 def _read_document(path_value: object) -> bytes:
@@ -1002,9 +845,9 @@ def _validate_existing_reference_root(
         if captured != expected_bytes:
             raise ValueError("reference artifact bytes differ from the operation reference")
         try:
-            decoded = json.loads(captured.decode("utf-8"))
+            decoded = decode_canonical_json_bytes(captured, require_object=True)
             stored = MonitorRunRef.from_value(decoded)
-        except MonitorReplayError as error:
+        except (MonitorReplayError, ReplayContractError) as error:
             raise ValueError("reference artifact is not a complete canonical MonitorRunRef") from error
         if stored.to_dict() != reference.to_dict():
             raise ValueError("reference artifact differs from the operation reference")
