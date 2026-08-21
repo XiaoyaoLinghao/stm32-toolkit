@@ -249,16 +249,15 @@ py -3.12 -m pytest -q tools/stm32-toolkit/tests/test_fix_verification_model.py t
 
 **Commit:** `feat(diagnostics): freeze fix verification values`
 
-## Task 6B: Extend the diagnostic event domain and lifecycle
+## Task 6B1: Extend the diagnostic event domain and lifecycle
 
 **Product behavior:** Existing sessions reload unchanged while new append-only events materialize
-source changes, verification plans, markers, attempts and final FixVerifications.
+source changes, verification plans, markers, attempts and final FixVerifications in pure reduction.
 
 **Files:**
 
 - Modify: `tools/stm32-toolkit/src/stm32_toolkit/diagnostics/model.py`
 - Modify: `tools/stm32-toolkit/src/stm32_toolkit/diagnostics/events.py`
-- Modify: `tools/stm32-toolkit/src/stm32_toolkit/diagnostics/store.py`
 - Create: `tools/stm32-toolkit/tests/test_fix_verification_events.py`
 
 **Required interfaces:**
@@ -268,18 +267,43 @@ source changes, verification plans, markers, attempts and final FixVerifications
   fields appear only after the first new event.
 - Implement the five new event types and transitions from the design. `PASSED` alone resolves;
   other completed results return to `INVESTIGATING` while attempts remain.
-- Store checkpoints include every new immutable Evidence reference as a parent. Old chains reload;
-  invalid transitions, missing evidence, stale revision, or conflict append nothing.
-- Store validation keeps exact failed-run identity and applies only the design's closed declared
-  after-firmware scope to diff/fixed/analysis/marker Evidence; no generic identity relaxation.
+- Pure event validation/reduction enforces the exact payloads, references, unique collections and
+  active-plan transitions without reading Evidence or storage.
 
 **TDD verify:**
 
 ```powershell
-py -3.12 -m pytest -q tools/stm32-toolkit/tests/test_fix_verification_events.py tools/stm32-toolkit/tests/test_fix_verification_model.py tools/stm32-toolkit/tests/test_diagnostic_model.py tools/stm32-toolkit/tests/test_diagnostic_events.py tools/stm32-toolkit/tests/test_diagnostic_store.py
+py -3.12 -m pytest -q tools/stm32-toolkit/tests/test_fix_verification_events.py tools/stm32-toolkit/tests/test_fix_verification_model.py tools/stm32-toolkit/tests/test_diagnostic_model.py tools/stm32-toolkit/tests/test_diagnostic_events.py
 ```
 
 **Commit:** `feat(diagnostics): add fix verification lifecycle`
+
+## Task 6B2: Persist verification Evidence parents
+
+**Product behavior:** Every accepted new event is durably checkpointed with its exact Evidence
+parents and can be reloaded/repaired without changing old event or parent bytes.
+
+**Files:**
+
+- Modify: `tools/stm32-toolkit/src/stm32_toolkit/diagnostics/store.py`
+- Modify: `tools/stm32-toolkit/tests/test_fix_verification_events.py`
+
+**Required interfaces:**
+
+- New event parents follow stable first-seen payload order after the prior checkpoint parent; old
+  event reference ordering remains exact.
+- Store validates exact failed identity and only the design's closed declared after-firmware scope
+  for diff/fixed/analysis/marker Evidence, including the declared diff ArtifactRef.
+- Missing/corrupt/wrong-scope Evidence, stale revision and operation conflict append no event/root;
+  interrupted checkpoint publication remains repairable from immutable event bytes.
+
+**TDD verify:**
+
+```powershell
+py -3.12 -m pytest -q tools/stm32-toolkit/tests/test_fix_verification_events.py tools/stm32-toolkit/tests/test_diagnostic_store.py tools/stm32-toolkit/tests/test_diagnostic_events.py
+```
+
+**Commit:** `feat(diagnostics): persist verification evidence parents`
 
 ## Task 5B: Publish analysis, marker and deterministic bundle
 
