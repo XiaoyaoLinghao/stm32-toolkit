@@ -419,6 +419,8 @@ attaches a Monitor marker, completes a FixVerification, and reloads the authorit
 **Files:**
 
 - Modify: `tools/stm32-toolkit/src/stm32_toolkit/diagnostic_workflows.py`
+- Modify: `tools/stm32-toolkit/src/stm32_toolkit/diagnostics/model.py`
+- Modify: `tools/stm32-toolkit/tests/test_fix_verification_model.py`
 - Create: `tools/stm32-toolkit/tests/test_fix_verification_workflows.py`
 
 **Required interfaces:**
@@ -428,10 +430,19 @@ attaches a Monitor marker, completes a FixVerification, and reloads the authorit
   `diagnostic_complete_verification`, and `diagnostic_show_verification`.
 - Generalize `diagnostic_start` from Host-only to authoritative failed Host or failed Target replay;
   reject physical/unknown Target records in VS-03.
-- Validate TestRuns only through TestRunRepository and analysis/marker/bundle only through
-  EvidenceStore. Enforce exact inventory/case/project/source/build/ELF lineage and plan digest.
+- Validate TestRuns only through TestRunRepository and analysis/marker only through EvidenceStore.
+  Toolkit must not import Monitor; it consumes exact closed canonical analysis and marker JSON
+  through their root/envelope/artifact contracts. The bundle is not a completion input. Enforce
+  exact inventory/case/project/source/build/ELF lineage and plan digest.
 - Derive PASSED/FAILED/INCONCLUSIVE from evidence; callers cannot select a successful status.
+- Derive completion time from the fixed-after TestRun. Require one attached marker for every
+  required analysis/evidence pair, and canonicalize the pair list together rather than sorting the
+  two parallel tuples independently.
 - Retry is idempotent. Any contradiction creates no partial event; only PASSED resolves.
+- Preserve existing Host behavior; accept only failed, replay, explicitly non-physical Target
+  TestRuns at diagnostic start. Keep Target, Monitor and Diagnostic session IDs independent.
+- Freeze the six signatures, operation names, returned projections and error-classification rules
+  from design section 3.7; do not invent a new adapter, bundle field, platform matrix or Gate.
 
 **TDD verify:**
 

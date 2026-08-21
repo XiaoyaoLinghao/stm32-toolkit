@@ -431,6 +431,93 @@ The status/reason pairing is closed: `PASSED/VERIFICATION_PASSED`; `FAILED` with
 `MANDATORY_EVIDENCE_MISSING`, `MANDATORY_EVIDENCE_CORRUPT`, or `ANALYSIS_NOT_VALID`; and
 `CANCELLED/CALLER_CANCELLED`. Incompatible identity is rejected before a FixVerification exists.
 
+### 3.7 Diagnostic verification workflow boundary
+
+Toolkit implements the 0602 application boundary without importing `stm32_monitor`. Monitor remains
+an independently installable producer of closed JSON Evidence. Toolkit reloads a required analysis
+through `monitor-analysis/<analysis_id>`, requires the exact root and envelope, operation
+`monitor-analysis`, one canonical `application/json` artifact of kind `monitor-analysis`, schema
+`stm32-monitor-analysis/1`, and a payload SHA-256 equal to `analysis_id`. It validates the closed
+payload fields needed by the frozen contract, including exact before/after run IDs, identity,
+`quality`, `conclusion`, and `changed`. A marker is reloaded in the same way through
+`diagnostic-marker/<marker_id>`, operation/kind `diagnostic-marker`, schema
+`stm32-diagnostic-marker/1`, and must reproduce every field of the supplied
+`DiagnosticMarkerRef`. This closed-Evidence projection is the only 0603-to-0602 dependency.
+
+The public workflow signatures are:
+
+```python
+diagnostic_declare_source_change(
+    context: DiagnosticWorkflowContext, *, operation_id: str,
+    diagnostic_session_id: str, expected_revision: int,
+    source_change_declaration: SourceChangeDeclaration | dict[str, object],
+    actor: str = "user",
+) -> OperationResult[object]
+
+diagnostic_add_verification_plan(
+    context: DiagnosticWorkflowContext, *, operation_id: str,
+    diagnostic_session_id: str, expected_revision: int,
+    verification_plan: VerificationPlan | dict[str, object],
+    actor: str = "user",
+) -> OperationResult[object]
+
+diagnostic_start_verification(
+    context: DiagnosticWorkflowContext, *, operation_id: str,
+    diagnostic_session_id: str, expected_revision: int,
+    verification_plan_id: str, actor: str = "tool",
+) -> OperationResult[object]
+
+diagnostic_attach_marker(
+    context: DiagnosticWorkflowContext, *, operation_id: str,
+    diagnostic_session_id: str, expected_revision: int,
+    diagnostic_marker_ref: DiagnosticMarkerRef | dict[str, object],
+    actor: str = "tool",
+) -> OperationResult[object]
+
+diagnostic_complete_verification(
+    context: DiagnosticWorkflowContext, *, operation_id: str,
+    diagnostic_session_id: str, expected_revision: int,
+    executed_operation_ids: list[str], cancelled: bool = False,
+    actor: str = "tool",
+) -> OperationResult[object]
+
+diagnostic_show_verification(
+    context: DiagnosticWorkflowContext, *, diagnostic_session_id: str,
+) -> OperationResult[object]
+```
+
+Their exact operation names are respectively `diagnostic.source-change.declare`,
+`diagnostic.verification-plan.add`, `diagnostic.verification.start`,
+`diagnostic.marker.attach`, `diagnostic.verification.complete`, and
+`diagnostic.verification.show`. Mutation results return the authoritative reloaded `session` plus
+the declared/added/started/attached/completed value; show returns `session`, all historical
+`fix_verifications`, and `authoritative=true`.
+
+The caller never supplies a completion status, reason or timestamp. Completion derives
+`completed_at_utc` from the authoritative fixed-after TestRun `ended_at_utc`, so retrying an exact
+operation is deterministic. Identity incompatibility returns `INCOMPATIBLE_IDENTITY` before an
+event exists. Provider or filesystem inability returns `ENVIRONMENT_FAILURE`; structurally
+contradictory Evidence outside completion returns `EVIDENCE_INTEGRITY_FAILURE`. During completion,
+missing or corrupt mandatory Evidence is instead recorded as the already frozen
+`INCONCLUSIVE/MANDATORY_EVIDENCE_MISSING` or `INCONCLUSIVE/MANDATORY_EVIDENCE_CORRUPT` conclusion.
+
+Completion requires one attached, byte-validated marker covering every parallel
+`(required_analysis_id, required_analysis_evidence_id)` pair. A valid completed analysis with
+`changed=false` contradicts the expected-change plan and produces
+`FAILED/ANALYSIS_CONTRADICTED`; degraded, invalid or inconclusive analysis produces
+`INCONCLUSIVE/ANALYSIS_NOT_VALID`. The analysis bundle remains a deterministic export artifact and
+is not a VerificationPlan or FixVerification parent because neither frozen model contains a bundle
+field. Verification plan and FixVerification analysis/evidence tuples are canonicalized by sorting
+the pairs by analysis ID and then unzipping them; the two tuple positions must never be sorted
+independently.
+
+`diagnostic_start` retains the accepted Host behavior and additionally accepts only an
+authoritative failed Target replay. Its TestRun root must state `mode=target`, `state=failed`,
+`execution_source=replay`, `physical_transport_evidence=false`, the current import workspace, and
+the manifest origin workspace. The DiagnosticSession retains that origin identity. Target,
+Monitor, and Diagnostic session identifiers remain separate authority domains and are never
+compared for equality.
+
 ## 4. Diagnostic events and state transitions
 
 VS-02's accepted events remain byte-compatible. The session model is extended with source changes,
