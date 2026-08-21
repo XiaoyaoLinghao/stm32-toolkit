@@ -742,6 +742,49 @@ def test_result_requires_request_digest_and_exact_lineage_binding(tmp_path: Path
         AnalysisResult.from_value(tampered)
 
 
+def test_result_rejects_completed_outcome_below_request_threshold(tmp_path: Path) -> None:
+    request, computation, lineage, _ = _authoritative_case(tmp_path)
+    higher_threshold = _request(request.before_run, request.after_run, minimum=3)
+    digest_correct = replace(computation, request_digest=higher_threshold.request_digest)
+
+    with pytest.raises(AnalysisError) as error:
+        AnalysisResult.new(
+            request=higher_threshold,
+            computation=digest_correct,
+            lineage=lineage,
+        )
+    assert error.value.code == ANALYSIS_REQUEST_INVALID
+
+
+def test_result_rejects_inconclusive_outcome_at_request_threshold(tmp_path: Path) -> None:
+    request, computation, lineage, _ = _authoritative_case(tmp_path)
+    digest_correct = replace(
+        computation,
+        quality="INVALID",
+        conclusion="INCONCLUSIVE",
+        reason_code="INSUFFICIENT_VALID_PAIRS",
+        before_first=None,
+        before_last=None,
+        before_min=None,
+        before_max=None,
+        after_first=None,
+        after_last=None,
+        after_min=None,
+        after_max=None,
+        delta_first=None,
+        delta_last=None,
+        changed=None,
+    )
+
+    with pytest.raises(AnalysisError) as error:
+        AnalysisResult.new(
+            request=request,
+            computation=digest_correct,
+            lineage=lineage,
+        )
+    assert error.value.code == ANALYSIS_REQUEST_INVALID
+
+
 @pytest.mark.parametrize("label", ["change-observed", "no-change-observed", "analysis-inconclusive"])
 def test_marker_labels_ids_nfc_bounds_and_no_generic_evidence_field(tmp_path: Path, label: str) -> None:
     _, _, _, result = _authoritative_case(tmp_path)

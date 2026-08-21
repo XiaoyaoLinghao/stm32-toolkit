@@ -753,6 +753,11 @@ class AnalysisResult:
             _fail("analysis result lineage is invalid")
         if computation.request_digest != request.request_digest:
             _fail("analysis result request digest does not match")
+        if computation.conclusion == "COMPLETED":
+            if computation.aligned_pair_count < request.minimum_valid_pairs:
+                _fail("completed analysis does not meet request threshold")
+        elif computation.aligned_pair_count >= request.minimum_valid_pairs:
+            _fail("inconclusive analysis meets request threshold")
         expected_lineage = AnalysisLineage.new(
             before_run=request.before_run,
             after_run=request.after_run,
