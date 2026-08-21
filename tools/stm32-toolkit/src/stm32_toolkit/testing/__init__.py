@@ -21,6 +21,15 @@ from .model import (
 )
 from .publication import PublishedTestRun, TestRunPublisher, TestRunRepository
 from .protocol import assemble_test_run, validate_event_payload
+from .replay import (
+    TargetReplayDescriptor,
+    TargetReplayError,
+    TargetReplayFixture,
+    TARGET_REPLAY_TRANSPORT,
+    calculate_replay_id,
+    canonical_replay_json_bytes,
+    load_target_replay_fixture,
+)
 
 __all__ = [
     "CASE_STATES",
@@ -34,6 +43,10 @@ __all__ = [
     "TestInventory",
     "TestProtocolError",
     "TestRunManifest",
+    "TargetReplayDescriptor",
+    "TargetReplayError",
+    "TargetReplayFixture",
+    "TARGET_REPLAY_TRANSPORT",
     "PublishedTestRun",
     "TestRunPublisher",
     "TestRunRepository",
@@ -41,8 +54,11 @@ __all__ = [
     "calculate_host_build_inventory_digest",
     "calculate_host_test_executable_inventory_digest",
     "calculate_inventory_digest",
+    "calculate_replay_id",
+    "canonical_replay_json_bytes",
     "create_inventory",
     "host_target_device",
     "validate_event_payload",
     "validate_host_identity",
+    "load_target_replay_fixture",
 ]
