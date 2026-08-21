@@ -1455,6 +1455,7 @@ class SourceChangeDeclaration:
 def _verification_plan_payload(
     *,
     schema: object,
+    verification_plan_id: object,
     diagnostic_session_id: object,
     failed_before_run_id: object,
     failed_before_evidence_id: object,
@@ -1467,6 +1468,7 @@ def _verification_plan_payload(
     expected_changed: object,
 ) -> dict[str, object]:
     normalized_schema = _closed_schema(schema, VERIFICATION_PLAN_SCHEMA)
+    normalized_plan_id = _closed_hash(verification_plan_id)
     failed_run = _closed_run_id(failed_before_run_id)
     fixed_run = _closed_run_id(fixed_after_run_id)
     failed_evidence = _closed_hash(failed_before_evidence_id)
@@ -1483,6 +1485,7 @@ def _verification_plan_payload(
         _fail(DIAGNOSTIC_INVALID_EVENT)
     return {
         "schema": normalized_schema,
+        "verification_plan_id": normalized_plan_id,
         "diagnostic_session_id": _closed_hex_id(diagnostic_session_id),
         "failed_before_run_id": failed_run,
         "failed_before_evidence_id": failed_evidence,
@@ -1500,6 +1503,7 @@ def _verification_plan_payload_from_value(value: object) -> dict[str, object]:
     if type(value) is VerificationPlan:
         return _verification_plan_payload(
             schema=value.schema,
+            verification_plan_id=value.verification_plan_id,
             diagnostic_session_id=value.diagnostic_session_id,
             failed_before_run_id=value.failed_before_run_id,
             failed_before_evidence_id=value.failed_before_evidence_id,
@@ -1521,6 +1525,7 @@ def _verification_plan_payload_from_value(value: object) -> dict[str, object]:
     )
     return _verification_plan_payload(
         schema=data["schema"],
+        verification_plan_id=data["verification_plan_id"],
         diagnostic_session_id=data["diagnostic_session_id"],
         failed_before_run_id=data["failed_before_run_id"],
         failed_before_evidence_id=data["failed_before_evidence_id"],
@@ -1557,6 +1562,7 @@ class VerificationPlan:
     def __post_init__(self) -> None:
         payload = _verification_plan_payload(
             schema=self.schema,
+            verification_plan_id=self.verification_plan_id,
             diagnostic_session_id=self.diagnostic_session_id,
             failed_before_run_id=self.failed_before_run_id,
             failed_before_evidence_id=self.failed_before_evidence_id,
@@ -1568,12 +1574,12 @@ class VerificationPlan:
             required_monitor_quality=self.required_monitor_quality,
             expected_changed=self.expected_changed,
         )
-        plan_id = _closed_hash(self.verification_plan_id)
         digest = _closed_hash(self.plan_digest)
         calculated = _digest_payload(payload)
-        if plan_id != calculated or digest != calculated:
+        if digest != calculated:
             _fail(DIAGNOSTIC_INVALID_EVENT)
         object.__setattr__(self, "schema", payload["schema"])
+        object.__setattr__(self, "verification_plan_id", payload["verification_plan_id"])
         for field_name in (
             "diagnostic_session_id", "failed_before_run_id", "failed_before_evidence_id",
             "source_change_declaration_id", "fixed_after_run_id", "fixed_after_evidence_id",
@@ -1586,13 +1592,13 @@ class VerificationPlan:
             "required_analysis_evidence_ids",
             tuple(cast(list[str], payload["required_analysis_evidence_ids"])),
         )
-        object.__setattr__(self, "verification_plan_id", plan_id)
         object.__setattr__(self, "plan_digest", digest)
 
     @classmethod
     def new(
         cls,
         *,
+        verification_plan_id: str,
         diagnostic_session_id: str,
         failed_before_run_id: str,
         failed_before_evidence_id: str,
@@ -1606,6 +1612,7 @@ class VerificationPlan:
     ) -> "VerificationPlan":
         payload = _verification_plan_payload(
             schema=VERIFICATION_PLAN_SCHEMA,
+            verification_plan_id=verification_plan_id,
             diagnostic_session_id=diagnostic_session_id,
             failed_before_run_id=failed_before_run_id,
             failed_before_evidence_id=failed_before_evidence_id,
@@ -1620,7 +1627,7 @@ class VerificationPlan:
         digest = _digest_payload(payload)
         return cls(
             payload["schema"],
-            digest,
+            payload["verification_plan_id"],
             payload["diagnostic_session_id"],
             payload["failed_before_run_id"],
             payload["failed_before_evidence_id"],
@@ -1660,7 +1667,6 @@ class VerificationPlan:
 
     def to_dict(self) -> dict[str, object]:
         payload = _verification_plan_payload_from_value(self)
-        payload["verification_plan_id"] = self.verification_plan_id
         payload["plan_digest"] = self.plan_digest
         return {
             "schema": payload["schema"],
@@ -1867,8 +1873,6 @@ def _fix_verification_payload(
         _fail(DIAGNOSTIC_INVALID_EVENT)
     normalized_plan_id = _closed_hash(verification_plan_id)
     normalized_plan_digest = _closed_hash(verification_plan_digest)
-    if normalized_plan_id != normalized_plan_digest:
-        _fail(DIAGNOSTIC_INVALID_EVENT)
     normalized_status = _closed_text(status, limit=32)
     allowed_reasons = _FIX_REASONS.get(normalized_status)
     if allowed_reasons is None:

@@ -25,6 +25,7 @@ SESSION_ID = "a" * 32
 HYPOTHESIS_IDS = ("1" * 32, "2" * 32)
 ANALYSIS_IDS = ("3" * 64, "4" * 64)
 ANALYSIS_EVIDENCE_IDS = ("5" * 64, "6" * 64)
+PLAN_ID = "0" * 64
 ARTIFACT = ArtifactRef(
     sha256="7" * 64,
     size_bytes=17,
@@ -34,7 +35,7 @@ ARTIFACT = ArtifactRef(
 )
 
 
-def _source() -> SourceChangeDeclaration:
+def _source(validation_plan_id: str = PLAN_ID) -> SourceChangeDeclaration:
     return SourceChangeDeclaration.new(
         before_source_sha256="8" * 64,
         after_source_sha256="9" * 64,
@@ -46,13 +47,17 @@ def _source() -> SourceChangeDeclaration:
         diff_evidence_id="e" * 64,
         diff_artifact=ARTIFACT,
         claimed_hypothesis_ids=HYPOTHESIS_IDS,
-        validation_plan_id="f" * 64,
+        validation_plan_id=validation_plan_id,
     )
 
 
-def _plan(source: SourceChangeDeclaration | None = None) -> VerificationPlan:
-    declaration = _source() if source is None else source
+def _plan(
+    source: SourceChangeDeclaration | None = None,
+    verification_plan_id: str = PLAN_ID,
+) -> VerificationPlan:
+    declaration = _source(verification_plan_id) if source is None else source
     return VerificationPlan.new(
+        verification_plan_id=verification_plan_id,
         diagnostic_session_id=SESSION_ID,
         failed_before_run_id="failed-before",
         failed_before_evidence_id="1" * 64,
@@ -81,8 +86,11 @@ def _marker(plan: VerificationPlan | None = None) -> DiagnosticMarkerRef:
     )
 
 
-def _fix(source: SourceChangeDeclaration | None = None) -> FixVerification:
-    plan = _plan(source)
+def _fix(
+    source: SourceChangeDeclaration | None = None,
+    verification_plan_id: str = PLAN_ID,
+) -> FixVerification:
+    plan = _plan(source, verification_plan_id)
     return FixVerification.new(
         diagnostic_session_id=SESSION_ID,
         failed_before_run_id=plan.failed_before_run_id,
@@ -134,6 +142,26 @@ def test_new_round_trip_fresh_containers_frozen_and_artifact_snapshot() -> None:
     assert type(source.diff_artifact) is ArtifactRef
 
 
+def test_source_plan_fix_bind_without_digest_fixed_point() -> None:
+    plan_id = "e" * 64
+    source = _source(plan_id)
+    plan = _plan(source, plan_id)
+    verification = _fix(source, plan_id)
+    assert source.validation_plan_id == plan_id
+    assert plan.verification_plan_id == plan_id
+    assert plan.verification_plan_id != plan.plan_digest
+    assert plan.source_change_declaration_id == source.declaration_id
+    assert verification.verification_plan_id == plan_id
+    assert verification.verification_plan_digest == plan.plan_digest
+
+    changed_plan = plan.to_dict()
+    changed_plan["verification_plan_id"] = "d" * 64
+    _expect_invalid(lambda: VerificationPlan.from_value(changed_plan))
+    changed_verification = verification.to_dict()
+    changed_verification["verification_plan_digest"] = "c" * 64
+    _expect_invalid(lambda: FixVerification.from_value(changed_verification))
+
+
 def test_derived_ids_are_canonical_and_bind_every_field() -> None:
     source = _source()
     plan = _plan(source)
@@ -148,9 +176,9 @@ def test_derived_ids_are_canonical_and_bind_every_field() -> None:
     assert calculate_source_change_declaration_id(source.to_dict()) == source.declaration_id
 
     plan_fields = plan.to_dict()
-    plan_fields.pop("verification_plan_id")
     plan_fields.pop("plan_digest")
-    assert plan.verification_plan_id == plan.plan_digest == sha256(
+    assert plan.verification_plan_id == PLAN_ID
+    assert plan.plan_digest == sha256(
         canonical_diagnostic_json_bytes(plan_fields)
     ).hexdigest()
     assert calculate_verification_plan_digest(plan.to_dict()) == plan.plan_digest
