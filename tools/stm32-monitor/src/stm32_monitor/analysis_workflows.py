@@ -1032,7 +1032,7 @@ def export_analysis_bundle(
         _fail(INCOMPATIBLE_IDENTITY, "fixed-after replay identity is invalid")
     if publication.analysis_result.request_digest != request.request_digest:
         _fail(INCOMPATIBLE_IDENTITY, "analysis request does not match publication")
-    if publication.analysis_result.lineage != lineage:
+    if publication.analysis_result.identity != lineage:
         _fail(INCOMPATIBLE_IDENTITY, "analysis lineage does not match publication")
     if publication.analysis_evidence_ref.analysis_id != publication.analysis_result.analysis_id:
         _fail(INCOMPATIBLE_IDENTITY, "analysis evidence does not match publication")
@@ -1068,6 +1068,10 @@ def export_analysis_bundle(
     except (EvidenceValidationError, ValueError, TypeError, OverflowError) as error:
         _fail(EVIDENCE_INTEGRITY_FAILURE, "upstream derived Evidence is invalid")
         raise AssertionError from error
+    if publication.analysis_evidence_ref.evidence_id != str(analysis_envelope.evidence_id):
+        _fail(EVIDENCE_INTEGRITY_FAILURE, "analysis evidence reference does not match stored envelope")
+    if publication.diagnostic_marker_ref.marker_evidence_id != str(marker_envelope.evidence_id):
+        _fail(EVIDENCE_INTEGRITY_FAILURE, "marker evidence reference does not match stored envelope")
     _validate_published_derived(
         evidence_store, root_type=_MONITOR_ANALYSIS_ROOT,
         root_id=publication.analysis_result.analysis_id,

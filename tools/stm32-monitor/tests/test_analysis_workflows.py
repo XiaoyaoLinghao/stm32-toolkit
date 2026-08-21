@@ -16,6 +16,7 @@ from stm32_monitor.analysis_workflows import (
     AnalysisBundleRef,
     AnalysisPublication,
     AnalysisWorkflowError,
+    EVIDENCE_INTEGRITY_FAILURE,
     compare_monitor_runs,
     export_analysis_bundle,
 )
@@ -33,6 +34,10 @@ from stm32_toolkit.evidence import ArtifactRef, EvidenceEnvelope, EvidenceIdenti
 from stm32_toolkit.evidence.gc import get_root, plan_gc
 from stm32_toolkit.evidence.store import EvidenceStore
 from stm32_toolkit.paths import WorkspacePaths
+from stm32_toolkit.testing.model import TestCaseResult, TestRunManifest
+from stm32_toolkit.testing.publication import TestRunPublisher
+from stm32_toolkit.testing.replay import load_target_replay_fixture
+from stm32_toolkit.testing.target import TargetFrameDecoder
 
 
 def test_analysis_bundle_ref_is_closed_and_content_addressed():
@@ -48,6 +53,59 @@ def test_analysis_bundle_ref_is_closed_and_content_addressed():
     assert AnalysisBundleRef.from_value(ref.to_dict()) == ref
     with pytest.raises(AnalysisWorkflowError):
         AnalysisBundleRef("stm32-monitor-analysis-bundle-ref/1", "A" * 64, "a" * 64, artifact)
+
+
+def test_export_analysis_bundle_reloads_real_target_runs(tmp_path: Path) -> None:
+    paths = _paths(tmp_path)
+    evidence, before, after = _ingest_pair(paths)
+    declaration = _declaration(tmp_path, evidence, before, after)
+    failed_id, fixed_id = _publish_target_pair(paths, evidence)
+    publication = _publish(paths, evidence, before, after, declaration)
+    payload, ref = workflows.export_analysis_bundle(
+        paths, evidence, _request(before, after), publication, failed_id, fixed_id, declaration
+    )
+    body = json.loads(payload.decode("utf-8"))
+    assert list(body) == sorted(["schema", "before_run", "after_run", "analysis_request",
+        "analysis_result", "analysis_evidence_ref", "diagnostic_marker",
+        "diagnostic_marker_ref", "failed_before_test_run_id", "fixed_after_test_run_id",
+        "source_change_declaration_id", "digest_table"])
+    assert ref.bundle_id == sha256(payload).hexdigest()
+    bundle_root = get_root(evidence, "monitor-analysis-bundle", ref.bundle_id)
+    bundle = evidence.get_envelope(bundle_root.manifest_id)
+    assert bundle.parents == (before.transcript_evidence_id, after.transcript_evidence_id,
+        publication.analysis_evidence_ref.evidence_id, publication.diagnostic_marker_ref.marker_evidence_id,
+        declaration.diff_evidence_id)
+    assert evidence.read_artifact(ref.artifact, maximum_bytes=1_000_000) == payload
+    again, same_ref = workflows.export_analysis_bundle(
+        paths, evidence, _request(before, after), publication, failed_id, fixed_id, declaration
+    )
+    assert (again, same_ref) == (payload, ref)
+
+
+@pytest.mark.parametrize("case", ["missing-analysis", "forged-marker"])
+def test_export_analysis_bundle_rejects_upstream_contradiction_without_bundle_mutation(
+    tmp_path: Path, case: str
+) -> None:
+    paths = _paths(tmp_path)
+    evidence, before, after = _ingest_pair(paths)
+    declaration = _declaration(tmp_path, evidence, before, after)
+    failed_id, fixed_id = _publish_target_pair(paths, evidence)
+    publication = _publish(paths, evidence, before, after, declaration)
+    if case == "missing-analysis":
+        analysis_root = get_root(evidence, "monitor-analysis", publication.analysis_result.analysis_id)
+        artifact = evidence.get_envelope(analysis_root.manifest_id).artifacts[0]
+        (evidence.root / artifact.relative_path).unlink()
+        expected = EVIDENCE_INTEGRITY_FAILURE
+    else:
+        forged = replace(publication.diagnostic_marker_ref, marker_evidence_id="a" * 64)
+        publication = AnalysisPublication(publication.analysis_result, publication.analysis_evidence_ref,
+                                          publication.diagnostic_marker, forged)
+        expected = EVIDENCE_INTEGRITY_FAILURE
+    with pytest.raises(AnalysisWorkflowError) as error:
+        workflows.export_analysis_bundle(paths, evidence, _request(before, after), publication,
+                                         failed_id, fixed_id, declaration)
+    assert error.value.code == expected
+    assert not any("monitor-analysis-bundle" in path for path in _evidence_tree(evidence))
 
 
 FIXTURES = Path(__file__).parent / "fixtures" / "vs03"
@@ -67,6 +125,46 @@ def _paths(tmp_path: Path, session_id: str = "analysis-import") -> WorkspacePath
 
 def _evidence(paths: WorkspacePaths) -> EvidenceStore:
     return EvidenceStore(paths.workspace_root / "evidence")
+
+
+def _publish_target_pair(paths: WorkspacePaths, evidence: EvidenceStore) -> tuple[str, str]:
+    target_dir = Path(__file__).parents[2] / "stm32-toolkit" / "tests" / "fixtures" / "vs03" / "target"
+    publisher = TestRunPublisher(evidence, paths.project_root, paths.data_root.parent / "target-results")
+    run_ids = ("vs03-failed-before", "vs03-fixed-after")
+    for role, run_id in zip(("failed-before", "fixed-after"), run_ids):
+        fixture = load_target_replay_fixture(target_dir / f"{role}.json", target_dir / f"{role}.hex")
+        descriptor_path = paths.project_root / f"{role}.json"
+        descriptor_path.write_bytes((target_dir / f"{role}.json").read_bytes())
+        descriptor_artifact = evidence.ingest_file(descriptor_path, kind="target-replay-descriptor", media_type="application/json")
+        stream_path = paths.project_root / f"{role}.bin"
+        stream_path.write_bytes(fixture.stream_bytes)
+        stream_artifact = evidence.ingest_file(stream_path, kind="target-replay-stream", media_type="application/octet-stream")
+        descriptor = EvidenceEnvelope(
+            identity=fixture.descriptor.identity, operation="target-replay-input",
+            produced_at_utc="2026-08-21T00:00:00.000000Z", parents=(),
+            artifacts=(descriptor_artifact, stream_artifact), metadata={
+                "replay_id": fixture.descriptor.replay_id, "scenario_role": role,
+                "stream_sha256": fixture.descriptor.stream.sha256,
+                "stream_size_bytes": fixture.descriptor.stream.size_bytes,
+                "execution_source": "replay", "physical_transport_evidence": False,
+                "origin_workspace_id": fixture.descriptor.identity.workspace_id,
+                "import_workspace_id": paths.workspace_id,
+            })
+        frames = TargetFrameDecoder().feed(fixture.stream_bytes)
+        decoder = TargetFrameDecoder(); frames = decoder.feed(fixture.stream_bytes); decoder.finish()
+        starts = {str(f.payload["case_id"]): f.payload for f in frames if f.kind == 3}
+        cases = tuple(TestCaseResult(str(f.payload["case_id"]), str(f.payload["state"]),
+            str(starts[str(f.payload["case_id"])] ["started_at_utc"]), str(f.payload["ended_at_utc"]),
+            int(f.payload["duration_ms"]), f.payload["message"], None, None)
+            for f in frames if f.kind == 4)
+        raw_path = paths.project_root / f"{role}.events"
+        raw_path.write_bytes(fixture.stream_bytes)
+        raw = evidence.ingest_file(raw_path, kind="test-events", media_type="application/vnd.stm32.target-events")
+        manifest = TestRunManifest("stm32-test/1", run_id, "target", str(frames[-1].payload["state"]),
+            fixture.descriptor.identity, "replay", cases, str(frames[1].payload["started_at_utc"]),
+            str(frames[-1].payload["ended_at_utc"]), int(frames[-1].payload["duration_ms"]), None, None, raw)
+        publisher.publish_target_replay(manifest, descriptor, paths.workspace_id)
+    return run_ids
 
 
 def _fixture(role: str) -> Path:
