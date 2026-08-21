@@ -126,6 +126,7 @@ def _advance(
             if active_verification_plan_id is _KEEP_ACTIVE_PLAN
             else cast(str | None, active_verification_plan_id)
         ),
+        failed_run_mode=session.failed_run_mode,
     )
 
 
@@ -185,6 +186,7 @@ def _reduce_created(event: DiagnosticEvent) -> DiagnosticSession:
         hypotheses=(),
         observation_plans=(),
         observation_results=(),
+        failed_run_mode=cast(str, request.get("failed_run_mode", "host")),
     )
 
 

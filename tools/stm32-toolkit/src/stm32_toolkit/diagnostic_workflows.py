@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 import re
 import secrets
-from typing import Callable
+from typing import Callable, Literal, cast
 
 from stm32_toolkit.diagnostics import (
     ACTORS,
@@ -28,7 +28,6 @@ from stm32_toolkit.diagnostics import (
     create_event,
 )
 from stm32_toolkit.evidence import EvidenceValidationError
-from stm32_toolkit.evidence.gc import get_root
 from stm32_toolkit.evidence.store import EvidenceStore
 from stm32_toolkit.paths import WorkspacePaths, require_safe_session_id
 from stm32_toolkit.project_model import ProjectManifestError, load_project_model
@@ -144,6 +143,12 @@ def _validate_actor(actor: object) -> str:
     return actor
 
 
+def _validate_failed_run_mode(value: object) -> Literal["host", "target"]:
+    if not isinstance(value, str) or value not in {"host", "target"}:
+        raise _WorkflowFailure(DIAGNOSTIC_INVALID_EVENT)
+    return cast(Literal["host", "target"], value)
+
+
 def _validate_session_id(session_id: object) -> str:
     if not isinstance(session_id, str) or _DIAGNOSTIC_SESSION_ID.fullmatch(session_id) is None:
         raise _WorkflowFailure(DIAGNOSTIC_INVALID_EVENT)
@@ -200,9 +205,9 @@ def _make_state(context: DiagnosticWorkflowContext) -> _WorkflowState:
 
 
 def _require_identity(state: _WorkflowState, identity: object) -> None:
-    if (
-        getattr(identity, "project_id", None) != str(state.model.logical_project_id)
-        or getattr(identity, "workspace_id", None) != state.workspace.workspace_id
+    if not (
+        getattr(identity, "project_id", None) == str(state.model.logical_project_id)
+        and getattr(identity, "workspace_id", None) == state.workspace.workspace_id
     ):
         raise DiagnosticValidationError(DIAGNOSTIC_IDENTITY_MISMATCH)
 
@@ -211,15 +216,16 @@ def _load_failed_run(
     state: _WorkflowState,
     failed_test_run_id: str,
     *,
-    target_hint: bool = False,
+    failed_run_mode: Literal["host", "target"],
 ) -> object:
+    target_mode = failed_run_mode == "target"
     try:
         return state.repository.load(failed_test_run_id)
     except FileNotFoundError as error:
-        code = _EVIDENCE_INTEGRITY_FAILURE if target_hint else DIAGNOSTIC_EVIDENCE_MISSING
+        code = _EVIDENCE_INTEGRITY_FAILURE if target_mode else DIAGNOSTIC_EVIDENCE_MISSING
         raise _WorkflowFailure(code) from error
     except OSError as error:
-        code = _ENVIRONMENT_FAILURE if target_hint else DIAGNOSTIC_EVIDENCE_MISSING
+        code = _ENVIRONMENT_FAILURE if target_mode else DIAGNOSTIC_EVIDENCE_MISSING
         raise _WorkflowFailure(code) from error
     except (
         EvidenceValidationError,
@@ -229,7 +235,7 @@ def _load_failed_run(
         KeyError,
         IndexError,
     ) as error:
-        code = _EVIDENCE_INTEGRITY_FAILURE if target_hint else DIAGNOSTIC_EVIDENCE_MISSING
+        code = _EVIDENCE_INTEGRITY_FAILURE if target_mode else DIAGNOSTIC_EVIDENCE_MISSING
         raise _WorkflowFailure(code) from error
 
 
@@ -273,32 +279,22 @@ def _validate_target_authority(
     return manifest
 
 
-def _target_run_root_hint(state: _WorkflowState, failed_test_run_id: str) -> bool:
-    try:
-        root = get_root(state.evidence_store, "test-run", failed_test_run_id)
-    except (EvidenceValidationError, OSError, TypeError, ValueError):
-        return False
-    return root.metadata.get("mode") == "target"
-
-
 def _load_authoritative_run(
     state: _WorkflowState,
     failed_test_run_id: str,
     *,
+    failed_run_mode: Literal["host", "target"],
     expected_identity: object | None = None,
-    target_hint: bool | None = None,
 ) -> object:
-    if target_hint is None:
-        target_hint = _target_run_root_hint(state, failed_test_run_id)
     published = _load_failed_run(
         state,
         failed_test_run_id,
-        target_hint=target_hint,
+        failed_run_mode=failed_run_mode,
     )
     manifest = getattr(published, "manifest", None)
-    if getattr(manifest, "mode", None) == "target":
-        if getattr(getattr(published, "envelope", None), "operation", None) == "host-test-run":
-            raise DiagnosticValidationError(DIAGNOSTIC_INVALID_EVENT)
+    if failed_run_mode == "target":
+        if getattr(manifest, "mode", None) != "target":
+            raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
         _validate_target_authority(
             state,
             published,
@@ -306,9 +302,10 @@ def _load_authoritative_run(
             expected_identity=expected_identity,
         )
         return published
+    if getattr(manifest, "mode", None) != "host" or getattr(manifest, "state", None) != "failed":
+        raise DiagnosticValidationError(DIAGNOSTIC_INVALID_EVENT)
     if expected_identity is None:
-        identity = getattr(manifest, "identity", None)
-        _require_identity(state, identity)
+        _require_identity(state, getattr(manifest, "identity", None))
     else:
         _require_identity(state, expected_identity)
         if (
@@ -316,11 +313,6 @@ def _load_authoritative_run(
             or getattr(getattr(published, "envelope", None), "identity", None) != expected_identity
         ):
             raise _WorkflowFailure(DIAGNOSTIC_IDENTITY_MISMATCH)
-    if (
-        getattr(manifest, "mode", None) != "host"
-        or getattr(manifest, "state", None) != "failed"
-    ):
-        raise DiagnosticValidationError(DIAGNOSTIC_INVALID_EVENT)
     return published
 
 
@@ -336,16 +328,25 @@ def _diagnostic_start(
     *,
     operation_id: object,
     failed_test_run_id: object,
+    failed_run_mode: object,
     actor: object,
 ) -> OperationResult[object]:
     operation_id = _validate_operation_id(operation_id)
     failed_test_run_id = _validate_run_id(failed_test_run_id)
+    failed_run_mode = _validate_failed_run_mode(failed_run_mode)
     actor = _validate_actor(actor)
     state = _make_state(context)
-    published = _load_authoritative_run(state, failed_test_run_id)
+    published = _load_authoritative_run(
+        state,
+        failed_test_run_id,
+        failed_run_mode=failed_run_mode,
+    )
     manifest = getattr(published, "manifest")
     identity = getattr(manifest, "identity")
     envelope = getattr(published, "envelope")
+    request: dict[str, object] = {"failed_test_run_id": failed_test_run_id}
+    if failed_run_mode == "target":
+        request["failed_run_mode"] = "target"
     event = create_event(
         diagnostic_session_id=_new_session_id(),
         operation_id=operation_id,
@@ -356,7 +357,7 @@ def _diagnostic_start(
         actor=actor,
         previous_digest=None,
         payload={
-            "request": {"failed_test_run_id": failed_test_run_id},
+            "request": request,
             "result": {
                 "failed_evidence_id": str(envelope.evidence_id),
                 "identity": identity.to_dict(),
@@ -390,12 +391,11 @@ def _new_timestamp() -> str:
 
 def _load_bound_session(state: _WorkflowState, diagnostic_session_id: str) -> DiagnosticSession:
     session = state.diagnostic_store.load(diagnostic_session_id)
-    target_hint = session.identity.workspace_id != state.workspace.workspace_id
     _load_authoritative_run(
         state,
         session.failed_test_run_id,
+        failed_run_mode=session.failed_run_mode,
         expected_identity=session.identity,
-        target_hint=target_hint,
     )
     return session
 
@@ -598,12 +598,11 @@ def _diagnostic_assess_hypothesis(
 
 
 def _load_bound_failed_run(state: _WorkflowState, session: DiagnosticSession) -> object:
-    target_hint = session.identity.workspace_id != state.workspace.workspace_id
     published = _load_authoritative_run(
         state,
         session.failed_test_run_id,
+        failed_run_mode=session.failed_run_mode,
         expected_identity=session.identity,
-        target_hint=target_hint,
     )
     envelope = getattr(published, "envelope", None)
     if getattr(envelope, "evidence_id", None) != session.failed_evidence_id:
@@ -786,6 +785,7 @@ def diagnostic_start(
     *,
     operation_id: str,
     failed_test_run_id: str,
+    failed_run_mode: Literal["host", "target"] = "host",
     actor: str = "user",
 ) -> OperationResult[object]:
     return _result(
@@ -794,6 +794,7 @@ def diagnostic_start(
             context,
             operation_id=operation_id,
             failed_test_run_id=failed_test_run_id,
+            failed_run_mode=failed_run_mode,
             actor=actor,
         ),
     )

@@ -16,6 +16,7 @@ from stm32_toolkit.diagnostic_workflows import (
     diagnostic_show,
     diagnostic_start,
 )
+from stm32_toolkit.evidence import EVIDENCE_CORRUPT, EvidenceValidationError
 from stm32_toolkit.paths import WorkspacePaths
 from stm32_toolkit.testing.replay import load_target_replay_fixture
 
@@ -70,6 +71,7 @@ def _replay_and_open_session(
         _fresh_diagnostic_context(diagnostic_context),
         operation_id="diagnostic.start",
         failed_test_run_id="vs03-failed-before",
+        failed_run_mode="target",
     )
     assert started.ok is True
     session_id = started.data["session"]["diagnostic_session_id"]
@@ -114,6 +116,12 @@ def _authority_snapshot(workspace: WorkspacePaths) -> tuple[object, object]:
     )
 
 
+def _target_test_run_root(workspace: WorkspacePaths) -> Path:
+    roots = tuple((workspace.workspace_root / "evidence" / "roots" / "test-run").glob("*.json"))
+    assert len(roots) == 1
+    return roots[0]
+
+
 def test_target_replay_diagnostic_session_reloads_with_origin_authority(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -130,6 +138,7 @@ def test_target_replay_diagnostic_session_reloads_with_origin_authority(
         _fresh_diagnostic_context(diagnostic_context),
         operation_id="diagnostic.start",
         failed_test_run_id="vs03-failed-before",
+        failed_run_mode="target",
     )
     assert replay.ok is True
     assert started.ok is True and started.data["session"]["state"] == "OPEN"
@@ -185,6 +194,7 @@ def test_target_replay_start_rejects_foreign_project_without_mutation(
         _fresh_diagnostic_context(diagnostic_context),
         operation_id="diagnostic.start.foreign-project",
         failed_test_run_id="vs03-failed-before",
+        failed_run_mode="target",
     )
     after = _authority_snapshot(workspace)
     assert started.ok is False
@@ -236,10 +246,238 @@ def test_target_replay_start_classifies_repository_failures(
         _fresh_diagnostic_context(diagnostic_context),
         operation_id=f"diagnostic.start.{failure}",
         failed_test_run_id="vs03-failed-before",
+        failed_run_mode="target",
     )
     after = _authority_snapshot(workspace)
     assert started.ok is False
     assert started.code == expected_code
+    assert after == before
+
+
+def test_target_replay_start_missing_published_root_is_integrity_failure_without_mutation(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    testing_context, diagnostic_context = _contexts(tmp_path)
+    _install_model(monkeypatch)
+    replay = testing_workflows.target_replay_run(
+        testing_context,
+        "vs03-failed-before",
+        FIXTURES / "failed-before.json",
+        FIXTURES / "failed-before.hex",
+    )
+    assert replay.ok is True
+    workspace = WorkspacePaths.from_roots(
+        diagnostic_context.data_root,
+        diagnostic_context.project_root,
+        PROJECT_ID,
+        diagnostic_context.session_id,
+    )
+    _target_test_run_root(workspace).unlink()
+    before = _authority_snapshot(workspace)
+    started = diagnostic_start(
+        _fresh_diagnostic_context(diagnostic_context),
+        operation_id="diagnostic.start.target-missing-root",
+        failed_test_run_id="vs03-failed-before",
+        failed_run_mode="target",
+    )
+    after = _authority_snapshot(workspace)
+    assert started.ok is False
+    assert started.code == "EVIDENCE_INTEGRITY_FAILURE"
+    assert after == before
+
+
+def test_default_host_repository_corruption_keeps_legacy_failure_projection(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _testing_context, diagnostic_context = _contexts(tmp_path)
+    _install_model(monkeypatch)
+
+    class CorruptRepository:
+        def __init__(self, _evidence_store: object) -> None:
+            pass
+
+        def load(self, _run_id: str) -> object:
+            raise EvidenceValidationError(EVIDENCE_CORRUPT, "corrupt")
+
+    monkeypatch.setattr(diagnostic_workflows, "_repository_factory", CorruptRepository)
+    workspace = WorkspacePaths.from_roots(
+        diagnostic_context.data_root,
+        diagnostic_context.project_root,
+        PROJECT_ID,
+        diagnostic_context.session_id,
+    )
+    before = _authority_snapshot(workspace)
+    started = diagnostic_start(
+        _fresh_diagnostic_context(diagnostic_context),
+        operation_id="diagnostic.start.host-corrupt",
+        failed_test_run_id="host-failed-run",
+    )
+    after = _authority_snapshot(workspace)
+    assert started.ok is False
+    assert started.code == "DIAGNOSTIC_EVIDENCE_MISSING"
+    assert started.message == "required TestRun evidence is absent or damaged"
+    assert started.details == {}
+    assert after == before
+
+
+def test_invalid_failed_run_mode_is_rejected_before_repository_access_without_mutation(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _testing_context, diagnostic_context = _contexts(tmp_path)
+    _install_model(monkeypatch)
+
+    class ForbiddenRepository:
+        def __init__(self, _evidence_store: object) -> None:
+            pass
+
+        def load(self, _run_id: str) -> object:
+            raise AssertionError("invalid mode must be rejected before repository access")
+
+    monkeypatch.setattr(diagnostic_workflows, "_repository_factory", ForbiddenRepository)
+    workspace = WorkspacePaths.from_roots(
+        diagnostic_context.data_root,
+        diagnostic_context.project_root,
+        PROJECT_ID,
+        diagnostic_context.session_id,
+    )
+    before = _authority_snapshot(workspace)
+    started = diagnostic_start(
+        _fresh_diagnostic_context(diagnostic_context),
+        operation_id="diagnostic.start.invalid-mode",
+        failed_test_run_id="vs03-failed-before",
+        failed_run_mode="invalid",  # type: ignore[arg-type]
+    )
+    after = _authority_snapshot(workspace)
+    assert started.ok is False
+    assert started.code == "DIAGNOSTIC_INVALID_EVENT"
+    assert after == before
+
+
+def test_target_mode_rejects_host_record_without_mutation(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    testing_context, diagnostic_context = _contexts(tmp_path)
+    _install_model(monkeypatch)
+    replay = testing_workflows.target_replay_run(
+        testing_context,
+        "vs03-failed-before",
+        FIXTURES / "failed-before.json",
+        FIXTURES / "failed-before.hex",
+    )
+    assert replay.ok is True
+    original_factory = diagnostic_workflows._repository_factory
+
+    class HostRecordRepository:
+        def __init__(self, evidence_store: object) -> None:
+            self._repository = original_factory(evidence_store)
+
+        def load(self, run_id: str) -> object:
+            published = self._repository.load(run_id)
+            return replace(
+                published,
+                manifest=replace(published.manifest, mode="host", transport=None),
+            )
+
+    monkeypatch.setattr(diagnostic_workflows, "_repository_factory", HostRecordRepository)
+    workspace = WorkspacePaths.from_roots(
+        diagnostic_context.data_root,
+        diagnostic_context.project_root,
+        PROJECT_ID,
+        diagnostic_context.session_id,
+    )
+    before = _authority_snapshot(workspace)
+    started = diagnostic_start(
+        _fresh_diagnostic_context(diagnostic_context),
+        operation_id="diagnostic.start.target-host-record",
+        failed_test_run_id="vs03-failed-before",
+        failed_run_mode="target",
+    )
+    after = _authority_snapshot(workspace)
+    assert started.ok is False
+    assert started.code == "EVIDENCE_INTEGRITY_FAILURE"
+    assert after == before
+
+
+def test_default_host_mode_rejects_target_record_without_mutation(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    testing_context, diagnostic_context = _contexts(tmp_path)
+    _install_model(monkeypatch)
+    replay = testing_workflows.target_replay_run(
+        testing_context,
+        "vs03-failed-before",
+        FIXTURES / "failed-before.json",
+        FIXTURES / "failed-before.hex",
+    )
+    assert replay.ok is True
+    workspace = WorkspacePaths.from_roots(
+        diagnostic_context.data_root,
+        diagnostic_context.project_root,
+        PROJECT_ID,
+        diagnostic_context.session_id,
+    )
+    before = _authority_snapshot(workspace)
+    started = diagnostic_start(
+        _fresh_diagnostic_context(diagnostic_context),
+        operation_id="diagnostic.start.host-target-record",
+        failed_test_run_id="vs03-failed-before",
+    )
+    after = _authority_snapshot(workspace)
+    assert started.ok is False
+    assert started.code == "DIAGNOSTIC_INVALID_EVENT"
+    assert after == before
+
+
+def test_target_alias_show_uses_durable_mode_after_published_root_is_deleted(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    testing_context, diagnostic_context = _contexts(tmp_path)
+    _install_model(monkeypatch)
+    origin_workspace_id = load_target_replay_fixture(
+        FIXTURES / "failed-before.json", FIXTURES / "failed-before.hex"
+    ).descriptor.identity.workspace_id
+    original_factory = WorkspacePaths.from_roots
+
+    def alias_factory(
+        data_root: Path,
+        project_root: Path,
+        logical_project_id: UUID,
+        session_id: str | None = None,
+    ) -> WorkspacePaths:
+        actual = original_factory(data_root, project_root, logical_project_id, session_id)
+        return replace(actual, workspace_id=origin_workspace_id)
+
+    monkeypatch.setattr(testing_workflows.WorkspacePaths, "from_roots", alias_factory)
+    monkeypatch.setattr(diagnostic_workflows, "_workspace_paths_factory", alias_factory)
+    replay = testing_workflows.target_replay_run(
+        testing_context,
+        "vs03-failed-before",
+        FIXTURES / "failed-before.json",
+        FIXTURES / "failed-before.hex",
+    )
+    assert replay.ok is True
+    started = diagnostic_start(
+        _fresh_diagnostic_context(diagnostic_context),
+        operation_id="diagnostic.start.alias-missing-root",
+        failed_test_run_id="vs03-failed-before",
+        failed_run_mode="target",
+    )
+    assert started.ok is True
+    session_id = started.data["session"]["diagnostic_session_id"]
+    workspace = original_factory(
+        diagnostic_context.data_root,
+        diagnostic_context.project_root,
+        PROJECT_ID,
+        diagnostic_context.session_id,
+    )
+    _target_test_run_root(workspace).unlink()
+    before = _authority_snapshot(workspace)
+    shown = diagnostic_show(
+        _fresh_diagnostic_context(diagnostic_context), diagnostic_session_id=session_id
+    )
+    after = _authority_snapshot(workspace)
+    assert shown.ok is False
+    assert shown.code == "EVIDENCE_INTEGRITY_FAILURE"
     assert after == before
 
 
@@ -275,6 +513,7 @@ def test_target_replay_alias_workspace_is_legal_for_start_and_show(
         _fresh_diagnostic_context(diagnostic_context),
         operation_id="diagnostic.start.alias",
         failed_test_run_id="vs03-failed-before",
+        failed_run_mode="target",
     )
     assert started.ok is True
     shown = diagnostic_show(

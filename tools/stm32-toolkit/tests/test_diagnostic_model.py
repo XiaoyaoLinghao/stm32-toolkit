@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import FrozenInstanceError
+from dataclasses import FrozenInstanceError, replace
 from hashlib import sha256
 
 import pytest
@@ -59,6 +59,48 @@ def _plan() -> ObservationPlan:
         steps=(step,),
         digest=digest,
     )
+
+
+def test_failed_run_mode_is_omitted_for_host_and_round_trips_for_target() -> None:
+    host = DiagnosticSession(
+        diagnostic_session_id="f" * 32,
+        revision=1,
+        state="OPEN",
+        identity=IDENTITY,
+        failed_test_run_id="run-1",
+        failed_evidence_id="0" * 64,
+        event_head="3" * 64,
+        hypotheses=(),
+        observation_plans=(),
+        observation_results=(),
+    )
+    host_wire = host.to_dict()
+    assert "failed_run_mode" not in host_wire
+    assert DiagnosticSession.from_value(host_wire) == host
+
+    target = replace(host, failed_run_mode="target")
+    assert target.to_dict() == {**host_wire, "failed_run_mode": "target"}
+    assert DiagnosticSession.from_value(target.to_dict()) == target
+
+
+@pytest.mark.parametrize("value", ["host", "unknown", 1, None])
+def test_explicit_failed_run_mode_wire_values_are_rejected(value: object) -> None:
+    session = DiagnosticSession(
+        diagnostic_session_id="f" * 32,
+        revision=1,
+        state="OPEN",
+        identity=IDENTITY,
+        failed_test_run_id="run-1",
+        failed_evidence_id="0" * 64,
+        event_head="3" * 64,
+        hypotheses=(),
+        observation_plans=(),
+        observation_results=(),
+    )
+    wire = {**session.to_dict(), "failed_run_mode": value}
+    with pytest.raises(DiagnosticValidationError) as error:
+        DiagnosticSession.from_value(wire)
+    assert error.value.code == DIAGNOSTIC_INVALID_EVENT
 
 
 def test_closed_models_round_trip_with_fresh_json_containers() -> None:

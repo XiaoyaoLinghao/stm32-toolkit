@@ -196,8 +196,21 @@ def test_session_created_and_investigation_started_reduce_revisions() -> None:
         request={"failed_test_run_id": "run-1"},
         result={"failed_evidence_id": "0" * 64, "identity": IDENTITY.to_dict()},
     )
+    assert created.digest == "8dad9ef72887e1de571e91fa8f13d1d9910fb6b74c88158eedef483875a8c432"
     assert created.digest == calculate_event_digest(created.to_dict())
     session = reduce_event(None, created)
+    assert session.to_dict() == {
+        "diagnostic_session_id": SID,
+        "revision": 1,
+        "state": "OPEN",
+        "identity": IDENTITY.to_dict(),
+        "failed_test_run_id": "run-1",
+        "failed_evidence_id": "0" * 64,
+        "event_head": created.digest,
+        "hypotheses": [],
+        "observation_plans": [],
+        "observation_results": [],
+    }
     assert session.revision == 1
     assert session.state == "OPEN"
     assert session.event_head == created.digest
@@ -213,6 +226,49 @@ def test_session_created_and_investigation_started_reduce_revisions() -> None:
     assert session.revision == 2
     assert session.state == "INVESTIGATING"
     assert session.event_head == started.digest
+
+
+def test_target_session_created_and_investigation_started_preserve_mode() -> None:
+    created = _event(
+        sequence=0,
+        event_type="session.created",
+        request={"failed_test_run_id": "vs03-failed-before", "failed_run_mode": "target"},
+        result={"failed_evidence_id": "0" * 64, "identity": IDENTITY.to_dict()},
+    )
+    session = reduce_event(None, created)
+    assert session.failed_run_mode == "target"
+    assert session.to_dict()["failed_run_mode"] == "target"
+
+    started = _event(
+        sequence=1,
+        event_type="investigation.started",
+        request={},
+        result={},
+        previous_digest=created.digest,
+    )
+    session = reduce_event(session, started)
+    assert session.failed_run_mode == "target"
+
+
+@pytest.mark.parametrize(
+    "event_request",
+    [
+        {"failed_test_run_id": "run-1", "failed_run_mode": "host"},
+        {"failed_test_run_id": "run-1", "failed_run_mode": "unknown"},
+        {"failed_test_run_id": "run-1", "failed_run_mode": None},
+        {"failed_run_mode": "target"},
+        {"failed_test_run_id": "run-1", "failed_run_mode": "target", "extra": True},
+    ],
+)
+def test_session_created_rejects_non_target_or_non_exact_mode_requests(event_request: dict[str, object]) -> None:
+    with pytest.raises(DiagnosticValidationError) as error:
+        _event(
+            sequence=0,
+            event_type="session.created",
+            request=event_request,
+            result={"failed_evidence_id": "0" * 64, "identity": IDENTITY.to_dict()},
+        )
+    assert error.value.code == DIAGNOSTIC_INVALID_EVENT
 
 
 @pytest.mark.parametrize("event_type,event_request,event_result", _canonical_payloads())

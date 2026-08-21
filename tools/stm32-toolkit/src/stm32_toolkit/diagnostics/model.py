@@ -689,11 +689,14 @@ class DiagnosticSession:
     diagnostic_marker_refs: tuple[DiagnosticMarkerRef, ...] = ()
     fix_verifications: tuple[FixVerification, ...] = ()
     active_verification_plan_id: str | None = None
+    failed_run_mode: Literal["host", "target"] = "host"
 
     def __post_init__(self) -> None:
         session_id = _hex_id(self.diagnostic_session_id)
         revision = _integer(self.revision)
         if self.state not in STATES:
+            _fail(DIAGNOSTIC_INVALID_EVENT)
+        if not isinstance(self.failed_run_mode, str) or self.failed_run_mode not in {"host", "target"}:
             _fail(DIAGNOSTIC_INVALID_EVENT)
         if not isinstance(self.identity, EvidenceIdentity):
             _fail(DIAGNOSTIC_INVALID_EVENT)
@@ -855,6 +858,7 @@ class DiagnosticSession:
         object.__setattr__(self, "diagnostic_marker_refs", tuple(self.diagnostic_marker_refs))
         object.__setattr__(self, "fix_verifications", tuple(self.fix_verifications))
         object.__setattr__(self, "active_verification_plan_id", active_plan_id)
+        object.__setattr__(self, "failed_run_mode", self.failed_run_mode)
 
     @classmethod
     def from_value(cls, value: object) -> "DiagnosticSession":
@@ -870,15 +874,21 @@ class DiagnosticSession:
             "active_verification_plan_id",
         }
         keys = set(value)
-        if keys != legacy_keys and keys != extended_keys:
+        mode_keys = {"failed_run_mode"}
+        if keys not in (legacy_keys, extended_keys, legacy_keys | mode_keys, extended_keys | mode_keys):
             _fail(DIAGNOSTIC_INVALID_EVENT)
         data = cast(Mapping[str, object], value)
+        failed_run_mode = data.get("failed_run_mode", "host")
+        if "failed_run_mode" in keys and (
+            not isinstance(failed_run_mode, str) or failed_run_mode != "target"
+        ):
+            _fail(DIAGNOSTIC_INVALID_EVENT)
         hypotheses = data["hypotheses"]
         plans = data["observation_plans"]
         results = data["observation_results"]
         if not isinstance(hypotheses, list) or not isinstance(plans, list) or not isinstance(results, list):
             _fail(DIAGNOSTIC_INVALID_EVENT)
-        if keys == legacy_keys:
+        if keys == legacy_keys or keys == legacy_keys | mode_keys:
             return cls(
                 data["diagnostic_session_id"],
                 data["revision"],
@@ -890,6 +900,7 @@ class DiagnosticSession:
                 tuple(Hypothesis.from_value(item) for item in hypotheses),
                 tuple(ObservationPlan.from_value(item) for item in plans),
                 tuple(ObservationResult.from_value(item) for item in results),
+                failed_run_mode=cast(Literal["host", "target"], failed_run_mode),
             )
         declarations = data["source_change_declarations"]
         verification_plans = data["verification_plans"]
@@ -927,6 +938,7 @@ class DiagnosticSession:
             tuple(DiagnosticMarkerRef.from_value(item) for item in marker_refs),
             tuple(FixVerification.from_value(item) for item in fix_verifications),
             data["active_verification_plan_id"],
+            cast(Literal["host", "target"], failed_run_mode),
         )
 
     def to_dict(self) -> dict[str, object]:
@@ -960,6 +972,8 @@ class DiagnosticSession:
                     "active_verification_plan_id": self.active_verification_plan_id,
                 }
             )
+        if self.failed_run_mode == "target":
+            result["failed_run_mode"] = "target"
         return result
 
 
@@ -979,8 +993,13 @@ def _validate_event_payload(event_type: str, value: object) -> dict[str, object]
     result = payload["result"]
     assert isinstance(request, dict) and isinstance(result, dict)
     if event_type == "session.created":
-        _keys(request, {"failed_test_run_id"})
+        if set(request) not in ({"failed_test_run_id"}, {"failed_test_run_id", "failed_run_mode"}):
+            _fail(DIAGNOSTIC_INVALID_EVENT)
         _run_id(request["failed_test_run_id"])
+        if "failed_run_mode" in request and (
+            not isinstance(request["failed_run_mode"], str) or request["failed_run_mode"] != "target"
+        ):
+            _fail(DIAGNOSTIC_INVALID_EVENT)
         result_data = _keys(result, {"failed_evidence_id", "identity"})
         _hash(result_data["failed_evidence_id"])
         _identity(result_data["identity"])
