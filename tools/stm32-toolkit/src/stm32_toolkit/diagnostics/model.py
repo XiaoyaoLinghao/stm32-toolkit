@@ -1388,11 +1388,12 @@ def _parallel_hash_tuples(
     *,
     maximum: int = 16,
 ) -> tuple[tuple[str, ...], tuple[str, ...]]:
-    ids = _hash_tuple(values, maximum=maximum)
+    ids = _hash_tuple_preserve_order(values, maximum=maximum)
     evidence_ids = _hash_tuple_preserve_order(evidence_values, maximum=maximum)
     if len(ids) != len(evidence_ids):
         _fail(DIAGNOSTIC_INVALID_EVENT)
-    return ids, evidence_ids
+    pairs = sorted(zip(ids, evidence_ids), key=lambda pair: pair[0])
+    return tuple(pair[0] for pair in pairs), tuple(pair[1] for pair in pairs)
 
 
 def _wire_parallel_hash_tuples(
@@ -1401,11 +1402,12 @@ def _wire_parallel_hash_tuples(
     *,
     maximum: int = 16,
 ) -> tuple[tuple[str, ...], tuple[str, ...]]:
-    ids = _wire_hash_tuple(values, maximum=maximum)
+    ids = _wire_hash_tuple_preserve_order(values, maximum=maximum)
     evidence_ids = _wire_hash_tuple_preserve_order(evidence_values, maximum=maximum)
     if len(ids) != len(evidence_ids):
         _fail(DIAGNOSTIC_INVALID_EVENT)
-    return ids, evidence_ids
+    pairs = sorted(zip(ids, evidence_ids), key=lambda pair: pair[0])
+    return tuple(pair[0] for pair in pairs), tuple(pair[1] for pair in pairs)
 
 
 def _hash_tuple_preserve_order(

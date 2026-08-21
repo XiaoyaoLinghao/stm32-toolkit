@@ -414,3 +414,54 @@ def test_utc_and_evidence_pairing_and_parallel_tuple_rules() -> None:
     invalid_plan = plan.to_dict()
     invalid_plan["fixed_after_run_id"] = invalid_plan["failed_before_run_id"]
     _expect_invalid(lambda: VerificationPlan.from_value(invalid_plan))
+
+
+def test_verification_plan_paired_analysis_evidence_ids_sort_together() -> None:
+    declaration = _source()
+    analysis_ids = ("f" * 64, "e" * 64)
+    evidence_ids = ("1" * 64, "2" * 64)
+    plan = VerificationPlan.new(
+        verification_plan_id=PLAN_ID,
+        diagnostic_session_id=SESSION_ID,
+        failed_before_run_id="failed-before",
+        failed_before_evidence_id="3" * 64,
+        source_change_declaration_id=declaration.declaration_id,
+        fixed_after_run_id="fixed-after",
+        fixed_after_evidence_id="4" * 64,
+        required_analysis_ids=analysis_ids,
+        required_analysis_evidence_ids=evidence_ids,
+        required_monitor_quality="VALID",
+        expected_changed=True,
+    )
+    assert tuple(zip(plan.required_analysis_ids, plan.required_analysis_evidence_ids)) == (
+        ("e" * 64, "2" * 64),
+        ("f" * 64, "1" * 64),
+    )
+    assert VerificationPlan.from_value(plan.to_dict()) == plan
+
+
+def test_fix_verification_paired_analysis_evidence_ids_sort_together() -> None:
+    plan = _plan()
+    analysis_ids = ("f" * 64, "e" * 64)
+    evidence_ids = ("1" * 64, "2" * 64)
+    verification = FixVerification.new(
+        diagnostic_session_id=SESSION_ID,
+        failed_before_run_id=plan.failed_before_run_id,
+        failed_before_evidence_id=plan.failed_before_evidence_id,
+        source_change_declaration_id=plan.source_change_declaration_id,
+        fixed_after_run_id=plan.fixed_after_run_id,
+        fixed_after_evidence_id=plan.fixed_after_evidence_id,
+        verification_plan_id=plan.verification_plan_id,
+        verification_plan_digest=plan.plan_digest,
+        analysis_ids=analysis_ids,
+        analysis_evidence_ids=evidence_ids,
+        executed_operation_ids=("verification.start", "verification.complete"),
+        status="PASSED",
+        reason_code="VERIFICATION_PASSED",
+        completed_at_utc="2026-08-21T12:34:56.000000Z",
+    )
+    assert tuple(zip(verification.analysis_ids, verification.analysis_evidence_ids)) == (
+        ("e" * 64, "2" * 64),
+        ("f" * 64, "1" * 64),
+    )
+    assert FixVerification.from_value(verification.to_dict()) == verification
