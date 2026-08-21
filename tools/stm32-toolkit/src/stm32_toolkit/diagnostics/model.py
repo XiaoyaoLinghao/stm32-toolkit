@@ -81,9 +81,14 @@ EVENT_TYPES = (
     "observation.plan_added",
     "observation.plan_executed",
     "hypothesis.assessed",
+    "source_change.declared",
+    "verification.plan_added",
+    "verification.started",
+    "analysis.marker_attached",
+    "verification.completed",
 )
 ACTORS = ("user", "tool", "ai-client")
-STATES = ("OPEN", "INVESTIGATING")
+STATES = ("OPEN", "INVESTIGATING", "FIX_PROPOSED", "VERIFYING", "RESOLVED", "ABANDONED")
 
 _HASH = re.compile(r"^[0-9a-f]{64}$")
 _HEX_ID = re.compile(r"^[0-9a-f]{32}$")
@@ -671,7 +676,7 @@ class Hypothesis:
 class DiagnosticSession:
     diagnostic_session_id: str
     revision: int
-    state: Literal["OPEN", "INVESTIGATING"]
+    state: Literal["OPEN", "INVESTIGATING", "FIX_PROPOSED", "VERIFYING", "RESOLVED", "ABANDONED"]
     identity: EvidenceIdentity
     failed_test_run_id: str
     failed_evidence_id: str
@@ -679,6 +684,11 @@ class DiagnosticSession:
     hypotheses: tuple[Hypothesis, ...]
     observation_plans: tuple[ObservationPlan, ...]
     observation_results: tuple[ObservationResult, ...]
+    source_change_declarations: tuple[SourceChangeDeclaration, ...] = ()
+    verification_plans: tuple[VerificationPlan, ...] = ()
+    diagnostic_marker_refs: tuple[DiagnosticMarkerRef, ...] = ()
+    fix_verifications: tuple[FixVerification, ...] = ()
+    active_verification_plan_id: str | None = None
 
     def __post_init__(self) -> None:
         session_id = _hex_id(self.diagnostic_session_id)
@@ -690,17 +700,17 @@ class DiagnosticSession:
         run_id = _run_id(self.failed_test_run_id)
         evidence_id = _hash(self.failed_evidence_id)
         event_head = _hash(self.event_head)
-        if not isinstance(self.hypotheses, tuple) or not isinstance(self.observation_plans, tuple) or not isinstance(self.observation_results, tuple):
+        if type(self.hypotheses) is not tuple or type(self.observation_plans) is not tuple or type(self.observation_results) is not tuple:
             _fail(DIAGNOSTIC_INVALID_EVENT)
         if len(self.hypotheses) > MAX_HYPOTHESES or len(self.observation_plans) > MAX_PLANS:
             _fail(DIAGNOSTIC_LIMIT_EXCEEDED)
         if len(self.observation_results) > MAX_RESULTS:
             _fail(DIAGNOSTIC_LIMIT_EXCEEDED)
-        if not all(isinstance(item, Hypothesis) for item in self.hypotheses):
+        if not all(type(item) is Hypothesis for item in self.hypotheses):
             _fail(DIAGNOSTIC_INVALID_EVENT)
-        if not all(isinstance(item, ObservationPlan) for item in self.observation_plans):
+        if not all(type(item) is ObservationPlan for item in self.observation_plans):
             _fail(DIAGNOSTIC_INVALID_EVENT)
-        if not all(isinstance(item, ObservationResult) for item in self.observation_results):
+        if not all(type(item) is ObservationResult for item in self.observation_results):
             _fail(DIAGNOSTIC_INVALID_EVENT)
         if len({item.hypothesis_id for item in self.hypotheses}) != len(self.hypotheses):
             _fail(DIAGNOSTIC_PLAN_INVALID)
@@ -729,6 +739,119 @@ class DiagnosticSession:
                 result = results.get((assessment.plan_id, assessment.step_id))
                 if result is None or assessment.evidence_id != result.evidence_id or assessment.selector != result.selector or assessment.observed_value != result.observed_value:
                     _fail(DIAGNOSTIC_PLAN_INVALID)
+
+        if (
+            type(self.source_change_declarations) is not tuple
+            or type(self.verification_plans) is not tuple
+            or type(self.diagnostic_marker_refs) is not tuple
+            or type(self.fix_verifications) is not tuple
+        ):
+            _fail(DIAGNOSTIC_INVALID_EVENT)
+        if (
+            len(self.source_change_declarations) > MAX_PLANS
+            or len(self.verification_plans) > MAX_PLANS
+            or len(self.diagnostic_marker_refs) > MAX_RESULTS
+            or len(self.fix_verifications) > MAX_RESULTS
+        ):
+            _fail(DIAGNOSTIC_LIMIT_EXCEEDED)
+        if not all(type(item) is SourceChangeDeclaration for item in self.source_change_declarations):
+            _fail(DIAGNOSTIC_INVALID_EVENT)
+        if not all(type(item) is VerificationPlan for item in self.verification_plans):
+            _fail(DIAGNOSTIC_INVALID_EVENT)
+        if not all(type(item) is DiagnosticMarkerRef for item in self.diagnostic_marker_refs):
+            _fail(DIAGNOSTIC_INVALID_EVENT)
+        if not all(type(item) is FixVerification for item in self.fix_verifications):
+            _fail(DIAGNOSTIC_INVALID_EVENT)
+        if self.active_verification_plan_id is not None:
+            active_plan_id = _hash(self.active_verification_plan_id)
+        else:
+            active_plan_id = None
+
+        declarations = {item.declaration_id: item for item in self.source_change_declarations}
+        plans = {item.verification_plan_id: item for item in self.verification_plans}
+        markers = {item.marker_id: item for item in self.diagnostic_marker_refs}
+        fixes = {item.fix_verification_id: item for item in self.fix_verifications}
+        if (
+            len(declarations) != len(self.source_change_declarations)
+            or len(plans) != len(self.verification_plans)
+            or len(markers) != len(self.diagnostic_marker_refs)
+            or len(fixes) != len(self.fix_verifications)
+        ):
+            _fail(DIAGNOSTIC_PLAN_INVALID)
+        hypothesis_ids = {item.hypothesis_id for item in self.hypotheses}
+        if any(
+            hypothesis_id not in hypothesis_ids
+            for declaration in self.source_change_declarations
+            for hypothesis_id in declaration.claimed_hypothesis_ids
+        ):
+            _fail(DIAGNOSTIC_PLAN_INVALID)
+        for plan in self.verification_plans:
+            declaration = declarations.get(plan.source_change_declaration_id)
+            if declaration is None or plan.diagnostic_session_id != session_id:
+                _fail(DIAGNOSTIC_PLAN_INVALID)
+            if plan.verification_plan_id != declaration.validation_plan_id:
+                _fail(DIAGNOSTIC_PLAN_INVALID)
+        for marker in self.diagnostic_marker_refs:
+            if marker.diagnostic_session_id != session_id or marker.hypothesis_id not in hypothesis_ids:
+                _fail(DIAGNOSTIC_PLAN_INVALID)
+            if not any(
+                marker.analysis_id == analysis_id and marker.analysis_evidence_id == evidence_id
+                for plan in self.verification_plans
+                for analysis_id, evidence_id in zip(
+                    plan.required_analysis_ids,
+                    plan.required_analysis_evidence_ids,
+                )
+            ):
+                _fail(DIAGNOSTIC_PLAN_INVALID)
+            if active_plan_id is not None:
+                active_plan = plans.get(active_plan_id)
+                if active_plan is None or not any(
+                    marker.analysis_id == analysis_id and marker.analysis_evidence_id == evidence_id
+                    for analysis_id, evidence_id in zip(
+                        active_plan.required_analysis_ids,
+                        active_plan.required_analysis_evidence_ids,
+                    )
+                ):
+                    _fail(DIAGNOSTIC_PLAN_INVALID)
+        for verification in self.fix_verifications:
+            plan = plans.get(verification.verification_plan_id)
+            declaration = declarations.get(verification.source_change_declaration_id)
+            if (
+                plan is None
+                or declaration is None
+                or verification.diagnostic_session_id != session_id
+                or verification.source_change_declaration_id != plan.source_change_declaration_id
+                or verification.verification_plan_digest != plan.plan_digest
+                or verification.failed_before_run_id != run_id
+                or verification.failed_before_evidence_id != evidence_id
+                or verification.failed_before_run_id != plan.failed_before_run_id
+                or verification.failed_before_evidence_id != plan.failed_before_evidence_id
+                or verification.fixed_after_run_id != plan.fixed_after_run_id
+                or verification.fixed_after_evidence_id != plan.fixed_after_evidence_id
+                or verification.analysis_ids != plan.required_analysis_ids
+                or verification.analysis_evidence_ids != plan.required_analysis_evidence_ids
+            ):
+                _fail(DIAGNOSTIC_PLAN_INVALID)
+        if active_plan_id is not None and active_plan_id not in plans:
+            _fail(DIAGNOSTIC_PLAN_INVALID)
+        if self.state == "VERIFYING" and active_plan_id is None:
+            _fail(DIAGNOSTIC_PLAN_INVALID)
+        if self.state != "VERIFYING" and active_plan_id is not None:
+            _fail(DIAGNOSTIC_PLAN_INVALID)
+        has_new_lifecycle_data = bool(
+            self.source_change_declarations
+            or self.verification_plans
+            or self.diagnostic_marker_refs
+            or self.fix_verifications
+        )
+        if self.state == "OPEN" and has_new_lifecycle_data:
+            _fail(DIAGNOSTIC_INVALID_EVENT)
+        if self.state == "FIX_PROPOSED" and not self.source_change_declarations:
+            _fail(DIAGNOSTIC_INVALID_EVENT)
+        if self.state == "RESOLVED" and not any(
+            item.status == "PASSED" for item in self.fix_verifications
+        ):
+            _fail(DIAGNOSTIC_INVALID_EVENT)
         object.__setattr__(self, "diagnostic_session_id", session_id)
         object.__setattr__(self, "revision", revision)
         object.__setattr__(self, "failed_test_run_id", run_id)
@@ -737,21 +860,66 @@ class DiagnosticSession:
         object.__setattr__(self, "hypotheses", tuple(self.hypotheses))
         object.__setattr__(self, "observation_plans", tuple(self.observation_plans))
         object.__setattr__(self, "observation_results", tuple(self.observation_results))
+        object.__setattr__(self, "source_change_declarations", tuple(self.source_change_declarations))
+        object.__setattr__(self, "verification_plans", tuple(self.verification_plans))
+        object.__setattr__(self, "diagnostic_marker_refs", tuple(self.diagnostic_marker_refs))
+        object.__setattr__(self, "fix_verifications", tuple(self.fix_verifications))
+        object.__setattr__(self, "active_verification_plan_id", active_plan_id)
 
     @classmethod
     def from_value(cls, value: object) -> "DiagnosticSession":
         _reject_tuples(value)
-        data = _keys(
-            value,
-            {
-                "diagnostic_session_id", "revision", "state", "identity", "failed_test_run_id", "failed_evidence_id",
-                "event_head", "hypotheses", "observation_plans", "observation_results",
-            },
-        )
+        if not isinstance(value, Mapping):
+            _fail(DIAGNOSTIC_INVALID_EVENT)
+        legacy_keys = {
+            "diagnostic_session_id", "revision", "state", "identity", "failed_test_run_id", "failed_evidence_id",
+            "event_head", "hypotheses", "observation_plans", "observation_results",
+        }
+        extended_keys = legacy_keys | {
+            "source_change_declarations", "verification_plans", "diagnostic_marker_refs", "fix_verifications",
+            "active_verification_plan_id",
+        }
+        keys = set(value)
+        if keys != legacy_keys and keys != extended_keys:
+            _fail(DIAGNOSTIC_INVALID_EVENT)
+        data = cast(Mapping[str, object], value)
         hypotheses = data["hypotheses"]
         plans = data["observation_plans"]
         results = data["observation_results"]
         if not isinstance(hypotheses, list) or not isinstance(plans, list) or not isinstance(results, list):
+            _fail(DIAGNOSTIC_INVALID_EVENT)
+        if keys == legacy_keys:
+            return cls(
+                data["diagnostic_session_id"],
+                data["revision"],
+                data["state"],
+                _identity(data["identity"]),
+                data["failed_test_run_id"],
+                data["failed_evidence_id"],
+                data["event_head"],
+                tuple(Hypothesis.from_value(item) for item in hypotheses),
+                tuple(ObservationPlan.from_value(item) for item in plans),
+                tuple(ObservationResult.from_value(item) for item in results),
+            )
+        declarations = data["source_change_declarations"]
+        verification_plans = data["verification_plans"]
+        marker_refs = data["diagnostic_marker_refs"]
+        fix_verifications = data["fix_verifications"]
+        if (
+            not isinstance(declarations, list)
+            or not isinstance(verification_plans, list)
+            or not isinstance(marker_refs, list)
+            or not isinstance(fix_verifications, list)
+        ):
+            _fail(DIAGNOSTIC_INVALID_EVENT)
+        if (
+            data["state"] in {"OPEN", "INVESTIGATING"}
+            and not declarations
+            and not verification_plans
+            and not marker_refs
+            and not fix_verifications
+            and data["active_verification_plan_id"] is None
+        ):
             _fail(DIAGNOSTIC_INVALID_EVENT)
         return cls(
             data["diagnostic_session_id"],
@@ -764,10 +932,23 @@ class DiagnosticSession:
             tuple(Hypothesis.from_value(item) for item in hypotheses),
             tuple(ObservationPlan.from_value(item) for item in plans),
             tuple(ObservationResult.from_value(item) for item in results),
+            tuple(SourceChangeDeclaration.from_value(item) for item in declarations),
+            tuple(VerificationPlan.from_value(item) for item in verification_plans),
+            tuple(DiagnosticMarkerRef.from_value(item) for item in marker_refs),
+            tuple(FixVerification.from_value(item) for item in fix_verifications),
+            data["active_verification_plan_id"],
         )
 
     def to_dict(self) -> dict[str, object]:
-        return {
+        legacy = (
+            self.state in {"OPEN", "INVESTIGATING"}
+            and not self.source_change_declarations
+            and not self.verification_plans
+            and not self.diagnostic_marker_refs
+            and not self.fix_verifications
+            and self.active_verification_plan_id is None
+        )
+        result = {
             "diagnostic_session_id": self.diagnostic_session_id,
             "revision": self.revision,
             "state": self.state,
@@ -779,6 +960,17 @@ class DiagnosticSession:
             "observation_plans": [item.to_dict() for item in self.observation_plans],
             "observation_results": [item.to_dict() for item in self.observation_results],
         }
+        if not legacy:
+            result.update(
+                {
+                    "source_change_declarations": [item.to_dict() for item in self.source_change_declarations],
+                    "verification_plans": [item.to_dict() for item in self.verification_plans],
+                    "diagnostic_marker_refs": [item.to_dict() for item in self.diagnostic_marker_refs],
+                    "fix_verifications": [item.to_dict() for item in self.fix_verifications],
+                    "active_verification_plan_id": self.active_verification_plan_id,
+                }
+            )
+        return result
 
 
 def _payload(value: object) -> dict[str, object]:
@@ -844,6 +1036,46 @@ def _validate_event_payload(event_type: str, value: object) -> dict[str, object]
             key: assessment.to_dict()[key]
             for key in ("hypothesis_id", "plan_id", "step_id", "polarity", "rationale")
         } != request:
+            _fail(DIAGNOSTIC_INVALID_EVENT)
+    elif event_type == "source_change.declared":
+        declaration_data = _keys(request, {"source_change_declaration"})
+        declaration = SourceChangeDeclaration.from_value(declaration_data["source_change_declaration"])
+        result_data = _keys(result, {"declaration_id"})
+        declaration_id = _hash(result_data["declaration_id"])
+        if declaration_id != declaration.declaration_id:
+            _fail(DIAGNOSTIC_INVALID_EVENT)
+    elif event_type == "verification.plan_added":
+        plan_data = _keys(request, {"verification_plan"})
+        plan = VerificationPlan.from_value(plan_data["verification_plan"])
+        result_data = _keys(result, {"verification_plan_id", "plan_digest"})
+        plan_id = _hash(result_data["verification_plan_id"])
+        plan_digest = _hash(result_data["plan_digest"])
+        if plan_id != plan.verification_plan_id or plan_digest != plan.plan_digest:
+            _fail(DIAGNOSTIC_INVALID_EVENT)
+    elif event_type == "verification.started":
+        _keys(request, {"verification_plan_id"})
+        _keys(result, {"verification_plan_id"})
+        plan_id = _hash(request["verification_plan_id"])
+        result_plan_id = _hash(result["verification_plan_id"])
+        if plan_id != result_plan_id:
+            _fail(DIAGNOSTIC_INVALID_EVENT)
+    elif event_type == "analysis.marker_attached":
+        marker_data = _keys(request, {"diagnostic_marker_ref"})
+        marker = DiagnosticMarkerRef.from_value(marker_data["diagnostic_marker_ref"])
+        result_data = _keys(result, {"marker_id"})
+        marker_id = _hash(result_data["marker_id"])
+        if marker_id != marker.marker_id:
+            _fail(DIAGNOSTIC_INVALID_EVENT)
+    elif event_type == "verification.completed":
+        verification_data = _keys(request, {"fix_verification"})
+        verification = FixVerification.from_value(verification_data["fix_verification"])
+        result_data = _keys(result, {"fix_verification_id", "status", "reason_code"})
+        verification_id = _hash(result_data["fix_verification_id"])
+        if (
+            verification_id != verification.fix_verification_id
+            or result_data["status"] != verification.status
+            or result_data["reason_code"] != verification.reason_code
+        ):
             _fail(DIAGNOSTIC_INVALID_EVENT)
     else:
         _fail(DIAGNOSTIC_INVALID_EVENT)
