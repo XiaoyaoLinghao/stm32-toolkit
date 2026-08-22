@@ -7,7 +7,7 @@ from uuid import UUID
 
 import pytest
 
-from stm32_monitor.history import HistoryStore
+from stm32_monitor.history import HistoryQuery, HistoryStore
 from stm32_monitor.models import ObservationBinding, SampleBatch, SampleValue, WatchItem
 from stm32_monitor.replay import (
     EVIDENCE_INTEGRITY_FAILURE,
@@ -324,6 +324,10 @@ def _append_large_physical_history(
     raw_probe: str,
     monitor_run_id: UUID,
     group_id: UUID,
+    *,
+    batch_count: int = 40,
+    values_per_batch: int = 250,
+    definition_chars: int = 256,
 ) -> tuple[SampleBatch, ...]:
     binding = ObservationBinding(
         workspace_id=paths.workspace_id,
@@ -342,7 +346,10 @@ def _append_large_physical_history(
         dwarf_sha256="f" * 64,
         svd_sha256=None,
     )
-    watches = tuple(WatchItem.variable(f"counter-{index:03d}") for index in range(250))
+    watches = tuple(
+        WatchItem.variable(f"counter-{index:03d}")
+        for index in range(values_per_batch)
+    )
     batches = tuple(
         SampleBatch(
             binding=binding,
@@ -361,13 +368,13 @@ def _append_large_physical_history(
                 SampleValue(
                     watch,
                     "OK",
-                    typed_value={"type": "uint32", "value": sequence * 250 + index},
-                    definition={"description": "x" * 256},
+                    typed_value={"type": "uint32", "value": sequence * values_per_batch + index},
+                    definition={"description": "x" * definition_chars},
                 )
                 for index, watch in enumerate(watches)
             ),
         )
-        for sequence in range(40)
+        for sequence in range(batch_count)
     )
     history = HistoryStore(paths)
     try:
@@ -424,6 +431,143 @@ def test_physical_large_history_reassembles_cursor_fragments_and_allows_over_one
         EvidenceStore(evidence.root),
         str(monitor_run_id),
     ) == reference
+
+
+def test_physical_history_allows_more_fragments_than_reconstructed_batch_limit(
+    tmp_path: Path,
+) -> None:
+    paths, evidence, test_run_id, raw_probe, monitor_run_id, group_id = _physical_context(tmp_path)
+    _publish_physical_test_run(
+        paths,
+        evidence,
+        test_run_id=test_run_id,
+        raw_probe=raw_probe,
+        monitor_run_id=monitor_run_id,
+    )
+    batches = _append_large_physical_history(
+        paths,
+        raw_probe,
+        monitor_run_id,
+        group_id,
+        batch_count=1024,
+        values_per_batch=9,
+    )
+    pages = []
+    history = HistoryStore(paths)
+    try:
+        cursor = None
+        while True:
+            result = history.query_history(
+                HistoryQuery(
+                    session_id=paths.session_id,
+                    start_ns=batches[0].captured_unix_ns,
+                    end_ns=batches[-1].captured_unix_ns + 1,
+                    limit=10_000,
+                    cursor=cursor,
+                    run_id=monitor_run_id,
+                    group_id=group_id,
+                )
+            )
+            assert result.ok and result.data is not None
+            pages.append(result.data)
+            if result.data.next_cursor is None:
+                break
+            cursor = result.data.next_cursor
+    finally:
+        history.close()
+    assert sum(page.value_count for page in pages) == 9_216
+    assert sum(len(page.batches) for page in pages) == 1_025
+
+    reference = publish_physical_monitor_run(
+        paths,
+        evidence,
+        scenario_role="failed-before",
+        test_run_id=test_run_id,
+        run_id=str(monitor_run_id),
+        group_id=str(group_id),
+        start_sequence=0,
+        end_sequence_exclusive=1024,
+        start_captured_unix_ns=batches[0].captured_unix_ns,
+        end_captured_unix_ns_exclusive=batches[-1].captured_unix_ns + 1,
+        probe_id=raw_probe,
+    )
+    assert load_monitor_run_reference(paths, EvidenceStore(evidence.root), str(monitor_run_id)) == reference
+
+
+def test_physical_history_allows_monitor_bounded_typed_strings(
+    tmp_path: Path,
+) -> None:
+    paths, evidence, test_run_id, raw_probe, monitor_run_id, group_id = _physical_context(tmp_path)
+    _publish_physical_test_run(
+        paths,
+        evidence,
+        test_run_id=test_run_id,
+        raw_probe=raw_probe,
+        monitor_run_id=monitor_run_id,
+    )
+    binding = ObservationBinding(
+        workspace_id=paths.workspace_id,
+        logical_project_id="123e4567-e89b-42d3-a456-426614174000",
+        session_id=paths.session_id,
+        probe_id=raw_probe,
+        target_device="stm32:stm32f429zi",
+        physical_target="board:fixture-01",
+        build_id="b" * 64,
+        elf_sha256="c" * 64,
+        input_snapshot_sha256="d" * 64,
+        git_head="e" * 40,
+        git_dirty=False,
+        flash_session_id="flash-session-01",
+        lease_id="lease-01",
+        dwarf_sha256="f" * 64,
+        svd_sha256=None,
+    )
+    typed_payload = "x" * 70_000
+    batches = tuple(
+        SampleBatch(
+            binding=binding,
+            group_id=group_id,
+            group_revision=1,
+            run_id=monitor_run_id,
+            sequence=sequence,
+            scheduled_unix_ns=1_700_000_000_000_000_000 + sequence * 1_000_000,
+            captured_unix_ns=1_700_000_000_000_000_100 + sequence * 1_000_000,
+            latency_ns=100,
+            actual_rate_hz=1000.0,
+            subscriber_drops=0,
+            history_drops=0,
+            deadline_drops=0,
+            values=(
+                SampleValue(
+                    WatchItem.variable("large-string"),
+                    "OK",
+                    typed_value={"payload": typed_payload},
+                ),
+            ),
+        )
+        for sequence in range(2)
+    )
+    history = HistoryStore(paths)
+    try:
+        appended = history.append_batches(batches)
+        assert appended.ok, appended.to_dict()
+    finally:
+        history.close()
+
+    reference = publish_physical_monitor_run(
+        paths,
+        evidence,
+        scenario_role="failed-before",
+        test_run_id=test_run_id,
+        run_id=str(monitor_run_id),
+        group_id=str(group_id),
+        start_sequence=0,
+        end_sequence_exclusive=2,
+        start_captured_unix_ns=batches[0].captured_unix_ns,
+        end_captured_unix_ns_exclusive=batches[-1].captured_unix_ns + 1,
+        probe_id=raw_probe,
+    )
+    assert load_monitor_run_reference(paths, EvidenceStore(evidence.root), str(monitor_run_id)) == reference
 
 
 def test_physical_history_window_publishes_and_fresh_loads_v2_reference(tmp_path: Path) -> None:

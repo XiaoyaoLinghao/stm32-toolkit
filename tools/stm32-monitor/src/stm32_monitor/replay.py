@@ -22,7 +22,6 @@ from stm32_toolkit.evidence import (
 )
 from stm32_toolkit.evidence.model import (
     MAX_JSON_DEPTH as _EVIDENCE_JSON_DEPTH,
-    MAX_STRING_BYTES as _EVIDENCE_STRING_BYTES,
 )
 from stm32_toolkit.evidence.gc import RootRecord, get_root, put_root
 from stm32_toolkit.monitor_replay_contract import (
@@ -48,8 +47,15 @@ from stm32_toolkit.project_model import ProjectManifestError, load_project_model
 from stm32_toolkit.testing.publication import TestRunRepository
 from stm32_toolkit.paths import WorkspacePaths, require_safe_session_id
 
-from .history import HistoryBatchSlice, HistoryQuery, HistoryStore, MAX_HISTORY_VALUES
+from .history import (
+    HistoryBatchSlice,
+    HistoryPage,
+    HistoryQuery,
+    HistoryStore,
+    MAX_HISTORY_VALUES,
+)
 from .models import (
+    MAX_JSON_STRING_CHARS as _MONITOR_JSON_STRING_CHARS,
     MAX_SIGNED_INT64,
     ObservationBinding,
     SampleBatch,
@@ -1335,7 +1341,7 @@ def _physical_copy_json(
     if isinstance(value, str):
         if (
             unicodedata.normalize("NFC", value) != value
-            or len(value.encode("utf-8")) > _EVIDENCE_STRING_BYTES
+            or len(value) > _MONITOR_JSON_STRING_CHARS
         ):
             raise ValueError("physical transcript string is invalid")
         return value
@@ -1660,6 +1666,7 @@ def _physical_history_batches(
     cursor: str | None = None
     seen_cursors: set[str] = set()
     slices: list[HistoryBatchSlice] = []
+    fragment_values = 0
     try:
         monitor_run_uuid = UUID(run_id)
         while True:
@@ -1679,9 +1686,23 @@ def _physical_history_batches(
                     _fail(EVIDENCE_INTEGRITY_FAILURE, "physical Monitor history is corrupt")
                 _fail(ENVIRONMENT_FAILURE, "physical Monitor history provider failed")
             page = result.data
-            slices.extend(page.batches)
-            if len(slices) > MAX_REPLAY_BATCHES:
-                _physical_identity_error("physical Monitor history window is too large")
+            if type(page) is not HistoryPage or type(page.batches) is not tuple:
+                _fail(EVIDENCE_INTEGRITY_FAILURE, "physical Monitor history page is corrupt")
+            for history_slice in page.batches:
+                if (
+                    type(history_slice) is not HistoryBatchSlice
+                    or type(history_slice.values) is not tuple
+                    or not history_slice.values
+                    or any(type(value) is not SampleValue for value in history_slice.values)
+                ):
+                    _fail(
+                        EVIDENCE_INTEGRITY_FAILURE,
+                        "physical Monitor history contains invalid fragments",
+                    )
+                fragment_values += len(history_slice.values)
+                if fragment_values > MAX_HISTORY_VALUES:
+                    _physical_identity_error("physical Monitor history window is too large")
+                slices.append(history_slice)
             next_cursor = page.next_cursor
             if next_cursor is None:
                 break
@@ -1727,6 +1748,8 @@ def _physical_history_batches(
                         values=tuple(current_values),
                     )
                 )
+                if len(batches) > MAX_REPLAY_BATCHES:
+                    _physical_identity_error("physical Monitor history has too many batches")
             except (TypeError, ValueError, OverflowError) as error:
                 raise MonitorReplayError(
                     EVIDENCE_INTEGRITY_FAILURE,
