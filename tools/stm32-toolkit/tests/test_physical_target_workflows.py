@@ -1,0 +1,620 @@
+from __future__ import annotations
+
+import asyncio
+import json
+import pytest
+from dataclasses import dataclass
+from hashlib import sha256
+from pathlib import Path
+from typing import Mapping
+
+from stm32_toolkit.evidence import EvidenceIdentity, canonical_json_bytes
+from stm32_toolkit.paths import WorkspacePaths
+from stm32_toolkit.probe.backend import (
+    FlashBackendReport,
+    ProbeAttachmentEvidence,
+    ProbeDescriptor,
+)
+from stm32_toolkit.probe.client import ProbeClient
+from stm32_toolkit.probe.lease import ProbeLeaseManager
+from stm32_toolkit.probe.model import OperationLevel
+from stm32_toolkit.probe.supervisor import ProbeServiceConfig, ProbeServiceSupervisor
+from stm32_toolkit.testing.model import calculate_inventory_digest
+from stm32_toolkit.testing.target import encode_frame
+import stm32_toolkit.testing_workflows as workflows
+from test_build_runner import prepare_project
+from test_flash import _publish_current_debug_build
+
+
+RAW_PROBE = "probe-r3-a"
+CASES = ("suite.boot", "suite.sensor")
+
+
+@dataclass
+class _Board:
+    flashed: bool = False
+
+
+def _fixed_identity(
+    build: Mapping[str, object], workspace: WorkspacePaths
+) -> EvidenceIdentity:
+    return EvidenceIdentity(
+        workspace_id=workspace.workspace_id,
+        project_id=str(build["logicalProjectId"]),
+        session_id=workspace.session_id,
+        build_id=str(build["buildId"]),
+        elf_sha256=str(build["elfSha256"]),
+        target_device=str(build["targetDevice"]),
+        input_snapshot_sha256=str(build["inputSnapshotSha256"]),
+        git_commit=str(build["gitHead"]),
+        git_dirty=bool(build["gitDirty"]),
+    )
+
+
+def _fixed_stream(
+    identity: EvidenceIdentity, digest: str, cases: tuple[str, ...] = CASES
+) -> bytes:
+    started = "2026-08-22T00:00:00.000000Z"
+    ended = "2026-08-22T00:00:01.000000Z"
+    bodies: list[tuple[int, dict[str, object]]] = [
+        (1, {"mode": "target", "identity": identity.to_dict(), "case_ids": list(cases), "inventory_digest": digest, "discovered_at_utc": started}),
+        (2, {"run_id": "physical-r3-run", "started_at_utc": started, "case_ids": list(cases), "inventory_digest": digest}),
+    ]
+    for case_id in cases:
+        bodies.extend(
+            [
+                (3, {"case_id": case_id, "started_at_utc": started}),
+                (4, {"case_id": case_id, "state": "passed", "ended_at_utc": ended, "duration_ms": 500, "message": None, "stdout": None, "stderr": None}),
+            ]
+        )
+    frames = [
+        encode_frame(kind, sequence, body)
+        for sequence, (kind, body) in enumerate(bodies)
+    ]
+    terminal = {
+        "state": "passed",
+        "ended_at_utc": ended,
+        "duration_ms": 1000,
+        "inventory_digest": digest,
+        "build_id": identity.build_id,
+        "elf_sha256": identity.elf_sha256,
+        "target_device": identity.target_device,
+        "counts": {"passed": len(cases), "failed": 0, "skipped": 0, "error": 0, "timeout": 0},
+        "event_stream_digest": sha256(b"".join(frames)).hexdigest(),
+    }
+    frames.append(encode_frame(5, len(frames), terminal))
+    return b"".join(frames)
+
+
+class _SourceChangeBackend:
+    def __init__(
+        self,
+        *,
+        board: _Board,
+        physical_identity: Mapping[str, object],
+        stream: bytes,
+        flash_segment: bytes,
+        events: list[tuple[object, ...]],
+        fail_transport: bool = False,
+    ) -> None:
+        self.board = board
+        self.identity_value = dict(physical_identity)
+        self.stream = stream
+        self.flash_segment = flash_segment
+        self.events = events
+        self.fail_transport = fail_transport
+        self.level = ""
+        self.remaining = b""
+
+    def preflight_target_capabilities(self, probe_id: str, level: object) -> None:
+        self.level = str(getattr(level, "value", ""))
+        self.events.append(("preflight", self.level, probe_id))
+
+    def list_probes(self) -> tuple[ProbeDescriptor, ...]:
+        return (ProbeDescriptor(RAW_PROBE, "ST", "ST-LINK", None),)
+
+    def open_attach(
+        self, probe_id: str, target: str, *, halt_on_connect: bool = False
+    ) -> ProbeAttachmentEvidence:
+        self.events.append(("attach", self.level, halt_on_connect))
+        return ProbeAttachmentEvidence(probe_id, target, target, 1)
+
+    def target_identity(self) -> Mapping[str, object]:
+        self.events.append(("identity", self.level))
+        return dict(self.identity_value)
+
+    def flash_elf(self, image: bytes) -> FlashBackendReport:
+        self.events.append(("flash", self.level))
+        self.board.flashed = True
+        return FlashBackendReport(len(image), 1)
+
+    def read_memory(self, address: int, length: int) -> bytes:
+        assert self.board.flashed and address == 0x08000000
+        return self.flash_segment[:length]
+
+    def open_target_transport(
+        self, transport: str, config: Mapping[str, object], deadline_ms: int
+    ) -> Mapping[str, object]:
+        self.events.append(("transport.open", self.level, self.board.flashed))
+        if not self.board.flashed:
+            raise AssertionError("pre-flash Target transport is forbidden")
+        if self.fail_transport:
+            raise RuntimeError("post-flash transport unavailable")
+        ram = config["ram"]
+        normalized_ram = tuple((item["start"], item["size"]) for item in ram)
+        digest = sha256(
+            canonical_json_bytes(
+                {"address": config["address"], "ring_size": config["size"], "ram": normalized_ram}
+            )
+        ).hexdigest()
+        region = ram[0]
+        self.remaining = self.stream
+        return {
+            "transport_id": "transport-r3",
+            "identity": {
+                "probe_id": config["probe_id"],
+                "target_id": config["target_id"],
+                "transport": transport,
+                "config_digest": digest,
+                "address": f"0x{int(config['address']):08x}",
+                "ring_size": str(config["size"]),
+                "ram_bounds": f"0x{int(region['start']):08x}+0x{int(region['size']):08x}",
+            },
+        }
+
+    def read_target_transport(
+        self, transport_id: str, maximum: int, deadline_ms: int
+    ) -> Mapping[str, object]:
+        raw, self.remaining = self.remaining[:maximum], self.remaining[maximum:]
+        return {"data": raw, "eof": not self.remaining}
+
+    def close_target_transport(self, transport_id: str) -> Mapping[str, object]:
+        self.events.append(("transport.close", self.level))
+        return {"transport_id": transport_id, "closed": True}
+
+    def close(self) -> None:
+        self.events.append(("backend.close", self.level))
+
+
+def _fixed_project(tmp_path: Path) -> tuple[Path, Mapping[str, object]]:
+    project = prepare_project(
+        tmp_path,
+        overrides={
+            "schemaVersion": 3,
+            "testing": {
+                "target": {
+                    "executable": "build/arm-debug/firmware.elf",
+                    "timeout_seconds": 10,
+                    "transport": {
+                        "kind": "memory-mailbox",
+                        "options": {"address": 0x20000000, "size": 4096},
+                    },
+                }
+            },
+        },
+    )
+    return project, _publish_current_debug_build(project)
+
+
+def test_prepare_never_reads_old_inventory_and_execute_proves_fixed_after_flash(
+    tmp_path: Path,
+) -> None:
+    project, build = _fixed_project(tmp_path)
+    data_root = (tmp_path / "plugin-data").absolute()
+    workspace = WorkspacePaths.from_roots(
+        data_root, project, build["logicalProjectId"], "session-r3"
+    )
+    fixed_identity = _fixed_identity(build, workspace)
+    expected_digest = calculate_inventory_digest("target", fixed_identity, CASES)
+    board = _Board()
+    events: list[tuple[object, ...]] = []
+    flash_segment = (project / "build/arm-debug/firmware.elf").read_bytes()[84:404]
+
+    def backend_factory() -> _SourceChangeBackend:
+        return _SourceChangeBackend(
+            board=board,
+            physical_identity={
+                "board_id": str(build["targetDevice"]),
+                "mcu": "stm32f407vg",
+                "target_id": str(build["targetDevice"]),
+                "probe_serial_hash": sha256(RAW_PROBE.encode()).hexdigest(),
+            },
+            stream=_fixed_stream(fixed_identity, expected_digest),
+            flash_segment=flash_segment,
+            events=events,
+        )
+
+    prepare = getattr(workflows, "target_test_prepare", None)
+    execute = getattr(workflows, "target_test_execute", None)
+    seams_type = getattr(workflows, "TargetWorkflowSeams", None)
+    assert callable(prepare) and callable(execute) and seams_type is not None
+    seams = seams_type(_test_backend_factory=backend_factory)
+    context = workflows.TestingWorkflowContext(project, data_root, "session-r3")
+
+    prepared = asyncio.run(
+        prepare(context, probe_id=RAW_PROBE, case_ids=CASES, _seams=seams)
+    )
+    assert prepared.ok is True, (prepared.to_dict(), events)
+    assert prepared.data["inventory_digest"] == expected_digest
+    assert board.flashed is False
+    assert not [event for event in events if event[0] == "transport.open"]
+    assert not [event for event in events if event[:2] == ("preflight", "modify")]
+
+    executed = asyncio.run(
+        execute(
+            workflows.TestingWorkflowContext(project, data_root, "session-r3"),
+            probe_id=RAW_PROBE,
+            authorized_action_digest=prepared.data["authorized_action_digest"],
+            _seams=seams,
+        )
+    )
+    assert executed.ok is True, (executed.to_dict(), events)
+    assert [event for event in events if event[:2] == ("flash", "modify")] == [
+        ("flash", "modify")
+    ]
+    assert [event for event in events if event[0] == "transport.open"] == [
+        ("transport.open", "modify", True)
+    ]
+    shown = workflows.test_show(
+        workflows.TestingWorkflowContext(project, data_root, "session-r3"),
+        run_id=executed.data["run"]["run_id"],
+    )
+    assert shown.ok is True
+    assert shown.data["execution_source"] == "physical"
+    public_bytes = json.dumps(
+        {"prepared": prepared.to_dict(), "executed": executed.to_dict(), "shown": shown.to_dict()},
+        sort_keys=True,
+    ).encode()
+    durable_bytes = b"".join(
+        path.read_bytes()
+        for path in data_root.rglob("*")
+        if path.is_file()
+    ) + (project / "artifacts/migration/flash-result.json").read_bytes()
+    assert RAW_PROBE.encode() not in public_bytes + durable_bytes
+    assert str(project).encode() not in public_bytes + durable_bytes
+
+
+def test_case_ids_are_mandatory_and_authorization_is_single_use(tmp_path: Path) -> None:
+    project, build = _fixed_project(tmp_path)
+    data_root = (tmp_path / "plugin-data").absolute()
+    workspace = WorkspacePaths.from_roots(
+        data_root, project, build["logicalProjectId"], "session-r3"
+    )
+    identity = _fixed_identity(build, workspace)
+    digest = calculate_inventory_digest("target", identity, CASES)
+    board = _Board()
+    events: list[tuple[object, ...]] = []
+    segment = (project / "build/arm-debug/firmware.elf").read_bytes()[84:404]
+
+    def factory() -> _SourceChangeBackend:
+        return _SourceChangeBackend(
+            board=board,
+            physical_identity={
+                "board_id": str(build["targetDevice"]), "mcu": "stm32f407vg",
+                "target_id": str(build["targetDevice"]),
+                "probe_serial_hash": sha256(RAW_PROBE.encode()).hexdigest(),
+            },
+            stream=_fixed_stream(identity, digest), flash_segment=segment, events=events,
+        )
+
+    seams = workflows.TargetWorkflowSeams(factory)
+    context = workflows.TestingWorkflowContext(project, data_root, "session-r3")
+    invalid = asyncio.run(
+        workflows.target_test_prepare(context, probe_id=RAW_PROBE, case_ids=(), _seams=seams)
+    )
+    assert invalid.ok is False
+    assert events == []
+    prepared = asyncio.run(
+        workflows.target_test_prepare(context, probe_id=RAW_PROBE, case_ids=CASES, _seams=seams)
+    )
+    first = asyncio.run(
+        workflows.target_test_execute(
+            context, probe_id=RAW_PROBE,
+            authorized_action_digest=prepared.data["authorized_action_digest"], _seams=seams,
+        )
+    )
+    second = asyncio.run(
+        workflows.target_test_execute(
+            context, probe_id=RAW_PROBE,
+            authorized_action_digest=prepared.data["authorized_action_digest"], _seams=seams,
+        )
+    )
+    assert first.ok is True
+    assert second.ok is False and second.code == "TEST_AUTHORIZATION_INVALID"
+    assert len([event for event in events if event[:2] == ("flash", "modify")]) == 1
+
+
+def test_postflash_contradiction_consumes_and_creates_no_testrun_root(tmp_path: Path) -> None:
+    project, build = _fixed_project(tmp_path)
+    data_root = (tmp_path / "plugin-data").absolute()
+    workspace = WorkspacePaths.from_roots(
+        data_root, project, build["logicalProjectId"], "session-r3"
+    )
+    identity = _fixed_identity(build, workspace)
+    expected = calculate_inventory_digest("target", identity, CASES)
+    board = _Board()
+    events: list[tuple[object, ...]] = []
+    segment = (project / "build/arm-debug/firmware.elf").read_bytes()[84:404]
+
+    def factory() -> _SourceChangeBackend:
+        return _SourceChangeBackend(
+            board=board,
+            physical_identity={
+                "board_id": str(build["targetDevice"]), "mcu": "stm32f407vg",
+                "target_id": str(build["targetDevice"]),
+                "probe_serial_hash": sha256(RAW_PROBE.encode()).hexdigest(),
+            },
+            stream=_fixed_stream(identity, "f" * 64), flash_segment=segment, events=events,
+        )
+
+    seams = workflows.TargetWorkflowSeams(factory)
+    context = workflows.TestingWorkflowContext(project, data_root, "session-r3")
+    prepared = asyncio.run(
+        workflows.target_test_prepare(context, probe_id=RAW_PROBE, case_ids=CASES, _seams=seams)
+    )
+    assert prepared.data["inventory_digest"] == expected
+    failed = asyncio.run(
+        workflows.target_test_execute(
+            context, probe_id=RAW_PROBE,
+            authorized_action_digest=prepared.data["authorized_action_digest"], _seams=seams,
+        )
+    )
+    reused = asyncio.run(
+        workflows.target_test_execute(
+            context, probe_id=RAW_PROBE,
+            authorized_action_digest=prepared.data["authorized_action_digest"], _seams=seams,
+        )
+    )
+    assert failed.ok is False and reused.code == "TEST_AUTHORIZATION_INVALID"
+    assert workflows.test_show(context, run_id="physical-r3-run").ok is False
+    flash_bytes = (project / "artifacts/migration/flash-result.json").read_bytes()
+    assert RAW_PROBE.encode() not in flash_bytes
+    assert sha256(RAW_PROBE.encode()).hexdigest().encode() in flash_bytes
+
+
+@pytest.mark.parametrize("failure", ["old-identity", "extra", "missing", "digest", "transport"])
+def test_all_postflash_contract_failures_stay_consumed(
+    tmp_path: Path, failure: str
+) -> None:
+    project, build = _fixed_project(tmp_path)
+    data_root = (tmp_path / "plugin-data").absolute()
+    workspace = WorkspacePaths.from_roots(
+        data_root, project, build["logicalProjectId"], "session-r3"
+    )
+    fixed = _fixed_identity(build, workspace)
+    expected = calculate_inventory_digest("target", fixed, CASES)
+    observed_identity = fixed
+    observed_cases = CASES
+    observed_digest = expected
+    if failure == "old-identity":
+        observed_identity = EvidenceIdentity(
+            fixed.workspace_id, fixed.project_id, fixed.session_id, "0" * 64,
+            fixed.elf_sha256, fixed.target_device, fixed.input_snapshot_sha256,
+            fixed.git_commit, fixed.git_dirty,
+        )
+    elif failure == "extra":
+        observed_cases = (*CASES, "suite.extra")
+    elif failure == "missing":
+        observed_cases = CASES[:1]
+    elif failure == "digest":
+        observed_digest = "f" * 64
+    board = _Board()
+    events: list[tuple[object, ...]] = []
+    segment = (project / "build/arm-debug/firmware.elf").read_bytes()[84:404]
+
+    def factory() -> _SourceChangeBackend:
+        return _SourceChangeBackend(
+            board=board,
+            physical_identity={
+                "board_id": str(build["targetDevice"]), "mcu": "stm32f407vg",
+                "target_id": str(build["targetDevice"]),
+                "probe_serial_hash": sha256(RAW_PROBE.encode()).hexdigest(),
+            },
+            stream=_fixed_stream(observed_identity, observed_digest, observed_cases),
+            flash_segment=segment, events=events,
+            fail_transport=failure == "transport",
+        )
+
+    seams = workflows.TargetWorkflowSeams(factory)
+    context = workflows.TestingWorkflowContext(project, data_root, "session-r3")
+    prepared = asyncio.run(
+        workflows.target_test_prepare(context, probe_id=RAW_PROBE, case_ids=CASES, _seams=seams)
+    )
+    failed = asyncio.run(
+        workflows.target_test_execute(
+            context, probe_id=RAW_PROBE,
+            authorized_action_digest=prepared.data["authorized_action_digest"], _seams=seams,
+        )
+    )
+    reused = asyncio.run(
+        workflows.target_test_execute(
+            context, probe_id=RAW_PROBE,
+            authorized_action_digest=prepared.data["authorized_action_digest"], _seams=seams,
+        )
+    )
+    assert failed.ok is False
+    assert reused.code == "TEST_AUTHORIZATION_INVALID"
+    assert workflows.test_show(context, run_id="physical-r3-run").ok is False
+    assert len([event for event in events if event[:2] == ("flash", "modify")]) == 1
+
+
+def test_static_source_drift_is_consumed_before_any_modify_work(tmp_path: Path) -> None:
+    project, build = _fixed_project(tmp_path)
+    data_root = (tmp_path / "plugin-data").absolute()
+    events: list[tuple[object, ...]] = []
+    board = _Board()
+    segment = (project / "build/arm-debug/firmware.elf").read_bytes()[84:404]
+
+    def factory() -> _SourceChangeBackend:
+        workspace = WorkspacePaths.from_roots(
+            data_root, project, build["logicalProjectId"], "session-r3"
+        )
+        identity = _fixed_identity(build, workspace)
+        digest = calculate_inventory_digest("target", identity, CASES)
+        return _SourceChangeBackend(
+            board=board,
+            physical_identity={
+                "board_id": str(build["targetDevice"]), "mcu": "stm32f407vg",
+                "target_id": str(build["targetDevice"]),
+                "probe_serial_hash": sha256(RAW_PROBE.encode()).hexdigest(),
+            },
+            stream=_fixed_stream(identity, digest), flash_segment=segment, events=events,
+        )
+
+    seams = workflows.TargetWorkflowSeams(factory)
+    context = workflows.TestingWorkflowContext(project, data_root, "session-r3")
+    prepared = asyncio.run(
+        workflows.target_test_prepare(context, probe_id=RAW_PROBE, case_ids=CASES, _seams=seams)
+    )
+    (project / "Src/main.c").write_bytes(b"int changed;\n")
+    failed = asyncio.run(
+        workflows.target_test_execute(
+            context, probe_id=RAW_PROBE,
+            authorized_action_digest=prepared.data["authorized_action_digest"], _seams=seams,
+        )
+    )
+    reused = asyncio.run(
+        workflows.target_test_execute(
+            context, probe_id=RAW_PROBE,
+            authorized_action_digest=prepared.data["authorized_action_digest"], _seams=seams,
+        )
+    )
+    assert failed.code == "TEST_INVENTORY_CHANGED"
+    assert reused.code == "TEST_AUTHORIZATION_INVALID"
+    assert not [event for event in events if event[:2] == ("preflight", "modify")]
+
+
+@pytest.mark.parametrize(
+    ("transport", "project_transport", "required"),
+    [
+        ("mailbox", {"kind": "memory-mailbox", "options": {"address": 0x20000000, "size": 4096}}, {"address", "size", "ram", "target_id", "probe_id"}),
+        ("rtt", {"kind": "rtt", "options": {"channel": 0}}, {"channel", "control_block_address", "ram", "target_id", "probe_id"}),
+        ("uart", {"kind": "uart", "options": {"port": "COM9", "baud": 115200}}, {"port", "baud", "data_bits", "parity", "stop_bits", "target_id", "probe_id"}),
+        ("semihosting", {"kind": "semihosting", "options": {}}, {"elf_path", "elf_sha256", "host_files", "target_id", "probe_id"}),
+    ],
+)
+def test_probe_service_derives_all_runtime_transport_configs(
+    tmp_path: Path, transport: str, project_transport: Mapping[str, object], required: set[str]
+) -> None:
+    project = prepare_project(
+        tmp_path,
+        overrides={
+            "schemaVersion": 3,
+            "testing": {
+                "target": {
+                    "executable": "build/arm-debug/firmware.elf",
+                    "timeout_seconds": 10,
+                    "transport": project_transport,
+                }
+            },
+        },
+    )
+    build = _publish_current_debug_build(project)
+    data_root = (tmp_path / "plugin-data").absolute()
+    workspace = WorkspacePaths.from_roots(
+        data_root, project, build["logicalProjectId"], "transport-session"
+    )
+    workspace.ensure()
+    opened: list[Mapping[str, object]] = []
+
+    class Backend:
+        def preflight_target_capabilities(self, probe_id: str, level: object) -> None:
+            pass
+
+        def list_probes(self) -> tuple[ProbeDescriptor, ...]:
+            return (ProbeDescriptor(RAW_PROBE, "ST", "ST-LINK", None),)
+
+        def open_attach(self, probe_id: str, target: str, *, halt_on_connect: bool = False) -> ProbeAttachmentEvidence:
+            return ProbeAttachmentEvidence(probe_id, target, target, 1)
+
+        def target_identity(self) -> Mapping[str, object]:
+            return {
+                "board_id": str(build["targetDevice"]), "mcu": "stm32f407vg",
+                "target_id": str(build["targetDevice"]),
+                "probe_serial_hash": sha256(RAW_PROBE.encode()).hexdigest(),
+            }
+
+        def open_target_transport(self, name: str, config: Mapping[str, object], deadline_ms: int) -> Mapping[str, object]:
+            assert name == transport
+            opened.append(dict(config))
+            return {"transport_id": "transport-one", "identity": {"transport": name}}
+
+        def close_target_transport(self, transport_id: str) -> Mapping[str, object]:
+            return {"transport_id": transport_id, "closed": True}
+
+        def close(self) -> None:
+            pass
+
+    async def scenario() -> None:
+        supervisor = ProbeServiceSupervisor(
+            config=ProbeServiceConfig(
+                RAW_PROBE, workspace.workspace_id, workspace.session_id,
+                OperationLevel.MODIFY, workspace.session_root, project,
+            ),
+            lease_manager=ProbeLeaseManager(data_root), backend_factory=Backend,
+        )
+        client: ProbeClient | None = None
+        try:
+            client = ProbeClient(await supervisor.start())
+            await client.attach(RAW_PROBE, "stm32f407vg")
+            result = await client.target_transport_open(transport, project_transport, 1000)
+            await client.target_transport_close(str(result["transport_id"]))
+        finally:
+            if client is not None:
+                await client.close()
+            await supervisor.stop()
+
+    asyncio.run(scenario())
+    assert len(opened) == 1 and set(opened[0]) == required
+    assert opened[0]["probe_id"] == sha256(RAW_PROBE.encode()).hexdigest()
+    if transport == "semihosting":
+        assert Path(str(opened[0]["elf_path"])).is_absolute()
+
+
+def test_busy_prepare_reports_owner_without_stealing_the_live_lease(tmp_path: Path) -> None:
+    project, build = _fixed_project(tmp_path)
+    data_root = (tmp_path / "plugin-data").absolute()
+    blocking = WorkspacePaths.from_roots(
+        data_root, project, build["logicalProjectId"], "blocking-session"
+    )
+    blocking.ensure()
+    board = _Board()
+    events: list[tuple[object, ...]] = []
+    segment = (project / "build/arm-debug/firmware.elf").read_bytes()[84:404]
+
+    def factory() -> _SourceChangeBackend:
+        return _SourceChangeBackend(
+            board=board,
+            physical_identity={
+                "board_id": str(build["targetDevice"]), "mcu": "stm32f407vg",
+                "target_id": str(build["targetDevice"]),
+                "probe_serial_hash": sha256(RAW_PROBE.encode()).hexdigest(),
+            },
+            stream=b"", flash_segment=segment, events=events,
+        )
+
+    async def scenario() -> None:
+        blocker = ProbeServiceSupervisor(
+            config=ProbeServiceConfig(
+                RAW_PROBE, blocking.workspace_id, blocking.session_id,
+                OperationLevel.OBSERVE, blocking.session_root, project,
+            ),
+            lease_manager=ProbeLeaseManager(data_root), backend_factory=factory,
+        )
+        client: ProbeClient | None = None
+        try:
+            client = ProbeClient(await blocker.start())
+            result = await workflows.target_test_prepare(
+                workflows.TestingWorkflowContext(project, data_root, "session-r3"),
+                probe_id=RAW_PROBE, case_ids=CASES,
+                _seams=workflows.TargetWorkflowSeams(factory),
+            )
+            assert result.ok is False and result.code == "PROBE_BUSY"
+            await client.attach(RAW_PROBE, "stm32f407vg")
+            assert (await client.target_identity())["probe_serial_hash"] == sha256(RAW_PROBE.encode()).hexdigest()
+        finally:
+            if client is not None:
+                await client.close()
+            await blocker.stop()
+
+    asyncio.run(scenario())

@@ -76,6 +76,7 @@ class FlashRequest:
     expected_elf_sha256: str
     authorized: bool
     timeout_ms: int = 30_000
+    evidence_probe_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -130,6 +131,18 @@ class _FreshFirmware:
     segments: tuple[FlashSegment, ...]
 
 
+@dataclass(frozen=True)
+class FreshFirmwareFacts:
+    model: ProjectModel
+    elf_path: str
+    elf_sha256: str
+    build_id: str
+    input_snapshot_sha256: str
+    git_commit: str
+    git_dirty: bool
+    target_device: str
+
+
 class _FlashFailure(Exception):
     def __init__(
         self, code: str, message: str, details: Mapping[str, object] | None = None
@@ -175,6 +188,12 @@ def _validate_request(request: object) -> tuple[FlashRequest, Path]:
     ):
         if not isinstance(value, str) or _SHA256.fullmatch(value) is None:
             raise _fail("FLASH_REQUEST_INVALID", "Flash request is invalid", field=field, rule="value")
+    if request.evidence_probe_id is not None and (
+        not isinstance(request.evidence_probe_id, str)
+        or _SHA256.fullmatch(request.evidence_probe_id) is None
+        or request.evidence_probe_id != sha256(request.probe_id.encode("utf-8")).hexdigest()
+    ):
+        raise _fail("FLASH_REQUEST_INVALID", "Flash request is invalid", field="evidenceProbeId", rule="value")
     if (
         isinstance(request.timeout_ms, bool)
         or not isinstance(request.timeout_ms, int)
@@ -389,6 +408,27 @@ def _load_fresh_firmware(root: Path) -> _FreshFirmware:
     return _FreshFirmware(root, model, identity, str(elf_rel), elf_data, segments)
 
 
+def load_fresh_firmware_facts(project_root: Path) -> FreshFirmwareFacts:
+    if not isinstance(project_root, Path):
+        raise _fail("FLASH_REQUEST_INVALID", "Flash request is invalid", field="projectRoot", rule="type")
+    try:
+        root = project_root.expanduser().resolve(strict=True)
+    except (OSError, RuntimeError):
+        raise _fail("FLASH_REQUEST_INVALID", "Flash request is invalid", field="projectRoot", rule="value") from None
+    fresh = _load_fresh_firmware(root)
+    identity = fresh.identity
+    return FreshFirmwareFacts(
+        fresh.model,
+        fresh.elf_path,
+        str(identity["elfSha256"]),
+        str(identity["buildId"]),
+        str(identity["inputSnapshotSha256"]),
+        str(identity["gitHead"]),
+        bool(identity["gitDirty"]),
+        str(identity["targetDevice"]),
+    )
+
+
 def _canonical_target(value: str) -> str:
     return _TARGET_CANONICAL.sub("", value.casefold())
 
@@ -489,7 +529,7 @@ async def flash_firmware(request: object, client: object) -> OperationResult[Fla
             elf_size=len(firmware.elf_data),
             target_device=firmware.model.target.device,
             debug_target=typed.target,
-            probe_id=typed.probe_id,
+            probe_id=typed.evidence_probe_id or typed.probe_id,
             workspace_id=workspace_id,
             session_id=session_id,
             verified_bytes=verified,
@@ -540,4 +580,4 @@ async def flash_firmware(request: object, client: object) -> OperationResult[Fla
         )
 
 
-__all__ = ["FlashReport", "FlashRequest", "flash_firmware"]
+__all__ = ["FlashReport", "FlashRequest", "FreshFirmwareFacts", "flash_firmware", "load_fresh_firmware_facts"]

@@ -558,14 +558,8 @@ class ProbeClient:
             raise _response_error()
         identity = data["identity"]
         if (
-            set(identity) != {"board_id", "mcu", "target_id", "probe_serial_hash"}
-            or any(
-                not isinstance(identity[field], str) or not identity[field]
-                for field in ("board_id", "mcu", "target_id")
-            )
-            or not isinstance(identity["probe_serial_hash"], str)
-            or len(identity["probe_serial_hash"]) != 64
-            or any(character not in "0123456789abcdef" for character in identity["probe_serial_hash"])
+            not identity
+            or any(not isinstance(key, str) or not isinstance(value, str) or not value for key, value in identity.items())
         ):
             raise _response_error()
         return data

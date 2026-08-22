@@ -21,6 +21,8 @@ TEST_TOOLS = {
     "stm32_test_host_discover",
     "stm32_test_host_run",
     "stm32_test_show",
+    "stm32_test_target_prepare",
+    "stm32_test_target_execute",
 }
 
 
@@ -59,6 +61,22 @@ def test_testing_tools_have_closed_project_bound_schemas(tmp_path: Path):
     assert show_schema["required"] == ["runId"]
     assert show_schema["properties"]["runId"]["maxLength"] == 65_536
     assert show_schema["additionalProperties"] is False
+
+    prepare_schema = schemas["stm32_test_target_prepare"]
+    assert set(prepare_schema["properties"]) == {"probeId", "caseIds"}
+    assert set(prepare_schema["required"]) == {"probeId", "caseIds"}
+    assert prepare_schema["properties"]["caseIds"]["minItems"] == 1
+    assert prepare_schema["additionalProperties"] is False
+    execute_schema = schemas["stm32_test_target_execute"]
+    assert set(execute_schema["properties"]) == {"probeId", "authorizedActionDigest"}
+    assert set(execute_schema["required"]) == {"probeId", "authorizedActionDigest"}
+    assert execute_schema["additionalProperties"] is False
+    forbidden_physical = {
+        "inventoryDigest", "workspaceId", "projectId", "sessionId", "target",
+        "buildId", "elfSha256", "inputSnapshotSha256",
+    }
+    assert not forbidden_physical & set(prepare_schema["properties"])
+    assert not forbidden_physical & set(execute_schema["properties"])
 
     forbidden = {
         "projectRoot", "project_root", "dataRoot", "data_root", "sessionId",

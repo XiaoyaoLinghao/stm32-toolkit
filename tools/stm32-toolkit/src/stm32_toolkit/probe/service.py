@@ -20,6 +20,7 @@ from aiohttp import web
 
 from stm32_toolkit import __version__
 from stm32_toolkit.testing.artifacts import TestArtifactCollector
+from stm32_toolkit.probe.flash import load_fresh_firmware_facts
 
 from .backend import ProbeBackend, ProbeBackendError
 from .authorization import ControlAuthorizationError, ControlAuthorizationStore
@@ -375,6 +376,65 @@ class ProbeService:
         ):
             raise ProbeBackendError("PROBE_BACKEND_ERROR", "Target identity output is invalid")
         return identity
+
+    def _effective_target_transport_config(
+        self, transport: str, supplied: Mapping[str, object]
+    ) -> dict[str, object]:
+        """Rebuild runtime-only transport facts from the current Project v3."""
+        root = self._project_root
+        if root is None:
+            return dict(supplied)
+        facts = load_fresh_firmware_facts(root)
+        model = facts.model
+        target_config = getattr(getattr(model, "testing", None), "target", None)
+        configured = getattr(target_config, "transport", None)
+        kind = getattr(configured, "kind", None)
+        options = getattr(configured, "options", None)
+        names = {
+            "memory-mailbox": "mailbox", "rtt": "rtt", "uart": "uart",
+            "semihosting": "semihosting",
+        }
+        if names.get(kind) != transport:
+            raise ProbeBackendError("PROBE_BACKEND_ERROR", "Target transport configuration changed")
+        if kind == "memory-mailbox":
+            project = {"kind": kind, "options": {"address": options.address, "size": options.size}}
+        elif kind == "rtt":
+            project_options = {"channel": options.channel}
+            if options.control_block_address is not None:
+                project_options["controlBlockAddress"] = options.control_block_address
+            project = {"kind": kind, "options": project_options}
+        elif kind == "uart":
+            project = {"kind": kind, "options": {"port": options.port, "baud": options.baud}}
+        else:
+            project = {"kind": kind, "options": {}}
+        if dict(supplied) != project:
+            raise ProbeBackendError("PROBE_BACKEND_ERROR", "Target transport configuration changed")
+        physical = self._closed_target_identity(self._backend.target_identity())
+        common = {
+            "target_id": facts.target_device,
+            "probe_id": physical["probe_serial_hash"],
+        }
+        ram = [
+            {"start": region.origin, "size": region.length}
+            for region in model.memory.regions
+            if "w" in region.attributes.casefold()
+        ]
+        if transport == "mailbox":
+            return {**project["options"], "ram": ram, **common}
+        if transport == "rtt":
+            return {
+                "channel": project["options"]["channel"],
+                "control_block_address": project["options"].get("controlBlockAddress"),
+                "ram": ram, **common,
+            }
+        if transport == "uart":
+            return {**project["options"], "data_bits": 8, "parity": "N", "stop_bits": 1, **common}
+        return {
+            "elf_path": str(root.joinpath(*facts.elf_path.split("/")).resolve(strict=True)),
+            "elf_sha256": facts.elf_sha256,
+            "host_files": False,
+            **common,
+        }
 
     @staticmethod
     def _closed_target_state(value: object) -> dict[str, object]:
@@ -844,10 +904,42 @@ class ProbeService:
                     "truncated": captured["truncated"],
                 }
             if request.operation == "target.transport.open":
-                result = dict(self._backend.open_target_transport(str(request.data["transport"]), request.data["config"], int(request.data["deadline_ms"])))
+                transport = str(request.data["transport"])
+                effective = self._effective_target_transport_config(
+                    transport, request.data["config"]
+                )
+                result = dict(self._backend.open_target_transport(transport, effective, int(request.data["deadline_ms"])))
                 if set(result) != {"transport_id", "identity"} or not isinstance(result["transport_id"], str):
                     raise ProbeBackendError("PROBE_BACKEND_ERROR", "Target transport result is invalid")
-                result["identity"] = self._closed_target_identity(result["identity"])
+                identity = result["identity"]
+                if not isinstance(identity, Mapping) or not identity or any(
+                    not isinstance(key, str) or not isinstance(value, str) or not value
+                    for key, value in identity.items()
+                ):
+                    raise ProbeBackendError("PROBE_BACKEND_ERROR", "Target transport identity is invalid")
+                transport_fields = {
+                    "mailbox": {"probe_id", "target_id", "transport", "config_digest", "address", "ring_size", "ram_bounds"},
+                    "rtt": {"probe_id", "target_id", "transport", "config_digest", "channel", "control_block_address", "ram_bounds"},
+                    "uart": {"probe_id", "target_id", "transport", "config_digest", "port", "baud", "data_bits", "parity", "stop_bits", "flow_control"},
+                    "semihosting": {"probe_id", "target_id", "transport", "config_digest", "elf_path", "elf_sha256", "host_file_policy"},
+                }[transport]
+                projected = {key: value for key, value in identity.items() if key in transport_fields}
+                result["identity"] = projected if set(projected) == transport_fields else dict(identity)
+                if transport == "semihosting" and self._project_root is not None:
+                    facts = load_fresh_firmware_facts(self._project_root)
+                    result["identity"]["elf_path"] = facts.elf_path
+                    result["identity"]["config_digest"] = hashlib.sha256(
+                        json.dumps(
+                            {
+                                "elf_path": facts.elf_path,
+                                "elf_sha256": facts.elf_sha256,
+                                "host_files": False,
+                                "profile_declared": True,
+                            },
+                            ensure_ascii=False, allow_nan=False,
+                            separators=(",", ":"), sort_keys=True,
+                        ).encode("utf-8")
+                    ).hexdigest()
                 return result
             if request.operation == "target.transport.read":
                 captured = dict(self._backend.read_target_transport(str(request.data["transport_id"]), int(request.data["max_bytes"]), int(request.data["deadline_ms"])))

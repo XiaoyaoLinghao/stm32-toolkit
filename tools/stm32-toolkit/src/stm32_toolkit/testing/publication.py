@@ -18,6 +18,7 @@ from stm32_toolkit.evidence import (
 )
 from stm32_toolkit.evidence.gc import RootRecord, get_root, put_root
 from stm32_toolkit.evidence.store import MAX_EVIDENCE_READ_BYTES, EvidenceStore
+from stm32_toolkit.execution_provenance import validate_execution_provenance
 
 from .artifacts import TestArtifactCollector
 from .model import (
@@ -39,6 +40,7 @@ _HASH = re.compile(r"^[0-9a-f]{64}$")
 _HOST_OPERATION = "host-test-run"
 _TARGET_INPUT_OPERATION = "target-replay-input"
 _TARGET_OPERATION = "target-test-replay"
+_PHYSICAL_TARGET_OPERATION = "target-test-physical"
 _TERMINAL_STATES = frozenset({"passed", "failed", "error"})
 _CASE_COUNT_STATES = ("passed", "failed", "skipped", "error", "timeout")
 _ENVELOPE_METADATA = {"test_run_id", "test_manifest_sha256", "inventory_digest"}
@@ -62,6 +64,11 @@ _TARGET_METADATA = {
     "physical_transport_evidence",
     "test_manifest_sha256",
     "test_run_id",
+}
+_PHYSICAL_TARGET_METADATA = {
+    "action_digest", "execution_source", "flash_session_id", "import_workspace_id",
+    "lease_id", "origin_workspace_id", "physical_transport_evidence",
+    "probe_serial_hash", "test_manifest_sha256", "test_run_id",
 }
 def _publication_invalid(message: str, error: BaseException | None = None) -> None:
     failure = protocol_error("TEST_PROTOCOL_INVALID", message)
@@ -420,7 +427,7 @@ class PublishedTestRun:
             "test_manifest": self.manifest_artifact.to_dict(),
             "evidence_id": self.envelope.evidence_id,
         }
-        if self.envelope.operation == _TARGET_OPERATION:
+        if self.envelope.operation in {_TARGET_OPERATION, _PHYSICAL_TARGET_OPERATION}:
             data.update(
                 {
                     "execution_source": self.root.metadata["execution_source"],
@@ -637,6 +644,90 @@ class TestRunPublisher:
             _evidence_commit_failure("Target replay root publication failed", exc)
         return PublishedTestRun(verified, manifest_artifact, envelope, root)
 
+    def publish_target_physical(
+        self,
+        manifest: TestRunManifest,
+        run_envelope: EvidenceEnvelope,
+        *,
+        action_digest: str,
+        workspace_id: str,
+        probe_serial_hash: str,
+        flash_session_id: str,
+        lease_id: str,
+    ) -> PublishedTestRun:
+        """Root one completed physical Target run from its retained raw Evidence."""
+        if not isinstance(manifest, TestRunManifest) or manifest.mode != "target" or manifest.transport not in {"mailbox", "rtt", "uart", "semihosting"}:
+            _publication_invalid("publication requires a physical Target manifest")
+        if manifest.state not in _TERMINAL_STATES or manifest.stdout is not None or manifest.stderr is not None:
+            _publication_invalid("physical Target manifest is not terminal")
+        for value, field in (
+            (action_digest, "action_digest"), (workspace_id, "workspace_id"),
+            (probe_serial_hash, "probe_serial_hash"),
+        ):
+            _hash(value, field)
+        if manifest.identity.workspace_id != workspace_id or not isinstance(run_envelope, EvidenceEnvelope):
+            _publication_invalid("physical Target provenance is incompatible")
+        try:
+            validate_execution_provenance(
+                execution_source="physical", physical_transport_evidence=True,
+                origin_workspace_id=workspace_id, import_workspace_id=workspace_id,
+                origin_session_id=manifest.identity.session_id,
+                current_session_id=manifest.identity.session_id,
+                hardware_labels={
+                    "probe_id": probe_serial_hash,
+                    "target_id": str(manifest.identity.target_device),
+                    "flash_session_id": flash_session_id,
+                    "lease_id": lease_id,
+                },
+            )
+        except ValueError as error:
+            _publication_invalid("physical Target provenance is incompatible", error)
+        if run_envelope.identity != manifest.identity or run_envelope.operation != "target-test-run":
+            _publication_invalid("physical Target run Evidence is invalid")
+        raw_refs = tuple(
+            artifact for artifact in run_envelope.artifacts
+            if artifact.kind == "test-events" and artifact.media_type == "application/vnd.stm32.target-events"
+        )
+        if raw_refs != (manifest.raw_events,):
+            _publication_invalid("physical Target raw Evidence is invalid")
+        payload = canonical_json_bytes(manifest.to_dict())
+        directory = self._collector.new_directory("test-manifest")
+        manifest_artifact = self._collector.write_and_ingest(
+            directory, "test-run-manifest.json", payload,
+            kind="test-manifest", media_type="application/json",
+        )
+        envelope = EvidenceEnvelope(
+            identity=manifest.identity,
+            operation=_PHYSICAL_TARGET_OPERATION,
+            produced_at_utc=manifest.ended_at_utc,
+            parents=(str(run_envelope.evidence_id),),
+            artifacts=(manifest_artifact, manifest.raw_events),
+            metadata={
+                "action_digest": action_digest,
+                "execution_source": "physical",
+                "flash_session_id": flash_session_id,
+                "import_workspace_id": workspace_id,
+                "lease_id": lease_id,
+                "origin_workspace_id": workspace_id,
+                "physical_transport_evidence": True,
+                "probe_serial_hash": probe_serial_hash,
+                "test_manifest_sha256": manifest_artifact.sha256,
+                "test_run_id": manifest.run_id,
+            },
+        )
+        self.evidence_store.put_envelope(run_envelope)
+        self.evidence_store.put_envelope(envelope)
+        root = RootRecord(
+            "test-run", manifest.run_id, str(envelope.evidence_id),
+            {
+                "mode": "target", "state": manifest.state,
+                "execution_source": "physical", "physical_transport_evidence": True,
+                "origin_workspace_id": workspace_id, "import_workspace_id": workspace_id,
+            },
+        )
+        put_root(self.evidence_store, root)
+        return PublishedTestRun(manifest, manifest_artifact, envelope, root)
+
 
 class TestRunRepository:
     """Reload one TestRun through its exact Evidence root and object bindings."""
@@ -751,10 +842,75 @@ class TestRunRepository:
             _corrupt("stored root metadata contradicts the Target replay record")
         return PublishedTestRun(manifest, manifest_artifact, envelope, root)
 
+    def _load_target_physical(
+        self, root: RootRecord, envelope: EvidenceEnvelope, run_id: str
+    ) -> PublishedTestRun:
+        metadata = dict(envelope.metadata)
+        if envelope.operation != _PHYSICAL_TARGET_OPERATION or set(metadata) != _PHYSICAL_TARGET_METADATA:
+            _corrupt("stored physical Target metadata is not closed")
+        workspace_id = _hash(metadata["origin_workspace_id"], "origin_workspace_id")
+        if (
+            metadata["execution_source"] != "physical"
+            or metadata["physical_transport_evidence"] is not True
+            or metadata["import_workspace_id"] != workspace_id
+            or envelope.identity.workspace_id != workspace_id
+            or metadata["test_run_id"] != run_id
+            or len(envelope.parents) != 1
+        ):
+            _corrupt("stored physical Target provenance is invalid")
+        _hash(metadata["action_digest"], "action_digest")
+        _hash(metadata["probe_serial_hash"], "probe_serial_hash")
+        try:
+            parent = self.evidence_store.get_envelope(envelope.parents[0])
+        except EvidenceValidationError as error:
+            _corrupt("stored physical Target run parent is absent", error)
+        parent_metadata = dict(parent.metadata)
+        if (
+            parent.operation != "target-test-run"
+            or parent.identity != envelope.identity
+            or parent_metadata.get("action_digest") != metadata["action_digest"]
+            or parent_metadata.get("probe_serial_hash") != metadata["probe_serial_hash"]
+            or parent_metadata.get("test_run_id") != run_id
+        ):
+            _corrupt("stored physical Target run parent is invalid")
+        manifest_refs = tuple(
+            artifact for artifact in envelope.artifacts
+            if artifact.kind == "test-manifest" and artifact.media_type == "application/json"
+        )
+        raw_refs = tuple(
+            artifact for artifact in envelope.artifacts
+            if artifact.kind == "test-events" and artifact.media_type == "application/vnd.stm32.target-events"
+        )
+        if len(manifest_refs) != 1 or len(raw_refs) != 1 or len(envelope.artifacts) != 2:
+            _corrupt("stored physical Target artifacts are invalid")
+        manifest_artifact = manifest_refs[0]
+        if manifest_artifact.sha256 != metadata["test_manifest_sha256"]:
+            _corrupt("stored physical Target manifest digest is invalid")
+        manifest = _decode_manifest_bytes(
+            self.evidence_store.read_artifact(manifest_artifact, maximum_bytes=MAX_EVIDENCE_READ_BYTES)
+        )
+        if (
+            manifest.run_id != run_id or manifest.mode != "target"
+            or manifest.transport not in {"mailbox", "rtt", "uart", "semihosting"}
+            or manifest.state not in _TERMINAL_STATES or manifest.identity != envelope.identity
+            or manifest.raw_events != raw_refs[0]
+        ):
+            _corrupt("stored physical Target manifest is invalid")
+        expected_root = {
+            "mode": "target", "state": manifest.state,
+            "execution_source": "physical", "physical_transport_evidence": True,
+            "origin_workspace_id": workspace_id, "import_workspace_id": workspace_id,
+        }
+        if root.manifest_id != envelope.evidence_id or root.metadata != expected_root:
+            _corrupt("stored physical Target root is invalid")
+        return PublishedTestRun(manifest, manifest_artifact, envelope, root)
+
     def load(self, run_id: str) -> PublishedTestRun:
         root = get_root(self.evidence_store, "test-run", run_id)
         try:
             envelope = self.evidence_store.get_envelope(root.manifest_id)
+            if envelope.operation == _PHYSICAL_TARGET_OPERATION:
+                return self._load_target_physical(root, envelope, run_id)
             if envelope.operation == _TARGET_OPERATION:
                 return self._load_target_replay(root, envelope, run_id)
             if envelope.operation != _HOST_OPERATION:

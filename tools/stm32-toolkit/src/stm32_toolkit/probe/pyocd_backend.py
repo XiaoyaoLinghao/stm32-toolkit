@@ -490,7 +490,13 @@ class PyOCDBackend:
                 or set(runtime) != {"elf_path", "elf_sha256"}
                 or not isinstance(path, str)
                 or not path
-                or re.fullmatch(r"[A-Z]:\\[^\r\n]+", path) is None
+                or (
+                    re.fullmatch(r"[A-Z]:\\[^\r\n]+", path) is None
+                    and (
+                        path.startswith("/") or "\\" in path or ":" in path
+                        or any(part in {"", ".", ".."} for part in path.split("/"))
+                    )
+                )
                 or not isinstance(digest, str)
                 or re.fullmatch(r"[0-9a-f]{64}", digest) is None
             ):
@@ -511,9 +517,10 @@ class PyOCDBackend:
 
         declared_transports = set(profile) & {"mailbox", "rtt", "uart", "semihosting", "swo", "probe"}
         log_transport = profile.get("log_transport")
-        if declared_transports or log_transport is not None:
+        if declared_transports:
             if self._target_transport_factory is None:
                 raise ProbeBackendError("PROBE_OPERATION_UNAVAILABLE", "Target transport provider is unavailable")
+        if log_transport is not None:
             if not isinstance(log_transport, Mapping) or set(log_transport) != {"kind", "options"}:
                 raise ProbeBackendError("PROBE_IDENTITY_MISMATCH", "Target log transport profile is invalid")
             kind = log_transport.get("kind")
@@ -1064,7 +1071,17 @@ class PyOCDBackend:
         transport_id = f"transport-{self._next_transport}"
         self._next_transport += 1
         self._transports[transport_id] = handle
-        return {"transport_id": transport_id, "identity": dict(self.target_identity())}
+        identity = getattr(handle, "identity")()
+        if not isinstance(identity, Mapping):
+            try:
+                getattr(handle, "close")()
+            finally:
+                self._transports.pop(transport_id, None)
+            raise ProbeBackendError("PROBE_BACKEND_ERROR", "Target transport identity is invalid")
+        return {
+            "transport_id": transport_id,
+            "identity": {**dict(self.target_identity()), **dict(identity)},
+        }
 
     def read_target_transport(self, transport_id: str, max_bytes: int, deadline_ms: int) -> Mapping[str, object]:
         handle = self._transports.get(transport_id)

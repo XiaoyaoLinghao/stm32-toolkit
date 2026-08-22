@@ -52,6 +52,8 @@ from stm32_toolkit.testing_workflows import (
     TestingWorkflowContext,
     host_test_discover,
     host_test_run,
+    target_test_prepare,
+    target_test_execute,
     target_replay_run,
     test_show,
 )
@@ -136,7 +138,9 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     project_root = getattr(args, "project_root", Path.cwd())
-    hardware = args.command in _HARDWARE_COMMANDS
+    hardware = args.command in _HARDWARE_COMMANDS or getattr(args, "operation", "") in {
+        "test.target.prepare", "test.target.execute"
+    }
     try:
         result = (
             asyncio.run(_hardware_operation_result(args, project_root))
@@ -300,6 +304,23 @@ def _build_parser() -> argparse.ArgumentParser:
     replay.add_argument("--operation-id", required=True, type=_diagnostic_operation_id)
     replay.add_argument("--descriptor-file", required=True, type=Path)
     replay.add_argument("--stream-file", required=True, type=Path)
+
+    target = test_commands.add_parser("target")
+    target_commands = target.add_subparsers(dest="target_command", required=True)
+    target_prepare = target_commands.add_parser("prepare")
+    target_prepare.set_defaults(operation="test.target.prepare")
+    _add_testing_context(target_prepare)
+    target_prepare.add_argument("--probe", required=True)
+    target_prepare.add_argument(
+        "--case", dest="case_ids", action=_UniqueCaseAction, required=True, default=()
+    )
+    target_execute = target_commands.add_parser("execute")
+    target_execute.set_defaults(operation="test.target.execute")
+    _add_testing_context(target_execute)
+    target_execute.add_argument("--probe", required=True)
+    target_execute.add_argument(
+        "--authorized-action-digest", required=True, type=_testing_digest
+    )
 
     diagnose = commands.add_parser("diagnose")
     diagnose_commands = diagnose.add_subparsers(
@@ -843,6 +864,17 @@ async def _hardware_operation_result(
     args: argparse.Namespace,
     project_root: Path,
 ) -> OperationResult[object]:
+    if args.command == "test" and args.test_command == "target":
+        context = TestingWorkflowContext(project_root, args.data_root, args.session_id)
+        if args.target_command == "prepare":
+            return await target_test_prepare(
+                context, probe_id=args.probe, case_ids=args.case_ids
+            )
+        return await target_test_execute(
+            context,
+            probe_id=args.probe,
+            authorized_action_digest=args.authorized_action_digest,
+        )
     common = (project_root, args.data_root, args.session_id)
     if args.command == "probe":
         return await probe_list_workflow(ProbeListWorkflowRequest(*common))

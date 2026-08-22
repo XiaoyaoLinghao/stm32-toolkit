@@ -45,6 +45,20 @@ def _show_argv(run_id: str = "run-1") -> list[str]:
     return ["test", "show", run_id, *CONTEXT_ARGS]
 
 
+def _target_prepare_argv(*case_ids: str) -> list[str]:
+    argv = ["test", "target", "prepare", "--probe", "probe-a"]
+    for case_id in case_ids:
+        argv.extend(["--case", case_id])
+    return [*argv, *CONTEXT_ARGS]
+
+
+def _target_execute_argv() -> list[str]:
+    return [
+        "test", "target", "execute", "--probe", "probe-a",
+        "--authorized-action-digest", DIGEST, *CONTEXT_ARGS,
+    ]
+
+
 def test_testing_parser_exposes_fixed_operations_and_run_shape() -> None:
     assert parse(_discover_argv()).operation == "test.host.discover"
 
@@ -55,6 +69,33 @@ def test_testing_parser_exposes_fixed_operations_and_run_shape() -> None:
     show = parse(_show_argv())
     assert show.operation == "test.show"
     assert show.run_id == "run-1"
+    prepared = parse(_target_prepare_argv("fails"))
+    assert prepared.operation == "test.target.prepare" and prepared.case_ids == ("fails",)
+    executed = parse(_target_execute_argv())
+    assert executed.operation == "test.target.execute" and executed.authorized_action_digest == DIGEST
+
+
+@pytest.mark.parametrize(
+    ("argv", "workflow", "expected"),
+    [
+        (_target_prepare_argv("fails"), "target_test_prepare", {"probe_id": "probe-a", "case_ids": ("fails",)}),
+        (_target_execute_argv(), "target_test_execute", {"probe_id": "probe-a", "authorized_action_digest": DIGEST}),
+    ],
+)
+def test_physical_target_cli_is_one_async_workflow_call(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+    argv: list[str], workflow: str, expected: dict[str, object],
+) -> None:
+    calls: list[dict[str, object]] = []
+
+    async def operation(_context: object, **kwargs: object) -> OperationResult[dict[str, object]]:
+        calls.append(kwargs)
+        return OperationResult.success("test.target", {"ok": True})
+
+    monkeypatch.setattr(cli, workflow, operation)
+    assert cli.main(argv) == 0
+    assert calls == [expected]
+    assert json.loads(capsys.readouterr().out)["ok"] is True
 
 
 def test_discover_dispatches_exactly_once_and_writes_one_json_result(

@@ -76,6 +76,8 @@ from stm32_toolkit.testing_workflows import (
     TestingWorkflowContext,
     host_test_discover,
     host_test_run,
+    target_test_prepare,
+    target_test_execute,
     target_replay_run,
     test_show,
 )
@@ -1263,6 +1265,35 @@ async def tool_test_show_for_request(
     return test_show(_testing_context(runtime), run_id=run_id).to_dict()
 
 
+async def tool_test_target_prepare_for_request(
+    runtime: ServerRuntime, context: Context | None, probe_id: str,
+    case_ids: list[str] | tuple[str, ...],
+) -> dict[str, object]:
+    failure = await _client_roots_failure(runtime, context, "test.target.prepare")
+    if failure is not None:
+        return failure
+    return (
+        await target_test_prepare(
+            _testing_context(runtime), probe_id=probe_id, case_ids=tuple(case_ids)
+        )
+    ).to_dict()
+
+
+async def tool_test_target_execute_for_request(
+    runtime: ServerRuntime, context: Context | None, probe_id: str,
+    authorized_action_digest: str,
+) -> dict[str, object]:
+    failure = await _client_roots_failure(runtime, context, "test.target.execute")
+    if failure is not None:
+        return failure
+    return (
+        await target_test_execute(
+            _testing_context(runtime), probe_id=probe_id,
+            authorized_action_digest=authorized_action_digest,
+        )
+    ).to_dict()
+
+
 async def _client_roots_failure(
     runtime: ServerRuntime,
     context: Context | None,
@@ -1821,12 +1852,28 @@ def create_server(
     ) -> dict[str, object]:
         return await tool_test_show_for_request(runtime, ctx, runId)
 
+    @mcp.tool(name="stm32_test_target_prepare")
+    async def stm32_test_target_prepare(
+        ctx: Context, probeId: ProbeId, caseIds: Annotated[list[CaseId], Field(min_length=1, max_length=MAX_CASES), AfterValidator(_unique_case_ids)],
+    ) -> dict[str, object]:
+        return await tool_test_target_prepare_for_request(runtime, ctx, probeId, caseIds)
+
+    @mcp.tool(name="stm32_test_target_execute")
+    async def stm32_test_target_execute(
+        ctx: Context, probeId: ProbeId, authorizedActionDigest: Digest,
+    ) -> dict[str, object]:
+        return await tool_test_target_execute_for_request(
+            runtime, ctx, probeId, authorizedActionDigest
+        )
+
     _close_tool_input_schemas(
         mcp,
         (
             "stm32_test_host_discover",
             "stm32_test_host_run",
             "stm32_test_show",
+            "stm32_test_target_prepare",
+            "stm32_test_target_execute",
             "stm32_test_target_replay",
             "stm32_diagnostic_start",
             "stm32_diagnostic_show",

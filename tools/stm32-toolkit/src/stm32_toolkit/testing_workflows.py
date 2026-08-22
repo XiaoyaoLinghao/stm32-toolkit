@@ -5,6 +5,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 import re
+from hashlib import sha256
+from typing import Callable
+from datetime import datetime, timezone
 
 from stm32_toolkit.build.identity import (
     GitEvidence,
@@ -18,6 +21,7 @@ from stm32_toolkit.evidence import (
     EVIDENCE_LIMIT_EXCEEDED,
     EVIDENCE_PATH_UNSAFE,
     EvidenceEnvelope,
+    EvidenceIdentity,
     EvidenceIdentityContext,
     EvidenceValidationError,
 )
@@ -32,6 +36,7 @@ from stm32_toolkit.testing.model import (
     TestProtocolError,
     TestRunManifest,
     host_target_device,
+    calculate_inventory_digest,
 )
 from stm32_toolkit.testing.publication import TestRunPublisher, TestRunRepository
 from stm32_toolkit.testing.replay import (
@@ -44,13 +49,27 @@ from stm32_toolkit.testing.target import (
     TargetFrameDecoder,
     TargetRunBinding,
     TargetRunValidator,
+    PhysicalRunProvenance,
+    PhysicalTargetFlashAdapter,
+    ProbeClientTargetTransport,
+    TargetRunError,
+    TargetTestRunner,
 )
+from stm32_toolkit.probe.flash import load_fresh_firmware_facts
+from stm32_toolkit.probe.client import ProbeClient, ProbeClientError
+from stm32_toolkit.probe.lease import ProbeLeaseError, ProbeLeaseManager
+from stm32_toolkit.probe.model import OperationLevel
+from stm32_toolkit.probe.supervisor import ProbeServiceConfig, ProbeServiceSupervisor
+from stm32_toolkit.probe.service import ProbeServiceError
+from stm32_toolkit.probe.worker import ProbeWorkerConfig
 
 
 _DISCOVER_OPERATION = "test.host.discover"
 _RUN_OPERATION = "test.host.run"
 _SHOW_OPERATION = "test.show"
 _REPLAY_OPERATION = "test.target.replay"
+_TARGET_PREPARE_OPERATION = "test.target.prepare"
+_TARGET_EXECUTE_OPERATION = "test.target.execute"
 _DIGEST = re.compile(r"^[0-9a-f]{64}$")
 _RUN_ID = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
 
@@ -110,6 +129,8 @@ _PUBLIC_MESSAGES = {
     "TEST_AUTHORIZATION_INVALID": "Target test authorization is invalid.",
     "TEST_IDENTITY_MISMATCH": "Test identity does not match.",
     "TEST_EXECUTION_FAILED": "Test execution failed.",
+    "TEST_FLASH_FAILED": "Target firmware flash failed.",
+    "PROBE_BUSY": "The selected probe is busy.",
 }
 
 _TEST_CODE_MAP = {
@@ -175,6 +196,23 @@ def _exception_result(operation: str, error: BaseException) -> OperationResult[N
         return _test_failure(operation, error)
     if isinstance(error, ProjectManifestError):
         return _project_failure(operation, error)
+    if isinstance(error, (ProbeClientError, ProbeLeaseError, ProbeServiceError, TargetRunError)) or isinstance(getattr(error, "code", None), str):
+        code = getattr(error, "code", "TEST_EXECUTION_FAILED")
+        if code == "PROBE_BUSY":
+            return _failure(operation, "PROBE_BUSY")
+        mapped = {
+            "PROBE_IDENTITY_MISMATCH": "TEST_IDENTITY_MISMATCH",
+            "PROBE_BACKEND_ERROR": "TEST_TRANSPORT_UNAVAILABLE",
+            "PROBE_OPERATION_UNAVAILABLE": "TEST_TRANSPORT_UNAVAILABLE",
+            "PROBE_SERVICE_UNAVAILABLE": "TEST_TRANSPORT_UNAVAILABLE",
+            "FIRMWARE_INPUT_CHANGED": "TEST_INVENTORY_CHANGED",
+            "FIRMWARE_IDENTITY_MISMATCH": "TEST_IDENTITY_MISMATCH",
+            "FLASH_PLAN_CHANGED": "TEST_INVENTORY_CHANGED",
+            "FLASH_IMAGE_INVALID": "TEST_INVENTORY_CHANGED",
+        }.get(code, code)
+        if mapped in _PUBLIC_MESSAGES:
+            return _failure(operation, mapped)
+        return _failure(operation, "TEST_EXECUTION_FAILED")
     raise error
 
 
@@ -279,7 +317,298 @@ def _valid_case_ids(case_ids: object) -> bool:
         return False
     if not all(isinstance(case_id, str) and bool(case_id) for case_id in case_ids):
         return False
-    return len(case_ids) == len(set(case_ids))
+    return bool(case_ids) and len(case_ids) <= 4096 and len(case_ids) == len(set(case_ids))
+
+
+@dataclass(frozen=True)
+class TargetWorkflowSeams:
+    """One private seam replacing only the physical backend in tests."""
+
+    _test_backend_factory: Callable[[], object] | None = None
+
+
+def _target_project_config(target: object) -> tuple[str, dict[str, object]]:
+    configured = getattr(target, "transport", None)
+    kind = getattr(configured, "kind", None)
+    options = getattr(configured, "options", None)
+    transport = {
+        "memory-mailbox": "mailbox", "rtt": "rtt", "uart": "uart",
+        "semihosting": "semihosting",
+    }.get(kind)
+    if transport == "mailbox":
+        value = {"kind": kind, "options": {"address": options.address, "size": options.size}}
+    elif transport == "rtt":
+        members = {"channel": options.channel}
+        if options.control_block_address is not None:
+            members["controlBlockAddress"] = options.control_block_address
+        value = {"kind": kind, "options": members}
+    elif transport == "uart":
+        value = {"kind": kind, "options": {"port": options.port, "baud": options.baud}}
+    elif transport == "semihosting":
+        value = {"kind": kind, "options": {}}
+    else:
+        raise TestProtocolError("TEST_PROTOCOL_INVALID", "Target transport is invalid")
+    return transport, value
+
+
+def _target_support_profile(model: object, facts: object, project: Mapping[str, object]) -> dict[str, object]:
+    target = getattr(getattr(model, "testing", None), "target", None)
+    transport, _ = _target_project_config(target)
+    ram = [
+        {"start": region.origin, "size": region.length}
+        for region in model.memory.regions
+        if "w" in region.attributes.casefold()
+    ]
+    profile: dict[str, object] = {
+        "backend": "pyocd",
+        "board_id": facts.target_device,
+        "mcu": model.debug.target,
+        "target_id": facts.target_device,
+        "ram": ram,
+    }
+    options = dict(project["options"])
+    if transport == "mailbox":
+        profile["mailbox"] = options
+    elif transport == "rtt":
+        profile["rtt"] = {
+            "channel": options["channel"],
+            **({"control_block_address": options["controlBlockAddress"]} if "controlBlockAddress" in options else {}),
+        }
+    elif transport == "uart":
+        profile["uart"] = options
+    else:
+        profile["semihosting"] = {"declared": True}
+        profile["semihosting_runtime"] = {
+            "elf_path": facts.elf_path,
+            "elf_sha256": facts.elf_sha256,
+        }
+    return profile
+
+
+def _target_state(context: TestingWorkflowContext) -> tuple[_WorkflowState, object, object, str, dict[str, object], dict[str, object]]:
+    state = _make_state(context, with_identity=False, require_host=False)
+    facts = load_fresh_firmware_facts(context.project_root)
+    target = getattr(getattr(facts.model, "testing", None), "target", None)
+    if target is None:
+        raise _WorkflowFailure("PROJECT_TESTING_NOT_CONFIGURED")
+    transport, project_config = _target_project_config(target)
+    support = _target_support_profile(facts.model, facts, project_config)
+    return state, facts.model, facts, transport, project_config, support
+
+
+def _target_supervisor(
+    context: TestingWorkflowContext,
+    state: _WorkflowState,
+    *, probe_id: str,
+    level: OperationLevel,
+    support: Mapping[str, object],
+    seams: TargetWorkflowSeams,
+) -> ProbeServiceSupervisor:
+    collector = TestArtifactCollector(
+        state.results_root, state.evidence_store, project_root=state.workspace.project_root
+    )
+    config = ProbeServiceConfig(
+        probe_id, state.workspace.workspace_id, state.workspace.session_id, level,
+        state.workspace.session_root, context.project_root,
+        artifact_collector=collector,
+    )
+    manager = ProbeLeaseManager(context.data_root)
+    if seams._test_backend_factory is not None:
+        return ProbeServiceSupervisor(
+            config=config, lease_manager=manager,
+            backend_factory=seams._test_backend_factory,
+        )
+    worker = ProbeWorkerConfig(target_profile={**dict(support), "probe_id": probe_id})
+    return ProbeServiceSupervisor(config=config, lease_manager=manager, worker_config=worker)
+
+
+async def target_test_prepare(
+    context: TestingWorkflowContext,
+    *,
+    probe_id: str,
+    case_ids: tuple[str, ...],
+    _seams: TargetWorkflowSeams = TargetWorkflowSeams(),
+) -> OperationResult[dict[str, object]]:
+    """Authorize exact fixed-after firmware facts without reading Target inventory."""
+    supervisor: ProbeServiceSupervisor | None = None
+    client: ProbeClient | None = None
+    try:
+        if not isinstance(probe_id, str) or not probe_id or not _valid_case_ids(case_ids):
+            raise TestProtocolError("TEST_PROTOCOL_INVALID", "Physical Target request is invalid")
+        state, model, facts, transport, project_config, support = _target_state(context)
+        probe_hash = sha256(probe_id.encode("utf-8")).hexdigest()
+        expected_identity = EvidenceIdentity(
+            state.workspace.workspace_id, str(model.logical_project_id),
+            state.workspace.session_id, facts.build_id, facts.elf_sha256,
+            facts.target_device, facts.input_snapshot_sha256, facts.git_commit,
+            facts.git_dirty,
+        )
+        inventory_digest = calculate_inventory_digest("target", expected_identity, case_ids)
+        supervisor = _target_supervisor(
+            context, state, probe_id=probe_id, level=OperationLevel.OBSERVE,
+            support=support, seams=_seams,
+        )
+        endpoint = await supervisor.start()
+        client = ProbeClient(endpoint)
+        await client.attach(probe_id, str(model.debug.target))
+        physical = await client.target_identity()
+        expected_target = {
+            "board_id": facts.target_device, "mcu": str(model.debug.target),
+            "target_id": facts.target_device, "probe_serial_hash": probe_hash,
+        }
+        if physical != expected_target:
+            raise TargetRunError("TEST_IDENTITY_MISMATCH", "Physical Target identity changed")
+        current_facts = load_fresh_firmware_facts(context.project_root)
+        if (
+            current_facts.build_id != facts.build_id
+            or current_facts.elf_sha256 != facts.elf_sha256
+            or current_facts.input_snapshot_sha256 != facts.input_snapshot_sha256
+            or current_facts.git_commit != facts.git_commit
+            or current_facts.git_dirty != facts.git_dirty
+            or current_facts.target_device != facts.target_device
+        ):
+            raise TargetRunError("TEST_INVENTORY_CHANGED", "Physical Target inputs changed")
+        runner = TargetTestRunner(
+            state.workspace.session_root / "target-authorizations", client,
+            object(), lambda _: object(), owns_probe=False,
+        )
+        prepared = await runner.prepare(
+            workspace_id=state.workspace.workspace_id,
+            project_id=str(model.logical_project_id),
+            session_id=state.workspace.session_id,
+            revision=facts.git_commit,
+            input_snapshot_sha256=facts.input_snapshot_sha256,
+            target=expected_target,
+            probe_serial_hash=probe_hash,
+            elf_path=facts.elf_path,
+            elf_sha256=facts.elf_sha256,
+            build_id=facts.build_id,
+            inventory_digest=inventory_digest,
+            transport=transport,
+            transport_config=project_config,
+            support_profile=support,
+            cases=case_ids,
+            timeout_ms=int(getattr(getattr(model.testing, "target"), "timeout_seconds")) * 1000,
+        )
+        return OperationResult.success(_TARGET_PREPARE_OPERATION, {
+            "authorized_action_digest": prepared.action_digest,
+            "expires_at_utc": prepared.expires_at_utc.strftime("%Y-%m-%dT%H:%M:%S.%fZ"),
+            "inventory_digest": inventory_digest,
+            "case_ids": list(case_ids),
+            "probe_serial_hash": probe_hash,
+        })
+    except Exception as error:
+        return _exception_result(_TARGET_PREPARE_OPERATION, error)
+    finally:
+        if client is not None:
+            await client.close()
+        if supervisor is not None:
+            await supervisor.stop()
+
+
+async def target_test_execute(
+    context: TestingWorkflowContext,
+    *,
+    probe_id: str,
+    authorized_action_digest: str,
+    _seams: TargetWorkflowSeams = TargetWorkflowSeams(),
+) -> OperationResult[dict[str, object]]:
+    """Consume one intent, flash, validate fixed-after inventory, and publish."""
+    supervisor: ProbeServiceSupervisor | None = None
+    client: ProbeClient | None = None
+    try:
+        if not isinstance(probe_id, str) or not probe_id or not _valid_digest(authorized_action_digest):
+            raise TargetRunError("TEST_AUTHORIZATION_INVALID", "Target authorization is invalid")
+        state = _make_state(context, with_identity=False, require_host=False)
+        auth_runner = TargetTestRunner(
+            state.workspace.session_root / "target-authorizations", object(),
+            object(), lambda _: object(), owns_probe=False,
+        )
+        loaded = auth_runner.load_prepared(authorized_action_digest)
+        consumed = auth_runner.consume_prepared(authorized_action_digest)
+        binding = consumed.binding
+        if datetime.now(timezone.utc) >= loaded.expires_at_utc:
+            raise TargetRunError("TEST_AUTHORIZATION_INVALID", "Target authorization expired")
+        state, model, facts, transport, project_config, support = _target_state(context)
+        probe_hash = sha256(probe_id.encode("utf-8")).hexdigest()
+        expected_identity = EvidenceIdentity(
+            state.workspace.workspace_id, str(model.logical_project_id),
+            state.workspace.session_id, facts.build_id, facts.elf_sha256,
+            facts.target_device, facts.input_snapshot_sha256, facts.git_commit,
+            facts.git_dirty,
+        )
+        expected_inventory_digest = calculate_inventory_digest(
+            "target", expected_identity, tuple(binding["cases"])
+        )
+        if binding["probe_serial_hash"] != probe_hash:
+            raise TargetRunError("TEST_IDENTITY_MISMATCH", "Physical probe identity changed")
+        if (
+            binding["workspace_id"] != state.workspace.workspace_id
+            or binding["project_id"] != str(model.logical_project_id)
+            or binding["session_id"] != state.workspace.session_id
+            or binding["revision"] != facts.git_commit
+            or binding["input_snapshot_sha256"] != facts.input_snapshot_sha256
+            or binding["build_id"] != facts.build_id
+            or binding["elf_sha256"] != facts.elf_sha256
+            or binding["elf_path"] != facts.elf_path
+            or binding["transport"] != transport
+            or binding["transport_config"] != project_config
+            or binding["support_profile"] != support
+            or binding["inventory_digest"] != expected_inventory_digest
+        ):
+            raise TargetRunError("TEST_INVENTORY_CHANGED", "Physical Target inputs changed")
+        supervisor = _target_supervisor(
+            context, state, probe_id=probe_id, level=OperationLevel.MODIFY,
+            support=support, seams=_seams,
+        )
+        endpoint = await supervisor.start()
+        client = ProbeClient(endpoint)
+        await client.attach(probe_id, str(model.debug.target))
+        if await client.target_identity() != binding["target"]:
+            raise TargetRunError("TEST_IDENTITY_MISMATCH", "Physical Target identity changed")
+        collector = TestArtifactCollector(
+            state.results_root, state.evidence_store, project_root=state.workspace.project_root
+        )
+        runner = TargetTestRunner(
+            state.workspace.session_root / "target-authorizations", client,
+            PhysicalTargetFlashAdapter(
+                project_root=context.project_root, raw_probe_id=probe_id, client=client
+            ),
+            lambda name: ProbeClientTargetTransport(client, project_config, name),
+            artifact_collector=collector, owns_probe=False,
+        )
+        result = await runner.run(
+            None, authorized_action_digest,
+            current_revision=facts.git_commit,
+            current_inventory_digest=str(binding["inventory_digest"]),
+            current_input_snapshot_sha256=facts.input_snapshot_sha256,
+            consumed=consumed,
+            physical_provenance=PhysicalRunProvenance(
+                state.workspace.workspace_id, state.workspace.session_id, probe_hash,
+                state.workspace.session_id, endpoint.lease_id,
+            ),
+        )
+        manifest = result["test_manifest"]
+        run_envelope = result["evidence"]
+        publisher = _publisher_factory(
+            state.evidence_store, state.workspace.project_root, state.results_root
+        )
+        published = publisher.publish_target_physical(
+            manifest, run_envelope,
+            action_digest=authorized_action_digest,
+            workspace_id=state.workspace.workspace_id,
+            probe_serial_hash=probe_hash,
+            flash_session_id=state.workspace.session_id,
+            lease_id=endpoint.lease_id,
+        )
+        return OperationResult.success(_TARGET_EXECUTE_OPERATION, published.public_data())
+    except Exception as error:
+        return _exception_result(_TARGET_EXECUTE_OPERATION, error)
+    finally:
+        if client is not None:
+            await client.close()
+        if supervisor is not None:
+            await supervisor.stop()
 
 
 def host_test_run(
@@ -516,8 +845,11 @@ def test_show(
 
 __all__ = [
     "TestingWorkflowContext",
+    "TargetWorkflowSeams",
     "host_test_discover",
     "host_test_run",
+    "target_test_prepare",
+    "target_test_execute",
     "target_replay_run",
     "test_show",
 ]
