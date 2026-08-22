@@ -1,6 +1,8 @@
 # STM32TK-0701 VS07-A implementation report
 
-Status: local candidate returned for independent GPT-5.6-sol review. This report is written before its report commit.
+Status: `REWRITE_REQUIRED` after independent GPT-5.6-sol recovery review. The
+implementation evidence below is retained as the implementer's record and is
+superseded where the independent verdict identifies missing proof or behavior.
 
 ## Ownership and source ledger
 
@@ -41,8 +43,46 @@ Disposable workspace: `C:\tmp\stm32tk-0701-observe-20260823`. The workspace was 
 
 ## Local state and blockers
 
-The implementation branch contains only local commits and has no configured remote mutation. Before this report commit, tracked product changes were committed through CodeHead above; this report records the replacement evidence and does not contain its own final SHA. No PRODUCT blocker remains in the replacement slice. The current environment fact requiring operator attention is `VSCODE_MISSING`; it is not required to produce the VS07-A plan. Independent Sol review of the complete accepted-base-to-final-head diff remains the acceptance authority.
+The implementation branch contains only local commits and has no configured remote mutation. Before the implementation report commit, tracked product changes were committed through CodeHead above. The current environment fact requiring operator attention is `VSCODE_MISSING`; it is not required to produce the VS07-A plan. The independent Sol verdict below records unresolved PRODUCT blockers and is the acceptance authority.
 
 ## Sol review round 1 correction evidence
 
 Recovery Tasks 1R–2R introduced typed candidate-resolution states and a common resolver, with canonical path deduplication, registered/standard precedence, bounded PATH enumeration, strict profile/metadata trust, creation blocker propagation, IOC negative paths, duplicate CLI rejection, and frozen MCP reuse. Focused and exact aggregate suites passed; independent Sol review remains the acceptance authority.
+
+## Independent Sol recovery verdict
+
+Verdict: `REWRITE_REQUIRED` at implementation head `1f02801ec5444a7e6bfecd84a93f44108e126d55`.
+
+The exact aggregate slice passed with exit 0 under short disposable TEMP
+`C:\tmp\p07sol1f`, with no skip/xfail and one existing runpy warning. A first
+run under the much longer review-tree TEMP produced five existing staging
+failures; the unchanged command passed under the short TEMP, so those failures
+are classified `ENVIRONMENT`, not as VS07-A product evidence.
+
+Fresh read-only doctor and MCU create-plan observations both exited 0. CubeMX
+`6.18.1-RC2`, CubeCLT `1.22.0`, GCC `14.3.1`, CMake `4.3.1`, and Ninja `1.13.2`
+were observed; `VSCODE_MISSING` remained the only creation-support environment
+issue, plan blockers were empty, `mutated=false`, and the names/sizes/content-
+hash snapshot was unchanged.
+
+The candidate is not accepted because the same load-bearing recovery contract
+remained incomplete after two rounds:
+
+- `test_tool_support.py` was unchanged from the rejected candidate, so the
+  named tier-priority, PATH ambiguity, canonical-alias, independent HKCU,
+  metadata failure, native runner failure, and static non-execution tests were
+  not added.
+- VS Code still queries HKLM and HKCU inside one exception scope; a missing HKLM
+  key suppresses HKCU discovery.
+- CubeMX and VS Code still use one `shutil.which` result instead of enumerating
+  the complete PATH tier, so same-tier ambiguity cannot be reported.
+- Invalid registered/standard candidates are prefiltered as absent, and typed
+  resolution is not consistently preserved through every public issue path.
+- Task 2R proof remains partial: only one duplicate option, partial `.ioc`
+  inputs, and doctor-only frozen runtime reuse were added; redirect parents,
+  inventory states, all repeated scalar options, create-plan runtime reuse,
+  client-root enforcement, and fixed-clock CLI/MCP parity remain unproved.
+
+Per `AGENTS.md`, the same issue did not converge in two recovery rounds. Local
+patching by the current implementation owner has stopped. No remote, install,
+hardware, CubeMX execution, VS07-B, or VS07-C action is authorized or implied.
