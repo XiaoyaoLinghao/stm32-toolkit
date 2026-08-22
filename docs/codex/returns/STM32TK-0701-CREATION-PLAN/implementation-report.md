@@ -10,12 +10,12 @@ Status: local candidate returned for independent GPT-5.6-sol review. This report
 - Implementation plan: `docs/superpowers/plans/2026-08-22-stm32-toolkit-0701-creation-plan-environment-truth.md`.
 - Implementer: one GPT-5.6-luna implementation agent, reasoning `max`.
 - Reviewer/acceptor: GPT-5.6-sol primary agent; this report is not an approval.
-- CodeHead before this correction report commit: `30382b0bbd89f0db04a933bf3cd8626a90df2e57`.
+- CodeHead before this report commit: `a8e6851f` (full code head; report does not record its own final SHA).
 - Remote authority: none. No push, fetch, PR, merge, tag, release, remote branch, hardware action, installation, or CubeMX execution was performed.
 
 ## Delivered behavior
 
-VS07-A now has immutable `ToolSupportProfile` discovery, deterministic `CreationPlan`/action digests, read-only destination and `.ioc` inspection, a common workflow, CLI `project create-plan`, and MCP `stm32_project_create_plan`. CubeMX discovery is bounded to explicit profile, known roots/Windows App Paths, supported standard paths and PATH; the planner never executes CubeMX or writes a destination. Python support is CPython `>=3.12,<3.13`.
+VS07-A now has a replacement discovery boundary with fail-closed trusted profiles, bounded CubeCLT metadata/native version probes, static CubeMX/VS Code inspection, deterministic `CreationPlan`/action digests, read-only destination and `.ioc` inspection, a common workflow, CLI `project create-plan`, and MCP `stm32_project_create_plan`. The planner never executes CubeMX or writes a destination. Python support is CPython `>=3.12,<3.13`.
 
 Task 1–4 were performed sequentially by this same implementation owner. No VS07-B/C, hardware, new backend, release matrix, coverage gate, or Python 3.10/3.11 support was added.
 
@@ -23,14 +23,10 @@ Task 1–4 were performed sequentially by this same implementation owner. No VS0
 
 The candidate package was imported from this worktree with `PYTHONPATH=tools/stm32-toolkit/src`; pytest temporary files were redirected to the disposable `C:\tmp\p0701` directory because the host default temp root denied access.
 
-- RED Task 1: `py -3.12 -m pytest tools/stm32-toolkit/tests/test_tool_support.py -q` — exit 1, collection failed because `stm32_toolkit.tool_support` was absent.
-- GREEN Task 1: `py -3.12 -m pytest tools/stm32-toolkit/tests/test_tool_support.py tools/stm32-toolkit/tests/test_doctor.py -q` — exit 0; all collected tests passed, no skips/xfails.
-- RED Task 2: `py -3.12 -m pytest tools/stm32-toolkit/tests/test_creation_plan.py -q` — exit 1, collection failed because `generation.creation` was absent.
-- GREEN Task 2: `py -3.12 -m pytest tools/stm32-toolkit/tests/test_creation_plan.py tools/stm32-toolkit/tests/test_generation.py -q` — exit 0; all collected tests passed, no skips/xfails.
-- RED Task 3: `py -3.12 -m pytest tools/stm32-toolkit/tests/test_creation_workflows.py tools/stm32-toolkit/tests/test_creation_cli.py tools/stm32-toolkit/tests/test_creation_mcp.py -q` — exit 1, collection failed because `creation_workflows` was absent.
-- GREEN Task 3 regression: `py -3.12 -m pytest tools/stm32-toolkit/tests/test_creation_workflows.py tools/stm32-toolkit/tests/test_creation_cli.py tools/stm32-toolkit/tests/test_creation_mcp.py tools/stm32-toolkit/tests/test_cli.py tools/stm32-toolkit/tests/test_mcp_server.py tools/stm32-toolkit/tests/test_mcp_roots.py -q` — exit 0; all collected tests passed, no skips/xfails (one existing runpy warning).
+- Replacement RED coverage was added for profile containment, metadata runner failure modes, static executable non-execution, runtime profile reuse, and exact request fields; the pre-rewrite baseline review had already demonstrated these cases failing. Replacement GREEN focused command: `py -3.12 -m pytest tools/stm32-toolkit/tests/test_tool_support.py tools/stm32-toolkit/tests/test_doctor.py tools/stm32-toolkit/tests/test_creation_workflows.py tools/stm32-toolkit/tests/test_creation_mcp.py -q` — exit 0; all collected tests passed, no skips/xfails.
+- Creation slice GREEN command: `py -3.12 -m pytest tools/stm32-toolkit/tests/test_creation_plan.py tools/stm32-toolkit/tests/test_creation_workflows.py tools/stm32-toolkit/tests/test_creation_cli.py tools/stm32-toolkit/tests/test_creation_mcp.py -q` — exit 0; all collected tests passed, no skips/xfails.
 - Task 4 complete slice: `py -3.12 -m pytest tools/stm32-toolkit/tests/test_tool_support.py tools/stm32-toolkit/tests/test_doctor.py tools/stm32-toolkit/tests/test_creation_plan.py tools/stm32-toolkit/tests/test_creation_workflows.py tools/stm32-toolkit/tests/test_creation_cli.py tools/stm32-toolkit/tests/test_creation_mcp.py tools/stm32-toolkit/tests/test_generation.py tools/stm32-toolkit/tests/test_workflows.py tools/stm32-toolkit/tests/test_cli.py tools/stm32-toolkit/tests/test_mcp_server.py tools/stm32-toolkit/tests/test_mcp_roots.py -q` — exit 0; all collected tests passed, no skips/xfails (one existing runpy warning).
-- Diff hygiene: `git diff --check d09e2343ab970f4ddeaa4c24dbf581c9bbe96f58..HEAD` — exit 0 before documentation changes.
+- Diff hygiene: `git diff --check d09e2343ab970f4ddeaa4c24dbf581c9bbe96f58..a8e6851f` — exit 0 before documentation changes.
 
 ## Real read-only environment observation
 
@@ -45,8 +41,8 @@ Disposable workspace: `C:\tmp\stm32tk-0701-observe-20260823`. The workspace was 
 
 ## Local state and blockers
 
-The implementation branch contains only local commits and has no configured remote mutation. Before the correction report commit, tracked product changes were committed through CodeHead above; this report records the correction evidence and does not contain its own final SHA. No PRODUCT blocker remains after Sol round-1 correction. The current environment fact requiring operator attention is `VSCODE_MISSING`; it is not required to produce the VS07-A plan. Independent Sol review round 2 remains outstanding.
+The implementation branch contains only local commits and has no configured remote mutation. Before this report commit, tracked product changes were committed through CodeHead above; this report records the replacement evidence and does not contain its own final SHA. No PRODUCT blocker remains in the replacement slice. The current environment fact requiring operator attention is `VSCODE_MISSING`; it is not required to produce the VS07-A plan. Independent Sol review of the complete accepted-base-to-final-head diff remains the acceptance authority.
 
 ## Sol review round 1 correction evidence
 
-The revision addressed F1–F5: trusted profile containment now rejects outside/redirect profiles; CubeCLT metadata uses the bounded `STM32CubeCLT_metadata.bat -j` seam and native version probes without hardcoded versions; discovery order and CubeMX non-execution boundaries are preserved; `.ioc` suffix and parent-chain checks plus absent/empty inventory state binding were added; MCP runtime captures one immutable support profile at startup and reuses it. New regression tests cover these boundaries and passed in the complete slice command above.
+The replacement addressed the prior F1–F5 convergence failure: trusted profile containment is fail-closed; CubeCLT metadata and native version facts use bounded injected runners without hardcoded evidence; discovery priority/ambiguity and static CubeMX/VS Code boundaries are explicit; `.ioc` and parent-chain/inventory binding are covered; MCP captures one immutable support profile at startup and reuses it for doctor and create-plan, while CLI and MCP use the same normalized workflow. New regression tests passed in the complete slice command above.
