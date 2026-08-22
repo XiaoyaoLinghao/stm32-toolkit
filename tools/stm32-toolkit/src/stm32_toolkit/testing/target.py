@@ -44,6 +44,7 @@ from stm32_toolkit.testing.transports.base import format_ram_bounds, ram_regions
 
 FRAME_MAGIC = b"ST32"
 _CLEANUP_ATTEMPT_WINDOW_SECONDS = 0.050
+_MAX_TARGET_AUTHORIZATION_RECORD_BYTES = 64 * 1024
 FRAME_VERSION = 1
 FRAME_HEADER_BYTES = 16
 FRAME_CRC_BYTES = 4
@@ -797,6 +798,9 @@ class ProbeClientTargetTransport:
         return data
 
     async def eof_async(self) -> bool:
+        return self.eof()
+
+    def eof(self) -> bool:
         return self._eof
 
     async def close_async(self) -> None:
@@ -1014,14 +1018,17 @@ class TargetTestRunner:
             self._validate_prepared_record(full)
         except ValueError as error:
             raise TargetRunError("TEST_PROTOCOL_INVALID", "Target run binding is invalid") from error
-        digest = sha256(canonical_json_bytes(full)).hexdigest()
+        payload = canonical_json_bytes(full)
+        if len(payload) > _MAX_TARGET_AUTHORIZATION_RECORD_BYTES:
+            raise TargetRunError("TEST_PROTOCOL_INVALID", "Target run binding is too large")
+        digest = sha256(payload).hexdigest()
         try:
             with self._authorization_authority._authority_lock(
                 create=True
             ) as directory_descriptor:
                 created = self._authorization_authority._authorization_create_new(
                     self._authorization_authority._path(digest, "prepared"),
-                    canonical_json_bytes(full),
+                    payload,
                     phase="target-run-prepare",
                     directory_descriptor=directory_descriptor,
                 )
@@ -1049,7 +1056,8 @@ class TargetTestRunner:
         try:
             with self._authorization_authority._authority_lock(create=False) as descriptor:
                 payload = self._authorization_authority._read_stable_record_bytes(
-                    self._authorization_authority._path(digest, "prepared"), 65_536,
+                    self._authorization_authority._path(digest, "prepared"),
+                    _MAX_TARGET_AUTHORIZATION_RECORD_BYTES,
                     directory_descriptor=descriptor,
                 )
             record = json.loads(payload.decode("utf-8"))
@@ -1078,7 +1086,7 @@ class TargetTestRunner:
                 path = self._authorization_authority._path(digest, "prepared")
                 payload = self._authorization_authority._read_stable_record_bytes(
                     path,
-                    65_536,
+                    _MAX_TARGET_AUTHORIZATION_RECORD_BYTES,
                     directory_descriptor=directory_descriptor,
                 )
                 record = json.loads(payload.decode("utf-8"))

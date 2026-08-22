@@ -96,6 +96,7 @@ class _SourceChangeBackend:
         flash_segment: bytes,
         events: list[tuple[object, ...]],
         fail_transport: bool = False,
+        empty_reads: int = 0,
     ) -> None:
         self.board = board
         self.identity_value = dict(physical_identity)
@@ -103,6 +104,7 @@ class _SourceChangeBackend:
         self.flash_segment = flash_segment
         self.events = events
         self.fail_transport = fail_transport
+        self.empty_reads = empty_reads
         self.level = ""
         self.remaining = b""
 
@@ -165,6 +167,10 @@ class _SourceChangeBackend:
     def read_target_transport(
         self, transport_id: str, maximum: int, deadline_ms: int
     ) -> Mapping[str, object]:
+        self.events.append(("transport.read", self.level))
+        if self.empty_reads:
+            self.empty_reads -= 1
+            return {"data": b"", "eof": False}
         raw, self.remaining = self.remaining[:maximum], self.remaining[maximum:]
         return {"data": raw, "eof": not self.remaining}
 
@@ -222,6 +228,7 @@ def test_prepare_never_reads_old_inventory_and_execute_proves_fixed_after_flash(
             stream=_fixed_stream(fixed_identity, expected_digest),
             flash_segment=flash_segment,
             events=events,
+            empty_reads=1,
         )
 
     prepare = getattr(workflows, "target_test_prepare", None)
@@ -261,6 +268,7 @@ def test_prepare_never_reads_old_inventory_and_execute_proves_fixed_after_flash(
     )
     assert shown.ok is True
     assert shown.data["execution_source"] == "physical"
+    assert len([event for event in events if event[:2] == ("transport.read", "modify")]) >= 2
     manifests = [
         json.loads(path.read_text(encoding="utf-8"))
         for path in (workspace.workspace_root / "evidence/manifests").glob("*.json")

@@ -13,7 +13,7 @@ import threading
 import time
 
 import pytest
-from stm32_toolkit.evidence import EvidenceIdentity
+from stm32_toolkit.evidence import EvidenceIdentity, canonical_json_bytes
 from stm32_toolkit.result import OperationResult
 
 from stm32_toolkit.probe import client as probe_client
@@ -507,6 +507,81 @@ def test_target_runner_prepare_rejects_nonclosed_and_bad_limits(tmp_path: Path):
     common["build_id"] = "b" * 64
     with pytest.raises(target_module.TargetRunError):
       await runner.prepare(now=datetime(2026, 8, 16), **common)
+  run(scenario())
+
+
+def test_target_authorization_record_exact_size_bound_round_trips_without_side_effect_overflow(
+    tmp_path: Path,
+) -> None:
+  async def scenario():
+    limit = 64 * 1024
+    instant = datetime(2026, 8, 16, tzinfo=timezone.utc)
+    common = dict(
+        workspace_id="w", project_id="p", session_id="s", revision="r", target=IDENTITY,
+        probe_serial_hash=PROBE_HASH, elf_path="", elf_sha256="e" * 64,
+        build_id="b" * 64, inventory_digest="a" * 64, transport="mailbox",
+        transport_config=MAILBOX_PROJECT_CONFIG, support_profile=TARGET_SUPPORT,
+        cases=("suite.case",), timeout_ms=1_000,
+    )
+    template = {
+        **common,
+        "cases": ["suite.case"],
+        "nonce": "0" * 64,
+        "prepared_at_utc": "2026-08-16T00:00:00.000000Z",
+        "expires_at_utc": "2026-08-16T00:05:00.000000Z",
+    }
+    exact_path = "a" * (limit - len(canonical_json_bytes(template)))
+    exact_root = (tmp_path / "exact-authorizations").absolute()
+    runner = target_module.TargetTestRunner(
+        exact_root, FakeProbeClient(), FakeFlashWorkflow(), lambda name: FakeTransport([])
+    )
+    prepared = await runner.prepare(now=instant, **{**common, "elf_path": exact_path})
+    record_path = exact_root / "records" / f"{prepared.action_digest}.prepared.json"
+    assert record_path.stat().st_size == limit
+
+    restarted = target_module.TargetTestRunner(
+        exact_root, FakeProbeClient(), FakeFlashWorkflow(), lambda name: FakeTransport([])
+    )
+    assert restarted.load_prepared(prepared.action_digest).binding["elf_path"] == exact_path
+    assert restarted.consume_prepared(prepared.action_digest, now=instant).binding["elf_path"] == exact_path
+
+    overflow_root = (tmp_path / "overflow-authorizations").absolute()
+    overflow = target_module.TargetTestRunner(
+        overflow_root, FakeProbeClient(), FakeFlashWorkflow(), lambda name: FakeTransport([])
+    )
+    with pytest.raises(target_module.TargetRunError) as error:
+      await overflow.prepare(
+          now=instant, **{**common, "elf_path": exact_path + "a"}
+      )
+    assert error.value.code == "TEST_PROTOCOL_INVALID"
+    assert not overflow_root.exists()
+  run(scenario())
+
+
+def test_probe_client_target_transport_latches_only_explicit_service_eof() -> None:
+  async def scenario():
+    class Client:
+      def __init__(self):
+        self.reads = [(b"", False), (b"terminal", True)]
+
+      async def target_transport_open(self, transport, config, remaining):
+        return {"transport_id": "live-1", "identity": {"transport": transport}}
+
+      async def target_transport_read(self, transport_id, maximum, remaining):
+        return self.reads.pop(0)
+
+      async def target_transport_close(self, transport_id):
+        return None
+
+    transport = target_module.ProbeClientTargetTransport(
+        Client(), MAILBOX_PROJECT_CONFIG, "mailbox"
+    )
+    deadline = time.monotonic() + 1
+    await transport.open(MAILBOX_PROJECT_CONFIG, deadline)
+    assert await transport.read_async(1024, deadline) == b""
+    assert transport.eof() is False
+    assert await transport.read_async(1024, deadline) == b"terminal"
+    assert transport.eof() is True
   run(scenario())
 
 

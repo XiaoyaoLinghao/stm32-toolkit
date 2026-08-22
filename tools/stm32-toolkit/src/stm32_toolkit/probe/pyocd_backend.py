@@ -1095,7 +1095,7 @@ class PyOCDBackend:
             raise ProbeBackendError("PROBE_BACKEND_ERROR", "Target transport read failed") from error
         if not isinstance(raw, bytes) or len(raw) > max_bytes:
             raise ProbeBackendError("PROBE_BACKPRESSURE", "Target transport returned invalid output")
-        return {"data": raw, "eof": len(raw) == 0}
+        return {"data": raw, "eof": False}
 
     def close_target_transport(self, transport_id: str) -> Mapping[str, object]:
         handle = self._transports.pop(transport_id, None)

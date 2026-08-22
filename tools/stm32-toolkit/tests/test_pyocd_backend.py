@@ -23,6 +23,22 @@ def backend_with_probes(*probe_ids: str) -> tuple[PyOCDBackend, FakePyOCDDriver]
     return PyOCDBackend(driver), driver
 
 
+@pytest.mark.parametrize("transport", ("mailbox", "rtt", "uart", "semihosting"))
+def test_live_target_transport_empty_read_is_explicitly_not_eof(transport: str) -> None:
+    class LiveHandle:
+        def read(self, maximum: int, deadline: float) -> bytes:
+            return b""
+
+    backend, _driver = backend_with_probes()
+    transport_id = f"transport-{transport}"
+    backend._transports[transport_id] = LiveHandle()
+
+    assert backend.read_target_transport(transport_id, 1024, 1000) == {
+        "data": b"",
+        "eof": False,
+    }
+
+
 def test_list_probes_returns_bounded_deterministic_descriptors():
     driver = FakePyOCDDriver(
         (
