@@ -10,7 +10,7 @@ Status: local candidate returned for independent GPT-5.6-sol review. This report
 - Implementation plan: `docs/superpowers/plans/2026-08-22-stm32-toolkit-0701-creation-plan-environment-truth.md`.
 - Implementer: one GPT-5.6-luna implementation agent, reasoning `max`.
 - Reviewer/acceptor: GPT-5.6-sol primary agent; this report is not an approval.
-- CodeHead before this report commit: `ede7a300` (full code head; report does not record its own final SHA).
+- CodeHead before this report commit: `109f2f8e` (full code head; report does not record its own final SHA).
 - Remote authority: none. No push, fetch, PR, merge, tag, release, remote branch, hardware action, installation, or CubeMX execution was performed.
 
 ## Delivered behavior
@@ -45,4 +45,4 @@ The implementation branch contains only local commits and has no configured remo
 
 ## Sol review round 1 correction evidence
 
-The final bounded revision addressed Sol review R1–R5: candidate tiers now resolve standard/registered candidates before PATH and reject ambiguity; metadata and explicit facts enforce safe parent chains; strict UTF-8/native probe failures and all creation-relevant support issues become plan blockers; the metadata test injects the bounded runner rather than the parser; and repeated create-plan scalar options are rejected. Regression tests passed in the focused command; independent Sol review remains the acceptance authority.
+Recovery Tasks 1R–2R introduced typed `DiscoveryCandidate`/`CandidateTier`/`CandidateResolution` states and a common resolver, with canonical path deduplication, registered/standard precedence, bounded PATH enumeration, strict profile/metadata trust, and creation blocker propagation. Focused Task 1R tests passed; the exact aggregate remains the required independent verification.
