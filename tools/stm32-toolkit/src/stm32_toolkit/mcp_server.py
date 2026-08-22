@@ -27,6 +27,7 @@ from pydantic import (
 )
 
 from stm32_toolkit.context import build_project_context
+from stm32_toolkit.creation_workflows import CreationPlanWorkflowRequest, plan_creation_workflow
 from stm32_toolkit.detection import detect_project
 from stm32_toolkit.diagnostic_workflows import (
     DiagnosticWorkflowContext,
@@ -486,6 +487,30 @@ def tool_project_context(runtime: ServerRuntime) -> dict[str, object]:
     ).to_dict()
 
 
+def tool_project_create_plan(
+    runtime: ServerRuntime,
+    source_kind: str,
+    source: str,
+    destination: str,
+    framework: str,
+    language: str,
+) -> dict[str, object]:
+    """Return a read-only CubeMX creation plan bound to this runtime."""
+    return plan_creation_workflow(
+        CreationPlanWorkflowRequest(
+            runtime.project_root,
+            runtime.data_root,
+            runtime.session_id,
+            source_kind,
+            source,
+            destination,
+            framework,
+            language,
+            None,
+        )
+    ).to_dict()
+
+
 def tool_keil_inspect(
     runtime: ServerRuntime,
     uvprojx: str | None = None,
@@ -570,6 +595,19 @@ async def tool_project_context_for_request(
 ) -> dict[str, object]:
     failure = await _client_roots_failure(runtime, context, "project.context")
     return failure if failure is not None else tool_project_context(runtime)
+
+
+async def tool_project_create_plan_for_request(
+    runtime: ServerRuntime,
+    context: Context | None,
+    source_kind: str,
+    source: str,
+    destination: str,
+    framework: str,
+    language: str,
+) -> dict[str, object]:
+    failure = await _client_roots_failure(runtime, context, "project-create-plan")
+    return failure if failure is not None else tool_project_create_plan(runtime, source_kind, source, destination, framework, language)
 
 
 async def tool_keil_inspect_for_request(
@@ -1433,6 +1471,19 @@ def create_server(
     async def stm32_project_context(ctx: Context) -> dict[str, object]:
         return await tool_project_context_for_request(runtime, ctx)
 
+    @mcp.tool(name="stm32_project_create_plan")
+    async def stm32_project_create_plan(
+        ctx: Context,
+        sourceKind: Literal["mcu", "board", "ioc"],
+        source: str,
+        destination: str,
+        framework: Literal["hal", "ll"],
+        language: Literal["c", "cpp"],
+    ) -> dict[str, object]:
+        return await tool_project_create_plan_for_request(
+            runtime, ctx, sourceKind, source, destination, framework, language
+        )
+
     @mcp.tool(name="stm32_keil_inspect")
     async def stm32_keil_inspect(
         ctx: Context,
@@ -1881,6 +1932,7 @@ def create_server(
         mcp,
         (
             "stm32_test_host_discover",
+            "stm32_project_create_plan",
             "stm32_test_host_run",
             "stm32_test_show",
             "stm32_test_target_prepare",

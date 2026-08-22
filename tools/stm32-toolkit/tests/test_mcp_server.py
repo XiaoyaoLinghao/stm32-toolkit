@@ -106,6 +106,7 @@ def test_server_registers_exactly_the_twenty_five_project_bound_tools(tmp_path: 
         "stm32_doctor",
         "stm32_project_detect",
         "stm32_project_context",
+        "stm32_project_create_plan",
         "stm32_keil_inspect",
         "stm32_keil_convert",
         "stm32_project_configure",
@@ -128,6 +129,15 @@ def test_server_registers_exactly_the_twenty_five_project_bound_tools(tmp_path: 
         "stm32_diagnostic_hypothesis_assess",
         "stm32_diagnostic_plan_add",
         "stm32_diagnostic_plan_run",
+        "stm32_diagnostic_marker_attach",
+        "stm32_diagnostic_source_change_declare",
+        "stm32_diagnostic_verification_plan_add",
+        "stm32_diagnostic_verification_start",
+        "stm32_diagnostic_verification_complete",
+        "stm32_diagnostic_verification_show",
+        "stm32_test_target_prepare",
+        "stm32_test_target_execute",
+        "stm32_test_target_replay",
     }
     zero_argument_tools = {
         "stm32_doctor",

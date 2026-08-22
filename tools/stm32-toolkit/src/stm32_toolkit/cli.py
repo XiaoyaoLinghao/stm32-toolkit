@@ -11,6 +11,7 @@ import unicodedata
 from pathlib import Path
 
 from stm32_toolkit.context import build_project_context
+from stm32_toolkit.creation_workflows import CreationPlanWorkflowRequest, plan_creation_workflow
 from stm32_toolkit.detection import detect_project
 from stm32_toolkit.diagnostic_workflows import (
     DiagnosticWorkflowContext,
@@ -195,6 +196,16 @@ def _build_parser() -> argparse.ArgumentParser:
     context.add_argument("--data-root", required=True, type=Path)
     context.add_argument("--session-id", required=True)
     _add_json(context)
+
+    create_plan = project_commands.add_parser("create-plan")
+    _add_project_root(create_plan)
+    create_plan.add_argument("--source-kind", choices=("mcu", "board", "ioc"), required=True)
+    create_plan.add_argument("--source", required=True)
+    create_plan.add_argument("--destination", required=True)
+    create_plan.add_argument("--framework", choices=("hal", "ll"), required=True)
+    create_plan.add_argument("--language", choices=("c", "cpp"), required=True)
+    create_plan.add_argument("--support-profile", type=Path)
+    _add_json(create_plan)
 
     configure = project_commands.add_parser("configure")
     _add_workflow_root(configure)
@@ -975,6 +986,20 @@ def _operation_result(
             return _detect_result(project_root)
         if args.project_command == "context":
             return build_project_context(project_root, args.data_root, args.session_id)
+        if args.project_command == "create-plan":
+            return plan_creation_workflow(
+                CreationPlanWorkflowRequest(
+                    project_root=project_root,
+                    data_root=getattr(args, "data_root", project_root / ".stm32-toolkit-data"),
+                    session_id="cli",
+                    source_kind=args.source_kind,
+                    source_value=args.source,
+                    destination=args.destination,
+                    framework=args.framework,
+                    language=args.language,
+                    support_profile_path=args.support_profile,
+                )
+            )
         return configure_project_workflow(
             project_root,
             plan_id=args.plan_id,
