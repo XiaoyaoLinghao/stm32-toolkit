@@ -338,6 +338,9 @@ def _build_parser() -> argparse.ArgumentParser:
         "--operation-id", required=True, type=_diagnostic_operation_id
     )
     diagnostic_start.add_argument(
+        "--failed-run-mode", choices=("host", "target"), default="host"
+    )
+    diagnostic_start.add_argument(
         "--actor", choices=_DIAGNOSTIC_ACTORS, default="user"
     )
     _add_testing_context(diagnostic_start)
@@ -1008,6 +1011,11 @@ def _operation_result(
                 context,
                 operation_id=args.operation_id,
                 failed_test_run_id=args.failed_test_run_id,
+                **(
+                    {"failed_run_mode": args.failed_run_mode}
+                    if args.failed_run_mode == "target"
+                    else {}
+                ),
                 actor=args.actor,
             )
         if args.diagnose_command == "show":

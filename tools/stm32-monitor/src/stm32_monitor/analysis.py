@@ -12,7 +12,13 @@ from typing import cast
 from uuid import UUID
 
 from .models import ObservationBinding, SampleBatch, SampleValue, WatchItem
-from .replay import MonitorReplayError, MonitorRunRef, canonical_replay_json_bytes
+from .replay import (
+    MonitorReplayError,
+    MonitorRunRef,
+    MonitorRunRefV2,
+    canonical_physical_json_bytes,
+    canonical_replay_json_bytes,
+)
 
 
 ANALYSIS_REQUEST_SCHEMA = "stm32-monitor-analysis-request/1"
@@ -147,6 +153,19 @@ _MARKER_FIELDS = frozenset(
 )
 _MARKER_POLARITIES = frozenset({"supports", "refutes"})
 _MARKER_LABELS = frozenset({"change-observed", "no-change-observed", "analysis-inconclusive"})
+MonitorRunReference = MonitorRunRef | MonitorRunRefV2
+
+
+def _is_monitor_run_reference(value: object) -> bool:
+    return type(value) in (MonitorRunRef, MonitorRunRefV2)
+
+
+def _same_reference_family(before: MonitorRunReference, after: MonitorRunReference) -> bool:
+    return (
+        type(before) is type(after)
+        and before.execution_source == after.execution_source
+        and before.physical_transport_evidence is after.physical_transport_evidence
+    )
 
 
 class AnalysisError(ValueError):
@@ -253,8 +272,8 @@ def _diagnostic_hash(value: object, label: str) -> str:
 @dataclass(frozen=True, slots=True)
 class AnalysisRequest:
     schema: str
-    before_run: MonitorRunRef
-    after_run: MonitorRunRef
+    before_run: MonitorRunReference
+    after_run: MonitorRunReference
     selector_kind: str
     selector: str
     alignment: str
@@ -263,8 +282,10 @@ class AnalysisRequest:
     def __post_init__(self) -> None:
         if type(self.schema) is not str or self.schema != ANALYSIS_REQUEST_SCHEMA:
             _fail("analysis request schema is invalid")
-        if type(self.before_run) is not MonitorRunRef or type(self.after_run) is not MonitorRunRef:
+        if not _is_monitor_run_reference(self.before_run) or not _is_monitor_run_reference(self.after_run):
             _fail("analysis request runs are invalid")
+        if not _same_reference_family(self.before_run, self.after_run):
+            _fail("analysis request run reference families are incompatible")
         _watch(self.selector_kind, self.selector)
         if type(self.alignment) is not str or self.alignment != "run-relative":
             _fail("analysis alignment is invalid")
@@ -526,12 +547,14 @@ class AnalysisLineage:
     def new(
         cls,
         *,
-        before_run: MonitorRunRef,
-        after_run: MonitorRunRef,
+        before_run: MonitorRunReference,
+        after_run: MonitorRunReference,
         source_change_declaration_id: str | None,
     ) -> "AnalysisLineage":
-        if type(before_run) is not MonitorRunRef or type(after_run) is not MonitorRunRef:
+        if not _is_monitor_run_reference(before_run) or not _is_monitor_run_reference(after_run):
             _fail("analysis lineage run references are invalid")
+        if not _same_reference_family(before_run, after_run):
+            _fail("analysis lineage run reference families are incompatible")
         if (
             before_run.origin_workspace_id != after_run.origin_workspace_id
             or before_run.import_workspace_id != after_run.import_workspace_id
@@ -940,7 +963,7 @@ class DiagnosticMarker:
         }
 
 
-def _binding_matches(reference: MonitorRunRef, batch: SampleBatch) -> bool:
+def _binding_matches(reference: MonitorRunReference, batch: SampleBatch) -> bool:
     binding = batch.binding
     return (
         type(binding) is ObservationBinding
@@ -962,8 +985,8 @@ def _binding_matches(reference: MonitorRunRef, batch: SampleBatch) -> bool:
     )
 
 
-def _validate_window(reference: MonitorRunRef, batches: object) -> tuple[SampleBatch, ...]:
-    if type(reference) is not MonitorRunRef:
+def _validate_window(reference: MonitorRunReference, batches: object) -> tuple[SampleBatch, ...]:
+    if not _is_monitor_run_reference(reference):
         _fail("analysis run reference is invalid")
     if type(batches) is not tuple or not batches or len(batches) > MAX_ANALYSIS_BATCHES:
         _fail("analysis batch window is invalid")
@@ -992,7 +1015,12 @@ def _validate_window(reference: MonitorRunRef, batches: object) -> tuple[SampleB
         ):
             _fail("analysis batch ordering is invalid")
         try:
-            digest = sha256(canonical_replay_json_bytes(batch.to_dict())).hexdigest()
+            canonicalizer = (
+                canonical_physical_json_bytes
+                if type(reference) is MonitorRunRefV2
+                else canonical_replay_json_bytes
+            )
+            digest = sha256(canonicalizer(batch.to_dict())).hexdigest()
         except (MonitorReplayError, TypeError, ValueError, OverflowError) as error:
             raise AnalysisError(ANALYSIS_REQUEST_INVALID, "analysis batch digest is invalid") from error
         if digest != reference.projected_batch_sha256s[index]:
@@ -1050,21 +1078,35 @@ def _trusted_sample(batch: SampleBatch, requested: WatchItem) -> tuple[str, floa
 
 
 def _shared_compatibility(
-    before: MonitorRunRef,
-    after: MonitorRunRef,
+    before: MonitorRunReference,
+    after: MonitorRunReference,
     before_batches: tuple[SampleBatch, ...],
     after_batches: tuple[SampleBatch, ...],
 ) -> None:
     if (
+        not _same_reference_family(before, after)
+        or
         before.origin_workspace_id != after.origin_workspace_id
         or before.import_workspace_id != after.import_workspace_id
         or before.logical_project_id != after.logical_project_id
         or before.target_device != after.target_device
-        or before.group_id != after.group_id
-        or before.group_revision != after.group_revision
+        or before.execution_source != after.execution_source
+        or before.physical_transport_evidence is not after.physical_transport_evidence
+        or before.physical_target != after.physical_target
+        or before.probe_id != after.probe_id
+        or before.origin_session_id != after.origin_session_id
+        or before.projected_session_id != after.projected_session_id
         or set(_vocabulary(before_batches)) != set(_vocabulary(after_batches))
     ):
         _fail("analysis run identities are incompatible")
+    # Replay references preserve the accepted v1 group identity contract.
+    # Physical captures may use independent Monitor groups/revisions and
+    # leases; each source record is still checked against its own batch chain.
+    if before.execution_source == "replay" and (
+        before.group_id != after.group_id
+        or before.group_revision != after.group_revision
+    ):
+        _fail("analysis replay group identities are incompatible")
 
 
 def _stats(values: list[float | int]) -> tuple[float | int, float | int, float | int, float | int]:
@@ -1191,5 +1233,6 @@ __all__ = [
     "AnalysisRequest",
     "AnalysisResult",
     "DiagnosticMarker",
+    "MonitorRunReference",
     "analyze_monitor_windows",
 ]

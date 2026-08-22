@@ -361,6 +361,37 @@ def test_start_dispatches_once_with_exact_context_keywords_and_json(
     }
 
 
+def test_start_dispatches_target_failed_run_mode_without_execution_source_fields(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    calls: list[dict[str, object]] = []
+    result = OperationResult.success(
+        "diagnostic.start",
+        {"session": {"diagnostic_session_id": DIAGNOSTIC_SESSION_ID}},
+    )
+
+    def start(context: object, **kwargs: object) -> OperationResult[object]:
+        calls.append(kwargs)
+        return result
+
+    monkeypatch.setattr(cli, "diagnostic_start", start, raising=False)
+
+    argv = _start_argv()
+    argv[argv.index("--json"):argv.index("--json")] = []
+    argv.extend(["--failed-run-mode", "target", "--json"])
+
+    assert cli.main(argv) == 0
+    capsys.readouterr()
+    assert calls == [
+        {
+            "operation_id": "start-1",
+            "failed_test_run_id": "run-1",
+            "failed_run_mode": "target",
+            "actor": "user",
+        }
+    ]
+
+
 def test_show_dispatches_once_with_exact_context_keywords_and_json(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:

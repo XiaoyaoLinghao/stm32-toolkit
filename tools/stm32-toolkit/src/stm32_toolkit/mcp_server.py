@@ -147,6 +147,7 @@ DiagnosticSessionId = Annotated[
 
 
 DiagnosticActor = Literal["user", "tool", "ai-client"]
+DiagnosticFailedRunMode = Literal["host", "target"]
 DiagnosticRevision = Annotated[StrictInt, Field(ge=0, le=10_000)]
 DiagnosticText = Annotated[
     str,
@@ -1085,15 +1086,21 @@ async def tool_diagnostic_start_for_request(
     operation_id: DiagnosticOperationId,
     failed_test_run_id: RunId,
     actor: DiagnosticActor = "user",
+    failed_run_mode: DiagnosticFailedRunMode = "host",
 ) -> dict[str, object]:
     failure = await _client_roots_failure(runtime, context, "diagnostic.start")
     if failure is not None:
         return failure
+    kwargs: dict[str, object] = {
+        "operation_id": operation_id,
+        "failed_test_run_id": failed_test_run_id,
+        "actor": actor,
+    }
+    if failed_run_mode == "target":
+        kwargs["failed_run_mode"] = "target"
     return diagnostic_start(
         _diagnostic_context(runtime),
-        operation_id=operation_id,
-        failed_test_run_id=failed_test_run_id,
-        actor=actor,
+        **kwargs,
     ).to_dict()
 
 
@@ -1597,9 +1604,13 @@ def create_server(
         operationId: DiagnosticOperationId,
         failedTestRunId: RunId,
         actor: DiagnosticActor = "user",
+        failedRunMode: DiagnosticFailedRunMode = "host",
     ) -> dict[str, object]:
+        kwargs: dict[str, object] = {}
+        if failedRunMode == "target":
+            kwargs["failed_run_mode"] = "target"
         return await tool_diagnostic_start_for_request(
-            runtime, ctx, operationId, failedTestRunId, actor
+            runtime, ctx, operationId, failedTestRunId, actor, **kwargs
         )
 
     @mcp.tool(name="stm32_diagnostic_show")

@@ -48,14 +48,21 @@ from stm32_toolkit.evidence.store import MAX_EVIDENCE_READ_BYTES
 from stm32_toolkit.evidence.store import EvidenceStore
 from stm32_toolkit.paths import WorkspacePaths, require_safe_session_id
 from stm32_toolkit.monitor_replay_contract import (
+    MAX_PHYSICAL_TRANSCRIPT_BYTES,
     MONITOR_REPLAY_EXECUTION_SOURCE,
     MONITOR_REPLAY_SCHEMA,
     MONITOR_REPLAY_SOURCE,
     MONITOR_RUN_REF_SCHEMA,
+    MONITOR_RUN_REF_SCHEMA_V2,
+    MONITOR_PHYSICAL_SOURCE,
+    MONITOR_PHYSICAL_TRANSCRIPT_SCHEMA,
     ReplayContractError,
+    canonical_physical_json_bytes,
     canonical_replay_json_bytes as _shared_canonical_replay_json_bytes,
     decode_canonical_json_bytes,
+    decode_physical_transcript_bytes,
     validate_replay_document,
+    validate_physical_transcript,
     validate_run_reference,
 )
 from stm32_toolkit.project_model import ProjectManifestError, load_project_model
@@ -87,6 +94,8 @@ _ENVIRONMENT_FAILURE = "ENVIRONMENT_FAILURE"
 _EVIDENCE_INTEGRITY_FAILURE = "EVIDENCE_INTEGRITY_FAILURE"
 
 _TARGET_REPLAY_OPERATION = "target-test-replay"
+_TARGET_PHYSICAL_OPERATION = "target-test-physical"
+_PHYSICAL_TRANSPORTS = frozenset({"mailbox", "rtt", "uart", "semihosting"})
 _ANALYSIS_OPERATION = "monitor-analysis"
 _MARKER_OPERATION = "diagnostic-marker"
 _ANALYSIS_ROOT = "monitor-analysis"
@@ -118,6 +127,21 @@ _MARKER_FIELDS = frozenset(
 _MONITOR_REF_METADATA_FIELDS = frozenset(
     {
         "operation_id", "run_ref_sha256", "fixture_sha256", "scenario_role",
+        "origin_workspace_id", "import_workspace_id", "execution_source",
+        "physical_transport_evidence",
+    }
+)
+_PHYSICAL_TRANSCRIPT_METADATA_FIELDS = frozenset(
+    {
+        "operation_id", "scenario_role", "test_run_id", "origin_workspace_id",
+        "import_workspace_id", "origin_session_id", "projected_session_id",
+        "origin_run_id", "projected_run_id", "source_record_sha256",
+        "execution_source", "physical_transport_evidence",
+    }
+)
+_PHYSICAL_REFERENCE_METADATA_FIELDS = frozenset(
+    {
+        "operation_id", "run_ref_sha256", "source_record_sha256", "scenario_role",
         "origin_workspace_id", "import_workspace_id", "execution_source",
         "physical_transport_evidence",
     }
@@ -327,6 +351,20 @@ def _has_provider_os_error(error: BaseException) -> bool:
     return False
 
 
+def _execution_policy(published: object) -> tuple[str, bool]:
+    """Return the exact source discriminator carried by a TestRun Evidence."""
+
+    envelope = getattr(published, "envelope", None)
+    metadata = dict(getattr(envelope, "metadata", {}) or {})
+    source = metadata.get("execution_source")
+    physical = metadata.get("physical_transport_evidence")
+    if source == "replay" and physical is False:
+        return "replay", False
+    if source == "physical" and physical is True:
+        return "physical", True
+    raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
+
+
 def _load_failed_run(
     state: _WorkflowState,
     failed_test_run_id: str,
@@ -373,24 +411,42 @@ def _validate_target_authority(
         expected_identity is not None and identity != expected_identity
     ) or identity.project_id != str(state.model.logical_project_id):
         raise _WorkflowFailure(_INCOMPATIBLE_IDENTITY)
+    try:
+        execution_source, physical = _execution_policy(published)
+    except _WorkflowFailure:
+        raise
+    expected_operation = (
+        _TARGET_PHYSICAL_OPERATION if physical else _TARGET_REPLAY_OPERATION
+    )
+    expected_transport = (
+        getattr(manifest, "transport", None) in _PHYSICAL_TRANSPORTS
+        if physical
+        else getattr(manifest, "transport", None) == "replay"
+    )
     if (
         getattr(manifest, "run_id", None) != failed_test_run_id
         or getattr(manifest, "mode", None) != "target"
         or getattr(manifest, "state", None) != "failed"
-        or getattr(manifest, "transport", None) != "replay"
+        or not expected_transport
         or getattr(envelope, "identity", None) != identity
-        or getattr(envelope, "operation", None) != "target-test-replay"
+        or getattr(envelope, "operation", None) != expected_operation
         or getattr(root, "manifest_id", None) != getattr(envelope, "evidence_id", None)
     ):
         raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
     expected_root_metadata = {
         "mode": "target",
         "state": "failed",
-        "execution_source": "replay",
-        "physical_transport_evidence": False,
+        "execution_source": execution_source,
+        "physical_transport_evidence": physical,
         "origin_workspace_id": identity.workspace_id,
         "import_workspace_id": state.workspace.workspace_id,
     }
+    if physical:
+        expected_root_metadata = {
+            "mode": "target",
+            "state": "failed",
+            **dict(getattr(envelope, "metadata", {})),
+        }
     if getattr(root, "metadata", None) != expected_root_metadata:
         raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
     return manifest
@@ -709,6 +765,11 @@ def _completion_outcome(
                 getattr(after, "manifest"),
                 marker,
                 analysis_identity=analysis_envelope.identity,
+                execution_source=cast(str, analysis_envelope.metadata["execution_source"]),
+                physical_transport_evidence=cast(
+                    bool,
+                    analysis_envelope.metadata["physical_transport_evidence"],
+                ),
             )
         except _CompletionEvidenceFailure as error:
             missing, corrupt, environment = _completion_failure_kind(
@@ -840,6 +901,7 @@ def _diagnostic_complete_verification(
         plan,
         expected_identity=session.identity,
     )
+    _validate_pair_execution_policy(before, after)
     if (
         str(getattr(before, "envelope").evidence_id) != plan.failed_before_evidence_id
         or str(getattr(after, "envelope").evidence_id) != plan.fixed_after_evidence_id
@@ -1185,26 +1247,50 @@ def _load_target_run(
         raise _WorkflowFailure(_INCOMPATIBLE_IDENTITY)
     if expected_identity is not None and not _same_scope(identity, expected_identity):
         raise _WorkflowFailure(_INCOMPATIBLE_IDENTITY)
+    execution_source, physical = _execution_policy(published)
     expected_metadata = {
         "mode": "target",
         "state": expected_state,
-        "execution_source": "replay",
-        "physical_transport_evidence": False,
+        "execution_source": execution_source,
+        "physical_transport_evidence": physical,
         "origin_workspace_id": identity.workspace_id,
         "import_workspace_id": state.workspace.workspace_id,
     }
+    expected_operation = _TARGET_PHYSICAL_OPERATION if physical else _TARGET_REPLAY_OPERATION
+    expected_transport = (
+        getattr(manifest, "transport", None) in _PHYSICAL_TRANSPORTS
+        if physical
+        else getattr(manifest, "transport", None) == "replay"
+    )
+    if physical:
+        expected_metadata = {
+            "mode": "target",
+            "state": expected_state,
+            **dict(getattr(envelope, "metadata", {})),
+        }
     if (
         getattr(manifest, "run_id", None) != run_id
         or getattr(manifest, "mode", None) != "target"
         or getattr(manifest, "state", None) != expected_state
-        or getattr(manifest, "transport", None) != "replay"
+        or not expected_transport
         or getattr(envelope, "identity", None) != identity
-        or getattr(envelope, "operation", None) != _TARGET_REPLAY_OPERATION
+        or getattr(envelope, "operation", None) != expected_operation
         or getattr(root, "manifest_id", None) != getattr(envelope, "evidence_id", None)
         or getattr(root, "metadata", None) != expected_metadata
     ):
         raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
     return published
+
+
+def _validate_pair_execution_policy(before: object, after: object) -> tuple[str, bool]:
+    try:
+        before_policy = _execution_policy(before)
+        after_policy = _execution_policy(after)
+    except _WorkflowFailure:
+        raise
+    if before_policy != after_policy:
+        raise _WorkflowFailure(_INCOMPATIBLE_IDENTITY)
+    return before_policy
 
 
 def _validate_declaration_lineage(
@@ -1343,6 +1429,19 @@ def _read_transcript_parent(
         run_identity = getattr(run, "identity", run)
         envelope = state.evidence_store.get_envelope(evidence_id)
         metadata = dict(envelope.metadata)
+        if (
+            metadata.get("execution_source") == "physical"
+            and metadata.get("physical_transport_evidence") is True
+        ):
+            return _read_physical_transcript_parent(
+                state,
+                evidence_id=evidence_id,
+                run_identity=run_identity,
+                expected_test_run_id=getattr(run, "run_id", None),
+                expected_role=expected_role,
+                envelope=envelope,
+                metadata=metadata,
+            )
         expected_metadata_fields = {
             "operation_id", "scenario_role", "origin_workspace_id", "import_workspace_id",
             "origin_run_id", "projected_run_id", "fixture_sha256", "execution_source",
@@ -1466,6 +1565,295 @@ def _read_transcript_parent(
         code = _ENVIRONMENT_FAILURE if _has_provider_os_error(error) else _EVIDENCE_INTEGRITY_FAILURE
         raise _WorkflowFailure(code) from error
     except (UnicodeError, json.JSONDecodeError, TypeError, ValueError, OverflowError) as error:
+        raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE) from error
+    except OSError as error:
+        raise _WorkflowFailure(_ENVIRONMENT_FAILURE) from error
+
+
+def _read_physical_transcript_parent(
+    state: _WorkflowState,
+    *,
+    evidence_id: str,
+    run_identity: object,
+    expected_test_run_id: object | None,
+    expected_role: str,
+    envelope: EvidenceEnvelope,
+    metadata: dict[str, object],
+) -> tuple[EvidenceEnvelope, dict[str, object]]:
+    """Validate one immutable physical Monitor source and its run authority.
+
+    This reader deliberately consumes only the transcript, reference, and linked
+    TestRun Evidence graph.  It never opens Monitor History and never accepts a
+    raw probe selector.
+    """
+
+    try:
+        if (
+            envelope.operation != "monitor-physical-window"
+            or envelope.parents
+            or len(envelope.artifacts) != 1
+            or set(metadata) != _PHYSICAL_TRANSCRIPT_METADATA_FIELDS
+            or metadata["scenario_role"] != expected_role
+            or metadata["origin_workspace_id"] != getattr(run_identity, "workspace_id", None)
+            or metadata["import_workspace_id"] != state.workspace.workspace_id
+            or metadata["origin_session_id"] != envelope.identity.session_id
+            or metadata["projected_session_id"] != state.workspace.session_id
+            or metadata["execution_source"] != "physical"
+            or metadata["physical_transport_evidence"] is not True
+            or not _same_replay_identity(envelope.identity, run_identity)
+            or str(envelope.evidence_id) != evidence_id
+        ):
+            raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
+
+        operation_id = metadata["operation_id"]
+        if not isinstance(operation_id, str) or not operation_id:
+            raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
+        try:
+            operation_uuid = UUID(operation_id)
+            origin_run_uuid = UUID(str(metadata["origin_run_id"]))
+            projected_run_uuid = UUID(str(metadata["projected_run_id"]))
+        except (AttributeError, TypeError, ValueError) as error:
+            raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE) from error
+        if (
+            str(operation_uuid) != operation_id
+            or origin_run_uuid != operation_uuid
+            or projected_run_uuid != operation_uuid
+        ):
+            raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
+        _hash_value(metadata["source_record_sha256"])
+
+        transcript_root = get_root(state.evidence_store, "monitor-run", operation_id)
+        expected_transcript_root_metadata = {
+            "source_record_sha256": metadata["source_record_sha256"],
+            "run_ref_sha256": None,
+            "origin_workspace_id": metadata["origin_workspace_id"],
+            "import_workspace_id": metadata["import_workspace_id"],
+            "execution_source": "physical",
+            "physical_transport_evidence": True,
+        }
+        if (
+            transcript_root.root_type != "monitor-run"
+            or transcript_root.root_id != operation_id
+            or transcript_root.manifest_id != evidence_id
+            or set(transcript_root.metadata)
+            != {
+                "source_record_sha256", "run_ref_sha256", "origin_workspace_id",
+                "import_workspace_id", "execution_source", "physical_transport_evidence",
+            }
+            or dict(transcript_root.metadata).get("source_record_sha256")
+            != expected_transcript_root_metadata["source_record_sha256"]
+            or dict(transcript_root.metadata).get("origin_workspace_id")
+            != expected_transcript_root_metadata["origin_workspace_id"]
+            or dict(transcript_root.metadata).get("import_workspace_id")
+            != expected_transcript_root_metadata["import_workspace_id"]
+            or dict(transcript_root.metadata).get("execution_source") != "physical"
+            or dict(transcript_root.metadata).get("physical_transport_evidence") is not True
+        ):
+            raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
+        root_metadata = dict(transcript_root.metadata)
+        _hash_value(root_metadata["run_ref_sha256"])
+
+        artifact = envelope.artifacts[0]
+        if artifact.kind != "monitor-physical-transcript" or artifact.media_type != "application/json":
+            raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
+        raw = state.evidence_store.read_artifact(
+            artifact,
+            maximum_bytes=MAX_PHYSICAL_TRANSCRIPT_BYTES,
+        )
+        if (
+            artifact.size_bytes != len(raw)
+            or artifact.sha256 != hashlib.sha256(raw).hexdigest()
+            or artifact.sha256 != metadata["source_record_sha256"]
+        ):
+            raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
+        try:
+            decoded = decode_physical_transcript_bytes(raw)
+            transcript = validate_physical_transcript(decoded)
+        except ReplayContractError as error:
+            raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE) from error
+        if transcript != decoded:
+            raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
+        if (
+            transcript["schema"] != MONITOR_PHYSICAL_TRANSCRIPT_SCHEMA
+            or transcript["source"] != MONITOR_PHYSICAL_SOURCE
+            or transcript["scenario_role"] != expected_role
+            or transcript["execution_source"] != "physical"
+            or transcript["physical_transport_evidence"] is not True
+        ):
+            raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
+        transcript_test_run_id = transcript["test_run_id"]
+        if not isinstance(transcript_test_run_id, str) or not transcript_test_run_id:
+            raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
+        if expected_test_run_id is not None and transcript_test_run_id != expected_test_run_id:
+            raise _WorkflowFailure(_INCOMPATIBLE_IDENTITY)
+        binding = cast(dict[str, object], transcript["binding"])
+        batches = cast(list[object], transcript["batches"])
+        if not batches or not isinstance(batches[0], dict):
+            raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
+        first = cast(dict[str, object], batches[0])
+        if (
+            first["runId"] != operation_id
+            or binding["workspaceId"] != getattr(run_identity, "workspace_id", None)
+            or binding["logicalProjectId"] != getattr(run_identity, "project_id", None)
+            or binding["sessionId"] != envelope.identity.session_id
+            or binding["targetDevice"] != getattr(run_identity, "target_device", None)
+            or binding["buildId"] != getattr(run_identity, "build_id", None)
+            or binding["elfSha256"] != getattr(run_identity, "elf_sha256", None)
+            or binding["inputSnapshotSha256"]
+            != getattr(run_identity, "input_snapshot_sha256", None)
+            or binding["gitHead"] != getattr(run_identity, "git_commit", None)
+            or binding["gitDirty"] is not getattr(run_identity, "git_dirty", None)
+        ):
+            raise _WorkflowFailure(_INCOMPATIBLE_IDENTITY)
+        if any(
+            not isinstance(batch, dict)
+            or batch.get("runId") != operation_id
+            or batch.get("binding") != binding
+            for batch in batches
+        ):
+            raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
+
+        reference_root = get_root(state.evidence_store, "monitor-run-ref", operation_id)
+        reference_root_metadata = dict(reference_root.metadata)
+        if (
+            reference_root.root_type != "monitor-run-ref"
+            or reference_root.root_id != operation_id
+            or set(reference_root_metadata) != _PHYSICAL_REFERENCE_METADATA_FIELDS
+            or reference_root_metadata["operation_id"] != operation_id
+            or reference_root_metadata["scenario_role"] != expected_role
+            or reference_root_metadata["source_record_sha256"]
+            != metadata["source_record_sha256"]
+            or reference_root_metadata["origin_workspace_id"]
+            != metadata["origin_workspace_id"]
+            or reference_root_metadata["import_workspace_id"]
+            != metadata["import_workspace_id"]
+            or reference_root_metadata["execution_source"] != "physical"
+            or reference_root_metadata["physical_transport_evidence"] is not True
+            or reference_root.manifest_id == evidence_id
+        ):
+            raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
+        reference_envelope = state.evidence_store.get_envelope(reference_root.manifest_id)
+        if (
+            reference_envelope.operation != "monitor-run-ref"
+            or reference_envelope.parents != (evidence_id,)
+            or len(reference_envelope.artifacts) != 1
+            or dict(reference_envelope.metadata) != reference_root_metadata
+            or reference_envelope.produced_at_utc != envelope.produced_at_utc
+            or reference_root.manifest_id != str(reference_envelope.evidence_id)
+        ):
+            raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
+        reference_artifact = reference_envelope.artifacts[0]
+        if reference_artifact.kind != "monitor-run-ref" or reference_artifact.media_type != "application/json":
+            raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
+        reference_raw = state.evidence_store.read_artifact(
+            reference_artifact,
+            maximum_bytes=MAX_EVIDENCE_READ_BYTES,
+        )
+        if (
+            reference_artifact.size_bytes != len(reference_raw)
+            or reference_artifact.sha256 != hashlib.sha256(reference_raw).hexdigest()
+        ):
+            raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
+        try:
+            reference_decoded = decode_canonical_json_bytes(
+                reference_raw,
+                require_object=True,
+            )
+            reference = validate_run_reference(reference_decoded)
+        except ReplayContractError as error:
+            raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE) from error
+        if (
+            reference["schema"] != MONITOR_RUN_REF_SCHEMA_V2
+            or reference["operation_id"] != operation_id
+            or reference["scenario_role"] != expected_role
+            or reference["execution_source"] != "physical"
+            or reference["physical_transport_evidence"] is not True
+            or reference["source_record_sha256"] != metadata["source_record_sha256"]
+            or reference["source_record_sha256"] != hashlib.sha256(raw).hexdigest()
+            or reference["run_ref_sha256"] != reference_root_metadata["run_ref_sha256"]
+            or reference["transcript_evidence_id"] != evidence_id
+            or reference_envelope.identity != envelope.identity
+        ):
+            raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
+
+        expected_reference = {
+            "origin_workspace_id": binding["workspaceId"],
+            "import_workspace_id": state.workspace.workspace_id,
+            "logical_project_id": binding["logicalProjectId"],
+            "origin_session_id": binding["sessionId"],
+            "projected_session_id": state.workspace.session_id,
+            "origin_run_id": operation_id,
+            "projected_run_id": operation_id,
+            "target_device": binding["targetDevice"],
+            "probe_id": binding["probeId"],
+            "physical_target": binding["physicalTarget"],
+            "build_id": binding["buildId"],
+            "elf_sha256": binding["elfSha256"],
+            "input_snapshot_sha256": binding["inputSnapshotSha256"],
+            "git_head": binding["gitHead"],
+            "git_dirty": binding["gitDirty"],
+            "flash_session_id": binding["flashSessionId"],
+            "lease_id": binding["leaseId"],
+            "dwarf_sha256": binding["dwarfSha256"],
+            "svd_sha256": binding["svdSha256"],
+            "group_id": first["groupId"],
+            "group_revision": first["groupRevision"],
+            "start_sequence": first["sequence"],
+            "end_sequence_exclusive": cast(dict[str, object], batches[-1])["sequence"] + 1,
+            "start_captured_unix_ns": first["capturedUnixNs"],
+            "end_captured_unix_ns_exclusive": cast(dict[str, object], batches[-1])["capturedUnixNs"] + 1,
+        }
+        if any(reference[key] != value for key, value in expected_reference.items()):
+            raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
+        expected_batch_digests = [
+            hashlib.sha256(canonical_physical_json_bytes(cast(dict[str, object], batch))).hexdigest()
+            for batch in batches
+        ]
+        if reference["projected_batch_sha256s"] != expected_batch_digests:
+            raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
+        if (
+            dict(transcript_root.metadata)
+            != {
+                "source_record_sha256": reference["source_record_sha256"],
+                "run_ref_sha256": reference["run_ref_sha256"],
+                "origin_workspace_id": reference["origin_workspace_id"],
+                "import_workspace_id": reference["import_workspace_id"],
+                "execution_source": "physical",
+                "physical_transport_evidence": True,
+            }
+        ):
+            raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
+        if (
+            dict(envelope.metadata).get("test_run_id") != transcript_test_run_id
+            or dict(envelope.metadata).get("origin_run_id") != operation_id
+            or dict(envelope.metadata).get("projected_run_id") != operation_id
+        ):
+            raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
+
+        expected_state: Literal["failed", "passed"] = (
+            "failed" if expected_role == "failed-before" else "passed"
+        )
+        linked = _load_target_run(
+            state,
+            transcript_test_run_id,
+            expected_state=expected_state,
+            expected_identity=run_identity,
+        )
+        linked_manifest = getattr(linked, "manifest", None)
+        if (
+            getattr(linked_manifest, "run_id", None) != transcript_test_run_id
+            or not _same_replay_identity(getattr(linked_manifest, "identity", None), run_identity)
+        ):
+            raise _WorkflowFailure(_INCOMPATIBLE_IDENTITY)
+        return envelope, reference
+    except _WorkflowFailure:
+        raise
+    except FileNotFoundError as error:
+        raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE) from error
+    except EvidenceValidationError as error:
+        code = _ENVIRONMENT_FAILURE if _has_provider_os_error(error) else _EVIDENCE_INTEGRITY_FAILURE
+        raise _WorkflowFailure(code) from error
+    except (ReplayContractError, UnicodeError, json.JSONDecodeError, TypeError, ValueError, OverflowError) as error:
         raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE) from error
     except OSError as error:
         raise _WorkflowFailure(_ENVIRONMENT_FAILURE) from error
@@ -1771,6 +2159,28 @@ def _validate_analysis(
         raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
     if not _same_replay_identity(envelope.identity, after_identity):
         raise _WorkflowFailure(_INCOMPATIBLE_IDENTITY)
+    if envelope.parents != tuple(envelope.parents) or len(envelope.parents) != 3:
+        raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
+    if envelope.parents[2] != declaration.diff_evidence_id:
+        raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
+    before_transcript, before_reference = _read_transcript_parent(
+        state,
+        evidence_id=envelope.parents[0],
+        run=before,
+        expected_role="failed-before",
+    )
+    after_transcript, after_reference = _read_transcript_parent(
+        state,
+        evidence_id=envelope.parents[1],
+        run=after,
+        expected_role="fixed-after",
+    )
+    if (
+        before_reference["execution_source"] != after_reference["execution_source"]
+        or before_reference["physical_transport_evidence"]
+        is not after_reference["physical_transport_evidence"]
+    ):
+        raise _WorkflowFailure(_INCOMPATIBLE_IDENTITY)
     expected_metadata = {
         "analysis_id": analysis_id,
         "before_run_id": analysis.get("before_run_id"),
@@ -1779,27 +2189,11 @@ def _validate_analysis(
         "origin_workspace_id": after_identity.workspace_id,
         "import_workspace_id": state.workspace.workspace_id,
         "origin_session_id": envelope.identity.session_id,
-        "execution_source": "replay",
-        "physical_transport_evidence": False,
+        "execution_source": before_reference["execution_source"],
+        "physical_transport_evidence": before_reference["physical_transport_evidence"],
     }
     if dict(envelope.metadata) != expected_metadata:
         raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
-    if envelope.parents != tuple(envelope.parents) or len(envelope.parents) != 3:
-        raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
-    if envelope.parents[2] != declaration.diff_evidence_id:
-        raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
-    before_transcript, before_reference = _read_transcript_parent(
-        state,
-        evidence_id=envelope.parents[0],
-        run=before_identity,
-        expected_role="failed-before",
-    )
-    after_transcript, after_reference = _read_transcript_parent(
-        state,
-        evidence_id=envelope.parents[1],
-        run=after_identity,
-        expected_role="fixed-after",
-    )
     if (
         analysis.get("before_run_id") != before_reference["run_ref_sha256"]
         or analysis.get("after_run_id") != after_reference["run_ref_sha256"]
@@ -1969,6 +2363,8 @@ def _validate_marker(
     after: object,
     marker: DiagnosticMarkerRef,
     analysis_identity: object,
+    execution_source: str = "replay",
+    physical_transport_evidence: bool = False,
 ) -> None:
     _root, envelope, _artifact, _payload, payload = _read_json_evidence(
         state,
@@ -1986,8 +2382,8 @@ def _validate_marker(
         "origin_workspace_id": analysis_identity.workspace_id,
         "import_workspace_id": state.workspace.workspace_id,
         "origin_session_id": analysis_identity.session_id,
-        "execution_source": "replay",
-        "physical_transport_evidence": False,
+        "execution_source": execution_source,
+        "physical_transport_evidence": physical_transport_evidence,
     }
     if dict(envelope.metadata) != expected_metadata or envelope.parents != (marker.analysis_evidence_id,):
         raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
@@ -2159,6 +2555,7 @@ def _diagnostic_add_verification_plan(
         plan,
         expected_identity=session.identity,
     )
+    _validate_pair_execution_policy(before, after)
     _validate_declaration_lineage(
         declaration,
         before_identity=getattr(before, "manifest").identity,
@@ -2354,6 +2751,7 @@ def _diagnostic_attach_marker(
         expected_state="passed",
         expected_identity=session.identity,
     )
+    _validate_pair_execution_policy(before, after)
     _validate_declaration_lineage(
         declaration,
         before_identity=getattr(before, "manifest").identity,
@@ -2384,6 +2782,11 @@ def _diagnostic_attach_marker(
         getattr(after, "manifest"),
         marker,
         analysis_identity=analysis_envelope.identity,
+        execution_source=cast(str, analysis_envelope.metadata["execution_source"]),
+        physical_transport_evidence=cast(
+            bool,
+            analysis_envelope.metadata["physical_transport_evidence"],
+        ),
     )
     event = create_event(
         diagnostic_session_id=session.diagnostic_session_id,

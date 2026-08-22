@@ -39,6 +39,12 @@ from stm32_toolkit.testing.model import TestCaseResult, TestRunManifest
 from stm32_toolkit.testing.publication import TestRunPublisher
 from stm32_toolkit.testing.replay import load_target_replay_fixture
 from stm32_toolkit.testing.target import TargetFrameDecoder
+from test_physical_publication import (
+    _append_physical_history,
+    _physical_context,
+    _publish_physical_test_run,
+)
+from stm32_monitor.replay import load_monitor_run_reference, publish_physical_monitor_run
 
 
 def test_analysis_bundle_ref_is_closed_and_content_addressed():
@@ -395,6 +401,130 @@ def test_compare_monitor_runs_publishes_changed_analysis_and_marker(tmp_path: Pa
     assert analysis_envelope.identity.session_id == after.origin_session_id
     assert analysis_envelope.identity.workspace_id != paths.workspace_id
     assert plan_gc(evidence).reachable_manifests
+
+
+def test_compare_physical_runs_uses_transcripts_after_history_is_discarded(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    paths, evidence, failed_test_run_id, raw_probe, failed_run_id, failed_group_id = (
+        _physical_context(tmp_path)
+    )
+    _publish_physical_test_run(
+        paths,
+        evidence,
+        test_run_id=failed_test_run_id,
+        raw_probe=raw_probe,
+        monitor_run_id=failed_run_id,
+    )
+    failed_batches = _append_physical_history(
+        paths,
+        raw_probe,
+        failed_run_id,
+        failed_group_id,
+        scenario_role="failed-before",
+    )
+    publish_physical_monitor_run(
+        paths,
+        evidence,
+        scenario_role="failed-before",
+        test_run_id=failed_test_run_id,
+        run_id=str(failed_run_id),
+        group_id=str(failed_group_id),
+        start_sequence=failed_batches[0].sequence,
+        end_sequence_exclusive=failed_batches[-1].sequence + 1,
+        start_captured_unix_ns=failed_batches[0].captured_unix_ns,
+        end_captured_unix_ns_exclusive=failed_batches[-1].captured_unix_ns + 1,
+        probe_id=raw_probe,
+    )
+    fixed_test_run_id = "physical-test-run-02"
+    fixed_run_id = UUID("33333333-3333-4333-8333-333333333333")
+    fixed_group_id = UUID("44444444-4444-4444-8444-444444444444")
+    _publish_physical_test_run(
+        paths,
+        evidence,
+        test_run_id=fixed_test_run_id,
+        raw_probe=raw_probe,
+        monitor_run_id=fixed_run_id,
+        state="passed",
+    )
+    fixed_batches = _append_physical_history(
+        paths,
+        raw_probe,
+        fixed_run_id,
+        fixed_group_id,
+        scenario_role="fixed-after",
+        value_offset=10,
+    )
+    publish_physical_monitor_run(
+        paths,
+        evidence,
+        scenario_role="fixed-after",
+        test_run_id=fixed_test_run_id,
+        run_id=str(fixed_run_id),
+        group_id=str(fixed_group_id),
+        start_sequence=fixed_batches[0].sequence,
+        end_sequence_exclusive=fixed_batches[-1].sequence + 1,
+        start_captured_unix_ns=fixed_batches[0].captured_unix_ns,
+        end_captured_unix_ns_exclusive=fixed_batches[-1].captured_unix_ns + 1,
+        probe_id=raw_probe,
+    )
+    before = load_monitor_run_reference(paths, evidence, str(failed_run_id))
+    after = load_monitor_run_reference(paths, evidence, str(fixed_run_id))
+
+    class _HistoryMustNotBeRead:
+        def __init__(self, *_args: object, **_kwargs: object) -> None:
+            raise AssertionError("physical compare must not open Monitor History")
+
+    monkeypatch.setattr(workflows, "HistoryStore", _HistoryMustNotBeRead)
+    publication = compare_monitor_runs(
+        paths,
+        evidence,
+        _request(before, after),
+        "f" * 32,
+        HYPOTHESIS_ID,
+        "supports",
+        "the physical fixed run changed the observed counter",
+    )
+
+    assert publication.analysis_result.quality == "VALID"
+    assert publication.analysis_result.conclusion == "COMPLETED"
+    assert publication.analysis_result.changed is True
+    analysis_root = get_root(evidence, "monitor-analysis", publication.analysis_result.analysis_id)
+    analysis_envelope = evidence.get_envelope(analysis_root.manifest_id)
+    assert analysis_envelope.parents == (
+        before.transcript_evidence_id,
+        after.transcript_evidence_id,
+    )
+    assert analysis_envelope.metadata["execution_source"] == "physical"
+    assert analysis_envelope.metadata["physical_transport_evidence"] is True
+    assert raw_probe.encode("utf-8") not in json.dumps(
+        dict(analysis_envelope.metadata),
+        sort_keys=True,
+    ).encode("utf-8")
+    bundle, bundle_ref = export_analysis_bundle(
+        paths,
+        evidence,
+        _request(before, after),
+        publication,
+        failed_test_run_id,
+        fixed_test_run_id,
+    )
+    retry_bundle, retry_ref = export_analysis_bundle(
+        paths,
+        EvidenceStore(paths.workspace_root / "evidence"),
+        _request(before, after),
+        publication,
+        failed_test_run_id,
+        fixed_test_run_id,
+    )
+    assert (retry_bundle, retry_ref) == (bundle, bundle_ref)
+    bundle_document = json.loads(bundle.decode("utf-8"))
+    assert bundle_document["before_run"]["schema"] == "stm32-monitor-run-ref/2"
+    assert bundle_document["after_run"]["schema"] == "stm32-monitor-run-ref/2"
+    assert bundle_document["before_run"]["execution_source"] == "physical"
+    assert bundle_document["after_run"]["physical_transport_evidence"] is True
+    assert raw_probe not in bundle.decode("utf-8")
 
 
 def test_publication_fields_identity_and_transcript_metadata_are_exact(tmp_path: Path) -> None:

@@ -82,10 +82,17 @@ def test_lifecycle_tools_have_exact_closed_project_bound_schemas(tmp_path: Path)
     assert LIFECYCLE_TOOLS <= set(schemas)
 
     start = schemas["stm32_diagnostic_start"]
-    assert set(start["properties"]) == {"operationId", "failedTestRunId", "actor"}
+    assert set(start["properties"]) == {
+        "operationId",
+        "failedTestRunId",
+        "actor",
+        "failedRunMode",
+    }
     assert start["required"] == ["operationId", "failedTestRunId"]
     assert start["properties"]["actor"]["default"] == "user"
     assert start["properties"]["actor"]["enum"] == ACTORS
+    assert start["properties"]["failedRunMode"]["default"] == "host"
+    assert start["properties"]["failedRunMode"]["enum"] == ["host", "target"]
 
     operation_schema = start["properties"]["operationId"]
     assert operation_schema["pattern"] == r"^[a-z0-9][a-z0-9._-]{0,127}$"

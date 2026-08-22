@@ -43,7 +43,13 @@ def validate_execution_provenance(
             or origin_workspace_id != import_workspace_id
             or origin_session_id != current_session_id
             or set(labels) != expected_labels
-            or any(not isinstance(value, str) or not value or value == "replay" for value in labels.values())
+            or any(
+                not isinstance(value, str)
+                or not value
+                or value == "replay"
+                or value.startswith("replay:")
+                for value in labels.values()
+            )
         ):
             raise ValueError("physical provenance is incompatible")
     elif physical_transport_evidence or (

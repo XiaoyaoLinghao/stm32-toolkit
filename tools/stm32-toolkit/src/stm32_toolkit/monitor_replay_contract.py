@@ -10,18 +10,22 @@ import math
 import re
 import unicodedata
 from uuid import UUID
+from typing import cast
 
 
 MONITOR_REPLAY_SCHEMA = "stm32-monitor-replay/1"
 MONITOR_REPLAY_SOURCE = "toolkit-generated-probe-v2-replay"
 MONITOR_RUN_REF_SCHEMA = "stm32-monitor-run-ref/1"
 MONITOR_RUN_REF_SCHEMA_V2 = "stm32-monitor-run-ref/2"
+MONITOR_PHYSICAL_TRANSCRIPT_SCHEMA = "stm32-monitor-physical-transcript/1"
+MONITOR_PHYSICAL_SOURCE = "toolkit-live-history"
 MONITOR_REPLAY_EXECUTION_SOURCE = "replay"
 MONITOR_REPLAY_PROBE_ID = "replay:probe-v2"
 MONITOR_REPLAY_PHYSICAL_TARGET = "replay:non-physical"
 MONITOR_REPLAY_FLASH_SESSION_ID = "replay:no-flash"
 MONITOR_REPLAY_LEASE_ID = "replay:no-lease"
 MAX_REPLAY_DOCUMENT_BYTES = 1024 * 1024
+MAX_PHYSICAL_TRANSCRIPT_BYTES = 64 * 1024 * 1024
 MAX_REPLAY_BATCHES = 1024
 MAX_REPLAY_JSON_DEPTH = 32
 MAX_REPLAY_JSON_NODES = 10_000
@@ -135,6 +139,18 @@ _REF_FIELDS_V2 = frozenset(
     {
         *(_REF_FIELDS_V1 - {"fixture_sha256"}),
         "source_record_sha256",
+    }
+)
+_PHYSICAL_TRANSCRIPT_FIELDS = frozenset(
+    {
+        "schema",
+        "source",
+        "scenario_role",
+        "test_run_id",
+        "execution_source",
+        "physical_transport_evidence",
+        "binding",
+        "batches",
     }
 )
 
@@ -277,6 +293,147 @@ def decode_canonical_json_bytes(
     if require_object and type(copied) is not dict:
         _fail("replay JSON must be an object")
     return copied
+
+
+def _copy_physical_json(
+    value: object,
+    *,
+    depth: int = 0,
+    budget: _JsonBudget | None = None,
+) -> object:
+    """Copy one physical transcript value under the shared Monitor bounds.
+
+    Physical transcripts have their own 64 MiB byte budget, but retain the
+    dependency-neutral JSON safety rules used by Monitor's typed models.  In
+    particular, a large source record is allowed without weakening the
+    per-string, depth, node, numeric, or NFC checks.
+    """
+
+    state = budget if budget is not None else _JsonBudget()
+    if depth > MAX_REPLAY_JSON_DEPTH:
+        _fail("physical transcript JSON exceeds its depth limit")
+    state.nodes += 1
+    # Physical Monitor's existing source-record decoder permits one million
+    # nodes.  The separate 10,000 value limit below bounds the actual sample
+    # payload without changing that accepted B1 byte budget.
+    if state.nodes > 1_000_000:
+        _fail("physical transcript JSON exceeds its node limit")
+    if value is None or type(value) is bool:
+        return value
+    if type(value) is int:
+        if not MIN_SIGNED_INT64 <= value <= MAX_SIGNED_INT64:
+            _fail("physical transcript JSON integer is out of range")
+        return value
+    if type(value) is float:
+        if not math.isfinite(value):
+            _fail("physical transcript JSON number is not finite")
+        return value
+    if type(value) is str:
+        if len(value) > MAX_REPLAY_JSON_STRING_CHARS:
+            _fail("physical transcript JSON string exceeds its limit")
+        if unicodedata.normalize("NFC", value) != value:
+            _fail("physical transcript JSON strings must use NFC")
+        try:
+            value.encode("utf-8")
+        except UnicodeEncodeError as error:
+            raise ReplayContractError("physical transcript JSON contains invalid Unicode") from error
+        return value
+    if isinstance(value, tuple):
+        _fail("physical transcript JSON must not contain tuple containers")
+    if isinstance(value, Mapping):
+        identity = id(value)
+        if identity in state.active:
+            _fail("physical transcript JSON contains a cycle")
+        state.active.add(identity)
+        try:
+            copied: dict[str, object] = {}
+            for key, item in value.items():
+                if type(key) is not str:
+                    _fail("physical transcript JSON object keys must be strings")
+                if unicodedata.normalize("NFC", key) != key:
+                    _fail("physical transcript JSON object keys must use NFC")
+                if key in copied:
+                    _fail("physical transcript JSON object keys must be unique")
+                copied[key] = _copy_physical_json(
+                    item,
+                    depth=depth + 1,
+                    budget=state,
+                )
+            return copied
+        finally:
+            state.active.remove(identity)
+    if isinstance(value, list):
+        identity = id(value)
+        if identity in state.active:
+            _fail("physical transcript JSON contains a cycle")
+        state.active.add(identity)
+        try:
+            return [
+                _copy_physical_json(item, depth=depth + 1, budget=state)
+                for item in value
+            ]
+        finally:
+            state.active.remove(identity)
+    _fail("physical transcript JSON contains an unsupported value")
+
+
+def canonical_physical_json_bytes(value: object) -> bytes:
+    """Return canonical JSON bytes for a physical source record."""
+
+    copied = _copy_physical_json(value)
+    try:
+        raw = json.dumps(
+            copied,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        ).encode("utf-8")
+    except (TypeError, UnicodeError, ValueError, OverflowError) as error:
+        raise ReplayContractError("physical transcript JSON is not canonical") from error
+    if len(raw) > MAX_PHYSICAL_TRANSCRIPT_BYTES:
+        _fail("physical transcript bytes exceed their size limit")
+    return raw
+
+
+def decode_physical_transcript_bytes(raw: bytes) -> dict[str, object]:
+    """Decode one canonical physical transcript without Monitor imports."""
+
+    if type(raw) is not bytes or not raw or len(raw) > MAX_PHYSICAL_TRANSCRIPT_BYTES:
+        _fail("physical transcript bytes exceed their bounded input limit")
+    if raw.startswith(b"\xef\xbb\xbf"):
+        _fail("physical transcript JSON must not contain a BOM")
+
+    def pairs(items: list[tuple[str, object]]) -> dict[str, object]:
+        result: dict[str, object] = {}
+        for key, item in items:
+            if key in result:
+                _fail("physical transcript JSON has duplicate object keys")
+            result[key] = item
+        return result
+
+    def reject_constant(_: str) -> object:
+        _fail("physical transcript JSON contains a non-finite number")
+
+    try:
+        decoded = json.loads(
+            raw.decode("utf-8"),
+            object_pairs_hook=pairs,
+            parse_constant=reject_constant,
+        )
+    except ReplayContractError:
+        raise
+    except (UnicodeDecodeError, json.JSONDecodeError, ValueError, RecursionError) as error:
+        raise ReplayContractError("physical transcript JSON is not valid UTF-8 JSON") from error
+    if type(decoded) is not dict:
+        _fail("physical transcript JSON must be an object")
+    try:
+        canonical = canonical_physical_json_bytes(decoded)
+    except ReplayContractError:
+        raise
+    if canonical != raw:
+        _fail("physical transcript JSON is not canonical")
+    return cast(dict[str, object], _copy_physical_json(decoded))
 
 
 def _mapping(value: object, fields: frozenset[str], label: str) -> dict[str, object]:
@@ -444,6 +601,94 @@ def _validate_batch(value: object, binding: dict[str, object]) -> dict[str, obje
     return batch
 
 
+def _validate_physical_binding(value: object) -> dict[str, object]:
+    binding = _mapping(value, _BINDING_FIELDS, "physical binding")
+    for field in (
+        "workspaceId",
+        "buildId",
+        "elfSha256",
+        "inputSnapshotSha256",
+        "dwarfSha256",
+    ):
+        _hash(binding[field], field)
+    if binding["svdSha256"] is not None:
+        _hash(binding["svdSha256"], "svdSha256")
+    _uuid(binding["logicalProjectId"], "logicalProjectId")
+    _session(binding["sessionId"], "sessionId")
+    for field in ("probeId", "targetDevice", "physicalTarget", "flashSessionId", "leaseId"):
+        _text(binding[field], field, 256)
+    if type(binding["gitDirty"]) is not bool:
+        _fail("gitDirty is invalid")
+    if type(binding["gitHead"]) is not str or _GIT_SHA.fullmatch(binding["gitHead"]) is None:
+        _fail("gitHead is invalid")
+    if (
+        _SHA256.fullmatch(cast(str, binding["probeId"])) is None
+        or any(
+            cast(str, binding[field]) == "replay"
+            or cast(str, binding[field]).startswith("replay:")
+            for field in ("probeId", "targetDevice", "physicalTarget", "flashSessionId", "leaseId")
+        )
+    ):
+        _fail("physical binding labels are invalid")
+    return binding
+
+
+def validate_physical_transcript(value: object) -> dict[str, object]:
+    """Validate one closed physical transcript wire object.
+
+    The function intentionally returns only JSON-shaped data.  Monitor turns
+    the validated batches into its immutable ``SampleBatch`` model, while
+    Toolkit can independently validate the same Evidence without importing
+    Monitor or touching live History.
+    """
+
+    document = _copy_physical_json(value)
+    if type(document) is not dict:
+        _fail("physical transcript must be an object")
+    document = _mapping(document, _PHYSICAL_TRANSCRIPT_FIELDS, "physical transcript")
+    if document["schema"] != MONITOR_PHYSICAL_TRANSCRIPT_SCHEMA:
+        _fail("physical transcript schema is invalid")
+    if document["source"] != MONITOR_PHYSICAL_SOURCE:
+        _fail("physical transcript source is invalid")
+    if document["execution_source"] != "physical":
+        _fail("physical transcript execution source is invalid")
+    if document["physical_transport_evidence"] is not True:
+        _fail("physical transcript physical evidence must be true")
+    if document["scenario_role"] not in _ROLES:
+        _fail("physical transcript scenario role is invalid")
+    _text(document["test_run_id"], "test_run_id", 256)
+    binding = _validate_physical_binding(document["binding"])
+    raw_batches = document["batches"]
+    if type(raw_batches) is not list or not raw_batches or len(raw_batches) > MAX_REPLAY_BATCHES:
+        _fail("physical transcript batches are invalid")
+    parsed = [_validate_batch(item, binding) for item in cast(list[object], raw_batches)]
+    total_values = sum(len(cast(list[object], batch["values"])) for batch in parsed)
+    if total_values > 10_000:
+        _fail("physical transcript values exceed their limit")
+    first = parsed[0]
+    selectors = [sample["watch"] for sample in cast(list[object], first["values"])]
+    if len({canonical_physical_json_bytes(item) for item in selectors}) != len(selectors):
+        _fail("physical transcript selectors are not unique")
+    previous_sequence: int | None = None
+    previous_captured: int | None = None
+    for batch in parsed:
+        if (
+            batch["binding"] != binding
+            or batch["groupId"] != first["groupId"]
+            or batch["groupRevision"] != first["groupRevision"]
+            or batch["runId"] != first["runId"]
+            or [sample["watch"] for sample in cast(list[object], batch["values"])] != selectors
+        ):
+            _fail("physical transcript batch identity is invalid")
+        if previous_sequence is not None and batch["sequence"] != previous_sequence + 1:
+            _fail("physical transcript sequences are not contiguous")
+        if previous_captured is not None and batch["capturedUnixNs"] <= previous_captured:
+            _fail("physical transcript captured times are not increasing")
+        previous_sequence = cast(int, batch["sequence"])
+        previous_captured = cast(int, batch["capturedUnixNs"])
+    return cast(dict[str, object], document)
+
+
 def validate_replay_document(value: object) -> dict[str, object]:
     """Return a deep canonical wire copy of a replay document."""
 
@@ -530,8 +775,9 @@ def _validate_run_reference_common(reference: dict[str, object]) -> None:
             or reference["origin_run_id"] != reference["projected_run_id"]
             or _SHA256.fullmatch(reference["probe_id"]) is None
             or any(
-                reference[field].startswith("replay:")
-                for field in ("probe_id", "physical_target", "flash_session_id", "lease_id")
+                reference[field] == "replay"
+                or reference[field].startswith("replay:")
+                for field in ("target_device", "probe_id", "physical_target", "flash_session_id", "lease_id")
             )
         ):
             _fail("monitor run reference physical provenance is invalid")
@@ -613,6 +859,7 @@ def validate_run_reference(value: object) -> dict[str, object]:
 
 
 __all__ = [
+    "MAX_PHYSICAL_TRANSCRIPT_BYTES",
     "MAX_REPLAY_BATCHES",
     "MAX_REPLAY_DOCUMENT_BYTES",
     "MAX_REPLAY_JSON_DEPTH",
@@ -626,10 +873,15 @@ __all__ = [
     "MONITOR_REPLAY_PROBE_ID",
     "MONITOR_REPLAY_SCHEMA",
     "MONITOR_REPLAY_SOURCE",
+    "MONITOR_PHYSICAL_SOURCE",
+    "MONITOR_PHYSICAL_TRANSCRIPT_SCHEMA",
     "MONITOR_RUN_REF_SCHEMA",
     "MONITOR_RUN_REF_SCHEMA_V2",
     "canonical_replay_json_bytes",
+    "canonical_physical_json_bytes",
     "decode_canonical_json_bytes",
+    "decode_physical_transcript_bytes",
+    "validate_physical_transcript",
     "validate_replay_document",
     "validate_run_reference",
 ]

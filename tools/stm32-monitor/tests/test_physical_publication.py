@@ -24,6 +24,11 @@ from stm32_toolkit.evidence import EvidenceEnvelope, EvidenceIdentity
 from stm32_toolkit.evidence.model import canonical_json_bytes
 from stm32_toolkit.evidence.store import EvidenceStore
 from stm32_toolkit.paths import WorkspacePaths
+from stm32_toolkit.diagnostic_workflows import (
+    DiagnosticWorkflowContext,
+    diagnostic_show,
+    diagnostic_start,
+)
 from stm32_toolkit.testing.model import TestCaseResult as _TestCaseResult
 from stm32_toolkit.testing.model import TestRunManifest as _TestRunManifest
 from stm32_toolkit.testing.publication import TestRunPublisher as _TestRunPublisher
@@ -90,9 +95,51 @@ def test_physical_v2_reference_uses_source_record_and_forbids_v1_fixture() -> No
     assert "fixture_sha256" not in reference.to_dict()
 
 
-def test_physical_v2_reference_rejects_replay_probe_labels() -> None:
+def test_failed_physical_target_diagnostic_starts_and_reloads_bound_session(
+    tmp_path: Path,
+) -> None:
+    paths, evidence, test_run_id, raw_probe, monitor_run_id, _group_id = _physical_context(tmp_path)
+    _publish_physical_test_run(
+        paths,
+        evidence,
+        test_run_id=test_run_id,
+        raw_probe=raw_probe,
+        monitor_run_id=monitor_run_id,
+    )
+    context = DiagnosticWorkflowContext(paths.project_root, paths.data_root, paths.session_id)
+    started = diagnostic_start(
+        context,
+        operation_id="physical-diagnostic-start",
+        failed_test_run_id=test_run_id,
+        failed_run_mode="target",
+    )
+    assert started.ok, started.to_dict()
+    session = started.data["session"]
+    assert session["failed_run_mode"] == "target"
+    reloaded = diagnostic_show(
+        DiagnosticWorkflowContext(paths.project_root, paths.data_root, paths.session_id),
+        diagnostic_session_id=session["diagnostic_session_id"],
+    )
+    assert reloaded.ok, reloaded.to_dict()
+    assert reloaded.data["session"]["failed_run_mode"] == "target"
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("probe_id", "replay:probe-v2"),
+        ("target_device", "replay"),
+        ("physical_target", "replay:non-physical"),
+        ("flash_session_id", "replay"),
+        ("lease_id", "replay:lease"),
+    ],
+)
+def test_physical_v2_reference_rejects_replay_hardware_labels(
+    field: str,
+    value: str,
+) -> None:
     payload = _physical_v2_candidate()
-    payload["probe_id"] = "replay:probe-v2"
+    payload[field] = value
     payload["run_ref_sha256"] = sha256(
         canonical_json_bytes(
             {key: value for key, value in payload.items() if key != "run_ref_sha256"}
@@ -179,16 +226,23 @@ def _publish_physical_test_run(
     test_run_id: str,
     raw_probe: str,
     monitor_run_id: UUID,
+    state: str = "failed",
+    build_id: str = "b" * 64,
+    elf_sha256: str = "c" * 64,
+    input_snapshot_sha256: str = "d" * 64,
+    git_head: str = "e" * 40,
 ) -> None:
+    assert state in {"failed", "passed"}
+    case_state = state
     identity = EvidenceIdentity(
         workspace_id=paths.workspace_id,
         project_id="123e4567-e89b-42d3-a456-426614174000",
         session_id=paths.session_id,
-        build_id="b" * 64,
-        elf_sha256="c" * 64,
+        build_id=build_id,
+        elf_sha256=elf_sha256,
         target_device="stm32:stm32f429zi",
-        input_snapshot_sha256="d" * 64,
-        git_commit="e" * 40,
+        input_snapshot_sha256=input_snapshot_sha256,
+        git_commit=git_head,
         git_dirty=False,
     )
     raw_source = paths.project_root / "events.bin"
@@ -202,17 +256,17 @@ def _publish_physical_test_run(
         "stm32-test/1",
         test_run_id,
         "target",
-        "failed",
+        state,
         identity,
         "semihosting",
         (
             _TestCaseResult(
                 "case.counter",
-                "failed",
+                case_state,
                 "2026-08-22T00:00:00.000000Z",
                 "2026-08-22T00:00:00.001000Z",
-                1,
-                "expected failure",
+                1 if state == "failed" else 0,
+                "expected failure" if state == "failed" else None,
                 None,
                 None,
             ),
@@ -268,6 +322,13 @@ def _append_physical_history(
     raw_probe: str,
     monitor_run_id: UUID,
     group_id: UUID,
+    *,
+    scenario_role: str = "failed-before",
+    value_offset: int = 0,
+    build_id: str = "b" * 64,
+    elf_sha256: str = "c" * 64,
+    input_snapshot_sha256: str = "d" * 64,
+    git_head: str = "e" * 40,
 ) -> tuple[SampleBatch, ...]:
     binding = ObservationBinding(
         workspace_id=paths.workspace_id,
@@ -276,10 +337,10 @@ def _append_physical_history(
         probe_id=raw_probe,
         target_device="stm32:stm32f429zi",
         physical_target="board:fixture-01",
-        build_id="b" * 64,
-        elf_sha256="c" * 64,
-        input_snapshot_sha256="d" * 64,
-        git_head="e" * 40,
+        build_id=build_id,
+        elf_sha256=elf_sha256,
+        input_snapshot_sha256=input_snapshot_sha256,
+        git_head=git_head,
         git_dirty=False,
         flash_session_id="flash-session-01",
         lease_id="lease-01",
@@ -304,7 +365,7 @@ def _append_physical_history(
                 SampleValue(
                     WatchItem.variable("counter"),
                     "OK",
-                    typed_value={"type": "uint32", "value": sequence},
+                    typed_value={"type": "uint32", "value": sequence + value_offset},
                 ),
             ),
         )

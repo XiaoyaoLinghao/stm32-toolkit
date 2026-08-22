@@ -52,7 +52,10 @@ from .replay import (
     MonitorReplayDocument,
     MonitorReplayError,
     MonitorRunRef,
+    MonitorRunRefV2,
+    AuthenticatedPhysicalMonitorRun,
     canonical_replay_json_bytes,
+    load_authenticated_physical_monitor_run,
 )
 
 
@@ -83,6 +86,15 @@ _ANALYSIS_BUNDLE_ROOT = "monitor-analysis-bundle"
 _ANALYSIS_BUNDLE_SCHEMA = "stm32-monitor-analysis-bundle/1"
 _ANALYSIS_BUNDLE_REF_SCHEMA = "stm32-monitor-analysis-bundle-ref/1"
 _REPLAY_ROLES = {"failed-before", "fixed-after"}
+MonitorRunReference = MonitorRunRef | MonitorRunRefV2
+
+
+def _is_monitor_run_reference(value: object) -> bool:
+    return type(value) in (MonitorRunRef, MonitorRunRefV2)
+
+
+def _is_physical_reference(value: object) -> bool:
+    return type(value) is MonitorRunRefV2
 
 class AnalysisWorkflowError(ValueError):
     """One stable, bounded error at the analysis publication boundary."""
@@ -242,7 +254,7 @@ def _safe_text(value: object, label: str) -> str:
     return value
 
 
-def _identity_for_ref(reference: MonitorRunRef) -> EvidenceIdentity:
+def _identity_for_ref(reference: MonitorRunReference) -> EvidenceIdentity:
     try:
         return EvidenceIdentity(
             workspace_id=reference.origin_workspace_id,
@@ -256,7 +268,7 @@ def _identity_for_ref(reference: MonitorRunRef) -> EvidenceIdentity:
             git_dirty=reference.git_dirty,
         )
     except (TypeError, ValueError, OverflowError, EvidenceValidationError) as error:
-        _fail(EVIDENCE_INTEGRITY_FAILURE, "replay Evidence identity is invalid")
+        _fail(EVIDENCE_INTEGRITY_FAILURE, "Monitor Evidence identity is invalid")
         raise AssertionError from error
 
 
@@ -543,7 +555,7 @@ def _validate_inputs(
     polarity: str,
     rationale: str,
     source_change_declaration: SourceChangeDeclaration | None,
-) -> tuple[MonitorRunRef, MonitorRunRef, AnalysisLineage]:
+) -> tuple[MonitorRunReference, MonitorRunReference, AnalysisLineage]:
     if (
         type(paths) is not WorkspacePaths
         or type(evidence_store) is not EvidenceStore
@@ -568,17 +580,28 @@ def _validate_inputs(
     if (
         before.scenario_role != "failed-before"
         or after.scenario_role != "fixed-after"
-        or before.execution_source != MONITOR_REPLAY_EXECUTION_SOURCE
-        or after.execution_source != MONITOR_REPLAY_EXECUTION_SOURCE
-        or before.physical_transport_evidence is not False
-        or after.physical_transport_evidence is not False
+        or not _is_monitor_run_reference(before)
+        or not _is_monitor_run_reference(after)
     ):
-        _fail(INCOMPATIBLE_IDENTITY, "analysis runs are not non-physical replay roles")
+        _fail(INCOMPATIBLE_IDENTITY, "analysis runs are not accepted roles")
+    if (
+        before.execution_source != after.execution_source
+        or before.physical_transport_evidence is not after.physical_transport_evidence
+        or (before.execution_source == "replay"
+            and (before.physical_transport_evidence is not False
+                 or after.physical_transport_evidence is not False))
+        or (before.execution_source == "physical"
+            and (before.physical_transport_evidence is not True
+                 or after.physical_transport_evidence is not True))
+    ):
+        _fail(INCOMPATIBLE_IDENTITY, "analysis runs have mixed execution provenance")
     if (
         before.origin_workspace_id != after.origin_workspace_id
         or before.import_workspace_id != after.import_workspace_id
         or before.logical_project_id != after.logical_project_id
         or before.target_device != after.target_device
+        or before.physical_target != after.physical_target
+        or before.probe_id != after.probe_id
         or before.origin_session_id != after.origin_session_id
         or before.projected_session_id != after.projected_session_id
         or before.import_workspace_id != paths.workspace_id
@@ -610,7 +633,7 @@ def _validate_inputs(
             or declaration.after_elf_sha256 != after.elf_sha256
             or hypothesis_id not in declaration.claimed_hypothesis_ids
         ):
-            _fail(INCOMPATIBLE_IDENTITY, "source declaration does not bridge the replay firmware")
+            _fail(INCOMPATIBLE_IDENTITY, "source declaration does not bridge the firmware")
         declaration_id = declaration.declaration_id
     elif source_change_declaration is not None:
         _fail(INCOMPATIBLE_IDENTITY, "identical firmware cannot carry a source declaration")
@@ -644,7 +667,7 @@ def _slice_static(batch: HistoryBatchSlice) -> tuple[object, ...]:
     )
 
 
-def _projected_binding(reference: MonitorRunRef, paths: WorkspacePaths) -> ObservationBinding:
+def _projected_binding(reference: MonitorRunReference, paths: WorkspacePaths) -> ObservationBinding:
     try:
         return ObservationBinding(
             workspace_id=paths.workspace_id,
@@ -664,11 +687,33 @@ def _projected_binding(reference: MonitorRunRef, paths: WorkspacePaths) -> Obser
             svd_sha256=reference.svd_sha256,
         )
     except (TypeError, ValueError, OverflowError) as error:
-        _fail(INCOMPATIBLE_IDENTITY, "projected replay binding is invalid")
+        _fail(INCOMPATIBLE_IDENTITY, "projected Monitor binding is invalid")
         raise AssertionError from error
 
 
-def _query_window(paths: WorkspacePaths, reference: MonitorRunRef) -> tuple[SampleBatch, ...]:
+def _load_physical_source(
+    paths: WorkspacePaths,
+    evidence_store: EvidenceStore,
+    reference: MonitorRunRefV2,
+) -> AuthenticatedPhysicalMonitorRun:
+    try:
+        loaded = load_authenticated_physical_monitor_run(
+            paths,
+            evidence_store,
+            reference.operation_id,
+        )
+    except MonitorReplayError as error:
+        if error.code == "INCOMPATIBLE_IDENTITY":
+            _fail(INCOMPATIBLE_IDENTITY, "physical Monitor identity is incompatible")
+        if error.code == "ENVIRONMENT_FAILURE":
+            _fail(ENVIRONMENT_FAILURE, "physical Monitor Evidence provider failed")
+        _fail(EVIDENCE_INTEGRITY_FAILURE, "physical Monitor Evidence is corrupt")
+    if loaded.reference != reference:
+        _fail(EVIDENCE_INTEGRITY_FAILURE, "stored physical reference differs from the request")
+    return loaded
+
+
+def _query_window(paths: WorkspacePaths, reference: MonitorRunReference) -> tuple[SampleBatch, ...]:
     history: HistoryStore | None = None
     try:
         history = HistoryStore(paths)
@@ -825,8 +870,8 @@ def _artifact_for_payload(payload: bytes, *, kind: str) -> ArtifactRef:
 
 def _analysis_metadata(
     result: AnalysisResult,
-    before: MonitorRunRef,
-    after: MonitorRunRef,
+    before: MonitorRunReference,
+    after: MonitorRunReference,
     declaration: SourceChangeDeclaration | None,
 ) -> dict[str, object]:
     return {
@@ -837,15 +882,15 @@ def _analysis_metadata(
         "origin_workspace_id": after.origin_workspace_id,
         "import_workspace_id": after.import_workspace_id,
         "origin_session_id": after.origin_session_id,
-        "execution_source": MONITOR_REPLAY_EXECUTION_SOURCE,
-        "physical_transport_evidence": False,
+        "execution_source": after.execution_source,
+        "physical_transport_evidence": after.physical_transport_evidence,
     }
 
 
 def _marker_metadata(
     marker: DiagnosticMarker,
     analysis_evidence_id: str,
-    after: MonitorRunRef,
+    after: MonitorRunReference,
 ) -> dict[str, object]:
     return {
         "marker_id": marker.marker_id,
@@ -854,8 +899,8 @@ def _marker_metadata(
         "origin_workspace_id": after.origin_workspace_id,
         "import_workspace_id": after.import_workspace_id,
         "origin_session_id": after.origin_session_id,
-        "execution_source": MONITOR_REPLAY_EXECUTION_SOURCE,
-        "physical_transport_evidence": False,
+        "execution_source": after.execution_source,
+        "physical_transport_evidence": after.physical_transport_evidence,
     }
 
 
@@ -1016,10 +1061,18 @@ def compare_monitor_runs(
     declaration = source_change_declaration
     if declaration is not None:
         _validate_diff_evidence(evidence_store, declaration, after)
-    before_transcript = _validate_transcript(evidence_store, before)
-    after_transcript = _validate_transcript(evidence_store, after)
-    before_batches = _query_window(paths, before)
-    after_batches = _query_window(paths, after)
+    if _is_physical_reference(before) and _is_physical_reference(after):
+        before_source = _load_physical_source(paths, evidence_store, before)
+        after_source = _load_physical_source(paths, evidence_store, after)
+        before_transcript = before_source.transcript_envelope
+        after_transcript = after_source.transcript_envelope
+        before_batches = before_source.batches
+        after_batches = after_source.batches
+    else:
+        before_transcript = _validate_transcript(evidence_store, before)
+        after_transcript = _validate_transcript(evidence_store, after)
+        before_batches = _query_window(paths, before)
+        after_batches = _query_window(paths, after)
     try:
         computation = analyze_monitor_windows(request, before_batches, after_batches)
         result = AnalysisResult.new(request=request, computation=computation, lineage=lineage)
@@ -1156,8 +1209,16 @@ def export_analysis_bundle(
         _fail(INCOMPATIBLE_IDENTITY, "diagnostic marker does not match publication")
     if source_change_declaration is not None:
         _validate_diff_evidence(evidence_store, source_change_declaration, after)
-    before_transcript = _validate_transcript(evidence_store, before)
-    after_transcript = _validate_transcript(evidence_store, after)
+    before_source: AuthenticatedPhysicalMonitorRun | None = None
+    after_source: AuthenticatedPhysicalMonitorRun | None = None
+    if _is_physical_reference(before) and _is_physical_reference(after):
+        before_source = _load_physical_source(paths, evidence_store, before)
+        after_source = _load_physical_source(paths, evidence_store, after)
+        before_transcript = before_source.transcript_envelope
+        after_transcript = after_source.transcript_envelope
+    else:
+        before_transcript = _validate_transcript(evidence_store, before)
+        after_transcript = _validate_transcript(evidence_store, after)
 
     analysis_payload = canonical_replay_json_bytes(publication.analysis_result.to_dict())
     analysis_artifact = _artifact_for_payload(analysis_payload, kind=_MONITOR_ANALYSIS_ROOT)
@@ -1211,22 +1272,38 @@ def export_analysis_bundle(
     except Exception as error:
         _fail(EVIDENCE_INTEGRITY_FAILURE, "test run evidence is absent or corrupt")
         raise AssertionError from error
-    for loaded, reference, state, run_id in (
-        (before_test, before, "failed", failed_before_test_run_id),
-        (after_test, after, "passed", fixed_after_test_run_id),
+    expected_physical = _is_physical_reference(before) and _is_physical_reference(after)
+    for loaded, reference, state, run_id, source in (
+        (before_test, before, "failed", failed_before_test_run_id, before_source),
+        (after_test, after, "passed", fixed_after_test_run_id, after_source),
     ):
         manifest = loaded.manifest
-        if (manifest.run_id != run_id or manifest.mode != "target" or manifest.transport != "replay"
-                or manifest.state != state or not _test_identity_matches_reference(manifest, reference)):
-            _fail(INCOMPATIBLE_IDENTITY, "TestRun does not match replay reference")
-        expected_target_root = {
-            "mode": "target", "state": state, "execution_source": "replay",
-            "physical_transport_evidence": False,
-            "origin_workspace_id": reference.origin_workspace_id,
-            "import_workspace_id": paths.workspace_id,
-        }
-        if loaded.root.metadata != expected_target_root:
-            _fail(INCOMPATIBLE_IDENTITY, "TestRun root metadata does not match replay reference")
+        if expected_physical:
+            assert source is not None
+            if (
+                source.test_run_id != run_id
+                or manifest.run_id != run_id
+                or manifest.mode != "target"
+                or manifest.transport not in {"mailbox", "rtt", "uart", "semihosting"}
+                or manifest.state != state
+                or not _test_identity_matches_reference(manifest, reference)
+                or loaded.envelope.operation != "target-test-physical"
+                or loaded.root.metadata.get("execution_source") != "physical"
+                or loaded.root.metadata.get("physical_transport_evidence") is not True
+            ):
+                _fail(INCOMPATIBLE_IDENTITY, "TestRun does not match physical reference")
+        else:
+            if (manifest.run_id != run_id or manifest.mode != "target" or manifest.transport != "replay"
+                    or manifest.state != state or not _test_identity_matches_reference(manifest, reference)):
+                _fail(INCOMPATIBLE_IDENTITY, "TestRun does not match replay reference")
+            expected_target_root = {
+                "mode": "target", "state": state, "execution_source": "replay",
+                "physical_transport_evidence": False,
+                "origin_workspace_id": reference.origin_workspace_id,
+                "import_workspace_id": paths.workspace_id,
+            }
+            if loaded.root.metadata != expected_target_root:
+                _fail(INCOMPATIBLE_IDENTITY, "TestRun root metadata does not match replay reference")
     if before_test.manifest.identity.session_id != after_test.manifest.identity.session_id:
         _fail(INCOMPATIBLE_IDENTITY, "Target TestRuns do not share a session")
 
@@ -1267,8 +1344,8 @@ def export_analysis_bundle(
             "fixed_after_test_run_id": fixed_after_test_run_id,
             "source_change_declaration_id": None if source_change_declaration is None else source_change_declaration.declaration_id,
             "origin_workspace_id": after.origin_workspace_id, "import_workspace_id": after.import_workspace_id,
-            "origin_session_id": after.origin_session_id, "execution_source": "replay",
-            "physical_transport_evidence": False,
+            "origin_session_id": after.origin_session_id, "execution_source": after.execution_source,
+            "physical_transport_evidence": after.physical_transport_evidence,
         }
         envelope = EvidenceEnvelope(
             identity=_identity_for_ref(after), operation=_ANALYSIS_BUNDLE_OPERATION,

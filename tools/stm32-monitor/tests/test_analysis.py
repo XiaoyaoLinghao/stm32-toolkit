@@ -25,11 +25,13 @@ from stm32_monitor.models import MAX_SIGNED_INT64, SampleBatch, SampleValue, Wat
 from stm32_monitor.replay import (
     MonitorReplayDocument,
     MonitorRunRef,
+    MonitorRunRefV2,
     _make_reference,
     _project_batches,
     canonical_replay_json_bytes,
 )
 from stm32_toolkit.paths import WorkspacePaths
+from test_physical_publication import _physical_v2_candidate
 
 
 FIXTURES = Path(__file__).parent / "fixtures" / "vs03"
@@ -134,6 +136,27 @@ def _ref_with(reference: MonitorRunRef, **changes: object) -> MonitorRunRef:
     return MonitorRunRef.from_value(payload)
 
 
+def _physical_reference(*, role: str, operation_id: str, group_id: str) -> MonitorRunRefV2:
+    payload = _physical_v2_candidate()
+    payload.update(
+        {
+            "operation_id": operation_id,
+            "scenario_role": role,
+            "origin_run_id": operation_id,
+            "projected_run_id": operation_id,
+            "group_id": group_id,
+        }
+    )
+    payload["run_ref_sha256"] = sha256(
+        canonical_replay_json_bytes(
+            {key: value for key, value in payload.items() if key != "run_ref_sha256"}
+        )
+    ).hexdigest()
+    reference = MonitorRunRef.from_value(payload)
+    assert type(reference) is MonitorRunRefV2
+    return reference
+
+
 def test_request_and_computation_are_closed_canonical_values(tmp_path: Path) -> None:
     _, _, _, before, after, before_ref, after_ref = _case(tmp_path)
     request = _request(before_ref, after_ref)
@@ -153,6 +176,61 @@ def test_request_and_computation_are_closed_canonical_values(tmp_path: Path) -> 
     assert AnalysisComputation.from_value(result.to_dict()) == result
     assert "analysis_id" not in result.to_dict()
     assert "evidence_id" not in result.to_dict()
+
+
+def test_analysis_request_accepts_exact_physical_v2_pairs_and_rejects_mixed_or_subclass(
+    tmp_path: Path,
+) -> None:
+    before = _physical_reference(
+        role="failed-before",
+        operation_id="11111111-1111-4111-8111-111111111111",
+        group_id="22222222-2222-4222-8222-222222222222",
+    )
+    after = _physical_reference(
+        role="fixed-after",
+        operation_id="33333333-3333-4333-8333-333333333333",
+        group_id="44444444-4444-4444-8444-444444444444",
+    )
+    request = AnalysisRequest(
+        schema="stm32-monitor-analysis-request/1",
+        before_run=before,
+        after_run=after,
+        selector_kind="variable",
+        selector="counter",
+        alignment="run-relative",
+        minimum_valid_pairs=2,
+    )
+    assert request.before_run.schema == "stm32-monitor-run-ref/2"
+    assert AnalysisLineage.new(
+        before_run=before,
+        after_run=after,
+        source_change_declaration_id=None,
+    ).before_build_id == before.build_id
+
+    _, _, _, _, _, replay_before, _ = _case(tmp_path)
+    with pytest.raises(AnalysisError):
+        AnalysisRequest(
+            schema="stm32-monitor-analysis-request/1",
+            before_run=replay_before,
+            after_run=after,
+            selector_kind="variable",
+            selector="counter",
+            alignment="run-relative",
+            minimum_valid_pairs=2,
+        )
+
+    subclass = type("PhysicalReferenceSubclass", (MonitorRunRefV2,), {})
+    forged = subclass(*(getattr(before, field.name) for field in fields(MonitorRunRefV2)))
+    with pytest.raises(AnalysisError):
+        AnalysisRequest(
+            schema="stm32-monitor-analysis-request/1",
+            before_run=forged,
+            after_run=after,
+            selector_kind="variable",
+            selector="counter",
+            alignment="run-relative",
+            minimum_valid_pairs=2,
+        )
 
 
 def test_changed_window_is_valid_and_exactly_aligned(tmp_path: Path) -> None:

@@ -94,6 +94,33 @@ def _reference_digest(reference: dict[str, object]) -> str:
     return hashlib.sha256(_raw_canonical_json_bytes(unsigned)).hexdigest()
 
 
+def _physical_transcript(source: dict[str, object]) -> dict[str, object]:
+    binding = deepcopy(source["binding"])
+    binding.update(
+        {
+            "probeId": hashlib.sha256(b"probe/serial/01").hexdigest(),
+            "physicalTarget": "board:fixture-01",
+            "flashSessionId": "flash-session-01",
+            "leaseId": "lease-01",
+        }
+    )
+    batches = []
+    for batch in source["batches"]:
+        copy = deepcopy(batch)
+        copy["binding"] = deepcopy(binding)
+        batches.append(copy)
+    return {
+        "schema": "stm32-monitor-physical-transcript/1",
+        "source": "toolkit-live-history",
+        "scenario_role": source["scenario_role"],
+        "test_run_id": "physical-test-run-01",
+        "execution_source": "physical",
+        "physical_transport_evidence": True,
+        "binding": binding,
+        "batches": batches,
+    }
+
+
 def _document_bindings(document: dict[str, object]) -> list[dict[str, object]]:
     return [
         document["binding"],
@@ -457,6 +484,26 @@ def test_shared_contract_rejects_replay_source_v2_reference(tmp_path: Path) -> N
 
     with pytest.raises(contract.ReplayContractError):
         contract.validate_run_reference(payload)
+
+
+@pytest.mark.parametrize("role", ("failed-before", "fixed-after"))
+def test_shared_contract_accepts_closed_physical_transcript_without_raw_selector(
+    role: str,
+) -> None:
+    contract = _contract()
+    payload = _physical_transcript(_document(role))
+    before = deepcopy(payload)
+    validated = contract.validate_physical_transcript(payload)
+    assert validated == payload
+    assert validated is not payload
+    assert validated["binding"] is not payload["binding"]
+    assert b"probe/serial/01" not in contract.canonical_physical_json_bytes(payload)
+    assert payload == before
+
+    extra = deepcopy(payload)
+    extra["unexpected"] = True
+    with pytest.raises(contract.ReplayContractError):
+        contract.validate_physical_transcript(extra)
 
 
 @pytest.mark.parametrize("case_name", tuple(_document_mutations(_document("failed-before"))))
