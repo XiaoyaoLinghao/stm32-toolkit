@@ -239,3 +239,11 @@ by files or error classes.
 VS04-C is blocked until the user names the board, MCU/target, raw probe selector, Project v3,
 failing case, transport configuration, Monitor selector, failing/fixed source revisions, and tool
 environment. Each returned action digest then requires a separate explicit user authorization.
+
+On 2026-08-22 the user explicitly deferred the named Scenario C hardware campaign until all planned
+software code development is complete. This is a scheduling disposition, not a physical acceptance:
+VS-03 and VS04-A/B remain software-complete, later software slices may proceed, and 0.6 release
+acceptance still requires Scenario C. No generic VS04-C plan, hardware action digest, simulated
+physical PASS, or additional product implementation is created during the deferral. When a real
+Project v3 and hardware environment become available, resume here; any product defect discovered by
+the real run returns to its owning A or B contract.
