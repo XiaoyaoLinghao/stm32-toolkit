@@ -31,6 +31,7 @@ from stm32_toolkit.diagnostic_workflows import (
 )
 from stm32_toolkit.testing.model import TestCaseResult as _TestCaseResult
 from stm32_toolkit.testing.model import TestRunManifest as _TestRunManifest
+from stm32_toolkit.testing.model import calculate_inventory_digest as _calculate_inventory_digest
 from stm32_toolkit.testing.publication import TestRunPublisher as _TestRunPublisher
 
 
@@ -260,7 +261,7 @@ def _publish_physical_test_run(
     git_head: str = "e" * 40,
     session_id: str | None = None,
     case_id: str = "case.counter",
-    inventory_digest: str = "1" * 64,
+    inventory_digest: str | None = None,
 ) -> None:
     assert state in {"failed", "passed"}
     case_state = state
@@ -275,6 +276,11 @@ def _publish_physical_test_run(
         input_snapshot_sha256=input_snapshot_sha256,
         git_commit=git_head,
         git_dirty=False,
+    )
+    stored_inventory_digest = (
+        _calculate_inventory_digest("target", identity, (case_id,))
+        if inventory_digest is None
+        else inventory_digest
     )
     raw_source = paths.project_root / "events.bin"
     raw_source.write_bytes(b"physical-events")
@@ -330,7 +336,7 @@ def _publish_physical_test_run(
             "import_session_id": run_session_id,
             "import_workspace_id": paths.workspace_id,
             "intent_digest": digest,
-            "inventory_digest": inventory_digest,
+            "inventory_digest": stored_inventory_digest,
             "lease_id": "lease-01",
             "origin_session_id": run_session_id,
             "origin_workspace_id": paths.workspace_id,

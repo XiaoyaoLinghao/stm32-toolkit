@@ -447,6 +447,10 @@ def test_compare_physical_runs_uses_transcripts_after_history_is_discarded(
         raw_probe=raw_probe,
         monitor_run_id=fixed_run_id,
         state="passed",
+        build_id="0" * 64,
+        elf_sha256="1" * 64,
+        input_snapshot_sha256="2" * 64,
+        git_head="f" * 40,
     )
     fixed_batches = _append_physical_history(
         paths,
@@ -455,6 +459,10 @@ def test_compare_physical_runs_uses_transcripts_after_history_is_discarded(
         fixed_group_id,
         scenario_role="fixed-after",
         value_offset=10,
+        build_id="0" * 64,
+        elf_sha256="1" * 64,
+        input_snapshot_sha256="2" * 64,
+        git_head="f" * 40,
     )
     publish_physical_monitor_run(
         paths,
@@ -477,6 +485,7 @@ def test_compare_physical_runs_uses_transcripts_after_history_is_discarded(
             raise AssertionError("physical compare must not open Monitor History")
 
     monkeypatch.setattr(workflows, "HistoryStore", _HistoryMustNotBeRead)
+    declaration = _declaration(tmp_path, evidence, before, after)
     publication = compare_monitor_runs(
         paths,
         evidence,
@@ -485,6 +494,7 @@ def test_compare_physical_runs_uses_transcripts_after_history_is_discarded(
         HYPOTHESIS_ID,
         "supports",
         "the physical fixed run changed the observed counter",
+        declaration,
     )
 
     assert publication.analysis_result.quality == "VALID"
@@ -495,6 +505,7 @@ def test_compare_physical_runs_uses_transcripts_after_history_is_discarded(
     assert analysis_envelope.parents == (
         before.transcript_evidence_id,
         after.transcript_evidence_id,
+        declaration.diff_evidence_id,
     )
     assert analysis_envelope.metadata["execution_source"] == "physical"
     assert analysis_envelope.metadata["physical_transport_evidence"] is True
@@ -509,6 +520,7 @@ def test_compare_physical_runs_uses_transcripts_after_history_is_discarded(
         publication,
         failed_test_run_id,
         fixed_test_run_id,
+        declaration,
     )
     retry_bundle, retry_ref = export_analysis_bundle(
         paths,
@@ -517,6 +529,7 @@ def test_compare_physical_runs_uses_transcripts_after_history_is_discarded(
         publication,
         failed_test_run_id,
         fixed_test_run_id,
+        declaration,
     )
     assert (retry_bundle, retry_ref) == (bundle, bundle_ref)
     bundle_document = json.loads(bundle.decode("utf-8"))
@@ -545,7 +558,6 @@ def test_export_physical_bundle_rejects_case_or_inventory_scope_mismatch_before_
         raw_probe=raw_probe,
         monitor_run_id=failed_run_id,
         case_id="case.counter",
-        inventory_digest="1" * 64,
     )
     failed_batches = _append_physical_history(
         paths, raw_probe, failed_run_id, failed_group_id, scenario_role="failed-before"
@@ -571,7 +583,7 @@ def test_export_physical_bundle_rejects_case_or_inventory_scope_mismatch_before_
         monitor_run_id=fixed_run_id,
         state="passed",
         case_id="case.other" if mismatch == "case" else "case.counter",
-        inventory_digest="2" * 64 if mismatch == "inventory" else "1" * 64,
+        inventory_digest="2" * 64 if mismatch == "inventory" else None,
     )
     fixed_batches = _append_physical_history(
         paths, raw_probe, fixed_run_id, fixed_group_id, scenario_role="fixed-after", value_offset=10

@@ -601,6 +601,44 @@ def test_physical_typed_json_cumulative_string_budget_matches_monitor(
         contract.validate_physical_transcript(candidate)
 
 
+@pytest.mark.parametrize("field", ("typedValue", "definition"))
+@pytest.mark.parametrize("depth", (27, 28, 32, 33))
+def test_physical_typed_json_depth_matches_monitor(
+    field: str,
+    depth: int,
+) -> None:
+    contract = _contract()
+    candidate = _physical_transcript(_document("failed-before"))
+    sample = candidate["batches"][0]["values"][0]
+    sample[field] = _deep_json(depth)
+    if field == "typedValue":
+        monitor_value = sample[field]
+        monitor_definition = None
+    else:
+        monitor_value = sample["typedValue"]
+        monitor_definition = sample[field]
+    watch = WatchItem.from_dict(sample["watch"])
+
+    if depth <= 32:
+        SampleValue(
+            watch,
+            "OK",
+            typed_value=monitor_value,
+            definition=monitor_definition,
+        )
+        contract.validate_physical_transcript(candidate)
+    else:
+        with pytest.raises(ValueError):
+            SampleValue(
+                watch,
+                "OK",
+                typed_value=monitor_value,
+                definition=monitor_definition,
+            )
+        with pytest.raises(contract.ReplayContractError):
+            contract.validate_physical_transcript(candidate)
+
+
 def test_physical_typed_json_node_budget_matches_monitor() -> None:
     contract = _contract()
     candidate = _physical_transcript(_document("failed-before"))

@@ -22,6 +22,7 @@ from stm32_toolkit.evidence import (
 from stm32_toolkit.evidence.gc import RootRecord, get_root, put_root
 from stm32_toolkit.evidence.store import EvidenceStore, MAX_EVIDENCE_READ_BYTES
 from stm32_toolkit.paths import WorkspacePaths
+from stm32_toolkit.testing.model import calculate_inventory_digest
 from stm32_toolkit.testing.publication import TestRunRepository
 
 from .analysis import (
@@ -1309,14 +1310,22 @@ def export_analysis_bundle(
         after_cases = tuple(getattr(case, "case_id", None) for case in after_test.manifest.cases)
         before_inventory = before_test.envelope.metadata.get("inventory_digest")
         after_inventory = after_test.envelope.metadata.get("inventory_digest")
+        try:
+            before_expected_inventory = calculate_inventory_digest(
+                "target", before_test.manifest.identity, before_cases
+            )
+            after_expected_inventory = calculate_inventory_digest(
+                "target", after_test.manifest.identity, after_cases
+            )
+        except (TypeError, ValueError, OverflowError):
+            _fail(INCOMPATIBLE_IDENTITY, "physical TestRun inventory scope is invalid")
         if (
             any(type(case_id) is not str or not case_id for case_id in before_cases + after_cases)
             or frozenset(before_cases) != frozenset(after_cases)
             or before_inventory != before_test.root.metadata.get("inventory_digest")
             or after_inventory != after_test.root.metadata.get("inventory_digest")
-            or type(before_inventory) is not str
-            or type(after_inventory) is not str
-            or before_inventory != after_inventory
+            or before_inventory != before_expected_inventory
+            or after_inventory != after_expected_inventory
         ):
             _fail(INCOMPATIBLE_IDENTITY, "physical TestRuns do not share case or inventory scope")
     if before_test.manifest.identity.session_id != after_test.manifest.identity.session_id:

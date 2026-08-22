@@ -30,6 +30,7 @@ MAX_REPLAY_BATCHES = 1024
 MAX_REPLAY_JSON_DEPTH = 32
 MAX_REPLAY_JSON_NODES = 10_000
 MAX_REPLAY_JSON_STRING_CHARS = 1024 * 1024
+_PHYSICAL_JSON_DEPTH_ALLOWANCE = 5
 MIN_SIGNED_INT64 = -(1 << 63)
 MAX_SIGNED_INT64 = (1 << 63) - 1
 
@@ -310,7 +311,7 @@ def _copy_physical_json(
     """
 
     state = budget if budget is not None else _JsonBudget()
-    if depth > MAX_REPLAY_JSON_DEPTH:
+    if depth > MAX_REPLAY_JSON_DEPTH + _PHYSICAL_JSON_DEPTH_ALLOWANCE:
         _fail("physical transcript JSON exceeds its depth limit")
     state.nodes += 1
     # Physical Monitor's existing source-record decoder permits one million
