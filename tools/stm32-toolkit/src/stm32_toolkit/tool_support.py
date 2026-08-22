@@ -362,6 +362,8 @@ def discover_tool_support(request: SupportProfileRequest | None = None, *, probe
         issues.append(ToolSupportIssue("PYTHON_UNSUPPORTED", "python", "Use CPython >=3.12,<3.13."))
     if cubemx is None:
         issues.append(ToolSupportIssue("CUBEMX_MISSING", "cubeMx", "Install STM32CubeMX 6.18 and rerun discovery."))
+    elif not cubemx.version.startswith("6.18"):
+        issues.append(ToolSupportIssue("CUBEMX_UNSUPPORTED", "cubeMx", "Use STM32CubeMX 6.18.x."))
     if cubeclt_root is None:
         issues.append(ToolSupportIssue("CUBECLT_MISSING", "cubeClt", "Install STM32CubeCLT 1.22.0 or provide a trusted profile."))
     for name, code in (("gcc", "GCC_MISSING"), ("cmake", "CMAKE_MISSING"), ("ninja", "NINJA_MISSING")):
