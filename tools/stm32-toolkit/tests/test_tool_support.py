@@ -94,3 +94,17 @@ def test_missing_tools_are_reported_without_writing(tmp_path: Path, monkeypatch)
     assert profile.cubemx is None
     assert any(item.code == "CUBEMX_MISSING" for item in profile.issues)
     assert before == after
+
+
+def test_support_profile_must_be_inside_trusted_data_root(tmp_path: Path):
+    outside = tmp_path.parent / "outside-profile.json"
+    outside.write_text("{}", encoding="utf-8")
+    with pytest.raises(ValueError):
+        discover_tool_support(SupportProfileRequest(outside, tmp_path))
+
+
+def test_cubeclt_metadata_batch_seam_is_bounded_and_injected(tmp_path: Path, monkeypatch):
+    root = tmp_path / "clt"
+    root.mkdir()
+    monkeypatch.setattr("stm32_toolkit.tool_support._run_cubeclt_metadata", lambda value: {"GNUToolsForSTM32": str(root / "gcc"), "CMake": str(root / "cmake"), "Ninja": str(root / "ninja")})
+    assert "GNUToolsForSTM32" in __import__("stm32_toolkit.tool_support", fromlist=["_run_cubeclt_metadata"])._run_cubeclt_metadata(root)

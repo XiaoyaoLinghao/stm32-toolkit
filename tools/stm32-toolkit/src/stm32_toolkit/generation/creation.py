@@ -154,7 +154,7 @@ def _directory(path: Path) -> bool:
 
 
 def _ioc_hash(path: Path) -> str:
-    if not _regular(path):
+    if not _regular(path) or path.suffix.casefold() != ".ioc":
         raise CreationInputError("CREATION_IOC_INVALID", "ioc")
     try:
         if path.stat().st_size > _MAX_IOC_BYTES:
@@ -175,7 +175,7 @@ def _inventory(root: Path, destination: Path) -> tuple[str, bool]:
     if destination.exists() and not _directory(destination):
         return sha256_hex(canonical_json_bytes({"path": destination.name, "kind": "unsafe"})), True
     if not destination.exists():
-        return sha256_hex(canonical_json_bytes([])), False
+        return sha256_hex(canonical_json_bytes({"state": "absent", "entries": []})), False
     entries: list[dict[str, object]] = []
     try:
         for child in sorted(destination.rglob("*"), key=lambda item: item.as_posix().casefold()):
@@ -186,7 +186,19 @@ def _inventory(root: Path, destination: Path) -> tuple[str, bool]:
                 entries.append({"path": relative, "kind": "dir" if child.is_dir() else "file", "size": child.stat().st_size if child.is_file() else None})
     except OSError:
         entries.append({"path": "<unavailable>", "kind": "unsafe"})
-    return sha256_hex(canonical_json_bytes(entries)), bool(entries)
+    return sha256_hex(canonical_json_bytes({"state": "empty" if not entries else "populated", "entries": entries})), bool(entries)
+
+
+def _validate_chain(root: Path, target: Path) -> None:
+    try:
+        relative = target.relative_to(root)
+    except ValueError:
+        raise CreationInputError("CREATION_PATH_INVALID", "path") from None
+    current = root
+    for part in relative.parts[:-1] if relative.parts else ():
+        current = current / part
+        if current.exists() and not _directory(current):
+            raise CreationInputError("CREATION_PATH_INVALID", "path")
 
 
 def _tool_digest(tools: ToolSupportProfile) -> str:
@@ -206,10 +218,13 @@ def plan_project_creation(workspace_root: Path, request: CreationRequest, tools:
     if not root.is_dir():
         raise CreationInputError("CREATION_WORKSPACE_INVALID", "workspaceRoot")
     source = root / request.source.value if request.source.kind == "ioc" else None
+    if source is not None:
+        _validate_chain(root, source)
     source_hash = _ioc_hash(source) if source is not None else None
     normalized_source = CreationSource(request.source.kind, request.source.value, source_hash)
     normalized = CreationRequest(normalized_source, request.destination, request.framework, request.language, request.overwrite)
     destination = root / normalized.destination
+    _validate_chain(root, destination)
     inventory_digest, has_inventory = _inventory(root, destination)
     blockers: list[CreationBlocker] = []
     issue_map = {issue.code: issue for issue in tools.issues}

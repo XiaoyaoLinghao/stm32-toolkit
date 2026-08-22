@@ -62,3 +62,15 @@ def test_missing_cubemx_returns_stable_blocker_without_writes(tmp_path: Path):
 def test_creation_request_rejects_unsafe_paths(value: str):
     with pytest.raises(CreationInputError):
         CreationRequest.from_mcu("STM32F429ZITx", value, framework="hal", language="c")
+
+
+def test_ioc_requires_ioc_suffix_and_absent_empty_inventory_digests_differ(tmp_path: Path):
+    bad = tmp_path / "input.txt"
+    bad.write_text("Mcu.Name=STM32F4\n", encoding="utf-8")
+    with pytest.raises(CreationInputError):
+        plan_project_creation(tmp_path, CreationRequest.from_ioc("input.txt", "generated", framework="hal", language="c"), _tools(tmp_path), now=_NOW)
+    request = CreationRequest.from_mcu("STM32F429ZITx", "generated", framework="hal", language="c")
+    absent = plan_project_creation(tmp_path, request, _tools(tmp_path), now=_NOW)
+    (tmp_path / "generated").mkdir()
+    empty = plan_project_creation(tmp_path, request, _tools(tmp_path), now=_NOW)
+    assert absent.destination_inventory_digest != empty.destination_inventory_digest

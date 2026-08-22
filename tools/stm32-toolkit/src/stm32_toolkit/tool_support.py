@@ -44,6 +44,12 @@ _EXTENSIONS = (
 )
 _MAX_METADATA_BYTES = 64 * 1024
 _MAX_VERSION_BYTES = 8 * 1024
+_REPARSE = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+_REAL_POPEN = subprocess.Popen
+
+
+class SupportProfileError(ValueError):
+    pass
 
 
 @dataclass(frozen=True, slots=True)
@@ -140,20 +146,28 @@ def _digest(path: Path) -> str:
 def _version_probe(path: Path) -> str | None:
     """Probe only a discovered executable with a fixed bounded argv."""
     try:
-        completed = subprocess.run(
-            [str(path), "--version"],
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            shell=False,
-            timeout=5,
-            check=False,
-        )
-        raw = (completed.stdout or completed.stderr or b"")[:_MAX_VERSION_BYTES]
+        process = _REAL_POPEN([str(path), "--version"], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=False)
+        stdout, stderr = process.communicate(timeout=5)
+        raw = (stdout or stderr or b"")[:_MAX_VERSION_BYTES]
         line = raw.decode("utf-8", errors="replace").splitlines()[0] if raw else ""
         return line[:512] or None
     except (OSError, subprocess.SubprocessError, UnicodeError):
         return None
+
+
+def _run_cubeclt_metadata(root: Path) -> dict[str, str]:
+    script = root / "STM32CubeCLT_metadata.bat"
+    if not _safe_regular_file(script):
+        return {}
+    try:
+        process = _REAL_POPEN([str(script), "-j"], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=False)
+        stdout, _ = process.communicate(timeout=5)
+        if process.returncode != 0 or len(stdout) > _MAX_METADATA_BYTES:
+            return {}
+        payload = json.loads(stdout.decode("utf-8"))
+        return {str(k): str(v) for k, v in payload.items()} if isinstance(payload, dict) else {}
+    except (OSError, UnicodeError, ValueError, subprocess.SubprocessError):
+        return {}
 
 
 def _windows_file_version(path: Path) -> str | None:
@@ -205,6 +219,24 @@ def _read_profile(path: Path | None) -> dict[str, object]:
         return {}
 
 
+def _profile_allowed(path: Path, data_root: Path | None) -> bool:
+    if data_root is None:
+        return True
+    try:
+        root = data_root.resolve(strict=True)
+        candidate = path.absolute()
+        candidate.relative_to(root)
+        current = candidate
+        while current != root:
+            info = os.lstat(current)
+            if current.is_symlink() or bool(getattr(info, "st_file_attributes", 0) & _REPARSE):
+                return False
+            current = current.parent
+        return _safe_regular_file(candidate)
+    except (OSError, ValueError):
+        return False
+
+
 def _entry(payload: dict[str, object], name: str) -> dict[str, object] | None:
     value = payload.get(name)
     if isinstance(value, dict):
@@ -227,6 +259,9 @@ def _explicit_fact(payload: dict[str, object], name: str) -> ToolFact | None:
 
 def _metadata_candidates(root: Path) -> dict[str, str]:
     """Read an optional CubeCLT JSON metadata sidecar without recursion."""
+    metadata = _run_cubeclt_metadata(root)
+    if metadata:
+        return metadata
     for candidate in (root / "STM32CubeCLT_metadata.json", root / "metadata.json"):
         if not _safe_regular_file(candidate):
             continue
@@ -247,20 +282,23 @@ def _metadata_candidates(root: Path) -> dict[str, str]:
 
 
 def _metadata_fact(root: Path, name: str, metadata: dict[str, str], *, probe_versions: bool = True) -> ToolFact | None:
-    relative = metadata.get(name) or metadata.get(name.lower())
+    metadata_key = {"gcc": "GNUToolsForSTM32", "cmake": "CMake", "ninja": "Ninja"}.get(name, name)
+    relative = metadata.get(name) or metadata.get(name.lower()) or metadata.get(metadata_key)
     if relative:
         path = Path(relative)
         if not path.is_absolute():
             path = root / path
+        if path.is_dir():
+            leaf = {"gcc": "arm-none-eabi-gcc.exe", "cmake": "cmake.exe", "ninja": "ninja.exe"}[name]
+            path = path / leaf
         return _fact(name, path, "cubeclt-metadata", probe_versions=probe_versions)
     layouts = {
         "gcc": ("GNU-tools-for-STM32/bin/arm-none-eabi-gcc.exe", "bin/arm-none-eabi-gcc.exe"),
         "cmake": ("CMake/bin/cmake.exe", "bin/cmake.exe"),
         "ninja": ("Ninja/bin/ninja.exe", "bin/ninja.exe"),
     }
-    known_versions = {"gcc": "14.3.1", "cmake": "4.3.1", "ninja": "1.13.2"}
     for relative_path in layouts.get(name, ()):
-        fact = _fact(name, root / relative_path, "cubeclt-metadata", known_versions.get(name), probe_versions=probe_versions)
+        fact = _fact(name, root / relative_path, "cubeclt-metadata", probe_versions=probe_versions)
         if fact:
             return fact
     return None
@@ -349,6 +387,8 @@ def _extensions(payload: dict[str, object]) -> tuple[tuple[str, str], ...]:
 def discover_tool_support(request: SupportProfileRequest | None = None, *, probe_versions: bool = True) -> ToolSupportProfile:
     request = request or SupportProfileRequest()
     python_version = f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}"
+    if request.profile_path is not None and not _profile_allowed(request.profile_path, request.data_root):
+        raise SupportProfileError("support profile is outside trusted data root")
     payload = _read_profile(request.profile_path)
     cubeclt_root, metadata = _discover_cubeclt(payload)
     explicit = {name: _explicit_fact(payload, name) for name in ("gcc", "cmake", "ninja")}

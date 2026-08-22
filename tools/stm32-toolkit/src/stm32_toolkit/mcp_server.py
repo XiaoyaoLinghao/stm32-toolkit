@@ -67,6 +67,7 @@ from stm32_toolkit.hardware_workflows import (
 from stm32_toolkit.identity import canonical_project_root, new_session_id
 from stm32_toolkit.paths import require_safe_session_id
 from stm32_toolkit.result import OperationResult
+from stm32_toolkit.tool_support import ToolSupportProfile, SupportProfileRequest, discover_tool_support
 from stm32_toolkit.workflows import (
     build_firmware_workflow,
     configure_project_workflow,
@@ -414,6 +415,7 @@ class ServerRuntime:
     project_root: Path
     data_root: Path
     session_id: str
+    support_profile: ToolSupportProfile | None = None
 
     @classmethod
     def create(
@@ -448,7 +450,8 @@ class ServerRuntime:
             raise ValueError("data root is not a directory")
         _require_external_data_root(canonical_data, canonical_project)
 
-        return cls(canonical_project, canonical_data, resolved_session_id)
+        support = discover_tool_support(SupportProfileRequest(data_root=canonical_data), probe_versions=True)
+        return cls(canonical_project, canonical_data, resolved_session_id, support)
 
 
 def _require_external_data_root(data_root: Path, project_root: Path) -> None:
@@ -507,6 +510,7 @@ def tool_project_create_plan(
             framework,
             language,
             None,
+            runtime.support_profile,
         )
     ).to_dict()
 

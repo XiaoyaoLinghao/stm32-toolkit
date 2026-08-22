@@ -7,7 +7,7 @@ from pathlib import Path
 
 from stm32_toolkit.generation.creation import CreationInputError, CreationRequest, plan_project_creation
 from stm32_toolkit.result import OperationResult
-from stm32_toolkit.tool_support import SupportProfileRequest, discover_tool_support
+from stm32_toolkit.tool_support import SupportProfileRequest, SupportProfileError, ToolSupportProfile, discover_tool_support
 
 
 @dataclass(frozen=True, slots=True)
@@ -21,6 +21,7 @@ class CreationPlanWorkflowRequest:
     framework: str
     language: str
     support_profile_path: Path | None = None
+    support_profile: ToolSupportProfile | None = None
 
 
 def _request(value: CreationPlanWorkflowRequest) -> CreationRequest:
@@ -36,12 +37,12 @@ def _request(value: CreationPlanWorkflowRequest) -> CreationRequest:
 def plan_creation_workflow(request: CreationPlanWorkflowRequest) -> OperationResult[dict[str, object]]:
     try:
         creation_request = _request(request)
-        support = discover_tool_support(SupportProfileRequest(request.support_profile_path, request.data_root))
+        support = request.support_profile or discover_tool_support(SupportProfileRequest(request.support_profile_path, request.data_root))
         from datetime import datetime, timezone
 
         plan = plan_project_creation(request.project_root, creation_request, support, now=datetime.now(timezone.utc))
         return OperationResult.success("project-create-plan", {**plan.to_dict(), "mutated": False})
     except CreationInputError as error:
         return OperationResult.failure("project-create-plan", "CREATION_INPUT_INVALID", "Creation request is invalid", {"field": error.field})
-    except (OSError, ValueError, RuntimeError):
+    except (OSError, ValueError, RuntimeError, SupportProfileError):
         return OperationResult.failure("project-create-plan", "CREATION_ENVIRONMENT_INVALID", "Creation environment is unavailable", {})

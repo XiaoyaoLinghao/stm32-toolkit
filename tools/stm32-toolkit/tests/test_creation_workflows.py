@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from stm32_toolkit.creation_workflows import CreationPlanWorkflowRequest, plan_creation_workflow
+from stm32_toolkit.tool_support import ToolSupportProfile
 
 
 def test_plan_workflow_reports_missing_cubemx_as_plan_blocker(tmp_path: Path, monkeypatch):
@@ -18,3 +19,10 @@ def test_workflow_rejects_malformed_input_without_exception_text(tmp_path: Path)
     assert result.ok is False
     assert result.code == "CREATION_INPUT_INVALID"
     assert "CreationInputError" not in result.message
+
+
+def test_workflow_rejects_profile_outside_data_root(tmp_path: Path):
+    outside = tmp_path.parent / "bad-profile.json"
+    outside.write_text("{}", encoding="utf-8")
+    result = plan_creation_workflow(CreationPlanWorkflowRequest(tmp_path, tmp_path / "data", "session", "mcu", "STM32F4", "generated", "hal", "c", outside))
+    assert result.ok is False and result.code == "CREATION_ENVIRONMENT_INVALID"

@@ -44,7 +44,7 @@ def run_doctor(
     project_root: Path, *, data_root: Path | None = None
 ) -> OperationResult[dict[str, object]]:
     """Collect offline, read-only evidence about the local toolkit environment."""
-    support = discover_tool_support(SupportProfileRequest(data_root=data_root), probe_versions=False)
+    support = discover_tool_support(SupportProfileRequest(data_root=data_root), probe_versions=True)
     return OperationResult.success(
         "doctor",
         {
