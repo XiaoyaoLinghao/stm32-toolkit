@@ -72,3 +72,73 @@ Slice tests must prove, rather than merely mention:
 - doctor legacy keys plus the same creation-support facts used by the runtime.
 
 The exact existing VS07-A slice command remains the only aggregate check. No coverage gate, platform matrix, packaging, hardware, CubeMX generation, VS07-B, or VS07-C work is added.
+
+## 7. Candidate-resolution interface reset
+
+The replacement review proved that returning `ToolFact | None` from each
+discovery helper is structurally insufficient: `None` currently means both
+"this tier has no candidate" and "this tier supplied invalid evidence". The
+subsequent `explicit or metadata or PATH` expression therefore turns a
+fail-closed contract into ambient fallback. The per-component functions also
+cannot share correct canonical deduplication or same-tier ambiguity handling.
+
+The implementation must replace that control flow with these immutable
+internal concepts (names may use leading underscores, but the fields and state
+transitions are frozen):
+
+```python
+@dataclass(frozen=True)
+class DiscoveryCandidate:
+    path: Path
+    source: str
+    version_hint: str | None = None
+
+@dataclass(frozen=True)
+class CandidateTier:
+    source: str
+    candidates: tuple[DiscoveryCandidate, ...]
+    invalid: bool = False
+
+@dataclass(frozen=True)
+class CandidateResolution:
+    fact: ToolFact | None
+    issue: ToolSupportIssue | None
+```
+
+`_resolve_component(component, tiers, evidence_builder) -> CandidateResolution`
+is the only selector. For each tier it performs the following transition:
+
+1. `invalid=True` returns `<COMPONENT>_INVALID` immediately.
+2. Canonicalize every supplied path as a safe existing regular file. Any
+   supplied unsafe, redirected, missing, or non-file path returns
+   `<COMPONENT>_INVALID`; it is not equivalent to an empty tier.
+3. Deduplicate by the platform-normalized canonical absolute path. Registry,
+   standard, duplicate PATH entries, spelling aliases, and case aliases to the
+   same file count once.
+4. Zero canonical candidates advances to the next tier; two or more distinct
+   candidates return `<COMPONENT>_AMBIGUOUS`; exactly one candidate is passed
+   to the component's evidence builder.
+5. Evidence failure returns `<COMPONENT>_PROBE_FAILED`; an observed but wrong
+   version returns `<COMPONENT>_UNSUPPORTED`; neither advances to a lower tier.
+6. Exhausting every empty tier returns `<COMPONENT>_MISSING`.
+
+An explicit profile is validated before tiers are built. A supplied tool entry
+whose path is unsafe, missing or the wrong type raises `SupportProfileError`;
+it never becomes an empty tier. A present CubeCLT metadata command whose
+execution or JSON/path evidence is invalid returns a closed metadata/tool issue
+and suppresses known-layout and PATH fallback. The known CubeCLT layout is used
+only when the metadata command is genuinely absent.
+
+PATH discovery must enumerate all bounded candidates rather than call
+`shutil.which` once. It splits the current `PATH`, examines each directory once,
+uses the component's exact executable basename plus Windows `PATHEXT` rules,
+and passes every safe match in one PATH tier to the common resolver. Registry
+lookups query HKLM and HKCU independently: a missing key in either hive adds no
+candidate and cannot suppress the other hive. Registered and known standard
+candidates form one tier and are canonically deduplicated before ambiguity is
+decided.
+
+The existing public dataclasses, CLI/MCP schemas and positive-environment JSON
+remain unchanged. New closed issue codes affect only negative discovery paths.
+Issue messages contain the component and remediation, never the rejected host
+path.
