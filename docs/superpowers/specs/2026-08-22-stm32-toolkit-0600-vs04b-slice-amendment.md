@@ -96,6 +96,13 @@ The projected transcript replaces only `ObservationBinding.probe_id` with the ha
 bytes are forbidden from the transcript, v2 reference, Evidence metadata/root, and public result.
 The existing live History database is not rewritten and remains the live observation authority.
 
+The physical transcript has its own 64 MiB canonical-byte limit, equal to the EvidenceStore
+single-object read limit; the existing 1 MiB replay-document limit remains unchanged. A requested
+physical window whose complete canonical transcript exceeds 64 MiB is `MONITOR_PHYSICAL_INVALID`
+before any artifact, envelope, or root publication. Public History pages may split a batch at a
+cursor: the publisher reconstructs contiguous authenticated slices into the original complete
+batch and rejects only missing, overlapping, reordered, or contradictory slices.
+
 `source_record_sha256` equals the SHA-256 of the canonical transcript bytes and therefore also the
 transcript artifact digest. The transcript Evidence operation is `monitor-physical-window` and its
 closed metadata records operation/run ID, scenario role, linked TestRun ID, workspace/session,
@@ -107,6 +114,12 @@ source/flag, and source-record digest. The reference Evidence retains operation
 Publication is append-only and idempotent for the same complete intent and bytes. An existing root
 with different transcript/reference bytes is `OPERATION_CONFLICT`. No mutation of the source
 History or physical TestRun is permitted.
+
+When a complete reference already exists for the operation ID, caller-visible intent fields that
+are available in that reference, including role, group, sequence, and captured-time bounds, are
+compared before querying the requested History window. A mismatch is `OPERATION_CONFLICT`, not an
+identity error. Matching intent continues through authoritative source validation. A retained
+transcript-only prefix is validated against the newly reconstructed complete intent before resume.
 
 The publisher preflights both complete payloads and both root identities before the first durable
 root write. Validation, identity, integrity, and pre-existing conflict failures therefore create

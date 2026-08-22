@@ -59,10 +59,15 @@ The first GREEN must prove:
 
 - no Probe/runtime/service method is called;
 - the exact complete sequence/time window is reconstructed through public History queries;
+- split authenticated History slices are reassembled across cursors into complete batches;
 - TestRun/Project/History identity and physical provenance match;
 - the transcript and v2 reference publish with authoritative roots;
 - fresh loader returns the same reference;
 - new/public durable bytes contain the probe hash but not the raw selector.
+
+Use a separate 64 MiB maximum for physical canonical transcript bytes, matching the EvidenceStore
+single-object read bound. Keep replay at 1 MiB. Reject an oversized physical transcript as
+`MONITOR_PHYSICAL_INVALID` before publishing any artifact, envelope, or root.
 
 The publisher must preflight both roots and complete payloads before its first root write. Repeated
 identical publication returns the same reference. A conflict never replaces an existing root.
@@ -80,6 +85,12 @@ and provider failure. Validation, integrity, and pre-existing conflict cases ass
 class and zero new roots. Fault injection at each durable publication boundary asserts either zero
 durable data or the exact valid publication prefix; retrying the same intent must complete both
 roots, while a malformed or contradictory prefix must fail closed.
+
+If a complete reference already exists, compare its role/group/sequence/time intent with the
+request before querying the changed window and return `OPERATION_CONFLICT` for drift. Add a
+multi-page case where one batch is split at the 10,000-value cursor, a physical transcript above the
+1 MiB replay limit that remains loadable, and a synthetic over-64-MiB preflight boundary without
+creating a release-scale data matrix.
 
 Do not manufacture physical Evidence from replay batches. Do not accept caller identity fields or
 caller-supplied batch bytes.
