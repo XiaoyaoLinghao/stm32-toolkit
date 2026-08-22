@@ -17,7 +17,7 @@ from stm32_toolkit.tool_support import ToolSupportProfile
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _MCU = re.compile(r"^STM32[A-Z0-9]+$", re.IGNORECASE)
 _SAFE_BOARD = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
-_MAX_IOC_BYTES = 4 * 1024 * 1024
+_MAX_IOC_BYTES = 1 * 1024 * 1024
 _REPARSE = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
 
 

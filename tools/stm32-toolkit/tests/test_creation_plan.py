@@ -74,3 +74,23 @@ def test_ioc_requires_ioc_suffix_and_absent_empty_inventory_digests_differ(tmp_p
     (tmp_path / "generated").mkdir()
     empty = plan_project_creation(tmp_path, request, _tools(tmp_path), now=_NOW)
     assert absent.destination_inventory_digest != empty.destination_inventory_digest
+
+
+@pytest.mark.parametrize("payload", [b"\xff", b"x" * (2 * 1024 * 1024)], ids=["invalid-utf8", "oversize"])
+def test_ioc_rejects_invalid_utf8_or_oversize(tmp_path: Path, payload: bytes):
+    ioc = tmp_path / "bad.ioc"
+    ioc.write_bytes(payload)
+    with pytest.raises((CreationInputError, OSError, ValueError)):
+        plan_project_creation(tmp_path, CreationRequest.from_ioc("bad.ioc", "generated", framework="hal", language="c"), _tools(tmp_path), now=_NOW)
+
+
+@pytest.mark.parametrize("kind", ["mcu", "board", "ioc"])
+def test_all_creation_source_kinds_have_literal_plans(tmp_path: Path, kind: str):
+    if kind == "mcu":
+        request = CreationRequest.from_mcu("STM32F429ZITx", "generated", framework="hal", language="c")
+    elif kind == "board":
+        request = CreationRequest.from_board("NUCLEO-F429ZI", "generated", framework="hal", language="c")
+    else:
+        (tmp_path / "board.ioc").write_text("Mcu.Name=STM32F4\n", encoding="utf-8")
+        request = CreationRequest.from_ioc("board.ioc", "generated", framework="hal", language="c")
+    assert plan_project_creation(tmp_path, request, _tools(tmp_path), now=_NOW).request.source.kind == kind

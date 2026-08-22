@@ -533,13 +533,45 @@ def discover_tool_support(request: SupportProfileRequest | None = None, *, probe
             if value is not None and (not isinstance(value, dict) or not isinstance(value.get("path"), str)):
                 raise SupportProfileError("support profile schema is invalid")
     cubeclt_root, metadata = _discover_cubeclt(payload)
-    explicit = {name: _explicit_fact(payload, name) for name in ("gcc", "cmake", "ninja")}
     facts: dict[str, ToolFact | None] = {}
+    resolution_issues: list[ToolSupportIssue] = []
     for name in ("gcc", "cmake", "ninja"):
-        facts[name] = explicit[name] or _discover_cubeclt_fact(cubeclt_root, name, metadata, probe_versions=probe_versions) or _find_path_fact(name, probe_versions=probe_versions)
+        tiers: list[CandidateTier] = []
+        entry = _entry(payload, name)
+        if entry is not None:
+            raw = entry.get("path")
+            tiers.append(CandidateTier("explicit", (DiscoveryCandidate(Path(raw), "explicit", str(entry.get("version") or "unknown")),) if isinstance(raw, str) else (), invalid=not isinstance(raw, str)))
+        metadata_value = metadata.get({"gcc": "GNUToolsForSTM32", "cmake": "CMake", "ninja": "Ninja"}[name])
+        if metadata_value is not None:
+            mp = Path(metadata_value)
+            if not mp.is_absolute() and cubeclt_root is not None:
+                mp = cubeclt_root / mp
+            if mp.is_dir():
+                mp = mp / {"gcc": "arm-none-eabi-gcc.exe", "cmake": "cmake.exe", "ninja": "ninja.exe"}[name]
+            tiers.append(CandidateTier("metadata", (DiscoveryCandidate(mp, "cubeclt-metadata"),), invalid=cubeclt_root is None or not _under_safe_root(mp, cubeclt_root)))
+        elif cubeclt_root is not None:
+            layout = {
+                "gcc": "GNU-tools-for-STM32/bin/arm-none-eabi-gcc.exe",
+                "cmake": "CMake/bin/cmake.exe",
+                "ninja": "Ninja/bin/ninja.exe",
+            }[name]
+            known = cubeclt_root / layout
+            tiers.append(CandidateTier("known-root", (DiscoveryCandidate(known, "cubeclt-metadata"),) if _safe_regular_file(known) else ()))
+        path_candidates = []
+        for raw_dir in os.environ.get("PATH", "").split(os.pathsep):
+            if raw_dir:
+                candidate = Path(raw_dir) / {"gcc": "arm-none-eabi-gcc.exe", "cmake": "cmake.exe", "ninja": "ninja.exe"}[name]
+                if _safe_regular_file(candidate):
+                    path_candidates.append(DiscoveryCandidate(candidate, "path"))
+        tiers.append(CandidateTier("path", tuple(path_candidates)))
+        result = _resolve_component(name, tuple(tiers), lambda c: _fact(name, c.path, c.source, c.version_hint, probe_versions=probe_versions))
+        facts[name] = result.fact
+        if result.issue:
+            resolution_issues.append(result.issue)
     cubemx = _discover_cube_mx(payload)
     vscode = _discover_vscode(payload)
     issues: list[ToolSupportIssue] = []
+    issues.extend(resolution_issues)
     if not (sys.version_info.major == 3 and sys.version_info.minor == 12):
         issues.append(ToolSupportIssue("PYTHON_UNSUPPORTED", "python", "Use CPython >=3.12,<3.13."))
     if cubemx is None:
