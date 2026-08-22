@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from stm32_toolkit.tool_support import (
+    ProcessObservation,
     SupportProfileRequest,
     ToolFact,
     ToolSupportIssue,
@@ -105,6 +106,17 @@ def test_support_profile_must_be_inside_trusted_data_root(tmp_path: Path):
 
 def test_cubeclt_metadata_batch_seam_is_bounded_and_injected(tmp_path: Path, monkeypatch):
     root = tmp_path / "clt"
-    root.mkdir()
-    monkeypatch.setattr("stm32_toolkit.tool_support._run_cubeclt_metadata", lambda value: {"GNUToolsForSTM32": str(root / "gcc"), "CMake": str(root / "cmake"), "Ninja": str(root / "ninja")})
-    assert "GNUToolsForSTM32" in __import__("stm32_toolkit.tool_support", fromlist=["_run_cubeclt_metadata"])._run_cubeclt_metadata(root)
+    gcc = _write_executable(root / "gcc.exe")
+    cmake = _write_executable(root / "cmake.exe")
+    ninja = _write_executable(root / "ninja.exe")
+    script = _write_executable(root / "STM32CubeCLT_metadata.bat")
+    def fake_runner(argv, **kwargs):
+        if argv[0] == str(script):
+            return ProcessObservation(0, json.dumps({"GNUToolsForSTM32": str(gcc), "CMake": str(cmake), "Ninja": str(ninja)}).encode(), b"")
+        return ProcessObservation(0, b"GNU Arm Embedded Toolchain 14.3.1\n", b"")
+    monkeypatch.setattr("stm32_toolkit.tool_support._run_bounded", fake_runner)
+    import stm32_toolkit.tool_support as support
+    metadata = support._metadata_candidates(root)
+    assert metadata["GNUToolsForSTM32"] == str(gcc)
+    fact = support._metadata_fact(root, "gcc", metadata)
+    assert fact is not None and fact.version == "14.3.1"

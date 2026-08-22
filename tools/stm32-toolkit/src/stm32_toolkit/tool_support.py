@@ -182,7 +182,7 @@ def _version_probe(path: Path) -> str | None:
         if observation.returncode != 0 or observation.timed_out or observation.truncated:
             return None
         raw = (observation.stdout or observation.stderr)[:_MAX_VERSION_BYTES]
-        line = raw.decode("utf-8", errors="replace").splitlines()[0] if raw else ""
+        line = raw.decode("utf-8", errors="strict").splitlines()[0] if raw else ""
         return line[:512] or None
     except (OSError, subprocess.SubprocessError, UnicodeError):
         return None
@@ -196,7 +196,7 @@ def _run_cubeclt_metadata(root: Path) -> dict[str, str]:
         observation = _run_bounded((str(script), "-j"), capture_limit=_MAX_METADATA_BYTES)
         if observation.returncode != 0 or observation.timed_out or observation.truncated:
             return {}
-        payload = json.loads(observation.stdout.decode("utf-8"))
+        payload = json.loads(observation.stdout.decode("utf-8", errors="strict"))
         return {str(k): str(v) for k, v in payload.items()} if isinstance(payload, dict) else {}
     except (OSError, UnicodeError, ValueError, subprocess.SubprocessError):
         return {}
@@ -239,6 +239,16 @@ def _fact(
     if not _safe_regular_file(path):
         return None
     try:
+        current = path.absolute()
+        anchor = Path(current.anchor)
+        while current != anchor:
+            info = os.lstat(current)
+            if current.is_symlink() or bool(getattr(info, "st_file_attributes", 0) & _REPARSE):
+                return None
+            current = current.parent
+    except OSError:
+        return None
+    try:
         digest = _digest(path)
     except OSError:
         return None
@@ -271,7 +281,7 @@ def _read_profile(path: Path | None) -> dict[str, object]:
 
 def _profile_allowed(path: Path, data_root: Path | None) -> bool:
     if data_root is None:
-        return False
+            return False
     try:
         root = data_root.resolve(strict=True)
         candidate = path.absolute()
@@ -283,6 +293,22 @@ def _profile_allowed(path: Path, data_root: Path | None) -> bool:
                 return False
             current = current.parent
         return _safe_regular_file(candidate)
+    except (OSError, ValueError):
+        return False
+
+
+def _under_safe_root(path: Path, root: Path) -> bool:
+    try:
+        candidate = path.absolute()
+        base = root.resolve(strict=True)
+        candidate.relative_to(base)
+        current = candidate
+        while current != base:
+            info = os.lstat(current)
+            if current.is_symlink() or bool(getattr(info, "st_file_attributes", 0) & _REPARSE):
+                return False
+            current = current.parent
+        return True
     except (OSError, ValueError):
         return False
 
@@ -314,27 +340,8 @@ def _explicit_fact(payload: dict[str, object], name: str) -> ToolFact | None:
 
 
 def _metadata_candidates(root: Path) -> dict[str, str]:
-    """Read an optional CubeCLT JSON metadata sidecar without recursion."""
-    metadata = _run_cubeclt_metadata(root)
-    if metadata:
-        return metadata
-    for candidate in (root / "STM32CubeCLT_metadata.json", root / "metadata.json"):
-        if not _safe_regular_file(candidate):
-            continue
-        try:
-            if candidate.stat().st_size > _MAX_METADATA_BYTES:
-                return {}
-            value = json.loads(candidate.read_text(encoding="utf-8"))
-            if not isinstance(value, dict):
-                return {}
-            result: dict[str, str] = {}
-            for key, item in value.items():
-                if isinstance(key, str) and isinstance(item, str):
-                    result[key] = item
-            return result
-        except (OSError, UnicodeError, ValueError):
-            return {}
-    return {}
+    """Read only the bounded native CubeCLT metadata seam."""
+    return _run_cubeclt_metadata(root)
 
 
 def _metadata_fact(root: Path, name: str, metadata: dict[str, str], *, probe_versions: bool = True) -> ToolFact | None:
@@ -347,6 +354,8 @@ def _metadata_fact(root: Path, name: str, metadata: dict[str, str], *, probe_ver
         if path.is_dir():
             leaf = {"gcc": "arm-none-eabi-gcc.exe", "cmake": "cmake.exe", "ninja": "ninja.exe"}[name]
             path = path / leaf
+        if not _under_safe_root(path, root):
+            return None
         return _fact(name, path, "cubeclt-metadata", probe_versions=probe_versions)
     layouts = {
         "gcc": ("GNU-tools-for-STM32/bin/arm-none-eabi-gcc.exe", "bin/arm-none-eabi-gcc.exe"),
@@ -388,18 +397,18 @@ def _discover_vscode(payload: dict[str, object]) -> ToolFact | None:
     explicit = _explicit_fact(payload, "vsCode")
     if explicit:
         return explicit
-    try:
-        located = shutil.which("code")
-    except OSError:
-        located = None
-    if located:
-        return _fact("vsCode", Path(located), "path", probe_versions=True, allow_process_probe=False)
     found = [_fact("vsCode", candidate, "standard", probe_versions=True, allow_process_probe=False) for candidate in _VS_CODE_PATHS]
     found = [fact for fact in found if fact]
     if len(found) > 1:
         raise SupportProfileError("ambiguous vscode candidates")
     if found:
         return found[0]
+    try:
+        located = shutil.which("code")
+    except OSError:
+        located = None
+    if located:
+        return _fact("vsCode", Path(located), "path", probe_versions=True, allow_process_probe=False)
     return None
 
 
@@ -407,14 +416,7 @@ def _discover_cube_mx(payload: dict[str, object]) -> ToolFact | None:
     explicit = _explicit_fact(payload, "cubeMx")
     if explicit:
         return explicit
-    try:
-        located = shutil.which("STM32CubeMX")
-    except OSError:
-        located = None
-    if located:
-        fact = _fact("cubeMx", Path(located), "path", probe_versions=False)
-        if fact:
-            return fact
+    registered_facts: list[ToolFact] = []
     if os.name == "nt":
         try:
             import winreg
@@ -424,15 +426,21 @@ def _discover_cube_mx(payload: dict[str, object]) -> ToolFact | None:
             if isinstance(registered, str):
                 fact = _fact("cubeMx", Path(registered), "standard", probe_versions=True, allow_process_probe=False)
                 if fact:
-                    return fact
+                    registered_facts.append(fact)
         except (OSError, ImportError):
             pass
     found = [_fact("cubeMx", candidate, "standard", probe_versions=True, allow_process_probe=False) for candidate in _CUBEMX_PATHS]
-    found = [fact for fact in found if fact]
+    found = registered_facts + [fact for fact in found if fact]
     if len(found) > 1:
         raise SupportProfileError("ambiguous cubeMx candidates")
     if found:
         return found[0]
+    try:
+        located = shutil.which("STM32CubeMX")
+    except OSError:
+        located = None
+    if located:
+        return _fact("cubeMx", Path(located), "path", probe_versions=True, allow_process_probe=False)
     return None
 
 

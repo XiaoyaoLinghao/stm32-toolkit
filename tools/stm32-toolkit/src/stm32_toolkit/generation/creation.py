@@ -232,6 +232,9 @@ def plan_project_creation(workspace_root: Path, request: CreationRequest, tools:
         issue = issue_map.get(code)
         if issue:
             blockers.append(CreationBlocker(issue.code, issue.component, issue.remediation))
+    for issue in tools.issues:
+        if issue.component != "vsCode" and not any(item.code == issue.code for item in blockers):
+            blockers.append(CreationBlocker(issue.code, issue.component, issue.remediation))
     if tools.cubemx is None and not any(item.code == "CUBEMX_MISSING" for item in blockers):
         blockers.append(CreationBlocker("CUBEMX_MISSING", "cubeMx", "Install STM32CubeMX 6.18 and rerun discovery."))
     for fact, code, component in ((tools.cubeclt_root, "CUBECLT_MISSING", "cubeClt"), (tools.gcc, "GCC_MISSING", "gcc"), (tools.cmake, "CMAKE_MISSING", "cmake"), (tools.ninja, "NINJA_MISSING", "ninja")):

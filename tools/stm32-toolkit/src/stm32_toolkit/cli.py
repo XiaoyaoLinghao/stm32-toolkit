@@ -10,6 +10,13 @@ import sys
 import unicodedata
 from pathlib import Path
 
+
+class _RejectDuplicate(argparse.Action):
+    def __call__(self, parser, namespace, values, option_string=None):
+        if getattr(namespace, self.dest, None) is not None:
+            parser.error(f"argument {option_string}: repeated option")
+        setattr(namespace, self.dest, values)
+
 from stm32_toolkit.context import build_project_context
 from stm32_toolkit.creation_workflows import CreationPlanWorkflowRequest, plan_creation_workflow
 from stm32_toolkit.detection import detect_project
@@ -200,12 +207,12 @@ def _build_parser() -> argparse.ArgumentParser:
 
     create_plan = project_commands.add_parser("create-plan")
     _add_project_root(create_plan)
-    create_plan.add_argument("--source-kind", choices=("mcu", "board", "ioc"), required=True)
-    create_plan.add_argument("--source", required=True)
-    create_plan.add_argument("--destination", required=True)
-    create_plan.add_argument("--framework", choices=("hal", "ll"), required=True)
-    create_plan.add_argument("--language", choices=("c", "cpp"), required=True)
-    create_plan.add_argument("--support-profile", type=Path)
+    create_plan.add_argument("--source-kind", choices=("mcu", "board", "ioc"), required=True, action=_RejectDuplicate)
+    create_plan.add_argument("--source", required=True, action=_RejectDuplicate)
+    create_plan.add_argument("--destination", required=True, action=_RejectDuplicate)
+    create_plan.add_argument("--framework", choices=("hal", "ll"), required=True, action=_RejectDuplicate)
+    create_plan.add_argument("--language", choices=("c", "cpp"), required=True, action=_RejectDuplicate)
+    create_plan.add_argument("--support-profile", type=Path, action=_RejectDuplicate)
     _add_json(create_plan)
 
     configure = project_commands.add_parser("configure")
