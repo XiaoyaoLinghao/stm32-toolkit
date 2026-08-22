@@ -341,8 +341,9 @@ def test_case_ids_are_mandatory_and_authorization_is_single_use(tmp_path: Path) 
     assert len([event for event in events if event[:2] == ("flash", "modify")]) == 1
 
 
+@pytest.mark.parametrize("case_ids", [tuple(reversed(CASES)), ("suite.\udcff",)])
 def test_prepare_rejects_noncanonical_case_order_before_observe_or_authorization(
-    tmp_path: Path,
+    tmp_path: Path, case_ids: tuple[str, ...],
 ) -> None:
     project, build = _fixed_project(tmp_path)
     data_root = (tmp_path / "plugin-data").absolute()
@@ -355,7 +356,7 @@ def test_prepare_rejects_noncanonical_case_order_before_observe_or_authorization
         workflows.target_test_prepare(
             context,
             probe_id=RAW_PROBE,
-            case_ids=tuple(reversed(CASES)),
+            case_ids=case_ids,
             _seams=workflows.TargetWorkflowSeams(factory),
         )
     )
@@ -365,6 +366,43 @@ def test_prepare_rejects_noncanonical_case_order_before_observe_or_authorization
         data_root, project, build["logicalProjectId"], "session-r3"
     )
     assert not (workspace.session_root / "target-authorizations").exists()
+
+
+@pytest.mark.parametrize(
+    ("code", "expected"),
+    [
+        ("FIRMWARE_INPUT_CHANGED", "TEST_INVENTORY_CHANGED"),
+        ("FIRMWARE_IDENTITY_MISMATCH", "TEST_IDENTITY_MISMATCH"),
+        ("FLASH_PLAN_CHANGED", "TEST_INVENTORY_CHANGED"),
+        ("FLASH_IMAGE_INVALID", "TEST_INVENTORY_CHANGED"),
+    ],
+)
+def test_physical_prepare_projects_only_frozen_firmware_fact_failures(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    code: str,
+    expected: str,
+) -> None:
+    project, _build = _fixed_project(tmp_path)
+    data_root = (tmp_path / "plugin-data").absolute()
+
+    class FactsFailure(Exception):
+        pass
+
+    error = FactsFailure("private facts failure")
+    error.code = code
+    monkeypatch.setattr(
+        workflows, "load_fresh_firmware_facts", lambda _root: (_ for _ in ()).throw(error)
+    )
+    result = asyncio.run(
+        workflows.target_test_prepare(
+            workflows.TestingWorkflowContext(project, data_root, "session-r3"),
+            probe_id=RAW_PROBE,
+            case_ids=CASES,
+        )
+    )
+
+    assert result.ok is False and result.code == expected
 
 
 def test_postflash_contradiction_consumes_and_creates_no_testrun_root(tmp_path: Path) -> None:

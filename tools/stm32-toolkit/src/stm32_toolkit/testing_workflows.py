@@ -197,8 +197,8 @@ def _exception_result(operation: str, error: BaseException) -> OperationResult[N
         return _test_failure(operation, error)
     if isinstance(error, ProjectManifestError):
         return _project_failure(operation, error)
-    if isinstance(error, (ProbeClientError, ProbeLeaseError, ProbeServiceError, TargetRunError)) or isinstance(getattr(error, "code", None), str):
-        code = getattr(error, "code", "TEST_EXECUTION_FAILED")
+    if isinstance(error, (ProbeClientError, ProbeLeaseError, ProbeServiceError, TargetRunError)):
+        code = error.code
         if code == "PROBE_BUSY":
             return _failure(operation, "PROBE_BUSY")
         mapped = {
@@ -206,14 +206,19 @@ def _exception_result(operation: str, error: BaseException) -> OperationResult[N
             "PROBE_BACKEND_ERROR": "TEST_TRANSPORT_UNAVAILABLE",
             "PROBE_OPERATION_UNAVAILABLE": "TEST_TRANSPORT_UNAVAILABLE",
             "PROBE_SERVICE_UNAVAILABLE": "TEST_TRANSPORT_UNAVAILABLE",
-            "FIRMWARE_INPUT_CHANGED": "TEST_INVENTORY_CHANGED",
-            "FIRMWARE_IDENTITY_MISMATCH": "TEST_IDENTITY_MISMATCH",
-            "FLASH_PLAN_CHANGED": "TEST_INVENTORY_CHANGED",
-            "FLASH_IMAGE_INVALID": "TEST_INVENTORY_CHANGED",
         }.get(code, code)
         if mapped in _PUBLIC_MESSAGES:
             return _failure(operation, mapped)
         return _failure(operation, "TEST_EXECUTION_FAILED")
+    if operation in {_TARGET_PREPARE_OPERATION, _TARGET_EXECUTE_OPERATION}:
+        mapped = {
+            "FIRMWARE_INPUT_CHANGED": "TEST_INVENTORY_CHANGED",
+            "FIRMWARE_IDENTITY_MISMATCH": "TEST_IDENTITY_MISMATCH",
+            "FLASH_PLAN_CHANGED": "TEST_INVENTORY_CHANGED",
+            "FLASH_IMAGE_INVALID": "TEST_INVENTORY_CHANGED",
+        }.get(getattr(error, "code", None))
+        if mapped is not None:
+            return _failure(operation, mapped)
     raise error
 
 
@@ -314,20 +319,21 @@ def _valid_digest(value: object) -> bool:
 
 
 def _valid_case_ids(case_ids: object) -> bool:
-    if not isinstance(case_ids, tuple):
-        return False
-    if not all(isinstance(case_id, str) and bool(case_id) for case_id in case_ids):
+    return (
+        isinstance(case_ids, tuple)
+        and all(isinstance(case_id, str) and bool(case_id) for case_id in case_ids)
+        and len(case_ids) == len(set(case_ids))
+    )
+
+
+def _valid_physical_case_ids(case_ids: object) -> bool:
+    if not _valid_case_ids(case_ids) or not case_ids or len(case_ids) > 4096:
         return False
     try:
         canonical = tuple(sorted(case_ids, key=lambda case_id: case_id.encode("utf-8")))
     except UnicodeEncodeError:
         return False
-    return (
-        bool(case_ids)
-        and len(case_ids) <= 4096
-        and len(case_ids) == len(set(case_ids))
-        and case_ids == canonical
-    )
+    return case_ids == canonical
 
 
 @dataclass(frozen=True)
@@ -443,7 +449,7 @@ async def target_test_prepare(
     supervisor: ProbeServiceSupervisor | None = None
     client: ProbeClient | None = None
     try:
-        if not isinstance(probe_id, str) or not probe_id or not _valid_case_ids(case_ids):
+        if not isinstance(probe_id, str) or not probe_id or not _valid_physical_case_ids(case_ids):
             raise TestProtocolError("TEST_PROTOCOL_INVALID", "Physical Target request is invalid")
         state, model, facts, transport, project_config, support = _target_state(context)
         probe_hash = sha256(probe_id.encode("utf-8")).hexdigest()

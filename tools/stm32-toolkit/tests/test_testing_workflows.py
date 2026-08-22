@@ -312,6 +312,46 @@ def test_run_rediscovers_and_digest_mismatch_has_no_execution_or_publication(
     assert published == []
 
 
+def test_host_reverse_case_selection_reaches_runner_in_exact_caller_order(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    context = _context(tmp_path)
+    _install_context_seams(monkeypatch, context.project_root)
+    inventory = _FakeInventory()
+    received: list[tuple[str, ...]] = []
+
+    class Runner:
+        def __init__(self, **kwargs: object) -> None:
+            self.discovery_artifact = SimpleNamespace(to_dict=lambda: DISCOVERY)
+
+        def discover(self, config: object, identity: object) -> _FakeInventory:
+            return inventory
+
+        def run(self, discovered: object, case_ids: tuple[str, ...]) -> _FakeManifest:
+            assert discovered is inventory
+            received.append(case_ids)
+            return _FakeManifest()
+
+    class Publisher:
+        def __init__(self, *args: object) -> None:
+            pass
+
+        def publish_host(self, *args: object, **kwargs: object) -> _FakePublished:
+            return _FakePublished()
+
+    monkeypatch.setattr(workflows, "_host_runner_factory", Runner)
+    monkeypatch.setattr(workflows, "_publisher_factory", Publisher)
+
+    result = workflows.host_test_run(
+        context,
+        inventory_digest=inventory.inventory_digest,
+        case_ids=("passes", "fails"),
+    )
+
+    assert result.ok is True
+    assert received == [("passes", "fails")]
+
+
 def test_unknown_cases_do_not_publish_and_typed_errors_use_fixed_projection(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ):
