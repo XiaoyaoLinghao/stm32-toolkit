@@ -17,6 +17,14 @@ from stm32_toolkit.generation.managed_files import (
     GenerationPlan,
     ManagedFileRecord,
 )
+from stm32_toolkit.generation.creation import (
+    CreationBlocker,
+    CreationInputError,
+    CreationPlan,
+    CreationRequest,
+    CreationSource,
+    plan_project_creation,
+)
 
 __all__ = [
     "GenerationError",
@@ -27,4 +35,10 @@ __all__ = [
     "GenerationPlan",
     "plan_project_configuration",
     "apply_project_configuration",
+    "CreationBlocker",
+    "CreationInputError",
+    "CreationPlan",
+    "CreationRequest",
+    "CreationSource",
+    "plan_project_creation",
 ]
