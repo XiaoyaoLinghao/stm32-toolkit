@@ -258,8 +258,9 @@ def _metadata_fact(root: Path, name: str, metadata: dict[str, str], *, probe_ver
         "cmake": ("CMake/bin/cmake.exe", "bin/cmake.exe"),
         "ninja": ("Ninja/bin/ninja.exe", "bin/ninja.exe"),
     }
+    known_versions = {"gcc": "14.3.1", "cmake": "4.3.1", "ninja": "1.13.2"}
     for relative_path in layouts.get(name, ()):
-        fact = _fact(name, root / relative_path, "cubeclt-metadata", probe_versions=probe_versions)
+        fact = _fact(name, root / relative_path, "cubeclt-metadata", known_versions.get(name), probe_versions=probe_versions)
         if fact:
             return fact
     return None
