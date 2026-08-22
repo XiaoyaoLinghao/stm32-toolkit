@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import contextlib
+import errno
 import json
 import secrets
 import sys
@@ -252,6 +253,10 @@ def _load_context(arguments: argparse.Namespace) -> tuple[WorkspacePaths, Eviden
     except _AdapterFailure:
         raise
     except ProjectManifestError as error:
+        if _has_provider_io_cause(error):
+            raise _AdapterFailure(
+                ENVIRONMENT_FAILURE, "Project provider is unavailable"
+            ) from error
         raise _AdapterFailure(ANALYSIS_WORKFLOW_INVALID, "Project configuration is invalid") from error
     except (OSError, PermissionError) as error:
         raise _AdapterFailure(ENVIRONMENT_FAILURE, "Monitor analysis storage is unavailable") from error
@@ -282,8 +287,14 @@ def _load_json_file(path_value: str) -> dict[str, object]:
         raw = EvidenceStore._read_file_bytes(
             Path(path_value).expanduser(), maximum_bytes=_ADAPTER_JSON_LIMIT
         )
-    except (EvidenceValidationError, FileNotFoundError, OSError, TypeError, ValueError) as error:
+    except EvidenceValidationError as error:
         raise _AdapterFailure(ANALYSIS_WORKFLOW_INVALID, "JSON input file is invalid") from error
+    except (FileNotFoundError, NotADirectoryError, IsADirectoryError, TypeError, ValueError) as error:
+        raise _AdapterFailure(ANALYSIS_WORKFLOW_INVALID, "JSON input file is invalid") from error
+    except (PermissionError, OSError) as error:
+        if _is_missing_path_error(error):
+            raise _AdapterFailure(ANALYSIS_WORKFLOW_INVALID, "JSON input file is invalid") from error
+        raise _AdapterFailure(ENVIRONMENT_FAILURE, "JSON input provider is unavailable") from error
     return _decode_json_bytes(raw)
 
 
@@ -413,6 +424,25 @@ def _adapter_error(error: BaseException) -> tuple[str, str]:
     if isinstance(error, (AnalysisError, TypeError, ValueError, OverflowError, KeyError)):
         return ANALYSIS_WORKFLOW_INVALID, "Monitor analysis input is invalid"
     return ENVIRONMENT_FAILURE, "Monitor analysis provider failed"
+
+
+def _has_provider_io_cause(error: BaseException) -> bool:
+    """Classify only clearly distinguishable manifest provider failures."""
+
+    current: BaseException | None = error.__cause__
+    seen: set[int] = set()
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if isinstance(current, (PermissionError, OSError)):
+            return not _is_missing_path_error(current)
+        current = current.__cause__
+    return False
+
+
+def _is_missing_path_error(error: OSError) -> bool:
+    return isinstance(error, (FileNotFoundError, NotADirectoryError, IsADirectoryError)) or getattr(
+        error, "errno", None
+    ) in (errno.ENOENT, errno.ENOTDIR, errno.EISDIR)
 
 
 __all__ = ["main"]

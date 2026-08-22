@@ -57,6 +57,7 @@ from .replay import (
 
 
 ANALYSIS_WORKFLOW_INVALID = "ANALYSIS_WORKFLOW_INVALID"
+ANALYSIS_PUBLICATION_SCHEMA = "stm32-monitor-analysis-publication/1"
 INCOMPATIBLE_IDENTITY = "INCOMPATIBLE_IDENTITY"
 EVIDENCE_INTEGRITY_FAILURE = "EVIDENCE_INTEGRITY_FAILURE"
 OPERATION_CONFLICT = "OPERATION_CONFLICT"
@@ -115,6 +116,7 @@ class AnalysisPublication:
         """Return the one closed wire projection owned by Monitor analysis."""
 
         return {
+            "schema": ANALYSIS_PUBLICATION_SCHEMA,
             "analysis_result": self.analysis_result.to_dict(),
             "analysis_evidence_ref": self.analysis_evidence_ref.to_dict(),
             "diagnostic_marker": self.diagnostic_marker.to_dict(),
@@ -123,14 +125,15 @@ class AnalysisPublication:
 
     @classmethod
     def from_value(cls, value: object) -> "AnalysisPublication":
-        if type(value) is cls:
-            return value
         if type(value) is not dict or set(value) != {
+            "schema",
             "analysis_result",
             "analysis_evidence_ref",
             "diagnostic_marker",
             "diagnostic_marker_ref",
         }:
+            _fail(ANALYSIS_WORKFLOW_INVALID, "analysis publication is invalid")
+        if value["schema"] != ANALYSIS_PUBLICATION_SCHEMA:
             _fail(ANALYSIS_WORKFLOW_INVALID, "analysis publication is invalid")
         try:
             publication = cls(
@@ -1287,6 +1290,7 @@ def export_analysis_bundle(
 
 __all__ = [
     "ANALYSIS_WORKFLOW_INVALID",
+    "ANALYSIS_PUBLICATION_SCHEMA",
     "EVIDENCE_INTEGRITY_FAILURE",
     "ENVIRONMENT_FAILURE",
     "INCOMPATIBLE_IDENTITY",

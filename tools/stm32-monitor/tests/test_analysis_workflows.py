@@ -453,12 +453,24 @@ def test_analysis_publication_has_exact_closed_wire_round_trip(tmp_path: Path) -
 
     wire = publication.to_dict()
     assert set(wire) == {
+        "schema",
         "analysis_result",
         "analysis_evidence_ref",
         "diagnostic_marker",
         "diagnostic_marker_ref",
     }
+    assert wire["schema"] == "stm32-monitor-analysis-publication/1"
     assert AnalysisPublication.from_value(wire) == publication
+
+    with pytest.raises(AnalysisWorkflowError) as error:
+        AnalysisPublication.from_value(publication)
+    assert error.value.code == "ANALYSIS_WORKFLOW_INVALID"
+
+    wrong_schema = dict(wire)
+    wrong_schema["schema"] = "stm32-monitor-analysis-publication/0"
+    with pytest.raises(AnalysisWorkflowError) as error:
+        AnalysisPublication.from_value(wrong_schema)
+    assert error.value.code == "ANALYSIS_WORKFLOW_INVALID"
 
     with pytest.raises(AnalysisWorkflowError) as error:
         AnalysisPublication.from_value({**wire, "unexpected": None})

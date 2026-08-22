@@ -14,6 +14,7 @@ from stm32_monitor.analysis_workflows import AnalysisPublication
 from stm32_monitor.protocol import ProtocolResult
 from stm32_toolkit.diagnostics import SourceChangeDeclaration
 from stm32_toolkit.paths import WorkspacePaths
+from stm32_toolkit.project_model import ProjectManifestError
 
 
 PROJECT_ID = UUID("123e4567-e89b-42d3-a456-426614174000")
@@ -302,3 +303,94 @@ def test_analysis_file_errors_are_stable_and_do_not_leak_paths(
     payload = json.loads(output.getvalue())
     assert payload["code"] == "ANALYSIS_WORKFLOW_INVALID"
     assert str(missing) not in output.getvalue()
+
+
+def test_analysis_file_permission_failure_is_environment_error_without_leaks(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project = tmp_path / "project"
+    _project_and_model(monkeypatch, project)
+    private = tmp_path / "private-secret-request.json"
+
+    def deny(cls: object, path: Path, *, maximum_bytes: int | None = None) -> bytes:
+        raise PermissionError("private provider secret")
+
+    monkeypatch.setattr(cli.EvidenceStore, "_read_file_bytes", classmethod(deny))
+    output = io.StringIO()
+    code = cli.main(
+        [
+            "analysis",
+            "compare",
+            "--project",
+            str(project),
+            "--data-root",
+            str(tmp_path / "data"),
+            "--session-id",
+            "monitor-a",
+            "--request-file",
+            str(private),
+            "--diagnostic-session-id",
+            "1" * 32,
+            "--hypothesis-id",
+            "2" * 32,
+            "--polarity",
+            "supports",
+            "--rationale",
+            "changed",
+            "--json",
+        ],
+        _stdout=output,
+    )
+
+    assert code == 1
+    payload = json.loads(output.getvalue())
+    assert payload["code"] == "ENVIRONMENT_FAILURE"
+    assert "private provider secret" not in output.getvalue()
+    assert str(private) not in output.getvalue()
+
+
+def test_project_manifest_permission_failure_is_environment_error_without_leaks(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+
+    def fail(_root: Path):
+        try:
+            raise PermissionError("private manifest provider secret")
+        except PermissionError as cause:
+            raise ProjectManifestError(
+                "PROJECT_NOT_CONFIGURED", "manifest unavailable", {}
+            ) from cause
+
+    monkeypatch.setattr(cli, "load_project_model", fail)
+    output = io.StringIO()
+    code = cli.main(
+        [
+            "analysis",
+            "compare",
+            "--project",
+            str(project),
+            "--data-root",
+            str(tmp_path / "data"),
+            "--session-id",
+            "monitor-a",
+            "--request-file",
+            str(tmp_path / "request.json"),
+            "--diagnostic-session-id",
+            "1" * 32,
+            "--hypothesis-id",
+            "2" * 32,
+            "--polarity",
+            "supports",
+            "--rationale",
+            "changed",
+            "--json",
+        ],
+        _stdout=output,
+    )
+
+    assert code == 1
+    payload = json.loads(output.getvalue())
+    assert payload["code"] == "ENVIRONMENT_FAILURE"
+    assert "private manifest provider secret" not in output.getvalue()
