@@ -36,6 +36,7 @@ from .replay import (
     INCOMPATIBLE_IDENTITY,
     MONITOR_PHYSICAL_INVALID,
     MonitorReplayError,
+    OPERATION_CONFLICT,
     canonical_replay_json_bytes,
     ingest_monitor_replay,
     publish_physical_monitor_run,
@@ -51,6 +52,7 @@ _ADAPTER_CODES = frozenset(
         EVIDENCE_INTEGRITY_FAILURE,
         ENVIRONMENT_FAILURE,
         MONITOR_PHYSICAL_INVALID,
+        OPERATION_CONFLICT,
     }
 )
 
@@ -196,7 +198,10 @@ def main(
         except KeyboardInterrupt:
             return 130
         except BaseException as error:
-            code, message = _adapter_error(error)
+            code, message = _adapter_error(
+                error,
+                adapter_operation=getattr(arguments, "adapter_operation", None),
+            )
             result = failure(arguments.adapter_operation, code, message)
         _write_protocol_result(result, _stdout)
         return 0 if result.ok else 1
@@ -443,7 +448,11 @@ def _run_adapter(arguments: argparse.Namespace) -> ProtocolResult[object]:
     )
 
 
-def _adapter_error(error: BaseException) -> tuple[str, str]:
+def _adapter_error(
+    error: BaseException,
+    *,
+    adapter_operation: str | None = None,
+) -> tuple[str, str]:
     if isinstance(error, _AdapterFailure):
         return error.code, error.message
     if isinstance(error, AnalysisWorkflowError):
@@ -454,10 +463,12 @@ def _adapter_error(error: BaseException) -> tuple[str, str]:
             code = ANALYSIS_WORKFLOW_INVALID
         return code, error.message
     if isinstance(error, MonitorReplayError):
+        if error.code == OPERATION_CONFLICT:
+            if adapter_operation == "monitor.physical.publish":
+                return OPERATION_CONFLICT, error.message
+            return EVIDENCE_INTEGRITY_FAILURE, error.message
         if error.code in _ADAPTER_CODES:
             return error.code, error.message
-        if error.code == "OPERATION_CONFLICT":
-            return EVIDENCE_INTEGRITY_FAILURE, error.message
         return ANALYSIS_WORKFLOW_INVALID, error.message
     if isinstance(error, (OSError, PermissionError)):
         return ENVIRONMENT_FAILURE, "Monitor analysis provider failed"

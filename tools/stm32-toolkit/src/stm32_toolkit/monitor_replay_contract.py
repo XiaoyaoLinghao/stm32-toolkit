@@ -600,6 +600,10 @@ def validate_run_reference(value: object) -> dict[str, object]:
             _fail("monitor run reference physical evidence must be false")
         _hash(reference["fixture_sha256"], "fixture_sha256")
     else:
+        if reference["execution_source"] != "physical":
+            _fail("monitor run reference execution source is invalid")
+        if reference["physical_transport_evidence"] is not True:
+            _fail("monitor run reference physical evidence must be true")
         _hash(reference["source_record_sha256"], "source_record_sha256")
     unsigned = {key: item for key, item in reference.items() if key != "run_ref_sha256"}
     expected = hashlib.sha256(canonical_replay_json_bytes(unsigned)).hexdigest()

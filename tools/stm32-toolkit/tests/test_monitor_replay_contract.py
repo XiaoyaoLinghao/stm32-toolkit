@@ -439,6 +439,26 @@ def test_shared_contract_accepts_the_two_real_run_references_without_mutation(
     assert payload == before
 
 
+def test_shared_contract_rejects_replay_source_v2_reference(tmp_path: Path) -> None:
+    contract = _contract()
+    payload = _reference(tmp_path, "failed-before")
+    payload["schema"] = "stm32-monitor-run-ref/2"
+    payload["source_record_sha256"] = payload.pop("fixture_sha256")
+    payload["execution_source"] = "replay"
+    payload["physical_transport_evidence"] = False
+    payload["probe_id"] = "replay:probe-v2"
+    payload["physical_target"] = "replay:non-physical"
+    payload["flash_session_id"] = "replay:no-flash"
+    payload["lease_id"] = "replay:no-lease"
+    unsigned = {key: value for key, value in payload.items() if key != "run_ref_sha256"}
+    payload["run_ref_sha256"] = hashlib.sha256(
+        _raw_canonical_json_bytes(unsigned)
+    ).hexdigest()
+
+    with pytest.raises(contract.ReplayContractError):
+        contract.validate_run_reference(payload)
+
+
 @pytest.mark.parametrize("case_name", tuple(_document_mutations(_document("failed-before"))))
 def test_shared_and_monitor_reject_the_same_document_wire_mutations(
     case_name: str,

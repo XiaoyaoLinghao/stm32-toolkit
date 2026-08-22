@@ -4,14 +4,26 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 import hashlib
+import json
+import math
 import re
 import tempfile
 import unicodedata
+from collections.abc import Mapping
 from pathlib import Path
 from typing import cast
 from uuid import UUID
 
-from stm32_toolkit.evidence import ArtifactRef, EvidenceEnvelope, EvidenceIdentity, EvidenceValidationError
+from stm32_toolkit.evidence import (
+    ArtifactRef,
+    EvidenceEnvelope,
+    EvidenceIdentity,
+    EvidenceValidationError,
+)
+from stm32_toolkit.evidence.model import (
+    MAX_JSON_DEPTH as _EVIDENCE_JSON_DEPTH,
+    MAX_STRING_BYTES as _EVIDENCE_STRING_BYTES,
+)
 from stm32_toolkit.evidence.gc import RootRecord, get_root, put_root
 from stm32_toolkit.monitor_replay_contract import (
     MAX_REPLAY_BATCHES,
@@ -31,7 +43,7 @@ from stm32_toolkit.monitor_replay_contract import (
     validate_replay_document,
     validate_run_reference,
 )
-from stm32_toolkit.evidence.store import EvidenceStore
+from stm32_toolkit.evidence.store import MAX_EVIDENCE_READ_BYTES, EvidenceStore
 from stm32_toolkit.project_model import ProjectManifestError, load_project_model
 from stm32_toolkit.testing.publication import TestRunRepository
 from stm32_toolkit.paths import WorkspacePaths, require_safe_session_id
@@ -57,6 +69,8 @@ INCOMPATIBLE_IDENTITY = "INCOMPATIBLE_IDENTITY"
 MONITOR_PHYSICAL_TRANSCRIPT_SCHEMA = "stm32-monitor-physical-transcript/1"
 MONITOR_PHYSICAL_SOURCE = "toolkit-live-history"
 MONITOR_PHYSICAL_WINDOW_OPERATION = "monitor-physical-window"
+MAX_PHYSICAL_TRANSCRIPT_BYTES = MAX_EVIDENCE_READ_BYTES
+_PHYSICAL_JSON_NODES = 1_000_000
 
 MONITOR_REPLAY_INVALID = "MONITOR_REPLAY_INVALID"
 EVIDENCE_INTEGRITY_FAILURE = "EVIDENCE_INTEGRITY_FAILURE"
@@ -1047,6 +1061,8 @@ def _validate_existing_root(
     expected_envelope: EvidenceEnvelope,
     raw: bytes,
     evidence_store: EvidenceStore,
+    *,
+    maximum_bytes: int = MAX_REPLAY_DOCUMENT_BYTES,
 ) -> None:
     if root.to_dict() != expected_root.to_dict():
         _fail(OPERATION_CONFLICT, "operation root has a different intent")
@@ -1058,7 +1074,7 @@ def _validate_existing_root(
             raise ValueError("transcript envelope artifact set is invalid")
         captured = evidence_store.read_artifact(
             envelope.artifacts[0],
-            maximum_bytes=MAX_REPLAY_DOCUMENT_BYTES,
+            maximum_bytes=maximum_bytes,
         )
         if captured != raw:
             raise ValueError("transcript artifact bytes differ from the operation root")
@@ -1268,6 +1284,102 @@ def _publish_reference(
 
 def _physical_invalid(message: str) -> None:
     _fail(MONITOR_PHYSICAL_INVALID, message)
+
+
+def _physical_canonical_json_bytes(value: object) -> bytes:
+    """Encode physical transcript JSON under its independent 64 MiB budget."""
+
+    try:
+        copied = _physical_copy_json(value)
+        raw = json.dumps(
+            copied,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        ).encode("utf-8")
+    except (TypeError, ValueError, OverflowError, UnicodeError, RecursionError) as error:
+        raise MonitorReplayError(
+            MONITOR_PHYSICAL_INVALID,
+            "physical Monitor transcript is invalid",
+        ) from error
+    if len(raw) > MAX_PHYSICAL_TRANSCRIPT_BYTES:
+        _physical_invalid("physical Monitor transcript exceeds its size limit")
+    return raw
+
+
+def _physical_copy_json(
+    value: object,
+    *,
+    depth: int = 0,
+    nodes: list[int] | None = None,
+    active: set[int] | None = None,
+) -> object:
+    state_nodes = nodes if nodes is not None else [0]
+    state_active = active if active is not None else set()
+    if depth > _EVIDENCE_JSON_DEPTH:
+        raise ValueError("physical transcript JSON exceeds its depth limit")
+    state_nodes[0] += 1
+    if state_nodes[0] > _PHYSICAL_JSON_NODES:
+        raise ValueError("physical transcript JSON exceeds its node limit")
+    if value is None or type(value) is bool:
+        return value
+    if type(value) is int:
+        if not -MAX_SIGNED_INT64 <= value <= MAX_SIGNED_INT64:
+            raise ValueError("physical transcript integer is out of range")
+        return value
+    if type(value) is float:
+        if not math.isfinite(value):
+            raise ValueError("physical transcript number is not finite")
+        return value
+    if isinstance(value, str):
+        if (
+            unicodedata.normalize("NFC", value) != value
+            or len(value.encode("utf-8")) > _EVIDENCE_STRING_BYTES
+        ):
+            raise ValueError("physical transcript string is invalid")
+        return value
+    if isinstance(value, tuple):
+        raise ValueError("physical transcript JSON must not contain tuples")
+    if isinstance(value, Mapping):
+        identity = id(value)
+        if identity in state_active:
+            raise ValueError("physical transcript JSON contains a cycle")
+        state_active.add(identity)
+        try:
+            copied: dict[str, object] = {}
+            for key, item in value.items():
+                if type(key) is not str or unicodedata.normalize("NFC", key) != key:
+                    raise ValueError("physical transcript JSON key is invalid")
+                if key in copied:
+                    raise ValueError("physical transcript JSON key is duplicated")
+                copied[key] = _physical_copy_json(
+                    item,
+                    depth=depth + 1,
+                    nodes=state_nodes,
+                    active=state_active,
+                )
+            return copied
+        finally:
+            state_active.remove(identity)
+    if isinstance(value, list):
+        identity = id(value)
+        if identity in state_active:
+            raise ValueError("physical transcript JSON contains a cycle")
+        state_active.add(identity)
+        try:
+            return [
+                _physical_copy_json(
+                    item,
+                    depth=depth + 1,
+                    nodes=state_nodes,
+                    active=state_active,
+                )
+                for item in value
+            ]
+        finally:
+            state_active.remove(identity)
+    raise TypeError("physical transcript JSON contains an unsupported value")
 
 
 def _physical_identity_error(message: str) -> None:
@@ -1580,29 +1692,39 @@ def _physical_history_batches(
         if not slices:
             _physical_identity_error("physical Monitor history window is empty")
         batches: list[SampleBatch] = []
-        for history_slice in slices:
-            if (
-                type(history_slice) is not HistoryBatchSlice
-                or history_slice.start_ordinal != 0
-                or len(history_slice.values) != history_slice.batch_value_count
-            ):
-                _physical_identity_error("physical Monitor history contains a partial batch")
+        closed_keys: set[tuple[object, ...]] = set()
+        current_key: tuple[object, ...] | None = None
+        current_evidence: tuple[object, ...] | None = None
+        current_slice: HistoryBatchSlice | None = None
+        current_values: list[SampleValue] = []
+        current_next_ordinal = 0
+        total_values = 0
+
+        def finish_current() -> None:
+            nonlocal current_key, current_evidence, current_slice
+            nonlocal current_values, current_next_ordinal, total_values
+            if current_slice is None or current_key is None or current_evidence is None:
+                return
+            if current_next_ordinal != current_slice.batch_value_count:
+                _physical_identity_error(
+                    "physical Monitor history ended with a partial batch"
+                )
             try:
                 batches.append(
                     SampleBatch(
-                        binding=history_slice.binding,
-                        group_id=history_slice.group_id,
-                        group_revision=history_slice.group_revision,
-                        run_id=history_slice.run_id,
-                        sequence=history_slice.sequence,
-                        scheduled_unix_ns=history_slice.scheduled_unix_ns,
-                        captured_unix_ns=history_slice.captured_unix_ns,
-                        latency_ns=history_slice.latency_ns,
-                        actual_rate_hz=history_slice.actual_rate_hz,
-                        subscriber_drops=history_slice.subscriber_drops,
-                        history_drops=history_slice.history_drops,
-                        deadline_drops=history_slice.deadline_drops,
-                        values=history_slice.values,
+                        binding=current_slice.binding,
+                        group_id=current_slice.group_id,
+                        group_revision=current_slice.group_revision,
+                        run_id=current_slice.run_id,
+                        sequence=current_slice.sequence,
+                        scheduled_unix_ns=current_slice.scheduled_unix_ns,
+                        captured_unix_ns=current_slice.captured_unix_ns,
+                        latency_ns=current_slice.latency_ns,
+                        actual_rate_hz=current_slice.actual_rate_hz,
+                        subscriber_drops=current_slice.subscriber_drops,
+                        history_drops=current_slice.history_drops,
+                        deadline_drops=current_slice.deadline_drops,
+                        values=tuple(current_values),
                     )
                 )
             except (TypeError, ValueError, OverflowError) as error:
@@ -1610,6 +1732,67 @@ def _physical_history_batches(
                     EVIDENCE_INTEGRITY_FAILURE,
                     "physical Monitor history contains invalid data",
                 ) from error
+            closed_keys.add(current_key)
+            total_values += len(current_values)
+            if total_values > MAX_HISTORY_VALUES:
+                _physical_identity_error("physical Monitor history window is too large")
+            current_key = None
+            current_evidence = None
+            current_slice = None
+            current_values = []
+            current_next_ordinal = 0
+
+        for history_slice in slices:
+            if type(history_slice) is not HistoryBatchSlice:
+                _physical_identity_error("physical Monitor history contains invalid slices")
+            key = (
+                history_slice.binding.workspace_id,
+                history_slice.binding.session_id,
+                history_slice.run_id,
+                history_slice.sequence,
+            )
+            evidence = (
+                history_slice.binding,
+                history_slice.group_id,
+                history_slice.group_revision,
+                history_slice.run_id,
+                history_slice.sequence,
+                history_slice.scheduled_unix_ns,
+                history_slice.captured_unix_ns,
+                history_slice.latency_ns,
+                history_slice.actual_rate_hz,
+                history_slice.subscriber_drops,
+                history_slice.history_drops,
+                history_slice.deadline_drops,
+                history_slice.batch_value_count,
+            )
+            if current_key != key:
+                if current_key is not None:
+                    finish_current()
+                if key in closed_keys or history_slice.start_ordinal != 0:
+                    _physical_identity_error(
+                        "physical Monitor history fragments are reordered or incomplete"
+                    )
+                current_key = key
+                current_evidence = evidence
+                current_slice = history_slice
+                current_values = []
+                current_next_ordinal = 0
+            elif current_evidence != evidence:
+                _physical_identity_error(
+                    "physical Monitor history fragment metadata changed"
+                )
+            if history_slice.start_ordinal != current_next_ordinal:
+                _physical_identity_error(
+                    "physical Monitor history fragments have a gap or overlap"
+                )
+            current_values.extend(history_slice.values)
+            current_next_ordinal += len(history_slice.values)
+            if current_slice is None or current_next_ordinal > current_slice.batch_value_count:
+                _physical_identity_error("physical Monitor history fragment exceeds its batch")
+            if total_values + current_next_ordinal > MAX_HISTORY_VALUES:
+                _physical_identity_error("physical Monitor history window is too large")
+        finish_current()
         expected_sequences = tuple(range(start_sequence, end_sequence_exclusive))
         if tuple(batch.sequence for batch in batches) != expected_sequences:
             _physical_identity_error("physical Monitor history sequence window is invalid")
@@ -1738,7 +1921,7 @@ def _parse_physical_transcript(
     raw: bytes,
 ) -> tuple[dict[str, object], tuple[SampleBatch, ...]]:
     try:
-        wire = decode_canonical_json_bytes(raw, require_object=True)
+        wire = _decode_physical_json_bytes(raw)
         if type(wire) is not dict or set(wire) != {
             "schema",
             "source",
@@ -1806,6 +1989,52 @@ def _parse_physical_transcript(
         ) from error
 
 
+def _decode_physical_json_bytes(raw: bytes) -> object:
+    """Decode one canonical physical transcript without the replay 1 MiB limit."""
+
+    if type(raw) is not bytes or len(raw) > MAX_PHYSICAL_TRANSCRIPT_BYTES:
+        raise ReplayContractError("physical transcript bytes exceed their size limit")
+    if raw.startswith(b"\xef\xbb\xbf"):
+        raise ReplayContractError("physical transcript must not include a BOM")
+
+    def pairs(items: list[tuple[str, object]]) -> dict[str, object]:
+        result: dict[str, object] = {}
+        for key, value in items:
+            if key in result:
+                raise ReplayContractError("physical transcript has duplicate keys")
+            result[key] = value
+        return result
+
+    def reject_constant(text: str) -> object:
+        raise ReplayContractError(f"physical transcript has a non-finite number: {text}")
+
+    try:
+        decoded = json.loads(
+            raw.decode("utf-8"),
+            object_pairs_hook=pairs,
+            parse_constant=reject_constant,
+        )
+    except ReplayContractError:
+        raise
+    except (UnicodeDecodeError, json.JSONDecodeError, ValueError, RecursionError) as error:
+        raise ReplayContractError("physical transcript is not valid UTF-8 JSON") from error
+    try:
+        canonical = json.dumps(
+            _physical_copy_json(decoded),
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        ).encode("utf-8")
+    except (TypeError, ValueError, OverflowError, UnicodeError, RecursionError) as error:
+        raise ReplayContractError("physical transcript canonical JSON is invalid") from error
+    if len(canonical) > MAX_PHYSICAL_TRANSCRIPT_BYTES or canonical != raw:
+        raise ReplayContractError("physical transcript JSON is not canonical")
+    if type(decoded) is not dict:
+        raise ReplayContractError("physical transcript must be a JSON object")
+    return decoded
+
+
 def _physical_publish_transcript(
     raw: bytes,
     expected_envelope: EvidenceEnvelope,
@@ -1840,6 +2069,7 @@ def _physical_publish_transcript(
                     expected_envelope,
                     raw,
                     evidence_store,
+                    maximum_bytes=MAX_PHYSICAL_TRANSCRIPT_BYTES,
                 )
                 return
             raise
@@ -1940,7 +2170,10 @@ def load_monitor_run_reference(
             reference_bytes,
             require_object=True,
         )
-        reference = MonitorRunRefV2.from_value(decoded_reference)
+        try:
+            reference = MonitorRunRefV2.from_value(decoded_reference)
+        except MonitorReplayError as error:
+            raise ReplayContractError("physical reference bytes are invalid") from error
         if reference.operation_id != operation:
             raise ReplayContractError("physical reference operation ID is invalid")
         if reference_root.metadata != _physical_reference_metadata(reference):
@@ -1961,7 +2194,7 @@ def load_monitor_run_reference(
             raise ReplayContractError("physical transcript envelope is invalid")
         transcript_bytes = evidence_store.read_artifact(
             transcript_envelope.artifacts[0],
-            maximum_bytes=MAX_REPLAY_DOCUMENT_BYTES,
+            maximum_bytes=MAX_PHYSICAL_TRANSCRIPT_BYTES,
         )
         wire, batches = _parse_physical_transcript(transcript_bytes)
         source_digest = hashlib.sha256(transcript_bytes).hexdigest()
@@ -1988,7 +2221,32 @@ def load_monitor_run_reference(
         if transcript_envelope.identity != expected_identity:
             raise ReplayContractError("physical transcript identity is invalid")
         if (
-            binding.workspace_id != paths.workspace_id
+            wire["schema"] != MONITOR_PHYSICAL_TRANSCRIPT_SCHEMA
+            or wire["source"] != MONITOR_PHYSICAL_SOURCE
+            or wire["execution_source"] != reference.execution_source
+            or wire["physical_transport_evidence"] is not reference.physical_transport_evidence
+            or wire["scenario_role"] != reference.scenario_role
+            or reference.origin_workspace_id != binding.workspace_id
+            or reference.import_workspace_id != binding.workspace_id
+            or reference.logical_project_id != binding.logical_project_id
+            or reference.origin_session_id != binding.session_id
+            or reference.projected_session_id != binding.session_id
+            or reference.origin_run_id != operation
+            or reference.projected_run_id != operation
+            or str(batches[0].run_id) != operation
+            or reference.target_device != binding.target_device
+            or reference.probe_id != binding.probe_id
+            or reference.physical_target != binding.physical_target
+            or reference.build_id != binding.build_id
+            or reference.elf_sha256 != binding.elf_sha256
+            or reference.input_snapshot_sha256 != binding.input_snapshot_sha256
+            or reference.git_head != binding.git_head
+            or reference.git_dirty is not binding.git_dirty
+            or reference.flash_session_id != binding.flash_session_id
+            or reference.lease_id != binding.lease_id
+            or reference.dwarf_sha256 != binding.dwarf_sha256
+            or reference.svd_sha256 != binding.svd_sha256
+            or binding.workspace_id != paths.workspace_id
             or binding.session_id != paths.session_id
             or reference.import_workspace_id != paths.workspace_id
             or reference.projected_session_id != paths.session_id
@@ -2085,6 +2343,27 @@ def publish_physical_monitor_run(
         _physical_invalid("physical Monitor window is invalid")
     raw_probe_id = _physical_probe_selector(probe_id)
 
+    # A complete reference is authoritative for request intent.  Check it
+    # before touching the live TestRun or History providers so a changed
+    # retry cannot observe or mutate a different window.
+    existing_reference_root = _load_monitor_reference_root(evidence_store, operation)
+    if existing_reference_root is not None:
+        existing_reference = load_monitor_run_reference(
+            paths,
+            evidence_store,
+            operation,
+        )
+        if (
+            existing_reference.scenario_role != scenario_role
+            or existing_reference.group_id != group_text
+            or existing_reference.start_sequence != start_sequence
+            or existing_reference.end_sequence_exclusive != end_sequence_exclusive
+            or existing_reference.start_captured_unix_ns != start_captured_unix_ns
+            or existing_reference.end_captured_unix_ns_exclusive
+            != end_captured_unix_ns_exclusive
+        ):
+            _fail(OPERATION_CONFLICT, "complete physical reference intent differs")
+
     published = _physical_test_run(evidence_store, test_run_id)
     batches = _physical_history_batches(
         paths=paths,
@@ -2108,7 +2387,7 @@ def publish_physical_monitor_run(
         test_run_id=test_run_id,
         batches=projected,
     )
-    transcript_raw = canonical_replay_json_bytes(transcript_wire)
+    transcript_raw = _physical_canonical_json_bytes(transcript_wire)
     transcript_envelope = _physical_transcript_envelope(
         raw=transcript_raw,
         scenario_role=scenario_role,
@@ -2141,6 +2420,7 @@ def publish_physical_monitor_run(
             transcript_envelope,
             transcript_raw,
             evidence_store,
+            maximum_bytes=MAX_PHYSICAL_TRANSCRIPT_BYTES,
         )
     if existing_reference_root is not None:
         _validate_existing_reference_root(
@@ -2297,6 +2577,7 @@ __all__ = [
     "INCOMPATIBLE_IDENTITY",
     "MAX_REPLAY_BATCHES",
     "MAX_REPLAY_DOCUMENT_BYTES",
+    "MAX_PHYSICAL_TRANSCRIPT_BYTES",
     "MONITOR_REPLAY_EXECUTION_SOURCE",
     "MONITOR_REPLAY_FLASH_SESSION_ID",
     "MONITOR_REPLAY_IMPORT_OPERATION",
