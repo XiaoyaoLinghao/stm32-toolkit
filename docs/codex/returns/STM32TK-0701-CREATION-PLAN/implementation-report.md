@@ -10,7 +10,7 @@ Status: local candidate returned for independent GPT-5.6-sol review. This report
 - Implementation plan: `docs/superpowers/plans/2026-08-22-stm32-toolkit-0701-creation-plan-environment-truth.md`.
 - Implementer: one GPT-5.6-luna implementation agent, reasoning `max`.
 - Reviewer/acceptor: GPT-5.6-sol primary agent; this report is not an approval.
-- CodeHead before this report commit: `c2c4997900cb0ab7174be923aa087462744408d4`.
+- CodeHead before this correction report commit: `30382b0bbd89f0db04a933bf3cd8626a90df2e57`.
 - Remote authority: none. No push, fetch, PR, merge, tag, release, remote branch, hardware action, installation, or CubeMX execution was performed.
 
 ## Delivered behavior
@@ -45,4 +45,8 @@ Disposable workspace: `C:\tmp\stm32tk-0701-observe-20260823`. The workspace was 
 
 ## Local state and blockers
 
-The implementation branch contains only local commits and has no configured remote mutation. Before the report commit, tracked product changes were committed through CodeHead above; the README and this report are the final documentation changes. No PRODUCT, INFRASTRUCTURE, PLATFORM, or HARDWARE blocker was found. The only current environment fact requiring operator attention is `VSCODE_MISSING`; it is not required to produce the VS07-A plan. Independent Sol review remains outstanding.
+The implementation branch contains only local commits and has no configured remote mutation. Before the correction report commit, tracked product changes were committed through CodeHead above; this report records the correction evidence and does not contain its own final SHA. No PRODUCT blocker remains after Sol round-1 correction. The current environment fact requiring operator attention is `VSCODE_MISSING`; it is not required to produce the VS07-A plan. Independent Sol review round 2 remains outstanding.
+
+## Sol review round 1 correction evidence
+
+The revision addressed F1–F5: trusted profile containment now rejects outside/redirect profiles; CubeCLT metadata uses the bounded `STM32CubeCLT_metadata.bat -j` seam and native version probes without hardcoded versions; discovery order and CubeMX non-execution boundaries are preserved; `.ioc` suffix and parent-chain checks plus absent/empty inventory state binding were added; MCP runtime captures one immutable support profile at startup and reuses it. New regression tests cover these boundaries and passed in the complete slice command above.
