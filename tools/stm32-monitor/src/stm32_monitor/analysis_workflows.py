@@ -53,9 +53,9 @@ from .replay import (
     MonitorReplayError,
     MonitorRunRef,
     MonitorRunRefV2,
-    AuthenticatedPhysicalMonitorRun,
+    _AuthenticatedPhysicalMonitorRun,
     canonical_replay_json_bytes,
-    load_authenticated_physical_monitor_run,
+    _load_authenticated_physical_monitor_run,
 )
 
 
@@ -695,9 +695,9 @@ def _load_physical_source(
     paths: WorkspacePaths,
     evidence_store: EvidenceStore,
     reference: MonitorRunRefV2,
-) -> AuthenticatedPhysicalMonitorRun:
+) -> _AuthenticatedPhysicalMonitorRun:
     try:
-        loaded = load_authenticated_physical_monitor_run(
+        loaded = _load_authenticated_physical_monitor_run(
             paths,
             evidence_store,
             reference.operation_id,
@@ -1209,8 +1209,8 @@ def export_analysis_bundle(
         _fail(INCOMPATIBLE_IDENTITY, "diagnostic marker does not match publication")
     if source_change_declaration is not None:
         _validate_diff_evidence(evidence_store, source_change_declaration, after)
-    before_source: AuthenticatedPhysicalMonitorRun | None = None
-    after_source: AuthenticatedPhysicalMonitorRun | None = None
+    before_source: _AuthenticatedPhysicalMonitorRun | None = None
+    after_source: _AuthenticatedPhysicalMonitorRun | None = None
     if _is_physical_reference(before) and _is_physical_reference(after):
         before_source = _load_physical_source(paths, evidence_store, before)
         after_source = _load_physical_source(paths, evidence_store, after)
@@ -1304,6 +1304,21 @@ def export_analysis_bundle(
             }
             if loaded.root.metadata != expected_target_root:
                 _fail(INCOMPATIBLE_IDENTITY, "TestRun root metadata does not match replay reference")
+    if expected_physical:
+        before_cases = tuple(getattr(case, "case_id", None) for case in before_test.manifest.cases)
+        after_cases = tuple(getattr(case, "case_id", None) for case in after_test.manifest.cases)
+        before_inventory = before_test.envelope.metadata.get("inventory_digest")
+        after_inventory = after_test.envelope.metadata.get("inventory_digest")
+        if (
+            any(type(case_id) is not str or not case_id for case_id in before_cases + after_cases)
+            or frozenset(before_cases) != frozenset(after_cases)
+            or before_inventory != before_test.root.metadata.get("inventory_digest")
+            or after_inventory != after_test.root.metadata.get("inventory_digest")
+            or type(before_inventory) is not str
+            or type(after_inventory) is not str
+            or before_inventory != after_inventory
+        ):
+            _fail(INCOMPATIBLE_IDENTITY, "physical TestRuns do not share case or inventory scope")
     if before_test.manifest.identity.session_id != after_test.manifest.identity.session_id:
         _fail(INCOMPATIBLE_IDENTITY, "Target TestRuns do not share a session")
 

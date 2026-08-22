@@ -124,6 +124,33 @@ def test_failed_physical_target_diagnostic_starts_and_reloads_bound_session(
     assert reloaded.data["session"]["failed_run_mode"] == "target"
 
 
+def test_physical_target_diagnostic_rejects_foreign_current_session_before_create(
+    tmp_path: Path,
+) -> None:
+    paths, evidence, test_run_id, raw_probe, monitor_run_id, _group_id = _physical_context(tmp_path)
+    _publish_physical_test_run(
+        paths,
+        evidence,
+        test_run_id=test_run_id,
+        raw_probe=raw_probe,
+        monitor_run_id=monitor_run_id,
+        session_id="foreign-physical-session",
+    )
+
+    context = DiagnosticWorkflowContext(paths.project_root, paths.data_root, paths.session_id)
+    result = diagnostic_start(
+        context,
+        operation_id="physical-foreign-session-start",
+        failed_test_run_id=test_run_id,
+        failed_run_mode="target",
+    )
+
+    assert result.ok is False
+    assert result.code == "INCOMPATIBLE_IDENTITY"
+    sessions = paths.diagnostics_root / "sessions"
+    assert not sessions.exists() or not any(sessions.rglob("*.json"))
+
+
 @pytest.mark.parametrize(
     ("field", "value"),
     [
@@ -231,13 +258,17 @@ def _publish_physical_test_run(
     elf_sha256: str = "c" * 64,
     input_snapshot_sha256: str = "d" * 64,
     git_head: str = "e" * 40,
+    session_id: str | None = None,
+    case_id: str = "case.counter",
+    inventory_digest: str = "1" * 64,
 ) -> None:
     assert state in {"failed", "passed"}
     case_state = state
+    run_session_id = paths.session_id if session_id is None else session_id
     identity = EvidenceIdentity(
         workspace_id=paths.workspace_id,
         project_id="123e4567-e89b-42d3-a456-426614174000",
-        session_id=paths.session_id,
+        session_id=run_session_id,
         build_id=build_id,
         elf_sha256=elf_sha256,
         target_device="stm32:stm32f429zi",
@@ -261,7 +292,7 @@ def _publish_physical_test_run(
         "semihosting",
         (
             _TestCaseResult(
-                "case.counter",
+                case_id,
                 case_state,
                 "2026-08-22T00:00:00.000000Z",
                 "2026-08-22T00:00:00.001000Z",
@@ -296,12 +327,12 @@ def _publish_physical_test_run(
             "action_digest": digest,
             "execution_source": "physical",
             "flash_session_id": "flash-session-01",
-            "import_session_id": paths.session_id,
+            "import_session_id": run_session_id,
             "import_workspace_id": paths.workspace_id,
             "intent_digest": digest,
-            "inventory_digest": "1" * 64,
+            "inventory_digest": inventory_digest,
             "lease_id": "lease-01",
-            "origin_session_id": paths.session_id,
+            "origin_session_id": run_session_id,
             "origin_workspace_id": paths.workspace_id,
             "physical_transport_evidence": True,
             "probe_id": sha256(raw_probe.encode("utf-8")).hexdigest(),

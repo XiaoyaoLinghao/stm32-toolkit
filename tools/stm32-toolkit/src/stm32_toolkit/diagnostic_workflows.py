@@ -365,6 +365,17 @@ def _execution_policy(published: object) -> tuple[str, bool]:
     raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
 
 
+def _manifest_execution_policy(manifest: object) -> tuple[str, bool]:
+    """Recover the closed source policy from an already-authenticated TestRun manifest."""
+
+    transport = getattr(manifest, "transport", None)
+    if transport == "replay":
+        return "replay", False
+    if transport in _PHYSICAL_TRANSPORTS:
+        return "physical", True
+    raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
+
+
 def _load_failed_run(
     state: _WorkflowState,
     failed_test_run_id: str,
@@ -415,6 +426,11 @@ def _validate_target_authority(
         execution_source, physical = _execution_policy(published)
     except _WorkflowFailure:
         raise
+    if physical and (
+        identity.workspace_id != state.workspace.workspace_id
+        or identity.session_id != state.workspace.session_id
+    ):
+        raise _WorkflowFailure(_INCOMPATIBLE_IDENTITY)
     expected_operation = (
         _TARGET_PHYSICAL_OPERATION if physical else _TARGET_REPLAY_OPERATION
     )
@@ -2181,6 +2197,14 @@ def _validate_analysis(
         is not after_reference["physical_transport_evidence"]
     ):
         raise _WorkflowFailure(_INCOMPATIBLE_IDENTITY)
+    before_policy = _manifest_execution_policy(before)
+    after_policy = _manifest_execution_policy(after)
+    reference_policy = (
+        before_reference["execution_source"],
+        before_reference["physical_transport_evidence"],
+    )
+    if before_policy != after_policy or before_policy != reference_policy:
+        raise _WorkflowFailure(_INCOMPATIBLE_IDENTITY)
     expected_metadata = {
         "analysis_id": analysis_id,
         "before_run_id": analysis.get("before_run_id"),
@@ -2366,6 +2390,12 @@ def _validate_marker(
     execution_source: str = "replay",
     physical_transport_evidence: bool = False,
 ) -> None:
+    expected_policy = _manifest_execution_policy(before)
+    if (
+        expected_policy != _manifest_execution_policy(after)
+        or expected_policy != (execution_source, physical_transport_evidence)
+    ):
+        raise _WorkflowFailure(_INCOMPATIBLE_IDENTITY)
     _root, envelope, _artifact, _payload, payload = _read_json_evidence(
         state,
         root_type=_MARKER_ROOT,

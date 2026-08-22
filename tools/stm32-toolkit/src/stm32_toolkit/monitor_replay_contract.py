@@ -377,6 +377,102 @@ def _copy_physical_json(
     _fail("physical transcript JSON contains an unsupported value")
 
 
+def _validate_monitor_typed_json(value: object) -> None:
+    """Mirror Monitor's per-value ``_freeze_json`` budget without importing it."""
+
+    def scalar(item: object, state: _JsonBudget) -> None:
+        if item is None or type(item) is bool:
+            return
+        if type(item) is int:
+            if not MIN_SIGNED_INT64 <= item <= MAX_SIGNED_INT64:
+                _fail("physical Monitor JSON integer is out of range")
+            return
+        if type(item) is float:
+            if not math.isfinite(item):
+                _fail("physical Monitor JSON number is not finite")
+            return
+        if type(item) is str:
+            state.string_chars += len(item)
+            if state.string_chars > MAX_REPLAY_JSON_STRING_CHARS:
+                _fail("physical Monitor JSON string data exceeds its limit")
+            return
+        _fail("physical Monitor JSON contains an unsupported value")
+
+    def freeze(item: object, depth: int, state: _JsonBudget) -> None:
+        if depth > MAX_REPLAY_JSON_DEPTH:
+            _fail("physical Monitor JSON exceeds its depth limit")
+        state.nodes += 1
+        if state.nodes > MAX_REPLAY_JSON_NODES:
+            _fail("physical Monitor JSON exceeds its node limit")
+        if item is None or type(item) is bool or type(item) in (int, float, str):
+            scalar(item, state)
+            return
+        if isinstance(item, tuple):
+            _fail("physical Monitor JSON must not contain tuple containers")
+        if isinstance(item, list):
+            identity = id(item)
+            if identity in state.active:
+                _fail("physical Monitor JSON contains a cycle")
+            state.active.add(identity)
+            try:
+                for child in item:
+                    freeze(child, depth + 1, state)
+            finally:
+                state.active.remove(identity)
+            return
+        if isinstance(item, Mapping):
+            identity = id(item)
+            if identity in state.active:
+                _fail("physical Monitor JSON contains a cycle")
+            state.active.add(identity)
+            keys: set[str] = set()
+            try:
+                for key, child in item.items():
+                    if type(key) is not str:
+                        _fail("physical Monitor JSON object keys must be strings")
+                    normalized = key if key.isascii() else unicodedata.normalize("NFC", key)
+                    state.string_chars += len(normalized)
+                    if state.string_chars > MAX_REPLAY_JSON_STRING_CHARS:
+                        _fail("physical Monitor JSON string data exceeds its limit")
+                    if normalized in keys:
+                        _fail("physical Monitor JSON object keys must be unique after normalization")
+                    keys.add(normalized)
+                    freeze(child, depth + 1, state)
+            finally:
+                state.active.remove(identity)
+            return
+        _fail("physical Monitor JSON contains an unsupported value")
+
+    # Monitor's model has a shallow-object fast path.  Preserve its exact node
+    # accounting before falling back to the recursive path for nested values.
+    if type(value) is dict:
+        if len(value) + 1 > MAX_REPLAY_JSON_NODES:
+            _fail("physical Monitor JSON exceeds its node limit")
+        simple_string_chars = 0
+        simple = True
+        keys: set[str] = set()
+        for key, item in value.items():
+            if type(key) is not str:
+                _fail("physical Monitor JSON object keys must be strings")
+            normalized = key if key.isascii() else unicodedata.normalize("NFC", key)
+            simple_string_chars += len(normalized)
+            if normalized in keys:
+                _fail("physical Monitor JSON object keys must be unique after normalization")
+            keys.add(normalized)
+            if item is None or type(item) is bool or type(item) in (int, float, str):
+                if type(item) is str:
+                    simple_string_chars += len(item)
+                if simple_string_chars > MAX_REPLAY_JSON_STRING_CHARS:
+                    _fail("physical Monitor JSON string data exceeds its limit")
+                scalar(item, _JsonBudget())
+            else:
+                simple = False
+                break
+        if simple:
+            return
+    freeze(value, 0, _JsonBudget())
+
+
 def canonical_physical_json_bytes(value: object) -> bytes:
     """Return canonical JSON bytes for a physical source record."""
 
@@ -557,13 +653,16 @@ def _validate_sample(value: object) -> dict[str, object]:
     if status == "OK":
         if typed_value is None or code is not None:
             _fail("replay successful sample is invalid")
+        _validate_monitor_typed_json(typed_value)
     else:
         if typed_value is not None or type(code) is not str:
             _fail("replay failed sample is invalid")
         _text(code, "sample code", 128)
     definition = sample["definition"]
-    if definition is not None and type(definition) is not dict:
-        _fail("sample definition is invalid")
+    if definition is not None:
+        _validate_monitor_typed_json(definition)
+        if type(definition) is not dict:
+            _fail("sample definition is invalid")
     return sample
 
 

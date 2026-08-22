@@ -527,6 +527,87 @@ def test_compare_physical_runs_uses_transcripts_after_history_is_discarded(
     assert raw_probe not in bundle.decode("utf-8")
 
 
+@pytest.mark.parametrize("mismatch", ("case", "inventory"))
+def test_export_physical_bundle_rejects_case_or_inventory_scope_mismatch_before_writes(
+    tmp_path: Path,
+    mismatch: str,
+) -> None:
+    paths, evidence, failed_test_run_id, raw_probe, failed_run_id, failed_group_id = (
+        _physical_context(tmp_path)
+    )
+    fixed_test_run_id = "physical-test-run-02"
+    fixed_run_id = UUID("33333333-3333-4333-8333-333333333333")
+    fixed_group_id = UUID("44444444-4444-4444-8444-444444444444")
+    _publish_physical_test_run(
+        paths,
+        evidence,
+        test_run_id=failed_test_run_id,
+        raw_probe=raw_probe,
+        monitor_run_id=failed_run_id,
+        case_id="case.counter",
+        inventory_digest="1" * 64,
+    )
+    failed_batches = _append_physical_history(
+        paths, raw_probe, failed_run_id, failed_group_id, scenario_role="failed-before"
+    )
+    publish_physical_monitor_run(
+        paths,
+        evidence,
+        scenario_role="failed-before",
+        test_run_id=failed_test_run_id,
+        run_id=str(failed_run_id),
+        group_id=str(failed_group_id),
+        start_sequence=failed_batches[0].sequence,
+        end_sequence_exclusive=failed_batches[-1].sequence + 1,
+        start_captured_unix_ns=failed_batches[0].captured_unix_ns,
+        end_captured_unix_ns_exclusive=failed_batches[-1].captured_unix_ns + 1,
+        probe_id=raw_probe,
+    )
+    _publish_physical_test_run(
+        paths,
+        evidence,
+        test_run_id=fixed_test_run_id,
+        raw_probe=raw_probe,
+        monitor_run_id=fixed_run_id,
+        state="passed",
+        case_id="case.other" if mismatch == "case" else "case.counter",
+        inventory_digest="2" * 64 if mismatch == "inventory" else "1" * 64,
+    )
+    fixed_batches = _append_physical_history(
+        paths, raw_probe, fixed_run_id, fixed_group_id, scenario_role="fixed-after", value_offset=10
+    )
+    publish_physical_monitor_run(
+        paths,
+        evidence,
+        scenario_role="fixed-after",
+        test_run_id=fixed_test_run_id,
+        run_id=str(fixed_run_id),
+        group_id=str(fixed_group_id),
+        start_sequence=fixed_batches[0].sequence,
+        end_sequence_exclusive=fixed_batches[-1].sequence + 1,
+        start_captured_unix_ns=fixed_batches[0].captured_unix_ns,
+        end_captured_unix_ns_exclusive=fixed_batches[-1].captured_unix_ns + 1,
+        probe_id=raw_probe,
+    )
+    before = load_monitor_run_reference(paths, evidence, str(failed_run_id))
+    after = load_monitor_run_reference(paths, evidence, str(fixed_run_id))
+    publication = compare_monitor_runs(paths, evidence, _request(before, after), "f" * 32, HYPOTHESIS_ID, "supports", "scope mismatch")
+    snapshot = _evidence_tree(evidence)
+
+    with pytest.raises(AnalysisWorkflowError) as error:
+        workflows.export_analysis_bundle(
+            paths,
+            evidence,
+            _request(before, after),
+            publication,
+            failed_test_run_id,
+            fixed_test_run_id,
+        )
+
+    assert error.value.code == "INCOMPATIBLE_IDENTITY"
+    assert _evidence_tree(evidence) == snapshot
+
+
 def test_publication_fields_identity_and_transcript_metadata_are_exact(tmp_path: Path) -> None:
     paths = _paths(tmp_path)
     evidence, before, after = _ingest_pair(paths)

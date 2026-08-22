@@ -201,7 +201,7 @@ def _fail(code: str, message: str) -> None:
 
 
 @dataclass(frozen=True, slots=True)
-class AuthenticatedPhysicalMonitorRun:
+class _AuthenticatedPhysicalMonitorRun:
     """Complete physical source authority loaded from immutable Evidence."""
 
     reference: MonitorRunRefV2
@@ -2209,7 +2209,7 @@ def _load_monitor_run_authenticated(
     paths: WorkspacePaths,
     evidence_store: EvidenceStore,
     operation_id: str,
-) -> AuthenticatedPhysicalMonitorRun:
+) -> _AuthenticatedPhysicalMonitorRun:
     """Reload one complete physical Monitor authority graph from Evidence."""
 
     if type(paths) is not WorkspacePaths or type(evidence_store) is not EvidenceStore:
@@ -2356,7 +2356,7 @@ def _load_monitor_run_authenticated(
             raw_probe_id=None,
             scenario_role=reference.scenario_role,
         )
-        return AuthenticatedPhysicalMonitorRun(
+        return _AuthenticatedPhysicalMonitorRun(
             reference=reference,
             transcript_root=transcript_root,
             transcript_envelope=transcript_envelope,
@@ -2404,11 +2404,11 @@ def load_monitor_run_reference(
     return _load_monitor_run_authenticated(paths, evidence_store, operation_id).reference
 
 
-def load_authenticated_physical_monitor_run(
+def _load_authenticated_physical_monitor_run(
     paths: WorkspacePaths,
     evidence_store: EvidenceStore,
     operation_id: str,
-) -> AuthenticatedPhysicalMonitorRun:
+) -> _AuthenticatedPhysicalMonitorRun:
     """Reload the complete physical source record and linked TestRun."""
 
     return _load_monitor_run_authenticated(paths, evidence_store, operation_id)
@@ -2707,13 +2707,11 @@ __all__ = [
     "MONITOR_RUN_REF_SCHEMA_V2",
     "MonitorReplayDocument",
     "MonitorReplayError",
-    "AuthenticatedPhysicalMonitorRun",
     "MonitorRunRef",
     "MonitorRunRefV2",
     "OPERATION_CONFLICT",
     "canonical_replay_json_bytes",
     "ingest_monitor_replay",
     "load_monitor_run_reference",
-    "load_authenticated_physical_monitor_run",
     "publish_physical_monitor_run",
 ]

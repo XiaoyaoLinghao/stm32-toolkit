@@ -107,6 +107,13 @@ def _history_batches(paths: WorkspacePaths, run_id: UUID):
         history.close()
 
 
+def test_authenticated_physical_loader_is_package_private() -> None:
+    assert "AuthenticatedPhysicalMonitorRun" not in replay_module.__all__
+    assert "load_authenticated_physical_monitor_run" not in replay_module.__all__
+    assert hasattr(replay_module, "_AuthenticatedPhysicalMonitorRun")
+    assert hasattr(replay_module, "_load_authenticated_physical_monitor_run")
+
+
 def _rewrite_document(
     tmp_path: Path,
     source_role: str,

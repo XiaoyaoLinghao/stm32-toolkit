@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping
+from copy import deepcopy
 from hashlib import sha256
 from pathlib import Path
 from uuid import UUID
@@ -18,7 +19,12 @@ from stm32_monitor.analysis_workflows import (
     compare_monitor_runs,
     export_analysis_bundle,
 )
-from stm32_monitor.replay import load_monitor_run_reference, publish_physical_monitor_run
+from stm32_monitor.replay import (
+    canonical_replay_json_bytes,
+    ingest_monitor_replay,
+    load_monitor_run_reference,
+    publish_physical_monitor_run,
+)
 from stm32_toolkit.diagnostic_workflows import (
     DiagnosticWorkflowContext,
     diagnostic_add_hypothesis,
@@ -99,6 +105,44 @@ def _publish_window(
         probe_id=raw_probe,
     )
     return batches
+
+
+def _ingest_replay_reference_bound_to_physical_identity(
+    paths: object,
+    evidence: EvidenceStore,
+    *,
+    role: str,
+    operation_id: str,
+    build_id: str,
+    elf_sha256: str,
+    input_snapshot_sha256: str,
+    git_head: str,
+) -> object:
+    fixture = Path(__file__).parent / "fixtures" / "vs03" / f"{role}.json"
+    payload = json.loads(fixture.read_bytes()[:-1].decode("utf-8"))
+    binding = deepcopy(payload["binding"])
+    binding.update(
+        {
+            "workspaceId": paths.workspace_id,
+            "sessionId": paths.session_id,
+            "targetDevice": "stm32:stm32f429zi",
+            "buildId": build_id,
+            "elfSha256": elf_sha256,
+            "inputSnapshotSha256": input_snapshot_sha256,
+            "gitHead": git_head,
+        }
+    )
+    payload["binding"] = binding
+    payload["batches"] = [
+        dict(batch, binding=deepcopy(binding), runId=operation_id)
+        for batch in payload["batches"]
+    ]
+    unsigned = dict(payload)
+    unsigned.pop("fixture_sha256")
+    payload["fixture_sha256"] = sha256(canonical_replay_json_bytes(unsigned)).hexdigest()
+    replay_path = paths.project_root / f"replay-{role}.json"
+    replay_path.write_bytes(canonical_replay_json_bytes(payload) + b"\n")
+    return ingest_monitor_replay(paths, evidence, operation_id, replay_path)
 
 
 def test_vs04b2_physical_diagnostic_survives_fresh_reload(tmp_path: Path, monkeypatch) -> None:
@@ -365,3 +409,180 @@ def test_vs04b2_physical_diagnostic_survives_fresh_reload(tmp_path: Path, monkey
         )
     )
     assert shown_verification["fix_verifications"][0]["reason_code"] == "VERIFICATION_PASSED"
+
+
+def test_vs04b2_physical_diagnostic_rejects_legal_replay_analysis_before_plan_append(
+    tmp_path: Path,
+) -> None:
+    paths, evidence, failed_test_run_id, raw_probe, failed_run_id, failed_group_id = (
+        _physical_context(tmp_path)
+    )
+    fixed_test_run_id = "physical-test-run-02"
+    fixed_run_id = UUID("33333333-3333-4333-8333-333333333333")
+    fixed_group_id = UUID("44444444-4444-4444-8444-444444444444")
+    before_build_id = "b" * 64
+    before_elf_sha256 = "c" * 64
+    before_input_snapshot_sha256 = "d" * 64
+    before_git_head = "e" * 40
+    after_build_id = "0" * 64
+    after_elf_sha256 = "1" * 64
+    after_input_snapshot_sha256 = "2" * 64
+    after_git_head = "f" * 40
+    _publish_window(
+        paths,
+        evidence,
+        test_run_id=failed_test_run_id,
+        monitor_run_id=failed_run_id,
+        group_id=failed_group_id,
+        scenario_role="failed-before",
+        state="failed",
+        value_offset=0,
+        build_id=before_build_id,
+        elf_sha256=before_elf_sha256,
+        input_snapshot_sha256=before_input_snapshot_sha256,
+        git_head=before_git_head,
+        raw_probe=raw_probe,
+    )
+    _publish_window(
+        paths,
+        evidence,
+        test_run_id=fixed_test_run_id,
+        monitor_run_id=fixed_run_id,
+        group_id=fixed_group_id,
+        scenario_role="fixed-after",
+        state="passed",
+        value_offset=10,
+        build_id=after_build_id,
+        elf_sha256=after_elf_sha256,
+        input_snapshot_sha256=after_input_snapshot_sha256,
+        git_head=after_git_head,
+        raw_probe=raw_probe,
+    )
+    before_ref = _ingest_replay_reference_bound_to_physical_identity(
+        paths,
+        evidence,
+        role="failed-before",
+        operation_id="55555555-5555-4555-8555-555555555555",
+        build_id=before_build_id,
+        elf_sha256=before_elf_sha256,
+        input_snapshot_sha256=before_input_snapshot_sha256,
+        git_head=before_git_head,
+    )
+    after_ref = _ingest_replay_reference_bound_to_physical_identity(
+        paths,
+        evidence,
+        role="fixed-after",
+        operation_id="66666666-6666-4666-8666-666666666666",
+        build_id=after_build_id,
+        elf_sha256=after_elf_sha256,
+        input_snapshot_sha256=after_input_snapshot_sha256,
+        git_head=after_git_head,
+    )
+    repository = TestRunRepository(evidence)
+    failed = repository.load(failed_test_run_id)
+    fixed = repository.load(fixed_test_run_id)
+    diff_path = paths.project_root / "source-change.diff"
+    diff_path.write_bytes(b"--- a/src/main.c\n+++ b/src/main.c\n")
+    diff_artifact = evidence.ingest_file(diff_path, kind="source-diff", media_type="text/x-diff")
+    diff_envelope = EvidenceEnvelope(
+        identity=fixed.manifest.identity,
+        operation="diagnostic-source-change",
+        produced_at_utc=fixed.manifest.ended_at_utc,
+        parents=(),
+        artifacts=(diff_artifact,),
+        metadata={"kind": "source-change-diff"},
+    )
+    evidence.put_envelope(diff_envelope)
+    context = DiagnosticWorkflowContext(paths.project_root, paths.data_root, paths.session_id)
+    session = _ok(
+        diagnostic_start(
+            context,
+            operation_id="b2-replay-policy-start",
+            failed_test_run_id=failed_test_run_id,
+            failed_run_mode="target",
+        )
+    )["session"]
+    diagnostic_session_id = str(session["diagnostic_session_id"])
+    _ok(
+        diagnostic_begin(
+            context,
+            operation_id="b2-replay-policy-begin",
+            diagnostic_session_id=diagnostic_session_id,
+            expected_revision=1,
+        )
+    )
+    hypothesis = _ok(
+        diagnostic_add_hypothesis(
+            context,
+            operation_id="b2-replay-policy-hypothesis",
+            diagnostic_session_id=diagnostic_session_id,
+            expected_revision=2,
+            statement="the physical fixed run changes the observed counter",
+        )
+    )["hypothesis"]
+    hypothesis_id = str(hypothesis["hypothesis_id"])
+    declaration = SourceChangeDeclaration.new(
+        before_source_sha256=failed.manifest.identity.input_snapshot_sha256,
+        after_source_sha256=fixed.manifest.identity.input_snapshot_sha256,
+        before_build_id=failed.manifest.identity.build_id,
+        before_elf_sha256=failed.manifest.identity.elf_sha256,
+        after_build_id=fixed.manifest.identity.build_id,
+        after_elf_sha256=fixed.manifest.identity.elf_sha256,
+        changed_paths=("src/main.c",),
+        diff_evidence_id=str(diff_envelope.evidence_id),
+        diff_artifact=diff_artifact,
+        claimed_hypothesis_ids=(hypothesis_id,),
+        validation_plan_id="b" * 64,
+    )
+    _ok(
+        diagnostic_declare_source_change(
+            context,
+            operation_id="b2-replay-policy-declaration",
+            diagnostic_session_id=diagnostic_session_id,
+            expected_revision=3,
+            source_change_declaration=declaration,
+        )
+    )
+    publication = compare_monitor_runs(
+        paths,
+        evidence,
+        AnalysisRequest(
+            schema="stm32-monitor-analysis-request/1",
+            before_run=before_ref,
+            after_run=after_ref,
+            selector_kind="variable",
+            selector="counter",
+            alignment="run-relative",
+            minimum_valid_pairs=2,
+        ),
+        diagnostic_session_id,
+        hypothesis_id,
+        "supports",
+        "the replay analysis is otherwise legal",
+        declaration,
+    )
+    plan = VerificationPlan.new(
+        verification_plan_id=declaration.validation_plan_id,
+        diagnostic_session_id=diagnostic_session_id,
+        failed_before_run_id=failed_test_run_id,
+        failed_before_evidence_id=str(failed.envelope.evidence_id),
+        source_change_declaration_id=declaration.declaration_id,
+        fixed_after_run_id=fixed_test_run_id,
+        fixed_after_evidence_id=str(fixed.envelope.evidence_id),
+        required_analysis_ids=(publication.analysis_result.analysis_id,),
+        required_analysis_evidence_ids=(publication.analysis_evidence_ref.evidence_id,),
+        required_monitor_quality="VALID",
+        expected_changed=True,
+    )
+    result = diagnostic_add_verification_plan(
+        context,
+        operation_id="b2-replay-policy-plan",
+        diagnostic_session_id=diagnostic_session_id,
+        expected_revision=4,
+        verification_plan=plan,
+    )
+
+    assert result.ok is False
+    assert result.code == "INCOMPATIBLE_IDENTITY"
+    shown = _ok(diagnostic_show(context, diagnostic_session_id=diagnostic_session_id))
+    assert shown["session"]["revision"] == 4

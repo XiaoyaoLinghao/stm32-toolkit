@@ -17,6 +17,7 @@ from stm32_monitor.replay import (
     canonical_replay_json_bytes,
     ingest_monitor_replay,
 )
+from stm32_monitor.models import SampleValue, WatchItem
 from stm32_toolkit.evidence.store import EvidenceStore
 from stm32_toolkit.paths import WorkspacePaths
 
@@ -571,3 +572,62 @@ def test_shared_and_monitor_reject_the_same_reference_wire_mutations(
         with pytest.raises(contract.ReplayContractError):
             contract.validate_run_reference(candidate)
         assert candidate == before, case_name
+
+
+@pytest.mark.parametrize("field", ("typedValue", "definition"))
+def test_physical_typed_json_cumulative_string_budget_matches_monitor(
+    field: str,
+) -> None:
+    contract = _contract()
+    candidate = _physical_transcript(_document("failed-before"))
+    sample = candidate["batches"][0]["values"][0]
+    sample[field] = {"left": "a" * 700_000, "right": "b" * 700_000}
+    if field == "typedValue":
+        monitor_value = sample[field]
+        monitor_definition = None
+    else:
+        monitor_value = sample["typedValue"]
+        monitor_definition = sample[field]
+    watch = WatchItem.from_dict(sample["watch"])
+
+    with pytest.raises(ValueError):
+        SampleValue(
+            watch,
+            "OK",
+            typed_value=monitor_value,
+            definition=monitor_definition,
+        )
+    with pytest.raises(contract.ReplayContractError):
+        contract.validate_physical_transcript(candidate)
+
+
+def test_physical_typed_json_node_budget_matches_monitor() -> None:
+    contract = _contract()
+    candidate = _physical_transcript(_document("failed-before"))
+    sample = candidate["batches"][0]["values"][0]
+    sample["typedValue"] = [0] * 10_000
+    watch = WatchItem.from_dict(sample["watch"])
+
+    with pytest.raises(ValueError):
+        SampleValue(watch, "OK", typed_value=sample["typedValue"])
+    with pytest.raises(contract.ReplayContractError):
+        contract.validate_physical_transcript(candidate)
+
+
+def test_physical_typed_json_signed_int64_boundary_matches_monitor() -> None:
+    contract = _contract()
+    accepted = _physical_transcript(_document("failed-before"))
+    accepted_sample = accepted["batches"][0]["values"][0]
+    accepted_sample["typedValue"] = {"minimum": -(1 << 63)}
+    accepted_watch = WatchItem.from_dict(accepted_sample["watch"])
+    SampleValue(accepted_watch, "OK", typed_value=accepted_sample["typedValue"])
+    contract.validate_physical_transcript(accepted)
+
+    rejected = _physical_transcript(_document("failed-before"))
+    rejected_sample = rejected["batches"][0]["values"][0]
+    rejected_sample["typedValue"] = {"below": -(1 << 63) - 1}
+    rejected_watch = WatchItem.from_dict(rejected_sample["watch"])
+    with pytest.raises(ValueError):
+        SampleValue(rejected_watch, "OK", typed_value=rejected_sample["typedValue"])
+    with pytest.raises(contract.ReplayContractError):
+        contract.validate_physical_transcript(rejected)
