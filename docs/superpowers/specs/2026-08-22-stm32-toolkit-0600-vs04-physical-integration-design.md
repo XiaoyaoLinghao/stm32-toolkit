@@ -239,4 +239,3 @@ by files or error classes.
 VS04-C is blocked until the user names the board, MCU/target, raw probe selector, Project v3,
 failing case, transport configuration, Monitor selector, failing/fixed source revisions, and tool
 environment. Each returned action digest then requires a separate explicit user authorization.
-

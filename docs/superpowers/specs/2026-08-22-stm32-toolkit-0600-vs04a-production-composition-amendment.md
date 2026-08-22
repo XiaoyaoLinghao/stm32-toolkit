@@ -123,4 +123,3 @@ and a fake backend at the existing backend seam.
   their defined boundary without stealing a lease or producing an unauthorized root.
 - Scanning authorization, Evidence, result, and stdout bytes finds neither the raw selector nor an
   absolute ELF path.
-

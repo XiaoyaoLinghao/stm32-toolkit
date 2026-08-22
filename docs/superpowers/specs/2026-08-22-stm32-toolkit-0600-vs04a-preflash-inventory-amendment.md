@@ -74,4 +74,3 @@ consume -> static/hardware preflight -> one flash -> board identity changes to f
 A fake backend that reports current build identity before flash is invalid test evidence. Tests also
 cover post-flash old identity, wrong/extra/missing cases, wrong inventory digest, and transport
 failure: all consume authorization, publish no TestRun root, and require a new digest.
-

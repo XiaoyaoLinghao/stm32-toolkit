@@ -3,7 +3,7 @@
 ## Ledger and outcome
 
 - Accepted base: `6d8a593990d176e5ef2b9e051059ab6e5b3fd76b`.
-- Branch: `codex/STM32TK-0600-VS04B1-PHYSICAL-MONITOR-REF` from the documentation head.
+- Accepted replacement branch: `codex/STM32TK-0600-VS04B1-PHYSICAL-MONITOR-REF-REPLACEMENT`.
 - Specification/review owner: GPT-5.6-sol.
 - Implementation/test owner: one GPT-5.6-luna agent with reasoning effort `max`.
 - Python 3.12 only; no physical or remote authority.
@@ -21,6 +21,8 @@ Monitor product code:
   publication module;
 - `tools/stm32-monitor/src/stm32_monitor/history.py` only if a read-only helper is strictly needed;
 - `tools/stm32-monitor/src/stm32_monitor/cli.py`;
+- `tools/stm32-monitor/src/stm32_monitor/protocol.py` only to admit the existing public
+  `OPERATION_CONFLICT` result emitted by the idempotency boundary;
 - package exports only where required.
 
 Shared contract:

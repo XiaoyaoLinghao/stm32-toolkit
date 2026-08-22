@@ -3,6 +3,7 @@
 ## Ledger and outcome
 
 - Accepted base: `2b8b5b166c04c59d3f0f8bf326204ac74264620e`.
+- Implementation branch: `codex/STM32TK-0600-VS04B2-PHYSICAL-DIAGNOSTIC`.
 - Specification: `docs/superpowers/specs/2026-08-22-stm32-toolkit-0600-vs04b2-physical-diagnostic-verification.md`.
 - Specification/plan owner and reviewer: GPT-5.6-sol primary.
 - Implementer: one GPT-5.6-luna agent at reasoning effort `max`.
