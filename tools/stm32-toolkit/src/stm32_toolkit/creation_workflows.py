@@ -20,8 +20,6 @@ class CreationPlanWorkflowRequest:
     destination: str
     framework: str
     language: str
-    support_profile_path: Path | None = None
-    support_profile: ToolSupportProfile | None = None
 
 
 def _request(value: CreationPlanWorkflowRequest) -> CreationRequest:
@@ -34,10 +32,10 @@ def _request(value: CreationPlanWorkflowRequest) -> CreationRequest:
     raise CreationInputError("CREATION_SOURCE_INVALID", "sourceKind")
 
 
-def plan_creation_workflow(request: CreationPlanWorkflowRequest) -> OperationResult[dict[str, object]]:
+def plan_creation_workflow(request: CreationPlanWorkflowRequest, *, support_profile: ToolSupportProfile | None = None) -> OperationResult[dict[str, object]]:
     try:
         creation_request = _request(request)
-        support = request.support_profile or discover_tool_support(SupportProfileRequest(request.support_profile_path, request.data_root))
+        support = support_profile or discover_tool_support(SupportProfileRequest(data_root=request.data_root))
         from datetime import datetime, timezone
 
         plan = plan_project_creation(request.project_root, creation_request, support, now=datetime.now(timezone.utc))

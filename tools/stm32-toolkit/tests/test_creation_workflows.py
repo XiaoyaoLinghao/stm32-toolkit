@@ -1,28 +1,31 @@
 from __future__ import annotations
 
 from pathlib import Path
+import pytest
 
 from stm32_toolkit.creation_workflows import CreationPlanWorkflowRequest, plan_creation_workflow
-from stm32_toolkit.tool_support import ToolSupportProfile
+from stm32_toolkit.tool_support import SupportProfileError, SupportProfileRequest, discover_tool_support
 
 
 def test_plan_workflow_reports_missing_cubemx_as_plan_blocker(tmp_path: Path, monkeypatch):
     monkeypatch.setattr("stm32_toolkit.creation_workflows.discover_tool_support", lambda request: __import__("stm32_toolkit.tool_support", fromlist=["ToolSupportProfile"]).ToolSupportProfile("3.12.10", None, None, None, None, None, None, (), ()))
-    result = plan_creation_workflow(CreationPlanWorkflowRequest(tmp_path, tmp_path / "data", "session", "mcu", "STM32F429ZITx", "generated", "hal", "c", None))
+    result = plan_creation_workflow(CreationPlanWorkflowRequest(tmp_path, tmp_path / "data", "session", "mcu", "STM32F429ZITx", "generated", "hal", "c"))
     assert result.ok is True
     assert result.data["blockers"][0]["code"] == "CUBEMX_MISSING"
     assert result.data["mutated"] is False
 
 
 def test_workflow_rejects_malformed_input_without_exception_text(tmp_path: Path):
-    result = plan_creation_workflow(CreationPlanWorkflowRequest(tmp_path, tmp_path / "data", "session", "bad", "value", "generated", "hal", "c", None))
+    result = plan_creation_workflow(CreationPlanWorkflowRequest(tmp_path, tmp_path / "data", "session", "bad", "value", "generated", "hal", "c"))
     assert result.ok is False
     assert result.code == "CREATION_INPUT_INVALID"
     assert "CreationInputError" not in result.message
 
 
-def test_workflow_rejects_profile_outside_data_root(tmp_path: Path):
+def test_support_profile_rejects_path_outside_data_root(tmp_path: Path):
     outside = tmp_path.parent / "bad-profile.json"
     outside.write_text("{}", encoding="utf-8")
-    result = plan_creation_workflow(CreationPlanWorkflowRequest(tmp_path, tmp_path / "data", "session", "mcu", "STM32F4", "generated", "hal", "c", outside))
-    assert result.ok is False and result.code == "CREATION_ENVIRONMENT_INVALID"
+    with pytest.raises(SupportProfileError):
+        discover_tool_support(
+            SupportProfileRequest(profile_path=outside, data_root=tmp_path / "data")
+        )

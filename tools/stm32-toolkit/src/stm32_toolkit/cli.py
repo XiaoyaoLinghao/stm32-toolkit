@@ -30,6 +30,7 @@ from stm32_toolkit.diagnostic_workflows import (
     diagnostic_start_verification,
 )
 from stm32_toolkit.doctor import run_doctor
+from stm32_toolkit.tool_support import SupportProfileRequest, discover_tool_support
 from stm32_toolkit.hardware_workflows import (
     FaultWorkflowRequest,
     FlashWorkflowRequest,
@@ -987,18 +988,31 @@ def _operation_result(
         if args.project_command == "context":
             return build_project_context(project_root, args.data_root, args.session_id)
         if args.project_command == "create-plan":
+            data_root = getattr(args, "data_root", project_root / ".stm32-toolkit-data")
+            try:
+                support = discover_tool_support(
+                    SupportProfileRequest(profile_path=args.support_profile, data_root=data_root),
+                    probe_versions=True,
+                )
+            except (OSError, ValueError, RuntimeError):
+                return OperationResult.failure(
+                    "project-create-plan",
+                    "CREATION_ENVIRONMENT_INVALID",
+                    "Creation environment is unavailable",
+                    {},
+                )
             return plan_creation_workflow(
                 CreationPlanWorkflowRequest(
                     project_root=project_root,
-                    data_root=getattr(args, "data_root", project_root / ".stm32-toolkit-data"),
+                    data_root=data_root,
                     session_id="cli",
                     source_kind=args.source_kind,
                     source_value=args.source,
                     destination=args.destination,
                     framework=args.framework,
                     language=args.language,
-                    support_profile_path=args.support_profile,
-                )
+                ),
+                support_profile=support,
             )
         return configure_project_workflow(
             project_root,

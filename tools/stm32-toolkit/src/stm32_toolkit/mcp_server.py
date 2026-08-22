@@ -415,7 +415,7 @@ class ServerRuntime:
     project_root: Path
     data_root: Path
     session_id: str
-    support_profile: ToolSupportProfile | None = None
+    support_profile: ToolSupportProfile
 
     @classmethod
     def create(
@@ -464,7 +464,11 @@ def _require_external_data_root(data_root: Path, project_root: Path) -> None:
 
 def tool_doctor(runtime: ServerRuntime) -> dict[str, object]:
     """Return the read-only environment diagnosis for the bound project."""
-    return run_doctor(runtime.project_root).to_dict()
+    return run_doctor(
+        runtime.project_root,
+        data_root=runtime.data_root,
+        support_profile=runtime.support_profile,
+    ).to_dict()
 
 
 def tool_project_detect(runtime: ServerRuntime) -> dict[str, object]:
@@ -499,20 +503,17 @@ def tool_project_create_plan(
     language: str,
 ) -> dict[str, object]:
     """Return a read-only CubeMX creation plan bound to this runtime."""
-    return plan_creation_workflow(
-        CreationPlanWorkflowRequest(
-            runtime.project_root,
-            runtime.data_root,
-            runtime.session_id,
-            source_kind,
-            source,
-            destination,
-            framework,
-            language,
-            None,
-            runtime.support_profile,
-        )
-    ).to_dict()
+    request = CreationPlanWorkflowRequest(
+        runtime.project_root,
+        runtime.data_root,
+        runtime.session_id,
+        source_kind,
+        source,
+        destination,
+        framework,
+        language,
+    )
+    return plan_creation_workflow(request, support_profile=runtime.support_profile).to_dict()
 
 
 def tool_keil_inspect(
