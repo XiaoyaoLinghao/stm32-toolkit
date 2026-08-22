@@ -7,7 +7,7 @@ from uuid import UUID
 
 import pytest
 
-from stm32_monitor.history import HistoryQuery, HistoryStore
+from stm32_monitor.history import MAX_HISTORY_BATCHES, HistoryQuery, HistoryStore
 from stm32_monitor.models import ObservationBinding, SampleBatch, SampleValue, WatchItem
 from stm32_monitor.replay import (
     EVIDENCE_INTEGRITY_FAILURE,
@@ -378,8 +378,11 @@ def _append_large_physical_history(
     )
     history = HistoryStore(paths)
     try:
-        appended = history.append_batches(batches)
-        assert appended.ok, appended.to_dict()
+        for offset in range(0, len(batches), MAX_HISTORY_BATCHES):
+            appended = history.append_batches(
+                batches[offset : offset + MAX_HISTORY_BATCHES]
+            )
+            assert appended.ok, appended.to_dict()
     finally:
         history.close()
     return batches
@@ -568,6 +571,47 @@ def test_physical_history_allows_monitor_bounded_typed_strings(
         probe_id=raw_probe,
     )
     assert load_monitor_run_reference(paths, EvidenceStore(evidence.root), str(monitor_run_id)) == reference
+
+
+def test_physical_history_rejects_more_reconstructed_batches_before_root_writes(
+    tmp_path: Path,
+) -> None:
+    paths, evidence, test_run_id, raw_probe, monitor_run_id, group_id = _physical_context(tmp_path)
+    _publish_physical_test_run(
+        paths,
+        evidence,
+        test_run_id=test_run_id,
+        raw_probe=raw_probe,
+        monitor_run_id=monitor_run_id,
+    )
+    batches = _append_large_physical_history(
+        paths,
+        raw_probe,
+        monitor_run_id,
+        group_id,
+        batch_count=1025,
+        values_per_batch=1,
+        definition_chars=0,
+    )
+
+    with pytest.raises(MonitorReplayError) as failure:
+        publish_physical_monitor_run(
+            paths,
+            evidence,
+            scenario_role="failed-before",
+            test_run_id=test_run_id,
+            run_id=str(monitor_run_id),
+            group_id=str(group_id),
+            start_sequence=0,
+            end_sequence_exclusive=1025,
+            start_captured_unix_ns=batches[0].captured_unix_ns,
+            end_captured_unix_ns_exclusive=batches[-1].captured_unix_ns + 1,
+            probe_id=raw_probe,
+        )
+
+    assert failure.value.code == "INCOMPATIBLE_IDENTITY"
+    assert _monitor_root_files(evidence, "monitor-run") == ()
+    assert _monitor_root_files(evidence, "monitor-run-ref") == ()
 
 
 def test_physical_history_window_publishes_and_fresh_loads_v2_reference(tmp_path: Path) -> None:

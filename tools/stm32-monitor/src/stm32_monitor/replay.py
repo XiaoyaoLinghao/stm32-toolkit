@@ -1641,6 +1641,35 @@ def _physical_make_reference(
     return reference
 
 
+def _physical_sample_batch_from_slice(
+    history_slice: HistoryBatchSlice,
+    values: tuple[SampleValue, ...],
+) -> SampleBatch:
+    """Construct one complete batch and preserve its model-boundary errors."""
+
+    try:
+        return SampleBatch(
+            binding=history_slice.binding,
+            group_id=history_slice.group_id,
+            group_revision=history_slice.group_revision,
+            run_id=history_slice.run_id,
+            sequence=history_slice.sequence,
+            scheduled_unix_ns=history_slice.scheduled_unix_ns,
+            captured_unix_ns=history_slice.captured_unix_ns,
+            latency_ns=history_slice.latency_ns,
+            actual_rate_hz=history_slice.actual_rate_hz,
+            subscriber_drops=history_slice.subscriber_drops,
+            history_drops=history_slice.history_drops,
+            deadline_drops=history_slice.deadline_drops,
+            values=values,
+        )
+    except (TypeError, ValueError, OverflowError) as error:
+        raise MonitorReplayError(
+            EVIDENCE_INTEGRITY_FAILURE,
+            "physical Monitor history contains invalid data",
+        ) from error
+
+
 def _physical_history_batches(
     *,
     paths: WorkspacePaths,
@@ -1730,31 +1759,13 @@ def _physical_history_batches(
                 _physical_identity_error(
                     "physical Monitor history ended with a partial batch"
                 )
-            try:
-                batches.append(
-                    SampleBatch(
-                        binding=current_slice.binding,
-                        group_id=current_slice.group_id,
-                        group_revision=current_slice.group_revision,
-                        run_id=current_slice.run_id,
-                        sequence=current_slice.sequence,
-                        scheduled_unix_ns=current_slice.scheduled_unix_ns,
-                        captured_unix_ns=current_slice.captured_unix_ns,
-                        latency_ns=current_slice.latency_ns,
-                        actual_rate_hz=current_slice.actual_rate_hz,
-                        subscriber_drops=current_slice.subscriber_drops,
-                        history_drops=current_slice.history_drops,
-                        deadline_drops=current_slice.deadline_drops,
-                        values=tuple(current_values),
-                    )
-                )
-                if len(batches) > MAX_REPLAY_BATCHES:
-                    _physical_identity_error("physical Monitor history has too many batches")
-            except (TypeError, ValueError, OverflowError) as error:
-                raise MonitorReplayError(
-                    EVIDENCE_INTEGRITY_FAILURE,
-                    "physical Monitor history contains invalid data",
-                ) from error
+            reconstructed = _physical_sample_batch_from_slice(
+                current_slice,
+                tuple(current_values),
+            )
+            batches.append(reconstructed)
+            if len(batches) > MAX_REPLAY_BATCHES:
+                _physical_identity_error("physical Monitor history has too many batches")
             closed_keys.add(current_key)
             total_values += len(current_values)
             if total_values > MAX_HISTORY_VALUES:
