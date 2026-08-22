@@ -140,6 +140,12 @@ creates neither `monitor-run` nor `monitor-run-ref` root. A provider failure dur
 retain only a valid append-only prefix as defined above. Already accepted replay Evidence remains
 unchanged.
 
+Domain classification occurs outside generic model-construction exception mapping. In particular,
+the reconstructed-batch and total-value product limits are window compatibility checks and return
+`INCOMPATIBLE_IDENTITY`. A helper may translate `TypeError`, `ValueError`, or `OverflowError` raised
+by `SampleBatch` construction into `EVIDENCE_INTEGRITY_FAILURE`, but it must return before any
+product-limit check; `MonitorReplayError` must never be captured and reclassified by that mapping.
+
 ## B1 acceptance scenarios
 
 1. A real `HistoryStore` contains two or more contiguous live physical batches. An accepted

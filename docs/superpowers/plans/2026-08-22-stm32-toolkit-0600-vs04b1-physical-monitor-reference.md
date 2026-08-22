@@ -92,6 +92,16 @@ multi-page case where one batch is split at the 10,000-value cursor, a physical 
 1 MiB replay limit that remains loadable, and a synthetic over-64-MiB preflight boundary without
 creating a release-scale data matrix.
 
+### 3a. Stop-loss replacement boundary
+
+After two pagination correction rounds, do not add another inline catch-order patch to the original
+attempt. The replacement candidate extracts batch construction into a helper that maps only model
+constructor failures and returns a validated `SampleBatch`. The caller then appends it and performs
+the 1,024 reconstructed-batch and 10,000-value compatibility checks outside every generic
+`ValueError` handler. One real 1,025-batch test must return `INCOMPATIBLE_IDENTITY` with zero Monitor
+roots; the already accepted 1,024-batch/1,025-fragment and 70,000-character cases must remain green.
+No other B1 behavior or file boundary changes.
+
 Do not manufacture physical Evidence from replay batches. Do not accept caller identity fields or
 caller-supplied batch bytes.
 
