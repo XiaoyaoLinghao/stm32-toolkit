@@ -227,7 +227,15 @@ def _windows_file_version(path: Path) -> str | None:
         return None
 
 
-def _fact(name: str, path: Path, source: ToolSource, version: str | None = None, *, probe_versions: bool = True) -> ToolFact | None:
+def _fact(
+    name: str,
+    path: Path,
+    source: ToolSource,
+    version: str | None = None,
+    *,
+    probe_versions: bool = True,
+    allow_process_probe: bool = True,
+) -> ToolFact | None:
     if not _safe_regular_file(path):
         return None
     try:
@@ -235,7 +243,7 @@ def _fact(name: str, path: Path, source: ToolSource, version: str | None = None,
     except OSError:
         return None
     probed = _windows_file_version(path) if probe_versions else None
-    probed = probed or (_version_probe(path) if probe_versions else None)
+    probed = probed or (_version_probe(path) if probe_versions and allow_process_probe else None)
     selected = version or probed or "unknown"
     if name in ("gcc", "cmake", "ninja"):
         match = re.search(r"\b(14\.3\.1|4\.3\.1|1\.13\.2)\b", selected)
@@ -296,7 +304,13 @@ def _explicit_fact(payload: dict[str, object], name: str) -> ToolFact | None:
     raw_path = entry.get("path")
     if not isinstance(raw_path, str):
         return None
-    return _fact(name, Path(raw_path), "explicit", str(entry.get("version") or "unknown"))
+    return _fact(
+        name,
+        Path(raw_path),
+        "explicit",
+        str(entry.get("version") or "unknown"),
+        allow_process_probe=name not in ("cubeMx", "vsCode"),
+    )
 
 
 def _metadata_candidates(root: Path) -> dict[str, str]:
@@ -379,8 +393,8 @@ def _discover_vscode(payload: dict[str, object]) -> ToolFact | None:
     except OSError:
         located = None
     if located:
-        return _fact("vsCode", Path(located), "path", probe_versions=False)
-    found = [_fact("vsCode", candidate, "standard", probe_versions=False) for candidate in _VS_CODE_PATHS]
+        return _fact("vsCode", Path(located), "path", probe_versions=True, allow_process_probe=False)
+    found = [_fact("vsCode", candidate, "standard", probe_versions=True, allow_process_probe=False) for candidate in _VS_CODE_PATHS]
     found = [fact for fact in found if fact]
     if len(found) > 1:
         raise SupportProfileError("ambiguous vscode candidates")
@@ -408,12 +422,12 @@ def _discover_cube_mx(payload: dict[str, object]) -> ToolFact | None:
             with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\STM32CubeMX.exe") as key:
                 registered, _ = winreg.QueryValueEx(key, None)
             if isinstance(registered, str):
-                fact = _fact("cubeMx", Path(registered), "standard", probe_versions=False)
+                fact = _fact("cubeMx", Path(registered), "standard", probe_versions=True, allow_process_probe=False)
                 if fact:
                     return fact
         except (OSError, ImportError):
             pass
-    found = [_fact("cubeMx", candidate, "standard", probe_versions=False) for candidate in _CUBEMX_PATHS]
+    found = [_fact("cubeMx", candidate, "standard", probe_versions=True, allow_process_probe=False) for candidate in _CUBEMX_PATHS]
     found = [fact for fact in found if fact]
     if len(found) > 1:
         raise SupportProfileError("ambiguous cubeMx candidates")
