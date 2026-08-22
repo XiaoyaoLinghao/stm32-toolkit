@@ -1,0 +1,24 @@
+# SDD ledger — plan: docs/superpowers/plans/2026-08-22-stm32-toolkit-0701-creation-plan-environment-truth.md
+
+- Module/phase: STM32 Toolkit 0.7 / VS07-A implementation.
+- Product accepted base: d09e2343ab970f4ddeaa4c24dbf581c9bbe96f58.
+- Implementation branch base: 6007fafc33ee801b8bda64540dcefa50eef8b26a.
+- Specification/plan owner: GPT-5.6-sol primary agent.
+- Implementer: `/root/vs07a_implementer`, one GPT-5.6-luna subagent, reasoning max.
+- Reviewer/acceptor: GPT-5.6-sol primary agent.
+- Branch: codex/STM32TK-0701-CREATION-PLAN.
+- Worktree: C:/tmp/stm32tk-0701-creation-plan.
+- Remote authority: none; no push, PR, merge, tag, release, close, or remote branch mutation.
+- Hardware/install authority: none in this slice; planning remains read-only.
+- Bounded ownership exception: none.
+
+- 2026-08-23 dispatch: implementation started at clean `6007fafc33ee801b8bda64540dcefa50eef8b26a`; Tasks 1-4 are sequential checkpoints owned by the same implementer.
+
+- Task 1 RED: `py -3.12 -m pytest tools/stm32-toolkit/tests/test_tool_support.py -q` failed at collection with the expected missing `stm32_toolkit.tool_support` module.
+- Task 1 GREEN: implemented immutable ToolSupportProfile discovery and doctor `creationSupport`; `py -3.12 -m pytest tools/stm32-toolkit/tests/test_tool_support.py tools/stm32-toolkit/tests/test_doctor.py -q` passed (`32 passed`, exit 0; PYTHONPATH pointed at this worktree and TEMP used a disposable worktree directory due host temp ACL).
+- Environment note: CubeMX is installed outside the standard C: candidates at the Windows App Paths registration `D:\Program Files\STMicroelectronics\STM32Cube\STM32CubeMX\STM32CubeMX.exe`, observed by the primary agent as `6.18.1-RC2`; product discovery includes the bounded App Paths lookup and does not execute CubeMX.
+- Task 2 RED: `py -3.12 -m pytest tools/stm32-toolkit/tests/test_creation_plan.py -q` failed at collection with the expected missing `generation.creation` module.
+- Task 2 GREEN: implemented immutable CreationRequest/CreationPlan and read-only inventory/digest binding; `py -3.12 -m pytest tools/stm32-toolkit/tests/test_creation_plan.py tools/stm32-toolkit/tests/test_generation.py -q` passed (exit 0; 296 tests in this command, no skips/xfails).
+- Task 3 RED: `py -3.12 -m pytest tools/stm32-toolkit/tests/test_creation_workflows.py ... -q` failed at collection with the expected missing `creation_workflows` module.
+- Task 3 GREEN: added one read-only workflow plus CLI `project create-plan` and MCP `stm32_project_create_plan`; focused adapter/regression command passed (exit 0, 58 passed, one pre-existing warning; no skips/xfails). Updated the stale MCP registration expectation to include already-registered target/diagnostic tools and the new creation-plan tool.
+- Task 4 GREEN: README/README_zh-CN and implementation report prepared. Exact complete slice command passed exit 0 with no skips/xfails (one existing runpy warning). Real doctor and create-plan both exited 0 against `C:\tmp\stm32tk-0701-observe-20260823`; CubeMX `6.18.1-RC2` via bounded App Paths, CubeCLT root `C:\ST\STM32CubeCLT_1.22.0`, GCC `14.3.1`, CMake `4.3.1`, Ninja `1.13.2`, plan blockers empty, mutated false, workspace snapshot unchanged. Doctor issue `VSCODE_MISSING` is recorded as ENVIRONMENT; test fixtures retain CUBEMX_MISSING coverage.

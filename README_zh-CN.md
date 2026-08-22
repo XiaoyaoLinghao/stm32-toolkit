@@ -16,6 +16,16 @@ STM32 Toolkit 是一个在 VS Code 中使用、由 Agent 驱动的本地 STM32 �
 
 ST 官方 STM32 VS Code 扩展不是必需依赖。推荐的编辑器扩展仍是 C/C++、CMake Tools 和 Cortex-Debug。
 
+## VS07-A 只读创建计划
+
+在受支持的 Windows 与 CPython `>=3.12,<3.13` 环境中，可用以下命令检查新工程请求：
+
+```powershell
+stm32-toolkit project create-plan --project-root . --source-kind mcu --source STM32F429ZITx --destination generated --framework hal --language c --json
+```
+
+命令返回确定性的计划、工具/计划摘要和目标目录摘要，或封闭且可操作的阻断项。CubeMX 6.18 负责生成工程；CubeCLT 1.22.0 提供 GCC/CMake/Ninja，不能替代 CubeMX。`CUBEMX_MISSING` 表示必须安装 CubeMX，或通过可信 support profile 暴露它后再规划。VS07-A 不运行 CubeMX、不创建 staging、不写入目标目录，也不应用计划。Agent-neutral MCP 等价操作是 `stm32_project_create_plan`。
+
 ## 从 GitHub 安装
 
 本插件直接从 GitHub 分发，不进入公开目录。以 user scope 安装一次：

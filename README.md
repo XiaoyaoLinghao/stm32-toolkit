@@ -16,6 +16,16 @@ The published 0.5.0 packaging below remains the current installable baseline. Lo
 
 The ST STM32 VS Code extension is not required. The recommended editor extensions remain C/C++, CMake Tools, and Cortex-Debug.
 
+## VS07-A read-only creation planning
+
+On supported Windows hosts running CPython `>=3.12,<3.13`, inspect a new project request with:
+
+```powershell
+stm32-toolkit project create-plan --project-root . --source-kind mcu --source STM32F429ZITx --destination generated --framework hal --language c --json
+```
+
+The command returns a deterministic plan, tool/profile and destination digests, or closed remediation blockers. CubeMX 6.18 is the generator; CubeCLT 1.22.0 supplies GCC/CMake/Ninja and is not a replacement for CubeMX. `CUBEMX_MISSING` means CubeMX must be installed or exposed through a trusted support profile before planning can proceed. VS07-A never runs CubeMX, creates staging, writes the destination, or applies a plan. The equivalent Agent-neutral MCP operation is `stm32_project_create_plan`.
+
 ## Install directly from GitHub
 
 The plugin is distributed directly from GitHub, not a public catalog. Install it once at user scope:
