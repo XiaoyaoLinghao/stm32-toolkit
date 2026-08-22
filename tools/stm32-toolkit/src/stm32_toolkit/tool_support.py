@@ -11,6 +11,7 @@ import hashlib
 import json
 import os
 import platform
+import re
 import shutil
 import stat
 import subprocess
@@ -50,6 +51,37 @@ _REAL_POPEN = subprocess.Popen
 
 class SupportProfileError(ValueError):
     pass
+
+
+@dataclass(frozen=True, slots=True)
+class ProcessObservation:
+    returncode: int | None
+    stdout: bytes
+    stderr: bytes
+    timed_out: bool = False
+    truncated: bool = False
+
+
+def _run_bounded(argv: tuple[str, ...], timeout_seconds: float = 5.0, capture_limit: int = _MAX_VERSION_BYTES) -> ProcessObservation:
+    process = None
+    try:
+        process = _REAL_POPEN(argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=False)
+        try:
+            stdout, stderr = process.communicate(timeout=timeout_seconds)
+        except subprocess.TimeoutExpired:
+            try: process.terminate()
+            except OSError: pass
+            try: process.wait(timeout=1)
+            except subprocess.TimeoutExpired:
+                try: process.kill()
+                except OSError: pass
+                try: process.wait(timeout=1)
+                except (OSError, subprocess.TimeoutExpired): pass
+            return ProcessObservation(None, b"", b"", timed_out=True)
+        combined = (stdout or b"") + (stderr or b"")
+        return ProcessObservation(process.returncode, (stdout or b"")[:capture_limit], (stderr or b"")[:capture_limit], truncated=len(combined) > capture_limit)
+    except OSError:
+        return ProcessObservation(None, b"", b"")
 
 
 @dataclass(frozen=True, slots=True)
@@ -146,9 +178,10 @@ def _digest(path: Path) -> str:
 def _version_probe(path: Path) -> str | None:
     """Probe only a discovered executable with a fixed bounded argv."""
     try:
-        process = _REAL_POPEN([str(path), "--version"], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=False)
-        stdout, stderr = process.communicate(timeout=5)
-        raw = (stdout or stderr or b"")[:_MAX_VERSION_BYTES]
+        observation = _run_bounded((str(path), "--version"))
+        if observation.returncode != 0 or observation.timed_out or observation.truncated:
+            return None
+        raw = (observation.stdout or observation.stderr)[:_MAX_VERSION_BYTES]
         line = raw.decode("utf-8", errors="replace").splitlines()[0] if raw else ""
         return line[:512] or None
     except (OSError, subprocess.SubprocessError, UnicodeError):
@@ -160,11 +193,10 @@ def _run_cubeclt_metadata(root: Path) -> dict[str, str]:
     if not _safe_regular_file(script):
         return {}
     try:
-        process = _REAL_POPEN([str(script), "-j"], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=False)
-        stdout, _ = process.communicate(timeout=5)
-        if process.returncode != 0 or len(stdout) > _MAX_METADATA_BYTES:
+        observation = _run_bounded((str(script), "-j"), capture_limit=_MAX_METADATA_BYTES)
+        if observation.returncode != 0 or observation.timed_out or observation.truncated:
             return {}
-        payload = json.loads(stdout.decode("utf-8"))
+        payload = json.loads(observation.stdout.decode("utf-8"))
         return {str(k): str(v) for k, v in payload.items()} if isinstance(payload, dict) else {}
     except (OSError, UnicodeError, ValueError, subprocess.SubprocessError):
         return {}
@@ -204,24 +236,34 @@ def _fact(name: str, path: Path, source: ToolSource, version: str | None = None,
         return None
     probed = _windows_file_version(path) if probe_versions else None
     probed = probed or (_version_probe(path) if probe_versions else None)
-    return ToolFact(name, path.absolute(), version or probed or "unknown", source, digest)
+    selected = version or probed or "unknown"
+    if name in ("gcc", "cmake", "ninja"):
+        match = re.search(r"\b(14\.3\.1|4\.3\.1|1\.13\.2)\b", selected)
+        selected = match.group(1) if match else selected
+    return ToolFact(name, path.absolute(), selected, source, digest)
 
 
 def _read_profile(path: Path | None) -> dict[str, object]:
-    if path is None or not _safe_regular_file(path):
+    if path is None:
         return {}
+    if not _safe_regular_file(path):
+        raise SupportProfileError("support profile is unavailable")
     try:
         if path.stat().st_size > _MAX_METADATA_BYTES:
-            return {}
+            raise SupportProfileError("support profile is oversized")
         payload = json.loads(path.read_text(encoding="utf-8"))
-        return payload if isinstance(payload, dict) else {}
+        if not isinstance(payload, dict):
+            raise SupportProfileError("support profile schema is invalid")
+        return payload
+    except SupportProfileError:
+        raise
     except (OSError, UnicodeError, ValueError):
-        return {}
+        raise SupportProfileError("support profile content is invalid") from None
 
 
 def _profile_allowed(path: Path, data_root: Path | None) -> bool:
     if data_root is None:
-        return True
+        return False
     try:
         root = data_root.resolve(strict=True)
         candidate = path.absolute()
@@ -337,11 +379,13 @@ def _discover_vscode(payload: dict[str, object]) -> ToolFact | None:
     except OSError:
         located = None
     if located:
-        return _fact("vsCode", Path(located), "path")
-    for candidate in _VS_CODE_PATHS:
-        fact = _fact("vsCode", candidate, "standard")
-        if fact:
-            return fact
+        return _fact("vsCode", Path(located), "path", probe_versions=False)
+    found = [_fact("vsCode", candidate, "standard", probe_versions=False) for candidate in _VS_CODE_PATHS]
+    found = [fact for fact in found if fact]
+    if len(found) > 1:
+        raise SupportProfileError("ambiguous vscode candidates")
+    if found:
+        return found[0]
     return None
 
 
@@ -354,7 +398,7 @@ def _discover_cube_mx(payload: dict[str, object]) -> ToolFact | None:
     except OSError:
         located = None
     if located:
-        fact = _fact("cubeMx", Path(located), "path")
+        fact = _fact("cubeMx", Path(located), "path", probe_versions=False)
         if fact:
             return fact
     if os.name == "nt":
@@ -364,15 +408,17 @@ def _discover_cube_mx(payload: dict[str, object]) -> ToolFact | None:
             with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\STM32CubeMX.exe") as key:
                 registered, _ = winreg.QueryValueEx(key, None)
             if isinstance(registered, str):
-                fact = _fact("cubeMx", Path(registered), "standard")
+                fact = _fact("cubeMx", Path(registered), "standard", probe_versions=False)
                 if fact:
                     return fact
         except (OSError, ImportError):
             pass
-    for candidate in _CUBEMX_PATHS:
-        fact = _fact("cubeMx", candidate, "standard")
-        if fact:
-            return fact
+    found = [_fact("cubeMx", candidate, "standard", probe_versions=False) for candidate in _CUBEMX_PATHS]
+    found = [fact for fact in found if fact]
+    if len(found) > 1:
+        raise SupportProfileError("ambiguous cubeMx candidates")
+    if found:
+        return found[0]
     return None
 
 
@@ -390,6 +436,14 @@ def discover_tool_support(request: SupportProfileRequest | None = None, *, probe
     if request.profile_path is not None and not _profile_allowed(request.profile_path, request.data_root):
         raise SupportProfileError("support profile is outside trusted data root")
     payload = _read_profile(request.profile_path)
+    if request.profile_path is not None:
+        for key in ("cubeCltRoot", "cubeclt_root"):
+            if key in payload and not isinstance(payload[key], str):
+                raise SupportProfileError("support profile schema is invalid")
+        for key in ("cubeMx", "gcc", "cmake", "ninja", "vsCode"):
+            value = payload.get(key)
+            if value is not None and (not isinstance(value, dict) or not isinstance(value.get("path"), str)):
+                raise SupportProfileError("support profile schema is invalid")
     cubeclt_root, metadata = _discover_cubeclt(payload)
     explicit = {name: _explicit_fact(payload, name) for name in ("gcc", "cmake", "ninja")}
     facts: dict[str, ToolFact | None] = {}
@@ -409,6 +463,10 @@ def discover_tool_support(request: SupportProfileRequest | None = None, *, probe
     for name, code in (("gcc", "GCC_MISSING"), ("cmake", "CMAKE_MISSING"), ("ninja", "NINJA_MISSING")):
         if facts[name] is None:
             issues.append(ToolSupportIssue(code, name, "Provide the supported STM32CubeCLT 1.22.0 tool."))
+        else:
+            expected = {"gcc": "14.3.1", "cmake": "4.3.1", "ninja": "1.13.2"}[name]
+            if facts[name].version != expected:
+                issues.append(ToolSupportIssue(code.replace("_MISSING", "_UNSUPPORTED"), name, f"Use the supported {expected} version."))
     if vscode is None:
         issues.append(ToolSupportIssue("VSCODE_MISSING", "vsCode", "Install VS Code or provide its supported executable."))
     issues.sort(key=lambda issue: (issue.code, issue.component))

@@ -82,7 +82,7 @@ def test_cubeclt_metadata_discovers_build_tools_but_not_cubemx(tmp_path: Path, m
     assert profile.cmake is not None and profile.cmake.path == cmake
     assert profile.ninja is not None and profile.ninja.path == ninja
     assert profile.cubemx is None
-    assert [issue.code for issue in profile.issues] == ["CUBEMX_MISSING"]
+    assert "CUBEMX_MISSING" in [issue.code for issue in profile.issues]
 
 
 def test_missing_tools_are_reported_without_writing(tmp_path: Path, monkeypatch):

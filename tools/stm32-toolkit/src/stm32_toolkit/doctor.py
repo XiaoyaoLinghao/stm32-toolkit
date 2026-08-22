@@ -13,7 +13,7 @@ from typing import BinaryIO
 
 from stm32_toolkit.detection import detect_project, planned_action
 from stm32_toolkit.result import OperationResult
-from stm32_toolkit.tool_support import SupportProfileRequest, discover_tool_support
+from stm32_toolkit.tool_support import SupportProfileRequest, ToolSupportProfile, discover_tool_support
 
 
 TOOLS = (
@@ -41,10 +41,11 @@ _VERSION_LINE_LIMIT = 512
 
 
 def run_doctor(
-    project_root: Path, *, data_root: Path | None = None
+    project_root: Path, *, data_root: Path | None = None,
+    support_profile: ToolSupportProfile | None = None,
 ) -> OperationResult[dict[str, object]]:
     """Collect offline, read-only evidence about the local toolkit environment."""
-    support = discover_tool_support(SupportProfileRequest(data_root=data_root), probe_versions=True)
+    support = support_profile or discover_tool_support(SupportProfileRequest(data_root=data_root), probe_versions=True)
     return OperationResult.success(
         "doctor",
         {
