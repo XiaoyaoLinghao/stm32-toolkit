@@ -261,6 +261,23 @@ def test_prepare_never_reads_old_inventory_and_execute_proves_fixed_after_flash(
     )
     assert shown.ok is True
     assert shown.data["execution_source"] == "physical"
+    manifests = [
+        json.loads(path.read_text(encoding="utf-8"))
+        for path in (workspace.workspace_root / "evidence/manifests").glob("*.json")
+    ]
+    operations = [manifest["operation"] for manifest in manifests]
+    assert operations.count("target-test-physical") == 1
+    assert "target-test-run" not in operations
+    physical = next(
+        manifest for manifest in manifests if manifest["operation"] == "target-test-physical"
+    )
+    assert set(physical["metadata"]) == {
+        "action_digest", "execution_source", "flash_session_id",
+        "import_session_id", "import_workspace_id", "intent_digest", "inventory_digest",
+        "lease_id", "origin_session_id", "origin_workspace_id",
+        "physical_transport_evidence", "probe_id", "target_id",
+        "transport_config_digest",
+    }
     public_bytes = json.dumps(
         {"prepared": prepared.to_dict(), "executed": executed.to_dict(), "shown": shown.to_dict()},
         sort_keys=True,
@@ -322,6 +339,32 @@ def test_case_ids_are_mandatory_and_authorization_is_single_use(tmp_path: Path) 
     assert first.ok is True
     assert second.ok is False and second.code == "TEST_AUTHORIZATION_INVALID"
     assert len([event for event in events if event[:2] == ("flash", "modify")]) == 1
+
+
+def test_prepare_rejects_noncanonical_case_order_before_observe_or_authorization(
+    tmp_path: Path,
+) -> None:
+    project, build = _fixed_project(tmp_path)
+    data_root = (tmp_path / "plugin-data").absolute()
+
+    def factory() -> _SourceChangeBackend:
+        raise AssertionError("noncanonical cases must fail before backend construction")
+
+    context = workflows.TestingWorkflowContext(project, data_root, "session-r3")
+    result = asyncio.run(
+        workflows.target_test_prepare(
+            context,
+            probe_id=RAW_PROBE,
+            case_ids=tuple(reversed(CASES)),
+            _seams=workflows.TargetWorkflowSeams(factory),
+        )
+    )
+
+    assert result.ok is False and result.code == "TEST_PROTOCOL_INVALID"
+    workspace = WorkspacePaths.from_roots(
+        data_root, project, build["logicalProjectId"], "session-r3"
+    )
+    assert not (workspace.session_root / "target-authorizations").exists()
 
 
 def test_postflash_contradiction_consumes_and_creates_no_testrun_root(tmp_path: Path) -> None:

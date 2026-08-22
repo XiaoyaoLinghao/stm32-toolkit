@@ -66,9 +66,10 @@ _TARGET_METADATA = {
     "test_run_id",
 }
 _PHYSICAL_TARGET_METADATA = {
-    "action_digest", "execution_source", "flash_session_id", "import_workspace_id",
-    "lease_id", "origin_workspace_id", "physical_transport_evidence",
-    "probe_serial_hash", "test_manifest_sha256", "test_run_id",
+    "action_digest", "execution_source", "flash_session_id", "import_session_id",
+    "import_workspace_id", "intent_digest", "inventory_digest", "lease_id",
+    "origin_session_id", "origin_workspace_id", "physical_transport_evidence",
+    "probe_id", "target_id", "transport_config_digest",
 }
 def _publication_invalid(message: str, error: BaseException | None = None) -> None:
     failure = protocol_error("TEST_PROTOCOL_INVALID", message)
@@ -648,85 +649,90 @@ class TestRunPublisher:
         self,
         manifest: TestRunManifest,
         run_envelope: EvidenceEnvelope,
-        *,
-        action_digest: str,
-        workspace_id: str,
-        probe_serial_hash: str,
-        flash_session_id: str,
-        lease_id: str,
     ) -> PublishedTestRun:
         """Root one completed physical Target run from its retained raw Evidence."""
         if not isinstance(manifest, TestRunManifest) or manifest.mode != "target" or manifest.transport not in {"mailbox", "rtt", "uart", "semihosting"}:
             _publication_invalid("publication requires a physical Target manifest")
         if manifest.state not in _TERMINAL_STATES or manifest.stdout is not None or manifest.stderr is not None:
             _publication_invalid("physical Target manifest is not terminal")
-        for value, field in (
-            (action_digest, "action_digest"), (workspace_id, "workspace_id"),
-            (probe_serial_hash, "probe_serial_hash"),
+        if not isinstance(run_envelope, EvidenceEnvelope):
+            _publication_invalid("physical Target run Evidence is invalid")
+        metadata = dict(run_envelope.metadata)
+        if (
+            run_envelope.identity != manifest.identity
+            or run_envelope.operation != _PHYSICAL_TARGET_OPERATION
+            or run_envelope.parents != ()
+            or set(metadata) != _PHYSICAL_TARGET_METADATA
         ):
-            _hash(value, field)
-        if manifest.identity.workspace_id != workspace_id or not isinstance(run_envelope, EvidenceEnvelope):
-            _publication_invalid("physical Target provenance is incompatible")
+            _publication_invalid("physical Target run Evidence is invalid")
+        for field in (
+            "action_digest", "import_workspace_id", "intent_digest", "inventory_digest",
+            "origin_workspace_id", "probe_id", "transport_config_digest",
+        ):
+            _hash(metadata[field], field)
+        workspace_id = str(metadata["origin_workspace_id"])
         try:
             validate_execution_provenance(
                 execution_source="physical", physical_transport_evidence=True,
-                origin_workspace_id=workspace_id, import_workspace_id=workspace_id,
-                origin_session_id=manifest.identity.session_id,
-                current_session_id=manifest.identity.session_id,
+                origin_workspace_id=workspace_id,
+                import_workspace_id=str(metadata["import_workspace_id"]),
+                origin_session_id=str(metadata["origin_session_id"]),
+                current_session_id=str(metadata["import_session_id"]),
                 hardware_labels={
-                    "probe_id": probe_serial_hash,
-                    "target_id": str(manifest.identity.target_device),
-                    "flash_session_id": flash_session_id,
-                    "lease_id": lease_id,
+                    "probe_id": str(metadata["probe_id"]),
+                    "target_id": str(metadata["target_id"]),
+                    "flash_session_id": str(metadata["flash_session_id"]),
+                    "lease_id": str(metadata["lease_id"]),
                 },
             )
         except ValueError as error:
             _publication_invalid("physical Target provenance is incompatible", error)
-        if run_envelope.identity != manifest.identity or run_envelope.operation != "target-test-run":
-            _publication_invalid("physical Target run Evidence is invalid")
+        if (
+            metadata["action_digest"] != metadata["intent_digest"]
+            or metadata["execution_source"] != "physical"
+            or metadata["physical_transport_evidence"] is not True
+            or metadata["origin_workspace_id"] != manifest.identity.workspace_id
+            or metadata["import_workspace_id"] != manifest.identity.workspace_id
+            or metadata["origin_session_id"] != manifest.identity.session_id
+            or metadata["import_session_id"] != manifest.identity.session_id
+            or metadata["target_id"] != manifest.identity.target_device
+        ):
+            _publication_invalid("physical Target provenance is incompatible")
         raw_refs = tuple(
             artifact for artifact in run_envelope.artifacts
             if artifact.kind == "test-events" and artifact.media_type == "application/vnd.stm32.target-events"
         )
         if raw_refs != (manifest.raw_events,):
             _publication_invalid("physical Target raw Evidence is invalid")
-        payload = canonical_json_bytes(manifest.to_dict())
-        directory = self._collector.new_directory("test-manifest")
-        manifest_artifact = self._collector.write_and_ingest(
-            directory, "test-run-manifest.json", payload,
-            kind="test-manifest", media_type="application/json",
+        manifest_refs = tuple(
+            artifact for artifact in run_envelope.artifacts
+            if artifact.kind == "test-manifest" and artifact.media_type == "application/json"
         )
-        envelope = EvidenceEnvelope(
-            identity=manifest.identity,
-            operation=_PHYSICAL_TARGET_OPERATION,
-            produced_at_utc=manifest.ended_at_utc,
-            parents=(str(run_envelope.evidence_id),),
-            artifacts=(manifest_artifact, manifest.raw_events),
-            metadata={
-                "action_digest": action_digest,
-                "execution_source": "physical",
-                "flash_session_id": flash_session_id,
-                "import_workspace_id": workspace_id,
-                "lease_id": lease_id,
-                "origin_workspace_id": workspace_id,
-                "physical_transport_evidence": True,
-                "probe_serial_hash": probe_serial_hash,
-                "test_manifest_sha256": manifest_artifact.sha256,
-                "test_run_id": manifest.run_id,
-            },
-        )
-        self.evidence_store.put_envelope(run_envelope)
-        self.evidence_store.put_envelope(envelope)
+        if (
+            len(manifest_refs) != 1
+            or run_envelope.artifacts != (manifest_refs[0], manifest.raw_events)
+            or run_envelope.produced_at_utc != manifest.ended_at_utc
+        ):
+            _publication_invalid("physical Target manifest Evidence is invalid")
+        manifest_artifact = manifest_refs[0]
+        try:
+            retained_manifest = _decode_manifest_bytes(
+                self.evidence_store.read_artifact(
+                    manifest_artifact, maximum_bytes=MAX_EVIDENCE_READ_BYTES
+                )
+            )
+        except EvidenceValidationError:
+            raise
+        if retained_manifest != manifest:
+            _publication_invalid("physical Target manifest Evidence is incompatible")
+        if self.evidence_store.get_envelope(str(run_envelope.evidence_id)) != run_envelope:
+            _publication_invalid("physical Target run Evidence was not retained")
         root = RootRecord(
-            "test-run", manifest.run_id, str(envelope.evidence_id),
-            {
-                "mode": "target", "state": manifest.state,
-                "execution_source": "physical", "physical_transport_evidence": True,
-                "origin_workspace_id": workspace_id, "import_workspace_id": workspace_id,
-            },
+            "test-run", manifest.run_id, str(run_envelope.evidence_id),
+            {"mode": "target", "state": manifest.state, **metadata},
         )
         put_root(self.evidence_store, root)
-        return PublishedTestRun(manifest, manifest_artifact, envelope, root)
+        return PublishedTestRun(manifest, manifest_artifact, run_envelope, root)
 
 
 class TestRunRepository:
@@ -854,25 +860,38 @@ class TestRunRepository:
             or metadata["physical_transport_evidence"] is not True
             or metadata["import_workspace_id"] != workspace_id
             or envelope.identity.workspace_id != workspace_id
-            or metadata["test_run_id"] != run_id
-            or len(envelope.parents) != 1
+            or len(envelope.parents) != 0
         ):
             _corrupt("stored physical Target provenance is invalid")
-        _hash(metadata["action_digest"], "action_digest")
-        _hash(metadata["probe_serial_hash"], "probe_serial_hash")
-        try:
-            parent = self.evidence_store.get_envelope(envelope.parents[0])
-        except EvidenceValidationError as error:
-            _corrupt("stored physical Target run parent is absent", error)
-        parent_metadata = dict(parent.metadata)
-        if (
-            parent.operation != "target-test-run"
-            or parent.identity != envelope.identity
-            or parent_metadata.get("action_digest") != metadata["action_digest"]
-            or parent_metadata.get("probe_serial_hash") != metadata["probe_serial_hash"]
-            or parent_metadata.get("test_run_id") != run_id
+        for field in (
+            "action_digest", "import_workspace_id", "intent_digest", "inventory_digest",
+            "origin_workspace_id", "probe_id", "transport_config_digest",
         ):
-            _corrupt("stored physical Target run parent is invalid")
+            _hash(metadata[field], field)
+        if (
+            metadata["action_digest"] != metadata["intent_digest"]
+            or metadata["origin_session_id"] != envelope.identity.session_id
+            or metadata["import_session_id"] != envelope.identity.session_id
+            or metadata["target_id"] != envelope.identity.target_device
+        ):
+            _corrupt("stored physical Target provenance is invalid")
+        try:
+            validate_execution_provenance(
+                execution_source=metadata["execution_source"],
+                physical_transport_evidence=metadata["physical_transport_evidence"],
+                origin_workspace_id=metadata["origin_workspace_id"],
+                import_workspace_id=metadata["import_workspace_id"],
+                origin_session_id=metadata["origin_session_id"],
+                current_session_id=metadata["import_session_id"],
+                hardware_labels={
+                    "probe_id": metadata["probe_id"],
+                    "target_id": metadata["target_id"],
+                    "flash_session_id": metadata["flash_session_id"],
+                    "lease_id": metadata["lease_id"],
+                },
+            )
+        except ValueError as error:
+            _corrupt("stored physical Target provenance is invalid", error)
         manifest_refs = tuple(
             artifact for artifact in envelope.artifacts
             if artifact.kind == "test-manifest" and artifact.media_type == "application/json"
@@ -884,8 +903,6 @@ class TestRunRepository:
         if len(manifest_refs) != 1 or len(raw_refs) != 1 or len(envelope.artifacts) != 2:
             _corrupt("stored physical Target artifacts are invalid")
         manifest_artifact = manifest_refs[0]
-        if manifest_artifact.sha256 != metadata["test_manifest_sha256"]:
-            _corrupt("stored physical Target manifest digest is invalid")
         manifest = _decode_manifest_bytes(
             self.evidence_store.read_artifact(manifest_artifact, maximum_bytes=MAX_EVIDENCE_READ_BYTES)
         )
@@ -896,11 +913,7 @@ class TestRunRepository:
             or manifest.raw_events != raw_refs[0]
         ):
             _corrupt("stored physical Target manifest is invalid")
-        expected_root = {
-            "mode": "target", "state": manifest.state,
-            "execution_source": "physical", "physical_transport_evidence": True,
-            "origin_workspace_id": workspace_id, "import_workspace_id": workspace_id,
-        }
+        expected_root = {"mode": "target", "state": manifest.state, **metadata}
         if root.manifest_id != envelope.evidence_id or root.metadata != expected_root:
             _corrupt("stored physical Target root is invalid")
         return PublishedTestRun(manifest, manifest_artifact, envelope, root)

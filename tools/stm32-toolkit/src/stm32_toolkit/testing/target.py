@@ -718,18 +718,19 @@ class PreparedTargetRun:
 
 
 @dataclass(frozen=True)
-class ConsumedTargetRun:
-    action_digest: str
-    binding: Mapping[str, object]
-
-
-@dataclass(frozen=True)
 class PhysicalRunProvenance:
     workspace_id: str
     session_id: str
     probe_serial_hash: str
     flash_session_id: str
     lease_id: str
+
+
+@dataclass(frozen=True)
+class ConsumedTargetRun:
+    action_digest: str
+    binding: Mapping[str, object]
+    provenance: PhysicalRunProvenance | None = None
 
 
 class PhysicalTargetFlashAdapter:
@@ -1183,7 +1184,6 @@ class TargetTestRunner:
         current_revision: str, current_inventory_digest: str, now: datetime | None = None,
         consumed: ConsumedTargetRun | None = None,
         current_input_snapshot_sha256: str | None = None,
-        physical_provenance: PhysicalRunProvenance | None = None,
     ) -> Mapping[str, object]:
         transport = None
         transport_close_attempted = False
@@ -1193,6 +1193,7 @@ class TargetTestRunner:
         raw = bytearray()
         frames: list[TargetFrame] = []
         action_digest = authorized_digest
+        physical_provenance: PhysicalRunProvenance | None = None
         try:
             instant = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
             if consumed is None:
@@ -1205,6 +1206,7 @@ class TargetTestRunner:
                     raise TargetRunError("TEST_AUTHORIZATION_INVALID", "Target authorization value is invalid")
                 binding = consumed.binding
                 action_digest = consumed.action_digest
+            physical_provenance = consumed.provenance if consumed is not None else None
             try:
                 expires_at = datetime.fromisoformat(
                     str(binding["expires_at_utc"])[:-1] + "+00:00"
@@ -1220,9 +1222,9 @@ class TargetTestRunner:
                 or ("input_snapshot_sha256" in binding and current_input_snapshot_sha256 != binding["input_snapshot_sha256"])
             ):
                 raise TargetRunError("TEST_INVENTORY_CHANGED", "Project revision or inventory changed")
-            if isinstance(self._flash, PhysicalTargetFlashAdapter):
+            if physical_provenance is not None:
                 if not isinstance(physical_provenance, PhysicalRunProvenance):
-                    raise TargetRunError("TEST_AUTHORIZATION_INVALID", "Physical provenance is required")
+                    raise TargetRunError("TEST_AUTHORIZATION_INVALID", "Physical provenance is invalid")
                 endpoint = getattr(self._probe, "endpoint", None)
                 try:
                     validate_execution_provenance(
@@ -1246,8 +1248,8 @@ class TargetTestRunner:
                     or getattr(endpoint, "lease_id", None) != physical_provenance.lease_id
                 ):
                     raise TargetRunError("TEST_IDENTITY_MISMATCH", "Physical provenance changed")
-            elif physical_provenance is not None:
-                raise TargetRunError("TEST_AUTHORIZATION_INVALID", "Physical provenance is invalid")
+            elif isinstance(self._flash, PhysicalTargetFlashAdapter):
+                raise TargetRunError("TEST_AUTHORIZATION_INVALID", "Physical provenance is required")
             identity = await _invoke_before_deadline(
                 self._probe.target_identity,
                 deadline=deadline,
@@ -1508,20 +1510,45 @@ class TargetTestRunner:
                 code="TEST_TIMEOUT",
                 message="Target Evidence deadline elapsed",
             )
-            envelope = EvidenceEnvelope(
-                identity=identity,
-                operation="target-test-run",
-                produced_at_utc=str(terminal["ended_at_utc"]),
-                parents=(),
-                artifacts=(raw_artifact, manifest_artifact),
-                metadata={
-                    "action_digest": action_digest,
-                    "probe_serial_hash": binding["probe_serial_hash"],
-                    "test_run_id": manifest.run_id,
-                    "test_manifest_sha256": manifest_artifact.sha256,
-                    "transport_config_digest": transport_identity["config_digest"],
-                },
-            )
+            if physical_provenance is None:
+                envelope = EvidenceEnvelope(
+                    identity=identity,
+                    operation="target-test-run",
+                    produced_at_utc=str(terminal["ended_at_utc"]),
+                    parents=(),
+                    artifacts=(raw_artifact, manifest_artifact),
+                    metadata={
+                        "action_digest": action_digest,
+                        "probe_serial_hash": binding["probe_serial_hash"],
+                        "test_run_id": manifest.run_id,
+                        "test_manifest_sha256": manifest_artifact.sha256,
+                        "transport_config_digest": transport_identity["config_digest"],
+                    },
+                )
+            else:
+                envelope = EvidenceEnvelope(
+                    identity=identity,
+                    operation="target-test-physical",
+                    produced_at_utc=str(terminal["ended_at_utc"]),
+                    parents=(),
+                    artifacts=(manifest_artifact, raw_artifact),
+                    metadata={
+                        "action_digest": action_digest,
+                        "execution_source": "physical",
+                        "flash_session_id": physical_provenance.flash_session_id,
+                        "import_session_id": str(binding["session_id"]),
+                        "import_workspace_id": str(binding["workspace_id"]),
+                        "intent_digest": action_digest,
+                        "inventory_digest": str(binding["inventory_digest"]),
+                        "lease_id": physical_provenance.lease_id,
+                        "origin_session_id": physical_provenance.session_id,
+                        "origin_workspace_id": physical_provenance.workspace_id,
+                        "physical_transport_evidence": True,
+                        "probe_id": physical_provenance.probe_serial_hash,
+                        "target_id": str(dict(binding["target"])["target_id"]),
+                        "transport_config_digest": transport_identity["config_digest"],
+                    },
+                )
             _require_before_deadline(
                 deadline=deadline,
                 code="TEST_TIMEOUT",

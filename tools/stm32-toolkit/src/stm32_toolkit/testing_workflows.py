@@ -46,6 +46,7 @@ from stm32_toolkit.testing.replay import (
     load_target_replay_fixture,
 )
 from stm32_toolkit.testing.target import (
+    ConsumedTargetRun,
     TargetFrameDecoder,
     TargetRunBinding,
     TargetRunValidator,
@@ -317,7 +318,16 @@ def _valid_case_ids(case_ids: object) -> bool:
         return False
     if not all(isinstance(case_id, str) and bool(case_id) for case_id in case_ids):
         return False
-    return bool(case_ids) and len(case_ids) <= 4096 and len(case_ids) == len(set(case_ids))
+    try:
+        canonical = tuple(sorted(case_ids, key=lambda case_id: case_id.encode("utf-8")))
+    except UnicodeEncodeError:
+        return False
+    return (
+        bool(case_ids)
+        and len(case_ids) <= 4096
+        and len(case_ids) == len(set(case_ids))
+        and case_ids == canonical
+    )
 
 
 @dataclass(frozen=True)
@@ -577,30 +587,27 @@ async def target_test_execute(
             lambda name: ProbeClientTargetTransport(client, project_config, name),
             artifact_collector=collector, owns_probe=False,
         )
+        physical_consumed = ConsumedTargetRun(
+            consumed.action_digest,
+            consumed.binding,
+            PhysicalRunProvenance(
+                state.workspace.workspace_id, state.workspace.session_id, probe_hash,
+                state.workspace.session_id, endpoint.lease_id,
+            ),
+        )
         result = await runner.run(
             None, authorized_action_digest,
             current_revision=facts.git_commit,
             current_inventory_digest=str(binding["inventory_digest"]),
             current_input_snapshot_sha256=facts.input_snapshot_sha256,
-            consumed=consumed,
-            physical_provenance=PhysicalRunProvenance(
-                state.workspace.workspace_id, state.workspace.session_id, probe_hash,
-                state.workspace.session_id, endpoint.lease_id,
-            ),
+            consumed=physical_consumed,
         )
         manifest = result["test_manifest"]
         run_envelope = result["evidence"]
         publisher = _publisher_factory(
             state.evidence_store, state.workspace.project_root, state.results_root
         )
-        published = publisher.publish_target_physical(
-            manifest, run_envelope,
-            action_digest=authorized_action_digest,
-            workspace_id=state.workspace.workspace_id,
-            probe_serial_hash=probe_hash,
-            flash_session_id=state.workspace.session_id,
-            lease_id=endpoint.lease_id,
-        )
+        published = publisher.publish_target_physical(manifest, run_envelope)
         return OperationResult.success(_TARGET_EXECUTE_OPERATION, published.public_data())
     except Exception as error:
         return _exception_result(_TARGET_EXECUTE_OPERATION, error)

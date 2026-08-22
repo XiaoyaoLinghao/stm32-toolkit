@@ -46,15 +46,15 @@ def _show_argv(run_id: str = "run-1") -> list[str]:
 
 
 def _target_prepare_argv(*case_ids: str) -> list[str]:
-    argv = ["test", "target", "prepare", "--probe", "probe-a"]
+    argv = ["test", "target", "prepare", "--probe-id", "probe-a"]
     for case_id in case_ids:
-        argv.extend(["--case", case_id])
+        argv.extend(["--case-id", case_id])
     return [*argv, *CONTEXT_ARGS]
 
 
 def _target_execute_argv() -> list[str]:
     return [
-        "test", "target", "execute", "--probe", "probe-a",
+        "test", "target", "execute", "--probe-id", "probe-a",
         "--authorized-action-digest", DIGEST, *CONTEXT_ARGS,
     ]
 
@@ -96,6 +96,58 @@ def test_physical_target_cli_is_one_async_workflow_call(
     assert cli.main(argv) == 0
     assert calls == [expected]
     assert json.loads(capsys.readouterr().out)["ok"] is True
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["test", "target", "prepare", "--probe", "probe-a", "--case-id", "fails", *CONTEXT_ARGS],
+        ["test", "target", "prepare", "--probe-id", "probe-a", "--case", "fails", *CONTEXT_ARGS],
+        ["test", "target", "execute", "--probe", "probe-a", "--authorized-action-digest", DIGEST, *CONTEXT_ARGS],
+    ],
+)
+def test_physical_target_cli_rejects_superseded_option_spellings(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    argv: list[str],
+) -> None:
+    calls: list[str] = []
+    monkeypatch.setattr(cli, "target_test_prepare", lambda *args, **kwargs: calls.append("prepare"))
+    monkeypatch.setattr(cli, "target_test_execute", lambda *args, **kwargs: calls.append("execute"))
+
+    assert cli.main(argv) == 2
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err.endswith("invalid arguments\n")
+    assert calls == []
+
+
+@pytest.mark.parametrize(
+    ("argv", "workflow", "operation"),
+    [
+        (_target_prepare_argv("fails"), "target_test_prepare", "test.target.prepare"),
+        (_target_execute_argv(), "target_test_execute", "test.target.execute"),
+    ],
+)
+def test_physical_target_cli_sanitizes_escaping_exceptions_with_exact_operation(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    argv: list[str],
+    workflow: str,
+    operation: str,
+) -> None:
+    async def explode(*args: object, **kwargs: object) -> object:
+        raise RuntimeError("SECRET physical adapter failure")
+
+    monkeypatch.setattr(cli, workflow, explode)
+    assert cli.main(argv) == 2
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+    assert payload == OperationResult.failure(
+        operation, "HARDWARE_INTERNAL_ERROR", "Hardware command failed", {}
+    ).to_dict()
+    assert "SECRET" not in captured.out
+    assert captured.err == ""
 
 
 def test_discover_dispatches_exactly_once_and_writes_one_json_result(

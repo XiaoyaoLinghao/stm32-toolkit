@@ -82,6 +82,10 @@ _REPARSE_POINT = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
 class _SafeArgumentParser(argparse.ArgumentParser):
     """Argparse contract that never echoes caller values on grammar errors."""
 
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        kwargs.setdefault("allow_abbrev", False)
+        super().__init__(*args, **kwargs)
+
     def error(self, message: str) -> None:
         self.exit(2, f"{self.prog}: invalid arguments\n")
 
@@ -310,14 +314,14 @@ def _build_parser() -> argparse.ArgumentParser:
     target_prepare = target_commands.add_parser("prepare")
     target_prepare.set_defaults(operation="test.target.prepare")
     _add_testing_context(target_prepare)
-    target_prepare.add_argument("--probe", required=True)
+    target_prepare.add_argument("--probe-id", dest="probe_id", required=True)
     target_prepare.add_argument(
-        "--case", dest="case_ids", action=_UniqueCaseAction, required=True, default=()
+        "--case-id", dest="case_ids", action=_UniqueCaseAction, required=True, default=()
     )
     target_execute = target_commands.add_parser("execute")
     target_execute.set_defaults(operation="test.target.execute")
     _add_testing_context(target_execute)
-    target_execute.add_argument("--probe", required=True)
+    target_execute.add_argument("--probe-id", dest="probe_id", required=True)
     target_execute.add_argument(
         "--authorized-action-digest", required=True, type=_testing_digest
     )
@@ -841,6 +845,8 @@ def _validate_cli_modes(parser: argparse.ArgumentParser, args: argparse.Namespac
 
 
 def _hardware_operation_name(args: argparse.Namespace) -> str:
+    if args.command == "test" and args.test_command == "target":
+        return f"test.target.{args.target_command}"
     if args.command == "probe":
         return "stm32_probe_list"
     if args.command == "flash":
@@ -868,11 +874,11 @@ async def _hardware_operation_result(
         context = TestingWorkflowContext(project_root, args.data_root, args.session_id)
         if args.target_command == "prepare":
             return await target_test_prepare(
-                context, probe_id=args.probe, case_ids=args.case_ids
+                context, probe_id=args.probe_id, case_ids=args.case_ids
             )
         return await target_test_execute(
             context,
-            probe_id=args.probe,
+            probe_id=args.probe_id,
             authorized_action_digest=args.authorized_action_digest,
         )
     common = (project_root, args.data_root, args.session_id)
