@@ -24,6 +24,7 @@ from stm32_toolkit.monitor_replay_contract import (
     MONITOR_REPLAY_SCHEMA,
     MONITOR_REPLAY_SOURCE,
     MONITOR_RUN_REF_SCHEMA,
+    MONITOR_RUN_REF_SCHEMA_V2,
     ReplayContractError,
     canonical_replay_json_bytes as _contract_canonical_replay_json_bytes,
     decode_canonical_json_bytes,
@@ -31,6 +32,8 @@ from stm32_toolkit.monitor_replay_contract import (
     validate_run_reference,
 )
 from stm32_toolkit.evidence.store import EvidenceStore
+from stm32_toolkit.project_model import ProjectManifestError, load_project_model
+from stm32_toolkit.testing.publication import TestRunRepository
 from stm32_toolkit.paths import WorkspacePaths, require_safe_session_id
 
 from .history import HistoryBatchSlice, HistoryQuery, HistoryStore, MAX_HISTORY_VALUES
@@ -49,6 +52,11 @@ MONITOR_RUN_ROOT_TYPE = "monitor-run"
 MONITOR_RUN_REF_ROOT_TYPE = "monitor-run-ref"
 MONITOR_RUN_REF_OPERATION = "monitor-run-ref"
 MONITOR_RUN_REF_ARTIFACT_KIND = "monitor-run-ref"
+MONITOR_PHYSICAL_INVALID = "MONITOR_PHYSICAL_INVALID"
+INCOMPATIBLE_IDENTITY = "INCOMPATIBLE_IDENTITY"
+MONITOR_PHYSICAL_TRANSCRIPT_SCHEMA = "stm32-monitor-physical-transcript/1"
+MONITOR_PHYSICAL_SOURCE = "toolkit-live-history"
+MONITOR_PHYSICAL_WINDOW_OPERATION = "monitor-physical-window"
 
 MONITOR_REPLAY_INVALID = "MONITOR_REPLAY_INVALID"
 EVIDENCE_INTEGRITY_FAILURE = "EVIDENCE_INTEGRITY_FAILURE"
@@ -60,6 +68,8 @@ _ERROR_CODES = frozenset(
         EVIDENCE_INTEGRITY_FAILURE,
         OPERATION_CONFLICT,
         ENVIRONMENT_FAILURE,
+        MONITOR_PHYSICAL_INVALID,
+        INCOMPATIBLE_IDENTITY,
     }
 )
 _ROLES = frozenset({"failed-before", "fixed-after"})
@@ -100,6 +110,10 @@ _REF_FIELDS = (
     "projected_batch_sha256s",
     "transcript_evidence_id",
     "run_ref_sha256",
+)
+_REF_FIELDS_V2 = tuple(
+    "source_record_sha256" if field == "fixture_sha256" else field
+    for field in _REF_FIELDS
 )
 _EVIDENCE_METADATA_FIELDS = frozenset(
     {
@@ -209,7 +223,7 @@ def _require_text(value: object, label: str, *, code: str = MONITOR_REPLAY_INVAL
 def _parse_binding(value: object) -> ObservationBinding:
     try:
         binding = ObservationBinding.from_dict(cast(dict[str, object], value))
-    except (TypeError, ValueError, OverflowError) as error:
+    except (KeyError, TypeError, ValueError, OverflowError) as error:
         raise MonitorReplayError(MONITOR_REPLAY_INVALID, "replay binding is invalid") from error
     return binding
 
@@ -226,15 +240,15 @@ def _parse_sample(value: object) -> SampleValue:
             code=cast(str | None, sample_value["code"]),
             definition=cast(dict[str, object] | None, sample_value["definition"]),
         )
-    except (TypeError, ValueError, OverflowError) as error:
+    except (KeyError, TypeError, ValueError, OverflowError) as error:
         raise MonitorReplayError(MONITOR_REPLAY_INVALID, "replay sample is invalid") from error
     return sample
 
 
 def _parse_batch(value: object) -> SampleBatch:
-    batch_value = cast(dict[str, object], value)
-    binding = _parse_binding(batch_value["binding"])
     try:
+        batch_value = cast(dict[str, object], value)
+        binding = _parse_binding(batch_value["binding"])
         batch = SampleBatch(
             binding=binding,
             group_id=UUID(cast(str, batch_value["groupId"])),
@@ -252,7 +266,7 @@ def _parse_batch(value: object) -> SampleBatch:
         )
     except MonitorReplayError:
         raise
-    except (TypeError, ValueError, OverflowError) as error:
+    except (KeyError, TypeError, ValueError, OverflowError) as error:
         raise MonitorReplayError(MONITOR_REPLAY_INVALID, "replay batch is invalid") from error
     return batch
 
@@ -471,11 +485,13 @@ class MonitorRunRef:
             _fail(MONITOR_REPLAY_INVALID, "run reference digest is invalid")
 
     @classmethod
-    def from_value(cls, value: object) -> "MonitorRunRef":
+    def from_value(cls, value: object) -> "MonitorRunRef | MonitorRunRefV2":
         if type(value) is cls:
             return value
         try:
             wire = validate_run_reference(value)
+            if wire["schema"] == MONITOR_RUN_REF_SCHEMA_V2:
+                return MonitorRunRefV2.from_value(wire)
             return cls(
                 **{
                     field_name: (
@@ -526,6 +542,126 @@ class MonitorRunRef:
             "start_captured_unix_ns": self.start_captured_unix_ns,
             "end_captured_unix_ns_exclusive": self.end_captured_unix_ns_exclusive,
             "fixture_sha256": self.fixture_sha256,
+            "projected_batch_sha256s": list(self.projected_batch_sha256s),
+            "transcript_evidence_id": self.transcript_evidence_id,
+            "run_ref_sha256": self.run_ref_sha256,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class MonitorRunRefV2:
+    """Generic Monitor run reference v2 with a source-record digest."""
+
+    schema: str
+    operation_id: str
+    scenario_role: str
+    execution_source: str
+    physical_transport_evidence: bool
+    origin_workspace_id: str
+    import_workspace_id: str
+    logical_project_id: str
+    origin_session_id: str
+    projected_session_id: str
+    origin_run_id: str
+    projected_run_id: str
+    target_device: str
+    probe_id: str
+    physical_target: str
+    build_id: str
+    elf_sha256: str
+    input_snapshot_sha256: str
+    git_head: str
+    git_dirty: bool
+    flash_session_id: str
+    lease_id: str
+    dwarf_sha256: str
+    svd_sha256: str | None
+    group_id: str
+    group_revision: int
+    start_sequence: int
+    end_sequence_exclusive: int
+    start_captured_unix_ns: int
+    end_captured_unix_ns_exclusive: int
+    source_record_sha256: str
+    projected_batch_sha256s: tuple[str, ...]
+    transcript_evidence_id: str
+    run_ref_sha256: str
+
+    def __post_init__(self) -> None:
+        if self.schema != MONITOR_RUN_REF_SCHEMA_V2:
+            _fail(MONITOR_REPLAY_INVALID, "monitor run reference schema is invalid")
+        try:
+            validate_run_reference(self.to_dict())
+        except ReplayContractError as error:
+            raise MonitorReplayError(
+                MONITOR_REPLAY_INVALID,
+                "monitor run reference failed closed validation",
+            ) from error
+
+    @classmethod
+    def from_value(cls, value: object) -> "MonitorRunRefV2":
+        if type(value) is cls:
+            return value
+        try:
+            wire = validate_run_reference(value)
+            if wire["schema"] != MONITOR_RUN_REF_SCHEMA_V2:
+                raise ReplayContractError("monitor run reference schema is invalid")
+            return cls(
+                **{
+                    field_name: (
+                        tuple(wire[field_name])
+                        if field_name == "projected_batch_sha256s"
+                        else wire[field_name]
+                    )
+                    for field_name in _REF_FIELDS_V2
+                }
+            )
+        except ReplayContractError as error:
+            raise MonitorReplayError(
+                MONITOR_REPLAY_INVALID,
+                "monitor run reference failed closed validation",
+            ) from error
+        except MonitorReplayError:
+            raise
+        except (TypeError, ValueError, OverflowError) as error:
+            raise MonitorReplayError(
+                MONITOR_REPLAY_INVALID,
+                "monitor run reference is invalid",
+            ) from error
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "schema": self.schema,
+            "operation_id": self.operation_id,
+            "scenario_role": self.scenario_role,
+            "execution_source": self.execution_source,
+            "physical_transport_evidence": self.physical_transport_evidence,
+            "origin_workspace_id": self.origin_workspace_id,
+            "import_workspace_id": self.import_workspace_id,
+            "logical_project_id": self.logical_project_id,
+            "origin_session_id": self.origin_session_id,
+            "projected_session_id": self.projected_session_id,
+            "origin_run_id": self.origin_run_id,
+            "projected_run_id": self.projected_run_id,
+            "target_device": self.target_device,
+            "probe_id": self.probe_id,
+            "physical_target": self.physical_target,
+            "build_id": self.build_id,
+            "elf_sha256": self.elf_sha256,
+            "input_snapshot_sha256": self.input_snapshot_sha256,
+            "git_head": self.git_head,
+            "git_dirty": self.git_dirty,
+            "flash_session_id": self.flash_session_id,
+            "lease_id": self.lease_id,
+            "dwarf_sha256": self.dwarf_sha256,
+            "svd_sha256": self.svd_sha256,
+            "group_id": self.group_id,
+            "group_revision": self.group_revision,
+            "start_sequence": self.start_sequence,
+            "end_sequence_exclusive": self.end_sequence_exclusive,
+            "start_captured_unix_ns": self.start_captured_unix_ns,
+            "end_captured_unix_ns_exclusive": self.end_captured_unix_ns_exclusive,
+            "source_record_sha256": self.source_record_sha256,
             "projected_batch_sha256s": list(self.projected_batch_sha256s),
             "transcript_evidence_id": self.transcript_evidence_id,
             "run_ref_sha256": self.run_ref_sha256,
@@ -1130,6 +1266,907 @@ def _publish_reference(
         ) from error
 
 
+def _physical_invalid(message: str) -> None:
+    _fail(MONITOR_PHYSICAL_INVALID, message)
+
+
+def _physical_identity_error(message: str) -> None:
+    _fail(INCOMPATIBLE_IDENTITY, message)
+
+
+def _physical_int(value: object, label: str) -> int:
+    if type(value) is not int or isinstance(value, bool) or not 0 <= value <= MAX_SIGNED_INT64:
+        _physical_invalid(f"{label} is invalid")
+    return cast(int, value)
+
+
+def _physical_operation_id(value: object, label: str) -> str:
+    try:
+        return _require_uuid(value, label, code=MONITOR_PHYSICAL_INVALID)
+    except MonitorReplayError:
+        raise
+
+
+def _physical_probe_selector(value: object) -> str:
+    if (
+        type(value) is not str
+        or not value
+        or value.strip() != value
+        or unicodedata.normalize("NFC", value) != value
+        or any(ord(character) < 32 for character in value)
+    ):
+        _physical_invalid("probe_id is invalid")
+    return cast(str, value)
+
+
+def _physical_expected_root_metadata(reference: MonitorRunRefV2) -> dict[str, object]:
+    return {
+        "source_record_sha256": reference.source_record_sha256,
+        "run_ref_sha256": reference.run_ref_sha256,
+        "origin_workspace_id": reference.origin_workspace_id,
+        "import_workspace_id": reference.import_workspace_id,
+        "execution_source": "physical",
+        "physical_transport_evidence": True,
+    }
+
+
+def _physical_reference_metadata(reference: MonitorRunRefV2) -> dict[str, object]:
+    return {
+        "operation_id": reference.operation_id,
+        "run_ref_sha256": reference.run_ref_sha256,
+        "source_record_sha256": reference.source_record_sha256,
+        "scenario_role": reference.scenario_role,
+        "origin_workspace_id": reference.origin_workspace_id,
+        "import_workspace_id": reference.import_workspace_id,
+        "execution_source": "physical",
+        "physical_transport_evidence": True,
+    }
+
+
+def _physical_transcript_wire(
+    *,
+    scenario_role: str,
+    test_run_id: str,
+    batches: tuple[SampleBatch, ...],
+) -> dict[str, object]:
+    if not batches:
+        _physical_identity_error("physical history window is empty")
+    return {
+        "schema": MONITOR_PHYSICAL_TRANSCRIPT_SCHEMA,
+        "source": MONITOR_PHYSICAL_SOURCE,
+        "scenario_role": scenario_role,
+        "test_run_id": test_run_id,
+        "execution_source": "physical",
+        "physical_transport_evidence": True,
+        "binding": batches[0].binding.to_dict(),
+        "batches": [batch.to_dict() for batch in batches],
+    }
+
+
+def _physical_transcript_envelope(
+    *,
+    raw: bytes,
+    scenario_role: str,
+    test_run_id: str,
+    batches: tuple[SampleBatch, ...],
+    paths: WorkspacePaths,
+) -> EvidenceEnvelope:
+    binding = batches[0].binding
+    source_record_sha256 = hashlib.sha256(raw).hexdigest()
+    artifact = ArtifactRef(
+        sha256=source_record_sha256,
+        size_bytes=len(raw),
+        relative_path=f"objects/sha256/{source_record_sha256[:2]}/{source_record_sha256}",
+        kind="monitor-physical-transcript",
+        media_type="application/json",
+    )
+    try:
+        identity = EvidenceIdentity(
+            workspace_id=binding.workspace_id,
+            project_id=binding.logical_project_id,
+            session_id=binding.session_id,
+            build_id=binding.build_id,
+            elf_sha256=binding.elf_sha256,
+            target_device=binding.target_device,
+            input_snapshot_sha256=binding.input_snapshot_sha256,
+            git_commit=binding.git_head,
+            git_dirty=binding.git_dirty,
+        )
+        metadata = {
+            "operation_id": str(batches[0].run_id),
+            "scenario_role": scenario_role,
+            "test_run_id": test_run_id,
+            "origin_workspace_id": binding.workspace_id,
+            "import_workspace_id": paths.workspace_id,
+            "origin_session_id": binding.session_id,
+            "projected_session_id": paths.session_id,
+            "origin_run_id": str(batches[0].run_id),
+            "projected_run_id": str(batches[0].run_id),
+            "source_record_sha256": source_record_sha256,
+            "execution_source": "physical",
+            "physical_transport_evidence": True,
+        }
+        return EvidenceEnvelope(
+            identity=identity,
+            operation=MONITOR_PHYSICAL_WINDOW_OPERATION,
+            produced_at_utc=unix_ns_to_utc(batches[0].captured_unix_ns),
+            parents=(),
+            artifacts=(artifact,),
+            metadata=metadata,
+        )
+    except EvidenceValidationError as error:
+        raise MonitorReplayError(
+            EVIDENCE_INTEGRITY_FAILURE,
+            "physical Monitor transcript Evidence is invalid",
+        ) from error
+
+
+def _physical_reference_envelope(
+    reference: MonitorRunRefV2,
+    transcript_envelope: EvidenceEnvelope,
+) -> EvidenceEnvelope:
+    raw = canonical_replay_json_bytes(reference.to_dict())
+    digest = hashlib.sha256(raw).hexdigest()
+    artifact = ArtifactRef(
+        sha256=digest,
+        size_bytes=len(raw),
+        relative_path=f"objects/sha256/{digest[:2]}/{digest}",
+        kind=MONITOR_RUN_REF_ARTIFACT_KIND,
+        media_type="application/json",
+    )
+    try:
+        return EvidenceEnvelope(
+            identity=transcript_envelope.identity,
+            operation=MONITOR_RUN_REF_OPERATION,
+            produced_at_utc=transcript_envelope.produced_at_utc,
+            parents=(reference.transcript_evidence_id,),
+            artifacts=(artifact,),
+            metadata=_physical_reference_metadata(reference),
+        )
+    except EvidenceValidationError as error:
+        raise MonitorReplayError(
+            EVIDENCE_INTEGRITY_FAILURE,
+            "physical Monitor run reference Evidence is invalid",
+        ) from error
+
+
+def _physical_reference_root(
+    reference: MonitorRunRefV2,
+    envelope: EvidenceEnvelope,
+) -> RootRecord:
+    try:
+        return RootRecord(
+            root_type=MONITOR_RUN_REF_ROOT_TYPE,
+            root_id=reference.operation_id,
+            manifest_id=str(envelope.evidence_id),
+            metadata=_physical_reference_metadata(reference),
+        )
+    except EvidenceValidationError as error:
+        raise MonitorReplayError(
+            EVIDENCE_INTEGRITY_FAILURE,
+            "physical Monitor run reference root is invalid",
+        ) from error
+
+
+def _physical_transcript_root(reference: MonitorRunRefV2) -> RootRecord:
+    try:
+        return RootRecord(
+            root_type=MONITOR_RUN_ROOT_TYPE,
+            root_id=reference.operation_id,
+            manifest_id=reference.transcript_evidence_id,
+            metadata=_physical_expected_root_metadata(reference),
+        )
+    except EvidenceValidationError as error:
+        raise MonitorReplayError(
+            EVIDENCE_INTEGRITY_FAILURE,
+            "physical Monitor transcript root is invalid",
+        ) from error
+
+
+def _physical_make_reference(
+    *,
+    scenario_role: str,
+    operation_id: str,
+    test_run_id: str,
+    batches: tuple[SampleBatch, ...],
+    transcript_evidence_id: str,
+    source_record_sha256: str,
+) -> MonitorRunRefV2:
+    first = batches[0]
+    last = batches[-1]
+    binding = first.binding
+    payload: dict[str, object] = {
+        "schema": MONITOR_RUN_REF_SCHEMA_V2,
+        "operation_id": operation_id,
+        "scenario_role": scenario_role,
+        "execution_source": "physical",
+        "physical_transport_evidence": True,
+        "origin_workspace_id": binding.workspace_id,
+        "import_workspace_id": binding.workspace_id,
+        "logical_project_id": binding.logical_project_id,
+        "origin_session_id": binding.session_id,
+        "projected_session_id": binding.session_id,
+        "origin_run_id": operation_id,
+        "projected_run_id": operation_id,
+        "target_device": binding.target_device,
+        "probe_id": binding.probe_id,
+        "physical_target": binding.physical_target,
+        "build_id": binding.build_id,
+        "elf_sha256": binding.elf_sha256,
+        "input_snapshot_sha256": binding.input_snapshot_sha256,
+        "git_head": binding.git_head,
+        "git_dirty": binding.git_dirty,
+        "flash_session_id": binding.flash_session_id,
+        "lease_id": binding.lease_id,
+        "dwarf_sha256": binding.dwarf_sha256,
+        "svd_sha256": binding.svd_sha256,
+        "group_id": str(first.group_id),
+        "group_revision": first.group_revision,
+        "start_sequence": first.sequence,
+        "end_sequence_exclusive": last.sequence + 1,
+        "start_captured_unix_ns": first.captured_unix_ns,
+        "end_captured_unix_ns_exclusive": last.captured_unix_ns + 1,
+        "source_record_sha256": source_record_sha256,
+        "projected_batch_sha256s": [_batch_digest(batch) for batch in batches],
+        "transcript_evidence_id": transcript_evidence_id,
+        "run_ref_sha256": "0" * 64,
+    }
+    unsigned = dict(payload)
+    unsigned.pop("run_ref_sha256")
+    payload["run_ref_sha256"] = hashlib.sha256(
+        canonical_replay_json_bytes(unsigned)
+    ).hexdigest()
+    try:
+        reference = MonitorRunRefV2.from_value(payload)
+    except MonitorReplayError:
+        raise
+    return reference
+
+
+def _physical_history_batches(
+    *,
+    paths: WorkspacePaths,
+    run_id: str,
+    group_id: UUID,
+    start_sequence: int,
+    end_sequence_exclusive: int,
+    start_captured_unix_ns: int,
+    end_captured_unix_ns_exclusive: int,
+) -> tuple[SampleBatch, ...]:
+    try:
+        history = HistoryStore(paths)
+    except (OSError, TypeError, ValueError) as error:
+        raise MonitorReplayError(
+            ENVIRONMENT_FAILURE,
+            "physical Monitor history provider failed",
+        ) from error
+    except Exception as error:
+        raise MonitorReplayError(
+            ENVIRONMENT_FAILURE,
+            "physical Monitor history provider failed",
+        ) from error
+    cursor: str | None = None
+    seen_cursors: set[str] = set()
+    slices: list[HistoryBatchSlice] = []
+    try:
+        monitor_run_uuid = UUID(run_id)
+        while True:
+            result = history.query_history(
+                HistoryQuery(
+                    session_id=paths.session_id,
+                    start_ns=start_captured_unix_ns,
+                    end_ns=end_captured_unix_ns_exclusive,
+                    limit=MAX_HISTORY_VALUES,
+                    cursor=cursor,
+                    run_id=monitor_run_uuid,
+                    group_id=group_id,
+                )
+            )
+            if not result.ok or result.data is None:
+                if result.code in {"MONITOR_STORAGE_CORRUPT", "MONITOR_STORAGE_INVALID"}:
+                    _fail(EVIDENCE_INTEGRITY_FAILURE, "physical Monitor history is corrupt")
+                _fail(ENVIRONMENT_FAILURE, "physical Monitor history provider failed")
+            page = result.data
+            slices.extend(page.batches)
+            if len(slices) > MAX_REPLAY_BATCHES:
+                _physical_identity_error("physical Monitor history window is too large")
+            next_cursor = page.next_cursor
+            if next_cursor is None:
+                break
+            if next_cursor in seen_cursors:
+                _fail(EVIDENCE_INTEGRITY_FAILURE, "physical Monitor history cursor repeated")
+            seen_cursors.add(next_cursor)
+            cursor = next_cursor
+        if not slices:
+            _physical_identity_error("physical Monitor history window is empty")
+        batches: list[SampleBatch] = []
+        for history_slice in slices:
+            if (
+                type(history_slice) is not HistoryBatchSlice
+                or history_slice.start_ordinal != 0
+                or len(history_slice.values) != history_slice.batch_value_count
+            ):
+                _physical_identity_error("physical Monitor history contains a partial batch")
+            try:
+                batches.append(
+                    SampleBatch(
+                        binding=history_slice.binding,
+                        group_id=history_slice.group_id,
+                        group_revision=history_slice.group_revision,
+                        run_id=history_slice.run_id,
+                        sequence=history_slice.sequence,
+                        scheduled_unix_ns=history_slice.scheduled_unix_ns,
+                        captured_unix_ns=history_slice.captured_unix_ns,
+                        latency_ns=history_slice.latency_ns,
+                        actual_rate_hz=history_slice.actual_rate_hz,
+                        subscriber_drops=history_slice.subscriber_drops,
+                        history_drops=history_slice.history_drops,
+                        deadline_drops=history_slice.deadline_drops,
+                        values=history_slice.values,
+                    )
+                )
+            except (TypeError, ValueError, OverflowError) as error:
+                raise MonitorReplayError(
+                    EVIDENCE_INTEGRITY_FAILURE,
+                    "physical Monitor history contains invalid data",
+                ) from error
+        expected_sequences = tuple(range(start_sequence, end_sequence_exclusive))
+        if tuple(batch.sequence for batch in batches) != expected_sequences:
+            _physical_identity_error("physical Monitor history sequence window is invalid")
+        first = batches[0]
+        last = batches[-1]
+        if (
+            first.captured_unix_ns != start_captured_unix_ns
+            or last.captured_unix_ns + 1 != end_captured_unix_ns_exclusive
+        ):
+            _physical_identity_error("physical Monitor history time window is invalid")
+        selectors = tuple(value.watch for value in first.values)
+        if any(
+            tuple(value.watch for value in batch.values) != selectors
+            or batch.captured_unix_ns <= previous.captured_unix_ns
+            for previous, batch in zip(batches, batches[1:])
+        ):
+            _physical_identity_error("physical Monitor history sample chain is invalid")
+        if any(
+            batch.group_id != group_id
+            or batch.run_id != monitor_run_uuid
+            or batch.binding != first.binding
+            or batch.group_revision != first.group_revision
+            for batch in batches
+        ):
+            _physical_identity_error("physical Monitor history binding is inconsistent")
+        return tuple(batches)
+    finally:
+        history.close()
+
+
+def _physical_project_batches(
+    batches: tuple[SampleBatch, ...],
+    raw_probe_id: str,
+) -> tuple[SampleBatch, ...]:
+    hashed_probe_id = hashlib.sha256(raw_probe_id.encode("utf-8")).hexdigest()
+    projected_binding = replace(batches[0].binding, probe_id=hashed_probe_id)
+    return tuple(replace(batch, binding=projected_binding) for batch in batches)
+
+
+def _physical_test_run(
+    evidence_store: EvidenceStore,
+    test_run_id: str,
+) -> object:
+    try:
+        published = TestRunRepository(evidence_store).load(test_run_id)
+    except EvidenceValidationError as error:
+        raise MonitorReplayError(
+            EVIDENCE_INTEGRITY_FAILURE,
+            "physical TestRun Evidence is corrupt",
+        ) from error
+    except (OSError, TypeError, ValueError) as error:
+        raise MonitorReplayError(
+            ENVIRONMENT_FAILURE,
+            "physical TestRun provider failed",
+        ) from error
+    metadata = dict(published.root.metadata)
+    if (
+        published.envelope.operation != "target-test-physical"
+        or metadata.get("execution_source") != "physical"
+        or metadata.get("physical_transport_evidence") is not True
+        or published.manifest.mode != "target"
+        or published.manifest.transport not in {"mailbox", "rtt", "uart", "semihosting"}
+        or published.manifest.state not in {"passed", "failed", "error"}
+    ):
+        _physical_identity_error("linked TestRun is not an accepted physical Target run")
+    return published
+
+
+def _physical_validate_binding(
+    *,
+    published: object,
+    batches: tuple[SampleBatch, ...],
+    paths: WorkspacePaths,
+    raw_probe_id: str,
+    scenario_role: str,
+) -> None:
+    first = batches[0]
+    binding = first.binding
+    try:
+        project = load_project_model(paths.project_root)
+    except ProjectManifestError as error:
+        raise MonitorReplayError(
+            ENVIRONMENT_FAILURE,
+            "physical Project manifest could not be loaded",
+        ) from error
+    except (OSError, TypeError, ValueError) as error:
+        raise MonitorReplayError(
+            ENVIRONMENT_FAILURE,
+            "physical Project provider failed",
+        ) from error
+    if (
+        project.schema_version != 3
+        or str(project.logical_project_id) != binding.logical_project_id
+        or project.debug.backend != "pyocd"
+        or project.debug.target != binding.physical_target
+        or project.target.device != binding.target_device
+        or binding.workspace_id != paths.workspace_id
+        or binding.session_id != paths.session_id
+        or binding.probe_id != raw_probe_id
+        or hashlib.sha256(raw_probe_id.encode("utf-8")).hexdigest()
+        != str(published.root.metadata.get("probe_id"))
+        or binding.flash_session_id != published.root.metadata.get("flash_session_id")
+        or binding.lease_id != published.root.metadata.get("lease_id")
+        or binding.target_device != published.root.metadata.get("target_id")
+        or published.root.metadata.get("origin_workspace_id") != paths.workspace_id
+        or published.root.metadata.get("import_workspace_id") != paths.workspace_id
+        or published.root.metadata.get("origin_session_id") != paths.session_id
+        or published.root.metadata.get("import_session_id") != paths.session_id
+        or published.manifest.identity.workspace_id != binding.workspace_id
+        or published.manifest.identity.project_id != binding.logical_project_id
+        or published.manifest.identity.session_id != binding.session_id
+        or published.manifest.identity.build_id != binding.build_id
+        or published.manifest.identity.elf_sha256 != binding.elf_sha256
+        or published.manifest.identity.target_device != binding.target_device
+        or published.manifest.identity.input_snapshot_sha256 != binding.input_snapshot_sha256
+        or published.manifest.identity.git_commit != binding.git_head
+        or published.manifest.identity.git_dirty != binding.git_dirty
+    ):
+        _physical_identity_error("physical TestRun and Monitor history identity differ")
+    expected_state = {"failed-before": "failed", "fixed-after": "passed"}[scenario_role]
+    if published.manifest.state != expected_state:
+        _physical_identity_error("physical TestRun state contradicts the scenario role")
+
+
+def _parse_physical_transcript(
+    raw: bytes,
+) -> tuple[dict[str, object], tuple[SampleBatch, ...]]:
+    try:
+        wire = decode_canonical_json_bytes(raw, require_object=True)
+        if type(wire) is not dict or set(wire) != {
+            "schema",
+            "source",
+            "scenario_role",
+            "test_run_id",
+            "execution_source",
+            "physical_transport_evidence",
+            "binding",
+            "batches",
+        }:
+            raise ReplayContractError("physical transcript fields are not closed")
+        if (
+            wire["schema"] != MONITOR_PHYSICAL_TRANSCRIPT_SCHEMA
+            or wire["source"] != MONITOR_PHYSICAL_SOURCE
+            or wire["execution_source"] != "physical"
+            or wire["physical_transport_evidence"] is not True
+            or wire["scenario_role"] not in _ROLES
+        ):
+            raise ReplayContractError("physical transcript provenance is invalid")
+        _require_text(wire["test_run_id"], "test_run_id")
+        binding = _parse_binding(wire["binding"])
+        if (
+            _SHA256.fullmatch(binding.probe_id) is None
+            or binding.physical_target.startswith("replay:")
+            or binding.flash_session_id.startswith("replay:")
+            or binding.lease_id.startswith("replay:")
+        ):
+            raise ReplayContractError("physical transcript labels are invalid")
+        raw_batches = wire["batches"]
+        if type(raw_batches) is not list or not raw_batches or len(raw_batches) > MAX_REPLAY_BATCHES:
+            raise ReplayContractError("physical transcript batches are invalid")
+        batches = tuple(_parse_batch(item) for item in cast(list[object], raw_batches))
+        first = batches[0]
+        selectors = tuple(item.watch for item in first.values)
+        previous_sequence: int | None = None
+        previous_captured: int | None = None
+        for batch in batches:
+            if (
+                batch.binding != binding
+                or batch.group_id != first.group_id
+                or batch.group_revision != first.group_revision
+                or batch.run_id != first.run_id
+                or tuple(item.watch for item in batch.values) != selectors
+                or not batch.values
+            ):
+                raise ReplayContractError("physical transcript batch identity is invalid")
+            if previous_sequence is not None and batch.sequence != previous_sequence + 1:
+                raise ReplayContractError("physical transcript sequences are not contiguous")
+            if previous_captured is not None and batch.captured_unix_ns <= previous_captured:
+                raise ReplayContractError("physical transcript captured times are not increasing")
+            previous_sequence = batch.sequence
+            previous_captured = batch.captured_unix_ns
+        return cast(dict[str, object], wire), batches
+    except MonitorReplayError:
+        raise
+    except ReplayContractError as error:
+        raise MonitorReplayError(
+            EVIDENCE_INTEGRITY_FAILURE,
+            "physical Monitor transcript is corrupt",
+        ) from error
+    except (KeyError, TypeError, ValueError, OverflowError) as error:
+        raise MonitorReplayError(
+            EVIDENCE_INTEGRITY_FAILURE,
+            "physical Monitor transcript is corrupt",
+        ) from error
+
+
+def _physical_publish_transcript(
+    raw: bytes,
+    expected_envelope: EvidenceEnvelope,
+    expected_root: RootRecord,
+    evidence_store: EvidenceStore,
+) -> None:
+    try:
+        with tempfile.TemporaryDirectory(prefix="stm32-monitor-physical-") as directory:
+            source = Path(directory) / "transcript.json"
+            source.write_bytes(raw)
+            artifact = evidence_store.ingest_file(
+                source,
+                kind="monitor-physical-transcript",
+                media_type="application/json",
+            )
+        if artifact != expected_envelope.artifacts[0]:
+            raise EvidenceValidationError(
+                "EVIDENCE_CORRUPT",
+                "physical transcript artifact identity differs from the expected source",
+            )
+        evidence_store.put_envelope(expected_envelope)
+        try:
+            put_root(evidence_store, expected_root)
+        except EvidenceValidationError as error:
+            if error.message == "root identity already has different canonical bytes":
+                winner = _load_monitor_root(evidence_store, expected_root.root_id)
+                if winner is None:
+                    _fail(ENVIRONMENT_FAILURE, "physical Monitor transcript root disappeared")
+                _validate_existing_root(
+                    winner,
+                    expected_root,
+                    expected_envelope,
+                    raw,
+                    evidence_store,
+                )
+                return
+            raise
+    except MonitorReplayError:
+        raise
+    except OSError as error:
+        raise MonitorReplayError(
+            ENVIRONMENT_FAILURE,
+            "physical Monitor transcript provider failed",
+        ) from error
+    except EvidenceValidationError as error:
+        raise MonitorReplayError(
+            EVIDENCE_INTEGRITY_FAILURE,
+            "physical Monitor transcript publication is corrupt",
+        ) from error
+    except Exception as error:
+        raise MonitorReplayError(
+            ENVIRONMENT_FAILURE,
+            "physical Monitor transcript publication failed",
+        ) from error
+
+
+def _physical_publish_reference(
+    reference: MonitorRunRefV2,
+    expected_envelope: EvidenceEnvelope,
+    expected_root: RootRecord,
+    evidence_store: EvidenceStore,
+) -> None:
+    raw = canonical_replay_json_bytes(reference.to_dict())
+    try:
+        with tempfile.TemporaryDirectory(prefix="stm32-monitor-physical-ref-") as directory:
+            source = Path(directory) / "run-ref.json"
+            source.write_bytes(raw)
+            artifact = evidence_store.ingest_file(
+                source,
+                kind=MONITOR_RUN_REF_ARTIFACT_KIND,
+                media_type="application/json",
+            )
+        if artifact != expected_envelope.artifacts[0]:
+            raise EvidenceValidationError(
+                "EVIDENCE_CORRUPT",
+                "physical reference artifact identity differs from the expected reference",
+            )
+        evidence_store.put_envelope(expected_envelope)
+        try:
+            put_root(evidence_store, expected_root)
+        except EvidenceValidationError as error:
+            if error.message == "root identity already has different canonical bytes":
+                _resolve_reference_root_race(evidence_store, expected_root)
+                return
+            raise
+    except MonitorReplayError:
+        raise
+    except OSError as error:
+        raise MonitorReplayError(
+            ENVIRONMENT_FAILURE,
+            "physical Monitor reference provider failed",
+        ) from error
+    except EvidenceValidationError as error:
+        raise MonitorReplayError(
+            EVIDENCE_INTEGRITY_FAILURE,
+            "physical Monitor reference publication is corrupt",
+        ) from error
+    except Exception as error:
+        raise MonitorReplayError(
+            ENVIRONMENT_FAILURE,
+            "physical Monitor reference publication failed",
+        ) from error
+
+
+def load_monitor_run_reference(
+    paths: WorkspacePaths,
+    evidence_store: EvidenceStore,
+    operation_id: str,
+) -> MonitorRunRefV2:
+    """Reload one immutable physical Monitor run reference from Evidence."""
+
+    if type(paths) is not WorkspacePaths or type(evidence_store) is not EvidenceStore:
+        _physical_invalid("paths and evidence_store have invalid types")
+    operation = _physical_operation_id(operation_id, "operation_id")
+    reference_root = _load_monitor_reference_root(evidence_store, operation)
+    transcript_root = _load_monitor_root(evidence_store, operation)
+    if reference_root is None or transcript_root is None:
+        _fail(EVIDENCE_INTEGRITY_FAILURE, "physical Monitor reference is incomplete")
+    try:
+        reference_envelope = evidence_store.get_envelope(reference_root.manifest_id)
+        if (
+            reference_envelope.operation != MONITOR_RUN_REF_OPERATION
+            or reference_envelope.parents != (transcript_root.manifest_id,)
+            or len(reference_envelope.artifacts) != 1
+        ):
+            raise ReplayContractError("physical reference envelope is invalid")
+        reference_bytes = evidence_store.read_artifact(
+            reference_envelope.artifacts[0],
+            maximum_bytes=MAX_REPLAY_DOCUMENT_BYTES,
+        )
+        decoded_reference = decode_canonical_json_bytes(
+            reference_bytes,
+            require_object=True,
+        )
+        reference = MonitorRunRefV2.from_value(decoded_reference)
+        if reference.operation_id != operation:
+            raise ReplayContractError("physical reference operation ID is invalid")
+        if reference_root.metadata != _physical_reference_metadata(reference):
+            raise ReplayContractError("physical reference root metadata is invalid")
+        if reference_envelope.metadata != _physical_reference_metadata(reference):
+            raise ReplayContractError("physical reference envelope metadata is invalid")
+        if reference_root.manifest_id != reference_envelope.evidence_id:
+            raise ReplayContractError("physical reference root manifest is invalid")
+        if reference_bytes != canonical_replay_json_bytes(reference.to_dict()):
+            raise ReplayContractError("physical reference bytes are not canonical")
+
+        transcript_envelope = evidence_store.get_envelope(transcript_root.manifest_id)
+        if (
+            transcript_envelope.operation != MONITOR_PHYSICAL_WINDOW_OPERATION
+            or transcript_envelope.parents != ()
+            or len(transcript_envelope.artifacts) != 1
+        ):
+            raise ReplayContractError("physical transcript envelope is invalid")
+        transcript_bytes = evidence_store.read_artifact(
+            transcript_envelope.artifacts[0],
+            maximum_bytes=MAX_REPLAY_DOCUMENT_BYTES,
+        )
+        wire, batches = _parse_physical_transcript(transcript_bytes)
+        source_digest = hashlib.sha256(transcript_bytes).hexdigest()
+        if source_digest != reference.source_record_sha256:
+            raise ReplayContractError("physical transcript digest differs from reference")
+        if transcript_envelope.evidence_id != reference.transcript_evidence_id:
+            raise ReplayContractError("physical transcript evidence ID differs from reference")
+        if transcript_root.manifest_id != transcript_envelope.evidence_id:
+            raise ReplayContractError("physical transcript root manifest is invalid")
+        if transcript_root.metadata != _physical_expected_root_metadata(reference):
+            raise ReplayContractError("physical transcript root metadata is invalid")
+        binding = batches[0].binding
+        expected_identity = EvidenceIdentity(
+            workspace_id=binding.workspace_id,
+            project_id=binding.logical_project_id,
+            session_id=binding.session_id,
+            build_id=binding.build_id,
+            elf_sha256=binding.elf_sha256,
+            target_device=binding.target_device,
+            input_snapshot_sha256=binding.input_snapshot_sha256,
+            git_commit=binding.git_head,
+            git_dirty=binding.git_dirty,
+        )
+        if transcript_envelope.identity != expected_identity:
+            raise ReplayContractError("physical transcript identity is invalid")
+        if (
+            binding.workspace_id != paths.workspace_id
+            or binding.session_id != paths.session_id
+            or reference.import_workspace_id != paths.workspace_id
+            or reference.projected_session_id != paths.session_id
+            or reference.origin_workspace_id != reference.import_workspace_id
+            or reference.origin_session_id != reference.projected_session_id
+            or reference.origin_run_id != operation
+            or reference.projected_run_id != operation
+            or reference.group_id != str(batches[0].group_id)
+            or reference.group_revision != batches[0].group_revision
+            or reference.start_sequence != batches[0].sequence
+            or reference.end_sequence_exclusive != batches[-1].sequence + 1
+            or reference.start_captured_unix_ns != batches[0].captured_unix_ns
+            or reference.end_captured_unix_ns_exclusive != batches[-1].captured_unix_ns + 1
+            or reference.projected_batch_sha256s
+            != tuple(_batch_digest(batch) for batch in batches)
+        ):
+            raise ReplayContractError("physical transcript and reference windows differ")
+        expected_transcript_metadata = dict(
+            _physical_transcript_envelope(
+                raw=transcript_bytes,
+                scenario_role=cast(str, wire["scenario_role"]),
+                test_run_id=cast(str, wire["test_run_id"]),
+                batches=batches,
+                paths=paths,
+            ).metadata
+        )
+        if dict(transcript_envelope.metadata) != expected_transcript_metadata:
+            raise ReplayContractError("physical transcript metadata is invalid")
+        return reference
+    except MonitorReplayError:
+        raise
+    except EvidenceValidationError as error:
+        if _has_non_missing_os_error(error):
+            raise MonitorReplayError(
+                ENVIRONMENT_FAILURE,
+                "physical Monitor Evidence provider failed",
+            ) from error
+        raise MonitorReplayError(
+            EVIDENCE_INTEGRITY_FAILURE,
+            "physical Monitor Evidence is corrupt",
+        ) from error
+    except OSError as error:
+        if isinstance(error, FileNotFoundError):
+            raise MonitorReplayError(
+                EVIDENCE_INTEGRITY_FAILURE,
+                "physical Monitor Evidence is corrupt",
+            ) from error
+        raise MonitorReplayError(
+            ENVIRONMENT_FAILURE,
+            "physical Monitor Evidence provider failed",
+        ) from error
+    except (ReplayContractError, TypeError, ValueError, OverflowError) as error:
+        raise MonitorReplayError(
+            EVIDENCE_INTEGRITY_FAILURE,
+            "physical Monitor Evidence is corrupt",
+        ) from error
+
+
+def publish_physical_monitor_run(
+    paths: WorkspacePaths,
+    evidence_store: EvidenceStore,
+    *,
+    scenario_role: str,
+    test_run_id: str,
+    run_id: str,
+    group_id: str,
+    start_sequence: int,
+    end_sequence_exclusive: int,
+    start_captured_unix_ns: int,
+    end_captured_unix_ns_exclusive: int,
+    probe_id: str,
+) -> MonitorRunRefV2:
+    """Publish one complete live physical History window as a durable v2 reference."""
+
+    if type(paths) is not WorkspacePaths or type(evidence_store) is not EvidenceStore:
+        _physical_invalid("paths and evidence_store have invalid types")
+    if scenario_role not in _ROLES:
+        _physical_invalid("scenario_role is invalid")
+    test_run_id = _require_text(test_run_id, "test_run_id", code=MONITOR_PHYSICAL_INVALID)
+    operation = _physical_operation_id(run_id, "run_id")
+    group_text = _physical_operation_id(group_id, "group_id")
+    group_uuid = UUID(group_text)
+    start_sequence = _physical_int(start_sequence, "start_sequence")
+    end_sequence_exclusive = _physical_int(end_sequence_exclusive, "end_sequence_exclusive")
+    start_captured_unix_ns = _physical_int(start_captured_unix_ns, "start_captured_unix_ns")
+    end_captured_unix_ns_exclusive = _physical_int(
+        end_captured_unix_ns_exclusive,
+        "end_captured_unix_ns_exclusive",
+    )
+    if (
+        end_sequence_exclusive <= start_sequence
+        or end_captured_unix_ns_exclusive <= start_captured_unix_ns
+    ):
+        _physical_invalid("physical Monitor window is invalid")
+    raw_probe_id = _physical_probe_selector(probe_id)
+
+    published = _physical_test_run(evidence_store, test_run_id)
+    batches = _physical_history_batches(
+        paths=paths,
+        run_id=operation,
+        group_id=group_uuid,
+        start_sequence=start_sequence,
+        end_sequence_exclusive=end_sequence_exclusive,
+        start_captured_unix_ns=start_captured_unix_ns,
+        end_captured_unix_ns_exclusive=end_captured_unix_ns_exclusive,
+    )
+    _physical_validate_binding(
+        published=published,
+        batches=batches,
+        paths=paths,
+        raw_probe_id=raw_probe_id,
+        scenario_role=scenario_role,
+    )
+    projected = _physical_project_batches(batches, raw_probe_id)
+    transcript_wire = _physical_transcript_wire(
+        scenario_role=scenario_role,
+        test_run_id=test_run_id,
+        batches=projected,
+    )
+    transcript_raw = canonical_replay_json_bytes(transcript_wire)
+    transcript_envelope = _physical_transcript_envelope(
+        raw=transcript_raw,
+        scenario_role=scenario_role,
+        test_run_id=test_run_id,
+        batches=projected,
+        paths=paths,
+    )
+    source_digest = hashlib.sha256(transcript_raw).hexdigest()
+    reference = _physical_make_reference(
+        scenario_role=scenario_role,
+        operation_id=operation,
+        test_run_id=test_run_id,
+        batches=projected,
+        transcript_evidence_id=str(transcript_envelope.evidence_id),
+        source_record_sha256=source_digest,
+    )
+    reference_envelope = _physical_reference_envelope(reference, transcript_envelope)
+    transcript_root = _physical_transcript_root(reference)
+    reference_root = _physical_reference_root(reference, reference_envelope)
+
+    # Both authoritative roots are checked against complete bytes before any root write.
+    existing_transcript_root = _load_monitor_root(evidence_store, operation)
+    existing_reference_root = _load_monitor_reference_root(evidence_store, operation)
+    if existing_transcript_root is None and existing_reference_root is not None:
+        _fail(EVIDENCE_INTEGRITY_FAILURE, "physical reference exists without its transcript root")
+    if existing_transcript_root is not None:
+        _validate_existing_root(
+            existing_transcript_root,
+            transcript_root,
+            transcript_envelope,
+            transcript_raw,
+            evidence_store,
+        )
+    if existing_reference_root is not None:
+        _validate_existing_reference_root(
+            existing_reference_root,
+            reference_root,
+            reference_envelope,
+            reference,
+            evidence_store,
+        )
+    if existing_transcript_root is None:
+        _physical_publish_transcript(
+            transcript_raw,
+            transcript_envelope,
+            transcript_root,
+            evidence_store,
+        )
+    if existing_reference_root is None:
+        _physical_publish_reference(
+            reference,
+            reference_envelope,
+            reference_root,
+            evidence_store,
+        )
+    return load_monitor_run_reference(paths, evidence_store, operation)
+
+
 def ingest_monitor_replay(
     paths: WorkspacePaths,
     evidence_store: EvidenceStore,
@@ -1257,6 +2294,7 @@ def ingest_monitor_replay(
 __all__ = [
     "EVIDENCE_INTEGRITY_FAILURE",
     "ENVIRONMENT_FAILURE",
+    "INCOMPATIBLE_IDENTITY",
     "MAX_REPLAY_BATCHES",
     "MAX_REPLAY_DOCUMENT_BYTES",
     "MONITOR_REPLAY_EXECUTION_SOURCE",
@@ -1268,14 +2306,22 @@ __all__ = [
     "MONITOR_REPLAY_PROBE_ID",
     "MONITOR_REPLAY_SCHEMA",
     "MONITOR_REPLAY_SOURCE",
+    "MONITOR_PHYSICAL_INVALID",
+    "MONITOR_PHYSICAL_SOURCE",
+    "MONITOR_PHYSICAL_TRANSCRIPT_SCHEMA",
+    "MONITOR_PHYSICAL_WINDOW_OPERATION",
     "MONITOR_RUN_REF_ARTIFACT_KIND",
     "MONITOR_RUN_REF_OPERATION",
     "MONITOR_RUN_REF_ROOT_TYPE",
     "MONITOR_RUN_REF_SCHEMA",
+    "MONITOR_RUN_REF_SCHEMA_V2",
     "MonitorReplayDocument",
     "MonitorReplayError",
     "MonitorRunRef",
+    "MonitorRunRefV2",
     "OPERATION_CONFLICT",
     "canonical_replay_json_bytes",
     "ingest_monitor_replay",
+    "load_monitor_run_reference",
+    "publish_physical_monitor_run",
 ]

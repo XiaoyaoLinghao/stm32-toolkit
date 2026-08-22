@@ -25,7 +25,6 @@ from .analysis_workflows import (
     ANALYSIS_WORKFLOW_INVALID,
     ENVIRONMENT_FAILURE,
     EVIDENCE_INTEGRITY_FAILURE,
-    INCOMPATIBLE_IDENTITY,
     AnalysisPublication,
     AnalysisWorkflowError,
     compare_monitor_runs,
@@ -33,7 +32,14 @@ from .analysis_workflows import (
 )
 from .models import MonitorConfig
 from .protocol import MAX_PROTOCOL_BYTES, ProtocolResult, ProtocolViolation, failure, parse_json_object, success
-from .replay import MonitorReplayError, canonical_replay_json_bytes, ingest_monitor_replay
+from .replay import (
+    INCOMPATIBLE_IDENTITY,
+    MONITOR_PHYSICAL_INVALID,
+    MonitorReplayError,
+    canonical_replay_json_bytes,
+    ingest_monitor_replay,
+    publish_physical_monitor_run,
+)
 from .runtime import MonitorRuntime, MonitorRuntimeError
 
 
@@ -44,6 +50,7 @@ _ADAPTER_CODES = frozenset(
         INCOMPATIBLE_IDENTITY,
         EVIDENCE_INTEGRITY_FAILURE,
         ENVIRONMENT_FAILURE,
+        MONITOR_PHYSICAL_INVALID,
     }
 )
 
@@ -81,6 +88,22 @@ def _parser() -> argparse.ArgumentParser:
     ingest.add_argument("--document-file", required=True)
     ingest.add_argument("--json", action="store_true", required=True)
     ingest.set_defaults(adapter_operation="monitor.replay.ingest")
+
+    physical = commands.add_parser("physical", help="publish a physical Monitor window")
+    physical_commands = physical.add_subparsers(dest="physical_command", required=True)
+    publish = physical_commands.add_parser("publish", help="publish one committed live window")
+    _add_context_options(publish, session_required=True)
+    publish.add_argument("--scenario-role", required=True)
+    publish.add_argument("--test-run-id", required=True)
+    publish.add_argument("--run-id", required=True)
+    publish.add_argument("--group-id", required=True)
+    publish.add_argument("--start-sequence", required=True, type=int)
+    publish.add_argument("--end-sequence-exclusive", required=True, type=int)
+    publish.add_argument("--start-captured-unix-ns", required=True, type=int)
+    publish.add_argument("--end-captured-unix-ns-exclusive", required=True, type=int)
+    publish.add_argument("--probe-id", required=True)
+    publish.add_argument("--json", action="store_true", required=True)
+    publish.set_defaults(adapter_operation="monitor.physical.publish")
 
     analysis = commands.add_parser("analysis", help="publish Monitor analysis")
     analysis_commands = analysis.add_subparsers(dest="analysis_command", required=True)
@@ -167,7 +190,7 @@ def main(
     parser = _parser()
     with contextlib.redirect_stderr(_stderr):
         arguments = parser.parse_args(list(argv) if argv is not None else None)
-    if arguments.command in {"replay", "analysis"}:
+    if arguments.command in {"replay", "analysis", "physical"}:
         try:
             result = _run_adapter(arguments)
         except KeyboardInterrupt:
@@ -357,6 +380,25 @@ def _run_adapter(arguments: argparse.Namespace) -> ProtocolResult[object]:
             evidence,
             arguments.operation_id,
             Path(arguments.document_file),
+        )
+        return success(
+            arguments.adapter_operation,
+            {"monitor_run_ref": _model_wire(reference, "monitor run reference")},
+        )
+
+    if arguments.adapter_operation == "monitor.physical.publish":
+        reference = publish_physical_monitor_run(
+            paths,
+            evidence,
+            scenario_role=arguments.scenario_role,
+            test_run_id=arguments.test_run_id,
+            run_id=arguments.run_id,
+            group_id=arguments.group_id,
+            start_sequence=arguments.start_sequence,
+            end_sequence_exclusive=arguments.end_sequence_exclusive,
+            start_captured_unix_ns=arguments.start_captured_unix_ns,
+            end_captured_unix_ns_exclusive=arguments.end_captured_unix_ns_exclusive,
+            probe_id=arguments.probe_id,
         )
         return success(
             arguments.adapter_operation,

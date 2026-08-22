@@ -15,6 +15,7 @@ from uuid import UUID
 MONITOR_REPLAY_SCHEMA = "stm32-monitor-replay/1"
 MONITOR_REPLAY_SOURCE = "toolkit-generated-probe-v2-replay"
 MONITOR_RUN_REF_SCHEMA = "stm32-monitor-run-ref/1"
+MONITOR_RUN_REF_SCHEMA_V2 = "stm32-monitor-run-ref/2"
 MONITOR_REPLAY_EXECUTION_SOURCE = "replay"
 MONITOR_REPLAY_PROBE_ID = "replay:probe-v2"
 MONITOR_REPLAY_PHYSICAL_TARGET = "replay:non-physical"
@@ -92,7 +93,7 @@ _BATCH_FIELDS = frozenset(
 _SAMPLE_FIELDS = frozenset({"watch", "status", "typedValue", "code", "definition"})
 _VARIABLE_WATCH_FIELDS = frozenset({"kind", "expression"})
 _REGISTER_WATCH_FIELDS = frozenset({"kind", "registerPath"})
-_REF_FIELDS = frozenset(
+_REF_FIELDS_V1 = frozenset(
     {
         "schema",
         "operation_id",
@@ -128,6 +129,12 @@ _REF_FIELDS = frozenset(
         "projected_batch_sha256s",
         "transcript_evidence_id",
         "run_ref_sha256",
+    }
+)
+_REF_FIELDS_V2 = frozenset(
+    {
+        *(_REF_FIELDS_V1 - {"fixture_sha256"}),
+        "source_record_sha256",
     }
 )
 
@@ -496,22 +503,14 @@ def validate_replay_document(value: object) -> dict[str, object]:
     return document
 
 
-def validate_run_reference(value: object) -> dict[str, object]:
-    """Return a deep canonical wire copy of a MonitorRunRef."""
-
-    reference = _copy_json(value)
-    if type(reference) is not dict:
-        _fail("monitor run reference must be an object")
-    reference = _mapping(reference, _REF_FIELDS, "monitor run reference")
-    if reference["schema"] != MONITOR_RUN_REF_SCHEMA:
-        _fail("monitor run reference schema is invalid")
+def _validate_run_reference_common(reference: dict[str, object]) -> None:
     operation_id = _uuid(reference["operation_id"], "operation_id")
     if type(reference["scenario_role"]) is not str or reference["scenario_role"] not in _ROLES:
         _fail("monitor run reference scenario role is invalid")
-    if reference["execution_source"] != MONITOR_REPLAY_EXECUTION_SOURCE:
+    if reference["execution_source"] not in {"replay", "physical"}:
         _fail("monitor run reference execution source is invalid")
-    if type(reference["physical_transport_evidence"]) is not bool or reference["physical_transport_evidence"]:
-        _fail("monitor run reference physical evidence must be false")
+    if type(reference["physical_transport_evidence"]) is not bool:
+        _fail("monitor run reference physical evidence is invalid")
     for field in ("origin_workspace_id", "import_workspace_id"):
         _hash(reference[field], field)
     _uuid(reference["logical_project_id"], "logical_project_id")
@@ -523,8 +522,22 @@ def validate_run_reference(value: object) -> dict[str, object]:
         _fail("monitor run reference operation and run IDs contradict")
     for field in ("target_device", "probe_id", "physical_target", "flash_session_id", "lease_id"):
         _text(reference[field], field, 256)
-    if (
-        reference["probe_id"] != MONITOR_REPLAY_PROBE_ID
+    if reference["execution_source"] == "physical":
+        if (
+            reference["physical_transport_evidence"] is not True
+            or reference["origin_workspace_id"] != reference["import_workspace_id"]
+            or reference["origin_session_id"] != reference["projected_session_id"]
+            or reference["origin_run_id"] != reference["projected_run_id"]
+            or _SHA256.fullmatch(reference["probe_id"]) is None
+            or any(
+                reference[field].startswith("replay:")
+                for field in ("probe_id", "physical_target", "flash_session_id", "lease_id")
+            )
+        ):
+            _fail("monitor run reference physical provenance is invalid")
+    elif (
+        reference["physical_transport_evidence"] is not False
+        or reference["probe_id"] != MONITOR_REPLAY_PROBE_ID
         or reference["physical_target"] != MONITOR_REPLAY_PHYSICAL_TARGET
         or reference["flash_session_id"] != MONITOR_REPLAY_FLASH_SESSION_ID
         or reference["lease_id"] != MONITOR_REPLAY_LEASE_ID
@@ -535,7 +548,6 @@ def validate_run_reference(value: object) -> dict[str, object]:
         "elf_sha256",
         "input_snapshot_sha256",
         "dwarf_sha256",
-        "fixture_sha256",
         "transcript_evidence_id",
     ):
         _hash(reference[field], field)
@@ -565,6 +577,30 @@ def validate_run_reference(value: object) -> dict[str, object]:
     for digest in projected:
         _hash(digest, "projected batch digest")
     _hash(reference["run_ref_sha256"], "run_ref_sha256")
+
+
+def validate_run_reference(value: object) -> dict[str, object]:
+    """Return a deep canonical wire copy of a v1 or v2 MonitorRunRef."""
+
+    reference = _copy_json(value)
+    if type(reference) is not dict:
+        _fail("monitor run reference must be an object")
+    schema = reference.get("schema")
+    if schema == MONITOR_RUN_REF_SCHEMA:
+        reference = _mapping(reference, _REF_FIELDS_V1, "monitor run reference")
+    elif schema == MONITOR_RUN_REF_SCHEMA_V2:
+        reference = _mapping(reference, _REF_FIELDS_V2, "monitor run reference")
+    else:
+        _fail("monitor run reference schema is invalid")
+    _validate_run_reference_common(reference)
+    if schema == MONITOR_RUN_REF_SCHEMA:
+        if reference["execution_source"] != MONITOR_REPLAY_EXECUTION_SOURCE:
+            _fail("monitor run reference execution source is invalid")
+        if reference["physical_transport_evidence"] is not False:
+            _fail("monitor run reference physical evidence must be false")
+        _hash(reference["fixture_sha256"], "fixture_sha256")
+    else:
+        _hash(reference["source_record_sha256"], "source_record_sha256")
     unsigned = {key: item for key, item in reference.items() if key != "run_ref_sha256"}
     expected = hashlib.sha256(canonical_replay_json_bytes(unsigned)).hexdigest()
     if reference["run_ref_sha256"] != expected:
@@ -587,6 +623,7 @@ __all__ = [
     "MONITOR_REPLAY_SCHEMA",
     "MONITOR_REPLAY_SOURCE",
     "MONITOR_RUN_REF_SCHEMA",
+    "MONITOR_RUN_REF_SCHEMA_V2",
     "canonical_replay_json_bytes",
     "decode_canonical_json_bytes",
     "validate_replay_document",
