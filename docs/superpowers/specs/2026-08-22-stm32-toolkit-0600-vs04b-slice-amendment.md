@@ -108,11 +108,24 @@ Publication is append-only and idempotent for the same complete intent and bytes
 with different transcript/reference bytes is `OPERATION_CONFLICT`. No mutation of the source
 History or physical TestRun is permitted.
 
+The publisher preflights both complete payloads and both root identities before the first durable
+root write. Validation, identity, integrity, and pre-existing conflict failures therefore create
+neither root. Durable publication then has one ordered commit sequence: transcript artifact,
+transcript envelope, `monitor-run` root, reference artifact, reference envelope, and
+`monitor-run-ref` root. Because Evidence is append-only rather than transactional across roots, a
+provider failure after that sequence starts may retain only the already validated prefix. That
+prefix is not rolled back or replaced. The same complete intent must recognize the matching prefix
+and resume idempotently to the same final reference; malformed or contradictory retained data is an
+integrity failure or conflict. A provider failure is `ENVIRONMENT_FAILURE` and never converts a
+partial durable prefix into a successful result.
+
 Invalid arguments or noncanonical identifiers are `MONITOR_PHYSICAL_INVALID`. Cross-source,
 identity, firmware, target, window, role/state, or provenance mismatch is
 `INCOMPATIBLE_IDENTITY`. Corrupt History or Evidence is `EVIDENCE_INTEGRITY_FAILURE`; provider or
-storage inability is `ENVIRONMENT_FAILURE`. A negative path creates neither `monitor-run` nor
-`monitor-run-ref` root. Already accepted replay Evidence remains unchanged.
+storage inability is `ENVIRONMENT_FAILURE`. A negative path before the durable commit sequence
+creates neither `monitor-run` nor `monitor-run-ref` root. A provider failure during commit may
+retain only a valid append-only prefix as defined above. Already accepted replay Evidence remains
+unchanged.
 
 ## B1 acceptance scenarios
 
@@ -124,7 +137,10 @@ storage inability is `ENVIRONMENT_FAILURE`. A negative path creates neither `mon
    the same run ID conflicts without replacing either root.
 3. A replay TestRun, raw-probe/hash mismatch, firmware/target/session/lease drift, incomplete batch,
    sequence gap, role/state contradiction, or corrupted stored batch fails with no new roots.
-4. Existing v1 replay ingestion, exact reference bytes, Analysis inputs, and replay tests remain
+4. A provider fault at each durable publication boundary returns `ENVIRONMENT_FAILURE`; any retained
+   data is an exact valid prefix, and retrying the same intent completes both roots without replacing
+   prior data.
+5. Existing v1 replay ingestion, exact reference bytes, Analysis inputs, and replay tests remain
    unchanged.
 
 ## B2 boundary

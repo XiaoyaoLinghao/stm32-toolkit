@@ -66,13 +66,20 @@ The first GREEN must prove:
 
 The publisher must preflight both roots and complete payloads before its first root write. Repeated
 identical publication returns the same reference. A conflict never replaces an existing root.
+After preflight, publish the transcript artifact/envelope/root before the reference
+artifact/envelope/root. If a provider failure interrupts this append-only sequence, return
+`ENVIRONMENT_FAILURE`, retain only the exact validated prefix, and let the same complete intent
+resume from that prefix on retry. Never roll back, delete, or replace retained Evidence.
 
 ### 3. Close negative behavior
 
 Add parameterized tests for replay TestRun, wrong role/state, raw selector/hash, workspace/session,
 project, build/ELF/snapshot/Git, target/debug target, flash session/lease, run/group/revision,
 sequence/time window, incomplete slices, repeated cursors, storage corruption, Evidence conflict,
-and provider failure. Assert the frozen error class and zero new roots.
+and provider failure. Validation, integrity, and pre-existing conflict cases assert the frozen error
+class and zero new roots. Fault injection at each durable publication boundary asserts either zero
+durable data or the exact valid publication prefix; retrying the same intent must complete both
+roots, while a malformed or contradictory prefix must fail closed.
 
 Do not manufacture physical Evidence from replay batches. Do not accept caller identity fields or
 caller-supplied batch bytes.
@@ -98,6 +105,6 @@ Use short Windows basetemps and exact worktree source roots. Run:
 
 Do not run Analysis/Diagnostics/Monitor UI, release matrices, hardware, coverage, packaging, or
 Python 3.10. The Sol reviewer independently publishes and fresh-loads one physical v2 reference and
-probes v1 byte identity plus negative no-root behavior.
+probes v1 byte identity, pre-commit negative no-root behavior, and interrupted-publication resume.
 
 Expected commit: `feat(monitor): publish physical run references`.
