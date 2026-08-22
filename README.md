@@ -2,7 +2,19 @@
 
 [简体中文](README_zh-CN.md) | English
 
-STM32 Toolkit 0.5.0 turns one Keil uVision project into a reproducible ARM GNU/GCC build and an identity-pinned probe/debug workflow. It provides read-only Keil inspection, guarded ARMCC-to-GCC conversion, managed GCC/CMake and VS Code configuration, bounded builds, explicit probe flashing, one-time debugger handoff, typed DWARF/SVD reads, finite sampling, Fault analysis, and an offline project-isolated Monitor UI. It remains the foundation for future AI-assisted STM32 coding, debugging, testing, and monitoring.
+STM32 Toolkit is a local, Agent-driven STM32 development control plane for VS Code. Its generic CLI/MCP core coordinates one-way Keil-to-GCC migration, reproducible CubeCLT builds, identity-pinned PyOCD probe workflows, Cortex-Debug handoff, project-isolated Monitor data, tests, and evidence-driven diagnosis. Claude Code is the currently released thin client adapter, not a separate product runtime.
+
+The published 0.5.0 packaging below remains the current installable baseline. Local 0.6 product code has completed its software scenarios with named physical evidence deferred; it has not been pushed, merged, tagged, or released. The approved 0.7–1.0 direction adds CubeMX-backed new-project creation, one resumable vertical acceptance path, Windows/Python 3.12 release convergence, and a final unified real-project hardware campaign.
+
+## Product tool boundary
+
+- **STM32CubeMX 6.18:** generates MCU pin/clock/peripheral, startup, HAL/LL, and native CMake project bytes for new projects.
+- **STM32CubeCLT 1.22.0:** supplies ARM GCC, CMake, Ninja, CubeProgrammer/ST tools, target facts, and SVD data. Toolkit uses GCC/CMake/Ninja; bundled ST flash/debug tools are not parallel product backends.
+- **PyOCD:** remains the sole production Probe backend for flash, observation, target transports, and debug handoff.
+- **Cortex-Debug:** provides the human VS Code debug UI after an explicit one-time PyOCD handoff.
+- **STM32 Toolkit:** owns project identity, authorization, orchestration, Monitor/Test/Diagnostic contracts, and Agent-neutral CLI/MCP behavior.
+
+The ST STM32 VS Code extension is not required. The recommended editor extensions remain C/C++, CMake Tools, and Cortex-Debug.
 
 ## Install directly from GitHub
 
@@ -86,12 +98,15 @@ The first package command is `stm32-toolkit doctor --json`. Doctor reports offli
 - strict JSON CLI workflows, exactly 15 MCP tools, eight thin Skills, and one managed 0.5.0 runtime;
 - an offline Monitor UI served by the same loopback process, explicit human `stm32-monitor open`, verified CSV/JSONL history export, and user group schema JSON import/export.
 
-### Follow-on work
+### Repository development status
 
-The 0.5 software surface is complete, but physical probe/board claims require the named real-hardware gates. Linux and physical gates that were not actually run remain deferred rather than fabricated.
+The local 0.6 candidate adds immutable Host/Target test evidence, four Target transports, diagnostic and fix-verification lifecycles, Monitor comparison/markers/bundles, and public CLI/MCP adapters. Its software scenarios are accepted locally; historical 0.4 hardware checks and the 0.6 physical scenario are deliberately retained for the unified 1.0 campaign. This is not a published 0.6 release claim.
 
-Monitor groups, history, retention, storage, HTTP/WebSocket service, and the UI are user-created monitor groups and project-isolated; the toolkit ships no invented presets. Keil-to-GCC migration remains one-way and never writes back to a Keil project.
+The approved 0.7–1.0 design and progress baseline are:
 
-### Deferred to 0.6.0
+- 0.7: read-only creation planning, authorized CubeMX generation/build, and safe regeneration;
+- 0.8: one resumable, isolated vertical scenario adapter for Keil and CubeMX inputs;
+- 0.9: Python 3.12 Windows runtime, Agent adapters, installation, upgrade, security, and release artifacts;
+- 1.0: one real legacy-Keil scenario and one new-CubeMX scenario on named physical hardware.
 
-The following remain deferred and are not implemented in 0.5.0: AI-readable snapshot or diagnostic session export and "AI Analyze"; multi-run/group/firmware history overlay, diff, brush, or cross-session comparison; full quality timeline, distribution, per-stage, or halt-impact dashboard; annotations, bookmarks, and diagnostic markers; and host/target test automation. 0.6 implementation does not begin before 0.5.0 acceptance.
+Monitor groups and UI state remain user-created and project-isolated; the Toolkit ships no invented presets. Keil-to-GCC migration remains one-way and never writes back to a Keil project.

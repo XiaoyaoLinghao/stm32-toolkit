@@ -1,5 +1,9 @@
 # STM32 Toolkit Codex Continuation Plan (0.4.0 to 1.0.0)
 
+> **Status:** Historical sequencing reference. For 0.7–1.0, the current authority is
+> `../specs/2026-08-22-stm32-toolkit-0.7-1.0-integrated-product-design.md` and
+> `2026-08-22-stm32-toolkit-0.7-1.0-vertical-delivery-plan.md`.
+
 > **Execution owner:** Codex. OpenClaw coordination is paused by the user as of
 > 2026-08-07. Use `test-driven-development`, `systematic-debugging`, and
 > `verification-before-completion` for every implementation packet.

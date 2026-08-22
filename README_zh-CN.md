@@ -2,7 +2,19 @@
 
 [English](README.md) | 简体中文
 
-STM32 Toolkit 0.5.0 将 Keil uVision 工程转换为可复现的 ARM GNU/GCC 构建，并提供与固件身份严格绑定的探针及调试工作流。功能包括只读 Keil 检查、受保护的 ARMCC→GCC 转换、托管 GCC/CMake 与 VS Code 配置、受约束构建、显式授权烧录、一次性调试器交接、DWARF/SVD 类型化读取、有限采样、Fault 分析，以及一个离线、项目隔离的 Monitor UI。它仍是后续 AI 辅助 STM32 编码、调试、测试与监控的基础。
+STM32 Toolkit 是一个在 VS Code 中使用、由 Agent 驱动的本地 STM32 开发控制面。通用 CLI/MCP 核心负责协调一次性 Keil→GCC 迁移、可复现 CubeCLT 构建、身份绑定的 PyOCD 探针工作流、Cortex-Debug 交接、项目隔离的 Monitor、测试和证据诊断。Claude Code 是当前已发布的薄客户端适配器，不是另一套产品运行时。
+
+下文的 0.5.0 包装仍是当前可安装基线。本地 0.6 产品代码已经完成软件场景，具名物理证据后置；它尚未推送、合并、打 tag 或发布。批准后的 0.7–1.0 方向将增加 CubeMX 新工程创建、单一可恢复纵向验收、Windows/Python 3.12 发布收敛，以及最终一次统一的真实项目硬件活动。
+
+## 产品工具边界
+
+- **STM32CubeMX 6.18：** 为新工程生成 MCU pin/clock/peripheral、startup、HAL/LL 和原生 CMake 工程字节。
+- **STM32CubeCLT 1.22.0：** 提供 ARM GCC、CMake、Ninja、CubeProgrammer/ST 工具、target 事实和 SVD 数据。Toolkit 使用 GCC/CMake/Ninja；随附的 ST 烧录/调试工具不是平行产品后端。
+- **PyOCD：** 是烧录、观察、Target transport 和调试交接的唯一生产 Probe 后端。
+- **Cortex-Debug：** 在一次性 PyOCD 交接后提供 VS Code 人工调试界面。
+- **STM32 Toolkit：** 拥有项目身份、授权、编排、Monitor/Test/Diagnostic 契约和 Agent-neutral CLI/MCP 行为。
+
+ST 官方 STM32 VS Code 扩展不是必需依赖。推荐的编辑器扩展仍是 C/C++、CMake Tools 和 Cortex-Debug。
 
 ## 从 GitHub 安装
 
@@ -82,12 +94,15 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File '${CLAUDE_PLUGIN_ROOT}/b
 - 严格 JSON CLI、恰好 15 个 MCP 工具、八个薄 Skill 和一个托管 0.5.0 runtime；
 - 由同一 loopback 进程服务的离线 Monitor UI、显式人工 `stm32-monitor open`、已验证的 CSV/JSONL 历史导出，以及用户组 schema JSON 导入/导出。
 
-### 后续工作
+### 仓库开发状态
 
-0.5 软件表面已完成，但真实探针/开发板结论只能由具名物理门禁产生。未实际运行的 Linux 或物理门禁继续标记延期，不得虚构通过。
+本地 0.6 候选已经增加不可变 Host/Target 测试证据、四种 Target transport、诊断与修复验证生命周期、Monitor 比较/marker/bundle，以及公共 CLI/MCP 适配器。软件场景已经本地接受；历史 0.4 硬件检查和 0.6 物理场景明确保留到统一 1.0 活动。这不是已发布 0.6 的声明。
 
-监控组、历史、保留策略、存储、HTTP/WebSocket 服务和 UI 均由用户创建且项目隔离；本工具不附带或发明预设。Keil→GCC 迁移保持单向，不会写回 Keil 工程。
+批准后的 0.7–1.0 设计与进度基线为：
 
-### 延后到 0.6.0
+- 0.7：只读创建计划、授权 CubeMX 生成/构建和安全重新生成；
+- 0.8：面向 Keil 与 CubeMX 输入的一套可恢复、隔离纵向场景适配器；
+- 0.9：Python 3.12 Windows runtime、Agent 适配、安装、升级、安全和发布产物；
+- 1.0：在具名实体硬件上完成一个真实 legacy-Keil 场景和一个 new-CubeMX 场景。
 
-以下功能保持延后，0.5.0 不实现：AI 可读快照或诊断会话导出及 "AI Analyze"；多 run/group/firmware 历史叠加、diff、brush 或跨会话比较；完整质量时间线、分布、分阶段或 halt 影响面板；注释、书签和诊断标记；host/target 测试自动化。0.6 实现不会在 0.5.0 验收前开始。
+Monitor 组和 UI 状态继续由用户创建并保持项目隔离；Toolkit 不附带虚构预设。Keil→GCC 迁移保持单向，不会写回 Keil 工程。

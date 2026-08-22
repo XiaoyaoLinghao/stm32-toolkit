@@ -20,18 +20,22 @@ Before acting, reconstruct this ledger: module and phase, full accepted-base SHA
 - Approved implementation plans live under `docs/superpowers/plans/`.
 - Architecture: `docs/superpowers/specs/2026-07-29-stm32-toolkit-ai-development-design.md`.
 - Roadmap: `docs/superpowers/plans/2026-08-04-stm32-toolkit-complete-development-roadmap.md`.
+- Current 0.7–1.0 integration design: `docs/superpowers/specs/2026-08-22-stm32-toolkit-0.7-1.0-integrated-product-design.md`.
+- Current 0.7–1.0 delivery plan: `docs/superpowers/plans/2026-08-22-stm32-toolkit-0.7-1.0-vertical-delivery-plan.md`.
+- Large-project lessons: `docs/codex/lessons/2026-08-22-large-project-development-error-book.md`.
 
 Never accept, repeat, retain, or commit plaintext credentials. Commit identity is not proof of GitHub authentication; verify each computer independently. Preserve unrelated changes and review in a clean isolated worktree at the exact reviewed CodeHead/final head, using the accepted base only as the diff origin.
 
 ## Delivery workflow
 
 1. The 5.6-sol primary agent reconstructs the ownership ledger and freezes one self-contained vertical-slice specification and implementation plan at a full accepted-base SHA, with public behavior, boundaries, risks, and proportionate evidence requirements.
-2. After user approval of both specification and plan, the primary agent creates one `gpt-5.6-luna` implementation subagent with reasoning effort `max` for that bounded slice.
-3. The 5.6-luna agent implements and runs slice-level tests in one clean isolated worktree. It does not push, create or mutate a PR, merge, close, tag, or delete a remote branch without separate user authorization.
-4. The 5.6-sol primary agent independently reviews the complete accepted-base-to-CodeHead diff in a clean worktree, runs only the applicable slice or integration verification, reconciles the evidence, and records one verdict.
-5. Correctable findings remain on the same slice branch and return to a 5.6-luna implementation agent. If the same issue does not converge after two rounds, stop local patching and return to the interface or integration design.
-6. Release-level matrices, packaging, hardware, and evidence archival run only at the integration or release layer unless a written risk trigger explicitly moves the affected check forward.
-7. Any push, PR, merge, tag, closure, or remote deletion stops for a new explicit user authorization.
+2. After the governing specification is approved, the primary agent writes the bounded slice plan. The user has waived a separate approval stop for later written implementation plans; this does not waive product-scope, remote, release, installation, or hardware authorization.
+3. The primary agent creates one `gpt-5.6-luna` implementation subagent with reasoning effort `max` for that bounded slice.
+4. The 5.6-luna agent implements and runs slice-level tests in one clean isolated worktree. It does not push, create or mutate a PR, merge, close, tag, or delete a remote branch without separate user authorization.
+5. The 5.6-sol primary agent independently reviews the complete accepted-base-to-CodeHead diff in a clean worktree, runs only the applicable slice or integration verification, reconciles the evidence, and records one verdict.
+6. Correctable findings remain on the same slice branch and return to a 5.6-luna implementation agent. If the same issue does not converge after two rounds, stop local patching and return to the interface or integration design.
+7. Release-level matrices, packaging, hardware, and evidence archival run only at the integration or release layer unless a written risk trigger explicitly moves the affected check forward.
+8. Any push, PR, merge, tag, closure, or remote deletion stops for a new explicit user authorization.
 
 Do not add collaboration apps, manifests, validators, CI, or dispatch automation unless the user explicitly assigns that tooling as product scope.
 

@@ -1,5 +1,10 @@
 # STM32 Toolkit AI 开发闭环设计
 
+> **当前权威说明（2026-08-22）：** 本文继续作为 VS Code 工作区、一次性 Keil 迁移、
+> CMake 构建、单一 Probe Service、Monitor、Test 和 Diagnostic 闭环的架构来源。Agent
+> 宿主、Python 支持、Cube 外部工具职责以及全部 0.7–1.0 交付决策，由
+> `2026-08-22-stm32-toolkit-0.7-1.0-integrated-product-design.md` 取代。
+
 - 状态：已完成设计讨论，等待书面审阅
 - 日期：2026-07-29
 - 目标产品：在 VS Code 工作区中使用的 Claude Code STM32 Toolkit 插件

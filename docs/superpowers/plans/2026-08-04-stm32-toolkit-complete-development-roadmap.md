@@ -2,18 +2,18 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Extend the installed 0.2.0 foundation into a 1.0.0 Toolkit that completes one real Keil-to-GCC migration and gives Claude Code a safe, observable coding/build/test/flash/debug/monitor loop.
+**Goal:** Extend the accepted 0.2–0.6 foundation into a 1.0.0 Toolkit that lets an Agent in VS Code migrate one real Keil project or create one CubeMX project, then safely build, flash, debug, monitor, test, diagnose, fix, and verify it.
 
-**Architecture:** Keep Skills thin and deterministic behavior in the versioned CLI/MCP core. A loopback-only Probe Service owns PyOCD and arbitrates MCP, Monitor, tests, flash, and Cortex-Debug; project facts stay in the repository while runtime state remains isolated below `${CLAUDE_PLUGIN_DATA}/projects/<workspaceId>`.
+**Architecture:** Keep every Agent integration thin and deterministic behavior in one versioned Agent-neutral CLI/MCP core. CubeMX owns new-project generation, CubeCLT supplies GCC/CMake/Ninja, and one loopback Probe Service owns PyOCD and arbitrates MCP, Monitor, tests, flash, and Cortex-Debug; project facts stay in the repository while runtime state remains isolated per workspace.
 
-**Tech Stack:** Python 3.10+, jsonschema, MCP SDK, PyOCD, pyelftools, cmsis-svd, aiohttp, CMake 3.22+, Ninja, ARM GNU Toolchain, Unity/CMock, TypeScript, Vite, ECharts, Vitest, Playwright, STM32CubeMX 6.18+ CLI.
+**Tech Stack:** CPython `>=3.12,<3.13`, jsonschema, MCP SDK, PyOCD, pyelftools, cmsis-svd, aiohttp, STM32CubeMX 6.18 CLI, STM32CubeCLT 1.22.0, ARM GCC 14.3.1, CMake 4.3.1, Ninja 1.13.2, Unity/CMock, TypeScript, Vite, ECharts, Vitest, and Playwright.
 
 ## Layered Implementation Boundary
 
-This reconciliation remains a written-plan candidate until the user confirms its exact local
-CodeHead. Before that confirmation, frozen CodeHead
-`a31f997e0be87f6e14ad85b7cd033b4f4073b62f` remains authoritative and no implementation task may
-use this section to change an external product contract or the source/order of Task 8 and later.
+The current 0.7–1.0 authority is
+`../specs/2026-08-22-stm32-toolkit-0.7-1.0-integrated-product-design.md` with execution order in
+`2026-08-22-stm32-toolkit-0.7-1.0-vertical-delivery-plan.md`. Historical task and Gate ladders in
+this roadmap remain evidence only when they conflict with that design.
 
 Future work is planned by responsibility layer before it is assigned to a release:
 
@@ -60,9 +60,9 @@ later approved proof and can never satisfy a physical-hardware PASS.
 | PyOCD | `0.45.1`, Apache-2.0 | Adopt as the sole local probe execution engine behind Probe v2. |
 | pyserial | `3.5`, BSD | Adopt for the closed UART transport only. |
 | pyelftools | `0.33`, public domain | Adopt for ELF/DWARF parsing and verification. |
-| SQLite/aiohttp | managed CPython SQLite `3.41.2` (3.10) and `3.49.1` (3.12), public domain; aiohttp `3.12.15`/`3.14.3`, Apache-2.0 AND MIT | Adopt existing Monitor stack; the 0.6 package task must select one frozen offline set per supported interpreter. |
+| SQLite/aiohttp | CPython 3.12 managed runtime only | Adopt the existing Monitor stack and one frozen Windows release set. |
 | Preact/ECharts/Vitest/Playwright | `10.29.8` MIT / `6.1.0` Apache-2.0 / `4.1.10` MIT / `1.56.1` Apache-2.0 | Adopt the package-lock versions; Chromium only for current Windows scope. |
-| STM32CubeMX CLI | planned `6.18`; ST proprietary license; executable and offline source absent from the current host | Pending mandatory 0.7 proof-of-fit; Task 1 remains blocked until PASS. |
+| STM32CubeMX CLI | planned `6.18`; ST proprietary license; executable absent from the current host | Required for VS07-B positive acceptance; VS07-A must first report its absence accurately without a fake success. |
 | CMSIS-Toolbox/CMSIS-Pack | exact Toolbox version not yet selected; Apache-2.0 upstream; commands absent from the current host | Pending bounded Pack/device/SVD proof; csolution/cbuild/cbridge remain rejected unless a later proof avoids a second project model. |
 | Ceedling and pytest-embedded | not pinned | Reject as defaults; reconsider only for a named CMock/DUT fixture that passes a separate proof. |
 | Serial Studio, OpenHTF, Zephyr Twister | not pinned | Reject from the product core because each duplicates an existing product/test/Monitor lifecycle. |
@@ -73,7 +73,7 @@ SBOM and offline-source evidence required by the owning package or proof task.
 
 ## Global Constraints
 
-- Preserve the Toolkit form: one Claude Code user-scope plugin; no cloud service, external database, Codex-only dependency, or copied project Skills.
+- Preserve the Toolkit form: one Agent-neutral CLI/MCP core with thin client adapters; no cloud service, external database, Agent-specific product fork, or copied project Skills.
 - Migrate the current real Keil project only. Do not build batch migration or prewrite compatibility for every STM32 family.
 - Keil-to-GCC is one-way; never write `.uvprojx`, synchronize two build systems, or combine compiler migration with SPL/HAL conversion.
 - Inspect/plan/dry-run are read-only. Writes require a recoverable Git baseline and digest-checked apply plan.
@@ -84,7 +84,7 @@ SBOM and offline-source evidence required by the owning package or proof task.
 - Support the current and immediately previous project schema; upgrade only through explicit dry-run/apply.
 - Never overwrite drifted user files; generate a diff and require new authorization.
 - Plugin, CLI, Probe Service, Monitor, Skills, and protocols share one SemVer; bump it for each GitHub release.
-- Python branch coverage remains at least 90%; Monitor has browser tests; skipped hardware tests cannot satisfy release gates.
+- Python branch coverage remains at least 90% at release level; Monitor has affected browser tests; skipped hardware tests cannot satisfy 1.0 physical acceptance.
 
 ## Release Sequence
 
@@ -94,7 +94,10 @@ SBOM and offline-source evidence required by the owning package or proof task.
 | 0.4.0 | `2026-08-04-stm32-toolkit-0.4-probe-debug.md` | Probe leases/service, safe flash, Cortex-Debug handoff, typed variable/register/Fault evidence |
 | 0.5.0 | `../specs/2026-08-10-stm32tk-0502-lean-monitor-ui-design.md` | Rebuilt project-isolated Monitor service and offline UI; unified 0.5.0 release; zero presets; explicit connect/start |
 | 0.6.0 | `../specs/2026-08-14-stm32tk-0600-evidence-diagnostics-program-design.md` | Immutable test evidence, four Target transports, safe diagnostic loop, Monitor analytics, and one frozen final matrix |
-| 0.7.0–1.0.0 | `2026-08-04-stm32-toolkit-0.7-1.0-creation-acceptance.md` | CubeMX new-project creation and real-board vertical acceptance |
+| 0.7.0 | `2026-08-22-stm32-toolkit-0.7-1.0-vertical-delivery-plan.md` | VS07-A/B/C: read-only creation plan, authorized CubeMX generation/build, safe regeneration |
+| 0.8.0 | same | VS08-A/B: versioned scenario adapter, resume/isolation/human checkpoints |
+| 0.9.0 | same | VS09-A/B: Python 3.12 Agent/runtime convergence, install/upgrade/security/artifacts |
+| 1.0.0 | same | VS10: one unified real Keil + new CubeMX physical campaign |
 
 The 0.6 execution bundle is ordered as
 `2026-08-14-stm32tk-0601-test-evidence.md`,
@@ -111,11 +114,15 @@ execution packet are recorded in
 - [x] 0.3.0 migration, managed GCC/CMake configuration, and reproducible build gate
 - [x] 0.4.0 Probe Service, leases, flash, typed reads, and debug handoff gate
 - [x] 0.5.0 project-isolated monitor service and UI gate
-- [ ] 0.6.0 host/target tests and evidence-driven AI diagnostics gate
-- [ ] 0.7.0 CubeMX-backed project creation gate
+- [x] 0.6.0 software Host/Target, Monitor and evidence-driven diagnostic scenarios (`SOFTWARE_COMPLETE_HARDWARE_PENDING`)
+- [ ] VS07-A deterministic creation plan and environment truth
+- [ ] VS07-B authorized CubeMX creation and build
+- [ ] VS07-C safe regeneration
+- [ ] VS08-A/B resumable and isolated vertical scenario behavior
+- [ ] VS09-A/B installable Python 3.12 Windows release candidate
 - [ ] 1.0.0 non-skippable real-hardware vertical acceptance gate
 
-Implementation commits must update the detailed task checkbox in the corresponding phase plan. A release checkbox above is checked only in the same commit that records all exit-gate evidence; partial work remains visible as unchecked steps rather than being summarized as complete.
+Progress is updated only when a runnable slice outcome is independently accepted. Internal checklist, test-count, report, or Gate completion does not advance product progress by itself.
 
 ## Dependency Flow
 
@@ -147,7 +154,7 @@ Implementation commits must update the detailed task checkbox in the correspondi
 - `run_host_tests(HostTestRequest) -> OperationResult[TestReport]`.
 - `run_target_tests(TargetTestRequest, ProbeClient) -> OperationResult[TestReport]`.
 - `DiagnosticStore` persists hypotheses, evidence, actions, conclusion, and fix verification.
-- `plan_project_creation(request: ProjectCreateRequest) -> ProjectCreationPlan`.
+- `plan_project_creation(workspace_root: Path, request: CreationRequest, tools: ToolSupportProfile, *, now: datetime) -> CreationPlan`.
 
 ## Requirement Traceability
 
@@ -162,12 +169,13 @@ Implementation commits must update the detailed task checkbox in the correspondi
 | AI hypotheses, bounded observations/control, evidence assessment, and fix verification | STM32TK-0602 Tasks 1--12 |
 | Cross-run analytics, quality, annotations, bundles, and Monitor UI | STM32TK-0603 Tasks 1--13 |
 | Shared candidate/final governance and real-hardware reconciliation | STM32TK-0600 release acceptance |
-| From-zero CubeMX project creation without a hand-written MCU matrix | 0.7–1.0 Task 1 |
-| Per-project data isolation, versioning, GitHub-only installation, and upgrades | all phases; 0.7–1.0 Task 3 |
-| Non-skippable real-board vertical proof | 0.7–1.0 Tasks 2 and 4 |
+| From-zero CubeMX project creation without a hand-written MCU matrix | VS07-A/B/C |
+| Per-project data isolation and resumable scenarios | VS08-A/B |
+| Agent-neutral Python 3.12 runtime, GitHub installation and upgrades | VS09-A/B |
+| Non-skippable real-board vertical proof | VS10 |
 ## 1.0.0 Non-Negotiable Acceptance
 
-The real-board command must complete without a skip marker:
+Both the real legacy-Keil and new-CubeMX scenarios must complete without a hardware skip marker:
 
 ```text
 Keil inspect/baseline
@@ -183,14 +191,27 @@ Keil inspect/baseline
 → target test and Monitor verification
 ```
 
-The acceptance bundle must contain `inspection.json`, `conversion-report.json`, `build-result.json`, `memory-comparison.json`, `flash-result.json`, `monitor-snapshot.json`, `diagnostic-session.json`, `target-test.json`, and `migration-summary.md`.
+```text
+CubeMX MCU/.ioc creation plan and authorized generation
+→ native CMake/GCC build
+→ matching-target flash
+→ Monitor observation and reproducible failure
+→ ranked hypotheses and evidence collection
+→ authorized source fix
+→ rebuild/reflash
+→ target test and Monitor verification
+```
+
+Both acceptance bundles contain project/tool/board/probe/firmware identities, `build-result.json`, `flash-result.json`, `monitor-snapshot.json`, `diagnostic-session.json`, `target-test.json`, and a scenario summary. The Keil bundle additionally contains `inspection.json`, `conversion-report.json`, and `memory-comparison.json`; the CubeMX bundle instead contains the `.ioc`/request digest, `CreationPlan`, native generation inventory, and generated-file ownership manifest.
 
 ## Authoritative Requirements
 
+- `docs/superpowers/specs/2026-08-22-stm32-toolkit-0.7-1.0-integrated-product-design.md`
+- `docs/superpowers/plans/2026-08-22-stm32-toolkit-0.7-1.0-vertical-delivery-plan.md`
 - `docs/superpowers/specs/2026-07-29-stm32-toolkit-ai-development-design.md`
 - `requirements/follow-on-skills/migrate-keil/SKILL.md`
 - `requirements/follow-on-skills/init-stm32-project/SKILL.md`
 - `requirements/follow-on-skills/read-var/SKILL.md`
 - `requirements/follow-on-skills/stm32-monitor/SKILL.md`
-- Claude plugin structure/versioning: `https://code.claude.com/docs/en/plugins-reference`
+- Claude plugin structure/versioning applies only to the retained Claude adapter: `https://code.claude.com/docs/en/plugins-reference`
 - STM32CubeMX CLI: `https://dev.st.com/stm32cube-docs/stm32cubemx/6.18.0/en/docs/markup/CubeMX_CLI.html`
