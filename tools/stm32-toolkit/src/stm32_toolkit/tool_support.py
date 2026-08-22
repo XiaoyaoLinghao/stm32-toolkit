@@ -399,6 +399,18 @@ def _discover_vscode(payload: dict[str, object]) -> ToolFact | None:
         return explicit
     found = [_fact("vsCode", candidate, "standard", probe_versions=True, allow_process_probe=False) for candidate in _VS_CODE_PATHS]
     found = [fact for fact in found if fact]
+    if os.name == "nt":
+        try:
+            import winreg
+            for hive in (winreg.HKEY_LOCAL_MACHINE, winreg.HKEY_CURRENT_USER):
+                with winreg.OpenKey(hive, r"SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\Code.exe") as key:
+                    registered, _ = winreg.QueryValueEx(key, None)
+                if isinstance(registered, str):
+                    fact = _fact("vsCode", Path(registered), "standard", probe_versions=True, allow_process_probe=False)
+                    if fact:
+                        found.append(fact)
+        except (OSError, ImportError):
+            pass
     if len(found) > 1:
         raise SupportProfileError("ambiguous vscode candidates")
     if found:
