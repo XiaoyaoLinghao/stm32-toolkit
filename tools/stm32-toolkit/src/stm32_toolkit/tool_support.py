@@ -62,6 +62,50 @@ class ProcessObservation:
     truncated: bool = False
 
 
+@dataclass(frozen=True, slots=True)
+class DiscoveryCandidate:
+    path: Path
+    source: str
+    version_hint: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class CandidateTier:
+    source: str
+    candidates: tuple[DiscoveryCandidate, ...]
+    invalid: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class CandidateResolution:
+    fact: ToolFact | None
+    issue: ToolSupportIssue | None
+
+
+def _resolve_component(component: str, tiers: tuple[CandidateTier, ...], evidence_builder) -> CandidateResolution:
+    for tier in tiers:
+        if tier.invalid:
+            return CandidateResolution(None, ToolSupportIssue(f"{component.upper()}_INVALID", component, "Provide a safe supported executable."))
+        canonical: dict[str, DiscoveryCandidate] = {}
+        for candidate in tier.candidates:
+            try:
+                path = candidate.path.absolute()
+                if not _safe_regular_file(path) or not _under_safe_root(path, Path(path.anchor)):
+                    return CandidateResolution(None, ToolSupportIssue(f"{component.upper()}_INVALID", component, "Provide a safe supported executable."))
+                canonical[os.path.normcase(str(path.resolve(strict=True)))] = DiscoveryCandidate(path.resolve(strict=True), candidate.source, candidate.version_hint)
+            except (OSError, ValueError):
+                return CandidateResolution(None, ToolSupportIssue(f"{component.upper()}_INVALID", component, "Provide a safe supported executable."))
+        if not canonical:
+            continue
+        if len(canonical) > 1:
+            return CandidateResolution(None, ToolSupportIssue(f"{component.upper()}_AMBIGUOUS", component, "Provide exactly one supported executable."))
+        fact = evidence_builder(next(iter(canonical.values())))
+        if fact is None:
+            return CandidateResolution(None, ToolSupportIssue(f"{component.upper()}_PROBE_FAILED", component, "Provide a readable supported executable."))
+        return CandidateResolution(fact, None)
+    return CandidateResolution(None, ToolSupportIssue(f"{component.upper()}_MISSING", component, "Install or configure the supported tool."))
+
+
 def _run_bounded(argv: tuple[str, ...], timeout_seconds: float = 5.0, capture_limit: int = _MAX_VERSION_BYTES) -> ProcessObservation:
     process = None
     try:
@@ -370,11 +414,18 @@ def _metadata_fact(root: Path, name: str, metadata: dict[str, str], *, probe_ver
 
 
 def _find_path_fact(name: str, *, probe_versions: bool = True) -> ToolFact | None:
-    try:
-        located = shutil.which({"gcc": "arm-none-eabi-gcc", "cmake": "cmake", "ninja": "ninja"}[name])
-    except (KeyError, OSError):
-        located = None
-    return _fact(name, Path(located), "path", probe_versions=probe_versions) if located else None
+    executable = {"gcc": "arm-none-eabi-gcc", "cmake": "cmake", "ninja": "ninja"}[name]
+    candidates: list[DiscoveryCandidate] = []
+    for raw_dir in os.environ.get("PATH", "").split(os.pathsep):
+        if not raw_dir:
+            continue
+        directory = Path(raw_dir)
+        for suffix in ("", ".exe", ".bat", ".cmd"):
+            candidate = directory / f"{executable}{suffix}"
+            if _safe_regular_file(candidate):
+                candidates.append(DiscoveryCandidate(candidate, "path"))
+    result = _resolve_component(name, (CandidateTier("path", tuple(candidates)),), lambda c: _fact(name, c.path, "path", probe_versions=probe_versions))
+    return result.fact
 
 
 def _discover_cubeclt(payload: dict[str, object]) -> tuple[Path | None, dict[str, str]]:
@@ -397,8 +448,7 @@ def _discover_vscode(payload: dict[str, object]) -> ToolFact | None:
     explicit = _explicit_fact(payload, "vsCode")
     if explicit:
         return explicit
-    found = [_fact("vsCode", candidate, "standard", probe_versions=True, allow_process_probe=False) for candidate in _VS_CODE_PATHS]
-    found = [fact for fact in found if fact]
+    standard = [DiscoveryCandidate(candidate, "standard") for candidate in _VS_CODE_PATHS if _safe_regular_file(candidate)]
     if os.name == "nt":
         try:
             import winreg
@@ -408,13 +458,14 @@ def _discover_vscode(payload: dict[str, object]) -> ToolFact | None:
                 if isinstance(registered, str):
                     fact = _fact("vsCode", Path(registered), "standard", probe_versions=True, allow_process_probe=False)
                     if fact:
-                        found.append(fact)
+                        standard.append(DiscoveryCandidate(Path(registered), "standard"))
         except (OSError, ImportError):
             pass
-    if len(found) > 1:
-        raise SupportProfileError("ambiguous vscode candidates")
-    if found:
-        return found[0]
+    result = _resolve_component("vsCode", (CandidateTier("standard", tuple(standard)),), lambda candidate: _fact("vsCode", candidate.path, "standard", probe_versions=True, allow_process_probe=False))
+    if result.fact:
+        return result.fact
+    if result.issue and result.issue.code != "VSCODE_MISSING":
+        raise SupportProfileError(result.issue.code)
     try:
         located = shutil.which("code")
     except OSError:
@@ -428,7 +479,7 @@ def _discover_cube_mx(payload: dict[str, object]) -> ToolFact | None:
     explicit = _explicit_fact(payload, "cubeMx")
     if explicit:
         return explicit
-    registered_facts: list[ToolFact] = []
+    standard: list[DiscoveryCandidate] = [DiscoveryCandidate(candidate, "standard") for candidate in _CUBEMX_PATHS if _safe_regular_file(candidate)]
     if os.name == "nt":
         try:
             import winreg
@@ -436,17 +487,14 @@ def _discover_cube_mx(payload: dict[str, object]) -> ToolFact | None:
             with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\STM32CubeMX.exe") as key:
                 registered, _ = winreg.QueryValueEx(key, None)
             if isinstance(registered, str):
-                fact = _fact("cubeMx", Path(registered), "standard", probe_versions=True, allow_process_probe=False)
-                if fact:
-                    registered_facts.append(fact)
+                standard.append(DiscoveryCandidate(Path(registered), "standard"))
         except (OSError, ImportError):
             pass
-    found = [_fact("cubeMx", candidate, "standard", probe_versions=True, allow_process_probe=False) for candidate in _CUBEMX_PATHS]
-    found = registered_facts + [fact for fact in found if fact]
-    if len(found) > 1:
-        raise SupportProfileError("ambiguous cubeMx candidates")
-    if found:
-        return found[0]
+    result = _resolve_component("cubeMx", (CandidateTier("standard", tuple(standard)),), lambda candidate: _fact("cubeMx", candidate.path, "standard", probe_versions=True, allow_process_probe=False))
+    if result.fact:
+        return result.fact
+    if result.issue and result.issue.code != "CUBEMX_MISSING":
+        raise SupportProfileError(result.issue.code)
     try:
         located = shutil.which("STM32CubeMX")
     except OSError:
@@ -471,6 +519,12 @@ def discover_tool_support(request: SupportProfileRequest | None = None, *, probe
         raise SupportProfileError("support profile is outside trusted data root")
     payload = _read_profile(request.profile_path)
     if request.profile_path is not None:
+        for configured in ("cubeMx", "vsCode", "gcc", "cmake", "ninja"):
+            entry = _entry(payload, configured)
+            if entry is not None:
+                raw = entry.get("path")
+                if not isinstance(raw, str) or not _safe_regular_file(Path(raw)) or not _under_safe_root(Path(raw), Path(Path(raw).anchor)):
+                    raise SupportProfileError(f"{configured} profile candidate is invalid")
         for key in ("cubeCltRoot", "cubeclt_root"):
             if key in payload and not isinstance(payload[key], str):
                 raise SupportProfileError("support profile schema is invalid")
