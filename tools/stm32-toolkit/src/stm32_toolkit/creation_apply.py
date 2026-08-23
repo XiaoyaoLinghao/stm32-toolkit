@@ -9,14 +9,16 @@ import secrets
 import shutil
 import stat
 import threading
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Iterator
 
 from stm32_toolkit.creation_authorization import (
     ConsumedCreationAuthorization,
     CreationAuthorizationError,
     CreationAuthorizationStore,
+    _durable_lock,
 )
 from stm32_toolkit.cubemx_adapter import CubeMXAdapter, CubeMXAdapterError, CubeMXStagingContext
 from stm32_toolkit.cubemx_project import (
@@ -38,6 +40,19 @@ _DESTINATION_LOCKS_GUARD = threading.Lock()
 def _lock_for(path: Path) -> threading.Lock:
     with _DESTINATION_LOCKS_GUARD:
         return _DESTINATION_LOCKS.setdefault(path, threading.Lock())
+
+
+@contextmanager
+def _acquire_activation_lock(data_root: Path, destination: Path) -> Iterator[None]:
+    """Claim a destination activation slot across independent processes."""
+    try:
+        canonical = destination.expanduser().resolve(strict=False).as_posix().encode("utf-8")
+        lock_name = hashlib.sha256(canonical).hexdigest()
+        lock_path = data_root.expanduser().resolve(strict=False) / "creation" / "activation-locks" / f"{lock_name}.lock"
+        with _durable_lock(lock_path):
+            yield
+    except CreationAuthorizationError:
+        raise CreationApplyError("CREATION_ACTIVATION_FAILED", "creation activation lock is unavailable") from None
 
 
 class CreationApplyError(ValueError):
@@ -135,6 +150,27 @@ def _cleanup(path: Path | None) -> bool:
         return False
 
 
+def _assert_public_paths_are_portable(staging: Path, root: Path) -> None:
+    """Reject native output that embeds host-controlled absolute project paths."""
+    markers = {
+        str(staging.resolve(strict=True)).encode("utf-8"),
+        staging.resolve(strict=True).as_posix().encode("utf-8"),
+        str(root.resolve(strict=True)).encode("utf-8"),
+        root.resolve(strict=True).as_posix().encode("utf-8"),
+    }
+    try:
+        for path in staging.rglob("*"):
+            if not path.is_file() or path.is_symlink():
+                continue
+            data = path.read_bytes()
+            if any(marker and marker in data for marker in markers):
+                raise CreationApplyError("CUBEMX_NATIVE_OUTPUT_INVALID", "native output contains an absolute host path")
+    except CreationApplyError:
+        raise
+    except OSError:
+        raise CreationApplyError("CUBEMX_NATIVE_OUTPUT_INVALID", "native output cannot be inspected") from None
+
+
 def _result_ok(value: object) -> bool:
     return isinstance(value, OperationResult) and value.ok
 
@@ -175,33 +211,37 @@ def _activate_absent(staging: Path, destination: Path) -> None:
 
 
 def _activate_empty(staging: Path, destination: Path, backup: Path) -> None:
-    first_done = False
-    second_done = False
+    destination_backed_up = False
+    staging_activated = False
+
+    def restore_exact_empty() -> None:
+        try:
+            if staging_activated and destination.exists():
+                os.replace(destination, staging)
+            if destination_backed_up and backup.exists():
+                os.replace(backup, destination)
+            if not destination.exists():
+                destination.mkdir()
+            if any(destination.iterdir()):
+                raise OSError
+        except OSError:
+            raise CreationApplyError("CREATION_ACTIVATION_ROLLBACK_FAILED", "creation activation rollback failed") from None
+
     try:
         os.replace(destination, backup)
-        first_done = True
+        destination_backed_up = True
         os.replace(staging, destination)
-        second_done = True
+        staging_activated = True
         try:
-            os.replace(backup, backup.with_name(backup.name + ".removed"))
-            removed = backup.with_name(backup.name + ".removed")
-            shutil.rmtree(removed)
+            shutil.rmtree(backup)
         except OSError:
-            # Restore the exact empty state if cleanup failed after activation.
-            try:
-                os.replace(destination, staging)
-                os.replace(backup, destination)
-            except OSError:
-                raise CreationApplyError("CREATION_ACTIVATION_ROLLBACK_FAILED", "creation activation rollback failed") from None
+            restore_exact_empty()
             raise CreationApplyError("CREATION_ACTIVATION_FAILED", "creation backup cleanup failed") from None
     except CreationApplyError:
         raise
     except OSError:
-        if first_done and not second_done:
-            try:
-                os.replace(backup, destination)
-            except OSError:
-                raise CreationApplyError("CREATION_ACTIVATION_ROLLBACK_FAILED", "creation activation rollback failed") from None
+        if destination_backed_up and not staging_activated:
+            restore_exact_empty()
         raise CreationApplyError("CREATION_ACTIVATION_FAILED", "creation destination activation failed") from None
 
 
@@ -213,6 +253,7 @@ def apply_creation(
     environment: object | None = None,
     environment_factory: Callable[[ConsumedCreationAuthorization], object] | None = None,
     adapter_factory: Callable[[ConsumedCreationAuthorization, object], object] | None = None,
+    revalidate_plan: Callable[..., None] | None = None,
     validate_native: Callable[..., object] | None = None,
     configure: Callable[[Path], object] | None = None,
     build: Callable[[Path, str], object] | None = None,
@@ -240,6 +281,13 @@ def apply_creation(
         original_digest, original_state = _state(root, destination)
         if original_state == "unsafe" or original_state == "populated":
             raise CreationApplyError("CREATION_DESTINATION_CHANGED", "destination must be absent or empty")
+        if revalidate_plan is not None:
+            try:
+                revalidate_plan(capability, root, destination, original_digest, original_state)
+            except CreationApplyError:
+                raise
+            except Exception:
+                raise CreationApplyError("CREATION_PLAN_CHANGED", "creation plan could not be revalidated") from None
         if environment is None and environment_factory is not None:
             try:
                 environment = environment_factory(capability)
@@ -264,7 +312,18 @@ def apply_creation(
         attempt_id = attempt_id_factory() if attempt_id_factory else secrets.token_hex(12)
         staging = destination.parent / f".stm32tk-creation-{attempt_id}"
         staging.mkdir()
-        adapter.generate(capability, CubeMXStagingContext(staging))
+        execution = adapter.generate(capability, CubeMXStagingContext(staging))
+        control_root = getattr(execution, "control_root", None)
+        if isinstance(control_root, Path):
+            try:
+                control_root.resolve(strict=False).relative_to(staging.resolve(strict=True))
+            except ValueError:
+                pass
+            else:
+                raise CreationApplyError("CUBEMX_NATIVE_OUTPUT_INVALID", "CubeMX control files overlap project staging")
+            if not _cleanup(control_root):
+                raise CreationApplyError("CREATION_ACTIVATION_FAILED", "CubeMX control files could not be cleaned")
+        _assert_public_paths_are_portable(staging, root)
         validation = (validate_native or _default_validate)(staging, capability=capability, environment=environment)
         configured = (configure or _default_configure)(staging)
         if not _result_ok(configured):
@@ -275,10 +334,7 @@ def apply_creation(
         release = (build or _default_build)(staging, "arm-release")
         if not _result_ok(release):
             raise CreationApplyError("CREATION_RELEASE_BUILD_FAILED", "Release build failed", {"result": _json_value(release)})
-        lock = _lock_for(destination)
-        if not lock.acquire(blocking=False):
-            raise CreationApplyError("CREATION_DESTINATION_CHANGED", "destination operation is busy")
-        try:
+        with _acquire_activation_lock(request.data_root, destination):
             current_digest, current_state = _state(root, destination)
             if current_digest != original_digest or current_state != original_state:
                 raise CreationApplyError("CREATION_DESTINATION_CHANGED", "destination changed while creation was staged")
@@ -289,8 +345,6 @@ def apply_creation(
                 _activate_empty(staging, destination, backup)
             if on_activate is not None:
                 on_activate()
-        finally:
-            lock.release()
         evidence = CreationApplyEvidence(
             attempt_id=attempt_id,
             ownership_manifest_path=getattr(validation, "ownership_manifest_path", None),

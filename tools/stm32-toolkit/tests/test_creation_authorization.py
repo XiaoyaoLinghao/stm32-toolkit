@@ -1,7 +1,11 @@
 from __future__ import annotations
 
 import json
+import os
+import subprocess
+import sys
 import threading
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -136,3 +140,62 @@ def test_two_concurrent_consumers_have_exactly_one_winner(tmp_path: Path):
     for thread in threads:
         thread.join()
     assert sorted(outcomes) == ["CREATION_AUTHORIZATION_CONSUMED", "OK"]
+
+
+def test_two_independent_processes_have_exactly_one_durable_consumer(tmp_path: Path):
+    store = CreationAuthorizationStore(tmp_path, now=lambda: NOW, nonce_factory=lambda: "nonce")
+    result = _prepare(store)
+    markers = tmp_path / "markers"
+    markers.mkdir()
+    script = r'''
+import os
+import sys
+import time
+from datetime import datetime, timezone
+from pathlib import Path
+import stm32_toolkit.creation_authorization as module
+from stm32_toolkit.creation_authorization import CreationAuthorizationError, CreationAuthorizationStore
+
+data_root = Path(sys.argv[1])
+digest = sys.argv[2]
+markers = Path(sys.argv[3])
+real_replace = module.os.replace
+
+def synchronized_replace(source, target):
+    (markers / f"ready-{os.getpid()}").write_text("ready", encoding="utf-8")
+    while not (markers / "release").exists():
+        time.sleep(0.005)
+    return real_replace(source, target)
+
+module.os.replace = synchronized_replace
+store = CreationAuthorizationStore(
+    data_root,
+    now=lambda: datetime(2026, 8, 23, 12, tzinfo=timezone.utc),
+)
+try:
+    store.consume(digest, authorized=True)
+except CreationAuthorizationError as error:
+    print(error.code, flush=True)
+else:
+    print("OK", flush=True)
+'''
+    environment = os.environ.copy()
+    source_root = str(Path(__file__).resolve().parents[1] / "src")
+    environment["PYTHONPATH"] = source_root + os.pathsep + environment.get("PYTHONPATH", "")
+    processes = [
+        subprocess.Popen(
+            [sys.executable, "-c", script, str(tmp_path), result.authorization_digest, str(markers)],
+            env=environment,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        for _ in range(2)
+    ]
+    deadline = time.monotonic() + 10
+    while not list(markers.glob("ready-*")) and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert list(markers.glob("ready-*"))
+    (markers / "release").write_text("release", encoding="utf-8")
+    outputs = [process.communicate(timeout=10)[0].strip() for process in processes]
+    assert sorted(outputs) == ["CREATION_AUTHORIZATION_CONSUMED", "OK"]

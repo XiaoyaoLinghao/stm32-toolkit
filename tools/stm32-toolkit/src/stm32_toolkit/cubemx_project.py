@@ -24,11 +24,16 @@ _MAX_PATH_DEPTH = 32
 _MAX_RELATIVE_BYTES = 4096
 _SAFE_REL = re.compile(r"^[A-Za-z0-9_./+@=-]+$")
 _CPU_RE = re.compile(r"(?im)^\s*(?:set\s*\(\s*CMAKE_SYSTEM_PROCESSOR\s+|CMAKE_SYSTEM_PROCESSOR\s*=\s*)([A-Za-z0-9_.+-]+)", re.MULTILINE)
+_CPU_FLAG_RE = re.compile(r"(?i)(?:^|\s)-mcpu=([A-Za-z0-9_.+-]+)")
+_FPU_FLAG_RE = re.compile(r"(?i)(?:^|\s)-mfpu=([A-Za-z0-9_.+-]+)")
+_FLOAT_ABI_FLAG_RE = re.compile(r"(?i)(?:^|\s)-mfloat-abi=([A-Za-z0-9_.+-]+)")
 _IOC_RE = re.compile(r"(?im)^\s*Mcu\.Name\s*=\s*([^\r\n]+)")
 _PKG_RE = re.compile(r"(?im)^\s*ProjectManager\.FirmwarePackage\s*=\s*([^\r\n]+)")
 _LANG_RE = re.compile(r"(?im)^\s*ProjectManager\.Language\s*=\s*([^\r\n]+)")
 _MEM_RE = re.compile(r"(?im)\b([A-Za-z_][A-Za-z0-9_]*)\s*\(([^)]*)\)\s*:\s*ORIGIN\s*=\s*(0x[0-9A-Fa-f]+|[0-9]+)\s*,\s*LENGTH\s*=\s*([0-9A-Za-z]+)")
 _PROJECT_RE = re.compile(r"(?im)^\s*project\s*\(\s*([A-Za-z0-9_.+-]+)")
+_ADD_SUBDIRECTORY_RE = re.compile(r"(?im)^\s*add_subdirectory\s*\(\s*([A-Za-z0-9_./+-]+)")
+_TOOLCHAIN_RE = re.compile(r'(?im)^\s*set\s*\(\s*CMAKE_TOOLCHAIN_FILE\s+(?:"([^"]+)"|([^\s)]+))')
 
 
 class CubeMXNativeProjectError(ValueError):
@@ -121,6 +126,76 @@ def _tokens(text: str, pattern: str) -> list[str]:
     return result
 
 
+def _set_values(text: str, name: str) -> list[str]:
+    match = re.search(rf"(?is)\bset\s*\(\s*{re.escape(name)}\s+([^)]*)\)", text)
+    if not match:
+        return []
+    body = re.sub(r"#[^\n]*", "", match.group(1)).replace("\\\n", " ")
+    return [first or second for first, second in re.findall(r'(?:"([^"]+)"|([^\s()]+))', body)]
+
+
+def _cmake_files(staging_dir: Path, top: str) -> tuple[tuple[Path, str], ...]:
+    files: list[tuple[Path, str]] = [(staging_dir, top)]
+    pending = [staging_dir / item / "CMakeLists.txt" for item in _ADD_SUBDIRECTORY_RE.findall(top)]
+    seen = {staging_dir / "CMakeLists.txt"}
+    while pending:
+        path = pending.pop(0)
+        if path in seen:
+            continue
+        try:
+            relative = path.parent.relative_to(staging_dir)
+        except ValueError:
+            raise _invalid("native CMake subdirectory is unsafe") from None
+        if any(part in {"", ".", ".."} for part in relative.parts):
+            raise _invalid("native CMake subdirectory is unsafe")
+        text = _read_text(staging_dir, path.relative_to(staging_dir).as_posix())
+        assert text is not None
+        seen.add(path)
+        files.append((path.parent, text))
+        pending.extend(path.parent / item / "CMakeLists.txt" for item in _ADD_SUBDIRECTORY_RE.findall(text))
+        if len(files) > 32:
+            raise _invalid("native CMake graph exceeds its bound")
+    return tuple(files)
+
+
+def _expand_cmake_path(value: str, base: Path, staging_dir: Path) -> str:
+    value = value.replace("\\", "/")
+    if value.startswith("${CMAKE_SOURCE_DIR}/") or value.startswith("${PROJECT_SOURCE_DIR}/"):
+        value = value.split("}/", 1)[1]
+        path = staging_dir / value
+    elif value.startswith("${CMAKE_CURRENT_LIST_DIR}/"):
+        value = value.split("}/", 1)[1]
+        path = base / value
+    elif value.startswith("${"):
+        raise _invalid("native CMake variable is unresolved")
+    elif value.startswith("/") or value.startswith("\\") or re.match(r"^[A-Za-z]:", value):
+        raise _invalid("native CMake path is unsafe")
+    else:
+        path = base / value
+    try:
+        relative = path.resolve(strict=False).relative_to(staging_dir.resolve(strict=True)).as_posix()
+    except (OSError, RuntimeError, ValueError):
+        raise _invalid("native CMake path escapes staging") from None
+    if relative in {"", "."} or any(part in {"", ".", ".."} for part in Path(relative).parts):
+        raise _invalid("native CMake path is unsafe")
+    if not _SAFE_REL.fullmatch(relative):
+        raise _invalid("native CMake path is unsafe")
+    return relative
+
+
+def _declared_paths(cmake_files: tuple[tuple[Path, str], ...], names: tuple[str, ...], staging_dir: Path) -> list[str]:
+    values: list[str] = []
+    for base, text in cmake_files:
+        for name in names:
+            values.extend(_set_values(text, name))
+    result: list[str] = []
+    for value in values:
+        if value.upper() in {"PRIVATE", "PUBLIC", "INTERFACE"}:
+            continue
+        result.append(_expand_cmake_path(value, base, staging_dir))
+    return result
+
+
 def _length(value: str) -> int:
     match = re.fullmatch(r"(?i)(0x[0-9a-f]+|[0-9]+)([km]?)", value)
     if not match:
@@ -141,6 +216,8 @@ class NativeProjectModel:
     project_name: str
     target_device: str
     core: str
+    fpu: str
+    float_abi: str
     framework: str
     language: str
     sources: tuple[str, ...]
@@ -172,7 +249,7 @@ class NativeProjectModel:
             # identity to remain the Toolkit version.
             "generatedBy": {"tool": "stm32-toolkit", "version": __version__},
             "project": {"name": self.project_name, "origin": "cubemx"},
-            "target": {"device": self.target_device, "core": self.core},
+            "target": {"device": self.target_device, "core": self.core, "fpu": self.fpu, "floatAbi": self.float_abi},
             "framework": {"type": self.framework, "version": None},
             "build": {
                 "sources": list(self.sources),
@@ -209,8 +286,18 @@ def parse_native_project(
     files = _safe_inventory(staging_dir)
     cmake = _read_text(staging_dir, "CMakeLists.txt")
     assert cmake is not None
-    if re.search(r"(?i)\b(?:add_custom_command|add_custom_target|execute_process|ExternalProject|FetchContent)\b|\bfile\s*\(\s*(?:download|upload)\b|\binclude\s*\(", cmake):
+    cmake_files = _cmake_files(staging_dir, cmake)
+    if any(re.search(r"(?i)\b(?:add_custom_command|add_custom_target|execute_process|ExternalProject|FetchContent)\b|\bfile\s*\(\s*(?:download|upload)\b|\binclude\s*\(", text) for _, text in cmake_files):
         raise _invalid("native CMake contains an unsafe construct")
+    toolchain_files: list[tuple[Path, str]] = []
+    for quoted, bare in _TOOLCHAIN_RE.findall(cmake):
+        value = quoted or bare
+        relative = _expand_cmake_path(value, staging_dir, staging_dir)
+        toolchain_path = staging_dir / relative
+        toolchain_text = _read_text(staging_dir, relative)
+        assert toolchain_text is not None
+        toolchain_files.append((toolchain_path.parent, toolchain_text))
+    all_cmake = "\n".join(text for _, text in (*cmake_files, *toolchain_files))
     ioc_candidates = [name for name, _, _ in files if name.casefold().endswith(".ioc")]
     if len(ioc_candidates) > 1:
         raise _invalid("native IOC inventory is ambiguous")
@@ -233,13 +320,19 @@ def parse_native_project(
         raise _invalid("native language does not satisfy the C++ request")
     if request.framework == "ll" and not re.search(r"(?im)\bLL_[A-Za-z0-9_]+", ioc or ""):
         raise _invalid("native IOC does not explicitly select LL")
-    core_match = _CPU_RE.search(cmake)
-    core = core_match.group(1).lower() if core_match else "cortex-m4"
+    core_match = _CPU_FLAG_RE.search(all_cmake) or _CPU_RE.search(all_cmake)
+    core = core_match.group(1).lower() if core_match else ""
     if not core.startswith("cortex-"):
         raise _invalid("native CPU identity is invalid")
-    source_tokens = _tokens(cmake, r"(?:set\s*\(\s*[A-Za-z0-9_]*SOURCES|target_sources\s*\([^)]*)\s+([^)]*)\)")
-    if not source_tokens:
-        source_tokens = [name for name, _, _ in files if name.casefold().endswith((".c", ".cpp"))]
+    fpu_match = _FPU_FLAG_RE.search(all_cmake)
+    float_abi_match = _FLOAT_ABI_FLAG_RE.search(all_cmake)
+    if fpu_match is None or float_abi_match is None:
+        raise _invalid("native CPU floating-point facts are incomplete")
+    fpu = fpu_match.group(1).lower()
+    float_abi = float_abi_match.group(1).lower()
+    source_tokens: list[str] = _declared_paths(cmake_files, ("MX_Application_Src", "STM32_Drivers_Src"), staging_dir)
+    for _, text in cmake_files:
+        source_tokens.extend(_tokens(text, r"(?:set\s*\(\s*[A-Za-z0-9_]*SOURCES|target_sources\s*\([^)]*)\s+([^)]*)\)"))
     source_paths = tuple(sorted({item for item in source_tokens if item.casefold().endswith((".c", ".cpp"))}))
     assembly = tuple(sorted({item for item in source_tokens if item.casefold().endswith((".s", ".asm", ".spp"))}))
     if not source_paths and not assembly:
@@ -247,13 +340,24 @@ def parse_native_project(
     for relative in (*source_paths, *assembly):
         if not _safe_file(staging_dir.joinpath(*relative.split("/"))):
             raise _invalid("native source inventory references a missing file")
-    include_paths = tuple(sorted(set(_tokens(cmake, r"target_include_directories\s*\([^)]*?\s((?:[^()]|\([^)]*\))*)\)"))))
+    include_tokens = _declared_paths(cmake_files, ("MX_Include_Dirs",), staging_dir)
+    for _, text in cmake_files:
+        include_tokens.extend(_tokens(text, r"target_include_directories\s*\([^)]*?\s((?:[^()]|\([^)]*\))*)\)"))
+    include_paths = tuple(sorted(set(include_tokens)))
     for relative in include_paths:
         if not (staging_dir.joinpath(*relative.split("/"))).is_dir():
             raise _invalid("native include inventory references a missing directory")
-    defines = tuple(sorted(set(_tokens(cmake, r"target_compile_definitions\s*\([^)]*?\s((?:[^()]|\([^)]*\))*)\)"))))
-    options = tuple(sorted(set(_tokens(cmake, r"target_compile_options\s*\([^)]*?\s((?:[^()]|\([^)]*\))*)\)"))))
-    linker_match = re.search(r"(?im)(?:LINKER_SCRIPT|CMAKE_EXE_LINKER_FLAGS[^\n]*-T)\s*(?:=\s*)?(?:\$\{CMAKE_SOURCE_DIR\}/)?([A-Za-z0-9_.+-]+\.ld)", cmake)
+    define_tokens: list[str] = []
+    for _, text in cmake_files:
+        define_tokens.extend(value for value in _set_values(text, "MX_Defines_Syms") if _SAFE_REL.fullmatch(value))
+        define_tokens.extend(_tokens(text, r"target_compile_definitions\s*\([^)]*?\s((?:[^()]|\([^)]*\))*)\)"))
+    defines = tuple(sorted(set(define_tokens)))
+    option_tokens: list[str] = []
+    for _, text in cmake_files:
+        option_tokens.extend(_tokens(text, r"target_compile_options\s*\([^)]*?\s((?:[^()]|\([^)]*\))*)\)"))
+    option_tokens.extend(re.findall(r"(?i)-(?:mcpu|mthumb|mfpu|mfloat-abi)(?:=[A-Za-z0-9_.+-]+)?", all_cmake))
+    options = tuple(sorted(set(option_tokens)))
+    linker_match = re.search(r'(?im)-T\s*"?(?:\$\{CMAKE_SOURCE_DIR\}/)?([A-Za-z0-9_.+-]+\.ld)', all_cmake)
     if linker_match:
         linker = linker_match.group(1)
     else:
@@ -265,11 +369,22 @@ def parse_native_project(
     assert linker_text is not None
     memory: list[dict[str, object]] = []
     for name, attrs, origin, length in _MEM_RE.findall(linker_text):
-        memory.append({"name": name, "origin": int(origin, 0), "length": _length(length), "attributes": "r-x" if "x" in attrs.lower() else "rw-"})
+        flags = attrs.lower()
+        attributes = "rwx" if "x" in flags and "w" in flags else ("r-x" if "x" in flags else ("rw-" if "w" in flags else "r--"))
+        memory.append(
+            {
+                "name": name,
+                "origin": int(origin, 0),
+                "length": _length(length),
+                "attributes": attributes,
+            }
+        )
     if not memory:
         raise _invalid("native linker memory regions are missing")
     project_match = _PROJECT_RE.search(cmake)
-    project_name = project_match.group(1) if project_match else staging_dir.name
+    if project_match is None:
+        raise _invalid("native project name is missing")
+    project_name = project_match.group(1)
     logical = uuid5(NAMESPACE_URL, f"stm32-toolkit/project/{plan_id}")
     return NativeProjectModel(
         project_root=staging_dir,
@@ -277,6 +392,8 @@ def parse_native_project(
         project_name=project_name,
         target_device=device,
         core=core,
+        fpu=fpu,
+        float_abi=float_abi,
         framework=request.framework,
         language=request.language,
         sources=source_paths,

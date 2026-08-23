@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
 from datetime import datetime, timezone
+from types import SimpleNamespace
 import pytest
 
 from stm32_toolkit.creation_workflows import (
@@ -15,8 +17,9 @@ from stm32_toolkit.creation_authorization import (
     CreationPrepareRequest,
 )
 from stm32_toolkit.creation_environment import CreationEnvironmentError
-from stm32_toolkit.generation.creation import CreationRequest
-from stm32_toolkit.tool_support import SupportProfileError, SupportProfileRequest, discover_tool_support
+from stm32_toolkit.generation.creation import CreationRequest, plan_project_creation
+from stm32_toolkit.tool_support import ToolFact, ToolSupportProfile, SupportProfileError, SupportProfileRequest, discover_tool_support
+from stm32_toolkit.result import OperationResult
 
 
 def test_plan_workflow_reports_missing_cubemx_as_plan_blocker(tmp_path: Path, monkeypatch):
@@ -129,6 +132,13 @@ def test_apply_consumes_before_environment_discovery_failure(tmp_path: Path, mon
     creation_request = CreationRequest.from_mcu(
         "STM32F429ZITx", "generated", framework="hal", language="c"
     )
+    support = ToolSupportProfile("3.12.10", None, None, None, None, None, None, (), ())
+    plan = plan_project_creation(
+        tmp_path,
+        creation_request,
+        support,
+        now=datetime(2026, 8, 23, 12, tzinfo=timezone.utc),
+    )
     store = CreationAuthorizationStore(
         data_root,
         now=lambda: datetime(2026, 8, 23, 12, tzinfo=timezone.utc),
@@ -138,8 +148,8 @@ def test_apply_consumes_before_environment_discovery_failure(tmp_path: Path, mon
         CreationPrepareRequest(
             creation_request,
             tmp_path,
-            "a" * 64,
-            "b" * 64,
+            plan.plan_id,
+            plan.action_digest,
             "c" * 64,
             "2026-08-23T13:00:00Z",
         )
@@ -151,7 +161,6 @@ def test_apply_consumes_before_environment_discovery_failure(tmp_path: Path, mon
             CreationEnvironmentError("CUBEMX_REPOSITORY_MISSING", "repository unavailable")
         ),
     )
-    support = ToolSupportProfile("3.12.10", None, None, None, None, None, None, (), ())
     result = apply_creation_workflow(
         CreationPlanWorkflowRequest(
             tmp_path,
@@ -168,7 +177,86 @@ def test_apply_consumes_before_environment_discovery_failure(tmp_path: Path, mon
         store=store,
         support_profile=support,
     )
-    assert result.code == "CUBEMX_REPOSITORY_MISSING"
+    assert result.code == "CREATION_PLAN_CHANGED"
     with pytest.raises(CreationAuthorizationError) as error:
         store.consume(prepared.authorization_digest, authorized=True)
     assert error.value.code == "CREATION_AUTHORIZATION_CONSUMED"
+
+
+def _complete_support(tmp_path: Path) -> ToolSupportProfile:
+    def fact(name: str) -> ToolFact:
+        path = tmp_path / f"{name}.exe"
+        path.write_bytes(name.encode("ascii"))
+        return ToolFact(name, path, "1.0.0", "explicit", hashlib.sha256(path.read_bytes()).hexdigest())
+
+    return ToolSupportProfile(
+        "3.12.10",
+        fact("cubeMx"),
+        tmp_path,
+        fact("gcc"),
+        fact("cmake"),
+        fact("ninja"),
+        fact("vsCode"),
+        (),
+        (),
+    )
+
+
+class _ApplyProbe:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def generate(self, capability, staging) -> None:
+        self.calls += 1
+
+
+def test_apply_rejects_ioc_drift_before_cube_mx_call(tmp_path: Path):
+    ioc = tmp_path / "board.ioc"
+    ioc.write_text("Mcu.Name=STM32F429ZI\n", encoding="utf-8")
+    data_root = tmp_path / "data"
+    support = _complete_support(tmp_path)
+    creation_request = CreationRequest.from_ioc("board.ioc", "generated", framework="hal", language="c")
+    plan = plan_project_creation(tmp_path, creation_request, support, now=datetime(2026, 8, 23, 12, tzinfo=timezone.utc))
+    store = CreationAuthorizationStore(data_root, now=lambda: datetime(2026, 8, 23, 12, tzinfo=timezone.utc), nonce_factory=lambda: "nonce")
+    prepared = store.prepare(CreationPrepareRequest(plan.request, tmp_path, plan.plan_id, plan.action_digest, "c" * 64, plan.expires_at))
+    ioc.write_text("Mcu.Name=STM32H743ZI\n", encoding="utf-8")
+    adapter = _ApplyProbe()
+    result = apply_creation_workflow(
+        CreationPlanWorkflowRequest(tmp_path, data_root, "session", "ioc", "board.ioc", "generated", "hal", "c"),
+        authorization_digest=prepared.authorization_digest,
+        authorized=True,
+        store=store,
+        adapter=adapter,
+        environment=SimpleNamespace(digest="c" * 64),
+        support_profile=support,
+        validate_native=lambda staging, **kwargs: SimpleNamespace(ownership_manifest_path="m", ownership_manifest_sha256="1" * 64),
+        configure=lambda root: OperationResult.success("configure", {}),
+        build=lambda root, preset: OperationResult.success("build", {}),
+    )
+    assert result.code == "CREATION_PLAN_CHANGED"
+    assert adapter.calls == 0
+
+
+def test_apply_rejects_absent_to_empty_destination_drift_before_cube_mx_call(tmp_path: Path):
+    data_root = tmp_path / "data"
+    support = _complete_support(tmp_path)
+    creation_request = CreationRequest.from_mcu("STM32F429ZITx", "generated", framework="hal", language="c")
+    plan = plan_project_creation(tmp_path, creation_request, support, now=datetime(2026, 8, 23, 12, tzinfo=timezone.utc))
+    store = CreationAuthorizationStore(data_root, now=lambda: datetime(2026, 8, 23, 12, tzinfo=timezone.utc), nonce_factory=lambda: "nonce")
+    prepared = store.prepare(CreationPrepareRequest(plan.request, tmp_path, plan.plan_id, plan.action_digest, "c" * 64, plan.expires_at))
+    (tmp_path / "generated").mkdir()
+    adapter = _ApplyProbe()
+    result = apply_creation_workflow(
+        CreationPlanWorkflowRequest(tmp_path, data_root, "session", "mcu", "STM32F429ZITx", "generated", "hal", "c"),
+        authorization_digest=prepared.authorization_digest,
+        authorized=True,
+        store=store,
+        adapter=adapter,
+        environment=SimpleNamespace(digest="c" * 64),
+        support_profile=support,
+        validate_native=lambda staging, **kwargs: SimpleNamespace(ownership_manifest_path="m", ownership_manifest_sha256="1" * 64),
+        configure=lambda root: OperationResult.success("configure", {}),
+        build=lambda root, preset: OperationResult.success("build", {}),
+    )
+    assert result.code == "CREATION_PLAN_CHANGED"
+    assert adapter.calls == 0

@@ -197,7 +197,16 @@ class CreationExecutionEnvironment:
     gcc: ToolFact | None = None
     cmake: ToolFact | None = None
     ninja: ToolFact | None = None
-    protocol: tuple[str, ...] = ("load", "project", "toolchain", "compiler", "generate", "exit")
+    protocol: tuple[str, ...] = (
+        "source",
+        "project name",
+        "project path",
+        "project toolchain",
+        "project compiler",
+        "SetStructure",
+        "project generate",
+        "exit",
+    )
     digest: str = field(init=False)
 
     def __post_init__(self) -> None:

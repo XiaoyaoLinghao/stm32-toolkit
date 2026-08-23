@@ -1,11 +1,16 @@
 from __future__ import annotations
 
+import os
+import subprocess
+import sys
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
-from stm32_toolkit.creation_apply import CreationApplyRequest, apply_creation
+import stm32_toolkit.creation_apply as creation_apply_module
+from stm32_toolkit.creation_apply import CreationApplyError, CreationApplyRequest, apply_creation
 from stm32_toolkit.creation_authorization import (
     CreationAuthorizationError,
     CreationAuthorizationStore,
@@ -32,6 +37,29 @@ class RecordingAdapter:
         self.calls += 1
         self.events.append("cubeMx")
         (staging.staging_dir / "native.txt").write_text("generated", encoding="utf-8")
+        return SimpleNamespace(invocations=1)
+
+
+class ControlArtifactAdapter(RecordingAdapter):
+    def generate(self, capability, staging):
+        self.calls += 1
+        (staging.staging_dir / "native.c").write_text("int main(void) {}\n", encoding="utf-8")
+        (staging.staging_dir / ".stm32-project.json").write_text("{\"generatedBy\":\"test\"}\n", encoding="utf-8")
+        (staging.staging_dir / ".stm32-toolkit").mkdir()
+        (staging.staging_dir / ".stm32-toolkit" / "cubemx-ownership.json").write_text(
+            '{"files":[{"path":"native.c"}]}\n', encoding="utf-8"
+        )
+        control_root = staging.staging_dir.parent / ".cube-control"
+        control_root.mkdir(exist_ok=True)
+        (control_root / "script").write_text(str(staging.staging_dir), encoding="utf-8")
+        (control_root / ".stm32-toolkit-home").mkdir(exist_ok=True)
+        return SimpleNamespace(invocations=1, control_root=control_root)
+
+
+class AbsolutePathAdapter(RecordingAdapter):
+    def generate(self, capability, staging):
+        self.calls += 1
+        (staging.staging_dir / "native.txt").write_text(str(staging.staging_dir.resolve()), encoding="utf-8")
         return SimpleNamespace(invocations=1)
 
 
@@ -116,3 +144,229 @@ def test_apply_requires_exact_boolean_true(tmp_path: Path):
     with pytest.raises(CreationAuthorizationError) as error:
         apply_creation(CreationApplyRequest(tmp_path, data, prepared.authorization_digest, False), store=store)
     assert error.value.code == "CREATION_AUTHORIZATION_REQUIRED"
+
+
+def test_empty_activation_backup_cleanup_failure_restores_exact_empty_state(tmp_path: Path, monkeypatch):
+    staging = tmp_path / "staging"
+    staging.mkdir()
+    (staging / "native.txt").write_text("generated", encoding="utf-8")
+    destination = tmp_path / "generated"
+    destination.mkdir()
+    backup = tmp_path / ".generated.backup-test"
+    real_rmtree = creation_apply_module.shutil.rmtree
+
+    def fail_cleanup(path, *args, **kwargs):
+        if Path(path) == backup:
+            raise OSError("injected backup cleanup failure")
+        return real_rmtree(path, *args, **kwargs)
+
+    monkeypatch.setattr(creation_apply_module.shutil, "rmtree", fail_cleanup)
+    with pytest.raises(CreationApplyError) as error:
+        creation_apply_module._activate_empty(staging, destination, backup)
+    assert error.value.code == "CREATION_ACTIVATION_FAILED"
+    assert destination.is_dir()
+    assert list(destination.iterdir()) == []
+    assert not backup.exists()
+
+
+def test_empty_activation_first_rename_failure_keeps_empty_destination(tmp_path: Path, monkeypatch):
+    staging = tmp_path / "staging"
+    staging.mkdir()
+    destination = tmp_path / "generated"
+    destination.mkdir()
+    backup = tmp_path / ".generated.backup-first"
+    real_replace = creation_apply_module.os.replace
+
+    def fail_first(source, target):
+        if Path(source) == destination and Path(target) == backup:
+            raise OSError("injected first rename failure")
+        return real_replace(source, target)
+
+    monkeypatch.setattr(creation_apply_module.os, "replace", fail_first)
+    with pytest.raises(CreationApplyError) as error:
+        creation_apply_module._activate_empty(staging, destination, backup)
+    assert error.value.code == "CREATION_ACTIVATION_FAILED"
+    assert destination.is_dir() and list(destination.iterdir()) == []
+    assert staging.exists() and not backup.exists()
+
+
+def test_empty_activation_second_rename_failure_restores_empty_destination(tmp_path: Path, monkeypatch):
+    staging = tmp_path / "staging"
+    staging.mkdir()
+    destination = tmp_path / "generated"
+    destination.mkdir()
+    backup = tmp_path / ".generated.backup-second"
+    real_replace = creation_apply_module.os.replace
+
+    def fail_second(source, target):
+        if Path(source) == staging and Path(target) == destination:
+            raise OSError("injected second rename failure")
+        return real_replace(source, target)
+
+    monkeypatch.setattr(creation_apply_module.os, "replace", fail_second)
+    with pytest.raises(CreationApplyError) as error:
+        creation_apply_module._activate_empty(staging, destination, backup)
+    assert error.value.code == "CREATION_ACTIVATION_FAILED"
+    assert destination.is_dir() and list(destination.iterdir()) == []
+    assert staging.exists() and not backup.exists()
+
+
+def test_empty_activation_rollback_failure_is_bounded(tmp_path: Path, monkeypatch):
+    staging = tmp_path / "staging"
+    staging.mkdir()
+    (staging / "native.txt").write_text("generated", encoding="utf-8")
+    destination = tmp_path / "generated"
+    destination.mkdir()
+    backup = tmp_path / ".generated.backup-rollback"
+    real_replace = creation_apply_module.os.replace
+    real_rmtree = creation_apply_module.shutil.rmtree
+
+    def fail_restore(source, target):
+        if Path(source) == destination and Path(target) == staging:
+            raise OSError("injected rollback rename failure")
+        return real_replace(source, target)
+
+    def fail_cleanup(path, *args, **kwargs):
+        if Path(path) == backup:
+            raise OSError("injected backup cleanup failure")
+        return real_rmtree(path, *args, **kwargs)
+
+    monkeypatch.setattr(creation_apply_module.os, "replace", fail_restore)
+    monkeypatch.setattr(creation_apply_module.shutil, "rmtree", fail_cleanup)
+    with pytest.raises(CreationApplyError) as error:
+        creation_apply_module._activate_empty(staging, destination, backup)
+    assert error.value.code == "CREATION_ACTIVATION_ROLLBACK_FAILED"
+
+
+def test_apply_reports_staging_cleanup_failure_with_bounded_evidence(tmp_path: Path, monkeypatch):
+    data, store, prepared = _authorization(tmp_path)
+    original_cleanup = creation_apply_module._cleanup
+
+    def fail_staging_cleanup(path):
+        if path is not None and path.name.startswith(".stm32tk-creation-"):
+            return False
+        return original_cleanup(path)
+
+    monkeypatch.setattr(creation_apply_module, "_cleanup", fail_staging_cleanup)
+    result = apply_creation(
+        CreationApplyRequest(tmp_path, data, prepared.authorization_digest, True),
+        store=store,
+        adapter=RecordingAdapter([]),
+        validate_native=_validator([]),
+        configure=lambda root: OperationResult.success("configure", {}),
+        build=lambda root, preset: OperationResult.failure("build", "FAIL", "failed", {}) if preset == "arm-release" else OperationResult.success("build", {}),
+    )
+    assert result.ok is False
+    assert result.code == "CREATION_ACTIVATION_ROLLBACK_FAILED"
+
+
+def test_activation_lock_serializes_independent_processes(tmp_path: Path):
+    data_root = tmp_path / "data"
+    destination = tmp_path / "generated"
+    markers = tmp_path / "markers"
+    markers.mkdir()
+    script = r'''
+import os
+import sys
+import time
+from pathlib import Path
+from stm32_toolkit.creation_apply import _acquire_activation_lock
+
+data_root = Path(sys.argv[1])
+destination = Path(sys.argv[2])
+markers = Path(sys.argv[3])
+pid = os.getpid()
+with _acquire_activation_lock(data_root, destination):
+    (markers / f"ready-{pid}").write_text("ready", encoding="utf-8")
+    while not (markers / "release").exists():
+        time.sleep(0.005)
+    (markers / f"done-{pid}").write_text("done", encoding="utf-8")
+'''
+    environment = os.environ.copy()
+    source_root = str(Path(__file__).resolve().parents[1] / "src")
+    environment["PYTHONPATH"] = source_root + os.pathsep + environment.get("PYTHONPATH", "")
+    processes = [
+        subprocess.Popen(
+            [sys.executable, "-c", script, str(data_root), str(destination), str(markers)],
+            env=environment,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        for _ in range(2)
+    ]
+    deadline = time.monotonic() + 10
+    while len(list(markers.glob("ready-*"))) < 1 and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert len(list(markers.glob("ready-*"))) == 1
+    time.sleep(0.2)
+    assert len(list(markers.glob("ready-*"))) == 1
+    (markers / "release").write_text("release", encoding="utf-8")
+    outputs = [process.communicate(timeout=10) for process in processes]
+    assert all(process.returncode == 0 for process in processes), outputs
+    assert len(list(markers.glob("done-*"))) == 2
+
+
+def test_plan_revalidation_rejects_drift_before_cube_mx_call(tmp_path: Path):
+    data, store, prepared = _authorization(tmp_path)
+    adapter = RecordingAdapter([])
+
+    def reject_drift(*args):
+        raise CreationApplyError("CREATION_PLAN_CHANGED", "creation plan changed")
+
+    result = apply_creation(
+        CreationApplyRequest(tmp_path, data, prepared.authorization_digest, True),
+        store=store,
+        adapter=adapter,
+        revalidate_plan=reject_drift,
+        validate_native=_validator([]),
+        configure=lambda root: OperationResult.success("configure", {}),
+        build=lambda root, preset: OperationResult.success("build", {}),
+    )
+    assert result.ok is False
+    assert result.code == "CREATION_PLAN_CHANGED"
+    assert adapter.calls == 0
+
+
+def test_post_activation_inventory_excludes_control_artifacts_and_host_paths(tmp_path: Path):
+    data, store, prepared = _authorization(tmp_path)
+    adapter = ControlArtifactAdapter([])
+
+    def validate(staging, **kwargs):
+        relative_files = [path.relative_to(staging).as_posix() for path in staging.rglob("*") if path.is_file()]
+        assert all(not item.startswith(".stm32-toolkit-home") for item in relative_files)
+        assert all(not item.endswith(".script") for item in relative_files)
+        return SimpleNamespace(ownership_manifest_path=".stm32-toolkit/cubemx-ownership.json", ownership_manifest_sha256="1" * 64)
+
+    result = apply_creation(
+        CreationApplyRequest(tmp_path, data, prepared.authorization_digest, True),
+        store=store,
+        adapter=adapter,
+        validate_native=validate,
+        configure=lambda root: OperationResult.success("configure", {}),
+        build=lambda root, preset: OperationResult.success("build", {}),
+    )
+    assert result.ok is True
+    destination = tmp_path / "generated"
+    public_bytes = b"".join(path.read_bytes() for path in destination.rglob("*") if path.is_file())
+    assert str(tmp_path).encode() not in public_bytes
+    assert b".stm32-toolkit-home" not in public_bytes
+    assert b"script" not in public_bytes
+    assert not (destination / ".cube-control").exists()
+
+
+def test_absolute_staging_path_in_native_output_is_rejected_before_activation(tmp_path: Path):
+    data, store, prepared = _authorization(tmp_path)
+    adapter = AbsolutePathAdapter([])
+    result = apply_creation(
+        CreationApplyRequest(tmp_path, data, prepared.authorization_digest, True),
+        store=store,
+        adapter=adapter,
+        validate_native=_validator([]),
+        configure=lambda root: OperationResult.success("configure", {}),
+        build=lambda root, preset: OperationResult.success("build", {}),
+    )
+    assert result.ok is False
+    assert result.code == "CUBEMX_NATIVE_OUTPUT_INVALID"
+    assert adapter.calls == 1
+    assert not (tmp_path / "generated").exists()

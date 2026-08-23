@@ -6,10 +6,12 @@ import json
 import os
 import secrets
 import threading
-from dataclasses import dataclass
+import time
+from contextlib import contextmanager
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Iterator
 
 from stm32_toolkit.generation.creation import CreationRequest, CreationSource
 from stm32_toolkit.generation.managed_files import canonical_json_bytes, sha256_hex
@@ -18,6 +20,92 @@ _DIGEST_CHARS = frozenset("0123456789abcdef")
 _MAX_RECORD_BYTES = 64 * 1024
 _LOCKS: dict[Path, threading.Lock] = {}
 _LOCKS_GUARD = threading.Lock()
+
+
+@contextmanager
+def _durable_lock(path: Path) -> Iterator[None]:
+    """Serialize a record transition across both threads and processes.
+
+    The JSON record itself is replaced atomically, but an atomic replace does
+    not make the read/validate/replace sequence a claim.  A small lock file
+    gives that sequence one durable cross-process critical section.  The
+    process-local lock remains useful on Windows, where byte-range locks are
+    not recursive within one process.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with _lock_for(path):
+        deadline = time.monotonic() + 30.0
+        while True:
+            try:
+                handle = path.open("a+b")
+                break
+            except OSError:
+                # Windows may deny opening a byte-range-locked file until the
+                # current owner closes it. Treat that as lock contention;
+                # permanent failures still terminate within the bounded wait.
+                if os.name != "nt" or time.monotonic() >= deadline:
+                    raise CreationAuthorizationError(
+                        "CREATION_AUTHORIZATION_STORE_UNAVAILABLE",
+                        "authorization store is unavailable",
+                    ) from None
+                time.sleep(0.01)
+        try:
+            handle.seek(0, os.SEEK_END)
+            if handle.tell() == 0:
+                handle.write(b"\0")
+                handle.flush()
+            handle.seek(0)
+            if os.name == "nt":
+                import msvcrt
+
+                while True:
+                    try:
+                        msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
+                        break
+                    except OSError:
+                        time.sleep(0.01)
+            else:
+                import fcntl
+
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+            yield
+        except CreationAuthorizationError:
+            raise
+        except OSError:
+            raise CreationAuthorizationError(
+                "CREATION_AUTHORIZATION_STORE_UNAVAILABLE",
+                "authorization store is unavailable",
+            ) from None
+        finally:
+            try:
+                if os.name == "nt":
+                    import msvcrt
+
+                    handle.seek(0)
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+                else:
+                    import fcntl
+
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+            except OSError:
+                pass
+            handle.close()
+
+
+_ISSUANCE_MARKER = object()
+
+
+class _CapabilityClaim:
+    __slots__ = ("_marker",)
+
+    def __init__(self, marker: object) -> None:
+        if marker is not _ISSUANCE_MARKER:
+            raise TypeError("capability claims are store-issued")
+        self._marker = marker
+
+
+def _issued_claim() -> _CapabilityClaim:
+    return _CapabilityClaim(_ISSUANCE_MARKER)
 
 
 def _lock_for(path: Path) -> threading.Lock:
@@ -110,6 +198,17 @@ class ConsumedCreationAuthorization:
     issued_at: str
     expires_at: str
     record_path: Path
+    _claim: _CapabilityClaim | None = field(default=None, repr=False, compare=False)
+
+    def _is_store_issued(self) -> bool:
+        """Return whether this object carries the winning store claim.
+
+        The serialized authorization record intentionally carries no claim
+        secret.  Only the object returned by the successful in-process
+        transition receives this private marker; reconstructed or directly
+        constructed dataclass values therefore cannot authorize CubeMX.
+        """
+        return isinstance(self._claim, _CapabilityClaim) and self._claim._marker is _ISSUANCE_MARKER
 
     @property
     def execution_environment_digest(self) -> str:
@@ -186,6 +285,13 @@ class CreationAuthorizationStore:
     def attempts_root(self) -> Path:
         return self.data_root / "creation" / "attempts"
 
+    @property
+    def authorization_locks_root(self) -> Path:
+        return self.authorization_root / ".locks"
+
+    def _lock_path(self, authorization_digest: str) -> Path:
+        return self.authorization_locks_root / f"{authorization_digest}.lock"
+
     def prepare(self, request: CreationPrepareRequest) -> CreationAuthorizationResult:
         if not isinstance(request, CreationPrepareRequest):
             raise CreationAuthorizationError("CREATION_AUTHORIZATION_INVALID", "authorization request is invalid")
@@ -217,7 +323,7 @@ class CreationAuthorizationStore:
         try:
             root.mkdir(parents=True, exist_ok=True)
             path = root / f"{digest}.json"
-            with _lock_for(path):
+            with _durable_lock(self._lock_path(digest)):
                 flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
                 fd = os.open(path, flags, 0o600)
                 try:
@@ -236,7 +342,7 @@ class CreationAuthorizationStore:
         if not _digest(authorization_digest):
             raise CreationAuthorizationError("CREATION_AUTHORIZATION_INVALID", "authorization digest is invalid")
         path = self.authorization_root / f"{authorization_digest}.json"
-        with _lock_for(path):
+        with _durable_lock(self._lock_path(authorization_digest)):
             try:
                 data = path.read_bytes()
             except OSError:
@@ -289,6 +395,7 @@ class CreationAuthorizationStore:
                 issued_at=payload["issuedAt"],
                 expires_at=payload["expiresAt"],
                 record_path=path,
+                _claim=_issued_claim(),
             )
 
     def peek(self, authorization_digest: str) -> ConsumedCreationAuthorization:

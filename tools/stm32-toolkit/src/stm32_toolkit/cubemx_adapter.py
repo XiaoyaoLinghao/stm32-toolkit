@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import hashlib
 import re
 import stat
 from dataclasses import dataclass
@@ -32,6 +33,7 @@ class CubeMXStagingContext:
     staging_dir: Path
     script_name: str = ".stm32-toolkit-cubemx.script"
     timeout_seconds: int = 300
+    control_root: Path | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.staging_dir, Path) or not self.staging_dir.is_dir():
@@ -42,6 +44,21 @@ class CubeMXStagingContext:
             raise CubeMXAdapterError("CUBEMX_NATIVE_OUTPUT_INVALID", "CubeMX script name is invalid")
         if type(self.timeout_seconds) is not int or not 1 <= self.timeout_seconds <= 3600:
             raise CubeMXAdapterError("CUBEMX_TIMEOUT", "CubeMX timeout is invalid")
+        if self.control_root is not None:
+            if not isinstance(self.control_root, Path) or not self.control_root.is_absolute():
+                raise CubeMXAdapterError("CUBEMX_NATIVE_OUTPUT_INVALID", "CubeMX control root is unsafe")
+            try:
+                control = self.control_root.resolve(strict=False)
+                staging = self.staging_dir.resolve(strict=True)
+                control.relative_to(staging)
+            except ValueError:
+                pass
+            except (OSError, RuntimeError):
+                raise CubeMXAdapterError("CUBEMX_NATIVE_OUTPUT_INVALID", "CubeMX control root is unsafe") from None
+            else:
+                raise CubeMXAdapterError("CUBEMX_NATIVE_OUTPUT_INVALID", "CubeMX control root must be outside staging")
+            if self.control_root.exists() and self.control_root.is_symlink():
+                raise CubeMXAdapterError("CUBEMX_NATIVE_OUTPUT_INVALID", "CubeMX control root is unsafe")
 
 
 @dataclass(frozen=True, slots=True)
@@ -50,6 +67,7 @@ class CubeMXExecutionResult:
     script_path: Path
     process: ProcessResult
     invocations: int = 1
+    control_root: Path | None = None
 
     @property
     def stdout(self) -> str:
@@ -70,35 +88,75 @@ def _safe_leaf(path: Path) -> Path:
         raise CubeMXAdapterError("CUBEMX_EXECUTION_ENVIRONMENT_CHANGED", "CubeMX executable facts changed") from None
 
 
-def _portable_source(capability: ConsumedCreationAuthorization) -> str:
+def _quote(value: str) -> str:
+    if not value or any(char in value for char in ("\r", "\n", "\x00")):
+        raise CubeMXAdapterError("CUBEMX_NATIVE_OUTPUT_INVALID", "CubeMX command value is invalid")
+    return '"' + value.replace('"', '\\"') + '"'
+
+
+def _control_root(context: CubeMXStagingContext) -> Path:
+    if context.control_root is not None:
+        return context.control_root.resolve(strict=False)
+    digest = hashlib.sha256(context.staging_dir.resolve(strict=True).as_posix().encode("utf-8")).hexdigest()[:16]
+    return context.staging_dir.parent / f".stm32tk-cubemx-control-{digest}"
+
+
+def _project_name(capability: ConsumedCreationAuthorization) -> str:
     source = capability.request.source.value
     if capability.request.source.kind == "ioc":
-        return source.replace("\\", "/")
-    return source
+        source = Path(source).stem
+    value = re.sub(r"[^A-Za-z0-9_-]", "_", source)
+    value = value[:64] or "STM32Project"
+    if not re.match(r"[A-Za-z_]", value):
+        value = "Project_" + value
+    return value
 
 
-def _script_for(capability: ConsumedCreationAuthorization, context: CubeMXStagingContext) -> str:
+def _safe_ioc_source(capability: ConsumedCreationAuthorization, control_root: Path) -> Path:
+    source = capability.project_root / capability.request.source.value
+    try:
+        info = os.lstat(source)
+        if not stat.S_ISREG(info.st_mode) or source.is_symlink() or bool(getattr(info, "st_file_attributes", 0) & 0x400):
+            raise OSError
+        source = source.resolve(strict=True)
+        digest = hashlib.sha256(source.read_bytes()).hexdigest()
+    except (OSError, RuntimeError, ValueError):
+        raise CubeMXAdapterError("CREATION_PLAN_CHANGED", "authorized IOC source is unavailable") from None
+    if capability.request.source.sha256 is None or digest != capability.request.source.sha256:
+        raise CubeMXAdapterError("CREATION_PLAN_CHANGED", "authorized IOC source changed")
+    target = control_root / "input.ioc"
+    try:
+        target.write_bytes(source.read_bytes())
+    except OSError:
+        raise CubeMXAdapterError("CUBEMX_NATIVE_OUTPUT_INVALID", "CubeMX IOC input cannot be staged") from None
+    return target
+
+
+def _script_for(capability: ConsumedCreationAuthorization, context: CubeMXStagingContext, control_root: Path) -> str:
     request = capability.request
+    if request.source.kind == "mcu":
+        source_command = f"load {request.source.value}"
+    elif request.source.kind == "board":
+        source_command = f"loadboard {request.source.value}"
+    elif request.source.kind == "ioc":
+        source_command = f"config load {_quote(_safe_ioc_source(capability, control_root).as_posix())}"
+    else:
+        raise CubeMXAdapterError("CREATION_SOURCE_INVALID", "CubeMX source kind is invalid")
+    staging = context.staging_dir.resolve(strict=True).as_posix()
     lines = [
-        f"load {_portable_source(capability)}",
-        f"project name {context.staging_dir.name}",
-        f"project path {context.staging_dir.as_posix()}",
+        source_command,
+        f"project name {_project_name(capability)}",
+        f"project path {_quote(staging)}",
         "project toolchain CMake",
         "project compiler GCC",
-        "project structure Advanced",
+        "SetStructure Advanced",
         "project generate",
         "exit",
     ]
-    if request.framework == "ll":
-        # The caller can only reach this path after explicit `.ioc` evidence;
-        # no per-peripheral setDriver guessing is performed here.
-        lines.insert(1, "# existing-ioc-ll-selection")
-    if request.language == "cpp":
-        lines.insert(1, "# existing-ioc-cpp-selection")
     return "\n".join(lines) + "\n"
 
 
-def _closed_environment(java: Path, isolated_home: Path) -> tuple[tuple[str, str], ...]:
+def _closed_environment(java: Path, isolated_home: Path, repository: Path) -> tuple[tuple[str, str], ...]:
     # No ambient environment is inherited.  Only the Java lookup path and a
     # fixed isolated home are passed to the child; proxies point at a loopback
     # port that is not opened by Toolkit.
@@ -108,10 +166,56 @@ def _closed_environment(java: Path, isolated_home: Path) -> tuple[tuple[str, str
                 ("PATH", java.parent.as_posix()),
                 ("JAVA_HOME", java.parent.parent.as_posix()),
                 ("STM32_TOOLKIT_HOME", isolated_home.as_posix()),
+                ("STM32CUBE_REPOSITORY", repository.as_posix()),
             ),
             key=lambda item: item[0],
         )
     )
+
+
+def _repository(environment: object) -> Path:
+    try:
+        candidate = Path(getattr(environment, "repository")).resolve(strict=True)
+        info = os.lstat(candidate)
+        if not stat.S_ISDIR(info.st_mode) or candidate.is_symlink() or bool(getattr(info, "st_file_attributes", 0) & 0x400):
+            raise OSError
+        return candidate
+    except (AttributeError, OSError, RuntimeError, TypeError, ValueError):
+        raise CubeMXAdapterError("CREATION_EXECUTION_ENVIRONMENT_CHANGED", "Cube firmware repository facts changed") from None
+
+
+def _seed_updater(home: Path, repository: Path) -> None:
+    updater = home / "STM32Cube" / "Updater" / "Updater.ini"
+    try:
+        updater.parent.mkdir(parents=True, exist_ok=True)
+        updater.write_text(
+            "[Updater]\n"
+            f"Repository={repository.as_posix()}\n"
+            "Offline=true\n",
+            encoding="utf-8",
+            newline="\n",
+        )
+    except OSError:
+        raise CubeMXAdapterError("CUBEMX_NATIVE_OUTPUT_INVALID", "CubeMX updater configuration cannot be prepared") from None
+
+
+def _protocol_lines(output: str) -> list[str]:
+    lines: list[str] = []
+    for raw in output.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("[ERROR]"):
+            continue
+        lines.append(line)
+    return lines
+
+
+def _validate_protocol(output: str, commands: list[str]) -> None:
+    lines = _protocol_lines(output)
+    if any(re.fullmatch(r"KO(?:\s+.*)?", line, re.IGNORECASE) for line in lines):
+        raise CubeMXAdapterError("CUBEMX_PROTOCOL_INVALID", "CubeMX reported a protocol failure")
+    expected = [part for command in commands for part in (command, "OK")] + ["Bye bye"]
+    if lines != expected:
+        raise CubeMXAdapterError("CUBEMX_PROTOCOL_INVALID", "CubeMX protocol completion is incomplete")
 
 
 class CubeMXAdapter:
@@ -128,6 +232,8 @@ class CubeMXAdapter:
     ) -> CubeMXExecutionResult:
         if not isinstance(capability, ConsumedCreationAuthorization):
             raise CubeMXAdapterError("CREATION_AUTHORIZATION_REQUIRED", "CubeMX requires a consumed authorization")
+        if not capability._is_store_issued():
+            raise CubeMXAdapterError("CREATION_AUTHORIZATION_REQUIRED", "CubeMX requires the winning consumed authorization")
         if not isinstance(staging, CubeMXStagingContext):
             raise CubeMXAdapterError("CUBEMX_NATIVE_OUTPUT_INVALID", "CubeMX staging context is invalid")
         request = capability.request
@@ -138,15 +244,21 @@ class CubeMXAdapter:
         try:
             java = _safe_leaf(Path(getattr(self.environment, "java_executable")))
             cubemx = _safe_leaf(Path(getattr(self.environment, "cubemx_executable")))
+            repository = _repository(self.environment)
         except (TypeError, AttributeError):
             raise CubeMXAdapterError("CREATION_EXECUTION_ENVIRONMENT_CHANGED", "CubeMX execution facts are unavailable") from None
-        isolated_home = staging.staging_dir / ".stm32-toolkit-home"
+        control_root = _control_root(staging)
+        isolated_home = control_root / "home"
         try:
-            isolated_home.mkdir(exist_ok=True)
-            script = staging.staging_dir / staging.script_name
-            script.write_text(_script_for(capability, staging), encoding="utf-8", newline="\n")
+            control_root.mkdir(parents=True, exist_ok=True)
+            isolated_home.mkdir(parents=True, exist_ok=True)
+            _seed_updater(isolated_home, repository)
+            script = control_root / staging.script_name
+            script_text = _script_for(capability, staging, control_root)
+            script.write_text(script_text, encoding="utf-8", newline="\n")
         except OSError:
-            raise CubeMXAdapterError("CUBEMX_NATIVE_OUTPUT_INVALID", "CubeMX staging cannot be prepared") from None
+            raise CubeMXAdapterError("CUBEMX_NATIVE_OUTPUT_INVALID", "CubeMX control files cannot be prepared") from None
+        commands = [line for line in script_text.splitlines() if line and not line.startswith("#")]
         argv = (
             java.as_posix(),
             "-Djava.net.useSystemProxies=false",
@@ -168,7 +280,7 @@ class CubeMXAdapter:
                     timeout_seconds=staging.timeout_seconds,
                     max_output_bytes=1024 * 1024,
                     max_lines=20_000,
-                    env=_closed_environment(java, isolated_home),
+                    env=_closed_environment(java, isolated_home, repository),
                 )
             )
         except CubeMXAdapterError:
@@ -184,16 +296,8 @@ class CubeMXAdapter:
         if process.returncode != 0:
             raise CubeMXAdapterError("CUBEMX_EXECUTION_FAILED", "CubeMX exited unsuccessfully")
         output = f"{process.stdout}\n{process.stderr}"
-        if re.search(r"(?im)^\s*KO\b", output):
-            raise CubeMXAdapterError("CUBEMX_PROTOCOL_INVALID", "CubeMX reported a protocol failure")
-        # The fixed script has two externally observable required commands for
-        # protocol purposes: load and project generate.  Intermediate command
-        # logging varies between CubeMX patch releases and is not trusted.
-        if not re.search(r"(?im)^\s*load\b", output) or not re.search(r"(?im)^\s*project\s+generate\b", output):
-            raise CubeMXAdapterError("CUBEMX_PROTOCOL_INVALID", "CubeMX protocol echoes are incomplete")
-        if len(re.findall(r"(?im)^\s*OK\b", output)) < 2 or not re.search(r"(?im)\bBye bye\b", output):
-            raise CubeMXAdapterError("CUBEMX_PROTOCOL_INVALID", "CubeMX protocol completion is incomplete")
-        return CubeMXExecutionResult(staging.staging_dir, script, process)
+        _validate_protocol(output, commands)
+        return CubeMXExecutionResult(staging.staging_dir, script, process, control_root=control_root)
 
     apply = generate
     execute = generate

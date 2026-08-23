@@ -11,7 +11,7 @@ from stm32_toolkit.creation_authorization import (
     CreationAuthorizationStore,
     CreationPrepareRequest,
 )
-from stm32_toolkit.creation_apply import CreationApplyRequest, apply_creation
+from stm32_toolkit.creation_apply import CreationApplyError, CreationApplyRequest, apply_creation
 from stm32_toolkit.creation_environment import CreationEnvironmentError, discover_creation_environment
 from stm32_toolkit.generation.creation import CreationInputError, CreationRequest, plan_project_creation
 from stm32_toolkit.result import OperationResult
@@ -153,6 +153,28 @@ def apply_creation_workflow(
     authorization_store = store or CreationAuthorizationStore(request.data_root)
     environment_factory = None
     adapter_factory = None
+    revalidate_plan = None
+    if support_profile is not None:
+        def check_current_plan(capability, root, destination, original_digest, original_state):
+            try:
+                current = plan_project_creation(
+                    root,
+                    capability.request,
+                    support_profile,
+                    now=_now_factory(),
+                )
+            except (CreationInputError, OSError, ValueError, RuntimeError):
+                raise CreationApplyError("CREATION_PLAN_CHANGED", "the authorized creation plan cannot be revalidated") from None
+            if (
+                current.blockers
+                or current.plan_id != capability.plan_id
+                or current.action_digest != capability.action_digest
+                or current.request != capability.request
+                or current.destination_inventory_digest != original_digest
+            ):
+                raise CreationApplyError("CREATION_PLAN_CHANGED", "the authorized creation plan changed")
+
+        revalidate_plan = check_current_plan
     if adapter is None and environment is None and support_profile is not None:
         def resolve_environment(capability):
             return discover_creation_environment(
@@ -182,6 +204,7 @@ def apply_creation_workflow(
             environment=environment,
             environment_factory=environment_factory,
             adapter_factory=adapter_factory,
+            revalidate_plan=revalidate_plan,
             validate_native=validate_native,  # type: ignore[arg-type]
             configure=configure,  # type: ignore[arg-type]
             build=build,  # type: ignore[arg-type]

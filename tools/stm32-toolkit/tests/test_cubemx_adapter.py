@@ -1,33 +1,59 @@
 from __future__ import annotations
 
+import hashlib
+from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
 from stm32_toolkit.creation_authorization import ConsumedCreationAuthorization
+from stm32_toolkit.creation_authorization import CreationAuthorizationStore, CreationPrepareRequest
 from stm32_toolkit.cubemx_adapter import (
     CubeMXAdapter,
     CubeMXAdapterError,
     CubeMXStagingContext,
 )
-from stm32_toolkit.generation.creation import CreationRequest
+from stm32_toolkit.generation.creation import CreationRequest, CreationSource
 from stm32_toolkit.process import ProcessResult
 
 
-def _capability(tmp_path: Path, *, framework: str = "hal", language: str = "c") -> ConsumedCreationAuthorization:
-    return ConsumedCreationAuthorization(
-        authorization_digest="a" * 64,
-        nonce="nonce",
-        plan_id="b" * 64,
-        action_digest="c" * 64,
-        environment_digest="d" * 64,
-        project_root=tmp_path,
-        request=CreationRequest.from_mcu("STM32F429ZITx", "generated", framework=framework, language=language),
-        issued_at="2026-08-23T12:00:00Z",
-        expires_at="2026-08-23T13:00:00Z",
-        record_path=tmp_path / "authorization.json",
+def _capability(
+    tmp_path: Path,
+    *,
+    source_kind: str = "mcu",
+    framework: str = "hal",
+    language: str = "c",
+) -> ConsumedCreationAuthorization:
+    if source_kind == "mcu":
+        request = CreationRequest.from_mcu("STM32F429ZITx", "generated", framework=framework, language=language)
+    elif source_kind == "board":
+        request = CreationRequest.from_board("NUCLEO-F429ZI", "generated", framework=framework, language=language)
+    else:
+        source = tmp_path / "board.ioc"
+        source.write_text("Mcu.Name=STM32F429ZI\n", encoding="utf-8")
+        request = CreationRequest(
+            CreationSource("ioc", source.name, hashlib.sha256(source.read_bytes()).hexdigest()),
+            "generated",
+            framework,
+            language,
+        )
+    store = CreationAuthorizationStore(
+        tmp_path / "capability-data",
+        now=lambda: datetime(2026, 8, 23, 12, tzinfo=timezone.utc),
+        nonce_factory=lambda: "nonce",
     )
+    prepared = store.prepare(
+        CreationPrepareRequest(
+            request,
+            tmp_path,
+            "b" * 64,
+            "c" * 64,
+            "d" * 64,
+            "2026-08-23T13:00:00Z",
+        )
+    )
+    return store.consume(prepared.authorization_digest, authorized=True)
 
 
 def _environment(tmp_path: Path) -> SimpleNamespace:
@@ -35,18 +61,45 @@ def _environment(tmp_path: Path) -> SimpleNamespace:
     cube = tmp_path / "STM32CubeMX.exe"
     java.write_bytes(b"java")
     cube.write_bytes(b"cube")
+    repository = tmp_path / "Repository"
+    repository.mkdir()
     return SimpleNamespace(
         java_executable=java,
         cubemx_executable=cube,
         cubemx_version="6.18.1-RC2",
         digest="d" * 64,
+        repository=repository,
     )
+
+
+def _successful_protocol(script: str) -> str:
+    commands = [line for line in script.splitlines() if line and not line.startswith("#")]
+    return "\n".join(item for command in commands for item in (command, "OK")) + "\nBye bye\n"
 
 
 def test_direct_adapter_call_without_consumed_capability_is_rejected(tmp_path: Path):
     adapter = CubeMXAdapter(_environment(tmp_path), runner=lambda request: None)
     with pytest.raises(CubeMXAdapterError) as error:
         adapter.generate(object(), CubeMXStagingContext(tmp_path))
+    assert error.value.code == "CREATION_AUTHORIZATION_REQUIRED"
+
+
+def test_adapter_rejects_forged_consumed_capability(tmp_path: Path):
+    forged = ConsumedCreationAuthorization(
+        authorization_digest="a" * 64,
+        nonce="nonce",
+        plan_id="b" * 64,
+        action_digest="c" * 64,
+        environment_digest="d" * 64,
+        project_root=tmp_path,
+        request=CreationRequest.from_mcu("STM32F429ZITx", "generated", framework="hal", language="c"),
+        issued_at="2026-08-23T12:00:00Z",
+        expires_at="2026-08-23T13:00:00Z",
+        record_path=tmp_path / "authorization.json",
+    )
+    adapter = CubeMXAdapter(_environment(tmp_path), runner=lambda request: pytest.fail("CubeMX must not run"))
+    with pytest.raises(CubeMXAdapterError) as error:
+        adapter.generate(forged, CubeMXStagingContext(tmp_path))
     assert error.value.code == "CREATION_AUTHORIZATION_REQUIRED"
 
 
@@ -61,7 +114,7 @@ def test_adapter_invokes_one_fixed_bounded_process_without_network_or_wrapper(tm
         assert "login" not in script.lower()
         assert "swmgr" not in script.lower()
         assert "xcubedl" not in script.lower()
-        return ProcessResult(0, "load\nOK\nproject generate\nOK\nBye bye\n", "", False, 1, False, False)
+        return ProcessResult(0, _successful_protocol(script), "", False, 1, False, False)
 
     adapter = CubeMXAdapter(_environment(tmp_path), runner=runner)
     result = adapter.generate(_capability(tmp_path), CubeMXStagingContext(staging))
@@ -71,9 +124,70 @@ def test_adapter_invokes_one_fixed_bounded_process_without_network_or_wrapper(tm
     assert request.argv[0].endswith("java.exe")
     assert request.argv[-2] == "-q"
     assert request.argv[-1].endswith(".script")
+    assert Path(request.argv[-1]).parent != staging
+    assert not list(staging.glob(".stm32-toolkit-*"))
     assert "-jar" in request.argv
     assert "-Djava.net.useSystemProxies=false" in request.argv
     assert request.env is not None
+
+
+@pytest.mark.parametrize(
+    "source_kind,expected_load,expected_name",
+    [
+        ("mcu", "load STM32F429ZITX", "STM32F429ZITX"),
+        ("board", "loadboard NUCLEO-F429ZI", "NUCLEO-F429ZI"),
+        ("ioc", "config load", "board"),
+    ],
+)
+def test_source_kind_script_uses_verified_commands_and_safe_deterministic_project(tmp_path: Path, source_kind: str, expected_load: str, expected_name: str):
+    staging = tmp_path / "staging"
+    staging.mkdir()
+    observed: list[str] = []
+
+    def runner(request):
+        script = Path(request.argv[-1]).read_text(encoding="utf-8")
+        observed.append(script)
+        return ProcessResult(0, _successful_protocol(script), "", False, 1, False, False)
+
+    adapter = CubeMXAdapter(_environment(tmp_path), runner=runner)
+    result = adapter.generate(_capability(tmp_path, source_kind=source_kind), CubeMXStagingContext(staging))
+    assert result.invocations == 1
+    script = observed[0]
+    assert expected_load in script
+    assert f"project name {expected_name}" in script
+    assert "SetStructure Advanced" in script
+    assert "project structure Advanced" not in script
+    assert "project path" in script and staging.as_posix() in script
+    assert Path(result.script_path).parent != staging
+    if source_kind == "ioc":
+        assert "config load" in script
+        assert str(tmp_path / "board.ioc") not in script
+    else:
+        assert "config load" not in script
+
+
+def test_adapter_seeds_isolated_updater_repository_configuration_outside_staging(tmp_path: Path):
+    staging = tmp_path / "staging"
+    staging.mkdir()
+    adapter = CubeMXAdapter(
+        _environment(tmp_path),
+        runner=lambda request: ProcessResult(
+            0,
+            _successful_protocol(Path(request.argv[-1]).read_text(encoding="utf-8")),
+            "",
+            False,
+            1,
+            False,
+            False,
+        ),
+    )
+    result = adapter.generate(_capability(tmp_path), CubeMXStagingContext(staging))
+    control_root = result.script_path.parent
+    configs = list(control_root.rglob("updater.ini")) + list(control_root.rglob("Updater.ini"))
+    assert configs
+    assert (tmp_path / "Repository").resolve().as_posix() in configs[0].read_text(encoding="utf-8")
+    assert control_root != staging
+    assert not list(staging.glob(".stm32-toolkit-*"))
 
 
 @pytest.mark.parametrize(
@@ -98,9 +212,11 @@ def test_protocol_failures_are_typed_and_do_not_claim_generation(tmp_path: Path,
 def test_unrelated_error_log_text_does_not_override_successful_protocol(tmp_path: Path):
     staging = tmp_path / "staging"
     staging.mkdir()
-    output = "[ERROR] updater advertisement failed\nload\nOK\nproject generate\nOK\nBye bye\n"
+    capability = _capability(tmp_path)
+    expected_script = "load STM32F429ZITX\nproject name STM32F429ZITX\nproject path \"{}\"\nproject toolchain CMake\nproject compiler GCC\nSetStructure Advanced\nproject generate\nexit\n".format(staging.resolve().as_posix())
+    output = "[ERROR] updater advertisement failed\n" + _successful_protocol(expected_script)
     adapter = CubeMXAdapter(_environment(tmp_path), runner=lambda request: ProcessResult(0, output, "", False, 1, False, False))
-    result = adapter.generate(_capability(tmp_path), CubeMXStagingContext(staging))
+    result = adapter.generate(capability, CubeMXStagingContext(staging))
     assert result.invocations == 1
 
 
