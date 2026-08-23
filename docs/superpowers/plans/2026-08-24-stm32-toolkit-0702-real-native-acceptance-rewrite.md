@@ -118,4 +118,3 @@ Sol then creates a new clean detached worktree at the returned HEAD, reviews
 `bff9cc120923b0e9f2ba29a1b3511f1bcc26ab6e..HEAD`, repeats the exact slice and
 both real native scenarios, and issues the only verdict. Any load-bearing
 recurrence returns to this interface design, not a compatibility shim.
-

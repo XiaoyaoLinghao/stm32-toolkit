@@ -149,4 +149,3 @@ worktree, repeats the exact slice and both disposable native scenarios, and
 issues the only acceptance verdict. VS07-C remains frozen until that verdict is
 `ACCEPTED`. No push, PR, merge, tag, release, install, hardware, expanded Python
 support, release matrix, dual-platform audit, or coverage gate is authorized.
-
