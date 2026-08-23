@@ -1,12 +1,19 @@
 # STM32 Toolkit VS07-B Authorized Creation and Build Design
 
-**Status:** Approved for implementation under the user's standing approval waiver  
-**Date:** 2026-08-23  
-**Module/phase:** STM32 Toolkit 0.7 / VS07-B  
-**Accepted base:** `bff9cc120923b0e9f2ba29a1b3511f1bcc26ab6e`  
-**Specification owner/reviewer:** GPT-5.6-sol primary agent  
-**Implementation owner:** one GPT-5.6-luna agent, reasoning `max`  
-**Branch:** `codex/STM32TK-0702-CREATION-APPLY`  
+**Status:** Approved for implementation under the user's standing approval waiver
+
+**Date:** 2026-08-23
+
+**Module/phase:** STM32 Toolkit 0.7 / VS07-B
+
+**Accepted base:** `bff9cc120923b0e9f2ba29a1b3511f1bcc26ab6e`
+
+**Specification owner/reviewer:** GPT-5.6-sol primary agent
+
+**Implementation owner:** one GPT-5.6-luna agent, reasoning `max`
+
+**Branch:** `codex/STM32TK-0702-CREATION-APPLY`
+
 **Remote authority:** none
 
 ## 1. Outcome and boundaries
