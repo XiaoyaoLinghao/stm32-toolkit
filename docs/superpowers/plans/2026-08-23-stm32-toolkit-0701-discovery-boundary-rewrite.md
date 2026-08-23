@@ -1,6 +1,6 @@
 # STM32 Toolkit VS07-A Discovery Boundary Rewrite Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans. The existing single GPT-5.6-luna/max implementer owns all tasks below as sequential checkpoints; do not dispatch another agent.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans. One user-authorized replacement GPT-5.6-luna/max implementer owns remaining Tasks 1R–2R as sequential checkpoints; do not dispatch another implementation agent.
 
 **Goal:** Replace the non-converged VS07-A discovery boundary with a fail-closed, deterministic and test-proven implementation while preserving the approved public creation-plan interfaces.
 
@@ -12,7 +12,7 @@
 
 - Product accepted base is `d09e2343ab970f4ddeaa4c24dbf581c9bbe96f58`; rewrite input head is `1679dcca5839324b01187075955cfa2dd6efe595`.
 - Governing rewrite specification is `docs/superpowers/specs/2026-08-23-stm32-toolkit-0701-discovery-boundary-rewrite-design.md`.
-- The same one GPT-5.6-luna/max implementer owns every product/test/report change.
+- One replacement GPT-5.6-luna/max implementer owns the remaining Tasks 1R–2R product, test and report changes. The prior implementer is retired from this slice. This bounded ownership override expires after Sol verification.
 - CubeMX and VS Code must never execute. Only CubeCLT metadata and GCC/CMake/Ninja fixed version commands may execute through the bounded runner.
 - Planning writes no project or destination bytes and performs no install, hardware, Git remote, VS07-B, or VS07-C action.
 - Python support remains exactly `>=3.12,<3.13`.
@@ -83,8 +83,8 @@ Task 2R, then repeat Task 3 against the new code head.
 ### Task 1R: Replace the optional-fact helper chain with the frozen resolver
 
 This is an interface-level recovery checkpoint after the replacement review,
-not another local patch round. Complete it before repeating Task 3. The same
-single Luna/max implementer owns the entire checkpoint.
+not another local patch round. Complete it before repeating Task 3. The one
+user-authorized replacement Luna/max implementer owns the entire checkpoint.
 
 **Files:**
 - Rewrite as needed: `tools/stm32-toolkit/src/stm32_toolkit/tool_support.py`

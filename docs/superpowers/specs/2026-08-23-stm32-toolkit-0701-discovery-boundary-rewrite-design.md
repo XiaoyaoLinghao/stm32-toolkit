@@ -4,7 +4,9 @@
 
 **Owner and final reviewer:** GPT-5.6-sol primary agent
 
-**Implementation owner:** the existing single GPT-5.6-luna/max VS07-A implementer
+**Implementation owner:** one replacement GPT-5.6-luna/max implementer,
+explicitly authorized by the user on 2026-08-23 for remaining Tasks 1R–2R.
+The prior implementer no longer owns or edits this slice.
 
 **Product accepted base:** `d09e2343ab970f4ddeaa4c24dbf581c9bbe96f58`
 
