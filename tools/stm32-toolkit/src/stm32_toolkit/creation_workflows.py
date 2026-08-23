@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 
 from stm32_toolkit.generation.creation import CreationInputError, CreationRequest, plan_project_creation
@@ -22,6 +23,9 @@ class CreationPlanWorkflowRequest:
     language: str
 
 
+_now_factory = lambda: datetime.now(timezone.utc)
+
+
 def _request(value: CreationPlanWorkflowRequest) -> CreationRequest:
     if value.source_kind == "mcu":
         return CreationRequest.from_mcu(value.source_value, value.destination, framework=value.framework, language=value.language)
@@ -36,9 +40,7 @@ def plan_creation_workflow(request: CreationPlanWorkflowRequest, *, support_prof
     try:
         creation_request = _request(request)
         support = support_profile or discover_tool_support(SupportProfileRequest(data_root=request.data_root))
-        from datetime import datetime, timezone
-
-        plan = plan_project_creation(request.project_root, creation_request, support, now=datetime.now(timezone.utc))
+        plan = plan_project_creation(request.project_root, creation_request, support, now=_now_factory())
         return OperationResult.success("project-create-plan", {**plan.to_dict(), "mutated": False})
     except CreationInputError as error:
         return OperationResult.failure("project-create-plan", "CREATION_INPUT_INVALID", "Creation request is invalid", {"field": error.field})

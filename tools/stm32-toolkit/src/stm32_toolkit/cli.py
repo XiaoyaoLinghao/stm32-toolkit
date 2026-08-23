@@ -610,7 +610,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def _add_project_root(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--project-root", type=Path, default=argparse.SUPPRESS)
+    parser.add_argument("--project-root", type=Path, default=argparse.SUPPRESS, action=_RejectDuplicate)
 
 
 def _add_workflow_root(parser: argparse.ArgumentParser) -> None:

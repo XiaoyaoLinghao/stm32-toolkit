@@ -171,22 +171,32 @@ def _ioc_hash(path: Path) -> str:
         raise CreationInputError("CREATION_IOC_UNAVAILABLE", "ioc") from None
 
 
-def _inventory(root: Path, destination: Path) -> tuple[str, bool]:
+def _inventory_state(root: Path, destination: Path) -> tuple[str, str]:
+    """Return a canonical destination state without following redirects."""
     if destination.exists() and not _directory(destination):
-        return sha256_hex(canonical_json_bytes({"path": destination.name, "kind": "unsafe"})), True
+        return sha256_hex(canonical_json_bytes({"state": "unsafe", "entries": []})), "unsafe"
     if not destination.exists():
-        return sha256_hex(canonical_json_bytes({"state": "absent", "entries": []})), False
+        return sha256_hex(canonical_json_bytes({"state": "absent", "entries": []})), "absent"
     entries: list[dict[str, object]] = []
+    unsafe = False
     try:
         for child in sorted(destination.rglob("*"), key=lambda item: item.as_posix().casefold()):
             relative = child.relative_to(destination).as_posix()
             if child.is_symlink() or not (_directory(child) or _regular(child)):
                 entries.append({"path": relative, "kind": "unsafe"})
+                unsafe = True
             else:
                 entries.append({"path": relative, "kind": "dir" if child.is_dir() else "file", "size": child.stat().st_size if child.is_file() else None})
     except OSError:
         entries.append({"path": "<unavailable>", "kind": "unsafe"})
-    return sha256_hex(canonical_json_bytes({"state": "empty" if not entries else "populated", "entries": entries})), bool(entries)
+        unsafe = True
+    state = "unsafe" if unsafe else ("empty" if not entries else "populated")
+    return sha256_hex(canonical_json_bytes({"state": state, "entries": entries})), state
+
+
+def _inventory(root: Path, destination: Path) -> tuple[str, bool]:
+    digest, state = _inventory_state(root, destination)
+    return digest, state != "absent" and state != "empty"
 
 
 def _validate_chain(root: Path, target: Path) -> None:
@@ -194,6 +204,8 @@ def _validate_chain(root: Path, target: Path) -> None:
         relative = target.relative_to(root)
     except ValueError:
         raise CreationInputError("CREATION_PATH_INVALID", "path") from None
+    if not _directory(root):
+        raise CreationInputError("CREATION_PATH_INVALID", "path")
     current = root
     for part in relative.parts[:-1] if relative.parts else ():
         current = current / part
@@ -225,7 +237,7 @@ def plan_project_creation(workspace_root: Path, request: CreationRequest, tools:
     normalized = CreationRequest(normalized_source, request.destination, request.framework, request.language, request.overwrite)
     destination = root / normalized.destination
     _validate_chain(root, destination)
-    inventory_digest, has_inventory = _inventory(root, destination)
+    inventory_digest, inventory_state = _inventory_state(root, destination)
     blockers: list[CreationBlocker] = []
     issue_map = {issue.code: issue for issue in tools.issues}
     for code in ("CUBEMX_MISSING", "CUBEMX_UNSUPPORTED", "CUBECLT_MISSING", "GCC_MISSING", "CMAKE_MISSING", "NINJA_MISSING", "PYTHON_UNSUPPORTED"):
@@ -240,8 +252,34 @@ def plan_project_creation(workspace_root: Path, request: CreationRequest, tools:
     for fact, code, component in ((tools.cubeclt_root, "CUBECLT_MISSING", "cubeClt"), (tools.gcc, "GCC_MISSING", "gcc"), (tools.cmake, "CMAKE_MISSING", "cmake"), (tools.ninja, "NINJA_MISSING", "ninja")):
         if fact is None and not any(item.code == code for item in blockers):
             blockers.append(CreationBlocker(code, component, "Provide the supported STM32CubeCLT 1.22.0 tool."))
-    if has_inventory:
+    if inventory_state == "unsafe":
+        blockers.append(CreationBlocker("DESTINATION_UNSAFE", "destination", "Choose a destination with no redirect or unsafe entry."))
+    elif inventory_state == "populated":
         blockers.append(CreationBlocker("DESTINATION_NOT_EMPTY", "destination", "Choose an absent or empty destination; overwrite is refuse-only."))
+    blocker_order = {
+        "CUBEMX_MISSING": 0,
+        "CUBEMX_UNSUPPORTED": 1,
+        "CUBEMX_PROBE_FAILED": 2,
+        "CUBEMX_INVALID": 3,
+        "CUBEMX_AMBIGUOUS": 4,
+        "CUBECLT_MISSING": 10,
+        "GCC_MISSING": 20,
+        "GCC_UNSUPPORTED": 21,
+        "GCC_PROBE_FAILED": 22,
+        "GCC_INVALID": 23,
+        "CMAKE_MISSING": 30,
+        "CMAKE_UNSUPPORTED": 31,
+        "CMAKE_PROBE_FAILED": 32,
+        "CMAKE_INVALID": 33,
+        "NINJA_MISSING": 40,
+        "NINJA_UNSUPPORTED": 41,
+        "NINJA_PROBE_FAILED": 42,
+        "NINJA_INVALID": 43,
+        "PYTHON_UNSUPPORTED": 50,
+        "DESTINATION_UNSAFE": 60,
+        "DESTINATION_NOT_EMPTY": 61,
+    }
+    blockers.sort(key=lambda blocker: (blocker_order.get(blocker.code, 100), blocker.code, blocker.component, blocker.remediation))
     tool_digest = _tool_digest(tools)
     root_digest = sha256_hex(str(root).replace("\\", "/").casefold().encode("utf-8"))
     plan_inputs = {"schemaVersion": 1, "request": normalized.to_dict(), "toolProfileDigest": tool_digest, "destinationInventoryDigest": inventory_digest, "workspaceDigest": root_digest}
