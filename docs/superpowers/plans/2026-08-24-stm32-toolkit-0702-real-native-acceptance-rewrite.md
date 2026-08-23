@@ -107,6 +107,12 @@ report and VS07-B SDD ledger after product CodeHead is committed.
   successful strict parse, Toolkit configuration, Debug and Release builds,
   activation, portable output, no control/container residue, and no CubeMX/
   Java process. Do not use hardware.
+- [ ] If the real F4 parent-plus-`Legacy` include declarations reproduce
+  `BUILD_INPUT_INVALID` with `rule=duplicate`, add one focused build-input
+  regression and make only exact-path recursive/explicit overlap idempotent.
+  Preserve both model include paths and every existing alias, collision,
+  redirect, escape, and type rejection; then restart Task 3RR from the exact
+  16-file command.
 - [ ] Run `compileall`, accepted-base `git diff --check`, inspect the complete
   diff/status, and confirm the branch has no upstream/push.
 - [ ] Commit product/tests before reports. Then rewrite the implementation

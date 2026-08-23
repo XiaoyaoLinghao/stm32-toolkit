@@ -135,6 +135,15 @@ All path values must resolve inside the native project root. The real portable
 missing listed sources, the incomplete r6 tree, unbounded files, unsafe CMake,
 and mixed dialects fail closed.
 
+The real F4 include list declares both
+`Drivers/STM32F4xx_HAL_Driver/Inc` and its compiler-significant child
+`Drivers/STM32F4xx_HAL_Driver/Inc/Legacy`. The project model preserves both
+include declarations. Build-input inventory treats the exact same portable
+directory reached first through recursive parent inventory and later through
+that explicit child declaration as one idempotent evidence traversal. It does
+not discard either compiler include path and does not relax case-fold
+collisions, alternate aliases, redirects, escapes, or non-directory failures.
+
 ## 6. Acceptance and sequencing
 
 The implementer must first prove every old defect RED, then implement this
