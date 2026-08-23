@@ -1,73 +1,89 @@
 # SDD ledger — VS07-B authorized creation and build
 
 - Module/phase: STM32 Toolkit 0.7 / VS07-B.
-- Accepted base: `bff9cc120923b0e9f2ba29a1b3511f1bcc26ab6e`.
+- Accepted base: \`bff9cc120923b0e9f2ba29a1b3511f1bcc26ab6e\`.
 - Specification/plan owner: GPT-5.6-sol primary agent.
-- Implementer: `/root/vs07b_implementer`, GPT-5.6-luna, reasoning max.
+- Implementer: \`/root/vs07b_implementer\`, GPT-5.6-luna, reasoning max.
 - Reviewer/acceptor: GPT-5.6-sol primary agent.
-- Branch: `codex/STM32TK-0702-CREATION-APPLY`.
-- Worktree: `C:/tmp/stm32tk-0702-creation-apply`.
-- Remote authority: none; no push, PR mutation, merge, tag, release, close, or
-  remote branch operation.
-- Install/hardware authority: none; no package/software installation and no
-  hardware operation.
-- Bounded ownership exception: none.
+- Branch/worktree: \`codex/STM32TK-0702-CREATION-APPLY\` /
+  \`C:/tmp/stm32tk-0702-creation-apply\`.
+- Remote/install/hardware authority: none; no push, PR, merge, release,
+  package/software installation, hardware action, or VS07-C work.
+- CodeHead before the separate report/ledger commit:
+  \`e24205f4329e531331c64b8761fbdc1736fc53d1\`.
+- Product recovery commit:
+  \`7c23c7a95c7011872d2fa58e43e15386724b3d61\`.
+- Test-only activation-worker cleanup correction:
+  \`e24205f4329e531331c64b8761fbdc1736fc53d1\`.
 
-- 2026-08-23 reconstruction: branch/worktree started clean at accepted VS07-A
-  head `bff9cc12`; original dirty `D:/workspace/stm32-toolkit` was not changed.
-- Baseline exact VS07-A 11-file suite: exit 0, 323 passed, no skip/xfail, one
-  existing `runpy` warning.
-- Real environment: CubeMX App Paths resolves to
-  `D:/Program Files/STMicroelectronics/STM32Cube/STM32CubeMX/STM32CubeMX.exe`,
-  native startup reports `6.18.1-RC2`, and sibling Java CLI execution is
-  bounded. CubeCLT 1.22.0 / GCC 14.3.1 / CMake 4.3.1 / Ninja 1.13.2 remain
-  present.
-- Real environment blocker: updater configuration names
-  `C:/Users/ZhangYang/STM32Cube/Repository/`, which is absent; bounded searches
-  found no `STM32Cube_FW_*` package. Classification: `ENVIRONMENT`. No install
-  is authorized and no positive native result may be fabricated.
-- Native command facts: CubeMX supports load/config-load, CMake toolchain, GCC
-  compiler, project path/name/generate and exit. It exposes no verified project
-  language command. HAL/C are the basic supported path; LL/C++ require explicit
-  `.ioc` evidence or close with typed configuration-required failures.
-- Design/plan:
-  `docs/superpowers/specs/2026-08-23-stm32-toolkit-0702-authorized-creation-build-design.md`
-  and
-  `docs/superpowers/plans/2026-08-23-stm32-toolkit-0702-authorized-creation-build.md`.
-- Tasks 1-4 were sequential checkpoints for the same implementer, not separate
-  agents or release gates. Sol's first independent review returned
-  `REVISION_REQUIRED` for findings F1-F6 on candidate `a493be27`; the first
-  revision product bytes are in `fe984f8d` and its report commit is
-  `9d388bfa`. The implementation report is
-  `docs/codex/returns/STM32TK-0702-CREATION-APPLY/implementation-report.md`.
-- The report's claim that the final exact slice passed 630 tests is superseded
-  by Sol's clean round-2 review. The exact 16-file slice collected 630 tests
-  but finished with 629 passed and one product failure:
-  `test_activation_lock_serializes_independent_processes` raised
-  `CREATION_ACTIVATION_FAILED` in the second independent process. JUnit:
-  `C:/tmp/p0702-sol-r2-slice.xml`.
-- Round-2 native read-only observations also proved that the revised adapter
-  still modeled the wrong updater location/key, required an `OK` after
-  `exit` that native CubeMX does not emit, did not accept the mixed native
-  log/protocol stream, and emitted an incomplete `loadboard` command. Installed
-  6.18 templates proved that the revised parser still omitted the actual
-  `CMAKE_PROJECT_NAME`/`CMakePresets.json`/nested-list global dialect and the
-  context `mx-generated.cmake` dialect. Findings F2, F4, and F6 therefore did
-  not converge in two implementation/review rounds.
-- Per the repository stop-loss, local patching stopped. The native protocol,
-  parser, isolated-home, and descriptor-lock boundaries are replaced together
-  by the approved interface-level recovery design and plan:
-  `docs/superpowers/specs/2026-08-23-stm32-toolkit-0702-native-contract-recovery-design.md`
-  and
-  `docs/superpowers/plans/2026-08-23-stm32-toolkit-0702-native-contract-recovery.md`.
-  Tasks 1R-3R remain owned sequentially by the same sole Luna/max implementer.
-- Real read-only evidence on `C:\tmp\p0702-real-observe-final`: doctor and
-  create-plan succeeded; create-prepare returned typed
-  `CUBEMX_REPOSITORY_MISSING` with child exit 2. The canonical repository and
-  all `STM32Cube_FW_*` packages are absent, the destination stayed absent, and
-  no CubeMX process remained. Positive native acceptance is therefore an
-  `ENVIRONMENT` blocker; it is not a product PASS or deferred physical PASS.
-- Implementation state: interface recovery is ready for Tasks 1R-3R. Sol will
-  perform a third independent accepted-base-to-final-head review in a new clean
-  worktree. The maximum verdict while the offline firmware package is absent
-  is `IMPLEMENTATION_COMPLETE_ENVIRONMENT_BLOCKED`; VS07-C remains frozen.
+## History and recovery
+
+- The accepted VS07-A baseline was \`bff9cc12\`; the original dirty
+  \`D:/workspace/stm32-toolkit\` worktree was preserved and untouched.
+- Sol's first review returned REVISION_REQUIRED with F1-F6. Sol's clean
+  round-2 review then recorded 630 collected / 629 passed plus one
+  \`CREATION_ACTIVATION_FAILED\` independent activation process, and native
+  observations disproved the old protocol/updater/parser contracts.
+- Local patching stopped at that non-converged boundary. The approved
+  interface-level recovery design/plan replaced native protocol, parser,
+  isolated-home, and lock boundaries together. VS07-C remains frozen.
+- Tasks 1R-3R were executed sequentially by this sole implementer. Native
+  protocol transcripts and parser fixtures came from installed CubeMX 6.18
+  template/help facts; no native generation was claimed.
+
+## RED/GREEN and verification ledger
+
+- Task 1R RED command:
+  \`py -3.12 -m pytest tools/stm32-toolkit/tests/test_cubemx_adapter.py -q
+  --basetemp C:\\tmp\\p0702-r1-task1-red\` with
+  \`PYTHONPATH=tools/stm32-toolkit/src\`: 10 failed, 9 passed. GREEN:
+  basetemp \`p0702-r1-task1-green2\`, 19 passed.
+- Task 2R RED command:
+  \`py -3.12 -m pytest tools/stm32-toolkit/tests/test_cubemx_project.py -q
+  --basetemp C:\\tmp\\p0702-r1-task2-red\`: 6 failed, 10 passed. GREEN:
+  basetemp \`p0702-r1-task2-green5\`, 15 passed.
+- Task 3R focused durable-lock command:
+  authorization independent-consumer plus activation independent-process
+  tests, basetemp \`p0702-r1-task3-green-lock1\`: 2 passed. The complete
+  authorization/apply focused set passed 22/22.
+- A bounded real-process activation proof ran 20 fresh roots: exactly one
+  holder before release, two completion markers, and two exit-0 children for
+  every run. Five repetitions of the independent authorization-consumer test
+  each returned exactly one \`OK\` and one
+  \`CREATION_AUTHORIZATION_CONSUMED\`.
+- Initial affected recovery run
+  \`C:\\tmp\\p0702-r3-affected.xml\`: 89 tests, one failure, no errors/skips.
+  The failing assertion timed out before child communication; this was
+  classified TEST (harness cleanup), not PRODUCT. The test now releases and
+  communicates/kills children in \`finally\`, committed as the separate
+  \`e24205f4\` correction.
+- Final affected recovery set: 89/89, 0 failures/errors/skips.
+- Exact public CLI/MCP set: 76/76, 0 failures/errors/skips; only the existing
+  runpy warning.
+- Exact approved 16-file slice: 642/642, 0 failures/errors/skips/xfails,
+  JUnit \`C:\\tmp\\p0702-r3-slice-final.xml\`.
+- Compileall exited 0:
+  \`py -3.12 -m compileall -q tools/stm32-toolkit/src/stm32_toolkit\`.
+- Accepted-base diff check exited 0:
+  \`git diff --check bff9cc120923b0e9f2ba29a1b3511f1bcc26ab6e..e24205f4329e531331c64b8761fbdc1736fc53d1\`.
+- Final pre-report product worktree was clean, local, and unpushed.
+
+## Environment evidence and state
+
+- Fresh read-only workspace:
+  \`C:\\tmp\\p0702-real-observe-recovery-r3\`.
+- Doctor and create-plan exited 0. Plan ID:
+  \`b49c2763d7442009cda4b3189448bac8a8efc191d0e22158e005264cad694b63\`.
+  Action digest:
+  \`003904ff6685bd1ec796cedca5f09e364ab48a281cb224b2e7a7621577fc9cef\`.
+- Create-prepare exited 2 with typed
+  \`CUBEMX_REPOSITORY_MISSING\`; no authorization record was issued.
+- CubeMX 6.18.1-RC2 and CubeCLT facts were discovered, but
+  \`C:\\Users\\ZhangYang\\STM32Cube\\Repository\` and all
+  \`STM32Cube_FW_*\` packages were absent. The \`generated\` destination stayed
+  absent and no CubeMX/java/javaw process remained.
+- Classification: PRODUCT evidence is the code/tests and checks above;
+  TEST is the corrected child-cleanup harness defect; ENVIRONMENT is the
+  missing offline firmware repository; REPORT has no format/diff failure.
+- Maximum state is \`IMPLEMENTATION_COMPLETE_ENVIRONMENT_BLOCKED\`, pending
+  Sol's independent complete accepted-base-to-final-head review.

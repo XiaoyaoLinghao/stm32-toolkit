@@ -2,156 +2,127 @@
 
 ## Status and ownership
 
-- Status: `IMPLEMENTED_PENDING_INDEPENDENT_REVIEW`.
+- Status: \`IMPLEMENTATION_COMPLETE_ENVIRONMENT_BLOCKED\`, pending Sol's independent review; the implementer does not self-accept.
 - Module/phase: STM32 Toolkit 0.7 / VS07-B authorized creation and build.
-- Accepted base: `bff9cc120923b0e9f2ba29a1b3511f1bcc26ab6e`.
-- CodeHead before this report/ledger commit:
-  `fe984f8dcd78f8f2339fa574733dd33e3badc3bf`.
-- Implementer: `/root/vs07b_implementer`, GPT-5.6-luna, reasoning `max`.
-- Independent reviewer/acceptor: GPT-5.6-sol primary agent. The implementer
-  does not self-accept this slice.
-- Branch/worktree: `codex/STM32TK-0702-CREATION-APPLY` /
-  `C:/tmp/stm32tk-0702-creation-apply`.
-- Remote authority: none exercised. No push, PR mutation, merge, tag, release,
-  close, or remote-branch operation was performed.
-- Install/hardware authority: none exercised. No firmware package, software,
-  hardware, or CubeMX updater operation was installed or invoked.
+- Accepted base: \`bff9cc120923b0e9f2ba29a1b3511f1bcc26ab6e\`.
+- CodeHead before this report/ledger commit: \`e24205f4329e531331c64b8761fbdc1736fc53d1\`.
+- Implementer: \`/root/vs07b_implementer\`, GPT-5.6-luna, reasoning max.
+- Reviewer/acceptor: GPT-5.6-sol primary agent.
+- Branch/worktree: \`codex/STM32TK-0702-CREATION-APPLY\` / \`C:/tmp/stm32tk-0702-creation-apply\`.
+- No push, PR, merge, tag, release, remote operation, install, hardware action, updater operation, or VS07-C work was performed.
+- Product recovery commit: \`7c23c7a95c7011872d2fa58e43e15386724b3d61\`.
+- Separate test-only cleanup correction: \`e24205f4329e531331c64b8761fbdc1736fc53d1\`. Neither includes this report or ledger.
 
-## Delivered behavior
+## Delivered recovery
 
-Tasks 1–4 were executed sequentially by this one implementer:
+Tasks 1R-3R were executed sequentially by this sole implementer under the
+approved native-contract recovery design and plan.
 
-1. Added bounded, file-backed, expiring single-use authorization records with
-   atomic consume/replay/concurrency semantics, immutable execution-environment
-   binding, and read-only preparation re-planning.
-2. Added the closed CubeMX adapter: consumed-capability input, sibling Java,
-   fixed JVM/process shape, closed environment, bounded protocol handling, and
-   bounded native CMake/IOC/linker validation with CubeMX ownership manifests.
-3. Added sibling staging, one generation, native validation, configure, Debug
-   and Release builds, final destination revalidation, transactional absent/
-   empty activation, rollback, and sanitized attempt evidence. Public apply now
-   consumes before environment discovery, so an attempted apply cannot leave a
-   reusable capability.
-4. Added `project create-prepare` and `project create-apply`, the matching
-   `stm32_project_create_prepare` and `stm32_project_create_apply` MCP tools,
-   exact authorization/schema handling, English/Chinese usage notes, and the
-   public regression tests.
-
-The product commits preceding this report commit are `2dbb6c51`, `a4d70db9`,
-`72b398d3`, `3be836e2`, and `fe984f8d`; the CodeHead above is the last
-product/test commit and deliberately does not include this report or the
-ledger update. Sol's independent round-1 review of the prior candidate
-`a493be274f7c857fa7e85ab11964d65854525abc` returned `REVISION_REQUIRED` with
-findings F1-F6. `fe984f8d` addresses each finding with product tests written
-RED before the corresponding fixes.
+- Task 1R replaced the invented CubeMX equality protocol with the verified
+  6.18 mixed-log ordered protocol: exact MCU/IOC/board commands, \`OK\` for
+  every non-\`exit\` command, and delayed \`Bye bye\` after \`exit\`. It emits
+  the exact isolated updater layout and keeps control home/script/log outside
+  product staging, cleaning it on adapter failure and after success.
+- Task 2R strictly parses the literal global nested
+  \`cmake/stm32cubemx\` and context \`mx-generated.cmake\` CMake dialects,
+  bounded safe path expressions, project/preset/toolchain/linker facts, and
+  CPU/FPU/ABI facts with no source or architecture fallbacks. F4/H7 fixtures
+  were derived from installed \`STM32PackCreator.jar\` template entries.
+- Task 3R uses an identity-checked descriptor lock for authorization and
+  activation across independent processes, preserves rollback transitions, and
+  cleans child processes in the activation serialization test on assertions.
+- Existing public creation CLI/MCP behavior remains covered by regression tests.
 
 ## TDD RED/GREEN evidence
 
-Tests were written before each corresponding product edit. The initial
-uninstalled-worktree collection failure (`ModuleNotFoundError`) was classified
-`ENVIRONMENT`; repeating with
-`$env:PYTHONPATH='tools/stm32-toolkit/src'` produced the intended product RED
-signals. The review-revision RED/GREEN checkpoints were:
+Tests were written and run RED before corresponding product edits. The initial
+collection without the isolated source path was an environment
+\`ModuleNotFoundError\`; the commands below use the required source path.
 
-- F1 authorization: an independent-process replay/concurrency test returned
-  `['OK', 'OK']` before the durable claim fix, and the forged-capability test
-  reached the runner before issuance validation. After the fix, the focused
-  authorization/adapter set passed (8 authorization and 15 adapter tests in
-  the final slice).
-- F2/F3 adapter and privacy: five protocol/source-kind/control-artifact tests
-  failed before the closed script, updater binding, and external control-root
-  fixes. The final adapter set passed 15 tests, including exact echo/OK/Bye-bye
-  validation, source-specific commands, updater binding, and no control bytes
-  in the activated product.
-- F4 native parser: three tests failed before nested 6.18 CMake parsing and
-  strict CPU/FPU/ABI/project-fact validation. The final native-project set
-  passed 7 tests, including representative F4/H7 nested fixtures and
-  configure-plan synthesis.
-- F5 revalidation: drift tests first failed with an unexpected
-  `revalidate_plan` argument and then passed after the apply/workflow contract
-  was wired; adapter invocation remained zero for IOC and absent-to-empty
-  destination drift.
-- F6 activation: rollback injection first reproduced the missing-backup-path
-  failure and the durable-lock seam was absent; the final apply set passed 14
-  tests covering rename/cleanup/rollback injection, restoration, and
-  concurrency.
-- Public Task 4: CLI/MCP tests were authored before the public adapters and
-  passed as the final 76-test public set (14 creation CLI, 8 creation MCP, 26
-  CLI, 15 MCP server, and 13 MCP roots).
+Task 1R RED:
 
-## Verification commands and results
+\`\`\`powershell
+$env:PYTHONPATH='tools/stm32-toolkit/src'; py -3.12 -m pytest tools/stm32-toolkit/tests/test_cubemx_adapter.py -q --basetemp C:\\tmp\\p0702-r1-task1-red
+\`\`\`
 
-All commands below were run from the returned worktree with CPython 3.12.10.
-The source-path environment assignment is required because this isolated
-worktree is intentionally not installed as a package.
+Result: exit 1, 10 failed and 9 passed. GREEN with
+\`--basetemp C:\\tmp\\p0702-r1-task1-green2\`: 19 passed.
 
-Focused public command:
+Task 2R RED:
 
-```powershell
-$env:PYTHONPATH='tools/stm32-toolkit/src'; py -3.12 -m pytest tools/stm32-toolkit/tests/test_creation_cli.py tools/stm32-toolkit/tests/test_creation_mcp.py tools/stm32-toolkit/tests/test_cli.py tools/stm32-toolkit/tests/test_mcp_server.py tools/stm32-toolkit/tests/test_mcp_roots.py -q --basetemp C:\tmp\p0702-r1-public-final --junitxml=C:\tmp\p0702-r1-public-final.xml
-```
+\`\`\`powershell
+$env:PYTHONPATH='tools/stm32-toolkit/src'; py -3.12 -m pytest tools/stm32-toolkit/tests/test_cubemx_project.py -q --basetemp C:\\tmp\\p0702-r1-task2-red
+\`\`\`
 
-Result: exit 0, 76 passed, 0 failed/error/skipped/xfail, with only the
-pre-existing `runpy` warning for `stm32_toolkit.cli`.
+Result: exit 1, 6 failed and 10 passed. GREEN with
+\`--basetemp C:\\tmp\\p0702-r1-task2-green5\`: 15 passed, including literal
+global/context F4/H7 fixtures and Debug/Release planning.
 
-Exact complete VS07-B slice file set from the approved plan:
+Task 3R retained Sol's round-2 RED proof in
+\`C:\\tmp\\p0702-sol-r2-slice.xml\`: 630 collected, 629 passed, and the
+independent activation test failed with the second process returning
+\`CREATION_ACTIVATION_FAILED\`. The focused durable-lock command:
 
-```powershell
-$env:PYTHONPATH='tools/stm32-toolkit/src'; py -3.12 -m pytest tools/stm32-toolkit/tests/test_creation_authorization.py tools/stm32-toolkit/tests/test_creation_environment.py tools/stm32-toolkit/tests/test_cubemx_adapter.py tools/stm32-toolkit/tests/test_cubemx_project.py tools/stm32-toolkit/tests/test_creation_apply.py tools/stm32-toolkit/tests/test_creation_plan.py tools/stm32-toolkit/tests/test_creation_workflows.py tools/stm32-toolkit/tests/test_creation_cli.py tools/stm32-toolkit/tests/test_creation_mcp.py tools/stm32-toolkit/tests/test_process.py tools/stm32-toolkit/tests/test_generation.py tools/stm32-toolkit/tests/test_workflows.py tools/stm32-toolkit/tests/test_build_runner.py tools/stm32-toolkit/tests/test_cli.py tools/stm32-toolkit/tests/test_mcp_server.py tools/stm32-toolkit/tests/test_mcp_roots.py -q --basetemp C:\tmp\p0702-r1-slice-final --junitxml=C:\tmp\p0702-r1-slice-final.xml
-```
+\`\`\`powershell
+$env:PYTHONPATH='tools/stm32-toolkit/src'; py -3.12 -m pytest tools/stm32-toolkit/tests/test_creation_authorization.py::test_two_independent_processes_have_exactly_one_durable_consumer tools/stm32-toolkit/tests/test_creation_apply.py::test_activation_lock_serializes_independent_processes -q --basetemp C:\\tmp\\p0702-r1-task3-green-lock1
+\`\`\`
 
-Result: exit 0, 630 passed, 0 failed/error/skipped/xfail. JUnit totals were
-83 build-runner, 26 CLI, 14 apply, 8 authorization, 14 creation-CLI, 4
-environment, 8 creation-MCP, 19 creation-plan, 10 creation-workflow, 15
-adapter, 7 native-project, 276 generation, 13 MCP-roots, 15 MCP-server, 39
-process, and 79 workflow tests. The only warning was the same pre-existing
-`runpy` warning. `py -3.12 -m compileall -q
-tools/stm32-toolkit/src/stm32_toolkit` exited 0. `git diff --check
-bff9cc120923b0e9f2ba29a1b3511f1bcc26ab6e..fe984f8dcd78f8f2339fa574733dd33e3badc3bf`
-also exited 0 at CodeHead.
+passed 2/2. The complete authorization/apply focused command passed 22/22.
+A bounded real-process activation harness ran 20 fresh lock roots with one
+holder before release, two completion markers, and two exit-0 children on every
+run. The independent authorization-consumer test was repeated five times;
+each run returned exactly one \`OK\` and one
+\`CREATION_AUTHORIZATION_CONSUMED\`.
 
-Verification classification:
+The first post-recovery affected run was:
 
-- `PRODUCT`: all source-pinned focused and complete slice tests, typed CLI/MCP
-  schemas, replay/concurrency, staging/rollback, protocol, native-parser,
-  configure/build ordering, and diff-check evidence above.
-- `ENVIRONMENT`: the initial uninstalled-worktree collection failure and the
-  real host's absent Cube firmware repository. These do not invalidate the
-  product test evidence.
-- `REPORT`: no report-format or diff-check failure observed.
+\`\`\`powershell
+$env:PYTHONPATH='tools/stm32-toolkit/src'; py -3.12 -m pytest tools/stm32-toolkit/tests/test_creation_authorization.py tools/stm32-toolkit/tests/test_creation_apply.py tools/stm32-toolkit/tests/test_cubemx_adapter.py tools/stm32-toolkit/tests/test_cubemx_project.py tools/stm32-toolkit/tests/test_creation_workflows.py tools/stm32-toolkit/tests/test_creation_environment.py tools/stm32-toolkit/tests/test_creation_plan.py -q --basetemp C:\\tmp\\p0702-r3-affected --junitxml=C:\\tmp\\p0702-r3-affected.xml
+\`\`\`
+
+JUnit recorded 89 tests, 1 failure, 0 errors/skips: the assertion timed out
+with no \`ready-*\` marker before child \`communicate\` ran. The repeated
+real-process proofs showed no product contention. This was classified TEST
+(test-harness cleanup), corrected with finally-based release/communicate/kill
+cleanup, and committed separately as \`e24205f4\`.
+
+## Verification
+
+- Final affected recovery command (the seven files above, basetemp
+  \`C:\\tmp\\p0702-r3-affected-final\`, JUnit) passed 89/89, exit 0, with
+  0 failures/errors/skips.
+- Exact public CLI/MCP command
+  (\`test_creation_cli.py test_creation_mcp.py test_cli.py test_mcp_server.py
+  test_mcp_roots.py\`, JUnit \`C:\\tmp\\p0702-r3-public.xml\`) passed 76/76,
+  exit 0; only the pre-existing runpy warning appeared.
+- Exact approved 16-file VS07-B command (JUnit
+  \`C:\\tmp\\p0702-r3-slice-final.xml\`) passed 642/642 with 0
+  failures/errors/skips/xfails.
+- \`py -3.12 -m compileall -q tools/stm32-toolkit/src/stm32_toolkit\` exited
+  0.
+- \`git diff --check bff9cc120923b0e9f2ba29a1b3511f1bcc26ab6e..e24205f4329e531331c64b8761fbdc1736fc53d1\` exited 0.
+- Worktree was clean and branch local/unpushed before this report/ledger commit.
+
+Classification: PRODUCT covers the native protocol, updater/control cleanup,
+strict parser, durable lock, CLI/MCP, focused/affected/slice tests, compileall,
+and diff check. TEST covers only the initial affected-run harness cleanup
+defect. ENVIRONMENT covers the absent Cube firmware repository. REPORT has no
+format or diff-check failure.
 
 ## Real-host read-only observation
 
-Disposable workspace: `C:\tmp\p0702-real-observe-final`. No destination or
-repository bytes were changed. Commands were:
+Fresh disposable workspace: \`C:\\tmp\\p0702-real-observe-recovery-r3\`.
+Doctor and plan commands exited 0. Plan ID was
+\`b49c2763d7442009cda4b3189448bac8a8efc191d0e22158e005264cad694b63\`; action
+digest was
+\`003904ff6685bd1ec796cedca5f09e364ab48a281cb224b2e7a7621577fc9cef\`.
+The exact prepare command used those values and returned child exit 2 with
+typed \`CUBEMX_REPOSITORY_MISSING\`; no authorization record was issued.
 
-```powershell
-$env:PYTHONPATH='tools/stm32-toolkit/src'; py -3.12 -m stm32_toolkit.cli doctor --project-root C:\tmp\p0702-real-observe-final --json
-$env:PYTHONPATH='tools/stm32-toolkit/src'; py -3.12 -m stm32_toolkit.cli project create-plan --project-root C:\tmp\p0702-real-observe-final --source-kind mcu --source STM32F429ZITx --destination generated --framework hal --language c --json
-$env:PYTHONPATH='tools/stm32-toolkit/src'; py -3.12 -m stm32_toolkit.cli project create-prepare --project-root C:\tmp\p0702-real-observe-final --source-kind mcu --source STM32F429ZITx --destination generated --framework hal --language c --plan-id 62659eb96bb4c4afc3b9247064d645a579850894e6d207e8353b06854b5e4865 --action-digest 449899123f48c5a1f6dd0e056be27f6787fdec986f987d7cacf98f9dd1884a92 --json
-```
-
-Observed results:
-
-- `doctor`: exit 0; CPython `3.12.10`; creation support found CubeMX
-  `6.18.1-RC2` at the registered App Paths location and CubeCLT `1.22.0`
-  facts (GCC `14.3.1`, CMake `4.3.1`, Ninja `1.13.2`). The existing doctor
-  `STM32CubeMX` tool entry remains unavailable while the creation-support
-  resolver safely finds the installed executable.
-- `create-plan`: exit 0, `mutated=false`, plan ID
-  `62659eb96bb4c4afc3b9247064d645a579850894e6d207e8353b06854b5e4865`, action
-  digest
-  `449899123f48c5a1f6dd0e056be27f6787fdec986f987d7cacf98f9dd1884a92`, and no
-  planning blockers.
-- `create-prepare`: child exit 2 (the enclosing PowerShell probe also
-  confirmed this with `CHILD_EXIT=2`), typed
-  `CUBEMX_REPOSITORY_MISSING`, and no authorization record was issued.
-- `C:\Users\ZhangYang\STM32Cube\Repository` was absent and the bounded
-  package search found no `STM32Cube_FW_*` directory. The disposable
-  `generated` destination remained absent before and after the commands, and
-  `Get-Process -Name STM32CubeMX` found no CubeMX process afterward.
-
-This is an `ENVIRONMENT` blocker for positive native acceptance, not a product
-PASS or a deferred physical PASS. No positive native `.ioc`/MCU generation,
-hardware action, package installation, release matrix, coverage gate, or
-VS07-C work was performed.
+The host discovered CubeMX 6.18.1-RC2 and CubeCLT/GCC/CMake/Ninja facts, but
+\`C:\\Users\\ZhangYang\\STM32Cube\\Repository\` was absent, no
+\`STM32Cube_FW_*\` package directory existed, \`generated\` stayed absent, and
+no CubeMX/java/javaw process remained. This is an ENVIRONMENT blocker, not a
+native-generation PASS or deferred physical PASS. No positive native
+generation, package installation, hardware action, release matrix, coverage
+gate, or VS07-C work was performed.
