@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
+from stm32_toolkit import regeneration
 from stm32_toolkit.regeneration import (
     MAX_DIFF_BYTES,
+    MAX_PREVIEW_BYTES,
     InventoryEntry,
     RegenerationError,
     RegenerationInputError,
@@ -84,6 +87,80 @@ def test_regeneration_preview_fails_closed_when_aggregate_display_exceeds_bound(
     with pytest.raises(RegenerationError) as caught:
         build_regeneration_preview(before, after)
     assert caught.value.code == "REGENERATION_PREVIEW_TOO_LARGE"
+
+
+@pytest.mark.parametrize("status", ("added", "deleted", "binary"))
+def test_regeneration_preview_bounds_complete_change_record_metadata(status: str):
+    count = 10_000
+    before_data = b"\xff" if status == "binary" else b""
+    after_data = b"\xfe" if status == "binary" else b""
+    before_entries = ()
+    after_entries = ()
+    before_bytes = {}
+    after_bytes = {}
+    if status in {"deleted", "binary"}:
+        before_entries = tuple(
+            InventoryEntry(f"App/{index:05d}.bin", "file", len(before_data), f"{index:064x}", "user")
+            for index in range(count)
+        )
+        before_bytes = {entry.path: before_data for entry in before_entries}
+    if status in {"added", "binary"}:
+        after_entries = tuple(
+            InventoryEntry(f"App/{index:05d}.bin", "file", len(after_data), f"{index + 1:064x}", "user")
+            for index in range(count)
+        )
+        after_bytes = {entry.path: after_data for entry in after_entries}
+    before = SimpleNamespace(
+        inventory=before_entries,
+        file_bytes=before_bytes,
+        ownership_manifest_digest="1" * 64,
+        managed_manifest_digest="2" * 64,
+    )
+    after = SimpleNamespace(
+        inventory=after_entries,
+        file_bytes=after_bytes,
+        ownership_manifest_digest="3" * 64,
+        managed_manifest_digest="4" * 64,
+    )
+    with pytest.raises(RegenerationError) as caught:
+        build_regeneration_preview(before, after)
+    assert caught.value.code == "REGENERATION_PREVIEW_TOO_LARGE"
+
+
+def test_regeneration_preview_public_payload_is_bounded_for_successful_preview():
+    before = SimpleNamespace(
+        inventory=(InventoryEntry("App/keep.txt", "file", 1, "a" * 64, "user"),),
+        file_bytes={"App/keep.txt": b"a"},
+        ownership_manifest_digest="1" * 64,
+        managed_manifest_digest="2" * 64,
+    )
+    after = SimpleNamespace(
+        inventory=(InventoryEntry("App/keep.txt", "file", 1, "b" * 64, "user"),),
+        file_bytes={"App/keep.txt": b"b"},
+        ownership_manifest_digest="3" * 64,
+        managed_manifest_digest="4" * 64,
+    )
+    preview = build_regeneration_preview(before, after)
+    encoded = json.dumps(preview.to_dict(), sort_keys=True, separators=(",", ":")).encode("utf-8")
+    assert len(encoded) <= MAX_PREVIEW_BYTES
+
+
+def test_regeneration_read_rejects_open_identity_change(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    victim = tmp_path / "victim.bin"
+    replacement = tmp_path / "replacement.bin"
+    victim.write_bytes(b"same-size")
+    replacement.write_bytes(b"same-size")
+    real_open = regeneration.os.open
+
+    def open_replacement(path, flags, *args, **kwargs):
+        if Path(path) == victim:
+            return real_open(replacement, flags, *args, **kwargs)
+        return real_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(regeneration.os, "open", open_replacement)
+    with pytest.raises(RegenerationError) as caught:
+        regeneration._read_file(victim)
+    assert caught.value.code == "REGENERATION_STATE_CHANGED"
 
 
 def test_destination_symlink_is_rejected_before_resolution(tmp_path: Path):

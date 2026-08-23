@@ -326,16 +326,58 @@ def _safe_lstat(path: Path) -> os.stat_result:
 
 def _read_file(path: Path, *, limit: int = MAX_FILE_BYTES) -> tuple[bytes, int]:
     before = _safe_lstat(path)
-    if not stat.S_ISREG(before.st_mode):
+    if not stat.S_ISREG(before.st_mode) or before.st_nlink != 1:
         raise RegenerationError("REGENERATION_PATH_UNSAFE", "project path contains a special file")
     if before.st_size > limit:
         raise RegenerationError("REGENERATION_PATH_UNSAFE", "project file exceeds its bound")
+    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    descriptor = -1
     try:
-        data = path.read_bytes()
+        descriptor = os.open(path, flags)
+        opened = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(opened.st_mode)
+            or opened.st_nlink != 1
+            or opened.st_size > limit
+            or (before.st_dev, before.st_ino) != (opened.st_dev, opened.st_ino)
+            or before.st_size != opened.st_size
+            or before.st_mtime_ns != opened.st_mtime_ns
+        ):
+            raise RegenerationError("REGENERATION_STATE_CHANGED", "project file changed while it was opened")
+        ctime_comparable = before.st_ctime_ns == opened.st_ctime_ns
+        chunks = bytearray()
+        while True:
+            block = os.read(descriptor, min(64 * 1024, limit + 1 - len(chunks)))
+            if not block:
+                break
+            chunks.extend(block)
+            if len(chunks) > limit:
+                raise RegenerationError("REGENERATION_PATH_UNSAFE", "project file exceeds its bound")
+        trailing = os.read(descriptor, 1)
+        after_read = os.fstat(descriptor)
+    except RegenerationError:
+        raise
     except OSError:
-        raise RegenerationError("REGENERATION_PATH_UNSAFE", "project file cannot be read") from None
+        raise RegenerationError("REGENERATION_PATH_UNSAFE", "project path cannot be read") from None
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
     after = _safe_lstat(path)
-    if before.st_size != len(data) or after.st_size != len(data) or before.st_mtime_ns != after.st_mtime_ns:
+    data = bytes(chunks)
+    if (
+        trailing != b""
+        or len(data) != opened.st_size
+        or (after_read.st_dev, after_read.st_ino) != (opened.st_dev, opened.st_ino)
+        or after_read.st_nlink != opened.st_nlink
+        or after_read.st_size != opened.st_size
+        or after_read.st_mtime_ns != opened.st_mtime_ns
+        or (ctime_comparable and after_read.st_ctime_ns != opened.st_ctime_ns)
+        or (after.st_dev, after.st_ino) != (opened.st_dev, opened.st_ino)
+        or after.st_nlink != opened.st_nlink
+        or after.st_size != opened.st_size
+        or after.st_mtime_ns != opened.st_mtime_ns
+        or (ctime_comparable and after.st_ctime_ns != opened.st_ctime_ns)
+    ):
         raise RegenerationError("REGENERATION_STATE_CHANGED", "project file changed while it was read")
     return data, len(data)
 
@@ -656,7 +698,7 @@ def _classify_snapshot(
         entry = actual_by_path.get(path)
         if entry is None or entry.kind != "file":
             blockers.append(RegenerationBlocker("REGENERATION_STATE_CHANGED", path, "CubeMX-owned file is missing"))
-        elif path != ioc_path and (entry.size != int(row["size"]) or entry.sha256 != row["sha256"]):
+        elif path not in toolkit_paths and path != ioc_path and (entry.size != int(row["size"]) or entry.sha256 != row["sha256"]):
             blockers.append(RegenerationBlocker("REGENERATION_STATE_CHANGED", path, "CubeMX-owned file drifted"))
     for path in sorted(managed_paths, key=portable_sort_key):
         entry = actual_by_path.get(path)
@@ -951,7 +993,16 @@ def build_regeneration_preview(
         "userOwned": sum(item.ownership == "user" for item in after.inventory),
         "derived": sum(item.ownership == "derived" for item in after.inventory),
     }
-    return RegenerationPreview(sha256_hex(canonical_json_bytes(digest_payload)), tuple(changes), counts, replacement_digest, ownership_digest)
+    preview = RegenerationPreview(
+        sha256_hex(canonical_json_bytes(digest_payload)),
+        tuple(changes),
+        counts,
+        replacement_digest,
+        ownership_digest,
+    )
+    if len(canonical_json_bytes(preview.to_dict())) > MAX_PREVIEW_BYTES:
+        raise RegenerationError("REGENERATION_PREVIEW_TOO_LARGE", "regeneration preview exceeds its public bound")
+    return preview
 
 
 def plan_regeneration(

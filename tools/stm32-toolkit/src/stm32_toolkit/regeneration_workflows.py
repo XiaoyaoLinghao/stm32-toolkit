@@ -51,6 +51,9 @@ from stm32_toolkit.tool_support import ToolSupportProfile
 from stm32_toolkit.workflows import build_firmware_workflow
 from stm32_toolkit.regeneration import (
     MAX_FILE_BYTES,
+    MAX_FILES,
+    MAX_TOTAL_BYTES,
+    InventoryEntry,
     OwnershipSnapshot,
     RegenerationBlocker,
     RegenerationError,
@@ -58,6 +61,7 @@ from stm32_toolkit.regeneration import (
     RegenerationPlan,
     RegenerationPreview,
     RegenerationWorkflowRequest,
+    _USER_ROOTS,
     _canonical_root,
     _creation_request,
     _digest,
@@ -225,14 +229,9 @@ class RegenerationAuthorizationStore:
             raise RegenerationAuthorizationError("REGENERATION_AUTHORIZATION_INVALID", "authorization digest is invalid")
         path = self._path(digest)
         try:
-            info = os.lstat(path)
-            if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or bool(getattr(info, "st_file_attributes", 0) & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)):
-                raise OSError
-            data = path.read_bytes()
-            if len(data) > 64 * 1024:
-                raise ValueError
+            data, _ = _read_file(path, limit=64 * 1024)
             payload = json.loads(data.decode("utf-8"), object_pairs_hook=_json_no_duplicates)
-        except (OSError, UnicodeError, ValueError, TypeError):
+        except (RegenerationError, OSError, UnicodeError, ValueError, TypeError):
             raise RegenerationAuthorizationError("REGENERATION_AUTHORIZATION_INVALID", "authorization record is malformed") from None
         required = {"schemaVersion", "nonce", "issuedAt", "expiresAt", "state", "planId", "actionDigest", "previewDigest", "executionEnvironmentDigest", "projectStateDigest", "ownershipManifestDigest", "managedManifestDigest", "currentIocSha256", "workspaceRoot", "dataRoot", "destination", "authorizationDigest"}
         if not isinstance(payload, dict) or set(payload) != required or payload.get("schemaVersion") != 1 or payload.get("authorizationDigest") != digest or _auth_digest(payload) != digest:
@@ -523,7 +522,9 @@ def _prepare_candidate(
         for root_name in ("App", "Tests"):
             _copy_tree(plan.request.project_root / root_name, child / root_name)
     try:
-        return _load_snapshot_for_candidate(child, resolved_environment)
+        snapshot = _load_snapshot_for_candidate(child, resolved_environment)
+        _reject_candidate_blockers(snapshot)
+        return snapshot
     except RegenerationError:
         raise
 
@@ -544,6 +545,65 @@ def _load_snapshot_for_candidate(candidate: Path, environment: object | None) ->
         raise
     except (ProjectManifestError, OSError, ValueError):
         raise RegenerationError("REGENERATION_PREVIEW_FAILED", "CubeMX candidate metadata is invalid") from None
+
+
+def _user_inventory_from_entries(inventory: tuple[InventoryEntry, ...]) -> tuple[tuple[str, str, int, str | None], ...]:
+    return tuple(
+        (entry.path, entry.kind, entry.size, entry.sha256)
+        for entry in inventory
+        if entry.ownership == "user"
+    )
+
+
+def _user_inventory(root: Path) -> tuple[tuple[str, str, int, str | None], ...]:
+    """Rehash only the closed App/Tests roots without widening ownership."""
+    records: list[InventoryEntry] = []
+    total = 0
+    files = 0
+    for root_name in _USER_ROOTS:
+        user_root = root / root_name
+        if not os.path.lexists(user_root):
+            continue
+        info = _safe_lstat(user_root)
+        if not stat.S_ISDIR(info.st_mode):
+            raise RegenerationError("REGENERATION_USER_DRIFT", "user ownership root is not a directory", {"root": root_name})
+        records.append(InventoryEntry(root_name, "dir", 0, None, "user"))
+        pending = [user_root]
+        while pending:
+            current = pending.pop()
+            try:
+                children = sorted(current.iterdir(), key=lambda item: portable_sort_key(item.name))
+            except OSError:
+                raise RegenerationError("REGENERATION_USER_DRIFT", "user-owned files cannot be inspected", {"root": root_name}) from None
+            for child in children:
+                relative = _relative_path(root, child)
+                child_info = _safe_lstat(child)
+                if stat.S_ISDIR(child_info.st_mode):
+                    records.append(InventoryEntry(relative, "dir", 0, None, "user"))
+                    pending.append(child)
+                    continue
+                if not stat.S_ISREG(child_info.st_mode):
+                    raise RegenerationError("REGENERATION_PATH_UNSAFE", "user-owned files contain a special path", {"root": root_name})
+                files += 1
+                if files > MAX_FILES:
+                    raise RegenerationError("REGENERATION_PATH_UNSAFE", "user-owned file count exceeds its bound")
+                data, size = _read_file(child)
+                total += size
+                if total > MAX_TOTAL_BYTES:
+                    raise RegenerationError("REGENERATION_PATH_UNSAFE", "user-owned aggregate size exceeds its bound")
+                records.append(InventoryEntry(relative, "file", size, hashlib.sha256(data).hexdigest(), "user"))
+    records.sort(key=lambda item: portable_sort_key(item.path))
+    return tuple((entry.path, entry.kind, entry.size, entry.sha256) for entry in records)
+
+
+def _reject_candidate_blockers(snapshot: OwnershipSnapshot) -> None:
+    if snapshot.blockers:
+        blocker = snapshot.blockers[0]
+        raise RegenerationError(
+            blocker.code,
+            "CubeMX candidate ownership state is invalid",
+            {"blockers": [item.to_dict() for item in snapshot.blockers]},
+        )
 
 
 def _clean_roots(*roots: tuple[Path | None, bool]) -> bool:
@@ -771,6 +831,13 @@ def apply_regeneration_workflow(
                 current_plan = _plan_for_request(request, support_profile=support_profile, repository=repository, environment=environment, now=now)
                 if current_plan.plan_id != plan.plan_id:
                     raise RegenerationError("REGENERATION_STATE_CHANGED", "project state changed while staged")
+                expected_user = _user_inventory_from_entries(plan.inventory)
+                current_user = _user_inventory_from_entries(current.inventory)
+                if current_user != expected_user:
+                    raise RegenerationError("REGENERATION_USER_DRIFT", "user-owned state changed while staged")
+                candidate_user = _user_inventory(staging)
+                if candidate_user != current_user:
+                    raise RegenerationError("REGENERATION_USER_DRIFT", "candidate user-owned state changed before activation")
                 # The activation lock serializes destination replacement; only
                 # the exact validated candidate can cross it.
                 _, recovery = _activation_replace(staging, plan.request.project_root, attempt)
