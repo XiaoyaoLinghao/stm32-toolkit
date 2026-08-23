@@ -145,6 +145,16 @@ report and VS07-B SDD ledger after product CodeHead is committed.
   generic compatibility RED/GREEN, then run one real MCU Debug+Release apply.
   This is the only implementation round for the redesigned boundary; another
   runtime/link failure is `REWRITE_REQUIRED`.
+- [ ] Preserve real attempt `ea3bb6fee91111b8ee0dbb66` as activation RED:
+  Debug and Release completed at code head `14b666e5`, activation moved the
+  child, the first empty-container `rmdir` failed, and exact rollback/cleanup
+  succeeded. Add focused RED tests for transient `rmdir` failure followed by
+  success, persistent failure with exact absent/empty rollback, and an entry
+  appearing between attempts. Retry only an empty container's `rmdir`, at most
+  20 attempts with 50 ms spacing; do not retry renames, backup cleanup, locks,
+  or non-empty state. Commit the correction, then run one fresh public MCU
+  Debug+Release+activation attempt. A second container-cleanup failure stops
+  local patching and returns to activation design.
 - [ ] Run `compileall`, accepted-base `git diff --check`, inspect the complete
   diff/status, and confirm the branch has no upstream/push.
 - [ ] Commit product/tests before reports. Then rewrite the implementation

@@ -179,6 +179,18 @@ never mislabels vendor bytes as a Toolkit template. Projects without
 behavior byte-for-byte. This is one mode switch on an existing public model,
 not a second parser or build backend.
 
+The first real run against that native-linker boundary configured and built
+both firmware presets, then Windows transiently refused the single `rmdir` of
+the now-empty generation container. The existing rollback immediately restored
+the exact absent destination and removed the same container, so this is an
+activation cleanup race rather than another runtime/link failure. Container
+cleanup therefore rechecks that the owned container is empty before every
+attempt and retries only its `rmdir` at most 20 times with 50 ms between failed
+attempts. An entry appearing in the container fails immediately; a persistent
+removal failure keeps the existing `CREATION_ACTIVATION_FAILED` plus exact
+rollback behavior. Renames, backup cleanup, locks, destination validation, and
+all other failures are never retried.
+
 ## 6. Acceptance and sequencing
 
 The implementer must first prove every old defect RED, then implement this
