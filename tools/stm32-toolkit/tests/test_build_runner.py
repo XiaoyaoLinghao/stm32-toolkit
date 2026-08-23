@@ -1127,6 +1127,33 @@ def test_header_changed_during_build_returns_input_changed(
     assert result.details == {"path": "Inc/board.h"}
 
 
+def test_parent_child_include_overlap_is_snapshotted_once(tmp_path: Path):
+    root = prepare_project(tmp_path, git_repo=False, name="parent-child-overlap")
+    payload = json.loads((root / ".stm32-project.json").read_text(encoding="utf-8"))
+    payload["build"]["includePaths"] = [
+        "Drivers/STM32F4xx_HAL_Driver/Inc",
+        "Drivers/STM32F4xx_HAL_Driver/Inc/Legacy",
+    ]
+    (root / ".stm32-project.json").write_text(
+        json.dumps(payload, indent=2) + "\n", encoding="utf-8"
+    )
+    legacy = root / "Drivers" / "STM32F4xx_HAL_Driver" / "Inc" / "Legacy"
+    legacy.mkdir(parents=True)
+    (legacy.parent / "stm32f4xx_hal.h").write_text("#pragma once\n", encoding="utf-8")
+    (legacy / "stm32f4xx_hal_legacy.h").write_text("#pragma once\n", encoding="utf-8")
+
+    model = load_project_model(root)
+    assert model.build.include_paths == (
+        "Drivers/STM32F4xx_HAL_Driver/Inc",
+        "Drivers/STM32F4xx_HAL_Driver/Inc/Legacy",
+    )
+    snapshot = identity_mod.snapshot_project_inputs(model)
+    paths = [entry.path for entry in snapshot.entries]
+    assert paths.count("Drivers/STM32F4xx_HAL_Driver/Inc/stm32f4xx_hal.h") == 1
+    assert paths.count("Drivers/STM32F4xx_HAL_Driver/Inc/Legacy/stm32f4xx_hal_legacy.h") == 1
+    assert len(paths) == len(set(paths))
+
+
 def test_map_invalid_publishes_failure(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     root = prepare_project(tmp_path)
     install_fake_cmake(monkeypatch, tmp_path, env={"FAKE_CMAKE_MAP_DEFECT": "malformed"})

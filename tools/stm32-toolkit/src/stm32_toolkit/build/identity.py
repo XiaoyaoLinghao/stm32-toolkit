@@ -228,8 +228,16 @@ def snapshot_project_inputs(model: ProjectModel) -> InputSnapshot:
     for record in records:
         _require_input_path(root, record.path, paths, declared_identities)
     walked: set[str] = set()
+    explicitly_walked: set[str] = set()
     for include in model.build.include_paths:
-        _walk_include(root, include, paths, declared_identities, walked)
+        _walk_include(
+            root,
+            include,
+            paths,
+            declared_identities,
+            walked,
+            explicit_walked=explicitly_walked,
+        )
     if len(paths) > _FILE_LIMIT_COUNT:
         raise _input_invalid_rule("fileCount")
     collision = casefold_collision(paths)
@@ -350,7 +358,11 @@ def _walk_include(
     declared_identities: dict[tuple[int, int], str],
     walked: set[str],
     depth: int = 0,
+    explicit_walked: set[str] | None = None,
+    explicit: bool = True,
 ) -> None:
+    if explicit_walked is None:
+        explicit_walked = set()
     if depth > _MAX_WALK_DEPTH:
         raise _input_invalid(rel_dir, "escape")
     if portable_path_error(rel_dir) is not None:
@@ -358,8 +370,14 @@ def _walk_include(
     if rel_dir.startswith("build/") or rel_dir.startswith("artifacts/migration"):
         raise _input_invalid(rel_dir, "reserved")
     if rel_dir in walked:
+        if explicit and rel_dir not in explicit_walked:
+            return
+        if not explicit and rel_dir in explicit_walked:
+            return
         raise _input_invalid_rule("duplicate")
     walked.add(rel_dir)
+    if explicit:
+        explicit_walked.add(rel_dir)
     absolute = root.joinpath(*rel_dir.split("/"))
     try:
         lst = _lstat(absolute)
@@ -400,7 +418,16 @@ def _walk_include(
             except OSError:
                 raise _input_invalid(rel, "inspection") from None
             if stat.S_ISDIR(target_lst.st_mode):
-                _walk_include(root, rel, paths, declared_identities, walked, depth + 1)
+                _walk_include(
+                    root,
+                    rel,
+                    paths,
+                    declared_identities,
+                    walked,
+                    depth + 1,
+                    explicit_walked,
+                    explicit=False,
+                )
             elif stat.S_ISREG(target_lst.st_mode):
                 identity = (target_lst.st_dev, target_lst.st_ino)
                 if rel in paths or identity in declared_identities:
@@ -409,7 +436,16 @@ def _walk_include(
             else:
                 raise _input_invalid(rel, "regularFile")
         elif stat.S_ISDIR(child_lst.st_mode):
-            _walk_include(root, rel, paths, declared_identities, walked, depth + 1)
+            _walk_include(
+                root,
+                rel,
+                paths,
+                declared_identities,
+                walked,
+                depth + 1,
+                explicit_walked,
+                explicit=False,
+            )
         elif stat.S_ISREG(child_lst.st_mode):
             identity = (child_lst.st_dev, child_lst.st_ino)
             if rel in paths or identity in declared_identities:
