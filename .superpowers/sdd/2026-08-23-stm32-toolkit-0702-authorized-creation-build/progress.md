@@ -9,7 +9,7 @@
 - CodeHead before the separate report/ledger commit: `e515eac91e99b777819c1660221d5c29ad1ef9a5`.
 - Product revision commit: `e515eac91e99b777819c1660221d5c29ad1ef9a5`.
 - No push, PR, merge, tag, release, remote operation, package installation, hardware action, or VS07-C work was performed.
-- Sol must independently review the complete accepted-base-to-CodeHead diff; the implementer does not self-accept.
+- Sol independently reviewed the complete accepted-base-to-returned-head diff; the implementer did not self-accept.
 
 ## Scope and recovery history
 
@@ -151,6 +151,54 @@ or hardware action was performed. The public API path was
   native PASS claim.
 - REPORT: normal Markdown and accepted-base diff check passed.
 
-The branch is local and unpushed with no upstream configured. Sol independently
-reviews the complete accepted-base-to-CodeHead diff; no acceptance claim is
-made here. VS07-C remains frozen pending that verdict.
+The branch is local and unpushed with no upstream configured. The implementation
+return made no self-acceptance claim; the independent reviewer reconciliation
+below records the final VS07-B verdict.
+
+## Sol independent acceptance reconciliation
+
+- Reviewed returned head: `51b739f9fe48a9f312b3a0950a7416e3333024af` in clean detached worktree
+  `C:/tmp/stm32tk-0702-final2-review-51b739f`.
+- Complete review range: accepted base
+  `bff9cc120923b0e9f2ba29a1b3511f1bcc26ab6e` through the reviewed head;
+  `git diff --check` passed. The correction range from `5070be3e` was also
+  inspected independently.
+- Independent probes rejected retained-digest authorization record tampering
+  from both `peek` and `consume`, rejected an IOC firmware fact missing its
+  exact version, and restored generic non-native memory-role selection to
+  first executable/first writable (`RAM`, `RAM`).
+- The exact approved 16-file slice returned `698 tests, 0 failures, 0 errors,
+  0 skipped`; JUnit is `C:/tmp/p0702-sol-final2-slice.xml`. Source/test
+  `compileall` passed.
+- Fresh public MCU workspace/data:
+  `C:/tmp/p0702-sol-final2-mcu` /
+  `C:/tmp/p0702-sol-final2-mcu-data`; local Git head
+  `10a9922ea953b29ac329102de94bf79d10720b73`, no remote. Plan, prepare,
+  apply, configure, Debug, Release, and activation returned `OK`. The attempt
+  was `01bf122bd9422ceee63e1c66`; ownership manifest SHA-256 was
+  `052e21276e4d3bfd32f32f1f9eae6336dad00b4fb2691db3ef2e774ffbcbb6c9`;
+  Debug/Release build IDs were
+  `b9f775b36f40b2d1100bd1d61e1e1c6dd60bb94216c6bac2df9b35ad377f3fb5` /
+  `902973ec3996247164643757a0f9f8c6ab9ee7dd94f2c5cf95c185100a0750b8`.
+- Fresh public captured-IOC workspace/data:
+  `C:/tmp/p0702-sol-final2-ioc` /
+  `C:/tmp/p0702-sol-final2-ioc-data`; local Git head
+  `970c100ca77cf2738f2bbde5c39a90e250e92b86`, no remote. Captured source
+  and copy both had SHA-256
+  `636e9c2de3921db06e855c8180d6d701efda66c2db1b9e6e534dc135cb34d2b0`.
+  Plan, prepare, apply, configure, Debug, Release, and activation returned
+  `OK`. The attempt was `253ecedbb891f5e94c8bd421`; ownership manifest
+  SHA-256 was
+  `0fc0d43967392446c1618e0f7c16fea05d20c27d27c1e8bf6408ac482b1aad93`;
+  Debug/Release build IDs were
+  `f88105be6feb252f8498e8466df0d4144576e3dfeb28d48e394f61815124b492` /
+  `6d6ba74167567a39072973ab91b1670746dce6f07ccd60a648167858d282cec7`.
+- Each public scenario activated 1,562 files, had zero non-build host-path
+  hits, left no generation/activation/control residue, and added no persistent
+  CubeMX/Java PID. Pre-existing `javaw.exe` PID 32708 was unchanged and was
+  not terminated. No hardware evidence is claimed.
+- Verdict: `ACCEPTED`. No unresolved PRODUCT defect remains in VS07-B.
+  VS07-C may now be reconstructed as the next separately bounded slice.
+- Remote status: branch remains local, unpushed, and without an upstream. No
+  push, PR, merge, tag, release, remote mutation, installation, or hardware
+  operation was performed.

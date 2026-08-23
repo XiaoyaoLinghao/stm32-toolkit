@@ -187,7 +187,14 @@ process timeout was classified TEST (subprocess cleanup) and was corrected
 before this CodeHead. Installed package facts are ENVIRONMENT evidence. No
 REPORT format or diff-check failure remains.
 
-The branch is local and unpushed, with no upstream configured. Sol must
-independently review the complete accepted-base-to-CodeHead diff and issue the
-acceptance verdict; this report makes no acceptance claim. VS07-C remains
-frozen pending that review.
+At implementation return the branch was local and unpushed, with no upstream
+configured, and this implementer-authored report made no acceptance claim.
+Sol subsequently reviewed the complete accepted-base-to-returned-head diff at
+`51b739f9fe48a9f312b3a0950a7416e3333024af`, reran the 698-test slice and
+`compileall`, executed independent authorization/package/generic-role probes,
+and completed fresh public MCU and captured-IOC native scenarios. Both public
+scenarios passed plan, prepare, apply, configure, Debug, Release, activation,
+portability, residue, and PID-delta checks. Sol's verdict is `ACCEPTED`; the
+tracked SDD ledger contains the exact independent evidence. The branch remains
+local and unpushed, and no remote, installation, hardware, or release action
+was performed.
