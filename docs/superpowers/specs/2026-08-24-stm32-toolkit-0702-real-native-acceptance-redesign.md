@@ -155,6 +155,18 @@ native acceptance creates an isolated local repository and initial commit as
 test setup, with command-scoped identity and no remote, before invoking the
 public plan/prepare/apply path.
 
+Toolkit continues to own one deterministic CMake/linker configuration rather
+than copying the device-specific CubeMX linker script. That owned runtime
+contract must nevertheless link the real CubeMX startup and generated newlib
+support. The CMake target therefore uses compiler-managed start files (no
+`-nostartfiles`), the installed `nano.specs` and `nosys.specs`, and `libm`.
+The generated linker exports the startup data/BSS symbols, `_estack` and
+`_sstack`, `_end`/`end`, exception-index bounds, and preinit/init/fini array
+bounds consumed by `__libc_init_array`. Stack top is the end of the selected
+writable RAM region; heap and stack reservations have an explicit non-overlap
+assertion. The exact real MCU build, not template-string assertions alone, is
+the acceptance evidence for this contract.
+
 ## 6. Acceptance and sequencing
 
 The implementer must first prove every old defect RED, then implement this

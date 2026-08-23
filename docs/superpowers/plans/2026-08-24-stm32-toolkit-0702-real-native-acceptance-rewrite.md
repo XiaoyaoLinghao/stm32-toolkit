@@ -120,6 +120,13 @@ report and VS07-B SDD ledger after product CodeHead is committed.
   positive native scenarios, create a fresh local repository and initial test
   commit with command-scoped identity and no remote, then restart Task 3RR from
   the exact 16-file command.
+- [ ] Preserve the real link failure as RED: all 21 objects compile, then
+  `_estack` and `_init` fail under `-nostartfiles`. Add focused generated
+  runtime-contract tests, replace `-nostartfiles` with compiler start files,
+  `nano.specs`, `nosys.specs`, and `libm`, and emit the frozen STM32/newlib
+  linker symbols, arrays, top-of-RAM stack, and heap/stack assertion. Run the
+  affected generation/build tests and one real MCU Debug+Release build before
+  restarting the full Task 3RR sequence.
 - [ ] Run `compileall`, accepted-base `git diff --check`, inspect the complete
   diff/status, and confirm the branch has no upstream/push.
 - [ ] Commit product/tests before reports. Then rewrite the implementation
