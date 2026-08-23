@@ -8,6 +8,7 @@ import os
 import secrets
 import shutil
 import stat
+import time
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -210,12 +211,35 @@ def _authorized_project_child(
 
 
 def _remove_empty_container(staging: Path) -> None:
-    try:
-        if any(staging.iterdir()):
-            raise OSError
-        staging.rmdir()
-    except OSError:
-        raise CreationApplyError("CREATION_ACTIVATION_FAILED", "creation generation container cleanup failed") from None
+    for attempt in range(20):
+        try:
+            if any(staging.iterdir()):
+                raise CreationApplyError(
+                    "CREATION_ACTIVATION_FAILED",
+                    "creation generation container cleanup failed",
+                )
+            staging.rmdir()
+            return
+        except CreationApplyError:
+            raise
+        except OSError:
+            if attempt == 19:
+                break
+            try:
+                if any(staging.iterdir()):
+                    raise CreationApplyError(
+                        "CREATION_ACTIVATION_FAILED",
+                        "creation generation container cleanup failed",
+                    )
+            except CreationApplyError:
+                raise
+            except OSError:
+                break
+            time.sleep(0.05)
+    raise CreationApplyError(
+        "CREATION_ACTIVATION_FAILED",
+        "creation generation container cleanup failed",
+    ) from None
 
 
 def _rollback_after_container_cleanup_failure(

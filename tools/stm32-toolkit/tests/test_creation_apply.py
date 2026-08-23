@@ -214,6 +214,126 @@ def test_empty_activation_backup_cleanup_failure_restores_exact_empty_state(tmp_
     assert not backup.exists()
 
 
+def test_remove_empty_container_retries_transient_rmdir_failure(tmp_path: Path, monkeypatch):
+    staging = tmp_path / ".stm32tk-creation-transient"
+    staging.mkdir()
+    real_rmdir = Path.rmdir
+    rmdir_calls: list[Path] = []
+    sleeps: list[float] = []
+
+    def transient_rmdir(path: Path):
+        rmdir_calls.append(path)
+        if len(rmdir_calls) < 4:
+            raise OSError("transient sharing violation")
+        return real_rmdir(path)
+
+    monkeypatch.setattr(Path, "rmdir", transient_rmdir)
+    monkeypatch.setattr(
+        creation_apply_module,
+        "time",
+        SimpleNamespace(sleep=lambda delay: sleeps.append(delay)),
+        raising=False,
+    )
+
+    creation_apply_module._remove_empty_container(staging)
+
+    assert len(rmdir_calls) == 4
+    assert sleeps == [0.05, 0.05, 0.05]
+    assert not staging.exists()
+
+
+def test_remove_empty_container_persistent_failure_is_bounded(tmp_path: Path, monkeypatch):
+    staging = tmp_path / ".stm32tk-creation-persistent"
+    staging.mkdir()
+    rmdir_calls: list[Path] = []
+    sleeps: list[float] = []
+
+    def persistent_rmdir(path: Path):
+        rmdir_calls.append(path)
+        raise OSError("persistent sharing violation")
+
+    monkeypatch.setattr(Path, "rmdir", persistent_rmdir)
+    monkeypatch.setattr(
+        creation_apply_module,
+        "time",
+        SimpleNamespace(sleep=lambda delay: sleeps.append(delay)),
+        raising=False,
+    )
+    with pytest.raises(CreationApplyError) as error:
+        creation_apply_module._remove_empty_container(staging)
+
+    assert error.value.code == "CREATION_ACTIVATION_FAILED"
+    assert len(rmdir_calls) == 20
+    assert sleeps == [0.05] * 19
+    assert staging.is_dir()
+
+
+def test_remove_empty_container_fails_immediately_when_entry_appears_between_attempts(
+    tmp_path: Path, monkeypatch
+):
+    staging = tmp_path / ".stm32tk-creation-entry"
+    staging.mkdir()
+    rmdir_calls: list[Path] = []
+
+    def entry_after_first_failure(path: Path):
+        rmdir_calls.append(path)
+        (staging / "unexpected-entry").write_text("appeared", encoding="utf-8")
+        raise OSError("transient sharing violation")
+
+    monkeypatch.setattr(Path, "rmdir", entry_after_first_failure)
+    monkeypatch.setattr(
+        creation_apply_module,
+        "time",
+        SimpleNamespace(sleep=lambda _delay: pytest.fail("non-empty container was retried")),
+        raising=False,
+    )
+    with pytest.raises(CreationApplyError) as error:
+        creation_apply_module._remove_empty_container(staging)
+
+    assert error.value.code == "CREATION_ACTIVATION_FAILED"
+    assert len(rmdir_calls) == 1
+    assert (staging / "unexpected-entry").is_file()
+
+
+@pytest.mark.parametrize("initial_state", ["absent", "empty"])
+def test_public_apply_persistent_container_cleanup_preserves_exact_destination_state(
+    tmp_path: Path, monkeypatch, initial_state: str
+):
+    destination = tmp_path / "generated"
+    if initial_state == "empty":
+        destination.mkdir()
+    data, store, prepared = _authorization(tmp_path)
+    rmdir_calls: list[Path] = []
+    real_rmdir = Path.rmdir
+
+    def persistent_container_rmdir(path: Path):
+        if path.name.startswith(".stm32tk-creation-"):
+            rmdir_calls.append(path)
+            raise OSError("persistent sharing violation")
+        return real_rmdir(path)
+
+    monkeypatch.setattr(Path, "rmdir", persistent_container_rmdir)
+    result = apply_creation(
+        CreationApplyRequest(tmp_path, data, prepared.authorization_digest, True),
+        store=store,
+        adapter=RecordingAdapter([]),
+        validate_native=_validator([]),
+        configure=lambda root: OperationResult.success("configure", {}),
+        build=lambda root, preset: OperationResult.success("build", {"preset": preset}),
+    )
+
+    assert result.ok is False
+    assert result.code == "CREATION_ACTIVATION_FAILED"
+    assert len(rmdir_calls) == 20
+    if initial_state == "absent":
+        assert not destination.exists()
+    else:
+        assert destination.is_dir()
+        assert list(destination.iterdir()) == []
+    assert not list(tmp_path.glob(".stm32tk-creation-*"))
+    assert not list(tmp_path.glob(".generated.backup-*"))
+
+
 def test_empty_activation_first_rename_failure_keeps_empty_destination(tmp_path: Path, monkeypatch):
     staging = tmp_path / "staging"
     staging.mkdir()
