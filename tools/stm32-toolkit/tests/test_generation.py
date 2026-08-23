@@ -107,11 +107,14 @@ target_link_options(firmware PRIVATE
   -mthumb
   -mfpu=fpv4-sp-d16
   -mfloat-abi=hard
-  -nostartfiles
+  "--specs=nano.specs"
+  "--specs=nosys.specs"
   "-T${CMAKE_SOURCE_DIR}/linker/stm32tk.ld"
   "-Wl,-Map=${CMAKE_BINARY_DIR}/firmware.map"
   "-Wl,--gc-sections"
 )
+
+target_link_libraries(firmware PRIVATE m)
 
 add_custom_command(TARGET firmware POST_BUILD
   COMMAND ${CMAKE_OBJCOPY} -O ihex "$<TARGET_FILE:firmware>" "${CMAKE_BINARY_DIR}/firmware.hex"
@@ -130,6 +133,9 @@ MEMORY
   FLASH (rx) : ORIGIN = 0x08000000, LENGTH = 0x00100000
   RAM (rwx) : ORIGIN = 0x20000000, LENGTH = 0x00020000
 }
+
+_estack = ORIGIN(RAM) + LENGTH(RAM);
+_sstack = _estack - _Min_Stack_Size;
 
 SECTIONS
 {
@@ -155,7 +161,38 @@ SECTIONS
 
   .ARM.exidx :
   {
+    __exidx_start = .;
     *(.ARM.exidx* .gnu.linkonce.arm.exidx.*)
+    __exidx_end = .;
+  } > FLASH
+
+  .preinit_array :
+  {
+    . = ALIGN(4);
+    PROVIDE_HIDDEN(__preinit_array_start = .);
+    KEEP(*(.preinit_array*))
+    PROVIDE_HIDDEN(__preinit_array_end = .);
+    . = ALIGN(4);
+  } > FLASH
+
+  .init_array :
+  {
+    . = ALIGN(4);
+    PROVIDE_HIDDEN(__init_array_start = .);
+    KEEP(*(SORT(.init_array.*)))
+    KEEP(*(.init_array*))
+    PROVIDE_HIDDEN(__init_array_end = .);
+    . = ALIGN(4);
+  } > FLASH
+
+  .fini_array :
+  {
+    . = ALIGN(4);
+    PROVIDE_HIDDEN(__fini_array_start = .);
+    KEEP(*(SORT(.fini_array.*)))
+    KEEP(*(.fini_array*))
+    PROVIDE_HIDDEN(__fini_array_end = .);
+    . = ALIGN(4);
   } > FLASH
 
   .data :
@@ -175,24 +212,27 @@ SECTIONS
     . = ALIGN(4);
     _ebss = .;
   } > RAM
+  _end = .;
+  end = _end;
 
   .heap (NOLOAD) :
   {
     . = ALIGN(8);
-    __end__ = .;
-    end = __end__;
-    __HeapBase = .;
+    __HeapBase = _end;
+    . = __HeapBase;
     . += _Min_Heap_Size;
     __HeapLimit = .;
   } > RAM
 
-  .stack (NOLOAD) :
+  .stack _sstack (NOLOAD) :
   {
-    . = ALIGN(8);
-    __StackTop = .;
-    . += _Min_Stack_Size;
+    . = _sstack;
     __StackLimit = .;
+    . += _Min_Stack_Size;
+    __StackTop = .;
   } > RAM
+
+  ASSERT(__HeapLimit <= _sstack, "heap and stack overlap")
 }
 """
 
@@ -1313,7 +1353,8 @@ def test_cmake_link_options_exact_hard_fpu_snapshot(tmp_path):
         "  -mthumb\n"
         "  -mfpu=fpv4-sp-d16\n"
         "  -mfloat-abi=hard\n"
-        "  -nostartfiles\n"
+        "  \"--specs=nano.specs\"\n"
+        "  \"--specs=nosys.specs\"\n"
         '  "-T${CMAKE_SOURCE_DIR}/linker/stm32tk.ld"\n'
         '  "-Wl,-Map=${CMAKE_BINARY_DIR}/firmware.map"\n'
         '  "-Wl,--gc-sections"\n'
@@ -1335,7 +1376,8 @@ def test_cmake_link_options_no_fpu_snapshot(tmp_path):
         "target_link_options(firmware PRIVATE\n"
         "  -mcpu=cortex-m4\n"
         "  -mthumb\n"
-        "  -nostartfiles\n"
+        "  \"--specs=nano.specs\"\n"
+        "  \"--specs=nosys.specs\"\n"
         '  "-T${CMAKE_SOURCE_DIR}/linker/stm32tk.ld"\n'
         '  "-Wl,-Map=${CMAKE_BINARY_DIR}/firmware.map"\n'
         '  "-Wl,--gc-sections"\n'
@@ -1354,7 +1396,8 @@ def test_cmake_link_arch_flags_match_compile_arch_flags_hard_fpu(tmp_path):
     for flag in ("-mcpu=cortex-m4", "-mthumb", "-mfpu=fpv4-sp-d16", "-mfloat-abi=hard"):
         assert flag in compile_block
         assert flag in link_block
-    assert "-nostartfiles" in link_block
+    assert "--specs=nano.specs" in link_block
+    assert "--specs=nosys.specs" in link_block
     assert "--gc-sections" in link_block
     assert "-Map=" in link_block
     assert "-T${CMAKE_SOURCE_DIR}" in link_block
@@ -1374,7 +1417,8 @@ def test_cmake_link_arch_flags_match_compile_arch_flags_no_fpu(tmp_path):
     assert "-mthumb" in link_block
     assert "-mfpu=" not in link_block
     assert "-mfloat-abi=" not in link_block
-    assert "-nostartfiles" in link_block
+    assert "--specs=nano.specs" in link_block
+    assert "--specs=nosys.specs" in link_block
     assert "-Wl,--gc-sections" in link_block
 
 
@@ -1467,7 +1511,7 @@ def _memory_block_attributes(text: str) -> list[str]:
     return [
         line.split("(", 1)[1].split(")", 1)[0]
         for line in memory.splitlines()
-        if "ORIGIN" in line
+        if ": ORIGIN" in line
     ]
 
 
@@ -1650,6 +1694,60 @@ def test_root_and_packaged_templates_are_byte_identical():
         )
         assert packaged == root_bytes, name
         assert sha256(packaged) == sha256(root_bytes)
+
+
+def test_runtime_link_contract_has_native_startup_and_newlib_symbols(tmp_path):
+    """The managed runtime contract must link real CubeMX/newlib startup code."""
+    import importlib.resources
+
+    for name in ("cmake/CMakeLists.txt.j2", "cmake/linker.ld.j2"):
+        root_bytes = (REPO_ROOT / "templates" / name).read_bytes()
+        packaged = (
+            importlib.resources.files("stm32_toolkit")
+            .joinpath("templates", *name.split("/"))
+            .read_bytes()
+        )
+        assert packaged == root_bytes, name
+
+    root = write_project(tmp_path / "proj")
+    plan = plan_for(root)
+    cmake = next(entry for entry in plan.files if entry.path == "CMakeLists.txt")
+    cmake_text = cmake.after_bytes.decode("utf-8")
+    assert "-nostartfiles" not in cmake_text
+    assert "--specs=nano.specs" in cmake_text
+    assert "--specs=nosys.specs" in cmake_text
+    assert "target_link_libraries(firmware PRIVATE m)" in cmake_text
+
+    linker = next(entry for entry in plan.files if entry.path == "linker/stm32tk.ld")
+    linker_text = linker.after_bytes.decode("utf-8")
+    assert "_estack = ORIGIN(RAM) + LENGTH(RAM);" in linker_text
+    assert "_sstack = _estack - _Min_Stack_Size;" in linker_text
+    assert "_end = .;" in linker_text
+    assert "end = _end;" in linker_text
+    assert "__exidx_start = .;" in linker_text
+    assert "__exidx_end = .;" in linker_text
+    for symbol in (
+        "__preinit_array_start",
+        "__preinit_array_end",
+        "__init_array_start",
+        "__init_array_end",
+        "__fini_array_start",
+        "__fini_array_end",
+    ):
+        assert symbol in linker_text
+    assert "ASSERT(__HeapLimit <= _sstack" in linker_text
+
+    no_fpu = standard_payload()
+    no_fpu["target"] = {"device": "X", "core": "cortex-m3"}
+    no_fpu_root = write_project(tmp_path / "no-fpu", no_fpu)
+    no_fpu_plan = plan_for(no_fpu_root)
+    no_fpu_cmake = next(
+        entry for entry in no_fpu_plan.files if entry.path == "CMakeLists.txt"
+    ).after_bytes.decode("utf-8")
+    assert "-mfpu=" not in no_fpu_cmake
+    assert "-mfloat-abi=" not in no_fpu_cmake
+    assert "--specs=nano.specs" in no_fpu_cmake
+    assert "--specs=nosys.specs" in no_fpu_cmake
 
 
 def test_missing_template_resource_is_rejected():

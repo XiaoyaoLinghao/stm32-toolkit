@@ -9,6 +9,9 @@ MEMORY
   {{ region.name }} ({{ region.attributes }}) : ORIGIN = {{ region.origin_hex }}, LENGTH = {{ region.length_hex }}{% endfor %}
 }
 
+_estack = ORIGIN({{ ram_region }}) + LENGTH({{ ram_region }});
+_sstack = _estack - _Min_Stack_Size;
+
 SECTIONS
 {
   .isr_vector :
@@ -33,7 +36,38 @@ SECTIONS
 
   .ARM.exidx :
   {
+    __exidx_start = .;
     *(.ARM.exidx* .gnu.linkonce.arm.exidx.*)
+    __exidx_end = .;
+  } > {{ flash_region }}
+
+  .preinit_array :
+  {
+    . = ALIGN(4);
+    PROVIDE_HIDDEN(__preinit_array_start = .);
+    KEEP(*(.preinit_array*))
+    PROVIDE_HIDDEN(__preinit_array_end = .);
+    . = ALIGN(4);
+  } > {{ flash_region }}
+
+  .init_array :
+  {
+    . = ALIGN(4);
+    PROVIDE_HIDDEN(__init_array_start = .);
+    KEEP(*(SORT(.init_array.*)))
+    KEEP(*(.init_array*))
+    PROVIDE_HIDDEN(__init_array_end = .);
+    . = ALIGN(4);
+  } > {{ flash_region }}
+
+  .fini_array :
+  {
+    . = ALIGN(4);
+    PROVIDE_HIDDEN(__fini_array_start = .);
+    KEEP(*(SORT(.fini_array.*)))
+    KEEP(*(.fini_array*))
+    PROVIDE_HIDDEN(__fini_array_end = .);
+    . = ALIGN(4);
   } > {{ flash_region }}
 {%- for section in fixed_sections %}
 
@@ -59,22 +93,25 @@ SECTIONS
     . = ALIGN(4);
     _ebss = .;
   } > {{ ram_region }}
+  _end = .;
+  end = _end;
 
   .heap (NOLOAD) :
   {
     . = ALIGN(8);
-    __end__ = .;
-    end = __end__;
-    __HeapBase = .;
+    __HeapBase = _end;
+    . = __HeapBase;
     . += _Min_Heap_Size;
     __HeapLimit = .;
   } > {{ ram_region }}
 
-  .stack (NOLOAD) :
+  .stack _sstack (NOLOAD) :
   {
-    . = ALIGN(8);
-    __StackTop = .;
-    . += _Min_Stack_Size;
+    . = _sstack;
     __StackLimit = .;
+    . += _Min_Stack_Size;
+    __StackTop = .;
   } > {{ ram_region }}
+
+  ASSERT(__HeapLimit <= _sstack, "heap and stack overlap")
 }
