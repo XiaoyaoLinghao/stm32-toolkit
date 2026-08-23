@@ -87,9 +87,13 @@ destination. CubeMX receives:
 The only accepted native output root is
 `<generation-container>/<project-name>`. It must be a safe non-reparse
 directory, the container must contain no other entries, and the project root
-must stay on the same volume. Parsing, Toolkit configure/build, and activation
-operate on that child root. Activation moves the child root to the planned
-destination and removes the now-empty container.
+must stay on the same volume. Native parsing, ownership-manifest creation, and
+the host-path scan run while that child remains under the generation container.
+The validated child is then atomically renamed to a distinct sibling activation
+staging root and the now-empty generation container is removed before Toolkit
+configuration or either build begins. Configuration and both builds operate on
+the activation staging root; final activation moves that root to the planned
+destination and has no parent generation container left to clean up.
 
 The adapter owns its control root with one `try/finally` lifecycle. It never
 returns a live control path. Setup errors, IOC drift, invalid runner results,
@@ -179,17 +183,22 @@ never mislabels vendor bytes as a Toolkit template. Projects without
 behavior byte-for-byte. This is one mode switch on an existing public model,
 not a second parser or build backend.
 
-The first real run against that native-linker boundary configured and built
-both firmware presets, then Windows transiently refused the single `rmdir` of
-the now-empty generation container. The existing rollback immediately restored
-the exact absent destination and removed the same container, so this is an
-activation cleanup race rather than another runtime/link failure. Container
-cleanup therefore rechecks that the owned container is empty before every
-attempt and retries only its `rmdir` at most 20 times with 50 ms between failed
-attempts. An entry appearing in the container fails immediately; a persistent
-removal failure keeps the existing `CREATION_ACTIVATION_FAILED` plus exact
-rollback behavior. Renames, backup cleanup, locks, destination validation, and
-all other failures are never retried.
+Two real runs against that native-linker boundary configured and built both
+firmware presets, then Windows refused the post-build `rmdir` of the now-empty
+generation container. A bounded one-second retry did not converge; both runs
+restored the exact absent destination and removed all residue. Post-build
+container cleanup is therefore superseded by the pre-build relocation boundary
+above, not extended with another retry.
+
+The pre-build cleanup still rechecks that the owned generation container is
+empty before every attempt and retries only its `rmdir` at most 20 times with
+50 ms between failed attempts. An entry appearing in the container fails
+immediately. Relocation or cleanup failure occurs before configuration/build or
+destination mutation, removes both owned roots, and returns the existing
+bounded activation/staging failure semantics. Renames, backup cleanup, locks,
+destination validation, and all other failures are never retried. The native
+model and ownership paths remain portable and byte-identical across relocation;
+no parse, host-path scan, or arbitrary vendor input read is repeated afterward.
 
 ## 6. Acceptance and sequencing
 

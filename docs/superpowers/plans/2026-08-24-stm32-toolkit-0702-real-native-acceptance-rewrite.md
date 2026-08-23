@@ -155,6 +155,19 @@ report and VS07-B SDD ledger after product CodeHead is committed.
   or non-empty state. Commit the correction, then run one fresh public MCU
   Debug+Release+activation attempt. A second container-cleanup failure stops
   local patching and returns to activation design.
+- [ ] Replace the non-converged post-build cleanup boundary as one activation
+  integration rewrite. Preserve attempts `ea3bb6fee91111b8ee0dbb66` and
+  `a01eb84a1e22775f000be767` as RED. After CubeMX returns its one authorized
+  child, perform native validation, manifest seeding, and host-path scanning in
+  that child; atomically rename the validated child to a separate same-volume
+  sibling activation staging root; remove the empty generation container before
+  Toolkit configure/build; then configure, build Debug/Release, and activate
+  only the staging root. Prove exact call/root order, no post-build container
+  cleanup call, portable model/ownership stability across relocation, collision
+  fail-closed behavior, and cleanup of both owned roots for every pre-activation
+  failure. Preserve absent/empty destination transactions and all existing
+  rollback/error semantics. Run one committed fresh public MCU apply. Any
+  recurrence of this container/relocation boundary is `REWRITE_REQUIRED`.
 - [ ] Run `compileall`, accepted-base `git diff --check`, inspect the complete
   diff/status, and confirm the branch has no upstream/push.
 - [ ] Commit product/tests before reports. Then rewrite the implementation
