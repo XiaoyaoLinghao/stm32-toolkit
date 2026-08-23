@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import subprocess
 from pathlib import Path
 from datetime import datetime, timezone
 from types import SimpleNamespace
@@ -200,6 +201,157 @@ def _complete_support(tmp_path: Path) -> ToolSupportProfile:
         (),
         (),
     )
+
+
+def _init_local_head(root: Path, *, commit: bool) -> None:
+    subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+    if commit:
+        subprocess.run(
+            [
+                "git",
+                "-c",
+                "user.name=stm32tk-test",
+                "-c",
+                "user.email=stm32tk-test@example.com",
+                "add",
+                "-A",
+            ],
+            cwd=root,
+            check=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        subprocess.run(
+            [
+                "git",
+                "-c",
+                "user.name=stm32tk-test",
+                "-c",
+                "user.email=stm32tk-test@example.com",
+                "commit",
+                "-q",
+                "--allow-empty",
+                "-m",
+                "test fixture",
+            ],
+            cwd=root,
+            check=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+
+
+def _prepare_with_support(tmp_path: Path, support: ToolSupportProfile):
+    request = CreationPlanWorkflowRequest(
+        tmp_path,
+        tmp_path / "data",
+        "session",
+        "mcu",
+        "STM32F429ZITx",
+        "generated",
+        "hal",
+        "c",
+    )
+    planned = plan_creation_workflow(request, support_profile=support)
+    assert planned.ok is True
+    return request, planned
+
+
+def test_prepare_rejects_non_git_workspace_before_environment_or_authorization(
+    tmp_path: Path, monkeypatch
+):
+    import stm32_toolkit.creation_workflows as workflows
+
+    support = _complete_support(tmp_path)
+    request, planned = _prepare_with_support(tmp_path, support)
+    calls: list[str] = []
+    original_prepare = CreationAuthorizationStore.prepare
+
+    def record_environment(*args, **kwargs):
+        calls.append("environment")
+        return SimpleNamespace(digest="c" * 64)
+
+    def record_authorization(self, *args, **kwargs):
+        calls.append("authorization")
+        return original_prepare(self, *args, **kwargs)
+
+    monkeypatch.setattr(workflows, "discover_creation_environment", record_environment)
+    monkeypatch.setattr(CreationAuthorizationStore, "prepare", record_authorization)
+    result = workflows.prepare_creation_workflow(
+        request,
+        plan_id=planned.data["planId"],
+        action_digest=planned.data["actionDigest"],
+        support_profile=support,
+    )
+    assert result.ok is False
+    assert result.code == "BUILD_GIT_INVALID"
+    assert result.details == {"rule": "head"}
+    assert calls == []
+    assert not (tmp_path / "data").exists()
+    assert not (tmp_path / "generated").exists()
+
+
+def test_prepare_rejects_unborn_git_workspace_before_environment_or_authorization(
+    tmp_path: Path, monkeypatch
+):
+    import stm32_toolkit.creation_workflows as workflows
+
+    support = _complete_support(tmp_path)
+    _init_local_head(tmp_path, commit=False)
+    request, planned = _prepare_with_support(tmp_path, support)
+    calls: list[str] = []
+    original_prepare = CreationAuthorizationStore.prepare
+
+    def record_environment(*args, **kwargs):
+        calls.append("environment")
+        return SimpleNamespace(digest="c" * 64)
+
+    def record_authorization(self, *args, **kwargs):
+        calls.append("authorization")
+        return original_prepare(self, *args, **kwargs)
+
+    monkeypatch.setattr(workflows, "discover_creation_environment", record_environment)
+    monkeypatch.setattr(CreationAuthorizationStore, "prepare", record_authorization)
+    result = workflows.prepare_creation_workflow(
+        request,
+        plan_id=planned.data["planId"],
+        action_digest=planned.data["actionDigest"],
+        support_profile=support,
+    )
+    assert result.ok is False
+    assert result.code == "BUILD_GIT_INVALID"
+    assert result.details == {"rule": "head"}
+    assert calls == []
+    assert not (tmp_path / "data").exists()
+    assert not (tmp_path / "generated").exists()
+
+
+def test_prepare_accepts_valid_local_head_before_existing_environment_authorization(
+    tmp_path: Path, monkeypatch
+):
+    import stm32_toolkit.creation_workflows as workflows
+
+    support = _complete_support(tmp_path)
+    _init_local_head(tmp_path, commit=True)
+    request, planned = _prepare_with_support(tmp_path, support)
+    calls: list[str] = []
+
+    def record_environment(*args, **kwargs):
+        calls.append("environment")
+        return SimpleNamespace(digest="c" * 64)
+
+    monkeypatch.setattr(workflows, "discover_creation_environment", record_environment)
+    result = workflows.prepare_creation_workflow(
+        request,
+        plan_id=planned.data["planId"],
+        action_digest=planned.data["actionDigest"],
+        support_profile=support,
+    )
+    assert result.ok is True
+    assert calls == ["environment"]
+    assert result.data["executionEnvironmentDigest"] == "c" * 64
+    assert (tmp_path / "data").is_dir()
+    assert not (tmp_path / "generated").exists()
 
 
 class _ApplyProbe:
