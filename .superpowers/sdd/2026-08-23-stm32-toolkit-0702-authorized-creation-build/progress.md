@@ -34,27 +34,40 @@
   `docs/superpowers/specs/2026-08-23-stm32-toolkit-0702-authorized-creation-build-design.md`
   and
   `docs/superpowers/plans/2026-08-23-stm32-toolkit-0702-authorized-creation-build.md`.
-- Tasks 1-4 are complete sequential checkpoints for the same implementer, not
-  separate agents or release gates. Sol's first independent review returned
-  `REVISION_REQUIRED` for findings F1-F6 on candidate `a493be27`; the product
-  fixes and their RED/GREEN tests are in `fe984f8d`. Product/test CodeHead
-  before the report commit is
-  `fe984f8dcd78f8f2339fa574733dd33e3badc3bf`; the implementation report is
+- Tasks 1-4 were sequential checkpoints for the same implementer, not separate
+  agents or release gates. Sol's first independent review returned
+  `REVISION_REQUIRED` for findings F1-F6 on candidate `a493be27`; the first
+  revision product bytes are in `fe984f8d` and its report commit is
+  `9d388bfa`. The implementation report is
   `docs/codex/returns/STM32TK-0702-CREATION-APPLY/implementation-report.md`.
-- TDD evidence: Task 1 focused GREEN 36 at its checkpoint, Task 2 GREEN 329,
-  Task 3 GREEN 174 before the final lifecycle regression, and Task 4 public
-  GREEN 76. Revision RED/GREEN evidence covered durable independent-process
-  authorization and forged capabilities, source-specific CubeMX protocol and
-  isolated control artifacts, nested native CMake facts, pre-adapter drift
-  revalidation, and activation rollback/concurrency. The final exact VS07-B
-  slice collected and passed 630 tests with no failures/errors/skips/xfails;
-  the source-path assignment was required in this uninstalled worktree and is
-  classified `ENVIRONMENT`.
+- The report's claim that the final exact slice passed 630 tests is superseded
+  by Sol's clean round-2 review. The exact 16-file slice collected 630 tests
+  but finished with 629 passed and one product failure:
+  `test_activation_lock_serializes_independent_processes` raised
+  `CREATION_ACTIVATION_FAILED` in the second independent process. JUnit:
+  `C:/tmp/p0702-sol-r2-slice.xml`.
+- Round-2 native read-only observations also proved that the revised adapter
+  still modeled the wrong updater location/key, required an `OK` after
+  `exit` that native CubeMX does not emit, did not accept the mixed native
+  log/protocol stream, and emitted an incomplete `loadboard` command. Installed
+  6.18 templates proved that the revised parser still omitted the actual
+  `CMAKE_PROJECT_NAME`/`CMakePresets.json`/nested-list global dialect and the
+  context `mx-generated.cmake` dialect. Findings F2, F4, and F6 therefore did
+  not converge in two implementation/review rounds.
+- Per the repository stop-loss, local patching stopped. The native protocol,
+  parser, isolated-home, and descriptor-lock boundaries are replaced together
+  by the approved interface-level recovery design and plan:
+  `docs/superpowers/specs/2026-08-23-stm32-toolkit-0702-native-contract-recovery-design.md`
+  and
+  `docs/superpowers/plans/2026-08-23-stm32-toolkit-0702-native-contract-recovery.md`.
+  Tasks 1R-3R remain owned sequentially by the same sole Luna/max implementer.
 - Real read-only evidence on `C:\tmp\p0702-real-observe-final`: doctor and
   create-plan succeeded; create-prepare returned typed
   `CUBEMX_REPOSITORY_MISSING` with child exit 2. The canonical repository and
   all `STM32Cube_FW_*` packages are absent, the destination stayed absent, and
   no CubeMX process remained. Positive native acceptance is therefore an
   `ENVIRONMENT` blocker; it is not a product PASS or deferred physical PASS.
-- Implementation state: pending Sol's independent complete-diff review. No
-  VS07-C work may start before VS07-B acceptance.
+- Implementation state: interface recovery is ready for Tasks 1R-3R. Sol will
+  perform a third independent accepted-base-to-final-head review in a new clean
+  worktree. The maximum verdict while the offline firmware package is absent
+  is `IMPLEMENTATION_COMPLETE_ENVIRONMENT_BLOCKED`; VS07-C remains frozen.
