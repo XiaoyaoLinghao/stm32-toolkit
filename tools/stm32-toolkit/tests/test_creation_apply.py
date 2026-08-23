@@ -133,6 +133,178 @@ def test_apply_orders_one_generation_then_configure_and_two_builds_before_activa
     assert (tmp_path / "generated" / "native.txt").read_text(encoding="utf-8") == "generated"
 
 
+def test_apply_relocates_validated_child_before_cleanup_configure_and_build(tmp_path: Path, monkeypatch):
+    data, store, prepared = _authorization(tmp_path)
+    events: list[tuple[str, Path | None]] = []
+    generation_root: list[Path] = []
+    validated_root: list[Path] = []
+
+    class RootRecordingAdapter(RecordingAdapter):
+        def generate(self, capability, staging):
+            generation_root.append(staging.staging_dir)
+            return super().generate(capability, staging)
+
+    real_remove = creation_apply_module._remove_empty_container
+    real_scan = creation_apply_module._assert_public_paths_are_portable
+
+    def observe_remove(path: Path):
+        events.append(("cleanup", path))
+        return real_remove(path)
+
+    def observe_scan(project_root, root, *, inventory=None):
+        events.append(("scan", project_root))
+        return real_scan(project_root, root, inventory=inventory)
+
+    monkeypatch.setattr(creation_apply_module, "_remove_empty_container", observe_remove)
+    monkeypatch.setattr(creation_apply_module, "_assert_public_paths_are_portable", observe_scan)
+
+    def validate(project_root, **kwargs):
+        validated_root.append(project_root)
+        events.append(("validate", project_root))
+        return SimpleNamespace(ownership_manifest_path="m", ownership_manifest_sha256="1" * 64)
+
+    def configure(project_root):
+        events.append(("configure", project_root))
+        return OperationResult.success("configure", {})
+
+    def build(project_root, preset):
+        events.append((f"build:{preset}", project_root))
+        return OperationResult.success("build", {"preset": preset})
+
+    result = apply_creation(
+        CreationApplyRequest(tmp_path, data, prepared.authorization_digest, True),
+        store=store,
+        adapter=RootRecordingAdapter([]),
+        validate_native=validate,
+        configure=configure,
+        build=build,
+    )
+
+    assert result.ok is True
+    assert generation_root and validated_root
+    assert events[0] == ("validate", validated_root[0])
+    assert events[1] == ("scan", generation_root[0] / "generated")
+    cleanup_index = next(index for index, event in enumerate(events) if event[0] == "cleanup")
+    configure_index = next(index for index, event in enumerate(events) if event[0] == "configure")
+    assert cleanup_index < configure_index
+    assert sum(event[0] == "cleanup" for event in events) == 1
+    assert events[cleanup_index][1] == generation_root[0]
+    configured_root = events[configure_index][1]
+    assert configured_root is not None
+    assert configured_root.name.startswith(".stm32tk-activation-")
+    assert configured_root != generation_root[0]
+    assert not generation_root[0].exists()
+    assert not validated_root[0].exists()
+    assert result.data["ownershipManifestPath"] == "m"
+
+
+def test_activation_staging_collision_fails_before_cube_mx_and_preserves_collision(
+    tmp_path: Path,
+):
+    data, store, prepared = _authorization(tmp_path)
+    attempt_id = "activation-collision"
+    collision = tmp_path / f".stm32tk-activation-{attempt_id}"
+    collision.mkdir()
+    (collision / "keep.txt").write_text("keep", encoding="utf-8")
+    adapter = RecordingAdapter([])
+
+    result = apply_creation(
+        CreationApplyRequest(tmp_path, data, prepared.authorization_digest, True),
+        store=store,
+        adapter=adapter,
+        validate_native=_validator([]),
+        configure=lambda root: OperationResult.success("configure", {}),
+        build=lambda root, preset: OperationResult.success("build", {}),
+        attempt_id_factory=lambda: attempt_id,
+    )
+
+    assert result.ok is False
+    assert result.code == "CREATION_ACTIVATION_FAILED"
+    assert adapter.calls == 0
+    assert (collision / "keep.txt").read_text(encoding="utf-8") == "keep"
+    assert not list(tmp_path.glob(".stm32tk-creation-*"))
+
+
+def test_relocation_failure_cleans_both_owned_roots_without_destination_mutation(
+    tmp_path: Path, monkeypatch
+):
+    data, store, prepared = _authorization(tmp_path)
+    real_replace = creation_apply_module.os.replace
+
+    def fail_relocation(source, target):
+        if Path(source).name == "generated" and Path(target).name.startswith(".stm32tk-activation-"):
+            raise OSError("injected relocation failure")
+        return real_replace(source, target)
+
+    monkeypatch.setattr(creation_apply_module.os, "replace", fail_relocation)
+    result = apply_creation(
+        CreationApplyRequest(tmp_path, data, prepared.authorization_digest, True),
+        store=store,
+        adapter=RecordingAdapter([]),
+        validate_native=_validator([]),
+        configure=lambda root: OperationResult.success("configure", {}),
+        build=lambda root, preset: OperationResult.success("build", {}),
+    )
+
+    assert result.ok is False
+    assert result.code == "CREATION_ACTIVATION_FAILED"
+    assert not (tmp_path / "generated").exists()
+    assert not list(tmp_path.glob(".stm32tk-creation-*"))
+    assert not list(tmp_path.glob(".stm32tk-activation-*"))
+
+
+def test_configure_failure_after_relocation_cleans_activation_staging_and_generation_container(
+    tmp_path: Path,
+):
+    data, store, prepared = _authorization(tmp_path)
+    configured_roots: list[Path] = []
+
+    def configure(root: Path):
+        configured_roots.append(root)
+        assert root.name.startswith(".stm32tk-activation-")
+        return OperationResult.failure("configure", "FAIL", "failed", {})
+
+    result = apply_creation(
+        CreationApplyRequest(tmp_path, data, prepared.authorization_digest, True),
+        store=store,
+        adapter=RecordingAdapter([]),
+        validate_native=_validator([]),
+        configure=configure,
+        build=lambda root, preset: OperationResult.success("build", {}),
+    )
+
+    assert result.ok is False
+    assert result.code == "CREATION_CONFIGURATION_FAILED"
+    assert configured_roots
+    assert not (tmp_path / "generated").exists()
+    assert not list(tmp_path.glob(".stm32tk-creation-*"))
+    assert not list(tmp_path.glob(".stm32tk-activation-*"))
+
+
+def test_activation_failure_after_build_cleans_both_owned_roots(tmp_path: Path, monkeypatch):
+    data, store, prepared = _authorization(tmp_path)
+
+    def fail_activation(staging, destination):
+        assert staging.name.startswith(".stm32tk-activation-")
+        raise CreationApplyError("CREATION_ACTIVATION_FAILED", "injected activation failure")
+
+    monkeypatch.setattr(creation_apply_module, "_activate_absent", fail_activation)
+    result = apply_creation(
+        CreationApplyRequest(tmp_path, data, prepared.authorization_digest, True),
+        store=store,
+        adapter=RecordingAdapter([]),
+        validate_native=_validator([]),
+        configure=lambda root: OperationResult.success("configure", {}),
+        build=lambda root, preset: OperationResult.success("build", {"preset": preset}),
+    )
+
+    assert result.ok is False
+    assert result.code == "CREATION_ACTIVATION_FAILED"
+    assert not (tmp_path / "generated").exists()
+    assert not list(tmp_path.glob(".stm32tk-creation-*"))
+    assert not list(tmp_path.glob(".stm32tk-activation-*"))
+
+
 def test_empty_destination_is_replaced_only_after_both_builds(tmp_path: Path):
     (tmp_path / "generated").mkdir()
     data, store, prepared = _authorization(tmp_path)
@@ -163,6 +335,7 @@ def test_release_build_failure_leaves_destination_absent_and_cleans_staging(tmp_
     assert result.code == "CREATION_RELEASE_BUILD_FAILED"
     assert not (tmp_path / "generated").exists()
     assert not list(tmp_path.glob(".stm32tk-creation-*"))
+    assert not list(tmp_path.glob(".stm32tk-activation-*"))
 
 
 def test_populated_destination_is_rejected_without_consuming_generation_call(tmp_path: Path):
@@ -408,7 +581,7 @@ def test_apply_reports_staging_cleanup_failure_with_bounded_evidence(tmp_path: P
     original_cleanup = creation_apply_module._cleanup
 
     def fail_staging_cleanup(path):
-        if path is not None and path.name.startswith(".stm32tk-creation-"):
+        if path is not None and path.name.startswith((".stm32tk-creation-", ".stm32tk-activation-")):
             return False
         return original_cleanup(path)
 
@@ -573,7 +746,9 @@ def test_apply_validates_and_activates_only_adapter_project_child_root(tmp_path:
 
 
 def assert_path(path: Path, seen: list[Path]) -> None:
-    assert seen and path == seen[0]
+    assert seen and path != seen[0]
+    assert path.name.startswith(".stm32tk-activation-")
+    assert (path / "native.txt").is_file()
 
 
 def test_host_path_scan_consumes_bounded_native_inventory(tmp_path: Path, monkeypatch):

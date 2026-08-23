@@ -142,13 +142,75 @@ def _write_attempt(data_root: Path, attempt_id: str, payload: dict[str, object])
 
 
 def _cleanup(path: Path | None) -> bool:
-    if path is None or not path.exists():
+    if path is None or not os.path.lexists(path):
         return True
     try:
+        info = os.lstat(path)
+        if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
+            return False
         shutil.rmtree(path)
-        return not path.exists()
+        return not os.path.lexists(path)
     except OSError:
         return False
+
+
+def _owned_root_absent(path: Path) -> None:
+    """Reject a root collision without taking ownership of the path."""
+    try:
+        if os.path.lexists(path):
+            raise CreationApplyError(
+                "CREATION_ACTIVATION_FAILED",
+                "creation staging path is already occupied",
+            )
+    except CreationApplyError:
+        raise
+    except OSError:
+        raise CreationApplyError(
+            "CREATION_ACTIVATION_FAILED",
+            "creation staging path cannot be inspected",
+        ) from None
+
+
+def _create_owned_root(path: Path) -> None:
+    """Create one empty root, retaining ownership only after mkdir succeeds."""
+    _owned_root_absent(path)
+    try:
+        path.mkdir()
+    except FileExistsError:
+        raise CreationApplyError(
+            "CREATION_ACTIVATION_FAILED",
+            "creation staging path is already occupied",
+        ) from None
+    except OSError:
+        raise CreationApplyError(
+            "CREATION_ACTIVATION_FAILED",
+            "creation staging path cannot be created",
+        ) from None
+
+
+def _cleanup_owned(path: Path | None, owned: bool) -> bool:
+    """Clean only roots this apply call created or received by relocation."""
+    if not owned:
+        return True
+    return _cleanup(path)
+
+
+def _cleanup_apply_roots(
+    generation_container: Path | None,
+    generation_owned: bool,
+    activation_staging: Path | None,
+    activation_owned: bool,
+    backup: Path | None,
+    backup_owned: bool,
+) -> bool:
+    """Clean only this attempt's generation, activation, and backup roots."""
+    return all(
+        (
+            _cleanup_owned(activation_staging, activation_owned),
+            _cleanup_owned(generation_container, generation_owned),
+            _cleanup_owned(backup, backup_owned),
+        )
+    )
 
 
 def _assert_public_paths_are_portable(
@@ -240,28 +302,6 @@ def _remove_empty_container(staging: Path) -> None:
         "CREATION_ACTIVATION_FAILED",
         "creation generation container cleanup failed",
     ) from None
-
-
-def _rollback_after_container_cleanup_failure(
-    staging: Path,
-    destination: Path,
-    original_state: str,
-) -> None:
-    """Undo a successful child activation when its owned container cannot close."""
-    try:
-        project = staging / destination.name
-        if destination.exists():
-            os.replace(destination, project)
-        if original_state == "empty":
-            destination.mkdir()
-        if staging.exists():
-            shutil.rmtree(staging)
-        if destination.exists() and original_state == "absent":
-            raise OSError
-        if original_state == "empty" and (not destination.is_dir() or any(destination.iterdir())):
-            raise OSError
-    except OSError:
-        raise CreationApplyError("CREATION_ACTIVATION_ROLLBACK_FAILED", "creation activation rollback failed") from None
 
 
 def _result_ok(value: object) -> bool:
@@ -420,6 +460,12 @@ def apply_creation(
     except CreationAuthorizationError as error:
         return _failure(operation, error.code, error.message, error.details)
     try:
+        generation_container: Path | None = None
+        generation_owned = False
+        activation_staging: Path | None = None
+        activation_owned = False
+        backup: Path | None = None
+        backup_owned = False
         root = request.project_root.expanduser().resolve(strict=True)
         if root != capability.project_root:
             raise CreationApplyError("CREATION_PLAN_CHANGED", "authorization project root changed")
@@ -460,16 +506,29 @@ def apply_creation(
         if adapter is None:
             raise CreationApplyError("CUBEMX_EXECUTION_ENVIRONMENT_CHANGED", "CubeMX adapter is unavailable")
         attempt_id = attempt_id_factory() if attempt_id_factory else secrets.token_hex(12)
-        staging = destination.parent / f".stm32tk-creation-{attempt_id}"
-        staging.mkdir()
-        execution = adapter.generate(capability, CubeMXStagingContext(staging))
-        project_root = _authorized_project_child(staging, execution, capability)
+        generation_container = destination.parent / f".stm32tk-creation-{attempt_id}"
+        activation_staging = destination.parent / f".stm32tk-activation-{attempt_id}"
+        _owned_root_absent(generation_container)
+        _owned_root_absent(activation_staging)
+        _create_owned_root(generation_container)
+        generation_owned = True
+        execution = adapter.generate(capability, CubeMXStagingContext(generation_container))
+        project_root = _authorized_project_child(generation_container, execution, capability)
         validation = (validate_native or _default_validate)(project_root, capability=capability, environment=environment)
         model = getattr(validation, "model", None)
         inventory = getattr(model, "files", None)
         if not isinstance(inventory, tuple):
             inventory = None
         _assert_public_paths_are_portable(project_root, root, inventory=inventory)
+        _owned_root_absent(activation_staging)
+        try:
+            os.replace(project_root, activation_staging)
+        except OSError:
+            raise CreationApplyError("CREATION_ACTIVATION_FAILED", "creation activation staging failed") from None
+        activation_owned = True
+        project_root = activation_staging
+        _remove_empty_container(generation_container)
+        generation_owned = False
         configured = (configure or _default_configure)(project_root)
         if not _result_ok(configured):
             raise CreationApplyError("CREATION_CONFIGURATION_FAILED", "Project configuration failed", {"result": _json_value(configured)})
@@ -486,13 +545,13 @@ def apply_creation(
             backup = destination.parent / f".{destination.name}.backup-{attempt_id}"
             if original_state == "absent":
                 _activate_absent(project_root, destination)
+                activation_owned = False
             else:
+                _owned_root_absent(backup)
+                backup_owned = True
                 _activate_empty(project_root, destination, backup)
-            try:
-                _remove_empty_container(staging)
-            except CreationApplyError:
-                _rollback_after_container_cleanup_failure(staging, destination, original_state)
-                raise
+                activation_owned = False
+                backup_owned = False
             if on_activate is not None:
                 on_activate()
         evidence = CreationApplyEvidence(
@@ -520,35 +579,64 @@ def apply_creation(
     except CreationApplyError as error:
         attempt = locals().get("attempt_id", "unknown")
         _write_attempt(request.data_root, str(attempt), {"code": error.code, "phase": "apply"})
-        staging_path = locals().get("staging")
-        if isinstance(staging_path, Path) and staging_path.exists():
-            if not _cleanup(staging_path) and error.code not in {"CREATION_ACTIVATION_ROLLBACK_FAILED"}:
-                return _failure(operation, "CREATION_ACTIVATION_ROLLBACK_FAILED", "creation staging cleanup failed", {"attemptId": str(attempt)})
+        if not _cleanup_apply_roots(
+            locals().get("generation_container"),
+            bool(locals().get("generation_owned", False)),
+            locals().get("activation_staging"),
+            bool(locals().get("activation_owned", False)),
+            locals().get("backup"),
+            bool(locals().get("backup_owned", False)),
+        ) and error.code not in {"CREATION_ACTIVATION_ROLLBACK_FAILED"}:
+            return _failure(operation, "CREATION_ACTIVATION_ROLLBACK_FAILED", "creation staging cleanup failed", {"attemptId": str(attempt)})
         return _failure(operation, error.code, error.message, {**error.details, "attemptId": str(attempt)})
     except CubeMXAdapterError as error:
         attempt = str(locals().get("attempt_id", "unknown"))
-        staging_path = locals().get("staging")
-        if isinstance(staging_path, Path) and staging_path.exists() and not _cleanup(staging_path):
+        if not _cleanup_apply_roots(
+            locals().get("generation_container"),
+            bool(locals().get("generation_owned", False)),
+            locals().get("activation_staging"),
+            bool(locals().get("activation_owned", False)),
+            locals().get("backup"),
+            bool(locals().get("backup_owned", False)),
+        ):
             return _failure(operation, "CREATION_ACTIVATION_ROLLBACK_FAILED", "creation staging cleanup failed", {"attemptId": attempt})
         _write_attempt(request.data_root, attempt, {"code": error.code, "phase": "cubemx"})
         return _failure(operation, error.code, error.message, {"attemptId": attempt})
     except CreationEnvironmentError as error:
         attempt = str(locals().get("attempt_id", "unknown"))
-        staging_path = locals().get("staging")
-        if isinstance(staging_path, Path) and staging_path.exists() and not _cleanup(staging_path):
+        if not _cleanup_apply_roots(
+            locals().get("generation_container"),
+            bool(locals().get("generation_owned", False)),
+            locals().get("activation_staging"),
+            bool(locals().get("activation_owned", False)),
+            locals().get("backup"),
+            bool(locals().get("backup_owned", False)),
+        ):
             return _failure(operation, "CREATION_ACTIVATION_ROLLBACK_FAILED", "creation staging cleanup failed", {"attemptId": attempt})
         _write_attempt(request.data_root, attempt, {"code": error.code, "phase": "environment"})
         return _failure(operation, error.code, error.message, {"attemptId": attempt})
     except CubeMXNativeProjectError as error:
         attempt = str(locals().get("attempt_id", "unknown"))
-        staging_path = locals().get("staging")
-        if isinstance(staging_path, Path) and staging_path.exists() and not _cleanup(staging_path):
+        if not _cleanup_apply_roots(
+            locals().get("generation_container"),
+            bool(locals().get("generation_owned", False)),
+            locals().get("activation_staging"),
+            bool(locals().get("activation_owned", False)),
+            locals().get("backup"),
+            bool(locals().get("backup_owned", False)),
+        ):
             return _failure(operation, "CREATION_ACTIVATION_ROLLBACK_FAILED", "creation staging cleanup failed", {"attemptId": attempt})
         _write_attempt(request.data_root, attempt, {"code": error.code, "phase": "validation"})
         return _failure(operation, error.code, error.message, {"attemptId": attempt})
     except OSError:
-        staging_path = locals().get("staging")
-        if isinstance(staging_path, Path) and staging_path.exists() and not _cleanup(staging_path):
+        if not _cleanup_apply_roots(
+            locals().get("generation_container"),
+            bool(locals().get("generation_owned", False)),
+            locals().get("activation_staging"),
+            bool(locals().get("activation_owned", False)),
+            locals().get("backup"),
+            bool(locals().get("backup_owned", False)),
+        ):
             return _failure(operation, "CREATION_ACTIVATION_ROLLBACK_FAILED", "creation staging cleanup failed", {"attemptId": str(locals().get("attempt_id", "unknown"))})
         return _failure(operation, "CREATION_ACTIVATION_FAILED", "creation staging failed", {"attemptId": str(locals().get("attempt_id", "unknown"))})
 
