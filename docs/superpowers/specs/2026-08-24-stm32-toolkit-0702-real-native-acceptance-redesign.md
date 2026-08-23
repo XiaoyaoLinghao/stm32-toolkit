@@ -167,6 +167,15 @@ writable RAM region; heap and stack reservations have an explicit non-overlap
 assertion. The exact real MCU build, not template-string assertions alone, is
 the acceptance evidence for this contract.
 
+Memory-region order is not a role declaration: real F429 output orders
+`RAM (rwx)`, `CCMRAM (rwx)`, then `FLASH (rx)`. Toolkit selects the first
+executable, non-writable region as code/Flash and then the first distinct
+writable region as primary RAM. It fails configuration when either role is
+absent instead of treating executable RAM as Flash. `_sstack` is applied only
+as the `.stack` output-section address; the section body advances exactly the
+configured stack size to `_estack` and never assigns the absolute address a
+second time. The heap/stack assertion compares their actual bounds.
+
 ## 6. Acceptance and sequencing
 
 The implementer must first prove every old defect RED, then implement this

@@ -127,6 +127,13 @@ report and VS07-B SDD ledger after product CodeHead is committed.
   linker symbols, arrays, top-of-RAM stack, and heap/stack assertion. Run the
   affected generation/build tests and one real MCU Debug+Release build before
   restarting the full Task 3RR sequence.
+- [ ] Preserve the second real link RED: all objects compile and the prior
+  runtime symbols resolve, but role selection maps code to `RAM (rwx)` and the
+  stack applies `_sstack` twice. Select Flash only from executable non-writable
+  regions, select a distinct writable RAM region, fail if either is absent,
+  and apply `_sstack` only as the section address. Repeat focused tests and one
+  real MCU Debug+Release build. If this same runtime/link boundary still fails,
+  stop local patching and return to integration design.
 - [ ] Run `compileall`, accepted-base `git diff --check`, inspect the complete
   diff/status, and confirm the branch has no upstream/push.
 - [ ] Commit product/tests before reports. Then rewrite the implementation
