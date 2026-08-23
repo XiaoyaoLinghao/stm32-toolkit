@@ -35,15 +35,21 @@
   and
   `docs/superpowers/plans/2026-08-23-stm32-toolkit-0702-authorized-creation-build.md`.
 - Tasks 1-4 are complete sequential checkpoints for the same implementer, not
-  separate agents or release gates. Product/test/docs CodeHead before the
-  report commit is
-  `3be836e292f98a231b59afcd1897dd4a7ac90efa`; the implementation report is
+  separate agents or release gates. Sol's first independent review returned
+  `REVISION_REQUIRED` for findings F1-F6 on candidate `a493be27`; the product
+  fixes and their RED/GREEN tests are in `fe984f8d`. Product/test CodeHead
+  before the report commit is
+  `fe984f8dcd78f8f2339fa574733dd33e3badc3bf`; the implementation report is
   `docs/codex/returns/STM32TK-0702-CREATION-APPLY/implementation-report.md`.
 - TDD evidence: Task 1 focused GREEN 36 at its checkpoint, Task 2 GREEN 329,
   Task 3 GREEN 174 before the final lifecycle regression, and Task 4 public
-  GREEN 76. The final exact VS07-B slice collected and passed 610 tests with
-  no failures/errors/skips/xfails; the source-path assignment was required in
-  this uninstalled worktree and is classified `ENVIRONMENT`.
+  GREEN 76. Revision RED/GREEN evidence covered durable independent-process
+  authorization and forged capabilities, source-specific CubeMX protocol and
+  isolated control artifacts, nested native CMake facts, pre-adapter drift
+  revalidation, and activation rollback/concurrency. The final exact VS07-B
+  slice collected and passed 630 tests with no failures/errors/skips/xfails;
+  the source-path assignment was required in this uninstalled worktree and is
+  classified `ENVIRONMENT`.
 - Real read-only evidence on `C:\tmp\p0702-real-observe-final`: doctor and
   create-plan succeeded; create-prepare returned typed
   `CUBEMX_REPOSITORY_MISSING` with child exit 2. The canonical repository and
