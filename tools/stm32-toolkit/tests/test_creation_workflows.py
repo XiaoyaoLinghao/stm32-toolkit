@@ -5,6 +5,8 @@ from datetime import datetime, timezone
 import pytest
 
 from stm32_toolkit.creation_workflows import CreationPlanWorkflowRequest, plan_creation_workflow
+from stm32_toolkit.creation_authorization import CreationAuthorizationError
+from stm32_toolkit.creation_environment import CreationEnvironmentError
 from stm32_toolkit.tool_support import SupportProfileError, SupportProfileRequest, discover_tool_support
 
 
@@ -79,3 +81,32 @@ def test_workflow_environment_failure_is_closed_and_has_no_host_path(tmp_path: P
     assert result.code == "CREATION_ENVIRONMENT_INVALID"
     assert leaked not in result.message
     assert leaked not in str(result.details)
+
+
+def test_prepare_is_read_only_and_never_invokes_cubemx(tmp_path: Path, monkeypatch):
+    import stm32_toolkit.creation_workflows as workflows
+    from stm32_toolkit.tool_support import ToolSupportProfile
+
+    calls: list[str] = []
+    monkeypatch.setattr(workflows, "discover_creation_environment", lambda *args, **kwargs: calls.append("environment") or type("E", (), {"digest": "c" * 64})())
+    monkeypatch.setattr(workflows, "discover_tool_support", lambda request: ToolSupportProfile("3.12.10", None, None, None, None, None, None, (), ()))
+    request = CreationPlanWorkflowRequest(tmp_path, tmp_path / "data", "session", "mcu", "STM32F429ZITx", "generated", "hal", "c")
+    planned = plan_creation_workflow(request)
+    assert planned.ok is True
+    result = workflows.prepare_creation_workflow(request, plan_id="a" * 64, action_digest="b" * 64)
+    assert result.code == "CREATION_PLAN_CHANGED"
+    assert calls == []
+    assert tuple(tmp_path.rglob("*")) == ()
+
+
+def test_prepare_requires_exact_plan_and_action_digests(tmp_path: Path, monkeypatch):
+    import stm32_toolkit.creation_workflows as workflows
+    from stm32_toolkit.tool_support import ToolSupportProfile
+
+    support = ToolSupportProfile("3.12.10", None, None, None, None, None, None, (), ())
+    monkeypatch.setattr(workflows, "discover_tool_support", lambda request: support)
+    request = CreationPlanWorkflowRequest(tmp_path, tmp_path / "data", "session", "mcu", "STM32F429ZITx", "generated", "hal", "c")
+    planned = plan_creation_workflow(request)
+    assert planned.ok is True
+    result = workflows.prepare_creation_workflow(request, plan_id="a" * 64, action_digest="b" * 64)
+    assert result.code == "CREATION_PLAN_CHANGED"
