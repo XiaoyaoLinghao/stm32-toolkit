@@ -125,3 +125,25 @@
   native interface is a design blocker, not another local patch opportunity.
   No correction round was dispatched. VS07-B is not accepted and VS07-C
   remains frozen. No remote, install, hardware, or release action occurred.
+
+## 2026-08-24 real-native redesign
+
+- The user installed the one official package directory
+  `STM32Cube_FW_F4_V1.28.3`; package.xml, Drivers, Projects, Documentation, and
+  the F4 HAL driver are present. The prior ENVIRONMENT blocker is resolved.
+- Sol probes r5-r8 established four additional PRODUCT boundary facts before
+  product changes: official repository ZIP siblings must not be treated as
+  directories; isolated TEMP/TMP is required for JNA; the normalized MCU needs
+  the case-correct `db/mcu/.../Mcu@RefName` native token; and CubeMX requires a
+  native Windows project path and generates `<path>/<project-name>`.
+- Probe r8 exited 0 with 425 stdout lines, 10 stderr warning lines, no
+  truncation/timeout, 1,458 generated files, and present sysmem/syscalls. It is
+  the source for static sanitized protocol and real-template fixtures. Current
+  parsing of that real tree closes at the actual Debug generator expression,
+  confirming the parser rewrite is required.
+- Approved replacement design/plan:
+  `docs/superpowers/specs/2026-08-24-stm32-toolkit-0702-real-native-acceptance-redesign.md`
+  and
+  `docs/superpowers/plans/2026-08-24-stm32-toolkit-0702-real-native-acceptance-rewrite.md`.
+  Tasks 1RR-3RR remain sequential checkpoints for the same sole Luna/max
+  implementer. VS07-C remains frozen pending Sol acceptance of VS07-B.
