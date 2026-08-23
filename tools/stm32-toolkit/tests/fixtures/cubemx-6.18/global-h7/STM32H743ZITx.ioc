@@ -1,3 +1,3 @@
 Mcu.Name=STM32H743ZITx
-ProjectManager.FirmwarePackage=STM32Cube_FW_H7
+ProjectManager.FirmwarePackage=STM32Cube_FW_H7 V1.0.0
 ProjectManager.Language=C

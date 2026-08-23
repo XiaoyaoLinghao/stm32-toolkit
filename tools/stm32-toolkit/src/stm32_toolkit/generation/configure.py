@@ -437,7 +437,7 @@ def _memory_region_roles(model: ProjectModel) -> tuple[str, str]:
         (
             region.name
             for region in model.memory.regions
-            if "x" in region.attributes and "w" not in region.attributes
+            if "x" in region.attributes
         ),
         None,
     )
@@ -451,14 +451,14 @@ def _memory_region_roles(model: ProjectModel) -> tuple[str, str]:
         (
             region.name
             for region in model.memory.regions
-            if "w" in region.attributes and region.name != flash
+            if "w" in region.attributes
         ),
         None,
     )
     if ram is None:
         raise _raise_error(
             "GENERATION_MODEL_INVALID",
-            "a distinct writable memory region is required for RAM",
+            "a writable memory region is required for RAM",
             {"field": "memory.regions", "rule": "ramRole"},
         )
     return flash, ram

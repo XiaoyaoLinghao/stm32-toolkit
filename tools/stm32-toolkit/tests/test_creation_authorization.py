@@ -119,6 +119,35 @@ def test_malformed_record_is_closed_without_raw_record_data(tmp_path: Path):
     assert "not-an-object" not in str(error.value)
 
 
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("request", {"source": {"kind": "mcu", "value": "STM32F429ZITx"}, "destination": "tampered", "framework": "hal", "language": "c"}),
+        ("projectRoot", "C:/tampered"),
+        ("planId", "d" * 64),
+        ("actionDigest", "e" * 64),
+        ("executionEnvironmentDigest", "f" * 64),
+        ("expiresAt", "2026-08-23T14:00:00Z"),
+        ("issuedAt", "2026-08-23T11:00:00Z"),
+        ("nonce", "tampered-nonce"),
+    ],
+)
+def test_record_integrity_rejects_prepared_payload_tampering(tmp_path: Path, field: str, value: object):
+    store = CreationAuthorizationStore(tmp_path, now=lambda: NOW, nonce_factory=lambda: "nonce")
+    result = _prepare(store)
+    record = tmp_path / "creation" / "authorizations" / f"{result.authorization_digest}.json"
+    payload = json.loads(record.read_text(encoding="utf-8"))
+    payload[field] = value
+    record.write_text(json.dumps(payload, sort_keys=True, separators=(",", ":")), encoding="utf-8")
+
+    with pytest.raises(CreationAuthorizationError) as peek_error:
+        store.peek(result.authorization_digest)
+    assert peek_error.value.code == "CREATION_AUTHORIZATION_INVALID"
+    with pytest.raises(CreationAuthorizationError) as consume_error:
+        store.consume(result.authorization_digest, authorized=True)
+    assert consume_error.value.code == "CREATION_AUTHORIZATION_INVALID"
+
+
 def test_two_concurrent_consumers_have_exactly_one_winner(tmp_path: Path):
     store = CreationAuthorizationStore(tmp_path, now=lambda: NOW, nonce_factory=lambda: "nonce")
     result = _prepare(store)

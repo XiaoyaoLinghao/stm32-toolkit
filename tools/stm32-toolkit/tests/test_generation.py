@@ -994,7 +994,7 @@ def test_no_writable_region_is_rejected(tmp_path):
     assert error.value.details == {"field": "memory.regions", "rule": "writable"}
 
 
-def test_native_memory_order_selects_flash_and_primary_ram_by_attributes(tmp_path):
+def test_generic_memory_order_keeps_first_executable_and_writable_by_order(tmp_path):
     payload = standard_payload()
     payload["memory"]["regions"] = [
         {"name": "RAM", "origin": 0x20000000, "length": 0x30000, "attributes": "rwx"},
@@ -1006,18 +1006,29 @@ def test_native_memory_order_selects_flash_and_primary_ram_by_attributes(tmp_pat
     linker = next(entry for entry in plan.files if entry.path == "linker/stm32tk.ld")
     text = linker.after_bytes.decode("utf-8")
     assert "_estack" not in text
-    assert "  } > FLASH\n\n  .text" in text
-    assert "  } > FLASH\n\n  .ARM.extab" in text
-    assert "  } > FLASH\n\n  .ARM.exidx" in text
-    assert "  } > RAM AT> FLASH" in text
+    assert "  } > RAM\n\n  .text" in text
+    assert "  } > RAM\n\n  .ARM.extab" in text
+    assert "  } > RAM\n\n  .ARM.exidx" in text
+    assert "  } > RAM AT> RAM" in text
+
+
+def test_generic_memory_roles_use_first_executable_and_writable_regions(tmp_path):
+    payload = standard_payload()
+    payload["memory"]["regions"] = [
+        {"name": "RAM", "origin": 0x20000000, "length": 0x30000, "attributes": "rwx"},
+        {"name": "CCMRAM", "origin": 0x10000000, "length": 0x10000, "attributes": "rwx"},
+        {"name": "FLASH", "origin": 0x08000000, "length": 0x200000, "attributes": "r-x"},
+    ]
+    root = write_project(tmp_path / "proj", payload)
+    model = load_project_model(root)
+    assert configure_mod._memory_region_roles(model) == ("RAM", "RAM")
 
 
 @pytest.mark.parametrize(
     "regions",
     [
         [
-            {"name": "RAM", "origin": 0x20000000, "length": 0x30000, "attributes": "rwx"},
-            {"name": "CCMRAM", "origin": 0x10000000, "length": 0x10000, "attributes": "rwx"},
+            {"name": "RAM", "origin": 0x20000000, "length": 0x30000, "attributes": "rw-"},
         ],
         [
             {"name": "FLASH", "origin": 0x08000000, "length": 0x200000, "attributes": "r-x"},

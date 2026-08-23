@@ -442,9 +442,14 @@ def parse_native_project(
         str(getattr(environment, "package_name", "")),
         str(getattr(environment, "package_version", "")),
     )
-    if actual_family is None or expected_family is None or actual_family != expected_family:
-        raise _invalid("native IOC package disagrees with the environment")
-    if actual_version is not None and actual_version != expected_version:
+    if (
+        actual_family is None
+        or expected_family is None
+        or actual_family != expected_family
+        or actual_version is None
+        or expected_version is None
+        or actual_version != expected_version
+    ):
         raise _invalid("native IOC package disagrees with the environment")
     native_language_match = _LANG_RE.search(ioc or "")
     native_language = native_language_match.group(1).strip().casefold() if native_language_match else "c"

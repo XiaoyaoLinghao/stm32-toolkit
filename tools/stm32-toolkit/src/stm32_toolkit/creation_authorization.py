@@ -127,6 +127,13 @@ def _digest(value: object) -> bool:
     return isinstance(value, str) and len(value) == 64 and set(value).issubset(_DIGEST_CHARS)
 
 
+def _record_integrity_digest(payload: dict[str, object]) -> str:
+    """Hash the immutable prepared-state record, independent of transition state."""
+    canonical = {key: value for key, value in payload.items() if key != "authorizationDigest"}
+    canonical["state"] = "prepared"
+    return sha256_hex(canonical_json_bytes(canonical))
+
+
 class CreationAuthorizationError(ValueError):
     """Closed public authorization failure."""
 
@@ -310,7 +317,7 @@ class CreationAuthorizationStore:
             "projectRoot": request.project_root.as_posix(),
             "request": request.request.to_dict(),
         }
-        digest = sha256_hex(canonical_json_bytes(payload_base))
+        digest = _record_integrity_digest(payload_base)
         payload = {**payload_base, "authorizationDigest": digest}
         data = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
         if len(data) > _MAX_RECORD_BYTES:
@@ -351,6 +358,8 @@ class CreationAuthorizationStore:
                     raise ValueError
                 required = {"schemaVersion", "nonce", "issuedAt", "expiresAt", "state", "planId", "actionDigest", "executionEnvironmentDigest", "projectRoot", "request", "authorizationDigest"}
                 if set(payload) != required or payload.get("schemaVersion") != 1 or payload.get("authorizationDigest") != authorization_digest:
+                    raise ValueError
+                if _record_integrity_digest(payload) != authorization_digest:
                     raise ValueError
                 if not isinstance(payload.get("nonce"), str) or not payload["nonce"] or payload.get("state") not in {"prepared", "consumed"}:
                     raise ValueError
@@ -411,6 +420,8 @@ class CreationAuthorizationStore:
             payload = json.loads(data.decode("utf-8"))
             required = {"schemaVersion", "nonce", "issuedAt", "expiresAt", "state", "planId", "actionDigest", "executionEnvironmentDigest", "projectRoot", "request", "authorizationDigest"}
             if not isinstance(payload, dict) or set(payload) != required or payload.get("schemaVersion") != 1 or payload.get("authorizationDigest") != authorization_digest:
+                raise ValueError
+            if _record_integrity_digest(payload) != authorization_digest:
                 raise ValueError
             if payload.get("state") != "prepared" or not isinstance(payload.get("nonce"), str):
                 raise ValueError

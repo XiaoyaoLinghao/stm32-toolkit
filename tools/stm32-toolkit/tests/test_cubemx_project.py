@@ -427,6 +427,25 @@ def test_native_parser_requires_exact_firmware_family_and_version(tmp_path: Path
     assert error.value.code == "CUBEMX_NATIVE_OUTPUT_INVALID"
 
 
+def test_native_parser_rejects_missing_firmware_version(tmp_path: Path):
+    root = _real_native_tree(tmp_path)
+    (root / "STM32F429ZITx.ioc").write_text(
+        (root / "STM32F429ZITx.ioc").read_text(encoding="utf-8").replace(
+            "STM32Cube FW_F4 V1.28.3", "STM32Cube FW_F4"
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(CubeMXNativeProjectError) as error:
+        parse_native_project(
+            root,
+            request=CreationRequest.from_mcu("STM32F429ZITx", "generated", framework="hal", language="c"),
+            plan_id="a" * 64,
+            action_digest="b" * 64,
+            environment=_real_native_environment(),
+        )
+    assert error.value.code == "CUBEMX_NATIVE_OUTPUT_INVALID"
+
+
 def test_native_parser_rejects_incomplete_r6_absolute_or_missing_source_tree(tmp_path: Path):
     root = _real_native_tree(tmp_path)
     nested = root / "cmake" / "stm32cubemx" / "CMakeLists.txt"
