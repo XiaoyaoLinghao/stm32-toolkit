@@ -173,9 +173,9 @@ def _ioc_hash(path: Path) -> str:
 
 def _inventory_state(root: Path, destination: Path) -> tuple[str, str]:
     """Return a canonical destination state without following redirects."""
-    if destination.exists() and not _directory(destination):
+    if os.path.lexists(destination) and not _directory(destination):
         return sha256_hex(canonical_json_bytes({"state": "unsafe", "entries": []})), "unsafe"
-    if not destination.exists():
+    if not os.path.lexists(destination):
         return sha256_hex(canonical_json_bytes({"state": "absent", "entries": []})), "absent"
     entries: list[dict[str, object]] = []
     unsafe = False
@@ -209,7 +209,7 @@ def _validate_chain(root: Path, target: Path) -> None:
     current = root
     for part in relative.parts[:-1] if relative.parts else ():
         current = current / part
-        if current.exists() and not _directory(current):
+        if os.path.lexists(current) and not _directory(current):
             raise CreationInputError("CREATION_PATH_INVALID", "path")
 
 
@@ -247,10 +247,10 @@ def plan_project_creation(workspace_root: Path, request: CreationRequest, tools:
     for issue in tools.issues:
         if issue.component != "vsCode" and not any(item.code == issue.code for item in blockers):
             blockers.append(CreationBlocker(issue.code, issue.component, issue.remediation))
-    if tools.cubemx is None and not any(item.code == "CUBEMX_MISSING" for item in blockers):
+    if tools.cubemx is None and not any(item.component == "cubeMx" for item in blockers):
         blockers.append(CreationBlocker("CUBEMX_MISSING", "cubeMx", "Install STM32CubeMX 6.18 and rerun discovery."))
     for fact, code, component in ((tools.cubeclt_root, "CUBECLT_MISSING", "cubeClt"), (tools.gcc, "GCC_MISSING", "gcc"), (tools.cmake, "CMAKE_MISSING", "cmake"), (tools.ninja, "NINJA_MISSING", "ninja")):
-        if fact is None and not any(item.code == code for item in blockers):
+        if fact is None and not any(item.component == component for item in blockers):
             blockers.append(CreationBlocker(code, component, "Provide the supported STM32CubeCLT 1.22.0 tool."))
     if inventory_state == "unsafe":
         blockers.append(CreationBlocker("DESTINATION_UNSAFE", "destination", "Choose a destination with no redirect or unsafe entry."))

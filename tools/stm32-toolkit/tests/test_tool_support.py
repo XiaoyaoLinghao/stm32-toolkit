@@ -133,6 +133,34 @@ def test_cubeclt_metadata_batch_seam_is_bounded_and_injected(tmp_path: Path, mon
     assert fact is not None and fact.version == "14.3.1"
 
 
+def test_native_cubeclt_windows_metadata_directories_are_normalized(tmp_path: Path, monkeypatch):
+    root, gcc, cmake, ninja = _metadata_root(tmp_path)
+    # CubeCLT 1.22.0 emits these Windows paths with single backslashes and
+    # points at component bin directories rather than executable leaves.
+    raw = (
+        '{"GNUToolsForSTM32":"' + str(gcc.parent) + '",'
+        '"CMake":"' + str(cmake.parent) + '",'
+        '"Ninja":"' + str(ninja.parent) + '"}'
+    ).encode()
+    metadata_path = root / "STM32CubeCLT_metadata.bat"
+    monkeypatch.setattr(support, "_CUBECLT_ROOTS", ())
+    monkeypatch.setattr(
+        support,
+        "_run_bounded",
+        lambda argv, **kwargs: ProcessObservation(0, raw, b"")
+        if Path(argv[0]) == metadata_path
+        else ProcessObservation(0, b"", b""),
+    )
+
+    profile = discover_tool_support(
+        _write_profile(tmp_path, {"cubeCltRoot": str(root)}), probe_versions=False
+    )
+
+    assert profile.gcc is not None and profile.gcc.path == gcc
+    assert profile.cmake is not None and profile.cmake.path == cmake
+    assert profile.ninja is not None and profile.ninja.path == ninja
+
+
 def _write_profile(tmp_path: Path, payload: dict[str, object]) -> SupportProfileRequest:
     profile = tmp_path / "profile.json"
     profile.write_text(json.dumps(payload), encoding="utf-8")

@@ -490,11 +490,48 @@ def _read_metadata(root: Path) -> _MetadataRead:
         observation = _run_bounded((str(script), "-j"), capture_limit=_MAX_METADATA_BYTES)
         if not isinstance(observation, ProcessObservation) or observation.returncode != 0 or observation.timed_out or observation.truncated:
             return _MetadataRead({}, True, True)
-        payload = json.loads(observation.stdout.decode("utf-8", errors="strict"))
+        raw = observation.stdout.decode("utf-8", errors="strict")
+        native_path_format = False
+        try:
+            payload = json.loads(raw)
+        except json.JSONDecodeError:
+            # STM32CubeCLT 1.22.0 emits Windows paths with single backslashes
+            # even though it labels the output JSON.  Repair only that known
+            # string-level encoding defect; malformed/non-object payloads
+            # remain invalid below.
+            repaired: list[str] = []
+            in_string = False
+            for character in raw:
+                if character == '"':
+                    in_string = not in_string
+                    repaired.append(character)
+                elif character == "\\" and in_string:
+                    repaired.append("\\\\")
+                else:
+                    repaired.append(character)
+            payload = json.loads("".join(repaired))
+            native_path_format = True
         if not isinstance(payload, dict):
             return _MetadataRead({}, True, True)
         if any(not isinstance(key, str) for key in payload) or any(key in {"GNUToolsForSTM32", "CMake", "Ninja", "gcc", "cmake", "ninja"} and not isinstance(value, str) for key, value in payload.items()):
             return _MetadataRead({}, True, True)
+        if native_path_format:
+            # The native command reports component bin directories.  Convert
+            # those trusted schema values to the executable candidates that
+            # the resolver requires; ordinary valid JSON directory evidence
+            # remains fail-closed in _metadata_tier.
+            leaves = {
+                "GNUToolsForSTM32": "arm-none-eabi-gcc.exe",
+                "gcc": "arm-none-eabi-gcc.exe",
+                "CMake": "cmake.exe",
+                "cmake": "cmake.exe",
+                "Ninja": "ninja.exe",
+                "ninja": "ninja.exe",
+            }
+            for key, leaf in leaves.items():
+                value = payload.get(key)
+                if isinstance(value, str) and Path(value).name.casefold() == "bin":
+                    payload[key] = str(Path(value) / leaf)
         return _MetadataRead(dict(payload), True, False)
     except (OSError, UnicodeError, ValueError, AttributeError, subprocess.SubprocessError):
         return _MetadataRead({}, True, True)
@@ -529,7 +566,7 @@ def _metadata_tier(root: Path | None, metadata: _MetadataRead, component: str) -
     if metadata.present:
         value = _metadata_value(metadata, component)
         if value is None:
-            return CandidateTier("cubeclt-metadata", ())
+            return CandidateTier("cubeclt-metadata", (), invalid=True)
         if not isinstance(value, str):
             return CandidateTier("cubeclt-metadata", (), invalid=True)
         path = Path(value)
@@ -567,7 +604,12 @@ def _registry_candidates(component: str) -> tuple[DiscoveryCandidate, ...]:
             except (OSError, AttributeError, TypeError):
                 continue
             if isinstance(value, str) and value.strip():
-                result.append(DiscoveryCandidate(Path(value.strip().strip('"')), "standard"))
+                candidate = Path(value.strip().strip('"'))
+                # A stale App Paths entry is absence.  Existing redirected,
+                # non-file, or otherwise unsafe entries remain candidates so
+                # the common resolver can fail closed on that evidence.
+                if _lexists(candidate):
+                    result.append(DiscoveryCandidate(candidate, "standard"))
     return tuple(result)
 
 
@@ -578,7 +620,9 @@ def _standard_tier(component: str) -> CandidateTier:
         paths = _CUBEMX_PATHS
     else:
         paths = _VS_CODE_PATHS
-    candidates = [DiscoveryCandidate(path, "standard") for path in paths]
+    # Missing known layouts are absence, not invalid evidence.  Existing
+    # unsafe/non-regular paths are retained so the resolver can fail closed.
+    candidates = [DiscoveryCandidate(path, "standard") for path in paths if _lexists(path)]
     candidates.extend(_registry_candidates(component))
     return CandidateTier("standard", tuple(candidates))
 
