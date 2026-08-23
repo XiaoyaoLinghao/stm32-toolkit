@@ -113,6 +113,13 @@ report and VS07-B SDD ledger after product CodeHead is committed.
   Preserve both model include paths and every existing alias, collision,
   redirect, escape, and type rejection; then restart Task 3RR from the exact
   16-file command.
+- [ ] Before the next native retry, prove that a missing or unborn workspace
+  Git HEAD is rejected by public prepare as `BUILD_GIT_INVALID`, before CubeMX
+  or authorization persistence. Reuse the existing bounded Git-evidence
+  primitive and do not initialize or commit from product code. For both
+  positive native scenarios, create a fresh local repository and initial test
+  commit with command-scoped identity and no remote, then restart Task 3RR from
+  the exact 16-file command.
 - [ ] Run `compileall`, accepted-base `git diff --check`, inspect the complete
   diff/status, and confirm the branch has no upstream/push.
 - [ ] Commit product/tests before reports. Then rewrite the implementation

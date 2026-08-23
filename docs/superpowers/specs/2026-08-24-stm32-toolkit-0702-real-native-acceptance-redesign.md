@@ -144,6 +144,17 @@ that explicit child declaration as one idempotent evidence traversal. It does
 not discard either compiler include path and does not relax case-fold
 collisions, alternate aliases, redirects, escapes, or non-directory failures.
 
+The existing build identity contract also requires the planned workspace to
+have a resolvable local Git HEAD. The public plan remains read-only and does
+not invent repository state. Prepare validates the workspace with the existing
+bounded Git-evidence primitive before environment discovery or authorization
+record creation; a missing, unborn, or invalid repository returns the existing
+`BUILD_GIT_INVALID` code and bounded rule. Product code never runs `git init`,
+creates a commit, changes Git configuration, or contacts a remote. Positive
+native acceptance creates an isolated local repository and initial commit as
+test setup, with command-scoped identity and no remote, before invoking the
+public plan/prepare/apply path.
+
 ## 6. Acceptance and sequencing
 
 The implementer must first prove every old defect RED, then implement this
