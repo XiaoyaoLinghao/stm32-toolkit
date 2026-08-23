@@ -117,9 +117,9 @@ def test_support_profile_must_be_inside_trusted_data_root(tmp_path: Path):
 
 def test_cubeclt_metadata_batch_seam_is_bounded_and_injected(tmp_path: Path, monkeypatch):
     root = tmp_path / "clt"
-    gcc = _write_executable(root / "gcc.exe")
-    cmake = _write_executable(root / "cmake.exe")
-    ninja = _write_executable(root / "ninja.exe")
+    gcc = _write_executable(root / "GNU-tools-for-STM32" / "bin" / "arm-none-eabi-gcc.exe")
+    cmake = _write_executable(root / "CMake" / "bin" / "cmake.exe")
+    ninja = _write_executable(root / "Ninja" / "bin" / "ninja.exe")
     script = _write_executable(root / "STM32CubeCLT_metadata.bat")
     def fake_runner(argv, **kwargs):
         if argv[0] == str(script):
@@ -127,10 +127,16 @@ def test_cubeclt_metadata_batch_seam_is_bounded_and_injected(tmp_path: Path, mon
         return ProcessObservation(0, b"GNU Arm Embedded Toolchain 14.3.1\n", b"")
     monkeypatch.setattr("stm32_toolkit.tool_support._run_bounded", fake_runner)
     import stm32_toolkit.tool_support as support
-    metadata = support._metadata_candidates(root)
-    assert metadata["GNUToolsForSTM32"] == str(gcc)
-    fact = support._metadata_fact(root, "gcc", metadata)
-    assert fact is not None and fact.version == "14.3.1"
+    metadata = support._read_metadata(root)
+    assert metadata.values["GNUToolsForSTM32"] == str(gcc)
+    tier = support._metadata_tier(root, metadata, "gcc")
+    assert tier is not None and tier.candidates[0].path == gcc
+    result = support._resolve_component(
+        "gcc",
+        (tier,),
+        lambda candidate: support._build_fact(candidate, "gcc", probe_versions=True),
+    )
+    assert result.fact is not None and result.fact.version == "14.3.1"
 
 
 def test_native_cubeclt_windows_metadata_directories_are_normalized(tmp_path: Path, monkeypatch):

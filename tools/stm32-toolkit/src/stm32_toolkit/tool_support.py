@@ -537,15 +537,6 @@ def _read_metadata(root: Path) -> _MetadataRead:
         return _MetadataRead({}, True, True)
 
 
-def _run_cubeclt_metadata(root: Path) -> dict[str, str]:
-    result = _read_metadata(root)
-    return {key: value for key, value in result.values.items() if isinstance(value, str)}
-
-
-def _metadata_candidates(root: Path) -> dict[str, str]:
-    return _run_cubeclt_metadata(root)
-
-
 def _metadata_value(metadata: _MetadataRead, component: str) -> object | None:
     names = {"gcc": ("gcc", "GNUToolsForSTM32"), "cmake": ("cmake", "CMake"), "ninja": ("ninja", "Ninja")}[component]
     for name in names:
@@ -678,18 +669,6 @@ def _discover_cubeclt(payload: dict[str, object]) -> tuple[Path | None, _Metadat
     return None, _MetadataRead({}, False, False)
 
 
-def _metadata_fact(root: Path, name: str, metadata: dict[str, str], *, probe_versions: bool = True) -> ToolFact | None:
-    value = _metadata_value(_MetadataRead(metadata, True, False), name)
-    if not isinstance(value, str):
-        return None
-    path = Path(value)
-    if not path.is_absolute():
-        path = root / path
-    if not _under_safe_root(path, root):
-        return None
-    return _build_fact(DiscoveryCandidate(path, "cubeclt-metadata"), name, probe_versions=probe_versions)
-
-
 def _resolve_static(payload: dict[str, object], component: str, *, probe_versions: bool) -> CandidateResolution:
     tiers: list[CandidateTier] = []
     explicit = _explicit_tier(payload, component)
@@ -718,14 +697,6 @@ def _discover_vscode(payload: dict[str, object], *, probe_versions: bool = True)
 
 _DEFAULT_DISCOVER_CUBE_MX = _discover_cube_mx
 _DEFAULT_DISCOVER_VSCODE = _discover_vscode
-
-
-def _discover_cubeclt_fact(root: Path | None, name: str, metadata: dict[str, str], *, probe_versions: bool = True) -> ToolFact | None:
-    return _metadata_fact(root, name, metadata, probe_versions=probe_versions) if root else None
-
-
-def _find_path_fact(name: str, *, probe_versions: bool = True) -> ToolFact | None:
-    return _resolve_component(name, (_path_tier(name),), lambda candidate: _build_fact(candidate, name, probe_versions=probe_versions)).fact
 
 
 def _extensions(payload: dict[str, object]) -> tuple[tuple[str, str], ...]:
