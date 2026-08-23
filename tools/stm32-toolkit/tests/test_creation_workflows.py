@@ -354,6 +354,55 @@ def test_prepare_accepts_valid_local_head_before_existing_environment_authorizat
     assert not (tmp_path / "generated").exists()
 
 
+def test_prepare_preserves_plan_blocker_priority_before_git_check(tmp_path: Path, monkeypatch):
+    import stm32_toolkit.creation_workflows as workflows
+
+    support = ToolSupportProfile("3.12.10", None, None, None, None, None, None, (), ())
+    request = CreationPlanWorkflowRequest(
+        tmp_path,
+        tmp_path / "data",
+        "session",
+        "mcu",
+        "STM32F429ZITx",
+        "generated",
+        "hal",
+        "c",
+    )
+    planned = plan_creation_workflow(request, support_profile=support)
+    assert planned.ok is True
+    assert planned.data["blockers"][0]["code"] == "CUBEMX_MISSING"
+    calls: list[str] = []
+    original_prepare = CreationAuthorizationStore.prepare
+
+    def record_git(*args, **kwargs):
+        calls.append("git")
+        return SimpleNamespace(head="a" * 40, dirty=False)
+
+    def record_environment(*args, **kwargs):
+        calls.append("environment")
+        return SimpleNamespace(digest="c" * 64)
+
+    def record_authorization(self, *args, **kwargs):
+        calls.append("authorization")
+        return original_prepare(self, *args, **kwargs)
+
+    monkeypatch.setattr(workflows, "git_evidence", record_git)
+    monkeypatch.setattr(workflows, "discover_creation_environment", record_environment)
+    monkeypatch.setattr(CreationAuthorizationStore, "prepare", record_authorization)
+    result = workflows.prepare_creation_workflow(
+        request,
+        plan_id=planned.data["planId"],
+        action_digest=planned.data["actionDigest"],
+        support_profile=support,
+    )
+    assert result.ok is False
+    assert result.code == "CUBEMX_MISSING"
+    assert result.details["blockers"][0]["code"] == "CUBEMX_MISSING"
+    assert calls == []
+    assert not (tmp_path / "data").exists()
+    assert not (tmp_path / "generated").exists()
+
+
 class _ApplyProbe:
     def __init__(self) -> None:
         self.calls = 0

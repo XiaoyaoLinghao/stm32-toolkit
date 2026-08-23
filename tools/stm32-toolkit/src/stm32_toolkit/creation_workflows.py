@@ -97,14 +97,14 @@ def prepare_creation_workflow(
             "The creation plan changed since planning",
             {"currentPlanId": plan.plan_id, "currentActionDigest": plan.action_digest},
         )
-    try:
-        git_evidence(request.project_root.expanduser().resolve(strict=True))
-    except BuildError as error:
-        return OperationResult.failure(operation, error.code, error.message, error.details)
     if plan.blockers:
         blockers = [blocker.to_dict() for blocker in plan.blockers]
         first = plan.blockers[0]
         return OperationResult.failure(operation, first.code, "Creation prerequisites are unavailable", {"blockers": blockers})
+    try:
+        git_evidence(request.project_root.expanduser().resolve(strict=True))
+    except BuildError as error:
+        return OperationResult.failure(operation, error.code, error.message, error.details)
     try:
         environment = discover_creation_environment(
             support,
