@@ -18,6 +18,7 @@ import shutil  # compatibility import for existing doctor/test callers
 import stat
 import subprocess
 import sys
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Literal
@@ -264,9 +265,45 @@ def _run_bounded(argv: tuple[str, ...], timeout_seconds: float = 5.0, capture_li
     process = None
     try:
         process = _REAL_POPEN(argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=False)
+        output: dict[str, bytearray] = {"stdout": bytearray(), "stderr": bytearray()}
+        state = {"captured": 0, "truncated": False}
+        lock = threading.Lock()
+
+        def drain(stream: object, name: str) -> None:
+            if stream is None:
+                return
+            try:
+                while True:
+                    chunk = stream.read(4096)  # type: ignore[union-attr]
+                    if not chunk:
+                        return
+                    with lock:
+                        available = max(0, capture_limit - state["captured"])
+                        if available:
+                            kept = chunk[:available]
+                            output[name].extend(kept)
+                            state["captured"] += len(kept)
+                        if len(chunk) > available:
+                            state["truncated"] = True
+            except (OSError, ValueError, AttributeError, TypeError):
+                return
+
+        readers = tuple(
+            threading.Thread(
+                target=drain,
+                args=(getattr(process, name, None), name),
+                name=f"stm32-toolkit-support-{name}",
+                daemon=True,
+            )
+            for name in ("stdout", "stderr")
+        )
+        for reader in readers:
+            reader.start()
+        timed_out = False
         try:
-            stdout, stderr = process.communicate(timeout=timeout_seconds)
+            returncode = process.wait(timeout=timeout_seconds)
         except subprocess.TimeoutExpired:
+            timed_out = True
             try:
                 process.terminate()
             except OSError:
@@ -282,13 +319,16 @@ def _run_bounded(argv: tuple[str, ...], timeout_seconds: float = 5.0, capture_li
                     process.wait(timeout=1)
                 except (OSError, subprocess.TimeoutExpired):
                     pass
-            try:
-                process.communicate(timeout=1)
-            except (OSError, subprocess.SubprocessError):
-                pass
-            return ProcessObservation(None, b"", b"", timed_out=True)
-        out, err = stdout or b"", stderr or b""
-        return ProcessObservation(process.returncode, out[:capture_limit], err[:capture_limit], truncated=len(out) + len(err) > capture_limit)
+            returncode = None
+        for reader in readers:
+            reader.join(timeout=1)
+        return ProcessObservation(
+            returncode,
+            bytes(output["stdout"]),
+            bytes(output["stderr"]),
+            timed_out=timed_out,
+            truncated=state["truncated"],
+        )
     except (OSError, ValueError, subprocess.SubprocessError):
         return ProcessObservation(None, b"", b"")
 
@@ -443,12 +483,27 @@ def _entry(payload: dict[str, object], name: str) -> dict[str, object] | None:
 def _validate_profile_payload(payload: dict[str, object], data_root: Path | None) -> None:
     if data_root is None or _canonical_directory(data_root) is None:
         raise SupportProfileError("support profile data root is unavailable")
+    supported_keys = {"cubeCltRoot", "cubeclt_root", "cubeMx", "vsCode", "gcc", "cmake", "ninja", "tools", "vsCodeExtensions"}
+    if set(payload) - supported_keys:
+        raise SupportProfileError("support profile schema is invalid")
+    if "cubeCltRoot" in payload and "cubeclt_root" in payload:
+        raise SupportProfileError("support profile schema is invalid")
     for key in ("cubeCltRoot", "cubeclt_root"):
         if key in payload:
             raw_root = payload[key]
             if not isinstance(raw_root, str) or _canonical_directory(Path(raw_root)) is None:
                 raise SupportProfileError("support profile cubeclt root is invalid")
+    nested = payload.get("tools")
+    if nested is not None:
+        if not isinstance(nested, dict) or set(nested) - {"cubeMx", "vsCode", "gcc", "cmake", "ninja"}:
+            raise SupportProfileError("support profile schema is invalid")
+        if any(not isinstance(value, dict) for value in nested.values()):
+            raise SupportProfileError("support profile schema is invalid")
     for name in ("cubeMx", "vsCode", "gcc", "cmake", "ninja"):
+        if name in payload and not isinstance(payload[name], dict):
+            raise SupportProfileError("support profile schema is invalid")
+        if isinstance(nested, dict) and name in payload and name in nested:
+            raise SupportProfileError("support profile schema is invalid")
         entry = _entry(payload, name)
         if entry is None:
             continue
@@ -460,6 +515,10 @@ def _validate_profile_payload(payload: dict[str, object], data_root: Path | None
             raise SupportProfileError("support profile schema is invalid")
         if _canonical_regular_file(Path(raw_path)) is None:
             raise SupportProfileError("support profile candidate is invalid")
+    if "vsCodeExtensions" in payload:
+        extensions = payload["vsCodeExtensions"]
+        if not isinstance(extensions, dict) or any(not isinstance(key, str) or not isinstance(value, str) for key, value in extensions.items()):
+            raise SupportProfileError("support profile schema is invalid")
 
 
 def _explicit_tier(payload: dict[str, object], component: str) -> CandidateTier | None:
@@ -596,11 +655,7 @@ def _registry_candidates(component: str) -> tuple[DiscoveryCandidate, ...]:
                 continue
             if isinstance(value, str) and value.strip():
                 candidate = Path(value.strip().strip('"'))
-                # A stale App Paths entry is absence.  Existing redirected,
-                # non-file, or otherwise unsafe entries remain candidates so
-                # the common resolver can fail closed on that evidence.
-                if _lexists(candidate):
-                    result.append(DiscoveryCandidate(candidate, "standard"))
+                result.append(DiscoveryCandidate(candidate, "standard"))
     return tuple(result)
 
 
@@ -678,21 +733,12 @@ def _resolve_static(payload: dict[str, object], component: str, *, probe_version
     return _resolve_component(component, tuple(tiers), lambda candidate: _static_fact_for(component, candidate, probe_versions=probe_versions))
 
 
-_LAST_DISCOVERY_ISSUES: dict[str, ToolSupportIssue] = {}
+def _discover_cube_mx(payload: dict[str, object], *, probe_versions: bool = True) -> CandidateResolution:
+    return _resolve_static(payload, "cubeMx", probe_versions=probe_versions)
 
 
-def _discover_cube_mx(payload: dict[str, object], *, probe_versions: bool = True) -> ToolFact | None:
-    result = _resolve_static(payload, "cubeMx", probe_versions=probe_versions)
-    if result.issue is not None:
-        _LAST_DISCOVERY_ISSUES["cubeMx"] = result.issue
-    return result.fact
-
-
-def _discover_vscode(payload: dict[str, object], *, probe_versions: bool = True) -> ToolFact | None:
-    result = _resolve_static(payload, "vsCode", probe_versions=probe_versions)
-    if result.issue is not None:
-        _LAST_DISCOVERY_ISSUES["vsCode"] = result.issue
-    return result.fact
+def _discover_vscode(payload: dict[str, object], *, probe_versions: bool = True) -> CandidateResolution:
+    return _resolve_static(payload, "vsCode", probe_versions=probe_versions)
 
 
 _DEFAULT_DISCOVER_CUBE_MX = _discover_cube_mx
@@ -710,6 +756,26 @@ def _append_issue(issues: list[ToolSupportIssue], issue: ToolSupportIssue | None
         issues.append(issue)
 
 
+def _static_resolution(
+    helper: Callable[..., object],
+    default: Callable[..., object],
+    payload: dict[str, object],
+    *,
+    probe_versions: bool,
+) -> CandidateResolution:
+    if helper is default:
+        result = helper(payload, probe_versions=probe_versions)
+    else:
+        # Keep the narrow historical monkeypatch seam used by doctor tests;
+        # production discovery always returns the typed resolution directly.
+        result = helper(payload)
+    if isinstance(result, CandidateResolution):
+        return result
+    if isinstance(result, ToolFact):
+        return CandidateResolution(result, None)
+    return CandidateResolution(None, None)
+
+
 def discover_tool_support(request: SupportProfileRequest | None = None, *, probe_versions: bool = True) -> ToolSupportProfile:
     request = request or SupportProfileRequest()
     if request.profile_path is not None and not _profile_allowed(request.profile_path, request.data_root):
@@ -717,7 +783,6 @@ def discover_tool_support(request: SupportProfileRequest | None = None, *, probe
     payload = _read_profile(request.profile_path)
     if request.profile_path is not None:
         _validate_profile_payload(payload, request.data_root)
-    _LAST_DISCOVERY_ISSUES.clear()
     cubeclt_root, metadata = _discover_cubeclt(payload)
     facts: dict[str, ToolFact | None] = {}
     issues: list[ToolSupportIssue] = []
@@ -737,21 +802,27 @@ def discover_tool_support(request: SupportProfileRequest | None = None, *, probe
             _append_issue(issues, _issue(component, "UNSUPPORTED", f"Use the supported {_EXPECTED_VERSIONS[component]} version."))
     # Keep the historical helper seam callable by simple monkeypatches used by
     # doctor-facing tests while preserving the probe_versions test seam.
-    if _discover_cube_mx is _DEFAULT_DISCOVER_CUBE_MX:
-        cubemx = _discover_cube_mx(payload, probe_versions=probe_versions)
-    else:
-        cubemx = _discover_cube_mx(payload)
-    _append_issue(issues, _LAST_DISCOVERY_ISSUES.get("cubeMx"))
-    if cubemx is not None and not cubemx.version.startswith("6.18"):
+    cube_resolution = _static_resolution(
+        _discover_cube_mx,
+        _DEFAULT_DISCOVER_CUBE_MX,
+        payload,
+        probe_versions=probe_versions,
+    )
+    cubemx = cube_resolution.fact
+    _append_issue(issues, cube_resolution.issue)
+    if cubemx is not None and not cubemx.version.startswith("6.18."):
         _append_issue(issues, _issue("cubeMx", "UNSUPPORTED", "Use STM32CubeMX 6.18.x."))
-    if cubemx is None and "cubeMx" not in _LAST_DISCOVERY_ISSUES:
+    if cubemx is None and cube_resolution.issue is None:
         _append_issue(issues, _issue("cubeMx", "MISSING", "Install STM32CubeMX 6.18 and rerun discovery."))
-    if _discover_vscode is _DEFAULT_DISCOVER_VSCODE:
-        vscode = _discover_vscode(payload, probe_versions=probe_versions)
-    else:
-        vscode = _discover_vscode(payload)
-    _append_issue(issues, _LAST_DISCOVERY_ISSUES.get("vsCode"))
-    if vscode is None and "vsCode" not in _LAST_DISCOVERY_ISSUES:
+    vscode_resolution = _static_resolution(
+        _discover_vscode,
+        _DEFAULT_DISCOVER_VSCODE,
+        payload,
+        probe_versions=probe_versions,
+    )
+    vscode = vscode_resolution.fact
+    _append_issue(issues, vscode_resolution.issue)
+    if vscode is None and vscode_resolution.issue is None:
         _append_issue(issues, _issue("vsCode", "MISSING", "Install VS Code or provide its supported executable."))
     if sys.version_info[:2] != (3, 12):
         _append_issue(issues, ToolSupportIssue("PYTHON_UNSUPPORTED", "python", "Use CPython >=3.12,<3.13."))

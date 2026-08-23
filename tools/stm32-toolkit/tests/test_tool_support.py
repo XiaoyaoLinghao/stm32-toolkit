@@ -1,9 +1,13 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import os
+import subprocess
 import sys
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
 from pathlib import Path
 
@@ -106,6 +110,67 @@ def test_missing_tools_are_reported_without_writing(tmp_path: Path, monkeypatch)
     assert profile.cubemx is None
     assert any(item.code == "CUBEMX_MISSING" for item in profile.issues)
     assert before == after
+
+
+def test_overlapping_discoveries_keep_static_issues_on_their_own_call(tmp_path: Path, monkeypatch):
+    barrier = threading.Barrier(2)
+    invalid_returned = threading.Event()
+    missing_written = threading.Event()
+    local = threading.local()
+
+    class InterleavingIssues(dict[str, ToolSupportIssue]):
+        def clear(self):
+            # The pre-fix implementation clears this process-global store for
+            # every call. Keep the seam stable while forcing the overwrite.
+            return None
+
+        def __setitem__(self, key, value):
+            super().__setitem__(key, value)
+            if getattr(local, "marker", None) == "missing" and key == "cubeMx":
+                missing_written.set()
+
+        def get(self, key, default=None):
+            if getattr(local, "marker", None) == "invalid" and key == "cubeMx":
+                assert missing_written.wait(2)
+            return super().get(key, default)
+
+    monkeypatch.setattr(support, "_LAST_DISCOVERY_ISSUES", InterleavingIssues(), raising=False)
+    monkeypatch.setattr(support, "_CUBECLT_ROOTS", ())
+    monkeypatch.setattr(support, "_standard_tier", lambda component: support.CandidateTier("standard", ()))
+    monkeypatch.setattr(support, "_path_tier", lambda component: support.CandidateTier("path", ()))
+
+    def fake_static(payload, component, *, probe_versions):
+        if component == "cubeMx":
+            barrier.wait(2)
+            if local.marker == "invalid":
+                invalid_returned.set()
+            else:
+                assert invalid_returned.wait(2)
+            issue = ToolSupportIssue(
+                "CUBEMX_INVALID" if local.marker == "invalid" else "CUBEMX_MISSING",
+                "cubeMx",
+                local.marker,
+            )
+            return support.CandidateResolution(None, issue)
+        return support.CandidateResolution(
+            None, ToolSupportIssue("VSCODE_MISSING", "vsCode", "missing")
+        )
+
+    monkeypatch.setattr(support, "_resolve_static", fake_static)
+
+    def discover(marker: str):
+        local.marker = marker
+        profile = discover_tool_support(
+            SupportProfileRequest(data_root=tmp_path), probe_versions=False
+        )
+        return {issue.code for issue in profile.issues}
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        invalid = executor.submit(discover, "invalid")
+        missing = executor.submit(discover, "missing")
+
+    assert "CUBEMX_INVALID" in invalid.result()
+    assert "CUBEMX_MISSING" in missing.result()
 
 
 def test_support_profile_must_be_inside_trusted_data_root(tmp_path: Path):
@@ -328,6 +393,36 @@ def test_vscode_hkcu_registration_survives_missing_hklm(tmp_path: Path, monkeypa
     assert profile.vscode.source == "standard"
 
 
+def test_stale_app_paths_value_is_invalid_registry_evidence(tmp_path: Path, monkeypatch):
+    stale = tmp_path / "uninstalled" / "Code.exe"
+
+    class FakeWinreg:
+        HKEY_LOCAL_MACHINE = "HKLM"
+        HKEY_CURRENT_USER = "HKCU"
+
+        @staticmethod
+        def OpenKey(hive, _subkey):
+            if hive == FakeWinreg.HKEY_LOCAL_MACHINE:
+                return object()
+            raise OSError("missing HKCU")
+
+        @staticmethod
+        def QueryValueEx(_key, _name):
+            return str(stale), 1
+
+    monkeypatch.setattr(support.os, "name", "nt")
+    monkeypatch.setitem(sys.modules, "winreg", FakeWinreg)
+    monkeypatch.setattr(support, "_VS_CODE_PATHS", ())
+    monkeypatch.setattr(support, "_CUBEMX_PATHS", ())
+    monkeypatch.setattr(support, "_CUBECLT_ROOTS", ())
+    monkeypatch.setenv("PATH", "")
+
+    profile = discover_tool_support(SupportProfileRequest(data_root=tmp_path), probe_versions=False)
+
+    assert profile.vscode is None
+    assert any(issue.code == "VSCODE_INVALID" for issue in profile.issues)
+
+
 @pytest.mark.parametrize(
     ("pe_version", "expected_fact", "expected_issue"),
     [("6.18.1", True, None), (None, False, "CUBEMX_PROBE_FAILED"), ("7.0.0", True, "CUBEMX_UNSUPPORTED")],
@@ -443,3 +538,174 @@ def test_native_version_runner_outcomes_are_closed(
     assert (profile.gcc is not None) is expected_fact
     if expected_issue:
         assert expected_issue in {item.code for item in profile.issues}
+
+
+class _RunnerStream:
+    def __init__(self, payload: bytes):
+        self._stream = io.BytesIO(payload)
+
+    def read(self, size: int = -1) -> bytes:
+        return self._stream.read(size)
+
+    def close(self) -> None:
+        self._stream.close()
+
+
+def test_bounded_runner_has_one_total_capture_limit_and_marks_oversize(monkeypatch):
+    capture_limit = 32
+
+    class FakeProcess:
+        returncode = 0
+
+        def __init__(self):
+            self.stdout = _RunnerStream(b"o" * (capture_limit + 9))
+            self.stderr = _RunnerStream(b"e" * (capture_limit + 9))
+            self.terminated = False
+            self.killed = False
+            self.wait_calls = 0
+
+        def communicate(self, timeout=None):
+            return (
+                b"o" * (capture_limit + 9),
+                b"e" * (capture_limit + 9),
+            )
+
+        def wait(self, timeout=None):
+            self.wait_calls += 1
+            return self.returncode
+
+        def terminate(self):
+            self.terminated = True
+
+        def kill(self):
+            self.killed = True
+
+    process = FakeProcess()
+    seen = {}
+
+    def popen(argv, **kwargs):
+        seen.update(kwargs)
+        return process
+
+    monkeypatch.setattr(support, "_REAL_POPEN", popen)
+    observation = support._run_bounded(("tool",), capture_limit=capture_limit)
+
+    assert observation.truncated is True
+    assert len(observation.stdout) + len(observation.stderr) <= capture_limit
+    assert seen["shell"] is False
+    assert seen["stdin"] is subprocess.DEVNULL
+
+
+def test_bounded_runner_timeout_terminates_and_reaps(monkeypatch):
+    class TimeoutProcess:
+        returncode = None
+
+        def __init__(self):
+            self.stdout = _RunnerStream(b"")
+            self.stderr = _RunnerStream(b"")
+            self.terminated = False
+            self.killed = False
+            self.wait_calls = 0
+
+        def communicate(self, timeout=None):
+            raise subprocess.TimeoutExpired(["tool"], timeout)
+
+        def wait(self, timeout=None):
+            self.wait_calls += 1
+            if not self.terminated:
+                raise subprocess.TimeoutExpired(["tool"], timeout)
+            self.returncode = -15
+            return self.returncode
+
+        def terminate(self):
+            self.terminated = True
+
+        def kill(self):
+            self.killed = True
+
+    process = TimeoutProcess()
+    monkeypatch.setattr(support, "_REAL_POPEN", lambda argv, **kwargs: process)
+
+    observation = support._run_bounded(("tool",), timeout_seconds=0.01)
+
+    assert observation.timed_out is True
+    assert process.terminated is True
+    assert process.wait_calls >= 1
+
+
+@pytest.mark.parametrize(
+    ("label", "payload"),
+    [
+        ("unknown-key", {"ambient": True}),
+        ("malformed-tools", {"tools": []}),
+        ("wrong-tool-entry", {"gcc": "not-an-entry"}),
+        ("extension-value", {"vsCodeExtensions": {"ms-vscode.cpptools": 1}}),
+    ],
+)
+def test_support_profile_schema_is_closed_without_ambient_fallback(
+    tmp_path: Path, monkeypatch, label: str, payload: dict[str, object]
+):
+    profile_path = tmp_path / f"{label}.json"
+    profile_path.write_text(json.dumps(payload), encoding="utf-8")
+    candidate = _write_executable(tmp_path / "path" / "arm-none-eabi-gcc.exe")
+    monkeypatch.setenv("PATH", str(candidate.parent))
+    monkeypatch.setattr(support, "_CUBECLT_ROOTS", ())
+    monkeypatch.setattr(support, "_CUBEMX_PATHS", ())
+    monkeypatch.setattr(support, "_VS_CODE_PATHS", ())
+    monkeypatch.setattr(support, "_registry_candidates", lambda component: ())
+    calls = []
+    monkeypatch.setattr(support, "_run_bounded", lambda argv, **kwargs: calls.append(argv))
+
+    with pytest.raises(SupportProfileError):
+        discover_tool_support(SupportProfileRequest(profile_path=profile_path, data_root=tmp_path))
+
+    assert calls == []
+    assert candidate.exists()
+
+
+@pytest.mark.parametrize(
+    ("label", "content"),
+    [
+        ("oversize", b"{}" + b" " * (support._MAX_METADATA_BYTES + 1)),
+        ("invalid-utf8", b"\xff"),
+        ("invalid-json", b"{not-json"),
+    ],
+    ids=["oversize", "invalid-utf8", "invalid-json"],
+)
+def test_support_profile_content_failures_are_closed(
+    tmp_path: Path, label: str, content: bytes
+):
+    profile_path = tmp_path / f"{label}.json"
+    profile_path.write_bytes(content)
+
+    with pytest.raises(SupportProfileError):
+        discover_tool_support(SupportProfileRequest(profile_path=profile_path, data_root=tmp_path))
+
+
+def test_missing_support_profile_is_closed(tmp_path: Path):
+    with pytest.raises(SupportProfileError):
+        discover_tool_support(
+            SupportProfileRequest(profile_path=tmp_path / "missing.json", data_root=tmp_path)
+        )
+
+
+@pytest.mark.parametrize(
+    ("version", "supported"),
+    [("6.18.1", True), ("6.18.1-RC2", True), ("6.180.0", False), ("6.18x", False)],
+)
+def test_cubemx_version_requires_dotted_618_prefix(
+    tmp_path: Path, monkeypatch, version: str, supported: bool
+):
+    cubemx = _write_executable(tmp_path / "STM32CubeMX.exe")
+    monkeypatch.setattr(support, "_CUBECLT_ROOTS", ())
+    monkeypatch.setattr(support, "_CUBEMX_PATHS", ())
+    monkeypatch.setattr(support, "_VS_CODE_PATHS", ())
+    monkeypatch.setattr(support, "_registry_candidates", lambda component: ())
+    monkeypatch.setenv("PATH", "")
+    profile = discover_tool_support(
+        _write_profile(tmp_path, {"cubeMx": {"path": str(cubemx), "version": version}}),
+        probe_versions=False,
+    )
+
+    assert (profile.cubemx is not None) is True
+    assert ("CUBEMX_UNSUPPORTED" in {issue.code for issue in profile.issues}) is (not supported)
