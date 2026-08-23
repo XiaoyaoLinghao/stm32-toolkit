@@ -35,7 +35,7 @@ stm32-toolkit project create-prepare --project-root . --source-kind mcu --source
 stm32-toolkit project create-apply --project-root . --authorization-digest AUTHORIZATION_DIGEST --authorized --json
 ```
 
-Prepare 不改变目标目录。Apply 在同卷 sibling staging 中运行 CubeMX，校验原生 CMake/IOC 事实，复用 Toolkit configure 以及 Debug/Release 构建，并在两次构建成功后才激活。重放、漂移、缺少 Cube firmware repository、协议/构建失败或激活失败都会返回 typed error，目标不会留下半工程。MCP 等价工具是 `stm32_project_create_prepare` 与 `stm32_project_create_apply`。当前主机虽安装 CubeMX，但缺少离线 `STM32Cube_FW_*` repository，因此真实原生正向验收仍是环境阻断；本切片不安装 package，也不声称 native PASS。
+Prepare 不改变目标目录。Apply 在同卷 sibling staging 中运行 CubeMX，校验原生 CMake/IOC 事实，复用 Toolkit configure 以及 Debug/Release 构建，并在两次构建成功后才激活。重放、漂移、缺少 Cube firmware repository、协议/构建失败或激活失败都会返回 typed error，目标不会留下半工程。MCP 等价工具是 `stm32_project_create_prepare` 与 `stm32_project_create_apply`。已验证的本地主机具备 CubeMX 6.18.1-RC2、CubeCLT 1.22.0 与 `STM32Cube_FW_F4_V1.28.3` 离线 package。本地候选已完成 MCU 与 captured-IOC 原生软件场景，包括 configure、Debug/Release 构建、激活和残留检查。未执行硬件、安装、远程或 release 操作；Sol 的独立 review 仍是验收门槛。
 
 ## 从 GitHub 安装
 

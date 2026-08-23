@@ -6,169 +6,151 @@
 - Implementer: `/root/vs07b_implementer`, GPT-5.6-luna, reasoning max.
 - Reviewer/acceptor: GPT-5.6-sol primary agent.
 - Branch/worktree: `codex/STM32TK-0702-CREATION-APPLY` / `C:/tmp/stm32tk-0702-creation-apply`.
-- CodeHead before the separate report/ledger commit: `7bfcba8472ec00c25f37b856c0ff066ab56794f3`.
-- Product activation rewrite commit: `7bfcba8472ec00c25f37b856c0ff066ab56794f3`.
-- Prior bounded cleanup correction: `cf908a6720304391abe07588ee462ec26061e130`.
-- No push, PR, merge, tag, release, remote operation, package installation,
-  hardware action, or VS07-C work was performed.
-- Sol must independently review the complete accepted-base-to-CodeHead diff;
-  the implementer does not self-accept.
+- CodeHead before the separate report/ledger commit: `e515eac91e99b777819c1660221d5c29ad1ef9a5`.
+- Product revision commit: `e515eac91e99b777819c1660221d5c29ad1ef9a5`.
+- No push, PR, merge, tag, release, remote operation, package installation, hardware action, or VS07-C work was performed.
+- Sol must independently review the complete accepted-base-to-CodeHead diff; the implementer does not self-accept.
 
-## History and recovery
+## Scope and recovery history
 
-- The accepted VS07-A baseline was `bff9cc12`; the unrelated
-  `D:/workspace/stm32-toolkit` worktree was preserved and untouched.
-- Sol's first review returned F1-F6 revision findings. The subsequent
-  recovery established the verified CubeMX 6.18 protocol, isolated updater and
-  control lifecycle, strict global/context native parser, native linker
-  ownership, Git precondition, and durable authorization/activation claims.
-- Two native linker/runtime reconstruction rounds did not converge and were
-  replaced by the `generation.nativeLinkerScript` interface design. The real
-  native link then configured and built both presets before exposing the
-  generation-container cleanup race.
-- The first cleanup correction proved bounded empty-container retry, but two
-  fresh native attempts (`ea3bb6fee91111b8ee0dbb66` and
-  `a01eb84a1e22775f000be767`) reproduced post-build parent cleanup failure.
-  Sol's approved activation redesign separated generation and activation
-  roots; this ledger records the resulting implementation below.
-- VS07-C remains frozen pending Sol's independent verdict.
+The implementation retains the approved VS07-B lifecycle: public plan is
+read-only; prepare revalidates the plan, Git head, environment, and destination
+facts before writing one capability; apply consumes it once, generates in a
+bounded CubeMX root, validates native bytes and ownership before relocation,
+cleans that root before configure, builds Debug and Release in a separate
+activation staging sibling, and activates only after both builds. Collision,
+redirect, unsafe-type, drift, rollback, and cleanup paths remain fail closed.
 
-## TDD and product evidence
+Earlier recovery checkpoints were retained as evidence: adapter RED 10 failed
+/ 9 passed then 19 passed GREEN; parser RED 6 failed / 10 passed then 15 passed
+GREEN; native linker ownership focused RED 5 failed then 5 passed; bounded
+cleanup correction RED 4 failed / 1 passed then 5 passed; and the activation
+integration RED 4 failed / 0 passed then 4 passed. The earlier affected
+activation process timeout was TEST-classified subprocess cleanup, corrected
+before this revision.
 
-Historical recovery checkpoints retained in this attempt:
+## Current revision TDD evidence
 
-- Task 1R adapter RED: 10 failed, 9 passed; GREEN: 19 passed.
-- Task 2R parser RED: 6 failed, 10 passed; GREEN: 15 passed.
-- Native linker ownership focused RED: 5 failed; GREEN: 5 passed.
-- Bounded cleanup correction RED: 4 failed, 1 passed; GREEN: 5 passed.
-- The first affected activation-process run had 89 tests with one timeout;
-  this was classified TEST (subprocess cleanup), corrected in the separate
-  cleanup correction commit, and the affected set then passed 89/89.
-
-The final activation integration RED was:
+Authorization record-integrity RED:
 
 ```powershell
-$env:PYTHONPATH='tools/stm32-toolkit/src'; py -3.12 -m pytest tools/stm32-toolkit/tests/test_creation_apply.py -k 'relocat or activation_staging_collision or relocation_failure or configure_failure_after_relocation' -q --basetemp C:\tmp\p0702-activation-red2
+$env:PYTHONPATH='tools/stm32-toolkit/src'; py -3.12 -m pytest tools/stm32-toolkit/tests/test_creation_authorization.py -k record_integrity -q --basetemp C:\tmp\p0702-r4-f1-red
 ```
 
-It returned `4 failed, 0 passed`. The failures proved the old single-root
-ordering and absence of collision/relocation seams. The matching GREEN run
-returned `4 passed` in `C:\tmp\p0702-activation-green2`.
+Result: `8 failed`. GREEN returned `10 passed` with the focused integrity,
+replay, and bounded-record selection. The complete authorization module
+returned `16 passed`.
 
-The final focused apply suite returned `27 passed` in
-`C:\tmp\p0702-activation-apply-green2`. The directly affected apply/workflow
-suite returned `41 passed`, exit 0, with JUnit
-`C:\tmp\p0702-activation-affected2.xml`.
-
-The final product owns generation and activation roots independently, rejects
-collisions without deleting them, validates/scans before relocation, cleans
-the generation root before configure, sends only activation staging to
-configure/build/final activation, and cleans both roots on relocation,
-configure, build, activation, and typed validation failures. Existing
-absent/empty destination transactions and bounded retry tests remain green.
-
-## Final verification
-
-The exact approved 16-file slice was run with fresh basetemp
-`C:\tmp\p0702-rr4-slice` and JUnit `C:\tmp\p0702-rr4-slice.xml`:
+Strict native family/version RED:
 
 ```powershell
-$env:PYTHONPATH='tools/stm32-toolkit/src'; py -3.12 -m pytest tools/stm32-toolkit/tests/test_creation_authorization.py tools/stm32-toolkit/tests/test_creation_environment.py tools/stm32-toolkit/tests/test_cubemx_adapter.py tools/stm32-toolkit/tests/test_cubemx_project.py tools/stm32-toolkit/tests/test_creation_apply.py tools/stm32-toolkit/tests/test_creation_plan.py tools/stm32-toolkit/tests/test_creation_workflows.py tools/stm32-toolkit/tests/test_creation_cli.py tools/stm32-toolkit/tests/test_creation_mcp.py tools/stm32-toolkit/tests/test_process.py tools/stm32-toolkit/tests/test_generation.py tools/stm32-toolkit/tests/test_workflows.py tools/stm32-toolkit/tests/test_build_runner.py tools/stm32-toolkit/tests/test_cli.py tools/stm32-toolkit/tests/test_mcp_server.py tools/stm32-toolkit/tests/test_mcp_roots.py -q --basetemp C:\tmp\p0702-rr4-slice --junitxml=C:\tmp\p0702-rr4-slice.xml
+$env:PYTHONPATH='tools/stm32-toolkit/src'; py -3.12 -m pytest tools/stm32-toolkit/tests/test_cubemx_project.py -k missing_firmware_version -q --basetemp C:\tmp\p0702-r4-f2-red
 ```
 
-JUnit result: `688 tests, 0 failures, 0 errors, 0 skipped`, exit 0. The only
-warning was the existing `runpy` warning from `test_cli.py`.
+Result: `1 failed`. GREEN returned `3 passed` for exact family/version,
+missing-version rejection, and the sanitized F4 fixture.
 
-Compileall:
+Generic memory-role RED:
 
 ```powershell
-$env:PYTHONPATH='tools/stm32-toolkit/src'; py -3.12 -m compileall -q tools/stm32-toolkit/src tools/stm32-toolkit/tests
+$env:PYTHONPATH='tools/stm32-toolkit/src'; py -3.12 -m pytest tools/stm32-toolkit/tests/test_generation.py -k generic_memory_roles -q --basetemp C:\tmp\p0702-r4-f3-red
 ```
 
-Result: exit 0.
+Result: `1 failed`. GREEN returned `3 passed` for generic order/role
+compatibility and non-native configuration. The combined affected command
+returned `321 passed, 0 failures, 0 errors, 0 skipped`, JUnit
+`C:\tmp\p0702-r4-affected-f123-green.xml`.
 
-Accepted-base diff check:
+The product change centralizes canonical prepared-state authorization hashing,
+requires exact native IOC package family and version, and restores generic
+first-executable/first-writable region order. Native mode continues to use the
+validated CubeMX linker and does not use generic linker roles.
+
+## Aggregate verification
+
+The exact approved 16-file command ran after product commit `e515eac9`:
 
 ```powershell
-git diff --check bff9cc120923b0e9f2ba29a1b3511f1bcc26ab6e..7bfcba8472ec00c25f37b856c0ff066ab56794f3
+$env:PYTHONPATH='tools/stm32-toolkit/src'; py -3.12 -m pytest tools/stm32-toolkit/tests/test_creation_authorization.py tools/stm32-toolkit/tests/test_creation_environment.py tools/stm32-toolkit/tests/test_cubemx_adapter.py tools/stm32-toolkit/tests/test_cubemx_project.py tools/stm32-toolkit/tests/test_creation_apply.py tools/stm32-toolkit/tests/test_creation_plan.py tools/stm32-toolkit/tests/test_creation_workflows.py tools/stm32-toolkit/tests/test_creation_cli.py tools/stm32-toolkit/tests/test_creation_mcp.py tools/stm32-toolkit/tests/test_process.py tools/stm32-toolkit/tests/test_generation.py tools/stm32-toolkit/tests/test_workflows.py tools/stm32-toolkit/tests/test_build_runner.py tools/stm32-toolkit/tests/test_cli.py tools/stm32-toolkit/tests/test_mcp_server.py tools/stm32-toolkit/tests/test_mcp_roots.py -q --basetemp C:\tmp\p0702-r5-slice --junitxml=C:\tmp\p0702-r5-slice.xml
 ```
 
-Result: exit 0. The product worktree was clean before this docs edit, and
-the branch has no upstream configured.
+JUnit: `698 tests, 0 failures, 0 errors, 0 skipped`, exit 0. The only warning
+was the existing `runpy` warning in `test_cli.py`. Compileall over source and
+tests exited 0. Accepted-base `git diff --check
+bff9cc120923b0e9f2ba29a1b3511f1bcc26ab6e..e515eac91e99b777819c1660221d5c29ad1ef9a5`
+exited 0.
 
-## Real native MCU evidence
+## Fresh native MCU evidence
 
-The run used CubeMX 6.18.1-RC2, CubeCLT 1.22.0, GCC 14.3.1, CMake 4.3.1,
-Ninja 1.13.2, and installed package
+Environment: CubeMX `6.18.1-RC2`, CubeCLT `1.22.0`, GCC `14.3.1`, CMake
+`4.3.1`, Ninja `1.13.2`, and installed
 `C:/Users/ZhangYang/STM32Cube/Repository/STM32Cube_FW_F4_V1.28.3`. No install
-was performed by the implementer and no hardware was used.
+or hardware action was performed. The public API path was
+`plan_creation_workflow`, `prepare_creation_workflow`, then
+`apply_creation_workflow` with a discovered support profile.
 
-Fresh workspace/data roots:
+- Workspace/data: `C:\tmp\p0702-r5-native-mcu` /
+  `C:\tmp\p0702-r5-native-mcu-data`.
+- Test local Git setup commit: `d47aa21fb422ba623b73eb48b573ff681680b3f4`; no remote.
+- Request source: MCU `STM32F429ZITx`; destination `generated`.
+- Plan/action: `86cb0f1a1e0f6c162a909990bdc612755ec0ea3bedc5bdfc163f4fe03a7aea7f` /
+  `e59ec7ed21302c8f0e700a574bbc59227e346b2a882981fa790d798fc1515664`.
+- Prepare/auth/environment: `OK` /
+  `5c2b9755f19f3b687048d0596060ab9b1f0ce0b48c9eeb2507a65f875398ce21` /
+  `74dd331eadfa1ad4c6f622d477176ec7aae72d07cd0ab18f1549752f075cab62`.
+- Apply: `OK`; attempt `16e604974bdc447447daacf0`; ownership manifest
+  `570a0526a61bc12348fb2d3739aeaf64067f8f4ec65edb9b1b44dc95d2e30e3c`.
+- Debug/Release build IDs:
+  `6acc5f11d9c1e437df84e4ada37a98b1b8381bda27324c36483de0e70ae3da55` /
+  `9cf3c7c7bbfad3338026ab61ced0201a219c51e112ddc59d423e43a579123ebd`.
+- Both builds and activation were `OK`; Debug/Release ELF sizes were
+  1,030,080 / 16,768 bytes; each used 1,584 RAM bytes. Memory facts were RAM
+  196,608, CCMRAM 65,536, and FLASH 2,097,152 bytes.
+- Output: 1,562 files, zero non-build workspace/staging path hits, zero
+  control/generation/activation residue.
+- PID delta: only pre-existing `javaw.exe` PID `32708` before and after; it
+  was not terminated and no new persistent CubeMX/Java PID remained.
 
-- Workspace: `C:\tmp\p0702-native-rewrite-mcu3`.
-- Data root: `C:\tmp\p0702-native-rewrite-mcu3-data`.
-- Local Git setup commit: `fc3af925caf1dcb8f126fac88dc0c80a794620a3`; no remote.
-- Request: `CreationPlanWorkflowRequest(root, data,
-  'native-rewrite-mcu3', 'mcu', 'STM32F429ZITx', 'generated', 'hal', 'c')`.
-- Plan ID: `5e698e2c4afcaf31663ec325956dcdc1455a274f45882d0c76cfaeaf5dcfe05a`.
-- Action digest: `6be30edd55f632a5a7da2c1bb7f7a278e4f2d3963e332a5482b3dd1f4d674415`.
-- Authorization digest: `ecf1d02bc419cae42867fe1d4ae30e885fff97ffe0d9739661bd34545566539b`.
-- Environment digest: `74dd331eadfa1ad4c6f622d477176ec7aae72d07cd0ab18f1549752f075cab62`.
-- Public plan and prepare: `OK`.
-- Public apply: `OK`; attempt `f3bb99fe4ed02e63bdcf6f86`.
-- Ownership manifest SHA-256: `1ac4e5e62935df9f0e458ed9f17e7e37154cdad1bf539385e6df98009eb50e94`.
-- Debug build ID: `3da3a38d3bff4f0954eb0185b2c2a46f255687e36572ef3a0fded11b59c8e02f`.
-- Release build ID: `a7a1846dec96f0302e192c1dacc111a26bc23cfb1771c5f1225be481b6ad708b`.
-- Debug/Release ELF sizes: 1,030,400 / 16,768 bytes.
-- Memory: RAM 196,608 bytes, CCMRAM 65,536 bytes, FLASH 2,097,152 bytes.
-- Activated output: 1,562 files; non-build host-path hits: 0.
-- No control, generation, or activation root remained after apply.
-- Process delta: only pre-existing Java PID 32708 before and after; it was not
-  terminated and no new persistent CubeMX/Java process remained.
+## Fresh native captured-IOC evidence
 
-## Real native captured-IOC evidence
-
-Fresh workspace/data roots:
-
-- Workspace: `C:\tmp\p0702-native-rewrite-ioc3`.
-- Data root: `C:\tmp\p0702-native-rewrite-ioc3-data`.
+- Workspace/data: `C:\tmp\p0702-r5-native-ioc` /
+  `C:\tmp\p0702-r5-native-ioc-data`.
 - Captured source:
-  `C:\tmp\p0702-native-capture-r8\generated-staging\STM32F429ZITx\STM32F429ZITx.ioc`.
-- Portable copied path: `input/STM32F429ZITx.ioc`.
-- Source and copied SHA-256:
+  `C:\tmp\p0702-native-capture-r8\generated-staging\STM32F429ZITx\STM32F429ZITx.ioc`;
+  copied once to `input/STM32F429ZITx.ioc`.
+- Source/copy SHA-256:
   `636e9c2de3921db06e855c8180d6d701efda66c2db1b9e6e534dc135cb34d2b0`.
-- Local Git setup commit: `0d5fd998592c7c4bf49409b6655c405ea59a870c`; no remote.
-- Request: `CreationPlanWorkflowRequest(root, data,
-  'native-rewrite-ioc3', 'ioc', 'input/STM32F429ZITx.ioc', 'generated',
-  'hal', 'c')`.
-- Plan ID: `713e99003b4680a37d5301f4a3daa304a98e40b4997fce030f876b1ea0cf748a`.
-- Action digest: `82acd98b65f365a5b80b38a8083308f040cd74f76177123ffaf1f79b545f83a4`.
-- Authorization digest: `f4797a276ceb574dcde792d5920674fcfde54b44ebb79ee1c45c680090613e2a`.
-- Environment digest: `24e69448b12f71273ce9bb03c8c85e245210515c58c60307bf1f80ad73cdf195`.
-- Public plan and prepare: `OK`.
-- Public apply: `OK`; attempt `d7560a5648cc402ad59aa587`.
-- Ownership manifest SHA-256: `45b0fa563078133012d54842297274b9d0c27df6d9db04a7a0176aa328d40983`.
-- Debug build ID: `1c3e9502eeb7a046d32a5a7020f93cfa1013050f6b2930ce9fa084dcd0d98549`.
-- Release build ID: `267af93c4b619bdbc0840618201d1f3edd8864f1ac3a087bd2a321dcd7f1b63f`.
-- Debug/Release ELF sizes: 1,030,400 / 16,768 bytes.
-- Memory: RAM 196,608 bytes, CCMRAM 65,536 bytes, FLASH 2,097,152 bytes.
-- Activated output: 1,562 files; non-build host-path hits: 0.
-- No control, generation, or activation root remained after apply.
-- Process delta: only pre-existing Java PID 32708 before and after; no new
-  persistent CubeMX/Java process remained.
+- Test local Git setup commit: `4becd254df50ba04e263a76aa7f668238abd9533`; no remote.
+- Request source: IOC `input/STM32F429ZITx.ioc`; destination `generated`.
+- Plan/action: `2c5c81cf1de7b4680a4c136900b3f50a886175fd5caaf0d55a016c515ae9c02d` /
+  `27419915b77fcd4a7e4d8bed31083932973932113c613cd7f062f22e86c185a1`.
+- Prepare/auth/environment: `OK` /
+  `7ca74d6874642d554b3dfe3ffad49e426717f6852273622e0899b8c1fab7cfad` /
+  `24e69448b12f71273ce9bb03c8c85e245210515c58c60307bf1f80ad73cdf195`.
+- Apply: `OK`; attempt `0bef7326087e98a477590f99`; ownership manifest
+  `5349c90731ad944560b42a59ebd154a57b029ab90832bf0991d84f45a477299a`.
+- Debug/Release build IDs:
+  `ee919b5a39730e988c465f83c52c550361b3508cda946f1f35f529e18e96fe3d` /
+  `b422dcb02c2251d76720819eb3cb0ab5d70237501a0709c07c51a176a0fe0a3a`.
+- Both builds and activation were `OK`; ELF sizes were 1,030,080 / 16,768
+  bytes; each used 1,584 RAM bytes and memory facts matched MCU.
+- Output: 1,562 files, zero non-build host-path hits, and no control,
+  generation, or activation residue.
+- PID delta: only pre-existing Java PID `32708` remained; no new persistent
+  CubeMX/Java PID remained.
 
 ## Classification and handoff
 
-- PRODUCT: double-root activation implementation, collision/cleanup/ordering
-  contracts, native integration, and all product regression evidence.
+- PRODUCT: authorization integrity, strict native package identity, generic
+  compatibility, activation lifecycle, ownership/portability, and native
+  software integration.
 - TEST: the earlier one-test subprocess timeout caused by harness cleanup;
-  corrected before the final CodeHead.
-- ENVIRONMENT: the prior missing-repository observation is historical; the
-  installed package facts above enabled these two native software runs. No
-  native hardware or physical PASS is claimed.
-- REPORT: this report and ledger use normal Markdown backticks; diff-check
-  passed before docs editing.
+  corrected before the returned product CodeHead.
+- ENVIRONMENT: installed CubeMX/CubeCLT/package facts above; the earlier
+  `CUBEMX_REPOSITORY_MISSING` observation remains historical and is not a
+  native PASS claim.
+- REPORT: normal Markdown and accepted-base diff check passed.
 
-The branch remains local and unpushed. Sol independently reviews the complete
-accepted-base-to-CodeHead diff and repeats the applicable evidence; no
-acceptance claim is made here.
+The branch is local and unpushed with no upstream configured. Sol independently
+reviews the complete accepted-base-to-CodeHead diff; no acceptance claim is
+made here. VS07-C remains frozen pending that verdict.

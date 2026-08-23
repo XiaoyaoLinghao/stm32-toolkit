@@ -35,7 +35,7 @@ stm32-toolkit project create-prepare --project-root . --source-kind mcu --source
 stm32-toolkit project create-apply --project-root . --authorization-digest AUTHORIZATION_DIGEST --authorized --json
 ```
 
-Preparation is destination-read-only. Apply generates in sibling staging, validates native CMake/IOC facts, reuses Toolkit configure plus Debug and Release builds, and activates only after both builds succeed. Replays, drift, missing Cube firmware repositories, protocol/build failures, or activation failures close with typed errors and no half-created destination. The MCP equivalents are `stm32_project_create_prepare` and `stm32_project_create_apply`. The current host has CubeMX installed but no offline `STM32Cube_FW_*` repository, so positive native acceptance remains an environment blocker; no package installation or native PASS is claimed here.
+Preparation is destination-read-only. Apply generates in sibling staging, validates native CMake/IOC facts, reuses Toolkit configure plus Debug and Release builds, and activates only after both builds succeed. Replays, drift, missing Cube firmware repositories, protocol/build failures, or activation failures close with typed errors and no half-created destination. The MCP equivalents are `stm32_project_create_prepare` and `stm32_project_create_apply`. The verified host has CubeMX 6.18.1-RC2, CubeCLT 1.22.0, and the `STM32Cube_FW_F4_V1.28.3` offline package. This local candidate completed the MCU and captured-IOC native software scenarios, including configure, Debug/Release builds, activation, and residue checks. No hardware, installation, remote, or release action was performed; Sol's review remains the acceptance gate.
 
 ## Install directly from GitHub
 
