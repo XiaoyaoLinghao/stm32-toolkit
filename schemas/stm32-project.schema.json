@@ -154,6 +154,7 @@
       ],
       "properties": {
         "cubeMxIoc": {"type": ["string", "null"], "minLength": 1},
+        "nativeLinkerScript": {"type": ["string", "null"], "minLength": 1},
         "managedManifest": {"type": "string", "minLength": 1},
         "generatedDirectories": {
           "type": "array",

@@ -163,10 +163,23 @@ def test_v2_load_returns_exact_frozen_model(tmp_path: Path):
         tool="stm32-toolkit",
         version=__version__,
         cube_mx_ioc="firmware.ioc",
+        native_linker_script=None,
         managed_manifest=".stm32-toolkit/generated-files.json",
         generated_directories=("Core", "Drivers"),
         user_directories=("App", "User"),
     )
+
+
+def test_schema3_native_linker_script_is_optional_and_model_bound(tmp_path: Path):
+    payload = _v2_payload()
+    payload["schemaVersion"] = 3
+    payload["generation"]["nativeLinkerScript"] = "STM32F429xx_FLASH.ld"
+    (tmp_path / "STM32F429xx_FLASH.ld").write_bytes(b"MEMORY {}\n")
+    _write_manifest(tmp_path, payload)
+
+    model = load_project_model(tmp_path)
+
+    assert model.generation.native_linker_script == "STM32F429xx_FLASH.ld"
 
 
 def test_all_model_containers_reject_mutation(tmp_path: Path):
@@ -227,6 +240,15 @@ def test_root_and_packaged_v2_schemas_are_json_equivalent():
     assert json.loads(root_schema.read_text(encoding="utf-8")) == json.loads(
         packaged_schema.read_text(encoding="utf-8")
     )
+
+
+def test_root_and_packaged_schema3_bytes_are_identical():
+    root_schema = REPO_ROOT / "schemas" / "stm32-project.schema.json"
+    packaged_schema = resources.files("stm32_toolkit").joinpath(
+        "schemas/stm32-project.schema.json"
+    )
+
+    assert root_schema.read_bytes() == packaged_schema.read_bytes()
 
 
 def test_missing_schema_version_returns_stable_error(tmp_path: Path):

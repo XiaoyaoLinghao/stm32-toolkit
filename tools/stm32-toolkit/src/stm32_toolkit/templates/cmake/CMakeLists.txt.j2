@@ -46,14 +46,21 @@ target_link_options({{ target_name }} PRIVATE
   {{ fpu_flag }}
   {{ float_abi_flag }}
 {%- endif %}
+{%- if native_linker_script %}
   "--specs=nano.specs"
   "--specs=nosys.specs"
+  "-T${CMAKE_SOURCE_DIR}/{{ native_linker_script }}"
+{%- else %}
+  -nostartfiles
   "-T${CMAKE_SOURCE_DIR}/linker/stm32tk.ld"
+{%- endif %}
   "-Wl,-Map=${CMAKE_BINARY_DIR}/{{ map_name }}"
   "-Wl,--gc-sections"
 )
 
+{%- if native_linker_script %}
 target_link_libraries({{ target_name }} PRIVATE m)
+{%- endif %}
 
 add_custom_command(TARGET {{ target_name }} POST_BUILD
   COMMAND ${CMAKE_OBJCOPY} -O ihex "$<TARGET_FILE:{{ target_name }}>" "${CMAKE_BINARY_DIR}/{{ hex_name }}"

@@ -346,6 +346,68 @@ def test_native_parser_accepts_sanitized_r8_f429_global_template(tmp_path: Path)
     assert model.package_version == "1.28.3"
 
 
+def test_native_linker_is_published_as_exact_inventory_and_ownership_input(tmp_path: Path):
+    root = _real_native_tree(tmp_path)
+    model = parse_native_project(
+        root,
+        request=CreationRequest.from_mcu("STM32F429ZITx", "generated", framework="hal", language="c"),
+        plan_id="a" * 64,
+        action_digest="b" * 64,
+        environment=_real_native_environment(),
+    )
+
+    linker_rows = [row for row in model.files if row[0] == model.linker_script]
+    assert linker_rows == [(model.linker_script, (root / model.linker_script).stat().st_size, linker_rows[0][2])]
+    ownership_path = write_native_project_manifests(root, model)
+    manifest = json.loads((root / ".stm32-project.json").read_text(encoding="utf-8"))
+    ownership = json.loads(ownership_path.read_text(encoding="utf-8"))
+    ownership_rows = [row for row in ownership["files"] if row["path"] == model.linker_script]
+
+    assert manifest["generation"]["nativeLinkerScript"] == model.linker_script
+    assert ownership_rows == [{"path": model.linker_script, "size": linker_rows[0][1], "sha256": linker_rows[0][2]}]
+
+
+def test_native_configuration_uses_vendor_linker_input_and_omits_generic_target(tmp_path: Path):
+    root = _real_native_tree(tmp_path)
+    model = parse_native_project(
+        root,
+        request=CreationRequest.from_mcu("STM32F429ZITx", "generated", framework="hal", language="c"),
+        plan_id="a" * 64,
+        action_digest="b" * 64,
+        environment=_real_native_environment(),
+    )
+    write_native_project_manifests(root, model)
+    plan = plan_project_configuration(load_project_model(root))
+
+    paths = {entry.path for entry in plan.files}
+    inputs = [entry for entry in plan.inputs if entry.path == model.linker_script]
+    cmake = next(entry.after_bytes for entry in plan.files if entry.path == "CMakeLists.txt").decode("utf-8")
+
+    assert "linker/stm32tk.ld" not in paths
+    assert len(inputs) == 1
+    assert inputs[0].sha256 == model.files[[row[0] for row in model.files].index(model.linker_script)][2]
+    assert f'"-T${{CMAKE_SOURCE_DIR}}/{model.linker_script}"' in cmake
+    assert "-nostartfiles" not in cmake
+    assert '"--specs=nano.specs"' in cmake
+    assert '"--specs=nosys.specs"' in cmake
+    assert "target_link_libraries" in cmake
+
+
+def test_native_parser_rejects_linker_path_not_present_in_inventory(tmp_path: Path):
+    root = _real_native_tree(tmp_path)
+    linker = root / "STM32F429xx_FLASH.ld"
+    linker.unlink()
+    with pytest.raises(CubeMXNativeProjectError) as error:
+        parse_native_project(
+            root,
+            request=CreationRequest.from_mcu("STM32F429ZITx", "generated", framework="hal", language="c"),
+            plan_id="a" * 64,
+            action_digest="b" * 64,
+            environment=_real_native_environment(),
+        )
+    assert error.value.code == "CUBEMX_NATIVE_OUTPUT_INVALID"
+
+
 def test_native_parser_requires_exact_firmware_family_and_version(tmp_path: Path):
     root = _real_native_tree(tmp_path)
     (root / "STM32F429ZITx.ioc").write_text(

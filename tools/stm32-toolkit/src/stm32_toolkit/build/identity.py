@@ -204,8 +204,17 @@ def snapshot_project_inputs(model: ProjectModel) -> InputSnapshot:
     paths: list[str] = []
     declared_identities: dict[tuple[int, int], str] = {}
     declared = [".stm32-project.json", *model.build.sources, *model.build.assembly_sources]
+    native_linker = model.generation.native_linker_script
+    if native_linker is not None:
+        declared.append(native_linker)
     for rel in declared:
-        _require_input_path(root, rel, paths, declared_identities)
+        _require_input_path(
+            root,
+            rel,
+            paths,
+            declared_identities,
+            reject_redirect=rel == native_linker,
+        )
     manifest_rel = model.generation.managed_manifest
     manifest_abs = root.joinpath(*manifest_rel.split("/"))
     try:
@@ -298,6 +307,8 @@ def _require_input_path(
     rel: str,
     paths: list[str],
     declared_identities: dict[tuple[int, int], str],
+    *,
+    reject_redirect: bool = False,
 ) -> None:
     if portable_path_error(rel) is not None:
         raise _input_invalid(rel, "portable")
@@ -317,6 +328,11 @@ def _require_input_path(
         raise _input_invalid(rel, "missing") from None
     except OSError:
         raise _input_invalid(rel, "inspection") from None
+    if reject_redirect and (
+        stat.S_ISLNK(lst.st_mode)
+        or bool(getattr(lst, "st_file_attributes", 0) & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400))
+    ):
+        raise _input_invalid(rel, "redirect")
     if not stat.S_ISREG(lst.st_mode):
         raise _input_invalid(rel, "regularFile")
     identity = _canonical_identity(absolute, lst, root, rel)

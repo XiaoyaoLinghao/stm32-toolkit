@@ -330,6 +330,7 @@ class NativeProjectModel:
             "debug": {},
             "generation": {
                 "cubeMxIoc": self.ioc_path,
+                "nativeLinkerScript": self.linker_script,
                 "managedManifest": ".stm32-toolkit/generated-files.json",
                 "generatedDirectories": ["Core", "Drivers"],
                 "userDirectories": ["App", "Tests"],
@@ -390,6 +391,9 @@ def parse_native_project(
         _check_unsafe(generated_text)
     del generated_root
     linker = _resolve_path(linker, staging_dir, staging_dir)
+    linker_rows = [row for row in files if row[0] == linker]
+    if len(linker_rows) != 1:
+        raise _invalid("native linker script is not present exactly once in the native inventory")
 
     source_values = _path_list(generated_text, "MX_Application_Src", generated_base, staging_dir)
     source_values.extend(_path_list(generated_text, "STM32_Drivers_Src", generated_base, staging_dir))

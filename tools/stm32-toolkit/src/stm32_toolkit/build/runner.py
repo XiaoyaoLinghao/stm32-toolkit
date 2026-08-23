@@ -273,9 +273,12 @@ def _require_managed_configuration(root: Path) -> ProjectModel:
             "managed configuration is invalid",
             dict(details) if isinstance(details, dict) else {"path": manifest_rel, "rule": "manifest"},
         ) from None
+    native_linker = model.generation.native_linker_script
     targets = set(GENERATED_TARGETS)
+    if native_linker is not None:
+        targets.discard("linker/stm32tk.ld")
     for record in records:
-        if record.path not in targets:
+        if record.path == native_linker or record.path not in targets:
             raise build_error(
                 BUILD_PROJECT_INVALID,
                 "managed configuration is invalid",
@@ -322,12 +325,39 @@ def _require_managed_configuration(root: Path) -> ProjectModel:
                 "managed configuration is invalid",
                 {"path": record.path, "rule": "digest"},
             )
-    for target in (
+    required_targets = [
         "CMakeLists.txt",
         "CMakePresets.json",
         "cmake/arm-none-eabi-gcc.cmake",
-        "linker/stm32tk.ld",
-    ):
+    ]
+    if native_linker is None:
+        required_targets.append("linker/stm32tk.ld")
+    else:
+        native_absolute = root.joinpath(*native_linker.split("/"))
+        try:
+            native_lstat = os.lstat(native_absolute)
+        except OSError:
+            raise build_error(
+                BUILD_PROJECT_INVALID,
+                "managed configuration is invalid",
+                {"path": native_linker, "rule": "missing"},
+            ) from None
+        if (
+            stat.S_ISLNK(native_lstat.st_mode)
+            or bool(getattr(native_lstat, "st_file_attributes", 0) & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400))
+        ):
+            raise build_error(
+                BUILD_PROJECT_INVALID,
+                "managed configuration is invalid",
+                {"path": native_linker, "rule": "redirect"},
+            )
+        if not stat.S_ISREG(native_lstat.st_mode):
+            raise build_error(
+                BUILD_PROJECT_INVALID,
+                "managed configuration is invalid",
+                {"path": native_linker, "rule": "regularFile"},
+            )
+    for target in required_targets:
         if not (root / target).is_file():
             raise build_error(
                 BUILD_PROJECT_INVALID,

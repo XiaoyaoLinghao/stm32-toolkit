@@ -268,6 +268,14 @@ def _validate_generation_spec(model: ProjectModel) -> None:
             "managed manifest path is not supported",
             {"field": "generation.managedManifest", "rule": "value"},
         )
+    if model.generation.native_linker_script is not None and portable_path_error(
+        model.generation.native_linker_script
+    ) is not None:
+        raise _raise_error(
+            "GENERATION_MODEL_INVALID",
+            "native linker script path is not supported",
+            {"field": "generation.nativeLinkerScript", "rule": "withinProjectRoot"},
+        )
 
 
 def _validate_options(model: ProjectModel) -> dict[str, object]:
@@ -738,6 +746,8 @@ def _collect_inputs(
         all_paths.append(model.debug.svd)
     if model.generation.cube_mx_ioc is not None:
         all_paths.append(model.generation.cube_mx_ioc)
+    if model.generation.native_linker_script is not None:
+        all_paths.append(model.generation.native_linker_script)
     if prior_data is not None:
         all_paths.append(MANAGED_MANIFEST_PATH)
     if report_sha is not None:
@@ -750,6 +760,27 @@ def _collect_inputs(
                 "input path is not portable",
                 {"path": path, "rule": "withinProjectRoot"},
             )
+        if path == model.generation.native_linker_script:
+            native_path = root.joinpath(*path.split("/"))
+            try:
+                native_lstat = os.lstat(native_path)
+            except FileNotFoundError:
+                continue
+            except OSError:
+                raise _raise_error(
+                    "GENERATION_INPUT_INVALID",
+                    "native linker script inspection failed",
+                    {"path": path, "rule": "unreadable"},
+                ) from None
+            if (
+                stat.S_ISLNK(native_lstat.st_mode)
+                or bool(getattr(native_lstat, "st_file_attributes", 0) & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400))
+            ):
+                raise _raise_error(
+                    "GENERATION_INPUT_INVALID",
+                    "native linker script must not redirect",
+                    {"path": path, "rule": "redirect"},
+                )
     duplicate = _duplicate_or_casefold(all_paths)
     if duplicate is not None:
         raise _raise_error(
@@ -878,7 +909,7 @@ def _render_targets(
 ) -> dict[str, tuple[str, bytes]]:
     contexts = _build_contexts(model, options, fixed_sections)
     rendered: dict[str, tuple[str, bytes]] = {}
-    for target in GENERATED_TARGETS:
+    for target in _targets_for_model(model):
         template_name = _target_template(target)
         if template_name.endswith(".j2"):
             data = _render_template(template_name, contexts[target])
@@ -890,6 +921,13 @@ def _render_targets(
 
 def _target_template(target: str) -> str:
     return TARGET_TEMPLATES[target]
+
+
+def _targets_for_model(model: ProjectModel) -> tuple[str, ...]:
+    """Return the generated Toolkit targets for generic or native output."""
+    if model.generation.native_linker_script is None:
+        return GENERATED_TARGETS
+    return tuple(target for target in GENERATED_TARGETS if target != "linker/stm32tk.ld")
 
 
 def _normalize_gnu_ld_attributes(attrs: str) -> str:
@@ -912,7 +950,10 @@ def _build_contexts(
     basename = model.build.elf[len("build/arm-debug/") :]
     stem = basename[: -len(".elf")]
     target_name = sanitize_cmake_identifier(stem)
-    flash_region, ram_region = _memory_region_roles(model)
+    if model.generation.native_linker_script is None:
+        flash_region, ram_region = _memory_region_roles(model)
+    else:
+        flash_region = ram_region = None
     cmake = {
         "project_name": project_name,
         "target_name": target_name,
@@ -929,6 +970,7 @@ def _build_contexts(
         "map_name": f"{stem}.map",
         "hex_name": f"{stem}.hex",
         "bin_name": f"{stem}.bin",
+        "native_linker_script": model.generation.native_linker_script,
     }
     linker = {
         "regions": [
@@ -1046,7 +1088,7 @@ def _build_contexts(
         }
     }
     settings = {"settings": {"cmake.configureOnOpen": False, "cmake.useCMakePresets": "always"}}
-    return {
+    contexts = {
         "CMakeLists.txt": cmake,
         "cmake/arm-none-eabi-gcc.cmake": {},
         "CMakePresets.json": presets,
@@ -1057,6 +1099,9 @@ def _build_contexts(
         ".vscode/settings.json": settings,
         ".vscode/extensions.json": {},
     }
+    if model.generation.native_linker_script is not None:
+        contexts.pop("linker/stm32tk.ld")
+    return contexts
 
 
 def _load_template_resource(name: str) -> bytes:
@@ -1129,7 +1174,7 @@ def _classify_targets(
 ) -> list[GeneratedFile]:
     prior_by_path = {record.path: record for record in prior}
     files: list[GeneratedFile] = []
-    for target in sorted(GENERATED_TARGETS, key=portable_sort_key):
+    for target in sorted(rendered, key=portable_sort_key):
         current = _read_current_target(root, target)
         template_name, after_bytes = rendered[target]
         after_sha256 = sha256_hex(after_bytes)
@@ -1219,7 +1264,7 @@ def _collect_blockers(
     prior: tuple[ManagedFileRecord, ...], files: list[GeneratedFile]
 ) -> list[GenerationBlocker]:
     blockers: list[GenerationBlocker] = []
-    target_set = set(GENERATED_TARGETS)
+    target_set = {entry.path for entry in files}
     for entry in files:
         if entry.status == "user-drift":
             blockers.append(
@@ -1340,10 +1385,11 @@ def _validate_plan(plan: object) -> None:
         raise _plan_invalid("inputLimit")
 
     file_paths = [entry.path for entry in plan.files]
+    target_set = set(_targets_for_model(plan.model))
     for entry in plan.files:
         if portable_path_error(entry.path) is not None:
             raise _plan_invalid("portablePath")
-        if entry.path not in GENERATED_TARGETS:
+        if entry.path not in target_set:
             raise _plan_invalid("targetPath")
         if entry.status not in {"create", "unchanged", "update-managed", "user-drift", "unowned-collision"}:
             raise _plan_invalid("status")

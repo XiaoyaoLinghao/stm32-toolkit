@@ -31,6 +31,7 @@ import pytest
 
 from stm32_toolkit.build import BuildReport, BuildRequest, FirmwareIdentity, MemoryUsage, run_build
 from stm32_toolkit.build import identity as identity_mod
+from stm32_toolkit.build.identity import snapshot_project_inputs
 from stm32_toolkit.generation import apply_project_configuration, plan_project_configuration
 from stm32_toolkit.project_model import load_project_model
 
@@ -657,6 +658,40 @@ def prepare_project(
     return root
 
 
+def _make_native_linker_fixture(root: Path) -> Path:
+    linker = root / "STM32F429xx_FLASH.ld"
+    linker.write_bytes(b"ENTRY(Reset_Handler)\nMEMORY {}\n")
+    manifest_path = root / ".stm32-project.json"
+    payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    payload["schemaVersion"] = 3
+    payload["generation"]["nativeLinkerScript"] = linker.name
+    manifest_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    managed_path = root / ".stm32-toolkit" / "generated-files.json"
+    managed = json.loads(managed_path.read_text(encoding="utf-8"))
+    managed["files"] = [item for item in managed["files"] if item["path"] != "linker/stm32tk.ld"]
+    managed_path.write_text(json.dumps(managed, indent=2) + "\n", encoding="utf-8")
+    (root / "linker" / "stm32tk.ld").unlink()
+    return linker
+
+
+def test_native_linker_is_hashed_once_in_build_snapshot_and_generic_target_is_absent(tmp_path: Path):
+    root = prepare_project(tmp_path, git_repo=False)
+    linker = _make_native_linker_fixture(root)
+
+    snapshot = snapshot_for(root)
+    paths = [entry.path for entry in snapshot.entries]
+
+    assert paths.count(linker.name) == 1
+    assert "linker/stm32tk.ld" not in paths
+    native = next(entry for entry in snapshot.entries if entry.path == linker.name)
+    assert native.sha256 == sha256_hex(linker.read_bytes())
+    first_digest = snapshot.sha256
+    linker.write_bytes(linker.read_bytes() + b"\n")
+    drifted = snapshot_for(root)
+    assert drifted.sha256 != first_digest
+    assert [entry.path for entry in drifted.entries].count(linker.name) == 1
+
+
 def hit_records(hit_file: Path) -> list[dict]:
     if not hit_file.exists():
         return []
@@ -680,6 +715,10 @@ def orig_argv_records(orig_file: Path) -> list[list[str]]:
 
 def read_json(path: Path) -> dict:
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+def snapshot_for(root: Path):
+    return snapshot_project_inputs(load_project_model(root))
 
 
 def identity_path_for(root: Path, preset: str = "arm-debug") -> Path:

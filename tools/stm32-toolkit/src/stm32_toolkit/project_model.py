@@ -117,6 +117,7 @@ class GenerationSpec:
     tool: str
     version: str
     cube_mx_ioc: str | None
+    native_linker_script: str | None
     managed_manifest: str
     generated_directories: tuple[str, ...]
     user_directories: tuple[str, ...]
@@ -424,6 +425,12 @@ def validate_model_document(root: Path, payload: dict, version: int) -> None:
             root, "generation.cubeMxIoc", generation.get("cubeMxIoc"), cache
         )
         _validate_path_field(
+            root,
+            "generation.nativeLinkerScript",
+            generation.get("nativeLinkerScript"),
+            cache,
+        )
+        _validate_path_field(
             root, "generation.managedManifest", generation.get("managedManifest"), cache
         )
         _validate_path_field(
@@ -724,6 +731,7 @@ def _build_model(root: Path, payload: dict, version: int) -> ProjectModel:
             tool="stm32-toolkit",
             version=__version__,
             cube_mx_ioc=None,
+            native_linker_script=None,
             managed_manifest=".stm32-toolkit/generated-files.json",
             generated_directories=(),
             user_directories=(),
@@ -748,6 +756,7 @@ def _build_model(root: Path, payload: dict, version: int) -> ProjectModel:
             tool=generated_by["tool"],
             version=generated_by["version"],
             cube_mx_ioc=generation_data.get("cubeMxIoc"),
+            native_linker_script=generation_data.get("nativeLinkerScript"),
             managed_manifest=generation_data["managedManifest"],
             generated_directories=tuple(generation_data.get("generatedDirectories", ())),
             user_directories=tuple(generation_data.get("userDirectories", ())),

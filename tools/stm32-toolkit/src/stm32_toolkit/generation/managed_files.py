@@ -278,6 +278,7 @@ def _model_payload(model: ProjectModel) -> dict[str, object]:
             "tool": model.generation.tool,
             "version": model.generation.version,
             "cube_mx_ioc": model.generation.cube_mx_ioc,
+            "native_linker_script": model.generation.native_linker_script,
             "managed_manifest": model.generation.managed_manifest,
             "generated_directories": list(model.generation.generated_directories),
             "user_directories": list(model.generation.user_directories),
