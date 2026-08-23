@@ -1,11 +1,11 @@
 # SDD ledger — VS07-C safe regeneration
 
-- Status: specification and implementation plan approved; implementation not
-  started.
+- Status: Luna implementation returned for independent Sol review; no final
+  acceptance verdict has been issued.
 - Module/phase: STM32 Toolkit 0.7 / VS07-C.
 - Accepted base: `fcdcd1ab9c1f358df78fbfb8b12ed9b0397c534d`.
 - Specification/plan owner: GPT-5.6-sol primary agent.
-- Implementer: pending one GPT-5.6-luna, reasoning max.
+- Implementer: one GPT-5.6-luna, reasoning max, complete local pass.
 - Reviewer/acceptor: GPT-5.6-sol primary agent.
 - Branch/worktree: `codex/STM32TK-0703-SAFE-REGENERATION` /
   `C:/tmp/stm32tk-0703-safe-regeneration`.
@@ -14,6 +14,13 @@
   `docs/superpowers/specs/2026-08-24-stm32-toolkit-0703-safe-regeneration-design.md`.
 - Plan:
   `docs/superpowers/plans/2026-08-24-stm32-toolkit-0703-safe-regeneration.md`.
+
+## Implementer return
+
+- Product/tests CodeHead: `15701023441ad05d11d39120c43c50a3f3857a3c`.
+- Implementation report commit: `907b5db5f9736df3b4a8c568abe5e971f5f631d5`.
+- Product and report commits are local, unpushed, and separate. No PR, merge,
+  tag, release, hardware, installation, or remote action was performed.
 
 ## Reconstructed baseline facts
 
@@ -55,3 +62,29 @@ behavior, not task percentages. Task 1–4 are one Luna implementer's internal
 checkpoints. TDD evidence, classifications, product CodeHead, slice result,
 real native result, implementation report, branch cleanliness, and final Sol
 verdict will be appended here without deleting this reconstructed baseline.
+
+## Completed public scenarios and evidence
+
+- Read-only plan, authorized preview, exact replay/apply, user-tree
+  preservation, configure, Debug, Release, atomic activation, and
+  single-use authorization were exercised by the focused tests and the fresh
+  native software scenario.
+- The exact approved slice passed `681 passed, 1 skipped`; the skipped test was
+  the Windows symlink-creation probe because this host refused symlink
+  creation, and it remains deferred platform evidence rather than a physical
+  pass. `compileall` and accepted-base-to-CodeHead `git diff --check` passed.
+- Fresh native evidence used the installed CubeMX 6.18.1-RC2, CubeCLT 1.22.0,
+  and F4 V1.28.3 package. Plan/prepare/apply returned `OK`; configure,
+  Debug, and Release returned `OK`; App/Tests hashes were unchanged; sibling
+  transaction/control roots were absent; only pre-existing javaw PID 32708
+  remained. Authorization replay returned
+  `REGENERATION_AUTHORIZATION_CONSUMED`.
+- Copied schema-2 Keil read-only evidence returned
+  `REGENERATION_NOT_CUBEMX_PROJECT` with equal before/after tree digests.
+
+## Outstanding owner
+
+- GPT-5.6-sol must review the complete accepted-base-to-final-head diff in a
+  clean worktree, repeat the required slice and independent probes, reconcile
+  the report, and issue the final `ACCEPTED`, `REVISION_REQUIRED`, or
+  `REWRITE_REQUIRED` verdict.
