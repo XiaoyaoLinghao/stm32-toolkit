@@ -1,0 +1,6 @@
+cmake_minimum_required(VERSION 3.22)
+set(CMAKE_PROJECT_NAME ContextF4)
+project(${CMAKE_PROJECT_NAME})
+set(STM32_MCU_FLAGS "-mcpu=cortex-m4 -mthumb -mfpu=fpv4-sp-d16 -mfloat-abi=hard")
+set(STM32_LINKER_SCRIPT STM32F429ZITx_FLASH.ld)
+include("mx-generated.cmake")

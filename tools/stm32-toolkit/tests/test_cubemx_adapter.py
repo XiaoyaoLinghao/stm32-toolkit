@@ -72,9 +72,17 @@ def _environment(tmp_path: Path) -> SimpleNamespace:
     )
 
 
-def _successful_protocol(script: str) -> str:
+def _native_618_transcript(script: str) -> str:
+    """Sanitized native 6.18 transcript: mixed logs and no exit OK."""
     commands = [line for line in script.splitlines() if line and not line.startswith("#")]
-    return "\n".join(item for command in commands for item in (command, "OK")) + "\nBye bye\n"
+    output = ["2026-08-23 12:00:00 INFO  native startup", "[WARN] updater offline"]
+    for command in commands:
+        output.append(command)
+        if command == "exit":
+            output.extend(["INFO generation complete", "Bye bye"])
+        else:
+            output.extend(["progress: command accepted", "OK"])
+    return "\n".join(output) + "\n"
 
 
 def test_direct_adapter_call_without_consumed_capability_is_rejected(tmp_path: Path):
@@ -114,7 +122,7 @@ def test_adapter_invokes_one_fixed_bounded_process_without_network_or_wrapper(tm
         assert "login" not in script.lower()
         assert "swmgr" not in script.lower()
         assert "xcubedl" not in script.lower()
-        return ProcessResult(0, _successful_protocol(script), "", False, 1, False, False)
+        return ProcessResult(0, _native_618_transcript(script), "", False, 1, False, False)
 
     adapter = CubeMXAdapter(_environment(tmp_path), runner=runner)
     result = adapter.generate(_capability(tmp_path), CubeMXStagingContext(staging))
@@ -135,7 +143,7 @@ def test_adapter_invokes_one_fixed_bounded_process_without_network_or_wrapper(tm
     "source_kind,expected_load,expected_name",
     [
         ("mcu", "load STM32F429ZITX", "STM32F429ZITX"),
-        ("board", "loadboard NUCLEO-F429ZI", "NUCLEO-F429ZI"),
+        ("board", "loadboard NUCLEO-F429ZI allmodes", "NUCLEO-F429ZI"),
         ("ioc", "config load", "board"),
     ],
 )
@@ -147,7 +155,7 @@ def test_source_kind_script_uses_verified_commands_and_safe_deterministic_projec
     def runner(request):
         script = Path(request.argv[-1]).read_text(encoding="utf-8")
         observed.append(script)
-        return ProcessResult(0, _successful_protocol(script), "", False, 1, False, False)
+        return ProcessResult(0, _native_618_transcript(script), "", False, 1, False, False)
 
     adapter = CubeMXAdapter(_environment(tmp_path), runner=runner)
     result = adapter.generate(_capability(tmp_path, source_kind=source_kind), CubeMXStagingContext(staging))
@@ -173,7 +181,7 @@ def test_adapter_seeds_isolated_updater_repository_configuration_outside_staging
         _environment(tmp_path),
         runner=lambda request: ProcessResult(
             0,
-            _successful_protocol(Path(request.argv[-1]).read_text(encoding="utf-8")),
+            _native_618_transcript(Path(request.argv[-1]).read_text(encoding="utf-8")),
             "",
             False,
             1,
@@ -182,10 +190,14 @@ def test_adapter_seeds_isolated_updater_repository_configuration_outside_staging
         ),
     )
     result = adapter.generate(_capability(tmp_path), CubeMXStagingContext(staging))
-    control_root = result.script_path.parent
-    configs = list(control_root.rglob("updater.ini")) + list(control_root.rglob("Updater.ini"))
-    assert configs
-    assert (tmp_path / "Repository").resolve().as_posix() in configs[0].read_text(encoding="utf-8")
+    control_root = result.control_root
+    assert control_root is not None
+    updater = control_root / "home" / ".stm32cubemx" / "plugins" / "updater" / "updater.ini"
+    assert updater.is_file()
+    updater_text = updater.read_text(encoding="utf-8")
+    assert "[Path]" in updater_text
+    assert "RepositoryPath=" in updater_text
+    assert (tmp_path / "Repository").resolve().as_posix() in updater_text
     assert control_root != staging
     assert not list(staging.glob(".stm32-toolkit-*"))
 
@@ -214,10 +226,34 @@ def test_unrelated_error_log_text_does_not_override_successful_protocol(tmp_path
     staging.mkdir()
     capability = _capability(tmp_path)
     expected_script = "load STM32F429ZITX\nproject name STM32F429ZITX\nproject path \"{}\"\nproject toolchain CMake\nproject compiler GCC\nSetStructure Advanced\nproject generate\nexit\n".format(staging.resolve().as_posix())
-    output = "[ERROR] updater advertisement failed\n" + _successful_protocol(expected_script)
+    output = "[ERROR] updater advertisement failed\n" + _native_618_transcript(expected_script)
     adapter = CubeMXAdapter(_environment(tmp_path), runner=lambda request: ProcessResult(0, output, "", False, 1, False, False))
     result = adapter.generate(capability, CubeMXStagingContext(staging))
     assert result.invocations == 1
+
+
+@pytest.mark.parametrize(
+    "process",
+    [
+        ProcessResult(1, "", "", False, 1, False, False),
+        ProcessResult(0, "", "", True, 1, False, False),
+        ProcessResult(0, "", "", False, 1, True, False),
+        ProcessResult(0, "exit\nBye bye\n", "", False, 1, False, False),
+    ],
+)
+def test_adapter_removes_control_root_on_every_native_failure(tmp_path: Path, process: ProcessResult):
+    staging = tmp_path / "staging"
+    staging.mkdir()
+    observed: list[Path] = []
+
+    def runner(request):
+        observed.append(Path(request.argv[-1]).parent)
+        return process
+
+    adapter = CubeMXAdapter(_environment(tmp_path), runner=runner)
+    with pytest.raises(CubeMXAdapterError):
+        adapter.generate(_capability(tmp_path), CubeMXStagingContext(staging))
+    assert observed and not observed[0].exists()
 
 
 @pytest.mark.parametrize(

@@ -8,7 +8,6 @@ import os
 import secrets
 import shutil
 import stat
-import threading
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -32,15 +31,6 @@ from stm32_toolkit.generation.creation import _inventory_state
 from stm32_toolkit.project_model import ProjectManifestError, load_project_model
 from stm32_toolkit.result import OperationResult
 from stm32_toolkit.workflows import build_firmware_workflow
-
-_DESTINATION_LOCKS: dict[Path, threading.Lock] = {}
-_DESTINATION_LOCKS_GUARD = threading.Lock()
-
-
-def _lock_for(path: Path) -> threading.Lock:
-    with _DESTINATION_LOCKS_GUARD:
-        return _DESTINATION_LOCKS.setdefault(path, threading.Lock())
-
 
 @contextmanager
 def _acquire_activation_lock(data_root: Path, destination: Path) -> Iterator[None]:

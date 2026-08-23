@@ -1,0 +1,5 @@
+cmake_minimum_required(VERSION 3.22)
+set(MX_Defines_Syms USE_HAL_DRIVER STM32H743xx)
+set(MX_Include_Dirs ${CMAKE_CURRENT_LIST_DIR}/../../Core/Inc ${CMAKE_CURRENT_SOURCE_DIR}/../../Drivers/CMSIS)
+set(MX_Application_Src ${CMAKE_CURRENT_LIST_DIR}/../../Core/Src/main.c)
+set(STM32_Drivers_Src ${CMAKE_CURRENT_LIST_DIR}/../../Drivers/Src/stm32_hal.c)

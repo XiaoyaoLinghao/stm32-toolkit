@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import os
 import secrets
-import threading
+import stat
 import time
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -18,78 +18,79 @@ from stm32_toolkit.generation.managed_files import canonical_json_bytes, sha256_
 
 _DIGEST_CHARS = frozenset("0123456789abcdef")
 _MAX_RECORD_BYTES = 64 * 1024
-_LOCKS: dict[Path, threading.Lock] = {}
-_LOCKS_GUARD = threading.Lock()
-
-
 @contextmanager
 def _durable_lock(path: Path) -> Iterator[None]:
-    """Serialize a record transition across both threads and processes.
-
-    The JSON record itself is replaced atomically, but an atomic replace does
-    not make the read/validate/replace sequence a claim.  A small lock file
-    gives that sequence one durable cross-process critical section.  The
-    process-local lock remains useful on Windows, where byte-range locks are
-    not recursive within one process.
-    """
+    """Serialize a transition with an identity-checked descriptor lock."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    with _lock_for(path):
-        deadline = time.monotonic() + 30.0
-        while True:
-            try:
-                handle = path.open("a+b")
-                break
-            except OSError:
-                # Windows may deny opening a byte-range-locked file until the
-                # current owner closes it. Treat that as lock contention;
-                # permanent failures still terminate within the bounded wait.
-                if os.name != "nt" or time.monotonic() >= deadline:
-                    raise CreationAuthorizationError(
-                        "CREATION_AUTHORIZATION_STORE_UNAVAILABLE",
-                        "authorization store is unavailable",
-                    ) from None
-                time.sleep(0.01)
-        try:
-            handle.seek(0, os.SEEK_END)
-            if handle.tell() == 0:
-                handle.write(b"\0")
-                handle.flush()
-            handle.seek(0)
-            if os.name == "nt":
-                import msvcrt
+    flags = os.O_RDWR | os.O_CREAT | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    deadline = time.monotonic() + 30.0
+    fd: int | None = None
+    try:
+        pre_open = os.lstat(path) if os.path.lexists(path) else None
+        fd = os.open(path, flags, 0o600)
+        opened = os.fstat(fd)
+        if not stat.S_ISREG(opened.st_mode) or opened.st_nlink != 1:
+            raise OSError("lock file is not a single-link regular file")
+        if pre_open is not None and (pre_open.st_dev, pre_open.st_ino) != (opened.st_dev, opened.st_ino):
+            raise OSError("lock file identity changed before open")
+        if opened.st_size == 0:
+            os.lseek(fd, 0, os.SEEK_END)
+            os.write(fd, b"\0")
+            opened = os.fstat(fd)
+        if opened.st_size != 1:
+            raise OSError("lock file size is invalid")
+        os.lseek(fd, 0, os.SEEK_SET)
+        if os.name == "nt":
+            import msvcrt
 
-                while True:
-                    try:
-                        msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
-                        break
-                    except OSError:
-                        time.sleep(0.01)
-            else:
-                import fcntl
+            while True:
+                try:
+                    msvcrt.locking(fd, msvcrt.LK_LOCK, 1)
+                    break
+                except OSError:
+                    if time.monotonic() >= deadline:
+                        raise OSError("lock contention exceeded bound") from None
+                    time.sleep(0.01)
+        else:
+            import fcntl
 
-                fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
-            yield
-        except CreationAuthorizationError:
-            raise
-        except OSError:
-            raise CreationAuthorizationError(
-                "CREATION_AUTHORIZATION_STORE_UNAVAILABLE",
-                "authorization store is unavailable",
-            ) from None
-        finally:
+            fcntl.flock(fd, fcntl.LOCK_EX)
+        current = os.lstat(path)
+        held = os.fstat(fd)
+        if (
+            not stat.S_ISREG(current.st_mode)
+            or current.st_nlink != 1
+            or current.st_size != 1
+            or (current.st_dev, current.st_ino) != (held.st_dev, held.st_ino)
+            or held.st_size != 1
+        ):
+            raise OSError("lock file identity changed while held")
+        yield
+    except CreationAuthorizationError:
+        raise
+    except OSError:
+        raise CreationAuthorizationError(
+            "CREATION_AUTHORIZATION_STORE_UNAVAILABLE",
+            "authorization store is unavailable",
+        ) from None
+    finally:
+        if fd is not None:
             try:
                 if os.name == "nt":
                     import msvcrt
 
-                    handle.seek(0)
-                    msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+                    os.lseek(fd, 0, os.SEEK_SET)
+                    msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
                 else:
                     import fcntl
 
-                    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+                    fcntl.flock(fd, fcntl.LOCK_UN)
             except OSError:
                 pass
-            handle.close()
+            try:
+                os.close(fd)
+            except OSError:
+                pass
 
 
 _ISSUANCE_MARKER = object()
@@ -106,11 +107,6 @@ class _CapabilityClaim:
 
 def _issued_claim() -> _CapabilityClaim:
     return _CapabilityClaim(_ISSUANCE_MARKER)
-
-
-def _lock_for(path: Path) -> threading.Lock:
-    with _LOCKS_GUARD:
-        return _LOCKS.setdefault(path, threading.Lock())
 
 
 def _utc(value: datetime) -> datetime:

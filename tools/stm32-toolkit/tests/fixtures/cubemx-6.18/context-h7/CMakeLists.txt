@@ -1,0 +1,6 @@
+cmake_minimum_required(VERSION 3.22)
+set(CMAKE_PROJECT_NAME ContextH7)
+project(${CMAKE_PROJECT_NAME})
+set(STM32_MCU_FLAGS "-mcpu=cortex-m7 -mthumb -mfpu=fpv5-d16 -mfloat-abi=hard")
+set(STM32_LINKER_SCRIPT STM32H743ZITx_FLASH.ld)
+include("mx-generated.cmake")

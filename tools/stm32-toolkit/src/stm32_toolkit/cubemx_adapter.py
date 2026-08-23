@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import hashlib
 import re
+import shutil
 import stat
 from dataclasses import dataclass
 from pathlib import Path
@@ -89,9 +90,9 @@ def _safe_leaf(path: Path) -> Path:
 
 
 def _quote(value: str) -> str:
-    if not value or any(char in value for char in ("\r", "\n", "\x00")):
+    if not value or any(char in value for char in ('"', "\r", "\n", "\x00")):
         raise CubeMXAdapterError("CUBEMX_NATIVE_OUTPUT_INVALID", "CubeMX command value is invalid")
-    return '"' + value.replace('"', '\\"') + '"'
+    return '"' + value + '"'
 
 
 def _control_root(context: CubeMXStagingContext) -> Path:
@@ -137,7 +138,7 @@ def _script_for(capability: ConsumedCreationAuthorization, context: CubeMXStagin
     if request.source.kind == "mcu":
         source_command = f"load {request.source.value}"
     elif request.source.kind == "board":
-        source_command = f"loadboard {request.source.value}"
+        source_command = f"loadboard {request.source.value} allmodes"
     elif request.source.kind == "ioc":
         source_command = f"config load {_quote(_safe_ioc_source(capability, control_root).as_posix())}"
     else:
@@ -184,14 +185,37 @@ def _repository(environment: object) -> Path:
         raise CubeMXAdapterError("CREATION_EXECUTION_ENVIRONMENT_CHANGED", "Cube firmware repository facts changed") from None
 
 
-def _seed_updater(home: Path, repository: Path) -> None:
-    updater = home / "STM32Cube" / "Updater" / "Updater.ini"
+def _seed_updater(home: Path, repository: Path, software_path: Path, cubemx_version: str) -> None:
+    updater_root = home / ".stm32cubemx" / "plugins" / "updater"
+    updater = updater_root / "updater.ini"
+
+    def _ini_path(path: Path) -> str:
+        return path.resolve(strict=True).as_posix().rstrip("/") + "/"
+
     try:
         updater.parent.mkdir(parents=True, exist_ok=True)
         updater.write_text(
-            "[Updater]\n"
-            f"Repository={repository.as_posix()}\n"
-            "Offline=true\n",
+            "[Data]\n"
+            "DataLastStamp=0\n\n"
+            "[Path]\n"
+            f"SoftwarePath={_ini_path(software_path)}\n"
+            f"RepositoryPath={_ini_path(repository)}\n"
+            f"UpdaterPath={_ini_path(updater_root)}\n\n"
+            "[ReStart]\n"
+            "SoftCopy=0\n\n"
+            "[TimeDate]\n"
+            "CheckType=1\n"
+            "LastCheckStamp=0\n"
+            "IntervalDayCheck=5\n"
+            "LastCheckConnectionStamp=0\n\n"
+            "[Version]\n"
+            "SoftType=0\n"
+            "DbVersion=DB.6.0.181\n"
+            f"SoftVersion=MX.{cubemx_version}\n\n"
+            "[Proxy]\n"
+            "Type=0\n"
+            "Test=2\n"
+            "Authentification=0\n",
             encoding="utf-8",
             newline="\n",
         )
@@ -199,23 +223,51 @@ def _seed_updater(home: Path, repository: Path) -> None:
         raise CubeMXAdapterError("CUBEMX_NATIVE_OUTPUT_INVALID", "CubeMX updater configuration cannot be prepared") from None
 
 
-def _protocol_lines(output: str) -> list[str]:
-    lines: list[str] = []
+def _validate_protocol(output: str, commands: list[str]) -> None:
+    """Validate required protocol events in CubeMX's mixed log stream."""
+    if not commands or commands[-1] != "exit":
+        raise CubeMXAdapterError("CUBEMX_PROTOCOL_INVALID", "CubeMX command sequence is invalid")
+    index = 0
+    awaiting_ok = False
+    exit_seen = False
+    bye_seen = False
     for raw in output.splitlines():
         line = raw.strip()
-        if not line or line.startswith("[ERROR]"):
+        if not line:
             continue
-        lines.append(line)
-    return lines
-
-
-def _validate_protocol(output: str, commands: list[str]) -> None:
-    lines = _protocol_lines(output)
-    if any(re.fullmatch(r"KO(?:\s+.*)?", line, re.IGNORECASE) for line in lines):
-        raise CubeMXAdapterError("CUBEMX_PROTOCOL_INVALID", "CubeMX reported a protocol failure")
-    expected = [part for command in commands for part in (command, "OK")] + ["Bye bye"]
-    if lines != expected:
+        if re.fullmatch(r"KO(?:\s+.*)?", line, re.IGNORECASE):
+            raise CubeMXAdapterError("CUBEMX_PROTOCOL_INVALID", "CubeMX reported a protocol failure")
+        if line == "Bye bye":
+            if not exit_seen or awaiting_ok or index != len(commands):
+                raise CubeMXAdapterError("CUBEMX_PROTOCOL_INVALID", "CubeMX protocol completion is incomplete")
+            bye_seen = True
+            continue
+        if index < len(commands) and line == commands[index]:
+            if awaiting_ok or bye_seen:
+                raise CubeMXAdapterError("CUBEMX_PROTOCOL_INVALID", "CubeMX protocol command order is invalid")
+            index += 1
+            if line == "exit":
+                exit_seen = True
+            else:
+                awaiting_ok = True
+            continue
+        if line in commands:
+            raise CubeMXAdapterError("CUBEMX_PROTOCOL_INVALID", "CubeMX protocol command order is invalid")
+        if line == "OK":
+            if awaiting_ok:
+                awaiting_ok = False
+            continue
+        # Native log4j/INFO/WARN/progress text is not protocol.
+    if awaiting_ok or index != len(commands) or not exit_seen or not bye_seen:
         raise CubeMXAdapterError("CUBEMX_PROTOCOL_INVALID", "CubeMX protocol completion is incomplete")
+
+
+def _remove_control_root(control_root: Path) -> None:
+    try:
+        if control_root.exists():
+            shutil.rmtree(control_root)
+    except OSError:
+        raise CubeMXAdapterError("CUBEMX_NATIVE_OUTPUT_INVALID", "CubeMX control files cannot be cleaned") from None
 
 
 class CubeMXAdapter:
@@ -247,12 +299,13 @@ class CubeMXAdapter:
             repository = _repository(self.environment)
         except (TypeError, AttributeError):
             raise CubeMXAdapterError("CREATION_EXECUTION_ENVIRONMENT_CHANGED", "CubeMX execution facts are unavailable") from None
-        control_root = _control_root(staging)
-        isolated_home = control_root / "home"
+        control_root: Path | None = None
         try:
+            control_root = _control_root(staging)
+            isolated_home = control_root / "home"
             control_root.mkdir(parents=True, exist_ok=True)
             isolated_home.mkdir(parents=True, exist_ok=True)
-            _seed_updater(isolated_home, repository)
+            _seed_updater(isolated_home, repository, cubemx.parent, str(getattr(self.environment, "cubemx_version", "6.18.1-RC2")))
             script = control_root / staging.script_name
             script_text = _script_for(capability, staging, control_root)
             script.write_text(script_text, encoding="utf-8", newline="\n")
@@ -284,19 +337,28 @@ class CubeMXAdapter:
                 )
             )
         except CubeMXAdapterError:
+            if control_root is not None:
+                _remove_control_root(control_root)
             raise
         except Exception:
+            if control_root is not None:
+                _remove_control_root(control_root)
             raise CubeMXAdapterError("CUBEMX_EXECUTION_FAILED", "CubeMX could not be started") from None
         if not isinstance(process, ProcessResult):
             raise CubeMXAdapterError("CUBEMX_EXECUTION_FAILED", "CubeMX returned no bounded process result")
-        if process.timed_out:
-            raise CubeMXAdapterError("CUBEMX_TIMEOUT", "CubeMX timed out")
-        if process.stdout_truncated or process.stderr_truncated:
-            raise CubeMXAdapterError("CUBEMX_OUTPUT_TRUNCATED", "CubeMX output exceeded its bound")
-        if process.returncode != 0:
-            raise CubeMXAdapterError("CUBEMX_EXECUTION_FAILED", "CubeMX exited unsuccessfully")
-        output = f"{process.stdout}\n{process.stderr}"
-        _validate_protocol(output, commands)
+        try:
+            if process.timed_out:
+                raise CubeMXAdapterError("CUBEMX_TIMEOUT", "CubeMX timed out")
+            if process.stdout_truncated or process.stderr_truncated:
+                raise CubeMXAdapterError("CUBEMX_OUTPUT_TRUNCATED", "CubeMX output exceeded its bound")
+            if process.returncode != 0:
+                raise CubeMXAdapterError("CUBEMX_EXECUTION_FAILED", "CubeMX exited unsuccessfully")
+            output = f"{process.stdout}\n{process.stderr}"
+            _validate_protocol(output, commands)
+        except CubeMXAdapterError:
+            if control_root is not None:
+                _remove_control_root(control_root)
+            raise
         return CubeMXExecutionResult(staging.staging_dir, script, process, control_root=control_root)
 
     apply = generate

@@ -1,0 +1,8 @@
+cmake_minimum_required(VERSION 3.22)
+set(CMAKE_C_STANDARD 11)
+set(CMAKE_C_STANDARD_REQUIRED ON)
+set(CMAKE_PROJECT_NAME GlobalF4)
+set(CMAKE_EXPORT_COMPILE_COMMANDS TRUE)
+project(${CMAKE_PROJECT_NAME})
+add_executable(${CMAKE_PROJECT_NAME})
+add_subdirectory(cmake/stm32cubemx)
