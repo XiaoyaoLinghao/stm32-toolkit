@@ -285,26 +285,37 @@ with _acquire_activation_lock(data_root, destination):
     environment = os.environ.copy()
     source_root = str(Path(__file__).resolve().parents[1] / "src")
     environment["PYTHONPATH"] = source_root + os.pathsep + environment.get("PYTHONPATH", "")
-    processes = [
-        subprocess.Popen(
-            [sys.executable, "-c", script, str(data_root), str(destination), str(markers)],
-            env=environment,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-        )
-        for _ in range(2)
-    ]
-    deadline = time.monotonic() + 10
-    while len(list(markers.glob("ready-*"))) < 1 and time.monotonic() < deadline:
-        time.sleep(0.01)
-    assert len(list(markers.glob("ready-*"))) == 1
-    time.sleep(0.2)
-    assert len(list(markers.glob("ready-*"))) == 1
-    (markers / "release").write_text("release", encoding="utf-8")
-    outputs = [process.communicate(timeout=10) for process in processes]
-    assert all(process.returncode == 0 for process in processes), outputs
-    assert len(list(markers.glob("done-*"))) == 2
+    processes = []
+    try:
+        for _ in range(2):
+            processes.append(
+                subprocess.Popen(
+                    [sys.executable, "-c", script, str(data_root), str(destination), str(markers)],
+                    env=environment,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                )
+            )
+        deadline = time.monotonic() + 10
+        while len(list(markers.glob("ready-*"))) < 1 and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert len(list(markers.glob("ready-*"))) == 1
+        time.sleep(0.2)
+        assert len(list(markers.glob("ready-*"))) == 1
+        (markers / "release").write_text("release", encoding="utf-8")
+        outputs = [process.communicate(timeout=10) for process in processes]
+        assert all(process.returncode == 0 for process in processes), outputs
+        assert len(list(markers.glob("done-*"))) == 2
+    finally:
+        (markers / "release").write_text("release", encoding="utf-8")
+        for process in processes:
+            if process.poll() is None:
+                try:
+                    process.communicate(timeout=10)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.communicate(timeout=10)
 
 
 def test_plan_revalidation_rejects_drift_before_cube_mx_call(tmp_path: Path):
