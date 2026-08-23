@@ -1,0 +1,12 @@
+#MicroXplorer Configuration settings - do not modify
+File.Version=6
+Mcu.Name=STM32F429ZITx
+Mcu.Family=STM32F4
+Mcu.Package=LQFP144
+MxCube.Version=6.18.1
+MxDb.Version=DB.6.0.181
+ProjectManager.CompilerLinker=GCC
+ProjectManager.FirmwarePackage=STM32Cube FW_F4 V1.28.3
+ProjectManager.Language=C
+ProjectManager.ProjectName=STM32F429ZITx
+ProjectManager.TargetToolchain=CMake

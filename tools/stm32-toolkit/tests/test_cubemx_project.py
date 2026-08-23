@@ -58,6 +58,21 @@ def _fixture_request(name: str) -> CreationRequest:
     return CreationRequest.from_mcu(device, "generated", framework="hal", language="c")
 
 
+def _real_native_tree(tmp_path: Path) -> Path:
+    return _fixture_tree(tmp_path, "native-f429")
+
+
+def _real_native_environment(*, package_name: str = "STM32Cube_FW_F4", package_version: str = "1.28.3") -> SimpleNamespace:
+    return SimpleNamespace(
+        cubemx_version="6.18.1-RC2",
+        cubemx_sha256="1" * 64,
+        package_name=package_name,
+        package_version=package_version,
+        package_sha256="2" * 64,
+        digest="3" * 64,
+    )
+
+
 def _seed_managed_manifest(root: Path) -> None:
     managed = root / ".stm32-toolkit" / "generated-files.json"
     managed.parent.mkdir(parents=True, exist_ok=True)
@@ -306,3 +321,64 @@ def test_native_parser_rejects_project_name_or_include_contract_drift(tmp_path: 
             environment=_fixture_environment("context-f4"),
         )
     assert include_error.value.code == "CUBEMX_NATIVE_OUTPUT_INVALID"
+
+
+def test_native_parser_accepts_sanitized_r8_f429_global_template(tmp_path: Path):
+    root = _real_native_tree(tmp_path)
+    model = parse_native_project(
+        root,
+        request=CreationRequest.from_mcu("STM32F429ZITx", "generated", framework="hal", language="c"),
+        plan_id="a" * 64,
+        action_digest="b" * 64,
+        environment=_real_native_environment(),
+    )
+    assert model.project_name == "STM32F429ZITx"
+    assert model.target_device == "STM32F429ZITx"
+    assert model.core == "cortex-m4"
+    assert model.fpu == "fpv4-sp-d16"
+    assert model.float_abi == "hard"
+    assert "Core/Src/sysmem.c" in model.sources
+    assert "Core/Src/syscalls.c" in model.sources
+    assert "Drivers/STM32F4xx_HAL_Driver/Src/stm32f4xx_hal.c" in model.sources
+    assert "USE_HAL_DRIVER" in model.defines
+    assert "DEBUG" not in model.defines
+    assert model.configuration_defines == ("$<$<CONFIG:Debug>:DEBUG>",)
+    assert model.package_version == "1.28.3"
+
+
+def test_native_parser_requires_exact_firmware_family_and_version(tmp_path: Path):
+    root = _real_native_tree(tmp_path)
+    (root / "STM32F429ZITx.ioc").write_text(
+        (root / "STM32F429ZITx.ioc").read_text(encoding="utf-8").replace(
+            "STM32Cube FW_F4 V1.28.3", "STM32Cube FW_F4 V9.99.9"
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(CubeMXNativeProjectError) as error:
+        parse_native_project(
+            root,
+            request=CreationRequest.from_mcu("STM32F429ZITx", "generated", framework="hal", language="c"),
+            plan_id="a" * 64,
+            action_digest="b" * 64,
+            environment=_real_native_environment(),
+        )
+    assert error.value.code == "CUBEMX_NATIVE_OUTPUT_INVALID"
+
+
+def test_native_parser_rejects_incomplete_r6_absolute_or_missing_source_tree(tmp_path: Path):
+    root = _real_native_tree(tmp_path)
+    nested = root / "cmake" / "stm32cubemx" / "CMakeLists.txt"
+    text = nested.read_text(encoding="utf-8").replace(
+        "${CMAKE_CURRENT_SOURCE_DIR}/../../Core/Src/syscalls.c",
+        "C:/tmp/p0702-native-capture-r6/generated-staging/STM32F429ZITX/Core/Src/syscalls.c",
+    )
+    nested.write_text(text.replace("${CMAKE_CURRENT_SOURCE_DIR}/../../Core/Src/sysmem.c\n", ""), encoding="utf-8")
+    with pytest.raises(CubeMXNativeProjectError) as error:
+        parse_native_project(
+            root,
+            request=CreationRequest.from_mcu("STM32F429ZITx", "generated", framework="hal", language="c"),
+            plan_id="a" * 64,
+            action_digest="b" * 64,
+            environment=_real_native_environment(),
+        )
+    assert error.value.code == "CUBEMX_NATIVE_OUTPUT_INVALID"

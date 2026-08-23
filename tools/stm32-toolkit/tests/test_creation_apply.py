@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import os
+import hashlib
+import shutil
 import subprocess
 import sys
 import time
@@ -20,6 +22,33 @@ from stm32_toolkit.generation.creation import CreationRequest
 from stm32_toolkit.result import OperationResult
 
 
+def test_native_validation_seeds_existing_cubemx_targets_as_managed(tmp_path: Path):
+    root = tmp_path / "generated"
+    root.mkdir()
+    (root / ".stm32-project.json").write_text("{}\n", encoding="utf-8")
+    (root / "CMakeLists.txt").write_text("native cmake\n", encoding="utf-8")
+    (root / "CMakePresets.json").write_text("{}\n", encoding="utf-8")
+    inventory = tuple(
+        (
+            path.relative_to(root).as_posix(),
+            path.stat().st_size,
+            hashlib.sha256(path.read_bytes()).hexdigest(),
+        )
+        for path in sorted(root.rglob("*"))
+        if path.is_file()
+    )
+
+    manifest = creation_apply_module._seed_native_managed_manifest(
+        root,
+        model_sha256="a" * 64,
+        inventory=inventory,
+    )
+
+    payload = __import__("json").loads(manifest.read_text(encoding="utf-8"))
+    assert [entry["path"] for entry in payload["files"]] == ["CMakeLists.txt", "CMakePresets.json"]
+    assert all(entry["ownership"] == "managed" for entry in payload["files"])
+
+
 def _authorization(tmp_path: Path):
     data = tmp_path / "data"
     request = CreationRequest.from_mcu("STM32F429ZITx", "generated", framework="hal", language="c")
@@ -36,31 +65,47 @@ class RecordingAdapter:
     def generate(self, capability, staging):
         self.calls += 1
         self.events.append("cubeMx")
-        (staging.staging_dir / "native.txt").write_text("generated", encoding="utf-8")
-        return SimpleNamespace(invocations=1)
+        child = staging.staging_dir / "generated"
+        child.mkdir()
+        (child / "native.txt").write_text("generated", encoding="utf-8")
+        return SimpleNamespace(invocations=1, project_root=child)
+
+
+class ChildRootAdapter(RecordingAdapter):
+    def generate(self, capability, staging):
+        self.calls += 1
+        child = staging.staging_dir / "generated"
+        child.mkdir()
+        (child / "native.txt").write_text("generated", encoding="utf-8")
+        return SimpleNamespace(invocations=1, project_root=child)
 
 
 class ControlArtifactAdapter(RecordingAdapter):
     def generate(self, capability, staging):
         self.calls += 1
-        (staging.staging_dir / "native.c").write_text("int main(void) {}\n", encoding="utf-8")
-        (staging.staging_dir / ".stm32-project.json").write_text("{\"generatedBy\":\"test\"}\n", encoding="utf-8")
-        (staging.staging_dir / ".stm32-toolkit").mkdir()
-        (staging.staging_dir / ".stm32-toolkit" / "cubemx-ownership.json").write_text(
+        child = staging.staging_dir / "generated"
+        child.mkdir()
+        (child / "native.c").write_text("int main(void) {}\n", encoding="utf-8")
+        (child / ".stm32-project.json").write_text("{\"generatedBy\":\"test\"}\n", encoding="utf-8")
+        (child / ".stm32-toolkit").mkdir()
+        (child / ".stm32-toolkit" / "cubemx-ownership.json").write_text(
             '{"files":[{"path":"native.c"}]}\n', encoding="utf-8"
         )
         control_root = staging.staging_dir.parent / ".cube-control"
         control_root.mkdir(exist_ok=True)
         (control_root / "script").write_text(str(staging.staging_dir), encoding="utf-8")
         (control_root / ".stm32-toolkit-home").mkdir(exist_ok=True)
-        return SimpleNamespace(invocations=1, control_root=control_root)
+        shutil.rmtree(control_root)
+        return SimpleNamespace(invocations=1, project_root=child)
 
 
 class AbsolutePathAdapter(RecordingAdapter):
     def generate(self, capability, staging):
         self.calls += 1
-        (staging.staging_dir / "native.txt").write_text(str(staging.staging_dir.resolve()), encoding="utf-8")
-        return SimpleNamespace(invocations=1)
+        child = staging.staging_dir / "generated"
+        child.mkdir()
+        (child / "native.txt").write_text(str(staging.staging_dir.resolve()), encoding="utf-8")
+        return SimpleNamespace(invocations=1, project_root=child)
 
 
 def _validator(events: list[str]):
@@ -381,3 +426,53 @@ def test_absolute_staging_path_in_native_output_is_rejected_before_activation(tm
     assert result.code == "CUBEMX_NATIVE_OUTPUT_INVALID"
     assert adapter.calls == 1
     assert not (tmp_path / "generated").exists()
+
+
+def test_apply_validates_and_activates_only_adapter_project_child_root(tmp_path: Path):
+    data, store, prepared = _authorization(tmp_path)
+    seen: list[Path] = []
+
+    def validate(project_root, **kwargs):
+        seen.append(project_root)
+        assert project_root.name == "generated"
+        assert (project_root / "native.txt").is_file()
+        return SimpleNamespace(ownership_manifest_path="m", ownership_manifest_sha256="1" * 64)
+
+    result = apply_creation(
+        CreationApplyRequest(tmp_path, data, prepared.authorization_digest, True),
+        store=store,
+        adapter=ChildRootAdapter([]),
+        validate_native=validate,
+        configure=lambda root: (assert_path(root, seen) or OperationResult.success("configure", {})),
+        build=lambda root, preset: (assert_path(root, seen) or OperationResult.success("build", {"preset": preset})),
+    )
+    assert result.ok is True
+    assert seen and seen[0].name == "generated"
+    assert (tmp_path / "generated" / "native.txt").read_text(encoding="utf-8") == "generated"
+    assert not list(tmp_path.glob(".stm32tk-creation-*"))
+
+
+def assert_path(path: Path, seen: list[Path]) -> None:
+    assert seen and path == seen[0]
+
+
+def test_host_path_scan_consumes_bounded_native_inventory(tmp_path: Path, monkeypatch):
+    project = tmp_path / "generated"
+    project.mkdir()
+    listed = project / "listed.c"
+    unlisted = project / "unlisted.c"
+    listed.write_text("portable", encoding="utf-8")
+    unlisted.write_text(str(tmp_path), encoding="utf-8")
+    real_read = Path.read_bytes
+
+    def guarded_read(path: Path):
+        if path.resolve() == unlisted.resolve():
+            raise AssertionError("host path scan read outside bounded inventory")
+        return real_read(path)
+
+    monkeypatch.setattr(Path, "read_bytes", guarded_read)
+    creation_apply_module._assert_public_paths_are_portable(
+        project,
+        tmp_path,
+        inventory=(("listed.c", listed.stat().st_size, "0" * 64),),
+    )

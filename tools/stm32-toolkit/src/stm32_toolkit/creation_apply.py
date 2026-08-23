@@ -28,6 +28,16 @@ from stm32_toolkit.cubemx_project import (
 from stm32_toolkit.creation_environment import CreationEnvironmentError
 from stm32_toolkit.generation.configure import apply_project_configuration, plan_project_configuration
 from stm32_toolkit.generation.creation import _inventory_state
+from stm32_toolkit.generation.managed_files import (
+    GENERATED_TARGETS,
+    MANAGED_MANIFEST_PATH,
+    TARGET_TEMPLATES,
+    TEMPLATE_VERSION,
+    GeneratedFile,
+    build_managed_manifest_bytes,
+    model_sha256_for,
+    portable_sort_key,
+)
 from stm32_toolkit.project_model import ProjectManifestError, load_project_model
 from stm32_toolkit.result import OperationResult
 from stm32_toolkit.workflows import build_firmware_workflow
@@ -140,16 +150,27 @@ def _cleanup(path: Path | None) -> bool:
         return False
 
 
-def _assert_public_paths_are_portable(staging: Path, root: Path) -> None:
+def _assert_public_paths_are_portable(
+    project_root: Path,
+    root: Path,
+    *,
+    inventory: tuple[tuple[str, int, str], ...] | None = None,
+) -> None:
     """Reject native output that embeds host-controlled absolute project paths."""
     markers = {
-        str(staging.resolve(strict=True)).encode("utf-8"),
-        staging.resolve(strict=True).as_posix().encode("utf-8"),
+        str(project_root.resolve(strict=True)).encode("utf-8"),
+        project_root.resolve(strict=True).as_posix().encode("utf-8"),
+        str(project_root.parent.resolve(strict=True)).encode("utf-8"),
+        project_root.parent.resolve(strict=True).as_posix().encode("utf-8"),
         str(root.resolve(strict=True)).encode("utf-8"),
         root.resolve(strict=True).as_posix().encode("utf-8"),
     }
     try:
-        for path in staging.rglob("*"):
+        if inventory is None:
+            paths = [path for path in project_root.rglob("*") if path.is_file() and not path.is_symlink()]
+        else:
+            paths = [project_root.joinpath(*relative.split("/")) for relative, _, _ in inventory]
+        for path in paths:
             if not path.is_file() or path.is_symlink():
                 continue
             data = path.read_bytes()
@@ -161,8 +182,117 @@ def _assert_public_paths_are_portable(staging: Path, root: Path) -> None:
         raise CreationApplyError("CUBEMX_NATIVE_OUTPUT_INVALID", "native output cannot be inspected") from None
 
 
+def _authorized_project_child(
+    staging: Path,
+    execution: object,
+    capability: ConsumedCreationAuthorization,
+) -> Path:
+    candidate = getattr(execution, "project_root", None)
+    if not isinstance(candidate, Path):
+        raise CreationApplyError("CUBEMX_NATIVE_OUTPUT_INVALID", "CubeMX did not return its authorized project root")
+    try:
+        container = staging.resolve(strict=True)
+        lexical = candidate.absolute()
+        lexical_info = os.lstat(lexical)
+        if stat.S_ISLNK(lexical_info.st_mode) or bool(getattr(lexical_info, "st_file_attributes", 0) & 0x400):
+            raise OSError
+        project = lexical.resolve(strict=True)
+        project.relative_to(container)
+        info = os.lstat(project)
+        expected_name = capability.request.destination.replace("\\", "/").split("/")[-1]
+        if project.parent != container or project.name != expected_name or not stat.S_ISDIR(info.st_mode) or project.is_symlink() or bool(getattr(info, "st_file_attributes", 0) & 0x400):
+            raise OSError
+        if len(list(container.iterdir())) != 1:
+            raise OSError
+        return project
+    except (OSError, RuntimeError, ValueError):
+        raise CreationApplyError("CUBEMX_NATIVE_OUTPUT_INVALID", "CubeMX project root is outside the authorized child") from None
+
+
+def _remove_empty_container(staging: Path) -> None:
+    try:
+        if any(staging.iterdir()):
+            raise OSError
+        staging.rmdir()
+    except OSError:
+        raise CreationApplyError("CREATION_ACTIVATION_FAILED", "creation generation container cleanup failed") from None
+
+
+def _rollback_after_container_cleanup_failure(
+    staging: Path,
+    destination: Path,
+    original_state: str,
+) -> None:
+    """Undo a successful child activation when its owned container cannot close."""
+    try:
+        project = staging / destination.name
+        if destination.exists():
+            os.replace(destination, project)
+        if original_state == "empty":
+            destination.mkdir()
+        if staging.exists():
+            shutil.rmtree(staging)
+        if destination.exists() and original_state == "absent":
+            raise OSError
+        if original_state == "empty" and (not destination.is_dir() or any(destination.iterdir())):
+            raise OSError
+    except OSError:
+        raise CreationApplyError("CREATION_ACTIVATION_ROLLBACK_FAILED", "creation activation rollback failed") from None
+
+
 def _result_ok(value: object) -> bool:
     return isinstance(value, OperationResult) and value.ok
+
+
+def _seed_native_managed_manifest(
+    project_root: Path,
+    *,
+    model_sha256: str,
+    inventory: tuple[tuple[str, int, str], ...],
+) -> Path:
+    """Record existing CubeMX targets as Toolkit-managed before configuration.
+
+    The native parser has already bounded and hashed ``inventory``. Reuse
+    those exact rows rather than walking the project again or treating any
+    unrelated CubeMX file as a Toolkit target.
+    """
+    rows = {relative: (size, digest) for relative, size, digest in inventory}
+    files: list[GeneratedFile] = []
+    try:
+        for target in GENERATED_TARGETS:
+            row = rows.get(target)
+            if row is None:
+                continue
+            size, digest = row
+            path = project_root.joinpath(*target.split("/"))
+            data = path.read_bytes()
+            if len(data) != size or hashlib.sha256(data).hexdigest() != digest:
+                raise OSError
+            files.append(
+                GeneratedFile(
+                    path=target,
+                    status="unchanged",
+                    template_name=TARGET_TEMPLATES[target],
+                    template_version=TEMPLATE_VERSION,
+                    before_sha256=digest,
+                    after_sha256=digest,
+                    before_size=size,
+                    after_size=size,
+                    unified_diff="",
+                    before_bytes=data,
+                    after_bytes=data,
+                )
+            )
+        files.sort(key=lambda entry: portable_sort_key(entry.path))
+        manifest_path = project_root / MANAGED_MANIFEST_PATH
+        manifest_path.parent.mkdir(parents=True, exist_ok=True)
+        manifest_path.write_bytes(build_managed_manifest_bytes(tuple(files), model_sha256))
+        return manifest_path
+    except OSError:
+        raise CubeMXNativeProjectError(
+            "CUBEMX_NATIVE_OUTPUT_INVALID",
+            "native generated-target inventory changed during validation",
+        ) from None
 
 
 def _default_validate(staging: Path, *, capability: ConsumedCreationAuthorization, environment: object) -> object:
@@ -174,6 +304,12 @@ def _default_validate(staging: Path, *, capability: ConsumedCreationAuthorizatio
         environment=environment,
     )
     ownership_path = write_native_project_manifests(staging, model)
+    project_model = load_project_model(staging)
+    _seed_native_managed_manifest(
+        staging,
+        model_sha256=model_sha256_for(project_model),
+        inventory=model.files,
+    )
     digest = hashlib.sha256(ownership_path.read_bytes()).hexdigest()
     return type("NativeValidation", (), {"model": model, "ownership_manifest_path": ownership_path.relative_to(staging).as_posix(), "ownership_manifest_sha256": digest})()
 
@@ -303,25 +439,20 @@ def apply_creation(
         staging = destination.parent / f".stm32tk-creation-{attempt_id}"
         staging.mkdir()
         execution = adapter.generate(capability, CubeMXStagingContext(staging))
-        control_root = getattr(execution, "control_root", None)
-        if isinstance(control_root, Path):
-            try:
-                control_root.resolve(strict=False).relative_to(staging.resolve(strict=True))
-            except ValueError:
-                pass
-            else:
-                raise CreationApplyError("CUBEMX_NATIVE_OUTPUT_INVALID", "CubeMX control files overlap project staging")
-            if not _cleanup(control_root):
-                raise CreationApplyError("CREATION_ACTIVATION_FAILED", "CubeMX control files could not be cleaned")
-        _assert_public_paths_are_portable(staging, root)
-        validation = (validate_native or _default_validate)(staging, capability=capability, environment=environment)
-        configured = (configure or _default_configure)(staging)
+        project_root = _authorized_project_child(staging, execution, capability)
+        validation = (validate_native or _default_validate)(project_root, capability=capability, environment=environment)
+        model = getattr(validation, "model", None)
+        inventory = getattr(model, "files", None)
+        if not isinstance(inventory, tuple):
+            inventory = None
+        _assert_public_paths_are_portable(project_root, root, inventory=inventory)
+        configured = (configure or _default_configure)(project_root)
         if not _result_ok(configured):
             raise CreationApplyError("CREATION_CONFIGURATION_FAILED", "Project configuration failed", {"result": _json_value(configured)})
-        debug = (build or _default_build)(staging, "arm-debug")
+        debug = (build or _default_build)(project_root, "arm-debug")
         if not _result_ok(debug):
             raise CreationApplyError("CREATION_DEBUG_BUILD_FAILED", "Debug build failed", {"result": _json_value(debug)})
-        release = (build or _default_build)(staging, "arm-release")
+        release = (build or _default_build)(project_root, "arm-release")
         if not _result_ok(release):
             raise CreationApplyError("CREATION_RELEASE_BUILD_FAILED", "Release build failed", {"result": _json_value(release)})
         with _acquire_activation_lock(request.data_root, destination):
@@ -330,9 +461,14 @@ def apply_creation(
                 raise CreationApplyError("CREATION_DESTINATION_CHANGED", "destination changed while creation was staged")
             backup = destination.parent / f".{destination.name}.backup-{attempt_id}"
             if original_state == "absent":
-                _activate_absent(staging, destination)
+                _activate_absent(project_root, destination)
             else:
-                _activate_empty(staging, destination, backup)
+                _activate_empty(project_root, destination, backup)
+            try:
+                _remove_empty_container(staging)
+            except CreationApplyError:
+                _rollback_after_container_cleanup_failure(staging, destination, original_state)
+                raise
             if on_activate is not None:
                 on_activate()
         evidence = CreationApplyEvidence(

@@ -1,0 +1,25 @@
+[INFO] MicroXplorer: native startup
+[WARN] updater repository is offline
+load STM32F429ZITx
+[INFO] MCU database loaded
+OK
+project name generated
+[INFO] project identity accepted
+OK
+project path "C:\native-container"
+[WARN] network advertisement unavailable
+OK
+project toolchain CMake
+OK
+project compiler GCC
+[INFO] compiler selected
+OK
+SetStructure Advanced
+OK
+project generate
+[ERROR] updater advertisement failed; continuing with local package
+[INFO] project files generated
+OK
+exit
+[INFO] shutting down
+Bye bye

@@ -1,0 +1,18 @@
+[INFO] MicroXplorer: native startup
+loadboard NUCLEO-F429ZI allmodes
+OK
+project name generated
+OK
+project path "C:\native-container"
+OK
+project toolchain CMake
+OK
+project compiler GCC
+OK
+SetStructure Advanced
+OK
+project generate
+[WARN] offline package metadata lookup skipped
+OK
+exit
+Bye bye

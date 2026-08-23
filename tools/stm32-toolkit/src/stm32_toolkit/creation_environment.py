@@ -27,7 +27,11 @@ _REPARSE = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
 _PACKAGE_RE = re.compile(r"^STM32Cube_FW_([A-Z0-9]+)_V([0-9][A-Za-z0-9_.-]*)$", re.IGNORECASE)
 _MAX_PACKAGE_METADATA_BYTES = 256 * 1024
 _MAX_PACKAGE_FILES = 200_000
-_MAX_REPOSITORY_DEPTH = 8
+# The official F4 package contains Projects/*/Examples/*/STM32CubeIDE/Example
+# trees 13 components deep; retain a finite bound above that observed shape.
+_MAX_REPOSITORY_DEPTH = 16
+_MAX_MCU_DESCRIPTORS = 10_000
+_MAX_MCU_DESCRIPTOR_BYTES = 2 * 1024 * 1024
 
 
 class CreationEnvironmentError(ValueError):
@@ -179,6 +183,57 @@ def _package_digest(package: Path) -> str:
     return sha256_hex(canonical_json_bytes(entries))
 
 
+def _mcu_descriptor_facts(install: Path, request: CreationRequest) -> tuple[str | None, str | None, str | None]:
+    if request.source.kind != "mcu":
+        return None, None, None
+    root = _safe_directory(install / "db" / "mcu")
+    if root is None:
+        raise CreationEnvironmentError("CUBEMX_MCU_DESCRIPTOR_INVALID", "CubeMX MCU descriptor database is unavailable")
+    expected = f"{request.source.value.casefold()}.xml"
+    matches: list[Path] = []
+    inspected = 0
+    pending = [root]
+    try:
+        while pending:
+            current = pending.pop()
+            children = sorted(current.iterdir(), key=lambda path: path.name.casefold())
+            for child in children:
+                inspected += 1
+                if inspected > _MAX_MCU_DESCRIPTORS:
+                    raise CreationEnvironmentError("CUBEMX_MCU_DESCRIPTOR_INVALID", "CubeMX MCU descriptor inventory is oversized")
+                info = os.lstat(child)
+                if stat.S_ISLNK(info.st_mode) or bool(getattr(info, "st_file_attributes", 0) & _REPARSE):
+                    raise CreationEnvironmentError("CUBEMX_MCU_DESCRIPTOR_INVALID", "CubeMX MCU descriptor database contains a redirect")
+                if stat.S_ISDIR(info.st_mode):
+                    pending.append(child)
+                elif stat.S_ISREG(info.st_mode) and child.name.casefold() == expected:
+                    safe = _safe_regular(child)
+                    if safe is None:
+                        raise CreationEnvironmentError("CUBEMX_MCU_DESCRIPTOR_INVALID", "CubeMX MCU descriptor is unsafe")
+                    matches.append(safe)
+    except CreationEnvironmentError:
+        raise
+    except OSError:
+        raise CreationEnvironmentError("CUBEMX_MCU_DESCRIPTOR_INVALID", "CubeMX MCU descriptors cannot be inspected") from None
+    if len(matches) != 1:
+        raise CreationEnvironmentError("CUBEMX_MCU_DESCRIPTOR_INVALID", "CubeMX MCU descriptor is missing or ambiguous")
+    descriptor = matches[0]
+    try:
+        info = os.lstat(descriptor)
+        if info.st_size > _MAX_MCU_DESCRIPTOR_BYTES:
+            raise CreationEnvironmentError("CUBEMX_MCU_DESCRIPTOR_INVALID", "CubeMX MCU descriptor is oversized")
+        data = descriptor.read_bytes()
+        root_node = ET.fromstring(data.decode("utf-8"))
+    except CreationEnvironmentError:
+        raise
+    except (OSError, UnicodeError, ET.ParseError):
+        raise CreationEnvironmentError("CUBEMX_MCU_DESCRIPTOR_INVALID", "CubeMX MCU descriptor is malformed") from None
+    token = root_node.attrib.get("RefName")
+    if not isinstance(token, str) or not token or token.casefold() != request.source.value.casefold():
+        raise CreationEnvironmentError("CUBEMX_MCU_DESCRIPTOR_INVALID", "CubeMX MCU descriptor RefName disagrees with the request")
+    return token, descriptor.relative_to(install).as_posix(), hashlib.sha256(data).hexdigest()
+
+
 @dataclass(frozen=True, slots=True)
 class CreationExecutionEnvironment:
     """Immutable execution facts bound to one authorized creation."""
@@ -193,6 +248,9 @@ class CreationExecutionEnvironment:
     package_name: str
     package_version: str
     package_sha256: str
+    native_source_token: str | None = None
+    native_descriptor_path: str | None = None
+    native_descriptor_sha256: str | None = None
     cubeclt_root: Path | None = None
     gcc: ToolFact | None = None
     cmake: ToolFact | None = None
@@ -215,6 +273,11 @@ class CreationExecutionEnvironment:
             "java": {"path": _display_path(self.java_executable), "sha256": self.java_sha256},
             "repository": _display_path(self.repository),
             "package": {"path": _display_path(self.package), "name": self.package_name, "version": self.package_version, "sha256": self.package_sha256},
+            "native": {
+                "sourceToken": self.native_source_token,
+                "descriptorPath": self.native_descriptor_path,
+                "descriptorSha256": self.native_descriptor_sha256,
+            },
             "cubeCltRoot": _display_path(self.cubeclt_root) if self.cubeclt_root else None,
             "gcc": self.gcc.to_dict() if self.gcc else None,
             "cmake": self.cmake.to_dict() if self.cmake else None,
@@ -256,6 +319,9 @@ class CreationExecutionEnvironment:
             "packageName": self.package_name,
             "packageVersion": self.package_version,
             "packageSha256": self.package_sha256,
+            "nativeSourceToken": self.native_source_token,
+            "nativeDescriptorPath": self.native_descriptor_path,
+            "nativeDescriptorSha256": self.native_descriptor_sha256,
             "repositoryDigest": self.repository_digest,
             "cubeCltRoot": _display_path(self.cubeclt_root) if self.cubeclt_root else None,
             "digest": self.digest,
@@ -304,7 +370,9 @@ def discover_creation_environment(
     candidates: list[Path] = []
     try:
         for item in sorted(repository_path.iterdir(), key=lambda path: path.name.casefold()):
-            if not _PACKAGE_RE.match(item.name):
+            if not _PACKAGE_RE.fullmatch(item.name):
+                continue
+            if item.suffix.casefold() == ".zip":
                 continue
             safe_item = _safe_directory(item)
             if safe_item is None:
@@ -320,6 +388,7 @@ def discover_creation_environment(
     package = candidates[0]
     name, version = _package_metadata(package)
     package_hash = _package_digest(package)
+    native_token, descriptor_path, descriptor_hash = _mcu_descriptor_facts(install, request)
     try:
         cubemx_hash = _digest_file(cubemx)
         java_hash = _digest_file(sibling)
@@ -336,6 +405,9 @@ def discover_creation_environment(
         package_name=name,
         package_version=version,
         package_sha256=package_hash,
+        native_source_token=native_token,
+        native_descriptor_path=descriptor_path,
+        native_descriptor_sha256=descriptor_hash,
         cubeclt_root=support.cubeclt_root,
         gcc=support.gcc,
         cmake=support.cmake,

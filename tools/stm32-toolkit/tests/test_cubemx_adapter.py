@@ -7,6 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
+import stm32_toolkit.cubemx_adapter as cubemx_adapter_module
 from stm32_toolkit.creation_authorization import ConsumedCreationAuthorization
 from stm32_toolkit.creation_authorization import CreationAuthorizationStore, CreationPrepareRequest
 from stm32_toolkit.cubemx_adapter import (
@@ -69,20 +70,24 @@ def _environment(tmp_path: Path) -> SimpleNamespace:
         cubemx_version="6.18.1-RC2",
         digest="d" * 64,
         repository=repository,
+        native_source_token="STM32F429ZITx",
+        native_descriptor_path=str(tmp_path / "descriptor.xml"),
+        native_descriptor_sha256="e" * 64,
     )
 
 
-def _native_618_transcript(script: str) -> str:
-    """Sanitized native 6.18 transcript: mixed logs and no exit OK."""
-    commands = [line for line in script.splitlines() if line and not line.startswith("#")]
-    output = ["2026-08-23 12:00:00 INFO  native startup", "[WARN] updater offline"]
-    for command in commands:
-        output.append(command)
-        if command == "exit":
-            output.extend(["INFO generation complete", "Bye bye"])
-        else:
-            output.extend(["progress: command accepted", "OK"])
-    return "\n".join(output) + "\n"
+def _native_fixture(name: str, container: Path, control: Path | None = None) -> str:
+    """Load a static hand-sanitized r8 transcript; never derive responses."""
+    fixture = Path(__file__).parent / "fixtures" / "cubemx-6.18" / "native-f429" / f"stdout-{name}-success.txt"
+    text = fixture.read_text(encoding="utf-8")
+    text = text.replace(r"C:\native-container", str(container.resolve()))
+    if control is not None:
+        text = text.replace(r"C:\control", str(control.resolve()))
+    return text
+
+
+def _native_project_root(container: Path) -> None:
+    (container / "generated").mkdir()
 
 
 def test_direct_adapter_call_without_consumed_capability_is_rejected(tmp_path: Path):
@@ -122,7 +127,8 @@ def test_adapter_invokes_one_fixed_bounded_process_without_network_or_wrapper(tm
         assert "login" not in script.lower()
         assert "swmgr" not in script.lower()
         assert "xcubedl" not in script.lower()
-        return ProcessResult(0, _native_618_transcript(script), "", False, 1, False, False)
+        _native_project_root(staging)
+        return ProcessResult(0, _native_fixture("mcu", staging), (Path(__file__).parent / "fixtures" / "cubemx-6.18" / "native-f429" / "stderr-warning.txt").read_text(encoding="utf-8"), False, 1, False, False)
 
     adapter = CubeMXAdapter(_environment(tmp_path), runner=runner)
     result = adapter.generate(_capability(tmp_path), CubeMXStagingContext(staging))
@@ -142,9 +148,9 @@ def test_adapter_invokes_one_fixed_bounded_process_without_network_or_wrapper(tm
 @pytest.mark.parametrize(
     "source_kind,expected_load,expected_name",
     [
-        ("mcu", "load STM32F429ZITX", "STM32F429ZITX"),
-        ("board", "loadboard NUCLEO-F429ZI allmodes", "NUCLEO-F429ZI"),
-        ("ioc", "config load", "board"),
+        ("mcu", "load STM32F429ZITx", "generated"),
+        ("board", "loadboard NUCLEO-F429ZI allmodes", "generated"),
+        ("ioc", "config load", "generated"),
     ],
 )
 def test_source_kind_script_uses_verified_commands_and_safe_deterministic_project(tmp_path: Path, source_kind: str, expected_load: str, expected_name: str):
@@ -155,7 +161,14 @@ def test_source_kind_script_uses_verified_commands_and_safe_deterministic_projec
     def runner(request):
         script = Path(request.argv[-1]).read_text(encoding="utf-8")
         observed.append(script)
-        return ProcessResult(0, _native_618_transcript(script), "", False, 1, False, False)
+        _native_project_root(staging)
+        if source_kind == "mcu":
+            output = _native_fixture("mcu", staging)
+        elif source_kind == "board":
+            output = _native_fixture("board", staging)
+        else:
+            output = _native_fixture("ioc", staging, Path(request.argv[-1]).parent)
+        return ProcessResult(0, output, "", False, 1, False, False)
 
     adapter = CubeMXAdapter(_environment(tmp_path), runner=runner)
     result = adapter.generate(_capability(tmp_path, source_kind=source_kind), CubeMXStagingContext(staging))
@@ -165,7 +178,7 @@ def test_source_kind_script_uses_verified_commands_and_safe_deterministic_projec
     assert f"project name {expected_name}" in script
     assert "SetStructure Advanced" in script
     assert "project structure Advanced" not in script
-    assert "project path" in script and staging.as_posix() in script
+    assert "project path" in script and str(staging.resolve()) in script
     assert Path(result.script_path).parent != staging
     if source_kind == "ioc":
         assert "config load" in script
@@ -179,26 +192,19 @@ def test_adapter_seeds_isolated_updater_repository_configuration_outside_staging
     staging.mkdir()
     adapter = CubeMXAdapter(
         _environment(tmp_path),
-        runner=lambda request: ProcessResult(
+        runner=lambda request: (_native_project_root(staging) or ProcessResult(
             0,
-            _native_618_transcript(Path(request.argv[-1]).read_text(encoding="utf-8")),
+            _native_fixture("mcu", staging),
             "",
             False,
             1,
             False,
             False,
-        ),
+        )),
     )
     result = adapter.generate(_capability(tmp_path), CubeMXStagingContext(staging))
-    control_root = result.control_root
-    assert control_root is not None
-    updater = control_root / "home" / ".stm32cubemx" / "plugins" / "updater" / "updater.ini"
-    assert updater.is_file()
-    updater_text = updater.read_text(encoding="utf-8")
-    assert "[Path]" in updater_text
-    assert "RepositoryPath=" in updater_text
-    assert (tmp_path / "Repository").resolve().as_posix() in updater_text
-    assert control_root != staging
+    assert result.project_root == staging / "generated"
+    assert not hasattr(result, "control_root")
     assert not list(staging.glob(".stm32-toolkit-*"))
 
 
@@ -221,13 +227,42 @@ def test_protocol_failures_are_typed_and_do_not_claim_generation(tmp_path: Path,
     assert error.value.code == code
 
 
+@pytest.mark.parametrize("mutation", ["missing_ok", "duplicate_ok", "reordered", "ko", "duplicate_bye"])
+def test_static_native_transcript_protocol_variants_close(tmp_path: Path, mutation: str):
+    staging = tmp_path / "staging"
+    staging.mkdir()
+    output = _native_fixture("mcu", staging)
+    if mutation == "missing_ok":
+        output = output.replace("OK\nproject name generated", "project name generated", 1)
+    elif mutation == "duplicate_ok":
+        output = output.replace("OK\nproject name generated", "OK\nOK\nproject name generated", 1)
+    elif mutation == "reordered":
+        output = output.replace("project name generated", 'project path "C:\\native-container"', 1)
+    elif mutation == "ko":
+        output = output.replace("OK\nproject name generated", "KO\nproject name generated", 1)
+    else:
+        output += "Bye bye\n"
+
+    def runner(request):
+        _native_project_root(staging)
+        return ProcessResult(0, output, "", False, 1, False, False)
+
+    with pytest.raises(CubeMXAdapterError) as error:
+        CubeMXAdapter(_environment(tmp_path), runner=runner).generate(
+            _capability(tmp_path), CubeMXStagingContext(staging)
+        )
+    assert error.value.code == "CUBEMX_PROTOCOL_INVALID"
+
+
 def test_unrelated_error_log_text_does_not_override_successful_protocol(tmp_path: Path):
     staging = tmp_path / "staging"
     staging.mkdir()
     capability = _capability(tmp_path)
-    expected_script = "load STM32F429ZITX\nproject name STM32F429ZITX\nproject path \"{}\"\nproject toolchain CMake\nproject compiler GCC\nSetStructure Advanced\nproject generate\nexit\n".format(staging.resolve().as_posix())
-    output = "[ERROR] updater advertisement failed\n" + _native_618_transcript(expected_script)
-    adapter = CubeMXAdapter(_environment(tmp_path), runner=lambda request: ProcessResult(0, output, "", False, 1, False, False))
+    output = "[ERROR] updater advertisement failed\n" + _native_fixture("mcu", staging)
+    adapter = CubeMXAdapter(
+        _environment(tmp_path),
+        runner=lambda request: (_native_project_root(staging) or ProcessResult(0, output, "", False, 1, False, False)),
+    )
     result = adapter.generate(capability, CubeMXStagingContext(staging))
     assert result.invocations == 1
 
@@ -254,6 +289,79 @@ def test_adapter_removes_control_root_on_every_native_failure(tmp_path: Path, pr
     with pytest.raises(CubeMXAdapterError):
         adapter.generate(_capability(tmp_path), CubeMXStagingContext(staging))
     assert observed and not observed[0].exists()
+
+
+def test_closed_child_environment_binds_isolated_temp_and_tmp(tmp_path: Path):
+    java = tmp_path / "jre" / "bin" / "java.exe"
+    isolated_home = tmp_path / "control" / "home"
+    repository = tmp_path / "Repository"
+    isolated_temp = tmp_path / "control" / "temp"
+    values = dict(cubemx_adapter_module._closed_environment(java, isolated_home, repository, isolated_temp))
+    assert values["TEMP"] == str(isolated_temp.resolve())
+    assert values["TMP"] == str(isolated_temp.resolve())
+    assert values["STM32_TOOLKIT_HOME"] == str(isolated_home.resolve())
+
+
+def test_adapter_rejects_extra_or_missing_native_output_root(tmp_path: Path):
+    staging = tmp_path / "container"
+    staging.mkdir()
+
+    def runner(request):
+        (staging / "generated").mkdir()
+        (staging / "unexpected").mkdir()
+        return ProcessResult(0, _native_fixture("mcu", staging), "", False, 1, False, False)
+
+    adapter = CubeMXAdapter(_environment(tmp_path), runner=runner)
+    with pytest.raises(CubeMXAdapterError) as error:
+        adapter.generate(_capability(tmp_path), CubeMXStagingContext(staging))
+    assert error.value.code == "CUBEMX_NATIVE_OUTPUT_INVALID"
+    assert not list(staging.parent.glob(".stm32tk-cubemx-control-*"))
+
+
+def test_adapter_cleans_control_root_when_setup_fails(tmp_path: Path, monkeypatch):
+    staging = tmp_path / "container"
+    staging.mkdir()
+
+    def fail_seed(*args, **kwargs):
+        raise CubeMXAdapterError("CUBEMX_NATIVE_OUTPUT_INVALID", "injected setup failure")
+
+    monkeypatch.setattr(cubemx_adapter_module, "_seed_updater", fail_seed)
+    adapter = CubeMXAdapter(_environment(tmp_path), runner=lambda request: pytest.fail("CubeMX must not run"))
+    with pytest.raises(CubeMXAdapterError) as error:
+        adapter.generate(_capability(tmp_path), CubeMXStagingContext(staging))
+    assert error.value.code == "CUBEMX_NATIVE_OUTPUT_INVALID"
+    assert not list(staging.parent.glob(".stm32tk-cubemx-control-*"))
+
+
+def test_ioc_hash_and_staged_bytes_are_one_read(tmp_path: Path, monkeypatch):
+    capability = _capability(tmp_path, source_kind="ioc")
+    staging = tmp_path / "container"
+    staging.mkdir()
+    source = tmp_path / "board.ioc"
+    original = source.read_bytes()
+    reads = 0
+    real_read_bytes = Path.read_bytes
+
+    def read_once(path: Path):
+        nonlocal reads
+        if path.resolve() == source.resolve():
+            reads += 1
+            return original if reads == 1 else b"mutated-after-hash"
+        return real_read_bytes(path)
+
+    monkeypatch.setattr(Path, "read_bytes", read_once)
+    captured: list[bytes] = []
+
+    def runner(request):
+        control = Path(request.argv[-1]).parent
+        captured.append((control / "input.ioc").read_bytes())
+        _native_project_root(staging)
+        return ProcessResult(0, _native_fixture("ioc", staging, control), "", False, 1, False, False)
+
+    adapter = CubeMXAdapter(_environment(tmp_path), runner=runner)
+    adapter.generate(capability, CubeMXStagingContext(staging))
+    assert reads == 1
+    assert captured == [original]
 
 
 @pytest.mark.parametrize(
