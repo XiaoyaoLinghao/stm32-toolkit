@@ -87,3 +87,41 @@
   missing offline firmware repository; REPORT has no format/diff failure.
 - Maximum state is \`IMPLEMENTATION_COMPLETE_ENVIRONMENT_BLOCKED\`, pending
   Sol's independent complete accepted-base-to-final-head review.
+
+## Sol independent review round 3
+
+- Review input: `4120fe47ac1d502aa75a37a1d0e1af4dd5022c6f` in the clean detached
+  worktree `C:/tmp/stm32tk-0702-recovery-review`; the reviewed range was the
+  complete accepted-base-to-final-head diff.
+- Exact 16-file slice: 642/642 passed, zero failures/errors/skips, JUnit
+  `C:/tmp/p0702-sol-r3-slice.xml`. `compileall` and accepted-base
+  `git diff --check` exited 0. Five repetitions of the two independent-process
+  authorization/activation tests passed 10/10.
+- Fresh read-only observation in `C:/tmp/p0702-sol-r3-observe/workspace`:
+  doctor and create-plan exited 0; create-prepare exited 2 with typed
+  `CUBEMX_REPOSITORY_MISSING`; the workspace snapshot was unchanged,
+  `generated` stayed absent, and no CubeMX/Java process remained.
+- Verdict: `REWRITE_REQUIRED`. Finding R3-F1 is a recurrence of the recovered
+  F2 boundary: `test_cubemx_adapter.py::_native_618_transcript` still
+  manufactures a command/OK sequence from the generated script instead of
+  using a captured, sanitized native 6.18 transcript, contrary to the recovery
+  design's explicit prohibition. The green adapter tests therefore do not
+  independently establish the frozen native protocol.
+- Finding R3-F2: an authorized IOC source drift returns the correct
+  `CREATION_PLAN_CHANGED` code but leaves `.stm32tk-cubemx-control-*` on disk.
+  Sol reproduced this in `C:/tmp/p0702-sol-ioc-drift-cleanup`; the recovery
+  contract requires control-root removal on every exit path.
+- Finding R3-F3: the authorized IOC file is read once for its hash and a second
+  time for the staged copy, so the copied bytes are not necessarily the bytes
+  whose digest was authorized. Finding R3-F4: host-path scanning calls
+  `read_bytes()` across native output before the parser enforces file and
+  aggregate byte bounds. Both violate the frozen integrity/bounded-output
+  boundary.
+- Finding R3-F5 is REPORT-only: the implementation report and the rewritten
+  portion of this ledger contain literal escaped Markdown backticks. It does
+  not invalidate passing product evidence but must not be described as a clean
+  report result.
+- Per the recovery plan's explicit stop condition, recurrence of the recovered
+  native interface is a design blocker, not another local patch opportunity.
+  No correction round was dispatched. VS07-B is not accepted and VS07-C
+  remains frozen. No remote, install, hardware, or release action occurred.
