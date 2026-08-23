@@ -31,6 +31,12 @@ from stm32_toolkit.creation_workflows import (
     plan_creation_workflow,
     prepare_creation_workflow,
 )
+from stm32_toolkit.regeneration import RegenerationInputError, RegenerationWorkflowRequest
+from stm32_toolkit.regeneration_workflows import (
+    RegenerationAuthorizationStore,
+    apply_regeneration_workflow,
+    prepare_regeneration_workflow,
+)
 from stm32_toolkit.detection import detect_project
 from stm32_toolkit.diagnostic_workflows import (
     DiagnosticWorkflowContext,
@@ -244,6 +250,25 @@ def _build_parser() -> argparse.ArgumentParser:
     create_apply.add_argument("--authorization-digest", required=True, action=_RejectDuplicate)
     create_apply.add_argument("--authorized", action=_RejectDuplicateTrue, nargs=0, default=False)
     _add_json(create_apply)
+
+    regenerate_plan = project_commands.add_parser("regenerate-plan")
+    _add_project_root(regenerate_plan)
+    regenerate_plan.add_argument("--destination", required=True, action=_RejectDuplicate)
+    _add_json(regenerate_plan)
+
+    regenerate_prepare = project_commands.add_parser("regenerate-prepare")
+    _add_project_root(regenerate_prepare)
+    regenerate_prepare.add_argument("--destination", required=True, action=_RejectDuplicate)
+    regenerate_prepare.add_argument("--plan-id", required=True, action=_RejectDuplicate)
+    regenerate_prepare.add_argument("--action-digest", required=True, action=_RejectDuplicate)
+    regenerate_prepare.add_argument("--authorized", action=_RejectDuplicateTrue, nargs=0, default=False)
+    _add_json(regenerate_prepare)
+
+    regenerate_apply = project_commands.add_parser("regenerate-apply")
+    _add_project_root(regenerate_apply)
+    regenerate_apply.add_argument("--authorization-digest", required=True, action=_RejectDuplicate)
+    regenerate_apply.add_argument("--authorized", action=_RejectDuplicateTrue, nargs=0, default=False)
+    _add_json(regenerate_apply)
 
     configure = project_commands.add_parser("configure")
     _add_workflow_root(configure)
@@ -889,6 +914,14 @@ def _validate_cli_modes(parser: argparse.ArgumentParser, args: argparse.Namespac
         if not args.authorized:
             parser.error("--authorized is required for project create-apply")
         return
+    if args.command == "project" and args.project_command == "regenerate-apply":
+        if not args.authorized:
+            parser.error("--authorized is required for project regenerate-apply")
+        return
+    if args.command == "project" and args.project_command == "regenerate-prepare":
+        if not args.authorized:
+            parser.error("--authorized is required for project regenerate-prepare")
+        return
     if args.command == "project" and args.project_command == "create-prepare":
         return
     apply_mode = getattr(args, "apply", False)
@@ -1113,6 +1146,44 @@ def _operation_result(
                 authorization_digest=args.authorization_digest,
                 authorized=args.authorized,
                 support_profile=support,
+            )
+        if args.project_command == "regenerate-plan":
+            data_root = project_root.parent / ".stm32-toolkit-data"
+            try:
+                request = RegenerationWorkflowRequest(project_root, data_root, "cli", args.destination)
+            except RegenerationInputError as error:
+                return OperationResult.failure("project-regenerate-plan", error.code, error.message, {"field": error.field})
+            from stm32_toolkit.regeneration import plan_regeneration
+
+            return plan_regeneration(request)
+        if args.project_command == "regenerate-prepare":
+            data_root = project_root.parent / ".stm32-toolkit-data"
+            try:
+                request = RegenerationWorkflowRequest(project_root, data_root, "cli", args.destination)
+            except RegenerationInputError as error:
+                return OperationResult.failure("project-regenerate-prepare", error.code, error.message, {"field": error.field})
+            return prepare_regeneration_workflow(
+                request,
+                plan_id=args.plan_id,
+                action_digest=args.action_digest,
+                authorized=args.authorized,
+            )
+        if args.project_command == "regenerate-apply":
+            data_root = project_root.parent / ".stm32-toolkit-data"
+            store = RegenerationAuthorizationStore(data_root)
+            try:
+                bound = store.peek(args.authorization_digest)
+                destination = bound.destination
+            except Exception:
+                # Keep the request grammar closed; the workflow returns the
+                # typed authorization failure without exposing record details.
+                destination = "invalid"
+            request = RegenerationWorkflowRequest(project_root, data_root, "cli", destination)
+            return apply_regeneration_workflow(
+                request,
+                authorization_digest=args.authorization_digest,
+                authorized=args.authorized,
+                store=store,
             )
         return configure_project_workflow(
             project_root,

@@ -33,6 +33,12 @@ from stm32_toolkit.creation_workflows import (
     plan_creation_workflow,
     prepare_creation_workflow,
 )
+from stm32_toolkit.regeneration import RegenerationWorkflowRequest
+from stm32_toolkit.regeneration_workflows import (
+    RegenerationAuthorizationStore,
+    apply_regeneration_workflow,
+    prepare_regeneration_workflow,
+)
 from stm32_toolkit.detection import detect_project
 from stm32_toolkit.diagnostic_workflows import (
     DiagnosticWorkflowContext,
@@ -576,6 +582,55 @@ def tool_project_create_apply(
     return result.to_dict() if hasattr(result, "to_dict") else result
 
 
+def tool_project_regenerate_plan(
+    runtime: ServerRuntime,
+    destination: str,
+) -> dict[str, object]:
+    request = RegenerationWorkflowRequest(runtime.project_root, runtime.data_root, runtime.session_id, destination)
+    from stm32_toolkit.regeneration import plan_regeneration
+
+    return plan_regeneration(request, support_profile=runtime.support_profile).to_dict()
+
+
+def tool_project_regenerate_prepare(
+    runtime: ServerRuntime,
+    destination: str,
+    plan_id: str,
+    action_digest: str,
+    authorized: bool,
+) -> dict[str, object]:
+    request = RegenerationWorkflowRequest(runtime.project_root, runtime.data_root, runtime.session_id, destination)
+    result = prepare_regeneration_workflow(
+        request,
+        plan_id=plan_id,
+        action_digest=action_digest,
+        authorized=authorized,
+        support_profile=runtime.support_profile,
+    )
+    return result.to_dict()
+
+
+def tool_project_regenerate_apply(
+    runtime: ServerRuntime,
+    authorization_digest: str,
+    authorized: bool,
+) -> dict[str, object]:
+    store = RegenerationAuthorizationStore(runtime.data_root)
+    try:
+        destination = store.peek(authorization_digest).destination
+    except Exception:
+        destination = "invalid"
+    request = RegenerationWorkflowRequest(runtime.project_root, runtime.data_root, runtime.session_id, destination)
+    result = apply_regeneration_workflow(
+        request,
+        authorization_digest=authorization_digest,
+        authorized=authorized,
+        support_profile=runtime.support_profile,
+        store=store,
+    )
+    return result.to_dict()
+
+
 def tool_keil_inspect(
     runtime: ServerRuntime,
     uvprojx: str | None = None,
@@ -702,6 +757,49 @@ async def tool_project_create_apply_for_request(
     if failure is not None:
         return failure
     return tool_project_create_apply(runtime, authorization_digest, authorized)
+
+
+async def tool_project_regenerate_plan_for_request(
+    runtime: ServerRuntime,
+    context: Context | None,
+    destination: str,
+) -> dict[str, object]:
+    failure = await _client_roots_failure(runtime, context, "project-regenerate-plan")
+    if failure is not None:
+        return failure
+    try:
+        return tool_project_regenerate_plan(runtime, destination)
+    except ValueError:
+        return OperationResult.failure("project-regenerate-plan", "REGENERATION_INPUT_INVALID", "regeneration input is invalid", {}).to_dict()
+
+
+async def tool_project_regenerate_prepare_for_request(
+    runtime: ServerRuntime,
+    context: Context | None,
+    destination: str,
+    plan_id: str,
+    action_digest: str,
+    authorized: bool,
+) -> dict[str, object]:
+    failure = await _client_roots_failure(runtime, context, "project-regenerate-prepare")
+    if failure is not None:
+        return failure
+    try:
+        return tool_project_regenerate_prepare(runtime, destination, plan_id, action_digest, authorized)
+    except ValueError:
+        return OperationResult.failure("project-regenerate-prepare", "REGENERATION_INPUT_INVALID", "regeneration input is invalid", {}).to_dict()
+
+
+async def tool_project_regenerate_apply_for_request(
+    runtime: ServerRuntime,
+    context: Context | None,
+    authorization_digest: str,
+    authorized: bool,
+) -> dict[str, object]:
+    failure = await _client_roots_failure(runtime, context, "project-regenerate-apply")
+    if failure is not None:
+        return failure
+    return tool_project_regenerate_apply(runtime, authorization_digest, authorized)
 
 
 async def tool_keil_inspect_for_request(
@@ -1603,6 +1701,35 @@ def create_server(
             runtime, ctx, authorizationDigest, authorized
         )
 
+    @mcp.tool(name="stm32_project_regenerate_plan")
+    async def stm32_project_regenerate_plan(
+        ctx: Context,
+        destination: ProjectRelativePath,
+    ) -> dict[str, object]:
+        return await tool_project_regenerate_plan_for_request(runtime, ctx, destination)
+
+    @mcp.tool(name="stm32_project_regenerate_prepare")
+    async def stm32_project_regenerate_prepare(
+        ctx: Context,
+        destination: ProjectRelativePath,
+        planId: Digest,
+        actionDigest: Digest,
+        authorized: StrictBool,
+    ) -> dict[str, object]:
+        return await tool_project_regenerate_prepare_for_request(
+            runtime, ctx, destination, planId, actionDigest, authorized
+        )
+
+    @mcp.tool(name="stm32_project_regenerate_apply")
+    async def stm32_project_regenerate_apply(
+        ctx: Context,
+        authorizationDigest: Digest,
+        authorized: StrictBool,
+    ) -> dict[str, object]:
+        return await tool_project_regenerate_apply_for_request(
+            runtime, ctx, authorizationDigest, authorized
+        )
+
     @mcp.tool(name="stm32_keil_inspect")
     async def stm32_keil_inspect(
         ctx: Context,
@@ -2052,6 +2179,9 @@ def create_server(
         (
             "stm32_test_host_discover",
             "stm32_project_create_plan",
+            "stm32_project_regenerate_plan",
+            "stm32_project_regenerate_prepare",
+            "stm32_project_regenerate_apply",
             "stm32_test_host_run",
             "stm32_test_show",
             "stm32_test_target_prepare",

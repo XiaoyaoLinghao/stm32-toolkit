@@ -37,6 +37,18 @@ stm32-toolkit project create-apply --project-root . --authorization-digest AUTHO
 
 Prepare 不改变目标目录。Apply 在同卷 sibling staging 中运行 CubeMX，校验原生 CMake/IOC 事实，复用 Toolkit configure 以及 Debug/Release 构建，并在两次构建成功后才激活。重放、漂移、缺少 Cube firmware repository、协议/构建失败或激活失败都会返回 typed error，目标不会留下半工程。MCP 等价工具是 `stm32_project_create_prepare` 与 `stm32_project_create_apply`。已验证的本地主机具备 CubeMX 6.18.1-RC2、CubeCLT 1.22.0 与 `STM32Cube_FW_F4_V1.28.3` 离线 package。本地候选已完成 MCU 与 captured-IOC 原生软件场景，包括 configure、Debug/Release 构建、激活和残留检查，并通过 Sol 对完整 diff 的独立审查。未执行硬件、安装、远程或 release 操作。
 
+## VS07-C 安全重新生成（本地 0.7 候选）
+
+对于 VS07-B 创建的 schema-3 CubeMX 工程，可先预览 IOC 重新生成，再明确授权：
+
+```powershell
+stm32-toolkit project regenerate-plan --project-root . --destination generated --json
+stm32-toolkit project regenerate-prepare --project-root . --destination generated --plan-id PLAN_ID --action-digest ACTION_DIGEST --authorized --json
+stm32-toolkit project regenerate-apply --project-root . --authorization-digest AUTHORIZATION_DIGEST --authorized --json
+```
+
+Plan 完全只读，只有在明确授权后 preview 才会运行 CubeMX。Apply 消费一次与 preview 绑定的 capability，以字节级保留 `App/` 与 `Tests/`，拒绝未知或漂移的 ownership，重新运行并核对完全相同的 preview，在隔离 staging 中完成 Debug/Release configure/build 后原子激活。Schema-2 Keil 工程返回 `REGENERATION_NOT_CUBEMX_PROJECT`；本候选不重新生成 Keil 工程、不烧录硬件，也不作 release 声明。MCP 等价工具是 `stm32_project_regenerate_plan`、`stm32_project_regenerate_prepare` 和 `stm32_project_regenerate_apply`。
+
 ## 从 GitHub 安装
 
 本插件直接从 GitHub 分发，不进入公开目录。以 user scope 安装一次：

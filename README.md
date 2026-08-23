@@ -37,6 +37,18 @@ stm32-toolkit project create-apply --project-root . --authorization-digest AUTHO
 
 Preparation is destination-read-only. Apply generates in sibling staging, validates native CMake/IOC facts, reuses Toolkit configure plus Debug and Release builds, and activates only after both builds succeed. Replays, drift, missing Cube firmware repositories, protocol/build failures, or activation failures close with typed errors and no half-created destination. The MCP equivalents are `stm32_project_create_prepare` and `stm32_project_create_apply`. The verified host has CubeMX 6.18.1-RC2, CubeCLT 1.22.0, and the `STM32Cube_FW_F4_V1.28.3` offline package. This local candidate completed the MCU and captured-IOC native software scenarios, including configure, Debug/Release builds, activation, and residue checks, and passed Sol's independent complete-diff review. No hardware, installation, remote, or release action was performed.
 
+## VS07-C safe regeneration (local 0.7 candidate)
+
+For an existing schema-3 CubeMX project created by VS07-B, review an IOC regeneration before authorizing it:
+
+```powershell
+stm32-toolkit project regenerate-plan --project-root . --destination generated --json
+stm32-toolkit project regenerate-prepare --project-root . --destination generated --plan-id PLAN_ID --action-digest ACTION_DIGEST --authorized --json
+stm32-toolkit project regenerate-apply --project-root . --authorization-digest AUTHORIZATION_DIGEST --authorized --json
+```
+
+The plan is read-only and the preview runs CubeMX only after explicit authorization. Apply consumes one preview-bound capability, preserves `App/` and `Tests/` byte-for-byte, rejects unknown or drifted ownership, reruns the exact preview, configures and builds Debug/Release in isolated staging, and activates atomically. Schema-2 Keil projects receive `REGENERATION_NOT_CUBEMX_PROJECT`; this candidate does not regenerate Keil projects, flash hardware, or make a release claim. MCP equivalents are `stm32_project_regenerate_plan`, `stm32_project_regenerate_prepare`, and `stm32_project_regenerate_apply`.
+
 ## Install directly from GitHub
 
 The plugin is distributed directly from GitHub, not a public catalog. Install it once at user scope:
