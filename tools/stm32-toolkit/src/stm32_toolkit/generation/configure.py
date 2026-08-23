@@ -426,9 +426,33 @@ def _validate_memory(model: ProjectModel) -> None:
 
 def _memory_region_roles(model: ProjectModel) -> tuple[str, str]:
     flash = next(
-        region.name for region in model.memory.regions if "x" in region.attributes
+        (
+            region.name
+            for region in model.memory.regions
+            if "x" in region.attributes and "w" not in region.attributes
+        ),
+        None,
     )
-    ram = next(region.name for region in model.memory.regions if "w" in region.attributes)
+    if flash is None:
+        raise _raise_error(
+            "GENERATION_MODEL_INVALID",
+            "an executable non-writable memory region is required for Flash",
+            {"field": "memory.regions", "rule": "flashRole"},
+        )
+    ram = next(
+        (
+            region.name
+            for region in model.memory.regions
+            if "w" in region.attributes and region.name != flash
+        ),
+        None,
+    )
+    if ram is None:
+        raise _raise_error(
+            "GENERATION_MODEL_INVALID",
+            "a distinct writable memory region is required for RAM",
+            {"field": "memory.regions", "rule": "ramRole"},
+        )
     return flash, ram
 
 

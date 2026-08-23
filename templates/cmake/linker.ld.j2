@@ -107,11 +107,11 @@ SECTIONS
 
   .stack _sstack (NOLOAD) :
   {
-    . = _sstack;
     __StackLimit = .;
     . += _Min_Stack_Size;
     __StackTop = .;
   } > {{ ram_region }}
 
-  ASSERT(__HeapLimit <= _sstack, "heap and stack overlap")
+  ASSERT(__HeapLimit <= __StackLimit, "heap and stack overlap")
+  ASSERT(__StackTop == _estack, "stack does not reach _estack")
 }

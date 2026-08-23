@@ -226,13 +226,13 @@ SECTIONS
 
   .stack _sstack (NOLOAD) :
   {
-    . = _sstack;
     __StackLimit = .;
     . += _Min_Stack_Size;
     __StackTop = .;
   } > RAM
 
-  ASSERT(__HeapLimit <= _sstack, "heap and stack overlap")
+  ASSERT(__HeapLimit <= __StackLimit, "heap and stack overlap")
+  ASSERT(__StackTop == _estack, "stack does not reach _estack")
 }
 """
 
@@ -1034,6 +1034,45 @@ def test_no_writable_region_is_rejected(tmp_path):
     assert error.value.details == {"field": "memory.regions", "rule": "writable"}
 
 
+def test_native_memory_order_selects_flash_and_primary_ram_by_attributes(tmp_path):
+    payload = standard_payload()
+    payload["memory"]["regions"] = [
+        {"name": "RAM", "origin": 0x20000000, "length": 0x30000, "attributes": "rwx"},
+        {"name": "CCMRAM", "origin": 0x10000000, "length": 0x10000, "attributes": "rwx"},
+        {"name": "FLASH", "origin": 0x08000000, "length": 0x200000, "attributes": "r-x"},
+    ]
+    root = write_project(tmp_path / "proj", payload)
+    plan = plan_for(root)
+    linker = next(entry for entry in plan.files if entry.path == "linker/stm32tk.ld")
+    text = linker.after_bytes.decode("utf-8")
+    assert "_estack = ORIGIN(RAM) + LENGTH(RAM);" in text
+    assert "  } > FLASH\n\n  .text" in text
+    assert "  } > FLASH\n\n  .ARM.extab" in text
+    assert "  } > FLASH\n\n  .ARM.exidx" in text
+    assert "  } > RAM AT> FLASH" in text
+
+
+@pytest.mark.parametrize(
+    "regions",
+    [
+        [
+            {"name": "RAM", "origin": 0x20000000, "length": 0x30000, "attributes": "rwx"},
+            {"name": "CCMRAM", "origin": 0x10000000, "length": 0x10000, "attributes": "rwx"},
+        ],
+        [
+            {"name": "FLASH", "origin": 0x08000000, "length": 0x200000, "attributes": "r-x"},
+        ],
+    ],
+)
+def test_native_memory_roles_fail_closed_when_flash_or_ram_role_is_absent(tmp_path, regions):
+    payload = standard_payload()
+    payload["memory"]["regions"] = regions
+    root = write_project(tmp_path / "proj", payload)
+    with pytest.raises(GenerationError) as error:
+        plan_for(root)
+    assert error.value.code == "GENERATION_MODEL_INVALID"
+
+
 def test_negative_origin_and_bool_ranges_are_rejected_directly(tmp_path):
     root = write_project(tmp_path / "proj")
     model = load_project_model(root)
@@ -1486,6 +1525,20 @@ def test_linker_snapshot_no_fixed_sections(tmp_path):
     assert entry.after_bytes == EXPECTED_LINKER.encode("utf-8")
 
 
+def test_linker_stack_uses_absolute_section_address_once_and_actual_bounds(tmp_path):
+    root = write_project(tmp_path / "proj")
+    plan = plan_for(root)
+    entry = next(entry for entry in plan.files if entry.path == "linker/stm32tk.ld")
+    text = entry.after_bytes.decode("utf-8")
+    stack = text.split(".stack _sstack (NOLOAD) :", 1)[1].split("} > RAM", 1)[0]
+    assert ". = _sstack" not in stack
+    assert stack.count(". += _Min_Stack_Size;") == 1
+    assert "__StackLimit = .;" in stack
+    assert "__StackTop = .;" in stack
+    assert "ASSERT(__HeapLimit <= __StackLimit" in text
+    assert "ASSERT(__StackTop == _estack" in text
+
+
 def test_linker_snapshot_with_ccm_region_preserves_order(tmp_path):
     payload = standard_payload()
     payload["memory"]["regions"] = [
@@ -1530,6 +1583,7 @@ def test_linker_memory_attributes_normalized_for_gnu_ld(tmp_path, attrs, expecte
     payload["memory"]["regions"] = [
         {"name": "FLASH", "origin": 0x08000000, "length": 0x100000, "attributes": attrs},
         {"name": "RAM", "origin": 0x20000000, "length": 0x20000, "attributes": "rwx"},
+        {"name": "CODE", "origin": 0x09000000, "length": 0x100000, "attributes": "r-x"},
     ]
     root = write_project(tmp_path / "proj", payload)
     plan = plan_for(root)
@@ -1735,7 +1789,7 @@ def test_runtime_link_contract_has_native_startup_and_newlib_symbols(tmp_path):
         "__fini_array_end",
     ):
         assert symbol in linker_text
-    assert "ASSERT(__HeapLimit <= _sstack" in linker_text
+    assert "ASSERT(__HeapLimit <= __StackLimit" in linker_text
 
     no_fpu = standard_payload()
     no_fpu["target"] = {"device": "X", "core": "cortex-m3"}
