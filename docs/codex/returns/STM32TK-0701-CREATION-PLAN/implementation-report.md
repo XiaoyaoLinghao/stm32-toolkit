@@ -1,8 +1,10 @@
 # STM32TK-0701 VS07-A implementation report
 
 Status: `IMPLEMENTED_PENDING_INDEPENDENT_REVIEW`. This is the replacement
-implementer's evidence record, not an acceptance decision. Sol must review the
-complete accepted-base-to-final-head diff independently.
+implementer's evidence record, not an acceptance decision. Sol's round-1
+review at `31dbf436` was `REVISION_REQUIRED`; its F1-F6 findings are addressed
+in the product/test revision below. Sol must review the complete
+accepted-base-to-final-head diff independently.
 
 ## Ownership and source ledger
 
@@ -12,7 +14,7 @@ complete accepted-base-to-final-head diff independently.
 - Execution plan: `docs/superpowers/plans/2026-08-23-stm32-toolkit-0701-discovery-boundary-rewrite.md`.
 - Implementer: the user-authorized replacement GPT-5.6-luna/max owner `/root/vs07a_replacement`.
 - Reviewer/acceptor: GPT-5.6-sol primary agent; the implementer did not approve this diff.
-- CodeHead before this report commit: `88eb8e03` (the report does not record its own final commit SHA).
+- CodeHead before this report commit: `04d12e97` (the report does not record its own final commit SHA).
 - Branch/worktree: `codex/STM32TK-0701-CREATION-PLAN` / `C:\tmp\stm32tk-0701-creation-plan`.
 - Remote authority: none. No push, fetch, PR, merge, tag, release, installation, hardware, CubeMX execution, VS07-B, or VS07-C action was performed.
 
@@ -39,6 +41,13 @@ Product/test commits before this report are:
 - `864b331d` — `fix(project): close creation planning contracts`
 - `cdaebaae` — `fix(project): normalize native discovery evidence`
 - `88eb8e03` — `refactor(project): remove legacy discovery fallbacks`
+- `04d12e97` — `fix(project): harden discovery evidence boundaries`
+
+The final correction removes the cross-call discovery issue state and returns
+typed static resolutions per call; preserves stale present registry values for
+common invalid-evidence classification; bounds combined stdout/stderr capture
+and terminates/reaps timed-out probes; closes support-profile schema and
+content validation; and requires the dotted `6.18.` CubeMX version prefix.
 
 ## Strict TDD evidence
 
@@ -72,6 +81,26 @@ blocker ordering, and the missing fixed-clock seam in three workflow/adapter
 proofs. The final focused command passed 40 tests, exit 0, with no skip/xfail,
 using `C:\tmp\p0701-final-task2b`.
 
+Sol round-1 correction RED was run after adding every F1-F6 regression proof,
+before changing the product. The targeted command exited `1` with nine
+expected failures: the shared discovery issue race, stale App Paths
+prefiltering, two-stream capture of twice the configured limit, four
+open-schema/fallback cases, and the two invalid CubeMX version-boundary cases.
+The timeout, content-size/encoding/JSON behavior, missing-profile, and
+supported-version controls were retained as passing RED controls.
+
+The corresponding GREEN targeted command passed 16 tests, exit `0`, with no
+skip/xfail. The full discovery and doctor command then passed 74 tests, exit
+`0`, with no skip/xfail.
+
+```text
+py -3.12 -m pytest tools/stm32-toolkit/tests/test_tool_support.py -k "overlapping or stale_app_paths or bounded_runner or support_profile_schema or support_profile_content or missing_support_profile or cubemx_version_requires" -q --tb=short --basetemp C:\tmp\p0701-review-red-targeted2
+py -3.12 -m pytest tools/stm32-toolkit/tests/test_tool_support.py tools/stm32-toolkit/tests/test_doctor.py -q --basetemp C:\tmp\p0701-review-green-focused
+```
+
+The targeted GREEN used disposable basetemp `C:\tmp\p0701-review-green-targeted`;
+the full focused GREEN used `C:\tmp\p0701-review-green-focused`.
+
 The first real observation also exposed a `PRODUCT` discovery defect: absent
 known-layout constants were treated as invalid candidates and the native
 CubeCLT command emitted single-backslash Windows paths to component `bin`
@@ -82,15 +111,15 @@ metadata regression test and commit `cdaebaae`.
 
 ## Exact complete VS07-A slice
 
-The required command was run on `88eb8e03` with the worktree `src` first on
-`PYTHONPATH` and short disposable TEMP/basetemp `C:\tmp\p0701-slice-4`:
+The required command was run on `04d12e97` with the worktree `src` first on
+`PYTHONPATH` and short disposable TEMP/basetemp `C:\tmp\p0701-slice-review`:
 
 ```text
-py -3.12 -m pytest tools/stm32-toolkit/tests/test_tool_support.py tools/stm32-toolkit/tests/test_doctor.py tools/stm32-toolkit/tests/test_creation_plan.py tools/stm32-toolkit/tests/test_creation_workflows.py tools/stm32-toolkit/tests/test_creation_cli.py tools/stm32-toolkit/tests/test_creation_mcp.py tools/stm32-toolkit/tests/test_generation.py tools/stm32-toolkit/tests/test_workflows.py tools/stm32-toolkit/tests/test_cli.py tools/stm32-toolkit/tests/test_mcp_server.py tools/stm32-toolkit/tests/test_mcp_roots.py -q --basetemp C:\tmp\p0701-slice-4
+py -3.12 -m pytest tools/stm32-toolkit/tests/test_tool_support.py tools/stm32-toolkit/tests/test_doctor.py tools/stm32-toolkit/tests/test_creation_plan.py tools/stm32-toolkit/tests/test_creation_workflows.py tools/stm32-toolkit/tests/test_creation_cli.py tools/stm32-toolkit/tests/test_creation_mcp.py tools/stm32-toolkit/tests/test_generation.py tools/stm32-toolkit/tests/test_workflows.py tools/stm32-toolkit/tests/test_cli.py tools/stm32-toolkit/tests/test_mcp_server.py tools/stm32-toolkit/tests/test_mcp_roots.py -q --basetemp C:\tmp\p0701-slice-review
 ```
 
-Result: exit `0`, 507 passed, zero failures/errors, zero skips, zero xfails.
-Collection counts were: `test_tool_support.py` 30, `test_doctor.py` 28,
+Result: exit `0`, 523 passed, zero failures/errors, zero skips, zero xfails.
+Collection counts were: `test_tool_support.py` 46, `test_doctor.py` 28,
 `test_creation_plan.py` 19, `test_creation_workflows.py` 5,
 `test_creation_cli.py` 10, `test_creation_mcp.py` 6, `test_generation.py` 276,
 `test_workflows.py` 79, `test_cli.py` 26, `test_mcp_server.py` 15, and
@@ -99,7 +128,7 @@ from `test_main_guard_raises_system_exit_when_run_as_module`.
 
 ## Fresh real read-only observation
 
-Observation workspace: `C:\tmp\stm32tk-0701-observe-recovery-final-20260823-2`.
+Observation workspace: `C:\tmp\stm32tk-0701-observe-review-20260823-1`.
 It contained one pre-existing fixture, `seed.bin`, size 6, SHA-256
 `ae4442edeb4b16dd3caae01dc9f9f536ae4cb6dc78e56f5d540469de83b32779`.
 The relative name/size/hash snapshot before and after both commands was
@@ -109,10 +138,10 @@ after.
 Commands and results:
 
 ```text
-py -3.12 -m stm32_toolkit.cli doctor --project-root C:\tmp\stm32tk-0701-observe-recovery-final-20260823-2 --json
+py -3.12 -m stm32_toolkit.cli doctor --project-root C:\tmp\stm32tk-0701-observe-review-20260823-1 --json
 exit 0
 
-py -3.12 -m stm32_toolkit.cli project create-plan --project-root C:\tmp\stm32tk-0701-observe-recovery-final-20260823-2 --source-kind mcu --source STM32F429ZITx --destination generated --framework hal --language c --json
+py -3.12 -m stm32_toolkit.cli project create-plan --project-root C:\tmp\stm32tk-0701-observe-review-20260823-1 --source-kind mcu --source STM32F429ZITx --destination generated --framework hal --language c --json
 exit 0
 ```
 
@@ -126,7 +155,8 @@ CMake `4.3.1`, SHA-256
 `f05482595d42888f2befe209d8aa4848560c8a05356411043241a15e7d3f86a7`; and
 Ninja `1.13.2`, SHA-256
 `09478fb9503b6a8884b033f423148844b33f9caa179be8244f09b672b6d437d9`.
-VS Code was absent and the sole support issue was `VSCODE_MISSING`.
+The stale registered VS Code value was present but invalid, so the sole
+support issue was `VSCODE_INVALID`; it was not used as a creation blocker.
 
 The create-plan result had `blockers=[]`, `mutated=false`, and no destination
 or source mutation. This observation is read-only evidence; no CubeMX process
@@ -134,24 +164,25 @@ was started.
 
 ## Failure classification and boundaries
 
-- `PRODUCT` — the five Task 2 RED cases and the native discovery defect above;
-  both were corrected and covered by GREEN evidence.
-- `ENVIRONMENT` — real VS Code absence (`VSCODE_MISSING`) and the denied
-  Windows symlink privilege during the first fixture attempt. The latter was
-  removed from the final test path by deterministic reparse simulation.
+- `PRODUCT` — the five Task 2 RED cases, the native discovery defect above,
+  and Sol round-1 F1-F6; all were corrected and covered by GREEN evidence.
+- `ENVIRONMENT` — the host's stale VS Code App Paths value is reported as
+  `VSCODE_INVALID`, and the denied Windows symlink privilege during the first
+  fixture attempt. The latter was removed from the final test path by
+  deterministic reparse simulation.
 - `DEFERRED` — no hardware, package/install, CubeMX generation, VS07-B, or
   VS07-C evidence was requested or authorized for this slice.
 
 ## Diff and local state
 
 Against the named product base, `git diff --check
-d09e2343ab970f4ddeaa4c24dbf581c9bbe96f58..88eb8e03` exited 0. Against the
-governance head, the product/test diff contains only the nine in-scope files:
-`tool_support.py`, `creation.py`, `creation_workflows.py`, `cli.py`, and the
-five corresponding discovery/creation test files (including the existing MCP
-test updates). No out-of-scope product path was changed by this recovery slice.
+d09e2343ab970f4ddeaa4c24dbf581c9bbe96f58..04d12e97` exited 0. The latest
+review correction diff from `31dbf436..04d12e97` contains only
+`tools/stm32-toolkit/src/stm32_toolkit/tool_support.py` and
+`tools/stm32-toolkit/tests/test_tool_support.py`; the complete recovery
+product/test commits remain within the frozen discovery and creation slice.
 
 Before this report commit, `git status --short --branch` was clean at
-`88eb8e03`; the branch is local-only and has no upstream or remote mutation.
+`04d12e97`; the branch is local-only and has no upstream or remote mutation.
 The report and SDD ledger are the only changes in the separate documentation
 commit that follows. Sol remains the independent acceptance authority.
