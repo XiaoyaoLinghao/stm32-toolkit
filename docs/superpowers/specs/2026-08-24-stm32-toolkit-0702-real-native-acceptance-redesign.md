@@ -155,26 +155,29 @@ native acceptance creates an isolated local repository and initial commit as
 test setup, with command-scoped identity and no remote, before invoking the
 public plan/prepare/apply path.
 
-Toolkit continues to own one deterministic CMake/linker configuration rather
-than copying the device-specific CubeMX linker script. That owned runtime
-contract must nevertheless link the real CubeMX startup and generated newlib
-support. The CMake target therefore uses compiler-managed start files (no
-`-nostartfiles`), the installed `nano.specs` and `nosys.specs`, and `libm`.
-The generated linker exports the startup data/BSS symbols, `_estack` and
-`_sstack`, `_end`/`end`, exception-index bounds, and preinit/init/fini array
-bounds consumed by `__libc_init_array`. Stack top is the end of the selected
-writable RAM region; heap and stack reservations have an explicit non-overlap
-assertion. The exact real MCU build, not template-string assertions alone, is
-the acceptance evidence for this contract.
+Two local attempts to reconstruct the CubeMX runtime from memory regions did
+not converge: after resolving startup/newlib symbols, real linking still found
+absolute location-counter errors in the reconstructed heap/stack sections.
+That reconstruction strategy is superseded.
 
-Memory-region order is not a role declaration: real F429 output orders
-`RAM (rwx)`, `CCMRAM (rwx)`, then `FLASH (rx)`. Toolkit selects the first
-executable, non-writable region as code/Flash and then the first distinct
-writable region as primary RAM. It fails configuration when either role is
-absent instead of treating executable RAM as Flash. `_sstack` is applied only
-as the `.stack` output-section address; the section body advances exactly the
-configured stack size to `_estack` and never assigns the absolute address a
-second time. The heap/stack assertion compares their actual bounds.
+For a native CubeMX project, CubeMX remains the sole owner of the device-level
+linker/runtime script it generated. `NativeProjectModel.linker_script` is
+published as an optional, portable `generation.nativeLinkerScript` field in the
+schema-3 manifest. It must be a bounded, non-redirecting regular file already
+present in the strict native inventory and CubeMX ownership manifest. Toolkit
+does not copy, reinterpret, or generate `linker/stm32tk.ld` for that native
+mode. It owns the CMake target, presets, editor configuration, managed-file
+manifest, build identity, and drift checks; its CMake target references the
+bound native linker and uses compiler-managed start files, the installed
+`nano.specs` and `nosys.specs`, and `libm`.
+
+The native linker is a configuration input and a build-snapshot input, so its
+exact bytes affect configuration and firmware identities and drift is rejected.
+The managed-file manifest omits the generic linker target in native mode and
+never mislabels vendor bytes as a Toolkit template. Projects without
+`generation.nativeLinkerScript` retain the pre-redesign generic linker and link
+behavior byte-for-byte. This is one mode switch on an existing public model,
+not a second parser or build backend.
 
 ## 6. Acceptance and sequencing
 

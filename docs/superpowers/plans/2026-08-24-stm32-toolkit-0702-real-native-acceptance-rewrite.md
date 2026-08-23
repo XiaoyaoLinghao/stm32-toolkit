@@ -134,6 +134,17 @@ report and VS07-B SDD ledger after product CodeHead is committed.
   and apply `_sstack` only as the section address. Repeat focused tests and one
   real MCU Debug+Release build. If this same runtime/link boundary still fails,
   stop local patching and return to integration design.
+- [ ] Replace the non-converged reconstruction strategy as one integration
+  rewrite. Add optional schema/model field
+  `generation.nativeLinkerScript`; bind it to the parser's existing strict
+  native linker path/inventory/ownership row; include its bytes in configure
+  inputs and build snapshots; render native CMake with that path plus start
+  files, nano/nosys specs, and `libm`; omit `linker/stm32tk.ld` from native
+  managed targets. Restore generic non-native linker/render behavior to its
+  pre-runtime-recovery bytes. Prove schema/path/drift/managed-ownership and
+  generic compatibility RED/GREEN, then run one real MCU Debug+Release apply.
+  This is the only implementation round for the redesigned boundary; another
+  runtime/link failure is `REWRITE_REQUIRED`.
 - [ ] Run `compileall`, accepted-base `git diff --check`, inspect the complete
   diff/status, and confirm the branch has no upstream/push.
 - [ ] Commit product/tests before reports. Then rewrite the implementation
