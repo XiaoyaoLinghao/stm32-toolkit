@@ -13,6 +13,8 @@ from stm32_toolkit.mcp_server import (
     tool_doctor,
     tool_project_create_plan,
     tool_project_create_plan_for_request,
+    tool_project_create_prepare,
+    tool_project_create_apply,
 )
 from stm32_toolkit.tool_support import ToolFact, ToolSupportProfile
 
@@ -155,3 +157,24 @@ def test_cli_and_mcp_creation_plan_parity_uses_fixed_clock_and_profile(tmp_path:
     )
     assert exit_code == 0
     assert cli_payload["data"] == mcp_payload["data"]
+
+
+def test_mcp_registers_prepare_and_apply_with_closed_schemas(tmp_path: Path):
+    server = create_server(tmp_path, tmp_path.parent / "data-public", "session")
+    tools = asyncio.run(server.list_tools())
+    prepare = next(item for item in tools if item.name == "stm32_project_create_prepare")
+    apply = next(item for item in tools if item.name == "stm32_project_create_apply")
+    assert set(prepare.inputSchema["properties"]) == {"sourceKind", "source", "destination", "framework", "language", "planId", "actionDigest"}
+    assert set(apply.inputSchema["properties"]) == {"authorizationDigest", "authorized"}
+
+
+def test_mcp_prepare_and_apply_adapters_share_typed_workflows(tmp_path: Path, monkeypatch):
+    runtime = ServerRuntime.create(tmp_path, tmp_path.parent / "data-public-adapters", "session")
+    from stm32_toolkit.result import OperationResult
+    import stm32_toolkit.mcp_server as mcp
+    monkeypatch.setattr(mcp, "prepare_creation_workflow", lambda request, **kwargs: OperationResult.success("project-create-prepare", {"mutated": False}).to_dict())
+    monkeypatch.setattr(mcp, "apply_creation_workflow", lambda request, **kwargs: OperationResult.success("project-create-apply", {"mutated": True}).to_dict())
+    prepared = tool_project_create_prepare(runtime, "mcu", "STM32F429ZITx", "generated", "hal", "c", "a" * 64, "b" * 64)
+    applied = tool_project_create_apply(runtime, "c" * 64, True)
+    assert prepared["data"]["mutated"] is False
+    assert applied["data"]["mutated"] is True

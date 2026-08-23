@@ -212,7 +212,11 @@ def parse_native_project(
     if re.search(r"(?i)\b(?:add_custom_command|add_custom_target|execute_process|ExternalProject|FetchContent)\b|\bfile\s*\(\s*(?:download|upload)\b|\binclude\s*\(", cmake):
         raise _invalid("native CMake contains an unsafe construct")
     ioc_candidates = [name for name, _, _ in files if name.casefold().endswith(".ioc")]
-    ioc_path = ioc_candidates[0] if len(ioc_candidates) == 1 else None
+    if len(ioc_candidates) > 1:
+        raise _invalid("native IOC inventory is ambiguous")
+    ioc_path = ioc_candidates[0] if ioc_candidates else None
+    if request.source.kind == "ioc" and ioc_path is None:
+        raise _invalid("native IOC source is missing")
     ioc = _read_text(staging_dir, ioc_path, required=False) if ioc_path else None
     native_device = _IOC_RE.search(ioc or "")
     device = (native_device.group(1).strip() if native_device else (request.source.value if request.source.kind == "mcu" else ""))
@@ -240,7 +244,13 @@ def parse_native_project(
     assembly = tuple(sorted({item for item in source_tokens if item.casefold().endswith((".s", ".asm", ".spp"))}))
     if not source_paths and not assembly:
         raise _invalid("native source inventory is empty")
+    for relative in (*source_paths, *assembly):
+        if not _safe_file(staging_dir.joinpath(*relative.split("/"))):
+            raise _invalid("native source inventory references a missing file")
     include_paths = tuple(sorted(set(_tokens(cmake, r"target_include_directories\s*\([^)]*?\s((?:[^()]|\([^)]*\))*)\)"))))
+    for relative in include_paths:
+        if not (staging_dir.joinpath(*relative.split("/"))).is_dir():
+            raise _invalid("native include inventory references a missing directory")
     defines = tuple(sorted(set(_tokens(cmake, r"target_compile_definitions\s*\([^)]*?\s((?:[^()]|\([^)]*\))*)\)"))))
     options = tuple(sorted(set(_tokens(cmake, r"target_compile_options\s*\([^)]*?\s((?:[^()]|\([^)]*\))*)\)"))))
     linker_match = re.search(r"(?im)(?:LINKER_SCRIPT|CMAKE_EXE_LINKER_FLAGS[^\n]*-T)\s*(?:=\s*)?(?:\$\{CMAKE_SOURCE_DIR\}/)?([A-Za-z0-9_.+-]+\.ld)", cmake)

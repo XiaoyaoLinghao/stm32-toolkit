@@ -93,11 +93,14 @@ def _display_path(path: Path) -> str:
     return path.as_posix()
 
 
-def _family_for_request(request: CreationRequest) -> str | None:
+def _family_for_request(request: CreationRequest, project_root: Path | None = None) -> str | None:
     value = request.source.value.upper()
     if request.source.kind == "ioc":
         try:
-            text = (Path(value).read_text(encoding="utf-8", errors="strict"))
+            ioc_path = Path(request.source.value)
+            if project_root is not None:
+                ioc_path = project_root / ioc_path
+            text = ioc_path.read_text(encoding="utf-8", errors="strict")
         except (OSError, UnicodeError):
             return None
         match = re.search(r"(?im)^\s*Mcu\.Name\s*=\s*(STM32[A-Za-z0-9]+)", text)
@@ -216,12 +219,24 @@ class CreationExecutionEnvironment:
         return self.cubemx_executable
 
     @property
+    def cube_mx(self) -> Path:
+        return self.cubemx_executable
+
+    @property
     def java_path(self) -> Path:
+        return self.java_executable
+
+    @property
+    def java(self) -> Path:
         return self.java_executable
 
     @property
     def repository_digest(self) -> str:
         return sha256_hex(canonical_json_bytes({"repository": _display_path(self.repository), "package": self.package_sha256}))
+
+    @property
+    def package_digest(self) -> str:
+        return self.package_sha256
 
     def to_dict(self) -> dict[str, object]:
         """Return sanitized facts suitable for internal evidence/public filtering."""
@@ -244,6 +259,7 @@ def discover_creation_environment(
     request: CreationRequest,
     *,
     repository: Path | None = None,
+    project_root: Path | None = None,
 ) -> CreationExecutionEnvironment:
     """Resolve and validate the closed creation environment.
 
@@ -266,19 +282,26 @@ def discover_creation_environment(
     except ValueError:
         raise CreationEnvironmentError("CUBEMX_JAVA_INVALID", "CubeMX Java runtime is outside its installation") from None
 
-    repository_path = _safe_directory(repository or _default_repository())
+    repository_candidate = repository or _default_repository()
+    repository_path = _safe_directory(repository_candidate)
     if repository_path is None:
-        raise CreationEnvironmentError("CUBEMX_REPOSITORY_MISSING", "Cube firmware repository is unavailable")
-    family = _family_for_request(request)
+        try:
+            exists = os.path.lexists(repository_candidate)
+        except OSError:
+            exists = True
+        code = "CUBEMX_REPOSITORY_INVALID" if exists else "CUBEMX_REPOSITORY_MISSING"
+        raise CreationEnvironmentError(code, "Cube firmware repository is unavailable")
+    family = _family_for_request(request, project_root)
     candidates: list[Path] = []
     try:
         for item in sorted(repository_path.iterdir(), key=lambda path: path.name.casefold()):
-            if _safe_directory(item) is None:
-                continue
             if not _PACKAGE_RE.match(item.name):
                 continue
+            safe_item = _safe_directory(item)
+            if safe_item is None:
+                raise CreationEnvironmentError("CUBEMX_REPOSITORY_INVALID", "Cube firmware repository contains an unsafe package")
             if family is None or item.name.upper().startswith(f"STM32CUBE_FW_{family.upper()}_"):
-                candidates.append(item.resolve(strict=True))
+                candidates.append(safe_item)
     except OSError:
         raise CreationEnvironmentError("CUBEMX_REPOSITORY_INVALID", "Cube firmware repository cannot be inspected") from None
     if not candidates:

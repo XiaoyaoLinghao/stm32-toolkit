@@ -12,7 +12,7 @@ from stm32_toolkit.creation_authorization import (
     CreationAuthorizationStore,
     CreationPrepareRequest,
 )
-from stm32_toolkit.generation.creation import CreationRequest
+from stm32_toolkit.generation.creation import CreationRequest, CreationSource
 
 
 NOW = datetime(2026, 8, 23, 12, 0, tzinfo=timezone.utc)
@@ -61,6 +61,28 @@ def test_consume_requires_exact_true_and_does_not_consume_false(tmp_path: Path):
     assert error.value.code == "CREATION_AUTHORIZATION_REQUIRED"
     capability = store.consume(result.authorization_digest, authorized=True)
     assert capability.plan_id == "a" * 64
+
+
+def test_ioc_source_digest_survives_authorization_round_trip(tmp_path: Path):
+    request = CreationRequest(
+        CreationSource("ioc", "input.ioc", "d" * 64),
+        "generated",
+        "hal",
+        "c",
+    )
+    store = CreationAuthorizationStore(tmp_path, now=lambda: NOW, nonce_factory=lambda: "nonce")
+    prepared = store.prepare(
+        CreationPrepareRequest(
+            request,
+            tmp_path,
+            "a" * 64,
+            "b" * 64,
+            "c" * 64,
+            "2026-08-23T13:00:00Z",
+        )
+    )
+    consumed = store.consume(prepared.authorization_digest, authorized=True)
+    assert consumed.request.source.sha256 == "d" * 64
 
 
 def test_replay_is_rejected_after_consumption(tmp_path: Path):

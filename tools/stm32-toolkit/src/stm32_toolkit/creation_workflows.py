@@ -11,6 +11,7 @@ from stm32_toolkit.creation_authorization import (
     CreationAuthorizationStore,
     CreationPrepareRequest,
 )
+from stm32_toolkit.creation_apply import CreationApplyRequest, apply_creation
 from stm32_toolkit.creation_environment import CreationEnvironmentError, discover_creation_environment
 from stm32_toolkit.generation.creation import CreationInputError, CreationRequest, plan_project_creation
 from stm32_toolkit.result import OperationResult
@@ -99,7 +100,12 @@ def prepare_creation_workflow(
         first = plan.blockers[0]
         return OperationResult.failure(operation, first.code, "Creation prerequisites are unavailable", {"blockers": blockers})
     try:
-        environment = discover_creation_environment(support, plan.request, repository=repository)
+        environment = discover_creation_environment(
+            support,
+            plan.request,
+            repository=repository,
+            project_root=request.project_root.expanduser().resolve(strict=True),
+        )
         authorization_store = store or CreationAuthorizationStore(request.data_root)
         authorization = authorization_store.prepare(
             CreationPrepareRequest(
@@ -126,3 +132,60 @@ def prepare_creation_workflow(
             "mutated": False,
         },
     )
+
+
+def apply_creation_workflow(
+    request: CreationPlanWorkflowRequest,
+    *,
+    authorization_digest: str,
+    authorized: bool,
+    store: CreationAuthorizationStore | None = None,
+    adapter: object | None = None,
+    environment: object | None = None,
+    support_profile: ToolSupportProfile | None = None,
+    repository: Path | None = None,
+    validate_native: object | None = None,
+    configure: object | None = None,
+    build: object | None = None,
+    on_activate: object | None = None,
+) -> OperationResult[dict[str, object]]:
+    """Thin public adapter over the VS07-B consume/apply engine."""
+    authorization_store = store or CreationAuthorizationStore(request.data_root)
+    environment_factory = None
+    adapter_factory = None
+    if adapter is None and environment is None and support_profile is not None:
+        def resolve_environment(capability):
+            return discover_creation_environment(
+                support_profile,
+                capability.request,
+                repository=repository,
+                project_root=capability.project_root,
+            )
+
+        def build_adapter(capability, resolved_environment):
+            from stm32_toolkit.cubemx_adapter import CubeMXAdapter
+
+            return CubeMXAdapter(resolved_environment)
+
+        environment_factory = resolve_environment
+        adapter_factory = build_adapter
+    try:
+        return apply_creation(
+            CreationApplyRequest(
+                project_root=request.project_root,
+                data_root=request.data_root,
+                authorization_digest=authorization_digest,
+                authorized=authorized,
+            ),
+            store=authorization_store,
+            adapter=adapter,
+            environment=environment,
+            environment_factory=environment_factory,
+            adapter_factory=adapter_factory,
+            validate_native=validate_native,  # type: ignore[arg-type]
+            configure=configure,  # type: ignore[arg-type]
+            build=build,  # type: ignore[arg-type]
+            on_activate=on_activate,  # type: ignore[arg-type]
+        )
+    except CreationAuthorizationError as error:
+        return OperationResult.failure("project-create-apply", error.code, error.message, error.details)

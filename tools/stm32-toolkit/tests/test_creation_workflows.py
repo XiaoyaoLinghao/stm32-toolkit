@@ -4,9 +4,18 @@ from pathlib import Path
 from datetime import datetime, timezone
 import pytest
 
-from stm32_toolkit.creation_workflows import CreationPlanWorkflowRequest, plan_creation_workflow
-from stm32_toolkit.creation_authorization import CreationAuthorizationError
+from stm32_toolkit.creation_workflows import (
+    CreationPlanWorkflowRequest,
+    apply_creation_workflow,
+    plan_creation_workflow,
+)
+from stm32_toolkit.creation_authorization import (
+    CreationAuthorizationError,
+    CreationAuthorizationStore,
+    CreationPrepareRequest,
+)
 from stm32_toolkit.creation_environment import CreationEnvironmentError
+from stm32_toolkit.generation.creation import CreationRequest
 from stm32_toolkit.tool_support import SupportProfileError, SupportProfileRequest, discover_tool_support
 
 
@@ -110,3 +119,56 @@ def test_prepare_requires_exact_plan_and_action_digests(tmp_path: Path, monkeypa
     assert planned.ok is True
     result = workflows.prepare_creation_workflow(request, plan_id="a" * 64, action_digest="b" * 64)
     assert result.code == "CREATION_PLAN_CHANGED"
+
+
+def test_apply_consumes_before_environment_discovery_failure(tmp_path: Path, monkeypatch):
+    import stm32_toolkit.creation_workflows as workflows
+    from stm32_toolkit.tool_support import ToolSupportProfile
+
+    data_root = tmp_path / "data"
+    creation_request = CreationRequest.from_mcu(
+        "STM32F429ZITx", "generated", framework="hal", language="c"
+    )
+    store = CreationAuthorizationStore(
+        data_root,
+        now=lambda: datetime(2026, 8, 23, 12, tzinfo=timezone.utc),
+        nonce_factory=lambda: "nonce",
+    )
+    prepared = store.prepare(
+        CreationPrepareRequest(
+            creation_request,
+            tmp_path,
+            "a" * 64,
+            "b" * 64,
+            "c" * 64,
+            "2026-08-23T13:00:00Z",
+        )
+    )
+    monkeypatch.setattr(
+        workflows,
+        "discover_creation_environment",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            CreationEnvironmentError("CUBEMX_REPOSITORY_MISSING", "repository unavailable")
+        ),
+    )
+    support = ToolSupportProfile("3.12.10", None, None, None, None, None, None, (), ())
+    result = apply_creation_workflow(
+        CreationPlanWorkflowRequest(
+            tmp_path,
+            data_root,
+            "session",
+            "mcu",
+            "STM32F429ZITx",
+            "generated",
+            "hal",
+            "c",
+        ),
+        authorization_digest=prepared.authorization_digest,
+        authorized=True,
+        store=store,
+        support_profile=support,
+    )
+    assert result.code == "CUBEMX_REPOSITORY_MISSING"
+    with pytest.raises(CreationAuthorizationError) as error:
+        store.consume(prepared.authorization_digest, authorized=True)
+    assert error.value.code == "CREATION_AUTHORIZATION_CONSUMED"

@@ -93,3 +93,63 @@ def test_cli_invalid_creation_environment_is_closed_json_without_path_leakage(tm
     payload = json.loads(captured.out)
     assert payload["code"] == "CREATION_ENVIRONMENT_INVALID"
     assert leaked not in captured.err
+
+
+def test_cli_create_prepare_requires_exact_plan_and_action_digest(tmp_path: Path, monkeypatch, capsys):
+    import stm32_toolkit.cli as cli
+    calls = []
+
+    def fake_prepare(request, **kwargs):
+        calls.append((request, kwargs))
+        from stm32_toolkit.result import OperationResult
+        return OperationResult.success("project-create-prepare", {"mutated": False, "authorizationDigest": "a" * 64})
+
+    monkeypatch.setattr(cli, "prepare_creation_workflow", fake_prepare)
+    code = main([
+        "project", "create-prepare", "--project-root", str(tmp_path), "--source-kind", "mcu",
+        "--source", "STM32F429ZITx", "--destination", "generated", "--framework", "hal", "--language", "c",
+        "--plan-id", "b" * 64, "--action-digest", "c" * 64, "--json",
+    ])
+    assert code == 0
+    assert calls and calls[0][1]["plan_id"] == "b" * 64
+    assert json.loads(capsys.readouterr().out)["data"]["mutated"] is False
+
+
+def test_cli_create_apply_forwards_only_authorization_digest_and_true(tmp_path: Path, monkeypatch, capsys):
+    import stm32_toolkit.cli as cli
+    calls = []
+
+    def fake_apply(request, **kwargs):
+        calls.append((request, kwargs))
+        from stm32_toolkit.result import OperationResult
+        return OperationResult.success("project-create-apply", {"mutated": True})
+
+    monkeypatch.setattr(cli, "apply_creation_workflow", fake_apply)
+    code = main([
+        "project", "create-apply", "--project-root", str(tmp_path), "--authorization-digest", "a" * 64,
+        "--authorized", "--json",
+    ])
+    assert code == 0
+    assert calls and calls[0][1]["authorized"] is True
+    assert json.loads(capsys.readouterr().out)["data"]["mutated"] is True
+
+
+def test_cli_create_apply_without_authorized_is_rejected(tmp_path: Path):
+    assert main([
+        "project", "create-apply", "--project-root", str(tmp_path), "--authorization-digest", "a" * 64,
+        "--json",
+    ]) == 2
+
+
+def test_cli_create_apply_rejects_repeated_authorized_flag(tmp_path: Path):
+    with pytest.raises(SystemExit):
+        _build_parser().parse_args([
+            "project",
+            "create-apply",
+            "--project-root",
+            str(tmp_path),
+            "--authorization-digest",
+            "a" * 64,
+            "--authorized",
+            "--authorized",
+        ])

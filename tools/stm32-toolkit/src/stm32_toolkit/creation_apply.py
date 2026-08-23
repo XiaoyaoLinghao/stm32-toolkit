@@ -24,6 +24,7 @@ from stm32_toolkit.cubemx_project import (
     parse_native_project,
     write_native_project_manifests,
 )
+from stm32_toolkit.creation_environment import CreationEnvironmentError
 from stm32_toolkit.generation.configure import apply_project_configuration, plan_project_configuration
 from stm32_toolkit.generation.creation import _inventory_state
 from stm32_toolkit.project_model import ProjectManifestError, load_project_model
@@ -53,6 +54,8 @@ class CreationApplyRequest:
     data_root: Path
     authorization_digest: str
     authorized: bool
+    expected_plan_id: str | None = None
+    expected_action_digest: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -208,6 +211,8 @@ def apply_creation(
     store: CreationAuthorizationStore | None = None,
     adapter: object | None = None,
     environment: object | None = None,
+    environment_factory: Callable[[ConsumedCreationAuthorization], object] | None = None,
+    adapter_factory: Callable[[ConsumedCreationAuthorization, object], object] | None = None,
     validate_native: Callable[..., object] | None = None,
     configure: Callable[[Path], object] | None = None,
     build: Callable[[Path, str], object] | None = None,
@@ -227,12 +232,33 @@ def apply_creation(
         root = request.project_root.expanduser().resolve(strict=True)
         if root != capability.project_root:
             raise CreationApplyError("CREATION_PLAN_CHANGED", "authorization project root changed")
+        if request.expected_plan_id is not None and request.expected_plan_id != capability.plan_id:
+            raise CreationApplyError("CREATION_PLAN_CHANGED", "creation plan changed")
+        if request.expected_action_digest is not None and request.expected_action_digest != capability.action_digest:
+            raise CreationApplyError("CREATION_PLAN_CHANGED", "creation action changed")
         destination = _destination(root, capability)
         original_digest, original_state = _state(root, destination)
         if original_state == "unsafe" or original_state == "populated":
             raise CreationApplyError("CREATION_DESTINATION_CHANGED", "destination must be absent or empty")
+        if environment is None and environment_factory is not None:
+            try:
+                environment = environment_factory(capability)
+            except CreationEnvironmentError:
+                raise
+            except Exception:
+                raise CreationApplyError(
+                    "CREATION_EXECUTION_ENVIRONMENT_CHANGED",
+                    "creation execution environment is unavailable",
+                ) from None
         if environment is not None and getattr(environment, "digest", capability.environment_digest) != capability.environment_digest:
             raise CreationApplyError("CREATION_EXECUTION_ENVIRONMENT_CHANGED", "creation execution environment changed")
+        if adapter is None and adapter_factory is not None:
+            try:
+                adapter = adapter_factory(capability, environment)
+            except CubeMXAdapterError:
+                raise
+            except Exception:
+                raise CreationApplyError("CUBEMX_EXECUTION_ENVIRONMENT_CHANGED", "CubeMX adapter is unavailable") from None
         if adapter is None:
             raise CreationApplyError("CUBEMX_EXECUTION_ENVIRONMENT_CHANGED", "CubeMX adapter is unavailable")
         attempt_id = attempt_id_factory() if attempt_id_factory else secrets.token_hex(12)
@@ -296,16 +322,34 @@ def apply_creation(
                 return _failure(operation, "CREATION_ACTIVATION_ROLLBACK_FAILED", "creation staging cleanup failed", {"attemptId": str(attempt)})
         return _failure(operation, error.code, error.message, {**error.details, "attemptId": str(attempt)})
     except CubeMXAdapterError as error:
-        return _failure(operation, error.code, error.message, {"attemptId": locals().get("attempt_id", "unknown")})
+        attempt = str(locals().get("attempt_id", "unknown"))
+        staging_path = locals().get("staging")
+        if isinstance(staging_path, Path) and staging_path.exists() and not _cleanup(staging_path):
+            return _failure(operation, "CREATION_ACTIVATION_ROLLBACK_FAILED", "creation staging cleanup failed", {"attemptId": attempt})
+        _write_attempt(request.data_root, attempt, {"code": error.code, "phase": "cubemx"})
+        return _failure(operation, error.code, error.message, {"attemptId": attempt})
+    except CreationEnvironmentError as error:
+        attempt = str(locals().get("attempt_id", "unknown"))
+        staging_path = locals().get("staging")
+        if isinstance(staging_path, Path) and staging_path.exists() and not _cleanup(staging_path):
+            return _failure(operation, "CREATION_ACTIVATION_ROLLBACK_FAILED", "creation staging cleanup failed", {"attemptId": attempt})
+        _write_attempt(request.data_root, attempt, {"code": error.code, "phase": "environment"})
+        return _failure(operation, error.code, error.message, {"attemptId": attempt})
     except CubeMXNativeProjectError as error:
-        return _failure(operation, error.code, error.message, {"attemptId": locals().get("attempt_id", "unknown")})
+        attempt = str(locals().get("attempt_id", "unknown"))
+        staging_path = locals().get("staging")
+        if isinstance(staging_path, Path) and staging_path.exists() and not _cleanup(staging_path):
+            return _failure(operation, "CREATION_ACTIVATION_ROLLBACK_FAILED", "creation staging cleanup failed", {"attemptId": attempt})
+        _write_attempt(request.data_root, attempt, {"code": error.code, "phase": "validation"})
+        return _failure(operation, error.code, error.message, {"attemptId": attempt})
     except OSError:
-        return _failure(operation, "CREATION_ACTIVATION_FAILED", "creation staging failed", {"attemptId": locals().get("attempt_id", "unknown")})
+        staging_path = locals().get("staging")
+        if isinstance(staging_path, Path) and staging_path.exists() and not _cleanup(staging_path):
+            return _failure(operation, "CREATION_ACTIVATION_ROLLBACK_FAILED", "creation staging cleanup failed", {"attemptId": str(locals().get("attempt_id", "unknown"))})
+        return _failure(operation, "CREATION_ACTIVATION_FAILED", "creation staging failed", {"attemptId": str(locals().get("attempt_id", "unknown"))})
 
 
 apply_creation_workflow = apply_creation
 run_creation_apply = apply_creation
 
-
 __all__ = ["CreationApplyError", "CreationApplyRequest", "CreationApplyEvidence", "apply_creation", "apply_creation_workflow"]
-

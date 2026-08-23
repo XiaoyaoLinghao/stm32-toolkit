@@ -198,6 +198,4 @@ class CubeMXAdapter:
     apply = generate
     execute = generate
 
-
 __all__ = ["CubeMXAdapter", "CubeMXAdapterError", "CubeMXExecutionResult", "CubeMXStagingContext"]
-

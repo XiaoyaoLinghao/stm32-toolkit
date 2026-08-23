@@ -26,6 +26,17 @@ stm32-toolkit project create-plan --project-root . --source-kind mcu --source ST
 
 命令返回确定性的计划、工具/计划摘要和目标目录摘要，或封闭且可操作的阻断项。CubeMX 6.18 负责生成工程；CubeCLT 1.22.0 提供 GCC/CMake/Ninja，不能替代 CubeMX。`CUBEMX_MISSING` 表示必须安装 CubeMX，或通过可信 support profile 暴露它后再规划。VS07-A 不运行 CubeMX、不创建 staging、不写入目标目录，也不应用计划。Agent-neutral MCP 等价操作是 `stm32_project_create_plan`。
 
+## VS07-B 授权创建与构建
+
+在确认计划未变化后签发一次性、会过期的 capability，再严格消费一次：
+
+```powershell
+stm32-toolkit project create-prepare --project-root . --source-kind mcu --source STM32F429ZITx --destination generated --framework hal --language c --plan-id PLAN_ID --action-digest ACTION_DIGEST --json
+stm32-toolkit project create-apply --project-root . --authorization-digest AUTHORIZATION_DIGEST --authorized --json
+```
+
+Prepare 不改变目标目录。Apply 在同卷 sibling staging 中运行 CubeMX，校验原生 CMake/IOC 事实，复用 Toolkit configure 以及 Debug/Release 构建，并在两次构建成功后才激活。重放、漂移、缺少 Cube firmware repository、协议/构建失败或激活失败都会返回 typed error，目标不会留下半工程。MCP 等价工具是 `stm32_project_create_prepare` 与 `stm32_project_create_apply`。当前主机虽安装 CubeMX，但缺少离线 `STM32Cube_FW_*` repository，因此真实原生正向验收仍是环境阻断；本切片不安装 package，也不声称 native PASS。
+
 ## 从 GitHub 安装
 
 本插件直接从 GitHub 分发，不进入公开目录。以 user scope 安装一次：

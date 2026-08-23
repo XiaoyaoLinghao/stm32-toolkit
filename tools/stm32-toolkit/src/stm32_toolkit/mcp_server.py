@@ -27,7 +27,12 @@ from pydantic import (
 )
 
 from stm32_toolkit.context import build_project_context
-from stm32_toolkit.creation_workflows import CreationPlanWorkflowRequest, plan_creation_workflow
+from stm32_toolkit.creation_workflows import (
+    CreationPlanWorkflowRequest,
+    apply_creation_workflow,
+    plan_creation_workflow,
+    prepare_creation_workflow,
+)
 from stm32_toolkit.detection import detect_project
 from stm32_toolkit.diagnostic_workflows import (
     DiagnosticWorkflowContext,
@@ -516,6 +521,61 @@ def tool_project_create_plan(
     return plan_creation_workflow(request, support_profile=runtime.support_profile).to_dict()
 
 
+def tool_project_create_prepare(
+    runtime: ServerRuntime,
+    source_kind: str,
+    source: str,
+    destination: str,
+    framework: str,
+    language: str,
+    plan_id: str,
+    action_digest: str,
+) -> dict[str, object]:
+    """Issue one single-use authorization for an exact VS07-A plan."""
+    request = CreationPlanWorkflowRequest(
+        runtime.project_root,
+        runtime.data_root,
+        runtime.session_id,
+        source_kind,
+        source,
+        destination,
+        framework,
+        language,
+    )
+    result = prepare_creation_workflow(
+        request,
+        plan_id=plan_id,
+        action_digest=action_digest,
+        support_profile=runtime.support_profile,
+    )
+    return result.to_dict() if hasattr(result, "to_dict") else result
+
+
+def tool_project_create_apply(
+    runtime: ServerRuntime,
+    authorization_digest: str,
+    authorized: bool,
+) -> dict[str, object]:
+    """Consume one authorization and run the staged creation flow."""
+    request = CreationPlanWorkflowRequest(
+        runtime.project_root,
+        runtime.data_root,
+        runtime.session_id,
+        "mcu",
+        "STM32F429ZITx",
+        "generated",
+        "hal",
+        "c",
+    )
+    result = apply_creation_workflow(
+        request,
+        authorization_digest=authorization_digest,
+        authorized=authorized,
+        support_profile=runtime.support_profile,
+    )
+    return result.to_dict() if hasattr(result, "to_dict") else result
+
+
 def tool_keil_inspect(
     runtime: ServerRuntime,
     uvprojx: str | None = None,
@@ -613,6 +673,35 @@ async def tool_project_create_plan_for_request(
 ) -> dict[str, object]:
     failure = await _client_roots_failure(runtime, context, "project-create-plan")
     return failure if failure is not None else tool_project_create_plan(runtime, source_kind, source, destination, framework, language)
+
+
+async def tool_project_create_prepare_for_request(
+    runtime: ServerRuntime,
+    context: Context | None,
+    source_kind: str,
+    source: str,
+    destination: str,
+    framework: str,
+    language: str,
+    plan_id: str,
+    action_digest: str,
+) -> dict[str, object]:
+    failure = await _client_roots_failure(runtime, context, "project-create-prepare")
+    if failure is not None:
+        return failure
+    return tool_project_create_prepare(runtime, source_kind, source, destination, framework, language, plan_id, action_digest)
+
+
+async def tool_project_create_apply_for_request(
+    runtime: ServerRuntime,
+    context: Context | None,
+    authorization_digest: str,
+    authorized: bool,
+) -> dict[str, object]:
+    failure = await _client_roots_failure(runtime, context, "project-create-apply")
+    if failure is not None:
+        return failure
+    return tool_project_create_apply(runtime, authorization_digest, authorized)
 
 
 async def tool_keil_inspect_for_request(
@@ -1487,6 +1576,31 @@ def create_server(
     ) -> dict[str, object]:
         return await tool_project_create_plan_for_request(
             runtime, ctx, sourceKind, source, destination, framework, language
+        )
+
+    @mcp.tool(name="stm32_project_create_prepare")
+    async def stm32_project_create_prepare(
+        ctx: Context,
+        sourceKind: Literal["mcu", "board", "ioc"],
+        source: str,
+        destination: str,
+        framework: Literal["hal", "ll"],
+        language: Literal["c", "cpp"],
+        planId: Digest,
+        actionDigest: Digest,
+    ) -> dict[str, object]:
+        return await tool_project_create_prepare_for_request(
+            runtime, ctx, sourceKind, source, destination, framework, language, planId, actionDigest
+        )
+
+    @mcp.tool(name="stm32_project_create_apply")
+    async def stm32_project_create_apply(
+        ctx: Context,
+        authorizationDigest: Digest,
+        authorized: StrictBool,
+    ) -> dict[str, object]:
+        return await tool_project_create_apply_for_request(
+            runtime, ctx, authorizationDigest, authorized
         )
 
     @mcp.tool(name="stm32_keil_inspect")

@@ -26,6 +26,17 @@ stm32-toolkit project create-plan --project-root . --source-kind mcu --source ST
 
 The command returns a deterministic plan, tool/profile and destination digests, or closed remediation blockers. CubeMX 6.18 is the generator; CubeCLT 1.22.0 supplies GCC/CMake/Ninja and is not a replacement for CubeMX. `CUBEMX_MISSING` means CubeMX must be installed or exposed through a trusted support profile before planning can proceed. VS07-A never runs CubeMX, creates staging, writes the destination, or applies a plan. The equivalent Agent-neutral MCP operation is `stm32_project_create_plan`.
 
+## VS07-B authorized creation and build
+
+After reviewing an unchanged plan, issue one expiring capability and then consume it exactly once:
+
+```powershell
+stm32-toolkit project create-prepare --project-root . --source-kind mcu --source STM32F429ZITx --destination generated --framework hal --language c --plan-id PLAN_ID --action-digest ACTION_DIGEST --json
+stm32-toolkit project create-apply --project-root . --authorization-digest AUTHORIZATION_DIGEST --authorized --json
+```
+
+Preparation is destination-read-only. Apply generates in sibling staging, validates native CMake/IOC facts, reuses Toolkit configure plus Debug and Release builds, and activates only after both builds succeed. Replays, drift, missing Cube firmware repositories, protocol/build failures, or activation failures close with typed errors and no half-created destination. The MCP equivalents are `stm32_project_create_prepare` and `stm32_project_create_apply`. The current host has CubeMX installed but no offline `STM32Cube_FW_*` repository, so positive native acceptance remains an environment blocker; no package installation or native PASS is claimed here.
+
 ## Install directly from GitHub
 
 The plugin is distributed directly from GitHub, not a public catalog. Install it once at user scope:

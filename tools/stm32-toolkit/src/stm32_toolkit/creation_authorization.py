@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
 
-from stm32_toolkit.generation.creation import CreationRequest
+from stm32_toolkit.generation.creation import CreationRequest, CreationSource
 from stm32_toolkit.generation.managed_files import canonical_json_bytes, sha256_hex
 
 _DIGEST_CHARS = frozenset("0123456789abcdef")
@@ -132,12 +132,31 @@ def _request_dict(value: object) -> CreationRequest:
     if not isinstance(source, dict) or set(source) - {"kind", "value", "sha256"}:
         raise ValueError("source")
     kind, source_value = source.get("kind"), source.get("value")
+    destination = value.get("destination")
+    framework = value.get("framework")
+    language = value.get("language")
+    if not all(isinstance(item, str) for item in (kind, source_value, destination, framework, language)):
+        raise ValueError("request")
     if kind == "mcu":
-        result = CreationRequest.from_mcu(str(source_value), str(value.get("destination")), framework=str(value.get("framework")), language=str(value.get("language")))
+        if "sha256" in source:
+            raise ValueError("source")
+        result = CreationRequest.from_mcu(source_value, destination, framework=framework, language=language)
     elif kind == "board":
-        result = CreationRequest.from_board(str(source_value), str(value.get("destination")), framework=str(value.get("framework")), language=str(value.get("language")))
+        if "sha256" in source:
+            raise ValueError("source")
+        result = CreationRequest.from_board(source_value, destination, framework=framework, language=language)
     elif kind == "ioc":
-        result = CreationRequest(CreationRequest.from_ioc(str(source_value), str(value.get("destination")), framework=str(value.get("framework")), language=str(value.get("language"))).source, str(value.get("destination")), str(value.get("framework")), str(value.get("language")))
+        result = CreationRequest.from_ioc(source_value, destination, framework=framework, language=language)
+        source_hash = source.get("sha256")
+        if source_hash is not None:
+            if not _digest(source_hash):
+                raise ValueError("source")
+            result = CreationRequest(
+                CreationSource("ioc", result.source.value, source_hash),
+                result.destination,
+                result.framework,
+                result.language,
+            )
     else:
         raise ValueError("source kind")
     return result
@@ -271,6 +290,53 @@ class CreationAuthorizationStore:
                 expires_at=payload["expiresAt"],
                 record_path=path,
             )
+
+    def peek(self, authorization_digest: str) -> ConsumedCreationAuthorization:
+        """Read a prepared capability without changing its state.
+
+        This is an internal revalidation seam for the apply adapter; callers
+        still need :meth:`consume` with the exact boolean authorization to
+        obtain the one winning capability.
+        """
+        if not _digest(authorization_digest):
+            raise CreationAuthorizationError("CREATION_AUTHORIZATION_INVALID", "authorization digest is invalid")
+        path = self.authorization_root / f"{authorization_digest}.json"
+        try:
+            data = path.read_bytes()
+            if len(data) > _MAX_RECORD_BYTES:
+                raise ValueError
+            payload = json.loads(data.decode("utf-8"))
+            required = {"schemaVersion", "nonce", "issuedAt", "expiresAt", "state", "planId", "actionDigest", "executionEnvironmentDigest", "projectRoot", "request", "authorizationDigest"}
+            if not isinstance(payload, dict) or set(payload) != required or payload.get("schemaVersion") != 1 or payload.get("authorizationDigest") != authorization_digest:
+                raise ValueError
+            if payload.get("state") != "prepared" or not isinstance(payload.get("nonce"), str):
+                raise ValueError
+            if not all(_digest(payload.get(field)) for field in ("planId", "actionDigest", "executionEnvironmentDigest")):
+                raise ValueError
+            issued = _parse_time(payload["issuedAt"])
+            expires = _parse_time(payload["expiresAt"])
+            if _utc(self._now()) >= expires:
+                raise CreationAuthorizationError("CREATION_AUTHORIZATION_EXPIRED", "authorization has expired")
+            root = Path(str(payload["projectRoot"]))
+            if not root.is_absolute() or root != root.resolve(strict=False):
+                raise ValueError
+            request = _request_dict(payload["request"])
+        except CreationAuthorizationError:
+            raise
+        except (OSError, UnicodeError, ValueError, TypeError, OverflowError):
+            raise CreationAuthorizationError("CREATION_AUTHORIZATION_INVALID", "authorization record is malformed") from None
+        return ConsumedCreationAuthorization(
+            authorization_digest=authorization_digest,
+            nonce=payload["nonce"],
+            plan_id=payload["planId"],
+            action_digest=payload["actionDigest"],
+            environment_digest=payload["executionEnvironmentDigest"],
+            project_root=root,
+            request=request,
+            issued_at=payload["issuedAt"],
+            expires_at=payload["expiresAt"],
+            record_path=path,
+        )
 
 
 __all__ = [

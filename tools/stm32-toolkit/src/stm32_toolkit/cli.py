@@ -17,8 +17,20 @@ class _RejectDuplicate(argparse.Action):
             parser.error(f"argument {option_string}: repeated option")
         setattr(namespace, self.dest, values)
 
+
+class _RejectDuplicateTrue(argparse.Action):
+    def __call__(self, parser, namespace, values, option_string=None):
+        if getattr(namespace, self.dest, False):
+            parser.error(f"argument {option_string}: repeated option")
+        setattr(namespace, self.dest, True)
+
 from stm32_toolkit.context import build_project_context
-from stm32_toolkit.creation_workflows import CreationPlanWorkflowRequest, plan_creation_workflow
+from stm32_toolkit.creation_workflows import (
+    CreationPlanWorkflowRequest,
+    apply_creation_workflow,
+    plan_creation_workflow,
+    prepare_creation_workflow,
+)
 from stm32_toolkit.detection import detect_project
 from stm32_toolkit.diagnostic_workflows import (
     DiagnosticWorkflowContext,
@@ -214,6 +226,24 @@ def _build_parser() -> argparse.ArgumentParser:
     create_plan.add_argument("--language", choices=("c", "cpp"), required=True, action=_RejectDuplicate)
     create_plan.add_argument("--support-profile", type=Path, action=_RejectDuplicate)
     _add_json(create_plan)
+
+    create_prepare = project_commands.add_parser("create-prepare")
+    _add_project_root(create_prepare)
+    create_prepare.add_argument("--source-kind", choices=("mcu", "board", "ioc"), required=True, action=_RejectDuplicate)
+    create_prepare.add_argument("--source", required=True, action=_RejectDuplicate)
+    create_prepare.add_argument("--destination", required=True, action=_RejectDuplicate)
+    create_prepare.add_argument("--framework", choices=("hal", "ll"), required=True, action=_RejectDuplicate)
+    create_prepare.add_argument("--language", choices=("c", "cpp"), required=True, action=_RejectDuplicate)
+    create_prepare.add_argument("--plan-id", required=True, action=_RejectDuplicate)
+    create_prepare.add_argument("--action-digest", required=True, action=_RejectDuplicate)
+    create_prepare.add_argument("--support-profile", type=Path, action=_RejectDuplicate)
+    _add_json(create_prepare)
+
+    create_apply = project_commands.add_parser("create-apply")
+    _add_project_root(create_apply)
+    create_apply.add_argument("--authorization-digest", required=True, action=_RejectDuplicate)
+    create_apply.add_argument("--authorized", action=_RejectDuplicateTrue, nargs=0, default=False)
+    _add_json(create_apply)
 
     configure = project_commands.add_parser("configure")
     _add_workflow_root(configure)
@@ -855,6 +885,12 @@ def _validate_cli_modes(parser: argparse.ArgumentParser, args: argparse.Namespac
         return
     if args.command in _HARDWARE_COMMANDS:
         return
+    if args.command == "project" and args.project_command == "create-apply":
+        if not args.authorized:
+            parser.error("--authorized is required for project create-apply")
+        return
+    if args.command == "project" and args.project_command == "create-prepare":
+        return
     apply_mode = getattr(args, "apply", False)
     authorized = getattr(args, "authorized", False)
     plan_id = getattr(args, "plan_id", None)
@@ -995,7 +1031,7 @@ def _operation_result(
         if args.project_command == "context":
             return build_project_context(project_root, args.data_root, args.session_id)
         if args.project_command == "create-plan":
-            data_root = getattr(args, "data_root", project_root / ".stm32-toolkit-data")
+            data_root = getattr(args, "data_root", project_root.parent / ".stm32-toolkit-data")
             try:
                 support = discover_tool_support(
                     SupportProfileRequest(profile_path=args.support_profile, data_root=data_root),
@@ -1019,6 +1055,63 @@ def _operation_result(
                     framework=args.framework,
                     language=args.language,
                 ),
+                support_profile=support,
+            )
+        if args.project_command == "create-prepare":
+            data_root = project_root.parent / ".stm32-toolkit-data"
+            try:
+                support = discover_tool_support(
+                    SupportProfileRequest(profile_path=args.support_profile, data_root=data_root),
+                    probe_versions=True,
+                )
+            except (OSError, ValueError, RuntimeError):
+                return OperationResult.failure(
+                    "project-create-prepare",
+                    "CREATION_ENVIRONMENT_INVALID",
+                    "Creation environment is unavailable",
+                    {},
+                )
+            return prepare_creation_workflow(
+                CreationPlanWorkflowRequest(
+                    project_root=project_root,
+                    data_root=data_root,
+                    session_id="cli",
+                    source_kind=args.source_kind,
+                    source_value=args.source,
+                    destination=args.destination,
+                    framework=args.framework,
+                    language=args.language,
+                ),
+                plan_id=args.plan_id,
+                action_digest=args.action_digest,
+                support_profile=support,
+            )
+        if args.project_command == "create-apply":
+            data_root = project_root.parent / ".stm32-toolkit-data"
+            try:
+                support = discover_tool_support(
+                    SupportProfileRequest(data_root=data_root), probe_versions=True
+                )
+            except (OSError, ValueError, RuntimeError):
+                return OperationResult.failure(
+                    "project-create-apply",
+                    "CREATION_ENVIRONMENT_INVALID",
+                    "Creation environment is unavailable",
+                    {},
+                )
+            return apply_creation_workflow(
+                CreationPlanWorkflowRequest(
+                    project_root=project_root,
+                    data_root=data_root,
+                    session_id="cli",
+                    source_kind="mcu",
+                    source_value="STM32F429ZITx",
+                    destination="generated",
+                    framework="hal",
+                    language="c",
+                ),
+                authorization_digest=args.authorization_digest,
+                authorized=args.authorized,
                 support_profile=support,
             )
         return configure_project_workflow(
