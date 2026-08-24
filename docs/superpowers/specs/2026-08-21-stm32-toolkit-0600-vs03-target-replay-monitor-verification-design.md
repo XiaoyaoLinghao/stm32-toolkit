@@ -1,10 +1,10 @@
 # STM32 Toolkit 0.6 VS-03 Target Replay and Monitor Verification Design
 
-**Status:** Frozen for local implementation under the approved 0.6 integration design  
-**Runtime:** CPython >=3.12,<3.13 only  
-**Accepted base:** `2664f0ec903a6a0db1f2f55ab7ed07996a8f6862`  
-**Specification/review owner:** primary `gpt-5.6-sol` agent  
-**Implementation owner:** one `gpt-5.6-luna` subagent at `max` reasoning  
+**Status:** Frozen for local implementation under the approved 0.6 integration design
+**Runtime:** CPython >=3.12,<3.13 only
+**Accepted base:** `2664f0ec903a6a0db1f2f55ab7ed07996a8f6862`
+**Specification/review owner:** primary `gpt-5.6-sol` agent
+**Implementation owner:** one `gpt-5.6-luna` subagent at `max` reasoning
 **Remote authority:** none; no push, PR mutation, merge, close, or remote branch operation
 
 ## 1. Slice outcome and boundary
