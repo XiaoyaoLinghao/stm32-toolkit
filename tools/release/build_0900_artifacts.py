@@ -589,7 +589,11 @@ def _select_wheels(wheelhouse: Path, policy: Mapping[str, Any]) -> tuple[dict[st
         candidates = available.get(normalized, [])
         if len(candidates) != 1:
             _reject("closed wheelhouse has duplicate normalized distributions")
-        selected[normalized] = candidates[0]
+        # Keep the strict metadata/RECORD/license parse from the compatibility
+        # pass above.  Reusing the discovery object would silently drop its
+        # license and dependency facts because discovery is intentionally
+        # non-strict.
+        selected[normalized] = _read_wheel(candidates[0].path, policy, strict=True)
         if normalized in direct_pin_names:
             direct.add(normalized)
     # Exact direct versions are checked after graph closure.

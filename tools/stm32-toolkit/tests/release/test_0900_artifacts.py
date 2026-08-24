@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import copy
 import subprocess
 import sys
 import zipfile
@@ -388,6 +389,23 @@ def test_malformed_requirement_is_rejected_and_specifier_is_checked():
     name, applies, specifier = module._marker_applies("example>=2; python_version >= '3.12'")
     assert (name, applies) == ("example", True)
     assert not specifier.contains("1.0.0")
+
+
+def test_selected_wheels_retain_strict_metadata_and_license_facts(tmp_path: Path):
+    from importlib.util import module_from_spec, spec_from_file_location
+
+    spec = spec_from_file_location("build_0900_artifacts_selection", UTILITY)
+    module = module_from_spec(spec)
+    assert spec and spec.loader
+    spec.loader.exec_module(module)
+    wheel = tmp_path / "example-1.0.0-py3-none-any.whl"
+    _write_wheel(wheel)
+    policy = copy.deepcopy(module._load_policy())
+    policy["directPins"] = {"example": "1.0.0"}
+    policy["resolvedPins"] = {"example": "1.0.0"}
+    selected, _ = module._select_wheels(tmp_path, policy)
+    assert selected["example"].license == "MIT"
+    assert selected["example"].requires == ()
 
 
 def test_license_authority_contains_canonical_and_shipped_wheel_material():
