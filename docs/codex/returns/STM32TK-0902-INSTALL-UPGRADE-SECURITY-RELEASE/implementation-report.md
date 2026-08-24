@@ -4,24 +4,25 @@
 
 - Module/slice: STM32 Toolkit 0.9, VS09-B installation, upgrade, security, and release artifacts.
 - Implementer: GPT-5.6-luna, reasoning effort `max`.
-- Independent reviewer/acceptor: GPT-5.6-sol primary agent; this report does not issue a review verdict.
+- Independent reviewer/acceptor: GPT-5.6-sol primary agent. This report does not issue a review
+  verdict.
 - Accepted VS09-A slice base: `22bff0061e54e37eba22d892a3b8c34949c3b130`.
 - Version accepted base: `9a5a132b74638a39b346848cfad0eeb7db9a0539`.
 - Frozen specification commit: `4f91a92dcdd1a3b5a0efb2b535fb0274ee075d1b`.
 - Frozen implementation-plan commit: `d452d5e782d5829efacc9f961e4d4c0847ed1e76`.
 - Branch: `codex/STM32TK-0902-INSTALL-UPGRADE-RELEASE`.
 - Product CodeHead recorded before this report commit:
-  `5840dd3261731f53cc99247e9dc08ce0e3c4769d`.
+  `07427d04be38e10b44ba267f28c75dfad1262b9e`.
 - Worktree: `C:/tmp/stm32tk-0902-install-upgrade-release`.
 
-The implementation keeps one setup/runtime lifecycle and registration authority, the accepted
+The implementation retains one setup/runtime lifecycle and registration authority, the accepted
 48 MCP tools and 8 Skills, and adds no controller/provider/backend, Agent-specific product logic,
-second runtime, Python/platform target, CI, collaboration automation, hardware behavior, VS10, or
-remote mutation.
+second runtime, additional Python/platform target, CI, collaboration automation, hardware
+behavior, VS10, or remote mutation.
 
 ## Product changes
 
-Product and test files changed from the accepted VS09-A base:
+The implementation surface changed from the accepted VS09-A base in these files:
 
 - `LICENSE`
 - `README.md`
@@ -38,110 +39,121 @@ Product and test files changed from the accepted VS09-A base:
 - `tools/stm32-toolkit/tests/test_0900_security.py`
 - `tools/stm32-toolkit/tests/test_setup_runtime.py`
 
-The release utility is stdlib-first and verifies strict JSON, safe paths, wheel compatibility and
-RECORD hashes, dependency closure, license/notices/SBOM/Monitor asset closure, deterministic ZIPs,
-and the pinned source archive. Setup verifies the extracted bundle, copies and rehashes every
-manifest wheel into unique staging, installs once with `--no-index --no-deps --only-binary=:all:`,
-runs `pip check` and the existing doctor/pyOCD/Monitor validations, then publishes one atomic
-`runtime-state.json` with generation and source/manifest binding. Refusals occur before staging
-or quarantine.
+The correction round closed the extracted source/release member set, binds the exact verified
+manifest and utility facts through setup staging and promotion, and binds each product wheel to
+the archived source. The verifier now requires exact product identity, normalized distribution
+names, closed wheel metadata/RECORD/license/tag and dependency/version closure, exact official
+repository provenance, and strict marker parsing. Candidate licenses contain canonical SPDX text
+and all selected-wheel license/NOTICE/COPYING material. The SPDX document has unique package
+authority and `DESCRIBES`, `DEPENDS_ON`, and `GENERATED_FROM` relationships. Setup performs one
+offline binary-only install and publishes one generation-bound runtime state; refusals happen
+before staging or quarantine.
 
 ## TDD evidence and classifications
 
-Baseline focused tests were run before product edits under CPython 3.12.10 and exited 0. The
-baseline covered setup runtime, plugin layout, public inventory, explicit project upgrade/v3,
-Monitor storage/auth, probe lease, creation authorization, evidence schema/store, and path
-contracts.
+Baseline and RED failures were classified before product edits. The correction-round artifact RED
+run was:
 
-RED was recorded before GREEN for each behavior slice:
+```text
+PYTHONPATH=tools/stm32-toolkit/src
+py -3.12 -m pytest tools/stm32-toolkit/tests/release/test_0900_artifacts.py -q -p no:cacheprovider --basetemp C:/tmp/p0902-r1-artifact-red
+```
 
-- Artifact utility: `py -3.12 -m pytest tools/stm32-toolkit/tests/release/test_0900_artifacts.py -q --basetemp C:/tmp/p0902-artifacts-red-3` — 20 tests, 2 expected failures for the absent release policy/utility behavior (PRODUCT RED).
-- Setup bundle/runtime-state: `py -3.12 -m pytest tools/stm32-toolkit/tests/test_setup_runtime.py -k "bundle or runtime_state or downgrade or source_conflict or offline" -q --basetemp C:/tmp/p0902-setup-red` — 3 expected failures for absent bundle/state/staging-before-validation behavior (PRODUCT RED).
-- Security: the initial DEL-byte hostile-name and malformed runtime-state cases failed before the utility fixes (PRODUCT RED); the same focused file later passed completely.
-- Candidate assembly exposed four product defects before finalization: case-sensitive official-remote comparison, nondeterministic/empty license archive retention, release authority outside the extracted source root, and source archive not retained in that root. Each was classified PRODUCT, fixed, and rebuilt before freezing the Product CodeHead.
-- A final-matrix collection attempt with `PYTHONPATH` deliberately cleared failed to import source packages. This was classified ENVIRONMENT, corrected by supplying the two explicit source roots, and was not treated as a product failure.
+It produced 6 expected failures covering extracted source extra/tampered members, release extra
+members, a self-consistent tampered product wheel, missing provenance, malformed requirements,
+and the stale SBOM fixture. These were PRODUCT/TEST RED findings and were corrected before the
+Product CodeHead. Earlier baseline RED covered absent bundle/state validation and hostile runtime
+state inputs; those were likewise classified PRODUCT before correction.
 
-GREEN evidence:
+Affected GREEN evidence at the Product CodeHead:
 
-- Artifact utility: 22 passed.
-- Security suite: 27 passed.
-- Complete setup suite and plugin/layout checks: passed.
-- Final affected regression (explicit `PYTHONPATH=tools/stm32-toolkit/src;tools/stm32-monitor/src`, `-p no:cacheprovider`) collected 478 tests and exited 0: 477 passed, 1 skipped.
-- `py -3.12 -m compileall -q tools/release/build_0900_artifacts.py`: exit 0.
-- `git diff --check 22bff0061e54e37eba22d892a3b8c34949c3b130..5840dd3261731f53cc99247e9dc08ce0e3c4769d`: exit 0.
+- `test_0900_artifacts.py`: **33 passed**.
+- `test_0900_security.py`: **27 passed**.
+- `test_setup_runtime.py`: complete setup suite passed.
+- `test_plugin_layout.py` plus `test_public_inventory.py`: **23 passed**.
+- `py -3.12 -m py_compile tools/release/build_0900_artifacts.py`: exit 0.
+- `git diff --check 22bff0061e54e37eba22d892a3b8c34949c3b130..07427d04be38e10b44ba267f28c75dfad1262b9e`: exit 0.
 
-## Candidate and reproducibility evidence
+The first broad collection probe omitted the Monitor source root and failed with five
+`ModuleNotFoundError: stm32_monitor` errors; this was ENVIRONMENT, not PRODUCT. A corrected,
+non-gating full-toolkit probe was allowed to finish at the parent’s request, emitted unrelated
+failures outside the frozen affected matrix, and was classified OUT-OF-SCOPE/ENVIRONMENT. It was
+not used as release evidence and no unrelated product code was changed. The planned affected
+slices above are the governing GREEN evidence.
 
-The exact Windows x86_64 CPython 3.12 binary wheel closure was downloaded read-only to a
-disposable wheelhouse. Candidate assembly and install used no index; no upload, authentication,
+## Candidate, reproducibility, and security evidence
+
+The exact disposable Windows CPython 3.12 binary wheelhouse was assembled from read-only public
+downloads. Candidate assembly and final verification used no index; no upload, authentication,
 Git/GitHub mutation, or release publication was performed.
 
-Two builds from Product CodeHead `5840dd3261731f53cc99247e9dc08ce0e3c4769d` using the same
-wheelhouse produced `C:/tmp/p0902-candidate-a` and `C:/tmp/p0902-candidate-b`. Both contained 13
-files; recursive relative path, size, and SHA-256 comparison returned `DIFF_COUNT=0`. External
-checksum verification returned `CHECKSUM_LINES=12 CHECKSUM_PASS=12`.
+Two byte-identical candidates were built from Product CodeHead `07427d04be38e10b44ba267f28c75dfad1262b9e` using the same wheelhouse. Recursive relative-path, size, and SHA-256 comparison returned `same=True` for all 13 files; external `CHECKSUMS.sha256` verification returned **12/12**. The duplicate and wheelhouse were removed after evidence. The retained candidate is:
 
-Final retained candidate: `C:/tmp/p0902-candidate-a`
+`C:/tmp/p0902-r1-candidate-release-a`
 
 | File | Bytes | SHA-256 |
 | --- | ---: | --- |
-| `CHECKSUMS.sha256` | 1073 | `92a4431c37e6c527ec5c5f4b2c325bd69b43d17eba71570e6728e79c4307f5a2` |
+| `CHECKSUMS.sha256` | 1073 | `609d4e9040acb923f85fa0dca20413c11e54a4a10a179f34d9ff6318b1535795` |
 | `compatibility.md` | 1742 | `309159534892c68f938000c09177b1ad34a34594f690be2828c64ca6ea6fa439` |
 | `LICENSE` | 1075 | `55edb314745f2b0d3fe09e512726c3bf67cb20ba99fa3cd66859a64f3e6b6af5` |
-| `licenses.zip` | 1205 | `85aa59213ea18e93c8a2697eec5dfbfa4951235de4204467f8eb6ccdd6933c43` |
+| `licenses.zip` | 375550 | `bab50ffe7d84056cdc44047855c1b50139cbf8a003664242e8a7932119591cfc` |
 | `monitor-assets.json` | 975 | `e08692c6b519cc90c82cae2ce972ae9f9636ea6796196d6418fe44c4479403c6` |
-| `release-manifest.json` | 15329 | `dc3d0d94c42945be9d60f1eb116fa5cef9bc514ebf2f2852799e150bc4d39e3d` |
-| `sbom.spdx.json` | 126634 | `bcc5ca279df786f700380244b20cfc66603152809284ac8a4e3c09016392ad5d` |
-| `stm32_monitor-0.9.0-py3-none-any.whl` | 1244802 | `9a734a3188d0c6c36a39c03e65f98f777c162f7c1f0dfc34acd152f5f90dafc4` |
-| `stm32_toolkit-0.9.0-py3-none-any.whl` | 2510618 | `674ecb6070e2d8233d5401af6f0129f5a5eb8427a85552d2c7795367b495d6ae` |
-| `stm32-toolkit-0.9.0-source.zip` | 12803377 | `f6229fb2d4e8f3188e6b929c4e97755ad1c61924826818b96a7a33f4cbd43637` |
-| `stm32-toolkit-0.9.0-windows-x86_64.zip` | 96955398 | `2d7aa6402df42784f6530bb462119cb8b316962ceb73faf35a852bcb55de9f13` |
-| `THIRD-PARTY-NOTICES.md` | 2130 | `3d674a54bd1416609f3bc1f08266d676fa99b194b5bd3ab2bd20e5a3d73af022` |
+| `release-manifest.json` | 15813 | `acbb847b53e6db9f2ce508683b78ff1104500afebedd45d97527b3f31cef729e` |
+| `sbom.spdx.json` | 191430 | `03b779a22ff570a3c3518fdba2fad0c22f2d83d59dff82a6a7fa38572fc4e2e1` |
+| `stm32_monitor-0.9.0-py3-none-any.whl` | 1244802 | `d64315c6d441e69c75cd8b1325e28814447577ff3691188d3e192aefb4df9951` |
+| `stm32_toolkit-0.9.0-py3-none-any.whl` | 2510618 | `e38f6d951d24adf8cc8de382956a208c28177fa513e5d429646490410d673d9f` |
+| `stm32-toolkit-0.9.0-source.zip` | 12853664 | `55a73fbb59349d3351ce4295c71ab95e2fd8f4ac9f640089b86757c1305c5863` |
+| `stm32-toolkit-0.9.0-windows-x86_64.zip` | 98693440 | `0d1f1a37a438084f19be66121dfceaa2caf396a7478cd88c3c95d444488c452d` |
+| `THIRD-PARTY-NOTICES.md` | 2615 | `c9a740027186fc46351903a24913ccbfbcaf4341c86ed5d782bfd47e3151f1ea` |
 | `troubleshooting.md` | 675 | `86d99f7cdb22964ec039887aafc4bf41a9c0a22a5def8fa24418b52da0976762` |
 
-Safe standard-library extraction of the Windows archive into the disposable clean profile
-passed. Extracted-root `verify-bundle` passed. The release manifest passed
-`schemas/stm32-release.schema.json` validation, contains 64 wheels (62 external closure wheels
-plus the two product wheels), and records public inventory `mcpTools=48`, `skills=8`.
+The manifest passed `schemas/stm32-release.schema.json` validation and contains 64 wheels (62
+external closure wheels plus Toolkit and Monitor), 6 artifacts, source commit
+`07427d04be38e10b44ba267f28c75dfad1262b9e`, and public inventory `mcpTools=48`, `skills=8`.
+All manifest distribution names are normalized. The license archive has 86 members: 80
+wheel-shipped license/NOTICE/COPYING materials and 6 canonical SPDX texts under
+`licenses/spdx/`. The SBOM has 491 unique package authorities (62 Python, 2 product, 427 UI),
+with relationships `DESCRIBES=2`, `DEPENDS_ON=96`, and `GENERATED_FROM=427`; duplicate authority
+count is 0 and `NOASSERTION` license count is 0.
 
-## Candidate install, upgrade, refusal, and storage evidence
+Fresh extracted-root security probes failed closed with subprocess return code 2 before staging:
 
-- With hostile Python/PATH/user package variables removed, extracted-bundle Bootstrap exited 0.
-  Read-only Check exited 0 with healthy managed CPython 3.12.10, Toolkit 0.9.0, Monitor 0.9.0,
-  matching runtime state generation 1, exact 48 MCP tools/8 Skills, and doctor validation.
-- Managed-runtime `pip check` exited 0 (`No broken requirements found`). Direct managed-runtime
-  metadata/import checks reported Toolkit and Monitor 0.9.0; Monitor UI `index.html` and Vite
-  manifest/assets were validated. The setup install command is one `pip install` with
-  `--no-index --no-deps --only-binary=:all:` and no package-index fallback.
-- Same-version Repair exited 0, quarantined the prior managed runtime, and atomically advanced
-  state generation from 1 to 2; subsequent state verification returned `matching`.
-- A disposable legacy 0.5.0 runtime with a marker and absent state was repaired successfully.
-  The marker was preserved under `.quarantine`, the new state was schema 1 generation 1, the
-  managed runtime was healthy, and the explicit project file remained unchanged.
-- A disposable profile with recorded `activeVersion`/`highestInstalledVersion` 1.0.0 returned
-  utility `downgrade-refused` (exit 2) and setup refusal (exit 2). State, runtime marker,
-  project, and full profile tree were byte-equivalent before/after; neither `.staging` nor
-  `.quarantine` was created.
-- Existing explicit project Schema upgrade and Monitor storage rollback/preserve paths are
-  included in the final 478-test regression. No real user data or hardware was used.
+- appended source member plus an extra source file: `extracted source closure is invalid`;
+- extra release member: `release member closure is invalid`;
+- replaced `release/licenses.zip`: `invalid ZIP artifact`;
+- modified a product wheel and rewrote its valid RECORD/manifest facts: `bundle product wheel is not bound to its source`.
 
-## Failure/deferred classifications
+## Candidate installation, upgrade, refusal, and storage evidence
 
-- PRODUCT: intentional RED cases and the four candidate assembly defects listed above; all were
-  corrected and covered by GREEN evidence before the Product CodeHead.
-- ENVIRONMENT: one source-test collection attempt without the explicit source import roots;
-  corrected without product changes.
-- HARDWARE: real-board/probe/flash/debug evidence is deferred to the named later owner; no
-  physical hardware was claimed.
-- PLATFORM/INFRASTRUCTURE/REPORT: no unresolved failures in the returned evidence.
+With `PYTHONPATH`, `PYTHONHOME`, `PIP_*`, and hostile PATH/user package variables removed, the
+fresh extracted candidate profile produced:
+
+- read-only Check: exit 0, bundle valid, runtime initially absent, state absent, no mutation;
+- offline Bootstrap: exit 0, managed CPython 3.12.10 healthy, Toolkit/Monitor 0.9.0, state
+  generation 1 matching the candidate manifest/source, exact 48 MCP tools/8 Skills, and doctor
+  validation;
+- post-Bootstrap Check: exit 0; managed-runtime `pip check`: exit 0, `No broken requirements found`;
+- legacy Repair: exit 0 from a 0.3.0 runtime with a marker and absent state; the marker was
+  preserved under `runtime/.quarantine`, state schema 1 generation 1 was created, and the
+  explicit project remained unchanged;
+- downgrade refusal: exit 2 for recorded highest version 1.0.0, before staging/quarantine;
+- source-conflict refusal: exit 2 for mismatched manifest/source identity, before staging/quarantine.
+
+The downgrade and source-conflict profiles remained byte-equivalent, with no `.staging` or
+`.quarantine` created. Existing explicit project upgrade and Monitor storage preservation/rollback
+paths remained covered by the affected regression. No real user data, network service, hardware,
+or board was used; hardware and platform-only evidence remains deferred to the named later owner.
 
 ## Cleanup and Git state
 
-After evidence capture, the duplicate candidate, extracted install profiles, wheelhouse, all
-p0902 basetemps/logs/failure outputs, and ignored build/egg-info/pytest/Python cache directories
-were removed using guarded exact-path cleanup. Exactly one named final candidate directory remains:
-`C:/tmp/p0902-candidate-a`.
+All disposable p0902 candidate copies, extracted profiles, wheelhouse, basetemps, logs, failure
+outputs, and generated `Testing` data were removed using verified exact paths. The generated
+tracked-tree `native-outcomes/ctest-pipe/Testing` directory was removed while its source-controlled
+`CTestTestfile.cmake` fixture was preserved. Exactly one final named candidate directory remains:
+`C:/tmp/p0902-r1-candidate-release-a`. Sol’s independent review evidence root
+`C:/tmp/p0902-sol-r1-tamper` was retained untouched.
 
-The branch is local, clean, unpushed, and has no upstream. No push, PR, merge, tag, release,
-remote branch deletion, authentication, upload, or other remote mutation was performed. The
-ignored SDD ledger records the same evidence and cleanup state.
+The branch is clean, local, unpushed, and has no upstream. No push, PR, merge, tag, release,
+remote branch deletion, authentication, upload, or other remote mutation was performed. This
+report is committed separately after the Product CodeHead and intentionally contains neither its
+own final commit SHA nor an acceptance verdict.
