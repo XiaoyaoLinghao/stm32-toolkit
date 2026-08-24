@@ -431,6 +431,58 @@ def _load_chain(
     return chain
 
 
+def _next_deadline_stage(revision: int) -> str:
+    if revision == 0:
+        return REQUIRED_STAGES[0]
+    return REQUIRED_STAGES[revision if revision <= 4 else revision - 1]
+
+
+def _validate_chain_semantics(
+    chain: list[tuple[AcceptanceAttempt, EvidenceEnvelope]],
+    *,
+    model: object | None = None,
+    workspace: WorkspacePaths | None = None,
+) -> None:
+    """Validate semantic continuity beyond each snapshot's local schema."""
+    if not chain:
+        raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_NOT_FOUND")
+    immutable = (
+        "attempt_id", "scenario_id", "scenario_version", "scenario_digest",
+        "recovery_policy_digest", "workspace_id", "logical_project_id",
+        "project_origin", "execution_source", "physical_transport_evidence",
+        "opened_at_utc",
+    )
+    first = chain[0][0]
+    for revision, (attempt, envelope) in enumerate(chain):
+        if attempt.revision != revision:
+            raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_EVIDENCE_INTEGRITY_FAILED")
+        if envelope.parents != (() if revision == 0 else (chain[revision - 1][1].evidence_id,)):
+            raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_EVIDENCE_INTEGRITY_FAILED")
+        if envelope.artifacts != () or envelope.produced_at_utc != attempt.updated_at_utc:
+            raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_EVIDENCE_INTEGRITY_FAILED")
+        if attempt.deadline_at_utc != (
+            None if revision == 7 else _deadline(attempt.updated_at_utc, _next_deadline_stage(revision))
+        ):
+            raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_EVIDENCE_INTEGRITY_FAILED")
+        if revision == 0 and attempt.opened_at_utc != attempt.updated_at_utc:
+            raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_EVIDENCE_INTEGRITY_FAILED")
+        if attempt is not first:
+            if any(getattr(attempt, field) != getattr(first, field) for field in immutable):
+                raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_EVIDENCE_INTEGRITY_FAILED")
+            previous = chain[revision - 1][0]
+            if _timestamp(attempt.updated_at_utc) < _timestamp(previous.updated_at_utc):
+                raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_EVIDENCE_INTEGRITY_FAILED")
+            if previous.deadline_at_utc is None or _timestamp(attempt.updated_at_utc) > _timestamp(previous.deadline_at_utc):
+                raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_EVIDENCE_INTEGRITY_FAILED")
+            for key, value in previous.stage_outputs.items():
+                if value is not None and attempt.stage_outputs.get(key) != value:
+                    raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_EVIDENCE_INTEGRITY_FAILED")
+            if previous.source_change_authorization is not None and attempt.source_change_authorization != previous.source_change_authorization:
+                raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_EVIDENCE_INTEGRITY_FAILED")
+    if model is not None and workspace is not None and first.project_origin != _project_origin(model):
+        raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_IDENTITY_MISMATCH")
+
+
 def _hash_attempt_payload(attempt: AcceptanceAttempt) -> str:
     payload = attempt.to_dict()
     payload.pop("checkpointId")
@@ -473,6 +525,7 @@ def _publish_snapshot(
             logical_project_id=str(getattr(model, "logical_project_id")),
         ) if _typed_root_path(evidence, _root_id(candidate.attempt_id, 0)).exists() else []
         if current:
+            _validate_chain_semantics(current, model=model, workspace=workspace)
             latest, latest_envelope = current[-1]
             if latest.revision > expected_revision:
                 if _equivalent_transition(latest, candidate):
@@ -921,6 +974,7 @@ def _begin_attempt(
             workspace_id=workspace.workspace_id,
             logical_project_id=project_id,
         )
+        _validate_chain_semantics(chain, model=model, workspace=workspace)
         latest = chain[-1][0]
         if (
             latest.scenario_id != scenario.scenario_id
@@ -1001,6 +1055,7 @@ def _checkpoint_attempt(
         workspace_id=workspace.workspace_id,
         logical_project_id=str(getattr(model, "logical_project_id")),
     )
+    _validate_chain_semantics(chain, model=model, workspace=workspace)
     current = chain[-1][0]
     if current.revision != expected_revision:
         if current.revision > expected_revision:
@@ -1110,6 +1165,7 @@ def _authorize_source_change(
         workspace_id=workspace.workspace_id,
         logical_project_id=str(getattr(model, "logical_project_id")),
     )
+    _validate_chain_semantics(chain, model=model, workspace=workspace)
     current = chain[-1][0]
     if current.revision != expected_revision:
         if (
@@ -1202,6 +1258,7 @@ def _show_attempt(
         workspace_id=workspace.workspace_id,
         logical_project_id=str(getattr(model, "logical_project_id")),
     )
+    _validate_chain_semantics(chain, model=model, workspace=workspace)
     attempt = chain[-1][0]
     data: dict[str, object] = {"authoritative": True, "attempt": attempt.to_dict()}
     if resume:

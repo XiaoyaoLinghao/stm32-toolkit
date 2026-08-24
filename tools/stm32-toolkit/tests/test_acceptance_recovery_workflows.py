@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
+import json
 from pathlib import Path
 import shutil
 from types import SimpleNamespace
@@ -18,7 +19,8 @@ from stm32_toolkit.acceptance.recovery_workflows import (
     checkpoint_acceptance_attempt,
     resume_acceptance_attempt,
 )
-from stm32_toolkit.evidence import EvidenceIdentity
+from stm32_toolkit.evidence import ArtifactRef, EvidenceEnvelope, EvidenceIdentity
+from stm32_toolkit.evidence.gc import RootRecord, get_root
 
 
 ATTEMPT_ID = "00000000-0000-4000-8000-000000000001"
@@ -206,6 +208,163 @@ def test_one_workspace_has_one_published_checkpoint_winner(tmp_path: Path, monke
         results = list(pool.map(lambda item: checkpoint_acceptance_attempt(item, attempt_id=ATTEMPT_ID, expected_revision=0, stage="project-materialized"), contexts))
     assert all(result.ok for result in results), [result.to_dict() for result in results]
     assert results[0].data == results[1].data
+
+
+def _replace_revision_one(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    mutate_attempt=None,
+    mutate_envelope=None,
+    target_revision: int = 1,
+):
+    project, data, context = _project_transition_context(
+        tmp_path, monkeypatch, lambda: "2026-08-24T00:00:00.000000Z"
+    )
+    assert begin_acceptance_attempt(
+        context, attempt_id=ATTEMPT_ID, scenario_id="legacy-keil-migration", scenario_version="1"
+    ).ok
+    assert checkpoint_acceptance_attempt(
+        context, attempt_id=ATTEMPT_ID, expected_revision=0, stage="project-materialized"
+    ).ok
+    if target_revision == 2:
+        assert checkpoint_acceptance_attempt(
+            context, attempt_id=ATTEMPT_ID, expected_revision=1, stage="firmware-built-before"
+        ).ok
+    workspace = recovery_workflows._workspace_paths_factory(
+        data, project, "00000000-0000-4000-8000-000000000002", "session-a"
+    )
+    evidence = recovery_workflows._evidence_store_factory(workspace.workspace_root / "evidence")
+    root_id = recovery_workflows._root_id(ATTEMPT_ID, target_revision)
+    root = get_root(evidence, "acceptance-attempt", root_id)
+    old_envelope = evidence.get_envelope(root.manifest_id)
+    attempt = recovery_workflows.AcceptanceAttempt.from_value(
+        json.loads(recovery_workflows.canonical_json_bytes(old_envelope.metadata["attempt"]).decode("utf-8"))
+    )
+    payload = attempt.to_dict()
+    if mutate_attempt is not None:
+        mutate_attempt(payload)
+    payload["checkpointId"] = "0" * 64
+    payload["checkpointId"] = recovery_workflows.hashlib.sha256(
+        recovery_workflows.canonical_json_bytes(
+            {key: value for key, value in payload.items() if key != "checkpointId"}
+        )
+    ).hexdigest()
+    replacement = recovery_workflows.AcceptanceAttempt.from_value(payload)
+    envelope_values = {
+        "identity": old_envelope.identity,
+        "operation": old_envelope.operation,
+        "produced_at_utc": replacement.updated_at_utc,
+        "parents": old_envelope.parents,
+        "artifacts": old_envelope.artifacts,
+        "metadata": recovery_workflows._envelope_metadata(replacement),
+    }
+    artifact_bytes = b"tampered-artifact"
+    artifact_hash = recovery_workflows.hashlib.sha256(artifact_bytes).hexdigest()
+    artifact_path = evidence.root / "objects" / "sha256" / artifact_hash[:2] / artifact_hash
+    artifact_path.parent.mkdir(parents=True, exist_ok=True)
+    artifact_path.write_bytes(artifact_bytes)
+    if mutate_envelope is not None:
+        mutate_envelope(envelope_values)
+    replacement_envelope = EvidenceEnvelope(**envelope_values)
+    with evidence._mutation_lock():
+        evidence._put_envelope_locked(replacement_envelope)
+        root_path = recovery_workflows._typed_root_path(evidence, root_id)
+        root_path.unlink()
+        recovery_workflows._publish_root_locked(
+            evidence,
+            RootRecord("acceptance-attempt", root_id, str(replacement_envelope.evidence_id), recovery_workflows._root_metadata(replacement)),
+        )
+    return context
+
+
+def test_canonical_revision_scenario_switch_fails_closed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    def mutate(payload):
+        payload["scenarioId"] = "new-cubemx-project"
+        payload["scenarioDigest"] = recovery_workflows.describe_scenario(
+            "new-cubemx-project", "1"
+        ).scenario_digest
+        payload["projectOrigin"] = "cubemx"
+    context = _replace_revision_one(tmp_path, monkeypatch, mutate_attempt=mutate)
+    result = resume_acceptance_attempt(context, attempt_id=ATTEMPT_ID)
+    assert result.code == "ACCEPTANCE_ATTEMPT_EVIDENCE_INTEGRITY_FAILED"
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        pytest.param(("attempt2", lambda payload: payload["stageOutputs"].__setitem__("projectModelDigest", "f" * 64)), id="prior-output"),
+        pytest.param(
+            ("attempt", lambda payload: payload.update(
+                {
+                    "openedAtUtc": "2026-08-24T00:00:01.000000Z",
+                    "updatedAtUtc": "2026-08-24T00:00:01.000000Z",
+                    "deadlineAtUtc": "2026-08-24T00:15:01.000000Z",
+                }
+            )),
+            id="opened-time",
+        ),
+        pytest.param(("attempt", lambda payload: payload.__setitem__("deadlineAtUtc", "2026-08-24T00:16:00.000000Z")), id="deadline-policy"),
+        pytest.param(("envelope", lambda envelope: envelope.update({"parents": ("a" * 64,)})), id="wrong-parent"),
+        pytest.param(("envelope", lambda envelope: envelope.update({"parents": ()})), id="missing-parent"),
+        pytest.param(
+            ("envelope", lambda envelope: envelope.update(
+                {
+                    "artifacts": (
+                        ArtifactRef(
+                            recovery_workflows.hashlib.sha256(b"tampered-artifact").hexdigest(),
+                            len(b"tampered-artifact"),
+                            "objects/sha256/" + recovery_workflows.hashlib.sha256(b"tampered-artifact").hexdigest()[:2] + "/" + recovery_workflows.hashlib.sha256(b"tampered-artifact").hexdigest(),
+                            "log",
+                            "text/plain",
+                        ),
+                    )
+                }
+            )),
+            id="artifact",
+        ),
+        pytest.param(
+            ("envelope", lambda envelope: envelope.update({"produced_at_utc": "2026-08-24T00:00:01.000000Z"})),
+            id="produced-time",
+        ),
+    ],
+)
+def test_canonical_chain_mutations_fail_closed_without_new_roots(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mutation
+):
+    target, mutate = mutation
+    context = _replace_revision_one(
+        tmp_path,
+        monkeypatch,
+        mutate_attempt=(mutate if target in {"attempt", "attempt2"} else None),
+        mutate_envelope=(mutate if target == "envelope" else None),
+        target_revision=(2 if target == "attempt2" else 1),
+    )
+    result = resume_acceptance_attempt(context, attempt_id=ATTEMPT_ID)
+    assert result.code == "ACCEPTANCE_ATTEMPT_EVIDENCE_INTEGRITY_FAILED"
+
+
+def test_current_project_origin_drift_fails_closed_on_public_resume_and_show(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    project, data, context = _project_transition_context(
+        tmp_path, monkeypatch, lambda: "2026-08-24T00:00:00.000000Z"
+    )
+    assert begin_acceptance_attempt(
+        context, attempt_id=ATTEMPT_ID, scenario_id="legacy-keil-migration", scenario_version="1"
+    ).ok
+    monkeypatch.setattr(
+        recovery_workflows,
+        "_load_project_model",
+        lambda _root: SimpleNamespace(
+            schema_version=3,
+            logical_project_id=UUID("00000000-0000-4000-8000-000000000002"),
+            memory=SimpleNamespace(source="cubemx"),
+            target_device="STM32F429ZITx",
+        ),
+    )
+    assert resume_acceptance_attempt(context, attempt_id=ATTEMPT_ID).code == "ACCEPTANCE_ATTEMPT_IDENTITY_MISMATCH"
+    assert recovery_workflows.show_acceptance_attempt(context, attempt_id=ATTEMPT_ID).code == "ACCEPTANCE_ATTEMPT_IDENTITY_MISMATCH"
 
 
 @pytest.mark.parametrize(

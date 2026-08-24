@@ -41,6 +41,8 @@ from stm32_toolkit.diagnostic_workflows import (
     diagnostic_start_verification,
 )
 from stm32_toolkit.diagnostics import VerificationPlan
+from stm32_toolkit.evidence import EvidenceEnvelope
+from stm32_toolkit.evidence.gc import RootRecord
 from stm32_toolkit.evidence.store import EvidenceStore
 from stm32_toolkit.result import OperationResult
 from stm32_toolkit.paths import WorkspacePaths
@@ -528,3 +530,42 @@ def test_real_replay_diagnostic_acceptance_chain_reaches_revision_seven(
         AcceptanceWorkflowContext(project_root, data_root, f"vs08a-{origin}-session"),
         record_id=RECORD_ID,
     ).ok
+    evidence = EvidenceStore(workspace.workspace_root / "evidence")
+    root_id = recovery_workflows._root_id(attempt_id, 6)
+    root = recovery_workflows.get_root(evidence, "acceptance-attempt", root_id)
+    old_envelope = evidence.get_envelope(root.manifest_id)
+    payload = json.loads(
+        recovery_workflows.canonical_json_bytes(old_envelope.metadata["attempt"]).decode("utf-8")
+    )
+    payload["sourceChangeAuthorization"]["actionDigest"] = "0" * 64
+    payload["checkpointId"] = "0" * 64
+    payload["checkpointId"] = hashlib.sha256(
+        recovery_workflows.canonical_json_bytes(
+            {key: value for key, value in payload.items() if key != "checkpointId"}
+        )
+    ).hexdigest()
+    tampered = recovery_workflows.AcceptanceAttempt.from_value(payload)
+    tampered_envelope = EvidenceEnvelope(
+        identity=old_envelope.identity,
+        operation=old_envelope.operation,
+        produced_at_utc=old_envelope.produced_at_utc,
+        parents=old_envelope.parents,
+        artifacts=old_envelope.artifacts,
+        metadata=recovery_workflows._envelope_metadata(tampered),
+    )
+    with evidence._mutation_lock():
+        evidence._put_envelope_locked(tampered_envelope)
+        recovery_workflows._typed_root_path(evidence, root_id).unlink()
+        recovery_workflows._publish_root_locked(
+            evidence,
+            RootRecord(
+                "acceptance-attempt",
+                root_id,
+                str(tampered_envelope.evidence_id),
+                recovery_workflows._root_metadata(tampered),
+            ),
+        )
+    # Remove only the downstream test root so the assertion isolates the
+    # revision-5 authorization invariant rather than a broken rev6->rev7 link.
+    recovery_workflows._typed_root_path(evidence, recovery_workflows._root_id(attempt_id, 7)).unlink()
+    assert recovery_workflows.show_acceptance_attempt(context, attempt_id=attempt_id).code == "ACCEPTANCE_ATTEMPT_EVIDENCE_INTEGRITY_FAILED"
