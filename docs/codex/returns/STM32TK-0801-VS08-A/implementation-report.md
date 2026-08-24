@@ -10,7 +10,7 @@
 - Branch: codex/STM32TK-0801-VS08-A
 - Worktree: C:/tmp/stm32tk-0801-vs08a
 - Product/tests CodeHead before this report was committed: 04617a9e7312a6d2854bee6ab7ec4f3ffaefcc9c
-- Corrected product/tests CodeHead for this report: a493ef11c0ea80b721be5615236c7bc99019b78b
+- Corrected product/tests CodeHead for this report: da0078c949ad17676aebd5fd1ec9fd763fb55cc8
 
 The product/tests commit was created before this report. The report commit's SHA is intentionally
 not recorded in this file.
@@ -264,3 +264,95 @@ or source record was altered, and the real vertical tests exercise the seam.
 No installation, credential handling, hardware access, provider/backend/probe work, Python-support
 work, resume/checkpoint work, release-gate work, push, PR mutation, merge, tag, release, close, or
 remote branch deletion occurred. The branch remains local, unpushed, and without an upstream.
+
+## Review round 2 correction ledger
+
+The final allowed independent complete-diff review returned `REVISION_REQUIRED`. The correction
+remained on the same bounded branch and was implemented with real Evidence/Test/Diagnostic
+readers and publication primitives. The previous authority fixture that monkeypatched public
+readers and TestRunRepository was removed.
+
+### RED evidence
+
+1. Actual Diagnostic ABI mapping:
+
+   `$env:PYTHONPATH=(Resolve-Path '.\tools\stm32-toolkit\src').Path; py -3.12 -m pytest tools/stm32-toolkit/tests/test_acceptance_workflows.py -k public_diagnostic_reader_failures -q --basetemp=C:\tmp\stm32tk-vs08a-red-abi-map-1`
+
+   Five failures exposed the real public codes that the old mapping mishandled: `INCOMPATIBLE_IDENTITY`
+   was projected as `ACCEPTANCE_NOT_COMPLETE`, `DIAGNOSTIC_EVIDENCE_MISSING` as
+   `ACCEPTANCE_EVIDENCE_INTEGRITY_FAILED`, and `EVIDENCE_INTEGRITY_FAILURE` as
+   `ACCEPTANCE_NOT_COMPLETE` (the two verification rows also exposed the reachability setup before
+   the real closed mapping test was finalized). The expected contract is identity, reference, and
+   integrity respectively; unresolved completion remains `ACCEPTANCE_NOT_COMPLETE` only after a
+   successful Diagnostic reader result.
+
+2. Publication phase split:
+
+   `$env:PYTHONPATH=(Resolve-Path '.\tools\stm32-toolkit\src').Path; py -3.12 -m pytest tools/stm32-toolkit/tests/test_acceptance_workflows.py -k "evidence_corrupt_envelope or identical_root_publication_race" --basetemp=C:\tmp\stm32tk-vs08a-red-publication-phases-2`
+
+   The envelope corruption regression initially returned `ACCEPTANCE_RECORD_CONFLICT` instead of
+   `ACCEPTANCE_EVIDENCE_INTEGRITY_FAILED`; the root race row passed. This isolated the incorrect
+   envelope/root exception handling before the publication tests were moved to real stores.
+
+3. Real-reader conflict setup:
+
+   `$env:PYTHONPATH=(Resolve-Path '.\tools\stm32-toolkit\src').Path + ';' + (Resolve-Path '..\stm32-monitor\src').Path; py -3.12 -m pytest tools/stm32-toolkit/tests/test_vs08a_scenarios.py -q --basetemp=C:\tmp\stm32tk-vs08a-red-real-boundary-1`
+
+   The new real same-record conflict initially failed during the second chain with
+   `DIAGNOSTIC_OPERATION_CONFLICT`, proving the test authority reused operation IDs. The helper
+   was corrected to use distinct run/session/operation identities; no production lifecycle was
+   changed for that fixture defect.
+
+4. Physical publication fixture:
+
+   The first real physical-publication run was rejected by the existing publisher because the
+   fixture used a non-hash `probe_id` (`TEST_PROTOCOL_INVALID`). The fixture was corrected to
+   satisfy the existing physical publication primitive; the final test uses `TestRunPublisher`
+   and the real `test_show` reader and does not claim physical PASS.
+
+### GREEN evidence
+
+- Actual closed Diagnostic mapping: `py -3.12 -m pytest tools/stm32-toolkit/tests/test_acceptance_workflows.py -q --basetemp=C:\tmp\stm32tk-vs08a-green-workflow-unit-3` -> `11 passed` before the final additional alias row; the final affected matrix includes the resulting `12` workflow tests and all pass.
+- Real physical publication: `... test_vs08a_scenarios.py -q -k "physical_publication" --basetemp=C:\tmp\stm32tk-vs08a-green-real-physical-4` -> `1 passed`.
+- Real acceptance-root/publication phases: `... test_vs08a_scenarios.py -q -k "acceptance_show_distinguishes or envelope_corruption or different_root_publication or identical_root_publication" --basetemp=C:\tmp\stm32tk-vs08a-green-real-publication-4` -> `4 passed`; the final genuine different-root race was separately rerun at `C:\tmp\stm32tk-vs08a-green-different-root-race-9` -> `1 passed`.
+- Complete real VS08-A vertical coverage: `py -3.12 -m pytest tools/stm32-toolkit/tests/test_vs08a_scenarios.py -q --basetemp=C:\tmp\stm32tk-vs08a-green-vertical-final-7` -> all collected tests passed before the final separately passing different-root addition; the final affected matrix below includes all `23` vertical tests.
+- Required affected regression (fresh final basetemp): `py -3.12 -m pytest tools/stm32-toolkit/tests/test_acceptance_model.py tools/stm32-toolkit/tests/test_acceptance_workflows.py tools/stm32-toolkit/tests/test_acceptance_cli.py tools/stm32-toolkit/tests/test_acceptance_mcp.py tools/stm32-toolkit/tests/test_vs08a_scenarios.py tools/stm32-toolkit/tests/test_evidence_gc.py tools/stm32-toolkit/tests/test_vs03_end_to_end.py tools/stm32-toolkit/tests/test_creation_workflows.py tools/stm32-toolkit/tests/test_workflows.py tools/stm32-toolkit/tests/test_mcp_server.py tools/stm32-toolkit/tests/test_testing_mcp.py tools/stm32-toolkit/tests/test_diagnostic_mcp.py tools/stm32-toolkit/tests/test_testing_cli.py tools/stm32-toolkit/tests/test_diagnostic_cli.py -q --basetemp=C:\tmp\stm32tk-vs08a-affected-final-r2-2` -> `482 passed, 1 skipped`, exit code 0. The one skip is the pre-existing platform-only skip and is not physical PASS evidence.
+- Static verification after the product commit: Python 3.12 `compileall -q tools/stm32-toolkit/src tools/stm32-toolkit/tests`, `git diff --check`, and `git diff --check 8f7bcb5c860998bc8459c7b33690d9a297319a6c` all passed.
+
+### Review round 2 product/tests files and self-review
+
+Product/tests commit: `da0078c949ad17676aebd5fd1ec9fd763fb55cc8`.
+
+Exact files changed in this correction:
+
+- `tools/stm32-toolkit/src/stm32_toolkit/acceptance/workflows.py`
+- `tools/stm32-toolkit/tests/test_acceptance_workflows.py`
+- `tools/stm32-toolkit/tests/test_vs08a_scenarios.py`
+
+The workflow now uses an explicit closed map for the actual Diagnostic reader ABI, including
+verification-show results; corrupt/missing public Test roots and corrupt acceptance roots remain
+distinct; envelope `EVIDENCE_CORRUPT` is integrity failure; root `EVIDENCE_CORRUPT` reloads an
+identical record, reports a valid different record as conflict, and classifies an unreadable
+root/store as integrity failure. Stable request comparison still occurs before `_utc_now()`, so
+an advancing clock cannot turn an identical retry into a conflict.
+
+The behavior suite now constructs real replay/Diagnostic chains, a valid physical publication via
+`TestRunPublisher`, real cross-workspace/project copies, wrong-state records, corrupt/missing roots,
+real Diagnostic event corruption, unresolved/non-passing verification, mismatched verification
+binding, idempotent retry, and same-ID conflict. Publication race tests use the existing
+EvidenceStore fault-injection seam while invoking real `put_envelope`/`put_root`; no public reader,
+TestRunRepository, model validation, Evidence publication, or root publication method is mocked.
+Every invalid mutation asserts no acceptance root and snapshots prior Evidence bytes where the
+attempt is required to be non-mutating.
+
+No controller, scheduler, daemon, provider, Evidence store, Probe backend, Python support,
+resume/checkpoint behavior, release gate, or unrelated refactor was added. The sole concern is
+the pre-existing compact 32-hex Diagnostic storage ID versus the canonical hyphenated acceptance
+UUID; only the bounded lookup conversion is used, and real vertical tests cover it.
+
+### Final status and prohibited actions
+
+Product/tests CodeHead is `da0078c949ad17676aebd5fd1ec9fd763fb55cc8`; the report is committed
+separately and intentionally does not record that later report commit SHA. The branch is clean,
+local, unpushed, and has no upstream. No installation, credentials, hardware, push, PR mutation,
+merge, tag, release, close, remote deletion, or physical PASS action occurred.
