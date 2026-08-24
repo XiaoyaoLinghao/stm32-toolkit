@@ -33,6 +33,14 @@ from stm32_toolkit.acceptance.workflows import (
     record_acceptance_scenario,
     show_acceptance_scenario,
 )
+from stm32_toolkit.acceptance.recovery_workflows import (
+    AcceptanceRecoveryContext,
+    authorize_acceptance_source_change,
+    begin_acceptance_attempt,
+    checkpoint_acceptance_attempt,
+    resume_acceptance_attempt,
+    show_acceptance_attempt,
+)
 from stm32_toolkit.context import build_project_context
 from stm32_toolkit.creation_workflows import (
     CreationPlanWorkflowRequest,
@@ -206,6 +214,15 @@ AcceptanceScenarioVersion = Literal["1"]
 AcceptanceUuid = Annotated[
     StrictStr,
     Field(pattern=_ACCEPTANCE_UUID_PATTERN, min_length=36, max_length=36),
+]
+AcceptanceRevision = Annotated[StrictInt, Field(ge=0, le=7)]
+AcceptanceAttemptStage = Literal[
+    "project-materialized",
+    "firmware-built-before",
+    "target-failure-replayed",
+    "diagnosis-completed",
+    "firmware-built-after",
+    "target-fix-verified",
 ]
 
 
@@ -1139,6 +1156,14 @@ def _acceptance_context(runtime: ServerRuntime) -> AcceptanceWorkflowContext:
     )
 
 
+def _acceptance_recovery_context(runtime: ServerRuntime) -> AcceptanceRecoveryContext:
+    return AcceptanceRecoveryContext(
+        project_root=runtime.project_root,
+        data_root=runtime.data_root,
+        session_id=runtime.session_id,
+    )
+
+
 class _ProjectPathError(ValueError):
     """A caller path did not satisfy the MCP project-file boundary."""
 
@@ -1607,6 +1632,99 @@ async def tool_acceptance_scenario_show_for_request(
         return failure
     return show_acceptance_scenario(
         _acceptance_context(runtime), record_id=record_id
+    ).to_dict()
+
+
+async def tool_acceptance_attempt_begin_for_request(
+    runtime: ServerRuntime,
+    context: Context | None,
+    attempt_id: AcceptanceUuid,
+    scenario_id: AcceptanceScenarioId,
+    scenario_version: AcceptanceScenarioVersion,
+) -> dict[str, object]:
+    operation = "acceptance.attempt.begin"
+    failure = await _client_roots_failure(runtime, context, operation)
+    if failure is not None:
+        return failure
+    return begin_acceptance_attempt(
+        _acceptance_recovery_context(runtime),
+        attempt_id=attempt_id,
+        scenario_id=scenario_id,
+        scenario_version=scenario_version,
+    ).to_dict()
+
+
+async def tool_acceptance_attempt_checkpoint_for_request(
+    runtime: ServerRuntime,
+    context: Context | None,
+    attempt_id: AcceptanceUuid,
+    expected_revision: AcceptanceRevision,
+    stage: AcceptanceAttemptStage,
+    test_run_id: AcceptanceUuid | None = None,
+    diagnostic_session_id: AcceptanceUuid | None = None,
+    acceptance_record_id: AcceptanceUuid | None = None,
+) -> dict[str, object]:
+    operation = "acceptance.attempt.checkpoint"
+    failure = await _client_roots_failure(runtime, context, operation)
+    if failure is not None:
+        return failure
+    return checkpoint_acceptance_attempt(
+        _acceptance_recovery_context(runtime),
+        attempt_id=attempt_id,
+        expected_revision=expected_revision,
+        stage=stage,
+        test_run_id=test_run_id,
+        diagnostic_session_id=diagnostic_session_id,
+        acceptance_record_id=acceptance_record_id,
+    ).to_dict()
+
+
+async def tool_acceptance_attempt_authorize_source_change_for_request(
+    runtime: ServerRuntime,
+    context: Context | None,
+    attempt_id: AcceptanceUuid,
+    expected_revision: AcceptanceRevision,
+    action_digest: Digest,
+    authorized: StrictBool,
+) -> dict[str, object]:
+    operation = "acceptance.attempt.authorize-source-change"
+    failure = await _client_roots_failure(runtime, context, operation)
+    if failure is not None:
+        return failure
+    return authorize_acceptance_source_change(
+        _acceptance_recovery_context(runtime),
+        attempt_id=attempt_id,
+        expected_revision=expected_revision,
+        action_digest=action_digest,
+        authorized=authorized,
+    ).to_dict()
+
+
+async def tool_acceptance_attempt_show_for_request(
+    runtime: ServerRuntime,
+    context: Context | None,
+    attempt_id: AcceptanceUuid,
+) -> dict[str, object]:
+    operation = "acceptance.attempt.show"
+    failure = await _client_roots_failure(runtime, context, operation)
+    if failure is not None:
+        return failure
+    return show_acceptance_attempt(
+        _acceptance_recovery_context(runtime), attempt_id=attempt_id
+    ).to_dict()
+
+
+async def tool_acceptance_attempt_resume_for_request(
+    runtime: ServerRuntime,
+    context: Context | None,
+    attempt_id: AcceptanceUuid,
+) -> dict[str, object]:
+    operation = "acceptance.attempt.resume"
+    failure = await _client_roots_failure(runtime, context, operation)
+    if failure is not None:
+        return failure
+    return resume_acceptance_attempt(
+        _acceptance_recovery_context(runtime), attempt_id=attempt_id
     ).to_dict()
 
 
@@ -2291,6 +2409,64 @@ def create_server(
     ) -> dict[str, object]:
         return await tool_acceptance_scenario_show_for_request(runtime, ctx, recordId)
 
+    @mcp.tool(name="stm32_acceptance_attempt_begin")
+    async def stm32_acceptance_attempt_begin(
+        ctx: Context,
+        attemptId: AcceptanceUuid,
+        scenarioId: AcceptanceScenarioId,
+        scenarioVersion: AcceptanceScenarioVersion,
+    ) -> dict[str, object]:
+        return await tool_acceptance_attempt_begin_for_request(
+            runtime, ctx, attemptId, scenarioId, scenarioVersion
+        )
+
+    @mcp.tool(name="stm32_acceptance_attempt_checkpoint")
+    async def stm32_acceptance_attempt_checkpoint(
+        ctx: Context,
+        attemptId: AcceptanceUuid,
+        expectedRevision: AcceptanceRevision,
+        stage: AcceptanceAttemptStage,
+        testRunId: AcceptanceUuid | None = None,
+        diagnosticSessionId: AcceptanceUuid | None = None,
+        acceptanceRecordId: AcceptanceUuid | None = None,
+    ) -> dict[str, object]:
+        return await tool_acceptance_attempt_checkpoint_for_request(
+            runtime,
+            ctx,
+            attemptId,
+            expectedRevision,
+            stage,
+            testRunId,
+            diagnosticSessionId,
+            acceptanceRecordId,
+        )
+
+    @mcp.tool(name="stm32_acceptance_attempt_authorize_source_change")
+    async def stm32_acceptance_attempt_authorize_source_change(
+        ctx: Context,
+        attemptId: AcceptanceUuid,
+        expectedRevision: AcceptanceRevision,
+        actionDigest: Digest,
+        authorized: StrictBool,
+    ) -> dict[str, object]:
+        return await tool_acceptance_attempt_authorize_source_change_for_request(
+            runtime, ctx, attemptId, expectedRevision, actionDigest, authorized
+        )
+
+    @mcp.tool(name="stm32_acceptance_attempt_show")
+    async def stm32_acceptance_attempt_show(
+        ctx: Context,
+        attemptId: AcceptanceUuid,
+    ) -> dict[str, object]:
+        return await tool_acceptance_attempt_show_for_request(runtime, ctx, attemptId)
+
+    @mcp.tool(name="stm32_acceptance_attempt_resume")
+    async def stm32_acceptance_attempt_resume(
+        ctx: Context,
+        attemptId: AcceptanceUuid,
+    ) -> dict[str, object]:
+        return await tool_acceptance_attempt_resume_for_request(runtime, ctx, attemptId)
+
     _close_tool_input_schemas(
         mcp,
         (
@@ -2320,6 +2496,11 @@ def create_server(
             "stm32_acceptance_scenario_describe",
             "stm32_acceptance_scenario_record",
             "stm32_acceptance_scenario_show",
+            "stm32_acceptance_attempt_begin",
+            "stm32_acceptance_attempt_checkpoint",
+            "stm32_acceptance_attempt_authorize_source_change",
+            "stm32_acceptance_attempt_show",
+            "stm32_acceptance_attempt_resume",
         ),
     )
 

@@ -15,6 +15,25 @@ from .workflows import (
     record_acceptance_scenario,
     show_acceptance_scenario,
 )
+from .recovery import (
+    ATTEMPT_SCHEMA,
+    AUTHORIZATION_FIELDS,
+    AcceptanceAttempt,
+    AcceptanceRecoveryPolicy,
+    AcceptanceRecoveryValidationError,
+    RECOVERY_POLICY_DIGEST,
+    RECOVERY_POLICY_SCHEMA,
+    STAGE_OUTPUT_KEYS,
+    acceptance_recovery_policy,
+)
+from .recovery_workflows import (
+    AcceptanceRecoveryContext,
+    authorize_acceptance_source_change,
+    begin_acceptance_attempt,
+    checkpoint_acceptance_attempt,
+    resume_acceptance_attempt,
+    show_acceptance_attempt,
+)
 
 __all__ = [
     "AcceptanceRecord",
@@ -28,4 +47,19 @@ __all__ = [
     "describe_acceptance_scenario",
     "record_acceptance_scenario",
     "show_acceptance_scenario",
+    "ATTEMPT_SCHEMA",
+    "AUTHORIZATION_FIELDS",
+    "AcceptanceAttempt",
+    "AcceptanceRecoveryPolicy",
+    "AcceptanceRecoveryValidationError",
+    "RECOVERY_POLICY_DIGEST",
+    "RECOVERY_POLICY_SCHEMA",
+    "STAGE_OUTPUT_KEYS",
+    "acceptance_recovery_policy",
+    "AcceptanceRecoveryContext",
+    "authorize_acceptance_source_change",
+    "begin_acceptance_attempt",
+    "checkpoint_acceptance_attempt",
+    "resume_acceptance_attempt",
+    "show_acceptance_attempt",
 ]

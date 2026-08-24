@@ -31,6 +31,14 @@ from stm32_toolkit.acceptance.workflows import (
     record_acceptance_scenario,
     show_acceptance_scenario,
 )
+from stm32_toolkit.acceptance.recovery_workflows import (
+    AcceptanceRecoveryContext,
+    authorize_acceptance_source_change,
+    begin_acceptance_attempt,
+    checkpoint_acceptance_attempt,
+    resume_acceptance_attempt,
+    show_acceptance_attempt,
+)
 from stm32_toolkit.creation_workflows import (
     CreationPlanWorkflowRequest,
     apply_creation_workflow,
@@ -438,6 +446,47 @@ def _build_parser() -> argparse.ArgumentParser:
     scenario_show.set_defaults(operation="acceptance.scenario.show")
     _add_testing_context(scenario_show)
     scenario_show.add_argument("--record-id", required=True, type=_acceptance_uuid)
+
+    attempt = scenario_commands.add_parser("attempt")
+    attempt_commands = attempt.add_subparsers(dest="attempt_command", required=True)
+
+    attempt_begin = attempt_commands.add_parser("begin")
+    attempt_begin.set_defaults(operation="acceptance.attempt.begin")
+    _add_testing_context(attempt_begin)
+    attempt_begin.add_argument("--attempt-id", required=True, type=_acceptance_uuid)
+    attempt_begin.add_argument("--scenario-id", required=True)
+    attempt_begin.add_argument("--scenario-version", required=True)
+
+    attempt_checkpoint = attempt_commands.add_parser("checkpoint")
+    attempt_checkpoint.set_defaults(operation="acceptance.attempt.checkpoint")
+    _add_testing_context(attempt_checkpoint)
+    attempt_checkpoint.add_argument("--attempt-id", required=True, type=_acceptance_uuid)
+    attempt_checkpoint.add_argument("--expected-revision", required=True, type=_bounded_int(0, 7))
+    attempt_checkpoint.add_argument("--stage", required=True, choices=(
+        "project-materialized", "firmware-built-before", "target-failure-replayed",
+        "diagnosis-completed", "firmware-built-after", "target-fix-verified",
+    ))
+    attempt_checkpoint.add_argument("--test-run-id", type=_acceptance_uuid)
+    attempt_checkpoint.add_argument("--diagnostic-session-id", type=_acceptance_uuid)
+    attempt_checkpoint.add_argument("--acceptance-record-id", type=_acceptance_uuid)
+
+    attempt_authorize = attempt_commands.add_parser("authorize-source-change")
+    attempt_authorize.set_defaults(operation="acceptance.attempt.authorize-source-change")
+    _add_testing_context(attempt_authorize)
+    attempt_authorize.add_argument("--attempt-id", required=True, type=_acceptance_uuid)
+    attempt_authorize.add_argument("--expected-revision", required=True, type=_bounded_int(0, 7))
+    attempt_authorize.add_argument("--action-digest", required=True, type=_testing_digest)
+    attempt_authorize.add_argument("--authorized", action=_RejectDuplicateTrue, nargs=0, default=False)
+
+    attempt_show = attempt_commands.add_parser("show")
+    attempt_show.set_defaults(operation="acceptance.attempt.show")
+    _add_testing_context(attempt_show)
+    attempt_show.add_argument("--attempt-id", required=True, type=_acceptance_uuid)
+
+    attempt_resume = attempt_commands.add_parser("resume")
+    attempt_resume.set_defaults(operation="acceptance.attempt.resume")
+    _add_testing_context(attempt_resume)
+    attempt_resume.add_argument("--attempt-id", required=True, type=_acceptance_uuid)
 
     diagnose = commands.add_parser("diagnose")
     diagnose_commands = diagnose.add_subparsers(
@@ -949,6 +998,10 @@ def _validate_cli_modes(parser: argparse.ArgumentParser, args: argparse.Namespac
     """Reject grammar violations that argparse cannot express alone."""
     if args.command == "test":
         return
+    if args.command == "scenario" and args.scenario_command == "attempt":
+        if args.attempt_command == "authorize-source-change" and not args.authorized:
+            parser.error("--authorized is required for source-change authorization")
+        return
     if args.command == "read" and args.read_command == "sample":
         if args.count is None and args.duration_ms is None:
             parser.error("sample requires --count or --duration-ms")
@@ -1258,6 +1311,41 @@ def _operation_result(
             )
         return test_show(context, run_id=args.run_id)
     if args.command == "scenario":
+        if args.scenario_command == "attempt":
+            context = AcceptanceRecoveryContext(
+                project_root=project_root,
+                data_root=args.data_root,
+                session_id=args.session_id,
+            )
+            if args.attempt_command == "begin":
+                return begin_acceptance_attempt(
+                    context,
+                    attempt_id=args.attempt_id,
+                    scenario_id=args.scenario_id,
+                    scenario_version=args.scenario_version,
+                )
+            if args.attempt_command == "checkpoint":
+                return checkpoint_acceptance_attempt(
+                    context,
+                    attempt_id=args.attempt_id,
+                    expected_revision=args.expected_revision,
+                    stage=args.stage,
+                    test_run_id=args.test_run_id,
+                    diagnostic_session_id=args.diagnostic_session_id,
+                    acceptance_record_id=args.acceptance_record_id,
+                )
+            if args.attempt_command == "authorize-source-change":
+                return authorize_acceptance_source_change(
+                    context,
+                    attempt_id=args.attempt_id,
+                    expected_revision=args.expected_revision,
+                    action_digest=args.action_digest,
+                    authorized=args.authorized,
+                )
+            if args.attempt_command == "show":
+                return show_acceptance_attempt(context, attempt_id=args.attempt_id)
+            return resume_acceptance_attempt(context, attempt_id=args.attempt_id)
+
         context = AcceptanceWorkflowContext(
             project_root=project_root,
             data_root=args.data_root,

@@ -43,6 +43,7 @@ REGISTERED_ROOT_TYPES = frozenset(
         "diagnostic-marker",
         "monitor-analysis-bundle",
         "acceptance-scenario",
+        "acceptance-attempt",
     }
 )
 _HASH = re.compile(r"^[0-9a-f]{64}$")

@@ -146,6 +146,11 @@ def test_server_registers_exactly_the_project_bound_tools(tmp_path: Path):
         "stm32_acceptance_scenario_describe",
         "stm32_acceptance_scenario_record",
         "stm32_acceptance_scenario_show",
+        "stm32_acceptance_attempt_begin",
+        "stm32_acceptance_attempt_checkpoint",
+        "stm32_acceptance_attempt_authorize_source_change",
+        "stm32_acceptance_attempt_show",
+        "stm32_acceptance_attempt_resume",
     }
     zero_argument_tools = {
         "stm32_doctor",
