@@ -154,6 +154,14 @@ def test_policy_binds_complete_source_controlled_spdx_texts():
         assert len(content) >= 1000
 
 
+def test_root_license_checkout_is_pinned_to_canonical_lf_bytes():
+    attributes = (REPO_ROOT / ".gitattributes").read_text(encoding="utf-8").splitlines()
+    assert "/LICENSE text eol=lf" in attributes
+    assert (REPO_ROOT / "LICENSE").read_bytes() == (
+        REPO_ROOT / "tools" / "release" / "licenses" / "spdx" / "MIT.txt"
+    ).read_bytes()
+
+
 def test_license_authority_reads_bound_source_texts_not_summaries():
     from importlib.util import module_from_spec, spec_from_file_location
 
