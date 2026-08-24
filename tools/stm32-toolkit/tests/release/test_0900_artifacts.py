@@ -242,5 +242,7 @@ def test_windows_bundle_keeps_release_members_available_below_source_prefix():
     members = {
         "stm32-toolkit-0.9.0/tools/release/build_0900_artifacts.py",
         "stm32-toolkit-0.9.0/release/release-manifest.json",
+        "stm32-toolkit-0.9.0/stm32-toolkit-0.9.0-source.zip",
     }
     assert "stm32-toolkit-0.9.0/release/release-manifest.json" in members
+    assert "stm32-toolkit-0.9.0/stm32-toolkit-0.9.0-source.zip" in members

@@ -879,6 +879,7 @@ def _build(args: argparse.Namespace) -> dict[str, Any]:
         # explicit directory without following a sibling or ambient path.
         for name, data in release_files.items():
             bundle_files[f"stm32-toolkit-{VERSION}/{name}"] = data
+        bundle_files[f"stm32-toolkit-{VERSION}/{manifest['source']['archive']}"] = source_archive
         bundle_data = io.BytesIO()
         with tempfile.TemporaryDirectory(prefix="stm32tk-bundle-") as bundle_temp:
             bundle_path = Path(bundle_temp) / "bundle.zip"
