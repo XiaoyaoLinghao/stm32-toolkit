@@ -5,7 +5,7 @@
 - Slice: VS08-B recovery, isolation, and human checkpoints, Task 1.
 - Accepted base: `eea72a46d9fcdcd7abd8ebfac5b09a8e921f6ba2`.
 - Specification/plan head: `79f6317d8fb7899bc2b24171ef4d516acbd837af`.
-- Product/tests CodeHead: `fc83263304d5d949191ac1ba49d8405a196670fa` (`fix(acceptance): close VS08-B retry and lineage gaps`).
+- Product/tests CodeHead: `1e728111aac7c304c7b8c82c68a1ba0c0e503747` (`fix(acceptance): enforce immutable recovery chain semantics`).
 - Branch/worktree: `codex/STM32TK-0802-VS08-B` / `C:\tmp\stm32tk-0802-vs08b`.
 - Implementer: sole `gpt-5.6-luna`, max reasoning; independent acceptance remains with GPT-5.6-sol.
 - Remote state: no upstream, unpushed, no PR or other remote action.
@@ -32,6 +32,10 @@ After the correction round, the focused recovery suite completed `15 passed`; th
 Independent review round 1 was `REVISION_REQUIRED`. New RED summaries were captured before correction: the identical project checkpoint retry command returned `1 failed` with `ACCEPTANCE_ATTEMPT_REVISION_CONFLICT`; the seven-case diagnostic lineage command returned `7 failed` because the production validator had no `expected_session_id` contract; and the real vertical returned `2 failed` at monitor-fixture ingestion until the rewritten fixture digest was repaired. The final-completion vertical then exposed `2 failed` with `ACCEPTANCE_ATTEMPT_INPUT_INVALID` from the UUID/hash mismatch in `acceptanceRecordId` validation. These are result summaries, not retained raw transcripts.
 
 The correction adds exact immutable retries for all checkpoint stages and source authorization, identity-bound diagnostic sessions and source hashes, fail-closed chain/root/orphan/copy isolation checks, exact-deadline coverage, one-workspace concurrent publication, and real reader-chain vertical coverage through revision 7 for both origins. Verification: `py -3.12 -m pytest tools/stm32-toolkit/tests/test_acceptance_recovery_workflows.py tools/stm32-toolkit/tests/test_vs08b_scenarios.py -q --basetemp=C:\tmp\stm32tk-0802-vs08b-r1-affected-1` — `15 passed` in the focused recovery portion and `2 passed` vertical origins; `py -3.12 -m compileall -q tools/stm32-toolkit/src tools/stm32-toolkit/tests` — exit 0; `git diff --check` — exit 0.
+
+## Correction round 2
+
+Independent review round 2 identified a canonical revision-chain semantic gap. The preserved RED reproduction was a public Keil revision-0 attempt followed by a canonical CubeMX revision-1 snapshot; public resume returned `True OK new-cubemx-project`. The correction validates immutable attempt/scenario/version/digest/policy/workspace/project/origin/execution/physical/opened fields, prior output and authorization continuity, timestamp/deadline policy, exact envelope parents/artifacts/produced time, and current project-origin binding on begin/show/resume/authorize/advance. Focused GREEN coverage includes scenario switch, prior-output rewrite, opened/deadline rewrite, authorization rewrite on an intact 0–6 chain, wrong/missing parent, artifact, produced-time mismatch, and public origin drift; all fail closed without publishing a new root. The round-2 affected matrix completed with exit 0; compileall and diff-check completed with exit 0. No hardware or remote action was performed.
 
 ## Verification commands
 
