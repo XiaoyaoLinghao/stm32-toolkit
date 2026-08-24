@@ -842,15 +842,13 @@ def _build(args: argparse.Namespace) -> dict[str, Any]:
             product_wheels[normalized] = wheel.read_bytes()
             selected[normalized] = _read_wheel(wheel, policy)
         monitor_assets = _monitor_asset_inventory(product_wheels["stm32-monitor"])
-        licenses_zip = io.BytesIO()
         with tempfile.TemporaryDirectory(prefix="stm32tk-licenses-") as license_temp:
             license_root = Path(license_temp) / "licenses"
             license_root.mkdir()
             license_text = Path(repo / "LICENSE").read_bytes()
             (license_root / "MIT.txt").write_bytes(license_text)
             _write_fixed_zip(Path(license_temp) / "licenses.zip", {"licenses/MIT.txt": license_text}, timestamp=epoch)
-            licenses_zip.write_bytes(Path(license_temp, "licenses.zip").read_bytes())
-        licenses_data = licenses_zip.getvalue()
+            licenses_data = Path(license_temp, "licenses.zip").read_bytes()
         sbom = _canonical_json(_spdx(selected, product_wheels, args.code_head, epoch, repo))
         notices = _notices(selected)
         compatibility = _compatibility(selected)
