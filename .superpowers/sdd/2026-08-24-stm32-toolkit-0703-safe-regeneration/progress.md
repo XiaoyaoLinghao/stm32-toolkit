@@ -17,7 +17,7 @@
 
 ## Implementer return
 
-- Product/tests CodeHead: `94fd34a0b19890accdedc6002ab3c84fb87e8689`.
+- Product/tests CodeHead: `b01ece4e5f1db601150350351a34cf83a0a46053`.
 - The product/tests commit and the updated implementation report/ledger are
   local, unpushed, and separate. The report/ledger commit SHA is supplied in
   the implementer return rather than recorded inside its own tracked files.
@@ -71,7 +71,7 @@ verdict will be appended here without deleting this reconstructed baseline.
   preservation, configure, Debug, Release, atomic activation, and
   single-use authorization were exercised by the focused tests and the fresh
   native software scenario.
-- The exact approved slice passed `698 passed, 1 skipped`; the skipped test was
+- The exact approved slice passed `699 passed, 1 skipped`; the skipped test was
   the Windows symlink-creation probe because this host refused symlink
   creation, and it remains deferred platform evidence rather than a physical
   pass. `compileall` and accepted-base-to-CodeHead `git diff --check` passed.
@@ -82,6 +82,13 @@ verdict will be appended here without deleting this reconstructed baseline.
   preview metadata bounds, Toolkit-over-CubeMX precedence, no-follow identity
   reads for project and authorization files, and the focused authorization,
   rollback, CLI, and MCP regressions.
+- Review-round 2 added a deletion RED regression for a missing
+  Toolkit-owned `CMakeLists.txt`; the observed failure had both
+  `REGENERATION_STATE_CHANGED` and `REGENERATION_TOOLKIT_DRIFT`. The minimal
+  fix excludes Toolkit-owned paths from the missing/type CubeMX branch, so the
+  focused round-2 GREEN run passed 30 with one skipped test and the exact slice
+  passed 699 with one skipped. The correction is product commit
+  `b01ece4e11c5db051f1ddbdd569195d9e47c811b`.
 - Fresh r3 native evidence used the installed CubeMX 6.18.1-RC2, CubeCLT
   1.22.0, and F4 V1.28.3 package. The copied prior owned IOC was changed from
   `ProjectManager.HeapSize=0x200` to `0x300`; plan/prepare/apply returned `OK`;

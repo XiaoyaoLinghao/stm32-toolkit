@@ -1,7 +1,7 @@
 # VS07-C safe regeneration implementation report
 
 - Accepted base: `fcdcd1ab9c1f358df78fbfb8b12ed9b0397c534d`
-- Product/tests CodeHead before this report commit: `94fd34a0b19890accdedc6002ab3c84fb87e8689`
+- Product/tests CodeHead before this report commit: `b01ece4e11c5db051f1ddbdd569195d9e47c811b`
 - Implementer: one GPT-5.6-luna implementation pass, reasoning max
 - Branch/worktree: `codex/STM32TK-0703-SAFE-REGENERATION` /
   `C:/tmp/stm32tk-0703-safe-regeneration`
@@ -16,8 +16,9 @@ activation and rollback cleanup, CLI commands, MCP tools, regression tests, and
 English / Chinese usage notes. The revision product commit additionally
 rehashes `App/` and `Tests/` after configure/build under the activation lock,
 rejects candidate ownership blockers, excludes Toolkit-owned paths from
-CubeMX-drift checks, hardens no-follow identity reads (including authorization
-records), and bounds the complete public preview representation. Schema-2/
+CubeMX-drift checks for both missing and modified paths, hardens no-follow
+identity reads (including authorization records), and bounds the complete
+public preview representation. Schema-2/
 non-CubeMX destinations fail with `REGENERATION_NOT_CUBEMX_PROJECT`.
 `build/`, `artifacts/`, and `.stm32-toolkit/build.lock` are disposable.
 
@@ -30,29 +31,36 @@ $env:PYTHONPATH='tools/stm32-toolkit/src'; py -3.12 -m pytest tools/stm32-toolki
 ERROR collecting ... ModuleNotFoundError: No module named 'stm32_toolkit.regeneration'
 ```
 
-For the review-round corrections, the focused RED run collected 30 tests and
-failed the 11 newly added boundary/race/precedence cases expected by TDD.
-The corresponding GREEN run passed 29 with one Windows symlink-specific test
-skipped because this host did not permit creating a test symlink. The exact
-approved slice passed `698 passed, 1 skipped` with zero failures and zero
-errors, producing `C:\tmp\p0703-luna-slice-r1.xml`. The skipped check is
-recorded as deferred platform evidence, not as a physical pass.
+For review round 1, the focused RED run collected 30 tests and failed the 11
+newly added boundary/race/precedence cases expected by TDD; its GREEN run
+passed 29 with one Windows symlink-specific test skipped. For review round 2,
+the focused deletion RED run collected 31 tests and failed the one new
+missing-Toolkit precedence case; its GREEN run passed 30 with the same one
+platform skip, producing `C:\tmp\p0703-luna-green-r2.xml`. The exact approved
+slice passed `699 passed, 1 skipped` with zero failures and zero errors,
+producing `C:\tmp\p0703-luna-slice-r2.xml`. The skipped check is recorded as
+deferred platform evidence, not as a physical pass.
 
 The exact slice was:
 
 ```text
-$env:PYTHONPATH='tools/stm32-toolkit/src'; py -3.12 -m pytest tools/stm32-toolkit/tests/test_regeneration.py tools/stm32-toolkit/tests/test_regeneration_workflows.py tools/stm32-toolkit/tests/test_regeneration_cli.py tools/stm32-toolkit/tests/test_regeneration_mcp.py tools/stm32-toolkit/tests/test_creation_authorization.py tools/stm32-toolkit/tests/test_creation_environment.py tools/stm32-toolkit/tests/test_cubemx_adapter.py tools/stm32-toolkit/tests/test_cubemx_project.py tools/stm32-toolkit/tests/test_creation_apply.py tools/stm32-toolkit/tests/test_creation_workflows.py tools/stm32-toolkit/tests/test_generation.py tools/stm32-toolkit/tests/test_build_runner.py tools/stm32-toolkit/tests/test_migration_plan.py tools/stm32-toolkit/tests/test_migration_apply.py tools/stm32-toolkit/tests/test_cli.py tools/stm32-toolkit/tests/test_mcp_server.py tools/stm32-toolkit/tests/test_mcp_roots.py -q --basetemp C:\tmp\p0703-luna-slice-r1 --junitxml=C:\tmp\p0703-luna-slice-r1.xml
+$env:PYTHONPATH='tools/stm32-toolkit/src'; py -3.12 -m pytest tools/stm32-toolkit/tests/test_regeneration.py tools/stm32-toolkit/tests/test_regeneration_workflows.py tools/stm32-toolkit/tests/test_regeneration_cli.py tools/stm32-toolkit/tests/test_regeneration_mcp.py tools/stm32-toolkit/tests/test_creation_authorization.py tools/stm32-toolkit/tests/test_creation_environment.py tools/stm32-toolkit/tests/test_cubemx_adapter.py tools/stm32-toolkit/tests/test_cubemx_project.py tools/stm32-toolkit/tests/test_creation_apply.py tools/stm32-toolkit/tests/test_creation_workflows.py tools/stm32-toolkit/tests/test_generation.py tools/stm32-toolkit/tests/test_build_runner.py tools/stm32-toolkit/tests/test_migration_plan.py tools/stm32-toolkit/tests/test_migration_apply.py tools/stm32-toolkit/tests/test_cli.py tools/stm32-toolkit/tests/test_mcp_server.py tools/stm32-toolkit/tests/test_mcp_roots.py -q --basetemp C:\tmp\p0703-luna-slice-r2 --junitxml=C:\tmp\p0703-luna-slice-r2.xml
 ```
 
 `py -3.12 -m compileall -q tools/stm32-toolkit/src tools/stm32-toolkit/tests`
-and `git diff --check fcdcd1ab9c1f358df78fbfb8b12ed9b0397c534d..94fd34a0b19890accdedc6002ab3c84fb87e8689` both passed.
+and `git diff --check fcdcd1ab9c1f358df78fbfb8b12ed9b0397c534d..b01ece4e11c5db051f1ddbdd569195d9e47c811b` both passed.
 
 The final verification commands were:
 
 ```text
 py -3.12 -m compileall -q tools/stm32-toolkit/src tools/stm32-toolkit/tests
-git diff --check fcdcd1ab9c1f358df78fbfb8b12ed9b0397c534d..94fd34a0b19890accdedc6002ab3c84fb87e8689
+git diff --check fcdcd1ab9c1f358df78fbfb8b12ed9b0397c534d..b01ece4e11c5db051f1ddbdd569195d9e47c811b
 ```
+
+The round-2 product correction is limited to the missing/type branch of
+Toolkit-over-CubeMX classification. It does not affect the already-passed
+native happy path, which contains all Toolkit files; Sol is responsible for
+repeating the final native evidence independently.
 
 ## Fresh native software scenario
 
