@@ -17,10 +17,12 @@ from stm32_toolkit.acceptance.recovery_workflows import (
     _validate_diagnostic_session,
     begin_acceptance_attempt,
     checkpoint_acceptance_attempt,
+    authorize_acceptance_source_change,
     resume_acceptance_attempt,
 )
 from stm32_toolkit.evidence import ArtifactRef, EvidenceEnvelope, EvidenceIdentity
 from stm32_toolkit.evidence.gc import RootRecord, get_root
+from stm32_toolkit.diagnostics import DiagnosticSession, Hypothesis, SourceChangeDeclaration
 
 
 ATTEMPT_ID = "00000000-0000-4000-8000-000000000001"
@@ -365,6 +367,202 @@ def test_current_project_origin_drift_fails_closed_on_public_resume_and_show(
     )
     assert resume_acceptance_attempt(context, attempt_id=ATTEMPT_ID).code == "ACCEPTANCE_ATTEMPT_IDENTITY_MISMATCH"
     assert recovery_workflows.show_acceptance_attempt(context, attempt_id=ATTEMPT_ID).code == "ACCEPTANCE_ATTEMPT_IDENTITY_MISMATCH"
+
+
+def test_failed_replay_target_only_mismatch_fails_closed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    model = SimpleNamespace(logical_project_id=UUID("00000000-0000-4000-8000-000000000002"), target_device="STM32F429ZITx")
+    workspace = SimpleNamespace(workspace_id="a" * 64, workspace_root=tmp_path)
+    attempt = _base_snapshot(
+        attempt_id=ATTEMPT_ID,
+        scenario_id="legacy-keil-migration",
+        scenario_version="1",
+        scenario_digest="e6fc21a053645f6ae3af8be59ed95941f1dddb57921baeff4263b4276e1cd6cb",
+        workspace_id=workspace.workspace_id,
+        logical_project_id=str(model.logical_project_id),
+        project_origin="keil",
+        opened_at="2026-08-24T00:00:00.000000Z",
+        updated_at="2026-08-24T00:00:00.000000Z",
+        revision=2,
+        previous_checkpoint_id="a" * 64,
+        outputs={
+            "projectModelDigest": "c" * 64,
+            "beforeBuildId": "b" * 64,
+            "beforeElfSha256": "e" * 64,
+            "beforeInputSnapshotSha256": "d" * 64,
+            "failedBeforeTestRunId": None,
+            "failedBeforeEvidenceId": None,
+            "diagnosticSessionId": None,
+            "diagnosticRevision": None,
+            "diagnosticEventHead": None,
+            "afterBuildId": None,
+            "afterElfSha256": None,
+            "afterInputSnapshotSha256": None,
+            "sourceChangeDeclarationId": None,
+            "acceptanceRecordId": None,
+        },
+        deadline_at="2026-08-24T00:15:00.000000Z",
+    )
+    monkeypatch.setattr(
+        recovery_workflows,
+        "_test_show",
+        lambda *_args, **_kwargs: recovery_workflows.OperationResult.success(
+            "test.show",
+            {
+                "run": {"run_id": "00000000-0000-4000-8000-000000000003", "mode": "target", "state": "failed"},
+                "execution_source": "replay",
+                "physical_transport_evidence": False,
+                "import_workspace_id": workspace.workspace_id,
+                "evidence_id": "f" * 64,
+            },
+        ),
+    )
+    published = SimpleNamespace(
+        manifest=SimpleNamespace(
+            mode="target", state="failed", transport="replay",
+            identity=SimpleNamespace(
+                project_id=str(model.logical_project_id), build_id="b" * 64,
+                elf_sha256="e" * 64, target_device="OTHER-MCU",
+            ),
+        ),
+        root=SimpleNamespace(metadata={"physical_transport_evidence": False, "import_workspace_id": workspace.workspace_id}),
+        envelope=SimpleNamespace(evidence_id="f" * 64),
+    )
+    monkeypatch.setattr(recovery_workflows, "TestRunRepository", lambda *_args: SimpleNamespace(load=lambda _run_id: published))
+    with pytest.raises(recovery_workflows._RecoveryFailure) as error:
+        recovery_workflows._build_transition(
+            AcceptanceRecoveryContext(tmp_path, tmp_path / "data", "session-a"),
+            model,
+            workspace,
+            attempt,
+            "target-failure-replayed",
+            test_run_id="00000000-0000-4000-8000-000000000003",
+            diagnostic_session_id=None,
+            acceptance_record_id=None,
+        )
+    assert error.value.code == "ACCEPTANCE_ATTEMPT_IDENTITY_MISMATCH"
+
+
+def test_concurrent_identical_begin_returns_one_exact_revision_zero(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    project, data, context = _project_transition_context(tmp_path, monkeypatch, lambda: "2026-08-24T00:00:00.000000Z")
+    contexts = [AcceptanceRecoveryContext(project, data, "session-a", clock=lambda: "2026-08-24T00:00:00.000000Z") for _ in range(2)]
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(lambda item: begin_acceptance_attempt(item, attempt_id=ATTEMPT_ID, scenario_id="legacy-keil-migration", scenario_version="1"), contexts))
+    assert all(result.ok for result in results), [result.to_dict() for result in results]
+    assert results[0].data == results[1].data
+
+
+def _authorize_revision_four_with_diagnostic_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    source_declaration: bool = False,
+    stale: bool = False,
+):
+    model = SimpleNamespace(
+        logical_project_id=UUID("00000000-0000-4000-8000-000000000002"),
+        memory=SimpleNamespace(source="keil"),
+        target_device="STM32F429ZITx",
+    )
+    workspace = SimpleNamespace(workspace_id="a" * 64)
+    outputs = {
+        "projectModelDigest": "c" * 64,
+        "beforeBuildId": "b" * 64,
+        "beforeElfSha256": "e" * 64,
+        "beforeInputSnapshotSha256": "d" * 64,
+        "failedBeforeTestRunId": "00000000-0000-4000-8000-000000000003",
+        "failedBeforeEvidenceId": "f" * 64,
+        "diagnosticSessionId": "00000000-0000-4000-8000-000000000004",
+        "diagnosticRevision": 6,
+        "diagnosticEventHead": "1" * 64,
+        "afterBuildId": None,
+        "afterElfSha256": None,
+        "afterInputSnapshotSha256": None,
+        "sourceChangeDeclarationId": None,
+        "acceptanceRecordId": None,
+    }
+    current = _base_snapshot(
+        attempt_id=ATTEMPT_ID,
+        scenario_id="legacy-keil-migration",
+        scenario_version="1",
+        scenario_digest="e6fc21a053645f6ae3af8be59ed95941f1dddb57921baeff4263b4276e1cd6cb",
+        workspace_id=workspace.workspace_id,
+        logical_project_id=str(model.logical_project_id),
+        project_origin="keil",
+        opened_at="2026-08-24T00:00:00.000000Z",
+        updated_at="2026-08-24T00:00:00.000000Z",
+        revision=4,
+        previous_checkpoint_id="a" * 64,
+        outputs=outputs,
+        deadline_at="2026-08-24T00:15:00.000000Z",
+    )
+    monkeypatch.setattr(recovery_workflows, "_load_project_and_workspace", lambda _context: (model, workspace, SimpleNamespace()))
+    monkeypatch.setattr(recovery_workflows, "_load_chain", lambda *_args, **_kwargs: [(current, SimpleNamespace(evidence_id="2" * 64))])
+    monkeypatch.setattr(recovery_workflows, "_validate_chain_semantics", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(recovery_workflows, "_publish_snapshot", lambda *args, **_kwargs: args[4])
+    hypothesis = Hypothesis(
+        hypothesis_id="9" * 32,
+        statement="the captured failure is reproducible",
+        status="open",
+        confidence_basis="unrated",
+        supporting=(),
+        refuting=(),
+    )
+    declaration = SourceChangeDeclaration.new(
+        before_source_sha256="1" * 64,
+        after_source_sha256="2" * 64,
+        before_build_id=outputs["beforeBuildId"],
+        before_elf_sha256=outputs["beforeElfSha256"],
+        after_build_id="3" * 64,
+        after_elf_sha256="4" * 64,
+        changed_paths=("src/main.c",),
+        diff_evidence_id="5" * 64,
+        diff_artifact=ArtifactRef("6" * 64, 4, "objects/sha256/66/" + "6" * 64, "diff", "text/plain"),
+        claimed_hypothesis_ids=(hypothesis.hypothesis_id,),
+        validation_plan_id="7" * 64,
+    )
+    diagnostic_session = DiagnosticSession(
+        diagnostic_session_id=outputs["diagnosticSessionId"].replace("-", ""),
+        revision=outputs["diagnosticRevision"] + (1 if stale else 0),
+        state="INVESTIGATING",
+        identity=EvidenceIdentity(
+            workspace_id=workspace.workspace_id,
+            project_id=str(model.logical_project_id),
+            session_id="session-a",
+            build_id=outputs["beforeBuildId"],
+            elf_sha256=outputs["beforeElfSha256"],
+            target_device=model.target_device,
+            input_snapshot_sha256=outputs["beforeInputSnapshotSha256"],
+            git_commit="8" * 40,
+            git_dirty=False,
+        ),
+        failed_test_run_id=outputs["failedBeforeTestRunId"],
+        failed_evidence_id=outputs["failedBeforeEvidenceId"],
+        event_head="2" * 64 if stale else outputs["diagnosticEventHead"],
+        hypotheses=(hypothesis,),
+        observation_plans=(),
+        observation_results=(),
+        source_change_declarations=(declaration,) if source_declaration else (),
+    )
+    monkeypatch.setattr(
+        recovery_workflows,
+        "_diagnostic_show",
+        lambda *_args, **_kwargs: recovery_workflows.OperationResult.success(
+            "diagnostic.show", {"session": diagnostic_session.to_dict()}
+        ),
+    )
+    context = AcceptanceRecoveryContext(tmp_path, tmp_path / "data", "session-a", clock=lambda: "2026-08-24T00:00:00.000000Z")
+    digest = recovery_workflows._action_digest(current)
+    return authorize_acceptance_source_change(context, attempt_id=ATTEMPT_ID, expected_revision=4, action_digest=digest, authorized=True)
+
+
+def test_source_declaration_before_authorization_fails_closed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    result = _authorize_revision_four_with_diagnostic_failure(tmp_path, monkeypatch, source_declaration=True)
+    assert result.code == "ACCEPTANCE_ATTEMPT_OUTPUT_INVALID"
+
+
+def test_stale_diagnostic_revision_or_head_fails_closed_before_authorization(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    result = _authorize_revision_four_with_diagnostic_failure(tmp_path, monkeypatch, stale=True)
+    assert result.code == "ACCEPTANCE_ATTEMPT_IDENTITY_MISMATCH"
 
 
 @pytest.mark.parametrize(

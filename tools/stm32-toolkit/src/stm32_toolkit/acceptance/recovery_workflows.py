@@ -531,6 +531,8 @@ def _publish_snapshot(
                 if _equivalent_transition(latest, candidate):
                     return latest
                 raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_REVISION_CONFLICT")
+            if latest.revision == expected_revision and _equivalent_transition(latest, candidate):
+                return latest
             if latest.revision != expected_revision:
                 raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_REVISION_CONFLICT")
             if expected_revision != candidate.revision - 1 and not (
@@ -759,6 +761,8 @@ def _build_transition(
                 or str(published.envelope.evidence_id) != evidence_id
             ):
                 raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_OUTPUT_INVALID")
+            if published.manifest.identity.target_device != getattr(model, "target_device", getattr(getattr(model, "target", None), "device", None)):
+                raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_IDENTITY_MISMATCH")
         except _RecoveryFailure:
             raise
         except (EvidenceValidationError, OSError, ValueError, KeyError, TypeError):
@@ -1186,6 +1190,35 @@ def _authorize_source_change(
         raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_ACTION_DIGEST_MISMATCH")
     if current.source_change_authorization is not None:
         raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_REVISION_CONFLICT")
+    diagnostic_id = cast(str, current.stage_outputs.get("diagnosticSessionId"))
+    diagnostic_data = _public_data(
+        _diagnostic_show(
+            DiagnosticWorkflowContext(context.project_root, context.data_root, context.session_id),
+            diagnostic_session_id=diagnostic_id.replace("-", ""),
+        )
+    )
+    session_data = diagnostic_data.get("session")
+    if not isinstance(session_data, Mapping):
+        raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_OUTPUT_INVALID")
+    try:
+        diagnostic_session = DiagnosticSession.from_value(session_data)
+    except (DiagnosticValidationError, TypeError, ValueError) as error:
+        raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_EVIDENCE_INTEGRITY_FAILED") from error
+    _validate_diagnostic_session(
+        diagnostic_session,
+        current,
+        model,
+        workspace,
+        expected_session_id=diagnostic_id,
+        allow_source_change=False,
+    )
+    if (
+        diagnostic_session.revision != current.stage_outputs.get("diagnosticRevision")
+        or diagnostic_session.event_head != current.stage_outputs.get("diagnosticEventHead")
+    ):
+        raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_IDENTITY_MISMATCH")
+    if diagnostic_session.source_change_declarations:
+        raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_OUTPUT_INVALID")
     authorization = {
         "action": "source-change",
         "actionDigest": expected_digest,
