@@ -8,7 +8,7 @@ Monitor, tests, and evidence-driven diagnosis. Claude Code is a thin adapter to 
 
 ## VS09-B local candidate and runtime boundary
 
-This repository contains a local 0.9.0 VS09-B candidate. It has not been pushed, tagged, published,
+This repository contains an accepted 0.9.0 VS09-B candidate. It has not been tagged, published,
 or released. The official source is
 `https://github.com/XiaoyaoLinghao/stm32-toolkit.git`; candidate builds bind one full 40-hex Git
 CodeHead and a closed Windows CPython 3.12 wheelhouse. The release contract is CPython `>=3.12,<3.13`; the managed interpreter is selected only from

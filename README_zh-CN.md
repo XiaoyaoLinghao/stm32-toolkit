@@ -8,7 +8,7 @@ Keil→GCC 迁移、构建、探针工作流、Monitor、测试和证据诊断�
 
 ## VS09-B 本地 candidate 与运行时边界
 
-本仓库包含本地 **0.9.0 VS09-B candidate**，尚未 push、打 tag、上传或 release。官方源码为
+本仓库包含已验收的 **0.9.0 VS09-B candidate**，尚未打 tag、上传或 release。官方源码为
 `https://github.com/XiaoyaoLinghao/stm32-toolkit.git`；candidate 构建绑定一个完整 40 位 Git
 CodeHead 和封闭的 Windows CPython 3.12 wheelhouse。发布契约是 CPython `>=3.12,<3.13`；托管
 解释器只能使用 `DATA_ROOT/runtime/0.9.0/Scripts/python.exe`。MCP 绝不回退到系统解释器。
