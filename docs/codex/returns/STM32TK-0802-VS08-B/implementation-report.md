@@ -66,3 +66,36 @@ No hardware, install, or remote action was performed. Product/tests CodeHead for
 - Plan’s full affected matrix, with corrected absolute toolkit/monitor `PYTHONPATH` and `C:\tmp\stm32tk-0802-vs08b-green-final` — exit 0; one existing platform-capability skip.
 
 The report commit is intentionally not named here. The CodeHead above is the product/tests commit required for independent review; this report was written after that commit and will be committed separately.
+
+## Independent GPT-5.6-sol acceptance
+
+- Verdict: `ACCEPTED`.
+- Accepted base: `eea72a46d9fcdcd7abd8ebfac5b09a8e921f6ba2`.
+- Product/tests CodeHead: `38972842729f944359a58b3d696752f44d9fd6d5`.
+- Implementer report head reviewed: `5d9fea6d52de4fd5245315e0b19c2763a0b23812`.
+- Reviewer: GPT-5.6-sol primary agent, independent of the sole Luna/max implementer.
+- Review isolation: detached clean worktree at the exact report head; complete
+  accepted-base-to-report diff reviewed. All round-1, round-2, and round-3
+  product findings are resolved; no unresolved product defect remains.
+- Independent focused recovery/CLI/MCP/VS08-B/Evidence-GC/MCP-server matrix:
+  200 collected tests, exit 0.
+- Independent Acceptance/Diagnostic/VS08-A/VS08-B integration matrix: 169
+  collected tests, exit 0. Both Keil and CubeMX revision-7 software verticals
+  passed from real existing authorities and fresh recovery contexts.
+- Independent concurrent-begin probe: two results were `(True, OK)`, their
+  stored attempts were exact-equal, and both were revision 0.
+- Independent canonical scenario-switch corruption probe failed closed with
+  `ACCEPTANCE_ATTEMPT_EVIDENCE_INTEGRITY_FAILED` and published no later root.
+- `py -3.12 -m compileall -q src tests`, complete diff check, frozen scenario
+  and recovery-policy digest checks, prohibited-surface scan, credential scan,
+  branch/upstream/remote audit, and report self-SHA check all passed.
+- Verification generated no physical evidence and made no hardware, install,
+  push, PR, merge, tag, release, or other remote action. Replay/fixture evidence
+  remains software-only and is not physical PASS.
+- Run-scoped basetemps, bytecode caches, and detached review worktrees were
+  removed after evidence reconciliation. The implementation branch remained
+  clean, local, unpushed, and without an upstream before this acceptance-only
+  report update.
+
+This acceptance section intentionally does not name its own commit. The
+product/tests CodeHead above remains the immutable product review boundary.
