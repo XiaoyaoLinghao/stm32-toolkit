@@ -250,6 +250,39 @@ specific evidence/path files actually touched. Skipped platform behavior cannot 
 - [ ] Run public-inventory/plugin/package-boundary tests. Monitor UI E2E is not triggered unless UI
   source or browser-visible behavior changed.
 
+### Correction round 2: close the bootstrap trust anchor and full-license authority
+
+The first correction closed source/release membership after the release utility started, but Sol
+proved that the setup helper still executed an attacker-replaced extracted utility before any
+independent trust decision. The replacement wrote a marker and returned self-computed hashes;
+read-only Check exited `0` with `bundle.status=ok`. This is the same installation-boundary issue,
+so the second correction must fix the interface rather than add another post-execution hash.
+
+- [ ] Treat the externally checksummed, already-running `setup-stm32-env.ps1` as the bootstrap
+  trust root. Before the first release-utility byte can execute, compare ordinary/non-redirected
+  utility and policy bytes with frozen SHA-256 constants owned by setup. The builder must reject a
+  CodeHead whose constants do not match its exact committed utility/policy bytes.
+- [ ] Execute only the bytes that were read and hash-verified, through the existing bootstrap
+  CPython process and argument array. Do not hash one path and later ask Python to reopen mutable
+  utility/policy paths. A small in-memory launcher over the existing utility is allowed; a second
+  verifier, runtime, controller, provider, backend, public command, or setup argument is not.
+- [ ] Add a RED fixture replacing the extracted utility with code that writes a marker and returns
+  plausible self-hashes/manifest facts. Both Check and authorized Bootstrap must reject before the
+  marker exists, staging is created, or any attacker byte executes. Add a policy-swap equivalent
+  and a changed-after-read test at the owning bootstrap boundary.
+- [ ] Replace hand-authored SPDX summaries with complete canonical license texts. Store exact
+  source-controlled full texts under the release authority (or another frozen source path), bind
+  each used SPDX identifier to an exact policy SHA-256, and fail the build on missing, truncated,
+  substituted, or unlisted text. `licenses.zip` and `release/licenses/` must contain those full
+  texts plus wheel-shipped license/NOTICE/COPYING files.
+- [ ] Rebuild twice only after the corrected Product CodeHead is frozen; repeat the fake-utility
+  non-execution probe, full-license hash audit, affected artifact/security/setup tests, one fresh
+  offline Bootstrap/Check, legacy Repair, and downgrade/source-conflict refusal. Do not rerun the
+  full Toolkit or historical release-controller suites.
+- [ ] Correct the implementation report: the parent stopped the accidental broad Toolkit run
+  because it exceeded the frozen affected matrix; it did not request that run to finish. Record it
+  as non-gating, interrupted out-of-scope verification and do not attribute unrelated PASS/FAIL.
+
 ### Task 7: assemble and verify the real candidate twice
 
 - [ ] Create exact disposable roots `C:/tmp/p0902-candidate-a`, `...-b`, `...-wheelhouse`, and
