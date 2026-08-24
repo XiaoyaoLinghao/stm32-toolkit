@@ -119,6 +119,36 @@ def test_policy_schema_and_license_authority_are_present():
     assert policy["directPins"]["jsonschema"] == "4.26.0"
 
 
+def test_policy_binds_complete_source_controlled_spdx_texts():
+    policy = json.loads(POLICY.read_text(encoding="utf-8"))
+    expected = {"Apache-2.0", "BSD-3-Clause", "CC0-1.0", "MIT", "MPL-2.0", "PSF-2.0"}
+    hashes = policy["licenseTextHashes"]
+    assert set(hashes) == expected
+    authority = REPO_ROOT / "tools" / "release" / "licenses" / "spdx"
+    for identifier in sorted(expected):
+        path = authority / f"{identifier}.txt"
+        content = path.read_bytes()
+        assert hashlib.sha256(content).hexdigest() == hashes[identifier]
+        assert len(content) >= 1000
+
+
+def test_license_authority_reads_bound_source_texts_not_summaries():
+    from importlib.util import module_from_spec, spec_from_file_location
+
+    spec = spec_from_file_location("build_0900_artifacts_full_license", UTILITY)
+    module = module_from_spec(spec)
+    assert spec and spec.loader
+    spec.loader.exec_module(module)
+    info = module.WheelInfo(
+        Path("example.whl"), "example-1.0.0-py3-none-any.whl", "example", "example", "1.0.0",
+        ("py3", "none", "any"), {}, (), {}, "Apache-2.0",
+    )
+    policy = module._load_policy()
+    files = module._license_files({"example": info}, policy, REPO_ROOT)
+    authority = REPO_ROOT / "tools" / "release" / "licenses" / "spdx"
+    assert files["release/licenses/spdx/Apache-2.0.txt"] == (authority / "Apache-2.0.txt").read_bytes()
+
+
 @pytest.mark.parametrize(
     "member",
     ["", ".", "..", "../escape", "a/../../escape", "/absolute", r"C:\\escape", "\\\\server\\share", "a:b", "CON.txt", "a.", "a ", "a\t"],

@@ -46,31 +46,16 @@ SOURCE_PREFIX = f"stm32-toolkit-{VERSION}/"
 MANIFEST_ARTIFACT_KINDS = frozenset({"monitor-assets", "sbom", "notices", "license", "compatibility", "troubleshooting"})
 LICENSE_FILE_NAME = re.compile(r"(?:^|/)(?:license|licence|copying|notice)(?:[^/]*)$", re.I)
 
-# The release includes a deterministic text authority for every SPDX identifier
-# used by the selected Python/UI packages.  These short canonical notices are
-# intentionally local and immutable; no package-index or ambient site-package
-# lookup is permitted at build or install time.
-CANONICAL_LICENSE_TEXTS = {
-    "MIT": """MIT License\n\nPermission is hereby granted, free of charge, to any person obtaining a copy\nof this software and associated documentation files (the \"Software\"), to deal\nin the Software without restriction, including without limitation the rights\nto use, copy, modify, merge, publish, distribute, sublicense, and/or sell\ncopies of the Software, and to permit persons to whom the Software is\nfurnished to do so, subject to the following conditions:\n\nThe above copyright notice and this permission notice shall be included in all\ncopies or substantial portions of the Software.\n\nTHE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR\nIMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,\nFITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE\nAUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER\nLIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,\nOUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE\nSOFTWARE.\n""",
-    "Apache-2.0": "SPDX-License-Identifier: Apache-2.0\nApache License, Version 2.0 (the \"License\"); you may not use this file except in compliance with the License.\n",
-    "BSD-2-Clause": "SPDX-License-Identifier: BSD-2-Clause\nRedistribution and use in source and binary forms, with or without modification, are permitted provided that the conditions are met.\n",
-    "BSD-3-Clause": "SPDX-License-Identifier: BSD-3-Clause\nRedistribution and use in source and binary forms, with or without modification, are permitted provided that the conditions are met.\n",
-    "ISC": "SPDX-License-Identifier: ISC\nPermission to use, copy, modify, and/or distribute this software for any purpose with or without fee is hereby granted.\n",
-    "MPL-2.0": "SPDX-License-Identifier: MPL-2.0\nThis Source Code Form is subject to the terms of the Mozilla Public License, v. 2.0.\n",
-    "PSF-2.0": "SPDX-License-Identifier: PSF-2.0\nThis License Agreement is licensed under the Python Software Foundation License Version 2.\n",
-    "LGPL-2.1-only": "SPDX-License-Identifier: LGPL-2.1-only\nThis library is free software; you can redistribute it and/or modify it under the terms of the GNU Lesser General Public License version 2.1.\n",
-    "LGPL-2.1-or-later": "SPDX-License-Identifier: LGPL-2.1-or-later\nThis library is free software under the GNU Lesser General Public License, version 2.1 or later.\n",
-    "LGPL-3.0-only": "SPDX-License-Identifier: LGPL-3.0-only\nThis library is free software under the GNU Lesser General Public License version 3.\n",
-    "LGPL-3.0-or-later": "SPDX-License-Identifier: LGPL-3.0-or-later\nThis library is free software under the GNU Lesser General Public License, version 3 or later.\n",
-    "Zlib": "SPDX-License-Identifier: Zlib\nThis software is provided 'as-is', without any express or implied warranty.\n",
-    "Unlicense": "SPDX-License-Identifier: Unlicense\nThis is free and unencumbered software released into the public domain.\n",
-    "CC0-1.0": "SPDX-License-Identifier: CC0-1.0\nTo the extent possible under law, the author has waived all copyright and related rights to this work.\n",
-    "BlueOak-1.0.0": "SPDX-License-Identifier: BlueOak-1.0.0\nThis software is provided under the Blue Oak Model License 1.0.0.\n",
-    "MIT-0": "SPDX-License-Identifier: MIT-0\nPermission is hereby granted, free of charge, to any person obtaining a copy of this software.\n",
-    "Python-2.0": "SPDX-License-Identifier: Python-2.0\nThis software is provided under the Python License, version 2.0.\n",
-    "CC-BY-4.0": "SPDX-License-Identifier: CC-BY-4.0\nThis work is licensed under the Creative Commons Attribution 4.0 International License.\n",
-    "0BSD": "SPDX-License-Identifier: 0BSD\nPermission to use, copy, modify, and/or distribute this software for any purpose with or without fee is hereby granted.\n",
+LICENSE_AUTHORITY_RELATIVE = Path("tools/release/licenses/spdx")
+CANONICAL_LICENSE_SHA256 = {
+    "Apache-2.0": "240b8a39fdfd2bd3b3539c02e34466334884fc84b056b57f06e9da35323ecd97",
+    "BSD-3-Clause": "aad753d6c862eb1a2a10afd82583bcf9623a6b9a9866f74360dc1340f8d06f98",
+    "CC0-1.0": "df8feba9f3469adec9c1c794633af3edb101f09e1641624ff78282f32ea410ea",
+    "MIT": "55edb314745f2b0d3fe09e512726c3bf67cb20ba99fa3cd66859a64f3e6b6af5",
+    "MPL-2.0": "4644cfa1be77f07944fcda50ab46d1df715e3ff41475936970c0208f72c4d06d",
+    "PSF-2.0": "247e3814570d91389681031a3ce8e818eedd04f6e1176836fd78d71ee521d752",
 }
+_TRUSTED_POLICY_BYTES: bytes | None = None
 
 
 class ReleaseError(Exception):
@@ -212,7 +197,7 @@ def _canonical_distribution_name(name: str) -> str:
     return normalized
 
 
-def _license_identifiers(expression: str, policy: Mapping[str, Any]) -> tuple[str, ...]:
+def _license_identifiers(expression: str, policy: Mapping[str, Any], *, require_canonical_text: bool = True) -> tuple[str, ...]:
     if not isinstance(expression, str) or not expression.strip():
         _reject("selected license is not declared")
     allowed = set(policy.get("allowedLicenses", []))
@@ -222,7 +207,7 @@ def _license_identifiers(expression: str, policy: Mapping[str, Any]) -> tuple[st
     )
     if not identifiers or any(token not in allowed for token in identifiers):
         _reject("selected license is outside policy")
-    if any(token not in CANONICAL_LICENSE_TEXTS for token in identifiers):
+    if require_canonical_text and any(token not in CANONICAL_LICENSE_SHA256 for token in identifiers):
         _reject("selected license text is unavailable")
     return tuple(dict.fromkeys(identifiers))
 
@@ -287,7 +272,8 @@ def _safe_commit(value: Any) -> str:
 
 def _load_policy() -> dict[str, Any]:
     path = Path(__file__).with_name("release_0900_policy.json")
-    value = _strict_json(_read_bounded(path, MAX_MANIFEST_BYTES), limit=MAX_MANIFEST_BYTES)
+    raw = _TRUSTED_POLICY_BYTES if _TRUSTED_POLICY_BYTES is not None else _read_bounded(path, MAX_MANIFEST_BYTES)
+    value = _strict_json(raw, limit=MAX_MANIFEST_BYTES)
     if not isinstance(value, dict):
         _reject("release policy is invalid")
     return value
@@ -404,6 +390,22 @@ def _assert_source(repo: Path, code_head: str) -> int:
     if remote_result.returncode != 0 or not _official_remote(str(remote_result.stdout)):
         _reject("source repository identity is not official")
     return _git_epoch(repo, code_head)
+
+
+def _assert_bootstrap_trust_anchor(repo: Path) -> None:
+    setup_path = repo / "bin" / "setup-stm32-env.ps1"
+    utility_path = repo / "tools" / "release" / "build_0900_artifacts.py"
+    policy_path = repo / "tools" / "release" / "release_0900_policy.json"
+    try:
+        setup_text = setup_path.read_text(encoding="utf-8")
+        utility_hash = _sha256(utility_path)
+        policy_hash = _sha256(policy_path)
+    except (OSError, UnicodeError) as exc:
+        raise ReleaseError("bootstrap trust anchor is unavailable") from exc
+    utility_matches = re.findall(r'(?m)^\$ReleaseUtilitySha256\s*=\s*"([0-9a-f]{64})"\s*$', setup_text)
+    policy_matches = re.findall(r'(?m)^\$ReleasePolicySha256\s*=\s*"([0-9a-f]{64})"\s*$', setup_text)
+    if len(utility_matches) != 1 or len(policy_matches) != 1 or utility_matches[0] != utility_hash or policy_matches[0] != policy_hash:
+        _reject("bootstrap trust anchor does not match the committed release utility and policy")
 
 
 def _metadata_from_zip(members: Mapping[str, bytes]) -> tuple[dict[str, str], list[str]]:
@@ -784,7 +786,7 @@ def _spdx(selected: Mapping[str, WheelInfo], product_wheels: Mapping[str, bytes]
             if not isinstance(record, dict) or not isinstance(record.get("version"), str) or not record["version"]:
                 _reject("UI dependency license or version is missing")
             license_value = record.get("license")
-            _license_identifiers(license_value, policy)
+            _license_identifiers(license_value, policy, require_canonical_text=False)
             name = _canonical_distribution_name(path.rsplit("/", 1)[-1])
             key = (name, record["version"])
             if key in ui_ids:
@@ -860,16 +862,23 @@ def _license_files(selected: Mapping[str, WheelInfo], policy: Mapping[str, Any],
             relative = _validate_safe_relative(member)
             target = f"release/licenses/packages/{_canonical_distribution_name(normalized)}/{relative}"
             files[target] = content
+    hashes = policy.get("licenseTextHashes")
+    if not isinstance(hashes, dict) or set(hashes) != set(CANONICAL_LICENSE_SHA256):
+        _reject("release policy license authority is invalid")
     for identifier in sorted(identifiers):
-        text = CANONICAL_LICENSE_TEXTS.get(identifier)
-        if text is None:
-            _reject("required SPDX license text is unavailable")
-        if identifier == "MIT" and license_text is not None:
-            text_bytes = license_text
-        elif identifier == "MIT" and (repo_root / "LICENSE").is_file():
-            text_bytes = (repo_root / "LICENSE").read_bytes()
-        else:
-            text_bytes = text.encode("utf-8")
+        expected_hash = CANONICAL_LICENSE_SHA256.get(identifier)
+        if expected_hash is None or hashes.get(identifier) != expected_hash:
+            _reject("required SPDX license text is outside the frozen authority")
+        authority_path = repo_root / LICENSE_AUTHORITY_RELATIVE / f"{identifier}.txt"
+        try:
+            _assert_no_redirect_ancestors(authority_path)
+            text_bytes = _read_bounded(authority_path, MAX_MANIFEST_BYTES)
+        except (OSError, ReleaseError) as exc:
+            if isinstance(exc, ReleaseError):
+                raise
+            raise ReleaseError("required SPDX license text is unavailable") from exc
+        if _sha256(text_bytes) != expected_hash or len(text_bytes) < 1000:
+            _reject("required SPDX license text is invalid")
         files[f"release/licenses/spdx/{identifier}.txt"] = text_bytes
     return files
 
@@ -1174,6 +1183,7 @@ def _build(args: argparse.Namespace) -> dict[str, Any]:
         pass
     policy = _load_policy()
     epoch = _assert_source(repo, args.code_head)
+    _assert_bootstrap_trust_anchor(repo)
     selected, direct = _select_wheels(wheelhouse, policy)
     with tempfile.TemporaryDirectory(prefix="stm32tk-release-") as temp:
         temp_root = Path(temp)

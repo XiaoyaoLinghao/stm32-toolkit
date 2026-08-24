@@ -44,6 +44,14 @@
     "CC-BY-4.0",
     "0BSD"
   ],
+  "licenseTextHashes": {
+    "Apache-2.0": "240b8a39fdfd2bd3b3539c02e34466334884fc84b056b57f06e9da35323ecd97",
+    "BSD-3-Clause": "aad753d6c862eb1a2a10afd82583bcf9623a6b9a9866f74360dc1340f8d06f98",
+    "CC0-1.0": "df8feba9f3469adec9c1c794633af3edb101f09e1641624ff78282f32ea410ea",
+    "MIT": "55edb314745f2b0d3fe09e512726c3bf67cb20ba99fa3cd66859a64f3e6b6af5",
+    "MPL-2.0": "4644cfa1be77f07944fcda50ab46d1df715e3ff41475936970c0208f72c4d06d",
+    "PSF-2.0": "247e3814570d91389681031a3ce8e818eedd04f6e1176836fd78d71ee521d752"
+  },
   "resolvedPins": {
     "aiohappyeyeballs": "2.7.1",
     "aiohttp": "3.14.3",

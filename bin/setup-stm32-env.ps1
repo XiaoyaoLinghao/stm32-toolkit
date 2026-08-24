@@ -13,8 +13,44 @@ $RuntimeVersion = "0.9.0"
 $LegacyRuntimeVersions = @("0.5.0", "0.3.0")
 $ProcessOutputLimit = 65536
 $ReleaseUtilityRelative = "tools/release/build_0900_artifacts.py"
+$ReleasePolicyRelative = "tools/release/release_0900_policy.json"
+$ReleaseUtilitySha256 = "7ff59e645d35ff311ae901e638b8ee1e0f3b90bfc45c96ec079e87f6ebf9b14f"
+$ReleasePolicySha256 = "8bb1db7ed69941ced78ac0dac8c4aa600fc2dcb0300365a197cd8e85bade0ee7"
 $ReleaseManifestRelative = "release/release-manifest.json"
 $RuntimeStateFileName = "runtime-state.json"
+$InMemoryReleaseLauncher = @'
+import struct
+import sys
+
+try:
+    utility_path = sys.argv[1]
+    utility_arguments = sys.argv[2:]
+    frame = sys.stdin.buffer.read()
+    if frame.startswith(b"\xef\xbb\xbf"):
+        frame = frame[3:]
+    if len(frame) < 16:
+        raise ValueError("trusted release input is truncated")
+    utility_length, policy_length = struct.unpack("<QQ", frame[:16])
+    expected = 16 + utility_length + policy_length
+    if len(frame) != expected:
+        raise ValueError("trusted release input length is invalid")
+    utility_start = 16
+    policy_start = utility_start + utility_length
+    utility_bytes = frame[utility_start:policy_start]
+    policy_bytes = frame[policy_start:]
+    sys.argv = [utility_path] + utility_arguments
+    namespace = {
+        "__name__": "__main__",
+        "__file__": utility_path,
+        "__package__": None,
+        "_TRUSTED_POLICY_BYTES": policy_bytes,
+    }
+    exec(compile(utility_bytes, utility_path, "exec"), namespace, namespace)
+except SystemExit:
+    raise
+except Exception:
+    raise SystemExit(2)
+'@
 $ProbeValidationScript = @'
 import importlib.metadata as metadata
 import sys
@@ -205,9 +241,9 @@ function Add-RetainedBytes {
 }
 
 function Invoke-BoundedProcess {
-    param([string]$FilePath, [string[]]$Arguments, [int]$TimeoutSeconds = 5)
+    param([string]$FilePath, [string[]]$Arguments, [int]$TimeoutSeconds = 5, [byte[]]$StandardInput = $null)
     $process = [Diagnostics.Process]::new()
-    $process.StartInfo = [Diagnostics.ProcessStartInfo]@{ FileName=$FilePath; Arguments=(ConvertTo-ProcessArguments $Arguments); UseShellExecute=$false; CreateNoWindow=$true; RedirectStandardOutput=$true; RedirectStandardError=$true }
+    $process.StartInfo = [Diagnostics.ProcessStartInfo]@{ FileName=$FilePath; Arguments=(ConvertTo-ProcessArguments $Arguments); UseShellExecute=$false; CreateNoWindow=$true; RedirectStandardInput=($null -ne $StandardInput); RedirectStandardOutput=$true; RedirectStandardError=$true }
     foreach ($name in @("PYTHONPATH", "PYTHONHOME", "PYTHONUSERBASE", "PYTHONSTARTUP", "PYTHONINSPECT")) {
         [void]$process.StartInfo.EnvironmentVariables.Remove($name)
     }
@@ -217,6 +253,14 @@ function Invoke-BoundedProcess {
     $stderrRetained = [IO.MemoryStream]::new()
     try {
         try { [void]$process.Start() } catch { return [ordered]@{ status="error"; exitCode=$null; stdout=""; stderr=$_.Exception.Message } }
+        if ($null -ne $StandardInput) {
+            try {
+                $inputStream = $process.StandardInput.BaseStream
+                $inputStream.Write($StandardInput, 0, $StandardInput.Length)
+                $inputStream.Flush()
+                $inputStream.Close()
+            } catch { try { $process.Kill() } catch { }; return [ordered]@{ status="error"; exitCode=$null; stdout=""; stderr="trusted release input failed" } }
+        }
         $stdoutBuffer = [byte[]]::new(4096); $stderrBuffer = [byte[]]::new(4096)
         $stdoutStream = $process.StandardOutput.BaseStream; $stderrStream = $process.StandardError.BaseStream
         $stdoutTask = $stdoutStream.ReadAsync($stdoutBuffer, 0, $stdoutBuffer.Length)
@@ -270,12 +314,24 @@ function Find-BootstrapPython {
     return [ordered]@{ available = $false; path = $null; prefix = @(); version = $null; supported = $false; status = "missing" }
 }
 
+function New-TrustedReleaseInputFrame {
+    param([byte[]]$UtilityBytes, [byte[]]$PolicyBytes)
+    $frame = [byte[]]::new(16 + $UtilityBytes.Length + $PolicyBytes.Length)
+    [Buffer]::BlockCopy([BitConverter]::GetBytes([Int64]$UtilityBytes.Length), 0, $frame, 0, 8)
+    [Buffer]::BlockCopy([BitConverter]::GetBytes([Int64]$PolicyBytes.Length), 0, $frame, 8, 8)
+    [Buffer]::BlockCopy($UtilityBytes, 0, $frame, 16, $UtilityBytes.Length)
+    [Buffer]::BlockCopy($PolicyBytes, 0, $frame, 16 + $UtilityBytes.Length, $PolicyBytes.Length)
+    return $frame
+}
+
 function Invoke-ReleaseUtility {
-    param([object]$BootstrapPython, [string[]]$Arguments)
-    if ($null -eq $BootstrapPython -or $BootstrapPython.supported -ne $true -or -not $BootstrapPython.path) {
+    param([object]$BootstrapPython, [object]$TrustedInputs, [string[]]$Arguments)
+    if ($null -eq $BootstrapPython -or $BootstrapPython.supported -ne $true -or -not $BootstrapPython.path -or $null -eq $TrustedInputs -or $TrustedInputs.status -ne "ok") {
         return [ordered]@{ status = "unavailable"; exitCode = $null; payload = $null }
     }
-    $result = Invoke-BoundedProcess $BootstrapPython.path (@($BootstrapPython.prefix) + @("-I") + @($Arguments)) 30
+    $launcherArguments = @($BootstrapPython.prefix) + @("-I", "-c", $InMemoryReleaseLauncher, [string]$TrustedInputs.utilityPath) + @($Arguments)
+    $inputFrame = New-TrustedReleaseInputFrame $TrustedInputs.utilityBytes $TrustedInputs.policyBytes
+    $result = Invoke-BoundedProcess $BootstrapPython.path $launcherArguments 30 -StandardInput $inputFrame
     $payload = $null
     if ($result.stdout) {
         try { $payload = $result.stdout | ConvertFrom-Json } catch { $payload = $null }
@@ -283,23 +339,64 @@ function Invoke-ReleaseUtility {
     return [ordered]@{ status = $result.status; exitCode = $result.exitCode; payload = $payload; stderr = $result.stderr }
 }
 
-function Get-BundleEvidence {
-    param([string]$ToolkitRoot, [object]$BootstrapPython)
+function Get-BytesSha256 {
+    param([byte[]]$Bytes)
+    $sha = [Security.Cryptography.SHA256]::Create()
+    try { return (([BitConverter]::ToString($sha.ComputeHash($Bytes)) -replace "-", "").ToLowerInvariant()) }
+    finally { $sha.Dispose() }
+}
+
+function Get-TrustedBundleInputs {
+    param([string]$ToolkitRoot)
     $manifest = Join-Path $ToolkitRoot $ReleaseManifestRelative
     $utility = Join-Path $ToolkitRoot $ReleaseUtilityRelative
+    $policy = Join-Path $ToolkitRoot $ReleasePolicyRelative
+    $base = [ordered]@{ status = "missing"; manifestPath = $manifest; utilityPath = $utility; policyPath = $policy; manifestSha256 = $null; utilitySha256 = $null; policySha256 = $null; utilityBytes = $null; policyBytes = $null; error = $null }
+    if (-not (Test-Path -LiteralPath $manifest -PathType Leaf)) { return $base }
+    if (-not (Test-Path -LiteralPath $utility -PathType Leaf) -or -not (Test-Path -LiteralPath $policy -PathType Leaf)) {
+        $base.status = "invalid"; $base.error = "release trust inputs are unavailable"; return $base
+    }
+    try {
+        Assert-NotRedirect "release utility" $utility
+        Assert-NotRedirect "release policy" $policy
+        $utilityBytes = [IO.File]::ReadAllBytes($utility)
+        $policyBytes = [IO.File]::ReadAllBytes($policy)
+        $utilityHash = Get-BytesSha256 $utilityBytes
+        $policyHash = Get-BytesSha256 $policyBytes
+        if ($utilityHash -cne $ReleaseUtilitySha256 -or $policyHash -cne $ReleasePolicySha256) {
+            $base.status = "invalid"; $base.error = "release bootstrap trust anchor mismatch"; return $base
+        }
+        $base.status = "ok"
+        $base.manifestSha256 = Get-FileSha256 $manifest
+        $base.utilitySha256 = $utilityHash
+        $base.policySha256 = $policyHash
+        $base.utilityBytes = $utilityBytes
+        $base.policyBytes = $policyBytes
+        return $base
+    } catch {
+        $base.status = "invalid"; $base.error = "release bootstrap trust inputs are invalid"; return $base
+    }
+}
+
+function Get-BundleEvidence {
+    param([string]$ToolkitRoot, [object]$BootstrapPython, [object]$TrustedInputs)
+    $manifest = Join-Path $ToolkitRoot $ReleaseManifestRelative
     $base = [ordered]@{ status = "missing"; productVersion = $null; wheels = @(); wheelEntries = @(); manifestSha256 = $null; utilitySha256 = $null; sourceCommit = $null; error = $null }
     if (-not (Test-Path -LiteralPath $manifest -PathType Leaf)) { return $base }
-    if (-not (Test-Path -LiteralPath $utility -PathType Leaf)) { $base.status = "invalid"; $base.error = "release utility is unavailable"; return $base }
-    $checked = Invoke-ReleaseUtility $BootstrapPython @($utility, "verify-bundle", "--toolkit-root", $ToolkitRoot, "--json")
+    if ($null -eq $TrustedInputs -or $TrustedInputs.status -ne "ok") { $base.status = "invalid"; $base.error = if ($TrustedInputs.error) { $TrustedInputs.error } else { "release bootstrap trust inputs are unavailable" }; return $base }
+    $checked = Invoke-ReleaseUtility $BootstrapPython $TrustedInputs @("verify-bundle", "--toolkit-root", $ToolkitRoot, "--json")
     if ($checked.status -ne "ok" -or $null -eq $checked.payload -or $checked.payload.status -ne "ok") {
         $base.status = "invalid"; $base.error = "release bundle verification failed"; return $base
+    }
+    if ([string]$checked.payload.manifestSha256 -cne [string]$TrustedInputs.manifestSha256 -or [string]$checked.payload.utilitySha256 -cne [string]$TrustedInputs.utilitySha256) {
+        $base.status = "invalid"; $base.error = "release bundle facts changed after trust read"; return $base
     }
     $base.status = "ok"
     $base.productVersion = $checked.payload.productVersion
     $base.wheels = @($checked.payload.wheels)
     $base.wheelEntries = @($checked.payload.wheelEntries)
-    $base.manifestSha256 = [string]$checked.payload.manifestSha256
-    $base.utilitySha256 = [string]$checked.payload.utilitySha256
+    $base.manifestSha256 = [string]$TrustedInputs.manifestSha256
+    $base.utilitySha256 = [string]$TrustedInputs.utilitySha256
     $base.sourceCommit = [string]$checked.payload.sourceCommit
     if (-not $base.manifestSha256 -or -not $base.utilitySha256 -or -not $base.sourceCommit -or $base.wheelEntries.Count -eq 0) {
         $base.status = "invalid"; $base.error = "release bundle verification omitted bound facts"; return $base
@@ -308,24 +405,24 @@ function Get-BundleEvidence {
 }
 
 function Assert-BundleFacts {
-    param([string]$ToolkitRoot, [object]$BundleEvidence)
-    if ($null -eq $BundleEvidence -or $BundleEvidence.status -ne "ok") { throw "release bundle verification is unavailable" }
+    param([string]$ToolkitRoot, [object]$BundleEvidence, [object]$TrustedInputs)
+    if ($null -eq $BundleEvidence -or $BundleEvidence.status -ne "ok" -or $null -eq $TrustedInputs -or $TrustedInputs.status -ne "ok") { throw "release bundle verification is unavailable" }
     $manifest = Join-Path $ToolkitRoot $ReleaseManifestRelative
     $utility = Join-Path $ToolkitRoot $ReleaseUtilityRelative
     if (-not (Test-Path -LiteralPath $manifest -PathType Leaf) -or -not (Test-Path -LiteralPath $utility -PathType Leaf)) { throw "verified release facts are no longer present" }
-    if ((Get-FileSha256 $manifest) -cne ([string]$BundleEvidence.manifestSha256)) { throw "release manifest changed after verification" }
-    if ((Get-FileSha256 $utility) -cne ([string]$BundleEvidence.utilitySha256)) { throw "release utility changed after verification" }
+    if ((Get-FileSha256 $manifest) -cne ([string]$TrustedInputs.manifestSha256)) { throw "release manifest changed after verification" }
+    if ((Get-FileSha256 $utility) -cne ([string]$TrustedInputs.utilitySha256)) { throw "release utility changed after verification" }
+    if ((Get-FileSha256 (Join-Path $ToolkitRoot $ReleasePolicyRelative)) -cne ([string]$TrustedInputs.policySha256)) { throw "release policy changed after verification" }
 }
 
 function Get-RuntimeStateEvidence {
-    param([string]$StatePath, [string]$ManifestPath, [object]$BootstrapPython, [object]$BundleEvidence)
+    param([string]$StatePath, [string]$ManifestPath, [object]$BootstrapPython, [object]$BundleEvidence, [object]$TrustedInputs)
     $missing = [ordered]@{ status = "missing"; activeVersion = $null; installGeneration = $null }
     if (-not (Test-Path -LiteralPath $StatePath -PathType Leaf)) { return $missing }
     if (-not (Test-Path -LiteralPath $ManifestPath -PathType Leaf)) { return [ordered]@{ status = "invalid"; error = "release manifest is unavailable" } }
-    try { Assert-BundleFacts (Split-Path (Split-Path $ManifestPath -Parent) -Parent) $BundleEvidence } catch { return [ordered]@{ status = "invalid"; error = $_.Exception.Message } }
+    try { Assert-BundleFacts (Split-Path (Split-Path $ManifestPath -Parent) -Parent) $BundleEvidence $TrustedInputs } catch { return [ordered]@{ status = "invalid"; error = $_.Exception.Message } }
     $toolkitRoot = Split-Path (Split-Path $ManifestPath -Parent) -Parent
-    $utility = Join-Path $toolkitRoot $ReleaseUtilityRelative
-    $checked = Invoke-ReleaseUtility $BootstrapPython @($utility, "verify-runtime-state", "--state", $StatePath, "--candidate-manifest", $ManifestPath, "--json")
+    $checked = Invoke-ReleaseUtility $BootstrapPython $TrustedInputs @("verify-runtime-state", "--state", $StatePath, "--candidate-manifest", $ManifestPath, "--json")
     if ($null -eq $checked.payload -or -not ($checked.payload.status)) {
         return [ordered]@{ status = "invalid"; error = "runtime state verification failed" }
     }
@@ -536,9 +633,10 @@ try {
     )
     $bootstrapPython = Find-BootstrapPython
     $releaseManifest = Join-Path $resolvedToolkitRoot $ReleaseManifestRelative
-    $bundleEvidence = Get-BundleEvidence $resolvedToolkitRoot $bootstrapPython
+    $trustedInputs = Get-TrustedBundleInputs $resolvedToolkitRoot
+    $bundleEvidence = Get-BundleEvidence $resolvedToolkitRoot $bootstrapPython $trustedInputs
     $runtimeStatePath = Join-Path $runtimeParent $RuntimeStateFileName
-    $runtimeStateEvidence = Get-RuntimeStateEvidence $runtimeStatePath $releaseManifest $bootstrapPython $bundleEvidence
+    $runtimeStateEvidence = Get-RuntimeStateEvidence $runtimeStatePath $releaseManifest $bootstrapPython $bundleEvidence $trustedInputs
 
     if ($Mode -eq "Check") {
         if (Test-Path -LiteralPath $runtime) {
@@ -580,7 +678,7 @@ try {
     if ($Mode -eq "Repair" -and ($presentLegacyRuntimes.Count -gt 1)) { throw "multiple legacy runtimes are present; repair is ambiguous" }
     if ($Mode -eq "Repair" -and -not ($currentExists -or $presentLegacyRuntimes.Count -gt 0)) { throw "managed runtime is missing; authorize Bootstrap instead" }
     if ($bundleEvidence.status -ne "ok") { throw "release bundle is missing or invalid" }
-    Assert-BundleFacts $resolvedToolkitRoot $bundleEvidence
+    Assert-BundleFacts $resolvedToolkitRoot $bundleEvidence $trustedInputs
     if ($runtimeStateEvidence.status -in @("downgrade-refused", "source-conflict", "unsupported", "invalid")) {
         throw "runtime state refuses this release candidate"
     }
@@ -635,7 +733,7 @@ try {
     try { $doctorPayload = $doctorCheck.stdout | ConvertFrom-Json } catch { throw "toolkit doctor returned invalid JSON" }
     $doctorError = Get-DoctorContractError $doctorPayload
     if ($doctorError) { throw $doctorError }
-    Assert-BundleFacts $resolvedToolkitRoot $bundleEvidence
+    Assert-BundleFacts $resolvedToolkitRoot $bundleEvidence $trustedInputs
 
     $quarantined = $null
     $quarantineSource = $null
@@ -675,7 +773,7 @@ try {
         throw
     }
     if ((Test-Path -LiteralPath $stagingRoot) -and -not (Get-ChildItem -LiteralPath $stagingRoot -Force | Select-Object -First 1)) { Remove-Item -LiteralPath $stagingRoot -Force }
-    [ordered]@{ mode = $Mode.ToUpperInvariant(); runtime = (Get-RuntimeEvidence $runtime $runtimePython $resolvedProjectRoot); bundle = $bundleEvidence; runtimeState = (Get-RuntimeStateEvidence $runtimeStatePath $releaseManifest $bootstrapPython $bundleEvidence); quarantinedRuntime = if ($quarantined) { $quarantined.Replace("\", "/") } else { $null }; mutated = $true } | ConvertTo-Json -Depth 30
+    [ordered]@{ mode = $Mode.ToUpperInvariant(); runtime = (Get-RuntimeEvidence $runtime $runtimePython $resolvedProjectRoot); bundle = $bundleEvidence; runtimeState = (Get-RuntimeStateEvidence $runtimeStatePath $releaseManifest $bootstrapPython $bundleEvidence $trustedInputs); quarantinedRuntime = if ($quarantined) { $quarantined.Replace("\", "/") } else { $null }; mutated = $true } | ConvertTo-Json -Depth 30
     exit 0
 } catch {
     $primaryError = $_.Exception.Message

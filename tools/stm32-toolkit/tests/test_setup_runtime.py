@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import hashlib
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -126,6 +127,88 @@ def test_bootstrap_rejects_unsupported_python_before_runtime_mutation(tmp_path: 
     assert result.returncode == 2
     assert "CPython >=3.12,<3.13 is required" in result.stderr
     assert not (plugin_data / "runtime").exists()
+
+
+@pytest.mark.parametrize("mode", ["Check", "Bootstrap"])
+def test_setup_rejects_replaced_release_utility_before_execution(tmp_path: Path, mode: str):
+    project = tmp_path / "project"
+    project.mkdir()
+    plugin_root = tmp_path / "plugin"
+    (plugin_root / "tools" / "stm32-toolkit").mkdir(parents=True)
+    _write_fake_monitor_package(plugin_root)
+    wheelhouse = tmp_path / "wheelhouse"
+    wheelhouse.mkdir()
+    _write_test_build_backend(wheelhouse)
+    _write_fake_release_bundle(plugin_root, wheelhouse)
+    utility = plugin_root / "tools" / "release" / "build_0900_artifacts.py"
+    marker = plugin_root / "SOL-UNVERIFIED-UTILITY-EXECUTED.txt"
+    _write_attacker_release_utility(utility, marker)
+    plugin_data = tmp_path / "plugin-data"
+    environment = _clean_environment()
+    environment["PIP_NO_INDEX"] = "1"
+    environment["PIP_FIND_LINKS"] = str(wheelhouse)
+
+    result = _run_helper(mode, plugin_root, plugin_data, project, environment=environment, timeout=180, helper=HELPER)
+
+    if mode == "Check":
+        assert result.returncode == 0
+        assert json.loads(result.stdout)["bundle"]["status"] == "invalid"
+    else:
+        assert result.returncode == 2
+    assert not marker.exists()
+    assert not (plugin_data / "runtime" / ".staging").exists()
+
+
+def test_setup_rejects_policy_swap_at_bootstrap_boundary(tmp_path: Path):
+    project = tmp_path / "project"
+    project.mkdir()
+    plugin_root = tmp_path / "plugin"
+    (plugin_root / "tools" / "stm32-toolkit").mkdir(parents=True)
+    _write_fake_monitor_package(plugin_root)
+    wheelhouse = tmp_path / "wheelhouse"
+    wheelhouse.mkdir()
+    _write_test_build_backend(wheelhouse)
+    _write_fake_release_bundle(plugin_root, wheelhouse)
+    policy = plugin_root / "tools" / "release" / "release_0900_policy.json"
+    policy.write_text('{"version":"attacker"}\n', encoding="utf-8")
+    utility = plugin_root / "tools" / "release" / "build_0900_artifacts.py"
+    marker = plugin_root / "SOL-POLICY-SWAP-UTILITY-EXECUTED.txt"
+    _write_attacker_release_utility(utility, marker)
+    plugin_data = tmp_path / "plugin-data"
+    environment = _clean_environment()
+    environment["PIP_NO_INDEX"] = "1"
+    environment["PIP_FIND_LINKS"] = str(wheelhouse)
+
+    result = _run_helper("Bootstrap", plugin_root, plugin_data, project, environment=environment, timeout=180, helper=HELPER)
+
+    assert result.returncode == 2
+    assert not marker.exists()
+    assert not (plugin_data / "runtime" / ".staging").exists()
+
+
+def test_setup_rejects_changed_after_read_utility_before_staging(tmp_path: Path):
+    project = tmp_path / "project"
+    project.mkdir()
+    plugin_root = tmp_path / "plugin"
+    (plugin_root / "tools" / "stm32-toolkit").mkdir(parents=True)
+    _write_fake_monitor_package(plugin_root)
+    wheelhouse = tmp_path / "wheelhouse"
+    wheelhouse.mkdir()
+    _write_test_build_backend(wheelhouse)
+    _write_fake_release_bundle(plugin_root, wheelhouse)
+    utility = plugin_root / "tools" / "release" / "build_0900_artifacts.py"
+    marker = plugin_root / "SOL-CHANGED-AFTER-READ-UTILITY-EXECUTED.txt"
+    _write_attacker_release_utility(utility, marker, mutate_self=True)
+    plugin_data = tmp_path / "plugin-data"
+    environment = _clean_environment()
+    environment["PIP_NO_INDEX"] = "1"
+    environment["PIP_FIND_LINKS"] = str(wheelhouse)
+
+    result = _run_helper("Bootstrap", plugin_root, plugin_data, project, environment=environment, timeout=180, helper=HELPER)
+
+    assert result.returncode == 2
+    assert not marker.exists()
+    assert not (plugin_data / "runtime" / ".staging").exists()
 
 
 def test_partial_runtime_directory_is_broken_and_recommends_repair(tmp_path: Path):
@@ -897,6 +980,10 @@ raise SystemExit(main())
 """,
         encoding="utf-8",
     )
+    shutil.copy2(
+        REPO_ROOT / "tools" / "release" / "release_0900_policy.json",
+        utility.with_name("release_0900_policy.json"),
+    )
 
     def write_wheel(path: Path, files: dict[str, bytes]) -> None:
         records = []
@@ -968,6 +1055,44 @@ raise SystemExit(main())
         "publicInventory": {"mcpTools": 48, "skills": 8},
     }
     (release / "release-manifest.json").write_text(json.dumps(manifest, sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8")
+
+
+def _write_attacker_release_utility(path: Path, marker: Path, *, mutate_self: bool = False) -> None:
+    path.write_text(
+        f"""import hashlib, json, sys
+from pathlib import Path
+
+MARKER = Path({str(marker)!r})
+MUTATE_SELF = {mutate_self!r}
+
+def digest(path):
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+def main():
+    MARKER.write_text('SOL-UNVERIFIED-UTILITY-EXECUTED', encoding='utf-8')
+    if MUTATE_SELF:
+        Path(__file__).write_text('# changed-after-read\\n', encoding='utf-8')
+    args = sys.argv[1:]
+    root = Path(__file__).resolve().parents[2]
+    manifest_path = root / 'release' / 'release-manifest.json'
+    manifest = json.loads(manifest_path.read_text(encoding='utf-8'))
+    if 'verify-bundle' in args:
+        print(json.dumps({{'status': 'ok', 'productVersion': '0.9.0',
+            'manifestSha256': digest(manifest_path),
+            'utilitySha256': digest(Path(__file__)),
+            'sourceCommit': manifest['source']['commit'],
+            'wheels': [entry['file'] for entry in manifest['wheels']],
+            'wheelEntries': manifest['wheels']}}, separators=(',', ':')))
+        return 0
+    if 'verify-runtime-state' in args:
+        print(json.dumps({{'status': 'missing'}}, separators=(',', ':')))
+        return 0
+    return 2
+
+raise SystemExit(main())
+""",
+        encoding="utf-8",
+    )
 
 
 def _write_fake_monitor_package(plugin_root: Path) -> None:
@@ -1069,7 +1194,19 @@ def _run_helper(
     *,
     environment: dict[str, str] | None = None,
     timeout: float = 30,
+    helper: Path | None = None,
 ) -> subprocess.CompletedProcess[str]:
+    helper_path = helper or HELPER
+    fixture_utility = plugin_root / "tools" / "release" / "build_0900_artifacts.py"
+    fixture_policy = plugin_root / "tools" / "release" / "release_0900_policy.json"
+    if helper is None and plugin_root != REPO_ROOT and fixture_utility.is_file() and fixture_policy.is_file():
+        helper_text = HELPER.read_text(encoding="utf-8")
+        utility_hash = hashlib.sha256(fixture_utility.read_bytes()).hexdigest()
+        policy_hash = hashlib.sha256(fixture_policy.read_bytes()).hexdigest()
+        helper_text = re.sub(r'(?m)^(\$ReleaseUtilitySha256\s*=\s*")[0-9a-f]{64}("\s*)$', rf'\g<1>{utility_hash}\g<2>', helper_text)
+        helper_text = re.sub(r'(?m)^(\$ReleasePolicySha256\s*=\s*")[0-9a-f]{64}("\s*)$', rf'\g<1>{policy_hash}\g<2>', helper_text)
+        helper_path = plugin_data.parent / "setup-stm32-env-fixture.ps1"
+        helper_path.write_text(helper_text, encoding="utf-8", newline="")
     return subprocess.run(
         [
             "powershell.exe",
@@ -1077,7 +1214,7 @@ def _run_helper(
             "-ExecutionPolicy",
             "Bypass",
             "-File",
-            str(HELPER),
+            str(helper_path),
             "-Mode",
             mode,
             "-ToolkitRoot",
