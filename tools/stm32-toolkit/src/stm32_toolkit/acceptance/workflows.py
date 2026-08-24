@@ -28,12 +28,13 @@ from stm32_toolkit.diagnostics import (
     FixVerification,
 )
 from stm32_toolkit.evidence import (
+    EVIDENCE_CORRUPT,
     EvidenceEnvelope,
     EvidenceValidationError,
     get_root,
 )
 from stm32_toolkit.evidence.gc import RootRecord, put_root
-from stm32_toolkit.evidence.model import canonical_json_bytes
+from stm32_toolkit.evidence.model import MAX_ENVELOPE_BYTES, canonical_json_bytes
 from stm32_toolkit.evidence.store import EvidenceStore
 from stm32_toolkit.paths import WorkspacePaths, require_safe_session_id
 from stm32_toolkit.project_model import ProjectManifestError, load_project_model
@@ -153,6 +154,36 @@ def _canonical_uuid(field: str, value: object) -> str:
     return value
 
 
+def _typed_root_path(evidence: EvidenceStore, root_type: str, root_id: str) -> Path:
+    root_name = hashlib.sha256(
+        canonical_json_bytes({"root_type": root_type, "root_id": root_id})
+    ).hexdigest() + ".json"
+    return evidence.root / "roots" / root_type / root_name
+
+
+def _root_failure_code(
+    evidence: EvidenceStore, *, root_type: str, root_id: str
+) -> str:
+    """Classify a failed exact-key lookup without exposing Evidence details."""
+    path = _typed_root_path(evidence, root_type, root_id)
+    try:
+        payload = evidence._read_file_bytes(path, maximum_bytes=MAX_ENVELOPE_BYTES)
+    except FileNotFoundError:
+        return "ACCEPTANCE_REFERENCE_INVALID"
+    except (EvidenceValidationError, OSError, TypeError, ValueError):
+        return "ACCEPTANCE_EVIDENCE_INTEGRITY_FAILED"
+    try:
+        document = json.loads(payload.decode("utf-8"))
+        if canonical_json_bytes(document) != payload:
+            return "ACCEPTANCE_EVIDENCE_INTEGRITY_FAILED"
+        root = RootRecord.from_value(document)
+    except (EvidenceValidationError, UnicodeError, json.JSONDecodeError, TypeError, ValueError):
+        return "ACCEPTANCE_EVIDENCE_INTEGRITY_FAILED"
+    if root.root_type != root_type or root.root_id != root_id:
+        return "ACCEPTANCE_REFERENCE_INVALID"
+    return "ACCEPTANCE_EVIDENCE_INTEGRITY_FAILED"
+
+
 def _diagnostic_storage_id(value: str) -> str:
     """Map the canonical UUID wire spelling to Diagnostic's compact ID storage."""
     return value.replace("-", "")
@@ -170,8 +201,52 @@ def _mapping(value: object, field: str) -> Mapping[str, object]:
     return value
 
 
-def _require_success(result: object, *, code: str = "ACCEPTANCE_REFERENCE_INVALID") -> Mapping[str, object]:
+def _reader_failure_code(
+    result: OperationResult[object],
+    *,
+    reader_kind: str,
+    evidence: EvidenceStore | None = None,
+    root_type: str | None = None,
+    root_id: str | None = None,
+) -> str:
+    observed = result.code
+    if reader_kind == "test":
+        if observed == EVIDENCE_CORRUPT:
+            if evidence is None or root_type is None or root_id is None:
+                return "ACCEPTANCE_EVIDENCE_INTEGRITY_FAILED"
+            return _root_failure_code(evidence, root_type=root_type, root_id=root_id)
+        if observed.startswith("EVIDENCE_"):
+            return "ACCEPTANCE_EVIDENCE_INTEGRITY_FAILED"
+        return "ACCEPTANCE_REFERENCE_INVALID"
+    if observed == "DIAGNOSTIC_NOT_FOUND":
+        return "ACCEPTANCE_REFERENCE_INVALID"
+    if observed == "DIAGNOSTIC_IDENTITY_MISMATCH":
+        return "ACCEPTANCE_IDENTITY_MISMATCH"
+    if observed.startswith("DIAGNOSTIC_"):
+        return "ACCEPTANCE_EVIDENCE_INTEGRITY_FAILED"
+    return "ACCEPTANCE_NOT_COMPLETE"
+
+
+def _require_success(
+    result: object,
+    *,
+    code: str = "ACCEPTANCE_REFERENCE_INVALID",
+    reader_kind: str | None = None,
+    evidence: EvidenceStore | None = None,
+    root_type: str | None = None,
+    root_id: str | None = None,
+) -> Mapping[str, object]:
     if not isinstance(result, OperationResult) or result.ok is not True:
+        if isinstance(result, OperationResult) and reader_kind is not None:
+            raise _AcceptanceFailure(
+                _reader_failure_code(
+                    result,
+                    reader_kind=reader_kind,
+                    evidence=evidence,
+                    root_type=root_type,
+                    root_id=root_id,
+                )
+            )
         raise _AcceptanceFailure(code)
     # OperationResult intentionally freezes lists to tuples.  Public model
     # decoders are JSON boundaries and must receive the thawed canonical view.
@@ -273,10 +348,18 @@ def _load_authoritative_runs(
         context.project_root, context.data_root, context.session_id
     )
     before_result = _require_success(
-        test_show(testing_context, run_id=failed_before_test_run_id)
+        test_show(testing_context, run_id=failed_before_test_run_id),
+        reader_kind="test",
+        evidence=evidence,
+        root_type="test-run",
+        root_id=failed_before_test_run_id,
     )
     after_result = _require_success(
-        test_show(testing_context, run_id=fixed_after_test_run_id)
+        test_show(testing_context, run_id=fixed_after_test_run_id),
+        reader_kind="test",
+        evidence=evidence,
+        root_type="test-run",
+        root_id=fixed_after_test_run_id,
     )
     repository = TestRunRepository(evidence)
     try:
@@ -308,12 +391,14 @@ def _load_diagnostic_chain(
             diagnostic_context, diagnostic_session_id=diagnostic_storage_id
         ),
         code="ACCEPTANCE_NOT_COMPLETE",
+        reader_kind="diagnostic",
     )
     verification_shown = _require_success(
         diagnostic_show_verification(
             diagnostic_context, diagnostic_session_id=diagnostic_storage_id
         ),
         code="ACCEPTANCE_NOT_COMPLETE",
+        reader_kind="diagnostic",
     )
     session_data = _mapping(shown.get("session"), "diagnostic session")
     verification_session_data = _mapping(verification_shown.get("session"), "diagnostic session")
@@ -426,6 +511,12 @@ def _read_acceptance(
         root = get_root(evidence, "acceptance-scenario", record_id)
         envelope = evidence.get_envelope(root.manifest_id)
     except (EvidenceValidationError, OSError, FileNotFoundError, ValueError) as error:
+        if isinstance(error, EvidenceValidationError) and error.code == EVIDENCE_CORRUPT:
+            failure_code = _root_failure_code(
+                evidence, root_type="acceptance-scenario", root_id=record_id
+            )
+            if failure_code == "ACCEPTANCE_REFERENCE_INVALID":
+                raise _AcceptanceFailure(failure_code) from error
         raise _AcceptanceFailure("ACCEPTANCE_EVIDENCE_INTEGRITY_FAILED") from error
     if (
         root.root_type != "acceptance-scenario"
@@ -465,12 +556,12 @@ def _read_acceptance(
 
 
 def _check_existing_record(
-    evidence: EvidenceStore, record: AcceptanceRecord
+    evidence: EvidenceStore,
+    *,
+    record_id: str,
+    expected_values: Mapping[str, object],
 ) -> OperationResult[dict[str, object]] | None:
-    root_name = hashlib.sha256(
-        canonical_json_bytes({"root_type": "acceptance-scenario", "root_id": record.record_id})
-    ).hexdigest() + ".json"
-    root_path = evidence.root / "roots" / "acceptance-scenario" / root_name
+    root_path = _typed_root_path(evidence, "acceptance-scenario", record_id)
     try:
         root_exists = root_path.exists()
     except OSError:
@@ -478,12 +569,13 @@ def _check_existing_record(
     if not root_exists:
         return None
     try:
-        existing, _root, _envelope = _read_acceptance(evidence, record.record_id)
+        existing, _root, _envelope = _read_acceptance(evidence, record_id)
     except _AcceptanceFailure as error:
         if error.code == "ACCEPTANCE_EVIDENCE_INTEGRITY_FAILED":
             return _failure(_RECORD_OPERATION, "ACCEPTANCE_EVIDENCE_INTEGRITY_FAILED")
         return _failure(_RECORD_OPERATION, error.code)
-    if existing.to_dict() == record.to_dict():
+    existing_values = existing.to_dict()
+    if all(existing_values.get(key) == value for key, value in expected_values.items()):
         return OperationResult.success(_RECORD_OPERATION, {"record": existing.to_dict()})
     return _failure(_RECORD_OPERATION, "ACCEPTANCE_RECORD_CONFLICT")
 
@@ -550,6 +642,37 @@ def _record_acceptance(
     )
 
     # Step 6: project stable references only; no Test/Diagnostic payloads are copied.
+    stable_values = {
+        "schema": RECORD_SCHEMA,
+        "recordId": record_id,
+        "scenarioId": scenario.scenario_id,
+        "scenarioVersion": scenario.scenario_version,
+        "scenarioDigest": scenario.scenario_digest,
+        "workspaceId": workspace.workspace_id,
+        "logicalProjectId": project_id,
+        "projectOrigin": scenario.project_origin,
+        "executionSource": "replay",
+        "physicalTransportEvidence": False,
+        "completedStages": list(REQUIRED_STAGES),
+        "failedBeforeTestRunId": failed_before_test_run_id,
+        "fixedAfterTestRunId": fixed_after_test_run_id,
+        "diagnosticSessionId": diagnostic_session_id,
+        "fixVerificationId": verification.fix_verification_id,
+        "failedBeforeEvidenceId": str(before.envelope.evidence_id),
+        "fixedAfterEvidenceId": str(after.envelope.evidence_id),
+        "beforeBuildId": before.manifest.identity.build_id,
+        "afterBuildId": after.manifest.identity.build_id,
+        "beforeElfSha256": before.manifest.identity.elf_sha256,
+        "afterElfSha256": after.manifest.identity.elf_sha256,
+        "verdict": "SOFTWARE_PASSED",
+    }
+    existing = _check_existing_record(
+        evidence,
+        record_id=record_id,
+        expected_values=stable_values,
+    )
+    if existing is not None:
+        return existing
     record = AcceptanceRecord(
         schema=RECORD_SCHEMA,
         record_id=record_id,
@@ -575,9 +698,6 @@ def _record_acceptance(
         verdict="SOFTWARE_PASSED",
         produced_at_utc=_utc_now(),
     )
-    existing = _check_existing_record(evidence, record)
-    if existing is not None:
-        return existing
     parent_values = (
         str(before.envelope.evidence_id),
         str(after.envelope.evidence_id),
@@ -604,7 +724,11 @@ def _record_acceptance(
     except EvidenceValidationError as error:
         if error.code == EVIDENCE_CORRUPT:
             # An identical immutable retry is reusable; a different root is a conflict.
-            existing = _check_existing_record(evidence, record)
+            existing = _check_existing_record(
+                evidence,
+                record_id=record.record_id,
+                expected_values=stable_values,
+            )
             if existing is not None:
                 return existing
             return _failure(_RECORD_OPERATION, "ACCEPTANCE_RECORD_CONFLICT")

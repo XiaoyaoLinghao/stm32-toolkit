@@ -18,6 +18,7 @@ from stm32_toolkit.acceptance.workflows import (
     record_acceptance_scenario,
     show_acceptance_scenario,
 )
+import stm32_toolkit.acceptance.workflows as acceptance_workflows
 from stm32_toolkit.diagnostic_workflows import (
     DiagnosticWorkflowContext,
     diagnostic_add_hypothesis,
@@ -37,6 +38,7 @@ from stm32_toolkit.diagnostics import SourceChangeDeclaration, VerificationPlan
 from stm32_toolkit.evidence import EvidenceEnvelope
 from stm32_toolkit.evidence.store import EvidenceStore
 from stm32_toolkit.paths import WorkspacePaths
+from stm32_toolkit.result import OperationResult
 from stm32_toolkit.testing.publication import TestRunRepository as RunRepository
 from stm32_toolkit.testing.replay import (
     calculate_replay_id,
@@ -59,6 +61,7 @@ MONITOR_FIXTURES = Path(__file__).parents[2] / "stm32-monitor" / "tests" / "fixt
 FAILED_RUN_ID = "00000000-0000-4000-8000-000000000002"
 FIXED_RUN_ID = "00000000-0000-4000-8000-000000000003"
 RECORD_ID = "00000000-0000-4000-8000-000000000001"
+ALTERNATE_FIXED_RUN_ID = "00000000-0000-4000-8000-000000000006"
 MONITOR_OPERATION_IDS = {
     "failed-before": "33333333-3333-4333-8333-333333333333",
     "fixed-after": "44444444-4444-4444-8444-444444444444",
@@ -151,7 +154,7 @@ def _canonical_replay_inputs(
     descriptor["stream"]["sha256"] = hashlib.sha256(stream).hexdigest()
     descriptor["stream"]["size_bytes"] = len(stream)
     descriptor["replay_id"] = calculate_replay_id(descriptor)
-    root = tmp_path / "replay-inputs" / role
+    root = tmp_path / "replay-inputs" / f"{role}-{run_id}"
     root.mkdir(parents=True)
     descriptor_path = root / "descriptor.json"
     stream_path = root / "stream.hex"
@@ -198,7 +201,12 @@ def _source_change(
 
 
 def _complete_existing_chain(
-    tmp_path: Path, origin: str, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    origin: str,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    complete_verification: bool = True,
+    cancelled: bool = False,
 ) -> tuple[Path, Path, str]:
     monkeypatch.setattr(
         diagnostic_workflows_module,
@@ -391,6 +399,8 @@ def _complete_existing_chain(
             diagnostic_marker_ref=publication.diagnostic_marker_ref,
         )
     )
+    if not complete_verification:
+        return project_root, data_root, _wire_diagnostic_id(diagnostic_id)
     completed = _ok(
         diagnostic_complete_verification(
             diagnostic,
@@ -403,11 +413,12 @@ def _complete_existing_chain(
                 "monitor.analysis.compare",
                 "monitor.analysis.bundle",
             ],
+            cancelled=cancelled,
         )
     )
     verification = completed["fix_verification"]
     assert isinstance(verification, Mapping)
-    assert verification["status"] == "PASSED"
+    assert verification["status"] == ("CANCELLED" if cancelled else "PASSED")
     return project_root, data_root, _wire_diagnostic_id(diagnostic_id)
 
 
@@ -478,6 +489,108 @@ def test_vs08a_definition_origin_mismatch_fails_before_publication(
         )
     )
     assert after_acceptance_roots == before_acceptance_roots == ()
+
+
+def test_vs08a_unresolved_diagnostic_is_rejected_without_acceptance_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    project_root, data_root, diagnostic_id = _complete_existing_chain(
+        tmp_path, "keil", monkeypatch, complete_verification=False
+    )
+    result = record_acceptance_scenario(
+        AcceptanceWorkflowContext(project_root, data_root, "vs08a-keil-session"),
+        record_id=RECORD_ID,
+        scenario_id="legacy-keil-migration",
+        scenario_version="1",
+        failed_before_test_run_id=FAILED_RUN_ID,
+        fixed_after_test_run_id=FIXED_RUN_ID,
+        diagnostic_session_id=diagnostic_id,
+    )
+    assert result.ok is False
+    assert result.code == "ACCEPTANCE_NOT_COMPLETE"
+    assert not list((data_root).rglob("*/roots/acceptance-scenario/*.json"))
+
+
+def test_vs08a_nonpassing_verification_is_rejected_without_acceptance_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    project_root, data_root, diagnostic_id = _complete_existing_chain(
+        tmp_path, "keil", monkeypatch, cancelled=True
+    )
+    result = record_acceptance_scenario(
+        AcceptanceWorkflowContext(project_root, data_root, "vs08a-keil-session"),
+        record_id=RECORD_ID,
+        scenario_id="legacy-keil-migration",
+        scenario_version="1",
+        failed_before_test_run_id=FAILED_RUN_ID,
+        fixed_after_test_run_id=FIXED_RUN_ID,
+        diagnostic_session_id=diagnostic_id,
+    )
+    assert result.ok is False
+    assert result.code == "ACCEPTANCE_NOT_COMPLETE"
+    assert not list((data_root).rglob("*/roots/acceptance-scenario/*.json"))
+
+
+def test_vs08a_verification_bound_to_different_fixed_run_is_rejected(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    project_root, data_root, diagnostic_id = _complete_existing_chain(
+        tmp_path, "keil", monkeypatch
+    )
+    alternate_descriptor, alternate_stream = _canonical_replay_inputs(
+        tmp_path, "fixed-after", ALTERNATE_FIXED_RUN_ID
+    )
+    testing = TestContext(project_root, data_root, "vs08a-keil-session")
+    assert _ok(
+        target_replay_run(
+            testing,
+            ALTERNATE_FIXED_RUN_ID,
+            alternate_descriptor,
+            alternate_stream,
+        )
+    )
+    result = record_acceptance_scenario(
+        AcceptanceWorkflowContext(project_root, data_root, "vs08a-keil-session"),
+        record_id=RECORD_ID,
+        scenario_id="legacy-keil-migration",
+        scenario_version="1",
+        failed_before_test_run_id=FAILED_RUN_ID,
+        fixed_after_test_run_id=ALTERNATE_FIXED_RUN_ID,
+        diagnostic_session_id=diagnostic_id,
+    )
+    assert result.ok is False
+    assert result.code == "ACCEPTANCE_REFERENCE_INVALID", result.to_dict()
+    assert not list((data_root).rglob("*/roots/acceptance-scenario/*.json"))
+
+
+def test_vs08a_diagnostic_verification_reader_identity_failure_is_mapped(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    project_root, data_root, diagnostic_id = _complete_existing_chain(
+        tmp_path, "keil", monkeypatch
+    )
+    monkeypatch.setattr(
+        acceptance_workflows,
+        "diagnostic_show_verification",
+        lambda _context, *, diagnostic_session_id: OperationResult.failure(
+            "diagnostic.verification.show",
+            "DIAGNOSTIC_IDENTITY_MISMATCH",
+            "diagnostic reader failure",
+            {},
+        ),
+    )
+    result = record_acceptance_scenario(
+        AcceptanceWorkflowContext(project_root, data_root, "vs08a-keil-session"),
+        record_id=RECORD_ID,
+        scenario_id="legacy-keil-migration",
+        scenario_version="1",
+        failed_before_test_run_id=FAILED_RUN_ID,
+        fixed_after_test_run_id=FIXED_RUN_ID,
+        diagnostic_session_id=diagnostic_id,
+    )
+    assert result.ok is False
+    assert result.code == "ACCEPTANCE_IDENTITY_MISMATCH"
+    assert not list((data_root).rglob("*/roots/acceptance-scenario/*.json"))
 
 
 def test_vs08a_scenario_contract_is_software_only():
