@@ -104,9 +104,9 @@ from stm32_toolkit.workflows import (
     convert_keil_workflow,
     inspect_keil_workflow,
 )
+from stm32_toolkit import __version__
 
 
-_VERSION = "0.5.0"
 _STDERR_LIMIT = 500
 _HARDWARE_COMMANDS = frozenset({"probe", "flash", "debug", "read", "fault"})
 _TEST_DIGEST = re.compile(r"^[0-9a-f]{64}$")
@@ -176,16 +176,17 @@ def main(argv: list[str] | None = None) -> int:
     try:
         args = parser.parse_args(argv)
         _validate_cli_modes(parser, args)
+        _require_explicit_project_root(parser, args)
     except SystemExit as error:
         # argparse reports grammar violations on stderr and exits 2; keep the
         # process contract while returning the code for in-process callers.
         return error.code if isinstance(error.code, int) else 2
 
     if args.command == "version":
-        print(_VERSION)
+        print(__version__)
         return 0
 
-    project_root = getattr(args, "project_root", Path.cwd())
+    project_root = args.project_root
     hardware = args.command in _HARDWARE_COMMANDS or getattr(args, "operation", "") in {
         "test.target.prepare", "test.target.execute"
     }
@@ -754,6 +755,13 @@ def _build_parser() -> argparse.ArgumentParser:
 
 def _add_project_root(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--project-root", type=Path, default=argparse.SUPPRESS, action=_RejectDuplicate)
+
+
+def _require_explicit_project_root(
+    parser: argparse.ArgumentParser, args: argparse.Namespace
+) -> None:
+    if args.command != "version" and not hasattr(args, "project_root"):
+        parser.error("project root is required")
 
 
 def _add_workflow_root(parser: argparse.ArgumentParser) -> None:

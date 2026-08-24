@@ -10,6 +10,7 @@ from stm32_toolkit.mcp_server import (
     tool_project_context,
     tool_project_detect,
 )
+from stm32_toolkit.public_inventory import MCP_TOOL_NAMES
 
 
 def test_tool_project_detect_uses_the_runtime_bound_project_root(tmp_path: Path):
@@ -102,56 +103,7 @@ def test_server_registers_exactly_the_project_bound_tools(tmp_path: Path):
     assert "permanently bound" in server.instructions
     assert "explicitly authorized" in server.instructions
     assert "only read-only foundation tools" not in server.instructions
-    assert {tool.name for tool in tools} == {
-        "stm32_doctor",
-        "stm32_project_detect",
-        "stm32_project_context",
-            "stm32_project_create_plan",
-            "stm32_project_create_prepare",
-            "stm32_project_create_apply",
-            "stm32_project_regenerate_plan",
-            "stm32_project_regenerate_prepare",
-            "stm32_project_regenerate_apply",
-        "stm32_keil_inspect",
-        "stm32_keil_convert",
-        "stm32_project_configure",
-        "stm32_build",
-        "stm32_probe_list",
-        "stm32_flash",
-        "stm32_debug_handoff_begin",
-        "stm32_debug_handoff_end",
-        "stm32_variable_read",
-        "stm32_variable_sample",
-        "stm32_register_read",
-        "stm32_fault_analyze",
-        "stm32_test_host_discover",
-        "stm32_test_host_run",
-        "stm32_test_show",
-        "stm32_diagnostic_start",
-        "stm32_diagnostic_show",
-        "stm32_diagnostic_begin",
-        "stm32_diagnostic_hypothesis_add",
-        "stm32_diagnostic_hypothesis_assess",
-        "stm32_diagnostic_plan_add",
-        "stm32_diagnostic_plan_run",
-        "stm32_diagnostic_marker_attach",
-        "stm32_diagnostic_source_change_declare",
-        "stm32_diagnostic_verification_plan_add",
-        "stm32_diagnostic_verification_start",
-        "stm32_diagnostic_verification_complete",
-        "stm32_diagnostic_verification_show",
-        "stm32_test_target_prepare",
-        "stm32_test_target_execute",
-        "stm32_test_target_replay",
-        "stm32_acceptance_scenario_describe",
-        "stm32_acceptance_scenario_record",
-        "stm32_acceptance_scenario_show",
-        "stm32_acceptance_attempt_begin",
-        "stm32_acceptance_attempt_checkpoint",
-        "stm32_acceptance_attempt_authorize_source_change",
-        "stm32_acceptance_attempt_show",
-        "stm32_acceptance_attempt_resume",
-    }
+    assert {tool.name for tool in tools} == set(MCP_TOOL_NAMES.values())
     zero_argument_tools = {
         "stm32_doctor",
         "stm32_project_detect",

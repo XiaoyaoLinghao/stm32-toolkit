@@ -13,8 +13,8 @@ description: Use when a Claude Code user asks to check, bootstrap, repair, or di
 
 - CHECK is read-only and offline with respect to installation. It never creates files, probes hardware, kills unrelated or existing processes, or installs anything. It may terminate only a probe subprocess that CHECK itself started after that probe exceeds its timeout.
 - Never register a second MCP. The plugin-bundled `.mcp.json` starts only after the managed runtime is healthy.
-- The only MCP interpreter is `${CLAUDE_PLUGIN_DATA}/runtime/0.5.0/Scripts/python.exe`; system `python`, `py`, or `uv` is never an MCP fallback. A healthy runtime includes the local Toolkit `probe` extra, the exact `stm32-monitor` release with readable UI manifest and static assets, and passes an isolated PEP 440 `pyocd` distribution check in the declared `>=0.45.1,<0.46` range.
-- Host Python 3.10+ is only a bounded bootstrap prerequisite for installing `${CLAUDE_PLUGIN_ROOT}/tools/stm32-toolkit` and `${CLAUDE_PLUGIN_ROOT}/tools/stm32-monitor`.
+- The only MCP interpreter is `${CLAUDE_PLUGIN_DATA}/runtime/0.9.0/Scripts/python.exe`; system `python`, `py`, or `uv` is never an MCP fallback. A healthy runtime includes the local Toolkit `probe` extra, the exact `stm32-monitor` release with readable UI manifest and static assets, and passes an isolated PEP 440 `pyocd` distribution check in the declared `>=0.45.1,<0.46` range.
+- CPython >=3.12,<3.13 is the only bounded bootstrap prerequisite for installing `${CLAUDE_PLUGIN_ROOT}/tools/stm32-toolkit` and `${CLAUDE_PLUGIN_ROOT}/tools/stm32-monitor`.
 - ARM GCC, ARM GDB, CMake, Ninja, PyOCD, CubeMX, VS Code extension, and CMSIS-Pack checks are bounded and read-only. Missing tools are reported, never installed.
 - Monitor groups remain user-created; do not probe boards or create presets.
 
@@ -27,10 +27,10 @@ The helper fails closed before mutation on empty, relative, unresolved, redirect
 ## CHECK
 
 ```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File '${CLAUDE_PLUGIN_ROOT}/bin/setup-stm32-env.ps1' -Mode Check -PluginRoot '${CLAUDE_PLUGIN_ROOT}' -PluginData '${CLAUDE_PLUGIN_DATA}' -ProjectDir '${CLAUDE_PROJECT_DIR}'
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File '${CLAUDE_PLUGIN_ROOT}/bin/setup-stm32-env.ps1' -Mode Check -ToolkitRoot '${CLAUDE_PLUGIN_ROOT}' -DataRoot '${CLAUDE_PLUGIN_DATA}' -ProjectRoot '${CLAUDE_PROJECT_DIR}'
 ```
 
-CHECK always returns JSON. `runtime.status` is `missing`, `healthy`, or `broken`; it includes exact version/error evidence and `recommendedMode`. A healthy runtime has version `0.5.0` and a successful bounded `-m stm32_toolkit.cli ... doctor --json`. An existing `0.3.0` runtime reports `broken` with `recommendedMode` `Repair`; Repair quarantines that runtime before atomically promoting 0.5.0. Tool version, extension, and pack inventory commands are bounded; timeouts become evidence rather than hangs.
+CHECK always returns JSON. `runtime.status` is `missing`, `healthy`, or `broken`; it includes exact version/error evidence and `recommendedMode`. A healthy runtime has version `0.9.0` and a successful bounded `-m stm32_toolkit.cli ... doctor --json`. An existing 0.5.0 runtime reports broken as legacy evidence; an existing 0.3.0 runtime reports broken with `recommendedMode` `Repair`. Repair quarantines that runtime before atomically promoting 0.9.0. Tool version, extension, and pack inventory commands are bounded; timeouts become evidence rather than hangs.
 
 ## VS Code extensions (CHECK evidence only)
 
@@ -42,18 +42,18 @@ For `missing`, ask authorization for Bootstrap. For `broken`, ask authorization 
 
 ## MUTATE
 
-Both modes build in a unique `${CLAUDE_PLUGIN_DATA}/runtime/.staging/0.5.0-<id>` directory, install `${CLAUDE_PLUGIN_ROOT}/tools/stm32-toolkit[probe]` and `${CLAUDE_PLUGIN_ROOT}/tools/stm32-monitor` without using the user pip cache, validate exact Toolkit version `0.5.0`, validate the exact `stm32-monitor` version with readable UI manifest and assets, validate isolated `pyocd` import and distribution metadata in the declared range, and validate doctor before promotion. Failed safe staging is removed; a staging tree containing redirects is preserved for manual recovery rather than followed.
+Both modes build in a unique `${CLAUDE_PLUGIN_DATA}/runtime/.staging/0.9.0-<id>` directory, install `${CLAUDE_PLUGIN_ROOT}/tools/stm32-toolkit[probe]` and `${CLAUDE_PLUGIN_ROOT}/tools/stm32-monitor` without using the user pip cache, validate exact Toolkit version `0.9.0`, validate the exact `stm32-monitor` version with readable UI manifest and assets, validate isolated `pyocd` import and distribution metadata in the declared range, and validate doctor before promotion. Failed safe staging is removed; a staging tree containing redirects is preserved for manual recovery rather than followed.
 
 For an absent runtime, after explicit authorization run:
 
 ```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File '${CLAUDE_PLUGIN_ROOT}/bin/setup-stm32-env.ps1' -Mode Bootstrap -PluginRoot '${CLAUDE_PLUGIN_ROOT}' -PluginData '${CLAUDE_PLUGIN_DATA}' -ProjectDir '${CLAUDE_PROJECT_DIR}'
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File '${CLAUDE_PLUGIN_ROOT}/bin/setup-stm32-env.ps1' -Mode Bootstrap -ToolkitRoot '${CLAUDE_PLUGIN_ROOT}' -DataRoot '${CLAUDE_PLUGIN_DATA}' -ProjectRoot '${CLAUDE_PROJECT_DIR}'
 ```
 
 For a broken runtime, after separate explicit authorization run:
 
 ```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File '${CLAUDE_PLUGIN_ROOT}/bin/setup-stm32-env.ps1' -Mode Repair -PluginRoot '${CLAUDE_PLUGIN_ROOT}' -PluginData '${CLAUDE_PLUGIN_DATA}' -ProjectDir '${CLAUDE_PROJECT_DIR}'
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File '${CLAUDE_PLUGIN_ROOT}/bin/setup-stm32-env.ps1' -Mode Repair -ToolkitRoot '${CLAUDE_PLUGIN_ROOT}' -DataRoot '${CLAUDE_PLUGIN_DATA}' -ProjectRoot '${CLAUDE_PROJECT_DIR}'
 ```
 
 Repair moves the failed runtime to `${CLAUDE_PLUGIN_DATA}/runtime/.quarantine/` before promotion and rolls it back if promotion fails. Neither mode writes project files, installs external hardware tools, packs, extensions, drivers, or registers MCP.

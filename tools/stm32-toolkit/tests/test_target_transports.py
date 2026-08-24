@@ -60,7 +60,7 @@ def test_mailbox_production_reader_uses_only_public_probe_v2(monkeypatch, tmp_pa
 
     monkeypatch.setattr(target_module, "ProbeClient", PublicClient)
     endpoint = ProbeEndpoint(
-        protocol="stm32-toolkit-probe/2", toolkit_version="0.5.0", host="127.0.0.1", port=1,
+        protocol="stm32-toolkit-probe/2", toolkit_version="0.9.0", host="127.0.0.1", port=1,
         token="0" * 64, workspace_id="workspace-a", session_id="session-a", lease_id="lease-a",
         probe_id="probe-a", operation_level=OperationLevel.OBSERVE, record_path=tmp_path / "endpoint.json",
     )

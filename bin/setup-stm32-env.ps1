@@ -3,14 +3,14 @@ param(
     [Parameter(Mandatory = $true)]
     [ValidateSet("Check", "Bootstrap", "Repair")]
     [string]$Mode,
-    [Parameter(Mandatory = $true)][string]$PluginRoot,
-    [Parameter(Mandatory = $true)][string]$PluginData,
-    [Parameter(Mandatory = $true)][string]$ProjectDir
+    [Parameter(Mandatory = $true)][string]$ToolkitRoot,
+    [Parameter(Mandatory = $true)][string]$DataRoot,
+    [Parameter(Mandatory = $true)][string]$ProjectRoot
 )
 
 $ErrorActionPreference = "Stop"
-$RuntimeVersion = "0.5.0"
-$LegacyRuntimeVersion = "0.3.0"
+$RuntimeVersion = "0.9.0"
+$LegacyRuntimeVersions = @("0.5.0", "0.3.0")
 $ProcessOutputLimit = 65536
 $ProbeValidationScript = @'
 import importlib.metadata as metadata
@@ -55,7 +55,7 @@ try:
 except Exception:
     raise SystemExit(2)
 ui = resources.files("stm32_monitor") / "ui_dist"
-if version != "0.5.0":
+if version != "0.9.0":
     raise SystemExit(3)
 if not _file(ui, "index.html") or not _file(ui, ".vite/manifest.json"):
     raise SystemExit(4)
@@ -78,10 +78,10 @@ if not assets or not all(_file(ui, name) for name in assets):
 print(version)
 '@
 
-function Resolve-ClaudePath {
+function Resolve-ExplicitPath {
     param([string]$Name, [AllowEmptyString()][string]$Value, [switch]$MustExist)
-    if ([string]::IsNullOrWhiteSpace($Value)) { throw "$Name is empty; Claude inline path substitution is required" }
-    if ($Value -match '\$\{CLAUDE_(PLUGIN_ROOT|PLUGIN_DATA|PROJECT_DIR)\}') { throw "$Name contains an unresolved Claude placeholder" }
+    if ([string]::IsNullOrWhiteSpace($Value)) { throw "$Name is empty; an explicit path is required" }
+    if ($Value -match '\$\{[^}]+\}') { throw "$Name contains an unresolved path placeholder" }
     if ($Value -notmatch '^(?:[A-Za-z]:[\\/]|\\\\[^\\/]+[\\/][^\\/]+(?:[\\/]|$)|//[^/]+/[^/]+(?:/|$))') { throw "$Name must be an absolute path" }
     $resolved = [IO.Path]::GetFullPath($Value)
     if ($MustExist -and -not (Test-Path -LiteralPath $resolved -PathType Container)) { throw "$Name does not identify an existing directory" }
@@ -184,19 +184,26 @@ function Invoke-BoundedProcess {
 
 function Find-BootstrapPython {
     $firstFailure = $null
-    foreach ($name in @("python", "python3", "py")) {
+    $candidates = @(
+        [ordered]@{ name = "py"; prefix = @("-3.12") },
+        [ordered]@{ name = "python"; prefix = @() },
+        [ordered]@{ name = "python3"; prefix = @() }
+    )
+    foreach ($candidate in $candidates) {
+        $name = $candidate.name
         $command = Get-Command $name -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
         if (-not $command) { continue }
-        $probe = Invoke-BoundedProcess $command.Source @("-I", "-c", "import json,sys;print(json.dumps({'version':'.'.join(map(str,sys.version_info[:3])),'supported':sys.version_info>=(3,10)}))") 3
+        $probeArguments = @($candidate.prefix) + @("-I", "-c", "import json,sys;print(json.dumps({'version':'.'.join(map(str,sys.version_info[:3])),'supported':sys.version_info[:2] == (3,12)}))")
+        $probe = Invoke-BoundedProcess $command.Source $probeArguments 3
         if ($probe.status -ne "ok") {
-            if (-not $firstFailure) { $firstFailure = [ordered]@{ available = $true; path = $command.Source; version = $null; supported = $false; status = $probe.status } }
+            if (-not $firstFailure) { $firstFailure = [ordered]@{ available = $true; path = $command.Source; prefix = @($candidate.prefix); version = $null; supported = $false; status = $probe.status } }
             continue
         }
         try { $metadata = $probe.stdout | ConvertFrom-Json } catch { continue }
-        if ($metadata.supported -eq $true) { return [ordered]@{ available = $true; path = $command.Source; version = $metadata.version; supported = $true; status = "ok" } }
+        if ($metadata.supported -eq $true) { return [ordered]@{ available = $true; path = $command.Source; prefix = @($candidate.prefix); version = $metadata.version; supported = $true; status = "ok" } }
     }
     if ($firstFailure) { return $firstFailure }
-    return [ordered]@{ available = $false; path = $null; version = $null; supported = $false; status = "missing" }
+    return [ordered]@{ available = $false; path = $null; prefix = @(); version = $null; supported = $false; status = "missing" }
 }
 
 function Get-RuntimeEvidence {
@@ -266,35 +273,47 @@ function Assert-StepOk {
 $staging = $null
 $stagingRoot = $null
 try {
-    $resolvedPluginRoot = Resolve-ClaudePath "PluginRoot" $PluginRoot -MustExist
-    $resolvedPluginData = Resolve-ClaudePath "PluginData" $PluginData
-    $resolvedProjectDir = Resolve-ClaudePath "ProjectDir" $ProjectDir -MustExist
-    Assert-NoRedirectAncestors "PluginData" $resolvedPluginData
-    $package = Join-Path $resolvedPluginRoot "tools/stm32-toolkit"
-    if (-not (Test-Path -LiteralPath $package -PathType Container)) { throw "PluginRoot does not contain tools/stm32-toolkit" }
-    $monitorPackage = Join-Path $resolvedPluginRoot "tools/stm32-monitor"
-    if (-not (Test-Path -LiteralPath $monitorPackage -PathType Container)) { throw "PluginRoot does not contain tools/stm32-monitor" }
-    $runtimeParent = Join-Path $resolvedPluginData "runtime"
+    $resolvedToolkitRoot = Resolve-ExplicitPath "ToolkitRoot" $ToolkitRoot -MustExist
+    $resolvedDataRoot = Resolve-ExplicitPath "DataRoot" $DataRoot
+    $resolvedProjectRoot = Resolve-ExplicitPath "ProjectRoot" $ProjectRoot -MustExist
+    Assert-NoRedirectAncestors "ToolkitRoot" $resolvedToolkitRoot
+    Assert-NoRedirectAncestors "DataRoot" $resolvedDataRoot
+    Assert-NoRedirectAncestors "ProjectRoot" $resolvedProjectRoot
+    $package = Join-Path $resolvedToolkitRoot "tools/stm32-toolkit"
+    if (-not (Test-Path -LiteralPath $package -PathType Container)) { throw "ToolkitRoot does not contain tools/stm32-toolkit" }
+    $monitorPackage = Join-Path $resolvedToolkitRoot "tools/stm32-monitor"
+    if (-not (Test-Path -LiteralPath $monitorPackage -PathType Container)) { throw "ToolkitRoot does not contain tools/stm32-monitor" }
+    $runtimeParent = Join-Path $resolvedDataRoot "runtime"
     $runtime = Join-Path $runtimeParent $RuntimeVersion
     $runtimePython = Join-Path $runtime "Scripts/python.exe"
-    $legacyRuntime = Join-Path $runtimeParent $LegacyRuntimeVersion
-    $legacyRuntimePython = Join-Path $legacyRuntime "Scripts/python.exe"
+    $legacyRuntimes = @(
+        foreach ($legacyVersion in $LegacyRuntimeVersions) {
+            [ordered]@{
+                version = $legacyVersion
+                path = Join-Path $runtimeParent $legacyVersion
+                python = Join-Path (Join-Path $runtimeParent $legacyVersion) "Scripts/python.exe"
+            }
+        }
+    )
     $bootstrapPython = Find-BootstrapPython
 
     if ($Mode -eq "Check") {
         if (Test-Path -LiteralPath $runtime) {
-            $runtimeEvidence = Get-RuntimeEvidence $runtime $runtimePython $resolvedProjectDir
-        } elseif (Test-Path -LiteralPath $legacyRuntime) {
-            $runtimeEvidence = Get-RuntimeEvidence $legacyRuntime $legacyRuntimePython $resolvedProjectDir
+            $runtimeEvidence = Get-RuntimeEvidence $runtime $runtimePython $resolvedProjectRoot
         } else {
-            $runtimeEvidence = Get-RuntimeEvidence $runtime $runtimePython $resolvedProjectDir
+            $legacy = $legacyRuntimes | Where-Object { Test-Path -LiteralPath $_.path } | Select-Object -First 1
+            if ($legacy) {
+                $runtimeEvidence = Get-RuntimeEvidence $legacy.path $legacy.python $resolvedProjectRoot
+            } else {
+                $runtimeEvidence = Get-RuntimeEvidence $runtime $runtimePython $resolvedProjectRoot
+            }
         }
         $result = [ordered]@{
             mode = "CHECK"
             runtime = $runtimeEvidence
             bootstrapPython = $bootstrapPython
             tools = Get-GapEvidence
-            project = $resolvedProjectDir.Replace("\", "/")
+            project = $resolvedProjectRoot.Replace("\", "/")
             mutated = $false
             authorizationRequired = ($runtimeEvidence.status -ne "healthy")
             recommendedMode = if ($runtimeEvidence.status -eq "missing") { "Bootstrap" } elseif ($runtimeEvidence.status -eq "broken") { "Repair" } else { $null }
@@ -303,11 +322,12 @@ try {
         exit 0
     }
 
-    if (-not $bootstrapPython.supported) { throw "Host Python 3.10+ is required to create the managed runtime" }
+    if (-not $bootstrapPython.supported) { throw "CPython >=3.12,<3.13 is required to create the managed runtime" }
     $currentExists = Test-Path -LiteralPath $runtime
-    $legacyExists = Test-Path -LiteralPath $legacyRuntime
-    if ($Mode -eq "Bootstrap" -and ($currentExists -or $legacyExists)) { throw "managed runtime path already exists; run Check and authorize Repair if it is broken" }
-    if ($Mode -eq "Repair" -and -not ($currentExists -or $legacyExists)) { throw "managed runtime is missing; authorize Bootstrap instead" }
+    $presentLegacyRuntimes = @($legacyRuntimes | Where-Object { Test-Path -LiteralPath $_.path })
+    if ($Mode -eq "Bootstrap" -and ($currentExists -or $presentLegacyRuntimes.Count -gt 0)) { throw "managed runtime path already exists; run Check and authorize Repair if it is broken" }
+    if ($Mode -eq "Repair" -and ($presentLegacyRuntimes.Count -gt 1)) { throw "multiple legacy runtimes are present; repair is ambiguous" }
+    if ($Mode -eq "Repair" -and -not ($currentExists -or $presentLegacyRuntimes.Count -gt 0)) { throw "managed runtime is missing; authorize Bootstrap instead" }
     Assert-NoRedirectAncestors "runtime parent" $runtimeParent
     Assert-NotRedirect "managed runtime" $runtime
 
@@ -318,7 +338,7 @@ try {
     Assert-NoRedirectAncestors "staging root" $stagingRoot
     $staging = Join-Path $stagingRoot ("$RuntimeVersion-" + [Guid]::NewGuid().ToString("N"))
 
-    Assert-StepOk (Invoke-BoundedProcess $bootstrapPython.path @("-I", "-m", "venv", $staging) 120) "runtime creation"
+    Assert-StepOk (Invoke-BoundedProcess $bootstrapPython.path (@($bootstrapPython.prefix) + @("-I", "-m", "venv", $staging)) 120) "runtime creation"
     $stagingPython = Join-Path $staging "Scripts/python.exe"
     Assert-NotRedirect "staging runtime" $staging
     Assert-NotRedirect "staging Scripts" (Join-Path $staging "Scripts")
@@ -331,7 +351,7 @@ try {
     if ($installedVersion -ne $RuntimeVersion) { throw "expected toolkit $RuntimeVersion, found $installedVersion" }
     Assert-StepOk (Invoke-BoundedProcess $stagingPython @("-I", "-c", $ProbeValidationScript) 10) "pyocd runtime validation"
     Assert-StepOk (Invoke-BoundedProcess $stagingPython @("-I", "-c", $MonitorValidationScript) 10) "monitor UI validation"
-    $doctorCheck = Invoke-BoundedProcess $stagingPython @("-I", "-m", "stm32_toolkit.cli", "--project-root", $resolvedProjectDir, "doctor", "--json") 15
+    $doctorCheck = Invoke-BoundedProcess $stagingPython @("-I", "-m", "stm32_toolkit.cli", "--project-root", $resolvedProjectRoot, "doctor", "--json") 15
     Assert-StepOk $doctorCheck "toolkit doctor validation"
     try { $doctorPayload = $doctorCheck.stdout | ConvertFrom-Json } catch { throw "toolkit doctor returned invalid JSON" }
     if ($doctorPayload.ok -ne $true) { throw "toolkit doctor reported failure" }
@@ -342,8 +362,9 @@ try {
         $quarantineRoot = Join-Path $runtimeParent ".quarantine"
         [void][IO.Directory]::CreateDirectory($quarantineRoot)
         Assert-NoRedirectAncestors "quarantine root" $quarantineRoot
-        $quarantineSource = if ($currentExists) { $runtime } else { $legacyRuntime }
-        $quarantineVersion = if ($currentExists) { $RuntimeVersion } else { $LegacyRuntimeVersion }
+        $legacyToQuarantine = if ($presentLegacyRuntimes.Count -eq 1) { $presentLegacyRuntimes[0] } else { $null }
+        $quarantineSource = if ($currentExists) { $runtime } else { $legacyToQuarantine.path }
+        $quarantineVersion = if ($currentExists) { $RuntimeVersion } else { $legacyToQuarantine.version }
         $quarantined = Join-Path $quarantineRoot ("$quarantineVersion-" + [DateTime]::UtcNow.ToString("yyyyMMddTHHmmssfffZ") + "-" + [Guid]::NewGuid().ToString("N"))
         Move-Item -LiteralPath $quarantineSource -Destination $quarantined
     }
@@ -355,7 +376,7 @@ try {
         throw
     }
     if ((Test-Path -LiteralPath $stagingRoot) -and -not (Get-ChildItem -LiteralPath $stagingRoot -Force | Select-Object -First 1)) { Remove-Item -LiteralPath $stagingRoot -Force }
-    [ordered]@{ mode = $Mode.ToUpperInvariant(); runtime = (Get-RuntimeEvidence $runtime $runtimePython $resolvedProjectDir); quarantinedRuntime = if ($quarantined) { $quarantined.Replace("\", "/") } else { $null }; mutated = $true } | ConvertTo-Json -Depth 30
+    [ordered]@{ mode = $Mode.ToUpperInvariant(); runtime = (Get-RuntimeEvidence $runtime $runtimePython $resolvedProjectRoot); quarantinedRuntime = if ($quarantined) { $quarantined.Replace("\", "/") } else { $null }; mutated = $true } | ConvertTo-Json -Depth 30
     exit 0
 } catch {
     $primaryError = $_.Exception.Message

@@ -17,6 +17,7 @@ from .analysis import (
     DiagnosticMarker,
     analyze_monitor_windows,
 )
+from stm32_toolkit import __version__
 from .analysis_workflows import (
     ANALYSIS_WORKFLOW_INVALID,
     ENVIRONMENT_FAILURE,
@@ -52,8 +53,6 @@ from .replay import (
     publish_physical_monitor_run,
 )
 
-
-__version__ = "0.5.0"
 
 __all__ = [
     "MONITOR_PROTOCOL_VERSION",

@@ -69,6 +69,36 @@ def test_doctor_reports_missing_planned_tools_without_mutating(monkeypatch, tmp_
     assert not any(tmp_path.iterdir())
 
 
+def test_doctor_reports_closed_runtime_and_public_inventory(monkeypatch, tmp_path: Path):
+    monkeypatch.setattr(
+        "stm32_toolkit.doctor.importlib.metadata.version", lambda name: "0.9.0"
+    )
+    result = run_doctor(tmp_path)
+    runtime = result.data["runtime"]
+    assert runtime == {
+        "requiredPython": ">=3.12,<3.13",
+        "pythonVersion": ".".join(str(part) for part in sys.version_info[:3]),
+        "pythonSupported": sys.version_info[:2] == (3, 12),
+        "toolkitVersion": "0.9.0",
+        "monitorVersion": "0.9.0",
+        "versionsCompatible": True,
+    }
+    assert len(result.data["publicInventory"]["mcpTools"]) == 48
+    assert len(result.data["publicInventory"]["skills"]) == 8
+
+
+def test_doctor_reports_missing_monitor_metadata_without_fabrication(
+    monkeypatch, tmp_path: Path
+):
+    def missing(_name: str) -> str:
+        raise importlib.metadata.PackageNotFoundError
+
+    monkeypatch.setattr("stm32_toolkit.doctor.importlib.metadata.version", missing)
+    runtime = run_doctor(tmp_path).data["runtime"]
+    assert runtime["monitorVersion"] is None
+    assert runtime["versionsCompatible"] is False
+
+
 def test_doctor_reports_probe_core_dependencies_without_starting_or_writing(
     monkeypatch, tmp_path: Path
 ):

@@ -1,14 +1,14 @@
 @echo off
 setlocal
 
-if not defined CLAUDE_PLUGIN_DATA (
-  >&2 echo stm32-monitor: CLAUDE_PLUGIN_DATA is not set. Run /stm32-toolkit:setup-stm32-env, then retry.
+if not defined STM32_TOOLKIT_DATA_ROOT (
+  >&2 echo stm32-monitor: STM32_TOOLKIT_DATA_ROOT is not set. Run the generic runtime Check, then retry.
   exit /b 2
 )
 
-set "STM32_MONITOR_RUNTIME=%CLAUDE_PLUGIN_DATA%\runtime\0.5.0\Scripts\python.exe"
+set "STM32_MONITOR_RUNTIME=%STM32_TOOLKIT_DATA_ROOT%\runtime\0.9.0\Scripts\python.exe"
 if not exist "%STM32_MONITOR_RUNTIME%" (
-  >&2 echo stm32-monitor: runtime/0.5.0/Scripts/python.exe is missing under CLAUDE_PLUGIN_DATA. Run /stm32-toolkit:setup-stm32-env, then retry.
+  >&2 echo stm32-monitor: runtime/0.9.0/Scripts/python.exe is missing under STM32_TOOLKIT_DATA_ROOT.
   exit /b 2
 )
 

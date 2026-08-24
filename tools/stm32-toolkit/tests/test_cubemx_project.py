@@ -81,7 +81,7 @@ def _seed_managed_manifest(root: Path) -> None:
             {
                 "schemaVersion": 1,
                 "tool": "stm32-toolkit",
-                "toolVersion": "0.5.0",
+                "toolVersion": "0.9.0",
                 "templateVersion": 1,
                 "projectManifestSha256": "0" * 64,
                 "files": [
@@ -189,7 +189,7 @@ def test_native_parser_extracts_literal_nested_cubemx_cmake_and_toolchain_facts(
             {
                 "schemaVersion": 1,
                 "tool": "stm32-toolkit",
-                "toolVersion": "0.5.0",
+                "toolVersion": "0.9.0",
                 "templateVersion": 1,
                 "projectManifestSha256": "0" * 64,
                 "files": [

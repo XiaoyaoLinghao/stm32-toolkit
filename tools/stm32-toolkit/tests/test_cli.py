@@ -16,8 +16,39 @@ def test_version_command_writes_only_the_package_version(capsys):
     assert main(["version"]) == 0
 
     captured = capsys.readouterr()
-    assert captured.out == "0.5.0\n"
+    assert captured.out == "0.9.0\n"
     assert captured.err == ""
+
+
+def test_doctor_without_explicit_project_root_fails_before_workflow(monkeypatch, capsys):
+    called = False
+
+    def unexpected(*_args, **_kwargs):
+        nonlocal called
+        called = True
+        raise AssertionError("workflow must not run")
+
+    monkeypatch.setattr("stm32_toolkit.cli._operation_result", unexpected)
+    assert main(["doctor", "--json"]) == 2
+    assert called is False
+    assert capsys.readouterr().err == "stm32-toolkit: invalid arguments\n"
+
+
+def test_project_detect_without_explicit_root_never_uses_current_directory(
+    monkeypatch, capsys
+):
+    with monkeypatch.context() as context:
+        context.setattr(
+            "stm32_toolkit.cli.Path.cwd",
+            lambda: (_ for _ in ()).throw(AssertionError("cwd fallback")),
+        )
+        assert main(["project", "detect", "--json"]) == 2
+    assert capsys.readouterr().err == "stm32-toolkit: invalid arguments\n"
+
+
+def test_version_is_the_only_root_free_command(capsys):
+    assert main(["version"]) == 0
+    assert capsys.readouterr().out == "0.9.0\n"
 
 
 def test_detect_command_emits_a_json_result_envelope(tmp_path: Path, capsys):
@@ -653,7 +684,7 @@ def test_package_lazy_attributes_and_unknown_attribute_error() -> None:
     import stm32_toolkit
     from stm32_toolkit import MonitorObservationRequest, open_monitor_observation
 
-    assert stm32_toolkit.__version__ == "0.5.0"
+    assert stm32_toolkit.__version__ == "0.9.0"
     assert callable(MonitorObservationRequest)
     assert callable(open_monitor_observation)
     # The lazily imported attribute is cached on the package.

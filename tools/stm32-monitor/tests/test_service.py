@@ -346,8 +346,8 @@ def test_service_binds_dynamic_ipv4_loopback_and_status_is_authenticated() -> No
             "details",
         }
         assert payload["protocol"] == "stm32-toolkit-monitor/1"
-        assert payload["monitorVersion"] == "0.5.0"
-        assert endpoint.monitor_version == "0.5.0"
+        assert payload["monitorVersion"] == "0.9.0"
+        assert endpoint.monitor_version == "0.9.0"
         assert payload["data"]["operation"] == "monitor.status"
         assert runtime.calls[0][0] == "monitor.status"
 

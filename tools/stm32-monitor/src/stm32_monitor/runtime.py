@@ -21,7 +21,7 @@ from stm32_toolkit import __version__ as TOOLKIT_VERSION
 from stm32_toolkit.paths import WorkspacePaths
 from stm32_toolkit.project_model import load_project_model
 
-from .service import MONITOR_PROTOCOL_VERSION, MonitorEndpoint, MonitorService
+from .service import MONITOR_PROTOCOL_VERSION, MONITOR_VERSION, MonitorEndpoint, MonitorService
 
 _LIVE_END = object()
 _REPLAY_EVENTS = 256
@@ -507,7 +507,7 @@ class MonitorRuntime:
                 or not 1 <= port <= 65_535
                 or getattr(endpoint, "workspace_id", None) != paths.workspace_id
                 or getattr(endpoint, "session_id", None) != paths.session_id
-                or getattr(endpoint, "monitor_version", None) != "0.5.0"
+                or getattr(endpoint, "monitor_version", None) != MONITOR_VERSION
             ):
                 raise ValueError("invalid endpoint")
             record = paths.session_root / "monitor-runtime.json"
@@ -516,7 +516,7 @@ class MonitorRuntime:
                 {
                     "protocol": MONITOR_PROTOCOL_VERSION,
                     "toolkitVersion": TOOLKIT_VERSION,
-                    "monitorVersion": "0.5.0",
+                    "monitorVersion": MONITOR_VERSION,
                     "host": "127.0.0.1",
                     "port": port,
                     "pid": os.getpid(),
@@ -607,7 +607,7 @@ class MonitorRuntime:
             {
                 "protocol": MONITOR_PROTOCOL_VERSION,
                 "toolkitVersion": TOOLKIT_VERSION,
-                "monitorVersion": "0.5.0",
+                "monitorVersion": MONITOR_VERSION,
                 "stateRevision": self._state_revision,
             },
         )
