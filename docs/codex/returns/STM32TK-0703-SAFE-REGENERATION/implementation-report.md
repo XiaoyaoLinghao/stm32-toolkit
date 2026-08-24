@@ -37,8 +37,8 @@ passed 29 with one Windows symlink-specific test skipped. For review round 2,
 the focused deletion RED run collected 31 tests and failed the one new
 missing-Toolkit precedence case; its GREEN run passed 30 with the same one
 platform skip, producing `C:\tmp\p0703-luna-green-r2.xml`. The exact approved
-slice passed `699 passed, 1 skipped` with zero failures and zero errors,
-producing `C:\tmp\p0703-luna-slice-r2.xml`. The skipped check is recorded as
+slice contained 699 tests: `698 passed, 1 skipped` with zero failures and zero
+errors, producing `C:\tmp\p0703-luna-slice-r2.xml`. The skipped check is recorded as
 deferred platform evidence, not as a physical pass.
 
 The exact slice was:

@@ -71,8 +71,8 @@ verdict will be appended here without deleting this reconstructed baseline.
   preservation, configure, Debug, Release, atomic activation, and
   single-use authorization were exercised by the focused tests and the fresh
   native software scenario.
-- The exact approved slice passed `699 passed, 1 skipped`; the skipped test was
-  the Windows symlink-creation probe because this host refused symlink
+- The exact approved slice contained 699 tests: `698 passed, 1 skipped`; the
+  skipped test was the Windows symlink-creation probe because this host refused symlink
   creation, and it remains deferred platform evidence rather than a physical
   pass. `compileall` and accepted-base-to-CodeHead `git diff --check` passed.
 - Review-round GREEN focused coverage passed 29 tests with one skipped Windows
@@ -87,8 +87,8 @@ verdict will be appended here without deleting this reconstructed baseline.
   `REGENERATION_STATE_CHANGED` and `REGENERATION_TOOLKIT_DRIFT`. The minimal
   fix excludes Toolkit-owned paths from the missing/type CubeMX branch, so the
   focused round-2 GREEN run passed 30 with one skipped test and the exact slice
-  passed 699 with one skipped. The correction is product commit
-  `b01ece4e11c5db051f1ddbdd569195d9e47c811b`.
+  contained 699 tests: 698 passed and one skipped. The correction is product
+  commit `b01ece4e11c5db051f1ddbdd569195d9e47c811b`.
 - Fresh r3 native evidence used the installed CubeMX 6.18.1-RC2, CubeCLT
   1.22.0, and F4 V1.28.3 package. The copied prior owned IOC was changed from
   `ProjectManager.HeapSize=0x200` to `0x300`; plan/prepare/apply returned `OK`;
@@ -112,9 +112,9 @@ verdict will be appended here without deleting this reconstructed baseline.
   `C:/tmp/stm32tk-0703-sol-final-review-4f83dbf`. The diff contains 15 files,
   3,496 insertions, and one deletion. No unresolved product defect remained
   after the two recorded revision rounds.
-- The exact approved 17-file slice independently passed `699 passed, 1
-  skipped`, with zero failures and zero errors in 430.757 seconds. The skip is
-  the host-refused Windows symlink probe and remains deferred platform
+- The exact approved 17-file slice independently contained 699 tests: `698
+  passed, 1 skipped`, with zero failures and zero errors in 430.757 seconds.
+  The skip is the host-refused Windows symlink probe and remains deferred platform
   evidence. Python 3.12 `compileall` and accepted-base-to-final-head `git diff
   --check` passed.
 - Independent adversarial probes passed: tampered authorization peek/consume
