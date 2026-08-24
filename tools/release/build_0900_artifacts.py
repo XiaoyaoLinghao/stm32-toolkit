@@ -874,6 +874,11 @@ def _build(args: argparse.Namespace) -> dict[str, Any]:
         source_files = _zip_members(source_archive)
         bundle_files = dict(source_files)
         bundle_files.update(release_files)
+        # The extracted ToolkitRoot is the pinned source prefix.  Keep the
+        # release authority below that same root so setup can consume one
+        # explicit directory without following a sibling or ambient path.
+        for name, data in release_files.items():
+            bundle_files[f"stm32-toolkit-{VERSION}/{name}"] = data
         bundle_data = io.BytesIO()
         with tempfile.TemporaryDirectory(prefix="stm32tk-bundle-") as bundle_temp:
             bundle_path = Path(bundle_temp) / "bundle.zip"

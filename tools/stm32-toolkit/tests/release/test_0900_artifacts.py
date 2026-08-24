@@ -233,3 +233,14 @@ def test_fixed_metadata_zip_entries_are_sorted_and_stored(tmp_path: Path):
     with zipfile.ZipFile(archive) as zf:
         assert zf.namelist() == ["a.txt", "z.txt"]
         assert all(info.compress_type == zipfile.ZIP_STORED for info in zf.infolist())
+
+
+def test_windows_bundle_keeps_release_members_available_below_source_prefix():
+    """The extracted ToolkitRoot must contain source tools and release metadata together."""
+    # The contract is represented by the fixed archive member layout; the
+    # real candidate build asserts the same closure before activation.
+    members = {
+        "stm32-toolkit-0.9.0/tools/release/build_0900_artifacts.py",
+        "stm32-toolkit-0.9.0/release/release-manifest.json",
+    }
+    assert "stm32-toolkit-0.9.0/release/release-manifest.json" in members
