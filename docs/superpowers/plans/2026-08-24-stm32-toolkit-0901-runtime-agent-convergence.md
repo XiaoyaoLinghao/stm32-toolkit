@@ -813,31 +813,39 @@ The independent complete-diff review of returned head
 Luna/max implementer owns this bounded correction round. The frozen specification already defines
 the behavior; this section corrects plan omissions and does not add a product subsystem.
 
-- [ ] **Root cardinality and value safety:** add RED tests showing that CLI workflow, hardware,
+- [x] **Root cardinality and value safety:** add RED tests showing that CLI workflow, hardware,
   testing, and diagnostic parsers reject a global plus command-local project root, and that CLI
   empty, unresolved-token, relative, or redirected project roots fail before workflow invocation.
   Add MCP parser tests proving duplicate project/data roots fail rather than last-value-wins.
   Implement one shared CLI project-root argument action/type across every existing root helper and
   the equivalent bounded MCP parser guard. Preserve current aliases and all workflow behavior.
-- [ ] **Managed-runtime health evidence:** make both Check and pre-promotion validation require the
+- [x] **Managed-runtime health evidence:** make both Check and pre-promotion validation require the
   exact doctor runtime contract (`requiredPython`, `pythonSupported`, Toolkit/Monitor versions and
   compatibility) plus the exact 48 MCP and eight Skill inventories. Missing, false, malformed, or
   mismatched fields make the runtime broken or abort promotion before mutation. Update the setup
   fake package to emit the complete contract and add a negative test for an `ok=true` doctor with
   unsupported/missing runtime evidence.
-- [ ] **Independent inventory oracle:** keep the production `MCP_TOOL_NAMES` map, but make
+- [x] **Independent inventory oracle:** keep the production `MCP_TOOL_NAMES` map, but make
   `test_public_inventory.py` contain an independent frozen expected mapping/set copied from the
   specification. Assert the production map and actual server registrations separately against
   that oracle so one typo in the production map cannot update both sides of the test.
-- [ ] **Monitor/UI identity closure:** align the two root versions in `package-lock.json` and the
+- [x] **Monitor/UI identity closure:** align the two root versions in `package-lock.json` and the
   current fake-runtime/bootstrap/main fixtures to `0.9.0`. Extend the Python public-inventory test
   to parse/check these files without introducing a browser or Node release matrix.
-- [ ] **Executable documentation:** change both bilingual build examples to the existing
+- [x] **Executable documentation:** change both bilingual build examples to the existing
   `--preset arm-debug` value and assert that exact example in the focused documentation test.
-- [ ] **Evidence reconciliation:** run the focused CLI/MCP/public-inventory/doctor/plugin/setup and
+- [x] **Evidence reconciliation:** run the focused CLI/MCP/public-inventory/doctor/plugin/setup and
   Monitor package/protocol/runtime tests affected by these fixes in an installed CPython 3.12
   environment so isolated fake-CMake children can import the returned candidate. Use package-split
   pytest commands or `--import-mode=importlib` to avoid the two `test_cli.py` basename collision.
   Re-run the fresh local wheel/runtime smoke only if product/package bytes changed, clean every
   new run root, append the correction evidence to both reports/ledger, and commit locally. Do not
   start VS09-B or perform remote/hardware actions.
+
+Sol independently re-reviewed `591a71242bfbcbd29433634cae4cd433fe9e9725..8c57f0ecf6b812ddaba9f19cedf394d3fbe50edc`
+and the complete accepted-base range
+`9a5a132b74638a39b346848cfad0eeb7db9a0539..8c57f0ecf6b812ddaba9f19cedf394d3fbe50edc`
+in a clean detached worktree. All five findings are addressed, the risk-triggered checks and one
+fresh installed-wheel smoke pass, and the VS09-A verdict is `ACCEPTED`. The detailed independent
+evidence is in
+`docs/codex/returns/STM32TK-0901-RUNTIME-AGENT-CONVERGENCE/review-report.md`.
