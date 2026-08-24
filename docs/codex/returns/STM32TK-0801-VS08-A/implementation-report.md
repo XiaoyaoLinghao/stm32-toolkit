@@ -356,3 +356,28 @@ Product/tests CodeHead is `da0078c949ad17676aebd5fd1ec9fd763fb55cc8`; the report
 separately and intentionally does not record that later report commit SHA. The branch is clean,
 local, unpushed, and has no upstream. No installation, credentials, hardware, push, PR mutation,
 merge, tag, release, close, remote deletion, or physical PASS action occurred.
+
+## Independent GPT-5.6-sol acceptance
+
+- Verdict: `ACCEPTED`.
+- Complete review range: accepted base
+  `8f7bcb5c860998bc8459c7b33690d9a297319a6c` through returned report head
+  `2a92b49c5bc9810321d2142fde6edc4886cec9b6`, inspected in the clean detached worktree
+  `C:/tmp/stm32tk-0801-vs08a-sol-review-2a92b49`.
+- Accepted product/tests CodeHead:
+  `da0078c949ad17676aebd5fd1ec9fd763fb55cc8`.
+- Independent ABI probe confirmed the real Diagnostic mappings:
+  `INCOMPATIBLE_IDENTITY -> ACCEPTANCE_IDENTITY_MISMATCH`,
+  `DIAGNOSTIC_EVIDENCE_MISSING -> ACCEPTANCE_REFERENCE_INVALID`, and
+  `EVIDENCE_INTEGRITY_FAILURE -> ACCEPTANCE_EVIDENCE_INTEGRITY_FAILED`.
+- Independent focused VS08-A matrix passed at final head with no failure/error output.
+- Independent required 14-file affected matrix passed at final head with no failures/errors and
+  one pre-existing platform-only skip; the skip is not physical PASS evidence.
+- Independent Python 3.12 `compileall`, accepted-base-to-head `git diff --check`, complete 16-file
+  diff inspection, and prohibited-surface scan passed.
+- The two review rounds resolved advancing-clock idempotency, the undefined Evidence error
+  constant, exact missing/corrupt/identity error semantics, envelope/root publication
+  classification, and real-reader coverage. No unresolved product defect remains in VS08-A.
+- The implementation branch was clean, local, unpushed, without upstream, and absent from all
+  remote-tracking branches at acceptance. No hardware, install, push, PR, merge, tag, release,
+  close, or remote deletion action was performed.
