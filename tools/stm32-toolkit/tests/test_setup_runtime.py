@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import shutil
 import subprocess
@@ -228,6 +229,7 @@ def test_bootstrap_rejects_ok_doctor_without_exact_runtime_inventory_before_prom
     wheelhouse.mkdir()
     _write_test_build_backend(wheelhouse, complete_doctor=False)
     _write_fake_monitor_package(plugin_root)
+    _write_fake_release_bundle(plugin_root, wheelhouse, complete_doctor=False)
     (package / "pyproject.toml").write_text(
         "[build-system]\nrequires = ['test-build-backend==1.0']\n"
         "build-backend = 'test_backend'\n",
@@ -332,6 +334,7 @@ def test_existing_0_3_runtime_requires_repair_and_is_quarantined_before_0_9_prom
     wheelhouse.mkdir()
     _write_test_build_backend(wheelhouse)
     _write_fake_monitor_package(plugin_root)
+    _write_fake_release_bundle(plugin_root, wheelhouse)
     (package / "pyproject.toml").write_text(
         "[build-system]\nrequires = ['test-build-backend==1.0']\n"
         "build-backend = 'test_backend'\n",
@@ -416,6 +419,7 @@ def test_bootstrap_and_repair_are_staged_versioned_and_project_read_only(tmp_pat
     wheelhouse.mkdir()
     _write_test_build_backend(wheelhouse)
     _write_fake_monitor_package(plugin_root)
+    _write_fake_release_bundle(plugin_root, wheelhouse)
     (package / "pyproject.toml").write_text(
         "[build-system]\nrequires = ['test-build-backend==1.0']\nbuild-backend = 'test_backend'\n",
         encoding="utf-8",
@@ -511,6 +515,7 @@ def test_bootstrap_installs_declared_build_requirements_in_fresh_venv(tmp_path: 
     wheelhouse.mkdir()
     _write_test_build_backend(wheelhouse)
     _write_fake_monitor_package(plugin_root)
+    _write_fake_release_bundle(plugin_root, wheelhouse)
     (package / "pyproject.toml").write_text(
         "[build-system]\n"
         "requires = ['test-build-backend==1.0']\n"
@@ -554,6 +559,7 @@ def test_bootstrap_ignores_hostile_python_path_and_home(tmp_path: Path):
     wheelhouse.mkdir()
     _write_test_build_backend(wheelhouse)
     _write_fake_monitor_package(plugin_root)
+    _write_fake_release_bundle(plugin_root, wheelhouse)
     (package / "pyproject.toml").write_text(
         "[build-system]\nrequires = ['test-build-backend==1.0']\nbuild-backend = 'test_backend'\n",
         encoding="utf-8",
@@ -609,6 +615,7 @@ def test_healthy_check_preserves_drive_root_argument_and_following_doctor_args(t
     wheelhouse.mkdir()
     _write_test_build_backend(wheelhouse)
     _write_fake_monitor_package(plugin_root)
+    _write_fake_release_bundle(plugin_root, wheelhouse)
     (package / "pyproject.toml").write_text(
         "[build-system]\nrequires = ['test-build-backend==1.0']\nbuild-backend = 'test_backend'\n",
         encoding="utf-8",
@@ -655,6 +662,80 @@ def test_check_rejects_redirected_plugin_data_ancestor(tmp_path: Path):
     assert result.returncode != 0
     assert "redirect" in result.stderr.lower() or "reparse" in result.stderr.lower()
     assert not (plugin_data_target / "runtime").exists()
+
+
+def test_check_reports_missing_release_bundle_and_runtime_state(tmp_path: Path):
+    project = tmp_path / "project"
+    project.mkdir()
+    plugin_root = tmp_path / "plugin"
+    (plugin_root / "tools" / "stm32-toolkit").mkdir(parents=True)
+    (plugin_root / "tools" / "stm32-monitor").mkdir(parents=True)
+    data = tmp_path / "data"
+
+    result = _run_helper("Check", plugin_root, data, project)
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["bundle"]["status"] == "missing"
+    assert payload["runtimeState"]["status"] == "missing"
+    assert payload["mutated"] is False
+    assert not (data / "runtime" / "runtime-state.json").exists()
+
+
+def test_bootstrap_rejects_missing_bundle_before_creating_staging(tmp_path: Path):
+    project = tmp_path / "project"
+    project.mkdir()
+    plugin_root = tmp_path / "plugin"
+    (plugin_root / "tools" / "stm32-toolkit").mkdir(parents=True)
+    (plugin_root / "tools" / "stm32-monitor").mkdir(parents=True)
+    data = tmp_path / "data"
+    fake_bin = tmp_path / "fake-bin"
+    fake_bin.mkdir()
+    (fake_bin / "py.cmd").write_text(
+        '@echo off\r\necho {"version":"3.12.10","supported":true}\r\nexit /b 0\r\n',
+        encoding="utf-8",
+    )
+    environment = _clean_environment()
+    environment["PATH"] = os.pathsep.join(
+        [str(fake_bin), str(Path(os.environ["SystemRoot"]) / "System32")]
+    )
+
+    result = _run_helper("Bootstrap", plugin_root, data, project, environment=environment)
+
+    assert result.returncode == 2
+    assert "bundle" in result.stderr.lower()
+    assert not (data / "runtime" / ".staging").exists()
+
+
+def test_bootstrap_rejects_invalid_bundle_hash_before_creating_staging(tmp_path: Path):
+    project = tmp_path / "project"
+    project.mkdir()
+    plugin_root = tmp_path / "plugin"
+    release = plugin_root / "release" / "wheels"
+    release.mkdir(parents=True)
+    (plugin_root / "tools" / "stm32-toolkit").mkdir(parents=True)
+    (plugin_root / "tools" / "stm32-monitor").mkdir(parents=True)
+    (release / "example-1.0.0-py3-none-any.whl").write_bytes(b"not-a-wheel")
+    (plugin_root / "release" / "release-manifest.json").write_text(
+        json.dumps({"schema": "stm32-toolkit-release/1"}) + "\n", encoding="utf-8"
+    )
+    data = tmp_path / "data"
+    fake_bin = tmp_path / "fake-bin"
+    fake_bin.mkdir()
+    (fake_bin / "py.cmd").write_text(
+        '@echo off\r\necho {"version":"3.12.10","supported":true}\r\nexit /b 0\r\n',
+        encoding="utf-8",
+    )
+    environment = _clean_environment()
+    environment["PATH"] = os.pathsep.join(
+        [str(fake_bin), str(Path(os.environ["SystemRoot"]) / "System32")]
+    )
+
+    result = _run_helper("Bootstrap", plugin_root, data, project, environment=environment)
+
+    assert result.returncode == 2
+    assert "bundle" in result.stderr.lower()
+    assert not (data / "runtime" / ".staging").exists()
 
 def test_setup_contract_uses_namespaced_skill_and_ignores_coverage_data():
     launcher = (REPO_ROOT / "bin" / "stm32-toolkit-mcp.cmd").read_text(encoding="utf-8")
@@ -758,6 +839,87 @@ def build_wheel(wheel_directory, config_settings=None, metadata_directory=None):
             "Wheel-Version: 1.0\nGenerator: tests\nRoot-Is-Purelib: true\nTag: py3-none-any\n",
         )
         archive.writestr("pyocd-0.45.1.dist-info/RECORD", "")
+
+
+def _write_fake_release_bundle(plugin_root: Path, wheelhouse: Path, *, complete_doctor: bool = True) -> None:
+    """Create a complete local release tree for setup lifecycle tests."""
+    release = plugin_root / "release"
+    wheels = release / "wheels"
+    wheels.mkdir(parents=True, exist_ok=True)
+    utility = plugin_root / "tools" / "release" / "build_0900_artifacts.py"
+    utility.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(REPO_ROOT / "tools" / "release" / "build_0900_artifacts.py", utility)
+
+    def write_wheel(path: Path, files: dict[str, bytes]) -> None:
+        records = []
+        for name, content in files.items():
+            if name.endswith("/RECORD"):
+                continue
+            digest = hashlib.sha256(content).digest()
+            import base64
+
+            records.append(
+                f"{name},sha256={base64.urlsafe_b64encode(digest).rstrip(b'=').decode()},{len(content)}"
+            )
+        record_name = next(name for name in files if name.endswith(".dist-info/RECORD"))
+        files = dict(files)
+        files[record_name] = ("\n".join(records + [f"{record_name},,"]) + "\n").encode()
+        with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_STORED) as archive:
+            for name, content in sorted(files.items()):
+                archive.writestr(name, content)
+
+    toolkit_name = "stm32_toolkit-0.9.0-py3-none-any.whl"
+    toolkit_dist = "stm32_toolkit-0.9.0.dist-info"
+    toolkit_files = {
+        "stm32_toolkit/__init__.py": b"__version__ = '0.9.0'\n",
+        "stm32_toolkit/cli.py": (_fake_toolkit_cli_source() if complete_doctor else _fake_incomplete_toolkit_cli_source()).encode(),
+        f"{toolkit_dist}/METADATA": b"Metadata-Version: 2.3\nName: stm32-toolkit\nVersion: 0.9.0\nRequires-Dist: pyocd==0.45.1\nLicense-Expression: MIT\n",
+        f"{toolkit_dist}/WHEEL": b"Wheel-Version: 1.0\nRoot-Is-Purelib: true\nTag: py3-none-any\n",
+        f"{toolkit_dist}/RECORD": b"",
+    }
+    write_wheel(wheels / toolkit_name, toolkit_files)
+
+    monitor_name = "stm32_monitor-0.9.0-py3-none-any.whl"
+    monitor_dist = "stm32_monitor-0.9.0.dist-info"
+    monitor_files = {
+        "stm32_monitor/__init__.py": b"__version__ = '0.9.0'\n",
+        "stm32_monitor/ui_dist/index.html": b"<div id='app'></div>\n",
+        "stm32_monitor/ui_dist/.vite/manifest.json": b'{"index.html":{"file":"assets/app-aaaaaaaa.js","css":[]}}\n',
+        "stm32_monitor/ui_dist/assets/app-aaaaaaaa.js": b"export {}\n",
+        f"{monitor_dist}/METADATA": b"Metadata-Version: 2.3\nName: stm32-monitor\nVersion: 0.9.0\nRequires-Dist: stm32-toolkit==0.9.0\nLicense-Expression: MIT\n",
+        f"{monitor_dist}/WHEEL": b"Wheel-Version: 1.0\nRoot-Is-Purelib: true\nTag: py3-none-any\n",
+        f"{monitor_dist}/RECORD": b"",
+    }
+    write_wheel(wheels / monitor_name, monitor_files)
+    pyocd_source = wheelhouse / "pyocd-0.45.1-py3-none-any.whl"
+    if pyocd_source.is_file():
+        shutil.copy2(pyocd_source, wheels / pyocd_source.name)
+    source = plugin_root / "source.zip"
+    with zipfile.ZipFile(source, "w", compression=zipfile.ZIP_STORED) as archive:
+        archive.writestr("source.txt", "fixture")
+
+    def digest(path: Path) -> str:
+        return hashlib.sha256(path.read_bytes()).hexdigest()
+
+    wheel_entries = []
+    for name, dist in ((toolkit_name, "stm32-toolkit"), (monitor_name, "stm32-monitor")):
+        path = wheels / name
+        wheel_entries.append({"name": dist, "version": "0.9.0", "file": f"release/wheels/{name}", "sha256": digest(path), "size": path.stat().st_size, "direct": True, "license": "MIT"})
+    pyocd_path = wheels / "pyocd-0.45.1-py3-none-any.whl"
+    if pyocd_path.is_file():
+        wheel_entries.append({"name": "pyocd", "version": "0.45.1", "file": "release/wheels/pyocd-0.45.1-py3-none-any.whl", "sha256": digest(pyocd_path), "size": pyocd_path.stat().st_size, "direct": False, "license": "MIT"})
+    manifest = {
+        "schema": "stm32-toolkit-release/1",
+        "productVersion": "0.9.0",
+        "requiredPython": ">=3.12,<3.13",
+        "platform": {"os": "windows", "architecture": "x86_64", "python": "cp312"},
+        "source": {"repository": "https://github.com/XiaoyaoLinghao/stm32-toolkit.git", "commit": "a" * 40, "archive": "source.zip", "sha256": digest(source)},
+        "runtimeStateSchema": "stm32-toolkit-runtime-state/1",
+        "wheels": wheel_entries,
+        "artifacts": [],
+        "publicInventory": {"mcpTools": 48, "skills": 8},
+    }
+    (release / "release-manifest.json").write_text(json.dumps(manifest, sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8")
 
 
 def _write_fake_monitor_package(plugin_root: Path) -> None:

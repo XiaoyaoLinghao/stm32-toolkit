@@ -145,7 +145,7 @@ def test_package_dependency_contract_uses_only_toolkit_and_aiohttp() -> None:
     ]
     assert dependencies == [
         "stm32-toolkit==0.9.0",
-        "aiohttp>=3.9,<4",
+        "aiohttp==3.14.3",
     ]
     lowered = text.casefold()
     assert not any(name in lowered for name in ("pyocd", "cmsis-svd", "pyyaml"))

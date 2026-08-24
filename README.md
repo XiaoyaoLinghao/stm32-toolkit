@@ -6,13 +6,17 @@ STM32 Toolkit is a local, Agent-neutral STM32 development control plane. The CLI
 share one product contract for project identity, Keil-to-GCC migration, builds, probe workflows,
 Monitor, tests, and evidence-driven diagnosis. Claude Code is a thin adapter to that contract.
 
-## VS09-A status and runtime boundary
+## VS09-B local candidate and runtime boundary
 
-This repository contains a local 0.9.0 VS09-A candidate. It has not been pushed, tagged, or
-released. The release contract is CPython `>=3.12,<3.13`; the managed interpreter is selected only
-from `DATA_ROOT/runtime/0.9.0/Scripts/python.exe`. A system interpreter is never an MCP fallback.
-The setup helper's CHECK mode is read-only. Bootstrap and Repair require explicit authorization,
-stage locally, validate the Toolkit and Monitor packages, and promote only after validation.
+This repository contains a local 0.9.0 VS09-B candidate. It has not been pushed, tagged, published,
+or released. The official source is
+`https://github.com/XiaoyaoLinghao/stm32-toolkit.git`; candidate builds bind one full 40-hex Git
+CodeHead and a closed Windows CPython 3.12 wheelhouse. The release contract is CPython `>=3.12,<3.13`; the managed interpreter is selected only from
+`DATA_ROOT/runtime/0.9.0/Scripts/python.exe`. A system interpreter is never an MCP fallback. The
+setup helper's CHECK mode is read-only. Bootstrap and Repair require explicit authorization,
+verify the extracted offline bundle, stage locally, validate the Toolkit/Monitor packages, run
+`pip check`, and promote only after validation.
+The accepted local 0.9.0 VS09-A candidate is the runtime and inventory base for this VS09-B slice.
 
 The current runtime is generic: an integration may choose any absolute `TOOLKIT_ROOT`,
 `DATA_ROOT`, and `PROJECT_ROOT`. The launcher reads only `STM32_TOOLKIT_DATA_ROOT`; the CLI requires
@@ -59,6 +63,32 @@ does not mutate the project. The generic invocation is:
 ```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File '${CLAUDE_PLUGIN_ROOT}/bin/setup-stm32-env.ps1' -Mode Check -ToolkitRoot '${CLAUDE_PLUGIN_ROOT}' -DataRoot '${CLAUDE_PLUGIN_DATA}' -ProjectRoot '${CLAUDE_PROJECT_DIR}'
 ```
+
+### Offline candidate build and install
+
+From a clean checkout at the pinned CodeHead, a release owner may assemble a disposable local
+candidate with the exact Windows CPython 3.12 wheelhouse. The utility never resolves from an index,
+uses only executable-plus-argument subprocesses, and does not push or publish:
+
+```powershell
+py -3.12 tools/release/build_0900_artifacts.py build `
+  --repo-root C:\src\stm32-toolkit `
+  --code-head <40-lowercase-hex-commit> `
+  --wheelhouse C:\tmp\p0902-wheelhouse `
+  --output-root C:\tmp\p0902-candidate
+```
+
+Verify `CHECKSUMS.sha256` before extracting `stm32-toolkit-0.9.0-windows-x86_64.zip`. Point the
+generic setup command at the extracted `ToolkitRoot`, explicit `DataRoot`, and explicit
+`ProjectRoot`. CHECK reports bundle and `runtime-state.json` evidence; Bootstrap and Repair install
+only the manifest-listed wheels from the extracted `release/wheels/` directory with `--no-index`
+and `--no-deps`. Legacy 0.3.0/0.5.0 runtimes are quarantined during authorized Repair. A recorded
+higher installed version returns `downgrade-refused`; a same-version different manifest/source
+returns `source-conflict`; unsupported future state is never rewritten. Project and Monitor data
+remain owned by their existing explicit transactions.
+
+The candidate is Windows x86_64 only, contains the deterministic source/archive/SBOM/license/
+compatibility/troubleshooting material, and has no hardware or remote-release acceptance claim.
 
 `.stm32-project.json` is the version-controlled project configuration. Machine-owned state lives
 under `${CLAUDE_PLUGIN_DATA}/projects/<workspaceId>` (or the equivalent generic `DATA_ROOT`), so
@@ -141,9 +171,9 @@ remain operator actions.
 ## VS09-B boundary
 
 VS09-B owns pinned-source installation, secure upgrade and downgrade, malicious-name tests,
-checksums, archives, SBOM, licenses, compatibility, and troubleshooting. Those controls are not
-claimed as completed release evidence by this local VS09-A candidate. Hardware, remote, PR, merge,
-tag, and release actions are likewise outside this candidate.
+checksums, archives, SBOM, licenses, compatibility, and troubleshooting. The local candidate is
+reproducible and auditable, but no remote release, PR, merge, tag, upload, signing, or hardware
+action is performed by this repository.
 
 Historical 0.5 evidence remains in its labelled release-controller and replay fixtures. It is
 preserved as history, not presented as the current runtime or inventory.

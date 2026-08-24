@@ -1,0 +1,56 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/XiaoyaoLinghao/stm32-toolkit/schemas/stm32-release.schema.json",
+  "title": "STM32 Toolkit 0.9 release manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "productVersion", "requiredPython", "platform", "source", "runtimeStateSchema", "wheels", "artifacts", "publicInventory"],
+  "properties": {
+    "schema": {"const": "stm32-toolkit-release/1"},
+    "productVersion": {"const": "0.9.0"},
+    "requiredPython": {"const": ">=3.12,<3.13"},
+    "platform": {
+      "type": "object", "additionalProperties": false,
+      "required": ["os", "architecture", "python"],
+      "properties": {"os": {"const": "windows"}, "architecture": {"const": "x86_64"}, "python": {"const": "cp312"}}
+    },
+    "source": {
+      "type": "object", "additionalProperties": false,
+      "required": ["repository", "commit", "archive", "sha256"],
+      "properties": {
+        "repository": {"const": "https://github.com/XiaoyaoLinghao/stm32-toolkit.git"},
+        "commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+        "archive": {"type": "string"},
+        "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      }
+    },
+    "runtimeStateSchema": {"const": "stm32-toolkit-runtime-state/1"},
+    "wheels": {"type": "array", "items": {"$ref": "#/$defs/wheel"}},
+    "artifacts": {"type": "array", "items": {"$ref": "#/$defs/artifact"}},
+    "publicInventory": {
+      "type": "object", "additionalProperties": false,
+      "required": ["mcpTools", "skills"],
+      "properties": {"mcpTools": {"const": 48}, "skills": {"const": 8}}
+    }
+  },
+  "$defs": {
+    "wheel": {
+      "type": "object", "additionalProperties": false,
+      "required": ["name", "version", "file", "sha256", "size", "direct", "license"],
+      "properties": {
+        "name": {"type": "string"}, "version": {"type": "string"}, "file": {"type": "string"},
+        "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}, "size": {"type": "integer", "minimum": 1},
+        "direct": {"type": "boolean"}, "license": {"type": "string"}
+      }
+    },
+    "artifact": {
+      "type": "object", "additionalProperties": false,
+      "required": ["kind", "file", "sha256", "size"],
+      "properties": {
+        "kind": {"enum": ["monitor-assets", "sbom", "notices", "license", "compatibility", "troubleshooting"]},
+        "file": {"type": "string"}, "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "size": {"type": "integer", "minimum": 1}
+      }
+    }
+  }
+}
