@@ -1003,6 +1003,23 @@ def _verify_dependency_closure(selected: Mapping[str, WheelInfo], policy: Mappin
             _reject("bundle resolved dependency pin is invalid")
 
 
+def _verify_product_source_binding(selected: Mapping[str, WheelInfo], source_files: Mapping[str, bytes]) -> None:
+    source_roots = {
+        "stm32-toolkit": "tools/stm32-toolkit/src/",
+        "stm32-monitor": "tools/stm32-monitor/src/",
+    }
+    for normalized, source_root in source_roots.items():
+        info = selected.get(normalized)
+        if info is None:
+            _reject("bundle product wheel is missing")
+        for member, data in info.members.items():
+            if ".dist-info/" in member:
+                continue
+            source_member = source_root + member
+            if source_files.get(source_member) != data:
+                _reject("bundle product wheel is not bound to its source")
+
+
 def _verify_bundle(root: Path) -> dict[str, Any]:
     _assert_no_redirect_ancestors(root)
     if not root.is_dir():
@@ -1041,6 +1058,7 @@ def _verify_bundle(root: Path) -> dict[str, Any]:
         if not name.startswith(SOURCE_PREFIX):
             _reject("source archive prefix is invalid")
         source_files[name.removeprefix(SOURCE_PREFIX)] = data
+    _verify_product_source_binding(selected, source_files)
     source_license = source_members.get(SOURCE_PREFIX + "LICENSE")
     if source_license is None:
         _reject("source license is missing")

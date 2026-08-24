@@ -408,6 +408,34 @@ def test_selected_wheels_retain_strict_metadata_and_license_facts(tmp_path: Path
     assert selected["example"].requires == ()
 
 
+def test_product_wheel_source_binding_rejects_self_consistent_replacement():
+    from importlib.util import module_from_spec, spec_from_file_location
+
+    spec = spec_from_file_location("build_0900_artifacts_source_binding", UTILITY)
+    module = module_from_spec(spec)
+    assert spec and spec.loader
+    spec.loader.exec_module(module)
+
+    def info(name: str, member: str, content: bytes):
+        return module.WheelInfo(
+            Path(f"{name}.whl"), f"{name}-0.9.0-py3-none-any.whl", name, name, "0.9.0",
+            ("py3", "none", "any"), {}, (), {member: content, f"{name.replace('-', '_')}-0.9.0.dist-info/RECORD": b""}, "MIT",
+        )
+
+    selected = {
+        "stm32-toolkit": info("stm32-toolkit", "stm32_toolkit/__init__.py", b"toolkit"),
+        "stm32-monitor": info("stm32-monitor", "stm32_monitor/__init__.py", b"monitor"),
+    }
+    source = {
+        "tools/stm32-toolkit/src/stm32_toolkit/__init__.py": b"toolkit",
+        "tools/stm32-monitor/src/stm32_monitor/__init__.py": b"monitor",
+    }
+    module._verify_product_source_binding(selected, source)
+    source["tools/stm32-toolkit/src/stm32_toolkit/__init__.py"] = b"replacement"
+    with pytest.raises(module.ReleaseError):
+        module._verify_product_source_binding(selected, source)
+
+
 def test_license_authority_contains_canonical_and_shipped_wheel_material():
     from importlib.util import module_from_spec, spec_from_file_location
 
