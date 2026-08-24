@@ -696,7 +696,7 @@ def _classify_snapshot(
     actual_by_path = {entry.path: entry for entry in inventory}
     for path, row in sorted(prior_rows.items(), key=lambda item: portable_sort_key(item[0])):
         entry = actual_by_path.get(path)
-        if entry is None or entry.kind != "file":
+        if path not in toolkit_paths and (entry is None or entry.kind != "file"):
             blockers.append(RegenerationBlocker("REGENERATION_STATE_CHANGED", path, "CubeMX-owned file is missing"))
         elif path not in toolkit_paths and path != ioc_path and (entry.size != int(row["size"]) or entry.sha256 != row["sha256"]):
             blockers.append(RegenerationBlocker("REGENERATION_STATE_CHANGED", path, "CubeMX-owned file drifted"))

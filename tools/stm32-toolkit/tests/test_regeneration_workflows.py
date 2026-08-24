@@ -271,6 +271,16 @@ def test_snapshot_drift_respects_toolkit_precedence(tmp_path: Path, relative: st
     assert tuple(item["code"] for item in planned.data["blockers"]) == (expected,)
 
 
+def test_snapshot_missing_toolkit_file_has_only_toolkit_blocker(tmp_path: Path):
+    workspace, destination, environment = _project(tmp_path)
+    (destination / "CMakeLists.txt").unlink()
+    request = RegenerationWorkflowRequest(workspace, tmp_path / "data", "session", "generated")
+    planned = plan_regeneration(request, environment=environment)
+    assert planned.code == "OK"
+    assert tuple(item["code"] for item in planned.data["blockers"]) == ("REGENERATION_TOOLKIT_DRIFT",)
+    assert tuple(item["path"] for item in planned.data["blockers"]) == ("CMakeLists.txt",)
+
+
 def test_prepare_rejects_candidate_ownership_collision_before_authorization(tmp_path: Path):
     workspace, destination, environment = _project(tmp_path)
     request = RegenerationWorkflowRequest(workspace, tmp_path / "data", "session", "generated")
