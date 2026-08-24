@@ -19,7 +19,7 @@ MCP 绝不回退到系统解释器。setup helper 的 CHECK 模式只读；Boots
 
 ```powershell
 stm32-toolkit --project-root C:\work\blinky doctor --json
-stm32-toolkit --project-root C:\work\blinky build --preset Debug --json
+stm32-toolkit --project-root C:\work\blinky build --preset arm-debug --json
 ```
 
 ## 通用 MCP 模板

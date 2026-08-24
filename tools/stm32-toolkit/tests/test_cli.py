@@ -1,4 +1,6 @@
 import json
+import os
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -49,6 +51,172 @@ def test_project_detect_without_explicit_root_never_uses_current_directory(
 def test_version_is_the_only_root_free_command(capsys):
     assert main(["version"]) == 0
     assert capsys.readouterr().out == "0.9.0\n"
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        [
+            "--project-root",
+            "C:/one",
+            "build",
+            "--project-root",
+            "C:/two",
+            "--preset",
+            "arm-debug",
+            "--json",
+        ],
+        [
+            "--project-root",
+            "C:/one",
+            "probe",
+            "list",
+            "--project-root",
+            "C:/two",
+            "--data-root",
+            "C:/data",
+            "--session-id",
+            "s",
+            "--json",
+        ],
+        [
+            "--project-root",
+            "C:/one",
+            "test",
+            "discover",
+            "--project-root",
+            "C:/two",
+            "--data-root",
+            "C:/data",
+            "--session-id",
+            "s",
+            "--mode",
+            "host",
+            "--json",
+        ],
+        [
+            "--project-root",
+            "C:/one",
+            "diagnose",
+            "start",
+            "run-1",
+            "--project-root",
+            "C:/two",
+            "--data-root",
+            "C:/data",
+            "--session-id",
+            "s",
+            "--operation-id",
+            "op",
+            "--json",
+        ],
+    ],
+)
+def test_workflow_contexts_reject_global_and_command_local_project_roots(argv):
+    with pytest.raises(SystemExit) as raised:
+        from stm32_toolkit.cli import _build_parser
+
+        _build_parser().parse_args(argv)
+    assert raised.value.code == 2
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        [
+            "--project-root",
+            "C:/one",
+            "probe",
+            "list",
+            "--data-root",
+            "C:/data",
+            "--session-id",
+            "s",
+            "--json",
+        ],
+        [
+            "--project-root",
+            "C:/one",
+            "test",
+            "discover",
+            "--data-root",
+            "C:/data",
+            "--session-id",
+            "s",
+            "--mode",
+            "host",
+            "--json",
+        ],
+        [
+            "--project-root",
+            "C:/one",
+            "diagnose",
+            "start",
+            "run-1",
+            "--data-root",
+            "C:/data",
+            "--session-id",
+            "s",
+            "--operation-id",
+            "op",
+            "--json",
+        ],
+    ],
+)
+def test_global_project_root_satisfies_each_local_context(argv):
+    from stm32_toolkit.cli import _build_parser
+
+    args = _build_parser().parse_args(argv)
+    assert args.project_root == Path("C:/one")
+
+
+@pytest.mark.parametrize("value", ["", "${PROJECT_ROOT}", "relative"])
+def test_invalid_project_root_values_fail_before_workflow(monkeypatch, capsys, value):
+    called = False
+
+    def unexpected(*_args, **_kwargs):
+        nonlocal called
+        called = True
+        raise AssertionError("workflow must not run")
+
+    monkeypatch.setattr("stm32_toolkit.cli._operation_result", unexpected)
+    assert main(["doctor", "--project-root", value, "--json"]) == 2
+    assert called is False
+    assert capsys.readouterr().err == "stm32-toolkit: invalid arguments\n"
+
+
+def test_parser_rejects_relative_project_root_before_dispatch():
+    from stm32_toolkit.cli import _build_parser
+
+    with pytest.raises(SystemExit):
+        _build_parser().parse_args(["doctor", "--project-root", "relative", "--json"])
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows directory junction")
+def test_redirected_project_root_fails_before_workflow(monkeypatch, tmp_path: Path, capsys):
+    target = tmp_path / "target"
+    target.mkdir()
+    redirected = tmp_path / "redirected"
+    result = subprocess.run(
+        ["cmd.exe", "/d", "/c", "mklink", "/J", str(redirected), str(target)],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        pytest.skip("directory junctions unavailable")
+
+    called = False
+
+    def unexpected(*_args, **_kwargs):
+        nonlocal called
+        called = True
+        raise AssertionError("workflow must not run")
+
+    monkeypatch.setattr("stm32_toolkit.cli._operation_result", unexpected)
+    assert main(["doctor", "--project-root", str(redirected), "--json"]) == 2
+    assert called is False
+    assert capsys.readouterr().err == "stm32-toolkit: invalid arguments\n"
 
 
 def test_detect_command_emits_a_json_result_envelope(tmp_path: Path, capsys):

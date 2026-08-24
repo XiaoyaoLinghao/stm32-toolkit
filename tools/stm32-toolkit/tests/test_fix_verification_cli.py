@@ -19,7 +19,7 @@ DIGEST = "a" * 64
 def _context_args() -> list[str]:
     return [
         "--project-root",
-        "project-root",
+        "C:/project-root",
         "--data-root",
         "data-root",
         "--session-id",
@@ -51,7 +51,7 @@ def test_target_replay_parser_and_dispatch_are_one_call(
         "test",
         "replay",
         "--project-root",
-        "project-root",
+        "C:/project-root",
         "--data-root",
         "data-root",
         "--session-id",
@@ -70,7 +70,7 @@ def test_target_replay_parser_and_dispatch_are_one_call(
     assert len(calls) == 1
     context, kwargs = calls[0]
     assert context == _TestingWorkflowContext(
-        Path("project-root"), Path("data-root"), "tool-session"
+        Path("C:/project-root"), Path("data-root"), "tool-session"
     )
     assert kwargs == {
         "operation_id": OPERATION,
@@ -171,7 +171,7 @@ def test_diagnostic_adapter_object_files_are_decoded_before_one_workflow_call(
     assert len(calls) == 1
     context, kwargs = calls[0]
     assert context == DiagnosticWorkflowContext(
-        Path("project-root"), Path("data-root"), "tool-session"
+        Path("C:/project-root"), Path("data-root"), "tool-session"
     )
     if command in {"source-change", "verification-plan", "marker"}:
         object_key = {
@@ -202,7 +202,7 @@ def test_verification_complete_collects_operation_ids_and_show_dispatches(
     monkeypatch.setattr(cli, "diagnostic_show_verification", show_workflow)
     common = [
         "--project-root",
-        "project-root",
+        "C:/project-root",
         "--data-root",
         "data-root",
         "--session-id",

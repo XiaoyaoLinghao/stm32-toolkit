@@ -20,7 +20,7 @@ an explicit `--project-root` for every project-bound command.
 
 ```powershell
 stm32-toolkit --project-root C:\work\blinky doctor --json
-stm32-toolkit --project-root C:\work\blinky build --preset Debug --json
+stm32-toolkit --project-root C:\work\blinky build --preset arm-debug --json
 ```
 
 ## Generic MCP template

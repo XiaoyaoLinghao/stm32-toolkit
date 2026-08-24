@@ -20,13 +20,13 @@ def test_cli_create_plan_is_read_only_and_supports_mcu(tmp_path: Path, capsys):
 
 def test_cli_rejects_duplicate_source_option():
     with pytest.raises(SystemExit):
-        _build_parser().parse_args(["project", "create-plan", "--project-root", ".", "--source-kind", "mcu", "--source", "A", "--source", "B", "--destination", "x", "--framework", "hal", "--language", "c"])
+        _build_parser().parse_args(["project", "create-plan", "--project-root", "C:/project-root", "--source-kind", "mcu", "--source", "A", "--source", "B", "--destination", "x", "--framework", "hal", "--language", "c"])
 
 
 @pytest.mark.parametrize(
     "option, first, second",
     [
-        ("--project-root", ".", "other"),
+        ("--project-root", "C:/project-root", "C:/other"),
         ("--source-kind", "mcu", "board"),
         ("--source", "STM32F429ZITx", "STM32F407ZGTX"),
         ("--destination", "generated", "other"),
@@ -40,7 +40,7 @@ def test_cli_rejects_every_repeated_scalar_creation_option(option: str, first: s
         "project",
         "create-plan",
         "--project-root",
-        ".",
+        "C:/project-root",
         "--source-kind",
         "mcu",
         "--source",

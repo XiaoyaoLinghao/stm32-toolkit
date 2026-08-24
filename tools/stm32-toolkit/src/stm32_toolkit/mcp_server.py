@@ -121,6 +121,24 @@ _SERVER_INSTRUCTIONS = (
     "explicitly authorized conversion, configuration, build, flash, and "
     "debug handoff operations."
 )
+
+
+class _RejectDuplicateArgument(argparse.Action):
+    def __call__(self, parser, namespace, values, option_string=None):
+        if getattr(namespace, self.dest, None) is not None:
+            parser.error(f"argument {option_string}: repeated option")
+        setattr(namespace, self.dest, values)
+
+
+def _mcp_root_type(value: str) -> Path:
+    if not value or not value.strip():
+        raise argparse.ArgumentTypeError("root is empty")
+    if "${" in value:
+        raise argparse.ArgumentTypeError("root contains an unresolved path placeholder")
+    root = Path(value)
+    if not root.is_absolute():
+        raise argparse.ArgumentTypeError("root must be an absolute path")
+    return root
 _CLIENT_ROOTS_TIMEOUT_SECONDS = 5.0
 _DIGEST_PATTERN = r"^[0-9a-f]{64}$"
 _PROBE_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
@@ -2510,8 +2528,18 @@ def create_server(
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="stm32-toolkit-mcp")
-    parser.add_argument("--project-root", required=True, type=Path)
-    parser.add_argument("--data-root", required=True, type=Path)
+    parser.add_argument(
+        "--project-root",
+        required=True,
+        type=_mcp_root_type,
+        action=_RejectDuplicateArgument,
+    )
+    parser.add_argument(
+        "--data-root",
+        required=True,
+        type=_mcp_root_type,
+        action=_RejectDuplicateArgument,
+    )
     parser.add_argument("--session-id")
     return parser
 

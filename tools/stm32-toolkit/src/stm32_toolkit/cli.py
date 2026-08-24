@@ -18,6 +18,17 @@ class _RejectDuplicate(argparse.Action):
         setattr(namespace, self.dest, values)
 
 
+class _ProjectRootAction(argparse.Action):
+    """Store exactly one safe project root across global and local parsers."""
+
+    def __call__(self, parser, namespace, values, option_string=None):
+        global _PROJECT_ROOT_PARSE_SEEN
+        if _PROJECT_ROOT_PARSE_SEEN:
+            parser.error(f"argument {option_string}: repeated option")
+        _PROJECT_ROOT_PARSE_SEEN = True
+        setattr(namespace, self.dest, values)
+
+
 class _RejectDuplicateTrue(argparse.Action):
     def __call__(self, parser, namespace, values, option_string=None):
         if getattr(namespace, self.dest, False):
@@ -121,6 +132,38 @@ _ACCEPTANCE_UUID = re.compile(
 )
 _STEPS_FILE_MAX_BYTES = 1024 * 1024
 _REPARSE_POINT = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+_PROJECT_ROOT_PARSE_DEPTH = 0
+_PROJECT_ROOT_PARSE_SEEN = False
+
+
+def _project_root_type(value: str) -> Path:
+    if not value or not value.strip():
+        raise argparse.ArgumentTypeError("project root is empty")
+    if "${" in value:
+        raise argparse.ArgumentTypeError("project root contains an unresolved path placeholder")
+    root = Path(value)
+    if not root.is_absolute():
+        raise argparse.ArgumentTypeError("project root must be an absolute path")
+    return root
+
+
+def _project_root_error(root: Path) -> str | None:
+    if not root.is_absolute():
+        return "project root must be an absolute path"
+    absolute = Path(os.path.abspath(os.fspath(root)))
+    for component in (absolute, *absolute.parents):
+        try:
+            metadata = os.lstat(component)
+        except FileNotFoundError:
+            continue
+        except OSError:
+            return "project root is unavailable"
+        if (
+            component.is_symlink()
+            or getattr(metadata, "st_file_attributes", 0) & _REPARSE_POINT
+        ):
+            return "project root is redirected"
+    return None
 
 
 class _SafeArgumentParser(argparse.ArgumentParser):
@@ -131,7 +174,20 @@ class _SafeArgumentParser(argparse.ArgumentParser):
         super().__init__(*args, **kwargs)
 
     def error(self, message: str) -> None:
-        self.exit(2, f"{self.prog}: invalid arguments\n")
+        self.exit(2, "stm32-toolkit: invalid arguments\n")
+
+    def parse_known_args(self, args=None, namespace=None):
+        global _PROJECT_ROOT_PARSE_DEPTH, _PROJECT_ROOT_PARSE_SEEN
+        outermost = _PROJECT_ROOT_PARSE_DEPTH == 0
+        if outermost:
+            _PROJECT_ROOT_PARSE_SEEN = False
+        _PROJECT_ROOT_PARSE_DEPTH += 1
+        try:
+            return super().parse_known_args(args, namespace)
+        finally:
+            _PROJECT_ROOT_PARSE_DEPTH -= 1
+            if outermost:
+                _PROJECT_ROOT_PARSE_SEEN = False
 
 
 class _StepsFileError(Exception):
@@ -754,7 +810,12 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def _add_project_root(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--project-root", type=Path, default=argparse.SUPPRESS, action=_RejectDuplicate)
+    parser.add_argument(
+        "--project-root",
+        type=_project_root_type,
+        default=argparse.SUPPRESS,
+        action=_ProjectRootAction,
+    )
 
 
 def _require_explicit_project_root(
@@ -762,6 +823,10 @@ def _require_explicit_project_root(
 ) -> None:
     if args.command != "version" and not hasattr(args, "project_root"):
         parser.error("project root is required")
+    if args.command != "version":
+        error = _project_root_error(args.project_root)
+        if error is not None:
+            parser.error(error)
 
 
 def _add_workflow_root(parser: argparse.ArgumentParser) -> None:
@@ -769,8 +834,9 @@ def _add_workflow_root(parser: argparse.ArgumentParser) -> None:
         "--project",
         "--project-root",
         dest="project_root",
-        type=Path,
+        type=_project_root_type,
         default=argparse.SUPPRESS,
+        action=_ProjectRootAction,
     )
 
 
@@ -784,10 +850,11 @@ def _add_hardware_context(
         "--project",
         "--project-root",
         dest="project_root",
-        required=True,
-        type=Path,
+        default=argparse.SUPPRESS,
+        type=_project_root_type,
+        action=_ProjectRootAction,
     )
-    parser.add_argument("--data-root", required=True, type=Path)
+    parser.add_argument("--data-root", required=True, type=Path, action=_RejectDuplicate)
     parser.add_argument("--session-id", required=True)
     if probe:
         parser.add_argument("--probe", required=True)
@@ -802,10 +869,11 @@ def _add_testing_context(parser: argparse.ArgumentParser) -> None:
         "--project",
         "--project-root",
         dest="project_root",
-        required=True,
-        type=Path,
+        default=argparse.SUPPRESS,
+        type=_project_root_type,
+        action=_ProjectRootAction,
     )
-    parser.add_argument("--data-root", required=True, type=Path)
+    parser.add_argument("--data-root", required=True, type=Path, action=_RejectDuplicate)
     parser.add_argument("--session-id", required=True)
     parser.add_argument("--json", action="store_true")
 
@@ -816,10 +884,11 @@ def _add_diagnostic_tool_context(parser: argparse.ArgumentParser) -> None:
         "--project",
         "--project-root",
         dest="project_root",
-        required=True,
-        type=Path,
+        default=argparse.SUPPRESS,
+        type=_project_root_type,
+        action=_ProjectRootAction,
     )
-    parser.add_argument("--data-root", required=True, type=Path)
+    parser.add_argument("--data-root", required=True, type=Path, action=_RejectDuplicate)
     parser.add_argument(
         "--tool-session-id",
         "--session-id",

@@ -78,6 +78,67 @@ if not assets or not all(_file(ui, name) for name in assets):
 print(version)
 '@
 
+$ExpectedMcpTools = @(
+    "stm32_doctor",
+    "stm32_project_detect",
+    "stm32_project_context",
+    "stm32_project_create_plan",
+    "stm32_project_create_prepare",
+    "stm32_project_create_apply",
+    "stm32_project_regenerate_plan",
+    "stm32_project_regenerate_prepare",
+    "stm32_project_regenerate_apply",
+    "stm32_keil_inspect",
+    "stm32_keil_convert",
+    "stm32_project_configure",
+    "stm32_build",
+    "stm32_probe_list",
+    "stm32_flash",
+    "stm32_debug_handoff_begin",
+    "stm32_debug_handoff_end",
+    "stm32_variable_read",
+    "stm32_variable_sample",
+    "stm32_register_read",
+    "stm32_fault_analyze",
+    "stm32_diagnostic_start",
+    "stm32_diagnostic_show",
+    "stm32_diagnostic_begin",
+    "stm32_diagnostic_hypothesis_add",
+    "stm32_diagnostic_hypothesis_assess",
+    "stm32_diagnostic_plan_add",
+    "stm32_diagnostic_plan_run",
+    "stm32_test_target_replay",
+    "stm32_diagnostic_source_change_declare",
+    "stm32_diagnostic_verification_plan_add",
+    "stm32_diagnostic_verification_start",
+    "stm32_diagnostic_marker_attach",
+    "stm32_diagnostic_verification_complete",
+    "stm32_diagnostic_verification_show",
+    "stm32_test_host_discover",
+    "stm32_test_host_run",
+    "stm32_test_show",
+    "stm32_test_target_prepare",
+    "stm32_test_target_execute",
+    "stm32_acceptance_scenario_describe",
+    "stm32_acceptance_scenario_record",
+    "stm32_acceptance_scenario_show",
+    "stm32_acceptance_attempt_begin",
+    "stm32_acceptance_attempt_checkpoint",
+    "stm32_acceptance_attempt_authorize_source_change",
+    "stm32_acceptance_attempt_show",
+    "stm32_acceptance_attempt_resume"
+)
+$ExpectedSkills = @(
+    "setup-stm32-env",
+    "migrate-keil",
+    "configure-stm32-project",
+    "build-firmware",
+    "flash-firmware",
+    "debug-firmware",
+    "read-var",
+    "stm32-monitor"
+)
+
 function Resolve-ExplicitPath {
     param([string]$Name, [AllowEmptyString()][string]$Value, [switch]$MustExist)
     if ([string]::IsNullOrWhiteSpace($Value)) { throw "$Name is empty; an explicit path is required" }
@@ -206,6 +267,61 @@ function Find-BootstrapPython {
     return [ordered]@{ available = $false; path = $null; prefix = @(); version = $null; supported = $false; status = "missing" }
 }
 
+function Get-DoctorContractError {
+    param($Payload)
+    if ($null -eq $Payload -or $Payload.ok -isnot [bool] -or $Payload.ok -ne $true) {
+        return "doctor runtime evidence is missing or not ok"
+    }
+    $data = $Payload.data
+    if ($null -eq $data) { return "doctor runtime evidence is missing data" }
+    $runtime = $data.runtime
+    if ($null -eq $runtime) { return "doctor runtime evidence is missing runtime" }
+    foreach ($field in @("requiredPython", "pythonVersion", "pythonSupported", "toolkitVersion", "monitorVersion", "versionsCompatible")) {
+        if (-not ($runtime.PSObject.Properties.Name -contains $field)) {
+            return "doctor runtime evidence is missing $field"
+        }
+    }
+    if ($runtime.requiredPython -isnot [string] -or $runtime.requiredPython -cne ">=3.12,<3.13") {
+        return "doctor runtime evidence has an unexpected Python requirement"
+    }
+    if ($runtime.pythonVersion -isnot [string] -or $runtime.pythonVersion -notmatch '^3\.12\.\d+$') {
+        return "doctor runtime evidence has an unsupported Python version"
+    }
+    if ($runtime.pythonSupported -isnot [bool] -or $runtime.pythonSupported -ne $true) {
+        return "doctor runtime evidence reports an unsupported Python"
+    }
+    if ($runtime.toolkitVersion -isnot [string] -or $runtime.toolkitVersion -cne $RuntimeVersion) {
+        return "doctor runtime evidence has an unexpected Toolkit version"
+    }
+    if ($runtime.monitorVersion -isnot [string] -or $runtime.monitorVersion -cne $RuntimeVersion) {
+        return "doctor runtime evidence has an unexpected Monitor version"
+    }
+    if ($runtime.versionsCompatible -isnot [bool] -or $runtime.versionsCompatible -ne $true) {
+        return "doctor runtime evidence reports incompatible package versions"
+    }
+    $inventory = $data.publicInventory
+    if ($null -eq $inventory) { return "doctor runtime evidence is missing public inventory" }
+    $mcpTools = @($inventory.mcpTools)
+    if ($mcpTools.Count -ne $ExpectedMcpTools.Count) {
+        return "doctor runtime evidence has an unexpected MCP inventory"
+    }
+    for ($index = 0; $index -lt $ExpectedMcpTools.Count; $index++) {
+        if ($mcpTools[$index] -isnot [string] -or $mcpTools[$index] -cne $ExpectedMcpTools[$index]) {
+            return "doctor runtime evidence has an unexpected MCP inventory"
+        }
+    }
+    $skills = @($inventory.skills)
+    if ($skills.Count -ne $ExpectedSkills.Count) {
+        return "doctor runtime evidence has an unexpected Skill inventory"
+    }
+    for ($index = 0; $index -lt $ExpectedSkills.Count; $index++) {
+        if ($skills[$index] -isnot [string] -or $skills[$index] -cne $ExpectedSkills[$index]) {
+            return "doctor runtime evidence has an unexpected Skill inventory"
+        }
+    }
+    return $null
+}
+
 function Get-RuntimeEvidence {
     param([string]$Runtime, [string]$RuntimePython, [string]$Project)
     $runtimePathExists = Test-Path -LiteralPath $Runtime
@@ -227,7 +343,8 @@ function Get-RuntimeEvidence {
     $doctor = Invoke-BoundedProcess $RuntimePython @("-I", "-m", "stm32_toolkit.cli", "--project-root", $Project, "doctor", "--json") 15
     if ($doctor.status -ne "ok") { $evidence.status = "broken"; $evidence.error = "doctor $($doctor.status): $($doctor.stderr)".Trim(); return $evidence }
     try { $doctorPayload = $doctor.stdout | ConvertFrom-Json } catch { $evidence.status = "broken"; $evidence.error = "doctor returned invalid JSON"; return $evidence }
-    if ($doctorPayload.ok -ne $true) { $evidence.status = "broken"; $evidence.error = "doctor reported failure"; return $evidence }
+    $doctorError = Get-DoctorContractError $doctorPayload
+    if ($doctorError) { $evidence.status = "broken"; $evidence.error = $doctorError; return $evidence }
     $evidence.status = "healthy"
     $evidence.doctor = $doctorPayload
     return $evidence
@@ -354,7 +471,8 @@ try {
     $doctorCheck = Invoke-BoundedProcess $stagingPython @("-I", "-m", "stm32_toolkit.cli", "--project-root", $resolvedProjectRoot, "doctor", "--json") 15
     Assert-StepOk $doctorCheck "toolkit doctor validation"
     try { $doctorPayload = $doctorCheck.stdout | ConvertFrom-Json } catch { throw "toolkit doctor returned invalid JSON" }
-    if ($doctorPayload.ok -ne $true) { throw "toolkit doctor reported failure" }
+    $doctorError = Get-DoctorContractError $doctorPayload
+    if ($doctorError) { throw $doctorError }
 
     $quarantined = $null
     $quarantineSource = $null

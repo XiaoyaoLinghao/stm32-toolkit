@@ -489,6 +489,7 @@ def test_setup_skill_passes_inline_claude_paths_explicitly_without_ambient_varia
 
 def test_readme_documents_the_vs09a_contract_and_vs09b_boundary():
     readme = README.read_text(encoding="utf-8")
+    readme_zh = (REPO_ROOT / "README_zh-CN.md").read_text(encoding="utf-8")
 
     assert "local 0.9.0 VS09-A candidate" in readme
     assert "CPython `>=3.12,<3.13`" in readme
@@ -497,6 +498,9 @@ def test_readme_documents_the_vs09a_contract_and_vs09b_boundary():
     assert "absolute launcher" in readme
     assert "all 48" in readme
     assert "VS09-B" in readme
+    expected_build = "stm32-toolkit --project-root C:\\work\\blinky build --preset arm-debug --json"
+    assert expected_build in readme
+    assert expected_build in readme_zh
     for phrase in (
         "/stm32-toolkit:setup-stm32-env",
         "automatically",

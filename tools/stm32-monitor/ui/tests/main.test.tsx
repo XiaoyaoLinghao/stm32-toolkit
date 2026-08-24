@@ -26,7 +26,7 @@ it("renders only the fixed startup error when fragment bootstrap fails",async()=
 it("mounts the application only after successful fragment bootstrap",async()=>{
   window.history.replaceState(null,"",`/#token=${TOKEN}`);
   vi.stubGlobal("fetch",vi.fn().mockResolvedValue(new Response(JSON.stringify({
-    protocol:"stm32-toolkit-monitor/1",toolkitVersion:"0.5.0",monitorVersion:"0.5.0",
+    protocol:"stm32-toolkit-monitor/1",toolkitVersion:"0.9.0",monitorVersion:"0.9.0",
     ok:true,operation:"monitor.auth.bootstrap",code:"OK",message:"",
     data:{authenticated:true},details:{},
   }))));

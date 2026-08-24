@@ -26,8 +26,8 @@ from aiohttp import web
 from stm32_monitor.protocol import failure, success
 from stm32_monitor.service import MonitorService
 
-_TOOLKIT_VERSION = "0.5.0"
-_MONITOR_VERSION = "0.5.0"
+_TOOLKIT_VERSION = "0.9.0"
+_MONITOR_VERSION = "0.9.0"
 _DEFAULT_ROWS = 2
 
 

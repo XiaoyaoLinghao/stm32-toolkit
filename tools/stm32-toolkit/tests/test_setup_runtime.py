@@ -15,6 +15,66 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parents[3]
 HELPER = REPO_ROOT / "bin" / "setup-stm32-env.ps1"
 EXPECTED_SKILL = "/stm32-toolkit:setup-stm32-env"
+FAKE_MCP_TOOLS = (
+    "stm32_doctor",
+    "stm32_project_detect",
+    "stm32_project_context",
+    "stm32_project_create_plan",
+    "stm32_project_create_prepare",
+    "stm32_project_create_apply",
+    "stm32_project_regenerate_plan",
+    "stm32_project_regenerate_prepare",
+    "stm32_project_regenerate_apply",
+    "stm32_keil_inspect",
+    "stm32_keil_convert",
+    "stm32_project_configure",
+    "stm32_build",
+    "stm32_probe_list",
+    "stm32_flash",
+    "stm32_debug_handoff_begin",
+    "stm32_debug_handoff_end",
+    "stm32_variable_read",
+    "stm32_variable_sample",
+    "stm32_register_read",
+    "stm32_fault_analyze",
+    "stm32_diagnostic_start",
+    "stm32_diagnostic_show",
+    "stm32_diagnostic_begin",
+    "stm32_diagnostic_hypothesis_add",
+    "stm32_diagnostic_hypothesis_assess",
+    "stm32_diagnostic_plan_add",
+    "stm32_diagnostic_plan_run",
+    "stm32_test_target_replay",
+    "stm32_diagnostic_source_change_declare",
+    "stm32_diagnostic_verification_plan_add",
+    "stm32_diagnostic_verification_start",
+    "stm32_diagnostic_marker_attach",
+    "stm32_diagnostic_verification_complete",
+    "stm32_diagnostic_verification_show",
+    "stm32_test_host_discover",
+    "stm32_test_host_run",
+    "stm32_test_show",
+    "stm32_test_target_prepare",
+    "stm32_test_target_execute",
+    "stm32_acceptance_scenario_describe",
+    "stm32_acceptance_scenario_record",
+    "stm32_acceptance_scenario_show",
+    "stm32_acceptance_attempt_begin",
+    "stm32_acceptance_attempt_checkpoint",
+    "stm32_acceptance_attempt_authorize_source_change",
+    "stm32_acceptance_attempt_show",
+    "stm32_acceptance_attempt_resume",
+)
+FAKE_SKILLS = (
+    "setup-stm32-env",
+    "migrate-keil",
+    "configure-stm32-project",
+    "build-firmware",
+    "flash-firmware",
+    "debug-firmware",
+    "read-var",
+    "stm32-monitor",
+)
 
 
 pytestmark = pytest.mark.skipif(os.name != "nt", reason="PowerShell runtime setup")
@@ -127,6 +187,65 @@ def test_check_rejects_current_runtime_without_probe_extra(tmp_path: Path):
     assert "traceback" not in payload["runtime"]["error"].lower()
     assert "modulenotfounderror" not in payload["runtime"]["error"].lower()
     assert str(tmp_path) not in payload["runtime"]["error"]
+
+
+def test_check_rejects_ok_doctor_without_exact_runtime_inventory(tmp_path: Path):
+    project = tmp_path / "project"
+    project.mkdir()
+    plugin_data = tmp_path / "plugin-data"
+    runtime = plugin_data / "runtime" / "0.9.0"
+    venv.EnvBuilder(with_pip=True).create(runtime)
+    site_packages = runtime / "Lib" / "site-packages"
+    _install_fake_toolkit(site_packages)
+    _install_fake_monitor(site_packages)
+    _install_fake_probe(site_packages, "0.45.1")
+    (site_packages / "stm32_toolkit" / "cli.py").write_text(
+        "import json,sys\n"
+        "if sys.argv[1:]==['version']: print('0.9.0')\n"
+        "elif 'doctor' in sys.argv: print(json.dumps({'ok':True,'data':{}}))\n"
+        "else: raise SystemExit(2)\n",
+        encoding="utf-8",
+    )
+
+    checked = _run_helper("Check", REPO_ROOT, plugin_data, project)
+
+    assert checked.returncode == 0, checked.stderr
+    payload = json.loads(checked.stdout)
+    assert payload["runtime"]["status"] == "broken"
+    assert payload["recommendedMode"] == "Repair"
+    assert "doctor runtime evidence" in payload["runtime"]["error"]
+
+
+def test_bootstrap_rejects_ok_doctor_without_exact_runtime_inventory_before_promotion(
+    tmp_path: Path,
+):
+    project = tmp_path / "project"
+    project.mkdir()
+    plugin_root = tmp_path / "plugin"
+    package = plugin_root / "tools" / "stm32-toolkit"
+    package.mkdir(parents=True)
+    wheelhouse = tmp_path / "wheelhouse"
+    wheelhouse.mkdir()
+    _write_test_build_backend(wheelhouse, complete_doctor=False)
+    _write_fake_monitor_package(plugin_root)
+    (package / "pyproject.toml").write_text(
+        "[build-system]\nrequires = ['test-build-backend==1.0']\n"
+        "build-backend = 'test_backend'\n",
+        encoding="utf-8",
+    )
+    plugin_data = tmp_path / "plugin-data"
+    environment = _clean_environment()
+    environment["PIP_NO_INDEX"] = "1"
+    environment["PIP_FIND_LINKS"] = str(wheelhouse)
+
+    result = _run_helper(
+        "Bootstrap", plugin_root, plugin_data, project,
+        environment=environment, timeout=180,
+    )
+
+    assert result.returncode == 2
+    assert "doctor runtime evidence" in result.stderr
+    assert not (plugin_data / "runtime" / "0.9.0").exists()
 
 
 @pytest.mark.parametrize(
@@ -560,7 +679,14 @@ def test_setup_contract_uses_namespaced_skill_and_ignores_coverage_data():
     assert ".coverage.*" in gitignore
 
 
-def _write_test_build_backend(wheelhouse: Path) -> None:
+def _write_test_build_backend(
+    wheelhouse: Path, *, complete_doctor: bool = True
+) -> None:
+    doctor_source = (
+        _fake_toolkit_cli_source()
+        if complete_doctor
+        else _fake_incomplete_toolkit_cli_source()
+    )
     backend_source = """from pathlib import Path
 import zipfile
 import venv
@@ -598,7 +724,7 @@ def build_wheel(wheel_directory, config_settings=None, metadata_directory=None):
         dist_name = 'stm32_toolkit-0.9.0-py3-none-any.whl'
         files = {
             'stm32_toolkit/__init__.py': "__version__ = '0.9.0'\\n",
-            'stm32_toolkit/cli.py': "import json,sys\\nif sys.argv[1:]==['version']: print('0.9.0')\\nelif 'doctor' in sys.argv:\\n i=sys.argv.index('--project-root'); print(json.dumps({'protocol':'stm32-toolkit/1','ok':True,'data':{'projectRoot':sys.argv[i+1],'argv':sys.argv[1:]}}))\\nelse: raise SystemExit(2)\\n",
+            'stm32_toolkit/cli.py': __DOCTOR_SOURCE__,
             'stm32_toolkit-0.9.0.dist-info/METADATA': 'Metadata-Version: 2.1\\nName: stm32-toolkit\\nVersion: 0.9.0\\nProvides-Extra: probe\\nRequires-Dist: pyocd==0.45.1; extra == "probe"\\n',
             'stm32_toolkit-0.9.0.dist-info/WHEEL': 'Wheel-Version: 1.0\\nGenerator: test-backend\\nRoot-Is-Purelib: true\\nTag: py3-none-any\\n',
             'stm32_toolkit-0.9.0.dist-info/RECORD': '',
@@ -607,6 +733,7 @@ def build_wheel(wheel_directory, config_settings=None, metadata_directory=None):
         for path, content in files.items(): archive.writestr(path, content)
     return dist_name
 """
+    backend_source = backend_source.replace("__DOCTOR_SOURCE__", repr(doctor_source))
     wheel = wheelhouse / "test_build_backend-1.0-py3-none-any.whl"
     with zipfile.ZipFile(wheel, "w") as archive:
         archive.writestr("test_backend.py", backend_source)
@@ -666,12 +793,47 @@ def _install_fake_toolkit(site_packages: Path) -> None:
     package = site_packages / "stm32_toolkit"
     package.mkdir(parents=True)
     (package / "__init__.py").write_text("__version__ = '0.9.0'\n", encoding="utf-8")
-    (package / "cli.py").write_text(
+    (package / "cli.py").write_text(_fake_toolkit_cli_source(), encoding="utf-8")
+
+
+def _fake_toolkit_cli_source() -> str:
+    payload = {
+        "protocol": "stm32-toolkit/1",
+        "ok": True,
+        "data": {
+            "runtime": {
+                "requiredPython": ">=3.12,<3.13",
+                "pythonVersion": "3.12.0",
+                "pythonSupported": True,
+                "toolkitVersion": "0.9.0",
+                "monitorVersion": "0.9.0",
+                "versionsCompatible": True,
+            },
+            "publicInventory": {
+                "mcpTools": list(FAKE_MCP_TOOLS),
+                "skills": list(FAKE_SKILLS),
+            },
+        },
+    }
+    return (
+        "import json,sys\n"
+        "if sys.argv[1:]==['version']: print('0.9.0')\n"
+        "elif 'doctor' in sys.argv:\n"
+        f" payload={payload!r}\n"
+        " payload['data']['runtime']['pythonVersion']='.'.join(str(part) for part in sys.version_info[:3])\n"
+        " payload['data']['runtime']['pythonSupported']=sys.version_info[:2] == (3,12)\n"
+        " i=sys.argv.index('--project-root'); payload['data']['projectRoot']=sys.argv[i+1]; payload['data']['argv']=sys.argv[1:]\n"
+        " print(json.dumps(payload))\n"
+        "else: raise SystemExit(2)\n"
+    )
+
+
+def _fake_incomplete_toolkit_cli_source() -> str:
+    return (
         "import json,sys\n"
         "if sys.argv[1:]==['version']: print('0.9.0')\n"
         "elif 'doctor' in sys.argv: print(json.dumps({'ok':True,'data':{}}))\n"
-        "else: raise SystemExit(2)\n",
-        encoding="utf-8",
+        "else: raise SystemExit(2)\n"
     )
 
 

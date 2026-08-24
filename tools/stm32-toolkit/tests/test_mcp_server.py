@@ -165,6 +165,35 @@ def test_main_reports_startup_failures_on_stderr_without_stdout(tmp_path: Path, 
     assert "startup failed" in captured.err
 
 
+@pytest.mark.parametrize(
+    "argv",
+    [
+        [
+            "--project-root",
+            "C:/one",
+            "--project-root",
+            "C:/two",
+            "--data-root",
+            "C:/data",
+        ],
+        [
+            "--project-root",
+            "C:/project",
+            "--data-root",
+            "C:/one",
+            "--data-root",
+            "C:/two",
+        ],
+    ],
+)
+def test_mcp_parser_rejects_duplicate_project_or_data_roots(argv):
+    from stm32_toolkit.mcp_server import _build_parser
+
+    with pytest.raises(SystemExit) as raised:
+        _build_parser().parse_args(argv)
+    assert raised.value.code == 2
+
+
 def test_runtime_rejects_project_root_file_without_creating_data(tmp_path: Path):
     """Catches binding an MCP process to a non-directory project path."""
     project_file = tmp_path / "project.bin"

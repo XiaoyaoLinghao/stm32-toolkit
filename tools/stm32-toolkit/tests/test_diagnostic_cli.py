@@ -12,7 +12,7 @@ from stm32_toolkit.result import OperationResult
 
 CONTEXT_ARGS = [
     "--project",
-    "project-root",
+    "C:/project-root",
     "--data-root",
     "data-root",
     "--session-id",
@@ -229,7 +229,7 @@ def test_diagnostic_parser_exposes_fixed_operations_defaults_and_context() -> No
     assert start.failed_test_run_id == "run-1"
     assert start.operation_id == "start-1"
     assert start.actor == "user"
-    assert start.project_root == Path("project-root")
+    assert start.project_root == Path("C:/project-root")
     assert start.data_root == Path("data-root")
     assert start.session_id == "toolkit-session"
     assert start.json is True
@@ -239,7 +239,7 @@ def test_diagnostic_parser_exposes_fixed_operations_defaults_and_context() -> No
     assert show.diagnose_command == "show"
     assert show.operation == "diagnostic.show"
     assert show.diagnostic_session_id == DIAGNOSTIC_SESSION_ID
-    assert show.project_root == Path("project-root")
+    assert show.project_root == Path("C:/project-root")
     assert show.data_root == Path("data-root")
     assert show.session_id == "toolkit-session"
     assert show.json is True
@@ -252,7 +252,7 @@ def test_diagnostic_parser_exposes_fixed_operations_defaults_and_context() -> No
     assert begin.operation_id == "begin-1"
     assert begin.expected_revision == 0
     assert begin.actor == "user"
-    assert begin.project_root == Path("project-root")
+    assert begin.project_root == Path("C:/project-root")
     assert begin.data_root == Path("data-root")
     assert begin.session_id == "toolkit-session"
     assert begin.json is True
@@ -267,7 +267,7 @@ def test_diagnostic_parser_exposes_fixed_operations_defaults_and_context() -> No
     assert add.expected_revision == 2
     assert add.statement == "clock configuration is inconsistent"
     assert add.actor == "user"
-    assert add.project_root == Path("project-root")
+    assert add.project_root == Path("C:/project-root")
     assert add.data_root == Path("data-root")
     assert add.session_id == "toolkit-session"
     assert add.json is True
@@ -286,7 +286,7 @@ def test_diagnostic_parser_exposes_fixed_operations_defaults_and_context() -> No
     assert assess.polarity == "supports"
     assert assess.rationale == "the executed observation matches the hypothesis"
     assert assess.actor == "user"
-    assert assess.project_root == Path("project-root")
+    assert assess.project_root == Path("C:/project-root")
     assert assess.data_root == Path("data-root")
     assert assess.session_id == "toolkit-session"
     assert assess.json is True
@@ -308,7 +308,7 @@ def test_plan_parser_exposes_exact_operations_defaults_context_and_decoded_steps
     assert add.actor == "user"
     assert add.steps == STEPS_VALUE
     assert not hasattr(add, "steps_file")
-    assert add.project_root == Path("project-root")
+    assert add.project_root == Path("C:/project-root")
     assert add.data_root == Path("data-root")
     assert add.session_id == "toolkit-session"
     assert add.json is True
@@ -323,7 +323,7 @@ def test_plan_parser_exposes_exact_operations_defaults_context_and_decoded_steps
     assert run.expected_revision == 9
     assert run.plan_id == PLAN_ID
     assert run.actor == "tool"
-    assert run.project_root == Path("project-root")
+    assert run.project_root == Path("C:/project-root")
     assert run.data_root == Path("data-root")
     assert run.session_id == "toolkit-session"
     assert run.json is True
@@ -352,7 +352,7 @@ def test_start_dispatches_once_with_exact_context_keywords_and_json(
     assert len(calls) == 1
     context, kwargs = calls[0]
     assert context == DiagnosticWorkflowContext(
-        Path("project-root"), Path("data-root"), "toolkit-session"
+        Path("C:/project-root"), Path("data-root"), "toolkit-session"
     )
     assert kwargs == {
         "operation_id": "start-1",
@@ -412,7 +412,7 @@ def test_show_dispatches_once_with_exact_context_keywords_and_json(
     assert len(calls) == 1
     context, kwargs = calls[0]
     assert context == DiagnosticWorkflowContext(
-        Path("project-root"), Path("data-root"), "toolkit-session"
+        Path("C:/project-root"), Path("data-root"), "toolkit-session"
     )
     assert kwargs == {"diagnostic_session_id": DIAGNOSTIC_SESSION_ID}
 
@@ -437,7 +437,7 @@ def test_begin_dispatches_once_with_exact_context_keywords_and_json(
     assert len(calls) == 1
     context, kwargs = calls[0]
     assert context == DiagnosticWorkflowContext(
-        Path("project-root"), Path("data-root"), "toolkit-session"
+        Path("C:/project-root"), Path("data-root"), "toolkit-session"
     )
     assert kwargs == {
         "operation_id": "begin-1",
@@ -470,7 +470,7 @@ def test_hypothesis_add_dispatches_once_with_exact_context_keywords_and_json(
     assert len(calls) == 1
     context, kwargs = calls[0]
     assert context == DiagnosticWorkflowContext(
-        Path("project-root"), Path("data-root"), "toolkit-session"
+        Path("C:/project-root"), Path("data-root"), "toolkit-session"
     )
     assert kwargs == {
         "operation_id": "hypothesis-add-1",
@@ -504,7 +504,7 @@ def test_hypothesis_assess_dispatches_once_with_exact_context_keywords_and_json(
     assert len(calls) == 1
     context, kwargs = calls[0]
     assert context == DiagnosticWorkflowContext(
-        Path("project-root"), Path("data-root"), "toolkit-session"
+        Path("C:/project-root"), Path("data-root"), "toolkit-session"
     )
     assert kwargs == {
         "operation_id": "hypothesis-assess-1",
@@ -545,7 +545,7 @@ def test_plan_add_dispatches_once_with_decoded_steps_and_exact_json(
     assert len(calls) == 1
     context, kwargs = calls[0]
     assert context == DiagnosticWorkflowContext(
-        Path("project-root"), Path("data-root"), "toolkit-session"
+        Path("C:/project-root"), Path("data-root"), "toolkit-session"
     )
     assert kwargs == {
         "operation_id": "plan-add-1",
@@ -580,7 +580,7 @@ def test_plan_run_dispatches_once_with_default_tool_actor_and_exact_json(
     assert len(calls) == 1
     context, kwargs = calls[0]
     assert context == DiagnosticWorkflowContext(
-        Path("project-root"), Path("data-root"), "toolkit-session"
+        Path("C:/project-root"), Path("data-root"), "toolkit-session"
     )
     assert kwargs == {
         "operation_id": "plan-run-1",
