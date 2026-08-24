@@ -3,7 +3,9 @@ from __future__ import annotations
 import gc
 import hashlib
 import json
+import shutil
 from collections.abc import Mapping
+from dataclasses import replace
 from pathlib import Path
 from uuid import UUID
 
@@ -12,7 +14,7 @@ import pytest
 from stm32_monitor.analysis import AnalysisRequest
 from stm32_monitor.analysis_workflows import compare_monitor_runs, export_analysis_bundle
 from stm32_monitor.replay import ingest_monitor_replay
-from stm32_toolkit.acceptance.model import describe_scenario
+from stm32_toolkit.acceptance.model import AcceptanceRecord, describe_scenario
 from stm32_toolkit.acceptance.workflows import (
     AcceptanceWorkflowContext,
     record_acceptance_scenario,
@@ -35,11 +37,16 @@ from stm32_toolkit.diagnostic_workflows import (
 )
 import stm32_toolkit.diagnostic_workflows as diagnostic_workflows_module
 from stm32_toolkit.diagnostics import SourceChangeDeclaration, VerificationPlan
-from stm32_toolkit.evidence import EvidenceEnvelope
+from stm32_toolkit.evidence import EVIDENCE_CORRUPT, EvidenceEnvelope, EvidenceValidationError
+from stm32_toolkit.evidence.gc import RootRecord
+from stm32_toolkit.evidence.model import canonical_json_bytes
 from stm32_toolkit.evidence.store import EvidenceStore
 from stm32_toolkit.paths import WorkspacePaths
 from stm32_toolkit.result import OperationResult
-from stm32_toolkit.testing.publication import TestRunRepository as RunRepository
+from stm32_toolkit.testing.publication import (
+    TestRunPublisher as RunPublisher,
+    TestRunRepository as RunRepository,
+)
 from stm32_toolkit.testing.replay import (
     calculate_replay_id,
     canonical_replay_json_bytes,
@@ -207,14 +214,18 @@ def _complete_existing_chain(
     *,
     complete_verification: bool = True,
     cancelled: bool = False,
+    failed_run_id: str = FAILED_RUN_ID,
+    fixed_run_id: str = FIXED_RUN_ID,
+    diagnostic_compact_id: str = "00000000000040008000000000000004",
+    operation_prefix: str = "vs08a",
 ) -> tuple[Path, Path, str]:
     monkeypatch.setattr(
         diagnostic_workflows_module,
         "_session_id_factory",
-        lambda: "00000000000040008000000000000004",
+        lambda: diagnostic_compact_id,
     )
     project_root = tmp_path / "project"
-    project_root.mkdir()
+    project_root.mkdir(exist_ok=True)
     (project_root / ".stm32-project.json").write_bytes(
         json.dumps(_project_manifest(origin), sort_keys=True, separators=(",", ":")).encode()
     )
@@ -224,17 +235,17 @@ def _complete_existing_chain(
     diagnostic = DiagnosticWorkflowContext(project_root, data_root, runtime_session_id)
 
     failed_descriptor, failed_stream = _canonical_replay_inputs(
-        tmp_path, "failed-before", FAILED_RUN_ID
+        tmp_path, "failed-before", failed_run_id
     )
     fixed_descriptor, fixed_stream = _canonical_replay_inputs(
-        tmp_path, "fixed-after", FIXED_RUN_ID
+        tmp_path, "fixed-after", fixed_run_id
     )
-    _ok(target_replay_run(testing, FAILED_RUN_ID, failed_descriptor, failed_stream))
+    _ok(target_replay_run(testing, failed_run_id, failed_descriptor, failed_stream))
     started = _ok(
         diagnostic_start(
             diagnostic,
-            operation_id="vs08a-diagnostic-start",
-            failed_test_run_id=FAILED_RUN_ID,
+            operation_id=f"{operation_prefix}-diagnostic-start",
+            failed_test_run_id=failed_run_id,
             failed_run_mode="target",
         )
     )
@@ -244,7 +255,7 @@ def _complete_existing_chain(
     _ok(
         diagnostic_begin(
             diagnostic,
-            operation_id="vs08a-diagnostic-begin",
+            operation_id=f"{operation_prefix}-diagnostic-begin",
             diagnostic_session_id=diagnostic_id,
             expected_revision=1,
         )
@@ -252,7 +263,7 @@ def _complete_existing_chain(
     hypothesis = _ok(
         diagnostic_add_hypothesis(
             diagnostic,
-            operation_id="vs08a-hypothesis-add",
+            operation_id=f"{operation_prefix}-hypothesis-add",
             diagnostic_session_id=diagnostic_id,
             expected_revision=2,
             statement="the failed replay identifies the faulty behavior",
@@ -263,7 +274,7 @@ def _complete_existing_chain(
     plan = _ok(
         diagnostic_add_plan(
             diagnostic,
-            operation_id="vs08a-observation-plan-add",
+            operation_id=f"{operation_prefix}-observation-plan-add",
             diagnostic_session_id=diagnostic_id,
             expected_revision=3,
             steps=[
@@ -281,7 +292,7 @@ def _complete_existing_chain(
     _ok(
         diagnostic_run_plan(
             diagnostic,
-            operation_id="vs08a-observation-plan-run",
+            operation_id=f"{operation_prefix}-observation-plan-run",
             diagnostic_session_id=diagnostic_id,
             expected_revision=4,
             plan_id=plan_id,
@@ -290,7 +301,7 @@ def _complete_existing_chain(
     _ok(
         diagnostic_assess_hypothesis(
             diagnostic,
-            operation_id="vs08a-hypothesis-assess",
+            operation_id=f"{operation_prefix}-hypothesis-assess",
             diagnostic_session_id=diagnostic_id,
             expected_revision=5,
             hypothesis_id=hypothesis_id,
@@ -303,7 +314,7 @@ def _complete_existing_chain(
 
     workspace = WorkspacePaths.from_roots(data_root, project_root, PROJECT_ID, runtime_session_id)
     evidence = EvidenceStore(workspace.workspace_root / "evidence")
-    before = RunRepository(evidence).load(FAILED_RUN_ID)
+    before = RunRepository(evidence).load(failed_run_id)
     fixed_fixture = load_target_replay_fixture(fixed_descriptor, fixed_stream)
     declaration = _source_change(
         tmp_path, evidence, before, fixed_fixture.descriptor.identity, hypothesis_id
@@ -311,14 +322,14 @@ def _complete_existing_chain(
     _ok(
         diagnostic_declare_source_change(
             diagnostic,
-            operation_id="vs08a-source-change-declare",
+            operation_id=f"{operation_prefix}-source-change-declare",
             diagnostic_session_id=diagnostic_id,
             expected_revision=6,
             source_change_declaration=declaration,
         )
     )
-    _ok(target_replay_run(testing, FIXED_RUN_ID, fixed_descriptor, fixed_stream))
-    after = RunRepository(evidence).load(FIXED_RUN_ID)
+    _ok(target_replay_run(testing, fixed_run_id, fixed_descriptor, fixed_stream))
+    after = RunRepository(evidence).load(fixed_run_id)
     monitor_before = ingest_monitor_replay(
         workspace,
         evidence,
@@ -355,17 +366,17 @@ def _complete_existing_chain(
         evidence,
         request,
         publication,
-        FAILED_RUN_ID,
-        FIXED_RUN_ID,
+        failed_run_id,
+        fixed_run_id,
         declaration,
     )
     verification_plan = VerificationPlan.new(
         verification_plan_id="b" * 64,
         diagnostic_session_id=diagnostic_id,
-        failed_before_run_id=FAILED_RUN_ID,
+        failed_before_run_id=failed_run_id,
         failed_before_evidence_id=str(before.envelope.evidence_id),
         source_change_declaration_id=declaration.declaration_id,
-        fixed_after_run_id=FIXED_RUN_ID,
+        fixed_after_run_id=fixed_run_id,
         fixed_after_evidence_id=str(after.envelope.evidence_id),
         required_analysis_ids=(publication.analysis_result.analysis_id,),
         required_analysis_evidence_ids=(publication.analysis_evidence_ref.evidence_id,),
@@ -375,7 +386,7 @@ def _complete_existing_chain(
     _ok(
         diagnostic_add_verification_plan(
             diagnostic,
-            operation_id="vs08a-verification-plan-add",
+            operation_id=f"{operation_prefix}-verification-plan-add",
             diagnostic_session_id=diagnostic_id,
             expected_revision=7,
             verification_plan=verification_plan,
@@ -384,7 +395,7 @@ def _complete_existing_chain(
     _ok(
         diagnostic_start_verification(
             diagnostic,
-            operation_id="vs08a-verification-start",
+            operation_id=f"{operation_prefix}-verification-start",
             diagnostic_session_id=diagnostic_id,
             expected_revision=8,
             verification_plan_id=verification_plan.verification_plan_id,
@@ -393,7 +404,7 @@ def _complete_existing_chain(
     _ok(
         diagnostic_attach_marker(
             diagnostic,
-            operation_id="vs08a-marker-attach",
+            operation_id=f"{operation_prefix}-marker-attach",
             diagnostic_session_id=diagnostic_id,
             expected_revision=9,
             diagnostic_marker_ref=publication.diagnostic_marker_ref,
@@ -404,12 +415,12 @@ def _complete_existing_chain(
     completed = _ok(
         diagnostic_complete_verification(
             diagnostic,
-            operation_id="vs08a-verification-complete",
+            operation_id=f"{operation_prefix}-verification-complete",
             diagnostic_session_id=diagnostic_id,
             expected_revision=10,
             executed_operation_ids=[
-                FAILED_RUN_ID,
-                FIXED_RUN_ID,
+                failed_run_id,
+                fixed_run_id,
                 "monitor.analysis.compare",
                 "monitor.analysis.bundle",
             ],
@@ -420,6 +431,84 @@ def _complete_existing_chain(
     assert isinstance(verification, Mapping)
     assert verification["status"] == ("CANCELLED" if cancelled else "PASSED")
     return project_root, data_root, _wire_diagnostic_id(diagnostic_id)
+
+
+def _evidence_snapshot(root: Path) -> dict[str, bytes]:
+    return {
+        path.relative_to(root).as_posix(): path.read_bytes()
+        for path in root.rglob("*")
+        if path.is_file()
+    }
+
+
+def _record(
+    project_root: Path,
+    data_root: Path,
+    *,
+    record_id: str = RECORD_ID,
+    failed_run_id: str = FAILED_RUN_ID,
+    fixed_run_id: str = FIXED_RUN_ID,
+    diagnostic_id: str,
+    scenario_id: str = "legacy-keil-migration",
+) -> OperationResult[object]:
+    return record_acceptance_scenario(
+        AcceptanceWorkflowContext(project_root, data_root, "vs08a-keil-session"),
+        record_id=record_id,
+        scenario_id=scenario_id,
+        scenario_version="1",
+        failed_before_test_run_id=failed_run_id,
+        fixed_after_test_run_id=fixed_run_id,
+        diagnostic_session_id=diagnostic_id,
+    )
+
+
+def _publish_valid_physical_fixture(
+    tmp_path: Path,
+    project_root: Path,
+    data_root: Path,
+    run_id: str,
+) -> None:
+    """Create a valid stored physical publication through TestRunPublisher."""
+    workspace = WorkspacePaths.from_roots(
+        data_root, project_root, PROJECT_ID, "vs08a-keil-session"
+    )
+    evidence = EvidenceStore(workspace.workspace_root / "evidence")
+    replay = RunRepository(evidence).load(FAILED_RUN_ID)
+    manifest = replace(replay.manifest, run_id=run_id, transport="mailbox")
+    manifest_path = tmp_path / f"{run_id}-manifest.json"
+    manifest_path.write_bytes(canonical_json_bytes(manifest.to_dict()))
+    manifest_artifact = evidence.ingest_file(
+        manifest_path, kind="test-manifest", media_type="application/json"
+    )
+    identity = manifest.identity
+    digest = "a" * 64
+    envelope = EvidenceEnvelope(
+        identity=identity,
+        operation="target-test-physical",
+        produced_at_utc=manifest.ended_at_utc,
+        parents=(),
+        artifacts=(manifest_artifact, manifest.raw_events),
+        metadata={
+            "action_digest": digest,
+            "execution_source": "physical",
+            "flash_session_id": "flash-vs08a-fixture",
+            "import_session_id": identity.session_id,
+            "import_workspace_id": identity.workspace_id,
+            "intent_digest": digest,
+            "inventory_digest": "b" * 64,
+            "lease_id": "lease-vs08a-fixture",
+            "origin_session_id": identity.session_id,
+            "origin_workspace_id": identity.workspace_id,
+            "physical_transport_evidence": True,
+            "probe_id": "d" * 64,
+            "target_id": identity.target_device,
+            "transport_config_digest": "c" * 64,
+        },
+    )
+    evidence.put_envelope(envelope)
+    RunPublisher(evidence, project_root, tmp_path / "physical-results").publish_target_physical(
+        manifest, envelope
+    )
 
 
 @pytest.mark.parametrize("origin,scenario_id", [
@@ -457,6 +546,290 @@ def test_vs08a_completed_software_chain_reloads_acceptance_record(
     assert shown.data == {"authoritative": True, "record": record}
 
 
+def test_vs08a_real_reader_idempotency_survives_advancing_clock(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    project_root, data_root, diagnostic_id = _complete_existing_chain(
+        tmp_path, "keil", monkeypatch
+    )
+    ticks = iter(
+        (
+            "2026-08-24T00:00:00.000000Z",
+            "2026-08-24T00:00:01.000000Z",
+        )
+    )
+    monkeypatch.setattr(acceptance_workflows, "_utc_now", lambda: next(ticks))
+    first = _record(project_root, data_root, diagnostic_id=diagnostic_id)
+    assert first.ok is True, first.to_dict()
+    retry = _record(project_root, data_root, diagnostic_id=diagnostic_id)
+    assert retry.ok is True, retry.to_dict()
+    assert retry.data == first.data
+
+
+def test_vs08a_real_reader_conflict_preserves_existing_acceptance_bytes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    project_root, data_root, first_diagnostic_id = _complete_existing_chain(
+        tmp_path, "keil", monkeypatch
+    )
+    first = _record(project_root, data_root, diagnostic_id=first_diagnostic_id)
+    assert first.ok is True, first.to_dict()
+    workspace = WorkspacePaths.from_roots(
+        data_root, project_root, PROJECT_ID, "vs08a-keil-session"
+    )
+    evidence_root = workspace.workspace_root / "evidence"
+    second_failed_id = "00000000-0000-4000-8000-000000000007"
+    second_fixed_id = "00000000-0000-4000-8000-000000000008"
+    _, _, second_diagnostic_id = _complete_existing_chain(
+        tmp_path,
+        "keil",
+        monkeypatch,
+        failed_run_id=second_failed_id,
+        fixed_run_id=second_fixed_id,
+        diagnostic_compact_id="00000000000040008000000000000005",
+        operation_prefix="vs08a-alt",
+    )
+    before = _evidence_snapshot(evidence_root)
+    conflict = _record(
+        project_root,
+        data_root,
+        diagnostic_id=second_diagnostic_id,
+        failed_run_id=second_failed_id,
+        fixed_run_id=second_fixed_id,
+    )
+    assert conflict.ok is False
+    assert conflict.code == "ACCEPTANCE_RECORD_CONFLICT"
+    assert _evidence_snapshot(evidence_root) == before
+
+
+def test_vs08a_real_physical_publication_is_rejected_without_acceptance_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    project_root, data_root, diagnostic_id = _complete_existing_chain(
+        tmp_path, "keil", monkeypatch
+    )
+    physical_run_id = "00000000-0000-4000-8000-000000000009"
+    _publish_valid_physical_fixture(tmp_path, project_root, data_root, physical_run_id)
+    workspace = WorkspacePaths.from_roots(
+        data_root, project_root, PROJECT_ID, "vs08a-keil-session"
+    )
+    evidence_root = workspace.workspace_root / "evidence"
+    before = _evidence_snapshot(evidence_root)
+    result = _record(
+        project_root,
+        data_root,
+        diagnostic_id=diagnostic_id,
+        failed_run_id=physical_run_id,
+    )
+    assert result.ok is False
+    assert result.code == "ACCEPTANCE_PHYSICAL_EVIDENCE_FORBIDDEN"
+    assert not list((evidence_root / "roots" / "acceptance-scenario").glob("*.json"))
+    assert _evidence_snapshot(evidence_root) == before
+
+
+@pytest.mark.parametrize(
+    ("damage", "expected"),
+    [
+        ("missing", "ACCEPTANCE_REFERENCE_INVALID"),
+        ("corrupt", "ACCEPTANCE_EVIDENCE_INTEGRITY_FAILED"),
+    ],
+    ids=["missing-acceptance-root", "corrupt-acceptance-root"],
+)
+def test_vs08a_real_acceptance_show_distinguishes_missing_and_corrupt_root(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    damage: str,
+    expected: str,
+):
+    project_root, data_root, diagnostic_id = _complete_existing_chain(
+        tmp_path, "keil", monkeypatch
+    )
+    created = _record(project_root, data_root, diagnostic_id=diagnostic_id)
+    assert created.ok is True, created.to_dict()
+    workspace = WorkspacePaths.from_roots(
+        data_root, project_root, PROJECT_ID, "vs08a-keil-session"
+    )
+    evidence_root = workspace.workspace_root / "evidence"
+    acceptance_root = next(
+        (evidence_root / "roots" / "acceptance-scenario").glob("*.json")
+    )
+    if damage == "missing":
+        acceptance_root.unlink()
+    else:
+        acceptance_root.write_bytes(b"{}")
+    before = _evidence_snapshot(evidence_root)
+    shown = show_acceptance_scenario(
+        AcceptanceWorkflowContext(project_root, data_root, "vs08a-keil-session"),
+        record_id=RECORD_ID,
+    )
+    assert shown.ok is False
+    assert shown.code == expected
+    assert _evidence_snapshot(evidence_root) == before
+
+
+def test_vs08a_real_envelope_corruption_is_integrity_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    project_root, data_root, diagnostic_id = _complete_existing_chain(
+        tmp_path, "keil", monkeypatch
+    )
+    monkeypatch.setattr(
+        acceptance_workflows,
+        "_utc_now",
+        lambda: "2026-08-24T00:00:00.000000Z",
+    )
+    created = _record(project_root, data_root, diagnostic_id=diagnostic_id)
+    assert created.ok is True, created.to_dict()
+    workspace = WorkspacePaths.from_roots(
+        data_root, project_root, PROJECT_ID, "vs08a-keil-session"
+    )
+    evidence_root = workspace.workspace_root / "evidence"
+    root_path = next(
+        (evidence_root / "roots" / "acceptance-scenario").glob("*.json")
+    )
+    manifest_id = json.loads(root_path.read_bytes().decode("utf-8"))["manifest_id"]
+    root_path.unlink()
+    (evidence_root / "manifests" / f"{manifest_id}.json").write_bytes(b"{}")
+    before = _evidence_snapshot(evidence_root)
+    result = _record(project_root, data_root, diagnostic_id=diagnostic_id)
+    assert result.ok is False
+    assert result.code == "ACCEPTANCE_EVIDENCE_INTEGRITY_FAILED"
+    assert not list((evidence_root / "roots" / "acceptance-scenario").glob("*.json"))
+    assert _evidence_snapshot(evidence_root) == before
+
+
+def test_vs08a_real_root_publication_corruption_is_integrity_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    project_root, data_root, diagnostic_id = _complete_existing_chain(
+        tmp_path, "keil", monkeypatch
+    )
+    workspace = WorkspacePaths.from_roots(
+        data_root, project_root, PROJECT_ID, "vs08a-keil-session"
+    )
+    raised = False
+
+    def fail_before_root_publish(point: str):
+        nonlocal raised
+        if point == "gc-root.before_publish" and not raised:
+            raised = True
+            raise EvidenceValidationError(EVIDENCE_CORRUPT, "root store corruption")
+
+    monkeypatch.setattr(
+        acceptance_workflows,
+        "_evidence_store_factory",
+        lambda _path: EvidenceStore(
+            workspace.workspace_root / "evidence",
+            fault_injector=fail_before_root_publish,
+        ),
+    )
+    result = _record(project_root, data_root, diagnostic_id=diagnostic_id)
+    assert result.ok is False
+    assert result.code == "ACCEPTANCE_EVIDENCE_INTEGRITY_FAILED"
+    assert raised is True
+    assert not list(
+        (workspace.workspace_root / "evidence" / "roots" / "acceptance-scenario").glob(
+            "*.json"
+        )
+    )
+
+
+def test_vs08a_real_different_root_race_is_record_conflict(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    project_root, data_root, diagnostic_id = _complete_existing_chain(
+        tmp_path, "keil", monkeypatch
+    )
+    monkeypatch.setattr(
+        acceptance_workflows,
+        "_utc_now",
+        lambda: "2026-08-24T00:00:00.000000Z",
+    )
+    created = _record(project_root, data_root, diagnostic_id=diagnostic_id)
+    assert created.ok is True, created.to_dict()
+    workspace = WorkspacePaths.from_roots(
+        data_root, project_root, PROJECT_ID, "vs08a-keil-session"
+    )
+    evidence = EvidenceStore(workspace.workspace_root / "evidence")
+    acceptance_root = next(
+        (evidence.root / "roots" / "acceptance-scenario").glob("*.json")
+    )
+    root_document = json.loads(acceptance_root.read_bytes().decode("utf-8"))
+    original_envelope = evidence.get_envelope(root_document["manifest_id"])
+    alternate_data = dict(created.data["record"])
+    alternate_data["completedStages"] = list(alternate_data["completedStages"])
+    alternate_data["fixVerificationId"] = "e" * 64
+    alternate_record = AcceptanceRecord.from_value(alternate_data)
+    alternate_envelope = acceptance_workflows._acceptance_envelope(
+        alternate_record,
+        identity=original_envelope.identity,
+        parents=original_envelope.parents,
+    )
+    evidence.put_envelope(alternate_envelope)
+    alternate_root = RootRecord(
+        "acceptance-scenario",
+        RECORD_ID,
+        str(alternate_envelope.evidence_id),
+        acceptance_workflows._acceptance_root_metadata(alternate_record),
+    )
+    acceptance_root.unlink()
+    raced = False
+    target = acceptance_workflows._typed_root_path(
+        evidence, "acceptance-scenario", RECORD_ID
+    )
+
+    def publish_different_root(point: str):
+        nonlocal raced
+        if point == "gc-root.before_publish" and not raced:
+            raced = True
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(canonical_json_bytes(alternate_root.to_dict()))
+
+    monkeypatch.setattr(
+        acceptance_workflows,
+        "_evidence_store_factory",
+        lambda _path: EvidenceStore(
+            workspace.workspace_root / "evidence",
+            fault_injector=publish_different_root,
+        ),
+    )
+    result = _record(project_root, data_root, diagnostic_id=diagnostic_id)
+    assert result.ok is False
+    assert result.code == "ACCEPTANCE_RECORD_CONFLICT"
+    assert raced is True
+    assert target.read_bytes() == canonical_json_bytes(alternate_root.to_dict())
+
+
+def test_vs08a_real_identical_root_publication_race_reloads_record(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    project_root, data_root, diagnostic_id = _complete_existing_chain(
+        tmp_path, "keil", monkeypatch
+    )
+    raised = False
+
+    def publish_then_raise(point: str):
+        nonlocal raised
+        if point == "gc-root.after_publish" and not raised:
+            raised = True
+            raise EvidenceValidationError(EVIDENCE_CORRUPT, "identical root race")
+
+    workspace = WorkspacePaths.from_roots(
+        data_root, project_root, PROJECT_ID, "vs08a-keil-session"
+    )
+    monkeypatch.setattr(
+        acceptance_workflows,
+        "_evidence_store_factory",
+        lambda _path: EvidenceStore(
+            workspace.workspace_root / "evidence",
+            fault_injector=publish_then_raise,
+        ),
+    )
+    result = _record(project_root, data_root, diagnostic_id=diagnostic_id)
+    assert result.ok is True, result.to_dict()
+    assert raised is True
+
+
 def test_vs08a_definition_origin_mismatch_fails_before_publication(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
@@ -491,12 +864,183 @@ def test_vs08a_definition_origin_mismatch_fails_before_publication(
     assert after_acceptance_roots == before_acceptance_roots == ()
 
 
+def test_vs08a_real_reader_cross_workspace_reference_is_rejected(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    project_root, data_root, diagnostic_id = _complete_existing_chain(
+        tmp_path, "keil", monkeypatch
+    )
+    other_project_root = tmp_path / "other-workspace-project"
+    other_project_root.mkdir()
+    (other_project_root / ".stm32-project.json").write_bytes(
+        (project_root / ".stm32-project.json").read_bytes()
+    )
+    source_workspace = WorkspacePaths.from_roots(
+        data_root, project_root, PROJECT_ID, "vs08a-keil-session"
+    )
+    other_workspace = WorkspacePaths.from_roots(
+        data_root, other_project_root, PROJECT_ID, "vs08a-keil-session"
+    )
+    shutil.copytree(
+        source_workspace.workspace_root / "evidence",
+        other_workspace.workspace_root / "evidence",
+    )
+    evidence_root = other_workspace.workspace_root / "evidence"
+    before = _evidence_snapshot(evidence_root)
+    result = _record(
+        other_project_root,
+        data_root,
+        diagnostic_id=diagnostic_id,
+    )
+    assert result.ok is False
+    assert result.code == "ACCEPTANCE_IDENTITY_MISMATCH"
+    assert not list((evidence_root / "roots" / "acceptance-scenario").glob("*.json"))
+    assert _evidence_snapshot(evidence_root) == before
+
+
+def test_vs08a_real_reader_cross_project_reference_is_rejected(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    project_root, data_root, diagnostic_id = _complete_existing_chain(
+        tmp_path, "keil", monkeypatch
+    )
+    other_project_id = UUID("87654321-4321-8765-4321-876543214321")
+    other_project_root = tmp_path / "other-logical-project"
+    other_project_root.mkdir()
+    manifest = _project_manifest("keil")
+    manifest["logicalProjectId"] = str(other_project_id)
+    (other_project_root / ".stm32-project.json").write_bytes(
+        json.dumps(manifest, sort_keys=True, separators=(",", ":")).encode()
+    )
+    source_workspace = WorkspacePaths.from_roots(
+        data_root, project_root, PROJECT_ID, "vs08a-keil-session"
+    )
+    other_workspace = WorkspacePaths.from_roots(
+        data_root, other_project_root, other_project_id, "vs08a-keil-session"
+    )
+    shutil.copytree(
+        source_workspace.workspace_root / "evidence",
+        other_workspace.workspace_root / "evidence",
+    )
+    evidence_root = other_workspace.workspace_root / "evidence"
+    before = _evidence_snapshot(evidence_root)
+    result = _record(
+        other_project_root,
+        data_root,
+        diagnostic_id=diagnostic_id,
+    )
+    assert result.ok is False
+    assert result.code == "ACCEPTANCE_IDENTITY_MISMATCH"
+    assert not list((evidence_root / "roots" / "acceptance-scenario").glob("*.json"))
+    assert _evidence_snapshot(evidence_root) == before
+
+
+@pytest.mark.parametrize(
+    ("wrong_side", "role", "wrong_run_id"),
+    [
+        ("before", "fixed-after", "00000000-0000-4000-8000-000000000007"),
+        ("after", "failed-before", "00000000-0000-4000-8000-000000000008"),
+    ],
+    ids=["before-not-failed", "after-not-passed"],
+)
+def test_vs08a_real_reader_wrong_failed_fixed_state_is_rejected(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    wrong_side: str,
+    role: str,
+    wrong_run_id: str,
+):
+    project_root, data_root, diagnostic_id = _complete_existing_chain(
+        tmp_path, "keil", monkeypatch
+    )
+    descriptor, stream = _canonical_replay_inputs(tmp_path, role, wrong_run_id)
+    testing = TestContext(project_root, data_root, "vs08a-keil-session")
+    _ok(target_replay_run(testing, wrong_run_id, descriptor, stream))
+    workspace = WorkspacePaths.from_roots(
+        data_root, project_root, PROJECT_ID, "vs08a-keil-session"
+    )
+    evidence_root = workspace.workspace_root / "evidence"
+    before = _evidence_snapshot(evidence_root)
+    result = _record(
+        project_root,
+        data_root,
+        diagnostic_id=diagnostic_id,
+        failed_run_id=wrong_run_id if wrong_side == "before" else FAILED_RUN_ID,
+        fixed_run_id=FIXED_RUN_ID if wrong_side == "before" else wrong_run_id,
+    )
+    assert result.ok is False
+    assert result.code == "ACCEPTANCE_REFERENCE_INVALID"
+    assert not list((evidence_root / "roots" / "acceptance-scenario").glob("*.json"))
+    assert _evidence_snapshot(evidence_root) == before
+
+
+@pytest.mark.parametrize(
+    ("damage", "expected"),
+    [("missing", "ACCEPTANCE_REFERENCE_INVALID"), ("corrupt", "ACCEPTANCE_EVIDENCE_INTEGRITY_FAILED")],
+    ids=["missing-public-root", "corrupt-public-root"],
+)
+def test_vs08a_real_test_show_distinguishes_missing_and_corrupt_root(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    damage: str,
+    expected: str,
+):
+    project_root, data_root, diagnostic_id = _complete_existing_chain(
+        tmp_path, "keil", monkeypatch
+    )
+    workspace = WorkspacePaths.from_roots(
+        data_root, project_root, PROJECT_ID, "vs08a-keil-session"
+    )
+    evidence_root = workspace.workspace_root / "evidence"
+    fixed_root = next(
+        path
+        for path in (evidence_root / "roots" / "test-run").glob("*.json")
+        if json.loads(path.read_bytes().decode())["root_id"] == FIXED_RUN_ID
+    )
+    if damage == "missing":
+        fixed_root.unlink()
+    else:
+        fixed_root.write_bytes(b"{}")
+    before = _evidence_snapshot(evidence_root)
+    result = _record(project_root, data_root, diagnostic_id=diagnostic_id)
+    assert result.ok is False
+    assert result.code == expected
+    assert not list((evidence_root / "roots" / "acceptance-scenario").glob("*.json"))
+    assert _evidence_snapshot(evidence_root) == before
+
+
+def test_vs08a_real_diagnostic_show_corruption_is_integrity_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    project_root, data_root, diagnostic_id = _complete_existing_chain(
+        tmp_path, "keil", monkeypatch
+    )
+    workspace = WorkspacePaths.from_roots(
+        data_root, project_root, PROJECT_ID, "vs08a-keil-session"
+    )
+    events = workspace.diagnostics_root / "sessions" / diagnostic_id.replace("-", "") / "events"
+    latest = sorted(events.glob("*.json"))[-1]
+    latest.write_bytes(b"not-json")
+    evidence_root = workspace.workspace_root / "evidence"
+    before = _evidence_snapshot(evidence_root)
+    result = _record(project_root, data_root, diagnostic_id=diagnostic_id)
+    assert result.ok is False
+    assert result.code == "ACCEPTANCE_EVIDENCE_INTEGRITY_FAILED"
+    assert not list((evidence_root / "roots" / "acceptance-scenario").glob("*.json"))
+    assert _evidence_snapshot(evidence_root) == before
+
+
 def test_vs08a_unresolved_diagnostic_is_rejected_without_acceptance_root(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
     project_root, data_root, diagnostic_id = _complete_existing_chain(
         tmp_path, "keil", monkeypatch, complete_verification=False
     )
+    workspace = WorkspacePaths.from_roots(
+        data_root, project_root, PROJECT_ID, "vs08a-keil-session"
+    )
+    evidence_root = workspace.workspace_root / "evidence"
+    before = _evidence_snapshot(evidence_root)
     result = record_acceptance_scenario(
         AcceptanceWorkflowContext(project_root, data_root, "vs08a-keil-session"),
         record_id=RECORD_ID,
@@ -509,6 +1053,7 @@ def test_vs08a_unresolved_diagnostic_is_rejected_without_acceptance_root(
     assert result.ok is False
     assert result.code == "ACCEPTANCE_NOT_COMPLETE"
     assert not list((data_root).rglob("*/roots/acceptance-scenario/*.json"))
+    assert _evidence_snapshot(evidence_root) == before
 
 
 def test_vs08a_nonpassing_verification_is_rejected_without_acceptance_root(
@@ -517,6 +1062,11 @@ def test_vs08a_nonpassing_verification_is_rejected_without_acceptance_root(
     project_root, data_root, diagnostic_id = _complete_existing_chain(
         tmp_path, "keil", monkeypatch, cancelled=True
     )
+    workspace = WorkspacePaths.from_roots(
+        data_root, project_root, PROJECT_ID, "vs08a-keil-session"
+    )
+    evidence_root = workspace.workspace_root / "evidence"
+    before = _evidence_snapshot(evidence_root)
     result = record_acceptance_scenario(
         AcceptanceWorkflowContext(project_root, data_root, "vs08a-keil-session"),
         record_id=RECORD_ID,
@@ -529,6 +1079,7 @@ def test_vs08a_nonpassing_verification_is_rejected_without_acceptance_root(
     assert result.ok is False
     assert result.code == "ACCEPTANCE_NOT_COMPLETE"
     assert not list((data_root).rglob("*/roots/acceptance-scenario/*.json"))
+    assert _evidence_snapshot(evidence_root) == before
 
 
 def test_vs08a_verification_bound_to_different_fixed_run_is_rejected(
@@ -549,6 +1100,11 @@ def test_vs08a_verification_bound_to_different_fixed_run_is_rejected(
             alternate_stream,
         )
     )
+    workspace = WorkspacePaths.from_roots(
+        data_root, project_root, PROJECT_ID, "vs08a-keil-session"
+    )
+    evidence_root = workspace.workspace_root / "evidence"
+    before = _evidence_snapshot(evidence_root)
     result = record_acceptance_scenario(
         AcceptanceWorkflowContext(project_root, data_root, "vs08a-keil-session"),
         record_id=RECORD_ID,
@@ -561,36 +1117,7 @@ def test_vs08a_verification_bound_to_different_fixed_run_is_rejected(
     assert result.ok is False
     assert result.code == "ACCEPTANCE_REFERENCE_INVALID", result.to_dict()
     assert not list((data_root).rglob("*/roots/acceptance-scenario/*.json"))
-
-
-def test_vs08a_diagnostic_verification_reader_identity_failure_is_mapped(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-):
-    project_root, data_root, diagnostic_id = _complete_existing_chain(
-        tmp_path, "keil", monkeypatch
-    )
-    monkeypatch.setattr(
-        acceptance_workflows,
-        "diagnostic_show_verification",
-        lambda _context, *, diagnostic_session_id: OperationResult.failure(
-            "diagnostic.verification.show",
-            "DIAGNOSTIC_IDENTITY_MISMATCH",
-            "diagnostic reader failure",
-            {},
-        ),
-    )
-    result = record_acceptance_scenario(
-        AcceptanceWorkflowContext(project_root, data_root, "vs08a-keil-session"),
-        record_id=RECORD_ID,
-        scenario_id="legacy-keil-migration",
-        scenario_version="1",
-        failed_before_test_run_id=FAILED_RUN_ID,
-        fixed_after_test_run_id=FIXED_RUN_ID,
-        diagnostic_session_id=diagnostic_id,
-    )
-    assert result.ok is False
-    assert result.code == "ACCEPTANCE_IDENTITY_MISMATCH"
-    assert not list((data_root).rglob("*/roots/acceptance-scenario/*.json"))
+    assert _evidence_snapshot(evidence_root) == before
 
 
 def test_vs08a_scenario_contract_is_software_only():

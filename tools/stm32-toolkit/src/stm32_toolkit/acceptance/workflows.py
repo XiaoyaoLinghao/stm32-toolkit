@@ -76,6 +76,18 @@ _ACCEPTANCE_ROOT_METADATA = frozenset(
         "logical_project_id",
     }
 )
+_DIAGNOSTIC_READER_FAILURE_CODES = {
+    "DIAGNOSTIC_EVIDENCE_MISSING": "ACCEPTANCE_REFERENCE_INVALID",
+    "DIAGNOSTIC_IDENTITY_MISMATCH": "ACCEPTANCE_IDENTITY_MISMATCH",
+    "INCOMPATIBLE_IDENTITY": "ACCEPTANCE_IDENTITY_MISMATCH",
+    "EVIDENCE_INTEGRITY_FAILURE": "ACCEPTANCE_EVIDENCE_INTEGRITY_FAILED",
+    "DIAGNOSTIC_INVALID_EVENT": "ACCEPTANCE_EVIDENCE_INTEGRITY_FAILED",
+    "DIAGNOSTIC_INVALID_TRANSITION": "ACCEPTANCE_EVIDENCE_INTEGRITY_FAILED",
+    "DIAGNOSTIC_REVISION_CONFLICT": "ACCEPTANCE_EVIDENCE_INTEGRITY_FAILED",
+    "DIAGNOSTIC_LIMIT_EXCEEDED": "ACCEPTANCE_EVIDENCE_INTEGRITY_FAILED",
+    "DIAGNOSTIC_PLAN_INVALID": "ACCEPTANCE_EVIDENCE_INTEGRITY_FAILED",
+    "DIAGNOSTIC_OPERATION_CONFLICT": "ACCEPTANCE_EVIDENCE_INTEGRITY_FAILED",
+}
 
 
 _MESSAGES = {
@@ -218,13 +230,9 @@ def _reader_failure_code(
         if observed.startswith("EVIDENCE_"):
             return "ACCEPTANCE_EVIDENCE_INTEGRITY_FAILED"
         return "ACCEPTANCE_REFERENCE_INVALID"
-    if observed == "DIAGNOSTIC_NOT_FOUND":
-        return "ACCEPTANCE_REFERENCE_INVALID"
-    if observed == "DIAGNOSTIC_IDENTITY_MISMATCH":
-        return "ACCEPTANCE_IDENTITY_MISMATCH"
-    if observed.startswith("DIAGNOSTIC_"):
-        return "ACCEPTANCE_EVIDENCE_INTEGRITY_FAILED"
-    return "ACCEPTANCE_NOT_COMPLETE"
+    return _DIAGNOSTIC_READER_FAILURE_CODES.get(
+        observed, "ACCEPTANCE_EVIDENCE_INTEGRITY_FAILED"
+    )
 
 
 def _require_success(
@@ -712,6 +720,9 @@ def _record_acceptance(
     # Step 7: existing immutable EvidenceStore primitives own publication.
     try:
         evidence.put_envelope(envelope)
+    except EvidenceValidationError as error:
+        raise _AcceptanceFailure("ACCEPTANCE_EVIDENCE_INTEGRITY_FAILED") from error
+    try:
         put_root(
             evidence,
             RootRecord(
@@ -723,7 +734,7 @@ def _record_acceptance(
         )
     except EvidenceValidationError as error:
         if error.code == EVIDENCE_CORRUPT:
-            # An identical immutable retry is reusable; a different root is a conflict.
+            # A root race can reuse an identical record; a different root is a conflict.
             existing = _check_existing_record(
                 evidence,
                 record_id=record.record_id,
@@ -731,7 +742,10 @@ def _record_acceptance(
             )
             if existing is not None:
                 return existing
-            return _failure(_RECORD_OPERATION, "ACCEPTANCE_RECORD_CONFLICT")
+            # EVIDENCE_CORRUPT from a root publication is a conflict only when
+            # the immutable root can be reloaded and proves a different record.
+            # A missing/unreadable root is store corruption, not an ID conflict.
+            return _failure(_RECORD_OPERATION, "ACCEPTANCE_EVIDENCE_INTEGRITY_FAILED")
         raise _AcceptanceFailure("ACCEPTANCE_EVIDENCE_INTEGRITY_FAILED") from error
     # Step 8: reload every published byte through authoritative readers.
     stored, _root, _stored_envelope = _read_acceptance(evidence, record.record_id)
