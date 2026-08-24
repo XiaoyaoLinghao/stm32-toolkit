@@ -595,6 +595,49 @@ def _stage_reference_shape(
     return test_value, diagnostic_value, acceptance_value
 
 
+def _checkpoint_retry_matches(
+    attempt: AcceptanceAttempt,
+    *,
+    expected_revision: int,
+    stage: str,
+    test_run_id: str | None,
+    diagnostic_session_id: str | None,
+    acceptance_record_id: str | None,
+) -> bool:
+    """Check a response-loss retry against the already-published next revision."""
+    if attempt.revision != expected_revision + 1:
+        return False
+    expected_prefix = REQUIRED_STAGES[: expected_revision + 1 if expected_revision < 4 else expected_revision]
+    if tuple(attempt.completed_stages) != expected_prefix:
+        return False
+    outputs = attempt.stage_outputs
+    if stage == "project-materialized":
+        return test_run_id is None and diagnostic_session_id is None and acceptance_record_id is None and outputs["projectModelDigest"] is not None
+    if stage == "firmware-built-before":
+        return test_run_id is None and diagnostic_session_id is None and acceptance_record_id is None and outputs["beforeBuildId"] is not None
+    if stage == "target-failure-replayed":
+        return (
+            test_run_id == outputs["failedBeforeTestRunId"]
+            and diagnostic_session_id is None
+            and acceptance_record_id is None
+        )
+    if stage == "diagnosis-completed":
+        return (
+            diagnostic_session_id == outputs["diagnosticSessionId"]
+            and test_run_id is None
+            and acceptance_record_id is None
+        )
+    if stage == "firmware-built-after":
+        return test_run_id is None and diagnostic_session_id is None and acceptance_record_id is None and outputs["afterBuildId"] is not None
+    if stage == "target-fix-verified":
+        return (
+            acceptance_record_id == outputs["acceptanceRecordId"]
+            and test_run_id is None
+            and diagnostic_session_id is None
+        )
+    return False
+
+
 def _check_deadline(attempt: AcceptanceAttempt, now: str) -> None:
     if attempt.deadline_at_utc is not None and _timestamp(now) > _timestamp(attempt.deadline_at_utc):
         raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_TIMED_OUT")
@@ -606,6 +649,14 @@ def _public_data(result: object) -> Mapping[str, object]:
     value = result.to_dict().get("data")
     if not isinstance(value, Mapping):
         raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_OUTPUT_INVALID")
+    return cast(Mapping[str, object], _thaw_json(value))
+
+
+def _thaw_json(value: object) -> object:
+    if isinstance(value, Mapping):
+        return {str(key): _thaw_json(item) for key, item in value.items()}
+    if isinstance(value, (tuple, list)):
+        return [_thaw_json(item) for item in value]
     return value
 
 
@@ -677,7 +728,14 @@ def _build_transition(
             session = DiagnosticSession.from_value(session_data)
         except (DiagnosticValidationError, TypeError, ValueError) as error:
             raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_EVIDENCE_INTEGRITY_FAILED") from error
-        _validate_diagnostic_session(session, attempt, model, workspace, allow_source_change=False)
+        _validate_diagnostic_session(
+            session,
+            attempt,
+            model,
+            workspace,
+            expected_session_id=diagnostic_session_id,
+            allow_source_change=False,
+        )
         outputs["diagnosticSessionId"] = diagnostic_session_id
         outputs["diagnosticRevision"] = session.revision
         outputs["diagnosticEventHead"] = session.event_head
@@ -700,13 +758,22 @@ def _build_transition(
             session = DiagnosticSession.from_value(session_data)
         except (DiagnosticValidationError, TypeError, ValueError) as error:
             raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_EVIDENCE_INTEGRITY_FAILED") from error
-        _validate_diagnostic_session(session, attempt, model, workspace, allow_source_change=True)
+        _validate_diagnostic_session(
+            session,
+            attempt,
+            model,
+            workspace,
+            expected_session_id=session_id,
+            allow_source_change=True,
+        )
         declarations = tuple(session.source_change_declarations)
         if len(declarations) != 1 or session.revision <= int(authorization["diagnosticRevision"]):
             raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_OUTPUT_INVALID")
         declaration = declarations[0]
         if (
-            declaration.before_build_id != attempt.stage_outputs.get("beforeBuildId")
+            declaration.before_source_sha256 != attempt.stage_outputs.get("beforeInputSnapshotSha256")
+            or declaration.after_source_sha256 != build["inputSnapshotSha256"]
+            or declaration.before_build_id != attempt.stage_outputs.get("beforeBuildId")
             or declaration.before_elf_sha256 != attempt.stage_outputs.get("beforeElfSha256")
             or declaration.after_build_id != build["buildId"]
             or declaration.after_elf_sha256 != build["elfSha256"]
@@ -783,13 +850,22 @@ def _validate_diagnostic_session(
     model: object,
     workspace: WorkspacePaths,
     *,
+    expected_session_id: str,
     allow_source_change: bool,
 ) -> None:
+    target = getattr(model, "target_device", None)
+    if target is None:
+        target = getattr(getattr(model, "target", None), "device", None)
     if (
-        session.failed_test_run_id != attempt.stage_outputs.get("failedBeforeTestRunId")
+        session.diagnostic_session_id != expected_session_id.replace("-", "")
+        or session.failed_test_run_id != attempt.stage_outputs.get("failedBeforeTestRunId")
         or session.failed_evidence_id != attempt.stage_outputs.get("failedBeforeEvidenceId")
         or session.identity.project_id != str(getattr(model, "logical_project_id"))
         or session.identity.workspace_id != workspace.workspace_id
+        or session.identity.target_device != target
+        or session.identity.build_id != attempt.stage_outputs.get("beforeBuildId")
+        or session.identity.elf_sha256 != attempt.stage_outputs.get("beforeElfSha256")
+        or session.identity.input_snapshot_sha256 != attempt.stage_outputs.get("beforeInputSnapshotSha256")
     ):
         raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_IDENTITY_MISMATCH")
     if not allow_source_change and session.state != "INVESTIGATING":
@@ -928,6 +1004,17 @@ def _checkpoint_attempt(
     current = chain[-1][0]
     if current.revision != expected_revision:
         if current.revision > expected_revision:
+            if _checkpoint_retry_matches(
+                current,
+                expected_revision=expected_revision,
+                stage=stage,
+                test_run_id=test_value,
+                diagnostic_session_id=diagnostic_value,
+                acceptance_record_id=acceptance_value,
+            ):
+                return OperationResult.success(
+                    "acceptance.attempt.checkpoint", {"attempt": current.to_dict()}
+                )
             raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_REVISION_CONFLICT")
         raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_EVIDENCE_INTEGRITY_FAILED")
     if current.next_stage != stage:
@@ -1025,6 +1112,16 @@ def _authorize_source_change(
     )
     current = chain[-1][0]
     if current.revision != expected_revision:
+        if (
+            current.revision == expected_revision + 1
+            and expected_revision == 4
+            and current.source_change_authorization is not None
+            and current.source_change_authorization.get("actionDigest") == action_digest
+            and authorized is True
+        ):
+            return OperationResult.success(
+                "acceptance.attempt.authorize-source-change", {"attempt": current.to_dict()}
+            )
         raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_REVISION_CONFLICT")
     now = _now(context)
     _check_deadline(current, now)

@@ -296,7 +296,7 @@ def _validate_stage_outputs(value: object, revision: int) -> dict[str, object]:
             if item is not None and (type(item) is not int or item < 0):
                 raise AcceptanceRecoveryValidationError(f"{key} must be a non-negative integer or null")
             continue
-        if key in {"failedBeforeTestRunId", "diagnosticSessionId"}:
+        if key in {"failedBeforeTestRunId", "diagnosticSessionId", "acceptanceRecordId"}:
             if item is not None:
                 _uuid(key, item)
         elif item is not None:
