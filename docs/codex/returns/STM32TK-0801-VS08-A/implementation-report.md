@@ -10,6 +10,7 @@
 - Branch: codex/STM32TK-0801-VS08-A
 - Worktree: C:/tmp/stm32tk-0801-vs08a
 - Product/tests CodeHead before this report was committed: 04617a9e7312a6d2854bee6ab7ec4f3ffaefcc9c
+- Corrected product/tests CodeHead for this report: a493ef11c0ea80b721be5615236c7bc99019b78b
 
 The product/tests commit was created before this report. The report commit's SHA is intentionally
 not recorded in this file.
@@ -101,6 +102,96 @@ fresh C:/tmp basetemp. No package installation was performed.
 
    Result: both commands passed with exit code 0. The accepted-base-to-product-head diff was
    also checked after the product commit with git diff --check 8f7bcb5c860998bc8459c7b33690d9a297319a6c..HEAD.
+
+### Review round 1 correction evidence
+
+The independent complete-diff review identified two product defects and insufficient exact-code
+coverage. The fixes were made on the same bounded branch with no scope expansion.
+
+#### RED
+
+1. Idempotency regression with an advancing clock:
+
+    $env:PYTHONPATH=(Resolve-Path '.\tools\stm32-toolkit\src').Path
+    py -3.12 -m pytest tools/stm32-toolkit/tests/test_acceptance_workflows.py::test_completed_replay_chain_publishes_reloadable_immutable_record -q --basetemp=C:\tmp\stm32tk-vs08a-red-idempotency-1
+
+   Expected failure: the first call returned `OK`, while the identical retry one clock tick
+   later returned `ACCEPTANCE_RECORD_CONFLICT`. This demonstrated that `producedAtUtc` was being
+   computed before existing-record comparison.
+
+2. Review workflow regressions:
+
+    $env:PYTHONPATH=(Resolve-Path '.\tools\stm32-toolkit\src').Path
+    py -3.12 -m pytest tools/stm32-toolkit/tests/test_acceptance_workflows.py -q --basetemp=C:\tmp\stm32tk-vs08a-red-review-workflow-1
+
+   Expected failures: five failures—advancing-clock idempotency conflict; a `NameError` for the
+   undefined `EVIDENCE_CORRUPT` branch; corrupt public Test evidence downgraded to
+   `ACCEPTANCE_REFERENCE_INVALID`; diagnostic identity mismatch downgraded to
+   `ACCEPTANCE_NOT_COMPLETE`; and diagnostic chain corruption downgraded to
+   `ACCEPTANCE_NOT_COMPLETE`.
+
+The new named mutation tests cover physical evidence, cross-workspace/project identity, wrong
+failed/fixed states, unresolved and non-passing diagnostic completion, mismatched verification
+binding, corrupt and missing/wrong-kind public roots, typed root-publication conflict, exact
+record-ID conflict with byte preservation, and public reader error-code mapping. Invalid attempts
+assert no acceptance root and, where applicable, unchanged prior Evidence bytes.
+
+#### GREEN after correction
+
+1. Workflow correction suite:
+
+    $env:PYTHONPATH=(Resolve-Path '.\tools\stm32-toolkit\src').Path
+    py -3.12 -m pytest tools/stm32-toolkit/tests/test_acceptance_workflows.py -q --basetemp=C:\tmp\stm32tk-vs08a-green-review-workflow-5
+
+   Result: 21 passed.
+
+2. Focused VS08-A correction suite:
+
+    $env:PYTHONPATH=(Resolve-Path '.\tools\stm32-toolkit\src').Path + ';' + (Resolve-Path '.\tools\stm32-monitor\src').Path
+    py -3.12 -m pytest tools/stm32-toolkit/tests/test_acceptance_model.py tools/stm32-toolkit/tests/test_acceptance_workflows.py tools/stm32-toolkit/tests/test_acceptance_cli.py tools/stm32-toolkit/tests/test_acceptance_mcp.py tools/stm32-toolkit/tests/test_vs08a_scenarios.py tools/stm32-toolkit/tests/test_evidence_gc.py::test_registered_typed_roots_are_closed_and_shared_objects_follow_reachability tools/stm32-toolkit/tests/test_mcp_server.py -q --basetemp=C:\tmp\stm32tk-vs08a-focused-review-final-2
+
+   Result: 59 passed.
+
+3. Affected regression suite:
+
+    $env:PYTHONPATH=(Resolve-Path '.\tools\stm32-toolkit\src').Path + ';' + (Resolve-Path '.\tools\stm32-monitor\src').Path
+    py -3.12 -m pytest tools/stm32-toolkit/tests/test_acceptance_model.py tools/stm32-toolkit/tests/test_acceptance_workflows.py tools/stm32-toolkit/tests/test_acceptance_cli.py tools/stm32-toolkit/tests/test_acceptance_mcp.py tools/stm32-toolkit/tests/test_vs08a_scenarios.py tools/stm32-toolkit/tests/test_evidence_gc.py tools/stm32-toolkit/tests/test_vs03_end_to_end.py tools/stm32-toolkit/tests/test_creation_workflows.py tools/stm32-toolkit/tests/test_workflows.py tools/stm32-toolkit/tests/test_mcp_server.py tools/stm32-toolkit/tests/test_testing_mcp.py tools/stm32-toolkit/tests/test_diagnostic_mcp.py tools/stm32-toolkit/tests/test_testing_cli.py tools/stm32-toolkit/tests/test_diagnostic_cli.py -q --basetemp=C:\tmp\stm32tk-vs08a-affected-review-final-2
+
+   Result: 476 passed, 1 skipped, exit code 0. The skip is the existing platform-only skip and
+   is not physical PASS evidence.
+
+4. Static checks after correction:
+
+    $env:PYTHONPATH=(Resolve-Path '.\tools\stm32-toolkit\src').Path + ';' + (Resolve-Path '.\tools\stm32-monitor\src').Path
+    py -3.12 -m compileall -q tools/stm32-toolkit/src tools/stm32-toolkit/tests
+    git diff --check
+    git diff --check 8f7bcb5c860998bc8459c7b33690d9a297319a6c..HEAD
+
+   Result: all commands passed with exit code 0.
+
+#### Correction files and self-review
+
+The correction product/tests commit touched exactly:
+
+- `tools/stm32-toolkit/src/stm32_toolkit/acceptance/workflows.py`
+- `tools/stm32-toolkit/tests/test_acceptance_workflows.py`
+- `tools/stm32-toolkit/tests/test_vs08a_scenarios.py`
+
+The workflow now compares all request-derived stable record fields before calling the clock,
+returns the exact existing record for an identical retry, and keeps a different same-ID request
+as `ACCEPTANCE_RECORD_CONFLICT` without replacing acceptance bytes. Evidence corruption uses the
+imported `EVIDENCE_CORRUPT` constant and returns only typed closed results. Public Test and
+Diagnostic reader failures deliberately distinguish missing/wrong-kind references, identity
+mismatch, incomplete completion, and existing corruption. Acceptance-root absence is
+`ACCEPTANCE_REFERENCE_INVALID`; an existing malformed root/envelope is
+`ACCEPTANCE_EVIDENCE_INTEGRITY_FAILED`. No controller, scheduler, daemon, provider, Evidence
+store, Probe backend, Python support, resume/checkpoint behavior, release gate, or unrelated
+refactor was added.
+
+The only compatibility concern remains the pre-existing Diagnostic compact 32-hex storage ID
+versus the canonical hyphenated acceptance UUID: the adapter maps only at lookup and stores the
+canonical UUID in the acceptance record. The vertical tests exercise this seam. Replay/fixture
+evidence remains explicitly non-physical, and no hardware or physical PASS was claimed.
 
 ## Exact files
 
