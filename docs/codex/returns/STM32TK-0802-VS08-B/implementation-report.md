@@ -5,7 +5,7 @@
 - Slice: VS08-B recovery, isolation, and human checkpoints, Task 1.
 - Accepted base: `eea72a46d9fcdcd7abd8ebfac5b09a8e921f6ba2`.
 - Specification/plan head: `79f6317d8fb7899bc2b24171ef4d516acbd837af`.
-- Product/tests CodeHead: `1e728111aac7c304c7b8c82c68a1ba0c0e503747` (`fix(acceptance): enforce immutable recovery chain semantics`).
+- Product/tests CodeHead: `38972842729f944359a58b3d696752f44d9fd6d5` (`fix(acceptance): close replay authority and begin races`).
 - Branch/worktree: `codex/STM32TK-0802-VS08-B` / `C:\tmp\stm32tk-0802-vs08b`.
 - Implementer: sole `gpt-5.6-luna`, max reasoning; independent acceptance remains with GPT-5.6-sol.
 - Remote state: no upstream, unpushed, no PR or other remote action.
@@ -36,6 +36,25 @@ The correction adds exact immutable retries for all checkpoint stages and source
 ## Correction round 2
 
 Independent review round 2 identified a canonical revision-chain semantic gap. The preserved RED reproduction was a public Keil revision-0 attempt followed by a canonical CubeMX revision-1 snapshot; public resume returned `True OK new-cubemx-project`. The correction validates immutable attempt/scenario/version/digest/policy/workspace/project/origin/execution/physical/opened fields, prior output and authorization continuity, timestamp/deadline policy, exact envelope parents/artifacts/produced time, and current project-origin binding on begin/show/resume/authorize/advance. Focused GREEN coverage includes scenario switch, prior-output rewrite, opened/deadline rewrite, authorization rewrite on an intact 0–6 chain, wrong/missing parent, artifact, produced-time mismatch, and public origin drift; all fail closed without publishing a new root. The round-2 affected matrix completed with exit 0; compileall and diff-check completed with exit 0. No hardware or remote action was performed.
+
+## Correction round 3
+
+Independent review round 3 was `REVISION_REQUIRED` for three bounded authority/concurrency gaps. The original RED output was not retained as a raw transcript; the following are result summaries from the exact focused commands, with no transcript reconstructed:
+
+- `py -3.12 -m pytest tests/test_acceptance_recovery_workflows.py::test_failed_replay_target_only_mismatch_fails_closed -q --basetemp=C:\tmp\stm32tk-0802-vs08b-r3-red-target` — RED, `1 failed` (`DID NOT RAISE`), PRODUCT: failed replay did not compare the published target device.
+- `py -3.12 -m pytest tests/test_acceptance_recovery_workflows.py::test_source_declaration_before_authorization_fails_closed tests/test_acceptance_recovery_workflows.py::test_stale_diagnostic_revision_or_head_fails_closed_before_authorization -q --basetemp=C:\tmp\stm32tk-0802-vs08b-r3-red-diagnostic` — RED, `2 failed` (both returned `OK`), PRODUCT: authorization did not reload Diagnostic authority.
+- `py -3.12 -m pytest tests/test_acceptance_recovery_workflows.py::test_concurrent_identical_begin_returns_one_exact_revision_zero -q --basetemp=C:\tmp\stm32tk-0802-vs08b-r3-red-concurrent` — RED, `1 failed`: one of two identical callers returned `ACCEPTANCE_ATTEMPT_EVIDENCE_INTEGRITY_FAILED`, PRODUCT: publication race did not converge.
+
+The correction adds the authoritative current-target comparison, reloads and validates the exact Diagnostic session/revision/event head/state/source-declaration set immediately before revision 5, and returns the exact existing revision-0 snapshot for identical requests serialized by the existing Evidence mutation lock. Distinct scenario/origin requests remain conflicts. The source-declaration and stale-authority tests now construct valid public Diagnostic snapshots rather than mocking the reader failure.
+
+GREEN evidence:
+
+- `py -3.12 -m pytest tests/test_acceptance_recovery_workflows.py::test_failed_replay_target_only_mismatch_fails_closed tests/test_acceptance_recovery_workflows.py::test_source_declaration_before_authorization_fails_closed tests/test_acceptance_recovery_workflows.py::test_stale_diagnostic_revision_or_head_fails_closed_before_authorization tests/test_acceptance_recovery_workflows.py::test_concurrent_identical_begin_returns_one_exact_revision_zero -q --basetemp=C:\tmp\stm32tk-0802-vs08b-r3-green-final` — `4 passed`.
+- `py -3.12 -m pytest tests/test_acceptance_recovery_workflows.py tests/test_vs08b_scenarios.py -q --basetemp=C:\tmp\stm32tk-0802-vs08b-r3-focused` — exit 0; recovery workflow and both real Keil/CubeMX revision-7 verticals passed.
+- `py -3.12 -m pytest tests/test_acceptance_recovery_model.py tests/test_acceptance_recovery_workflows.py tests/test_acceptance_recovery_mcp.py tests/test_acceptance_recovery_cli.py tests/test_acceptance_workflows.py tests/test_diagnostic_workflows.py tests/test_vs08a_scenarios.py tests/test_vs08b_scenarios.py -q --basetemp=C:\tmp\stm32tk-0802-vs08b-r3-matrix` — exit 0; `169` tests collected, no failure output.
+- `py -3.12 -m compileall -q src` and `git diff --check` — exit 0.
+
+No hardware, install, or remote action was performed. Product/tests CodeHead for this correction is the commit recorded in Handoff; the report commit is intentionally not named here.
 
 ## Verification commands
 
