@@ -23,7 +23,7 @@ from stm32_toolkit.probe.protocol import (
 )
 
 
-TOOLKIT_VERSION = "0.5.0"
+TOOLKIT_VERSION = "0.9.0"
 REQUEST_ID = "request-123"
 WORKSPACE_ID = "workspace-123"
 SESSION_ID = "session-123"
@@ -320,7 +320,7 @@ def test_response_encoding_is_deterministic_and_snapshots_payload():
         b'{"code":"OK","data":{"values":[{"address":536870912,"value":"0102"}]},'
         b'"details":{},"message":"","ok":true,"operation":"memory.read",'
         b'"protocol":"stm32-toolkit-probe/2","requestId":"request-123",'
-        b'"toolkitVersion":"0.5.0"}'
+        b'"toolkitVersion":"0.9.0"}'
     )
 
 

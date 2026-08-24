@@ -11,7 +11,13 @@ description: Use when a user explicitly asks to open the project-isolated STM32 
 4. Run in the foreground:
 
    ```powershell
-   & '${CLAUDE_PLUGIN_ROOT}/bin/stm32-monitor.cmd' open --project '${CLAUDE_PROJECT_DIR}' --data-root '${CLAUDE_PLUGIN_DATA}'
+   $previousStm32ToolkitDataRoot = [Environment]::GetEnvironmentVariable('STM32_TOOLKIT_DATA_ROOT', 'Process')
+   try {
+     [Environment]::SetEnvironmentVariable('STM32_TOOLKIT_DATA_ROOT', '${CLAUDE_PLUGIN_DATA}', 'Process')
+     & '${CLAUDE_PLUGIN_ROOT}/bin/stm32-monitor.cmd' open --project '${CLAUDE_PROJECT_DIR}' --data-root '${CLAUDE_PLUGIN_DATA}'
+   } finally {
+     [Environment]::SetEnvironmentVariable('STM32_TOOLKIT_DATA_ROOT', $previousStm32ToolkitDataRoot, 'Process')
+   }
    ```
 
 Never print, persist, copy, or log the fragment URL. Connect, group creation, and sampling remain explicit page actions.

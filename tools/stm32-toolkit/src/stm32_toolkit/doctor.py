@@ -12,8 +12,15 @@ from pathlib import Path
 from typing import BinaryIO
 
 from stm32_toolkit.detection import detect_project, planned_action
+from stm32_toolkit import __version__ as TOOLKIT_VERSION
 from stm32_toolkit.result import OperationResult
 from stm32_toolkit.tool_support import SupportProfileRequest, ToolSupportProfile, discover_tool_support
+from stm32_toolkit.public_inventory import (
+    MCP_TOOL_NAMES,
+    REQUIRED_PYTHON,
+    SKILL_NAMES,
+    SUPPORTED_PYTHON,
+)
 
 
 TOOLS = (
@@ -55,9 +62,38 @@ def run_doctor(
             "vscodeExtensions": _vscode_extension_evidence(),
             "probeCore": _probe_core_evidence(data_root),
             "creationSupport": support.to_dict(),
+            "runtime": _runtime_evidence(),
+            "publicInventory": _public_inventory(),
             "mutated": False,
         },
     )
+
+
+def _monitor_version() -> str | None:
+    try:
+        return importlib.metadata.version("stm32-monitor")
+    except (importlib.metadata.PackageNotFoundError, OSError, ValueError):
+        return None
+
+
+def _runtime_evidence() -> dict[str, object]:
+    monitor_version = _monitor_version()
+    python_version = ".".join(str(part) for part in sys.version_info[:3])
+    return {
+        "requiredPython": REQUIRED_PYTHON,
+        "pythonVersion": python_version,
+        "pythonSupported": sys.version_info[:2] == SUPPORTED_PYTHON,
+        "toolkitVersion": TOOLKIT_VERSION,
+        "monitorVersion": monitor_version,
+        "versionsCompatible": monitor_version == TOOLKIT_VERSION,
+    }
+
+
+def _public_inventory() -> dict[str, object]:
+    return {
+        "mcpTools": list(MCP_TOOL_NAMES.values()),
+        "skills": list(SKILL_NAMES),
+    }
 
 
 def _dependency_evidence(distribution: str) -> dict[str, object]:

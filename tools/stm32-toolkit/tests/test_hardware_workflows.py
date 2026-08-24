@@ -49,7 +49,7 @@ def _project(root: Path, *, svd: str | None = "device.svd", schema_version: int 
     manifest = {
         "schemaVersion": schema_version,
         "logicalProjectId": "12345678-1234-5678-1234-567812345678",
-        "generatedBy": {"tool": "stm32-toolkit", "version": "0.5.0"},
+        "generatedBy": {"tool": "stm32-toolkit", "version": "0.9.0"},
         "project": {"name": "hardware", "origin": "manual"},
         "target": {"device": "STM32F407VGTx", "core": "cortex-m4"},
         "framework": {"type": "spl", "version": None},

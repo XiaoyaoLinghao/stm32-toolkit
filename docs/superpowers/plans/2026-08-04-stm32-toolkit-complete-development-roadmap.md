@@ -116,10 +116,10 @@ execution packet are recorded in
 - [x] 0.5.0 project-isolated monitor service and UI gate
 - [x] 0.6.0 software Host/Target, Monitor and evidence-driven diagnostic scenarios (`SOFTWARE_COMPLETE_HARDWARE_PENDING`)
 - [x] VS07-A deterministic creation plan and environment truth
-- [ ] VS07-B authorized CubeMX creation and build
-- [ ] VS07-C safe regeneration
-- [ ] VS08-A/B resumable and isolated vertical scenario behavior
-- [ ] VS09-A/B installable Python 3.12 Windows release candidate
+- [x] VS07-B authorized CubeMX creation and build
+- [x] VS07-C safe regeneration
+- [x] VS08-A/B resumable and isolated vertical scenario behavior
+- [x] VS09-A/B installable Python 3.12 Windows release candidate
 - [ ] 1.0.0 non-skippable real-hardware vertical acceptance gate
 
 Progress is updated only when a runnable slice outcome is independently accepted. Internal checklist, test-count, report, or Gate completion does not advance product progress by itself.

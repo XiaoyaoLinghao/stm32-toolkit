@@ -37,7 +37,7 @@ def test_plugin_manifest_uses_standard_skill_discovery_and_version():
     assert plugin == {
         "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
         "name": "stm32-toolkit",
-        "version": "0.5.0",
+        "version": "0.9.0",
         "description": (
             "AI-assisted STM32 development with read-only Keil inspection, "
             "guarded ARMCC-to-GCC conversion, managed GCC/CMake configuration, "
@@ -45,7 +45,7 @@ def test_plugin_manifest_uses_standard_skill_discovery_and_version():
         ),
         "author": {"name": "STM32 Toolkit Team"},
     }
-    assert plugin["version"] == __version__ == "0.5.0"
+    assert plugin["version"] == __version__ == "0.9.0"
 
 
 def test_marketplace_manifest_uses_a_supported_plugin_source():
@@ -79,9 +79,7 @@ def test_mcp_config_binds_only_the_plugin_launcher_to_claude_roots():
             "${CLAUDE_PLUGIN_DATA}",
         ],
         "env": {
-            "STM32_TOOLKIT_PLUGIN_ROOT": "${CLAUDE_PLUGIN_ROOT}",
             "STM32_TOOLKIT_DATA_ROOT": "${CLAUDE_PLUGIN_DATA}",
-            "STM32_TOOLKIT_PROJECT_ROOT": "${CLAUDE_PROJECT_DIR}",
         },
     }
 
@@ -103,14 +101,13 @@ def test_launcher_reports_missing_environment_without_interpreter_fallback(tmp_p
         )
 
     environment = os.environ.copy()
-    environment.pop("CLAUDE_PLUGIN_DATA", None)
+    environment.pop("STM32_TOOLKIT_DATA_ROOT", None)
     environment["PATH"] = str(fake_path)
     result = _run_launcher(environment, "--sentinel")
 
     assert result.returncode != 0
     assert result.stdout == ""
-    assert "/stm32-toolkit:setup-stm32-env" in result.stderr
-    assert "CLAUDE_PLUGIN_DATA" in result.stderr
+    assert "STM32_TOOLKIT_DATA_ROOT" in result.stderr
     assert not marker.exists()
 
 
@@ -129,21 +126,21 @@ def test_launcher_reports_missing_versioned_runtime_without_interpreter_fallback
         )
 
     environment = os.environ.copy()
-    environment["CLAUDE_PLUGIN_DATA"] = str(plugin_data)
+    environment["STM32_TOOLKIT_DATA_ROOT"] = str(plugin_data)
     environment["PATH"] = str(fake_path)
     result = _run_launcher(environment, "--sentinel")
 
     assert result.returncode != 0
     assert result.stdout == ""
-    assert "/stm32-toolkit:setup-stm32-env" in result.stderr
-    assert "runtime/0.5.0/Scripts/python.exe" in result.stderr.replace("\\", "/")
+    assert "STM32_TOOLKIT_DATA_ROOT" in result.stderr
+    assert "runtime/0.9.0/Scripts/python.exe" in result.stderr.replace("\\", "/")
     assert not marker.exists()
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows cmd.exe launcher")
 def test_launcher_forwards_arguments_and_preserves_runtime_exit_code(tmp_path: Path):
     plugin_data = tmp_path / "plugin data"
-    runtime = plugin_data / "runtime" / "0.5.0"
+    runtime = plugin_data / "runtime" / "0.9.0"
     venv.EnvBuilder(with_pip=False).create(runtime)
     module_root = tmp_path / "stub module"
     package = module_root / "stm32_toolkit"
@@ -157,7 +154,7 @@ def test_launcher_forwards_arguments_and_preserves_runtime_exit_code(tmp_path: P
     )
 
     environment = os.environ.copy()
-    environment["CLAUDE_PLUGIN_DATA"] = str(plugin_data)
+    environment["STM32_TOOLKIT_DATA_ROOT"] = str(plugin_data)
     environment["PYTHONPATH"] = str(module_root)
     result = _run_launcher(
         environment,
@@ -195,14 +192,14 @@ def test_monitor_launcher_reports_missing_environment_without_interpreter_fallba
         )
 
     environment = os.environ.copy()
-    environment.pop("CLAUDE_PLUGIN_DATA", None)
+    environment.pop("STM32_TOOLKIT_DATA_ROOT", None)
     environment["PATH"] = str(fake_path)
     result = _run_monitor_launcher(environment, "open", "--help")
 
     assert result.returncode != 0
     assert result.stdout == ""
     assert "stm32-monitor" in result.stderr
-    assert "CLAUDE_PLUGIN_DATA" in result.stderr
+    assert "STM32_TOOLKIT_DATA_ROOT" in result.stderr
     assert not marker.exists()
 
 
@@ -221,14 +218,14 @@ def test_monitor_launcher_reports_missing_versioned_runtime_without_interpreter_
         )
 
     environment = os.environ.copy()
-    environment["CLAUDE_PLUGIN_DATA"] = str(plugin_data)
+    environment["STM32_TOOLKIT_DATA_ROOT"] = str(plugin_data)
     environment["PATH"] = str(fake_path)
     result = _run_monitor_launcher(environment, "open", "--help")
 
     assert result.returncode != 0
     assert result.stdout == ""
     assert "stm32-monitor" in result.stderr
-    assert "runtime/0.5.0/Scripts/python.exe" in result.stderr.replace("\\", "/")
+    assert "runtime/0.9.0/Scripts/python.exe" in result.stderr.replace("\\", "/")
     assert not marker.exists()
 
 
@@ -237,7 +234,7 @@ def test_monitor_launcher_forwards_arguments_and_preserves_runtime_exit_code(
     tmp_path: Path,
 ):
     plugin_data = tmp_path / "plugin data"
-    runtime = plugin_data / "runtime" / "0.5.0"
+    runtime = plugin_data / "runtime" / "0.9.0"
     venv.EnvBuilder(with_pip=False).create(runtime)
     module_root = tmp_path / "stub module"
     package = module_root / "stm32_monitor"
@@ -251,7 +248,7 @@ def test_monitor_launcher_forwards_arguments_and_preserves_runtime_exit_code(
     )
 
     environment = os.environ.copy()
-    environment["CLAUDE_PLUGIN_DATA"] = str(plugin_data)
+    environment["STM32_TOOLKIT_DATA_ROOT"] = str(plugin_data)
     environment["PYTHONPATH"] = str(module_root)
     result = _run_monitor_launcher(
         environment,
@@ -289,9 +286,9 @@ def test_setup_skill_has_an_explicit_read_only_check_and_authorized_mutation_con
         "read-only",
         "offline",
         "explicit authorization",
-        "${CLAUDE_PLUGIN_DATA}/runtime/0.5.0",
+        "${CLAUDE_PLUGIN_DATA}/runtime/0.9.0",
         "${CLAUDE_PLUGIN_ROOT}/tools/stm32-toolkit",
-        "Host Python 3.10+",
+        "CPython >=3.12,<3.13",
         "ARM GCC",
         "ARM GDB",
         "CMake",
@@ -421,11 +418,11 @@ def test_setup_helper_uses_explicit_paths_without_ambient_environment(tmp_path: 
             str(SETUP_HELPER),
             "-Mode",
             "Check",
-            "-PluginRoot",
+            "-ToolkitRoot",
             str(REPO_ROOT),
-            "-PluginData",
+            "-DataRoot",
             str(plugin_data),
-            "-ProjectDir",
+            "-ProjectRoot",
             str(project),
         ],
         check=False,
@@ -437,7 +434,7 @@ def test_setup_helper_uses_explicit_paths_without_ambient_environment(tmp_path: 
     assert result.returncode == 0, result.stderr
     payload = json.loads(result.stdout)
     assert payload["mode"] == "CHECK"
-    assert payload["runtime"]["path"].endswith("/runtime/0.5.0")
+    assert payload["runtime"]["path"].endswith("/runtime/0.9.0")
     assert payload["project"] == project.as_posix()
     assert payload["mutated"] is False
     assert not plugin_data.exists()
@@ -456,11 +453,11 @@ def test_setup_helper_rejects_unresolved_inline_paths_before_mutation(tmp_path: 
             str(SETUP_HELPER),
             "-Mode",
             "Bootstrap",
-            "-PluginRoot",
+            "-ToolkitRoot",
             "${CLAUDE_PLUGIN_ROOT}",
-            "-PluginData",
+            "-DataRoot",
             str(tmp_path / "${CLAUDE_PLUGIN_DATA}"),
-            "-ProjectDir",
+            "-ProjectRoot",
             "${CLAUDE_PROJECT_DIR}",
         ],
         check=False,
@@ -470,7 +467,7 @@ def test_setup_helper_rejects_unresolved_inline_paths_before_mutation(tmp_path: 
     )
 
     assert result.returncode != 0
-    assert "unresolved Claude placeholder" in result.stderr
+    assert "unresolved path placeholder" in result.stderr
     assert list(tmp_path.iterdir()) == []
 
 
@@ -482,20 +479,29 @@ def test_setup_skill_passes_inline_claude_paths_explicitly_without_ambient_varia
     assert "powershell.exe" in command_blocks
     assert "-File '${CLAUDE_PLUGIN_ROOT}/bin/setup-stm32-env.ps1'" in command_blocks
     for argument in (
-        "-PluginRoot '${CLAUDE_PLUGIN_ROOT}'",
-        "-PluginData '${CLAUDE_PLUGIN_DATA}'",
-        "-ProjectDir '${CLAUDE_PROJECT_DIR}'",
+        "-ToolkitRoot '${CLAUDE_PLUGIN_ROOT}'",
+        "-DataRoot '${CLAUDE_PLUGIN_DATA}'",
+        "-ProjectRoot '${CLAUDE_PROJECT_DIR}'",
     ):
         assert argument in command_blocks
     assert "PowerShell" in skill
     assert "Git Bash" in skill
 
-def test_readme_documents_the_foundation_contract_without_follow_on_claims():
+def test_readme_documents_the_vs09a_contract_and_vs09b_boundary():
     readme = README.read_text(encoding="utf-8")
+    readme_zh = (REPO_ROOT / "README_zh-CN.md").read_text(encoding="utf-8")
 
-    assert "foundation for future AI-assisted STM32 coding, debugging, testing, and monitoring" in readme
+    assert "local 0.9.0 VS09-A candidate" in readme
+    assert "CPython `>=3.12,<3.13`" in readme
+    assert "DATA_ROOT/runtime/0.9.0" in readme
+    assert '"STM32_TOOLKIT_DATA_ROOT"' in readme
+    assert "absolute launcher" in readme
+    assert "all 48" in readme
+    assert "VS09-B" in readme
+    expected_build = "stm32-toolkit --project-root C:\\work\\blinky build --preset arm-debug --json"
+    assert expected_build in readme
+    assert expected_build in readme_zh
     for phrase in (
-        "user scope",
         "/stm32-toolkit:setup-stm32-env",
         "automatically",
         "${CLAUDE_PROJECT_DIR}",
@@ -505,8 +511,6 @@ def test_readme_documents_the_foundation_contract_without_follow_on_claims():
         "Keil-to-GCC",
         "one-way",
         "user-created monitor groups",
-        "Foundation",
-        "Follow-on",
     ):
         assert phrase in readme
     for stale_claim in (
@@ -515,6 +519,9 @@ def test_readme_documents_the_foundation_contract_without_follow_on_claims():
         "localhost:8888",
         "pyocd-debug-mcp",
         "cp -r stm32-toolkit/skills",
+        "exactly 15",
+        "runtime/0.5.0",
+        "Host Python 3.10",
     ):
         assert stale_claim not in readme
 
@@ -542,8 +549,10 @@ def test_two_configured_clones_use_distinct_workspaces_without_project_mutation(
     assert first_workspace["workspaceId"] != second_workspace["workspaceId"]
     assert first_workspace["sessionId"] == "session-a"
     assert second_workspace["sessionId"] == "session-b"
-    first_root = data_root / "projects" / first_workspace["workspaceId"]
-    second_root = data_root / "projects" / second_workspace["workspaceId"]
+    # WorkspacePaths keeps the full identity in evidence but uses its stable
+    # 24-character storage key on disk.
+    first_root = data_root / "projects" / first_workspace["workspaceId"][:24]
+    second_root = data_root / "projects" / second_workspace["workspaceId"][:24]
     assert first_root != second_root
     assert (first_root / "sessions" / "session-a").is_dir()
     assert (second_root / "sessions" / "session-b").is_dir()
@@ -581,6 +590,7 @@ def _environment_without_claude_plugin_paths() -> dict[str, str]:
         "CLAUDE_PLUGIN_ROOT",
         "CLAUDE_PLUGIN_DATA",
         "CLAUDE_PROJECT_DIR",
+        "STM32_TOOLKIT_DATA_ROOT",
     ):
         environment.pop(name, None)
     return environment
@@ -640,23 +650,23 @@ def _project_snapshot(root: Path) -> dict[str, bytes]:
     }
 
 
-def test_unified_0_4_0_runtime_version_across_launcher_setup_and_skill():
-    """No launcher/helper/Skill selects the obsolete 0.3 runtime."""
+def test_unified_0_9_0_runtime_version_across_launcher_setup_and_skill():
+    """No launcher/helper/Skill selects a legacy runtime."""
     launcher = LAUNCHER.read_text(encoding="utf-8")
     monitor_launcher = MONITOR_LAUNCHER.read_text(encoding="utf-8")
     helper = SETUP_HELPER.read_text(encoding="utf-8")
     skill = SETUP_SKILL.read_text(encoding="utf-8")
     manifest = json.loads(PLUGIN_MANIFEST.read_text(encoding="utf-8"))
 
-    assert manifest["version"] == __version__ == "0.5.0"
-    assert "runtime\\0.5.0\\Scripts\\python.exe" in launcher
-    assert "runtime/0.5.0/Scripts/python.exe" in launcher.replace("\\", "/")
+    assert manifest["version"] == __version__ == "0.9.0"
+    assert "runtime\\0.9.0\\Scripts\\python.exe" in launcher
+    assert "runtime/0.9.0/Scripts/python.exe" in launcher.replace("\\", "/")
     assert "0.3.0" not in launcher
-    assert "runtime\\0.5.0\\Scripts\\python.exe" in monitor_launcher
-    assert "runtime/0.5.0/Scripts/python.exe" in monitor_launcher.replace("\\", "/")
+    assert "runtime\\0.9.0\\Scripts\\python.exe" in monitor_launcher
+    assert "runtime/0.9.0/Scripts/python.exe" in monitor_launcher.replace("\\", "/")
     assert "0.3.0" not in monitor_launcher
     assert " -m stm32_monitor " in monitor_launcher
-    assert '$RuntimeVersion = "0.5.0"' in helper
+    assert '$RuntimeVersion = "0.9.0"' in helper
     assert "0.3.0" in helper  # legacy-upgrade detection, never current selection
     assert '"${package}[probe]"' in helper
     assert "$monitorPackage" in helper
@@ -665,10 +675,10 @@ def test_unified_0_4_0_runtime_version_across_launcher_setup_and_skill():
     assert "ui_dist" in helper
     assert "import pyocd" in helper
     assert '"-I", "-c"' in helper
-    assert "${CLAUDE_PLUGIN_DATA}/runtime/0.5.0" in skill
-    assert "${CLAUDE_PLUGIN_DATA}/runtime/.staging/0.5.0-<id>" in skill
+    assert "${CLAUDE_PLUGIN_DATA}/runtime/0.9.0" in skill
+    assert "${CLAUDE_PLUGIN_DATA}/runtime/.staging/0.9.0-<id>" in skill
     assert "tools/stm32-toolkit[probe]" in skill
     assert "isolated PEP 440 `pyocd` distribution check" in skill
     assert ">=0.45.1,<0.46" in skill
-    assert "existing `0.3.0` runtime reports `broken`" in skill
+    assert "existing 0.3.0 runtime reports broken" in skill
     assert skill.count("0.3.0") == 1

@@ -9,7 +9,7 @@ from stm32_toolkit.result import OperationResult
 
 CONTEXT_ARGS = [
     "--project",
-    "project-root",
+    "C:/project-root",
     "--data-root",
     "data-root",
     "--session-id",
@@ -170,7 +170,7 @@ def test_discover_dispatches_exactly_once_and_writes_one_json_result(
     assert captured.err == ""
     assert len(calls) == 1
     context = calls[0]
-    assert context.project_root == Path("project-root")
+    assert context.project_root == Path("C:/project-root")
     assert context.data_root == Path("data-root")
     assert context.session_id == "session-a"
 
@@ -196,7 +196,7 @@ def test_run_dispatches_exactly_once_with_digest_and_tuple_cases(
     assert captured.err == ""
     assert len(calls) == 1
     context, digest, case_ids = calls[0]
-    assert context.project_root == Path("project-root")
+    assert context.project_root == Path("C:/project-root")
     assert context.data_root == Path("data-root")
     assert context.session_id == "session-a"
     assert digest == DIGEST
@@ -244,7 +244,7 @@ def test_show_dispatches_exactly_once_with_run_id(
     assert captured.err == ""
     assert len(calls) == 1
     context, run_id = calls[0]
-    assert context.project_root == Path("project-root")
+    assert context.project_root == Path("C:/project-root")
     assert context.data_root == Path("data-root")
     assert context.session_id == "session-a"
     assert run_id == "run-1"

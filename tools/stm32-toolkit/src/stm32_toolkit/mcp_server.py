@@ -27,6 +27,7 @@ from pydantic import (
     model_validator,
 )
 
+from stm32_toolkit.public_inventory import MCP_TOOL_NAMES
 from stm32_toolkit.acceptance.workflows import (
     AcceptanceWorkflowContext,
     describe_acceptance_scenario,
@@ -120,6 +121,24 @@ _SERVER_INSTRUCTIONS = (
     "explicitly authorized conversion, configuration, build, flash, and "
     "debug handoff operations."
 )
+
+
+class _RejectDuplicateArgument(argparse.Action):
+    def __call__(self, parser, namespace, values, option_string=None):
+        if getattr(namespace, self.dest, None) is not None:
+            parser.error(f"argument {option_string}: repeated option")
+        setattr(namespace, self.dest, values)
+
+
+def _mcp_root_type(value: str) -> Path:
+    if not value or not value.strip():
+        raise argparse.ArgumentTypeError("root is empty")
+    if "${" in value:
+        raise argparse.ArgumentTypeError("root contains an unresolved path placeholder")
+    root = Path(value)
+    if not root.is_absolute():
+        raise argparse.ArgumentTypeError("root must be an absolute path")
+    return root
 _CLIENT_ROOTS_TIMEOUT_SECONDS = 5.0
 _DIGEST_PATTERN = r"^[0-9a-f]{64}$"
 _PROBE_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
@@ -1848,19 +1867,19 @@ def create_server(
     runtime = ServerRuntime.create(project_root, data_root, session_id)
     mcp = FastMCP(_SERVER_NAME, instructions=_SERVER_INSTRUCTIONS)
 
-    @mcp.tool(name="stm32_doctor")
+    @mcp.tool(name=MCP_TOOL_NAMES["doctor"])
     async def stm32_doctor(ctx: Context) -> dict[str, object]:
         return await tool_doctor_for_request(runtime, ctx)
 
-    @mcp.tool(name="stm32_project_detect")
+    @mcp.tool(name=MCP_TOOL_NAMES["project_detect"])
     async def stm32_project_detect(ctx: Context) -> dict[str, object]:
         return await tool_project_detect_for_request(runtime, ctx)
 
-    @mcp.tool(name="stm32_project_context")
+    @mcp.tool(name=MCP_TOOL_NAMES["project_context"])
     async def stm32_project_context(ctx: Context) -> dict[str, object]:
         return await tool_project_context_for_request(runtime, ctx)
 
-    @mcp.tool(name="stm32_project_create_plan")
+    @mcp.tool(name=MCP_TOOL_NAMES["project_create_plan"])
     async def stm32_project_create_plan(
         ctx: Context,
         sourceKind: Literal["mcu", "board", "ioc"],
@@ -1873,7 +1892,7 @@ def create_server(
             runtime, ctx, sourceKind, source, destination, framework, language
         )
 
-    @mcp.tool(name="stm32_project_create_prepare")
+    @mcp.tool(name=MCP_TOOL_NAMES["project_create_prepare"])
     async def stm32_project_create_prepare(
         ctx: Context,
         sourceKind: Literal["mcu", "board", "ioc"],
@@ -1888,7 +1907,7 @@ def create_server(
             runtime, ctx, sourceKind, source, destination, framework, language, planId, actionDigest
         )
 
-    @mcp.tool(name="stm32_project_create_apply")
+    @mcp.tool(name=MCP_TOOL_NAMES["project_create_apply"])
     async def stm32_project_create_apply(
         ctx: Context,
         authorizationDigest: Digest,
@@ -1898,14 +1917,14 @@ def create_server(
             runtime, ctx, authorizationDigest, authorized
         )
 
-    @mcp.tool(name="stm32_project_regenerate_plan")
+    @mcp.tool(name=MCP_TOOL_NAMES["project_regenerate_plan"])
     async def stm32_project_regenerate_plan(
         ctx: Context,
         destination: ProjectRelativePath,
     ) -> dict[str, object]:
         return await tool_project_regenerate_plan_for_request(runtime, ctx, destination)
 
-    @mcp.tool(name="stm32_project_regenerate_prepare")
+    @mcp.tool(name=MCP_TOOL_NAMES["project_regenerate_prepare"])
     async def stm32_project_regenerate_prepare(
         ctx: Context,
         destination: ProjectRelativePath,
@@ -1917,7 +1936,7 @@ def create_server(
             runtime, ctx, destination, planId, actionDigest, authorized
         )
 
-    @mcp.tool(name="stm32_project_regenerate_apply")
+    @mcp.tool(name=MCP_TOOL_NAMES["project_regenerate_apply"])
     async def stm32_project_regenerate_apply(
         ctx: Context,
         authorizationDigest: Digest,
@@ -1927,7 +1946,7 @@ def create_server(
             runtime, ctx, authorizationDigest, authorized
         )
 
-    @mcp.tool(name="stm32_keil_inspect")
+    @mcp.tool(name=MCP_TOOL_NAMES["keil_inspect"])
     async def stm32_keil_inspect(
         ctx: Context,
         uvprojx: str | None = None,
@@ -1938,7 +1957,7 @@ def create_server(
             runtime, ctx, uvprojx, targetName, includeBaseline
         )
 
-    @mcp.tool(name="stm32_keil_convert")
+    @mcp.tool(name=MCP_TOOL_NAMES["keil_convert"])
     async def stm32_keil_convert(
         ctx: Context,
         uvprojx: str | None = None,
@@ -1950,7 +1969,7 @@ def create_server(
             runtime, ctx, uvprojx, targetName, planId, authorized
         )
 
-    @mcp.tool(name="stm32_project_configure")
+    @mcp.tool(name=MCP_TOOL_NAMES["project_configure"])
     async def stm32_project_configure(
         ctx: Context,
         planId: str | None = None,
@@ -1958,7 +1977,7 @@ def create_server(
     ) -> dict[str, object]:
         return await tool_project_configure_for_request(runtime, ctx, planId, authorized)
 
-    @mcp.tool(name="stm32_build")
+    @mcp.tool(name=MCP_TOOL_NAMES["build"])
     async def stm32_build(
         ctx: Context,
         preset: Literal["arm-debug", "arm-release"],
@@ -1970,11 +1989,11 @@ def create_server(
             runtime, ctx, preset, clean, timeoutSeconds, authorized
         )
 
-    @mcp.tool(name="stm32_probe_list")
+    @mcp.tool(name=MCP_TOOL_NAMES["probe_list"])
     async def stm32_probe_list(ctx: Context) -> dict[str, object]:
         return await tool_probe_list_for_request(runtime, ctx)
 
-    @mcp.tool(name="stm32_flash")
+    @mcp.tool(name=MCP_TOOL_NAMES["flash"])
     async def stm32_flash(
         ctx: Context,
         probeId: ProbeId,
@@ -1991,7 +2010,7 @@ def create_server(
             authorized,
         )
 
-    @mcp.tool(name="stm32_debug_handoff_begin")
+    @mcp.tool(name=MCP_TOOL_NAMES["debug_handoff_begin"])
     async def stm32_debug_handoff_begin(
         ctx: Context,
         probeId: ProbeId,
@@ -2010,7 +2029,7 @@ def create_server(
             previousWatchSelection,
         )
 
-    @mcp.tool(name="stm32_debug_handoff_end")
+    @mcp.tool(name=MCP_TOOL_NAMES["debug_handoff_end"])
     async def stm32_debug_handoff_end(
         ctx: Context,
         probeId: ProbeId,
@@ -2018,7 +2037,7 @@ def create_server(
     ) -> dict[str, object]:
         return await tool_handoff_end_for_request(runtime, ctx, probeId, ticket)
 
-    @mcp.tool(name="stm32_variable_read")
+    @mcp.tool(name=MCP_TOOL_NAMES["variable_read"])
     async def stm32_variable_read(
         ctx: Context,
         probeId: ProbeId,
@@ -2035,7 +2054,7 @@ def create_server(
             expressions,
         )
 
-    @mcp.tool(name="stm32_variable_sample")
+    @mcp.tool(name=MCP_TOOL_NAMES["variable_sample"])
     async def stm32_variable_sample(
         ctx: Context,
         probeId: ProbeId,
@@ -2058,7 +2077,7 @@ def create_server(
             durationMs,
         )
 
-    @mcp.tool(name="stm32_register_read")
+    @mcp.tool(name=MCP_TOOL_NAMES["register_read"])
     async def stm32_register_read(
         ctx: Context,
         probeId: ProbeId,
@@ -2077,7 +2096,7 @@ def create_server(
             acknowledgeAccessRisk,
         )
 
-    @mcp.tool(name="stm32_fault_analyze")
+    @mcp.tool(name=MCP_TOOL_NAMES["fault_analyze"])
     async def stm32_fault_analyze(
         ctx: Context,
         probeId: ProbeId,
@@ -2092,7 +2111,7 @@ def create_server(
             expectedElfSha256,
         )
 
-    @mcp.tool(name="stm32_diagnostic_start")
+    @mcp.tool(name=MCP_TOOL_NAMES["diagnostic_start"])
     async def stm32_diagnostic_start(
         ctx: Context,
         operationId: DiagnosticOperationId,
@@ -2107,7 +2126,7 @@ def create_server(
             runtime, ctx, operationId, failedTestRunId, actor, **kwargs
         )
 
-    @mcp.tool(name="stm32_diagnostic_show")
+    @mcp.tool(name=MCP_TOOL_NAMES["diagnostic_show"])
     async def stm32_diagnostic_show(
         ctx: Context,
         diagnosticSessionId: DiagnosticSessionId,
@@ -2116,7 +2135,7 @@ def create_server(
             runtime, ctx, diagnosticSessionId
         )
 
-    @mcp.tool(name="stm32_diagnostic_begin")
+    @mcp.tool(name=MCP_TOOL_NAMES["diagnostic_begin"])
     async def stm32_diagnostic_begin(
         ctx: Context,
         operationId: DiagnosticOperationId,
@@ -2133,7 +2152,7 @@ def create_server(
             actor,
         )
 
-    @mcp.tool(name="stm32_diagnostic_hypothesis_add")
+    @mcp.tool(name=MCP_TOOL_NAMES["diagnostic_hypothesis_add"])
     async def stm32_diagnostic_hypothesis_add(
         ctx: Context,
         operationId: DiagnosticOperationId,
@@ -2152,7 +2171,7 @@ def create_server(
             actor,
         )
 
-    @mcp.tool(name="stm32_diagnostic_hypothesis_assess")
+    @mcp.tool(name=MCP_TOOL_NAMES["diagnostic_hypothesis_assess"])
     async def stm32_diagnostic_hypothesis_assess(
         ctx: Context,
         operationId: DiagnosticOperationId,
@@ -2179,7 +2198,7 @@ def create_server(
             actor,
         )
 
-    @mcp.tool(name="stm32_diagnostic_plan_add")
+    @mcp.tool(name=MCP_TOOL_NAMES["diagnostic_plan_add"])
     async def stm32_diagnostic_plan_add(
         ctx: Context,
         operationId: DiagnosticOperationId,
@@ -2198,7 +2217,7 @@ def create_server(
             actor,
         )
 
-    @mcp.tool(name="stm32_diagnostic_plan_run")
+    @mcp.tool(name=MCP_TOOL_NAMES["diagnostic_plan_run"])
     async def stm32_diagnostic_plan_run(
         ctx: Context,
         operationId: DiagnosticOperationId,
@@ -2217,7 +2236,7 @@ def create_server(
             actor,
         )
 
-    @mcp.tool(name="stm32_test_target_replay")
+    @mcp.tool(name=MCP_TOOL_NAMES["test_target_replay"])
     async def stm32_test_target_replay(
         ctx: Context,
         operationId: DiagnosticOperationId,
@@ -2228,7 +2247,7 @@ def create_server(
             runtime, ctx, operationId, descriptorPath, streamPath
         )
 
-    @mcp.tool(name="stm32_diagnostic_source_change_declare")
+    @mcp.tool(name=MCP_TOOL_NAMES["diagnostic_source_change_declare"])
     async def stm32_diagnostic_source_change_declare(
         ctx: Context,
         operationId: DiagnosticOperationId,
@@ -2247,7 +2266,7 @@ def create_server(
             actor,
         )
 
-    @mcp.tool(name="stm32_diagnostic_verification_plan_add")
+    @mcp.tool(name=MCP_TOOL_NAMES["diagnostic_verification_plan_add"])
     async def stm32_diagnostic_verification_plan_add(
         ctx: Context,
         operationId: DiagnosticOperationId,
@@ -2266,7 +2285,7 @@ def create_server(
             actor,
         )
 
-    @mcp.tool(name="stm32_diagnostic_verification_start")
+    @mcp.tool(name=MCP_TOOL_NAMES["diagnostic_verification_start"])
     async def stm32_diagnostic_verification_start(
         ctx: Context,
         operationId: DiagnosticOperationId,
@@ -2285,7 +2304,7 @@ def create_server(
             actor,
         )
 
-    @mcp.tool(name="stm32_diagnostic_marker_attach")
+    @mcp.tool(name=MCP_TOOL_NAMES["diagnostic_marker_attach"])
     async def stm32_diagnostic_marker_attach(
         ctx: Context,
         operationId: DiagnosticOperationId,
@@ -2304,7 +2323,7 @@ def create_server(
             actor,
         )
 
-    @mcp.tool(name="stm32_diagnostic_verification_complete")
+    @mcp.tool(name=MCP_TOOL_NAMES["diagnostic_verification_complete"])
     async def stm32_diagnostic_verification_complete(
         ctx: Context,
         operationId: DiagnosticOperationId,
@@ -2327,7 +2346,7 @@ def create_server(
             actor,
         )
 
-    @mcp.tool(name="stm32_diagnostic_verification_show")
+    @mcp.tool(name=MCP_TOOL_NAMES["diagnostic_verification_show"])
     async def stm32_diagnostic_verification_show(
         ctx: Context,
         diagnosticSessionId: DiagnosticSessionId,
@@ -2336,11 +2355,11 @@ def create_server(
             runtime, ctx, diagnosticSessionId
         )
 
-    @mcp.tool(name="stm32_test_host_discover")
+    @mcp.tool(name=MCP_TOOL_NAMES["test_host_discover"])
     async def stm32_test_host_discover(ctx: Context) -> dict[str, object]:
         return await tool_test_host_discover_for_request(runtime, ctx)
 
-    @mcp.tool(name="stm32_test_host_run")
+    @mcp.tool(name=MCP_TOOL_NAMES["test_host_run"])
     async def stm32_test_host_run(
         ctx: Context,
         inventoryDigest: Digest,
@@ -2350,20 +2369,20 @@ def create_server(
             runtime, ctx, inventoryDigest, caseIds
         )
 
-    @mcp.tool(name="stm32_test_show")
+    @mcp.tool(name=MCP_TOOL_NAMES["test_show"])
     async def stm32_test_show(
         ctx: Context,
         runId: RunId,
     ) -> dict[str, object]:
         return await tool_test_show_for_request(runtime, ctx, runId)
 
-    @mcp.tool(name="stm32_test_target_prepare")
+    @mcp.tool(name=MCP_TOOL_NAMES["test_target_prepare"])
     async def stm32_test_target_prepare(
         ctx: Context, probeId: ProbeId, caseIds: Annotated[list[CaseId], Field(min_length=1, max_length=MAX_CASES), AfterValidator(_unique_case_ids)],
     ) -> dict[str, object]:
         return await tool_test_target_prepare_for_request(runtime, ctx, probeId, caseIds)
 
-    @mcp.tool(name="stm32_test_target_execute")
+    @mcp.tool(name=MCP_TOOL_NAMES["test_target_execute"])
     async def stm32_test_target_execute(
         ctx: Context, probeId: ProbeId, authorizedActionDigest: Digest,
     ) -> dict[str, object]:
@@ -2371,7 +2390,7 @@ def create_server(
             runtime, ctx, probeId, authorizedActionDigest
         )
 
-    @mcp.tool(name="stm32_acceptance_scenario_describe")
+    @mcp.tool(name=MCP_TOOL_NAMES["acceptance_scenario_describe"])
     async def stm32_acceptance_scenario_describe(
         ctx: Context,
         scenarioId: AcceptanceScenarioId,
@@ -2381,7 +2400,7 @@ def create_server(
             runtime, ctx, scenarioId, scenarioVersion
         )
 
-    @mcp.tool(name="stm32_acceptance_scenario_record")
+    @mcp.tool(name=MCP_TOOL_NAMES["acceptance_scenario_record"])
     async def stm32_acceptance_scenario_record(
         ctx: Context,
         recordId: AcceptanceUuid,
@@ -2402,14 +2421,14 @@ def create_server(
             diagnosticSessionId,
         )
 
-    @mcp.tool(name="stm32_acceptance_scenario_show")
+    @mcp.tool(name=MCP_TOOL_NAMES["acceptance_scenario_show"])
     async def stm32_acceptance_scenario_show(
         ctx: Context,
         recordId: AcceptanceUuid,
     ) -> dict[str, object]:
         return await tool_acceptance_scenario_show_for_request(runtime, ctx, recordId)
 
-    @mcp.tool(name="stm32_acceptance_attempt_begin")
+    @mcp.tool(name=MCP_TOOL_NAMES["acceptance_attempt_begin"])
     async def stm32_acceptance_attempt_begin(
         ctx: Context,
         attemptId: AcceptanceUuid,
@@ -2420,7 +2439,7 @@ def create_server(
             runtime, ctx, attemptId, scenarioId, scenarioVersion
         )
 
-    @mcp.tool(name="stm32_acceptance_attempt_checkpoint")
+    @mcp.tool(name=MCP_TOOL_NAMES["acceptance_attempt_checkpoint"])
     async def stm32_acceptance_attempt_checkpoint(
         ctx: Context,
         attemptId: AcceptanceUuid,
@@ -2441,7 +2460,7 @@ def create_server(
             acceptanceRecordId,
         )
 
-    @mcp.tool(name="stm32_acceptance_attempt_authorize_source_change")
+    @mcp.tool(name=MCP_TOOL_NAMES["acceptance_attempt_authorize_source_change"])
     async def stm32_acceptance_attempt_authorize_source_change(
         ctx: Context,
         attemptId: AcceptanceUuid,
@@ -2453,14 +2472,14 @@ def create_server(
             runtime, ctx, attemptId, expectedRevision, actionDigest, authorized
         )
 
-    @mcp.tool(name="stm32_acceptance_attempt_show")
+    @mcp.tool(name=MCP_TOOL_NAMES["acceptance_attempt_show"])
     async def stm32_acceptance_attempt_show(
         ctx: Context,
         attemptId: AcceptanceUuid,
     ) -> dict[str, object]:
         return await tool_acceptance_attempt_show_for_request(runtime, ctx, attemptId)
 
-    @mcp.tool(name="stm32_acceptance_attempt_resume")
+    @mcp.tool(name=MCP_TOOL_NAMES["acceptance_attempt_resume"])
     async def stm32_acceptance_attempt_resume(
         ctx: Context,
         attemptId: AcceptanceUuid,
@@ -2509,8 +2528,18 @@ def create_server(
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="stm32-toolkit-mcp")
-    parser.add_argument("--project-root", required=True, type=Path)
-    parser.add_argument("--data-root", required=True, type=Path)
+    parser.add_argument(
+        "--project-root",
+        required=True,
+        type=_mcp_root_type,
+        action=_RejectDuplicateArgument,
+    )
+    parser.add_argument(
+        "--data-root",
+        required=True,
+        type=_mcp_root_type,
+        action=_RejectDuplicateArgument,
+    )
     parser.add_argument("--session-id")
     return parser
 

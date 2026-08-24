@@ -31,7 +31,15 @@ from .analysis_workflows import (
     export_analysis_bundle,
 )
 from .models import MonitorConfig
-from .protocol import MAX_PROTOCOL_BYTES, ProtocolResult, ProtocolViolation, failure, parse_json_object, success
+from .protocol import (
+    MAX_PROTOCOL_BYTES,
+    MONITOR_VERSION,
+    ProtocolResult,
+    ProtocolViolation,
+    failure,
+    parse_json_object,
+    success,
+)
 from .replay import (
     INCOMPATIBLE_IDENTITY,
     MONITOR_PHYSICAL_INVALID,
@@ -69,6 +77,7 @@ class _AdapterFailure(ValueError):
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="stm32-monitor")
     commands = parser.add_subparsers(dest="command", required=True)
+    commands.add_parser("version", help="print the Monitor package version")
     serve = commands.add_parser("serve", help="start the authenticated monitor service")
     serve.add_argument("--project", required=True)
     serve.add_argument("--data-root", required=True)
@@ -192,6 +201,10 @@ def main(
     parser = _parser()
     with contextlib.redirect_stderr(_stderr):
         arguments = parser.parse_args(list(argv) if argv is not None else None)
+    if arguments.command == "version":
+        _stdout.write(MONITOR_VERSION + "\n")
+        _stdout.flush()
+        return 0
     if arguments.command in {"replay", "analysis", "physical"}:
         try:
             result = _run_adapter(arguments)

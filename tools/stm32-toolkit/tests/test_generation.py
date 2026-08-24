@@ -2151,9 +2151,12 @@ def _valid_manifest_bytes(root: Path, extra_records=()) -> bytes:
         (b'{"schemaVersion":1,"tool":"other","toolVersion":"0.5.0","templateVersion":1,"projectManifestSha256":"' + b"a" * 64 + b'","files":[]}', "tool"),
         (b'{"schemaVersion":1,"tool":"stm32-toolkit","toolVersion":"9.9.9","templateVersion":1,"projectManifestSha256":"' + b"a" * 64 + b'","files":[]}', "version"),
         (b'{"schemaVersion":1,"tool":"stm32-toolkit","toolVersion":"0.5.0","templateVersion":2,"projectManifestSha256":"' + b"a" * 64 + b'","files":[]}', "version"),
-        (b'{"schemaVersion":1,"tool":"stm32-toolkit","toolVersion":"0.5.0","templateVersion":1,"projectManifestSha256":"zzz","files":[]}', "hash"),
-        (b'{"schemaVersion":1,"tool":"stm32-toolkit","toolVersion":"0.5.0","templateVersion":1,"projectManifestSha256":"' + b"a" * 64 + b'","files":{}}', "type"),
-        (b'{"schemaVersion":1,"tool":"stm32-toolkit","toolVersion":"0.5.0","templateVersion":1,"projectManifestSha256":"' + b"a" * 64 + b'","files":[1]}', "type"),
+        # Keep historical 0.5.0 producer records above as version-rejection
+        # fixtures; these structural cases use the current identity so their
+        # targeted hash/type validators remain observable.
+        (b'{"schemaVersion":1,"tool":"stm32-toolkit","toolVersion":"0.9.0","templateVersion":1,"projectManifestSha256":"zzz","files":[]}', "hash"),
+        (b'{"schemaVersion":1,"tool":"stm32-toolkit","toolVersion":"0.9.0","templateVersion":1,"projectManifestSha256":"' + b"a" * 64 + b'","files":{}}', "type"),
+        (b'{"schemaVersion":1,"tool":"stm32-toolkit","toolVersion":"0.9.0","templateVersion":1,"projectManifestSha256":"' + b"a" * 64 + b'","files":[1]}', "type"),
     ],
 )
 def test_malformed_prior_manifests_are_rejected(tmp_path, content, rule):

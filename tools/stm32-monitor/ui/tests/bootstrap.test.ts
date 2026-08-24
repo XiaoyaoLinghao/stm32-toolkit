@@ -14,8 +14,8 @@ it("scrubs the only valid fragment before bearer bootstrap",async()=>{
     expect(new Headers(init?.headers).get("Authorization")).toBe(`Bearer ${TOKEN}`);
     expect(new Headers(init?.headers).has("Origin")).toBe(false);
     expect(init).toMatchObject({method:"POST",credentials:"same-origin",body:null});
-    return new Response(JSON.stringify({protocol:"stm32-toolkit-monitor/1",toolkitVersion:"0.5.0",
-      monitorVersion:"0.5.0",ok:true,operation:"monitor.auth.bootstrap",code:"OK",message:"",
+    return new Response(JSON.stringify({protocol:"stm32-toolkit-monitor/1",toolkitVersion:"0.9.0",
+      monitorVersion:"0.9.0",ok:true,operation:"monitor.auth.bootstrap",code:"OK",message:"",
       data:{authenticated:true},details:{}}));});
   const result=await bootstrapFromFragment(window,fetchLike);
   expect(order).toEqual(["scrub","fetch"]);
