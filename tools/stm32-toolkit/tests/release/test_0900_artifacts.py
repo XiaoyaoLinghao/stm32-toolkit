@@ -11,6 +11,7 @@ import hashlib
 import json
 import os
 import copy
+import re
 import subprocess
 import sys
 import zipfile
@@ -37,6 +38,27 @@ def _run(*args: str, cwd: Path = REPO_ROOT) -> subprocess.CompletedProcess[str]:
 
 def _sha(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def test_bootstrap_anchor_binds_git_archive_bytes_not_worktree_filter_bytes():
+    from importlib.util import module_from_spec, spec_from_file_location
+
+    spec = spec_from_file_location("build_0900_artifacts_archive_anchor", UTILITY)
+    module = module_from_spec(spec)
+    assert spec and spec.loader
+    spec.loader.exec_module(module)
+    head = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=REPO_ROOT, text=True).strip()
+    epoch = module._git_epoch(REPO_ROOT, head)
+    source_archive = module._git_archive(REPO_ROOT, head, epoch)
+    members = module._zip_members(source_archive)
+    setup = members["stm32-toolkit-0.9.0/bin/setup-stm32-env.ps1"].decode("utf-8")
+    utility = members["stm32-toolkit-0.9.0/tools/release/build_0900_artifacts.py"]
+    policy = members["stm32-toolkit-0.9.0/tools/release/release_0900_policy.json"]
+    utility_match = re.search(r'(?m)^\$ReleaseUtilitySha256\s*=\s*"([0-9a-f]{64})"\s*$', setup)
+    policy_match = re.search(r'(?m)^\$ReleasePolicySha256\s*=\s*"([0-9a-f]{64})"\s*$', setup)
+    assert utility_match and policy_match
+    assert utility_match.group(1) == hashlib.sha256(utility).hexdigest()
+    assert policy_match.group(1) == hashlib.sha256(policy).hexdigest()
 
 
 def _write_wheel(path: Path, name: str = "example", version: str = "1.0.0", requires: tuple[str, ...] = ()) -> None:

@@ -392,15 +392,23 @@ def _assert_source(repo: Path, code_head: str) -> int:
     return _git_epoch(repo, code_head)
 
 
-def _assert_bootstrap_trust_anchor(repo: Path) -> None:
-    setup_path = repo / "bin" / "setup-stm32-env.ps1"
-    utility_path = repo / "tools" / "release" / "build_0900_artifacts.py"
-    policy_path = repo / "tools" / "release" / "release_0900_policy.json"
+def _assert_bootstrap_trust_anchor(repo: Path, source_archive: bytes) -> None:
+    """Bind setup's frozen digests to the bytes delivered by git archive.
+
+    The release source archive is the byte authority for the extracted
+    ToolkitRoot.  On Windows, ``git archive`` may apply the repository's
+    checkout filters, so hashing a worktree path would authorize different
+    bytes from the ones setup will execute.
+    """
+    setup_name = SOURCE_PREFIX + "bin/setup-stm32-env.ps1"
+    utility_name = SOURCE_PREFIX + "tools/release/build_0900_artifacts.py"
+    policy_name = SOURCE_PREFIX + "tools/release/release_0900_policy.json"
     try:
-        setup_text = setup_path.read_text(encoding="utf-8")
-        utility_hash = _sha256(utility_path)
-        policy_hash = _sha256(policy_path)
-    except (OSError, UnicodeError) as exc:
+        members = _zip_members(source_archive)
+        setup_text = members[setup_name].decode("utf-8")
+        utility_hash = _sha256(members[utility_name])
+        policy_hash = _sha256(members[policy_name])
+    except (KeyError, UnicodeError, ReleaseError) as exc:
         raise ReleaseError("bootstrap trust anchor is unavailable") from exc
     utility_matches = re.findall(r'(?m)^\$ReleaseUtilitySha256\s*=\s*"([0-9a-f]{64})"\s*$', setup_text)
     policy_matches = re.findall(r'(?m)^\$ReleasePolicySha256\s*=\s*"([0-9a-f]{64})"\s*$', setup_text)
@@ -1183,11 +1191,11 @@ def _build(args: argparse.Namespace) -> dict[str, Any]:
         pass
     policy = _load_policy()
     epoch = _assert_source(repo, args.code_head)
-    _assert_bootstrap_trust_anchor(repo)
+    source_archive = _git_archive(repo, args.code_head, epoch)
+    _assert_bootstrap_trust_anchor(repo, source_archive)
     selected, direct = _select_wheels(wheelhouse, policy)
     with tempfile.TemporaryDirectory(prefix="stm32tk-release-") as temp:
         temp_root = Path(temp)
-        source_archive = _git_archive(repo, args.code_head, epoch)
         product_wheels: dict[str, bytes] = {}
         for package_path, normalized in (("tools/stm32-toolkit", "stm32-toolkit"), ("tools/stm32-monitor", "stm32-monitor")):
             built_dir = temp_root / normalized
