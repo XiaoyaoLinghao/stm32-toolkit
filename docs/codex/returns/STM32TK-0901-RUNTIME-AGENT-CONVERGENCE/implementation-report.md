@@ -137,10 +137,18 @@ The final focused CLI/parser set collected `157`, with `156 passed`, `1 skipped`
 junction unavailable on that node), and zero failures.
 
 The installed CPython 3.12 candidate was used for the final package-split Step 12 matrix to keep
-the two `test_cli.py` modules isolated. Toolkit exact Step 12 files returned `832 tests`, zero
-failures/errors/skips; Monitor exact Step 12 files returned `219 passed in 85.16s`. Compileall and
-`git diff --check` both exited `0`. The pre-candidate fake-CMake subprocess/import failures remain
-ENVIRONMENT/INFRASTRUCTURE evidence; no VS08 workflow behavior was changed.
+the two `test_cli.py` modules isolated:
+
+```powershell
+$env:PYTHONPATH = 'tools/stm32-toolkit/src;tools/stm32-monitor/src'
+C:/tmp/p0901-correction-runtime/Scripts/python.exe -m pytest tools/stm32-toolkit/tests/test_public_inventory.py tools/stm32-toolkit/tests/test_cli.py tools/stm32-toolkit/tests/test_doctor.py tools/stm32-toolkit/tests/test_mcp_server.py tools/stm32-toolkit/tests/test_mcp_roots.py tools/stm32-toolkit/tests/test_plugin_layout.py tools/stm32-toolkit/tests/test_setup_runtime.py tools/stm32-toolkit/tests/test_build_runner.py tools/stm32-toolkit/tests/test_cubemx_project.py tools/stm32-toolkit/tests/test_generation.py tools/stm32-toolkit/tests/test_hardware_workflows.py tools/stm32-toolkit/tests/test_mcp_migration_build.py tools/stm32-toolkit/tests/test_migration_plan.py tools/stm32-toolkit/tests/test_probe_protocol.py tools/stm32-toolkit/tests/test_result.py tools/stm32-toolkit/tests/test_target_transports.py -q --basetemp C:/tmp/p0901-correction-slice-toolkit-final --junitxml=C:/tmp/p0901-correction-slice-toolkit-final.xml
+C:/tmp/p0901-correction-runtime/Scripts/python.exe -m pytest tools/stm32-monitor/tests/test_cli.py tools/stm32-monitor/tests/test_exports.py tools/stm32-monitor/tests/test_models.py tools/stm32-monitor/tests/test_package_boundary.py tools/stm32-monitor/tests/test_protocol.py tools/stm32-monitor/tests/test_runtime.py tools/stm32-monitor/tests/test_service.py -q --basetemp C:/tmp/p0901-correction-slice-monitor --junitxml=C:/tmp/p0901-correction-slice-monitor.xml
+```
+
+Toolkit's 16 exact Step 12 files returned `832 tests`, zero failures/errors/skips; Monitor's 7
+files returned `219 passed in 85.16s`. Compileall and `git diff --check` both exited `0`. The
+pre-candidate fake-CMake subprocess/import failures remain ENVIRONMENT/INFRASTRUCTURE evidence;
+no VS08 workflow behavior was changed.
 
 Product fixes were committed before the final smoke as Product CodeHead
 `b547803c10bf9944b9f7a33178343b8c32bfd717` (`fix(vs09): address runtime convergence review
