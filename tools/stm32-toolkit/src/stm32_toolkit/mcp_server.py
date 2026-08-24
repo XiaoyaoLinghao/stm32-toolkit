@@ -23,9 +23,16 @@ from pydantic import (
     Field,
     StrictBool,
     StrictInt,
+    StrictStr,
     model_validator,
 )
 
+from stm32_toolkit.acceptance.workflows import (
+    AcceptanceWorkflowContext,
+    describe_acceptance_scenario,
+    record_acceptance_scenario,
+    show_acceptance_scenario,
+)
 from stm32_toolkit.context import build_project_context
 from stm32_toolkit.creation_workflows import (
     CreationPlanWorkflowRequest,
@@ -112,6 +119,7 @@ _RUN_ID_PATTERN = r"^[a-z0-9][a-z0-9._-]*$"
 _DIAGNOSTIC_OPERATION_PATTERN = r"^[a-z0-9][a-z0-9._-]{0,127}$"
 _DIAGNOSTIC_SESSION_PATTERN = r"^[0-9a-f]{32}$"
 _DIAGNOSTIC_PLAN_PATTERN = r"^[0-9a-f]{64}$"
+_ACCEPTANCE_UUID_PATTERN = r"^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
 _PORTABLE_PATH_MAX_BYTES = 4096
 _REPARSE_POINT = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
 
@@ -192,6 +200,13 @@ DiagnosticStepId = Annotated[
     ),
 ]
 DiagnosticPolarity = Literal["supports", "refutes"]
+
+AcceptanceScenarioId = Literal["legacy-keil-migration", "new-cubemx-project"]
+AcceptanceScenarioVersion = Literal["1"]
+AcceptanceUuid = Annotated[
+    StrictStr,
+    Field(pattern=_ACCEPTANCE_UUID_PATTERN, min_length=36, max_length=36),
+]
 
 
 def _validate_portable_project_path(value: str) -> str:
@@ -1116,6 +1131,14 @@ def _diagnostic_context(runtime: ServerRuntime) -> DiagnosticWorkflowContext:
     )
 
 
+def _acceptance_context(runtime: ServerRuntime) -> AcceptanceWorkflowContext:
+    return AcceptanceWorkflowContext(
+        project_root=runtime.project_root,
+        data_root=runtime.data_root,
+        session_id=runtime.session_id,
+    )
+
+
 class _ProjectPathError(ValueError):
     """A caller path did not satisfy the MCP project-file boundary."""
 
@@ -1528,6 +1551,62 @@ async def tool_test_target_execute_for_request(
             _testing_context(runtime), probe_id=probe_id,
             authorized_action_digest=authorized_action_digest,
         )
+    ).to_dict()
+
+
+async def tool_acceptance_scenario_describe_for_request(
+    runtime: ServerRuntime,
+    context: Context | None,
+    scenario_id: AcceptanceScenarioId,
+    scenario_version: AcceptanceScenarioVersion,
+) -> dict[str, object]:
+    operation = "acceptance.scenario.describe"
+    failure = await _client_roots_failure(runtime, context, operation)
+    if failure is not None:
+        return failure
+    return describe_acceptance_scenario(
+        _acceptance_context(runtime),
+        scenario_id=scenario_id,
+        scenario_version=scenario_version,
+    ).to_dict()
+
+
+async def tool_acceptance_scenario_record_for_request(
+    runtime: ServerRuntime,
+    context: Context | None,
+    record_id: AcceptanceUuid,
+    scenario_id: AcceptanceScenarioId,
+    scenario_version: AcceptanceScenarioVersion,
+    failed_before_test_run_id: AcceptanceUuid,
+    fixed_after_test_run_id: AcceptanceUuid,
+    diagnostic_session_id: AcceptanceUuid,
+) -> dict[str, object]:
+    operation = "acceptance.scenario.record"
+    failure = await _client_roots_failure(runtime, context, operation)
+    if failure is not None:
+        return failure
+    return record_acceptance_scenario(
+        _acceptance_context(runtime),
+        record_id=record_id,
+        scenario_id=scenario_id,
+        scenario_version=scenario_version,
+        failed_before_test_run_id=failed_before_test_run_id,
+        fixed_after_test_run_id=fixed_after_test_run_id,
+        diagnostic_session_id=diagnostic_session_id,
+    ).to_dict()
+
+
+async def tool_acceptance_scenario_show_for_request(
+    runtime: ServerRuntime,
+    context: Context | None,
+    record_id: AcceptanceUuid,
+) -> dict[str, object]:
+    operation = "acceptance.scenario.show"
+    failure = await _client_roots_failure(runtime, context, operation)
+    if failure is not None:
+        return failure
+    return show_acceptance_scenario(
+        _acceptance_context(runtime), record_id=record_id
     ).to_dict()
 
 
@@ -2174,6 +2253,44 @@ def create_server(
             runtime, ctx, probeId, authorizedActionDigest
         )
 
+    @mcp.tool(name="stm32_acceptance_scenario_describe")
+    async def stm32_acceptance_scenario_describe(
+        ctx: Context,
+        scenarioId: AcceptanceScenarioId,
+        scenarioVersion: AcceptanceScenarioVersion,
+    ) -> dict[str, object]:
+        return await tool_acceptance_scenario_describe_for_request(
+            runtime, ctx, scenarioId, scenarioVersion
+        )
+
+    @mcp.tool(name="stm32_acceptance_scenario_record")
+    async def stm32_acceptance_scenario_record(
+        ctx: Context,
+        recordId: AcceptanceUuid,
+        scenarioId: AcceptanceScenarioId,
+        scenarioVersion: AcceptanceScenarioVersion,
+        failedBeforeTestRunId: AcceptanceUuid,
+        fixedAfterTestRunId: AcceptanceUuid,
+        diagnosticSessionId: AcceptanceUuid,
+    ) -> dict[str, object]:
+        return await tool_acceptance_scenario_record_for_request(
+            runtime,
+            ctx,
+            recordId,
+            scenarioId,
+            scenarioVersion,
+            failedBeforeTestRunId,
+            fixedAfterTestRunId,
+            diagnosticSessionId,
+        )
+
+    @mcp.tool(name="stm32_acceptance_scenario_show")
+    async def stm32_acceptance_scenario_show(
+        ctx: Context,
+        recordId: AcceptanceUuid,
+    ) -> dict[str, object]:
+        return await tool_acceptance_scenario_show_for_request(runtime, ctx, recordId)
+
     _close_tool_input_schemas(
         mcp,
         (
@@ -2200,6 +2317,9 @@ def create_server(
             "stm32_diagnostic_marker_attach",
             "stm32_diagnostic_verification_complete",
             "stm32_diagnostic_verification_show",
+            "stm32_acceptance_scenario_describe",
+            "stm32_acceptance_scenario_record",
+            "stm32_acceptance_scenario_show",
         ),
     )
 

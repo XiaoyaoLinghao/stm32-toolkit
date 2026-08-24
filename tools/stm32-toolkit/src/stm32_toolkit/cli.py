@@ -25,6 +25,12 @@ class _RejectDuplicateTrue(argparse.Action):
         setattr(namespace, self.dest, True)
 
 from stm32_toolkit.context import build_project_context
+from stm32_toolkit.acceptance.workflows import (
+    AcceptanceWorkflowContext,
+    describe_acceptance_scenario,
+    record_acceptance_scenario,
+    show_acceptance_scenario,
+)
 from stm32_toolkit.creation_workflows import (
     CreationPlanWorkflowRequest,
     apply_creation_workflow,
@@ -102,6 +108,9 @@ _DIAGNOSTIC_RUN_ID = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
 _DIAGNOSTIC_PLAN_ID = re.compile(r"^[0-9a-f]{64}$")
 _DIAGNOSTIC_ACTORS = ("user", "tool", "ai-client")
 _DIAGNOSTIC_MAX_BYTES = 64 * 1024
+_ACCEPTANCE_UUID = re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+)
 _STEPS_FILE_MAX_BYTES = 1024 * 1024
 _REPARSE_POINT = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
 
@@ -399,6 +408,36 @@ def _build_parser() -> argparse.ArgumentParser:
     target_execute.add_argument(
         "--authorized-action-digest", required=True, type=_testing_digest
     )
+
+    scenario = commands.add_parser("scenario")
+    scenario_commands = scenario.add_subparsers(dest="scenario_command", required=True)
+
+    scenario_describe = scenario_commands.add_parser("describe")
+    scenario_describe.set_defaults(operation="acceptance.scenario.describe")
+    _add_testing_context(scenario_describe)
+    scenario_describe.add_argument("--scenario-id", required=True)
+    scenario_describe.add_argument("--scenario-version", required=True)
+
+    scenario_record = scenario_commands.add_parser("record")
+    scenario_record.set_defaults(operation="acceptance.scenario.record")
+    _add_testing_context(scenario_record)
+    scenario_record.add_argument("--record-id", required=True, type=_acceptance_uuid)
+    scenario_record.add_argument("--scenario-id", required=True)
+    scenario_record.add_argument("--scenario-version", required=True)
+    scenario_record.add_argument(
+        "--failed-before-test-run-id", required=True, type=_acceptance_uuid
+    )
+    scenario_record.add_argument(
+        "--fixed-after-test-run-id", required=True, type=_acceptance_uuid
+    )
+    scenario_record.add_argument(
+        "--diagnostic-session-id", required=True, type=_acceptance_uuid
+    )
+
+    scenario_show = scenario_commands.add_parser("show")
+    scenario_show.set_defaults(operation="acceptance.scenario.show")
+    _add_testing_context(scenario_show)
+    scenario_show.add_argument("--record-id", required=True, type=_acceptance_uuid)
 
     diagnose = commands.add_parser("diagnose")
     diagnose_commands = diagnose.add_subparsers(
@@ -736,6 +775,12 @@ def _add_diagnostic_tool_context(parser: argparse.ArgumentParser) -> None:
 def _testing_digest(value: str) -> str:
     if _TEST_DIGEST.fullmatch(value) is None:
         raise argparse.ArgumentTypeError("invalid inventory digest")
+    return value
+
+
+def _acceptance_uuid(value: str) -> str:
+    if _ACCEPTANCE_UUID.fullmatch(value) is None:
+        raise argparse.ArgumentTypeError("invalid acceptance UUID")
     return value
 
 
@@ -1212,6 +1257,29 @@ def _operation_result(
                 stream_file=args.stream_file,
             )
         return test_show(context, run_id=args.run_id)
+    if args.command == "scenario":
+        context = AcceptanceWorkflowContext(
+            project_root=project_root,
+            data_root=args.data_root,
+            session_id=args.session_id,
+        )
+        if args.scenario_command == "describe":
+            return describe_acceptance_scenario(
+                context,
+                scenario_id=args.scenario_id,
+                scenario_version=args.scenario_version,
+            )
+        if args.scenario_command == "record":
+            return record_acceptance_scenario(
+                context,
+                record_id=args.record_id,
+                scenario_id=args.scenario_id,
+                scenario_version=args.scenario_version,
+                failed_before_test_run_id=args.failed_before_test_run_id,
+                fixed_after_test_run_id=args.fixed_after_test_run_id,
+                diagnostic_session_id=args.diagnostic_session_id,
+            )
+        return show_acceptance_scenario(context, record_id=args.record_id)
     if args.command == "diagnose":
         context = DiagnosticWorkflowContext(
             project_root, args.data_root, args.session_id

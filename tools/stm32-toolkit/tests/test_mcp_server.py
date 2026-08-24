@@ -143,6 +143,9 @@ def test_server_registers_exactly_the_project_bound_tools(tmp_path: Path):
         "stm32_test_target_prepare",
         "stm32_test_target_execute",
         "stm32_test_target_replay",
+        "stm32_acceptance_scenario_describe",
+        "stm32_acceptance_scenario_record",
+        "stm32_acceptance_scenario_show",
     }
     zero_argument_tools = {
         "stm32_doctor",
