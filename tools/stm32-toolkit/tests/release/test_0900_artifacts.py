@@ -201,6 +201,26 @@ def test_build_rejects_dirty_or_wrong_code_head_without_output(tmp_path: Path):
     assert not output.exists()
 
 
+def test_official_repository_identity_accepts_case_insensitive_github_remote(tmp_path: Path):
+    from importlib.util import module_from_spec, spec_from_file_location
+
+    spec = spec_from_file_location("build_0900_artifacts_identity", UTILITY)
+    module = module_from_spec(spec)
+    assert spec and spec.loader
+    spec.loader.exec_module(module)
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.email", "test@example.invalid"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=repo, check=True)
+    (repo / "README").write_text("fixture\n", encoding="utf-8")
+    subprocess.run(["git", "add", "README"], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-qm", "fixture"], cwd=repo, check=True)
+    subprocess.run(["git", "remote", "add", "origin", "https://github.com/XiaoyaoLinghao/stm32-toolkit.git"], cwd=repo, check=True)
+    head = module._git_output(repo, ["rev-parse", "HEAD"])
+    assert module._assert_source(repo, head) > 0
+
+
 def test_fixed_metadata_zip_entries_are_sorted_and_stored(tmp_path: Path):
     archive = tmp_path / "fixed.zip"
     from importlib.util import spec_from_file_location, module_from_spec

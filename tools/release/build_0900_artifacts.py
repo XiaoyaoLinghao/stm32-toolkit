@@ -329,7 +329,7 @@ def _assert_source(repo: Path, code_head: str) -> int:
     _git_output(repo, ["cat-file", "-e", f"{code_head}^{{commit}}"])
     remote_result = _process(["git", "config", "--get", "remote.origin.url"], cwd=repo, timeout=30, text=True)
     remote = str(remote_result.stdout).strip() if remote_result.returncode == 0 else REPOSITORY
-    if remote and "github.com/XiaoyaoLinghao/stm32-toolkit" not in remote.lower():
+    if remote and "github.com/xiaoyaolinghao/stm32-toolkit" not in remote.lower():
         _reject("source repository identity is not official")
     return _git_epoch(repo, code_head)
 
