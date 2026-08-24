@@ -1,7 +1,7 @@
 # VS07-C safe regeneration implementation report
 
 - Accepted base: `fcdcd1ab9c1f358df78fbfb8b12ed9b0397c534d`
-- Product/tests CodeHead before this report commit: `15701023441ad05d11d39120c43c50a3f3857a3c`
+- Product/tests CodeHead before this report commit: `94fd34a0b19890accdedc6002ab3c84fb87e8689`
 - Implementer: one GPT-5.6-luna implementation pass, reasoning max
 - Branch/worktree: `codex/STM32TK-0703-SAFE-REGENERATION` /
   `C:/tmp/stm32tk-0703-safe-regeneration`
@@ -9,64 +9,79 @@
 
 ## Delivered boundary
 
-The product commit adds the neutral plan/prepare/apply regeneration workflows,
-strict schema-3 CubeMX ownership inventory, bounded preview/change digests,
-single-use persistent authorization, CubeMX adapter replay, atomic activation
-and rollback cleanup, CLI commands, MCP tools, regression tests, and English /
-Chinese usage notes. Schema-2/non-CubeMX destinations fail with
-`REGENERATION_NOT_CUBEMX_PROJECT`. `App/` and `Tests/` are copied and rehashed;
+The product commits add the neutral plan/prepare/apply regeneration workflows,
+strict schema-3 CubeMX ownership inventory, bounded complete preview/change
+digests, single-use persistent authorization, CubeMX adapter replay, atomic
+activation and rollback cleanup, CLI commands, MCP tools, regression tests, and
+English / Chinese usage notes. The revision product commit additionally
+rehashes `App/` and `Tests/` after configure/build under the activation lock,
+rejects candidate ownership blockers, excludes Toolkit-owned paths from
+CubeMX-drift checks, hardens no-follow identity reads (including authorization
+records), and bounds the complete public preview representation. Schema-2/
+non-CubeMX destinations fail with `REGENERATION_NOT_CUBEMX_PROJECT`.
 `build/`, `artifacts/`, and `.stm32-toolkit/build.lock` are disposable.
 
 ## TDD evidence
 
-The first focused RED run was executed before adding the core module:
+The original focused RED run was executed before adding the core module:
 
 ```text
 $env:PYTHONPATH='tools/stm32-toolkit/src'; py -3.12 -m pytest tools/stm32-toolkit/tests/test_regeneration.py -q --basetemp C:\tmp\p0703-luna-red
 ERROR collecting ... ModuleNotFoundError: No module named 'stm32_toolkit.regeneration'
 ```
 
-After implementation, the focused regeneration command passed `13 passed`;
-the Windows symlink-specific test was `SKIPPED` because this host did not
-permit creating a test symlink. The exact approved slice passed `681 passed,
-1 skipped` and produced `C:\tmp\p0703-luna-slice.xml` with zero failures and
-zero errors. The skipped check is recorded as deferred platform evidence, not
-as a physical pass.
+For the review-round corrections, the focused RED run collected 30 tests and
+failed the 11 newly added boundary/race/precedence cases expected by TDD.
+The corresponding GREEN run passed 29 with one Windows symlink-specific test
+skipped because this host did not permit creating a test symlink. The exact
+approved slice passed `698 passed, 1 skipped` with zero failures and zero
+errors, producing `C:\tmp\p0703-luna-slice-r1.xml`. The skipped check is
+recorded as deferred platform evidence, not as a physical pass.
 
 The exact slice was:
 
 ```text
-$env:PYTHONPATH='tools/stm32-toolkit/src'; py -3.12 -m pytest tools/stm32-toolkit/tests/test_regeneration.py tools/stm32-toolkit/tests/test_regeneration_workflows.py tools/stm32-toolkit/tests/test_regeneration_cli.py tools/stm32-toolkit/tests/test_regeneration_mcp.py tools/stm32-toolkit/tests/test_creation_authorization.py tools/stm32-toolkit/tests/test_creation_environment.py tools/stm32-toolkit/tests/test_cubemx_adapter.py tools/stm32-toolkit/tests/test_cubemx_project.py tools/stm32-toolkit/tests/test_creation_apply.py tools/stm32-toolkit/tests/test_creation_workflows.py tools/stm32-toolkit/tests/test_generation.py tools/stm32-toolkit/tests/test_build_runner.py tools/stm32-toolkit/tests/test_migration_plan.py tools/stm32-toolkit/tests/test_migration_apply.py tools/stm32-toolkit/tests/test_cli.py tools/stm32-toolkit/tests/test_mcp_server.py tools/stm32-toolkit/tests/test_mcp_roots.py -q --basetemp C:\tmp\p0703-luna-slice --junitxml=C:\tmp\p0703-luna-slice.xml
+$env:PYTHONPATH='tools/stm32-toolkit/src'; py -3.12 -m pytest tools/stm32-toolkit/tests/test_regeneration.py tools/stm32-toolkit/tests/test_regeneration_workflows.py tools/stm32-toolkit/tests/test_regeneration_cli.py tools/stm32-toolkit/tests/test_regeneration_mcp.py tools/stm32-toolkit/tests/test_creation_authorization.py tools/stm32-toolkit/tests/test_creation_environment.py tools/stm32-toolkit/tests/test_cubemx_adapter.py tools/stm32-toolkit/tests/test_cubemx_project.py tools/stm32-toolkit/tests/test_creation_apply.py tools/stm32-toolkit/tests/test_creation_workflows.py tools/stm32-toolkit/tests/test_generation.py tools/stm32-toolkit/tests/test_build_runner.py tools/stm32-toolkit/tests/test_migration_plan.py tools/stm32-toolkit/tests/test_migration_apply.py tools/stm32-toolkit/tests/test_cli.py tools/stm32-toolkit/tests/test_mcp_server.py tools/stm32-toolkit/tests/test_mcp_roots.py -q --basetemp C:\tmp\p0703-luna-slice-r1 --junitxml=C:\tmp\p0703-luna-slice-r1.xml
 ```
 
 `py -3.12 -m compileall -q tools/stm32-toolkit/src tools/stm32-toolkit/tests`
-and `git diff --check fcdcd1ab9c1f358df78fbfb8b12ed9b0397c534d..15701023441ad05d11d39120c43c50a3f3857a3c` both passed.
+and `git diff --check fcdcd1ab9c1f358df78fbfb8b12ed9b0397c534d..94fd34a0b19890accdedc6002ab3c84fb87e8689` both passed.
+
+The final verification commands were:
+
+```text
+py -3.12 -m compileall -q tools/stm32-toolkit/src tools/stm32-toolkit/tests
+git diff --check fcdcd1ab9c1f358df78fbfb8b12ed9b0397c534d..94fd34a0b19890accdedc6002ab3c84fb87e8689
+```
 
 ## Fresh native software scenario
 
-Evidence workspace: `C:/tmp/stm32tk-0703-native-evidence/workspace` (local Git
-repository with no remote). The captured-IOC project was seeded from the
-VS07-B native F429 fixture, `App/fixture.txt` and `Tests/fixture.txt` were
-added, and only `ProjectManager.HeapSize=0x200` was changed to `0x300` before
-planning. Support and execution facts were discovered from the installed
-CubeMX `6.18.1-RC2`, CubeCLT `1.22.0`, and
+Evidence workspace: `C:/tmp/stm32tk-0703-native-evidence-r3/workspace` (fresh
+local Git repository with no remote). The copied accepted VS07-B captured-IOC
+project had the prior owned IOC value `ProjectManager.HeapSize=0x200`; the
+scenario changed it to `0x300` before planning and seeded
+`App/keep.txt` and `Tests/keep.txt`. Support and execution facts were
+discovered from the installed CubeMX `6.18.1-RC2`, CubeCLT `1.22.0`, and
 `C:/Users/ZhangYang/STM32Cube/Repository/STM32Cube_FW_F4_V1.28.3`; no tool was
 installed.
 
-- Plan: `OK`, plan ID `af2f65c5bb36744d4dbf69c1ebcee5967de0355ea13a359b53a6f88c9bce6915`, action digest `305838943ba45bada73ca8096f821d57bdbd7170b7c3307d3a3134e4a2c8e140`.
-- Prepare: `OK`, one CubeMX invocation, preview digest `659bb7499a6d17de8b791cc29cc6680095b0dac745ced35d27d9434d212f8cbe`, authorization digest `d38f3ddb1d4cd3e3c965b6f5ca4ba2e1ec7108cc90c7098b11b27901c176037c`.
-- Apply: `OK`, one replay CubeMX invocation, configure `OK`, Debug `OK`, Release `OK`, ownership manifest SHA-256 `0b0db38cf155f01225f382794ed02c4ed93f612b0312c9cfe5e3784f22864ee0`, attempt `12bbb016b9c4d2cee8b03ac8`.
-- `App/fixture.txt`: before/after `5f360513ef957290b48bd9bee4407e2a5dba2fbe08f3c7b07b4346114b755207`.
-- `Tests/fixture.txt`: before/after `73a1cb006db02800fdd842c2343c3f3c565c4489a3def8699f2c1e8a077a4e67`.
-- The regenerated project contained `generated.ioc` with `ProjectManager.HeapSize=0x300`; no transaction or CubeMX control sibling remained. The derived build lock and build/artifact outputs were recreated by the configure/build stage.
-- Pre-existing `javaw` PID `32708` was observed before the scenario and was the only `javaw` PID afterward. It was not terminated. Replay of the same authorization returned `REGENERATION_AUTHORIZATION_CONSUMED` without a third generation.
+- Environment digest: `24e69448b12f71273ce9bb03c8c85e245210515c58c60307bf1f80ad73cdf195`; CubeMX executable SHA-256 `db4ca49eea336b819eede7f2a1cea19fff65f2f435aee35efc54ce856b6fae01`; package SHA-256 `9b3230070c1199526d1d3a344eb2a2e628b0c54fb279ef709673a4577ea6d3cc`.
+- Plan: `OK`, plan ID `e50ec444c42bdc81877e34fc4b77643a8010cbededdd17bfe352bb4fc6ba7964`, action digest `2aa401d83b38abd0dc49e4fbb52f032483eac19c41ec2a0b4a3c7d608972dfb3`.
+- Prepare: `OK`, preview digest `3e63534cc536a2fd0dc1d3cdf971d85ceebb5e309f9f1cb0c2a445266bc13209`, authorization digest `db63dd57b54079d760f77d391a47e0f09107c7f9804e8f8038ebc4cf52c2920f`.
+- Apply: `OK`, one replay CubeMX invocation, configure `OK`, Debug `OK`, Release `OK`, ownership manifest SHA-256 `9ddfc1cc378ea83057855717ec170ea50d41fd11f5b6127958c19d601e43000d`, attempt `98562fd76c6671ed8d6f1966`.
+- Debug build ID: `0fc47a3a45b08a6364e8ac1aafef9b87dbae587528be764602d99d89f255a864`; Release build ID: `184586217158fee43dd63d0890d9f35720a6c4a6cf3e665c46538dc306ea20b2`.
+- `App/keep.txt`: before/after `727948d3d05623d6152720a780545ecc7da8f9fb5a8c2885fe8f565733b8c6dd`.
+- `Tests/keep.txt`: before/after `b3c0f9601084c9d578dcf5621fab01ee59fa46957f424c51dee9a5a48dbf4b4c`.
+- The regenerated project contained `generated.ioc` with `ProjectManager.HeapSize=0x300`; no `.stm32tk-*` transaction or CubeMX-control sibling remained. The configure/build mutation ledgers and derived build/artifact outputs were created by the existing configure/build stages.
+- Pre-existing `javaw` PID `32708` was observed before and after the scenario and remained the only `javaw` PID; PID delta was empty and it was not terminated. Replay of the same authorization returned `REGENERATION_AUTHORIZATION_CONSUMED` without a third generation.
 
 ## Keil read-only refusal
 
-Against a copied schema-2 Keil fixture in
-`C:/tmp/stm32tk-0703-keil-evidence/workspace`, public planning returned
+Against the copied schema-2 Keil fixture in
+`C:/tmp/stm32tk-0703-keil-evidence/workspace`, fresh public planning returned
+operation `project-regenerate-plan` / code
 `REGENERATION_NOT_CUBEMX_PROJECT`. The recursive before/after tree digest was
-`f16c51dbed27f99c8a630007a92c3378a9272c5d24cf9ef66321631698765b8c` on both
+`3fe379cf892915a39f4c063704bf757e390b44dd7cfb14bbf35cbd4b5a5cb47c` on both
 sides. No CubeMX call or destination mutation occurred.
 
 ## Handoff

@@ -17,10 +17,12 @@
 
 ## Implementer return
 
-- Product/tests CodeHead: `15701023441ad05d11d39120c43c50a3f3857a3c`.
-- Implementation report commit: `907b5db5f9736df3b4a8c568abe5e971f5f631d5`.
-- Product and report commits are local, unpushed, and separate. No PR, merge,
-  tag, release, hardware, installation, or remote action was performed.
+- Product/tests CodeHead: `94fd34a0b19890accdedc6002ab3c84fb87e8689`.
+- The product/tests commit and the updated implementation report/ledger are
+  local, unpushed, and separate. The report/ledger commit SHA is supplied in
+  the implementer return rather than recorded inside its own tracked files.
+- No PR, merge, tag, release, hardware, installation, or remote action was
+  performed.
 
 ## Reconstructed baseline facts
 
@@ -69,18 +71,31 @@ verdict will be appended here without deleting this reconstructed baseline.
   preservation, configure, Debug, Release, atomic activation, and
   single-use authorization were exercised by the focused tests and the fresh
   native software scenario.
-- The exact approved slice passed `681 passed, 1 skipped`; the skipped test was
+- The exact approved slice passed `698 passed, 1 skipped`; the skipped test was
   the Windows symlink-creation probe because this host refused symlink
   creation, and it remains deferred platform evidence rather than a physical
   pass. `compileall` and accepted-base-to-CodeHead `git diff --check` passed.
-- Fresh native evidence used the installed CubeMX 6.18.1-RC2, CubeCLT 1.22.0,
-  and F4 V1.28.3 package. Plan/prepare/apply returned `OK`; configure,
-  Debug, and Release returned `OK`; App/Tests hashes were unchanged; sibling
-  transaction/control roots were absent; only pre-existing javaw PID 32708
-  remained. Authorization replay returned
+- Review-round GREEN focused coverage passed 29 tests with one skipped Windows
+  symlink probe; the RED run had 11 expected failures across 30 collected
+  tests. The revision product commit adds post-configure/build App/Tests
+  rehashing under the activation lock, candidate-blocker rejection, complete
+  preview metadata bounds, Toolkit-over-CubeMX precedence, no-follow identity
+  reads for project and authorization files, and the focused authorization,
+  rollback, CLI, and MCP regressions.
+- Fresh r3 native evidence used the installed CubeMX 6.18.1-RC2, CubeCLT
+  1.22.0, and F4 V1.28.3 package. The copied prior owned IOC was changed from
+  `ProjectManager.HeapSize=0x200` to `0x300`; plan/prepare/apply returned `OK`;
+  configure, Debug, and Release returned `OK`; `App/keep.txt` SHA-256
+  `727948d3d05623d6152720a780545ecc7da8f9fb5a8c2885fe8f565733b8c6dd` and
+  `Tests/keep.txt` SHA-256
+  `b3c0f9601084c9d578dcf5621fab01ee59fa46957f424c51dee9a5a48dbf4b4c` were
+  unchanged; `.stm32tk-*` transaction/control roots were absent; only the
+  pre-existing javaw PID 32708 remained. Authorization replay returned
   `REGENERATION_AUTHORIZATION_CONSUMED`.
-- Copied schema-2 Keil read-only evidence returned
-  `REGENERATION_NOT_CUBEMX_PROJECT` with equal before/after tree digests.
+- Fresh copied schema-2 Keil read-only evidence returned operation
+  `project-regenerate-plan` / `REGENERATION_NOT_CUBEMX_PROJECT` with equal
+  before/after tree digest
+  `3fe379cf892915a39f4c063704bf757e390b44dd7cfb14bbf35cbd4b5a5cb47c`.
 
 ## Outstanding owner
 
