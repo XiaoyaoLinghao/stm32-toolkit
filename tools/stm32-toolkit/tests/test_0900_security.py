@@ -9,6 +9,7 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 UTILITY = REPO_ROOT / "tools" / "release" / "build_0900_artifacts.py"
+POLICY = REPO_ROOT / "tools" / "release" / "release_0900_policy.json"
 
 
 @pytest.fixture(scope="module")
@@ -18,6 +19,49 @@ def release_module():
     assert spec and spec.loader
     spec.loader.exec_module(module)
     return module
+
+
+def _write_valid_runtime_manifest(path: Path) -> None:
+    policy = json.loads(POLICY.read_text(encoding="utf-8"))
+    canonical = lambda name: name.lower().replace("_", "-")
+    direct = {canonical(name) for name in policy["directPins"] if canonical(name) not in {"setuptools", "wheel"}}
+    resolved = {canonical(name): version for name, version in policy["resolvedPins"].items()}
+    names = sorted(set(resolved) | direct | {"stm32-toolkit", "stm32-monitor"})
+    wheels = [
+        {
+            "name": name,
+            "version": "0.9.0" if name.startswith("stm32-") else resolved[name],
+            "file": f"release/wheels/{name.replace('-', '_')}-0.9.0-py3-none-any.whl",
+            "sha256": "b" * 64,
+            "size": 1,
+            "direct": name in direct or name.startswith("stm32-"),
+            "license": "MIT",
+        }
+        for name in names
+    ]
+    artifacts = [
+        {"kind": kind, "file": f"release/{filename}", "sha256": "c" * 64, "size": 1}
+        for kind, filename in (
+            ("monitor-assets", "monitor-assets.json"),
+            ("sbom", "sbom.spdx.json"),
+            ("notices", "THIRD-PARTY-NOTICES.md"),
+            ("license", "LICENSE"),
+            ("compatibility", "compatibility.md"),
+            ("troubleshooting", "troubleshooting.md"),
+        )
+    ]
+    manifest = {
+        "schema": "stm32-toolkit-release/1",
+        "productVersion": "0.9.0",
+        "requiredPython": ">=3.12,<3.13",
+        "platform": {"os": "windows", "architecture": "x86_64", "python": "cp312"},
+        "source": {"repository": "https://github.com/XiaoyaoLinghao/stm32-toolkit.git", "commit": "a" * 40, "archive": "source.zip", "sha256": "a" * 64},
+        "runtimeStateSchema": "stm32-toolkit-runtime-state/1",
+        "wheels": wheels,
+        "artifacts": artifacts,
+        "publicInventory": {"mcpTools": 48, "skills": 8},
+    }
+    path.write_text(json.dumps(manifest, separators=(",", ":")) + "\n", encoding="utf-8")
 
 
 @pytest.mark.parametrize(
@@ -85,24 +129,7 @@ def test_case_folded_manifest_paths_are_rejected_before_reads(release_module, tm
 def test_runtime_state_rejects_boolean_generation_and_future_schema(release_module, tmp_path: Path):
     state = tmp_path / "runtime-state.json"
     manifest = tmp_path / "release-manifest.json"
-    manifest.write_text(
-        json.dumps(
-            {
-                "schema": "stm32-toolkit-release/1",
-                "productVersion": "0.9.0",
-                "requiredPython": ">=3.12,<3.13",
-                "platform": {"os": "windows", "architecture": "x86_64", "python": "cp312"},
-                "source": {"repository": "https://github.com/XiaoyaoLinghao/stm32-toolkit.git", "commit": "a" * 40, "archive": "source.zip", "sha256": "a" * 64},
-                "runtimeStateSchema": "stm32-toolkit-runtime-state/1",
-                "wheels": [],
-                "artifacts": [],
-                "publicInventory": {"mcpTools": 48, "skills": 8},
-            },
-            separators=(",", ":"),
-        )
-        + "\n",
-        encoding="utf-8",
-    )
+    _write_valid_runtime_manifest(manifest)
     base = {
         "activeVersion": "0.9.0",
         "highestInstalledVersion": "0.9.0",
@@ -120,24 +147,7 @@ def test_runtime_state_rejects_boolean_generation_and_future_schema(release_modu
 
 def test_runtime_state_refuses_a_recorded_higher_version_before_mutation(release_module, tmp_path: Path):
     manifest = tmp_path / "release-manifest.json"
-    manifest.write_text(
-        json.dumps(
-            {
-                "schema": "stm32-toolkit-release/1",
-                "productVersion": "0.9.0",
-                "requiredPython": ">=3.12,<3.13",
-                "platform": {"os": "windows", "architecture": "x86_64", "python": "cp312"},
-                "source": {"repository": "https://github.com/XiaoyaoLinghao/stm32-toolkit.git", "commit": "a" * 40, "archive": "source.zip", "sha256": "a" * 64},
-                "runtimeStateSchema": "stm32-toolkit-runtime-state/1",
-                "wheels": [],
-                "artifacts": [],
-                "publicInventory": {"mcpTools": 48, "skills": 8},
-            },
-            separators=(",", ":"),
-        )
-        + "\n",
-        encoding="utf-8",
-    )
+    _write_valid_runtime_manifest(manifest)
     state = tmp_path / "runtime-state.json"
     state.write_text(
         json.dumps(
@@ -163,24 +173,7 @@ def test_runtime_state_refuses_a_recorded_higher_version_before_mutation(release
 
 def test_runtime_state_malformed_json_is_reported_as_invalid(release_module, tmp_path: Path):
     manifest = tmp_path / "release-manifest.json"
-    manifest.write_text(
-        json.dumps(
-            {
-                "schema": "stm32-toolkit-release/1",
-                "productVersion": "0.9.0",
-                "requiredPython": ">=3.12,<3.13",
-                "platform": {"os": "windows", "architecture": "x86_64", "python": "cp312"},
-                "source": {"repository": "https://github.com/XiaoyaoLinghao/stm32-toolkit.git", "commit": "a" * 40, "archive": "source.zip", "sha256": "a" * 64},
-                "runtimeStateSchema": "stm32-toolkit-runtime-state/1",
-                "wheels": [],
-                "artifacts": [],
-                "publicInventory": {"mcpTools": 48, "skills": 8},
-            },
-            separators=(",", ":"),
-        )
-        + "\n",
-        encoding="utf-8",
-    )
+    _write_valid_runtime_manifest(manifest)
     state = tmp_path / "runtime-state.json"
     state.write_text("{malformed\n", encoding="utf-8")
     status, payload = release_module._verify_runtime_state(state, manifest)
