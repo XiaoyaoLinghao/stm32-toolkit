@@ -849,7 +849,7 @@ def _notices(selected: Mapping[str, WheelInfo]) -> bytes:
     return ("\n".join(lines).rstrip() + "\n").encode("utf-8")
 
 
-def _license_files(selected: Mapping[str, WheelInfo], policy: Mapping[str, Any], repo_root: Path) -> dict[str, bytes]:
+def _license_files(selected: Mapping[str, WheelInfo], policy: Mapping[str, Any], repo_root: Path, *, license_text: bytes | None = None) -> dict[str, bytes]:
     files: dict[str, bytes] = {}
     identifiers: set[str] = {"MIT"}
     for normalized, info in sorted(selected.items()):
@@ -864,7 +864,9 @@ def _license_files(selected: Mapping[str, WheelInfo], policy: Mapping[str, Any],
         text = CANONICAL_LICENSE_TEXTS.get(identifier)
         if text is None:
             _reject("required SPDX license text is unavailable")
-        if identifier == "MIT" and (repo_root / "LICENSE").is_file():
+        if identifier == "MIT" and license_text is not None:
+            text_bytes = license_text
+        elif identifier == "MIT" and (repo_root / "LICENSE").is_file():
             text_bytes = (repo_root / "LICENSE").read_bytes()
         else:
             text_bytes = text.encode("utf-8")
@@ -1026,7 +1028,23 @@ def _verify_bundle(root: Path) -> dict[str, Any]:
         selected[normalized] = info
         checks.append({"file": PurePosixPath(entry["file"]).name, "size": len(data)})
     _verify_dependency_closure(selected, policy)
-    license_files = _license_files(selected, policy, root)
+    source = manifest["source"]
+    source_path = root / source["archive"]
+    if not source_path.is_file():
+        _reject("source archive is missing")
+    source_data = _read_bounded(source_path, 1 << 31)
+    if _sha256(source_data) != source["sha256"]:
+        _reject("source archive integrity verification failed")
+    source_members = _zip_members(source_data)
+    source_files: dict[str, bytes] = {}
+    for name, data in source_members.items():
+        if not name.startswith(SOURCE_PREFIX):
+            _reject("source archive prefix is invalid")
+        source_files[name.removeprefix(SOURCE_PREFIX)] = data
+    source_license = source_members.get(SOURCE_PREFIX + "LICENSE")
+    if source_license is None:
+        _reject("source license is missing")
+    license_files = _license_files(selected, policy, root, license_text=source_license)
     release_entries = [*manifest["wheels"], *manifest["artifacts"]]
     expected_release = {entry["file"] for entry in release_entries}
     expected_release.update(license_files)
@@ -1051,19 +1069,6 @@ def _verify_bundle(root: Path) -> dict[str, Any]:
     }
     if set(actual_release) != expected_release:
         _reject("release member closure is invalid")
-    source = manifest["source"]
-    source_path = root / source["archive"]
-    if not source_path.is_file():
-        _reject("source archive is missing")
-    source_data = _read_bounded(source_path, 1 << 31)
-    if _sha256(source_data) != source["sha256"]:
-        _reject("source archive integrity verification failed")
-    source_members = _zip_members(source_data)
-    source_files: dict[str, bytes] = {}
-    for name, data in source_members.items():
-        if not name.startswith(SOURCE_PREFIX):
-            _reject("source archive prefix is invalid")
-        source_files[name.removeprefix(SOURCE_PREFIX)] = data
     actual_source = {
         path.relative_to(root).as_posix(): _read_bounded(path, 1 << 31)
         for path in root.rglob("*")
@@ -1162,7 +1167,11 @@ def _build(args: argparse.Namespace) -> dict[str, Any]:
             product_wheels[normalized] = wheel.read_bytes()
             selected[normalized] = _read_wheel(wheel, policy)
         monitor_assets = _monitor_asset_inventory(product_wheels["stm32-monitor"])
-        license_files = _license_files(selected, policy, repo)
+        source_members = _zip_members(source_archive)
+        source_license = source_members.get(SOURCE_PREFIX + "LICENSE")
+        if source_license is None:
+            _reject("source license is missing")
+        license_files = _license_files(selected, policy, repo, license_text=source_license)
         with tempfile.TemporaryDirectory(prefix="stm32tk-licenses-") as license_temp:
             license_entries = {name.removeprefix("release/"): data for name, data in sorted(license_files.items())}
             _write_fixed_zip(Path(license_temp) / "licenses.zip", license_entries, timestamp=epoch)
