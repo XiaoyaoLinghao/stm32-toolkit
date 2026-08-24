@@ -848,7 +848,55 @@ def _write_fake_release_bundle(plugin_root: Path, wheelhouse: Path, *, complete_
     wheels.mkdir(parents=True, exist_ok=True)
     utility = plugin_root / "tools" / "release" / "build_0900_artifacts.py"
     utility.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(REPO_ROOT / "tools" / "release" / "build_0900_artifacts.py", utility)
+    utility.write_text(
+        """import hashlib, json, sys
+from pathlib import Path
+
+def digest(path):
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+def main():
+    args = sys.argv[1:]
+    root = Path(__file__).resolve().parents[2]
+    manifest_path = root / 'release' / 'release-manifest.json'
+    manifest = json.loads(manifest_path.read_text(encoding='utf-8'))
+    if 'verify-bundle' in args:
+        print(json.dumps({'status': 'ok', 'productVersion': '0.9.0',
+            'manifestSha256': digest(manifest_path),
+            'utilitySha256': digest(Path(__file__)),
+            'sourceCommit': manifest['source']['commit'],
+            'wheels': [entry['file'] for entry in manifest['wheels']],
+            'wheelEntries': manifest['wheels']}, separators=(',', ':')))
+        return 0
+    if 'verify-runtime-state' in args:
+        state_path = Path(args[args.index('--state') + 1])
+        if not state_path.exists():
+            print(json.dumps({'status': 'missing'}, separators=(',', ':')))
+            return 0
+        state = json.loads(state_path.read_text(encoding='utf-8'))
+        candidate_hash = digest(manifest_path)
+        if state.get('highestInstalledVersion', '0.0.0') > '0.9.0':
+            status = 'downgrade-refused'
+        elif (state.get('activeVersion') == '0.9.0' and
+              (state.get('releaseManifestSha256') != candidate_hash or
+               state.get('sourceCommit') != manifest['source']['commit'])):
+            status = 'source-conflict'
+        elif (state.get('releaseManifestSha256') == candidate_hash and
+              state.get('sourceCommit') == manifest['source']['commit']):
+            status = 'matching'
+        else:
+            status = 'repairable'
+        payload = {'status': status}
+        if 'activeVersion' in state: payload['activeVersion'] = state['activeVersion']
+        if 'installGeneration' in state: payload['installGeneration'] = state['installGeneration']
+        print(json.dumps(payload, separators=(',', ':')))
+        return 2 if status in ('downgrade-refused', 'source-conflict') else 0
+    return 2
+
+raise SystemExit(main())
+""",
+        encoding="utf-8",
+    )
 
     def write_wheel(path: Path, files: dict[str, bytes]) -> None:
         records = []

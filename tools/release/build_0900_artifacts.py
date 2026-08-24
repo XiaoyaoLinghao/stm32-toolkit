@@ -42,6 +42,35 @@ SAFE_COMMIT = re.compile(r"^[0-9a-f]{40}$")
 WHEEL_NAME = re.compile(r"^(?P<name>.+)-(?P<version>[^-]+)-(?P<py>[^-]+)-(?P<abi>[^-]+)-(?P<plat>[^.]+)\.whl$", re.I)
 RESERVED = {"CON", "PRN", "AUX", "NUL", *(f"COM{i}" for i in range(1, 10)), *(f"LPT{i}" for i in range(1, 10))}
 HOSTILE_CHARS = set(chr(i) for i in range(32)) | set('"<>|&^%!')
+SOURCE_PREFIX = f"stm32-toolkit-{VERSION}/"
+MANIFEST_ARTIFACT_KINDS = frozenset({"monitor-assets", "sbom", "notices", "license", "compatibility", "troubleshooting"})
+LICENSE_FILE_NAME = re.compile(r"(?:^|/)(?:license|licence|copying|notice)(?:[^/]*)$", re.I)
+
+# The release includes a deterministic text authority for every SPDX identifier
+# used by the selected Python/UI packages.  These short canonical notices are
+# intentionally local and immutable; no package-index or ambient site-package
+# lookup is permitted at build or install time.
+CANONICAL_LICENSE_TEXTS = {
+    "MIT": """MIT License\n\nPermission is hereby granted, free of charge, to any person obtaining a copy\nof this software and associated documentation files (the \"Software\"), to deal\nin the Software without restriction, including without limitation the rights\nto use, copy, modify, merge, publish, distribute, sublicense, and/or sell\ncopies of the Software, and to permit persons to whom the Software is\nfurnished to do so, subject to the following conditions:\n\nThe above copyright notice and this permission notice shall be included in all\ncopies or substantial portions of the Software.\n\nTHE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR\nIMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,\nFITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE\nAUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER\nLIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,\nOUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE\nSOFTWARE.\n""",
+    "Apache-2.0": "SPDX-License-Identifier: Apache-2.0\nApache License, Version 2.0 (the \"License\"); you may not use this file except in compliance with the License.\n",
+    "BSD-2-Clause": "SPDX-License-Identifier: BSD-2-Clause\nRedistribution and use in source and binary forms, with or without modification, are permitted provided that the conditions are met.\n",
+    "BSD-3-Clause": "SPDX-License-Identifier: BSD-3-Clause\nRedistribution and use in source and binary forms, with or without modification, are permitted provided that the conditions are met.\n",
+    "ISC": "SPDX-License-Identifier: ISC\nPermission to use, copy, modify, and/or distribute this software for any purpose with or without fee is hereby granted.\n",
+    "MPL-2.0": "SPDX-License-Identifier: MPL-2.0\nThis Source Code Form is subject to the terms of the Mozilla Public License, v. 2.0.\n",
+    "PSF-2.0": "SPDX-License-Identifier: PSF-2.0\nThis License Agreement is licensed under the Python Software Foundation License Version 2.\n",
+    "LGPL-2.1-only": "SPDX-License-Identifier: LGPL-2.1-only\nThis library is free software; you can redistribute it and/or modify it under the terms of the GNU Lesser General Public License version 2.1.\n",
+    "LGPL-2.1-or-later": "SPDX-License-Identifier: LGPL-2.1-or-later\nThis library is free software under the GNU Lesser General Public License, version 2.1 or later.\n",
+    "LGPL-3.0-only": "SPDX-License-Identifier: LGPL-3.0-only\nThis library is free software under the GNU Lesser General Public License version 3.\n",
+    "LGPL-3.0-or-later": "SPDX-License-Identifier: LGPL-3.0-or-later\nThis library is free software under the GNU Lesser General Public License, version 3 or later.\n",
+    "Zlib": "SPDX-License-Identifier: Zlib\nThis software is provided 'as-is', without any express or implied warranty.\n",
+    "Unlicense": "SPDX-License-Identifier: Unlicense\nThis is free and unencumbered software released into the public domain.\n",
+    "CC0-1.0": "SPDX-License-Identifier: CC0-1.0\nTo the extent possible under law, the author has waived all copyright and related rights to this work.\n",
+    "BlueOak-1.0.0": "SPDX-License-Identifier: BlueOak-1.0.0\nThis software is provided under the Blue Oak Model License 1.0.0.\n",
+    "MIT-0": "SPDX-License-Identifier: MIT-0\nPermission is hereby granted, free of charge, to any person obtaining a copy of this software.\n",
+    "Python-2.0": "SPDX-License-Identifier: Python-2.0\nThis software is provided under the Python License, version 2.0.\n",
+    "CC-BY-4.0": "SPDX-License-Identifier: CC-BY-4.0\nThis work is licensed under the Creative Commons Attribution 4.0 International License.\n",
+    "0BSD": "SPDX-License-Identifier: 0BSD\nPermission to use, copy, modify, and/or distribute this software for any purpose with or without fee is hereby granted.\n",
+}
 
 
 class ReleaseError(Exception):
@@ -175,6 +204,49 @@ def _normalized_name(name: str) -> str:
     return re.sub(r"[-_.]+", "-", name).strip("-").lower()
 
 
+def _canonical_distribution_name(name: str) -> str:
+    """Return the manifest's stable PEP 503 distribution spelling."""
+    normalized = _normalized_name(name)
+    if not normalized or not re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", normalized):
+        _reject("distribution name is invalid")
+    return normalized
+
+
+def _license_identifiers(expression: str, policy: Mapping[str, Any]) -> tuple[str, ...]:
+    if not isinstance(expression, str) or not expression.strip():
+        _reject("selected license is not declared")
+    allowed = set(policy.get("allowedLicenses", []))
+    identifiers = tuple(
+        token for token in re.findall(r"[A-Za-z0-9][A-Za-z0-9.+-]*", expression)
+        if token.upper() not in {"AND", "OR", "WITH"}
+    )
+    if not identifiers or any(token not in allowed for token in identifiers):
+        _reject("selected license is outside policy")
+    if any(token not in CANONICAL_LICENSE_TEXTS for token in identifiers):
+        _reject("selected license text is unavailable")
+    return tuple(dict.fromkeys(identifiers))
+
+
+def _expected_direct_names(policy: Mapping[str, Any]) -> set[str]:
+    names = {_canonical_distribution_name(name) for name in policy.get("directPins", {})}
+    names -= {"setuptools", "wheel"}
+    return names | {"stm32-toolkit", "stm32-monitor"}
+
+
+def _official_remote(value: str) -> bool:
+    """Accept only exact normalized HTTPS/SSH official repository forms."""
+    remote = value.strip()
+    if not remote:
+        return False
+    lower = remote.lower()
+    accepted = {
+        "https://github.com/xiaoyaolinghao/stm32-toolkit.git",
+        "ssh://git@github.com/xiaoyaolinghao/stm32-toolkit.git",
+        "git@github.com:xiaoyaolinghao/stm32-toolkit.git",
+    }
+    return lower in accepted
+
+
 def _safe_join(root: Path, relative: str, *, require_file: bool = True) -> Path:
     clean = _validate_safe_relative(relative)
     candidate = root.joinpath(*clean.split("/"))
@@ -268,7 +340,8 @@ def _zip_members(data: bytes) -> dict[str, bytes]:
     try:
         with zipfile.ZipFile(io.BytesIO(data)) as archive:
             names = [info.filename for info in archive.infolist()]
-            if len(names) != len(set(names)):
+            folded_names = {unicodedata.normalize("NFC", name).casefold() for name in names}
+            if len(names) != len(set(names)) or len(names) != len(folded_names):
                 _reject("archive contains duplicate members")
             result: dict[str, bytes] = {}
             for info in archive.infolist():
@@ -328,8 +401,7 @@ def _assert_source(repo: Path, code_head: str) -> int:
     # Ensure the object exists and is a commit.
     _git_output(repo, ["cat-file", "-e", f"{code_head}^{{commit}}"])
     remote_result = _process(["git", "config", "--get", "remote.origin.url"], cwd=repo, timeout=30, text=True)
-    remote = str(remote_result.stdout).strip() if remote_result.returncode == 0 else REPOSITORY
-    if remote and "github.com/xiaoyaolinghao/stm32-toolkit" not in remote.lower():
+    if remote_result.returncode != 0 or not _official_remote(str(remote_result.stdout)):
         _reject("source repository identity is not official")
     return _git_epoch(repo, code_head)
 
@@ -411,14 +483,7 @@ def _license_value(info_name: str, metadata: Mapping[str, str], policy: Mapping[
         value = overrides[info_name]
     else:
         value = metadata.get("license-expression") or metadata.get("license")
-    if not isinstance(value, str) or not value.strip():
-        _reject("selected wheel license is not declared")
-    # Keep expressions closed: every identifier must be one of the policy's
-    # accepted SPDX IDs.  Operators and parentheses are harmless syntax.
-    allowed = set(policy.get("allowedLicenses", []))
-    identifiers = re.findall(r"[A-Za-z0-9][A-Za-z0-9.+-]*", value)
-    if not identifiers or any(token not in allowed for token in identifiers if token.upper() not in {"AND", "OR", "WITH"}):
-        _reject("selected wheel license is outside policy")
+    _license_identifiers(value, policy)
     return value
 
 
@@ -455,25 +520,26 @@ def _read_wheel(path: Path, policy: Mapping[str, Any], *, strict: bool = True) -
                      (py_tag, abi_tag, platform_tag), metadata, tuple(requires), members, license_value)
 
 
-def _marker_applies(requirement: str) -> tuple[str, bool]:
-    # Prefer pip's packaging parser, which is already part of the CPython pip
-    # installation.  The fallback accepts the simple unmarked/name-only form.
+def _marker_applies(requirement: str) -> tuple[str, bool, Any]:
+    # pip's packaging parser is part of the supported CPython runtime.  A
+    # malformed requirement is never downgraded to a permissive name-only
+    # interpretation.
     try:
         from pip._vendor.packaging.requirements import Requirement
-
         parsed = Requirement(requirement)
-        env = {
-            "implementation_name": "cpython", "implementation_version": "3.12.10",
-            "os_name": "nt", "platform_machine": "AMD64", "platform_release": "",
-            "platform_system": "Windows", "platform_version": "", "python_full_version": "3.12.10",
-            "python_version": "3.12", "sys_platform": "win32", "extra": "probe",
-        }
-        return parsed.name, parsed.marker.evaluate(env) if parsed.marker else True
-    except Exception:
-        match = re.match(r"\s*([A-Za-z0-9_.-]+)", requirement)
-        if not match:
-            _reject("wheel requirement is invalid")
-        return match.group(1), True
+    except Exception as exc:
+        raise ReleaseError("wheel requirement is invalid") from exc
+    env = {
+        "implementation_name": "cpython", "implementation_version": "3.12.10",
+        "os_name": "nt", "platform_machine": "AMD64", "platform_release": "",
+        "platform_system": "Windows", "platform_version": "", "python_full_version": "3.12.10",
+        "python_version": "3.12", "sys_platform": "win32", "extra": "probe",
+    }
+    try:
+        applies = parsed.marker.evaluate(env) if parsed.marker else True
+    except Exception as exc:
+        raise ReleaseError("wheel requirement marker is invalid") from exc
+    return parsed.name, applies, parsed.specifier
 
 
 def _select_wheels(wheelhouse: Path, policy: Mapping[str, Any]) -> tuple[dict[str, WheelInfo], set[str]]:
@@ -509,7 +575,7 @@ def _select_wheels(wheelhouse: Path, policy: Mapping[str, Any]) -> tuple[dict[st
             _reject("closed wheelhouse has an ambiguous distribution")
         info = _read_wheel(compatible[0].path, policy, strict=True)
         for requirement in info.requires:
-            dep_name, applies = _marker_applies(requirement)
+            dep_name, applies, specifier = _marker_applies(requirement)
             if not applies:
                 continue
             dep_normalized = _normalized_name(dep_name)
@@ -533,6 +599,20 @@ def _select_wheels(wheelhouse: Path, policy: Mapping[str, Any]) -> tuple[dict[st
             continue
         if normalized in selected and not _version_equal(selected[normalized].version, required_version):
             _reject("direct dependency pin is not satisfied")
+    resolved_pins = policy.get("resolvedPins", {})
+    for normalized, required_version in resolved_pins.items():
+        canonical = _canonical_distribution_name(normalized)
+        if canonical in selected and not _version_equal(selected[canonical].version, required_version):
+            _reject("resolved dependency pin is not satisfied")
+    for info in selected.values():
+        for requirement in info.requires:
+            dep_name, applies, specifier = _marker_applies(requirement)
+            if not applies:
+                continue
+            dep_normalized = _normalized_name(dep_name)
+            dependency = selected.get(dep_normalized)
+            if dependency is None or not specifier.contains(dependency.version, prereleases=True):
+                _reject("wheel dependency closure is not satisfied")
     return selected, direct
 
 
@@ -610,7 +690,7 @@ def _monitor_asset_inventory(monitor_wheel: bytes) -> dict[str, Any]:
     return {"version": metadata.get("version", VERSION), "manifestSha256": _sha256(manifest_bytes), "files": files}
 
 
-def _spdx(selected: Mapping[str, WheelInfo], product_wheels: Mapping[str, bytes], code_head: str, epoch: int, repo_root: Path) -> dict[str, Any]:
+def _spdx_legacy(selected: Mapping[str, WheelInfo], product_wheels: Mapping[str, bytes], code_head: str, epoch: int, repo_root: Path) -> dict[str, Any]:
     packages: list[dict[str, Any]] = []
     for index, (normalized, info) in enumerate(sorted(selected.items())):
         packages.append({
@@ -651,11 +731,141 @@ def _spdx(selected: Mapping[str, WheelInfo], product_wheels: Mapping[str, bytes]
     }
 
 
+def _spdx(selected: Mapping[str, WheelInfo], product_wheels: Mapping[str, bytes], code_head: str, epoch: int, repo_root: Path, policy: Mapping[str, Any] | None = None) -> dict[str, Any]:
+    policy = policy or _load_policy()
+    packages: dict[str, dict[str, Any]] = {}
+    product_names = {_normalized_name(name) for name in product_wheels}
+    python_ids: dict[str, str] = {}
+    for raw_normalized, info in sorted(selected.items()):
+        normalized = _canonical_distribution_name(raw_normalized)
+        if normalized in product_names:
+            continue
+        package_id = f"SPDXRef-Python-{normalized}"
+        if package_id in packages:
+            _reject("SBOM contains duplicate Python package authority")
+        _license_identifiers(info.license, policy)
+        python_ids[normalized] = package_id
+        packages[package_id] = {
+            "SPDXID": package_id,
+            "name": normalized,
+            "versionInfo": info.version,
+            "downloadLocation": info.metadata.get("home-page", "NOASSERTION"),
+            "licenseConcluded": info.license,
+            "licenseDeclared": info.license,
+            "supplier": info.metadata.get("author", "NOASSERTION"),
+            "checksums": [{"algorithm": "SHA256", "checksumValue": _sha256(info.path)}],
+        }
+    product_ids: dict[str, str] = {}
+    product_requirements: dict[str, tuple[str, ...]] = {}
+    for name, data in sorted(product_wheels.items()):
+        normalized = _canonical_distribution_name(name)
+        package_id = f"SPDXRef-Product-{normalized}"
+        product_ids[normalized] = package_id
+        _, requires = _metadata_from_zip(_zip_members(data))
+        product_requirements[normalized] = tuple(requires)
+        packages[package_id] = {
+            "SPDXID": package_id, "name": normalized, "versionInfo": VERSION,
+            "downloadLocation": REPOSITORY, "licenseConcluded": "MIT", "licenseDeclared": "MIT",
+            "supplier": "Organization: STM32 Toolkit Team", "checksums": [{"algorithm": "SHA256", "checksumValue": _sha256(data)}],
+        }
+    ui_ids: dict[tuple[str, str], str] = {}
+    lock = repo_root / "tools" / "stm32-monitor" / "ui" / "package-lock.json"
+    if lock.is_file():
+        lock_data = _strict_json(_read_bounded(lock, 16 << 20), limit=16 << 20)
+        if not isinstance(lock_data, dict) or not isinstance(lock_data.get("packages"), dict):
+            _reject("UI dependency lock is invalid")
+        for path, record in sorted(lock_data["packages"].items()):
+            if not path:
+                continue
+            if not isinstance(record, dict) or not isinstance(record.get("version"), str) or not record["version"]:
+                _reject("UI dependency license or version is missing")
+            license_value = record.get("license")
+            _license_identifiers(license_value, policy)
+            name = _canonical_distribution_name(path.rsplit("/", 1)[-1])
+            key = (name, record["version"])
+            if key in ui_ids:
+                continue
+            package_id = f"SPDXRef-UI-{name}-{re.sub(r'[^A-Za-z0-9.-]', '-', record['version'])}"
+            suffix = 2
+            while package_id in packages:
+                package_id = f"SPDXRef-UI-{name}-{re.sub(r'[^A-Za-z0-9.-]', '-', record['version'])}-{suffix}"
+                suffix += 1
+            ui_ids[key] = package_id
+            packages[package_id] = {
+                "SPDXID": package_id, "name": name, "versionInfo": record["version"],
+                "downloadLocation": record.get("resolved", "NOASSERTION"),
+                "licenseConcluded": license_value, "licenseDeclared": license_value,
+            }
+    relationships: set[tuple[str, str, str]] = set()
+    for package_id in product_ids.values():
+        relationships.add(("SPDXRef-Document", "DESCRIBES", package_id))
+    for normalized, requires in product_requirements.items():
+        source_id = product_ids[normalized]
+        for requirement in requires:
+            dep_name, applies, _ = _marker_applies(requirement)
+            if not applies:
+                continue
+            target_id = product_ids.get(_normalized_name(dep_name)) or python_ids.get(_normalized_name(dep_name))
+            if target_id is None:
+                _reject("SBOM product dependency is outside the closed solution")
+            relationships.add((source_id, "DEPENDS_ON", target_id))
+    for raw_normalized, info in sorted(selected.items()):
+        normalized = _canonical_distribution_name(raw_normalized)
+        if normalized in product_names:
+            continue
+        source_id = python_ids[normalized]
+        for requirement in info.requires:
+            dep_name, applies, _ = _marker_applies(requirement)
+            if not applies:
+                continue
+            target_id = python_ids.get(_normalized_name(dep_name)) or product_ids.get(_normalized_name(dep_name))
+            if target_id is None:
+                _reject("SBOM Python dependency is outside the closed solution")
+            relationships.add((source_id, "DEPENDS_ON", target_id))
+    monitor_id = product_ids.get("stm32-monitor")
+    if monitor_id:
+        for ui_id in ui_ids.values():
+            relationships.add((monitor_id, "GENERATED_FROM", ui_id))
+    ordered_relationships = [
+        {"spdxElementId": source, "relationshipType": relation, "relatedSpdxElement": target}
+        for source, relation, target in sorted(relationships)
+    ]
+    return {
+        "spdxVersion": "SPDX-2.3", "dataLicense": "CC0-1.0", "SPDXID": "SPDXRef-DOCUMENT",
+        "name": "stm32-toolkit-0.9.0", "documentNamespace": f"https://github.com/xiaoyaolinghao/stm32-toolkit/spdx/{code_head}",
+        "creationInfo": {"created": _datetime.datetime.fromtimestamp(epoch, _datetime.timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"), "creators": ["Tool: stm32-toolkit-release", f"Commit: {code_head}"]},
+        "packages": sorted(packages.values(), key=lambda item: item["SPDXID"]), "relationships": ordered_relationships,
+    }
+
+
 def _notices(selected: Mapping[str, WheelInfo]) -> bytes:
     lines = ["# Third-party notices", "", "This file is generated from the closed release wheel manifest.", ""]
     for normalized, info in sorted(selected.items()):
         lines.extend([f"## {info.name} {info.version}", "", f"License: {info.license}", ""])
     return ("\n".join(lines).rstrip() + "\n").encode("utf-8")
+
+
+def _license_files(selected: Mapping[str, WheelInfo], policy: Mapping[str, Any], repo_root: Path) -> dict[str, bytes]:
+    files: dict[str, bytes] = {}
+    identifiers: set[str] = {"MIT"}
+    for normalized, info in sorted(selected.items()):
+        identifiers.update(_license_identifiers(info.license, policy))
+        for member, content in sorted(info.members.items()):
+            if not LICENSE_FILE_NAME.search(member):
+                continue
+            relative = _validate_safe_relative(member)
+            target = f"release/licenses/packages/{_canonical_distribution_name(normalized)}/{relative}"
+            files[target] = content
+    for identifier in sorted(identifiers):
+        text = CANONICAL_LICENSE_TEXTS.get(identifier)
+        if text is None:
+            _reject("required SPDX license text is unavailable")
+        if identifier == "MIT" and (repo_root / "LICENSE").is_file():
+            text_bytes = (repo_root / "LICENSE").read_bytes()
+        else:
+            text_bytes = text.encode("utf-8")
+        files[f"release/licenses/spdx/{identifier}.txt"] = text_bytes
+    return files
 
 
 def _compatibility(selected: Mapping[str, WheelInfo]) -> bytes:
@@ -703,13 +913,18 @@ def _load_manifest(path: Path) -> dict[str, Any]:
     _manifest_shape(manifest)
     names: set[str] = set()
     distributions: set[str] = set()
+    policy = _load_policy()
+    expected_direct = _expected_direct_names(policy)
+    direct_seen: set[str] = set()
     for wheel in manifest["wheels"]:
         if not isinstance(wheel, dict) or set(wheel) != {"name", "version", "file", "sha256", "size", "direct", "license"}:
             _reject("release manifest wheel entry is invalid")
-        if not isinstance(wheel["name"], str) or _normalized_name(wheel["name"]) in distributions:
+        if not isinstance(wheel["name"], str) or wheel["name"] != _canonical_distribution_name(wheel["name"]) or _normalized_name(wheel["name"]) in distributions:
             _reject("release manifest contains duplicate distributions")
         distributions.add(_normalized_name(wheel["name"]))
         file_name = _validate_safe_relative(wheel["file"])
+        if not file_name.startswith("release/wheels/") or not file_name.endswith(".whl"):
+            _reject("release manifest wheel path is invalid")
         folded = unicodedata.normalize("NFC", file_name).casefold()
         if folded in names:
             _reject("release manifest contains duplicate files")
@@ -717,9 +932,17 @@ def _load_manifest(path: Path) -> dict[str, Any]:
         _safe_hash(wheel["sha256"])
         if type(wheel["size"]) is not int or wheel["size"] < 1 or type(wheel["direct"]) is not bool or not isinstance(wheel["version"], str) or not isinstance(wheel["license"], str):
             _reject("release manifest wheel entry is invalid")
+        _license_identifiers(wheel["license"], policy)
+        if wheel["direct"]:
+            direct_seen.add(wheel["name"])
+        if wheel["name"] in {"stm32-toolkit", "stm32-monitor"} and wheel["version"] != VERSION:
+            _reject("release manifest product version is invalid")
+        resolved_pins = policy.get("resolvedPins", {})
+        if wheel["name"] not in {"stm32-toolkit", "stm32-monitor"} and wheel["name"] in resolved_pins and wheel["version"] != resolved_pins[wheel["name"]]:
+            _reject("release manifest resolved version is invalid")
     kinds: set[str] = set()
     for artifact in manifest["artifacts"]:
-        if not isinstance(artifact, dict) or set(artifact) != {"kind", "file", "sha256", "size"} or artifact["kind"] not in {"monitor-assets", "sbom", "notices", "license", "compatibility", "troubleshooting"}:
+        if not isinstance(artifact, dict) or set(artifact) != {"kind", "file", "sha256", "size"} or artifact["kind"] not in MANIFEST_ARTIFACT_KINDS:
             _reject("release manifest artifact entry is invalid")
         file_name = _validate_safe_relative(artifact["file"])
         folded = unicodedata.normalize("NFC", file_name).casefold()
@@ -728,7 +951,50 @@ def _load_manifest(path: Path) -> dict[str, Any]:
         names.add(folded); kinds.add(artifact["kind"]); _safe_hash(artifact["sha256"])
         if type(artifact["size"]) is not int or artifact["size"] < 1:
             _reject("release manifest artifact entry is invalid")
+    expected_artifacts = {
+        "monitor-assets": "release/monitor-assets.json", "sbom": "release/sbom.spdx.json",
+        "notices": "release/THIRD-PARTY-NOTICES.md", "license": "release/LICENSE",
+        "compatibility": "release/compatibility.md", "troubleshooting": "release/troubleshooting.md",
+    }
+    if kinds != MANIFEST_ARTIFACT_KINDS or {item["kind"]: item["file"] for item in manifest["artifacts"]} != expected_artifacts:
+        _reject("release manifest artifact closure is incomplete")
+    if direct_seen != expected_direct:
+        _reject("release manifest direct dependency closure is invalid")
+    if not {"stm32-toolkit", "stm32-monitor"}.issubset(distributions):
+        _reject("release manifest product wheels are missing")
     return manifest
+
+
+def _verify_dependency_closure(selected: Mapping[str, WheelInfo], policy: Mapping[str, Any]) -> None:
+    expected_direct = _expected_direct_names(policy)
+    if set(selected) < expected_direct:
+        _reject("bundle dependency closure is missing a direct distribution")
+    closure: set[str] = set()
+    pending = list(expected_direct)
+    while pending:
+        normalized = pending.pop()
+        if normalized in closure:
+            continue
+        info = selected.get(normalized)
+        if info is None:
+            _reject("bundle dependency closure is missing a distribution")
+        closure.add(normalized)
+        for requirement in info.requires:
+            dep_name, applies, specifier = _marker_applies(requirement)
+            if not applies:
+                continue
+            dep_normalized = _canonical_distribution_name(dep_name)
+            dependency = selected.get(dep_normalized)
+            if dependency is None or not specifier.contains(dependency.version, prereleases=True):
+                _reject("bundle dependency specifier is unsatisfied")
+            pending.append(dep_normalized)
+    if closure != set(selected):
+        _reject("bundle contains an unreferenced distribution")
+    resolved_pins = policy.get("resolvedPins", {})
+    for normalized, required_version in resolved_pins.items():
+        canonical = _canonical_distribution_name(normalized)
+        if canonical in selected and not _version_equal(selected[canonical].version, required_version):
+            _reject("bundle resolved dependency pin is invalid")
 
 
 def _verify_bundle(root: Path) -> dict[str, Any]:
@@ -739,29 +1005,79 @@ def _verify_bundle(root: Path) -> dict[str, Any]:
     if not manifest_path.is_file():
         _reject("release manifest is missing")
     manifest = _load_manifest(manifest_path)
+    policy = _load_policy()
     checks: list[dict[str, Any]] = []
-    for entry in [*manifest["wheels"], *manifest["artifacts"]]:
+    selected: dict[str, WheelInfo] = {}
+    for entry in manifest["wheels"]:
+        path = _safe_join(root, entry["file"])
+        data = _read_bounded(path, 1 << 31)
+        if len(data) != entry["size"] or _sha256(data) != entry["sha256"]:
+            _reject("bundle integrity verification failed")
+        info = _read_wheel(path, policy, strict=True)
+        normalized = _canonical_distribution_name(info.name)
+        if normalized != entry["name"] or not _version_equal(info.version, entry["version"]) or info.license != entry["license"]:
+            _reject("bundle wheel metadata does not match its manifest")
+        if normalized in selected:
+            _reject("bundle contains duplicate distributions")
+        selected[normalized] = info
+        checks.append({"file": PurePosixPath(entry["file"]).name, "size": len(data)})
+    _verify_dependency_closure(selected, policy)
+    license_files = _license_files(selected, policy, root)
+    release_entries = [*manifest["wheels"], *manifest["artifacts"]]
+    expected_release = {entry["file"] for entry in release_entries}
+    expected_release.update(license_files)
+    expected_release.add("release/release-manifest.json")
+    expected_release.add("release/licenses.zip")
+    for entry in manifest["artifacts"]:
         path = _safe_join(root, entry["file"])
         data = _read_bounded(path, 1 << 31)
         if len(data) != entry["size"] or _sha256(data) != entry["sha256"]:
             _reject("bundle integrity verification failed")
         checks.append({"file": PurePosixPath(entry["file"]).name, "size": len(data)})
+    licenses_archive = _safe_join(root, "release/licenses.zip")
+    license_archive_members = _zip_members(_read_bounded(licenses_archive, 1 << 31))
+    expected_license_archive = {name.removeprefix("release/"): data for name, data in license_files.items()}
+    if license_archive_members != expected_license_archive:
+        _reject("license archive closure is invalid")
+    release_root = root / "release"
+    actual_release = {
+        path.relative_to(root).as_posix(): _read_bounded(path, 1 << 31)
+        for path in release_root.rglob("*")
+        if path.is_file()
+    }
+    if set(actual_release) != expected_release:
+        _reject("release member closure is invalid")
     source = manifest["source"]
-    source_path: Path | None = None
-    for candidate in (root / source["archive"], root / "release" / source["archive"]):
-        if candidate.is_file():
-            source_path = candidate
-            break
-    if source_path is None:
+    source_path = root / source["archive"]
+    if not source_path.is_file():
         _reject("source archive is missing")
     source_data = _read_bounded(source_path, 1 << 31)
     if _sha256(source_data) != source["sha256"]:
         _reject("source archive integrity verification failed")
+    source_members = _zip_members(source_data)
+    source_files: dict[str, bytes] = {}
+    for name, data in source_members.items():
+        if not name.startswith(SOURCE_PREFIX):
+            _reject("source archive prefix is invalid")
+        source_files[name.removeprefix(SOURCE_PREFIX)] = data
+    actual_source = {
+        path.relative_to(root).as_posix(): _read_bounded(path, 1 << 31)
+        for path in root.rglob("*")
+        if path.is_file() and path.relative_to(root).as_posix() != source["archive"] and not path.relative_to(root).as_posix().startswith("release/")
+    }
+    if actual_source != source_files:
+        _reject("extracted source closure is invalid")
+    utility_path = root / "tools/release/build_0900_artifacts.py"
+    utility_hash = _sha256(_read_bounded(utility_path, 1 << 20))
     return {
         "status": "ok",
         "schema": MANIFEST_SCHEMA,
         "productVersion": VERSION,
+        "manifestSha256": _sha256(manifest_path),
+        "utilitySha256": utility_hash,
+        "sourceCommit": source["commit"],
         "wheels": [entry["file"] for entry in manifest["wheels"]],
+        "wheelEntries": manifest["wheels"],
         "files": sorted(checks, key=lambda item: item["file"].encode("utf-8")),
     }
 
@@ -795,12 +1111,12 @@ def _verify_runtime_state(state_path: Path, manifest_path: Path) -> tuple[str, d
     return "repairable", {"status": "repairable", "activeVersion": state["activeVersion"], "installGeneration": state["installGeneration"]}
 
 
-def _build_manifest(code_head: str, source_archive: bytes, product_wheels: Mapping[str, bytes], selected: Mapping[str, WheelInfo], artifacts: Mapping[str, bytes], asset_inventory: dict[str, Any]) -> dict[str, Any]:
+def _build_manifest(code_head: str, source_archive: bytes, product_wheels: Mapping[str, bytes], selected: Mapping[str, WheelInfo], artifacts: Mapping[str, bytes]) -> dict[str, Any]:
     wheels = []
     for normalized, info in sorted(selected.items()):
         file_name = f"release/wheels/{info.filename}"
         data = product_wheels.get(normalized, info.path.read_bytes())
-        wheels.append({"name": info.name, "version": info.version, "file": file_name, "sha256": _sha256(data), "size": len(data), "direct": normalized in {"stm32-toolkit", "stm32-monitor", "jsonschema", "mcp", "pyelftools", "jinja2", "aiohttp", "pyocd", "pyserial"}, "license": info.license})
+        wheels.append({"name": _canonical_distribution_name(info.name), "version": info.version, "file": file_name, "sha256": _sha256(data), "size": len(data), "direct": normalized in _expected_direct_names(_load_policy()), "license": info.license})
     artifact_entries = []
     for kind, (file_name, data) in sorted(artifacts.items()):
         artifact_entries.append({"kind": kind, "file": f"release/{file_name}", "sha256": _sha256(data), "size": len(data)})
@@ -842,14 +1158,12 @@ def _build(args: argparse.Namespace) -> dict[str, Any]:
             product_wheels[normalized] = wheel.read_bytes()
             selected[normalized] = _read_wheel(wheel, policy)
         monitor_assets = _monitor_asset_inventory(product_wheels["stm32-monitor"])
+        license_files = _license_files(selected, policy, repo)
         with tempfile.TemporaryDirectory(prefix="stm32tk-licenses-") as license_temp:
-            license_root = Path(license_temp) / "licenses"
-            license_root.mkdir()
-            license_text = Path(repo / "LICENSE").read_bytes()
-            (license_root / "MIT.txt").write_bytes(license_text)
-            _write_fixed_zip(Path(license_temp) / "licenses.zip", {"licenses/MIT.txt": license_text}, timestamp=epoch)
+            license_entries = {name.removeprefix("release/"): data for name, data in sorted(license_files.items())}
+            _write_fixed_zip(Path(license_temp) / "licenses.zip", license_entries, timestamp=epoch)
             licenses_data = Path(license_temp, "licenses.zip").read_bytes()
-        sbom = _canonical_json(_spdx(selected, product_wheels, args.code_head, epoch, repo))
+        sbom = _canonical_json(_spdx(selected, product_wheels, args.code_head, epoch, repo, policy))
         notices = _notices(selected)
         compatibility = _compatibility(selected)
         troubleshooting = _troubleshooting()
@@ -861,7 +1175,7 @@ def _build(args: argparse.Namespace) -> dict[str, Any]:
             "compatibility": ("compatibility.md", compatibility),
             "troubleshooting": ("troubleshooting.md", troubleshooting),
         }
-        manifest = _build_manifest(args.code_head, source_archive, product_wheels, selected, artifacts, monitor_assets)
+        manifest = _build_manifest(args.code_head, source_archive, product_wheels, selected, artifacts)
         manifest_data = _canonical_json(manifest)
         # Build a release tree used by verify-bundle and by the extracted
         # Windows candidate.  Product wheels are copied into the closed set.
@@ -870,6 +1184,7 @@ def _build(args: argparse.Namespace) -> dict[str, Any]:
             release_files[f"release/wheels/{info.filename}"] = product_wheels.get(normalized, info.path.read_bytes())
         for _, (name, data) in sorted(artifacts.items()):
             release_files[f"release/{name}"] = data
+        release_files.update(license_files)
         release_files["release/licenses.zip"] = licenses_data
         source_files = _zip_members(source_archive)
         bundle_files = dict(source_files)
@@ -903,6 +1218,12 @@ def _build(args: argparse.Namespace) -> dict[str, Any]:
         # Verify the internal release tree before activating the candidate.
         verify_root = temp_root / "verify"
         verify_root.mkdir()
+        for name, data in source_files.items():
+            if not name.startswith(SOURCE_PREFIX):
+                _reject("source archive prefix is invalid")
+            target = verify_root / name.removeprefix(SOURCE_PREFIX)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(data)
         for name, data in release_files.items():
             target = verify_root / name
             target.parent.mkdir(parents=True, exist_ok=True); target.write_bytes(data)

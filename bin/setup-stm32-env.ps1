@@ -287,7 +287,7 @@ function Get-BundleEvidence {
     param([string]$ToolkitRoot, [object]$BootstrapPython)
     $manifest = Join-Path $ToolkitRoot $ReleaseManifestRelative
     $utility = Join-Path $ToolkitRoot $ReleaseUtilityRelative
-    $base = [ordered]@{ status = "missing"; productVersion = $null; wheels = @(); error = $null }
+    $base = [ordered]@{ status = "missing"; productVersion = $null; wheels = @(); wheelEntries = @(); manifestSha256 = $null; utilitySha256 = $null; sourceCommit = $null; error = $null }
     if (-not (Test-Path -LiteralPath $manifest -PathType Leaf)) { return $base }
     if (-not (Test-Path -LiteralPath $utility -PathType Leaf)) { $base.status = "invalid"; $base.error = "release utility is unavailable"; return $base }
     $checked = Invoke-ReleaseUtility $BootstrapPython @($utility, "verify-bundle", "--toolkit-root", $ToolkitRoot, "--json")
@@ -297,14 +297,32 @@ function Get-BundleEvidence {
     $base.status = "ok"
     $base.productVersion = $checked.payload.productVersion
     $base.wheels = @($checked.payload.wheels)
+    $base.wheelEntries = @($checked.payload.wheelEntries)
+    $base.manifestSha256 = [string]$checked.payload.manifestSha256
+    $base.utilitySha256 = [string]$checked.payload.utilitySha256
+    $base.sourceCommit = [string]$checked.payload.sourceCommit
+    if (-not $base.manifestSha256 -or -not $base.utilitySha256 -or -not $base.sourceCommit -or $base.wheelEntries.Count -eq 0) {
+        $base.status = "invalid"; $base.error = "release bundle verification omitted bound facts"; return $base
+    }
     return $base
 }
 
+function Assert-BundleFacts {
+    param([string]$ToolkitRoot, [object]$BundleEvidence)
+    if ($null -eq $BundleEvidence -or $BundleEvidence.status -ne "ok") { throw "release bundle verification is unavailable" }
+    $manifest = Join-Path $ToolkitRoot $ReleaseManifestRelative
+    $utility = Join-Path $ToolkitRoot $ReleaseUtilityRelative
+    if (-not (Test-Path -LiteralPath $manifest -PathType Leaf) -or -not (Test-Path -LiteralPath $utility -PathType Leaf)) { throw "verified release facts are no longer present" }
+    if ((Get-FileSha256 $manifest) -cne ([string]$BundleEvidence.manifestSha256)) { throw "release manifest changed after verification" }
+    if ((Get-FileSha256 $utility) -cne ([string]$BundleEvidence.utilitySha256)) { throw "release utility changed after verification" }
+}
+
 function Get-RuntimeStateEvidence {
-    param([string]$StatePath, [string]$ManifestPath, [object]$BootstrapPython)
+    param([string]$StatePath, [string]$ManifestPath, [object]$BootstrapPython, [object]$BundleEvidence)
     $missing = [ordered]@{ status = "missing"; activeVersion = $null; installGeneration = $null }
     if (-not (Test-Path -LiteralPath $StatePath -PathType Leaf)) { return $missing }
     if (-not (Test-Path -LiteralPath $ManifestPath -PathType Leaf)) { return [ordered]@{ status = "invalid"; error = "release manifest is unavailable" } }
+    try { Assert-BundleFacts (Split-Path (Split-Path $ManifestPath -Parent) -Parent) $BundleEvidence } catch { return [ordered]@{ status = "invalid"; error = $_.Exception.Message } }
     $toolkitRoot = Split-Path (Split-Path $ManifestPath -Parent) -Parent
     $utility = Join-Path $toolkitRoot $ReleaseUtilityRelative
     $checked = Invoke-ReleaseUtility $BootstrapPython @($utility, "verify-runtime-state", "--state", $StatePath, "--candidate-manifest", $ManifestPath, "--json")
@@ -520,7 +538,7 @@ try {
     $releaseManifest = Join-Path $resolvedToolkitRoot $ReleaseManifestRelative
     $bundleEvidence = Get-BundleEvidence $resolvedToolkitRoot $bootstrapPython
     $runtimeStatePath = Join-Path $runtimeParent $RuntimeStateFileName
-    $runtimeStateEvidence = Get-RuntimeStateEvidence $runtimeStatePath $releaseManifest $bootstrapPython
+    $runtimeStateEvidence = Get-RuntimeStateEvidence $runtimeStatePath $releaseManifest $bootstrapPython $bundleEvidence
 
     if ($Mode -eq "Check") {
         if (Test-Path -LiteralPath $runtime) {
@@ -562,6 +580,7 @@ try {
     if ($Mode -eq "Repair" -and ($presentLegacyRuntimes.Count -gt 1)) { throw "multiple legacy runtimes are present; repair is ambiguous" }
     if ($Mode -eq "Repair" -and -not ($currentExists -or $presentLegacyRuntimes.Count -gt 0)) { throw "managed runtime is missing; authorize Bootstrap instead" }
     if ($bundleEvidence.status -ne "ok") { throw "release bundle is missing or invalid" }
+    Assert-BundleFacts $resolvedToolkitRoot $bundleEvidence
     if ($runtimeStateEvidence.status -in @("downgrade-refused", "source-conflict", "unsupported", "invalid")) {
         throw "runtime state refuses this release candidate"
     }
@@ -580,17 +599,17 @@ try {
     Assert-NotRedirect "staging runtime" $staging
     Assert-NotRedirect "staging Scripts" (Join-Path $staging "Scripts")
     Assert-NotRedirect "staging interpreter" $stagingPython
-    $manifestFacts = Get-ManifestFacts $releaseManifest
     $wheelArguments = @()
     $wheelStage = Join-Path $staging "release-wheels"
     [void][IO.Directory]::CreateDirectory($wheelStage)
-    foreach ($relativeWheel in @($bundleEvidence.wheels)) {
+    foreach ($manifestWheel in @($bundleEvidence.wheelEntries)) {
+        if ($null -eq $manifestWheel) { throw "release bundle wheel facts are invalid" }
+        $relativeWheel = [string]$manifestWheel.file
         if ($relativeWheel -isnot [string] -or $relativeWheel -notmatch '^release/wheels/[^/]+\.whl$') { throw "release bundle wheel path is invalid" }
         $sourceWheel = Join-Path $resolvedToolkitRoot ($relativeWheel.Replace("/", "\"))
         if (-not (Test-Path -LiteralPath $sourceWheel -PathType Leaf)) { throw "release bundle wheel is missing" }
-        $manifestWheel = @($manifestFacts.manifest.wheels | Where-Object { $_.file -ceq $relativeWheel }) | Select-Object -First 1
-        if ($null -eq $manifestWheel) { throw "release bundle wheel is not manifest-listed" }
         $sourceHash = Get-FileSha256 $sourceWheel
+        if ((Get-Item -LiteralPath $sourceWheel).Length -ne [int64]$manifestWheel.size) { throw "release bundle wheel size changed" }
         if ($sourceHash -cne ([string]$manifestWheel.sha256)) { throw "release bundle wheel integrity changed" }
         $destinationWheel = Join-Path $wheelStage ([IO.Path]::GetFileName($sourceWheel))
         Copy-Item -LiteralPath $sourceWheel -Destination $destinationWheel -Force
@@ -616,6 +635,7 @@ try {
     try { $doctorPayload = $doctorCheck.stdout | ConvertFrom-Json } catch { throw "toolkit doctor returned invalid JSON" }
     $doctorError = Get-DoctorContractError $doctorPayload
     if ($doctorError) { throw $doctorError }
+    Assert-BundleFacts $resolvedToolkitRoot $bundleEvidence
 
     $quarantined = $null
     $quarantineSource = $null
@@ -639,7 +659,7 @@ try {
     try {
         Move-Item -LiteralPath $staging -Destination $runtime
         $staging = $null
-        Write-RuntimeStateAtomic $runtimeStatePath $manifestFacts.hash $manifestFacts.sourceCommit $stateGeneration
+        Write-RuntimeStateAtomic $runtimeStatePath $bundleEvidence.manifestSha256 $bundleEvidence.sourceCommit $stateGeneration
     } catch {
         if (Test-Path -LiteralPath $runtime -PathType Container) {
             try { Remove-Item -LiteralPath $runtime -Force -Recurse -ErrorAction Stop } catch { }
@@ -655,7 +675,7 @@ try {
         throw
     }
     if ((Test-Path -LiteralPath $stagingRoot) -and -not (Get-ChildItem -LiteralPath $stagingRoot -Force | Select-Object -First 1)) { Remove-Item -LiteralPath $stagingRoot -Force }
-    [ordered]@{ mode = $Mode.ToUpperInvariant(); runtime = (Get-RuntimeEvidence $runtime $runtimePython $resolvedProjectRoot); bundle = $bundleEvidence; runtimeState = (Get-RuntimeStateEvidence $runtimeStatePath $releaseManifest $bootstrapPython); quarantinedRuntime = if ($quarantined) { $quarantined.Replace("\", "/") } else { $null }; mutated = $true } | ConvertTo-Json -Depth 30
+    [ordered]@{ mode = $Mode.ToUpperInvariant(); runtime = (Get-RuntimeEvidence $runtime $runtimePython $resolvedProjectRoot); bundle = $bundleEvidence; runtimeState = (Get-RuntimeStateEvidence $runtimeStatePath $releaseManifest $bootstrapPython $bundleEvidence); quarantinedRuntime = if ($quarantined) { $quarantined.Replace("\", "/") } else { $null }; mutated = $true } | ConvertTo-Json -Depth 30
     exit 0
 } catch {
     $primaryError = $_.Exception.Message
