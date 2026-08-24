@@ -12,7 +12,7 @@
 - Correction-round-2 addendum: `2b15726c80c35237d769e3acb84e640df1721a84`.
 - Branch/worktree: `codex/STM32TK-0902-INSTALL-UPGRADE-RELEASE` / `C:/tmp/stm32tk-0902-install-upgrade-release`.
 - Product CodeHead, frozen before this report commit:
-  `caae6bca5fc8da519f75b615bfa57c56dacae37d`.
+  `464878d6f08eddcfaa641ffac96834a13b2d70b6`.
 
 The product retains one setup/runtime lifecycle and registration authority, exactly 48 MCP tools
 and 8 Skills, and no controller/provider/backend, Agent-specific product logic, second runtime,
@@ -41,6 +41,9 @@ Round-2 implementation commits before the report are `5224b0a648cf44c5e56932af89
 (full canonical SPDX authority, setup-owned in-memory trust execution, and RED coverage),
 `df1cd3e25abcbfe30ed1f2ba5b58a6640c8feed6` (bind anchor verification to archived source bytes),
 and `caae6bca5fc8da519f75b615bfa57c56dacae37d` (refresh the final archived utility digest).
+The final checkout/diff-hygiene correction is `464878d6f08eddcfaa641ffac96834a13b2d70b6`:
+it pins `/LICENSE` to LF checkout bytes and exempts only the canonical SPDX authority directory
+from Git's trailing-space/blank-at-EOF diff check, preserving the upstream license bytes exactly.
 
 The bootstrap trust root is the externally checksummed setup script. It reads ordinary utility and
 policy bytes, checks the frozen digests, and sends those retained bytes through the existing
@@ -72,7 +75,7 @@ wheels, and did not relax product policy.
 Final affected GREEN evidence:
 
 - `py -3.12 -m pytest tools/stm32-toolkit/tests/release/test_0900_artifacts.py -q -p no:cacheprovider`
-  — **36 passed**;
+  — **37 passed**;
 - `py -3.12 -m pytest tools/stm32-toolkit/tests/test_0900_security.py -q -p no:cacheprovider`
   — **27 passed**;
 - the final trust-boundary subset of `test_setup_runtime.py` — **4 passed**;
@@ -80,7 +83,13 @@ Final affected GREEN evidence:
   Bootstrap/Check/Repair/refusal probes below exercised the same setup boundary at the frozen
   Product CodeHead;
 - `py -3.12 -m py_compile tools/release/build_0900_artifacts.py` — exit 0;
-- `git diff --check` — exit 0 for the final working tree.
+- the final checkout regression (`test_root_license_checkout_is_pinned_to_canonical_lf_bytes`)
+  — **1 passed** after its RED failure on the missing `/LICENSE text eol=lf` rule;
+- `git diff --check 22bff0061e54e37eba22d892a3b8c34949c3b130..HEAD` — exit 0 after the RED
+  baseline flagged only the six canonical SPDX files' preserved upstream whitespace;
+- `git check-attr` — `LICENSE eol: lf` and canonical SPDX `whitespace: -trailing-space`;
+- `py -3.12 -m py_compile tools/release/build_0900_artifacts.py tools/stm32-toolkit/tests/release/test_0900_artifacts.py`
+  — exit 0.
 
 An accidental broad full-Toolkit run was stopped by the parent after approximately 8.5 minutes and
 4,445 disposable files because it exceeded the frozen affected matrix. It was interrupted,
@@ -96,28 +105,28 @@ files. Each candidate's `CHECKSUMS.sha256` independently verified **12/12** entr
 
 The retained self-contained candidate is:
 
-`C:/tmp/p0902-final-candidate-vs09b-r2`
+`C:/tmp/p0902-final-candidate-vs09b-r3`
 
 | File | Bytes | SHA-256 |
 | --- | ---: | --- |
-| `CHECKSUMS.sha256` | 1073 | `0dd47dfc15626cbfaa123125b669fd0c7460aa19bd2d614aea192418218dd34d` |
+| `CHECKSUMS.sha256` | 1073 | `94b9442edfbe935d976ce9b31435b095145ea83be517ac7de846f53dc0a11762` |
 | `LICENSE` | 1075 | `55edb314745f2b0d3fe09e512726c3bf67cb20ba99fa3cd66859a64f3e6b6af5` |
 | `THIRD-PARTY-NOTICES.md` | 2615 | `c9a740027186fc46351903a24913ccbfbcaf4341c86ed5d782bfd47e3151f1ea` |
 | `compatibility.md` | 1742 | `309159534892c68f938000c09177b1ad34a34594f690be2828c64ca6ea6fa439` |
-| `licenses.zip` | 413750 | `d88d44c4381ac5ebcfd6529dd7c55480109e4ade29e6b9f6511153cecb2ba0ed` |
+| `licenses.zip` | 413750 | `676323df0c214c3440dc67e1fa496a8a7fe6adb63a77a5c784377afa957432eb` |
 | `monitor-assets.json` | 975 | `e08692c6b519cc90c82cae2ce972ae9f9636ea6796196d6418fe44c4479403c6` |
-| `release-manifest.json` | 15813 | `5224607a8b0de16647ed615ba9d36b050d0ba4b6bf49e00dc5ecbc6692e76d0b` |
-| `sbom.spdx.json` | 191430 | `cc8bbeaf8f4a07cffb447166f78bac7d19f1179b022bd29e30073643bfcb5021` |
-| `stm32_monitor-0.9.0-py3-none-any.whl` | 1244802 | `565ec5e1207aa48fa843f3a18788826aff01da00ac02757a45472ca7529e4151` |
-| `stm32_toolkit-0.9.0-py3-none-any.whl` | 2510618 | `75c8b168813f3f6a061e8035d2f6c52e238cb7d2217df176b72c2c75be12b8fa` |
-| `stm32-toolkit-0.9.0-source.zip` | 12911385 | `416475a37a9061f3126efb2921f70a310c79f9febd9306ee97da151a2dcb2e3d` |
-| `stm32-toolkit-0.9.0-windows-x86_64.zip` | 98961682 | `e70f5367759e7581dbdfc9fd685d8a47fdb5e2e479afc009b5fef6180f558f3f` |
-| `troubleshooting.md` | 675 | `86d99f7cdb22964ec039887aafc4bf41a9c0a22a5def8fa24418b52da097676` |
+| `release-manifest.json` | 15813 | `c63b502fb39d645375ed18a1b41f269a8bf13b646a9c03ba73d46dbc1fcf4c60` |
+| `sbom.spdx.json` | 191430 | `9b917cfe1f12369843365854a59df3a028c861eda217fdee1c44a30950943a48` |
+| `stm32_monitor-0.9.0-py3-none-any.whl` | 1244802 | `4e601360c74d1192959ac150312c54685fd358dee8fa54fe94964319286ca5fb` |
+| `stm32_toolkit-0.9.0-py3-none-any.whl` | 2510618 | `879aa5710048a0e7a13476332f1073eee7319aaab418fe8a2e6d520fafed40bc` |
+| `stm32-toolkit-0.9.0-source.zip` | 12913053 | `95ba4739f80fbda8af7538c21f6c89f49909b6aa5e166533bb6715c09969863e` |
+| `stm32-toolkit-0.9.0-windows-x86_64.zip` | 98965018 | `d33aa28cf91b099b69399f590dee68bd239656c5fcdc3c99676b04c900a0943d` |
+| `troubleshooting.md` | 675 | `86d99f7cdb22964ec039887aafc4bf41a9c0a22a5def8fa24418b52da0976762` |
 
 The manifest has schema `stm32-toolkit-release/1`, 64 normalized wheels (62 external plus Toolkit
-and Monitor), six artifact entries, source commit `caae6bca5fc8da519f75b615bfa57c56dacae37d`,
+and Monitor), six artifact entries, source commit `464878d6f08eddcfaa641ffac96834a13b2d70b6`,
 and inventory 48/8. The extracted Windows bundle passed `verify-bundle` with manifest SHA
-`5224607a8b0de16647ed615ba9d36b050d0ba4b6bf49e00dc5ecbc6692e76d0b` and utility SHA
+`c63b502fb39d645375ed18a1b41f269a8bf13b646a9c03ba73d46dbc1fcf4c60` and utility SHA
 `30f77206434d79d5ee8f912b754f75a4c43d24766c3b4f2c8d739b39957d13e0`.
 
 The license archive has 86 members: 80 wheel-shipped license/NOTICE/COPYING materials plus six
@@ -138,17 +147,19 @@ authority count is 0 and `NOASSERTION` license count is 0.
 
 ## Security and lifecycle integration evidence
 
-The final candidate's fresh extracted root was tested with the standard-library ZIP extractor.
-The following candidate-shaped probes failed closed before attacker execution, staging, or
-quarantine:
+The final trust implementation was tested with a standard-library extraction of the candidate;
+the following candidate-shaped probes failed closed before attacker execution, staging, or
+quarantine. The final checkout-only correction leaves the setup utility, policy, and launcher
+bytes unchanged from those probes:
 
 - replaced extracted release utility: Check exit 0 with `bundle.status=invalid`; Bootstrap exit 2;
   both marker absent and staging absent;
 - swapped extracted release policy: Bootstrap exit 2, staging absent;
 - changed-after-read utility fixture: Bootstrap exit 2, staging absent.
 
-Fresh offline install used a clean explicit project/data root with `PYTHONPATH`, `PYTHONHOME`,
-`PIP_*`, and user-package variables removed. It produced:
+The retained r3 candidate was freshly extracted and bootstrapped into new explicit project/data
+roots using only its embedded release wheels (the setup install path is offline/no-index). It
+produced:
 
 - Bootstrap exit 0, managed CPython 3.12.10, Toolkit/Monitor 0.9.0, runtime-state schema 1,
   generation 1, and matching manifest/source identity;
@@ -156,20 +167,20 @@ Fresh offline install used a clean explicit project/data root with `PYTHONPATH`,
 - managed `pip check` exit 0 (`No broken requirements found`);
 - doctor exit 0 with protocol `stm32-toolkit/1`, 48 MCP tools, 8 Skills, and Toolkit/Monitor 0.9.0.
 
-A fresh 0.3.0 legacy profile was checked as broken and repaired offline. Repair exited 0, promoted
-0.9.0, removed the legacy path, and preserved its marker in one timestamped `.quarantine` entry.
-Separate recorded-state profiles refused a highest-installed 1.0.0 downgrade and a same-version
-source/manifest conflict: both Bootstrap commands exited 2, created no `.staging` or
-`.quarantine`, and left the state file byte-equivalent. Existing explicit project and Monitor
+The earlier correction's fresh 0.3.0 legacy repair, highest-installed 1.0.0 downgrade refusal, and
+same-version source/manifest conflict refusal remain applicable: this final product commit changes
+only checkout attributes and a regression test, while setup/runtime/product wheel bytes are
+unchanged. Those profiles repaired/refused offline as recorded, with refusal paths creating no
+`.staging` or `.quarantine` and preserving state bytes. Existing explicit project and Monitor
 storage preservation/rollback behavior remains covered by the affected regression suite.
 
 ## Cleanup and local Git state
 
 All disposable product p0902 candidates, extracted profiles, wheelhouse, basetemps, logs, failure
-outputs, and generated test roots were removed after evidence capture. Exactly one named final
-candidate remains at `C:/tmp/p0902-final-candidate-vs09b-r2`. Sol review roots
-`C:/tmp/p0902-sol-r1-tamper`, `C:/tmp/p0902-sol-r2-bootstrap`, and its retained data/project roots
-were preserved untouched.
+outputs, and generated test roots from this correction were removed after evidence capture. Exactly
+one named final candidate remains at `C:/tmp/p0902-final-candidate-vs09b-r3`; the prior r2
+candidate was removed only after the r3 rebuild and checks completed. Every existing
+`C:/tmp/p0902-sol-*` review root, including the old-candidate review roots, was preserved untouched.
 
 The branch is clean, local, unpushed, and has no upstream. No push, PR, merge, tag, release,
 remote branch deletion, authentication, upload, hardware, or other remote operation occurred.
