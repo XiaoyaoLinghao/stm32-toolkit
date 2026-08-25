@@ -149,7 +149,8 @@ Retain `_normalize_keil_path` and all existing containment behavior.
 
 **Files:**
 - Modify: `tools/stm32-toolkit/src/stm32_toolkit/migration/planner.py`.
-- Modify: `tools/stm32-toolkit/tests/test_migration_plan.py` and only directly required public parity tests.
+- Modify: `tools/stm32-toolkit/src/stm32_toolkit/migration/apply.py`.
+- Modify: `tools/stm32-toolkit/tests/test_migration_plan.py`, `tools/stm32-toolkit/tests/test_migration_apply.py`, and only directly required public parity tests.
 - Create: SDD `task-2c-report.md`.
 
 **Interfaces:**
@@ -157,8 +158,8 @@ Retain `_normalize_keil_path` and all existing containment behavior.
 - Produces: stable fail-closed `ARMCC_OPTION_UNSUPPORTED` blockers for non-target scoped defines/include paths/misc controls; no new schema/model/CLI/MCP field.
 
 - [ ] **Step 1: Add focused RED tests.** Construct minimal convertible inspections/projects with include-only group options and define-only file options. Require exactly one blocker per scoped option record, file path only for file scope, empty path for group scope, line/column zero, and evidence `<scope-kind>:<owner>`. Add mixed-field, two differently named groups, two same-owner group records, long-owner evidence capped at 200 codepoints, target defines/includes supported, target/group/file misc-regression, and unchanged legacy non-scoped deduplication cases. Base must show the scoped include/define cases incorrectly plan without those blockers.
-- [ ] **Step 2: Implement the minimal planner gate.** For target scope, preserve supported defines/includes and reject only misc as today. For group/file scope, reject the record when any defines, include paths, or misc controls are non-empty. Bound evidence to 200 codepoints with the full `group:`/`file:` prefix. Keep these new blockers in inspection-authored order after the existing blocker set and never deduplicate them; retain the prior five-field deduplication identity for every other blocker. Do not merge, normalize away, special-case duplicates, or inspect project names/paths.
-- [ ] **Step 3: Run focused GREEN and affected parity.** Run the new nodes, all migration-plan tests, and only workflow/CLI/MCP nodes that assert blocker parity; run `git diff --check`. Use exact basetemps and clean them after evidence.
+- [ ] **Step 2: Implement the minimal planner and apply gate.** For target scope, preserve supported defines/includes and reject only misc as today. For group/file scope, reject the record when any defines, include paths, or misc controls are non-empty. Bound evidence to 200 codepoints with the full `group:`/`file:` prefix. Keep these new blockers in inspection-authored order after the existing blocker set and never deduplicate them; retain the prior five-field deduplication identity for every other blocker. In apply, re-derive the exact scoped suffix from the bound inspection, validate the existing prefix with legacy path/sort rules, allow empty paths only for an exact group suffix record, and require suffix equality/order before plan-ID/fresh-plan/no-write enforcement. A valid blocked plan returns `MIGRATION_BLOCKED`; forged structure remains `MIGRATION_PLAN_INVALID`. Do not merge, normalize away, special-case duplicates, or inspect project names/paths.
+- [ ] **Step 3: Run focused GREEN and affected parity.** Run the new planner nodes, group-only and mixed existing/scoped apply nodes, forged suffix/path/order cases, all migration-plan and migration-apply tests, and only workflow/CLI/MCP nodes that assert blocker parity; run `git diff --check`. Use exact basetemps and clean them after evidence.
 - [ ] **Step 4: Commit and report.** Commit only product/tests as `fix(vs10a): reject scoped Keil compiler options`; record accepted base, code head before report, RED/GREEN counts, exact paths, cleanup, and no candidate/runtime/project/hardware/remote mutation.
 - [ ] **Step 5: Stop for Sol complete review.** Sol reviews `7c28986406f8932e96c3976b7e925bfd1c2eba44..Task2cHead` and the cumulative `12d0d3be1f59a5ed44b84a1244575cb853b97173..Task2cHead`, reruns only focused applicable checks, and accepts before Task 3c.
 
