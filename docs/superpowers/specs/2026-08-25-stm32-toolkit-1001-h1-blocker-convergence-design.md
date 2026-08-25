@@ -168,6 +168,19 @@ Use the same CPython 3.12.10/OpenSSL direct request, exact URL, redirect rejecti
 
 No candidate/runtime/project/hardware action follows this request automatically. Luna returns the retained file and formal evidence to Sol. Sol may authorize a corrected SHA-256 anchor only if the actual bytes reproduce the prior observed SHA, match the official BLAKE2b-256 exactly, match the official MD5 exactly, pass all archive/RECORD checks, and the response identity/status/length gates remain exact. BLAKE2b is the independent strong identity anchor; MD5 alone can never authorize the correction. Any other result removes the exact scratch file after minimum evidence is preserved and blocks VS10-A. No further request for this wheel is allowed.
 
+### 7.4 Accepted corrected wheel identity anchor
+
+The final retained bytes passed every Section 7.3 gate. Sol independently recomputed all three file digests and all 20 `RECORD` rows. The accepted identity tuple for this one artifact is therefore:
+
+- file: `wheel-0.48.0-py3-none-any.whl`, size 33320;
+- corrected actual-byte SHA-256: `3217dcc807155e45db462d7ef2431f5ddda0d7273b700d05a67b271ceb1287ab`;
+- official URL/PyPI BLAKE2b-256 strong anchor: `2e2969cfbb602cd91690c55d38ba9fe53e6a7e76a6fa647bf38f19c138d25449`;
+- corroborating official MD5/ETag: `75e4bbe15fefadbb91258c5e79b38aa3`.
+
+The PyPI JSON SHA-256 `3217dcc807155e45eb462d7ef2431f5ddda0d7273b700d05a67b271ceb1287ab` remains preserved as the rejected inconsistent metadata value; it must not be silently overwritten in diagnostic evidence. The correction is authorized only because the actual bytes match the independent official BLAKE2b strong anchor, reproduce across three direct requests and two TLS stacks, match the official MD5, and pass ZIP/RECORD integrity. It is not a policy to prefer downloaded bytes over published hashes.
+
+Sol writes a single-use machine-readable authorization after this design and plan reach the implementation branch. It binds the retained wheel path and all three accepted digests, diagnostic-evidence digest, current clean Toolkit CodeHead, unchanged campaign P0/runtime identities, and the exact Task 3 continuation. Luna may then execute Task 3 Step 5 onward: copy the already-retained wheel into the temporary closed set, make the one already-authorized setuptools request, and continue only if every frozen tuple and 66-member equality gate passes. Any drift invalidates the authorization before mutation.
+
 ## 8. Acceptance criteria
 
 - Real inspect resolves `Project/OBJ/LWIP.axf` and `Project/LIST/LWIP.map`, captures their exact hashes, and selects SPL from two independent generic evidence categories.
