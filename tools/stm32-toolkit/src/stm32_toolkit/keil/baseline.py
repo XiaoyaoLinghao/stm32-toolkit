@@ -39,6 +39,21 @@ _SELECTED_SYMBOLS = ("__Vectors", "Reset_Handler", "SystemInit", "main", "HardFa
 _PROGRAM_SIZE_RE = re.compile(
     r"Program Size:[ \t]*Code=(\d+)[ \t]+RO-data=(\d+)[ \t]+RW-data=(\d+)[ \t]+ZI-data=(\d+)"
 )
+_COMPONENT_SECTION_RE = re.compile(r"^[ \t]*Image component sizes[ \t]*$")
+_COMPONENT_HEADER_RE = re.compile(
+    r"^[ \t]*Code[ \t]+\(inc\. data\)[ \t]+RO[ \t]+Data[ \t]+RW[ \t]+Data"
+    r"[ \t]+ZI[ \t]+Data[ \t]+Debug(?:[ \t]+Object[ \t]+Name)?[ \t]*$"
+)
+_COMPONENT_RO_SIZE_RE = re.compile(
+    r"^[ \t]*Total[ \t]+RO[ \t]+Size(?:[ \t]+\([^\r\n]*\))?[ \t]+([0-9]+)"
+    r"(?:[ \t]+\([^\r\n]*\))?[ \t]*$",
+    re.MULTILINE,
+)
+_COMPONENT_RW_SIZE_RE = re.compile(
+    r"^[ \t]*Total[ \t]+RW[ \t]+Size(?:[ \t]+\([^\r\n]*\))?[ \t]+([0-9]+)"
+    r"(?:[ \t]+\([^\r\n]*\))?[ \t]*$",
+    re.MULTILINE,
+)
 _MAX_UINT64 = 0xFFFFFFFFFFFFFFFF
 
 
@@ -191,6 +206,106 @@ def _parse_axf(
         ) from error
 
 
+def _parse_component_summary(text: str, relative: str) -> tuple[int, int, int, int] | None:
+    lines = text.splitlines()
+    section_indices = [
+        index for index, line in enumerate(lines) if _COMPONENT_SECTION_RE.fullmatch(line)
+    ]
+    header_indices = [
+        index
+        for index, line in enumerate(lines)
+        if _COMPONENT_HEADER_RE.fullmatch(line)
+    ]
+    has_component_signal = bool(section_indices) or any(
+        len(line.strip().split()) > 2 and line.strip().endswith("Grand Totals") for line in lines
+    )
+    if not has_component_signal:
+        return None
+    if len(section_indices) != 1:
+        raise _raise(
+            "KEIL_MAP_INVALID",
+            "map component totals require one exact section",
+            {"path": relative, "rule": "componentSection"},
+        )
+    section_index = section_indices[0]
+    header_indices = [index for index in header_indices if index > section_index]
+    if not header_indices:
+        raise _raise(
+            "KEIL_MAP_INVALID",
+            "map component totals require an exact header",
+            {"path": relative, "rule": "componentHeader"},
+        )
+    total_rows = [
+        line.strip()
+        for line in lines[header_indices[0] + 1 :]
+        if line.strip().endswith("Grand Totals")
+    ]
+    if not total_rows or len(total_rows) != 1:
+        raise _raise(
+            "KEIL_MAP_INVALID",
+            "map component totals require exactly one Grand Totals row",
+            {"path": relative, "rule": "componentTotals"},
+        )
+    fields = total_rows[0].split()
+    if len(fields) < 2 or fields[-2:] != ["Grand", "Totals"]:
+        raise _raise(
+            "KEIL_MAP_INVALID",
+            "map component totals row is malformed",
+            {"path": relative, "rule": "componentColumns"},
+        )
+    values = fields[:-2]
+    if len(values) != 6 or any(not value or not all("0" <= char <= "9" for char in value) for value in values):
+        raise _raise(
+            "KEIL_MAP_INVALID",
+            "map component totals require six ASCII decimal columns",
+            {"path": relative, "rule": "componentColumns"},
+        )
+    parsed = tuple(int(value) for value in values)
+    if any(value > _MAX_UINT64 for value in parsed):
+        raise _raise(
+            "KEIL_MAP_INVALID",
+            "map component totals overflow unsigned 64-bit",
+            {"path": relative, "rule": "overflow"},
+        )
+    code, _inc_data, ro_data, rw_data, zi_data, _debug = parsed
+    section_text = "\n".join(lines[section_index + 1 :])
+    ro_matches = [match for match in _COMPONENT_RO_SIZE_RE.finditer(section_text)]
+    rw_matches = [match for match in _COMPONENT_RW_SIZE_RE.finditer(section_text)]
+    if len(ro_matches) != 1 or len(rw_matches) != 1:
+        raise _raise(
+            "KEIL_MAP_INVALID",
+            "map component totals require RO and RW cross-checks",
+            {"path": relative, "rule": "componentCrossCheck"},
+        )
+    ro_total = int(ro_matches[0].group(1))
+    rw_total = int(rw_matches[0].group(1))
+    if ro_total > _MAX_UINT64 or rw_total > _MAX_UINT64:
+        raise _raise(
+            "KEIL_MAP_INVALID",
+            "map component cross-check overflows unsigned 64-bit",
+            {"path": relative, "rule": "overflow"},
+        )
+    if code > _MAX_UINT64 - ro_data or rw_data > _MAX_UINT64 - zi_data:
+        raise _raise(
+            "KEIL_MAP_INVALID",
+            "map component totals overflow unsigned 64-bit",
+            {"path": relative, "rule": "overflow"},
+        )
+    if ro_total != code + ro_data or rw_total != rw_data + zi_data:
+        raise _raise(
+            "KEIL_MAP_INVALID",
+            "map component RO/RW cross-check mismatch",
+            {"path": relative, "rule": "componentCrossCheck"},
+        )
+    if code > _MAX_UINT64 - ro_data - rw_data:
+        raise _raise(
+            "KEIL_MAP_INVALID",
+            "map component flash size overflows unsigned 64-bit",
+            {"path": relative, "rule": "overflow"},
+        )
+    return code, ro_data, rw_data, zi_data
+
+
 def _parse_map(data: bytes, relative: str) -> KeilProgramSize:
     try:
         text = data.decode("utf-8")
@@ -216,13 +331,23 @@ def _parse_map(data: bytes, relative: str) -> KeilProgramSize:
                 {"path": relative, "rule": "conflict"},
             )
         summaries.append(values)
-    if not summaries:
+    component = _parse_component_summary(text, relative)
+    if not summaries and component is None:
         raise _raise(
             "KEIL_MAP_INVALID",
             "map file has no program size summary",
             {"path": relative, "rule": "programSize"},
         )
-    code, ro_data, rw_data, zi_data = summaries[-1]
+    if summaries:
+        if component is not None and component != summaries[-1]:
+            raise _raise(
+                "KEIL_MAP_INVALID",
+                "conflicting classic and component program size summaries",
+                {"path": relative, "rule": "componentConflict"},
+            )
+        code, ro_data, rw_data, zi_data = summaries[-1]
+    else:
+        code, ro_data, rw_data, zi_data = component
     return KeilProgramSize(code, ro_data, rw_data, zi_data, code + ro_data + rw_data, rw_data + zi_data)
 
 

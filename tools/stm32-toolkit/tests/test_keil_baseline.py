@@ -28,6 +28,12 @@ KEIL_FIXTURE = FIXTURES / "keil-project"
 
 SHN_ABS = 0xFFF1
 
+COMPONENT_SECTION = "Image component sizes"
+COMPONENT_HEADER = "Code  (inc. data)  RO Data  RW Data  ZI Data  Debug"
+COMPONENT_ROW = "62772       5540      1004     1576   406440  534601   Grand Totals"
+COMPONENT_RO_CHECK = "Total RO Size 63776"
+COMPONENT_RW_CHECK = "Total RW Size 408016"
+
 
 # ---------------------------------------------------------------------------
 # helpers
@@ -219,6 +225,35 @@ def baseline_map(keil_project: Path) -> Path:
     return keil_project / "Listing" / "legacy.map"
 
 
+def write_component_map(
+    project: Path,
+    *,
+    section: str | None = COMPONENT_SECTION,
+    header: str | None = COMPONENT_HEADER,
+    rows: tuple[str, ...] = (COMPONENT_ROW,),
+    checks: tuple[str, ...] = (COMPONENT_RO_CHECK, COMPONENT_RW_CHECK),
+    classic: str | None = None,
+) -> None:
+    lines: list[str] = []
+    if classic is not None:
+        lines.append(classic)
+    if section is not None:
+        lines.append(section)
+    if header is not None:
+        lines.append(header)
+    lines.extend(rows)
+    lines.extend(checks)
+    (project / "Listing" / "legacy.map").write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def assert_component_map_rule(project: Path, rule: str) -> None:
+    inspection = inspect_keil(project)
+    with pytest.raises(KeilInspectionError) as error:
+        capture_keil_baseline(project, inspection)
+    assert error.value.code == "KEIL_MAP_INVALID"
+    assert error.value.details == {"path": "Listing/legacy.map", "rule": rule}
+
+
 def write_axf(keil_project: Path, data: bytes) -> Path:
     objects = keil_project / "Objects"
     objects.mkdir(parents=True, exist_ok=True)
@@ -359,6 +394,87 @@ def test_map_program_size_parsing(tmp_path: Path) -> None:
     inspection = inspect_keil(root)
     baseline = capture_keil_baseline(root, inspection)
     assert baseline.program_size == KeilProgramSize(1000, 200, 50, 750, 1250, 800)
+
+
+def test_map_image_component_program_size_parsing(keil_project: Path) -> None:
+    write_component_map(keil_project)
+    inspection = inspect_keil(keil_project)
+    baseline = capture_keil_baseline(keil_project, inspection)
+    assert baseline.program_size == KeilProgramSize(62772, 1004, 1576, 406440, 65352, 408016)
+
+
+def test_map_component_totals_require_exact_section(keil_project: Path) -> None:
+    write_component_map(keil_project, section=None)
+    assert_component_map_rule(keil_project, "componentSection")
+
+
+def test_map_component_totals_require_exact_header(keil_project: Path) -> None:
+    write_component_map(keil_project, header=None)
+    assert_component_map_rule(keil_project, "componentHeader")
+
+
+@pytest.mark.parametrize(
+    "row",
+    (
+        "62772 5540 1004 1576 406440 Grand Totals",
+        "62772 5540 1004 1576 406440 534601 0 Grand Totals",
+    ),
+    ids=("five-columns", "seven-columns"),
+)
+def test_map_component_totals_require_six_columns(keil_project: Path, row: str) -> None:
+    write_component_map(keil_project, rows=(row,))
+    assert_component_map_rule(keil_project, "componentColumns")
+
+
+def test_map_component_totals_reject_multiple_rows(keil_project: Path) -> None:
+    write_component_map(keil_project, rows=(COMPONENT_ROW, COMPONENT_ROW))
+    assert_component_map_rule(keil_project, "componentTotals")
+
+
+def test_map_component_totals_reject_uint64_overflow(keil_project: Path) -> None:
+    write_component_map(
+        keil_project,
+        rows=("18446744073709551616 5540 1004 1576 406440 534601 Grand Totals",),
+    )
+    assert_component_map_rule(keil_project, "overflow")
+
+
+def test_map_component_totals_require_cross_checks(keil_project: Path) -> None:
+    write_component_map(keil_project, checks=())
+    assert_component_map_rule(keil_project, "componentCrossCheck")
+
+
+@pytest.mark.parametrize(
+    "checks",
+    (
+        ("Total RO Size 63775", COMPONENT_RW_CHECK),
+        (COMPONENT_RO_CHECK, "Total RW Size 408015"),
+    ),
+    ids=("ro-mismatch", "rw-mismatch"),
+)
+def test_map_component_totals_reject_cross_check_mismatch(
+    keil_project: Path, checks: tuple[str, str]
+) -> None:
+    write_component_map(keil_project, checks=checks)
+    assert_component_map_rule(keil_project, "componentCrossCheck")
+
+
+def test_map_classic_program_size_precedes_matching_component(keil_project: Path) -> None:
+    write_component_map(
+        keil_project,
+        classic="Program Size: Code=62772 RO-data=1004 RW-data=1576 ZI-data=406440",
+    )
+    inspection = inspect_keil(keil_project)
+    baseline = capture_keil_baseline(keil_project, inspection)
+    assert baseline.program_size == KeilProgramSize(62772, 1004, 1576, 406440, 65352, 408016)
+
+
+def test_map_component_totals_reject_classic_conflict(keil_project: Path) -> None:
+    write_component_map(
+        keil_project,
+        classic="Program Size: Code=1 RO-data=2 RW-data=3 ZI-data=4",
+    )
+    assert_component_map_rule(keil_project, "componentConflict")
 
 
 def test_committed_fixture_map_only_baseline(keil_project: Path) -> None:
