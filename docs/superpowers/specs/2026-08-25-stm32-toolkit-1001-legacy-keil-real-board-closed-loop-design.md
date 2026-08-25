@@ -1,6 +1,7 @@
 # STM32 Toolkit 1.0 VS10-A 真实 Keil 工程实体板闭环设计
 
-**状态：** 讨论设计已批准；书面规格冻结，待用户审阅
+**状态：** 用户已批准；2026-08-25 实施计划映射发现 Target v1 实体固件身份自引用后，
+由规格所有者作向后兼容修订并重新冻结
 
 **切片：** `STM32TK-1001-LEGACY-KEIL-REAL-BOARD-CLOSED-LOOP`（VS10-A）
 
@@ -71,8 +72,49 @@ semihosting 的现有软件适配器、协议和 replay 证据保持不变，但
 必须明确标记三者为未在 1.0 命名参考硬件上实体资格化。
 
 这项收敛取代历史“必须为四种 transport 采购或虚构外部资产才能形成 1.0 本地候选”的要求，
-不删除 transport、不改变公共协议，也不把 unavailable 结果改写为 PASS。未来若用户提供并
+不删除 transport、不把 unavailable 结果改写为 PASS。未来若用户提供并
 单独授权真实 RTT/UART/semihosting 资产，可在后续版本建立独立资格活动；不扩张当前 VS10。
+
+### 1.2 Target 实体帧的可实现性修订
+
+实施计划的逐文件映射确认，现有 `stm32-target-frame/1` 不能由未接受 host 写入的真实 MCU
+诚实地产生：inventory 要求固件上报 workspace/session、Git、input snapshot、build ID、完整
+ELF SHA-256 和 UTC，`run_end` 又重复绑定 build ID/完整 ELF SHA-256 和 UTC。把完整 ELF digest
+编入 ELF 会改变被散列 bytes，形成不可求解的 SHA-256 自引用；本板应用也没有经同步的可信
+UTC。fixture/replay 可以预填这些值，但不能据此宣称实体板 PASS。
+
+VS10-A 因此增加一个最小、通用、Agent-neutral 的 `stm32-target-frame/2` host-bound 模式，并
+保留 v1 的全部读取、replay 和验证兼容性。它不是第二 Test runtime/controller/backend，也不
+允许 host 写 mailbox：
+
+- Project schema v3 的 `testing.target` 新增可选 `protocol`，只接受
+  `stm32-target-frame/1` 或 `stm32-target-frame/2`；缺省为 v1，旧项目 bytes/行为不变；
+- v2 使用同一 `ST32` header、kind、sequence、payload 长度、CRC32、stream size 和 recovery
+  限制，header `version=2`；一个 decoder 实例只能接受其显式 expected version，禁止混流；
+- v2 target payload 不声明 host 权威事实。每种 payload 都带非递减 `monotonic_ms`（unsigned
+  63-bit）；inventory/run_start/run_end 使用 `case_inventory_digest`，其唯一公式是对 canonical
+  JSON `{"case_ids":<UTF-8 byte order sorted unique ids>,"mode":"target","protocol":"stm32-target-frame/2"}`
+  的 SHA-256；
+- v2 inventory 是 `{mode,case_ids,case_inventory_digest,monotonic_ms}`；run_start 是
+  `{case_ids,case_inventory_digest,monotonic_ms}`；case_start 是 `{case_id,monotonic_ms}`；
+  case_result 是 `{case_id,state,monotonic_ms,message}`；log 是
+  `{stream,message,monotonic_ms}`；run_end 是
+  `{state,case_inventory_digest,counts,event_stream_digest,monotonic_ms}`。所有对象继续 closed，
+  case/result/state/count/digest 语义与 v1 相同，stdout/stderr 在 host publication 中为 null；
+- host 在 discovery 时用当前 fresh firmware facts、project/workspace/session、Probe/target 和
+  host capture UTC 构造现有 `EvidenceIdentity`/`TestInventory`，并把完整 inventory digest 与
+  case-inventory digest 一同固定到 prepare/execute 的 single-use action digest；
+- execute 必须在同一 exclusive MODIFY lease 内 guarded-flash exact ELF、逐 segment readback、
+  验证 Probe/target/transport 身份后才接受 v2 bytes。host 用 run_start capture UTC 加 target
+  monotonic delta 形成现有 TestRun UTC/duration 字段；counter 回退、超时外 delta、inventory
+  漂移、v1/v2 混流或 flash/identity/lease 漂移均 fail closed；
+- raw-events artifact 保留 exact v2 target bytes；TestRun identity 始终来自上述 host-verified
+  flash lineage，绝不伪装成 target 自报 ELF/Git/UTC。`execution_source=physical` 和
+  `physical_transport_evidence=true` 仍只在真实 Probe transport 成功后成立。
+
+这项修订替代本规格较早的“不得改变公共协议”字面约束，仅授权上述 v2 扩展和所需的公共
+schema/model/runner/CLI/MCP 透传、测试与文档；不得借机改变 v1、增加 transport、backend、
+writer、runtime、controller、provider、Agent 分支或 release 范围。
 
 ## 2. 可运行用户场景
 
@@ -90,9 +132,12 @@ D4 约每秒翻转，Toolkit 同时读取 `testtime` 的活动变化和 GPIOE OD
 
 ### 场景 A2：可复现 D4 常灭故障被诊断并修复
 
-迁移工程增加最小、项目自有的 `stm32-target-frame/1` memory-mailbox emitter。mailbox 占用
-的 4096 字节必须由最终 linker/MAP/ELF 证明是明确保留且不与代码、数据、栈、堆或 DMA
-区域重叠的可读写 RAM；`.stm32-project.json` 只记录该证明所得的地址，禁止猜测地址。
+迁移工程增加最小、项目自有的 `stm32-target-frame/2` memory-mailbox emitter。ring 为 4096
+字节；现有 transport 在 ring 前还有 16 字节 producer/consumer header，因此 linker 必须明确
+保留合计 4112 字节。只有 P1 MAP/ELF 证明 SRAM1 顶部空闲后，候选区才固定为
+`0x2002EFF0..0x20030000`：header address `0x2002EFF0`、ring size `4096`。P2/P3/P4 的最终
+linker/MAP/ELF 必须重复证明该范围不与代码、数据、栈、堆或 DMA 重叠；manifest 记录 exact
+address/size/protocol，禁止猜测地址。
 
 正常插桩构建烧录后，物理 `d4-heartbeat` Target case、D4、`testtime`、PE4 ODR 和 Monitor
 全部通过。随后一个独立故障 commit 把周期性 `LED1=!LED1` 改为 active-low LED 的 held-off
@@ -272,15 +317,17 @@ local project Git baseline P0 (project source authority)
 | P0 | 完整 intake baseline，尚无 Toolkit 迁移 | 不烧录 |
 | P1 | digest-guarded Keil conversion、Toolkit configure、原逻辑 GCC build | 迁移未插桩 firmware 候选 |
 | P1c（仅触发时） | H1/H2 证实且绑定 exact diff digest 的最小 project portability correction | 修正后的未插桩 firmware 可烧录 |
-| P2 | 项目自有 mailbox emitter、保留 linker region、schema-v3 Target test 配置 | 正常插桩 firmware |
+| P2 | 项目自有 v2 mailbox emitter、4112-byte linker region、schema-v3 Target test 配置 | 正常插桩 firmware |
 | P3 | 单一故障：heartbeat 分支写 `LED1=1` | D4 常灭 expected-failed |
 | P4 | 经过 Toolkit 单次 source-change authorization 恢复 toggle | fixed-after |
 
-P1 不删除或重写 Keil 输入。P1c 不得预建；没有真实失败证据时不存在。P2 的 emitter 和测试 case 位于项目自有源目录；不得修改 Toolkit
-协议，也不得把测试业务逻辑放入 Cube/vendor 生成文件。mailbox section 可以通过项目 linker
-配置保留，但必须在 P2/P3/P4 每个最终 MAP/ELF 中重新证明地址和 4096 字节范围。
+P1 不删除或重写 Keil 输入。P1c 不得预建；没有真实失败证据时不存在。P2 的 emitter 和测试
+case 位于项目自有源目录，不得把测试业务逻辑放入 Cube/vendor 生成文件。mailbox section
+通过项目自有 native linker 配置保留，必须在 P2/P3/P4 每个最终 MAP/ELF 中重新证明
+`0x2002EFF0..0x20030000` 合计 4112 字节范围；manifest 的 `address=0x2002EFF0`、`size=4096`。
 
-项目必须使用现有 `stm32-target-frame/1` 和现有 `memory-mailbox` transport。case ID 固定为
+项目必须使用本文冻结的 `stm32-target-frame/2` 和现有 `memory-mailbox` transport，且
+`testing.target.protocol` 必须显式为 `stm32-target-frame/2`。case ID 固定为
 `d4-heartbeat`，它验证应用层 heartbeat 周期推进与 PE4 输出状态；用户肉眼 D4 观察提供独立
 板级佐证。固件不得通过 mailbox 接受 host 控制，不得开放 host memory write，也不得新增
 UART/RTT/semihosting fallback。
@@ -293,7 +340,8 @@ UART/RTT/semihosting fallback。
 | ISR 共享 `testtime` 非 volatile | 先保留并取证；仅在确认根因后做摘要授权的最小 project 修正 |
 | 工程包含多个 STM32F4 startup 候选 | 以 Keil `Target 1`、实际向量引用和 F429ZG target 选择唯一 startup；多定义或错误向量在 H1 停止 |
 | historical AXF/MAP 与 GCC 使用量不同 | 报告真实差异；地址/容量/关键符号不明时不烧录，不设置无依据百分比容差 |
-| mailbox 与 stack/heap/DMA 重叠 | linker 显式保留，P2/P3/P4 每个 MAP/ELF 重证；无法证明则不运行 Target test |
+| mailbox 与 stack/heap/DMA 重叠 | linker 显式保留 header+ring 4112 bytes，P2/P3/P4 每个 MAP/ELF 重证；无法证明则不运行 Target test |
+| target 自报 host/ELF/UTC 导致伪证或自引用 | 仅 v2 host-bound 模式；exact flash/readback/lease/Probe 形成 identity，target 只报 case/monotonic 事实；任何 v1/v2 混流拒绝 |
 | D4 肉眼现象不能证明应用路径 | 必须与 `testtime`、PE4 ODR、physical TestRun 和 Monitor 联合判断 |
 | Cortex-Debug 或 Probe owner 未正确释放 | 返回 busy owner evidence 并停止；不 kill/steal，只有已证明正常 detach 后 reacquire |
 
@@ -356,7 +404,9 @@ ELF SHA、Probe 和 `--authorized` 执行当次公共 flash。
 
 在 P2 的 MAP/ELF/mailbox 地址重新通过 H1 适用检查后：
 
-1. `test target prepare` 从当前 project/build/cases/probe 派生 single-use action digest；
+1. v2 discovery 在 read-only transport 上取得 case inventory；host 从 fresh firmware facts 和
+   capture UTC 构造 TestInventory，`test target prepare` 把 protocol、case/full inventory
+   digests、current project/build/probe 一并派生 single-use action digest；
 2. `test target execute` 消费 digest，以同一 MODIFY lease 完成 guarded flash、readback、
    mailbox 读取和 physical TestRun publication；
 3. `d4-heartbeat`、D4、`testtime`、PE4 ODR、Monitor 全部 PASS；
@@ -523,7 +573,7 @@ VS10-A 只有同时满足以下条件才是 `ACCEPTED`：
   memory/symbol/entry/vector 检查；
 - P1（或经真实证据触发的 P1c）在命名板上 flash/readback 成功，D4、`testtime`、PE4 ODR、
   Fault 和 Monitor 结果一致；
-- P2 的 mailbox 地址由 MAP/ELF 证明，normal physical Target test PASS；
+- P2 的 v2 mailbox header/ring 地址由 MAP/ELF 证明，normal physical Target test PASS；
 - P3 只引入 held-off 故障，并得到 D4 off、timer alive、PE4 high 和 physical Target FAIL；
 - Diagnostic 以真实 evidence 排序假设并把结论绑定 P3；
 - P4 source fix 消费 single-use authorization，new build/reflash 后 D4/typed/SVD/Monitor 与
