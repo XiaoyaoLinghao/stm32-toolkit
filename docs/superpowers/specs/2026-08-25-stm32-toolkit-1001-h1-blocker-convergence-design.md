@@ -72,6 +72,27 @@ The matcher must not form a family/peripheral cross-product and must not use Uni
 
 TDD tests must first reproduce the real XML nesting/listing MAP defect and SPL source-set ambiguity at the accepted base. GREEN tests cover core inspection, baseline capture, CLI/MCP parity, fallback MAP location, containment failures, HAL/LL conflict refusal, and no false selection from weak evidence. Run only the focused Keil/migration/workflow/CLI/MCP tests plus directly affected regression. Rebuild and verify one Windows candidate because Toolkit bytes change; no full release matrix is triggered.
 
+### 4.4 ARM linker image-component program-size fallback
+
+The corrected public inspect reached the real contained `Project/LIST/LWIP.map` and exposed a second generic Keil MAP format. This ARM linker output has no `Program Size: Code=...` line. It instead contains an `Image component sizes` section with this exact six-number totals layout:
+
+```text
+Code  (inc. data)  RO Data  RW Data  ZI Data  Debug
+62772       5540      1004     1576   406440  534601   Grand Totals
+```
+
+The parenthesized `inc. data` value is a subset of Code, not RO Data. For the real baseline the public `KeilProgramSize` is therefore Code `62772`, RO Data `1004`, RW Data `1576`, and ZI Data `406440`; its existing derived values are ROM `65352` and RAM `408016`.
+
+The MAP parser keeps the existing bounded UTF-8/size/overflow contract and adds one fail-closed fallback:
+
+- the existing `Program Size` form remains authoritative when present;
+- otherwise require the exact `Image component sizes` section, the exact ordered `Code (inc. data) / RO Data / RW Data / ZI Data / Debug` header semantics, and exactly one `Grand Totals` row with six unsigned decimal values;
+- map columns 1/3/4/5 to Code/RO/RW/ZI and ignore columns 2/6 only after validation;
+- require `Total RO Size` to equal Code + RO Data and `Total RW Size` to equal RW Data + ZI Data; these two cross-checks are mandatory for the fallback;
+- reject missing headers/totals/cross-checks, malformed or overflowing values, multiple component totals, cross-check mismatches, or a component tuple that conflicts with a present `Program Size` tuple using the existing stable `KEIL_MAP_INVALID` envelope and bounded rule names.
+
+This is generic ARM linker evidence parsing. It must not recognize the project name, output basename, object list, absolute path, or the real numeric values specially. No public model, schema, CLI, MCP, error code, output-path rule, framework rule, or baseline lifecycle changes.
+
 ## 5. Project portability correction contract
 
 The project correction is not Toolkit product logic. It is one local Git change bound to a machine-readable proposal and a SHA-256 over the exact proposed P0-to-portability diff before apply. The standing user instruction authorizes the Sol primary to approve that exact digest without another interactive prompt. Any byte drift invalidates approval.
@@ -181,9 +202,18 @@ The PyPI JSON SHA-256 `3217dcc807155e45eb462d7ef2431f5ddda0d7273b700d05a67b271ce
 
 Sol writes a single-use machine-readable authorization after this design and plan reach the implementation branch. It binds the retained wheel path and all three accepted digests, diagnostic-evidence digest, current clean Toolkit CodeHead, unchanged campaign P0/runtime identities, and the exact Task 3 continuation. Luna may then execute Task 3 Step 5 onward: copy the already-retained wheel into the temporary closed set, make the one already-authorized setuptools request, and continue only if every frozen tuple and 66-member equality gate passes. Any drift invalidates the authorization before mutation.
 
+### 7.5 Candidate invalidation after the real MAP format defect
+
+The candidate and fresh runtime at Toolkit CodeHead `171a46060225479a6031c2499cbb6298e4b83d6a` passed all package/runtime gates but failed the first unchanged-P0 public inspect with `KEIL_MAP_INVALID` because Section 4.4 was not implemented. They remain valid evidence for their bytes but are not H1-eligible and cannot be patched in place.
+
+After the Section 4.4 product correction is independently accepted, preserve the current candidate/extracted/runtime state identity and build a new candidate under distinct campaign paths `runtime/mapfix-candidate` and `runtime/mapfix-candidate-extracted`. The current managed runtime remains the only active runtime until the new candidate passes all verification. Because the two backend wheel bytes were correctly cleaned after their prior one-time build, one new bounded acquisition of each exact official artifact is permitted for this invalidation-triggered rebuild, using the accepted identities from Sections 7.1 and 7.4: setuptools SHA-256 `51a52592b3b99e102b609654876bd65f19f999935166d1352678931132b0c670`; wheel corrected SHA-256 `3217dcc807155e45db462d7ef2431f5ddda0d7273b700d05a67b271ceb1287ab` plus BLAKE2b-256 `2e2969cfbb602cd91690c55d38ba9fe53e6a7e76a6fa647bf38f19c138d25449`. The same direct-URL, redirect-rejection, filename/size, ZIP, no-resolver/index/dependency, 66-member, source-binding, trust-anchor, candidate, and cleanup gates apply.
+
+After the map-fix candidate is verified, preserve the `171a4606...` runtime lineage, prove no process uses it, retire only the exact campaign `data/runtime`, and fresh-bootstrap the new candidate. Do not use same-version upgrade/repair. The final unchanged-P0 inspect/dry-run must capture the real AXF/MAP hashes, produce the exact Section 4.4 sizes, select SPL, and return exactly the frozen 37 portability blockers before Task 4 begins.
+
 ## 8. Acceptance criteria
 
 - Real inspect resolves `Project/OBJ/LWIP.axf` and `Project/LIST/LWIP.map`, captures their exact hashes, and selects SPL from two independent generic evidence categories.
+- Real MAP fallback reports Code `62772`, RO Data `1004`, RW Data `1576`, ZI Data `406440`, derived ROM `65352`, and RAM `408016`, with RO/RW total cross-checks passing.
 - Focused Toolkit tests and independent complete-diff review pass without a new public option, agent logic, runtime, provider, backend, or controller.
 - The project correction is exact-digest authorized, limited to the frozen 36 encodings plus one derived profile and one startup C file, and preserves original Keil inputs/historical outputs.
 - Corrected public conversion/configuration applies only unchanged plans; two public builds are reproducible and all parent H1 gates pass, including vector/symbol/memory proof and a fully free `0x2002EFF0..0x20030000` interval.
