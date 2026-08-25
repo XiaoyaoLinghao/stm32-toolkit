@@ -293,6 +293,38 @@ def test_v2_host_bound_assembly_returns_existing_manifest_and_case_models():
     assert manifest.stdout is None and manifest.stderr is None
 
 
+@pytest.mark.parametrize("forged_field", ["payload", "kind", "sequence", "version"])
+def test_v2_assembly_uses_raw_decoder_frames_not_forged_wrappers(forged_field: str):
+    frames, stream = _v2_stream()
+    forged = list(frames)
+    result_index = next(index for index, frame in enumerate(forged) if frame.kind == 4)
+    frame = forged[result_index]
+    if forged_field == "payload":
+        payload = dict(frame.payload)
+        payload["message"] = "forged-host-visible-message"
+        forged[result_index] = target_mod.TargetFrame(
+            frame.kind, frame.sequence, payload, frame.raw_bytes, frame.version
+        )
+    elif forged_field == "kind":
+        forged[result_index] = target_mod.TargetFrame(
+            6, frame.sequence, frame.payload, frame.raw_bytes, frame.version
+        )
+    elif forged_field == "sequence":
+        forged[result_index] = target_mod.TargetFrame(
+            frame.kind, 999, frame.payload, frame.raw_bytes, frame.version
+        )
+    else:
+        forged[result_index] = target_mod.TargetFrame(
+            frame.kind, frame.sequence, frame.payload, frame.raw_bytes, 1
+        )
+
+    manifest = _assemble_v2(frames=tuple(forged), stream=stream)
+
+    assert manifest.state == "passed"
+    assert manifest.cases[0].state == "passed"
+    assert manifest.cases[0].message is None
+
+
 def test_v2_assembly_rejects_timeout_inventory_count_state_and_raw_digest_contradictions():
     frames, stream = _v2_stream()
     _assert_code(

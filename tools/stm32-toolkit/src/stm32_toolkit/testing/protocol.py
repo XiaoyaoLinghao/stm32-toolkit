@@ -425,16 +425,15 @@ def assemble_target_v2_run(
         from .target import TargetFrame, TargetFrameDecoder
 
         target_frames = tuple(frames)
-        if not all(isinstance(frame, TargetFrame) and frame.version == 2 for frame in target_frames):
-            raise ValueError("target frames must be version 2")
+        if not all(isinstance(frame, TargetFrame) for frame in target_frames):
+            raise ValueError("target frames are invalid")
         stream = b"".join(frame.raw_bytes for frame in target_frames)
         decoder = TargetFrameDecoder(expected_version=2)
         decoded = decoder.feed(stream)
         decoder.finish()
-        if len(decoded) != len(target_frames) or any(
-            left.raw_bytes != right.raw_bytes for left, right in zip(decoded, target_frames)
-        ):
-            raise ValueError("target frame stream does not match exact frame bytes")
+        # TargetFrame is a public dataclass, so its metadata is not trusted.  The
+        # independently decoded frames are the sole source for publication.
+        target_frames = decoded
     except TestProtocolError:
         raise
     except Exception as error:
