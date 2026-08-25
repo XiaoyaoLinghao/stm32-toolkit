@@ -278,6 +278,53 @@ def standard_repo(tmp_path: Path) -> Path:
     )
 
 
+def _add_group_scoped_controls(repo: Path, group_name: str, *, defines: str = "") -> None:
+    project = next(repo.glob("*.uvprojx"))
+    text = project.read_text(encoding="utf-8")
+    marker = f"            <GroupName>{group_name}</GroupName>\n"
+    option = (
+        "            <GroupOption>\n"
+        "              <GroupArmAds>\n"
+        "                <Cads>\n"
+        "                  <VariousControls>\n"
+        f"                    <Define>{defines}</Define>\n"
+        "                    <IncludePath></IncludePath>\n"
+        "                    <MiscControls></MiscControls>\n"
+        "                  </VariousControls>\n"
+        "                </Cads>\n"
+        "              </GroupArmAds>\n"
+        "            </GroupOption>\n"
+    )
+    assert text.count(marker) == 1
+    project.write_text(text.replace(marker, marker + option, 1), encoding="utf-8")
+
+
+def _add_file_scoped_controls(repo: Path, file_path: str, *, defines: str = "") -> None:
+    project = next(repo.glob("*.uvprojx"))
+    text = project.read_text(encoding="utf-8")
+    marker = f"              <FilePath>.\\{file_path}</FilePath>\n"
+    option = (
+        "              <FileOption>\n"
+        "                <FileArmAds>\n"
+        "                  <Cads>\n"
+        "                    <VariousControls>\n"
+        f"                      <Define>{defines}</Define>\n"
+        "                      <IncludePath></IncludePath>\n"
+        "                      <MiscControls></MiscControls>\n"
+        "                    </VariousControls>\n"
+        "                  </Cads>\n"
+        "                </FileArmAds>\n"
+        "              </FileOption>\n"
+    )
+    assert text.count(marker) == 1
+    project.write_text(text.replace(marker, marker + option, 1), encoding="utf-8")
+
+
+def _commit_project_changes(repo: Path, message: str = "scoped options") -> None:
+    subprocess.run(["git", "add", "-A"], cwd=repo, check=True, env=git_env())
+    subprocess.run(["git", "commit", "-q", "-m", message], cwd=repo, check=True, env=git_env())
+
+
 def fixture_inspection(root: Path) -> KeilInspection:
     return inspect_keil(root)
 
@@ -1010,6 +1057,116 @@ def test_apply_blocked_plan_refuses_without_writes(tmp_path):
     assert list(result.details["blockerCodes"]) == sorted({b.code for b in plan.blockers})
     assert snapshot_tree(repo) == before
     assert not (repo / ".stm32-toolkit").exists()
+
+
+def test_apply_group_scoped_blocker_is_validated_then_blocked_without_writes(tmp_path):
+    repo = build_repo(
+        tmp_path,
+        files={
+            "Main/main.c": "int main(void) { return 0; }\n",
+            "Common/common.c": "int common(void) { return 0; }\n",
+        },
+    )
+    _add_group_scoped_controls(repo, "Main", defines="GROUP_ONLY")
+    _commit_project_changes(repo)
+
+    plan = plan_keil_conversion(repo, fixture_inspection(repo))
+    assert [(blocker.path, blocker.evidence) for blocker in plan.blockers] == [
+        ("", "group:Main")
+    ]
+    before = snapshot_tree(repo)
+
+    result = apply_keil_conversion(plan)
+
+    assert result.ok is False
+    assert result.code == "MIGRATION_BLOCKED"
+    assert list(result.details["blockerCodes"]) == ["ARMCC_OPTION_UNSUPPORTED"]
+    assert snapshot_tree(repo) == before
+    assert not (repo / ".stm32-toolkit").exists()
+
+
+def test_apply_mixed_legacy_prefix_and_file_scoped_suffix_is_blocked_without_writes(tmp_path):
+    repo = build_repo(
+        tmp_path,
+        files={
+            "Main/main.c": "int main(void) { return 0; }\n",
+            "Startup/startup.s": "; startup\n    AREA RESET, DATA, READONLY\n    END\n",
+        },
+        uvprojx_kwargs={
+            "groups": (
+                ("Main", (("main.c", "1", "Main/main.c"),)),
+                ("Startup", (("startup.s", "2", "Startup/startup.s"),)),
+            )
+        },
+    )
+    _add_file_scoped_controls(repo, "Main/main.c", defines="FILE_ONLY")
+    _commit_project_changes(repo)
+
+    plan = plan_keil_conversion(repo, fixture_inspection(repo))
+    assert [(blocker.path, blocker.evidence) for blocker in plan.blockers] == [
+        ("Startup/startup.s", ""),
+        ("Main/main.c", "file:Main/main.c"),
+    ]
+    before = snapshot_tree(repo)
+
+    result = apply_keil_conversion(plan)
+
+    assert result.ok is False
+    assert result.code == "MIGRATION_BLOCKED"
+    assert list(result.details["blockerCodes"]) == [
+        "ARMCC_ASSEMBLY_UNSUPPORTED",
+        "ARMCC_OPTION_UNSUPPORTED",
+    ]
+    assert snapshot_tree(repo) == before
+    assert not (repo / ".stm32-toolkit").exists()
+
+
+def test_apply_forged_scoped_suffix_path_order_and_insertion_are_invalid_without_writes(
+    tmp_path,
+):
+    groups = (
+        ("First", (("first.c", "1", "First/first.c"),)),
+        ("Second", (("second.c", "1", "Second/second.c"),)),
+    )
+    repo = build_repo(
+        tmp_path,
+        files={
+            "First/first.c": "int first(void) { return 0; }\n",
+            "Second/second.c": "int second(void) { return 0; }\n",
+        },
+        uvprojx_kwargs={"groups": groups},
+    )
+    _add_group_scoped_controls(repo, "First", defines="FIRST")
+    _add_group_scoped_controls(repo, "Second", defines="SECOND")
+    _commit_project_changes(repo)
+
+    plan = plan_keil_conversion(repo, fixture_inspection(repo))
+    assert [(blocker.path, blocker.evidence) for blocker in plan.blockers] == [
+        ("", "group:First"),
+        ("", "group:Second"),
+    ]
+    first, second = plan.blockers
+    forged_cases = (
+        forge(plan, blockers=(second, first)),
+        forge(plan, blockers=(replace(first, path="forged.c"), second)),
+        forge(plan, blockers=(first,)),
+        forge(
+            plan,
+            blockers=(
+                replace(first, path="Inserted/injected.c", evidence="group:Inserted"),
+                first,
+                second,
+            ),
+        ),
+    )
+    for forged in forged_cases:
+        before = snapshot_tree(repo)
+        result = apply_keil_conversion(forged)
+        assert result.ok is False
+        assert result.code == "MIGRATION_PLAN_INVALID"
+        assert result.details == {"rule": "blockerSuffix"}
+        assert snapshot_tree(repo) == before
+        assert not (repo / ".stm32-toolkit").exists()
 
 
 def test_apply_head_changed(tmp_path):

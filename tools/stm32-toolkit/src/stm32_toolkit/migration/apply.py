@@ -43,6 +43,7 @@ from stm32_toolkit.migration.planner import (
     _MANIFEST_NAME,
     _canonical_root,
     _read_limited,
+    _scoped_option_blockers,
     plan_keil_conversion,
 )
 
@@ -72,6 +73,52 @@ def _sha256(data: bytes) -> str:
 
 def _plan_invalid(rule: str) -> _ApplyFailure:
     return _fail("MIGRATION_PLAN_INVALID", "plan validation failed", {"rule": rule})
+
+
+def _validate_blockers(plan: MigrationPlan) -> None:
+    """Validate the legacy blocker prefix and the authored scoped suffix.
+
+    Planner output keeps ordinary blockers in the historical path-sorted,
+    five-field identity order, then appends group/file option blockers in the
+    exact order authored by the inspection.  The latter may legitimately use
+    an empty group path, so it must be validated separately before applying
+    the legacy portable-path rule.
+    """
+    try:
+        expected_suffix = tuple(_scoped_option_blockers(plan.inspection))
+    except (AttributeError, TypeError, ValueError):
+        raise _plan_invalid("type")
+    blockers = plan.blockers
+    suffix_size = len(expected_suffix)
+    if suffix_size:
+        if len(blockers) < suffix_size or tuple(blockers[-suffix_size:]) != expected_suffix:
+            raise _plan_invalid("blockerSuffix")
+        prefix = blockers[:-suffix_size]
+    else:
+        prefix = blockers
+
+    # A scoped blocker may not be smuggled into the legacy prefix.  Target
+    # misc controls retain their old empty-path behavior and are rejected by
+    # the legacy path check below; no other ARMCC option blocker belongs here.
+    if any(
+        blocker.code == "ARMCC_OPTION_UNSUPPORTED" and blocker.path
+        for blocker in prefix
+    ):
+        raise _plan_invalid("blockerSuffix")
+
+    for blocker in prefix:
+        if portable_path_error(blocker.path) is not None:
+            raise _plan_invalid("type")
+
+    blocker_key = lambda blocker: (
+        blocker.path,
+        blocker.line,
+        blocker.column,
+        blocker.code,
+        blocker.rule_id,
+    )
+    if list(prefix) != sorted(prefix, key=blocker_key):
+        raise _plan_invalid("sortedOrder")
 
 
 # ---------------------------------------------------------------------------
@@ -161,7 +208,7 @@ def _validate_plan(plan: object) -> None:
         if (
             not isinstance(blocker.code, str)
             or not isinstance(blocker.rule_id, str)
-            or portable_path_error(blocker.path) is not None
+            or not isinstance(blocker.path, str)
             or not isinstance(blocker.line, int)
             or not isinstance(blocker.column, int)
             or not isinstance(blocker.evidence, str)
@@ -188,9 +235,7 @@ def _validate_plan(plan: object) -> None:
     fixed_key = lambda s: (s.address, s.section, s.source_path, s.line, s.symbol)
     if list(plan.fixed_sections) != sorted(plan.fixed_sections, key=fixed_key):
         raise _plan_invalid("sortedOrder")
-    blocker_key = lambda b: (b.path, b.line, b.column, b.code, b.rule_id)
-    if list(plan.blockers) != sorted(plan.blockers, key=blocker_key):
-        raise _plan_invalid("sortedOrder")
+    _validate_blockers(plan)
 
     for patch in plan.patches:
         created = patch.before_bytes is None
