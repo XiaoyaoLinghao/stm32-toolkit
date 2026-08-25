@@ -20,7 +20,14 @@ from .model import (
     validate_host_identity,
 )
 from .publication import PublishedTestRun, TestRunPublisher, TestRunRepository
-from .protocol import assemble_test_run, validate_event_payload
+from .protocol import (
+    TARGET_FRAME_V1,
+    TARGET_FRAME_V2,
+    assemble_target_v2_run,
+    assemble_test_run,
+    calculate_case_inventory_digest,
+    validate_event_payload,
+)
 from .replay import (
     TargetReplayDescriptor,
     TargetReplayError,
@@ -46,11 +53,15 @@ __all__ = [
     "TargetReplayDescriptor",
     "TargetReplayError",
     "TargetReplayFixture",
+    "TARGET_FRAME_V1",
+    "TARGET_FRAME_V2",
     "TARGET_REPLAY_TRANSPORT",
     "PublishedTestRun",
     "TestRunPublisher",
     "TestRunRepository",
+    "assemble_target_v2_run",
     "assemble_test_run",
+    "calculate_case_inventory_digest",
     "calculate_host_build_inventory_digest",
     "calculate_host_test_executable_inventory_digest",
     "calculate_inventory_digest",

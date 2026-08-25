@@ -38,7 +38,11 @@ from stm32_toolkit.testing.model import (
     TEST_SCHEMA,
     protocol_error,
 )
-from stm32_toolkit.testing.protocol import validate_event_payload
+from stm32_toolkit.testing.protocol import (
+    TARGET_FRAME_V1,
+    TARGET_FRAME_V2,
+    validate_event_payload,
+)
 from stm32_toolkit.testing.transports.base import format_ram_bounds, ram_regions
 
 
@@ -46,6 +50,8 @@ FRAME_MAGIC = b"ST32"
 _CLEANUP_ATTEMPT_WINDOW_SECONDS = 0.050
 _MAX_TARGET_AUTHORIZATION_RECORD_BYTES = 64 * 1024
 FRAME_VERSION = 1
+FRAME_V2_VERSION = 2
+_SUPPORTED_FRAME_VERSIONS = {FRAME_VERSION, FRAME_V2_VERSION}
 FRAME_HEADER_BYTES = 16
 FRAME_CRC_BYTES = 4
 _HEADER = struct.Struct("<4sBBHII")
@@ -257,6 +263,7 @@ class TargetFrame:
     sequence: int
     payload: Mapping[str, object]
     raw_bytes: bytes
+    version: int = FRAME_VERSION
 
     @property
     def kind_name(self) -> str:
@@ -285,22 +292,31 @@ class TargetRunSummary:
     event_stream_digest: str
 
 
-def encode_frame(kind: int, sequence: int, payload: Mapping[str, object], *, flags: int = 0) -> bytes:
-    """Encode one canonical version-1 frame."""
+def encode_frame(
+    kind: int,
+    sequence: int,
+    payload: Mapping[str, object],
+    *,
+    version: int = FRAME_VERSION,
+    flags: int = 0,
+) -> bytes:
+    """Encode one canonical frame for an explicit target-frame version."""
     if type(kind) is not int or kind not in EVENT_KINDS or type(sequence) is not int or not 0 <= sequence <= 0xFFFFFFFF:
         raise protocol_error("TEST_PROTOCOL_INVALID", "frame kind or sequence is invalid")
+    if type(version) is not int or version not in _SUPPORTED_FRAME_VERSIONS:
+        raise protocol_error("TEST_FRAME_VERSION_INVALID", "target frame version is unsupported")
     if type(flags) is not int or flags != 0:
-        raise protocol_error("TEST_PROTOCOL_INVALID", "version 1 frame flags must be zero")
+        raise protocol_error("TEST_PROTOCOL_INVALID", "target frame flags must be zero")
     if not isinstance(payload, Mapping):
         raise protocol_error("TEST_PROTOCOL_INVALID", "frame payload must be a JSON object")
-    value = validate_event_payload(EVENT_KINDS[kind], dict(payload))
+    value = validate_event_payload(EVENT_KINDS[kind], dict(payload), frame_version=version)
     try:
         body = canonical_json_bytes(value)
     except (TypeError, ValueError) as exc:
         raise protocol_error("TEST_PROTOCOL_INVALID", "frame payload is not canonical JSON") from exc
     if len(body) > MAX_FRAME_PAYLOAD_BYTES:
         raise protocol_error("TEST_FRAME_TOO_LARGE", "frame payload exceeds 16 KiB")
-    header = _HEADER.pack(FRAME_MAGIC, FRAME_VERSION, kind, flags, sequence, len(body))
+    header = _HEADER.pack(FRAME_MAGIC, version, kind, flags, sequence, len(body))
     framed = header + body
     return framed + _CRC.pack(zlib.crc32(framed) & 0xFFFFFFFF)
 
@@ -313,18 +329,24 @@ class TargetFrameDecoder:
         *,
         max_stream_bytes: int = MAX_RUN_STREAM_BYTES,
         max_discarded_bytes: int = MAX_FRAME_PAYLOAD_BYTES + FRAME_HEADER_BYTES + FRAME_CRC_BYTES,
+        expected_version: int = FRAME_VERSION,
     ) -> None:
         if type(max_stream_bytes) is not int or not 1 <= max_stream_bytes <= MAX_RUN_STREAM_BYTES:
             raise protocol_error("TEST_PROTOCOL_INVALID", "stream limit is invalid")
         if type(max_discarded_bytes) is not int or max_discarded_bytes < 0:
             raise protocol_error("TEST_PROTOCOL_INVALID", "recovery limit is invalid")
+        if type(expected_version) is not int or expected_version not in _SUPPORTED_FRAME_VERSIONS:
+            raise protocol_error("TEST_FRAME_VERSION_INVALID", "target frame version is unsupported")
         self._max_stream_bytes = max_stream_bytes
         self._max_discarded_bytes = max_discarded_bytes
+        self._expected_version = expected_version
         self._buffer = bytearray()
         self._stream_bytes = 0
         self._discarded_bytes = 0
         self._expected_sequence = 0
         self._pending_recovery_error: TestProtocolError | None = None
+        self._version_mismatch_seen = False
+        self._last_monotonic_ms: int | None = None
         self._finished = False
         self._frames: list[TargetFrame] = []
 
@@ -370,8 +392,12 @@ class TargetFrameDecoder:
             assert magic == FRAME_MAGIC
             if payload_length > MAX_FRAME_PAYLOAD_BYTES:
                 raise protocol_error("TEST_FRAME_TOO_LARGE", "frame payload exceeds 16 KiB")
-            if version != FRAME_VERSION:
-                self._pending_recovery_error = protocol_error("TEST_FRAME_VERSION_INVALID", "target frame version is not 1")
+            if version != self._expected_version:
+                self._version_mismatch_seen = True
+                self._pending_recovery_error = protocol_error(
+                    "TEST_FRAME_VERSION_INVALID",
+                    f"target frame version is not {self._expected_version}",
+                )
                 self._discard(1)
                 continue
             frame_length = FRAME_HEADER_BYTES + payload_length + FRAME_CRC_BYTES
@@ -381,7 +407,8 @@ class TargetFrameDecoder:
             expected_crc = _CRC.unpack_from(candidate, frame_length - FRAME_CRC_BYTES)[0]
             actual_crc = zlib.crc32(candidate[:-FRAME_CRC_BYTES]) & 0xFFFFFFFF
             if expected_crc != actual_crc:
-                self._pending_recovery_error = protocol_error("TEST_FRAME_CRC_INVALID", "target frame CRC is invalid")
+                if not self._version_mismatch_seen:
+                    self._pending_recovery_error = protocol_error("TEST_FRAME_CRC_INVALID", "target frame CRC is invalid")
                 self._discard(1)
                 continue
             if kind not in EVENT_KINDS or flags != 0:
@@ -399,11 +426,22 @@ class TargetFrameDecoder:
                 raise protocol_error("TEST_PROTOCOL_INVALID", "target frame payload is not UTF-8 JSON") from exc
             if not isinstance(payload, dict):
                 raise protocol_error("TEST_PROTOCOL_INVALID", "target frame payload must be a JSON object")
-            value = validate_event_payload(EVENT_KINDS[kind], payload)
-            frame = TargetFrame(kind, sequence, _deep_freeze(value), candidate)
+            value = validate_event_payload(
+                EVENT_KINDS[kind], payload, frame_version=version
+            )
+            if version == FRAME_V2_VERSION:
+                monotonic_ms = value["monotonic_ms"]
+                if self._last_monotonic_ms is not None and monotonic_ms < self._last_monotonic_ms:
+                    raise protocol_error(
+                        "TEST_EVENT_SEQUENCE_INVALID",
+                        "target frame monotonic counter is not nondecreasing",
+                    )
+                self._last_monotonic_ms = monotonic_ms
+            frame = TargetFrame(kind, sequence, _deep_freeze(value), candidate, version)
             del self._buffer[:frame_length]
             self._expected_sequence += 1
-            self._pending_recovery_error = None
+            if not self._version_mismatch_seen:
+                self._pending_recovery_error = None
             self._frames.append(frame)
             decoded.append(frame)
         return tuple(decoded)
