@@ -1509,6 +1509,114 @@ def test_scan_total_limit(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> No
 # ---------------------------------------------------------------------------
 
 
+def _source_group(specs: tuple[tuple[str, bool], ...]) -> list[dict]:
+    return [
+        {
+            "name": path.rsplit("/", 1)[-1],
+            "path": f".\\{path}",
+            **({"excluded": True} if excluded else {}),
+        }
+        for path, excluded in specs
+    ]
+
+
+def test_framework_spl_canonical_source_set_selects_spl(tmp_path: Path) -> None:
+    root = tmp_path / "root"
+    specs = (("Vendor/MISC.C", False), ("Vendor/STM32F4XX_GPIO.C", False))
+    simple_project(
+        root,
+        defines="USE_STDPERIPH_DRIVER",
+        sources={path: "int source(void) { return 0; }\n" for path, _ in specs},
+        extra={
+            "groups": [{"name": "Drivers", "files": _source_group(specs)}],
+        },
+    )
+
+    report = inspect_keil(root)
+
+    assert report.framework == "spl"
+    assert report.framework_candidates == ("spl",)
+    assert report.framework_evidence == (
+        KeilEvidence("define", "USE_STDPERIPH_DRIVER", "spl"),
+        KeilEvidence("source", "standard-peripheral-source-set", "spl"),
+    )
+    assert not any(w.code == "KEIL_FRAMEWORK_SELECTION_REQUIRED" for w in report.warnings)
+
+
+@pytest.mark.parametrize(
+    "specs",
+    [
+        pytest.param((("Vendor/app.c", False),), id="lone-define"),
+        pytest.param((("Vendor/misc.c", False),), id="lone-misc"),
+        pytest.param((("Vendor/stm32f4xx_gpio.c", False),), id="lone-peripheral"),
+        pytest.param(
+            (("Vendor/misc.c", False), ("Vendor/stm32f4xx_it.c", False)),
+            id="interrupt-unit-excluded",
+        ),
+        pytest.param(
+            (("Vendor/misc.c", False), ("Vendor/system_stm32f4xx.c", False)),
+            id="system-unit-excluded",
+        ),
+        pytest.param(
+            (("Vendor/misc.c", False), ("Vendor/stm32f4xx_hal_gpio.c", False)),
+            id="hal-unit-excluded",
+        ),
+        pytest.param(
+            (("Vendor/misc.c", False), ("Vendor/stm32f4xx_ll_gpio.c", False)),
+            id="ll-unit-excluded",
+        ),
+        pytest.param(
+            (("Vendor/misc.c", False), ("Vendor/stm32f4xx_gpio.c", True)),
+            id="excluded-peripheral-source",
+        ),
+    ],
+)
+def test_framework_spl_source_set_fails_closed_for_weak_or_excluded_sources(
+    tmp_path: Path, specs: tuple[tuple[str, bool], ...]
+) -> None:
+    root = tmp_path / "root"
+    simple_project(
+        root,
+        defines="USE_STDPERIPH_DRIVER",
+        sources={path: "int source(void) { return 0; }\n" for path, _ in specs},
+        extra={
+            "groups": [{"name": "Drivers", "files": _source_group(specs)}],
+        },
+    )
+
+    report = inspect_keil(root)
+
+    assert report.framework is None
+    assert report.framework_candidates == ("spl",)
+    assert report.framework_evidence == (
+        KeilEvidence("define", "USE_STDPERIPH_DRIVER", "spl"),
+    )
+    assert [w.code for w in report.warnings].count("KEIL_FRAMEWORK_SELECTION_REQUIRED") == 1
+
+
+def test_framework_spl_source_set_does_not_override_qualified_hal_evidence(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "root"
+    specs = (("Vendor/misc.c", False), ("Vendor/stm32f4xx_gpio.c", False))
+    simple_project(
+        root,
+        defines="USE_STDPERIPH_DRIVER,USE_HAL_DRIVER",
+        include_paths="Drivers/STM32F4xx_HAL_Driver/Inc",
+        sources={path: "int source(void) { return 0; }\n" for path, _ in specs},
+        extra={
+            "groups": [{"name": "Drivers", "files": _source_group(specs)}],
+        },
+    )
+    (root / "Drivers/STM32F4xx_HAL_Driver/Inc").mkdir(parents=True)
+
+    report = inspect_keil(root)
+
+    assert report.framework is None
+    assert report.framework_candidates == ("hal", "spl")
+    assert "KEIL_FRAMEWORK_SELECTION_REQUIRED" in [w.code for w in report.warnings]
+
+
 def test_framework_spl_two_categories(tmp_path: Path) -> None:
     root = tmp_path / "root"
     simple_project(

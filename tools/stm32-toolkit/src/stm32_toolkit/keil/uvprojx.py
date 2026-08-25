@@ -701,6 +701,13 @@ def _classify_path(abs_path: Path) -> str:
 # ---------------------------------------------------------------------------
 
 
+_SPL_PERIPHERAL_SOURCE_RE = re.compile(
+    r"^stm32[a-z0-9]+xx_[a-z0-9]+\.c$", re.IGNORECASE
+)
+_SPL_INTERRUPT_SOURCE_RE = re.compile(r"^stm32[a-z0-9]+xx_it\.c$", re.IGNORECASE)
+_SPL_SYSTEM_SOURCE_RE = re.compile(r"^system_stm32[a-z0-9]+xx\.c$", re.IGNORECASE)
+
+
 def _framework_evidence(
     defines: tuple[str, ...],
     include_paths: tuple[str, ...],
@@ -725,6 +732,23 @@ def _framework_evidence(
             add("define", define, "ll")
     for include in scanned_includes:
         add(include.category, include.value, include.framework)
+
+    included_basenames = {
+        source.path.replace("\\", "/").rsplit("/", 1)[-1]
+        for source in sources
+        if source.included
+    }
+    has_misc_source = any(basename.lower() == "misc.c" for basename in included_basenames)
+    has_peripheral_source = any(
+        _SPL_PERIPHERAL_SOURCE_RE.fullmatch(basename)
+        and "_hal_" not in basename.lower()
+        and "_ll_" not in basename.lower()
+        and _SPL_INTERRUPT_SOURCE_RE.fullmatch(basename) is None
+        and _SPL_SYSTEM_SOURCE_RE.fullmatch(basename) is None
+        for basename in included_basenames
+    )
+    if has_misc_source and has_peripheral_source:
+        add("source", "standard-peripheral-source-set", "spl")
 
     all_paths = list(include_paths) + [source.path for source in sources]
     has_hal_driver_path = False

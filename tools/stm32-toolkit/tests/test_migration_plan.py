@@ -1426,6 +1426,39 @@ def test_framework_selection_required_blocker_and_no_manifest(tmp_path):
     assert not any(patch.path == ".stm32-project.json" for patch in plan.patches)
 
 
+def test_canonical_spl_source_set_removes_only_framework_blocker(tmp_path):
+    groups = (
+        ("Main", (("main.c", "1", "Main/main.c"),)),
+        (
+            "Drivers",
+            (
+                ("misc.c", "1", "Vendor/misc.c"),
+                ("stm32f4xx_gpio.c", "1", "Vendor/stm32f4xx_gpio.c"),
+            ),
+        ),
+    )
+    repo = build_repo(
+        tmp_path,
+        files={
+            "Main/main.c": "int main(void) { return 0; }\n",
+            "Vendor/misc.c": "int misc(void) { return 0; }\n",
+            "Vendor/stm32f4xx_gpio.c": "int gpio(void) { return 0; }\n",
+        },
+        uvprojx_kwargs={
+            "defines": "USE_STDPERIPH_DRIVER",
+            "includes": "Main;Vendor",
+            "groups": groups,
+        },
+    )
+
+    inspection = fixture_inspection(repo)
+    plan = plan_keil_conversion(repo, inspection)
+
+    assert inspection.framework == "spl"
+    assert not any(b.code == "MIGRATION_FRAMEWORK_SELECTION_REQUIRED" for b in plan.blockers)
+    assert any(patch.path == ".stm32-project.json" for patch in plan.patches)
+
+
 def test_memory_incomplete_blocker(tmp_path):
     cpu = 'IROM(0x8000000,0x100000) CPUTYPE("Cortex-M4")'
     repo = build_repo(
