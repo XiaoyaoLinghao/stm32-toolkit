@@ -62,9 +62,11 @@ This would evade the product behavior being accepted, break plan/digest guarante
 Framework selection keeps the existing two-distinct-evidence-category rule. A new generic `source` evidence item for SPL is emitted only when the included source set contains both:
 
 - a source whose case-insensitive basename is `misc.c`; and
-- a source whose case-insensitive basename matches a canonical bare Standard Peripheral Library peripheral unit `stm32<family>xx_<peripheral>.c`, excluding names containing `_hal_` or `_ll_` and excluding `stm32<family>xx_it.c` and `system_stm32<family>xx.c`.
+- an ASCII-only source basename whose lowercase form is exactly one of these 29 real STM32F4 Standard Peripheral Library units: `stm32f4xx_adc.c`, `stm32f4xx_can.c`, `stm32f4xx_crc.c`, `stm32f4xx_cryp.c`, `stm32f4xx_dac.c`, `stm32f4xx_dbgmcu.c`, `stm32f4xx_dcmi.c`, `stm32f4xx_dma.c`, `stm32f4xx_dma2d.c`, `stm32f4xx_exti.c`, `stm32f4xx_flash.c`, `stm32f4xx_fmc.c`, `stm32f4xx_fsmc.c`, `stm32f4xx_gpio.c`, `stm32f4xx_hash.c`, `stm32f4xx_i2c.c`, `stm32f4xx_iwdg.c`, `stm32f4xx_ltdc.c`, `stm32f4xx_pwr.c`, `stm32f4xx_rcc.c`, `stm32f4xx_rng.c`, `stm32f4xx_rtc.c`, `stm32f4xx_sai.c`, `stm32f4xx_sdio.c`, `stm32f4xx_spi.c`, `stm32f4xx_syscfg.c`, `stm32f4xx_tim.c`, `stm32f4xx_usart.c`, or `stm32f4xx_wwdg.c`.
 
 This `source` evidence plus the existing `define=USE_STDPERIPH_DRIVER` evidence selects SPL for the real project. The rule is based on source-set semantics, not directory or project names. HAL/LL evidence, mixed-framework evidence, a lone define, a lone source signature, or ambiguous qualified frameworks must continue to fail closed.
+
+The matcher must not form a family/peripheral cross-product and must not use Unicode-aware case folding. Unknown families, nonexistent family/peripheral combinations, interrupt/system units, HAL/LL units, and Unicode-confusable basenames remain non-evidence.
 
 ### 4.3 Tests and release impact
 
@@ -126,6 +128,18 @@ Existing stable public error envelopes and plan drift rejection remain unchanged
 - corrected inspect/conversion/configuration/build and memory-comparison records
 
 No evidence may label fixture, static, replay, or no-hardware results as physical PASS. Temporary candidate worktrees, proposal scratch, basetemps, and build intermediates are removed only after required formal evidence is preserved. The campaign retains the old and replacement candidate identities needed to explain evidence invalidation; there is still one active managed runtime and one public Toolkit behavior path.
+
+### 7.1 One-time closed-input recovery after classified absence
+
+Task 3 preflight proved the retained 64-wheel runtime wheelhouse does not contain the two previously pinned build-backend wheels. A read-only search of the approved local cache roots also found no copy. This is an `ENVIRONMENT` blocker, not a product failure, and permits exactly one bounded recovery before Task 3 resumes:
+
+- acquire only `setuptools-84.0.0-py3-none-any.whl` from `https://files.pythonhosted.org/packages/95/9c/c510029fc6ef33a6275cd2c5d3cecd6613dfd6aa401d57c54f1c18852ccf/setuptools-84.0.0-py3-none-any.whl` and `wheel-0.48.0-py3-none-any.whl` from `https://files.pythonhosted.org/packages/2e/29/69cfbb602cd91690c55d38ba9fe53e6a7e76a6fa647bf38f19c138d25449/wheel-0.48.0-py3-none-any.whl`, the exact official artifact URLs published by PyPI;
+- write them only into a new run-scoped recovery directory under campaign `scratch`, with redirects disabled and no package resolver, index search, dependency resolution, installation, or alternate source;
+- require respectively `(size=818216, sha256=51a52592b3b99e102b609654876bd65f19f999935166d1352678931132b0c670)` and `(size=33320, sha256=3217dcc807155e45eb462d7ef2431f5ddda0d7273b700d05a67b271ceb1287ab)` before either file may enter the closed build wheelhouse;
+- record source URL, TLS request result, filename, size, SHA-256, acquisition time, and the prior local-cache miss in formal evidence;
+- if either request, filename, size, or digest differs, remove the two exact run-scoped downloads and stop without build/runtime/project/hardware mutation.
+
+This recovery does not expand supported dependencies or authorize general network acquisition. After verified copy-in, the build still consumes the same frozen 66-wheel set and all original member/trust-anchor equality gates apply. The recovery directory is removed after evidence is preserved.
 
 ## 8. Acceptance criteria
 
