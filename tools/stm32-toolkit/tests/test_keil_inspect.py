@@ -163,23 +163,21 @@ def project_xml(*targets: dict, xmlns: bool = True) -> str:
         )
         if "float_abi" in target:
             parts.append(f"          <uFloatingPoint>{target['float_abi']}</uFloatingPoint>")
-        if target.get("output_in_common"):
-            parts.extend(
-                [
-                    f"          <OutputDirectory>{target.get('out_dir', DEFAULT_OUT_DIR)}</OutputDirectory>",
-                    f"          <OutputName>{target.get('out_name', 'firmware')}</OutputName>",
-                ]
+        if not target.get("omit_common_output_directory"):
+            parts.append(
+                f"          <OutputDirectory>{target.get('out_dir', DEFAULT_OUT_DIR)}</OutputDirectory>"
             )
-            if target.get("listing_path") is not None:
-                parts.append(f"          <ListingPath>{target['listing_path']}</ListingPath>")
+        if not target.get("omit_common_output_name"):
+            parts.append(f"          <OutputName>{target.get('out_name', 'firmware')}</OutputName>")
+        if not target.get("omit_common_listing_path") and target.get("listing_path") is not None:
+            parts.append(f"          <ListingPath>{target['listing_path']}</ListingPath>")
         parts.append("        </TargetCommonOption>")
-        if not target.get("output_in_common"):
-            parts.extend(
-                [
-                    f"        <OutputDirectory>{target.get('out_dir', DEFAULT_OUT_DIR)}</OutputDirectory>",
-                    f"        <OutputName>{target.get('out_name', 'firmware')}</OutputName>",
-                ]
-            )
+        if "outer_out_dir" in target:
+            parts.append(f"        <OutputDirectory>{target['outer_out_dir']}</OutputDirectory>")
+        if "outer_out_name" in target:
+            parts.append(f"        <OutputName>{target['outer_out_name']}</OutputName>")
+        if "outer_listing_path" in target:
+            parts.append(f"        <ListingPath>{target['outer_listing_path']}</ListingPath>")
         parts.extend(
             [
                 "        <TargetArmAds>",
@@ -299,7 +297,6 @@ def test_real_keil_output_paths_are_read_from_target_common(tmp_path: Path) -> N
     xml = project_xml(
         {
             "name": "Target 1",
-            "output_in_common": True,
             "out_dir": ".\\OBJ\\",
             "out_name": "LWIP",
             "listing_path": ".\\LIST\\",
@@ -317,12 +314,99 @@ def test_real_keil_output_paths_are_read_from_target_common(tmp_path: Path) -> N
     assert inspection.output.map_file == "LIST/LWIP.map"
 
 
+def test_target_option_output_fields_are_ignored(tmp_path: Path) -> None:
+    root = tmp_path / "outer-decoys"
+    xml = project_xml(
+        {
+            "name": "Target 1",
+            "out_dir": ".\\OBJ\\",
+            "out_name": "LWIP",
+            "listing_path": ".\\LIST\\",
+            "outer_out_dir": "..\\..\\escape\\",
+            "outer_out_name": "FORGED",
+            "outer_listing_path": "C:\\Windows\\system32\\",
+            "groups": [{"name": "G", "files": [{"name": "main.c", "path": ".\\Src\\main.c"}]}],
+        }
+    )
+    write_project(root, xml, {".\\Src\\main.c": "int main(void) { return 0; }\n"})
+
+    inspection = inspect_keil(root)
+
+    assert inspection.output.object_directory == "OBJ"
+    assert inspection.output.listing_directory == "LIST"
+    assert inspection.output.output_name == "LWIP"
+    assert inspection.output.axf == "OBJ/LWIP.axf"
+    assert inspection.output.map_file == "LIST/LWIP.map"
+
+
+def test_missing_common_listing_ignores_outer_listing(tmp_path: Path) -> None:
+    root = tmp_path / "missing-common-listing"
+    xml = project_xml(
+        {
+            "name": "Target 1",
+            "out_dir": ".\\OBJ\\",
+            "out_name": "LWIP",
+            "omit_common_listing_path": True,
+            "outer_listing_path": "..\\..\\escape\\",
+            "groups": [{"name": "G", "files": [{"name": "main.c", "path": ".\\Src\\main.c"}]}],
+        }
+    )
+    write_project(root, xml, {".\\Src\\main.c": "int main(void) { return 0; }\n"})
+
+    inspection = inspect_keil(root)
+
+    assert inspection.output.listing_directory is None
+    assert inspection.output.map_file == "OBJ/LWIP.map"
+
+
+def test_missing_common_output_name_ignores_outer_name(tmp_path: Path) -> None:
+    root = tmp_path / "missing-common-name"
+    xml = project_xml(
+        {
+            "name": "Target 1",
+            "out_dir": ".\\OBJ\\",
+            "listing_path": ".\\LIST\\",
+            "omit_common_output_name": True,
+            "outer_out_name": "FORGED",
+            "groups": [{"name": "G", "files": [{"name": "main.c", "path": ".\\Src\\main.c"}]}],
+        }
+    )
+    write_project(root, xml, {".\\Src\\main.c": "int main(void) { return 0; }\n"})
+
+    inspection = inspect_keil(root)
+
+    assert inspection.output.output_name is None
+    assert inspection.output.axf is None
+    assert inspection.output.map_file is None
+
+
+def test_missing_common_output_directory_ignores_outer_directory(tmp_path: Path) -> None:
+    root = tmp_path / "missing-common-directory"
+    xml = project_xml(
+        {
+            "name": "Target 1",
+            "out_name": "LWIP",
+            "listing_path": ".\\LIST\\",
+            "omit_common_output_directory": True,
+            "outer_out_dir": "..\\..\\escape\\",
+            "groups": [{"name": "G", "files": [{"name": "main.c", "path": ".\\Src\\main.c"}]}],
+        }
+    )
+    write_project(root, xml, {".\\Src\\main.c": "int main(void) { return 0; }\n"})
+
+    inspection = inspect_keil(root)
+
+    assert inspection.output.object_directory is None
+    assert inspection.output.listing_directory == "LIST"
+    assert inspection.output.axf is None
+    assert inspection.output.map_file == "LIST/LWIP.map"
+
+
 def test_real_keil_map_path_falls_back_to_object_directory(tmp_path: Path) -> None:
     root = tmp_path / "map-fallback"
     xml = project_xml(
         {
             "name": "Target 1",
-            "output_in_common": True,
             "out_dir": ".\\OBJ\\",
             "out_name": "LWIP",
             "groups": [{"name": "G", "files": [{"name": "main.c", "path": ".\\Src\\main.c"}]}],
@@ -350,7 +434,6 @@ def test_real_keil_output_paths_keep_containment(
     root = tmp_path / field / target_key / value.replace("\\", "_").replace(":", "_")
     target = {
         "name": "Target 1",
-        "output_in_common": True,
         "out_dir": ".\\OBJ\\",
         "out_name": "LWIP",
         "listing_path": ".\\LIST\\",
@@ -394,7 +477,7 @@ def test_main_fixture_exact_extraction(keil_project: Path) -> None:
     assert output.listing_directory == "Listing"
     assert output.output_name == "legacy"
     assert output.axf == "Objects/legacy.axf"
-    assert output.map_file == "Objects/legacy.map"
+    assert output.map_file == "Listing/legacy.map"
     assert output.scatter_file == "Objects/legacy.sct"
 
     assert report.scoped_options == (
@@ -918,7 +1001,7 @@ def test_path_normalization_nested_and_mixed(keil_project: Path) -> None:
     nested = keil_project / "Nested"
     nested.mkdir()
     shutil.copyfile(keil_project / "legacy.uvprojx", nested / "legacy.uvprojx")
-    for name in ("Common", "Main", "Startup", "Objects"):
+    for name in ("Common", "Main", "Startup", "Objects", "Listing"):
         shutil.move(str(keil_project / name), str(nested / name))
     os.remove(keil_project / "legacy.uvprojx")
     report = inspect_keil(keil_project, uvprojx=keil_project / "Nested" / "legacy.uvprojx")
@@ -927,7 +1010,7 @@ def test_path_normalization_nested_and_mixed(keil_project: Path) -> None:
     assert report.include_paths == ("Nested/Common", "Nested/Main", "Nested/Startup")
     assert report.output.object_directory == "Nested/Objects"
     assert report.output.axf == "Nested/Objects/legacy.axf"
-    assert report.output.map_file == "Nested/Objects/legacy.map"
+    assert report.output.map_file == "Nested/Listing/legacy.map"
 
 
 def test_mixed_separators_normalized(tmp_path: Path) -> None:
@@ -1009,7 +1092,7 @@ def test_windows_style_paths_serialize_posix(keil_project: Path) -> None:
     nested = keil_project / "MDK-ARM"
     nested.mkdir()
     shutil.copyfile(keil_project / "legacy.uvprojx", nested / "legacy.uvprojx")
-    for name in ("Common", "Main", "Startup", "Objects"):
+    for name in ("Common", "Main", "Startup", "Objects", "Listing"):
         shutil.move(str(keil_project / name), str(nested / name))
     os.remove(keil_project / "legacy.uvprojx")
     report = inspect_keil(keil_project, uvprojx=keil_project / "MDK-ARM" / "legacy.uvprojx")
@@ -1031,7 +1114,7 @@ def test_windows_style_paths_serialize_posix(keil_project: Path) -> None:
     assert data["sources"][0]["path"] == "MDK-ARM/Common/common.c"
     assert data["include_paths"] == ["MDK-ARM/Common", "MDK-ARM/Main", "MDK-ARM/Startup"]
     assert data["output"]["axf"] == "MDK-ARM/Objects/legacy.axf"
-    assert data["output"]["map_file"] == "MDK-ARM/Objects/legacy.map"
+    assert data["output"]["map_file"] == "MDK-ARM/Listing/legacy.map"
     assert data["output"]["scatter_file"] == "MDK-ARM/Objects/legacy.sct"
     assert data["findings"][-1]["path"] == "MDK-ARM/Objects/legacy.sct"
     assert all(d["path"].startswith("MDK-ARM/") for d in data["inputs"])

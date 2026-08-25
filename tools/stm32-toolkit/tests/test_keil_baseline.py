@@ -216,7 +216,7 @@ def keil_project(tmp_path: Path) -> Path:
 
 @pytest.fixture
 def baseline_map(keil_project: Path) -> Path:
-    return keil_project / "Objects" / "legacy.map"
+    return keil_project / "Listing" / "legacy.map"
 
 
 def write_axf(keil_project: Path, data: bytes) -> Path:
@@ -349,8 +349,9 @@ def test_map_program_size_parsing(tmp_path: Path) -> None:
         '<?xml version="1.0" encoding="UTF-8" ?><Project>'
         "<Targets><Target><TargetName>T</TargetName><pCCUsed>5060750::V5::ARMCC</pCCUsed>"
         "<TargetOption><TargetCommonOption><Device>D</Device>"
-        '<Cpu>CPUTYPE("Cortex-M4")</Cpu></TargetCommonOption>'
+        '<Cpu>CPUTYPE("Cortex-M4")</Cpu>'
         "<OutputDirectory>.\\Objects\\</OutputDirectory><OutputName>firmware</OutputName>"
+        "</TargetCommonOption>"
         "<TargetArmAds><Cads><VariousControls/></Cads><LDads><VariousControls/></LDads></TargetArmAds>"
         "</TargetOption><Groups/></Target></Targets></Project>"
     )
@@ -364,12 +365,12 @@ def test_committed_fixture_map_only_baseline(keil_project: Path) -> None:
     inspection = inspect_keil(keil_project)
     baseline = capture_keil_baseline(keil_project, inspection)
     assert baseline.available is True
-    assert baseline.map_file.path == "Objects/legacy.map"
+    assert baseline.map_file.path == "Listing/legacy.map"
     assert baseline.map_file.available is True
     assert baseline.map_file.sha256 == hashlib.sha256(
-        (keil_project / "Objects" / "legacy.map").read_bytes()
+        (keil_project / "Listing" / "legacy.map").read_bytes()
     ).hexdigest()
-    assert baseline.map_file.size == (keil_project / "Objects" / "legacy.map").stat().st_size
+    assert baseline.map_file.size == (keil_project / "Listing" / "legacy.map").stat().st_size
     assert baseline.axf == KeilArtifactEvidence("Objects/legacy.axf", False, None, None)
     assert baseline.entry_point is None
     assert baseline.sections == ()
@@ -387,8 +388,9 @@ def test_missing_both_artifacts(tmp_path: Path) -> None:
         '<?xml version="1.0" encoding="UTF-8" ?><Project>'
         "<Targets><Target><TargetName>T</TargetName><pCCUsed>5060750::V5::ARMCC</pCCUsed>"
         "<TargetOption><TargetCommonOption><Device>D</Device>"
-        '<Cpu>CPUTYPE("Cortex-M4")</Cpu></TargetCommonOption>'
+        '<Cpu>CPUTYPE("Cortex-M4")</Cpu>'
         "<OutputDirectory>.\\Objects\\</OutputDirectory><OutputName>firmware</OutputName>"
+        "</TargetCommonOption>"
         "<TargetArmAds><Cads><VariousControls/></Cads><LDads><VariousControls/></LDads></TargetArmAds>"
         "</TargetOption><Groups><Group><GroupName>G</GroupName><Files><File><FileName>a.c</FileName>"
         "<FileType>1</FileType><FilePath>.\\Src\\a.c</FilePath></File></Files></Group></Groups>"
@@ -408,7 +410,7 @@ def test_missing_both_artifacts(tmp_path: Path) -> None:
 def test_axf_only_availability(keil_project: Path) -> None:
     elf = build_minimal_elf32()
     write_axf(keil_project, elf)
-    os.remove(keil_project / "Objects" / "legacy.map")
+    os.remove(keil_project / "Listing" / "legacy.map")
     inspection = inspect_keil(keil_project)
     baseline = capture_keil_baseline(keil_project, inspection)
     assert baseline.available is True
@@ -468,29 +470,29 @@ def test_axf_size_cap(keil_project: Path) -> None:
 
 
 def test_map_size_cap(keil_project: Path) -> None:
-    target = keil_project / "Objects" / "legacy.map"
+    target = keil_project / "Listing" / "legacy.map"
     with target.open("wb") as handle:
         handle.truncate(32 * 1024 * 1024 + 1)
     inspection = inspect_keil(keil_project)
     with pytest.raises(KeilInspectionError) as error:
         capture_keil_baseline(keil_project, inspection)
     assert error.value.code == "KEIL_MAP_INVALID"
-    assert error.value.details == {"path": "Objects/legacy.map", "rule": "size"}
+    assert error.value.details == {"path": "Listing/legacy.map", "rule": "size"}
 
 
 def test_map_missing_program_size(keil_project: Path) -> None:
-    (keil_project / "Objects" / "legacy.map").write_text(
+    (keil_project / "Listing" / "legacy.map").write_text(
         "Execution Region ER_IROM1 (Base: 0x08000000, Size: 0x100)\n", encoding="utf-8"
     )
     inspection = inspect_keil(keil_project)
     with pytest.raises(KeilInspectionError) as error:
         capture_keil_baseline(keil_project, inspection)
     assert error.value.code == "KEIL_MAP_INVALID"
-    assert error.value.details == {"path": "Objects/legacy.map", "rule": "programSize"}
+    assert error.value.details == {"path": "Listing/legacy.map", "rule": "programSize"}
 
 
 def test_map_conflicting_summaries(keil_project: Path) -> None:
-    (keil_project / "Objects" / "legacy.map").write_text(
+    (keil_project / "Listing" / "legacy.map").write_text(
         "Program Size: Code=1 RO-data=2 RW-data=3 ZI-data=4\n"
         "Program Size: Code=1 RO-data=2 RW-data=3 ZI-data=5\n",
         encoding="utf-8",
@@ -499,11 +501,11 @@ def test_map_conflicting_summaries(keil_project: Path) -> None:
     with pytest.raises(KeilInspectionError) as error:
         capture_keil_baseline(keil_project, inspection)
     assert error.value.code == "KEIL_MAP_INVALID"
-    assert error.value.details == {"path": "Objects/legacy.map", "rule": "conflict"}
+    assert error.value.details == {"path": "Listing/legacy.map", "rule": "conflict"}
 
 
 def test_map_duplicate_identical_summaries_accepted(keil_project: Path) -> None:
-    (keil_project / "Objects" / "legacy.map").write_text(
+    (keil_project / "Listing" / "legacy.map").write_text(
         "Program Size: Code=1 RO-data=2 RW-data=3 ZI-data=4\n"
         "Program Size: Code=1 RO-data=2 RW-data=3 ZI-data=4\n",
         encoding="utf-8",
@@ -514,7 +516,7 @@ def test_map_duplicate_identical_summaries_accepted(keil_project: Path) -> None:
 
 
 def test_map_overflow(keil_project: Path) -> None:
-    (keil_project / "Objects" / "legacy.map").write_text(
+    (keil_project / "Listing" / "legacy.map").write_text(
         "Program Size: Code=18446744073709551616 RO-data=0 RW-data=0 ZI-data=0\n",
         encoding="utf-8",
     )
@@ -522,16 +524,16 @@ def test_map_overflow(keil_project: Path) -> None:
     with pytest.raises(KeilInspectionError) as error:
         capture_keil_baseline(keil_project, inspection)
     assert error.value.code == "KEIL_MAP_INVALID"
-    assert error.value.details == {"path": "Objects/legacy.map", "rule": "overflow"}
+    assert error.value.details == {"path": "Listing/legacy.map", "rule": "overflow"}
 
 
 def test_map_invalid_encoding(keil_project: Path) -> None:
-    (keil_project / "Objects" / "legacy.map").write_bytes(b"Program Size:\xff\xfe Code=1\n")
+    (keil_project / "Listing" / "legacy.map").write_bytes(b"Program Size:\xff\xfe Code=1\n")
     inspection = inspect_keil(keil_project)
     with pytest.raises(KeilInspectionError) as error:
         capture_keil_baseline(keil_project, inspection)
     assert error.value.code == "KEIL_MAP_INVALID"
-    assert error.value.details == {"path": "Objects/legacy.map", "rule": "encoding"}
+    assert error.value.details == {"path": "Listing/legacy.map", "rule": "encoding"}
 
 
 def test_unreadable_artifact(keil_project: Path) -> None:
@@ -566,10 +568,10 @@ def test_artifact_in_root_redirect_accepted(keil_project: Path, redirect) -> Non
     redirect(keil_project / "Objects", real_dir)
     inspection = inspect_keil(keil_project)
     assert inspection.output.object_directory == "Objects-real"
-    assert inspection.output.map_file == "Objects-real/legacy.map"
+    assert inspection.output.map_file == "Listing/legacy.map"
     baseline = capture_keil_baseline(keil_project, inspection)
     assert baseline.map_file.available is True
-    assert baseline.map_file.path == "Objects-real/legacy.map"
+    assert baseline.map_file.path == "Listing/legacy.map"
     assert baseline.program_size == KeilProgramSize(8124, 720, 92, 16988, 8936, 17080)
 
 
