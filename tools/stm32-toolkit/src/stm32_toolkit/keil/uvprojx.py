@@ -701,79 +701,38 @@ def _classify_path(abs_path: Path) -> str:
 # ---------------------------------------------------------------------------
 
 
-_SPL_FAMILY_TOKENS = frozenset(
+_SPL_F4_PERIPHERAL_BASENAMES = frozenset(
     {
-        "c0",
-        "f0",
-        "f1",
-        "f2",
-        "f3",
-        "f4",
-        "f7",
-        "g0",
-        "g4",
-        "h5",
-        "h7",
-        "l0",
-        "l1",
-        "l4",
-        "l5",
-        "n6",
-        "u0",
-        "u5",
-        "w0",
-        "wb",
-        "wl",
+        "stm32f4xx_adc.c",
+        "stm32f4xx_can.c",
+        "stm32f4xx_crc.c",
+        "stm32f4xx_cryp.c",
+        "stm32f4xx_dac.c",
+        "stm32f4xx_dbgmcu.c",
+        "stm32f4xx_dcmi.c",
+        "stm32f4xx_dma.c",
+        "stm32f4xx_dma2d.c",
+        "stm32f4xx_exti.c",
+        "stm32f4xx_flash.c",
+        "stm32f4xx_fmc.c",
+        "stm32f4xx_fsmc.c",
+        "stm32f4xx_gpio.c",
+        "stm32f4xx_hash.c",
+        "stm32f4xx_i2c.c",
+        "stm32f4xx_iwdg.c",
+        "stm32f4xx_ltdc.c",
+        "stm32f4xx_pwr.c",
+        "stm32f4xx_rcc.c",
+        "stm32f4xx_rng.c",
+        "stm32f4xx_rtc.c",
+        "stm32f4xx_sai.c",
+        "stm32f4xx_sdio.c",
+        "stm32f4xx_spi.c",
+        "stm32f4xx_syscfg.c",
+        "stm32f4xx_tim.c",
+        "stm32f4xx_usart.c",
+        "stm32f4xx_wwdg.c",
     }
-)
-_SPL_PERIPHERAL_TOKENS = frozenset(
-    {
-        "adc",
-        "can",
-        "cec",
-        "comp",
-        "crc",
-        "crs",
-        "dac",
-        "dbgmcu",
-        "dcmi",
-        "dfsdm",
-        "dma",
-        "dma2d",
-        "dsi",
-        "eth",
-        "exti",
-        "flash",
-        "fmc",
-        "fmpi2c",
-        "fsmc",
-        "gpio",
-        "hash",
-        "i2c",
-        "iwdg",
-        "lptim",
-        "ltdc",
-        "opamp",
-        "pwr",
-        "qspi",
-        "rcc",
-        "rng",
-        "rtc",
-        "sai",
-        "sdio",
-        "sdmmc",
-        "spi",
-        "syscfg",
-        "tim",
-        "tsc",
-        "usart",
-        "wwdg",
-    }
-)
-_SPL_PERIPHERAL_SOURCE_RE = re.compile(
-    rf"^stm32(?P<family>{'|'.join(sorted(_SPL_FAMILY_TOKENS))})xx_"
-    rf"(?P<peripheral>{'|'.join(sorted(_SPL_PERIPHERAL_TOKENS))})\.c$",
-    re.IGNORECASE,
 )
 
 
@@ -809,7 +768,7 @@ def _framework_evidence(
     }
     has_misc_source = any(basename.lower() == "misc.c" for basename in included_basenames)
     has_peripheral_source = any(
-        _SPL_PERIPHERAL_SOURCE_RE.fullmatch(basename)
+        basename.isascii() and basename.lower() in _SPL_F4_PERIPHERAL_BASENAMES
         for basename in included_basenames
     )
     if has_misc_source and has_peripheral_source:

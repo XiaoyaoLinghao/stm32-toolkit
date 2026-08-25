@@ -1588,6 +1588,22 @@ def test_framework_spl_canonical_source_set_selects_spl(tmp_path: Path) -> None:
             (("Vendor/misc.c", False), ("Vendor/stm32f4xx_notaperipheral.c", False)),
             id="unknown-peripheral-token",
         ),
+        pytest.param(
+            (("Vendor/misc.c", False), ("Vendor/stm32c0xx_eth.c", False)),
+            id="invalid-family-peripheral-pair-c0-eth",
+        ),
+        pytest.param(
+            (("Vendor/misc.c", False), ("Vendor/stm32n6xx_fsmc.c", False)),
+            id="invalid-family-peripheral-pair-n6-fsmc",
+        ),
+        pytest.param(
+            (("Vendor/misc.c", False), ("Vendor/stm32w0xx_dcmi.c", False)),
+            id="invalid-family-peripheral-pair-w0-dcmi",
+        ),
+        pytest.param(
+            (("Vendor/misc.c", False), ("Vendor/stm32f4xx_uſart.c", False)),
+            id="unicode-confusable-peripheral",
+        ),
     ],
 )
 def test_framework_spl_source_set_fails_closed_for_weak_or_excluded_sources(
