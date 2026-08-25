@@ -153,7 +153,20 @@ The source-of-truth hash is not relaxed. To distinguish a reproducible source/en
 - if any gate fails or the digest again differs, preserve minimum diagnostic evidence, remove the exact scratch download, and stop before candidate/runtime/project/hardware mutation;
 - if every gate passes, classify the first response as a transient/environmental transport-integrity failure, combine the verified diagnostic wheel with a fresh exact recovery of the already-passing setuptools artifact under the same CPython transport and gates, then admit only those two verified bytes to the temporary 66-wheel closed set and resume Task 3.
 
-No third request, mirror, resolver, index search, alternate version, hash update, or acceptance of mismatched bytes is authorized.
+Section 7.2 itself authorizes no third request, mirror, resolver, index search, alternate version, hash update, or acceptance of mismatched bytes. Section 7.3 separately supersedes only the request-count boundary for its one final evidence-only diagnosis; every other prohibition remains in force.
+
+### 7.3 Final multi-digest source-identity diagnosis
+
+The independent OpenSSL retry reproduced the same valid 33320-byte ZIP and the same SHA mismatch. Its response ETag equals PyPI's published MD5 `75e4bbe15fefadbb91258c5e79b38aa3`, while the exact official artifact URL path embeds PyPI's published BLAKE2b-256 `2e2969cfbb602cd91690c55d38ba9fe53e6a7e76a6fa647bf38f19c138d25449`. Response claims are not sufficient to change a trust anchor, so one final evidence-only request is permitted to hash the actual bytes under both independent algorithms.
+
+Use the same CPython 3.12.10/OpenSSL direct request, exact URL, redirect rejection, response/size/ZIP gates, and new exact run-scoped scratch root. Retain the file until Sol reconciles these actual-byte digests:
+
+- SHA-256 against both the published value and the two prior observed values;
+- BLAKE2b-256 against the exact official URL path and PyPI JSON;
+- MD5 against the ETag and PyPI JSON, as corroborating legacy evidence only;
+- ZIP member list, per-member CRC test, and wheel `RECORD` self-consistency.
+
+No candidate/runtime/project/hardware action follows this request automatically. Luna returns the retained file and formal evidence to Sol. Sol may authorize a corrected SHA-256 anchor only if the actual bytes reproduce the prior observed SHA, match the official BLAKE2b-256 exactly, match the official MD5 exactly, pass all archive/RECORD checks, and the response identity/status/length gates remain exact. BLAKE2b is the independent strong identity anchor; MD5 alone can never authorize the correction. Any other result removes the exact scratch file after minimum evidence is preserved and blocks VS10-A. No further request for this wheel is allowed.
 
 ## 8. Acceptance criteria
 
