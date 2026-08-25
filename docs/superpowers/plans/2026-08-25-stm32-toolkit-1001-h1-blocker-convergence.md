@@ -107,6 +107,44 @@ Retain `_normalize_keil_path` and all existing containment behavior.
 - [ ] **Step 9: Rerun unchanged-P0 inspect/dry-run.** Require baseline paths/hashes for `Project/OBJ/LWIP.axf` and `Project/LIST/LWIP.map`, `framework=spl`, and exactly 37 remaining blockers: the frozen 36 encodings plus one ARMCC assembly. Any different set stops.
 - [ ] **Step 10: Preserve evidence and clean.** Remove only the exact detached build worktree, wheelhouse, extraction diagnostics, and basetemps after recording hashes. Retain old/new candidate lineage and the active extracted Toolkit root. Write `task-6r-candidate-report.md`; do not touch project P0.
 
+### Task 2b: Parse ARM linker image-component program sizes
+
+**Files:**
+- Modify: `tools/stm32-toolkit/src/stm32_toolkit/keil/baseline.py`.
+- Modify: `tools/stm32-toolkit/tests/test_keil_baseline.py`.
+- Modify only if public parity needs an explicit regression: existing Keil inspect/workflow/CLI/MCP tests.
+- Create: SDD `task-2b-report.md`.
+
+**Interfaces:**
+- Consumes: contained UTF-8 MAP bytes and the existing `KeilProgramSize`/`KEIL_MAP_INVALID` contract.
+- Produces: the same `KeilProgramSize` type from either the existing `Program Size` line or the design's exact ARM linker component-totals section.
+
+- [ ] **Step 1: Add the real-format RED test.** Use a minimal generic MAP fixture with exact component header, six-column `Grand Totals` row `62772 5540 1004 1576 406440 534601`, `Total RO Size 63776`, and `Total RW Size 408016`. Assert Code/RO/RW/ZI `62772/1004/1576/406440` and derived ROM/RAM `65352/408016`. Run only the new node with exact basetemp; base must fail with `programSize`.
+- [ ] **Step 2: Add fail-closed RED cases.** Cover a totals row without the exact section/header, five or seven columns, multiple totals, uint64 overflow, missing RO/RW cross-checks, incorrect RO/RW cross-checks, and conflicting classic/component tuples. Preserve existing classic `Program Size` tests unchanged.
+- [ ] **Step 3: Implement the minimal fallback.** Parse ASCII decimal values only inside the bounded exact component section. Map columns 1/3/4/5 to Code/RO/RW/ZI, validate columns 2/6 but do not publish them, require the two arithmetic cross-checks, and reuse stable `KEIL_MAP_INVALID` with explicit bounded `rule` values. Do not inspect project/path/object names or add a public field.
+- [ ] **Step 4: Run focused GREEN and affected parity.** Run all `test_keil_baseline.py`, focused Keil inspect/migration/workflow/CLI/MCP baseline nodes, `git diff --check`, and a direct read-only parse of the copied P0 MAP fixture only if the fixture is copied into an exact basetemp. Remove exact basetemps after evidence.
+- [ ] **Step 5: Commit and report.** Record accepted base `171a46060225479a6031c2499cbb6298e4b83d6a`, code head before report, RED/GREEN counts, changed paths, cleanup, and no candidate/runtime/project/hardware/remote action. Commit only the bounded product/tests as `fix(vs10a): parse ARM linker component totals`.
+- [ ] **Step 6: Stop for complete Sol review.** Sol reviews the complete `12d0d3be1f59a5ed44b84a1244575cb853b97173..Task2bHead` product diff in a clean exact-head worktree, reruns only focused affected checks, and returns one verdict. Task 3b cannot begin before `ACCEPTED`.
+
+### Task 3b: Rebuild the map-fix candidate and close unchanged-P0 inspect
+
+**Files:**
+- Create: campaign `runtime/mapfix-candidate/` and `runtime/mapfix-candidate-extracted/stm32-toolkit-0.9.0/`.
+- Replace: campaign `data/runtime/` only through exact retirement plus fresh Bootstrap after candidate acceptance.
+- Create: map-fix backend recovery/build/verify/runtime/inspect/dry-run evidence and final `task-6r-mapfix-report.md`.
+
+**Interfaces:**
+- Consumes: independently accepted Task 2b head, current `171a4606...` candidate/runtime lineage, frozen 64 runtime wheels, and the exact two backend identities in design Section 7.5.
+- Produces: one verified map-fix candidate, one active matching runtime, and unchanged-P0 public evidence with real baseline/SPL/exact 37 blockers.
+
+- [ ] **Step 1: Freeze invalidation and recovery preconditions.** Record accepted Task 2b CodeHead, current candidate/runtime state/manifests/hashes, P0/head/tree/status/no remote, empty scratch, and exact official URLs/filenames/sizes/digests. Make exactly one CPython/OpenSSL direct request per backend into a new exact scratch root, reject redirects, and require the corrected wheel SHA+BLAKE2b plus setuptools SHA. No other network operation is permitted.
+- [ ] **Step 2: Form and verify the temporary 66-wheel set.** Copy the retained 64 runtime wheels plus only the two verified backends; require exact count, closed filename/hash manifest, zero missing/extra/mismatch/reparse. Preserve acquisition/member evidence.
+- [ ] **Step 3: Build from a canonical CRLF detached head.** Create one clean detached `core.autocrlf=true` worktree at the exact Task 2b CodeHead. Require 117 Toolkit and 25 Monitor source/wheel member equality, changed `baseline.py` equality, source archive equality, and utility/policy trust anchors before invoking the default builder into `runtime/mapfix-candidate`.
+- [ ] **Step 4: Verify and extract the candidate.** Require exit `0`, 13 top files, 12/12 checksums, collision-safe two-root extraction, byte-equal duplicated release trees, shipped `verify-bundle status=ok`, exact sourceCommit/manifest/utility/policy, 64 runtime wheels, required release assets, product bindings, 48 MCP tools, and 8 Skills.
+- [ ] **Step 5: Fresh-replace the managed runtime.** Preserve current `171a4606...` runtime state/manifest/package hashes and no-process proof. Resolve/check/remove only exact campaign `data/runtime`, then Bootstrap the map-fix candidate with explicit ToolkitRoot/DataRoot/ProjectRoot. Require one 0.9.0 runtime, generation 1, exact new sourceCommit/manifest, CPython 3.12.10 isolated imports, doctor `ok=true`, 8 Skills, 48 MCP tools, no staging/second runtime, and unchanged P0.
+- [ ] **Step 6: Run unchanged-P0 public inspect and dry-run.** Preserve before/after P0 and historical hashes. Require AXF `Project/OBJ/LWIP.axf` SHA-256 `65f5b98c970befbea2c7fd529f54a51438b3c635d794e20519d284c33976c225`, MAP `Project/LIST/LWIP.map` SHA-256 `6fca9fc30bd964f81da0c2417d46fe6930f6317ce96ee30d63fbf2981e8bbe9f`, design Section 4.4 exact program sizes, F429ZG, SPL from define+source evidence, and exactly 37 blockers: the frozen 36 encodings plus one ARMCC assembly, with no framework/other blocker.
+- [ ] **Step 7: Clean, report, and stop for Sol review.** Remove only exact detached worktree, acquisition/wheelhouse/source-binding roots and disposable diagnostics after evidence. Retain all candidate/runtime lineages and formal evidence; scratch ends empty, Toolkit/P0 clean, no hardware/remote. Sol reconciles Task 2b product diff and all Task 3b evidence before Task 4.
+
 ### Task 4: Propose and authorize the exact project portability correction
 
 **Files:**
