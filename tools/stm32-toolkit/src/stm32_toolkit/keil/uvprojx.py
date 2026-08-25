@@ -701,11 +701,80 @@ def _classify_path(abs_path: Path) -> str:
 # ---------------------------------------------------------------------------
 
 
-_SPL_PERIPHERAL_SOURCE_RE = re.compile(
-    r"^stm32[a-z0-9]+xx_[a-z0-9]+\.c$", re.IGNORECASE
+_SPL_FAMILY_TOKENS = frozenset(
+    {
+        "c0",
+        "f0",
+        "f1",
+        "f2",
+        "f3",
+        "f4",
+        "f7",
+        "g0",
+        "g4",
+        "h5",
+        "h7",
+        "l0",
+        "l1",
+        "l4",
+        "l5",
+        "n6",
+        "u0",
+        "u5",
+        "w0",
+        "wb",
+        "wl",
+    }
 )
-_SPL_INTERRUPT_SOURCE_RE = re.compile(r"^stm32[a-z0-9]+xx_it\.c$", re.IGNORECASE)
-_SPL_SYSTEM_SOURCE_RE = re.compile(r"^system_stm32[a-z0-9]+xx\.c$", re.IGNORECASE)
+_SPL_PERIPHERAL_TOKENS = frozenset(
+    {
+        "adc",
+        "can",
+        "cec",
+        "comp",
+        "crc",
+        "crs",
+        "dac",
+        "dbgmcu",
+        "dcmi",
+        "dfsdm",
+        "dma",
+        "dma2d",
+        "dsi",
+        "eth",
+        "exti",
+        "flash",
+        "fmc",
+        "fmpi2c",
+        "fsmc",
+        "gpio",
+        "hash",
+        "i2c",
+        "iwdg",
+        "lptim",
+        "ltdc",
+        "opamp",
+        "pwr",
+        "qspi",
+        "rcc",
+        "rng",
+        "rtc",
+        "sai",
+        "sdio",
+        "sdmmc",
+        "spi",
+        "syscfg",
+        "tim",
+        "tsc",
+        "usart",
+        "wwdg",
+    }
+)
+_SPL_PERIPHERAL_SOURCE_RE = re.compile(
+    rf"^stm32(?P<family>{'|'.join(sorted(_SPL_FAMILY_TOKENS))})xx_"
+    rf"(?P<peripheral>{'|'.join(sorted(_SPL_PERIPHERAL_TOKENS))})\.c$",
+    re.IGNORECASE,
+)
 
 
 def _framework_evidence(
@@ -741,10 +810,6 @@ def _framework_evidence(
     has_misc_source = any(basename.lower() == "misc.c" for basename in included_basenames)
     has_peripheral_source = any(
         _SPL_PERIPHERAL_SOURCE_RE.fullmatch(basename)
-        and "_hal_" not in basename.lower()
-        and "_ll_" not in basename.lower()
-        and _SPL_INTERRUPT_SOURCE_RE.fullmatch(basename) is None
-        and _SPL_SYSTEM_SOURCE_RE.fullmatch(basename) is None
         for basename in included_basenames
     )
     if has_misc_source and has_peripheral_source:

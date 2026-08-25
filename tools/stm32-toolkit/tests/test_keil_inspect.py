@@ -1569,6 +1569,25 @@ def test_framework_spl_canonical_source_set_selects_spl(tmp_path: Path) -> None:
             (("Vendor/misc.c", False), ("Vendor/stm32f4xx_gpio.c", True)),
             id="excluded-peripheral-source",
         ),
+        pytest.param(
+            (("Vendor/misc.c", False), ("Vendor/stm32f4xx_hal.c", False)),
+            id="hal-core-unit",
+        ),
+        pytest.param(
+            (
+                ("Vendor/misc.c", False),
+                ("Vendor/stm32notafamilyxx_notaperipheral.c", False),
+            ),
+            id="unknown-family-and-peripheral",
+        ),
+        pytest.param(
+            (("Vendor/misc.c", False), ("Vendor/stm32f4xxxx_gpio.c", False)),
+            id="malformed-family-token",
+        ),
+        pytest.param(
+            (("Vendor/misc.c", False), ("Vendor/stm32f4xx_notaperipheral.c", False)),
+            id="unknown-peripheral-token",
+        ),
     ],
 )
 def test_framework_spl_source_set_fails_closed_for_weak_or_excluded_sources(
