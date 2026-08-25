@@ -42,7 +42,7 @@ _PROGRAM_SIZE_RE = re.compile(
 _COMPONENT_SECTION_RE = re.compile(r"^[ \t]*Image component sizes[ \t]*$")
 _COMPONENT_HEADER_RE = re.compile(
     r"^[ \t]*Code[ \t]+\(inc\. data\)[ \t]+RO[ \t]+Data[ \t]+RW[ \t]+Data"
-    r"[ \t]+ZI[ \t]+Data[ \t]+Debug(?:[ \t]+Object[ \t]+Name)?[ \t]*$"
+    r"[ \t]+ZI[ \t]+Data[ \t]+Debug[ \t]*$"
 )
 _COMPONENT_RO_SIZE_RE = re.compile(
     r"^[ \t]*Total[ \t]+RO[ \t]+Size(?:[ \t]+\([^\r\n]*\))?[ \t]+([0-9]+)"
@@ -55,6 +55,7 @@ _COMPONENT_RW_SIZE_RE = re.compile(
     re.MULTILINE,
 )
 _MAX_UINT64 = 0xFFFFFFFFFFFFFFFF
+_MAX_UINT64_TEXT = str(_MAX_UINT64)
 
 
 def _raise(code: str, message: str, details: dict[str, object]) -> KeilInspectionError:
@@ -206,6 +207,19 @@ def _parse_axf(
         ) from error
 
 
+def _parse_component_uint64(value: str, relative: str) -> int:
+    normalized = value.lstrip("0") or "0"
+    if len(normalized) > len(_MAX_UINT64_TEXT) or (
+        len(normalized) == len(_MAX_UINT64_TEXT) and normalized > _MAX_UINT64_TEXT
+    ):
+        raise _raise(
+            "KEIL_MAP_INVALID",
+            "map component value overflows unsigned 64-bit",
+            {"path": relative, "rule": "overflow"},
+        )
+    return int(normalized)
+
+
 def _parse_component_summary(text: str, relative: str) -> tuple[int, int, int, int] | None:
     lines = text.splitlines()
     section_indices = [
@@ -235,18 +249,24 @@ def _parse_component_summary(text: str, relative: str) -> tuple[int, int, int, i
             "map component totals require an exact header",
             {"path": relative, "rule": "componentHeader"},
         )
-    total_rows = [
-        line.strip()
-        for line in lines[header_indices[0] + 1 :]
+    if len(header_indices) != 1:
+        raise _raise(
+            "KEIL_MAP_INVALID",
+            "map component totals require exactly one exact header",
+            {"path": relative, "rule": "componentHeader"},
+        )
+    total_indices = [
+        index
+        for index, line in enumerate(lines[section_index + 1 :], start=section_index + 1)
         if line.strip().endswith("Grand Totals")
     ]
-    if not total_rows or len(total_rows) != 1:
+    if not total_indices or len(total_indices) != 1 or total_indices[0] <= header_indices[0]:
         raise _raise(
             "KEIL_MAP_INVALID",
             "map component totals require exactly one Grand Totals row",
             {"path": relative, "rule": "componentTotals"},
         )
-    fields = total_rows[0].split()
+    fields = lines[total_indices[0]].strip().split()
     if len(fields) < 2 or fields[-2:] != ["Grand", "Totals"]:
         raise _raise(
             "KEIL_MAP_INVALID",
@@ -260,13 +280,7 @@ def _parse_component_summary(text: str, relative: str) -> tuple[int, int, int, i
             "map component totals require six ASCII decimal columns",
             {"path": relative, "rule": "componentColumns"},
         )
-    parsed = tuple(int(value) for value in values)
-    if any(value > _MAX_UINT64 for value in parsed):
-        raise _raise(
-            "KEIL_MAP_INVALID",
-            "map component totals overflow unsigned 64-bit",
-            {"path": relative, "rule": "overflow"},
-        )
+    parsed = tuple(_parse_component_uint64(value, relative) for value in values)
     code, _inc_data, ro_data, rw_data, zi_data, _debug = parsed
     section_text = "\n".join(lines[section_index + 1 :])
     ro_matches = [match for match in _COMPONENT_RO_SIZE_RE.finditer(section_text)]
@@ -277,14 +291,8 @@ def _parse_component_summary(text: str, relative: str) -> tuple[int, int, int, i
             "map component totals require RO and RW cross-checks",
             {"path": relative, "rule": "componentCrossCheck"},
         )
-    ro_total = int(ro_matches[0].group(1))
-    rw_total = int(rw_matches[0].group(1))
-    if ro_total > _MAX_UINT64 or rw_total > _MAX_UINT64:
-        raise _raise(
-            "KEIL_MAP_INVALID",
-            "map component cross-check overflows unsigned 64-bit",
-            {"path": relative, "rule": "overflow"},
-        )
+    ro_total = _parse_component_uint64(ro_matches[0].group(1), relative)
+    rw_total = _parse_component_uint64(rw_matches[0].group(1), relative)
     if code > _MAX_UINT64 - ro_data or rw_data > _MAX_UINT64 - zi_data:
         raise _raise(
             "KEIL_MAP_INVALID",
@@ -331,7 +339,13 @@ def _parse_map(data: bytes, relative: str) -> KeilProgramSize:
                 {"path": relative, "rule": "conflict"},
             )
         summaries.append(values)
-    component = _parse_component_summary(text, relative)
+    if summaries:
+        try:
+            component = _parse_component_summary(text, relative)
+        except KeilInspectionError:
+            component = None
+    else:
+        component = _parse_component_summary(text, relative)
     if not summaries and component is None:
         raise _raise(
             "KEIL_MAP_INVALID",

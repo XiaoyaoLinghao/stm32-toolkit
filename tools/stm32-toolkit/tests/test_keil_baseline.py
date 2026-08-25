@@ -444,6 +444,45 @@ def test_map_component_totals_require_cross_checks(keil_project: Path) -> None:
     assert_component_map_rule(keil_project, "componentCrossCheck")
 
 
+def test_map_classic_program_size_precedes_incomplete_component(keil_project: Path) -> None:
+    write_component_map(
+        keil_project,
+        header=None,
+        classic="Program Size: Code=1 RO-data=2 RW-data=3 ZI-data=4",
+    )
+    inspection = inspect_keil(keil_project)
+    baseline = capture_keil_baseline(keil_project, inspection)
+    assert baseline.program_size == KeilProgramSize(1, 2, 3, 4, 6, 7)
+
+
+def test_map_component_totals_reject_duplicate_exact_headers(keil_project: Path) -> None:
+    write_component_map(keil_project, header=f"{COMPONENT_HEADER}\n{COMPONENT_HEADER}")
+    assert_component_map_rule(keil_project, "componentHeader")
+
+
+def test_map_component_totals_require_totals_after_exact_header(keil_project: Path) -> None:
+    write_component_map(keil_project, header=f"{COMPONENT_ROW}\n{COMPONENT_HEADER}")
+    assert_component_map_rule(keil_project, "componentTotals")
+
+
+def test_map_component_totals_reject_oversized_decimal_row(keil_project: Path) -> None:
+    oversized = "9" * 5000
+    write_component_map(
+        keil_project,
+        rows=(f"{oversized} 5540 1004 1576 406440 534601 Grand Totals",),
+    )
+    assert_component_map_rule(keil_project, "overflow")
+
+
+def test_map_component_totals_reject_oversized_decimal_cross_check(keil_project: Path) -> None:
+    oversized = "9" * 5000
+    write_component_map(
+        keil_project,
+        checks=(f"Total RO Size {oversized}", COMPONENT_RW_CHECK),
+    )
+    assert_component_map_rule(keil_project, "overflow")
+
+
 @pytest.mark.parametrize(
     "checks",
     (
