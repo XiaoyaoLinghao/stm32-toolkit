@@ -286,18 +286,23 @@ def _add_group_scoped_controls(
     defines: str = "",
     include_paths: str = "",
     misc_controls: str = "",
+    occurrence: int = 0,
 ) -> None:
     project = next(repo.glob("*.uvprojx"))
     text = project.read_text(encoding="utf-8")
     marker = f"            <GroupName>{group_name}</GroupName>\n"
-    assert text.count(marker) == 1
+    assert 0 <= occurrence < text.count(marker)
     option = _scoped_controls_xml(
         option_tag="GroupOption",
         defines=defines,
         include_paths=include_paths,
         misc_controls=misc_controls,
     )
-    project.write_text(text.replace(marker, marker + option, 1), encoding="utf-8")
+    start = -1
+    for _ in range(occurrence + 1):
+        start = text.index(marker, start + 1)
+    insertion = start + len(marker)
+    project.write_text(text[:insertion] + option + text[insertion:], encoding="utf-8")
 
 
 def _add_file_scoped_controls(
@@ -307,6 +312,7 @@ def _add_file_scoped_controls(
     defines: str = "",
     include_paths: str = "",
     misc_controls: str = "",
+    excluded: bool = False,
 ) -> None:
     project = next(repo.glob("*.uvprojx"))
     text = project.read_text(encoding="utf-8")
@@ -318,7 +324,11 @@ def _add_file_scoped_controls(
         include_paths=include_paths,
         misc_controls=misc_controls,
     )
-    project.write_text(text.replace(marker, marker + option, 1), encoding="utf-8")
+    excluded_xml = "              <IncludeInBuild>0</IncludeInBuild>\n" if excluded else ""
+    project.write_text(
+        text.replace(marker, marker + excluded_xml + option, 1),
+        encoding="utf-8",
+    )
 
 
 def _commit_scoped_project(repo: Path) -> None:
@@ -1485,7 +1495,7 @@ def test_group_include_only_option_is_one_scoped_blocker(tmp_path):
     assert scoped[0].path == ""
     assert scoped[0].line == 0
     assert scoped[0].column == 0
-    assert scoped[0].evidence == "scope:Main"
+    assert scoped[0].evidence == "group:Main"
 
 
 def test_file_define_only_option_is_one_file_scoped_blocker(tmp_path):
@@ -1504,7 +1514,7 @@ def test_file_define_only_option_is_one_file_scoped_blocker(tmp_path):
     assert scoped[0].path == "Main/main.c"
     assert scoped[0].line == 0
     assert scoped[0].column == 0
-    assert scoped[0].evidence == "scope:Main/main.c"
+    assert scoped[0].evidence == "file:Main/main.c"
 
 
 def test_mixed_scoped_option_fields_still_emit_one_blocker(tmp_path):
@@ -1527,7 +1537,7 @@ def test_mixed_scoped_option_fields_still_emit_one_blocker(tmp_path):
     scoped = [b for b in plan.blockers if b.code == "ARMCC_OPTION_UNSUPPORTED"]
     assert len(scoped) == 1
     assert scoped[0].path == ""
-    assert scoped[0].evidence == "scope:Main"
+    assert scoped[0].evidence == "group:Main"
 
 
 def test_group_scoped_blockers_preserve_authored_order_and_owner_evidence(tmp_path):
@@ -1552,9 +1562,119 @@ def test_group_scoped_blockers_preserve_authored_order_and_owner_evidence(tmp_pa
 
     scoped = [b for b in plan.blockers if b.code == "ARMCC_OPTION_UNSUPPORTED"]
     assert [(b.path, b.evidence) for b in scoped] == [
-        ("", "scope:First"),
-        ("", "scope:Second"),
+        ("", "group:First"),
+        ("", "group:Second"),
     ]
+
+
+def test_same_owner_group_records_are_not_deduplicated(tmp_path):
+    groups = (
+        ("SameOwner", (("first.c", "1", "First/first.c"),)),
+        ("SameOwner", (("second.c", "1", "Second/second.c"),)),
+    )
+    repo = build_repo(
+        tmp_path,
+        files={
+            "First/first.c": "int first(void) { return 0; }\n",
+            "Second/second.c": "int second(void) { return 0; }\n",
+        },
+        uvprojx_kwargs={"groups": groups},
+        commit=False,
+    )
+    _add_group_scoped_controls(repo, "SameOwner", defines="DUPLICATE", occurrence=0)
+    _add_group_scoped_controls(repo, "SameOwner", defines="DUPLICATE", occurrence=1)
+    _commit_scoped_project(repo)
+
+    plan = plan_keil_conversion(repo, fixture_inspection(repo))
+
+    scoped = [b for b in plan.blockers if b.code == "ARMCC_OPTION_UNSUPPORTED"]
+    assert [(b.path, b.evidence) for b in scoped] == [
+        ("", "group:SameOwner"),
+        ("", "group:SameOwner"),
+    ]
+
+
+def test_long_group_owner_evidence_is_unicode_bounded_with_prefix(tmp_path):
+    owner = "组" * 501
+    groups = ((owner, (("main.c", "1", "Main/main.c"),)),)
+    repo = build_repo(
+        tmp_path,
+        files={"Main/main.c": "int main(void) { return 0; }\n"},
+        uvprojx_kwargs={"groups": groups},
+        commit=False,
+    )
+    _add_group_scoped_controls(repo, owner, include_paths="LONG")
+    _commit_scoped_project(repo)
+
+    plan = plan_keil_conversion(repo, fixture_inspection(repo))
+
+    scoped = [b for b in plan.blockers if b.code == "ARMCC_OPTION_UNSUPPORTED"]
+    assert len(scoped) == 1
+    assert len(scoped[0].evidence) == 200
+    assert scoped[0].evidence == ("group:" + owner)[:200]
+    assert scoped[0].evidence.startswith("group:")
+
+
+def test_excluded_file_scoped_option_still_blocks(tmp_path):
+    repo = build_repo(
+        tmp_path,
+        files={"Main/main.c": "int main(void) { return 0; }\n"},
+        commit=False,
+    )
+    _add_file_scoped_controls(
+        repo,
+        "Main/main.c",
+        include_paths="EXCLUDED_INCLUDE",
+        excluded=True,
+    )
+    _commit_scoped_project(repo)
+
+    plan = plan_keil_conversion(repo, fixture_inspection(repo))
+
+    scoped = [b for b in plan.blockers if b.code == "ARMCC_OPTION_UNSUPPORTED"]
+    assert [(b.path, b.evidence) for b in scoped] == [
+        ("Main/main.c", "file:Main/main.c")
+    ]
+
+
+def test_non_scoped_blocker_deduplication_still_ignores_evidence(monkeypatch, tmp_path):
+    from stm32_toolkit.keil import KeilFinding
+
+    repo = build_repo(
+        tmp_path,
+        files={"Main/main.c": "int main(void) { return 0; }\n"},
+    )
+    inspection = fixture_inspection(repo)
+    supplied = replace(
+        inspection,
+        findings=(
+            KeilFinding(
+                "ARMCC_UNKNOWN_FUTURE",
+                "blocker",
+                "Main/main.c",
+                3,
+                4,
+                "first evidence",
+                "first",
+            ),
+            KeilFinding(
+                "ARMCC_UNKNOWN_FUTURE",
+                "blocker",
+                "Main/main.c",
+                3,
+                4,
+                "second evidence",
+                "second",
+            ),
+        ),
+    )
+    monkeypatch.setattr(planner_mod, "inspect_keil", lambda *args, **kwargs: supplied)
+
+    plan = plan_keil_conversion(repo, supplied)
+
+    blockers = [b for b in plan.blockers if b.code == "ARMCC_FINDING_UNSUPPORTED"]
+    assert len(blockers) == 1
+    assert blockers[0].evidence == "first evidence"
 
 
 def test_target_defines_and_include_paths_remain_supported(tmp_path):
@@ -1589,8 +1709,8 @@ def test_group_and_file_misc_controls_keep_existing_refusal(tmp_path):
 
     scoped = [b for b in plan.blockers if b.code == "ARMCC_OPTION_UNSUPPORTED"]
     assert [(b.path, b.evidence) for b in scoped] == [
-        ("", "scope:Main"),
-        ("Main/main.c", "scope:Main/main.c"),
+        ("", "group:Main"),
+        ("Main/main.c", "file:Main/main.c"),
     ]
 
 

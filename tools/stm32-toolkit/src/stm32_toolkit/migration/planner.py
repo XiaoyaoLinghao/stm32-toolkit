@@ -326,6 +326,28 @@ def _finding_blockers(findings: tuple) -> list[MigrationBlocker]:
     return blockers
 
 
+def _scoped_option_blockers(inspection: KeilInspection) -> list[MigrationBlocker]:
+    blockers: list[MigrationBlocker] = []
+    for option in inspection.scoped_options:
+        if option.scope not in {"group", "file"}:
+            continue
+        if not (option.defines or option.include_paths or option.misc_controls):
+            continue
+        owner = option.owner if option.scope == "file" else ""
+        blockers.append(
+            MigrationBlocker(
+                "ARMCC_OPTION_UNSUPPORTED",
+                "ARMCC_OPTION_UNSUPPORTED",
+                owner,
+                0,
+                0,
+                f"{option.scope}:{option.owner}"[:200],
+                "scoped ARMCC compiler options are not representable",
+            )
+        )
+    return blockers
+
+
 def _inspection_blockers(inspection: KeilInspection) -> list[MigrationBlocker]:
     blockers: list[MigrationBlocker] = []
     if inspection.compiler != "armcc":
@@ -404,21 +426,6 @@ def _inspection_blockers(inspection: KeilInspection) -> list[MigrationBlocker]:
                     0,
                     "",
                     "ARMCC target/group/file misc controls are not empty",
-                )
-            )
-        elif option.scope in {"group", "file"} and (
-            option.defines or option.include_paths or option.misc_controls
-        ):
-            owner = option.owner if option.scope == "file" else ""
-            blockers.append(
-                MigrationBlocker(
-                    "ARMCC_OPTION_UNSUPPORTED",
-                    "ARMCC_OPTION_UNSUPPORTED",
-                    owner,
-                    0,
-                    0,
-                    f"scope:{option.owner}",
-                    "scoped ARMCC compiler options are not representable",
                 )
             )
     blockers.extend(_finding_blockers(inspection.findings))
@@ -610,6 +617,7 @@ def plan_keil_conversion(root: Path, inspection: KeilInspection) -> MigrationPla
         )
 
     blockers: list[MigrationBlocker] = []
+    scoped_option_blockers = _scoped_option_blockers(inspection)
     if status:
         blockers.append(
             MigrationBlocker(
@@ -765,17 +773,10 @@ def plan_keil_conversion(root: Path, inspection: KeilInspection) -> MigrationPla
     unique_blockers: dict[tuple, MigrationBlocker] = {}
     for blocker in sorted(blockers, key=blocker_key):
         unique_blockers.setdefault(
-            (
-                blocker.code,
-                blocker.rule_id,
-                blocker.path,
-                blocker.line,
-                blocker.column,
-                blocker.evidence,
-            ),
+            (blocker.code, blocker.rule_id, blocker.path, blocker.line, blocker.column),
             blocker,
         )
-    ordered_blockers = tuple(unique_blockers.values())
+    ordered_blockers = tuple(unique_blockers.values()) + tuple(scoped_option_blockers)
 
     plan = MigrationPlan(
         project_root=canonical,
