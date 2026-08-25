@@ -31,6 +31,8 @@ from stm32_toolkit.identity import canonical_project_root
 _MANIFEST_NAME = ".stm32-project.json"
 _SCHEMA_V1_NAME = "stm32-project-v1.schema.json"
 _SCHEMA_V2_NAME = "stm32-project.schema.json"
+TARGET_FRAME_V1 = "stm32-target-frame/1"
+TARGET_FRAME_V2 = "stm32-target-frame/2"
 
 #: Exact v1 origin to v2 memory.source mapping; anything else maps to manual.
 SOURCE_MAPPING = {"keil-migration": "keil", "cubemx": "cubemx"}
@@ -175,6 +177,7 @@ class TargetTestConfig:
     executable: str
     timeout_seconds: int
     transport: TargetTransportConfig
+    protocol: str = TARGET_FRAME_V1
 
 
 @dataclass(frozen=True)
@@ -819,6 +822,7 @@ def _build_testing_config(value: object) -> TestingConfig | None:
             executable=target_data["executable"],
             timeout_seconds=target_data["timeout_seconds"],
             transport=TargetTransportConfig(kind=kind, options=options),
+            protocol=target_data.get("protocol", TARGET_FRAME_V1),
         )
     return TestingConfig(host=host, target=target)
 

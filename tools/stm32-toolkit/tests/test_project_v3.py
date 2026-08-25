@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import stat
+from dataclasses import asdict
 from importlib import resources
 from pathlib import Path
 
@@ -109,6 +110,69 @@ def test_v3_model_exposes_distinct_host_presets_without_inference(tmp_path: Path
     assert dict(model.testing.host.environment_values) == {"STM32TK_TEST_SEED": "1"}
     with pytest.raises(TypeError):
         model.testing.host.environment_values["STM32TK_TEST_SEED"] = "2"
+
+
+def test_v3_target_protocol_defaults_to_v1_without_rewriting_manifest(tmp_path: Path):
+    payload = _v3_payload()
+    _write(tmp_path, payload)
+    before = (tmp_path / MANIFEST_NAME).read_bytes()
+
+    model = load_project_model(tmp_path)
+
+    assert model.testing.target.protocol == "stm32-target-frame/1"
+    assert (tmp_path / MANIFEST_NAME).read_bytes() == before
+    assert "protocol" not in json.loads(before)["testing"]["target"]
+
+
+@pytest.mark.parametrize(
+    "protocol",
+    ["stm32-target-frame/1", "stm32-target-frame/2"],
+)
+def test_v3_target_protocol_loads_explicit_version(tmp_path: Path, protocol: str):
+    payload = _v3_payload()
+    payload["testing"]["target"]["protocol"] = protocol
+    _write(tmp_path, payload)
+
+    model = load_project_model(tmp_path)
+
+    assert model.testing.target.protocol == protocol
+
+
+@pytest.mark.parametrize(
+    "protocol",
+    ["stm32-target-frame/3", "STM32-TARGET-FRAME/2", "stm32-target-frame/2 ", {"version": 2}],
+)
+def test_v3_target_protocol_rejects_unknown_case_changed_and_non_string_values(
+    tmp_path: Path, protocol: object
+):
+    payload = _v3_payload()
+    payload["testing"]["target"]["protocol"] = protocol
+
+    error = _schema_error(tmp_path, payload)
+
+    assert error.details == {"field": "testing.target.protocol", "rule": "enum"}
+
+
+def test_v3_target_protocol_rejects_unknown_target_fields(tmp_path: Path):
+    payload = _v3_payload()
+    payload["testing"]["target"]["protocolExtra"] = "stm32-target-frame/2"
+
+    error = _schema_error(tmp_path, payload)
+
+    assert error.details == {
+        "field": "testing.target.protocolExtra",
+        "rule": "additionalProperties",
+    }
+
+
+def test_v3_target_protocol_survives_public_dataclass_serialization(tmp_path: Path):
+    payload = _v3_payload()
+    payload["testing"]["target"]["protocol"] = "stm32-target-frame/2"
+    _write(tmp_path, payload)
+
+    model = load_project_model(tmp_path)
+
+    assert asdict(model.testing.target)["protocol"] == "stm32-target-frame/2"
 
 
 @pytest.mark.parametrize("missing", ["buildPreset", "ctestPreset"])
