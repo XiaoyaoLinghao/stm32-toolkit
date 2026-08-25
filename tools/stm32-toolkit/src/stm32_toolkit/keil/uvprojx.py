@@ -849,18 +849,35 @@ def inspect_keil(
     linker_misc = _text_of(ldads, "MiscControls") or ""
 
     base_dir = project_abs.parent
+    common_output_directory = _text_of(common, "OutputDirectory")
+    common_listing_directory = _text_of(common, "ListingPath")
+    common_output_name = _text_of(common, "OutputName")
+
+    def output_text(name: str) -> str | None:
+        common_value = _text_of(common, name)
+        if common_value is not None:
+            return common_value
+        return _text_of(target_option, name)
+
     out_dir = _normalize_keil_path(
-        _text_of(target_option, "OutputDirectory"), base_dir, canonical_root, "outputDirectory"
+        output_text("OutputDirectory"), base_dir, canonical_root, "outputDirectory"
     )
     listing_dir = _normalize_keil_path(
-        _text_of(target_option, "ListingPath"), base_dir, canonical_root, "listingDirectory"
+        output_text("ListingPath"), base_dir, canonical_root, "listingDirectory"
     )
-    out_name_raw = _text_of(target_option, "OutputName")
+    out_name_raw = output_text("OutputName")
     output_name = out_name_raw.strip() if out_name_raw and out_name_raw.strip() else None
     object_directory = out_dir[0] if out_dir else None
     listing_directory = listing_dir[0] if listing_dir else None
     axf = f"{object_directory}/{output_name}.axf" if object_directory and output_name else None
-    map_file = f"{object_directory}/{output_name}.map" if object_directory and output_name else None
+    uses_common_output_fields = any(
+        value is not None
+        for value in (common_output_directory, common_listing_directory, common_output_name)
+    )
+    map_directory = (
+        listing_directory or object_directory if uses_common_output_fields else object_directory
+    )
+    map_file = f"{map_directory}/{output_name}.map" if map_directory and output_name else None
     scatter = _normalize_keil_path(scatter_raw, base_dir, canonical_root, "scatter")
 
     warnings: list[KeilWarning] = []

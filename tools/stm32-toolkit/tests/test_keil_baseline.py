@@ -227,9 +227,74 @@ def write_axf(keil_project: Path, data: bytes) -> Path:
     return target
 
 
+def write_real_nested_project(root: Path, listing_path: str | None = ".\\LIST\\") -> None:
+    listing_xml = f"<ListingPath>{listing_path}</ListingPath>" if listing_path is not None else ""
+    xml = f'''<?xml version="1.0" encoding="UTF-8" ?>
+<Project>
+  <Targets>
+    <Target>
+      <TargetName>Target 1</TargetName>
+      <pCCUsed>5060750::V5::ARMCC</pCCUsed>
+      <TargetOption>
+        <TargetCommonOption>
+          <Device>STM32F429ZGTx</Device>
+          <Cpu>CPUTYPE("Cortex-M4")</Cpu>
+          <OutputDirectory>.\\OBJ\\</OutputDirectory>
+          <OutputName>LWIP</OutputName>
+          {listing_xml}
+        </TargetCommonOption>
+        <TargetArmAds>
+          <Cads><VariousControls /></Cads>
+          <LDads><VariousControls /></LDads>
+        </TargetArmAds>
+      </TargetOption>
+      <Groups />
+    </Target>
+  </Targets>
+</Project>
+'''
+    (root / "proj.uvprojx").parent.mkdir(parents=True, exist_ok=True)
+    (root / "proj.uvprojx").write_text(xml, encoding="utf-8")
+    (root / "OBJ").mkdir(parents=True, exist_ok=True)
+    (root / "OBJ" / "LWIP.axf").write_bytes(build_minimal_elf32())
+    map_directory = "LIST" if listing_path is not None else "OBJ"
+    (root / map_directory).mkdir(parents=True, exist_ok=True)
+    (root / map_directory / "LWIP.map").write_text(
+        "Program Size:\tCode=1000  RO-data=200  RW-data=50  ZI-data=750\n",
+        encoding="utf-8",
+    )
+
+
 # ---------------------------------------------------------------------------
 # exact ELF/MAP parsing
 # ---------------------------------------------------------------------------
+
+
+def test_real_nested_output_paths_capture_axf_and_listing_map(tmp_path: Path) -> None:
+    root = tmp_path / "real-nesting"
+    write_real_nested_project(root)
+
+    inspection = inspect_keil(root)
+    baseline = capture_keil_baseline(root, inspection)
+
+    assert inspection.output.object_directory == "OBJ"
+    assert inspection.output.listing_directory == "LIST"
+    assert inspection.output.output_name == "LWIP"
+    assert inspection.output.axf == "OBJ/LWIP.axf"
+    assert inspection.output.map_file == "LIST/LWIP.map"
+    assert baseline.axf.path == "OBJ/LWIP.axf"
+    assert baseline.map_file.path == "LIST/LWIP.map"
+
+
+def test_real_nested_output_paths_fall_back_to_object_map(tmp_path: Path) -> None:
+    root = tmp_path / "map-fallback"
+    write_real_nested_project(root, listing_path=None)
+
+    inspection = inspect_keil(root)
+    baseline = capture_keil_baseline(root, inspection)
+
+    assert inspection.output.map_file == "OBJ/LWIP.map"
+    assert baseline.map_file.path == "OBJ/LWIP.map"
 
 
 def test_elf_exact_parse(keil_project: Path) -> None:

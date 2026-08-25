@@ -163,11 +163,25 @@ def project_xml(*targets: dict, xmlns: bool = True) -> str:
         )
         if "float_abi" in target:
             parts.append(f"          <uFloatingPoint>{target['float_abi']}</uFloatingPoint>")
+        if target.get("output_in_common"):
+            parts.extend(
+                [
+                    f"          <OutputDirectory>{target.get('out_dir', DEFAULT_OUT_DIR)}</OutputDirectory>",
+                    f"          <OutputName>{target.get('out_name', 'firmware')}</OutputName>",
+                ]
+            )
+            if target.get("listing_path") is not None:
+                parts.append(f"          <ListingPath>{target['listing_path']}</ListingPath>")
+        parts.append("        </TargetCommonOption>")
+        if not target.get("output_in_common"):
+            parts.extend(
+                [
+                    f"        <OutputDirectory>{target.get('out_dir', DEFAULT_OUT_DIR)}</OutputDirectory>",
+                    f"        <OutputName>{target.get('out_name', 'firmware')}</OutputName>",
+                ]
+            )
         parts.extend(
             [
-                "        </TargetCommonOption>",
-                f"        <OutputDirectory>{target.get('out_dir', DEFAULT_OUT_DIR)}</OutputDirectory>",
-                f"        <OutputName>{target.get('out_name', 'firmware')}</OutputName>",
                 "        <TargetArmAds>",
                 "          <Cads>",
                 "            <VariousControls>",
@@ -278,6 +292,78 @@ def keil_project(tmp_path: Path) -> Path:
 # ---------------------------------------------------------------------------
 # exact extraction from the representative fixture
 # ---------------------------------------------------------------------------
+
+
+def test_real_keil_output_paths_are_read_from_target_common(tmp_path: Path) -> None:
+    root = tmp_path / "real-nesting"
+    xml = project_xml(
+        {
+            "name": "Target 1",
+            "output_in_common": True,
+            "out_dir": ".\\OBJ\\",
+            "out_name": "LWIP",
+            "listing_path": ".\\LIST\\",
+            "groups": [{"name": "G", "files": [{"name": "main.c", "path": ".\\Src\\main.c"}]}],
+        }
+    )
+    write_project(root, xml, {".\\Src\\main.c": "int main(void) { return 0; }\n"})
+
+    inspection = inspect_keil(root)
+
+    assert inspection.output.object_directory == "OBJ"
+    assert inspection.output.listing_directory == "LIST"
+    assert inspection.output.output_name == "LWIP"
+    assert inspection.output.axf == "OBJ/LWIP.axf"
+    assert inspection.output.map_file == "LIST/LWIP.map"
+
+
+def test_real_keil_map_path_falls_back_to_object_directory(tmp_path: Path) -> None:
+    root = tmp_path / "map-fallback"
+    xml = project_xml(
+        {
+            "name": "Target 1",
+            "output_in_common": True,
+            "out_dir": ".\\OBJ\\",
+            "out_name": "LWIP",
+            "groups": [{"name": "G", "files": [{"name": "main.c", "path": ".\\Src\\main.c"}]}],
+        }
+    )
+    write_project(root, xml, {".\\Src\\main.c": "int main(void) { return 0; }\n"})
+
+    inspection = inspect_keil(root)
+
+    assert inspection.output.map_file == "OBJ/LWIP.map"
+
+
+@pytest.mark.parametrize(
+    ("field", "target_key", "value"),
+    [
+        ("outputDirectory", "out_dir", "..\\..\\escape\\"),
+        ("outputDirectory", "out_dir", "C:\\Windows\\system32\\"),
+        ("listingDirectory", "listing_path", "..\\..\\escape\\"),
+        ("listingDirectory", "listing_path", "C:\\Windows\\system32\\"),
+    ],
+)
+def test_real_keil_output_paths_keep_containment(
+    tmp_path: Path, field: str, target_key: str, value: str
+) -> None:
+    root = tmp_path / field / target_key / value.replace("\\", "_").replace(":", "_")
+    target = {
+        "name": "Target 1",
+        "output_in_common": True,
+        "out_dir": ".\\OBJ\\",
+        "out_name": "LWIP",
+        "listing_path": ".\\LIST\\",
+        "groups": [{"name": "G", "files": [{"name": "main.c", "path": ".\\Src\\main.c"}]}],
+    }
+    target[target_key] = value
+    write_project(root, project_xml(target), {".\\Src\\main.c": "int main(void) { return 0; }\n"})
+
+    with pytest.raises(KeilInspectionError) as error:
+        inspect_keil(root)
+
+    assert error.value.code == "KEIL_PATH_OUTSIDE_PROJECT"
+    assert error.value.details == {"field": field, "rule": "withinProjectRoot"}
 
 
 def test_main_fixture_exact_extraction(keil_project: Path) -> None:
