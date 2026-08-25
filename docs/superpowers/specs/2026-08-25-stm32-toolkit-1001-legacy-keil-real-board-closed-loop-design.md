@@ -101,6 +101,10 @@ VS10-A 因此增加一个最小、通用、Agent-neutral 的 `stm32-target-frame
   `{stream,message,monotonic_ms}`；run_end 是
   `{state,case_inventory_digest,counts,event_stream_digest,monotonic_ms}`。所有对象继续 closed，
   case/result/state/count/digest 语义与 v1 相同，stdout/stderr 在 host publication 中为 null；
+- v2 discovery 只要求 stream 的第一个完整有效帧是 inventory；同一次 read 已带回的尾随帧
+  不属于 discovery，也不触发“必须只有一帧”的 v1 规则。host 只保留第一个 frame 的 exact raw
+  bytes，立即关闭 read-only transport；execute 随后总是重新烧录并从复位后的空 mailbox 获取
+  新的完整 run，因此不需要 target 接受命令或区分 discovery/run；
 - host 在 discovery 时用当前 fresh firmware facts、project/workspace/session、Probe/target 和
   host capture UTC 构造现有 `EvidenceIdentity`/`TestInventory`，并把完整 inventory digest 与
   case-inventory digest 一同固定到 prepare/execute 的 single-use action digest；
