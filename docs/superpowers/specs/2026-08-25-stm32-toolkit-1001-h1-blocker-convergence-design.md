@@ -105,7 +105,7 @@ Static project tests compare the derived profile and C vector sequence against t
 
 1. Luna/max implements the Toolkit correction with RED/GREEN tests and commits it on the existing VS10-A implementation branch.
 2. Sol reviews the complete `12d0d3be..CodeHead` diff in a clean worktree and runs only focused affected tests. No project correction starts before `ACCEPTED`.
-3. Build, checksum, verify, and bootstrap a replacement 0.9.0 campaign candidate from the accepted CodeHead. The old candidate remains evidence but is no longer current.
+3. Build and verify a replacement 0.9.0 campaign candidate from the accepted CodeHead. Because secure runtime state must reject different bytes under the same version, do not invoke upgrade/repair over the old 0.9.0 runtime. Preserve its state/manifest/package hashes, verify no process uses it, retire only the exact campaign-managed `data/runtime` tree, and bootstrap the replacement into a fresh `data/runtime`. The old candidate identity remains evidence but is no longer current.
 4. Rerun inspect on unchanged P0. Require real AXF/MAP baseline and `framework=spl`. Rerun convert dry-run and require that only the 36 encoding and one ARMCC assembly blockers remain.
 5. Luna/max constructs the project portability proposal in scratch, records its exact diff digest, and returns it without changing P0. Sol verifies scope and authorizes only that digest under the standing user direction.
 6. Apply the exact proposal, commit the local portability input, rerun inspect/convert dry-run, and require zero blockers. Apply only the unchanged conversion plan, then guarded configure.
