@@ -20,6 +20,7 @@ from stm32_toolkit.probe.lease import ProbeLeaseManager
 from stm32_toolkit.probe.model import OperationLevel
 from stm32_toolkit.probe.supervisor import ProbeServiceConfig, ProbeServiceSupervisor
 from stm32_toolkit.testing.model import calculate_inventory_digest
+from stm32_toolkit.testing.protocol import calculate_case_inventory_digest
 from stm32_toolkit.testing.target import encode_frame
 import stm32_toolkit.testing_workflows as workflows
 from test_build_runner import prepare_project
@@ -83,6 +84,64 @@ def _fixed_stream(
         "event_stream_digest": sha256(b"".join(frames)).hexdigest(),
     }
     frames.append(encode_frame(5, len(frames), terminal))
+    return b"".join(frames)
+
+
+def _fixed_v2_stream(cases: tuple[str, ...] = CASES) -> bytes:
+    case_digest = calculate_case_inventory_digest(cases)
+    frames = [
+        encode_frame(
+            1,
+            0,
+            {
+                "mode": "target",
+                "case_ids": list(cases),
+                "case_inventory_digest": case_digest,
+                "monotonic_ms": 0,
+            },
+            version=2,
+        ),
+        encode_frame(
+            2,
+            1,
+            {
+                "case_ids": list(cases),
+                "case_inventory_digest": case_digest,
+                "monotonic_ms": 1,
+            },
+            version=2,
+        ),
+    ]
+    sequence = 2
+    for case_id in cases:
+        frames.extend(
+            [
+                encode_frame(
+                    3, sequence, {"case_id": case_id, "monotonic_ms": sequence}, version=2
+                ),
+                encode_frame(
+                    4,
+                    sequence + 1,
+                    {"case_id": case_id, "state": "passed", "monotonic_ms": sequence + 1, "message": None},
+                    version=2,
+                ),
+            ]
+        )
+        sequence += 2
+    frames.append(
+        encode_frame(
+            5,
+            len(frames),
+            {
+                "state": "passed",
+                "case_inventory_digest": case_digest,
+                "counts": {"passed": len(cases), "failed": 0, "skipped": 0, "error": 0, "timeout": 0},
+                "event_stream_digest": sha256(b"".join(frames)).hexdigest(),
+                "monotonic_ms": sequence,
+            },
+            version=2,
+        )
+    )
     return b"".join(frames)
 
 
@@ -182,23 +241,29 @@ class _SourceChangeBackend:
         self.events.append(("backend.close", self.level))
 
 
-def _fixed_project(tmp_path: Path) -> tuple[Path, Mapping[str, object]]:
+def _fixed_project(
+    tmp_path: Path, *, protocol: str | None = None
+) -> tuple[Path, Mapping[str, object]]:
+    target = {
+        "executable": "build/arm-debug/firmware.elf",
+        "timeout_seconds": 10,
+        "transport": {
+            "kind": "memory-mailbox",
+            "options": {"address": 0x20000000, "size": 4096},
+        },
+    }
     project = prepare_project(
         tmp_path,
         overrides={
             "schemaVersion": 3,
-            "testing": {
-                "target": {
-                    "executable": "build/arm-debug/firmware.elf",
-                    "timeout_seconds": 10,
-                    "transport": {
-                        "kind": "memory-mailbox",
-                        "options": {"address": 0x20000000, "size": 4096},
-                    },
-                }
-            },
+            "testing": {"target": target},
         },
     )
+    if protocol is not None:
+        manifest_path = project / ".stm32-project.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest["testing"]["target"]["protocol"] = protocol
+        manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
     return project, _publish_current_debug_build(project)
 
 
@@ -297,6 +362,68 @@ def test_prepare_never_reads_old_inventory_and_execute_proves_fixed_after_flash(
     ) + (project / "artifacts/migration/flash-result.json").read_bytes()
     assert RAW_PROBE.encode() not in public_bytes + durable_bytes
     assert str(project).encode() not in public_bytes + durable_bytes
+
+
+def test_v2_physical_execution_binds_protocol_digests_and_publishes_after_flash(
+    tmp_path: Path,
+) -> None:
+    project, build = _fixed_project(tmp_path, protocol="stm32-target-frame/2")
+    data_root = (tmp_path / "plugin-data").absolute()
+    workspace = WorkspacePaths.from_roots(
+        data_root, project, build["logicalProjectId"], "session-r3-v2"
+    )
+    identity = _fixed_identity(build, workspace)
+    expected_digest = calculate_inventory_digest("target", identity, CASES)
+    case_digest = calculate_case_inventory_digest(CASES)
+    board = _Board()
+    events: list[tuple[object, ...]] = []
+    flash_segment = (project / "build/arm-debug/firmware.elf").read_bytes()[84:404]
+
+    def backend_factory() -> _SourceChangeBackend:
+        return _SourceChangeBackend(
+            board=board,
+            physical_identity={
+                "board_id": str(build["targetDevice"]),
+                "mcu": "stm32f407vg",
+                "target_id": str(build["targetDevice"]),
+                "probe_serial_hash": sha256(RAW_PROBE.encode()).hexdigest(),
+            },
+            stream=_fixed_v2_stream(),
+            flash_segment=flash_segment,
+            events=events,
+        )
+
+    seams = workflows.TargetWorkflowSeams(_test_backend_factory=backend_factory)
+    context = workflows.TestingWorkflowContext(project, data_root, "session-r3-v2")
+    prepared = asyncio.run(
+        workflows.target_test_prepare(context, probe_id=RAW_PROBE, case_ids=CASES, _seams=seams)
+    )
+
+    assert prepared.ok is True, prepared.to_dict()
+    assert prepared.data["protocol"] == "stm32-target-frame/2"
+    assert prepared.data["case_inventory_digest"] == case_digest
+    assert prepared.data["inventory_digest"] == expected_digest
+    assert board.flashed is False
+
+    executed = asyncio.run(
+        workflows.target_test_execute(
+            context,
+            probe_id=RAW_PROBE,
+            authorized_action_digest=prepared.data["authorized_action_digest"],
+            _seams=seams,
+        )
+    )
+
+    assert executed.ok is True, (executed.to_dict(), events)
+    assert board.flashed is True
+    flash_index = next(index for index, event in enumerate(events) if event[:2] == ("flash", "modify"))
+    open_index = next(index for index, event in enumerate(events) if event[0] == "transport.open")
+    read_index = next(index for index, event in enumerate(events) if event[0] == "transport.read")
+    assert flash_index < open_index < read_index
+    shown = workflows.test_show(context, run_id=executed.data["run"]["run_id"])
+    assert shown.ok is True
+    assert shown.data["execution_source"] == "physical"
+    assert shown.data["physical_transport_evidence"] is True
 
 
 def test_case_ids_are_mandatory_and_authorization_is_single_use(tmp_path: Path) -> None:

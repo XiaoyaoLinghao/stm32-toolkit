@@ -20,6 +20,7 @@ from stm32_toolkit.probe import client as probe_client
 from stm32_toolkit.probe.authorization import ControlAuthorizationError, ControlAuthorizationStore
 from stm32_toolkit.testing import target as target_module
 from stm32_toolkit.testing.model import calculate_inventory_digest
+from stm32_toolkit.testing.protocol import calculate_case_inventory_digest
 
 ProbeClientError = probe_client.ProbeClientError
 
@@ -146,6 +147,33 @@ def valid_target_stream(case_id: str = "suite.case") -> bytes:
 
 
 TARGET_RUN_INVENTORY_DIGEST = _target_inventory_digest()
+
+
+V2_CASE_ID = "suite.case"
+V2_CASE_INVENTORY_DIGEST = calculate_case_inventory_digest([V2_CASE_ID])
+
+
+def _v2_target_stream(case_id: str = V2_CASE_ID) -> tuple[bytes, bytes]:
+  case_digest = calculate_case_inventory_digest([case_id])
+  nonterminal = [
+      (1, {"mode": "target", "case_ids": [case_id], "case_inventory_digest": case_digest, "monotonic_ms": 0}),
+      (2, {"case_ids": [case_id], "case_inventory_digest": case_digest, "monotonic_ms": 1}),
+      (3, {"case_id": case_id, "monotonic_ms": 2}),
+      (4, {"case_id": case_id, "state": "passed", "monotonic_ms": 3, "message": None}),
+  ]
+  frames = [
+      target_module.encode_frame(kind, sequence, payload, version=2)
+      for sequence, (kind, payload) in enumerate(nonterminal)
+  ]
+  terminal = {
+      "state": "passed",
+      "case_inventory_digest": case_digest,
+      "counts": {"passed": 1, "failed": 0, "skipped": 0, "error": 0, "timeout": 0},
+      "event_stream_digest": sha256(b"".join(frames)).hexdigest(),
+      "monotonic_ms": 4,
+  }
+  frames.append(target_module.encode_frame(5, len(frames), terminal, version=2))
+  return b"".join(frames[:1]), b"".join(frames)
 
 
 def test_control_prepare_binds_snapshot_and_execute_consumes_before_denial(tmp_path: Path):
@@ -3029,6 +3057,93 @@ def test_target_discovery_rejects_a_synchronous_read_that_crosses_its_deadline(
     assert caught.value.code == "TEST_TRANSPORT_UNAVAILABLE"
     assert active.calls[-1] == ("close",)
     assert probe.closed
+
+  run(scenario())
+
+
+def test_v2_discovery_returns_host_inventory_and_only_first_frame_bytes_with_trailing_run(
+    tmp_path: Path,
+) -> None:
+  """The v2 handshake stops at the first complete inventory frame, not EOF."""
+  async def scenario() -> None:
+    inventory_frame, stream = _v2_target_stream()
+    active = FakeTransport([stream])
+    probe = FakeProbeClient()
+    runner = target_module.TargetTestRunner(
+        (tmp_path / "v2-discovery" / "runs").absolute(),
+        probe,
+        FakeFlashWorkflow(),
+        lambda _name: active,
+    )
+    host_identity = _target_evidence_identity()
+
+    discovered = await runner.discover(
+        transport="mailbox",
+        transport_config=MAILBOX_PROJECT_CONFIG,
+        support_profile=TARGET_SUPPORT,
+        deadline=time.monotonic() + 1.0,
+        protocol="stm32-target-frame/2",
+        host_identity=host_identity,
+        expected_identity=IDENTITY,
+        expected_firmware={
+            "build_id": host_identity.build_id,
+            "elf_sha256": host_identity.elf_sha256,
+            "revision": host_identity.git_commit,
+            "inventory_digest": calculate_inventory_digest(
+                "target", host_identity, (V2_CASE_ID,)
+            ),
+            "case_inventory_digest": V2_CASE_INVENTORY_DIGEST,
+            "case_ids": (V2_CASE_ID,),
+        },
+    )
+
+    assert discovered["protocol"] == "stm32-target-frame/2"
+    assert discovered["raw"] == inventory_frame
+    assert discovered["raw"] != stream
+    assert discovered["case_inventory_digest"] == V2_CASE_INVENTORY_DIGEST
+    assert discovered["inventory"]["identity"] == host_identity.to_dict()
+    assert active.calls[-1] == ("close",)
+    assert probe.closed
+
+  run(scenario())
+
+
+def test_v2_prepare_persists_closed_protocol_and_case_inventory_bindings(
+    tmp_path: Path,
+) -> None:
+  async def scenario() -> None:
+    runner = target_module.TargetTestRunner(
+        (tmp_path / "v2-prepare" / "runs").absolute(),
+        FakeProbeClient(),
+        FakeFlashWorkflow(),
+        lambda _name: FakeTransport([]),
+    )
+    prepared = await runner.prepare(
+        workspace_id=WORKSPACE_ID,
+        project_id=PROJECT_ID,
+        session_id=SESSION_ID,
+        revision=REVISION,
+        input_snapshot_sha256="9" * 64,
+        target=IDENTITY,
+        probe_serial_hash=PROBE_HASH,
+        elf_path="build/app.elf",
+        elf_sha256="e" * 64,
+        build_id="b" * 64,
+        inventory_digest=_target_inventory_digest(),
+        case_inventory_digest=V2_CASE_INVENTORY_DIGEST,
+        protocol="stm32-target-frame/2",
+        transport="mailbox",
+        transport_config=MAILBOX_PROJECT_CONFIG,
+        support_profile=TARGET_SUPPORT,
+        cases=(V2_CASE_ID,),
+        timeout_ms=1000,
+        now=datetime(2026, 8, 25, tzinfo=timezone.utc),
+    )
+
+    record = runner.load_prepared(prepared.action_digest).binding
+    assert record["protocol"] == "stm32-target-frame/2"
+    assert record["case_inventory_digest"] == V2_CASE_INVENTORY_DIGEST
+    assert record["inventory_digest"] == _target_inventory_digest()
 
   run(scenario())
 

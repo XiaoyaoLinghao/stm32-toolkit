@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 import re
 from hashlib import sha256
-from typing import Callable
+from typing import Callable, Mapping
 from datetime import datetime, timezone
 
 from stm32_toolkit.build.identity import (
@@ -37,6 +37,11 @@ from stm32_toolkit.testing.model import (
     TestRunManifest,
     host_target_device,
     calculate_inventory_digest,
+)
+from stm32_toolkit.testing.protocol import (
+    TARGET_FRAME_V1,
+    TARGET_FRAME_V2,
+    calculate_case_inventory_digest,
 )
 from stm32_toolkit.testing.publication import TestRunPublisher, TestRunRepository
 from stm32_toolkit.testing.replay import (
@@ -367,6 +372,13 @@ def _target_project_config(target: object) -> tuple[str, dict[str, object]]:
     return transport, value
 
 
+def _target_protocol(target: object) -> str:
+    protocol = getattr(target, "protocol", TARGET_FRAME_V1)
+    if protocol not in {TARGET_FRAME_V1, TARGET_FRAME_V2}:
+        raise TestProtocolError("TEST_FRAME_VERSION_INVALID", "Target frame protocol is unsupported")
+    return protocol
+
+
 def _target_support_profile(model: object, facts: object, project: Mapping[str, object]) -> dict[str, object]:
     target = getattr(getattr(model, "testing", None), "target", None)
     transport, _ = _target_project_config(target)
@@ -401,15 +413,18 @@ def _target_support_profile(model: object, facts: object, project: Mapping[str, 
     return profile
 
 
-def _target_state(context: TestingWorkflowContext) -> tuple[_WorkflowState, object, object, str, dict[str, object], dict[str, object]]:
+def _target_state(context: TestingWorkflowContext) -> tuple[
+    _WorkflowState, object, object, str, str, dict[str, object], dict[str, object]
+]:
     state = _make_state(context, with_identity=False, require_host=False)
     facts = load_fresh_firmware_facts(context.project_root)
     target = getattr(getattr(facts.model, "testing", None), "target", None)
     if target is None:
         raise _WorkflowFailure("PROJECT_TESTING_NOT_CONFIGURED")
     transport, project_config = _target_project_config(target)
+    protocol = _target_protocol(target)
     support = _target_support_profile(facts.model, facts, project_config)
-    return state, facts.model, facts, transport, project_config, support
+    return state, facts.model, facts, transport, protocol, project_config, support
 
 
 def _target_supervisor(
@@ -451,7 +466,7 @@ async def target_test_prepare(
     try:
         if not isinstance(probe_id, str) or not probe_id or not _valid_physical_case_ids(case_ids):
             raise TestProtocolError("TEST_PROTOCOL_INVALID", "Physical Target request is invalid")
-        state, model, facts, transport, project_config, support = _target_state(context)
+        state, model, facts, transport, protocol, project_config, support = _target_state(context)
         probe_hash = sha256(probe_id.encode("utf-8")).hexdigest()
         expected_identity = EvidenceIdentity(
             state.workspace.workspace_id, str(model.logical_project_id),
@@ -460,6 +475,7 @@ async def target_test_prepare(
             facts.git_dirty,
         )
         inventory_digest = calculate_inventory_digest("target", expected_identity, case_ids)
+        case_inventory_digest = calculate_case_inventory_digest(case_ids)
         supervisor = _target_supervisor(
             context, state, probe_id=probe_id, level=OperationLevel.OBSERVE,
             support=support, seams=_seams,
@@ -488,7 +504,7 @@ async def target_test_prepare(
             state.workspace.session_root / "target-authorizations", client,
             object(), lambda _: object(), owns_probe=False,
         )
-        prepared = await runner.prepare(
+        binding = dict(
             workspace_id=state.workspace.workspace_id,
             project_id=str(model.logical_project_id),
             session_id=state.workspace.session_id,
@@ -506,13 +522,23 @@ async def target_test_prepare(
             cases=case_ids,
             timeout_ms=int(getattr(getattr(model.testing, "target"), "timeout_seconds")) * 1000,
         )
-        return OperationResult.success(_TARGET_PREPARE_OPERATION, {
+        if protocol == TARGET_FRAME_V2:
+            binding.update(
+                protocol=protocol,
+                case_inventory_digest=case_inventory_digest,
+                git_dirty=facts.git_dirty,
+            )
+        prepared = await runner.prepare(**binding)
+        result = {
             "authorized_action_digest": prepared.action_digest,
             "expires_at_utc": prepared.expires_at_utc.strftime("%Y-%m-%dT%H:%M:%S.%fZ"),
             "inventory_digest": inventory_digest,
             "case_ids": list(case_ids),
             "probe_serial_hash": probe_hash,
-        })
+        }
+        if protocol == TARGET_FRAME_V2:
+            result.update({"protocol": protocol, "case_inventory_digest": case_inventory_digest})
+        return OperationResult.success(_TARGET_PREPARE_OPERATION, result)
     except Exception as error:
         return _exception_result(_TARGET_PREPARE_OPERATION, error)
     finally:
@@ -545,7 +571,7 @@ async def target_test_execute(
         binding = consumed.binding
         if datetime.now(timezone.utc) >= loaded.expires_at_utc:
             raise TargetRunError("TEST_AUTHORIZATION_INVALID", "Target authorization expired")
-        state, model, facts, transport, project_config, support = _target_state(context)
+        state, model, facts, transport, protocol, project_config, support = _target_state(context)
         probe_hash = sha256(probe_id.encode("utf-8")).hexdigest()
         expected_identity = EvidenceIdentity(
             state.workspace.workspace_id, str(model.logical_project_id),
@@ -556,6 +582,7 @@ async def target_test_execute(
         expected_inventory_digest = calculate_inventory_digest(
             "target", expected_identity, tuple(binding["cases"])
         )
+        expected_case_inventory_digest = calculate_case_inventory_digest(tuple(binding["cases"]))
         if binding["probe_serial_hash"] != probe_hash:
             raise TargetRunError("TEST_IDENTITY_MISMATCH", "Physical probe identity changed")
         if (
@@ -571,6 +598,14 @@ async def target_test_execute(
             or binding["transport_config"] != project_config
             or binding["support_profile"] != support
             or binding["inventory_digest"] != expected_inventory_digest
+            or binding.get("protocol", TARGET_FRAME_V1) != protocol
+            or (
+                protocol == TARGET_FRAME_V2
+                and (
+                    binding.get("case_inventory_digest") != expected_case_inventory_digest
+                    or binding.get("git_dirty") != facts.git_dirty
+                )
+            )
         ):
             raise TargetRunError("TEST_INVENTORY_CHANGED", "Physical Target inputs changed")
         supervisor = _target_supervisor(

@@ -36,11 +36,14 @@ from stm32_toolkit.testing.model import (
     TestInventory,
     TestRunManifest,
     TEST_SCHEMA,
+    calculate_inventory_digest,
     protocol_error,
 )
 from stm32_toolkit.testing.protocol import (
     TARGET_FRAME_V1,
     TARGET_FRAME_V2,
+    assemble_target_v2_run,
+    calculate_case_inventory_digest,
     validate_event_payload,
 )
 from stm32_toolkit.testing.transports.base import format_ram_bounds, ram_regions
@@ -255,6 +258,36 @@ def _deep_thaw(value: object) -> object:
     if isinstance(value, tuple):
         return [_deep_thaw(member) for member in value]
     return value
+
+
+def _target_protocol_version(protocol: object) -> int:
+    if protocol in (None, TARGET_FRAME_V1):
+        return FRAME_VERSION
+    if protocol == TARGET_FRAME_V2:
+        return FRAME_V2_VERSION
+    raise TargetRunError("TEST_FRAME_VERSION_INVALID", "Target frame protocol is unsupported")
+
+
+def _host_identity_from_binding(binding: Mapping[str, object]) -> EvidenceIdentity:
+    target = binding.get("target")
+    if not isinstance(target, Mapping):
+        raise TargetRunError("TEST_IDENTITY_MISMATCH", "Target identity binding is invalid")
+    input_snapshot = binding.get("input_snapshot_sha256", "0" * 64)
+    git_dirty = binding.get("git_dirty", False)
+    try:
+        return EvidenceIdentity(
+            workspace_id=str(binding["workspace_id"]),
+            project_id=str(binding["project_id"]),
+            session_id=str(binding["session_id"]),
+            build_id=str(binding["build_id"]),
+            elf_sha256=str(binding["elf_sha256"]),
+            target_device=str(target["target_id"]),
+            input_snapshot_sha256=str(input_snapshot),
+            git_commit=str(binding["revision"]),
+            git_dirty=git_dirty,
+        )
+    except (KeyError, TypeError, ValueError) as error:
+        raise TargetRunError("TEST_IDENTITY_MISMATCH", "Host Target identity binding is invalid") from error
 
 
 @dataclass(frozen=True)
@@ -1027,17 +1060,62 @@ class TargetTestRunner:
             raise cleanup_error
 
     async def prepare(self, *, now: datetime | None = None, **binding: object) -> PreparedTargetRun:
-        required = {
+        legacy_required = {
             "workspace_id", "project_id", "session_id", "revision", "target", "probe_serial_hash",
             "elf_path", "elf_sha256", "build_id", "inventory_digest", "transport",
             "transport_config", "support_profile", "cases", "timeout_ms",
         }
-        if set(binding) not in (required, required | {"input_snapshot_sha256"}):
+        protocol = binding.get("protocol", TARGET_FRAME_V1)
+        try:
+            protocol_version = _target_protocol_version(protocol)
+        except TargetRunError as error:
+            raise error
+        v2_required = legacy_required | {"protocol", "case_inventory_digest"}
+        allowed = (
+            legacy_required,
+            legacy_required | {"input_snapshot_sha256"},
+            legacy_required | {"protocol"},
+            legacy_required | {"protocol", "input_snapshot_sha256"},
+            v2_required,
+            v2_required | {"input_snapshot_sha256"},
+            v2_required | {"git_dirty"},
+            v2_required | {"input_snapshot_sha256", "git_dirty"},
+        )
+        if set(binding) not in allowed or (
+            protocol_version == FRAME_VERSION and set(binding) not in (
+                legacy_required,
+                legacy_required | {"input_snapshot_sha256"},
+                legacy_required | {"protocol"},
+                legacy_required | {"protocol", "input_snapshot_sha256"},
+            )
+        ) or (
+            protocol_version == FRAME_V2_VERSION and set(binding) not in (
+                v2_required,
+                v2_required | {"input_snapshot_sha256"},
+                v2_required | {"git_dirty"},
+                v2_required | {"input_snapshot_sha256", "git_dirty"},
+            )
+        ):
             raise TargetRunError("TEST_PROTOCOL_INVALID", "Target run binding is not closed")
         for digest in ("probe_serial_hash", "elf_sha256", "build_id", "inventory_digest"):
             value = binding[digest]
             if not isinstance(value, str) or len(value) != 64 or any(c not in "0123456789abcdef" for c in value):
                 raise TargetRunError("TEST_PROTOCOL_INVALID", f"{digest} is invalid")
+        if protocol_version == FRAME_V2_VERSION:
+            case_digest = binding["case_inventory_digest"]
+            if (
+                not isinstance(case_digest, str)
+                or len(case_digest) != 64
+                or any(c not in "0123456789abcdef" for c in case_digest)
+            ):
+                raise TargetRunError("TEST_PROTOCOL_INVALID", "case_inventory_digest is invalid")
+            try:
+                if case_digest != calculate_case_inventory_digest(binding["cases"]):
+                    raise TargetRunError("TEST_INVENTORY_CHANGED", "Target case inventory changed")
+            except TestProtocolError as error:
+                raise TargetRunError(error.code, error.message) from error
+            if "git_dirty" in binding and type(binding["git_dirty"]) is not bool:
+                raise TargetRunError("TEST_PROTOCOL_INVALID", "git_dirty is invalid")
         if type(binding["timeout_ms"]) is not int or not 1 <= binding["timeout_ms"] <= 300_000:
             raise TargetRunError("TEST_PROTOCOL_INVALID", "Target timeout is invalid")
         instant = now or datetime.now(timezone.utc)
@@ -1045,8 +1123,12 @@ class TargetTestRunner:
             raise TargetRunError("TEST_PROTOCOL_INVALID", "Target run time must be UTC aware")
         nonce = secrets.token_hex(32)
         expires = instant.astimezone(timezone.utc) + timedelta(minutes=5)
+        persisted_binding = dict(binding)
+        if protocol_version == FRAME_VERSION:
+            # Explicit v1 is normalized back to the accepted legacy record shape.
+            persisted_binding.pop("protocol", None)
         full = {
-            **binding,
+            **persisted_binding,
             "cases": list(binding["cases"]),
             "nonce": nonce,
             "prepared_at_utc": instant.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ"),
@@ -1167,14 +1249,44 @@ class TargetTestRunner:
 
     @staticmethod
     def _validate_prepared_record(record: Mapping[str, object]) -> None:
-        required = {
+        legacy_required = {
             "workspace_id", "project_id", "session_id", "revision", "target",
             "probe_serial_hash", "elf_path", "elf_sha256", "build_id", "inventory_digest",
             "transport", "transport_config", "support_profile", "cases", "timeout_ms", "nonce",
             "prepared_at_utc", "expires_at_utc",
         }
         try:
-            if set(record) not in (required, required | {"input_snapshot_sha256"}):
+            protocol = record.get("protocol", TARGET_FRAME_V1)
+            try:
+                protocol_version = _target_protocol_version(protocol)
+            except TargetRunError as error:
+                raise ValueError from error
+            v2_required = legacy_required | {"protocol", "case_inventory_digest"}
+            allowed = (
+                legacy_required,
+                legacy_required | {"input_snapshot_sha256"},
+                legacy_required | {"protocol"},
+                legacy_required | {"protocol", "input_snapshot_sha256"},
+                v2_required,
+                v2_required | {"input_snapshot_sha256"},
+                v2_required | {"git_dirty"},
+                v2_required | {"input_snapshot_sha256", "git_dirty"},
+            )
+            if set(record) not in allowed:
+                raise ValueError
+            if protocol_version == FRAME_VERSION and set(record) not in (
+                legacy_required,
+                legacy_required | {"input_snapshot_sha256"},
+                legacy_required | {"protocol"},
+                legacy_required | {"protocol", "input_snapshot_sha256"},
+            ):
+                raise ValueError
+            if protocol_version == FRAME_V2_VERSION and set(record) not in (
+                v2_required,
+                v2_required | {"input_snapshot_sha256"},
+                v2_required | {"git_dirty"},
+                v2_required | {"input_snapshot_sha256", "git_dirty"},
+            ):
                 raise ValueError
             for field in ("workspace_id", "project_id", "session_id", "revision", "elf_path"):
                 if not isinstance(record[field], str) or not record[field]:
@@ -1184,6 +1296,17 @@ class TargetTestRunner:
                 if not isinstance(value, str) or len(value) != 64 or any(
                     character not in "0123456789abcdef" for character in value
                 ):
+                    raise ValueError
+            if protocol_version == FRAME_V2_VERSION:
+                case_digest = record["case_inventory_digest"]
+                if (
+                    not isinstance(case_digest, str)
+                    or len(case_digest) != 64
+                    or any(character not in "0123456789abcdef" for character in case_digest)
+                    or case_digest != calculate_case_inventory_digest(record["cases"])
+                ):
+                    raise ValueError
+                if "git_dirty" in record and type(record["git_dirty"]) is not bool:
                     raise ValueError
             if "input_snapshot_sha256" in record:
                 value = record["input_snapshot_sha256"]
@@ -1252,6 +1375,7 @@ class TargetTestRunner:
                     raise TargetRunError("TEST_AUTHORIZATION_INVALID", "Target authorization value is invalid")
                 binding = consumed.binding
                 action_digest = consumed.action_digest
+            protocol_version = _target_protocol_version(binding.get("protocol", TARGET_FRAME_V1))
             physical_provenance = consumed.provenance if consumed is not None else None
             try:
                 expires_at = datetime.fromisoformat(
@@ -1380,14 +1504,18 @@ class TargetTestRunner:
                 ),
                 binding,
             )
-            decoder = TargetFrameDecoder()
-            validator = TargetRunValidator(
-                TargetRunBinding(
-                    str(binding["inventory_digest"]),
-                    str(binding["build_id"]),
-                    str(binding["elf_sha256"]),
-                    str(dict(binding["target"])["target_id"]),
+            decoder = TargetFrameDecoder(expected_version=protocol_version)
+            validator = (
+                TargetRunValidator(
+                    TargetRunBinding(
+                        str(binding["inventory_digest"]),
+                        str(binding["build_id"]),
+                        str(binding["elf_sha256"]),
+                        str(dict(binding["target"])["target_id"]),
+                    )
                 )
+                if protocol_version == FRAME_VERSION
+                else None
             )
             async for chunk in _poll_transport_chunks(
                 transport,
@@ -1405,7 +1533,8 @@ class TargetTestRunner:
                     decoded = decoder.feed(chunk)
                     for frame in decoded:
                         frames.append(frame)
-                        validator.accept(frame)
+                        if validator is not None:
+                            validator.accept(frame)
                 except TestProtocolError as error:
                     raise TargetRunError(error.code, error.message) from error
                 _require_before_deadline(
@@ -1413,7 +1542,7 @@ class TargetTestRunner:
                     code="TEST_TIMEOUT",
                     message="Target output deadline elapsed",
                 )
-                if validator.is_terminal:
+                if validator is not None and validator.is_terminal:
                     break
             _require_before_deadline(
                 deadline=deadline,
@@ -1422,23 +1551,13 @@ class TargetTestRunner:
             )
             try:
                 decoder.finish()
-                validator.finish()
+                if validator is not None:
+                    validator.finish()
                 _require_before_deadline(
                     deadline=deadline,
                     code="TEST_TIMEOUT",
                     message="Target output deadline elapsed",
                 )
-                inventory_payload = _deep_thaw(frames[0].payload)
-                assert isinstance(inventory_payload, dict)
-                run_inventory = TestInventory(
-                    mode=inventory_payload["mode"],
-                    identity=EvidenceIdentity.from_dict(inventory_payload["identity"]),
-                    case_ids=tuple(inventory_payload["case_ids"]),
-                    inventory_digest=inventory_payload["inventory_digest"],
-                    discovered_at_utc=inventory_payload["discovered_at_utc"],
-                )
-                identity = run_inventory.identity
-                expected_cases = tuple(binding["cases"])
                 final_transport_identity = _closed_transport_identity(
                     await _invoke_before_deadline(
                         transport.identity,
@@ -1448,18 +1567,57 @@ class TargetTestRunner:
                     ),
                     binding,
                 )
-                if (
-                    run_inventory.mode != "target"
-                    or run_inventory.case_ids != expected_cases
-                    or tuple(frames[1].payload["case_ids"]) != expected_cases
-                    or tuple(
-                        str(frame.payload["case_id"]) for frame in frames if frame.kind == 4
-                    ) != expected_cases
-                    or final_transport_identity != transport_identity
-                ):
+                if final_transport_identity != transport_identity:
                     raise TargetRunError(
-                        "TEST_IDENTITY_MISMATCH", "Target inventory, cases, or transport changed"
+                        "TEST_IDENTITY_MISMATCH", "Target transport identity changed"
                     )
+                expected_cases = tuple(binding["cases"])
+                if protocol_version == FRAME_V2_VERSION:
+                    if not frames or frames[0].kind != 1:
+                        raise TargetRunError(
+                            "TEST_EVENT_SEQUENCE_INVALID", "v2 target inventory is missing"
+                        )
+                    inventory_payload = _deep_thaw(frames[0].payload)
+                    assert isinstance(inventory_payload, dict)
+                    if (
+                        tuple(inventory_payload["case_ids"]) != expected_cases
+                        or inventory_payload["case_inventory_digest"]
+                        != binding["case_inventory_digest"]
+                        or calculate_case_inventory_digest(expected_cases)
+                        != binding["case_inventory_digest"]
+                    ):
+                        raise TargetRunError(
+                            "TEST_INVENTORY_CHANGED", "Target inventory or cases changed"
+                        )
+                    identity = _host_identity_from_binding(binding)
+                    if calculate_inventory_digest(
+                        "target", identity, expected_cases
+                    ) != binding["inventory_digest"]:
+                        raise TargetRunError(
+                            "TEST_INVENTORY_CHANGED", "Host Target inventory changed"
+                        )
+                else:
+                    inventory_payload = _deep_thaw(frames[0].payload)
+                    assert isinstance(inventory_payload, dict)
+                    run_inventory = TestInventory(
+                        mode=inventory_payload["mode"],
+                        identity=EvidenceIdentity.from_dict(inventory_payload["identity"]),
+                        case_ids=tuple(inventory_payload["case_ids"]),
+                        inventory_digest=inventory_payload["inventory_digest"],
+                        discovered_at_utc=inventory_payload["discovered_at_utc"],
+                    )
+                    identity = run_inventory.identity
+                    if (
+                        run_inventory.mode != "target"
+                        or run_inventory.case_ids != expected_cases
+                        or tuple(frames[1].payload["case_ids"]) != expected_cases
+                        or tuple(
+                            str(frame.payload["case_id"]) for frame in frames if frame.kind == 4
+                        ) != expected_cases
+                    ):
+                        raise TargetRunError(
+                            "TEST_IDENTITY_MISMATCH", "Target inventory or cases changed"
+                        )
                 _require_before_deadline(
                     deadline=deadline,
                     code="TEST_TIMEOUT",
@@ -1473,6 +1631,10 @@ class TargetTestRunner:
                     or identity.elf_sha256 != binding["elf_sha256"]
                     or identity.target_device != dict(binding["target"])["target_id"]
                     or identity.git_commit != binding["revision"]
+                    or (
+                        "input_snapshot_sha256" in binding
+                        and identity.input_snapshot_sha256 != binding["input_snapshot_sha256"]
+                    )
                 ):
                     raise TargetRunError(
                         "TEST_IDENTITY_MISMATCH", "Target Test and Evidence identities do not match"
@@ -1505,40 +1667,56 @@ class TargetTestRunner:
                 code="TEST_TIMEOUT",
                 message="Target Evidence deadline elapsed",
             )
-            run_start = frames[1].payload
-            terminal = frames[-1].payload
-            case_starts = {
-                str(frame.payload["case_id"]): frame.payload
-                for frame in frames if frame.kind == 3
-            }
-            cases = tuple(
-                TestCaseResult(
-                    str(frame.payload["case_id"]),
-                    str(frame.payload["state"]),
-                    str(case_starts[str(frame.payload["case_id"])]["started_at_utc"]),
-                    str(frame.payload["ended_at_utc"]),
-                    int(frame.payload["duration_ms"]),
-                    frame.payload["message"],
-                    None,
-                    None,
+            if protocol_version == FRAME_V2_VERSION:
+                try:
+                    manifest = assemble_target_v2_run(
+                        identity=identity,
+                        run_id=f"target-v2-{action_digest[:32]}",
+                        started_at_utc=instant.strftime("%Y-%m-%dT%H:%M:%S.%fZ"),
+                        frames=tuple(frames),
+                        raw_events=raw_artifact,
+                        transport=str(binding["transport"]),
+                        timeout_ms=int(binding["timeout_ms"]),
+                    )
+                except TestProtocolError as error:
+                    raise TargetRunError(error.code, error.message) from error
+                run_start = frames[1].payload
+                terminal = frames[-1].payload
+            else:
+                run_start = frames[1].payload
+                terminal = frames[-1].payload
+                case_starts = {
+                    str(frame.payload["case_id"]): frame.payload
+                    for frame in frames if frame.kind == 3
+                }
+                cases = tuple(
+                    TestCaseResult(
+                        str(frame.payload["case_id"]),
+                        str(frame.payload["state"]),
+                        str(case_starts[str(frame.payload["case_id"])]["started_at_utc"]),
+                        str(frame.payload["ended_at_utc"]),
+                        int(frame.payload["duration_ms"]),
+                        frame.payload["message"],
+                        None,
+                        None,
+                    )
+                    for frame in frames if frame.kind == 4
                 )
-                for frame in frames if frame.kind == 4
-            )
-            manifest = TestRunManifest(
-                TEST_SCHEMA,
-                str(run_start["run_id"]),
-                "target",
-                str(terminal["state"]),
-                identity,
-                str(binding["transport"]),
-                cases,
-                str(run_start["started_at_utc"]),
-                str(terminal["ended_at_utc"]),
-                int(terminal["duration_ms"]),
-                None,
-                None,
-                raw_artifact,
-            )
+                manifest = TestRunManifest(
+                    TEST_SCHEMA,
+                    str(run_start["run_id"]),
+                    "target",
+                    str(terminal["state"]),
+                    identity,
+                    str(binding["transport"]),
+                    cases,
+                    str(run_start["started_at_utc"]),
+                    str(terminal["ended_at_utc"]),
+                    int(terminal["duration_ms"]),
+                    None,
+                    None,
+                    raw_artifact,
+                )
             _require_before_deadline(
                 deadline=deadline,
                 code="TEST_TIMEOUT",
@@ -1560,7 +1738,7 @@ class TargetTestRunner:
                 envelope = EvidenceEnvelope(
                     identity=identity,
                     operation="target-test-run",
-                    produced_at_utc=str(terminal["ended_at_utc"]),
+                    produced_at_utc=manifest.ended_at_utc,
                     parents=(),
                     artifacts=(raw_artifact, manifest_artifact),
                     metadata={
@@ -1575,7 +1753,7 @@ class TargetTestRunner:
                 envelope = EvidenceEnvelope(
                     identity=identity,
                     operation="target-test-physical",
-                    produced_at_utc=str(terminal["ended_at_utc"]),
+                    produced_at_utc=manifest.ended_at_utc,
                     parents=(),
                     artifacts=(manifest_artifact, raw_artifact),
                     metadata={
@@ -1685,6 +1863,8 @@ class TargetTestRunner:
         self, *, transport: str, transport_config: Mapping[str, object],
         support_profile: Mapping[str, object], deadline: float,
         expected_identity: Mapping[str, object], expected_firmware: Mapping[str, object],
+        protocol: str = TARGET_FRAME_V1,
+        host_identity: EvidenceIdentity | Mapping[str, object] | None = None,
     ) -> Mapping[str, object]:
         active: object | None = None
         primary_error: TargetRunError | None = None
@@ -1694,6 +1874,15 @@ class TargetTestRunner:
             else time.monotonic()
         )
         try:
+            protocol_version = _target_protocol_version(protocol)
+            firmware_keys = (
+                {"build_id", "elf_sha256", "revision", "inventory_digest"}
+                if protocol_version == FRAME_VERSION
+                else {
+                    "build_id", "elf_sha256", "revision", "inventory_digest",
+                    "case_inventory_digest", "case_ids",
+                }
+            )
             if (
                 type(deadline) not in {int, float}
                 or not math.isfinite(deadline)
@@ -1713,8 +1902,7 @@ class TargetTestRunner:
                     for character in expected_identity["probe_serial_hash"]
                 )
                 or not isinstance(expected_firmware, Mapping)
-                or set(expected_firmware)
-                != {"build_id", "elf_sha256", "revision", "inventory_digest"}
+                or set(expected_firmware) != firmware_keys
                 or not isinstance(expected_firmware["revision"], str)
                 or not expected_firmware["revision"]
                 or any(
@@ -1725,6 +1913,10 @@ class TargetTestRunner:
                         for character in expected_firmware[field]
                     )
                     for field in ("build_id", "elf_sha256", "inventory_digest")
+                )
+                or (
+                    protocol_version == FRAME_V2_VERSION
+                    and not isinstance(host_identity, (EvidenceIdentity, Mapping))
                 )
             ):
                 raise ValueError("Target discovery binding is invalid")
@@ -1796,7 +1988,10 @@ class TargetTestRunner:
                 nonlocal observed_transport_identity
                 observed_transport_identity = _closed_transport_identity(active.identity(), binding)
 
-            decoder = TargetFrameDecoder(max_stream_bytes=65_536)
+            decoder = TargetFrameDecoder(
+                max_stream_bytes=65_536,
+                expected_version=protocol_version,
+            )
             frames: list[TargetFrame] = []
             raw = bytearray()
             async for chunk in _poll_transport_chunks(
@@ -1812,8 +2007,101 @@ class TargetTestRunner:
                 deadline_completes_collection=True,
                 post_read=observe_transport_identity,
             ):
+                if protocol_version == FRAME_V2_VERSION:
+                    first: TargetFrame | None = None
+                    for byte in chunk:
+                        decoded = decoder.feed(bytes((byte,)))
+                        if decoded:
+                            first = decoded[0]
+                            break
+                    if first is None:
+                        continue
+                    if first.kind != 1:
+                        raise TestProtocolError(
+                            "TEST_EVENT_SEQUENCE_INVALID",
+                            "Target discovery must begin with an inventory frame",
+                        )
+                    # The inventory frame is the complete v2 handshake.  Do not
+                    # retain run bytes that happened to share this transport read.
+                    frames.append(first)
+                    raw.extend(first.raw_bytes)
+                    break
+                decoded = decoder.feed(chunk)
                 raw.extend(chunk)
-                frames.extend(decoder.feed(chunk))
+                frames.extend(decoded)
+
+            if protocol_version == FRAME_V2_VERSION:
+                if len(frames) != 1 or frames[0].kind != 1:
+                    raise TestProtocolError(
+                        "TEST_EVENT_SEQUENCE_INVALID",
+                        "Target discovery must return one complete v2 inventory frame",
+                    )
+                inventory_payload = _deep_thaw(frames[0].payload)
+                assert isinstance(inventory_payload, dict)
+                if not isinstance(host_identity, EvidenceIdentity):
+                    try:
+                        host_identity = EvidenceIdentity.from_dict(host_identity)
+                    except (TypeError, ValueError) as error:
+                        raise TestProtocolError(
+                            "TEST_IDENTITY_MISMATCH", "Host Target identity is invalid"
+                        ) from error
+                case_ids = inventory_payload.get("case_ids")
+                expected_case_ids = expected_firmware["case_ids"]
+                if (
+                    not isinstance(case_ids, list)
+                    or not isinstance(expected_case_ids, (list, tuple))
+                    or tuple(case_ids) != tuple(expected_case_ids)
+                    or inventory_payload.get("mode") != "target"
+                    or inventory_payload.get("case_inventory_digest")
+                    != expected_firmware["case_inventory_digest"]
+                ):
+                    raise TargetRunError(
+                        "TEST_INVENTORY_CHANGED", "Configured target inventory is unavailable"
+                    )
+                try:
+                    expected_case_digest = calculate_case_inventory_digest(case_ids)
+                except TestProtocolError as error:
+                    raise TestProtocolError(error.code, error.message) from error
+                if expected_case_digest != expected_firmware["case_inventory_digest"]:
+                    raise TargetRunError(
+                        "TEST_INVENTORY_CHANGED", "Configured target inventory is unavailable"
+                    )
+                if calculate_inventory_digest(
+                    "target", host_identity, tuple(case_ids)
+                ) != expected_firmware["inventory_digest"]:
+                    raise TargetRunError(
+                        "TEST_INVENTORY_CHANGED", "Configured target inventory is unavailable"
+                    )
+                inventory = TestInventory(
+                    mode="target",
+                    identity=host_identity,
+                    case_ids=tuple(case_ids),
+                    inventory_digest=expected_firmware["inventory_digest"],
+                    discovered_at_utc=datetime.now(timezone.utc).strftime(
+                        "%Y-%m-%dT%H:%M:%S.%fZ"
+                    ),
+                )
+                if (
+                    inventory.identity.build_id != firmware["build_id"]
+                    or inventory.identity.elf_sha256 != firmware["elf_sha256"]
+                    or inventory.identity.git_commit != firmware["revision"]
+                    or inventory.identity.target_device != target["target_id"]
+                ):
+                    raise TargetRunError(
+                        "TEST_TRANSPORT_UNAVAILABLE",
+                        "Configured target firmware is unavailable",
+                    )
+                if observed_transport_identity != transport_identity:
+                    raise TargetRunError(
+                        "TEST_TRANSPORT_UNAVAILABLE", "Target transport identity changed"
+                    )
+                return {
+                    "protocol": TARGET_FRAME_V2,
+                    "identity": transport_identity,
+                    "inventory": inventory.to_dict(),
+                    "case_inventory_digest": expected_case_digest,
+                    "raw": bytes(raw),
+                }
 
             decoder.finish()
             if len(frames) != 1 or frames[0].kind != 1:
