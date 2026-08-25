@@ -11,6 +11,7 @@ import subprocess
 import sys
 import threading
 import time
+from types import SimpleNamespace
 
 import pytest
 from stm32_toolkit.evidence import EvidenceIdentity, canonical_json_bytes
@@ -1916,6 +1917,371 @@ async def _r5_prepared_runner(
       now=instant,
   )
   return runner, prepared, instant, probe, evidence_store, workflow_calls
+
+
+async def _v2_prepared_runner(
+    tmp_path: Path,
+    transport: FakeTransport,
+    *,
+    timeout_ms: int = 1_000,
+    probe: FakeProbeClient | None = None,
+    flash_workflow: object | None = None,
+    transport_factory: object | None = None,
+):
+  from stm32_toolkit.evidence.store import EvidenceStore
+  from stm32_toolkit.testing.artifacts import TestArtifactCollector
+
+  project = tmp_path / "v2-project"
+  project.mkdir(parents=True)
+  evidence_store = EvidenceStore((tmp_path / "v2-evidence").absolute())
+  collector = TestArtifactCollector(
+      (tmp_path / "v2-results").absolute(), evidence_store, project_root=project,
+  )
+  workflow_calls = []
+
+  async def workflow(request):
+    workflow_calls.append(request)
+    return OperationResult.success("stm32_flash", {"status": "success"})
+
+  probe = probe or FakeProbeClient()
+  probe.identity = dict(IDENTITY)
+  flash = target_module.GuardedTargetFlashAdapter(
+      project_root=project,
+      data_root=(tmp_path / "v2-data").absolute(),
+      session_id=SESSION_ID,
+      probe_id=PROBE_SELECTOR,
+      workflow=flash_workflow or workflow,
+  )
+  runner = target_module.TargetTestRunner(
+      (tmp_path / "v2-runs").absolute(),
+      probe,
+      flash,
+      transport_factory or (lambda _name: transport),
+      artifact_collector=collector,
+  )
+  instant = datetime(2026, 8, 25, tzinfo=timezone.utc)
+  host_identity = _target_evidence_identity()
+  prepared = await runner.prepare(
+      workspace_id=WORKSPACE_ID,
+      project_id=PROJECT_ID,
+      session_id=SESSION_ID,
+      revision=REVISION,
+      input_snapshot_sha256="9" * 64,
+      target=IDENTITY,
+      probe_serial_hash=PROBE_HASH,
+      elf_path="build/app.elf",
+      elf_sha256="e" * 64,
+      build_id="b" * 64,
+      inventory_digest=calculate_inventory_digest(
+          "target", host_identity, (V2_CASE_ID,)
+      ),
+      protocol="stm32-target-frame/2",
+      case_inventory_digest=V2_CASE_INVENTORY_DIGEST,
+      git_dirty=False,
+      transport="mailbox",
+      transport_config=MAILBOX_PROJECT_CONFIG,
+      support_profile=TARGET_SUPPORT,
+      cases=(V2_CASE_ID,),
+      timeout_ms=timeout_ms,
+      now=instant,
+  )
+  return runner, prepared, instant, probe, evidence_store, workflow_calls
+
+
+def test_v2_execute_assembles_manifest_after_guarded_flash_and_transport(
+    tmp_path: Path,
+) -> None:
+  async def scenario() -> None:
+    _inventory, stream = _v2_target_stream()
+    transport = FakeTransport([stream])
+    runner, prepared, instant, probe, _store, workflow_calls = (
+        await _v2_prepared_runner(tmp_path, transport)
+    )
+
+    result = await runner.run(
+        prepared,
+        prepared.action_digest,
+        current_revision=REVISION,
+        current_inventory_digest=prepared.binding["inventory_digest"],
+        current_input_snapshot_sha256="9" * 64,
+        now=instant,
+    )
+
+    assert result["test_manifest"].state == "passed"
+    assert result["test_manifest"].raw_events.size_bytes == len(stream)
+    assert len(workflow_calls) == 1
+    assert [call[0] for call in transport.calls] == ["open", "read", "read", "close"]
+    assert probe.closed
+
+  run(scenario())
+
+
+@pytest.mark.parametrize(
+    ("mutation", "expected_code"),
+    [
+        ("revision", "TEST_INVENTORY_CHANGED"),
+        ("inventory", "TEST_INVENTORY_CHANGED"),
+        ("input_snapshot", "TEST_INVENTORY_CHANGED"),
+        ("target", "TEST_IDENTITY_MISMATCH"),
+        ("probe", "TEST_IDENTITY_MISMATCH"),
+    ],
+)
+def test_v2_execute_rejects_live_identity_and_inventory_drift(
+    tmp_path: Path, mutation: str, expected_code: str,
+) -> None:
+  async def scenario() -> None:
+    _inventory, stream = _v2_target_stream()
+    transport = FakeTransport([stream])
+    runner, prepared, instant, probe, _store, workflow_calls = (
+        await _v2_prepared_runner(tmp_path, transport)
+    )
+    current_revision = "d" * 40 if mutation == "revision" else REVISION
+    current_inventory = "f" * 64 if mutation == "inventory" else prepared.binding["inventory_digest"]
+    current_snapshot = "8" * 64 if mutation == "input_snapshot" else "9" * 64
+    if mutation == "target":
+      probe.identity["target_id"] = "target-drift"
+    if mutation == "probe":
+      probe.identity["probe_serial_hash"] = "a" * 64
+
+    with pytest.raises(target_module.TargetRunError) as caught:
+      await runner.run(
+          prepared,
+          prepared.action_digest,
+          current_revision=current_revision,
+          current_inventory_digest=current_inventory,
+          current_input_snapshot_sha256=current_snapshot,
+          now=instant,
+      )
+
+    assert caught.value.code == expected_code
+    assert workflow_calls == []
+    assert transport.calls == []
+    assert probe.closed
+
+  run(scenario())
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("project_id", "223e4567-e89b-42d3-a456-426614174000"),
+        ("elf_sha256", "f" * 64),
+        ("build_id", "d" * 64),
+    ],
+)
+def test_v2_execute_rejects_host_identity_binding_drift(
+    tmp_path: Path, field: str, value: str,
+) -> None:
+  async def scenario() -> None:
+    _inventory, stream = _v2_target_stream()
+    transport = FakeTransport([stream])
+    runner, prepared, instant, probe, _store, workflow_calls = (
+        await _v2_prepared_runner(tmp_path, transport)
+    )
+    binding = dict(prepared.binding)
+    binding[field] = value
+    consumed = target_module.ConsumedTargetRun(prepared.action_digest, binding)
+
+    with pytest.raises(target_module.TargetRunError) as caught:
+      await runner.run(
+          None,
+          prepared.action_digest,
+          current_revision=REVISION,
+          current_inventory_digest=prepared.binding["inventory_digest"],
+          current_input_snapshot_sha256="9" * 64,
+          consumed=consumed,
+          now=instant,
+      )
+
+    assert caught.value.code == "TEST_INVENTORY_CHANGED"
+    assert len(workflow_calls) == 1
+    assert [call[0] for call in transport.calls] == ["open", "read", "read", "close"]
+    assert probe.closed
+
+  run(scenario())
+
+
+def test_v2_execute_rejects_protocol_and_case_inventory_drift(
+    tmp_path: Path,
+) -> None:
+  async def scenario() -> None:
+    for field, value, expected in (
+        ("protocol", "stm32-target-frame/1", "TEST_FRAME_VERSION_INVALID"),
+        ("case_inventory_digest", "f" * 64, "TEST_INVENTORY_CHANGED"),
+    ):
+      _inventory, stream = _v2_target_stream()
+      transport = FakeTransport([stream])
+      runner, prepared, instant, probe, _store, workflow_calls = (
+          await _v2_prepared_runner(tmp_path / field, transport)
+      )
+      binding = dict(prepared.binding)
+      binding[field] = value
+      consumed = target_module.ConsumedTargetRun(prepared.action_digest, binding)
+
+      with pytest.raises(target_module.TargetRunError) as caught:
+        await runner.run(
+            None,
+            prepared.action_digest,
+            current_revision=REVISION,
+            current_inventory_digest=prepared.binding["inventory_digest"],
+            current_input_snapshot_sha256="9" * 64,
+            consumed=consumed,
+            now=instant,
+        )
+
+      assert caught.value.code == expected
+      assert len(workflow_calls) == 1
+      assert probe.closed
+
+  run(scenario())
+
+
+def test_v2_execute_rejects_transport_identity_drift(
+    tmp_path: Path,
+) -> None:
+  class DriftTransport(FakeTransport):
+    identity_calls = 0
+
+    def identity(self):
+      self.identity_calls += 1
+      value = super().identity()
+      if self.identity_calls > 1:
+        value["config_digest"] = "f" * 64
+      return value
+
+  async def scenario() -> None:
+    _inventory, stream = _v2_target_stream()
+    transport = DriftTransport([stream])
+    runner, prepared, instant, probe, _store, workflow_calls = (
+        await _v2_prepared_runner(tmp_path, transport)
+    )
+
+    with pytest.raises(target_module.TargetRunError) as caught:
+      await runner.run(
+          prepared,
+          prepared.action_digest,
+          current_revision=REVISION,
+          current_inventory_digest=prepared.binding["inventory_digest"],
+          current_input_snapshot_sha256="9" * 64,
+          now=instant,
+      )
+
+    assert caught.value.code == "TEST_IDENTITY_MISMATCH"
+    assert len(workflow_calls) == 1
+    assert probe.closed
+
+  run(scenario())
+
+
+def test_v2_execute_rejects_lease_provenance_drift(
+    tmp_path: Path,
+) -> None:
+  async def scenario() -> None:
+    _inventory, stream = _v2_target_stream()
+    transport = FakeTransport([stream])
+    probe = FakeProbeClient()
+    probe.endpoint = SimpleNamespace(lease_id="lease-current")
+    runner, prepared, instant, probe, _store, workflow_calls = (
+        await _v2_prepared_runner(tmp_path, transport, probe=probe)
+    )
+    provenance = target_module.PhysicalRunProvenance(
+        WORKSPACE_ID, SESSION_ID, PROBE_HASH, "flash-session", "lease-stale"
+    )
+    consumed = target_module.ConsumedTargetRun(
+        prepared.action_digest, prepared.binding, provenance
+    )
+
+    with pytest.raises(target_module.TargetRunError) as caught:
+      await runner.run(
+          None,
+          prepared.action_digest,
+          current_revision=REVISION,
+          current_inventory_digest=prepared.binding["inventory_digest"],
+          current_input_snapshot_sha256="9" * 64,
+          consumed=consumed,
+          now=instant,
+      )
+
+    assert caught.value.code == "TEST_IDENTITY_MISMATCH"
+    assert workflow_calls == []
+    assert transport.calls == []
+    assert probe.closed
+
+  run(scenario())
+
+
+def test_v2_authorization_is_single_use(tmp_path: Path) -> None:
+  async def scenario() -> None:
+    _inventory, stream = _v2_target_stream()
+    transport = FakeTransport([stream, b""])
+    runner, prepared, instant, probe, _store, workflow_calls = (
+        await _v2_prepared_runner(tmp_path, transport)
+    )
+    kwargs = {
+        "current_revision": REVISION,
+        "current_inventory_digest": prepared.binding["inventory_digest"],
+        "current_input_snapshot_sha256": "9" * 64,
+        "now": instant,
+    }
+
+    first = await runner.run(prepared, prepared.action_digest, **kwargs)
+    with pytest.raises(target_module.TargetRunError) as caught:
+      await runner.run(prepared, prepared.action_digest, **kwargs)
+
+    assert first["test_manifest"].state == "passed"
+    assert caught.value.code == "TEST_AUTHORIZATION_INVALID"
+    assert len(workflow_calls) == 1
+    assert probe.closed
+
+  run(scenario())
+
+
+def test_v2_retry_uses_fresh_capture_after_stale_bytes_fail(
+    tmp_path: Path,
+) -> None:
+  async def scenario() -> None:
+    _inventory, valid_stream = _v2_target_stream()
+    stale_stream = b"\x00" + valid_stream
+    transports = [FakeTransport([stale_stream]), FakeTransport([valid_stream])]
+    runner, first, instant, probe, _store, workflow_calls = (
+        await _v2_prepared_runner(
+            tmp_path,
+            transports[0],
+            transport_factory=lambda _name: transports.pop(0),
+        )
+    )
+    second_binding = {
+        key: value
+        for key, value in first.binding.items()
+        if key not in {"nonce", "prepared_at_utc", "expires_at_utc"}
+    }
+    second = await runner.prepare(**second_binding, now=instant)
+
+    with pytest.raises(target_module.TargetRunError) as caught:
+      await runner.run(
+          first,
+          first.action_digest,
+          current_revision=REVISION,
+          current_inventory_digest=first.binding["inventory_digest"],
+          current_input_snapshot_sha256="9" * 64,
+          now=instant,
+      )
+    result = await runner.run(
+        second,
+        second.action_digest,
+        current_revision=REVISION,
+        current_inventory_digest=second.binding["inventory_digest"],
+        current_input_snapshot_sha256="9" * 64,
+        now=instant,
+    )
+
+    assert caught.value.code == "TEST_PROTOCOL_INVALID"
+    assert result["test_manifest"].raw_events.size_bytes == len(valid_stream)
+    assert result["test_manifest"].raw_events.sha256 == sha256(valid_stream).hexdigest()
+    assert len(workflow_calls) == 2
+    assert probe.closed
+
+  run(scenario())
 
 
 def test_guarded_flash_rejects_raw_probe_selector_not_bound_to_authorized_hash(tmp_path: Path):

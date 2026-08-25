@@ -87,8 +87,18 @@ def _fixed_stream(
     return b"".join(frames)
 
 
-def _fixed_v2_stream(cases: tuple[str, ...] = CASES) -> bytes:
+def _fixed_v2_stream(
+    cases: tuple[str, ...] = CASES, *, case_state: str = "passed"
+) -> bytes:
     case_digest = calculate_case_inventory_digest(cases)
+    terminal_state = "failed" if case_state == "failed" else "passed"
+    counts = {
+        "passed": len(cases) if case_state == "passed" else 0,
+        "failed": len(cases) if case_state == "failed" else 0,
+        "skipped": 0,
+        "error": 0,
+        "timeout": 0,
+    }
     frames = [
         encode_frame(
             1,
@@ -122,7 +132,12 @@ def _fixed_v2_stream(cases: tuple[str, ...] = CASES) -> bytes:
                 encode_frame(
                     4,
                     sequence + 1,
-                    {"case_id": case_id, "state": "passed", "monotonic_ms": sequence + 1, "message": None},
+                    {
+                        "case_id": case_id,
+                        "state": case_state,
+                        "monotonic_ms": sequence + 1,
+                        "message": None,
+                    },
                     version=2,
                 ),
             ]
@@ -133,9 +148,9 @@ def _fixed_v2_stream(cases: tuple[str, ...] = CASES) -> bytes:
             5,
             len(frames),
             {
-                "state": "passed",
+                "state": terminal_state,
                 "case_inventory_digest": case_digest,
-                "counts": {"passed": len(cases), "failed": 0, "skipped": 0, "error": 0, "timeout": 0},
+                "counts": counts,
                 "event_stream_digest": sha256(b"".join(frames)).hexdigest(),
                 "monotonic_ms": sequence,
             },
@@ -191,6 +206,7 @@ class _SourceChangeBackend:
 
     def read_memory(self, address: int, length: int) -> bytes:
         assert self.board.flashed and address == 0x08000000
+        self.events.append(("flash.readback", self.level))
         return self.flash_segment[:length]
 
     def open_target_transport(
@@ -210,6 +226,7 @@ class _SourceChangeBackend:
         ).hexdigest()
         region = ram[0]
         self.remaining = self.stream
+        self.events.append(("transport.identity", self.level))
         return {
             "transport_id": "transport-r3",
             "identity": {
@@ -365,7 +382,7 @@ def test_prepare_never_reads_old_inventory_and_execute_proves_fixed_after_flash(
 
 
 def test_v2_physical_execution_binds_protocol_digests_and_publishes_after_flash(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     project, build = _fixed_project(tmp_path, protocol="stm32-target-frame/2")
     data_root = (tmp_path / "plugin-data").absolute()
@@ -393,6 +410,13 @@ def test_v2_physical_execution_binds_protocol_digests_and_publishes_after_flash(
             events=events,
         )
 
+    real_publish = workflows.TestRunPublisher.publish_target_physical
+
+    def record_publish(self, manifest, run_envelope):
+        events.append(("publish",))
+        return real_publish(self, manifest, run_envelope)
+
+    monkeypatch.setattr(workflows.TestRunPublisher, "publish_target_physical", record_publish)
     seams = workflows.TargetWorkflowSeams(_test_backend_factory=backend_factory)
     context = workflows.TestingWorkflowContext(project, data_root, "session-r3-v2")
     prepared = asyncio.run(
@@ -417,13 +441,103 @@ def test_v2_physical_execution_binds_protocol_digests_and_publishes_after_flash(
     assert executed.ok is True, (executed.to_dict(), events)
     assert board.flashed is True
     flash_index = next(index for index, event in enumerate(events) if event[:2] == ("flash", "modify"))
+    readback_index = next(
+        index for index, event in enumerate(events) if event[:2] == ("flash.readback", "modify")
+    )
+    postflash_identity_index = next(
+        index
+        for index, event in enumerate(events)
+        if index > flash_index and event == ("identity", "modify")
+    )
     open_index = next(index for index, event in enumerate(events) if event[0] == "transport.open")
+    transport_identity_index = next(
+        index for index, event in enumerate(events)
+        if event[:2] == ("transport.identity", "modify")
+    )
     read_index = next(index for index, event in enumerate(events) if event[0] == "transport.read")
-    assert flash_index < open_index < read_index
+    publish_index = next(index for index, event in enumerate(events) if event == ("publish",))
+    assert (
+        flash_index
+        < readback_index
+        < postflash_identity_index
+        < open_index
+        < transport_identity_index
+        < read_index
+        < publish_index
+    )
     shown = workflows.test_show(context, run_id=executed.data["run"]["run_id"])
     assert shown.ok is True
     assert shown.data["execution_source"] == "physical"
     assert shown.data["physical_transport_evidence"] is True
+
+
+def test_v2_failed_terminal_run_still_publishes_only_after_physical_evidence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project, build = _fixed_project(tmp_path, protocol="stm32-target-frame/2")
+    data_root = (tmp_path / "plugin-data").absolute()
+    workspace = WorkspacePaths.from_roots(
+        data_root, project, build["logicalProjectId"], "session-r3-v2-failed"
+    )
+    identity = _fixed_identity(build, workspace)
+    expected_digest = calculate_inventory_digest("target", identity, CASES)
+    case_digest = calculate_case_inventory_digest(CASES)
+    board = _Board()
+    events: list[tuple[object, ...]] = []
+    flash_segment = (project / "build/arm-debug/firmware.elf").read_bytes()[84:404]
+
+    def backend_factory() -> _SourceChangeBackend:
+        return _SourceChangeBackend(
+            board=board,
+            physical_identity={
+                "board_id": str(build["targetDevice"]),
+                "mcu": "stm32f407vg",
+                "target_id": str(build["targetDevice"]),
+                "probe_serial_hash": sha256(RAW_PROBE.encode()).hexdigest(),
+            },
+            stream=_fixed_v2_stream(case_state="failed"),
+            flash_segment=flash_segment,
+            events=events,
+        )
+
+    real_publish = workflows.TestRunPublisher.publish_target_physical
+
+    def record_publish(self, manifest, run_envelope):
+        events.append(("publish",))
+        return real_publish(self, manifest, run_envelope)
+
+    monkeypatch.setattr(workflows.TestRunPublisher, "publish_target_physical", record_publish)
+    seams = workflows.TargetWorkflowSeams(_test_backend_factory=backend_factory)
+    context = workflows.TestingWorkflowContext(project, data_root, "session-r3-v2-failed")
+    prepared = asyncio.run(
+        workflows.target_test_prepare(
+            context, probe_id=RAW_PROBE, case_ids=CASES, _seams=seams
+        )
+    )
+    assert prepared.ok is True
+    assert prepared.data["protocol"] == "stm32-target-frame/2"
+    assert prepared.data["case_inventory_digest"] == case_digest
+    assert prepared.data["inventory_digest"] == expected_digest
+
+    executed = asyncio.run(
+        workflows.target_test_execute(
+            context,
+            probe_id=RAW_PROBE,
+            authorized_action_digest=prepared.data["authorized_action_digest"],
+            _seams=seams,
+        )
+    )
+
+    assert executed.ok is True, (executed.to_dict(), events)
+    shown = workflows.test_show(context, run_id=executed.data["run"]["run_id"])
+    assert shown.ok is True
+    assert shown.data["run"]["state"] == "failed"
+    assert shown.data["execution_source"] == "physical"
+    assert shown.data["physical_transport_evidence"] is True
+    assert board.flashed is True
+    assert any(event[:2] == ("flash.readback", "modify") for event in events)
+    assert any(event[:2] == ("transport.identity", "modify") for event in events)
+    assert events.index(("transport.read", "modify")) < events.index(("publish",))
 
 
 def test_case_ids_are_mandatory_and_authorization_is_single_use(tmp_path: Path) -> None:

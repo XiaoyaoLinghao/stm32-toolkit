@@ -129,6 +129,24 @@ def test_target_replay_publisher_exposes_the_public_publication_entrypoint():
     assert callable(getattr(Publisher, "publish_target_replay", None))
 
 
+def test_replay_publication_cannot_claim_physical_transport_evidence(
+    tmp_path: Path,
+):
+    _fixture_value, store, project_root, results_root, descriptor, manifest = _bundle(
+        tmp_path, name="failed-before", operation_id="vs03-failed-before"
+    )
+
+    published = Publisher(store, project_root, results_root).publish_target_replay(
+        manifest, descriptor, IMPORT_WORKSPACE_ID
+    )
+
+    public = published.public_data()
+    assert public["execution_source"] == "replay"
+    assert public["physical_transport_evidence"] is False
+    assert published.root.metadata["execution_source"] == "replay"
+    assert published.root.metadata["physical_transport_evidence"] is False
+
+
 def test_target_replay_publishes_origin_manifest_and_import_metadata(tmp_path: Path):
     fixture, store, project_root, results_root, descriptor, manifest = _bundle(
         tmp_path, name="failed-before", operation_id="vs03-failed-before"
