@@ -128,6 +128,18 @@ The project correction is not Toolkit product logic. It is one local Git change 
 
 Static project tests compare the derived profile and C vector sequence against the original ARMCC DCD sequence, verify exactly one startup input, compile the startup with the frozen GCC flags, and prove the original profile/startup hashes unchanged.
 
+### 5.4 Revealed ARMCC source-syntax portability
+
+The first public dry-run after the authorized 38-path portability commit passed inspection but revealed nine deeper project-input blockers that the prior encoding refusal had masked: four ARMCC assembly functions in `Common/common.c`, four absolute-placement declarations in `MALLOC/malloc.c`, and one `#pragma import(__use_no_semihosting)` in `USER/usart1/usart1.c`. This is project portability, not a Toolkit defect or a reason to weaken the conservative scanner.
+
+A second digest-bound project proposal may change exactly those three UTF-8 paths from portability commit `b83b404c8da6993658586fa1b553d715f95993c1`:
+
+- Preserve the four public function signatures in `Common/common.c`, replacing their ARMCC bodies only with the CMSIS Cortex-M4 equivalents `__WFI()`, `__disable_irq()`, `__enable_irq()`, and `__set_MSP(addr)`. Compile and disassemble the unit; require the corresponding `wfi`, `cpsid i`, `cpsie i`, and `msr MSP` instructions and ordinary Thumb returns.
+- Preserve the internal SRAM allocator pool/table sizes and controller layout in `MALLOC/malloc.c`. Express `mem1base` with GCC four-byte alignment. Replace only the four ARMCC absolute-placement objects with compile-time pointer addresses consumed by `mallco_dev`: pool/table `0x68000000`/`0x68032000` for external SRAM and `0x10000000`/`0x1000F000` for CCM. Require the derived ends `0x68035200` and `0x1000FF00`, no arithmetic overflow/overlap, unchanged allocator sizes/order/functions, and no allocatable ELF section in the two reserved pointer-managed ranges.
+- Remove only the active ARMCC no-semihosting pragma in `USER/usart1/usart1.c`. Preserve `_sys_exit`, `fputc`, USART1 register behavior, and every other source token.
+
+Before apply, the proposal must compile the three units with the frozen GCC/include/define contract, produce a zero-blocker deterministic public dry-run in a disposable exact project tree, and record one canonical three-path Git binary diff with closed before/after hashes. Sol authorization binds the current project head/tree, proposal evidence SHA, diff SHA, and exactly three modified paths. Any byte drift invalidates it. The standing user direction authorizes this bounded local correction without extending to Toolkit, runtime, golden, hardware, or remote mutation.
+
 ## 6. Corrected H1 lifecycle
 
 1. Luna/max implements the Toolkit correction with RED/GREEN tests and commits it on the existing VS10-A implementation branch.
