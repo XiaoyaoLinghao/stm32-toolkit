@@ -147,6 +147,18 @@ Monitor Skill 只在调用启动器期间临时设置通用 data-root 环境，�
 服务恰好注册上述 48 个名称，顺序和 schema 也是 Agent-neutral 契约的一部分。项目操作不能
 通过参数偷偷替换 project root、环境、target、ELF、SVD、地址或服务凭据。
 
+## Target 测试与实体资格
+
+Target frame v1 保持 replay 兼容：旧项目的 v1 fixture、字节和回放语义继续保持不变。
+Target frame v2 是 host-bound 的。项目在显式 project root 的 `testing.target.protocol` 中
+选择 v2；host 会把完整的 project、固件、Probe、target、session、revision identity 与
+case-inventory digest 绑定，并且只有在受保护的 flash、readback 和 transport identity 检查
+完成后才发布实体结果。CLI 与 MCP 的 target prepare/execute 入口读取该项目配置，不接受调用
+方注入的 identity、ELF、target 或 address。
+
+VS10-A 的参考 transport 只有一个 `memory-mailbox` 路径。RTT、UART 和 semihosting 仍保留
+软件 adapter 及 replay 兼容协议选项，但尚未在指定参考硬件上进行实体资格化。
+
 ## 产品工具边界
 
 STM32CubeMX 负责生成新工程的 MCU、pin、clock、peripheral、startup、HAL/LL 和原生 CMake

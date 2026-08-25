@@ -160,6 +160,20 @@ The server exposes exactly these 48 names. Registration order and schemas are pa
 Agent-neutral contract; callers cannot smuggle an alternate project root, environment, target,
 ELF, SVD, address, or service credential through a project-bound operation.
 
+## Target testing and physical qualification
+
+Target-frame v1 remains replay-compatible: existing v1 fixtures, bytes, and replay semantics are
+preserved for legacy projects. Target-frame v2 is host-bound. A project selects it with
+`testing.target.protocol` in its explicit project root; the host binds the full project, firmware,
+probe, target, session, and revision identity together with the case-inventory digest, and only
+publishes a physical result after guarded flash, readback, and transport-identity checks. The CLI
+and MCP target prepare/execute entry points read that project configuration and do not accept
+caller-supplied identity, ELF, target, or address values.
+
+The VS10-A reference transport is the single `memory-mailbox` path. RTT, UART, and semihosting
+remain software adapters and replay-compatible protocol options, but they are not physically
+qualified on the named reference hardware.
+
 ## Product tool boundary
 
 STM32CubeMX generates new-project MCU, pin, clock, peripheral, startup, HAL/LL, and native CMake
