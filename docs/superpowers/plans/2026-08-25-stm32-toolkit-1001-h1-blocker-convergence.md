@@ -156,7 +156,7 @@ Retain `_normalize_keil_path` and all existing containment behavior.
 - Consumes: unchanged P0, exact 37-blocker plan, original XML/startup hashes.
 - Produces: one canonical Git binary diff SHA-256 and a closed manifest of target paths/before/after hashes; it does not mutate P0.
 
-- [ ] **Step 1: Verify all encoding preconditions in scratch.** For each exact blocker path, strict UTF-8 must fail and this round trip must hold:
+- [ ] **Step 1: Verify all encoding preconditions in scratch.** Require exactly 36 unique blocker paths and strict UTF-8 failure for every original. For the exact 34-path strict set, this round trip must hold:
 
 ```python
 decoded = original.decode("gb18030", errors="strict")
@@ -165,7 +165,7 @@ converted = decoded.encode("utf-8", errors="strict")
 assert converted.decode("utf-8", errors="strict") == decoded
 ```
 
-Preserve decoded newline characters and record before/after/text digests.
+For the two Section 5.1 pinned inputs, require exact path/size/SHA and the exact thirteen one-byte failure offset/value pairs. Use the frozen GB18030 valid-span decoder with literal ASCII `\xHH` emission only for those invalid bytes; require every event to occur after an optional-whitespace full-line `//`, no line continuation, no replacement character, strict UTF-8 output, identical valid-span scalars and newline characters, a reversible event manifest, and unchanged token-bearing text. Preserve decoded newline characters and record before/after/text or valid-span digests plus the conversion mode. Any path/hash/event drift stops before proposal generation.
 - [ ] **Step 2: Create and validate the derived profile in scratch.** Parse the original securely, copy it, and change exactly one selected source node from `Startup_config/startup_stm32f429_439xx.s` to `Migration/startup_stm32f429xx.c` with C type. Normalize neither unrelated XML nor original project bytes. A semantic comparison must prove all other selected-target fields and source ordering equal.
 - [ ] **Step 3: Create the C startup proposal.** Transcribe all original DCD vector entries in exact order, use `0x20030000` initial SP, implement data copy/BSS zero/SystemInit/main, and weak aliases. Parse both files to assert equal vector count/names/reserved slots and exactly one strong project `TIM3_IRQHandler` candidate.
 - [ ] **Step 4: Compile the startup proposal in scratch.** Invoke only the frozen ARM GCC for a compile-only syntax/object check using the project CMSIS include/defines. Inspect the object for `.isr_vector`, Thumb `Reset_Handler`, and undefined linker boundary symbols expected from the managed linker.

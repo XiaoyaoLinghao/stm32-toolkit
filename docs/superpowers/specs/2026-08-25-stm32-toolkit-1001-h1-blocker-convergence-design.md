@@ -100,10 +100,14 @@ The project correction is not Toolkit product logic. It is one local Git change 
 ### 5.1 Encoding normalization
 
 - Scope is exactly the 36 paths returned as `ARMCC_SOURCE_ENCODING_UNSUPPORTED` by the frozen plan.
-- Every original file must fail strict UTF-8, pass strict GB18030 decoding, and round-trip byte-exactly through GB18030 before it is eligible.
-- Re-encode the identical Unicode scalar sequence as UTF-8 without BOM. Preserve the decoded newline sequence; do not format, rename symbols, or change code/comments.
-- Record path, original size/SHA-256, encoding, decoded-text digest, output size/SHA-256, and a proof that decoding the output as UTF-8 yields the identical scalar sequence.
-- Any file failing these rules stops the correction; no replacement characters or fallback encodings are allowed.
+- All 36 originals must fail strict UTF-8. The 34 files that pass strict GB18030 must round-trip byte-exactly through GB18030, then be re-encoded from the identical Unicode scalar sequence as UTF-8 without BOM. Preserve decoded newline characters; do not format, rename symbols, or change code/comments.
+- P0, intake, and golden bytes prove that two files contain pre-existing comment corruption rather than a second usable source encoding:
+  - `USER/usart2_rs485_1/usart2_rs485_1.c`, 4785 bytes, SHA-256 `6814388ad93a854a0f5af1ae1396dbb1356be85e977caf96ca7f59772ffb6be2`, has twelve one-byte GB18030 failures: `F3@1704`, `F3@1765`, `FC@1770`, `F9@1830`, `E8@1832`, `ED@1893`, `F3@1899`, `EA@1901`, `E9@1957`, `E0@1959`, `EA@2008`, and `F3@2172`.
+  - `USER/usart5_rs485_2/usart5_rs485_2.c`, 4856 bytes, SHA-256 `f5c8e277733c4bf776e5df6403f6839f7e2253ff698cd1e31d8ca8f5a9c9a9ad`, has one one-byte failure, `F3@2217`.
+- Those thirteen bytes are eligible for one reversible project-owned recovery only when every path, size, SHA-256, offset, byte value, and error length matches the list above; every error is inside a physical line matching `^[ \t]*//`, and no affected line ends in a continuation backslash. Decode all valid spans as strict GB18030 and render each invalid byte in the comment as the literal ASCII text `\xHH`. Do not guess the lost Chinese character, use a replacement character, or select a fallback codec.
+- The recovered output must be strict UTF-8 without BOM. Valid decoded spans and newline characters remain identical; each escape plus the closed recovery manifest makes every corrupt source byte reversible. A line-level proof must show that the affected lines contain no C tokens before the full-line comment and that all other token-bearing text has identical Unicode scalars.
+- Record path, original size/SHA-256, conversion mode (`strict-gb18030` or `gb18030-with-comment-byte-escapes`), decoded-text or valid-span digest, recovery events where applicable, output size/SHA-256, newline proof, and strict UTF-8 output proof.
+- Any drift from the exact 34-path strict set or the two pinned recovery inputs stops the correction. Toolkit product logic receives no encoding detector, repair rule, project path, or special case.
 
 ### 5.2 Derived GCC Keil profile
 
