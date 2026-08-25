@@ -141,6 +141,20 @@ Task 3 preflight proved the retained 64-wheel runtime wheelhouse does not contai
 
 This recovery does not expand supported dependencies or authorize general network acquisition. After verified copy-in, the build still consumes the same frozen 66-wheel set and all original member/trust-anchor equality gates apply. The recovery directory is removed after evidence is preserved.
 
+### 7.2 Independent-transport diagnosis after the first recovery mismatch
+
+The first bounded recovery fetched both expected sizes through Windows curl/Schannel after the redirect-disabled .NET client failed before bytes. Setuptools matched. The wheel response had SHA-256 `3217dcc807155e45db462d7ef2431f5ddda0d7273b700d05a67b271ceb1287ab`, differing at hex index 16 from the frozen and official PyPI digest `3217dcc807155e45eb462d7ef2431f5ddda0d7273b700d05a67b271ceb1287ab`. Ordinal comparison independently confirmed the mismatch; the bytes were rejected and removed before build or runtime mutation.
+
+The source-of-truth hash is not relaxed. To distinguish a reproducible source/environment rewrite from a transient Schannel/curl transfer defect, exactly one diagnostic retry is permitted for `wheel-0.48.0-py3-none-any.whl`:
+
+- use the frozen CPython 3.12.10 interpreter's standard-library `urllib.request` over its OpenSSL TLS stack, with a redirect handler that rejects every redirect and the same exact official artifact URL;
+- stream only to a new exact run-scoped campaign scratch directory; require HTTP 200, final URL equality, `Content-Length=33320`, downloaded size 33320, a valid ZIP central directory/CRC test, and SHA-256 `3217dcc807155e45eb462d7ef2431f5ddda0d7273b700d05a67b271ceb1287ab`;
+- record Python/OpenSSL versions, response headers needed for provenance, timestamps, size/hash, the first-attempt mismatch, and official PyPI metadata digest in formal evidence; do not log secrets or unrelated headers;
+- if any gate fails or the digest again differs, preserve minimum diagnostic evidence, remove the exact scratch download, and stop before candidate/runtime/project/hardware mutation;
+- if every gate passes, classify the first response as a transient/environmental transport-integrity failure, combine the verified diagnostic wheel with a fresh exact recovery of the already-passing setuptools artifact under the same CPython transport and gates, then admit only those two verified bytes to the temporary 66-wheel closed set and resume Task 3.
+
+No third request, mirror, resolver, index search, alternate version, hash update, or acceptance of mismatched bytes is authorized.
+
 ## 8. Acceptance criteria
 
 - Real inspect resolves `Project/OBJ/LWIP.axf` and `Project/LIST/LWIP.map`, captures their exact hashes, and selects SPL from two independent generic evidence categories.
