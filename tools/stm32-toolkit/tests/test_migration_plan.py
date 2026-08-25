@@ -257,6 +257,74 @@ def fixture_inspection(root: Path) -> KeilInspection:
     return inspect_keil(root)
 
 
+def _scoped_controls_xml(
+    *,
+    option_tag: str,
+    defines: str = "",
+    include_paths: str = "",
+    misc_controls: str = "",
+) -> str:
+    return (
+        f"            <{option_tag}>\n"
+        f"              <{option_tag[:-6]}ArmAds>\n"
+        "                <Cads>\n"
+        "                  <VariousControls>\n"
+        f"                    <Define>{defines}</Define>\n"
+        f"                    <IncludePath>{include_paths}</IncludePath>\n"
+        f"                    <MiscControls>{misc_controls}</MiscControls>\n"
+        "                  </VariousControls>\n"
+        "                </Cads>\n"
+        f"              </{option_tag[:-6]}ArmAds>\n"
+        f"            </{option_tag}>\n"
+    )
+
+
+def _add_group_scoped_controls(
+    repo: Path,
+    group_name: str,
+    *,
+    defines: str = "",
+    include_paths: str = "",
+    misc_controls: str = "",
+) -> None:
+    project = next(repo.glob("*.uvprojx"))
+    text = project.read_text(encoding="utf-8")
+    marker = f"            <GroupName>{group_name}</GroupName>\n"
+    assert text.count(marker) == 1
+    option = _scoped_controls_xml(
+        option_tag="GroupOption",
+        defines=defines,
+        include_paths=include_paths,
+        misc_controls=misc_controls,
+    )
+    project.write_text(text.replace(marker, marker + option, 1), encoding="utf-8")
+
+
+def _add_file_scoped_controls(
+    repo: Path,
+    file_path: str,
+    *,
+    defines: str = "",
+    include_paths: str = "",
+    misc_controls: str = "",
+) -> None:
+    project = next(repo.glob("*.uvprojx"))
+    text = project.read_text(encoding="utf-8")
+    marker = f"              <FilePath>.\\{file_path}</FilePath>\n"
+    assert text.count(marker) == 1
+    option = _scoped_controls_xml(
+        option_tag="FileOption",
+        defines=defines,
+        include_paths=include_paths,
+        misc_controls=misc_controls,
+    )
+    project.write_text(text.replace(marker, marker + option, 1), encoding="utf-8")
+
+
+def _commit_scoped_project(repo: Path) -> None:
+    git_init(repo)
+
+
 def _inject_reparse(monkeypatch, link: Path, target: Path) -> None:
     """Deterministically simulate a reparse point at ``link`` whose canonical
     target is ``target``, without requiring OS privileges.
@@ -1399,6 +1467,131 @@ def test_option_unsupported_blocker(tmp_path):
     inspection = fixture_inspection(repo)
     plan = plan_keil_conversion(repo, inspection)
     assert any(b.code == "ARMCC_OPTION_UNSUPPORTED" for b in plan.blockers)
+
+
+def test_group_include_only_option_is_one_scoped_blocker(tmp_path):
+    repo = build_repo(
+        tmp_path,
+        files={"Main/main.c": "int main(void) { return 0; }\n"},
+        commit=False,
+    )
+    _add_group_scoped_controls(repo, "Main", include_paths="GroupOnly")
+    _commit_scoped_project(repo)
+
+    plan = plan_keil_conversion(repo, fixture_inspection(repo))
+
+    scoped = [b for b in plan.blockers if b.code == "ARMCC_OPTION_UNSUPPORTED"]
+    assert len(scoped) == 1
+    assert scoped[0].path == ""
+    assert scoped[0].line == 0
+    assert scoped[0].column == 0
+    assert scoped[0].evidence == "scope:Main"
+
+
+def test_file_define_only_option_is_one_file_scoped_blocker(tmp_path):
+    repo = build_repo(
+        tmp_path,
+        files={"Main/main.c": "int main(void) { return 0; }\n"},
+        commit=False,
+    )
+    _add_file_scoped_controls(repo, "Main/main.c", defines="FILE_ONLY")
+    _commit_scoped_project(repo)
+
+    plan = plan_keil_conversion(repo, fixture_inspection(repo))
+
+    scoped = [b for b in plan.blockers if b.code == "ARMCC_OPTION_UNSUPPORTED"]
+    assert len(scoped) == 1
+    assert scoped[0].path == "Main/main.c"
+    assert scoped[0].line == 0
+    assert scoped[0].column == 0
+    assert scoped[0].evidence == "scope:Main/main.c"
+
+
+def test_mixed_scoped_option_fields_still_emit_one_blocker(tmp_path):
+    repo = build_repo(
+        tmp_path,
+        files={"Main/main.c": "int main(void) { return 0; }\n"},
+        commit=False,
+    )
+    _add_group_scoped_controls(
+        repo,
+        "Main",
+        defines="GROUP_DEFINE",
+        include_paths="GroupInclude",
+        misc_controls="--group-misc",
+    )
+    _commit_scoped_project(repo)
+
+    plan = plan_keil_conversion(repo, fixture_inspection(repo))
+
+    scoped = [b for b in plan.blockers if b.code == "ARMCC_OPTION_UNSUPPORTED"]
+    assert len(scoped) == 1
+    assert scoped[0].path == ""
+    assert scoped[0].evidence == "scope:Main"
+
+
+def test_group_scoped_blockers_preserve_authored_order_and_owner_evidence(tmp_path):
+    groups = (
+        ("First", (("first.c", "1", "First/first.c"),)),
+        ("Second", (("second.c", "1", "Second/second.c"),)),
+    )
+    repo = build_repo(
+        tmp_path,
+        files={
+            "First/first.c": "int first(void) { return 0; }\n",
+            "Second/second.c": "int second(void) { return 0; }\n",
+        },
+        uvprojx_kwargs={"groups": groups},
+        commit=False,
+    )
+    _add_group_scoped_controls(repo, "First", defines="FIRST")
+    _add_group_scoped_controls(repo, "Second", include_paths="SECOND")
+    _commit_scoped_project(repo)
+
+    plan = plan_keil_conversion(repo, fixture_inspection(repo))
+
+    scoped = [b for b in plan.blockers if b.code == "ARMCC_OPTION_UNSUPPORTED"]
+    assert [(b.path, b.evidence) for b in scoped] == [
+        ("", "scope:First"),
+        ("", "scope:Second"),
+    ]
+
+
+def test_target_defines_and_include_paths_remain_supported(tmp_path):
+    repo = build_repo(
+        tmp_path,
+        files={"Main/main.c": "int main(void) { return 0; }\n"},
+        uvprojx_kwargs={
+            "defines": "TARGET_DEFINE",
+            "includes": "Main;Common;TargetInclude",
+        },
+    )
+    inspection = fixture_inspection(repo)
+    plan = plan_keil_conversion(repo, inspection)
+
+    assert inspection.scoped_options[0].scope == "target"
+    assert inspection.scoped_options[0].defines == ("TARGET_DEFINE",)
+    assert inspection.scoped_options[0].include_paths == ("Main", "Common", "TargetInclude")
+    assert not any(b.code == "ARMCC_OPTION_UNSUPPORTED" for b in plan.blockers)
+
+
+def test_group_and_file_misc_controls_keep_existing_refusal(tmp_path):
+    repo = build_repo(
+        tmp_path,
+        files={"Main/main.c": "int main(void) { return 0; }\n"},
+        commit=False,
+    )
+    _add_group_scoped_controls(repo, "Main", misc_controls="--group-misc")
+    _add_file_scoped_controls(repo, "Main/main.c", misc_controls="--file-misc")
+    _commit_scoped_project(repo)
+
+    plan = plan_keil_conversion(repo, fixture_inspection(repo))
+
+    scoped = [b for b in plan.blockers if b.code == "ARMCC_OPTION_UNSUPPORTED"]
+    assert [(b.path, b.evidence) for b in scoped] == [
+        ("", "scope:Main"),
+        ("Main/main.c", "scope:Main/main.c"),
+    ]
 
 
 def test_compiler_unsupported_blocker(tmp_path):

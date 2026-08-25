@@ -393,7 +393,7 @@ def _inspection_blockers(inspection: KeilInspection) -> list[MigrationBlocker]:
             )
         )
     for option in inspection.scoped_options:
-        if option.misc_controls:
+        if option.scope == "target" and option.misc_controls:
             owner = option.owner if option.scope == "file" else ""
             blockers.append(
                 MigrationBlocker(
@@ -404,6 +404,21 @@ def _inspection_blockers(inspection: KeilInspection) -> list[MigrationBlocker]:
                     0,
                     "",
                     "ARMCC target/group/file misc controls are not empty",
+                )
+            )
+        elif option.scope in {"group", "file"} and (
+            option.defines or option.include_paths or option.misc_controls
+        ):
+            owner = option.owner if option.scope == "file" else ""
+            blockers.append(
+                MigrationBlocker(
+                    "ARMCC_OPTION_UNSUPPORTED",
+                    "ARMCC_OPTION_UNSUPPORTED",
+                    owner,
+                    0,
+                    0,
+                    f"scope:{option.owner}",
+                    "scoped ARMCC compiler options are not representable",
                 )
             )
     blockers.extend(_finding_blockers(inspection.findings))
@@ -750,7 +765,14 @@ def plan_keil_conversion(root: Path, inspection: KeilInspection) -> MigrationPla
     unique_blockers: dict[tuple, MigrationBlocker] = {}
     for blocker in sorted(blockers, key=blocker_key):
         unique_blockers.setdefault(
-            (blocker.code, blocker.rule_id, blocker.path, blocker.line, blocker.column),
+            (
+                blocker.code,
+                blocker.rule_id,
+                blocker.path,
+                blocker.line,
+                blocker.column,
+                blocker.evidence,
+            ),
             blocker,
         )
     ordered_blockers = tuple(unique_blockers.values())
