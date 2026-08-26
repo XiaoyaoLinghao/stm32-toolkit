@@ -183,13 +183,13 @@ tests-only fix commit and again reached 100% with exit 0.
 ## Final identities, scope, and cleanup
 
 Final code/tests head before this report-only commit is
-`6bf7fb3ad3fafe8c9068957c647bb5546018231b` with tree
-`73733549c501872c6402b2e3f64fefb13a0e3b88`. The final source identities are:
+`87bfa05290f0aff7db74e69fcf268e3e1f47bf8f` with tree
+`6499e1711feb70a9e8a1bde271d1dbf7c6b8ed31`. The final source identities are:
 
 | path | bytes | SHA-256 |
 | --- | ---: | --- |
 | `tools/stm32-toolkit/src/stm32_toolkit/migration/planner.py` | 32433 | `c4b64a6179a254e02c7e0449384204e48b2cd641f6e16b6801226aa4f82e7a70` |
-| `tools/stm32-toolkit/tests/test_migration_plan.py` | 93627 | `bb9d9df7fd6b331cbf51c3a1be91ab1901097f42604f81fde514e4516c8b892d` |
+| `tools/stm32-toolkit/tests/test_migration_plan.py` | 93890 | `4c1b600034e864481a2e681eb9eb21a2718f40bf3ae75a51da632b86155e3294` |
 
 `MIGRATION_COMPILER_UNSUPPORTED` is restored to the accepted-base empty path
 and empty evidence bytes. The final commit history includes the tests-only
@@ -209,3 +209,50 @@ rejected by the execution environment destructive-action policy before
 execution. It was not removed through a deletion bypass. This is classified
 `ENVIRONMENT/cleanup-policy`; it does not alter the test results. The report
 does not claim cleanup success and does not self-accept the implementation.
+
+## Final whole-branch review fix wave
+
+The final review identified that the hard-float test counted the expected
+`-mfpu=fpv4-sp-d16` and `-mfloat-abi=hard` lines and excluded a few known bad
+spellings, but could still pass if an additional unrecognized FPU or ABI token
+were present. The tests-only correction now collects every token beginning with
+`-mfpu=` and every token beginning with `-mfloat-abi=` in each compile and link
+block, asserting exactly `[-mfpu=fpv4-sp-d16]` and
+`[-mfloat-abi=hard]`. The existing line-count and explicit bad-spelling
+assertions remain in place. This closes the final-review finding without
+changing planner.py or apply.py.
+
+The required final-review commands used the frozen CPython 3.12 interpreter,
+`-p no:cacheprovider`, and the exact basetemp
+`C:/tmp/stm32tk-1001-fpu-test-isolation-pytest`:
+
+```powershell
+& 'C:\Users\ZhangYang\AppData\Local\Programs\Python\Python312\python.exe' -c "import sys,pytest; sys.path.insert(0,'src'); raise SystemExit(pytest.main(['tests/test_migration_plan.py::test_armcc_cortex_m4_fpu2_without_raw_abi_normalizes_and_configures','tests/test_migration_plan.py::test_neither_fpu_nor_abi_stays_absent_from_manifest_and_flags','tests/test_migration_plan.py::test_armclang_cortex_m4_fpu2_without_raw_abi_has_one_public_blocker','tests/test_migration_plan.py::test_unsupported_float_abi_public_blocker_prevents_apply_without_writes','-q','-p','no:cacheprovider','--basetemp=C:/tmp/stm32tk-1001-fpu-test-isolation-pytest']))"
+```
+
+Scenario A/B/C nodes: exit 0, 4/4 passed.
+
+```powershell
+& 'C:\Users\ZhangYang\AppData\Local\Programs\Python\Python312\python.exe' -c "import sys,pytest; sys.path.insert(0,'src'); raise SystemExit(pytest.main(['tests/test_migration_plan.py','tests/test_generation.py','-q','-k','fpu or float_abi or keil_conversion','-p','no:cacheprovider','--basetemp=C:/tmp/stm32tk-1001-fpu-test-isolation-pytest']))"
+```
+
+Focused selection: exit 0, 34/34 passed.
+
+```powershell
+& 'C:\Users\ZhangYang\AppData\Local\Programs\Python\Python312\python.exe' -c "import sys,pytest; sys.path.insert(0,'src'); raise SystemExit(pytest.main(['tests/test_migration_plan.py','-q','-p','no:cacheprovider','--basetemp=C:/tmp/stm32tk-1001-fpu-test-isolation-pytest']))"
+```
+
+Complete migration file: exit 0, 97/97 passed.
+
+The tests-only commit before this report-only update is:
+
+- Commit: `87bfa05290f0aff7db74e69fcf268e3e1f47bf8f`
+- Tree: `6499e1711feb70a9e8a1bde271d1dbf7c6b8ed31`
+- Parent: `a56fec84b53225c9d0aa13ee8156cb601a67ad66`
+- Message: `test(vs10a): reject duplicate FPU ABI flags`
+- Path set: exactly `tools/stm32-toolkit/tests/test_migration_plan.py`.
+
+The exact basetemp remains because destructive cleanup was rejected by policy;
+this remains an `ENVIRONMENT/cleanup-policy` concern. The final-review fix
+does not change the prior no-campaign, no-runtime, no-hardware, no-network, and
+no-remote boundaries. Independent Sol review remains required.
