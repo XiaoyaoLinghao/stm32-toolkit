@@ -388,7 +388,7 @@ def _inspection_blockers(inspection: KeilInspection) -> list[MigrationBlocker]:
             MigrationBlocker(
                 "MIGRATION_COMPILER_UNSUPPORTED",
                 "MIGRATION_COMPILER_UNSUPPORTED",
-                "",
+                inspection.project_file,
                 0,
                 0,
                 "",
@@ -442,9 +442,12 @@ def _inspection_blockers(inspection: KeilInspection) -> list[MigrationBlocker]:
             "MIGRATION_FLOAT_ABI_REQUIRES_FPU": "Keil float ABI evidence requires FPU evidence",
             "MIGRATION_FLOAT_ABI_UNSUPPORTED": "unsupported or ambiguous Keil float ABI",
         }
-        blocker_evidence = (
-            inspection.fpu if fpu_abi_blocker != "MIGRATION_FLOAT_ABI_REQUIRES_FPU" else inspection.float_abi
-        )
+        blocker_evidence = {
+            "MIGRATION_FPU_UNSUPPORTED": inspection.fpu,
+            "MIGRATION_FLOAT_ABI_REQUIRED": inspection.fpu,
+            "MIGRATION_FLOAT_ABI_REQUIRES_FPU": inspection.float_abi,
+            "MIGRATION_FLOAT_ABI_UNSUPPORTED": inspection.float_abi,
+        }[fpu_abi_blocker]
         blockers.append(
             MigrationBlocker(
                 fpu_abi_blocker,
