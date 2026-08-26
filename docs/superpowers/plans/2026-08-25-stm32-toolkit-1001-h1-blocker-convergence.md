@@ -163,7 +163,7 @@ Retain `_normalize_keil_path` and all existing containment behavior.
 - [ ] **Step 4: Commit and report.** Commit only product/tests as `fix(vs10a): reject scoped Keil compiler options`; record accepted base, code head before report, RED/GREEN counts, exact paths, cleanup, and no candidate/runtime/project/hardware/remote mutation.
 - [ ] **Step 5: Stop for Sol complete review.** Sol reviews `7c28986406f8932e96c3976b7e925bfd1c2eba44..Task2cHead` and the cumulative `12d0d3be1f59a5ed44b84a1244575cb853b97173..Task2cHead`, reruns only focused applicable checks, and accepts before Task 3c.
 
-### Task 3c: Rebuild the scoped-option candidate/runtime and prove the eleven blockers
+### Task 3c: Rebuild the scoped-option candidate/runtime and prove the twelve blockers
 
 **Files:**
 - Create: campaign `runtime/scoped-options-candidate/` and `runtime/scoped-options-candidate-extracted/stm32-toolkit-0.9.0/`.
@@ -172,12 +172,12 @@ Retain `_normalize_keil_path` and all existing containment behavior.
 
 **Interfaces:**
 - Consumes: independently accepted Task 2c head, map-fix candidate/runtime lineage, frozen 64 runtime wheels, and exact Section 7.6 backend identities.
-- Produces: one verified replacement candidate, one matching active runtime, and unchanged `b83b404...` public evidence with exactly eleven blockers.
+- Produces: one verified replacement candidate, one matching active runtime, and unchanged `b83b404...` public evidence with exactly twelve blockers. The set retains the Task 3b assembly blocker in addition to the nine post-portability C-source blockers and the two new scoped-option blockers.
 
 - [ ] **Step 1: Freeze preconditions and acquire only two backends.** Record Task2c CodeHead/status, all candidate/runtime/project identities, empty scratch, and accepted backend URLs/sizes/digests. Make one redirect-rejecting direct request per backend and require exact filename/hash/archive identity; no resolver/index/dependencies.
 - [ ] **Step 2: Build and verify from a canonical CRLF detached head.** Form the exact 66-wheel closed set, prove source/wheel/archive/trust-anchor bindings, invoke the default builder into the distinct scoped-options path, and require the complete prior 13-file/12-checksum/release/SBOM/licenses/compatibility/troubleshooting/Monitor/48-MCP/8-Skills verification inventory.
 - [ ] **Step 3: Fresh-replace the campaign runtime.** Preserve the map-fix runtime identity and no-process proof; resolve/remove only exact campaign `data/runtime`; bootstrap only from the accepted extracted replacement with explicit roots. Require one 0.9.0 generation-1 runtime, exact new sourceCommit/manifest, CPython 3.12.10 isolated imports, doctor OK, and no staging/second runtime.
-- [ ] **Step 4: Verify unchanged project behavior.** On clean/no-remote `b83b404c8da6993658586fa1b553d715f95993c1`, public inspect must retain exact AXF/MAP hashes, program sizes, F429ZG, SPL, 53 selected C units, 37 target includes, and the two group scoped options. Two public convert dry-runs must be deterministic and return exactly eleven blockers, including distinct `group:Main` and `group:USER` `ARMCC_OPTION_UNSUPPORTED` findings.
+- [ ] **Step 4: Verify unchanged project behavior.** On clean/no-remote `b83b404c8da6993658586fa1b553d715f95993c1`, public inspect must retain exact AXF/MAP hashes, program sizes, F429ZG, SPL, 53 selected C units, 37 target includes, the retained `Startup_config/startup_stm32f429_439xx.s` assembly source, and the two group scoped options. Two public convert dry-runs must be deterministic and return exactly twelve blockers: one retained ARMCC assembly, four inline assembly, four absolute placement, one no-semihosting pragma, and distinct `group:Main` and `group:USER` `ARMCC_OPTION_UNSUPPORTED` findings. This corrects the prior plan arithmetic; it does not authorize a product or project change.
 - [ ] **Step 5: Clean, report, and stop for Sol review.** Remove only exact build/acquisition/basetemp scratch after preserving formal evidence; project/Toolkit clean, no hardware/remote, scratch empty. Sol reconciles candidate/runtime/source binding before the five-path project proposal resumes.
 
 ### Task 4: Propose and authorize the exact project portability correction
