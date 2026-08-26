@@ -127,7 +127,7 @@ The 64 frozen runtime wheels are copied from the active runtime only after byte/
 
 No resolver, index selection, redirect, mirror, alternate artifact, or dependency expansion is allowed. The closed set remains exactly 66 wheels. The usual 13-file/12-checksum candidate, release manifest, SBOM, licenses, compatibility, troubleshooting, Monitor, 48-MCP, 8-Skills, CPython 3.12.10, and single-runtime gates apply.
 
-After candidate verification, retire only the exact campaign-managed runtime and fresh-bootstrap the replacement; same-version upgrade/repair remains forbidden. On clean campaign commit `d701c7142cf0bad9b03a690cf0456ecc97e3484f`, rerun public inspect/convert. The new plan must correct the three conversion artifacts through a new guarded local commit; do not edit or rewrite `d701c714...`. Then resume the frozen public configure and two-build H1 sequence.
+After candidate verification, retire only the exact campaign-managed runtime and fresh-bootstrap the replacement; same-version upgrade/repair remains forbidden. On clean campaign commit `d701c7142cf0bad9b03a690cf0456ecc97e3484f`, rerun public inspect/convert. The new plan must correct the three conversion artifacts through a new guarded local commit; do not edit or rewrite `d701c7142cf0bad9b03a690cf0456ecc97e3484f`. Then resume the frozen public configure and two-build H1 sequence.
 
 ## 9. Acceptance criteria
 
@@ -136,5 +136,5 @@ After candidate verification, retire only the exact campaign-managed runtime and
 - Unknown/incomplete tuples stop at conversion with the exact stable blocker and cannot apply.
 - Focused RED/GREEN and independent review pass; complete diff has no unrelated product, schema, runtime, Agent, MCP, provider, backend, controller, or support-range change.
 - Replacement candidate/runtime is source-bound to the accepted code head and passes all frozen inventory/security gates.
-- Corrected conversion is a new child commit of `d701c714...`; original Keil inputs, historical outputs, D4/test logic, golden tree, hardware, and remote state remain untouched.
+- Corrected conversion is a new child commit of `d701c7142cf0bad9b03a690cf0456ecc97e3484f`; original Keil inputs, historical outputs, D4/test logic, golden tree, hardware, and remote state remain untouched.
 - The project and Toolkit worktrees finish clean, campaign scratch is empty, and only minimum formal evidence remains.
