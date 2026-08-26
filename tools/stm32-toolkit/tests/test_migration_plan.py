@@ -1988,6 +1988,12 @@ def test_armclang_cortex_m4_fpu2_without_raw_abi_has_one_public_blocker(tmp_path
     assert inspection.float_abi is None
 
     plan = plan_keil_conversion(repo, inspection)
+    compiler_blockers = [
+        blocker for blocker in plan.blockers if blocker.code == "MIGRATION_COMPILER_UNSUPPORTED"
+    ]
+    assert [(blocker.path, blocker.evidence) for blocker in compiler_blockers] == [
+        ("", "")
+    ]
     assert [(blocker.code, blocker.evidence) for blocker in plan.blockers] == [
         ("MIGRATION_COMPILER_UNSUPPORTED", ""),
         ("MIGRATION_FLOAT_ABI_REQUIRED", "FPU2"),
