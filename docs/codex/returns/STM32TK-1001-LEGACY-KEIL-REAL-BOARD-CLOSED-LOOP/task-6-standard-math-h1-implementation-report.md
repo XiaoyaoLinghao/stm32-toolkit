@@ -27,10 +27,10 @@ GPT-5.6-sol complete-diff and evidence review. No hardware acceptance is made.
 - Project branch: `codex/STM32TK-1001-P1C-STANDARD-MATH-CORRECTED`.
 - Project tracked diff from `718c37ed...` contains exactly the 13 public
   conversion/configuration artifacts; no C, H, S, or ASM source path changed.
-  The project has zero remotes and tracked status is clean; 81 disposable
-  public-build paths remain untracked only under `.stm32-toolkit/build.lock`,
-  `artifacts/migration/build-result.json`, `artifacts/migration/build.log`,
-  and `build/*`.
+  The 81 disposable public-build run outputs were reversibly moved with native
+  `Move-Item` to
+  `C:\tmp\stm32tk-vs10a-legacy-campaign\evidence\project-final-run-outputs-standard-math`.
+  The project source worktree is now clean and has zero remotes.
 
 The active managed runtime was not changed in this report task. Its state file
 is `C:\tmp\stm32tk-vs10a-legacy-campaign\data\runtime\runtime-state.json`,
@@ -178,11 +178,15 @@ byte-for-byte in all existing records and only received an appended
 post-addition SHA is
 `9d38a0f92254546fddc8b6d27d44451e857cc43a65e34652a3e573473ac81075`.
 
-All newly generated JSON files parsed successfully. The standard-math project
-run outputs remain as the known cleanup-policy residual for independent review:
-they are untracked and confined to the exact build/artifact prefixes listed
-above; no source-controlled file was removed or changed. No hardware, network,
-remote Git, golden, or Toolkit product mutation occurred in this report task.
+All newly generated JSON files parsed successfully. The final-state evidence is
+`evidence/project-standard-math-final-state.json` (SHA-256
+`9c948b2a9a718d309dcb592c401f7eca91558b8c96fc489b24b2ccf54d20d529`). The
+only cleanup-policy residual recorded for this slice is the retained
+`C:\tmp\stm32tk-vs10a-legacy-campaign\scratch\standard-math-build1-reset`;
+the previously documented Toolkit test basetemps remain governed by their
+earlier review report. No source-controlled file was removed or changed. No
+hardware, network, remote Git, golden, or Toolkit product mutation occurred in
+this report task.
 
 The report itself is deliberately report-only and does not contain its own
 final commit SHA. Independent Sol review is required before any acceptance
