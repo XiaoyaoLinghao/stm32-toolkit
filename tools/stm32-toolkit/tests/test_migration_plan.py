@@ -1963,6 +1963,12 @@ def test_armcc_cortex_m4_fpu2_without_raw_abi_normalizes_and_configures(tmp_path
     compile_options = _cmake_option_block(text, "target_compile_options")
     link_options = _cmake_option_block(text, "target_link_options")
     for options in (compile_options, link_options):
+        assert [token for token in options.split() if token.startswith("-mfpu=")] == [
+            "-mfpu=fpv4-sp-d16"
+        ]
+        assert [
+            token for token in options.split() if token.startswith("-mfloat-abi=")
+        ] == ["-mfloat-abi=hard"]
         assert options.count("  -mfpu=fpv4-sp-d16\n") == 1
         assert options.count("  -mfloat-abi=hard\n") == 1
         assert "-mfpu=FPU2" not in options
