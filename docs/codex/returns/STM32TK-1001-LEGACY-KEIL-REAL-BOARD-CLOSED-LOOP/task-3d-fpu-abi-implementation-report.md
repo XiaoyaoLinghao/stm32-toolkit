@@ -1,28 +1,24 @@
 # STM32TK-1001 Task 3d: FPU/ABI normalization implementation report
 
-Implementation status: complete; independent Sol review required.
+Implementation status: complete; independent GPT-5.6-sol review required.
 
-This report covers Task 1 of the frozen Keil FPU/ABI normalization plan. It is not
-self-acceptance and makes no hardware or H1 claim.
+This report covers Task 1 of the frozen Keil FPU/ABI normalization plan. It is
+implementation evidence only: it is not self-acceptance and makes no hardware
+or H1 claim. The stale intermediate compiler-path narrative from an earlier
+revision is superseded by the accepted-base facts recorded below.
 
 ## Lineage
 
-- Brief worktree baseline before code changes: `bf7549a9a42afba81b75b4c78ef51143deb11ad0`
-- Brief baseline tree: `44ac62b31f351b7c0c7ca8fd4247a59402435978`
-- Design commit: `a14048e8f371bc652a282a9644cfd6f0980b73d5`
-- Plan commit: `bf7549a9a42afba81b75b4c78ef51143deb11ad0`
-- Accepted base required by the brief's report step: `77514c441854bf7a8218eb2974e54abac478e31b`
-- Product code head before this report-only commit: `30d06c23e79eee3f83a28de196986de70ff89e28`
-- Product code tree at that head: `fe4fd351d24517791cafd948ce3e47bb9248d632`
+- Accepted product base: `77514c441854bf7a8218eb2974e54abac478e31b`
+- Design commit: `9f9258c3f321229d5141aba17592397ae79246fe`
+- Plan commit: `13b991bd0bfb2cffd89063e7e58d9629f9e20cd6`
+- Task 1 code/tests head before this report-only commit:
+  `6bf7fb3ad3fafe8c9068957c647bb5546018231b`
+- Task 1 code/tests tree at that head:
+  `73733549c501872c6402b2e3f64fefb13a0e3b88`
 
-The code head was committed first with:
-
-```text
-fix(vs10a): normalize Keil FPU ABI conversion
-```
-
-The final report is committed separately. This report deliberately does not record
-the SHA of that report-only commit.
+The report is committed separately from the code/tests commits. It deliberately
+does not record the SHA of its own report-only commit or moving commit totals.
 
 ## Implementation
 
@@ -71,7 +67,9 @@ a generic test-fixture directory assumption (`Common` was not present); the fixt
 was made explicit within the authorized test file and the rerun passed. The setup
 issue was classified `TEST_FIXTURE`, not `PRODUCT`.
 
-The final code-head identities were:
+The initial implementation-stage identities below are retained as historical
+evidence; the final Task 1 identities before this report-only commit are given
+in the reconciliation section below.
 
 | path | bytes | SHA-256 |
 | --- | ---: | --- |
@@ -102,84 +100,112 @@ coverage gaps. `_inspection_blockers()` now maps raw evidence by blocker code:
 `MIGRATION_FLOAT_ABI_UNSUPPORTED` use `inspection.float_abi`. The normalized
 FPU/ABI pair behavior is unchanged.
 
-`test_migration_plan.py` now covers a real ARMCLANG + Cortex-M4/FPU2 + missing
-ABI project through public `plan_keil_conversion`, verifies one deterministic
-`MIGRATION_FLOAT_ABI_REQUIRED` blocker with raw evidence `FPU2`, repeats the
-plan for deterministic output, and checks guarded apply returns
-`MIGRATION_BLOCKED` without writing `.stm32-project.json`,
-`artifacts/migration/conversion.patch`, or
-`artifacts/migration/conversion-report.json`. The no-FPU/no-ABI case runs
-conversion, reloads the model, and verifies that generated compile/link options
-contain no `-mfpu=` or `-mfloat-abi=`. The hard-float case verifies one correct
-normalized pair per compile/link block and rejects raw `FPU2`, wrong ABI, and
-duplicate pair spellings.
+`test_migration_plan.py` covers a real ARMCLANG + Cortex-M4/FPU2 + missing-ABI
+project through public `plan_keil_conversion`, verifies the complete ordered
+blocker list including `MIGRATION_COMPILER_UNSUPPORTED / ""` and
+`MIGRATION_FLOAT_ABI_REQUIRED / "FPU2"`, repeats planning for deterministic
+output, and checks guarded apply returns `MIGRATION_PLAN_INVALID` with
+`details={"rule": "type"}`. The three conversion products remain absent. This
+is the accepted-base behavior: the empty compiler-blocker path is retained and
+the existing validator rejects it before the blocked-apply gate.
 
-The ARMCLANG guarded-apply case exposed an adjacent existing contract issue:
-with the historical empty path on `MIGRATION_COMPILER_UNSUPPORTED`, apply
-returned `MIGRATION_PLAN_INVALID` (`rule=type`) during blocker validation before
-the intended `MIGRATION_BLOCKED` gate. Sol approved retaining the minimal
-planner-side correction that binds this existing compiler blocker to
-`inspection.project_file`; the blocker code and compiler semantics were not
-changed. A precise regression assertion pins the path. TDD RED was observed
-while that path was temporarily empty: actual `('', '')` versus expected
-`('app.uvprojx', '')`, exit 1. Restoring the approved correction produced the
-required guarded `MIGRATION_BLOCKED` result.
+The ARMCC Scenario B public case verifies the complete one-item blocker list
+`MIGRATION_FLOAT_ABI_UNSUPPORTED / "weird"`, guarded apply returns
+`MIGRATION_BLOCKED` with the exact blocker-code list, and all three conversion
+products remain absent. The no-FPU/no-ABI case runs conversion, reloads the
+model, and verifies that generated compile/link options contain no `-mfpu=` or
+`-mfloat-abi=`. The hard-float case verifies one correct normalized pair per
+compile/link block and rejects raw `FPU2`, wrong ABI, and duplicate pair
+spellings.
 
-## Revision 1 verification
+An intermediate adjacent planner correction changed the compiler-blocker path
+to `inspection.project_file` so the ARMCLANG combined fixture could reach
+`MIGRATION_BLOCKED`. That correction and its acceptance narrative are
+superseded and are not present in the final Task 1 code/tests head. Restoring
+the accepted-base empty path reproduced the existing `MIGRATION_PLAN_INVALID`
+(`rule=type`) result. The conflict is classified
+`TEST_DESIGN_CONFLICT/EXISTING_BLOCKER`, not a product acceptance. The final
+test separately pins the accepted-base compiler `(path, evidence)` tuple to
+`[("", "")]` while retaining the complete blocker-list oracle.
 
-All local commands used the frozen CPython 3.12 interpreter.
+## Final Task 1 verification
 
-ARMCLANG public/guarded-apply node:
+All final local commands used the frozen CPython 3.12 interpreter, disabled the
+pytest cache provider, and reused the brief's exact run-scoped basetemp
+`C:/tmp/stm32tk-1001-fpu-test-isolation-pytest`.
 
-```powershell
-& 'C:\Users\ZhangYang\AppData\Local\Programs\Python\Python312\python.exe' -c "import sys,pytest; sys.path.insert(0,'src'); raise SystemExit(pytest.main(['tests/test_migration_plan.py::test_armclang_cortex_m4_fpu2_without_raw_abi_has_one_public_blocker','-q']))"
-```
-
-Exit 0; 1 passed. It confirmed the compiler blocker path equals
-`inspection.project_file`, the FPU blocker evidence is `FPU2`, guarded apply
-returns `MIGRATION_BLOCKED`, and all three conversion products remain absent.
-
-Focused revision selection:
+The ARMCLANG Scenario A and ARMCC Scenario B nodes were run together:
 
 ```powershell
-& 'C:\Users\ZhangYang\AppData\Local\Programs\Python\Python312\python.exe' -c "import sys,pytest; sys.path.insert(0,'src'); raise SystemExit(pytest.main(['tests/test_migration_plan.py','tests/test_generation.py','-q','-k','fpu or float_abi or keil_conversion']))"
+& 'C:\Users\ZhangYang\AppData\Local\Programs\Python\Python312\python.exe' -c "import sys,pytest; sys.path.insert(0,'src'); raise SystemExit(pytest.main(['tests/test_migration_plan.py::test_armclang_cortex_m4_fpu2_without_raw_abi_has_one_public_blocker','tests/test_migration_plan.py::test_unsupported_float_abi_public_blocker_prevents_apply_without_writes','-q','-p','no:cacheprovider','--basetemp=C:/tmp/stm32tk-1001-fpu-test-isolation-pytest']))"
 ```
 
-Exit 0; 33 passed (10 `test_generation.py`, 23 `test_migration_plan.py`).
+Exit 0; 2/2 passed. Scenario A's complete ordered blocker list is
+`[(MIGRATION_COMPILER_UNSUPPORTED, ""),
+(MIGRATION_FLOAT_ABI_REQUIRED, "FPU2")]`, with the separate compiler
+`(path, evidence)` assertion `[("", "")]`; apply returns
+`MIGRATION_PLAN_INVALID` with `{"rule": "type"}` and writes none of
+`.stm32-project.json`, `artifacts/migration/conversion.patch`, or
+`artifacts/migration/conversion-report.json`. Scenario B's complete list is
+`[(MIGRATION_FLOAT_ABI_UNSUPPORTED, "weird")]`; apply returns
+`MIGRATION_BLOCKED` with exactly
+`["MIGRATION_FLOAT_ABI_UNSUPPORTED"]` and writes none of those three
+conversion products.
 
-Complete affected migration suite:
+The two exact Scenario C nodes were run together:
 
 ```powershell
-& 'C:\Users\ZhangYang\AppData\Local\Programs\Python\Python312\python.exe' -c "import sys,pytest; sys.path.insert(0,'src'); raise SystemExit(pytest.main(['tests/test_migration_plan.py','-q']))"
+& 'C:\Users\ZhangYang\AppData\Local\Programs\Python\Python312\python.exe' -c "import sys,pytest; sys.path.insert(0,'src'); raise SystemExit(pytest.main(['tests/test_migration_plan.py::test_armcc_cortex_m4_fpu2_without_raw_abi_normalizes_and_configures','tests/test_migration_plan.py::test_neither_fpu_nor_abi_stays_absent_from_manifest_and_flags','-q','-p','no:cacheprovider','--basetemp=C:/tmp/stm32tk-1001-fpu-test-isolation-pytest']))"
 ```
 
-Exit 0; 96 passed. Collection-only checks independently reported the same 33
-focused and 96 migration tests. Git fixture creation emitted only the configured
-LF-to-CRLF advisory; no pytest warning summary or test failure occurred.
-`git diff --check` exited 0.
+Exit 0; 2/2 passed. The ARMCC Cortex-M4/FPU2/no-ABI path produces
+`fpv4-sp-d16` plus `hard`, exactly once in each compile/link block. The
+no-FPU/no-ABI path leaves both manifest members absent and emits neither
+`-mfpu=` nor `-mfloat-abi=` in compile or link text.
 
-The Sol read-only diagnostic separately reported 9/9 parameterized cases across
-four focused nodes. That reviewer evidence is retained as a boundary and is not
-used in place of the local 1/1, 33/33, and 96/96 runs above.
+The required focused selection was:
 
-## Revision 1 lineage and identities
+```powershell
+& 'C:\Users\ZhangYang\AppData\Local\Programs\Python\Python312\python.exe' -c "import sys,pytest; sys.path.insert(0,'src'); raise SystemExit(pytest.main(['tests/test_migration_plan.py','tests/test_generation.py','-q','-k','fpu or float_abi or keil_conversion','-p','no:cacheprovider','--basetemp=C:/tmp/stm32tk-1001-fpu-test-isolation-pytest']))"
+```
 
-- Prior code head: `30d06c23e79eee3f83a28de196986de70ff89e28`
-- Revision code commit: `266b6d40bac3a0fee095204fb7c933b726cf3f78`
-- Revision code tree: `f4701a43d884aa38eb68e3bcbb5182bddf1a6284`
-- Tests-only follow-up commit: `dc8f642e7708625c5707e0694512b915e819bc7b`
-- Code/tests head before this report-only commit: `dc8f642e7708625c5707e0694512b915e819bc7b`
-- Code/tests tree before this report-only commit: `1318fe0cbea97550d6211a058012c4599c430971`
+Exit 0; 34/34 passed.
 
-Final source/test identities before the report-only commit:
+The complete affected-file command was:
+
+```powershell
+& 'C:\Users\ZhangYang\AppData\Local\Programs\Python\Python312\python.exe' -c "import sys,pytest; sys.path.insert(0,'src'); raise SystemExit(pytest.main(['tests/test_migration_plan.py','-q','-p','no:cacheprovider','--basetemp=C:/tmp/stm32tk-1001-fpu-test-isolation-pytest']))"
+```
+
+Exit 0; 97/97 passed. The same complete command was rerun after the final
+tests-only fix commit and again reached 100% with exit 0.
+
+## Final identities, scope, and cleanup
+
+Final code/tests head before this report-only commit is
+`6bf7fb3ad3fafe8c9068957c647bb5546018231b` with tree
+`73733549c501872c6402b2e3f64fefb13a0e3b88`. The final source identities are:
 
 | path | bytes | SHA-256 |
 | --- | ---: | --- |
-| `tools/stm32-toolkit/src/stm32_toolkit/migration/planner.py` | 32454 | `0f21b2591c24c18f15298676a529a47474fc8edc96ad6963f0facef354908fb7` |
-| `tools/stm32-toolkit/tests/test_migration_plan.py` | 92835 | `390b71667653a4a68e1f03d0c36319d6d24a98ee87cb0265284148ba3809332f` |
+| `tools/stm32-toolkit/src/stm32_toolkit/migration/planner.py` | 32433 | `c4b64a6179a254e02c7e0449384204e48b2cd641f6e16b6801226aa4f82e7a70` |
+| `tools/stm32-toolkit/tests/test_migration_plan.py` | 93627 | `bb9d9df7fd6b331cbf51c3a1be91ab1901097f42604f81fde514e4516c8b892d` |
 
-The report deliberately does not contain the SHA of its own report-only commit.
-This remains implementation evidence only; acceptance is reserved for the
-independent Sol reviewer. No generation, schema, inspection, CLI, MCP, version,
-dependency, plan, specification, project, runtime, campaign, golden, hardware,
-network, or remote Git files were modified or accessed in this revision.
+`MIGRATION_COMPILER_UNSUPPORTED` is restored to the accepted-base empty path
+and empty evidence bytes. The final commit history includes the tests-only
+complete-list oracle fix and the tests-only compiler path/evidence oracle fix;
+the implementation report records the code/tests head before this separate
+report commit and does not contain its own future SHA.
+
+Only `planner.py` and `test_migration_plan.py` are product-slice code/test
+paths. No generation, schema, inspection, CLI, MCP, version, dependency, plan,
+specification, project, campaign, runtime, golden, hardware, network, or remote
+Git state was changed or accessed. The earlier adjacent path correction and
+the earlier review report's acceptance wording are superseded; independent
+Sol review of the complete accepted-base-to-head diff remains required.
+
+The exact disposable basetemp remains because exact recursive cleanup was
+rejected by the execution environment destructive-action policy before
+execution. It was not removed through a deletion bypass. This is classified
+`ENVIRONMENT/cleanup-policy`; it does not alter the test results. The report
+does not claim cleanup success and does not self-accept the implementation.
