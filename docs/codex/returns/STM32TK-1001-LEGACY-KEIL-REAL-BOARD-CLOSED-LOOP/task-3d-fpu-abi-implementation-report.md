@@ -13,9 +13,9 @@ revision is superseded by the accepted-base facts recorded below.
 - Design commit: `9f9258c3f321229d5141aba17592397ae79246fe`
 - Plan commit: `13b991bd0bfb2cffd89063e7e58d9629f9e20cd6`
 - Task 1 code/tests head before this report-only commit:
-  `6bf7fb3ad3fafe8c9068957c647bb5546018231b`
+  `87bfa05290f0aff7db74e69fcf268e3e1f47bf8f`
 - Task 1 code/tests tree at that head:
-  `73733549c501872c6402b2e3f64fefb13a0e3b88`
+  `6499e1711feb70a9e8a1bde271d1dbf7c6b8ed31`
 
 The report is committed separately from the code/tests commits. It deliberately
 does not record the SHA of its own report-only commit or moving commit totals.
