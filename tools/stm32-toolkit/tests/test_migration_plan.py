@@ -1992,7 +1992,7 @@ def test_armclang_cortex_m4_fpu2_without_raw_abi_has_one_public_blocker(tmp_path
         blocker for blocker in plan.blockers if blocker.code == "MIGRATION_COMPILER_UNSUPPORTED"
     ]
     assert [(blocker.path, blocker.evidence) for blocker in compiler_blockers] == [
-        (inspection.project_file, "")
+        ("", "")
     ]
     fpu_abi_blockers = [
         blocker for blocker in plan.blockers if blocker.code.startswith("MIGRATION_FLOAT_ABI")
@@ -2013,8 +2013,8 @@ def test_armclang_cortex_m4_fpu2_without_raw_abi_has_one_public_blocker(tmp_path
 
     result = apply_keil_conversion(plan)
     assert result.ok is False
-    assert result.code == "MIGRATION_BLOCKED"
-    assert "MIGRATION_FLOAT_ABI_REQUIRED" in result.details["blockerCodes"]
+    assert result.code == "MIGRATION_PLAN_INVALID"
+    assert result.details == {"rule": "type"}
     for rel in CONVERSION_PRODUCTS:
         assert not (repo / rel).exists()
 
@@ -2208,6 +2208,44 @@ def test_unknown_or_ambiguous_float_abi_produces_a_stable_blocker(
     assert len(blocker) == 1
     assert blocker[0].message == "unsupported or ambiguous Keil float ABI"
     assert blocker[0].evidence == raw
+
+
+def test_unsupported_float_abi_public_blocker_prevents_apply_without_writes(tmp_path):
+    repo = build_repo(
+        tmp_path,
+        files={"Main/main.c": "int main(void) { return 0; }\n"},
+        uvprojx_kwargs={
+            "fpu": "weird",
+            "groups": (("Main", (("main.c", "1", "Main/main.c"),)),),
+            "includes": f"Main;{FRAMEWORK_INCLUDE}",
+        },
+    )
+    inspection = fixture_inspection(repo)
+    assert inspection.compiler == "armcc"
+    assert inspection.fpu == "FPU2"
+    assert inspection.float_abi == "weird"
+
+    plan = plan_keil_conversion(repo, inspection)
+    blockers = [
+        blocker
+        for blocker in plan.blockers
+        if blocker.code == "MIGRATION_FLOAT_ABI_UNSUPPORTED"
+    ]
+    assert [(blocker.code, blocker.evidence) for blocker in blockers] == [
+        ("MIGRATION_FLOAT_ABI_UNSUPPORTED", "weird")
+    ]
+    assert not [
+        blocker
+        for blocker in plan.blockers
+        if blocker.code == "MIGRATION_COMPILER_UNSUPPORTED"
+    ]
+
+    result = apply_keil_conversion(plan)
+    assert result.ok is False
+    assert result.code == "MIGRATION_BLOCKED"
+    assert result.details["blockerCodes"].count("MIGRATION_FLOAT_ABI_UNSUPPORTED") == 1
+    for rel in CONVERSION_PRODUCTS:
+        assert not (repo / rel).exists()
 
 
 def test_absent_float_abi_stays_absent(tmp_path):

@@ -388,7 +388,7 @@ def _inspection_blockers(inspection: KeilInspection) -> list[MigrationBlocker]:
             MigrationBlocker(
                 "MIGRATION_COMPILER_UNSUPPORTED",
                 "MIGRATION_COMPILER_UNSUPPORTED",
-                inspection.project_file,
+                "",
                 0,
                 0,
                 "",
