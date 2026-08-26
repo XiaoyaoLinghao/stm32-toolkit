@@ -170,6 +170,21 @@ def test_v2_load_returns_exact_frozen_model(tmp_path: Path):
     )
 
 
+def test_schema2_rejects_schema3_only_link_standard_math(tmp_path: Path):
+    payload = _v2_payload()
+    payload["build"]["linkStandardMath"] = True
+    _write_manifest(tmp_path, payload)
+
+    with pytest.raises(ProjectManifestError) as caught:
+        load_project_model(tmp_path)
+
+    assert caught.value.code == "PROJECT_SCHEMA_INVALID"
+    assert caught.value.details == {
+        "field": "build.linkStandardMath",
+        "rule": "additionalProperties",
+    }
+
+
 def test_schema3_link_standard_math_defaults_false_and_binds_booleans(tmp_path: Path):
     missing = _v2_payload()
     missing["schemaVersion"] = 3

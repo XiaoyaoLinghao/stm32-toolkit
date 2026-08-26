@@ -338,6 +338,7 @@ def _packaged_validator(version: int) -> Draft202012Validator:
             schema = deepcopy(schema)
             schema["properties"]["schemaVersion"] = {"const": 2}
             schema["properties"].pop("testing", None)
+            schema["properties"]["build"]["properties"].pop("linkStandardMath", None)
         Draft202012Validator.check_schema(schema)
         validator = Draft202012Validator(schema, format_checker=FormatChecker())
         _PACKAGED_VALIDATORS[schema_name] = validator
