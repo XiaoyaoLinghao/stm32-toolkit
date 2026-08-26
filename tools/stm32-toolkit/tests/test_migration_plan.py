@@ -1879,6 +1879,7 @@ def test_manifest_mapping_and_deterministic_uuid(tmp_path):
     assert payload["build"]["includePaths"] == ["Main", "Common", FRAMEWORK_INCLUDE]
     assert payload["build"]["defines"] == ["USE_STDPERIPH_DRIVER", "STM32F429xx"]
     assert payload["build"]["compileOptions"] == []
+    assert payload["build"]["linkStandardMath"] is True
     assert payload["build"]["assemblySources"] == []
     assert payload["build"]["presets"] == ["arm-debug", "arm-release"]
     assert payload["build"]["elf"] == "build/arm-debug/my_app_v1.elf"
@@ -1957,6 +1958,7 @@ def test_armcc_cortex_m4_fpu2_without_raw_abi_normalizes_and_configures(tmp_path
     manifest = json.loads((repo / ".stm32-project.json").read_text(encoding="utf-8"))
     assert manifest["target"]["fpu"] == "fpv4-sp-d16"
     assert manifest["target"]["floatAbi"] == "hard"
+    assert manifest["build"]["linkStandardMath"] is True
     configuration = plan_project_configuration(load_project_model(repo))
     cmake = next(file for file in configuration.files if file.path == "CMakeLists.txt")
     text = cmake.after_bytes.decode("utf-8")

@@ -574,6 +574,7 @@ def _manifest_proposal(root: Path, inspection: KeilInspection) -> dict | None:
             "includePaths": list(inspection.include_paths),
             "defines": list(inspection.defines),
             "compileOptions": [],
+            "linkStandardMath": True,
             "assemblySources": [
                 source.path
                 for source in inspection.sources

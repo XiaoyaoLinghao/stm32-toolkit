@@ -93,6 +93,9 @@
           "type": "array",
           "items": {"type": "string", "minLength": 1}
         },
+        "linkStandardMath": {
+          "type": "boolean"
+        },
         "assemblySources": {
           "type": "array",
           "items": {"type": "string", "minLength": 1}

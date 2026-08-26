@@ -14,6 +14,7 @@ import shutil
 import stat
 import subprocess
 import sys
+from copy import deepcopy
 from dataclasses import FrozenInstanceError, replace
 from pathlib import Path
 
@@ -1777,6 +1778,81 @@ def test_generic_link_contract_restores_pre_runtime_recovery_bytes(tmp_path):
     assert "-nostartfiles" in no_fpu_cmake
     assert "--specs=nano.specs" not in no_fpu_cmake
     assert "--specs=nosys.specs" not in no_fpu_cmake
+
+
+def generated_cmake_bytes(root: Path, payload: dict) -> bytes:
+    project = write_project(root, payload)
+    plan = plan_for(project)
+    return next(
+        entry.after_bytes for entry in plan.files if entry.path == "CMakeLists.txt"
+    )
+
+
+def test_generic_standard_math_selector_is_bounded_and_byte_compatible(tmp_path):
+    missing = standard_payload()
+    missing["schemaVersion"] = 3
+    missing_bytes = generated_cmake_bytes(tmp_path / "missing", missing)
+    assert len(missing_bytes) == 1116
+    assert sha256(missing_bytes) == "9fd3c7787345e6660506b176ca6e41cbba43c8f2dfd1e63af0a42072d7aae4ff"
+
+    explicit_false = deepcopy(missing)
+    explicit_false["build"]["linkStandardMath"] = False
+    false_bytes = generated_cmake_bytes(tmp_path / "false", explicit_false)
+    assert false_bytes == missing_bytes
+
+    explicit_true = deepcopy(missing)
+    explicit_true["build"]["linkStandardMath"] = True
+    true_bytes = generated_cmake_bytes(tmp_path / "true", explicit_true)
+    text = true_bytes.decode("utf-8")
+    assert text.count("target_link_libraries(firmware PRIVATE m)") == 1
+    assert "-nostartfiles" in text
+    assert "--specs=nano.specs" not in text
+    assert "--specs=nosys.specs" not in text
+
+
+def test_link_standard_math_participates_in_generation_model_hash(tmp_path):
+    roots = {}
+    for name, present, value in (
+        ("missing", False, False),
+        ("false", True, False),
+        ("true", True, True),
+    ):
+        payload = standard_payload()
+        payload["schemaVersion"] = 3
+        if present:
+            payload["build"]["linkStandardMath"] = value
+        roots[name] = write_project(tmp_path / name, payload)
+    missing_hash = model_sha256_for(load_project_model(roots["missing"]))
+    false_hash = model_sha256_for(load_project_model(roots["false"]))
+    true_hash = model_sha256_for(load_project_model(roots["true"]))
+    assert missing_hash == false_hash
+    assert true_hash != missing_hash
+
+
+def test_native_standard_math_selector_never_duplicates_or_changes_output(tmp_path):
+    outputs = []
+    for name, present, value in (
+        ("missing", False, False),
+        ("false", True, False),
+        ("true", True, True),
+    ):
+        payload = standard_payload()
+        payload["schemaVersion"] = 3
+        payload["generation"]["nativeLinkerScript"] = "STM32F429_FLASH.ld"
+        if present:
+            payload["build"]["linkStandardMath"] = value
+        root = write_project(tmp_path / name, payload)
+        (root / "STM32F429_FLASH.ld").write_bytes(b"MEMORY {}\n")
+        cmake = next(
+            entry.after_bytes
+            for entry in plan_for(root).files
+            if entry.path == "CMakeLists.txt"
+        )
+        assert cmake.decode("utf-8").count(
+            "target_link_libraries(firmware PRIVATE m)"
+        ) == 1
+        outputs.append(cmake)
+    assert outputs[0] == outputs[1] == outputs[2]
 
 
 def test_missing_template_resource_is_rejected():

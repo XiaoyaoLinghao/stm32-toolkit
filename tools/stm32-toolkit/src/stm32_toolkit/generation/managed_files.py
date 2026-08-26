@@ -256,6 +256,7 @@ def _model_payload(model: ProjectModel) -> dict[str, object]:
             "assembly_sources": list(model.build.assembly_sources),
             "presets": list(model.build.presets),
             "elf": model.build.elf,
+            "link_standard_math": model.build.link_standard_math,
         },
         "memory": {
             "source": model.memory.source,

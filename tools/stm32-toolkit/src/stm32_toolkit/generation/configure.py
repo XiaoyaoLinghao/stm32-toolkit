@@ -967,6 +967,7 @@ def _build_contexts(
         "includes": [_cmake_quote(include) for include in model.build.include_paths],
         "defines": list(model.build.defines),
         "compile_options": list(model.build.compile_options),
+        "link_standard_math": model.build.link_standard_math,
         "map_name": f"{stem}.map",
         "hex_name": f"{stem}.hex",
         "bin_name": f"{stem}.bin",

@@ -91,6 +91,7 @@ class BuildSpec:
     assembly_sources: tuple[str, ...]
     presets: tuple[str, ...]
     elf: str | None
+    link_standard_math: bool = False
 
 
 @dataclass(frozen=True)
@@ -718,6 +719,7 @@ def _build_model(root: Path, payload: dict, version: int) -> ProjectModel:
         assembly_sources=tuple(build_data.get("assemblySources", ())),
         presets=tuple(build_data.get("presets", ())) if version in (2, 3) else (),
         elf=build_data.get("elf"),
+        link_standard_math=build_data.get("linkStandardMath", False),
     )
     debug_data = payload.get("debug") or {}
     debug = DebugSpec(

@@ -170,6 +170,36 @@ def test_v2_load_returns_exact_frozen_model(tmp_path: Path):
     )
 
 
+def test_schema3_link_standard_math_defaults_false_and_binds_booleans(tmp_path: Path):
+    missing = _v2_payload()
+    missing["schemaVersion"] = 3
+    missing_root = tmp_path / "missing"
+    missing_root.mkdir()
+    _write_manifest(missing_root, missing)
+    assert load_project_model(missing_root).build.link_standard_math is False
+
+    for name, value in (("false", False), ("true", True)):
+        payload = _v2_payload()
+        payload["schemaVersion"] = 3
+        payload["build"]["linkStandardMath"] = value
+        root = tmp_path / name
+        root.mkdir()
+        _write_manifest(root, payload)
+        assert load_project_model(root).build.link_standard_math is value
+
+
+@pytest.mark.parametrize("bad", ["true", 1, 0, None, [], {}])
+def test_schema3_link_standard_math_rejects_non_booleans(tmp_path: Path, bad: object):
+    payload = _v2_payload()
+    payload["schemaVersion"] = 3
+    payload["build"]["linkStandardMath"] = bad
+    _write_manifest(tmp_path, payload)
+    with pytest.raises(ProjectManifestError) as caught:
+        load_project_model(tmp_path)
+    assert caught.value.code == "PROJECT_SCHEMA_INVALID"
+    assert caught.value.details == {"field": "build.linkStandardMath", "rule": "type"}
+
+
 def test_schema3_native_linker_script_is_optional_and_model_bound(tmp_path: Path):
     payload = _v2_payload()
     payload["schemaVersion"] = 3
