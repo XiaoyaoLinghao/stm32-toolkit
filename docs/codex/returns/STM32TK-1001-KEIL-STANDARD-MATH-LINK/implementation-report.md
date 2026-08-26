@@ -109,3 +109,43 @@ $env:PYTHONPATH=(Resolve-Path '.\\tools\\stm32-toolkit\\src').Path
 - Sol primary must independently review the complete accepted-base-to-code-head diff and issue the verdict.
 - Candidate/runtime construction, fresh runtime replacement, restarted campaign conversion/configuration, two campaign builds, H1 evidence, hardware evidence, and acceptance have not been performed by this implementer.
 - No hardware, network, push, PR, merge, tag, release, or remote branch action occurred.
+
+## Revision round 1: Schema-3-only selector correction
+
+- Independent review finding: the packaged Schema-2 validator cloned the shared
+  schema and removed `testing` but left the Schema-3-only
+  `build.linkStandardMath` property enabled. Consequently, a Schema-2 manifest
+  containing `build.linkStandardMath=true` loaded as a model instead of being
+  rejected by the accepted-base contract.
+- Test-first RED command:
+
+  ~~~powershell
+  $env:PYTHONPATH=(Resolve-Path '.\\tools\\stm32-toolkit\\src').Path
+  & 'C:\\Users\\ZhangYang\\AppData\\Local\\Programs\\Python\\Python312\\python.exe' -m pytest tools/stm32-toolkit/tests/test_project_model.py -q -k 'schema2_rejects_schema3_only_link_standard_math' -p no:cacheprovider --basetemp=C:/tmp/stm32tk-1001-link-schema2-red
+  ~~~
+
+  Exit 1 with the expected product RED: `DID NOT RAISE`. The regression
+  asserted the accepted-base details
+  `{"field":"build.linkStandardMath","rule":"additionalProperties"}`.
+- The narrow production correction removes `linkStandardMath` only from the
+  deep-copied packaged Schema-2 build properties, alongside the existing
+  Schema-2 `testing` removal. Explicit caller-supplied schemas, Schema 3,
+  `nativeLinkerScript`, and all planner/apply behavior remain unchanged.
+- Exact regression GREEN command used a fresh no-cache basetemp and exited 0
+  with 1 passed. The selector-focused rerun exited 0 with 17 passed (the
+  newly-added Schema-2 regression accounts for the additional selected test).
+- Complete affected-file rerun covered `test_project_model.py`,
+  `test_project_v3.py`, `test_generation.py`, `test_migration_plan.py`, and
+  `test_plugin_layout.py`; it exited 0 with 614 collected, 612 passed, and 2
+  skipped. No test assertion or unrelated product behavior was changed.
+- Product/tests correction commit: `0cdd142f80421c6aea59e81e963936779b05f00f`,
+  tree `c33729b55bcfcb40ff782e81548f5e2cba8a8e2f`, parent
+  `991090e88f9c37dd6c2ccf80ba01f7c68a126e2e`.
+- Revision scope audit passed: `git diff --check` passed and the pre-commit
+  name-only set was exactly `tools/stm32-toolkit/src/stm32_toolkit/project_model.py`
+  and `tools/stm32-toolkit/tests/test_project_model.py`. The report is not in
+  the product/tests commit.
+- Fresh exact basetemp cleanup attempts for the revision RED, regression
+  GREEN, selector-focused GREEN, and complete affected GREEN paths were
+  rejected by the environment policy before execution. No bypass was used;
+  these remain `ENVIRONMENT/cleanup-policy` concerns.
