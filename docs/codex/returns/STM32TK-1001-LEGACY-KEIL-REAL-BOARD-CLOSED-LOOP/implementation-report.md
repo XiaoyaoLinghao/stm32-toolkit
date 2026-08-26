@@ -16,9 +16,9 @@ five-path ARMCC/GCC/profile correction and all later H1/physical work were not s
 - Corrected frozen specification/plan docs head:
   `8cf0f9626bce315fd313afb591ac16141915e988`.
 - Specification: `docs/superpowers/specs/2026-08-25-stm32-toolkit-1001-h1-blocker-convergence-design.md`.
-- Plan: `docs/superpowers/plans/2026-08-25-stm32tk-1001-h1-blocker-convergence.md`.
+- Plan: `docs/superpowers/plans/2026-08-25-stm32-toolkit-1001-h1-blocker-convergence.md`.
 - Implementation branch/worktree:
-  `codex/STM32TK-1001-LEGACY-HARDWARE-CLOSED-LOOP` /
+  `codex/STM32TK-1001-LEGACY-HARDWARE-CLOSED-LOOP-impl` /
   `C:/tmp/stm32tk-1001-legacy-hardware-impl`.
 - Toolkit implementation head immediately before this report commit:
   `8cf0f9626bce315fd313afb591ac16141915e988` (the only change after the product CodeHead is
