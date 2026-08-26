@@ -20,6 +20,8 @@ from pathlib import Path
 import pytest
 
 from stm32_toolkit.keil import KeilInputDigest, KeilInspection, inspect_keil
+from stm32_toolkit.generation import plan_project_configuration
+from stm32_toolkit.project_model import load_project_model
 
 import stm32_toolkit.migration.model as model_mod
 import stm32_toolkit.migration.planner as planner_mod
@@ -32,6 +34,7 @@ from stm32_toolkit.migration import (
 )
 
 CORE_CPU = 'IRAM(0x20000000,0x30000) IROM(0x8000000,0x100000) CPUTYPE("Cortex-M4") FPU2'
+CORE_CPU_NO_FPU = 'IRAM(0x20000000,0x30000) IROM(0x8000000,0x100000) CPUTYPE("Cortex-M4")'
 FRAMEWORK_INCLUDE = "Libraries/STM32F4xx_StdPeriph_Driver"
 UUID_NAMESPACE = uuid.UUID("a2e9f523-3c9e-5cb2-bf50-5cf9ff5d16a8")
 
@@ -1862,7 +1865,7 @@ def test_manifest_mapping_and_deterministic_uuid(tmp_path):
     assert payload["target"] == {
         "device": "STM32F429ZGTx",
         "core": "cortex-m4",
-        "fpu": "FPU2",
+        "fpu": "fpv4-sp-d16",
         "floatAbi": "softfp",
         "devicePack": "Keil.STM32F4xx_DFP.2.16.1",
     }
@@ -1920,11 +1923,147 @@ def test_manifest_canonical_bytes(tmp_path):
 # ---------------------------------------------------------------------------
 
 
-def _plan_target_for_fpu(tmp_path, fpu: str | None):
+def test_armcc_cortex_m4_fpu2_without_raw_abi_normalizes_and_configures(tmp_path):
     repo = build_repo(
         tmp_path,
         files={"Main/main.c": "int main(void) { return 0; }\n"},
-        uvprojx_kwargs={"fpu": fpu},
+        uvprojx_kwargs={
+            "fpu": None,
+            "groups": (("Main", (("main.c", "1", "Main/main.c"),)),),
+            "includes": f"Main;{FRAMEWORK_INCLUDE}",
+        },
+    )
+    inspection = fixture_inspection(repo)
+    assert inspection.fpu == "FPU2"
+    assert inspection.float_abi is None
+
+    plan = plan_keil_conversion(repo, inspection)
+    assert not plan.blockers
+    applied = apply_keil_conversion(plan)
+    assert applied.ok is True
+
+    manifest = json.loads((repo / ".stm32-project.json").read_text(encoding="utf-8"))
+    assert manifest["target"]["fpu"] == "fpv4-sp-d16"
+    assert manifest["target"]["floatAbi"] == "hard"
+    configuration = plan_project_configuration(load_project_model(repo))
+    cmake = next(file for file in configuration.files if file.path == "CMakeLists.txt")
+    text = cmake.after_bytes.decode("utf-8")
+    assert "-mfpu=fpv4-sp-d16" in text
+    assert "-mfloat-abi=hard" in text
+
+
+def test_unsupported_raw_fpu_returns_one_stable_blocker(tmp_path):
+    repo = build_repo(
+        tmp_path,
+        files={"Main/main.c": "int main(void) { return 0; }\n"},
+        uvprojx_kwargs={
+            "cpu": CORE_CPU.replace("FPU2", "FPU3"),
+            "fpu": None,
+        },
+    )
+    inspection = fixture_inspection(repo)
+
+    generated_fpu, generated_float_abi, blocker = planner_mod._normalize_target_fpu_abi(
+        inspection
+    )
+
+    assert (generated_fpu, generated_float_abi, blocker) == (
+        None,
+        None,
+        "MIGRATION_FPU_UNSUPPORTED",
+    )
+
+
+def test_recognized_fpu_outside_armcc_tuple_requires_explicit_abi(tmp_path):
+    repo = build_repo(
+        tmp_path,
+        files={"Main/main.c": "int main(void) { return 0; }\n"},
+        uvprojx_kwargs={"cpu": CORE_CPU_NO_FPU, "fpu": None},
+    )
+    inspection = replace(
+        fixture_inspection(repo), compiler="armclang", fpu="FPU2", float_abi=None
+    )
+
+    generated_fpu, generated_float_abi, blocker = planner_mod._normalize_target_fpu_abi(
+        inspection
+    )
+
+    assert (generated_fpu, generated_float_abi, blocker) == (
+        None,
+        None,
+        "MIGRATION_FLOAT_ABI_REQUIRED",
+    )
+
+
+def test_explicit_abi_without_fpu_returns_one_stable_blocker(tmp_path):
+    repo = build_repo(
+        tmp_path,
+        files={"Main/main.c": "int main(void) { return 0; }\n"},
+        uvprojx_kwargs={"cpu": CORE_CPU_NO_FPU, "fpu": None},
+    )
+    inspection = replace(fixture_inspection(repo), fpu=None, float_abi="hard")
+
+    generated_fpu, generated_float_abi, blocker = planner_mod._normalize_target_fpu_abi(
+        inspection
+    )
+
+    assert (generated_fpu, generated_float_abi, blocker) == (
+        None,
+        None,
+        "MIGRATION_FLOAT_ABI_REQUIRES_FPU",
+    )
+
+
+def test_neither_fpu_nor_abi_stays_absent_from_manifest_and_flags(tmp_path):
+    repo = build_repo(
+        tmp_path,
+        files={"Main/main.c": "int main(void) { return 0; }\n"},
+        uvprojx_kwargs={"cpu": CORE_CPU_NO_FPU, "fpu": None},
+    )
+    inspection = fixture_inspection(repo)
+    assert planner_mod._normalize_target_fpu_abi(inspection) == (None, None, None)
+
+    plan = plan_keil_conversion(repo, inspection)
+    assert not plan.blockers
+    payload = manifest_json(next(p for p in plan.patches if p.path == ".stm32-project.json"))
+
+    assert "fpu" not in payload["target"]
+    assert "floatAbi" not in payload["target"]
+
+
+@pytest.mark.parametrize(
+    ("cpu", "raw_abi", "expected_code"),
+    [
+        (CORE_CPU.replace("FPU2", "FPU3"), None, "MIGRATION_FPU_UNSUPPORTED"),
+        (CORE_CPU_NO_FPU, "hard", "MIGRATION_FLOAT_ABI_REQUIRES_FPU"),
+    ],
+)
+def test_fpu_abi_blockers_prevent_apply(tmp_path, cpu, raw_abi, expected_code):
+    repo = build_repo(
+        tmp_path,
+        files={"Main/main.c": "int main(void) { return 0; }\n"},
+        uvprojx_kwargs={"cpu": cpu, "fpu": raw_abi},
+    )
+    inspection = fixture_inspection(repo)
+    plan = plan_keil_conversion(repo, inspection)
+
+    blocker_codes = [blocker.code for blocker in plan.blockers]
+    assert blocker_codes.count(expected_code) == 1
+    result = apply_keil_conversion(plan)
+
+    assert result.ok is False
+    assert result.code == "MIGRATION_BLOCKED"
+    assert expected_code in result.details["blockerCodes"]
+    assert not (repo / ".stm32-project.json").exists()
+
+
+def _plan_target_for_fpu(
+    tmp_path, fpu: str | None, *, cpu: str = CORE_CPU
+):
+    repo = build_repo(
+        tmp_path,
+        files={"Main/main.c": "int main(void) { return 0; }\n"},
+        uvprojx_kwargs={"cpu": cpu, "fpu": fpu},
     )
     inspection = fixture_inspection(repo)
     plan = plan_keil_conversion(repo, inspection)
@@ -1968,7 +2107,7 @@ def test_unknown_or_ambiguous_float_abi_produces_a_stable_blocker(
 
 def test_absent_float_abi_stays_absent(tmp_path):
     """No uFloatingPoint evidence means no floatAbi in the proposal."""
-    _, payload = _plan_target_for_fpu(tmp_path, None)
+    _, payload = _plan_target_for_fpu(tmp_path, None, cpu=CORE_CPU_NO_FPU)
 
     assert "floatAbi" not in payload["target"]
 

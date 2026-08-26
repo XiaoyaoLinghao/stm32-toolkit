@@ -86,6 +86,11 @@ _KNOWN_FLOAT_ABIS = frozenset({"soft", "softfp", "hard"})
 #: ambiguous and produces a stable blocker instead of entering the manifest.
 _KEIL_FLOAT_ABI_EVIDENCE = {"0": "soft", "1": "softfp", "2": "softfp"}
 
+# Verifiable Keil CPU/FPU evidence mapped to a GCC FPU spelling.  The mapping
+# is deliberately closed: an unknown tuple must not become an inferred
+# compiler option.
+_KEIL_FPU_EVIDENCE = {("cortex-m4", "FPU2"): "fpv4-sp-d16"}
+
 
 def _normalize_float_abi(raw: str | None) -> tuple[str | None, str | None]:
     """Map raw Keil ``uFloatingPoint`` text to a GCC float ABI.
@@ -107,6 +112,34 @@ def _normalize_float_abi(raw: str | None) -> tuple[str | None, str | None]:
     if normalized is not None:
         return normalized, None
     return None, "MIGRATION_FLOAT_ABI_UNSUPPORTED"
+
+
+def _normalize_target_fpu_abi(
+    inspection: KeilInspection,
+) -> tuple[str | None, str | None, str | None]:
+    """Normalize the atomic Keil FPU/ABI pair without guessing unsupported data."""
+    raw_fpu = (inspection.fpu or "").strip()
+    raw_abi = (inspection.float_abi or "").strip()
+    if not raw_fpu:
+        if raw_abi:
+            return None, None, "MIGRATION_FLOAT_ABI_REQUIRES_FPU"
+        return None, None, None
+    fpu = _KEIL_FPU_EVIDENCE.get((inspection.cpu.casefold(), raw_fpu.upper()))
+    if fpu is None:
+        return None, None, "MIGRATION_FPU_UNSUPPORTED"
+    if raw_abi:
+        abi, blocker = _normalize_float_abi(raw_abi)
+        if blocker is not None:
+            return None, None, blocker
+        assert abi is not None
+        return fpu, abi, None
+    if (
+        inspection.compiler == "armcc"
+        and inspection.cpu.casefold() == "cortex-m4"
+        and raw_fpu.upper() == "FPU2"
+    ):
+        return fpu, "hard", None
+    return None, None, "MIGRATION_FLOAT_ABI_REQUIRED"
 
 
 def _canonical_root(root: object, field: str = "projectRoot") -> Path:
@@ -401,17 +434,26 @@ def _inspection_blockers(inspection: KeilInspection) -> list[MigrationBlocker]:
                 "non-empty scatter-file linker setting",
             )
         )
-    _, float_abi_blocker = _normalize_float_abi(inspection.float_abi)
-    if float_abi_blocker is not None:
+    _, _, fpu_abi_blocker = _normalize_target_fpu_abi(inspection)
+    if fpu_abi_blocker is not None:
+        blocker_messages = {
+            "MIGRATION_FPU_UNSUPPORTED": "unsupported or ambiguous Keil FPU evidence",
+            "MIGRATION_FLOAT_ABI_REQUIRED": "Keil FPU evidence requires an explicit float ABI",
+            "MIGRATION_FLOAT_ABI_REQUIRES_FPU": "Keil float ABI evidence requires FPU evidence",
+            "MIGRATION_FLOAT_ABI_UNSUPPORTED": "unsupported or ambiguous Keil float ABI",
+        }
+        blocker_evidence = (
+            inspection.fpu if fpu_abi_blocker != "MIGRATION_FLOAT_ABI_REQUIRES_FPU" else inspection.float_abi
+        )
         blockers.append(
             MigrationBlocker(
-                float_abi_blocker,
-                float_abi_blocker,
+                fpu_abi_blocker,
+                fpu_abi_blocker,
                 inspection.project_file,
                 0,
                 0,
-                (inspection.float_abi or "")[:200],
-                "unsupported or ambiguous Keil float ABI",
+                (blocker_evidence or "")[:200],
+                blocker_messages[fpu_abi_blocker],
             )
         )
     for option in inspection.scoped_options:
@@ -546,9 +588,9 @@ def _manifest_proposal(root: Path, inspection: KeilInspection) -> dict | None:
             "userDirectories": [],
         },
     }
-    if inspection.fpu is not None:
-        payload["target"]["fpu"] = inspection.fpu
-    normalized_float_abi, _ = _normalize_float_abi(inspection.float_abi)
+    normalized_fpu, normalized_float_abi, _ = _normalize_target_fpu_abi(inspection)
+    if normalized_fpu is not None:
+        payload["target"]["fpu"] = normalized_fpu
     if normalized_float_abi is not None:
         payload["target"]["floatAbi"] = normalized_float_abi
     if inspection.device_pack is not None:
