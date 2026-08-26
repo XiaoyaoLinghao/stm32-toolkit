@@ -1988,27 +1988,15 @@ def test_armclang_cortex_m4_fpu2_without_raw_abi_has_one_public_blocker(tmp_path
     assert inspection.float_abi is None
 
     plan = plan_keil_conversion(repo, inspection)
-    compiler_blockers = [
-        blocker for blocker in plan.blockers if blocker.code == "MIGRATION_COMPILER_UNSUPPORTED"
-    ]
-    assert [(blocker.path, blocker.evidence) for blocker in compiler_blockers] == [
-        ("", "")
-    ]
-    fpu_abi_blockers = [
-        blocker for blocker in plan.blockers if blocker.code.startswith("MIGRATION_FLOAT_ABI")
-    ]
-    assert [(blocker.code, blocker.evidence) for blocker in fpu_abi_blockers] == [
-        ("MIGRATION_FLOAT_ABI_REQUIRED", "FPU2")
+    assert [(blocker.code, blocker.evidence) for blocker in plan.blockers] == [
+        ("MIGRATION_COMPILER_UNSUPPORTED", ""),
+        ("MIGRATION_FLOAT_ABI_REQUIRED", "FPU2"),
     ]
 
     repeated = plan_keil_conversion(repo, inspection)
-    repeated_fpu_abi_blockers = [
-        blocker
-        for blocker in repeated.blockers
-        if blocker.code.startswith("MIGRATION_FLOAT_ABI")
-    ]
-    assert [(blocker.code, blocker.evidence) for blocker in repeated_fpu_abi_blockers] == [
-        ("MIGRATION_FLOAT_ABI_REQUIRED", "FPU2")
+    assert [(blocker.code, blocker.evidence) for blocker in repeated.blockers] == [
+        ("MIGRATION_COMPILER_UNSUPPORTED", ""),
+        ("MIGRATION_FLOAT_ABI_REQUIRED", "FPU2"),
     ]
 
     result = apply_keil_conversion(plan)
@@ -2226,24 +2214,16 @@ def test_unsupported_float_abi_public_blocker_prevents_apply_without_writes(tmp_
     assert inspection.float_abi == "weird"
 
     plan = plan_keil_conversion(repo, inspection)
-    blockers = [
-        blocker
-        for blocker in plan.blockers
-        if blocker.code == "MIGRATION_FLOAT_ABI_UNSUPPORTED"
-    ]
-    assert [(blocker.code, blocker.evidence) for blocker in blockers] == [
+    assert [(blocker.code, blocker.evidence) for blocker in plan.blockers] == [
         ("MIGRATION_FLOAT_ABI_UNSUPPORTED", "weird")
-    ]
-    assert not [
-        blocker
-        for blocker in plan.blockers
-        if blocker.code == "MIGRATION_COMPILER_UNSUPPORTED"
     ]
 
     result = apply_keil_conversion(plan)
     assert result.ok is False
     assert result.code == "MIGRATION_BLOCKED"
-    assert result.details["blockerCodes"].count("MIGRATION_FLOAT_ABI_UNSUPPORTED") == 1
+    assert list(result.details["blockerCodes"]) == [
+        "MIGRATION_FLOAT_ABI_UNSUPPORTED"
+    ]
     for rel in CONVERSION_PRODUCTS:
         assert not (repo / rel).exists()
 
