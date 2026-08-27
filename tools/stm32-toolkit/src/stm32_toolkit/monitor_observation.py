@@ -26,8 +26,8 @@ from stm32_toolkit.debug import (
     read_variables,
     sample_registers,
     select_svd,
-    _svd_readable_regions_from_model,
 )
+from stm32_toolkit.debug.firmware import _svd_readable_regions_from_model
 from stm32_toolkit.paths import WorkspacePaths, require_safe_session_id
 from stm32_toolkit.probe import (
     OperationLevel,

@@ -2,7 +2,7 @@
 
 from .dwarf import DwarfCatalog
 from .fault import FaultAnalysisRequest, analyze_fault
-from .firmware import bind_debug_firmware, _svd_readable_regions_from_model
+from .firmware import bind_debug_firmware
 from .model import (
     DebugBindingRequest,
     DebugFirmwareBinding,
@@ -69,5 +69,4 @@ __all__ = [
     "sample_registers",
     "sample_variables",
     "select_svd",
-    "_svd_readable_regions_from_model",
 ]
