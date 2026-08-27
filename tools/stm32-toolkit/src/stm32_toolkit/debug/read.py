@@ -217,7 +217,11 @@ async def _memory_read(
 
 
 def _region(
-    binding: DebugFirmwareBinding, address: object, size: object
+    binding: DebugFirmwareBinding,
+    address: object,
+    size: object,
+    *,
+    svd: bool = False,
 ) -> MemoryRegionBinding:
     if (
         type(address) is not int
@@ -231,9 +235,10 @@ def _region(
             "DEBUG_ADDRESS_OUTSIDE_READABLE_MEMORY",
             "Typed location is outside readable project memory",
         )
+    readable_regions = binding.svd_readable_regions if svd else binding.memory_regions
     matches = tuple(
         item
-        for item in binding.memory_regions
+        for item in readable_regions
         if "r" in item.attributes
         and address >= item.origin
         and address + size <= item.origin + item.length
@@ -321,7 +326,7 @@ def _register(
         register.authorize_read(acknowledge if single else False, sampling=False)
     except SvdError as error:
         raise _fail(error.code, "SVD register cannot be read") from None
-    region = _region(binding, register.address, register.size_bytes)
+    region = _region(binding, register.address, register.size_bytes, svd=True)
 
     def decode(data: bytes) -> TypedValue:
         value = int.from_bytes(data, "little", signed=False)

@@ -250,6 +250,17 @@ async def bind_debug_firmware(
             for region in final_firmware.model.memory.regions
             if "r" in region.attributes
         )
+        debug_regions = tuple(
+            MemoryRegionBinding(region.name, region.origin, region.length, "r--")
+            for region in final_firmware.model.debug.readable_regions
+        )
+        if not debug_regions:
+            # Schema-v2 bindings predate the separate debug authority.  Keep
+            # their historical linker-readable fallback while schema-v3 debug
+            # regions are normalized to read-only access above.
+            svd_regions = regions
+        else:
+            svd_regions = debug_regions
         binding = DebugFirmwareBinding(
             logical_project_id=str(final_firmware.model.logical_project_id),
             workspace_id=typed.workspace_id,
@@ -269,6 +280,7 @@ async def bind_debug_firmware(
             confirmed_at_utc=confirmed_at,
             memory_regions=regions,
             project_root=root,
+            svd_readable_regions=svd_regions,
         )
         return OperationResult.success(_OPERATION, binding)
     except asyncio.CancelledError:

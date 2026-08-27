@@ -169,9 +169,9 @@ def _schema3_binding_env(tmp_path: Path, *, explicit: bool):
                 "svdDevice": "STM32F429",
                 "readableRegions": [
                     {
-                        "name": "PERIPH-40000",
-                        "origin": 0x40000000,
-                        "length": 0x8000,
+                        "name": "PERIPH-40020000",
+                        "origin": 0x40020000,
+                        "length": 0x20000,
                     }
                 ],
             }
@@ -211,7 +211,7 @@ def _schema3_binding_env(tmp_path: Path, *, explicit: bool):
         MemoryRegionBinding("RAM", 0x20000000, 0x20000, "rwx"),
     )
     svd_regions = (
-        MemoryRegionBinding("PERIPH-40000", 0x40000000, 0x8000, "r--"),
+        MemoryRegionBinding("PERIPH-40020000", 0x40020000, 0x20000, "r--"),
     )
     return root, identity, client, request, linker_regions, svd_regions
 
@@ -229,9 +229,16 @@ def test_production_binding_separates_linker_and_svd_readable_regions(
     assert result.ok is True, result.to_dict()
     binding = result.data
     assert binding.memory_regions == linker_regions
-    assert binding.svd_readable_regions == (svd_regions if explicit else linker_regions)
-    if explicit:
-        assert all(region.attributes == "r--" for region in binding.svd_readable_regions)
+    expected_svd_regions = (
+        svd_regions
+        if explicit
+        else tuple(
+            MemoryRegionBinding(region.name, region.origin, region.length, "r--")
+            for region in linker_regions
+        )
+    )
+    assert binding.svd_readable_regions == expected_svd_regions
+    assert all(region.attributes == "r--" for region in binding.svd_readable_regions)
     with pytest.raises(FrozenInstanceError):
         binding.svd_readable_regions = ()  # type: ignore[misc]
 

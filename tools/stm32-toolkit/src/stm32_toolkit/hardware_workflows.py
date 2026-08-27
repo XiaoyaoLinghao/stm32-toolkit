@@ -31,6 +31,7 @@ from stm32_toolkit.debug import (
     sample_variables,
     select_svd,
 )
+from stm32_toolkit.debug.svd import SvdError
 from stm32_toolkit.paths import WorkspacePaths, require_safe_session_id
 from stm32_toolkit.probe import (
     DebugHandoffRequest,
@@ -553,6 +554,7 @@ _KNOWN_STABLE_EXCEPTIONS = (
     ProbeClientError,
     ProbeLeaseError,
     ProbeServiceError,
+    SvdError,
 )
 
 
@@ -995,7 +997,10 @@ async def register_read_workflow(
             paths.project_root,
             model.target.device,
             (Path(model.debug.svd),),
-            readable_regions=binding.memory_regions,
+            readable_regions=getattr(
+                binding, "svd_readable_regions", binding.memory_regions
+            ),
+            svd_device=model.debug.svd_device,
         )
         return RegisterReadRequest(
             binding,

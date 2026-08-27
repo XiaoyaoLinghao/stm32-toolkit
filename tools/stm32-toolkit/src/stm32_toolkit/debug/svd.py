@@ -147,7 +147,7 @@ class SvdSelection:
         if (
             not isinstance(binding, DebugFirmwareBinding)
             or binding.target_device != self.target_device
-            or binding.memory_regions != self.readable_regions
+            or binding.svd_readable_regions != self.readable_regions
             or not isinstance(project_root, Path)
         ):
             raise SvdError(

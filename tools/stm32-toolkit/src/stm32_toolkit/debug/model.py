@@ -209,6 +209,9 @@ class DebugFirmwareBinding:
     confirmed_at_utc: str
     memory_regions: tuple[MemoryRegionBinding, ...]
     project_root: Path = field(repr=False, compare=True)
+    svd_readable_regions: tuple[MemoryRegionBinding, ...] | None = field(
+        default=None, repr=False, compare=True, kw_only=True
+    )
 
     def __post_init__(self) -> None:
         for name in (
@@ -236,6 +239,21 @@ class DebugFirmwareBinding:
             isinstance(region, MemoryRegionBinding) for region in self.memory_regions
         ):
             raise TypeError("memory_regions must be a non-empty tuple")
+        svd_readable_regions = (
+            self.memory_regions
+            if self.svd_readable_regions is None
+            else self.svd_readable_regions
+        )
+        if (
+            type(svd_readable_regions) is not tuple
+            or not svd_readable_regions
+            or not all(
+                isinstance(region, MemoryRegionBinding)
+                for region in svd_readable_regions
+            )
+        ):
+            raise TypeError("svd_readable_regions must be a non-empty tuple")
+        object.__setattr__(self, "svd_readable_regions", svd_readable_regions)
         if not isinstance(self.project_root, Path):
             raise TypeError("project_root must be a Path")
         try:
@@ -268,6 +286,9 @@ class DebugFirmwareBinding:
             "gitDirty": self.git_dirty,
             "confirmedAtUtc": self.confirmed_at_utc,
             "memoryRegions": [region.to_dict() for region in self.memory_regions],
+            "svdReadableRegions": [
+                region.to_dict() for region in self.svd_readable_regions
+            ],
         }
 
 

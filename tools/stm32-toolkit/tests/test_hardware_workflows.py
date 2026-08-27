@@ -584,7 +584,7 @@ def test_register_workflow_forwards_loaded_target_document_and_svd_regions(
             "svd": "device.svd",
             "svdDevice": "STM32F429",
             "readableRegions": [
-                {"name": "PERIPH-40000", "origin": 0x40000000, "length": 0x8000}
+                {"name": "PERIPH-40020000", "origin": 0x40020000, "length": 0x20000}
             ],
         }
     )
@@ -597,7 +597,7 @@ def test_register_workflow_forwards_loaded_target_document_and_svd_regions(
         MemoryRegionBinding("RAM", 0x20000000, 0x20000, "rwx"),
     )
     svd_regions = (
-        MemoryRegionBinding("PERIPH-40000", 0x40000000, 0x8000, "r--"),
+        MemoryRegionBinding("PERIPH-40020000", 0x40020000, 0x20000, "r--"),
     )
     binding = SimpleNamespace(
         project_root=project,

@@ -354,7 +354,9 @@ def test_selection_revalidates_target_document_and_region_provenance(
         MemoryRegionBinding("PERIPHERAL", 0x40000000, 0x00800000, "rw-"),
     )
     with pytest.raises(SvdError) as region_error:
-        selection.revalidate(replace(binding, memory_regions=wrong_regions), project)
+        selection.revalidate(
+            replace(binding, svd_readable_regions=wrong_regions), project
+        )
     assert region_error.value.code == "SVD_PROVENANCE_MISMATCH"
 
     path.write_bytes(_named_document("STM32F429ZITx"))
