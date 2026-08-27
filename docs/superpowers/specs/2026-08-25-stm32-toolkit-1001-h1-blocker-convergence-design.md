@@ -1,12 +1,19 @@
 # STM32TK-1001 H1 blocker convergence design
 
-**Status:** frozen correction design  
-**Parent slice:** VS10-A `STM32TK-1001-LEGACY-HARDWARE-CLOSED-LOOP`  
-**Accepted Toolkit base:** `12d0d3be1f59a5ed44b84a1244575cb853b97173`  
-**Project P0:** `e7b2408fb615748ca5d67a2006f31e2377a09942` / tree `c953083eb371171df5f48fe041aea48e7bdc6b76`  
-**Specification owner/reviewer:** GPT-5.6-sol primary  
-**Implementation owner:** the existing single GPT-5.6-luna/max VS10-A implementer  
-**Remote authority:** none  
+**Status:** frozen correction design
+
+**Parent slice:** VS10-A `STM32TK-1001-LEGACY-HARDWARE-CLOSED-LOOP`
+
+**Accepted Toolkit base:** `12d0d3be1f59a5ed44b84a1244575cb853b97173`
+
+**Project P0:** `e7b2408fb615748ca5d67a2006f31e2377a09942` / tree `c953083eb371171df5f48fe041aea48e7bdc6b76`
+
+**Specification owner/reviewer:** GPT-5.6-sol primary
+
+**Implementation owner:** the existing single GPT-5.6-luna/max VS10-A implementer
+
+**Remote authority:** none
+
 **Hardware authority:** none for this correction
 
 ## 1. Triggering evidence
