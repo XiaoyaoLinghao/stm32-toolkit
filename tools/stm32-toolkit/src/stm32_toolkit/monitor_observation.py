@@ -26,6 +26,7 @@ from stm32_toolkit.debug import (
     read_variables,
     sample_registers,
     select_svd,
+    _svd_readable_regions_from_model,
 )
 from stm32_toolkit.paths import WorkspacePaths, require_safe_session_id
 from stm32_toolkit.probe import (
@@ -905,6 +906,29 @@ async def open_monitor_observation(
             "Monitor observation request is invalid",
             {},
         )
+    svd: SvdSelection | None = None
+    if model.debug.svd is not None:
+        try:
+            svd = _seams.svd_select(
+                paths.project_root,
+                model.target.device,
+                (Path(model.debug.svd),),
+                readable_regions=_svd_readable_regions_from_model(model),
+                svd_device=model.debug.svd_device,
+            )
+            if type(svd) is not SvdSelection:
+                raise MonitorObservationError(
+                    "MONITOR_PROVENANCE_CHANGED", "SVD provenance is invalid"
+                )
+        except asyncio.CancelledError:
+            raise
+        except Exception as error:
+            return OperationResult.failure(
+                _OPERATION,
+                _failure_code(getattr(error, "code", None)),
+                "Monitor observation could not be established",
+                {},
+            )
     supervisor: object | None = None
     client: object | None = None
     root_guard: _DirectoryGuard | None = None
@@ -966,24 +990,13 @@ async def open_monitor_observation(
             binding = _validate_binding(
                 binding_result.data, typed, model, paths, endpoint
             )
+            if svd is not None:
+                svd.revalidate(binding, paths.project_root)
             catalog = _seams.catalog_from_binding(binding)
             if type(catalog) is not DwarfCatalog:
                 raise MonitorObservationError(
                     "MONITOR_PROVENANCE_CHANGED", "DWARF provenance is invalid"
                 )
-            svd: SvdSelection | None = None
-            if model.debug.svd is not None:
-                svd = _seams.svd_select(
-                    paths.project_root,
-                    model.target.device,
-                    (Path(model.debug.svd),),
-                    readable_regions=binding.svd_readable_regions,
-                    svd_device=model.debug.svd_device,
-                )
-                if type(svd) is not SvdSelection:
-                    raise MonitorObservationError(
-                        "MONITOR_PROVENANCE_CHANGED", "SVD provenance is invalid"
-                    )
             _endpoint(endpoint, paths, typed.probe_id)
             _endpoint(getattr(client, "endpoint", None), paths, typed.probe_id)
             session = MonitorObservationSession(

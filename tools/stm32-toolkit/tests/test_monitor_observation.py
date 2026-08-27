@@ -1508,7 +1508,11 @@ def test_optional_svd_and_invalid_provenance_factories(
             )
         )
         assert rejected.code == "MONITOR_PROVENANCE_CHANGED"
-        assert other.supervisors[0].stopped is True
+        if field == "svd_select":
+            assert other.supervisors == []
+            assert other.clients == []
+        else:
+            assert other.supervisors[0].stopped is True
 
 
 def test_revalidate_maps_binding_and_svd_failures(

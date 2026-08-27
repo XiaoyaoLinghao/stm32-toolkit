@@ -19,10 +19,12 @@ from typing import Any
 
 from stm32_toolkit.debug import (
     DebugBindingRequest,
+    DebugFirmwareBinding,
     DwarfCatalog,
     FaultAnalysisRequest,
     RegisterReadRequest,
     SampleVariablesRequest,
+    SvdSelection,
     VariableReadRequest,
     analyze_fault,
     bind_debug_firmware,
@@ -30,6 +32,7 @@ from stm32_toolkit.debug import (
     read_variables,
     sample_variables,
     select_svd,
+    _svd_readable_regions_from_model,
 )
 from stm32_toolkit.debug.svd import SvdError
 from stm32_toolkit.paths import WorkspacePaths, require_safe_session_id
@@ -992,16 +995,27 @@ async def register_read_workflow(
     except _WorkflowFailure as error:
         return _operation_failure(operation, error)
 
-    def build(binding: object) -> RegisterReadRequest:
+    try:
         selection = _seams.svd_select(
             paths.project_root,
             model.target.device,
             (Path(model.debug.svd),),
-            readable_regions=getattr(
-                binding, "svd_readable_regions", binding.memory_regions
-            ),
+            readable_regions=_svd_readable_regions_from_model(model),
             svd_device=model.debug.svd_device,
         )
+    except asyncio.CancelledError:
+        raise
+    except Exception as error:
+        return _stable_exception_result(operation, error)
+
+    def build(binding: object) -> RegisterReadRequest:
+        if type(binding) is DebugFirmwareBinding:
+            if type(selection) is not SvdSelection:
+                raise SvdError(
+                    "SVD_PROVENANCE_MISMATCH",
+                    "SVD selection provenance is invalid",
+                )
+            selection.revalidate(binding, paths.project_root)
         return RegisterReadRequest(
             binding,
             selection,

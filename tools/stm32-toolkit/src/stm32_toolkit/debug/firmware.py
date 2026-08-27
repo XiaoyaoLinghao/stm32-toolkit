@@ -163,6 +163,28 @@ def _same_firmware(before: object, after: object) -> bool:
     return all(before_identity.get(field) == after_identity.get(field) for field in fields)
 
 
+def _svd_readable_regions_from_model(
+    model: object,
+) -> tuple[MemoryRegionBinding, ...]:
+    """Derive the immutable SVD read authority from one loaded project model."""
+
+    linker_regions = tuple(
+        MemoryRegionBinding(
+            region.name,
+            region.origin,
+            region.length,
+            region.attributes,
+        )
+        for region in model.memory.regions
+        if "r" in region.attributes
+    )
+    debug_regions = tuple(
+        MemoryRegionBinding(region.name, region.origin, region.length, "r--")
+        for region in (getattr(model.debug, "readable_regions", ()) or ())
+    )
+    return debug_regions or linker_regions
+
+
 async def bind_debug_firmware(
     request: object, client: object
 ) -> OperationResult[DebugFirmwareBinding]:
@@ -250,17 +272,10 @@ async def bind_debug_firmware(
             for region in final_firmware.model.memory.regions
             if "r" in region.attributes
         )
-        debug_regions = tuple(
-            MemoryRegionBinding(region.name, region.origin, region.length, "r--")
-            for region in final_firmware.model.debug.readable_regions
-        )
-        if not debug_regions:
-            # Schema-v2 bindings predate the separate debug authority.  Keep
-            # their historical linker-readable fallback while schema-v3 debug
-            # regions are normalized to read-only access above.
-            svd_regions = regions
-        else:
-            svd_regions = debug_regions
+        # Schema-v2 bindings predate the separate debug authority.  The
+        # shared model-derived helper keeps their linker-readable fallback
+        # while normalizing schema-v3 debug regions to read-only access.
+        svd_regions = _svd_readable_regions_from_model(final_firmware.model)
         binding = DebugFirmwareBinding(
             logical_project_id=str(final_firmware.model.logical_project_id),
             workspace_id=typed.workspace_id,
