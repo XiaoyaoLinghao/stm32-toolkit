@@ -223,11 +223,144 @@ def _document(peripheral_body: str, *, device_access: str = "") -> bytes:
     ).encode("utf-8")
 
 
+def _named_document(device: str, *, register_body: str = "") -> bytes:
+    return (
+        '<?xml version="1.0" encoding="utf-8"?>'
+        f'<device><name>{device}</name><size>32</size><peripherals>'
+        '<peripheral><name>GPIOE</name><baseAddress>0x40021000</baseAddress>'
+        f"{register_body}</peripheral></peripherals></device>"
+    ).encode("utf-8")
+
+
+def _number_document(value: str) -> bytes:
+    return _document(
+        '<registers><register><name>VALUE</name>'
+        f"<addressOffset>{value}</addressOffset><size>32</size></register></registers>"
+    )
+
+
 def _select_payload(tmp_path: Path, payload: bytes):
     project = tmp_path / "project"
     project.mkdir(parents=True)
     (project / "device.svd").write_bytes(payload)
     return select_svd(project, "STM32F429ZITx", (Path("device.svd"),))
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("00000010", 10),
+        ("10", 10),
+        ("0x10", 16),
+        ("0X10", 16),
+        ("+00000010", 10),
+        ("+0x10", 16),
+        ("+0X10", 16),
+    ],
+)
+def test_numeric_metadata_accepts_decimal_and_hex_forms(
+    tmp_path: Path, value: str, expected: int
+) -> None:
+    selection = _select_payload(tmp_path, _number_document(value))
+
+    assert selection.register("GPIOA.VALUE").address == 0x40020000 + expected
+
+
+@pytest.mark.parametrize(
+    "value", ["-1", "0b10", "1 0", "10suffix", "", "wat", "0x"]
+)
+def test_numeric_metadata_rejects_non_decimal_or_hex_forms(
+    tmp_path: Path, value: str
+) -> None:
+    with pytest.raises(SvdError) as error:
+        _select_payload(tmp_path, _number_document(value))
+
+    assert error.value.code == "SVD_XML_INVALID"
+
+
+def test_explicit_svd_device_binds_variant_target_to_exact_document_name(
+    tmp_path: Path,
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "device.svd").write_bytes(_named_document("STM32F429"))
+
+    with pytest.raises(SvdError) as default:
+        _select_svd(
+            project,
+            "STM32F429ZGTx",
+            (Path("device.svd"),),
+            readable_regions=READABLE,
+        )
+    assert default.value.code == "SVD_SELECTION_REQUIRED"
+
+    selection = _select_svd(
+        project,
+        "STM32F429ZGTx",
+        (Path("device.svd"),),
+        readable_regions=READABLE,
+        svd_device="STM32F429",
+    )
+
+    assert selection.device == "STM32F429"
+    assert selection.target_device == "STM32F429ZGTx"
+
+
+@pytest.mark.parametrize("svd_device", ["STM32F429ZGTx", "stm32f429"])
+def test_explicit_svd_device_rejects_wrong_or_casefold_document_identity(
+    tmp_path: Path, svd_device: str
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "device.svd").write_bytes(_named_document("STM32F429"))
+
+    with pytest.raises(SvdError) as error:
+        _select_svd(
+            project,
+            "STM32F429ZGTx",
+            (Path("device.svd"),),
+            readable_regions=READABLE,
+            svd_device=svd_device,
+        )
+
+    assert error.value.code == "SVD_SELECTION_REQUIRED"
+
+
+def test_selection_revalidates_target_document_and_region_provenance(
+    tmp_path: Path,
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    path = project / "device.svd"
+    path.write_bytes(_named_document("STM32F429"))
+    target = "STM32F429ZGTx"
+    selection = _select_svd(
+        project,
+        target,
+        (Path("device.svd"),),
+        readable_regions=READABLE,
+        svd_device="STM32F429",
+    )
+    binding = replace(_binding(project), target_device=target)
+
+    assert selection.revalidate(binding, project) is True
+    with pytest.raises(SvdError) as target_error:
+        selection.revalidate(
+            replace(binding, target_device="STM32F429ZITx"), project
+        )
+    assert target_error.value.code == "SVD_PROVENANCE_MISMATCH"
+
+    wrong_regions = (
+        MemoryRegionBinding("PERIPHERAL", 0x40000000, 0x00800000, "rw-"),
+    )
+    with pytest.raises(SvdError) as region_error:
+        selection.revalidate(replace(binding, memory_regions=wrong_regions), project)
+    assert region_error.value.code == "SVD_PROVENANCE_MISMATCH"
+
+    path.write_bytes(_named_document("STM32F429ZITx"))
+    with pytest.raises(SvdError) as document_error:
+        selection.revalidate(binding, project)
+    assert document_error.value.code == "SVD_INPUT_CHANGED"
 
 
 def test_device_access_and_peripheral_reset_metadata_are_inherited(tmp_path: Path) -> None:
