@@ -155,6 +155,87 @@ def binding_env(tmp_path: Path):
     return root, identity, client, request
 
 
+def _schema3_binding_env(tmp_path: Path, *, explicit: bool):
+    root = prepare_project(tmp_path / ("explicit" if explicit else "legacy"))
+    manifest_path = root / ".stm32-project.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["schemaVersion"] = 3
+    manifest["target"]["device"] = "STM32F429ZGTx"
+    manifest["debug"]["target"] = "stm32f429zgtx"
+    if explicit:
+        manifest["debug"].update(
+            {
+                "svd": "svd/device.svd",
+                "svdDevice": "STM32F429",
+                "readableRegions": [
+                    {
+                        "name": "PERIPH-40000",
+                        "origin": 0x40000000,
+                        "length": 0x8000,
+                    }
+                ],
+            }
+        )
+        svd_path = root / "svd" / "device.svd"
+        svd_path.parent.mkdir(parents=True, exist_ok=True)
+        svd_path.write_text(
+            "<device><name>STM32F429</name><peripherals/></device>\n",
+            encoding="utf-8",
+        )
+    else:
+        manifest["debug"]["svd"] = None
+        manifest["debug"].pop("svdDevice", None)
+        manifest["debug"].pop("readableRegions", None)
+    manifest_path.write_bytes(
+        (json.dumps(manifest, indent=2, ensure_ascii=False) + "\n").encode("utf-8")
+    )
+
+    identity = _publish_current_debug_build(root)
+    flash = _flash_result(identity)
+    flash["debugTarget"] = "stm32f429zgtx"
+    atomic_write_json(root / "artifacts" / "migration" / "flash-result.json", flash)
+    client = BindingClient(_elf_with_flash_segment()[84 : 84 + 320])
+    client.resolved_target = "STM32F429ZGTx"
+    request = DebugBindingRequest(
+        project_root=root,
+        probe_id="probe-123",
+        target="stm32f429zgtx",
+        workspace_id="workspace-a",
+        observation_session_id="observe-session",
+        lease_id="lease-observe",
+        expected_build_id=str(identity["buildId"]),
+        expected_elf_sha256=str(identity["elfSha256"]),
+    )
+    linker_regions = (
+        MemoryRegionBinding("FLASH", 0x08000000, 0x100000, "r-x"),
+        MemoryRegionBinding("RAM", 0x20000000, 0x20000, "rwx"),
+    )
+    svd_regions = (
+        MemoryRegionBinding("PERIPH-40000", 0x40000000, 0x8000, "r--"),
+    )
+    return root, identity, client, request, linker_regions, svd_regions
+
+
+@pytest.mark.parametrize("explicit", [False, True], ids=["legacy-schema3", "explicit-schema3"])
+def test_production_binding_separates_linker_and_svd_readable_regions(
+    tmp_path: Path, explicit: bool
+) -> None:
+    root, _identity, client, request, linker_regions, svd_regions = _schema3_binding_env(
+        tmp_path, explicit=explicit
+    )
+
+    result = asyncio.run(bind_debug_firmware(request, client))
+
+    assert result.ok is True, result.to_dict()
+    binding = result.data
+    assert binding.memory_regions == linker_regions
+    assert binding.svd_readable_regions == (svd_regions if explicit else linker_regions)
+    if explicit:
+        assert all(region.attributes == "r--" for region in binding.svd_readable_regions)
+    with pytest.raises(FrozenInstanceError):
+        binding.svd_readable_regions = ()  # type: ignore[misc]
+
+
 def _snapshot(root: Path) -> tuple[dict[str, tuple[bytes, int, int]], str]:
     files: dict[str, tuple[bytes, int, int]] = {}
     for path in sorted(root.rglob("*")):

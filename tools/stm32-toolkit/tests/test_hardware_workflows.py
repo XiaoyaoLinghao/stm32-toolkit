@@ -33,6 +33,8 @@ from stm32_toolkit.hardware_workflows import (
     variable_sample_workflow,
 )
 from stm32_toolkit.identity import compute_workspace_id
+from stm32_toolkit.debug.model import MemoryRegionBinding
+from stm32_toolkit.debug.svd import SvdError
 from stm32_toolkit.probe.backend import ProbeDescriptor
 from stm32_toolkit.probe.model import OperationLevel
 from stm32_toolkit.result import OperationResult
@@ -567,6 +569,110 @@ def test_register_workflow_requires_exact_project_svd_before_service(tmp_path: P
     assert not result.ok
     assert result.code == "SVD_SELECTION_REQUIRED"
     assert recorder.events == []
+
+
+def test_register_workflow_forwards_loaded_target_document_and_svd_regions(
+    tmp_path: Path,
+) -> None:
+    project = _project(tmp_path / "project", schema_version=3)
+    manifest_path = project / ".stm32-project.json"
+    payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    payload["target"]["device"] = "STM32F429ZGTx"
+    payload["debug"].update(
+        {
+            "target": "stm32f429zgtx",
+            "svd": "device.svd",
+            "svdDevice": "STM32F429",
+            "readableRegions": [
+                {"name": "PERIPH-40000", "origin": 0x40000000, "length": 0x8000}
+            ],
+        }
+    )
+    manifest_path.write_bytes(
+        (json.dumps(payload, indent=2) + "\n").encode("utf-8")
+    )
+    recorder = _Recorder()
+    linker_regions = (
+        MemoryRegionBinding("FLASH", 0x08000000, 0x100000, "r-x"),
+        MemoryRegionBinding("RAM", 0x20000000, 0x20000, "rwx"),
+    )
+    svd_regions = (
+        MemoryRegionBinding("PERIPH-40000", 0x40000000, 0x8000, "r--"),
+    )
+    binding = SimpleNamespace(
+        project_root=project,
+        memory_regions=linker_regions,
+        svd_readable_regions=svd_regions,
+    )
+    captured: dict[str, object] = {}
+
+    def select(*args: object, **kwargs: object) -> str:
+        captured["args"] = args
+        captured["kwargs"] = kwargs
+        recorder.events.append("svd")
+        return "selection"
+
+    seams = replace(_seams(recorder, binding=binding), svd_select=select)
+    result = _run(
+        register_read_workflow(
+            RegisterReadWorkflowRequest(
+                project,
+                tmp_path / "data",
+                "session-a",
+                "probe-a",
+                BUILD_ID,
+                ELF_SHA,
+                ("GPIOE.ODR",),
+                False,
+            ),
+            _seams=seams,
+        )
+    )
+
+    assert result.ok is True
+    args = captured["args"]
+    kwargs = captured["kwargs"]
+    assert args[0] == project
+    assert args[1] == "STM32F429ZGTx"
+    assert args[2] == (Path("device.svd"),)
+    assert kwargs["svd_device"] == "STM32F429"
+    assert kwargs["readable_regions"] == svd_regions
+    assert binding.memory_regions == linker_regions
+
+
+def test_register_workflow_preserves_stable_svd_errors_at_public_boundary(
+    tmp_path: Path,
+) -> None:
+    project = _project(tmp_path / "project")
+    recorder = _Recorder()
+    binding = SimpleNamespace(project_root=project, memory_regions=("region",))
+
+    def reject(*args: object, **kwargs: object) -> str:
+        raise SvdError(
+            "SVD_SELECTION_REQUIRED", "An exact project SVD selection is required"
+        )
+
+    seams = replace(_seams(recorder, binding=binding), svd_select=reject)
+    result = _run(
+        register_read_workflow(
+            RegisterReadWorkflowRequest(
+                project,
+                tmp_path / "data",
+                "session-a",
+                "probe-a",
+                BUILD_ID,
+                ELF_SHA,
+                ("GPIOA.IDR",),
+                False,
+            ),
+            _seams=seams,
+        )
+    )
+
+    assert result.ok is False
+    assert result.code == "SVD_SELECTION_REQUIRED"
+    assert result.message == "An exact project SVD selection is required"
+    assert result.details == {}
 
 
 def test_schema_v2_session_and_portable_input_validation_precedes_hardware(tmp_path: Path) -> None:

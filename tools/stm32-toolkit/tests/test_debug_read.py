@@ -46,6 +46,19 @@ def _sha256(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
+def _gpioe_svd() -> bytes:
+    return (
+        "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n"
+        "<device><name>STM32F429</name><size>32</size><peripherals>"
+        "<peripheral><name>GPIOE</name><baseAddress>0x40021000</baseAddress>"
+        "<size>32</size><registers><register><name>ODR</name>"
+        "<addressOffset>0x14</addressOffset><size>32</size>"
+        "<access>read-write</access><fields><field><name>ODR4</name>"
+        "<bitOffset>4</bitOffset><bitWidth>1</bitWidth></field></fields>"
+        "</register></registers></peripheral></peripherals></device>\n"
+    ).encode("utf-8")
+
+
 @dataclass(frozen=True)
 class DebugEnv:
     root: Path
@@ -466,6 +479,64 @@ def test_registers_use_real_exact_svd_and_strict_risk_ack(debug_env: DebugEnv) -
         )
     )
     assert multiple.data.items[1].code == "SVD_ACCESS_RISK_ACK_REQUIRED"
+
+
+def test_register_reads_use_svd_regions_while_dwarf_keeps_linker_regions(
+    debug_env: DebugEnv,
+) -> None:
+    (debug_env.root / "svd" / "device.svd").write_bytes(_gpioe_svd())
+    linker_regions = debug_env.binding.memory_regions[:2]
+    svd_regions = (
+        MemoryRegionBinding("PERIPH-40000", 0x40000000, 0x10000, "r--"),
+    )
+    binding = replace(
+        debug_env.binding,
+        memory_regions=linker_regions,
+        svd_readable_regions=svd_regions,
+    )
+    selection = select_svd(
+        debug_env.root,
+        binding.target_device,
+        (Path("svd/device.svd"),),
+        readable_regions=svd_regions,
+        svd_device="STM32F429",
+    )
+    client = debug_env.client()
+    client.memory[0x40021014] = b"\x10\x00\x00\x00"
+
+    register_result = asyncio.run(
+        read_registers(
+            RegisterReadRequest(binding, selection, ("GPIOE.ODR",), True),
+            client,
+        )
+    )
+    assert register_result.ok is True
+    assert register_result.data.items[0].value.value == 0x10
+    variable_result = asyncio.run(
+        read_variables(
+            VariableReadRequest(binding, DwarfCatalog.from_binding(binding), ("signed32",)),
+            client,
+        )
+    )
+    assert variable_result.ok is True
+    assert variable_result.data.items[0].status == "ok"
+
+    calls_before_drift = len(client.calls)
+    drifted = replace(
+        binding,
+        svd_readable_regions=(
+            MemoryRegionBinding("OTHER", 0x40000000, 0x10000, "r--"),
+        ),
+    )
+    drift_result = asyncio.run(
+        read_registers(
+            RegisterReadRequest(drifted, selection, ("GPIOE.ODR",), True),
+            client,
+        )
+    )
+    assert drift_result.ok is False
+    assert drift_result.code == "SVD_PROVENANCE_MISMATCH"
+    assert len(client.calls) == calls_before_drift
 
 
 def test_register_write_only_missing_and_provenance_fail_closed(
