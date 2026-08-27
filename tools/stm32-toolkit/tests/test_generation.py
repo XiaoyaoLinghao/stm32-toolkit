@@ -1829,6 +1829,56 @@ def test_link_standard_math_participates_in_generation_model_hash(tmp_path):
     assert true_hash != missing_hash
 
 
+def test_debug_observation_facts_participate_in_generation_model_hash(tmp_path):
+    base = standard_payload()
+    base["schemaVersion"] = 3
+    base_root = write_project(tmp_path / "base", base)
+
+    explicit = deepcopy(base)
+    explicit["debug"]["svdDevice"] = "STM32F407"
+    explicit["debug"]["readableRegions"] = [
+        {"name": "PERIPH-40000", "origin": 0x40000000, "length": 0x8000}
+    ]
+    explicit_root = write_project(tmp_path / "explicit", explicit)
+
+    base_hash = model_sha256_for(load_project_model(base_root))
+    try:
+        explicit_hash = model_sha256_for(load_project_model(explicit_root))
+    except ProjectManifestError as error:
+        pytest.fail(
+            "explicit debug observation facts were rejected before model hashing: "
+            f"{error.code} {error.details}"
+        )
+    assert explicit_hash != base_hash
+
+
+def test_debug_observation_facts_do_not_change_generated_build_bytes(tmp_path):
+    base = standard_payload()
+    base["schemaVersion"] = 3
+    base_root = write_project(tmp_path / "base", base)
+    explicit = deepcopy(base)
+    explicit["debug"]["svdDevice"] = "STM32F407"
+    explicit["debug"]["readableRegions"] = [
+        {"name": "PERIPH-40000", "origin": 0x40000000, "length": 0x8000}
+    ]
+    explicit_root = write_project(tmp_path / "explicit", explicit)
+
+    base_plan = plan_for(base_root)
+    try:
+        explicit_plan = plan_for(explicit_root)
+    except ProjectManifestError as error:
+        pytest.fail(
+            "explicit debug observation facts were rejected before generation: "
+            f"{error.code} {error.details}"
+        )
+    assert [entry.path for entry in explicit_plan.files] == [
+        entry.path for entry in base_plan.files
+    ]
+    assert [entry.after_bytes for entry in explicit_plan.files] == [
+        entry.after_bytes for entry in base_plan.files
+    ]
+
+
 def test_native_standard_math_selector_never_duplicates_or_changes_output(tmp_path):
     outputs = []
     for name, present, value in (

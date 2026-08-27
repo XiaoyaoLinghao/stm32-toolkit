@@ -1122,3 +1122,98 @@ def test_project_manifest_explicit_schema_rejects_unsupported_version(
 
     assert error.value.code == "PROJECT_SCHEMA_VERSION_UNSUPPORTED"
     assert error.value.details == {"schemaVersion": 4, "supported": [2, 3]}
+
+
+def _explicit_svd_observation_payload() -> dict:
+    payload = _v2_payload()
+    payload["schemaVersion"] = 3
+    payload["debug"].update(
+        {
+            "svdDevice": "STM32F429",
+            "readableRegions": [
+                {"name": "PERIPH-40000", "origin": 0x40000000, "length": 0x8000}
+            ],
+        }
+    )
+    return payload
+
+
+def test_schema3_debug_observation_facts_bind_without_leaking_into_linker_memory(
+    tmp_path: Path,
+):
+    payload = _explicit_svd_observation_payload()
+    _write_manifest(tmp_path, payload)
+
+    model = load_project_model(tmp_path)
+
+    assert getattr(model.debug, "svd_device", None) == "STM32F429"
+    regions = getattr(model.debug, "readable_regions", ())
+    assert tuple((region.name, region.origin, region.length) for region in regions) == (
+        ("PERIPH-40000", 0x40000000, 0x8000),
+    )
+    assert model.memory.regions == (
+        MemoryRegion(name="FLASH", origin=134217728, length=2097152, attributes="r-x"),
+        MemoryRegion(name="RAM", origin=536870912, length=262144, attributes="rwx"),
+    )
+
+
+def test_schema3_debug_observation_facts_default_to_target_and_linker_regions(
+    tmp_path: Path,
+):
+    payload = _v2_payload()
+    payload["schemaVersion"] = 3
+    _write_manifest(tmp_path, payload)
+
+    model = load_project_model(tmp_path)
+
+    assert getattr(model.debug, "svd_device", None) == "STM32F429ZGTx"
+    regions = getattr(model.debug, "readable_regions", ())
+    assert tuple((region.name, region.origin, region.length) for region in regions) == (
+        ("FLASH", 134217728, 2097152),
+        ("RAM", 536870912, 262144),
+    )
+
+
+@pytest.mark.parametrize("missing", ["svd", "svdDevice", "readableRegions"])
+def test_schema3_debug_observation_facts_require_complete_coupling(
+    tmp_path: Path, missing: str
+):
+    payload = _explicit_svd_observation_payload()
+    payload["debug"].pop(missing)
+    _write_manifest(tmp_path, payload)
+
+    with pytest.raises(ProjectManifestError) as error:
+        load_project_model(tmp_path)
+
+    assert error.value.code == "PROJECT_SCHEMA_INVALID"
+    assert error.value.details == {"field": f"debug.{missing}", "rule": "required"}
+
+
+@pytest.mark.parametrize(
+    "regions",
+    [
+        [],
+        [{"name": "PERIPH", "origin": True, "length": 4}],
+        [{"name": "PERIPH", "origin": 0x40000000, "length": False}],
+        [
+            {"name": "PERIPH", "origin": 0x40000000, "length": 0x100},
+            {"name": "PERIPH", "origin": 0x40000080, "length": 0x100},
+        ],
+        [
+            {"name": "A", "origin": 0x40000000, "length": 0x100},
+            {"name": "B", "origin": 0x40000080, "length": 0x100},
+        ],
+        [{"name": "OVERFLOW", "origin": 0xFFFFFFFF, "length": 2}],
+    ],
+)
+def test_schema3_debug_readable_regions_fail_closed_for_invalid_ranges_and_names(
+    tmp_path: Path, regions: list[dict]
+):
+    payload = _explicit_svd_observation_payload()
+    payload["debug"]["readableRegions"] = regions
+    _write_manifest(tmp_path, payload)
+
+    with pytest.raises(ProjectManifestError) as error:
+        load_project_model(tmp_path)
+
+    assert error.value.code == "PROJECT_SCHEMA_INVALID"
