@@ -42,6 +42,7 @@ SOURCE_MAPPING = {"keil-migration": "keil", "cubemx": "cubemx"}
 #: rejected on every host, even where the host-native parser would treat the
 #: foreign form as relative.
 _WINDOWS_ABSOLUTE_RE = re.compile(r"^[A-Za-z]:")
+_DEBUG_IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_.-]{0,127}$")
 
 #: Windows NTFS reparse-point attribute (FILE_ATTRIBUTE_REPARSE_POINT). NTFS
 #: junctions and symlinks carry it; Python exposes it as ``st_file_attributes``
@@ -546,7 +547,7 @@ def _validate_debug_observation_document(debug: object) -> None:
                 {"field": f"debug.{field}", "rule": "required"},
             )
 
-    _validate_canonical_string(debug["svdDevice"], "debug.svdDevice", 128)
+    _validate_identifier(debug["svdDevice"], "debug.svdDevice")
     regions = debug["readableRegions"]
     seen_names: set[str] = set()
     prior: list[tuple[int, int]] = []
@@ -554,9 +555,7 @@ def _validate_debug_observation_document(debug: object) -> None:
         name = region["name"]
         origin = region["origin"]
         length = region["length"]
-        _validate_canonical_string(
-            name, f"debug.readableRegions[{index}].name", 128
-        )
+        _validate_identifier(name, f"debug.readableRegions[{index}].name")
         _validate_exact_integer(origin, f"debug.readableRegions[{index}].origin")
         _validate_exact_integer(length, f"debug.readableRegions[{index}].length")
         end = origin + length
@@ -613,6 +612,16 @@ def _validate_canonical_string(value: str, field: str, max_utf8_bytes: int) -> N
             "PROJECT_SCHEMA_INVALID",
             "Project manifest string exceeds its UTF-8 byte limit",
             {"field": field, "rule": "maxUtf8Bytes"},
+        )
+
+
+def _validate_identifier(value: str, field: str) -> None:
+    _validate_canonical_string(value, field, 128)
+    if _DEBUG_IDENTIFIER_RE.fullmatch(value) is None:
+        raise ProjectManifestError(
+            "PROJECT_SCHEMA_INVALID",
+            "Project manifest identifier has invalid syntax",
+            {"field": field, "rule": "pattern"},
         )
 
 
