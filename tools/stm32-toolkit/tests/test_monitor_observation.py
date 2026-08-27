@@ -18,6 +18,7 @@ from stm32_toolkit.debug import (
     MemoryRegionBinding,
     SvdError,
     read_variables,
+    select_svd,
     sample_registers,
 )
 from stm32_toolkit.debug.types import CatalogPage
@@ -382,9 +383,126 @@ def test_monitor_svd_selection_failure_is_stable_before_any_memory_read(
     )
     assert opened.ok is False
     assert opened.code == "MONITOR_PROVENANCE_CHANGED"
-    assert harness.clients[0].calls == []
-    assert harness.clients[0].closed is True
-    assert harness.supervisors[0].stopped is True
+    assert harness.supervisors == []
+    assert harness.clients == []
+    assert harness.bind_calls == []
+    assert not (tmp_path / "data").exists()
+
+
+@pytest.mark.parametrize(
+    ("case", "expected_code"),
+    [
+        ("malformed-number", "MONITOR_PROVENANCE_CHANGED"),
+        ("wrong-document", "MONITOR_PROVENANCE_CHANGED"),
+        ("out-of-range", "MONITOR_PROVENANCE_CHANGED"),
+    ],
+)
+def test_monitor_real_svd_failures_precede_service_start(
+    debug_env: DebugEnv,
+    tmp_path: Path,
+    case: str,
+    expected_code: str,
+) -> None:
+    region = _set_explicit_monitor_debug_manifest(debug_env)
+    manifest_path = debug_env.root / ".stm32-project.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    if case == "wrong-document":
+        manifest["debug"]["svdDevice"] = "STM32F429"
+    elif case == "out-of-range":
+        region = MemoryRegionBinding("PERIPH-NARROW", 0x40020000, 0x10, "r--")
+        manifest["debug"]["svdDevice"] = "STM32F429ZITx"
+        manifest["debug"]["readableRegions"] = [
+            {"name": region.name, "origin": region.origin, "length": region.length}
+        ]
+    else:
+        svd_path = debug_env.root / "svd" / "device.svd"
+        svd_path.write_bytes(
+            svd_path.read_bytes().replace(
+                b"<baseAddress>0x40020000</baseAddress>",
+                b"<baseAddress>0b40020000</baseAddress>",
+                1,
+            )
+        )
+    manifest_path.write_bytes(
+        (json.dumps(manifest, indent=2, ensure_ascii=False) + "\n").encode("utf-8")
+    )
+
+    harness = Harness(debug_env)
+    harness.binding_override = lambda binding: replace(
+        binding, svd_readable_regions=(region,)
+    )
+    data_root = tmp_path / "data"
+    seams = replace(harness.seams(), svd_select=select_svd)
+    result = asyncio.run(
+        open_monitor_observation(request(debug_env, data_root), _seams=seams)
+    )
+
+    assert result.ok is False
+    assert result.code == expected_code
+    assert harness.supervisors == []
+    assert harness.clients == []
+    assert harness.bind_calls == []
+    assert not data_root.exists()
+
+
+@pytest.mark.parametrize("drift", ["target", "svd-readable-regions"])
+def test_monitor_register_sample_revalidates_post_bind_svd_provenance(
+    debug_env: DebugEnv, tmp_path: Path, drift: str
+) -> None:
+    region = _set_explicit_monitor_debug_manifest(debug_env)
+    manifest_path = debug_env.root / ".stm32-project.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["debug"]["svdDevice"] = "STM32F429ZITx"
+    manifest_path.write_bytes(
+        (json.dumps(manifest, indent=2, ensure_ascii=False) + "\n").encode("utf-8")
+    )
+    harness = Harness(debug_env)
+    harness.binding_override = lambda binding: replace(
+        binding, svd_readable_regions=(region,)
+    )
+    sample_calls: list[object] = []
+
+    async def sample(request: object, client: object) -> OperationResult[object]:
+        sample_calls.append(request)
+        return OperationResult.success("sample", {"items": []})
+
+    seams = replace(
+        harness.seams(),
+        svd_select=select_svd,
+        sample_registers=sample,
+    )
+
+    async def scenario() -> None:
+        opened = await open_monitor_observation(
+            request(debug_env, tmp_path / "data"), _seams=seams
+        )
+        assert opened.ok is True
+        session = opened.data
+        try:
+            valid = await session.sample_registers(("GPIOA.IDR",))
+            assert valid.ok is True
+            assert len(sample_calls) == 1
+
+            if drift == "target":
+                harness.binding_override = lambda binding: replace(
+                    binding, target_device="STM32F429ZGTx"
+                )
+            else:
+                narrow = MemoryRegionBinding(
+                    "PERIPH-NARROW", 0x40020000, 0x10, "r--"
+                )
+                harness.binding_override = lambda binding: replace(
+                    binding, svd_readable_regions=(narrow,)
+                )
+            changed = await session.sample_registers(("GPIOA.IDR",))
+            assert changed.ok is False
+            assert changed.code == "MONITOR_FIRMWARE_CHANGED"
+            assert len(sample_calls) == 1
+            assert len(harness.bind_calls) == 2
+        finally:
+            await session.close()
+
+    asyncio.run(scenario())
 
 
 def test_request_has_no_raw_hardware_or_provenance_overrides(debug_env: DebugEnv, tmp_path: Path) -> None:

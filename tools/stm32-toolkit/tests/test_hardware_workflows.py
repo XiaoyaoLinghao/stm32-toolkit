@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import shutil
 import stat
 import threading
 from dataclasses import dataclass, replace
@@ -33,8 +34,8 @@ from stm32_toolkit.hardware_workflows import (
     variable_sample_workflow,
 )
 from stm32_toolkit.identity import compute_workspace_id
-from stm32_toolkit.debug.model import MemoryRegionBinding
-from stm32_toolkit.debug.svd import SvdError
+from stm32_toolkit.debug.model import DebugFirmwareBinding, MemoryRegionBinding
+from stm32_toolkit.debug.svd import SvdError, select_svd
 from stm32_toolkit.probe.backend import ProbeDescriptor
 from stm32_toolkit.probe.model import OperationLevel
 from stm32_toolkit.result import OperationResult
@@ -44,6 +45,7 @@ from fakes.fake_probe import FakeProbeBackend
 BUILD_ID = "1" * 64
 ELF_SHA = "2" * 64
 TICKET = "3" * 64
+FIXTURE_SVD = Path(__file__).parent / "fixtures" / "svd" / "STM32F429-exact.svd"
 
 
 def _project(root: Path, *, svd: str | None = "device.svd", schema_version: int = 2) -> Path:
@@ -90,6 +92,87 @@ def _project(root: Path, *, svd: str | None = "device.svd", schema_version: int 
     if svd is not None:
         (root / svd).write_bytes(b"<device/>")
     return root.resolve()
+
+
+def _real_svd_project(
+    root: Path,
+    *,
+    target_device: str = "STM32F429ZITx",
+    svd_device: str = "STM32F429ZITx",
+    readable_regions: tuple[MemoryRegionBinding, ...] | None = None,
+    binding_target_device: str | None = None,
+    svd_bytes: bytes | None = None,
+) -> tuple[Path, SimpleNamespace]:
+    project = _project(root, svd="device.svd", schema_version=3)
+    manifest_path = project / ".stm32-project.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["target"]["device"] = target_device
+    manifest["debug"].update(
+        {
+            "target": target_device.casefold(),
+            "svd": "device.svd",
+            "svdDevice": svd_device,
+        }
+    )
+    regions = readable_regions or (
+        MemoryRegionBinding("PERIPH-ALL", 0x40000000, 0x10000000, "r--"),
+    )
+    manifest["debug"]["readableRegions"] = [
+        {"name": region.name, "origin": region.origin, "length": region.length}
+        for region in regions
+    ]
+    manifest_path.write_bytes(
+        (json.dumps(manifest, indent=2) + "\n").encode("utf-8")
+    )
+    shutil.copyfile(
+        FIXTURE_SVD,
+        project / "device.svd",
+    )
+    if svd_bytes is not None:
+        (project / "device.svd").write_bytes(svd_bytes)
+    linker_regions = (
+        MemoryRegionBinding("FLASH", 0x08000000, 0x100000, "r-x"),
+        MemoryRegionBinding("RAM", 0x20000000, 0x20000, "rwx"),
+    )
+    binding = SimpleNamespace(
+        project_root=project,
+        target_device=binding_target_device or target_device,
+        memory_regions=linker_regions,
+        svd_readable_regions=regions,
+    )
+    return project, binding
+
+
+def _typed_svd_binding(
+    project: Path,
+    *,
+    target_device: str,
+    regions: tuple[MemoryRegionBinding, ...],
+) -> DebugFirmwareBinding:
+    return DebugFirmwareBinding(
+        logical_project_id="12345678-1234-5678-1234-567812345678",
+        workspace_id="workspace-a",
+        observation_session_id="session-a",
+        flash_session_id="flash-session",
+        lease_id="lease-secret",
+        probe_id="probe-a",
+        target_device=target_device,
+        debug_target="stm32f429zitx",
+        build_id=BUILD_ID,
+        elf_sha256=ELF_SHA,
+        elf_size=1,
+        elf_path="build/arm-debug/firmware.elf",
+        input_snapshot_sha256="4" * 64,
+        git_head="5" * 40,
+        git_dirty=False,
+        confirmed_at_utc="2026-08-27T01:02:03.000004Z",
+        memory_regions=(
+            MemoryRegionBinding("FLASH", 0x08000000, 0x100000, "r-x"),
+            MemoryRegionBinding("RAM", 0x20000000, 0x20000, "rwx"),
+        ),
+        project_root=project,
+        svd_readable_regions=regions,
+    )
 
 
 @dataclass
@@ -569,6 +652,116 @@ def test_register_workflow_requires_exact_project_svd_before_service(tmp_path: P
     assert not result.ok
     assert result.code == "SVD_SELECTION_REQUIRED"
     assert recorder.events == []
+
+
+@pytest.mark.parametrize(
+    ("case", "expected_code"),
+    [
+        ("malformed-number", "SVD_XML_INVALID"),
+        ("wrong-document", "SVD_SELECTION_REQUIRED"),
+        ("out-of-range", "SVD_ADDRESS_OUT_OF_RANGE"),
+    ],
+)
+def test_register_workflow_real_svd_failures_precede_service_start(
+    tmp_path: Path, case: str, expected_code: str
+) -> None:
+    if case == "malformed-number":
+        malformed = FIXTURE_SVD.read_bytes().replace(
+            b"<baseAddress>0x40020000</baseAddress>",
+            b"<baseAddress>0b40020000</baseAddress>",
+            1,
+        )
+        project, binding = _real_svd_project(
+            tmp_path / "project-malformed", svd_bytes=malformed
+        )
+    elif case == "wrong-document":
+        project, binding = _real_svd_project(
+            tmp_path / "project-wrong-document",
+            target_device="STM32F429ZGTx",
+            svd_device="STM32F429",
+        )
+    else:
+        narrow = (MemoryRegionBinding("PERIPH-NARROW", 0x40020000, 0x10, "r--"),)
+        project, binding = _real_svd_project(
+            tmp_path / "project-out-of-range", readable_regions=narrow
+        )
+
+    recorder = _Recorder()
+    data_root = tmp_path / "data"
+
+    def client_factory(endpoint: object) -> _Client:
+        recorder.events.append("client.create")
+        return _Client(endpoint, recorder)
+
+    seams = replace(
+        _seams(recorder, binding=binding),
+        client_factory=client_factory,
+        svd_select=select_svd,
+    )
+    result = _run(
+        register_read_workflow(
+            RegisterReadWorkflowRequest(
+                project,
+                data_root,
+                "session-a",
+                "probe-a",
+                BUILD_ID,
+                ELF_SHA,
+                ("GPIOA.IDR",),
+                False,
+            ),
+            _seams=seams,
+        )
+    )
+
+    assert result.ok is False
+    assert result.code == expected_code
+    assert recorder.events == []
+    assert recorder.configs == []
+    assert not data_root.exists()
+
+
+def test_register_workflow_revalidates_real_svd_against_bound_target_before_read(
+    tmp_path: Path,
+) -> None:
+    region = MemoryRegionBinding("PERIPH-ALL", 0x40000000, 0x10000000, "r--")
+    project, _ = _real_svd_project(tmp_path / "project-bound-target", readable_regions=(region,))
+    binding = _typed_svd_binding(
+        project,
+        target_device="STM32F429ZGTx",
+        regions=(region,),
+    )
+    recorder = _Recorder()
+    register_calls: list[object] = []
+
+    async def read_registers(request: object, client: object) -> OperationResult[object]:
+        register_calls.append(request)
+        return OperationResult.success("read", {"items": []})
+
+    seams = replace(
+        _seams(recorder, binding=binding),
+        svd_select=select_svd,
+        read_registers=read_registers,
+    )
+    result = _run(
+        register_read_workflow(
+            RegisterReadWorkflowRequest(
+                project,
+                tmp_path / "data",
+                "session-a",
+                "probe-a",
+                BUILD_ID,
+                ELF_SHA,
+                ("GPIOA.IDR",),
+                True,
+            ),
+            _seams=seams,
+        )
+    )
+
+    assert result.ok is False
+    assert result.code == "SVD_PROVENANCE_MISMATCH"
+    assert register_calls == []
 
 
 def test_register_workflow_forwards_loaded_target_document_and_svd_regions(
