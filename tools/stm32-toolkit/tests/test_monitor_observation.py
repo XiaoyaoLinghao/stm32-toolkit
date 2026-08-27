@@ -14,7 +14,12 @@ import pytest
 
 from stm32_toolkit import __version__
 from stm32_toolkit.build.identity import atomic_write_json
-from stm32_toolkit.debug import read_variables, sample_registers
+from stm32_toolkit.debug import (
+    MemoryRegionBinding,
+    SvdError,
+    read_variables,
+    sample_registers,
+)
 from stm32_toolkit.debug.types import CatalogPage
 from stm32_toolkit.monitor_observation import (
     MonitorObservationError,
@@ -290,6 +295,96 @@ def request(env: DebugEnv, data_root: Path, *, probe: str = "probe-123") -> Moni
         expected_build_id=env.binding.build_id,
         expected_elf_sha256=env.binding.elf_sha256,
     )
+
+
+def _set_explicit_monitor_debug_manifest(env: DebugEnv) -> MemoryRegionBinding:
+    manifest_path = env.root / ".stm32-project.json"
+    payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    payload["schemaVersion"] = 3
+    payload["debug"].update(
+        {
+            "svdDevice": "STM32F429",
+            "readableRegions": [
+                {
+                    "name": "PERIPH-40020000",
+                    "origin": 0x40020000,
+                    "length": 0x4000,
+                }
+            ],
+        }
+    )
+    manifest_path.write_bytes(
+        (json.dumps(payload, indent=2, ensure_ascii=False) + "\n").encode("utf-8")
+    )
+    return MemoryRegionBinding("PERIPH-40020000", 0x40020000, 0x4000, "r--")
+
+
+def test_monitor_svd_selection_uses_loaded_target_document_and_readable_regions(
+    debug_env: DebugEnv, tmp_path: Path
+) -> None:
+    svd_region = _set_explicit_monitor_debug_manifest(debug_env)
+    harness = Harness(debug_env)
+    harness.binding_override = lambda binding: replace(
+        binding, svd_readable_regions=(svd_region,)
+    )
+    captured: dict[str, object] = {}
+
+    def select(*args: object, **kwargs: object) -> object:
+        captured["args"] = args
+        captured["kwargs"] = kwargs
+        return debug_env.selection
+
+    seams = replace(harness.seams(), svd_select=select)
+
+    async def scenario() -> None:
+        opened = await open_monitor_observation(
+            request(debug_env, tmp_path / "data"), _seams=seams
+        )
+        assert opened.ok is True
+        session = opened.data
+        try:
+            assert captured["args"] == (
+                debug_env.root,
+                "STM32F429ZITx",
+                (Path("svd/device.svd"),),
+            )
+            kwargs = captured["kwargs"]
+            assert isinstance(kwargs, dict)
+            assert kwargs["svd_device"] == "STM32F429"
+            assert kwargs["readable_regions"] == (svd_region,)
+            assert kwargs["readable_regions"] != debug_env.binding.memory_regions
+            serialized = session.binding.to_dict()
+            assert serialized["svdReadableRegions"] == [svd_region.to_dict()]
+            assert serialized["svdReadableRegions"][0]["attributes"] == "r--"
+        finally:
+            await session.close()
+
+    asyncio.run(scenario())
+
+
+def test_monitor_svd_selection_failure_is_stable_before_any_memory_read(
+    debug_env: DebugEnv, tmp_path: Path
+) -> None:
+    svd_region = _set_explicit_monitor_debug_manifest(debug_env)
+    harness = Harness(debug_env)
+    harness.binding_override = lambda binding: replace(
+        binding, svd_readable_regions=(svd_region,)
+    )
+
+    def reject(*args: object, **kwargs: object) -> object:
+        raise SvdError("SVD_PROVENANCE_MISMATCH", "selection provenance changed")
+
+    seams = replace(harness.seams(), svd_select=reject)
+    opened = asyncio.run(
+        open_monitor_observation(
+            request(debug_env, tmp_path / "data"), _seams=seams
+        )
+    )
+    assert opened.ok is False
+    assert opened.code == "MONITOR_PROVENANCE_CHANGED"
+    assert harness.clients[0].calls == []
+    assert harness.clients[0].closed is True
+    assert harness.supervisors[0].stopped is True
 
 
 def test_request_has_no_raw_hardware_or_provenance_overrides(debug_env: DebugEnv, tmp_path: Path) -> None:

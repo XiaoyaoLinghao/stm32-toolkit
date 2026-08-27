@@ -171,7 +171,7 @@ def _schema3_binding_env(tmp_path: Path, *, explicit: bool):
                     {
                         "name": "PERIPH-40020000",
                         "origin": 0x40020000,
-                        "length": 0x20000,
+                        "length": 0x4000,
                     }
                 ],
             }
@@ -211,7 +211,7 @@ def _schema3_binding_env(tmp_path: Path, *, explicit: bool):
         MemoryRegionBinding("RAM", 0x20000000, 0x20000, "rwx"),
     )
     svd_regions = (
-        MemoryRegionBinding("PERIPH-40020000", 0x40020000, 0x20000, "r--"),
+        MemoryRegionBinding("PERIPH-40020000", 0x40020000, 0x4000, "r--"),
     )
     return root, identity, client, request, linker_regions, svd_regions
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from inspect import signature
 from pathlib import Path
 
 import pytest
@@ -33,6 +34,59 @@ HARDWARE_TOOLS = {
     "stm32_fault_analyze",
 }
 
+PUBLIC_TOOL_NAMES = frozenset(
+    {
+        "stm32_doctor",
+        "stm32_project_detect",
+        "stm32_project_context",
+        "stm32_project_create_plan",
+        "stm32_project_create_prepare",
+        "stm32_project_create_apply",
+        "stm32_project_regenerate_plan",
+        "stm32_project_regenerate_prepare",
+        "stm32_project_regenerate_apply",
+        "stm32_keil_inspect",
+        "stm32_keil_convert",
+        "stm32_project_configure",
+        "stm32_build",
+        "stm32_probe_list",
+        "stm32_flash",
+        "stm32_debug_handoff_begin",
+        "stm32_debug_handoff_end",
+        "stm32_variable_read",
+        "stm32_variable_sample",
+        "stm32_register_read",
+        "stm32_fault_analyze",
+        "stm32_diagnostic_start",
+        "stm32_diagnostic_show",
+        "stm32_diagnostic_begin",
+        "stm32_diagnostic_hypothesis_add",
+        "stm32_diagnostic_hypothesis_assess",
+        "stm32_diagnostic_plan_add",
+        "stm32_diagnostic_plan_run",
+        "stm32_test_target_replay",
+        "stm32_diagnostic_source_change_declare",
+        "stm32_diagnostic_verification_plan_add",
+        "stm32_diagnostic_verification_start",
+        "stm32_diagnostic_marker_attach",
+        "stm32_diagnostic_verification_complete",
+        "stm32_diagnostic_verification_show",
+        "stm32_test_host_discover",
+        "stm32_test_host_run",
+        "stm32_test_show",
+        "stm32_test_target_prepare",
+        "stm32_test_target_execute",
+        "stm32_acceptance_scenario_describe",
+        "stm32_acceptance_scenario_record",
+        "stm32_acceptance_scenario_show",
+        "stm32_acceptance_attempt_begin",
+        "stm32_acceptance_attempt_checkpoint",
+        "stm32_acceptance_attempt_authorize_source_change",
+        "stm32_acceptance_attempt_show",
+        "stm32_acceptance_attempt_resume",
+    }
+)
+
 
 def _runtime(tmp_path: Path) -> ServerRuntime:
     project = tmp_path / "project"
@@ -51,7 +105,20 @@ def test_server_registers_exactly_forty_eight_tools_including_hardware(tmp_path:
     schemas = _schemas(tmp_path)
 
     assert len(schemas) == 48
+    assert set(schemas) == PUBLIC_TOOL_NAMES
     assert HARDWARE_TOOLS <= set(schemas)
+
+
+def test_register_tool_public_signature_has_no_provenance_overrides() -> None:
+    assert tuple(signature(mcp_mod.tool_register_read_for_request).parameters) == (
+        "runtime",
+        "context",
+        "probe_id",
+        "expected_build_id",
+        "expected_elf_sha256",
+        "paths",
+        "acknowledge_access_risk",
+    )
 
 
 def test_hardware_schemas_expose_only_project_bound_arguments(tmp_path: Path):

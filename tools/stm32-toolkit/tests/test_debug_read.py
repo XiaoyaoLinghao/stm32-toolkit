@@ -485,7 +485,7 @@ def test_register_reads_use_svd_regions_while_dwarf_keeps_linker_regions(
     )
     linker_regions = debug_env.binding.memory_regions
     svd_regions = (
-        MemoryRegionBinding("PERIPH-40020000", 0x40020000, 0x20000, "r--"),
+        MemoryRegionBinding("PERIPH-40020000", 0x40020000, 0x4000, "r--"),
     )
     binding = replace(
         debug_env.binding,
@@ -524,7 +524,7 @@ def test_register_reads_use_svd_regions_while_dwarf_keeps_linker_regions(
     drifted = replace(
         binding,
         svd_readable_regions=(
-            MemoryRegionBinding("OTHER", 0x40020000, 0x20000, "r--"),
+            MemoryRegionBinding("OTHER", 0x40020000, 0x4000, "r--"),
         ),
     )
     drift_result = asyncio.run(

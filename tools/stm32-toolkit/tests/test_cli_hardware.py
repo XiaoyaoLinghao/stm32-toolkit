@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+from dataclasses import fields
+from inspect import signature
 from pathlib import Path
 
 import pytest
@@ -202,6 +204,26 @@ def test_hardware_cli_maps_nested_argv_to_one_exact_workflow_request(
     assert Path.cwd() == before
 
 
+def test_hardware_cli_public_signature_and_request_shape_remain_project_bound() -> None:
+    assert tuple(signature(main).parameters) == ("argv",)
+    assert tuple(item.name for item in fields(RegisterReadWorkflowRequest)) == (
+        "project_root",
+        "data_root",
+        "session_id",
+        "probe_id",
+        "expected_build_id",
+        "expected_elf_sha256",
+        "paths",
+        "acknowledge_access_risk",
+    )
+    forbidden = {
+        "target", "svd", "svd_device", "readable_regions", "address", "size"
+    }
+    assert not forbidden.intersection(
+        item.name for item in fields(RegisterReadWorkflowRequest)
+    )
+
+
 @pytest.mark.parametrize(
     ("attribute", "argv"),
     [
@@ -246,6 +268,8 @@ def test_omitted_authorization_reaches_intrusive_workflow_as_exact_false(
         ["--svd", "C:/secret/device.svd"],
         ["--elf", "C:/secret/firmware.elf"],
         ["--address", "0x20000000"],
+        ["--region", "secret-region"],
+        ["--size", "4"],
         ["--operation-level", "modify"],
         ["--token", "secret-token"],
         ["--lease", "secret-lease"],
