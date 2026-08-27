@@ -122,6 +122,14 @@ execution packet are recorded in
 - [x] VS09-A/B installable Python 3.12 Windows release candidate
 - [ ] 1.0.0 non-skippable real-hardware vertical acceptance gate
 
+Current VS10-A checkpoint (2026-08-27): the
+[`STM32TK-1001` software/hardware handoff](../../codex/returns/STM32TK-1001-LEGACY-KEIL-REAL-BOARD-CLOSED-LOOP/2026-08-27-software-hardware-handoff-status.md)
+records the accepted H2 build-to-flash correction and the overall
+`SOFTWARE_COMPLETE_HARDWARE_PENDING` state. The current CMSIS-DAP transport
+failed attach without programming; physical work is paused until the named
+J-Link replacement is available. This does not satisfy or advance the open
+1.0.0 real-hardware acceptance checkbox.
+
 Progress is updated only when a runnable slice outcome is independently accepted. Internal checklist, test-count, report, or Gate completion does not advance product progress by itself.
 
 ## Dependency Flow
