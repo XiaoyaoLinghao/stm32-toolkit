@@ -1217,3 +1217,64 @@ def test_schema3_debug_readable_regions_fail_closed_for_invalid_ranges_and_names
         load_project_model(tmp_path)
 
     assert error.value.code == "PROJECT_SCHEMA_INVALID"
+
+
+@pytest.mark.parametrize(
+    ("field", "invalid_value"),
+    [
+        ("svdDevice", "STM32 F429"),
+        ("svdDevice", "STM32/F429"),
+        ("svdDevice", "9STM32F429"),
+        ("svdDevice", "A" * 129),
+        ("svdDevice", "Cafe\u0301"),
+        ("readableRegions", "PERIPH 40000"),
+        ("readableRegions", "PERIPH/40000"),
+        ("readableRegions", "9PERIPH"),
+        ("readableRegions", "A" * 129),
+        ("readableRegions", "Cafe\u0301"),
+    ],
+)
+def test_schema3_debug_observation_identifiers_match_svd_name_syntax(
+    tmp_path: Path, field: str, invalid_value: str
+):
+    payload = _explicit_svd_observation_payload()
+    if field == "svdDevice":
+        payload["debug"][field] = invalid_value
+        expected_field = "debug.svdDevice"
+    else:
+        payload["debug"]["readableRegions"][0]["name"] = invalid_value
+        expected_field = "debug.readableRegions[0].name"
+    _write_manifest(tmp_path, payload)
+
+    with pytest.raises(ProjectManifestError) as error:
+        load_project_model(tmp_path)
+
+    assert error.value.code == "PROJECT_SCHEMA_INVALID"
+    assert error.value.details["field"] == expected_field
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("svdDevice", "STM32F429"),
+        (
+            "readableRegions",
+            [{"name": "PERIPH-40000", "origin": 0x40000000, "length": 0x8000}],
+        ),
+    ],
+)
+def test_schema2_rejects_schema3_only_debug_observation_fields(
+    tmp_path: Path, field: str, value: object
+):
+    payload = _v2_payload()
+    payload["debug"][field] = value
+    _write_manifest(tmp_path, payload)
+
+    with pytest.raises(ProjectManifestError) as error:
+        load_project_model(tmp_path)
+
+    assert error.value.code == "PROJECT_SCHEMA_INVALID"
+    assert error.value.details == {
+        "field": f"debug.{field}",
+        "rule": "additionalProperties",
+    }
