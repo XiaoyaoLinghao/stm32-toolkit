@@ -320,10 +320,22 @@ def _set_explicit_monitor_debug_manifest(env: DebugEnv) -> MemoryRegionBinding:
     return MemoryRegionBinding("PERIPH-40020000", 0x40020000, 0x4000, "r--")
 
 
+def _write_compatible_monitor_svd(env: DebugEnv) -> None:
+    (env.root / "svd" / "device.svd").write_bytes(
+        b"<?xml version=\"1.0\" encoding=\"utf-8\"?>"
+        b"<device><name>STM32F429</name><size>32</size><peripherals>"
+        b"<peripheral><name>GPIOE</name><baseAddress>0x40021000</baseAddress>"
+        b"<size>32</size><registers><register><name>ODR</name>"
+        b"<addressOffset>0x14</addressOffset><size>32</size>"
+        b"</register></registers></peripheral></peripherals></device>"
+    )
+
+
 def test_monitor_svd_selection_uses_loaded_target_document_and_readable_regions(
     debug_env: DebugEnv, tmp_path: Path
 ) -> None:
     svd_region = _set_explicit_monitor_debug_manifest(debug_env)
+    _write_compatible_monitor_svd(debug_env)
     harness = Harness(debug_env)
     harness.binding_override = lambda binding: replace(
         binding, svd_readable_regions=(svd_region,)
@@ -333,7 +345,7 @@ def test_monitor_svd_selection_uses_loaded_target_document_and_readable_regions(
     def select(*args: object, **kwargs: object) -> object:
         captured["args"] = args
         captured["kwargs"] = kwargs
-        return debug_env.selection
+        return select_svd(*args, **kwargs)
 
     seams = replace(harness.seams(), svd_select=select)
 
@@ -445,22 +457,43 @@ def test_monitor_real_svd_failures_precede_service_start(
     assert not data_root.exists()
 
 
-@pytest.mark.parametrize("drift", ["target", "svd-readable-regions"])
-def test_monitor_register_sample_revalidates_post_bind_svd_provenance(
-    debug_env: DebugEnv, tmp_path: Path, drift: str
+@pytest.mark.parametrize(
+    ("drift", "expected_code"),
+    [
+        ("target", "MONITOR_FIRMWARE_CHANGED"),
+        ("svd-readable-regions", "MONITOR_PROVENANCE_CHANGED"),
+    ],
+)
+def test_monitor_initial_open_revalidates_post_bind_svd_provenance(
+    debug_env: DebugEnv,
+    tmp_path: Path,
+    drift: str,
+    expected_code: str | None,
 ) -> None:
     region = _set_explicit_monitor_debug_manifest(debug_env)
-    manifest_path = debug_env.root / ".stm32-project.json"
-    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    manifest["debug"]["svdDevice"] = "STM32F429ZITx"
-    manifest_path.write_bytes(
-        (json.dumps(manifest, indent=2, ensure_ascii=False) + "\n").encode("utf-8")
-    )
+    _write_compatible_monitor_svd(debug_env)
     harness = Harness(debug_env)
-    harness.binding_override = lambda binding: replace(
-        binding, svd_readable_regions=(region,)
-    )
+    narrow = MemoryRegionBinding("PERIPH-NARROW", 0x40020000, 0x10, "r--")
+    if drift == "target":
+        harness.binding_override = lambda binding: replace(
+            binding,
+            target_device="STM32F429ZGTx",
+            svd_readable_regions=(region,),
+        )
+    elif drift == "svd-readable-regions":
+        harness.binding_override = lambda binding: replace(
+            binding, svd_readable_regions=(narrow,)
+        )
+    else:
+        harness.binding_override = lambda binding: replace(
+            binding, svd_readable_regions=(region,)
+        )
+    selection_state: list[tuple[int, int]] = []
     sample_calls: list[object] = []
+
+    def select(*args: object, **kwargs: object) -> object:
+        selection_state.append((len(harness.supervisors), len(harness.bind_calls)))
+        return select_svd(*args, **kwargs)
 
     async def sample(request: object, client: object) -> OperationResult[object]:
         sample_calls.append(request)
@@ -468,7 +501,7 @@ def test_monitor_register_sample_revalidates_post_bind_svd_provenance(
 
     seams = replace(
         harness.seams(),
-        svd_select=select_svd,
+        svd_select=select,
         sample_registers=sample,
     )
 
@@ -476,31 +509,12 @@ def test_monitor_register_sample_revalidates_post_bind_svd_provenance(
         opened = await open_monitor_observation(
             request(debug_env, tmp_path / "data"), _seams=seams
         )
-        assert opened.ok is True
-        session = opened.data
-        try:
-            valid = await session.sample_registers(("GPIOA.IDR",))
-            assert valid.ok is True
-            assert len(sample_calls) == 1
-
-            if drift == "target":
-                harness.binding_override = lambda binding: replace(
-                    binding, target_device="STM32F429ZGTx"
-                )
-            else:
-                narrow = MemoryRegionBinding(
-                    "PERIPH-NARROW", 0x40020000, 0x10, "r--"
-                )
-                harness.binding_override = lambda binding: replace(
-                    binding, svd_readable_regions=(narrow,)
-                )
-            changed = await session.sample_registers(("GPIOA.IDR",))
-            assert changed.ok is False
-            assert changed.code == "MONITOR_FIRMWARE_CHANGED"
-            assert len(sample_calls) == 1
-            assert len(harness.bind_calls) == 2
-        finally:
-            await session.close()
+        assert len(harness.bind_calls) == 1
+        assert selection_state == [(0, 0)]
+        assert sample_calls == []
+        assert opened.ok is False
+        assert opened.data is None
+        assert opened.code == expected_code
 
     asyncio.run(scenario())
 
