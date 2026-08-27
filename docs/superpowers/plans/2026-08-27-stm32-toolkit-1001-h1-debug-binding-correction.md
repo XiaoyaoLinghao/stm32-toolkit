@@ -114,17 +114,23 @@ the public H2 hardware gates.
 
 ## Task 5: Ordered public H2 entry after H1 acceptance
 
-- [ ] Reconfirm the disconnected-load safety topology, no probe owner, exact project
-  head/clean state, runtime state, and OS probe identity. Stop on any change.
-- [ ] Run one public `probe list` with a fresh safe session ID. Require exactly the
+- [x] Reconfirm the disconnected-load safety topology, no probe owner, exact project
+  head/clean state, runtime state, and OS probe identity. Stop on any change. The
+  2026-08-27 preflight retained the user-confirmed disconnected-load topology,
+  observed zero hardware owner processes, and matched the frozen runtime/project pins.
+- [x] Run one public `probe list` with a fresh safe session ID. Require exactly the
   expected CMSIS-DAP Probe ID `0001A0000000`; enumeration must close cleanly and
-  must not attach, reset, read target memory, or flash.
-- [ ] Through the next public read-only workflow, open only the named probe and
-  verify the chip/target identity is STM32F429ZG / `stm32f429zgtx`. Release the
-  session cleanly. Any mismatch stops before authorization or programming.
+  must not attach, reset, read target memory, or flash. Evidence is
+  `C:\tmp\stm32tk-vs10a-legacy-campaign\evidence\h2-svd-probe-list-20260827-0605-01.json`.
+- [x] Reconcile the unavailable standalone pre-flash identity workflow. On 2026-08-27
+  the user explicitly authorized the existing guarded flash to be the first attach
+  and target-identity gate. It may program only after the attachment resolves as
+  STM32F429ZG / `stm32f429zgtx`; any mismatch must stop with zero programming. This
+  approval does not authorize a new API/tool, direct PyOCD, or any other operation.
 - [ ] Prepare fresh build/ELF/project/probe pins, then run exactly one public guarded
-  flash with explicit authorization. Require segment validation and readback. No
-  direct PyOCD, CubeProgrammer, Keil, or debugger flash is permitted.
+  flash with explicit authorization. Require the identity-before-program ordering,
+  segment validation, and readback. No direct PyOCD, CubeProgrammer, Keil, or
+  debugger flash is permitted.
 - [ ] Collect the independent P1c smoke observations in order: user D4 approximately
   one-second blinking, bounded typed `testtime` activity, SVD GPIOE.ODR PE4
   transition, no active Cortex-M Fault, and one Monitor snapshot bound to the same
