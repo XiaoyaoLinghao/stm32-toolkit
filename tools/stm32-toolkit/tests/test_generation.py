@@ -1832,6 +1832,7 @@ def test_link_standard_math_participates_in_generation_model_hash(tmp_path):
 def test_debug_observation_facts_participate_in_generation_model_hash(tmp_path):
     base = standard_payload()
     base["schemaVersion"] = 3
+    base["debug"]["svd"] = "debug/stm32f407.svd"
     base_root = write_project(tmp_path / "base", base)
 
     explicit = deepcopy(base)
@@ -1855,6 +1856,7 @@ def test_debug_observation_facts_participate_in_generation_model_hash(tmp_path):
 def test_debug_observation_facts_do_not_change_generated_build_bytes(tmp_path):
     base = standard_payload()
     base["schemaVersion"] = 3
+    base["debug"]["svd"] = "debug/stm32f407.svd"
     base_root = write_project(tmp_path / "base", base)
     explicit = deepcopy(base)
     explicit["debug"]["svdDevice"] = "STM32F407"
@@ -1877,6 +1879,8 @@ def test_debug_observation_facts_do_not_change_generated_build_bytes(tmp_path):
     assert [entry.after_bytes for entry in explicit_plan.files] == [
         entry.after_bytes for entry in base_plan.files
     ]
+    assert explicit_plan.managed_manifest_path == ".stm32-toolkit/generated-files.json"
+    assert explicit_plan.managed_manifest_bytes != base_plan.managed_manifest_bytes
 
 
 def test_native_standard_math_selector_never_duplicates_or_changes_output(tmp_path):
