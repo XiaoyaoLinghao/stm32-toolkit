@@ -274,6 +274,15 @@ def _model_payload(model: ProjectModel) -> dict[str, object]:
             "backend": model.debug.backend,
             "target": model.debug.target,
             "svd": model.debug.svd,
+            "svd_device": model.debug.svd_device,
+            "readable_regions": [
+                {
+                    "name": region.name,
+                    "origin": region.origin,
+                    "length": region.length,
+                }
+                for region in model.debug.readable_regions
+            ],
         },
         "generation": {
             "tool": model.generation.tool,

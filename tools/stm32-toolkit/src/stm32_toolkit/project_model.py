@@ -109,10 +109,19 @@ class MemorySpec:
 
 
 @dataclass(frozen=True)
+class DebugReadableRegion:
+    name: str
+    origin: int
+    length: int
+
+
+@dataclass(frozen=True)
 class DebugSpec:
     backend: str | None
     target: str | None
     svd: str | None
+    svd_device: str | None = None
+    readable_regions: tuple[DebugReadableRegion, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -339,6 +348,8 @@ def _packaged_validator(version: int) -> Draft202012Validator:
             schema["properties"]["schemaVersion"] = {"const": 2}
             schema["properties"].pop("testing", None)
             schema["properties"]["build"]["properties"].pop("linkStandardMath", None)
+            schema["properties"]["debug"]["properties"].pop("svdDevice", None)
+            schema["properties"]["debug"]["properties"].pop("readableRegions", None)
         Draft202012Validator.check_schema(schema)
         validator = Draft202012Validator(schema, format_checker=FormatChecker())
         _PACKAGED_VALIDATORS[schema_name] = validator
@@ -424,6 +435,8 @@ def validate_model_document(root: Path, payload: dict, version: int) -> None:
     _validate_path_field(root, "build.elf", build.get("elf"), cache)
     debug = payload.get("debug") or {}
     _validate_path_field(root, "debug.svd", debug.get("svd"), cache)
+    if version == 3:
+        _validate_debug_observation_document(debug)
     if version in (2, 3):
         generation = payload["generation"]
         _validate_path_field(
@@ -515,6 +528,68 @@ def _validate_testing_document(
             _validate_canonical_string(
                 options["port"], "testing.target.transport.options.port", 256
             )
+
+
+def _validate_debug_observation_document(debug: object) -> None:
+    if not isinstance(debug, dict):
+        return
+    has_svd_device = "svdDevice" in debug
+    has_readable_regions = "readableRegions" in debug
+    if not (has_svd_device or has_readable_regions):
+        return
+
+    for field in ("svd", "svdDevice", "readableRegions"):
+        if field not in debug or (field == "svd" and debug[field] is None):
+            raise ProjectManifestError(
+                "PROJECT_SCHEMA_INVALID",
+                "Project manifest debug observation facts are incomplete",
+                {"field": f"debug.{field}", "rule": "required"},
+            )
+
+    _validate_canonical_string(debug["svdDevice"], "debug.svdDevice", 128)
+    regions = debug["readableRegions"]
+    seen_names: set[str] = set()
+    prior: list[tuple[int, int]] = []
+    for index, region in enumerate(regions):
+        name = region["name"]
+        origin = region["origin"]
+        length = region["length"]
+        _validate_canonical_string(
+            name, f"debug.readableRegions[{index}].name", 128
+        )
+        _validate_exact_integer(origin, f"debug.readableRegions[{index}].origin")
+        _validate_exact_integer(length, f"debug.readableRegions[{index}].length")
+        end = origin + length
+        if (
+            origin < 0
+            or origin > 0xFFFF_FFFF
+            or length < 1
+            or length > 0x1_0000_0000
+            or end > 0x1_0000_0000
+        ):
+            raise ProjectManifestError(
+                "PROJECT_SCHEMA_INVALID",
+                "Project manifest debug readable region is out of range",
+                {"field": f"debug.readableRegions[{index}]", "rule": "range"},
+            )
+        if name in seen_names:
+            raise ProjectManifestError(
+                "PROJECT_SCHEMA_INVALID",
+                "Project manifest debug readable region names must be unique",
+                {"field": "debug.readableRegions", "rule": "uniqueRegionName"},
+            )
+        seen_names.add(name)
+        if any(
+            origin < previous_origin + previous_length
+            and previous_origin < end
+            for previous_origin, previous_length in prior
+        ):
+            raise ProjectManifestError(
+                "PROJECT_SCHEMA_INVALID",
+                "Project manifest debug readable regions must not overlap",
+                {"field": "debug.readableRegions", "rule": "overlap"},
+            )
+        prior.append((origin, length))
 
 
 def _validate_exact_integer(value: object, field: str) -> None:
@@ -723,11 +798,6 @@ def _build_model(root: Path, payload: dict, version: int) -> ProjectModel:
         link_standard_math=build_data.get("linkStandardMath", False),
     )
     debug_data = payload.get("debug") or {}
-    debug = DebugSpec(
-        backend=debug_data.get("backend"),
-        target=debug_data.get("target"),
-        svd=debug_data.get("svd"),
-    )
     if version == 1:
         memory = MemorySpec(
             source=SOURCE_MAPPING.get(project.origin, "manual"),
@@ -767,6 +837,39 @@ def _build_model(root: Path, payload: dict, version: int) -> ProjectModel:
             generated_directories=tuple(generation_data.get("generatedDirectories", ())),
             user_directories=tuple(generation_data.get("userDirectories", ())),
         )
+
+    if version == 3 and (
+        "svdDevice" in debug_data or "readableRegions" in debug_data
+    ):
+        svd_device = debug_data["svdDevice"]
+        readable_regions = tuple(
+            DebugReadableRegion(
+                name=region["name"],
+                origin=region["origin"],
+                length=region["length"],
+            )
+            for region in debug_data["readableRegions"]
+        )
+    elif version == 3:
+        svd_device = target.device
+        readable_regions = tuple(
+            DebugReadableRegion(
+                name=region.name,
+                origin=region.origin,
+                length=region.length,
+            )
+            for region in memory.regions
+        )
+    else:
+        svd_device = None
+        readable_regions = ()
+    debug = DebugSpec(
+        backend=debug_data.get("backend"),
+        target=debug_data.get("target"),
+        svd=debug_data.get("svd"),
+        svd_device=svd_device,
+        readable_regions=readable_regions,
+    )
 
     testing = _build_testing_config(payload.get("testing")) if version == 3 else None
 
