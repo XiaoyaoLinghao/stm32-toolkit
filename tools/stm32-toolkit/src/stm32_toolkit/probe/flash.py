@@ -39,6 +39,7 @@ _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _TARGET_CANONICAL = re.compile(r"[^a-z0-9]")
 _IDENTITY_REL = "build/arm-debug/firmware-identity.json"
 _RESULT_REL = "artifacts/migration/build-result.json"
+_BUILD_LOG_REL = "artifacts/migration/build.log"
 _FLASH_RESULT_REL = "artifacts/migration/flash-result.json"
 _IDENTITY_LIMIT = 8 * 1024 * 1024
 _RESULT_LIMIT = 8 * 1024 * 1024
@@ -265,6 +266,39 @@ def _json_document(root: Path, rel: str, limit: int) -> dict[str, object]:
     return value
 
 
+def _public_artifact_paths(result: Mapping[str, object]) -> tuple[str, ...]:
+    artifacts = result.get("artifacts")
+    if not isinstance(artifacts, list) or len(artifacts) != 5:
+        raise _fail(
+            "FIRMWARE_EVIDENCE_INVALID",
+            "Firmware evidence is invalid",
+            path=_RESULT_REL,
+            rule="artifacts",
+        )
+    paths: list[str] = []
+    for item in artifacts:
+        if (
+            not isinstance(item, dict)
+            or set(item) != {"path"}
+            or not isinstance(item.get("path"), str)
+        ):
+            raise _fail(
+                "FIRMWARE_EVIDENCE_INVALID",
+                "Firmware evidence is invalid",
+                path=_RESULT_REL,
+                rule="artifacts",
+            )
+        paths.append(item["path"])
+    if len(set(paths)) != len(paths):
+        raise _fail(
+            "FIRMWARE_EVIDENCE_INVALID",
+            "Firmware evidence is invalid",
+            path=_RESULT_REL,
+            rule="artifacts",
+        )
+    return tuple(paths)
+
+
 def _artifact_record(result: Mapping[str, object], kind: str) -> Mapping[str, object]:
     artifacts = result.get("artifacts")
     if not isinstance(artifacts, list):
@@ -335,12 +369,14 @@ def _load_fresh_firmware(root: Path) -> _FreshFirmware:
         raise _fail("FIRMWARE_EVIDENCE_INVALID", "Firmware identity is invalid", path=_IDENTITY_REL, rule="schema") from None
     if compute_build_id(identity) != identity.get("buildId"):
         raise _fail("FIRMWARE_EVIDENCE_INVALID", "Firmware identity is invalid", path=_IDENTITY_REL, rule="buildId")
+    stage = result.get("stage")
     if (
         result.get("status") != "success"
-        or result.get("stage") != "complete"
+        or stage not in ("", "complete")
         or result.get("code") != "OK"
     ):
         raise _fail("FIRMWARE_BUILD_REQUIRED", "A current successful debug build is required", path=_RESULT_REL, rule="status")
+    public_artifact_paths = _public_artifact_paths(result) if stage == "" else None
     if identity.get("preset") != "arm-debug" or result.get("preset") != "arm-debug":
         raise _fail("FIRMWARE_IDENTITY_MISMATCH", "Firmware preset does not match the debug workflow", field="preset", rule="value")
     if identity.get("toolkitVersion") != __version__:
@@ -381,17 +417,38 @@ def _load_fresh_firmware(root: Path) -> _FreshFirmware:
         raise _fail("FIRMWARE_INPUT_CHANGED", "ELF changed after the selected build", field="elfSha256", rule="current")
     if sha256(map_data).hexdigest() != identity.get("mapSha256"):
         raise _fail("FIRMWARE_INPUT_CHANGED", "MAP changed after the selected build", field="mapSha256", rule="current")
-    elf_record = _artifact_record(result, "elf")
-    map_record = _artifact_record(result, "map")
-    if (
-        elf_record.get("path") != elf_rel
-        or elf_record.get("sha256") != identity.get("elfSha256")
-        or elf_record.get("size") != len(elf_data)
-        or map_record.get("path") != map_rel
-        or map_record.get("sha256") != identity.get("mapSha256")
-        or map_record.get("size") != len(map_data)
-    ):
-        raise _fail("FIRMWARE_IDENTITY_MISMATCH", "Build artifacts disagree with firmware identity", field="artifacts", rule="identity")
+    if public_artifact_paths is not None:
+        expected_artifact_paths = {
+            _BUILD_LOG_REL,
+            _RESULT_REL,
+            _IDENTITY_REL,
+            str(elf_rel),
+            map_rel,
+        }
+        if set(public_artifact_paths) != expected_artifact_paths:
+            raise _fail(
+                "FIRMWARE_IDENTITY_MISMATCH",
+                "Build artifacts disagree with firmware identity",
+                field="artifacts",
+                rule="identity",
+            )
+    else:
+        elf_record = _artifact_record(result, "elf")
+        map_record = _artifact_record(result, "map")
+        if (
+            elf_record.get("path") != elf_rel
+            or elf_record.get("sha256") != identity.get("elfSha256")
+            or elf_record.get("size") != len(elf_data)
+            or map_record.get("path") != map_rel
+            or map_record.get("sha256") != identity.get("mapSha256")
+            or map_record.get("size") != len(map_data)
+        ):
+            raise _fail(
+                "FIRMWARE_IDENTITY_MISMATCH",
+                "Build artifacts disagree with firmware identity",
+                field="artifacts",
+                rule="identity",
+            )
     try:
         elf_evidence = validate_elf(root.joinpath(*str(elf_rel).split("/")), model)
     except BuildError:
