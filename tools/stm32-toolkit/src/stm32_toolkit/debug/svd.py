@@ -31,6 +31,8 @@ _MAX_DERIVED_CHAIN_DEPTH = 256
 _MAX_CLUSTER_NESTING_DEPTH = 64
 _REPARSE_POINT = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
 _NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_.-]{0,127}$")
+_DECIMAL = re.compile(r"^\+?[0-9]+$")
+_HEX = re.compile(r"^\+?0[xX][0-9A-Fa-f]+$")
 _MAX_CATALOG_PAGE = 256
 _MAX_CATALOG_QUERY = 128
 _CURSOR_KEY = secrets.token_bytes(32)
@@ -92,6 +94,7 @@ class SvdRegister:
 @dataclass(frozen=True, init=False)
 class SvdSelection:
     device: str
+    target_device: str
     path: str
     sha256: str
     registers: tuple[SvdRegister, ...]
@@ -106,6 +109,7 @@ class SvdSelection:
         cls,
         *,
         device: str,
+        target_device: str,
         path: str,
         sha256: str,
         registers: tuple[SvdRegister, ...],
@@ -118,6 +122,7 @@ class SvdSelection:
         instance = object.__new__(cls)
         for name, value in (
             ("device", device),
+            ("target_device", target_device),
             ("path", path),
             ("sha256", sha256),
             ("registers", registers),
@@ -141,7 +146,7 @@ class SvdSelection:
     ) -> bool:
         if (
             not isinstance(binding, DebugFirmwareBinding)
-            or binding.target_device != self.device
+            or binding.target_device != self.target_device
             or binding.memory_regions != self.readable_regions
             or not isinstance(project_root, Path)
         ):
@@ -481,10 +486,16 @@ def _text(element: ET.Element, name: str, *, required: bool = False) -> str | No
 
 
 def _number(value: str | None, *, maximum: int = 0xFFFF_FFFF) -> int:
-    if value is None or len(value) > 32:
+    if not isinstance(value, str) or len(value) > 32:
+        raise _fail("SVD_XML_INVALID", "SVD numeric metadata is invalid")
+    if _DECIMAL.fullmatch(value) is not None:
+        base = 10
+    elif _HEX.fullmatch(value) is not None:
+        base = 16
+    else:
         raise _fail("SVD_XML_INVALID", "SVD numeric metadata is invalid")
     try:
-        parsed = int(value, 0)
+        parsed = int(value, base)
     except ValueError:
         raise _fail("SVD_XML_INVALID", "SVD numeric metadata is invalid") from None
     if parsed < 0 or parsed > maximum:
@@ -1048,6 +1059,7 @@ def select_svd(
     candidates: tuple[Path, ...],
     *,
     readable_regions: tuple[MemoryRegionBinding, ...],
+    svd_device: str | None = None,
 ) -> SvdSelection:
     """Select exactly one explicit SVD whose device name exactly matches."""
 
@@ -1057,9 +1069,13 @@ def select_svd(
         or _NAME.fullmatch(target_device) is None
         or type(candidates) is not tuple
         or not 1 <= len(candidates) <= _MAX_CANDIDATES
+        or (svd_device is not None and (
+            not isinstance(svd_device, str) or _NAME.fullmatch(svd_device) is None
+        ))
     ):
         raise _fail("SVD_SELECTION_REQUIRED", "An exact SVD selection is required")
     trusted_regions = _validate_readable_regions(readable_regions)
+    expected_document_device = target_device if svd_device is None else svd_device
     documents: list[
         tuple[str, tuple[SvdRegister, ...], str, _SafeRead]
     ] = []
@@ -1072,13 +1088,16 @@ def select_svd(
         source = _safe_read(project_root, relative)
         device, registers = _parse_document(source.data, portable)
         documents.append((device, registers, portable, source))
-    matches = tuple(item for item in documents if item[0] == target_device)
+    matches = tuple(
+        item for item in documents if item[0] == expected_document_device
+    )
     if len(matches) != 1:
         raise _fail("SVD_SELECTION_REQUIRED", "An exact SVD selection is required")
     device, registers, portable, source = matches[0]
     _validate_register_ranges(registers, trusted_regions)
     return SvdSelection._create(
         device=device,
+        target_device=target_device,
         path=portable,
         sha256=hashlib.sha256(source.data).hexdigest(),
         registers=registers,
