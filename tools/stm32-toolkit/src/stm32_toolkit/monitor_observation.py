@@ -977,7 +977,8 @@ async def open_monitor_observation(
                     paths.project_root,
                     model.target.device,
                     (Path(model.debug.svd),),
-                    readable_regions=binding.memory_regions,
+                    readable_regions=binding.svd_readable_regions,
+                    svd_device=model.debug.svd_device,
                 )
                 if type(svd) is not SvdSelection:
                     raise MonitorObservationError(
