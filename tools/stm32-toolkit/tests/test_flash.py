@@ -4,6 +4,7 @@ import asyncio
 import hashlib
 import json
 import struct
+from collections.abc import Callable
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -18,12 +19,18 @@ from stm32_toolkit.build.identity import (
     utc_now_rfc3339,
     validate_elf,
 )
+from stm32_toolkit.build import BuildRequest, run_build
 from stm32_toolkit.build.runner import build_result_document
 from stm32_toolkit.probe.backend import FlashBackendReport
 from stm32_toolkit.probe import flash as flash_mod
 from stm32_toolkit.probe.flash import FlashRequest, flash_firmware
 from stm32_toolkit.project_model import load_project_model
-from test_build_runner import build_elf_bytes, build_map_text, prepare_project
+from test_build_runner import (
+    build_elf_bytes,
+    build_map_text,
+    install_fake_cmake,
+    prepare_project,
+)
 
 
 def _sha256(data: bytes) -> str:
@@ -200,6 +207,37 @@ def _request(root: Path, identity: dict, **overrides: object) -> FlashRequest:
     }
     fields.update(overrides)
     return FlashRequest(**fields)  # type: ignore[arg-type]
+
+
+def _run_public_debug_build(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> tuple[Path, dict[str, object]]:
+    root = prepare_project(tmp_path)
+    install_fake_cmake(monkeypatch, tmp_path)
+    built = run_build(BuildRequest(project_root=root, preset="arm-debug"))
+    assert built.ok is True, built
+
+    identity = json.loads(
+        (root / "build" / "arm-debug" / "firmware-identity.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    result = json.loads(
+        (root / "artifacts" / "migration" / "build-result.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert result["status"] == "success"
+    assert result["stage"] == ""
+    assert result["code"] == "OK"
+    assert result["artifacts"] == [
+        {"path": "artifacts/migration/build.log"},
+        {"path": "artifacts/migration/build-result.json"},
+        {"path": "build/arm-debug/firmware-identity.json"},
+        {"path": "build/arm-debug/firmware.elf"},
+        {"path": "build/arm-debug/firmware.map"},
+    ]
+    return root, identity
 
 
 @pytest.mark.parametrize("authorized", [False, "true", 1, None, [], {}])
@@ -693,6 +731,149 @@ def test_flash_segment_parser_rejects_nonload_region_size_and_overlap(
     with pytest.raises(flash_mod._FlashFailure) as overlap:
         flash_mod._flash_segments(b"elf", model, "firmware.elf")
     assert overlap.value.details["rule"] == "overlap"
+
+
+def test_public_run_build_output_flashes_without_rewriting_build_evidence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root, identity = _run_public_debug_build(tmp_path, monkeypatch)
+    build_result_path = root / "artifacts" / "migration" / "build-result.json"
+    identity_path = root / "build" / "arm-debug" / "firmware-identity.json"
+    build_result_before = build_result_path.read_bytes()
+    identity_before = identity_path.read_bytes()
+    payload = b"\x00\xbf\x00\xbf"
+    monkeypatch.setattr(
+        flash_mod,
+        "_flash_segments",
+        lambda _data, _model, _rel: (
+            flash_mod.FlashSegment(0x08000000, payload),
+        ),
+    )
+    client = RecordingFlashClient(payload)
+
+    outcome = asyncio.run(flash_firmware(_request(root, identity), client))
+
+    assert outcome.ok is True, outcome
+    assert [event[0] for event in client.events] == ["attach", "program", "read"]
+    assert build_result_path.read_bytes() == build_result_before
+    assert identity_path.read_bytes() == identity_before
+
+
+def test_public_run_build_output_rejects_connected_target_before_program(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root, identity = _run_public_debug_build(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        flash_mod,
+        "_flash_segments",
+        lambda _data, _model, _rel: (
+            flash_mod.FlashSegment(0x08000000, b"\x00\xbf"),
+        ),
+    )
+    client = RecordingFlashClient(b"\x00\xbf", resolved_target="STM32F429ZG")
+
+    outcome = asyncio.run(flash_firmware(_request(root, identity), client))
+
+    assert outcome.ok is False
+    assert outcome.code == "FIRMWARE_IDENTITY_MISMATCH"
+    assert outcome.details == {"field": "connectedTarget", "rule": "identity"}
+    assert [event[0] for event in client.events] == ["attach"]
+
+
+@pytest.mark.parametrize(
+    "mutation, expected_code, expected_details",
+    [
+        (
+            lambda items: items.pop(),
+            "FIRMWARE_EVIDENCE_INVALID",
+            {"path": "artifacts/migration/build-result.json", "rule": "artifacts"},
+        ),
+        (
+            lambda items: items.__setitem__(1, dict(items[0])),
+            "FIRMWARE_EVIDENCE_INVALID",
+            {"path": "artifacts/migration/build-result.json", "rule": "artifacts"},
+        ),
+        (
+            lambda items: items[3].__setitem__("kind", "elf"),
+            "FIRMWARE_EVIDENCE_INVALID",
+            {"path": "artifacts/migration/build-result.json", "rule": "artifacts"},
+        ),
+        (
+            lambda items: items[3].__setitem__("path", "C:/outside/firmware.elf"),
+            "FIRMWARE_IDENTITY_MISMATCH",
+            {"field": "artifacts", "rule": "identity"},
+        ),
+    ],
+)
+def test_public_run_build_output_rejects_artifact_tampering_before_attach(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mutation: Callable[[list[dict[str, object]]], object],
+    expected_code: str,
+    expected_details: dict[str, str],
+) -> None:
+    root, identity = _run_public_debug_build(tmp_path, monkeypatch)
+    path = root / "artifacts" / "migration" / "build-result.json"
+    document = json.loads(path.read_text(encoding="utf-8"))
+    mutation(document["artifacts"])  # type: ignore[operator]
+    atomic_write_json(path, document)
+    client = RecordingFlashClient(b"")
+
+    outcome = asyncio.run(flash_firmware(_request(root, identity), client))
+
+    assert outcome.ok is False
+    assert outcome.code == expected_code
+    assert outcome.details == expected_details
+    assert client.events == []
+
+
+def test_flash_rejects_cross_dialect_and_arbitrary_stage_before_attach(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    rich_root = prepare_project(tmp_path, name="rich-project")
+    rich_identity = _publish_current_debug_build(rich_root)
+    rich_path = rich_root / "artifacts" / "migration" / "build-result.json"
+    rich_document = json.loads(rich_path.read_text(encoding="utf-8"))
+    rich_document["stage"] = ""
+    atomic_write_json(rich_path, rich_document)
+    rich_client = RecordingFlashClient(b"")
+    rich_outcome = asyncio.run(
+        flash_firmware(_request(rich_root, rich_identity), rich_client)
+    )
+    assert rich_outcome.code == "FIRMWARE_EVIDENCE_INVALID"
+    assert rich_outcome.details == {
+        "path": "artifacts/migration/build-result.json",
+        "rule": "artifacts",
+    }
+    assert rich_client.events == []
+
+    public_root, public_identity = _run_public_debug_build(tmp_path, monkeypatch)
+    public_path = public_root / "artifacts" / "migration" / "build-result.json"
+    public_document = json.loads(public_path.read_text(encoding="utf-8"))
+    public_document["stage"] = "complete"
+    atomic_write_json(public_path, public_document)
+    public_client = RecordingFlashClient(b"")
+    public_outcome = asyncio.run(
+        flash_firmware(_request(public_root, public_identity), public_client)
+    )
+    assert public_outcome.code == "FIRMWARE_EVIDENCE_INVALID"
+    assert public_outcome.details == {
+        "path": "artifacts/migration/build-result.json",
+        "rule": "artifacts",
+    }
+    assert public_client.events == []
+
+    public_document["stage"] = "complete-later"
+    atomic_write_json(public_path, public_document)
+    arbitrary = asyncio.run(
+        flash_firmware(_request(public_root, public_identity), public_client)
+    )
+    assert arbitrary.code == "FIRMWARE_BUILD_REQUIRED"
+    assert arbitrary.details == {
+        "path": "artifacts/migration/build-result.json",
+        "rule": "status",
+    }
+    assert public_client.events == []
 
 
 def test_flash_rejects_failed_or_mismatched_build_result(tmp_path: Path) -> None:
