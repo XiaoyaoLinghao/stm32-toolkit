@@ -34,6 +34,24 @@ def backend_with_probes(*probe_ids: str) -> tuple[PyOCDBackend, FakePyOCDDriver]
     return PyOCDBackend(driver), driver
 
 
+class ConnectionPolicyTarget(FakePyOCDTarget):
+    def __init__(
+        self,
+        *,
+        part_number: object = "stm32f407vg",
+        state: object = "halted",
+        resume_error: BaseException | None = None,
+    ) -> None:
+        super().__init__(part_number=part_number, state=state)
+        self.resume_error = resume_error
+
+    def resume(self) -> None:
+        self.calls.append(("resume",))
+        if self.resume_error is not None:
+            raise self.resume_error
+        self.state = "running"
+
+
 class _StagedInventoryDriver(FakePyOCDDriver):
     """Return a prescribed inventory on each enumeration call."""
 
@@ -374,7 +392,7 @@ def test_exact_legacy_selector_still_selects_only_the_matching_probe_object():
     assert evidence.to_dict()["probeId"] == "probe-a"
 
 
-def test_exact_attach_uses_observation_only_session_options_without_halting():
+def test_observation_attach_uses_pinned_halt_policy_then_returns_running():
     target = FakePyOCDTarget(
         memory={0x20000000: b"\x01\x02\x03\x04"},
         registers={"pc": 0x08000101},
@@ -389,18 +407,19 @@ def test_exact_attach_uses_observation_only_session_options_without_halting():
     assert session.open_count == 1
     assert session.options == {
         "auto_unlock": False,
-        "connect_mode": "attach",
+        "connect_mode": "halt",
         "dap_protocol": "swd",
         "frequency": 1_000_000,
         "no_config": True,
-        "pack.debug_sequences.enable": False,
+        "pack.debug_sequences.enable": True,
         "primary_core": 0,
         "project_dir": os.getcwd(),
         "resume_on_disconnect": False,
         "target_override": "stm32f407vg",
         "user_script": os.devnull,
     }
-    assert target.calls == []
+    assert target.calls == [("resume",), ("get_state",)]
+    assert target.state == "running"
     assert evidence.to_dict() == {
         "probeId": "probe-a",
         "requestedTarget": "stm32f407vg",
@@ -501,15 +520,57 @@ def test_flash_elf_failure_has_stable_error_and_no_success_telemetry():
     assert "private" not in str(error.value)
 
 
-def test_halt_on_connect_is_rejected_before_hardware_enumeration():
-    backend, driver = backend_with_probes("probe-a")
-    driver.list_error = AssertionError("enumeration must not run")
+def test_modify_attach_returns_only_after_target_is_proven_halted():
+    target = ConnectionPolicyTarget(state="halted")
+    driver = FakePyOCDDriver((FakePyOCDProbe("probe-a"),), target=target)
 
-    with pytest.raises(ProbeBackendError) as error:
-        backend.open_attach("probe-a", "stm32f407vg", halt_on_connect=True)
+    evidence = PyOCDBackend(driver).open_attach(
+        "probe-a", "stm32f407vg", halt_on_connect=True
+    )
 
-    assert error.value.code == "PROBE_OPERATION_LEVEL_DENIED"
-    assert driver.created_sessions == []
+    assert evidence.resolved_part_number == "stm32f407vg"
+    assert target.calls == [("get_state",)]
+    assert target.state == "halted"
+    assert driver.program_calls == []
+
+
+def test_observation_resume_failure_closes_candidate_and_publishes_nothing():
+    target = ConnectionPolicyTarget(
+        resume_error=RuntimeError(r"resume failed C:\private\target")
+    )
+    driver = FakePyOCDDriver((FakePyOCDProbe("probe-a"),), target=target)
+    backend = PyOCDBackend(driver)
+
+    with pytest.raises(ProbeBackendError) as caught:
+        backend.open_attach("probe-a", "stm32f407vg")
+
+    assert caught.value.code == "PROBE_ATTACH_FAILED"
+    assert "private" not in str(caught.value)
+    assert driver.program_calls == []
+    assert driver.created_sessions[0].close_count == 1
+    with pytest.raises(ProbeBackendError) as detached:
+        backend.read_memory(0x20000000, 4)
+    assert detached.value.code == "PROBE_NOT_ATTACHED"
+
+
+@pytest.mark.parametrize(
+    "part_number",
+    (None, "", "unknown\npart", r"C:\private", 1234),
+)
+def test_invalid_identity_resumes_and_closes_halted_candidate(part_number):
+    target = ConnectionPolicyTarget(part_number=part_number)
+    driver = FakePyOCDDriver((FakePyOCDProbe("probe-a"),), target=target)
+
+    with pytest.raises(ProbeBackendError) as caught:
+        PyOCDBackend(driver).open_attach(
+            "probe-a", "stm32f407vg", halt_on_connect=True
+        )
+
+    assert caught.value.code == "PROBE_TARGET_IDENTITY_UNAVAILABLE"
+    assert target.calls == [("resume",), ("get_state",)]
+    assert target.state == "running"
+    assert driver.program_calls == []
+    assert driver.created_sessions[0].close_count == 1
 
 
 @pytest.mark.parametrize("target", ("", "*", "stm32 f407", "t" * 129))

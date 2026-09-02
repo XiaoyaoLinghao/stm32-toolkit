@@ -92,15 +92,18 @@ class FakePyOCDTarget:
 
     def halt(self) -> None:
         self.calls.append(("halt",))
+        self.state = "halted"
 
     def resume(self) -> None:
         self.calls.append(("resume",))
+        self.state = "running"
 
     def step(self) -> None:
         self.calls.append(("step",))
 
     def reset(self) -> None:
         self.calls.append(("reset",))
+        self.state = "running"
 
 
 class FakePyOCDBoard:
