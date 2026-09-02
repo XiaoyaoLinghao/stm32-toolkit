@@ -1,14 +1,14 @@
 # STM32TK-1001 Attach Recovery Correction Design
 
-Date: 2026-09-02  
-Module / phase: STM32TK-1001 / VS10-A  
-Status: FROZEN FOR USER REVIEW  
-Full accepted product base: `03036f912e16006b1d2030b212962d3704e8a20f`  
-Accepted-base tree: `b7688538514a50f2e083d4bef788030f342daaba`  
-Reviewed but unaccepted predecessor code head: `1783b33ab77bdce2f6103e7f765db8bad8cd3d00`  
-Predecessor tree: `fdf79c8b8c043c3434251dcc6edb6dd6c4d184dc`  
-Specification owner and final reviewer: GPT-5.6-sol primary  
-Implementation owner: one GPT-5.6-luna agent at reasoning effort `max`  
+Date: 2026-09-02
+Module / phase: STM32TK-1001 / VS10-A
+Status: FROZEN FOR USER REVIEW
+Full accepted product base: `03036f912e16006b1d2030b212962d3704e8a20f`
+Accepted-base tree: `b7688538514a50f2e083d4bef788030f342daaba`
+Reviewed but unaccepted predecessor code head: `1783b33ab77bdce2f6103e7f765db8bad8cd3d00`
+Predecessor tree: `fdf79c8b8c043c3434251dcc6edb6dd6c4d184dc`
+Specification owner and final reviewer: GPT-5.6-sol primary
+Implementation owner: one GPT-5.6-luna agent at reasoning effort `max`
 Remote action: none authorized
 
 ## 1. Purpose and predecessor status
