@@ -67,7 +67,7 @@ the connection and firmware gates both pass.
 ### Scenario 3 — mismatched or unavailable targets produce zero programming
 
 If the resolved target identity is malformed, unavailable, ambiguous, or does not canonically
-equal the explicit requested target, attach fails before a usable backend session is published.
+equal the explicit requested target, attach fails before a successful attach response is published.
 Toolkit makes zero flash calls. If Toolkit halted a core, it attempts to resume it before closing
 the session. A successful-looking attachment must never be returned after failed restoration or
 cleanup.
@@ -113,6 +113,13 @@ boolean:
   `halt_on_connect=False`. Explicit control operations continue to use their existing
   single-use authorization path after attachment.
 
+`ProbeService` also owns the final canonical requested/resolved-target comparison before it
+publishes a successful attach response. It uses the existing flash target-canonicalization rule.
+On mismatch it resumes a modification attachment, verifies running state, closes the backend, and
+raises the existing `PROBE_IDENTITY_MISMATCH`. This keeps the backend adapter independent of the
+flash workflow while ensuring that a mismatched internal candidate session is never exposed as a
+successful public attachment.
+
 The client request schema, Probe protocol version, attachment response fields, lease model,
 authorization schema, CLI arguments, MCP tools, and error-code inventory do not change.
 
@@ -154,18 +161,22 @@ The backend performs these steps in order:
 3. Close any prior owned backend session.
 4. Create and open one PyOCD session with the frozen policy.
 5. Require one target object and exactly one core.
-6. Read a portable resolved part number and require canonical equality with the requested target.
-   Canonical equality is case-insensitive and ignores punctuation only, matching the existing flash
-   identity rule; it does not use prefix, substring, family fallback, or a vendor table.
+6. Read and validate a portable resolved part number.
 7. If `halt_on_connect=False`, resume and verify the target reports running. If
    `halt_on_connect=True`, verify it reports halted.
 8. Only after all preceding checks succeed, publish the session, target, selected probe, selector
-   hash, requested target, and resolved part number into backend-owned state and return
-   `ProbeAttachmentEvidence`.
+   hash, requested target, and resolved part number into backend-owned state and return candidate
+   `ProbeAttachmentEvidence` to `ProbeService`.
+9. Before encoding any successful response, `ProbeService` requires canonical equality between the
+   resolved part number and requested target. Canonical equality is case-insensitive and ignores
+   punctuation only; it does not use prefix, substring, family fallback, or a vendor table. On
+   mismatch the service restores running state when necessary, verifies restoration, closes the
+   backend, and fails with `PROBE_IDENTITY_MISMATCH`.
 
-Failures before step 8 operate only on local candidate objects. Cleanup must not publish a partial
-session. A modification caller receives no attachment evidence and therefore cannot reach the
-existing programming request when identity or state validation fails.
+Failures before step 8 operate only on local candidate objects. A failure at step 9 closes the
+backend-owned candidate before returning a response. Cleanup must not publish a partial or
+mismatched public attachment. A modification caller receives no attachment evidence and therefore
+cannot reach the existing programming request when identity or state validation fails.
 
 ## 6. Error semantics and cleanup
 
@@ -175,8 +186,9 @@ No new public error code is introduced.
   `PROBE_TARGET_INVALID`.
 - Missing target, ambiguous cores, and unavailable/malformed identity retain the existing target
   error codes.
-- A resolved target that does not canonically match the explicit requested target fails inside the
-  backend with the existing `PROBE_IDENTITY_MISMATCH` code, after bounded resume and close. The
+- A resolved target that does not canonically match the explicit requested target fails at the
+  Probe Service attach boundary with the existing `PROBE_IDENTITY_MISMATCH` code, after bounded
+  resume and close. The
   public flash workflow converts only this attach failure back to its already-established
   `FIRMWARE_IDENTITY_MISMATCH`; other attach failures retain their own codes.
 - PyOCD open, Pack sequence, resume, and state-transition failures are normalized through the
