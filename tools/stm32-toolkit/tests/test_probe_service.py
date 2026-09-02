@@ -268,6 +268,52 @@ class BlockingAttachBackend(FakeProbeBackend):
         super().close()
 
 
+class ExplicitRecoveryAttachBackend(BlockingAttachBackend):
+    def __init__(
+        self,
+        *,
+        entered: threading.Event,
+        release: threading.Event,
+        close_error: BaseException | None = None,
+    ) -> None:
+        super().__init__(entered=entered, release=release)
+        self.close_error = close_error
+
+    def target_state(self):
+        self.events.append(("target_state", "halted" if self.halted else "running"))
+        return {
+            "state": "halted" if self.halted else "running",
+            "reason": "requested",
+        }
+
+    def close(self) -> None:
+        self.events.append(("close_without_resume", self.halted))
+        self.close_called = True
+        if self.close_error is not None:
+            raise self.close_error
+        self.attached_probe_id = None
+        self.attached_target = None
+        self.closed = True
+
+
+def _attach_request(*, timeout_ms: int, request_id: str) -> ProbeRequest:
+    return ProbeRequest(
+        protocol="stm32-toolkit-probe/2",
+        toolkit_version=__version__,
+        request_id=request_id,
+        workspace_id="workspace-a",
+        session_id="session-a",
+        lease_id="lease-test",
+        operation_level=OperationLevel.MODIFY,
+        operation="probe.attach",
+        timeout_ms=timeout_ms,
+        data={
+            "probeId": "probe-a",
+            "target": "STM32F429ZITx",
+        },
+    )
+
+
 def test_service_binds_loopback_dynamic_port_and_publishes_private_endpoint(tmp_path: Path):
     async def scenario():
         service = make_service(tmp_path)
@@ -1253,6 +1299,177 @@ def test_timed_out_attach_closes_candidate(tmp_path: Path) -> None:
                 await asyncio.gather(*pending, return_exceptions=True)
             if not backend.closed and not backend.attach_active:
                 backend.close()
+
+    run(scenario())
+
+
+def test_cancelled_attach_waits_for_explicit_recovery_before_propagating(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        entered = threading.Event()
+        release = threading.Event()
+        backend = ExplicitRecoveryAttachBackend(entered=entered, release=release)
+        service = make_service(
+            tmp_path, level=OperationLevel.MODIFY, backend=backend
+        )
+        operation = asyncio.create_task(
+            service._run_backend(
+                _attach_request(
+                    timeout_ms=30_000,
+                    request_id="request-explicit-cancelled-attach",
+                )
+            )
+        )
+
+        async def delayed_release() -> None:
+            await asyncio.sleep(0.05)
+            release.set()
+
+        releaser = asyncio.create_task(delayed_release())
+        try:
+            assert await asyncio.to_thread(backend.entered.wait, 2)
+            operation.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await operation
+            assert releaser.done()
+            assert release.is_set()
+            assert backend.events[-4:] == [
+                ("attach_returned",),
+                ("resume",),
+                ("target_state", "running"),
+                ("close_without_resume", False),
+            ]
+            assert backend.halted is False
+            assert backend.closed is True
+            assert backend.flashed_images == []
+        finally:
+            release.set()
+            await asyncio.gather(releaser, return_exceptions=True)
+            if not operation.done():
+                operation.cancel()
+                await asyncio.gather(operation, return_exceptions=True)
+            pending = tuple(service._backend_tasks)
+            if pending:
+                await asyncio.gather(*pending, return_exceptions=True)
+            if not backend.closed and not backend.attach_active:
+                backend.close()
+
+    run(scenario())
+
+
+def test_timed_out_attach_waits_for_explicit_recovery_before_propagating(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        entered = threading.Event()
+        release = threading.Event()
+        backend = ExplicitRecoveryAttachBackend(entered=entered, release=release)
+        service = make_service(
+            tmp_path, level=OperationLevel.MODIFY, backend=backend
+        )
+        operation = asyncio.create_task(
+            service._run_backend(
+                _attach_request(
+                    timeout_ms=20,
+                    request_id="request-explicit-timed-out-attach",
+                )
+            )
+        )
+
+        async def delayed_release() -> None:
+            await asyncio.sleep(0.05)
+            release.set()
+
+        releaser = asyncio.create_task(delayed_release())
+        try:
+            assert await asyncio.to_thread(backend.entered.wait, 2)
+            with pytest.raises(asyncio.TimeoutError):
+                await operation
+            assert releaser.done()
+            assert release.is_set()
+            assert backend.events[-4:] == [
+                ("attach_returned",),
+                ("resume",),
+                ("target_state", "running"),
+                ("close_without_resume", False),
+            ]
+            assert backend.halted is False
+            assert backend.closed is True
+            assert backend.flashed_images == []
+        finally:
+            release.set()
+            await asyncio.gather(releaser, return_exceptions=True)
+            if not operation.done():
+                operation.cancel()
+                await asyncio.gather(operation, return_exceptions=True)
+            pending = tuple(service._backend_tasks)
+            if pending:
+                await asyncio.gather(*pending, return_exceptions=True)
+            if not backend.closed and not backend.attach_active:
+                backend.close()
+
+    run(scenario())
+
+
+def test_cancelled_attach_close_failure_preserves_sanitized_initiating_cause(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        entered = threading.Event()
+        release = threading.Event()
+        backend = ExplicitRecoveryAttachBackend(
+            entered=entered,
+            release=release,
+            close_error=RuntimeError(r"close failed C:\private\target"),
+        )
+        service = make_service(
+            tmp_path, level=OperationLevel.MODIFY, backend=backend
+        )
+        operation = asyncio.create_task(
+            service._run_backend(
+                _attach_request(
+                    timeout_ms=30_000,
+                    request_id="request-explicit-close-error",
+                )
+            )
+        )
+
+        async def delayed_release() -> None:
+            await asyncio.sleep(0.05)
+            release.set()
+
+        releaser = asyncio.create_task(delayed_release())
+        try:
+            assert await asyncio.to_thread(backend.entered.wait, 2)
+            operation.cancel()
+            with pytest.raises(ProbeBackendError) as caught:
+                await operation
+            assert caught.value.code == "PROBE_CLOSE_FAILED"
+            assert "private" not in str(caught.value)
+            cause = caught.value.__cause__
+            assert isinstance(cause, ProbeBackendError)
+            assert cause.code == "PROBE_BACKEND_ERROR"
+            assert "private" not in str(cause)
+            assert releaser.done()
+            assert release.is_set()
+            assert backend.events[-4:] == [
+                ("attach_returned",),
+                ("resume",),
+                ("target_state", "running"),
+                ("close_without_resume", False),
+            ]
+            assert backend.halted is False
+            assert backend.flashed_images == []
+        finally:
+            release.set()
+            await asyncio.gather(releaser, return_exceptions=True)
+            if not operation.done():
+                operation.cancel()
+                await asyncio.gather(operation, return_exceptions=True)
+            pending = tuple(service._backend_tasks)
+            if pending:
+                await asyncio.gather(*pending, return_exceptions=True)
 
     run(scenario())
 

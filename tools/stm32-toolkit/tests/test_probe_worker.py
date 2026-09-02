@@ -1,17 +1,21 @@
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 from functools import partial
+import json
 from pathlib import Path
+import shutil
 import threading
 import time
 
 import pytest
 
+from stm32_toolkit import __version__
 from stm32_toolkit.probe.backend import (
     FlashBackendReport, ProbeAttachmentEvidence, ProbeBackendError, ProbeDescriptor,
 )
-from stm32_toolkit.probe.model import OperationLevel
+from stm32_toolkit.probe.model import OperationLevel, ProbeRequest
 from stm32_toolkit.probe.worker import ProbeBackendWorker, ProbeWorkerError
 
 
@@ -97,6 +101,56 @@ class _WorkerTestBackend:
         return None
 
 
+class _AttachRecoveryWorkerBackend:
+    """Picklable worker seam that exposes attach terminal recovery ordering."""
+
+    def __init__(self, mode: str, marker_root: str) -> None:
+        self.mode = mode
+        self.marker_root = Path(marker_root)
+        self.marker_root.mkdir(parents=True, exist_ok=True)
+        self.marker = self.marker_root / "events.jsonl"
+        self.attached = False
+        self.halted = False
+        self.closed = False
+
+    def _record(self, event: str) -> None:
+        with self.marker.open("a", encoding="utf-8") as stream:
+            stream.write(json.dumps(event, separators=(",", ":")) + "\n")
+
+    def open_attach(
+        self, probe_id: str, target: str, *, halt_on_connect: bool = False
+    ) -> ProbeAttachmentEvidence:
+        self._record("attach-entered")
+        self.attached = True
+        self.halted = bool(halt_on_connect)
+        if self.mode == "unresponsive":
+            time.sleep(5.0)
+            self._record("late-attach-returned")
+        else:
+            time.sleep(0.1)
+            self._record("attach-returned")
+        return ProbeAttachmentEvidence(probe_id, target, target, 1)
+
+    def resume(self) -> None:
+        self._record("resume")
+        self.halted = False
+
+    def target_state(self):
+        state = "halted" if self.halted else "running"
+        self._record(f"target-state-{state}")
+        return {"state": state, "reason": "requested"}
+
+    def close(self) -> None:
+        state = "halted" if self.halted else "running"
+        self._record(f"close-{state}")
+        self.attached = False
+        self.closed = True
+
+    def flash_elf(self, image: bytes) -> FlashBackendReport:
+        self._record("program")
+        return FlashBackendReport(len(image), 1)
+
+
 @dataclass(frozen=True)
 class _StructuredProbe:
     probe_id: str = ATK_SELECTOR
@@ -121,6 +175,37 @@ def _structured_probe_factory() -> _StructuredProbeBackend:
 
 def _factory(mode: str, marker: str) -> _WorkerTestBackend:
     return _WorkerTestBackend(mode, marker)
+
+
+def _attach_recovery_factory(mode: str, marker_root: str) -> _AttachRecoveryWorkerBackend:
+    return _AttachRecoveryWorkerBackend(mode, marker_root)
+
+
+def _attach_recovery_request(*, timeout_ms: int, request_id: str) -> ProbeRequest:
+    return ProbeRequest(
+        protocol="stm32-toolkit-probe/2",
+        toolkit_version=__version__,
+        request_id=request_id,
+        workspace_id="workspace-a",
+        session_id="session-a",
+        lease_id="lease-test",
+        operation_level=OperationLevel.MODIFY,
+        operation="probe.attach",
+        timeout_ms=timeout_ms,
+        data={"probeId": "probe-a", "target": "STM32F429ZITx"},
+    )
+
+
+def _read_recovery_events(marker_root: Path) -> list[str]:
+    return [
+        json.loads(line)
+        for line in (marker_root / "events.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+
+
+def _remove_recovery_marker_root(marker_root: Path) -> None:
+    if marker_root.exists():
+        shutil.rmtree(marker_root)
 
 
 def test_worker_normal_call_and_close_leave_no_owned_process(tmp_path: Path) -> None:
@@ -293,6 +378,113 @@ def test_spawned_worker_service_isolates_legacy_and_target_observation_reads(
             await client.close()
             await service.stop()
         assert not worker.is_alive
+
+    run(scenario())
+
+
+def test_spawned_worker_attach_timeout_cooperatively_recovers_before_propagating(
+    tmp_path: Path,
+) -> None:
+    from test_probe_service import make_service, run
+
+    async def scenario() -> None:
+        marker_root = tmp_path / "cooperative-attach-marker"
+        worker: ProbeBackendWorker | None = None
+        service = None
+        try:
+            worker = ProbeBackendWorker(
+                _test_backend_factory=partial(
+                    _attach_recovery_factory, "cooperative", str(marker_root)
+                )
+            )
+            service = make_service(
+                tmp_path / "cooperative-service",
+                level=OperationLevel.MODIFY,
+                backend=worker,
+            )
+            with pytest.raises(asyncio.TimeoutError):
+                await service._run_backend(
+                    _attach_recovery_request(
+                        timeout_ms=20,
+                        request_id="request-worker-cooperative-attach",
+                    )
+                )
+            assert worker.is_alive is False
+            events = _read_recovery_events(marker_root)
+            assert events == [
+                "attach-entered",
+                "attach-returned",
+                "resume",
+                "target-state-running",
+                "close-running",
+            ]
+            assert "program" not in events
+        finally:
+            if worker is not None and worker.is_alive:
+                await asyncio.to_thread(worker.abort_owned_execution)
+            if service is not None:
+                pending = tuple(service._backend_tasks)
+                if pending:
+                    await asyncio.gather(*pending, return_exceptions=True)
+            _remove_recovery_marker_root(marker_root)
+
+    run(scenario())
+
+
+def test_unresponsive_worker_attach_uses_bounded_close_failure_fallback(
+    tmp_path: Path,
+) -> None:
+    from test_probe_service import make_service, run
+
+    async def scenario() -> None:
+        marker_root = tmp_path / "unresponsive-attach-marker"
+        worker: ProbeBackendWorker | None = None
+        service = None
+        try:
+            worker = ProbeBackendWorker(
+                _test_backend_factory=partial(
+                    _attach_recovery_factory, "unresponsive", str(marker_root)
+                )
+            )
+            service = make_service(
+                tmp_path / "unresponsive-service",
+                level=OperationLevel.MODIFY,
+                backend=worker,
+            )
+            with pytest.raises(ProbeBackendError) as caught:
+                await service._run_backend(
+                    _attach_recovery_request(
+                        timeout_ms=20,
+                        request_id="request-worker-unresponsive-attach",
+                    )
+                )
+            assert caught.value.code == "PROBE_CLOSE_FAILED"
+            assert worker.is_alive is False
+            await asyncio.sleep(1.1)
+            events = _read_recovery_events(marker_root)
+            assert events == ["attach-entered"]
+            assert not any(
+                event
+                in {
+                    "late-attach-returned",
+                    "resume",
+                    "close-running",
+                    "close-halted",
+                    "reset",
+                    "erase",
+                    "unlock",
+                    "program",
+                }
+                for event in events
+            )
+        finally:
+            if worker is not None and worker.is_alive:
+                await asyncio.to_thread(worker.abort_owned_execution)
+            if service is not None:
+                pending = tuple(service._backend_tasks)
+                if pending:
+                    await asyncio.gather(*pending, return_exceptions=True)
+            _remove_recovery_marker_root(marker_root)
 
     run(scenario())
 
