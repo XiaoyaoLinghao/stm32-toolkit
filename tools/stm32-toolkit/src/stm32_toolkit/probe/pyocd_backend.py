@@ -623,6 +623,27 @@ class PyOCDBackend:
         return matches[0]
 
     @staticmethod
+    def _read_target_state(target: object) -> str:
+        try:
+            state = getattr(target, "get_state")()
+            raw = getattr(state, "name", state)
+        except Exception as error:
+            raise ProbeBackendError(
+                "PROBE_BACKEND_ERROR", "Target state is unavailable"
+            ) from error
+        mapped = {
+            "running": "running",
+            "halted": "halted",
+            "reset": "reset",
+            "lockedup": "faulted",
+        }.get(str(raw).lower())
+        if mapped is None:
+            raise ProbeBackendError(
+                "PROBE_BACKEND_ERROR", "Target state is unavailable"
+            )
+        return mapped
+
+    @staticmethod
     def _close_external(session: object, probe: object) -> None:
         close_error: Exception | None = None
         try:
@@ -650,17 +671,32 @@ class PyOCDBackend:
                 "PROBE_CLOSE_FAILED", "Debug probe cleanup failed"
             ) from close_error
 
+    @classmethod
+    def _restore_candidate_and_close(
+        cls, session: object, probe: object, target: object
+    ) -> None:
+        restoration_error: Exception | None = None
+        try:
+            getattr(target, "resume")()
+            if cls._read_target_state(target) != "running":
+                raise ProbeBackendError(
+                    "PROBE_BACKEND_ERROR", "Target resume state is unavailable"
+                )
+        except Exception as error:
+            restoration_error = error
+
+        cls._close_external(session, probe)
+        if restoration_error is not None:
+            raise ProbeBackendError(
+                "PROBE_ATTACH_FAILED", "Debug probe attach failed"
+            ) from restoration_error
+
     def open_attach(
         self, probe_id: str, target: str, *, halt_on_connect: bool = False
     ) -> ProbeAttachmentEvidence:
         if not _valid_identifier(probe_id):
             raise ProbeBackendError(
                 "PROBE_SELECTION_REQUIRED", "An exact probe identifier is required"
-            )
-        if halt_on_connect is not False:
-            raise ProbeBackendError(
-                "PROBE_OPERATION_LEVEL_DENIED",
-                "Observation attach cannot halt the target",
             )
         if not _valid_identifier(target):
             raise ProbeBackendError("PROBE_TARGET_INVALID", "Target is invalid")
@@ -669,11 +705,11 @@ class PyOCDBackend:
         self.close()
         options: dict[str, object] = {
             "auto_unlock": False,
-            "connect_mode": "attach",
+            "connect_mode": "halt",
             "dap_protocol": "swd",
             "frequency": self._frequency_hz,
             "no_config": True,
-            "pack.debug_sequences.enable": False,
+            "pack.debug_sequences.enable": True,
             "primary_core": 0,
             "project_dir": os.getcwd(),
             "resume_on_disconnect": False,
@@ -681,9 +717,13 @@ class PyOCDBackend:
             "user_script": os.devnull,
         }
         session: object | None = None
+        session_opened = False
+        session_target: object | None = None
+        part_number: str | None = None
         try:
             session = self._get_driver().create_session(probe, options=options)
             getattr(session, "open")()
+            session_opened = True
             board = getattr(session, "board", None)
             session_target = None if board is None else getattr(board, "target", None)
             if session_target is None:
@@ -710,14 +750,33 @@ class PyOCDBackend:
                     "PROBE_TARGET_IDENTITY_UNAVAILABLE",
                     "Selected target identity is unavailable",
                 )
+            if halt_on_connect:
+                if self._read_target_state(session_target) != "halted":
+                    raise ProbeBackendError(
+                        "PROBE_BACKEND_ERROR", "Target halt state is unavailable"
+                    )
+            else:
+                getattr(session_target, "resume")()
+                if self._read_target_state(session_target) != "running":
+                    raise ProbeBackendError(
+                        "PROBE_BACKEND_ERROR", "Target resume state is unavailable"
+                    )
         except ProbeBackendError:
             if session is not None:
-                self._close_external(session, probe)
+                if session_opened and session_target is not None:
+                    self._restore_candidate_and_close(session, probe, session_target)
+                else:
+                    self._close_external(session, probe)
             raise
         except Exception as error:
             if session is not None:
                 try:
-                    self._close_external(session, probe)
+                    if session_opened and session_target is not None:
+                        self._restore_candidate_and_close(
+                            session, probe, session_target
+                        )
+                    else:
+                        self._close_external(session, probe)
                 except ProbeBackendError:
                     raise
             raise ProbeBackendError(
@@ -978,14 +1037,7 @@ class PyOCDBackend:
 
     def target_state(self) -> Mapping[str, object]:
         target = self._require_target()
-        try:
-            state = getattr(target, "get_state")()
-            raw = getattr(state, "name", state)
-        except Exception as error:
-            raise ProbeBackendError("PROBE_BACKEND_ERROR", "Target state is unavailable") from error
-        mapped = {"running": "running", "halted": "halted", "reset": "reset", "lockedup": "faulted"}.get(str(raw).lower())
-        if mapped is None:
-            raise ProbeBackendError("PROBE_BACKEND_ERROR", "Target state is unavailable")
+        mapped = self._read_target_state(target)
         reason = "fault" if mapped == "faulted" else "reset" if mapped == "reset" else "requested"
         return {"state": mapped, "reason": reason}
 

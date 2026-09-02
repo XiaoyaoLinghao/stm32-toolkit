@@ -20,7 +20,7 @@ from aiohttp import web
 
 from stm32_toolkit import __version__
 from stm32_toolkit.testing.artifacts import TestArtifactCollector
-from stm32_toolkit.probe.flash import load_fresh_firmware_facts
+from stm32_toolkit.probe.flash import _canonical_target, load_fresh_firmware_facts
 
 from .backend import ProbeBackend, ProbeBackendError
 from .authorization import ControlAuthorizationError, ControlAuthorizationStore
@@ -771,8 +771,41 @@ class ProbeService:
                 evidence = self._backend.open_attach(
                     str(request.data.get("probeId", "")),
                     str(request.data.get("target", "")),
-                    halt_on_connect=False,
+                    halt_on_connect=self._operation_level is OperationLevel.MODIFY,
                 )
+                resolved_target = getattr(evidence, "resolved_part_number", None)
+                requested_target = request.data.get("target")
+                if (
+                    not isinstance(requested_target, str)
+                    or not isinstance(resolved_target, str)
+                    or _canonical_target(requested_target)
+                    != _canonical_target(resolved_target)
+                ):
+                    restoration_error: Exception | None = None
+                    if self._operation_level is OperationLevel.MODIFY:
+                        try:
+                            self._backend.resume()
+                            if dict(self._backend.target_state())["state"] != "running":
+                                raise ProbeBackendError(
+                                    "PROBE_BACKEND_ERROR",
+                                    "Target resume state is invalid",
+                                )
+                        except Exception as error:
+                            restoration_error = error
+                    try:
+                        self._backend.close()
+                    except Exception as error:
+                        raise ProbeBackendError(
+                            "PROBE_CLOSE_FAILED", "Probe backend cleanup failed"
+                        ) from None
+                    if restoration_error is not None:
+                        raise ProbeBackendError(
+                            "PROBE_BACKEND_ERROR", "Target restoration failed"
+                        ) from restoration_error
+                    raise ProbeBackendError(
+                        "PROBE_IDENTITY_MISMATCH",
+                        "Connected target identity does not match",
+                    )
                 return evidence.to_dict()
             if request.operation == "memory.read":
                 data = self._backend.read_memory(
@@ -959,6 +992,7 @@ class ProbeService:
             raise ProbeBackendError("PROBE_OPERATION_UNSUPPORTED", "Operation is unsupported")
 
         is_modify = request.operation == "flash.program"
+        is_attach = request.operation == "probe.attach"
         has_irreversible_native_effect = (
             is_modify or request.operation_level is OperationLevel.CONTROL
         )
@@ -988,6 +1022,23 @@ class ProbeService:
             if not entered_backend.is_set():
                 task.cancel()
                 await asyncio.gather(task, return_exceptions=True)
+            elif is_attach and not task.cancelled():
+                abort = getattr(self._backend, "abort_owned_execution", None)
+                if callable(abort):
+                    aborting = asyncio.create_task(asyncio.to_thread(abort))
+                    await asyncio.wait_for(asyncio.shield(aborting), timeout=3.0)
+                    await asyncio.wait_for(
+                        asyncio.gather(asyncio.shield(task), return_exceptions=True),
+                        timeout=1.0,
+                    )
+                else:
+                    # Direct in-process fakes cannot be forcefully aborted. Wait
+                    # for their bounded attach to terminate before closing it.
+                    try:
+                        await _await_task_completion(task)
+                    except BaseException:
+                        pass
+                    await asyncio.to_thread(self._backend.close)
             elif has_irreversible_native_effect and not task.cancelled():
                 abort = getattr(self._backend, "abort_owned_execution", None)
                 if is_modify and not callable(abort):

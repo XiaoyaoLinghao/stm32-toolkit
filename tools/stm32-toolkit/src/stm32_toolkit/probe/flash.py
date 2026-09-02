@@ -561,7 +561,19 @@ async def flash_firmware(request: object, client: object) -> OperationResult[Fla
             raise _fail("FIRMWARE_IDENTITY_MISMATCH", "Flash target does not match the project", field="target", rule="project")
         workspace_id, session_id = _client_identity(client, typed)
         started = utc_now_rfc3339()
-        attachment = await client.attach(typed.probe_id, typed.target)
+        try:
+            attachment = await client.attach(typed.probe_id, typed.target)
+        except asyncio.CancelledError:
+            raise
+        except Exception as error:
+            if getattr(error, "code", None) == "PROBE_IDENTITY_MISMATCH":
+                raise _fail(
+                    "FIRMWARE_IDENTITY_MISMATCH",
+                    "Connected target does not match the project",
+                    field="connectedTarget",
+                    rule="identity",
+                ) from None
+            raise
         _validate_attachment(attachment, typed)
         _remove_stale_result(root)
         backend: FlashBackendReport = await client.program_verified_elf(
