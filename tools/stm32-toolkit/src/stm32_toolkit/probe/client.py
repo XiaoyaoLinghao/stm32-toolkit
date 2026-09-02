@@ -27,6 +27,11 @@ from .authorization import (
     ControlAuthorizationStore,
     PreparedControlAuthorization,
 )
+from .selector import (
+    probe_fingerprint as calculate_probe_fingerprint,
+    public_probe_selector,
+    valid_hardware_probe_id,
+)
 
 _ENDPOINT_FIELDS = {
     "protocol",
@@ -49,6 +54,14 @@ _RESPONSE_FIELDS = {
     "message",
     "data",
     "details",
+}
+_PROBE_DESCRIPTOR_FIELDS = {
+    "probeId",
+    "hardwareId",
+    "probeFingerprint",
+    "vendor",
+    "product",
+    "boardName",
 }
 MAX_RESPONSE_BYTES = 11 * 1_048_576
 _IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
@@ -79,6 +92,45 @@ def _closed_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
             raise ValueError("duplicate response member")
         value[key] = member
     return value
+
+
+def _valid_probe_display_text(value: object, *, allow_none: bool) -> bool:
+    if value is None:
+        return allow_none
+    return (
+        isinstance(value, str)
+        and bool(value)
+        and value == value.strip()
+        and len(value) <= 128
+        and all(ord(character) >= 0x20 for character in value)
+    )
+
+
+def _valid_probe_descriptor(value: object) -> bool:
+    if not isinstance(value, dict) or set(value) != _PROBE_DESCRIPTOR_FIELDS:
+        return False
+    probe_id = value["probeId"]
+    hardware_id = value["hardwareId"]
+    fingerprint = value["probeFingerprint"]
+    if (
+        not isinstance(probe_id, str)
+        or _IDENTIFIER.fullmatch(probe_id) is None
+        or not valid_hardware_probe_id(hardware_id)
+        or not isinstance(fingerprint, str)
+        or len(fingerprint) != 64
+        or any(character not in "0123456789abcdef" for character in fingerprint)
+        or not _valid_probe_display_text(value["vendor"], allow_none=False)
+        or not _valid_probe_display_text(value["product"], allow_none=False)
+        or not _valid_probe_display_text(value["boardName"], allow_none=True)
+    ):
+        return False
+    try:
+        return (
+            probe_id == public_probe_selector(hardware_id)
+            and fingerprint == calculate_probe_fingerprint(hardware_id)
+        )
+    except (TypeError, ValueError):
+        return False
 
 
 def _decode_response(
@@ -315,10 +367,17 @@ class ProbeClient:
     async def list_probes(self) -> list[dict[str, object]]:
         data = await self.request("probe.list", {})
         probes = data.get("probes")
-        if not isinstance(probes, list) or not all(isinstance(item, dict) for item in probes):
-            raise ProbeClientError(
-                "PROBE_RESPONSE_INVALID", "Probe Service response is invalid"
-            )
+        if not isinstance(probes, list):
+            raise _response_error()
+        selectors: set[str] = set()
+        for probe in probes:
+            if not _valid_probe_descriptor(probe):
+                raise _response_error()
+            probe_id = probe["probeId"]
+            assert isinstance(probe_id, str)
+            if probe_id in selectors:
+                raise _response_error()
+            selectors.add(probe_id)
         return probes
 
     async def attach(self, probe_id: str, target: str) -> ProbeAttachmentEvidence:

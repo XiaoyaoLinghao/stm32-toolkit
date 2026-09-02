@@ -17,6 +17,11 @@ from .backend import (
     ProbeBackendError,
     ProbeDescriptor,
 )
+from .selector import (
+    probe_fingerprint as calculate_probe_fingerprint,
+    public_probe_selector,
+    valid_hardware_probe_id,
+)
 
 _IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 _MIN_FREQUENCY_HZ = 100_000
@@ -554,7 +559,7 @@ class PyOCDBackend:
                 raise ProbeBackendError(
                     "PROBE_DESCRIPTOR_INVALID", "Debug probe descriptor is invalid"
                 ) from error
-            if not _valid_identifier(probe_id):
+            if not valid_hardware_probe_id(probe_id):
                 raise ProbeBackendError(
                     "PROBE_DESCRIPTOR_INVALID", "Debug probe descriptor is invalid"
                 )
@@ -572,7 +577,7 @@ class PyOCDBackend:
             raise ProbeBackendError(
                 "PROBE_DESCRIPTOR_INVALID", "Debug probe descriptor is invalid"
             ) from error
-        if not _valid_identifier(probe_id):
+        if not valid_hardware_probe_id(probe_id):
             raise ProbeBackendError(
                 "PROBE_DESCRIPTOR_INVALID", "Debug probe descriptor is invalid"
             )
@@ -582,26 +587,29 @@ class PyOCDBackend:
         assert isinstance(vendor, str)
         assert isinstance(product, str)
         return ProbeDescriptor(
-            probe_id=probe_id,
+            probe_id=public_probe_selector(probe_id),
             vendor=vendor,
             product=product,
             board_name=None,
+            hardware_id=probe_id,
+            probe_fingerprint=calculate_probe_fingerprint(probe_id),
         )
 
     def list_probes(self) -> tuple[ProbeDescriptor, ...]:
         descriptors = tuple(self._descriptor(probe) for probe in self._enumerate_raw())
-        return tuple(sorted(descriptors, key=lambda item: item.probe_id))
+        return tuple(sorted(descriptors, key=lambda item: (item.probe_id, item.hardware_id)))
 
     def _select_probe(self, probe_id: str) -> object:
         matches: list[object] = []
         for probe in self._enumerate_raw():
             try:
                 candidate = getattr(probe, "unique_id", None)
+                candidate_selector = public_probe_selector(candidate)
             except Exception as error:
                 raise ProbeBackendError(
                     "PROBE_DESCRIPTOR_INVALID", "Debug probe descriptor is invalid"
                 ) from error
-            if candidate == probe_id:
+            if candidate_selector == probe_id:
                 matches.append(probe)
         if not matches:
             raise ProbeBackendError(

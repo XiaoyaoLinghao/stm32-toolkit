@@ -5,6 +5,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Mapping, Protocol, runtime_checkable
 
+from .selector import (
+    probe_fingerprint as calculate_probe_fingerprint,
+    public_probe_selector,
+    valid_hardware_probe_id,
+)
+
 
 class ProbeBackendError(Exception):
     def __init__(
@@ -22,10 +28,30 @@ class ProbeDescriptor:
     vendor: str
     product: str
     board_name: str | None
+    hardware_id: str | None = None
+    probe_fingerprint: str | None = None
+
+    def __post_init__(self) -> None:
+        hardware_id = self.hardware_id if self.hardware_id is not None else self.probe_id
+        if not valid_hardware_probe_id(hardware_id):
+            raise ValueError("probe descriptor hardware identifier is invalid")
+        expected_selector = public_probe_selector(hardware_id)
+        if self.probe_id != expected_selector:
+            raise ValueError("probe descriptor selector is invalid")
+        expected_fingerprint = calculate_probe_fingerprint(hardware_id)
+        if (
+            self.probe_fingerprint is not None
+            and self.probe_fingerprint != expected_fingerprint
+        ):
+            raise ValueError("probe descriptor fingerprint is invalid")
+        object.__setattr__(self, "hardware_id", hardware_id)
+        object.__setattr__(self, "probe_fingerprint", expected_fingerprint)
 
     def to_dict(self) -> dict[str, object]:
         return {
             "probeId": self.probe_id,
+            "hardwareId": self.hardware_id,
+            "probeFingerprint": self.probe_fingerprint,
             "vendor": self.vendor,
             "product": self.product,
             "boardName": self.board_name,
