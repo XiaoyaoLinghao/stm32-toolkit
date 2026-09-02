@@ -296,6 +296,43 @@ class ExplicitRecoveryAttachBackend(BlockingAttachBackend):
         self.closed = True
 
 
+class MissingTargetStateCloseFailureBackend(BlockingAttachBackend):
+    def __init__(
+        self, *, entered: threading.Event, release: threading.Event
+    ) -> None:
+        super().__init__(entered=entered, release=release)
+        self.target_state = None
+        self.resume_called = False
+        self.close_halted_values: list[bool] = []
+
+    def resume(self) -> None:
+        self.resume_called = True
+        super().resume()
+
+    def close(self) -> None:
+        self.close_halted_values.append(self.halted)
+        super().close()
+        raise RuntimeError(r"close failed C:\private\target")
+
+
+class DelayedStoredCloseFailureBackend(BlockingAttachBackend):
+    def __init__(
+        self,
+        *,
+        entered: threading.Event,
+        release: threading.Event,
+        stored_error: ProbeBackendError,
+    ) -> None:
+        super().__init__(entered=entered, release=release)
+        self.stored_error = stored_error
+
+    def open_attach(self, probe_id, target, *, halt_on_connect=False):
+        super().open_attach(
+            probe_id, target, halt_on_connect=halt_on_connect
+        )
+        raise self.stored_error
+
+
 def _attach_request(*, timeout_ms: int, request_id: str) -> ProbeRequest:
     return ProbeRequest(
         protocol="stm32-toolkit-probe/2",
@@ -1474,6 +1511,133 @@ def test_cancelled_attach_close_failure_preserves_sanitized_initiating_cause(
                 ("close_without_resume", False),
             ]
             assert backend.halted is False
+            assert backend.flashed_images == []
+        finally:
+            release.set()
+            if releaser is not None:
+                await asyncio.gather(releaser, return_exceptions=True)
+            if not operation.done():
+                operation.cancel()
+                await asyncio.gather(operation, return_exceptions=True)
+            pending = tuple(service._backend_tasks)
+            if pending:
+                await asyncio.gather(*pending, return_exceptions=True)
+
+    run(scenario())
+
+
+def test_timed_out_modify_attach_requires_state_provider_for_recovery(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        entered = threading.Event()
+        release = threading.Event()
+        backend = MissingTargetStateCloseFailureBackend(
+            entered=entered, release=release
+        )
+        service = make_service(
+            tmp_path, level=OperationLevel.MODIFY, backend=backend
+        )
+        operation = asyncio.create_task(
+            service._run_backend(
+                _attach_request(
+                    timeout_ms=20,
+                    request_id="request-missing-target-state",
+                )
+            )
+        )
+
+        releaser: asyncio.Task[None] | None = None
+        try:
+            assert await asyncio.to_thread(backend.entered.wait, 2)
+
+            async def delayed_release() -> None:
+                await asyncio.sleep(0.05)
+                release.set()
+
+            releaser = asyncio.create_task(delayed_release())
+            with pytest.raises(ProbeBackendError) as caught:
+                await operation
+            assert caught.value.code == "PROBE_CLOSE_FAILED"
+            assert caught.value.message == "Probe attach cleanup failed"
+            assert caught.value.details == {}
+            cause = caught.value.__cause__
+            assert isinstance(cause, ProbeBackendError)
+            assert cause.code == "PROBE_BACKEND_ERROR"
+            assert cause.message == "Probe attach recovery failed"
+            assert cause.details == {}
+            assert cause.__cause__ is None
+            assert backend.resume_called is True
+            assert backend.close_called is True
+            assert backend.close_halted_values == [False]
+            assert backend.halted is False
+            assert backend.flashed_images == []
+            assert releaser.done()
+            assert release.is_set()
+        finally:
+            release.set()
+            if releaser is not None:
+                await asyncio.gather(releaser, return_exceptions=True)
+            if not operation.done():
+                operation.cancel()
+                await asyncio.gather(operation, return_exceptions=True)
+            pending = tuple(service._backend_tasks)
+            if pending:
+                await asyncio.gather(*pending, return_exceptions=True)
+
+    run(scenario())
+
+
+def test_attach_close_failure_preserves_the_sanitized_task_error(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        entered = threading.Event()
+        release = threading.Event()
+        stored_error = ProbeBackendError(
+            "PROBE_CLOSE_FAILED", "Probe attach cleanup failed", {}
+        )
+        backend = DelayedStoredCloseFailureBackend(
+            entered=entered,
+            release=release,
+            stored_error=stored_error,
+        )
+        service = make_service(
+            tmp_path, level=OperationLevel.MODIFY, backend=backend
+        )
+        operation = asyncio.create_task(
+            service._run_backend(
+                _attach_request(
+                    timeout_ms=20,
+                    request_id="request-stored-close-error",
+                )
+            )
+        )
+
+        releaser: asyncio.Task[None] | None = None
+        try:
+            assert await asyncio.to_thread(backend.entered.wait, 2)
+
+            async def delayed_release() -> None:
+                await asyncio.sleep(0.05)
+                release.set()
+
+            releaser = asyncio.create_task(delayed_release())
+            with pytest.raises(ProbeBackendError) as caught:
+                await operation
+            assert caught.value.code == "PROBE_CLOSE_FAILED"
+            assert caught.value.message == "Probe attach cleanup failed"
+            assert caught.value.details == {}
+            assert caught.value.__cause__ is stored_error
+            assert caught.value.__cause__.code == "PROBE_CLOSE_FAILED"
+            assert caught.value.__cause__.message == "Probe attach cleanup failed"
+            assert caught.value.__cause__.details == {}
+            assert caught.value.__cause__.__cause__ is None
+            assert releaser.done()
+            assert release.is_set()
+            assert backend.attach_returned is True
+            assert backend.attach_active is False
+            assert backend.close_called is False
             assert backend.flashed_images == []
         finally:
             release.set()
