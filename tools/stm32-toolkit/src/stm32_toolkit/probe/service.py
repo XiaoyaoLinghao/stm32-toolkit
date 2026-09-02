@@ -1102,22 +1102,20 @@ class ProbeService:
                     ) from initiating
                 if outcome == "error":
                     if isinstance(value, ProbeBackendError) and value.code == "PROBE_CLOSE_FAILED":
-                        initiating = ProbeBackendError(
-                            "PROBE_CLOSE_FAILED", "Probe attach cleanup failed"
-                        )
                         raise ProbeBackendError(
-                            "PROBE_CLOSE_FAILED", "Probe attach cleanup failed"
-                        ) from initiating
+                            value.code, value.message, value.details
+                        ) from value
                     raise
 
                 recovery_error: ProbeBackendError | None = None
-                target_state = getattr(self._backend, "target_state", None)
-                if (
-                    self._operation_level is OperationLevel.MODIFY
-                    and callable(target_state)
-                ):
+                if self._operation_level is OperationLevel.MODIFY:
                     try:
                         await _run_owned_backend_call(self._backend.resume)
+                        target_state = getattr(self._backend, "target_state", None)
+                        if not callable(target_state):
+                            raise ProbeBackendError(
+                                "PROBE_BACKEND_ERROR", "Target state is unavailable"
+                            )
                         state = self._closed_target_state(
                             await _run_owned_backend_call(target_state)
                         )
