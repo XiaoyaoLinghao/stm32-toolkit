@@ -623,6 +623,11 @@ class PyOCDBackend:
         return matches[0]
 
     @staticmethod
+    def _candidate_target(session: object) -> object | None:
+        board = getattr(session, "board", None)
+        return None if board is None else getattr(board, "target", None)
+
+    @staticmethod
     def _read_target_state(target: object) -> str:
         try:
             state = getattr(target, "get_state")()
@@ -630,7 +635,7 @@ class PyOCDBackend:
         except Exception as error:
             raise ProbeBackendError(
                 "PROBE_BACKEND_ERROR", "Target state is unavailable"
-            ) from error
+            ) from None
         mapped = {
             "running": "running",
             "halted": "halted",
@@ -669,27 +674,37 @@ class PyOCDBackend:
         if close_error is not None or still_open:
             raise ProbeBackendError(
                 "PROBE_CLOSE_FAILED", "Debug probe cleanup failed"
-            ) from close_error
+            ) from None
 
     @classmethod
     def _restore_candidate_and_close(
-        cls, session: object, probe: object, target: object
+        cls,
+        session: object,
+        probe: object,
+        target: object | None,
+        initiating: ProbeBackendError,
     ) -> None:
-        restoration_error: Exception | None = None
-        try:
-            getattr(target, "resume")()
-            if cls._read_target_state(target) != "running":
-                raise ProbeBackendError(
-                    "PROBE_BACKEND_ERROR", "Target resume state is unavailable"
-                )
-        except Exception as error:
-            restoration_error = error
+        restoration_error = False
+        if target is not None:
+            try:
+                getattr(target, "resume")()
+                if cls._read_target_state(target) != "running":
+                    raise ProbeBackendError(
+                        "PROBE_BACKEND_ERROR", "Target resume state is unavailable"
+                    )
+            except Exception:
+                restoration_error = True
 
-        cls._close_external(session, probe)
-        if restoration_error is not None:
+        try:
+            cls._close_external(session, probe)
+        except Exception:
+            raise ProbeBackendError(
+                "PROBE_CLOSE_FAILED", "Debug probe cleanup failed"
+            ) from initiating
+        if restoration_error:
             raise ProbeBackendError(
                 "PROBE_ATTACH_FAILED", "Debug probe attach failed"
-            ) from restoration_error
+            ) from initiating
 
     def open_attach(
         self, probe_id: str, target: str, *, halt_on_connect: bool = False
@@ -720,12 +735,15 @@ class PyOCDBackend:
         session_opened = False
         session_target: object | None = None
         part_number: str | None = None
+        open_started = False
         try:
             session = self._get_driver().create_session(probe, options=options)
+            session_target = self._candidate_target(session)
+            open_started = True
             getattr(session, "open")()
             session_opened = True
-            board = getattr(session, "board", None)
-            session_target = None if board is None else getattr(board, "target", None)
+            if session_target is None:
+                session_target = self._candidate_target(session)
             if session_target is None:
                 raise ProbeBackendError(
                     "PROBE_TARGET_UNAVAILABLE", "Selected target is unavailable"
@@ -744,7 +762,7 @@ class PyOCDBackend:
                 raise ProbeBackendError(
                     "PROBE_TARGET_IDENTITY_UNAVAILABLE",
                     "Selected target identity is unavailable",
-                ) from error
+                ) from None
             if part_number is None or not _valid_identifier(part_number):
                 raise ProbeBackendError(
                     "PROBE_TARGET_IDENTITY_UNAVAILABLE",
@@ -759,31 +777,64 @@ class PyOCDBackend:
                 getattr(session_target, "resume")()
                 if self._read_target_state(session_target) != "running":
                     raise ProbeBackendError(
-                        "PROBE_BACKEND_ERROR", "Target resume state is unavailable"
+                        "PROBE_ATTACH_FAILED", "Debug probe attach failed"
                     )
-        except ProbeBackendError:
+        except ProbeBackendError as error:
+            if (
+                open_started
+                and not session_opened
+                and session_target is None
+                and session is not None
+            ):
+                try:
+                    session_target = self._candidate_target(session)
+                except Exception:
+                    session_target = None
             if session is not None:
-                if session_opened and session_target is not None:
-                    self._restore_candidate_and_close(session, probe, session_target)
+                if session_opened or session_target is not None:
+                    self._restore_candidate_and_close(
+                        session, probe, session_target, error
+                    )
                 else:
-                    self._close_external(session, probe)
+                    try:
+                        self._close_external(session, probe)
+                    except Exception:
+                        raise ProbeBackendError(
+                            "PROBE_CLOSE_FAILED", "Debug probe cleanup failed"
+                        ) from error
             raise
         except Exception as error:
-            if session is not None:
-                try:
-                    if session_opened and session_target is not None:
-                        self._restore_candidate_and_close(
-                            session, probe, session_target
-                        )
-                    else:
-                        self._close_external(session, probe)
-                except ProbeBackendError:
-                    raise
-            raise ProbeBackendError(
+            initiating = ProbeBackendError(
                 "PROBE_ATTACH_FAILED",
                 "Debug probe attach failed",
                 {"probeId": probe_id, "target": target},
-            ) from error
+            )
+            if (
+                open_started
+                and not session_opened
+                and session_target is None
+                and session is not None
+            ):
+                try:
+                    session_target = self._candidate_target(session)
+                except Exception:
+                    session_target = None
+            if session is not None:
+                try:
+                    if session_opened or session_target is not None:
+                        self._restore_candidate_and_close(
+                            session, probe, session_target, initiating
+                        )
+                    else:
+                        try:
+                            self._close_external(session, probe)
+                        except Exception:
+                            raise ProbeBackendError(
+                                "PROBE_CLOSE_FAILED", "Debug probe cleanup failed"
+                            ) from initiating
+                except ProbeBackendError:
+                    raise
+            raise initiating from None
 
         self._session = session
         self._target = session_target

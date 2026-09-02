@@ -37,6 +37,7 @@ from .protocol import (
 
 _REPARSE_POINT = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
 _TARGET_REGISTER = re.compile(r"^[a-z][a-z0-9_]{0,31}$")
+_ATTACH_RECOVERY_SECONDS = 1.0
 
 
 async def _await_task_completion(task: asyncio.Task[object]) -> object:
@@ -54,6 +55,60 @@ async def _await_task_completion(task: asyncio.Task[object]) -> object:
     if cancellation is not None:
         raise cancellation
     return result
+
+
+async def _await_task_ignoring_cancellation(task: asyncio.Task[object]) -> object:
+    """Finish one owned cleanup task even when its caller is cancelled."""
+    while not task.done():
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError:
+            continue
+    return task.result()
+
+
+async def _await_attach_outcome(
+    task: asyncio.Task[object],
+) -> tuple[str, object | BaseException | None]:
+    """Wait for attach completion against one absolute recovery deadline."""
+    deadline = asyncio.get_running_loop().time() + _ATTACH_RECOVERY_SECONDS
+    while not task.done():
+        remaining = deadline - asyncio.get_running_loop().time()
+        if remaining <= 0:
+            return "timeout", None
+        waiter = asyncio.create_task(
+            asyncio.wait_for(asyncio.shield(task), timeout=remaining)
+        )
+        try:
+            await asyncio.shield(waiter)
+        except asyncio.CancelledError:
+            try:
+                await _await_task_ignoring_cancellation(waiter)
+            except asyncio.TimeoutError:
+                if not task.done():
+                    return "timeout", None
+            except BaseException:
+                pass
+        except asyncio.TimeoutError:
+            if not task.done():
+                return "timeout", None
+        except BaseException:
+            pass
+        if not task.done():
+            continue
+
+    if task.cancelled():
+        return "error", asyncio.CancelledError()
+    try:
+        return "success", task.result()
+    except BaseException as error:
+        return "error", error
+
+
+async def _run_owned_backend_call(call: Callable[[], object]) -> object:
+    """Run one backend recovery call to completion across caller cancellation."""
+    task = asyncio.create_task(asyncio.to_thread(call))
+    return await _await_task_ignoring_cancellation(task)
 
 
 async def _await_commit_completion(task: asyncio.Task[object]) -> object:
@@ -781,27 +836,34 @@ class ProbeService:
                     or _canonical_target(requested_target)
                     != _canonical_target(resolved_target)
                 ):
-                    restoration_error: Exception | None = None
+                    initiating = ProbeBackendError(
+                        "PROBE_IDENTITY_MISMATCH",
+                        "Connected target identity does not match",
+                    )
+                    restoration_error: ProbeBackendError | None = None
                     if self._operation_level is OperationLevel.MODIFY:
                         try:
                             self._backend.resume()
-                            if dict(self._backend.target_state())["state"] != "running":
+                            state = self._closed_target_state(
+                                self._backend.target_state()
+                            )
+                            if state["state"] != "running":
                                 raise ProbeBackendError(
                                     "PROBE_BACKEND_ERROR",
                                     "Target resume state is invalid",
                                 )
-                        except Exception as error:
-                            restoration_error = error
+                        except BaseException:
+                            restoration_error = ProbeBackendError(
+                                "PROBE_BACKEND_ERROR", "Target restoration failed"
+                            )
                     try:
                         self._backend.close()
-                    except Exception as error:
+                    except BaseException:
                         raise ProbeBackendError(
-                            "PROBE_CLOSE_FAILED", "Probe backend cleanup failed"
-                        ) from None
+                            "PROBE_CLOSE_FAILED", "Probe attach cleanup failed"
+                        ) from initiating
                     if restoration_error is not None:
-                        raise ProbeBackendError(
-                            "PROBE_BACKEND_ERROR", "Target restoration failed"
-                        ) from restoration_error
+                        raise restoration_error from None
                     raise ProbeBackendError(
                         "PROBE_IDENTITY_MISMATCH",
                         "Connected target identity does not match",
@@ -1023,22 +1085,64 @@ class ProbeService:
                 task.cancel()
                 await asyncio.gather(task, return_exceptions=True)
             elif is_attach and not task.cancelled():
-                abort = getattr(self._backend, "abort_owned_execution", None)
-                if callable(abort):
-                    aborting = asyncio.create_task(asyncio.to_thread(abort))
-                    await asyncio.wait_for(asyncio.shield(aborting), timeout=3.0)
-                    await asyncio.wait_for(
-                        asyncio.gather(asyncio.shield(task), return_exceptions=True),
-                        timeout=1.0,
+                outcome, value = await _await_attach_outcome(task)
+                if outcome == "timeout":
+                    initiating = ProbeBackendError(
+                        "PROBE_TIMEOUT", "Attach recovery did not reach a terminal state"
                     )
-                else:
-                    # Direct in-process fakes cannot be forcefully aborted. Wait
-                    # for their bounded attach to terminate before closing it.
+                    abort = getattr(self._backend, "abort_owned_execution", None)
+                    if callable(abort):
+                        aborting = asyncio.create_task(asyncio.to_thread(abort))
+                        try:
+                            await _await_task_ignoring_cancellation(aborting)
+                        except BaseException:
+                            pass
+                    raise ProbeBackendError(
+                        "PROBE_CLOSE_FAILED", "Probe attach cleanup failed"
+                    ) from initiating
+                if outcome == "error":
+                    if isinstance(value, ProbeBackendError) and value.code == "PROBE_CLOSE_FAILED":
+                        initiating = ProbeBackendError(
+                            "PROBE_CLOSE_FAILED", "Probe attach cleanup failed"
+                        )
+                        raise ProbeBackendError(
+                            "PROBE_CLOSE_FAILED", "Probe attach cleanup failed"
+                        ) from initiating
+                    raise
+
+                recovery_error: ProbeBackendError | None = None
+                target_state = getattr(self._backend, "target_state", None)
+                if (
+                    self._operation_level is OperationLevel.MODIFY
+                    and callable(target_state)
+                ):
                     try:
-                        await _await_task_completion(task)
+                        await _run_owned_backend_call(self._backend.resume)
+                        state = self._closed_target_state(
+                            await _run_owned_backend_call(target_state)
+                        )
+                        if state["state"] != "running":
+                            raise ProbeBackendError(
+                                "PROBE_BACKEND_ERROR",
+                                "Target resume state is invalid",
+                            )
                     except BaseException:
-                        pass
-                    await asyncio.to_thread(self._backend.close)
+                        recovery_error = ProbeBackendError(
+                            "PROBE_BACKEND_ERROR", "Probe attach recovery failed"
+                        )
+                try:
+                    await _run_owned_backend_call(self._backend.close)
+                except BaseException:
+                    initiating = recovery_error or ProbeBackendError(
+                        "PROBE_BACKEND_ERROR", "Probe attach recovery failed"
+                    )
+                    raise ProbeBackendError(
+                        "PROBE_CLOSE_FAILED", "Probe attach cleanup failed"
+                    ) from initiating
+                if recovery_error is not None:
+                    raise ProbeBackendError(
+                        "PROBE_CLOSE_FAILED", "Probe attach cleanup failed"
+                    ) from recovery_error
             elif has_irreversible_native_effect and not task.cancelled():
                 abort = getattr(self._backend, "abort_owned_execution", None)
                 if is_modify and not callable(abort):
