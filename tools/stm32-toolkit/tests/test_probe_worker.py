@@ -451,6 +451,7 @@ def test_unresponsive_worker_attach_uses_bounded_close_failure_fallback(
                 level=OperationLevel.MODIFY,
                 backend=worker,
             )
+            started = asyncio.get_running_loop().time()
             with pytest.raises(ProbeBackendError) as caught:
                 await service._run_backend(
                     _attach_recovery_request(
@@ -458,7 +459,21 @@ def test_unresponsive_worker_attach_uses_bounded_close_failure_fallback(
                         request_id="request-worker-unresponsive-attach",
                     )
                 )
+            elapsed = asyncio.get_running_loop().time() - started
             assert caught.value.code == "PROBE_CLOSE_FAILED"
+            assert caught.value.message == "Probe attach cleanup failed"
+            assert caught.value.details == {}
+            cause = caught.value.__cause__
+            assert isinstance(cause, ProbeBackendError)
+            assert cause.code == "PROBE_TIMEOUT"
+            assert cause.message == "Attach recovery did not reach a terminal state"
+            assert cause.details == {}
+            assert cause.__cause__ is None
+            assert caught.value.__cause__ is cause
+            assert "private" not in str(caught.value)
+            assert "private" not in str(cause)
+            assert elapsed >= 0.9
+            assert elapsed < 4.0
             assert worker.is_alive is False
             await asyncio.sleep(1.1)
             events = _read_recovery_events(marker_root)

@@ -1322,13 +1322,15 @@ def test_cancelled_attach_waits_for_explicit_recovery_before_propagating(
             )
         )
 
-        async def delayed_release() -> None:
-            await asyncio.sleep(0.05)
-            release.set()
-
-        releaser = asyncio.create_task(delayed_release())
+        releaser: asyncio.Task[None] | None = None
         try:
             assert await asyncio.to_thread(backend.entered.wait, 2)
+
+            async def delayed_release() -> None:
+                await asyncio.sleep(0.05)
+                release.set()
+
+            releaser = asyncio.create_task(delayed_release())
             operation.cancel()
             with pytest.raises(asyncio.CancelledError):
                 await operation
@@ -1345,7 +1347,8 @@ def test_cancelled_attach_waits_for_explicit_recovery_before_propagating(
             assert backend.flashed_images == []
         finally:
             release.set()
-            await asyncio.gather(releaser, return_exceptions=True)
+            if releaser is not None:
+                await asyncio.gather(releaser, return_exceptions=True)
             if not operation.done():
                 operation.cancel()
                 await asyncio.gather(operation, return_exceptions=True)
@@ -1377,13 +1380,15 @@ def test_timed_out_attach_waits_for_explicit_recovery_before_propagating(
             )
         )
 
-        async def delayed_release() -> None:
-            await asyncio.sleep(0.05)
-            release.set()
-
-        releaser = asyncio.create_task(delayed_release())
+        releaser: asyncio.Task[None] | None = None
         try:
             assert await asyncio.to_thread(backend.entered.wait, 2)
+
+            async def delayed_release() -> None:
+                await asyncio.sleep(0.05)
+                release.set()
+
+            releaser = asyncio.create_task(delayed_release())
             with pytest.raises(asyncio.TimeoutError):
                 await operation
             assert releaser.done()
@@ -1399,7 +1404,8 @@ def test_timed_out_attach_waits_for_explicit_recovery_before_propagating(
             assert backend.flashed_images == []
         finally:
             release.set()
-            await asyncio.gather(releaser, return_exceptions=True)
+            if releaser is not None:
+                await asyncio.gather(releaser, return_exceptions=True)
             if not operation.done():
                 operation.cancel()
                 await asyncio.gather(operation, return_exceptions=True)
@@ -1435,21 +1441,29 @@ def test_cancelled_attach_close_failure_preserves_sanitized_initiating_cause(
             )
         )
 
-        async def delayed_release() -> None:
-            await asyncio.sleep(0.05)
-            release.set()
-
-        releaser = asyncio.create_task(delayed_release())
+        releaser: asyncio.Task[None] | None = None
         try:
             assert await asyncio.to_thread(backend.entered.wait, 2)
+
+            async def delayed_release() -> None:
+                await asyncio.sleep(0.05)
+                release.set()
+
+            releaser = asyncio.create_task(delayed_release())
             operation.cancel()
             with pytest.raises(ProbeBackendError) as caught:
                 await operation
             assert caught.value.code == "PROBE_CLOSE_FAILED"
+            assert caught.value.message == "Probe attach cleanup failed"
+            assert caught.value.details == {}
             assert "private" not in str(caught.value)
             cause = caught.value.__cause__
             assert isinstance(cause, ProbeBackendError)
             assert cause.code == "PROBE_BACKEND_ERROR"
+            assert cause.message == "Probe attach recovery failed"
+            assert cause.details == {}
+            assert cause.__cause__ is None
+            assert caught.value.__cause__ is cause
             assert "private" not in str(cause)
             assert releaser.done()
             assert release.is_set()
@@ -1463,7 +1477,8 @@ def test_cancelled_attach_close_failure_preserves_sanitized_initiating_cause(
             assert backend.flashed_images == []
         finally:
             release.set()
-            await asyncio.gather(releaser, return_exceptions=True)
+            if releaser is not None:
+                await asyncio.gather(releaser, return_exceptions=True)
             if not operation.done():
                 operation.cancel()
                 await asyncio.gather(operation, return_exceptions=True)
