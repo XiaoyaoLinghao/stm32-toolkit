@@ -239,6 +239,7 @@ class BlockingAttachBackend(FakeProbeBackend):
         self.attach_active = False
         self.close_called = False
         self.close_while_attach_active = False
+        self.ever_close_while_active = False
 
     def open_attach(self, probe_id, target, *, halt_on_connect=False):
         self.attach_entered = True
@@ -258,9 +259,11 @@ class BlockingAttachBackend(FakeProbeBackend):
 
     def close(self) -> None:
         self.close_called = True
-        self.close_while_attach_active = self.attach_active
-        self.events.append(("close_called", self.attach_active))
-        if self.attach_active:
+        active = self.attach_active
+        self.close_while_attach_active = active
+        self.ever_close_while_active = self.ever_close_while_active or active
+        self.events.append(("close_called", active))
+        if active:
             raise RuntimeError("backend closed while attach was active")
         super().close()
 
@@ -1043,24 +1046,30 @@ def test_live_service_uses_exact_canonical_attach_identity(
 
 
 @pytest.mark.parametrize(
-    ("failure", "expected_code", "expected_state"),
+    ("restoration_failure", "close_failure", "expected_code", "expected_state"),
     (
-        ("state", "PROBE_BACKEND_ERROR", "halted"),
-        ("resume", "PROBE_BACKEND_ERROR", None),
-        ("close", "PROBE_CLOSE_FAILED", "running"),
+        ("state", False, "PROBE_BACKEND_ERROR", "halted"),
+        ("resume", False, "PROBE_BACKEND_ERROR", None),
+        (None, True, "PROBE_CLOSE_FAILED", "running"),
+        ("state", True, "PROBE_CLOSE_FAILED", "halted"),
+        ("resume", True, "PROBE_CLOSE_FAILED", None),
     ),
 )
 def test_modify_attach_mismatch_cleanup_error_precedence(
-    failure: str, expected_code: str, expected_state: str | None, tmp_path: Path
+    restoration_failure: str | None,
+    close_failure: bool,
+    expected_code: str,
+    expected_state: str | None,
+    tmp_path: Path,
 ) -> None:
     async def scenario() -> None:
         source = fake_backend()
         options: dict[str, object] = {}
-        if failure == "state":
+        if restoration_failure == "state":
             options["state_after_resume"] = "halted"
-        elif failure == "resume":
+        elif restoration_failure == "resume":
             options["resume_error"] = RuntimeError("resume failed")
-        else:
+        if close_failure:
             options["close_error"] = RuntimeError("close failed")
         backend = MismatchedAttachBackend(
             probes=source.list_probes(), memory={}, registers={}, **options
@@ -1093,7 +1102,7 @@ def test_modify_attach_mismatch_cleanup_error_precedence(
             try:
                 await service.stop()
             except RuntimeError:
-                if failure != "close":
+                if not close_failure:
                     raise
 
     run(scenario())
@@ -1107,27 +1116,53 @@ def test_cancelled_attach_closes_candidate(tmp_path: Path) -> None:
         service = make_service(
             tmp_path, level=OperationLevel.MODIFY, backend=backend
         )
-        endpoint = await service.start()
-        client = ProbeClient(endpoint)
+        request = asyncio.create_task(
+            service._run_backend(
+                ProbeRequest(
+                    protocol="stm32-toolkit-probe/2",
+                    toolkit_version=__version__,
+                    request_id="request-cancelled-attach",
+                    workspace_id="workspace-a",
+                    session_id="session-a",
+                    lease_id="lease-test",
+                    operation_level=OperationLevel.MODIFY,
+                    operation="probe.attach",
+                    timeout_ms=30_000,
+                    data={
+                        "probeId": "probe-a",
+                        "target": "STM32F429ZITx",
+                    },
+                )
+            )
+        )
+
+        async def delayed_release() -> None:
+            await asyncio.sleep(0.05)
+            release.set()
+
+        releaser = asyncio.create_task(delayed_release())
         try:
-            request = asyncio.create_task(client.attach("probe-a", "STM32F429ZITx"))
             assert await asyncio.to_thread(backend.entered.wait, 2)
             request.cancel()
-            backend.release.set()
             with pytest.raises(asyncio.CancelledError):
                 await request
-            for _ in range(100):
-                if backend.closed:
-                    break
-                await asyncio.sleep(0.01)
+            assert releaser.done()
+            assert release.is_set()
             assert backend.attach_entered is True
             assert backend.attach_returned is True
             assert backend.attach_active is False
             assert backend.close_called is True
             assert backend.close_while_attach_active is False
-            assert backend.events.index(("attach_returned",)) < backend.events.index(
-                ("close_called", False)
-            )
+            assert backend.ever_close_while_active is False
+            assert ("close_called", True) not in backend.events
+            assert backend.events == [
+                ("attach_entered",),
+                ("list_probes",),
+                ("open_attach", "probe-a", "STM32F429ZITx", True),
+                ("attach_returned",),
+                ("close_called", False),
+                ("close",),
+            ]
             assert backend.closed is True
             assert backend.halted is False
             assert backend.attached_probe_id is None
@@ -1135,8 +1170,15 @@ def test_cancelled_attach_closes_candidate(tmp_path: Path) -> None:
             assert backend.flashed_images == []
         finally:
             backend.release.set()
-            await client.close()
-            await service.stop()
+            await asyncio.gather(releaser, return_exceptions=True)
+            if not request.done():
+                request.cancel()
+                await asyncio.gather(request, return_exceptions=True)
+            pending = tuple(service._backend_tasks)
+            if pending:
+                await asyncio.gather(*pending, return_exceptions=True)
+            if not backend.closed and not backend.attach_active:
+                backend.close()
 
     run(scenario())
 
@@ -1149,34 +1191,52 @@ def test_timed_out_attach_closes_candidate(tmp_path: Path) -> None:
         service = make_service(
             tmp_path, level=OperationLevel.MODIFY, backend=backend
         )
-        endpoint = await service.start()
-        client = ProbeClient(endpoint)
-        try:
-            request = asyncio.create_task(
-                client.request(
-                    "probe.attach",
-                    {"probeId": "probe-a", "target": "STM32F429ZITx"},
+        request = asyncio.create_task(
+            service._run_backend(
+                ProbeRequest(
+                    protocol="stm32-toolkit-probe/2",
+                    toolkit_version=__version__,
+                    request_id="request-timed-out-attach",
+                    workspace_id="workspace-a",
+                    session_id="session-a",
+                    lease_id="lease-test",
+                    operation_level=OperationLevel.MODIFY,
+                    operation="probe.attach",
                     timeout_ms=20,
+                    data={
+                        "probeId": "probe-a",
+                        "target": "STM32F429ZITx",
+                    },
                 )
             )
-            assert await asyncio.to_thread(backend.entered.wait, 2)
+        )
+
+        async def delayed_release() -> None:
             await asyncio.sleep(0.05)
-            backend.release.set()
-            with pytest.raises(ProbeClientError) as caught:
+            release.set()
+
+        releaser = asyncio.create_task(delayed_release())
+        try:
+            assert await asyncio.to_thread(backend.entered.wait, 2)
+            with pytest.raises(asyncio.TimeoutError):
                 await request
-            assert caught.value.code == "PROBE_TIMEOUT"
-            for _ in range(100):
-                if backend.attach_returned:
-                    break
-                await asyncio.sleep(0.01)
+            assert releaser.done()
+            assert release.is_set()
             assert backend.attach_entered is True
             assert backend.attach_returned is True
             assert backend.attach_active is False
             assert backend.close_called is True
             assert backend.close_while_attach_active is False
-            assert backend.events.index(("attach_returned",)) < backend.events.index(
-                ("close_called", False)
-            )
+            assert backend.ever_close_while_active is False
+            assert ("close_called", True) not in backend.events
+            assert backend.events == [
+                ("attach_entered",),
+                ("list_probes",),
+                ("open_attach", "probe-a", "STM32F429ZITx", True),
+                ("attach_returned",),
+                ("close_called", False),
+                ("close",),
+            ]
             assert backend.closed is True
             assert backend.halted is False
             assert backend.attached_probe_id is None
@@ -1184,8 +1244,15 @@ def test_timed_out_attach_closes_candidate(tmp_path: Path) -> None:
             assert backend.flashed_images == []
         finally:
             backend.release.set()
-            await client.close()
-            await service.stop()
+            await asyncio.gather(releaser, return_exceptions=True)
+            if not request.done():
+                request.cancel()
+                await asyncio.gather(request, return_exceptions=True)
+            pending = tuple(service._backend_tasks)
+            if pending:
+                await asyncio.gather(*pending, return_exceptions=True)
+            if not backend.closed and not backend.attach_active:
+                backend.close()
 
     run(scenario())
 
