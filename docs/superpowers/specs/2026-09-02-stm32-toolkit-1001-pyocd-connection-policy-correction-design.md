@@ -216,6 +216,7 @@ The sole Luna/max implementer may change only the minimum product paths needed f
 
 Applicable tests may be added or changed only in:
 
+- `tools/stm32-toolkit/tests/fakes/fake_pyocd.py`
 - `tools/stm32-toolkit/tests/test_pyocd_backend.py`
 - `tools/stm32-toolkit/tests/test_probe_service.py`
 - `tools/stm32-toolkit/tests/test_flash.py`
