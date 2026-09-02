@@ -48,12 +48,16 @@ def test_fake_probe_satisfies_the_runtime_backend_contract():
     assert [item.to_dict() for item in backend.list_probes()] == [
         {
             "probeId": "probe-a",
+            "hardwareId": "probe-a",
+            "probeFingerprint": "6794af8371f2ba4c09d5fdb157bde8cfa7666c27897128d8ce23a9bddbfb6811",
             "vendor": "STMicroelectronics",
             "product": "ST-LINK/V3",
             "boardName": "NUCLEO-F429ZI",
         },
         {
             "probeId": "probe-b",
+            "hardwareId": "probe-b",
+            "probeFingerprint": "3e2c743bc9431b093422c1056976079b4eff185192b90106a4d75def15ab90e7",
             "vendor": "STMicroelectronics",
             "product": "ST-LINK/V2",
             "boardName": None,
