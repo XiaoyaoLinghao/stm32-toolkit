@@ -267,6 +267,11 @@ class BlockingAttachBackend(FakeProbeBackend):
             raise RuntimeError("backend closed while attach was active")
         super().close()
 
+    def target_state(self):
+        state = "halted" if self.halted else "running"
+        self.events.append(("target_state", state))
+        return {"state": state, "reason": "requested"}
+
 
 class ExplicitRecoveryAttachBackend(BlockingAttachBackend):
     def __init__(
@@ -1243,6 +1248,8 @@ def test_cancelled_attach_closes_candidate(tmp_path: Path) -> None:
                 ("list_probes",),
                 ("open_attach", "probe-a", "STM32F429ZITx", True),
                 ("attach_returned",),
+                ("resume",),
+                ("target_state", "running"),
                 ("close_called", False),
                 ("close",),
             ]
@@ -1317,6 +1324,8 @@ def test_timed_out_attach_closes_candidate(tmp_path: Path) -> None:
                 ("list_probes",),
                 ("open_attach", "probe-a", "STM32F429ZITx", True),
                 ("attach_returned",),
+                ("resume",),
+                ("target_state", "running"),
                 ("close_called", False),
                 ("close",),
             ]
