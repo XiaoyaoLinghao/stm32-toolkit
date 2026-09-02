@@ -332,6 +332,56 @@ def test_list_probes_rejects_every_malformed_closed_descriptor(
     assert error.value.message == "Probe Service response is invalid"
 
 
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("vendor", ""),
+        ("vendor", " Arm"),
+        ("vendor", "Arm "),
+        ("vendor", "A\x00rm"),
+        ("vendor", "v" * 129),
+        ("product", ""),
+        ("product", " CMSIS-DAP"),
+        ("product", "CMSIS-DAP "),
+        ("product", "C\x00MSIS-DAP"),
+        ("product", "p" * 129),
+        ("boardName", ""),
+        ("boardName", " Board"),
+        ("boardName", "Board "),
+        ("boardName", "B\x00oard"),
+        ("boardName", "b" * 129),
+    ],
+)
+def test_list_probes_rejects_each_malformed_display_field(
+    monkeypatch, field: str, value: str
+) -> None:
+    endpoint = ProbeEndpoint(
+        protocol="stm32-toolkit-probe/2",
+        toolkit_version=__version__,
+        host="127.0.0.1",
+        port=43123,
+        token="11" * 32,
+        workspace_id="workspace-a",
+        session_id="session-a",
+        lease_id="lease-a",
+    )
+    client = ProbeClient(endpoint)
+    record = probe_descriptor_record()
+    record[field] = value
+
+    async def request(*args, **kwargs):
+        return {"probes": [record]}
+
+    monkeypatch.setattr(client, "request", request)
+
+    import asyncio
+
+    with pytest.raises(ProbeClientError) as error:
+        asyncio.run(client.list_probes())
+    assert error.value.code == "PROBE_RESPONSE_INVALID"
+    assert error.value.message == "Probe Service response is invalid"
+
+
 def test_list_probes_rejects_duplicate_public_selectors(monkeypatch):
     endpoint = ProbeEndpoint(
         protocol="stm32-toolkit-probe/2",

@@ -19,6 +19,9 @@ from stm32_toolkit.probe.pyocd_backend import PyOCDBackend, _DefaultPyOCDDriver
 ATK_RAW = "ATK 20210914"
 ATK_FINGERPRINT = "91d67402fe525a5d16bf226f59ab5ecea743eb69292e95719167263ed1fcbf8c"
 ATK_SELECTOR = f"pyocd:{ATK_FINGERPRINT}"
+LEGACY_RAW = "pyocd:legacy"
+LEGACY_FINGERPRINT = "bd0fce68dc31a926e34b66a939564f46d56e0a6f835cf4ce453d69189e0a6bfb"
+LEGACY_SELECTOR = f"pyocd:{LEGACY_FINGERPRINT}"
 PUNCTUATION_RAW = r"CMSIS-DAP_QM Rev.B #001 / \\ port *"
 PUNCTUATION_FINGERPRINT = "4e5935ae758f5ba95bbad47253a8cf23e1bdedd44731aba13da92ac38277446f"
 PUNCTUATION_SELECTOR = f"pyocd:{PUNCTUATION_FINGERPRINT}"
@@ -29,6 +32,20 @@ def backend_with_probes(*probe_ids: str) -> tuple[PyOCDBackend, FakePyOCDDriver]
         tuple(FakePyOCDProbe(probe_id) for probe_id in probe_ids)
     )
     return PyOCDBackend(driver), driver
+
+
+class _StagedInventoryDriver(FakePyOCDDriver):
+    """Return a prescribed inventory on each enumeration call."""
+
+    def __init__(self, inventories: tuple[tuple[FakePyOCDProbe, ...], ...]) -> None:
+        super().__init__(inventories[0])
+        self._inventories = inventories
+        self.list_calls = 0
+
+    def list_probes(self) -> tuple[FakePyOCDProbe, ...]:
+        index = min(self.list_calls, len(self._inventories) - 1)
+        self.list_calls += 1
+        return self._inventories[index]
 
 
 @pytest.mark.parametrize("transport", ("mailbox", "rtt", "uart", "semihosting"))
@@ -181,6 +198,76 @@ def test_opaque_atk_hardware_id_is_listed_with_portable_selector_and_confirmatio
     }
 
 
+def test_open_attach_reenumerates_and_rejects_stale_then_accepts_fresh_atk_selector():
+    stale = FakePyOCDProbe(ATK_RAW)
+    fresh = FakePyOCDProbe(ATK_RAW)
+    driver = _StagedInventoryDriver(
+        (
+            (stale,),
+            (FakePyOCDProbe("probe-a"),),
+            (fresh,),
+            (fresh,),
+        )
+    )
+    backend = PyOCDBackend(driver)
+
+    first_listing = backend.list_probes()
+    assert first_listing[0].probe_id == ATK_SELECTOR
+
+    with pytest.raises(ProbeBackendError) as stale_error:
+        backend.open_attach(ATK_SELECTOR, "stm32f407vg")
+
+    assert stale_error.value.code == "PROBE_NOT_FOUND"
+    assert driver.list_calls == 2
+    assert driver.created_sessions == []
+
+    fresh_listing = backend.list_probes()
+    assert fresh_listing[0].probe_id == ATK_SELECTOR
+    evidence = backend.open_attach(ATK_SELECTOR, "stm32f407vg")
+
+    assert driver.list_calls == 4
+    assert driver.created_sessions[0].probe is fresh
+    assert evidence.to_dict()["probeId"] == ATK_SELECTOR
+    backend.close()
+
+
+def test_open_attach_rejects_invalid_candidate_alongside_valid_without_session():
+    valid = FakePyOCDProbe("probe-a")
+    invalid = FakePyOCDProbe("probe-b", vendor_name="secret\x00vendor")
+    driver = FakePyOCDDriver((valid, invalid))
+
+    with pytest.raises(ProbeBackendError) as error:
+        PyOCDBackend(driver).open_attach("probe-a", "stm32f407vg")
+
+    assert error.value.code == "PROBE_DESCRIPTOR_INVALID"
+    assert error.value.details == {}
+    assert "secret" not in str(error.value)
+    assert driver.created_sessions == []
+
+
+def test_utf8_hardware_id_boundary_is_enforced_by_backend():
+    accepted_raw = "Ω" * 256
+    rejected_raw = "Ω" * 257
+    accepted_probe = FakePyOCDProbe(accepted_raw)
+    accepted_driver = FakePyOCDDriver((accepted_probe,))
+
+    descriptor = PyOCDBackend(accepted_driver).list_probes()[0]
+
+    assert len(accepted_raw.encode("utf-8")) == 512
+    descriptor_record = descriptor.to_dict()
+    assert descriptor_record["hardwareId"] == accepted_raw
+    assert len(descriptor_record["probeFingerprint"]) == 64
+    assert descriptor_record["probeId"].startswith("pyocd:")
+
+    rejected_driver = FakePyOCDDriver((FakePyOCDProbe(rejected_raw),))
+    with pytest.raises(ProbeBackendError) as error:
+        PyOCDBackend(rejected_driver).list_probes()
+
+    assert len(rejected_raw.encode("utf-8")) == 514
+    assert error.value.code == "PROBE_DESCRIPTOR_INVALID"
+    assert rejected_driver.created_sessions == []
+
+
 def test_printable_hostile_hardware_text_is_data_and_not_a_path_or_match_expression():
     probe = FakePyOCDProbe(
         PUNCTUATION_RAW,
@@ -245,6 +332,33 @@ def test_reserved_prefix_hardware_id_is_not_accepted_as_its_own_public_selector(
 
     assert error.value.code == "PROBE_NOT_FOUND"
     assert driver.created_sessions == []
+
+
+def test_raw_pyocd_legacy_is_remapped_and_only_generated_selector_attaches():
+    probe = FakePyOCDProbe(LEGACY_RAW)
+    driver = FakePyOCDDriver((probe,))
+    backend = PyOCDBackend(driver)
+
+    descriptor = backend.list_probes()[0]
+    assert descriptor.to_dict() == {
+        "probeId": LEGACY_SELECTOR,
+        "hardwareId": LEGACY_RAW,
+        "probeFingerprint": LEGACY_FINGERPRINT,
+        "vendor": "STMicroelectronics",
+        "product": "ST-LINK/V3",
+        "boardName": None,
+    }
+
+    with pytest.raises(ProbeBackendError) as raw_error:
+        backend.open_attach(LEGACY_RAW, "stm32f407vg")
+
+    assert raw_error.value.code == "PROBE_NOT_FOUND"
+    assert driver.created_sessions == []
+
+    evidence = backend.open_attach(LEGACY_SELECTOR, "stm32f407vg")
+    assert driver.created_sessions[0].probe is probe
+    assert evidence.to_dict()["probeId"] == LEGACY_SELECTOR
+    backend.close()
 
 
 def test_exact_legacy_selector_still_selects_only_the_matching_probe_object():
