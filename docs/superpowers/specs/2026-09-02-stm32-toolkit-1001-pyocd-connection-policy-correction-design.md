@@ -175,6 +175,10 @@ No new public error code is introduced.
   `PROBE_TARGET_INVALID`.
 - Missing target, ambiguous cores, and unavailable/malformed identity retain the existing target
   error codes.
+- A resolved target that does not canonically match the explicit requested target fails inside the
+  backend with the existing `PROBE_IDENTITY_MISMATCH` code, after bounded resume and close. The
+  public flash workflow converts only this attach failure back to its already-established
+  `FIRMWARE_IDENTITY_MISMATCH`; other attach failures retain their own codes.
 - PyOCD open, Pack sequence, resume, and state-transition failures are normalized through the
   existing `PROBE_ATTACH_FAILED` or existing target-state/backend error boundary, without exposing
   raw host paths or hardware identifiers.
@@ -196,6 +200,7 @@ The sole Luna/max implementer may change only the minimum product paths needed f
 
 - `tools/stm32-toolkit/src/stm32_toolkit/probe/pyocd_backend.py`
 - `tools/stm32-toolkit/src/stm32_toolkit/probe/service.py`
+- `tools/stm32-toolkit/src/stm32_toolkit/probe/flash.py`
 
 Applicable tests may be added or changed only in:
 
@@ -206,7 +211,7 @@ Applicable tests may be added or changed only in:
 - `tools/stm32-toolkit/tests/test_hardware_workflows.py`
 - `tools/stm32-toolkit/tests/test_monitor_observation.py`
 
-If TDD demonstrates that a product path outside the two named files is necessary to satisfy the
+If TDD demonstrates that a product path outside the three named files is necessary to satisfy the
 frozen public behavior, implementation stops and returns the exact conflict to Sol. The implementer
 must not widen scope, weaken existing assertions, or modify runtime-installation code in this
 slice.
