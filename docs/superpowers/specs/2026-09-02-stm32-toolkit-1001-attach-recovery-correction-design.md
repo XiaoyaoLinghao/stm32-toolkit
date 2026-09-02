@@ -52,7 +52,7 @@ success.
 ### Scenario 2 — attach timeout or cancellation cooperatively restores the worker-owned target
 
 When `probe.attach` has entered the existing production `ProbeBackendWorker`, timeout or caller
-cancellation does not immediately terminate the child. Probe Service first waits a fixed bounded
+cancellation does not immediately terminate the child. Probe Service first waits a fixed one-second
 interval for the in-flight attach task to reach a terminal response. If the attach succeeds, the
 same existing worker proxy serially performs exactly one `resume`, requires
 `target_state().state == "running"`, and closes the backend and owned child before the original
@@ -118,7 +118,7 @@ not change in this correction.
 Probe Service already owns the asynchronous task that wraps the synchronous worker call. On
 attach timeout/cancellation after backend entry it performs this sequence:
 
-1. Wait at most one fixed recovery interval for the exact owned attach task to finish; repeated
+1. Wait at most one second for the exact owned attach task to finish; repeated
    caller cancellation cannot skip this bounded wait.
 2. If the task succeeds, the worker call lock is necessarily released. For a MODIFY attachment,
    invoke the existing `resume()` and `target_state()` proxy methods and require running; for an
@@ -150,7 +150,9 @@ For `probe.attach` only:
   `abort_owned_execution`, Probe Service invokes that existing hard-termination fallback once and
   returns `PROBE_CLOSE_FAILED`.
 - A direct test backend without an owned child cannot be force-terminated; failure to reach its
-  bounded terminal state returns `PROBE_CLOSE_FAILED` and is never reported as safe cleanup.
+  bounded terminal state within one second returns `PROBE_CLOSE_FAILED` and is never reported as
+  safe cleanup. Test seams used by this slice must release within that bound so no test worker
+  remains live after a terminal assertion.
 - A direct close failure is normalized to `PROBE_CLOSE_FAILED`; it never escapes as
   `PROBE_INTERNAL_ERROR`.
 
