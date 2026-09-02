@@ -197,12 +197,21 @@ class RecordingFlashClient:
         return self.image[offset : offset + length]
 
 
-class RejectedIdentityFlashClient(RecordingFlashClient):
+class RejectedAttachFlashClient(RecordingFlashClient):
+    def __init__(self, image: bytes, *, error_code: str) -> None:
+        super().__init__(image)
+        self.error_code = error_code
+
     async def attach(self, probe_id: str, target: str) -> object:
         self.events.append(("attach", probe_id, target))
         raise ProbeClientError(
-            "PROBE_IDENTITY_MISMATCH", "Connected target identity does not match"
+            self.error_code, "Probe attach failed"
         )
+
+
+class RejectedIdentityFlashClient(RejectedAttachFlashClient):
+    def __init__(self, image: bytes) -> None:
+        super().__init__(image, error_code="PROBE_IDENTITY_MISMATCH")
 
 
 def _request(root: Path, identity: dict, **overrides: object) -> FlashRequest:
@@ -524,6 +533,26 @@ def test_flash_maps_attach_identity_rejection_without_programming(
     assert result.ok is False
     assert result.code == "FIRMWARE_IDENTITY_MISMATCH"
     assert result.details == {"field": "connectedTarget", "rule": "identity"}
+    assert client.events == [("attach", "probe-123", "stm32f407vg")]
+    assert not any(event[0] == "program" for event in client.events)
+    assert not (root / "artifacts/migration/flash-result.json").exists()
+
+
+@pytest.mark.parametrize("error_code", ("PROBE_ATTACH_FAILED", "PROBE_CLOSE_FAILED"))
+def test_flash_preserves_non_identity_attach_failures_without_programming(
+    error_code: str, tmp_path: Path
+) -> None:
+    root = prepare_project(tmp_path)
+    identity = _publish_current_debug_build(root)
+    client = RejectedAttachFlashClient(
+        _elf_with_flash_segment()[84 : 84 + 320], error_code=error_code
+    )
+
+    result = asyncio.run(flash_firmware(_request(root, identity), client))
+
+    assert result.ok is False
+    assert result.code == error_code
+    assert result.details == {}
     assert client.events == [("attach", "probe-123", "stm32f407vg")]
     assert not any(event[0] == "program" for event in client.events)
     assert not (root / "artifacts/migration/flash-result.json").exists()

@@ -177,17 +177,51 @@ class BlockingFailingCloseBackend(BlockingCloseBackend):
 
 
 class MismatchedAttachBackend(FakeProbeBackend):
+    def __init__(
+        self,
+        *,
+        resolved_target: str = "STM32F407VG",
+        state_after_resume: str | None = None,
+        resume_error: Exception | None = None,
+        close_error: Exception | None = None,
+        **kwargs,
+    ) -> None:
+        super().__init__(**kwargs)
+        self.resolved_target = resolved_target
+        self.state_after_resume = state_after_resume
+        self.resume_error = resume_error
+        self.close_error = close_error
+        self.resume_called = False
+        self.close_attempts = 0
+
     def open_attach(self, probe_id, target, *, halt_on_connect=False):
         super().open_attach(
             probe_id, target, halt_on_connect=halt_on_connect
         )
-        return ProbeAttachmentEvidence(probe_id, target, "STM32F407VG", 1)
+        return ProbeAttachmentEvidence(probe_id, target, self.resolved_target, 1)
+
+    def resume(self) -> None:
+        self.resume_called = True
+        if self.resume_error is not None:
+            self.events.append(("resume",))
+            raise self.resume_error
+        super().resume()
 
     def target_state(self):
+        state = self.state_after_resume
+        if state is None or not self.resume_called:
+            state = "halted" if self.halted else "running"
+        self.events.append(("target_state", state))
         return {
-            "state": "halted" if self.halted else "running",
+            "state": state,
             "reason": "requested",
         }
+
+    def close(self) -> None:
+        self.close_attempts += 1
+        super().close()
+        if self.close_error is not None and self.close_attempts == 1:
+            raise self.close_error
 
 
 class BlockingAttachBackend(FakeProbeBackend):
@@ -200,14 +234,35 @@ class BlockingAttachBackend(FakeProbeBackend):
         )
         self.entered = entered
         self.release = release
+        self.attach_entered = False
+        self.attach_returned = False
+        self.attach_active = False
+        self.close_called = False
+        self.close_while_attach_active = False
 
     def open_attach(self, probe_id, target, *, halt_on_connect=False):
-        evidence = super().open_attach(
-            probe_id, target, halt_on_connect=halt_on_connect
-        )
-        self.entered.set()
-        self.release.wait(2)
-        return evidence
+        self.attach_entered = True
+        self.attach_active = True
+        self.events.append(("attach_entered",))
+        try:
+            evidence = super().open_attach(
+                probe_id, target, halt_on_connect=halt_on_connect
+            )
+            self.entered.set()
+            self.release.wait(2)
+            return evidence
+        finally:
+            self.attach_returned = True
+            self.attach_active = False
+            self.events.append(("attach_returned",))
+
+    def close(self) -> None:
+        self.close_called = True
+        self.close_while_attach_active = self.attach_active
+        self.events.append(("close_called", self.attach_active))
+        if self.attach_active:
+            raise RuntimeError("backend closed while attach was active")
+        super().close()
 
 
 def test_service_binds_loopback_dynamic_port_and_publishes_private_endpoint(tmp_path: Path):
@@ -912,13 +967,134 @@ def test_modify_attach_mismatch_resumes_closes_and_returns_no_evidence(tmp_path:
             with pytest.raises(ProbeClientError) as caught:
                 await client.attach("probe-a", "STM32F429ZITx")
             assert caught.value.code == "PROBE_IDENTITY_MISMATCH"
-            assert ("resume",) in backend.events
+            assert backend.events == [
+                ("list_probes",),
+                ("open_attach", "probe-a", "STM32F429ZITx", True),
+                ("resume",),
+                ("target_state", "running"),
+                ("close",),
+            ]
             assert backend.closed is True
             assert backend.halted is False
+            assert backend.attached_probe_id is None
+            assert backend.attached_target is None
             assert backend.flashed_images == []
         finally:
             await client.close()
             await service.stop()
+
+    run(scenario())
+
+
+@pytest.mark.parametrize(
+    ("resolved_target", "expected_error"),
+    (
+        ("stm32f429zitx", None),
+        ("STM32-F429.ZITX", None),
+        ("STM32F429", "PROBE_IDENTITY_MISMATCH"),
+        ("F429ZITX", "PROBE_IDENTITY_MISMATCH"),
+        ("STM32F4", "PROBE_IDENTITY_MISMATCH"),
+    ),
+)
+def test_live_service_uses_exact_canonical_attach_identity(
+    resolved_target: str, expected_error: str | None, tmp_path: Path
+) -> None:
+    async def scenario() -> None:
+        source = fake_backend()
+        backend = MismatchedAttachBackend(
+            probes=source.list_probes(),
+            memory={},
+            registers={},
+            resolved_target=resolved_target,
+        )
+        service = make_service(tmp_path, backend=backend)
+        endpoint = await service.start()
+        client = ProbeClient(endpoint)
+        try:
+            if expected_error is None:
+                attachment = await client.attach("probe-a", "STM32F429ZITx")
+                assert attachment.resolved_part_number == resolved_target
+                assert backend.events == [
+                    ("list_probes",),
+                    ("open_attach", "probe-a", "STM32F429ZITx", False),
+                ]
+                assert backend.closed is False
+                assert backend.halted is False
+                assert backend.attached_probe_id == "probe-a"
+            else:
+                with pytest.raises(ProbeClientError) as caught:
+                    await client.attach("probe-a", "STM32F429ZITx")
+                assert caught.value.code == expected_error
+                assert backend.events == [
+                    ("list_probes",),
+                    ("open_attach", "probe-a", "STM32F429ZITx", False),
+                    ("close",),
+                ]
+                assert backend.closed is True
+                assert backend.halted is False
+                assert backend.attached_probe_id is None
+                assert backend.attached_target is None
+                assert backend.flashed_images == []
+        finally:
+            await client.close()
+            await service.stop()
+
+    run(scenario())
+
+
+@pytest.mark.parametrize(
+    ("failure", "expected_code", "expected_state"),
+    (
+        ("state", "PROBE_BACKEND_ERROR", "halted"),
+        ("resume", "PROBE_BACKEND_ERROR", None),
+        ("close", "PROBE_CLOSE_FAILED", "running"),
+    ),
+)
+def test_modify_attach_mismatch_cleanup_error_precedence(
+    failure: str, expected_code: str, expected_state: str | None, tmp_path: Path
+) -> None:
+    async def scenario() -> None:
+        source = fake_backend()
+        options: dict[str, object] = {}
+        if failure == "state":
+            options["state_after_resume"] = "halted"
+        elif failure == "resume":
+            options["resume_error"] = RuntimeError("resume failed")
+        else:
+            options["close_error"] = RuntimeError("close failed")
+        backend = MismatchedAttachBackend(
+            probes=source.list_probes(), memory={}, registers={}, **options
+        )
+        service = make_service(
+            tmp_path, level=OperationLevel.MODIFY, backend=backend
+        )
+        endpoint = await service.start()
+        client = ProbeClient(endpoint)
+        try:
+            with pytest.raises(ProbeClientError) as caught:
+                await client.attach("probe-a", "STM32F429ZITx")
+            assert caught.value.code == expected_code
+            expected_events = [
+                ("list_probes",),
+                ("open_attach", "probe-a", "STM32F429ZITx", True),
+                ("resume",),
+            ]
+            if expected_state is not None:
+                expected_events.append(("target_state", expected_state))
+            expected_events.append(("close",))
+            assert backend.events == expected_events
+            assert backend.closed is True
+            assert backend.halted is False
+            assert backend.attached_probe_id is None
+            assert backend.attached_target is None
+            assert backend.flashed_images == []
+        finally:
+            await client.close()
+            try:
+                await service.stop()
+            except RuntimeError:
+                if failure != "close":
+                    raise
 
     run(scenario())
 
@@ -944,8 +1120,18 @@ def test_cancelled_attach_closes_candidate(tmp_path: Path) -> None:
                 if backend.closed:
                     break
                 await asyncio.sleep(0.01)
+            assert backend.attach_entered is True
+            assert backend.attach_returned is True
+            assert backend.attach_active is False
+            assert backend.close_called is True
+            assert backend.close_while_attach_active is False
+            assert backend.events.index(("attach_returned",)) < backend.events.index(
+                ("close_called", False)
+            )
             assert backend.closed is True
             assert backend.halted is False
+            assert backend.attached_probe_id is None
+            assert backend.attached_target is None
             assert backend.flashed_images == []
         finally:
             backend.release.set()
@@ -979,8 +1165,22 @@ def test_timed_out_attach_closes_candidate(tmp_path: Path) -> None:
             with pytest.raises(ProbeClientError) as caught:
                 await request
             assert caught.value.code == "PROBE_TIMEOUT"
+            for _ in range(100):
+                if backend.attach_returned:
+                    break
+                await asyncio.sleep(0.01)
+            assert backend.attach_entered is True
+            assert backend.attach_returned is True
+            assert backend.attach_active is False
+            assert backend.close_called is True
+            assert backend.close_while_attach_active is False
+            assert backend.events.index(("attach_returned",)) < backend.events.index(
+                ("close_called", False)
+            )
             assert backend.closed is True
             assert backend.halted is False
+            assert backend.attached_probe_id is None
+            assert backend.attached_target is None
             assert backend.flashed_images == []
         finally:
             backend.release.set()
