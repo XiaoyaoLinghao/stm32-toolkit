@@ -452,6 +452,9 @@ def test_attach_fails_closed_without_stable_physical_target_identity(part_number
 def test_flash_elf_uses_sector_only_file_programmer_options():
     backend, driver = backend_with_probes("probe-a")
     backend.open_attach("probe-a", "stm32f407vg")
+    assert driver.target.calls == [("resume",), ("get_state",)]
+    assert driver.target.state == "running"
+    driver.target.calls.clear()
 
     report = backend.flash_elf(b"ELF")
 
@@ -783,6 +786,9 @@ def test_exact_memory_bytes_are_returned_without_transformation():
     driver = FakePyOCDDriver((FakePyOCDProbe("probe-a"),), target=target)
     backend = PyOCDBackend(driver)
     backend.open_attach("probe-a", "stm32f407vg")
+    assert target.calls == [("resume",), ("get_state",)]
+    assert target.state == "running"
+    target.calls.clear()
 
     assert backend.read_memory(0, 4) == b"\x00\x7f\x80\xff"
     assert target.calls == [("read_memory_block8", 0, 4)]
@@ -848,6 +854,10 @@ def test_registers_are_read_individually_and_one_failure_does_not_detach():
     driver = FakePyOCDDriver((FakePyOCDProbe("probe-a"),), target=target)
     backend = PyOCDBackend(driver)
     backend.open_attach("probe-a", "stm32f407vg")
+    assert target.calls == [("resume",), ("get_state",)]
+    assert target.state == "running"
+    target.calls.clear()
+    target.state = "halted"
 
     with pytest.raises(ProbeBackendError) as error:
         backend.read_core_registers(("r0", "pc"))
@@ -868,6 +878,9 @@ def test_running_target_register_read_fails_without_implicit_halt():
     driver = FakePyOCDDriver((FakePyOCDProbe("probe-a"),), target=target)
     backend = PyOCDBackend(driver)
     backend.open_attach("probe-a", "stm32f407vg")
+    assert target.calls == [("resume",), ("get_state",)]
+    assert target.state == "running"
+    target.calls.clear()
 
     with pytest.raises(ProbeBackendError) as error:
         backend.read_core_registers(("pc",))
@@ -882,6 +895,9 @@ def test_control_methods_delegate_without_implicit_extra_operations():
     driver = FakePyOCDDriver((FakePyOCDProbe("probe-a"),), target=target)
     backend = PyOCDBackend(driver)
     backend.open_attach("probe-a", "stm32f407vg")
+    assert target.calls == [("resume",), ("get_state",)]
+    assert target.state == "running"
+    target.calls.clear()
 
     backend.halt()
     backend.resume()
