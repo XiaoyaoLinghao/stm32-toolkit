@@ -233,7 +233,9 @@ def test_open_attach_reenumerates_and_rejects_stale_then_accepts_fresh_atk_selec
 
 def test_open_attach_rejects_invalid_candidate_alongside_valid_without_session():
     valid = FakePyOCDProbe("probe-a")
-    invalid = FakePyOCDProbe("probe-b", vendor_name="secret\x00vendor")
+    invalid = FakePyOCDProbe(
+        "secret\nhardware", vendor_name="Vendor", product_name="Product"
+    )
     driver = FakePyOCDDriver((valid, invalid))
 
     with pytest.raises(ProbeBackendError) as error:
