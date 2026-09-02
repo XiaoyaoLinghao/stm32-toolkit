@@ -42,16 +42,22 @@ class ConnectionPolicyTarget(FakePyOCDTarget):
         state: object = "halted",
         resume_error: BaseException | None = None,
         resume_state: object = "running",
+        resume_states: tuple[object, ...] | None = None,
     ) -> None:
         super().__init__(part_number=part_number, state=state)
         self.resume_error = resume_error
-        self.resume_state = resume_state
+        self.resume_states = (
+            tuple(resume_states) if resume_states is not None else (resume_state,)
+        )
+        self._resume_count = 0
 
     def resume(self) -> None:
         self.calls.append(("resume",))
         if self.resume_error is not None:
             raise self.resume_error
-        self.state = self.resume_state
+        state_index = min(self._resume_count, len(self.resume_states) - 1)
+        self.state = self.resume_states[state_index]
+        self._resume_count += 1
 
 
 class _StagedInventoryDriver(FakePyOCDDriver):
@@ -577,17 +583,20 @@ def test_invalid_identity_resumes_and_closes_halted_candidate(part_number):
 
 @pytest.mark.parametrize("resume_state", ("halted", "reset", "unknown"))
 def test_observation_rejects_unproven_running_state_after_resume(resume_state):
-    target = ConnectionPolicyTarget(resume_state=resume_state)
+    target = ConnectionPolicyTarget(resume_states=(resume_state, resume_state))
     driver = FakePyOCDDriver((FakePyOCDProbe("probe-a"),), target=target)
     backend = PyOCDBackend(driver)
 
     with pytest.raises(ProbeBackendError) as caught:
         backend.open_attach("probe-a", "stm32f407vg")
 
-    assert caught.value.code == "PROBE_BACKEND_ERROR"
-    assert target.calls[:2] == [("resume",), ("get_state",)]
-    assert target.calls.count(("resume",)) >= 1
-    assert target.calls.count(("get_state",)) >= 1
+    assert caught.value.code == "PROBE_ATTACH_FAILED"
+    assert target.calls == [
+        ("resume",),
+        ("get_state",),
+        ("resume",),
+        ("get_state",),
+    ]
     assert target.state == resume_state
     assert driver.program_calls == []
     assert driver.created_sessions[0].close_count == 1
@@ -598,7 +607,7 @@ def test_observation_rejects_unproven_running_state_after_resume(resume_state):
 
 
 def test_modify_attach_rejects_candidate_that_reports_running():
-    target = ConnectionPolicyTarget(state="running")
+    target = ConnectionPolicyTarget(state="running", resume_states=("running",))
     driver = FakePyOCDDriver((FakePyOCDProbe("probe-a"),), target=target)
     backend = PyOCDBackend(driver)
 
@@ -606,8 +615,11 @@ def test_modify_attach_rejects_candidate_that_reports_running():
         backend.open_attach("probe-a", "stm32f407vg", halt_on_connect=True)
 
     assert caught.value.code == "PROBE_BACKEND_ERROR"
-    assert target.calls[0] == ("get_state",)
-    assert target.calls.count(("get_state",)) >= 1
+    assert target.calls == [
+        ("get_state",),
+        ("resume",),
+        ("get_state",),
+    ]
     assert target.state == "running"
     assert driver.program_calls == []
     assert driver.created_sessions[0].close_count == 1
