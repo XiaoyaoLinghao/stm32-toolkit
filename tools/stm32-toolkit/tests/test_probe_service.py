@@ -813,6 +813,8 @@ def test_client_lists_attaches_and_reads_without_halting(tmp_path: Path):
             assert probes == [
                 {
                     "probeId": "probe-a",
+                    "hardwareId": "probe-a",
+                    "probeFingerprint": "6794af8371f2ba4c09d5fdb157bde8cfa7666c27897128d8ce23a9bddbfb6811",
                     "vendor": "STMicroelectronics",
                     "product": "ST-LINK/V3",
                     "boardName": None,

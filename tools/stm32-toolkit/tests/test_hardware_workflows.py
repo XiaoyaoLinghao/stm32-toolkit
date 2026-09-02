@@ -45,6 +45,8 @@ from fakes.fake_probe import FakeProbeBackend
 BUILD_ID = "1" * 64
 ELF_SHA = "2" * 64
 TICKET = "3" * 64
+PROBE_A_FINGERPRINT = "6794af8371f2ba4c09d5fdb157bde8cfa7666c27897128d8ce23a9bddbfb6811"
+PROBE_B_FINGERPRINT = "3e2c743bc9431b093422c1056976079b4eff185192b90106a4d75def15ab90e7"
 FIXTURE_SVD = Path(__file__).parent / "fixtures" / "svd" / "STM32F429-exact.svd"
 
 
@@ -341,7 +343,24 @@ def test_probe_list_is_bounded_read_only_and_closes_backend_without_lease(tmp_pa
     assert payload["workspaceId"] == compute_workspace_id(
         UUID("12345678-1234-5678-1234-567812345678"), project
     )
-    assert [item["probeId"] for item in payload["probes"]] == ["probe-a", "probe-b"]
+    assert payload["probes"] == [
+        {
+            "probeId": "probe-a",
+            "hardwareId": "probe-a",
+            "probeFingerprint": PROBE_A_FINGERPRINT,
+            "vendor": "Arm",
+            "product": "CMSIS-DAP",
+            "boardName": None,
+        },
+        {
+            "probeId": "probe-b",
+            "hardwareId": "probe-b",
+            "probeFingerprint": PROBE_B_FINGERPRINT,
+            "vendor": "ST",
+            "product": "ST-Link",
+            "boardName": "Board",
+        },
+    ]
     assert recorder.events == ["backend.list", "backend.close"]
     assert recorder.configs == []
     assert _snapshot(project) == before

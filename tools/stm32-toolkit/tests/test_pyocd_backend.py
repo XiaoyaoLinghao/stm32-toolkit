@@ -16,6 +16,14 @@ from stm32_toolkit.probe.backend import FlashBackendReport, ProbeBackendError
 from stm32_toolkit.probe.pyocd_backend import PyOCDBackend, _DefaultPyOCDDriver
 
 
+ATK_RAW = "ATK 20210914"
+ATK_FINGERPRINT = "91d67402fe525a5d16bf226f59ab5ecea743eb69292e95719167263ed1fcbf8c"
+ATK_SELECTOR = f"pyocd:{ATK_FINGERPRINT}"
+PUNCTUATION_RAW = r"CMSIS-DAP_QM Rev.B #001 / \\ port *"
+PUNCTUATION_FINGERPRINT = "4e5935ae758f5ba95bbad47253a8cf23e1bdedd44731aba13da92ac38277446f"
+PUNCTUATION_SELECTOR = f"pyocd:{PUNCTUATION_FINGERPRINT}"
+
+
 def backend_with_probes(*probe_ids: str) -> tuple[PyOCDBackend, FakePyOCDDriver]:
     driver = FakePyOCDDriver(
         tuple(FakePyOCDProbe(probe_id) for probe_id in probe_ids)
@@ -65,12 +73,16 @@ def test_list_probes_returns_bounded_deterministic_descriptors():
     assert [item.to_dict() for item in PyOCDBackend(driver).list_probes()] == [
         {
             "probeId": "probe-a",
+            "hardwareId": "probe-a",
+            "probeFingerprint": "6794af8371f2ba4c09d5fdb157bde8cfa7666c27897128d8ce23a9bddbfb6811",
             "vendor": "Arm",
             "product": "CMSIS-DAP",
             "boardName": None,
         },
         {
             "probeId": "probe-z",
+            "hardwareId": "probe-z",
+            "probeFingerprint": "d6e2bddde98194a914c470d8f788dc01f80af265c644f44f958d05c64aa4bb9f",
             "vendor": "STMicroelectronics",
             "product": "ST-LINK/V3",
             "boardName": None,
@@ -78,7 +90,7 @@ def test_list_probes_returns_bounded_deterministic_descriptors():
     ]
 
 
-@pytest.mark.parametrize("probe_id", ("", "*", "probe-*", " probe-a"))
+@pytest.mark.parametrize("probe_id", ("", "*", "probe-*", " probe-a", ATK_RAW))
 def test_wildcard_or_malformed_probe_id_is_rejected_before_enumeration(probe_id):
     backend, driver = backend_with_probes("probe-a")
     driver.list_error = AssertionError("enumeration must not run")
@@ -128,9 +140,15 @@ def test_enumeration_failure_is_stable_and_does_not_leak_raw_exception_text():
     "bad_probe",
     (
         FakePyOCDProbe(""),
-        FakePyOCDProbe("probe with spaces"),
-        FakePyOCDProbe("p" * 129),
         FakePyOCDProbe(1234),
+        FakePyOCDProbe(None),
+        FakePyOCDProbe("a" * 513),
+        FakePyOCDProbe("contains\x00nul"),
+        FakePyOCDProbe("contains\nnewline"),
+        FakePyOCDProbe("contains\ttab"),
+        FakePyOCDProbe("contains\x1bescape"),
+        FakePyOCDProbe("contains\u202ebidi"),
+        FakePyOCDProbe("\ud800"),
     ),
 )
 def test_malformed_hardware_descriptor_fails_closed(bad_probe):
@@ -141,6 +159,103 @@ def test_malformed_hardware_descriptor_fails_closed(bad_probe):
 
     assert error.value.code == "PROBE_DESCRIPTOR_INVALID"
     assert error.value.details == {}
+    assert driver.created_sessions == []
+
+
+def test_opaque_atk_hardware_id_is_listed_with_portable_selector_and_confirmation_fields():
+    probe = FakePyOCDProbe(
+        ATK_RAW,
+        vendor_name="ATK",
+        product_name="ATK-HS-V3-CMSIS-DAP",
+    )
+
+    descriptor = PyOCDBackend(FakePyOCDDriver((probe,))).list_probes()[0]
+
+    assert descriptor.to_dict() == {
+        "probeId": ATK_SELECTOR,
+        "hardwareId": ATK_RAW,
+        "probeFingerprint": ATK_FINGERPRINT,
+        "vendor": "ATK",
+        "product": "ATK-HS-V3-CMSIS-DAP",
+        "boardName": None,
+    }
+
+
+def test_printable_hostile_hardware_text_is_data_and_not_a_path_or_match_expression():
+    probe = FakePyOCDProbe(
+        PUNCTUATION_RAW,
+        vendor_name="ATK",
+        product_name="CMSIS-DAP",
+    )
+    driver = FakePyOCDDriver((probe,))
+    backend = PyOCDBackend(driver)
+
+    descriptor = backend.list_probes()[0]
+    evidence = backend.open_attach(PUNCTUATION_SELECTOR, "stm32f407vg")
+
+    assert descriptor.to_dict() == {
+        "probeId": PUNCTUATION_SELECTOR,
+        "hardwareId": PUNCTUATION_RAW,
+        "probeFingerprint": PUNCTUATION_FINGERPRINT,
+        "vendor": "ATK",
+        "product": "CMSIS-DAP",
+        "boardName": None,
+    }
+    assert driver.created_sessions[0].probe is probe
+    assert evidence.to_dict()["probeId"] == PUNCTUATION_SELECTOR
+
+
+@pytest.mark.parametrize(
+    "probe_id",
+    (
+        "probe",
+        "PROBE-A",
+        "probe-a-extra",
+        ATK_SELECTOR[:-1],
+        ATK_SELECTOR.upper(),
+        "pyocd:" + "0" * 64,
+    ),
+)
+def test_stale_partial_case_changed_or_missing_generated_selector_opens_no_session(probe_id):
+    backend, driver = backend_with_probes(ATK_RAW, "probe-a")
+
+    with pytest.raises(ProbeBackendError) as error:
+        backend.open_attach(probe_id, "stm32f407vg")
+
+    assert error.value.code == "PROBE_NOT_FOUND"
+    assert driver.created_sessions == []
+
+
+def test_duplicate_generated_selector_is_ambiguous_and_opens_no_session():
+    backend, driver = backend_with_probes(ATK_RAW, ATK_RAW)
+
+    with pytest.raises(ProbeBackendError) as error:
+        backend.open_attach(ATK_SELECTOR, "stm32f407vg")
+
+    assert error.value.code == "PROBE_SELECTION_AMBIGUOUS"
+    assert driver.created_sessions == []
+
+
+def test_reserved_prefix_hardware_id_is_not_accepted_as_its_own_public_selector():
+    raw = "pyocd:" + "a" * 64
+    backend, driver = backend_with_probes(raw)
+
+    with pytest.raises(ProbeBackendError) as error:
+        backend.open_attach(raw, "stm32f407vg")
+
+    assert error.value.code == "PROBE_NOT_FOUND"
+    assert driver.created_sessions == []
+
+
+def test_exact_legacy_selector_still_selects_only_the_matching_probe_object():
+    selected = FakePyOCDProbe("probe-a")
+    other = FakePyOCDProbe("probe-b")
+    driver = FakePyOCDDriver((selected, other))
+
+    evidence = PyOCDBackend(driver).open_attach("probe-a", "stm32f407vg")
+
+    assert driver.created_sessions[0].probe is selected
+    assert evidence.to_dict()["probeId"] == "probe-a"
 
 
 def test_exact_attach_uses_observation_only_session_options_without_halting():

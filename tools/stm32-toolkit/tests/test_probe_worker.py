@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
 import threading
@@ -12,6 +13,11 @@ from stm32_toolkit.probe.backend import (
 )
 from stm32_toolkit.probe.model import OperationLevel
 from stm32_toolkit.probe.worker import ProbeBackendWorker, ProbeWorkerError
+
+
+ATK_RAW = "ATK 20210914"
+ATK_FINGERPRINT = "91d67402fe525a5d16bf226f59ab5ecea743eb69292e95719167263ed1fcbf8c"
+ATK_SELECTOR = f"pyocd:{ATK_FINGERPRINT}"
 
 
 class _WorkerTestBackend:
@@ -89,6 +95,28 @@ class _WorkerTestBackend:
             time.sleep(2.0)
             self.marker.write_text("late-close", encoding="utf-8")
         return None
+
+
+@dataclass(frozen=True)
+class _StructuredProbe:
+    probe_id: str = ATK_SELECTOR
+    hardware_id: str = ATK_RAW
+    probe_fingerprint: str = ATK_FINGERPRINT
+    vendor: str = "ATK"
+    product: str = "ATK-HS-V3-CMSIS-DAP"
+    board_name: str | None = None
+
+
+class _StructuredProbeBackend:
+    def list_probes(self):
+        return (_StructuredProbe(),)
+
+    def close(self) -> None:
+        return None
+
+
+def _structured_probe_factory() -> _StructuredProbeBackend:
+    return _StructuredProbeBackend()
 
 
 def _factory(mode: str, marker: str) -> _WorkerTestBackend:
@@ -205,6 +233,21 @@ def test_worker_exercises_the_complete_fixed_probe_backend_port(tmp_path: Path) 
     assert worker.read_target_transport(opened["transport_id"], 1, 1)["data"] == b"r"
     assert worker.close_target_transport(opened["transport_id"])["closed"] is True
     worker.close()
+
+
+def test_worker_preserves_all_six_probe_descriptor_facts_through_canonical_serializer() -> None:
+    worker = ProbeBackendWorker(_test_backend_factory=_structured_probe_factory)
+    try:
+        assert worker.list_probes()[0].to_dict() == {
+            "probeId": ATK_SELECTOR,
+            "hardwareId": ATK_RAW,
+            "probeFingerprint": ATK_FINGERPRINT,
+            "vendor": "ATK",
+            "product": "ATK-HS-V3-CMSIS-DAP",
+            "boardName": None,
+        }
+    finally:
+        worker.close()
 
 
 def test_spawned_worker_service_isolates_legacy_and_target_observation_reads(

@@ -45,6 +45,22 @@ def response_record() -> dict[str, object]:
     }
 
 
+ATK_RAW = "ATK 20210914"
+ATK_FINGERPRINT = "91d67402fe525a5d16bf226f59ab5ecea743eb69292e95719167263ed1fcbf8c"
+ATK_SELECTOR = f"pyocd:{ATK_FINGERPRINT}"
+
+
+def probe_descriptor_record() -> dict[str, object]:
+    return {
+        "probeId": ATK_SELECTOR,
+        "hardwareId": ATK_RAW,
+        "probeFingerprint": ATK_FINGERPRINT,
+        "vendor": "ATK",
+        "product": "ATK-HS-V3-CMSIS-DAP",
+        "boardName": None,
+    }
+
+
 def test_program_verified_elf_forces_modify_and_validates_telemetry(monkeypatch):
     endpoint = ProbeEndpoint(
         protocol="stm32-toolkit-probe/2",
@@ -218,6 +234,128 @@ def test_endpoint_loader_rejects_non_exact_probe_binding(tmp_path: Path):
     with pytest.raises(ProbeClientError) as error:
         load_probe_endpoint(path)
     assert error.value.code == "PROBE_ENDPOINT_INVALID"
+
+
+def test_list_probes_accepts_the_closed_six_field_descriptor_shape(monkeypatch):
+    endpoint = ProbeEndpoint(
+        protocol="stm32-toolkit-probe/2",
+        toolkit_version=__version__,
+        host="127.0.0.1",
+        port=43123,
+        token="11" * 32,
+        workspace_id="workspace-a",
+        session_id="session-a",
+        lease_id="lease-a",
+    )
+    client = ProbeClient(endpoint)
+    record = probe_descriptor_record()
+
+    async def request(*args, **kwargs):
+        return {"probes": [record]}
+
+    monkeypatch.setattr(client, "request", request)
+
+    import asyncio
+
+    assert asyncio.run(client.list_probes()) == [record]
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "missing_key",
+        "extra_key",
+        "nonportable_probe_id",
+        "invalid_hardware_id",
+        "non_hex_fingerprint",
+        "wrong_fingerprint",
+        "fingerprint_not_matching_hardware_id",
+        "malformed_vendor",
+        "malformed_product",
+        "malformed_board_name",
+        "inconsistent_legacy_selector_mapping",
+    ],
+)
+def test_list_probes_rejects_every_malformed_closed_descriptor(
+    monkeypatch, mutation: str
+) -> None:
+    endpoint = ProbeEndpoint(
+        protocol="stm32-toolkit-probe/2",
+        toolkit_version=__version__,
+        host="127.0.0.1",
+        port=43123,
+        token="11" * 32,
+        workspace_id="workspace-a",
+        session_id="session-a",
+        lease_id="lease-a",
+    )
+    client = ProbeClient(endpoint)
+    record = probe_descriptor_record()
+    if mutation == "missing_key":
+        del record["hardwareId"]
+    elif mutation == "extra_key":
+        record["unexpected"] = True
+    elif mutation == "nonportable_probe_id":
+        record["probeId"] = ATK_RAW
+    elif mutation == "invalid_hardware_id":
+        record["hardwareId"] = None
+    elif mutation == "non_hex_fingerprint":
+        record["probeFingerprint"] = "g" * 64
+    elif mutation == "wrong_fingerprint":
+        record["probeFingerprint"] = "0" * 64
+    elif mutation == "fingerprint_not_matching_hardware_id":
+        record["probeId"] = "probe-b"
+        record["hardwareId"] = "probe-b"
+    elif mutation == "malformed_vendor":
+        record["vendor"] = " \n"
+    elif mutation == "malformed_product":
+        record["product"] = "p" * 129
+    elif mutation == "malformed_board_name":
+        record["boardName"] = 123
+    elif mutation == "inconsistent_legacy_selector_mapping":
+        record["probeId"] = "probe-b"
+        record["hardwareId"] = "probe-a"
+        record["probeFingerprint"] = "6794af8371f2ba4c09d5fdb157bde8cfa7666c27897128d8ce23a9bddbfb6811"
+    else:
+        raise AssertionError(f"unknown mutation {mutation}")
+
+    async def request(*args, **kwargs):
+        return {"probes": [record]}
+
+    monkeypatch.setattr(client, "request", request)
+
+    import asyncio
+
+    with pytest.raises(ProbeClientError) as error:
+        asyncio.run(client.list_probes())
+    assert error.value.code == "PROBE_RESPONSE_INVALID"
+    assert error.value.message == "Probe Service response is invalid"
+
+
+def test_list_probes_rejects_duplicate_public_selectors(monkeypatch):
+    endpoint = ProbeEndpoint(
+        protocol="stm32-toolkit-probe/2",
+        toolkit_version=__version__,
+        host="127.0.0.1",
+        port=43123,
+        token="11" * 32,
+        workspace_id="workspace-a",
+        session_id="session-a",
+        lease_id="lease-a",
+    )
+    client = ProbeClient(endpoint)
+    records = [probe_descriptor_record(), probe_descriptor_record()]
+
+    async def request(*args, **kwargs):
+        return {"probes": records}
+
+    monkeypatch.setattr(client, "request", request)
+
+    import asyncio
+
+    with pytest.raises(ProbeClientError) as error:
+        asyncio.run(client.list_probes())
+    assert error.value.code == "PROBE_RESPONSE_INVALID"
 
 
 @pytest.mark.parametrize(

@@ -34,6 +34,15 @@ HARDWARE_TOOLS = {
     "stm32_fault_analyze",
 }
 
+ATK_LISTING = {
+    "probeId": "pyocd:91d67402fe525a5d16bf226f59ab5ecea743eb69292e95719167263ed1fcbf8c",
+    "hardwareId": "ATK 20210914",
+    "probeFingerprint": "91d67402fe525a5d16bf226f59ab5ecea743eb69292e95719167263ed1fcbf8c",
+    "vendor": "ATK",
+    "product": "ATK-HS-V3-CMSIS-DAP",
+    "boardName": None,
+}
+
 PUBLIC_TOOL_NAMES = frozenset(
     {
         "stm32_doctor",
@@ -161,6 +170,27 @@ def test_hardware_schemas_expose_only_project_bound_arguments(tmp_path: Path):
     }
     for fields in properties.values():
         assert not (fields & forbidden)
+
+
+def test_probe_list_mcp_preserves_all_probe_listing_confirmation_fields(
+    monkeypatch, tmp_path: Path
+) -> None:
+    runtime = _runtime(tmp_path)
+    listing = {
+        "workspaceId": "workspace-a",
+        "sessionId": "session-a",
+        "probes": [ATK_LISTING],
+    }
+
+    async def listed(_request: object) -> OperationResult[object]:
+        return OperationResult.success("stm32_probe_list", listing)
+
+    monkeypatch.setattr(mcp_mod, "probe_list_workflow", listed)
+
+    result = asyncio.run(mcp_mod.tool_probe_list_for_request(runtime, None))
+
+    assert result["ok"] is True
+    assert result["data"] == listing
 
 
 @pytest.mark.parametrize(

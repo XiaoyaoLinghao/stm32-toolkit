@@ -25,6 +25,14 @@ from stm32_toolkit.result import OperationResult
 BUILD_ID = "1" * 64
 ELF_SHA = "2" * 64
 TICKET = "3" * 64
+ATK_LISTING = {
+    "probeId": "pyocd:91d67402fe525a5d16bf226f59ab5ecea743eb69292e95719167263ed1fcbf8c",
+    "hardwareId": "ATK 20210914",
+    "probeFingerprint": "91d67402fe525a5d16bf226f59ab5ecea743eb69292e95719167263ed1fcbf8c",
+    "vendor": "ATK",
+    "product": "ATK-HS-V3-CMSIS-DAP",
+    "boardName": None,
+}
 
 
 def _context(project: Path, data: Path, session: str = "session-a") -> list[str]:
@@ -222,6 +230,28 @@ def test_hardware_cli_public_signature_and_request_shape_remain_project_bound() 
     assert not forbidden.intersection(
         item.name for item in fields(RegisterReadWorkflowRequest)
     )
+
+
+def test_hardware_cli_preserves_all_probe_listing_confirmation_fields(
+    monkeypatch, tmp_path: Path, capsys
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    listing = {
+        "workspaceId": "workspace-a",
+        "sessionId": "session-a",
+        "probes": [ATK_LISTING],
+    }
+
+    async def listed(_request: object) -> OperationResult[object]:
+        return OperationResult.success("stm32_probe_list", listing)
+
+    monkeypatch.setattr("stm32_toolkit.cli.probe_list_workflow", listed)
+
+    assert main(["probe", "list", *_context(project, tmp_path / "data")]) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["data"] == listing
 
 
 @pytest.mark.parametrize(
