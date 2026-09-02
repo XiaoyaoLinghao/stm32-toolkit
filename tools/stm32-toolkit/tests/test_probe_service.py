@@ -176,6 +176,40 @@ class BlockingFailingCloseBackend(BlockingCloseBackend):
         raise RuntimeError("backend cleanup failed")
 
 
+class MismatchedAttachBackend(FakeProbeBackend):
+    def open_attach(self, probe_id, target, *, halt_on_connect=False):
+        super().open_attach(
+            probe_id, target, halt_on_connect=halt_on_connect
+        )
+        return ProbeAttachmentEvidence(probe_id, target, "STM32F407VG", 1)
+
+    def target_state(self):
+        return {
+            "state": "halted" if self.halted else "running",
+            "reason": "requested",
+        }
+
+
+class BlockingAttachBackend(FakeProbeBackend):
+    def __init__(self, *, entered: threading.Event, release: threading.Event) -> None:
+        source = fake_backend()
+        super().__init__(
+            probes=source.list_probes(),
+            memory={0x20000000: b"\x01\x02\x03\x04"},
+            registers={"r0": 7, "pc": 0x08000101},
+        )
+        self.entered = entered
+        self.release = release
+
+    def open_attach(self, probe_id, target, *, halt_on_connect=False):
+        evidence = super().open_attach(
+            probe_id, target, halt_on_connect=halt_on_connect
+        )
+        self.entered.set()
+        self.release.wait(2)
+        return evidence
+
+
 def test_service_binds_loopback_dynamic_port_and_publishes_private_endpoint(tmp_path: Path):
     async def scenario():
         service = make_service(tmp_path)
@@ -828,6 +862,128 @@ def test_client_lists_attaches_and_reads_without_halting(tmp_path: Path):
                 "pc": 0x08000101,
             }
         finally:
+            await client.close()
+            await service.stop()
+
+    run(scenario())
+
+
+@pytest.mark.parametrize(
+    ("level", "expected_halt"),
+    (
+        (OperationLevel.OBSERVE, False),
+        (OperationLevel.CONTROL, False),
+        (OperationLevel.MODIFY, True),
+    ),
+)
+def test_attach_maps_service_level_to_required_return_state(
+    level: OperationLevel, expected_halt: bool, tmp_path: Path
+) -> None:
+    async def scenario() -> None:
+        backend = fake_backend()
+        service = make_service(tmp_path, level=level, backend=backend)
+        endpoint = await service.start()
+        client = ProbeClient(endpoint)
+        try:
+            await client.attach("probe-a", "STM32F429ZITx")
+            assert (
+                "open_attach", "probe-a", "STM32F429ZITx", expected_halt
+            ) in backend.events
+            assert backend.halted is expected_halt
+        finally:
+            await client.close()
+            await service.stop()
+
+    run(scenario())
+
+
+def test_modify_attach_mismatch_resumes_closes_and_returns_no_evidence(tmp_path: Path):
+    async def scenario() -> None:
+        source = fake_backend()
+        backend = MismatchedAttachBackend(
+            probes=source.list_probes(), memory={}, registers={}
+        )
+        service = make_service(
+            tmp_path, level=OperationLevel.MODIFY, backend=backend
+        )
+        endpoint = await service.start()
+        client = ProbeClient(endpoint)
+        try:
+            with pytest.raises(ProbeClientError) as caught:
+                await client.attach("probe-a", "STM32F429ZITx")
+            assert caught.value.code == "PROBE_IDENTITY_MISMATCH"
+            assert ("resume",) in backend.events
+            assert backend.closed is True
+            assert backend.halted is False
+            assert backend.flashed_images == []
+        finally:
+            await client.close()
+            await service.stop()
+
+    run(scenario())
+
+
+def test_cancelled_attach_closes_candidate(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        entered = threading.Event()
+        release = threading.Event()
+        backend = BlockingAttachBackend(entered=entered, release=release)
+        service = make_service(
+            tmp_path, level=OperationLevel.MODIFY, backend=backend
+        )
+        endpoint = await service.start()
+        client = ProbeClient(endpoint)
+        try:
+            request = asyncio.create_task(client.attach("probe-a", "STM32F429ZITx"))
+            assert await asyncio.to_thread(backend.entered.wait, 2)
+            request.cancel()
+            backend.release.set()
+            with pytest.raises(asyncio.CancelledError):
+                await request
+            for _ in range(100):
+                if backend.closed:
+                    break
+                await asyncio.sleep(0.01)
+            assert backend.closed is True
+            assert backend.halted is False
+            assert backend.flashed_images == []
+        finally:
+            backend.release.set()
+            await client.close()
+            await service.stop()
+
+    run(scenario())
+
+
+def test_timed_out_attach_closes_candidate(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        entered = threading.Event()
+        release = threading.Event()
+        backend = BlockingAttachBackend(entered=entered, release=release)
+        service = make_service(
+            tmp_path, level=OperationLevel.MODIFY, backend=backend
+        )
+        endpoint = await service.start()
+        client = ProbeClient(endpoint)
+        try:
+            request = asyncio.create_task(
+                client.request(
+                    "probe.attach",
+                    {"probeId": "probe-a", "target": "STM32F429ZITx"},
+                    timeout_ms=20,
+                )
+            )
+            assert await asyncio.to_thread(backend.entered.wait, 2)
+            await asyncio.sleep(0.05)
+            backend.release.set()
+            with pytest.raises(ProbeClientError) as caught:
+                await request
+            assert caught.value.code == "PROBE_TIMEOUT"
+            assert backend.closed is True
+            assert backend.halted is False
+            assert backend.flashed_images == []
+        finally:
+            backend.release.set()
             await client.close()
             await service.stop()
 

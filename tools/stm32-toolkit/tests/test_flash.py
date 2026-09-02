@@ -22,6 +22,7 @@ from stm32_toolkit.build.identity import (
 from stm32_toolkit.build import BuildRequest, run_build
 from stm32_toolkit.build.runner import build_result_document
 from stm32_toolkit.probe.backend import FlashBackendReport
+from stm32_toolkit.probe.client import ProbeClientError
 from stm32_toolkit.probe import flash as flash_mod
 from stm32_toolkit.probe.flash import FlashRequest, flash_firmware
 from stm32_toolkit.project_model import load_project_model
@@ -194,6 +195,14 @@ class RecordingFlashClient:
         self.events.append(("read", address, length))
         offset = address - 0x08000000
         return self.image[offset : offset + length]
+
+
+class RejectedIdentityFlashClient(RecordingFlashClient):
+    async def attach(self, probe_id: str, target: str) -> object:
+        self.events.append(("attach", probe_id, target))
+        raise ProbeClientError(
+            "PROBE_IDENTITY_MISMATCH", "Connected target identity does not match"
+        )
 
 
 def _request(root: Path, identity: dict, **overrides: object) -> FlashRequest:
@@ -499,6 +508,25 @@ def test_flash_rejects_resolved_target_identity_mismatch(tmp_path: Path) -> None
     assert result.code == "FIRMWARE_IDENTITY_MISMATCH"
     assert result.details == {"field": "connectedTarget", "rule": "identity"}
     assert client.events == [("attach", "probe-123", "stm32f407vg")]
+
+
+def test_flash_maps_attach_identity_rejection_without_programming(
+    tmp_path: Path,
+) -> None:
+    root = prepare_project(tmp_path)
+    identity = _publish_current_debug_build(root)
+    client = RejectedIdentityFlashClient(
+        _elf_with_flash_segment()[84 : 84 + 320]
+    )
+
+    result = asyncio.run(flash_firmware(_request(root, identity), client))
+
+    assert result.ok is False
+    assert result.code == "FIRMWARE_IDENTITY_MISMATCH"
+    assert result.details == {"field": "connectedTarget", "rule": "identity"}
+    assert client.events == [("attach", "probe-123", "stm32f407vg")]
+    assert not any(event[0] == "program" for event in client.events)
+    assert not (root / "artifacts/migration/flash-result.json").exists()
 
 
 def test_flash_readback_is_chunked_to_protocol_limit(tmp_path: Path) -> None:
