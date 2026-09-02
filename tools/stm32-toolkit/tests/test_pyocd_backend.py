@@ -564,6 +564,29 @@ def test_observation_resume_failure_closes_candidate_and_publishes_nothing():
     assert detached.value.code == "PROBE_NOT_ATTACHED"
 
 
+def test_partial_open_failure_after_halt_restores_before_close_and_publishes_nothing():
+    target = FakePyOCDTarget(state="running")
+    probe = FakePyOCDProbe("probe-a")
+    driver = FakePyOCDDriver((probe,), target=target)
+    driver.session_halt_before_open_error = True
+    driver.session_open_error = RuntimeError(r"post-connect failed C:\private\pack")
+    backend = PyOCDBackend(driver)
+
+    with pytest.raises(ProbeBackendError) as caught:
+        backend.open_attach("probe-a", "stm32f407vg")
+
+    assert caught.value.code == "PROBE_ATTACH_FAILED"
+    assert "private" not in str(caught.value)
+    assert target.calls == [("resume",), ("get_state",)]
+    assert target.state == "running"
+    assert driver.created_sessions[0].close_count == 1
+    assert probe.close_count == 1
+    assert driver.program_calls == []
+    with pytest.raises(ProbeBackendError) as detached:
+        backend.read_memory(0x20000000, 4)
+    assert detached.value.code == "PROBE_NOT_ATTACHED"
+
+
 @pytest.mark.parametrize(
     "part_number",
     (None, "", "unknown\npart", r"C:\private", 1234),
@@ -653,6 +676,31 @@ def test_invalid_identity_close_failure_is_authoritative_after_candidate_resume(
     with pytest.raises(ProbeBackendError) as detached:
         backend.read_memory(0x20000000, 4)
     assert detached.value.code == "PROBE_NOT_ATTACHED"
+
+
+def test_candidate_close_failure_chains_only_the_initiating_sanitized_error():
+    target = ConnectionPolicyTarget(
+        part_number=None,
+        resume_error=RuntimeError(r"resume failed C:\private\target"),
+    )
+    driver = FakePyOCDDriver((FakePyOCDProbe("probe-a"),), target=target)
+    driver.session_close_error = RuntimeError(r"close failed C:\private\probe")
+
+    with pytest.raises(ProbeBackendError) as caught:
+        PyOCDBackend(driver).open_attach(
+            "probe-a", "stm32f407vg", halt_on_connect=True
+        )
+
+    assert caught.value.code == "PROBE_CLOSE_FAILED"
+    cause = caught.value.__cause__
+    assert isinstance(cause, ProbeBackendError)
+    assert cause.code == "PROBE_TARGET_IDENTITY_UNAVAILABLE"
+    assert cause.message == "Selected target identity is unavailable"
+    assert cause.details == {}
+    assert "private" not in str(caught.value)
+    assert "private" not in str(cause)
+    assert target.calls == [("resume",)]
+    assert driver.program_calls == []
 
 
 @pytest.mark.parametrize("target", ("", "*", "stm32 f407", "t" * 129))

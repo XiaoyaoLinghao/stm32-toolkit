@@ -118,10 +118,12 @@ class FakePyOCDSession:
         *,
         options: Mapping[str, object],
         target: FakePyOCDTarget | None,
+        halt_before_open_error: bool = False,
     ) -> None:
         self.probe = probe
         self.options = dict(options)
         self.board = FakePyOCDBoard(target)
+        self.halt_before_open_error = halt_before_open_error
         self.open_count = 0
         self.close_count = 0
         self.open_error: BaseException | None = None
@@ -130,6 +132,8 @@ class FakePyOCDSession:
     def open(self) -> None:
         self.open_count += 1
         self.probe.is_open = True
+        if self.halt_before_open_error and self.board.target is not None:
+            self.board.target.state = "halted"
         if self.open_error is not None:
             raise self.open_error
 
@@ -157,6 +161,7 @@ class FakePyOCDDriver:
         self.list_error: BaseException | None = None
         self.create_error: BaseException | None = None
         self.session_open_error: BaseException | None = None
+        self.session_halt_before_open_error = False
         self.session_close_error: BaseException | None = None
         self.created_sessions: list[FakePyOCDSession] = []
         self.program_calls: list[tuple[object, bytes, dict[str, object]]] = []
@@ -177,6 +182,7 @@ class FakePyOCDDriver:
             probe,
             options=options,
             target=self.target,
+            halt_before_open_error=self.session_halt_before_open_error,
         )
         session.open_error = self.session_open_error
         session.close_error = self.session_close_error
