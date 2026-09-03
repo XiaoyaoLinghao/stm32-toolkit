@@ -1102,6 +1102,194 @@ def test_attach_maps_service_level_to_required_return_state(
     run(scenario())
 
 
+def test_observe_reuses_one_backend_attachment_across_logical_guards(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        backend = fake_backend()
+        service = make_service(
+            tmp_path,
+            level=OperationLevel.OBSERVE,
+            backend=backend,
+        )
+        endpoint = await service.start()
+        client = ProbeClient(endpoint)
+        try:
+            first = await client.attach("probe-a", "STM32F429ZITx")
+            assert await client.read_memory(0x20000000, 4) == b"\x01\x02\x03\x04"
+            second = await client.attach("probe-a", "stm32-f429.zitx")
+            assert await client.read_memory(0x20000000, 4) == b"\x01\x02\x03\x04"
+            third = await client.attach("probe-a", "STM32F429ZITx")
+
+            assert first.probe_id == second.probe_id == third.probe_id == "probe-a"
+            assert first.resolved_part_number == second.resolved_part_number == third.resolved_part_number
+            assert [event for event in backend.events if event[0] == "open_attach"] == [
+                ("open_attach", "probe-a", "STM32F429ZITx", False)
+            ]
+            assert backend.events.count(("list_probes",)) == 1
+            assert not any(event[0] in {"close", "halt", "resume", "reset", "flash_elf"} for event in backend.events)
+        finally:
+            await client.close()
+            await service.stop()
+
+    run(scenario())
+
+
+@pytest.mark.parametrize(
+    ("changed_probe", "changed_target"),
+    (
+        ("probe-b", "STM32F429ZITx"),
+        ("probe-a", "STM32F407VGTx"),
+    ),
+)
+def test_observe_rejects_changed_attachment_identity(
+    changed_probe: str, changed_target: str, tmp_path: Path
+) -> None:
+    async def scenario() -> None:
+        backend = fake_backend()
+        service = make_service(
+            tmp_path,
+            level=OperationLevel.OBSERVE,
+            backend=backend,
+        )
+        endpoint = await service.start()
+        client = ProbeClient(endpoint)
+        try:
+            await client.attach("probe-a", "STM32F429ZITx")
+            accepted_events = tuple(backend.events)
+            with pytest.raises(ProbeClientError) as error:
+                await client.attach(changed_probe, changed_target)
+
+            assert error.value.code == "PROBE_IDENTITY_MISMATCH"
+            assert error.value.message == "Connected target identity does not match"
+            assert error.value.details == {}
+            assert tuple(backend.events) == accepted_events
+            assert await client.read_memory(0x20000000, 4) == b"\x01\x02\x03\x04"
+        finally:
+            await client.close()
+            await service.stop()
+
+    run(scenario())
+
+
+def test_explicit_second_attach_after_first_failure_is_not_cached_unit_proof_not_automatic_retry(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        backend = fake_backend()
+        attempts = 0
+        original = backend.open_attach
+
+        def fail_once(probe_id, target, *, halt_on_connect=False):
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                raise ProbeBackendError(
+                    "PROBE_ATTACH_FAILED", "Debug probe attach failed"
+                )
+            return original(
+                probe_id, target, halt_on_connect=halt_on_connect
+            )
+
+        backend.open_attach = fail_once  # type: ignore[method-assign]
+        service = make_service(
+            tmp_path,
+            level=OperationLevel.OBSERVE,
+            backend=backend,
+        )
+        endpoint = await service.start()
+        client = ProbeClient(endpoint)
+        try:
+            with pytest.raises(ProbeClientError) as error:
+                await client.attach("probe-a", "STM32F429ZITx")
+            assert error.value.code == "PROBE_ATTACH_FAILED"
+            assert error.value.message == "Debug probe attach failed"
+            assert error.value.details == {}
+            assert not any(event[0] == "read_memory" for event in backend.events)
+
+            second = await client.attach("probe-a", "STM32F429ZITx")
+            assert second.probe_id == "probe-a"
+            assert attempts == 2
+        finally:
+            await client.close()
+            await service.stop()
+
+    run(scenario())
+
+
+@pytest.mark.parametrize(
+    ("level", "expected_halt"),
+    (
+        (OperationLevel.CONTROL, False),
+        (OperationLevel.MODIFY, True),
+    ),
+)
+def test_non_observe_repeat_attach_preserves_existing_dispatch(
+    level: OperationLevel, expected_halt: bool, tmp_path: Path
+) -> None:
+    async def scenario() -> None:
+        backend = fake_backend()
+        service = make_service(tmp_path, level=level, backend=backend)
+        endpoint = await service.start()
+        client = ProbeClient(endpoint)
+        try:
+            await client.attach("probe-a", "STM32F429ZITx")
+            await client.attach("probe-a", "STM32F429ZITx")
+
+            assert [event for event in backend.events if event[0] == "open_attach"] == [
+                ("open_attach", "probe-a", "STM32F429ZITx", expected_halt),
+                ("open_attach", "probe-a", "STM32F429ZITx", expected_halt),
+            ]
+        finally:
+            await client.close()
+            await service.stop()
+
+    run(scenario())
+
+
+def test_observation_attachment_is_service_local(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        backend = fake_backend()
+        first_service = make_service(
+            tmp_path / "first",
+            level=OperationLevel.OBSERVE,
+            backend=backend,
+        )
+        first_endpoint = await first_service.start()
+        first_client = ProbeClient(first_endpoint)
+        try:
+            await first_client.attach("probe-a", "STM32F429ZITx")
+            await first_client.attach("probe-a", "STM32F429ZITx")
+        finally:
+            await first_client.close()
+            await first_service.stop()
+
+        first_service_attach_events = [
+            event for event in backend.events if event[0] == "open_attach"
+        ]
+        assert len(first_service_attach_events) == 1
+
+        second_service = make_service(
+            tmp_path / "second",
+            level=OperationLevel.OBSERVE,
+            backend=backend,
+        )
+        second_endpoint = await second_service.start()
+        second_client = ProbeClient(second_endpoint)
+        try:
+            await second_client.attach("probe-a", "STM32F429ZITx")
+        finally:
+            await second_client.close()
+            await second_service.stop()
+
+        all_attach_events = [
+            event for event in backend.events if event[0] == "open_attach"
+        ]
+        assert len(all_attach_events) == 2
+
+    run(scenario())
+
+
 def test_modify_attach_mismatch_resumes_closes_and_returns_no_evidence(tmp_path: Path):
     async def scenario() -> None:
         source = fake_backend()
