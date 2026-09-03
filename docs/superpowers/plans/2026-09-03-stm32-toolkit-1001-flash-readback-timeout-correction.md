@@ -426,6 +426,12 @@ Record this commit as CodeHead only after the focused matrix has passed against 
 
 ### Task 3: Reconcile evidence, clean run-owned output, and commit the report separately
 
+**Plan correction after report review:** Repository `AGENTS.md` prohibits moving commit totals in
+the tracked implementation report. The original Task 3 wording incorrectly required local
+ahead/behind counts inside that durable file. The tracked report records only clean-worktree and
+no-remote-mutation facts; the implementer's return message may report the current ahead/behind
+snapshot out of band. This correction changes no product, test, or evidence result.
+
 **Files:**
 - Create: `docs/codex/returns/STM32TK-1001-FLASH-READBACK-TIMEOUT-CORRECTION/implementation-report.md`
 - Do not modify product or tests in this task.
@@ -499,7 +505,7 @@ Record that the earlier physical attempt entered programming and timed out durin
 
 ## Cleanup and status
 
-Record the exact run-owned path, cleanup outcome, final worktree status, local ahead/behind counts, and that no remote state changed.
+Record the exact run-owned path, cleanup outcome, final clean-worktree status, and that no remote state changed. Do not write branch-relative ahead/behind counts into the tracked report; report the current snapshot only in the out-of-band return message.
 ```
 
 The report must not contain its own future report commit SHA, a moving commit total, fabricated hardware evidence, or evidence attributed to Sol.
