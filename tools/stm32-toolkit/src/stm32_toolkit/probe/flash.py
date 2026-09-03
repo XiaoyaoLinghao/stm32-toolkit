@@ -32,6 +32,7 @@ from stm32_toolkit.project_model import ProjectModel, load_project_model
 from stm32_toolkit.result import OperationResult
 
 from .backend import FlashBackendReport
+from .protocol import MAX_READ_BYTES
 
 _OPERATION = "stm32_flash"
 _IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
@@ -45,7 +46,6 @@ _IDENTITY_LIMIT = 8 * 1024 * 1024
 _RESULT_LIMIT = 8 * 1024 * 1024
 _ELF_LIMIT = 64 * 1024 * 1024
 _MAP_LIMIT = 32 * 1024 * 1024
-_READ_CHUNK = 65_536
 _REPARSE_POINT = 0x400
 
 _BUILD_RESULT_FIELDS = {
@@ -534,7 +534,7 @@ async def _verify_segments(
     for segment in segments:
         offset = 0
         while offset < len(segment.data):
-            length = min(_READ_CHUNK, len(segment.data) - offset)
+            length = min(MAX_READ_BYTES, len(segment.data) - offset)
             if timeout_ms is None:
                 actual = await client.read_memory(segment.address + offset, length)
             else:
