@@ -10,6 +10,7 @@ from typing import Mapping
 
 from stm32_toolkit import __version__
 from stm32_toolkit.build.identity import utc_now_rfc3339
+from stm32_toolkit.probe.client import ProbeClientError
 from stm32_toolkit.probe.flash import _load_fresh_firmware, _verify_segments
 from stm32_toolkit.probe.handoff import (
     _load_flash_result,
@@ -211,9 +212,17 @@ async def bind_debug_firmware(
         flash = _flash(root, firmware, typed)
         try:
             attachment = await client.attach(typed.probe_id, typed.target)
-            _validate_attachment(attachment, typed.probe_id, typed.target)
         except asyncio.CancelledError:
             raise
+        except ProbeClientError as error:
+            if error.code == "PROBE_IDENTITY_MISMATCH":
+                raise _fail(
+                    "DEBUG_TARGET_MISMATCH",
+                    "Connected target does not match the debug binding request",
+                ) from None
+            raise _BindingFailure(error.code, error.message, error.details) from None
+        try:
+            _validate_attachment(attachment, typed.probe_id, typed.target)
         except Exception:
             raise _fail(
                 "DEBUG_TARGET_MISMATCH",
@@ -242,11 +251,13 @@ async def bind_debug_firmware(
             final_attachment = await client.attach(typed.probe_id, typed.target)
         except asyncio.CancelledError:
             raise
-        except Exception:
-            raise _fail(
-                "DEBUG_TARGET_MISMATCH",
-                "Connected target changed during debug binding",
-            ) from None
+        except ProbeClientError as error:
+            if error.code == "PROBE_IDENTITY_MISMATCH":
+                raise _fail(
+                    "DEBUG_TARGET_MISMATCH",
+                    "Connected target changed during debug binding",
+                ) from None
+            raise _BindingFailure(error.code, error.message, error.details) from None
         _endpoint(typed, client)
         try:
             _validate_attachment(final_attachment, typed.probe_id, typed.target)

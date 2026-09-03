@@ -5,10 +5,11 @@ from __future__ import annotations
 import asyncio
 import re
 from dataclasses import dataclass
-from typing import Callable
+from typing import Callable, Mapping
 
 from stm32_toolkit import __version__
 from stm32_toolkit.build.identity import utc_now_rfc3339
+from stm32_toolkit.probe.client import ProbeClientError
 from stm32_toolkit.probe.model import OperationLevel, PROBE_PROTOCOL_VERSION
 from stm32_toolkit.probe.protocol import MAX_BATCH_ITEMS, MAX_READ_BYTES
 from stm32_toolkit.probe.flash import _load_fresh_firmware
@@ -47,10 +48,13 @@ class RegisterReadRequest:
 
 
 class _ReadFailure(Exception):
-    def __init__(self, code: str, message: str) -> None:
+    def __init__(
+        self, code: str, message: str, details: Mapping[str, object] | None = None
+    ) -> None:
         super().__init__(message)
         self.code = code
         self.message = message
+        self.details = dict(details or {})
 
 
 @dataclass(frozen=True)
@@ -62,8 +66,10 @@ class _Resolved:
     decode: Callable[[bytes], TypedValue]
 
 
-def _fail(code: str, message: str) -> _ReadFailure:
-    return _ReadFailure(code, message)
+def _fail(
+    code: str, message: str, details: Mapping[str, object] | None = None
+) -> _ReadFailure:
+    return _ReadFailure(code, message, details)
 
 
 def _items(value: object) -> tuple[str, ...]:
@@ -172,8 +178,13 @@ async def _attach(binding: DebugFirmwareBinding, client: object) -> None:
         attachment = await client.attach(binding.probe_id, binding.debug_target)
     except asyncio.CancelledError:
         raise
-    except Exception:
-        raise _fail("DEBUG_TARGET_MISMATCH", "Connected target does not match the debug binding") from None
+    except ProbeClientError as error:
+        if error.code == "PROBE_IDENTITY_MISMATCH":
+            raise _fail(
+                "DEBUG_TARGET_MISMATCH",
+                "Connected target does not match the debug binding",
+            ) from None
+        raise _fail(error.code, error.message, error.details) from None
     resolved = getattr(attachment, "resolved_part_number", None)
     if (
         getattr(attachment, "probe_id", None) != binding.probe_id
@@ -193,7 +204,14 @@ async def _guard(
     _endpoint(binding, client)
     _current_firmware(binding)
     revalidate_source()
-    await _attach(binding, client)
+    try:
+        await _attach(binding, client)
+    except asyncio.CancelledError:
+        raise
+    except _ReadFailure:
+        raise
+    except Exception:
+        raise _fail("DEBUG_INTERNAL_ERROR", "Debug read failed") from None
     _endpoint(binding, client)
 
 
@@ -463,7 +481,9 @@ async def _execute(
     except asyncio.CancelledError:
         raise
     except _ReadFailure as error:
-        return OperationResult.failure(operation, error.code, error.message, {})
+        return OperationResult.failure(
+            operation, error.code, error.message, error.details
+        )
     except Exception:
         return OperationResult.failure(
             operation, "DEBUG_INTERNAL_ERROR", "Debug read failed", {}
@@ -483,7 +503,9 @@ async def read_variables(
         if type(request.catalog) is not DwarfCatalog:
             raise _fail("DEBUG_REQUEST_INVALID", "Debug read request is invalid")
     except _ReadFailure as error:
-        return OperationResult.failure(_VARIABLE_OPERATION, error.code, error.message, {})
+        return OperationResult.failure(
+            _VARIABLE_OPERATION, error.code, error.message, error.details
+        )
     return await _execute(
         _VARIABLE_OPERATION,
         binding,
@@ -509,7 +531,9 @@ async def read_registers(
         ) is not bool:
             raise _fail("DEBUG_REQUEST_INVALID", "Debug read request is invalid")
     except _ReadFailure as error:
-        return OperationResult.failure(_REGISTER_OPERATION, error.code, error.message, {})
+        return OperationResult.failure(
+            _REGISTER_OPERATION, error.code, error.message, error.details
+        )
     return await _execute(
         _REGISTER_OPERATION,
         binding,
