@@ -12,6 +12,8 @@ Status: implementation evidence returned for independent Sol review; not accepte
 - Original frozen implementation plan tree: ca06043ef810e2b07a631a34c68e3dd8aaf9af81
 - Plan compatibility correction: 3e675f1ee6565226bd6a1456e6bb7f29cc188d8c
 - Plan compatibility correction tree: 7059243645bea99df82eac7fbc4f5007231e41ab
+- Sol-owned report-governance plan correction: 6c92b6ae1d1c7239723e7da4c21ddfc9b329ee6a
+- Sol-owned report-governance plan correction tree: 31221b2a1a330fe71a9305d8b34e28e3bc301666
 - RED commit: 8ebbcfd7072018c22f75e532fd385e55938ace24
 - RED commit tree: 7b1730fbde171a013399319b8e8522df52f3cb6c
 - RED safety-oracle completion: 966d1aaf4ca1ea5dae962be3648bc3d941d25fee
@@ -133,8 +135,7 @@ C:\tmp\r2f3-20260903, and C:\tmp\r2fc-20260903 were each verified as exact run-o
 removed after evidence capture. The long nested Task 1 staging roots were also removed after
 their minimum setup failure evidence was recorded in the internal Task 1 report.
 
-Before this report was created, git diff --check passed, the worktree was clean apart from the
-ignored SDD workspace, and the local branch was ahead 48 and behind 0 relative to
-origin/codex/STM32TK-1001-LEGACY-HARDWARE-CLOSED-LOOP-impl. The report is committed separately
-from CodeHead. The final report worktree was left clean and no remote state changed. This report
-does not contain its own future report commit SHA or a moving commit total.
+Before this report was created, git diff --check passed and the worktree was clean apart from
+the ignored SDD workspace. The report is committed separately from CodeHead. The final report
+worktree was left clean and no remote state changed. This report intentionally contains no
+branch-relative ahead/behind numbers or moving commit total.
