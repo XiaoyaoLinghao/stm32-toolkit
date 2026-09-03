@@ -1014,6 +1014,65 @@ def test_client_lists_attaches_and_reads_without_halting(tmp_path: Path):
     run(scenario())
 
 
+def test_maximum_memory_read_round_trips_through_service_and_client(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        expected = bytes(index % 251 for index in range(32_768))
+        backend = FakeProbeBackend(
+            probes=(ProbeDescriptor("probe-a", "vendor", "product", None),),
+            memory={0x20000000: expected},
+            registers={},
+        )
+        service = make_service(tmp_path, backend=backend)
+        endpoint = await service.start()
+        client = ProbeClient(endpoint)
+        try:
+            await client.attach("probe-a", "STM32F429ZITx")
+            actual = await client.read_memory(
+                0x20000000, 32_768, timeout_ms=30_000
+            )
+            assert actual == expected
+            assert backend.events.count(("read_memory", 0x20000000, 32_768)) == 1
+        finally:
+            await client.close()
+            await service.stop()
+
+    run(scenario())
+
+
+def test_oversized_memory_read_is_rejected_before_backend_dispatch(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        backend = fake_backend()
+        attempts: list[tuple[int, int]] = []
+        original = backend.read_memory
+
+        def observed(address: int, length: int) -> bytes:
+            attempts.append((address, length))
+            return original(address, length)
+
+        backend.read_memory = observed  # type: ignore[method-assign]
+        service = make_service(tmp_path, backend=backend)
+        endpoint = await service.start()
+        client = ProbeClient(endpoint)
+        try:
+            with pytest.raises(ProbeClientError) as error:
+                await client.read_memory(0x20000000, 32_769)
+            assert error.value.code == "PROBE_REQUEST_INVALID"
+            assert error.value.details == {
+                "field": "data.length",
+                "rule": "maximum",
+            }
+            assert attempts == []
+        finally:
+            await client.close()
+            await service.stop()
+
+    run(scenario())
+
+
 @pytest.mark.parametrize(
     ("level", "expected_halt"),
     (

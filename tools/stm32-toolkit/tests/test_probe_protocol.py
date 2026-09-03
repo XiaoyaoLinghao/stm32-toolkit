@@ -61,6 +61,46 @@ def test_probe_protocol_schema_root_and_package_are_byte_identical():
     assert root_schema.read_bytes() == packaged_schema.read_bytes()
 
 
+def _memory_read_schema(schema: dict[str, object]) -> dict[str, object]:
+    clauses = schema["allOf"]
+    assert isinstance(clauses, list)
+    matches = [
+        clause
+        for clause in clauses
+        if clause.get("if", {}).get("properties", {}).get("operation", {}).get("const")
+        == "memory.read"
+    ]
+    assert len(matches) == 1
+    return matches[0]
+
+
+def test_memory_read_limit_matches_the_hex_response_envelope() -> None:
+    repo_root = Path(__file__).resolve().parents[3]
+    schema = json.loads(
+        (repo_root / "schemas" / "probe-protocol.schema.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    length = _memory_read_schema(schema)["then"]["properties"]["data"][
+        "properties"
+    ]["length"]
+
+    assert MAX_READ_BYTES == 32_768
+    assert length == {"type": "integer", "minimum": 1, "maximum": 32_768}
+
+    accepted = valid_request_dict()
+    accepted["data"] = {"address": 0x20000000, "length": 32_768}
+    decoded = decode_request(json.dumps(accepted).encode("utf-8"), TOOLKIT_VERSION)
+    assert decoded.data == {"address": 0x20000000, "length": 32_768}
+
+    rejected = valid_request_dict()
+    rejected["data"] = {"address": 0x20000000, "length": 32_769}
+    with pytest.raises(ProbeProtocolError) as error:
+        decode_request(json.dumps(rejected).encode("utf-8"), TOOLKIT_VERSION)
+    assert error.value.code == "PROBE_REQUEST_INVALID"
+    assert error.value.details == {"field": "data.length", "rule": "maximum"}
+
+
 def test_probe_request_schema_accepts_the_protocol_contract():
     schema = json.loads(
         (

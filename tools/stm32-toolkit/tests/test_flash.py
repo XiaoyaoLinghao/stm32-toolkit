@@ -357,7 +357,7 @@ def test_flash_programs_exact_elf_reads_back_segments_and_commits_result(
     assert document["debugTarget"] == "stm32f407vg"
 
 
-def test_flash_default_timeout_covers_exact_accepted_segment_without_splitting(
+def test_flash_default_timeout_covers_exact_accepted_segment_in_protocol_chunks(
     tmp_path: Path,
 ) -> None:
     root = prepare_project(tmp_path)
@@ -372,9 +372,10 @@ def test_flash_default_timeout_covers_exact_accepted_segment_without_splitting(
     assert result.ok is True, result.to_dict()
     assert sum(event[0] == "program" for event in client.events) == 1
     assert [event for event in client.events if event[0] == "read"] == [
-        ("read", 0x08000000, 51_852)
+        ("read", 0x08000000, 32_768),
+        ("read", 0x08008000, 19_084),
     ]
-    assert client.read_timeouts == [30_000]
+    assert client.read_timeouts == [30_000, 30_000]
     document = json.loads(
         (root / "artifacts" / "migration" / "flash-result.json").read_text(
             encoding="utf-8"
@@ -404,10 +405,11 @@ def test_flash_final_byte_mismatch_in_exact_accepted_segment_never_commits_succe
     assert result.ok is False
     assert result.code == "FLASH_VERIFY_FAILED"
     assert [event for event in client.events if event[0] == "read"] == [
-        ("read", 0x08000000, 51_852)
+        ("read", 0x08000000, 32_768),
+        ("read", 0x08008000, 19_084),
     ]
     assert sum(event[0] == "program" for event in client.events) == 1
-    assert client.read_timeouts == [30_000]
+    assert client.read_timeouts == [30_000, 30_000]
     assert not result_path.exists()
 
 
@@ -457,6 +459,54 @@ def test_flash_readback_timeout_never_retries_or_commits_success(tmp_path: Path)
     assert sum(event[0] == "program" for event in client.events) == 1
     assert sum(event[0] == "read" for event in client.events) == 1
     assert client.read_timeouts == [30_000]
+    assert not result_path.exists()
+
+
+def test_flash_second_chunk_timeout_never_retries_or_commits_success(
+    tmp_path: Path,
+) -> None:
+    root = prepare_project(tmp_path)
+    text_size = 51_788
+    identity = _publish_current_debug_build(root, text_size=text_size)
+    result_path = root / "artifacts" / "migration" / "flash-result.json"
+    result_path.write_text('{"status":"success"}\n', encoding="utf-8")
+    image = _elf_with_flash_segment(text_size=text_size)[84 : 84 + 51_852]
+
+    class SecondReadTimesOut(RecordingFlashClient):
+        async def read_memory(
+            self,
+            address: int,
+            length: int,
+            *,
+            timeout_ms: int = 5_000,
+        ) -> bytes:
+            self.events.append(("read", address, length))
+            self.read_timeouts.append(timeout_ms)
+            reads = sum(event[0] == "read" for event in self.events)
+            if reads == 2:
+                raise ProbeClientError(
+                    "PROBE_TIMEOUT", "Probe backend operation timed out"
+                )
+            offset = address - 0x08000000
+            return self.image[offset : offset + length]
+
+    client = SecondReadTimesOut(image)
+    result = asyncio.run(flash_firmware(_request(root, identity), client))
+
+    assert result.ok is False
+    assert result.code == "PROBE_TIMEOUT"
+    assert [event[0] for event in client.events] == [
+        "attach",
+        "program",
+        "read",
+        "read",
+    ]
+    assert [event for event in client.events if event[0] == "read"] == [
+        ("read", 0x08000000, 32_768),
+        ("read", 0x08008000, 19_084),
+    ]
+    assert client.read_timeouts == [30_000, 30_000]
+    assert sum(event[0] == "program" for event in client.events) == 1
     assert not result_path.exists()
 
 
@@ -677,10 +727,11 @@ def test_flash_readback_is_chunked_to_protocol_limit(tmp_path: Path) -> None:
     assert sum(event[0] == "program" for event in client.events) == 1
     reads = [event for event in client.events if event[0] == "read"]
     assert reads == [
-        ("read", 0x08000000, 65_536),
+        ("read", 0x08000000, 32_768),
+        ("read", 0x08008000, 32_768),
         ("read", 0x08010000, 4_528),
     ]
-    assert client.read_timeouts == [12_345, 12_345]
+    assert client.read_timeouts == [12_345, 12_345, 12_345]
 
 
 def test_flash_disk_change_during_programming_never_commits_success(tmp_path: Path) -> None:
