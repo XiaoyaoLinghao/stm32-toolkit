@@ -412,6 +412,8 @@ def _make_supervisor(
     backend_contract: object = seams.worker_config
     if seams._test_backend_factory is not None:
         backend_contract = seams._test_backend_factory
+    elif level is OperationLevel.OBSERVE:
+        backend_contract = seams.worker_config.for_observation()
     return seams.supervisor_factory(config, lease_manager, backend_contract)
 
 

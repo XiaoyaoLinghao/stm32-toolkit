@@ -965,6 +965,8 @@ async def open_monitor_observation(
             backend_contract = _guard_backend_factory(
                 root_guard, _seams._test_backend_factory
             )
+        else:
+            backend_contract = _seams.worker_config.for_observation()
         supervisor = _seams.supervisor_factory(config, lease_manager, backend_contract)
         _verify_root_guard(root_guard)
         endpoint = await supervisor.start()

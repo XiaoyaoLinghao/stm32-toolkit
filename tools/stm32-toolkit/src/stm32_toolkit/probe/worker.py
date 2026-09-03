@@ -105,6 +105,14 @@ class ProbeWorkerConfig:
             raise ProbeWorkerError("PROBE_PROTOCOL_INVALID", "Probe worker configuration is invalid")
         return value
 
+    def for_observation(self) -> "ProbeWorkerConfig":
+        return ProbeWorkerConfig(
+            frequency_hz=100_000,
+            target_profile=self.target_profile(),
+            transport_provider=self.transport_provider,
+            connection_policy=NORMAL_CONNECTION_POLICY,
+        )
+
     def for_under_reset_recovery(self) -> "ProbeWorkerConfig":
         return ProbeWorkerConfig(
             frequency_hz=100_000,
