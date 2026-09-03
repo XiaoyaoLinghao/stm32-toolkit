@@ -14,6 +14,8 @@ Status: implementation evidence returned for independent Sol review; not accepte
 - Plan compatibility correction tree: 7059243645bea99df82eac7fbc4f5007231e41ab
 - Sol-owned report-governance plan correction: 6c92b6ae1d1c7239723e7da4c21ddfc9b329ee6a
 - Sol-owned report-governance plan correction tree: 31221b2a1a330fe71a9305d8b34e28e3bc301666
+- Sol-owned physical-evidence wording plan correction: 4bf7366759a1c4327421b85ec6e3a2a4809b7622
+- Sol-owned physical-evidence wording plan correction tree: d45f5859aa952c1535cad608f579f32f1be06a68
 - RED commit: 8ebbcfd7072018c22f75e532fd385e55938ace24
 - RED commit tree: 7b1730fbde171a013399319b8e8522df52f3cb6c
 - RED safety-oracle completion: 966d1aaf4ca1ea5dae962be3648bc3d941d25fee
@@ -120,11 +122,14 @@ consumers, runtime, dependencies, packaging, README, Skills, and Monitor remaine
 
 ## Deferred external evidence
 
-The earlier physical attempt entered programming and timed out during unpropagated readback.
-Target contents after that attempt remain unknown. No physical attach, flash, read, or recovery
-attempt was performed for this correction. This software report does not reuse the earlier
-authorization and does not claim a physical PASS. A new one-attempt public recovery flash is
-deferred until after Sol software acceptance and requires separate explicit user authorization.
+The earlier physical attempt entered programming and returned PROBE_TIMEOUT before complete
+readback. The exact physical timeout phase and target contents after that attempt remain unknown.
+Separately, missing readback-timeout propagation is a deterministic software defect consistent
+with the observation, but it does not prove physical readback began. No physical attach, flash,
+read, or recovery attempt was performed for this correction. This software report does not reuse
+the earlier authorization and does not claim a physical PASS. A new one-attempt public recovery
+flash is deferred until after Sol software acceptance and requires separate explicit user
+authorization.
 
 ## Cleanup and status
 
