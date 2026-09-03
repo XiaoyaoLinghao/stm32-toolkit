@@ -15,7 +15,6 @@ the complete-diff review and verdict.
 - Approved implementation-plan commit: `607769b8e09aa1cc91cf418d778def50aad074c4`
 - Active branch: `codex/STM32TK-1001-LEGACY-HARDWARE-CLOSED-LOOP-impl`
 - Remote baseline: `74ee5f4c7872af1bb612c9068af36319457e087b`
-- Branch state before this report: `0` behind and `65` ahead of the tracked remote branch
 - Remote action: none authorized or taken
 - Specification owner and independent final reviewer: GPT-5.6-sol primary
 - Sole implementation owner: one GPT-5.6-luna agent at reasoning effort `max`
@@ -99,7 +98,7 @@ The named campaign runtime was invoked first. It reported CPython 3.12.10 and py
 failed before collection because pytest is not installed:
 
 ```text
-C:\tmp\stm32-vs10a-legacy-campaign\data\runtime\0.9.0\Scripts\python.exe: No module named pytest
+C:\tmp\stm32tk-vs10a-legacy-campaign\data\runtime\0.9.0\Scripts\python.exe: No module named pytest
 ```
 
 No dependency was installed or modified. The already-provisioned fallback was
