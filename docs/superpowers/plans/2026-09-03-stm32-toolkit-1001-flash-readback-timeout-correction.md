@@ -501,7 +501,7 @@ List every path changed after the approved plan and classify it as RED test, GRE
 
 ## Deferred external evidence
 
-Record that the earlier physical attempt entered programming and timed out during unpropagated readback; target contents remain unknown. This software report does not reuse that authorization or claim a physical PASS. A new one-attempt public recovery flash is deferred to the user-authorized hardware phase after Sol acceptance.
+Record that the earlier physical attempt entered programming and returned `PROBE_TIMEOUT` before complete readback. The exact physical timeout phase and target contents remain unknown. State separately that the missing readback-timeout propagation is a deterministic software defect consistent with the observation; do not present that software diagnosis as proof that physical readback had begun. This software report does not reuse the earlier authorization or claim a physical PASS. A new one-attempt public recovery flash is deferred to the user-authorized hardware phase after Sol acceptance.
 
 ## Cleanup and status
 
