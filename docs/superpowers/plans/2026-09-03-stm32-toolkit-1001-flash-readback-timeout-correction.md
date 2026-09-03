@@ -17,6 +17,7 @@
 - Product changes are restricted to `tools/stm32-toolkit/src/stm32_toolkit/probe/client.py` and `tools/stm32-toolkit/src/stm32_toolkit/probe/flash.py`.
 - Test changes are restricted to `tools/stm32-toolkit/tests/test_probe_client.py`, `tools/stm32-toolkit/tests/test_flash.py`, and only if required by the genuine producer-to-binder seam, `tools/stm32-toolkit/tests/test_debug_firmware.py`.
 - The generic `ProbeClient.read_memory()` default remains exactly 5,000 ms; public flash verification forwards the exact validated `FlashRequest.timeout_ms`, whose accepted public default is 30,000 ms.
+- The shared private `_verify_segments()` helper preserves its existing two-positional-argument read shape when no flash budget is supplied; debug binding and both handoff paths remain unchanged and continue to obtain the generic 5,000 ms client default.
 - Existing readback chunks remain at most 65,536 bytes. Programming remains at most once per invocation. No retry, reconnect, target fallback, reset, resume, or run action is added.
 - No public CLI/MCP/schema/configuration/environment option or result field is added. All current `flash-result.json` fields and trust consumers remain byte-compatible.
 - No hardware action is authorized. The prior one-attempt authorization is consumed; another physical attempt requires new explicit authorization after independent software acceptance.
@@ -279,6 +280,17 @@ If `test_debug_firmware.py` was unavoidably changed only for the imported produc
 
 ### Task 2: Implement the minimal timeout propagation and make the focused contract GREEN
 
+**Plan correction after blocked GREEN attempt:** The first Task 2 candidate at test head
+`966d1aaf4ca1ea5dae962be3648bc3d941d25fee` made `_verify_segments(..., timeout_ms)` required.
+The six target nodes passed, but the required focused binder control reproducibly returned
+`DEBUG_READBACK_MISMATCH` because unchanged `debug/firmware.py` calls the shared private helper
+with its accepted two positional arguments. Read-only call-site tracing found two additional
+unchanged consumers in `probe/handoff.py`. The implementer reverted the candidate and created no
+product commit. The corrected private interface below preserves the original call shape when no
+flash budget exists and forwards an explicit budget only for `flash_firmware()`. This is a
+compatibility correction within the approved specification, not a new public design or scope
+expansion.
+
 **Files:**
 - Modify: `tools/stm32-toolkit/src/stm32_toolkit/probe/client.py:440-450`
 - Modify: `tools/stm32-toolkit/src/stm32_toolkit/probe/flash.py:527-539`
@@ -287,7 +299,7 @@ If `test_debug_firmware.py` was unavoidably changed only for the imported produc
 
 **Interfaces:**
 - Consumes: `FlashRequest.timeout_ms`, already validated by `_validate_request()` to `1..30_000`, and `ProbeClient.request(..., timeout_ms=...)`.
-- Produces: `ProbeClient.read_memory(address: int, length: int, *, timeout_ms: int = 5_000) -> bytes` and `_verify_segments(client, segments, *, timeout_ms: int) -> int`.
+- Produces: `ProbeClient.read_memory(address: int, length: int, *, timeout_ms: int = 5_000) -> bytes` and `_verify_segments(client, segments, *, timeout_ms: int | None = None) -> int`. `None` means preserve the accepted two-positional-argument read call for existing debug/handoff consumers; flash always supplies its validated integer.
 
 - [ ] **Step 1: Add the backward-compatible client seam.**
 
@@ -321,25 +333,28 @@ Do not change `request()` defaults, operation level, response decoding, HTTP tim
 
 - [ ] **Step 2: Thread the already validated flash budget through the existing chunks.**
 
-Change `_verify_segments` to require a keyword-only deadline and forward it to each read:
+Change `_verify_segments` to accept a keyword-only optional flash deadline. Preserve the accepted call shape for existing debug and handoff consumers, and forward the deadline only when flash supplies it:
 
 ```python
 async def _verify_segments(
     client: object,
     segments: tuple[FlashSegment, ...],
     *,
-    timeout_ms: int,
+    timeout_ms: int | None = None,
 ) -> int:
     verified = 0
     for segment in segments:
         offset = 0
         while offset < len(segment.data):
             length = min(_READ_CHUNK, len(segment.data) - offset)
-            actual = await client.read_memory(
-                segment.address + offset,
-                length,
-                timeout_ms=timeout_ms,
-            )
+            if timeout_ms is None:
+                actual = await client.read_memory(segment.address + offset, length)
+            else:
+                actual = await client.read_memory(
+                    segment.address + offset,
+                    length,
+                    timeout_ms=timeout_ms,
+                )
             expected = segment.data[offset : offset + length]
             if type(actual) is not bytes or actual != expected:
                 raise _fail(
@@ -363,7 +378,7 @@ verified = await _verify_segments(
 )
 ```
 
-Do not add a constant, recovery branch, retry loop, smaller chunk, public field, or alternate readback path.
+Do not add a constant, recovery branch, retry loop, smaller chunk, public field, or alternate readback path. Do not edit `debug/firmware.py` or `probe/handoff.py`: their unchanged calls intentionally exercise the `None` compatibility branch.
 
 - [ ] **Step 3: Re-run the exact RED command and require GREEN.**
 
@@ -379,10 +394,13 @@ Expected: all six nodes PASS; the default read remains 5,000 ms, the accepted se
   tools/stm32-toolkit/tests/test_flash.py `
   tools/stm32-toolkit/tests/test_debug_firmware.py::test_genuine_flash_result_is_consumed_by_binding_without_a_second_trust_schema `
   tools/stm32-toolkit/tests/test_debug_firmware.py::test_missing_or_invalid_firmware_and_flash_evidence_are_stable `
+  tools/stm32-toolkit/tests/test_debug_handoff.py::test_begin_persists_paused_stops_releases_then_marks_external `
+  tools/stm32-toolkit/tests/test_debug_handoff.py::test_begin_drains_modifications_before_final_target_readback `
+  tools/stm32-toolkit/tests/test_debug_handoff.py::test_end_reacquires_revalidates_and_consumes_one_time_ticket `
   -q -p no:cacheprovider --basetemp (Join-Path $runRoot 'green-focused')
 ```
 
-Expected: PASS on CPython 3.12. This is the complete planned slice matrix. Do not run the prior seven-file recovery suite, full suite, coverage, package, release, CLI/MCP, Monitor, or hardware matrix unless a concrete failure proves a new affected dependency; classify such a failure before expanding verification.
+Expected: PASS on CPython 3.12. The three handoff nodes are the bounded risk-triggered expansion after the first GREEN candidate proved that `_verify_segments()` has three unchanged non-flash production callers. They prove begin ordering, final readback, and reacquisition remain compatible without widening product scope. This is the complete planned slice matrix. Do not run the prior seven-file recovery suite, full suite, coverage, package, release, CLI/MCP, Monitor, or hardware matrix unless a concrete failure proves a new affected dependency; classify such a failure before expanding verification.
 
 - [ ] **Step 5: Audit the complete allowed product delta and commit GREEN.**
 
@@ -465,7 +483,7 @@ Create the report with these sections and write the captured literal values, not
 
 ## Implemented behavior
 
-State the exact default 5,000 ms client behavior, explicit keyword forwarding, exact `FlashRequest.timeout_ms` propagation to every existing chunk, unchanged 65,536-byte bound, one-program/no-retry behavior, unchanged result schema, and unchanged binder trust path.
+State the exact default 5,000 ms client behavior, explicit keyword forwarding, exact `FlashRequest.timeout_ms` propagation to every existing flash chunk, unchanged two-positional-argument helper behavior for debug/handoff, unchanged 65,536-byte bound, one-program/no-retry behavior, unchanged result schema, and unchanged binder/handoff trust paths.
 
 ## TDD lineage
 
@@ -518,7 +536,7 @@ After the Luna/max return, the Sol primary must create a fresh detached clean wo
 3. verify only the allowed source/test/report paths changed after this plan;
 4. run `git diff --check d462f0ba868ae3cb980544a5a3c746ee7fc996c2..HEAD`;
 5. re-run the same complete focused matrix from Task 2 Step 4 under CPython 3.12 with a fresh Sol-owned external basetemp;
-6. verify exact 5,000-ms compatibility, exact 30,000/custom propagation, 51,852-byte one-read proof, 65,536-byte chunk bound, one-program/no-retry timeout closure, exact success schema, and genuine binder consumption;
+6. verify exact 5,000-ms compatibility, exact 30,000/custom flash propagation, unchanged two-positional-argument debug/handoff reads, 51,852-byte one-read proof, 65,536-byte chunk bound, one-program/no-retry timeout closure, exact success schema, genuine binder consumption, and the three bounded handoff controls;
 7. clean only the verified Sol-owned basetemp and classify any residue;
 8. issue `ACCEPTED`, `ACCEPTED_WITH_FIXES`, `REVISION_REQUIRED`, or `REWRITE_REQUIRED` without mutating remote state.
 
