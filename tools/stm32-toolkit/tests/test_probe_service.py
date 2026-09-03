@@ -273,6 +273,25 @@ class BlockingAttachBackend(FakeProbeBackend):
         return {"state": state, "reason": "requested"}
 
 
+class BlockingRecoveryCloseAttachBackend(BlockingAttachBackend):
+    def __init__(
+        self,
+        *,
+        entered: threading.Event,
+        release: threading.Event,
+        close_entered: threading.Event,
+        close_release: threading.Event,
+    ) -> None:
+        super().__init__(entered=entered, release=release)
+        self.close_entered = close_entered
+        self.close_release = close_release
+
+    def close(self) -> None:
+        self.close_entered.set()
+        self.close_release.wait(2)
+        super().close()
+
+
 class ExplicitRecoveryAttachBackend(BlockingAttachBackend):
     def __init__(
         self,
@@ -353,6 +372,13 @@ def _attach_request(*, timeout_ms: int, request_id: str) -> ProbeRequest:
             "probeId": "probe-a",
             "target": "STM32F429ZITx",
         },
+    )
+
+
+def _observe_attach_request(*, timeout_ms: int, request_id: str) -> ProbeRequest:
+    return replace(
+        _attach_request(timeout_ms=timeout_ms, request_id=request_id),
+        operation_level=OperationLevel.OBSERVE,
     )
 
 
@@ -1286,6 +1312,192 @@ def test_observation_attachment_is_service_local(tmp_path: Path) -> None:
             event for event in backend.events if event[0] == "open_attach"
         ]
         assert len(all_attach_events) == 2
+
+    run(scenario())
+
+
+@pytest.mark.parametrize("cancelled", [False, True], ids=["timeout", "cancelled"])
+def test_observe_attach_timeout_or_cancellation_does_not_reuse_candidate_while_recovering(
+    cancelled: bool, tmp_path: Path
+) -> None:
+    async def scenario() -> None:
+        entered = threading.Event()
+        release = threading.Event()
+        close_entered = threading.Event()
+        close_release = threading.Event()
+        backend = BlockingRecoveryCloseAttachBackend(
+            entered=entered,
+            release=release,
+            close_entered=close_entered,
+            close_release=close_release,
+        )
+        service = make_service(
+            tmp_path, level=OperationLevel.OBSERVE, backend=backend
+        )
+        operation = asyncio.create_task(
+            service._run_backend(
+                _observe_attach_request(
+                    timeout_ms=30_000 if cancelled else 20,
+                    request_id=f"request-observe-{ 'cancelled' if cancelled else 'timeout' }",
+                )
+            )
+        )
+        queued = asyncio.create_task(
+            service._run_backend(
+                _observe_attach_request(
+                    timeout_ms=30_000,
+                    request_id="request-observe-queued",
+                )
+            )
+        )
+        try:
+            assert await asyncio.to_thread(backend.entered.wait, 2)
+            await asyncio.sleep(0.05)
+            if cancelled:
+                operation.cancel()
+                await asyncio.sleep(0)
+            release.set()
+
+            assert await asyncio.to_thread(backend.close_entered.wait, 2)
+            assert not queued.done()
+            close_release.set()
+
+            with pytest.raises(
+                asyncio.CancelledError if cancelled else asyncio.TimeoutError
+            ):
+                await operation
+            await queued
+
+            assert [event for event in backend.events if event[0] == "open_attach"] == [
+                ("open_attach", "probe-a", "STM32F429ZITx", False),
+                ("open_attach", "probe-a", "STM32F429ZITx", False),
+            ]
+            close_index = backend.events.index(("close",))
+            second_attach_index = backend.events.index(
+                ("open_attach", "probe-a", "STM32F429ZITx", False), close_index
+            )
+            assert close_index < second_attach_index
+            assert backend.closed is False
+        finally:
+            release.set()
+            close_release.set()
+            if not operation.done():
+                operation.cancel()
+            if not queued.done():
+                queued.cancel()
+            await asyncio.gather(operation, queued, return_exceptions=True)
+            pending = tuple(service._backend_tasks)
+            if pending:
+                await asyncio.gather(*pending, return_exceptions=True)
+            if not backend.closed and not backend.attach_active:
+                backend.close()
+
+    run(scenario())
+
+
+def test_observe_stop_clears_attachment_before_same_service_restart(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        backend = fake_backend()
+        service = make_service(
+            tmp_path, level=OperationLevel.OBSERVE, backend=backend
+        )
+        first_endpoint = await service.start()
+        first_client = ProbeClient(first_endpoint)
+        try:
+            await first_client.attach("probe-a", "STM32F429ZITx")
+            await first_client.attach("probe-a", "STM32F429ZITx")
+        finally:
+            await first_client.close()
+        await service.stop()
+
+        second_endpoint = await service.start()
+        second_client = ProbeClient(second_endpoint)
+        try:
+            await second_client.attach("probe-a", "STM32F429ZITx")
+            assert [event for event in backend.events if event[0] == "open_attach"] == [
+                ("open_attach", "probe-a", "STM32F429ZITx", False),
+                ("open_attach", "probe-a", "STM32F429ZITx", False),
+            ]
+        finally:
+            await second_client.close()
+            await service.stop()
+
+    run(scenario())
+
+
+def test_observe_stop_clears_attachment_before_same_service_restart_after_close_error(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        backend = AlwaysFailingCloseBackend()
+        service = make_service(
+            tmp_path, level=OperationLevel.OBSERVE, backend=backend
+        )
+        first_endpoint = await service.start()
+        first_client = ProbeClient(first_endpoint)
+        try:
+            await first_client.attach("probe-a", "STM32F429ZITx")
+        finally:
+            await first_client.close()
+        with pytest.raises(RuntimeError, match="persistent backend close failure"):
+            await service.stop()
+
+        backend.raise_on_close = False
+        second_endpoint = await service.start()
+        second_client = ProbeClient(second_endpoint)
+        try:
+            await second_client.attach("probe-a", "STM32F429ZITx")
+            assert [event for event in backend.events if event[0] == "open_attach"] == [
+                ("open_attach", "probe-a", "STM32F429ZITx", False),
+                ("open_attach", "probe-a", "STM32F429ZITx", False),
+            ]
+        finally:
+            await second_client.close()
+            await service.stop()
+
+    run(scenario())
+
+
+def test_observe_stop_clears_attachment_before_same_service_restart_after_lease_error(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        backend = fake_backend()
+        service = make_service(
+            tmp_path, level=OperationLevel.OBSERVE, backend=backend
+        )
+        first_endpoint = await service.start()
+        first_client = ProbeClient(first_endpoint)
+        try:
+            await first_client.attach("probe-a", "STM32F429ZITx")
+        finally:
+            await first_client.close()
+
+        lease = service._lease
+        assert lease is not None
+        original_release = lease.release
+
+        def failing_release() -> None:
+            original_release()
+            raise RuntimeError("lease release failed")
+
+        lease.release = failing_release  # type: ignore[method-assign]
+        with pytest.raises(RuntimeError, match="lease release failed"):
+            await service.stop()
+
+        second_endpoint = await service.start()
+        second_client = ProbeClient(second_endpoint)
+        try:
+            await second_client.attach("probe-a", "STM32F429ZITx")
+            assert [event for event in backend.events if event[0] == "open_attach"] == [
+                ("open_attach", "probe-a", "STM32F429ZITx", False),
+                ("open_attach", "probe-a", "STM32F429ZITx", False),
+            ]
+        finally:
+            await second_client.close()
+            await service.stop()
 
     run(scenario())
 
