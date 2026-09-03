@@ -117,11 +117,13 @@ UTC interval: `03:03:02`–`03:05:35`; exit code 1. The seven files contained 45
 456 passed and 2 failed. The only failures were the pre-existing
 `test_debug_public_api_is_complete_and_pyocd_lazy` and
 `test_debug_package_exports_task_one_contracts_without_importing_pyocd` assertions in
-`test_debug_firmware.py`. Classification: `ENVIRONMENT` (pre-existing same-process test-order
-interaction). The existing `test_production_worker_uses_only_closed_serializable_pyocd_and_task8_config`
+`test_debug_firmware.py`. Classification: `INFRASTRUCTURE` (pre-existing same-process
+test-isolation order interaction). The existing `test_production_worker_uses_only_closed_serializable_pyocd_and_task8_config`
 exercises the existing semihost adapter, which imports PyOCD before the debug-laziness assertions
 when the prescribed order is used. No recovery/product assertion failed, and neither those
 assertions nor the transport/product behavior was weakened or changed.
+
+The literal plan-prescribed file order did not pass and is therefore not claimed as a PASS.
 
 As the order-conflict control, the same seven approved files were run at the exact code head with
 `test_debug_firmware.py` first, followed by the other six files, using a fresh external
@@ -130,6 +132,17 @@ exit code 0; all 458 tests passed. A collection-only check recorded the per-file
 `test_probe_worker.py` 25, `test_pyocd_backend.py` 109, `test_hardware_workflows.py` 69,
 `test_cli_hardware.py` 44, `test_mcp_hardware.py` 55, `test_flash.py` 42, and
 `test_debug_firmware.py` 114.
+
+## Independent Sol reviewer control evidence
+
+The independent GPT-5.6-sol reviewer ran a fresh detached accepted-base worktree at
+`f7865ed6e927403b51664705506237f4f69aa21d`, using the same runtime, `PYTHONPATH`, and literal
+plan-prescribed seven-file order. That control reproduced the same two debug PyOCD-laziness
+failures, proving they pre-date the candidate and are not a candidate regression. The reviewer
+also ran a fresh detached candidate worktree at report head `caef83173a1e4fa263144460971a76a43fcc9a0b`
+with code head `35da97e57939636c021e74802f3604dc2da5f914`, using the same seven files with
+`test_debug_firmware.py` first; it exited 0. Collection evidence records 458 tests. These are
+reviewer-owned control results, not an implementation-owner acceptance claim.
 
 The exact code-head run roots (`green`, `green2`, `green-order`, `green-pyocd`, diagnostic,
 `final`, and `final-order`) were inspected and removed only when they resolved to their explicit
