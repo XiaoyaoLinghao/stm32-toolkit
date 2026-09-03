@@ -22,7 +22,7 @@ from stm32_toolkit import __version__
 from stm32_toolkit.testing.artifacts import TestArtifactCollector
 from stm32_toolkit.probe.flash import _canonical_target, load_fresh_firmware_facts
 
-from .backend import ProbeBackend, ProbeBackendError
+from .backend import ProbeAttachmentEvidence, ProbeBackend, ProbeBackendError
 from .authorization import ControlAuthorizationError, ControlAuthorizationStore
 from .lease import ProbeLease, ProbeLeaseManager, _RuntimeRootAuthority
 from .model import OperationLevel, ProbeRequest, ProbeResponse
@@ -399,6 +399,9 @@ class ProbeService:
         self._heartbeat_task: asyncio.Task[None] | None = None
         self._stop_lock = asyncio.Lock()
         self._stopping = False
+        self._observation_attachment: tuple[
+            str, str, ProbeAttachmentEvidence
+        ] | None = None
 
     def _store_capture(
         self, data: bytes, *, prefix: str, name: str, kind: str, media_type: str
@@ -431,6 +434,20 @@ class ProbeService:
         ):
             raise ProbeBackendError("PROBE_BACKEND_ERROR", "Target identity output is invalid")
         return identity
+
+    def _reused_observation_attachment(
+        self, probe_id: str, target: str
+    ) -> ProbeAttachmentEvidence | None:
+        accepted = self._observation_attachment
+        if self._operation_level is not OperationLevel.OBSERVE or accepted is None:
+            return None
+        accepted_probe, accepted_target, evidence = accepted
+        if probe_id != accepted_probe or _canonical_target(target) != accepted_target:
+            raise ProbeBackendError(
+                "PROBE_IDENTITY_MISMATCH",
+                "Connected target identity does not match",
+            )
+        return evidence
 
     def _effective_target_transport_config(
         self, transport: str, supplied: Mapping[str, object]
@@ -823,9 +840,17 @@ class ProbeService:
             if request.operation == "probe.list":
                 return {"probes": [item.to_dict() for item in self._backend.list_probes()]}
             if request.operation == "probe.attach":
+                probe_id = str(request.data.get("probeId", ""))
+                target = str(request.data.get("target", ""))
+                evidence = self._reused_observation_attachment(probe_id, target)
+                if evidence is not None:
+                    payload = evidence.to_dict()
+                    payload["requestedTarget"] = target
+                    return payload
+
                 evidence = self._backend.open_attach(
-                    str(request.data.get("probeId", "")),
-                    str(request.data.get("target", "")),
+                    probe_id,
+                    target,
                     halt_on_connect=self._operation_level is OperationLevel.MODIFY,
                 )
                 resolved_target = getattr(evidence, "resolved_part_number", None)
@@ -868,7 +893,15 @@ class ProbeService:
                         "PROBE_IDENTITY_MISMATCH",
                         "Connected target identity does not match",
                     )
-                return evidence.to_dict()
+                payload = evidence.to_dict()
+                if self._operation_level is OperationLevel.OBSERVE:
+                    payload["requestedTarget"] = target
+                    self._observation_attachment = (
+                        probe_id,
+                        _canonical_target(target),
+                        evidence,
+                    )
+                return payload
             if request.operation == "memory.read":
                 data = self._backend.read_memory(
                     int(request.data["address"]), int(request.data["length"])
@@ -1451,6 +1484,7 @@ class ProbeService:
         self._runner = None
         self._lease = None
         self._endpoint = None
+        self._observation_attachment = None
         if endpoint is not None:
             try:
                 current = _read_endpoint_record(
