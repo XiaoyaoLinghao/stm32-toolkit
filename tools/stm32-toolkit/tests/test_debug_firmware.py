@@ -55,6 +55,7 @@ def test_debug_public_api_is_complete_and_pyocd_lazy() -> None:
     assert all(hasattr(debug, name) for name in expected)
     assert not any(name == "pyocd" or name.startswith("pyocd.") for name in sys.modules)
 from stm32_toolkit.probe.backend import ProbeAttachmentEvidence
+from stm32_toolkit.probe.client import ProbeClientError
 from stm32_toolkit.probe.flash import flash_firmware
 from stm32_toolkit.probe.handoff import _FLASH_FIELDS
 from stm32_toolkit.probe.model import OperationLevel, PROBE_PROTOCOL_VERSION
@@ -94,6 +95,14 @@ def _flash_result(identity: dict[str, object], *, session: str = "flash-session"
         "operationLevel": "modify",
         "authorized": True,
     }
+
+
+_STRUCTURED_PROBE_ATTACH_ERRORS = (
+    ("PROBE_ATTACH_FAILED", "Probe attach failed", {"stage": "open"}),
+    ("PROBE_SERVICE_UNAVAILABLE", "Probe Service request failed", {}),
+    ("PROBE_RESPONSE_INVALID", "Probe Service response is invalid", {}),
+    ("PROBE_CLOSE_FAILED", "Probe cleanup failed", {"stage": "close"}),
+)
 
 
 class BindingClient:
@@ -507,6 +516,178 @@ def test_bind_records_distinct_observation_and_flash_sessions_and_is_read_only(b
     assert before == after
     assert client.events[0] == ("attach", "probe-123", "stm32f407vg")
     assert sum(event[2] for event in client.events if event[0] == "read") == 320
+
+
+@pytest.mark.parametrize(
+    ("code", "message", "details"),
+    _STRUCTURED_PROBE_ATTACH_ERRORS,
+    ids=[entry[0] for entry in _STRUCTURED_PROBE_ATTACH_ERRORS],
+)
+def test_initial_probe_client_errors_cross_bind_boundary_unchanged(
+    binding_env, code: str, message: str, details: dict[str, object]
+) -> None:
+    _, _, client, request = binding_env
+    client.attach_error = ProbeClientError(code, message, details)
+
+    result = asyncio.run(bind_debug_firmware(request, client))
+
+    assert result.ok is False
+    assert result.data is None
+    assert result.code == code
+    assert result.message == message
+    assert result.details == details
+    assert client.events == [("attach", "probe-123", "stm32f407vg")]
+
+
+def test_initial_probe_identity_mismatch_keeps_sanitized_target_mapping(binding_env) -> None:
+    _, _, client, request = binding_env
+    client.attach_error = ProbeClientError(
+        "PROBE_IDENTITY_MISMATCH",
+        "raw target identity detail",
+        {"target": "private-target"},
+    )
+
+    result = asyncio.run(bind_debug_firmware(request, client))
+
+    assert result.ok is False
+    assert result.code == "DEBUG_TARGET_MISMATCH"
+    assert result.message == "Connected target does not match the debug binding request"
+    assert result.details == {}
+    assert "raw target identity detail" not in str(result.to_dict())
+    assert client.events == [("attach", "probe-123", "stm32f407vg")]
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("probe_id", "probe-other"),
+        ("requested_target", "stm32f103"),
+        ("resolved_part_number", "STM32F103"),
+        ("core_count", 2),
+    ],
+)
+def test_initial_returned_attachment_evidence_mismatch_fails_closed(
+    binding_env, field: str, value: object
+) -> None:
+    _, _, client, request = binding_env
+
+    async def wrong_attach(probe_id: str, target: str) -> object:
+        client.events.append(("attach", probe_id, target))
+        evidence = {
+            "probe_id": probe_id,
+            "requested_target": target,
+            "resolved_part_number": "STM32F407VG",
+            "core_count": 1,
+        }
+        evidence[field] = value
+        return SimpleNamespace(**evidence)
+
+    client.attach = wrong_attach
+    result = asyncio.run(bind_debug_firmware(request, client))
+
+    assert result.ok is False
+    assert result.code == "DEBUG_TARGET_MISMATCH"
+    assert result.data is None
+    assert client.events == [("attach", "probe-123", "stm32f407vg")]
+    assert not any(event[0] == "read" for event in client.events)
+
+
+def test_initial_raw_attach_error_is_internal_and_sanitized(binding_env) -> None:
+    _, _, client, request = binding_env
+    client.attach_error = RuntimeError("raw attach detail")
+
+    result = asyncio.run(bind_debug_firmware(request, client))
+
+    assert result.ok is False
+    assert result.code == "DEBUG_INTERNAL_ERROR"
+    assert result.message == "Debug firmware binding failed"
+    assert result.details == {}
+    assert "raw attach detail" not in str(result.to_dict())
+    assert client.events == [("attach", "probe-123", "stm32f407vg")]
+    assert not any(event[0] == "read" for event in client.events)
+
+
+@pytest.mark.parametrize(
+    ("code", "message", "details"),
+    _STRUCTURED_PROBE_ATTACH_ERRORS,
+    ids=[entry[0] for entry in _STRUCTURED_PROBE_ATTACH_ERRORS],
+)
+def test_final_probe_client_errors_cross_bind_boundary_unchanged(
+    binding_env, code: str, message: str, details: dict[str, object]
+) -> None:
+    _, _, client, request = binding_env
+
+    def fail_on_final_attach(call: int) -> None:
+        if call == 1:
+            client.attach_error = ProbeClientError(code, message, details)
+
+    client.on_attach = fail_on_final_attach
+    result = asyncio.run(bind_debug_firmware(request, client))
+
+    assert result.ok is False
+    assert result.data is None
+    assert result.code == code
+    assert result.message == message
+    assert result.details == details
+    assert [event[0] for event in client.events] == ["attach", "read", "attach"]
+    assert sum(event[2] for event in client.events if event[0] == "read") == 320
+    assert sum(event[0] == "attach" for event in client.events) == 2
+
+
+def test_final_probe_identity_mismatch_keeps_sanitized_target_mapping(binding_env) -> None:
+    _, _, client, request = binding_env
+
+    def fail_on_final_attach(call: int) -> None:
+        if call == 1:
+            client.attach_error = ProbeClientError(
+                "PROBE_IDENTITY_MISMATCH",
+                "raw final identity detail",
+                {"stage": "final"},
+            )
+
+    client.on_attach = fail_on_final_attach
+    result = asyncio.run(bind_debug_firmware(request, client))
+
+    assert result.ok is False
+    assert result.code == "DEBUG_TARGET_MISMATCH"
+    assert result.message == "Connected target changed during debug binding"
+    assert result.details == {}
+    assert "raw final identity detail" not in str(result.to_dict())
+    assert [event[0] for event in client.events] == ["attach", "read", "attach"]
+    assert sum(event[0] == "attach" for event in client.events) == 2
+
+
+def test_final_raw_attach_error_is_internal_and_sanitized(binding_env) -> None:
+    _, _, client, request = binding_env
+
+    def fail_on_final_attach(call: int) -> None:
+        if call == 1:
+            client.attach_error = RuntimeError("raw final attach detail")
+
+    client.on_attach = fail_on_final_attach
+    result = asyncio.run(bind_debug_firmware(request, client))
+
+    assert result.ok is False
+    assert result.code == "DEBUG_INTERNAL_ERROR"
+    assert result.message == "Debug firmware binding failed"
+    assert result.details == {}
+    assert "raw final attach detail" not in str(result.to_dict())
+    assert [event[0] for event in client.events] == ["attach", "read", "attach"]
+    assert sum(event[0] == "attach" for event in client.events) == 2
+
+
+def test_final_attach_cancellation_propagates(binding_env) -> None:
+    _, _, client, request = binding_env
+
+    def fail_on_final_attach(call: int) -> None:
+        if call == 1:
+            client.attach_error = asyncio.CancelledError()
+
+    client.on_attach = fail_on_final_attach
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(bind_debug_firmware(request, client))
+    assert [event[0] for event in client.events] == ["attach", "read", "attach"]
+    assert sum(event[0] == "attach" for event in client.events) == 2
 
 
 def test_genuine_flash_result_is_consumed_by_binding_without_a_second_trust_schema(

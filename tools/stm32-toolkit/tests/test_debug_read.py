@@ -31,6 +31,7 @@ from stm32_toolkit.debug.read import (
     read_variables,
 )
 from stm32_toolkit.debug.svd import SvdSelection, select_svd
+from stm32_toolkit.probe.client import ProbeClientError
 from stm32_toolkit.probe.model import OperationLevel, PROBE_PROTOCOL_VERSION
 from stm32_toolkit.project_model import load_project_model
 
@@ -40,6 +41,13 @@ from test_debug_firmware import _flash_result
 
 FIXTURE_ELF = Path(__file__).parent / "fixtures" / "dwarf" / "typed.elf"
 FIXTURE_SVD = Path(__file__).parent / "fixtures" / "svd" / "STM32F429-exact.svd"
+
+_STRUCTURED_PROBE_ATTACH_ERRORS = (
+    ("PROBE_ATTACH_FAILED", "Probe attach failed", {"stage": "open"}),
+    ("PROBE_SERVICE_UNAVAILABLE", "Probe Service request failed", {}),
+    ("PROBE_RESPONSE_INVALID", "Probe Service response is invalid", {}),
+    ("PROBE_CLOSE_FAILED", "Probe cleanup failed", {"stage": "close"}),
+)
 
 
 def _sha256(data: bytes) -> str:
@@ -259,6 +267,25 @@ class Client:
         return bytes(data)
 
 
+def _read_request(debug_env: DebugEnv, operation: str) -> object:
+    if operation == "variables":
+        return VariableReadRequest(
+            debug_env.binding, debug_env.catalog, ("signed32",)
+        )
+    if operation == "registers":
+        return RegisterReadRequest(
+            debug_env.binding, debug_env.selection, ("GPIOA.IDR",), False
+        )
+    raise AssertionError(f"unsupported test operation: {operation}")
+
+
+def _run_read(debug_env: DebugEnv, client: Client, operation: str):
+    request = _read_request(debug_env, operation)
+    if operation == "variables":
+        return asyncio.run(read_variables(request, client))
+    return asyncio.run(read_registers(request, client))
+
+
 def test_variables_use_real_provenance_merge_and_preserve_order(
     debug_env: DebugEnv,
 ) -> None:
@@ -397,7 +424,9 @@ def test_endpoint_attachment_and_firmware_are_revalidated(debug_env: DebugEnv) -
 
     client.attach = failed_attach
     failed = asyncio.run(read_variables(request, client))
-    assert failed.code == "DEBUG_TARGET_MISMATCH"
+    assert failed.code == "DEBUG_INTERNAL_ERROR"
+    assert failed.message == "Debug read failed"
+    assert failed.details == {}
     assert "raw attach detail" not in str(failed.to_dict())
 
     client = debug_env.client()
@@ -405,6 +434,311 @@ def test_endpoint_attachment_and_firmware_are_revalidated(debug_env: DebugEnv) -
     client.after_read = lambda: elf_path.write_bytes(elf_path.read_bytes() + b"changed")
     changed = asyncio.run(read_variables(request, client))
     assert changed.code == "DEBUG_FIRMWARE_CHANGED"
+    assert len(client.calls) == 1
+
+
+@pytest.mark.parametrize(
+    "operation", ["variables", "registers"], ids=["variables", "registers"]
+)
+@pytest.mark.parametrize(
+    ("code", "message", "details"),
+    _STRUCTURED_PROBE_ATTACH_ERRORS,
+    ids=[entry[0] for entry in _STRUCTURED_PROBE_ATTACH_ERRORS],
+)
+def test_initial_probe_client_errors_cross_read_boundary_unchanged(
+    debug_env: DebugEnv,
+    operation: str,
+    code: str,
+    message: str,
+    details: dict[str, object],
+) -> None:
+    client = debug_env.client()
+
+    async def failed_attach(probe_id: str, target: str) -> object:
+        raise ProbeClientError(code, message, details)
+
+    client.attach = failed_attach
+    result = _run_read(debug_env, client, operation)
+
+    assert result.ok is False
+    assert result.data is None
+    assert result.code == code
+    assert result.message == message
+    assert result.details == details
+    assert client.calls == []
+
+
+@pytest.mark.parametrize(
+    "operation", ["variables", "registers"], ids=["variables", "registers"]
+)
+def test_initial_probe_identity_mismatch_keeps_sanitized_read_mapping(
+    debug_env: DebugEnv, operation: str
+) -> None:
+    client = debug_env.client()
+
+    async def failed_attach(probe_id: str, target: str) -> object:
+        raise ProbeClientError(
+            "PROBE_IDENTITY_MISMATCH",
+            "raw target identity detail",
+            {"target": "private-target"},
+        )
+
+    client.attach = failed_attach
+    result = _run_read(debug_env, client, operation)
+
+    assert result.ok is False
+    assert result.data is None
+    assert result.code == "DEBUG_TARGET_MISMATCH"
+    assert result.message == "Connected target does not match the debug binding"
+    assert result.details == {}
+    assert "raw target identity detail" not in str(result.to_dict())
+    assert client.calls == []
+
+
+@pytest.mark.parametrize(
+    "operation", ["variables", "registers"], ids=["variables", "registers"]
+)
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("probe_id", "probe-other"),
+        ("requested_target", "stm32f103"),
+        ("resolved_part_number", "STM32F103"),
+        ("core_count", 2),
+    ],
+)
+def test_initial_returned_attachment_evidence_mismatch_fails_closed(
+    debug_env: DebugEnv, operation: str, field: str, value: object
+) -> None:
+    client = debug_env.client()
+
+    async def wrong_attach(probe_id: str, target: str) -> object:
+        evidence = {
+            "probe_id": probe_id,
+            "requested_target": target,
+            "resolved_part_number": "STM32F429ZI",
+            "core_count": 1,
+        }
+        evidence[field] = value
+        return SimpleNamespace(**evidence)
+
+    client.attach = wrong_attach
+    result = _run_read(debug_env, client, operation)
+
+    assert result.ok is False
+    assert result.data is None
+    assert result.code == "DEBUG_TARGET_MISMATCH"
+    assert result.details == {}
+    assert client.calls == []
+
+
+@pytest.mark.parametrize(
+    "operation", ["variables", "registers"], ids=["variables", "registers"]
+)
+def test_initial_raw_attach_error_is_internal_and_sanitized(
+    debug_env: DebugEnv, operation: str
+) -> None:
+    client = debug_env.client()
+
+    async def failed_attach(probe_id: str, target: str) -> object:
+        raise RuntimeError("raw attach detail")
+
+    client.attach = failed_attach
+    result = _run_read(debug_env, client, operation)
+
+    assert result.ok is False
+    assert result.data is None
+    assert result.code == "DEBUG_INTERNAL_ERROR"
+    assert result.message == "Debug read failed"
+    assert result.details == {}
+    assert "raw attach detail" not in str(result.to_dict())
+    assert client.calls == []
+
+
+@pytest.mark.parametrize(
+    "operation", ["variables", "registers"], ids=["variables", "registers"]
+)
+def test_initial_attach_cancellation_propagates_without_read(
+    debug_env: DebugEnv, operation: str
+) -> None:
+    client = debug_env.client()
+
+    async def cancelled_attach(probe_id: str, target: str) -> object:
+        raise asyncio.CancelledError
+
+    client.attach = cancelled_attach
+    with pytest.raises(asyncio.CancelledError):
+        _run_read(debug_env, client, operation)
+    assert client.calls == []
+
+
+@pytest.mark.parametrize(
+    "operation", ["variables", "registers"], ids=["variables", "registers"]
+)
+@pytest.mark.parametrize(
+    ("code", "message", "details"),
+    _STRUCTURED_PROBE_ATTACH_ERRORS,
+    ids=[entry[0] for entry in _STRUCTURED_PROBE_ATTACH_ERRORS],
+)
+def test_post_read_probe_client_errors_fail_whole_read_unchanged(
+    debug_env: DebugEnv,
+    operation: str,
+    code: str,
+    message: str,
+    details: dict[str, object],
+) -> None:
+    client = debug_env.client()
+    real_attach = client.attach
+    attach_calls = 0
+
+    async def attach(probe_id: str, target: str) -> object:
+        nonlocal attach_calls
+        attach_calls += 1
+        if attach_calls == 2:
+            raise ProbeClientError(code, message, details)
+        return await real_attach(probe_id, target)
+
+    client.attach = attach
+    result = _run_read(debug_env, client, operation)
+
+    assert result.ok is False
+    assert result.data is None
+    assert result.code == code
+    assert result.message == message
+    assert result.details == details
+    assert attach_calls == 2
+    assert len(client.calls) == 1
+
+
+@pytest.mark.parametrize(
+    "operation", ["variables", "registers"], ids=["variables", "registers"]
+)
+def test_post_read_probe_identity_mismatch_keeps_sanitized_mapping(
+    debug_env: DebugEnv, operation: str
+) -> None:
+    client = debug_env.client()
+    real_attach = client.attach
+    attach_calls = 0
+
+    async def attach(probe_id: str, target: str) -> object:
+        nonlocal attach_calls
+        attach_calls += 1
+        if attach_calls == 2:
+            raise ProbeClientError(
+                "PROBE_IDENTITY_MISMATCH",
+                "raw final identity detail",
+                {"stage": "final"},
+            )
+        return await real_attach(probe_id, target)
+
+    client.attach = attach
+    result = _run_read(debug_env, client, operation)
+
+    assert result.ok is False
+    assert result.data is None
+    assert result.code == "DEBUG_TARGET_MISMATCH"
+    assert result.message == "Connected target does not match the debug binding"
+    assert result.details == {}
+    assert "raw final identity detail" not in str(result.to_dict())
+    assert attach_calls == 2
+    assert len(client.calls) == 1
+
+
+@pytest.mark.parametrize(
+    "operation", ["variables", "registers"], ids=["variables", "registers"]
+)
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("probe_id", "probe-other"),
+        ("requested_target", "stm32f103"),
+        ("resolved_part_number", "STM32F103"),
+        ("core_count", 2),
+    ],
+)
+def test_post_read_returned_attachment_evidence_mismatch_fails_whole_read(
+    debug_env: DebugEnv, operation: str, field: str, value: object
+) -> None:
+    client = debug_env.client()
+    real_attach = client.attach
+    attach_calls = 0
+
+    async def attach(probe_id: str, target: str) -> object:
+        nonlocal attach_calls
+        attach_calls += 1
+        if attach_calls == 2:
+            evidence = {
+                "probe_id": probe_id,
+                "requested_target": target,
+                "resolved_part_number": "STM32F429ZI",
+                "core_count": 1,
+            }
+            evidence[field] = value
+            return SimpleNamespace(**evidence)
+        return await real_attach(probe_id, target)
+
+    client.attach = attach
+    result = _run_read(debug_env, client, operation)
+
+    assert result.ok is False
+    assert result.data is None
+    assert result.code == "DEBUG_TARGET_MISMATCH"
+    assert result.details == {}
+    assert attach_calls == 2
+    assert len(client.calls) == 1
+
+
+@pytest.mark.parametrize(
+    "operation", ["variables", "registers"], ids=["variables", "registers"]
+)
+def test_post_read_raw_attach_error_is_internal_and_sanitized(
+    debug_env: DebugEnv, operation: str
+) -> None:
+    client = debug_env.client()
+    real_attach = client.attach
+    attach_calls = 0
+
+    async def attach(probe_id: str, target: str) -> object:
+        nonlocal attach_calls
+        attach_calls += 1
+        if attach_calls == 2:
+            raise RuntimeError("raw final attach detail")
+        return await real_attach(probe_id, target)
+
+    client.attach = attach
+    result = _run_read(debug_env, client, operation)
+
+    assert result.ok is False
+    assert result.data is None
+    assert result.code == "DEBUG_INTERNAL_ERROR"
+    assert result.message == "Debug read failed"
+    assert result.details == {}
+    assert "raw final attach detail" not in str(result.to_dict())
+    assert attach_calls == 2
+    assert len(client.calls) == 1
+
+
+@pytest.mark.parametrize(
+    "operation", ["variables", "registers"], ids=["variables", "registers"]
+)
+def test_post_read_attach_cancellation_propagates_without_success(
+    debug_env: DebugEnv, operation: str
+) -> None:
+    client = debug_env.client()
+    real_attach = client.attach
+    attach_calls = 0
+
+    async def attach(probe_id: str, target: str) -> object:
+        nonlocal attach_calls
+        attach_calls += 1
+        if attach_calls == 2:
+            raise asyncio.CancelledError
+        return await real_attach(probe_id, target)
+
+    client.attach = attach
+    with pytest.raises(asyncio.CancelledError):
+        _run_read(debug_env, client, operation)
+    assert attach_calls == 2
     assert len(client.calls) == 1
 
 
