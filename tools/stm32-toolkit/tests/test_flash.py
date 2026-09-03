@@ -723,6 +723,7 @@ def test_flash_readback_is_chunked_to_protocol_limit(tmp_path: Path) -> None:
         "program",
         "read",
         "read",
+        "read",
     ]
     assert sum(event[0] == "program" for event in client.events) == 1
     reads = [event for event in client.events if event[0] == "read"]
