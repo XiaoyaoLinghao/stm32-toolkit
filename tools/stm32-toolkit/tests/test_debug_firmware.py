@@ -55,9 +55,16 @@ def test_debug_public_api_is_complete_and_pyocd_lazy() -> None:
     assert all(hasattr(debug, name) for name in expected)
     assert not any(name == "pyocd" or name.startswith("pyocd.") for name in sys.modules)
 from stm32_toolkit.probe.backend import ProbeAttachmentEvidence
+from stm32_toolkit.probe.flash import flash_firmware
+from stm32_toolkit.probe.handoff import _FLASH_FIELDS
 from stm32_toolkit.probe.model import OperationLevel, PROBE_PROTOCOL_VERSION
 from test_build_runner import prepare_project
-from test_flash import _elf_with_flash_segment, _publish_current_debug_build
+from test_flash import (
+    RecordingFlashClient,
+    _elf_with_flash_segment,
+    _publish_current_debug_build,
+    _request,
+)
 
 
 def _flash_result(identity: dict[str, object], *, session: str = "flash-session") -> dict[str, object]:
@@ -500,6 +507,58 @@ def test_bind_records_distinct_observation_and_flash_sessions_and_is_read_only(b
     assert before == after
     assert client.events[0] == ("attach", "probe-123", "stm32f407vg")
     assert sum(event[2] for event in client.events if event[0] == "read") == 320
+
+
+def test_genuine_flash_result_is_consumed_by_binding_without_a_second_trust_schema(
+    tmp_path: Path,
+) -> None:
+    root = prepare_project(tmp_path / "project")
+    identity = _publish_current_debug_build(root)
+    segment = _elf_with_flash_segment()[84 : 84 + 320]
+    flash_client = RecordingFlashClient(segment)
+
+    flashed = asyncio.run(flash_firmware(_request(root, identity), flash_client))
+
+    assert flashed.ok is True
+    flash_path = root / "artifacts" / "migration" / "flash-result.json"
+    assert flash_path.exists()
+    produced_document = json.loads(flash_path.read_text(encoding="utf-8"))
+    assert set(produced_document) == _FLASH_FIELDS
+
+    binding_client = BindingClient(segment)
+    result_seen_during_attach: list[bool] = []
+    binding_client.on_attach = lambda _call: result_seen_during_attach.append(
+        flash_path.exists()
+    )
+    request = DebugBindingRequest(
+        project_root=root,
+        probe_id="probe-123",
+        target="stm32f407vg",
+        workspace_id="workspace-a",
+        observation_session_id="observe-session",
+        lease_id="lease-observe",
+        expected_build_id=str(identity["buildId"]),
+        expected_elf_sha256=str(identity["elfSha256"]),
+    )
+
+    bound = asyncio.run(bind_debug_firmware(request, binding_client))
+
+    assert bound.ok is True
+    assert result_seen_during_attach
+    assert all(result_seen_during_attach)
+    assert binding_client.events[0][0] == "attach"
+    assert any(event[0] == "read" for event in binding_client.events)
+    assert set(json.loads(flash_path.read_text(encoding="utf-8"))) == set(
+        produced_document
+    )
+
+    flash_path.unlink()
+    binding_client.events.clear()
+    missing = asyncio.run(bind_debug_firmware(request, binding_client))
+
+    assert missing.ok is False
+    assert missing.code == "DEBUG_FLASH_REQUIRED"
+    assert binding_client.events == []
 
 
 @pytest.mark.parametrize("field", ["expected_build_id", "expected_elf_sha256"])

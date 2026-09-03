@@ -79,6 +79,7 @@ def _success(operation: str = "hardware") -> OperationResult[object]:
                 "expected_build_id": BUILD_ID,
                 "expected_elf_sha256": ELF_SHA,
                 "authorized": True,
+                "recovery_under_reset": False,
             },
         ),
         (
@@ -212,6 +213,36 @@ def test_hardware_cli_maps_nested_argv_to_one_exact_workflow_request(
     assert Path.cwd() == before
 
 
+def test_flash_cli_forwards_explicit_under_reset_recovery_flag(
+    monkeypatch, tmp_path: Path, capsys
+) -> None:
+    project = tmp_path / "project"
+    data = tmp_path / "runtime"
+    project.mkdir()
+    calls: list[object] = []
+
+    async def accepted(request: object) -> OperationResult[object]:
+        calls.append(request)
+        return _success("flash_workflow")
+
+    monkeypatch.setattr("stm32_toolkit.cli.flash_workflow", accepted)
+    assert main(
+        [
+            "flash",
+            *_context(project, data),
+            *_pins(),
+            "--authorized",
+            "--recovery-under-reset",
+        ]
+    ) == 0
+
+    assert capsys.readouterr().err == ""
+    assert len(calls) == 1
+    request = calls[0]
+    assert type(request) is FlashWorkflowRequest
+    assert request.recovery_under_reset is True
+
+
 def test_hardware_cli_public_signature_and_request_shape_remain_project_bound() -> None:
     assert tuple(signature(main).parameters) == ("argv",)
     assert tuple(item.name for item in fields(RegisterReadWorkflowRequest)) == (
@@ -304,6 +335,8 @@ def test_omitted_authorization_reaches_intrusive_workflow_as_exact_false(
         ["--token", "secret-token"],
         ["--lease", "secret-lease"],
         ["--authorized=true"],
+        ["--recovery-under-reset=true"],
+        ["--recovery-under-reset", "--recovery-under-reset"],
     ],
 )
 def test_forbidden_hardware_overrides_are_grammar_errors_without_secret_echo(

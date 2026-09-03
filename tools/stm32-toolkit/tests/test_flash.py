@@ -25,6 +25,7 @@ from stm32_toolkit.probe.backend import FlashBackendReport
 from stm32_toolkit.probe.client import ProbeClientError
 from stm32_toolkit.probe import flash as flash_mod
 from stm32_toolkit.probe.flash import FlashRequest, flash_firmware
+from stm32_toolkit.probe.handoff import _FLASH_FIELDS
 from stm32_toolkit.project_model import load_project_model
 from test_build_runner import (
     build_elf_bytes,
@@ -337,6 +338,7 @@ def test_flash_programs_exact_elf_reads_back_segments_and_commits_result(
             encoding="utf-8"
         )
     )
+    assert set(document) == _FLASH_FIELDS
     assert document["status"] == "success"
     assert document["operationLevel"] == "modify"
     assert document["authorized"] is True

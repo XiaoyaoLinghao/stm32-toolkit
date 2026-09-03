@@ -140,7 +140,8 @@ def test_hardware_schemas_expose_only_project_bound_arguments(tmp_path: Path):
     assert properties == {
         "stm32_probe_list": set(),
         "stm32_flash": {
-            "probeId", "expectedBuildId", "expectedElfSha256", "authorized"
+            "probeId", "expectedBuildId", "expectedElfSha256", "authorized",
+            "recoveryUnderReset",
         },
         "stm32_debug_handoff_begin": {
             "probeId", "expectedBuildId", "expectedElfSha256", "authorized",
@@ -265,6 +266,36 @@ def test_wrappers_build_requests_only_from_runtime_and_declared_fields(
     assert request.project_root == runtime.project_root
     assert request.data_root == runtime.data_root
     assert request.session_id == runtime.session_id
+    if wrapper_name == "tool_flash_for_request":
+        assert request.recovery_under_reset is False
+
+
+def test_flash_wrapper_forwards_explicit_recovery_selection(
+    monkeypatch, tmp_path: Path
+):
+    runtime = _runtime(tmp_path)
+    received: list[object] = []
+
+    async def accepted(request: object) -> OperationResult[object]:
+        received.append(request)
+        return OperationResult.success("accepted", {})
+
+    monkeypatch.setattr(mcp_mod, "flash_workflow", accepted)
+    result = asyncio.run(
+        mcp_mod.tool_flash_for_request(
+            runtime,
+            None,
+            "probe-a",
+            "a" * 64,
+            "b" * 64,
+            True,
+            True,
+        )
+    )
+
+    assert result == OperationResult.success("accepted", {}).to_dict()
+    assert len(received) == 1
+    assert received[0].recovery_under_reset is True
 
 
 @pytest.mark.parametrize(
@@ -274,7 +305,8 @@ def test_wrappers_build_requests_only_from_runtime_and_declared_fields(
         (
             "stm32_flash", "flash_workflow",
             {"probeId": "probe-a", "expectedBuildId": "a" * 64,
-             "expectedElfSha256": "b" * 64, "authorized": True},
+             "expectedElfSha256": "b" * 64, "authorized": True,
+             "recoveryUnderReset": True},
         ),
         (
             "stm32_debug_handoff_begin", "handoff_begin_workflow",
@@ -330,6 +362,8 @@ def test_registered_hardware_tools_dispatch_to_the_matching_workflow(
         tool_name, {"tool": tool_name}
     ).to_dict()
     assert len(received) == 1
+    if tool_name == "stm32_flash":
+        assert received[0].recovery_under_reset is True
 
 
 @pytest.mark.parametrize("value", ["true", "false", 1, 0])
@@ -354,6 +388,65 @@ def test_registered_intrusive_tools_reject_non_boolean_authorization(
              "expectedElfSha256": "b" * 64, "authorized": value},
         ))
     assert calls == 0
+
+
+@pytest.mark.parametrize("value", ["true", "false", 1, 0])
+def test_registered_flash_rejects_non_boolean_recovery_selection(
+    monkeypatch, tmp_path: Path, value: object
+):
+    runtime = _runtime(tmp_path)
+    calls = 0
+
+    async def forbidden(_request: object) -> OperationResult[object]:
+        nonlocal calls
+        calls += 1
+        return OperationResult.success("forbidden", {})
+
+    monkeypatch.setattr(mcp_mod, "flash_workflow", forbidden)
+    server = create_server(runtime.project_root, runtime.data_root, runtime.session_id)
+    with pytest.raises(Exception):
+        asyncio.run(
+            server.call_tool(
+                "stm32_flash",
+                {
+                    "probeId": "probe-a",
+                    "expectedBuildId": "a" * 64,
+                    "expectedElfSha256": "b" * 64,
+                    "authorized": True,
+                    "recoveryUnderReset": value,
+                },
+            )
+        )
+    assert calls == 0
+
+
+def test_registered_flash_omitted_recovery_defaults_to_exact_false(
+    monkeypatch, tmp_path: Path
+):
+    runtime = _runtime(tmp_path)
+    received: list[object] = []
+
+    async def accepted(request: object) -> OperationResult[object]:
+        received.append(request)
+        return OperationResult.success("stm32_flash", {})
+
+    monkeypatch.setattr(mcp_mod, "flash_workflow", accepted)
+    server = create_server(runtime.project_root, runtime.data_root, runtime.session_id)
+    _content, result = asyncio.run(
+        server.call_tool(
+            "stm32_flash",
+            {
+                "probeId": "probe-a",
+                "expectedBuildId": "a" * 64,
+                "expectedElfSha256": "b" * 64,
+                "authorized": True,
+            },
+        )
+    )
+
+    assert result == OperationResult.success("stm32_flash", {}).to_dict()
+    assert len(received) == 1
+    assert received[0].recovery_under_reset is False
 
 
 @pytest.mark.parametrize("value", [False, "true", "false", 1, 0, None, [], {}])

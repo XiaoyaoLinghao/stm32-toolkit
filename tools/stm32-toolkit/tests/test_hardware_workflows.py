@@ -297,6 +297,19 @@ def _seams(
     )
 
 
+def _capturing_worker_seams(
+    recorder: _Recorder, captured: list[object]
+) -> HardwareWorkflowSeams:
+    base = _seams(recorder)
+    return replace(
+        base,
+        _test_backend_factory=None,
+        supervisor_factory=lambda config, manager, contract: (
+            captured.append(contract) or _Supervisor(config, recorder)
+        ),
+    )
+
+
 def _run(awaitable: object) -> object:
     return asyncio.run(awaitable)
 
@@ -457,6 +470,127 @@ def test_flash_derives_target_and_workspace_and_uses_modify_with_exact_pins(tmp_
     )[:24]
     assert (data_root / "projects" / workspace_storage_key / "sessions" / "flash-session").is_dir()
     assert not (data_root / "projects" / workspace_storage_key / "monitor").exists()
+
+
+def test_flash_recovery_selects_one_fixed_worker_policy_and_preserves_normal_flash(
+    tmp_path: Path,
+) -> None:
+    from stm32_toolkit.probe.worker import (
+        ProbeWorkerConfig,
+        UNDER_RESET_RECOVERY_CONNECTION_POLICY,
+    )
+
+    ordinary_project = _project(tmp_path / "ordinary-project")
+    ordinary_data = tmp_path / "ordinary-data"
+    ordinary_recorder = _Recorder()
+    ordinary_captured: list[object] = []
+    ordinary = _run(
+        flash_workflow(
+            FlashWorkflowRequest(
+                ordinary_project,
+                ordinary_data,
+                "ordinary-session",
+                "probe-a",
+                BUILD_ID,
+                ELF_SHA,
+                True,
+            ),
+            _seams=_capturing_worker_seams(ordinary_recorder, ordinary_captured),
+        )
+    )
+
+    recovery_project = _project(tmp_path / "recovery-project")
+    recovery_data = tmp_path / "recovery-data"
+    recovery_recorder = _Recorder()
+    recovery_captured: list[object] = []
+    recovery = _run(
+        flash_workflow(
+            FlashWorkflowRequest(
+                recovery_project,
+                recovery_data,
+                "recovery-session",
+                "probe-a",
+                BUILD_ID,
+                ELF_SHA,
+                True,
+                True,
+            ),
+            _seams=_capturing_worker_seams(recovery_recorder, recovery_captured),
+        )
+    )
+
+    assert ordinary.ok is True
+    assert recovery.ok is True
+    assert ordinary_captured == [ProbeWorkerConfig()]
+    assert len(recovery_captured) == 1
+    recovery_config = recovery_captured[0]
+    assert type(recovery_config) is ProbeWorkerConfig
+    assert recovery_config.frequency_hz == 100_000
+    assert recovery_config.connection_policy == UNDER_RESET_RECOVERY_CONNECTION_POLICY
+    assert recovery_config.target_profile() == {}
+    assert recovery_config.transport_provider == "task8"
+    assert ordinary_recorder.events.count("operation") == 1
+    assert recovery_recorder.events.count("operation") == 1
+    assert ordinary_recorder.configs[0].operation_level is OperationLevel.MODIFY
+    assert recovery_recorder.configs[0].operation_level is OperationLevel.MODIFY
+
+
+@pytest.mark.parametrize("recovery_under_reset", ["true", 1, None, [], {}])
+def test_flash_recovery_selection_requires_exact_boolean_before_service(
+    tmp_path: Path, recovery_under_reset: object
+) -> None:
+    project = _project(tmp_path / "project")
+    recorder = _Recorder()
+
+    result = _run(
+        flash_workflow(
+            FlashWorkflowRequest(
+                project,
+                tmp_path / "data",
+                "session-a",
+                "probe-a",
+                BUILD_ID,
+                ELF_SHA,
+                True,
+                recovery_under_reset,
+            ),
+            _seams=_seams(recorder),
+        )
+    )
+
+    assert not result.ok
+    assert result.code == "HARDWARE_INPUT_INVALID"
+    assert result.message == "Flash recovery selection is invalid"
+    assert recorder.events == []
+    assert recorder.configs == []
+
+
+def test_flash_recovery_selection_keeps_authorization_precedence_before_service(
+    tmp_path: Path,
+) -> None:
+    project = _project(tmp_path / "project")
+    recorder = _Recorder()
+
+    result = _run(
+        flash_workflow(
+            FlashWorkflowRequest(
+                project,
+                tmp_path / "data",
+                "session-a",
+                "probe-a",
+                BUILD_ID,
+                ELF_SHA,
+                False,
+                True,
+            ),
+            _seams=_seams(recorder),
+        )
+    )
+
+    assert not result.ok
+    assert result.code == "AUTHORIZATION_REQUIRED"
+    assert recorder.events == []
+    assert recorder.configs == []
 
 
 @pytest.mark.parametrize("authorized", [False, "true", 1, None, [], {}])
