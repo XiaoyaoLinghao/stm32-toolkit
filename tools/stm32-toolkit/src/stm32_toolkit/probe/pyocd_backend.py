@@ -17,6 +17,7 @@ from .backend import (
     ProbeBackendError,
     ProbeDescriptor,
 )
+from .worker import NORMAL_CONNECTION_POLICY, UNDER_RESET_RECOVERY_CONNECTION_POLICY
 from .selector import (
     probe_fingerprint as calculate_probe_fingerprint,
     public_probe_selector,
@@ -280,6 +281,7 @@ class PyOCDBackend:
         frequency_hz: int = 1_000_000,
         target_profile: Mapping[str, object] | None = None,
         target_transport_factory: Callable[[str, object, Mapping[str, object]], object] | None = None,
+        connection_policy: str = NORMAL_CONNECTION_POLICY,
     ) -> None:
         if (
             isinstance(frequency_hz, bool)
@@ -288,8 +290,19 @@ class PyOCDBackend:
             or frequency_hz > _MAX_FREQUENCY_HZ
         ):
             raise ValueError("PyOCD frequency is invalid")
+        if type(connection_policy) is not str or connection_policy not in {
+            NORMAL_CONNECTION_POLICY,
+            UNDER_RESET_RECOVERY_CONNECTION_POLICY,
+        }:
+            raise ValueError("PyOCD connection policy is invalid")
+        if (
+            connection_policy == UNDER_RESET_RECOVERY_CONNECTION_POLICY
+            and frequency_hz != 100_000
+        ):
+            raise ValueError("PyOCD connection policy requires 100 kHz")
         self._driver = driver
         self._frequency_hz = frequency_hz
+        self._connection_policy = connection_policy
         self._target_profile = dict(target_profile or {})
         if target_transport_factory is not None and not callable(target_transport_factory):
             raise ValueError("Target transport factory is invalid")
@@ -720,7 +733,11 @@ class PyOCDBackend:
         self.close()
         options: dict[str, object] = {
             "auto_unlock": False,
-            "connect_mode": "halt",
+            "connect_mode": (
+                "under-reset"
+                if self._connection_policy == UNDER_RESET_RECOVERY_CONNECTION_POLICY
+                else "halt"
+            ),
             "dap_protocol": "swd",
             "frequency": self._frequency_hz,
             "no_config": True,

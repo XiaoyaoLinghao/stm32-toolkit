@@ -971,6 +971,7 @@ async def tool_flash_for_request(
     expected_build_id: str,
     expected_elf_sha256: str,
     authorized: object = False,
+    recovery_under_reset: object = False,
 ) -> dict[str, object]:
     operation = "stm32_flash"
     failure = await _client_roots_failure(runtime, context, operation)
@@ -990,6 +991,7 @@ async def tool_flash_for_request(
             expected_build_id,
             expected_elf_sha256,
             True,
+            recovery_under_reset,
         ),
         flash_workflow,
     )
@@ -2000,6 +2002,7 @@ def create_server(
         expectedBuildId: Digest,
         expectedElfSha256: Digest,
         authorized: StrictBool = False,
+        recoveryUnderReset: StrictBool = False,
     ) -> dict[str, object]:
         return await tool_flash_for_request(
             runtime,
@@ -2008,6 +2011,7 @@ def create_server(
             expectedBuildId,
             expectedElfSha256,
             authorized,
+            recoveryUnderReset,
         )
 
     @mcp.tool(name=MCP_TOOL_NAMES["debug_handoff_begin"])

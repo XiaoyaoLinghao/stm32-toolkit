@@ -388,6 +388,12 @@ def _build_parser() -> argparse.ArgumentParser:
     flash = commands.add_parser("flash")
     _add_hardware_context(flash, probe=True, pins=True)
     flash.add_argument("--authorized", action="store_true")
+    flash.add_argument(
+        "--recovery-under-reset",
+        action=_RejectDuplicateTrue,
+        nargs=0,
+        default=False,
+    )
 
     debug = commands.add_parser("debug")
     debug_commands = debug.add_subparsers(dest="debug_command", required=True)
@@ -1158,6 +1164,7 @@ async def _hardware_operation_result(
                 args.expected_build_id,
                 args.expected_elf_sha256,
                 args.authorized,
+                args.recovery_under_reset,
             )
         )
     if args.command == "debug":

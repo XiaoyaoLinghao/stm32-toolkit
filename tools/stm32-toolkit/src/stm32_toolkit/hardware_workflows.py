@@ -91,6 +91,7 @@ class FlashWorkflowRequest:
     expected_build_id: str
     expected_elf_sha256: str
     authorized: object
+    recovery_under_reset: object = False
 
 
 @dataclass(frozen=True)
@@ -742,8 +743,17 @@ async def flash_workflow(
         )
         if typed.authorized is not True:
             raise _fail("AUTHORIZATION_REQUIRED", "Explicit flash authorization is required")
+        if type(typed.recovery_under_reset) is not bool:
+            raise _fail("HARDWARE_INPUT_INVALID", "Flash recovery selection is invalid")
     except _WorkflowFailure as error:
         return _operation_failure(operation, error)
+
+    selected_seams = _seams
+    if typed.recovery_under_reset:
+        selected_seams = replace(
+            _seams,
+            worker_config=_seams.worker_config.for_under_reset_recovery(),
+        )
 
     async def action(supervisor: object, client: object) -> OperationResult[Any]:
         return await _seams.flash(
@@ -763,7 +773,7 @@ async def flash_workflow(
         paths=paths,
         probe_id=typed.probe_id,
         level=OperationLevel.MODIFY,
-        seams=_seams,
+        seams=selected_seams,
         action=action,
     )
 

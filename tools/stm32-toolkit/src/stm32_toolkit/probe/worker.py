@@ -22,6 +22,8 @@ from .backend import (
 
 
 _VERSION = "stm32-toolkit-probe-worker/1"
+NORMAL_CONNECTION_POLICY = "normal"
+UNDER_RESET_RECOVERY_CONNECTION_POLICY = "under-reset-recovery"
 # 64 MiB is the frozen PyOCD flash-image bound; canonical base64 expansion plus
 # the closed envelope remains below this fixed IPC ceiling.
 _MAX_MESSAGE_BYTES = 96 * 1024 * 1024
@@ -60,6 +62,7 @@ class ProbeWorkerConfig:
     frequency_hz: int
     target_profile_json: str
     transport_provider: str
+    connection_policy: str
 
     def __init__(
         self,
@@ -67,6 +70,7 @@ class ProbeWorkerConfig:
         frequency_hz: int = 1_000_000,
         target_profile: Mapping[str, object] | None = None,
         transport_provider: str = "task8",
+        connection_policy: str = NORMAL_CONNECTION_POLICY,
     ) -> None:
         profile_input: object = {} if target_profile is None else target_profile
         if (
@@ -74,6 +78,13 @@ class ProbeWorkerConfig:
             or not 100_000 <= frequency_hz <= 50_000_000
             or transport_provider != "task8"
             or not isinstance(profile_input, Mapping)
+            or type(connection_policy) is not str
+            or connection_policy
+            not in {NORMAL_CONNECTION_POLICY, UNDER_RESET_RECOVERY_CONNECTION_POLICY}
+            or (
+                connection_policy == UNDER_RESET_RECOVERY_CONNECTION_POLICY
+                and frequency_hz != 100_000
+            )
         ):
             raise TypeError("Probe worker configuration is invalid")
         try:
@@ -86,12 +97,21 @@ class ProbeWorkerConfig:
         object.__setattr__(self, "frequency_hz", frequency_hz)
         object.__setattr__(self, "target_profile_json", profile_json)
         object.__setattr__(self, "transport_provider", transport_provider)
+        object.__setattr__(self, "connection_policy", connection_policy)
 
     def target_profile(self) -> dict[str, object]:
         value = json.loads(self.target_profile_json)
         if not isinstance(value, dict):
             raise ProbeWorkerError("PROBE_PROTOCOL_INVALID", "Probe worker configuration is invalid")
         return value
+
+    def for_under_reset_recovery(self) -> "ProbeWorkerConfig":
+        return ProbeWorkerConfig(
+            frequency_hz=100_000,
+            target_profile=self.target_profile(),
+            transport_provider=self.transport_provider,
+            connection_policy=UNDER_RESET_RECOVERY_CONNECTION_POLICY,
+        )
 
 
 def _canonical_bytes(value: object) -> bytes:
@@ -180,6 +200,7 @@ def _worker_main(
                 frequency_hz=config.frequency_hz,
                 target_profile=config.target_profile(),
                 target_transport_factory=admitted_target_transport_factory,
+                connection_policy=config.connection_policy,
             )
         else:
             raise TypeError("Probe worker configuration is invalid")
