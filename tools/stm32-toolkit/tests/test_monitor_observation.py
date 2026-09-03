@@ -67,8 +67,9 @@ def test_monitor_closed_worker_selection_and_path_identity_boundaries(
     )
     production = module._supervisor_factory(config, manager, ProbeWorkerConfig())
     assert production._worker_config == ProbeWorkerConfig()
-    fake = module._supervisor_factory(config, manager, lambda: object())
-    assert fake._backend_factory is not None
+    factory = lambda: object()
+    fake = module._supervisor_factory(config, manager, factory)
+    assert fake._backend_factory is factory
 
     with pytest.raises(ValueError): module._canonical_root("bad", existing=False)
     with pytest.raises(ValueError): module._canonical_root(tmp_path / "missing", existing=True)
@@ -149,6 +150,49 @@ def test_monitor_closed_worker_selection_and_path_identity_boundaries(
 
     paths = SimpleNamespace(workspace_id="workspace-a", session_id="session-a")
     with pytest.raises(MonitorObservationError): module._endpoint(object(), paths, "probe-a")
+
+
+def test_monitor_production_supervisor_uses_normal_observation_profile(
+    debug_env: DebugEnv, tmp_path: Path
+) -> None:
+    from stm32_toolkit.probe.worker import NORMAL_CONNECTION_POLICY, ProbeWorkerConfig
+
+    profile = {
+        "backend": "pyocd",
+        "mcu": "stm32f429zgtx",
+        "probe_id": "probe-123",
+    }
+    base = ProbeWorkerConfig(target_profile=profile, transport_provider="task8")
+    harness = Harness(debug_env)
+    captured: list[object] = []
+
+    def supervisor_factory(config: object, lease: object, contract: object) -> object:
+        captured.append(contract)
+        return harness.supervisor(config, lease, contract)
+
+    seams = replace(
+        harness.seams(),
+        worker_config=base,
+        _test_backend_factory=None,
+        supervisor_factory=supervisor_factory,
+    )
+    opened = asyncio.run(
+        open_monitor_observation(
+            request(debug_env, tmp_path / "data"), _seams=seams
+        )
+    )
+    try:
+        assert opened.ok is True
+        assert len(captured) == 1
+        observation = captured[0]
+        assert type(observation) is ProbeWorkerConfig
+        assert observation.frequency_hz == 100_000
+        assert observation.connection_policy == NORMAL_CONNECTION_POLICY
+        assert observation.target_profile() == profile
+        assert observation.transport_provider == base.transport_provider
+    finally:
+        if opened.ok:
+            asyncio.run(opened.data.close())
 
 
 def _project_snapshot(root: Path) -> dict[str, tuple[str, bytes | None, int]]:

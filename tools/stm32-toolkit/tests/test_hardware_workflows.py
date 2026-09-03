@@ -298,11 +298,12 @@ def _seams(
 
 
 def _capturing_worker_seams(
-    recorder: _Recorder, captured: list[object]
+    recorder: _Recorder, captured: list[object], *, worker_config: object | None = None
 ) -> HardwareWorkflowSeams:
     base = _seams(recorder)
     return replace(
         base,
+        worker_config=base.worker_config if worker_config is None else worker_config,
         _test_backend_factory=None,
         supervisor_factory=lambda config, manager, contract: (
             captured.append(contract) or _Supervisor(config, recorder)
@@ -434,6 +435,70 @@ def test_closed_production_worker_selection_and_public_boundary_helpers(tmp_path
     )
     hardware_mod._make_supervisor(paths, "probe-a", OperationLevel.OBSERVE, seams)
     assert type(captured[0]) is ProbeWorkerConfig
+
+
+def test_make_supervisor_derives_observation_profile_only_for_observe(tmp_path: Path) -> None:
+    from stm32_toolkit.probe.worker import (
+        NORMAL_CONNECTION_POLICY,
+        ProbeWorkerConfig,
+    )
+
+    project = tmp_path / "project"
+    project.mkdir()
+    data = tmp_path / "data"
+    data.mkdir()
+    paths = SimpleNamespace(
+        project_root=project,
+        data_root=data,
+        workspace_root=data / "workspace",
+        session_root=data / "session",
+        workspace_id="workspace-a",
+        session_id="session-a",
+    )
+    profile = {
+        "backend": "pyocd",
+        "mcu": "stm32f429zgtx",
+        "probe_id": "probe-a",
+    }
+    base = ProbeWorkerConfig(target_profile=profile, transport_provider="task8")
+
+    captured_by_level: dict[OperationLevel, list[object]] = {}
+    for level in (OperationLevel.OBSERVE, OperationLevel.MODIFY, OperationLevel.CONTROL):
+        recorder = _Recorder()
+        captured: list[object] = []
+        seams = _capturing_worker_seams(
+            recorder,
+            captured,
+            worker_config=base,
+        )
+        hardware_mod._make_supervisor(paths, "probe-a", level, seams)
+        captured_by_level[level] = captured
+
+    assert all(len(captured_by_level[level]) == 1 for level in captured_by_level)
+
+    observation = captured_by_level[OperationLevel.OBSERVE][0]
+    assert type(observation) is ProbeWorkerConfig
+    assert observation.frequency_hz == 100_000
+    assert observation.connection_policy == NORMAL_CONNECTION_POLICY
+    assert observation.target_profile() == profile
+    assert observation.transport_provider == base.transport_provider
+    assert captured_by_level[OperationLevel.MODIFY] == [base]
+    assert captured_by_level[OperationLevel.CONTROL] == [base]
+
+    factory = lambda: object()
+    factory_captured: list[object] = []
+    factory_seams = replace(
+        _seams(_Recorder()),
+        worker_config=base,
+        _test_backend_factory=factory,
+        supervisor_factory=lambda config, manager, contract: (
+            factory_captured.append(contract) or object()
+        ),
+    )
+    hardware_mod._make_supervisor(
+        paths, "probe-a", OperationLevel.OBSERVE, factory_seams
+    )
+    assert factory_captured == [factory]
 
 
 @pytest.mark.parametrize("schema_version", [2, 3])

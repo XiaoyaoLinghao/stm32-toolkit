@@ -272,6 +272,37 @@ def test_worker_config_derives_only_the_fixed_under_reset_recovery_profile() -> 
     assert recovery.transport_provider == normal.transport_provider
 
 
+def test_worker_config_derives_normal_observation_profile_without_recovery_mechanics() -> None:
+    from stm32_toolkit.probe import worker as module
+
+    profile = {
+        "backend": "pyocd",
+        "mcu": "stm32f429zgtx",
+        "probe_id": "probe-a",
+    }
+    base = module.ProbeWorkerConfig(
+        target_profile=profile,
+        transport_provider="task8",
+    )
+    observation = base.for_observation()
+    recovery = base.for_under_reset_recovery()
+    recovery_observation = recovery.for_observation()
+
+    assert observation.frequency_hz == 100_000
+    assert observation.connection_policy == module.NORMAL_CONNECTION_POLICY
+    assert observation.target_profile() == base.target_profile()
+    assert observation.transport_provider == base.transport_provider
+    assert base == module.ProbeWorkerConfig(target_profile=profile)
+    assert base.frequency_hz == 1_000_000
+    assert base.for_under_reset_recovery().connection_policy == (
+        module.UNDER_RESET_RECOVERY_CONNECTION_POLICY
+    )
+    assert recovery_observation.frequency_hz == 100_000
+    assert recovery_observation.connection_policy == module.NORMAL_CONNECTION_POLICY
+    assert recovery_observation.target_profile() == profile
+    assert recovery_observation.transport_provider == "task8"
+
+
 def test_worker_config_and_direct_production_child_fail_closed() -> None:
     from stm32_toolkit.probe import worker as module
 
