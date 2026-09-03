@@ -169,6 +169,7 @@ class RecordingFlashClient:
         self.image = image
         self.resolved_target = resolved_target
         self.events: list[tuple[object, ...]] = []
+        self.read_timeouts: list[int] = []
 
     async def attach(self, probe_id: str, target: str) -> object:
         self.events.append(("attach", probe_id, target))
@@ -192,8 +193,15 @@ class RecordingFlashClient:
         )
         return FlashBackendReport(bytes_programmed=None, sectors_programmed=None)
 
-    async def read_memory(self, address: int, length: int) -> bytes:
+    async def read_memory(
+        self,
+        address: int,
+        length: int,
+        *,
+        timeout_ms: int = 5_000,
+    ) -> bytes:
         self.events.append(("read", address, length))
+        self.read_timeouts.append(timeout_ms)
         offset = address - 0x08000000
         return self.image[offset : offset + length]
 
@@ -332,6 +340,7 @@ def test_flash_programs_exact_elf_reads_back_segments_and_commits_result(
     assert client.events[0] == ("attach", "probe-123", "stm32f407vg")
     assert client.events[1][0:2] == ("program", "build/arm-debug/firmware.elf")
     assert client.events[2] == ("read", 0x08000000, 320)
+    assert client.read_timeouts == [30_000]
 
     document = json.loads(
         (root / "artifacts" / "migration" / "flash-result.json").read_text(
@@ -348,6 +357,33 @@ def test_flash_programs_exact_elf_reads_back_segments_and_commits_result(
     assert document["debugTarget"] == "stm32f407vg"
 
 
+def test_flash_default_timeout_covers_exact_accepted_segment_without_splitting(
+    tmp_path: Path,
+) -> None:
+    root = prepare_project(tmp_path)
+    text_size = 51_788
+    identity = _publish_current_debug_build(root, text_size=text_size)
+    image = _elf_with_flash_segment(text_size=text_size)[84 : 84 + 51_852]
+    assert len(image) == 51_852
+    client = RecordingFlashClient(image)
+
+    result = asyncio.run(flash_firmware(_request(root, identity), client))
+
+    assert result.ok is True, result.to_dict()
+    assert sum(event[0] == "program" for event in client.events) == 1
+    assert [event for event in client.events if event[0] == "read"] == [
+        ("read", 0x08000000, 51_852)
+    ]
+    assert client.read_timeouts == [30_000]
+    document = json.loads(
+        (root / "artifacts" / "migration" / "flash-result.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert set(document) == _FLASH_FIELDS
+    assert document["verifiedBytes"] == 51_852
+
+
 def test_flash_readback_mismatch_never_retains_success_evidence(
     tmp_path: Path,
 ) -> None:
@@ -361,6 +397,39 @@ def test_flash_readback_mismatch_never_retains_success_evidence(
 
     assert result.ok is False
     assert result.code == "FLASH_VERIFY_FAILED"
+    assert sum(event[0] == "program" for event in client.events) == 1
+    assert not result_path.exists()
+
+
+def test_flash_readback_timeout_never_retries_or_commits_success(tmp_path: Path) -> None:
+    root = prepare_project(tmp_path)
+    identity = _publish_current_debug_build(root)
+    result_path = root / "artifacts" / "migration" / "flash-result.json"
+    result_path.write_text('{"status":"success"}\n', encoding="utf-8")
+
+    class TimingOutReadClient(RecordingFlashClient):
+        async def read_memory(
+            self,
+            address: int,
+            length: int,
+            *,
+            timeout_ms: int = 5_000,
+        ) -> bytes:
+            self.events.append(("read", address, length))
+            self.read_timeouts.append(timeout_ms)
+            raise ProbeClientError(
+                "PROBE_TIMEOUT", "Probe backend operation timed out"
+            )
+
+    client = TimingOutReadClient(_elf_with_flash_segment()[84 : 84 + 320])
+    result = asyncio.run(flash_firmware(_request(root, identity), client))
+
+    assert result.ok is False
+    assert result.code == "PROBE_TIMEOUT"
+    assert [event[0] for event in client.events] == ["attach", "program", "read"]
+    assert sum(event[0] == "program" for event in client.events) == 1
+    assert sum(event[0] == "read" for event in client.events) == 1
+    assert client.read_timeouts == [30_000]
     assert not result_path.exists()
 
 
@@ -567,7 +636,9 @@ def test_flash_readback_is_chunked_to_protocol_limit(tmp_path: Path) -> None:
     image = _elf_with_flash_segment(text_size=text_size)[84 : 84 + 64 + text_size]
     client = RecordingFlashClient(image)
 
-    result = asyncio.run(flash_firmware(_request(root, identity), client))
+    result = asyncio.run(
+        flash_firmware(_request(root, identity, timeout_ms=12_345), client)
+    )
 
     assert result.ok is True
     reads = [event for event in client.events if event[0] == "read"]
@@ -575,6 +646,7 @@ def test_flash_readback_is_chunked_to_protocol_limit(tmp_path: Path) -> None:
         ("read", 0x08000000, 65_536),
         ("read", 0x08010000, 4_528),
     ]
+    assert client.read_timeouts == [12_345, 12_345]
 
 
 def test_flash_disk_change_during_programming_never_commits_success(tmp_path: Path) -> None:

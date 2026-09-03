@@ -102,6 +102,55 @@ def test_program_verified_elf_forces_modify_and_validates_telemetry(monkeypatch)
     ]
 
 
+def test_read_memory_preserves_default_and_forwards_explicit_timeout(monkeypatch):
+    endpoint = ProbeEndpoint(
+        protocol="stm32-toolkit-probe/2",
+        toolkit_version=__version__,
+        host="127.0.0.1",
+        port=43123,
+        token="11" * 32,
+        workspace_id="workspace-a",
+        session_id="session-a",
+        lease_id="lease-a",
+    )
+    client = ProbeClient(endpoint)
+    calls = []
+
+    async def request(
+        operation,
+        data,
+        *,
+        operation_level=OperationLevel.OBSERVE,
+        timeout_ms=5_000,
+    ):
+        calls.append((operation, data, operation_level, timeout_ms))
+        return {"bytes": "aabb"}
+
+    monkeypatch.setattr(client, "request", request)
+
+    import asyncio
+
+    assert asyncio.run(client.read_memory(0x20000000, 2)) == b"\xaa\xbb"
+    assert (
+        asyncio.run(client.read_memory(0x20000002, 2, timeout_ms=30_000))
+        == b"\xaa\xbb"
+    )
+    assert calls == [
+        (
+            "memory.read",
+            {"address": 0x20000000, "length": 2},
+            OperationLevel.OBSERVE,
+            5_000,
+        ),
+        (
+            "memory.read",
+            {"address": 0x20000002, "length": 2},
+            OperationLevel.OBSERVE,
+            30_000,
+        ),
+    ]
+
+
 def test_attach_returns_strict_physical_target_evidence(monkeypatch):
     endpoint = ProbeEndpoint(
         protocol="stm32-toolkit-probe/2",
