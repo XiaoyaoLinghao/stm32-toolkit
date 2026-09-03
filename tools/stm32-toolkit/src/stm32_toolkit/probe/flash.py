@@ -524,13 +524,25 @@ def _validate_attachment(attachment: object, request: FlashRequest) -> None:
         raise _fail("FIRMWARE_IDENTITY_MISMATCH", "Connected target does not match the project", field="connectedTarget", rule="identity")
 
 
-async def _verify_segments(client: object, segments: tuple[FlashSegment, ...]) -> int:
+async def _verify_segments(
+    client: object,
+    segments: tuple[FlashSegment, ...],
+    *,
+    timeout_ms: int | None = None,
+) -> int:
     verified = 0
     for segment in segments:
         offset = 0
         while offset < len(segment.data):
             length = min(_READ_CHUNK, len(segment.data) - offset)
-            actual = await client.read_memory(segment.address + offset, length)
+            if timeout_ms is None:
+                actual = await client.read_memory(segment.address + offset, length)
+            else:
+                actual = await client.read_memory(
+                    segment.address + offset,
+                    length,
+                    timeout_ms=timeout_ms,
+                )
             expected = segment.data[offset : offset + length]
             if type(actual) is not bytes or actual != expected:
                 raise _fail("FLASH_VERIFY_FAILED", "Programmed firmware readback did not match", address=segment.address + offset, length=length)
@@ -584,7 +596,11 @@ async def flash_firmware(request: object, client: object) -> OperationResult[Fla
         )
         if not isinstance(backend, FlashBackendReport):
             raise _fail("PROBE_RESPONSE_INVALID", "Probe Service programming response is invalid")
-        verified = await _verify_segments(client, firmware.segments)
+        verified = await _verify_segments(
+            client,
+            firmware.segments,
+            timeout_ms=typed.timeout_ms,
+        )
         current = _load_fresh_firmware(root)
         if (
             current.identity.get("buildId") != firmware.identity.get("buildId")

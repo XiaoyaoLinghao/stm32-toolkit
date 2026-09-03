@@ -437,8 +437,18 @@ class ProbeClient:
             sectors_programmed=values[1],
         )
 
-    async def read_memory(self, address: int, length: int) -> bytes:
-        data = await self.request("memory.read", {"address": address, "length": length})
+    async def read_memory(
+        self,
+        address: int,
+        length: int,
+        *,
+        timeout_ms: int = 5_000,
+    ) -> bytes:
+        data = await self.request(
+            "memory.read",
+            {"address": address, "length": length},
+            timeout_ms=timeout_ms,
+        )
         encoded = data.get("bytes")
         try:
             if not isinstance(encoded, str):
