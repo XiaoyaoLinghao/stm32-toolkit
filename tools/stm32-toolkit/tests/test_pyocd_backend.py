@@ -436,6 +436,38 @@ def test_observation_attach_uses_pinned_halt_policy_then_returns_running():
     }
 
 
+def test_modify_recovery_attach_uses_only_under_reset_at_100khz_and_stays_halted():
+    target = ConnectionPolicyTarget(state="halted")
+    driver = FakePyOCDDriver((FakePyOCDProbe("probe-a"),), target=target)
+    backend = PyOCDBackend(
+        driver,
+        frequency_hz=100_000,
+        connection_policy="under-reset-recovery",
+    )
+
+    evidence = backend.open_attach(
+        "probe-a", "stm32f429zgtx", halt_on_connect=True
+    )
+
+    assert evidence.resolved_part_number == "stm32f429zgtx"
+    assert driver.created_sessions[0].options == {
+        "auto_unlock": False,
+        "connect_mode": "under-reset",
+        "dap_protocol": "swd",
+        "frequency": 100_000,
+        "no_config": True,
+        "pack.debug_sequences.enable": True,
+        "primary_core": 0,
+        "project_dir": os.getcwd(),
+        "resume_on_disconnect": False,
+        "target_override": "stm32f429zgtx",
+        "user_script": os.devnull,
+    }
+    assert target.calls == [("get_state",)]
+    assert target.state == "halted"
+    assert driver.program_calls == []
+
+
 @pytest.mark.parametrize(
     "part_number", (None, "", "unknown\npart", r"C:\\private", 1234)
 )
@@ -719,6 +751,32 @@ def test_invalid_target_is_rejected_before_hardware_enumeration(target):
 def test_invalid_debug_clock_is_rejected(frequency_hz):
     with pytest.raises(ValueError, match="frequency"):
         PyOCDBackend(FakePyOCDDriver(), frequency_hz=frequency_hz)
+
+
+@pytest.mark.parametrize(
+    ("frequency_hz", "connection_policy"),
+    (
+        (100_000, "under-reset"),
+        (100_000, "UNDER-RESET-RECOVERY"),
+        (100_000, True),
+        (1_000_000, "under-reset-recovery"),
+        (100_001, "under-reset-recovery"),
+        (50_000_000, "under-reset-recovery"),
+    ),
+)
+def test_invalid_connection_policy_is_rejected_before_hardware_session_creation(
+    frequency_hz, connection_policy
+):
+    driver = FakePyOCDDriver((FakePyOCDProbe("probe-a"),))
+
+    with pytest.raises(ValueError, match="connection policy"):
+        PyOCDBackend(
+            driver,
+            frequency_hz=frequency_hz,
+            connection_policy=connection_policy,
+        )
+
+    assert driver.created_sessions == []
 
 
 def test_session_open_failure_closes_once_and_leaves_backend_detached():

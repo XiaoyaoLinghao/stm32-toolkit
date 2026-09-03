@@ -256,6 +256,22 @@ def test_production_worker_uses_only_closed_serializable_pyocd_and_task8_config(
         )
 
 
+def test_worker_config_derives_only_the_fixed_under_reset_recovery_profile() -> None:
+    from stm32_toolkit.probe import worker as module
+
+    normal = module.ProbeWorkerConfig(
+        target_profile={"backend": "pyocd", "mcu": "stm32f429zgtx"}
+    )
+    recovery = normal.for_under_reset_recovery()
+
+    assert normal.frequency_hz == 1_000_000
+    assert normal.connection_policy == module.NORMAL_CONNECTION_POLICY
+    assert recovery.frequency_hz == 100_000
+    assert recovery.connection_policy == module.UNDER_RESET_RECOVERY_CONNECTION_POLICY
+    assert recovery.target_profile() == normal.target_profile()
+    assert recovery.transport_provider == normal.transport_provider
+
+
 def test_worker_config_and_direct_production_child_fail_closed() -> None:
     from stm32_toolkit.probe import worker as module
 
@@ -263,6 +279,10 @@ def test_worker_config_and_direct_production_child_fail_closed() -> None:
         {"frequency_hz": True}, {"frequency_hz": 99_999},
         {"transport_provider": "dynamic"}, {"target_profile": []},
         {"target_profile": {"bad": {1}}},
+        {"connection_policy": "under-reset"},
+        {"connection_policy": "UNDER-RESET-RECOVERY"},
+        {"connection_policy": True},
+        {"frequency_hz": 1_000_000, "connection_policy": "under-reset-recovery"},
     ):
         with pytest.raises(TypeError):
             module.ProbeWorkerConfig(**kwargs)
@@ -288,6 +308,13 @@ def test_worker_config_and_direct_production_child_fail_closed() -> None:
     module._worker_main(invalid, None, None)
     assert invalid.sent[-1]["error"]["code"] == "PROBE_BACKEND_ERROR"
     assert invalid.closed is True
+
+    corrupted = module.ProbeWorkerConfig()
+    object.__setattr__(corrupted, "connection_policy", "under-reset")
+    corrupted_child = EofConnection()
+    module._worker_main(corrupted_child, corrupted, None)
+    assert corrupted_child.sent[-1]["error"]["code"] == "PROBE_BACKEND_ERROR"
+    assert corrupted_child.closed is True
 
 
 def test_worker_flash_ipc_is_bounded_but_not_limited_by_evidence_json_strings(tmp_path: Path) -> None:
