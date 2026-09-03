@@ -396,6 +396,7 @@ class ProbeService:
         self._backend_modify_tasks: set[asyncio.Task[object]] = set()
         self._modifications_draining = False
         self._backend_lock = asyncio.Lock()
+        self._observation_attachment_lock = asyncio.Lock()
         self._heartbeat_task: asyncio.Task[None] | None = None
         self._stop_lock = asyncio.Lock()
         self._stopping = False
@@ -810,7 +811,21 @@ class ProbeService:
         )
 
     async def _run_backend(self, request: ProbeRequest) -> object:
+        if (
+            request.operation == "probe.attach"
+            and self._operation_level is OperationLevel.OBSERVE
+        ):
+            async with self._observation_attachment_lock:
+                return await self._run_backend_inner(request)
+        return await self._run_backend_inner(request)
+
+    async def _run_backend_inner(self, request: ProbeRequest) -> object:
+        observation_candidate: tuple[
+            str, str, ProbeAttachmentEvidence
+        ] | None = None
+
         def invoke() -> object:
+            nonlocal observation_candidate
             if request.operation_level is OperationLevel.CONTROL:
                 try:
                     authorization = self._control_authorizations.consume(
@@ -896,7 +911,7 @@ class ProbeService:
                 payload = evidence.to_dict()
                 if self._operation_level is OperationLevel.OBSERVE:
                     payload["requestedTarget"] = target
-                    self._observation_attachment = (
+                    observation_candidate = (
                         probe_id,
                         _canonical_target(target),
                         evidence,
@@ -1110,10 +1125,15 @@ class ProbeService:
             self._backend_modify_tasks.add(task)
         task.add_done_callback(self._backend_task_finished)
         try:
-            return await asyncio.wait_for(
+            result = await asyncio.wait_for(
                 asyncio.shield(task), timeout=request.timeout_ms / 1000
             )
+            if observation_candidate is not None:
+                self._observation_attachment = observation_candidate
+            return result
         except (asyncio.TimeoutError, asyncio.CancelledError):
+            if is_attach and self._operation_level is OperationLevel.OBSERVE:
+                self._observation_attachment = None
             if not entered_backend.is_set():
                 task.cancel()
                 await asyncio.gather(task, return_exceptions=True)
