@@ -384,6 +384,33 @@ def test_flash_default_timeout_covers_exact_accepted_segment_without_splitting(
     assert document["verifiedBytes"] == 51_852
 
 
+def test_flash_final_byte_mismatch_in_exact_accepted_segment_never_commits_success(
+    tmp_path: Path,
+) -> None:
+    root = prepare_project(tmp_path)
+    text_size = 51_788
+    identity = _publish_current_debug_build(root, text_size=text_size)
+    result_path = root / "artifacts" / "migration" / "flash-result.json"
+    result_path.write_text('{"status":"success"}\n', encoding="utf-8")
+    image = bytearray(
+        _elf_with_flash_segment(text_size=text_size)[84 : 84 + 51_852]
+    )
+    image[-1] ^= 0xFF
+    assert len(image) == 51_852
+    client = RecordingFlashClient(bytes(image))
+
+    result = asyncio.run(flash_firmware(_request(root, identity), client))
+
+    assert result.ok is False
+    assert result.code == "FLASH_VERIFY_FAILED"
+    assert [event for event in client.events if event[0] == "read"] == [
+        ("read", 0x08000000, 51_852)
+    ]
+    assert sum(event[0] == "program" for event in client.events) == 1
+    assert client.read_timeouts == [30_000]
+    assert not result_path.exists()
+
+
 def test_flash_readback_mismatch_never_retains_success_evidence(
     tmp_path: Path,
 ) -> None:
@@ -641,6 +668,13 @@ def test_flash_readback_is_chunked_to_protocol_limit(tmp_path: Path) -> None:
     )
 
     assert result.ok is True
+    assert [event[0] for event in client.events] == [
+        "attach",
+        "program",
+        "read",
+        "read",
+    ]
+    assert sum(event[0] == "program" for event in client.events) == 1
     reads = [event for event in client.events if event[0] == "read"]
     assert reads == [
         ("read", 0x08000000, 65_536),
