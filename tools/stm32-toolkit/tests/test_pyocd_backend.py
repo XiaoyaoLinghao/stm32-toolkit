@@ -437,7 +437,7 @@ def test_observation_attach_uses_pinned_halt_policy_then_returns_running():
 
 
 def test_modify_recovery_attach_uses_only_under_reset_at_100khz_and_stays_halted():
-    target = ConnectionPolicyTarget(state="halted")
+    target = ConnectionPolicyTarget(part_number="stm32f429zgtx", state="halted")
     driver = FakePyOCDDriver((FakePyOCDProbe("probe-a"),), target=target)
     backend = PyOCDBackend(
         driver,
