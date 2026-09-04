@@ -1592,6 +1592,17 @@ def test_observe_attach_timeout_or_cancellation_does_not_reuse_candidate_while_r
             )
         )
         queued: asyncio.Task[object] | None = None
+        queued_started = asyncio.Event()
+
+        async def run_queued() -> object:
+            queued_started.set()
+            return await service._run_backend(
+                _observe_attach_request(
+                    timeout_ms=30_000,
+                    request_id="request-observe-queued",
+                )
+            )
+
         try:
             assert await asyncio.to_thread(backend.entered.wait, 2)
             await asyncio.sleep(0.05)
@@ -1601,14 +1612,9 @@ def test_observe_attach_timeout_or_cancellation_does_not_reuse_candidate_while_r
             release.set()
 
             assert await asyncio.to_thread(backend.close_entered.wait, 2)
-            queued = asyncio.create_task(
-                service._run_backend(
-                    _observe_attach_request(
-                        timeout_ms=30_000,
-                        request_id="request-observe-queued",
-                    )
-                )
-            )
+            queued = asyncio.create_task(run_queued())
+            await asyncio.wait_for(asyncio.shield(queued_started.wait()), 1)
+            await asyncio.sleep(0.05)
             assert not queued.done()
             close_release.set()
 
