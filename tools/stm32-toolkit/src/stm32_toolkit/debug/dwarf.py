@@ -159,7 +159,11 @@ def _is_declaration(die: object) -> bool:
     return value is True or (type(value) is int and value == 1)
 
 
-def _validated_variable_specification(die: object, cu: object) -> object | None:
+def _validated_variable_specification(
+    die: object,
+    cu: object,
+    boundary_offsets: frozenset[int],
+) -> object | None:
     attribute = getattr(die, "attributes", {}).get("DW_AT_specification")
     if attribute is None:
         return None
@@ -188,6 +192,11 @@ def _validated_variable_specification(die: object, cu: object) -> object | None:
         )
     target_offset = cu_offset + raw_value
     if target_offset < cu_die_offset or target_offset >= cu_offset + cu_size:
+        raise _fail(
+            "DWARF_ELF_MALFORMED",
+            "DWARF variable specification reference is malformed",
+        )
+    if target_offset not in boundary_offsets:
         raise _fail(
             "DWARF_ELF_MALFORMED",
             "DWARF variable specification reference is malformed",
@@ -648,6 +657,8 @@ class DwarfCatalog:
             die_count = 0
             catalog_count = 0
             for cu in dwarf.iter_CUs():
+                dies = []
+                boundary_offsets: set[int] = set()
                 for die in cu.iter_DIEs():
                     die_count += 1
                     if die_count > max_dies:
@@ -662,11 +673,19 @@ class DwarfCatalog:
                                 "DWARF DIE nesting exceeds its limit",
                             )
                         parent = getattr(parent, "_parent", None)
+                    dies.append(die)
+                    offset = getattr(die, "offset", None)
+                    if type(offset) is int:
+                        boundary_offsets.add(offset)
+                frozen_boundaries = frozenset(boundary_offsets)
+                for die in dies:
                     if die.tag != "DW_TAG_variable":
                         continue
                     if _is_declaration(die):
                         continue
-                    specification = _validated_variable_specification(die, cu)
+                    specification = _validated_variable_specification(
+                        die, cu, frozen_boundaries
+                    )
                     name_owner = (
                         die
                         if "DW_AT_name" in die.attributes
