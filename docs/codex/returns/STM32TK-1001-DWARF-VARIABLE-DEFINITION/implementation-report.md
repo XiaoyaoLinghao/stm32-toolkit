@@ -55,8 +55,10 @@ behavior is:
   location and declaration status are not inherited.
 - Existing lookup ambiguity, readable-region, type/location, provenance,
   per-item read, and sampling semantics remain in force. Invalid or unsupported
-  specification references fail with DWARF_ELF_MALFORMED before a guessed
-  address or target read. _integer_attribute and _location remain unchanged.
+  specification references fail catalog construction with DWARF_ELF_MALFORMED,
+  before a readable selection or typed-variable read derived from that reference.
+  Existing firmware-binding readback is unchanged. _integer_attribute and
+  _location remain unchanged.
 
 ## Test-first chronology and review correction
 
@@ -212,8 +214,8 @@ sample_variables paths with a test-only in-memory client seam. They verify
 successful decoded items, exact request address/length
 (0x20000134, 4), binding revalidation, per-item status, and two scheduled
 samples. This is synthetic memory evidence and is not physical board
-acceptance. A new real-board testtime sample remains unperformed and separately
-authorized.
+acceptance. A new real-board testtime sample remains unperformed and requires
+new explicit user authorization.
 
 The committed test-only changes are:
 
@@ -255,10 +257,13 @@ file was modified and no physical firmware was switched.
 
 ## Cleanup and residual evidence
 
-Cleanup was attempted only for run-owned disposable output and was never
-bypassed when the Windows execution policy rejected recursive removal before
-execution. No source-controlled test, reusable fixture, user data, failure
-evidence, external ELF, or review checkout was deleted.
+Cleanup was attempted only for run-owned disposable output. The tool execution
+policy rejected the recursive removal command before PowerShell execution for
+dwd-full-0904 and all three dwr roots; no deletion or bypass occurred. This is
+a tool execution policy result, not a Windows setting finding. dwd-red-0904 and
+dwd-green-0904 were retained without a recorded cleanup attempt. No
+source-controlled test, reusable fixture, user data, failure evidence,
+external ELF, or review checkout was deleted.
 
 Known Luna-owned residual basetemp roots:
 
@@ -269,8 +274,10 @@ Known Luna-owned residual basetemp roots:
 - C:\tmp\dwr-green-0904
 - C:\tmp\dwr-full-0904
 
-The explicit Remove-Item -LiteralPath ... -Recurse -Force attempts for these
-roots were rejected by policy before execution; the roots remain. The first
+The explicit Remove-Item -LiteralPath ... -Recurse -Force attempts for
+dwd-full-0904 and dwr-red-0904, dwr-green-0904, and dwr-full-0904 were rejected
+by the tool execution policy before PowerShell execution; those roots remain.
+No cleanup attempt was recorded for dwd-red-0904 or dwd-green-0904. The first
 wave full root was observed with 8821 entries before its blocked cleanup.
 
 Known Sol-owned residual roots and evidence:
@@ -279,6 +286,8 @@ Known Sol-owned residual roots and evidence:
 - C:\tmp\dwd-red-review-0904: clean detached review checkout retained.
 - C:\tmp\dwd-sol-0904: Sol matrix output retained.
 - C:\tmp\dwd-review-0904: Sol review checkout retained.
+- C:\tmp\dwd-final-review-0904: subsequently created retained reviewer
+  checkout, not disposable test output.
 - C:\tmp\dwr-sol-0904: final Sol matrix output retained.
 - C:\tmp\dwr-review-0904: final Sol review checkout retained.
 
