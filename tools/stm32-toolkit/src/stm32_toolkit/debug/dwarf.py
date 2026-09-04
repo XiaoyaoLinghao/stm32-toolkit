@@ -140,6 +140,81 @@ def _integer_attribute(die: object, attribute_name: str) -> int | None:
     return attribute.value if isinstance(attribute.value, int) else None
 
 
+_VARIABLE_SPECIFICATION_FORMS = frozenset(
+    {
+        "DW_FORM_ref1",
+        "DW_FORM_ref2",
+        "DW_FORM_ref4",
+        "DW_FORM_ref8",
+        "DW_FORM_ref_udata",
+    }
+)
+
+
+def _is_declaration(die: object) -> bool:
+    attribute = getattr(die, "attributes", {}).get("DW_AT_declaration")
+    if attribute is None:
+        return False
+    value = attribute.value
+    return value is True or (type(value) is int and value == 1)
+
+
+def _validated_variable_specification(die: object, cu: object) -> object | None:
+    attribute = getattr(die, "attributes", {}).get("DW_AT_specification")
+    if attribute is None:
+        return None
+    if getattr(attribute, "form", None) not in _VARIABLE_SPECIFICATION_FORMS:
+        raise _fail(
+            "DWARF_ELF_MALFORMED",
+            "DWARF variable specification reference is malformed",
+        )
+    raw_value = getattr(attribute, "raw_value", None)
+    if type(raw_value) is not int or raw_value < 0:
+        raise _fail(
+            "DWARF_ELF_MALFORMED",
+            "DWARF variable specification reference is malformed",
+        )
+    cu_offset = getattr(cu, "cu_offset", None)
+    cu_die_offset = getattr(cu, "cu_die_offset", None)
+    cu_size = getattr(cu, "size", None)
+    if (
+        type(cu_offset) is not int
+        or type(cu_die_offset) is not int
+        or type(cu_size) is not int
+    ):
+        raise _fail(
+            "DWARF_ELF_MALFORMED",
+            "DWARF variable specification reference is malformed",
+        )
+    target_offset = cu_offset + raw_value
+    if target_offset < cu_die_offset or target_offset >= cu_offset + cu_size:
+        raise _fail(
+            "DWARF_ELF_MALFORMED",
+            "DWARF variable specification reference is malformed",
+        )
+    try:
+        target = die.get_DIE_from_attribute("DW_AT_specification")
+    except (AttributeError, KeyError, TypeError, ValueError, ElfToolsDwarfError):
+        raise _fail(
+            "DWARF_ELF_MALFORMED",
+            "DWARF variable specification reference is malformed",
+        ) from None
+    if (
+        target is None
+        or getattr(target, "offset", None) != target_offset
+        or getattr(target, "cu", None) is not cu
+        or getattr(target, "tag", None) != "DW_TAG_variable"
+        or getattr(target, "offset", None) == getattr(die, "offset", None)
+        or not _is_declaration(target)
+        or "DW_AT_specification" in getattr(target, "attributes", {})
+    ):
+        raise _fail(
+            "DWARF_ELF_MALFORMED",
+            "DWARF variable specification reference is malformed",
+        )
+    return target
+
+
 @dataclass(frozen=True)
 class _CatalogSymbol:
     name: str
@@ -589,9 +664,20 @@ class DwarfCatalog:
                         parent = getattr(parent, "_parent", None)
                     if die.tag != "DW_TAG_variable":
                         continue
-                    if _integer_attribute(die, "DW_AT_declaration") == 1:
+                    if _is_declaration(die):
                         continue
-                    name = _name(die, "")
+                    specification = _validated_variable_specification(die, cu)
+                    name_owner = (
+                        die
+                        if "DW_AT_name" in die.attributes
+                        else specification or die
+                    )
+                    type_owner = (
+                        die
+                        if "DW_AT_type" in die.attributes
+                        else specification or die
+                    )
+                    name = _name(name_owner, "")
                     if not _IDENTIFIER.fullmatch(name):
                         continue
                     catalog_count += 1
@@ -601,7 +687,7 @@ class DwarfCatalog:
                             "DWARF catalog entry count exceeds its limit",
                         )
                     try:
-                        dwarf_type = type_graph.resolve_attribute(die)
+                        dwarf_type = type_graph.resolve_attribute(type_owner)
                         type_error = None
                     except DwarfError as exc:
                         dwarf_type = None
