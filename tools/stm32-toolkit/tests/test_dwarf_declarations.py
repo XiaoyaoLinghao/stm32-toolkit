@@ -22,6 +22,7 @@ from dwarf_declaration_fixture import (
     DECLARATION_ADDRESS,
     VARIABLE_ADDRESS,
     build_declaration_elf,
+    build_interior_payload_elf,
 )
 from stm32_toolkit.project_model import load_project_model
 from test_debug_read import DebugEnv, debug_env
@@ -53,6 +54,22 @@ def test_concrete_specification_definition_resolves_literal_unsigned_variable(
     assert selected.byte_size == 4
     assert selected.type.signed is False
     assert selected.decode(bytes([37, 0, 0, 0])).value == 37
+
+
+def test_forward_specification_reference_resolves_later_declaration(
+    tmp_path: Path,
+) -> None:
+    catalog = DwarfCatalog.from_elf(
+        _write_elf(tmp_path, forward_reference=True),
+        readable_regions=((0x20000000, 0x20030000),),
+    )
+
+    selected = catalog.lookup("testtime")
+
+    assert selected.address == 0x20000134
+    assert selected.byte_size == 4
+    assert selected.type.signed is False
+    assert selected.type.aliases == ("word_alias",)
 
 
 def test_direct_definition_without_specification_remains_readable(tmp_path: Path) -> None:
@@ -197,6 +214,17 @@ def test_malformed_specification_references_fail_closed(
     tmp_path: Path, kind: str
 ) -> None:
     path = _write_elf(tmp_path, malformed_reference=kind)
+
+    with pytest.raises(DwarfError) as raised:
+        DwarfCatalog.from_elf(
+            path, readable_regions=((0x20000000, 0x20030000),)
+        )
+    assert raised.value.code == "DWARF_ELF_MALFORMED"
+
+
+def test_supported_reference_inside_die_payload_is_malformed(tmp_path: Path) -> None:
+    path = tmp_path / "interior-payload.elf"
+    path.write_bytes(build_interior_payload_elf())
 
     with pytest.raises(DwarfError) as raised:
         DwarfCatalog.from_elf(

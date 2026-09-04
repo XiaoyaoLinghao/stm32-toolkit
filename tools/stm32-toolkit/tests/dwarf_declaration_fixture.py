@@ -171,6 +171,47 @@ class _Cu:
         return header + bytes(self.body)
 
 
+def _attribute_size(attribute: _Attribute) -> int:
+    if attribute.form == _DW_FORM_STRING:
+        return len(str(attribute.value).encode("utf-8")) + 1
+    if attribute.form in {_DW_FORM_DATA1, _DW_FORM_FLAG}:
+        return 1
+    if attribute.form == _DW_FORM_FLAG_PRESENT:
+        return 0
+    if attribute.form == _DW_FORM_REF1:
+        return 1
+    if attribute.form == _DW_FORM_REF2:
+        return 2
+    if attribute.form in {_DW_FORM_REF4, _DW_FORM_REF_ADDR}:
+        return 4
+    if attribute.form == _DW_FORM_REF8:
+        return 8
+    if attribute.form == _DW_FORM_REF_UDATA:
+        value = attribute.value
+        if isinstance(value, _Die):
+            if value.offset is None:
+                raise AssertionError("ULEB reference target was not assigned")
+            value = value.offset
+        return len(_uleb(int(value)))
+    if attribute.form == _DW_FORM_EXPRLOC:
+        expression = bytes(attribute.value)
+        return len(_uleb(len(expression))) + len(expression)
+    raise AssertionError(f"unsupported test form {attribute.form:#x}")
+
+
+def _assign_offsets(cu: _Cu, die: _Die, cursor: int = 0) -> int:
+    """Assign every DIE offset before encoding forward references."""
+
+    die.offset = cu.start + 11 + cursor
+    cursor += len(_uleb(cu.abbreviations.code_for(die)))
+    cursor += sum(_attribute_size(attribute) for attribute in die.attributes)
+    for child in die.children:
+        cursor = _assign_offsets(cu, child, cursor)
+    if die.children:
+        cursor += 1
+    return cursor
+
+
 def _name(value: str) -> _Attribute:
     return _Attribute(_DW_AT_NAME, _DW_FORM_STRING, value)
 
@@ -203,6 +244,7 @@ def build_declaration_elf(
     declaration_location: int | None = None,
     declaration_flag_form: str = "flag",
     malformed_reference: str | None = None,
+    forward_reference: bool = False,
 ) -> bytes:
     """Build a valid ELF32/ARM image with bounded DWARF declaration shapes."""
 
@@ -312,13 +354,56 @@ def build_declaration_elf(
     # Roots use children to retain a valid tree while the parser still visits
     # each variable in CU order. Add all nodes once so reference offsets exist.
     cu2_root = _Die(_DW_TAG_COMPILE_UNIT, (_name(cu2.name),))
-    cu2_root.children = (base, alias, declaration, *concrete)
+    cu2_root.children = (
+        base,
+        alias,
+        *concrete,
+        declaration,
+    ) if forward_reference else (base, alias, declaration, *concrete)
+    if forward_reference:
+        _assign_offsets(cu2, cu2_root)
     cu2.add(cu2_root)
 
     cu2_bytes = cu2.encode()
     info = cu1_bytes + cu2_bytes
     abbrev = abbreviations.encode()
     return _build_elf(info, abbrev)
+
+
+def build_interior_payload_elf() -> bytes:
+    """Build a valid ELF whose supported ref4 points into a name payload."""
+
+    root = _Die(_DW_TAG_COMPILE_UNIT, (_name("host\x02forged"),))
+    fake_declaration = _Die(
+        _DW_TAG_VARIABLE,
+        (
+            _name("unused"),
+            _Attribute(_DW_AT_DECLARATION, _DW_FORM_FLAG_PRESENT, True),
+        ),
+    )
+    base = _Die(
+        _DW_TAG_BASE_TYPE,
+        (
+            _name("unsigned int"),
+            _Attribute(_DW_AT_BYTE_SIZE, _DW_FORM_DATA1, 4),
+            _Attribute(_DW_AT_ENCODING, _DW_FORM_DATA1, 7),
+        ),
+    )
+    concrete = _Die(
+        _DW_TAG_VARIABLE,
+        (
+            _type(base),
+            _location(VARIABLE_ADDRESS),
+            _specification(16),
+        ),
+    )
+    root.children = (base, concrete)
+    abbreviations = _Abbreviations()
+    assert abbreviations.code_for(root) == 1
+    assert abbreviations.code_for(fake_declaration) == 2
+    cu = _Cu(0, abbreviations, "diagnostic")
+    cu.add(root)
+    return _build_elf(cu.encode(), abbreviations.encode())
 
 
 def _build_elf(debug_info: bytes, debug_abbrev: bytes) -> bytes:
@@ -473,4 +558,5 @@ __all__ = [
     "DECLARATION_ADDRESS",
     "VARIABLE_ADDRESS",
     "build_declaration_elf",
+    "build_interior_payload_elf",
 ]
