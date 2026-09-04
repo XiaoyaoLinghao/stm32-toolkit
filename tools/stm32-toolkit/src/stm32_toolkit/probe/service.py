@@ -815,8 +815,11 @@ class ProbeService:
             request.operation == "probe.attach"
             and self._operation_level is OperationLevel.OBSERVE
         ):
-            async with self._observation_attachment_lock:
-                return await self._run_backend_inner(request)
+            loop = asyncio.get_running_loop()
+            deadline = loop.time() + request.timeout_ms / 1000
+            async with asyncio.timeout_at(deadline):
+                async with self._observation_attachment_lock:
+                    return await self._run_backend_inner(request)
         return await self._run_backend_inner(request)
 
     async def _run_backend_inner(self, request: ProbeRequest) -> object:
