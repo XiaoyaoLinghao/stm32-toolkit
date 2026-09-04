@@ -292,6 +292,35 @@ class BlockingRecoveryCloseAttachBackend(BlockingAttachBackend):
         super().close()
 
 
+class BlockingFailingRecoveryCloseAttachBackend(
+    BlockingRecoveryCloseAttachBackend
+):
+    def __init__(
+        self,
+        *,
+        entered: threading.Event,
+        release: threading.Event,
+        close_entered: threading.Event,
+        close_release: threading.Event,
+    ) -> None:
+        super().__init__(
+            entered=entered,
+            release=release,
+            close_entered=close_entered,
+            close_release=close_release,
+        )
+        self.fail_next_close = True
+
+    def close(self) -> None:
+        self.close_entered.set()
+        self.close_release.wait(2)
+        if self.fail_next_close:
+            self.fail_next_close = False
+            self.events.append(("close_failed",))
+            raise RuntimeError("recovery close failed")
+        super().close()
+
+
 class ExplicitRecoveryAttachBackend(BlockingAttachBackend):
     def __init__(
         self,
@@ -1316,6 +1345,226 @@ def test_observation_attachment_is_service_local(tmp_path: Path) -> None:
     run(scenario())
 
 
+def test_observe_queued_attach_timeout_includes_lifecycle_lock_wait(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        entered = threading.Event()
+        release = threading.Event()
+        backend = BlockingAttachBackend(entered=entered, release=release)
+        service = make_service(
+            tmp_path, level=OperationLevel.OBSERVE, backend=backend
+        )
+        first = asyncio.create_task(
+            service._run_backend(
+                _observe_attach_request(
+                    timeout_ms=30_000,
+                    request_id="request-observe-first",
+                )
+            )
+        )
+        queued: asyncio.Task[object] | None = None
+        try:
+            assert await asyncio.to_thread(backend.entered.wait, 2)
+            queued = asyncio.create_task(
+                service._run_backend(
+                    _observe_attach_request(
+                        timeout_ms=20,
+                        request_id="request-observe-expired",
+                    )
+                )
+            )
+            await asyncio.sleep(0.20)
+
+            assert queued.done()
+            with pytest.raises(asyncio.TimeoutError):
+                await queued
+            assert not release.is_set()
+            assert [event for event in backend.events if event[0] == "open_attach"] == [
+                ("open_attach", "probe-a", "STM32F429ZITx", False),
+            ]
+
+            release.set()
+            await first
+            await asyncio.sleep(0)
+            assert [event for event in backend.events if event[0] == "open_attach"] == [
+                ("open_attach", "probe-a", "STM32F429ZITx", False),
+            ]
+        finally:
+            release.set()
+            if not first.done():
+                first.cancel()
+            if queued is not None and not queued.done():
+                queued.cancel()
+            await asyncio.gather(first, return_exceptions=True)
+            if queued is not None:
+                await asyncio.gather(queued, return_exceptions=True)
+            pending = tuple(service._backend_tasks)
+            if pending:
+                await asyncio.gather(*pending, return_exceptions=True)
+            if not backend.closed and not backend.attach_active:
+                backend.close()
+
+    run(scenario())
+
+
+def test_observe_queued_attach_timeout_maps_to_public_error(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        entered = threading.Event()
+        release = threading.Event()
+        backend = BlockingAttachBackend(entered=entered, release=release)
+        service = make_service(
+            tmp_path, level=OperationLevel.OBSERVE, backend=backend
+        )
+        endpoint = await service.start()
+        first_client = ProbeClient(endpoint)
+        second_client = ProbeClient(endpoint)
+        first: asyncio.Task[object] | None = None
+        queued: asyncio.Task[object] | None = None
+        try:
+            first = asyncio.create_task(
+                first_client.attach("probe-a", "STM32F429ZITx")
+            )
+            assert await asyncio.to_thread(backend.entered.wait, 2)
+            queued = asyncio.create_task(
+                second_client.request(
+                    "probe.attach",
+                    {"probeId": "probe-a", "target": "STM32F429ZITx"},
+                    timeout_ms=20,
+                )
+            )
+            await asyncio.sleep(0.20)
+
+            assert queued.done()
+            with pytest.raises(ProbeClientError) as caught:
+                await queued
+            assert caught.value.code == "PROBE_TIMEOUT"
+            assert caught.value.message == "Probe backend operation timed out"
+            assert caught.value.details == {}
+
+            release.set()
+            assert first is not None
+            await first
+            assert [event for event in backend.events if event[0] == "open_attach"] == [
+                ("open_attach", "probe-a", "STM32F429ZITx", False),
+            ]
+        finally:
+            release.set()
+            if first is not None and not first.done():
+                first.cancel()
+            if queued is not None and not queued.done():
+                queued.cancel()
+            tasks = tuple(
+                task for task in (first, queued) if task is not None
+            )
+            if tasks:
+                await asyncio.gather(*tasks, return_exceptions=True)
+            await first_client.close()
+            await second_client.close()
+            await service.stop()
+
+    run(scenario())
+
+
+def test_observe_recovery_close_failure_releases_deadline_fence(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        entered = threading.Event()
+        release = threading.Event()
+        close_entered = threading.Event()
+        close_release = threading.Event()
+        backend = BlockingFailingRecoveryCloseAttachBackend(
+            entered=entered,
+            release=release,
+            close_entered=close_entered,
+            close_release=close_release,
+        )
+        service = make_service(
+            tmp_path, level=OperationLevel.OBSERVE, backend=backend
+        )
+        first = asyncio.create_task(
+            service._run_backend(
+                _observe_attach_request(
+                    timeout_ms=20,
+                    request_id="request-observe-timeout",
+                )
+            )
+        )
+        second: asyncio.Task[object] | None = None
+        third: asyncio.Task[object] | None = None
+        try:
+            assert await asyncio.to_thread(backend.entered.wait, 2)
+            await asyncio.sleep(0.05)
+            release.set()
+            assert await asyncio.to_thread(backend.close_entered.wait, 2)
+
+            second = asyncio.create_task(
+                service._run_backend(
+                    _observe_attach_request(
+                        timeout_ms=20,
+                        request_id="request-observe-expired",
+                    )
+                )
+            )
+            await asyncio.sleep(0.20)
+
+            assert second.done()
+            with pytest.raises(asyncio.TimeoutError):
+                await second
+            assert [event for event in backend.events if event[0] == "open_attach"] == [
+                ("open_attach", "probe-a", "STM32F429ZITx", False),
+            ]
+
+            close_release.set()
+            with pytest.raises(ProbeBackendError) as caught:
+                await first
+            assert caught.value.code == "PROBE_CLOSE_FAILED"
+            assert caught.value.message == "Probe attach cleanup failed"
+
+            third = asyncio.create_task(
+                service._run_backend(
+                    _observe_attach_request(
+                        timeout_ms=30_000,
+                        request_id="request-observe-explicit-third",
+                    )
+                )
+            )
+            await third
+            open_attach_events = [
+                event for event in backend.events if event[0] == "open_attach"
+            ]
+            assert open_attach_events == [
+                ("open_attach", "probe-a", "STM32F429ZITx", False),
+                ("open_attach", "probe-a", "STM32F429ZITx", False),
+            ]
+            close_failed_index = backend.events.index(("close_failed",))
+            second_attach_index = backend.events.index(
+                open_attach_events[1], close_failed_index
+            )
+            assert close_failed_index < second_attach_index
+        finally:
+            release.set()
+            close_release.set()
+            if not first.done():
+                first.cancel()
+            if second is not None and not second.done():
+                second.cancel()
+            if third is not None and not third.done():
+                third.cancel()
+            tasks = tuple(
+                task for task in (first, second, third) if task is not None
+            )
+            await asyncio.gather(*tasks, return_exceptions=True)
+            pending = tuple(service._backend_tasks)
+            if pending:
+                await asyncio.gather(*pending, return_exceptions=True)
+            if not backend.closed and not backend.attach_active:
+                backend.close()
+
+    run(scenario())
+
+
 @pytest.mark.parametrize("cancelled", [False, True], ids=["timeout", "cancelled"])
 def test_observe_attach_timeout_or_cancellation_does_not_reuse_candidate_while_recovering(
     cancelled: bool, tmp_path: Path
@@ -1342,14 +1591,7 @@ def test_observe_attach_timeout_or_cancellation_does_not_reuse_candidate_while_r
                 )
             )
         )
-        queued = asyncio.create_task(
-            service._run_backend(
-                _observe_attach_request(
-                    timeout_ms=30_000,
-                    request_id="request-observe-queued",
-                )
-            )
-        )
+        queued: asyncio.Task[object] | None = None
         try:
             assert await asyncio.to_thread(backend.entered.wait, 2)
             await asyncio.sleep(0.05)
@@ -1359,6 +1601,14 @@ def test_observe_attach_timeout_or_cancellation_does_not_reuse_candidate_while_r
             release.set()
 
             assert await asyncio.to_thread(backend.close_entered.wait, 2)
+            queued = asyncio.create_task(
+                service._run_backend(
+                    _observe_attach_request(
+                        timeout_ms=30_000,
+                        request_id="request-observe-queued",
+                    )
+                )
+            )
             assert not queued.done()
             close_release.set()
 
@@ -1383,9 +1633,10 @@ def test_observe_attach_timeout_or_cancellation_does_not_reuse_candidate_while_r
             close_release.set()
             if not operation.done():
                 operation.cancel()
-            if not queued.done():
+            if queued is not None and not queued.done():
                 queued.cancel()
-            await asyncio.gather(operation, queued, return_exceptions=True)
+            tasks = (operation,) if queued is None else (operation, queued)
+            await asyncio.gather(*tasks, return_exceptions=True)
             pending = tuple(service._backend_tasks)
             if pending:
                 await asyncio.gather(*pending, return_exceptions=True)
