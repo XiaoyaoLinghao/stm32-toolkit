@@ -2,11 +2,13 @@
 
 用户于 2026-09-04 指定的原始代码目录：
 
-`D:\workspace\WDS\_CODE\branches\stable`
+`D:\workspace\MR_Code\branches\stable`
 
 此路径是用户提供的来源定位，不是当前 Toolkit 实机命令的 project-root。
-本机当次 `Test-Path -LiteralPath` 返回 `False`；原始目录内容、Git HEAD 和与验证副本的
-逐文件对应关系尚未核实。保留用户原始拼写，不自行改写为其他历史路径。
+本机当次 `Test-Path -LiteralPath` 返回 `True`，确认目录存在。Git 检查返回“不是 Git
+仓库”，因此不记录或推测原始目录 Git HEAD。与验证副本的逐文件对应关系尚未核实。
+用户最初提供的 `D:\workspace\WDS\_CODE\branches\stable` 不存在，随后明确更正为上述
+`MR_Code` 路径；以更正后的路径为准。
 
 当前已经执行 bind/register/sample 的验证副本为：
 
