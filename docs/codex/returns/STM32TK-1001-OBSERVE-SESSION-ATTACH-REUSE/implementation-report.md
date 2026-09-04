@@ -305,7 +305,7 @@ Total: 308 collected; 308 passed, 0 failed, 0 skipped.
 ## Changed paths and self-review
 
 The accepted-base-to-CodeHead diff contains exactly these seven paths. The earlier tracked
-implementation report is present legitimately because this branch contains multiple accepted
+implementation report is present legitimately because this branch contains retained prior
 implementation/report waves; it is classified as prior report history, not falsely omitted or
 relabelled as a product path:
 
