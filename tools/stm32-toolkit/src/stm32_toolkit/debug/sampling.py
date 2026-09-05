@@ -272,7 +272,7 @@ def _sampled_register(
         register.authorize_read(False, sampling=True)
     except SvdError as error:
         raise _read_fail(error.code, "SVD register cannot be sampled") from None
-    region = _region(binding, register.address, register.size_bytes)
+    region = _region(binding, register.address, register.size_bytes, svd=True)
 
     def decode(data: bytes) -> TypedValue:
         value = int.from_bytes(data, "little", signed=False)
