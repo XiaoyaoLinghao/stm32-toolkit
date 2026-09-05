@@ -177,6 +177,63 @@ def _factory(mode: str, marker: str) -> _WorkerTestBackend:
     return _WorkerTestBackend(mode, marker)
 
 
+class _StrictRegisterWorkerBackend:
+    """Spawn-safe backend seam that enforces the frozen register contract."""
+
+    def __init__(self, mode: str) -> None:
+        self.mode = mode
+
+    def _read(self, names: object) -> dict[str, int]:
+        if not isinstance(names, tuple):
+            raise ProbeBackendError(
+                "PROBE_REGISTER_INVALID", "Strict register fake requires tuple names"
+            )
+        if self.mode == "safe-state":
+            raise ProbeBackendError(
+                "PROBE_REGISTER_UNAVAILABLE",
+                "Core registers require an already halted target",
+                {"state": "running"},
+            )
+        if self.mode == "extra-details":
+            raise ProbeBackendError(
+                "PROBE_REGISTER_UNAVAILABLE",
+                "Core registers require an already halted target",
+                {"state": "running", "secret": "private"},
+            )
+        if self.mode == "wrong-type-details":
+            raise ProbeBackendError(
+                "PROBE_REGISTER_UNAVAILABLE",
+                "Core registers require an already halted target",
+                {"state": 7},
+            )
+        if self.mode == "unknown-state-details":
+            raise ProbeBackendError(
+                "PROBE_REGISTER_UNAVAILABLE",
+                "Core registers require an already halted target",
+                {"state": "faulted"},
+            )
+        if self.mode == "other-code-details":
+            raise ProbeBackendError(
+                "PROBE_REGISTER_INVALID",
+                "Core register request is invalid",
+                {"state": "running"},
+            )
+        return {name: index + 1 for index, name in enumerate(names)}
+
+    def read_core_registers(self, names: object) -> dict[str, int]:
+        return self._read(names)
+
+    def target_read_core_registers(self, names: object) -> dict[str, int]:
+        return self._read(names)
+
+    def close(self) -> None:
+        return None
+
+
+def _strict_register_factory(mode: str) -> _StrictRegisterWorkerBackend:
+    return _StrictRegisterWorkerBackend(mode)
+
+
 def _attach_recovery_factory(mode: str, marker_root: str) -> _AttachRecoveryWorkerBackend:
     return _AttachRecoveryWorkerBackend(mode, marker_root)
 
@@ -376,6 +433,57 @@ def test_worker_exercises_the_complete_fixed_probe_backend_port(tmp_path: Path) 
     assert worker.read_target_transport(opened["transport_id"], 1, 1)["data"] == b"r"
     assert worker.close_target_transport(opened["transport_id"])["closed"] is True
     worker.close()
+
+
+def test_spawned_worker_restores_tuple_register_args_for_legacy_and_target_reads() -> None:
+    worker = ProbeBackendWorker(
+        _test_backend_factory=partial(_strict_register_factory, "success")
+    )
+    try:
+        assert worker.read_core_registers(("pc", "lr")) == {"pc": 1, "lr": 2}
+        assert worker.target_read_core_registers(("sp",)) == {"sp": 1}
+    finally:
+        if worker.is_alive:
+            worker.close()
+
+
+def test_spawned_worker_preserves_safe_register_unavailable_state_detail() -> None:
+    worker = ProbeBackendWorker(
+        _test_backend_factory=partial(_strict_register_factory, "safe-state")
+    )
+    try:
+        with pytest.raises(ProbeWorkerError) as caught:
+            worker.read_core_registers(("pc",))
+        assert caught.value.code == "PROBE_REGISTER_UNAVAILABLE"
+        assert caught.value.message == "Probe worker operation failed"
+        assert caught.value.details == {"state": "running"}
+    finally:
+        if worker.is_alive:
+            worker.close()
+
+
+@pytest.mark.parametrize(
+    "mode", ["extra-details", "wrong-type-details", "unknown-state-details", "other-code-details"]
+)
+def test_spawned_worker_drops_unsafe_register_error_details(mode: str) -> None:
+    worker = ProbeBackendWorker(
+        _test_backend_factory=partial(_strict_register_factory, mode)
+    )
+    try:
+        with pytest.raises(ProbeWorkerError) as caught:
+            worker.read_core_registers(("pc",))
+        expected_code = (
+            "PROBE_REGISTER_INVALID"
+            if mode == "other-code-details"
+            else "PROBE_REGISTER_UNAVAILABLE"
+        )
+        assert caught.value.code == expected_code
+        assert caught.value.message == "Probe worker operation failed"
+        assert caught.value.details == {}
+        assert "private" not in str(caught.value)
+    finally:
+        if worker.is_alive:
+            worker.close()
 
 
 def test_worker_preserves_all_six_probe_descriptor_facts_through_canonical_serializer() -> None:
