@@ -1,16 +1,21 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import replace
+from pathlib import Path
 
 import pytest
 
 from stm32_toolkit.debug import sampling as sampling_mod
+from stm32_toolkit.debug import read as read_mod
 from stm32_toolkit.debug.sampling import (
     RegisterSampleRequest,
     SampleVariablesRequest,
     sample_registers,
     sample_variables,
 )
+from stm32_toolkit.debug.model import MemoryRegionBinding
+from stm32_toolkit.debug.svd import select_svd
 
 from test_debug_read import Client, DebugEnv, debug_env
 
@@ -357,6 +362,74 @@ def test_register_sampling_uses_exact_svd_and_sampling_risk_gate(
         assert rejected.ok is True
         assert rejected.data.items[0].status == "error"
         assert rejected.data.items[0].code == code
+
+
+def test_register_sampling_uses_separate_svd_regions_without_widening_linker_regions(
+    debug_env: DebugEnv, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (debug_env.root / "svd" / "device.svd").write_bytes(
+        (
+            '<?xml version="1.0" encoding="utf-8"?>\n'
+            "<device><name>STM32F429</name><size>32</size><peripherals>"
+            "<peripheral><name>GPIOE</name><baseAddress>0x40021000</baseAddress>"
+            "<size>32</size><registers><register><name>ODR</name>"
+            "<addressOffset>0x14</addressOffset><size>32</size>"
+            "<access>read-write</access><fields><field><name>ODR4</name>"
+            "<bitOffset>4</bitOffset><bitWidth>1</bitWidth></field></fields>"
+            "</register></registers></peripheral></peripherals></device>\n"
+        ).encode("utf-8")
+    )
+    linker_regions = tuple(
+        region
+        for region in debug_env.binding.memory_regions
+        if region.name != "PERIPH"
+    )
+    svd_regions = (
+        MemoryRegionBinding("PERIPH-GPIOE", 0x40021000, 0x1000, "r--"),
+    )
+    binding = replace(
+        debug_env.binding,
+        memory_regions=linker_regions,
+        svd_readable_regions=svd_regions,
+    )
+    selection = select_svd(
+        debug_env.root,
+        binding.target_device,
+        (Path("svd/device.svd"),),
+        readable_regions=svd_regions,
+        svd_device="STM32F429",
+    )
+
+    assert binding.memory_regions == linker_regions
+    assert all(
+        not (
+            region.origin <= 0x40021014
+            and 0x40021014 + 4 <= region.origin + region.length
+        )
+        for region in binding.memory_regions
+    )
+    assert selection.readable_regions == binding.svd_readable_regions
+
+    # This fixture's project manifest includes a broad PERIPH linker region so
+    # the existing read tests can cover both domains. The replacement binding
+    # intentionally models production's separated linker/SVD regions; bypass
+    # only the fixture's disk-model comparison so this test reaches sampling's
+    # region resolver while retaining endpoint, SVD, attach, and read guards.
+    monkeypatch.setattr(read_mod, "_current_firmware", lambda binding: None)
+    client = debug_env.client()
+    client.memory[0x40021014] = b"\x10\x00\x00\x00"
+    result = asyncio.run(
+        sample_registers(
+            RegisterSampleRequest(binding, selection, ("GPIOE.ODR",)),
+            client,
+        )
+    )
+
+    assert result.ok is True
+    item = result.data.items[0]
+    assert item.status == "ok"
+    assert item.value.value == 0x10
+    assert client.calls == [(0x40021014, 4)]
 
 
 def test_register_sample_request_is_bounded_and_has_no_raw_override(
