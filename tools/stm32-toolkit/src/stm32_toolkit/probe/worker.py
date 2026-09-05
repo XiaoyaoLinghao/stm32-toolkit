@@ -49,6 +49,9 @@ _BACKEND_ERROR_CODES = {
     "PROBE_TARGET_AMBIGUOUS", "PROBE_TARGET_IDENTITY_UNAVAILABLE", "PROBE_TARGET_INVALID",
     "PROBE_TARGET_UNAVAILABLE", "PROBE_TIMEOUT",
 }
+_REGISTER_ERROR_STATES = frozenset({
+    "halted", "running", "reset", "sleeping", "lockedup", "programming", "unknown",
+})
 
 
 class ProbeWorkerError(ProbeBackendError):
@@ -179,6 +182,17 @@ def _from_json(value: object) -> object:
     return value
 
 
+def _safe_register_error_details(code: object, details: object) -> dict[str, str] | None:
+    if code != "PROBE_REGISTER_UNAVAILABLE" or type(details) is not dict:
+        return None
+    if set(details) != {"state"} or type(details["state"]) is not str:
+        return None
+    state = details["state"]
+    if state not in _REGISTER_ERROR_STATES:
+        return None
+    return {"state": state}
+
+
 def _send(connection: Connection, value: Mapping[str, object]) -> None:
     payload = _canonical_bytes(value)
     if len(payload) > _MAX_OUTPUT_BYTES:
@@ -231,6 +245,12 @@ def _worker_main(
             if method == "preflight_target_capabilities" and len(args) == 2:
                 from .model import OperationLevel
                 args[1] = OperationLevel(args[1])
+            if (
+                method in {"read_core_registers", "target_read_core_registers"}
+                and len(args) == 1
+                and isinstance(args[0], list)
+            ):
+                args[0] = tuple(args[0])
             explicit_close_started = method == "close"
             result = getattr(backend, method)(
                 *args,
@@ -249,9 +269,17 @@ def _worker_main(
         if code not in _BACKEND_ERROR_CODES:
             code = "PROBE_BACKEND_ERROR"
         try:
+            error_payload: dict[str, object] = {
+                "code": code, "message": "Probe worker operation failed",
+            }
+            safe_details = _safe_register_error_details(
+                code, getattr(error, "details", None)
+            )
+            if safe_details is not None:
+                error_payload["details"] = safe_details
             _send(connection, {
                 "version": _VERSION, "ok": False,
-                "error": {"code": code, "message": "Probe worker operation failed"},
+                "error": error_payload,
             })
         except BaseException:
             pass
@@ -351,15 +379,23 @@ class ProbeBackendWorker:
                 failure = response.get("error")
                 if (
                     not isinstance(failure, dict)
-                    or set(failure) != {"code", "message"}
+                    or set(failure) not in ({"code", "message"}, {"code", "message", "details"})
+                    or type(failure.get("code")) is not str
                     or failure.get("code") not in _BACKEND_ERROR_CODES
                     or not isinstance(failure.get("message"), str)
                 ):
                     self.abort_owned_execution()
                     raise ProbeWorkerError("PROBE_BACKEND_ERROR", "Probe worker response is invalid")
                 code, message = failure["code"], failure["message"]
+                details: dict[str, str] = {}
+                if set(failure) == {"code", "message", "details"}:
+                    safe_details = _safe_register_error_details(code, failure["details"])
+                    if safe_details is None:
+                        self.abort_owned_execution()
+                        raise ProbeWorkerError("PROBE_BACKEND_ERROR", "Probe worker response is invalid")
+                    details = safe_details
                 self.abort_owned_execution()
-                raise ProbeWorkerError(code, message)
+                raise ProbeWorkerError(code, message, details)
             if set(response) != {"version", "ok", "id", "result"} or response["id"] != request_id:
                 self.abort_owned_execution()
                 raise ProbeWorkerError("PROBE_BACKEND_ERROR", "Probe worker response is invalid")
