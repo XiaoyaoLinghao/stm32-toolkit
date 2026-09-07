@@ -488,10 +488,28 @@ async def target_test_prepare(
         )
         inventory_digest = calculate_inventory_digest("target", expected_identity, case_ids)
         case_inventory_digest = calculate_case_inventory_digest(case_ids)
-        supervisor = _target_supervisor(
-            context, state, probe_id=probe_id, level=OperationLevel.OBSERVE,
-            support=support, seams=_seams,
-        )
+        if recovery_under_reset:
+            recovery_worker = ProbeWorkerConfig(
+                target_profile={**dict(support), "probe_id": probe_id}
+            ).for_under_reset_recovery()
+            supervisor = _target_supervisor(
+                context,
+                state,
+                probe_id=probe_id,
+                level=OperationLevel.OBSERVE,
+                support=support,
+                seams=_seams,
+                worker_config=recovery_worker,
+            )
+        else:
+            supervisor = _target_supervisor(
+                context,
+                state,
+                probe_id=probe_id,
+                level=OperationLevel.OBSERVE,
+                support=support,
+                seams=_seams,
+            )
         endpoint = await supervisor.start()
         client = ProbeClient(endpoint)
         await client.attach(probe_id, str(model.debug.target))
