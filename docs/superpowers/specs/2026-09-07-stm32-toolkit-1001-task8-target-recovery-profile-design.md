@@ -1,14 +1,23 @@
 # STM32TK-1001 Task 8 Target Recovery Profile Design
 
-Date: 2026-09-07  
-Module / phase: STM32TK-1001 / VS10-A H2 Task 8 physical closure  
-Status: FROZEN UNDER THE USER'S STANDING AUTONOMOUS-REPAIR AUTHORIZATION  
-Full accepted product base: `9d51b841a150d50a4323432d4fd118c8399efa4f`  
-Accepted-base tree: `764458944b24b0a5cbdc9503346ffc0c3781d1af`  
-Specification owner and independent reviewer: GPT-5.6-sol primary  
-Implementation owner after this freeze: the existing Task 8 GPT-5.6-luna agent at reasoning effort `max`  
-Active branch: `codex/STM32TK-1001-LEGACY-HARDWARE-CLOSED-LOOP-impl`  
-Remote action: none authorized  
+Date: 2026-09-07
+
+Module / phase: STM32TK-1001 / VS10-A H2 Task 8 physical closure
+
+Status: FROZEN UNDER THE USER'S STANDING AUTONOMOUS-REPAIR AUTHORIZATION
+
+Full accepted product base: `9d51b841a150d50a4323432d4fd118c8399efa4f`
+
+Accepted-base tree: `764458944b24b0a5cbdc9503346ffc0c3781d1af`
+
+Specification owner and independent reviewer: GPT-5.6-sol primary
+
+Implementation owner after this freeze: the existing Task 8 GPT-5.6-luna agent at reasoning effort `max`
+
+Active branch: `codex/STM32TK-1001-LEGACY-HARDWARE-CLOSED-LOOP-impl`
+
+Remote action: none authorized
+
 Hardware action: no further flash is authorized by this design
 
 ## 1. Trigger and exact defect boundary

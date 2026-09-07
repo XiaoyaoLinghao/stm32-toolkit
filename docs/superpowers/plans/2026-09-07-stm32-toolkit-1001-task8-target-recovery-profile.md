@@ -9,11 +9,15 @@ normal worker or `for_under_reset_recovery()` solely from the consumed binding. 
 readback, transport, publication, service, and backend behavior remains shared.
 
 **Accepted base:** `9d51b841a150d50a4323432d4fd118c8399efa4f` (tree
-`764458944b24b0a5cbdc9503346ffc0c3781d1af`).  
+`764458944b24b0a5cbdc9503346ffc0c3781d1af`).
+
 **Specification:**
-`docs/superpowers/specs/2026-09-07-stm32-toolkit-1001-task8-target-recovery-profile-design.md`.  
-**Implementation owner:** existing Task 8 GPT-5.6-luna/max agent.  
-**Reviewer:** GPT-5.6-sol primary.  
+`docs/superpowers/specs/2026-09-07-stm32-toolkit-1001-task8-target-recovery-profile-design.md`.
+
+**Implementation owner:** existing Task 8 GPT-5.6-luna/max agent.
+
+**Reviewer:** GPT-5.6-sol primary.
+
 **Remote/hardware authority:** none for this implementation.
 
 ## Task 1 - Commit public-contract RED
