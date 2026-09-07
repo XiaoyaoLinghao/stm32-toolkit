@@ -519,6 +519,115 @@ def test_bootstrap_and_repair_are_staged_versioned_and_project_read_only(tmp_pat
     runtime = plugin_data / "runtime" / "0.9.0"
     assert (runtime / "Scripts" / "python.exe").is_file()
     assert project_marker.read_text(encoding="utf-8") == "unchanged"
+
+
+def test_bootstrap_promotes_public_console_launchers_with_final_runtime_binding(
+    tmp_path: Path,
+):
+    """A real pip/distlib install must leave public launchers usable after promotion."""
+    roots = tmp_path / "x y"
+    project = roots / "project q"
+    project.mkdir(parents=True)
+    plugin_root = roots / "plugin q"
+    package = plugin_root / "tools" / "stm32-toolkit"
+    package.mkdir(parents=True)
+    wheelhouse = roots / "wheel h"
+    wheelhouse.mkdir()
+    _write_test_build_backend(wheelhouse)
+    _write_fake_monitor_package(plugin_root)
+    _write_fake_release_bundle(plugin_root, wheelhouse)
+    (package / "pyproject.toml").write_text(
+        "[build-system]\nrequires = ['test-build-backend==1.0']\n"
+        "build-backend = 'test_backend'\n",
+        encoding="utf-8",
+    )
+    plugin_data = roots / "data q"
+    environment = _clean_environment()
+    environment["PIP_NO_INDEX"] = "1"
+    environment["PIP_FIND_LINKS"] = str(wheelhouse)
+
+    result = _run_helper(
+        "Bootstrap", plugin_root, plugin_data, project,
+        environment=environment, timeout=180,
+    )
+
+    assert result.returncode == 0, result.stderr
+    runtime = plugin_data / "runtime" / "0.9.0"
+    runtime_python = runtime / "Scripts" / "python.exe"
+    assert runtime_python.is_file()
+    for launcher_name in (
+        "stm32-toolkit.exe",
+        "stm32-toolkit-mcp.exe",
+        "stm32-monitor.exe",
+    ):
+        launcher = runtime / "Scripts" / launcher_name
+        assert launcher.is_file()
+        launcher_bytes = launcher.read_bytes().lower()
+        assert _launcher_contains(launcher_bytes, runtime_python)
+        assert not _launcher_contains(launcher_bytes, plugin_data / "runtime" / ".staging")
+
+    toolkit = subprocess.run(
+        [str(runtime / "Scripts" / "stm32-toolkit.exe"), "version"],
+        check=False,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        env=environment,
+    )
+    monitor = subprocess.run(
+        [str(runtime / "Scripts" / "stm32-monitor.exe"), "version"],
+        check=False,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        env=environment,
+    )
+    assert toolkit.returncode == 0, toolkit.stderr
+    assert toolkit.stdout.strip() == "0.9.0"
+    assert monitor.returncode == 0, monitor.stderr
+    assert monitor.stdout.strip() == "0.9.0"
+
+
+def test_check_reports_staging_bound_public_console_launcher_as_broken(tmp_path: Path):
+    roots = tmp_path / "x y"
+    project = roots / "project q"
+    project.mkdir(parents=True)
+    plugin_root = roots / "plugin q"
+    package = plugin_root / "tools" / "stm32-toolkit"
+    package.mkdir(parents=True)
+    wheelhouse = roots / "wheel h"
+    wheelhouse.mkdir()
+    _write_test_build_backend(wheelhouse)
+    _write_fake_monitor_package(plugin_root)
+    _write_fake_release_bundle(plugin_root, wheelhouse)
+    (package / "pyproject.toml").write_text(
+        "[build-system]\nrequires = ['test-build-backend==1.0']\n"
+        "build-backend = 'test_backend'\n",
+        encoding="utf-8",
+    )
+    plugin_data = roots / "data q"
+    environment = _clean_environment()
+    environment["PIP_NO_INDEX"] = "1"
+    environment["PIP_FIND_LINKS"] = str(wheelhouse)
+
+    bootstrap = _run_helper(
+        "Bootstrap", plugin_root, plugin_data, project,
+        environment=environment, timeout=180,
+    )
+    assert bootstrap.returncode == 0, bootstrap.stderr
+
+    checked = _run_helper(
+        "Check", plugin_root, plugin_data, project,
+        environment=environment, timeout=60,
+    )
+
+    assert checked.returncode == 0, checked.stderr
+    payload = json.loads(checked.stdout)
+    assert payload["runtime"]["status"] == "broken"
+    assert payload["authorizationRequired"] is True
+    assert payload["recommendedMode"] == "Repair"
     assert not (plugin_data / "runtime" / ".staging").exists() or not any(
         (plugin_data / "runtime" / ".staging").iterdir()
     )
@@ -851,6 +960,7 @@ def _write_test_build_backend(
         if complete_doctor
         else _fake_incomplete_toolkit_cli_source()
     )
+    monitor_source = _fake_monitor_cli_source()
     backend_source = """from pathlib import Path
 import zipfile
 import venv
@@ -880,6 +990,9 @@ def build_wheel(wheel_directory, config_settings=None, metadata_directory=None):
             'stm32_monitor/ui_dist/index.html': '<div id="app"></div>\\n',
             'stm32_monitor/ui_dist/.vite/manifest.json': '{"index.html":{"file":"assets/app-aaaaaaaa.js","css":[]}}\\n',
             'stm32_monitor/ui_dist/assets/app-aaaaaaaa.js': 'export {}\\n',
+            'stm32_monitor/cli.py': __MONITOR_SOURCE__,
+            'stm32_monitor-0.9.0.dist-info/entry_points.txt': '[console_scripts]\\n'
+            'stm32-monitor = stm32_monitor.cli:main\\n',
             'stm32_monitor-0.9.0.dist-info/METADATA': 'Metadata-Version: 2.1\\nName: stm32-monitor\\nVersion: 0.9.0\\n',
             'stm32_monitor-0.9.0.dist-info/WHEEL': 'Wheel-Version: 1.0\\nGenerator: test-backend\\nRoot-Is-Purelib: true\\nTag: py3-none-any\\n',
             'stm32_monitor-0.9.0.dist-info/RECORD': '',
@@ -889,6 +1002,9 @@ def build_wheel(wheel_directory, config_settings=None, metadata_directory=None):
         files = {
             'stm32_toolkit/__init__.py': "__version__ = '0.9.0'\\n",
             'stm32_toolkit/cli.py': __DOCTOR_SOURCE__,
+            'stm32_toolkit-0.9.0.dist-info/entry_points.txt': '[console_scripts]\\n'
+            'stm32-toolkit = stm32_toolkit.cli:main\\n'
+            'stm32-toolkit-mcp = stm32_toolkit.cli:mcp_main\\n',
             'stm32_toolkit-0.9.0.dist-info/METADATA': 'Metadata-Version: 2.1\\nName: stm32-toolkit\\nVersion: 0.9.0\\nProvides-Extra: probe\\nRequires-Dist: pyocd==0.45.1; extra == "probe"\\n',
             'stm32_toolkit-0.9.0.dist-info/WHEEL': 'Wheel-Version: 1.0\\nGenerator: test-backend\\nRoot-Is-Purelib: true\\nTag: py3-none-any\\n',
             'stm32_toolkit-0.9.0.dist-info/RECORD': '',
@@ -898,6 +1014,7 @@ def build_wheel(wheel_directory, config_settings=None, metadata_directory=None):
     return dist_name
 """
     backend_source = backend_source.replace("__DOCTOR_SOURCE__", repr(doctor_source))
+    backend_source = backend_source.replace("__MONITOR_SOURCE__", repr(monitor_source))
     wheel = wheelhouse / "test_build_backend-1.0-py3-none-any.whl"
     with zipfile.ZipFile(wheel, "w") as archive:
         archive.writestr("test_backend.py", backend_source)
@@ -1008,6 +1125,11 @@ raise SystemExit(main())
     toolkit_files = {
         "stm32_toolkit/__init__.py": b"__version__ = '0.9.0'\n",
         "stm32_toolkit/cli.py": (_fake_toolkit_cli_source() if complete_doctor else _fake_incomplete_toolkit_cli_source()).encode(),
+        f"{toolkit_dist}/entry_points.txt": (
+            b"[console_scripts]\n"
+            b"stm32-toolkit = stm32_toolkit.cli:main\n"
+            b"stm32-toolkit-mcp = stm32_toolkit.cli:mcp_main\n"
+        ),
         f"{toolkit_dist}/METADATA": b"Metadata-Version: 2.3\nName: stm32-toolkit\nVersion: 0.9.0\nRequires-Dist: pyocd==0.45.1\nLicense-Expression: MIT\n",
         f"{toolkit_dist}/WHEEL": b"Wheel-Version: 1.0\nRoot-Is-Purelib: true\nTag: py3-none-any\n",
         f"{toolkit_dist}/RECORD": b"",
@@ -1018,11 +1140,16 @@ raise SystemExit(main())
     monitor_dist = "stm32_monitor-0.9.0.dist-info"
     monitor_files = {
         "stm32_monitor/__init__.py": b"__version__ = '0.9.0'\n",
+        "stm32_monitor/cli.py": _fake_monitor_cli_source().encode(),
         "stm32_monitor/ui_dist/index.html": b"<div id='app'></div>\n",
         "stm32_monitor/ui_dist/.vite/manifest.json": b'{"index.html":{"file":"assets/app-aaaaaaaa.js","css":[]}}\n',
         "stm32_monitor/ui_dist/assets/app-aaaaaaaa.js": b"export {}\n",
         f"{monitor_dist}/METADATA": b"Metadata-Version: 2.3\nName: stm32-monitor\nVersion: 0.9.0\nRequires-Dist: stm32-toolkit==0.9.0\nLicense-Expression: MIT\n",
         f"{monitor_dist}/WHEEL": b"Wheel-Version: 1.0\nRoot-Is-Purelib: true\nTag: py3-none-any\n",
+        f"{monitor_dist}/entry_points.txt": (
+            b"[console_scripts]\n"
+            b"stm32-monitor = stm32_monitor.cli:main\n"
+        ),
         f"{monitor_dist}/RECORD": b"",
     }
     write_wheel(wheels / monitor_name, monitor_files)
@@ -1122,6 +1249,12 @@ def _install_fake_monitor(site_packages: Path) -> None:
         "Metadata-Version: 2.1\nName: stm32-monitor\nVersion: 0.9.0\n",
         encoding="utf-8",
     )
+    (metadata / "entry_points.txt").write_text(
+        "[console_scripts]\n"
+        "stm32-monitor = stm32_monitor.cli:main\n",
+        encoding="utf-8",
+    )
+    (package / "cli.py").write_text(_fake_monitor_cli_source(), encoding="utf-8")
 
 
 def _install_fake_toolkit(site_packages: Path) -> None:
@@ -1129,6 +1262,42 @@ def _install_fake_toolkit(site_packages: Path) -> None:
     package.mkdir(parents=True)
     (package / "__init__.py").write_text("__version__ = '0.9.0'\n", encoding="utf-8")
     (package / "cli.py").write_text(_fake_toolkit_cli_source(), encoding="utf-8")
+    metadata = site_packages / "stm32_toolkit-0.9.0.dist-info"
+    metadata.mkdir(exist_ok=True)
+    (metadata / "METADATA").write_text(
+        "Metadata-Version: 2.1\nName: stm32-toolkit\nVersion: 0.9.0\n",
+        encoding="utf-8",
+    )
+    (metadata / "entry_points.txt").write_text(
+        "[console_scripts]\n"
+        "stm32-toolkit = stm32_toolkit.cli:main\n"
+        "stm32-toolkit-mcp = stm32_toolkit.cli:mcp_main\n",
+        encoding="utf-8",
+    )
+
+
+def _launcher_contains(launcher_bytes: bytes, path: Path) -> bool:
+    haystack = launcher_bytes.lower()
+    text = str(path)
+    variants = {text, text.replace("\\", "/"), text.replace("/", "\\")}
+    return any(
+        token in haystack
+        for value in variants
+        for token in (value.encode("utf-8").lower(), value.encode("utf-16le").lower())
+    )
+
+
+def _fake_monitor_cli_source() -> str:
+    return (
+        "import sys\n"
+        "def main():\n"
+        "    if sys.argv[1:] == ['version']:\n"
+        "        print('0.9.0')\n"
+        "        return 0\n"
+        "    return 0\n"
+        "if __name__ == '__main__':\n"
+        "    raise SystemExit(main())\n"
+    )
 
 
 def _fake_toolkit_cli_source() -> str:
@@ -1152,23 +1321,40 @@ def _fake_toolkit_cli_source() -> str:
     }
     return (
         "import json,sys\n"
-        "if sys.argv[1:]==['version']: print('0.9.0')\n"
-        "elif 'doctor' in sys.argv:\n"
-        f" payload={payload!r}\n"
-        " payload['data']['runtime']['pythonVersion']='.'.join(str(part) for part in sys.version_info[:3])\n"
-        " payload['data']['runtime']['pythonSupported']=sys.version_info[:2] == (3,12)\n"
-        " i=sys.argv.index('--project-root'); payload['data']['projectRoot']=sys.argv[i+1]; payload['data']['argv']=sys.argv[1:]\n"
-        " print(json.dumps(payload))\n"
-        "else: raise SystemExit(2)\n"
+        "def main():\n"
+        "    if sys.argv[1:] == ['version']:\n"
+        "        print('0.9.0')\n"
+        "        return 0\n"
+        "    if 'doctor' in sys.argv:\n"
+        f"        payload={payload!r}\n"
+        "        payload['data']['runtime']['pythonVersion']='.'.join(str(part) for part in sys.version_info[:3])\n"
+        "        payload['data']['runtime']['pythonSupported']=sys.version_info[:2] == (3,12)\n"
+        "        i=sys.argv.index('--project-root'); payload['data']['projectRoot']=sys.argv[i+1]; payload['data']['argv']=sys.argv[1:]\n"
+        "        print(json.dumps(payload))\n"
+        "        return 0\n"
+        "    return 2\n"
+        "def mcp_main():\n"
+        "    return 0\n"
+        "if __name__ == '__main__':\n"
+        "    raise SystemExit(main())\n"
     )
 
 
 def _fake_incomplete_toolkit_cli_source() -> str:
     return (
         "import json,sys\n"
-        "if sys.argv[1:]==['version']: print('0.9.0')\n"
-        "elif 'doctor' in sys.argv: print(json.dumps({'ok':True,'data':{}}))\n"
-        "else: raise SystemExit(2)\n"
+        "def main():\n"
+        "    if sys.argv[1:] == ['version']:\n"
+        "        print('0.9.0')\n"
+        "        return 0\n"
+        "    if 'doctor' in sys.argv:\n"
+        "        print(json.dumps({'ok':True,'data':{}}))\n"
+        "        return 0\n"
+        "    return 2\n"
+        "def mcp_main():\n"
+        "    return 0\n"
+        "if __name__ == '__main__':\n"
+        "    raise SystemExit(main())\n"
     )
 
 
