@@ -152,6 +152,7 @@ def _install_public_physical_seam(
         level: object,
         support: Mapping[str, object],
         seams: workflows.TargetWorkflowSeams,
+        worker_config: object | None = None,
     ) -> object:
         assert seams._test_backend_factory is None
         return real_supervisor(
@@ -163,6 +164,7 @@ def _install_public_physical_seam(
             seams=workflows.TargetWorkflowSeams(
                 _test_backend_factory=session.backend_factory
             ),
+            worker_config=worker_config,
         )
 
     monkeypatch.setattr(workflows, "_target_supervisor", target_supervisor)
@@ -456,7 +458,11 @@ def test_mcp_target_tools_close_schema_and_reject_forbidden_extra_fields(
     execute_name = MCP_TOOL_NAMES["test_target_execute"]
     assert schemas[prepare_name]["additionalProperties"] is False
     assert schemas[execute_name]["additionalProperties"] is False
-    assert set(schemas[prepare_name]["properties"]) == {"probeId", "caseIds"}
+    assert set(schemas[prepare_name]["properties"]) == {
+        "probeId", "caseIds", "recoveryUnderReset"
+    }
+    assert schemas[prepare_name]["properties"]["recoveryUnderReset"]["default"] is False
+    assert schemas[prepare_name]["properties"]["recoveryUnderReset"]["type"] == "boolean"
     assert set(schemas[execute_name]["properties"]) == {
         "probeId",
         "authorizedActionDigest",
