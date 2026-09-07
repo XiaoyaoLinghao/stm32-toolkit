@@ -280,6 +280,26 @@ class _SourceChangeBackend:
         self.events.append(("backend.close", self.level))
 
 
+class _PostflashIdentityChangeBackend(_SourceChangeBackend):
+    def target_identity(self) -> Mapping[str, object]:
+        identity = dict(super().target_identity())
+        if self.board.flashed and self.level == "modify":
+            identity["target_id"] = "changed-after-flash"
+        return identity
+
+
+class _ResumeFailureBackend(_SourceChangeBackend):
+    def __init__(self, *, resume_mode: str, **kwargs: object) -> None:
+        super().__init__(**kwargs)
+        self.resume_mode = resume_mode
+
+    def resume(self) -> None:
+        self.events.append(("resume", self.level))
+        if self.resume_mode == "error":
+            raise ProbeBackendError("PROBE_BACKEND_ERROR", "Target resume failed")
+        # Keep the backend halted so Probe Service must reject a false running proof.
+
+
 def _fixed_project(
     tmp_path: Path, *, protocol: str | None = None
 ) -> tuple[Path, Mapping[str, object]]:
@@ -953,6 +973,150 @@ def test_prepare_never_reads_old_inventory_and_execute_proves_fixed_after_flash(
     ) + (project / "artifacts/migration/flash-result.json").read_bytes()
     assert RAW_PROBE.encode() not in public_bytes + durable_bytes
     assert str(project).encode() not in public_bytes + durable_bytes
+
+
+def test_postflash_identity_mismatch_consumes_parent_without_resume_or_testrun(
+    tmp_path: Path,
+) -> None:
+    project, build = _fixed_project(tmp_path)
+    data_root = (tmp_path / "plugin-data").absolute()
+    workspace = WorkspacePaths.from_roots(
+        data_root, project, build["logicalProjectId"], "postflash-identity"
+    )
+    fixed_identity = _fixed_identity(build, workspace)
+    expected_digest = calculate_inventory_digest("target", fixed_identity, CASES)
+    board = _Board()
+    events: list[tuple[object, ...]] = []
+    segment = (project / "build/arm-debug/firmware.elf").read_bytes()[84:404]
+
+    def backend_factory() -> _PostflashIdentityChangeBackend:
+        return _PostflashIdentityChangeBackend(
+            board=board,
+            physical_identity={
+                "board_id": str(build["targetDevice"]),
+                "mcu": "stm32f407vg",
+                "target_id": str(build["targetDevice"]),
+                "probe_serial_hash": sha256(RAW_PROBE.encode()).hexdigest(),
+            },
+            stream=_fixed_stream(fixed_identity, expected_digest),
+            flash_segment=segment,
+            events=events,
+        )
+
+    seams = workflows.TargetWorkflowSeams(_test_backend_factory=backend_factory)
+    context = workflows.TestingWorkflowContext(project, data_root, "postflash-identity")
+    prepared = asyncio.run(
+        workflows.target_test_prepare(
+            context, probe_id=RAW_PROBE, case_ids=CASES, _seams=seams
+        )
+    )
+    assert prepared.ok is True, (prepared.to_dict(), events)
+
+    failed = asyncio.run(
+        workflows.target_test_execute(
+            context,
+            probe_id=RAW_PROBE,
+            authorized_action_digest=prepared.data["authorized_action_digest"],
+            _seams=seams,
+        )
+    )
+    assert failed.ok is False and failed.code == "TEST_IDENTITY_MISMATCH"
+    assert board.flashed is True
+    assert [event for event in events if event[:2] == ("flash", "modify")] == [
+        ("flash", "modify")
+    ]
+    assert not [event for event in events if event[:2] == ("resume", "modify")]
+    assert not [event for event in events if event[0] == "transport.open"]
+    assert workflows.test_show(context, run_id="physical-r3-run").ok is False
+    assert not list((workspace.workspace_root / "evidence/manifests").glob("*.json"))
+
+    reused = asyncio.run(
+        workflows.target_test_execute(
+            context,
+            probe_id=RAW_PROBE,
+            authorized_action_digest=prepared.data["authorized_action_digest"],
+            _seams=seams,
+        )
+    )
+    assert reused.ok is False and reused.code == "TEST_AUTHORIZATION_INVALID"
+    assert len([event for event in events if event[:2] == ("flash", "modify")]) == 1
+    assert not [event for event in events if event[:2] == ("resume", "modify")]
+    assert not [event for event in events if event[0] == "transport.open"]
+
+
+@pytest.mark.parametrize("resume_mode", ["error", "non-running"])
+def test_postflash_resume_failure_consumes_parent_without_transport_or_testrun(
+    tmp_path: Path, resume_mode: str,
+) -> None:
+    project, build = _fixed_project(tmp_path)
+    data_root = (tmp_path / "plugin-data").absolute()
+    workspace = WorkspacePaths.from_roots(
+        data_root, project, build["logicalProjectId"], f"postflash-resume-{resume_mode}"
+    )
+    fixed_identity = _fixed_identity(build, workspace)
+    expected_digest = calculate_inventory_digest("target", fixed_identity, CASES)
+    board = _Board()
+    events: list[tuple[object, ...]] = []
+    segment = (project / "build/arm-debug/firmware.elf").read_bytes()[84:404]
+
+    def backend_factory() -> _ResumeFailureBackend:
+        return _ResumeFailureBackend(
+            resume_mode=resume_mode,
+            board=board,
+            physical_identity={
+                "board_id": str(build["targetDevice"]),
+                "mcu": "stm32f407vg",
+                "target_id": str(build["targetDevice"]),
+                "probe_serial_hash": sha256(RAW_PROBE.encode()).hexdigest(),
+            },
+            stream=_fixed_stream(fixed_identity, expected_digest),
+            flash_segment=segment,
+            events=events,
+        )
+
+    seams = workflows.TargetWorkflowSeams(_test_backend_factory=backend_factory)
+    context = workflows.TestingWorkflowContext(
+        project, data_root, f"postflash-resume-{resume_mode}"
+    )
+    prepared = asyncio.run(
+        workflows.target_test_prepare(
+            context, probe_id=RAW_PROBE, case_ids=CASES, _seams=seams
+        )
+    )
+    assert prepared.ok is True, (prepared.to_dict(), events)
+
+    failed = asyncio.run(
+        workflows.target_test_execute(
+            context,
+            probe_id=RAW_PROBE,
+            authorized_action_digest=prepared.data["authorized_action_digest"],
+            _seams=seams,
+        )
+    )
+    assert failed.ok is False and failed.code == "TEST_EXECUTION_FAILED"
+    assert board.flashed is True
+    assert [event for event in events if event[:2] == ("flash", "modify")] == [
+        ("flash", "modify")
+    ]
+    assert [event for event in events if event[:2] == ("resume", "modify")] == [
+        ("resume", "modify")
+    ]
+    assert not [event for event in events if event[0] == "transport.open"]
+    assert workflows.test_show(context, run_id="physical-r3-run").ok is False
+    assert not list((workspace.workspace_root / "evidence/manifests").glob("*.json"))
+
+    reused = asyncio.run(
+        workflows.target_test_execute(
+            context,
+            probe_id=RAW_PROBE,
+            authorized_action_digest=prepared.data["authorized_action_digest"],
+            _seams=seams,
+        )
+    )
+    assert reused.ok is False and reused.code == "TEST_AUTHORIZATION_INVALID"
+    assert len([event for event in events if event[:2] == ("flash", "modify")]) == 1
+    assert len([event for event in events if event[:2] == ("resume", "modify")]) == 1
+    assert not [event for event in events if event[0] == "transport.open"]
 
 
 def test_v2_physical_execution_binds_protocol_digests_and_publishes_after_flash(
