@@ -63,9 +63,13 @@ def test_testing_tools_have_closed_project_bound_schemas(tmp_path: Path):
     assert show_schema["additionalProperties"] is False
 
     prepare_schema = schemas["stm32_test_target_prepare"]
-    assert set(prepare_schema["properties"]) == {"probeId", "caseIds"}
+    assert set(prepare_schema["properties"]) == {
+        "probeId", "caseIds", "recoveryUnderReset"
+    }
     assert set(prepare_schema["required"]) == {"probeId", "caseIds"}
     assert prepare_schema["properties"]["caseIds"]["minItems"] == 1
+    assert prepare_schema["properties"]["recoveryUnderReset"]["default"] is False
+    assert prepare_schema["properties"]["recoveryUnderReset"]["type"] == "boolean"
     assert prepare_schema["additionalProperties"] is False
     execute_schema = schemas["stm32_test_target_execute"]
     assert set(execute_schema["properties"]) == {"probeId", "authorizedActionDigest"}
@@ -256,6 +260,80 @@ def test_registered_testing_tools_are_thin_delegates_and_run_defaults_case_ids(
     assert show_result == {"tool": "show"}
     assert [name for name, _ in calls] == ["discover", "run", "show"]
     assert calls[1][1][2:] == ("a" * 64, [])
+
+
+def test_registered_target_prepare_forwards_recovery_and_execute_has_no_selector(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    runtime = _runtime(tmp_path)
+    server = create_server(runtime.project_root, runtime.data_root, runtime.session_id)
+    calls: list[tuple[object, ...]] = []
+
+    async def prepare(
+        runtime_arg: object,
+        context: object,
+        probe_id: str,
+        case_ids: list[str],
+        recovery_under_reset: object,
+    ) -> dict[str, object]:
+        calls.append((runtime_arg, context, probe_id, case_ids, recovery_under_reset))
+        return {"tool": "prepare"}
+
+    async def execute(*_args: object, **_kwargs: object) -> dict[str, object]:
+        raise AssertionError("execute must not receive a recovery selector")
+
+    monkeypatch.setattr(mcp_mod, "tool_test_target_prepare_for_request", prepare)
+    monkeypatch.setattr(mcp_mod, "tool_test_target_execute_for_request", execute)
+
+    _content, result = asyncio.run(
+        server.call_tool(
+            "stm32_test_target_prepare",
+            {
+                "probeId": "probe-a",
+                "caseIds": ["case-a"],
+                "recoveryUnderReset": True,
+            },
+        )
+    )
+
+    assert result == {"tool": "prepare"}
+    assert calls[0][2:] == ("probe-a", ["case-a"], True)
+    with pytest.raises(Exception):
+        asyncio.run(
+            server.call_tool(
+                "stm32_test_target_execute",
+                {
+                    "probeId": "probe-a",
+                    "authorizedActionDigest": "a" * 64,
+                    "recoveryUnderReset": True,
+                },
+            )
+        )
+
+
+@pytest.mark.parametrize("value", ["true", 1, None])
+def test_registered_target_prepare_rejects_non_strict_recovery_values(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, value: object
+):
+    runtime = _runtime(tmp_path)
+    server = create_server(runtime.project_root, runtime.data_root, runtime.session_id)
+
+    async def forbidden(*_args: object, **_kwargs: object) -> dict[str, object]:
+        raise AssertionError("invalid recovery value must fail schema validation first")
+
+    monkeypatch.setattr(mcp_mod, "tool_test_target_prepare_for_request", forbidden)
+
+    with pytest.raises(Exception):
+        asyncio.run(
+            server.call_tool(
+                "stm32_test_target_prepare",
+                {
+                    "probeId": "probe-a",
+                    "caseIds": ["case-a"],
+                    "recoveryUnderReset": value,
+                },
+            )
+        )
 
 
 def test_registered_host_run_rejects_repeated_case_ids_before_workflow(

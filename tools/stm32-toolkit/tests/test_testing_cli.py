@@ -45,8 +45,12 @@ def _show_argv(run_id: str = "run-1") -> list[str]:
     return ["test", "show", run_id, *CONTEXT_ARGS]
 
 
-def _target_prepare_argv(*case_ids: str) -> list[str]:
+def _target_prepare_argv(
+    *case_ids: str, recovery_under_reset: bool = False
+) -> list[str]:
     argv = ["test", "target", "prepare", "--probe-id", "probe-a"]
+    if recovery_under_reset:
+        argv.append("--recovery-under-reset")
     for case_id in case_ids:
         argv.extend(["--case-id", case_id])
     return [*argv, *CONTEXT_ARGS]
@@ -71,14 +75,40 @@ def test_testing_parser_exposes_fixed_operations_and_run_shape() -> None:
     assert show.run_id == "run-1"
     prepared = parse(_target_prepare_argv("fails"))
     assert prepared.operation == "test.target.prepare" and prepared.case_ids == ("fails",)
+    assert prepared.recovery_under_reset is False
+    recovery = parse(_target_prepare_argv("fails", recovery_under_reset=True))
+    assert recovery.recovery_under_reset is True
     executed = parse(_target_execute_argv())
     assert executed.operation == "test.target.execute" and executed.authorized_action_digest == DIGEST
+
+    with pytest.raises(SystemExit) as duplicate:
+        parse([
+            "test", "target", "prepare", "--probe-id", "probe-a",
+            "--recovery-under-reset", "--recovery-under-reset", "--case-id", "fails",
+            *CONTEXT_ARGS,
+        ])
+    assert duplicate.value.code == 2
+
+    with pytest.raises(SystemExit) as value_form:
+        parse([
+            "test", "target", "prepare", "--probe-id", "probe-a",
+            "--recovery-under-reset=true", "--case-id", "fails", *CONTEXT_ARGS,
+        ])
+    assert value_form.value.code == 2
+
+    with pytest.raises(SystemExit) as separate_value:
+        parse([
+            "test", "target", "prepare", "--probe-id", "probe-a",
+            "--recovery-under-reset", "true", "--case-id", "fails", *CONTEXT_ARGS,
+        ])
+    assert separate_value.value.code == 2
 
 
 @pytest.mark.parametrize(
     ("argv", "workflow", "expected"),
     [
-        (_target_prepare_argv("fails"), "target_test_prepare", {"probe_id": "probe-a", "case_ids": ("fails",)}),
+        (_target_prepare_argv("fails"), "target_test_prepare", {"probe_id": "probe-a", "case_ids": ("fails",), "recovery_under_reset": False}),
+        (_target_prepare_argv("fails", recovery_under_reset=True), "target_test_prepare", {"probe_id": "probe-a", "case_ids": ("fails",), "recovery_under_reset": True}),
         (_target_execute_argv(), "target_test_execute", {"probe_id": "probe-a", "authorized_action_digest": DIGEST}),
     ],
 )
