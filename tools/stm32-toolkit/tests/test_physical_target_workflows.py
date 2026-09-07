@@ -396,6 +396,80 @@ def test_target_prepare_persists_recovery_binding_without_programming(
     assert not [event for event in events if event[0] == "flash"]
 
 
+@pytest.mark.parametrize("recovery_under_reset", [False, True])
+def test_target_prepare_uses_bound_worker_configuration_before_attach(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    recovery_under_reset: bool,
+) -> None:
+    project, build = _fixed_project(tmp_path)
+    data_root = (tmp_path / "plugin-data").absolute()
+    board = _Board()
+    events: list[tuple[object, ...]] = []
+
+    def backend_factory() -> _SourceChangeBackend:
+        return _SourceChangeBackend(
+            board=board,
+            physical_identity={
+                "board_id": str(build["targetDevice"]), "mcu": "stm32f407vg",
+                "target_id": str(build["targetDevice"]),
+                "probe_serial_hash": sha256(RAW_PROBE.encode()).hexdigest(),
+            },
+            stream=b"", flash_segment=b"", events=events,
+        )
+
+    context = workflows.TestingWorkflowContext(
+        project, data_root, "recovery-prepare-worker"
+    )
+    _state, _model, _facts, _transport, _protocol, _project_config, support = (
+        workflows._target_state(context)
+    )
+    normal = ProbeWorkerConfig(target_profile={**dict(support), "probe_id": RAW_PROBE})
+    expected = normal.for_under_reset_recovery() if recovery_under_reset else None
+    captured: list[ProbeWorkerConfig | None] = []
+    real_supervisor = workflows._target_supervisor
+
+    def capture_supervisor(
+        context_arg: workflows.TestingWorkflowContext,
+        state_arg: object,
+        *,
+        probe_id: str,
+        level: object,
+        support: Mapping[str, object],
+        seams: workflows.TargetWorkflowSeams,
+        worker_config: ProbeWorkerConfig | None = None,
+    ) -> object:
+        captured.append(worker_config)
+        events.append(("supervisor", worker_config))
+        return real_supervisor(
+            context_arg,
+            state_arg,
+            probe_id=probe_id,
+            level=level,
+            support=support,
+            seams=seams,
+            worker_config=worker_config,
+        )
+
+    monkeypatch.setattr(workflows, "_target_supervisor", capture_supervisor)
+    prepared = asyncio.run(
+        workflows.target_test_prepare(
+            context,
+            probe_id=RAW_PROBE,
+            case_ids=CASES,
+            recovery_under_reset=recovery_under_reset,
+            _seams=workflows.TargetWorkflowSeams(backend_factory),
+        )
+    )
+
+    assert prepared.ok is True, (prepared.to_dict(), events)
+    assert captured == [expected]
+    supervisor_index = next(index for index, event in enumerate(events) if event[0] == "supervisor")
+    attach_index = next(index for index, event in enumerate(events) if event[0] == "attach")
+    assert supervisor_index < attach_index
+    assert board.flashed is False
+
+
 def test_target_supervisor_uses_the_frozen_worker_configuration(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
 ) -> None:
