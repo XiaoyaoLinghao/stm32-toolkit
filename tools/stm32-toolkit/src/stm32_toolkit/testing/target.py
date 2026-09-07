@@ -21,7 +21,11 @@ from stm32_toolkit.evidence import EvidenceEnvelope, EvidenceIdentity, canonical
 from stm32_toolkit.execution_provenance import validate_execution_provenance
 from stm32_toolkit.result import OperationResult
 from stm32_toolkit.testing.artifacts import TestArtifactCollector
-from stm32_toolkit.probe.client import ProbeClient
+from stm32_toolkit.probe.client import (
+    ControlAuthorizationClient,
+    ProbeClientError,
+    ProbeClient,
+)
 from stm32_toolkit.probe.authorization import (
     ControlAuthorizationError,
     ControlAuthorizationStore,
@@ -816,10 +820,20 @@ class ConsumedTargetRun:
 class PhysicalTargetFlashAdapter:
     """Program through the already leased Probe client used by the run."""
 
-    def __init__(self, *, project_root: Path, raw_probe_id: str, client: object) -> None:
+    def __init__(
+        self,
+        *,
+        project_root: Path,
+        raw_probe_id: str,
+        client: object,
+        control_authorizations: ControlAuthorizationStore,
+    ) -> None:
         self._project_root = project_root
         self._raw_probe_id = raw_probe_id
         self._client = client
+        if not isinstance(control_authorizations, ControlAuthorizationStore):
+            raise TypeError("Physical Target control authorization store is invalid")
+        self._control_authorizations = control_authorizations
 
     async def run(self, binding: Mapping[str, object]) -> None:
         from stm32_toolkit.probe.flash import FlashRequest, flash_firmware
@@ -839,6 +853,69 @@ class PhysicalTargetFlashAdapter:
         )
         if not isinstance(report, OperationResult) or not report.ok:
             raise TargetRunError("TEST_FLASH_FAILED", "Physical Target flash failed")
+
+    async def resume_after_flash(
+        self, binding: Mapping[str, object], deadline: float
+    ) -> None:
+        """Consume one exact CONTROL resume authorization after flash proof."""
+        try:
+            authorization = ControlAuthorizationClient(
+                self._control_authorizations, self._client
+            )
+            prepared = await authorization.prepare(
+                workspace_id=binding["workspace_id"],
+                project_id=binding["project_id"],
+                session_id=binding["session_id"],
+                revision=binding["revision"],
+                target=dict(binding["target"]),
+                firmware={
+                    "build_id": binding["build_id"],
+                    "elf_sha256": binding["elf_sha256"],
+                },
+                operation="target.resume",
+                arguments={},
+            )
+            result = await self._client.target_control(
+                "target.resume", {}, prepared.action_digest
+            )
+        except TargetRunError:
+            raise
+        except ProbeClientError as error:
+            _require_before_deadline(
+                deadline=deadline,
+                code="TEST_TIMEOUT",
+                message="Target resume deadline elapsed",
+            )
+            self._raise_resume_error(error.code, error)
+        except Exception as error:
+            _require_before_deadline(
+                deadline=deadline,
+                code="TEST_TIMEOUT",
+                message="Target resume deadline elapsed",
+            )
+            raise TargetRunError(
+                "TEST_EXECUTION_FAILED", "Physical Target resume failed"
+            ) from error
+        _require_before_deadline(
+            deadline=deadline,
+            code="TEST_TIMEOUT",
+            message="Target resume deadline elapsed",
+        )
+        if result != {"state": "running"}:
+            raise TargetRunError(
+                "TEST_EXECUTION_FAILED", "Physical Target resume state is invalid"
+            )
+
+    @staticmethod
+    def _raise_resume_error(code: str, cause: Exception) -> None:
+        mapped = {
+            "PROBE_IDENTITY_MISMATCH": "TEST_IDENTITY_MISMATCH",
+            "PROBE_TIMEOUT": "TEST_TIMEOUT",
+            "PROBE_BACKEND_ERROR": "TEST_TRANSPORT_UNAVAILABLE",
+            "PROBE_OPERATION_UNAVAILABLE": "TEST_TRANSPORT_UNAVAILABLE",
+            "PROBE_SERVICE_UNAVAILABLE": "TEST_TRANSPORT_UNAVAILABLE",
+        }.get(code, "TEST_EXECUTION_FAILED")
+        raise TargetRunError(mapped, "Physical Target resume failed") from cause
 
 
 class ProbeClientTargetTransport:
@@ -1493,6 +1570,13 @@ class TargetTestRunner:
             )
             if identity_after_flash != binding["target"]:
                 raise TargetRunError("TEST_IDENTITY_MISMATCH", "Target identity changed after flash")
+            if isinstance(self._flash, PhysicalTargetFlashAdapter):
+                await _invoke_before_deadline(
+                    lambda: self._flash.resume_after_flash(binding, deadline),
+                    deadline=deadline,
+                    code="TEST_TIMEOUT",
+                    message="Target resume deadline elapsed",
+                )
             await _invoke_before_deadline(
                 lambda: transport.open(effective_transport_config, deadline),
                 deadline=deadline,

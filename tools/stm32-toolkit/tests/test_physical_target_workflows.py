@@ -189,6 +189,7 @@ class _SourceChangeBackend:
         self.fail_transport = fail_transport
         self.empty_reads = empty_reads
         self.level = ""
+        self.running = False
         self.remaining = b""
 
     def preflight_target_capabilities(self, probe_id: str, level: object) -> None:
@@ -202,11 +203,23 @@ class _SourceChangeBackend:
         self, probe_id: str, target: str, *, halt_on_connect: bool = False
     ) -> ProbeAttachmentEvidence:
         self.events.append(("attach", self.level, halt_on_connect))
+        self.running = not halt_on_connect
         return ProbeAttachmentEvidence(probe_id, target, target, 1)
 
     def target_identity(self) -> Mapping[str, object]:
         self.events.append(("identity", self.level))
         return dict(self.identity_value)
+
+    def target_state(self) -> Mapping[str, object]:
+        self.events.append(("state", self.level, self.running))
+        return {
+            "state": "running" if self.running else "halted",
+            "reason": "requested",
+        }
+
+    def resume(self) -> None:
+        self.events.append(("resume", self.level))
+        self.running = True
 
     def flash_elf(self, image: bytes) -> FlashBackendReport:
         self.events.append(("flash", self.level))
@@ -824,8 +837,9 @@ def test_target_execute_rejects_missing_or_non_boolean_recovery_before_service(
     assert board.flashed is False
 
 
+@pytest.mark.parametrize("recovery_under_reset", [False, True])
 def test_prepare_never_reads_old_inventory_and_execute_proves_fixed_after_flash(
-    tmp_path: Path,
+    tmp_path: Path, recovery_under_reset: bool,
 ) -> None:
     project, build = _fixed_project(tmp_path)
     data_root = (tmp_path / "plugin-data").absolute()
@@ -861,7 +875,13 @@ def test_prepare_never_reads_old_inventory_and_execute_proves_fixed_after_flash(
     context = workflows.TestingWorkflowContext(project, data_root, "session-r3")
 
     prepared = asyncio.run(
-        prepare(context, probe_id=RAW_PROBE, case_ids=CASES, _seams=seams)
+        prepare(
+            context,
+            probe_id=RAW_PROBE,
+            case_ids=CASES,
+            recovery_under_reset=recovery_under_reset,
+            _seams=seams,
+        )
     )
     assert prepared.ok is True, (prepared.to_dict(), events)
     assert prepared.data["inventory_digest"] == expected_digest
@@ -884,6 +904,20 @@ def test_prepare_never_reads_old_inventory_and_execute_proves_fixed_after_flash(
     assert [event for event in events if event[0] == "transport.open"] == [
         ("transport.open", "modify", True)
     ]
+    flash_index = next(
+        index for index, event in enumerate(events) if event[:2] == ("flash", "modify")
+    )
+    postflash_identity_index = next(
+        index
+        for index, event in enumerate(events)
+        if index > flash_index and event == ("identity", "modify")
+    )
+    resume_indices = [
+        index for index, event in enumerate(events) if event[:2] == ("resume", "modify")
+    ]
+    open_index = next(index for index, event in enumerate(events) if event[0] == "transport.open")
+    assert len(resume_indices) == 1
+    assert postflash_identity_index < resume_indices[0] < open_index
     shown = workflows.test_show(
         workflows.TestingWorkflowContext(project, data_root, "session-r3"),
         run_id=executed.data["run"]["run_id"],

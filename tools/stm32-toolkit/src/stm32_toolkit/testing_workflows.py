@@ -659,7 +659,8 @@ async def target_test_execute(
         runner = TargetTestRunner(
             state.workspace.session_root / "target-authorizations", client,
             PhysicalTargetFlashAdapter(
-                project_root=context.project_root, raw_probe_id=probe_id, client=client
+                project_root=context.project_root, raw_probe_id=probe_id, client=client,
+                control_authorizations=supervisor.control_authorizations,
             ),
             lambda name: ProbeClientTargetTransport(client, project_config, name),
             artifact_collector=collector, owns_probe=False,
