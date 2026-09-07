@@ -319,6 +319,57 @@ def test_real_gnu_ld_wrapped_output_section_row_is_reconciled_with_elf():
     assert ram.used == 0x4
 
 
+def test_real_gnu_ld_wrapped_exact_16_character_output_section_is_reconciled_with_elf():
+    """The 16-character GNU ld field boundary is a valid wrapped row."""
+    name = ".stm32tk_mailbox"
+    text = build_map_text(
+        sections=(
+            (".text", 0x08000040, 0x4, None),
+            (name, 0x20000000, 0x4, None),
+        )
+    )
+    text = text.replace(
+        f"{name:<16} 0x0000000020000000 0x4",
+        f"{name}\n                0x0000000020000000 0x4",
+    )
+
+    _, ram = parse(
+        text,
+        elf_sections=evidence(
+            (".text", 0x08000040, 0x4, True),
+            (name, 0x20000000, 0x4, True),
+        ),
+    )
+
+    assert ram.used == 0x4
+
+
+def test_wrapped_output_section_name_shorter_than_16_characters_is_not_accepted():
+    name = ".stm32tk_mailbo"
+    assert len(name) == 15
+    text = build_map_text(
+        sections=(
+            (".text", 0x08000040, 0x4, None),
+            (name, 0x20000000, 0x4, None),
+        )
+    )
+    text = text.replace(
+        f"{name:<16} 0x0000000020000000 0x4",
+        f"{name}\n                0x0000000020000000 0x4",
+    )
+
+    with pytest.raises(MapError) as error:
+        parse(
+            text,
+            elf_sections=evidence(
+                (".text", 0x08000040, 0x4, True),
+                (name, 0x20000000, 0x4, True),
+            ),
+        )
+
+    assert error.value.details == {"rule": "missing"}
+
+
 def test_wrapped_output_section_preserves_load_address_accounting():
     name = ".stm32tk.generated.data"
     text = build_map_text(sections=((name, 0x20000000, 0x20, 0x08000100),))

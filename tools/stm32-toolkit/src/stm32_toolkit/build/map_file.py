@@ -48,7 +48,7 @@ _SECTION_ROW_RE = re.compile(
 #: the first line contains only the name and the immediately following
 #: indented line contains address, size, and optional load address.
 _WRAPPED_SECTION_NAME_RE = re.compile(
-    r"^([A-Za-z_.$][A-Za-z0-9_.$-]{16,})\s*$"
+    r"^([A-Za-z_.$][A-Za-z0-9_.$-]{15,})\s*$"
 )
 _WRAPPED_SECTION_VALUE_RE = re.compile(
     r"^\s+0x([0-9A-Fa-f]+)\s+0x([0-9A-Fa-f]+)"
