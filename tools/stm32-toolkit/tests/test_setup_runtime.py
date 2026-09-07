@@ -520,6 +520,23 @@ def test_bootstrap_and_repair_are_staged_versioned_and_project_read_only(tmp_pat
     assert (runtime / "Scripts" / "python.exe").is_file()
     assert project_marker.read_text(encoding="utf-8") == "unchanged"
 
+    assert not (plugin_data / "runtime" / ".staging").exists() or not any(
+        (plugin_data / "runtime" / ".staging").iterdir()
+    )
+
+    installed_package = next((runtime / "Lib" / "site-packages").glob("stm32_toolkit"))
+    shutil.rmtree(installed_package)
+    broken = _run_helper("Check", plugin_root, plugin_data, project, environment=environment)
+    assert json.loads(broken.stdout)["runtime"]["status"] == "broken"
+
+    repair = _run_helper("Repair", plugin_root, plugin_data, project, environment=environment, timeout=180)
+    assert repair.returncode == 0, repair.stderr
+    healthy = _run_helper("Check", plugin_root, plugin_data, project, environment=environment)
+    assert json.loads(healthy.stdout)["runtime"]["status"] == "healthy"
+    quarantine = plugin_data / "runtime" / ".quarantine"
+    assert any(path.name.startswith("0.9.0-") for path in quarantine.iterdir())
+    assert project_marker.read_text(encoding="utf-8") == "unchanged"
+
 
 def test_bootstrap_promotes_public_console_launchers_with_final_runtime_binding(
     tmp_path: Path,
@@ -617,6 +634,15 @@ def test_check_reports_staging_bound_public_console_launcher_as_broken(tmp_path:
         environment=environment, timeout=180,
     )
     assert bootstrap.returncode == 0, bootstrap.stderr
+    runtime = plugin_data / "runtime" / "0.9.0"
+    runtime_python = runtime / "Scripts" / "python.exe"
+    _replace_launcher_binding(
+        runtime / "Scripts" / "stm32-toolkit.exe",
+        runtime_python,
+        plugin_data / "runtime" / ".staging",
+    )
+    before_data = _snapshot_files(plugin_data)
+    before_project = _snapshot_files(project)
 
     checked = _run_helper(
         "Check", plugin_root, plugin_data, project,
@@ -628,22 +654,11 @@ def test_check_reports_staging_bound_public_console_launcher_as_broken(tmp_path:
     assert payload["runtime"]["status"] == "broken"
     assert payload["authorizationRequired"] is True
     assert payload["recommendedMode"] == "Repair"
+    assert _snapshot_files(plugin_data) == before_data
+    assert _snapshot_files(project) == before_project
     assert not (plugin_data / "runtime" / ".staging").exists() or not any(
         (plugin_data / "runtime" / ".staging").iterdir()
     )
-
-    installed_package = next((runtime / "Lib" / "site-packages").glob("stm32_toolkit"))
-    shutil.rmtree(installed_package)
-    broken = _run_helper("Check", plugin_root, plugin_data, project, environment=environment)
-    assert json.loads(broken.stdout)["runtime"]["status"] == "broken"
-
-    repair = _run_helper("Repair", plugin_root, plugin_data, project, environment=environment, timeout=180)
-    assert repair.returncode == 0, repair.stderr
-    healthy = _run_helper("Check", plugin_root, plugin_data, project, environment=environment)
-    assert json.loads(healthy.stdout)["runtime"]["status"] == "healthy"
-    quarantine = plugin_data / "runtime" / ".quarantine"
-    assert any(path.name.startswith("0.9.0-") for path in quarantine.iterdir())
-    assert project_marker.read_text(encoding="utf-8") == "unchanged"
 
 
 def test_check_bounds_a_hanging_bootstrap_python(tmp_path: Path):
@@ -1285,6 +1300,25 @@ def _launcher_contains(launcher_bytes: bytes, path: Path) -> bool:
         for value in variants
         for token in (value.encode("utf-8").lower(), value.encode("utf-16le").lower())
     )
+
+
+def _replace_launcher_binding(path: Path, old: Path, new: Path) -> None:
+    data = bytearray(path.read_bytes())
+    old_bytes = str(old).encode("utf-8")
+    index = data.lower().find(old_bytes.lower())
+    assert index >= 0
+    replacement = str(new).encode("utf-8")
+    assert len(replacement) <= len(old_bytes)
+    data[index : index + len(old_bytes)] = replacement + b"\0" * (len(old_bytes) - len(replacement))
+    path.write_bytes(data)
+
+
+def _snapshot_files(root: Path) -> dict[str, bytes]:
+    return {
+        str(path.relative_to(root)): path.read_bytes()
+        for path in root.rglob("*")
+        if path.is_file()
+    }
 
 
 def _fake_monitor_cli_source() -> str:
