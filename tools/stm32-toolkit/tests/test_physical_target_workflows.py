@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import pytest
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from hashlib import sha256
 from pathlib import Path
 from types import SimpleNamespace
@@ -24,7 +24,7 @@ from stm32_toolkit.probe.pyocd_backend import PyOCDBackend
 from stm32_toolkit.probe.supervisor import ProbeServiceConfig, ProbeServiceSupervisor
 from stm32_toolkit.probe.service import ProbeServiceError
 from stm32_toolkit.testing.model import calculate_inventory_digest
-from stm32_toolkit.testing.protocol import calculate_case_inventory_digest
+from stm32_toolkit.testing.protocol import TARGET_FRAME_V2, calculate_case_inventory_digest
 from stm32_toolkit.testing.target import encode_frame
 from stm32_toolkit.probe.worker import (
     NORMAL_CONNECTION_POLICY,
@@ -397,7 +397,7 @@ def test_target_prepare_persists_recovery_binding_without_programming(
 
 
 @pytest.mark.parametrize("recovery_under_reset", [False, True])
-def test_target_prepare_uses_bound_worker_configuration_before_attach(
+def test_target_prepare_keeps_normal_observe_and_recovery_static(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
     recovery_under_reset: bool,
@@ -424,8 +424,6 @@ def test_target_prepare_uses_bound_worker_configuration_before_attach(
     _state, _model, _facts, _transport, _protocol, _project_config, support = (
         workflows._target_state(context)
     )
-    normal = ProbeWorkerConfig(target_profile={**dict(support), "probe_id": RAW_PROBE})
-    expected = normal.for_under_reset_recovery() if recovery_under_reset else None
     captured: list[ProbeWorkerConfig | None] = []
     real_supervisor = workflows._target_supervisor
 
@@ -463,11 +461,177 @@ def test_target_prepare_uses_bound_worker_configuration_before_attach(
     )
 
     assert prepared.ok is True, (prepared.to_dict(), events)
-    assert captured == [expected]
+    if recovery_under_reset:
+        assert captured == []
+        assert events == []
+        assert board.flashed is False
+        return
+    assert captured == [None]
     supervisor_index = next(index for index, event in enumerate(events) if event[0] == "supervisor")
     attach_index = next(index for index, event in enumerate(events) if event[0] == "attach")
     assert supervisor_index < attach_index
     assert board.flashed is False
+
+
+def test_recovery_prepare_is_static_only_and_binds_exact_facts(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    project, build = _fixed_project(tmp_path, protocol=TARGET_FRAME_V2)
+    data_root = (tmp_path / "plugin-data").absolute()
+    context = workflows.TestingWorkflowContext(project, data_root, "static-prepare")
+    _state, model, facts, transport, _protocol, project_config, support = (
+        workflows._target_state(context)
+    )
+    events: list[str] = []
+
+    def forbidden_supervisor(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("recovery prepare must not construct a supervisor")
+
+    def forbidden_backend() -> object:
+        raise AssertionError("recovery prepare must not construct a backend")
+
+    monkeypatch.setattr(workflows, "_target_supervisor", forbidden_supervisor)
+    prepared = asyncio.run(
+        workflows.target_test_prepare(
+            context,
+            probe_id=RAW_PROBE,
+            case_ids=CASES,
+            recovery_under_reset=True,
+            _seams=workflows.TargetWorkflowSeams(forbidden_backend),
+        )
+    )
+
+    assert prepared.ok is True, prepared.to_dict()
+    workspace = WorkspacePaths.from_roots(
+        data_root, project, build["logicalProjectId"], "static-prepare"
+    )
+    runner = workflows.TargetTestRunner(
+        workspace.session_root / "target-authorizations",
+        object(), object(), lambda _: object(), owns_probe=False,
+    )
+    binding = runner.load_prepared(prepared.data["authorized_action_digest"]).binding
+    probe_hash = sha256(RAW_PROBE.encode("utf-8")).hexdigest()
+    expected_target = {
+        "board_id": facts.target_device,
+        "mcu": str(model.debug.target),
+        "target_id": facts.target_device,
+        "probe_serial_hash": probe_hash,
+    }
+    expected_identity = EvidenceIdentity(
+        workspace.workspace_id,
+        str(model.logical_project_id),
+        workspace.session_id,
+        facts.build_id,
+        facts.elf_sha256,
+        facts.target_device,
+        facts.input_snapshot_sha256,
+        facts.git_commit,
+        facts.git_dirty,
+    )
+    assert binding == {
+        "build_id": facts.build_id,
+        "case_inventory_digest": calculate_case_inventory_digest(CASES),
+        "cases": list(CASES),
+        "elf_path": facts.elf_path,
+        "elf_sha256": facts.elf_sha256,
+        "git_dirty": facts.git_dirty,
+        "input_snapshot_sha256": facts.input_snapshot_sha256,
+        "inventory_digest": calculate_inventory_digest(
+            "target", expected_identity, CASES
+        ),
+        "project_id": str(model.logical_project_id),
+        "protocol": TARGET_FRAME_V2,
+        "probe_serial_hash": probe_hash,
+        "recovery_under_reset": True,
+        "revision": facts.git_commit,
+        "session_id": workspace.session_id,
+        "support_profile": support,
+        "target": expected_target,
+        "timeout_ms": int(model.testing.target.timeout_seconds) * 1000,
+        "transport": transport,
+        "transport_config": project_config,
+        "workspace_id": workspace.workspace_id,
+        "nonce": binding["nonce"],
+        "prepared_at_utc": binding["prepared_at_utc"],
+        "expires_at_utc": binding["expires_at_utc"],
+    }
+    assert events == []
+
+
+@pytest.mark.parametrize(
+    "probe_id",
+    ["probe id", "-leading", "_leading", "中 probe", "probe\x00id", "a" * 129],
+)
+def test_recovery_prepare_rejects_nonportable_selector_before_authorization_or_service(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, probe_id: str,
+) -> None:
+    project, build = _fixed_project(tmp_path)
+    data_root = (tmp_path / "plugin-data").absolute()
+    context = workflows.TestingWorkflowContext(project, data_root, "invalid-selector")
+
+    def forbidden_supervisor(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("invalid selector must fail before supervisor construction")
+
+    def forbidden_backend() -> object:
+        raise AssertionError("invalid selector must fail before backend construction")
+
+    monkeypatch.setattr(workflows, "_target_supervisor", forbidden_supervisor)
+    result = asyncio.run(
+        workflows.target_test_prepare(
+            context,
+            probe_id=probe_id,
+            case_ids=CASES,
+            recovery_under_reset=True,
+            _seams=workflows.TargetWorkflowSeams(forbidden_backend),
+        )
+    )
+
+    assert result.ok is False and result.code == "TEST_PROTOCOL_INVALID"
+    workspace = WorkspacePaths.from_roots(
+        data_root, project, build["logicalProjectId"], "invalid-selector"
+    )
+    assert not (workspace.session_root / "target-authorizations").exists()
+
+
+def test_recovery_prepare_rejects_static_drift_before_authorization_or_service(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    project, build = _fixed_project(tmp_path)
+    data_root = (tmp_path / "plugin-data").absolute()
+    context = workflows.TestingWorkflowContext(project, data_root, "static-drift")
+    original_load = workflows.load_fresh_firmware_facts
+    calls = 0
+
+    def load_with_drift(root: Path) -> object:
+        nonlocal calls
+        facts = original_load(root)
+        calls += 1
+        return replace(facts, build_id=("f" * 64)) if calls >= 2 else facts
+
+    def forbidden_supervisor(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("static drift must fail before supervisor construction")
+
+    def forbidden_backend() -> object:
+        raise AssertionError("static drift must fail before backend construction")
+
+    monkeypatch.setattr(workflows, "load_fresh_firmware_facts", load_with_drift)
+    monkeypatch.setattr(workflows, "_target_supervisor", forbidden_supervisor)
+    result = asyncio.run(
+        workflows.target_test_prepare(
+            context,
+            probe_id=RAW_PROBE,
+            case_ids=CASES,
+            recovery_under_reset=True,
+            _seams=workflows.TargetWorkflowSeams(forbidden_backend),
+        )
+    )
+
+    assert calls == 2
+    assert result.ok is False and result.code == "TEST_INVENTORY_CHANGED"
+    workspace = WorkspacePaths.from_roots(
+        data_root, project, build["logicalProjectId"], "static-drift"
+    )
+    assert not (workspace.session_root / "target-authorizations").exists()
 
 
 def test_target_supervisor_uses_the_frozen_worker_configuration(
@@ -567,8 +731,17 @@ def test_target_execute_derives_worker_configuration_from_bound_selection(
             _seams=workflows.TargetWorkflowSeams(backend_factory),
         )
     )
+    reused = asyncio.run(
+        workflows.target_test_execute(
+            context,
+            probe_id=RAW_PROBE,
+            authorized_action_digest=prepared.data["authorized_action_digest"],
+            _seams=workflows.TargetWorkflowSeams(backend_factory),
+        )
+    )
 
     assert executed.ok is False and executed.code == "TEST_TRANSPORT_UNAVAILABLE"
+    assert reused.ok is False and reused.code == "TEST_AUTHORIZATION_INVALID"
     _state, _model, _facts, _transport, _protocol, _project_config, support = (
         workflows._target_state(context)
     )
