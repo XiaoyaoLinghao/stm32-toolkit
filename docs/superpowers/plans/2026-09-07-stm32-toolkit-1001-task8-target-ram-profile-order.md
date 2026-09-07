@@ -1,8 +1,11 @@
 # STM32TK-1001 Task 8 Target RAM Profile Order Correction Plan
 
-**Specification:** `docs/superpowers/specs/2026-09-07-stm32-toolkit-1001-task8-target-ram-profile-order-design.md`  
-**Dispatch base:** `5b2f1f5650c4166bcb64bfa6f361c8e4c080f27c`  
-**Implementation owner:** existing Task 8 GPT-5.6-luna/max agent  
+**Specification:** `docs/superpowers/specs/2026-09-07-stm32-toolkit-1001-task8-target-ram-profile-order-design.md`
+
+**Dispatch base:** `5b2f1f5650c4166bcb64bfa6f361c8e4c080f27c`
+
+**Implementation owner:** existing Task 8 GPT-5.6-luna/max agent
+
 **Independent reviewer:** GPT-5.6-sol
 
 ## Boundaries

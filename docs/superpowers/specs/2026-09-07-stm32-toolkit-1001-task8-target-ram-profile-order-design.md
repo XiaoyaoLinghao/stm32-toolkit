@@ -1,9 +1,13 @@
 # STM32TK-1001 Task 8 Target RAM Profile Order Correction
 
-**Status:** frozen for approval  
-**Specification owner/reviewer:** GPT-5.6-sol  
-**Implementation owner:** existing Task 8 GPT-5.6-luna/max agent  
-**Full accepted base:** `5b2f1f5650c4166bcb64bfa6f361c8e4c080f27c`  
+**Status:** frozen for approval
+
+**Specification owner/reviewer:** GPT-5.6-sol
+
+**Implementation owner:** existing Task 8 GPT-5.6-luna/max agent
+
+**Full accepted base:** `5b2f1f5650c4166bcb64bfa6f361c8e4c080f27c`
+
 **Physical reproduction project:** `C:\tmp\stm32tk-vs10a-legacy-campaign\project-standard-math` at `8c4aa0a6d6787e08d1e8f656b653677772ea0c6d`
 
 ## Problem and evidence
