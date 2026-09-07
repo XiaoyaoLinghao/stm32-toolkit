@@ -5,7 +5,7 @@ without weakening any other MAP/ELF validation.
 
 **Design:** `docs/superpowers/specs/2026-09-07-stm32-toolkit-1001-gnu-map-exact-width-section-design.md`
 
-**Base:** `69b7f2e2fdc45a6052adb1680d778b7e54f125d6`. One existing GPT-5.6-luna/max
+**Base:** `69b7f2e2e5a8475e27f1c315b4f75d03fdeac296`. One existing GPT-5.6-luna/max
 implements; GPT-5.6-sol independently reviews. Project candidate stays uncommitted during the
 product correction.
 
