@@ -6,6 +6,7 @@ import pytest
 from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Mapping
 
 from stm32_toolkit.evidence import EvidenceIdentity, canonical_json_bytes
@@ -13,11 +14,13 @@ from stm32_toolkit.paths import WorkspacePaths
 from stm32_toolkit.probe.backend import (
     FlashBackendReport,
     ProbeAttachmentEvidence,
+    ProbeBackendError,
     ProbeDescriptor,
 )
 from stm32_toolkit.probe.client import ProbeClient
 from stm32_toolkit.probe.lease import ProbeLeaseManager
 from stm32_toolkit.probe.model import OperationLevel
+from stm32_toolkit.probe.pyocd_backend import PyOCDBackend
 from stm32_toolkit.probe.supervisor import ProbeServiceConfig, ProbeServiceSupervisor
 from stm32_toolkit.testing.model import calculate_inventory_digest
 from stm32_toolkit.testing.protocol import calculate_case_inventory_digest
@@ -282,6 +285,59 @@ def _fixed_project(
         manifest["testing"]["target"]["protocol"] = protocol
         manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
     return project, _publish_current_debug_build(project)
+
+
+def test_target_support_profile_orders_task8_ram_before_capability_preflight() -> None:
+    regions = (
+        SimpleNamespace(name="IROM1", origin=0x08000000, length=0x00200000, attributes="rx"),
+        SimpleNamespace(name="IRAM1", origin=0x20000000, length=0x2EFF0, attributes="rwx"),
+        SimpleNamespace(name="MAILBOX", origin=0x2002EFF0, length=0x1010, attributes="rw"),
+        SimpleNamespace(name="IRAM2", origin=0x10000000, length=0x100000, attributes="rwx"),
+    )
+    model = SimpleNamespace(
+        testing=SimpleNamespace(
+            target=SimpleNamespace(
+                transport=SimpleNamespace(
+                    kind="memory-mailbox",
+                    options=SimpleNamespace(address=0x2002EFF0, size=0x1010),
+                )
+            )
+        ),
+        debug=SimpleNamespace(target="stm32f429zgtx"),
+        memory=SimpleNamespace(regions=regions),
+    )
+    facts = SimpleNamespace(
+        target_device="stm32f429zgtx",
+        elf_path="build/arm-debug/firmware.elf",
+        elf_sha256="e" * 64,
+    )
+    profile = workflows._target_support_profile(
+        model,
+        facts,
+        {"options": {"address": 0x2002EFF0, "size": 0x1010}},
+    )
+
+    try:
+        PyOCDBackend(target_profile=profile).preflight_target_capabilities(
+            "probe-task8", OperationLevel.OBSERVE
+        )
+    except ProbeBackendError as error:
+        pytest.fail(
+            "existing capability preflight rejected production Target support profile "
+            f"({error.code})"
+        )
+
+    assert profile["ram"] == [
+        {"start": 0x10000000, "size": 0x100000},
+        {"start": 0x20000000, "size": 0x2EFF0},
+        {"start": 0x2002EFF0, "size": 0x1010},
+    ]
+    assert tuple(region.name for region in model.memory.regions) == (
+        "IROM1",
+        "IRAM1",
+        "MAILBOX",
+        "IRAM2",
+    )
 
 
 def test_prepare_never_reads_old_inventory_and_execute_proves_fixed_after_flash(
