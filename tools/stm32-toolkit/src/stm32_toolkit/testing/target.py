@@ -268,6 +268,14 @@ def _target_protocol_version(protocol: object) -> int:
     raise TargetRunError("TEST_FRAME_VERSION_INVALID", "Target frame protocol is unsupported")
 
 
+def _optional_recovery_binding_sets(
+    binding_sets: tuple[set[str], ...],
+) -> tuple[set[str], ...]:
+    return binding_sets + tuple(
+        fields | {"recovery_under_reset"} for fields in binding_sets
+    )
+
+
 def _host_identity_from_binding(binding: Mapping[str, object]) -> EvidenceIdentity:
     target = binding.get("target")
     if not isinstance(target, Mapping):
@@ -1071,32 +1079,29 @@ class TargetTestRunner:
         except TargetRunError as error:
             raise error
         v2_required = legacy_required | {"protocol", "case_inventory_digest"}
-        allowed = (
+        legacy_bindings = (
             legacy_required,
             legacy_required | {"input_snapshot_sha256"},
             legacy_required | {"protocol"},
             legacy_required | {"protocol", "input_snapshot_sha256"},
+        )
+        v2_bindings = (
             v2_required,
             v2_required | {"input_snapshot_sha256"},
             v2_required | {"git_dirty"},
             v2_required | {"input_snapshot_sha256", "git_dirty"},
         )
+        allowed = _optional_recovery_binding_sets(legacy_bindings + v2_bindings)
         if set(binding) not in allowed or (
-            protocol_version == FRAME_VERSION and set(binding) not in (
-                legacy_required,
-                legacy_required | {"input_snapshot_sha256"},
-                legacy_required | {"protocol"},
-                legacy_required | {"protocol", "input_snapshot_sha256"},
-            )
+            protocol_version == FRAME_VERSION
+            and set(binding) not in _optional_recovery_binding_sets(legacy_bindings)
         ) or (
-            protocol_version == FRAME_V2_VERSION and set(binding) not in (
-                v2_required,
-                v2_required | {"input_snapshot_sha256"},
-                v2_required | {"git_dirty"},
-                v2_required | {"input_snapshot_sha256", "git_dirty"},
-            )
+            protocol_version == FRAME_V2_VERSION
+            and set(binding) not in _optional_recovery_binding_sets(v2_bindings)
         ):
             raise TargetRunError("TEST_PROTOCOL_INVALID", "Target run binding is not closed")
+        if "recovery_under_reset" in binding and type(binding["recovery_under_reset"]) is not bool:
+            raise TargetRunError("TEST_PROTOCOL_INVALID", "Target recovery profile is invalid")
         for digest in ("probe_serial_hash", "elf_sha256", "build_id", "inventory_digest"):
             value = binding[digest]
             if not isinstance(value, str) or len(value) != 64 or any(c not in "0123456789abcdef" for c in value):
@@ -1262,30 +1267,34 @@ class TargetTestRunner:
             except TargetRunError as error:
                 raise ValueError from error
             v2_required = legacy_required | {"protocol", "case_inventory_digest"}
-            allowed = (
+            legacy_bindings = (
                 legacy_required,
                 legacy_required | {"input_snapshot_sha256"},
                 legacy_required | {"protocol"},
                 legacy_required | {"protocol", "input_snapshot_sha256"},
+            )
+            v2_bindings = (
                 v2_required,
                 v2_required | {"input_snapshot_sha256"},
                 v2_required | {"git_dirty"},
                 v2_required | {"input_snapshot_sha256", "git_dirty"},
             )
+            allowed = _optional_recovery_binding_sets(legacy_bindings + v2_bindings)
             if set(record) not in allowed:
                 raise ValueError
-            if protocol_version == FRAME_VERSION and set(record) not in (
-                legacy_required,
-                legacy_required | {"input_snapshot_sha256"},
-                legacy_required | {"protocol"},
-                legacy_required | {"protocol", "input_snapshot_sha256"},
+            if (
+                protocol_version == FRAME_VERSION
+                and set(record) not in _optional_recovery_binding_sets(legacy_bindings)
             ):
                 raise ValueError
-            if protocol_version == FRAME_V2_VERSION and set(record) not in (
-                v2_required,
-                v2_required | {"input_snapshot_sha256"},
-                v2_required | {"git_dirty"},
-                v2_required | {"input_snapshot_sha256", "git_dirty"},
+            if (
+                protocol_version == FRAME_V2_VERSION
+                and set(record) not in _optional_recovery_binding_sets(v2_bindings)
+            ):
+                raise ValueError
+            if (
+                "recovery_under_reset" in record
+                and type(record["recovery_under_reset"]) is not bool
             ):
                 raise ValueError
             for field in ("workspace_id", "project_id", "session_id", "revision", "elf_path"):

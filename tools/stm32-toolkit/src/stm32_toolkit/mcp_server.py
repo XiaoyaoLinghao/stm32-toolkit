@@ -1574,13 +1574,17 @@ async def tool_test_show_for_request(
 async def tool_test_target_prepare_for_request(
     runtime: ServerRuntime, context: Context | None, probe_id: str,
     case_ids: list[str] | tuple[str, ...],
+    recovery_under_reset: bool = False,
 ) -> dict[str, object]:
     failure = await _client_roots_failure(runtime, context, "test.target.prepare")
     if failure is not None:
         return failure
     return (
         await target_test_prepare(
-            _testing_context(runtime), probe_id=probe_id, case_ids=tuple(case_ids)
+            _testing_context(runtime),
+            probe_id=probe_id,
+            case_ids=tuple(case_ids),
+            recovery_under_reset=recovery_under_reset,
         )
     ).to_dict()
 
@@ -2382,9 +2386,14 @@ def create_server(
 
     @mcp.tool(name=MCP_TOOL_NAMES["test_target_prepare"])
     async def stm32_test_target_prepare(
-        ctx: Context, probeId: ProbeId, caseIds: Annotated[list[CaseId], Field(min_length=1, max_length=MAX_CASES), AfterValidator(_unique_case_ids)],
+        ctx: Context,
+        probeId: ProbeId,
+        caseIds: Annotated[list[CaseId], Field(min_length=1, max_length=MAX_CASES), AfterValidator(_unique_case_ids)],
+        recoveryUnderReset: StrictBool = False,
     ) -> dict[str, object]:
-        return await tool_test_target_prepare_for_request(runtime, ctx, probeId, caseIds)
+        return await tool_test_target_prepare_for_request(
+            runtime, ctx, probeId, caseIds, recoveryUnderReset
+        )
 
     @mcp.tool(name=MCP_TOOL_NAMES["test_target_execute"])
     async def stm32_test_target_execute(

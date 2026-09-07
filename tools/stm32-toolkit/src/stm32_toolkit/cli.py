@@ -472,6 +472,13 @@ def _build_parser() -> argparse.ArgumentParser:
     target_prepare.add_argument(
         "--case-id", dest="case_ids", action=_UniqueCaseAction, required=True, default=()
     )
+    target_prepare.add_argument(
+        "--recovery-under-reset",
+        dest="recovery_under_reset",
+        action=_RejectDuplicateTrue,
+        nargs=0,
+        default=False,
+    )
     target_execute = target_commands.add_parser("execute")
     target_execute.set_defaults(operation="test.target.execute")
     _add_testing_context(target_execute)
@@ -1146,7 +1153,10 @@ async def _hardware_operation_result(
         context = TestingWorkflowContext(project_root, args.data_root, args.session_id)
         if args.target_command == "prepare":
             return await target_test_prepare(
-                context, probe_id=args.probe_id, case_ids=args.case_ids
+                context,
+                probe_id=args.probe_id,
+                case_ids=args.case_ids,
+                recovery_under_reset=args.recovery_under_reset,
             )
         return await target_test_execute(
             context,

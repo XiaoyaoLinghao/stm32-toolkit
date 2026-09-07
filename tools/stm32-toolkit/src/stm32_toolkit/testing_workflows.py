@@ -437,6 +437,7 @@ def _target_supervisor(
     level: OperationLevel,
     support: Mapping[str, object],
     seams: TargetWorkflowSeams,
+    worker_config: ProbeWorkerConfig | None = None,
 ) -> ProbeServiceSupervisor:
     collector = TestArtifactCollector(
         state.results_root, state.evidence_store, project_root=state.workspace.project_root
@@ -452,7 +453,9 @@ def _target_supervisor(
             config=config, lease_manager=manager,
             backend_factory=seams._test_backend_factory,
         )
-    worker = ProbeWorkerConfig(target_profile={**dict(support), "probe_id": probe_id})
+    worker = worker_config or ProbeWorkerConfig(
+        target_profile={**dict(support), "probe_id": probe_id}
+    )
     return ProbeServiceSupervisor(config=config, lease_manager=manager, worker_config=worker)
 
 
@@ -461,13 +464,19 @@ async def target_test_prepare(
     *,
     probe_id: str,
     case_ids: tuple[str, ...],
+    recovery_under_reset: object = False,
     _seams: TargetWorkflowSeams = TargetWorkflowSeams(),
 ) -> OperationResult[dict[str, object]]:
     """Authorize exact fixed-after firmware facts without reading Target inventory."""
     supervisor: ProbeServiceSupervisor | None = None
     client: ProbeClient | None = None
     try:
-        if not isinstance(probe_id, str) or not probe_id or not _valid_physical_case_ids(case_ids):
+        if (
+            not isinstance(probe_id, str)
+            or not probe_id
+            or not _valid_physical_case_ids(case_ids)
+            or type(recovery_under_reset) is not bool
+        ):
             raise TestProtocolError("TEST_PROTOCOL_INVALID", "Physical Target request is invalid")
         state, model, facts, transport, protocol, project_config, support = _target_state(context)
         probe_hash = sha256(probe_id.encode("utf-8")).hexdigest()
@@ -524,6 +533,7 @@ async def target_test_prepare(
             support_profile=support,
             cases=case_ids,
             timeout_ms=int(getattr(getattr(model.testing, "target"), "timeout_seconds")) * 1000,
+            recovery_under_reset=recovery_under_reset,
         )
         if protocol == TARGET_FRAME_V2:
             binding.update(
@@ -572,6 +582,8 @@ async def target_test_execute(
         loaded = auth_runner.load_prepared(authorized_action_digest)
         consumed = auth_runner.consume_prepared(authorized_action_digest)
         binding = consumed.binding
+        if type(binding.get("recovery_under_reset")) is not bool:
+            raise TargetRunError("TEST_AUTHORIZATION_INVALID", "Target recovery profile is invalid")
         if datetime.now(timezone.utc) >= loaded.expires_at_utc:
             raise TargetRunError("TEST_AUTHORIZATION_INVALID", "Target authorization expired")
         state, model, facts, transport, protocol, project_config, support = _target_state(context)
@@ -601,6 +613,7 @@ async def target_test_execute(
             or binding["transport_config"] != project_config
             or binding["support_profile"] != support
             or binding["inventory_digest"] != expected_inventory_digest
+            or type(binding.get("recovery_under_reset")) is not bool
             or binding.get("protocol", TARGET_FRAME_V1) != protocol
             or (
                 protocol == TARGET_FRAME_V2
@@ -611,9 +624,17 @@ async def target_test_execute(
             )
         ):
             raise TargetRunError("TEST_INVENTORY_CHANGED", "Physical Target inputs changed")
+        normal_worker = ProbeWorkerConfig(
+            target_profile={**dict(support), "probe_id": probe_id}
+        )
+        worker_config = (
+            normal_worker.for_under_reset_recovery()
+            if binding["recovery_under_reset"]
+            else normal_worker
+        )
         supervisor = _target_supervisor(
             context, state, probe_id=probe_id, level=OperationLevel.MODIFY,
-            support=support, seams=_seams,
+            support=support, seams=_seams, worker_config=worker_config,
         )
         endpoint = await supervisor.start()
         client = ProbeClient(endpoint)
