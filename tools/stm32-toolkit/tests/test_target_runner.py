@@ -247,6 +247,36 @@ class FakeTransport:
         return identity
 
 
+class _ResumeGatedTransport(FakeTransport):
+    """A Target transport that may open only after the physical target is running."""
+
+    def __init__(self, probe: FakeProbeClient, chunks: list[bytes]) -> None:
+        super().__init__(chunks)
+        self._probe = probe
+
+    def open(self, config, deadline):
+        if self._probe.state != {"state": "running", "reason": "requested"}:
+            raise AssertionError("physical Target transport opened while the core was halted")
+        return super().open(config, deadline)
+
+
+class _ResumingPhysicalFlashAdapter(target_module.PhysicalTargetFlashAdapter):
+    """Small runner seam that records the required post-flash transition."""
+
+    def __init__(self, probe: FakeProbeClient) -> None:
+        # Keep the test seam independent of the implementation constructor so RED
+        # proves the runner is missing the transition, rather than its test setup.
+        self.probe = probe
+        self.events: list[tuple[object, ...]] = []
+
+    async def run(self, binding) -> None:
+        self.events.append(("flash",))
+
+    async def resume_after_flash(self, binding, deadline) -> None:
+        self.events.append(("resume", dict(binding)))
+        self.probe.state = {"state": "running", "reason": "requested"}
+
+
 def test_target_run_preflights_project_v3_config_and_exact_authorized_cases_before_flash(
     tmp_path: Path,
 ) -> None:
@@ -485,6 +515,57 @@ def test_target_runner_success_persists_three_manifests_and_guarded_flash(tmp_pa
     assert transport.calls[0][2] > before_deadline
     assert transport.calls[-1] == ("close",)
     assert probe.closed
+  run(scenario())
+
+
+def test_physical_target_runner_resumes_after_postflash_identity_before_transport(
+    tmp_path: Path,
+) -> None:
+  async def scenario() -> None:
+    from stm32_toolkit.evidence.store import EvidenceStore
+    from stm32_toolkit.testing.artifacts import TestArtifactCollector
+
+    probe = FakeProbeClient()
+    probe.endpoint = SimpleNamespace(lease_id="lease")
+    flash = _ResumingPhysicalFlashAdapter(probe)
+    transport = _ResumeGatedTransport(probe, [valid_target_stream(), b""])
+    evidence_store = EvidenceStore((tmp_path / "evidence").absolute())
+    project_root = (tmp_path / "project").absolute()
+    project_root.mkdir(parents=True)
+    collector = TestArtifactCollector(
+        (tmp_path / "results").absolute(), evidence_store,
+        project_root=project_root,
+    )
+    runner = target_module.TargetTestRunner(
+        (tmp_path / "runs").absolute(), probe, flash, lambda _name: transport,
+        artifact_collector=collector,
+    )
+    instant = datetime.now(timezone.utc)
+    prepared = await runner.prepare(
+        workspace_id=WORKSPACE_ID, project_id=PROJECT_ID, session_id=SESSION_ID,
+        revision=REVISION, target=IDENTITY, probe_serial_hash=PROBE_HASH,
+        elf_path="build/app.elf", elf_sha256="e" * 64, build_id="b" * 64,
+        inventory_digest=TARGET_RUN_INVENTORY_DIGEST, transport="mailbox",
+        transport_config=MAILBOX_PROJECT_CONFIG, support_profile=TARGET_SUPPORT,
+        cases=("suite.case",), timeout_ms=1000, now=instant,
+    )
+    result = await runner.run(
+        None, prepared.action_digest, current_revision=REVISION,
+        current_inventory_digest=TARGET_RUN_INVENTORY_DIGEST, now=instant,
+        consumed=target_module.ConsumedTargetRun(
+            prepared.action_digest,
+            prepared.binding,
+            target_module.PhysicalRunProvenance(
+                WORKSPACE_ID, SESSION_ID, PROBE_HASH, SESSION_ID, "lease"
+            ),
+        ),
+    )
+
+    assert result["test_manifest"].state == "passed"
+    assert [event[0] for event in flash.events] == ["flash", "resume"]
+    assert transport.calls[0][0] == "open"
+    assert probe.state == {"state": "running", "reason": "requested"}
+
   run(scenario())
 
 
