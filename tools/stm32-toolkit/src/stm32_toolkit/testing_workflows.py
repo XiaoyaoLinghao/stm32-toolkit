@@ -78,6 +78,7 @@ _TARGET_PREPARE_OPERATION = "test.target.prepare"
 _TARGET_EXECUTE_OPERATION = "test.target.execute"
 _DIGEST = re.compile(r"^[0-9a-f]{64}$")
 _RUN_ID = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
+_PORTABLE_PROBE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 
 
 @dataclass(frozen=True)
@@ -323,6 +324,10 @@ def _valid_digest(value: object) -> bool:
     return isinstance(value, str) and _DIGEST.fullmatch(value) is not None
 
 
+def _valid_portable_probe_id(value: object) -> bool:
+    return isinstance(value, str) and _PORTABLE_PROBE_ID.fullmatch(value) is not None
+
+
 def _valid_case_ids(case_ids: object) -> bool:
     return (
         isinstance(case_ids, tuple)
@@ -478,6 +483,8 @@ async def target_test_prepare(
             or type(recovery_under_reset) is not bool
         ):
             raise TestProtocolError("TEST_PROTOCOL_INVALID", "Physical Target request is invalid")
+        if recovery_under_reset and not _valid_portable_probe_id(probe_id):
+            raise TestProtocolError("TEST_PROTOCOL_INVALID", "Physical Target request is invalid")
         state, model, facts, transport, protocol, project_config, support = _target_state(context)
         probe_hash = sha256(probe_id.encode("utf-8")).hexdigest()
         expected_identity = EvidenceIdentity(
@@ -488,38 +495,25 @@ async def target_test_prepare(
         )
         inventory_digest = calculate_inventory_digest("target", expected_identity, case_ids)
         case_inventory_digest = calculate_case_inventory_digest(case_ids)
-        if recovery_under_reset:
-            recovery_worker = ProbeWorkerConfig(
-                target_profile={**dict(support), "probe_id": probe_id}
-            ).for_under_reset_recovery()
-            supervisor = _target_supervisor(
-                context,
-                state,
-                probe_id=probe_id,
-                level=OperationLevel.OBSERVE,
-                support=support,
-                seams=_seams,
-                worker_config=recovery_worker,
-            )
-        else:
-            supervisor = _target_supervisor(
-                context,
-                state,
-                probe_id=probe_id,
-                level=OperationLevel.OBSERVE,
-                support=support,
-                seams=_seams,
-            )
-        endpoint = await supervisor.start()
-        client = ProbeClient(endpoint)
-        await client.attach(probe_id, str(model.debug.target))
-        physical = await client.target_identity()
         expected_target = {
             "board_id": facts.target_device, "mcu": str(model.debug.target),
             "target_id": facts.target_device, "probe_serial_hash": probe_hash,
         }
-        if physical != expected_target:
-            raise TargetRunError("TEST_IDENTITY_MISMATCH", "Physical Target identity changed")
+        if not recovery_under_reset:
+            supervisor = _target_supervisor(
+                context,
+                state,
+                probe_id=probe_id,
+                level=OperationLevel.OBSERVE,
+                support=support,
+                seams=_seams,
+            )
+            endpoint = await supervisor.start()
+            client = ProbeClient(endpoint)
+            await client.attach(probe_id, str(model.debug.target))
+            physical = await client.target_identity()
+            if physical != expected_target:
+                raise TargetRunError("TEST_IDENTITY_MISMATCH", "Physical Target identity changed")
         current_facts = load_fresh_firmware_facts(context.project_root)
         if (
             current_facts.build_id != facts.build_id
