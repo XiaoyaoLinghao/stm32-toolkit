@@ -1,9 +1,13 @@
 # STM32TK-1001 GNU MAP Exact-Width Section Design
 
-**Module / phase:** STM32 Toolkit 1.0 VS10-A, Task 8 P2 build validation correction  
-**Accepted correction base:** `69b7f2e2e5a8475e27f1c315b4f75d03fdeac296`  
-**Specification/review owner:** GPT-5.6-sol primary  
-**Implementation owner:** the existing single GPT-5.6-luna/max Task 8 implementer  
+**Module / phase:** STM32 Toolkit 1.0 VS10-A, Task 8 P2 build validation correction
+
+**Accepted correction base:** `69b7f2e2e5a8475e27f1c315b4f75d03fdeac296`
+
+**Specification/review owner:** GPT-5.6-sol primary
+
+**Implementation owner:** the existing single GPT-5.6-luna/max Task 8 implementer
+
 **Authority:** user approved continuing approach A and the bounded repair; no hardware or remote authority
 
 ## Problem

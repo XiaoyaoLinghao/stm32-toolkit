@@ -1,11 +1,17 @@
 # STM32TK-1001 Task 8 Native-Linker Ownership Transition Design
 
-**Module / phase:** STM32 Toolkit 1.0 VS10-A, Task 8 offline P2 preparation  
-**Parent accepted base:** `9b7839bb01f88a9e3d2c13203f38aa0d11647232`  
-**Toolkit dispatch head:** `93d5b32dd2dc2cb613ba9c68f714abd95df83d14`  
-**Project dispatch head:** `cf273a18b4c757b4866793c94b25d5ceaad39925`  
-**Specification owner / reviewer:** GPT-5.6-sol primary  
-**Implementation owner:** the existing single GPT-5.6-luna/max Task 8 implementer  
+**Module / phase:** STM32 Toolkit 1.0 VS10-A, Task 8 offline P2 preparation
+
+**Parent accepted base:** `9b7839bb01f88a9e3d2c13203f38aa0d11647232`
+
+**Toolkit dispatch head:** `93d5b32dd2dc2cb613ba9c68f714abd95df83d14`
+
+**Project dispatch head:** `cf273a18b4c757b4866793c94b25d5ceaad39925`
+
+**Specification owner / reviewer:** GPT-5.6-sol primary
+
+**Implementation owner:** the existing single GPT-5.6-luna/max Task 8 implementer
+
 **User decision:** approach A approved on 2026-09-07
 
 ## 1. Problem and root cause
