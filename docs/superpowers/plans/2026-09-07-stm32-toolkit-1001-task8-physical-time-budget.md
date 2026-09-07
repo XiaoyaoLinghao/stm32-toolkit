@@ -38,7 +38,8 @@ implements the project change. No remote or hardware action is authorized.
 
 - Run the exact public Debug build once.
 - Confirm build success, target `STM32F429ZGTx`, MAILBOX reservation/usage, no warning, and exact
-  ELF SHA-256 unchanged from `10df523425dbe8567d5876e5e790714d1314a5dd3d545e4d43a063c300fd6ead`.
+  implementation-worktree ELF SHA-256 unchanged from
+  `10df523425dbe8567d5876e5e790714d1314a5dd3d545e4d43a063c300fd6ead`.
 - Run the committed offline verifier once and confirm the v2 fixture, case digest, MAP/ELF/mailbox,
   startup, generated inventory, CMake, and no-write checks pass.
 - Project the public prepare binding through a non-hardware seam or the existing focused unit
@@ -51,6 +52,9 @@ implements the project change. No remote or hardware action is authorized.
 - Create a fresh clean detached project worktree at the returned code head.
 - Review the complete `8c4aa0a6d6787e08d1e8f656b653677772ea0c6d..CODE_HEAD` diff.
 - Re-run only the public build, offline verifier, and exact timeout projection needed by the risk.
+  Because a clean Debug build may embed a different absolute source path in non-loadable debug
+  metadata, compare its `objcopy -O binary` load image byte-for-byte with the implementation
+  build instead of requiring cross-worktree raw ELF hash equality.
 - Reconcile hashes/status and issue `ACCEPTED`, `REVISION_REQUIRED`, or `REWRITE_REQUIRED`.
 - Perform no hardware or remote action.
 

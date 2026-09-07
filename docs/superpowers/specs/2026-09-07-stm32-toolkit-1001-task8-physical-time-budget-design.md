@@ -57,9 +57,14 @@ mailbox protocol.
 
 The exact pinned runtime validates the updated project, performs a configure dry-run, and applies
 only the fresh authorized plan if necessary. A public Debug build succeeds. The generated
-inventory records the new project-model hash, while the ELF and MAP-relevant firmware/linker
-behavior remain unchanged. The committed offline verifier still passes and the expected case
-inventory digest remains
+inventory remains consistent, while the firmware load image and MAP-relevant firmware/linker
+behavior remain unchanged. In the implementation worktree, where existing Debug objects are
+reused, the ELF SHA-256 remains
+`10df523425dbe8567d5876e5e790714d1314a5dd3d545e4d43a063c300fd6ead`. A clean detached Debug
+build may encode a different absolute compilation path in non-loadable debug metadata; such a
+review build must instead prove its `objcopy -O binary` load image is byte-identical to the
+implementation build and pass the committed semantic verifier. The expected case inventory digest
+remains
 `966a489bdde16562885cc4ac3c3e2b9b9bde0b477f9c06aae25f4916be52c2b5`.
 
 ### Scenario 4 - physical continuation stays separately authorized
@@ -90,8 +95,9 @@ status. Existing untracked build outputs are preserved as run-owned evidence and
 
 The Sol reviewer reviews the complete project-base-to-final-head diff in a clean detached
 worktree. Acceptance requires exactly the allowed project paths, a 60-second projected binding,
-successful public build/offline verification, unchanged ELF bytes from the current Task 8 build,
-no unresolved product/safety/scope finding, and no hardware or remote action.
+successful public build/offline verification, a byte-identical firmware load image despite any
+path-dependent non-loadable Debug metadata, no unresolved product/safety/scope finding, and no
+hardware or remote action.
 
 ## Non-goals
 
