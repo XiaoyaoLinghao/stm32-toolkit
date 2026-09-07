@@ -81,7 +81,12 @@ all checks pass. Any failure publishes no PASS.
 ## 3. Frozen architecture and state ownership
 
 - The prepared authorization binding is the sole authority for the Target recovery choice.
-- `target_test_prepare()` writes the exact boolean into the existing canonical binding.
+- `TargetTestRunner` remains the strict canonical authorization-record owner. Its closed field
+  sets admit `recovery_under_reset` only as one optional exact boolean so existing lower-level
+  callers remain compatible; both prepare-time and loaded-record validation reject every other
+  value and every unknown field.
+- Public `target_test_prepare()` always writes the exact boolean into that existing canonical
+  binding.
 - `target_test_execute()` reads that bound boolean and chooses between the existing normal worker
   and the existing `for_under_reset_recovery()` derivation.
 - The CLI and MCP remain thin adapters. Execute receives no new flag or MCP field.
@@ -105,12 +110,14 @@ all checks pass. Any failure publishes no PASS.
 
 Product changes are allowed only in:
 
+- `tools/stm32-toolkit/src/stm32_toolkit/testing/target.py`;
 - `tools/stm32-toolkit/src/stm32_toolkit/testing_workflows.py`;
 - `tools/stm32-toolkit/src/stm32_toolkit/cli.py`;
 - `tools/stm32-toolkit/src/stm32_toolkit/mcp_server.py`.
 
 Tests are allowed only in:
 
+- `tools/stm32-toolkit/tests/test_target_runner.py`;
 - `tools/stm32-toolkit/tests/test_physical_target_workflows.py`;
 - `tools/stm32-toolkit/tests/test_testing_cli.py`;
 - `tools/stm32-toolkit/tests/test_testing_mcp.py`;
@@ -125,6 +132,8 @@ diff. Sol reviews the complete accepted-base-to-final-code-head diff in a fresh 
 Tests must prove:
 
 - default prepare binds exact false and default execute uses unchanged normal worker configuration;
+- the strict runner accepts optional exact false/true in canonical prepared records, preserves
+  legacy low-level bindings without the field, and rejects non-boolean values at prepare and load;
 - recovery prepare binds exact true into the action digest, while prepare itself performs no write;
 - recovery execute derives exactly 100 kHz/under-reset from the binding before service start;
 - execute has no independent recovery input and cannot contradict the prepared action;

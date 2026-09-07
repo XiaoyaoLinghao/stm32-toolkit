@@ -32,6 +32,9 @@ readback, transport, publication, service, and backend behavior remains shared.
 
 ## Task 2 - Commit workflow/safety RED
 
+- [ ] In `test_target_runner.py`, prove the closed authorization binding admits optional exact
+  false/true, preserves legacy lower-level bindings without the field, and rejects non-boolean
+  recovery values both before writing and when loading a canonical record.
 - [ ] In `test_physical_target_workflows.py`, prove prepare stores exact false/true in the prepared
   binding and recovery prepare still performs zero program calls.
 - [ ] Prove default execute passes the current normal worker configuration and recovery execute
@@ -44,6 +47,11 @@ readback, transport, publication, service, and backend behavior remains shared.
 
 ## Task 3 - Implement the bounded GREEN
 
+- [ ] In `testing/target.py`, extend every admitted legacy/v2 closed binding set with an optional
+  `recovery_under_reset` variant. When present, require `type(value) is bool` in both
+  `TargetTestRunner.prepare()` and `_validate_prepared_record()`. Keep unknown-field rejection,
+  canonical serialization, digest construction, timestamps, nonce, consume-once behavior, and
+  legacy field sets unchanged.
 - [ ] Add keyword-only `recovery_under_reset: object = False` to `target_test_prepare()`. Validate
   exact `bool` before `_target_state()` or supervisor construction and include it in the canonical
   binding passed to `TargetTestRunner.prepare()`.
@@ -55,14 +63,15 @@ readback, transport, publication, service, and backend behavior remains shared.
   fake seams and one-service topology intact.
 - [ ] Add the duplicate-rejecting prepare-only CLI flag and forward it. Do not alter execute CLI.
 - [ ] Add the prepare-only MCP strict boolean and forward it. Do not alter execute MCP.
-- [ ] Do not modify worker/backend, Target runner/flash adapter, schemas, inventories, or project.
-- [ ] Commit only the three allowed product files as GREEN.
+- [ ] Do not modify worker/backend, Target flash adapter, schemas, inventories, or project.
+- [ ] Commit only the four allowed product files as GREEN.
 
 ## Task 4 - Proportionate verification and return
 
 - [ ] Run the affected tests under CPython 3.12 with source/test `PYTHONPATH`,
   `-p no:cacheprovider`, `-o addopts=''`, and a short unique external basetemp:
-  `test_physical_target_workflows.py`, `test_testing_cli.py`, `test_testing_mcp.py`, plus only the
+  `test_target_runner.py`, `test_physical_target_workflows.py`, `test_testing_cli.py`,
+  `test_testing_mcp.py`, plus only the
   relevant public-v2 nodes if needed by the changed adapter contract.
 - [ ] Run `git diff --check`, `git diff --name-only`, exact HEAD/tree/status, and review the complete
   accepted-base-to-code-head diff. Any path outside the frozen allowlist stops implementation.
