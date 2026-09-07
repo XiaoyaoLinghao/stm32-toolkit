@@ -646,6 +646,70 @@ def test_target_prepared_record_closed_validation_rejects_each_identity_and_limi
       target_module.TargetTestRunner._validate_prepared_record(record)
 
 
+@pytest.mark.parametrize("recovery_under_reset", [False, True])
+def test_target_runner_prepared_binding_accepts_recovery_boolean_and_legacy_shape(
+    tmp_path: Path, recovery_under_reset: bool,
+) -> None:
+  async def scenario() -> None:
+    runner = target_module.TargetTestRunner(
+        tmp_path / "runs", FakeProbeClient(), FakeFlashWorkflow(),
+        lambda _name: FakeTransport([]),
+    )
+    common = {
+        "workspace_id": "workspace-a", "project_id": "project-a", "session_id": "session-a",
+        "revision": "rev-a", "target": IDENTITY, "probe_serial_hash": PROBE_HASH,
+        "elf_path": "build/app.elf", "elf_sha256": "e" * 64, "build_id": "b" * 64,
+        "inventory_digest": "a" * 64, "transport": "mailbox",
+        "transport_config": MAILBOX_PROJECT_CONFIG, "support_profile": TARGET_SUPPORT,
+        "cases": ("suite.case",), "timeout_ms": 1000,
+        "now": datetime(2026, 8, 16, tzinfo=timezone.utc),
+    }
+    prepared = await runner.prepare(
+        **common, recovery_under_reset=recovery_under_reset,
+    )
+    loaded = runner.load_prepared(prepared.action_digest)
+    assert loaded.binding["recovery_under_reset"] is recovery_under_reset
+
+    legacy = await runner.prepare(**common)
+    assert "recovery_under_reset" not in runner.load_prepared(legacy.action_digest).binding
+
+  run(scenario())
+
+
+@pytest.mark.parametrize("recovery_under_reset", [None, 0, 1, "true", []])
+def test_target_runner_rejects_non_boolean_recovery_at_prepare_and_load(
+    tmp_path: Path, recovery_under_reset: object,
+) -> None:
+  async def scenario() -> None:
+    runner = target_module.TargetTestRunner(
+        tmp_path / "runs", FakeProbeClient(), FakeFlashWorkflow(),
+        lambda _name: FakeTransport([]),
+    )
+    common = {
+        "workspace_id": "workspace-a", "project_id": "project-a", "session_id": "session-a",
+        "revision": "rev-a", "target": IDENTITY, "probe_serial_hash": PROBE_HASH,
+        "elf_path": "build/app.elf", "elf_sha256": "e" * 64, "build_id": "b" * 64,
+        "inventory_digest": "a" * 64, "transport": "mailbox",
+        "transport_config": MAILBOX_PROJECT_CONFIG, "support_profile": TARGET_SUPPORT,
+        "cases": ("suite.case",), "timeout_ms": 1000,
+        "now": datetime(2026, 8, 16, tzinfo=timezone.utc),
+    }
+    with pytest.raises(target_module.TargetRunError) as invalid_prepare:
+      await runner.prepare(**common, recovery_under_reset=recovery_under_reset)
+    assert invalid_prepare.value.code == "TEST_PROTOCOL_INVALID"
+
+    prepared = await runner.prepare(**common)
+    invalid_record = dict(prepared.binding, recovery_under_reset=recovery_under_reset)
+    payload = canonical_json_bytes(invalid_record)
+    digest = sha256(payload).hexdigest()
+    runner._authorization_authority._path(digest, "prepared").write_bytes(payload)
+    with pytest.raises(target_module.TargetRunError) as invalid_load:
+      runner.load_prepared(digest)
+    assert invalid_load.value.code == "TEST_AUTHORIZATION_INVALID"
+
+  run(scenario())
+
+
 @pytest.mark.parametrize("transport,config", [
     ("bad", MAILBOX_PROJECT_CONFIG),
     ("mailbox", []),
