@@ -289,17 +289,17 @@ def _fixed_project(
 
 def test_target_support_profile_orders_task8_ram_before_capability_preflight() -> None:
     regions = (
-        SimpleNamespace(name="IROM1", origin=0x08000000, length=0x00200000, attributes="rx"),
+        SimpleNamespace(name="IROM1", origin=0x08000000, length=0x100000, attributes="rx"),
         SimpleNamespace(name="IRAM1", origin=0x20000000, length=0x2EFF0, attributes="rwx"),
         SimpleNamespace(name="MAILBOX", origin=0x2002EFF0, length=0x1010, attributes="rw"),
-        SimpleNamespace(name="IRAM2", origin=0x10000000, length=0x100000, attributes="rwx"),
+        SimpleNamespace(name="IRAM2", origin=0x10000000, length=0x10000, attributes="rwx"),
     )
     model = SimpleNamespace(
         testing=SimpleNamespace(
             target=SimpleNamespace(
                 transport=SimpleNamespace(
                     kind="memory-mailbox",
-                    options=SimpleNamespace(address=0x2002EFF0, size=0x1010),
+                    options=SimpleNamespace(address=0x2002EFF0, size=4096),
                 )
             )
         ),
@@ -314,7 +314,7 @@ def test_target_support_profile_orders_task8_ram_before_capability_preflight() -
     profile = workflows._target_support_profile(
         model,
         facts,
-        {"options": {"address": 0x2002EFF0, "size": 0x1010}},
+        {"options": {"address": 0x2002EFF0, "size": 4096}},
     )
 
     try:
@@ -331,7 +331,7 @@ def test_target_support_profile_orders_task8_ram_before_capability_preflight() -
         )
 
     assert profile["ram"] == [
-        {"start": 0x10000000, "size": 0x100000},
+        {"start": 0x10000000, "size": 0x10000},
         {"start": 0x20000000, "size": 0x2EFF0},
         {"start": 0x2002EFF0, "size": 0x1010},
     ]
