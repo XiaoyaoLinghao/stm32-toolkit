@@ -71,4 +71,3 @@ hardware or remote action.
 After software acceptance, update the ignored SDD ledger and stop before physical execution. The
 previous action is consumed. A new probe attach, target read, reset/resume, flash, or Target execute
 requires a new explicit hardware authorization.
-

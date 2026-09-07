@@ -129,4 +129,3 @@ basetemp. Hardware remains deferred until a new explicit action is authorized.
   worker, project/schema, firmware, linker, mailbox protocol, CLI, MCP, runtime inventory, error
   vocabulary, package, release, Agent adapter, Python range, CI, or collaboration automation.
 - No hardware action, push, PR mutation, merge, tag, release, closure, or remote branch deletion.
-
