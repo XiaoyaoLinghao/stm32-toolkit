@@ -486,6 +486,101 @@ function Get-FileSha256 {
     } finally { $sha.Dispose() }
 }
 
+function Get-ProductWheelPaths {
+    param([string]$Runtime, [object]$BundleEvidence)
+    if ($null -eq $BundleEvidence -or $BundleEvidence.status -ne "ok") { throw "verified release bundle is unavailable" }
+    $wheelStage = Join-Path $Runtime "release-wheels"
+    if (-not (Test-Path -LiteralPath $wheelStage -PathType Container)) { throw "final runtime release wheels are missing" }
+    Assert-NoRedirectAncestors "final runtime release wheels" $wheelStage
+    $paths = @()
+    foreach ($distribution in @("stm32-toolkit", "stm32-monitor")) {
+        $matches = @($BundleEvidence.wheelEntries | Where-Object {
+            $null -ne $_ -and
+            $_.PSObject.Properties.Name -contains "name" -and
+            $_.PSObject.Properties.Name -contains "version" -and
+            ([string]$_.name -ceq $distribution) -and
+            ([string]$_.version -ceq $RuntimeVersion)
+        })
+        if ($matches.Count -ne 1) { throw "release bundle must contain exactly one verified $distribution wheel" }
+        $entry = $matches[0]
+        if ($entry.PSObject.Properties.Name -notcontains "file" -or $entry.PSObject.Properties.Name -notcontains "size" -or $entry.PSObject.Properties.Name -notcontains "sha256") {
+            throw "verified $distribution wheel facts are incomplete"
+        }
+        $relativeWheel = [string]$entry.file
+        if ($relativeWheel -cnotmatch '^release/wheels/[^/]+\.whl$') { throw "verified $distribution wheel path is invalid" }
+        $wheelName = [IO.Path]::GetFileName($relativeWheel.Replace("/", "\"))
+        if ([string]::IsNullOrWhiteSpace($wheelName)) { throw "verified $distribution wheel name is invalid" }
+        $path = Join-Path $wheelStage $wheelName
+        if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "final runtime $distribution wheel is missing" }
+        Assert-NotRedirect "final runtime $distribution wheel" $path
+        $item = Get-Item -LiteralPath $path -Force
+        if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw "final runtime $distribution wheel must be a regular file" }
+        if ($item.Length -ne [int64]$entry.size) { throw "final runtime $distribution wheel size changed" }
+        if ((Get-FileSha256 $path) -cne ([string]$entry.sha256)) { throw "final runtime $distribution wheel integrity changed" }
+        $paths += $path
+    }
+    return $paths
+}
+
+function Test-LauncherBytesContainText {
+    param([byte[]]$Bytes, [string]$Value)
+    if ($null -eq $Bytes -or [string]::IsNullOrEmpty($Value)) { return $false }
+    foreach ($encoding in @([Text.Encoding]::ASCII, [Text.Encoding]::UTF8, [Text.Encoding]::Unicode)) {
+        $decoded = $encoding.GetString($Bytes)
+        if ($decoded.IndexOf($Value, [StringComparison]::OrdinalIgnoreCase) -ge 0) { return $true }
+    }
+    return $false
+}
+
+function Get-PublicLauncherRecords {
+    param([string]$Runtime)
+    $scripts = Join-Path $Runtime "Scripts"
+    if (-not (Test-Path -LiteralPath $scripts -PathType Container)) { throw "final runtime Scripts directory is missing" }
+    Assert-NotRedirect "final runtime Scripts" $scripts
+    return @(
+        [ordered]@{ name = "stm32-toolkit"; path = Join-Path $scripts "stm32-toolkit.exe" }
+        [ordered]@{ name = "stm32-toolkit-mcp"; path = Join-Path $scripts "stm32-toolkit-mcp.exe" }
+        [ordered]@{ name = "stm32-monitor"; path = Join-Path $scripts "stm32-monitor.exe" }
+    )
+}
+
+function Assert-PublicLauncherBindings {
+    param([string]$Runtime, [string]$RuntimePython)
+    if (-not (Test-Path -LiteralPath $RuntimePython -PathType Leaf)) { throw "final runtime interpreter is missing" }
+    Assert-NotRedirect "final runtime interpreter" $RuntimePython
+    $records = @(Get-PublicLauncherRecords $Runtime)
+    foreach ($record in $records) {
+        if (-not (Test-Path -LiteralPath $record.path -PathType Leaf)) { throw "$($record.name) launcher is missing" }
+        Assert-NotRedirect "$($record.name) launcher" $record.path
+        $item = Get-Item -LiteralPath $record.path -Force
+        if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw "$($record.name) launcher must be a regular file" }
+        $bytes = [IO.File]::ReadAllBytes($record.path)
+        if (-not (Test-LauncherBytesContainText $bytes $RuntimePython)) { throw "$($record.name) launcher is not bound to the final runtime interpreter" }
+        if (Test-LauncherBytesContainText $bytes ".staging") { throw "$($record.name) launcher contains a staging interpreter binding" }
+    }
+    return $records
+}
+
+function Assert-PublicLauncherVersions {
+    param([string]$Runtime, [string]$RuntimePython)
+    $records = @(Assert-PublicLauncherBindings $Runtime $RuntimePython)
+    foreach ($record in $records | Where-Object { $_.name -in @("stm32-toolkit", "stm32-monitor") }) {
+        $version = Invoke-BoundedProcess $record.path @("version") 10
+        if ($version.status -ne "ok") { throw "$($record.name) launcher version check failed ($($version.status))" }
+        $reported = ($version.stdout -split "`r?`n")[0].Trim()
+        if ($reported -cne $RuntimeVersion) { throw "$($record.name) launcher reported an unexpected version" }
+    }
+    return $records
+}
+
+function Finalize-PublicLaunchers {
+    param([string]$Runtime, [string]$RuntimePython, [object]$BundleEvidence)
+    $wheelPaths = @(Get-ProductWheelPaths $Runtime $BundleEvidence)
+    $pipArguments = @("-I", "-m", "pip", "install", "--disable-pip-version-check", "--no-cache-dir", "--no-index", "--no-deps", "--only-binary=:all:", "--force-reinstall") + $wheelPaths
+    Assert-StepOk (Invoke-BoundedProcess $RuntimePython $pipArguments 300) "final runtime console launcher regeneration"
+    Assert-PublicLauncherVersions $Runtime $RuntimePython | Out-Null
+}
+
 function Get-DoctorContractError {
     param($Payload)
     if ($null -eq $Payload -or $Payload.ok -isnot [bool] -or $Payload.ok -ne $true) {
@@ -564,6 +659,9 @@ function Get-RuntimeEvidence {
     try { $doctorPayload = $doctor.stdout | ConvertFrom-Json } catch { $evidence.status = "broken"; $evidence.error = "doctor returned invalid JSON"; return $evidence }
     $doctorError = Get-DoctorContractError $doctorPayload
     if ($doctorError) { $evidence.status = "broken"; $evidence.error = $doctorError; return $evidence }
+    $pipCheck = Invoke-BoundedProcess $RuntimePython @("-I", "-m", "pip", "check") 120
+    if ($pipCheck.status -ne "ok") { $evidence.status = "broken"; $evidence.error = "pip check $($pipCheck.status): $($pipCheck.stderr)".Trim(); return $evidence }
+    try { Assert-PublicLauncherVersions $Runtime $RuntimePython | Out-Null } catch { $evidence.status = "broken"; $evidence.error = $_.Exception.Message; return $evidence }
     $evidence.status = "healthy"
     $evidence.doctor = $doctorPayload
     return $evidence
@@ -757,6 +855,9 @@ try {
     try {
         Move-Item -LiteralPath $staging -Destination $runtime
         $staging = $null
+        Finalize-PublicLaunchers $runtime $runtimePython $bundleEvidence
+        $finalRuntimeEvidence = Get-RuntimeEvidence $runtime $runtimePython $resolvedProjectRoot
+        if ($finalRuntimeEvidence.status -ne "healthy") { throw "final runtime validation failed: $($finalRuntimeEvidence.error)" }
         Write-RuntimeStateAtomic $runtimeStatePath $bundleEvidence.manifestSha256 $bundleEvidence.sourceCommit $stateGeneration
     } catch {
         if (Test-Path -LiteralPath $runtime -PathType Container) {
