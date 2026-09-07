@@ -318,7 +318,10 @@ def test_target_support_profile_orders_task8_ram_before_capability_preflight() -
     )
 
     try:
-        PyOCDBackend(target_profile=profile).preflight_target_capabilities(
+        PyOCDBackend(
+            target_profile=profile,
+            target_transport_factory=lambda *args: object(),
+        ).preflight_target_capabilities(
             "probe-task8", OperationLevel.OBSERVE
         )
     except ProbeBackendError as error:

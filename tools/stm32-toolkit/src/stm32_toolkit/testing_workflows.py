@@ -382,11 +382,14 @@ def _target_protocol(target: object) -> str:
 def _target_support_profile(model: object, facts: object, project: Mapping[str, object]) -> dict[str, object]:
     target = getattr(getattr(model, "testing", None), "target", None)
     transport, _ = _target_project_config(target)
-    ram = [
-        {"start": region.origin, "size": region.length}
-        for region in model.memory.regions
-        if "w" in region.attributes.casefold()
-    ]
+    ram = sorted(
+        (
+            {"start": region.origin, "size": region.length}
+            for region in model.memory.regions
+            if "w" in region.attributes.casefold()
+        ),
+        key=lambda region: (region["start"], region["size"]),
+    )
     profile: dict[str, object] = {
         "backend": "pyocd",
         "board_id": facts.target_device,
