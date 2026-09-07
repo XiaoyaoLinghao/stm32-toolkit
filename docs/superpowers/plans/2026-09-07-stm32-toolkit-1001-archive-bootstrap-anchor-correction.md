@@ -59,4 +59,3 @@ implementer uniquely owns the bounded product edit and its implementation eviden
 - [ ] Require exactly one active 0.9.0 runtime bound to the accepted head, then resume public Task 8
   configure/build/MAP/ELF/decoder/digest/no-write evidence and project commit/report.
 - [ ] Stop before hardware and every remote/release action unless separately authorized.
-

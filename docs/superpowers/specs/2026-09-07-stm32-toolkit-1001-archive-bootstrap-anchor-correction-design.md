@@ -87,4 +87,3 @@ and atomic staging behavior do not change.
 - `git diff --check` passes and the product diff contains only the two setup constants.
 - GPT-5.6-sol reviews the complete accepted-base-to-code-head diff and independently reruns the
   focused tests before issuing a verdict.
-
