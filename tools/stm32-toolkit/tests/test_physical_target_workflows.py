@@ -22,9 +22,15 @@ from stm32_toolkit.probe.lease import ProbeLeaseManager
 from stm32_toolkit.probe.model import OperationLevel
 from stm32_toolkit.probe.pyocd_backend import PyOCDBackend
 from stm32_toolkit.probe.supervisor import ProbeServiceConfig, ProbeServiceSupervisor
+from stm32_toolkit.probe.service import ProbeServiceError
 from stm32_toolkit.testing.model import calculate_inventory_digest
 from stm32_toolkit.testing.protocol import calculate_case_inventory_digest
 from stm32_toolkit.testing.target import encode_frame
+from stm32_toolkit.probe.worker import (
+    NORMAL_CONNECTION_POLICY,
+    UNDER_RESET_RECOVERY_CONNECTION_POLICY,
+    ProbeWorkerConfig,
+)
 import stm32_toolkit.testing_workflows as workflows
 from test_build_runner import prepare_project
 from test_flash import _publish_current_debug_build
@@ -341,6 +347,234 @@ def test_target_support_profile_orders_task8_ram_before_capability_preflight() -
         "MAILBOX",
         "IRAM2",
     )
+
+
+@pytest.mark.parametrize("recovery_under_reset", [False, True])
+def test_target_prepare_persists_recovery_binding_without_programming(
+    tmp_path: Path, recovery_under_reset: bool,
+) -> None:
+    project, build = _fixed_project(tmp_path)
+    data_root = (tmp_path / "plugin-data").absolute()
+    board = _Board()
+    events: list[tuple[object, ...]] = []
+
+    def backend_factory() -> _SourceChangeBackend:
+        return _SourceChangeBackend(
+            board=board,
+            physical_identity={
+                "board_id": str(build["targetDevice"]), "mcu": "stm32f407vg",
+                "target_id": str(build["targetDevice"]),
+                "probe_serial_hash": sha256(RAW_PROBE.encode()).hexdigest(),
+            },
+            stream=b"", flash_segment=b"", events=events,
+        )
+
+    context = workflows.TestingWorkflowContext(project, data_root, "recovery-prepare")
+    prepared = asyncio.run(
+        workflows.target_test_prepare(
+            context,
+            probe_id=RAW_PROBE,
+            case_ids=CASES,
+            recovery_under_reset=recovery_under_reset,
+            _seams=workflows.TargetWorkflowSeams(backend_factory),
+        )
+    )
+
+    assert prepared.ok is True, (prepared.to_dict(), events)
+    workspace = WorkspacePaths.from_roots(
+        data_root, project, build["logicalProjectId"], "recovery-prepare"
+    )
+    auth_runner = workflows.TargetTestRunner(
+        workspace.session_root / "target-authorizations",
+        object(), object(), lambda _: object(), owns_probe=False,
+    )
+    binding = auth_runner.load_prepared(
+        prepared.data["authorized_action_digest"]
+    ).binding
+    assert binding["recovery_under_reset"] is recovery_under_reset
+    assert board.flashed is False
+    assert not [event for event in events if event[0] == "flash"]
+
+
+def test_target_supervisor_uses_the_frozen_worker_configuration(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    project, _build = _fixed_project(tmp_path)
+    context = workflows.TestingWorkflowContext(
+        project, (tmp_path / "plugin-data").absolute(), "worker-config"
+    )
+    state, _model, _facts, _transport, _protocol, _project_config, support = (
+        workflows._target_state(context)
+    )
+    captured: list[dict[str, object]] = []
+
+    class CapturingSupervisor:
+        def __init__(self, **kwargs: object) -> None:
+            captured.append(kwargs)
+
+    monkeypatch.setattr(workflows, "ProbeServiceSupervisor", CapturingSupervisor)
+    normal = ProbeWorkerConfig(target_profile={**dict(support), "probe_id": RAW_PROBE})
+    recovery = normal.for_under_reset_recovery()
+
+    workflows._target_supervisor(
+        context,
+        state,
+        probe_id=RAW_PROBE,
+        level=OperationLevel.MODIFY,
+        support=support,
+        seams=workflows.TargetWorkflowSeams(),
+        worker_config=normal,
+    )
+    workflows._target_supervisor(
+        context,
+        state,
+        probe_id=RAW_PROBE,
+        level=OperationLevel.MODIFY,
+        support=support,
+        seams=workflows.TargetWorkflowSeams(),
+        worker_config=recovery,
+    )
+
+    assert [item["worker_config"] for item in captured] == [normal, recovery]
+    assert captured[0]["worker_config"].frequency_hz == 1_000_000
+    assert captured[0]["worker_config"].connection_policy == NORMAL_CONNECTION_POLICY
+    assert captured[1]["worker_config"].frequency_hz == 100_000
+    assert (
+        captured[1]["worker_config"].connection_policy
+        == UNDER_RESET_RECOVERY_CONNECTION_POLICY
+    )
+
+
+@pytest.mark.parametrize("recovery_under_reset", [False, True])
+def test_target_execute_derives_worker_configuration_from_bound_selection(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    recovery_under_reset: bool,
+) -> None:
+    project, build = _fixed_project(tmp_path)
+    data_root = (tmp_path / "plugin-data").absolute()
+    board = _Board()
+    events: list[tuple[object, ...]] = []
+
+    def backend_factory() -> _SourceChangeBackend:
+        return _SourceChangeBackend(
+            board=board,
+            physical_identity={
+                "board_id": str(build["targetDevice"]), "mcu": "stm32f407vg",
+                "target_id": str(build["targetDevice"]),
+                "probe_serial_hash": sha256(RAW_PROBE.encode()).hexdigest(),
+            },
+            stream=b"", flash_segment=b"", events=events,
+        )
+
+    context = workflows.TestingWorkflowContext(project, data_root, "worker-bound")
+    prepared = asyncio.run(
+        workflows.target_test_prepare(
+            context,
+            probe_id=RAW_PROBE,
+            case_ids=CASES,
+            recovery_under_reset=recovery_under_reset,
+            _seams=workflows.TargetWorkflowSeams(backend_factory),
+        )
+    )
+    assert prepared.ok is True, prepared.to_dict()
+    captured: list[ProbeWorkerConfig] = []
+
+    def capture_supervisor(*_args: object, **kwargs: object) -> object:
+        captured.append(kwargs["worker_config"])
+        raise ProbeServiceError("PROBE_SERVICE_UNAVAILABLE", "test seam")
+
+    monkeypatch.setattr(workflows, "_target_supervisor", capture_supervisor)
+    executed = asyncio.run(
+        workflows.target_test_execute(
+            context,
+            probe_id=RAW_PROBE,
+            authorized_action_digest=prepared.data["authorized_action_digest"],
+            _seams=workflows.TargetWorkflowSeams(backend_factory),
+        )
+    )
+
+    assert executed.ok is False and executed.code == "TEST_TRANSPORT_UNAVAILABLE"
+    _state, _model, _facts, _transport, _protocol, _project_config, support = (
+        workflows._target_state(context)
+    )
+    normal = ProbeWorkerConfig(target_profile={**dict(support), "probe_id": RAW_PROBE})
+    expected = normal.for_under_reset_recovery() if recovery_under_reset else normal
+    assert captured == [expected]
+
+
+@pytest.mark.parametrize("value", [pytest.param(None, id="missing"), "true", 1])
+def test_target_execute_rejects_missing_or_non_boolean_recovery_before_service(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, value: object,
+) -> None:
+    project, build = _fixed_project(tmp_path)
+    data_root = (tmp_path / "plugin-data").absolute()
+    board = _Board()
+    events: list[tuple[object, ...]] = []
+
+    def backend_factory() -> _SourceChangeBackend:
+        return _SourceChangeBackend(
+            board=board,
+            physical_identity={
+                "board_id": str(build["targetDevice"]), "mcu": "stm32f407vg",
+                "target_id": str(build["targetDevice"]),
+                "probe_serial_hash": sha256(RAW_PROBE.encode()).hexdigest(),
+            },
+            stream=b"", flash_segment=b"", events=events,
+        )
+
+    context = workflows.TestingWorkflowContext(project, data_root, "invalid-binding")
+    prepared = asyncio.run(
+        workflows.target_test_prepare(
+            context,
+            probe_id=RAW_PROBE,
+            case_ids=CASES,
+            _seams=workflows.TargetWorkflowSeams(backend_factory),
+        )
+    )
+    assert prepared.ok is True, prepared.to_dict()
+    auth_runner = workflows.TargetTestRunner(
+        WorkspacePaths.from_roots(
+            data_root, project, build["logicalProjectId"], "invalid-binding"
+        ).session_root / "target-authorizations",
+        object(), object(), lambda _: object(), owns_probe=False,
+    )
+    loaded = auth_runner.load_prepared(prepared.data["authorized_action_digest"])
+    binding = dict(loaded.binding)
+    if value is None:
+        binding.pop("recovery_under_reset", None)
+    else:
+        binding["recovery_under_reset"] = value
+
+    class FakeAuthRunner:
+        def __init__(self, *_args: object, **_kwargs: object) -> None:
+            pass
+
+        def load_prepared(self, _digest: str) -> object:
+            return loaded
+
+        def consume_prepared(self, digest: str) -> object:
+            return workflows.ConsumedTargetRun(digest, binding)
+
+    service_calls: list[object] = []
+
+    def forbidden_supervisor(*args: object, **kwargs: object) -> object:
+        service_calls.append((args, kwargs))
+        raise AssertionError("invalid binding must fail before supervisor construction")
+
+    monkeypatch.setattr(workflows, "TargetTestRunner", FakeAuthRunner)
+    monkeypatch.setattr(workflows, "_target_supervisor", forbidden_supervisor)
+    result = asyncio.run(
+        workflows.target_test_execute(
+            context,
+            probe_id=RAW_PROBE,
+            authorized_action_digest=prepared.data["authorized_action_digest"],
+        )
+    )
+
+    assert result.ok is False and result.code == "TEST_AUTHORIZATION_INVALID"
+    assert service_calls == []
+    assert board.flashed is False
 
 
 def test_prepare_never_reads_old_inventory_and_execute_proves_fixed_after_flash(
