@@ -487,11 +487,14 @@ class ProbeService:
             "target_id": facts.target_device,
             "probe_id": physical["probe_serial_hash"],
         }
-        ram = [
-            {"start": region.origin, "size": region.length}
-            for region in model.memory.regions
-            if "w" in region.attributes.casefold()
-        ]
+        ram = sorted(
+            [
+                {"start": region.origin, "size": region.length}
+                for region in model.memory.regions
+                if "w" in region.attributes.casefold()
+            ],
+            key=lambda region: (region["start"], region["size"]),
+        )
         if transport == "mailbox":
             return {**project["options"], "ram": ram, **common}
         if transport == "rtt":
