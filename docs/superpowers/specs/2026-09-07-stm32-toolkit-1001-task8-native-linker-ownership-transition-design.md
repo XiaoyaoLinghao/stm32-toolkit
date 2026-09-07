@@ -25,9 +25,10 @@ file after selecting the native linker. Task 8 omitted that transition step.
 
 1. The exact P1c managed linker bytes and managed-manifest record match SHA-256
    `f1eb3fb59947caea5011bcdbce3d757e8a46600a05779ec57f1e43d694ab2706`. The project copies those
-   bytes to `linker/vs10a.ld`, applies only the frozen SRAM1 reservation, selects it as the native
-   linker, and retires the exact old record and tracked file. Public configuration then has no
-   orphan blocker.
+   bytes to `linker/vs10a.ld`, applies only the frozen SRAM1 reservation, mirrors that exact split
+   in `memory.regions`, selects it as the native linker, and retires the exact old record and tracked
+   file. Public configuration then has no orphan blocker and public MAP validation sees the same
+   four ordered regions as the linker.
 2. Before any emitter exists, the transitioned project completes a public Debug build and the new
    ELF/MAP proves `.stm32tk_mailbox` is absent. This is the required Task 8 RED; no physical or
    transport PASS is claimed.
@@ -45,11 +46,16 @@ tree already recorded in the SDD ledger.
    the frozen value above. Any drift stops without deleting or rewriting anything.
 2. Create `linker/vs10a.ld` from the verified old bytes, then change only the approved memory facts:
    ordinary IRAM1 length `0x0002EFF0`; MAILBOX origin `0x2002EFF0`, length `0x00001010`.
-3. Set `generation.nativeLinkerScript` to `linker/vs10a.ld` and add the already approved closed
+3. Mirror the linker memory table exactly in `.stm32-project.json` without changing `memory.source`:
+   `IROM1` (`0x08000000`, `0x00100000`, `r-x`), `IRAM1` (`0x20000000`, `0x0002EFF0`, `rwx`),
+   `MAILBOX` (`0x2002EFF0`, `0x00001010`, `rwx`), and `IRAM2` (`0x10000000`, `0x00010000`, `rwx`),
+   in that order. This is the same physical SRAM1 capacity split into ordinary RAM and the approved
+   reservation; it does not add memory.
+4. Set `generation.nativeLinkerScript` to `linker/vs10a.ld` and add the already approved closed
    `testing.target` v2 memory-mailbox declaration.
-4. Remove exactly the `linker/stm32tk.ld` record from the managed manifest and delete exactly the
+5. Remove exactly the `linker/stm32tk.ld` record from the managed manifest and delete exactly the
    tracked `linker/stm32tk.ld`. No other managed record or file may change in this preflight step.
-5. Run public configuration dry-run. It must report no blockers. Apply only that fresh plan ID with
+6. Run public configuration dry-run. It must report no blockers. Apply only that fresh plan ID with
    the existing authorized project-local configure path. The resulting generated inventory must
    omit `linker/stm32tk.ld`, and generated CMake must reference `linker/vs10a.ld` exactly once.
 
@@ -77,6 +83,8 @@ run-owned cleanup. Historical P1c/H2 artifacts remain separately identified.
 
 - Old linker path, count, tracked state, or SHA mismatch: `PROJECT_STATE/BLOCKED`; no mutation.
 - Any additional orphan, drift, collision, or generated-file change: `PROJECT_STATE/BLOCKED`.
+- MAP and project-model region count, order, name, origin, length, or attributes mismatch:
+  `BUILD_MAP_INVALID`; do not claim RED.
 - Build fails before section inspection: `BLOCKED_TEST_DESIGN` or the returned classified product
   error; do not claim RED.
 - MAP/ELF ambiguity, overlap, wrong size/address, decoder rejection, digest mismatch, or any target

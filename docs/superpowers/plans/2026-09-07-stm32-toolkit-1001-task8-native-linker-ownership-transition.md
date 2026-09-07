@@ -28,15 +28,19 @@ The existing Task 8 Luna/max implementer must:
 2. Before mutation, require the old linker file and its one managed record to match SHA-256
    `f1eb3fb59947caea5011bcdbce3d757e8a46600a05779ec57f1e43d694ab2706` and require project HEAD
    `cf273a18b4c757b4866793c94b25d5ceaad39925`.
-3. Complete the design's closed transition: native candidate, exact manifest selection, remove only
-   the old linker managed record, delete only the old tracked linker.
-4. Run pinned-runtime public configure dry-run. Any blocker stops. Apply only the fresh plan ID with
+3. Complete the design's closed transition: native candidate, exact manifest selection, exact
+   four-region `memory.regions` mirror, remove only the old linker managed record, and delete only
+   the old tracked linker. The manifest keeps `memory.source=keil`; the split adds no capacity.
+4. Before configure, prove the linker and model have identical ordered IROM1/IRAM1/MAILBOX/IRAM2
+   names, origins, and lengths, with ordinary IRAM1 ending exactly where MAILBOX begins and MAILBOX
+   ending at `0x20030000`.
+5. Run pinned-runtime public configure dry-run. Any blocker stops. Apply only the fresh plan ID with
    `--authorized`, then prove the generated manifest omits the old linker and CMake names the native
    linker exactly once.
-5. With no emitter and no `.stm32tk_mailbox` output section, run the public Debug build. It must
+6. With no emitter and no `.stm32tk_mailbox` output section, run the public Debug build. It must
    succeed; inspect the new MAP/ELF and record the required absence as RED. Any earlier failure is a
    blocker, not RED.
-6. Run `git diff --check` and `git diff --name-only`. Record exact commands/results in the existing
+7. Run `git diff --check` and `git diff --name-only`. Record exact commands/results in the existing
    SDD `task-8-report.md`. Do not commit a deliberately broken project state unless needed to make
    the RED evidence independently reproducible; normally retain RED evidence in the report and
    continue directly to Task 3.
