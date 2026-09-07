@@ -395,6 +395,7 @@ def test_check_accepts_probe_distribution_in_declared_pep440_range(
     _install_fake_toolkit(site_packages)
     _install_fake_monitor(site_packages)
     _install_fake_probe(site_packages, probe_version)
+    _write_fake_public_launchers(runtime)
 
     checked = _run_helper("Check", REPO_ROOT, plugin_data, project)
 
@@ -454,6 +455,89 @@ def test_existing_0_3_runtime_requires_repair_and_is_quarantined_before_0_9_prom
     quarantines = list((plugin_data / "runtime" / ".quarantine").glob("0.3.0-*"))
     assert len(quarantines) == 1
     assert (quarantines[0] / marker.name).read_text(encoding="utf-8") == "preserve"
+
+
+def test_post_promotion_validation_failure_restores_previous_runtime_and_state(
+    tmp_path: Path,
+):
+    project = tmp_path / "project"
+    project.mkdir()
+    project_marker = project / "keep.txt"
+    project_marker.write_text("unchanged", encoding="utf-8")
+    plugin_root = tmp_path / "plugin"
+    package = plugin_root / "tools" / "stm32-toolkit"
+    package.mkdir(parents=True)
+    wheelhouse = tmp_path / "wheelhouse"
+    wheelhouse.mkdir()
+    _write_test_build_backend(wheelhouse)
+    _write_fake_monitor_package(plugin_root)
+    _write_fake_release_bundle(plugin_root, wheelhouse)
+    (package / "pyproject.toml").write_text(
+        "[build-system]\nrequires = ['test-build-backend==1.0']\n"
+        "build-backend = 'test_backend'\n",
+        encoding="utf-8",
+    )
+    plugin_data = tmp_path / "plugin-data"
+    environment = _clean_environment()
+    environment["PIP_NO_INDEX"] = "1"
+    environment["PIP_FIND_LINKS"] = str(wheelhouse)
+
+    bootstrap = _run_helper(
+        "Bootstrap", plugin_root, plugin_data, project,
+        environment=environment, timeout=180,
+    )
+    assert bootstrap.returncode == 0, bootstrap.stderr
+    runtime = plugin_data / "runtime" / "0.9.0"
+    state_path = plugin_data / "runtime" / "runtime-state.json"
+    prior_runtime = _snapshot_files(runtime)
+    prior_project = _snapshot_files(project)
+
+    toolkit_wheel = plugin_root / "release" / "wheels" / "stm32_toolkit-0.9.0-py3-none-any.whl"
+    mutated_wheel = tmp_path / "mutated-toolkit.whl"
+    with zipfile.ZipFile(toolkit_wheel) as source, zipfile.ZipFile(
+        mutated_wheel, "w", compression=zipfile.ZIP_STORED
+    ) as target:
+        for info in source.infolist():
+            content = source.read(info.filename)
+            if info.filename.endswith(".dist-info/entry_points.txt"):
+                content = content.replace(
+                    b"stm32-toolkit = stm32_toolkit.cli:main",
+                    b"stm32-toolkit = stm32_toolkit.cli:missing_main",
+                )
+            target.writestr(info.filename, content)
+    shutil.move(mutated_wheel, toolkit_wheel)
+
+    manifest_path = plugin_root / "release" / "release-manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    toolkit_entry = next(
+        entry for entry in manifest["wheels"] if entry["name"] == "stm32-toolkit"
+    )
+    toolkit_entry["sha256"] = hashlib.sha256(toolkit_wheel.read_bytes()).hexdigest()
+    toolkit_entry["size"] = toolkit_wheel.stat().st_size
+    manifest_path.write_text(
+        json.dumps(manifest, sort_keys=True, separators=(",", ":")) + "\n",
+        encoding="utf-8",
+    )
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    state["releaseManifestSha256"] = hashlib.sha256(manifest_path.read_bytes()).hexdigest()
+    state_path.write_text(
+        json.dumps(state, sort_keys=True, separators=(",", ":")) + "\n",
+        encoding="utf-8",
+    )
+    prior_state = state_path.read_bytes()
+
+    repair = _run_helper(
+        "Repair", plugin_root, plugin_data, project,
+        environment=environment, timeout=180,
+    )
+
+    assert repair.returncode != 0
+    assert "launcher" in repair.stderr.lower() or "version" in repair.stderr.lower()
+    assert _snapshot_files(runtime) == prior_runtime
+    assert state_path.read_bytes() == prior_state
+    assert _snapshot_files(project) == prior_project
+    staging = plugin_data / "runtime" / ".staging"
+    assert not staging.exists() or not any(staging.iterdir())
 
 
 def test_repair_rejects_multiple_legacy_runtimes_before_mutation(tmp_path: Path):
@@ -1288,6 +1372,23 @@ def _install_fake_toolkit(site_packages: Path) -> None:
         "stm32-toolkit = stm32_toolkit.cli:main\n"
         "stm32-toolkit-mcp = stm32_toolkit.cli:mcp_main\n",
         encoding="utf-8",
+    )
+
+
+def _write_fake_public_launchers(runtime: Path) -> None:
+    from pip._vendor.distlib.scripts import ScriptMaker
+
+    scripts = runtime / "Scripts"
+    maker = ScriptMaker(None, str(scripts))
+    maker.executable = str(scripts / "python.exe")
+    maker.variants = {""}
+    maker.clobber = True
+    maker.make_multiple(
+        [
+            "stm32-toolkit = stm32_toolkit.cli:main",
+            "stm32-toolkit-mcp = stm32_toolkit.cli:mcp_main",
+            "stm32-monitor = stm32_monitor.cli:main",
+        ]
     )
 
 
