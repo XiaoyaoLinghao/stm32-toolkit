@@ -720,6 +720,7 @@ def test_check_reports_staging_bound_public_console_launcher_as_broken(tmp_path:
     assert bootstrap.returncode == 0, bootstrap.stderr
     runtime = plugin_data / "runtime" / "0.9.0"
     runtime_python = runtime / "Scripts" / "python.exe"
+    _write_fake_public_launchers(runtime)
     _replace_launcher_binding(
         runtime / "Scripts" / "stm32-toolkit.exe",
         runtime_python,
