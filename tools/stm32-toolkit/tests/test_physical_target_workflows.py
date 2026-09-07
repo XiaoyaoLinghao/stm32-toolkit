@@ -1441,6 +1441,146 @@ def test_probe_service_derives_all_runtime_transport_configs(
         assert Path(str(opened[0]["elf_path"])).is_absolute()
 
 
+def test_probe_service_orders_unsorted_project_ram_for_mailbox_without_memory_io(
+    tmp_path: Path,
+) -> None:
+    project_transport = {
+        "kind": "memory-mailbox",
+        "options": {"address": 0x2002EFF0, "size": 4096},
+    }
+    project = prepare_project(
+        tmp_path,
+        overrides={
+            "schemaVersion": 3,
+            "memory": {
+                "source": "manual",
+                "regions": [
+                    {
+                        "name": "IROM1",
+                        "origin": 0x08000000,
+                        "length": 0x100000,
+                        "attributes": "r-x",
+                    },
+                    {
+                        "name": "IRAM1",
+                        "origin": 0x20000000,
+                        "length": 0x2EFF0,
+                        "attributes": "rwx",
+                    },
+                    {
+                        "name": "MAILBOX",
+                        "origin": 0x2002EFF0,
+                        "length": 0x1010,
+                        "attributes": "rw-",
+                    },
+                    {
+                        "name": "IRAM2",
+                        "origin": 0x10000000,
+                        "length": 0x10000,
+                        "attributes": "rwx",
+                    },
+                ],
+            },
+            "testing": {
+                "target": {
+                    "executable": "build/arm-debug/firmware.elf",
+                    "timeout_seconds": 10,
+                    "transport": project_transport,
+                }
+            },
+        },
+    )
+    build = _publish_current_debug_build(project)
+    data_root = (tmp_path / "plugin-data").absolute()
+    workspace = WorkspacePaths.from_roots(
+        data_root, project, build["logicalProjectId"], "service-ram-order"
+    )
+    workspace.ensure()
+    events: list[tuple[object, ...]] = []
+    opened: list[Mapping[str, object]] = []
+
+    class Backend:
+        def preflight_target_capabilities(self, probe_id: str, level: object) -> None:
+            events.append(("preflight",))
+
+        def list_probes(self) -> tuple[ProbeDescriptor, ...]:
+            return (ProbeDescriptor(RAW_PROBE, "ST", "ST-LINK", None),)
+
+        def open_attach(
+            self, probe_id: str, target: str, *, halt_on_connect: bool = False
+        ) -> ProbeAttachmentEvidence:
+            events.append(("attach", probe_id, target, halt_on_connect))
+            return ProbeAttachmentEvidence(probe_id, target, target, 1)
+
+        def target_identity(self) -> Mapping[str, object]:
+            return {
+                "board_id": str(build["targetDevice"]),
+                "mcu": "stm32f407vg",
+                "target_id": str(build["targetDevice"]),
+                "probe_serial_hash": sha256(RAW_PROBE.encode()).hexdigest(),
+            }
+
+        def read_memory(self, address: int, length: int) -> bytes:
+            events.append(("read_memory", address, length))
+            raise AssertionError("mailbox transport open must not read target memory")
+
+        def write_memory(self, address: int, data: bytes) -> None:
+            events.append(("write_memory", address, data))
+            raise AssertionError("mailbox transport open must not write target memory")
+
+        def open_target_transport(
+            self, name: str, config: Mapping[str, object], deadline_ms: int
+        ) -> Mapping[str, object]:
+            assert name == "mailbox"
+            opened.append(dict(config))
+            return {"transport_id": "transport-one", "identity": {"transport": name}}
+
+        def close_target_transport(self, transport_id: str) -> Mapping[str, object]:
+            return {"transport_id": transport_id, "closed": True}
+
+        def close(self) -> None:
+            pass
+
+    backend = Backend()
+
+    async def scenario() -> None:
+        supervisor = ProbeServiceSupervisor(
+            config=ProbeServiceConfig(
+                RAW_PROBE,
+                workspace.workspace_id,
+                workspace.session_id,
+                OperationLevel.MODIFY,
+                workspace.session_root,
+                project,
+            ),
+            lease_manager=ProbeLeaseManager(data_root),
+            backend_factory=lambda: backend,
+        )
+        client: ProbeClient | None = None
+        try:
+            client = ProbeClient(await supervisor.start())
+            await client.attach(RAW_PROBE, "stm32f407vg")
+            result = await client.target_transport_open(
+                "mailbox", project_transport, 1000
+            )
+            await client.target_transport_close(str(result["transport_id"]))
+        finally:
+            if client is not None:
+                await client.close()
+            await supervisor.stop()
+
+    asyncio.run(scenario())
+    assert len(opened) == 1
+    assert opened[0]["ram"] == [
+        {"start": 0x10000000, "size": 0x10000},
+        {"start": 0x20000000, "size": 0x2EFF0},
+        {"start": 0x2002EFF0, "size": 0x1010},
+    ]
+    assert not [
+        event for event in events if event[0] in {"read_memory", "write_memory"}
+    ]
+
+
 def test_busy_prepare_reports_owner_without_stealing_the_live_lease(tmp_path: Path) -> None:
     project, build = _fixed_project(tmp_path)
     data_root = (tmp_path / "plugin-data").absolute()
