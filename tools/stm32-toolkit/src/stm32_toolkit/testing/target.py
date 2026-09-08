@@ -952,8 +952,8 @@ class PhysicalTargetFlashAdapter:
             "PROBE_IDENTITY_MISMATCH": "TEST_IDENTITY_MISMATCH",
             "PROBE_TIMEOUT": "TEST_TIMEOUT",
             "PROBE_BACKEND_ERROR": "TEST_EXECUTION_FAILED",
-            "PROBE_OPERATION_UNAVAILABLE": "TEST_TRANSPORT_UNAVAILABLE",
-            "PROBE_SERVICE_UNAVAILABLE": "TEST_TRANSPORT_UNAVAILABLE",
+            "PROBE_OPERATION_UNAVAILABLE": "TEST_EXECUTION_FAILED",
+            "PROBE_SERVICE_UNAVAILABLE": "TEST_EXECUTION_FAILED",
         }.get(code, "TEST_EXECUTION_FAILED")
         raise TargetRunError(mapped, "Physical Target reset/start failed") from cause
 
