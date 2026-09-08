@@ -260,7 +260,7 @@ class _ResumeGatedTransport(FakeTransport):
         return super().open(config, deadline)
 
 
-class _ResumingPhysicalFlashAdapter(target_module.PhysicalTargetFlashAdapter):
+class _StartingPhysicalFlashAdapter(target_module.PhysicalTargetFlashAdapter):
     """Small runner seam that records the required post-flash transition."""
 
     def __init__(self, probe: FakeProbeClient) -> None:
@@ -272,8 +272,8 @@ class _ResumingPhysicalFlashAdapter(target_module.PhysicalTargetFlashAdapter):
     async def run(self, binding) -> None:
         self.events.append(("flash",))
 
-    async def resume_after_flash(self, binding, deadline) -> None:
-        self.events.append(("resume", dict(binding)))
+    async def start_after_flash(self, binding, deadline) -> None:
+        self.events.append(("reset", dict(binding)))
         self.probe.state = {"state": "running", "reason": "requested"}
 
 
@@ -518,7 +518,7 @@ def test_target_runner_success_persists_three_manifests_and_guarded_flash(tmp_pa
   run(scenario())
 
 
-def test_physical_target_runner_resumes_after_postflash_identity_before_transport(
+def test_physical_target_runner_starts_from_reset_after_postflash_identity_before_transport(
     tmp_path: Path,
 ) -> None:
   async def scenario() -> None:
@@ -527,7 +527,7 @@ def test_physical_target_runner_resumes_after_postflash_identity_before_transpor
 
     probe = FakeProbeClient()
     probe.endpoint = SimpleNamespace(lease_id="lease")
-    flash = _ResumingPhysicalFlashAdapter(probe)
+    flash = _StartingPhysicalFlashAdapter(probe)
     transport = _ResumeGatedTransport(probe, [valid_target_stream(), b""])
     evidence_store = EvidenceStore((tmp_path / "evidence").absolute())
     project_root = (tmp_path / "project").absolute()
@@ -562,7 +562,7 @@ def test_physical_target_runner_resumes_after_postflash_identity_before_transpor
     )
 
     assert result["test_manifest"].state == "passed"
-    assert [event[0] for event in flash.events] == ["flash", "resume"]
+    assert [event[0] for event in flash.events] == ["flash", "reset"]
     assert transport.calls[0][0] == "open"
     assert probe.state == {"state": "running", "reason": "requested"}
 
@@ -2157,6 +2157,38 @@ def test_v2_execute_assembles_manifest_after_guarded_flash_and_transport(
     assert len(workflow_calls) == 1
     assert [call[0] for call in transport.calls] == ["open", "read", "read", "close"]
     assert probe.closed
+
+  run(scenario())
+
+
+def test_v2_execute_stops_on_run_end_without_transport_eof(tmp_path: Path) -> None:
+  class NoEofTransport(FakeTransport):
+    def __init__(self, chunk: bytes) -> None:
+      super().__init__([chunk])
+
+    def eof(self):
+      return False
+
+  async def scenario() -> None:
+    _inventory, stream = _v2_target_stream()
+    transport = NoEofTransport(stream)
+    runner, prepared, instant, _probe, _store, workflow_calls = (
+        await _v2_prepared_runner(tmp_path, transport)
+    )
+
+    result = await runner.run(
+        prepared,
+        prepared.action_digest,
+        current_revision=REVISION,
+        current_inventory_digest=prepared.binding["inventory_digest"],
+        current_input_snapshot_sha256="9" * 64,
+        now=instant,
+    )
+
+    assert result["test_manifest"].state == "passed"
+    assert result["test_manifest"].raw_events.size_bytes == len(stream)
+    assert len(workflow_calls) == 1
+    assert [call[0] for call in transport.calls] == ["open", "read", "close"]
 
   run(scenario())
 
