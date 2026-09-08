@@ -277,6 +277,105 @@ class _StartingPhysicalFlashAdapter(target_module.PhysicalTargetFlashAdapter):
         self.probe.state = {"state": "running", "reason": "requested"}
 
 
+class _StartErrorProbe(FakeProbeClient):
+    def __init__(self, failed_operation: str, failure_code: str) -> None:
+        super().__init__()
+        self.failed_operation = failed_operation
+        self.failure_code = failure_code
+
+    async def target_control(self, operation, arguments, authorization):
+        self.calls.append(("control", operation, dict(arguments), authorization))
+        if operation == self.failed_operation:
+            raise ProbeClientError(self.failure_code, "simulated start failure")
+        if operation == "target.reset":
+            self.state = {"state": "halted", "reason": "reset"}
+            return dict(self.state)
+        if operation == "target.resume":
+            self.state = {"state": "running", "reason": "requested"}
+            return {"state": "running"}
+        raise AssertionError(f"unexpected control operation: {operation}")
+
+
+class _StartErrorPhysicalFlashAdapter(target_module.PhysicalTargetFlashAdapter):
+    def __init__(
+        self, probe: FakeProbeClient, control_authorizations: ControlAuthorizationStore,
+        project_root: Path,
+    ) -> None:
+        super().__init__(
+            project_root=project_root,
+            raw_probe_id="probe-a",
+            client=probe,
+            control_authorizations=control_authorizations,
+        )
+        self.flash_calls = 0
+
+    async def run(self, binding) -> None:
+        self.flash_calls += 1
+
+
+@pytest.mark.parametrize(
+    ("failed_operation", "failure_code"),
+    [
+        ("target.reset", "PROBE_OPERATION_UNAVAILABLE"),
+        ("target.reset", "PROBE_SERVICE_UNAVAILABLE"),
+        ("target.resume", "PROBE_OPERATION_UNAVAILABLE"),
+        ("target.resume", "PROBE_SERVICE_UNAVAILABLE"),
+    ],
+)
+def test_physical_start_probe_errors_are_terminal_before_transport(
+    tmp_path: Path, failed_operation: str, failure_code: str,
+) -> None:
+  async def scenario() -> None:
+    project_root = (tmp_path / "project").absolute()
+    project_root.mkdir(parents=True)
+    probe = _StartErrorProbe(failed_operation, failure_code)
+    probe.endpoint = SimpleNamespace(lease_id="lease")
+    control_authorizations = ControlAuthorizationStore((tmp_path / "control").absolute())
+    flash = _StartErrorPhysicalFlashAdapter(probe, control_authorizations, project_root)
+    transport = FakeTransport([])
+    runner = target_module.TargetTestRunner(
+        (tmp_path / "runs").absolute(), probe, flash, lambda _name: transport,
+    )
+    instant = datetime(2026, 8, 25, tzinfo=timezone.utc)
+    prepared = await runner.prepare(
+        workspace_id=WORKSPACE_ID, project_id=PROJECT_ID, session_id=SESSION_ID,
+        revision=REVISION, target=IDENTITY, probe_serial_hash=PROBE_HASH,
+        elf_path="build/app.elf", elf_sha256="e" * 64, build_id="b" * 64,
+        inventory_digest=TARGET_RUN_INVENTORY_DIGEST, transport="mailbox",
+        transport_config=MAILBOX_PROJECT_CONFIG, support_profile=TARGET_SUPPORT,
+        cases=("suite.case",), timeout_ms=1000, now=instant,
+    )
+    consumed = target_module.ConsumedTargetRun(
+        prepared.action_digest,
+        prepared.binding,
+        target_module.PhysicalRunProvenance(
+            WORKSPACE_ID, SESSION_ID, PROBE_HASH, SESSION_ID, "lease"
+        ),
+    )
+
+    with pytest.raises(target_module.TargetRunError) as caught:
+      await runner.run(
+          None, prepared.action_digest, current_revision=REVISION,
+          current_inventory_digest=TARGET_RUN_INVENTORY_DIGEST,
+          now=instant, consumed=consumed,
+      )
+
+    assert caught.value.code == "TEST_EXECUTION_FAILED"
+    assert isinstance(caught.value.__cause__, ProbeClientError)
+    assert flash.flash_calls == 1
+    controls = [call for call in probe.calls if call[0] == "control"]
+    assert [call[1] for call in controls] == (
+        ["target.reset"]
+        if failed_operation == "target.reset"
+        else ["target.reset", "target.resume"]
+    )
+    assert all(call[0] not in {"open", "read"} for call in transport.calls)
+    assert transport.calls == [("close",)]
+    assert probe.closed
+
+  run(scenario())
+
+
 def test_target_run_preflights_project_v3_config_and_exact_authorized_cases_before_flash(
     tmp_path: Path,
 ) -> None:
