@@ -25,6 +25,7 @@ _HASH = re.compile(r"^[0-9a-f]{64}$")
 _OPERATIONS = {
     "target.halt",
     "target.resume",
+    "target.reset",
     "target.step",
     "target.breakpoint.set",
     "target.breakpoint.clear",
@@ -121,7 +122,7 @@ def _closed_binding(binding: Mapping[str, object]) -> dict[str, object]:
         raise ControlAuthorizationError("PROBE_PROTOCOL_INVALID", "Control authorization state is invalid")
     arguments = value["arguments"]
     operation = value["operation"]
-    if operation in {"target.halt", "target.resume", "target.step"} and arguments:
+    if operation in {"target.halt", "target.resume", "target.reset", "target.step"} and arguments:
         raise ControlAuthorizationError("PROBE_PROTOCOL_INVALID", "Control authorization arguments are invalid")
     if operation == "target.breakpoint.set" and (
         set(arguments) != {"address", "kind", "size"}

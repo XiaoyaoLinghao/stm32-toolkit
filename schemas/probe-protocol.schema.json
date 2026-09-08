@@ -25,7 +25,7 @@
     "leaseId": {"$ref": "#/$defs/identifier"},
     "operationLevel": {"enum": ["observe", "control", "modify"]},
     "operation": {
-      "enum": ["probe.list", "probe.attach", "memory.read", "register.read", "probe.close", "flash.program", "target.transport.open", "target.transport.read", "target.transport.close", "target.identity.read", "target.state.read", "target.halt", "target.resume", "target.step", "target.breakpoint.set", "target.breakpoint.clear", "target.registers.read", "target.memory.read", "target.fault.capture", "target.logs.capture"]
+      "enum": ["probe.list", "probe.attach", "memory.read", "register.read", "probe.close", "flash.program", "target.transport.open", "target.transport.read", "target.transport.close", "target.identity.read", "target.state.read", "target.halt", "target.resume", "target.reset", "target.step", "target.breakpoint.set", "target.breakpoint.clear", "target.registers.read", "target.memory.read", "target.fault.capture", "target.logs.capture"]
     },
     "timeoutMs": {"type": "integer", "minimum": 1, "maximum": 300000},
     "data": {"type": "object"}
@@ -141,7 +141,7 @@
       "then": {"properties": {"operationLevel": {"const": "observe"}, "data": {"type": "object", "maxProperties": 0}}}
     },
     {
-      "if": {"properties": {"operation": {"enum": ["target.halt", "target.resume", "target.step"]}}},
+      "if": {"properties": {"operation": {"enum": ["target.halt", "target.resume", "target.reset", "target.step"]}}},
       "then": {"properties": {"operationLevel": {"const": "control"}, "data": {"type": "object", "additionalProperties": false, "required": ["authorization"], "properties": {"authorization": {"$ref": "#/$defs/digest"}}}}}
     },
     {

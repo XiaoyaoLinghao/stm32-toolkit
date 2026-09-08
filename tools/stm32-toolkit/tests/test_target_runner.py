@@ -839,7 +839,14 @@ def test_control_authorization_rejects_naive_invalid_and_changed_snapshot(tmp_pa
       await auth.prepare(**common, now=datetime(2026, 8, 16))
     assert naive.value.code == "PROBE_PROTOCOL_INVALID"
     with pytest.raises(ProbeClientError) as invalid:
-      await auth.prepare(**{**common, "operation": "target.reset"}, now=datetime(2026, 8, 16, tzinfo=timezone.utc))
+      await auth.prepare(
+          **{
+              **common,
+              "operation": "target.reset",
+              "arguments": {"unexpected": True},
+          },
+          now=datetime(2026, 8, 16, tzinfo=timezone.utc),
+      )
     assert invalid.value.code == "PROBE_PROTOCOL_INVALID"
   run(scenario())
 
@@ -928,7 +935,7 @@ def test_control_authorization_store_rejects_every_closed_binding_and_record_bou
   }
   invalid = [
       {key: value for key, value in base.items() if key != "revision"},
-      {**base, "operation": "target.reset"},
+      {**base, "operation": "target.reset", "arguments": {"unexpected": True}},
       {**base, "arguments": []},
       {**base, "workspace_id": ""},
       {**base, "target": []},
@@ -2155,7 +2162,7 @@ def test_v2_execute_assembles_manifest_after_guarded_flash_and_transport(
     assert result["test_manifest"].state == "passed"
     assert result["test_manifest"].raw_events.size_bytes == len(stream)
     assert len(workflow_calls) == 1
-    assert [call[0] for call in transport.calls] == ["open", "read", "read", "close"]
+    assert [call[0] for call in transport.calls] == ["open", "read", "close"]
     assert probe.closed
 
   run(scenario())
@@ -2189,6 +2196,137 @@ def test_v2_execute_stops_on_run_end_without_transport_eof(tmp_path: Path) -> No
     assert result["test_manifest"].raw_events.size_bytes == len(stream)
     assert len(workflow_calls) == 1
     assert [call[0] for call in transport.calls] == ["open", "read", "close"]
+
+  run(scenario())
+
+
+def test_v2_execute_times_out_without_run_end_even_without_transport_eof(
+    tmp_path: Path,
+) -> None:
+  class NoEofTransport(FakeTransport):
+    def __init__(self, chunk: bytes) -> None:
+      super().__init__([chunk])
+
+    def eof(self):
+      return False
+
+  async def scenario() -> None:
+    _inventory, stream = _v2_target_stream()
+    decoded = target_module.TargetFrameDecoder(expected_version=2).feed(stream)
+    incomplete = b"".join(frame.raw_bytes for frame in decoded[:-1])
+    transport = NoEofTransport(incomplete)
+    runner, prepared, instant, probe, _store, workflow_calls = (
+        await _v2_prepared_runner(tmp_path, transport, timeout_ms=250)
+    )
+
+    with pytest.raises(target_module.TargetRunError) as caught:
+      await runner.run(
+          prepared,
+          prepared.action_digest,
+          current_revision=REVISION,
+          current_inventory_digest=prepared.binding["inventory_digest"],
+          current_input_snapshot_sha256="9" * 64,
+          now=instant,
+      )
+
+    assert caught.value.code == "TEST_TIMEOUT"
+    assert len(workflow_calls) == 1
+    assert transport.calls[0][0] == "open"
+    assert sum(call[0] == "read" for call in transport.calls) >= 2
+    assert transport.calls[-1][0] == "close"
+    assert probe.closed
+
+  run(scenario())
+
+
+def test_v2_execute_rejects_frames_after_run_end_from_the_same_chunk(
+    tmp_path: Path,
+) -> None:
+  async def scenario() -> None:
+    _inventory, stream = _v2_target_stream()
+    decoded = target_module.TargetFrameDecoder(expected_version=2).feed(stream)
+    extra = target_module.encode_frame(
+        6,
+        len(decoded),
+        {"stream": "stdout", "message": "late", "monotonic_ms": 5},
+        version=2,
+    )
+    transport = FakeTransport([stream + extra])
+    runner, prepared, instant, probe, _store, workflow_calls = (
+        await _v2_prepared_runner(tmp_path, transport)
+    )
+
+    with pytest.raises(target_module.TargetRunError) as caught:
+      await runner.run(
+          prepared,
+          prepared.action_digest,
+          current_revision=REVISION,
+          current_inventory_digest=prepared.binding["inventory_digest"],
+          current_input_snapshot_sha256="9" * 64,
+          now=instant,
+      )
+
+    assert caught.value.code == "TEST_EVENT_SEQUENCE_INVALID"
+    assert len(workflow_calls) == 1
+    assert [call[0] for call in transport.calls] == ["open", "read", "close"]
+    assert probe.closed
+
+  run(scenario())
+
+
+@pytest.mark.parametrize("mutation", ["digest", "count", "premature"])
+def test_v2_execute_rejects_invalid_terminal_contract(
+    tmp_path: Path, mutation: str,
+) -> None:
+  async def scenario() -> None:
+    _inventory, stream = _v2_target_stream()
+    decoded = target_module.TargetFrameDecoder(expected_version=2).feed(stream)
+    prefix = decoded[:-1]
+    terminal = dict(decoded[-1].payload)
+    terminal["counts"] = dict(terminal["counts"])
+    if mutation == "digest":
+      terminal["event_stream_digest"] = "f" * 64
+      terminal_sequence = len(prefix)
+      frames = prefix
+    elif mutation == "count":
+      counts = dict(terminal["counts"])
+      counts["passed"] = 0
+      terminal["counts"] = counts
+      terminal_sequence = len(prefix)
+      frames = prefix
+    else:
+      prefix = prefix[:-1]
+      terminal["state"] = "error"
+      terminal["counts"] = {
+          "passed": 0, "failed": 0, "skipped": 0, "error": 1, "timeout": 0
+      }
+      prefix_raw = b"".join(frame.raw_bytes for frame in prefix)
+      terminal["event_stream_digest"] = sha256(prefix_raw).hexdigest()
+      terminal_sequence = len(prefix)
+      frames = prefix
+    invalid_terminal = target_module.encode_frame(
+        5, terminal_sequence, terminal, version=2
+    )
+    invalid_stream = b"".join(frame.raw_bytes for frame in frames) + invalid_terminal
+    transport = FakeTransport([invalid_stream])
+    runner, prepared, instant, probe, _store, workflow_calls = (
+        await _v2_prepared_runner(tmp_path, transport)
+    )
+
+    with pytest.raises(target_module.TargetRunError) as caught:
+      await runner.run(
+          prepared,
+          prepared.action_digest,
+          current_revision=REVISION,
+          current_inventory_digest=prepared.binding["inventory_digest"],
+          current_input_snapshot_sha256="9" * 64,
+          now=instant,
+      )
+
+    assert caught.value.code == "TEST_EVENT_SEQUENCE_INVALID"
+    assert len(workflow_calls) == 1
+    assert [call[0] for call in transport.calls] == ["open", "read", "close"]
+    assert probe.closed
 
   run(scenario())
 
@@ -2272,7 +2410,7 @@ def test_v2_execute_rejects_host_identity_binding_drift(
 
     assert caught.value.code == "TEST_INVENTORY_CHANGED"
     assert len(workflow_calls) == 1
-    assert [call[0] for call in transport.calls] == ["open", "read", "read", "close"]
+    assert [call[0] for call in transport.calls] == ["open", "read", "close"]
     assert probe.closed
 
   run(scenario())

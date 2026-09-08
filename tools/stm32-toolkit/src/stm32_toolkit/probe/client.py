@@ -529,7 +529,7 @@ class ProbeClient:
         self, operation: str, arguments: Mapping[str, object], authorization: str
     ) -> dict[str, object]:
         if operation not in {
-            "target.halt", "target.resume", "target.step",
+            "target.halt", "target.resume", "target.reset", "target.step",
             "target.breakpoint.set", "target.breakpoint.clear",
         }:
             raise ProbeClientError("PROBE_PROTOCOL_INVALID", "Target control operation is invalid")
@@ -545,10 +545,18 @@ class ProbeClient:
             "target.breakpoint.set": {"breakpoint_id", "address", "kind", "size"},
             "target.breakpoint.clear": {"breakpoint_id", "cleared"},
         }
-        self._closed_result(result, expected[operation])
+        if operation == "target.reset":
+            if set(result) not in ({"state"}, {"state", "reason"}):
+                raise _response_error()
+        else:
+            self._closed_result(result, expected[operation])
         if operation == "target.halt" and result != {"state": "halted", "reason": "requested"}:
             raise _response_error()
         if operation == "target.resume" and result != {"state": "running"}:
+            raise _response_error()
+        if operation == "target.reset" and result not in (
+            {"state": "running"}, {"state": "halted", "reason": "reset"}
+        ):
             raise _response_error()
         if operation == "target.step" and (
             result.get("state") != "halted"
@@ -708,7 +716,7 @@ class ControlAuthorizationClient:
             raise ProbeClientError("PROBE_PROTOCOL_INVALID", "Authorization time must be UTC aware")
         operation = binding.get("operation")
         arguments = binding.get("arguments")
-        if operation not in {"target.halt", "target.resume", "target.step", "target.breakpoint.set", "target.breakpoint.clear"} or not isinstance(arguments, Mapping):
+        if operation not in {"target.halt", "target.resume", "target.reset", "target.step", "target.breakpoint.set", "target.breakpoint.clear"} or not isinstance(arguments, Mapping):
             raise ProbeClientError("PROBE_PROTOCOL_INVALID", "Control authorization binding is invalid")
         identity = await self._probe.target_identity()
         state = await self._probe.target_state()

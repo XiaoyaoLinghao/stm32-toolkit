@@ -854,60 +854,100 @@ class PhysicalTargetFlashAdapter:
         if not isinstance(report, OperationResult) or not report.ok:
             raise TargetRunError("TEST_FLASH_FAILED", "Physical Target flash failed")
 
-    async def resume_after_flash(
+    async def _authorized_control(
+        self,
+        binding: Mapping[str, object],
+        operation: str,
+        deadline: float,
+    ) -> dict[str, object]:
+        _require_before_deadline(
+            deadline=deadline,
+            code="TEST_TIMEOUT",
+            message="Target start deadline elapsed",
+        )
+        authorization = ControlAuthorizationClient(
+            self._control_authorizations, self._client
+        )
+        prepared = await authorization.prepare(
+            workspace_id=binding["workspace_id"],
+            project_id=binding["project_id"],
+            session_id=binding["session_id"],
+            revision=binding["revision"],
+            target=dict(binding["target"]),
+            firmware={
+                "build_id": binding["build_id"],
+                "elf_sha256": binding["elf_sha256"],
+            },
+            operation=operation,
+            arguments={},
+        )
+        _require_before_deadline(
+            deadline=deadline,
+            code="TEST_TIMEOUT",
+            message="Target start deadline elapsed",
+        )
+        result = await self._client.target_control(
+            operation, {}, prepared.action_digest
+        )
+        _require_before_deadline(
+            deadline=deadline,
+            code="TEST_TIMEOUT",
+            message="Target start deadline elapsed",
+        )
+        return result
+
+    async def start_after_flash(
         self, binding: Mapping[str, object], deadline: float
     ) -> None:
-        """Consume one exact CONTROL resume authorization after flash proof."""
+        """Reset after flash, resuming only when reset leaves the core halted."""
         try:
-            authorization = ControlAuthorizationClient(
-                self._control_authorizations, self._client
+            reset_result = await self._authorized_control(
+                binding, "target.reset", deadline
             )
-            prepared = await authorization.prepare(
-                workspace_id=binding["workspace_id"],
-                project_id=binding["project_id"],
-                session_id=binding["session_id"],
-                revision=binding["revision"],
-                target=dict(binding["target"]),
-                firmware={
-                    "build_id": binding["build_id"],
-                    "elf_sha256": binding["elf_sha256"],
-                },
-                operation="target.resume",
-                arguments={},
+            if reset_result == {"state": "running"}:
+                return
+            if reset_result != {"state": "halted", "reason": "reset"}:
+                raise TargetRunError(
+                    "TEST_EXECUTION_FAILED", "Physical Target reset state is invalid"
+                )
+            state = await self._client.target_state()
+            _require_before_deadline(
+                deadline=deadline,
+                code="TEST_TIMEOUT",
+                message="Target start deadline elapsed",
             )
-            result = await self._client.target_control(
-                "target.resume", {}, prepared.action_digest
+            if state != reset_result:
+                raise TargetRunError(
+                    "TEST_EXECUTION_FAILED", "Physical Target reset state changed"
+                )
+            resume_result = await self._authorized_control(
+                binding, "target.resume", deadline
             )
+            if resume_result != {"state": "running"}:
+                raise TargetRunError(
+                    "TEST_EXECUTION_FAILED", "Physical Target resume state is invalid"
+                )
         except TargetRunError:
             raise
         except ProbeClientError as error:
             _require_before_deadline(
                 deadline=deadline,
                 code="TEST_TIMEOUT",
-                message="Target resume deadline elapsed",
+                message="Target start deadline elapsed",
             )
-            self._raise_resume_error(error.code, error)
+            self._raise_start_error(error.code, error)
         except Exception as error:
             _require_before_deadline(
                 deadline=deadline,
                 code="TEST_TIMEOUT",
-                message="Target resume deadline elapsed",
+                message="Target start deadline elapsed",
             )
             raise TargetRunError(
-                "TEST_EXECUTION_FAILED", "Physical Target resume failed"
+                "TEST_EXECUTION_FAILED", "Physical Target reset/start failed"
             ) from error
-        _require_before_deadline(
-            deadline=deadline,
-            code="TEST_TIMEOUT",
-            message="Target resume deadline elapsed",
-        )
-        if result != {"state": "running"}:
-            raise TargetRunError(
-                "TEST_EXECUTION_FAILED", "Physical Target resume state is invalid"
-            )
 
     @staticmethod
-    def _raise_resume_error(code: str, cause: Exception) -> None:
+    def _raise_start_error(code: str, cause: Exception) -> None:
         mapped = {
             "PROBE_IDENTITY_MISMATCH": "TEST_IDENTITY_MISMATCH",
             "PROBE_TIMEOUT": "TEST_TIMEOUT",
@@ -915,7 +955,7 @@ class PhysicalTargetFlashAdapter:
             "PROBE_OPERATION_UNAVAILABLE": "TEST_TRANSPORT_UNAVAILABLE",
             "PROBE_SERVICE_UNAVAILABLE": "TEST_TRANSPORT_UNAVAILABLE",
         }.get(code, "TEST_EXECUTION_FAILED")
-        raise TargetRunError(mapped, "Physical Target resume failed") from cause
+        raise TargetRunError(mapped, "Physical Target reset/start failed") from cause
 
 
 class ProbeClientTargetTransport:
@@ -1572,10 +1612,10 @@ class TargetTestRunner:
                 raise TargetRunError("TEST_IDENTITY_MISMATCH", "Target identity changed after flash")
             if isinstance(self._flash, PhysicalTargetFlashAdapter):
                 await _invoke_before_deadline(
-                    lambda: self._flash.resume_after_flash(binding, deadline),
+                    lambda: self._flash.start_after_flash(binding, deadline),
                     deadline=deadline,
                     code="TEST_TIMEOUT",
-                    message="Target resume deadline elapsed",
+                    message="Target start deadline elapsed",
                 )
             await _invoke_before_deadline(
                 lambda: transport.open(effective_transport_config, deadline),
@@ -1610,6 +1650,7 @@ class TargetTestRunner:
                 if protocol_version == FRAME_VERSION
                 else None
             )
+            terminal_seen = False
             async for chunk in _poll_transport_chunks(
                 transport,
                 deadline=deadline,
@@ -1628,6 +1669,8 @@ class TargetTestRunner:
                         frames.append(frame)
                         if validator is not None:
                             validator.accept(frame)
+                        if protocol_version == FRAME_V2_VERSION and frame.kind == 5:
+                            terminal_seen = True
                 except TestProtocolError as error:
                     raise TargetRunError(error.code, error.message) from error
                 _require_before_deadline(
@@ -1635,7 +1678,7 @@ class TargetTestRunner:
                     code="TEST_TIMEOUT",
                     message="Target output deadline elapsed",
                 )
-                if validator is not None and validator.is_terminal:
+                if terminal_seen or (validator is not None and validator.is_terminal):
                     break
             _require_before_deadline(
                 deadline=deadline,

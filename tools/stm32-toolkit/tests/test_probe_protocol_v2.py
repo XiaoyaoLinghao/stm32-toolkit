@@ -51,9 +51,9 @@ def test_v2_schema_mirrors_and_closed_operation_matrix():
     assert set(schema["properties"]["operation"]["enum"]) == {
         "probe.list", "probe.attach", "memory.read", "register.read", "probe.close", "flash.program",
         "target.transport.open", "target.transport.read", "target.transport.close", "target.identity.read",
-         "target.state.read", "target.halt", "target.resume", "target.step",
-         "target.reset",
-         "target.breakpoint.set", "target.breakpoint.clear", "target.registers.read",
+        "target.state.read", "target.halt", "target.resume", "target.step",
+        "target.reset",
+        "target.breakpoint.set", "target.breakpoint.clear", "target.registers.read",
         "target.memory.read", "target.fault.capture", "target.logs.capture",
     }
     assert getattr(probe_protocol, "TARGET_ERROR_CODES", None) == {
@@ -72,10 +72,10 @@ def test_v2_schema_mirrors_and_closed_operation_matrix():
         ("target.transport.close", "observe", {"transport_id": "transport-a"}, 5_000),
         ("target.identity.read", "observe", {}, 5_000),
         ("target.state.read", "observe", {}, 5_000),
-         ("target.halt", "control", {"authorization": "a" * 64}, 5_000),
-         ("target.resume", "control", {"authorization": "a" * 64}, 5_000),
-         ("target.reset", "control", {"authorization": "a" * 64}, 5_000),
-         ("target.step", "control", {"authorization": "a" * 64}, 5_000),
+        ("target.halt", "control", {"authorization": "a" * 64}, 5_000),
+        ("target.resume", "control", {"authorization": "a" * 64}, 5_000),
+        ("target.reset", "control", {"authorization": "a" * 64}, 5_000),
+        ("target.step", "control", {"authorization": "a" * 64}, 5_000),
         ("target.breakpoint.set", "control", {"address": 0x08000100, "kind": "temporary", "size": 4, "authorization": "a" * 64}, 5_000),
         ("target.breakpoint.clear", "control", {"breakpoint_id": "bp-1", "authorization": "a" * 64}, 5_000),
         ("target.registers.read", "observe", {"names": ["r0", "pc"]}, 5_000),

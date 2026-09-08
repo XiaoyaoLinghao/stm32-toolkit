@@ -3327,6 +3327,168 @@ def test_control_timeout_terminates_owned_worker_before_bounded_response(tmp_pat
     run(scenario())
 
 
+@pytest.mark.parametrize("reset_mode", ["running", "halted", "invalid"])
+def test_target_reset_is_control_authorized_and_single_use(
+    tmp_path: Path, reset_mode: str,
+) -> None:
+    class ResetBackend(FakeProbeBackend):
+        def __init__(self) -> None:
+            super().__init__(
+                probes=(ProbeDescriptor("probe-a", "vendor", "product", None),),
+                memory={0x20000000: b"\x01\x02\x03\x04"},
+                registers={"r0": 7, "pc": 0x08000101},
+            )
+            self.reset_mode = reset_mode
+            self.reset_calls = 0
+            self.reset_halted = False
+
+        def target_identity(self):
+            self._require_attach()
+            return {
+                "board_id": "board-a",
+                "mcu": "STM32F429ZITx",
+                "target_id": "target-a",
+                "probe_serial_hash": "a" * 64,
+            }
+
+        def target_state(self):
+            self._require_attach()
+            if self.reset_mode == "invalid" and self.reset_calls:
+                return {"state": "reset", "reason": "reset"}
+            if self.reset_halted:
+                return {"state": "halted", "reason": "reset"}
+            return {"state": "halted" if self.halted else "running", "reason": "requested"}
+
+        def reset(self) -> None:
+            self._require_attach()
+            self.events.append(("reset",))
+            self.reset_calls += 1
+            self.reset_halted = self.reset_mode == "halted"
+            self.halted = self.reset_halted
+
+    async def scenario() -> None:
+        backend = ResetBackend()
+        store = ControlAuthorizationStore((tmp_path / "control").absolute())
+        service = make_service(
+            tmp_path, level=OperationLevel.CONTROL, backend=backend,
+            control_authorizations=store,
+        )
+        endpoint = await service.start()
+        client = ProbeClient(endpoint)
+        try:
+            await client.attach("probe-a", "STM32F429ZITx")
+            identity = await client.target_identity()
+            state = await client.target_state()
+            prepared = store.prepare({
+                "workspace_id": "workspace-a", "project_id": "project-a",
+                "session_id": "session-a", "revision": "revision-a",
+                "target": identity,
+                "firmware": {"build_id": "b" * 64, "elf_sha256": "e" * 64},
+                "operation": "target.reset", "arguments": {},
+                "identity_snapshot": identity, "state_snapshot": state,
+            })
+            if reset_mode == "invalid":
+                with pytest.raises(ProbeClientError) as invalid:
+                    await client.target_control(
+                        "target.reset", {}, prepared.action_digest
+                    )
+                assert invalid.value.code == "PROBE_BACKEND_ERROR"
+                assert backend.reset_calls == 1
+                return
+            result = await client.target_control(
+                "target.reset", {}, prepared.action_digest
+            )
+            assert result == (
+                {"state": "running"}
+                if reset_mode == "running"
+                else {"state": "halted", "reason": "reset"}
+            )
+            assert backend.reset_calls == 1
+            assert not [event for event in backend.events if event[0] == "resume"]
+            with pytest.raises(ProbeClientError) as reused:
+                await client.target_control(
+                    "target.reset", {}, prepared.action_digest
+                )
+            assert reused.value.code == "PROBE_AUTHORIZATION_INVALID"
+            assert backend.reset_calls == 1
+        finally:
+            await client.close()
+            await service.stop()
+
+    run(scenario())
+
+
+def test_target_reset_timeout_returns_terminal_probe_error(tmp_path: Path) -> None:
+    class DelayedResetBackend(FakeProbeBackend):
+        def __init__(self) -> None:
+            super().__init__(
+                probes=(ProbeDescriptor("probe-a", "vendor", "product", None),),
+                memory={0x20000000: b"\x01\x02\x03\x04"},
+                registers={"r0": 7, "pc": 0x08000101},
+            )
+            self.entered = threading.Event()
+            self.release = threading.Event()
+            self.reset_calls = 0
+
+        def target_identity(self):
+            self._require_attach()
+            return {
+                "board_id": "board-a",
+                "mcu": "STM32F429ZITx",
+                "target_id": "target-a",
+                "probe_serial_hash": "a" * 64,
+            }
+
+        def target_state(self):
+            self._require_attach()
+            return {"state": "running", "reason": "requested"}
+
+        def reset(self) -> None:
+            self._require_attach()
+            self.reset_calls += 1
+            self.entered.set()
+            self.release.wait(2)
+
+    async def scenario() -> None:
+        backend = DelayedResetBackend()
+        store = ControlAuthorizationStore((tmp_path / "control").absolute())
+        service = make_service(
+            tmp_path, level=OperationLevel.CONTROL, backend=backend,
+            control_authorizations=store,
+        )
+        endpoint = await service.start()
+        client = ProbeClient(endpoint)
+        try:
+            await client.attach("probe-a", "STM32F429ZITx")
+            identity = await client.target_identity()
+            state = await client.target_state()
+            prepared = store.prepare({
+                "workspace_id": "workspace-a", "project_id": "project-a",
+                "session_id": "session-a", "revision": "revision-a",
+                "target": identity,
+                "firmware": {"build_id": "b" * 64, "elf_sha256": "e" * 64},
+                "operation": "target.reset", "arguments": {},
+                "identity_snapshot": identity, "state_snapshot": state,
+            })
+            request = asyncio.create_task(client.request(
+                "target.reset", {"authorization": prepared.action_digest},
+                operation_level=OperationLevel.CONTROL, timeout_ms=10,
+            ))
+            assert await asyncio.to_thread(backend.entered.wait, 1)
+            await asyncio.sleep(0.05)
+            backend.release.set()
+            with pytest.raises(ProbeClientError) as timed_out:
+                await request
+            assert timed_out.value.code == "PROBE_TIMEOUT"
+            assert backend.reset_calls == 1
+        finally:
+            backend.release.set()
+            await client.close()
+            await service.stop()
+
+    run(scenario())
+
+
 def test_target_capability_preflight_fails_before_lease_bind_or_attach(tmp_path: Path) -> None:
     class PreflightFailure(FakeProbeBackend):
         def __init__(self) -> None:

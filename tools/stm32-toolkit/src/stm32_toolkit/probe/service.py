@@ -954,6 +954,14 @@ class ProbeService:
                 if state["state"] != "running":
                     raise ProbeBackendError("PROBE_BACKEND_ERROR", "Target resume result is invalid")
                 return {"state": "running"}
+            if request.operation == "target.reset":
+                self._backend.reset()
+                state = self._closed_target_state(self._backend.target_state())
+                if state["state"] == "running":
+                    return {"state": "running"}
+                if state == {"state": "halted", "reason": "reset"}:
+                    return state
+                raise ProbeBackendError("PROBE_BACKEND_ERROR", "Target reset result is invalid")
             if request.operation == "target.step":
                 before_values = self._backend.read_core_registers(("pc",))
                 if not isinstance(before_values, Mapping) or set(before_values) != {"pc"}:
@@ -1418,7 +1426,7 @@ class ProbeService:
             OperationLevel.MODIFY
             if request.operation == "flash.program"
             else OperationLevel.CONTROL if request.operation in {
-                "target.halt", "target.resume", "target.step", "target.breakpoint.set", "target.breakpoint.clear"
+                "target.halt", "target.resume", "target.reset", "target.step", "target.breakpoint.set", "target.breakpoint.clear"
             } else OperationLevel.OBSERVE
         )
         if (

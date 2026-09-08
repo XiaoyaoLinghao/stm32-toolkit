@@ -221,6 +221,10 @@ class _SourceChangeBackend:
         self.events.append(("resume", self.level))
         self.running = True
 
+    def reset(self) -> None:
+        self.events.append(("reset", self.level))
+        self.running = True
+
     def flash_elf(self, image: bytes) -> FlashBackendReport:
         self.events.append(("flash", self.level))
         self.board.flashed = True
@@ -292,6 +296,18 @@ class _ResumeFailureBackend(_SourceChangeBackend):
     def __init__(self, *, resume_mode: str, **kwargs: object) -> None:
         super().__init__(**kwargs)
         self.resume_mode = resume_mode
+        self.reset_halted = False
+
+    def reset(self) -> None:
+        self.events.append(("reset", self.level))
+        self.running = False
+        self.reset_halted = True
+
+    def target_state(self) -> Mapping[str, object]:
+        if self.reset_halted:
+            self.events.append(("state", self.level, False))
+            return {"state": "halted", "reason": "reset"}
+        return super().target_state()
 
     def resume(self) -> None:
         self.events.append(("resume", self.level))
@@ -932,12 +948,13 @@ def test_prepare_never_reads_old_inventory_and_execute_proves_fixed_after_flash(
         for index, event in enumerate(events)
         if index > flash_index and event == ("identity", "modify")
     )
-    resume_indices = [
-        index for index, event in enumerate(events) if event[:2] == ("resume", "modify")
+    reset_indices = [
+        index for index, event in enumerate(events) if event[:2] == ("reset", "modify")
     ]
     open_index = next(index for index, event in enumerate(events) if event[0] == "transport.open")
-    assert len(resume_indices) == 1
-    assert postflash_identity_index < resume_indices[0] < open_index
+    assert len(reset_indices) == 1
+    assert not [event for event in events if event[:2] == ("resume", "modify")]
+    assert postflash_identity_index < reset_indices[0] < open_index
     shown = workflows.test_show(
         workflows.TestingWorkflowContext(project, data_root, "session-r3"),
         run_id=executed.data["run"]["run_id"],
@@ -1098,6 +1115,9 @@ def test_postflash_resume_failure_consumes_parent_without_transport_or_testrun(
     assert [event for event in events if event[:2] == ("flash", "modify")] == [
         ("flash", "modify")
     ]
+    assert [event for event in events if event[:2] == ("reset", "modify")] == [
+        ("reset", "modify")
+    ]
     assert [event for event in events if event[:2] == ("resume", "modify")] == [
         ("resume", "modify")
     ]
@@ -1115,6 +1135,7 @@ def test_postflash_resume_failure_consumes_parent_without_transport_or_testrun(
     )
     assert reused.ok is False and reused.code == "TEST_AUTHORIZATION_INVALID"
     assert len([event for event in events if event[:2] == ("flash", "modify")]) == 1
+    assert len([event for event in events if event[:2] == ("reset", "modify")]) == 1
     assert len([event for event in events if event[:2] == ("resume", "modify")]) == 1
     assert not [event for event in events if event[0] == "transport.open"]
 
@@ -1187,6 +1208,9 @@ def test_v2_physical_execution_binds_protocol_digests_and_publishes_after_flash(
         for index, event in enumerate(events)
         if index > flash_index and event == ("identity", "modify")
     )
+    reset_index = next(
+        index for index, event in enumerate(events) if event[:2] == ("reset", "modify")
+    )
     open_index = next(index for index, event in enumerate(events) if event[0] == "transport.open")
     transport_identity_index = next(
         index for index, event in enumerate(events)
@@ -1198,6 +1222,7 @@ def test_v2_physical_execution_binds_protocol_digests_and_publishes_after_flash(
         flash_index
         < readback_index
         < postflash_identity_index
+        < reset_index
         < open_index
         < transport_identity_index
         < read_index
