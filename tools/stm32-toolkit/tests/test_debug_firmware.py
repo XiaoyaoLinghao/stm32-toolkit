@@ -5,6 +5,7 @@ import asyncio
 import os
 import stat
 from dataclasses import FrozenInstanceError
+from hashlib import sha256
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -79,7 +80,7 @@ def _flash_result(identity: dict[str, object], *, session: str = "flash-session"
         "elfSize": identity["elfSize"],
         "targetDevice": identity["targetDevice"],
         "debugTarget": "stm32f407vg",
-        "probeId": "probe-123",
+        "probeId": sha256("probe-123".encode("utf-8")).hexdigest(),
         "workspaceId": "workspace-a",
         "sessionId": session,
         "verifiedBytes": 320,
@@ -698,7 +699,16 @@ def test_genuine_flash_result_is_consumed_by_binding_without_a_second_trust_sche
     segment = _elf_with_flash_segment()[84 : 84 + 320]
     flash_client = RecordingFlashClient(segment)
 
-    flashed = asyncio.run(flash_firmware(_request(root, identity), flash_client))
+    flashed = asyncio.run(
+        flash_firmware(
+            _request(
+                root,
+                identity,
+                evidence_probe_id=sha256("probe-123".encode("utf-8")).hexdigest(),
+            ),
+            flash_client,
+        )
+    )
 
     assert flashed.ok is True
     flash_path = root / "artifacts" / "migration" / "flash-result.json"
@@ -864,10 +874,20 @@ def test_disk_evidence_changed_during_final_attach_is_rejected(
     assert result.code == "DEBUG_FIRMWARE_CHANGED"
 
 
-def test_flash_must_match_workspace_probe_target_and_current_firmware(binding_env):
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("probeId", sha256("probe-other".encode("utf-8")).hexdigest()),
+        ("workspaceId", "other-workspace"),
+    ],
+    ids=["probe", "workspace"],
+)
+def test_flash_must_match_workspace_probe_target_and_current_firmware(
+    binding_env, field: str, value: str
+):
     root, identity, client, request = binding_env
     document = _flash_result(identity)
-    document["workspaceId"] = "other-workspace"
+    document[field] = value
     atomic_write_json(root / "artifacts" / "migration" / "flash-result.json", document)
     result = asyncio.run(bind_debug_firmware(request, client))
     assert result.ok is False

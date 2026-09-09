@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import re
 import stat
+from hashlib import sha256
 from pathlib import Path
 from typing import Mapping
 
@@ -120,10 +121,11 @@ def _flash(root: Path, firmware: object, request: DebugBindingRequest, *, change
         source_session = result.get("sessionId")
         if not isinstance(source_session, str) or _IDENTIFIER.fullmatch(source_session) is None:
             raise ValueError("invalid flash session")
+        evidence_probe_id = sha256(request.probe_id.encode("utf-8")).hexdigest()
         _validate_flash(
             result,
             firmware,
-            probe=request.probe_id,
+            probe=evidence_probe_id,
             workspace=request.workspace_id,
             session=source_session,
             target=request.target,
