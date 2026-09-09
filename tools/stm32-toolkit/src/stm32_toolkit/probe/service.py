@@ -29,6 +29,7 @@ from .attach_diagnostics import (
     append_late_attach,
     attach_details,
     extract_attach_diagnostic,
+    legacy_stage_matches_attach_diagnostic,
     make_attach_diagnostic,
     make_cleanup_entry,
     make_primary,
@@ -56,7 +57,7 @@ def _service_error_fields(error: BaseException) -> tuple[str, str]:
         source = error.code
         return (
             "identity-mismatch" if source == "PROBE_IDENTITY_MISMATCH" else "backend-code",
-            source if type(source) is str and source in SOURCE_CODES else "UNTYPED",
+            source if type(source) is str and source in SOURCE_CODES else "PROBE_BACKEND_ERROR",
         )
     if isinstance(error, asyncio.CancelledError):
         return "cancelled", "CALLER_CANCELLED"
@@ -69,6 +70,7 @@ def _service_error_fields(error: BaseException) -> tuple[str, str]:
                 "identity-mismatch" if source == "PROBE_IDENTITY_MISMATCH" else "backend-code",
                 source,
             )
+        return "backend-code", "PROBE_BACKEND_ERROR"
     return "unknown", "UNTYPED"
 
 
@@ -1789,16 +1791,20 @@ class ProbeService:
                 safe_details: dict[str, object] = {}
                 if diagnostic is not None:
                     safe_details["attachDiagnostic"] = diagnostic
+                legacy_stage = (
+                    error.details.get("stage")
+                    if type(error.details) is dict
+                    else None
+                )
                 if (
                     code == "PROBE_ATTACH_FAILED"
-                    and type(error.details) is dict
-                    and type(error.details.get("stage")) is str
-                    and error.details["stage"] in LEGACY_ATTACH_STAGES
+                    and type(legacy_stage) is str
+                    and legacy_stage in LEGACY_ATTACH_STAGES
                 ):
-                    safe_details = {
-                        "stage": error.details["stage"],
-                        **safe_details,
-                    }
+                    if diagnostic is None or legacy_stage_matches_attach_diagnostic(
+                        legacy_stage, diagnostic
+                    ):
+                        safe_details = {"stage": legacy_stage, **safe_details}
                 details = safe_details
             if request.operation.startswith("target.") and code not in TARGET_ERROR_CODES:
                 code, message, details = "PROBE_BACKEND_ERROR", "Probe backend operation failed", {}

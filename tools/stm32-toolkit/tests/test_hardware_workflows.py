@@ -1285,7 +1285,13 @@ def test_cleanup_success_merges_valid_attach_diagnostic_and_keeps_action_result(
             "stm32_flash",
             "PROBE_ATTACH_FAILED",
             "Probe attach failed",
-            {"attachDiagnostic": diagnostic, "private": "C:\\secret"},
+            {
+                "stage": "session-open",
+                "field": "target",
+                "rule": "identity",
+                "attachDiagnostic": diagnostic,
+                "private": str(project / "secret"),
+            },
         )
 
     result = _run(
@@ -1306,6 +1312,9 @@ def test_cleanup_success_merges_valid_attach_diagnostic_and_keeps_action_result(
     assert result.ok is False
     assert result.code == "PROBE_ATTACH_FAILED"
     details = result.to_dict()["details"]
+    assert details["stage"] == "session-open"
+    assert details["field"] == "target"
+    assert details["rule"] == "identity"
     assert details["attachDiagnostic"]["primary"] == diagnostic["primary"]
     assert details["attachDiagnostic"]["cleanup"] == [
         {"stage": "session-close", "outcome": "succeeded"},

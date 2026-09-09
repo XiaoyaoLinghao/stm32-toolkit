@@ -22,6 +22,7 @@ from .backend import (
 from .attach_diagnostics import (
     LEGACY_ATTACH_STAGES,
     append_cleanup,
+    legacy_stage_matches_attach_diagnostic,
     make_cleanup_entry,
     promote_legacy_details,
     SOURCE_CODES,
@@ -217,6 +218,14 @@ def _safe_attach_error_details(code: object, details: object) -> dict[str, objec
         if type(code) is not str or code not in _BACKEND_ERROR_CODES:
             return None
         result["attachDiagnostic"] = diagnostic
+    if (
+        "stage" in result
+        and "attachDiagnostic" in result
+        and not legacy_stage_matches_attach_diagnostic(
+            result["stage"], result["attachDiagnostic"], worker=True
+        )
+    ):
+        return None
     return result
 
 

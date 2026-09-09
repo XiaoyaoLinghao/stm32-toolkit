@@ -48,7 +48,7 @@ def _classify_attach_exception(error: BaseException) -> tuple[str, str]:
     if isinstance(error, ProbeBackendError):
         code = error.code
         reason = "identity-mismatch" if code == "PROBE_IDENTITY_MISMATCH" else "backend-code"
-        return reason, code if type(code) is str and code in SOURCE_CODES else "UNTYPED"
+        return reason, code if type(code) is str and code in SOURCE_CODES else "PROBE_BACKEND_ERROR"
 
     if isinstance(error, PermissionError):
         return "permission-denied", "UNTYPED"
@@ -103,9 +103,14 @@ def _classify_attach_exception(error: BaseException) -> tuple[str, str]:
     return "unknown", "UNTYPED"
 
 
-def _failure_primary(stage: str, error: BaseException) -> dict[str, str]:
+def _failure_primary(
+    stage: str,
+    error: BaseException,
+    *,
+    reason_override: str | None = None,
+) -> dict[str, str]:
     reason, source_code = _classify_attach_exception(error)
-    return make_primary(stage, reason, source_code)
+    return make_primary(stage, reason_override or reason, source_code)
 
 
 def _cleanup_failure(stage: str, error: BaseException, *, timed_out: bool = False) -> dict[str, str]:
@@ -786,7 +791,15 @@ class PyOCDBackend:
             still_open = True
             cleanup.append(_cleanup_failure("probe-open-check-after-close", error))
         else:
-            cleanup.append(make_cleanup_entry("probe-open-check-after-close", "succeeded"))
+            if still_open:
+                cleanup.append(make_cleanup_entry(
+                    "probe-open-check-after-close",
+                    "failed",
+                    reason="postcondition-failed",
+                    source_code="PROBE_CLOSE_FAILED",
+                ))
+            else:
+                cleanup.append(make_cleanup_entry("probe-open-check-after-close", "succeeded"))
         if close_error is not None or still_open:
             raise ProbeBackendError(
                 "PROBE_CLOSE_FAILED", "Debug probe cleanup failed"
@@ -899,6 +912,7 @@ class PyOCDBackend:
         open_started = False
         attach_stage = "session-create"
         last_verified: list[str | None] = [None]
+        primary_postcondition_failed = False
         try:
             session = self._get_driver().create_session(probe, options=options)
             open_started = True
@@ -939,6 +953,7 @@ class PyOCDBackend:
                 attach_stage = "halt-verify"
                 last_verified[0] = self._read_target_state(session_target)
                 if last_verified[0] != "halted":
+                    primary_postcondition_failed = True
                     raise ProbeBackendError(
                         "PROBE_BACKEND_ERROR", "Target halt state is unavailable"
                     )
@@ -948,6 +963,7 @@ class PyOCDBackend:
                 attach_stage = "resume-verify"
                 last_verified[0] = self._read_target_state(session_target)
                 if last_verified[0] != "running":
+                    primary_postcondition_failed = True
                     raise ProbeBackendError(
                         "PROBE_ATTACH_FAILED", "Debug probe attach failed",
                         {"stage": "resume-verify"},
@@ -992,7 +1008,13 @@ class PyOCDBackend:
                     except ProbeBackendError as cleanup_error:
                         close_error = cleanup_error
             diagnostic = make_attach_diagnostic(
-                _failure_primary(precise_stage, error),
+                _failure_primary(
+                    precise_stage,
+                    error,
+                    reason_override=(
+                        "postcondition-failed" if primary_postcondition_failed else None
+                    ),
+                ),
                 cleanup=cleanup,
                 last_verified_target_state=last_verified[0],
             )

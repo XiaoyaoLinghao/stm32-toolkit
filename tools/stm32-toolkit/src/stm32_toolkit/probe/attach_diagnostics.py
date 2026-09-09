@@ -163,6 +163,33 @@ _MONITOR_CLEANUP_STAGES = frozenset(
 _LATER_OUTER_CLEANUP_STAGES = frozenset(
     _SERVICE_STOP_CLEANUP_STAGES | _WORKFLOW_CLEANUP_STAGES | _MONITOR_CLEANUP_STAGES
 )
+_SERVICE_LATE_CLEANUP_STAGES = frozenset(SERVICE_OUTER_CLEANUP_STAGES[:5])
+_SERVICE_LATE_CLEANUP_ORDER = SERVICE_OUTER_CLEANUP_STAGES[:5]
+_SERVICE_STOP_CLEANUP_ORDER = SERVICE_OUTER_CLEANUP_STAGES[5:8]
+_WORKFLOW_CLEANUP_ORDER = SERVICE_OUTER_CLEANUP_STAGES[8:10]
+_MONITOR_CLEANUP_ORDER = SERVICE_OUTER_CLEANUP_STAGES[10:13]
+
+# Cleanup lists may contain nested producer groups.  The groups retain their
+# own execution order while the enclosing layers interleave them (for example,
+# a workflow closes its client, then receives the service-stop fragment, then
+# records workflow-service-stop).  There is intentionally no invented global
+# order between these groups.
+_CLEANUP_ORDER_GROUPS = (
+    BACKEND_CLEANUP_STAGES,
+    IDENTITY_CLEANUP_STAGES,
+    _SERVICE_LATE_CLEANUP_ORDER,
+    _SERVICE_STOP_CLEANUP_ORDER,
+    _WORKFLOW_CLEANUP_ORDER,
+    _MONITOR_CLEANUP_ORDER,
+)
+_FRAGMENT_STAGE_SCOPES = (
+    frozenset(BACKEND_CLEANUP_STAGES),
+    frozenset(IDENTITY_CLEANUP_STAGES),
+    _SERVICE_LATE_CLEANUP_STAGES,
+    _SERVICE_STOP_CLEANUP_STAGES,
+    _SERVICE_STOP_CLEANUP_STAGES | _WORKFLOW_CLEANUP_STAGES,
+    _SERVICE_STOP_CLEANUP_STAGES | _MONITOR_CLEANUP_STAGES,
+)
 
 
 def _exact_dict(value: object) -> bool:
@@ -179,6 +206,39 @@ def _exact_string(value: object, allowed: frozenset[str]) -> bool:
 
 def _valid_target_state(value: object) -> bool:
     return value is None or (type(value) is str and value in TARGET_STATES)
+
+
+def _cleanup_groups_are_ordered(entries: Iterable[Mapping[str, object]]) -> bool:
+    """Check each producer group's relative order without imposing a global order."""
+
+    stages = [entry.get("stage") for entry in entries]
+    for group in _CLEANUP_ORDER_GROUPS:
+        previous = -1
+        for stage in stages:
+            if stage not in group:
+                continue
+            index = group.index(stage)
+            if index <= previous:
+                return False
+            previous = index
+    return True
+
+
+def _cleanup_scope_is_ordered(
+    entries: Iterable[Mapping[str, object]], allowed_order: tuple[str, ...]
+) -> bool:
+    """Check the single local scope used by a late attach diagnostic."""
+
+    previous = -1
+    for entry in entries:
+        stage = entry.get("stage")
+        if stage not in allowed_order:
+            return False
+        index = allowed_order.index(stage)
+        if index <= previous:
+            return False
+        previous = index
+    return True
 
 
 def _cleanup_scope(primary_stage: str) -> frozenset[str]:
@@ -247,6 +307,8 @@ def _validate_late_attach(value: object) -> bool:
         if entry["stage"] in stages:
             return False
         stages.add(entry["stage"])
+    if not _cleanup_scope_is_ordered(cleanup, allowed_order):
+        return False
     return True
 
 
@@ -293,6 +355,8 @@ def validate_attach_diagnostic(
             return None
         stages.add(stage)
         cleanup.append(dict(entry))
+    if not _cleanup_groups_are_ordered(cleanup):
+        return None
     if len(cleanup) > len(allowed):
         return None
 
@@ -307,6 +371,13 @@ def validate_attach_diagnostic(
             if item["stage"] in stages:
                 return None
             stages.add(item["stage"])
+        late_order = (
+            BACKEND_CLEANUP_STAGES
+            if late_copy["primary"]["stage"] in BACKEND_PRIMARY_STAGES
+            else IDENTITY_CLEANUP_STAGES
+        )
+        if not _cleanup_scope_is_ordered(late_copy["cleanup"], late_order):
+            return None
     if len(stages) > len(CLEANUP_STAGES):
         return None
     return {
@@ -360,6 +431,28 @@ def primary_stage_from_legacy(stage: str) -> str | None:
     if stage == "cleanup-resume":
         return "resume"
     return None
+
+
+def legacy_stage_matches_attach_diagnostic(
+    stage: object,
+    diagnostic: object,
+    *,
+    worker: bool = False,
+) -> bool:
+    """Validate the frozen compatibility projection for a paired envelope."""
+
+    if type(stage) is not str or stage not in LEGACY_ATTACH_STAGES:
+        return False
+    valid = validate_attach_diagnostic(diagnostic, worker=worker)
+    if valid is None:
+        return False
+    if stage == "cleanup-resume":
+        return any(
+            entry["stage"] in {"candidate-resume", "candidate-resume-verify"}
+            and entry["outcome"] in {"failed", "timed-out"}
+            for entry in valid["cleanup"]
+        )
+    return legacy_stage_for_primary(valid["primary"]["stage"]) == stage
 
 
 def make_attach_diagnostic(
@@ -462,6 +555,12 @@ class CleanupFragment:
                 raise ValueError("cleanup fragment is invalid")
             seen.add(stage)
             frozen.append(MappingProxyType(dict(item)))
+        if raw and not any(
+            frozenset(item["stage"] for item in raw) <= scope
+            and _cleanup_groups_are_ordered(raw)
+            for scope in _FRAGMENT_STAGE_SCOPES
+        ):
+            raise ValueError("cleanup fragment is invalid")
         object.__setattr__(self, "entries", tuple(frozen))
 
     @classmethod
@@ -502,7 +601,8 @@ def append_cleanup(
         candidate_entries.append(dict(item))
     candidate = dict(current)
     candidate["cleanup"] = [*current["cleanup"], *candidate_entries]
-    return validate_attach_diagnostic(candidate)
+    merged = validate_attach_diagnostic(candidate)
+    return merged if merged is not None else current
 
 
 def append_late_attach(
@@ -565,6 +665,7 @@ __all__ = [
     "attach_details",
     "extract_attach_diagnostic",
     "legacy_stage_for_primary",
+    "legacy_stage_matches_attach_diagnostic",
     "make_attach_diagnostic",
     "make_cleanup_entry",
     "make_primary",

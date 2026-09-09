@@ -703,7 +703,14 @@ async def _one_shot(
                 result.operation,
                 result.code,
                 result.message,
-                {"attachDiagnostic": merged},
+                {
+                    **(
+                        dict(result.details)
+                        if isinstance(result.details, Mapping)
+                        else {}
+                    ),
+                    "attachDiagnostic": merged,
+                },
             )
     if cleanup.failed:
         if diagnostic is not None:

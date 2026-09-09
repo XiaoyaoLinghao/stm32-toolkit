@@ -416,6 +416,20 @@ class LateDiagnosticAttachBackend(BlockingAttachBackend):
         )
 
 
+class ContradictoryAttachBackend(FakeProbeBackend):
+    def open_attach(self, probe_id, target, *, halt_on_connect=False):
+        raise ProbeBackendError(
+            "PROBE_ATTACH_FAILED",
+            "Debug probe attach failed",
+            {
+                "stage": "session-open",
+                "attachDiagnostic": make_attach_diagnostic(
+                    make_primary("resume", "unknown", "UNTYPED")
+                ),
+            },
+        )
+
+
 def _attach_request(*, timeout_ms: int, request_id: str) -> ProbeRequest:
     return ProbeRequest(
         protocol="stm32-toolkit-probe/2",
@@ -464,6 +478,42 @@ def test_service_binds_loopback_dynamic_port_and_publishes_private_endpoint(tmp_
             if os.name != "nt":
                 assert stat.S_IMODE(endpoint.record_path.stat().st_mode) == 0o600
         finally:
+            await service.stop()
+
+    run(scenario())
+
+
+def test_service_normalizes_unallowlisted_backend_cleanup_source() -> None:
+    error = ProbeBackendError("PRIVATE_BACKEND_CODE", "private")
+    assert service_module._service_error_fields(error) == (
+        "backend-code",
+        "PROBE_BACKEND_ERROR",
+    )
+
+
+def test_service_drops_contradictory_legacy_attach_stage_pair(tmp_path: Path) -> None:
+    source = fake_backend()
+    backend = ContradictoryAttachBackend(
+        probes=source.list_probes(),
+        memory={0x20000000: b"\x01\x02\x03\x04"},
+        registers={"r0": 7, "pc": 0x08000101},
+    )
+
+    async def scenario() -> None:
+        service = make_service(tmp_path, backend=backend)
+        endpoint = await service.start()
+        client = ProbeClient(endpoint)
+        try:
+            with pytest.raises(ProbeClientError) as caught:
+                await client.attach("probe-a", "STM32F429ZITx")
+            assert caught.value.code == "PROBE_ATTACH_FAILED"
+            assert caught.value.details == {
+                "attachDiagnostic": make_attach_diagnostic(
+                    make_primary("resume", "unknown", "UNTYPED")
+                )
+            }
+        finally:
+            await client.close()
             await service.stop()
 
     run(scenario())

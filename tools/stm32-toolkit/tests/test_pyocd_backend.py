@@ -76,6 +76,14 @@ def test_attach_exception_classifier_does_not_match_exception_text(error: BaseEx
     assert _classify_attach_exception(error) == expected
 
 
+def test_attach_exception_classifier_normalizes_unallowlisted_toolkit_code() -> None:
+    error = ProbeBackendError("PRIVATE_BACKEND_CODE", "private")
+    assert _classify_attach_exception(error) == (
+        "backend-code",
+        "PROBE_BACKEND_ERROR",
+    )
+
+
 def backend_with_probes(*probe_ids: str) -> tuple[PyOCDBackend, FakePyOCDDriver]:
     driver = FakePyOCDDriver(
         tuple(FakePyOCDProbe(probe_id) for probe_id in probe_ids)
@@ -107,6 +115,33 @@ class ConnectionPolicyTarget(FakePyOCDTarget):
         state_index = min(self._resume_count, len(self.resume_states) - 1)
         self.state = self.resume_states[state_index]
         self._resume_count += 1
+
+
+class _FinalOpenCheckProbe:
+    def __init__(self, final_open: bool | str) -> None:
+        self._final_open = final_open
+        self._open_reads = 0
+        self.close_count = 0
+
+    @property
+    def is_open(self) -> bool:
+        self._open_reads += 1
+        if self._open_reads == 1:
+            return True
+        if self._final_open == "raises":
+            raise RuntimeError(r"final open check failed C:\\private\\probe")
+        return self._final_open
+
+    def close(self) -> None:
+        self.close_count += 1
+
+
+class _CloseOnlySession:
+    def __init__(self) -> None:
+        self.close_count = 0
+
+    def close(self) -> None:
+        self.close_count += 1
 
 
 class _StagedInventoryDriver(FakePyOCDDriver):
@@ -714,6 +749,9 @@ def test_observation_rejects_unproven_running_state_after_resume(resume_state):
     diagnostic = caught.value.details["attachDiagnostic"]
     assert validate_attach_diagnostic(diagnostic) == diagnostic
     assert diagnostic["primary"]["stage"] == "resume-verify"
+    assert diagnostic["primary"]["reason"] == (
+        "backend-code" if resume_state == "unknown" else "postcondition-failed"
+    )
     expected_reason = (
         "backend-code" if resume_state == "unknown" else "postcondition-failed"
     )
@@ -766,6 +804,7 @@ def test_resume_verification_failure_keeps_its_stage_when_cleanup_succeeds():
     diagnostic = caught.value.details["attachDiagnostic"]
     assert validate_attach_diagnostic(diagnostic) == diagnostic
     assert diagnostic["primary"]["stage"] == "resume-verify"
+    assert diagnostic["primary"]["reason"] == "postcondition-failed"
     assert target.calls == [
         ("resume",),
         ("get_state",),
@@ -784,6 +823,13 @@ def test_modify_attach_rejects_candidate_that_reports_running():
         backend.open_attach("probe-a", "stm32f407vg", halt_on_connect=True)
 
     assert caught.value.code == "PROBE_BACKEND_ERROR"
+    diagnostic = caught.value.details["attachDiagnostic"]
+    assert validate_attach_diagnostic(diagnostic) == diagnostic
+    assert diagnostic["primary"] == {
+        "stage": "halt-verify",
+        "reason": "postcondition-failed",
+        "sourceCode": "PROBE_BACKEND_ERROR",
+    }
     assert target.calls == [
         ("get_state",),
         ("resume",),
@@ -985,6 +1031,36 @@ def test_failed_open_and_failed_direct_probe_cleanup_report_close_failure():
 
     assert error.value.code == "PROBE_CLOSE_FAILED"
     assert probe.is_open is True
+
+
+@pytest.mark.parametrize("final_open", (True, "raises"))
+def test_final_probe_open_check_records_failure_for_open_or_unreadable_probe(final_open):
+    session = _CloseOnlySession()
+    probe = _FinalOpenCheckProbe(final_open)
+    cleanup = []
+
+    with pytest.raises(ProbeBackendError) as caught:
+        PyOCDBackend._close_external(session, probe, cleanup=cleanup)
+
+    assert caught.value.code == "PROBE_CLOSE_FAILED"
+    assert session.close_count == 1
+    assert probe.close_count == 1
+    assert cleanup[-1]["stage"] == "probe-open-check-after-close"
+    assert cleanup[-1]["outcome"] == "failed"
+    if final_open is True:
+        assert cleanup[-1] == {
+            "stage": "probe-open-check-after-close",
+            "outcome": "failed",
+            "reason": "postcondition-failed",
+            "sourceCode": "PROBE_CLOSE_FAILED",
+        }
+    else:
+        assert cleanup[-1] == {
+            "stage": "probe-open-check-after-close",
+            "outcome": "failed",
+            "reason": "unknown",
+            "sourceCode": "UNTYPED",
+        }
 
 
 def test_attach_failure_retains_primary_and_all_cleanup_outcomes():
