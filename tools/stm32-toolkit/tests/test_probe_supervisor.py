@@ -20,7 +20,7 @@ from stm32_toolkit.probe.supervisor import (
     ProbeServiceConfig,
     ProbeServiceSupervisor,
 )
-from stm32_toolkit.probe.service import ProbeServiceError
+from stm32_toolkit.probe.service import ProbeServiceCleanupError, ProbeServiceError
 from stm32_toolkit.probe.pyocd_backend import PyOCDBackend
 
 
@@ -500,8 +500,12 @@ def test_stop_clears_supervisor_state_before_backend_close_error(
         supervisor = make_supervisor(data_root, lambda: backend)
         endpoint = await supervisor.start()
 
-        with pytest.raises(RuntimeError, match="backend close failed"):
+        with pytest.raises(ProbeServiceCleanupError) as caught:
             await supervisor.stop()
+        assert isinstance(caught.value.__cause__, RuntimeError)
+        assert caught.value.cleanup_fragment.to_list()[1]["stage"] == (
+            "service-stop-backend-close"
+        )
         assert supervisor.endpoint is None
         assert not endpoint.record_path.exists()
         assert backend.close_attempts == 1
@@ -726,8 +730,12 @@ def test_supervisor_cleanup_failure_wins_over_concurrent_cancellation(
         assert not stopping.done()
         assert supervisor.endpoint is endpoint
         backend.release.set()
-        with pytest.raises(RuntimeError, match="supervisor backend cleanup failed"):
+        with pytest.raises(ProbeServiceCleanupError) as caught:
             await stopping
+        assert isinstance(caught.value.__cause__, RuntimeError)
+        assert caught.value.cleanup_fragment.to_list()[1]["stage"] == (
+            "service-stop-backend-close"
+        )
 
         assert backend.closed is True
         assert supervisor.endpoint is None

@@ -37,6 +37,7 @@ from stm32_toolkit.identity import compute_workspace_id
 from stm32_toolkit.debug.model import DebugFirmwareBinding, MemoryRegionBinding
 from stm32_toolkit.debug.svd import SvdError, select_svd
 from stm32_toolkit.probe.backend import ProbeDescriptor
+from stm32_toolkit.probe.attach_diagnostics import make_attach_diagnostic, make_cleanup_entry, make_primary
 from stm32_toolkit.probe.model import OperationLevel
 from stm32_toolkit.result import OperationResult
 from fakes.fake_probe import FakeProbeBackend
@@ -1218,6 +1219,100 @@ def test_cleanup_failure_replaces_success_and_is_sanitized(tmp_path: Path) -> No
     serialized = json.dumps(result.to_dict())
     assert "private" not in serialized.lower()
     assert "runtime" not in serialized.lower()
+
+
+def test_cleanup_failure_merges_valid_attach_diagnostic_and_keeps_primary(
+    tmp_path: Path,
+) -> None:
+    project = _project(tmp_path / "project")
+    recorder = _Recorder()
+    diagnostic = make_attach_diagnostic(
+        make_primary("session-open", "probe-disconnected", "UNTYPED"),
+        cleanup=[make_cleanup_entry("session-close", "succeeded")],
+    )
+
+    async def failed_flash(request: object, client: object) -> OperationResult[object]:
+        recorder.events.append("operation")
+        return OperationResult.failure(
+            "stm32_flash",
+            "PROBE_CLOSE_FAILED",
+            "Probe attach cleanup failed",
+            {"stage": "cleanup-resume", "attachDiagnostic": diagnostic},
+        )
+
+    result = _run(
+        flash_workflow(
+            FlashWorkflowRequest(
+                project,
+                tmp_path / "data",
+                "session-a",
+                "probe-a",
+                BUILD_ID,
+                ELF_SHA,
+                True,
+            ),
+            _seams=_seams(
+                recorder,
+                operation=failed_flash,
+                close_error=True,
+            ),
+        )
+    )
+
+    assert result.ok is False
+    assert result.code == "HARDWARE_CLEANUP_FAILED"
+    assert result.details["attachDiagnostic"]["primary"] == diagnostic["primary"]
+    assert [entry["stage"] for entry in result.details["attachDiagnostic"]["cleanup"]] == [
+        "session-close",
+        "workflow-client-close",
+        "workflow-service-stop",
+    ]
+    assert recorder.events[-2:] == ["client.close", "supervisor.stop"]
+
+
+def test_cleanup_success_merges_valid_attach_diagnostic_and_keeps_action_result(
+    tmp_path: Path,
+) -> None:
+    project = _project(tmp_path / "project")
+    recorder = _Recorder()
+    diagnostic = make_attach_diagnostic(
+        make_primary("session-open", "probe-disconnected", "UNTYPED"),
+        cleanup=[make_cleanup_entry("session-close", "succeeded")],
+    )
+
+    async def failed_flash(request: object, client: object) -> OperationResult[object]:
+        return OperationResult.failure(
+            "stm32_flash",
+            "PROBE_ATTACH_FAILED",
+            "Probe attach failed",
+            {"attachDiagnostic": diagnostic, "private": "C:\\secret"},
+        )
+
+    result = _run(
+        flash_workflow(
+            FlashWorkflowRequest(
+                project,
+                tmp_path / "data",
+                "session-a",
+                "probe-a",
+                BUILD_ID,
+                ELF_SHA,
+                True,
+            ),
+            _seams=_seams(recorder, operation=failed_flash),
+        )
+    )
+
+    assert result.ok is False
+    assert result.code == "PROBE_ATTACH_FAILED"
+    details = result.to_dict()["details"]
+    assert details["attachDiagnostic"]["primary"] == diagnostic["primary"]
+    assert details["attachDiagnostic"]["cleanup"] == [
+        {"stage": "session-close", "outcome": "succeeded"},
+        {"stage": "workflow-client-close", "outcome": "succeeded"},
+        {"stage": "workflow-service-stop", "outcome": "succeeded"},
+    ]
+    assert "secret" not in str(result.to_dict())
 
 
 def test_raw_operation_exception_is_sanitized_and_cleanup_runs(tmp_path: Path) -> None:

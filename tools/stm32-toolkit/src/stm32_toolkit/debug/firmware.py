@@ -11,6 +11,7 @@ from typing import Mapping
 from stm32_toolkit import __version__
 from stm32_toolkit.build.identity import utc_now_rfc3339
 from stm32_toolkit.probe.client import ProbeClientError
+from stm32_toolkit.probe.attach_diagnostics import extract_attach_diagnostic
 from stm32_toolkit.probe.flash import _load_fresh_firmware, _verify_segments
 from stm32_toolkit.probe.handoff import (
     _load_flash_result,
@@ -216,9 +217,11 @@ async def bind_debug_firmware(
             raise
         except ProbeClientError as error:
             if error.code == "PROBE_IDENTITY_MISMATCH":
+                details = extract_attach_diagnostic(error.details)
                 raise _fail(
                     "DEBUG_TARGET_MISMATCH",
                     "Connected target does not match the debug binding request",
+                    **({"attachDiagnostic": details} if details is not None else {}),
                 ) from None
             raise _BindingFailure(error.code, error.message, error.details) from None
         try:
@@ -253,9 +256,11 @@ async def bind_debug_firmware(
             raise
         except ProbeClientError as error:
             if error.code == "PROBE_IDENTITY_MISMATCH":
+                details = extract_attach_diagnostic(error.details)
                 raise _fail(
                     "DEBUG_TARGET_MISMATCH",
                     "Connected target changed during debug binding",
+                    **({"attachDiagnostic": details} if details is not None else {}),
                 ) from None
             raise _BindingFailure(error.code, error.message, error.details) from None
         _endpoint(typed, client)

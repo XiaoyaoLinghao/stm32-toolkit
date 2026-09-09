@@ -8,12 +8,22 @@ from pathlib import Path
 import shutil
 import threading
 import time
+from types import MappingProxyType
 
 import pytest
 
 from stm32_toolkit import __version__
 from stm32_toolkit.probe.backend import (
     FlashBackendReport, ProbeAttachmentEvidence, ProbeBackendError, ProbeDescriptor,
+)
+from stm32_toolkit.probe.attach_diagnostics import (
+    append_cleanup,
+    append_late_attach,
+    extract_attach_diagnostic,
+    make_attach_diagnostic,
+    make_cleanup_entry,
+    make_primary,
+    validate_attach_diagnostic,
 )
 from stm32_toolkit.probe.model import OperationLevel, ProbeRequest
 from stm32_toolkit.probe.worker import ProbeBackendWorker, ProbeWorkerError
@@ -240,10 +250,16 @@ class _AttachStageWorkerBackend:
     def __init__(self, details: object) -> None:
         self.details = details
 
-    def target_identity(self):
+    def _raise_attach_error(self):
         error = ProbeBackendError("PROBE_ATTACH_FAILED", "private backend detail", {})
         error.details = self.details  # type: ignore[assignment]
         raise error
+
+    def target_identity(self):
+        self._raise_attach_error()
+
+    def open_attach(self, probe_id, target, *, halt_on_connect=False):
+        self._raise_attach_error()
 
     def close(self) -> None:
         return None
@@ -508,8 +524,8 @@ def test_spawned_worker_drops_unsafe_register_error_details(mode: str) -> None:
 @pytest.mark.parametrize(
     ("details", "expected"),
     [
-        ({"stage": "session-open"}, {"stage": "session-open"}),
-        ({"stage": "cleanup-resume"}, {"stage": "cleanup-resume"}),
+        ({"stage": "session-open"}, {"legacy": "session-open", "primary": "session-open"}),
+        ({"stage": "cleanup-resume"}, {"legacy": "cleanup-resume", "primary": "resume"}),
         ({"stage": "session-open", "secret": "private"}, {}),
         ({"stage": "unknown-stage"}, {}),
         ({"stage": 7}, {}),
@@ -525,10 +541,23 @@ def test_spawned_worker_preserves_only_exact_known_attach_stage_details(
     )
     try:
         with pytest.raises(ProbeWorkerError) as caught:
-            worker.target_identity()
+            worker.open_attach("probe-a", "stm32f407vg")
         assert caught.value.code == "PROBE_ATTACH_FAILED"
         assert caught.value.message == "Probe worker operation failed"
-        assert caught.value.details == expected
+        if expected:
+            assert caught.value.details["stage"] == expected["legacy"]
+            diagnostic = caught.value.details["attachDiagnostic"]
+            assert validate_attach_diagnostic(diagnostic) == diagnostic
+            assert diagnostic["primary"] == {
+                "stage": expected["primary"],
+                "reason": "backend-code",
+                "sourceCode": "PROBE_ATTACH_FAILED",
+            }
+            assert diagnostic["cleanup"] == [
+                {"stage": "worker-parent-abort", "outcome": "succeeded"}
+            ]
+        else:
+            assert caught.value.details == {}
         assert "private backend detail" not in str(caught.value)
         assert "private exception text" not in str(caught.value)
         assert not worker.is_alive
@@ -721,7 +750,12 @@ def test_unresponsive_worker_attach_uses_bounded_close_failure_fallback(
             elapsed = asyncio.get_running_loop().time() - started
             assert caught.value.code == "PROBE_CLOSE_FAILED"
             assert caught.value.message == "Probe attach cleanup failed"
-            assert caught.value.details == {}
+            diagnostic = caught.value.details["attachDiagnostic"]
+            assert validate_attach_diagnostic(diagnostic) == diagnostic
+            assert diagnostic["primary"]["stage"] == "service-attach-deadline"
+            assert [entry["stage"] for entry in diagnostic["cleanup"]] == [
+                "service-terminal-wait", "service-worker-abort"
+            ]
             cause = caught.value.__cause__
             assert isinstance(cause, ProbeBackendError)
             assert cause.code == "PROBE_TIMEOUT"
@@ -794,6 +828,143 @@ def test_worker_closed_codec_rejects_duplicate_noncanonical_and_unsupported_valu
         module._from_json({"$bytes": "eB=="})
     with pytest.raises(ProbeWorkerError):
         module._canonical_bytes({"bad": {1}})
+
+
+def test_attach_diagnostic_is_exact_nonrecursive_and_preserves_primary() -> None:
+    primary = make_primary("session-open", "probe-disconnected", "UNTYPED")
+    diagnostic = make_attach_diagnostic(
+        primary,
+        cleanup=[make_cleanup_entry("session-close", "succeeded")],
+    )
+    assert validate_attach_diagnostic(diagnostic) == diagnostic
+
+    late = make_attach_diagnostic(
+        make_primary("target-identity", "unknown", "UNTYPED"),
+        cleanup=[make_cleanup_entry("probe-close", "succeeded")],
+    )
+    deadline = make_attach_diagnostic(
+        make_primary("service-attach-deadline", "timeout", "PROBE_TIMEOUT")
+    )
+    with_late = append_late_attach(
+        deadline,
+        {
+            "primary": late["primary"],
+            "cleanup": late["cleanup"],
+            "lastVerifiedTargetState": None,
+        },
+    )
+    assert with_late is not None
+    assert with_late["primary"] == deadline["primary"]
+    assert with_late["lateAttach"]["primary"] == late["primary"]
+    assert append_cleanup(
+        with_late,
+        (make_cleanup_entry("service-terminal-wait", "succeeded"),),
+    )["primary"] == deadline["primary"]
+
+    frozen = MappingProxyType(
+        {
+            "attachDiagnostic": MappingProxyType(
+                {
+                    "version": 1,
+                    "primary": MappingProxyType(primary),
+                    "lateAttach": None,
+                    "cleanup": (MappingProxyType({"stage": "session-close", "outcome": "succeeded"}),),
+                    "lastVerifiedTargetState": None,
+                }
+            )
+        }
+    )
+    assert extract_attach_diagnostic(frozen) == diagnostic
+
+    invalid = [
+        {**diagnostic, "extra": True},
+        {
+            **diagnostic,
+            "lateAttach": {
+                "primary": diagnostic["primary"],
+                "cleanup": [],
+                "lastVerifiedTargetState": None,
+                "lateAttach": None,
+            },
+        },
+        {
+            **diagnostic,
+            "cleanup": [
+                {"stage": "service-identity-resume", "outcome": "succeeded"}
+            ],
+        },
+        {
+            **diagnostic,
+            "primary": {"stage": "session-open", "reason": "private", "sourceCode": "UNTYPED"},
+        },
+        {
+            **diagnostic,
+            "primary": {"stage": "session-open", "reason": "unknown", "sourceCode": "UNTYPED"},
+            "cleanup": [
+                {"stage": "session-close", "outcome": "succeeded"},
+                {"stage": "session-close", "outcome": "succeeded"},
+            ],
+        },
+        {**diagnostic, "version": True},
+        {**diagnostic, "lastVerifiedTargetState": []},
+    ]
+    assert all(validate_attach_diagnostic(candidate) is None for candidate in invalid)
+
+    recursive: dict[str, object] = {
+        "primary": primary,
+        "cleanup": [],
+        "lastVerifiedTargetState": None,
+    }
+    recursive["primary"] = recursive
+    recursive_candidate = {**diagnostic, "lateAttach": recursive}
+    assert validate_attach_diagnostic(recursive_candidate) is None
+    assert extract_attach_diagnostic({"attachDiagnostic": recursive_candidate}) is None
+
+    worker_parent_stage = {
+        **diagnostic,
+        "cleanup": [{"stage": "worker-parent-abort", "outcome": "succeeded"}],
+    }
+    assert validate_attach_diagnostic(worker_parent_stage, worker=True) is None
+
+
+def test_worker_attach_admission_rejects_nonattach_diagnostics_and_invalid_scopes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from stm32_toolkit.probe import worker as module
+
+    diagnostic = make_attach_diagnostic(
+        make_primary("session-open", "unknown", "UNTYPED")
+    )
+    worker = ProbeBackendWorker(
+        _test_backend_factory=partial(_attach_stage_factory, {"attachDiagnostic": diagnostic})
+    )
+    try:
+        with pytest.raises(ProbeWorkerError) as caught:
+            worker.open_attach("probe-a", "stm32f407vg")
+        assert caught.value.details["attachDiagnostic"]["primary"] == diagnostic["primary"]
+        assert caught.value.details["attachDiagnostic"]["cleanup"] == [
+            {"stage": "worker-parent-abort", "outcome": "succeeded"}
+        ]
+    finally:
+        if worker.is_alive:
+            worker.close()
+
+    non_attach = ProbeBackendWorker(
+        _test_backend_factory=partial(_attach_stage_factory, {"attachDiagnostic": diagnostic})
+    )
+    try:
+        with pytest.raises(ProbeWorkerError) as caught:
+            non_attach.target_identity()
+        assert caught.value.details == {}
+    finally:
+        if non_attach.is_alive:
+            non_attach.close()
+
+    malformed = dict(diagnostic)
+    malformed["primary"] = make_primary("service-target-identity", "unknown", "UNTYPED")
+    assert module._safe_attach_error_details(
+        "PROBE_ATTACH_FAILED", {"attachDiagnostic": malformed}
+    ) is None
 
 
 def test_worker_child_dispatch_parser_is_closed_in_process(tmp_path: Path) -> None:

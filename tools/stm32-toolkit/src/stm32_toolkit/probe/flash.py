@@ -32,6 +32,7 @@ from stm32_toolkit.project_model import ProjectModel, load_project_model
 from stm32_toolkit.result import OperationResult
 
 from .backend import FlashBackendReport
+from .attach_diagnostics import extract_attach_diagnostic
 from .protocol import MAX_READ_BYTES
 
 _OPERATION = "stm32_flash"
@@ -579,11 +580,13 @@ async def flash_firmware(request: object, client: object) -> OperationResult[Fla
             raise
         except Exception as error:
             if getattr(error, "code", None) == "PROBE_IDENTITY_MISMATCH":
+                diagnostic = extract_attach_diagnostic(getattr(error, "details", None))
                 raise _fail(
                     "FIRMWARE_IDENTITY_MISMATCH",
                     "Connected target does not match the project",
                     field="connectedTarget",
                     rule="identity",
+                    **({"attachDiagnostic": diagnostic} if diagnostic is not None else {}),
                 ) from None
             raise
         _validate_attachment(attachment, typed)

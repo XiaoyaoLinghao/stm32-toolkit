@@ -19,6 +19,14 @@ from .backend import (
     ProbeBackendError,
     ProbeDescriptor,
 )
+from .attach_diagnostics import (
+    LEGACY_ATTACH_STAGES,
+    append_cleanup,
+    make_cleanup_entry,
+    promote_legacy_details,
+    SOURCE_CODES,
+    validate_attach_diagnostic,
+)
 
 
 _VERSION = "stm32-toolkit-probe-worker/1"
@@ -37,25 +45,11 @@ _METHODS = {
     "clear_temporary_breakpoint", "capture_fault", "capture_logs",
     "open_target_transport", "read_target_transport", "close_target_transport",
 }
-_BACKEND_ERROR_CODES = {
-    "PROBE_ATTACH_FAILED", "PROBE_BACKEND_ERROR", "PROBE_BACKEND_UNAVAILABLE",
-    "PROBE_BACKPRESSURE", "PROBE_CLOSE_FAILED", "PROBE_CONTROL_FAILED",
-    "PROBE_DESCRIPTOR_INVALID", "PROBE_ENUMERATION_FAILED", "PROBE_IDENTITY_MISMATCH",
-    "PROBE_LIMIT_EXCEEDED", "PROBE_NOT_ATTACHED", "PROBE_NOT_FOUND",
-    "PROBE_OPERATION_LEVEL_DENIED", "PROBE_OPERATION_UNAVAILABLE", "PROBE_PARTIAL_READ",
-    "PROBE_PROGRAM_FAILED", "PROBE_PROGRAM_INVALID", "PROBE_PROTOCOL_INVALID",
-    "PROBE_READ_INVALID", "PROBE_READ_UNAVAILABLE", "PROBE_REGISTER_INVALID",
-    "PROBE_REGISTER_UNAVAILABLE", "PROBE_SELECTION_AMBIGUOUS", "PROBE_SELECTION_REQUIRED",
-    "PROBE_TARGET_AMBIGUOUS", "PROBE_TARGET_IDENTITY_UNAVAILABLE", "PROBE_TARGET_INVALID",
-    "PROBE_TARGET_UNAVAILABLE", "PROBE_TIMEOUT",
-}
+_BACKEND_ERROR_CODES = frozenset(SOURCE_CODES - {"UNTYPED", "CALLER_CANCELLED"})
 _REGISTER_ERROR_STATES = frozenset({
     "halted", "running", "reset", "sleeping", "lockedup", "programming", "unknown",
 })
-_ATTACH_ERROR_STAGES = frozenset({
-    "session-create", "session-open", "target-resolve", "halt-verify",
-    "resume", "resume-verify", "cleanup-resume",
-})
+_ATTACH_ERROR_STAGES = LEGACY_ATTACH_STAGES
 
 
 class ProbeWorkerError(ProbeBackendError):
@@ -197,15 +191,33 @@ def _safe_register_error_details(code: object, details: object) -> dict[str, str
     return {"state": state}
 
 
-def _safe_attach_error_details(code: object, details: object) -> dict[str, str] | None:
-    if code != "PROBE_ATTACH_FAILED" or type(details) is not dict:
+def _safe_attach_error_details(code: object, details: object) -> dict[str, object] | None:
+    if type(details) is not dict:
         return None
-    if set(details) != {"stage"} or type(details["stage"]) is not str:
+    if set(details) not in (
+        {"stage"},
+        {"attachDiagnostic"},
+        {"stage", "attachDiagnostic"},
+    ):
         return None
-    stage = details["stage"]
-    if stage not in _ATTACH_ERROR_STAGES:
-        return None
-    return {"stage": stage}
+    result: dict[str, object] = {}
+    if "stage" in details:
+        stage = details["stage"]
+        if (
+            code != "PROBE_ATTACH_FAILED"
+            or type(stage) is not str
+            or stage not in _ATTACH_ERROR_STAGES
+        ):
+            return None
+        result["stage"] = stage
+    if "attachDiagnostic" in details:
+        diagnostic = validate_attach_diagnostic(details["attachDiagnostic"], worker=True)
+        if diagnostic is None:
+            return None
+        if type(code) is not str or code not in _BACKEND_ERROR_CODES:
+            return None
+        result["attachDiagnostic"] = diagnostic
+    return result
 
 
 def _send(connection: Connection, value: Mapping[str, object]) -> None:
@@ -226,6 +238,7 @@ def _worker_main(
 ) -> None:
     backend: object | None = None
     explicit_close_started = False
+    method: str | None = None
     try:
         if backend_factory is not None:
             # The callable is an explicit private test seam passed through Windows spawn;
@@ -281,7 +294,7 @@ def _worker_main(
         return
     except BaseException as error:
         code = error.code if isinstance(error, ProbeBackendError) else "PROBE_BACKEND_ERROR"
-        if code not in _BACKEND_ERROR_CODES:
+        if type(code) is not str or code not in _BACKEND_ERROR_CODES:
             code = "PROBE_BACKEND_ERROR"
         try:
             error_payload: dict[str, object] = {
@@ -289,7 +302,7 @@ def _worker_main(
             }
             safe_details = (
                 _safe_attach_error_details(code, getattr(error, "details", None))
-                if code == "PROBE_ATTACH_FAILED"
+                if method == "open_attach"
                 else _safe_register_error_details(code, getattr(error, "details", None))
             )
             if safe_details is not None:
@@ -404,18 +417,58 @@ class ProbeBackendWorker:
                     self.abort_owned_execution()
                     raise ProbeWorkerError("PROBE_BACKEND_ERROR", "Probe worker response is invalid")
                 code, message = failure["code"], failure["message"]
-                details: dict[str, str] = {}
+                details: dict[str, object] = {}
                 if set(failure) == {"code", "message", "details"}:
                     safe_details = (
                         _safe_attach_error_details(code, failure["details"])
-                        if code == "PROBE_ATTACH_FAILED"
+                        if method == "open_attach"
                         else _safe_register_error_details(code, failure["details"])
                     )
                     if safe_details is None:
                         self.abort_owned_execution()
                         raise ProbeWorkerError("PROBE_BACKEND_ERROR", "Probe worker response is invalid")
-                    details = safe_details
-                self.abort_owned_execution()
+                    details = dict(safe_details)
+                if method == "open_attach" and details.get("attachDiagnostic") is None:
+                    promoted = promote_legacy_details(details)
+                    if promoted is not None:
+                        details = {**details, "attachDiagnostic": promoted}
+                diagnostic = details.get("attachDiagnostic")
+                try:
+                    self.abort_owned_execution()
+                except BaseException as abort_error:
+                    if diagnostic is None:
+                        raise
+                    abort_code = (
+                        abort_error.code
+                        if isinstance(abort_error, ProbeBackendError)
+                        and type(abort_error.code) is str
+                        and abort_error.code in _BACKEND_ERROR_CODES
+                        else "PROBE_BACKEND_ERROR"
+                    )
+                    abort_details = append_cleanup(
+                        diagnostic,
+                        (
+                            make_cleanup_entry(
+                                "worker-parent-abort",
+                                "failed",
+                                reason="backend-code",
+                                source_code=abort_code,
+                            ),
+                        ),
+                    ) or diagnostic
+                    merged = dict(details)
+                    merged["attachDiagnostic"] = abort_details
+                    raise ProbeWorkerError(
+                        "PROBE_BACKEND_ERROR",
+                        "Probe worker could not be terminated",
+                        merged,
+                    ) from None
+                if diagnostic is not None:
+                    details = dict(details)
+                    details["attachDiagnostic"] = append_cleanup(
+                        diagnostic,
+                        (make_cleanup_entry("worker-parent-abort", "succeeded"),),
+                    ) or diagnostic
                 raise ProbeWorkerError(code, message, details)
             if set(response) != {"version", "ok", "id", "result"} or response["id"] != request_id:
                 self.abort_owned_execution()

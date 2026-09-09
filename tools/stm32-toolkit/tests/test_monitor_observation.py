@@ -28,6 +28,7 @@ from stm32_toolkit.monitor_observation import (
     MonitorObservationSeams,
     open_monitor_observation,
 )
+from stm32_toolkit.probe.attach_diagnostics import make_attach_diagnostic, make_primary
 from stm32_toolkit.probe.model import OperationLevel
 from stm32_toolkit.probe.lease import ProbeLeaseManager
 from stm32_toolkit.probe.protocol import PROBE_PROTOCOL_VERSION
@@ -1569,10 +1570,18 @@ def test_revalidate_maps_binding_and_svd_failures(
             request(debug_env, tmp_path / "data"), _seams=harness.seams()
         )
         session = opened.data
-        harness.bind_result = OperationResult.failure(
-            "stm32_debug_bind", "DEBUG_FIRMWARE_CHANGED", "changed", {}
+        diagnostic = make_attach_diagnostic(
+            make_primary("session-open", "probe-disconnected", "UNTYPED")
         )
-        assert (await session.revalidate()).code == "MONITOR_FIRMWARE_CHANGED"
+        harness.bind_result = OperationResult.failure(
+            "stm32_debug_bind",
+            "DEBUG_FIRMWARE_CHANGED",
+            "changed",
+            {"attachDiagnostic": diagnostic, "private": "C:\\secret"},
+        )
+        changed = await session.revalidate()
+        assert changed.code == "MONITOR_FIRMWARE_CHANGED"
+        assert changed.to_dict()["details"] == {"attachDiagnostic": diagnostic}
         harness.bind_result = OperationResult.success(
             "stm32_debug_bind",
             replace(session.binding, input_snapshot_sha256="e" * 64),
@@ -1647,6 +1656,77 @@ def test_cleanup_failure_has_priority_when_open_fails(
     assert "secret" not in str(result.to_dict())
     assert harness.supervisors[0].stopped is True
     assert len(guard_closes) == 1
+
+
+def test_open_cleanup_failure_merges_valid_attach_diagnostic(
+    debug_env: DebugEnv, tmp_path: Path
+) -> None:
+    harness = Harness(debug_env)
+    diagnostic = make_attach_diagnostic(
+        make_primary("session-open", "probe-disconnected", "UNTYPED")
+    )
+    harness.bind_result = OperationResult.failure(
+        "stm32_debug_bind",
+        "PROBE_ATTACH_FAILED",
+        "Probe attach failed",
+        {"attachDiagnostic": diagnostic, "private": "C:\\secret"},
+    )
+    seams = harness.seams()
+
+    def broken_client(endpoint: object) -> ObservationClient:
+        client = harness.client(endpoint)
+        client.close_error = RuntimeError("private close secret")
+        return client
+
+    seams = replace(seams, client_factory=broken_client)
+    result = asyncio.run(
+        open_monitor_observation(
+            request(debug_env, tmp_path / "data"), _seams=seams
+        )
+    )
+
+    assert result.ok is False
+    assert result.code == "MONITOR_CLEANUP_FAILED"
+    merged = result.to_dict()["details"]["attachDiagnostic"]
+    assert merged["primary"] == diagnostic["primary"]
+    assert [entry["stage"] for entry in merged["cleanup"]] == [
+        "monitor-client-close",
+        "monitor-service-stop",
+        "monitor-root-guard-close",
+    ]
+    assert "secret" not in str(result.to_dict())
+
+
+def test_open_cleanup_success_merges_valid_attach_diagnostic(
+    debug_env: DebugEnv, tmp_path: Path
+) -> None:
+    harness = Harness(debug_env)
+    diagnostic = make_attach_diagnostic(
+        make_primary("session-open", "probe-disconnected", "UNTYPED")
+    )
+    harness.bind_result = OperationResult.failure(
+        "stm32_debug_bind",
+        "PROBE_ATTACH_FAILED",
+        "Probe attach failed",
+        {"attachDiagnostic": diagnostic, "private": "C:\\secret"},
+    )
+
+    result = asyncio.run(
+        open_monitor_observation(
+            request(debug_env, tmp_path / "data"), _seams=harness.seams()
+        )
+    )
+
+    assert result.ok is False
+    assert result.code == "MONITOR_PROVENANCE_CHANGED"
+    merged = result.to_dict()["details"]["attachDiagnostic"]
+    assert merged["primary"] == diagnostic["primary"]
+    assert merged["cleanup"] == [
+        {"stage": "monitor-client-close", "outcome": "succeeded"},
+        {"stage": "monitor-service-stop", "outcome": "succeeded"},
+        {"stage": "monitor-root-guard-close", "outcome": "succeeded"},
+    ]
+    assert "secret" not in str(result.to_dict())
 
 
 def test_close_finishes_owned_cleanup_despite_repeated_cancellation(

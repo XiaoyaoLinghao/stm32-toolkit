@@ -22,6 +22,7 @@ from stm32_toolkit.build.identity import (
 from stm32_toolkit.build import BuildRequest, run_build
 from stm32_toolkit.build.runner import build_result_document
 from stm32_toolkit.probe.backend import FlashBackendReport
+from stm32_toolkit.probe.attach_diagnostics import make_attach_diagnostic, make_primary
 from stm32_toolkit.probe.client import ProbeClientError
 from stm32_toolkit.probe import flash as flash_mod
 from stm32_toolkit.probe.flash import FlashRequest, flash_firmware
@@ -681,6 +682,41 @@ def test_flash_maps_attach_identity_rejection_without_programming(
     assert result.ok is False
     assert result.code == "FIRMWARE_IDENTITY_MISMATCH"
     assert result.details == {"field": "connectedTarget", "rule": "identity"}
+    assert client.events == [("attach", "probe-123", "stm32f407vg")]
+    assert not any(event[0] == "program" for event in client.events)
+    assert not (root / "artifacts/migration/flash-result.json").exists()
+
+
+def test_flash_preserves_valid_attach_diagnostic_through_identity_mapping(
+    tmp_path: Path,
+) -> None:
+    root = prepare_project(tmp_path)
+    identity = _publish_current_debug_build(root)
+    diagnostic = make_attach_diagnostic(
+        make_primary("service-target-identity", "identity-mismatch", "PROBE_IDENTITY_MISMATCH")
+    )
+
+    class DiagnosticIdentityFlashClient(RejectedIdentityFlashClient):
+        async def attach(self, probe_id: str, target: str) -> object:
+            self.events.append(("attach", probe_id, target))
+            raise ProbeClientError(
+                "PROBE_IDENTITY_MISMATCH",
+                "Probe attach failed",
+                {"private": "C:\\secret", "attachDiagnostic": diagnostic},
+            )
+
+    client = DiagnosticIdentityFlashClient(
+        _elf_with_flash_segment()[84 : 84 + 320]
+    )
+    result = asyncio.run(flash_firmware(_request(root, identity), client))
+
+    assert result.ok is False
+    assert result.code == "FIRMWARE_IDENTITY_MISMATCH"
+    assert result.to_dict()["details"] == {
+        "field": "connectedTarget",
+        "rule": "identity",
+        "attachDiagnostic": diagnostic,
+    }
     assert client.events == [("attach", "probe-123", "stm32f407vg")]
     assert not any(event[0] == "program" for event in client.events)
     assert not (root / "artifacts/migration/flash-result.json").exists()

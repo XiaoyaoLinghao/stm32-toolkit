@@ -23,6 +23,17 @@ from stm32_toolkit.testing.artifacts import TestArtifactCollector
 from stm32_toolkit.probe.flash import _canonical_target, load_fresh_firmware_facts
 
 from .backend import ProbeAttachmentEvidence, ProbeBackend, ProbeBackendError
+from .attach_diagnostics import (
+    CleanupFragment,
+    LEGACY_ATTACH_STAGES,
+    append_late_attach,
+    attach_details,
+    extract_attach_diagnostic,
+    make_attach_diagnostic,
+    make_cleanup_entry,
+    make_primary,
+    SOURCE_CODES,
+)
 from .authorization import ControlAuthorizationError, ControlAuthorizationStore
 from .lease import ProbeLease, ProbeLeaseManager, _RuntimeRootAuthority
 from .model import OperationLevel, ProbeRequest, ProbeResponse
@@ -38,6 +49,44 @@ from .protocol import (
 _REPARSE_POINT = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
 _TARGET_REGISTER = re.compile(r"^[a-z][a-z0-9_]{0,31}$")
 _ATTACH_RECOVERY_SECONDS = 1.0
+
+
+def _service_error_fields(error: BaseException) -> tuple[str, str]:
+    if isinstance(error, ProbeBackendError):
+        source = error.code
+        return (
+            "identity-mismatch" if source == "PROBE_IDENTITY_MISMATCH" else "backend-code",
+            source if type(source) is str and source in SOURCE_CODES else "UNTYPED",
+        )
+    if isinstance(error, asyncio.CancelledError):
+        return "cancelled", "CALLER_CANCELLED"
+    if isinstance(error, TimeoutError):
+        return "timeout", "UNTYPED"
+    if isinstance(error, ProbeServiceError):
+        source = error.code
+        if type(source) is str and source in SOURCE_CODES:
+            return (
+                "identity-mismatch" if source == "PROBE_IDENTITY_MISMATCH" else "backend-code",
+                source,
+            )
+    return "unknown", "UNTYPED"
+
+
+def _service_cleanup_failure(stage: str, error: BaseException) -> dict[str, str]:
+    reason, source = _service_error_fields(error)
+    return make_cleanup_entry(stage, "failed", reason=reason, source_code=source)
+
+
+def _service_primary(stage: str, *, code: str, reason: str) -> dict[str, str]:
+    return make_primary(stage, reason, code)
+
+
+def _late_attach_payload(diagnostic: Mapping[str, object]) -> dict[str, object]:
+    return {
+        "primary": diagnostic["primary"],
+        "cleanup": diagnostic["cleanup"],
+        "lastVerifiedTargetState": diagnostic["lastVerifiedTargetState"],
+    }
 
 
 async def _await_task_completion(task: asyncio.Task[object]) -> object:
@@ -124,10 +173,31 @@ async def _await_commit_completion(task: asyncio.Task[object]) -> object:
 
 
 class ProbeServiceError(Exception):
-    def __init__(self, code: str, message: str) -> None:
+    def __init__(
+        self,
+        code: str,
+        message: str,
+        details: Mapping[str, object] | None = None,
+    ) -> None:
         super().__init__(message)
         self.code = code
         self.message = message
+        self.details = dict(details or {})
+
+
+class ProbeServiceCleanupError(ProbeServiceError, RuntimeError):
+    """Safe service cleanup failure carrying only modeled outcomes."""
+
+    def __init__(self, fragment: CleanupFragment) -> None:
+        super().__init__("PROBE_CLOSE_FAILED", "Probe Service cleanup failed")
+        self.cleanup_fragment = fragment
+
+
+class ProbeAttachTimeout(ProbeServiceError, TimeoutError):
+    """A timeout that remains an ``asyncio.TimeoutError`` for in-process callers."""
+
+    def __init__(self, details: Mapping[str, object] | None = None) -> None:
+        super().__init__("PROBE_TIMEOUT", "Probe backend operation timed out", details)
 
 
 @dataclass(frozen=True)
@@ -820,12 +890,32 @@ class ProbeService:
         ):
             loop = asyncio.get_running_loop()
             deadline = loop.time() + request.timeout_ms / 1000
-            async with asyncio.timeout_at(deadline):
-                async with self._observation_attachment_lock:
-                    return await self._run_backend_inner(request)
+            try:
+                await asyncio.wait_for(
+                    self._observation_attachment_lock.acquire(),
+                    timeout=max(0.0, deadline - loop.time()),
+                )
+            except asyncio.TimeoutError:
+                raise ProbeAttachTimeout(
+                    attach_details(
+                        make_attach_diagnostic(
+                            _service_primary(
+                                "service-backend-queue",
+                                code="PROBE_TIMEOUT",
+                                reason="timeout",
+                            )
+                        )
+                    )
+                ) from None
+            try:
+                return await self._run_backend_inner(request, deadline=deadline)
+            finally:
+                self._observation_attachment_lock.release()
         return await self._run_backend_inner(request)
 
-    async def _run_backend_inner(self, request: ProbeRequest) -> object:
+    async def _run_backend_inner(
+        self, request: ProbeRequest, *, deadline: float | None = None
+    ) -> object:
         observation_candidate: tuple[
             str, str, ProbeAttachmentEvidence
         ] | None = None
@@ -887,33 +977,97 @@ class ProbeService:
                         "Connected target identity does not match",
                     )
                     restoration_error: ProbeBackendError | None = None
+                    identity_cleanup: list[dict[str, str]] = []
+                    last_verified: str | None = None
                     if self._operation_level is OperationLevel.MODIFY:
+                        postcondition_failed = False
                         try:
                             self._backend.resume()
+                            identity_cleanup.append(
+                                make_cleanup_entry("service-identity-resume", "succeeded")
+                            )
                             state = self._closed_target_state(
                                 self._backend.target_state()
                             )
+                            last_verified = state["state"]
                             if state["state"] != "running":
+                                postcondition_failed = True
                                 raise ProbeBackendError(
                                     "PROBE_BACKEND_ERROR",
                                     "Target resume state is invalid",
                                 )
-                        except BaseException:
+                            identity_cleanup.append(
+                                make_cleanup_entry(
+                                    "service-identity-resume-verify", "succeeded"
+                                )
+                            )
+                        except BaseException as error:
+                            failure_stage = (
+                                "service-identity-resume-verify"
+                                if identity_cleanup
+                                and identity_cleanup[-1]["stage"]
+                                == "service-identity-resume"
+                                else "service-identity-resume"
+                            )
+                            failure_entry = (
+                                make_cleanup_entry(
+                                    failure_stage,
+                                    "failed",
+                                    reason="postcondition-failed",
+                                    source_code="PROBE_BACKEND_ERROR",
+                                )
+                                if postcondition_failed
+                                else _service_cleanup_failure(failure_stage, error)
+                            )
+                            identity_cleanup.append(
+                                failure_entry
+                            )
                             restoration_error = ProbeBackendError(
                                 "PROBE_BACKEND_ERROR", "Target restoration failed"
                             )
                     try:
                         self._backend.close()
-                    except BaseException:
+                    except BaseException as error:
+                        identity_cleanup.append(
+                            _service_cleanup_failure("service-identity-close", error)
+                        )
+                        diagnostic = make_attach_diagnostic(
+                            _service_primary(
+                                "service-target-identity",
+                                code="PROBE_IDENTITY_MISMATCH",
+                                reason="identity-mismatch",
+                            ),
+                            cleanup=identity_cleanup,
+                            last_verified_target_state=last_verified,
+                        )
                         raise ProbeBackendError(
-                            "PROBE_CLOSE_FAILED", "Probe attach cleanup failed"
+                            "PROBE_CLOSE_FAILED",
+                            "Probe attach cleanup failed",
+                            attach_details(diagnostic),
                         ) from initiating
+                    identity_cleanup.append(
+                        make_cleanup_entry("service-identity-close", "succeeded")
+                    )
+                    diagnostic = make_attach_diagnostic(
+                        _service_primary(
+                            "service-target-identity",
+                            code="PROBE_IDENTITY_MISMATCH",
+                            reason="identity-mismatch",
+                        ),
+                        cleanup=identity_cleanup,
+                        last_verified_target_state=last_verified,
+                    )
                     if restoration_error is not None:
-                        raise restoration_error from None
+                        raise ProbeBackendError(
+                            restoration_error.code,
+                            restoration_error.message,
+                            attach_details(diagnostic),
+                        ) from None
                     raise ProbeBackendError(
                         "PROBE_IDENTITY_MISMATCH",
                         "Connected target identity does not match",
-                    )
+                        attach_details(diagnostic),
+                    ) from None
                 payload = evidence.to_dict()
                 if self._operation_level is OperationLevel.OBSERVE:
                     payload["requestedTarget"] = target
@@ -1139,75 +1293,243 @@ class ProbeService:
             self._backend_modify_tasks.add(task)
         task.add_done_callback(self._backend_task_finished)
         try:
-            result = await asyncio.wait_for(
-                asyncio.shield(task), timeout=request.timeout_ms / 1000
-            )
+            timeout = request.timeout_ms / 1000
+            if deadline is not None:
+                timeout = max(0.0, deadline - asyncio.get_running_loop().time())
+            result = await asyncio.wait_for(asyncio.shield(task), timeout=timeout)
             if observation_candidate is not None:
                 self._observation_attachment = observation_candidate
             return result
-        except (asyncio.TimeoutError, asyncio.CancelledError):
+        except (asyncio.TimeoutError, asyncio.CancelledError) as interruption:
             if is_attach and self._operation_level is OperationLevel.OBSERVE:
                 self._observation_attachment = None
             if not entered_backend.is_set():
                 task.cancel()
                 await asyncio.gather(task, return_exceptions=True)
+                if isinstance(interruption, asyncio.CancelledError):
+                    raise
+                if not is_attach:
+                    raise
+                raise ProbeAttachTimeout(
+                    attach_details(
+                        make_attach_diagnostic(
+                            _service_primary(
+                                "service-backend-queue",
+                                code="PROBE_TIMEOUT",
+                                reason="timeout",
+                            )
+                        )
+                    )
+                ) from None
             elif is_attach and not task.cancelled():
+                was_cancelled = isinstance(interruption, asyncio.CancelledError)
+                primary_stage = (
+                    "service-attach-cancelled" if was_cancelled else "service-attach-deadline"
+                )
+                primary_code = "CALLER_CANCELLED" if was_cancelled else "PROBE_TIMEOUT"
+                primary_reason = "cancelled" if was_cancelled else "timeout"
+                recovery_cleanup: list[dict[str, str]] = []
+                recovery_state: str | None = None
                 outcome, value = await _await_attach_outcome(task)
                 if outcome == "timeout":
-                    initiating = ProbeBackendError(
-                        "PROBE_TIMEOUT", "Attach recovery did not reach a terminal state"
+                    recovery_cleanup.append(
+                        make_cleanup_entry(
+                            "service-terminal-wait",
+                            "timed-out",
+                            reason="timeout",
+                            source_code="PROBE_TIMEOUT",
+                        )
                     )
                     abort = getattr(self._backend, "abort_owned_execution", None)
                     if callable(abort):
                         aborting = asyncio.create_task(asyncio.to_thread(abort))
                         try:
                             await _await_task_ignoring_cancellation(aborting)
-                        except BaseException:
-                            pass
+                        except BaseException as error:
+                            recovery_cleanup.append(
+                                _service_cleanup_failure("service-worker-abort", error)
+                            )
+                        else:
+                            recovery_cleanup.append(
+                                make_cleanup_entry("service-worker-abort", "succeeded")
+                            )
+                    diagnostic = make_attach_diagnostic(
+                        _service_primary(
+                            primary_stage,
+                            code=primary_code,
+                            reason=primary_reason,
+                        ),
+                        cleanup=recovery_cleanup,
+                    )
+                    initiating = ProbeBackendError(
+                        "PROBE_TIMEOUT", "Attach recovery did not reach a terminal state"
+                    )
                     raise ProbeBackendError(
-                        "PROBE_CLOSE_FAILED", "Probe attach cleanup failed"
+                        "PROBE_CLOSE_FAILED",
+                        "Probe attach cleanup failed",
+                        attach_details(diagnostic),
                     ) from initiating
                 if outcome == "error":
-                    if isinstance(value, ProbeBackendError) and value.code == "PROBE_CLOSE_FAILED":
-                        raise ProbeBackendError(
-                            value.code, value.message, value.details
-                        ) from value
-                    raise
+                    if isinstance(value, ProbeBackendError):
+                        incoming = extract_attach_diagnostic(value.details)
+                        recovery_cleanup.append(
+                            _service_cleanup_failure("service-terminal-wait", value)
+                        )
+                        diagnostic = make_attach_diagnostic(
+                            _service_primary(
+                                primary_stage,
+                                code=primary_code,
+                                reason=primary_reason,
+                            ),
+                            cleanup=recovery_cleanup,
+                        )
+                        if incoming is not None:
+                            diagnostic = append_late_attach(
+                                diagnostic, _late_attach_payload(incoming)
+                            ) or diagnostic
+                        if value.code == "PROBE_CLOSE_FAILED":
+                            raise ProbeBackendError(
+                                value.code,
+                                value.message,
+                                attach_details(diagnostic),
+                            ) from value
+                        if was_cancelled:
+                            raise asyncio.CancelledError() from None
+                        raise ProbeAttachTimeout(attach_details(diagnostic)) from None
+                    recovery_cleanup.append(
+                        _service_cleanup_failure(
+                            "service-terminal-wait",
+                            value if isinstance(value, BaseException) else RuntimeError(),
+                        )
+                    )
+                    if was_cancelled:
+                        raise asyncio.CancelledError() from None
+                    raise ProbeAttachTimeout(
+                        attach_details(
+                            make_attach_diagnostic(
+                                _service_primary(
+                                    primary_stage,
+                                    code=primary_code,
+                                    reason=primary_reason,
+                                ),
+                                cleanup=recovery_cleanup,
+                            )
+                        )
+                    ) from None
 
+                recovery_cleanup.append(
+                    make_cleanup_entry("service-terminal-wait", "succeeded")
+                )
                 recovery_error: ProbeBackendError | None = None
                 if self._operation_level is OperationLevel.MODIFY:
                     try:
                         await _run_owned_backend_call(self._backend.resume)
-                        target_state = getattr(self._backend, "target_state", None)
-                        if not callable(target_state):
-                            raise ProbeBackendError(
-                                "PROBE_BACKEND_ERROR", "Target state is unavailable"
-                            )
-                        state = self._closed_target_state(
-                            await _run_owned_backend_call(target_state)
+                    except BaseException as error:
+                        recovery_cleanup.append(
+                            _service_cleanup_failure("service-late-resume", error)
                         )
-                        if state["state"] != "running":
-                            raise ProbeBackendError(
-                                "PROBE_BACKEND_ERROR",
-                                "Target resume state is invalid",
-                            )
-                    except BaseException:
                         recovery_error = ProbeBackendError(
                             "PROBE_BACKEND_ERROR", "Probe attach recovery failed"
                         )
+                    else:
+                        recovery_cleanup.append(
+                            make_cleanup_entry("service-late-resume", "succeeded")
+                        )
+                        target_state = getattr(self._backend, "target_state", None)
+                        if not callable(target_state):
+                            error = ProbeBackendError(
+                                "PROBE_BACKEND_ERROR", "Target state is unavailable"
+                            )
+                            recovery_cleanup.append(
+                                _service_cleanup_failure(
+                                    "service-late-resume-verify", error
+                                )
+                            )
+                            recovery_error = ProbeBackendError(
+                                "PROBE_BACKEND_ERROR", "Probe attach recovery failed"
+                            )
+                        else:
+                            postcondition_failed = False
+                            try:
+                                state = self._closed_target_state(
+                                    await _run_owned_backend_call(target_state)
+                                )
+                                recovery_state = state["state"]
+                                if state["state"] != "running":
+                                    postcondition_failed = True
+                                    raise ProbeBackendError(
+                                        "PROBE_BACKEND_ERROR",
+                                        "Target resume state is invalid",
+                                    )
+                            except BaseException as error:
+                                failure_entry = (
+                                    make_cleanup_entry(
+                                        "service-late-resume-verify",
+                                        "failed",
+                                        reason="postcondition-failed",
+                                        source_code="PROBE_BACKEND_ERROR",
+                                    )
+                                    if postcondition_failed
+                                    else _service_cleanup_failure(
+                                        "service-late-resume-verify", error
+                                    )
+                                )
+                                recovery_cleanup.append(
+                                    failure_entry
+                                )
+                                recovery_error = ProbeBackendError(
+                                    "PROBE_BACKEND_ERROR", "Probe attach recovery failed"
+                                )
+                            else:
+                                recovery_cleanup.append(
+                                    make_cleanup_entry(
+                                        "service-late-resume-verify", "succeeded"
+                                    )
+                                )
                 try:
                     await _run_owned_backend_call(self._backend.close)
-                except BaseException:
+                except BaseException as error:
+                    recovery_cleanup.append(
+                        _service_cleanup_failure("service-late-close", error)
+                    )
                     initiating = recovery_error or ProbeBackendError(
                         "PROBE_BACKEND_ERROR", "Probe attach recovery failed"
                     )
+                    diagnostic = make_attach_diagnostic(
+                        _service_primary(
+                            primary_stage,
+                            code=primary_code,
+                            reason=primary_reason,
+                        ),
+                        cleanup=recovery_cleanup,
+                        last_verified_target_state=recovery_state,
+                    )
                     raise ProbeBackendError(
-                        "PROBE_CLOSE_FAILED", "Probe attach cleanup failed"
+                        "PROBE_CLOSE_FAILED",
+                        "Probe attach cleanup failed",
+                        attach_details(diagnostic),
                     ) from initiating
+                recovery_cleanup.append(
+                    make_cleanup_entry("service-late-close", "succeeded")
+                )
+                diagnostic = make_attach_diagnostic(
+                    _service_primary(
+                        primary_stage,
+                        code=primary_code,
+                        reason=primary_reason,
+                    ),
+                    cleanup=recovery_cleanup,
+                    last_verified_target_state=recovery_state,
+                )
                 if recovery_error is not None:
                     raise ProbeBackendError(
-                        "PROBE_CLOSE_FAILED", "Probe attach cleanup failed"
+                        "PROBE_CLOSE_FAILED",
+                        "Probe attach cleanup failed",
+                        attach_details(diagnostic),
                     ) from recovery_error
+                if was_cancelled:
+                    raise asyncio.CancelledError() from None
+                raise ProbeAttachTimeout(attach_details(diagnostic)) from None
             elif has_irreversible_native_effect and not task.cancelled():
                 abort = getattr(self._backend, "abort_owned_execution", None)
                 if is_modify and not callable(abort):
@@ -1442,6 +1764,15 @@ class ProbeService:
         try:
             data = await self._run_backend(request)
             response = ProbeResponse.success(request.request_id, request.operation, data)
+        except ProbeAttachTimeout as error:
+            diagnostic = extract_attach_diagnostic(error.details)
+            response = ProbeResponse.failure(
+                request.request_id,
+                request.operation,
+                error.code,
+                error.message,
+                {"attachDiagnostic": diagnostic} if diagnostic is not None else {},
+            )
         except asyncio.TimeoutError:
             response = ProbeResponse.failure(
                 request.request_id,
@@ -1452,7 +1783,23 @@ class ProbeService:
         except ProbeBackendError as error:
             code = error.code
             message = error.message
-            details = error.details
+            details: Mapping[str, object] = error.details
+            if request.operation == "probe.attach":
+                diagnostic = extract_attach_diagnostic(error.details)
+                safe_details: dict[str, object] = {}
+                if diagnostic is not None:
+                    safe_details["attachDiagnostic"] = diagnostic
+                if (
+                    code == "PROBE_ATTACH_FAILED"
+                    and type(error.details) is dict
+                    and type(error.details.get("stage")) is str
+                    and error.details["stage"] in LEGACY_ATTACH_STAGES
+                ):
+                    safe_details = {
+                        "stage": error.details["stage"],
+                        **safe_details,
+                    }
+                details = safe_details
             if request.operation.startswith("target.") and code not in TARGET_ERROR_CODES:
                 code, message, details = "PROBE_BACKEND_ERROR", "Probe backend operation failed", {}
             response = ProbeResponse.failure(
@@ -1473,23 +1820,24 @@ class ProbeService:
             )
         return web.Response(body=encode_response(response), content_type="application/json")
 
-    async def stop(self) -> None:
+    async def stop(self) -> CleanupFragment:
         caller = asyncio.current_task()
         async with self._stop_lock:
             if self._runner is None and self._lease is None:
-                return
+                return CleanupFragment()
             self._stopping = True
             stopping = asyncio.create_task(self._stop_owned_state(caller))
-            await _await_task_completion(stopping)
+            return await _await_task_completion(stopping)  # type: ignore[return-value]
 
     async def _stop_owned_state(
         self, caller: asyncio.Task[object] | None
-    ) -> None:
+    ) -> CleanupFragment:
         heartbeat = self._heartbeat_task
         runner = self._runner
         endpoint = self._endpoint
         lease = self._lease
         first_error: Exception | None = None
+        cleanup: list[dict[str, str]] = []
 
         if heartbeat is not None and heartbeat is not caller:
             heartbeat.cancel()
@@ -1498,21 +1846,30 @@ class ProbeService:
             try:
                 await runner.cleanup()
             except Exception as error:
+                cleanup.append(_service_cleanup_failure("service-runner-cleanup", error))
                 if first_error is None:
                     first_error = error
+            else:
+                cleanup.append(make_cleanup_entry("service-runner-cleanup", "succeeded"))
         if self._backend_tasks:
             await asyncio.gather(*tuple(self._backend_tasks), return_exceptions=True)
         try:
             await asyncio.to_thread(self._backend.close)
         except Exception as error:
+            cleanup.append(_service_cleanup_failure("service-stop-backend-close", error))
             if first_error is None:
                 first_error = error
+        else:
+            cleanup.append(make_cleanup_entry("service-stop-backend-close", "succeeded"))
         if lease is not None:
             try:
                 await asyncio.to_thread(lease.release)
             except Exception as error:
+                cleanup.append(_service_cleanup_failure("service-lease-release", error))
                 if first_error is None:
                     first_error = error
+            else:
+                cleanup.append(make_cleanup_entry("service-lease-release", "succeeded"))
 
         self._heartbeat_task = None
         self._runner = None
@@ -1533,5 +1890,7 @@ class ProbeService:
             except (FileNotFoundError, OSError, ValueError, json.JSONDecodeError):
                 pass
         self._session_directory_descriptor = None
+        fragment = CleanupFragment.from_entries(cleanup)
         if first_error is not None:
-            raise first_error
+            raise ProbeServiceCleanupError(fragment) from first_error
+        return fragment

@@ -26,7 +26,19 @@ from stm32_toolkit.probe.lease import (
 )
 from stm32_toolkit.probe.model import OperationLevel
 from stm32_toolkit.probe.model import ProbeRequest
-from stm32_toolkit.probe.service import ProbeEndpoint, ProbeService, ProbeServiceError
+from stm32_toolkit.probe.service import (
+    ProbeEndpoint,
+    ProbeAttachTimeout,
+    ProbeService,
+    ProbeServiceCleanupError,
+    ProbeServiceError,
+)
+from stm32_toolkit.probe.attach_diagnostics import (
+    make_attach_diagnostic,
+    make_cleanup_entry,
+    make_primary,
+    validate_attach_diagnostic,
+)
 from stm32_toolkit.probe import service as service_module
 from fakes.fake_probe import FakeProbeBackend
 from stm32_toolkit.probe.backend import (
@@ -386,6 +398,24 @@ class DelayedStoredCloseFailureBackend(BlockingAttachBackend):
         raise self.stored_error
 
 
+class LateDiagnosticAttachBackend(BlockingAttachBackend):
+    def open_attach(self, probe_id, target, *, halt_on_connect=False):
+        super().open_attach(
+            probe_id, target, halt_on_connect=halt_on_connect
+        )
+        raise ProbeBackendError(
+            "PROBE_ATTACH_FAILED",
+            "Debug probe attach failed",
+            {
+                "stage": "session-open",
+                "attachDiagnostic": make_attach_diagnostic(
+                    make_primary("session-open", "probe-disconnected", "UNTYPED"),
+                    cleanup=[make_cleanup_entry("session-close", "succeeded")],
+                ),
+            },
+        )
+
+
 def _attach_request(*, timeout_ms: int, request_id: str) -> ProbeRequest:
     return ProbeRequest(
         protocol="stm32-toolkit-probe/2",
@@ -551,8 +581,18 @@ def test_cleanup_failure_wins_over_concurrent_stop_cancellation(
         await asyncio.sleep(0)
         assert not stopping.done()
         release.set()
-        with pytest.raises(RuntimeError, match="backend cleanup failed"):
+        with pytest.raises(ProbeServiceCleanupError) as caught:
             await stopping
+        assert isinstance(caught.value.__cause__, RuntimeError)
+        assert caught.value.cleanup_fragment.to_list()[-2:] == [
+            {
+                "stage": "service-stop-backend-close",
+                "outcome": "failed",
+                "reason": "unknown",
+                "sourceCode": "UNTYPED",
+            },
+            {"stage": "service-lease-release", "outcome": "succeeded"},
+        ]
 
         assert backend.closed is True
         assert service.endpoint is None
@@ -1440,7 +1480,10 @@ def test_observe_queued_attach_timeout_maps_to_public_error(tmp_path: Path) -> N
                 await queued
             assert caught.value.code == "PROBE_TIMEOUT"
             assert caught.value.message == "Probe backend operation timed out"
-            assert caught.value.details == {}
+            diagnostic = caught.value.details["attachDiagnostic"]
+            assert validate_attach_diagnostic(diagnostic) == diagnostic
+            assert diagnostic["primary"]["stage"] == "service-backend-queue"
+            assert diagnostic["cleanup"] == []
 
             release.set()
             assert first is not None
@@ -1462,6 +1505,63 @@ def test_observe_queued_attach_timeout_maps_to_public_error(tmp_path: Path) -> N
             await first_client.close()
             await second_client.close()
             await service.stop()
+
+    run(scenario())
+
+
+def test_attach_deadline_retains_one_late_backend_diagnostic_without_flattening(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        entered = threading.Event()
+        release = threading.Event()
+        backend = LateDiagnosticAttachBackend(entered=entered, release=release)
+        service = make_service(tmp_path, level=OperationLevel.MODIFY, backend=backend)
+        operation = asyncio.create_task(
+            service._run_backend(
+                _attach_request(
+                    timeout_ms=20,
+                    request_id="request-late-attach-diagnostic",
+                )
+            )
+        )
+        try:
+            assert await asyncio.to_thread(backend.entered.wait, 2)
+            await asyncio.sleep(0.05)
+            release.set()
+            with pytest.raises(ProbeAttachTimeout) as caught:
+                await operation
+            diagnostic = caught.value.details["attachDiagnostic"]
+            assert validate_attach_diagnostic(diagnostic) == diagnostic
+            assert diagnostic["primary"] == {
+                "stage": "service-attach-deadline",
+                "reason": "timeout",
+                "sourceCode": "PROBE_TIMEOUT",
+            }
+            assert diagnostic["lateAttach"]["primary"] == {
+                "stage": "session-open",
+                "reason": "probe-disconnected",
+                "sourceCode": "UNTYPED",
+            }
+            assert diagnostic["lateAttach"]["cleanup"] == [
+                {"stage": "session-close", "outcome": "succeeded"}
+            ]
+            assert diagnostic["cleanup"] == [
+                {
+                    "stage": "service-terminal-wait",
+                    "outcome": "failed",
+                    "reason": "backend-code",
+                    "sourceCode": "PROBE_ATTACH_FAILED",
+                }
+            ]
+        finally:
+            release.set()
+            if not operation.done():
+                operation.cancel()
+                await asyncio.gather(operation, return_exceptions=True)
+            pending = tuple(service._backend_tasks)
+            if pending:
+                await asyncio.gather(*pending, return_exceptions=True)
 
     run(scenario())
 
@@ -1698,8 +1798,12 @@ def test_observe_stop_clears_attachment_before_same_service_restart_after_close_
             await first_client.attach("probe-a", "STM32F429ZITx")
         finally:
             await first_client.close()
-        with pytest.raises(RuntimeError, match="persistent backend close failure"):
+        with pytest.raises(ProbeServiceCleanupError) as caught:
             await service.stop()
+        assert isinstance(caught.value.__cause__, RuntimeError)
+        assert caught.value.cleanup_fragment.to_list()[1]["stage"] == (
+            "service-stop-backend-close"
+        )
 
         backend.raise_on_close = False
         second_endpoint = await service.start()
@@ -1741,8 +1845,12 @@ def test_observe_stop_clears_attachment_before_same_service_restart_after_lease_
             raise RuntimeError("lease release failed")
 
         lease.release = failing_release  # type: ignore[method-assign]
-        with pytest.raises(RuntimeError, match="lease release failed"):
+        with pytest.raises(ProbeServiceCleanupError) as caught:
             await service.stop()
+        assert isinstance(caught.value.__cause__, RuntimeError)
+        assert caught.value.cleanup_fragment.to_list()[-1]["stage"] == (
+            "service-lease-release"
+        )
 
         second_endpoint = await service.start()
         second_client = ProbeClient(second_endpoint)
@@ -1887,6 +1995,20 @@ def test_modify_attach_mismatch_cleanup_error_precedence(
             with pytest.raises(ProbeClientError) as caught:
                 await client.attach("probe-a", "STM32F429ZITx")
             assert caught.value.code == expected_code
+            diagnostic = caught.value.details["attachDiagnostic"]
+            assert validate_attach_diagnostic(diagnostic) == diagnostic
+            assert diagnostic["primary"] == {
+                "stage": "service-target-identity",
+                "reason": "identity-mismatch",
+                "sourceCode": "PROBE_IDENTITY_MISMATCH",
+            }
+            if restoration_failure == "state":
+                assert diagnostic["cleanup"][1] == {
+                    "stage": "service-identity-resume-verify",
+                    "outcome": "failed",
+                    "reason": "postcondition-failed",
+                    "sourceCode": "PROBE_BACKEND_ERROR",
+                }
             expected_events = [
                 ("list_probes",),
                 ("open_attach", "probe-a", "STM32F429ZITx", True),
@@ -2217,7 +2339,15 @@ def test_cancelled_attach_close_failure_preserves_sanitized_initiating_cause(
                 await operation
             assert caught.value.code == "PROBE_CLOSE_FAILED"
             assert caught.value.message == "Probe attach cleanup failed"
-            assert caught.value.details == {}
+            diagnostic = caught.value.details["attachDiagnostic"]
+            assert validate_attach_diagnostic(diagnostic) == diagnostic
+            assert diagnostic["primary"]["stage"] == "service-attach-cancelled"
+            assert [entry["stage"] for entry in diagnostic["cleanup"]] == [
+                "service-terminal-wait",
+                "service-late-resume",
+                "service-late-resume-verify",
+                "service-late-close",
+            ]
             assert "private" not in str(caught.value)
             cause = caught.value.__cause__
             assert isinstance(cause, ProbeBackendError)
@@ -2285,7 +2415,15 @@ def test_timed_out_modify_attach_requires_state_provider_for_recovery(
                 await operation
             assert caught.value.code == "PROBE_CLOSE_FAILED"
             assert caught.value.message == "Probe attach cleanup failed"
-            assert caught.value.details == {}
+            diagnostic = caught.value.details["attachDiagnostic"]
+            assert validate_attach_diagnostic(diagnostic) == diagnostic
+            assert diagnostic["primary"]["stage"] == "service-attach-deadline"
+            assert [entry["stage"] for entry in diagnostic["cleanup"]] == [
+                "service-terminal-wait",
+                "service-late-resume",
+                "service-late-resume-verify",
+                "service-late-close",
+            ]
             cause = caught.value.__cause__
             assert isinstance(cause, ProbeBackendError)
             assert cause.code == "PROBE_BACKEND_ERROR"
@@ -2352,7 +2490,12 @@ def test_attach_close_failure_preserves_the_sanitized_task_error(
                 await operation
             assert caught.value.code == "PROBE_CLOSE_FAILED"
             assert caught.value.message == "Probe attach cleanup failed"
-            assert caught.value.details == {}
+            diagnostic = caught.value.details["attachDiagnostic"]
+            assert validate_attach_diagnostic(diagnostic) == diagnostic
+            assert diagnostic["primary"]["stage"] == "service-attach-deadline"
+            assert [entry["stage"] for entry in diagnostic["cleanup"]] == [
+                "service-terminal-wait",
+            ]
             assert caught.value.__cause__ is stored_error
             assert caught.value.__cause__.code == "PROBE_CLOSE_FAILED"
             assert caught.value.__cause__.message == "Probe attach cleanup failed"
@@ -2604,10 +2747,10 @@ def test_stop_cleans_owned_state_before_reraising_persistent_backend_close_error
         replacement: ProbeService | None = None
 
         try:
-            with pytest.raises(
-                RuntimeError, match="persistent backend close failure"
-            ):
+            with pytest.raises(ProbeServiceCleanupError) as caught:
                 await service.stop()
+            assert isinstance(caught.value.__cause__, RuntimeError)
+            assert str(caught.value.__cause__) == "persistent backend close failure"
 
             assert not endpoint.record_path.exists()
             await service.stop()
@@ -3733,8 +3876,29 @@ def test_stop_preserves_first_cleanup_error_and_still_releases_every_owner(tmp_p
         )
         pending = asyncio.create_task(asyncio.sleep(0))
         service._backend_tasks.add(pending)
-        with pytest.raises(RuntimeError, match="runner cleanup failed"):
+        with pytest.raises(ProbeServiceCleanupError) as caught:
             await service._stop_owned_state(None)
+        assert isinstance(caught.value.__cause__, RuntimeError)
+        assert caught.value.cleanup_fragment.to_list() == [
+            {
+                "stage": "service-runner-cleanup",
+                "outcome": "failed",
+                "reason": "unknown",
+                "sourceCode": "UNTYPED",
+            },
+            {
+                "stage": "service-stop-backend-close",
+                "outcome": "failed",
+                "reason": "unknown",
+                "sourceCode": "UNTYPED",
+            },
+            {
+                "stage": "service-lease-release",
+                "outcome": "failed",
+                "reason": "unknown",
+                "sourceCode": "UNTYPED",
+            },
+        ]
         assert service.endpoint is None
         assert backend.close_attempts == 1
 
@@ -3904,12 +4068,14 @@ def test_stop_records_backend_or_lease_error_when_each_is_first(tmp_path: Path) 
 
     async def scenario() -> None:
         backend_failure = make_service(tmp_path / "backend", backend=AlwaysFailingCloseBackend())
-        with pytest.raises(RuntimeError, match="persistent backend close failure"):
+        with pytest.raises(ProbeServiceCleanupError) as backend_caught:
             await backend_failure._stop_owned_state(None)
+        assert isinstance(backend_caught.value.__cause__, RuntimeError)
 
         lease_failure = make_service(tmp_path / "lease")
         lease_failure._lease = FailingLease()
-        with pytest.raises(RuntimeError, match="lease failed"):
+        with pytest.raises(ProbeServiceCleanupError) as lease_caught:
             await lease_failure._stop_owned_state(None)
+        assert isinstance(lease_caught.value.__cause__, RuntimeError)
 
     run(scenario())

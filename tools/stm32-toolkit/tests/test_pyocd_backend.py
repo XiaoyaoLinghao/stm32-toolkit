@@ -13,7 +13,12 @@ from fakes.fake_pyocd import (
     FakePyOCDTarget,
 )
 from stm32_toolkit.probe.backend import FlashBackendReport, ProbeBackendError
-from stm32_toolkit.probe.pyocd_backend import PyOCDBackend, _DefaultPyOCDDriver
+from stm32_toolkit.probe.attach_diagnostics import validate_attach_diagnostic
+from stm32_toolkit.probe.pyocd_backend import (
+    PyOCDBackend,
+    _DefaultPyOCDDriver,
+    _classify_attach_exception,
+)
 
 
 ATK_RAW = "ATK 20210914"
@@ -25,6 +30,50 @@ LEGACY_SELECTOR = f"pyocd:{LEGACY_FINGERPRINT}"
 PUNCTUATION_RAW = r"CMSIS-DAP_QM Rev.B #001 / \\ port *"
 PUNCTUATION_FINGERPRINT = "4e5935ae758f5ba95bbad47253a8cf23e1bdedd44731aba13da92ac38277446f"
 PUNCTUATION_SELECTOR = f"pyocd:{PUNCTUATION_FINGERPRINT}"
+
+
+@pytest.mark.parametrize(
+    ("error_type", "expected_reason"),
+    (
+        (PermissionError, "permission-denied"),
+        ("ProbeDisconnected", "probe-disconnected"),
+        ("TransferTimeoutError", "transport-timeout"),
+        ("TransferProtocolError", "transport-protocol"),
+        ("TransferFaultError", "transport-fault"),
+        ("CoreRegisterAccessError", "target-register"),
+        ("TargetSupportError", "target-unsupported"),
+        ("InternalError", "backend-internal"),
+        ("ProbeError", "probe-io"),
+        ("TransferError", "transport-error"),
+        ("TargetError", "target-response"),
+        ("CommandError", "debug-command"),
+        ("DebugError", "debug-operation"),
+        ("TimeoutError", "timeout"),
+        ("USBTimeoutError", "transport-timeout"),
+        ("USBError", "probe-io"),
+    ),
+)
+def test_attach_exception_classifier_uses_only_closed_exception_types(
+    error_type: object, expected_reason: str
+) -> None:
+    if isinstance(error_type, str):
+        from pyocd.core import exceptions as pyocd_exceptions
+        from usb import core as usb_core
+
+        error_type = getattr(
+            pyocd_exceptions if error_type not in {"USBTimeoutError", "USBError"} else usb_core,
+            error_type,
+        )
+    assert _classify_attach_exception(error_type("private C:\\secret\\probe")) == (
+        expected_reason,
+        "UNTYPED",
+    )
+
+
+@pytest.mark.parametrize("error", (RuntimeError("PermissionError in C:\\secret"), TimeoutError("private")))
+def test_attach_exception_classifier_does_not_match_exception_text(error: BaseException) -> None:
+    expected = ("timeout", "UNTYPED") if isinstance(error, TimeoutError) else ("unknown", "UNTYPED")
+    assert _classify_attach_exception(error) == expected
 
 
 def backend_with_probes(*probe_ids: str) -> tuple[PyOCDBackend, FakePyOCDDriver]:
@@ -588,7 +637,14 @@ def test_observation_resume_failure_closes_candidate_and_publishes_nothing():
         backend.open_attach("probe-a", "stm32f407vg")
 
     assert caught.value.code == "PROBE_ATTACH_FAILED"
-    assert caught.value.details == {"stage": "cleanup-resume"}
+    assert caught.value.details["stage"] == "cleanup-resume"
+    diagnostic = caught.value.details["attachDiagnostic"]
+    assert validate_attach_diagnostic(diagnostic) == diagnostic
+    assert diagnostic["primary"]["stage"] == "resume"
+    assert [entry["stage"] for entry in diagnostic["cleanup"]] == [
+        "candidate-resume", "session-close", "probe-open-check-before-close",
+        "probe-open-check-after-close",
+    ]
     assert "private" not in str(caught.value)
     assert driver.program_calls == []
     assert driver.created_sessions[0].close_count == 1
@@ -609,7 +665,10 @@ def test_partial_open_failure_after_halt_restores_before_close_and_publishes_not
         backend.open_attach("probe-a", "stm32f407vg")
 
     assert caught.value.code == "PROBE_ATTACH_FAILED"
-    assert caught.value.details == {"stage": "session-open"}
+    assert caught.value.details["stage"] == "session-open"
+    diagnostic = caught.value.details["attachDiagnostic"]
+    assert validate_attach_diagnostic(diagnostic) == diagnostic
+    assert diagnostic["primary"]["stage"] == "session-open"
     assert "private" not in str(caught.value)
     assert target.calls == [("resume",), ("get_state",)]
     assert target.state == "running"
@@ -651,7 +710,19 @@ def test_observation_rejects_unproven_running_state_after_resume(resume_state):
         backend.open_attach("probe-a", "stm32f407vg")
 
     assert caught.value.code == "PROBE_ATTACH_FAILED"
-    assert caught.value.details == {"stage": "cleanup-resume"}
+    assert caught.value.details["stage"] == "cleanup-resume"
+    diagnostic = caught.value.details["attachDiagnostic"]
+    assert validate_attach_diagnostic(diagnostic) == diagnostic
+    assert diagnostic["primary"]["stage"] == "resume-verify"
+    expected_reason = (
+        "backend-code" if resume_state == "unknown" else "postcondition-failed"
+    )
+    assert diagnostic["cleanup"][1] == {
+        "stage": "candidate-resume-verify",
+        "outcome": "failed",
+        "reason": expected_reason,
+        "sourceCode": "PROBE_BACKEND_ERROR",
+    }
     assert target.calls == [
         ("resume",),
         ("get_state",),
@@ -675,7 +746,10 @@ def test_session_create_failure_reports_only_the_closed_attach_stage():
         PyOCDBackend(driver).open_attach("probe-a", "stm32f407vg")
 
     assert caught.value.code == "PROBE_ATTACH_FAILED"
-    assert caught.value.details == {"stage": "session-create"}
+    assert caught.value.details["stage"] == "session-create"
+    diagnostic = caught.value.details["attachDiagnostic"]
+    assert validate_attach_diagnostic(diagnostic) == diagnostic
+    assert diagnostic["primary"]["stage"] == "session-create"
     assert "private" not in str(caught.value)
     assert driver.created_sessions == []
 
@@ -688,7 +762,10 @@ def test_resume_verification_failure_keeps_its_stage_when_cleanup_succeeds():
         PyOCDBackend(driver).open_attach("probe-a", "stm32f407vg")
 
     assert caught.value.code == "PROBE_ATTACH_FAILED"
-    assert caught.value.details == {"stage": "resume-verify"}
+    assert caught.value.details["stage"] == "resume-verify"
+    diagnostic = caught.value.details["attachDiagnostic"]
+    assert validate_attach_diagnostic(diagnostic) == diagnostic
+    assert diagnostic["primary"]["stage"] == "resume-verify"
     assert target.calls == [
         ("resume",),
         ("get_state",),
@@ -822,7 +899,10 @@ def test_session_open_failure_closes_once_and_leaves_backend_detached():
         backend.open_attach("probe-a", "stm32f407vg")
 
     assert error.value.code == "PROBE_ATTACH_FAILED"
-    assert error.value.details == {"stage": "session-open"}
+    assert error.value.details["stage"] == "session-open"
+    diagnostic = error.value.details["attachDiagnostic"]
+    assert validate_attach_diagnostic(diagnostic) == diagnostic
+    assert diagnostic["primary"]["stage"] == "session-open"
     assert "secret" not in str(error.value)
     assert driver.created_sessions[0].close_count == 1
     assert driver.probes[0].close_count == 1
@@ -843,7 +923,10 @@ def test_typed_session_open_attach_failure_is_normalized_to_the_closed_stage():
 
     assert error.value.code == "PROBE_ATTACH_FAILED"
     assert error.value.message == "Debug probe attach failed"
-    assert error.value.details == {"stage": "session-open"}
+    assert error.value.details["stage"] == "session-open"
+    diagnostic = error.value.details["attachDiagnostic"]
+    assert validate_attach_diagnostic(diagnostic) == diagnostic
+    assert diagnostic["primary"]["stage"] == "session-open"
     assert "private" not in str(error.value)
     assert driver.created_sessions[0].close_count == 1
     assert driver.probes[0].is_open is False
@@ -902,6 +985,35 @@ def test_failed_open_and_failed_direct_probe_cleanup_report_close_failure():
 
     assert error.value.code == "PROBE_CLOSE_FAILED"
     assert probe.is_open is True
+
+
+def test_attach_failure_retains_primary_and_all_cleanup_outcomes():
+    target = ConnectionPolicyTarget(
+        resume_error=RuntimeError("private resume failure"),
+    )
+    probe = FakePyOCDProbe("probe-a")
+    probe.close_error = RuntimeError("private probe close failure")
+    driver = FakePyOCDDriver((probe,), target=target)
+    driver.session_open_error = RuntimeError("private session open failure")
+    driver.session_close_error = RuntimeError("private session close failure")
+
+    with pytest.raises(ProbeBackendError) as error:
+        PyOCDBackend(driver).open_attach("probe-a", "stm32f407vg")
+
+    assert error.value.code == "PROBE_CLOSE_FAILED"
+    diagnostic = error.value.details["attachDiagnostic"]
+    assert diagnostic["primary"] == {
+        "stage": "session-open",
+        "reason": "unknown",
+        "sourceCode": "UNTYPED",
+    }
+    assert [entry["stage"] for entry in diagnostic["cleanup"]] == [
+        "candidate-resume",
+        "session-close",
+        "probe-open-check-before-close",
+        "probe-close",
+        "probe-open-check-after-close",
+    ]
 
 
 def test_multicore_target_is_rejected_instead_of_selecting_an_implicit_core():

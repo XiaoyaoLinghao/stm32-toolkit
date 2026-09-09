@@ -56,6 +56,7 @@ def test_debug_public_api_is_complete_and_pyocd_lazy() -> None:
     assert all(hasattr(debug, name) for name in expected)
     assert not any(name == "pyocd" or name.startswith("pyocd.") for name in sys.modules)
 from stm32_toolkit.probe.backend import ProbeAttachmentEvidence
+from stm32_toolkit.probe.attach_diagnostics import make_attach_diagnostic, make_primary
 from stm32_toolkit.probe.client import ProbeClientError
 from stm32_toolkit.probe.flash import flash_firmware
 from stm32_toolkit.probe.handoff import _FLASH_FIELDS
@@ -542,10 +543,13 @@ def test_initial_probe_client_errors_cross_bind_boundary_unchanged(
 
 def test_initial_probe_identity_mismatch_keeps_sanitized_target_mapping(binding_env) -> None:
     _, _, client, request = binding_env
+    diagnostic = make_attach_diagnostic(
+        make_primary("service-target-identity", "identity-mismatch", "PROBE_IDENTITY_MISMATCH")
+    )
     client.attach_error = ProbeClientError(
         "PROBE_IDENTITY_MISMATCH",
         "raw target identity detail",
-        {"target": "private-target"},
+        {"target": "private-target", "attachDiagnostic": diagnostic},
     )
 
     result = asyncio.run(bind_debug_firmware(request, client))
@@ -553,7 +557,7 @@ def test_initial_probe_identity_mismatch_keeps_sanitized_target_mapping(binding_
     assert result.ok is False
     assert result.code == "DEBUG_TARGET_MISMATCH"
     assert result.message == "Connected target does not match the debug binding request"
-    assert result.details == {}
+    assert result.to_dict()["details"] == {"attachDiagnostic": diagnostic}
     assert "raw target identity detail" not in str(result.to_dict())
     assert client.events == [("attach", "probe-123", "stm32f407vg")]
 
@@ -637,13 +641,16 @@ def test_final_probe_client_errors_cross_bind_boundary_unchanged(
 
 def test_final_probe_identity_mismatch_keeps_sanitized_target_mapping(binding_env) -> None:
     _, _, client, request = binding_env
+    diagnostic = make_attach_diagnostic(
+        make_primary("service-target-identity", "identity-mismatch", "PROBE_IDENTITY_MISMATCH")
+    )
 
     def fail_on_final_attach(call: int) -> None:
         if call == 1:
             client.attach_error = ProbeClientError(
                 "PROBE_IDENTITY_MISMATCH",
                 "raw final identity detail",
-                {"stage": "final"},
+                {"stage": "final", "attachDiagnostic": diagnostic},
             )
 
     client.on_attach = fail_on_final_attach
@@ -652,7 +659,7 @@ def test_final_probe_identity_mismatch_keeps_sanitized_target_mapping(binding_en
     assert result.ok is False
     assert result.code == "DEBUG_TARGET_MISMATCH"
     assert result.message == "Connected target changed during debug binding"
-    assert result.details == {}
+    assert result.to_dict()["details"] == {"attachDiagnostic": diagnostic}
     assert "raw final identity detail" not in str(result.to_dict())
     assert [event[0] for event in client.events] == ["attach", "read", "attach"]
     assert sum(event[0] == "attach" for event in client.events) == 2

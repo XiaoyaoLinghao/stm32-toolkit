@@ -17,6 +17,14 @@ from .backend import (
     ProbeBackendError,
     ProbeDescriptor,
 )
+from .attach_diagnostics import (
+    attach_details,
+    legacy_stage_for_primary,
+    make_attach_diagnostic,
+    make_cleanup_entry,
+    make_primary,
+    SOURCE_CODES,
+)
 from .worker import NORMAL_CONNECTION_POLICY, UNDER_RESET_RECOVERY_CONNECTION_POLICY
 from .selector import (
     probe_fingerprint as calculate_probe_fingerprint,
@@ -32,6 +40,82 @@ _MAX_REGISTER_BATCH = 256
 _MAX_TARGET_REGISTER_ALLOWLIST = 64
 _MAX_FLASH_BYTES = 64 * 1024 * 1024
 _TARGET_REGISTER = re.compile(r"^[a-z][a-z0-9_]{0,31}$")
+
+
+def _classify_attach_exception(error: BaseException) -> tuple[str, str]:
+    """Classify one exception by type, without looking at its text or identity."""
+
+    if isinstance(error, ProbeBackendError):
+        code = error.code
+        reason = "identity-mismatch" if code == "PROBE_IDENTITY_MISMATCH" else "backend-code"
+        return reason, code if type(code) is str and code in SOURCE_CODES else "UNTYPED"
+
+    if isinstance(error, PermissionError):
+        return "permission-denied", "UNTYPED"
+    try:
+        from pyocd.core.exceptions import (
+            CommandError,
+            CoreRegisterAccessError,
+            DebugError,
+            InternalError,
+            ProbeDisconnected,
+            ProbeError,
+            TargetError,
+            TargetSupportError,
+            TimeoutError as PyOCDTimeoutError,
+            TransferError,
+            TransferFaultError,
+            TransferProtocolError,
+            TransferTimeoutError,
+        )
+    except (ImportError, ModuleNotFoundError):
+        CommandError = CoreRegisterAccessError = DebugError = InternalError = ()  # type: ignore[assignment]
+        ProbeDisconnected = ProbeError = TargetError = TargetSupportError = ()  # type: ignore[assignment]
+        PyOCDTimeoutError = TransferError = TransferFaultError = ()  # type: ignore[assignment]
+        TransferProtocolError = TransferTimeoutError = ()  # type: ignore[assignment]
+    try:
+        from usb.core import USBError, USBTimeoutError
+    except (ImportError, ModuleNotFoundError):
+        USBError = USBTimeoutError = ()  # type: ignore[assignment]
+
+    typed = (
+        (ProbeDisconnected, "probe-disconnected"),
+        (TransferTimeoutError, "transport-timeout"),
+        (TransferProtocolError, "transport-protocol"),
+        (TransferFaultError, "transport-fault"),
+        (CoreRegisterAccessError, "target-register"),
+        (TargetSupportError, "target-unsupported"),
+        (InternalError, "backend-internal"),
+        (ProbeError, "probe-io"),
+        (TransferError, "transport-error"),
+        (DebugError, "debug-operation"),
+        (TargetError, "target-response"),
+        (CommandError, "debug-command"),
+        (PyOCDTimeoutError, "timeout"),
+        (USBTimeoutError, "transport-timeout"),
+        (USBError, "probe-io"),
+    )
+    for exception_type, reason in typed:
+        if exception_type and isinstance(error, exception_type):
+            return reason, "UNTYPED"
+    if isinstance(error, TimeoutError):
+        return "timeout", "UNTYPED"
+    return "unknown", "UNTYPED"
+
+
+def _failure_primary(stage: str, error: BaseException) -> dict[str, str]:
+    reason, source_code = _classify_attach_exception(error)
+    return make_primary(stage, reason, source_code)
+
+
+def _cleanup_failure(stage: str, error: BaseException, *, timed_out: bool = False) -> dict[str, str]:
+    reason, source_code = _classify_attach_exception(error)
+    return make_cleanup_entry(
+        stage,
+        "timed-out" if timed_out else "failed",
+        reason=reason,
+        source_code=source_code,
+    )
 
 
 @runtime_checkable
@@ -662,28 +746,47 @@ class PyOCDBackend:
         return mapped
 
     @staticmethod
-    def _close_external(session: object, probe: object) -> None:
+    def _close_external(
+        session: object,
+        probe: object,
+        *,
+        cleanup: list[dict[str, str]] | None = None,
+    ) -> None:
+        if cleanup is None:
+            cleanup = []
         close_error: Exception | None = None
         try:
             getattr(session, "close")()
         except Exception as error:
             close_error = error
+            cleanup.append(_cleanup_failure("session-close", error))
+        else:
+            cleanup.append(make_cleanup_entry("session-close", "succeeded"))
         try:
             probe_is_open = bool(getattr(probe, "is_open", False))
         except Exception as error:
             probe_is_open = True
             if close_error is None:
                 close_error = error
+            cleanup.append(_cleanup_failure("probe-open-check-before-close", error))
+        else:
+            cleanup.append(make_cleanup_entry("probe-open-check-before-close", "succeeded"))
         if probe_is_open:
             try:
                 getattr(probe, "close")()
             except Exception as error:
                 if close_error is None:
                     close_error = error
+                cleanup.append(_cleanup_failure("probe-close", error))
+            else:
+                cleanup.append(make_cleanup_entry("probe-close", "succeeded"))
         try:
             still_open = bool(getattr(probe, "is_open", False))
-        except Exception:
+        except Exception as error:
             still_open = True
+            cleanup.append(_cleanup_failure("probe-open-check-after-close", error))
+        else:
+            cleanup.append(make_cleanup_entry("probe-open-check-after-close", "succeeded"))
         if close_error is not None or still_open:
             raise ProbeBackendError(
                 "PROBE_CLOSE_FAILED", "Debug probe cleanup failed"
@@ -696,29 +799,58 @@ class PyOCDBackend:
         probe: object,
         target: object | None,
         initiating: ProbeBackendError,
-    ) -> None:
-        restoration_error = False
+        *,
+        cleanup: list[dict[str, str]] | None = None,
+        last_verified: list[str | None] | None = None,
+    ) -> tuple[ProbeBackendError | None, ProbeBackendError | None]:
+        if cleanup is None:
+            cleanup = []
+        if last_verified is None:
+            last_verified = [None]
+        restoration_error: ProbeBackendError | None = None
         if target is not None:
             try:
                 getattr(target, "resume")()
-                if cls._read_target_state(target) != "running":
-                    raise ProbeBackendError(
+            except Exception as error:
+                cleanup.append(_cleanup_failure("candidate-resume", error))
+                restoration_error = ProbeBackendError(
+                    "PROBE_BACKEND_ERROR", "Target resume state is unavailable"
+                )
+            else:
+                cleanup.append(make_cleanup_entry("candidate-resume", "succeeded"))
+            if restoration_error is None:
+                postcondition_failed = False
+                try:
+                    state = cls._read_target_state(target)
+                    last_verified[0] = state
+                    if state != "running":
+                        postcondition_failed = True
+                        raise ProbeBackendError(
+                            "PROBE_BACKEND_ERROR", "Target resume state is unavailable"
+                        )
+                except Exception as error:
+                    if postcondition_failed:
+                        cleanup.append(make_cleanup_entry(
+                            "candidate-resume-verify", "failed",
+                            reason="postcondition-failed",
+                            source_code="PROBE_BACKEND_ERROR",
+                        ))
+                    else:
+                        cleanup.append(_cleanup_failure("candidate-resume-verify", error))
+                    restoration_error = ProbeBackendError(
                         "PROBE_BACKEND_ERROR", "Target resume state is unavailable"
                     )
-            except Exception:
-                restoration_error = True
+                else:
+                    cleanup.append(make_cleanup_entry("candidate-resume-verify", "succeeded"))
 
         try:
-            cls._close_external(session, probe)
-        except Exception:
-            raise ProbeBackendError(
+            cls._close_external(session, probe, cleanup=cleanup)
+        except Exception as error:
+            close_error = error if isinstance(error, ProbeBackendError) else ProbeBackendError(
                 "PROBE_CLOSE_FAILED", "Debug probe cleanup failed"
-            ) from initiating
-        if restoration_error:
-            raise ProbeBackendError(
-                "PROBE_ATTACH_FAILED", "Debug probe attach failed",
-                {"stage": "cleanup-resume"},
-            ) from initiating
+            )
+            return restoration_error, close_error
+        return restoration_error, None
 
     def open_attach(
         self, probe_id: str, target: str, *, halt_on_connect: bool = False
@@ -729,9 +861,20 @@ class PyOCDBackend:
             )
         if not _valid_identifier(target):
             raise ProbeBackendError("PROBE_TARGET_INVALID", "Target is invalid")
-
         probe = self._select_probe(probe_id)
-        self.close()
+        prior_cleanup: list[dict[str, str]] = []
+        try:
+            self._close_internal(cleanup=prior_cleanup)
+        except ProbeBackendError as error:
+            diagnostic = make_attach_diagnostic(
+                _failure_primary("prior-attachment-close", error),
+                cleanup=prior_cleanup,
+            )
+            raise ProbeBackendError(
+                error.code,
+                error.message,
+                attach_details(diagnostic),
+            ) from error
         options: dict[str, object] = {
             "auto_unlock": False,
             "connect_mode": (
@@ -755,15 +898,16 @@ class PyOCDBackend:
         part_number: str | None = None
         open_started = False
         attach_stage = "session-create"
+        last_verified: list[str | None] = [None]
         try:
             session = self._get_driver().create_session(probe, options=options)
             open_started = True
-            attach_stage = "target-resolve"
+            attach_stage = "target-resolve-before-open"
             session_target = self._candidate_target(session)
             attach_stage = "session-open"
             getattr(session, "open")()
             session_opened = True
-            attach_stage = "target-resolve"
+            attach_stage = "target-resolve-after-open"
             if session_target is None:
                 session_target = self._candidate_target(session)
             if session_target is None:
@@ -776,6 +920,7 @@ class PyOCDBackend:
                     "PROBE_TARGET_AMBIGUOUS",
                     "Selected target does not resolve to exactly one core",
                 )
+            attach_stage = "target-identity"
             try:
                 part_number = _display_text(
                     getattr(session_target, "part_number", None), fallback=None
@@ -792,7 +937,8 @@ class PyOCDBackend:
                 )
             if halt_on_connect:
                 attach_stage = "halt-verify"
-                if self._read_target_state(session_target) != "halted":
+                last_verified[0] = self._read_target_state(session_target)
+                if last_verified[0] != "halted":
                     raise ProbeBackendError(
                         "PROBE_BACKEND_ERROR", "Target halt state is unavailable"
                     )
@@ -800,19 +946,23 @@ class PyOCDBackend:
                 attach_stage = "resume"
                 getattr(session_target, "resume")()
                 attach_stage = "resume-verify"
-                if self._read_target_state(session_target) != "running":
+                last_verified[0] = self._read_target_state(session_target)
+                if last_verified[0] != "running":
                     raise ProbeBackendError(
                         "PROBE_ATTACH_FAILED", "Debug probe attach failed",
                         {"stage": "resume-verify"},
                     )
-        except ProbeBackendError as error:
-            normalized_attach_failure = error.code == "PROBE_ATTACH_FAILED"
+        except Exception as error:
+            typed_backend_error = isinstance(error, ProbeBackendError)
+            normalized_attach_failure = typed_backend_error and error.code == "PROBE_ATTACH_FAILED"
+            outer = error if typed_backend_error else ProbeBackendError(
+                "PROBE_ATTACH_FAILED", "Debug probe attach failed"
+            )
             if normalized_attach_failure:
-                error = ProbeBackendError(
-                    "PROBE_ATTACH_FAILED",
-                    "Debug probe attach failed",
-                    {"stage": attach_stage},
+                outer = ProbeBackendError(
+                    "PROBE_ATTACH_FAILED", "Debug probe attach failed"
                 )
+            precise_stage = attach_stage
             if (
                 open_started
                 and not session_opened
@@ -823,53 +973,50 @@ class PyOCDBackend:
                     session_target = self._candidate_target(session)
                 except Exception:
                     session_target = None
+            cleanup: list[dict[str, str]] = []
+            restoration_error: ProbeBackendError | None = None
+            close_error: ProbeBackendError | None = None
             if session is not None:
                 if session_opened or session_target is not None:
-                    self._restore_candidate_and_close(
-                        session, probe, session_target, error
+                    restoration_error, close_error = self._restore_candidate_and_close(
+                        session,
+                        probe,
+                        session_target,
+                        outer,
+                        cleanup=cleanup,
+                        last_verified=last_verified,
                     )
                 else:
                     try:
-                        self._close_external(session, probe)
-                    except Exception:
-                        raise ProbeBackendError(
-                            "PROBE_CLOSE_FAILED", "Debug probe cleanup failed"
-                        ) from error
-            if normalized_attach_failure:
-                raise error
-            raise
-        except Exception as error:
-            initiating = ProbeBackendError(
-                "PROBE_ATTACH_FAILED",
-                "Debug probe attach failed",
-                {"stage": attach_stage},
+                        self._close_external(session, probe, cleanup=cleanup)
+                    except ProbeBackendError as cleanup_error:
+                        close_error = cleanup_error
+            diagnostic = make_attach_diagnostic(
+                _failure_primary(precise_stage, error),
+                cleanup=cleanup,
+                last_verified_target_state=last_verified[0],
             )
-            if (
-                open_started
-                and not session_opened
-                and session_target is None
-                and session is not None
-            ):
-                try:
-                    session_target = self._candidate_target(session)
-                except Exception:
-                    session_target = None
-            if session is not None:
-                try:
-                    if session_opened or session_target is not None:
-                        self._restore_candidate_and_close(
-                            session, probe, session_target, initiating
-                        )
-                    else:
-                        try:
-                            self._close_external(session, probe)
-                        except Exception:
-                            raise ProbeBackendError(
-                                "PROBE_CLOSE_FAILED", "Debug probe cleanup failed"
-                            ) from initiating
-                except ProbeBackendError:
-                    raise
-            raise initiating from None
+            if close_error is not None:
+                raise ProbeBackendError(
+                    "PROBE_CLOSE_FAILED",
+                    "Debug probe cleanup failed",
+                    attach_details(diagnostic),
+                ) from outer
+            if restoration_error is not None:
+                raise ProbeBackendError(
+                    "PROBE_ATTACH_FAILED",
+                    "Debug probe attach failed",
+                    {"stage": "cleanup-resume", "attachDiagnostic": diagnostic},
+                ) from None
+            legacy_stage = (
+                legacy_stage_for_primary(precise_stage)
+                if outer.code == "PROBE_ATTACH_FAILED"
+                else None
+            )
+            details = attach_details(diagnostic, legacy_stage=legacy_stage)
+            if typed_backend_error:
+                raise ProbeBackendError(outer.code, outer.message, details) from None
+            raise ProbeBackendError(outer.code, outer.message, details) from None
 
         self._session = session
         self._target = session_target
@@ -1279,7 +1426,7 @@ class PyOCDBackend:
             sectors_programmed=None,
         )
 
-    def close(self) -> None:
+    def _close_internal(self, *, cleanup: list[dict[str, str]] | None = None) -> None:
         session, self._session = self._session, None
         probe, self._probe = self._probe, None
         self._target = None
@@ -1295,4 +1442,7 @@ class PyOCDBackend:
             except Exception:
                 pass
         if session is not None and probe is not None:
-            self._close_external(session, probe)
+            self._close_external(session, probe, cleanup=cleanup)
+
+    def close(self) -> None:
+        self._close_internal()

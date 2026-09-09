@@ -9,6 +9,7 @@ from pathlib import Path
 from types import TracebackType
 
 from .backend import ProbeBackend
+from .attach_diagnostics import CleanupFragment, make_cleanup_entry
 from .pyocd_backend import PyOCDBackend
 from .worker import ProbeBackendWorker, ProbeWorkerConfig
 from .authorization import ControlAuthorizationStore
@@ -18,9 +19,11 @@ from stm32_toolkit.testing.artifacts import TestArtifactCollector
 from .service import (
     ProbeEndpoint,
     ProbeService,
+    ProbeServiceCleanupError,
     ProbeServiceError,
     _await_commit_completion,
     _await_task_completion,
+    _service_error_fields,
 )
 
 
@@ -120,21 +123,38 @@ class ProbeServiceSupervisor:
             self._endpoint = endpoint
             return endpoint
 
-    async def stop(self) -> None:
+    async def stop(self) -> CleanupFragment:
         async with self._lifecycle_lock:
             service = self._service
             backend = self._backend
+            fragment = CleanupFragment()
             try:
                 if service is not None:
                     stopping = asyncio.create_task(service.stop())
-                    await _await_task_completion(stopping)
+                    fragment = await _await_task_completion(stopping)  # type: ignore[assignment]
                 elif backend is not None:
                     closing = asyncio.create_task(asyncio.to_thread(backend.close))
-                    await _await_task_completion(closing)
+                    try:
+                        await _await_task_completion(closing)
+                    except BaseException as error:
+                        reason, source_code = _service_error_fields(error)
+                        fragment = CleanupFragment.from_entries((
+                            make_cleanup_entry(
+                                "service-stop-backend-close",
+                                "failed",
+                                reason=reason,
+                                source_code=source_code,
+                            ),
+                        ))
+                        raise ProbeServiceCleanupError(fragment) from error
+                    fragment = CleanupFragment.from_entries((
+                        make_cleanup_entry("service-stop-backend-close", "succeeded"),
+                    ))
             finally:
                 self._service = None
                 self._backend = None
                 self._endpoint = None
+            return fragment
 
     async def drain_modifications(self) -> None:
         async with self._lifecycle_lock:

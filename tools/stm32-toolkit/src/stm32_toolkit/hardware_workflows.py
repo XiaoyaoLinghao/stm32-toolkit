@@ -49,7 +49,14 @@ from stm32_toolkit.probe import (
 from stm32_toolkit.probe.backend import ProbeBackendError
 from stm32_toolkit.probe.client import ProbeClient, ProbeClientError
 from stm32_toolkit.probe.lease import ProbeLeaseError, ProbeLeaseManager
-from stm32_toolkit.probe.service import ProbeServiceError
+from stm32_toolkit.probe.service import ProbeServiceError, _service_error_fields
+from stm32_toolkit.probe.service import ProbeServiceCleanupError
+from stm32_toolkit.probe.attach_diagnostics import (
+    CleanupFragment,
+    append_cleanup,
+    extract_attach_diagnostic,
+    make_cleanup_entry,
+)
 from stm32_toolkit.probe.worker import ProbeBackendWorker, ProbeWorkerConfig
 from stm32_toolkit.project_model import ProjectManifestError, ProjectModel, load_project_model
 from stm32_toolkit.result import OperationResult
@@ -459,6 +466,7 @@ class _CleanupOutcome:
     failed: bool
     cancellation: asyncio.CancelledError | None
     fatal: BaseException | None
+    fragment: CleanupFragment
 
 
 def _merge_cancellation(
@@ -468,10 +476,21 @@ def _merge_cancellation(
     return current if current is not None else incoming
 
 
+def _workflow_cleanup_failure(stage: str, error: BaseException) -> dict[str, str]:
+    reason, source_code = _service_error_fields(error)
+    return make_cleanup_entry(
+        stage, "failed", reason=reason, source_code=source_code
+    )
+
+
 async def _cleanup(clients: list[object], supervisor: object | None) -> _CleanupOutcome:
     failed = False
     cancellation: asyncio.CancelledError | None = None
     fatal: BaseException | None = None
+    entries: list[dict[str, str]] = []
+    client_attempted = bool(clients)
+    client_failed = False
+    client_error: BaseException | None = None
 
     def record_error(error: BaseException) -> None:
         nonlocal failed, fatal
@@ -479,7 +498,7 @@ async def _cleanup(clients: list[object], supervisor: object | None) -> _Cleanup
         if not isinstance(error, (Exception, asyncio.CancelledError)) and fatal is None:
             fatal = error
 
-    async def finish(awaitable: object) -> None:
+    async def finish(awaitable: object) -> _OwnedOutcome:
         nonlocal failed, cancellation, fatal
         try:
             task = asyncio.ensure_future(awaitable)
@@ -490,28 +509,78 @@ async def _cleanup(clients: list[object], supervisor: object | None) -> _Cleanup
         cancellation = _merge_cancellation(cancellation, outcome.cancellation)
         error = outcome.error
         if error is None:
-            return
+            return outcome
         record_error(error)
+        return outcome
 
     for client in reversed(clients):
         close = getattr(client, "close", None)
         if close is None:
             failed = True
+            client_failed = True
+            if client_error is None:
+                client_error = RuntimeError("client close is unavailable")
             continue
         try:
             awaitable = close()
         except BaseException as error:
             record_error(error)
+            client_failed = True
+            if client_error is None:
+                client_error = error
             continue
-        await finish(awaitable)
+        outcome = await finish(awaitable)
+        client_failed = client_failed or outcome.error is not None
+        if client_error is None and outcome.error is not None:
+            client_error = outcome.error
+    if client_attempted:
+        if client_failed:
+            entries.append(
+                _workflow_cleanup_failure(
+                    "workflow-client-close", client_error or RuntimeError()
+                )
+            )
+        else:
+            entries.append(make_cleanup_entry("workflow-client-close", "succeeded"))
     if supervisor is not None:
         try:
             awaitable = supervisor.stop()
         except BaseException as error:
             record_error(error)
+            if isinstance(error, ProbeServiceCleanupError):
+                entries.extend(error.cleanup_fragment.to_list())
+            entries.append(
+                _workflow_cleanup_failure("workflow-service-stop", error)
+            )
         else:
-            await finish(awaitable)
-    return _CleanupOutcome(failed, cancellation, fatal)
+            try:
+                task = asyncio.ensure_future(awaitable)
+            except BaseException as error:
+                record_error(error)
+                entries.append(
+                    _workflow_cleanup_failure("workflow-service-stop", error)
+                )
+            else:
+                outcome = await _await_owned(task)
+                cancellation = _merge_cancellation(cancellation, outcome.cancellation)
+                if outcome.error is not None:
+                    record_error(outcome.error)
+                    if isinstance(outcome.error, ProbeServiceCleanupError):
+                        entries.extend(outcome.error.cleanup_fragment.to_list())
+                    entries.append(
+                        _workflow_cleanup_failure(
+                            "workflow-service-stop", outcome.error
+                        )
+                    )
+                else:
+                    if isinstance(outcome.value, CleanupFragment):
+                        entries.extend(outcome.value.to_list())
+                    entries.append(
+                        make_cleanup_entry("workflow-service-stop", "succeeded")
+                    )
+    return _CleanupOutcome(
+        failed, cancellation, fatal, CleanupFragment.from_entries(entries)
+    )
 
 
 def _sanitize(value: object, roots: tuple[Path, ...]) -> object:
@@ -624,7 +693,28 @@ async def _one_shot(
     cleanup = await _cleanup(clients, supervisor)
     if cleanup.fatal is not None:
         raise cleanup.fatal
+    diagnostic = extract_attach_diagnostic(
+        result.details if isinstance(result, OperationResult) else None
+    )
+    if diagnostic is not None and isinstance(result, OperationResult) and not result.ok:
+        merged = append_cleanup(diagnostic, cleanup.fragment)
+        if merged is not None:
+            result = OperationResult.failure(
+                result.operation,
+                result.code,
+                result.message,
+                {"attachDiagnostic": merged},
+            )
     if cleanup.failed:
+        if diagnostic is not None:
+            merged = extract_attach_diagnostic(result.details)
+            if merged is not None:
+                return OperationResult.failure(
+                    operation,
+                    "HARDWARE_CLEANUP_FAILED",
+                    "Hardware workflow cleanup failed",
+                    {"attachDiagnostic": merged},
+                )
         return OperationResult.failure(
             operation,
             "HARDWARE_CLEANUP_FAILED",

@@ -35,9 +35,16 @@ from stm32_toolkit.probe import (
     ProbeServiceSupervisor,
 )
 from stm32_toolkit.probe.client import ProbeClient
+from stm32_toolkit.probe.attach_diagnostics import (
+    CleanupFragment,
+    append_cleanup,
+    extract_attach_diagnostic,
+    make_cleanup_entry,
+)
 from stm32_toolkit.probe.lease import ProbeLeaseManager
 from stm32_toolkit.probe.protocol import PROBE_PROTOCOL_VERSION
 from stm32_toolkit.probe.worker import ProbeWorkerConfig
+from stm32_toolkit.probe.service import ProbeServiceCleanupError, _service_error_fields
 from stm32_toolkit.project_model import load_project_model
 from stm32_toolkit.result import OperationResult
 
@@ -59,10 +66,18 @@ class MonitorObservationRequest:
 
 
 class MonitorObservationError(Exception):
-    def __init__(self, code: str, message: str) -> None:
+    def __init__(
+        self,
+        code: str,
+        message: str,
+        details: dict[str, object] | None = None,
+        cleanup_fragment: CleanupFragment | None = None,
+    ) -> None:
         super().__init__(message)
         self.code = code
         self.message = message
+        self.details = dict(details or {})
+        self.cleanup_fragment = cleanup_fragment or CleanupFragment()
 
 
 def _supervisor_factory(
@@ -107,6 +122,13 @@ class _OwnedOutcome:
     cancellation: asyncio.CancelledError | None
 
 
+def _monitor_cleanup_failure(stage: str, error: BaseException) -> dict[str, str]:
+    reason, source_code = _service_error_fields(error)
+    return make_cleanup_entry(
+        stage, "failed", reason=reason, source_code=source_code
+    )
+
+
 async def _await_owned(task: asyncio.Future) -> _OwnedOutcome:
     cancellation: asyncio.CancelledError | None = None
     while not task.done():
@@ -127,48 +149,71 @@ async def _cleanup_resources(
     client: object | None,
     supervisor: object | None,
     root_guard: "_DirectoryGuard | None" = None,
-) -> None:
+) -> CleanupFragment:
     failed = False
     fatal: BaseException | None = None
+    entries: list[dict[str, str]] = []
     if client is not None:
         try:
             close = getattr(client, "close")
             await close()
         except asyncio.CancelledError:
             failed = True
-        except Exception:
+            entries.append(_monitor_cleanup_failure("monitor-client-close", asyncio.CancelledError()))
+        except Exception as error:
             failed = True
+            entries.append(_monitor_cleanup_failure("monitor-client-close", error))
         except BaseException as error:
             failed = True
             fatal = error
+            entries.append(_monitor_cleanup_failure("monitor-client-close", error))
+        else:
+            entries.append(make_cleanup_entry("monitor-client-close", "succeeded"))
     if supervisor is not None:
         try:
-            await supervisor.stop()
+            stopped = await supervisor.stop()
         except asyncio.CancelledError:
             failed = True
-        except Exception:
+            entries.append(_monitor_cleanup_failure("monitor-service-stop", asyncio.CancelledError()))
+        except Exception as error:
             failed = True
+            if isinstance(error, ProbeServiceCleanupError):
+                entries.extend(error.cleanup_fragment.to_list())
+            entries.append(_monitor_cleanup_failure("monitor-service-stop", error))
         except BaseException as error:
             failed = True
             if fatal is None:
                 fatal = error
+            entries.append(_monitor_cleanup_failure("monitor-service-stop", error))
+        else:
+            if isinstance(stopped, CleanupFragment):
+                entries.extend(stopped.to_list())
+            entries.append(make_cleanup_entry("monitor-service-stop", "succeeded"))
     if root_guard is not None:
         try:
             root_guard.close()
         except asyncio.CancelledError:
             failed = True
-        except Exception:
+            entries.append(_monitor_cleanup_failure("monitor-root-guard-close", asyncio.CancelledError()))
+        except Exception as error:
             failed = True
+            entries.append(_monitor_cleanup_failure("monitor-root-guard-close", error))
         except BaseException as error:
             failed = True
             if fatal is None:
                 fatal = error
+            entries.append(_monitor_cleanup_failure("monitor-root-guard-close", error))
+        else:
+            entries.append(make_cleanup_entry("monitor-root-guard-close", "succeeded"))
+    fragment = CleanupFragment.from_entries(entries)
     if fatal is not None:
         raise fatal
     if failed:
         raise MonitorObservationError(
-            "MONITOR_CLEANUP_FAILED", "Monitor observation cleanup failed"
+            "MONITOR_CLEANUP_FAILED", "Monitor observation cleanup failed",
+            cleanup_fragment=fragment,
         )
+    return fragment
 
 
 def _is_redirect(path: Path, metadata: os.stat_result) -> bool:
@@ -638,12 +683,18 @@ def _failure_code(code: object) -> str:
 
 
 def _failure_from_result(result: object) -> OperationResult:
+    diagnostic = extract_attach_diagnostic(getattr(result, "details", None))
     return OperationResult.failure(
         _OPERATION,
         _failure_code(getattr(result, "code", None)),
         "Monitor observation could not be established",
-        {},
+        {"attachDiagnostic": diagnostic} if diagnostic is not None else {},
     )
+
+
+def _diagnostic_details(error: object) -> dict[str, object]:
+    diagnostic = extract_attach_diagnostic(getattr(error, "details", None))
+    return {"attachDiagnostic": diagnostic} if diagnostic is not None else {}
 
 
 def _verify_root_guard(root_guard: _DirectoryGuard) -> None:
@@ -771,7 +822,10 @@ class MonitorObservationSession:
         current = await self.revalidate()
         if not current.ok:
             return OperationResult.failure(
-                operation, current.code, "Monitor observation changed", {}
+                operation,
+                current.code,
+                "Monitor observation changed",
+                _diagnostic_details(current),
             )
         try:
             page = self.catalog.variable_descriptors(
@@ -790,7 +844,10 @@ class MonitorObservationSession:
         current = await self.revalidate()
         if not current.ok:
             return OperationResult.failure(
-                operation, current.code, "Monitor observation changed", {}
+                operation,
+                current.code,
+                "Monitor observation changed",
+                _diagnostic_details(current),
             )
         if self.svd is None:
             return OperationResult.failure(
@@ -836,7 +893,7 @@ class MonitorObservationSession:
                     _REVALIDATE_OPERATION,
                     _failure_code(result.code),
                     "Monitor observation changed",
-                    {},
+                    _diagnostic_details(result),
                 )
             current = _validate_binding(
                 result.data,
@@ -871,7 +928,7 @@ class MonitorObservationSession:
                 _REVALIDATE_OPERATION,
                 _failure_code(getattr(error, "code", None)),
                 "Monitor observation changed",
-                {},
+                _diagnostic_details(error),
             )
 
     async def close(self) -> None:
@@ -885,8 +942,13 @@ class MonitorObservationSession:
         if outcome.error is not None:
             if not isinstance(outcome.error, (Exception, asyncio.CancelledError)):
                 raise outcome.error
+            if isinstance(outcome.error, MonitorObservationError):
+                raise outcome.error
             raise MonitorObservationError(
-                "MONITOR_CLEANUP_FAILED", "Monitor observation cleanup failed"
+                "MONITOR_CLEANUP_FAILED", "Monitor observation cleanup failed",
+                cleanup_fragment=getattr(
+                    outcome.error, "cleanup_fragment", CleanupFragment()
+                ),
             )
         if outcome.cancellation is not None:
             raise outcome.cancellation
@@ -1020,7 +1082,7 @@ async def open_monitor_observation(
             _OPERATION,
             _failure_code(getattr(error, "code", None)),
             "Monitor observation could not be established",
-            {},
+            _diagnostic_details(error),
         )
     except BaseException as error:
         fatal = error
@@ -1030,21 +1092,51 @@ async def open_monitor_observation(
         _cleanup_resources(client, supervisor, root_guard)
     )
     outcome = await _await_owned(cleanup)
+    cleanup_fragment = CleanupFragment()
     if outcome.error is not None:
         if not isinstance(outcome.error, (Exception, asyncio.CancelledError)):
             raise outcome.error
+        fragment = getattr(outcome.error, "cleanup_fragment", CleanupFragment())
+        if isinstance(fragment, CleanupFragment):
+            cleanup_fragment = fragment
+        diagnostic = extract_attach_diagnostic(
+            failure.details if isinstance(failure, OperationResult) else None
+        )
+        if diagnostic is not None:
+            merged = append_cleanup(diagnostic, cleanup_fragment)
+            if merged is not None:
+                return OperationResult.failure(
+                    _OPERATION,
+                    "MONITOR_CLEANUP_FAILED",
+                    "Monitor observation cleanup failed",
+                    {"attachDiagnostic": merged},
+                )
         return OperationResult.failure(
             _OPERATION,
             "MONITOR_CLEANUP_FAILED",
             "Monitor observation cleanup failed",
             {},
         )
+    if isinstance(outcome.value, CleanupFragment):
+        cleanup_fragment = outcome.value
     if fatal is not None:
         raise fatal
     if cancelled is not None:
         raise cancelled
     if outcome.cancellation is not None:
         raise outcome.cancellation
+    diagnostic = extract_attach_diagnostic(
+        failure.details if isinstance(failure, OperationResult) else None
+    )
+    if diagnostic is not None:
+        merged = append_cleanup(diagnostic, cleanup_fragment)
+        if merged is not None:
+            return OperationResult.failure(
+                _OPERATION,
+                failure.code if isinstance(failure, OperationResult) else "MONITOR_OBSERVATION_FAILED",
+                failure.message if isinstance(failure, OperationResult) else "Monitor observation could not be established",
+                {"attachDiagnostic": merged},
+            )
     assert failure is not None
     return failure
 
