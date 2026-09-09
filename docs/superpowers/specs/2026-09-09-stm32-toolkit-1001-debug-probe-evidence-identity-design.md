@@ -22,4 +22,3 @@ Only `debug/firmware.py` owns the conversion at the failing consumer boundary. U
 - Do not weaken workspace identity or accept an arbitrary probe identifier.
 - Do not deploy, package, enumerate hardware, attach, reset, flash, sample, or change remote state.
 - Do not change historical attempt 7 or OBSERVE evidence, or claim the pending observation/Task 9/Task 10/VS10-A gates complete.
-
