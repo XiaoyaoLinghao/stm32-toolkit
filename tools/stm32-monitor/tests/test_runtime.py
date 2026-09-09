@@ -1112,7 +1112,7 @@ def test_probe_catalog_and_status_failure_boundaries_are_closed_and_bounded(
     asyncio.run(scenario())
 
 
-def test_production_probe_descriptor_bridge_is_red_at_accepted_base(
+def test_production_probe_descriptor_bridge_accepts_six_fields_and_projects_public_identity(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from stm32_toolkit import hardware_workflows
