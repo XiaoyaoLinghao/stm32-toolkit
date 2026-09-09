@@ -716,7 +716,8 @@ class PyOCDBackend:
             ) from initiating
         if restoration_error:
             raise ProbeBackendError(
-                "PROBE_ATTACH_FAILED", "Debug probe attach failed"
+                "PROBE_ATTACH_FAILED", "Debug probe attach failed",
+                {"stage": "cleanup-resume"},
             ) from initiating
 
     def open_attach(
@@ -753,12 +754,16 @@ class PyOCDBackend:
         session_target: object | None = None
         part_number: str | None = None
         open_started = False
+        attach_stage = "session-create"
         try:
             session = self._get_driver().create_session(probe, options=options)
-            session_target = self._candidate_target(session)
             open_started = True
+            attach_stage = "target-resolve"
+            session_target = self._candidate_target(session)
+            attach_stage = "session-open"
             getattr(session, "open")()
             session_opened = True
+            attach_stage = "target-resolve"
             if session_target is None:
                 session_target = self._candidate_target(session)
             if session_target is None:
@@ -786,17 +791,27 @@ class PyOCDBackend:
                     "Selected target identity is unavailable",
                 )
             if halt_on_connect:
+                attach_stage = "halt-verify"
                 if self._read_target_state(session_target) != "halted":
                     raise ProbeBackendError(
                         "PROBE_BACKEND_ERROR", "Target halt state is unavailable"
                     )
             else:
+                attach_stage = "resume"
                 getattr(session_target, "resume")()
+                attach_stage = "resume-verify"
                 if self._read_target_state(session_target) != "running":
                     raise ProbeBackendError(
-                        "PROBE_ATTACH_FAILED", "Debug probe attach failed"
+                        "PROBE_ATTACH_FAILED", "Debug probe attach failed",
+                        {"stage": "resume-verify"},
                     )
         except ProbeBackendError as error:
+            if error.code == "PROBE_ATTACH_FAILED":
+                error = ProbeBackendError(
+                    "PROBE_ATTACH_FAILED",
+                    "Debug probe attach failed",
+                    {"stage": attach_stage},
+                )
             if (
                 open_started
                 and not session_opened
@@ -824,7 +839,7 @@ class PyOCDBackend:
             initiating = ProbeBackendError(
                 "PROBE_ATTACH_FAILED",
                 "Debug probe attach failed",
-                {"probeId": probe_id, "target": target},
+                {"stage": attach_stage},
             )
             if (
                 open_started

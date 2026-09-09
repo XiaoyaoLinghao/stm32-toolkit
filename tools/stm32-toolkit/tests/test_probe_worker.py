@@ -234,6 +234,25 @@ def _strict_register_factory(mode: str) -> _StrictRegisterWorkerBackend:
     return _StrictRegisterWorkerBackend(mode)
 
 
+class _AttachStageWorkerBackend:
+    """Spawn-safe backend seam for the closed attach-stage IPC contract."""
+
+    def __init__(self, details: object) -> None:
+        self.details = details
+
+    def target_identity(self):
+        error = ProbeBackendError("PROBE_ATTACH_FAILED", "private backend detail", {})
+        error.details = self.details  # type: ignore[assignment]
+        raise error
+
+    def close(self) -> None:
+        return None
+
+
+def _attach_stage_factory(details: object) -> _AttachStageWorkerBackend:
+    return _AttachStageWorkerBackend(details)
+
+
 def _attach_recovery_factory(mode: str, marker_root: str) -> _AttachRecoveryWorkerBackend:
     return _AttachRecoveryWorkerBackend(mode, marker_root)
 
@@ -481,6 +500,80 @@ def test_spawned_worker_drops_unsafe_register_error_details(mode: str) -> None:
         assert caught.value.message == "Probe worker operation failed"
         assert caught.value.details == {}
         assert "private" not in str(caught.value)
+    finally:
+        if worker.is_alive:
+            worker.close()
+
+
+@pytest.mark.parametrize(
+    ("details", "expected"),
+    [
+        ({"stage": "session-open"}, {"stage": "session-open"}),
+        ({"stage": "cleanup-resume"}, {"stage": "cleanup-resume"}),
+        ({"stage": "session-open", "secret": "private"}, {}),
+        ({"stage": "unknown-stage"}, {}),
+        ({"stage": 7}, {}),
+        ([], {}),
+        ("private exception text", {}),
+    ],
+)
+def test_spawned_worker_preserves_only_exact_known_attach_stage_details(
+    details: object, expected: dict[str, str]
+) -> None:
+    worker = ProbeBackendWorker(
+        _test_backend_factory=partial(_attach_stage_factory, details)
+    )
+    try:
+        with pytest.raises(ProbeWorkerError) as caught:
+            worker.target_identity()
+        assert caught.value.code == "PROBE_ATTACH_FAILED"
+        assert caught.value.message == "Probe worker operation failed"
+        assert caught.value.details == expected
+        assert "private backend detail" not in str(caught.value)
+        assert "private exception text" not in str(caught.value)
+        assert not worker.is_alive
+    finally:
+        if worker.is_alive:
+            worker.close()
+
+
+@pytest.mark.parametrize(
+    "details",
+    [
+        {"stage": "session-open", "secret": "private"},
+        {"stage": "unknown-stage"},
+        {"stage": 7},
+        "private exception text",
+    ],
+)
+def test_worker_rejects_malformed_attach_stage_details_from_ipc(
+    details: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from stm32_toolkit.probe import worker as module
+
+    worker = ProbeBackendWorker(
+        _test_backend_factory=partial(_factory, "normal", "unused")
+    )
+    monkeypatch.setattr(
+        worker,
+        "_receive",
+        lambda _deadline: {
+            "version": module._VERSION,
+            "ok": False,
+            "error": {
+                "code": "PROBE_ATTACH_FAILED",
+                "message": "Probe worker operation failed",
+                "details": details,
+            },
+        },
+    )
+    try:
+        with pytest.raises(ProbeWorkerError) as caught:
+            worker.target_identity()
+        assert caught.value.code == "PROBE_BACKEND_ERROR"
+        assert caught.value.message == "Probe worker response is invalid"
+        assert caught.value.details == {}
+        assert not worker.is_alive
     finally:
         if worker.is_alive:
             worker.close()

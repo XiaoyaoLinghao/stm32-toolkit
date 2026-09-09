@@ -588,6 +588,7 @@ def test_observation_resume_failure_closes_candidate_and_publishes_nothing():
         backend.open_attach("probe-a", "stm32f407vg")
 
     assert caught.value.code == "PROBE_ATTACH_FAILED"
+    assert caught.value.details == {"stage": "cleanup-resume"}
     assert "private" not in str(caught.value)
     assert driver.program_calls == []
     assert driver.created_sessions[0].close_count == 1
@@ -608,6 +609,7 @@ def test_partial_open_failure_after_halt_restores_before_close_and_publishes_not
         backend.open_attach("probe-a", "stm32f407vg")
 
     assert caught.value.code == "PROBE_ATTACH_FAILED"
+    assert caught.value.details == {"stage": "session-open"}
     assert "private" not in str(caught.value)
     assert target.calls == [("resume",), ("get_state",)]
     assert target.state == "running"
@@ -649,6 +651,7 @@ def test_observation_rejects_unproven_running_state_after_resume(resume_state):
         backend.open_attach("probe-a", "stm32f407vg")
 
     assert caught.value.code == "PROBE_ATTACH_FAILED"
+    assert caught.value.details == {"stage": "cleanup-resume"}
     assert target.calls == [
         ("resume",),
         ("get_state",),
@@ -662,6 +665,37 @@ def test_observation_rejects_unproven_running_state_after_resume(resume_state):
     with pytest.raises(ProbeBackendError) as detached:
         backend.read_memory(0x20000000, 4)
     assert detached.value.code == "PROBE_NOT_ATTACHED"
+
+
+def test_session_create_failure_reports_only_the_closed_attach_stage():
+    driver = FakePyOCDDriver((FakePyOCDProbe("probe-a"),))
+    driver.create_error = RuntimeError(r"session create failed C:\private\session")
+
+    with pytest.raises(ProbeBackendError) as caught:
+        PyOCDBackend(driver).open_attach("probe-a", "stm32f407vg")
+
+    assert caught.value.code == "PROBE_ATTACH_FAILED"
+    assert caught.value.details == {"stage": "session-create"}
+    assert "private" not in str(caught.value)
+    assert driver.created_sessions == []
+
+
+def test_resume_verification_failure_keeps_its_stage_when_cleanup_succeeds():
+    target = ConnectionPolicyTarget(resume_states=("halted", "running"))
+    driver = FakePyOCDDriver((FakePyOCDProbe("probe-a"),), target=target)
+
+    with pytest.raises(ProbeBackendError) as caught:
+        PyOCDBackend(driver).open_attach("probe-a", "stm32f407vg")
+
+    assert caught.value.code == "PROBE_ATTACH_FAILED"
+    assert caught.value.details == {"stage": "resume-verify"}
+    assert target.calls == [
+        ("resume",),
+        ("get_state",),
+        ("resume",),
+        ("get_state",),
+    ]
+    assert driver.created_sessions[0].close_count == 1
 
 
 def test_modify_attach_rejects_candidate_that_reports_running():
@@ -788,7 +822,7 @@ def test_session_open_failure_closes_once_and_leaves_backend_detached():
         backend.open_attach("probe-a", "stm32f407vg")
 
     assert error.value.code == "PROBE_ATTACH_FAILED"
-    assert error.value.details == {"probeId": "probe-a", "target": "stm32f407vg"}
+    assert error.value.details == {"stage": "session-open"}
     assert "secret" not in str(error.value)
     assert driver.created_sessions[0].close_count == 1
     assert driver.probes[0].close_count == 1

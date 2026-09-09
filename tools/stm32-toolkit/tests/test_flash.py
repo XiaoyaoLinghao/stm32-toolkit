@@ -706,6 +706,29 @@ def test_flash_preserves_non_identity_attach_failures_without_programming(
     assert not (root / "artifacts/migration/flash-result.json").exists()
 
 
+def test_flash_propagates_safe_attach_stage_without_programming(tmp_path: Path) -> None:
+    root = prepare_project(tmp_path)
+    identity = _publish_current_debug_build(root)
+
+    class StagedAttachFlashClient(RecordingFlashClient):
+        async def attach(self, probe_id: str, target: str) -> object:
+            self.events.append(("attach", probe_id, target))
+            raise ProbeClientError(
+                "PROBE_ATTACH_FAILED",
+                "Probe attach failed",
+                {"stage": "session-open"},
+            )
+
+    client = StagedAttachFlashClient(_elf_with_flash_segment()[84 : 84 + 320])
+    result = asyncio.run(flash_firmware(_request(root, identity), client))
+
+    assert result.ok is False
+    assert result.code == "PROBE_ATTACH_FAILED"
+    assert result.details == {"stage": "session-open"}
+    assert client.events == [("attach", "probe-123", "stm32f407vg")]
+    assert not (root / "artifacts/migration/flash-result.json").exists()
+
+
 def test_flash_readback_is_chunked_to_protocol_limit(tmp_path: Path) -> None:
     root = prepare_project(tmp_path)
     text_size = 70_000

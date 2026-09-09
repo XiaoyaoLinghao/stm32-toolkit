@@ -52,6 +52,10 @@ _BACKEND_ERROR_CODES = {
 _REGISTER_ERROR_STATES = frozenset({
     "halted", "running", "reset", "sleeping", "lockedup", "programming", "unknown",
 })
+_ATTACH_ERROR_STAGES = frozenset({
+    "session-create", "session-open", "target-resolve", "halt-verify",
+    "resume", "resume-verify", "cleanup-resume",
+})
 
 
 class ProbeWorkerError(ProbeBackendError):
@@ -193,6 +197,17 @@ def _safe_register_error_details(code: object, details: object) -> dict[str, str
     return {"state": state}
 
 
+def _safe_attach_error_details(code: object, details: object) -> dict[str, str] | None:
+    if code != "PROBE_ATTACH_FAILED" or type(details) is not dict:
+        return None
+    if set(details) != {"stage"} or type(details["stage"]) is not str:
+        return None
+    stage = details["stage"]
+    if stage not in _ATTACH_ERROR_STAGES:
+        return None
+    return {"stage": stage}
+
+
 def _send(connection: Connection, value: Mapping[str, object]) -> None:
     payload = _canonical_bytes(value)
     if len(payload) > _MAX_OUTPUT_BYTES:
@@ -272,8 +287,10 @@ def _worker_main(
             error_payload: dict[str, object] = {
                 "code": code, "message": "Probe worker operation failed",
             }
-            safe_details = _safe_register_error_details(
-                code, getattr(error, "details", None)
+            safe_details = (
+                _safe_attach_error_details(code, getattr(error, "details", None))
+                if code == "PROBE_ATTACH_FAILED"
+                else _safe_register_error_details(code, getattr(error, "details", None))
             )
             if safe_details is not None:
                 error_payload["details"] = safe_details
@@ -389,7 +406,11 @@ class ProbeBackendWorker:
                 code, message = failure["code"], failure["message"]
                 details: dict[str, str] = {}
                 if set(failure) == {"code", "message", "details"}:
-                    safe_details = _safe_register_error_details(code, failure["details"])
+                    safe_details = (
+                        _safe_attach_error_details(code, failure["details"])
+                        if code == "PROBE_ATTACH_FAILED"
+                        else _safe_register_error_details(code, failure["details"])
+                    )
                     if safe_details is None:
                         self.abort_owned_execution()
                         raise ProbeWorkerError("PROBE_BACKEND_ERROR", "Probe worker response is invalid")
