@@ -806,7 +806,8 @@ class PyOCDBackend:
                         {"stage": "resume-verify"},
                     )
         except ProbeBackendError as error:
-            if error.code == "PROBE_ATTACH_FAILED":
+            normalized_attach_failure = error.code == "PROBE_ATTACH_FAILED"
+            if normalized_attach_failure:
                 error = ProbeBackendError(
                     "PROBE_ATTACH_FAILED",
                     "Debug probe attach failed",
@@ -834,6 +835,8 @@ class PyOCDBackend:
                         raise ProbeBackendError(
                             "PROBE_CLOSE_FAILED", "Debug probe cleanup failed"
                         ) from error
+            if normalized_attach_failure:
+                raise error
             raise
         except Exception as error:
             initiating = ProbeBackendError(

@@ -832,6 +832,23 @@ def test_session_open_failure_closes_once_and_leaves_backend_detached():
     assert detached.value.code == "PROBE_NOT_ATTACHED"
 
 
+def test_typed_session_open_attach_failure_is_normalized_to_the_closed_stage():
+    driver = FakePyOCDDriver((FakePyOCDProbe("probe-a"),))
+    driver.session_open_error = ProbeBackendError(
+        "PROBE_ATTACH_FAILED", r"private backend detail C:\secret", {"secret": "raw"}
+    )
+
+    with pytest.raises(ProbeBackendError) as error:
+        PyOCDBackend(driver).open_attach("probe-a", "stm32f407vg")
+
+    assert error.value.code == "PROBE_ATTACH_FAILED"
+    assert error.value.message == "Debug probe attach failed"
+    assert error.value.details == {"stage": "session-open"}
+    assert "private" not in str(error.value)
+    assert driver.created_sessions[0].close_count == 1
+    assert driver.probes[0].is_open is False
+
+
 def test_missing_target_after_open_closes_session_and_fails_closed():
     driver = FakePyOCDDriver((FakePyOCDProbe("probe-a"),), target=None)
     backend = PyOCDBackend(driver)
