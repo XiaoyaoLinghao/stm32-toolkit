@@ -714,6 +714,7 @@ class MonitorRuntime:
 
     async def _list_probes(self, operation: str, config, failure, success):
         from stm32_toolkit.hardware_workflows import ProbeListWorkflowRequest
+        from stm32_toolkit.probe.backend import ProbeDescriptor
         from .models import ProbeConnectRequest
 
         request = ProbeListWorkflowRequest(
@@ -733,28 +734,56 @@ class MonitorRuntime:
             )
         data = getattr(result, "data", None)
         probes = data.get("probes") if isinstance(data, Mapping) else None
-        required = {"probeId", "vendor", "product", "boardName"}
+        public_schema = frozenset({"probeId", "vendor", "product", "boardName"})
+        production_schema = public_schema | frozenset({"hardwareId", "probeFingerprint"})
         if (
             type(probes) is not tuple
             or len(probes) > 64
-            or any(
-                not isinstance(item, Mapping)
-                or set(item) != required
-                for item in probes
-            )
         ):
             return failure(operation, "MONITOR_PROBE_ENUMERATION_FAILED", "Debug probe enumeration failed")
         try:
-            ordered = sorted(
-                (
-                    {
-                        "probeId": ProbeConnectRequest(item["probeId"]).probe_id,
-                        "vendor": _probe_public_text(item["vendor"]),
-                        "product": _probe_public_text(item["product"]),
-                        "boardName": _probe_public_text(item["boardName"], optional=True),
-                    }
+            schema = None
+            if probes:
+                if not isinstance(probes[0], Mapping):
+                    raise ValueError("probe descriptor is invalid")
+                schema = frozenset(probes[0])
+                if schema not in (public_schema, production_schema):
+                    raise ValueError("probe descriptor schema is invalid")
+                if any(
+                    not isinstance(item, Mapping) or frozenset(item) != schema
                     for item in probes
-                ),
+                ):
+                    raise ValueError("probe descriptor schema is invalid")
+
+            def project(item):
+                probe_id = ProbeConnectRequest(item["probeId"]).probe_id
+                vendor = _probe_public_text(item["vendor"])
+                product = _probe_public_text(item["product"])
+                board_name = _probe_public_text(item["boardName"], optional=True)
+                if schema == production_schema:
+                    descriptor = ProbeDescriptor(
+                        probe_id=probe_id,
+                        hardware_id=item["hardwareId"],
+                        probe_fingerprint=item["probeFingerprint"],
+                        vendor=vendor,
+                        product=product,
+                        board_name=board_name,
+                    )
+                    if (
+                        descriptor.probe_id != item["probeId"]
+                        or descriptor.hardware_id != item["hardwareId"]
+                        or descriptor.probe_fingerprint != item["probeFingerprint"]
+                    ):
+                        raise ValueError("probe descriptor identity is invalid")
+                return {
+                    "probeId": probe_id,
+                    "vendor": vendor,
+                    "product": product,
+                    "boardName": board_name,
+                }
+
+            ordered = sorted(
+                (project(item) for item in probes),
                 key=lambda item: item["probeId"],
             )
         except (KeyError, TypeError, ValueError):

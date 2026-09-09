@@ -1112,6 +1112,168 @@ def test_probe_catalog_and_status_failure_boundaries_are_closed_and_bounded(
     asyncio.run(scenario())
 
 
+def test_production_probe_descriptor_bridge_is_red_at_accepted_base(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from stm32_toolkit import hardware_workflows
+    from stm32_toolkit.hardware_workflows import HardwareWorkflowSeams, probe_list_workflow
+    from stm32_toolkit.probe import pyocd_backend, worker
+    from stm32_toolkit.probe.backend import ProbeDescriptor
+    from stm32_toolkit.probe.selector import probe_fingerprint, public_probe_selector
+    from stm32_toolkit.result import OperationResult
+
+    hardware_id = "ST-LINK/ABC123"
+    probe_id = public_probe_selector(hardware_id)
+    events: list[str] = []
+
+    class FakeBackend:
+        def __init__(self) -> None:
+            events.append("create")
+
+        def list_probes(self):
+            events.append("list")
+            descriptor = ProbeDescriptor(
+                probe_id=probe_id,
+                hardware_id=hardware_id,
+                probe_fingerprint=probe_fingerprint(hardware_id),
+                vendor="ST",
+                product="ST-LINK",
+                board_name="Board",
+            )
+            return (descriptor,)
+
+        def close(self) -> None:
+            events.append("close")
+
+    def forbidden_real_worker(*_args, **_kwargs):
+        raise AssertionError("real ProbeBackendWorker/PyOCDBackend must not be constructed")
+
+    monkeypatch.setattr(hardware_workflows, "ProbeBackendWorker", forbidden_real_worker)
+    monkeypatch.setattr(worker, "ProbeBackendWorker", forbidden_real_worker)
+    monkeypatch.setattr(pyocd_backend, "PyOCDBackend", forbidden_real_worker)
+
+    seams = HardwareWorkflowSeams(_test_backend_factory=FakeBackend)
+
+    async def production_probe_list(request):
+        return await probe_list_workflow(request, _seams=seams)
+
+    async def scenario() -> None:
+        runtime, config, _groups, _history, _exports, _samplers, observations, _requests = _protocol_runtime(
+            tmp_path, probe_list_factory=production_probe_list
+        )
+        await runtime.start(config)
+        try:
+            raw = await production_probe_list(
+                hardware_workflows.ProbeListWorkflowRequest(
+                    config.project_root, config.data_root, config.session_id
+                )
+            )
+            assert isinstance(raw, OperationResult)
+            assert raw.ok
+            assert set(raw.data["probes"][0]) == {
+                "probeId",
+                "hardwareId",
+                "probeFingerprint",
+                "vendor",
+                "product",
+                "boardName",
+            }
+
+            result = await runtime.dispatch("monitor.probes.list", {})
+            assert result.ok
+            assert result.to_dict()["data"] == {
+                "probes": [
+                    {
+                        "probeId": probe_id,
+                        "vendor": "ST",
+                        "product": "ST-LINK",
+                        "boardName": "Board",
+                    }
+                ]
+            }
+            monitor_output = json.dumps(result.to_dict(), sort_keys=True)
+            assert hardware_id not in monitor_output
+            assert '"hardwareId"' not in monitor_output
+            assert '"probeFingerprint"' not in monitor_output
+
+            connected = await runtime.dispatch(
+                "monitor.probe.connect", {"probeId": probe_id}
+            )
+            assert connected.ok
+            assert connected.to_dict()["data"] == {"probeId": probe_id}
+            assert len(observations) == 1
+            assert events == ["create", "list", "close"] * 3
+        finally:
+            await runtime.stop()
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    ("missing", "extra", "mixed", "hardware", "selector", "fingerprint", "display", "duplicate"),
+)
+def test_production_probe_descriptor_bridge_rejects_invalid_shape_or_identity(
+    tmp_path: Path, mutation: str
+) -> None:
+    from stm32_toolkit.probe.selector import probe_fingerprint, public_probe_selector
+    from stm32_toolkit.result import OperationResult
+
+    hardware_id = "ST-LINK/ABC123"
+    probe_id = public_probe_selector(hardware_id)
+    descriptor = {
+        "probeId": probe_id,
+        "hardwareId": hardware_id,
+        "probeFingerprint": probe_fingerprint(hardware_id),
+        "vendor": "ST",
+        "product": "ST-LINK",
+        "boardName": "Board",
+    }
+    listed = (descriptor,)
+    if mutation == "missing":
+        descriptor.pop("vendor")
+    elif mutation == "extra":
+        descriptor["extra"] = "rejected"
+    elif mutation == "mixed":
+        listed = (descriptor, {key: descriptor[key] for key in ("probeId", "vendor", "product", "boardName")})
+    elif mutation == "hardware":
+        descriptor["hardwareId"] = "ST-LINK:\nABC123"
+    elif mutation == "selector":
+        descriptor["probeId"] = "other-probe"
+    elif mutation == "fingerprint":
+        descriptor["probeFingerprint"] = "0" * 64
+    elif mutation == "display":
+        descriptor["vendor"] = ""
+    elif mutation == "duplicate":
+        listed = (descriptor, dict(descriptor))
+
+    async def probe_list(_request):
+        return OperationResult.success("stm32_probe_list", {"probes": listed})
+
+    async def scenario() -> None:
+        runtime, config, _groups, _history, _exports, _samplers, observations, _requests = (
+            _protocol_runtime(tmp_path, probe_list_factory=probe_list)
+        )
+        await runtime.start(config)
+        try:
+            result = await runtime.dispatch(
+                "monitor.probe.connect", {"probeId": probe_id}
+            )
+            assert not result.ok
+            assert result.code == "MONITOR_PROBE_ENUMERATION_FAILED"
+            assert result.message == "Debug probe enumeration failed"
+            assert result.details == {}
+            assert hardware_id not in json.dumps(result.to_dict(), sort_keys=True)
+            assert probe_fingerprint(hardware_id) not in json.dumps(
+                result.to_dict(), sort_keys=True
+            )
+            assert observations == []
+        finally:
+            await runtime.stop()
+
+    asyncio.run(scenario())
+
+
 def test_probe_discovery_validates_exact_public_values_and_the_sixty_four_probe_cap(
     tmp_path: Path,
 ) -> None:
