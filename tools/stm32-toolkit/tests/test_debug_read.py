@@ -23,7 +23,12 @@ from stm32_toolkit.build.identity import (
 from stm32_toolkit.build.runner import build_result_document
 from stm32_toolkit.debug.dwarf import DwarfCatalog
 from stm32_toolkit.debug import read as read_mod
-from stm32_toolkit.debug.model import DebugFirmwareBinding, MemoryRegionBinding
+from stm32_toolkit.debug.firmware import bind_debug_firmware
+from stm32_toolkit.debug.model import (
+    DebugBindingRequest,
+    DebugFirmwareBinding,
+    MemoryRegionBinding,
+)
 from stm32_toolkit.debug.read import (
     RegisterReadRequest,
     VariableReadRequest,
@@ -284,6 +289,47 @@ def _run_read(debug_env: DebugEnv, client: Client, operation: str):
     if operation == "variables":
         return asyncio.run(read_variables(request, client))
     return asyncio.run(read_registers(request, client))
+
+
+@pytest.mark.parametrize(
+    "probe_evidence",
+    ["probe-123", _sha256(b"probe-123")],
+    ids=["generic-selector", "physical-target-hash"],
+)
+def test_bound_probe_evidence_revalidates_through_one_debug_read(
+    debug_env: DebugEnv, probe_evidence: str
+) -> None:
+    flash_path = debug_env.root / "artifacts" / "migration" / "flash-result.json"
+    flash = json.loads(flash_path.read_text(encoding="utf-8"))
+    flash["probeId"] = probe_evidence
+    atomic_write_json(flash_path, flash)
+    binding = debug_env.binding
+    request = DebugBindingRequest(
+        project_root=debug_env.root,
+        probe_id=binding.probe_id,
+        target=binding.debug_target,
+        workspace_id=binding.workspace_id,
+        observation_session_id=binding.observation_session_id,
+        lease_id=binding.lease_id,
+        expected_build_id=binding.build_id,
+        expected_elf_sha256=binding.elf_sha256,
+    )
+    client = debug_env.client()
+
+    bound = asyncio.run(bind_debug_firmware(request, client))
+
+    assert bound.ok is True, bound.to_dict()
+    bound_binding = bound.data
+    catalog = DwarfCatalog.from_binding(bound_binding)
+    read = asyncio.run(
+        read_variables(
+            VariableReadRequest(bound_binding, catalog, ("signed32",)), client
+        )
+    )
+
+    assert read.ok is True, read.to_dict()
+    assert read.data.items[0].status == "ok"
+    assert client.attach_count >= 3
 
 
 def test_variables_use_real_provenance_merge_and_preserve_order(

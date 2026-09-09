@@ -648,7 +648,10 @@ def _validate_flash(
         or result.get("elfPath") != getattr(firmware, "elf_path")
         or result.get("targetDevice") != model.target.device
         or result.get("debugTarget") != target
-        or result.get("probeId") != probe
+        or result.get("probeId") not in (
+            probe,
+            hashlib.sha256(probe.encode("utf-8")).hexdigest(),
+        )
         or result.get("workspaceId") != workspace
         or result.get("sessionId") != session
         or result.get("gitHead") != identity.get("gitHead")

@@ -691,8 +691,13 @@ def test_final_attach_cancellation_propagates(binding_env) -> None:
     assert sum(event[0] == "attach" for event in client.events) == 2
 
 
+@pytest.mark.parametrize(
+    "evidence_probe_id",
+    [None, sha256("probe-123".encode("utf-8")).hexdigest()],
+    ids=["generic-selector", "physical-target-hash"],
+)
 def test_genuine_flash_result_is_consumed_by_binding_without_a_second_trust_schema(
-    tmp_path: Path,
+    tmp_path: Path, evidence_probe_id: str | None
 ) -> None:
     root = prepare_project(tmp_path / "project")
     identity = _publish_current_debug_build(root)
@@ -701,11 +706,7 @@ def test_genuine_flash_result_is_consumed_by_binding_without_a_second_trust_sche
 
     flashed = asyncio.run(
         flash_firmware(
-            _request(
-                root,
-                identity,
-                evidence_probe_id=sha256("probe-123".encode("utf-8")).hexdigest(),
-            ),
+            _request(root, identity, evidence_probe_id=evidence_probe_id),
             flash_client,
         )
     )
@@ -715,6 +716,9 @@ def test_genuine_flash_result_is_consumed_by_binding_without_a_second_trust_sche
     assert flash_path.exists()
     produced_document = json.loads(flash_path.read_text(encoding="utf-8"))
     assert set(produced_document) == _FLASH_FIELDS
+    assert produced_document["probeId"] == (
+        evidence_probe_id or "probe-123"
+    )
 
     binding_client = BindingClient(segment)
     result_seen_during_attach: list[bool] = []
@@ -877,10 +881,12 @@ def test_disk_evidence_changed_during_final_attach_is_rejected(
 @pytest.mark.parametrize(
     ("field", "value"),
     [
+        ("probeId", "probe-other"),
         ("probeId", sha256("probe-other".encode("utf-8")).hexdigest()),
+        ("probeId", "arbitrary-probe-identity"),
         ("workspaceId", "other-workspace"),
     ],
-    ids=["probe", "workspace"],
+    ids=["wrong-selector", "another-selector-hash", "arbitrary-identity", "workspace"],
 )
 def test_flash_must_match_workspace_probe_target_and_current_firmware(
     binding_env, field: str, value: str
