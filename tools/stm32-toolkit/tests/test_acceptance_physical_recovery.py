@@ -977,6 +977,8 @@ def test_persisted_physical_recovery_chain_uses_real_authorities_and_is_cas_safe
     physical_locked_diagnostic_data = recovery_workflows._load_physical_diagnostic_locked
 
     def stale_locked_diagnostic_data(*args):
+        # Inject a Diagnostic revision change in the old validation-to-publish
+        # gap; the locked publication path must refuse rev5.
         current_session = physical_locked_diagnostic_data(*args)
         return replace(current_session, revision=current_session.revision + 1)
 
