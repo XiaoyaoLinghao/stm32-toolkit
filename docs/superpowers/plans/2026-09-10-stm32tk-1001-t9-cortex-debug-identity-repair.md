@@ -22,6 +22,8 @@ Introduce one private `debug_handoff_metadata` capability, rather than widening 
 
 Expose it to handoff through private supervisor/service methods under existing lifecycle and backend serialization/lease checks. It must require an active committed attachment matching probe and target. It is not a new HTTP operation and must not use the worker while stop owns it. The handoff obtains metadata after its existing attachment/segment checks and before creating an external reservation. Generic logs, errors, endpoint, lease and debug-handoff state must not acquire raw identity.
 
+The private metadata request owns one five-second monotonic deadline captured before supervisor lifecycle-lock acquisition. Service-lock waiting and worker IPC use its remaining budget. Queue expiry must dispatch nothing and publish no companion/state/reservation. Cancellation and worker failure use existing owned-call cleanup and invalidate attachment state if the underlying worker/session is lost; a late result is never usable. This bound applies only to the new cache-read seam, not to normal attach, sampling or hardware timing. Do not add a new lock or queue.
+
 `CortexDebugAttachContract` adds `boardId` and `targetId`; keep existing `serialNumber` (public selector), `target`, executable, request and servertype fields for compatibility. `boardId` is the validated raw identity, never the opaque hash. `targetId` is the already validated requested debug target. This intentional external IDE configuration is the sole public return boundary for raw identity. The ordinary attach response remains four fields. No SVD-to-pack inference; cmsisPack is outside this repair and must come from verified environment configuration when the IDE is exercised.
 
 ## Persistence and lifecycle
