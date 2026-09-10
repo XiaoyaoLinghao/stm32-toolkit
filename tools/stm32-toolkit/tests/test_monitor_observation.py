@@ -15,6 +15,7 @@ import pytest
 from stm32_toolkit import __version__
 from stm32_toolkit.build.identity import atomic_write_json
 from stm32_toolkit.debug import (
+    DwarfError,
     MemoryRegionBinding,
     SvdError,
     read_variables,
@@ -1525,6 +1526,96 @@ def test_lightweight_revalidation_keeps_full_bind_out_of_stable_tick(
         assert len(harness.bind_calls) == initial_bind_calls + 1
         assert client.attach_count == initial_attach_count + 1
         assert client.calls == []
+        await session.close()
+
+    asyncio.run(exercise())
+
+
+@pytest.mark.parametrize(
+    ("drift", "expected_code"),
+    [
+        ("disk", "MONITOR_FIRMWARE_CHANGED"),
+        ("flash", "MONITOR_FIRMWARE_CHANGED"),
+        ("endpoint", "MONITOR_PROVENANCE_CHANGED"),
+        ("session", "MONITOR_PROVENANCE_CHANGED"),
+        ("lease", "MONITOR_PROVENANCE_CHANGED"),
+        ("attachment", "MONITOR_FIRMWARE_CHANGED"),
+        ("dwarf", "MONITOR_PROVENANCE_CHANGED"),
+        ("svd", "MONITOR_PROVENANCE_CHANGED"),
+    ],
+)
+def test_lightweight_revalidation_closes_identity_drift_without_read_or_bind(
+    debug_env: DebugEnv,
+    tmp_path: Path,
+    drift: str,
+    expected_code: str,
+) -> None:
+    harness = Harness(debug_env)
+
+    async def exercise() -> None:
+        opened = await open_monitor_observation(
+            request(debug_env, tmp_path / "data"), _seams=harness.seams()
+        )
+        assert opened.ok
+        session = opened.data
+        client = harness.clients[0]
+        bind_calls = len(harness.bind_calls)
+        memory_calls = list(client.calls)
+        attach_calls = client.attach_count
+
+        if drift == "disk":
+            path = debug_env.root / "build" / "arm-debug" / "firmware-identity.json"
+            identity = json.loads(path.read_text(encoding="utf-8"))
+            identity["buildId"] = "0" * 64
+            atomic_write_json(path, identity)
+        elif drift == "flash":
+            path = debug_env.root / "artifacts" / "migration" / "flash-result.json"
+            flash = json.loads(path.read_text(encoding="utf-8"))
+            flash["sessionId"] = "flash-drift"
+            atomic_write_json(path, flash)
+        elif drift == "endpoint":
+            client.endpoint = replace(client.endpoint, port=0)
+        elif drift == "session":
+            client.endpoint = replace(client.endpoint, session_id="drift-session")
+        elif drift == "lease":
+            client.endpoint = replace(client.endpoint, lease_id="drift-lease")
+        elif drift == "attachment":
+            async def mismatched_attach(probe_id: str, target: str) -> object:
+                client.attach_count += 1
+                return SimpleNamespace(
+                    probe_id=probe_id,
+                    requested_target=target,
+                    resolved_part_number="STM32F429ZI",
+                    core_count=2,
+                )
+
+            client.attach = mismatched_attach
+        elif drift == "dwarf":
+            class DriftCatalog:
+                def revalidate(self, binding: object) -> None:
+                    raise DwarfError("DWARF_INPUT_CHANGED", "changed")
+
+            session.catalog = DriftCatalog()
+        elif drift == "svd":
+            class DriftSelection:
+                def revalidate(self, binding: object, project_root: Path) -> None:
+                    raise SvdError("SVD_INPUT_CHANGED", "changed")
+
+            session.svd = DriftSelection()
+        else:
+            raise AssertionError(drift)
+
+        result = await session._revalidate_lightweight()
+        assert not result.ok
+        assert result.code == expected_code
+        assert result.message == "Monitor observation changed"
+        assert dict(result.details) == {}
+        assert len(harness.bind_calls) == bind_calls
+        assert client.calls == memory_calls == []
+        if drift == "attachment":
+            assert client.attach_count == attach_calls + 1
+        else:
+            assert client.attach_count == attach_calls
         await session.close()
 
     asyncio.run(exercise())

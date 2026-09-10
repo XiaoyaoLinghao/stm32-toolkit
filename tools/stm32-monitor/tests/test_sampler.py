@@ -775,6 +775,52 @@ def test_pause_resume_stop_and_new_start_create_distinct_runs(tmp_path: Path) ->
     asyncio.run(scenario())
 
 
+def test_lifecycle_re_admits_after_resume_and_new_start_while_ticks_stay_lightweight(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        project = tmp_path / "project"
+        project.mkdir()
+        observation = FakeObservation(_binding(project))
+        sampler = MonitorSampler(observation, FakeGroups(_group()), FakeHistory())
+        stream = sampler.subscribe()
+        first_pending = asyncio.create_task(_next(stream))
+        try:
+            started = await sampler.start(GROUP_ID, expected_revision=1)
+            first = await first_pending
+            second = await _next(stream)
+            assert started.ok
+            assert first.sequence == 0 and second.sequence == 1
+            assert observation.full_revalidate_calls == 1
+            light_before_resume = observation.lightweight_revalidate_calls
+            assert light_before_resume >= 2
+
+            paused = await sampler.pause()
+            assert paused.ok
+            resumed = await sampler.resume()
+            assert resumed.ok
+            assert observation.full_revalidate_calls == 2
+            resumed_batch = await _next(stream)
+            assert resumed_batch.run_id == first.run_id
+            assert observation.lightweight_revalidate_calls > light_before_resume
+
+            stopped = await sampler.stop()
+            assert stopped.ok
+            restarted_pending = asyncio.create_task(_next(stream))
+            restarted = await sampler.start(GROUP_ID, expected_revision=1)
+            assert restarted.ok
+            assert observation.full_revalidate_calls == 3
+            restarted_batch = await restarted_pending
+            assert restarted_batch.run_id != first.run_id
+            assert restarted_batch.sequence == 0
+            assert observation.lightweight_revalidate_calls > light_before_resume
+        finally:
+            await stream.aclose()
+            await sampler.close()
+
+    asyncio.run(scenario())
+
+
 @pytest.mark.parametrize("raise_append", [False, True])
 def test_history_storage_failures_are_counted_without_blocking_sampling(tmp_path: Path, raise_append: bool) -> None:
     async def scenario() -> None:
