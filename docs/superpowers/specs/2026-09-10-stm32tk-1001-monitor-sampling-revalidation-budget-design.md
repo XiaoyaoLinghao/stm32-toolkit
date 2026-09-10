@@ -1,6 +1,6 @@
 # STM32TK-1001 Monitor Sampling Revalidation Budget Design
 
-**Status:** proposed for user review; product implementation is not yet approved  
+**Status:** approved by the user on 2026-09-10; implemented and independently accepted  
 **Accepted base:** `7f1a5215c291aa6b805bd4c3b7215bbc49540f50`  
 **Specification owner / reviewer:** GPT-5.6-sol  
 **Implementation owner after approval:** one GPT-5.6-luna agent at reasoning effort `max`  

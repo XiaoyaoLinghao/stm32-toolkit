@@ -1,6 +1,6 @@
 # STM32TK-1001 Monitor Sampling Revalidation Budget Plan
 
-**Status:** proposed; blocked on the design's explicit residual-risk decision  
+**Status:** approved by the user on 2026-09-10; implementation completed and independently accepted  
 **Accepted base:** `7f1a5215c291aa6b805bd4c3b7215bbc49540f50`  
 **Specification:** `docs/superpowers/specs/2026-09-10-stm32tk-1001-monitor-sampling-revalidation-budget-design.md`
 
