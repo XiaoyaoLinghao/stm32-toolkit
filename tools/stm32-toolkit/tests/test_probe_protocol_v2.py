@@ -407,7 +407,7 @@ def test_admitted_pyocd_adapter_exposes_closed_target_operations():
         },
         target_transport_factory=transport_factory,
     )
-    backend.open_attach("probe-a", "stm32f407vg")
+    backend.open_attach("probe-a", "stm32f407vg", halt_on_connect=True)
     assert backend.target_identity()["target_id"] == "target-a"
     assert backend.target_state() == {"state": "halted", "reason": "requested"}
     breakpoint = backend.set_temporary_breakpoint(0x08000100, 2)
@@ -954,14 +954,22 @@ def test_pyocd_target_adapter_fails_closed_on_limits_identity_and_partial_output
     invalid_profile.close()
 
     class StateFailureTarget(Target):
-        def get_state(self):
-            raise RuntimeError("secret")
+        def __init__(self):
+            super().__init__()
+            self.fail_state = False
 
+        def get_state(self):
+            if self.fail_state:
+                raise RuntimeError("secret")
+            return super().get_state()
+
+    state_failure_target = StateFailureTarget()
     state_failure = PyOCDBackend(
-        FakePyOCDDriver((FakePyOCDProbe("probe-a"),), target=StateFailureTarget()),
+        FakePyOCDDriver((FakePyOCDProbe("probe-a"),), target=state_failure_target),
         target_profile={"board_id": "b", "mcu": "stm32f407vg", "target_id": "t"},
     )
     state_failure.open_attach("probe-a", "stm32f407vg")
+    state_failure_target.fail_state = True
     with pytest.raises(ProbeBackendError): state_failure.target_state()
     state_failure.close()
 
@@ -1257,11 +1265,20 @@ def test_pyocd_isolates_legacy_reads_from_closed_target_observation_policy():
     target.calls.clear()
 
     assert backend.read_memory(0x40000000, 4) == b"MMIO"
+    with pytest.raises(ProbeBackendError) as running_error:
+        backend.read_core_registers(("not_in_profile",))
+    assert running_error.value.code == "PROBE_REGISTER_UNAVAILABLE"
+    assert dict(running_error.value.details) == {"state": "running"}
+    assert target.calls == [
+        ("read_memory_block8", 0x40000000, 4),
+        ("get_state",),
+    ]
+    target.calls.clear()
+    target.state = "halted"
     assert backend.read_core_registers(("not_in_profile",)) == {
         "not_in_profile": 0x1234
     }
     assert target.calls == [
-        ("read_memory_block8", 0x40000000, 4),
         ("get_state",),
         ("read_core_registers_raw", ("not_in_profile",)),
     ]
