@@ -189,7 +189,7 @@ class FakeProbeBackend:
         self.halted = False
         self.closed = True
 
-    def debug_handoff_metadata(self) -> DebugHandoffMetadata:
+    def debug_handoff_metadata(self, *, deadline: float | None = None) -> DebugHandoffMetadata:
         self._require_attach()
         self.events.append(("debug_handoff_metadata",))
         if self.attached_hardware_id is None or self.attached_target is None:

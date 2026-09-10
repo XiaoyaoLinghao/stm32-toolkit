@@ -61,7 +61,12 @@ class _WorkerTestBackend:
     def list_probes(self): return (ProbeDescriptor("probe-a", "v", "p", None),)
     def open_attach(self, probe_id, target, *, halt_on_connect=False):
         return ProbeAttachmentEvidence(probe_id, target, target, 1)
-    def debug_handoff_metadata(self):
+    def debug_handoff_metadata(self, *, deadline=None):
+        if self.mode == "metadata-marker":
+            self.marker.write_text("metadata", encoding="ascii")
+        if self.mode == "metadata-hang":
+            time.sleep(5.0)
+            self.marker.write_text("late-metadata", encoding="ascii")
         return DebugHandoffMetadata("probe-a", "stm32", "probe-a")
     def _record_read(self, operation: str) -> None:
         with self.marker.open("ab") as stream:
@@ -116,7 +121,7 @@ class _WorkerTestBackend:
 
 
 class _MalformedMetadataBackend:
-    def debug_handoff_metadata(self):
+    def debug_handoff_metadata(self, *, deadline=None):
         return {"probeId": "probe-a", "target": "stm32"}
 
     def close(self):
@@ -1216,6 +1221,58 @@ def test_worker_timeout_terminates_cancel_ignored_child_without_late_action(
     assert worker.owned_pid == pid
     time.sleep(2.1)
     assert not marker.exists()
+
+
+def test_worker_metadata_deadline_expires_while_call_lock_is_queued(
+    tmp_path: Path,
+) -> None:
+    marker = tmp_path / "metadata-dispatch"
+    worker = ProbeBackendWorker(
+        _test_backend_factory=partial(_factory, "metadata-marker", str(marker))
+    )
+    assert worker._call_lock.acquire()
+    failures: list[BaseException] = []
+
+    def invoke() -> None:
+        try:
+            worker.debug_handoff_metadata(deadline=time.monotonic() + 0.05)
+        except BaseException as error:
+            failures.append(error)
+
+    caller = threading.Thread(target=invoke)
+    caller.start()
+    caller.join(1.0)
+    try:
+        assert not caller.is_alive()
+        assert len(failures) == 1
+        assert isinstance(failures[0], ProbeWorkerError)
+        assert failures[0].code == "PROBE_TIMEOUT"
+        assert not marker.exists()
+        assert worker.is_alive
+    finally:
+        worker._call_lock.release()
+        worker.close()
+
+
+def test_worker_metadata_deadline_bounds_dispatched_ipc_and_reaps_child(
+    tmp_path: Path,
+) -> None:
+    marker = tmp_path / "late-metadata"
+    worker = ProbeBackendWorker(
+        _test_backend_factory=partial(_factory, "metadata-hang", str(marker))
+    )
+    started = time.monotonic()
+    try:
+        with pytest.raises(ProbeWorkerError) as caught:
+            worker.debug_handoff_metadata(deadline=time.monotonic() + 0.05)
+        assert caught.value.code == "PROBE_TIMEOUT"
+        assert time.monotonic() - started < 1.5
+        assert not worker.is_alive
+        time.sleep(0.1)
+        assert not marker.exists()
+    finally:
+        if worker.is_alive:
+            worker.close()
 
 
 @pytest.mark.parametrize("mode", ["crash", "hard-crash", "oversize"])

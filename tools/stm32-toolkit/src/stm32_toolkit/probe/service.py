@@ -56,6 +56,7 @@ _REPARSE_POINT = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
 _TARGET_REGISTER = re.compile(r"^[a-z][a-z0-9_]{0,31}$")
 _ATTACH_RECOVERY_SECONDS = 1.0
 _DEBUG_HANDOFF_METADATA_SECONDS = 5.0
+_DEBUG_HANDOFF_METADATA_CLEANUP_SECONDS = 3.0
 
 
 def _service_error_fields(error: BaseException) -> tuple[str, str]:
@@ -122,6 +123,33 @@ async def _await_task_ignoring_cancellation(task: asyncio.Task[object]) -> objec
         except asyncio.CancelledError:
             continue
     return task.result()
+
+
+async def _await_task_bounded_ignoring_cancellation(
+    task: asyncio.Task[object], deadline: float
+) -> bool:
+    """Wait for one owned task until an absolute cleanup deadline."""
+    while not task.done():
+        remaining = deadline - asyncio.get_running_loop().time()
+        if remaining <= 0:
+            return False
+        waiter = asyncio.create_task(
+            asyncio.wait_for(asyncio.shield(task), timeout=remaining)
+        )
+        try:
+            await asyncio.shield(waiter)
+        except asyncio.CancelledError:
+            try:
+                await _await_task_ignoring_cancellation(waiter)
+            except asyncio.TimeoutError:
+                return task.done()
+            except BaseException:
+                pass
+        except asyncio.TimeoutError:
+            return task.done()
+        except BaseException:
+            pass
+    return True
 
 
 async def _await_attach_outcome(
@@ -471,6 +499,10 @@ class ProbeService:
         self._lease: ProbeLease | None = None
         self._endpoint: ProbeEndpoint | None = None
         self._backend_tasks: set[asyncio.Task[object]] = set()
+        self._metadata_owned_tasks: set[asyncio.Task[object]] = set()
+        self._metadata_abort_task: asyncio.Task[object] | None = None
+        self._metadata_cleanup_unresolved = False
+        self._metadata_abort_failed = False
         self._backend_modify_tasks: set[asyncio.Task[object]] = set()
         self._modifications_draining = False
         self._backend_lock = asyncio.Lock()
@@ -685,6 +717,10 @@ class ProbeService:
         return self._endpoint
 
     async def start(self) -> ProbeEndpoint:
+        if self._metadata_cleanup_unresolved:
+            raise ProbeServiceError(
+                "PROBE_SERVICE_UNAVAILABLE", "Probe Service is unavailable"
+            )
         if self._endpoint is not None:
             return self._endpoint
         session_directory_descriptor = (
@@ -1689,25 +1725,45 @@ class ProbeService:
                         raise ProbeServiceError(
                             "PROBE_TIMEOUT", "Debug handoff metadata request timed out"
                         )
-                    provider_task = asyncio.create_task(asyncio.to_thread(provider))
+                    provider_task = asyncio.create_task(
+                        asyncio.to_thread(provider, deadline=deadline)
+                    )
+                    self._track_metadata_task(provider_task)
                     try:
                         try:
                             value = await asyncio.wait_for(
                                 asyncio.shield(provider_task), timeout=remaining()
                             )
-                        except (asyncio.TimeoutError, asyncio.CancelledError):
+                        except (asyncio.TimeoutError, asyncio.CancelledError) as interruption:
                             abort = getattr(self._backend, "abort_owned_execution", None)
+                            abort_task: asyncio.Task[object] | None = None
                             if callable(abort):
                                 abort_task = asyncio.create_task(asyncio.to_thread(abort))
-                                try:
-                                    await _await_task_ignoring_cancellation(abort_task)
-                                except BaseException:
-                                    pass
+                                self._track_metadata_task(abort_task, abort=True)
+                            cleanup_task = asyncio.create_task(
+                                self._finish_metadata_cleanup(provider_task, abort_task)
+                            )
                             try:
-                                await _await_task_ignoring_cancellation(provider_task)
+                                cleanup_reached = await _await_task_ignoring_cancellation(
+                                    cleanup_task
+                                )
                             except BaseException:
-                                pass
-                            raise
+                                cleanup_reached = False
+                            if not cleanup_reached:
+                                self._metadata_cleanup_unresolved = True
+                                self._stopping = True
+                                self._observation_attachment = None
+                                raise ProbeServiceCleanupError(
+                                    CleanupFragment.from_entries((
+                                        make_cleanup_entry(
+                                            "service-worker-abort",
+                                            "failed",
+                                            reason="timeout",
+                                            source_code="PROBE_TIMEOUT",
+                                        ),
+                                    ))
+                                ) from None
+                            raise interruption
                     except BaseException:
                         self._observation_attachment = None
                         raise
@@ -1757,7 +1813,12 @@ class ProbeService:
             except asyncio.TimeoutError:
                 if not task.done():
                     task.cancel()
-                    await asyncio.gather(task, return_exceptions=True)
+                try:
+                    await _await_task_ignoring_cancellation(task)
+                except ProbeServiceCleanupError:
+                    raise
+                except BaseException:
+                    pass
                 raise ProbeServiceError(
                     "PROBE_TIMEOUT", "Debug handoff metadata request timed out"
                 ) from None
@@ -1766,6 +1827,8 @@ class ProbeService:
                     task.cancel()
                 try:
                     await _await_task_ignoring_cancellation(task)
+                except ProbeServiceCleanupError:
+                    raise
                 except BaseException:
                     pass
                 raise
@@ -1789,6 +1852,96 @@ class ProbeService:
         self._backend_modify_tasks.discard(task)
         if not task.cancelled():
             task.exception()
+
+    def _metadata_task_finished(self, task: asyncio.Task[object]) -> None:
+        self._metadata_owned_tasks.discard(task)
+        if not task.cancelled():
+            task.exception()
+
+    def _record_metadata_abort_failure(self) -> None:
+        abort_task = self._metadata_abort_task
+        if abort_task is None or not abort_task.done():
+            return
+        if abort_task.cancelled():
+            self._metadata_abort_failed = True
+            return
+        try:
+            abort_task.result()
+        except BaseException:
+            self._metadata_abort_failed = True
+
+    def _metadata_execution_stopped(self) -> bool:
+        if self._metadata_abort_failed:
+            return False
+        alive = getattr(self._backend, "is_alive", None)
+        if type(alive) is bool:
+            return not alive
+        return True
+
+    def _track_metadata_task(
+        self, task: asyncio.Task[object], *, abort: bool = False
+    ) -> None:
+        self._metadata_owned_tasks.add(task)
+        if abort:
+            self._metadata_abort_task = task
+        task.add_done_callback(self._metadata_task_finished)
+
+    async def _finish_metadata_cleanup(
+        self,
+        provider_task: asyncio.Task[object],
+        abort_task: asyncio.Task[object] | None,
+    ) -> bool:
+        deadline = (
+            asyncio.get_running_loop().time()
+            + _DEBUG_HANDOFF_METADATA_CLEANUP_SECONDS
+        )
+        tasks = [provider_task]
+        if abort_task is not None:
+            tasks.append(abort_task)
+        waits = [
+            asyncio.create_task(
+                _await_task_bounded_ignoring_cancellation(task, deadline)
+            )
+            for task in tasks
+        ]
+        outcomes = await asyncio.gather(*waits, return_exceptions=True)
+        self._record_metadata_abort_failure()
+        stopped = (
+            len(outcomes) == len(tasks)
+            and all(outcome is True for outcome in outcomes)
+            and all(task.done() for task in tasks)
+            and self._metadata_execution_stopped()
+        )
+        if not stopped:
+            self._metadata_cleanup_unresolved = True
+        return stopped
+
+    async def _finish_pending_metadata_cleanup(self) -> bool:
+        tasks = tuple(self._metadata_owned_tasks)
+        if tasks:
+            deadline = (
+                asyncio.get_running_loop().time()
+                + _DEBUG_HANDOFF_METADATA_CLEANUP_SECONDS
+            )
+            waits = [
+                asyncio.create_task(
+                    _await_task_bounded_ignoring_cancellation(task, deadline)
+                )
+                for task in tasks
+            ]
+            await asyncio.gather(*waits, return_exceptions=True)
+        self._record_metadata_abort_failure()
+        if any(not task.done() for task in tasks):
+            self._metadata_cleanup_unresolved = True
+        if self._metadata_cleanup_unresolved:
+            if (
+                any(not task.done() for task in tasks)
+                or self._metadata_abort_failed
+                or not self._metadata_execution_stopped()
+            ):
+                return False
+            self._metadata_cleanup_unresolved = False
+        return True
 
     def _read_verified_elf(
         self, relative_path: object, expected_sha256: object, expected_size: object
@@ -2040,6 +2193,11 @@ class ProbeService:
         lease = self._lease
         first_error: Exception | None = None
         cleanup: list[dict[str, str]] = []
+        metadata_cleanup_failed = False
+
+        if self._metadata_cleanup_unresolved or self._metadata_owned_tasks:
+            if not await self._finish_pending_metadata_cleanup():
+                metadata_cleanup_failed = True
 
         if heartbeat is not None and heartbeat is not caller:
             heartbeat.cancel()
@@ -2053,6 +2211,20 @@ class ProbeService:
                     first_error = error
             else:
                 cleanup.append(make_cleanup_entry("service-runner-cleanup", "succeeded"))
+        if metadata_cleanup_failed:
+            cleanup.append(
+                make_cleanup_entry(
+                    "service-stop-backend-close",
+                    "failed",
+                    reason="timeout",
+                    source_code="PROBE_TIMEOUT",
+                )
+            )
+            self._heartbeat_task = None
+            self._runner = None
+            self._observation_attachment = None
+            fragment = CleanupFragment.from_entries(cleanup)
+            raise ProbeServiceCleanupError(fragment) from None
         if self._backend_tasks:
             await asyncio.gather(*tuple(self._backend_tasks), return_exceptions=True)
         try:

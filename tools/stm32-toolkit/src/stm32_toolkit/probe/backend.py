@@ -133,7 +133,9 @@ class DebugHandoffMetadata:
 class DebugHandoffMetadataBackend(Protocol):
     """Private additive capability for the authenticated handoff path."""
 
-    def debug_handoff_metadata(self) -> DebugHandoffMetadata: ...
+    def debug_handoff_metadata(
+        self, *, deadline: float | None = None
+    ) -> DebugHandoffMetadata: ...
 
 
 @runtime_checkable

@@ -84,6 +84,12 @@ class ProbeServiceSupervisor:
     async def start(self, *, handoff_ticket: str | None = None) -> ProbeEndpoint:
         async with self._lifecycle_lock:
             if self._endpoint is not None:
+                if self._service is not None and getattr(
+                    self._service, "_metadata_cleanup_unresolved", False
+                ):
+                    raise ProbeServiceError(
+                        "PROBE_SERVICE_UNAVAILABLE", "Probe Service is unavailable"
+                    )
                 return self._endpoint
 
             backend: ProbeBackend | None = None
@@ -153,9 +159,13 @@ class ProbeServiceSupervisor:
                         make_cleanup_entry("service-stop-backend-close", "succeeded"),
                     ))
             finally:
-                self._service = None
-                self._backend = None
-                self._endpoint = None
+                if not (
+                    service is not None
+                    and getattr(service, "_metadata_cleanup_unresolved", False)
+                ):
+                    self._service = None
+                    self._backend = None
+                    self._endpoint = None
             return fragment
 
     async def drain_modifications(self) -> None:

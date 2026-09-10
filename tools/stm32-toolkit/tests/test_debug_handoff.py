@@ -513,6 +513,32 @@ def test_missing_companion_blocks_repeat_but_ticket_remains_endable(handoff_env)
     assert ended.ok is True
 
 
+def test_nonregular_companion_does_not_block_ticket_end(handoff_env):
+    _, _, session_root, supervisor, client, request = handoff_env
+    begun = asyncio.run(begin_debug_handoff(request, supervisor, client))
+    assert begun.ok is True
+    companion_path = session_root / CORTEX_CONFIG_NAME
+    companion_path.unlink()
+    companion_path.mkdir()
+
+    ended = asyncio.run(end_debug_handoff(begun.data.ticket_id, supervisor, lambda _: client))
+
+    assert ended.ok is True
+
+
+def test_begin_rejects_nonregular_companion_before_attach_or_reservation(handoff_env):
+    _, _, session_root, supervisor, client, request = handoff_env
+    (session_root / CORTEX_CONFIG_NAME).mkdir()
+
+    result = asyncio.run(begin_debug_handoff(request, supervisor, client))
+
+    assert result.code == "HANDOFF_STATE_INVALID"
+    assert supervisor.metadata_calls == 0
+    assert supervisor.stop_calls == 0
+    assert supervisor.lifecycle_events == []
+    assert not (session_root / STATE_NAME).exists()
+
+
 @pytest.mark.parametrize("field", ["ticketSha256", "boardId", "executable"])
 def test_stale_companion_blocks_repeat_without_second_reservation(handoff_env, field):
     _, _, session_root, supervisor, client, request = handoff_env

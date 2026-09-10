@@ -188,6 +188,38 @@ class BlockingFailingCloseBackend(BlockingCloseBackend):
         raise RuntimeError("backend cleanup failed")
 
 
+class BlockingMetadataCleanupBackend(FakeProbeBackend):
+    def __init__(
+        self,
+        *,
+        metadata_entered: threading.Event,
+        metadata_release: threading.Event,
+        abort_entered: threading.Event,
+        abort_release: threading.Event,
+    ) -> None:
+        source = fake_backend()
+        super().__init__(
+            probes=source.list_probes(),
+            memory={0x20000000: b"\x01\x02\x03\x04"},
+            registers={"r0": 7, "pc": 0x08000101},
+        )
+        self.metadata_entered = metadata_entered
+        self.metadata_release = metadata_release
+        self.abort_entered = abort_entered
+        self.abort_release = abort_release
+        self.metadata_deadline: float | None = None
+
+    def debug_handoff_metadata(self, *, deadline: float | None = None):
+        self.metadata_deadline = deadline
+        self.metadata_entered.set()
+        self.metadata_release.wait()
+        return super().debug_handoff_metadata(deadline=deadline)
+
+    def abort_owned_execution(self) -> None:
+        self.abort_entered.set()
+        self.abort_release.wait()
+
+
 class MismatchedAttachBackend(FakeProbeBackend):
     def __init__(
         self,
@@ -3213,6 +3245,78 @@ def test_timed_out_running_backend_error_is_retrieved(tmp_path: Path):
             release.set()
             await client.close()
             await service.stop()
+
+    run(scenario())
+
+
+def test_metadata_cleanup_timeout_is_bounded_and_retains_lease_until_stopped(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(service_module, "_DEBUG_HANDOFF_METADATA_CLEANUP_SECONDS", 0.05)
+
+    async def scenario() -> None:
+        metadata_entered = threading.Event()
+        metadata_release = threading.Event()
+        abort_entered = threading.Event()
+        abort_release = threading.Event()
+        backend = BlockingMetadataCleanupBackend(
+            metadata_entered=metadata_entered,
+            metadata_release=metadata_release,
+            abort_entered=abort_entered,
+            abort_release=abort_release,
+        )
+        service = make_service(tmp_path, backend=backend)
+        endpoint = await service.start()
+        client = ProbeClient(endpoint)
+        try:
+            await client.attach("probe-a", "STM32F429ZITx")
+            loop = asyncio.get_running_loop()
+            started = loop.time()
+            request = asyncio.create_task(
+                service.debug_handoff_metadata(
+                    "probe-a", "STM32F429ZITx", deadline=loop.time() + 1.0
+                )
+            )
+            assert await asyncio.to_thread(metadata_entered.wait, 1)
+            request.cancel()
+            assert await asyncio.to_thread(abort_entered.wait, 1)
+            with pytest.raises(ProbeServiceCleanupError) as metadata_error:
+                await request
+            assert metadata_error.value.code == "PROBE_CLOSE_FAILED"
+            assert loop.time() - started < 0.5
+            assert backend.metadata_deadline is not None
+            assert service._metadata_cleanup_unresolved is True
+            with pytest.raises(ProbeServiceError) as restart_error:
+                await service.start()
+            assert restart_error.value.code == "PROBE_SERVICE_UNAVAILABLE"
+
+            stopping_started = loop.time()
+            with pytest.raises(ProbeServiceCleanupError) as stop_error:
+                await service.stop()
+            assert stop_error.value.code == "PROBE_CLOSE_FAILED"
+            assert loop.time() - stopping_started < 0.5
+            assert service._lease is not None
+            assert service.endpoint is endpoint
+            record = json.loads(
+                service._lease_manager.record_path("probe-a").read_text(encoding="utf-8")
+            )
+            assert record["state"] == "active"
+            assert backend.closed is False
+
+            metadata_release.set()
+            abort_release.set()
+            deadline = loop.time() + 1
+            while service._metadata_owned_tasks and loop.time() < deadline:
+                await asyncio.sleep(0.01)
+            assert not service._metadata_owned_tasks
+            await service.stop()
+            assert backend.closed is True
+        finally:
+            metadata_release.set()
+            abort_release.set()
+            await client.close()
+            if service._lease is not None:
+                await service.stop()
 
     run(scenario())
 

@@ -1073,7 +1073,7 @@ class PyOCDBackend:
             core_count=1,
         )
 
-    def debug_handoff_metadata(self) -> DebugHandoffMetadata:
+    def debug_handoff_metadata(self, *, deadline: float | None = None) -> DebugHandoffMetadata:
         """Return identity captured by the current attachment without I/O."""
         if (
             self._session is None

@@ -289,7 +289,7 @@ def _safe_session_root(supervisor: object) -> tuple[object, Path]:
             raise _fail("HANDOFF_STATE_UNAVAILABLE", "Debug handoff state is unavailable") from None
         if _is_redirect(info) or not stat.S_ISDIR(info.st_mode):
             raise _fail("HANDOFF_STATE_INVALID", "Debug handoff state is invalid", rule="sessionRoot")
-    for name in (_STATE_NAME, _GUARD_NAME, _CORTEX_CONFIG_NAME):
+    for name in (_STATE_NAME, _GUARD_NAME):
         path = root / name
         try:
             child = os.lstat(path)
@@ -613,6 +613,7 @@ def _validate_cortex_config(value: dict[str, object]) -> dict[str, object]:
 
 def _read_cortex_config(session_root: Path) -> dict[str, object]:
     try:
+        _validate_cortex_config_path(session_root)
         value = _read_json_file(
             session_root / _CORTEX_CONFIG_NAME,
             _CORTEX_CONFIG_LIMIT,
@@ -633,7 +634,26 @@ def _read_cortex_config(session_root: Path) -> dict[str, object]:
         ) from None
 
 
+def _validate_cortex_config_path(session_root: Path) -> None:
+    path = session_root / _CORTEX_CONFIG_NAME
+    try:
+        child = os.lstat(path)
+    except FileNotFoundError:
+        return
+    except OSError:
+        raise _fail(
+            "HANDOFF_STATE_UNAVAILABLE", "Debug handoff state is unavailable"
+        ) from None
+    if _is_redirect(child) or not stat.S_ISREG(child.st_mode):
+        raise _fail(
+            "HANDOFF_STATE_INVALID",
+            "Debug handoff state is invalid",
+            rule="companionPath",
+        )
+
+
 def _write_cortex_config(session_root: Path, value: dict[str, object]) -> None:
+    _validate_cortex_config_path(session_root)
     _validate_cortex_config(value)
     data = json.dumps(value, sort_keys=True, separators=(",", ":")).encode("utf-8") + b"\n"
     descriptor = -1
@@ -1121,6 +1141,8 @@ async def begin_debug_handoff(
                         "Probe Service must be reacquired before debug handoff can resume",
                     )
                 if endpoint is not None:
+                    if state is None:
+                        _validate_cortex_config_path(session_root)
                     metadata: DebugHandoffMetadata | None = None
                     lease_id = _endpoint(endpoint, probe, workspace, session)
                     _validate_client_endpoint(client, endpoint)

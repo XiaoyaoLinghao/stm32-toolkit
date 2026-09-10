@@ -6,6 +6,7 @@ import base64
 from collections.abc import Callable, Mapping
 from dataclasses import asdict, dataclass, is_dataclass
 import json
+import math
 import multiprocessing
 from multiprocessing.connection import Connection
 import os
@@ -398,12 +399,37 @@ class ProbeBackendWorker:
             raise ProbeWorkerError("PROBE_BACKEND_ERROR", "Probe worker response is invalid")
         return value
 
-    def call(self, method: str, *args: object, timeout_seconds: float = 30.0, **kwargs: object) -> object:
-        if method not in _METHODS or not 0 < timeout_seconds <= 301:
+    def call(
+        self,
+        method: str,
+        *args: object,
+        timeout_seconds: float = 30.0,
+        deadline: float | None = None,
+        **kwargs: object,
+    ) -> object:
+        if (
+            method not in _METHODS
+            or not 0 < timeout_seconds <= 301
+            or (deadline is not None and (type(deadline) is not float or not math.isfinite(deadline)))
+        ):
             raise ProbeWorkerError("PROBE_PROTOCOL_INVALID", "Probe worker request is invalid")
-        with self._call_lock:
+        if deadline is None:
+            self._call_lock.acquire()
+        else:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise ProbeWorkerError("PROBE_TIMEOUT", "Probe worker operation timed out")
+            if not self._call_lock.acquire(timeout=remaining):
+                raise ProbeWorkerError("PROBE_TIMEOUT", "Probe worker operation timed out")
+        dispatched = False
+        try:
             if self._closed or not self._process.is_alive():
                 raise ProbeWorkerError("PROBE_BACKEND_ERROR", "Probe worker is unavailable")
+            request_deadline = (
+                deadline if deadline is not None else time.monotonic() + timeout_seconds
+            )
+            if request_deadline <= time.monotonic():
+                raise ProbeWorkerError("PROBE_TIMEOUT", "Probe worker operation timed out")
             self._sequence += 1
             request_id = self._sequence
             payload = _canonical_bytes({
@@ -414,9 +440,11 @@ class ProbeBackendWorker:
                 raise ProbeWorkerError("PROBE_LIMIT_EXCEEDED", "Probe worker request exceeds its limit")
             try:
                 self._connection.send_bytes(payload)
-                response = self._receive(time.monotonic() + timeout_seconds)
+                dispatched = True
+                response = self._receive(request_deadline)
             except ProbeWorkerError:
-                self.abort_owned_execution()
+                if dispatched:
+                    self.abort_owned_execution()
                 raise
             if response.get("ok") is False:
                 failure = response.get("error")
@@ -487,6 +515,8 @@ class ProbeBackendWorker:
                 self.abort_owned_execution()
                 raise ProbeWorkerError("PROBE_BACKEND_ERROR", "Probe worker response is invalid")
             return _from_json(response["result"])
+        finally:
+            self._call_lock.release()
 
     def abort_owned_execution(self) -> None:
         """Terminate only the exact child owned by this proxy and bound the join."""
@@ -514,9 +544,13 @@ class ProbeBackendWorker:
     def open_attach(self, probe_id: str, target: str, *, halt_on_connect: bool = False) -> ProbeAttachmentEvidence:
         return ProbeAttachmentEvidence(**self.call("open_attach", probe_id, target, halt_on_connect=halt_on_connect))
 
-    def debug_handoff_metadata(self) -> DebugHandoffMetadata:
+    def debug_handoff_metadata(self, *, deadline: float | None = None) -> DebugHandoffMetadata:
         try:
-            return DebugHandoffMetadata.from_value(self.call("debug_handoff_metadata"))
+            if deadline is None:
+                deadline = time.monotonic() + 5.0
+            return DebugHandoffMetadata.from_value(
+                self.call("debug_handoff_metadata", deadline=deadline)
+            )
         except (TypeError, ValueError) as error:
             self.abort_owned_execution()
             raise ProbeWorkerError(
