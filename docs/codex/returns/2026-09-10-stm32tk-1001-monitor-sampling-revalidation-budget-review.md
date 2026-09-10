@@ -65,3 +65,10 @@ The implementer could not remove the run-owned RED basetemp
 returned `Access is denied`; a later direct recursive `Remove-Item` request was rejected by execution
 policy. No further cleanup variant is authorized or attempted. The retained path is test output,
 not product or acceptance evidence.
+
+Sol's one cleanup request for the independent-review basetemps
+`D:\codex-tmp\stm32tk-monitor-revalidation-review-20260910-test-01` and
+`D:\codex-tmp\stm32tk-monitor-revalidation-review-20260910-test-02` was also rejected before
+process creation with `rejected: blocked by policy`. The requested operation was one verified,
+native PowerShell recursive `Remove-Item` over exactly those two D-only paths. Sol did not retry or
+use another deletion form; both paths remain disclosed.
