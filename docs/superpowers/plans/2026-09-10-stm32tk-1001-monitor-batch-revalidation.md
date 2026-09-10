@@ -1,9 +1,9 @@
 # STM32TK-1001 Monitor Batch Revalidation Plan
 
-**Status:** approved direction by the user on 2026-09-10; ready for bounded implementation  
-**Accepted base:** `4db09f65067e6cacbbe88c1c4c2e1f8dd19bd451`  
-**Specification:** `docs/superpowers/specs/2026-09-10-stm32tk-1001-monitor-batch-revalidation-design.md`  
-**Specification owner / reviewer:** GPT-5.6-sol  
+**Status:** approved by the user on 2026-09-10; implementation completed and independently accepted
+**Accepted base:** `4db09f65067e6cacbbe88c1c4c2e1f8dd19bd451`
+**Specification:** `docs/superpowers/specs/2026-09-10-stm32tk-1001-monitor-batch-revalidation-design.md`
+**Specification owner / reviewer:** GPT-5.6-sol
 **Implementation owner:** one GPT-5.6-luna agent at reasoning effort `max`
 
 ## Boundaries and lessons

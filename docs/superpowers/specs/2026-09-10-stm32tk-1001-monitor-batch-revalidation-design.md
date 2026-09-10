@@ -1,10 +1,10 @@
 # STM32TK-1001 Monitor Batch Revalidation Design
 
-**Status:** approved direction by the user on 2026-09-10; detailed contract frozen by GPT-5.6-sol for implementation  
-**Accepted base:** `4db09f65067e6cacbbe88c1c4c2e1f8dd19bd451`  
-**Specification owner / reviewer:** GPT-5.6-sol  
-**Implementation owner:** one GPT-5.6-luna agent at reasoning effort `max`  
-**Branch:** `codex/STM32TK-1001-LEGACY-HARDWARE-CLOSED-LOOP-impl`  
+**Status:** approved by the user on 2026-09-10; implemented and independently accepted
+**Accepted base:** `4db09f65067e6cacbbe88c1c4c2e1f8dd19bd451`
+**Specification owner / reviewer:** GPT-5.6-sol
+**Implementation owner:** one GPT-5.6-luna agent at reasoning effort `max`
+**Branch:** `codex/STM32TK-1001-LEGACY-HARDWARE-CLOSED-LOOP-impl`
 **Remote authority:** none
 
 ## Problem and evidence boundary
