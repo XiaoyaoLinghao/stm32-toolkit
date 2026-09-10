@@ -99,6 +99,37 @@ schema, sealed history or whole-project verification matrix. Preserve existing
 group-revision checking, scheduler/drop accounting, queues, history and export formats.
 Connection may halt briefly and resume; continuous reads must not issue core control.
 
+## Precision-wait implementation amendment (2026-09-10)
+
+At accepted implementation base `575d90c0c8b289068d8bd859261782ee9a3eee44`,
+QPC measures a real 111.6048ms adjacent-capture P95. A bounded host-only comparison
+using the production sampler and identical existing fake stores/16ms fake reads
+isolated the wait primitive: default asyncio wait had approximately110.400ms P95,
+thread sleep approximately100.863ms. These exploratory nearest-index percentiles
+are not the physical nearest-rank acceptance gate and do not upgrade prior evidence.
+
+Refine only the existing sampler wait, preserving its single producer and absolute
+QPC next_deadline. For more than50ms remaining, use existing asyncio sleep for the
+coarse portion and recheck QPC. In the final at-most50ms, submit one pure wait to
+the existing default executor. The worker recomputes remaining time from that
+same absolute deadline when it actually starts; queued elapsed time must not be
+added again. An expired deadline causes zero sleep. Cap a worker sleep argument
+at50ms and recheck afterward. Do not busy-spin, change the event-loop clock/policy,
+set global timer resolution, create a new pool, or add a background scheduler.
+
+The producer owns this executor Future until completion, including after repeated
+cancellation. Reuse the existing owned-await helper, widening its type from Task
+to Future if needed; do not create another asyncio Task. Stop/close invalidate the
+epoch as before and cannot finish while this wait Future remains pending. After
+cancellation, propagate cancellation before group access or probe reading. No
+promise is made about OS scheduling or executor queue latency; only the worker's
+requested blocking sleep is capped. Pause/resume and all pre-read/post-read guards
+remain unchanged. No wait touches a target, store, binding, lease or read plan.
+
+This is an implementation refinement of the approved sampling scenarios, not a
+new public timing/API promise. Physical thresholds and separate authorization
+for deployment and a fresh physical run remain unchanged.
+
 ## Acceptance
 
 Offline evidence must prove one plan per admission, reuse across multiple ticks,
