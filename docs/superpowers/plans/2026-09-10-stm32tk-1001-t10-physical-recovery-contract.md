@@ -1,0 +1,61 @@
+# T10 physical recovery contract repair
+
+Status: frozen for offline implementation. Native TestRun/Diagnostic identifier and source snapshot seams have been reconciled below.
+
+## Authority and scope
+
+Primary conversation owns the design and acceptance. One Luna/max owner will implement the complete recovery slice; an independent reviewer checks the complete diff. Accepted slice base is `4b79ad97c51a3bc62f7c57c4637489ac9d5c6da1`; governing requirement is section 7.5 of the approved 2026-08-25 legacy real-board closed-loop design. No remote action, hardware operation, project P3/P4 mutation, deployment or ownership override is authorized by this document.
+
+Task 10 already requires physical failed TestRun -> Diagnostic -> exact source-change authorization -> physical fixed TestRun -> FixVerification. Current replay-only AcceptanceAttempt cannot represent this. Current source action digest also omits the permitted file/content changes. These are product contract gaps, not evidence that current hardware or the accepted 100ms sampler failed.
+
+## User scenarios
+
+1. Existing VS08 replay attempts and AcceptanceRecord retain their schema, digest, accepted scenarios, stage spelling and behavior.
+2. A legacy physical repair attempt checkpoints an existing failed physical Target run and matching Diagnostic. Resume returns a reviewable exact source-change intent and its single-use authorization digest.
+3. After that authorization, only the declared resulting source snapshot and matching rebuilt firmware can advance. Final completion requires the actual matching physical passed run and completed Diagnostic FixVerification. Completion is not whole VS10-A acceptance.
+
+No new execution engine, evidence store, public tool, automatic source editor, automatic flash or migration of old evidence. No hardcoded Main.c/LED behavior in Toolkit. P3/P4 project changes remain a later separately authorized campaign operation.
+
+## Versioned attempt boundary
+
+Keep `stm32-acceptance-attempt/1`, its replay scenario registry, `stm32-acceptance-recovery-policy/1` and all VS08 record canonical bytes unchanged. Introduce `stm32-acceptance-attempt/2` only for scenario `legacy-keil-physical-repair`, version `1`, origin `keil`. Its definition belongs to recovery, never to the VS08 AcceptanceRecord registry. One deterministic physical policy definition and digest owns its stages and authorization behavior.
+
+Reuse existing attempt checkpoint roots, EvidenceStore locking/CAS, canonical envelope chain and public begin/checkpoint/resume/show/authorize-source-change operations. Schema dispatch must be closed; changing an attempt's schema, scenario, policy, execution source or source intent mid-chain is rejected.
+
+Physical ordered stages: `project-materialized`, `firmware-built-before`, `target-failure-observed`, `diagnosis-completed`, `firmware-built-after`, `target-fix-verified`. Preserve the existing 0..7 revision layout, with authorization between diagnosis revision 4 and after-build revision 6. Consumers read resume and do not assume a revision without checking the returned state. Physical executionSource is `physical`; physicalTransportEvidence remains false at revisions 0..2 and becomes true only after a validated physical failed TestRun at revision 3. This is the only permitted flag transition; it does not claim a successful outcome.
+
+Reuse corresponding existing timeout durations with the renamed failure stage. Expiry stops mutation, single-use means one accepted transition, and response-loss retries return the same checkpoint only for exactly matching inputs. Authorization never grants flash authority: Target prepare/execute retains separate explicit action authorization. No hardware call is permitted in recovery adapters.
+
+## Exact source-change intent
+
+At the physical `diagnosis-completed` checkpoint accept `sourceChangeIntent` alongside the diagnostic session. CLI uses a bounded JSON `--source-change-intent-file`; MCP uses a closed nested object on the existing checkpoint tool. Reject this input for v1 or other stages.
+
+Intent input schema `stm32-source-change-intent/1`: fields `schema`, `changes`. Changes is a lexically ordered, unique, nonempty list of at most 32 existing paths from the model's declared C/assembly source collections, each with exactly `path`, `beforeSha256`, `afterSha256`, `afterSize`. Require portable canonical relative paths, bounded regular files, actual changed hashes and existing source ownership. afterSize is a strict nonnegative integer within the existing eight MiB per-input limit. This slice supports replacement of existing source content only; reject additions, deletion, header-only changes, generated/configuration/manifest changes and path aliases. No guessed source identities or caller-supplied build identity overrides.
+
+At checkpoint, obtain the existing authoritative source InputSnapshot and verify it matches beforeInputSnapshotSha256 and the fresh P3 build. Validate every declared before hash against that snapshot. Compute the expected after-snapshot hash by substituting only the listed content hashes/sizes in the complete canonical snapshot representation; preserve every other entry and semantic field. Persist the validated intent plus derived `beforeInputSnapshotSha256`, `expectedAfterInputSnapshotSha256` and a canonical `intentDigest` in v2's closed snapshot. intentDigest is SHA256 of this expanded closed intent excluding intentDigest itself. This is immutable from revision 4 onward. No new manifest store is needed: the complete before entries exist in memory at checkpoint, are verified against the already published before digest, and are used then to derive the after digest; no later reconstruction from a scalar hash is attempted. Authorization re-reads the unchanged before snapshot and can repeat that derivation.
+
+Action digest includes schema, scenario/policy, current attempt/checkpoint identity, failed physical evidence identity, diagnostic revision/event head and intentDigest. Resume exposes the exact intent for approval. Authorization rechecks current source is still the P3 snapshot and diagnostic head unchanged before its single winner commits. After-build checkpoint requires the actual complete InputSnapshot hash equal expectedAfterInputSnapshotSha256, a new fresh build/ELF, and the matching existing SourceChangeDeclaration with both build, ELF and snapshot identities. This rejects extra source or configuration changes even if the declared file itself matches. It cannot authorize edits by changing the intent on a retry.
+
+## Physical evidence and completion
+
+Native run identifiers must be preserved verbatim. Physical Target v2 IDs are not to be converted into UUIDs. Attempt UUIDs and Diagnostic identifiers retain their own established domains. Existing TestRun publication and Diagnostic authorities, rather than caller-supplied flags, prove physical identity.
+
+For physical failure checkpoint require a loadable, integrity-validated TestRunRepository publication: target mode, failed state, physical source/transport evidence, current project/workspace/target, expected before build/ELF/input snapshot, and the exact published evidence ID. There is no missing-store fallback for the physical branch. Persist the native run ID and evidence ID. Preserve the physical probe/target lineage from this authority for subsequent Diagnostic and after-run comparisons.
+
+For physical final checkpoint accept `testRunId` and `fixVerificationId` on the existing checkpoint operation; reject `acceptanceRecordId`. Reload the actual passed physical after TestRun and the existing Diagnostic verification from the attempt's diagnostic session. Require completed successful verification with exact failed/fixed run/evidence, source declaration, before/after build/ELF/input snapshot, workspace/project/probe/target and expected-state lineage. Reject replay, host, partial, wrong probe, unrelated verification or swapped run. Store fixedAfterTestRunId, fixedAfterEvidenceId and fixVerificationId in the v2 closed outputs; do not create or accept a VS08 record. The existing SourceChangeDeclaration.changed_paths must equal the intent paths exactly. Its aggregate after snapshot must equal the derived expected snapshot; arbitrary diff text is never substituted for that proof.
+
+The v2 stage outputs retain v1's keys except acceptanceRecordId, replacing it with fixedAfterTestRunId, fixedAfterEvidenceId and fixVerificationId, all unavailable until revision 7. failedBeforeTestRunId/fixedAfterTestRunId use the existing native TestRun identifier domain; Diagnostic session input for v2 uses the existing 32-hex Diagnostic ID domain. sourceChangeIntent is a new top-level field null before revision 4. All other field names and revision availability rules remain as described above. The physical model may be separate from the v1 class, but uses the same recovery authority and persistence lifecycle.
+
+Extend only `diagnostic_workflows._validate_pair_execution_policy` for physical pairs: after existing policy validation, require identical envelope metadata probe_id, target_id and transport_config_digest, equal manifest transport, and equal project/workspace/target scope. Each publication remains individually validated by TestRunRepository. Do not require equal action/intent digest, flash session, operation session, lease, build or ELF: these are new per run and P3/P4 intentionally differ. Reuse this same pair validator when finalizing the physical attempt rather than implementing a divergent comparison. Existing immutable evidence references suffice; no FixVerification schema change is needed. These fields prove matching published probe/target/transport lineage, not an unrecorded silicon unique ID.
+
+All evidence loads fail closed on corruption or absent authority. A test fixture may exercise these validators offline but its test output must never be labeled physical acceptance.
+
+## Owned files and necessary verification
+
+Implementation ownership: `acceptance/recovery.py`, `acceptance/recovery_workflows.py`, one bounded physical recovery model/helper module if needed, acceptance-only arguments/adapters in `cli.py` and `mcp_server.py`, `diagnostic_workflows.py` only for the physical pair validator above, focused recovery tests and the existing diagnostic pair tests. Reuse existing build and Diagnostic models/functions without changing their schemas. T9 owns probe and generation modules, with no overlap.
+
+Required offline checks: v1 canonical compatibility; complete persisted v2 chain using real repository publication structures; physical/replay rejection; native Target ID roundtrip; exact source-intent digest and undeclared-change rejection; unauthorized/expired/stale/replayed action denial; concurrent CAS single winner and response-loss idempotence; completed FixVerification lineage; CLI/MCP parity and unchanged tool inventory. Independent full-diff review and affected integration checks follow once. Hardware remains deferred to a new bounded authorized campaign, with P2, attempt 7 and -12 evidence retained.
+
+## Confirmed reuse points
+
+At accepted base: build/identity.py:166-178 defines SnapshotEntry/InputSnapshot; snapshot_project_inputs at 191-302 hashes the ordered list of path/size/sha256 (mtime is excluded). No new build serialization is necessary. testing/model.py:39,329-331 owns the native run ID grammar; testing/target.py:1808-1815 generates target-v2 IDs. TestRunRepository.load and _load_target_physical at testing/publication.py:851-928 validate actual physical publications. Diagnostic accepts native IDs already (diagnostic_workflows.py:88,247-250; diagnostics/model.py:96,161-165). _load_target_run, _validate_pair_execution_policy and _validate_declaration_lineage at diagnostic_workflows.py:1250-1329 are the evidence/lineage seams. FixVerification and DiagnosticSession already bind run/evidence/declaration/plan/analysis IDs; only the cross-physical pair comparison is missing. A fake public reader is not sufficient evidence for the new physical path.
