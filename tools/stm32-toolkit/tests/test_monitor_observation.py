@@ -1538,6 +1538,7 @@ def test_private_mixed_batch_uses_one_guard_pair_per_tick_and_preserves_read_ord
 ) -> None:
     import stm32_toolkit.debug.read as read_module
     import stm32_toolkit.build.identity as identity_module
+    import stm32_toolkit.monitor_observation as observation_module
 
     harness = Harness(debug_env)
     opened = asyncio.run(
@@ -1552,6 +1553,7 @@ def test_private_mixed_batch_uses_one_guard_pair_per_tick_and_preserves_read_ord
     git_calls = 0
     dwarf_calls = 0
     svd_calls = 0
+    lifecycle: list[str] = []
     real_load = read_module._load_fresh_firmware
     real_run_process = identity_module.run_process
     real_dwarf = type(session.catalog).revalidate
@@ -1582,6 +1584,20 @@ def test_private_mixed_batch_uses_one_guard_pair_per_tick_and_preserves_read_ord
     monkeypatch.setattr(identity_module, "run_process", run_process)
     monkeypatch.setattr(type(session.catalog), "revalidate", dwarf)
     monkeypatch.setattr(type(session.svd), "revalidate", svd)
+    real_clock = observation_module.utc_now_rfc3339
+    real_lightweight = session._revalidate_lightweight
+
+    def clock() -> str:
+        lifecycle.append("timestamp")
+        return real_clock()
+
+    async def lightweight():
+        result = await real_lightweight()
+        lifecycle.append("guard")
+        return result
+
+    monkeypatch.setattr(observation_module, "utc_now_rfc3339", clock)
+    monkeypatch.setattr(session, "_revalidate_lightweight", lightweight)
     variable = debug_env.catalog.lookup("signed32")
     register = debug_env.selection.register("GPIOA.IDR")
     expected_calls = [
@@ -1604,6 +1620,14 @@ def test_private_mixed_batch_uses_one_guard_pair_per_tick_and_preserves_read_ord
             assert svd_calls == 4
             assert client.attach_count == 4
             assert client.calls == expected_calls * 2
+            assert lifecycle == [
+                "guard",
+                "guard",
+                "timestamp",
+                "guard",
+                "guard",
+                "timestamp",
+            ]
         finally:
             await session.close()
 

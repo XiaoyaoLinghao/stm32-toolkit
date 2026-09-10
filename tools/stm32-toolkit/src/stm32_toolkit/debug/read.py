@@ -483,7 +483,7 @@ async def _execute_prepared(
     prepared_groups: tuple[list[tuple[int, _Resolved]], ...],
     output: list[DebugReadItem | None],
     raw_read: Callable[[int, int], Awaitable[bytes]],
-) -> OperationResult[DebugReadReport]:
+) -> OperationResult[tuple[DebugReadItem, ...]]:
     """Execute resolved groups with a caller-owned guard boundary.
 
     Public reads continue to pass a guarded reader. Monitor's private mixed
@@ -496,10 +496,7 @@ async def _execute_prepared(
                 for index, result in await _read_group(raw_read, group):
                     output[index] = result
         items = tuple(item for item in output if item is not None)
-        return OperationResult.success(
-            operation,
-            DebugReadReport(binding, items, utc_now_rfc3339()),
-        )
+        return OperationResult.success(operation, items)
     except asyncio.CancelledError:
         raise
     except _ReadFailure as error:

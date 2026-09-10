@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Awaitable, Callable
 
 from stm32_toolkit import __version__
+from stm32_toolkit.build.identity import utc_now_rfc3339
 from stm32_toolkit.debug import (
     DebugBindingRequest,
     DebugFirmwareBinding,
@@ -911,7 +912,18 @@ class MonitorObservationSession:
                 "Monitor observation changed",
                 {},
             )
-        return result
+        items = result.data
+        if type(items) is not tuple:
+            return OperationResult.failure(
+                _BATCH_OPERATION,
+                "MONITOR_PROVENANCE_CHANGED",
+                "Monitor observation changed",
+                {},
+            )
+        return OperationResult.success(
+            _BATCH_OPERATION,
+            DebugReadReport(self.binding, items, utc_now_rfc3339()),
+        )
 
     async def list_variables(
         self, query: str, cursor: str | None, limit: int
