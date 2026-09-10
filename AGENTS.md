@@ -2,9 +2,9 @@
 
 ## Model ownership and delegation
 
-Git commits are the only durable source of truth. A GPT-5.6-sol primary agent owns project-state reconstruction, product architecture, specifications, implementation plans, task boundaries, risk decisions, complete-diff review, and acceptance. GPT-5.6-luna agents own product implementation and implementation tests.
+Git commits are the only durable source of truth. The primary conversation agent, regardless of its model, owns project-state reconstruction, product architecture, specifications, implementation plans, task boundaries, risk decisions, complete-diff review, and acceptance. It directly owns all task orchestration and subagent dispatch; no particular model is required as an intermediary. GPT-5.6-luna agents own product implementation and implementation tests.
 
-Every product implementation subagent must be created with model `gpt-5.6-luna` and reasoning effort `max`. A 5.6-sol agent must not implement product code, and a 5.6-luna implementation agent must not approve its own diff. Any ownership exception requires explicit user authorization naming the files and behavior, and expires after verification.
+Every product implementation subagent must be created with model `gpt-5.6-luna` and reasoning effort `max`. The primary conversation agent must not implement product code, and an implementation agent must not approve its own diff. Any ownership exception requires explicit user authorization naming the files and behavior, and expires after verification.
 
 The user authorizes every push, PR mutation, merge, closure, tag, and remote branch deletion. “Continue,” urgency, defect size, prior approval, or model availability does not transfer implementation ownership or remote authority.
 
@@ -28,11 +28,11 @@ Never accept, repeat, retain, or commit plaintext credentials. Commit identity i
 
 ## Delivery workflow
 
-1. The 5.6-sol primary agent reconstructs the ownership ledger and freezes one self-contained vertical-slice specification and implementation plan at a full accepted-base SHA, with public behavior, boundaries, risks, and proportionate evidence requirements.
+1. The primary conversation agent reconstructs the ownership ledger and freezes one self-contained vertical-slice specification and implementation plan at a full accepted-base SHA, with public behavior, boundaries, risks, and proportionate evidence requirements.
 2. After the governing specification is approved, the primary agent writes the bounded slice plan. The user has waived a separate approval stop for later written implementation plans; this does not waive product-scope, remote, release, installation, or hardware authorization.
 3. The primary agent creates one `gpt-5.6-luna` implementation subagent with reasoning effort `max` for that bounded slice.
 4. The 5.6-luna agent implements and runs slice-level tests in one clean isolated worktree. It does not push, create or mutate a PR, merge, close, tag, or delete a remote branch without separate user authorization.
-5. The 5.6-sol primary agent independently reviews the complete accepted-base-to-CodeHead diff in a clean worktree, runs only the applicable slice or integration verification, reconciles the evidence, and records one verdict.
+5. The primary conversation agent independently reviews the complete accepted-base-to-CodeHead diff in a clean worktree, runs only the applicable slice or integration verification, reconciles the evidence, and records one verdict.
 6. Correctable findings remain on the same slice branch and return to a 5.6-luna implementation agent. If the same issue does not converge after two rounds, stop local patching and return to the interface or integration design.
 7. Release-level matrices, packaging, hardware, and evidence archival run only at the integration or release layer unless a written risk trigger explicitly moves the affected check forward.
 8. Any push, PR, merge, tag, closure, or remote deletion stops for a new explicit user authorization.
@@ -49,7 +49,7 @@ The tracked implementation report records the accepted base and the CodeHead bef
 
 - `ACCEPTED`: all required non-deferred gates pass.
 - `SOFTWARE_COMPLETE_HARDWARE_PENDING`: all required software gates pass, but a named mandatory hardware matrix remains outstanding; this is not release acceptance.
-- `ACCEPTED_WITH_FIXES`: a 5.6-luna agent applied an explicitly bounded correction and the 5.6-sol primary agent verified it before the final CodeHead freeze.
+- `ACCEPTED_WITH_FIXES`: a 5.6-luna agent applied an explicitly bounded correction and the primary conversation agent verified it before the final CodeHead freeze.
 - `REVISION_REQUIRED`: correctable issues remain on the same module branch.
 - `REWRITE_REQUIRED`: architecture, safety, scope, or coverage requires a replacement implementation.
 
