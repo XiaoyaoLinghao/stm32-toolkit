@@ -28,6 +28,7 @@ from stm32_toolkit.debug import (
     select_svd,
 )
 from stm32_toolkit.debug.firmware import _svd_readable_regions_from_model
+from stm32_toolkit.debug.read import _guard as _debug_read_guard
 from stm32_toolkit.paths import WorkspacePaths, require_safe_session_id
 from stm32_toolkit.probe import (
     OperationLevel,
@@ -929,6 +930,30 @@ class MonitorObservationSession:
                 _failure_code(getattr(error, "code", None)),
                 "Monitor observation changed",
                 _diagnostic_details(error),
+            )
+
+    async def _revalidate_lightweight(self) -> OperationResult[DebugFirmwareBinding]:
+        try:
+            _verify_root_guard(self._root_guard)
+            _endpoint(self.endpoint, self._paths, self.binding.probe_id)
+
+            def revalidate_sources() -> None:
+                self.catalog.revalidate(self.binding)
+                if self.svd is not None:
+                    self.svd.revalidate(self.binding, self.binding.project_root)
+
+            await _debug_read_guard(self.binding, self.client, revalidate_sources)
+            _verify_root_guard(self._root_guard)
+            _endpoint(self.endpoint, self._paths, self.binding.probe_id)
+            return OperationResult.success(_REVALIDATE_OPERATION, self.binding)
+        except asyncio.CancelledError:
+            raise
+        except Exception as error:
+            return OperationResult.failure(
+                _REVALIDATE_OPERATION,
+                _failure_code(getattr(error, "code", None)),
+                "Monitor observation changed",
+                {},
             )
 
     async def close(self) -> None:

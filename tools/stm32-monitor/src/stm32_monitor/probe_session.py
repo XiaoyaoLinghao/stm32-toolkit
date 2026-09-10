@@ -227,5 +227,35 @@ class ProbeSession:
             return failure(operation, code, "Monitor observation changed")
         return success(operation, current)
 
+    async def _revalidate_lightweight(self) -> ProtocolResult[ObservationBinding]:
+        operation = "sampling.revalidate"
+        method = getattr(self._observation, "_revalidate_lightweight", None)
+        if not callable(method):
+            return failure(operation, "MONITOR_PROVENANCE_CHANGED", "Monitor observation changed")
+        try:
+            result = await method()
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            return failure(operation, "MONITOR_PROVENANCE_CHANGED", "Monitor observation changed")
+        if getattr(result, "ok", None) is not True:
+            code = _blocked_code(getattr(result, "code", None)) or "MONITOR_PROVENANCE_CHANGED"
+            return failure(operation, code, "Monitor observation changed")
+        try:
+            current = _map_binding(self._observation, getattr(result, "data", None))
+        except (TypeError, ValueError):
+            return failure(operation, "MONITOR_PROVENANCE_CHANGED", "Monitor observation changed")
+        if current != self.binding:
+            firmware_fields = (
+                "build_id", "elf_sha256", "input_snapshot_sha256", "git_head", "git_dirty", "flash_session_id",
+            )
+            code = (
+                "MONITOR_FIRMWARE_CHANGED"
+                if any(getattr(current, field) != getattr(self.binding, field) for field in firmware_fields)
+                else "MONITOR_PROVENANCE_CHANGED"
+            )
+            return failure(operation, code, "Monitor observation changed")
+        return success(operation, current)
+
 
 __all__ = ["ProbeReadOutcome", "ProbeSession"]

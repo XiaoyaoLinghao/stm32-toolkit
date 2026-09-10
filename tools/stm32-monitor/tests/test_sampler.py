@@ -57,13 +57,30 @@ class FakeObservation:
         self.calls = 0
         self.call_times: list[float] = []
         self.revalidate_calls = 0
+        self.full_revalidate_calls = 0
+        self.lightweight_revalidate_calls = 0
         self.block_after: int | None = None
         self.item_error = False
+        self.full_revalidate_result = None
+        self.lightweight_revalidate_result = None
 
     async def revalidate(self):
         self.revalidate_calls += 1
-        if self.block_after is not None and self.revalidate_calls > self.block_after:
+        self.full_revalidate_calls += 1
+        if self.full_revalidate_result is not None:
+            return self.full_revalidate_result
+        return OperationResult.success("revalidate", self.binding)
+
+    async def _revalidate_lightweight(self):
+        self.revalidate_calls += 1
+        self.lightweight_revalidate_calls += 1
+        if (
+            self.block_after is not None
+            and self.lightweight_revalidate_calls > self.block_after
+        ):
             return OperationResult.failure("revalidate", "MONITOR_FIRMWARE_CHANGED", "changed", {})
+        if self.lightweight_revalidate_result is not None:
+            return self.lightweight_revalidate_result
         return OperationResult.success("revalidate", self.binding)
 
     async def read_variables(self, expressions: tuple[str, ...]):
@@ -171,6 +188,187 @@ def test_start_binds_exact_group_revision_and_emits_immutable_batch(tmp_path: Pa
             assert batch.binding.build_id == "b" * 64
             assert batch.values[0].watch == WatchItem.variable("counter")
             assert batch.values[0].status == "OK"
+        finally:
+            await stream.aclose()
+            await sampler.close()
+
+    asyncio.run(scenario())
+
+
+def test_sampling_admits_once_then_uses_lightweight_ticks(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        project = tmp_path / "project"
+        project.mkdir()
+        observation = FakeObservation(_binding(project))
+        sampler = MonitorSampler(observation, FakeGroups(_group()), FakeHistory())
+        stream = sampler.subscribe()
+        first_pending = asyncio.create_task(_next(stream))
+        try:
+            started = await sampler.start(GROUP_ID, expected_revision=1)
+            first = await first_pending
+            second = await _next(stream)
+            assert started.ok
+            assert first.sequence == 0 and second.sequence == 1
+            assert observation.full_revalidate_calls == 1
+            assert observation.lightweight_revalidate_calls >= 2
+        finally:
+            await stream.aclose()
+            await sampler.close()
+
+    asyncio.run(scenario())
+
+
+def test_start_admission_failure_stays_idle_without_tasks(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        project = tmp_path / "project"
+        project.mkdir()
+        observation = FakeObservation(_binding(project))
+        observation.full_revalidate_result = OperationResult.failure(
+            "revalidate", "MONITOR_FIRMWARE_CHANGED", "changed", {"private": "detail"}
+        )
+        sampler = MonitorSampler(observation, FakeGroups(_group()), FakeHistory())
+        result = await sampler.start(GROUP_ID, expected_revision=1)
+        assert result.operation == "sampling.start"
+        assert result.code == "MONITOR_FIRMWARE_CHANGED"
+        assert result.message == "sampling cannot be started"
+        assert dict(result.details) == {}
+        assert sampler.state is SamplerState.IDLE
+        assert not sampler.tasks
+        assert observation.lightweight_revalidate_calls == 0
+        await sampler.close()
+
+    asyncio.run(scenario())
+
+
+def test_resume_admission_failure_enters_blocked_state_with_fixed_response(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        project = tmp_path / "project"
+        project.mkdir()
+        observation = FakeObservation(_binding(project))
+        sampler = MonitorSampler(observation, FakeGroups(_group()), FakeHistory())
+        await sampler.start(GROUP_ID, expected_revision=1)
+        await sampler.pause()
+        observation.full_revalidate_result = OperationResult.failure(
+            "revalidate", "MONITOR_PROVENANCE_CHANGED", "changed", {"private": "detail"}
+        )
+        resumed = await sampler.resume()
+        assert resumed.operation == "sampling.resume"
+        assert resumed.code == "MONITOR_PROVENANCE_CHANGED"
+        assert resumed.message == "sampling cannot be resumed"
+        assert dict(resumed.details) == {}
+        assert sampler.state is SamplerState.PAUSED_BLOCKED
+        await sampler.close()
+
+    asyncio.run(scenario())
+
+
+def test_start_admission_cancellation_keeps_idle_without_run_tasks(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        project = tmp_path / "project"
+        project.mkdir()
+        observation = FakeObservation(_binding(project))
+        entered = asyncio.Event()
+        release = asyncio.Event()
+
+        async def blocked_revalidate():
+            entered.set()
+            await release.wait()
+            return OperationResult.success("revalidate", observation.binding)
+
+        observation.revalidate = blocked_revalidate
+        sampler = MonitorSampler(observation, FakeGroups(_group()), FakeHistory())
+        pending = asyncio.create_task(sampler.start(GROUP_ID, expected_revision=1))
+        await asyncio.wait_for(entered.wait(), 1)
+        pending.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await pending
+        assert sampler.state is SamplerState.IDLE
+        assert not sampler.tasks
+        assert sampler._run_id is None
+        await sampler.close()
+
+    asyncio.run(scenario())
+
+
+def test_resume_admission_cancellation_keeps_paused_epoch_and_tasks(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        project = tmp_path / "project"
+        project.mkdir()
+        observation = FakeObservation(_binding(project))
+        sampler = MonitorSampler(observation, FakeGroups(_group()), FakeHistory())
+        await sampler.start(GROUP_ID, expected_revision=1)
+        await sampler.pause()
+        before_tasks = sampler.tasks
+        entered = asyncio.Event()
+        release = asyncio.Event()
+
+        async def blocked_revalidate():
+            entered.set()
+            await release.wait()
+            return OperationResult.success("revalidate", observation.binding)
+
+        observation.revalidate = blocked_revalidate
+        pending = asyncio.create_task(sampler.resume())
+        await asyncio.wait_for(entered.wait(), 1)
+        pending.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await pending
+        assert sampler.state is SamplerState.PAUSED
+        assert sampler.tasks == before_tasks
+        await sampler.close()
+
+    asyncio.run(scenario())
+
+
+def test_lightweight_failure_blocks_before_publication(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        project = tmp_path / "project"
+        project.mkdir()
+        observation = FakeObservation(_binding(project))
+        observation.lightweight_revalidate_result = OperationResult.failure(
+            "revalidate", "MONITOR_FIRMWARE_CHANGED", "changed", {"private": "detail"}
+        )
+        history = FakeHistory()
+        sampler = MonitorSampler(observation, FakeGroups(_group()), history)
+        stream = sampler.subscribe()
+        try:
+            started = await sampler.start(GROUP_ID, expected_revision=1)
+            deadline = time.monotonic() + 2
+            while sampler.state is not SamplerState.PAUSED_BLOCKED and time.monotonic() < deadline:
+                await asyncio.sleep(0.01)
+            assert started.ok
+            assert sampler.state is SamplerState.PAUSED_BLOCKED
+            assert history.batches == []
+            with pytest.raises(asyncio.TimeoutError):
+                await asyncio.wait_for(anext(stream), 0.05)
+        finally:
+            await stream.aclose()
+            await sampler.close()
+
+    asyncio.run(scenario())
+
+
+def test_pause_invalidates_inflight_read_before_publication(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        project = tmp_path / "project"
+        project.mkdir()
+        observation = FakeObservation(_binding(project), delay=0.2)
+        history = FakeHistory()
+        sampler = MonitorSampler(observation, FakeGroups(_group()), history)
+        stream = sampler.subscribe()
+        try:
+            await sampler.start(GROUP_ID, expected_revision=1)
+            deadline = time.monotonic() + 2
+            while observation.calls == 0 and time.monotonic() < deadline:
+                await asyncio.sleep(0.005)
+            assert observation.calls == 1
+            paused = await sampler.pause()
+            await asyncio.sleep(0.25)
+            assert paused.ok
+            assert sampler.state is SamplerState.PAUSED
+            assert history.batches == []
+            with pytest.raises(asyncio.TimeoutError):
+                await asyncio.wait_for(anext(stream), 0.05)
         finally:
             await stream.aclose()
             await sampler.close()

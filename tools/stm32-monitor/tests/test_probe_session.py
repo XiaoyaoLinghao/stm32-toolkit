@@ -72,6 +72,8 @@ class FakeObservation:
         self.raise_read = False
         self.raise_revalidate = False
         self.revalidate_result = OperationResult.success("revalidate", binding)
+        self.lightweight_calls = 0
+        self.lightweight_result = None
 
     async def read_variables(self, expressions: tuple[str, ...]):
         self.variable_calls.append(expressions)
@@ -90,6 +92,14 @@ class FakeObservation:
     async def revalidate(self):
         if self.raise_revalidate:
             raise RuntimeError("C:\\secret")
+        return self.revalidate_result
+
+    async def _revalidate_lightweight(self):
+        self.lightweight_calls += 1
+        if self.raise_revalidate:
+            raise RuntimeError("C:\\secret")
+        if self.lightweight_result is not None:
+            return self.lightweight_result
         return self.revalidate_result
 
     async def list_variables(self, query, cursor, limit):
@@ -316,6 +326,26 @@ def test_revalidation_rejects_firmware_and_dwarf_or_svd_changes(tmp_path: Path) 
         assert not raised.ok and raised.code == "MONITOR_PROVENANCE_CHANGED"
 
     asyncio.run(scenario())
+
+
+def test_private_lightweight_revalidation_maps_the_same_binding_contract(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    observation = FakeObservation(_binding(project))
+    session = ProbeSession(observation)
+
+    stable = asyncio.run(session._revalidate_lightweight())
+    assert stable.ok and stable.operation == "sampling.revalidate"
+    assert observation.lightweight_calls == 1
+
+    observation.lightweight_result = OperationResult.failure(
+        "revalidate", "MONITOR_FIRMWARE_CHANGED", "changed", {"private": "detail"}
+    )
+    blocked = asyncio.run(session._revalidate_lightweight())
+    assert not blocked.ok
+    assert blocked.code == "MONITOR_FIRMWARE_CHANGED"
+    assert blocked.message == "Monitor observation changed"
+    assert dict(blocked.details) == {}
 
 
 def test_malformed_reports_fail_closed_without_raw_exception_text(tmp_path: Path) -> None:

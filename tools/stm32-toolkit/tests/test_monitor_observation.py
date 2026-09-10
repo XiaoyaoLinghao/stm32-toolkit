@@ -1501,6 +1501,35 @@ def test_revalidate_rejects_firmware_epoch_change(
     asyncio.run(exercise())
 
 
+def test_lightweight_revalidation_keeps_full_bind_out_of_stable_tick(
+    debug_env: DebugEnv, tmp_path: Path
+) -> None:
+    harness = Harness(debug_env)
+
+    async def exercise() -> None:
+        opened = await open_monitor_observation(
+            request(debug_env, tmp_path / "data"), _seams=harness.seams()
+        )
+        assert opened.ok
+        session = opened.data
+        initial_bind_calls = len(harness.bind_calls)
+        client = harness.clients[0]
+        initial_attach_count = client.attach_count
+
+        full = await session.revalidate()
+        assert full.ok
+        assert len(harness.bind_calls) == initial_bind_calls + 1
+
+        lightweight = await session._revalidate_lightweight()
+        assert lightweight.ok
+        assert len(harness.bind_calls) == initial_bind_calls + 1
+        assert client.attach_count == initial_attach_count + 1
+        assert client.calls == []
+        await session.close()
+
+    asyncio.run(exercise())
+
+
 def test_open_rejects_forged_binding_identity_before_exposing_session(
     debug_env: DebugEnv, tmp_path: Path
 ) -> None:

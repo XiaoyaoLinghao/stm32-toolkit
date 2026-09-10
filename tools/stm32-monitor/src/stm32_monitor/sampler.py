@@ -90,6 +90,7 @@ class MonitorSampler:
         self._group: WatchGroup | None = None
         self._watches: tuple[WatchItem, ...] = ()
         self._run_id: UUID | None = None
+        self._epoch = 0
         self._sequence = 0
         self._last_capture_monotonic_ns: int | None = None
         self._subscriber_drops_pending = 0
@@ -116,6 +117,9 @@ class MonitorSampler:
                 listener(state)
             except Exception:
                 pass
+
+    def _invalidate_epoch(self) -> None:
+        self._epoch += 1
 
     @property
     def tasks(self) -> tuple[asyncio.Task[None], ...]:
@@ -184,6 +188,10 @@ class MonitorSampler:
                     watches.append(watch)
             if len(watches) > 256:
                 return failure(operation, "MONITOR_GROUP_LIMIT_EXCEEDED", "active watch limit was exceeded")
+            admission = await self._probe.revalidate()
+            if not admission.ok:
+                return failure(operation, admission.code, "sampling cannot be started", {})
+            self._invalidate_epoch()
             self._set_state(SamplerState.STARTING)
             self._group = group
             self._watches = tuple(watches)
@@ -212,7 +220,7 @@ class MonitorSampler:
                 },
             )
 
-    async def _current_group(self) -> bool:
+    async def _current_group(self, epoch: int | None = None) -> bool:
         group = self._group
         if group is None:
             return False
@@ -221,18 +229,22 @@ class MonitorSampler:
         except asyncio.CancelledError:
             raise
         except Exception:
-            self._block("MONITOR_STORAGE_INVALID")
+            if epoch is None or (self._epoch == epoch and self.state is SamplerState.RUNNING):
+                self._block("MONITOR_STORAGE_INVALID")
             return False
         current = getattr(result, "data", None)
         if getattr(result, "ok", None) is not True or not isinstance(current, WatchGroup):
-            self._block(getattr(result, "code", "MONITOR_GROUP_CONFLICT"))
+            if epoch is None or (self._epoch == epoch and self.state is SamplerState.RUNNING):
+                self._block(getattr(result, "code", "MONITOR_GROUP_CONFLICT"))
             return False
         if current.revision != group.revision or current.items != group.items or current.interval_ms != group.interval_ms:
-            self._block("MONITOR_GROUP_CONFLICT")
+            if epoch is None or (self._epoch == epoch and self.state is SamplerState.RUNNING):
+                self._block("MONITOR_GROUP_CONFLICT")
             return False
         return True
 
     def _block(self, code: str) -> None:
+        self._invalidate_epoch()
         self.blocked_code = code if isinstance(code, str) and code else "MONITOR_PROVENANCE_CHANGED"
         self._set_state(SamplerState.PAUSED_BLOCKED)
         if self._run_gate is not None:
@@ -260,15 +272,29 @@ class MonitorSampler:
                     await asyncio.sleep(delay_ns / 1_000_000_000)
                 if stop_event.is_set() or self.state is not SamplerState.RUNNING:
                     continue
-                if not await self._current_group():
+                epoch = self._epoch
+                if not await self._current_group(epoch):
+                    if self._epoch != epoch and self.state in (
+                        SamplerState.PAUSED,
+                        SamplerState.RUNNING,
+                    ):
+                        continue
                     return
-                validation = await self._probe.revalidate()
+                if self._epoch != epoch or self.state is not SamplerState.RUNNING:
+                    continue
+                validation = await self._probe._revalidate_lightweight()
                 if not validation.ok:
+                    if self._epoch != epoch or self.state is not SamplerState.RUNNING:
+                        continue
                     self._block(validation.code)
                     return
+                if self._epoch != epoch or self.state is not SamplerState.RUNNING:
+                    continue
                 started = time.monotonic_ns()
                 scheduled_unix_ns = max(0, time.time_ns() - max(0, started - next_deadline))
                 outcome = await self._probe.read(self._watches)
+                if self._epoch != epoch or self.state is not SamplerState.RUNNING:
+                    continue
                 if outcome.blocked_code is not None:
                     self._block(outcome.blocked_code)
                     return
@@ -399,6 +425,7 @@ class MonitorSampler:
         async with self._action_lock:
             if self.state is not SamplerState.RUNNING:
                 return failure(operation, self.blocked_code or "MONITOR_REQUEST_INVALID", "sampling cannot be paused")
+            self._invalidate_epoch()
             self._set_state(SamplerState.PAUSED)
             if self._run_gate is not None:
                 self._run_gate.clear()
@@ -411,6 +438,11 @@ class MonitorSampler:
                 return failure(operation, self.blocked_code or "MONITOR_PROVENANCE_CHANGED", "sampling is blocked")
             if self.state is not SamplerState.PAUSED:
                 return failure(operation, "MONITOR_REQUEST_INVALID", "sampling is not paused")
+            admission = await self._probe.revalidate()
+            if not admission.ok:
+                self._block(admission.code)
+                return failure(operation, admission.code, "sampling cannot be resumed", {})
+            self._invalidate_epoch()
             self._set_state(SamplerState.RUNNING)
             self._reset_deadline = True
             if self._run_gate is not None:
@@ -418,6 +450,7 @@ class MonitorSampler:
             return success(operation, {"resumed": True})
 
     async def _stop_run(self) -> None:
+        self._invalidate_epoch()
         stop_event = self._stop_event
         run_gate = self._run_gate
         if stop_event is not None:
@@ -453,6 +486,7 @@ class MonitorSampler:
             if self.state is SamplerState.CLOSED:
                 return failure(operation, "MONITOR_REQUEST_INVALID", "sampler is closed")
             if self.state is SamplerState.IDLE:
+                self._invalidate_epoch()
                 return success(operation, {"stopped": False})
             self._set_state(SamplerState.STOPPING)
             await self._stop_run()
@@ -505,6 +539,8 @@ class MonitorSampler:
             if self.state is not SamplerState.CLOSED:
                 if self.state is not SamplerState.IDLE:
                     await self._stop_run()
+                else:
+                    self._invalidate_epoch()
                 self.state = SamplerState.CLOSED
                 self.blocked_code = None
                 for queue in tuple(self._subscribers):
