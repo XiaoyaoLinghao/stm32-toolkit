@@ -500,6 +500,7 @@ class ProbeService:
         self._endpoint: ProbeEndpoint | None = None
         self._backend_tasks: set[asyncio.Task[object]] = set()
         self._metadata_owned_tasks: set[asyncio.Task[object]] = set()
+        self._metadata_provider_task: asyncio.Task[object] | None = None
         self._metadata_abort_task: asyncio.Task[object] | None = None
         self._metadata_cleanup_unresolved = False
         self._metadata_abort_failed = False
@@ -1728,77 +1729,72 @@ class ProbeService:
                     provider_task = asyncio.create_task(
                         asyncio.to_thread(provider, deadline=deadline)
                     )
-                    self._track_metadata_task(provider_task)
+                    self._metadata_provider_task = provider_task
+                    self._metadata_abort_task = None
+                    self._metadata_abort_failed = False
+                    self._track_metadata_task(provider_task, provider=True)
                     try:
+                        value = await asyncio.wait_for(
+                            asyncio.shield(provider_task), timeout=remaining()
+                        )
+                        if remaining() <= 0:
+                            raise ProbeServiceError(
+                                "PROBE_TIMEOUT", "Debug handoff metadata request timed out"
+                            )
                         try:
-                            value = await asyncio.wait_for(
-                                asyncio.shield(provider_task), timeout=remaining()
+                            metadata = DebugHandoffMetadata.from_value(value)
+                        except (TypeError, ValueError):
+                            raise ProbeBackendError(
+                                "PROBE_BACKEND_ERROR", "Debug handoff identity is invalid"
+                            ) from None
+                        if (
+                            metadata.probe_id != probe_id
+                            or metadata.target != target
+                        ):
+                            raise ProbeBackendError(
+                                "PROBE_IDENTITY_MISMATCH",
+                                "Connected target identity does not match",
                             )
-                        except (asyncio.TimeoutError, asyncio.CancelledError) as interruption:
-                            abort = getattr(self._backend, "abort_owned_execution", None)
-                            abort_task: asyncio.Task[object] | None = None
-                            if callable(abort):
-                                abort_task = asyncio.create_task(asyncio.to_thread(abort))
-                                self._track_metadata_task(abort_task, abort=True)
-                            cleanup_task = asyncio.create_task(
-                                self._finish_metadata_cleanup(provider_task, abort_task)
+                        if self._stopping or self._lease is None or self._endpoint is None:
+                            raise ProbeServiceError(
+                                "PROBE_SERVICE_UNAVAILABLE", "Probe Service is unavailable"
                             )
-                            try:
-                                cleanup_reached = await _await_task_ignoring_cancellation(
-                                    cleanup_task
-                                )
-                            except BaseException:
-                                cleanup_reached = False
-                            if not cleanup_reached:
-                                self._metadata_cleanup_unresolved = True
-                                self._stopping = True
-                                self._observation_attachment = None
-                                raise ProbeServiceCleanupError(
-                                    CleanupFragment.from_entries((
-                                        make_cleanup_entry(
-                                            "service-worker-abort",
-                                            "failed",
-                                            reason="timeout",
-                                            source_code="PROBE_TIMEOUT",
-                                        ),
-                                    ))
-                                ) from None
-                            raise interruption
+                        if remaining() <= 0:
+                            raise ProbeServiceError(
+                                "PROBE_TIMEOUT", "Debug handoff metadata request timed out"
+                            )
+                        return metadata
                     except BaseException:
                         self._observation_attachment = None
+                        abort = getattr(self._backend, "abort_owned_execution", None)
+                        abort_task: asyncio.Task[object] | None = None
+                        if callable(abort):
+                            abort_task = asyncio.create_task(asyncio.to_thread(abort))
+                            self._track_metadata_task(abort_task, abort=True)
+                        cleanup_task = asyncio.create_task(
+                            self._finish_metadata_cleanup(provider_task, abort_task)
+                        )
+                        try:
+                            cleanup_reached = await _await_task_ignoring_cancellation(
+                                cleanup_task
+                            )
+                        except BaseException:
+                            cleanup_reached = False
+                        if not cleanup_reached:
+                            self._metadata_cleanup_unresolved = True
+                            self._stopping = True
+                            self._observation_attachment = None
+                            raise ProbeServiceCleanupError(
+                                CleanupFragment.from_entries((
+                                    make_cleanup_entry(
+                                        "service-worker-abort",
+                                        "failed",
+                                        reason="timeout",
+                                        source_code="PROBE_TIMEOUT",
+                                    ),
+                                ))
+                            ) from None
                         raise
-                    if remaining() <= 0:
-                        self._observation_attachment = None
-                        raise ProbeServiceError(
-                            "PROBE_TIMEOUT", "Debug handoff metadata request timed out"
-                        )
-                    try:
-                        metadata = DebugHandoffMetadata.from_value(value)
-                    except (TypeError, ValueError):
-                        self._observation_attachment = None
-                        raise ProbeBackendError(
-                            "PROBE_BACKEND_ERROR", "Debug handoff identity is invalid"
-                        ) from None
-                    if (
-                        metadata.probe_id != probe_id
-                        or metadata.target != target
-                    ):
-                        self._observation_attachment = None
-                        raise ProbeBackendError(
-                            "PROBE_IDENTITY_MISMATCH",
-                            "Connected target identity does not match",
-                        )
-                    if self._stopping or self._lease is None or self._endpoint is None:
-                        self._observation_attachment = None
-                        raise ProbeServiceError(
-                            "PROBE_SERVICE_UNAVAILABLE", "Probe Service is unavailable"
-                        )
-                    if remaining() <= 0:
-                        self._observation_attachment = None
-                        raise ProbeServiceError(
-                            "PROBE_TIMEOUT", "Debug handoff metadata request timed out"
-                        )
-                    return metadata
                 finally:
                     if lock_acquired:
                         self._backend_lock.release()
@@ -1873,18 +1869,35 @@ class ProbeService:
     def _metadata_execution_stopped(self) -> bool:
         if self._metadata_abort_failed:
             return False
-        alive = getattr(self._backend, "is_alive", None)
-        if type(alive) is bool:
-            return not alive
-        return True
+        missing = object()
+        try:
+            alive = getattr(self._backend, "is_alive", missing)
+        except BaseException:
+            return False
+        if alive is missing:
+            return True
+        return type(alive) is bool and alive is False
 
     def _track_metadata_task(
-        self, task: asyncio.Task[object], *, abort: bool = False
+        self,
+        task: asyncio.Task[object],
+        *,
+        abort: bool = False,
+        provider: bool = False,
     ) -> None:
         self._metadata_owned_tasks.add(task)
+        if provider:
+            self._metadata_provider_task = task
         if abort:
             self._metadata_abort_task = task
         task.add_done_callback(self._metadata_task_finished)
+
+    def _metadata_cleanup_tasks(self) -> tuple[asyncio.Task[object], ...]:
+        tasks = list(self._metadata_owned_tasks)
+        for task in (self._metadata_provider_task, self._metadata_abort_task):
+            if task is not None and task not in tasks:
+                tasks.append(task)
+        return tuple(tasks)
 
     async def _finish_metadata_cleanup(
         self,
@@ -1917,7 +1930,7 @@ class ProbeService:
         return stopped
 
     async def _finish_pending_metadata_cleanup(self) -> bool:
-        tasks = tuple(self._metadata_owned_tasks)
+        tasks = self._metadata_cleanup_tasks()
         if tasks:
             deadline = (
                 asyncio.get_running_loop().time()

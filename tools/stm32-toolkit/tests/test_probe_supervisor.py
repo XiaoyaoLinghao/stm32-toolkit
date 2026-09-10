@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from functools import partial
 import hashlib
+import json
 import subprocess
 import sys
 from pathlib import Path
@@ -14,7 +15,7 @@ from fakes.fake_probe import FakeProbeBackend
 from stm32_toolkit.probe.backend import ProbeDescriptor
 from stm32_toolkit.probe.authorization import ControlAuthorizationStore
 from stm32_toolkit.probe.client import ProbeClient, ProbeClientError
-from stm32_toolkit.probe.lease import ProbeLeaseManager
+from stm32_toolkit.probe.lease import ProbeBusyError, ProbeLeaseManager
 from stm32_toolkit.probe.model import OperationLevel
 from stm32_toolkit.probe.supervisor import (
     ProbeServiceConfig,
@@ -22,6 +23,7 @@ from stm32_toolkit.probe.supervisor import (
 )
 from stm32_toolkit.probe.service import ProbeServiceCleanupError, ProbeServiceError
 from stm32_toolkit.probe.pyocd_backend import PyOCDBackend
+from stm32_toolkit.probe.worker import ProbeBackendWorker, ProbeWorkerError
 
 
 class RecordingBackend(FakeProbeBackend):
@@ -124,6 +126,125 @@ def test_concurrent_start_and_stop_share_one_owned_lifecycle(tmp_path: Path) -> 
 
         await supervisor.stop()
         assert factory.backends[0].close_attempts == 1
+
+    run(scenario())
+
+
+def test_metadata_worker_error_with_closed_live_worker_retains_ownership(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        from test_probe_worker import _factory
+
+        data_root = tmp_path / "plugin-data"
+        marker = tmp_path / "worker-marker"
+        workers: list[ProbeBackendWorker] = []
+
+        def backend_factory() -> ProbeBackendWorker:
+            worker = ProbeBackendWorker(
+                _test_backend_factory=partial(_factory, "normal", str(marker))
+            )
+            workers.append(worker)
+            return worker
+
+        supervisor = make_supervisor(data_root, backend_factory)
+        endpoint = await supervisor.start()
+        service = supervisor._service
+        assert service is not None
+        client = ProbeClient(endpoint)
+        worker: ProbeBackendWorker | None = None
+        try:
+            await client.attach("probe-a", "stm32")
+            worker = workers[0]
+            assert worker.is_alive is True
+            worker._closed = True
+
+            loop = asyncio.get_running_loop()
+            started = loop.time()
+            with pytest.raises(ProbeServiceCleanupError) as metadata_error:
+                await supervisor.debug_handoff_metadata("probe-a", "stm32")
+            assert metadata_error.value.code == "PROBE_CLOSE_FAILED"
+            assert loop.time() - started < 1.0
+            assert service._metadata_cleanup_unresolved is True
+            assert worker.is_alive is True
+
+            stopping_started = loop.time()
+            with pytest.raises(ProbeServiceCleanupError) as stop_error:
+                await supervisor.stop()
+            assert stop_error.value.code == "PROBE_CLOSE_FAILED"
+            assert loop.time() - stopping_started < 1.0
+            assert supervisor._service is service
+            assert supervisor._backend is worker
+            assert supervisor.endpoint is endpoint
+            assert service._lease is not None
+            record = json.loads(
+                ProbeLeaseManager(data_root)
+                .record_path("probe-a")
+                .read_text(encoding="utf-8")
+            )
+            assert record["state"] == "active"
+
+            competing = make_supervisor(data_root, RecordingBackend)
+            with pytest.raises(ProbeBusyError):
+                await competing.start()
+            assert competing.endpoint is None
+        finally:
+            await client.close()
+            if worker is not None and worker.is_alive:
+                worker._closed = False
+                worker.abort_owned_execution()
+            if supervisor._service is not None:
+                await supervisor.stop()
+
+    run(scenario())
+
+
+def test_metadata_worker_error_after_worker_stopped_allows_normal_stop(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        from test_probe_worker import _factory
+
+        data_root = tmp_path / "plugin-data"
+        marker = tmp_path / "worker-marker"
+        workers: list[ProbeBackendWorker] = []
+
+        def backend_factory() -> ProbeBackendWorker:
+            worker = ProbeBackendWorker(
+                _test_backend_factory=partial(_factory, "normal", str(marker))
+            )
+            workers.append(worker)
+            return worker
+
+        supervisor = make_supervisor(data_root, backend_factory)
+        endpoint = await supervisor.start()
+        service = supervisor._service
+        assert service is not None
+        client = ProbeClient(endpoint)
+        try:
+            await client.attach("probe-a", "stm32")
+            worker = workers[0]
+            worker.close()
+            assert worker._closed is True
+            assert worker.is_alive is False
+
+            with pytest.raises(ProbeWorkerError) as metadata_error:
+                await supervisor.debug_handoff_metadata("probe-a", "stm32")
+            assert metadata_error.value.code == "PROBE_BACKEND_ERROR"
+            assert service._metadata_cleanup_unresolved is False
+
+            await supervisor.stop()
+            assert supervisor.endpoint is None
+            record = json.loads(
+                ProbeLeaseManager(data_root)
+                .record_path("probe-a")
+                .read_text(encoding="utf-8")
+            )
+            assert record["state"] == "released"
+        finally:
+            await client.close()
+            if supervisor._service is not None:
+                await supervisor.stop()
 
     run(scenario())
 
