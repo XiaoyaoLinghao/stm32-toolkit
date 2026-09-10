@@ -203,6 +203,26 @@ def test_physical_policy_and_source_intent_are_frozen_and_round_trip():
     }
 
 
+@pytest.mark.parametrize("schema", [
+    "stm32-source-change-intent/0",
+    "stm32-source-change-intent/999",
+    "other-schema/1",
+])
+def test_source_change_intent_rejects_unknown_input_schema(schema: str):
+    with pytest.raises(AcceptanceRecoveryValidationError):
+        SourceChangeIntent.from_value(
+            {
+                "schema": schema,
+                "changes": [{
+                    "path": "src/main.c",
+                    "beforeSha256": "a" * 64,
+                    "afterSha256": "b" * 64,
+                    "afterSize": 12,
+                }],
+            }
+        )
+
+
 @pytest.mark.parametrize(
     "mutation",
     [

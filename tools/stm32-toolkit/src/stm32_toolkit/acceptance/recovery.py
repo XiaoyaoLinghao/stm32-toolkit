@@ -742,6 +742,8 @@ class SourceChangeIntent:
         if not isinstance(value, Mapping):
             raise AcceptanceRecoveryValidationError("source change intent must be an object")
         keys = set(value)
+        if value.get("schema") != SOURCE_CHANGE_INTENT_SCHEMA:
+            raise AcceptanceRecoveryValidationError("source change intent schema is unsupported")
         if keys == _SOURCE_CHANGE_INTENT_INPUT_FIELDS:
             return cls.new(changes=value["changes"])
         if keys != _SOURCE_CHANGE_INTENT_FIELDS:

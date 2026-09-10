@@ -2,8 +2,15 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
+from uuid import UUID
 
+import stm32_toolkit.acceptance.recovery_workflows as recovery_workflows
 from stm32_toolkit import cli
+from stm32_toolkit.acceptance.recovery_workflows import (
+    AcceptanceRecoveryContext,
+    begin_acceptance_attempt,
+)
 from stm32_toolkit.result import OperationResult
 
 
@@ -119,6 +126,72 @@ def test_cli_physical_checkpoint_translates_native_refs_and_source_intent(
         "source_change_intent": intent,
     }
     capsys.readouterr()
+
+
+def test_cli_rejects_unknown_physical_source_intent_schema(
+    monkeypatch, capsys, tmp_path: Path
+):
+    project = tmp_path / "project"
+    data = tmp_path / "data"
+    project.mkdir()
+    monkeypatch.setattr(
+        recovery_workflows,
+        "_load_project_model",
+        lambda _root: SimpleNamespace(
+            schema_version=3,
+            logical_project_id=UUID("00000000-0000-4000-8000-000000000002"),
+            memory=SimpleNamespace(source="keil"),
+            target_device="STM32F429ZITx",
+        ),
+    )
+    context = AcceptanceRecoveryContext(project, data, "session-a")
+    assert begin_acceptance_attempt(
+        context,
+        attempt_id=ATTEMPT_ID,
+        scenario_id="legacy-keil-physical-repair",
+        scenario_version="1",
+    ).ok
+    intent_path = tmp_path / "intent.json"
+    intent_path.write_text(
+        json.dumps(
+            {
+                "schema": "stm32-source-change-intent/999",
+                "changes": [{
+                    "path": "src/main.c",
+                    "beforeSha256": "a" * 64,
+                    "afterSha256": "b" * 64,
+                    "afterSize": 12,
+                }],
+            }
+        ),
+        encoding="utf-8",
+    )
+    assert cli.main(
+        [
+            "scenario",
+            "attempt",
+            "checkpoint",
+            "--project",
+            str(project),
+            "--data-root",
+            str(data),
+            "--session-id",
+            "session-a",
+            "--attempt-id",
+            ATTEMPT_ID,
+            "--expected-revision",
+            "0",
+            "--stage",
+            "diagnosis-completed",
+            "--diagnostic-session-id",
+            DIAGNOSTIC_ID.replace("-", ""),
+            "--source-change-intent-file",
+            str(intent_path),
+        ]
+    ) == 2
+    result = json.loads(capsys.readouterr().out)
+    assert result["code"] == "ACCEPTANCE_ATTEMPT_INPUT_INVALID"
+
 
 def test_cli_attempt_show_and_resume_share_project_bound_context(monkeypatch, capsys):
     calls = []

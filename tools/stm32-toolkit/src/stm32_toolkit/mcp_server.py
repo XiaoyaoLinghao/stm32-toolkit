@@ -231,6 +231,10 @@ DiagnosticPolarity = Literal["supports", "refutes"]
 AcceptanceScenarioId = Literal[
     "legacy-keil-migration",
     "new-cubemx-project",
+]
+AcceptanceAttemptScenarioId = Literal[
+    "legacy-keil-migration",
+    "new-cubemx-project",
     "legacy-keil-physical-repair",
 ]
 AcceptanceScenarioVersion = Literal["1"]
@@ -1697,7 +1701,7 @@ async def tool_acceptance_attempt_begin_for_request(
     runtime: ServerRuntime,
     context: Context | None,
     attempt_id: AcceptanceUuid,
-    scenario_id: AcceptanceScenarioId,
+    scenario_id: AcceptanceAttemptScenarioId,
     scenario_version: AcceptanceScenarioVersion,
 ) -> dict[str, object]:
     operation = "acceptance.attempt.begin"
@@ -2486,7 +2490,7 @@ def create_server(
     async def stm32_acceptance_attempt_begin(
         ctx: Context,
         attemptId: AcceptanceUuid,
-        scenarioId: AcceptanceScenarioId,
+        scenarioId: AcceptanceAttemptScenarioId,
         scenarioVersion: AcceptanceScenarioVersion,
     ) -> dict[str, object]:
         return await tool_acceptance_attempt_begin_for_request(

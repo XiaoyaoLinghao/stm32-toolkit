@@ -576,12 +576,15 @@ def test_diagnosis_rechecks_the_fresh_before_build_identity(
     monkeypatch.setattr(recovery_workflows, "_physical_diagnostic_data", lambda *_args: session)
     monkeypatch.setattr(
         recovery_workflows,
-        "_build_data",
-        lambda *_args: {
-            "buildId": "f" * 64,
-            "elfSha256": "3" * 64,
-            "inputSnapshotSha256": "4" * 64,
-        },
+        "_physical_build_data",
+        lambda *_args: (
+            {
+                "buildId": "f" * 64,
+                "elfSha256": "3" * 64,
+                "inputSnapshotSha256": "4" * 64,
+            },
+            SimpleNamespace(sha256="4" * 64, entries=()),
+        ),
     )
     with pytest.raises(recovery_workflows._RecoveryFailure) as error:
         recovery_workflows._physical_build_transition(
@@ -603,6 +606,33 @@ def test_diagnosis_rechecks_the_fresh_before_build_identity(
                 }],
             },
         )
+    assert error.value.code == "ACCEPTANCE_ATTEMPT_IDENTITY_MISMATCH"
+
+
+def test_physical_build_authority_rejects_snapshot_mutated_after_fresh_facts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    model = SimpleNamespace(
+        logical_project_id=UUID(PROJECT_ID),
+        target_device=TARGET,
+        build=SimpleNamespace(sources=("src/main.c",), assembly_sources=()),
+    )
+    context = AcceptanceRecoveryContext(tmp_path, tmp_path / "data", "session-a")
+    facts = SimpleNamespace(
+        build_id=PHYSICAL_BEFORE_BUILD,
+        elf_sha256=PHYSICAL_BEFORE_ELF,
+        input_snapshot_sha256="1" * 64,
+    )
+    monkeypatch.setattr(
+        recovery_workflows, "_load_fresh_firmware_facts", lambda _root: facts
+    )
+    monkeypatch.setattr(
+        recovery_workflows,
+        "snapshot_project_inputs",
+        lambda _model: SimpleNamespace(sha256="2" * 64, entries=()),
+    )
+    with pytest.raises(recovery_workflows._RecoveryFailure) as error:
+        recovery_workflows._physical_build_data(context, model)
     assert error.value.code == "ACCEPTANCE_ATTEMPT_IDENTITY_MISMATCH"
 
 
@@ -767,27 +797,27 @@ def test_persisted_physical_recovery_chain_uses_real_authorities_and_is_cas_safe
 
     build_after = {"value": False}
 
-    def build_context(_project: Path, _data: Path, _session: str) -> OperationResult[object]:
+    def fresh_firmware_facts(_project: Path):
         current_model = load_project_model(project_root)
         current_snapshot = snapshot_project_inputs(current_model)
         if build_after["value"]:
             build_id, elf_sha = PHYSICAL_AFTER_BUILD, PHYSICAL_AFTER_ELF
         else:
             build_id, elf_sha = PHYSICAL_BEFORE_BUILD, PHYSICAL_BEFORE_ELF
-        return OperationResult.success(
-            "build.project",
-            {
-                "build": {
-                    "elfFresh": True,
-                    "preset": "arm-debug",
-                    "buildId": build_id,
-                    "elfSha256": elf_sha,
-                    "inputSnapshotSha256": current_snapshot.sha256,
-                }
-            },
+        return SimpleNamespace(
+            model=current_model,
+            elf_path="build/arm-debug/firmware.elf",
+            elf_sha256=elf_sha,
+            build_id=build_id,
+            input_snapshot_sha256=current_snapshot.sha256,
+            git_commit="b" * 40,
+            git_dirty=False,
+            target_device=current_model.target.device,
         )
 
-    monkeypatch.setattr(recovery_workflows, "_build_project_context", build_context)
+    monkeypatch.setattr(
+        recovery_workflows, "_load_fresh_firmware_facts", fresh_firmware_facts
+    )
     monkeypatch.setattr(
         diagnostic_workflows,
         "_session_id_factory",
@@ -944,16 +974,14 @@ def test_persisted_physical_recovery_chain_uses_real_authorities_and_is_cas_safe
     assert rejected.ok is False
     assert rejected.code == "ACCEPTANCE_ATTEMPT_ACTION_DIGEST_MISMATCH"
 
-    physical_diagnostic_data = recovery_workflows._physical_diagnostic_data
+    physical_locked_diagnostic_data = recovery_workflows._load_physical_diagnostic_locked
 
-    def stale_diagnostic_data(
-        stale_context: AcceptanceRecoveryContext, stale_session_id: str
-    ) -> DiagnosticSession:
-        current_session = physical_diagnostic_data(stale_context, stale_session_id)
+    def stale_locked_diagnostic_data(*args):
+        current_session = physical_locked_diagnostic_data(*args)
         return replace(current_session, revision=current_session.revision + 1)
 
     monkeypatch.setattr(
-        recovery_workflows, "_physical_diagnostic_data", stale_diagnostic_data
+        recovery_workflows, "_load_physical_diagnostic_locked", stale_locked_diagnostic_data
     )
     stale_diagnostic = authorize_acceptance_source_change(
         context,
@@ -965,7 +993,7 @@ def test_persisted_physical_recovery_chain_uses_real_authorities_and_is_cas_safe
     assert stale_diagnostic.ok is False
     assert stale_diagnostic.code == "ACCEPTANCE_ATTEMPT_IDENTITY_MISMATCH"
     monkeypatch.setattr(
-        recovery_workflows, "_physical_diagnostic_data", physical_diagnostic_data
+        recovery_workflows, "_load_physical_diagnostic_locked", physical_locked_diagnostic_data
     )
 
     expired_context = AcceptanceRecoveryContext(
@@ -983,6 +1011,70 @@ def test_persisted_physical_recovery_chain_uses_real_authorities_and_is_cas_safe
     )
     assert expired.ok is False
     assert expired.code == "ACCEPTANCE_ATTEMPT_TIMED_OUT"
+
+    original_put_envelope_locked = EvidenceStore._put_envelope_locked
+    boundary_mode = {"value": "source"}
+    boundary_expired = {"value": False}
+
+    def boundary_clock() -> str:
+        return (
+            "2026-09-10T23:59:59.000000Z"
+            if boundary_expired["value"]
+            else "2026-09-10T00:00:00.000000Z"
+        )
+
+    def inject_publication_boundary_change(store, envelope, *args, **kwargs):
+        result = original_put_envelope_locked(store, envelope, *args, **kwargs)
+        attempt_metadata = getattr(envelope, "metadata", {}).get("attempt")
+        if (
+            isinstance(attempt_metadata, Mapping)
+            and attempt_metadata.get("revision") in {5, 6}
+        ):
+            if attempt_metadata.get("revision") == 5 and boundary_mode["value"] == "source":
+                source_path.write_bytes(after_source)
+            elif attempt_metadata.get("revision") == 5 and boundary_mode["value"] == "expiry":
+                boundary_expired["value"] = True
+            elif attempt_metadata.get("revision") == 6 and boundary_mode["value"] == "after-build-source":
+                source_path.write_bytes(b"int main(void) { return 2; }\n")
+        return result
+
+    monkeypatch.setattr(
+        EvidenceStore,
+        "_put_envelope_locked",
+        inject_publication_boundary_change,
+    )
+    boundary_context = AcceptanceRecoveryContext(
+        project_root, data_root, session_id, clock=boundary_clock
+    )
+    source_changed_at_boundary = authorize_acceptance_source_change(
+        boundary_context,
+        attempt_id=ATTEMPT_ID,
+        expected_revision=4,
+        action_digest=action_digest,
+        authorized=True,
+    )
+    assert source_changed_at_boundary.ok is False
+    assert source_changed_at_boundary.code == "ACCEPTANCE_ATTEMPT_IDENTITY_MISMATCH"
+    assert not recovery_workflows._typed_root_path(
+        evidence, recovery_workflows._root_id(ATTEMPT_ID, 5)
+    ).exists()
+
+    source_path.write_bytes(before_source)
+    boundary_mode["value"] = "expiry"
+    expired_at_boundary = authorize_acceptance_source_change(
+        boundary_context,
+        attempt_id=ATTEMPT_ID,
+        expected_revision=4,
+        action_digest=action_digest,
+        authorized=True,
+    )
+    assert expired_at_boundary.ok is False
+    assert expired_at_boundary.code == "ACCEPTANCE_ATTEMPT_TIMED_OUT"
+    assert not recovery_workflows._typed_root_path(
+        evidence, recovery_workflows._root_id(ATTEMPT_ID, 5)
+    ).exists()
+    boundary_expired["value"] = False
+    boundary_mode["value"] = "none"
 
     race_contexts = [
         AcceptanceRecoveryContext(
@@ -1082,6 +1174,20 @@ def test_persisted_physical_recovery_chain_uses_real_authorities_and_is_cas_safe
     assert extra_change.code == "ACCEPTANCE_ATTEMPT_IDENTITY_MISMATCH", extra_change.to_dict()
     project_manifest_path.write_bytes(manifest_before_extra)
 
+    boundary_mode["value"] = "after-build-source"
+    mixed_after_build = checkpoint_acceptance_attempt(
+        context,
+        attempt_id=ATTEMPT_ID,
+        expected_revision=5,
+        stage="firmware-built-after",
+    )
+    assert mixed_after_build.ok is False
+    assert mixed_after_build.code == "ACCEPTANCE_ATTEMPT_IDENTITY_MISMATCH"
+    assert not recovery_workflows._typed_root_path(
+        evidence, recovery_workflows._root_id(ATTEMPT_ID, 6)
+    ).exists()
+    source_path.write_bytes(after_source)
+    boundary_mode["value"] = "none"
     after_build = _ok(
         checkpoint_acceptance_attempt(
             context,

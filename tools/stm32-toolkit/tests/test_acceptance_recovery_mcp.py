@@ -34,6 +34,12 @@ def test_recovery_tools_are_five_project_bound_closed_tools(tmp_path: Path):
     }
     assert checkpoint["additionalProperties"] is False
     assert not ({"projectRoot", "dataRoot", "command", "environment", "transport"} & set(checkpoint["properties"]))
+    describe_scenario = tools["stm32_acceptance_scenario_describe"].inputSchema
+    record_scenario = tools["stm32_acceptance_scenario_record"].inputSchema
+    attempt_begin = tools["stm32_acceptance_attempt_begin"].inputSchema
+    assert "legacy-keil-physical-repair" not in describe_scenario["properties"]["scenarioId"]["enum"]
+    assert "legacy-keil-physical-repair" not in record_scenario["properties"]["scenarioId"]["enum"]
+    assert "legacy-keil-physical-repair" in attempt_begin["properties"]["scenarioId"]["enum"]
 
 
 def test_recovery_mcp_tools_translate_exact_values_once(monkeypatch, tmp_path: Path):

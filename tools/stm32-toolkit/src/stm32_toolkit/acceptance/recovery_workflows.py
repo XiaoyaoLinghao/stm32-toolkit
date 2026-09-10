@@ -17,6 +17,7 @@ import re
 from typing import cast
 from uuid import UUID
 
+import stm32_toolkit.diagnostic_workflows as _diagnostic_workflows
 from stm32_toolkit.acceptance.model import (
     AcceptanceRecord,
     AcceptanceValidationError,
@@ -46,6 +47,7 @@ from stm32_toolkit.evidence import (
 from stm32_toolkit.evidence.gc import RootRecord
 from stm32_toolkit.evidence.store import EvidenceStore
 from stm32_toolkit.paths import WorkspacePaths, require_safe_session_id
+from stm32_toolkit.probe.flash import load_fresh_firmware_facts
 from stm32_toolkit.project_model import ProjectManifestError, load_project_model
 from stm32_toolkit.generation.managed_files import model_sha256_for
 from stm32_toolkit.result import OperationResult
@@ -124,6 +126,7 @@ class _RecoveryFailure(Exception):
 _load_project_model = load_project_model
 _workspace_paths_factory = WorkspacePaths.from_roots
 _evidence_store_factory = EvidenceStore
+_load_fresh_firmware_facts = load_fresh_firmware_facts
 _build_project_context = build_project_context
 _test_show = test_show
 _diagnostic_show = diagnostic_show
@@ -294,6 +297,54 @@ def _build_data(
         "elfSha256": elf_sha,
         "inputSnapshotSha256": input_snapshot,
     }
+
+
+def _physical_build_data(
+    context: AcceptanceRecoveryContext,
+    model: object,
+) -> tuple[dict[str, object], object]:
+    """Load one validated firmware identity and bind it to the full snapshot.
+
+    The v1 recovery adapter intentionally keeps its established build-context
+    authority.  Physical checkpoints use the offline flash authority instead:
+    its build, ELF, and snapshot digests are recovered from one validated
+    firmware identity.  The full snapshot is still needed to derive the
+    source-change intent, so its digest is checked against that same identity
+    before either value is exposed to the physical workflow.
+    """
+    try:
+        facts = _load_fresh_firmware_facts(context.project_root)
+    except Exception as error:
+        raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_OUTPUT_INVALID") from error
+    build_id = getattr(facts, "build_id", None)
+    elf_sha256 = getattr(facts, "elf_sha256", None)
+    facts_snapshot_sha256 = getattr(facts, "input_snapshot_sha256", None)
+    if (
+        not isinstance(build_id, str)
+        or _HASH_PATTERN.fullmatch(build_id) is None
+        or not isinstance(elf_sha256, str)
+        or _HASH_PATTERN.fullmatch(elf_sha256) is None
+        or not isinstance(facts_snapshot_sha256, str)
+        or _HASH_PATTERN.fullmatch(facts_snapshot_sha256) is None
+    ):
+        raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_OUTPUT_INVALID")
+    try:
+        snapshot = snapshot_project_inputs(model)
+    except Exception as error:
+        raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_OUTPUT_INVALID") from error
+    snapshot_sha256 = getattr(snapshot, "sha256", None)
+    if not isinstance(snapshot_sha256, str) or _HASH_PATTERN.fullmatch(snapshot_sha256) is None:
+        raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_OUTPUT_INVALID")
+    if snapshot_sha256 != facts_snapshot_sha256:
+        raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_IDENTITY_MISMATCH")
+    return (
+        {
+            "buildId": build_id,
+            "elfSha256": elf_sha256,
+            "inputSnapshotSha256": facts_snapshot_sha256,
+        },
+        snapshot,
+    )
 
 
 def _current_identity(
@@ -1568,57 +1619,105 @@ def _publish_physical_snapshot(
     chain: list[tuple[PhysicalAcceptanceAttempt, EvidenceEnvelope]],
 ) -> PhysicalAcceptanceAttempt:
     with evidence._mutation_lock():
-        root0 = _typed_root_path(evidence, _root_id(candidate.attempt_id, 0))
-        current = (
-            _load_physical_chain(
-                evidence,
-                attempt_id=candidate.attempt_id,
-                workspace_id=workspace.workspace_id,
-                logical_project_id=str(getattr(model, "logical_project_id")),
-            )
-            if root0.exists()
-            else []
-        )
-        if current:
-            _validate_physical_chain_semantics(
-                current, model=model, workspace=workspace, session_id=context.session_id
-            )
-            latest, latest_envelope = current[-1]
-            if latest.revision > expected_revision:
-                if _physical_equivalent_transition(latest, candidate):
-                    return latest
-                raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_REVISION_CONFLICT")
-            if latest.revision == expected_revision and _physical_equivalent_transition(latest, candidate):
-                return latest
-            if latest.revision != expected_revision:
-                raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_REVISION_CONFLICT")
-            chain = current
-            parent_envelope = latest_envelope
-        else:
-            if expected_revision != 0 or candidate.revision != 0:
-                raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_REVISION_CONFLICT")
-            parent_envelope = None
-        identity = _current_identity(context, model, workspace)
-        parents = () if parent_envelope is None else (str(parent_envelope.evidence_id),)
-        envelope = EvidenceEnvelope(
-            identity=identity,
-            operation=_ATTEMPT_OPERATION,
-            produced_at_utc=candidate.updated_at_utc,
-            parents=parents,
-            artifacts=(),
-            metadata=_physical_envelope_metadata(candidate),
-        )
-        evidence._put_envelope_locked(envelope)
-        _publish_root_locked(
+        return _publish_physical_snapshot_locked(
             evidence,
-            RootRecord(
-                _ATTEMPT_ROOT_TYPE,
-                _root_id(candidate.attempt_id, candidate.revision),
-                str(envelope.evidence_id),
-                _physical_root_metadata(candidate),
-            ),
+            context,
+            model,
+            workspace,
+            candidate,
+            expected_revision=expected_revision,
+            chain=chain,
         )
-        return candidate
+
+
+def _publish_physical_snapshot_locked(
+    evidence: EvidenceStore,
+    context: AcceptanceRecoveryContext,
+    model: object,
+    workspace: WorkspacePaths,
+    candidate: PhysicalAcceptanceAttempt,
+    *,
+    expected_revision: int,
+    chain: list[tuple[PhysicalAcceptanceAttempt, EvidenceEnvelope]],
+) -> PhysicalAcceptanceAttempt:
+    """Publish a physical attempt snapshot while EvidenceStore is locked."""
+    root0 = _typed_root_path(evidence, _root_id(candidate.attempt_id, 0))
+    current = (
+        _load_physical_chain(
+            evidence,
+            attempt_id=candidate.attempt_id,
+            workspace_id=workspace.workspace_id,
+            logical_project_id=str(getattr(model, "logical_project_id")),
+        )
+        if root0.exists()
+        else []
+    )
+    if current:
+        _validate_physical_chain_semantics(
+            current, model=model, workspace=workspace, session_id=context.session_id
+        )
+        latest, latest_envelope = current[-1]
+        if latest.revision > expected_revision:
+            if _physical_equivalent_transition(latest, candidate):
+                return latest
+            raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_REVISION_CONFLICT")
+        if latest.revision == expected_revision and _physical_equivalent_transition(latest, candidate):
+            return latest
+        if latest.revision != expected_revision:
+            raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_REVISION_CONFLICT")
+        chain = current
+        parent_envelope = latest_envelope
+    else:
+        if expected_revision != 0 or candidate.revision != 0:
+            raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_REVISION_CONFLICT")
+        parent_envelope = None
+    identity = _current_identity(context, model, workspace)
+    parents = () if parent_envelope is None else (str(parent_envelope.evidence_id),)
+    envelope = EvidenceEnvelope(
+        identity=identity,
+        operation=_ATTEMPT_OPERATION,
+        produced_at_utc=candidate.updated_at_utc,
+        parents=parents,
+        artifacts=(),
+        metadata=_physical_envelope_metadata(candidate),
+    )
+    evidence._put_envelope_locked(envelope)
+    if candidate.revision == 6:
+        _validate_physical_build_after_publication(context, model, candidate)
+    _publish_root_locked(
+        evidence,
+        RootRecord(
+            _ATTEMPT_ROOT_TYPE,
+            _root_id(candidate.attempt_id, candidate.revision),
+            str(envelope.evidence_id),
+            _physical_root_metadata(candidate),
+        ),
+    )
+    return candidate
+
+
+def _validate_physical_build_after_publication(
+    context: AcceptanceRecoveryContext,
+    model: object,
+    candidate: PhysicalAcceptanceAttempt,
+) -> None:
+    """Recheck rev6 firmware facts after its envelope is durable.
+
+    The initial build transition binds the build identity to a full source
+    snapshot.  A source mutation can still occur while the envelope is being
+    published, so the same authority is checked once more before the root is
+    made visible.  A failed check leaves an unrooted envelope only.
+    """
+    build, snapshot = _physical_build_data(context, model)
+    expected = candidate.stage_outputs
+    if (
+        build.get("buildId") != expected.get("afterBuildId")
+        or build.get("elfSha256") != expected.get("afterElfSha256")
+        or build.get("inputSnapshotSha256") != expected.get("afterInputSnapshotSha256")
+        or getattr(snapshot, "sha256", None)
+        != getattr(candidate.source_change_intent, "expected_after_input_snapshot_sha256", None)
+    ):
+        raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_IDENTITY_MISMATCH")
 
 
 def _physical_equivalent_transition(
@@ -1809,6 +1908,33 @@ def _derive_physical_intent(
     )
 
 
+def _validate_physical_authorization_source(
+    model: object,
+    attempt: PhysicalAcceptanceAttempt,
+) -> SourceChangeIntent:
+    intent = attempt.source_change_intent
+    expected_before = attempt.stage_outputs.get("beforeInputSnapshotSha256")
+    if intent is None or not isinstance(expected_before, str):
+        raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_IDENTITY_MISMATCH")
+    if intent.before_input_snapshot_sha256 != expected_before:
+        raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_IDENTITY_MISMATCH")
+    try:
+        snapshot = snapshot_project_inputs(model)
+        refreshed = _derive_physical_intent(
+            model,
+            intent,
+            snapshot,
+            expected_before_hash=expected_before,
+        )
+    except _RecoveryFailure:
+        raise
+    except AcceptanceRecoveryValidationError as error:
+        raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_OUTPUT_INVALID") from error
+    if refreshed != intent:
+        raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_IDENTITY_MISMATCH")
+    return refreshed
+
+
 def _load_physical_test_run(
     context: AcceptanceRecoveryContext,
     model: object,
@@ -1894,6 +2020,79 @@ def _physical_diagnostic_data(
         raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_EVIDENCE_INTEGRITY_FAILED") from error
 
 
+def _physical_diagnostic_failure(error: BaseException) -> _RecoveryFailure:
+    code = getattr(error, "code", None)
+    if code in {"DIAGNOSTIC_IDENTITY_MISMATCH", "INCOMPATIBLE_IDENTITY"}:
+        return _RecoveryFailure("ACCEPTANCE_ATTEMPT_IDENTITY_MISMATCH")
+    return _RecoveryFailure("ACCEPTANCE_ATTEMPT_EVIDENCE_INTEGRITY_FAILED")
+
+
+def _load_physical_diagnostic_locked(
+    context: AcceptanceRecoveryContext,
+    model: object,
+    workspace: WorkspacePaths,
+    evidence: EvidenceStore,
+    attempt: PhysicalAcceptanceAttempt,
+    diagnostic_store: object,
+) -> DiagnosticSession:
+    """Load and authenticate Diagnostic while its store lock is held.
+
+    Calling the public diagnostic reader here would reacquire the same lock.
+    The locked chain reader is paired with the existing authoritative
+    TestRunRepository/target provenance checks instead.
+    """
+    session_id = attempt.stage_outputs.get("diagnosticSessionId")
+    if not isinstance(session_id, str):
+        raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_IDENTITY_MISMATCH")
+    try:
+        session, _events = diagnostic_store._load_chain_locked(session_id)
+        state = _diagnostic_workflows._WorkflowState(
+            model,
+            workspace,
+            evidence,
+            diagnostic_store,
+            _diagnostic_workflows._repository_factory(evidence),
+        )
+        published = _diagnostic_workflows._load_authoritative_run(
+            state,
+            session.failed_test_run_id,
+            failed_run_mode=session.failed_run_mode,
+            expected_identity=session.identity,
+        )
+        if getattr(getattr(published, "envelope", None), "evidence_id", None) != session.failed_evidence_id:
+            raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_IDENTITY_MISMATCH")
+    except _RecoveryFailure:
+        raise
+    except (
+        DiagnosticValidationError,
+        EvidenceValidationError,
+        FileNotFoundError,
+        OSError,
+        TypeError,
+        ValueError,
+        KeyError,
+        IndexError,
+    ) as error:
+        raise _physical_diagnostic_failure(error) from error
+    except _diagnostic_workflows._WorkflowFailure as error:
+        raise _physical_diagnostic_failure(error) from error
+    _validate_physical_diagnostic_session(
+        session,
+        attempt,
+        model,
+        workspace,
+        context,
+        expected_session_id=session_id,
+        allow_source_change=False,
+    )
+    if (
+        session.revision != attempt.stage_outputs.get("diagnosticRevision")
+        or session.event_head != attempt.stage_outputs.get("diagnosticEventHead")
+    ):
+        raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_IDENTITY_MISMATCH")
+    return session
+
+
 def _validate_physical_diagnostic_session(
     session: DiagnosticSession,
     attempt: PhysicalAcceptanceAttempt,
@@ -1964,7 +2163,7 @@ def _physical_build_transition(
     if stage == "project-materialized":
         outputs["projectModelDigest"] = _project_model_digest(model)
     elif stage == "firmware-built-before":
-        build = _build_data(context, model)
+        build, _snapshot = _physical_build_data(context, model)
         outputs["beforeBuildId"] = build["buildId"]
         outputs["beforeElfSha256"] = build["elfSha256"]
         outputs["beforeInputSnapshotSha256"] = build["inputSnapshotSha256"]
@@ -1995,17 +2194,13 @@ def _physical_build_transition(
         # Reconfirm the fresh P3 build authority at the diagnosis boundary.
         # The source snapshot alone cannot prove that the published firmware
         # and build record still identify the same before-change candidate.
-        before_build = _build_data(context, model)
+        before_build, before_snapshot = _physical_build_data(context, model)
         if (
             before_build["buildId"] != attempt.stage_outputs.get("beforeBuildId")
             or before_build["elfSha256"] != attempt.stage_outputs.get("beforeElfSha256")
             or before_build["inputSnapshotSha256"] != attempt.stage_outputs.get("beforeInputSnapshotSha256")
         ):
             raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_IDENTITY_MISMATCH")
-        try:
-            before_snapshot = snapshot_project_inputs(model)
-        except Exception as error:
-            raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_OUTPUT_INVALID") from error
         try:
             intent = _derive_physical_intent(
                 model,
@@ -2023,7 +2218,7 @@ def _physical_build_transition(
             raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_AUTHORIZATION_REQUIRED")
         if attempt.source_change_authorization is None or attempt.source_change_intent is None:
             raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_AUTHORIZATION_REQUIRED")
-        build = _build_data(context, model)
+        build, _snapshot = _physical_build_data(context, model)
         if build["buildId"] == attempt.stage_outputs.get("beforeBuildId"):
             raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_OUTPUT_INVALID")
         if build["inputSnapshotSha256"] != attempt.source_change_intent.expected_after_input_snapshot_sha256:
@@ -2375,90 +2570,151 @@ def _authorize_physical_source_change(
     action_digest = _canonical_hash("actionDigest", action_digest)
     if type(authorized) is not bool or authorized is not True:
         raise AcceptanceRecoveryValidationError("authorized must be true")
-    loaded = _physical_attempt_for_context(context, attempt_id)
-    if loaded is None:
+    model, workspace, evidence = _load_project_and_workspace(context)
+    root0 = _typed_root_path(evidence, _root_id(attempt_id, 0))
+    if not root0.exists():
         raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_NOT_FOUND")
-    model, workspace, evidence, chain = loaded
-    current = chain[-1][0]
-    if current.revision != expected_revision:
-        if (
-            current.revision == 5
-            and current.source_change_authorization is not None
-            and current.source_change_authorization.get("actionDigest") == action_digest
-        ):
-            return OperationResult.success("acceptance.attempt.authorize-source-change", {"attempt": current.to_dict()})
-        raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_REVISION_CONFLICT")
-    now = _now(context)
-    _check_deadline_physical(current, now)
-    if current.source_change_authorization is not None or current.source_change_intent is None:
-        raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_REVISION_CONFLICT")
-    if action_digest != _physical_action_digest(current):
-        raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_ACTION_DIGEST_MISMATCH")
-    session_id = cast(str, current.stage_outputs.get("diagnosticSessionId"))
-    session = _physical_diagnostic_data(context, session_id)
-    _validate_physical_diagnostic_session(
-        session, current, model, workspace, context,
-        expected_session_id=session_id,
-        allow_source_change=False,
+
+    # DiagnosticStore owns the first lock.  Keep it held across the complete
+    # authorization publication so a Diagnostic revision cannot change after
+    # it has been authenticated but before the attempt root is committed.
+    diagnostic_store = _diagnostic_workflows._diagnostic_store_factory(
+        workspace.diagnostics_root, evidence
     )
-    if (
-        session.revision != current.stage_outputs.get("diagnosticRevision")
-        or session.event_head != current.stage_outputs.get("diagnosticEventHead")
-    ):
-        raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_IDENTITY_MISMATCH")
-    try:
-        before_snapshot = snapshot_project_inputs(model)
-    except Exception as error:
-        raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_OUTPUT_INVALID") from error
-    if (
-        current.source_change_intent.before_input_snapshot_sha256 != current.stage_outputs.get("beforeInputSnapshotSha256")
-        or before_snapshot.sha256 != current.stage_outputs.get("beforeInputSnapshotSha256")
-    ):
-        raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_IDENTITY_MISMATCH")
-    try:
-        refreshed_intent = _derive_physical_intent(
-            model,
-            SourceChangeIntent.new(changes=[dict(item) for item in current.source_change_intent.changes]),
-            before_snapshot,
-            expected_before_hash=cast(str, current.stage_outputs["beforeInputSnapshotSha256"]),
+    with diagnostic_store._store_lock(create=False):
+        chain = _load_physical_chain(
+            evidence,
+            attempt_id=attempt_id,
+            workspace_id=workspace.workspace_id,
+            logical_project_id=str(getattr(model, "logical_project_id")),
         )
-    except AcceptanceRecoveryValidationError as error:
-        raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_OUTPUT_INVALID") from error
-    if refreshed_intent != current.source_change_intent:
-        raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_IDENTITY_MISMATCH")
-    authorization = {
-        "action": "source-change",
-        "actionDigest": action_digest,
-        "authorized": True,
-        "authorizedAtUtc": now,
-        "diagnosticSessionId": current.stage_outputs["diagnosticSessionId"],
-        "diagnosticRevision": current.stage_outputs["diagnosticRevision"],
-        "diagnosticEventHead": current.stage_outputs["diagnosticEventHead"],
-    }
-    candidate = _physical_base_snapshot(
-        attempt_id=current.attempt_id,
-        opened_at=current.opened_at_utc,
-        updated_at=now,
-        workspace_id=current.workspace_id,
-        logical_project_id=current.logical_project_id,
-        revision=5,
-        previous_checkpoint_id=current.checkpoint_id,
-        outputs=current.stage_outputs,
-        authorization=authorization,
-        intent=current.source_change_intent,
-        status="ACTIVE",
-        deadline_at=_physical_deadline(now, "firmware-built-after"),
-    )
-    published = _publish_physical_snapshot(
-        evidence,
-        context,
-        model,
-        workspace,
-        candidate,
-        expected_revision=4,
-        chain=chain,
-    )
-    return OperationResult.success("acceptance.attempt.authorize-source-change", {"attempt": published.to_dict()})
+        _validate_physical_chain_semantics(
+            chain, model=model, workspace=workspace, session_id=context.session_id
+        )
+        current = chain[-1][0]
+        if current.revision != expected_revision:
+            if (
+                current.revision == 5
+                and current.source_change_authorization is not None
+                and current.source_change_authorization.get("actionDigest") == action_digest
+            ):
+                return OperationResult.success(
+                    "acceptance.attempt.authorize-source-change", {"attempt": current.to_dict()}
+                )
+            raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_REVISION_CONFLICT")
+        if current.source_change_authorization is not None or current.source_change_intent is None:
+            raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_REVISION_CONFLICT")
+        now = _now(context)
+        _check_deadline_physical(current, now)
+        if action_digest != _physical_action_digest(current):
+            raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_ACTION_DIGEST_MISMATCH")
+
+        session = _load_physical_diagnostic_locked(
+            context,
+            model,
+            workspace,
+            evidence,
+            current,
+            diagnostic_store,
+        )
+        # This preflight keeps the normal error response deterministic.  The
+        # same source/intent/time checks are repeated under EvidenceStore after
+        # the envelope write and immediately before root publication.
+        _validate_physical_authorization_source(model, current)
+
+        with evidence._mutation_lock():
+            current_chain = _load_physical_chain(
+                evidence,
+                attempt_id=attempt_id,
+                workspace_id=workspace.workspace_id,
+                logical_project_id=str(getattr(model, "logical_project_id")),
+            )
+            _validate_physical_chain_semantics(
+                current_chain, model=model, workspace=workspace, session_id=context.session_id
+            )
+            latest, latest_envelope = current_chain[-1]
+            if latest.revision > expected_revision:
+                if (
+                    latest.revision == 5
+                    and latest.source_change_authorization is not None
+                    and latest.source_change_authorization.get("actionDigest") == action_digest
+                ):
+                    return OperationResult.success(
+                        "acceptance.attempt.authorize-source-change", {"attempt": latest.to_dict()}
+                    )
+                raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_REVISION_CONFLICT")
+            if latest.revision != expected_revision:
+                raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_REVISION_CONFLICT")
+            if (
+                latest.checkpoint_id != current.checkpoint_id
+                or latest.stage_outputs.get("diagnosticSessionId") != session.diagnostic_session_id
+                or latest.stage_outputs.get("diagnosticRevision") != session.revision
+                or latest.stage_outputs.get("diagnosticEventHead") != session.event_head
+            ):
+                raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_IDENTITY_MISMATCH")
+            current = latest
+            final_now = _now(context)
+            _check_deadline_physical(current, final_now)
+            _validate_physical_authorization_source(model, current)
+            authorization = {
+                "action": "source-change",
+                "actionDigest": action_digest,
+                "authorized": True,
+                "authorizedAtUtc": now,
+                "diagnosticSessionId": current.stage_outputs["diagnosticSessionId"],
+                "diagnosticRevision": current.stage_outputs["diagnosticRevision"],
+                "diagnosticEventHead": current.stage_outputs["diagnosticEventHead"],
+            }
+            candidate = _physical_base_snapshot(
+                attempt_id=current.attempt_id,
+                opened_at=current.opened_at_utc,
+                updated_at=now,
+                workspace_id=current.workspace_id,
+                logical_project_id=current.logical_project_id,
+                revision=5,
+                previous_checkpoint_id=current.checkpoint_id,
+                outputs=current.stage_outputs,
+                authorization=authorization,
+                intent=current.source_change_intent,
+                status="ACTIVE",
+                deadline_at=_physical_deadline(now, "firmware-built-after"),
+            )
+            identity = _current_identity(
+                context,
+                model,
+                workspace,
+                build={
+                    "buildId": current.stage_outputs["beforeBuildId"],
+                    "elfSha256": current.stage_outputs["beforeElfSha256"],
+                    "inputSnapshotSha256": current.stage_outputs["beforeInputSnapshotSha256"],
+                },
+            )
+            envelope = EvidenceEnvelope(
+                identity=identity,
+                operation=_ATTEMPT_OPERATION,
+                produced_at_utc=candidate.updated_at_utc,
+                parents=(str(latest_envelope.evidence_id),),
+                artifacts=(),
+                metadata=_physical_envelope_metadata(candidate),
+            )
+            evidence._put_envelope_locked(envelope)
+            # Source files cannot be locked by this adapter.  Revalidate after
+            # the envelope is durable and immediately before the root write;
+            # a failed check may leave an unrooted envelope but never a rev5.
+            _validate_physical_authorization_source(model, current)
+            _check_deadline_physical(current, _now(context))
+            _publish_root_locked(
+                evidence,
+                RootRecord(
+                    _ATTEMPT_ROOT_TYPE,
+                    _root_id(candidate.attempt_id, candidate.revision),
+                    str(envelope.evidence_id),
+                    _physical_root_metadata(candidate),
+                ),
+            )
+            return OperationResult.success(
+                "acceptance.attempt.authorize-source-change", {"attempt": candidate.to_dict()}
+            )
 
 
 def _show_physical_attempt(
