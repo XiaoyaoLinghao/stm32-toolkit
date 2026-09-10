@@ -230,6 +230,130 @@ async def _next(stream, timeout: float = 2.0):
     return await asyncio.wait_for(anext(stream), timeout)
 
 
+def test_precision_worker_caps_sleep_and_rechecks_absolute_deadline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import stm32_monitor.sampler as sampler_module
+
+    qpc_values = iter((0, 120_000_000))
+    sleep_requests: list[float] = []
+    sampler_clock = SimpleNamespace(
+        perf_counter_ns=lambda: next(qpc_values),
+        sleep=sleep_requests.append,
+    )
+    monkeypatch.setattr(sampler_module, "time", sampler_clock)
+
+    deadline = 100_000_000
+    sampler_module._sleep_until_deadline(deadline)
+    sampler_module._sleep_until_deadline(deadline)
+
+    assert sleep_requests == [0.05]
+
+
+def test_long_coarse_wait_cancellation_submits_no_precision_future(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import stm32_monitor.sampler as sampler_module
+
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    precision_submissions: list[int] = []
+
+    class AsyncioProxy:
+        def __getattr__(self, name: str):
+            return getattr(asyncio, name)
+
+        async def sleep(self, delay: float, result=None):
+            assert delay == 0.95
+            entered.set()
+            await release.wait()
+            return result
+
+    monkeypatch.setattr(
+        sampler_module,
+        "time",
+        SimpleNamespace(perf_counter_ns=lambda: 0),
+    )
+    monkeypatch.setattr(sampler_module, "asyncio", AsyncioProxy())
+    monkeypatch.setattr(
+        sampler_module,
+        "_sleep_until_deadline",
+        lambda deadline: precision_submissions.append(deadline),
+    )
+
+    async def scenario() -> None:
+        pending = asyncio.create_task(
+            sampler_module._wait_until_deadline(1_000_000_000)
+        )
+        await asyncio.wait_for(entered.wait(), 1)
+        pending.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await pending
+        assert precision_submissions == []
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("action", ["stop", "close"])
+def test_stop_and_close_drain_owned_precision_wait_before_return(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    action: str,
+) -> None:
+    import stm32_monitor.sampler as sampler_module
+
+    entered = threading.Event()
+    release = threading.Event()
+
+    def blocked_precision_wait(deadline_ns: int) -> None:
+        entered.set()
+        assert release.wait(timeout=5)
+
+    monkeypatch.setattr(
+        sampler_module, "_sleep_until_deadline", blocked_precision_wait
+    )
+
+    async def scenario() -> None:
+        project = tmp_path / "project"
+        project.mkdir()
+        observation = FakeObservation(_binding(project))
+        sampler = MonitorSampler(observation, FakeGroups(_group()), FakeHistory())
+        stream = sampler.subscribe()
+        pending = None
+        try:
+            started = await sampler.start(GROUP_ID, expected_revision=1)
+            assert started.ok
+            await _next(stream)
+            assert await asyncio.to_thread(entered.wait, 2)
+            producer = sampler._producer_task
+            assert producer is not None
+            pending = asyncio.create_task(getattr(sampler, action)())
+            await asyncio.sleep(0.05)
+            assert not pending.done()
+            assert producer.cancelling() >= 1
+            producer.cancel()
+            await asyncio.sleep(0.05)
+            assert not pending.done()
+            assert observation.calls == 1
+            release.set()
+            result = await pending
+            if action == "stop":
+                assert result.ok and result.data == {"stopped": True}
+                assert sampler.state is SamplerState.IDLE
+            else:
+                assert result is None
+                assert sampler.state is SamplerState.CLOSED
+            assert observation.calls == 1
+        finally:
+            release.set()
+            if pending is not None and not pending.done():
+                await pending
+            await stream.aclose()
+            await sampler.close()
+
+    asyncio.run(scenario())
+
+
 def test_sampler_uses_high_resolution_clock_for_subtick_latency_and_adjacent_rate(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

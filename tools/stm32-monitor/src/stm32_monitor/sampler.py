@@ -38,7 +38,12 @@ class SamplerState(str, Enum):
     CLOSED = "CLOSED"
 
 
-async def _await_owned(task: asyncio.Task[_T]) -> tuple[_T, asyncio.CancelledError | None]:
+_PRECISION_WAIT_NS = 50_000_000
+
+
+async def _await_owned(
+    task: asyncio.Future[_T] | asyncio.Task[_T],
+) -> tuple[_T, asyncio.CancelledError | None]:
     cancellation: asyncio.CancelledError | None = None
     while not task.done():
         try:
@@ -49,6 +54,29 @@ async def _await_owned(task: asyncio.Task[_T]) -> tuple[_T, asyncio.CancelledErr
         except BaseException:
             break
     return task.result(), cancellation
+
+
+def _sleep_until_deadline(deadline_ns: int) -> None:
+    remaining_ns = deadline_ns - time.perf_counter_ns()
+    if remaining_ns > 0:
+        time.sleep(min(remaining_ns, _PRECISION_WAIT_NS) / 1_000_000_000)
+
+
+async def _wait_until_deadline(deadline_ns: int) -> None:
+    while True:
+        remaining_ns = deadline_ns - time.perf_counter_ns()
+        if remaining_ns <= 0:
+            return
+        if remaining_ns > _PRECISION_WAIT_NS:
+            await asyncio.sleep(
+                (remaining_ns - _PRECISION_WAIT_NS) / 1_000_000_000
+            )
+            continue
+        loop = asyncio.get_running_loop()
+        wait = loop.run_in_executor(None, _sleep_until_deadline, deadline_ns)
+        _, cancellation = await _await_owned(wait)
+        if cancellation is not None:
+            raise cancellation
 
 
 class MonitorSampler:
@@ -275,7 +303,7 @@ class MonitorSampler:
                     self._reset_deadline = False
                 delay_ns = next_deadline - time.perf_counter_ns()
                 if delay_ns > 0:
-                    await asyncio.sleep(delay_ns / 1_000_000_000)
+                    await _wait_until_deadline(next_deadline)
                 if stop_event.is_set() or self.state is not SamplerState.RUNNING:
                     continue
                 epoch = self._epoch
