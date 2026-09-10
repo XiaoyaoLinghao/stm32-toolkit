@@ -66,6 +66,15 @@ class _Resolved:
     decode: Callable[[bytes], TypedValue]
 
 
+@dataclass(frozen=True)
+class _PreparedReadPlan:
+    expressions: tuple[str, ...]
+    groups: tuple[
+        tuple[tuple[tuple[int, _Resolved], ...], ...], ...
+    ]
+    initial_items: tuple[DebugReadItem | None, ...]
+
+
 def _fail(
     code: str, message: str, details: Mapping[str, object] | None = None
 ) -> _ReadFailure:
@@ -194,6 +203,16 @@ async def _attach(binding: DebugFirmwareBinding, client: object) -> None:
         or getattr(attachment, "core_count", None) != 1
     ):
         raise _fail("DEBUG_TARGET_MISMATCH", "Connected target does not match the debug binding")
+
+
+async def _prepared_guard(
+    binding: DebugFirmwareBinding, client: object
+) -> None:
+    """Check the existing committed logical attachment without reloading sources."""
+
+    _endpoint(binding, client)
+    await _attach(binding, client)
+    _endpoint(binding, client)
 
 
 async def _guard(
@@ -476,12 +495,21 @@ def _resolve_items(
     return resolved, output
 
 
-async def _execute_prepared(
-    operation: str,
-    binding: DebugFirmwareBinding,
+def _freeze_prepared_plan(
     expressions: tuple[str, ...],
     prepared_groups: tuple[list[tuple[int, _Resolved]], ...],
-    output: list[DebugReadItem | None],
+    initial_items: list[DebugReadItem | None],
+) -> _PreparedReadPlan:
+    groups = tuple(
+        tuple(tuple(group) for group in _groups(prepared))
+        for prepared in prepared_groups
+    )
+    return _PreparedReadPlan(expressions, groups, tuple(initial_items))
+
+
+async def _execute_prepared(
+    operation: str,
+    plan: _PreparedReadPlan,
     raw_read: Callable[[int, int], Awaitable[bytes]],
 ) -> OperationResult[tuple[DebugReadItem, ...]]:
     """Execute resolved groups with a caller-owned guard boundary.
@@ -491,9 +519,10 @@ async def _execute_prepared(
     """
 
     try:
-        for prepared in prepared_groups:
-            for group in _groups(prepared):
-                for index, result in await _read_group(raw_read, group):
+        output = list(plan.initial_items)
+        for prepared in plan.groups:
+            for group in prepared:
+                for index, result in await _read_group(raw_read, list(group)):
                     output[index] = result
         items = tuple(item for item in output if item is not None)
         return OperationResult.success(operation, items)

@@ -30,9 +30,12 @@ from stm32_toolkit.debug import (
 )
 from stm32_toolkit.debug.firmware import _svd_readable_regions_from_model
 from stm32_toolkit.debug.read import (
+    _PreparedReadPlan,
     _execute_prepared,
     _guard as _debug_read_guard,
     _items,
+    _freeze_prepared_plan,
+    _prepared_guard,
     _resolve_items,
     _variable,
 )
@@ -51,7 +54,7 @@ from stm32_toolkit.probe.attach_diagnostics import (
     make_cleanup_entry,
 )
 from stm32_toolkit.probe.lease import ProbeLeaseManager
-from stm32_toolkit.probe.protocol import PROBE_PROTOCOL_VERSION
+from stm32_toolkit.probe.protocol import MAX_BATCH_ITEMS, PROBE_PROTOCOL_VERSION
 from stm32_toolkit.probe.worker import ProbeWorkerConfig
 from stm32_toolkit.probe.service import ProbeServiceCleanupError, _service_error_fields
 from stm32_toolkit.project_model import load_project_model
@@ -60,6 +63,8 @@ from stm32_toolkit.result import OperationResult
 _OPERATION = "stm32_monitor_observation_open"
 _REVALIDATE_OPERATION = "stm32_monitor_observation_revalidate"
 _BATCH_OPERATION = "stm32_monitor_observation_batch"
+_PREPARE_OPERATION = "stm32_monitor_observation_prepare"
+_PREPARED_READ_OPERATION = "stm32_monitor_observation_prepared_read"
 _IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 _DIGEST = re.compile(r"^[0-9a-f]{64}$")
 _REPARSE_POINT = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
@@ -88,6 +93,21 @@ class MonitorObservationError(Exception):
         self.message = message
         self.details = dict(details or {})
         self.cleanup_fragment = cleanup_fragment or CleanupFragment()
+
+
+@dataclass(frozen=True)
+class _ReadPlanAdmission:
+    generation: int
+    binding: DebugFirmwareBinding
+
+
+@dataclass(frozen=True)
+class _MonitorReadPlan:
+    generation: int
+    binding: DebugFirmwareBinding
+    watch_keys: tuple[tuple[str, str], ...]
+    prepared: _PreparedReadPlan
+    admission: _ReadPlanAdmission
 
 
 def _supervisor_factory(
@@ -803,6 +823,11 @@ class MonitorObservationSession:
         self._paths = paths
         self._seams = seams
         self._close_task: asyncio.Task | None = None
+        self._plan_generation = 0
+        self._plan: _MonitorReadPlan | None = None
+        self._admission_generation = 0
+        self._admission: _ReadPlanAdmission | None = None
+        self._closed = False
 
     async def read_variables(
         self, expressions: tuple[str, ...]
@@ -824,6 +849,231 @@ class MonitorObservationSession:
         return await self._seams.sample_registers(
             RegisterSampleRequest(self.binding, self.svd, paths), self.client
         )
+
+    def _invalidate_read_plan(self) -> None:
+        self._plan_generation += 1
+        self._plan = None
+        self._admission_generation += 1
+        self._admission = None
+
+    def _discard_read_plan(self) -> None:
+        self._plan_generation += 1
+        self._plan = None
+
+    def _read_plan_admission(self) -> object | None:
+        if self._closed:
+            return None
+        return self._admission
+
+    def _verify_admission(self, value: object) -> _ReadPlanAdmission:
+        if (
+            self._closed
+            or type(value) is not _ReadPlanAdmission
+            or self._admission is not value
+            or value.generation != self._admission_generation
+            or not _same_binding(value.binding, self.binding)
+        ):
+            raise MonitorObservationError(
+                "MONITOR_PROVENANCE_CHANGED", "Monitor read admission changed"
+            )
+        return value
+
+    def _verify_read_plan(self, value: object) -> _MonitorReadPlan:
+        if (
+            self._closed
+            or type(value) is not _MonitorReadPlan
+            or self._plan is not value
+            or value.generation != self._plan_generation
+            or not _same_binding(value.binding, self.binding)
+            or self._admission is not value.admission
+        ):
+            raise MonitorObservationError(
+                "MONITOR_PROVENANCE_CHANGED", "Monitor observation plan changed"
+            )
+        return value
+
+    def _verify_read_context(self, plan: _MonitorReadPlan) -> None:
+        self._verify_read_plan(plan)
+        _verify_root_guard(self._root_guard)
+        _endpoint(self.endpoint, self._paths, self.binding.probe_id)
+        _endpoint(
+            getattr(self.client, "endpoint", None),
+            self._paths,
+            self.binding.probe_id,
+        )
+
+    async def _prepare_read_plan(
+        self,
+        variables: tuple[str, ...],
+        registers: tuple[str, ...],
+        *,
+        admission_token: object | None = None,
+    ) -> OperationResult[_MonitorReadPlan]:
+        """Compile immutable typed read metadata after full admission."""
+
+        self._discard_read_plan()
+        prepare_generation = self._plan_generation
+        prepare_admission = self._admission
+
+        def invalidate_failed_prepare() -> None:
+            if (
+                self._plan_generation == prepare_generation
+                and self._admission is prepare_admission
+            ):
+                self._invalidate_read_plan()
+
+        try:
+            if self._closed:
+                return OperationResult.failure(
+                    _PREPARE_OPERATION,
+                    "MONITOR_REQUEST_INVALID",
+                    "Monitor observation is closed",
+                    {},
+                )
+            if (
+                type(variables) is not tuple
+                or type(registers) is not tuple
+                or (not variables and not registers)
+                or len(variables) + len(registers) > MAX_BATCH_ITEMS
+            ):
+                raise MonitorObservationError(
+                    "MONITOR_REQUEST_INVALID", "Monitor read plan is invalid"
+                )
+            admission = self._verify_admission(
+                self._admission if admission_token is None else admission_token
+            )
+            checked_variables = _items(variables) if variables else ()
+            checked_registers = _items(registers) if registers else ()
+            selection = self.svd
+            if checked_registers and type(selection) is not SvdSelection:
+                invalidate_failed_prepare()
+                return OperationResult.failure(
+                    _PREPARE_OPERATION,
+                    "SVD_SELECTION_REQUIRED",
+                    "An exact project SVD selection is required",
+                    {},
+                )
+            _verify_root_guard(self._root_guard)
+            _endpoint(self.endpoint, self._paths, self.binding.probe_id)
+            _endpoint(
+                getattr(self.client, "endpoint", None),
+                self._paths,
+                self.binding.probe_id,
+            )
+            variable_resolved, variable_output = _resolve_items(
+                checked_variables,
+                lambda expression: _variable(
+                    self.binding, self.catalog, expression
+                ),
+            )
+            register_resolved, register_output = _resolve_items(
+                checked_registers,
+                lambda path: _sampled_register(
+                    self.binding, selection, path  # type: ignore[arg-type]
+                ),
+            )
+            register_offset = len(checked_variables)
+            prepared_registers = [
+                (index + register_offset, item)
+                for index, item in register_resolved
+            ]
+            expressions = checked_variables + checked_registers
+            prepared = _freeze_prepared_plan(
+                expressions,
+                (variable_resolved, prepared_registers),
+                [*variable_output, *register_output],
+            )
+            self._verify_admission(admission)
+            _verify_root_guard(self._root_guard)
+            _endpoint(self.endpoint, self._paths, self.binding.probe_id)
+            _endpoint(
+                getattr(self.client, "endpoint", None),
+                self._paths,
+                self.binding.probe_id,
+            )
+            plan = _MonitorReadPlan(
+                self._plan_generation,
+                self.binding,
+                tuple(
+                    [("variable", expression) for expression in checked_variables]
+                    + [("register", path) for path in checked_registers]
+                ),
+                prepared,
+                admission,
+            )
+            self._plan = plan
+            return OperationResult.success(_PREPARE_OPERATION, plan)
+        except asyncio.CancelledError:
+            invalidate_failed_prepare()
+            raise
+        except Exception as error:
+            invalidate_failed_prepare()
+            code = getattr(error, "code", None)
+            if code == "DEBUG_REQUEST_INVALID":
+                return OperationResult.failure(
+                    _PREPARE_OPERATION,
+                    "MONITOR_REQUEST_INVALID",
+                    "Monitor read plan is invalid",
+                    {},
+                )
+            return OperationResult.failure(
+                _PREPARE_OPERATION,
+                _failure_code(code),
+                "Monitor observation changed",
+                {},
+            )
+
+    async def _read_prepared(
+        self, value: object
+    ) -> OperationResult[DebugReadReport]:
+        """Read one immutable plan with only endpoint/root/attachment guards."""
+
+        plan: _MonitorReadPlan | None = None
+        try:
+            plan = self._verify_read_plan(value)
+            self._verify_read_context(plan)
+            await _prepared_guard(plan.binding, self.client)
+            self._verify_read_context(plan)
+            result = await _execute_prepared(
+                _PREPARED_READ_OPERATION,
+                plan.prepared,
+                self.client.read_memory,
+            )
+            if not result.ok:
+                if self._plan is plan:
+                    self._invalidate_read_plan()
+                return OperationResult.failure(
+                    _PREPARED_READ_OPERATION,
+                    _failure_code(result.code),
+                    "Monitor observation changed",
+                    {},
+                )
+            self._verify_read_context(plan)
+            await _prepared_guard(plan.binding, self.client)
+            self._verify_read_context(plan)
+            items = result.data
+            if type(items) is not tuple:
+                raise MonitorObservationError(
+                    "MONITOR_PROVENANCE_CHANGED",
+                    "Monitor observation report is invalid",
+                )
+            return OperationResult.success(
+                _PREPARED_READ_OPERATION,
+                DebugReadReport(self.binding, items, utc_now_rfc3339()),
+            )
+        except asyncio.CancelledError:
+            if plan is not None and self._plan is plan:
+                self._invalidate_read_plan()
+            raise
+        except Exception as error:
+            if plan is not None and self._plan is plan:
+                self._invalidate_read_plan()
+            return OperationResult.failure(
+                _PREPARED_READ_OPERATION,
+                _failure_code(getattr(error, "code", None)),
+                "Monitor observation changed",
+                {},
+            )
 
     async def _read_batch(
         self, variables: tuple[str, ...], registers: tuple[str, ...]
@@ -875,12 +1125,16 @@ class MonitorObservationSession:
                 {},
             )
 
-        output = [*variable_output, *register_output]
         register_offset = len(checked_variables)
         prepared_registers = [
             (index + register_offset, item)
             for index, item in register_resolved
         ]
+        prepared_plan = _freeze_prepared_plan(
+            checked_variables + checked_registers,
+            (variable_resolved, prepared_registers),
+            [*variable_output, *register_output],
+        )
         prepared = await self._revalidate_lightweight()
         if not prepared.ok:
             return OperationResult.failure(
@@ -891,10 +1145,7 @@ class MonitorObservationSession:
             )
         result = await _execute_prepared(
             _BATCH_OPERATION,
-            self.binding,
-            checked_variables + checked_registers,
-            (variable_resolved, prepared_registers),
-            output,
+            prepared_plan,
             self.client.read_memory,
         )
         if not result.ok:
@@ -981,6 +1232,23 @@ class MonitorObservationSession:
         return OperationResult.success(operation, page)
 
     async def revalidate(self) -> OperationResult[DebugFirmwareBinding]:
+        if self._closed:
+            return OperationResult.failure(
+                _REVALIDATE_OPERATION,
+                "MONITOR_REQUEST_INVALID",
+                "Monitor observation is closed",
+                {},
+            )
+        revalidation_generation = self._plan_generation
+        revalidation_admission = self._admission
+
+        def invalidate_failed_revalidation() -> None:
+            if (
+                self._plan_generation == revalidation_generation
+                and self._admission is revalidation_admission
+            ):
+                self._invalidate_read_plan()
+
         try:
             _verify_root_guard(self._root_guard)
             _endpoint(self.endpoint, self._paths, self.binding.probe_id)
@@ -999,6 +1267,7 @@ class MonitorObservationSession:
                 self.client,
             )
             if not result.ok or type(result.data) is not DebugFirmwareBinding:
+                invalidate_failed_revalidation()
                 return OperationResult.failure(
                     _REVALIDATE_OPERATION,
                     _failure_code(result.code),
@@ -1020,6 +1289,7 @@ class MonitorObservationSession:
                 self.endpoint,
             )
             if not _same_binding(self.binding, current):
+                invalidate_failed_revalidation()
                 return OperationResult.failure(
                     _REVALIDATE_OPERATION,
                     "MONITOR_FIRMWARE_CHANGED",
@@ -1030,10 +1300,25 @@ class MonitorObservationSession:
             if self.svd is not None:
                 self.svd.revalidate(current, current.project_root)
             self.binding = current
+            if self._admission is None:
+                self._admission_generation += 1
+                self._admission = _ReadPlanAdmission(
+                    self._admission_generation, current
+                )
+            elif not _same_binding(self._admission.binding, current):
+                invalidate_failed_revalidation()
+                return OperationResult.failure(
+                    _REVALIDATE_OPERATION,
+                    "MONITOR_PROVENANCE_CHANGED",
+                    "Monitor observation changed",
+                    {},
+                )
             return OperationResult.success(_REVALIDATE_OPERATION, current)
         except asyncio.CancelledError:
+            invalidate_failed_revalidation()
             raise
         except Exception as error:
+            invalidate_failed_revalidation()
             return OperationResult.failure(
                 _REVALIDATE_OPERATION,
                 _failure_code(getattr(error, "code", None)),
@@ -1066,6 +1351,9 @@ class MonitorObservationSession:
             )
 
     async def close(self) -> None:
+        if not self._closed:
+            self._closed = True
+            self._invalidate_read_plan()
         if self._close_task is None:
             self._close_task = asyncio.create_task(
                 _cleanup_resources(

@@ -98,6 +98,10 @@ class ProbeSession:
                 raise TypeError("observation session is invalid")
         self._observation = observation
         self.binding = _map_binding(observation, observation.binding)
+        self._read_plan: object | None = None
+        self._plan_watches: tuple[WatchItem, ...] = ()
+        self._plan_report_watches: tuple[WatchItem, ...] = ()
+        self._admission_token: object | None = None
 
     async def _list_catalog(
         self, method_name: str, query: str, cursor: str | None, limit: int
@@ -205,12 +209,114 @@ class ProbeSession:
             )
         return self._map_read_result(report_watches, selectors, result)
 
+    def invalidate_read_plan(self) -> None:
+        self._read_plan = None
+        self._plan_watches = ()
+        self._plan_report_watches = ()
+        self._admission_token = None
+        method = getattr(self._observation, "_invalidate_read_plan", None)
+        if callable(method):
+            method()
+
+    async def prepare_read_plan(
+        self, watches: Iterable[WatchItem]
+    ) -> ProtocolResult[dict[str, object]]:
+        operation = "sampling.prepare"
+        items = tuple(watches)
+        if (
+            not items
+            or not all(type(item) is WatchItem for item in items)
+            or len(set(items)) != len(items)
+        ):
+            self.invalidate_read_plan()
+            return failure(operation, "MONITOR_REQUEST_INVALID", "Monitor watch set is invalid")
+        variables = tuple(item for item in items if item.kind == "variable")
+        registers = tuple(item for item in items if item.kind == "register")
+        report_watches = variables + registers
+        self._read_plan = None
+        self._plan_watches = ()
+        self._plan_report_watches = ()
+        admission_token = self._admission_token
+
+        def invalidate_failed_prepare() -> None:
+            if self._read_plan is None and self._admission_token is admission_token:
+                self.invalidate_read_plan()
+
+        if admission_token is None:
+            invalidate_failed_prepare()
+            return failure(
+                operation,
+                "MONITOR_PROVENANCE_CHANGED",
+                "Monitor read plan could not be prepared",
+            )
+        try:
+            result = await self._observation._prepare_read_plan(
+                tuple(item.selector for item in variables),
+                tuple(item.selector for item in registers),
+                admission_token=admission_token,
+            )
+        except asyncio.CancelledError:
+            invalidate_failed_prepare()
+            raise
+        except Exception:
+            invalidate_failed_prepare()
+            return failure(operation, "MONITOR_PROVENANCE_CHANGED", "Monitor read plan could not be prepared")
+        if getattr(result, "ok", None) is not True:
+            invalidate_failed_prepare()
+            code = _blocked_code(getattr(result, "code", None))
+            if code is None:
+                code = "MONITOR_PROVENANCE_CHANGED"
+            return failure(operation, code, "Monitor read plan could not be prepared")
+        plan = getattr(result, "data", None)
+        if plan is None:
+            invalidate_failed_prepare()
+            return failure(operation, "MONITOR_PROVENANCE_CHANGED", "Monitor read plan is invalid")
+        try:
+            admission_method = getattr(self._observation, "_read_plan_admission", None)
+            admission_matches = callable(admission_method) and admission_method() is admission_token
+        except Exception:
+            admission_matches = False
+        if not admission_matches:
+            invalidate_failed_prepare()
+            return failure(operation, "MONITOR_PROVENANCE_CHANGED", "Monitor read admission changed")
+        self._read_plan = plan
+        self._plan_watches = items
+        self._plan_report_watches = report_watches
+        return success(operation, {"prepared": True})
+
     async def read(self, watches: Iterable[WatchItem]) -> ProbeReadOutcome:
         items = tuple(watches)
         if not items or not all(isinstance(item, WatchItem) for item in items):
             return ProbeReadOutcome((), "MONITOR_PROVENANCE_CHANGED", "Monitor watch set is invalid")
-        mixed_result = await self._read_mixed_batch(items)
+        plan = self._read_plan
+        if plan is None:
+            mixed_result = await self._read_mixed_batch(items)
+        else:
+            if items != self._plan_watches:
+                return ProbeReadOutcome(
+                    (), "MONITOR_PROVENANCE_CHANGED", "Monitor read plan changed"
+                )
+            selectors = tuple(item.selector for item in self._plan_report_watches)
+            try:
+                result = await self._observation._read_prepared(plan)
+            except asyncio.CancelledError:
+                if self._read_plan is plan:
+                    self.invalidate_read_plan()
+                raise
+            except Exception:
+                if self._read_plan is plan:
+                    self.invalidate_read_plan()
+                return ProbeReadOutcome(
+                    (),
+                    "MONITOR_PROVENANCE_CHANGED",
+                    "Monitor observation read failed",
+                )
+            mixed_result = self._map_read_result(
+                self._plan_report_watches, selectors, result
+            )
         if mixed_result.blocked_code is not None:
+            if plan is not None and self._read_plan is plan:
+                self.invalidate_read_plan()
             return mixed_result
         by_watch = {
             (value.watch.kind, value.watch.selector): value
@@ -224,18 +330,32 @@ class ProbeSession:
 
     async def revalidate(self) -> ProtocolResult[ObservationBinding]:
         operation = "sampling.revalidate"
+        revalidation_plan = self._read_plan
+        revalidation_admission = self._admission_token
+
+        def invalidate_failed_revalidation() -> None:
+            if (
+                self._read_plan is revalidation_plan
+                and self._admission_token is revalidation_admission
+            ):
+                self.invalidate_read_plan()
+
         try:
             result = await self._observation.revalidate()
         except asyncio.CancelledError:
+            invalidate_failed_revalidation()
             raise
         except Exception:
+            invalidate_failed_revalidation()
             return failure(operation, "MONITOR_PROVENANCE_CHANGED", "Monitor observation changed")
         if getattr(result, "ok", None) is not True:
+            invalidate_failed_revalidation()
             code = _blocked_code(getattr(result, "code", None)) or "MONITOR_PROVENANCE_CHANGED"
             return failure(operation, code, "Monitor observation changed")
         try:
             current = _map_binding(self._observation, getattr(result, "data", None))
         except (TypeError, ValueError):
+            invalidate_failed_revalidation()
             return failure(operation, "MONITOR_PROVENANCE_CHANGED", "Monitor observation changed")
         if current != self.binding:
             firmware_fields = (
@@ -246,7 +366,17 @@ class ProbeSession:
                 if any(getattr(current, field) != getattr(self.binding, field) for field in firmware_fields)
                 else "MONITOR_PROVENANCE_CHANGED"
             )
+            invalidate_failed_revalidation()
             return failure(operation, code, "Monitor observation changed")
+        try:
+            admission_method = getattr(self._observation, "_read_plan_admission", None)
+            token = admission_method() if callable(admission_method) else None
+        except Exception:
+            token = None
+        if token is None:
+            invalidate_failed_revalidation()
+            return failure(operation, "MONITOR_PROVENANCE_CHANGED", "Monitor observation changed")
+        self._admission_token = token
         return success(operation, current)
 
     async def _revalidate_lightweight(self) -> ProtocolResult[ObservationBinding]:

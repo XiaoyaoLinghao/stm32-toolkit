@@ -188,10 +188,15 @@ class MonitorSampler:
                     watches.append(watch)
             if len(watches) > 256:
                 return failure(operation, "MONITOR_GROUP_LIMIT_EXCEEDED", "active watch limit was exceeded")
+            self._probe.invalidate_read_plan()
             admission = await self._probe.revalidate()
             if not admission.ok:
                 return failure(operation, admission.code, "sampling cannot be started", {})
             self._invalidate_epoch()
+            prepared = await self._probe.prepare_read_plan(tuple(watches))
+            if not prepared.ok:
+                self._probe.invalidate_read_plan()
+                return failure(operation, prepared.code, "sampling cannot be started", {})
             self._set_state(SamplerState.STARTING)
             self._group = group
             self._watches = tuple(watches)
@@ -245,6 +250,7 @@ class MonitorSampler:
 
     def _block(self, code: str) -> None:
         self._invalidate_epoch()
+        self._probe.invalidate_read_plan()
         self.blocked_code = code if isinstance(code, str) and code else "MONITOR_PROVENANCE_CHANGED"
         self._set_state(SamplerState.PAUSED_BLOCKED)
         if self._run_gate is not None:
@@ -418,6 +424,7 @@ class MonitorSampler:
             if self.state is not SamplerState.RUNNING:
                 return failure(operation, self.blocked_code or "MONITOR_REQUEST_INVALID", "sampling cannot be paused")
             self._invalidate_epoch()
+            self._probe.invalidate_read_plan()
             self._set_state(SamplerState.PAUSED)
             if self._run_gate is not None:
                 self._run_gate.clear()
@@ -430,11 +437,16 @@ class MonitorSampler:
                 return failure(operation, self.blocked_code or "MONITOR_PROVENANCE_CHANGED", "sampling is blocked")
             if self.state is not SamplerState.PAUSED:
                 return failure(operation, "MONITOR_REQUEST_INVALID", "sampling is not paused")
+            self._probe.invalidate_read_plan()
             admission = await self._probe.revalidate()
             if not admission.ok:
                 self._block(admission.code)
                 return failure(operation, admission.code, "sampling cannot be resumed", {})
             self._invalidate_epoch()
+            prepared = await self._probe.prepare_read_plan(self._watches)
+            if not prepared.ok:
+                self._block(prepared.code)
+                return failure(operation, prepared.code, "sampling cannot be resumed", {})
             self._set_state(SamplerState.RUNNING)
             self._reset_deadline = True
             if self._run_gate is not None:
@@ -443,6 +455,7 @@ class MonitorSampler:
 
     async def _stop_run(self) -> None:
         self._invalidate_epoch()
+        self._probe.invalidate_read_plan()
         stop_event = self._stop_event
         run_gate = self._run_gate
         if stop_event is not None:
@@ -533,6 +546,7 @@ class MonitorSampler:
                     await self._stop_run()
                 else:
                     self._invalidate_epoch()
+                    self._probe.invalidate_read_plan()
                 self.state = SamplerState.CLOSED
                 self.blocked_code = None
                 for queue in tuple(self._subscribers):

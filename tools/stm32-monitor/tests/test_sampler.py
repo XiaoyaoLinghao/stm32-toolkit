@@ -65,13 +65,50 @@ class FakeObservation:
         self.item_error = False
         self.full_revalidate_result = None
         self.lightweight_revalidate_result = None
+        self._admission_token = None
+        self.plan_invalidations = 0
+        self.prepare_calls = 0
+
+    def _invalidate_read_plan(self) -> None:
+        self._admission_token = None
+        self.plan_invalidations += 1
+
+    def _read_plan_admission(self):
+        return self._admission_token
+
+    async def _prepare_read_plan(
+        self,
+        variables: tuple[str, ...],
+        registers: tuple[str, ...],
+        *,
+        admission_token=None,
+    ):
+        token = self._admission_token if admission_token is None else admission_token
+        if token is None or token is not self._admission_token:
+            return OperationResult.failure(
+                "prepare", "MONITOR_PROVENANCE_CHANGED", "changed", {}
+            )
+        self.prepare_calls += 1
+        return OperationResult.success(
+            "prepare", SimpleNamespace(variables=variables, registers=registers)
+        )
+
+    async def _read_prepared(self, plan):
+        return await self._read_batch(plan.variables, plan.registers)
 
     async def revalidate(self):
         self.revalidate_calls += 1
         self.full_revalidate_calls += 1
         if self.full_revalidate_result is not None:
-            return self.full_revalidate_result
-        return OperationResult.success("revalidate", self.binding)
+            result = self.full_revalidate_result
+        else:
+            result = OperationResult.success("revalidate", self.binding)
+        if result.ok and getattr(result, "data", None) is self.binding:
+            if self._admission_token is None:
+                self._admission_token = object()
+        else:
+            self._invalidate_read_plan()
+        return result
 
     async def _revalidate_lightweight(self):
         self.revalidate_calls += 1
@@ -246,6 +283,7 @@ def test_sampling_admits_once_then_uses_private_batch_ticks(tmp_path: Path) -> N
             assert started.ok
             assert first.sequence == 0 and second.sequence == 1
             assert observation.full_revalidate_calls == 1
+            assert observation.prepare_calls == 1
             assert observation.batch_calls >= 2
             assert observation.lightweight_revalidate_calls == 0
         finally:
@@ -440,6 +478,33 @@ def test_pause_invalidates_inflight_read_before_publication(tmp_path: Path) -> N
             assert history.batches == []
             with pytest.raises(asyncio.TimeoutError):
                 await asyncio.wait_for(anext(stream), 0.05)
+        finally:
+            await stream.aclose()
+            await sampler.close()
+
+    asyncio.run(scenario())
+
+
+def test_resume_installs_new_plan_while_old_inflight_read_is_stale(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        project = tmp_path / "project"
+        project.mkdir()
+        observation = FakeObservation(_binding(project), delay=0.2)
+        sampler = MonitorSampler(observation, FakeGroups(_group()), FakeHistory())
+        stream = sampler.subscribe()
+        try:
+            started = await sampler.start(GROUP_ID, expected_revision=1)
+            deadline = time.monotonic() + 2
+            while observation.calls == 0 and time.monotonic() < deadline:
+                await asyncio.sleep(0.005)
+            assert started.ok and observation.calls == 1
+            paused = await sampler.pause()
+            resumed = await sampler.resume()
+            fresh = await _next(stream)
+            assert paused.ok and resumed.ok
+            assert sampler.state is SamplerState.RUNNING
+            assert fresh.sequence == 0
+            assert observation.calls == 2
         finally:
             await stream.aclose()
             await sampler.close()
@@ -871,6 +936,7 @@ def test_lifecycle_re_admits_after_resume_and_new_start_while_ticks_use_private_
             resumed = await sampler.resume()
             assert resumed.ok
             assert observation.full_revalidate_calls == 2
+            assert observation.prepare_calls == 2
             resumed_batch = await _next(stream)
             assert resumed_batch.run_id == first.run_id
             assert observation.batch_calls > batch_before_resume
@@ -881,6 +947,7 @@ def test_lifecycle_re_admits_after_resume_and_new_start_while_ticks_use_private_
             restarted = await sampler.start(GROUP_ID, expected_revision=1)
             assert restarted.ok
             assert observation.full_revalidate_calls == 3
+            assert observation.prepare_calls == 3
             restarted_batch = await restarted_pending
             assert restarted_batch.run_id != first.run_id
             assert restarted_batch.sequence == 0

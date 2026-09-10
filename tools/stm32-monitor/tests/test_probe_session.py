@@ -74,6 +74,36 @@ class FakeObservation:
         self.revalidate_result = OperationResult.success("revalidate", binding)
         self.lightweight_calls = 0
         self.lightweight_result = None
+        self._admission_token = None
+        self.plan_invalidations = 0
+        self.prepare_calls = 0
+
+    def _invalidate_read_plan(self) -> None:
+        self._admission_token = None
+        self.plan_invalidations += 1
+
+    def _read_plan_admission(self):
+        return self._admission_token
+
+    async def _prepare_read_plan(
+        self,
+        variables: tuple[str, ...],
+        registers: tuple[str, ...],
+        *,
+        admission_token=None,
+    ):
+        token = self._admission_token if admission_token is None else admission_token
+        if token is None or token is not self._admission_token:
+            return OperationResult.failure(
+                "prepare", "MONITOR_PROVENANCE_CHANGED", "changed", {}
+            )
+        self.prepare_calls += 1
+        return OperationResult.success(
+            "prepare", SimpleNamespace(variables=variables, registers=registers)
+        )
+
+    async def _read_prepared(self, plan):
+        return await self._read_batch(plan.variables, plan.registers)
 
     async def read_variables(self, expressions: tuple[str, ...]):
         self.variable_calls.append(expressions)
@@ -125,7 +155,13 @@ class FakeObservation:
     async def revalidate(self):
         if self.raise_revalidate:
             raise RuntimeError("C:\\secret")
-        return self.revalidate_result
+        result = self.revalidate_result
+        if result.ok and isinstance(result.data, DebugFirmwareBinding):
+            if self._admission_token is None:
+                self._admission_token = object()
+        else:
+            self._invalidate_read_plan()
+        return result
 
     async def _revalidate_lightweight(self):
         self.lightweight_calls += 1
@@ -279,6 +315,36 @@ def test_probe_session_reads_sampler_watches_through_private_mixed_batch(tmp_pat
         assert outcome.blocked_code is None
         assert observation.batch_calls == [(('counter',), ('GPIOA.IDR',))]
         assert [value.watch for value in outcome.values] == list(items)
+
+    asyncio.run(scenario())
+
+
+def test_probe_session_requires_admission_and_discards_cancelled_plan(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        project = tmp_path / "project"
+        project.mkdir()
+        observation = FakeObservation(_binding(project))
+        session = ProbeSession(observation)
+        watch = (WatchItem.variable("counter"),)
+
+        before_admission = await session.prepare_read_plan(watch)
+        assert not before_admission.ok
+        assert session._read_plan is None
+
+        assert (await session.revalidate()).ok
+        entered = asyncio.Event()
+
+        async def cancelled_prepare(*_args, **_kwargs):
+            entered.set()
+            raise asyncio.CancelledError
+
+        observation._prepare_read_plan = cancelled_prepare
+        pending = asyncio.create_task(session.prepare_read_plan(watch))
+        await asyncio.wait_for(entered.wait(), 1)
+        with pytest.raises(asyncio.CancelledError):
+            await pending
+        assert session._read_plan is None
+        assert observation._read_plan_admission() is None
 
     asyncio.run(scenario())
 
