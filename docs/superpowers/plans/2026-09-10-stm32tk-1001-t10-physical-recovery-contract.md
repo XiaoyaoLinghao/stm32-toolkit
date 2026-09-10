@@ -50,6 +50,8 @@ The new `legacy-keil-physical-repair` scenario is mailbox-only, matching the cur
 
 All evidence loads fail closed on corruption or absent authority. A test fixture may exercise these validators offline but its test output must never be labeled physical acceptance.
 
+The new physical scenario's canonical document includes transport=mailbox, so its digest binds this scope. Persisted v2 attempts at revision 4 or later require the expanded intent (all three derived fields, including a validated intentDigest), not the caller's unexpanded input. The model binds intent.beforeInputSnapshotSha256 to stageOutputs.beforeInputSnapshotSha256, and at revision 6 or later binds expectedAfterInputSnapshotSha256 to stageOutputs.afterInputSnapshotSha256. These checks complement workflow validation and prevent accepting self-consistent but cross-bound persisted records. Reuse the existing native TestRun identifier domain including its established size bound; do not introduce a separate 256-character limit.
+
 ## Owned files and necessary verification
 
 Implementation ownership: `acceptance/recovery.py`, `acceptance/recovery_workflows.py`, `acceptance/__init__.py` only for corresponding canonical exports, one bounded physical recovery model/helper module if needed, acceptance-only arguments/adapters in `cli.py` and `mcp_server.py`, `diagnostic_workflows.py` only for the physical pair validator above, focused recovery tests and the existing diagnostic pair tests. Reuse existing build and Diagnostic models/functions without changing their schemas. T9 owns probe and generation modules, with no overlap.
