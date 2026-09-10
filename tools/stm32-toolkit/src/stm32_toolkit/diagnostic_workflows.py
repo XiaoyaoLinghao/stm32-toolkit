@@ -1306,6 +1306,49 @@ def _validate_pair_execution_policy(before: object, after: object) -> tuple[str,
         raise
     if before_policy != after_policy:
         raise _WorkflowFailure(_INCOMPATIBLE_IDENTITY)
+    if before_policy == ("physical", True):
+        before_manifest = getattr(before, "manifest", None)
+        after_manifest = getattr(after, "manifest", None)
+        before_envelope = getattr(before, "envelope", None)
+        after_envelope = getattr(after, "envelope", None)
+        before_identity = getattr(before_manifest, "identity", None)
+        after_identity = getattr(after_manifest, "identity", None)
+        before_metadata = getattr(before_envelope, "metadata", None)
+        after_metadata = getattr(after_envelope, "metadata", None)
+        lineage_fields = ("probe_id", "target_id")
+        before_transport = getattr(before_manifest, "transport", None)
+        after_transport = getattr(after_manifest, "transport", None)
+        if (
+            not isinstance(before_metadata, Mapping)
+            or not isinstance(after_metadata, Mapping)
+            or before_identity is None
+            or after_identity is None
+            or any(
+                getattr(before_identity, field, None) is None
+                or getattr(after_identity, field, None) is None
+                for field in ("workspace_id", "project_id", "session_id", "target_device")
+            )
+            or before_transport not in _PHYSICAL_TRANSPORTS
+            or after_transport not in _PHYSICAL_TRANSPORTS
+            or before_transport != after_transport
+            or not _same_scope(before_identity, after_identity)
+            or any(
+                field not in before_metadata
+                or field not in after_metadata
+                or before_metadata[field] != after_metadata[field]
+                for field in lineage_fields
+            )
+            or (
+                before_transport == "mailbox"
+                and (
+                    not isinstance(before_metadata.get("transport_config_digest"), str)
+                    or not isinstance(after_metadata.get("transport_config_digest"), str)
+                    or before_metadata.get("transport_config_digest")
+                    != after_metadata.get("transport_config_digest")
+                )
+            )
+        ):
+            raise _WorkflowFailure(_INCOMPATIBLE_IDENTITY)
     return before_policy
 
 

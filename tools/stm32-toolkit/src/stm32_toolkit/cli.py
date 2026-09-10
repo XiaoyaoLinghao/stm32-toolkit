@@ -534,11 +534,17 @@ def _build_parser() -> argparse.ArgumentParser:
     attempt_checkpoint.add_argument("--expected-revision", required=True, type=_bounded_int(0, 7))
     attempt_checkpoint.add_argument("--stage", required=True, choices=(
         "project-materialized", "firmware-built-before", "target-failure-replayed",
+        "target-failure-observed",
         "diagnosis-completed", "firmware-built-after", "target-fix-verified",
     ))
-    attempt_checkpoint.add_argument("--test-run-id", type=_acceptance_uuid)
-    attempt_checkpoint.add_argument("--diagnostic-session-id", type=_acceptance_uuid)
+    attempt_checkpoint.add_argument("--test-run-id", type=_diagnostic_run_id)
+    attempt_checkpoint.add_argument("--diagnostic-session-id", type=_acceptance_diagnostic_ref)
     attempt_checkpoint.add_argument("--acceptance-record-id", type=_acceptance_uuid)
+    attempt_checkpoint.add_argument("--fix-verification-id", type=_testing_digest)
+    attempt_checkpoint.add_argument(
+        "--source-change-intent-file", type=Path, action=_StepsFileAction,
+        dest="source_change_intent",
+    )
 
     attempt_authorize = attempt_commands.add_parser("authorize-source-change")
     attempt_authorize.set_defaults(operation="acceptance.attempt.authorize-source-change")
@@ -933,6 +939,12 @@ def _diagnostic_session_id(value: str) -> str:
     if _DIAGNOSTIC_SESSION_ID.fullmatch(value) is None:
         raise argparse.ArgumentTypeError("invalid diagnostic session id")
     return value
+
+
+def _acceptance_diagnostic_ref(value: str) -> str:
+    if _DIAGNOSTIC_SESSION_ID.fullmatch(value) is not None or _ACCEPTANCE_UUID.fullmatch(value) is not None:
+        return value
+    raise argparse.ArgumentTypeError("invalid diagnostic session id")
 
 
 def _diagnostic_run_id(value: str) -> str:
@@ -1419,14 +1431,21 @@ def _operation_result(
                     scenario_version=args.scenario_version,
                 )
             if args.attempt_command == "checkpoint":
+                checkpoint_kwargs = {
+                    "attempt_id": args.attempt_id,
+                    "expected_revision": args.expected_revision,
+                    "stage": args.stage,
+                    "test_run_id": args.test_run_id,
+                    "diagnostic_session_id": args.diagnostic_session_id,
+                    "acceptance_record_id": args.acceptance_record_id,
+                }
+                if args.source_change_intent is not None:
+                    checkpoint_kwargs["source_change_intent"] = args.source_change_intent
+                if args.fix_verification_id is not None:
+                    checkpoint_kwargs["fix_verification_id"] = args.fix_verification_id
                 return checkpoint_acceptance_attempt(
                     context,
-                    attempt_id=args.attempt_id,
-                    expected_revision=args.expected_revision,
-                    stage=args.stage,
-                    test_run_id=args.test_run_id,
-                    diagnostic_session_id=args.diagnostic_session_id,
-                    acceptance_record_id=args.acceptance_record_id,
+                    **checkpoint_kwargs,
                 )
             if args.attempt_command == "authorize-source-change":
                 return authorize_acceptance_source_change(

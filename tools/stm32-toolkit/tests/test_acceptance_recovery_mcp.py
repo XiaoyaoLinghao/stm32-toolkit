@@ -29,7 +29,8 @@ def test_recovery_tools_are_five_project_bound_closed_tools(tmp_path: Path):
     checkpoint = tools["stm32_acceptance_attempt_checkpoint"].inputSchema
     assert set(checkpoint["properties"]) == {
         "attemptId", "expectedRevision", "stage", "testRunId",
-        "diagnosticSessionId", "acceptanceRecordId",
+        "diagnosticSessionId", "acceptanceRecordId", "sourceChangeIntent",
+        "fixVerificationId",
     }
     assert checkpoint["additionalProperties"] is False
     assert not ({"projectRoot", "dataRoot", "command", "environment", "transport"} & set(checkpoint["properties"]))

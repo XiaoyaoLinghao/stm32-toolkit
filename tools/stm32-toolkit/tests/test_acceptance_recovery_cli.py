@@ -67,6 +67,59 @@ def test_cli_checkpoint_and_authorize_translate_optional_references(monkeypatch,
     }
     capsys.readouterr()
 
+
+def test_cli_physical_checkpoint_translates_native_refs_and_source_intent(
+    monkeypatch, capsys, tmp_path: Path
+):
+    calls = []
+    monkeypatch.setattr(
+        cli,
+        "checkpoint_acceptance_attempt",
+        lambda context, **kwargs: calls.append(kwargs)
+        or OperationResult.success("acceptance.attempt.checkpoint", {"attempt": {}}),
+    )
+    intent = {
+        "schema": "stm32-source-change-intent/1",
+        "changes": [
+            {
+                "path": "Src/main.c",
+                "beforeSha256": "a" * 64,
+                "afterSha256": "b" * 64,
+                "afterSize": 42,
+            }
+        ],
+    }
+    intent_path = tmp_path / "intent.json"
+    intent_path.write_text(json.dumps(intent), encoding="utf-8")
+    assert cli.main(
+        [
+            "scenario",
+            "attempt",
+            "checkpoint",
+            *_common(),
+            "--attempt-id",
+            ATTEMPT_ID,
+            "--expected-revision",
+            "3",
+            "--stage",
+            "diagnosis-completed",
+            "--diagnostic-session-id",
+            "0123456789abcdef0123456789abcdef",
+            "--source-change-intent-file",
+            str(intent_path),
+        ]
+    ) == 0
+    assert calls[0] == {
+        "attempt_id": ATTEMPT_ID,
+        "expected_revision": 3,
+        "stage": "diagnosis-completed",
+        "test_run_id": None,
+        "diagnostic_session_id": "0123456789abcdef0123456789abcdef",
+        "acceptance_record_id": None,
+        "source_change_intent": intent,
+    }
+    capsys.readouterr()
+
 def test_cli_attempt_show_and_resume_share_project_bound_context(monkeypatch, capsys):
     calls = []
     monkeypatch.setattr(

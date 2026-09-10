@@ -228,7 +228,11 @@ DiagnosticStepId = Annotated[
 ]
 DiagnosticPolarity = Literal["supports", "refutes"]
 
-AcceptanceScenarioId = Literal["legacy-keil-migration", "new-cubemx-project"]
+AcceptanceScenarioId = Literal[
+    "legacy-keil-migration",
+    "new-cubemx-project",
+    "legacy-keil-physical-repair",
+]
 AcceptanceScenarioVersion = Literal["1"]
 AcceptanceUuid = Annotated[
     StrictStr,
@@ -239,9 +243,19 @@ AcceptanceAttemptStage = Literal[
     "project-materialized",
     "firmware-built-before",
     "target-failure-replayed",
+    "target-failure-observed",
     "diagnosis-completed",
     "firmware-built-after",
     "target-fix-verified",
+]
+AcceptanceRunId = RunId
+AcceptanceDiagnosticRef = Annotated[
+    StrictStr,
+    Field(
+        pattern=rf"^(?:{_ACCEPTANCE_UUID_PATTERN[1:-1]}|{_DIAGNOSTIC_SESSION_PATTERN[1:-1]})$",
+        min_length=32,
+        max_length=36,
+    ),
 ]
 
 
@@ -279,6 +293,25 @@ def _reject_json_tuple(value: object) -> object:
         raise ValueError("JSON arrays must not be tuples")
     return value
 
+
+class SourceChangeIntentInput(BaseModel):
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    path: ProjectRelativePath
+    before_sha256: Digest = Field(alias="beforeSha256")
+    after_sha256: Digest = Field(alias="afterSha256")
+    after_size: Annotated[StrictInt, Field(ge=0, le=8 * 1024 * 1024)] = Field(alias="afterSize")
+
+
+class PhysicalSourceChangeIntentInput(BaseModel):
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    schema_: Literal["stm32-source-change-intent/1"] = Field(alias="schema")
+    changes: Annotated[
+        list[SourceChangeIntentInput],
+        BeforeValidator(_reject_json_tuple),
+        Field(min_length=1, max_length=32),
+    ]
 
 JsonArray = Annotated[list[object], BeforeValidator(_reject_json_tuple)]
 
@@ -1685,22 +1718,30 @@ async def tool_acceptance_attempt_checkpoint_for_request(
     attempt_id: AcceptanceUuid,
     expected_revision: AcceptanceRevision,
     stage: AcceptanceAttemptStage,
-    test_run_id: AcceptanceUuid | None = None,
-    diagnostic_session_id: AcceptanceUuid | None = None,
+    test_run_id: AcceptanceRunId | None = None,
+    diagnostic_session_id: AcceptanceDiagnosticRef | None = None,
     acceptance_record_id: AcceptanceUuid | None = None,
+    sourceChangeIntent: PhysicalSourceChangeIntentInput | None = None,
+    fixVerificationId: Digest | None = None,
 ) -> dict[str, object]:
     operation = "acceptance.attempt.checkpoint"
     failure = await _client_roots_failure(runtime, context, operation)
     if failure is not None:
         return failure
+    kwargs: dict[str, object] = {
+        "attempt_id": attempt_id,
+        "expected_revision": expected_revision,
+        "stage": stage,
+        "test_run_id": test_run_id,
+        "diagnostic_session_id": diagnostic_session_id,
+        "acceptance_record_id": acceptance_record_id,
+    }
+    if sourceChangeIntent is not None:
+        kwargs["source_change_intent"] = _nested_model_data(sourceChangeIntent)
+    if fixVerificationId is not None:
+        kwargs["fix_verification_id"] = fixVerificationId
     return checkpoint_acceptance_attempt(
-        _acceptance_recovery_context(runtime),
-        attempt_id=attempt_id,
-        expected_revision=expected_revision,
-        stage=stage,
-        test_run_id=test_run_id,
-        diagnostic_session_id=diagnostic_session_id,
-        acceptance_record_id=acceptance_record_id,
+        _acceptance_recovery_context(runtime), **kwargs
     ).to_dict()
 
 
@@ -2458,9 +2499,11 @@ def create_server(
         attemptId: AcceptanceUuid,
         expectedRevision: AcceptanceRevision,
         stage: AcceptanceAttemptStage,
-        testRunId: AcceptanceUuid | None = None,
-        diagnosticSessionId: AcceptanceUuid | None = None,
+        testRunId: AcceptanceRunId | None = None,
+        diagnosticSessionId: AcceptanceDiagnosticRef | None = None,
         acceptanceRecordId: AcceptanceUuid | None = None,
+        sourceChangeIntent: PhysicalSourceChangeIntentInput | None = None,
+        fixVerificationId: Digest | None = None,
     ) -> dict[str, object]:
         return await tool_acceptance_attempt_checkpoint_for_request(
             runtime,
@@ -2471,6 +2514,8 @@ def create_server(
             testRunId,
             diagnosticSessionId,
             acceptanceRecordId,
+            sourceChangeIntent,
+            fixVerificationId,
         )
 
     @mcp.tool(name=MCP_TOOL_NAMES["acceptance_attempt_authorize_source_change"])
