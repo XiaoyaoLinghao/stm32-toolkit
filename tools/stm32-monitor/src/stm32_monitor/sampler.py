@@ -264,16 +264,16 @@ class MonitorSampler:
         if group is None or run_id is None or stop_event is None or run_gate is None:
             return
         interval_ns = group.interval_ms * 1_000_000
-        next_deadline = time.monotonic_ns()
+        next_deadline = time.perf_counter_ns()
         try:
             while not stop_event.is_set():
                 await run_gate.wait()
                 if stop_event.is_set():
                     return
                 if self._reset_deadline:
-                    next_deadline = time.monotonic_ns()
+                    next_deadline = time.perf_counter_ns()
                     self._reset_deadline = False
-                delay_ns = next_deadline - time.monotonic_ns()
+                delay_ns = next_deadline - time.perf_counter_ns()
                 if delay_ns > 0:
                     await asyncio.sleep(delay_ns / 1_000_000_000)
                 if stop_event.is_set() or self.state is not SamplerState.RUNNING:
@@ -288,7 +288,7 @@ class MonitorSampler:
                     return
                 if self._epoch != epoch or self.state is not SamplerState.RUNNING:
                     continue
-                started = time.monotonic_ns()
+                started = time.perf_counter_ns()
                 scheduled_unix_ns = max(0, time.time_ns() - max(0, started - next_deadline))
                 outcome = await self._probe.read(self._watches)
                 if self._epoch != epoch or self.state is not SamplerState.RUNNING:
@@ -296,7 +296,7 @@ class MonitorSampler:
                 if outcome.blocked_code is not None:
                     self._block(outcome.blocked_code)
                     return
-                captured_monotonic = time.monotonic_ns()
+                captured_monotonic = time.perf_counter_ns()
                 captured_unix_ns = time.time_ns()
                 subscriber_drops = self._subscriber_drops_pending
                 history_drops = self._history_drops_pending
@@ -329,7 +329,7 @@ class MonitorSampler:
                 self._enqueue_history(batch)
                 self._broadcast(batch)
                 next_deadline += interval_ns
-                now = time.monotonic_ns()
+                now = time.perf_counter_ns()
                 if now >= next_deadline:
                     missed = (now - next_deadline) // interval_ns + 1
                     self._deadline_drops_pending += int(missed)

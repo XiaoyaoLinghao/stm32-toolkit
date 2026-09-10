@@ -230,6 +230,76 @@ async def _next(stream, timeout: float = 2.0):
     return await asyncio.wait_for(anext(stream), timeout)
 
 
+def test_sampler_uses_high_resolution_clock_for_subtick_latency_and_adjacent_rate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import stm32_monitor.sampler as sampler_module
+
+    origin = 9_000_000_000_000
+    first_started = origin + 1_000
+    first_captured = first_started + 275
+    first_after = first_captured + 1_000
+    second_deadline = origin + 100_000_000
+    second_started = second_deadline + 2_000
+    second_captured = second_started + 425
+    second_after = second_captured + 1_000
+    clock_values = iter(
+        (
+            origin,
+            origin,
+            first_started,
+            first_captured,
+            first_after,
+            second_deadline,
+            second_started,
+            second_captured,
+            second_after,
+            origin + 200_000_000,
+            origin + 200_000_000,
+        )
+    )
+
+    def perf_counter_ns() -> int:
+        try:
+            value = next(clock_values)
+        except StopIteration:
+            value = origin + 1_000_000_000
+        return value
+
+    # Replace only sampler.py's clock dependency; asyncio keeps its real
+    # monotonic clock for scheduling the production task and its sleeps.
+    sampler_clock = SimpleNamespace(
+        perf_counter_ns=perf_counter_ns,
+        time_ns=time.time_ns,
+    )
+    monkeypatch.setattr(sampler_module, "time", sampler_clock)
+
+    async def scenario() -> None:
+        project = tmp_path / "project"
+        project.mkdir()
+        sampler = MonitorSampler(
+            FakeObservation(_binding(project)), FakeGroups(_group()), FakeHistory()
+        )
+        stream = sampler.subscribe()
+        try:
+            started = await sampler.start(GROUP_ID, expected_revision=1)
+            assert started.ok
+            first = await _next(stream)
+            second = await _next(stream)
+            elapsed = second_captured - first_captured
+            assert first.latency_ns == 275
+            assert first.latency_ns < 1_000_000
+            assert second.latency_ns == 425
+            assert second.actual_rate_hz == pytest.approx(1_000_000_000 / elapsed)
+            assert first.scheduled_unix_ns > origin
+            assert second.scheduled_unix_ns > origin
+        finally:
+            await stream.aclose()
+            await sampler.close()
+
+    asyncio.run(scenario())
+
+
 def test_constructor_rejects_invalid_stores_and_private_queue_limits(tmp_path: Path) -> None:
     project = tmp_path / "project"
     project.mkdir()
