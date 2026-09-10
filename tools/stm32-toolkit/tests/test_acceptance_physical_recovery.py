@@ -1030,7 +1030,7 @@ def test_persisted_physical_recovery_chain_uses_real_authorities_and_is_cas_safe
         attempt_metadata = getattr(envelope, "metadata", {}).get("attempt")
         if (
             isinstance(attempt_metadata, Mapping)
-            and attempt_metadata.get("revision") in {5, 6}
+            and attempt_metadata.get("revision") in {5, 6, 7}
         ):
             if attempt_metadata.get("revision") == 5 and boundary_mode["value"] == "source":
                 source_path.write_bytes(after_source)
@@ -1038,6 +1038,12 @@ def test_persisted_physical_recovery_chain_uses_real_authorities_and_is_cas_safe
                 boundary_expired["value"] = True
             elif attempt_metadata.get("revision") == 6 and boundary_mode["value"] == "after-build-source":
                 source_path.write_bytes(b"int main(void) { return 2; }\n")
+            elif (
+                attempt_metadata.get("revision") in {6, 7}
+                and boundary_mode["value"]
+                == f"expiry-rev{attempt_metadata.get('revision')}"
+            ):
+                boundary_expired["value"] = True
         return result
 
     monkeypatch.setattr(
@@ -1189,6 +1195,22 @@ def test_persisted_physical_recovery_chain_uses_real_authorities_and_is_cas_safe
         evidence, recovery_workflows._root_id(ATTEMPT_ID, 6)
     ).exists()
     source_path.write_bytes(after_source)
+    boundary_mode["value"] = "expiry-rev6"
+    expired_rev6 = checkpoint_acceptance_attempt(
+        boundary_context,
+        attempt_id=ATTEMPT_ID,
+        expected_revision=5,
+        stage="firmware-built-after",
+    )
+    assert expired_rev6.ok is False
+    assert expired_rev6.code == "ACCEPTANCE_ATTEMPT_TIMED_OUT", expired_rev6.to_dict()
+    assert not recovery_workflows._typed_root_path(
+        evidence, recovery_workflows._root_id(ATTEMPT_ID, 6)
+    ).exists()
+    assert _ok(
+        resume_acceptance_attempt(boundary_context, attempt_id=ATTEMPT_ID)
+    )["attempt"]["revision"] == 5
+    boundary_expired["value"] = False
     boundary_mode["value"] = "none"
     after_build = _ok(
         checkpoint_acceptance_attempt(
@@ -1331,6 +1353,25 @@ def test_persisted_physical_recovery_chain_uses_real_authorities_and_is_cas_safe
     assert verification["status"] == "PASSED"
     assert completed["session"]["state"] == "RESOLVED"
 
+    boundary_mode["value"] = "expiry-rev7"
+    expired_final = checkpoint_acceptance_attempt(
+        boundary_context,
+        attempt_id=ATTEMPT_ID,
+        expected_revision=6,
+        stage="target-fix-verified",
+        test_run_id=PHYSICAL_FIXED_RUN,
+        fix_verification_id=verification["fix_verification_id"],
+    )
+    assert expired_final.ok is False
+    assert expired_final.code == "ACCEPTANCE_ATTEMPT_TIMED_OUT", expired_final.to_dict()
+    assert not recovery_workflows._typed_root_path(
+        evidence, recovery_workflows._root_id(ATTEMPT_ID, 7)
+    ).exists()
+    assert _ok(
+        resume_acceptance_attempt(boundary_context, attempt_id=ATTEMPT_ID)
+    )["attempt"]["revision"] == 6
+    boundary_expired["value"] = False
+    boundary_mode["value"] = "none"
     final = _ok(
         checkpoint_acceptance_attempt(
             context,

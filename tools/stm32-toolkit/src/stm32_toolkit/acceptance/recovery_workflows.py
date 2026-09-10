@@ -1630,6 +1630,41 @@ def _publish_physical_snapshot(
         )
 
 
+def _publish_physical_root_after_envelope_locked(
+    evidence: EvidenceStore,
+    context: AcceptanceRecoveryContext,
+    candidate: PhysicalAcceptanceAttempt,
+    envelope: EvidenceEnvelope,
+    *,
+    predecessor: PhysicalAcceptanceAttempt | None,
+    after_envelope_validation: Callable[[], None] | None = None,
+) -> None:
+    """Finish one physical publication at its shared pre-root boundary.
+
+    The envelope is durable before the potentially slow source/firmware
+    validation runs.  The predecessor remains the chain entry loaded while
+    the EvidenceStore mutation lock is held, so the final deadline sample is
+    against the authoritative predecessor rather than the candidate's new
+    deadline.  An exact retry returns before this helper is reached.
+    """
+    evidence._put_envelope_locked(envelope)
+    if after_envelope_validation is not None:
+        after_envelope_validation()
+    if candidate.revision != 0:
+        if predecessor is None or predecessor.revision != candidate.revision - 1:
+            raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_EVIDENCE_INTEGRITY_FAILED")
+        _check_deadline_physical(predecessor, _now(context))
+    _publish_root_locked(
+        evidence,
+        RootRecord(
+            _ATTEMPT_ROOT_TYPE,
+            _root_id(candidate.attempt_id, candidate.revision),
+            str(envelope.evidence_id),
+            _physical_root_metadata(candidate),
+        ),
+    )
+
+
 def _publish_physical_snapshot_locked(
     evidence: EvidenceStore,
     context: AcceptanceRecoveryContext,
@@ -1667,10 +1702,12 @@ def _publish_physical_snapshot_locked(
             raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_REVISION_CONFLICT")
         chain = current
         parent_envelope = latest_envelope
+        predecessor = latest
     else:
         if expected_revision != 0 or candidate.revision != 0:
             raise _RecoveryFailure("ACCEPTANCE_ATTEMPT_REVISION_CONFLICT")
         parent_envelope = None
+        predecessor = None
     identity = _current_identity(context, model, workspace)
     parents = () if parent_envelope is None else (str(parent_envelope.evidence_id),)
     envelope = EvidenceEnvelope(
@@ -1681,16 +1718,16 @@ def _publish_physical_snapshot_locked(
         artifacts=(),
         metadata=_physical_envelope_metadata(candidate),
     )
-    evidence._put_envelope_locked(envelope)
-    if candidate.revision == 6:
-        _validate_physical_build_after_publication(context, model, candidate)
-    _publish_root_locked(
+    _publish_physical_root_after_envelope_locked(
         evidence,
-        RootRecord(
-            _ATTEMPT_ROOT_TYPE,
-            _root_id(candidate.attempt_id, candidate.revision),
-            str(envelope.evidence_id),
-            _physical_root_metadata(candidate),
+        context,
+        candidate,
+        envelope,
+        predecessor=predecessor,
+        after_envelope_validation=(
+            (lambda: _validate_physical_build_after_publication(context, model, candidate))
+            if candidate.revision == 6
+            else None
         ),
     )
     return candidate
@@ -2697,19 +2734,18 @@ def _authorize_physical_source_change(
                 artifacts=(),
                 metadata=_physical_envelope_metadata(candidate),
             )
-            evidence._put_envelope_locked(envelope)
-            # Source files cannot be locked by this adapter.  Revalidate after
-            # the envelope is durable and immediately before the root write;
-            # a failed check may leave an unrooted envelope but never a rev5.
-            _validate_physical_authorization_source(model, current)
-            _check_deadline_physical(current, _now(context))
-            _publish_root_locked(
+            # Source files cannot be locked by this adapter.  The shared
+            # physical publication boundary revalidates after the envelope is
+            # durable and immediately before the root write; a failed check
+            # may leave an unrooted envelope but never a rev5.
+            _publish_physical_root_after_envelope_locked(
                 evidence,
-                RootRecord(
-                    _ATTEMPT_ROOT_TYPE,
-                    _root_id(candidate.attempt_id, candidate.revision),
-                    str(envelope.evidence_id),
-                    _physical_root_metadata(candidate),
+                context,
+                candidate,
+                envelope,
+                predecessor=current,
+                after_envelope_validation=lambda: _validate_physical_authorization_source(
+                    model, current
                 ),
             )
             return OperationResult.success(
