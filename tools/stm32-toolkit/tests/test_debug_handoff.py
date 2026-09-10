@@ -12,6 +12,7 @@ import pytest
 
 from stm32_toolkit import __version__
 from stm32_toolkit.build.identity import atomic_write_json, utc_now_rfc3339
+from stm32_toolkit.probe.backend import DebugHandoffMetadata
 from stm32_toolkit.probe.backend import ProbeAttachmentEvidence
 from stm32_toolkit.probe.backend import ProbeDescriptor
 from stm32_toolkit.probe.client import ProbeClient
@@ -24,14 +25,17 @@ from stm32_toolkit.probe.handoff import (
     end_debug_handoff,
 )
 from stm32_toolkit.probe.model import OperationLevel
+from stm32_toolkit.probe.service import ProbeServiceError
 from stm32_toolkit.probe.lease import ProbeLeaseManager
 from stm32_toolkit.probe.supervisor import ProbeServiceConfig, ProbeServiceSupervisor
+from stm32_toolkit.probe import supervisor as supervisor_module
 from fakes.fake_probe import FakeProbeBackend
 from test_build_runner import prepare_project
 from test_flash import _elf_with_flash_segment, _publish_current_debug_build
 
 
 STATE_NAME = "debug-handoff.json"
+CORTEX_CONFIG_NAME = "debug-handoff-cortex-debug.json"
 
 
 class FakeLeaseManager:
@@ -61,6 +65,9 @@ class FakeSupervisor:
         self.start_calls = 0
         self.stop_calls = 0
         self.drain_calls = 0
+        self.metadata_calls = 0
+        self.metadata_result: DebugHandoffMetadata | object | None = None
+        self.metadata_error: BaseException | None = None
         self.modifications_allowed = True
         self.modify_attempts: list[bool] = []
         self.lifecycle_events: list[str] = []
@@ -161,6 +168,19 @@ class FakeSupervisor:
             raise RuntimeError("wrong ticket")
         self.lifecycle_events.append("consume")
         self._handoff_consumed = True
+
+    async def debug_handoff_metadata(
+        self, probe_id: str, target: str
+    ) -> DebugHandoffMetadata:
+        self.metadata_calls += 1
+        self.lifecycle_events.append("metadata")
+        if self.metadata_error is not None:
+            raise self.metadata_error
+        if self.metadata_result is not None:
+            if isinstance(self.metadata_result, BaseException):
+                raise self.metadata_result
+            return self.metadata_result  # type: ignore[return-value]
+        return DebugHandoffMetadata(probe_id=probe_id, target=target, board_id=probe_id)
 
     async def finalize_consumed_handoff(self, ticket: str) -> bool:
         record = json.loads(self._lease_manager.path.read_text(encoding="utf-8"))
@@ -308,7 +328,9 @@ def test_cortex_debug_contract_is_data_only_exact_attach_configuration():
         "servertype": "pyocd",
         "request": "attach",
         "target": "stm32f407vg",
+        "targetId": "stm32f407vg",
         "serialNumber": "probe-123",
+        "boardId": "probe-123",
         "executable": "${workspaceFolder}/build/arm-debug/firmware.elf",
     }
 
@@ -413,6 +435,7 @@ def test_begin_persists_paused_stops_releases_then_marks_external(handoff_env):
     assert ticket is not None
     assert len(ticket.ticket_id) == 64
     assert supervisor.stop_calls == 1
+    assert supervisor.lifecycle_events.index("metadata") < supervisor.lifecycle_events.index("reserve")
     assert supervisor.lifecycle_events[-2:] == ["reserve", "stop"]
     assert supervisor.endpoint is None
     assert not (session_root / "probe-endpoint.json").exists()
@@ -434,6 +457,20 @@ def test_begin_persists_paused_stops_releases_then_marks_external(handoff_env):
     }
     if os.name != "nt":
         assert stat.S_IMODE((session_root / STATE_NAME).stat().st_mode) == 0o600
+        assert stat.S_IMODE((session_root / CORTEX_CONFIG_NAME).stat().st_mode) == 0o600
+    companion = json.loads((session_root / CORTEX_CONFIG_NAME).read_text(encoding="utf-8"))
+    assert companion == {
+        "schemaVersion": 1,
+        "ticketSha256": hashlib.sha256(ticket.ticket_id.encode("ascii")).hexdigest(),
+        "workspaceId": "workspace-a",
+        "sessionId": "session-a",
+        "probeId": "probe-123",
+        "target": "stm32f407vg",
+        "buildId": identity["buildId"],
+        "elfSha256": identity["elfSha256"],
+        "executable": "build/arm-debug/firmware.elf",
+        "boardId": "probe-123",
+    }
     assert [event[0] for event in client.events] == ["attach", "read"]
     lease_record = json.loads(
         supervisor._lease_manager.path.read_text(encoding="utf-8")
@@ -444,6 +481,77 @@ def test_begin_persists_paused_stops_releases_then_marks_external(handoff_env):
     ).hexdigest()
     assert ticket.ticket_id not in json.dumps(lease_record)
     assert ticket.ticket_id not in repr(ticket)
+
+
+def test_repeated_begin_reuses_companion_without_metadata_or_attach(handoff_env):
+    _, _, session_root, supervisor, client, request = handoff_env
+    first = asyncio.run(begin_debug_handoff(request, supervisor, client))
+    assert first.ok is True
+    first_events = list(client.events)
+    first_metadata_calls = supervisor.metadata_calls
+
+    repeated = asyncio.run(begin_debug_handoff(request, supervisor, client))
+
+    assert repeated.ok is True
+    assert repeated.data == first.data
+    assert supervisor.metadata_calls == first_metadata_calls
+    assert client.events == first_events
+    assert (session_root / CORTEX_CONFIG_NAME).is_file()
+
+
+def test_missing_companion_blocks_repeat_but_ticket_remains_endable(handoff_env):
+    _, _, session_root, supervisor, client, request = handoff_env
+    begun = asyncio.run(begin_debug_handoff(request, supervisor, client))
+    assert begun.ok is True
+    (session_root / CORTEX_CONFIG_NAME).unlink()
+
+    repeated = asyncio.run(begin_debug_handoff(request, supervisor, client))
+
+    assert repeated.code == "HANDOFF_IDENTITY_MISMATCH"
+    assert supervisor.stop_calls == 1
+    ended = asyncio.run(end_debug_handoff(begun.data.ticket_id, supervisor, lambda _: client))
+    assert ended.ok is True
+
+
+@pytest.mark.parametrize("field", ["ticketSha256", "boardId", "executable"])
+def test_stale_companion_blocks_repeat_without_second_reservation(handoff_env, field):
+    _, _, session_root, supervisor, client, request = handoff_env
+    begun = asyncio.run(begin_debug_handoff(request, supervisor, client))
+    assert begun.ok is True
+    companion_path = session_root / CORTEX_CONFIG_NAME
+    companion = json.loads(companion_path.read_text(encoding="utf-8"))
+    companion[field] = {
+        "ticketSha256": "0" * 64,
+        "boardId": "probe-other",
+        "executable": "build/other.elf",
+    }[field]
+    atomic_write_json(companion_path, companion)
+
+    repeated = asyncio.run(begin_debug_handoff(request, supervisor, client))
+
+    assert repeated.code == "HANDOFF_IDENTITY_MISMATCH"
+    assert supervisor.stop_calls == 1
+    assert supervisor.lifecycle_events.count("reserve") == 1
+
+
+@pytest.mark.parametrize(
+    "metadata",
+    [
+        {"probeId": "probe-123", "target": "stm32f407vg"},
+        DebugHandoffMetadata("probe-other", "stm32f407vg", "probe-other"),
+    ],
+)
+def test_metadata_mismatch_fails_before_ticket_or_reservation(handoff_env, metadata):
+    _, _, session_root, supervisor, client, request = handoff_env
+    supervisor.metadata_result = metadata
+
+    result = asyncio.run(begin_debug_handoff(request, supervisor, client))
+
+    assert result.code == "HANDOFF_IDENTITY_MISMATCH"
+    assert supervisor.stop_calls == 0
+    assert supervisor.lifecycle_events == ["metadata"]
+    assert not (session_root / STATE_NAME).exists()
+    assert not (session_root / CORTEX_CONFIG_NAME).exists()
 
 
 def test_real_observe_supervisor_completes_begin_and_end_without_modify_lease(
@@ -508,6 +616,70 @@ def test_real_observe_supervisor_completes_begin_and_end_without_modify_lease(
     assert supervisor.endpoint is None
     assert len(backends) == 2
     assert all(backend.closed for backend in backends)
+
+
+def test_metadata_lifecycle_queue_expiry_publishes_no_handoff_artifacts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    monkeypatch.setattr(supervisor_module, "_DEBUG_HANDOFF_METADATA_SECONDS", 0.05)
+    project = prepare_project(tmp_path / "project")
+    identity = _publish_current_debug_build(project)
+    atomic_write_json(
+        project / "artifacts" / "migration" / "flash-result.json",
+        _flash_result(identity),
+    )
+    data_root = tmp_path / "plugin-data"
+    session_root = data_root / "projects" / "workspace-a" / "session-a"
+    image = _elf_with_flash_segment()[84 : 84 + 320]
+    backends: list[FakeProbeBackend] = []
+
+    def backend_factory() -> FakeProbeBackend:
+        backend = FakeProbeBackend(
+            probes=(ProbeDescriptor("probe-123", "ST", "ST-LINK", None),),
+            memory={0x08000000: image},
+            registers={},
+        )
+        backends.append(backend)
+        return backend
+
+    supervisor = ProbeServiceSupervisor(
+        config=ProbeServiceConfig(
+            probe_id="probe-123",
+            workspace_id="workspace-a",
+            session_id="session-a",
+            operation_level=OperationLevel.OBSERVE,
+            session_root=session_root,
+            project_root=project,
+        ),
+        lease_manager=ProbeLeaseManager(data_root),
+        backend_factory=backend_factory,
+    )
+    request = DebugHandoffRequest(
+        project,
+        str(identity["buildId"]),
+        str(identity["elfSha256"]),
+        True,
+        ("counter",),
+    )
+
+    async def scenario():
+        endpoint = await supervisor.start()
+        client = ProbeClient(endpoint)
+        await client.attach("probe-123", "stm32f407vg")
+        await supervisor._lifecycle_lock.acquire()
+        try:
+            with pytest.raises(ProbeServiceError) as caught:
+                await supervisor.debug_handoff_metadata("probe-123", "stm32f407vg")
+            assert caught.value.code == "PROBE_TIMEOUT"
+        finally:
+            supervisor._lifecycle_lock.release()
+            await client.close()
+            await supervisor.stop()
+
+    asyncio.run(scenario())
+    assert not (session_root / STATE_NAME).exists()
+    assert not (session_root / CORTEX_CONFIG_NAME).exists()
+    assert not any(event[0] == "debug_handoff_metadata" for event in backends[0].events)
 
 
 def test_begin_drains_modifications_before_final_target_readback(handoff_env):

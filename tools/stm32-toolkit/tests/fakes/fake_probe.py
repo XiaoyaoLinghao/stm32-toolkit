@@ -6,6 +6,7 @@ import threading
 from collections.abc import Mapping
 
 from stm32_toolkit.probe.backend import (
+    DebugHandoffMetadata,
     FlashBackendReport,
     ProbeAttachmentEvidence,
     ProbeBackendError,
@@ -30,6 +31,7 @@ class FakeProbeBackend:
         self._barrier_lock = threading.Lock()
         self.events: list[tuple[object, ...]] = []
         self.attached_probe_id: str | None = None
+        self.attached_hardware_id: str | None = None
         self.attached_target: str | None = None
         self.halted = False
         self.disconnected = False
@@ -47,17 +49,21 @@ class FakeProbeBackend:
     def open_attach(
         self, probe_id: str, target: str, *, halt_on_connect: bool = False
     ) -> ProbeAttachmentEvidence:
+        # Match the production cache rule for a failed replacement attempt.
+        self.attached_hardware_id = None
         available = self.list_probes()
         if not probe_id:
             raise ProbeBackendError(
                 "PROBE_SELECTION_REQUIRED", "An exact probe identifier is required"
             )
-        if not any(item.probe_id == probe_id for item in available):
+        selected = next((item for item in available if item.probe_id == probe_id), None)
+        if selected is None:
             raise ProbeBackendError("PROBE_NOT_FOUND", "Selected probe is unavailable")
         if not target or len(target) > 128:
             raise ProbeBackendError("PROBE_TARGET_INVALID", "Target is invalid")
         self.events.append(("open_attach", probe_id, target, halt_on_connect))
         self.attached_probe_id = probe_id
+        self.attached_hardware_id = selected.hardware_id
         self.attached_target = target
         self.halted = bool(halt_on_connect)
         self.closed = False
@@ -128,6 +134,7 @@ class FakeProbeBackend:
     def disconnect(self) -> None:
         self.disconnected = True
         self.attached_probe_id = None
+        self.attached_hardware_id = None
         self.attached_target = None
 
     def reconnect(self) -> None:
@@ -177,9 +184,22 @@ class FakeProbeBackend:
             release.set()
         self.events.append(("close",))
         self.attached_probe_id = None
+        self.attached_hardware_id = None
         self.attached_target = None
         self.halted = False
         self.closed = True
+
+    def debug_handoff_metadata(self) -> DebugHandoffMetadata:
+        self._require_attach()
+        self.events.append(("debug_handoff_metadata",))
+        if self.attached_hardware_id is None or self.attached_target is None:
+            raise ProbeBackendError("PROBE_NOT_ATTACHED", "Probe is not attached")
+        return DebugHandoffMetadata(
+            probe_id=self.attached_probe_id or "",
+            target=self.attached_target,
+            board_id=self.attached_hardware_id,
+        )
+
     def preflight_target_capabilities(self, probe_id: str, operation_level: object) -> None:
         if (
             not isinstance(probe_id, str)

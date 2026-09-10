@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from types import TracebackType
 
-from .backend import ProbeBackend
+from .backend import DebugHandoffMetadata, ProbeBackend
 from .attach_diagnostics import CleanupFragment, make_cleanup_entry
 from .pyocd_backend import PyOCDBackend
 from .worker import ProbeBackendWorker, ProbeWorkerConfig
@@ -25,6 +25,8 @@ from .service import (
     _await_task_completion,
     _service_error_fields,
 )
+
+_DEBUG_HANDOFF_METADATA_SECONDS = 5.0
 
 
 @dataclass(frozen=True)
@@ -173,6 +175,37 @@ class ProbeServiceSupervisor:
                     "PROBE_SERVICE_UNAVAILABLE", "Probe Service is unavailable"
                 )
             await service.reserve_external_handoff(ticket)
+
+    async def debug_handoff_metadata(
+        self, probe_id: str, target: str
+    ) -> DebugHandoffMetadata:
+        """Read attached identity through the private handoff capability."""
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + _DEBUG_HANDOFF_METADATA_SECONDS
+        try:
+            await asyncio.wait_for(
+                self._lifecycle_lock.acquire(),
+                timeout=max(0.0, deadline - loop.time()),
+            )
+        except asyncio.TimeoutError:
+            raise ProbeServiceError(
+                "PROBE_TIMEOUT", "Debug handoff metadata request timed out"
+            ) from None
+        try:
+            service = self._service
+            if service is None or self._endpoint is None:
+                raise ProbeServiceError(
+                    "PROBE_SERVICE_UNAVAILABLE", "Probe Service is unavailable"
+                )
+            if deadline <= loop.time():
+                raise ProbeServiceError(
+                    "PROBE_TIMEOUT", "Debug handoff metadata request timed out"
+                )
+            return await service.debug_handoff_metadata(
+                probe_id, target, deadline=deadline
+            )
+        finally:
+            self._lifecycle_lock.release()
 
     async def consume_external_handoff(self, ticket: str) -> None:
         async with self._lifecycle_lock:

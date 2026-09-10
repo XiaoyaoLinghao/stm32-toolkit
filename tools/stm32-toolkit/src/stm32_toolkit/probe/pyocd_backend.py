@@ -12,6 +12,7 @@ from itertools import islice
 from typing import Callable, Protocol, runtime_checkable
 
 from .backend import (
+    DebugHandoffMetadata,
     FlashBackendReport,
     ProbeAttachmentEvidence,
     ProbeBackendError,
@@ -400,6 +401,7 @@ class PyOCDBackend:
         self._probe: object | None = None
         self._target: object | None = None
         self._probe_id: str | None = None
+        self._hardware_probe_id: str | None = None
         self._probe_serial_hash: str | None = None
         self._target_name: str | None = None
         self._resolved_part_number: str | None = None
@@ -868,6 +870,9 @@ class PyOCDBackend:
     def open_attach(
         self, probe_id: str, target: str, *, halt_on_connect: bool = False
     ) -> ProbeAttachmentEvidence:
+        # A failed replacement attempt must never leave the previous raw
+        # identity available through the private handoff capability.
+        self._hardware_probe_id = None
         if not _valid_identifier(probe_id):
             raise ProbeBackendError(
                 "PROBE_SELECTION_REQUIRED", "An exact probe identifier is required"
@@ -875,6 +880,19 @@ class PyOCDBackend:
         if not _valid_identifier(target):
             raise ProbeBackendError("PROBE_TARGET_INVALID", "Target is invalid")
         probe = self._select_probe(probe_id)
+        try:
+            hardware_probe_id = getattr(probe, "unique_id", None)
+        except Exception as error:
+            raise ProbeBackendError(
+                "PROBE_DESCRIPTOR_INVALID", "Debug probe descriptor is invalid"
+            ) from error
+        if (
+            not valid_hardware_probe_id(hardware_probe_id)
+            or public_probe_selector(hardware_probe_id) != probe_id
+        ):
+            raise ProbeBackendError(
+                "PROBE_IDENTITY_MISMATCH", "Selected debug probe identity is invalid"
+            )
         prior_cleanup: list[dict[str, str]] = []
         try:
             self._close_internal(cleanup=prior_cleanup)
@@ -1044,6 +1062,7 @@ class PyOCDBackend:
         self._target = session_target
         self._probe = probe
         self._probe_id = probe_id
+        self._hardware_probe_id = hardware_probe_id
         self._probe_serial_hash = sha256(probe_id.encode("utf-8")).hexdigest()
         self._target_name = target
         self._resolved_part_number = part_number
@@ -1053,6 +1072,30 @@ class PyOCDBackend:
             resolved_part_number=part_number,
             core_count=1,
         )
+
+    def debug_handoff_metadata(self) -> DebugHandoffMetadata:
+        """Return identity captured by the current attachment without I/O."""
+        if (
+            self._session is None
+            or self._probe is None
+            or self._target is None
+            or self._probe_id is None
+            or self._hardware_probe_id is None
+            or self._target_name is None
+            or self._resolved_part_number is None
+        ):
+            raise ProbeBackendError("PROBE_NOT_ATTACHED", "Probe is not attached")
+        try:
+            metadata = DebugHandoffMetadata(
+                probe_id=self._probe_id,
+                target=self._target_name,
+                board_id=self._hardware_probe_id,
+            )
+        except ValueError as error:
+            raise ProbeBackendError(
+                "PROBE_IDENTITY_MISMATCH", "Attached debug probe identity is invalid"
+            ) from error
+        return metadata
 
     def _require_target(self) -> object:
         target = self._target
@@ -1453,6 +1496,7 @@ class PyOCDBackend:
         probe, self._probe = self._probe, None
         self._target = None
         self._probe_id = None
+        self._hardware_probe_id = None
         self._probe_serial_hash = None
         self._target_name = None
         self._resolved_part_number = None

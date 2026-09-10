@@ -1280,6 +1280,42 @@ def test_observe_reuses_one_backend_attachment_across_logical_guards(
     run(scenario())
 
 
+def test_debug_handoff_metadata_queue_expiry_does_not_dispatch_backend_call(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        backend = fake_backend()
+        service = make_service(tmp_path, level=OperationLevel.OBSERVE, backend=backend)
+        endpoint = await service.start()
+        client = ProbeClient(endpoint)
+        try:
+            await client.attach("probe-a", "STM32F429ZITx")
+            await service._backend_lock.acquire()
+            try:
+                request = asyncio.create_task(
+                    service.debug_handoff_metadata(
+                        "probe-a",
+                        "STM32F429ZITx",
+                        deadline=asyncio.get_running_loop().time() + 0.03,
+                    )
+                )
+                await asyncio.sleep(0.10)
+                assert request.done()
+                with pytest.raises(ProbeServiceError) as caught:
+                    await request
+                assert caught.value.code == "PROBE_TIMEOUT"
+                assert not any(
+                    event[0] == "debug_handoff_metadata" for event in backend.events
+                )
+            finally:
+                service._backend_lock.release()
+        finally:
+            await client.close()
+            await service.stop()
+
+    run(scenario())
+
+
 @pytest.mark.parametrize(
     ("changed_probe", "changed_target"),
     (

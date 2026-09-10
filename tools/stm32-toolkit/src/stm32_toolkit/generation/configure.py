@@ -1041,34 +1041,14 @@ def _build_contexts(
             ],
         }
     }
-    if model.debug.backend is None:
-        # Build-only configuration: a deterministic launch document that
-        # claims no usable hardware debugging (no cortex-debug entry).
-        launch = {
-            "launch": {
-                "version": "0.2.0",
-                "configurations": [],
-            }
+    # A live Cortex-Debug identity is available only after an authorized
+    # handoff. Static generation therefore leaves launch configuration empty.
+    launch = {
+        "launch": {
+            "version": "0.2.0",
+            "configurations": [],
         }
-    else:
-        launch_config: dict[str, object] = {
-            "name": "STM32 Toolkit: Debug",
-            "type": "cortex-debug",
-            "request": "launch",
-            "servertype": "pyocd",
-            "target": model.debug.target,
-            "executable": "${workspaceFolder}/" + model.build.elf,
-        }
-        if model.debug.svd is not None:
-            launch_config["svdFile"] = "${workspaceFolder}/" + model.debug.svd
-        launch_config["preLaunchTask"] = "STM32 Toolkit: Debug Handoff Begin"
-        launch_config["postDebugTask"] = "STM32 Toolkit: Debug Handoff End"
-        launch = {
-            "launch": {
-                "version": "0.2.0",
-                "configurations": [launch_config],
-            }
-        }
+    }
     c_cpp = {
         "c_cpp": {
             "version": 4,

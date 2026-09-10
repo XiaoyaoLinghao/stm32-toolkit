@@ -12,7 +12,11 @@ from fakes.fake_pyocd import (
     FakePyOCDProbe,
     FakePyOCDTarget,
 )
-from stm32_toolkit.probe.backend import FlashBackendReport, ProbeBackendError
+from stm32_toolkit.probe.backend import (
+    DebugHandoffMetadata,
+    FlashBackendReport,
+    ProbeBackendError,
+)
 from stm32_toolkit.probe.attach_diagnostics import validate_attach_diagnostic
 from stm32_toolkit.probe.pyocd_backend import (
     PyOCDBackend,
@@ -339,6 +343,58 @@ def test_open_attach_reenumerates_and_rejects_stale_then_accepts_fresh_atk_selec
     assert driver.created_sessions[0].probe is fresh
     assert evidence.to_dict()["probeId"] == ATK_SELECTOR
     backend.close()
+
+
+def test_debug_handoff_metadata_uses_selected_raw_identity_without_reenumeration():
+    class CountingDriver(FakePyOCDDriver):
+        def __init__(self):
+            super().__init__((FakePyOCDProbe(ATK_RAW),))
+            self.list_calls = 0
+
+        def list_probes(self):
+            self.list_calls += 1
+            return super().list_probes()
+
+    driver = CountingDriver()
+    backend = PyOCDBackend(driver)
+    backend.open_attach(ATK_SELECTOR, "stm32f407vg")
+    calls_after_attach = driver.list_calls
+
+    metadata = backend.debug_handoff_metadata()
+
+    assert isinstance(metadata, DebugHandoffMetadata)
+    assert metadata.to_dict() == {
+        "probeId": ATK_SELECTOR,
+        "target": "stm32f407vg",
+        "boardId": ATK_RAW,
+    }
+    assert driver.list_calls == calls_after_attach
+    backend.close()
+    with pytest.raises(ProbeBackendError) as closed:
+        backend.debug_handoff_metadata()
+    assert closed.value.code == "PROBE_NOT_ATTACHED"
+
+
+def test_debug_handoff_metadata_is_unavailable_before_or_after_failed_attach():
+    backend, driver = backend_with_probes("probe-a")
+    with pytest.raises(ProbeBackendError) as absent:
+        backend.debug_handoff_metadata()
+    assert absent.value.code == "PROBE_NOT_ATTACHED"
+
+    backend.open_attach("probe-a", "stm32f407vg")
+    with pytest.raises(ProbeBackendError) as missing:
+        backend.open_attach("probe-missing", "stm32f407vg")
+    assert missing.value.code == "PROBE_NOT_FOUND"
+    with pytest.raises(ProbeBackendError) as after_selection_failure:
+        backend.debug_handoff_metadata()
+    assert after_selection_failure.value.code == "PROBE_NOT_ATTACHED"
+
+    driver.target = FakePyOCDTarget(part_number=None)
+    with pytest.raises(ProbeBackendError):
+        backend.open_attach("probe-a", "stm32f407vg")
+    with pytest.raises(ProbeBackendError) as failed:
+        backend.debug_handoff_metadata()
+    assert failed.value.code == "PROBE_NOT_ATTACHED"
 
 
 def test_open_attach_rejects_invalid_candidate_alongside_valid_without_session():

@@ -14,6 +14,7 @@ import time
 from typing import Any
 
 from .backend import (
+    DebugHandoffMetadata,
     FlashBackendReport,
     ProbeAttachmentEvidence,
     ProbeBackendError,
@@ -45,6 +46,7 @@ _METHODS = {
     "target_read_core_registers", "set_temporary_breakpoint",
     "clear_temporary_breakpoint", "capture_fault", "capture_logs",
     "open_target_transport", "read_target_transport", "close_target_transport",
+    "debug_handoff_metadata",
 }
 _BACKEND_ERROR_CODES = frozenset(SOURCE_CODES - {"UNTYPED", "CALLER_CANCELLED"})
 _REGISTER_ERROR_STATES = frozenset({
@@ -293,6 +295,8 @@ def _worker_main(
                 *args,
                 **{key: _from_json(item) for key, item in request["kwargs"].items()},
             )
+            if method == "debug_handoff_metadata":
+                result = DebugHandoffMetadata.from_value(result).to_dict()
             _send(connection, {
                 "version": _VERSION, "ok": True, "id": request["id"],
                 "result": _json_value(result),
@@ -509,6 +513,15 @@ class ProbeBackendWorker:
 
     def open_attach(self, probe_id: str, target: str, *, halt_on_connect: bool = False) -> ProbeAttachmentEvidence:
         return ProbeAttachmentEvidence(**self.call("open_attach", probe_id, target, halt_on_connect=halt_on_connect))
+
+    def debug_handoff_metadata(self) -> DebugHandoffMetadata:
+        try:
+            return DebugHandoffMetadata.from_value(self.call("debug_handoff_metadata"))
+        except (TypeError, ValueError) as error:
+            self.abort_owned_execution()
+            raise ProbeWorkerError(
+                "PROBE_BACKEND_ERROR", "Probe worker response is invalid"
+            ) from error
 
     def read_memory(self, address: int, length: int) -> bytes:
         return self.call("read_memory", address, length)

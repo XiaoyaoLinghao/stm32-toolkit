@@ -20,14 +20,18 @@ from stm32_toolkit.build.identity import utc_now_rfc3339
 from stm32_toolkit.result import OperationResult
 
 from .flash import _load_fresh_firmware, _verify_segments
+from .backend import DebugHandoffMetadata
 from .model import OperationLevel
+from .selector import public_probe_selector, valid_hardware_probe_id
 from .service import _await_task_completion
 
 _BEGIN_OPERATION = "stm32_debug_handoff_begin"
 _END_OPERATION = "stm32_debug_handoff_end"
 _STATE_NAME = "debug-handoff.json"
 _GUARD_NAME = ".debug-handoff.guard"
+_CORTEX_CONFIG_NAME = "debug-handoff-cortex-debug.json"
 _STATE_LIMIT = 65_536
+_CORTEX_CONFIG_LIMIT = 65_536
 _LEASE_RECORD_LIMIT = 16_384
 _FLASH_RESULT_LIMIT = 8 * 1024 * 1024
 _REPARSE_POINT = 0x400
@@ -77,6 +81,18 @@ _STATE_FIELDS = {
     "previousWatchSelection",
     "issuedAtUtc",
 }
+_CORTEX_CONFIG_FIELDS = {
+    "schemaVersion",
+    "ticketSha256",
+    "workspaceId",
+    "sessionId",
+    "probeId",
+    "target",
+    "buildId",
+    "elfSha256",
+    "executable",
+    "boardId",
+}
 _async_locks: dict[Path, tuple[asyncio.AbstractEventLoop, asyncio.Lock]] = {}
 
 
@@ -96,22 +112,41 @@ class CortexDebugAttachContract:
     serial_number: str
     servertype: str = "pyocd"
     request: str = "attach"
+    board_id: str | None = field(default=None, repr=False)
+    target_id: str | None = None
 
     def __post_init__(self) -> None:
         if self.servertype != "pyocd" or self.request != "attach":
             raise ValueError("Cortex-Debug contract must use PyOCD attach mode")
-        if _IDENTIFIER.fullmatch(self.target) is None:
+        if not isinstance(self.target, str) or _IDENTIFIER.fullmatch(self.target) is None:
             raise ValueError("Cortex-Debug target is invalid")
-        if _IDENTIFIER.fullmatch(self.serial_number) is None:
+        if not isinstance(self.serial_number, str) or _IDENTIFIER.fullmatch(self.serial_number) is None:
             raise ValueError("Cortex-Debug probe selector is invalid")
+        target_id = self.target if self.target_id is None else self.target_id
+        if not isinstance(target_id, str) or _IDENTIFIER.fullmatch(target_id) is None or target_id != self.target:
+            raise ValueError("Cortex-Debug target ID is invalid")
+        board_id = self.board_id
+        if board_id is None and valid_hardware_probe_id(self.serial_number):
+            if public_probe_selector(self.serial_number) == self.serial_number:
+                board_id = self.serial_number
+        if (
+            board_id is None
+            or not valid_hardware_probe_id(board_id)
+            or public_probe_selector(board_id) != self.serial_number
+        ):
+            raise ValueError("Cortex-Debug board identity is invalid")
         _validate_relative_path(self.executable)
+        object.__setattr__(self, "board_id", board_id)
+        object.__setattr__(self, "target_id", target_id)
 
     def to_dict(self) -> dict[str, str]:
         return {
             "servertype": "pyocd",
             "request": "attach",
             "target": self.target,
+            "targetId": self.target_id,
             "serialNumber": self.serial_number,
+            "boardId": self.board_id,
             "executable": f"${{workspaceFolder}}/{self.executable}",
         }
 
@@ -254,7 +289,7 @@ def _safe_session_root(supervisor: object) -> tuple[object, Path]:
             raise _fail("HANDOFF_STATE_UNAVAILABLE", "Debug handoff state is unavailable") from None
         if _is_redirect(info) or not stat.S_ISDIR(info.st_mode):
             raise _fail("HANDOFF_STATE_INVALID", "Debug handoff state is invalid", rule="sessionRoot")
-    for name in (_STATE_NAME, _GUARD_NAME):
+    for name in (_STATE_NAME, _GUARD_NAME, _CORTEX_CONFIG_NAME):
         path = root / name
         try:
             child = os.lstat(path)
@@ -530,6 +565,162 @@ def _write_state(session_root: Path, state: dict[str, object]) -> None:
                 pass
 
 
+def _validate_cortex_config(value: dict[str, object]) -> dict[str, object]:
+    if set(value) != _CORTEX_CONFIG_FIELDS or value.get("schemaVersion") != 1:
+        raise _fail(
+            "HANDOFF_STATE_INVALID",
+            "Debug handoff companion configuration is invalid",
+            rule="fields",
+        )
+    for field_name in ("ticketSha256", "buildId", "elfSha256"):
+        if not isinstance(value.get(field_name), str) or _SHA256.fullmatch(
+            str(value[field_name])
+        ) is None:
+            raise _fail(
+                "HANDOFF_STATE_INVALID",
+                "Debug handoff companion configuration is invalid",
+                rule=field_name,
+            )
+    for field_name in ("workspaceId", "sessionId", "probeId", "target"):
+        if not isinstance(value.get(field_name), str) or _IDENTIFIER.fullmatch(
+            str(value[field_name])
+        ) is None:
+            raise _fail(
+                "HANDOFF_STATE_INVALID",
+                "Debug handoff companion configuration is invalid",
+                rule=field_name,
+            )
+    try:
+        _validate_relative_path(value.get("executable"))
+    except (TypeError, ValueError):
+        raise _fail(
+            "HANDOFF_STATE_INVALID",
+            "Debug handoff companion configuration is invalid",
+            rule="executable",
+        ) from None
+    board_id = value.get("boardId")
+    if (
+        not valid_hardware_probe_id(board_id)
+        or public_probe_selector(board_id) != value.get("probeId")
+    ):
+        raise _fail(
+            "HANDOFF_STATE_INVALID",
+            "Debug handoff companion configuration is invalid",
+            rule="boardId",
+        )
+    return value
+
+
+def _read_cortex_config(session_root: Path) -> dict[str, object]:
+    try:
+        value = _read_json_file(
+            session_root / _CORTEX_CONFIG_NAME,
+            _CORTEX_CONFIG_LIMIT,
+            containment_root=session_root,
+        )
+        if value is None:
+            raise ValueError
+        return _validate_cortex_config(value)
+    except _HandoffFailure:
+        raise _fail(
+            "HANDOFF_IDENTITY_MISMATCH",
+            "Debug handoff identity configuration is invalid",
+        ) from None
+    except (OSError, TypeError, ValueError):
+        raise _fail(
+            "HANDOFF_IDENTITY_MISMATCH",
+            "Debug handoff identity configuration is invalid",
+        ) from None
+
+
+def _write_cortex_config(session_root: Path, value: dict[str, object]) -> None:
+    _validate_cortex_config(value)
+    data = json.dumps(value, sort_keys=True, separators=(",", ":")).encode("utf-8") + b"\n"
+    descriptor = -1
+    temporary: str | None = None
+    try:
+        descriptor, temporary = tempfile.mkstemp(
+            prefix=".debug-handoff-cortex-debug-",
+            suffix=".tmp",
+            dir=session_root,
+        )
+        if os.name != "nt":
+            os.chmod(temporary, 0o600)
+        with os.fdopen(descriptor, "wb") as handle:
+            descriptor = -1
+            handle.write(data)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, session_root / _CORTEX_CONFIG_NAME)
+        temporary = None
+        if os.name != "nt":
+            os.chmod(session_root / _CORTEX_CONFIG_NAME, 0o600)
+        try:
+            directory = os.open(session_root, os.O_RDONLY)
+            try:
+                os.fsync(directory)
+            finally:
+                os.close(directory)
+        except OSError:
+            pass
+    except OSError:
+        raise _fail(
+            "HANDOFF_STATE_UNAVAILABLE",
+            "Debug handoff state is unavailable",
+        ) from None
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+        if temporary is not None:
+            try:
+                os.unlink(temporary)
+            except OSError:
+                pass
+
+
+def _validate_cortex_config_matches(
+    value: Mapping[str, object],
+    state: Mapping[str, object],
+    firmware: object,
+    *,
+    ticket: str,
+    probe: str,
+    workspace: str,
+    session: str,
+    target: str,
+) -> None:
+    identity = getattr(firmware, "identity")
+    expected = {
+        "ticketSha256": hashlib.sha256(ticket.encode("ascii")).hexdigest(),
+        "workspaceId": workspace,
+        "sessionId": session,
+        "probeId": probe,
+        "target": target,
+        "buildId": identity.get("buildId"),
+        "elfSha256": identity.get("elfSha256"),
+        "executable": getattr(firmware, "elf_path"),
+    }
+    if any(value.get(key) != expected_value for key, expected_value in expected.items()):
+        raise _fail(
+            "HANDOFF_IDENTITY_MISMATCH",
+            "Debug handoff identity configuration is invalid",
+        )
+    if (
+        state.get("ticketId") != ticket
+        or state.get("workspaceId") != workspace
+        or state.get("sessionId") != session
+        or state.get("probeId") != probe
+        or state.get("target") != target
+        or state.get("buildId") != identity.get("buildId")
+        or state.get("elfSha256") != identity.get("elfSha256")
+        or public_probe_selector(str(value.get("boardId"))) != probe
+    ):
+        raise _fail(
+            "HANDOFF_IDENTITY_MISMATCH",
+            "Debug handoff identity configuration is invalid",
+        )
+
+
 def _configuration(config: object, root: Path) -> tuple[str, str, str]:
     probe = getattr(config, "probe_id", None)
     workspace = getattr(config, "workspace_id", None)
@@ -708,13 +899,82 @@ def _state_matches(
     )
 
 
-def _ticket(state: Mapping[str, object], executable: str) -> HandoffTicket:
+def _ticket(
+    state: Mapping[str, object],
+    executable: str,
+    board_id: str | None = None,
+) -> HandoffTicket:
     return HandoffTicket(
         str(state["ticketId"]),
         CortexDebugAttachContract(
-            str(state["target"]), executable, str(state["probeId"])
+            str(state["target"]),
+            executable,
+            str(state["probeId"]),
+            board_id=board_id,
+            target_id=str(state["target"]),
         ),
     )
+
+
+def _cortex_config(
+    state: Mapping[str, object],
+    firmware: object,
+    metadata: DebugHandoffMetadata,
+) -> dict[str, object]:
+    identity = getattr(firmware, "identity")
+    ticket = str(state["ticketId"])
+    value = {
+        "schemaVersion": 1,
+        "ticketSha256": hashlib.sha256(ticket.encode("ascii")).hexdigest(),
+        "workspaceId": str(state["workspaceId"]),
+        "sessionId": str(state["sessionId"]),
+        "probeId": metadata.probe_id,
+        "target": metadata.target,
+        "buildId": str(identity["buildId"]),
+        "elfSha256": str(identity["elfSha256"]),
+        "executable": str(getattr(firmware, "elf_path")),
+        "boardId": metadata.board_id,
+    }
+    _validate_cortex_config(value)
+    return value
+
+
+async def _debug_handoff_metadata(
+    supervisor: object,
+    probe: str,
+    target: str,
+) -> DebugHandoffMetadata:
+    provider = getattr(supervisor, "debug_handoff_metadata", None)
+    if not callable(provider):
+        raise _fail(
+            "HANDOFF_IDENTITY_MISMATCH",
+            "Attached probe identity is unavailable",
+        )
+    try:
+        value = await provider(probe, target)
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        raise _fail(
+            "HANDOFF_IDENTITY_MISMATCH",
+            "Attached probe identity is unavailable",
+        ) from None
+    try:
+        metadata = DebugHandoffMetadata.from_value(value)
+    except (TypeError, ValueError):
+        raise _fail(
+            "HANDOFF_IDENTITY_MISMATCH",
+            "Attached probe identity is invalid",
+        ) from None
+    if (
+        metadata.probe_id != probe
+        or metadata.target != target
+    ):
+        raise _fail(
+            "HANDOFF_IDENTITY_MISMATCH",
+            "Attached probe identity does not match the handoff",
+        )
+    return metadata
 
 
 def _prove_external_reservation(
@@ -800,6 +1060,17 @@ async def begin_debug_handoff(
                     ):
                         raise _fail("HANDOFF_STATE_CONFLICT", "Another debug handoff is active")
                     if state["state"] == "externally-owned":
+                        companion = _read_cortex_config(session_root)
+                        _validate_cortex_config_matches(
+                            companion,
+                            state,
+                            firmware,
+                            ticket=str(state["ticketId"]),
+                            probe=probe,
+                            workspace=workspace,
+                            session=session,
+                            target=target,
+                        )
                         _prove_external_reservation(
                             supervisor,
                             probe,
@@ -808,12 +1079,24 @@ async def begin_debug_handoff(
                             session_root / "probe-endpoint.json",
                         )
                         return OperationResult.success(
-                            _BEGIN_OPERATION, _ticket(state, firmware.elf_path)
+                            _BEGIN_OPERATION,
+                            _ticket(state, str(companion["executable"]), str(companion["boardId"])),
                         )
                     if (
                         state["state"] == "paused-for-debug"
                         and getattr(supervisor, "endpoint", None) is None
                     ):
+                        companion = _read_cortex_config(session_root)
+                        _validate_cortex_config_matches(
+                            companion,
+                            state,
+                            firmware,
+                            ticket=str(state["ticketId"]),
+                            probe=probe,
+                            workspace=workspace,
+                            session=session,
+                            target=target,
+                        )
                         _prove_external_reservation(
                             supervisor,
                             probe,
@@ -824,7 +1107,8 @@ async def begin_debug_handoff(
                         state["state"] = "externally-owned"
                         _write_state(session_root, state)
                         return OperationResult.success(
-                            _BEGIN_OPERATION, _ticket(state, firmware.elf_path)
+                            _BEGIN_OPERATION,
+                            _ticket(state, str(companion["executable"]), str(companion["boardId"])),
                         )
                     if state["state"] == "reacquiring":
                         raise _fail("HANDOFF_STATE_CONFLICT", "Debug handoff is already reacquiring")
@@ -837,6 +1121,7 @@ async def begin_debug_handoff(
                         "Probe Service must be reacquired before debug handoff can resume",
                     )
                 if endpoint is not None:
+                    metadata: DebugHandoffMetadata | None = None
                     lease_id = _endpoint(endpoint, probe, workspace, session)
                     _validate_client_endpoint(client, endpoint)
                     try:
@@ -872,6 +1157,7 @@ async def begin_debug_handoff(
                     attachment = await client.attach(probe, target)
                     _validate_attachment(attachment, probe, target)
                     await _verify_segments(client, firmware.segments)
+                    metadata = await _debug_handoff_metadata(supervisor, probe, target)
 
                     current_firmware = _load_fresh_firmware(root)
                     if (
@@ -880,6 +1166,7 @@ async def begin_debug_handoff(
                         or current_firmware.identity.get("elfSha256")
                         != typed.expected_elf_sha256
                         or current_firmware.model.debug.target != target
+                        or metadata.target != target
                     ):
                         raise _fail(
                             "HANDOFF_IDENTITY_MISMATCH",
@@ -896,27 +1183,51 @@ async def begin_debug_handoff(
                     )
                     firmware = current_firmware
 
-                if state is None:
-                    state = {
-                        "schemaVersion": 1,
-                        "toolkitVersion": __version__,
-                        "state": "paused-for-debug",
-                        "ticketId": secrets.token_hex(32),
-                        "workspaceId": workspace,
-                        "sessionId": session,
-                        "probeId": probe,
-                        "leaseId": lease_id,
-                        "target": target,
-                        "buildId": typed.expected_build_id,
-                        "elfSha256": typed.expected_elf_sha256,
-                        "previousWatchSelection": list(typed.previous_watch_selection),
-                        "issuedAtUtc": utc_now_rfc3339(),
-                    }
+                if endpoint is not None:
+                    assert metadata is not None
+                    if state is None:
+                        state = {
+                            "schemaVersion": 1,
+                            "toolkitVersion": __version__,
+                            "state": "paused-for-debug",
+                            "ticketId": secrets.token_hex(32),
+                            "workspaceId": workspace,
+                            "sessionId": session,
+                            "probeId": probe,
+                            "leaseId": lease_id,
+                            "target": target,
+                            "buildId": typed.expected_build_id,
+                            "elfSha256": typed.expected_elf_sha256,
+                            "previousWatchSelection": list(typed.previous_watch_selection),
+                            "issuedAtUtc": utc_now_rfc3339(),
+                        }
+                    else:
+                        state["leaseId"] = lease_id
+                    companion = _cortex_config(state, firmware, metadata)
+                    _validate_cortex_config_matches(
+                        companion,
+                        state,
+                        firmware,
+                        ticket=str(state["ticketId"]),
+                        probe=probe,
+                        workspace=workspace,
+                        session=session,
+                        target=target,
+                    )
+                    _write_cortex_config(session_root, companion)
                     _write_state(session_root, state)
                 else:
-                    state["leaseId"] = lease_id
-                    _write_state(session_root, state)
-
+                    companion = _read_cortex_config(session_root)
+                    _validate_cortex_config_matches(
+                        companion,
+                        state,
+                        firmware,
+                        ticket=str(state["ticketId"]),
+                        probe=probe,
+                        workspace=workspace,
+                        session=session,
+                        target=target,
+                    )
                 endpoint_path = getattr(endpoint, "record_path", None)
                 if endpoint_path is not None and not isinstance(endpoint_path, Path):
                     raise _fail("HANDOFF_SUPERVISOR_INVALID", "Probe supervisor endpoint is invalid")
@@ -953,7 +1264,12 @@ async def begin_debug_handoff(
                     if stop_cancellation is not None:
                         raise stop_cancellation
                 return OperationResult.success(
-                    _BEGIN_OPERATION, _ticket(state, firmware.elf_path)
+                    _BEGIN_OPERATION,
+                    _ticket(
+                        state,
+                        str(companion["executable"]),
+                        str(companion["boardId"]),
+                    ),
                 )
     except asyncio.CancelledError:
         raise

@@ -1177,7 +1177,9 @@ def test_present_svd_is_hashed_as_input(tmp_path):
     plan = plan_for(root)
     assert any(entry.path == "debug/stm32f407.svd" for entry in plan.inputs)
     launch = next(entry for entry in plan.files if entry.path == ".vscode/launch.json")
-    assert b"svdFile" in launch.after_bytes
+    assert json.loads(launch.after_bytes.decode("utf-8")) == {
+        "version": "0.2.0", "configurations": []
+    }
 
 
 def test_missing_cube_mx_ioc_is_rejected(tmp_path):
@@ -1484,7 +1486,9 @@ def test_target_name_and_outputs_follow_elf_basename(tmp_path):
     assert "${CMAKE_BINARY_DIR}/my-fw_v2.hex" in text
     assert "${CMAKE_BINARY_DIR}/my-fw_v2.bin" in text
     launch = next(entry for entry in plan.files if entry.path == ".vscode/launch.json")
-    assert "${workspaceFolder}/build/arm-debug/my-fw_v2.elf" in launch.after_bytes.decode("utf-8")
+    assert json.loads(launch.after_bytes.decode("utf-8")) == {
+        "version": "0.2.0", "configurations": []
+    }
 
 
 def test_sanitized_project_name_is_used(tmp_path):
@@ -1653,16 +1657,7 @@ def test_launch_snapshot_exact(tmp_path):
     plan = plan_for(root)
     entry = next(entry for entry in plan.files if entry.path == ".vscode/launch.json")
     payload = json.loads(entry.after_bytes.decode("utf-8"))
-    config = payload["configurations"][0]
-    assert config["name"] == "STM32 Toolkit: Debug"
-    assert config["type"] == "cortex-debug"
-    assert config["request"] == "launch"
-    assert config["servertype"] == "pyocd"
-    assert config["target"] == "stm32f407vg"
-    assert config["executable"] == "${workspaceFolder}/build/arm-debug/firmware.elf"
-    assert config["preLaunchTask"] == "STM32 Toolkit: Debug Handoff Begin"
-    assert config["postDebugTask"] == "STM32 Toolkit: Debug Handoff End"
-    assert "svdFile" not in config
+    assert payload == {"version": "0.2.0", "configurations": []}
 
 
 def test_launch_snapshot_with_svd(tmp_path):
@@ -1671,8 +1666,9 @@ def test_launch_snapshot_with_svd(tmp_path):
     root = write_project(tmp_path / "proj", payload)
     plan = plan_for(root)
     entry = next(entry for entry in plan.files if entry.path == ".vscode/launch.json")
-    config = json.loads(entry.after_bytes.decode("utf-8"))["configurations"][0]
-    assert config["svdFile"] == "${workspaceFolder}/debug/stm32f407.svd"
+    assert json.loads(entry.after_bytes.decode("utf-8")) == {
+        "version": "0.2.0", "configurations": []
+    }
 
 
 def test_c_cpp_snapshot_exact(tmp_path):

@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+import re
 from typing import Mapping, Protocol, runtime_checkable
 
 from .selector import (
@@ -10,6 +11,8 @@ from .selector import (
     public_probe_selector,
     valid_hardware_probe_id,
 )
+
+_IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 
 
 class ProbeBackendError(Exception):
@@ -84,6 +87,53 @@ class ProbeAttachmentEvidence:
             "resolvedPartNumber": self.resolved_part_number,
             "coreCount": self.core_count,
         }
+
+
+@dataclass(frozen=True)
+class DebugHandoffMetadata:
+    """Identity captured by one successful attachment for external handoff."""
+
+    probe_id: str
+    target: str
+    board_id: str = field(repr=False)
+
+    def __post_init__(self) -> None:
+        if (
+            not isinstance(self.probe_id, str)
+            or not isinstance(self.target, str)
+            or _IDENTIFIER.fullmatch(self.probe_id) is None
+            or _IDENTIFIER.fullmatch(self.target) is None
+            or not valid_hardware_probe_id(self.board_id)
+            or public_probe_selector(self.board_id) != self.probe_id
+        ):
+            raise ValueError("debug handoff metadata is invalid")
+
+    def to_dict(self) -> dict[str, str]:
+        return {
+            "probeId": self.probe_id,
+            "target": self.target,
+            "boardId": self.board_id,
+        }
+
+    @classmethod
+    def from_value(cls, value: object) -> "DebugHandoffMetadata":
+        if isinstance(value, cls):
+            return cls(value.probe_id, value.target, value.board_id)
+        if not isinstance(value, Mapping) or set(value) != {"probeId", "target", "boardId"}:
+            raise ValueError("debug handoff metadata is invalid")
+        probe_id = value.get("probeId")
+        target = value.get("target")
+        board_id = value.get("boardId")
+        if not all(isinstance(item, str) for item in (probe_id, target, board_id)):
+            raise ValueError("debug handoff metadata is invalid")
+        return cls(probe_id, target, board_id)
+
+
+@runtime_checkable
+class DebugHandoffMetadataBackend(Protocol):
+    """Private additive capability for the authenticated handoff path."""
+
+    def debug_handoff_metadata(self) -> DebugHandoffMetadata: ...
 
 
 @runtime_checkable

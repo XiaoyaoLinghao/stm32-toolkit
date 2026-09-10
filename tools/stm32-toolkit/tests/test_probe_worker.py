@@ -14,6 +14,7 @@ import pytest
 
 from stm32_toolkit import __version__
 from stm32_toolkit.probe.backend import (
+    DebugHandoffMetadata,
     FlashBackendReport, ProbeAttachmentEvidence, ProbeBackendError, ProbeDescriptor,
 )
 from stm32_toolkit.probe.attach_diagnostics import (
@@ -60,6 +61,8 @@ class _WorkerTestBackend:
     def list_probes(self): return (ProbeDescriptor("probe-a", "v", "p", None),)
     def open_attach(self, probe_id, target, *, halt_on_connect=False):
         return ProbeAttachmentEvidence(probe_id, target, target, 1)
+    def debug_handoff_metadata(self):
+        return DebugHandoffMetadata("probe-a", "stm32", "probe-a")
     def _record_read(self, operation: str) -> None:
         with self.marker.open("ab") as stream:
             stream.write((operation + "\n").encode("ascii"))
@@ -109,6 +112,14 @@ class _WorkerTestBackend:
         if self.mode in {"close-hang", "error-close-hang"}:
             time.sleep(2.0)
             self.marker.write_text("late-close", encoding="utf-8")
+        return None
+
+
+class _MalformedMetadataBackend:
+    def debug_handoff_metadata(self):
+        return {"probeId": "probe-a", "target": "stm32"}
+
+    def close(self):
         return None
 
 
@@ -457,6 +468,9 @@ def test_worker_exercises_the_complete_fixed_probe_backend_port(tmp_path: Path) 
     worker.preflight_target_capabilities("probe-a", OperationLevel.OBSERVE)
     assert worker.list_probes() == (ProbeDescriptor("probe-a", "v", "p", None),)
     assert worker.open_attach("probe-a", "stm32", halt_on_connect=False).core_count == 1
+    assert worker.debug_handoff_metadata().to_dict() == {
+        "probeId": "probe-a", "target": "stm32", "boardId": "probe-a"
+    }
     assert worker.read_memory(0, 2) == b"mm"
     assert worker.read_core_registers(("pc",)) == {"pc": 1}
     worker.halt(); worker.resume(); worker.step(); worker.reset()
@@ -1295,6 +1309,17 @@ def test_worker_hanging_close_is_terminated_without_late_cleanup_action(tmp_path
     assert not worker.is_alive
     time.sleep(2.1)
     assert not marker.exists()
+
+
+def test_worker_rejects_malformed_debug_handoff_metadata(tmp_path: Path) -> None:
+    worker = ProbeBackendWorker(_test_backend_factory=_MalformedMetadataBackend)
+    try:
+        with pytest.raises(ProbeWorkerError) as caught:
+            worker.debug_handoff_metadata()
+        assert caught.value.code == "PROBE_BACKEND_ERROR"
+        assert "board" not in caught.value.message.casefold()
+    finally:
+        worker.abort_owned_execution()
 
 
 def test_worker_operation_error_reaps_a_hanging_backend_cleanup_before_response(

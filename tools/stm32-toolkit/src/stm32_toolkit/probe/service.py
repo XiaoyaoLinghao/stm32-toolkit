@@ -22,7 +22,12 @@ from stm32_toolkit import __version__
 from stm32_toolkit.testing.artifacts import TestArtifactCollector
 from stm32_toolkit.probe.flash import _canonical_target, load_fresh_firmware_facts
 
-from .backend import ProbeAttachmentEvidence, ProbeBackend, ProbeBackendError
+from .backend import (
+    DebugHandoffMetadata,
+    ProbeAttachmentEvidence,
+    ProbeBackend,
+    ProbeBackendError,
+)
 from .attach_diagnostics import (
     CleanupFragment,
     LEGACY_ATTACH_STAGES,
@@ -50,6 +55,7 @@ from .protocol import (
 _REPARSE_POINT = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
 _TARGET_REGISTER = re.compile(r"^[a-z][a-z0-9_]{0,31}$")
 _ATTACH_RECOVERY_SECONDS = 1.0
+_DEBUG_HANDOFF_METADATA_SECONDS = 5.0
 
 
 def _service_error_fields(error: BaseException) -> tuple[str, str]:
@@ -1576,6 +1582,196 @@ class ProbeService:
             asyncio.to_thread(lease.reserve_external_handoff, ticket)
         )
         await _await_task_completion(reservation)
+
+    async def debug_handoff_metadata(
+        self,
+        probe_id: str,
+        target: str,
+        *,
+        deadline: float | None = None,
+    ) -> DebugHandoffMetadata:
+        """Read identity committed by the current attachment for handoff."""
+        loop = asyncio.get_running_loop()
+        if deadline is None:
+            deadline = loop.time() + _DEBUG_HANDOFF_METADATA_SECONDS
+        if (
+            type(deadline) is not float
+            or deadline != deadline
+            or deadline == float("inf")
+            or deadline == float("-inf")
+        ):
+            raise ProbeServiceError(
+                "PROBE_PROTOCOL_INVALID", "Debug handoff metadata deadline is invalid"
+            )
+
+        lease = self._lease
+        if lease is None or self._endpoint is None or self._stopping:
+            raise ProbeServiceError(
+                "PROBE_SERVICE_UNAVAILABLE", "Probe Service is unavailable"
+            )
+        if not isinstance(probe_id, str) or not isinstance(target, str):
+            raise ProbeServiceError(
+                "PROBE_IDENTITY_MISMATCH",
+                "Connected target identity does not match",
+            )
+
+        def remaining() -> float:
+            return deadline - loop.time()
+
+        if remaining() <= 0:
+            raise ProbeServiceError(
+                "PROBE_TIMEOUT", "Debug handoff metadata request timed out"
+            )
+        try:
+            await asyncio.wait_for(
+                self._observation_attachment_lock.acquire(),
+                timeout=remaining(),
+            )
+        except asyncio.TimeoutError:
+            raise ProbeServiceError(
+                "PROBE_TIMEOUT", "Debug handoff metadata request timed out"
+            ) from None
+
+        task: asyncio.Task[object] | None = None
+        try:
+            accepted = self._observation_attachment
+            if (
+                accepted is None
+                or accepted[0] != probe_id
+                or accepted[1] != _canonical_target(target)
+            ):
+                raise ProbeServiceError(
+                    "PROBE_IDENTITY_MISMATCH",
+                    "Connected target identity does not match",
+                )
+
+            async def invoke() -> DebugHandoffMetadata:
+                lock_acquired = False
+                try:
+                    if self._stopping or self._lease is None or self._endpoint is None:
+                        raise ProbeServiceError(
+                            "PROBE_SERVICE_UNAVAILABLE", "Probe Service is unavailable"
+                        )
+                    if remaining() <= 0:
+                        raise ProbeServiceError(
+                            "PROBE_TIMEOUT", "Debug handoff metadata request timed out"
+                        )
+                    try:
+                        await asyncio.wait_for(
+                            self._backend_lock.acquire(), timeout=remaining()
+                        )
+                    except asyncio.TimeoutError:
+                        raise ProbeServiceError(
+                            "PROBE_TIMEOUT", "Debug handoff metadata request timed out"
+                        ) from None
+                    lock_acquired = True
+                    if self._stopping or self._lease is None or self._endpoint is None:
+                        raise ProbeServiceError(
+                            "PROBE_SERVICE_UNAVAILABLE", "Probe Service is unavailable"
+                        )
+                    current = self._observation_attachment
+                    if (
+                        current is None
+                        or current[0] != probe_id
+                        or current[1] != _canonical_target(target)
+                    ):
+                        raise ProbeServiceError(
+                            "PROBE_IDENTITY_MISMATCH",
+                            "Connected target identity does not match",
+                        )
+                    provider = getattr(self._backend, "debug_handoff_metadata", None)
+                    if not callable(provider):
+                        raise ProbeServiceError(
+                            "PROBE_OPERATION_UNAVAILABLE",
+                            "Debug handoff identity is unavailable",
+                        )
+                    if remaining() <= 0:
+                        raise ProbeServiceError(
+                            "PROBE_TIMEOUT", "Debug handoff metadata request timed out"
+                        )
+                    provider_task = asyncio.create_task(asyncio.to_thread(provider))
+                    try:
+                        try:
+                            value = await asyncio.wait_for(
+                                asyncio.shield(provider_task), timeout=remaining()
+                            )
+                        except (asyncio.TimeoutError, asyncio.CancelledError):
+                            abort = getattr(self._backend, "abort_owned_execution", None)
+                            if callable(abort):
+                                abort_task = asyncio.create_task(asyncio.to_thread(abort))
+                                try:
+                                    await _await_task_ignoring_cancellation(abort_task)
+                                except BaseException:
+                                    pass
+                            try:
+                                await _await_task_ignoring_cancellation(provider_task)
+                            except BaseException:
+                                pass
+                            raise
+                    except BaseException:
+                        self._observation_attachment = None
+                        raise
+                    if remaining() <= 0:
+                        self._observation_attachment = None
+                        raise ProbeServiceError(
+                            "PROBE_TIMEOUT", "Debug handoff metadata request timed out"
+                        )
+                    try:
+                        metadata = DebugHandoffMetadata.from_value(value)
+                    except (TypeError, ValueError):
+                        self._observation_attachment = None
+                        raise ProbeBackendError(
+                            "PROBE_BACKEND_ERROR", "Debug handoff identity is invalid"
+                        ) from None
+                    if (
+                        metadata.probe_id != probe_id
+                        or metadata.target != target
+                    ):
+                        self._observation_attachment = None
+                        raise ProbeBackendError(
+                            "PROBE_IDENTITY_MISMATCH",
+                            "Connected target identity does not match",
+                        )
+                    if self._stopping or self._lease is None or self._endpoint is None:
+                        self._observation_attachment = None
+                        raise ProbeServiceError(
+                            "PROBE_SERVICE_UNAVAILABLE", "Probe Service is unavailable"
+                        )
+                    if remaining() <= 0:
+                        self._observation_attachment = None
+                        raise ProbeServiceError(
+                            "PROBE_TIMEOUT", "Debug handoff metadata request timed out"
+                        )
+                    return metadata
+                finally:
+                    if lock_acquired:
+                        self._backend_lock.release()
+
+            task = asyncio.create_task(invoke())
+            self._backend_tasks.add(task)
+            task.add_done_callback(self._backend_task_finished)
+            try:
+                result = await asyncio.wait_for(
+                    asyncio.shield(task), timeout=max(0.0, remaining())
+                )
+            except asyncio.TimeoutError:
+                if not task.done():
+                    task.cancel()
+                    await asyncio.gather(task, return_exceptions=True)
+                raise ProbeServiceError(
+                    "PROBE_TIMEOUT", "Debug handoff metadata request timed out"
+                ) from None
+            except asyncio.CancelledError:
+                if not task.done():
+                    task.cancel()
+                try:
+                    await _await_task_ignoring_cancellation(task)
+                except BaseException:
+                    pass
+                raise
+            return result  # type: ignore[return-value]
+        finally:
+            self._observation_attachment_lock.release()
 
     async def consume_external_handoff(self, ticket: str) -> None:
         lease = self._lease
