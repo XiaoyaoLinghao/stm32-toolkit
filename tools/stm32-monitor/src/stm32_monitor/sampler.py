@@ -282,14 +282,6 @@ class MonitorSampler:
                     return
                 if self._epoch != epoch or self.state is not SamplerState.RUNNING:
                     continue
-                validation = await self._probe._revalidate_lightweight()
-                if not validation.ok:
-                    if self._epoch != epoch or self.state is not SamplerState.RUNNING:
-                        continue
-                    self._block(validation.code)
-                    return
-                if self._epoch != epoch or self.state is not SamplerState.RUNNING:
-                    continue
                 started = time.monotonic_ns()
                 scheduled_unix_ns = max(0, time.time_ns() - max(0, started - next_deadline))
                 outcome = await self._probe.read(self._watches)

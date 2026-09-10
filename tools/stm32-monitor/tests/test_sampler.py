@@ -56,6 +56,8 @@ class FakeObservation:
         self.delay = delay
         self.calls = 0
         self.call_times: list[float] = []
+        self.batch_calls = 0
+        self.batch_args: list[tuple[tuple[str, ...], tuple[str, ...]]] = []
         self.revalidate_calls = 0
         self.full_revalidate_calls = 0
         self.lightweight_revalidate_calls = 0
@@ -101,6 +103,40 @@ class FakeObservation:
 
     async def sample_registers(self, paths: tuple[str, ...]):
         return await self.read_variables(paths)
+
+    async def _read_batch(
+        self, variables: tuple[str, ...], registers: tuple[str, ...]
+    ):
+        self.batch_calls += 1
+        self.batch_args.append((variables, registers))
+        if self.block_after is not None and self.batch_calls > self.block_after:
+            return OperationResult.failure("batch", "MONITOR_FIRMWARE_CHANGED", "changed", {})
+        if self.lightweight_revalidate_result is not None:
+            return self.lightweight_revalidate_result
+        variable_result = (
+            await self.read_variables(variables) if variables else None
+        )
+        if variable_result is not None and not variable_result.ok:
+            return variable_result
+        register_result = (
+            await self.sample_registers(registers) if registers else None
+        )
+        if register_result is not None and not register_result.ok:
+            return register_result
+        items = tuple(
+            item
+            for result in (variable_result, register_result)
+            if result is not None
+            for item in result.data.items
+        )
+        return OperationResult.success(
+            "batch",
+            DebugReadReport(
+                self.binding,
+                items,
+                "2026-08-08T01:02:04.000000Z",
+            ),
+        )
 
 
 class FakeGroups:
@@ -195,7 +231,7 @@ def test_start_binds_exact_group_revision_and_emits_immutable_batch(tmp_path: Pa
     asyncio.run(scenario())
 
 
-def test_sampling_admits_once_then_uses_lightweight_ticks(tmp_path: Path) -> None:
+def test_sampling_admits_once_then_uses_private_batch_ticks(tmp_path: Path) -> None:
     async def scenario() -> None:
         project = tmp_path / "project"
         project.mkdir()
@@ -210,7 +246,42 @@ def test_sampling_admits_once_then_uses_lightweight_ticks(tmp_path: Path) -> Non
             assert started.ok
             assert first.sequence == 0 and second.sequence == 1
             assert observation.full_revalidate_calls == 1
-            assert observation.lightweight_revalidate_calls >= 2
+            assert observation.batch_calls >= 2
+            assert observation.lightweight_revalidate_calls == 0
+        finally:
+            await stream.aclose()
+            await sampler.close()
+
+    asyncio.run(scenario())
+
+
+def test_sampling_uses_one_private_mixed_batch_per_completed_tick(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        project = tmp_path / "project"
+        project.mkdir()
+        observation = FakeObservation(_binding(project))
+        history = FakeHistory()
+        group = _group(
+            items=(WatchItem.register("GPIOA.IDR"), WatchItem.variable("counter"))
+        )
+        sampler = MonitorSampler(observation, FakeGroups(group), history)
+        stream = sampler.subscribe()
+        first_pending = asyncio.create_task(_next(stream))
+        try:
+            started = await sampler.start(GROUP_ID, expected_revision=1)
+            first = await first_pending
+            second = await _next(stream)
+            assert started.ok
+            assert first.sequence == 0 and second.sequence == 1
+            assert observation.batch_args[:2] == [
+                (("counter",), ("GPIOA.IDR",)),
+                (("counter",), ("GPIOA.IDR",)),
+            ]
+            assert observation.lightweight_revalidate_calls == 0
+            assert [value.watch for value in first.values] == [
+                WatchItem.register("GPIOA.IDR"),
+                WatchItem.variable("counter"),
+            ]
         finally:
             await stream.aclose()
             await sampler.close()
@@ -320,7 +391,7 @@ def test_resume_admission_cancellation_keeps_paused_epoch_and_tasks(tmp_path: Pa
     asyncio.run(scenario())
 
 
-def test_lightweight_failure_blocks_before_publication(tmp_path: Path) -> None:
+def test_batch_guard_failure_blocks_before_publication(tmp_path: Path) -> None:
     async def scenario() -> None:
         project = tmp_path / "project"
         project.mkdir()
@@ -775,7 +846,7 @@ def test_pause_resume_stop_and_new_start_create_distinct_runs(tmp_path: Path) ->
     asyncio.run(scenario())
 
 
-def test_lifecycle_re_admits_after_resume_and_new_start_while_ticks_stay_lightweight(
+def test_lifecycle_re_admits_after_resume_and_new_start_while_ticks_use_private_batch(
     tmp_path: Path,
 ) -> None:
     async def scenario() -> None:
@@ -792,8 +863,8 @@ def test_lifecycle_re_admits_after_resume_and_new_start_while_ticks_stay_lightwe
             assert started.ok
             assert first.sequence == 0 and second.sequence == 1
             assert observation.full_revalidate_calls == 1
-            light_before_resume = observation.lightweight_revalidate_calls
-            assert light_before_resume >= 2
+            batch_before_resume = observation.batch_calls
+            assert batch_before_resume >= 2
 
             paused = await sampler.pause()
             assert paused.ok
@@ -802,7 +873,7 @@ def test_lifecycle_re_admits_after_resume_and_new_start_while_ticks_stay_lightwe
             assert observation.full_revalidate_calls == 2
             resumed_batch = await _next(stream)
             assert resumed_batch.run_id == first.run_id
-            assert observation.lightweight_revalidate_calls > light_before_resume
+            assert observation.batch_calls > batch_before_resume
 
             stopped = await sampler.stop()
             assert stopped.ok
@@ -813,7 +884,7 @@ def test_lifecycle_re_admits_after_resume_and_new_start_while_ticks_stay_lightwe
             restarted_batch = await restarted_pending
             assert restarted_batch.run_id != first.run_id
             assert restarted_batch.sequence == 0
-            assert observation.lightweight_revalidate_calls > light_before_resume
+            assert observation.batch_calls > batch_before_resume
         finally:
             await stream.aclose()
             await sampler.close()

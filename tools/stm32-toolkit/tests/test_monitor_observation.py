@@ -1531,6 +1531,207 @@ def test_lightweight_revalidation_keeps_full_bind_out_of_stable_tick(
     asyncio.run(exercise())
 
 
+def test_private_mixed_batch_uses_one_guard_pair_per_tick_and_preserves_read_order(
+    debug_env: DebugEnv,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import stm32_toolkit.debug.read as read_module
+    import stm32_toolkit.build.identity as identity_module
+
+    harness = Harness(debug_env)
+    opened = asyncio.run(
+        open_monitor_observation(
+            request(debug_env, tmp_path / "data"), _seams=harness.seams()
+        )
+    )
+    assert opened.ok
+    session = opened.data
+    client = harness.clients[0]
+    load_calls = 0
+    git_calls = 0
+    dwarf_calls = 0
+    svd_calls = 0
+    real_load = read_module._load_fresh_firmware
+    real_run_process = identity_module.run_process
+    real_dwarf = type(session.catalog).revalidate
+    real_svd = type(session.svd).revalidate
+
+    def load(*args: object, **kwargs: object):
+        nonlocal load_calls
+        load_calls += 1
+        return real_load(*args, **kwargs)
+
+    def run_process(process_request: object):
+        nonlocal git_calls
+        if getattr(process_request, "argv", ()) and process_request.argv[0] == "git":
+            git_calls += 1
+        return real_run_process(process_request)
+
+    def dwarf(catalog: object, binding: object) -> None:
+        nonlocal dwarf_calls
+        dwarf_calls += 1
+        return real_dwarf(catalog, binding)
+
+    def svd(selection: object, binding: object, project_root: Path) -> None:
+        nonlocal svd_calls
+        svd_calls += 1
+        return real_svd(selection, binding, project_root)
+
+    monkeypatch.setattr(read_module, "_load_fresh_firmware", load)
+    monkeypatch.setattr(identity_module, "run_process", run_process)
+    monkeypatch.setattr(type(session.catalog), "revalidate", dwarf)
+    monkeypatch.setattr(type(session.svd), "revalidate", svd)
+    variable = debug_env.catalog.lookup("signed32")
+    register = debug_env.selection.register("GPIOA.IDR")
+    expected_calls = [
+        (variable.address, variable.byte_size),
+        (register.address, register.size_bytes),
+    ]
+
+    async def exercise() -> None:
+        try:
+            for _ in range(2):
+                result = await session._read_batch(("signed32",), ("GPIOA.IDR",))
+                assert result.ok
+                assert tuple(item.expression for item in result.data.items) == (
+                    "signed32",
+                    "GPIOA.IDR",
+                )
+            assert load_calls == 4
+            assert git_calls == 8
+            assert dwarf_calls == 4
+            assert svd_calls == 4
+            assert client.attach_count == 4
+            assert client.calls == expected_calls * 2
+        finally:
+            await session.close()
+
+    asyncio.run(exercise())
+
+
+@pytest.mark.parametrize("drift", ["pre", "post"])
+def test_private_mixed_batch_discards_on_guard_drift(
+    debug_env: DebugEnv,
+    tmp_path: Path,
+    drift: str,
+) -> None:
+    harness = Harness(debug_env)
+
+    async def exercise() -> None:
+        opened = await open_monitor_observation(
+            request(debug_env, tmp_path / f"data-{drift}"), _seams=harness.seams()
+        )
+        assert opened.ok
+        session = opened.data
+        client = harness.clients[0]
+        variable = debug_env.catalog.lookup("signed32")
+        register = debug_env.selection.register("GPIOA.IDR")
+        expected_calls = [
+            (variable.address, variable.byte_size),
+            (register.address, register.size_bytes),
+        ]
+        if drift == "pre":
+            client.endpoint = replace(client.endpoint, port=0)
+        else:
+            client.after_read = lambda: setattr(
+                client, "endpoint", replace(client.endpoint, port=0)
+            )
+        try:
+            result = await session._read_batch(("signed32",), ("GPIOA.IDR",))
+            assert result.ok is False
+            assert result.data is None
+            assert result.code == "MONITOR_PROVENANCE_CHANGED"
+            assert client.calls == ([] if drift == "pre" else expected_calls)
+        finally:
+            await session.close()
+
+    asyncio.run(exercise())
+
+
+def test_private_batch_reuses_grouped_raw_fallback_and_item_decoding(
+    debug_env: DebugEnv,
+    tmp_path: Path,
+) -> None:
+    harness = Harness(debug_env)
+
+    async def exercise() -> None:
+        opened = await open_monitor_observation(
+            request(debug_env, tmp_path / "data"), _seams=harness.seams()
+        )
+        assert opened.ok
+        session = opened.data
+        client = harness.clients[0]
+        first = debug_env.catalog.lookup("values[0]")
+        client.fail_once.add((first.address, 8))
+        try:
+            result = await session._read_batch(("values[0]", "values[1]"), ())
+            assert result.ok
+            assert [item.status for item in result.data.items] == ["ok", "ok"]
+            assert client.calls == [
+                (first.address, 8),
+                (first.address, 4),
+                (first.address + 4, 4),
+            ]
+        finally:
+            await session.close()
+
+    asyncio.run(exercise())
+
+
+def test_private_batch_keeps_sampling_svd_access_gate(
+    debug_env: DebugEnv,
+    tmp_path: Path,
+) -> None:
+    harness = Harness(debug_env)
+
+    async def exercise() -> None:
+        opened = await open_monitor_observation(
+            request(debug_env, tmp_path / "data"), _seams=harness.seams()
+        )
+        assert opened.ok
+        session = opened.data
+        client = harness.clients[0]
+        try:
+            result = await session._read_batch((), ("GPIOA.EVENT",))
+            assert result.ok
+            assert result.data.items[0].code == "SVD_REGISTER_NOT_SAMPLEABLE"
+            assert client.calls == []
+        finally:
+            await session.close()
+
+    asyncio.run(exercise())
+
+
+def test_private_batch_cancellation_propagates_without_post_guard(
+    debug_env: DebugEnv,
+    tmp_path: Path,
+) -> None:
+    harness = Harness(debug_env)
+
+    async def exercise() -> None:
+        opened = await open_monitor_observation(
+            request(debug_env, tmp_path / "data"), _seams=harness.seams()
+        )
+        assert opened.ok
+        session = opened.data
+        client = harness.clients[0]
+
+        async def cancelled_read(address: int, size: int) -> bytes:
+            raise asyncio.CancelledError
+
+        client.read_memory = cancelled_read
+        try:
+            with pytest.raises(asyncio.CancelledError):
+                await session._read_batch(("signed32",), ("GPIOA.IDR",))
+            assert client.attach_count == 1
+            assert client.calls == []
+        finally:
+            await session.close()
+
+    asyncio.run(exercise())
+
+
 @pytest.mark.parametrize(
     ("drift", "expected_code"),
     [

@@ -91,8 +91,7 @@ class ProbeSession:
         for name in (
             "binding",
             "catalog",
-            "read_variables",
-            "sample_registers",
+            "_read_batch",
             "revalidate",
         ):
             if not hasattr(observation, name):
@@ -142,6 +141,14 @@ class ProbeSession:
             raise
         except Exception:
             return ProbeReadOutcome((), "MONITOR_PROVENANCE_CHANGED", "Monitor observation read failed")
+        return self._map_read_result(watches, selectors, result)
+
+    def _map_read_result(
+        self,
+        watches: tuple[WatchItem, ...],
+        selectors: tuple[str, ...],
+        result: object,
+    ) -> ProbeReadOutcome:
         if getattr(result, "ok", None) is not True:
             code = _blocked_code(getattr(result, "code", None))
             if code is not None:
@@ -178,21 +185,36 @@ class ProbeSession:
                 values.append(SampleValue(watch, "ERROR", code=item.code or "MONITOR_PROVENANCE_CHANGED", definition=definition))
         return ProbeReadOutcome(tuple(values))
 
+    async def _read_mixed_batch(
+        self, items: tuple[WatchItem, ...]
+    ) -> ProbeReadOutcome:
+        variables = tuple(item for item in items if item.kind == "variable")
+        registers = tuple(item for item in items if item.kind == "register")
+        report_watches = variables + registers
+        selectors = tuple(item.selector for item in report_watches)
+        try:
+            result = await self._observation._read_batch(
+                tuple(item.selector for item in variables),
+                tuple(item.selector for item in registers),
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            return ProbeReadOutcome(
+                (), "MONITOR_PROVENANCE_CHANGED", "Monitor observation read failed"
+            )
+        return self._map_read_result(report_watches, selectors, result)
+
     async def read(self, watches: Iterable[WatchItem]) -> ProbeReadOutcome:
         items = tuple(watches)
         if not items or not all(isinstance(item, WatchItem) for item in items):
             return ProbeReadOutcome((), "MONITOR_PROVENANCE_CHANGED", "Monitor watch set is invalid")
-        variables = tuple(item for item in items if item.kind == "variable")
-        registers = tuple(item for item in items if item.kind == "register")
-        variable_result = await self._read_group(variables, "read_variables")
-        if variable_result.blocked_code is not None:
-            return variable_result
-        register_result = await self._read_group(registers, "sample_registers")
-        if register_result.blocked_code is not None:
-            return register_result
+        mixed_result = await self._read_mixed_batch(items)
+        if mixed_result.blocked_code is not None:
+            return mixed_result
         by_watch = {
             (value.watch.kind, value.watch.selector): value
-            for value in (*variable_result.values, *register_result.values)
+            for value in mixed_result.values
         }
         try:
             ordered = tuple(by_watch[(item.kind, item.selector)] for item in items)

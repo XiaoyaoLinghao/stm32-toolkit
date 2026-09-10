@@ -89,6 +89,39 @@ class FakeObservation:
             return OperationResult.failure("registers", self.read_failure[0], self.read_failure[1], {})
         return OperationResult.success("registers", _report(self.binding, paths, errors=self.register_errors))
 
+    async def _read_batch(
+        self, variables: tuple[str, ...], registers: tuple[str, ...]
+    ):
+        variable_result = (
+            await self.read_variables(variables) if variables else None
+        )
+        if variable_result is not None and not variable_result.ok:
+            return variable_result
+        register_result = (
+            await self.sample_registers(registers) if registers else None
+        )
+        if register_result is not None and not register_result.ok:
+            return register_result
+        items = tuple(
+            item
+            for result in (variable_result, register_result)
+            if result is not None
+            for item in result.data.items
+        )
+        report_binding = self.binding
+        for result in (variable_result, register_result):
+            if result is not None and isinstance(result.data, DebugReadReport):
+                report_binding = result.data.binding
+                break
+        return OperationResult.success(
+            "read",
+            DebugReadReport(
+                report_binding,
+                items,
+                "2026-08-08T01:02:04.000000Z",
+            ),
+        )
+
     async def revalidate(self):
         if self.raise_revalidate:
             raise RuntimeError("C:\\secret")
@@ -210,6 +243,42 @@ def test_grouped_reads_use_only_named_public_methods_and_preserve_item_order(tmp
         assert [value.status for value in outcome.values] == ["OK", "OK", "ERROR", "OK"]
         assert outcome.values[2].code == "DEBUG_VALUE_UNAVAILABLE"
         assert outcome.values[0].typed_value["expression"] == "counter"
+
+    asyncio.run(scenario())
+
+
+def test_probe_session_reads_sampler_watches_through_private_mixed_batch(tmp_path: Path) -> None:
+    class BatchObservation(FakeObservation):
+        def __init__(self, binding: DebugFirmwareBinding) -> None:
+            super().__init__(binding)
+            self.batch_calls: list[tuple[tuple[str, ...], tuple[str, ...]]] = []
+
+        async def _read_batch(
+            self, variables: tuple[str, ...], registers: tuple[str, ...]
+        ) -> OperationResult:
+            self.batch_calls.append((variables, registers))
+            return OperationResult.success(
+                "read",
+                _report(self.binding, variables + registers),
+            )
+
+        async def read_variables(self, expressions: tuple[str, ...]):
+            raise AssertionError("sampler must use the private mixed batch")
+
+        async def sample_registers(self, paths: tuple[str, ...]):
+            raise AssertionError("sampler must use the private mixed batch")
+
+    async def scenario() -> None:
+        project = tmp_path / "project"
+        project.mkdir()
+        observation = BatchObservation(_binding(project))
+        items = (WatchItem.register("GPIOA.IDR"), WatchItem.variable("counter"))
+
+        outcome = await ProbeSession(observation).read(items)
+
+        assert outcome.blocked_code is None
+        assert observation.batch_calls == [(('counter',), ('GPIOA.IDR',))]
+        assert [value.watch for value in outcome.values] == list(items)
 
     asyncio.run(scenario())
 

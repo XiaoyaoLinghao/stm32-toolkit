@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import re
 from dataclasses import dataclass
-from typing import Callable, Mapping
+from typing import Awaitable, Callable, Mapping
 
 from stm32_toolkit import __version__
 from stm32_toolkit.build.identity import utc_now_rfc3339
@@ -388,10 +388,34 @@ async def _one(
     revalidate_source: Callable[[], None],
     item: _Resolved,
 ) -> DebugReadItem:
+    return await _read_one(
+        lambda address, size: _memory_read(
+            binding, client, revalidate_source, address, size
+        ),
+        item,
+    )
+
+
+async def _group(
+    binding: DebugFirmwareBinding,
+    client: object,
+    revalidate_source: Callable[[], None],
+    group: list[tuple[int, _Resolved]],
+) -> list[tuple[int, DebugReadItem]]:
+    return await _read_group(
+        lambda address, size: _memory_read(
+            binding, client, revalidate_source, address, size
+        ),
+        group,
+    )
+
+
+async def _read_one(
+    raw_read: Callable[[int, int], Awaitable[bytes]],
+    item: _Resolved,
+) -> DebugReadItem:
     try:
-        data = await _memory_read(
-            binding, client, revalidate_source, item.address, item.size
-        )
+        data = await raw_read(item.address, item.size)
     except asyncio.CancelledError:
         raise
     except _ReadFailure:
@@ -406,21 +430,17 @@ async def _one(
         return DebugReadItem(item.expression, "error", code=error.code)
 
 
-async def _group(
-    binding: DebugFirmwareBinding,
-    client: object,
-    revalidate_source: Callable[[], None],
+async def _read_group(
+    raw_read: Callable[[int, int], Awaitable[bytes]],
     group: list[tuple[int, _Resolved]],
 ) -> list[tuple[int, DebugReadItem]]:
     if len(group) == 1:
         index, item = group[0]
-        return [(index, await _one(binding, client, revalidate_source, item))]
+        return [(index, await _read_one(raw_read, item))]
     start = group[0][1].address
     length = group[-1][1].address + group[-1][1].size - start
     try:
-        data = await _memory_read(
-            binding, client, revalidate_source, start, length
-        )
+        data = await raw_read(start, length)
         if not isinstance(data, bytes) or len(data) != length:
             raise ValueError("partial")
     except asyncio.CancelledError:
@@ -430,9 +450,7 @@ async def _group(
     except Exception:
         results: list[tuple[int, DebugReadItem]] = []
         for index, item in group:
-            results.append(
-                (index, await _one(binding, client, revalidate_source, item))
-            )
+            results.append((index, await _read_one(raw_read, item)))
         return results
     results = []
     for index, item in group:
@@ -443,6 +461,55 @@ async def _group(
         except _ReadFailure as error:
             results.append((index, DebugReadItem(item.expression, "error", code=error.code)))
     return results
+
+
+def _resolve_items(
+    expressions: tuple[str, ...], resolver: Callable[[str], _Resolved]
+) -> tuple[list[tuple[int, _Resolved]], list[DebugReadItem | None]]:
+    resolved: list[tuple[int, _Resolved]] = []
+    output: list[DebugReadItem | None] = [None] * len(expressions)
+    for index, expression in enumerate(expressions):
+        try:
+            resolved.append((index, resolver(expression)))
+        except _ReadFailure as error:
+            output[index] = DebugReadItem(expression, "error", code=error.code)
+    return resolved, output
+
+
+async def _execute_prepared(
+    operation: str,
+    binding: DebugFirmwareBinding,
+    expressions: tuple[str, ...],
+    prepared_groups: tuple[list[tuple[int, _Resolved]], ...],
+    output: list[DebugReadItem | None],
+    raw_read: Callable[[int, int], Awaitable[bytes]],
+) -> OperationResult[DebugReadReport]:
+    """Execute resolved groups with a caller-owned guard boundary.
+
+    Public reads continue to pass a guarded reader. Monitor's private mixed
+    batch passes a raw reader and owns one guard before and after all groups.
+    """
+
+    try:
+        for prepared in prepared_groups:
+            for group in _groups(prepared):
+                for index, result in await _read_group(raw_read, group):
+                    output[index] = result
+        items = tuple(item for item in output if item is not None)
+        return OperationResult.success(
+            operation,
+            DebugReadReport(binding, items, utc_now_rfc3339()),
+        )
+    except asyncio.CancelledError:
+        raise
+    except _ReadFailure as error:
+        return OperationResult.failure(
+            operation, error.code, error.message, error.details
+        )
+    except Exception:
+        return OperationResult.failure(
+            operation, "DEBUG_INTERNAL_ERROR", "Debug read failed", {}
+        )
 
 
 async def _execute(
@@ -457,13 +524,7 @@ async def _execute(
         _endpoint(binding, client)
         _current_firmware(binding)
         revalidate_source()
-        resolved: list[tuple[int, _Resolved]] = []
-        output: list[DebugReadItem | None] = [None] * len(expressions)
-        for index, expression in enumerate(expressions):
-            try:
-                resolved.append((index, resolver(expression)))
-            except _ReadFailure as error:
-                output[index] = DebugReadItem(expression, "error", code=error.code)
+        resolved, output = _resolve_items(expressions, resolver)
         if resolved:
             for group in _groups(resolved):
                 for index, result in await _group(

@@ -28,7 +28,14 @@ from stm32_toolkit.debug import (
     select_svd,
 )
 from stm32_toolkit.debug.firmware import _svd_readable_regions_from_model
-from stm32_toolkit.debug.read import _guard as _debug_read_guard
+from stm32_toolkit.debug.read import (
+    _execute_prepared,
+    _guard as _debug_read_guard,
+    _items,
+    _resolve_items,
+    _variable,
+)
+from stm32_toolkit.debug.sampling import _sampled_register
 from stm32_toolkit.paths import WorkspacePaths, require_safe_session_id
 from stm32_toolkit.probe import (
     OperationLevel,
@@ -51,6 +58,7 @@ from stm32_toolkit.result import OperationResult
 
 _OPERATION = "stm32_monitor_observation_open"
 _REVALIDATE_OPERATION = "stm32_monitor_observation_revalidate"
+_BATCH_OPERATION = "stm32_monitor_observation_batch"
 _IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 _DIGEST = re.compile(r"^[0-9a-f]{64}$")
 _REPARSE_POINT = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
@@ -815,6 +823,95 @@ class MonitorObservationSession:
         return await self._seams.sample_registers(
             RegisterSampleRequest(self.binding, self.svd, paths), self.client
         )
+
+    async def _read_batch(
+        self, variables: tuple[str, ...], registers: tuple[str, ...]
+    ) -> OperationResult[DebugReadReport]:
+        """Read one mixed Monitor batch inside two caller-owned guard boundaries."""
+
+        try:
+            if type(variables) is not tuple or type(registers) is not tuple:
+                raise ValueError
+            if not variables and not registers:
+                raise ValueError
+            checked_variables = _items(variables) if variables else ()
+            checked_registers = _items(registers) if registers else ()
+            selection = self.svd
+            if checked_registers and selection is None:
+                return OperationResult.failure(
+                    _BATCH_OPERATION,
+                    "SVD_SELECTION_REQUIRED",
+                    "An exact project SVD selection is required",
+                    {},
+                )
+            variable_resolved, variable_output = _resolve_items(
+                checked_variables,
+                lambda expression: _variable(
+                    self.binding, self.catalog, expression
+                ),
+            )
+            register_resolved, register_output = _resolve_items(
+                checked_registers,
+                lambda path: _sampled_register(
+                    self.binding, selection, path  # type: ignore[arg-type]
+                ),
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as error:
+            code = getattr(error, "code", None)
+            if code == "DEBUG_REQUEST_INVALID":
+                return OperationResult.failure(
+                    _BATCH_OPERATION,
+                    code,
+                    "Debug read request is invalid",
+                    {},
+                )
+            return OperationResult.failure(
+                _BATCH_OPERATION,
+                "MONITOR_PROVENANCE_CHANGED",
+                "Monitor observation changed",
+                {},
+            )
+
+        output = [*variable_output, *register_output]
+        register_offset = len(checked_variables)
+        prepared_registers = [
+            (index + register_offset, item)
+            for index, item in register_resolved
+        ]
+        prepared = await self._revalidate_lightweight()
+        if not prepared.ok:
+            return OperationResult.failure(
+                _BATCH_OPERATION,
+                prepared.code,
+                "Monitor observation changed",
+                {},
+            )
+        result = await _execute_prepared(
+            _BATCH_OPERATION,
+            self.binding,
+            checked_variables + checked_registers,
+            (variable_resolved, prepared_registers),
+            output,
+            self.client.read_memory,
+        )
+        if not result.ok:
+            return OperationResult.failure(
+                _BATCH_OPERATION,
+                "MONITOR_PROVENANCE_CHANGED",
+                "Monitor observation changed",
+                {},
+            )
+        completed = await self._revalidate_lightweight()
+        if not completed.ok:
+            return OperationResult.failure(
+                _BATCH_OPERATION,
+                completed.code,
+                "Monitor observation changed",
+                {},
+            )
+        return result
 
     async def list_variables(
         self, query: str, cursor: str | None, limit: int
