@@ -351,13 +351,31 @@ class ProbeBackendWorker:
             raise TypeError("Probe worker configuration is invalid")
         context = multiprocessing.get_context("spawn")
         parent, child = context.Pipe(duplex=True)
-        process = context.Process(
-            target=_worker_main,
-            args=(child, config, _test_backend_factory),
-            name="stm32-toolkit-probe-backend",
-            daemon=True,
-        )
-        process.start()
+        try:
+            if os.name == "nt":
+                from .worker_windows import WorkerWindowsSpawnProcess
+
+                process = WorkerWindowsSpawnProcess(
+                    target=_worker_main,
+                    args=(child, config, _test_backend_factory),
+                    name="stm32-toolkit-probe-backend",
+                    daemon=True,
+                )
+            else:
+                process = context.Process(
+                    target=_worker_main,
+                    args=(child, config, _test_backend_factory),
+                    name="stm32-toolkit-probe-backend",
+                    daemon=True,
+                )
+            process.start()
+        except BaseException:
+            for endpoint in (child, parent):
+                try:
+                    endpoint.close()
+                except BaseException:
+                    pass
+            raise
         child.close()
         self._connection = parent
         self._process = process

@@ -165,6 +165,119 @@ def test_main_reports_startup_failures_on_stderr_without_stdout(tmp_path: Path, 
     assert "startup failed" in captured.err
 
 
+def test_real_stdio_mcp_starts_and_closes_an_offline_worker_without_protocol_pollution(
+    tmp_path: Path,
+):
+    """Exercise the real FastMCP stdio path through worker construction and close."""
+    import json
+    import os
+    import sys
+    import tempfile
+    from datetime import timedelta
+
+    if sys.platform != "win32":
+        pytest.skip("Windows child-stdio integration")
+
+    from mcp import ClientSession, StdioServerParameters
+    from mcp.client.stdio import stdio_client
+
+    project = tmp_path / "project"
+    project.mkdir()
+    data_root = tmp_path / "plugin-data"
+    marker = tmp_path / "worker-result.json"
+    source_root = Path(__file__).parents[1] / "src"
+    child_code = f"""
+import __main__, importlib.util, json, pathlib, time
+import stm32_toolkit.mcp_server as server
+from stm32_toolkit.probe.worker import ProbeBackendWorker, ProbeWorkerConfig
+from stm32_toolkit.result import OperationResult
+
+__main__.__spec__ = importlib.util.find_spec('stm32_toolkit.mcp_server')
+marker = pathlib.Path({str(marker)!r})
+
+async def offline_only(request):
+    started = time.monotonic()
+    worker = None
+    try:
+        worker = ProbeBackendWorker(config=ProbeWorkerConfig())
+        pid = worker.owned_pid
+        worker.close()
+        data = {{
+            'scope': 'constructor/close only; no hardware',
+            'workerPid': pid,
+            'aliveAfterClose': worker.is_alive,
+            'hardwareOperations': [],
+            'readySeconds': time.monotonic() - started,
+        }}
+        marker.write_text(json.dumps(data, sort_keys=True), encoding='utf-8')
+        return OperationResult.success('offline_worker_startup', data)
+    except Exception as error:
+        data = {{'scope': 'constructor/close only; no hardware', 'hardwareOperations': []}}
+        marker.write_text(json.dumps(data, sort_keys=True), encoding='utf-8')
+        return OperationResult.failure(
+            'offline_worker_startup',
+            getattr(error, 'code', 'OFFLINE_FAILURE'),
+            str(error),
+            {{'seconds': time.monotonic() - started}},
+        )
+
+server.variable_read_workflow = offline_only
+raise SystemExit(server.main())
+"""
+    environment = os.environ.copy()
+    environment["PYTHONUNBUFFERED"] = "1"
+    environment["PYTHONPATH"] = os.pathsep.join(
+        value for value in (str(source_root), environment.get("PYTHONPATH", "")) if value
+    )
+    parameters = StdioServerParameters(
+        command=sys.executable,
+        args=[
+            "-c",
+            child_code,
+            "--project-root",
+            str(project),
+            "--data-root",
+            str(data_root),
+            "--session-id",
+            "session-stdio-worker",
+        ],
+        env=environment,
+        cwd=str(source_root.parent),
+    )
+
+    async def exercise_stdio():
+        with tempfile.TemporaryFile() as errlog:
+            async with stdio_client(
+                parameters, errlog=errlog
+            ) as (read_stream, write_stream):
+                async with ClientSession(read_stream, write_stream) as session:
+                    initialized = await session.initialize()
+                    result = await session.call_tool(
+                        "stm32_variable_read",
+                        {
+                            "probeId": "probe-a",
+                            "expectedBuildId": "a" * 64,
+                            "expectedElfSha256": "b" * 64,
+                            "expressions": ["counter"],
+                        },
+                        read_timeout_seconds=timedelta(seconds=20),
+                    )
+        return initialized, result
+
+    initialized, result = asyncio.run(exercise_stdio())
+    assert initialized.serverInfo.name == "STM32 Toolkit"
+    assert result.isError is False
+    assert result.structuredContent is not None
+    assert result.structuredContent["ok"] is True
+    assert result.structuredContent["code"] == "OK"
+    assert result.structuredContent["data"]["scope"] == (
+        "constructor/close only; no hardware"
+    )
+    assert result.structuredContent["data"]["aliveAfterClose"] is False
+    assert result.structuredContent["data"]["hardwareOperations"] == []
+    assert json.loads(marker.read_text(encoding="utf-8"))["aliveAfterClose"] is False
+
+
 @pytest.mark.parametrize(
     "argv",
     [

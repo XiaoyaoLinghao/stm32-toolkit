@@ -4,6 +4,7 @@ import asyncio
 from dataclasses import dataclass
 from functools import partial
 import json
+import sys
 from pathlib import Path
 import shutil
 import threading
@@ -326,6 +327,150 @@ def test_worker_normal_call_and_close_leave_no_owned_process(tmp_path: Path) -> 
     worker.close()
     assert not worker.is_alive
     assert pid > 0
+
+
+def test_windows_launcher_preserves_stdlib_identity_and_closes_owned_null_handles(
+    monkeypatch,
+) -> None:
+    if sys.platform != "win32":
+        pytest.skip("Windows CPython launcher seam")
+
+    from stm32_toolkit.probe import worker_windows as module
+    import multiprocessing.popen_spawn_win32 as spawn_win32
+
+    class FakeWinApi:
+        CREATE_NO_WINDOW = 0x08000000
+
+        def __init__(self, *, fail: bool = False) -> None:
+            self.fail = fail
+            self.created: tuple[object, ...] | None = None
+            self.closed: list[int] = []
+            self._next_handle = 100
+
+        def CreateFile(self, *args: object) -> int:
+            handle = self._next_handle
+            self._next_handle += 1
+            return handle
+
+        def CloseHandle(self, handle: int) -> None:
+            self.closed.append(handle)
+
+        def CreateProcess(self, *args: object) -> tuple[int, int, int, int]:
+            self.created = args
+            if self.fail:
+                raise RuntimeError("synthetic CreateProcess failure")
+            return (200, 201, 202, 203)
+
+    original_init = spawn_win32.Popen.__init__
+    original_globals = original_init.__globals__
+    original_winapi = original_globals["_winapi"]
+    parent_streams = (sys.stdin, sys.stdout, sys.stderr)
+
+    fake = FakeWinApi()
+    inheritable: list[tuple[int, bool]] = []
+    monkeypatch.setattr(
+        module.os,
+        "set_handle_inheritable",
+        lambda handle, inherit: inheritable.append((handle, inherit)),
+    )
+    result = module._NarrowWinApiProxy(fake).CreateProcess(
+        "python.exe", "--multiprocessing-fork", None, None, False, 0, None, None, None
+    )
+
+    assert result == (200, 201, 202, 203)
+    assert fake.closed == [100, 101, 102]
+    assert inheritable == [(100, True), (101, True), (102, True)]
+    assert fake.created is not None
+    assert fake.created[4] is True
+    assert fake.created[5] & fake.CREATE_NO_WINDOW
+    startup = fake.created[8]
+    assert startup.hStdInput == 100
+    assert startup.hStdOutput == 101
+    assert startup.hStdError == 102
+    assert startup.lpAttributeList == {"handle_list": [100, 101, 102]}
+    assert (sys.stdin, sys.stdout, sys.stderr) == parent_streams
+
+    failed = FakeWinApi(fail=True)
+    with pytest.raises(RuntimeError, match="synthetic CreateProcess failure"):
+        module._NarrowWinApiProxy(failed).CreateProcess(
+            "python.exe", "--multiprocessing-fork", None, None, False, 0, None, None, None
+        )
+    assert failed.closed == [100, 101, 102]
+
+    class BrokenStartupInfo:
+        def __init__(self, **kwargs: object) -> None:
+            raise RuntimeError("synthetic STARTUPINFO failure")
+
+    startup_failed = FakeWinApi()
+    monkeypatch.setattr(module.subprocess, "STARTUPINFO", BrokenStartupInfo)
+    with pytest.raises(RuntimeError, match="synthetic STARTUPINFO failure"):
+        module._NarrowWinApiProxy(startup_failed).CreateProcess(
+            "python.exe", "--multiprocessing-fork", None, None, False, 0, None, None, None
+        )
+    assert startup_failed.closed == [100, 101, 102]
+    assert startup_failed.created is None
+    assert spawn_win32.Popen.__init__ is original_init
+    assert original_init.__globals__ is original_globals
+    assert original_globals["_winapi"] is original_winapi
+    assert module._PopenInit.__code__ is original_init.__code__
+    assert module._PopenInit.__globals__ is not original_globals
+
+
+def test_windows_launcher_rejects_unsupported_private_runtime_before_create_process(
+    monkeypatch,
+) -> None:
+    if sys.platform != "win32":
+        pytest.skip("Windows CPython launcher seam")
+
+    from stm32_toolkit.probe import worker_windows as module
+    import multiprocessing.popen_spawn_win32 as spawn_win32
+
+    monkeypatch.setattr(spawn_win32.Popen, "__init__", lambda self, process_obj: None)
+    with pytest.raises(RuntimeError, match="unsupported CPython spawn runtime"):
+        module._WorkerWindowsPopen(object())
+
+
+def test_worker_start_failure_closes_both_pipe_ends_before_propagating(monkeypatch) -> None:
+    from stm32_toolkit.probe import worker as module
+
+    class Endpoint:
+        def __init__(self) -> None:
+            self.closed = 0
+
+        def close(self) -> None:
+            self.closed += 1
+
+    class FakeProcess:
+        pid = None
+
+        def start(self) -> None:
+            raise RuntimeError("synthetic process-start failure")
+
+    class FakeContext:
+        def __init__(self) -> None:
+            self.parent = Endpoint()
+            self.child = Endpoint()
+            self.process = FakeProcess()
+
+        def Pipe(self, *, duplex: bool):
+            assert duplex is True
+            return self.parent, self.child
+
+        def Process(self, **kwargs: object):
+            return self.process
+
+    context = FakeContext()
+    monkeypatch.setattr(module.multiprocessing, "get_context", lambda method: context)
+    if sys.platform == "win32":
+        from stm32_toolkit.probe import worker_windows
+
+        monkeypatch.setattr(worker_windows, "WorkerWindowsSpawnProcess", lambda **kwargs: context.process)
+
+    with pytest.raises(RuntimeError, match="synthetic process-start failure"):
+        ProbeBackendWorker(_test_backend_factory=_structured_probe_factory)
+
+    assert context.parent.closed == 1
+    assert context.child.closed == 1
 
 
 def test_production_worker_uses_only_closed_serializable_pyocd_and_task8_config() -> None:
