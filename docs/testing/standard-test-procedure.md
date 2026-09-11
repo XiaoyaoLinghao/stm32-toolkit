@@ -155,6 +155,8 @@ publish 的 data.monitor_run_ref 填 request before/after；compare 的 data.ana
 
 T9 已按原条款及独立审查收口：本次新生成 IDE 配置 PASS；09 的 end/reacquire 后 CLI typed read 和 814 的 CLI/MCP parity 分别按未变行为复用，不冒充同一次新 DataRoot 单序列，也不追加读取。原 Task9 三项已勾选；后文完整 T9 未通过为历史状态。下一项为 Task7 FullFault/观测及 T10 实机准备，VS10-A 仍未完成。
 
+受控 Fault 修复现为 **SOFTWARE_COMPLETE_HARDWARE_PENDING**：产品 CodeHead `333f456dfd0382ceb6b1904e5e29a7592a9ebda9`，最终五模块392项通过，完整差异与新增流程条目已独立审查。见 [实现与审查记录](../codex/returns/2026-09-11-stm32tk-fault-controlled-snapshot.md)。本轮未部署或访问硬件；实际安装仍为 e88。下一次部署及受控 Fault 实机验证须获得新授权并填写执行卡，不能直接对旧 runtime 使用新参数。FullFault 及剩余观测、T10、Task11/12、VS10-A 不因软件修复而完成。
+
 生成配置候选已部署：source `e88c012b6b965c048474f2bba12e1ef396f1d193`，新 DataRoot `D:\stm32tk-data\t9-generated-ide-20260911`；Check missing → Bootstrap → Check healthy/matching、安装字节、最终 PyOCD 启动器及生产身份离线核对通过。**GENERATED_IDE_PHYSICAL_ACCEPTED**；新配置原样使用，实际 IDE session `1f93448d-6f49-4918-a06f-837bdf941e1d` attach/terminated 已证实，用户 `testtime=20`、IDE 停止后 D4 闪烁。一 begin/一原 ticket end 均 OK，最终 observing/ticket cleared/registry released/无调试残留；用户补充归还后 D4 仍闪烁；Watch 时不闪与 IDE attach 停核日志一致，连续不停核采样证据分开保留。独立证据审查已 ACCEPTED（生成 IDE/handoff 切片）；不声称源文件导航已验证、GDB exit code=0 或机器采集 Watch 值。已消费配置从活动 workspace 撤下，快照保留。CLI/MCP 按原候选/原环境范围 REUSED，零追加读取，不宣布完整 T9。见 [部署记录](../codex/returns/2026-09-11-stm32tk-t9-generated-ide-delivery.md)。以下部署 814/未部署为历史断点。
 
 生成 IDE 配置软件修复已独立接受：候选 `894a03d0b241bd139ae3ea890684ca29c16f6edb` 新增版本限定的 `cortexDebugLaunch`，保留旧 API/companion；127 项 owner 回归、5 项主代理独立检查及实际扩展方法/PyOCD parser 离线验证通过。**SOFTWARE_COMPLETE_HARDWARE_PENDING**；当前部署仍为 `814b1683...`，本轮未部署或访问硬件。后续需准备并授权候选部署和一次新生成配置的真实 IDE 验证；完整 T9/T10/VS10-A 仍未完成。见 [软件修复记录](../codex/returns/2026-09-11-stm32tk-t9-generated-ide-compatibility.md)。下文“兼容缺口”保留为尚未实机闭合及旧版本的历史边界。
