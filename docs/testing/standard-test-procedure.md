@@ -94,10 +94,12 @@ attempt 写操作使用当前 attempt revision；Diagnostic 写操作分别使�
 `MON` 是安装的 `Scripts/stm32-monitor.exe`，不能用无 main 调用入口的 `python -m stm32_monitor.cli`。以下附 `--project <P> --data-root <D> --session-id <T10共同S> --json`；只发布/分析已有 history，**不生成物理采样窗口**。
 
 ```text
-MON physical publish --scenario-role <failed-before或fixed-after> --test-run-id <P3或P4> --run-id <实际historyRun> --group-id <实际group> --start-sequence <起点> --end-sequence-exclusive <终点不含> --start-captured-unix-ns <起点> --end-captured-unix-ns-exclusive <终点不含> --probe-id <history实际provenance>
+MON physical publish --scenario-role <failed-before或fixed-after> --test-run-id <P3或P4> --run-id <实际historyRun> --group-id <实际group> --start-sequence <起点> --end-sequence-exclusive <终点不含> --start-captured-unix-ns <起点> --end-captured-unix-ns-exclusive <终点不含> --probe-id <history.binding.probeId原始selector>
 MON analysis compare --request-file <request.json> --diagnostic-session-id <diagnostic> --hypothesis-id <hypothesis> --polarity supports --rationale <实际理由> --source-change-file <declaration.json>
 MON analysis bundle --request-file <同一request.json> --publication-file <publication.json> --failed-before-test-run-id <P3> --fixed-after-test-run-id <P4> --source-change-file <同一declaration.json>
 ```
+
+physical publish 的 --probe-id 必须取 `history.binding.probeId` 原始 selector，离线验证 `sha256(selector)==TestRun metadata.probe_id`；不得传已发布 `MonitorRunRef.probe_id` 的 SHA-256 值，否则会重复哈希并导致身份比较失败。字段来源见 Monitor `replay.py:1441-1450,1893-1899,1931-1965`。
 
 publish 的 data.monitor_run_ref 填 request before/after；compare 的 data.analysis_publication 单独保存为 publication.json，不能传完整响应；其中 diagnostic_marker_ref 用于 marker。要求 quality=VALID、conclusion=COMPLETED、changed=true。VerificationPlan ID 必须等于 declaration.validation_plan_id，绑定两侧 run/evidence、declaration、analysis ID/evidence，required_monitor_quality=VALID、expected_changed=true。verification complete 引用实际 P3/P4 operation IDs 和 monitor.analysis.compare、monitor.analysis.bundle。不生成 VS08 AcceptanceRecord 冒充物理验收。
 
