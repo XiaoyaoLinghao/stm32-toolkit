@@ -76,6 +76,8 @@ TK read variable --probe <selector> --expected-build-id <build> --expected-elf-s
 
 T9 外置 run-owned `.code-workspace` 的 folders 指向实际 P2；launch/configurations 包装本次 begin 返回的 Cortex-Debug 片段并加 name/type。保留 `servertype=pyocd`、`request=attach`、`targetId=target` 及返回的 serialNumber/boardId/executable。boardId 不可用 selector/fingerprint 或旧 raw ID 替代；executable 保留返回的 `${workspaceFolder}/...` 展开形式，确认解析后 ELF 存在且身份匹配。不写 P2 `.vscode` 改变输入身份。原生 UI 不可自动控制时由用户操作，headless DAP/fixture 不等价。
 
+生成配置兼容修正的版本边界见 [修正计划](../superpowers/plans/2026-09-11-stm32tk-t9-generated-ide-compatibility.md)。修正候选保留原 `cortexDebug` 身份数据，并新增 `cortexDebugLaunch`：核对 schemaVersion=1 及 profile 中的 Cortex-Debug/PyOCD 版本与实际环境完全一致后，原样包装其 `configuration`；不匹配则停止，不猜测通用兼容性。该配置直接提供绝对 cwd、UID/attach argv 和就绪正则，launch 不含 boardId；canonical cortexDebug 和内部 companion 仍保留并校验 boardId。先按部署 source 判断是否有新字段，不把旧 runtime 误当新候选；不再次手工改探针参数或补同名任务，环境路径/name/type 仍由已核对配置提供。旧版适配方法及其历史证据继续如下保留。
+
 workspace 级 launch 必须显式设置 `cwd` 为实际工程的**绝对路径**。Cortex-Debug 1.12.1 的 `resolveDebugConfigurationWithSubstitutedVariables(folder,config,...)` 在 cwd 缺失时执行 `config.cwd || folder.uri.fsPath`，相对 cwd 也会访问 folder.uri；workspace 级回调的 folder 可为 undefined。不得假设顶层 folders 会自动给该回调补齐上下文。配置核对须覆盖此分支，不能只检查命令参数。
 
 handoff begin 前，还必须在**不启动调试**的情况下确认实际 IDE 已成功打开目标 workspace，核对真实 executable/version/profile 与扩展激活状态；可使用当前窗口确认或该实例的启动/renderer/extension 日志。exe 存在或 Start-Process 返回不算成功。更新锁、启动退出或实际窗口属于另一安装时先记录并解决该环境前置，不终止无关更新程序，也不先交出探针再排查界面启动。

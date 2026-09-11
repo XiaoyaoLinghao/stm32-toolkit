@@ -54,6 +54,8 @@ Cortex-Debug 1.12.1 会把 boardId 转为旧 `--board`，PyOCD 0.45.1 的主 CLI
 
 ## 本次故障资料及后续方案要求
 
+生成配置修正候选及验证范围见 [T9 兼容修正计划](../superpowers/plans/2026-09-11-stm32tk-t9-generated-ide-compatibility.md)。新的 `cortexDebugLaunch.configuration` 含绝对 cwd、UID/attach 参数和兼容就绪正则，launch 无 boardId；原 canonical cortexDebug/内部 companion 身份数据不变。先核对部署 source、新字段 schemaVersion=1 和 profile 声明的 Cortex-Debug 1.12.1/PyOCD 0.45.1 与实际环境一致；缺失或不同则停止，不能把 profile 当作已检测事实或自行套用于未知版本。此修正不自动发现 GDB/pack/IDE 路径，不生成额外任务，也不代表尚未运行的真实 IDE 验收已通过。
+
 Windows 打包还须核对专用工作树与 `git archive` 的实际换行字节一致；仅设置归档 LF 而沿用已有 CRLF 工作树会触发 wheel/source binding 拒绝。应在创建干净打包工作树前设置该进程的 Git LF 参数，不改共享配置。证据 JSON 一律显式 UTF-8 读取；全新 DataRoot 的 session 目录尚不存在时验证其缺省状态，不直接调用要求父目录存在的 `_read_state`。这类离线检查失败应先修正检查前提，不能被计作硬件失败或要求重连。
 
 已部署 worker 修正及一次 CLI/MCP 实机等价结果见 [交付记录](../codex/returns/2026-09-11-stm32tk-t9-worker-stdin-delivery.md)。新候选启动/清理已通过，原始 IDE 配置兼容缺口仍在，不应要求后来部署者自行猜测适配参数。
