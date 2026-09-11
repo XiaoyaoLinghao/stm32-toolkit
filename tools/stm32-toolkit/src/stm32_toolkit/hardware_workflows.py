@@ -784,11 +784,17 @@ async def _one_shot(
         result = _with_controlled_cleanup(result, cleanup)
     if cleanup.failed:
         details: dict[str, object] = {}
-        if isinstance(result, OperationResult) and isinstance(result.details, Mapping):
+        controlled_result = (
+            isinstance(result, OperationResult)
+            and isinstance(result.details, Mapping)
+            and isinstance(result.details.get("controlledSnapshot"), Mapping)
+        )
+        if controlled_result:
+            assert isinstance(result, OperationResult)
             details.update(dict(result.details))
         if (
-            isinstance(result, OperationResult)
-            and isinstance(details.get("controlledSnapshot"), Mapping)
+            controlled_result
+            and isinstance(result, OperationResult)
             and "initiatingCode" not in details
         ):
             details["initiatingCode"] = result.code

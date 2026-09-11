@@ -1487,6 +1487,35 @@ def test_cleanup_failure_replaces_success_and_is_sanitized(tmp_path: Path) -> No
     assert "runtime" not in serialized.lower()
 
 
+def test_cleanup_failure_keeps_ordinary_failure_details_empty(tmp_path: Path) -> None:
+    project = _project(tmp_path / "project")
+    recorder = _Recorder()
+
+    async def failed_operation(request: object, client: object) -> OperationResult[object]:
+        return OperationResult.failure(
+            "stm32_variable_read",
+            "PROBE_FAILED",
+            "Probe operation failed",
+            {"private": str(project / "secret")},
+        )
+
+    result = _run(
+        variable_read_workflow(
+            VariableReadWorkflowRequest(
+                project, tmp_path / "data", "session-a", "probe-a", BUILD_ID, ELF_SHA, ("x",)
+            ),
+            _seams=_seams(
+                recorder,
+                operation=failed_operation,
+                stop_error=True,
+            ),
+        )
+    )
+
+    assert result.code == "HARDWARE_CLEANUP_FAILED"
+    assert result.details == {}
+
+
 def test_cleanup_failure_merges_valid_attach_diagnostic_and_keeps_primary(
     tmp_path: Path,
 ) -> None:
