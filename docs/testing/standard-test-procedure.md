@@ -148,7 +148,7 @@ publish 的 data.monitor_run_ref 填 request before/after；compare 的 data.ana
 
 后续离线修正已完成：部署脚本增加 PyOCD 最终化/绑定/版本检查并独立接受，本机从原 manifest 验证的同版本 wheel 限定修复后，真实 pyocd.exe 与模块版本均为 0 / 0.45.1。运行时产品 source、固件、receipt、runtime-state 及外部预约哈希未变；没有重新打包、全量部署或访问硬件。启动器阻塞已解除，07 仍为历史终态失败，下一步 IDE 重试及原 ticket 回收仍需新授权。参见 [修复及验证记录](../codex/returns/2026-09-11-stm32tk-runtime-pyocd-launcher-repair.md)。
 
-当前 continuation 08 已由用户“继续进行”新授权，范围为一次 IDE attach/观察/正常退出，成功后原 ticket end 及各一次 CLI/MCP 读取。离线身份、修复后 EXE、原 ticket/外部预约和无调试进程已核对；状态 **AWAITING_USER_SINGLE_IDE_ATTACH**，用户为唯一 IDE 操作者。原生窗口工具仍报身份校验错误，不能代替用户按 F5。证据及执行卡：`D:\codex-tmp\t9t10-t9-20260911-08`。未重复 begin，未执行新的硬件操作；首错即停。
+当前 continuation 08 已因用户报告“testtime=不可用，PyOCD报错” **TERMINAL_STOPPED_IDE_PYOCD_ERROR**。修复后的 EXE 哈希未变；当前没有 PyOCD/GDB/Python 进程，handoff/registry 仍为 externally-owned。扩展日志记录 T9 初始化、capabilities 后 terminated，未证明 server ready、attach 或成功 Watch 读取；已有多个会话记录，不能无时间链把它们都算作本轮操作。原始 gdb-server 错误尚缺，已请求用户复制现有输出，不重新连接补日志。暂停 end/reacquire、CLI/MCP 读取及重试。证据及执行卡：`D:\codex-tmp\t9t10-t9-20260911-08`。原生窗口工具身份校验失败仍限制直接读取 UI；不据错误码或变量不可用猜测硬件原因。
 
 | 项目 | 状态及下一步 |
 | --- | --- |
@@ -161,7 +161,7 @@ publish 的 data.monitor_run_ref 填 request before/after；compare 的 data.ana
 | observation 05 | **TERMINAL_STOPPED**：Fault 返回 FAULT_TARGET_NOT_HALTED / state=running；无 Fault report、无“无活动 Fault”结论；此后无采样/GPIO/handoff。lease released、runtime 进程 0、P2 receipt 未变 |
 | 必要观测 | **PENDING**：按原 Task7 逐项核对 -12 能覆盖的相同固件/probe/workspace 条款，仅补缺口；完整 Fault 公共入口 **BLOCKED**，见第 3 节 |
 | 100ms / 历史 | -12 的 30 秒 299 批、P95 102.8332ms 连续不停核 PASS 和 attempt 7 历史实机 PASS 保留，不冒充当前 T10 run |
-| T9 | 软件独立接受；06/07 保留历史失败，launcher 已离线修复；08 已获上述新授权，等待用户一次 IDE 操作，外部预约未回收。IDE attach/detach、end/reacquire 和公共入口等价仍 PENDING，原始生成配置兼容缺口保留，不宣称完整 T9 PASS |
+| T9 | 软件独立接受；06/07 保留历史失败，launcher 修正字节未变；08 因 PyOCD 错误终态停止，等待本次错误原文，外部预约未回收。IDE attach/detach、end/reacquire 和公共入口等价仍 PENDING，原始生成配置兼容缺口保留，不宣称完整 T9 PASS |
 | T10 | 软件独立接受；P3/P4/Diagnostic/FixVerification **PENDING**；当前候选物理窗口采集入口/预算/LED selector 尚待完整冻结，完成前不得开始 P3 |
 | VS10-A | **未完成**：剩余观测、T9、T10、Task11 lineage 和 Task12 全量 diff |
 
