@@ -215,11 +215,13 @@ Initialize it at boot, never accept target input, and write bounded frames only 
 
 ### Task 9: Prove Cortex-Debug handoff and CLI/MCP parity on P2
 
-- [ ] **Step 1: Begin the existing public handoff with exact P2 pins.** Record ticket/owner state. Open VS Code/Cortex-Debug through the generated configuration, attach to the current ELF, observe `testtime` or halted state, and detach normally. Do not kill or steal a competing owner.
+- [x] **Step 1: Begin the existing public handoff with exact P2 pins.** Record ticket/owner state. Open VS Code/Cortex-Debug through the generated configuration, attach to the current ELF, observe `testtime` or halted state, and detach normally. Do not kill or steal a competing owner.
 
-- [ ] **Step 2: Finish handoff and reacquire.** Consume the matching handoff completion, require Toolkit reacquisition, and repeat a typed read. Record no stale external owner/session.
+- [x] **Step 2: Finish handoff and reacquire.** Consume the matching handoff completion, require Toolkit reacquisition, and repeat a typed read. Record no stale external owner/session.
 
-- [ ] **Step 3: Invoke one equivalent observation through the other public entry.** If the first observation used CLI, use MCP now (or vice versa). Require the same project/workspace/session/build/ELF/probe/variable value semantics and existing envelope; caller supplies no derived identity.
+- [x] **Step 3: Invoke one equivalent observation through the other public entry.** If the first observation used CLI, use MCP now (or vice versa). Require the same project/workspace/session/build/ELF/probe/variable value semantics and existing envelope; caller supplies no derived identity.
+
+Acceptance 2026-09-11: generated IDE/handoff slice independently accepted at source e88c012b; Step 2 reuses attempt 09 end/reacquire then CLI testtime=10; Step 3 reuses 814b1683 CLI/MCP parity. This is explicit unchanged-behavior evidence reuse, not one new DataRoot run. See [T9 evidence mapping](../../codex/returns/2026-09-11-stm32tk-t9-generated-ide-delivery.md). Task7/T10/VS10-A remain incomplete.
 
 ### Task 10: Produce P3 failure, evidence-driven diagnosis, and authorized P4 fix
 
