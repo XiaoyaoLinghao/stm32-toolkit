@@ -146,6 +146,8 @@ publish 的 data.monitor_run_ref 填 request before/after；compare 的 data.ana
 
 ## 8. 当前验收断点（2026-09-11）
 
+最新 worker 修复及剩余读取已完成：候选 `814b1683d2f562ce1bb2db464ee4c572cb31d658` 经独立完整审查，部署至 `D:\stm32tk-data\t9-worker-stdin-20260911`；Check healthy/matching、安装字节及真实 stdio 离线检查通过。仅一次 CLI `testtime=38`、一次 MCP `testtime=0`，均为有效 32 位 typed read，完整绑定除采集时刻外一致；租约释放、无消费者残留，用户确认 D4 仍闪烁。**T9_CLI_MCP_PHYSICAL_PARITY_PASS**；下方 NOT_READY/未实现描述仅为历史状态。原始生成配置兼容性、完整 T9、T10/VS10-A 仍未完成。不得为同一结论重跑这两次读取。见 [本次修复与实机记录](../codex/returns/2026-09-11-stm32tk-t9-worker-stdin-delivery.md)。
+
 用户已授权 worker 修复后继续 T9。新候选部署路线经独立条款核对：保留旧 DataRoot，不绕过同版本 source-conflict；在 `D:\stm32tk-data\t9-worker-stdin-20260911` 先 Check=missing 再 Bootstrap，核对候选身份及真实启动器。不要复制旧 session/ticket/lease/action/runtime-state。P2 工程及 flash receipt 不变；由于 runtime/DataRoot 改变，本轮只新增同候选一次 CLI typed read → 一次 MCP typed read，首错停止。09 IDE/handoff 成功证据复用；原生成配置兼容性仍单独保留，不能自动宣布完整 T9。执行卡：`D:\codex-tmp\t9-worker-stdin-delivery-20260911\execution-card.md`，代码审查/部署前仍 NOT_READY。
 
 09 超时的后续离线定位：真实 stdio 中仅构造/关闭 worker 即复现 10 秒超时；仅对 Windows spawn worker 显式设 child stdin=NUL 后 1.469 秒 ready、关闭后无残留、协议正常。独立审查确认 stdin 继承触发的进程环境兼容问题，发生在服务/探针访问前；更底层阻塞栈未取得。诊断及最小修正边界见 [MCP worker stdin 修正计划](../superpowers/plans/2026-09-11-stm32tk-mcp-worker-stdin-repair.md)。产品修复尚未实现/部署，无硬件重试；下段“根因不足”为当时断点，已由此处取代。

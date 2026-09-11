@@ -1,5 +1,7 @@
 # T9 MCP Windows worker stdin: diagnosis and bounded correction
 
+Completed continuation: Luna/max correction `97edbe2431d42a6984f3e3ac17619d5e60fddbad` independently ACCEPTED, integrated/deployed candidate `814b1683d2f562ce1bb2db464ee4c572cb31d658`; offline stdio and one CLI/one MCP physical typed read passed, cleanup and user D4 confirmation passed. See [delivery evidence](../../codex/returns/2026-09-11-stm32tk-t9-worker-stdin-delivery.md). Earlier not-implemented/no-authority statements below describe the diagnosis stage; original IDE compatibility and full acceptance remain open.
+
 ## Authorized implementation continuation
 
 The user now requests “开始修复，然后继续推进T9测试工作”. Implementation base is `61e8250a384f2ffb9ec2bfb27e741ef6484c7d42`; the isolated implementation worktree is `D:\workspace\stm32tk-mcp-worker-stdin-impl`, branch `codex/mcp-worker-stdin-fix`. One Luna/max agent owns product files and tests. Main owns this design, integration and deployment; independent review precedes deployment. The current authority covers the bounded correction, local candidate deployment and remaining T9 checks; no flash/reset/repeated IDE cycle, remote action or hardware retry after a new failure.
