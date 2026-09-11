@@ -155,6 +155,8 @@ publish 的 data.monitor_run_ref 填 request before/after；compare 的 data.ana
 
 ## 8. 当前验收断点（2026-09-11）
 
+最新单次受控 FullFault 实机路径 **PASS**：用户新授权“可以开始”后，修正入口在已部署 source `70ed9c70075445d66d9229a1420817f604843fd2` 上执行一次，13,347ms、exit0/OK，取得完整报告及 running→halted→running、halt/resume 成功、全部 cleanup 成功。registry released、所属进程收尾已核对；用户事后确认 D4“在闪烁”。证据 `D:\codex-tmp\fault-verify-20260911-02`，详见 [最新执行结果](../codex/returns/2026-09-11-stm32tk-fault-controlled-deployment.md#newly-authorized-guarded-invocation-physical-pass)。无需重新部署或重复本场景；下文“待新授权/FullFault 未完成”保留为前次断点历史，已由本结果更新。其余 Task7 观测、T10、Task11/12、VS10-A 仍未完成。
+
 T9 已按原条款及独立审查收口：本次新生成 IDE 配置 PASS；09 的 end/reacquire 后 CLI typed read 和 814 的 CLI/MCP parity 分别按未变行为复用，不冒充同一次新 DataRoot 单序列，也不追加读取。原 Task9 三项已勾选；后文完整 T9 未通过为历史状态。下一项为 Task7 FullFault/观测及 T10 实机准备，VS10-A 仍未完成。
 
 受控 Fault 修复现为 **SOFTWARE_COMPLETE_HARDWARE_PENDING**：产品 CodeHead `333f456dfd0382ceb6b1904e5e29a7592a9ebda9`，最终五模块392项通过，完整差异与新增流程条目已独立审查。见 [实现与审查记录](../codex/returns/2026-09-11-stm32tk-fault-controlled-snapshot.md)。集成 source `70ed9c70075445d66d9229a1420817f604843fd2` 已部署至 `D:\stm32tk-data\fault-controlled-20260911\runtime\0.9.0`，Check healthy/matching、145项安装文件及固件绑定验证通过。随后唯一一次调用因主代理留证包装缺少 __main__ guard，在 Windows worker bootstrap 阶段返回 PROBE_TIMEOUT，尚未进入枚举/attach/halt；分类 **TERMINAL_STOPPED_INFRASTRUCTURE**。修正入口的离线真实 spawn 检查已通过，新一次实机调用待新授权；不重新部署，不自动重试。详见 [部署与首次调用记录](../codex/returns/2026-09-11-stm32tk-fault-controlled-deployment.md)。FullFault 及剩余观测、T10、Task11/12、VS10-A 仍未完成。下文 e88 部署为历史记录。
