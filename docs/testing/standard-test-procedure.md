@@ -159,7 +159,7 @@ publish 的 data.monitor_run_ref 填 request before/after；compare 的 data.ana
 | T10 | 软件独立接受；P3/P4/Diagnostic/FixVerification **PENDING**；当前候选物理窗口采集入口/预算/LED selector 尚待完整冻结，完成前不得开始 P3 |
 | VS10-A | **未完成**：剩余观测、T9、T10、Task11 lineage 和 Task12 全量 diff |
 
-T9 已核对位置：VS Code 为 `C:\Users\ZhangYang\AppData\Local\Programs\Microsoft VS Code\new_Code.exe`，GDB 为 `C:\ST\STM32CubeCLT_1.22.0\GNU-tools-for-STM32\bin\arm-none-eabi-gdb.EXE`，Cortex-Debug 1.12.1。外置 workspace 必须指向上表 project-standard-math，不能误用 sibling project。本地 pack 3.1.1 与 manifest 声明 2.17.1 不同，应核对实际 PyOCD target 支持/来源，不能静默等同。C 盘安装程序允许使用，旧 C temp/tmp 工作产物不可用。
+T9 本次实际运行的 IDE 为 `D:\Program Files\Microsoft VS Code\Code.exe` 1.129.1；此前 C 盘 `C:\Users\ZhangYang\AppData\Local\Programs\Microsoft VS Code\new_Code.exe` 因更新锁退出，不能继续列作已就绪入口。后续以实际进程及加载上下文重新核对。GDB 为 `C:\ST\STM32CubeCLT_1.22.0\GNU-tools-for-STM32\bin\arm-none-eabi-gdb.EXE`，Cortex-Debug 1.12.1。外置 workspace 必须指向上表 project-standard-math，不能误用 sibling project。本地 pack 3.1.1 与 manifest 声明 2.17.1 不同，应核对实际 PyOCD target 支持/来源，不能静默等同。C 盘安装程序允许使用，旧 C temp/tmp 工作产物不可用。
 
 可核验依据：
 
