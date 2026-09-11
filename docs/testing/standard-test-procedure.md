@@ -76,6 +76,10 @@ TK read variable --probe <selector> --expected-build-id <build> --expected-elf-s
 
 T9 外置 run-owned `.code-workspace` 的 folders 指向实际 P2；launch/configurations 包装本次 begin 返回的 Cortex-Debug 片段并加 name/type。保留 `servertype=pyocd`、`request=attach`、`targetId=target` 及返回的 serialNumber/boardId/executable。boardId 不可用 selector/fingerprint 或旧 raw ID 替代；executable 保留返回的 `${workspaceFolder}/...` 展开形式，确认解析后 ELF 存在且身份匹配。不写 P2 `.vscode` 改变输入身份。原生 UI 不可自动控制时由用户操作，headless DAP/fixture 不等价。
 
+workspace 级 launch 必须显式设置 `cwd` 为实际工程的**绝对路径**。Cortex-Debug 1.12.1 的 `resolveDebugConfigurationWithSubstitutedVariables(folder,config,...)` 在 cwd 缺失时执行 `config.cwd || folder.uri.fsPath`，相对 cwd 也会访问 folder.uri；workspace 级回调的 folder 可为 undefined。不得假设顶层 folders 会自动给该回调补齐上下文。配置核对须覆盖此分支，不能只检查命令参数。
+
+handoff begin 前，还必须在**不启动调试**的情况下确认实际 IDE 已成功打开目标 workspace，核对真实 executable/version/profile 与扩展激活状态；可使用当前窗口确认或该实例的启动/renderer/extension 日志。exe 存在或 Start-Process 返回不算成功。更新锁、启动退出或实际窗口属于另一安装时先记录并解决该环境前置，不终止无关更新程序，也不先交出探针再排查界面启动。
+
 本机环境适配（仅 Cortex-Debug 1.12.1 + PyOCD 0.45.1）：原始 handoff 返回值及 boardId 完整保存。该扩展的 PyOCD 控制器把 launch.boardId 转为旧 `--board`，而当前 pyocd.exe 不接受此参数；pyocd-gdbserver.exe 又不接受扩展附加的 `gdbserver` 子命令。故仅在本次外置 launch 中省略 boardId，并设 `serverArgs=["--uid", <本次返回的原始boardId>, "--connect", "attach"]`；其他返回字段不变，serverpath 指向已核实的 D runtime pyocd.exe，cmsisPack 指向已验证包含该 target 的实际 pack。禁止丢失原始身份或让 PyOCD 自动挑探针。
 
 离线依据：扩展 `dist/debugadapter.js` 的 PyOCDServerController.serverArguments() 仅在 boardId 存在时追加 --board，最后追加 serverArgs，不读取 serialNumber；当前 PyOCD parser 接受上述完整参数。`pyocd/subcommands/base.py:95-96` 定义 --connect，`gdbserver_cmd.py:184-197` 传入 Session；未设 --reset-run 时 `234-236` 不执行 reset，Cortex-Debug attach 仍会 monitor halt。此适配不修改插件/安装/固件、不新增启动脚本，连接时停核在当前授权内。实际结果必须标明“适配后的 IDE 路径”；不能把它宣称为原始生成配置直接可用或原始兼容缺口已修复，完整 T9 是否满足原规格须单独判定。
@@ -138,7 +142,7 @@ publish 的 data.monitor_run_ref 填 request before/after；compare 的 data.ana
 
 ## 8. 当前验收断点（2026-09-11）
 
-最新断点：本次新授权的 T9 attempt 06 已成功 begin，reservation 为 externally-owned，已打开外置 IDE 配置，等待用户真实 attach/正常 detach；此期间 Toolkit 不得访问探针。参见 [T9 attempt 06](../codex/returns/2026-09-11-stm32tk-1001-t9-ide-attempt-06.md)。后续执行依照该轮授权、实际返回 ticket 和执行卡；任何失败终态后不得复用历史动作。
+最新断点：T9 attempt 06 的 begin 成功，但用户按 F5 后报告 undefined/uri 异常，已 **TERMINAL_STOPPED_IDE_START_ERROR**。reservation 仍为 externally-owned，未执行 end/reacquire；此期间 Toolkit 不得访问探针。此前请求启动的 C 盘 new_Code.exe 实际被更新锁阻止，不能把启动命令返回视为 IDE 已打开；实际用户使用 D 盘 IDE。参见 [T9 attempt 06](../codex/returns/2026-09-11-stm32tk-1001-t9-ide-attempt-06.md)。先离线定位，重试或回收需核对新的明确授权，不能自动继续后续步骤。
 
 | 项目 | 状态及下一步 |
 | --- | --- |
@@ -151,7 +155,7 @@ publish 的 data.monitor_run_ref 填 request before/after；compare 的 data.ana
 | observation 05 | **TERMINAL_STOPPED**：Fault 返回 FAULT_TARGET_NOT_HALTED / state=running；无 Fault report、无“无活动 Fault”结论；此后无采样/GPIO/handoff。lease released、runtime 进程 0、P2 receipt 未变 |
 | 必要观测 | **PENDING**：按原 Task7 逐项核对 -12 能覆盖的相同固件/probe/workspace 条款，仅补缺口；完整 Fault 公共入口 **BLOCKED**，见第 3 节 |
 | 100ms / 历史 | -12 的 30 秒 299 批、P95 102.8332ms 连续不停核 PASS 和 attempt 7 历史实机 PASS 保留，不冒充当前 T10 run |
-| T9 | 软件独立接受；06 begin 已成功，**等待真实 IDE attach/detach**，随后 end/reacquire 和公共入口等价仍 PENDING。使用第 5 节已审查的本机参数适配，原始生成配置直接兼容的缺口保留；不宣称完整 T9 PASS |
+| T9 | 软件独立接受；06 begin 成功、F5 后 IDE 启动失败已停止，外部预约未回收；IDE attach/detach、end/reacquire 和公共入口等价仍 PENDING。原始生成配置直接兼容的缺口保留，不宣称完整 T9 PASS |
 | T10 | 软件独立接受；P3/P4/Diagnostic/FixVerification **PENDING**；当前候选物理窗口采集入口/预算/LED selector 尚待完整冻结，完成前不得开始 P3 |
 | VS10-A | **未完成**：剩余观测、T9、T10、Task11 lineage 和 Task12 全量 diff |
 
