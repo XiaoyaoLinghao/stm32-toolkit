@@ -18,6 +18,8 @@ Windows 离线回归的生成工程 fixture 也须预检路径深度：configura
 
 当前 Toolkit Fault fixture 使用相对仓库根目录的 `tools/stm32-toolkit/tests/fixtures/dwarf/typed.elf`。相关五模块回归从实际工作树根目录执行，PYTHONPATH 指向同一工作树的 Toolkit src；短 basetemp 不能替代工作目录核对。fixture 初始化失败和已执行的产品断言分别记录，仅补跑尚未执行的检查。
 
+若为原始异常留证增加 Python 启动包装，CLI 执行及进程创建必须放在 `if __name__ == "__main__":` 保护内。实机前使用实际 Windows spawn 进程入口和纯软件 child 验证子进程导入 `__mp_main__` 时不会再次执行 CLI；`--help` 或单函数留证自检不足以覆盖这一启动契约。优先直接使用已发布 CLI；确需包装时先说明缺少的证据及最小包装范围，不修改已部署产品文件。2026-09-11 首次受控 Fault 调用曾因测试包装缺少此保护，在 worker bootstrap 阶段失败，尚未进入枚举/attach/halt；应分类为测试入口 INFRASTRUCTURE，保留该次终态记录，不重新部署或自动重试硬件。
+
 使用 run 目录里的普通 Markdown/JSON 即可，不新增通用诊断框架或验证器。一次授权可以覆盖明确的连续步骤，无需逐命令重复确认；终态失败后的重试、范围变化或恢复策略必须重新核对并取得相应授权。
 
 | 必填项 | 执行前必须回答 |
@@ -155,7 +157,7 @@ publish 的 data.monitor_run_ref 填 request before/after；compare 的 data.ana
 
 T9 已按原条款及独立审查收口：本次新生成 IDE 配置 PASS；09 的 end/reacquire 后 CLI typed read 和 814 的 CLI/MCP parity 分别按未变行为复用，不冒充同一次新 DataRoot 单序列，也不追加读取。原 Task9 三项已勾选；后文完整 T9 未通过为历史状态。下一项为 Task7 FullFault/观测及 T10 实机准备，VS10-A 仍未完成。
 
-受控 Fault 修复现为 **SOFTWARE_COMPLETE_HARDWARE_PENDING**：产品 CodeHead `333f456dfd0382ceb6b1904e5e29a7592a9ebda9`，最终五模块392项通过，完整差异与新增流程条目已独立审查。见 [实现与审查记录](../codex/returns/2026-09-11-stm32tk-fault-controlled-snapshot.md)。本轮未部署或访问硬件；实际安装仍为 e88。下一次部署及受控 Fault 实机验证须获得新授权并填写执行卡，不能直接对旧 runtime 使用新参数。FullFault 及剩余观测、T10、Task11/12、VS10-A 不因软件修复而完成。
+受控 Fault 修复现为 **SOFTWARE_COMPLETE_HARDWARE_PENDING**：产品 CodeHead `333f456dfd0382ceb6b1904e5e29a7592a9ebda9`，最终五模块392项通过，完整差异与新增流程条目已独立审查。见 [实现与审查记录](../codex/returns/2026-09-11-stm32tk-fault-controlled-snapshot.md)。集成 source `70ed9c70075445d66d9229a1420817f604843fd2` 已部署至 `D:\stm32tk-data\fault-controlled-20260911\runtime\0.9.0`，Check healthy/matching、145项安装文件及固件绑定验证通过。随后唯一一次调用因主代理留证包装缺少 __main__ guard，在 Windows worker bootstrap 阶段返回 PROBE_TIMEOUT，尚未进入枚举/attach/halt；分类 **TERMINAL_STOPPED_INFRASTRUCTURE**。修正入口的离线真实 spawn 检查已通过，新一次实机调用待新授权；不重新部署，不自动重试。详见 [部署与首次调用记录](../codex/returns/2026-09-11-stm32tk-fault-controlled-deployment.md)。FullFault 及剩余观测、T10、Task11/12、VS10-A 仍未完成。下文 e88 部署为历史记录。
 
 生成配置候选已部署：source `e88c012b6b965c048474f2bba12e1ef396f1d193`，新 DataRoot `D:\stm32tk-data\t9-generated-ide-20260911`；Check missing → Bootstrap → Check healthy/matching、安装字节、最终 PyOCD 启动器及生产身份离线核对通过。**GENERATED_IDE_PHYSICAL_ACCEPTED**；新配置原样使用，实际 IDE session `1f93448d-6f49-4918-a06f-837bdf941e1d` attach/terminated 已证实，用户 `testtime=20`、IDE 停止后 D4 闪烁。一 begin/一原 ticket end 均 OK，最终 observing/ticket cleared/registry released/无调试残留；用户补充归还后 D4 仍闪烁；Watch 时不闪与 IDE attach 停核日志一致，连续不停核采样证据分开保留。独立证据审查已 ACCEPTED（生成 IDE/handoff 切片）；不声称源文件导航已验证、GDB exit code=0 或机器采集 Watch 值。已消费配置从活动 workspace 撤下，快照保留。CLI/MCP 按原候选/原环境范围 REUSED，零追加读取，不宣布完整 T9。见 [部署记录](../codex/returns/2026-09-11-stm32tk-t9-generated-ide-delivery.md)。以下部署 814/未部署为历史断点。
 
