@@ -44,7 +44,7 @@ bounded; timeouts become evidence rather than hangs.
 
 The existing isolated PEP 440 `pyocd` distribution check remains bounded to `>=0.45.1,<0.46`.
 
-Final-path launcher checks additionally require the manifest-pinned PyOCD console executable to be bound to the final runtime Python and to return the expected version with `pyocd.exe --version`. Import/module checks alone are insufficient after staging promotion. Use the [Windows deployment and IDE preflight](../../docs/testing/windows-deployment-and-ide-preflight.md) when preparing deployment instructions; keep its version-specific IDE compatibility limits explicit.
+Final-path launcher checks additionally require the PyOCD console executable to be bound to the final runtime Python and to return the expected version with `pyocd.exe --version`. Bootstrap/Repair require the exact release pin; Check retains the supported module-version range above and requires the launcher to agree with that validated module version. Import/module checks alone are insufficient after staging promotion. Use the [Windows deployment and IDE preflight](../../docs/testing/windows-deployment-and-ide-preflight.md) when preparing deployment instructions; keep its version-specific IDE compatibility limits explicit.
 
 ## VS Code extensions (CHECK evidence only)
 

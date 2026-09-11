@@ -30,6 +30,8 @@ if ($LASTEXITCODE -ne 0) { throw 'PyOCD executable failed' }
 
 两者应与发行 manifest 的 PyOCD 版本一致。安装器还负责最终解释器绑定检查；上面两条命令不替代完整 Check。不要手改 EXE、重建已删除的 staging 路径或改用 PATH 上未经核对的 PyOCD。
 
+Bootstrap/Repair 的最终化要求精确发行 pin。对已有 runtime，Check 保留既有 `>=0.45.1,<0.46` 模块版本范围，并要求启动器报告与已验证模块相同的版本；它不是把所有已安装环境强制改为 0.45.1，也不会自动改装依赖。
+
 ## IDE 就绪后，才交出探针
 
 先在不按 F5 的情况下打开实际 workspace，核对当前窗口所属 Code.exe、版本、用户 profile 和已激活的 Cortex-Debug。Start-Process 返回、exe 文件存在或另一安装的扩展清单均不证明目标 IDE 已就绪；更新锁或启动退出必须先解决。
