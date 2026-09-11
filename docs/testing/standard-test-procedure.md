@@ -138,7 +138,7 @@ publish 的 data.monitor_run_ref 填 request before/after；compare 的 data.ana
 
 ## 8. 当前验收断点（2026-09-11）
 
-以下是上次流程建档后的断点，硬件停止在 observation 05。后续执行以当轮新用户授权和执行卡为准，历史授权不可复用；先完成相应入口准备，再执行已授权且前置成立的步骤。
+最新断点：本次新授权的 T9 attempt 06 已成功 begin，reservation 为 externally-owned，已打开外置 IDE 配置，等待用户真实 attach/正常 detach；此期间 Toolkit 不得访问探针。参见 [T9 attempt 06](../codex/returns/2026-09-11-stm32tk-1001-t9-ide-attempt-06.md)。后续执行依照该轮授权、实际返回 ticket 和执行卡；任何失败终态后不得复用历史动作。
 
 | 项目 | 状态及下一步 |
 | --- | --- |
@@ -151,7 +151,7 @@ publish 的 data.monitor_run_ref 填 request before/after；compare 的 data.ana
 | observation 05 | **TERMINAL_STOPPED**：Fault 返回 FAULT_TARGET_NOT_HALTED / state=running；无 Fault report、无“无活动 Fault”结论；此后无采样/GPIO/handoff。lease released、runtime 进程 0、P2 receipt 未变 |
 | 必要观测 | **PENDING**：按原 Task7 逐项核对 -12 能覆盖的相同固件/probe/workspace 条款，仅补缺口；完整 Fault 公共入口 **BLOCKED**，见第 3 节 |
 | 100ms / 历史 | -12 的 30 秒 299 批、P95 102.8332ms 连续不停核 PASS 和 attempt 7 历史实机 PASS 保留，不冒充当前 T10 run |
-| T9 | 软件独立接受；实际 IDE attach/detach/end/reacquire、另一公共入口等价 **PENDING**。安装环境离线存在不等于实机通过 |
+| T9 | 软件独立接受；06 begin 已成功，**等待真实 IDE attach/detach**，随后 end/reacquire 和公共入口等价仍 PENDING。使用第 5 节已审查的本机参数适配，原始生成配置直接兼容的缺口保留；不宣称完整 T9 PASS |
 | T10 | 软件独立接受；P3/P4/Diagnostic/FixVerification **PENDING**；当前候选物理窗口采集入口/预算/LED selector 尚待完整冻结，完成前不得开始 P3 |
 | VS10-A | **未完成**：剩余观测、T9、T10、Task11 lineage 和 Task12 全量 diff |
 
