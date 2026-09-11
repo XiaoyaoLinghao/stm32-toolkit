@@ -50,6 +50,8 @@ Bootstrap/Repair 的最终化要求精确发行 pin。对已有 runtime，Check 
 
 Cortex-Debug 1.12.1 会把 boardId 转为旧 `--board`，PyOCD 0.45.1 的主 CLI 不接受它；旧 pyocd-gdbserver.exe 又不接受扩展生成的 `gdbserver` 子命令。本次受限适配是在外置配置中省略 boardId，设置 `serverArgs=["--uid", <本次返回的原始boardId>, "--connect", "attach"]`，并单独完整保留原始 handoff 返回值。它不代表所有扩展版本通用，更不代表产品原始生成配置的兼容缺口已经修复。离线验证实际扩展生成的参数后才能进入获准的 IDE 步骤。
 
+同一版本对还存在**就绪日志匹配差异**：扩展默认匹配 `/GDB server started (at|on) port/`，实际 PyOCD 输出 `GDB server listening on port 50000`。服务虽然已监听，扩展仍可能等到 10 秒超时后主动终止它。外置配置使用扩展已有字段 `overrideGDBServerStartedRegex="GDB server (?:started (?:at|on)|listening on) port [0-9]+"`；离线验证新旧 GDB 就绪行均匹配、STDIO 就绪行不匹配。不要延长超时、改端口、关闭就绪检测或因终端关闭就断言板子故障。该适配仍需独立审查及单独授权的真实 IDE 验证。
+
 ## 本次故障资料及后续方案要求
 
 | 观察到的错误 | 已证实的信息 / 证据限度 | 应进入部署验收的检查 |
@@ -59,6 +61,7 @@ Cortex-Debug 1.12.1 会把 boardId 转为旧 `--board`，PyOCD 0.45.1 的主 CLI
 | 找不到 STM32 Toolkit 任务 | 工程 launch 引用了 tasks.json 不包含的 handoff 任务；后续日志证实用户已选中无该任务依赖的 T9 配置 | 实际选中的配置、任务引用闭合，不用“仍然调试”跳过 |
 | IDE 启动未成功 | 请求启动的实例因更新锁退出；实际使用的是另一安装 | 当前窗口/进程/日志证明就绪，不以进程派发成功替代 |
 | 旧 PyOCD 参数不兼容 | 当前扩展控制器生成 --board；当前 CLI parser 拒绝。兼容适配仅适用于已核对的版本对 | 扩展、服务命令、pack、目标四者一致，先做离线参数检查 |
+| 已监听后 GDB Server 关闭 | 用户终端已证明目标发现和 GDB listen；实际扩展就绪正则不匹配 listening 文案，源码超时会关闭服务；现场完整 timeout/kill DAP 记录尚缺 | 实际服务输出与扩展 ready 正则一致，不能只验证 CLI 参数和启动器版本 |
 
 原始证据及本机路径在 [T9 执行记录](../codex/returns/2026-09-11-stm32tk-1001-t9-ide-attempt-06.md)，启动器修复范围见 [修复计划](../superpowers/plans/2026-09-11-stm32tk-runtime-pyocd-launcher-repair.md)。后续发行方案应引用本文件，并记录该版本已通过哪些检查、哪些兼容项仍有限制；不能仅在聊天中保留这些信息。
 

@@ -86,6 +86,8 @@ handoff begin 前，还必须在**不启动调试**的情况下确认实际 IDE 
 
 离线依据：扩展 `dist/debugadapter.js` 的 PyOCDServerController.serverArguments() 仅在 boardId 存在时追加 --board，最后追加 serverArgs，不读取 serialNumber；当前 PyOCD parser 接受上述完整参数。`pyocd/subcommands/base.py:95-96` 定义 --connect，`gdbserver_cmd.py:184-197` 传入 Session；未设 --reset-run 时 `234-236` 不执行 reset，Cortex-Debug attach 仍会 monitor halt。此适配不修改插件/安装/固件、不新增启动脚本，连接时停核在当前授权内。实际结果必须标明“适配后的 IDE 路径”；不能把它宣称为原始生成配置直接可用或原始兼容缺口已修复，完整 T9 是否满足原规格须单独判定。
 
+该版本对还须核对服务 ready 信号：Cortex-Debug 默认 `GDB server started (at|on) port` 不匹配 PyOCD 0.45.1 的 `GDB server listening on port`。仅外置 launch 增加现有字段 `overrideGDBServerStartedRegex="GDB server (?:started (?:at|on)|listening on) port [0-9]+"`，用已取得日志离线验证匹配及 STDIO 反例，独立审查后才进入下一次获准 IDE 步骤；不延长超时或重连补同一证据。
+
 T10 顺序如下；动态值只能来自真实返回，缺少的输入结构必须在开始前明确：
 
 | 步骤 | 操作与必要引用 |
@@ -150,6 +152,8 @@ publish 的 data.monitor_run_ref 填 request before/after；compare 的 data.ana
 
 当前 continuation 08 已因用户报告“testtime=不可用，PyOCD报错” **TERMINAL_STOPPED_IDE_PYOCD_ERROR**。修复后的 EXE 哈希未变；当前没有 PyOCD/GDB/Python 进程，handoff/registry 仍为 externally-owned。扩展日志记录 T9 初始化、capabilities 后 terminated，未证明 server ready、attach 或成功 Watch 读取；已有多个会话记录，不能无时间链把它们都算作本轮操作。原始 gdb-server 错误尚缺，已请求用户复制现有输出，不重新连接补日志。暂停 end/reacquire、CLI/MCP 读取及重试。证据及执行卡：`D:\codex-tmp\t9t10-t9-20260911-08`。原生窗口工具身份校验失败仍限制直接读取 UI；不据错误码或变量不可用猜测硬件原因。
 
+用户随后提供的终端原文补齐阶段：DP/AP/ROM/CPU 发现完成，GDB 已监听 50000；因此早先的“server ready 未证明”已被这份新证据替代。离线实际扩展函数复现就绪正则不匹配，10 秒超时关闭路径与现有约 10.4 秒时间记录一致，分类为 IDE 版本兼容；完整现场 timeout/kill DAP 记录仍缺。外置配置已仅添加上述 ready override，已通过独立审查，未启动服务或重试硬件，08 仍终态停止。
+
 | 项目 | 状态及下一步 |
 | --- | --- |
 | 工作树 | `D:\workspace\stm32tk-1001-legacy-hardware-impl`，分支 `codex/STM32TK-1001-LEGACY-HARDWARE-CLOSED-LOOP-impl`；本次文档 accepted base `35e08b72179dfa1784d447f09d2b2c33b39f0064` |
@@ -161,7 +165,7 @@ publish 的 data.monitor_run_ref 填 request before/after；compare 的 data.ana
 | observation 05 | **TERMINAL_STOPPED**：Fault 返回 FAULT_TARGET_NOT_HALTED / state=running；无 Fault report、无“无活动 Fault”结论；此后无采样/GPIO/handoff。lease released、runtime 进程 0、P2 receipt 未变 |
 | 必要观测 | **PENDING**：按原 Task7 逐项核对 -12 能覆盖的相同固件/probe/workspace 条款，仅补缺口；完整 Fault 公共入口 **BLOCKED**，见第 3 节 |
 | 100ms / 历史 | -12 的 30 秒 299 批、P95 102.8332ms 连续不停核 PASS 和 attempt 7 历史实机 PASS 保留，不冒充当前 T10 run |
-| T9 | 软件独立接受；06/07 保留历史失败，launcher 修正字节未变；08 因 PyOCD 错误终态停止，等待本次错误原文，外部预约未回收。IDE attach/detach、end/reacquire 和公共入口等价仍 PENDING，原始生成配置兼容缺口保留，不宣称完整 T9 PASS |
+| T9 | 软件独立接受；06/07 保留历史失败，launcher 修正字节未变；08 因 IDE 就绪匹配错误终态停止，该配置修正已离线通过并独立接受，尚未重试，外部预约未回收。IDE attach/detach、end/reacquire 和公共入口等价仍 PENDING，原始生成配置兼容缺口保留，不宣称完整 T9 PASS |
 | T10 | 软件独立接受；P3/P4/Diagnostic/FixVerification **PENDING**；当前候选物理窗口采集入口/预算/LED selector 尚待完整冻结，完成前不得开始 P3 |
 | VS10-A | **未完成**：剩余观测、T9、T10、Task11 lineage 和 Task12 全量 diff |
 
