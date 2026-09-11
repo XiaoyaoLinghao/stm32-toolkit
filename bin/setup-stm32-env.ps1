@@ -10,6 +10,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 $RuntimeVersion = "0.9.0"
+$PyOcdVersion = "0.45.1"
 $LegacyRuntimeVersions = @("0.5.0", "0.3.0")
 $ProcessOutputLimit = 65536
 $ReleaseUtilityRelative = "tools/release/build_0900_artifacts.py"
@@ -493,13 +494,20 @@ function Get-ProductWheelPaths {
     if (-not (Test-Path -LiteralPath $wheelStage -PathType Container)) { throw "final runtime release wheels are missing" }
     Assert-NoRedirectAncestors "final runtime release wheels" $wheelStage
     $paths = @()
-    foreach ($distribution in @("stm32-toolkit", "stm32-monitor")) {
+    $requiredWheels = @(
+        [ordered]@{ name = "stm32-toolkit"; version = $RuntimeVersion }
+        [ordered]@{ name = "stm32-monitor"; version = $RuntimeVersion }
+        [ordered]@{ name = "pyocd"; version = $PyOcdVersion }
+    )
+    foreach ($requiredWheel in $requiredWheels) {
+        $distribution = [string]$requiredWheel.name
+        $expectedVersion = [string]$requiredWheel.version
         $matches = @($BundleEvidence.wheelEntries | Where-Object {
             $null -ne $_ -and
             $_.PSObject.Properties.Name -contains "name" -and
             $_.PSObject.Properties.Name -contains "version" -and
             ([string]$_.name -ceq $distribution) -and
-            ([string]$_.version -ceq $RuntimeVersion)
+            ([string]$_.version -ceq $expectedVersion)
         })
         if ($matches.Count -ne 1) { throw "release bundle must contain exactly one verified $distribution wheel" }
         $entry = $matches[0]
@@ -541,6 +549,7 @@ function Get-PublicLauncherRecords {
         [ordered]@{ name = "stm32-toolkit"; path = Join-Path $scripts "stm32-toolkit.exe" }
         [ordered]@{ name = "stm32-toolkit-mcp"; path = Join-Path $scripts "stm32-toolkit-mcp.exe" }
         [ordered]@{ name = "stm32-monitor"; path = Join-Path $scripts "stm32-monitor.exe" }
+        [ordered]@{ name = "pyocd"; path = Join-Path $scripts "pyocd.exe" }
     )
 }
 
@@ -562,13 +571,19 @@ function Assert-PublicLauncherBindings {
 }
 
 function Assert-PublicLauncherVersions {
-    param([string]$Runtime, [string]$RuntimePython)
+    param([string]$Runtime, [string]$RuntimePython, [AllowEmptyString()][string]$ExpectedPyOcdVersion = $null)
     $records = @(Assert-PublicLauncherBindings $Runtime $RuntimePython)
-    foreach ($record in $records | Where-Object { $_.name -in @("stm32-toolkit", "stm32-monitor") }) {
-        $version = Invoke-BoundedProcess $record.path @("version") 10
+    foreach ($record in $records | Where-Object { $_.name -in @("stm32-toolkit", "stm32-monitor", "pyocd") }) {
+        $arguments = @("version")
+        $expected = $RuntimeVersion
+        if ($record.name -eq "pyocd") {
+            $arguments = @("--version")
+            $expected = if ([string]::IsNullOrWhiteSpace($ExpectedPyOcdVersion)) { $PyOcdVersion } else { $ExpectedPyOcdVersion }
+        }
+        $version = Invoke-BoundedProcess $record.path $arguments 10
         if ($version.status -ne "ok") { throw "$($record.name) launcher version check failed ($($version.status))" }
         $reported = ($version.stdout -split "`r?`n")[0].Trim()
-        if ($reported -cne $RuntimeVersion) { throw "$($record.name) launcher reported an unexpected version" }
+        if ($reported -cne $expected) { throw "$($record.name) launcher reported an unexpected version" }
     }
     return $records
 }
@@ -578,7 +593,7 @@ function Finalize-PublicLaunchers {
     $wheelPaths = @(Get-ProductWheelPaths $Runtime $BundleEvidence)
     $pipArguments = @("-I", "-m", "pip", "install", "--disable-pip-version-check", "--no-cache-dir", "--no-index", "--no-deps", "--only-binary=:all:", "--force-reinstall") + $wheelPaths
     Assert-StepOk (Invoke-BoundedProcess $RuntimePython $pipArguments 300) "final runtime console launcher regeneration"
-    Assert-PublicLauncherVersions $Runtime $RuntimePython | Out-Null
+    Assert-PublicLauncherVersions $Runtime $RuntimePython $PyOcdVersion | Out-Null
 }
 
 function Get-DoctorContractError {
@@ -652,6 +667,7 @@ function Get-RuntimeEvidence {
     if ($evidence.version -ne $RuntimeVersion) { $evidence.status = "broken"; $evidence.error = "expected toolkit $RuntimeVersion, found $($evidence.version)"; return $evidence }
     $probeRuntime = Invoke-BoundedProcess $RuntimePython @("-I", "-c", $ProbeValidationScript) 10
     if ($probeRuntime.status -ne "ok") { $evidence.status = "broken"; $evidence.error = "pyocd runtime validation failed ($($probeRuntime.status))"; return $evidence }
+    $probeVersion = ($probeRuntime.stdout -split "`r?`n")[0].Trim()
     $monitorRuntime = Invoke-BoundedProcess $RuntimePython @("-I", "-c", $MonitorValidationScript) 10
     if ($monitorRuntime.status -ne "ok") { $evidence.status = "broken"; $evidence.error = "stm32-monitor runtime validation failed ($($monitorRuntime.status))"; return $evidence }
     $doctor = Invoke-BoundedProcess $RuntimePython @("-I", "-m", "stm32_toolkit.cli", "--project-root", $Project, "doctor", "--json") 15
@@ -661,7 +677,7 @@ function Get-RuntimeEvidence {
     if ($doctorError) { $evidence.status = "broken"; $evidence.error = $doctorError; return $evidence }
     $pipCheck = Invoke-BoundedProcess $RuntimePython @("-I", "-m", "pip", "check") 120
     if ($pipCheck.status -ne "ok") { $evidence.status = "broken"; $evidence.error = "pip check $($pipCheck.status): $($pipCheck.stderr)".Trim(); return $evidence }
-    try { Assert-PublicLauncherVersions $Runtime $RuntimePython | Out-Null } catch { $evidence.status = "broken"; $evidence.error = $_.Exception.Message; return $evidence }
+    try { Assert-PublicLauncherVersions $Runtime $RuntimePython $probeVersion | Out-Null } catch { $evidence.status = "broken"; $evidence.error = $_.Exception.Message; return $evidence }
     $evidence.status = "healthy"
     $evidence.doctor = $doctorPayload
     return $evidence

@@ -660,6 +660,7 @@ def test_bootstrap_promotes_public_console_launchers_with_final_runtime_binding(
         "stm32-toolkit.exe",
         "stm32-toolkit-mcp.exe",
         "stm32-monitor.exe",
+        "pyocd.exe",
     ):
         launcher = runtime / "Scripts" / launcher_name
         assert launcher.is_file()
@@ -689,6 +690,17 @@ def test_bootstrap_promotes_public_console_launchers_with_final_runtime_binding(
     assert toolkit.stdout.strip() == "0.9.0"
     assert monitor.returncode == 0, monitor.stderr
     assert monitor.stdout.strip() == "0.9.0"
+    pyocd = subprocess.run(
+        [str(runtime / "Scripts" / "pyocd.exe"), "--version"],
+        check=False,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        env=environment,
+    )
+    assert pyocd.returncode == 0, pyocd.stderr
+    assert pyocd.stdout.strip() == "0.45.1"
 
 
 def test_check_reports_staging_bound_public_console_launcher_as_broken(tmp_path: Path):
@@ -1130,6 +1142,7 @@ def build_wheel(wheel_directory, config_settings=None, metadata_directory=None):
     probe_wheel = wheelhouse / "pyocd-0.45.1-py3-none-any.whl"
     with zipfile.ZipFile(probe_wheel, "w") as archive:
         archive.writestr("pyocd/__init__.py", "__version__ = '0.45.1'\n")
+        archive.writestr("pyocd/cli.py", _fake_probe_cli_source())
         archive.writestr(
             "pyocd-0.45.1.dist-info/METADATA",
             "Metadata-Version: 2.1\nName: pyocd\nVersion: 0.45.1\n",
@@ -1137,6 +1150,10 @@ def build_wheel(wheel_directory, config_settings=None, metadata_directory=None):
         archive.writestr(
             "pyocd-0.45.1.dist-info/WHEEL",
             "Wheel-Version: 1.0\nGenerator: tests\nRoot-Is-Purelib: true\nTag: py3-none-any\n",
+        )
+        archive.writestr(
+            "pyocd-0.45.1.dist-info/entry_points.txt",
+            "[console_scripts]\npyocd = pyocd.cli:main\n",
         )
         archive.writestr("pyocd-0.45.1.dist-info/RECORD", "")
 
@@ -1389,6 +1406,7 @@ def _write_fake_public_launchers(runtime: Path) -> None:
             "stm32-toolkit = stm32_toolkit.cli:main",
             "stm32-toolkit-mcp = stm32_toolkit.cli:mcp_main",
             "stm32-monitor = stm32_monitor.cli:main",
+            "pyocd = pyocd.cli:main",
         ]
     )
 
@@ -1494,16 +1512,37 @@ def _fake_incomplete_toolkit_cli_source() -> str:
     )
 
 
+def _fake_probe_cli_source() -> str:
+    return (
+        "import argparse\n"
+        "import pyocd\n"
+        "def main():\n"
+        "    parser = argparse.ArgumentParser(prog='pyocd')\n"
+        "    parser.add_argument('--version', action='store_true')\n"
+        "    args = parser.parse_args()\n"
+        "    if args.version:\n"
+        "        print(pyocd.__version__)\n"
+        "    return 0\n"
+        "if __name__ == '__main__':\n"
+        "    raise SystemExit(main())\n"
+    )
+
+
 def _install_fake_probe(site_packages: Path, probe_version: str) -> None:
     probe = site_packages / "pyocd"
     probe.mkdir()
     (probe / "__init__.py").write_text(
         f"__version__ = {probe_version!r}\n", encoding="utf-8"
     )
+    (probe / "cli.py").write_text(_fake_probe_cli_source(), encoding="utf-8")
     metadata = site_packages / f"pyocd-{probe_version}.dist-info"
     metadata.mkdir()
     (metadata / "METADATA").write_text(
         f"Metadata-Version: 2.1\nName: pyocd\nVersion: {probe_version}\n",
+        encoding="utf-8",
+    )
+    (metadata / "entry_points.txt").write_text(
+        "[console_scripts]\npyocd = pyocd.cli:main\n",
         encoding="utf-8",
     )
 
