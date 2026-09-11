@@ -16,6 +16,8 @@
 
 Windows 离线回归的生成工程 fixture 也须预检路径深度：configuration-staging 含 64 位 plan ID，长 basetemp 会使最终文件达到 260 字符并在 stage 阶段失败。使用独立短 D 盘 basetemp（例如 `D:\codex-tmp\fc-b1`），日志另放有描述性的证据目录；统一记录实际工作目录。2026-09-11 对照已在接受基线复现长路径失败，缩短路径通过；不能仅看到 GENERATION_APPLY_FAILED 就改本轮产品或归因 cwd。清理遭自动策略拒绝时保留，不换工具绕过。
 
+当前 Toolkit Fault fixture 使用相对仓库根目录的 `tools/stm32-toolkit/tests/fixtures/dwarf/typed.elf`。相关五模块回归从实际工作树根目录执行，PYTHONPATH 指向同一工作树的 Toolkit src；短 basetemp 不能替代工作目录核对。fixture 初始化失败和已执行的产品断言分别记录，仅补跑尚未执行的检查。
+
 使用 run 目录里的普通 Markdown/JSON 即可，不新增通用诊断框架或验证器。一次授权可以覆盖明确的连续步骤，无需逐命令重复确认；终态失败后的重试、范围变化或恢复策略必须重新核对并取得相应授权。
 
 | 必填项 | 执行前必须回答 |
@@ -44,7 +46,8 @@ provenance 拒绝必须记录检查函数/行号、逐字段预期值/实际值�
 | 变量/有限采样 | `debug/read.py:237-253,580-603` 走 memory.read；`probe/pyocd_backend.py:1193-1225` 无 halted 前置 | 允许运行态读取；正常 attach 仍有暂时停核。接口允许不等于已物理证明底层全程无瞬时停核 |
 | SVD 外设寄存器 | `debug/read.py:606-637` 解析后仍走 memory.read | 只读已核对安全的路径；不同于 core register；单点 ODR 仅证明当时位值 |
 | 完整 Fault | `debug/fault.py:227-245,514-558` 初次/最终 core register 要求 halted 且稳定；`debug/model.py:563-600` 强制 halted 报告 | 必须有保持 halted 的入口和所有权/控制契约；运行正常不等于无活动 Fault |
-| 当前公共 Fault wrapper | `hardware_workflows.py:979-1015,1146-1166` 固定 OBSERVE attach 并恢复 running，CLI/MCP 没有保持停核参数 | **BLOCKED：入口状态与 Fault 前置冲突。** 不能先 halt 再调用会 resume 的 wrapper，也不能放宽检查或把所有 OBSERVE 改为 halt |
+| 已部署默认 Fault wrapper | `hardware_workflows.py` 的 `fault_workflow` 默认 OBSERVE attach 并恢复 running；当前部署 e88 无受控参数 | **BLOCKED：入口状态与 Fault 前置冲突。** 不能先 halt 再调用会 resume 的 wrapper，也不能放宽检查或把所有 OBSERVE 改为 halt |
+| 受控 Fault 候选 | 新版 `fault --halt-for-analysis` / MCP `haltForAnalysis=true`；`fault_workflow` / `_controlled_fault_action` 一次 CONTROL 会话，保留正常 100kHz；固件绑定后验证真实 identity/running，再以新授权 halt、分析、resume 并验证 running | 软件审查和部署完成、取得本次实机授权后才可用。一个 halt、至多一个恢复 resume，不 reset/flash/reattach/retry；身份未知不猜测恢复。默认关闭。成功须有 Fault report、details.controlledSnapshot 及正常收尾；固定恢复总预算45秒和既有RPC/cleanup预算，执行卡不能复用旧IDE的45秒外层限制 |
 | IDE handoff | `probe/handoff.py` 的 begin/end 和 `CortexDebugAttachContract` 管理 ticket 与身份 | begin 成功后由 IDE 独占；正常 detach 后原 ticket end，回收成功才可 Toolkit read |
 
 连接时暂时停核是用户已接受的边界；连续采样阶段不得 halt/reset/resume，二者分别留证。完整 Fault 停核场景不能混入不停核采样，也不能在 IDE 持有探针时用 Toolkit 抢读。
