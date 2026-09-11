@@ -76,6 +76,10 @@ TK read variable --probe <selector> --expected-build-id <build> --expected-elf-s
 
 T9 外置 run-owned `.code-workspace` 的 folders 指向实际 P2；launch/configurations 包装本次 begin 返回的 Cortex-Debug 片段并加 name/type。保留 `servertype=pyocd`、`request=attach`、`targetId=target` 及返回的 serialNumber/boardId/executable。boardId 不可用 selector/fingerprint 或旧 raw ID 替代；executable 保留返回的 `${workspaceFolder}/...` 展开形式，确认解析后 ELF 存在且身份匹配。不写 P2 `.vscode` 改变输入身份。原生 UI 不可自动控制时由用户操作，headless DAP/fixture 不等价。
 
+本机环境适配（仅 Cortex-Debug 1.12.1 + PyOCD 0.45.1）：原始 handoff 返回值及 boardId 完整保存。该扩展的 PyOCD 控制器把 launch.boardId 转为旧 `--board`，而当前 pyocd.exe 不接受此参数；pyocd-gdbserver.exe 又不接受扩展附加的 `gdbserver` 子命令。故仅在本次外置 launch 中省略 boardId，并设 `serverArgs=["--uid", <本次返回的原始boardId>, "--connect", "attach"]`；其他返回字段不变，serverpath 指向已核实的 D runtime pyocd.exe，cmsisPack 指向已验证包含该 target 的实际 pack。禁止丢失原始身份或让 PyOCD 自动挑探针。
+
+离线依据：扩展 `dist/debugadapter.js` 的 PyOCDServerController.serverArguments() 仅在 boardId 存在时追加 --board，最后追加 serverArgs，不读取 serialNumber；当前 PyOCD parser 接受上述完整参数。`pyocd/subcommands/base.py:95-96` 定义 --connect，`gdbserver_cmd.py:184-197` 传入 Session；未设 --reset-run 时 `234-236` 不执行 reset，Cortex-Debug attach 仍会 monitor halt。此适配不修改插件/安装/固件、不新增启动脚本，连接时停核在当前授权内。实际结果必须标明“适配后的 IDE 路径”；不能把它宣称为原始生成配置直接可用或原始兼容缺口已修复，完整 T9 是否满足原规格须单独判定。
+
 T10 顺序如下；动态值只能来自真实返回，缺少的输入结构必须在开始前明确：
 
 | 步骤 | 操作与必要引用 |
