@@ -703,7 +703,10 @@ def test_bootstrap_promotes_public_console_launchers_with_final_runtime_binding(
     assert pyocd.stdout.strip() == "0.45.1"
 
 
-def test_check_reports_staging_bound_public_console_launcher_as_broken(tmp_path: Path):
+@pytest.mark.parametrize("launcher_name", ["stm32-toolkit", "pyocd"])
+def test_check_reports_staging_bound_public_console_launcher_as_broken(
+    tmp_path: Path, launcher_name: str
+):
     roots = tmp_path / "x y"
     project = roots / "project q"
     project.mkdir(parents=True)
@@ -734,7 +737,7 @@ def test_check_reports_staging_bound_public_console_launcher_as_broken(tmp_path:
     runtime_python = runtime / "Scripts" / "python.exe"
     _write_fake_public_launchers(runtime)
     _replace_launcher_binding(
-        runtime / "Scripts" / "stm32-toolkit.exe",
+        runtime / "Scripts" / f"{launcher_name}.exe",
         runtime_python,
         plugin_data / "runtime" / ".staging",
     )
@@ -749,6 +752,8 @@ def test_check_reports_staging_bound_public_console_launcher_as_broken(tmp_path:
     assert checked.returncode == 0, checked.stderr
     payload = json.loads(checked.stdout)
     assert payload["runtime"]["status"] == "broken"
+    if launcher_name == "pyocd":
+        assert "pyocd" in payload["runtime"]["error"].lower()
     assert payload["authorizationRequired"] is True
     assert payload["recommendedMode"] == "Repair"
     assert _snapshot_files(plugin_data) == before_data
