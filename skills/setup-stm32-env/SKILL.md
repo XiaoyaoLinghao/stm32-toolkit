@@ -44,6 +44,8 @@ bounded; timeouts become evidence rather than hangs.
 
 The existing isolated PEP 440 `pyocd` distribution check remains bounded to `>=0.45.1,<0.46`.
 
+Final-path launcher checks additionally require the manifest-pinned PyOCD console executable to be bound to the final runtime Python and to return the expected version with `pyocd.exe --version`. Import/module checks alone are insufficient after staging promotion. Use the [Windows deployment and IDE preflight](../../docs/testing/windows-deployment-and-ide-preflight.md) when preparing deployment instructions; keep its version-specific IDE compatibility limits explicit.
+
 ## VS Code extensions (CHECK evidence only)
 
 The doctor `vscodeExtensions` evidence checks exactly three recommended extensions by invoking the bounded read-only `code --list-extensions --show-versions` probe: `ms-vscode.cpptools`, `ms-vscode.cmake-tools`, and `marus25.cortex-debug`. Each reports `installed`, `version`, and a status of `ok`, `missing`, `unavailable` (no `code` executable), or `nonzero`/`timeout`/`error` (probe failed).
@@ -61,7 +63,7 @@ wheel set. They copy the verified wheels into a unique
 versions and assets, validate isolated `pyocd`, and validate doctor before promotion. Failed safe
 staging is removed; a staging tree containing redirects is preserved for manual recovery rather
 than followed. The state file is written atomically only after runtime promotion; failures restore
-the old runtime and state bytes.
+the old runtime and state bytes. After promotion, the verified Toolkit, Monitor and PyOCD wheels regenerate their console launchers using the final runtime interpreter; launcher binding/version checks must pass before healthy state is published.
 
 For an absent runtime, after explicit authorization run:
 

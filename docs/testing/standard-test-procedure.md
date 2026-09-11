@@ -80,6 +80,8 @@ workspace 级 launch 必须显式设置 `cwd` 为实际工程的**绝对路径**
 
 handoff begin 前，还必须在**不启动调试**的情况下确认实际 IDE 已成功打开目标 workspace，核对真实 executable/version/profile 与扩展激活状态；可使用当前窗口确认或该实例的启动/renderer/extension 日志。exe 存在或 Start-Process 返回不算成功。更新锁、启动退出或实际窗口属于另一安装时先记录并解决该环境前置，不终止无关更新程序，也不先交出探针再排查界面启动。
 
+在同一离线阶段，用配置实际选中的最终 runtime `pyocd.exe --version` 验证真实入口，并核对最终 Python 绑定及无 staging 残留；模块 parser/import 成功不能替代此项。缺失、退出非零或版本不符先修复，禁止进入 handoff。部署说明及这次 IDE 故障的复用核对项统一见 [Windows 部署与 IDE 前置核对](windows-deployment-and-ide-preflight.md)。
+
 本机环境适配（仅 Cortex-Debug 1.12.1 + PyOCD 0.45.1）：原始 handoff 返回值及 boardId 完整保存。该扩展的 PyOCD 控制器把 launch.boardId 转为旧 `--board`，而当前 pyocd.exe 不接受此参数；pyocd-gdbserver.exe 又不接受扩展附加的 `gdbserver` 子命令。故仅在本次外置 launch 中省略 boardId，并设 `serverArgs=["--uid", <本次返回的原始boardId>, "--connect", "attach"]`；其他返回字段不变，serverpath 指向已核实的 D runtime pyocd.exe，cmsisPack 指向已验证包含该 target 的实际 pack。禁止丢失原始身份或让 PyOCD 自动挑探针。
 
 离线依据：扩展 `dist/debugadapter.js` 的 PyOCDServerController.serverArguments() 仅在 boardId 存在时追加 --board，最后追加 serverArgs，不读取 serialNumber；当前 PyOCD parser 接受上述完整参数。`pyocd/subcommands/base.py:95-96` 定义 --connect，`gdbserver_cmd.py:184-197` 传入 Session；未设 --reset-run 时 `234-236` 不执行 reset，Cortex-Debug attach 仍会 monitor halt。此适配不修改插件/安装/固件、不新增启动脚本，连接时停核在当前授权内。实际结果必须标明“适配后的 IDE 路径”；不能把它宣称为原始生成配置直接可用或原始兼容缺口已修复，完整 T9 是否满足原规格须单独判定。

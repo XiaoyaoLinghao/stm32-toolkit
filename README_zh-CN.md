@@ -61,16 +61,18 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File '${CLAUDE_PLUGIN_ROOT}/b
 
 ### 离线 candidate 构建与安装
 
+部署方案及 IDE 准备请同时遵循 [Windows 部署与 IDE 前置核对](docs/testing/windows-deployment-and-ide-preflight.md)。特别要在最终 runtime 目录验证真实的 `pyocd.exe --version`；Python 模块导入成功不能替代启动器检查。
+
 在 pinned CodeHead 的干净 checkout 中，release owner 可以使用精确的 Windows CPython 3.12
 wheelhouse 组装本地 candidate。utility 不从 index 解析、不上传、不 push，也不发布远程
 release：
 
 ```powershell
 py -3.12 tools/release/build_0900_artifacts.py build `
-  --repo-root C:\src\stm32-toolkit `
+  --repo-root D:\src\stm32-toolkit `
   --code-head <40-位小写十六进制 commit> `
-  --wheelhouse C:\tmp\p0902-wheelhouse `
-  --output-root C:\tmp\p0902-candidate
+  --wheelhouse D:\build-artifacts\p0902-wheelhouse `
+  --output-root D:\build-artifacts\p0902-candidate
 ```
 
 先验证外置的 `CHECKSUMS.sha256`，再解压 `stm32-toolkit-0.9.0-windows-x86_64.zip`。generic
