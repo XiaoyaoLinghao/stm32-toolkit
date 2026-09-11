@@ -54,6 +54,10 @@ Cortex-Debug 1.12.1 会把 boardId 转为旧 `--board`，PyOCD 0.45.1 的主 CLI
 
 ## 本次故障资料及后续方案要求
 
+Windows MCP 前置还须覆盖真实 stdio 会话中的 worker 启动/关闭，而不只是 initialize/list_tools：09 的工具清单成功，但 Windows spawn 子进程沿用父 MCP stdin 后在 ready 握手超时。隔离 child 标准输入的离线重放已证明纠正方向；实际发行是否包含并通过该修复，以候选源码及对应测试证据为准。不能全局替换父 stdio/WinAPI，也不能把 worker-only 离线检查称为实机读取 PASS。见 [修正计划与证据](../superpowers/plans/2026-09-11-stm32tk-mcp-worker-stdin-repair.md)。
+
+开发候选版本号相同但 source/manifest 不同时，保留原 DataRoot 的 source-conflict 拒绝。若本次明确使用独立候选安装，应在新的长期 D 盘 DataRoot 执行 Check/Bootstrap；不要复制旧 runtime-state、活动或已消费的 ticket/lease/action 来制造连续状态。相同工程/固件的历史证据可按身份引用，新环境下 CLI/MCP 等价应由同候选的有界检查补齐。
+
 | 观察到的错误 | 已证实的信息 / 证据限度 | 应进入部署验收的检查 |
 | --- | --- | --- |
 | GDB Server Quit | 最终 PyOCD EXE 内嵌已删除的 staging Python；EXE --version exit 1、最终 Python 模块入口 exit 0。原 IDE 子进程 stderr/完整时序尚缺，不能仅凭弹窗推断硬件阶段 | 真实最终启动器绑定与版本；安装/Repair 的最终化、失败 rollback、只读 Check 回归 |
