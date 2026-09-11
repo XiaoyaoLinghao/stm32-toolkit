@@ -142,7 +142,7 @@ publish 的 data.monitor_run_ref 填 request before/after；compare 的 data.ana
 
 ## 8. 当前验收断点（2026-09-11）
 
-最新断点：06 的 URI 失败保持终态记录；cwd 修正后，用户以“可以，继续测试”新授权 continuation 07 的一次 IDE attach/正常退出及回收验证。当前 **AWAITING_USER_SINGLE_IDE_RETRY**，原 ticket 与 externally-owned 预约匹配，未重复 begin、未执行 end/reacquire。此期间 Toolkit 不得访问探针。实际用户使用 D 盘 IDE；继续使用已打开的 06 外置 workspace，07 保存其配置快照和新授权，证据目录 `D:\codex-tmp\t9t10-t9-20260911-07`。参见 [T9 执行记录](../codex/returns/2026-09-11-stm32tk-1001-t9-ide-attempt-06.md)。再次出现非预期错误即停止。
+最新断点：continuation 07 已因用户报告 `PyOCD: GDB Server Quit` **TERMINAL_STOPPED**。实际扩展日志确认正确 T9 attach 配置进入 initializing/capabilities 后 terminated；没有成功 attach/detach 证据。离线确认所配置的 pyocd.exe 内嵌已不存在的 D runtime staging Python，`--version` 退出 1，而最终 runtime Python 的 `-I -m pyocd --version` 返回 0 / 0.45.1。原 IDE server stderr 尚未取到，不能宣称已还原全部现场错误。当前阻塞为启动入口，后续硬件停止；未重复 begin、未执行 end/reacquire，最后已核实的 externally-owned 预约保留。证据目录 `D:\codex-tmp\t9t10-t9-20260911-07\gdb-server-failure`。参见 [T9 执行记录](../codex/returns/2026-09-11-stm32tk-1001-t9-ide-attempt-06.md)。
 
 | 项目 | 状态及下一步 |
 | --- | --- |
@@ -155,7 +155,7 @@ publish 的 data.monitor_run_ref 填 request before/after；compare 的 data.ana
 | observation 05 | **TERMINAL_STOPPED**：Fault 返回 FAULT_TARGET_NOT_HALTED / state=running；无 Fault report、无“无活动 Fault”结论；此后无采样/GPIO/handoff。lease released、runtime 进程 0、P2 receipt 未变 |
 | 必要观测 | **PENDING**：按原 Task7 逐项核对 -12 能覆盖的相同固件/probe/workspace 条款，仅补缺口；完整 Fault 公共入口 **BLOCKED**，见第 3 节 |
 | 100ms / 历史 | -12 的 30 秒 299 批、P95 102.8332ms 连续不停核 PASS 和 attempt 7 历史实机 PASS 保留，不冒充当前 T10 run |
-| T9 | 软件独立接受；06 URI 失败已离线修正，07 获新授权、等待用户一次 IDE 重试，外部预约未回收；IDE attach/detach、end/reacquire 和公共入口等价仍 PENDING。原始生成配置直接兼容的缺口保留，不宣称完整 T9 PASS |
+| T9 | 软件独立接受；06 URI 失败已离线修正；07 GDB Server Quit 终态停止，配置的 PyOCD launcher 离线启动失败，外部预约未回收。IDE attach/detach、end/reacquire 和公共入口等价仍 PENDING；原始生成配置兼容缺口保留，不宣称完整 T9 PASS |
 | T10 | 软件独立接受；P3/P4/Diagnostic/FixVerification **PENDING**；当前候选物理窗口采集入口/预算/LED selector 尚待完整冻结，完成前不得开始 P3 |
 | VS10-A | **未完成**：剩余观测、T9、T10、Task11 lineage 和 Task12 全量 diff |
 
