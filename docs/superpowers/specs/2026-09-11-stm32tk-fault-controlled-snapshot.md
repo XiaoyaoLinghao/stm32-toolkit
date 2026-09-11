@@ -1,6 +1,6 @@
 # Controlled Fault snapshot — proposed contract
 
-Status: PROPOSED, governing behavior approval required before implementation. Accepted source base: `e8563a6fd0758350e91d24be71fa47292684693d`. Main owns specification/integration/review; one Luna/max owner will implement after approval. Active integration branch: `codex/STM32TK-1001-LEGACY-HARDWARE-CLOSED-LOOP-impl`. No hardware, installation or remote action is authorized by this proposal.
+Status: APPROVED by user “同意” on 2026-09-11, following the explicit controlled Fault contract approval question. Original investigation base: `e8563a6fd0758350e91d24be71fa47292684693d`; implementation accepted base: `71184baf04fb5df93dd18d69aee87a07f5dee27f`. Main owns specification/integration/review; one Luna/max owner implements. Active integration branch: `codex/STM32TK-1001-LEGACY-HARDWARE-CLOSED-LOOP-impl`. This approval covers software implementation and offline verification, not hardware, installation or remote actions.
 
 ## Problem and evidence
 
