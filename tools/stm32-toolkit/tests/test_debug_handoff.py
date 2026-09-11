@@ -4,6 +4,7 @@ import asyncio
 import hashlib
 import json
 import os
+import re
 import stat
 from pathlib import Path
 from types import SimpleNamespace
@@ -24,9 +25,11 @@ from stm32_toolkit.probe.handoff import (
     begin_debug_handoff,
     end_debug_handoff,
 )
+from stm32_toolkit.probe import handoff as handoff_module
 from stm32_toolkit.probe.model import OperationLevel
 from stm32_toolkit.probe.service import ProbeServiceError
 from stm32_toolkit.probe.lease import ProbeLeaseManager
+from stm32_toolkit.probe.selector import public_probe_selector
 from stm32_toolkit.probe.supervisor import ProbeServiceConfig, ProbeServiceSupervisor
 from stm32_toolkit.probe import supervisor as supervisor_module
 from fakes.fake_probe import FakeProbeBackend
@@ -337,10 +340,14 @@ def test_cortex_debug_contract_is_data_only_exact_attach_configuration():
 
 def test_cortex_debug_contract_selects_exact_probe_when_two_are_present():
     first = CortexDebugAttachContract(
-        "stm32f407vg", "build/arm-debug/firmware.elf", "probe-a"
+        "stm32f407vg",
+        "build/arm-debug/firmware.elf",
+        "probe-a",
     )
     second = CortexDebugAttachContract(
-        "stm32f407vg", "build/arm-debug/firmware.elf", "probe-b"
+        "stm32f407vg",
+        "build/arm-debug/firmware.elf",
+        "probe-b",
     )
     assert first.to_dict()["serialNumber"] == "probe-a"
     assert second.to_dict()["serialNumber"] == "probe-b"
@@ -373,6 +380,108 @@ def test_cortex_debug_contract_rejects_backslash_and_control_paths():
     for executable in ("build\\firmware.elf", "build/firmware\n.elf"):
         with pytest.raises(ValueError):
             CortexDebugAttachContract("stm32f407vg", executable, "probe-123")
+
+
+def test_handoff_ticket_preserves_legacy_constructor_and_serialization():
+    contract = CortexDebugAttachContract(
+        "stm32f407vg", "build/arm-debug/firmware.elf", "probe-123"
+    )
+    ticket = HandoffTicket("a" * 64, contract)
+
+    assert ticket.to_dict() == {
+        "ticket": "a" * 64,
+        "cortexDebug": contract.to_dict(),
+    }
+
+
+def test_cortex_debug_launch_projection_passes_raw_probe_id_and_ready_regex():
+    raw_id = "ATK 20210914"
+    selector = public_probe_selector(raw_id)
+    canonical = CortexDebugAttachContract(
+        target="stm32f429zgtx",
+        executable="build/arm-debug/firmware.elf",
+        serial_number=selector,
+        board_id=raw_id,
+    )
+    ticket = HandoffTicket(
+        "b" * 64,
+        canonical,
+        _launch_projection=handoff_module._CortexDebugLaunchProjection(
+            canonical, "D:/workspace/project"
+        ),
+    )
+    result = ticket.to_dict()
+    assert result["cortexDebug"] == {
+        "servertype": "pyocd",
+        "request": "attach",
+        "target": "stm32f429zgtx",
+        "targetId": "stm32f429zgtx",
+        "serialNumber": selector,
+        "boardId": raw_id,
+        "executable": "${workspaceFolder}/build/arm-debug/firmware.elf",
+    }
+    launch = result["cortexDebugLaunch"]
+    assert launch == {
+        "schemaVersion": 1,
+        "profile": {"cortexDebug": "1.12.1", "pyocd": "0.45.1"},
+        "configuration": {
+            "servertype": "pyocd",
+            "request": "attach",
+            "target": "stm32f429zgtx",
+            "targetId": "stm32f429zgtx",
+            "serialNumber": selector,
+            "executable": "${workspaceFolder}/build/arm-debug/firmware.elf",
+            "cwd": "D:/workspace/project",
+            "serverArgs": ["--uid", raw_id, "--connect", "attach"],
+            "overrideGDBServerStartedRegex": (
+                "GDB server (?:started (?:at|on)|listening on) port [0-9]+"
+            ),
+        },
+    }
+    assert "boardId" not in launch["configuration"]
+    configuration = launch["configuration"]
+    regex = str(configuration["overrideGDBServerStartedRegex"])
+    assert re.search(regex, "0001150 I GDB server listening on port 50000 (core 0)")
+    assert re.search(regex, "GDB server started at port 50000")
+    assert re.search(regex, "GDB server started on port 50000")
+    assert not re.search(regex, "0001093 I STDIO server started on port 50001 (core 0)")
+
+    first = ticket.to_dict()
+    second = ticket.to_dict()
+    assert first == second
+    assert first is not second
+    assert first["cortexDebugLaunch"] is not second["cortexDebugLaunch"]
+    assert first["cortexDebugLaunch"]["configuration"] is not second["cortexDebugLaunch"]["configuration"]
+    assert first["cortexDebugLaunch"]["configuration"]["serverArgs"] is not second["cortexDebugLaunch"]["configuration"]["serverArgs"]
+    first["cortexDebugLaunch"]["configuration"]["serverArgs"][1] = "mutated"
+    assert second["cortexDebugLaunch"]["configuration"]["serverArgs"][1] == raw_id
+    assert canonical.to_dict()["boardId"] == raw_id
+    assert "_launch_projection" not in repr(ticket)
+
+
+def test_begin_rejects_control_project_root_before_ownership(handoff_env, monkeypatch):
+    _, _, session_root, supervisor, client, request = handoff_env
+    invalid_root = Path("D:/workspace/project\n")
+    monkeypatch.setattr(
+        handoff_module,
+        "_validate_request",
+        lambda _request: (request, invalid_root),
+    )
+    malformed = DebugHandoffRequest(
+        invalid_root,
+        request.expected_build_id,
+        request.expected_elf_sha256,
+        True,
+        request.previous_watch_selection,
+    )
+
+    result = asyncio.run(begin_debug_handoff(malformed, supervisor, client))
+
+    assert result.code == "HANDOFF_REQUEST_INVALID"
+    assert result.details == {"field": "projectRoot"}
+    assert supervisor.stop_calls == 0
+    assert supervisor.lifecycle_events == []
+    assert not (session_root / STATE_NAME).exists()
 
 
 @pytest.mark.parametrize("authorized", [False, "true", 1, None])
@@ -428,7 +537,7 @@ def test_begin_rejects_non_path_and_regular_file_roots(handoff_env, tmp_path: Pa
 
 
 def test_begin_persists_paused_stops_releases_then_marks_external(handoff_env):
-    _, identity, session_root, supervisor, client, request = handoff_env
+    project, identity, session_root, supervisor, client, request = handoff_env
     result = asyncio.run(begin_debug_handoff(request, supervisor, client))
     assert result.ok is True
     ticket = result.data
@@ -471,6 +580,34 @@ def test_begin_persists_paused_stops_releases_then_marks_external(handoff_env):
         "executable": "build/arm-debug/firmware.elf",
         "boardId": "probe-123",
     }
+    returned = ticket.to_dict()
+    assert returned["cortexDebug"] == {
+        "servertype": "pyocd",
+        "request": "attach",
+        "target": "stm32f407vg",
+        "targetId": "stm32f407vg",
+        "serialNumber": "probe-123",
+        "boardId": "probe-123",
+        "executable": "${workspaceFolder}/build/arm-debug/firmware.elf",
+    }
+    assert returned["cortexDebugLaunch"] == {
+        "schemaVersion": 1,
+        "profile": {"cortexDebug": "1.12.1", "pyocd": "0.45.1"},
+        "configuration": {
+            "servertype": "pyocd",
+            "request": "attach",
+            "target": "stm32f407vg",
+            "targetId": "stm32f407vg",
+            "serialNumber": "probe-123",
+            "executable": "${workspaceFolder}/build/arm-debug/firmware.elf",
+            "cwd": project.resolve().as_posix(),
+            "serverArgs": ["--uid", "probe-123", "--connect", "attach"],
+            "overrideGDBServerStartedRegex": (
+                "GDB server (?:started (?:at|on)|listening on) port [0-9]+"
+            ),
+        },
+    }
+    assert "boardId" not in returned["cortexDebugLaunch"]["configuration"]
     assert [event[0] for event in client.events] == ["attach", "read"]
     lease_record = json.loads(
         supervisor._lease_manager.path.read_text(encoding="utf-8")
@@ -494,6 +631,7 @@ def test_repeated_begin_reuses_companion_without_metadata_or_attach(handoff_env)
 
     assert repeated.ok is True
     assert repeated.data == first.data
+    assert repeated.data.to_dict() == first.data.to_dict()
     assert supervisor.metadata_calls == first_metadata_calls
     assert client.events == first_events
     assert (session_root / CORTEX_CONFIG_NAME).is_file()

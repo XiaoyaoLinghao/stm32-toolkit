@@ -152,15 +152,46 @@ class CortexDebugAttachContract:
 
 
 @dataclass(frozen=True)
+class _CortexDebugLaunchProjection:
+    contract: CortexDebugAttachContract
+    cwd: str
+
+    def to_dict(self) -> dict[str, object]:
+        canonical = self.contract.to_dict()
+        board_id = canonical.pop("boardId")
+        configuration: dict[str, str | list[str]] = dict(canonical)
+        configuration.update(
+            {
+                "cwd": self.cwd,
+                "serverArgs": ["--uid", board_id, "--connect", "attach"],
+                "overrideGDBServerStartedRegex": (
+                    "GDB server (?:started (?:at|on)|listening on) port [0-9]+"
+                ),
+            }
+        )
+        return {
+            "schemaVersion": 1,
+            "profile": {"cortexDebug": "1.12.1", "pyocd": "0.45.1"},
+            "configuration": configuration,
+        }
+
+
+@dataclass(frozen=True)
 class HandoffTicket:
     ticket_id: str = field(repr=False)
     cortex_debug: CortexDebugAttachContract
+    _launch_projection: _CortexDebugLaunchProjection | None = field(
+        default=None, kw_only=True, repr=False
+    )
 
     def to_dict(self) -> dict[str, object]:
-        return {
+        result: dict[str, object] = {
             "ticket": self.ticket_id,
             "cortexDebug": self.cortex_debug.to_dict(),
         }
+        if self._launch_projection is not None:
+            result["cortexDebugLaunch"] = self._launch_projection.to_dict()
+        return result
 
 
 @dataclass(frozen=True)
@@ -217,12 +248,29 @@ def _request_root(request: DebugHandoffRequest) -> Path:
     if not isinstance(request.project_root, Path):
         raise _fail("HANDOFF_REQUEST_INVALID", "Debug handoff request is invalid", field="projectRoot")
     try:
+        value = str(request.project_root)
+    except (TypeError, ValueError):
+        raise _fail("HANDOFF_REQUEST_INVALID", "Debug handoff request is invalid", field="projectRoot") from None
+    if any(ord(character) < 32 for character in value):
+        raise _fail("HANDOFF_REQUEST_INVALID", "Debug handoff request is invalid", field="projectRoot")
+    try:
         root = request.project_root.expanduser().resolve(strict=True)
-    except (OSError, RuntimeError):
+    except (OSError, RuntimeError, ValueError):
         raise _fail("HANDOFF_REQUEST_INVALID", "Debug handoff request is invalid", field="projectRoot") from None
     if not root.is_dir():
         raise _fail("HANDOFF_REQUEST_INVALID", "Debug handoff request is invalid", field="projectRoot")
     return root
+
+
+def _validated_handoff_cwd(root: Path) -> str:
+    cwd = root.as_posix()
+    if not root.is_absolute() or any(ord(character) < 32 for character in cwd):
+        raise _fail(
+            "HANDOFF_REQUEST_INVALID",
+            "Debug handoff request is invalid",
+            field="projectRoot",
+        )
+    return cwd
 
 
 def _valid_selection(value: object, container_type: type[tuple] | type[list]) -> bool:
@@ -923,16 +971,20 @@ def _ticket(
     state: Mapping[str, object],
     executable: str,
     board_id: str | None = None,
+    *,
+    cwd: str,
 ) -> HandoffTicket:
+    contract = CortexDebugAttachContract(
+        str(state["target"]),
+        executable,
+        str(state["probeId"]),
+        board_id=board_id,
+        target_id=str(state["target"]),
+    )
     return HandoffTicket(
         str(state["ticketId"]),
-        CortexDebugAttachContract(
-            str(state["target"]),
-            executable,
-            str(state["probeId"]),
-            board_id=board_id,
-            target_id=str(state["target"]),
-        ),
+        contract,
+        _launch_projection=_CortexDebugLaunchProjection(contract, cwd),
     )
 
 
@@ -1042,6 +1094,7 @@ async def begin_debug_handoff(
 
     try:
         typed, root = _validate_request(request)
+        cwd = _validated_handoff_cwd(root)
         config, session_root = _safe_session_root(supervisor)
         probe, workspace, session = _configuration(config, root)
         lock = _async_lock(session_root)
@@ -1100,7 +1153,12 @@ async def begin_debug_handoff(
                         )
                         return OperationResult.success(
                             _BEGIN_OPERATION,
-                            _ticket(state, str(companion["executable"]), str(companion["boardId"])),
+                            _ticket(
+                                state,
+                                str(companion["executable"]),
+                                str(companion["boardId"]),
+                                cwd=cwd,
+                            ),
                         )
                     if (
                         state["state"] == "paused-for-debug"
@@ -1128,7 +1186,12 @@ async def begin_debug_handoff(
                         _write_state(session_root, state)
                         return OperationResult.success(
                             _BEGIN_OPERATION,
-                            _ticket(state, str(companion["executable"]), str(companion["boardId"])),
+                            _ticket(
+                                state,
+                                str(companion["executable"]),
+                                str(companion["boardId"]),
+                                cwd=cwd,
+                            ),
                         )
                     if state["state"] == "reacquiring":
                         raise _fail("HANDOFF_STATE_CONFLICT", "Debug handoff is already reacquiring")
@@ -1291,6 +1354,7 @@ async def begin_debug_handoff(
                         state,
                         str(companion["executable"]),
                         str(companion["boardId"]),
+                        cwd=cwd,
                     ),
                 )
     except asyncio.CancelledError:
