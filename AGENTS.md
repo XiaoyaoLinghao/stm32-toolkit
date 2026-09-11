@@ -41,6 +41,14 @@ Do not add collaboration apps, manifests, validators, CI, or dispatch automation
 
 ## Evidence and report rules
 
+### Mandatory standard test procedure
+
+Before planning or executing tests, deployment, or hardware acceptance, read [the standard test procedure](docs/testing/standard-test-procedure.md), its current acceptance checkpoint, and the referenced latest execution report. This is the single maintained procedure; old run-local execution cards are historical snapshots, not authority for the next run.
+
+Before hardware access, fill its execution card with actual source/runtime/firmware identities, target state and ownership, existing entry-point preconditions, current authorization, finite budget, success evidence, failure stop and cleanup rules. Resolve missing or conflicting prerequisites offline before declaring a step READY. A terminal failure stops subsequent hardware; no automatic retry or recovery fallback. Preserve valid evidence and resume at the actual incomplete stage rather than repeating deployment or accepted Target tests.
+
+The primary agent maintains this procedure. When an entry contract or missed prerequisite changes, update the relevant procedure section and obtain independent review before the dependent hardware step. Documentation-only changes do not trigger packaging, deployment or a full test cycle. The procedure itself grants no hardware or remote authority.
+
 Every implementation plan specifies exact public behavior and boundaries and names the evidence owner and required environment for each verification layer. `PASS` means that owner ran the check against the recorded commit. A platform-only check may be `DEFERRED` only to a named later phase or owner; a pure code failure is never deferred. Do not invent target facts or attribute one agent's evidence to another owner.
 
 The tracked implementation report records the accepted base and the CodeHead before the report commit. It must not contain its own final commit SHA or moving commit totals. Local Git evidence records the report commit; any later remote identity is reported only after an authorized remote action.
