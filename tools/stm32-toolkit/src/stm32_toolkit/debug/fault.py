@@ -18,6 +18,7 @@ from stm32_toolkit import __version__
 from stm32_toolkit.build.identity import utc_now_rfc3339
 from stm32_toolkit.probe.flash import _load_fresh_firmware
 from stm32_toolkit.probe.handoff import (
+    _canonical_target,
     _load_flash_result,
     _validate_attachment,
     _validate_flash,
@@ -103,10 +104,22 @@ def _request(value: object) -> tuple[FaultAnalysisRequest, Path]:
     return value, root
 
 
-def _endpoint(binding: DebugFirmwareBinding, client: object) -> None:
+def _endpoint(
+    binding: DebugFirmwareBinding,
+    client: object,
+    *,
+    expected_operation_level: OperationLevel = OperationLevel.OBSERVE,
+) -> None:
+    if type(expected_operation_level) is not OperationLevel or expected_operation_level not in {
+        OperationLevel.OBSERVE,
+        OperationLevel.CONTROL,
+    }:
+        raise _fail(
+            "FAULT_ENDPOINT_MISMATCH",
+            "Probe client endpoint does not match the Fault binding",
+        )
     endpoint = getattr(client, "endpoint", None)
     level = getattr(endpoint, "operation_level", None)
-    level_value = getattr(level, "value", level)
     token = getattr(endpoint, "token", None)
     port = getattr(endpoint, "port", None)
     if (
@@ -122,7 +135,7 @@ def _endpoint(binding: DebugFirmwareBinding, client: object) -> None:
         or getattr(endpoint, "session_id", None) != binding.observation_session_id
         or getattr(endpoint, "lease_id", None) != binding.lease_id
         or getattr(endpoint, "probe_id", None) != binding.probe_id
-        or level_value != OperationLevel.OBSERVE.value
+        or level is not expected_operation_level
     ):
         raise _fail(
             "FAULT_ENDPOINT_MISMATCH",
@@ -179,8 +192,69 @@ def _current_firmware(root: Path, binding: DebugFirmwareBinding) -> bytes:
 
 
 async def _attachment(
-    binding: DebugFirmwareBinding, client: object, *, final: bool = False
-) -> None:
+    binding: DebugFirmwareBinding,
+    client: object,
+    *,
+    final: bool = False,
+    expected_operation_level: OperationLevel = OperationLevel.OBSERVE,
+    target_identity_snapshot: Mapping[str, object] | None = None,
+) -> dict[str, object] | None:
+    if type(expected_operation_level) is not OperationLevel or expected_operation_level not in {
+        OperationLevel.OBSERVE,
+        OperationLevel.CONTROL,
+    }:
+        raise _fail(
+            "FAULT_ENDPOINT_MISMATCH",
+            "Probe client endpoint does not match the Fault binding",
+        )
+    if expected_operation_level is OperationLevel.CONTROL:
+        expected_default = {
+            "board_id": binding.debug_target,
+            "mcu": binding.target_device,
+            "target_id": binding.debug_target,
+            "probe_serial_hash": hashlib.sha256(
+                binding.probe_id.encode("utf-8")
+            ).hexdigest(),
+        }
+
+        def validate_identity(value: object) -> dict[str, object]:
+            if (
+                not isinstance(value, Mapping)
+                or set(value) != set(expected_default)
+                or any(
+                    not isinstance(value[field], str) or not value[field]
+                    for field in ("board_id", "mcu", "target_id")
+                )
+                or not isinstance(value["probe_serial_hash"], str)
+                or _SHA256.fullmatch(value["probe_serial_hash"]) is None
+                or value["probe_serial_hash"]
+                != expected_default["probe_serial_hash"]
+                or _canonical_target(value["mcu"])
+                != _canonical_target(binding.target_device)
+            ):
+                raise ValueError("Fault target identity does not match")
+            return dict(value)
+
+        try:
+            current = validate_identity(await client.target_identity())
+            if target_identity_snapshot is None:
+                if (
+                    current["board_id"] != expected_default["board_id"]
+                    or current["target_id"] != expected_default["target_id"]
+                    or _canonical_target(current["mcu"])
+                    != _canonical_target(expected_default["mcu"])
+                ):
+                    raise ValueError("Fault target identity does not match")
+            elif current != validate_identity(target_identity_snapshot):
+                raise ValueError("Fault target identity changed")
+            return current
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            raise _fail(
+                "FAULT_TARGET_CHANGED" if final else "FAULT_TARGET_MISMATCH",
+                "Connected target does not match the Fault binding",
+            ) from None
     try:
         attachment = await client.attach(binding.probe_id, binding.debug_target)
         _validate_attachment(attachment, binding.probe_id, binding.debug_target)
@@ -191,6 +265,7 @@ async def _attachment(
             "FAULT_TARGET_CHANGED" if final else "FAULT_TARGET_MISMATCH",
             "Connected target does not match the Fault binding",
         ) from None
+    return None
 
 
 def _hex32(value: int) -> str:
@@ -512,16 +587,29 @@ def _symbols(
 
 
 async def analyze_fault(
-    request: object, client: object
+    request: object,
+    client: object,
+    *,
+    expected_operation_level: OperationLevel = OperationLevel.OBSERVE,
+    target_identity_snapshot: Mapping[str, object] | None = None,
 ) -> OperationResult[FaultReport]:
     """Capture Fault evidence without target control, target writes, or project writes."""
 
     try:
         typed, root = _request(request)
         binding = typed.binding
-        _endpoint(binding, client)
+        _endpoint(
+            binding,
+            client,
+            expected_operation_level=expected_operation_level,
+        )
         image = _current_firmware(root, binding)
-        await _attachment(binding, client)
+        identity_snapshot = await _attachment(
+            binding,
+            client,
+            expected_operation_level=expected_operation_level,
+            target_identity_snapshot=target_identity_snapshot,
+        )
         registers = await _read_registers(client)
         status_data = await _read_exact(
             client,
@@ -534,14 +622,24 @@ async def analyze_fault(
         stack_frame = await _stack_frame(client, binding, registers)
         symbols = _symbols(image, registers, stack_frame)
         confirmed_at = utc_now_rfc3339()
-        await _attachment(binding, client, final=True)
+        await _attachment(
+            binding,
+            client,
+            final=True,
+            expected_operation_level=expected_operation_level,
+            target_identity_snapshot=identity_snapshot,
+        )
         final_registers = await _read_registers(client, final=True)
         if final_registers != registers:
             raise _fail(
                 "FAULT_STATE_CHANGED",
                 "Target state changed during Fault analysis",
             )
-        _endpoint(binding, client)
+        _endpoint(
+            binding,
+            client,
+            expected_operation_level=expected_operation_level,
+        )
         _current_firmware(root, binding)
         report = FaultReport(
             binding=binding,

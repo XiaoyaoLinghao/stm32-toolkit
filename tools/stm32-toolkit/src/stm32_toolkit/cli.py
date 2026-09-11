@@ -430,6 +430,12 @@ def _build_parser() -> argparse.ArgumentParser:
 
     fault = commands.add_parser("fault")
     _add_hardware_context(fault, probe=True, pins=True)
+    fault.add_argument(
+        "--halt-for-analysis",
+        action=_RejectDuplicateTrue,
+        nargs=0,
+        default=False,
+    )
 
     test = commands.add_parser("test")
     test_commands = test.add_subparsers(dest="test_command", required=True)
@@ -1238,6 +1244,7 @@ async def _hardware_operation_result(
             args.probe,
             args.expected_build_id,
             args.expected_elf_sha256,
+            args.halt_for_analysis,
         )
     )
 

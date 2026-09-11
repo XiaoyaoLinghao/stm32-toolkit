@@ -1173,7 +1173,15 @@ async def tool_fault_analyze_for_request(
     probe_id: str,
     expected_build_id: str,
     expected_elf_sha256: str,
+    halt_for_analysis: object = False,
 ) -> dict[str, object]:
+    if type(halt_for_analysis) is not bool:
+        return OperationResult.failure(
+            "stm32_fault_analyze",
+            "HARDWARE_INPUT_INVALID",
+            "Fault halt selection is invalid",
+            {},
+        ).to_dict()
     return await _hardware_for_request(
         runtime,
         context,
@@ -1185,6 +1193,7 @@ async def tool_fault_analyze_for_request(
             probe_id,
             expected_build_id,
             expected_elf_sha256,
+            halt_for_analysis,
         ),
         fault_workflow,
     )
@@ -2155,6 +2164,7 @@ def create_server(
         probeId: ProbeId,
         expectedBuildId: Digest,
         expectedElfSha256: Digest,
+        haltForAnalysis: StrictBool = False,
     ) -> dict[str, object]:
         return await tool_fault_analyze_for_request(
             runtime,
@@ -2162,6 +2172,7 @@ def create_server(
             probeId,
             expectedBuildId,
             expectedElfSha256,
+            haltForAnalysis,
         )
 
     @mcp.tool(name=MCP_TOOL_NAMES["diagnostic_start"])

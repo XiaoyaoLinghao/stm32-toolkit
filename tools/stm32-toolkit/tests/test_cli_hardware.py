@@ -171,7 +171,7 @@ def _success(operation: str = "hardware") -> OperationResult[object]:
             "fault_workflow",
             lambda p, d: ["fault", *_context(p, d), *_pins()],
             FaultWorkflowRequest,
-            {"probe_id": "probe-a"},
+            {"probe_id": "probe-a", "halt_for_analysis": False},
         ),
     ],
 )
@@ -444,6 +444,56 @@ def test_hardware_workflow_failure_is_one_json_document_and_exit_two(
     payload = json.loads(captured.out)
     assert payload["ok"] is False
     assert payload["code"] == "PROBE_BUSY"
+
+
+def test_fault_cli_forwards_explicit_halt_for_analysis(
+    monkeypatch, tmp_path: Path, capsys
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    received: list[object] = []
+
+    async def accepted(request: object) -> OperationResult[object]:
+        received.append(request)
+        return _success("fault_workflow")
+
+    monkeypatch.setattr("stm32_toolkit.cli.fault_workflow", accepted)
+    assert main(
+        [
+            "fault",
+            *_context(project, tmp_path / "data"),
+            *_pins(),
+            "--halt-for-analysis",
+        ]
+    ) == 0
+    capsys.readouterr()
+    assert len(received) == 1
+    assert type(received[0]) is FaultWorkflowRequest
+    assert received[0].halt_for_analysis is True
+
+
+@pytest.mark.parametrize(
+    "extra", [["--halt-for-analysis=false"], ["--halt-for-analysis", "--halt-for-analysis"]]
+)
+def test_fault_cli_requires_presence_only_halt_flag(
+    monkeypatch, tmp_path: Path, capsys, extra: list[str]
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    called = False
+
+    async def forbidden(request: object) -> OperationResult[object]:
+        nonlocal called
+        called = True
+        return _success("fault_workflow")
+
+    monkeypatch.setattr("stm32_toolkit.cli.fault_workflow", forbidden)
+    assert main(
+        ["fault", *_context(project, tmp_path / "data"), *_pins(), *extra]
+    ) == 2
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert called is False
 
 
 def test_hardware_internal_exception_is_sanitized_json_without_runtime_leak(

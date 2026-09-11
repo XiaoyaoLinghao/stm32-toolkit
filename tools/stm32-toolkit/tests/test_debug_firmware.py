@@ -802,6 +802,33 @@ def test_exact_client_endpoint_is_required_before_hardware(binding_env, field: s
     assert client.events == []
 
 
+def test_control_binding_accepts_only_explicit_control_endpoint(binding_env):
+    _, _, client, request = binding_env
+    client.endpoint.operation_level = OperationLevel.CONTROL
+    result = asyncio.run(
+        bind_debug_firmware(
+            request,
+            client,
+            expected_operation_level=OperationLevel.CONTROL,
+        )
+    )
+    assert result.ok is True, result.to_dict()
+
+
+def test_control_binding_rejects_observe_endpoint(binding_env):
+    _, _, client, request = binding_env
+    result = asyncio.run(
+        bind_debug_firmware(
+            request,
+            client,
+            expected_operation_level=OperationLevel.CONTROL,
+        )
+    )
+    assert result.ok is False
+    assert result.code == "DEBUG_ENDPOINT_MISMATCH"
+    assert client.events == []
+
+
 def test_attachment_and_readback_mismatch_fail_closed(binding_env):
     _, _, client, request = binding_env
     client.resolved_target = "STM32F429ZI"

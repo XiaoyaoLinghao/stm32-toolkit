@@ -160,7 +160,7 @@ def test_hardware_schemas_expose_only_project_bound_arguments(tmp_path: Path):
             "acknowledgeAccessRisk",
         },
         "stm32_fault_analyze": {
-            "probeId", "expectedBuildId", "expectedElfSha256"
+            "probeId", "expectedBuildId", "expectedElfSha256", "haltForAnalysis"
         },
     }
     forbidden = {
@@ -268,6 +268,8 @@ def test_wrappers_build_requests_only_from_runtime_and_declared_fields(
     assert request.session_id == runtime.session_id
     if wrapper_name == "tool_flash_for_request":
         assert request.recovery_under_reset is False
+    if wrapper_name == "tool_fault_analyze_for_request":
+        assert request.halt_for_analysis is False
 
 
 def test_flash_wrapper_forwards_explicit_recovery_selection(
@@ -296,6 +298,34 @@ def test_flash_wrapper_forwards_explicit_recovery_selection(
     assert result == OperationResult.success("accepted", {}).to_dict()
     assert len(received) == 1
     assert received[0].recovery_under_reset is True
+
+
+@pytest.mark.parametrize("value", ["true", "false", 1, 0, None, [], {}])
+def test_fault_wrapper_rejects_non_boolean_halt_selection(
+    monkeypatch, tmp_path: Path, value: object
+):
+    runtime = _runtime(tmp_path)
+    calls = 0
+
+    async def forbidden(_request: object) -> OperationResult[object]:
+        nonlocal calls
+        calls += 1
+        return OperationResult.success("forbidden", {})
+
+    monkeypatch.setattr(mcp_mod, "fault_workflow", forbidden)
+    result = asyncio.run(
+        mcp_mod.tool_fault_analyze_for_request(
+            runtime,
+            None,
+            "probe-a",
+            "a" * 64,
+            "b" * 64,
+            value,
+        )
+    )
+    assert result["ok"] is False
+    assert result["code"] == "HARDWARE_INPUT_INVALID"
+    assert calls == 0
 
 
 @pytest.mark.parametrize(
@@ -338,7 +368,7 @@ def test_flash_wrapper_forwards_explicit_recovery_selection(
         (
             "stm32_fault_analyze", "fault_workflow",
             {"probeId": "probe-a", "expectedBuildId": "a" * 64,
-             "expectedElfSha256": "b" * 64},
+             "expectedElfSha256": "b" * 64, "haltForAnalysis": True},
         ),
     ],
 )
@@ -364,6 +394,8 @@ def test_registered_hardware_tools_dispatch_to_the_matching_workflow(
     assert len(received) == 1
     if tool_name == "stm32_flash":
         assert received[0].recovery_under_reset is True
+    if tool_name == "stm32_fault_analyze":
+        assert received[0].halt_for_analysis is True
 
 
 @pytest.mark.parametrize("value", ["true", "false", 1, 0])

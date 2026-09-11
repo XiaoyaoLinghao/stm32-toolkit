@@ -253,6 +253,38 @@ class FaultClient:
         return data
 
 
+class ControlFaultClient(FaultClient):
+    """CONTROL analyzer seam whose attach would resume the target."""
+
+    def __init__(self, binding: DebugFirmwareBinding) -> None:
+        super().__init__()
+        self.endpoint.operation_level = OperationLevel.CONTROL
+        self.identity = {
+            "board_id": binding.debug_target,
+            "mcu": binding.target_device,
+            "target_id": binding.debug_target,
+            "probe_serial_hash": hashlib.sha256(
+                binding.probe_id.encode("utf-8")
+            ).hexdigest(),
+        }
+
+    async def target_identity(self) -> dict[str, object]:
+        self.events.append(("target_identity",))
+        return dict(self.identity)
+
+    async def target_state(self) -> dict[str, object]:
+        self.events.append(("target_state",))
+        return {
+            "state": self.state,
+            "reason": "requested" if self.state in {"running", "halted"} else "fault",
+        }
+
+    async def attach(self, probe_id: str, target: str) -> ProbeAttachmentEvidence:
+        self.events.append(("attach", probe_id, target))
+        self.state = "running"
+        return await super().attach(probe_id, target)
+
+
 @pytest.fixture
 def fault_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     root = (tmp_path / "project").resolve()
@@ -365,6 +397,49 @@ def test_already_halted_basic_msp_fault_is_complete_and_read_only(fault_env):
     assert calls["load"] == 2
     assert not any(name in repr(client.events) for name in ("halt", "resume", "reset", "write"))
     assert (root / "build" / "arm-debug" / "firmware.elf").read_bytes() == _elf
+
+
+@pytest.mark.parametrize("supply_snapshot", [False, True])
+def test_control_analyzer_uses_identity_reads_without_reattaching_after_halt(
+    fault_env, supply_snapshot: bool
+):
+    root, _elf, binding, _current, _calls, _observe_client, request = fault_env
+    client = ControlFaultClient(binding)
+    identity = dict(client.identity)
+
+    result = asyncio.run(
+        analyze_fault(
+            request,
+            client,
+            expected_operation_level=OperationLevel.CONTROL,
+            target_identity_snapshot=identity if supply_snapshot else None,
+        )
+    )
+
+    assert result.ok is True, result.to_dict()
+    assert not any(event[0] == "attach" for event in client.events)
+    assert [event[0] for event in client.events if event[0] in {"target_identity", "target_state"}] == [
+        "target_identity",
+        "target_identity",
+    ]
+    assert client.state == "halted"
+    assert (root / "build" / "arm-debug" / "firmware.elf").exists()
+
+
+def test_control_analyzer_rejects_observe_endpoint_before_reads(fault_env):
+    _root, _elf, _binding, _current, _calls, client, request = fault_env
+
+    result = asyncio.run(
+        analyze_fault(
+            request,
+            client,
+            expected_operation_level=OperationLevel.CONTROL,
+        )
+    )
+
+    assert result.ok is False
+    assert result.code == "FAULT_ENDPOINT_MISMATCH"
+    assert client.events == []
 
 
 @pytest.mark.parametrize("state", ["running", "sleeping", "reset", "lockedup", "unknown"])

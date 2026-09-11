@@ -73,10 +73,22 @@ def _request(request: object) -> tuple[DebugBindingRequest, Path]:
     return request, root
 
 
-def _endpoint(request: DebugBindingRequest, client: object) -> None:
+def _endpoint(
+    request: DebugBindingRequest,
+    client: object,
+    *,
+    expected_operation_level: OperationLevel = OperationLevel.OBSERVE,
+) -> None:
+    if type(expected_operation_level) is not OperationLevel or expected_operation_level not in {
+        OperationLevel.OBSERVE,
+        OperationLevel.CONTROL,
+    }:
+        raise _fail(
+            "DEBUG_ENDPOINT_MISMATCH",
+            "Probe client endpoint does not match the debug binding",
+        )
     endpoint = getattr(client, "endpoint", None)
     level = getattr(endpoint, "operation_level", None)
-    level_value = getattr(level, "value", level)
     token = getattr(endpoint, "token", None)
     port = getattr(endpoint, "port", None)
     if (
@@ -92,7 +104,7 @@ def _endpoint(request: DebugBindingRequest, client: object) -> None:
         or getattr(endpoint, "session_id", None) != request.observation_session_id
         or getattr(endpoint, "lease_id", None) != request.lease_id
         or getattr(endpoint, "probe_id", None) != request.probe_id
-        or level_value != OperationLevel.OBSERVE.value
+        or level is not expected_operation_level
     ):
         raise _fail(
             "DEBUG_ENDPOINT_MISMATCH",
@@ -188,13 +200,20 @@ def _svd_readable_regions_from_model(
 
 
 async def bind_debug_firmware(
-    request: object, client: object
+    request: object,
+    client: object,
+    *,
+    expected_operation_level: OperationLevel = OperationLevel.OBSERVE,
 ) -> OperationResult[DebugFirmwareBinding]:
     """Prove one observation client is attached to the exact current image."""
 
     try:
         typed, root = _request(request)
-        _endpoint(typed, client)
+        _endpoint(
+            typed,
+            client,
+            expected_operation_level=expected_operation_level,
+        )
         firmware = _firmware(root)
         identity = firmware.identity
         if (
@@ -249,7 +268,11 @@ async def bind_debug_firmware(
                 "Firmware evidence changed during debug binding",
             )
         confirmed_at = utc_now_rfc3339()
-        _endpoint(typed, client)
+        _endpoint(
+            typed,
+            client,
+            expected_operation_level=expected_operation_level,
+        )
         try:
             final_attachment = await client.attach(typed.probe_id, typed.target)
         except asyncio.CancelledError:
@@ -263,7 +286,11 @@ async def bind_debug_firmware(
                     **({"attachDiagnostic": details} if details is not None else {}),
                 ) from None
             raise _BindingFailure(error.code, error.message, error.details) from None
-        _endpoint(typed, client)
+        _endpoint(
+            typed,
+            client,
+            expected_operation_level=expected_operation_level,
+        )
         try:
             _validate_attachment(final_attachment, typed.probe_id, typed.target)
         except Exception:

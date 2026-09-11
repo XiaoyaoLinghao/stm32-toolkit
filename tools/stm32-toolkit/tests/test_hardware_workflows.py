@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import os
 import shutil
@@ -38,6 +39,8 @@ from stm32_toolkit.debug.model import DebugFirmwareBinding, MemoryRegionBinding
 from stm32_toolkit.debug.svd import SvdError, select_svd
 from stm32_toolkit.probe.backend import ProbeDescriptor
 from stm32_toolkit.probe.attach_diagnostics import make_attach_diagnostic, make_cleanup_entry, make_primary
+from stm32_toolkit.probe.authorization import ControlAuthorizationStore
+from stm32_toolkit.probe.client import ProbeClientError
 from stm32_toolkit.probe.model import OperationLevel
 from stm32_toolkit.result import OperationResult
 from fakes.fake_probe import FakeProbeBackend
@@ -228,6 +231,91 @@ class _Supervisor:
         self.endpoint = None
 
 
+class _ControlledSupervisor(_Supervisor):
+    def __init__(
+        self,
+        config: object,
+        recorder: _Recorder,
+        *,
+        control_root: Path,
+        stop_error: bool = False,
+    ) -> None:
+        super().__init__(config, recorder, stop_error=stop_error)
+        self.control_authorizations = ControlAuthorizationStore(control_root)
+
+
+class _ControlledClient:
+    def __init__(
+        self,
+        endpoint: object,
+        recorder: _Recorder,
+        identity: dict[str, object],
+        store: ControlAuthorizationStore,
+    ) -> None:
+        self.endpoint = endpoint
+        self._recorder = recorder
+        self.identity = dict(identity)
+        self._store = store
+        self.state = "running"
+        self.control_calls: list[tuple[str, str]] = []
+        self.analyze_error: BaseException | None = None
+        self.resume_error: BaseException | None = None
+        self.control_delay = 0.0
+        self.analyze_delay = 0.0
+        self.halt_state = "halted"
+        self.halt_error: BaseException | None = None
+        self.halt_response: dict[str, object] | None = None
+        self.state_error_after_halt: BaseException | None = None
+        self.identity_changed_after_halt = False
+
+    def _state(self) -> dict[str, object]:
+        return {"state": self.state, "reason": "requested"}
+
+    async def target_identity(self) -> dict[str, object]:
+        self._recorder.events.append("target_identity")
+        identity = dict(self.identity)
+        if self.identity_changed_after_halt and self.state == "halted":
+            identity["target_id"] = "STM32F429ZGTx"
+        return identity
+
+    async def target_state(self) -> dict[str, object]:
+        self._recorder.events.append("target_state")
+        if self.state == "halted" and self.state_error_after_halt is not None:
+            raise self.state_error_after_halt
+        return self._state()
+
+    async def target_control(
+        self, operation: str, arguments: dict[str, object], authorization: str
+    ) -> dict[str, object]:
+        self._recorder.events.append(operation)
+        self._store.consume(
+            authorization,
+            operation=operation,
+            arguments=arguments,
+            workspace_id=self.endpoint.workspace_id,
+            session_id=self.endpoint.session_id,
+            identity=self.identity,
+            state=self._state(),
+        )
+        self.control_calls.append((operation, authorization))
+        if self.control_delay:
+            await asyncio.sleep(self.control_delay)
+        if operation == "target.resume" and self.resume_error is not None:
+            raise self.resume_error
+        if operation == "target.halt":
+            self.state = self.halt_state
+            if self.halt_error is not None:
+                raise self.halt_error
+            return self.halt_response or {"state": "halted", "reason": "requested"}
+        if operation == "target.resume":
+            self.state = "running"
+            return {"state": "running"}
+        raise AssertionError(operation)
+
+    async def close(self) -> None:
+        self._recorder.events.append("client.close")
+
+
 class _Backend:
     def __init__(self, recorder: _Recorder, *, list_error: bool = False) -> None:
         self._recorder = recorder
@@ -295,6 +383,124 @@ def _seams(
         analyze_fault=selected_operation,
         catalog_from_binding=lambda value: recorder.events.append("catalog") or "catalog",
         svd_select=lambda *args, **kwargs: recorder.events.append("svd") or "selection",
+    )
+
+
+def _controlled_seams(
+    project: Path,
+    recorder: _Recorder,
+    *,
+    identity: dict[str, object] | None = None,
+    initial_state: str = "running",
+    analyze_result: OperationResult[object] | None = None,
+    worker_profile: dict[str, object] | None = None,
+    control_delay: float = 0.0,
+    analyze_delay: float = 0.0,
+    halt_state: str = "halted",
+    halt_error: BaseException | None = None,
+    halt_response: dict[str, object] | None = None,
+    state_error_after_halt: BaseException | None = None,
+    identity_changed_after_halt: bool = False,
+    stop_error: bool = False,
+) -> HardwareWorkflowSeams:
+    from stm32_toolkit.probe.worker import ProbeWorkerConfig
+
+    template = replace(
+        _typed_svd_binding(
+            project,
+            target_device="STM32F407VGTx",
+            regions=(MemoryRegionBinding("FLASH", 0x08000000, 0x1000, "r-x"),),
+        ),
+        debug_target="stm32f407vg",
+    )
+    supervisor_holder: dict[str, _ControlledSupervisor] = {}
+    client_holder: dict[str, _ControlledClient] = {}
+
+    async def bind(
+        request: object,
+        client: object,
+        *,
+        expected_operation_level: OperationLevel,
+    ) -> OperationResult[object]:
+        assert expected_operation_level is OperationLevel.CONTROL
+        binding = replace(
+            template,
+            workspace_id=request.workspace_id,
+            observation_session_id=request.observation_session_id,
+            lease_id=client.endpoint.lease_id,
+            probe_id=request.probe_id,
+        )
+        return OperationResult.success("stm32_debug_bind", binding)
+
+    async def analyze(
+        request: object,
+        client: object,
+        *,
+        expected_operation_level: OperationLevel,
+        target_identity_snapshot: dict[str, object],
+    ) -> OperationResult[object]:
+        assert expected_operation_level is OperationLevel.CONTROL
+        assert target_identity_snapshot == client.identity
+        recorder.events.append("analyze-start")
+        if getattr(client, "analyze_delay", 0.0):
+            await asyncio.sleep(client.analyze_delay)
+        recorder.events.append("analyze-end")
+        return (
+            analyze_result
+            if analyze_result is not None
+            else OperationResult.success("stm32_fault_analyze", {"report": "captured"})
+        )
+
+    def make_supervisor(config: object, manager: object, contract: object) -> object:
+        recorder.worker_contract = contract
+        supervisor = _ControlledSupervisor(
+            config,
+            recorder,
+            control_root=manager.data_root / "control-authorizations",
+            stop_error=stop_error,
+        )
+        supervisor_holder["value"] = supervisor
+        return supervisor
+
+    def make_client(endpoint: object) -> object:
+        profile = worker_profile if worker_profile is not None else {}
+        binding_identity = {
+            "board_id": profile.get("board_id", template.debug_target),
+            "mcu": profile.get("mcu", template.target_device),
+            "target_id": profile.get("target_id", template.debug_target),
+            "probe_serial_hash": hashlib.sha256(
+                template.probe_id.encode("utf-8")
+            ).hexdigest(),
+        }
+        client = _ControlledClient(
+            endpoint,
+            recorder,
+            identity if identity is not None else binding_identity,
+            supervisor_holder["value"].control_authorizations,
+        )
+        client.state = initial_state
+        client_holder["value"] = client
+        recorder.control_client = client
+        client.control_delay = control_delay
+        client.analyze_delay = analyze_delay
+        client.halt_state = halt_state
+        client.halt_error = halt_error
+        client.halt_response = halt_response
+        client.state_error_after_halt = state_error_after_halt
+        client.identity_changed_after_halt = identity_changed_after_halt
+        return client
+
+    base = _seams(recorder)
+    return replace(
+        base,
+        _test_backend_factory=None,
+        worker_config=ProbeWorkerConfig(
+            target_profile=worker_profile if worker_profile is not None else {}
+        ),
+        supervisor_factory=make_supervisor,
+        client_factory=make_client,
+        bind=bind,
+        analyze_fault=analyze,
     )
 
 
@@ -428,6 +634,28 @@ def test_closed_production_worker_selection_and_public_boundary_helpers(tmp_path
     corrupted = OperationResult.failure("operation", "FAIL", "failed", {})
     object.__setattr__(corrupted, "details", [])
     assert hardware_mod._public_result(corrupted, paths).details == {}
+    detailed = OperationResult(
+        "stm32-toolkit/1",
+        True,
+        "operation",
+        "OK",
+        "",
+        {"accepted": True},
+        {"controlledSnapshot": {"mode": "halt-for-analysis"}},
+    )
+    public = hardware_mod._public_result(detailed, paths)
+    assert public.ok is True
+    assert public.details == {"controlledSnapshot": {"mode": "halt-for-analysis"}}
+    ordinary = OperationResult(
+        "stm32-toolkit/1",
+        True,
+        "operation",
+        "OK",
+        "",
+        {"accepted": True},
+        {"ordinary": "details"},
+    )
+    assert hardware_mod._public_result(ordinary, paths).details == {}
 
     captured: list[object] = []
     seams = HardwareWorkflowSeams(
@@ -436,6 +664,44 @@ def test_closed_production_worker_selection_and_public_boundary_helpers(tmp_path
     )
     hardware_mod._make_supervisor(paths, "probe-a", OperationLevel.OBSERVE, seams)
     assert type(captured[0]) is ProbeWorkerConfig
+
+
+def test_controlled_identity_matches_pyocd_empty_profile_mapping() -> None:
+    from stm32_toolkit.probe.pyocd_backend import PyOCDBackend
+
+    backend = object.__new__(PyOCDBackend)
+    backend._session = object()
+    backend._target = object()
+    backend._probe_serial_hash = hashlib.sha256(b"probe-a").hexdigest()
+    backend._target_name = "stm32f407vg"
+    backend._resolved_part_number = "STM32F407VGTx"
+    backend._target_profile = {}
+
+    assert backend.target_identity() == {
+        "board_id": "stm32f407vg",
+        "mcu": "STM32F407VGTx",
+        "target_id": "stm32f407vg",
+        "probe_serial_hash": hashlib.sha256(b"probe-a").hexdigest(),
+    }
+
+
+def test_controlled_call_does_not_create_after_recovery_deadline() -> None:
+    called = False
+
+    async def factory() -> object:
+        nonlocal called
+        called = True
+        return object()
+
+    async def scenario() -> object:
+        loop = asyncio.get_running_loop()
+        return await hardware_mod._controlled_call(
+            factory, deadline=loop.time() - 1.0
+        )
+
+    outcome = _run(scenario())
+    assert isinstance(outcome.error, asyncio.TimeoutError)
+    assert called is False
 
 
 def test_make_supervisor_derives_observation_profile_only_for_observe(tmp_path: Path) -> None:
@@ -1870,6 +2136,398 @@ def test_probe_and_firmware_pins_fail_closed_before_service(
     assert not result.ok
     assert result.code == "HARDWARE_INPUT_INVALID"
     assert recorder.events == []
+
+
+def test_fault_request_accepts_explicit_halt_for_analysis(tmp_path: Path) -> None:
+    project = _project(tmp_path / "project")
+    request = FaultWorkflowRequest(
+        project,
+        tmp_path / "data",
+        "session-a",
+        "probe-a",
+        BUILD_ID,
+        ELF_SHA,
+        True,
+    )
+    assert request.halt_for_analysis is True
+
+
+def test_controlled_fault_halts_analyzes_restores_and_keeps_observation_config(
+    tmp_path: Path,
+) -> None:
+    project = _project(tmp_path / "project")
+    recorder = _Recorder()
+    seams = _controlled_seams(project, recorder)
+
+    result = _run(
+        fault_workflow(
+            FaultWorkflowRequest(
+                project,
+                tmp_path / "data",
+                "session-a",
+                "probe-a",
+                BUILD_ID,
+                ELF_SHA,
+                True,
+            ),
+            _seams=seams,
+        )
+    )
+
+    assert result.ok is True, result.to_dict()
+    snapshot = result.to_dict()["details"]["controlledSnapshot"]
+    assert snapshot["mode"] == "halt-for-analysis"
+    assert snapshot["beforeState"]["state"] == "running"
+    assert snapshot["analysisState"]["state"] == "halted"
+    assert snapshot["afterState"]["state"] == "running"
+    assert snapshot["halt"] == {"dispatched": True, "outcome": "succeeded"}
+    assert snapshot["resume"] == {"dispatched": True, "outcome": "succeeded"}
+    assert snapshot["cleanup"]["outcome"] == "succeeded"
+    assert [call[0] for call in recorder.control_client.control_calls] == [
+        "target.halt",
+        "target.resume",
+    ]
+    assert recorder.control_client.control_calls[0][1] != recorder.control_client.control_calls[1][1]
+    assert recorder.configs[0].operation_level is OperationLevel.CONTROL
+    assert recorder.worker_contract.frequency_hz == 100_000
+    assert recorder.worker_contract.target_profile() == {}
+    assert recorder.events.index("target.halt") < recorder.events.index("analyze-start")
+    assert recorder.events.index("analyze-end") < recorder.events.index("target.resume")
+
+
+@pytest.mark.parametrize("value", ["true", 1, None, []])
+def test_controlled_fault_requires_exact_boolean_before_service(
+    tmp_path: Path, value: object
+) -> None:
+    project = _project(tmp_path / "project")
+    recorder = _Recorder()
+
+    result = _run(
+        fault_workflow(
+            FaultWorkflowRequest(
+                project,
+                tmp_path / "data",
+                "session-a",
+                "probe-a",
+                BUILD_ID,
+                ELF_SHA,
+                value,
+            ),
+            _seams=_seams(recorder),
+        )
+    )
+
+    assert result.code == "HARDWARE_INPUT_INVALID"
+    assert recorder.events == []
+    assert recorder.configs == []
+
+
+def test_controlled_fault_rejects_identity_before_control(tmp_path: Path) -> None:
+    project = _project(tmp_path / "project")
+    recorder = _Recorder()
+    identity = {
+        "board_id": "wrong-board",
+        "mcu": "STM32F407VGTx",
+        "target_id": "stm32f407vg",
+        "probe_serial_hash": hashlib.sha256(b"probe-a").hexdigest(),
+    }
+
+    result = _run(
+        fault_workflow(
+            FaultWorkflowRequest(
+                project,
+                tmp_path / "data",
+                "session-a",
+                "probe-a",
+                BUILD_ID,
+                ELF_SHA,
+                True,
+            ),
+            _seams=_controlled_seams(project, recorder, identity=identity),
+        )
+    )
+
+    assert result.code == "FAULT_TARGET_MISMATCH"
+    assert recorder.control_client.control_calls == []
+    snapshot = result.to_dict()["details"]["controlledSnapshot"]
+    assert snapshot["halt"]["dispatched"] is False
+
+
+@pytest.mark.parametrize(
+    ("halt_state", "expected_resume"),
+    [
+        ("halted", {"dispatched": True, "outcome": "succeeded"}),
+        ("running", {"dispatched": False, "outcome": "already-satisfied"}),
+    ],
+)
+def test_controlled_fault_reconciles_uncertain_halt_without_duplicate_control(
+    tmp_path: Path,
+    halt_state: str,
+    expected_resume: dict[str, object],
+) -> None:
+    project = _project(tmp_path / "project")
+    recorder = _Recorder()
+    result = _run(
+        fault_workflow(
+            FaultWorkflowRequest(
+                project,
+                tmp_path / "data",
+                "session-a",
+                "probe-a",
+                BUILD_ID,
+                ELF_SHA,
+                True,
+            ),
+            _seams=_controlled_seams(
+                project,
+                recorder,
+                halt_state=halt_state,
+                halt_error=ProbeClientError(
+                    "PROBE_CONTROL_FAILED", "Halt completion was uncertain"
+                ),
+            ),
+        )
+    )
+
+    assert result.ok is False
+    assert result.code == "PROBE_CONTROL_FAILED"
+    snapshot = result.to_dict()["details"]["controlledSnapshot"]
+    assert snapshot["halt"] == {"dispatched": True, "outcome": "unknown"}
+    assert snapshot["resume"] == expected_resume
+    assert snapshot["afterState"]["state"] == "running"
+    assert [call[0] for call in recorder.control_client.control_calls] == [
+        "target.halt",
+        *(["target.resume"] if halt_state == "halted" else []),
+    ]
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {
+            "state_error_after_halt": ProbeClientError(
+                "PROBE_STATE_UNAVAILABLE", "Target state is unavailable"
+            )
+        },
+        {"identity_changed_after_halt": True},
+    ],
+)
+def test_controlled_fault_stops_without_guessing_when_halt_recovery_is_unknown(
+    tmp_path: Path, kwargs: dict[str, object]
+) -> None:
+    project = _project(tmp_path / "project")
+    recorder = _Recorder()
+    result = _run(
+        fault_workflow(
+            FaultWorkflowRequest(
+                project,
+                tmp_path / "data",
+                "session-a",
+                "probe-a",
+                BUILD_ID,
+                ELF_SHA,
+                True,
+            ),
+            _seams=_controlled_seams(
+                project,
+                recorder,
+                halt_error=ProbeClientError(
+                    "PROBE_CONTROL_FAILED", "Halt completion was uncertain"
+                ),
+                **kwargs,
+            ),
+        )
+    )
+
+    assert result.ok is False
+    assert result.code == "HARDWARE_CLEANUP_FAILED"
+    details = result.to_dict()["details"]
+    assert details["initiatingCode"] == "PROBE_CONTROL_FAILED"
+    assert details["controlledSnapshot"]["resume"] == {
+        "dispatched": False,
+        "outcome": "unknown",
+    }
+    assert details["controlledSnapshot"]["afterState"] is None
+    assert [call[0] for call in recorder.control_client.control_calls] == [
+        "target.halt"
+    ]
+
+
+def test_controlled_fault_restores_after_analyzer_failure(tmp_path: Path) -> None:
+    project = _project(tmp_path / "project")
+    recorder = _Recorder()
+    failed = OperationResult.failure(
+        "stm32_fault_analyze",
+        "FAULT_STATUS_UNAVAILABLE",
+        "Fault status registers are unavailable",
+        {},
+    )
+
+    result = _run(
+        fault_workflow(
+            FaultWorkflowRequest(
+                project,
+                tmp_path / "data",
+                "session-a",
+                "probe-a",
+                BUILD_ID,
+                ELF_SHA,
+                True,
+            ),
+            _seams=_controlled_seams(project, recorder, analyze_result=failed),
+        )
+    )
+
+    assert result.code == "FAULT_STATUS_UNAVAILABLE"
+    assert recorder.control_client.state == "running"
+    assert [call[0] for call in recorder.control_client.control_calls] == [
+        "target.halt",
+        "target.resume",
+    ]
+    assert result.to_dict()["details"]["controlledSnapshot"]["afterState"]["state"] == "running"
+
+
+def test_controlled_fault_resume_failure_never_passes_and_preserves_initiating_code(
+    tmp_path: Path,
+) -> None:
+    project = _project(tmp_path / "project")
+    recorder = _Recorder()
+    seams = _controlled_seams(project, recorder)
+    base_factory = seams.client_factory
+
+    def make_client(endpoint: object) -> object:
+        client = base_factory(endpoint)
+        client.resume_error = ProbeClientError(
+            "PROBE_CONTROL_FAILED",
+            "Target resume failed",
+        )
+        return client
+
+    seams = replace(seams, client_factory=make_client)
+    result = _run(
+        fault_workflow(
+            FaultWorkflowRequest(
+                project,
+                tmp_path / "data",
+                "session-a",
+                "probe-a",
+                BUILD_ID,
+                ELF_SHA,
+                True,
+            ),
+            _seams=seams,
+        )
+    )
+
+    assert result.ok is False
+    assert result.code == "HARDWARE_CLEANUP_FAILED"
+    details = result.to_dict()["details"]
+    assert details["initiatingCode"] == "OK"
+    assert details["controlledSnapshot"]["resume"] == {
+        "dispatched": True,
+        "outcome": "failed",
+    }
+    assert [call[0] for call in recorder.control_client.control_calls] == [
+        "target.halt",
+        "target.resume",
+    ]
+
+
+def test_controlled_fault_cleanup_failure_keeps_snapshot_details(
+    tmp_path: Path,
+) -> None:
+    project = _project(tmp_path / "project")
+    recorder = _Recorder()
+    analysis_failure = OperationResult.failure(
+        "stm32_fault_analyze",
+        "FAULT_STATUS_UNAVAILABLE",
+        "Fault status registers are unavailable",
+        {"path": str(project / "private")},
+    )
+    result = _run(
+        fault_workflow(
+            FaultWorkflowRequest(
+                project,
+                tmp_path / "data",
+                "session-a",
+                "probe-a",
+                BUILD_ID,
+                ELF_SHA,
+                True,
+            ),
+            _seams=_controlled_seams(
+                project,
+                recorder,
+                analyze_result=analysis_failure,
+                stop_error=True,
+            ),
+        )
+    )
+
+    assert result.ok is False
+    assert result.code == "HARDWARE_CLEANUP_FAILED"
+    details = result.to_dict()["details"]
+    assert details["initiatingCode"] == "FAULT_STATUS_UNAVAILABLE"
+    assert details["path"] == "redacted"
+    snapshot = details["controlledSnapshot"]
+    assert snapshot["afterState"]["state"] == "running"
+    assert snapshot["cleanup"]["outcome"] == "failed"
+    assert [entry["stage"] for entry in snapshot["cleanup"]["stages"]] == [
+        "workflow-client-close",
+        "workflow-service-stop",
+    ]
+
+
+@pytest.mark.parametrize("phase", ["halt", "analyze", "resume"])
+def test_controlled_fault_cancellation_finishes_owned_recovery_once(
+    tmp_path: Path, phase: str
+) -> None:
+    project = _project(tmp_path / "project")
+    recorder = _Recorder()
+    seams = _controlled_seams(
+        project,
+        recorder,
+        control_delay=0.05 if phase in {"halt", "resume"} else 0.0,
+        analyze_delay=0.05 if phase == "analyze" else 0.0,
+    )
+
+    async def scenario() -> None:
+        task = asyncio.create_task(
+            fault_workflow(
+                FaultWorkflowRequest(
+                    project,
+                    tmp_path / "data",
+                    "session-a",
+                    "probe-a",
+                    BUILD_ID,
+                    ELF_SHA,
+                    True,
+                ),
+                _seams=seams,
+            )
+        )
+        marker = {
+            "halt": "target.halt",
+            "analyze": "analyze-start",
+            "resume": "target.resume",
+        }[phase]
+        for _ in range(100):
+            if marker in recorder.events:
+                break
+            await asyncio.sleep(0.001)
+        else:
+            raise AssertionError(f"missing cancellation marker: {marker}")
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    asyncio.run(scenario())
+    assert recorder.control_client.state == "running"
+    assert [call[0] for call in recorder.control_client.control_calls] == [
+        "target.halt",
+        "target.resume",
+    ]
+    assert recorder.events[-2:] == ["client.close", "supervisor.stop"]
 
 
 @pytest.mark.parametrize("expressions", [(), ("x", "x"), ("",), ("bad\x00name",)])

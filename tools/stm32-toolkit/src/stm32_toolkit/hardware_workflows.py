@@ -47,7 +47,11 @@ from stm32_toolkit.probe import (
     flash_firmware,
 )
 from stm32_toolkit.probe.backend import ProbeBackendError
-from stm32_toolkit.probe.client import ProbeClient, ProbeClientError
+from stm32_toolkit.probe.client import (
+    ControlAuthorizationClient,
+    ProbeClient,
+    ProbeClientError,
+)
 from stm32_toolkit.probe.lease import ProbeLeaseError, ProbeLeaseManager
 from stm32_toolkit.probe.service import ProbeServiceError, _service_error_fields
 from stm32_toolkit.probe.service import ProbeServiceCleanupError
@@ -57,6 +61,7 @@ from stm32_toolkit.probe.attach_diagnostics import (
     extract_attach_diagnostic,
     make_cleanup_entry,
 )
+from stm32_toolkit.probe.handoff import _canonical_target
 from stm32_toolkit.probe.worker import ProbeBackendWorker, ProbeWorkerConfig
 from stm32_toolkit.project_model import ProjectManifestError, ProjectModel, load_project_model
 from stm32_toolkit.result import OperationResult
@@ -67,6 +72,7 @@ _ERROR_CODE = re.compile(r"^[A-Z][A-Z0-9_]{1,63}$")
 _REPARSE_POINT = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
 _MAX_PROBES = 64
 _MAX_ITEMS = 256
+_CONTROLLED_SNAPSHOT_RECOVERY_SECONDS = 45.0
 _FORBIDDEN_RESULT_KEYS = frozenset(
     {
         "token",
@@ -167,6 +173,7 @@ class FaultWorkflowRequest:
     probe_id: str
     expected_build_id: str
     expected_elf_sha256: str
+    halt_for_analysis: object = False
 
 
 def _supervisor_factory(
@@ -406,6 +413,8 @@ def _make_supervisor(
     probe_id: str,
     level: OperationLevel,
     seams: HardwareWorkflowSeams,
+    *,
+    worker_config: ProbeWorkerConfig | None = None,
 ) -> object:
     config = ProbeServiceConfig(
         probe_id=probe_id,
@@ -416,10 +425,12 @@ def _make_supervisor(
         project_root=paths.project_root,
     )
     lease_manager = seams.lease_manager_factory(paths.data_root)
-    backend_contract: object = seams.worker_config
+    backend_contract: object = (
+        seams.worker_config if worker_config is None else worker_config
+    )
     if seams._test_backend_factory is not None:
         backend_contract = seams._test_backend_factory
-    elif level is OperationLevel.OBSERVE:
+    elif worker_config is None and level is OperationLevel.OBSERVE:
         backend_contract = seams.worker_config.for_observation()
     return seams.supervisor_factory(config, lease_manager, backend_contract)
 
@@ -619,9 +630,59 @@ def _public_result(result: object, paths: WorkspacePaths) -> OperationResult[obj
     details = _sanitize(payload.get("details", {}), roots)
     if not isinstance(details, Mapping):
         details = {}
-    if not result.ok:
-        return OperationResult.failure(result.operation, result.code, result.message, details)
-    return OperationResult.success(result.operation, _sanitize(payload.get("data"), roots))
+    controlled_snapshot = details.get("controlledSnapshot")
+    if not isinstance(controlled_snapshot, Mapping):
+        if not result.ok:
+            return OperationResult.failure(
+                result.operation, result.code, result.message, details
+            )
+        return OperationResult.success(
+            result.operation, _sanitize(payload.get("data"), roots)
+        )
+    return OperationResult(
+        result.protocol,
+        result.ok,
+        result.operation,
+        result.code,
+        result.message,
+        _sanitize(payload.get("data"), roots) if result.ok else None,
+        details,
+    )
+
+
+def _result_with_details(
+    result: OperationResult[Any], details: Mapping[str, object]
+) -> OperationResult[Any]:
+    return OperationResult(
+        result.protocol,
+        result.ok,
+        result.operation,
+        result.code,
+        result.message,
+        result.data,
+        details,
+    )
+
+
+def _with_controlled_cleanup(
+    result: OperationResult[Any],
+    cleanup: _CleanupOutcome,
+) -> OperationResult[Any]:
+    details = result.details
+    if not isinstance(details, Mapping):
+        return result
+    snapshot = details.get("controlledSnapshot")
+    if not isinstance(snapshot, Mapping):
+        return result
+    controlled = dict(snapshot)
+    controlled["cleanup"] = {
+        "outcome": "failed" if cleanup.failed else "succeeded",
+        "stages": cleanup.fragment.to_list(),
+    }
+    return _result_with_details(
+        result,
+        {**dict(details), "controlledSnapshot": controlled},
+    )
 
 
 _KNOWN_STABLE_EXCEPTIONS = (
@@ -668,6 +729,7 @@ async def _one_shot(
     level: OperationLevel,
     seams: HardwareWorkflowSeams,
     action: Callable[[object, object], Awaitable[OperationResult[Any]]],
+    worker_config: ProbeWorkerConfig | None = None,
 ) -> OperationResult[object]:
     supervisor: object | None = None
     clients: list[object] = []
@@ -676,7 +738,13 @@ async def _one_shot(
     result: OperationResult[Any] | None = None
     try:
         _ensure_session_root(paths)
-        supervisor = _make_supervisor(paths, probe_id, level, seams)
+        supervisor = _make_supervisor(
+            paths,
+            probe_id,
+            level,
+            seams,
+            worker_config=worker_config,
+        )
         endpoint = await supervisor.start()
         _validate_endpoint(endpoint, paths, probe_id, level)
         client = seams.client_factory(endpoint)
@@ -712,21 +780,32 @@ async def _one_shot(
                     "attachDiagnostic": merged,
                 },
             )
+    if isinstance(result, OperationResult):
+        result = _with_controlled_cleanup(result, cleanup)
     if cleanup.failed:
+        details: dict[str, object] = {}
+        if isinstance(result, OperationResult) and isinstance(result.details, Mapping):
+            details.update(dict(result.details))
+        if (
+            isinstance(result, OperationResult)
+            and isinstance(details.get("controlledSnapshot"), Mapping)
+            and "initiatingCode" not in details
+        ):
+            details["initiatingCode"] = result.code
         if diagnostic is not None:
-            merged = extract_attach_diagnostic(result.details)
+            merged = extract_attach_diagnostic(
+                result.details if isinstance(result, OperationResult) else None
+            )
             if merged is not None:
-                return OperationResult.failure(
-                    operation,
-                    "HARDWARE_CLEANUP_FAILED",
-                    "Hardware workflow cleanup failed",
-                    {"attachDiagnostic": merged},
-                )
-        return OperationResult.failure(
-            operation,
-            "HARDWARE_CLEANUP_FAILED",
-            "Hardware workflow cleanup failed",
-            {},
+                details["attachDiagnostic"] = merged
+        return _public_result(
+            OperationResult.failure(
+                operation,
+                "HARDWARE_CLEANUP_FAILED",
+                "Hardware workflow cleanup failed",
+                details,
+            ),
+            paths,
         )
     if fatal is not None:
         raise fatal
@@ -1015,6 +1094,516 @@ async def _bind_and_run(
     )
 
 
+def _new_controlled_snapshot() -> dict[str, object]:
+    return {
+        "mode": "halt-for-analysis",
+        "beforeState": None,
+        "analysisState": None,
+        "afterState": None,
+        "halt": {"dispatched": False, "outcome": "not-started"},
+        "resume": {"dispatched": False, "outcome": "not-started"},
+        "cleanup": {"outcome": "pending", "stages": []},
+    }
+
+
+def _controlled_result(
+    result: OperationResult[Any], snapshot: Mapping[str, object]
+) -> OperationResult[Any]:
+    details = dict(result.details) if isinstance(result.details, Mapping) else {}
+    return _result_with_details(
+        result,
+        {**details, "controlledSnapshot": dict(snapshot)},
+    )
+
+
+def _controlled_error(
+    operation: str, error: BaseException, snapshot: Mapping[str, object]
+) -> OperationResult[Any]:
+    if isinstance(error, _WorkflowFailure):
+        result: OperationResult[Any] = OperationResult.failure(
+            operation, error.code, error.message, {}
+        )
+    elif isinstance(error, asyncio.TimeoutError):
+        result = OperationResult.failure(
+            operation,
+            "PROBE_TIMEOUT",
+            "Probe control operation timed out",
+            {},
+        )
+    else:
+        result = _stable_exception_result(operation, error)
+    return _controlled_result(result, snapshot)
+
+
+def _controlled_identity_expectation(
+    binding: DebugFirmwareBinding, worker_config: ProbeWorkerConfig
+) -> dict[str, object]:
+    profile = worker_config.target_profile()
+    return {
+        "board_id": profile.get("board_id", binding.debug_target),
+        "mcu": profile.get("mcu", binding.target_device),
+        "target_id": profile.get("target_id", binding.debug_target),
+        "probe_serial_hash": hashlib.sha256(
+            binding.probe_id.encode("utf-8")
+        ).hexdigest(),
+    }
+
+
+def _validate_controlled_identity(
+    value: object,
+    binding: DebugFirmwareBinding,
+    expected: Mapping[str, object],
+) -> dict[str, object]:
+    fields = {"board_id", "mcu", "target_id", "probe_serial_hash"}
+    if not isinstance(expected, Mapping) or set(expected) != fields:
+        raise _fail(
+            "FAULT_TARGET_MISMATCH",
+            "Connected target does not match the Fault binding",
+        )
+    if (
+        not isinstance(value, Mapping)
+        or set(value) != fields
+        or any(
+            not isinstance(value[field], str) or not value[field]
+            for field in ("board_id", "mcu", "target_id")
+        )
+        or not isinstance(value["probe_serial_hash"], str)
+        or _DIGEST.fullmatch(value["probe_serial_hash"]) is None
+        or any(
+            not isinstance(expected[field], str) or not expected[field]
+            for field in ("board_id", "mcu", "target_id")
+        )
+        or not isinstance(expected["probe_serial_hash"], str)
+        or _DIGEST.fullmatch(expected["probe_serial_hash"]) is None
+        or value["probe_serial_hash"] != expected["probe_serial_hash"]
+        or value["board_id"] != expected["board_id"]
+        or value["target_id"] != expected["target_id"]
+        or _canonical_target(value["mcu"])
+        != _canonical_target(binding.target_device)
+        or _canonical_target(value["mcu"])
+        != _canonical_target(expected["mcu"])
+    ):
+        raise _fail(
+            "FAULT_TARGET_MISMATCH",
+            "Connected target does not match the Fault binding",
+        )
+    return dict(value)
+
+
+def _validate_controlled_state(value: object) -> dict[str, object]:
+    allowed_states = {"running", "halted", "reset", "faulted"}
+    allowed_reasons = {"requested", "breakpoint", "watchpoint", "fault", "exception", "reset"}
+    if (
+        not isinstance(value, Mapping)
+        or set(value) != {"state", "reason"}
+        or value["state"] not in allowed_states
+        or value["reason"] not in allowed_reasons
+    ):
+        raise _fail(
+            "PROBE_RESPONSE_INVALID",
+            "Probe target state response is invalid",
+        )
+    return dict(value)
+
+
+@dataclass(frozen=True)
+class _ControlledCallOutcome:
+    value: object | None
+    error: BaseException | None
+    cancellation: asyncio.CancelledError | None
+
+
+async def _controlled_call(
+    factory: Callable[[], Awaitable[object]], *, deadline: float | None = None
+) -> _ControlledCallOutcome:
+    try:
+        if deadline is not None:
+            remaining = deadline - asyncio.get_running_loop().time()
+            if remaining <= 0:
+                return _ControlledCallOutcome(None, asyncio.TimeoutError(), None)
+        awaitable = factory()
+        if deadline is not None:
+            awaitable = asyncio.wait_for(awaitable, timeout=remaining)
+        task = asyncio.ensure_future(awaitable)
+    except BaseException as error:
+        return _ControlledCallOutcome(None, error, None)
+    outcome = await _await_owned(task)
+    cancellation = outcome.cancellation
+    error = outcome.error
+    if isinstance(error, asyncio.CancelledError):
+        cancellation = _merge_cancellation(cancellation, error)
+        error = None
+    return _ControlledCallOutcome(outcome.value, error, cancellation)
+
+
+def _control_authorization_binding(
+    binding: DebugFirmwareBinding,
+    identity_snapshot: Mapping[str, object],
+    operation: str,
+) -> dict[str, object]:
+    return {
+        "workspace_id": binding.workspace_id,
+        "project_id": binding.logical_project_id,
+        "session_id": binding.observation_session_id,
+        "revision": binding.git_head,
+        "target": dict(identity_snapshot),
+        "firmware": {
+            "build_id": binding.build_id,
+            "elf_sha256": binding.elf_sha256,
+        },
+        "operation": operation,
+        "arguments": {},
+    }
+
+
+async def _prepare_control_authorization(
+    supervisor: object,
+    client: object,
+    binding: DebugFirmwareBinding,
+    identity_snapshot: Mapping[str, object],
+    operation: str,
+    *,
+    deadline: float | None = None,
+) -> _ControlledCallOutcome:
+    def prepare() -> Awaitable[object]:
+        store = getattr(supervisor, "control_authorizations", None)
+        authorizer = ControlAuthorizationClient(store, client)
+        return authorizer.prepare(
+            **_control_authorization_binding(binding, identity_snapshot, operation)
+        )
+
+    return await _controlled_call(prepare, deadline=deadline)
+
+
+async def _controlled_fault_action(
+    supervisor: object,
+    client: object,
+    *,
+    typed: FaultWorkflowRequest,
+    model: ProjectModel,
+    paths: WorkspacePaths,
+    seams: HardwareWorkflowSeams,
+    worker_config: ProbeWorkerConfig,
+) -> OperationResult[Any]:
+    operation = "stm32_fault_analyze"
+    snapshot = _new_controlled_snapshot()
+    cancelled: asyncio.CancelledError | None = None
+
+    async def call(
+        factory: Callable[[], Awaitable[object]], *, deadline: float | None = None
+    ) -> _ControlledCallOutcome:
+        nonlocal cancelled
+        outcome = await _controlled_call(factory, deadline=deadline)
+        cancelled = _merge_cancellation(cancelled, outcome.cancellation)
+        return outcome
+
+    endpoint = getattr(client, "endpoint", None)
+    bind_outcome = await call(
+        lambda: seams.bind(
+            DebugBindingRequest(
+                paths.project_root,
+                typed.probe_id,
+                model.debug.target,
+                paths.workspace_id,
+                paths.session_id,
+                endpoint.lease_id,
+                typed.expected_build_id,
+                typed.expected_elf_sha256,
+            ),
+            client,
+            expected_operation_level=OperationLevel.CONTROL,
+        )
+    )
+    if bind_outcome.error is not None:
+        if cancelled is not None:
+            raise cancelled
+        return _controlled_error(operation, bind_outcome.error, snapshot)
+    if cancelled is not None:
+        raise cancelled
+    binding_result = bind_outcome.value
+    if not isinstance(binding_result, OperationResult):
+        return _controlled_error(
+            operation,
+            RuntimeError("debug binding returned an invalid result"),
+            snapshot,
+        )
+    if not binding_result.ok or binding_result.data is None:
+        return _controlled_result(binding_result, snapshot)
+    binding = binding_result.data
+    if type(binding) is not DebugFirmwareBinding:
+        return _controlled_error(
+            operation,
+            _fail("DEBUG_BINDING_INVALID", "Debug binding is invalid"),
+            snapshot,
+        )
+    expected_identity = _controlled_identity_expectation(binding, worker_config)
+
+    identity_outcome = await call(lambda: client.target_identity())
+    if identity_outcome.error is not None:
+        if cancelled is not None:
+            raise cancelled
+        return _controlled_error(operation, identity_outcome.error, snapshot)
+    try:
+        identity_snapshot = _validate_controlled_identity(
+            identity_outcome.value, binding, expected_identity
+        )
+    except _WorkflowFailure as error:
+        return _controlled_error(operation, error, snapshot)
+    if cancelled is not None:
+        raise cancelled
+
+    state_outcome = await call(lambda: client.target_state())
+    if state_outcome.error is not None:
+        if cancelled is not None:
+            raise cancelled
+        return _controlled_error(operation, state_outcome.error, snapshot)
+    try:
+        before_state = _validate_controlled_state(state_outcome.value)
+    except _WorkflowFailure as error:
+        return _controlled_error(operation, error, snapshot)
+    snapshot["beforeState"] = dict(before_state)
+    if before_state["state"] != "running":
+        return _controlled_error(
+            operation,
+            _fail(
+                "FAULT_TARGET_NOT_RUNNING",
+                "Controlled Fault analysis requires a running target",
+            ),
+            snapshot,
+        )
+    if cancelled is not None:
+        raise cancelled
+
+    halt_prepared = await _prepare_control_authorization(
+        supervisor, client, binding, identity_snapshot, "target.halt"
+    )
+    cancelled = _merge_cancellation(cancelled, halt_prepared.cancellation)
+    if halt_prepared.error is not None:
+        if cancelled is not None:
+            raise cancelled
+        snapshot["halt"] = {"dispatched": False, "outcome": "failed"}
+        return _controlled_error(operation, halt_prepared.error, snapshot)
+    if cancelled is not None:
+        raise cancelled
+    prepared = halt_prepared.value
+    if prepared is None or not hasattr(prepared, "action_digest"):
+        snapshot["halt"] = {"dispatched": False, "outcome": "failed"}
+        return _controlled_error(
+            operation,
+            RuntimeError("halt authorization is invalid"),
+            snapshot,
+        )
+
+    snapshot["halt"] = {"dispatched": True, "outcome": "unknown"}
+    halt_outcome = await call(
+        lambda: client.target_control("target.halt", {}, prepared.action_digest)
+    )
+    if halt_outcome.error is not None:
+        initiating = _controlled_error(operation, halt_outcome.error, snapshot)
+    else:
+        try:
+            response = _validate_controlled_state(halt_outcome.value)
+            if response != {"state": "halted", "reason": "requested"}:
+                raise _fail(
+                    "PROBE_RESPONSE_INVALID",
+                    "Probe target halt response is invalid",
+                )
+            snapshot["halt"] = {"dispatched": True, "outcome": "succeeded"}
+            initiating = None
+        except _WorkflowFailure as error:
+            initiating = _controlled_error(operation, error, snapshot)
+    if cancelled is not None:
+        initiating = initiating or OperationResult.failure(
+            operation,
+            "HARDWARE_CANCELLED",
+            "Controlled Fault analysis was cancelled",
+            {},
+        )
+
+    if initiating is None:
+        halted_state_outcome = await call(lambda: client.target_state())
+        if halted_state_outcome.error is not None:
+            initiating = _controlled_error(operation, halted_state_outcome.error, snapshot)
+        else:
+            try:
+                halted_state = _validate_controlled_state(halted_state_outcome.value)
+                snapshot["analysisState"] = dict(halted_state)
+                if halted_state["state"] != "halted":
+                    raise _fail(
+                        "FAULT_TARGET_NOT_HALTED",
+                        "Target must remain halted before Fault analysis",
+                    )
+            except _WorkflowFailure as error:
+                initiating = _controlled_error(operation, error, snapshot)
+
+    if initiating is None and cancelled is None:
+        analysis_outcome = await call(
+            lambda: seams.analyze_fault(
+                FaultAnalysisRequest(binding),
+                client,
+                expected_operation_level=OperationLevel.CONTROL,
+                target_identity_snapshot=identity_snapshot,
+            )
+        )
+        if analysis_outcome.error is not None:
+            initiating = _controlled_error(operation, analysis_outcome.error, snapshot)
+        elif not isinstance(analysis_outcome.value, OperationResult):
+            initiating = _controlled_error(
+                operation,
+                RuntimeError("Fault analyzer returned an invalid result"),
+                snapshot,
+            )
+        else:
+            initiating = _controlled_result(analysis_outcome.value, snapshot)
+    elif initiating is None:
+        initiating = OperationResult.failure(
+            operation,
+            "HARDWARE_CANCELLED",
+            "Controlled Fault analysis was cancelled",
+            {},
+        )
+        initiating = _controlled_result(initiating, snapshot)
+
+    recovery_deadline = (
+        asyncio.get_running_loop().time() + _CONTROLLED_SNAPSHOT_RECOVERY_SECONDS
+    )
+    recovery_identity = await call(
+        lambda: client.target_identity(), deadline=recovery_deadline
+    )
+    recovery_state = await call(
+        lambda: client.target_state(), deadline=recovery_deadline
+    )
+    restoration_failed = False
+    current_identity: dict[str, object] | None = None
+    current_state: dict[str, object] | None = None
+    try:
+        if recovery_identity.error is None:
+            current_identity = _validate_controlled_identity(
+                recovery_identity.value, binding, expected_identity
+            )
+        else:
+            raise recovery_identity.error
+        if current_identity != identity_snapshot:
+            raise _fail(
+                "FAULT_TARGET_CHANGED",
+                "Connected target identity changed during Fault recovery",
+            )
+        if recovery_state.error is None:
+            current_state = _validate_controlled_state(recovery_state.value)
+        else:
+            raise recovery_state.error
+    except _WorkflowFailure:
+        restoration_failed = True
+    except BaseException:
+        restoration_failed = True
+
+    if not restoration_failed and current_state is not None:
+        if current_state["state"] == "running":
+            snapshot["afterState"] = dict(current_state)
+            snapshot["resume"] = {
+                "dispatched": False,
+                "outcome": "already-satisfied",
+            }
+        elif current_state["state"] == "halted":
+            resume_prepared = await _prepare_control_authorization(
+                supervisor,
+                client,
+                binding,
+                identity_snapshot,
+                "target.resume",
+                deadline=recovery_deadline,
+            )
+            cancelled = _merge_cancellation(cancelled, resume_prepared.cancellation)
+            if resume_prepared.error is not None:
+                restoration_failed = True
+                snapshot["resume"] = {
+                    "dispatched": False,
+                    "outcome": "failed",
+                }
+            else:
+                resume_authorization = resume_prepared.value
+                if resume_authorization is None or not hasattr(
+                    resume_authorization, "action_digest"
+                ):
+                    restoration_failed = True
+                    snapshot["resume"] = {
+                        "dispatched": False,
+                        "outcome": "failed",
+                    }
+                else:
+                    snapshot["resume"] = {
+                        "dispatched": True,
+                        "outcome": "unknown",
+                    }
+                    resume_outcome = await call(
+                        lambda: client.target_control(
+                            "target.resume",
+                            {},
+                            resume_authorization.action_digest,
+                        ),
+                        deadline=recovery_deadline,
+                    )
+                    if resume_outcome.error is not None:
+                        restoration_failed = True
+                    else:
+                        try:
+                            resume_response = resume_outcome.value
+                            if resume_response != {"state": "running"}:
+                                raise _fail(
+                                    "PROBE_RESPONSE_INVALID",
+                                    "Probe target resume response is invalid",
+                                )
+                        except _WorkflowFailure:
+                            restoration_failed = True
+                        else:
+                            after_outcome = await call(
+                                lambda: client.target_state(),
+                                deadline=recovery_deadline,
+                            )
+                            if after_outcome.error is not None:
+                                restoration_failed = True
+                            else:
+                                try:
+                                    after_state = _validate_controlled_state(
+                                        after_outcome.value
+                                    )
+                                except _WorkflowFailure:
+                                    restoration_failed = True
+                                else:
+                                    snapshot["afterState"] = dict(after_state)
+                                    if after_state["state"] == "running":
+                                        snapshot["resume"] = {
+                                            "dispatched": True,
+                                            "outcome": "succeeded",
+                                        }
+                                    else:
+                                        restoration_failed = True
+                    if restoration_failed and snapshot["resume"]["outcome"] == "unknown":
+                        snapshot["resume"] = {
+                            "dispatched": True,
+                            "outcome": "failed",
+                        }
+        else:
+            restoration_failed = True
+            snapshot["resume"] = {"dispatched": False, "outcome": "unknown"}
+    else:
+        snapshot["resume"] = {"dispatched": False, "outcome": "unknown"}
+
+    if restoration_failed:
+        details = dict(initiating.details) if isinstance(initiating.details, Mapping) else {}
+        details["controlledSnapshot"] = dict(snapshot)
+        details["initiatingCode"] = initiating.code
+        return OperationResult.failure(
+            operation,
+            "HARDWARE_CLEANUP_FAILED",
+            "Hardware workflow cleanup failed",
+            details,
+        )
+    if cancelled is not None:
+        raise cancelled
+    return _controlled_result(initiating, snapshot)
+
+
 async def variable_read_workflow(
     request: object,
     *,
@@ -1153,8 +1742,33 @@ async def fault_workflow(
         typed, model, paths = _prepare(
             request, FaultWorkflowRequest, require_probe=True, require_pins=True
         )
+        if type(typed.halt_for_analysis) is not bool:
+            raise _fail("HARDWARE_INPUT_INVALID", "Fault halt selection is invalid")
     except _WorkflowFailure as error:
         return _operation_failure(operation, error)
+    if typed.halt_for_analysis:
+        worker_config = _seams.worker_config.for_observation()
+
+        async def action(supervisor: object, client: object) -> OperationResult[Any]:
+            return await _controlled_fault_action(
+                supervisor,
+                client,
+                typed=typed,
+                model=model,
+                paths=paths,
+                seams=_seams,
+                worker_config=worker_config,
+            )
+
+        return await _one_shot(
+            operation=operation,
+            paths=paths,
+            probe_id=typed.probe_id,
+            level=OperationLevel.CONTROL,
+            seams=_seams,
+            action=action,
+            worker_config=worker_config,
+        )
     return await _bind_and_run(
         operation=operation,
         typed=typed,
