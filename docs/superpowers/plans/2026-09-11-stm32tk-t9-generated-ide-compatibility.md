@@ -1,5 +1,7 @@
 # T9 generated Cortex-Debug attach compatibility correction
 
+Software implementation and independent review completed at integrated candidate `894a03d0b241bd139ae3ea890684ca29c16f6edb`; status **SOFTWARE_COMPLETE_HARDWARE_PENDING**. See [the implementation and review record](../../codex/returns/2026-09-11-stm32tk-t9-generated-ide-compatibility.md). No deployment/hardware authority was consumed by this slice.
+
 Accepted base: `f27931ff85be33bb0466b69300777a9c07455ed4`, branch `codex/STM32TK-1001-LEGACY-HARDWARE-CLOSED-LOOP-impl`. User requests “开始修正” after the remaining original generated-configuration defect was identified. This authorizes the bounded code correction and offline verification; no new deployment, IDE session, hardware access or remote action is part of this slice. Main owns design/integration; one Luna/max owner implements/tests; an independent reviewer checks the complete base-to-CodeHead diff. Main is clean, 100 commits ahead of the locally recorded upstream; no fetch/push is implied.
 
 ## Scenarios and boundaries
@@ -12,7 +14,7 @@ Non-goals: static launch generation (already intentionally empty), automatic tas
 
 ## Frozen field and lifecycle contract
 
-Independent contract check identified that `CortexDebugAttachContract` and `HandoffTicket` are exported APIs. The initial direct replacement proposal above is superseded by this additive design before acceptance: **preserve their existing constructors and canonical serialization**. This is an explicit amendment to the older handoff plan: the existing seven-field `cortexDebug` remains identity data; the new named field is the version-scoped launch projection. It replaces manual projection only, not the canonical identity or a second backend.
+`CortexDebugAttachContract` and `HandoffTicket` are exported APIs, so this additive design **preserves their existing constructors and canonical serialization**. This explicitly amends the older handoff plan: the existing seven-field `cortexDebug` remains identity data; the new named field is the version-scoped launch projection. It replaces the manual conversion of identity data into launch settings and introduces no second backend.
 
 - Production change stays in `tools/stm32-toolkit/src/stm32_toolkit/probe/handoff.py`, plus existing `test_debug_handoff.py` and narrowly required public-wrapper tests. Keep `CortexDebugAttachContract` constructor and its exact seven-field `to_dict()` unchanged, including `boardId`. Preserve existing two-argument `HandoffTicket` construction and serialization when no new launch projection is attached.
 - The same implementation owner also updates the external-debugging step in `skills/debug-firmware/SKILL.md` to consume `cortexDebugLaunch.configuration` only after exact schema/profile/environment matching, preserve canonical identity/ticket, and leave verified environment paths/name/type to the wrapper. This bounded usage change is needed so the existing product workflow selects the new projection; do not widen the skill's tool inventory, permissions or other debugging paths.

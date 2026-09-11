@@ -148,6 +148,8 @@ publish 的 data.monitor_run_ref 填 request before/after；compare 的 data.ana
 
 ## 8. 当前验收断点（2026-09-11）
 
+生成 IDE 配置软件修复已独立接受：候选 `894a03d0b241bd139ae3ea890684ca29c16f6edb` 新增版本限定的 `cortexDebugLaunch`，保留旧 API/companion；127 项 owner 回归、5 项主代理独立检查及实际扩展方法/PyOCD parser 离线验证通过。**SOFTWARE_COMPLETE_HARDWARE_PENDING**；当前部署仍为 `814b1683...`，本轮未部署或访问硬件。后续需准备并授权候选部署和一次新生成配置的真实 IDE 验证；完整 T9/T10/VS10-A 仍未完成。见 [软件修复记录](../codex/returns/2026-09-11-stm32tk-t9-generated-ide-compatibility.md)。下文“兼容缺口”保留为尚未实机闭合及旧版本的历史边界。
+
 最新 worker 修复及剩余读取已完成：候选 `814b1683d2f562ce1bb2db464ee4c572cb31d658` 经独立完整审查，部署至 `D:\stm32tk-data\t9-worker-stdin-20260911`；Check healthy/matching、安装字节及真实 stdio 离线检查通过。仅一次 CLI `testtime=38`、一次 MCP `testtime=0`，均为有效 32 位 typed read，完整绑定除采集时刻外一致；租约释放、无消费者残留，用户确认 D4 仍闪烁。**T9_CLI_MCP_PHYSICAL_PARITY_PASS**；下方 NOT_READY/未实现描述仅为历史状态。原始生成配置兼容性、完整 T9、T10/VS10-A 仍未完成。不得为同一结论重跑这两次读取。见 [本次修复与实机记录](../codex/returns/2026-09-11-stm32tk-t9-worker-stdin-delivery.md)。
 
 用户已授权 worker 修复后继续 T9。新候选部署路线经独立条款核对：保留旧 DataRoot，不绕过同版本 source-conflict；在 `D:\stm32tk-data\t9-worker-stdin-20260911` 先 Check=missing 再 Bootstrap，核对候选身份及真实启动器。不要复制旧 session/ticket/lease/action/runtime-state。P2 工程及 flash receipt 不变；由于 runtime/DataRoot 改变，本轮只新增同候选一次 CLI typed read → 一次 MCP typed read，首错停止。09 IDE/handoff 成功证据复用；原生成配置兼容性仍单独保留，不能自动宣布完整 T9。执行卡：`D:\codex-tmp\t9-worker-stdin-delivery-20260911\execution-card.md`，代码审查/部署前仍 NOT_READY。
