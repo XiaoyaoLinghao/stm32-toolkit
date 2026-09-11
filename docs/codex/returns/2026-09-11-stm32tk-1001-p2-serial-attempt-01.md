@@ -11,3 +11,23 @@ The user subsequently asked whether D4 was constantly lit. This is a field-obser
 Cleanup evidence records the lease as released and zero matching runtime processes. P2 source/ELF, -12 100ms continuous no-halt physical PASS and attempt 7 historical PASS hashes remain preserved. The prior canonical flash receipt was copied before execution; the canonical receipt now represents this new successful flash and must not be mixed with old sessions.
 
 All current evidence is retained under `D:\codex-tmp\t9t10-p2-20260911-01`: `result.json`, prepare/execute responses, `flash-result.json`, prior flash receipt, prepared binding, consumed marker, released lease, session file inventory and preserved hashes. The empty run-owned temporary directory was removed. No hardware command was issued after the terminal failure. Root cause and any repair require offline analysis first; a hardware retry requires new explicit authority.
+
+## Offline follow-up: migrated control-authority blocker
+
+The user confirmed D4 is steadily lit. No reset, reconnect, power cycle or hardware read was performed during this follow-up. An ENVIRONMENT blocker is now independently reproducible against the real installed runtime and current data: the global control authorization authority retains C-volume identities, while its directories are on D.
+
+The comparison is `probe/authorization.py:297-302`, inside `ControlAuthorizationStore._authority_lock`: persisted `parent`, `root`, and `records` dictionaries must equal current `os.stat` device/inode identities. Persisted values come from `data/.87547cbd313cf8847ab3f942c230a1de0cec2d3108d11ad4b9ddd1e206de54c6.control-authority.json`; actual values come from `data`, `data/control-authorizations`, and its `records` directory respectively.
+
+| Field | Persisted expected device / inode | Actual D device / inode |
+| --- | --- | --- |
+| parent | 9429648286015755375 / 11540474046044328 | 2063488474270118270 / 562949955196612 |
+| root | 9429648286015755375 / 6755399443056853 | 2063488474270118270 / 281474978485962 |
+| records | 9429648286015755375 / 7599824373188836 | 2063488474270118270 / 281474978486455 |
+
+Directly reading current C and D volume IDs confirms the expected device is C and the actual device is D. The preserved authority file predates migration (mtime 2026-09-07). The migration handoff records a byte-preserving campaign copy; this preserves file contents, not filesystem identity semantics.
+
+Minimal offline validation invoked existing `_authority_lock(create=False)`, without preparing or consuming an authorization. It rejected with `PROBE_AUTHORIZATION_INVALID`, caused by `authorization authority identity changed`. Existing `PhysicalTargetFlashAdapter._raise_start_error` at `testing/target.py:950-958`, then `_exception_result` at `testing_workflows.py:197-228`, map it to the observed `TEST_EXECUTION_FAILED` with empty details. Evidence: `offline-control-authority.json`, `offline-authority-gate-reproduction.json`, and the preserved `legacy-control-authority.json`. No new diagnostic framework or product code was introduced.
+
+This proves a current deterministic blocker before a reset/resume control authorization can be persisted. It does not recover the original swallowed exception or prove that no earlier post-flash operation failed first. Flash/readback success is confirmed; actual reset dispatch, resume, GPIO state, core state and the precise cause of the steady LED remain unmeasured. No physical TestRun or current-session control authorization was found.
+
+Minimal correction proposal: preserve the complete old global control ledger (10 record files) together with its paired authority file outside the active data namespace, then let the existing store initialize a new D identity and only fresh authorizations. Do not rewrite inode pins, delete individual consumed markers, relax validation or revive any old digest. No packaging change is required. This proposal has not been applied; any correction and subsequent one-shot hardware verification must respect their explicit authorization boundaries.
