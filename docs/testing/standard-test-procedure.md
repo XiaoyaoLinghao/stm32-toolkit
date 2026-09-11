@@ -146,6 +146,8 @@ publish 的 data.monitor_run_ref 填 request before/after；compare 的 data.ana
 
 ## 8. 当前验收断点（2026-09-11）
 
+09 超时的后续离线定位：真实 stdio 中仅构造/关闭 worker 即复现 10 秒超时；仅对 Windows spawn worker 显式设 child stdin=NUL 后 1.469 秒 ready、关闭后无残留、协议正常。独立审查确认 stdin 继承触发的进程环境兼容问题，发生在服务/探针访问前；更底层阻塞栈未取得。诊断及最小修正边界见 [MCP worker stdin 修正计划](../superpowers/plans/2026-09-11-stm32tk-mcp-worker-stdin-repair.md)。产品修复尚未实现/部署，无硬件重试；下段“根因不足”为当时断点，已由此处取代。
+
 最新 continuation 09：适配后的 IDE 路径 PASS（用户 testtime=10、GDB exit 0、D4 闪烁；本地 session events 佐证 attach/terminated），原 ticket end/reacquire OK，一次 CLI 读取 testtime=10。随后一次 MCP 读取返回 PROBE_TIMEOUT，本轮 **TERMINAL_STOPPED_MCP_PROBE_TIMEOUT**，没有重试。最终 registry=released、handoff=observing/ticket=null，无 Python/PyOCD/GDB 残留；MCP 后 D4 未再次目视确认。根因/具体超时阶段证据不足，下一步仅离线定位。原始生成配置兼容缺口及 T9 MCP 等价仍未闭合，T10/VS10-A 未完成。证据 `D:\codex-tmp\t9t10-t9-20260911-09` 及下方 T9 执行记录。以下 07/08 为历史断点，原外部预约现已消费释放。
 
 最近 IDE 尝试：continuation 07 已因用户报告 `PyOCD: GDB Server Quit` **TERMINAL_STOPPED**。实际扩展日志确认正确 T9 attach 配置进入 initializing/capabilities 后 terminated；没有成功 attach/detach 证据。当时离线确认所配置的 pyocd.exe 内嵌已不存在的 D runtime staging Python，`--version` 退出 1，而最终 runtime Python 的 `-I -m pyocd --version` 返回 0 / 0.45.1。原 IDE server stderr 尚未取到，不能宣称已还原全部现场错误。当时的启动入口阻塞已按下段修正，后续硬件仍停止；未重复 begin、未执行 end/reacquire，最后已核实的 externally-owned 预约保留。证据目录 `D:\codex-tmp\t9t10-t9-20260911-07\gdb-server-failure`。参见 [T9 执行记录](../codex/returns/2026-09-11-stm32tk-1001-t9-ide-attempt-06.md)。
