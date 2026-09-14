@@ -1,6 +1,6 @@
 # Physical Monitor evidence across sequential leases
 
-Status: proposed; requires user approval before product implementation. Current integration base `e3784aa8551faaba7ec1c67126ae9ad320c889de`. Primary owns design and independent review; one Luna/max owner implements the bounded Monitor slice. Firmware P4 remains unchanged at `8755ba8fd0c678f32d7d23e7d827e84317026429`.
+Status: approved by the user on 2026-09-14: "同意，可以进行修正". Integration accepted base `e3784aa8551faaba7ec1c67126ae9ad320c889de`; proposal commit `e6e2d751115902ce0376fa8e4d304923f03a75f0`. Primary owns design and independent review; one Luna/max owner implements the bounded Monitor slice. Firmware P4 remains unchanged at `8755ba8fd0c678f32d7d23e7d827e84317026429`.
 
 ## Verified problem
 
