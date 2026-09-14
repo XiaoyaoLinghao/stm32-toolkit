@@ -1973,7 +1973,6 @@ def _physical_validate_binding(
         or binding.session_id != paths.session_id
         or not probe_identity_matches
         or binding.flash_session_id != published_root_metadata.get("flash_session_id")
-        or binding.lease_id != published_root_metadata.get("lease_id")
         or binding.target_device != published_root_metadata.get("target_id")
         or published_root_metadata.get("origin_workspace_id") != paths.workspace_id
         or published_root_metadata.get("import_workspace_id") != paths.workspace_id

@@ -262,6 +262,7 @@ def _publish_physical_test_run(
     session_id: str | None = None,
     case_id: str = "case.counter",
     inventory_digest: str | None = None,
+    lease_id: str = "lease-01",
 ) -> None:
     assert state in {"failed", "passed"}
     case_state = state
@@ -337,7 +338,7 @@ def _publish_physical_test_run(
             "import_workspace_id": paths.workspace_id,
             "intent_digest": digest,
             "inventory_digest": stored_inventory_digest,
-            "lease_id": "lease-01",
+            "lease_id": lease_id,
             "origin_session_id": run_session_id,
             "origin_workspace_id": paths.workspace_id,
             "physical_transport_evidence": True,
@@ -366,6 +367,7 @@ def _append_physical_history(
     elf_sha256: str = "c" * 64,
     input_snapshot_sha256: str = "d" * 64,
     git_head: str = "e" * 40,
+    lease_id: str = "lease-01",
 ) -> tuple[SampleBatch, ...]:
     binding = ObservationBinding(
         workspace_id=paths.workspace_id,
@@ -380,7 +382,7 @@ def _append_physical_history(
         git_head=git_head,
         git_dirty=False,
         flash_session_id="flash-session-01",
-        lease_id="lease-01",
+        lease_id=lease_id,
         dwarf_sha256="f" * 64,
         svd_sha256=None,
     )
@@ -803,6 +805,45 @@ def test_physical_history_window_publishes_and_fresh_loads_v2_reference(tmp_path
     assert fresh == reference
 
 
+def test_physical_publication_accepts_sequential_leases_and_retains_each_authority(
+    tmp_path: Path,
+) -> None:
+    paths, evidence, test_run_id, raw_probe, monitor_run_id, group_id = _physical_context(tmp_path)
+    target_lease_id = "target-lease-01"
+    monitor_lease_id = "monitor-lease-01"
+    _publish_physical_test_run(
+        paths,
+        evidence,
+        test_run_id=test_run_id,
+        raw_probe=raw_probe,
+        monitor_run_id=monitor_run_id,
+        lease_id=target_lease_id,
+    )
+    target_root_files = tuple((evidence.root / "roots" / "test-run").glob("*.json"))
+    assert len(target_root_files) == 1
+    target_root_path = target_root_files[0]
+    target_root_before = target_root_path.read_bytes()
+    request = _physical_request(
+        paths,
+        raw_probe,
+        monitor_run_id,
+        group_id,
+        test_run_id,
+        monitor_lease_id=monitor_lease_id,
+    )
+
+    reference = publish_physical_monitor_run(paths, evidence, **request)
+
+    assert reference.lease_id == monitor_lease_id
+    assert load_monitor_run_reference(
+        paths,
+        EvidenceStore(evidence.root),
+        str(monitor_run_id),
+    ).lease_id == monitor_lease_id
+    assert target_root_path.read_bytes() == target_root_before
+    assert json.loads(target_root_before.decode("utf-8"))["metadata"]["lease_id"] == target_lease_id
+
+
 def test_physical_cli_is_a_thin_sanitized_workflow_adapter(tmp_path: Path, monkeypatch) -> None:
     from stm32_monitor import cli as cli_module
 
@@ -1077,8 +1118,16 @@ def _physical_request(
     monitor_run_id: UUID,
     group_id: UUID,
     test_run_id: str,
+    *,
+    monitor_lease_id: str = "lease-01",
 ) -> dict[str, object]:
-    batches = _append_physical_history(paths, raw_probe, monitor_run_id, group_id)
+    batches = _append_physical_history(
+        paths,
+        raw_probe,
+        monitor_run_id,
+        group_id,
+        lease_id=monitor_lease_id,
+    )
     return {
         "scenario_role": "failed-before",
         "test_run_id": test_run_id,
