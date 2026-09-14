@@ -162,6 +162,8 @@ T10 采样入口复用已接受的有限 Monitor 生命周期，在执行卡中�
 按已核实绝对路径清理本轮不再需要的临时输出；保留源码测试、可复用基线、用户数据、共享缓存、rollback、授权账本、有效 PASS 和最小失败证据。Windows 使用同一 PowerShell 原生命令，删除前确认在本轮目录内。自动策略拒绝 cleanup 时记录保留，不换工具/路径绕过。没有新测试不制造清理工作。
 
 ## 8. 当前验收断点（2026-09-14）
+最新 D3 部署已通过：source `6250ef14035c053caa5ddc98c072c4be5b5e3650`，独立安装于原 DataRoot 子目录 `candidates\lockup-20260914`；调用该候选绝对 Python，业务 DataRoot 仍保留原根（旧默认 launcher 仍会选旧 runtime，不能混用）。一次新 prepare 在 5,269ms 终态停止：resume-verify/postcondition-failed，预期 running，实测规范状态 faulted。未产生 action、未 execute/烧录；lease released、相关进程无残留，不能称已恢复运行。D3 固件仍只是离线候选，T10/VS10-A 未完成。详见 [部署和本次停止记录](../codex/returns/2026-09-14-stm32tk-t10-d3-deployment.md)。下方“未部署”均为此前历史断点；禁止重用本次终态授权或自动恢复重试。
+
 新 D3 before-firmware 已完成实现和独立离线审查：工程 `D:\codex-tmp\t10-d3-fw`，CodeHead `8755ba8fd0c678f32d7d23e7d827e84317026429`，build `96e92552c24c1351588d44df5a97f6402b2740294366b8a49f1d879a053f71ea`。D3 低电平常亮、D4 主循环翻转，case 为 d3-heartbeat；新双位采样及精确 P3→P4 源码变更入口已离线验证。最终构建集已保留且现有 freshness loader 通过；不得把这些后续交付所需生成文件当作一次性测试垃圾清除。本轮未部署、未连接硬件，不改变以下 diagnostic-03 终态；后续仍需当前绑定和新的有界实机授权。见 [实现与审查记录](../codex/returns/2026-09-14-stm32tk-t10-d3-fixture.md)。T10、VS10-A 未完成。
 
 最新 diagnostic-03：新授权下唯一连接诊断 4,796ms 终态失败；primary 为 resume-verify/backend-code/PROBE_BACKEND_ERROR，lastVerifiedTargetState=null，已到恢复后的状态读取/归一化，尚不能区分读异常与未支持的返回状态。未产生 action，未烧录；registry released、所属进程无残留。LOCKUP/lockedup 映射缺陷已修复并通过独立审查，集成本地 commit 26eaab9d47239ca0eacb7eca34bf9b8131537cfd；尚未部署。不把它称为本轮板态已确证。用户报告 D4 常亮，但旧 P3 的 LED1=1 按原图应为熄灭；不能把该目视报告归为预期 P3，也不能据此证明程序停住。见 [diagnostic-03 记录](../codex/returns/2026-09-14-stm32tk-t10-p3-stopped.md#newly-authorized-diagnostic-03)。以下 continuation-02 是历史断点。
