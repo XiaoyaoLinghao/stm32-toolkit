@@ -1,6 +1,6 @@
 # D3 recovery programming succeeded
 
-The newly requested recovery execute succeeded in 27,189ms, exit0/OK. Flash receipt reports success and **54,904 verified bytes**; a real physical mailbox TestRun was published. Probe lease is released and no invocation/debug consumers remain. No further hardware operation occurred. The board's D3/D4 visual observation is pending the user's answer.
+The newly requested recovery execute succeeded in 27,189ms, exit0/OK. Flash receipt reports success and **54,904 verified bytes**; a real physical mailbox TestRun was published. Probe lease is released and no invocation/debug consumers remain. No further hardware operation occurred. The user subsequently confirmed: "是的，现在是D3常亮，D4闪烁". This confirms the intended visible D3-on/D4-blinking behavior after programming; it is a user observation, not a machine-collected Monitor window. The observation is retained in user-led-observation.json; no additional hardware access occurred.
 
 ## Bound identities and result
 

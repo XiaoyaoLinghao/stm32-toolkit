@@ -163,7 +163,7 @@ T10 采样入口复用已接受的有限 Monitor 生命周期，在执行卡中�
 按已核实绝对路径清理本轮不再需要的临时输出；保留源码测试、可复用基线、用户数据、共享缓存、rollback、授权账本、有效 PASS 和最小失败证据。Windows 使用同一 PowerShell 原生命令，删除前确认在本轮目录内。自动策略拒绝 cleanup 时记录保留，不换工具/路径绕过。没有新测试不制造清理工作。
 
 ## 8. 当前验收断点（2026-09-14）
-最新恢复烧录 **成功**：用户重新要求烧录后，一次恢复 execute 27,189ms/exit0，D3 固件 build `96e92552c24c1351588d44df5a97f6402b2740294366b8a49f1d879a053f71ea` 已写入并回读54,904字节，取得 physical run `target-v2-53b0c81ffeb50ab65bd6c0ad815ad273`，d3-heartbeat 为预期 failed，error/timeout/skipped=0。lease released、相关进程无残留；灯态等待用户确认，不冒充双位Monitor结果。随后补记 target-failure-observed 检查点返回 ACCEPTANCE_ATTEMPT_TIMED_OUT；真实烧录/TestRun保留，不因账本超时重烧。T10/VS10-A尚未完成，后续先按恢复/lineage契约核对既有证据。见 [恢复烧录记录](../codex/returns/2026-09-14-stm32tk-t10-d3-recovery-flash.md)。以下“未烧录/停止”均为先前断点。
+最新恢复烧录 **成功**：用户重新要求烧录后，一次恢复 execute 27,189ms/exit0，D3 固件 build `96e92552c24c1351588d44df5a97f6402b2740294366b8a49f1d879a053f71ea` 已写入并回读54,904字节，取得 physical run `target-v2-53b0c81ffeb50ab65bd6c0ad815ad273`，d3-heartbeat 为预期 failed，error/timeout/skipped=0。lease released、相关进程无残留；用户已确认“D3常亮，D4闪烁”，本次可见灯态符合预期；这是用户目视证据，不冒充双位Monitor结果。随后补记 target-failure-observed 检查点返回 ACCEPTANCE_ATTEMPT_TIMED_OUT；真实烧录/TestRun保留，不因账本超时重烧。T10/VS10-A尚未完成，后续先按恢复/lineage契约核对既有证据。见 [恢复烧录记录](../codex/returns/2026-09-14-stm32tk-t10-d3-recovery-flash.md)。以下“未烧录/停止”均为先前断点。
 
 最新 D3 部署已通过：source `6250ef14035c053caa5ddc98c072c4be5b5e3650`，独立安装于原 DataRoot 子目录 `candidates\lockup-20260914`；调用该候选绝对 Python，业务 DataRoot 仍保留原根（旧默认 launcher 仍会选旧 runtime，不能混用）。一次新 prepare 在 5,269ms 终态停止：resume-verify/postcondition-failed，预期 running，实测规范状态 faulted。未产生 action、未 execute/烧录；lease released、相关进程无残留，不能称已恢复运行。D3 固件仍只是离线候选，T10/VS10-A 未完成。详见 [部署和本次停止记录](../codex/returns/2026-09-14-stm32tk-t10-d3-deployment.md)。下方“未部署”均为此前历史断点；禁止重用本次终态授权或自动恢复重试。
 
