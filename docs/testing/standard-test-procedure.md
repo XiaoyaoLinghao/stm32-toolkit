@@ -104,6 +104,8 @@ handoff begin 前，还必须在**不启动调试**的情况下确认实际 IDE 
 
 T10 顺序如下；动态值只能来自真实返回，缺少的输入结构必须在开始前明确：
 
+恢复既有 P3 证据时，先通过公共 `physical publish` 发布并重新读取已提交的 failed-before window，再建立新的计时 attempt，按公共检查点引用原 TestRun；不得为补记账本重烧或重采样。新采集窗口同样必须完成发布及读取验证后，才能进入依赖它的源码授权或 FixVerification。Target 与 Monitor 的租约分别属于各自连接，保留两份真实值，以现有 TestRun 链接及稳定身份关联；同一 Monitor window/transcript/reference 内的租约仍须一致，不能复制旧租约来消除不匹配。
+
 | 步骤 | 操作与必要引用 |
 | --- | --- |
 | A | 新 UUID attempt，scenario=`legacy-keil-physical-repair`、version=1；scenario attempt begin → checkpoint project-materialized。P3/P4/Diagnostic 共用 EvidenceIdentity.session_id，各 flash/action/lease 独立且新鲜 |
@@ -163,6 +165,8 @@ T10 采样入口复用已接受的有限 Monitor 生命周期，在执行卡中�
 按已核实绝对路径清理本轮不再需要的临时输出；保留源码测试、可复用基线、用户数据、共享缓存、rollback、授权账本、有效 PASS 和最小失败证据。Windows 使用同一 PowerShell 原生命令，删除前确认在本轮目录内。自动策略拒绝 cleanup 时记录保留，不换工具/路径绕过。没有新测试不制造清理工作。
 
 ## 8. 当前验收断点（2026-09-14）
+租约关联修正已离线 **ACCEPTED**：CodeHead `72e9706c9cf60dc3204b351a98d3d01623125dd5`，仅修改跨操作租约相等谓词及现有测试；36项相关测试通过，主代理在干净工作树完成完整差异审查，并用实际存证副本经公共发布器及新进程读取验证通过，32份原始证据哈希不变。尚未部署到source6250 runtime，生产 evidence 尚未执行新发布，P4源码/新attempt/硬件均未动；下一步部署获准后先离线发布原窗口，再继续P4。见 [实现及独立验证](../codex/returns/2026-09-14-stm32tk-monitor-physical-lease-link.md)。下文“待批准修正”为此前断点。
+
 当前 P4 前置阻塞已离线确证：公共 Monitor physical publish 在 `replay.py:1976` 强制原 Target lease 与后续 Monitor lease 相等；实际26项身份/上下文比较仅该字段不同。两次独立连接各自正确释放，原烧录与下述300批采样PASS保留，不能改称硬件失败。P4源码未改、未构建、未创建新attempt、无新硬件；待批准并修正发布契约后复用既有数据继续。见 [根因及最小范围](../codex/returns/2026-09-14-stm32tk-t10-monitor-lease-publication-block.md)、[拟议规格](../superpowers/specs/2026-09-14-stm32tk-monitor-physical-lease-link-design.md) 和 [拟议计划](../superpowers/plans/2026-09-14-stm32tk-monitor-physical-lease-link.md)。
 
 最新 failed-before Monitor **PASS**：用户授权后单次30秒/100ms窗口，300个完整相关批次、零丢批，testtime有102个不同值，PE3={0}、PE4={0,1}；周期P95=101.8052ms、P99=103.5901ms、最大155.7186ms，现有功能/性能门槛均通过。采样停止、probe released、runtime stopped，registry released，相关进程无残留。未重烧、未重试；采样后用户灯态确认待回复。T10/VS10-A仍未完成；下文Monitor待授权为此前断点。见 [本轮实机采样记录](../codex/returns/2026-09-14-stm32tk-t10-d3-before-monitor.md)。
