@@ -744,6 +744,7 @@ class PyOCDBackend:
             "running": "running",
             "halted": "halted",
             "reset": "reset",
+            "lockup": "faulted",
             "lockedup": "faulted",
         }.get(str(raw).lower())
         if mapped is None:

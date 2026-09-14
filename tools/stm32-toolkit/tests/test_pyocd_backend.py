@@ -540,6 +540,47 @@ def test_exact_legacy_selector_still_selects_only_the_matching_probe_object():
     assert evidence.to_dict()["probeId"] == "probe-a"
 
 
+def test_native_pyocd_lockup_and_legacy_lockedup_map_to_faulted():
+    Target = pytest.importorskip("pyocd.core.target").Target
+
+    assert PyOCDBackend._read_target_state(FakePyOCDTarget(state=Target.State.LOCKUP)) == (
+        "faulted"
+    )
+    assert PyOCDBackend._read_target_state(FakePyOCDTarget(state="lockedup")) == (
+        "faulted"
+    )
+
+
+def test_observe_native_lockup_maps_faulted_but_rejects_running_postcondition():
+    Target = pytest.importorskip("pyocd.core.target").Target
+
+    target = ConnectionPolicyTarget(
+        resume_states=(Target.State.LOCKUP, Target.State.LOCKUP)
+    )
+    driver = FakePyOCDDriver((FakePyOCDProbe("probe-a"),), target=target)
+
+    with pytest.raises(ProbeBackendError) as caught:
+        PyOCDBackend(driver).open_attach("probe-a", "stm32f407vg")
+
+    assert caught.value.code == "PROBE_ATTACH_FAILED"
+    diagnostic = caught.value.details["attachDiagnostic"]
+    assert validate_attach_diagnostic(diagnostic) == diagnostic
+    assert diagnostic["primary"] == {
+        "stage": "resume-verify",
+        "reason": "postcondition-failed",
+        "sourceCode": "PROBE_ATTACH_FAILED",
+    }
+    assert diagnostic["lastVerifiedTargetState"] == "faulted"
+    assert target.calls == [
+        ("resume",),
+        ("get_state",),
+        ("resume",),
+        ("get_state",),
+    ]
+    assert target.state is Target.State.LOCKUP
+    assert driver.created_sessions[0].close_count == 1
+
+
 def test_observation_attach_uses_pinned_halt_policy_then_returns_running():
     target = FakePyOCDTarget(
         memory={0x20000000: b"\x01\x02\x03\x04"},
