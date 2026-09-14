@@ -124,6 +124,10 @@ physical publish 的 --probe-id 必须取 `history.binding.probeId` 原始 selec
 
 publish 的 data.monitor_run_ref 填 request before/after；compare 的 data.analysis_publication 单独保存为 publication.json，不能传完整响应；其中 diagnostic_marker_ref 用于 marker。要求 quality=VALID、conclusion=COMPLETED、changed=true。VerificationPlan ID 必须等于 declaration.validation_plan_id，绑定两侧 run/evidence、declaration、analysis ID/evidence，required_monitor_quality=VALID、expected_changed=true。verification complete 引用实际 P3/P4 operation IDs 和 monitor.analysis.compare、monitor.analysis.bundle。不生成 VS08 AcceptanceRecord 冒充物理验收。
 
+`diagnose source-change declare` 只消费完整 declaration，不生成 diff artifact/envelope。按现有 EvidenceStore 公共 API 准备：从真实 P3 TestRun envelope 读取 before identity，以 P3/P4 实际提交间仅 Main/Main.c 的 Git diff 创建 `kind=source-diff`、`media_type=text/x-diff` artifact；写入 operation 为 `diagnostic-source-change`、parents 为空、恰好一个 artifact、metadata 精确为 `{"kind":"source-change-diff"}` 的 envelope。declaration 的前后 source SHA 使用完整 InputSnapshot SHA，build/ELF 来自对应真实构建，不能用单文件 SHA 替代。run-local 包装必须先独立审查；不得使用测试中的合成 diff 或 identity。依据：EvidenceStore 规格 2026-08-14 第 139–159 行及 diagnostic_workflows.py 的 `_read_diff_evidence` 校验。
+
+T10 采样入口复用已接受的有限 Monitor 生命周期，在执行卡中固定两侧独立 output root、当前源码/ELF/runtime pins 和真实 session；调用前读取配置，Windows spawn 导入时不得启动 runtime。每个完整 batch 必须同时包含 testtime 与 GPIOE.ODR；P3 要求 testtime 至少两个不同有效值且 PE4 仅为 1，P4 要求 testtime 至少两个不同有效值且 PE4 同时出现 0/1。固定 30 秒窗口保留全部批次；发布边界使用实际选中 history 的首尾 sequence/captured 时间。历史离线回放仅验证入口判定，不作为本轮物理证据。
+
 ## 6. 首错即停，先分类再改动
 
 非预期枚举/attach/状态/身份/烧录/读取/发布/清理错误发生后，停止后续硬件及动作消费。保存原响应/异常链、最后成功阶段、授权消费状态、flash/TestRun 是否产生、当前 lease/ticket。执行原入口约定 cleanup；同次调用内部清理与外部重新调用硬件必须分开报告。cleanup 未证实成功则状态未知/阻塞，不能把超时或发送进程终止信号写成释放成功。
