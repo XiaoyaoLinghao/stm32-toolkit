@@ -163,6 +163,8 @@ T10 采样入口复用已接受的有限 Monitor 生命周期，在执行卡中�
 按已核实绝对路径清理本轮不再需要的临时输出；保留源码测试、可复用基线、用户数据、共享缓存、rollback、授权账本、有效 PASS 和最小失败证据。Windows 使用同一 PowerShell 原生命令，删除前确认在本轮目录内。自动策略拒绝 cleanup 时记录保留，不换工具/路径绕过。没有新测试不制造清理工作。
 
 ## 8. 当前验收断点（2026-09-14）
+当前 P4 前置阻塞已离线确证：公共 Monitor physical publish 在 `replay.py:1976` 强制原 Target lease 与后续 Monitor lease 相等；实际26项身份/上下文比较仅该字段不同。两次独立连接各自正确释放，原烧录与下述300批采样PASS保留，不能改称硬件失败。P4源码未改、未构建、未创建新attempt、无新硬件；待批准并修正发布契约后复用既有数据继续。见 [根因及最小范围](../codex/returns/2026-09-14-stm32tk-t10-monitor-lease-publication-block.md)、[拟议规格](../superpowers/specs/2026-09-14-stm32tk-monitor-physical-lease-link-design.md) 和 [拟议计划](../superpowers/plans/2026-09-14-stm32tk-monitor-physical-lease-link.md)。
+
 最新 failed-before Monitor **PASS**：用户授权后单次30秒/100ms窗口，300个完整相关批次、零丢批，testtime有102个不同值，PE3={0}、PE4={0,1}；周期P95=101.8052ms、P99=103.5901ms、最大155.7186ms，现有功能/性能门槛均通过。采样停止、probe released、runtime stopped，registry released，相关进程无残留。未重烧、未重试；采样后用户灯态确认待回复。T10/VS10-A仍未完成；下文Monitor待授权为此前断点。见 [本轮实机采样记录](../codex/returns/2026-09-14-stm32tk-t10-d3-before-monitor.md)。
 
 离线衔接已完成：现有 physical run 已通过公共接口绑定 Diagnostic `2781df6812f2dc0ba067e0b1b9d07b5a`，revision 5 / INVESTIGATING。原运行及 d3-heartbeat 均为 failed，离线观察匹配；timer-or-pe3 的具体分支仍未被机器证据区分，假设保持 open/unrated。旧 attempt 的公共 resume 确认 timedOut=true；尚未建立新计时 attempt，待 Monitor 与 P4 精确动作准备齐全后引用原 TestRun 连续推进。未新增任何硬件访问。下一步是一轮30秒/100ms的 failed-before 双位 Monitor 观测，待该范围授权；详见 [Diagnostic 衔接记录](../codex/returns/2026-09-14-stm32tk-t10-d3-diagnostic-lineage.md)。下文尚无 Diagnostic 为历史断点。
