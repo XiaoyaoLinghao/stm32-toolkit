@@ -47,6 +47,7 @@ provenance 拒绝必须记录检查函数/行号、逐字段预期值/实际值�
 | --- | --- | --- |
 | 正常 Target prepare | `testing_workflows.py:502-556` 建 OBSERVE，attach 后才持久化授权；`probe/pyocd_backend.py:978-988` 连接暂时 halt，然后 resume 并验证 running | 需要连接授权及唯一 owner；不烧录；无新 digest 不得 execute |
 | 正常 Target execute | `testing_workflows.py:647-654` 使用 MODIFY；`probe/pyocd_backend.py:970-977` 要求 attach halted；`testing/target.py:899-929,1599-1619` flash/readback 后 reset，必要时 resume，再开 transport | 只消费本次匹配的新 digest；flash 成功不等于程序运行成功，须得到真实 TestRun |
+| 已获本次恢复烧录授权的 Target | 复用已批准 recovery-static-prepare 规格：prepare 显式 `--recovery-under-reset`，`testing_workflows.py:502-514` 跳过全部硬件，仅验证静态事实并将 true 写入 action；execute `640-654` 从新 action 派生100kHz SWD/under-reset MODIFY，停核及物理身份核对后才写入 | 不要求旧程序先 running，不执行正常 prepare 作为前导；一次新 prepare/execute，禁止旧 digest、自动切换或失败重试。sector erase、keepUnwritten=true、auto_unlock=false；沿用现有回读/reset/条件 resume/transport/cleanup，不能把静态 prepare 成功当作板子已连接或烧录成功 |
 | 变量/有限采样 | `debug/read.py:237-253,580-603` 走 memory.read；`probe/pyocd_backend.py:1193-1225` 无 halted 前置 | 允许运行态读取；正常 attach 仍有暂时停核。接口允许不等于已物理证明底层全程无瞬时停核 |
 | SVD 外设寄存器 | `debug/read.py:606-637` 解析后仍走 memory.read | 只读已核对安全的路径；不同于 core register；单点 ODR 仅证明当时位值 |
 | 完整 Fault | `debug/fault.py:227-245,514-558` 初次/最终 core register 要求 halted 且稳定；`debug/model.py:563-600` 强制 halted 报告 | 必须有保持 halted 的入口和所有权/控制契约；运行正常不等于无活动 Fault |
@@ -162,6 +163,8 @@ T10 采样入口复用已接受的有限 Monitor 生命周期，在执行卡中�
 按已核实绝对路径清理本轮不再需要的临时输出；保留源码测试、可复用基线、用户数据、共享缓存、rollback、授权账本、有效 PASS 和最小失败证据。Windows 使用同一 PowerShell 原生命令，删除前确认在本轮目录内。自动策略拒绝 cleanup 时记录保留，不换工具/路径绕过。没有新测试不制造清理工作。
 
 ## 8. 当前验收断点（2026-09-14）
+最新恢复烧录 **成功**：用户重新要求烧录后，一次恢复 execute 27,189ms/exit0，D3 固件 build `96e92552c24c1351588d44df5a97f6402b2740294366b8a49f1d879a053f71ea` 已写入并回读54,904字节，取得 physical run `target-v2-53b0c81ffeb50ab65bd6c0ad815ad273`，d3-heartbeat 为预期 failed，error/timeout/skipped=0。lease released、相关进程无残留；灯态等待用户确认，不冒充双位Monitor结果。随后补记 target-failure-observed 检查点返回 ACCEPTANCE_ATTEMPT_TIMED_OUT；真实烧录/TestRun保留，不因账本超时重烧。T10/VS10-A尚未完成，后续先按恢复/lineage契约核对既有证据。见 [恢复烧录记录](../codex/returns/2026-09-14-stm32tk-t10-d3-recovery-flash.md)。以下“未烧录/停止”均为先前断点。
+
 最新 D3 部署已通过：source `6250ef14035c053caa5ddc98c072c4be5b5e3650`，独立安装于原 DataRoot 子目录 `candidates\lockup-20260914`；调用该候选绝对 Python，业务 DataRoot 仍保留原根（旧默认 launcher 仍会选旧 runtime，不能混用）。一次新 prepare 在 5,269ms 终态停止：resume-verify/postcondition-failed，预期 running，实测规范状态 faulted。未产生 action、未 execute/烧录；lease released、相关进程无残留，不能称已恢复运行。D3 固件仍只是离线候选，T10/VS10-A 未完成。详见 [部署和本次停止记录](../codex/returns/2026-09-14-stm32tk-t10-d3-deployment.md)。下方“未部署”均为此前历史断点；禁止重用本次终态授权或自动恢复重试。
 
 新 D3 before-firmware 已完成实现和独立离线审查：工程 `D:\codex-tmp\t10-d3-fw`，CodeHead `8755ba8fd0c678f32d7d23e7d827e84317026429`，build `96e92552c24c1351588d44df5a97f6402b2740294366b8a49f1d879a053f71ea`。D3 低电平常亮、D4 主循环翻转，case 为 d3-heartbeat；新双位采样及精确 P3→P4 源码变更入口已离线验证。最终构建集已保留且现有 freshness loader 通过；不得把这些后续交付所需生成文件当作一次性测试垃圾清除。本轮未部署、未连接硬件，不改变以下 diagnostic-03 终态；后续仍需当前绑定和新的有界实机授权。见 [实现与审查记录](../codex/returns/2026-09-14-stm32tk-t10-d3-fixture.md)。T10、VS10-A 未完成。
