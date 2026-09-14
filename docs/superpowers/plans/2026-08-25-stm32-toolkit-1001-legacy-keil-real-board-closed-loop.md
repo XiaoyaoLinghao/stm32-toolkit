@@ -225,15 +225,17 @@ Acceptance 2026-09-11: generated IDE/handoff slice independently accepted at sou
 
 ### Task 10: Produce P3 failure, evidence-driven diagnosis, and authorized P4 fix
 
-- [ ] **Step 1: Create only the P3 defect.** Change the heartbeat branch from `LED1=!LED1` to `LED1=1`, retain timer/test instrumentation, commit P3, rebuild, and prove only the intended source behavior plus expected build/ELF identity changed.
+2026-09-14: Future attempts follow the user-approved [D3 fixture amendment](../specs/2026-09-14-stm32tk-t10-d3-fixture-design.md). Preserve all prior D4 TestRuns and terminal attempts without relabeling. Software preparation does not close the physical steps below.
 
-- [ ] **Step 2: Execute a fresh Target action.** Never reuse P2 authorization. Flash/readback P3 and require D4 off, `testtime`/monotonic timer alive, PE4 high, Monitor agreement, and a physical failed `d4-heartbeat` TestRun.
+- [ ] **Step 1: Create only the P3 defect.** Prepare the revised `d3-heartbeat` fixture with initial and periodic `LED0=0` (D3 lit); retain periodic `LED1=!LED1` (D4 liveness), timer, and v2 mailbox contract. Commit P3, rebuild, and verify the intended source/case digest and fresh build/ELF identity.
 
-- [ ] **Step 3: Run the existing diagnostic workflow.** Start from the failed TestRun. Add and assess, in evidence order, timer/interrupt stopped, GPIO/board path failed, and application continuously writes high. Bind typed/DWARF, SVD, source diff, schematic D4/R13/VCC3.3 active-low facts, Monitor, and TestRun. Conclude only when evidence supports the application logic defect.
+- [ ] **Step 2: Execute a fresh Target action.** Never reuse P2 authorization. Flash/readback P3 and require D3 lit/PE3 low, D4 toggling/PE4 both values, `testtime`/monotonic timer alive, Monitor agreement, and a physical failed `d3-heartbeat` TestRun.
 
-- [ ] **Step 4: Generate the exact source-change authorization.** Declare only the P3-to-P4 restoration, checkpoint the correct acceptance attempt, and consume the single-use authorization for that exact diff. Reject an altered file/digest as a focused negative check without touching hardware.
+- [ ] **Step 3: Run the existing diagnostic workflow.** Start from the failed TestRun. Add and assess, in evidence order, timer/interrupt stopped, GPIO/board path failed, and application holds PE3 low. Bind typed/DWARF, SVD, source diff, schematic D3/R11/VCC3.3 active-low facts, independent D4 liveness, Monitor, and TestRun. Conclude only when evidence supports the application logic defect.
 
-- [ ] **Step 5: Restore toggle as P4, rebuild, and reflash with fresh pins.** Commit P4, require new build ID/ELF SHA, run a new Target prepare/execute, and collect D4/typed/SVD/Monitor plus physical passed TestRun.
+- [ ] **Step 4: Generate the exact source-change authorization.** Declare only the periodic `LED0=0` to `LED0=!LED0` restoration, preserving initial LED0=0 and D4 toggle; checkpoint the correct acceptance attempt, and consume the single-use authorization for that exact diff. Reject an altered file/digest as a focused negative check without touching hardware.
+
+- [ ] **Step 5: Restore toggle as P4, rebuild, and reflash with fresh pins.** Commit P4, require new build ID/ELF SHA, run a new Target prepare/execute, and collect D3 toggling plus D4 liveness, typed/SVD/Monitor and the physical passed TestRun.
 
 - [ ] **Step 6: Complete diagnostic verification.** Bind failed-before P3 and fixed-after P4, exact project/workspace/session/probe/target lineage, revisions, states, and source authorization. Do not create or relabel a VS08 AcceptanceRecord.
 

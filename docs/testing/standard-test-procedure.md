@@ -71,7 +71,7 @@ provenance 拒绝必须记录检查函数/行号、逐字段预期值/实际值�
 
 ```text
 TK build --project-root <P> --preset arm-debug --json
-TK test target prepare --probe-id <selector> --case-id d4-heartbeat
+TK test target prepare --probe-id <selector> --case-id <当前规格的case-id>
 TK test target execute --probe-id <selector> --authorized-action-digest <本次新digest>
 TK test show <实际nativeRunID>
 TK read sample --probe <selector> --expected-build-id <build> --expected-elf-sha256 <elf> --expression testtime --interval-ms 250 --count 3
@@ -99,16 +99,18 @@ handoff begin 前，还必须在**不启动调试**的情况下确认实际 IDE 
 
 该版本对还须核对服务 ready 信号：Cortex-Debug 默认 `GDB server started (at|on) port` 不匹配 PyOCD 0.45.1 的 `GDB server listening on port`。仅外置 launch 增加现有字段 `overrideGDBServerStartedRegex="GDB server (?:started (?:at|on)|listening on) port [0-9]+"`，用已取得日志离线验证匹配及 STDIO 反例，独立审查后才进入下一次获准 IDE 步骤；不延长超时或重连补同一证据。
 
+当前 T10 使用用户于 2026-09-14 批准的 [D3 修订规格](../superpowers/specs/2026-09-14-stm32tk-t10-d3-fixture-design.md)。原图 BSMR-MC04.PDF（SHA e14a70e9e49f7ce6e0285a687f215f591bb1f53d6322f6d32a5e4052c92f1af1）第 1 页确认 D3=LED0/PE3（MCU pin2），经 R11 1K 接 VCC3.3，0 亮/1 灭；D4=LED1/PE4 同为低电平亮。新 fixture/case/双位采样须使用新 session/attempt 与实际新 build/digest；旧 d4-heartbeat、P3/P4 和历史授权留存不改写。常亮/常灭不能代替 CPU 活性或规范状态证据。
+
 T10 顺序如下；动态值只能来自真实返回，缺少的输入结构必须在开始前明确：
 
 | 步骤 | 操作与必要引用 |
 | --- | --- |
 | A | 新 UUID attempt，scenario=`legacy-keil-physical-repair`、version=1；scenario attempt begin → checkpoint project-materialized。P3/P4/Diagnostic 共用 EvidenceIdentity.session_id，各 flash/action/lease 独立且新鲜 |
-| B | 获准后只将 Main/Main.c 的 `LED1=!LED1;` 改为 `LED1=1;`；真实 build → checkpoint firmware-built-before → 新 prepare/execute → P3 physical failed。仅预期 heartbeat 断言失败可继续，基础设施/身份/超时错误不能算预期 P3 |
+| B | 当前 D3 修订使用 `d3-heartbeat`：P3 初始化后及周期块 `LED0=0`，D3 常亮；保留周期 `LED1=!LED1`，D4 继续闪烁。真实 build → checkpoint firmware-built-before → 新 prepare/execute → P3 physical failed。仅预期 D3 heartbeat 断言失败可继续，基础设施/身份/超时错误不能算预期 P3 |
 | C | checkpoint target-failure-observed 绑定 P3 run；`diagnose start <P3> --failed-run-mode target --operation-id <新ID>` → begin/hypothesis add/plan add、run/hypothesis assess，形成实际诊断。failed-run-mode 默认 host，不可省略 |
 | D | P3 固件仍运行时，使用已准备入口采集有限 Monitor window 并 publish failed-before；不能切换 P4 后补采 P3 |
 | E | 核对实际 before 文件 SHA、完整 InputSnapshot、Diagnostic 对应的 source-change intent → checkpoint diagnosis-completed → scenario attempt resume → 核对返回 revision/actionDigest → authorize-source-change --authorized。旧 planned intent 只是候选，不是授权 |
-| F | 只恢复获准那一行 → 真实 build，完整 after InputSnapshot 等于 intent 派生值 → diagnose source-change declare → checkpoint firmware-built-after → 新 prepare/execute → 同 T10 身份 P4 physical passed |
+| F | 只将获准的周期块 `LED0=0` 恢复为 `LED0=!LED0`，保持初始 `LED0=0` 和 D4 翻转 → 真实 build，完整 after InputSnapshot 等于 intent 派生值 → diagnose source-change declare → checkpoint firmware-built-after → 新 prepare/execute → 同 T10 身份 P4 physical passed |
 | G | P4 运行时采集真实 window → publish fixed-after → compare/bundle 绑定两侧 monitor refs、TestRun、declaration、Diagnostic。selector 必须证明 LED 修复，只有 testtime 增长不够 |
 | H | VerificationPlan → verification start → marker attach → verification complete；Diagnostic=RESOLVED 且 FixVerification=PASSED 后，checkpoint target-fix-verified 绑定 P4 native ID 和实际 fix-verification-id |
 
@@ -128,7 +130,7 @@ publish 的 data.monitor_run_ref 填 request before/after；compare 的 data.ana
 
 `diagnose source-change declare` 只消费完整 declaration，不生成 diff artifact/envelope。按现有 EvidenceStore 公共 API 准备：从真实 P3 TestRun envelope 读取 before identity，以 P3/P4 实际提交间仅 Main/Main.c 的 Git diff 创建 `kind=source-diff`、`media_type=text/x-diff` artifact；写入 operation 为 `diagnostic-source-change`、parents 为空、恰好一个 artifact、metadata 精确为 `{"kind":"source-change-diff"}` 的 envelope。declaration 的前后 source SHA 使用完整 InputSnapshot SHA，build/ELF 来自对应真实构建，不能用单文件 SHA 替代。run-local 包装必须先独立审查；不得使用测试中的合成 diff 或 identity。依据：EvidenceStore 规格 2026-08-14 第 139–159 行及 diagnostic_workflows.py 的 `_read_diff_evidence` 校验。
 
-T10 采样入口复用已接受的有限 Monitor 生命周期，在执行卡中固定两侧独立 output root、当前源码/ELF/runtime pins 和真实 session；调用前读取配置，Windows spawn 导入时不得启动 runtime。每个完整 batch 必须同时包含 testtime 与 GPIOE.ODR；P3 要求 testtime 至少两个不同有效值且 PE4 仅为 1，P4 要求 testtime 至少两个不同有效值且 PE4 同时出现 0/1。固定 30 秒窗口保留全部批次；发布边界使用实际选中 history 的首尾 sequence/captured 时间。历史离线回放仅验证入口判定，不作为本轮物理证据。
+T10 采样入口复用已接受的有限 Monitor 生命周期，在执行卡中固定两侧独立 output root、当前源码/ELF/runtime pins 和真实 session；调用前读取配置，Windows spawn 导入时不得启动 runtime。当前 D3 修订的每个完整 batch 必须同时包含 testtime 与 GPIOE.ODR；两侧都要求 testtime 至少两个不同有效值且 PE4 同时出现 0/1，以验证 D4 主循环活性。P3 要求 PE3 仅为 0（D3 常亮），P4 要求 PE3 同时出现 0/1。固定 30 秒/100ms 窗口保留全部批次；发布边界使用实际选中 history 的首尾 sequence/captured 时间。历史 D4 回放只能验证原入口，不作为新 D3 物理证据。
 
 ## 6. 首错即停，先分类再改动
 

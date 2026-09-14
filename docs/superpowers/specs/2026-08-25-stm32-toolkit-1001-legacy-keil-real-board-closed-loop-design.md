@@ -136,6 +136,8 @@ D4 约每秒翻转，Toolkit 同时读取 `testtime` 的活动变化和 GPIOE OD
 
 ### 场景 A2：可复现 D4 常灭故障被诊断并修复
 
+2026-09-14 用户已批准 [D3 故障／D4 活性修订](2026-09-14-stm32tk-t10-d3-fixture-design.md)，未来 T10 以该修订为准。下述 D4 held-off 描述保留为原活动及历史证据依据，不作为新 D3 fixture 的执行指令。
+
 迁移工程增加最小、项目自有的 `stm32-target-frame/2` memory-mailbox emitter。ring 为 4096
 字节；现有 transport 在 ring 前还有 16 字节 producer/consumer header，因此 linker 必须明确
 保留合计 4112 字节。只有 P1 MAP/ELF 证明 SRAM1 顶部空闲后，候选区才固定为
