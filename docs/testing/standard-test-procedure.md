@@ -35,6 +35,8 @@ Windows 离线回归的生成工程 fixture 也须预检路径深度：configura
 
 关键字段未知的步骤不是 READY。先用现有源码、日志、CLI help 或既有函数离线补齐。若公共响应吞掉原始异常，必须在首次获准实机前准备好现有异常边界的捕获方式；不能失败后无授权重连补日志。新增脚本前说明现有入口为什么不够，并先离线验证。
 
+迁移工程首次重新构建前，核对 `build/<preset>/CMakeCache.txt` 的 `CMAKE_HOME_DIRECTORY` 和 `CMAKE_CACHEFILE_DIR` 与当前源目录/构建目录一致。缓存仍引用旧临时路径时，先保存失败日志，验证绝对路径及 reparse 边界后，将生成的 CMakeCache.txt 和 CMakeFiles 移入本轮证据目录，再用现有 build 入口从当前工程重新配置；不得执行或重建旧临时工程。该离线环境纠正不授权硬件重试，不覆盖原失败记录，也不使已接受的 P2 ELF/实机证据失效。
+
 provenance 拒绝必须记录检查函数/行号、逐字段预期值/实际值及各自来源、最后已证实阶段，不能只看错误码或 gitDirty。迁移后文件字节相同不保证 device/inode 身份相同；使用既有只读验证入口，不改 pin、不复活已消费记录。按场景创建 session：当前固件观测和 T9 沿用有效 flash receipt 的绑定，T10 按共同身份契约另建，不能每条命令任意换 session。
 
 ## 3. 状态契约表
