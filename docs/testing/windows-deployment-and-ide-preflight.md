@@ -6,7 +6,7 @@
 
 记录来源 commit、bundle/manifest SHA256、bootstrap Python 版本，以及本机真实的 ToolkitRoot、DataRoot、ProjectRoot。从包含启动器修正的已审查 commit 构建并分发 bundle；旧 bundle 中的 setup 不会因为仓库更新而自动修复。不要混用新脚本、另一来源 manifest 和另一版产品 wheel。
 
-发布构建还须固定两个已实际遇到的环境条件：打包隔离 checkout 的 `core.autocrlf=false`、`core.eol=lf`，避免 Git archive 的字节转换破坏确定性；构建 wheelhouse 包含策略固定的构建后端（当前 setuptools 84.0.0、wheel 0.48.0），不能把面向用户安装的 runtime wheel 集当成完整构建 wheelhouse。这两项来自已保存的 candidate-preparation 记录，修正的是构建环境，不应更改产品代码。不要因此修改使用者的全局 Git 配置。
+发布构建还须固定两个已实际遇到的环境条件：打包隔离 checkout 的 `core.autocrlf=false`、`core.eol=lf`，避免 Git archive 的字节转换破坏确定性；构建 wheelhouse 包含策略固定的构建后端（当前 setuptools 84.0.0、wheel 0.48.0），不能把面向用户安装的 runtime wheel 集当成完整构建 wheelhouse。这两项来自已保存的 candidate-preparation 记录，修正的是构建环境，不应更改产品代码。不要因此修改使用者的全局 Git 配置。 创建工作树时单条 `git -c core.autocrlf=false worktree add` 仅约束该次命令，不保证随后 builder 调用的 `git archive` 沿用。构建前在专用工作树核对有效配置来源及 `git ls-files --eol`；使用该工作树独有配置或覆盖整个构建进程的 Git 参数，确保 checkout 和 archive 同为 LF。2026-09-14 的租约修正部署曾在此处被 trust anchor 拒绝，修正打包环境后通过；完整错误留在该轮部署证据中。
 
 DataRoot 必须是长期保留的数据位置；runtime、项目身份、会话及烧录证据不能放入允许随意清理的临时目录。仅一次验证的 stdout/stderr、pytest basetemp 等使用独立且可归属的临时目录。迁移机器或磁盘后重新核对实际路径和 workspace/probe/固件绑定；不复制旧机器的 raw probe ID、ticket、已消费 action 或旧临时目录作为默认配置。
 

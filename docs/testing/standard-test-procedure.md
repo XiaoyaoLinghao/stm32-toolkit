@@ -165,6 +165,8 @@ T10 采样入口复用已接受的有限 Monitor 生命周期，在执行卡中�
 按已核实绝对路径清理本轮不再需要的临时输出；保留源码测试、可复用基线、用户数据、共享缓存、rollback、授权账本、有效 PASS 和最小失败证据。Windows 使用同一 PowerShell 原生命令，删除前确认在本轮目录内。自动策略拒绝 cleanup 时记录保留，不换工具/路径绕过。没有新测试不制造清理工作。
 
 ## 8. 当前验收断点（2026-09-14）
+租约修正已部署并完成生产存证验证 **PASS**：部署 source `0c375c03ab6afa4192a37d5732009b82845216a7`，独立 runtime 为业务 DataRoot 下 `candidates\lease-20260914\runtime\0.9.0`，调用其绝对 Python，业务 DataRoot 不变。Check healthy/matching、145 个安装文件匹配；原 failed-before 经公共 publisher 发布 OK，新进程认证读取通过，ref SHA `37e15560615974b49d041cd4386d3fbcbebaea76df395afd09581ae643739fc1`，两侧原 lease 分别保留、32 份原始证据不变。未新增硬件/烧录/采样/P4/attempt；旧 PASS 保留，T10/VS10-A 未完成。下一步按已准备的 P4 修复链路推进，不能使用旧默认 runtime 或复用已消费动作。详见 [部署及生产验证](../codex/returns/2026-09-14-stm32tk-monitor-lease-deployment.md)。以下“未部署/生产发布待执行”均为历史断点。
+
 租约关联修正已离线 **ACCEPTED**：CodeHead `72e9706c9cf60dc3204b351a98d3d01623125dd5`，仅修改跨操作租约相等谓词及现有测试；36项相关测试通过，主代理在干净工作树完成完整差异审查，并用实际存证副本经公共发布器及新进程读取验证通过，32份原始证据哈希不变。尚未部署到source6250 runtime，生产 evidence 尚未执行新发布，P4源码/新attempt/硬件均未动；下一步部署获准后先离线发布原窗口，再继续P4。见 [实现及独立验证](../codex/returns/2026-09-14-stm32tk-monitor-physical-lease-link.md)。下文“待批准修正”为此前断点。
 
 当前 P4 前置阻塞已离线确证：公共 Monitor physical publish 在 `replay.py:1976` 强制原 Target lease 与后续 Monitor lease 相等；实际26项身份/上下文比较仅该字段不同。两次独立连接各自正确释放，原烧录与下述300批采样PASS保留，不能改称硬件失败。P4源码未改、未构建、未创建新attempt、无新硬件；待批准并修正发布契约后复用既有数据继续。见 [根因及最小范围](../codex/returns/2026-09-14-stm32tk-t10-monitor-lease-publication-block.md)、[拟议规格](../superpowers/specs/2026-09-14-stm32tk-monitor-physical-lease-link-design.md) 和 [拟议计划](../superpowers/plans/2026-09-14-stm32tk-monitor-physical-lease-link.md)。
