@@ -2300,6 +2300,157 @@ def test_v2_execute_assembles_manifest_after_guarded_flash_and_transport(
   run(scenario())
 
 
+def test_v2_execute_anchors_manifest_at_first_run_start_after_flash(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+  """The V2 wall-clock anchor is captured when run_start is decoded."""
+  class AnchoredDateTime(datetime):
+    anchor = datetime(2026, 9, 18, 3, 4, 5, 678901, tzinfo=timezone.utc)
+    calls = 0
+
+    @classmethod
+    def now(cls, tz=None):
+      cls.calls += 1
+      return cls.anchor if tz is None else cls.anchor.astimezone(tz)
+
+  async def scenario() -> None:
+    _inventory, stream = _v2_target_stream()
+    transport = FakeTransport([stream])
+    runner, prepared, operation_start, _probe, _store, _workflow_calls = (
+        await _v2_prepared_runner(tmp_path, transport)
+    )
+    monkeypatch.setattr(target_module, "datetime", AnchoredDateTime)
+
+    result = await runner.run(
+        prepared,
+        prepared.action_digest,
+        current_revision=REVISION,
+        current_inventory_digest=prepared.binding["inventory_digest"],
+        current_input_snapshot_sha256="9" * 64,
+        now=operation_start,
+    )
+
+    assert AnchoredDateTime.calls == 1
+    assert result["test_manifest"].started_at_utc == (
+        AnchoredDateTime.anchor.strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+    )
+    assert result["test_manifest"].started_at_utc != operation_start.strftime(
+        "%Y-%m-%dT%H:%M:%S.%fZ"
+    )
+
+  run(scenario())
+
+
+def test_physical_v2_execute_retains_exact_partial_evidence_after_run_start(
+    tmp_path: Path,
+) -> None:
+  class FailingTransport(FakeTransport):
+    def read(self, maximum, deadline):
+      if self.chunks:
+        return super().read(maximum, deadline)
+      raise target_module.TargetRunError(
+          "TEST_TRANSPORT_UNAVAILABLE", "transport read failed after run_start"
+      )
+
+  async def scenario() -> None:
+    from stm32_toolkit.evidence import EvidenceEnvelope
+    from stm32_toolkit.evidence.store import EvidenceStore
+    from stm32_toolkit.testing.artifacts import TestArtifactCollector
+
+    _inventory, stream = _v2_target_stream()
+    decoded = target_module.TargetFrameDecoder(expected_version=2).feed(stream)
+    prefix = b"".join(frame.raw_bytes for frame in decoded[:2])
+    transport = FailingTransport([prefix])
+    probe = FakeProbeClient()
+    probe.endpoint = SimpleNamespace(lease_id="lease")
+    flash = _StartingPhysicalFlashAdapter(probe)
+    evidence_store = EvidenceStore((tmp_path / "evidence").absolute())
+    project_root = (tmp_path / "project").absolute()
+    project_root.mkdir(parents=True)
+    collector = TestArtifactCollector(
+        (tmp_path / "results").absolute(), evidence_store,
+        project_root=project_root,
+    )
+    runner = target_module.TargetTestRunner(
+        (tmp_path / "runs").absolute(), probe, flash, lambda _name: transport,
+        artifact_collector=collector,
+    )
+    instant = datetime(2026, 8, 25, tzinfo=timezone.utc)
+    prepared = await runner.prepare(
+        workspace_id=WORKSPACE_ID,
+        project_id=PROJECT_ID,
+        session_id=SESSION_ID,
+        revision=REVISION,
+        input_snapshot_sha256="9" * 64,
+        target=IDENTITY,
+        probe_serial_hash=PROBE_HASH,
+        elf_path="build/app.elf",
+        elf_sha256="e" * 64,
+        build_id="b" * 64,
+        inventory_digest=_target_inventory_digest(),
+        protocol="stm32-target-frame/2",
+        case_inventory_digest=V2_CASE_INVENTORY_DIGEST,
+        git_dirty=False,
+        transport="mailbox",
+        transport_config=MAILBOX_PROJECT_CONFIG,
+        support_profile=TARGET_SUPPORT,
+        cases=(V2_CASE_ID,),
+        timeout_ms=1000,
+        now=instant,
+    )
+    consumed = target_module.ConsumedTargetRun(
+        prepared.action_digest,
+        prepared.binding,
+        target_module.PhysicalRunProvenance(
+            WORKSPACE_ID, SESSION_ID, PROBE_HASH, SESSION_ID, "lease"
+        ),
+    )
+
+    with pytest.raises(target_module.TargetRunError) as caught:
+      await runner.run(
+          None,
+          prepared.action_digest,
+          current_revision=REVISION,
+          current_inventory_digest=prepared.binding["inventory_digest"],
+          current_input_snapshot_sha256="9" * 64,
+          consumed=consumed,
+          now=instant,
+      )
+
+    assert caught.value.code == "TEST_TRANSPORT_UNAVAILABLE"
+    manifests = list((tmp_path / "evidence" / "manifests").glob("*.json"))
+    assert len(manifests) == 1
+    partial = evidence_store.get_envelope(manifests[0].stem)
+    assert isinstance(partial, EvidenceEnvelope)
+    assert partial.operation == "target-test-partial"
+    assert partial.identity == _target_evidence_identity()
+    assert len(partial.artifacts) == 1
+    artifact = partial.artifacts[0]
+    assert artifact.kind == "test-events-partial"
+    assert evidence_store.read_artifact(artifact, maximum_bytes=65_536) == prefix
+    assert partial.metadata == {
+        "action_digest": prepared.action_digest,
+        "error_code": "TEST_TRANSPORT_UNAVAILABLE",
+        "execution_source": "physical",
+        "flash_session_id": SESSION_ID,
+        "import_session_id": SESSION_ID,
+        "import_workspace_id": WORKSPACE_ID,
+        "intent_digest": prepared.action_digest,
+        "inventory_digest": prepared.binding["inventory_digest"],
+        "lease_id": "lease",
+        "origin_session_id": SESSION_ID,
+        "origin_workspace_id": WORKSPACE_ID,
+        "physical_transport_evidence": True,
+        "probe_id": PROBE_HASH,
+        "probe_serial_hash": PROBE_HASH,
+        "target_id": "target-a",
+    }
+    assert not [item for item in partial.artifacts if item.kind == "test-manifest"]
+    assert probe.closed
+
+  run(scenario())
+
+
 def test_v2_execute_stops_on_run_end_without_transport_eof(tmp_path: Path) -> None:
   class NoEofTransport(FakeTransport):
     def __init__(self, chunk: bytes) -> None:
@@ -3915,6 +4066,54 @@ def test_v2_discovery_returns_host_inventory_and_only_first_frame_bytes_with_tra
     assert discovered["raw"] != stream
     assert discovered["case_inventory_digest"] == V2_CASE_INVENTORY_DIGEST
     assert discovered["inventory"]["identity"] == host_identity.to_dict()
+    assert active.calls[-1] == ("close",)
+    assert probe.closed
+
+  run(scenario())
+
+
+def test_v2_discovery_rejects_v1_before_v2_inventory_when_split_across_reads(
+    tmp_path: Path,
+) -> None:
+  """A valid V1 prefix cannot be hidden by a later V2 inventory frame."""
+  async def scenario() -> None:
+    v1_stream = _target_stream()
+    v1_frame = target_module.TargetFrameDecoder(expected_version=1).feed(v1_stream)[0].raw_bytes
+    v2_inventory, _v2_stream = _v2_target_stream()
+    split = len(v1_frame) + max(1, len(v2_inventory) // 2)
+    mixed = v1_frame + v2_inventory
+    active = FakeTransport([mixed[:split], mixed[split:]])
+    probe = FakeProbeClient()
+    runner = target_module.TargetTestRunner(
+        (tmp_path / "mixed-v2-discovery" / "runs").absolute(),
+        probe,
+        FakeFlashWorkflow(),
+        lambda _name: active,
+    )
+    host_identity = _target_evidence_identity()
+
+    with pytest.raises(target_module.TargetRunError) as caught:
+      await runner.discover(
+          transport="mailbox",
+          transport_config=MAILBOX_PROJECT_CONFIG,
+          support_profile=TARGET_SUPPORT,
+          deadline=time.monotonic() + 1.0,
+          protocol="stm32-target-frame/2",
+          host_identity=host_identity,
+          expected_identity=IDENTITY,
+          expected_firmware={
+              "build_id": host_identity.build_id,
+              "elf_sha256": host_identity.elf_sha256,
+              "revision": host_identity.git_commit,
+              "inventory_digest": calculate_inventory_digest(
+                  "target", host_identity, (V2_CASE_ID,)
+              ),
+              "case_inventory_digest": V2_CASE_INVENTORY_DIGEST,
+              "case_ids": (V2_CASE_ID,),
+          },
+      )
+
+    assert caught.value.code == "TEST_TRANSPORT_UNAVAILABLE"
     assert active.calls[-1] == ("close",)
     assert probe.closed
 

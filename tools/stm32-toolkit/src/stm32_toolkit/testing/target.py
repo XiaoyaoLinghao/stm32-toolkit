@@ -1677,6 +1677,7 @@ class TargetTestRunner:
                 else None
             )
             terminal_seen = False
+            v2_host_utc_anchor: datetime | None = None
             async for chunk in _poll_transport_chunks(
                 transport,
                 deadline=deadline,
@@ -1695,6 +1696,12 @@ class TargetTestRunner:
                         frames.append(frame)
                         if validator is not None:
                             validator.accept(frame)
+                        if (
+                            protocol_version == FRAME_V2_VERSION
+                            and frame.kind == 2
+                            and v2_host_utc_anchor is None
+                        ):
+                            v2_host_utc_anchor = datetime.now(timezone.utc).astimezone(timezone.utc)
                         if protocol_version == FRAME_V2_VERSION and frame.kind == 5:
                             terminal_seen = True
                 except TestProtocolError as error:
@@ -1830,11 +1837,15 @@ class TargetTestRunner:
                 message="Target Evidence deadline elapsed",
             )
             if protocol_version == FRAME_V2_VERSION:
+                if v2_host_utc_anchor is None:
+                    raise TargetRunError(
+                        "TEST_EVENT_SEQUENCE_INVALID", "v2 target run_start is missing"
+                    )
                 try:
                     manifest = assemble_target_v2_run(
                         identity=identity,
                         run_id=f"target-v2-{action_digest[:32]}",
-                        started_at_utc=instant.strftime("%Y-%m-%dT%H:%M:%S.%fZ"),
+                        started_at_utc=v2_host_utc_anchor.strftime("%Y-%m-%dT%H:%M:%S.%fZ"),
                         frames=tuple(frames),
                         raw_events=raw_artifact,
                         transport=str(binding["transport"]),
@@ -1983,8 +1994,33 @@ class TargetTestRunner:
             ):
                 try:
                     payload = _deep_thaw(frames[0].payload)
-                    if isinstance(payload, dict) and isinstance(payload.get("identity"), Mapping):
+                    partial_identity: EvidenceIdentity | None = None
+                    partial_metadata: dict[str, object] = {
+                        "action_digest": action_digest,
+                        "error_code": error.code,
+                        "probe_serial_hash": binding["probe_serial_hash"],
+                    }
+                    if protocol_version == FRAME_V2_VERSION:
+                        partial_identity = _host_identity_from_binding(binding)
+                        partial_metadata.update(
+                            {
+                                "execution_source": "physical",
+                                "flash_session_id": physical_provenance.flash_session_id,
+                                "import_session_id": str(binding["session_id"]),
+                                "import_workspace_id": str(binding["workspace_id"]),
+                                "intent_digest": action_digest,
+                                "inventory_digest": str(binding["inventory_digest"]),
+                                "lease_id": physical_provenance.lease_id,
+                                "origin_session_id": physical_provenance.session_id,
+                                "origin_workspace_id": physical_provenance.workspace_id,
+                                "physical_transport_evidence": True,
+                                "probe_id": physical_provenance.probe_serial_hash,
+                                "target_id": str(dict(binding["target"])["target_id"]),
+                            }
+                        )
+                    elif isinstance(payload, dict) and isinstance(payload.get("identity"), Mapping):
                         partial_identity = EvidenceIdentity.from_dict(payload["identity"])
+                    if partial_identity is not None:
                         directory = self._collector.new_directory("target-partial")
                         artifact = self._collector.write_and_ingest(
                             directory, "target-stream.partial.bin", bytes(raw),
@@ -1997,11 +2033,7 @@ class TargetTestRunner:
                                 operation="target-test-partial",
                                 produced_at_utc=datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ"),
                                 parents=(), artifacts=(artifact,),
-                                metadata={
-                                    "action_digest": action_digest,
-                                    "error_code": error.code,
-                                    "probe_serial_hash": binding["probe_serial_hash"],
-                                },
+                                metadata=partial_metadata,
                             )
                         )
                 except Exception:
@@ -2198,6 +2230,11 @@ class TargetTestRunner:
                         "TEST_EVENT_SEQUENCE_INVALID",
                         "Target discovery must return one complete v2 inventory frame",
                     )
+                # A complete inventory is sufficient for discovery, but the
+                # decoder still owns recovery errors from bytes immediately
+                # preceding it.  Finish it before accepting the handshake so a
+                # valid V1 frame cannot be hidden by a later V2 inventory.
+                decoder.finish()
                 inventory_payload = _deep_thaw(frames[0].payload)
                 assert isinstance(inventory_payload, dict)
                 if not isinstance(host_identity, EvidenceIdentity):
