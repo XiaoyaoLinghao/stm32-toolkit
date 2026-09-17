@@ -36,6 +36,11 @@ from stm32_toolkit.evidence import (
 )
 from stm32_toolkit.evidence.gc import RootRecord
 from stm32_toolkit.evidence.store import EvidenceStore, MAX_EVIDENCE_READ_BYTES
+from stm32_toolkit.monitor_replay_contract import (
+    MAX_PHYSICAL_TRANSCRIPT_BYTES, canonical_physical_json_bytes,
+    decode_canonical_json_bytes, decode_physical_transcript_bytes,
+    validate_physical_transcript, validate_run_reference,
+)
 from stm32_toolkit.testing.publication import PublishedTestRun, TestRunRepository
 
 from .recovery import (
@@ -73,6 +78,10 @@ _UTC = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z\Z")
 
 class ContinuationValidationError(ValueError):
     """Raised when an immutable continuation input or graph is invalid."""
+
+
+class ContinuationIdentityError(ContinuationValidationError):
+    """A valid proof does not belong to the consumer's requested context."""
 
 
 def _reject_tuples(value: object) -> None:
@@ -791,7 +800,7 @@ def authenticate_continuation(evidence_store, diagnostics_root, continuation_evi
             (expected_diagnostic_revision, proof.diagnostic_revision),
             (expected_diagnostic_event_head, proof.diagnostic_event_head)):
             if expected is not None and expected != actual:
-                raise ContinuationValidationError("continuation does not match consumer context")
+                raise ContinuationIdentityError("continuation does not match consumer context")
         return AuthenticatedContinuation(proof, envelope, root, predecessor, predecessor_envelope, before, after, diagnostic)
     except ContinuationValidationError:
         raise
@@ -819,7 +828,7 @@ def prepare_continuation(evidence_store, diagnostics_root, request, *, workspace
         request.fixed_after_test_run_id, request.fixed_after_evidence_id)
     values = _validate_proof_graph(evidence_store, diagnostics_root, proof)
     if expected_session_id is not None and values[2].manifest.identity.session_id != expected_session_id:
-        raise ContinuationValidationError("continuation caller session differs")
+        raise ContinuationIdentityError("continuation caller session differs")
     return (proof, *values)
 
 
@@ -847,6 +856,90 @@ def authenticate_plan_continuation(evidence, diagnostics_root, plan, session):
     return association
 
 
+def _continuation_monitor_reference(evidence, parent_id, loaded, role):
+    """Read the existing physical transcript/ref graph under its original identity."""
+    parent = evidence.get_envelope(parent_id)
+    identity = loaded.manifest.identity
+    if (parent.operation != "monitor-physical-window" or parent.identity != identity
+        or parent.parents or len(parent.artifacts) != 1):
+        raise ContinuationValidationError("continuation transcript identity differs")
+    artifact = parent.artifacts[0]
+    if artifact.kind != "monitor-physical-transcript" or artifact.media_type != "application/json":
+        raise ContinuationValidationError("continuation transcript artifact differs")
+    raw = evidence.read_artifact(artifact, maximum_bytes=MAX_PHYSICAL_TRANSCRIPT_BYTES)
+    transcript = validate_physical_transcript(decode_physical_transcript_bytes(raw))
+    binding, batches = transcript["binding"], transcript["batches"]
+    first, last = batches[0], batches[-1]
+    operation_id = _uuid("operation_id", first["runId"])
+    expected_binding = {
+        "workspaceId": identity.workspace_id, "logicalProjectId": identity.project_id,
+        "sessionId": identity.session_id, "targetDevice": identity.target_device,
+        "buildId": identity.build_id, "elfSha256": identity.elf_sha256,
+        "inputSnapshotSha256": identity.input_snapshot_sha256,
+        "gitHead": identity.git_commit, "gitDirty": identity.git_dirty,
+        "probeId": loaded.envelope.metadata["probe_id"],
+    }
+    if (transcript["test_run_id"] != loaded.manifest.run_id or transcript["scenario_role"] != role
+        or any(binding[key] != value for key, value in expected_binding.items())
+        or any(batch["runId"] != operation_id for batch in batches)):
+        raise ContinuationValidationError("continuation transcript TestRun binding differs")
+    expected_metadata = {
+        "operation_id": operation_id, "scenario_role": role, "test_run_id": loaded.manifest.run_id,
+        "origin_workspace_id": identity.workspace_id, "import_workspace_id": identity.workspace_id,
+        "origin_session_id": identity.session_id, "projected_session_id": identity.session_id,
+        "origin_run_id": operation_id, "projected_run_id": operation_id,
+        "source_record_sha256": artifact.sha256,
+        "execution_source": "physical", "physical_transport_evidence": True,
+    }
+    if dict(parent.metadata) != expected_metadata:
+        raise ContinuationValidationError("continuation transcript metadata differs")
+    root = get_root(evidence, "monitor-run", operation_id)
+    ref_root = get_root(evidence, "monitor-run-ref", operation_id)
+    ref_envelope = evidence.get_envelope(ref_root.manifest_id)
+    if (root.manifest_id != parent_id or ref_envelope.operation != "monitor-run-ref"
+        or ref_envelope.identity != identity or ref_envelope.parents != (parent_id,)
+        or ref_envelope.produced_at_utc != parent.produced_at_utc
+        or len(ref_envelope.artifacts) != 1):
+        raise ContinuationValidationError("continuation Monitor reference root differs")
+    ref_artifact = ref_envelope.artifacts[0]
+    if ref_artifact.kind != "monitor-run-ref" or ref_artifact.media_type != "application/json":
+        raise ContinuationValidationError("continuation Monitor reference artifact differs")
+    ref_raw = evidence.read_artifact(ref_artifact, maximum_bytes=MAX_EVIDENCE_READ_BYTES)
+    reference = validate_run_reference(decode_canonical_json_bytes(ref_raw, require_object=True))
+    expected_reference = {
+        "schema": "stm32-monitor-run-ref/2", "operation_id": operation_id, "scenario_role": role,
+        "execution_source": "physical", "physical_transport_evidence": True,
+        "source_record_sha256": artifact.sha256, "transcript_evidence_id": parent_id,
+        "origin_workspace_id": identity.workspace_id, "import_workspace_id": identity.workspace_id,
+        "logical_project_id": identity.project_id, "origin_session_id": identity.session_id,
+        "projected_session_id": identity.session_id,
+        "origin_run_id": operation_id, "projected_run_id": operation_id,
+        "target_device": identity.target_device, "probe_id": binding["probeId"],
+        "physical_target": binding["physicalTarget"], "build_id": identity.build_id,
+        "elf_sha256": identity.elf_sha256, "input_snapshot_sha256": identity.input_snapshot_sha256,
+        "git_head": identity.git_commit, "git_dirty": identity.git_dirty,
+        "flash_session_id": binding["flashSessionId"], "lease_id": binding["leaseId"],
+        "dwarf_sha256": binding["dwarfSha256"], "svd_sha256": binding["svdSha256"],
+        "group_id": first["groupId"], "group_revision": first["groupRevision"],
+        "start_sequence": first["sequence"], "end_sequence_exclusive": last["sequence"] + 1,
+        "start_captured_unix_ns": first["capturedUnixNs"],
+        "end_captured_unix_ns_exclusive": last["capturedUnixNs"] + 1,
+        "projected_batch_sha256s": [hashlib.sha256(canonical_physical_json_bytes(batch)).hexdigest() for batch in batches],
+    }
+    if any(reference[key] != value for key, value in expected_reference.items()):
+        raise ContinuationValidationError("continuation Monitor reference binding differs")
+    root_metadata = {
+        "source_record_sha256": artifact.sha256, "run_ref_sha256": reference["run_ref_sha256"],
+        "origin_workspace_id": identity.workspace_id, "import_workspace_id": identity.workspace_id,
+        "execution_source": "physical", "physical_transport_evidence": True,
+    }
+    ref_metadata = {**root_metadata, "operation_id": operation_id, "scenario_role": role}
+    if (dict(root.metadata) != root_metadata or dict(ref_root.metadata) != ref_metadata
+        or dict(ref_envelope.metadata) != ref_metadata):
+        raise ContinuationValidationError("continuation Monitor reference metadata differs")
+    return reference
+
+
 def validate_continuation_reference(evidence, association, envelope):
     """Check v2 event references without invoking Diagnostic event replay."""
     if envelope.identity != association.after.manifest.identity:
@@ -864,6 +957,8 @@ def validate_continuation_reference(evidence, association, envelope):
         validate_continuation_reference(evidence, association, analysis)
         return
     if (envelope.operation != "monitor-analysis" or len(envelope.artifacts) != 1
+        or envelope.artifacts[0].kind != "monitor-analysis"
+        or envelope.artifacts[0].media_type != "application/json"
         or len(envelope.parents) != 4
         or envelope.parents[2:] != (association.diagnostic.declaration.diff_evidence_id,
                                     association.continuation_evidence_id)
@@ -871,19 +966,51 @@ def validate_continuation_reference(evidence, association, envelope):
         raise ContinuationValidationError("continuation analysis parents differ")
     raw = evidence.read_artifact(envelope.artifacts[0], maximum_bytes=MAX_EVIDENCE_READ_BYTES)
     payload = json.loads(raw.decode("utf-8"))
-    if (not isinstance(payload, dict) or canonical_json_bytes(payload) != raw
+    fields = {
+        "schema", "analysis_id", "request_digest", "before_run_id", "after_run_id", "identity",
+        "quality", "conclusion", "reason_code", "aligned_position_count", "aligned_pair_count",
+        "excluded_position_count", "before_first", "before_last", "before_min", "before_max",
+        "after_first", "after_last", "after_min", "after_max", "delta_first", "delta_last", "changed",
+    }
+    if (not isinstance(payload, dict) or set(payload) != fields or canonical_json_bytes(payload) != raw
         or payload.get("schema") != CONTINUATION_ANALYSIS_SCHEMA):
         raise ContinuationValidationError("continuation analysis payload differs")
     unsigned = {key: value for key, value in payload.items() if key != "analysis_id"}
     if payload.get("analysis_id") != _hash_payload(unsigned):
         raise ContinuationValidationError("continuation analysis digest differs")
-    lineage = payload.get("identity")
-    if (not isinstance(lineage, dict) or lineage.get("schema") != CONTINUATION_LINEAGE_SCHEMA
-        or lineage.get("continuation_evidence_id") != association.continuation_evidence_id
-        or lineage.get("before_session_id") != association.before.manifest.identity.session_id
-        or lineage.get("after_session_id") != association.after.manifest.identity.session_id):
+    _hash("request_digest", payload["request_digest"])
+    before, after = association.before.manifest.identity, association.after.manifest.identity
+    expected_lineage = {
+        "schema": CONTINUATION_LINEAGE_SCHEMA, "origin_workspace_id": after.workspace_id,
+        "import_workspace_id": before.workspace_id, "logical_project_id": after.project_id,
+        "target_device": after.target_device,
+        "source_change_declaration_id": association.proof.source_change_declaration_id,
+        "before_input_snapshot_sha256": before.input_snapshot_sha256,
+        "before_build_id": before.build_id, "before_elf_sha256": before.elf_sha256,
+        "after_input_snapshot_sha256": after.input_snapshot_sha256,
+        "after_build_id": after.build_id, "after_elf_sha256": after.elf_sha256,
+        "before_session_id": before.session_id, "after_session_id": after.session_id,
+        "continuation_evidence_id": association.continuation_evidence_id,
+    }
+    if payload["identity"] != expected_lineage:
         raise ContinuationValidationError("continuation analysis lineage differs")
-    for parent_id, loaded in zip(envelope.parents[:2], (association.before, association.after)):
-        parent = evidence.get_envelope(parent_id)
-        if parent.operation != "monitor-physical-window" or parent.identity != loaded.manifest.identity:
-            raise ContinuationValidationError("continuation transcript identity differs")
+    for parent_id, loaded, role, field in (
+        (envelope.parents[0], association.before, "failed-before", "before_run_id"),
+        (envelope.parents[1], association.after, "fixed-after", "after_run_id"),
+    ):
+        reference = _continuation_monitor_reference(evidence, parent_id, loaded, role)
+        if payload[field] != reference["run_ref_sha256"]:
+            raise ContinuationValidationError("continuation analysis names another Monitor run")
+    metadata = {
+        "analysis_id": payload["analysis_id"], "before_run_id": payload["before_run_id"],
+        "after_run_id": payload["after_run_id"],
+        "source_change_declaration_id": association.proof.source_change_declaration_id,
+        "origin_workspace_id": after.workspace_id, "import_workspace_id": before.workspace_id,
+        "origin_session_id": after.session_id,
+        "execution_source": "physical", "physical_transport_evidence": True,
+        "continuation_evidence_id": association.continuation_evidence_id,
+    }
+    root = get_root(evidence, "monitor-analysis", payload["analysis_id"])
+    if (dict(envelope.metadata) != metadata or dict(root.metadata) != metadata
+        or root.manifest_id != str(envelope.evidence_id)):
+        raise ContinuationValidationError("continuation analysis metadata or root differs")

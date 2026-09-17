@@ -77,7 +77,7 @@ from .recovery import (
 from .continuation import (
     CONTINUATION_ATTEMPT_SCHEMA, CONTINUATION_SCHEMA, CONTINUATION_ROOT_TYPE,
     CONTINUATION_SCENARIO_DIGEST, CONTINUATION_POLICY_DIGEST, CONTINUATION_WINDOW_SECONDS,
-    PhysicalContinuationAttempt, ContinuationRequest, ContinuationValidationError,
+    PhysicalContinuationAttempt, ContinuationRequest, ContinuationValidationError, ContinuationIdentityError,
     authenticate_continuation, prepare_continuation, proof_parents, continuation_policy_document,
 )
 from .workflows import AcceptanceWorkflowContext, show_acceptance_scenario
@@ -159,6 +159,8 @@ def _result(operation: str, action: Callable[[], OperationResult[dict[str, objec
         return _failure(operation, error.code)
     except AcceptanceValidationError:
         return _failure(operation, "ACCEPTANCE_ATTEMPT_INPUT_INVALID")
+    except ContinuationIdentityError:
+        return _failure(operation, "ACCEPTANCE_ATTEMPT_IDENTITY_MISMATCH")
     except (DiagnosticValidationError, EvidenceValidationError, ProjectManifestError, FileNotFoundError, OSError, TypeError, ValueError, KeyError, IndexError, AttributeError):
         return _failure(operation, "ACCEPTANCE_ATTEMPT_EVIDENCE_INTEGRITY_FAILED")
 
