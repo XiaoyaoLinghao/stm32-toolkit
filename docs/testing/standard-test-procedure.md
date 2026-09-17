@@ -164,7 +164,9 @@ T10 采样入口复用已接受的有限 Monitor 生命周期，在执行卡中�
 
 按已核实绝对路径清理本轮不再需要的临时输出；保留源码测试、可复用基线、用户数据、共享缓存、rollback、授权账本、有效 PASS 和最小失败证据。Windows 使用同一 PowerShell 原生命令，删除前确认在本轮目录内。自动策略拒绝 cleanup 时记录保留，不换工具/路径绕过。没有新测试不制造清理工作。
 
-## 8. 当前验收断点（2026-09-14）
+## 8. 当前验收断点（2026-09-17）
+P4 单行修复已完成并离线审查通过：固件 commit `a5ebcab69278d3e25776ba7f9b0ab1376910cdd2`，build `5089b0924da702e38b05d245ae3b05d5f73935c02ee232b097f3e243c132e9fb`，只有周期 `LED0=0`→`LED0=!LED0`。用户已授权同轮烧录、30秒采样和闭环；新 attempt `4956a90c-6132-4651-b597-e5aef5a7fd22` 到 revision6。一次正常 prepare 成功，唯一 execute 在6259ms/exit2返回 `TEST_FLASH_FAILED`，原始flash结果为 `PROBE_PROGRAM_FAILED`、details为空。已终态停止；未取得P4烧录成功/TestRun，未采样或闭环、无重试。registry released、无所属调试进程残留；用户随后确认D3/D4均常亮，机器运行状态未证实。原83文件P3备份和既有PASS保留，当前P4构建需保留。T10/VS10-A仍未完成；见 [P4实施与本次烧录停止](../codex/returns/2026-09-17-stm32tk-t10-p4-programming.md)。下述P4尚未改动/待实施是历史断点。
+
 租约修正已部署并完成生产存证验证 **PASS**：部署 source `0c375c03ab6afa4192a37d5732009b82845216a7`，独立 runtime 为业务 DataRoot 下 `candidates\lease-20260914\runtime\0.9.0`，调用其绝对 Python，业务 DataRoot 不变。Check healthy/matching、145 个安装文件匹配；原 failed-before 经公共 publisher 发布 OK，新进程认证读取通过，ref SHA `37e15560615974b49d041cd4386d3fbcbebaea76df395afd09581ae643739fc1`，两侧原 lease 分别保留、32 份原始证据不变。未新增硬件/烧录/采样/P4/attempt；旧 PASS 保留，T10/VS10-A 未完成。下一步按已准备的 P4 修复链路推进，不能使用旧默认 runtime 或复用已消费动作。详见 [部署及生产验证](../codex/returns/2026-09-14-stm32tk-monitor-lease-deployment.md)。以下“未部署/生产发布待执行”均为历史断点。
 
 租约关联修正已离线 **ACCEPTED**：CodeHead `72e9706c9cf60dc3204b351a98d3d01623125dd5`，仅修改跨操作租约相等谓词及现有测试；36项相关测试通过，主代理在干净工作树完成完整差异审查，并用实际存证副本经公共发布器及新进程读取验证通过，32份原始证据哈希不变。尚未部署到source6250 runtime，生产 evidence 尚未执行新发布，P4源码/新attempt/硬件均未动；下一步部署获准后先离线发布原窗口，再继续P4。见 [实现及独立验证](../codex/returns/2026-09-14-stm32tk-monitor-physical-lease-link.md)。下文“待批准修正”为此前断点。
