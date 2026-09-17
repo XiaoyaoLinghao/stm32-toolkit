@@ -43,6 +43,10 @@ from stm32_toolkit.acceptance.recovery_workflows import (
     show_acceptance_attempt,
 )
 from stm32_toolkit.context import build_project_context
+from stm32_toolkit.monitor_replay_contract import (
+    ReplayContractError,
+    validate_run_reference,
+)
 from stm32_toolkit.creation_workflows import (
     CreationPlanWorkflowRequest,
     apply_creation_workflow,
@@ -493,6 +497,23 @@ class DiagnosticMonitorRunRef(BaseModel):
     transcript_evidence_id: Digest
     run_ref_sha256: Digest
     source_record_sha256: Digest
+
+    @model_validator(mode="before")
+    @classmethod
+    def _validate_replay_wire(cls, value: object) -> object:
+        raw = (
+            value.model_dump(mode="python", by_alias=True)
+            if isinstance(value, BaseModel)
+            else value
+        )
+        if isinstance(raw, dict) and "schema" not in raw and "schema_" in raw:
+            raw = dict(raw)
+            raw["schema"] = raw.pop("schema_")
+        try:
+            validate_run_reference(raw)
+        except (ReplayContractError, TypeError, ValueError, OverflowError) as error:
+            raise ValueError("monitor run reference violates replay contract") from error
+        return raw
 
     @model_validator(mode="after")
     def _validate_lineage(self) -> "DiagnosticMonitorRunRef":
