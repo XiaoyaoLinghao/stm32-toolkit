@@ -37,3 +37,30 @@ No new diagnostic framework or product patch was added. The existing reviewed `t
 Next hardware work requires new authorization after this terminal failure. It can reuse this deployment and firmware; do not repackage, redeploy, revive old actions or retry automatically. The sole missing diagnostic evidence is the original failure at the normal prepare boundary; no recovery-under-reset, unlock, chip erase or speculative control is justified by this record.
 
 Primary retains the run evidence, bundle/source for rollback, runtime, P4 build and original P3 backup. Previous policy-blocked cleanup remains untouched. Historical attempt 7, T9, 100ms, FullFault and P3 results retain their original scope; this run adds no physical PASS.
+
+## Newly authorized diagnostic-02: running postcondition failed
+
+The user explicitly agreed to one normal prepare, outer limit120s, including existing halt/resume and no programming. The exact already-reviewed capture wrapper and deployed runtime/ELF hashes matched before dispatch; existing offline capture/spawn checks were reused. No package/deployment, product edit or test matrix was repeated. A new single-dispatch marker and session `p4-program-diag-20260917-02` were used; the previous action/authority was not revived.
+
+At `2026-09-17T02:36:49.8173674+00:00`, PID24400 ran once and exited2 in **4884ms**, without timeout. Public response remained `TEST_EXECUTION_FAILED`, details={}; the restored capture retained the actual **PROBE_ATTACH_FAILED** from `testing_workflows.py:523` / `client.attach()`. No fresh action was produced; no execute, Flash, separate diagnostic read or retry followed.
+
+`next-prepare-exceptions.jsonl` records:
+
+| Field | Actual evidence | Meaning |
+| --- | --- | --- |
+| attachDiagnostic.primary | stage=`resume-verify`, reason=`postcondition-failed`, sourceCode=`PROBE_ATTACH_FAILED` | The normal connection reached its resume verification and failed the running postcondition |
+| lastVerifiedTargetState | `faulted` | Shared state slot was overwritten by cleanup; this proves cleanup's normalized state, not the initial verify's exact state |
+| cleanup candidate-resume | `succeeded` | The cleanup resume call returned; this is not proof that the core ran |
+| cleanup candidate-resume-verify | `failed`, `postcondition-failed`, sourceCode=`PROBE_BACKEND_ERROR` | Cleanup did not establish running either |
+| remaining cleanup | session-close, probe-open-check-before-close, probe-open-check-after-close, worker-parent-abort all `succeeded` | These cleanup steps succeeded; target recovery did not |
+| outer details.stage | `cleanup-resume` | Cleanup error context; it does not replace the retained primary resume-verify failure |
+
+New lease `lease-51ab0d531727491e88d0e97e8d6a11a7` is released, owned PID and related debug consumers are absent, and the new session has no files. Runtime, both old runtime-state files, firmware source/ELF and P3 backup manifest remain unchanged across six hash checks. Temp is empty; all diagnostic evidence is retained and the older policy cleanup hold is untouched. Post-operation LED observation has been requested but is not yet received at this checkpoint.
+
+Offline installed PyOCD0.45.1 source provides the lower-level interpretation: `core/soc_target.py:295-296` delegates state reads to the selected core; `coresight/cortex_m.py:1154-1171` reads DHCSR, with lines1164-1165 mapping S_LOCKUP to `Target.State.LOCKUP`. Address and bit definitions are at lines129/139; `core/target.py:39-50` defines the enum. These hashed excerpts are retained in `next-pyocd-state-source.json`. The physical response does not contain raw DHCSR, the original enum or a fault-register/PC snapshot; those values must not be fabricated from this source trace.
+
+Independent read-only source analysis by `p4_acceptance_contract` identifies the exact checks in `probe/pyocd_backend.py`: normal resume verification at lines1033-1042 requires `running`; its initial actual state is no longer separately available. Cleanup at lines864-922 resumes and reads again, also requiring `running`, and this run retained actual `faulted`. The normalizer at lines788-807 maps LOCKUP/LOCKEDUP to `faulted`; read errors and unsupported states raise `PROBE_BACKEND_ERROR` instead. Thus cleanup's observed `faulted` is not an arbitrary fallback for a read exception. The shared last-state slot is overwritten during cleanup, so the report must not claim the initial check also read that exact state. No state-mapping defect is established. `testing_workflows.py:523` failed before the separate `target_identity()` read at line524, so successful final identity verification is not claimed either.
+
+The immediate blocker is the target's failure to satisfy normal OBSERVE's running contract. The original cause of its abnormal state and the prior programming failure remains unknown. This result does not show that Flash was written, erased or corrupt, nor establish physical board damage. Historical results and T10/VS10-A status remain unchanged.
+
+The existing `test target prepare --recovery-under-reset` route is the bounded next proposal, not an action in this run. Recovery prepare is static; the resulting recovery execute uses SWD100kHz, two planned native under-reset connections and one programming call, with existing sector/keepUnwritten/no-unlock restrictions and readback/test/cleanup. Its September14 P3 result is historical evidence, not current P4 acceptance. `recovery-proposal-after-diag02.md` freezes this route in the run root. New recovery authorization is required; do not create an expiring action while waiting, repeat normal prepare, redeploy or automatically recover.

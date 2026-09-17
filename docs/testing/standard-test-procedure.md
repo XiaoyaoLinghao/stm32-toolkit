@@ -169,6 +169,8 @@ T10 采样入口复用已接受的有限 Monitor 生命周期，在执行卡中�
 按已核实绝对路径清理本轮不再需要的临时输出；保留源码测试、可复用基线、用户数据、共享缓存、rollback、授权账本、有效 PASS 和最小失败证据。Windows 使用同一 PowerShell 原生命令，删除前确认在本轮目录内。自动策略拒绝 cleanup 时记录保留，不换工具/路径绕过。没有新测试不制造清理工作。
 
 ## 8. 当前验收断点（2026-09-17）
+最新 diagnostic-02 已取得原始异常：用户新授权一次正常 prepare 后，4884ms 返回 `PROBE_ATTACH_FAILED`；primary 为 `resume-verify/postcondition-failed`，初始检查未达到预期 running；cleanup 再次恢复并复查为 faulted，初始具体状态已被共享槽位中的后者覆盖，不能回填。session关闭、probe关闭检查及worker-parent-abort成功；新lease released、相关进程0。未生成action，未烧录或重试；原始异常留证缺口已补齐，但异常运行态及此前烧录失败的根因仍未确证，未证实状态映射bug。可准备现有受控恢复烧录路线，须另获授权，不应再重复普通prepare或部署。T10/VS10-A仍未完成；见 [本次诊断证据](../codex/returns/2026-09-17-stm32tk-program-diagnostic-deployment.md#newly-authorized-diagnostic-02-running-postcondition-failed)。以下为此前断点。
+
 编程异常补丁已完成本地部署：source `7d22c149d5f83ded14024569bce9a17734b2b7d1`，独立 runtime 位于原业务 DataRoot 的 `candidates\program-diagnostic-20260917\runtime\0.9.0`；Check healthy/matching、145 个安装文件匹配。新诊断 session `p4-program-diag-20260917-01` 的唯一正常 prepare 在 4873ms 返回 `TEST_EXECUTION_FAILED` / details={}，未生成烧录授权、未 execute/烧录；本轮已终态停止。新 lease released、所属进程无残留，用户确认 D3/D4 均常亮。原始异常未留存，不能确认为 attach、Flash 或板态根因；已离线验证复用的现有捕获入口，下一次硬件须新授权，不需再次部署。P4 构建、P3 备份及历史 PASS 保留，T10/VS10-A 未完成。见 [本地部署及本轮停止记录](../codex/returns/2026-09-17-stm32tk-program-diagnostic-deployment.md)。以下未部署/旧实机断点均为历史记录。
 
 编程异常详情保留补丁已离线 ACCEPTED，CodeHead `8e75012e0c92dc37e67d0d31064590772a53be4b`：保留实际调用阶段、脱敏异常链及可用错误号/Flash地址/算法返回码，贯穿 worker 与 Target 公共响应。实现者相关回归489项通过，主代理干净工作树完整审查及8项关键用例通过；仅本地集成，未部署、未操作硬件。部署仍为 `0c375c03`；不能据此宣称物理烧录已修复。下述P4烧录失败仍是实机断点，T10/VS10-A仍未完成。见 [修正与独立验证](../codex/returns/2026-09-17-stm32tk-program-failure-diagnostic.md)。
