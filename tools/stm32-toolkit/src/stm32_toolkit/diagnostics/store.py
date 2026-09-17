@@ -809,11 +809,18 @@ class DiagnosticStore:
         def bind_continuation(plan):
             nonlocal association
             if plan.continuation_evidence_id is not None:
-                from stm32_toolkit.acceptance.continuation import authenticate_plan_continuation, ContinuationValidationError, ContinuationIdentityError
+                from stm32_toolkit.acceptance.continuation import (
+                    ContinuationEnvironmentError,
+                    ContinuationIdentityError,
+                    ContinuationValidationError,
+                    authenticate_plan_continuation,
+                )
                 try:
                     association = authenticate_plan_continuation(self.evidence_store, self.diagnostics_root, plan, session)
                 except ContinuationIdentityError:
                     _raise(DIAGNOSTIC_IDENTITY_MISMATCH)
+                except ContinuationEnvironmentError:
+                    _raise(DIAGNOSTIC_EVIDENCE_MISSING)
                 except OSError:
                     _raise(DIAGNOSTIC_EVIDENCE_MISSING)
                 except (ContinuationValidationError, EvidenceValidationError, TypeError, ValueError, KeyError):

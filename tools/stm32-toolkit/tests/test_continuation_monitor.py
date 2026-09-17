@@ -1624,3 +1624,63 @@ def test_diagnostic_continuation_error_mapping_for_public_plan_and_store(
         )
     assert raised.value.code == DIAGNOSTIC_IDENTITY_MISMATCH
     assert store.load_durable(pair.diagnostic_session_id).revision == pair.diagnostic_revision
+
+
+def test_diagnostic_store_maps_typed_continuation_provider_failure_on_append_and_replay(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pair = prepare_pair(tmp_path, monkeypatch)
+    baseline = _monitor_baseline(pair, tmp_path)
+    plan = _continuation_plan(pair, baseline)
+    event = _verification_plan_event(pair, plan, "continuation-plan-provider-failure")
+    store = DiagnosticStore(pair.workspace.diagnostics_root, pair.evidence)
+    original_get_envelope = EvidenceStore.get_envelope
+    provider_calls: list[str] = []
+
+    def fail_on_second_continuation_read(
+        evidence_store: EvidenceStore, evidence_id: str
+    ) -> EvidenceEnvelope:
+        if evidence_id == baseline.continuation_id:
+            provider_calls.append(evidence_id)
+            if len(provider_calls) == 2:
+                raise PermissionError("continuation provider unavailable")
+        return original_get_envelope(evidence_store, evidence_id)
+
+    # The first continuation read is the ordinary referenced-envelope read;
+    # the second is the shared authenticate_plan_continuation reader.  The
+    # latter must retain the typed environment-to-evidence-missing mapping.
+    with monkeypatch.context() as provider_patch:
+        provider_patch.setattr(
+            EvidenceStore, "get_envelope", fail_on_second_continuation_read
+        )
+        with pytest.raises(DiagnosticValidationError) as raised:
+            store.append(
+                pair.diagnostic_session_id,
+                event,
+                expected_revision=pair.diagnostic_revision,
+            )
+    assert raised.value.code == DIAGNOSTIC_EVIDENCE_MISSING
+    assert provider_calls == [baseline.continuation_id, baseline.continuation_id]
+    assert store.load_durable(pair.diagnostic_session_id).revision == pair.diagnostic_revision
+
+    accepted = store.append(
+        pair.diagnostic_session_id,
+        event,
+        expected_revision=pair.diagnostic_revision,
+    )
+    assert accepted.session.revision == pair.diagnostic_revision + 1
+
+    provider_calls.clear()
+    fresh_store = DiagnosticStore(
+        pair.workspace.diagnostics_root,
+        EvidenceStore(pair.evidence.root),
+    )
+    with monkeypatch.context() as provider_patch:
+        provider_patch.setattr(
+            EvidenceStore, "get_envelope", fail_on_second_continuation_read
+        )
+        with pytest.raises(DiagnosticValidationError) as raised:
+            fresh_store.load(pair.diagnostic_session_id)
+    assert raised.value.code == DIAGNOSTIC_EVIDENCE_MISSING
+    assert provider_calls == [baseline.continuation_id, baseline.continuation_id]
+    assert fresh_store.load_durable(pair.diagnostic_session_id).revision == pair.diagnostic_revision + 1
