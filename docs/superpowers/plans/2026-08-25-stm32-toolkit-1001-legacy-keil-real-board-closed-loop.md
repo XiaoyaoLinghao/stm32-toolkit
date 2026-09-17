@@ -233,11 +233,13 @@ Acceptance 2026-09-11: generated IDE/handoff slice independently accepted at sou
 
 - [ ] **Step 3: Run the existing diagnostic workflow.** Start from the failed TestRun. Add and assess, in evidence order, timer/interrupt stopped, GPIO/board path failed, and application holds PE3 low. Bind typed/DWARF, SVD, source diff, schematic D3/R11/VCC3.3 active-low facts, independent D4 liveness, Monitor, and TestRun. Conclude only when evidence supports the application logic defect.
 
+2026-09-17 reconciliation: this step remains incomplete. Production G/H and Step 6 passed, but the Diagnostic event chain has only the application candidate (open/unrated), two failed-run/case observations, and no three-alternative hypothesis assessments. Existing physical transcripts are available for an explicitly scoped offline remedy; do not rewrite the resolved history or count the change-observed marker as those missing assessments.
+
 - [ ] **Step 4: Generate the exact source-change authorization.** Declare only the periodic `LED0=0` to `LED0=!LED0` restoration, preserving initial LED0=0 and D4 toggle; checkpoint the correct acceptance attempt, and consume the single-use authorization for that exact diff. Reject an altered file/digest as a focused negative check without touching hardware.
 
 - [ ] **Step 5: Restore toggle as P4, rebuild, and reflash with fresh pins.** Commit P4, require new build ID/ELF SHA, run a new Target prepare/execute, and collect D3 toggling plus D4 liveness, typed/SVD/Monitor and the physical passed TestRun.
 
-- [ ] **Step 6: Complete diagnostic verification.** Bind failed-before P3 and fixed-after P4, exact project/workspace/session/probe/target lineage, revisions, states, and source authorization. Do not create or relabel a VS08 AcceptanceRecord.
+- [x] **Step 6: Complete diagnostic verification.** Bind failed-before P3 and fixed-after P4, exact project/workspace/session/probe/target lineage, revisions, states, and source authorization. Do not create or relabel a VS08 AcceptanceRecord. Production G/H completed on 2026-09-17 using the approved explicit-continuation proof and original physical windows: Diagnostic RESOLVED, FixVerification PASSED, fresh v3 COMPLETED and authoritative fresh reads. See [production delivery](../../codex/returns/STM32TK-T10-NATIVE-ANALYSIS/production-delivery.md). This closes Step 6 only; the other Task 10 clauses still require individual evidence reconciliation.
 
 ### Task 11: Reconcile evidence, report, and implementation return
 
