@@ -41,7 +41,7 @@ Windows 离线回归的生成工程 fixture 也须预检路径深度：configura
 
 迁移工程首次重新构建前，核对 `build/<preset>/CMakeCache.txt` 的 `CMAKE_HOME_DIRECTORY` 和 `CMAKE_CACHEFILE_DIR` 与当前源目录/构建目录一致。缓存仍引用旧临时路径时，先保存失败日志，验证绝对路径及 reparse 边界后，将生成的 CMakeCache.txt 和 CMakeFiles 移入本轮证据目录，再用现有 build 入口从当前工程重新配置；不得执行或重建旧临时工程。该离线环境纠正不授权硬件重试，不覆盖原失败记录，也不使已接受的 P2 ELF/实机证据失效。
 
-provenance 拒绝必须记录检查函数/行号、逐字段预期值/实际值及各自来源、最后已证实阶段，不能只看错误码或 gitDirty。迁移后文件字节相同不保证 device/inode 身份相同；使用既有只读验证入口，不改 pin、不复活已消费记录。按场景创建 session：当前固件观测和 T9 沿用有效 flash receipt 的绑定，T10 按共同身份契约另建，不能每条命令任意换 session。
+provenance 拒绝必须记录检查函数/行号、逐字段预期值/实际值及各自来源、最后已证实阶段，不能只看错误码或 gitDirty。迁移后文件字节相同不保证 device/inode 身份相同；使用既有只读验证入口，不改 pin、不复活已消费记录。按场景创建 session：当前固件观测和 T9 沿用有效 flash receipt 的绑定，T10 按共同身份契约另建，不能每条命令任意换 session。T10 中的故障诊断或恢复烧录需要新授权、action、lease 和 run 目录时，仍须保留 P3/P4/Diagnostic 的共同 EvidenceIdentity.session_id；新操作不等于新验收身份。恢复前离线核对最终 compare/FixVerification 的 session 前置。若已经生成不同 session 的实机结果，保留原身份并先解决合法续接契约；不能改元数据、改下一轮采样参数或重烧来掩盖关联缺口。
 
 ## 3. 状态契约表
 
@@ -169,6 +169,8 @@ T10 采样入口复用已接受的有限 Monitor 生命周期，在执行卡中�
 按已核实绝对路径清理本轮不再需要的临时输出；保留源码测试、可复用基线、用户数据、共享缓存、rollback、授权账本、有效 PASS 和最小失败证据。Windows 使用同一 PowerShell 原生命令，删除前确认在本轮目录内。自动策略拒绝 cleanup 时记录保留，不换工具/路径绕过。没有新测试不制造清理工作。
 
 ## 8. 当前验收断点（2026-09-17）
+本轮离线续接 **BLOCKED_SESSION_SCOPE**：原 P3/Diagnostic session 为 `vs10a-t10-d3-20260914-01`，恢复成功的 P4 为 `p4-recovery-20260917-03`；对实际记录调用现有 `_same_scope` 返回 false，四项比较仅 session 不同。现有 Monitor、Diagnostic 和 recovery 要求同一 session，公共导入不能合法重命名 physical 身份。原因是主代理将恢复操作放入独立身份造成的关联缺口；P4 的烧录/native/目视 PASS 保留，不归为硬件失败。原 revision6 attempt 已过期，不能原地续期。本轮没有操作硬件、部署、采样或执行完整 compare。先决定是否批准显式恢复续接的契约扩展；未批准前不修改验证器，T10 G/H、VS10-A Task11/12仍未完成。见 [具体检查、字段与最小纠正提案](../codex/returns/2026-09-17-stm32tk-t10-session-continuation-block.md)。
+
 最新受控 P4 恢复烧录 **PASS**：用户新授权后，现有 recovery 静态prepare绑定新action；一次execute在26431ms/exit0返回OK，回读54920字节，physical run `target-v2-d5b0e440822671ba2812a367bfedf2f6` 的 d3-heartbeat 1/1 passed。复用source7d22与原P4构建，无重复部署/编译/硬件重试；新session `p4-recovery-20260917-03`，action consumed、lease released、相关进程0。用户随后确认D3/D4都闪烁、一亮一暗交替，与P4的相反初值及同步取反逻辑一致；这是目视证据。独立核对确认native case覆盖计时及PE3变化，不替代PE3/PE4双位Monitor。T10 G/H及VS10-A其余验收仍未完成，此前失败根因也不因此自动确证；保留本轮PASS，不重烧补账本。见 [本次恢复烧录结果](../codex/returns/2026-09-17-stm32tk-p4-recovery-result.md)。以下终态失败均为历史记录，不覆盖本轮成功结果。
 
 最新 diagnostic-02 已取得原始异常：用户新授权一次正常 prepare 后，4884ms 返回 `PROBE_ATTACH_FAILED`；primary 为 `resume-verify/postcondition-failed`，初始检查未达到预期 running；cleanup 再次恢复并复查为 faulted，初始具体状态已被共享槽位中的后者覆盖，不能回填。session关闭、probe关闭检查及worker-parent-abort成功；新lease released、相关进程0。未生成action，未烧录或重试；原始异常留证缺口已补齐，但异常运行态及此前烧录失败的根因仍未确证，未证实状态映射bug。可准备现有受控恢复烧录路线，须另获授权，不应再重复普通prepare或部署。T10/VS10-A仍未完成；见 [本次诊断证据](../codex/returns/2026-09-17-stm32tk-program-diagnostic-deployment.md#newly-authorized-diagnostic-02-running-postcondition-failed)。以下为此前断点。
