@@ -177,7 +177,7 @@ T10 采样入口复用已接受的有限 Monitor 生命周期，在执行卡中�
 按已核实绝对路径清理本轮不再需要的临时输出；保留源码测试、可复用基线、用户数据、共享缓存、rollback、授权账本、有效 PASS 和最小失败证据。Windows 使用同一 PowerShell 原生命令，删除前确认在本轮目录内。自动策略拒绝 cleanup 时记录保留，不换工具/路径绕过。没有新测试不制造清理工作。
 
 ## 8. 当前验收断点（2026-09-17）
-用户已以“同意修改”批准显式恢复续接的限定离线修复；[规格](../superpowers/specs/2026-09-17-stm32tk-t10-explicit-continuation-design.md)与[实现计划](../superpowers/plans/2026-09-17-stm32tk-t10-explicit-continuation.md)冻结原始实机身份保留、共同关联证明及独立限时attempt。当前尚未实现、部署或补采样；旧恢复成功证据保留，T10/VS10-A未完成。下一阶段为单一Luna/max实现和独立离线审查；以下“待批准”保留为问题确证时的历史状态。
+显式恢复续接的软件修复已通过独立审查，CodeHead=`30ceae845f7770dfd01db90104bd01e5c3a70894`；[规格](../superpowers/specs/2026-09-17-stm32tk-t10-explicit-continuation-design.md)与[实现计划](../superpowers/plans/2026-09-17-stm32tk-t10-explicit-continuation.md)冻结原始实机身份保留、共同关联证明及独立限时 attempt。完整软件链和底层伪造/分类负例均通过；真实 P3/P4 证据的隔离副本已完成 bind 及新进程读取，原业务记录和副本中 68 个原有文件哈希不变。当前未部署、未操作硬件或补采样；T10 G/H、VS10-A Task11/12 未完成。后续部署后按新流程补真实 P4 Monitor 与验证闭环，不重烧补账本。当前源码工作区为 `D:\codex-tmp\t10c-0917\impl`；原 D:\workspace 集成工作区已不存在，不重建或依据 master 推测状态。见[实现与证据记录](../codex/returns/2026-09-17-stm32tk-t10-explicit-continuation-implementation.md)。以下“待批准/尚未实现”均保留为历史状态。
 
 本轮离线续接 **BLOCKED_SESSION_SCOPE**：原 P3/Diagnostic session 为 `vs10a-t10-d3-20260914-01`，恢复成功的 P4 为 `p4-recovery-20260917-03`；对实际记录调用现有 `_same_scope` 返回 false，四项比较仅 session 不同。现有 Monitor、Diagnostic 和 recovery 要求同一 session，公共导入不能合法重命名 physical 身份。原因是主代理将恢复操作放入独立身份造成的关联缺口；P4 的烧录/native/目视 PASS 保留，不归为硬件失败。原 revision6 attempt 已过期，不能原地续期。本轮没有操作硬件、部署、采样或执行完整 compare。先决定是否批准显式恢复续接的契约扩展；未批准前不修改验证器，T10 G/H、VS10-A Task11/12仍未完成。见 [具体检查、字段与最小纠正提案](../codex/returns/2026-09-17-stm32tk-t10-session-continuation-block.md)。
 
