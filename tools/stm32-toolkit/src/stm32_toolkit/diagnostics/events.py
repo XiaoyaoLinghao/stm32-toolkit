@@ -22,6 +22,7 @@ from .model import (
     ObservationPlan,
     ObservationResult,
     ObservationStep,
+    PHYSICAL_MONITOR_FACT_KIND,
     SourceChangeDeclaration,
     VerificationPlan,
     calculate_event_digest,
@@ -228,7 +229,12 @@ def _reduce_plan_executed(session: DiagnosticSession, event: DiagnosticEvent) ->
     assert isinstance(values, list)
     decoded = tuple(ObservationResult.from_value(item) for item in values)
     if len(decoded) != len(plan.steps) or any(
-        item.evidence_id != session.failed_evidence_id
+        item.evidence_id
+        != (
+            cast(str, plan.steps[index].selector["monitor_run_ref"]["transcript_evidence_id"])
+            if plan.steps[index].selector["kind"] == PHYSICAL_MONITOR_FACT_KIND
+            else session.failed_evidence_id
+        )
         or item.plan_id != plan.plan_id or item.step_id != plan.steps[index].step_id
         or item.selector != plan.steps[index].selector
         or item.expected_value != plan.steps[index].expected_value
@@ -495,14 +501,28 @@ def diagnostic_event_references(event: DiagnosticEvent) -> tuple[str, ...]:
     references: list[str] = []
     if event.event_type == "session.created":
         references.append(cast(str, result["failed_evidence_id"]))
+    elif event.event_type == "observation.plan_added":
+        request = payload["request"]
+        assert isinstance(request, dict)
+        steps = request["steps"]
+        assert isinstance(steps, list)
+        for step_data in steps:
+            step = ObservationStep.from_value(step_data)
+            references.extend(_selector_evidence_references(step.selector))
     elif event.event_type == "observation.plan_executed":
         values = result["observation_results"]
         assert isinstance(values, list)
-        references.extend(cast(str, item["evidence_id"]) for item in values if isinstance(item, dict))
+        for item in values:
+            if isinstance(item, dict):
+                decoded = ObservationResult.from_value(item)
+                references.extend(_selector_evidence_references(decoded.selector))
+                references.append(decoded.evidence_id)
     elif event.event_type == "hypothesis.assessed":
         assessment = result["assessment"]
         assert isinstance(assessment, dict)
-        references.append(cast(str, assessment["evidence_id"]))
+        decoded = EvidenceAssessment.from_value(assessment)
+        references.extend(_selector_evidence_references(decoded.selector))
+        references.append(decoded.evidence_id)
     elif event.event_type == "source_change.declared":
         request = payload["request"]
         assert isinstance(request, dict)
@@ -546,3 +566,17 @@ def diagnostic_event_references(event: DiagnosticEvent) -> tuple[str, ...]:
     }:
         return tuple(dict.fromkeys(references))
     return tuple(sorted(set(references)))
+
+
+def _selector_evidence_references(selector: Mapping[str, object]) -> tuple[str, ...]:
+    """Return the immutable evidence IDs named by one observation selector."""
+
+    if selector.get("kind") != PHYSICAL_MONITOR_FACT_KIND:
+        return ()
+    reference = selector.get("monitor_run_ref")
+    assert isinstance(reference, Mapping)
+    return (
+        cast(str, selector["continuation_evidence_id"]),
+        cast(str, selector["monitor_ref_evidence_id"]),
+        cast(str, reference["transcript_evidence_id"]),
+    )

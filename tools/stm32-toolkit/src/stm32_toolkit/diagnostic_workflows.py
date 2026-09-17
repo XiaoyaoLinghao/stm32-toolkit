@@ -68,9 +68,11 @@ from stm32_toolkit.monitor_replay_contract import (
 from stm32_toolkit.monitor_analysis_contract import (
     NATIVE_ANALYSIS_COMPUTATION_SCHEMA,
     NativeAnalysisContractError,
+    evaluate_physical_monitor_fact,
     native_statistics,
     validate_native_request,
 )
+from stm32_toolkit.diagnostics.model import PHYSICAL_MONITOR_FACT_KIND
 from stm32_toolkit.project_model import ProjectManifestError, load_project_model
 from stm32_toolkit.result import OperationResult
 from stm32_toolkit.testing.model import TestProtocolError
@@ -1182,10 +1184,18 @@ def _diagnostic_assess_hypothesis(
         raise DiagnosticValidationError(DIAGNOSTIC_PLAN_INVALID)
     step = steps[0]
     observation = results[0]
+    if step.selector["kind"] == PHYSICAL_MONITOR_FACT_KIND:
+        recomputed, evidence_id = _resolve_physical_monitor_fact(state, session, step)
+    else:
+        recomputed, evidence_id = _resolve_observation_selector(
+            _load_bound_failed_run(state, session),
+            step,
+        ), session.failed_evidence_id
     if (
         observation.selector != step.selector
         or observation.expected_value != step.expected_value
-        or observation.evidence_id != session.failed_evidence_id
+        or observation.evidence_id != evidence_id
+        or observation.observed_value != recomputed
     ):
         raise DiagnosticValidationError(DIAGNOSTIC_PLAN_INVALID)
     assessment = EvidenceAssessment.new(
@@ -3025,6 +3035,209 @@ def _resolve_observation_selector(manifest: object, step: ObservationStep) -> ob
     raise DiagnosticValidationError(DIAGNOSTIC_PLAN_INVALID)
 
 
+def _json_plain(value: object) -> object:
+    """Convert frozen selector mappings back to JSON-shaped values for equality."""
+
+    if isinstance(value, Mapping):
+        return {str(key): _json_plain(item) for key, item in value.items()}
+    if isinstance(value, tuple):
+        return [_json_plain(item) for item in value]
+    return value
+
+
+def _authenticate_physical_monitor_fact(
+    state: _WorkflowState,
+    session: DiagnosticSession,
+    selector: Mapping[str, object],
+) -> tuple[str, list[object]]:
+    """Authenticate one supplementary selector and return its immutable batches.
+
+    The continuation proof is the authority for the before/after pair.  The
+    reference's authenticated role selects exactly one member of that pair;
+    the caller-provided transcript and reference IDs are accepted only when
+    they resolve to the exact roots and bytes produced for that member.
+    """
+
+    reference = selector.get("monitor_run_ref")
+    if not isinstance(reference, Mapping):
+        raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
+    role = reference.get("scenario_role")
+    if role not in {"failed-before", "fixed-after"}:
+        raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
+    continuation_evidence_id = selector.get("continuation_evidence_id")
+    transcript_evidence_id = reference.get("transcript_evidence_id")
+    monitor_ref_evidence_id = selector.get("monitor_ref_evidence_id")
+    operation_id = reference.get("operation_id")
+    if not all(
+        isinstance(item, str) and item
+        for item in (
+            continuation_evidence_id,
+            transcript_evidence_id,
+            monitor_ref_evidence_id,
+            operation_id,
+        )
+    ):
+        raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
+
+    from stm32_toolkit.acceptance.continuation import (
+        ContinuationIdentityError,
+        ContinuationValidationError,
+        _continuation_monitor_reference,
+        authenticate_continuation,
+    )
+
+    try:
+        # This supplementary Diagnostic is intentionally a new session.  The
+        # historical proof's Diagnostic ID is therefore not an expected
+        # consumer identity; the failed-before TestRun identity below is the
+        # independent binding to this session.
+        association = authenticate_continuation(
+            state.evidence_store,
+            state.workspace.diagnostics_root,
+            continuation_evidence_id,
+            expected_workspace_id=session.identity.workspace_id,
+            expected_project_id=session.identity.project_id,
+            expected_session_id=session.identity.session_id,
+        )
+    except ContinuationIdentityError as error:
+        raise _WorkflowFailure(_INCOMPATIBLE_IDENTITY) from error
+    except FileNotFoundError as error:
+        raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE) from error
+    except OSError as error:
+        raise _WorkflowFailure(_ENVIRONMENT_FAILURE) from error
+    except (
+        ContinuationValidationError,
+        EvidenceValidationError,
+        ReplayContractError,
+        TypeError,
+        ValueError,
+        KeyError,
+        IndexError,
+    ) as error:
+        raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE) from error
+
+    proof = association.proof
+    before = association.before
+    after = association.after
+    before_manifest = getattr(before, "manifest", None)
+    before_envelope = getattr(before, "envelope", None)
+    if (
+        proof.failed_before_test_run_id != session.failed_test_run_id
+        or proof.failed_before_evidence_id != session.failed_evidence_id
+        or getattr(before_manifest, "run_id", None) != session.failed_test_run_id
+        or getattr(before_manifest, "identity", None) != session.identity
+        or getattr(before_envelope, "evidence_id", None) is None
+        or str(before_envelope.evidence_id) != session.failed_evidence_id
+    ):
+        raise _WorkflowFailure(_INCOMPATIBLE_IDENTITY)
+
+    loaded = before if role == "failed-before" else after
+    loaded_manifest = getattr(loaded, "manifest", None)
+    loaded_identity = getattr(loaded_manifest, "identity", None)
+    loaded_run_id = getattr(loaded_manifest, "run_id", None)
+    if loaded_identity is None or not isinstance(loaded_run_id, str):
+        raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
+
+    try:
+        # This existing low-level reader binds the transcript/ref graph to the
+        # exact authenticated TestRun member and role.  It also resolves the
+        # monitor-run-ref root using operation_id, the canonical root key.
+        actual_reference, batches = _continuation_monitor_reference(
+            state.evidence_store,
+            transcript_evidence_id,
+            loaded,
+            role,
+            include_batches=True,
+        )
+        ref_root = get_root(
+            state.evidence_store,
+            "monitor-run-ref",
+            operation_id,
+        )
+        ref_envelope = state.evidence_store.get_envelope(ref_root.manifest_id)
+        if (
+            ref_root.root_type != "monitor-run-ref"
+            or ref_root.root_id != operation_id
+            or str(ref_root.manifest_id) != monitor_ref_evidence_id
+            or str(ref_envelope.evidence_id) != monitor_ref_evidence_id
+            or ref_envelope.operation != "monitor-run-ref"
+            or ref_envelope.parents != (transcript_evidence_id,)
+            or dict(ref_envelope.metadata) != dict(ref_root.metadata)
+            or dict(ref_root.metadata).get("run_ref_sha256")
+            != actual_reference.get("run_ref_sha256")
+        ):
+            raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
+
+        # The workflow reader authenticates artifact bytes, physical transcript
+        # metadata, source identity and the linked target TestRun as well.  It
+        # needs the selected run's origin session as the projected workspace
+        # session for this original physical window.
+        selected_workspace = replace(
+            state.workspace,
+            session_id=loaded_identity.session_id,
+            session_root=state.workspace.workspace_root / "sessions" / loaded_identity.session_id,
+        )
+        selected_state = replace(state, workspace=selected_workspace)
+        transcript_envelope = state.evidence_store.get_envelope(transcript_evidence_id)
+        _envelope, validated_reference, validated_batches = _read_physical_transcript_parent(
+            selected_state,
+            evidence_id=transcript_evidence_id,
+            run_identity=loaded_identity,
+            expected_test_run_id=loaded_run_id,
+            expected_role=role,
+            envelope=transcript_envelope,
+            metadata=dict(transcript_envelope.metadata),
+        )
+        if (
+            validated_reference != actual_reference
+            or validated_batches != batches
+            or _json_plain(reference) != _json_plain(validated_reference)
+        ):
+            raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
+    except _WorkflowFailure:
+        raise
+    except FileNotFoundError as error:
+        raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE) from error
+    except OSError as error:
+        raise _WorkflowFailure(_ENVIRONMENT_FAILURE) from error
+    except (
+        ContinuationValidationError,
+        EvidenceValidationError,
+        ReplayContractError,
+        TypeError,
+        ValueError,
+        KeyError,
+        IndexError,
+    ) as error:
+        raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE) from error
+    return transcript_evidence_id, batches
+
+
+def _resolve_physical_monitor_fact(
+    state: _WorkflowState,
+    session: DiagnosticSession,
+    step: ObservationStep,
+) -> tuple[int, str]:
+    selector = step.selector
+    transcript_evidence_id, batches = _authenticate_physical_monitor_fact(
+        state,
+        session,
+        selector,
+    )
+    try:
+        observed = evaluate_physical_monitor_fact(
+            batches,
+            selector_kind=cast(str, selector["selector_kind"]),
+            selector=cast(str, selector["selector"]),
+            fact=cast(str, selector["fact"]),
+            minimum_valid_samples=cast(int, selector["minimum_valid_samples"]),
+            bit_index=cast(int | None, selector.get("bit_index")),
+        )
+    except NativeAnalysisContractError as error:
+        raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE) from error
+    return observed, transcript_evidence_id
+
+
 def _diagnostic_add_plan(
     context: DiagnosticWorkflowContext,
     *,
@@ -3045,7 +3258,10 @@ def _diagnostic_add_plan(
     manifest = _load_bound_failed_run(state, session)
     plan = _observation_plan(session, steps)
     for step in plan.steps:
-        _resolve_observation_selector(manifest, step)
+        if step.selector["kind"] == PHYSICAL_MONITOR_FACT_KIND:
+            _resolve_physical_monitor_fact(state, session, step)
+        else:
+            _resolve_observation_selector(manifest, step)
     plan_data = plan.to_dict()
     event = create_event(
         diagnostic_session_id=session.diagnostic_session_id,
@@ -3103,12 +3319,16 @@ def _diagnostic_run_plan(
     manifest = _load_bound_failed_run(state, session)
     observation_results_list: list[ObservationResult] = []
     for step in plan.steps:
-        observed = _resolve_observation_selector(manifest, step)
+        if step.selector["kind"] == PHYSICAL_MONITOR_FACT_KIND:
+            observed, evidence_id = _resolve_physical_monitor_fact(state, session, step)
+        else:
+            observed = _resolve_observation_selector(manifest, step)
+            evidence_id = session.failed_evidence_id
         observation_results_list.append(
             ObservationResult(
                 plan_id=plan.plan_id,
                 step_id=step.step_id,
-                evidence_id=session.failed_evidence_id,
+                evidence_id=evidence_id,
                 selector=step.selector,
                 observed_value=observed,
                 expected_value=step.expected_value,

@@ -431,6 +431,113 @@ DiagnosticRunState = Literal[
 ]
 DiagnosticCaseState = Literal["passed", "failed", "skipped", "error", "timeout"]
 DiagnosticCount = Annotated[StrictInt, Field(ge=0, le=100_000)]
+MonitorRunRefLogicalProjectId = Annotated[
+    str,
+    Field(pattern=r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"),
+]
+MonitorRunRefSessionId = Annotated[
+    str,
+    Field(pattern=r"^[a-z0-9][a-z0-9_-]*$", min_length=1, max_length=MAX_STRING_BYTES),
+    AfterValidator(_validate_test_string),
+]
+MonitorRunRefText = Annotated[
+    str,
+    Field(min_length=1, max_length=256),
+    AfterValidator(_validate_test_string),
+]
+MonitorRunRefGitHead = Annotated[str, Field(pattern=r"^[0-9a-f]{40}$")]
+MonitorRunRefUuid = Annotated[
+    str,
+    Field(pattern=r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"),
+]
+
+
+class DiagnosticMonitorRunRef(BaseModel):
+    """Closed v2 physical Monitor source reference accepted by the MCP edge."""
+
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    schema_: Literal["stm32-monitor-run-ref/2"] = Field(alias="schema")
+    operation_id: MonitorRunRefUuid
+    scenario_role: Literal["failed-before", "fixed-after"]
+    execution_source: Literal["physical"]
+    physical_transport_evidence: Literal[True]
+    origin_workspace_id: Digest
+    import_workspace_id: Digest
+    logical_project_id: MonitorRunRefLogicalProjectId
+    origin_session_id: MonitorRunRefSessionId
+    projected_session_id: MonitorRunRefSessionId
+    origin_run_id: MonitorRunRefUuid
+    projected_run_id: MonitorRunRefUuid
+    target_device: MonitorRunRefText
+    probe_id: MonitorRunRefText
+    physical_target: MonitorRunRefText
+    build_id: Digest
+    elf_sha256: Digest
+    input_snapshot_sha256: Digest
+    git_head: MonitorRunRefGitHead
+    git_dirty: StrictBool
+    flash_session_id: MonitorRunRefText
+    lease_id: MonitorRunRefText
+    dwarf_sha256: Digest
+    svd_sha256: Digest | None
+    group_id: MonitorRunRefUuid
+    group_revision: Annotated[StrictInt, Field(ge=1)]
+    start_sequence: Annotated[StrictInt, Field(ge=0)]
+    end_sequence_exclusive: Annotated[StrictInt, Field(ge=1)]
+    start_captured_unix_ns: Annotated[StrictInt, Field(ge=0)]
+    end_captured_unix_ns_exclusive: Annotated[StrictInt, Field(ge=1)]
+    projected_batch_sha256s: Annotated[
+        list[Digest], BeforeValidator(_reject_json_tuple), Field(min_length=1, max_length=1024)
+    ]
+    transcript_evidence_id: Digest
+    run_ref_sha256: Digest
+    source_record_sha256: Digest
+
+    @model_validator(mode="after")
+    def _validate_lineage(self) -> "DiagnosticMonitorRunRef":
+        if self.origin_run_id != self.operation_id or self.projected_run_id != self.operation_id:
+            raise ValueError("Monitor reference run IDs must match operation_id")
+        if self.origin_session_id != self.projected_session_id:
+            raise ValueError("Physical Monitor reference sessions must match")
+        if self.origin_workspace_id != self.import_workspace_id:
+            raise ValueError("Physical Monitor reference workspaces must match")
+        if self.end_sequence_exclusive <= self.start_sequence:
+            raise ValueError("Monitor reference sequence window is invalid")
+        if self.end_captured_unix_ns_exclusive <= self.start_captured_unix_ns:
+            raise ValueError("Monitor reference capture window is invalid")
+        return self
+
+
+class DiagnosticPhysicalMonitorFactSelector(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal["physical-monitor-fact/1"]
+    continuation_evidence_id: Digest
+    monitor_ref_evidence_id: Digest
+    monitor_run_ref: DiagnosticMonitorRunRef
+    selector_kind: Literal["variable", "register"]
+    selector: DiagnosticText
+    fact: Literal["value-varies", "bit-values-mask"]
+    minimum_valid_samples: Annotated[StrictInt, Field(ge=1, le=1024)]
+    bit_index: Annotated[StrictInt, Field(ge=0, le=31)] | None = None
+
+    @model_validator(mode="after")
+    def _validate_fact(self) -> "DiagnosticPhysicalMonitorFactSelector":
+        if self.fact == "value-varies" and (
+            self.bit_index is not None or "bit_index" in self.model_fields_set
+        ):
+            raise ValueError("value-varies does not accept bit_index")
+        if (
+            self.fact == "bit-values-mask"
+            and (
+                self.selector_kind != "register"
+                or self.bit_index is None
+                or "bit_index" not in self.model_fields_set
+            )
+        ):
+            raise ValueError("bit-values-mask requires a register selector")
+        return self
 
 
 class DiagnosticRunStateSelector(BaseModel):
@@ -456,7 +563,8 @@ class DiagnosticCaseCountSelector(BaseModel):
 DiagnosticSelector = Annotated[
     DiagnosticRunStateSelector
     | DiagnosticCaseStateSelector
-    | DiagnosticCaseCountSelector,
+    | DiagnosticCaseCountSelector
+    | DiagnosticPhysicalMonitorFactSelector,
     Field(discriminator="kind"),
 ]
 DiagnosticExpectedValue = DiagnosticRunState | DiagnosticCaseState | DiagnosticCount
@@ -492,6 +600,14 @@ class DiagnosticObservationStep(BaseModel):
             raise ValueError("expected value is incompatible with selector")
         if kind == "case-count" and type(self.expected_value) is not int:
             raise ValueError("expected value is incompatible with selector")
+        if kind == "physical-monitor-fact/1":
+            if type(self.expected_value) is not int:
+                raise ValueError("expected value is incompatible with selector")
+            fact = self.selector.fact
+            if fact == "value-varies" and self.expected_value not in {0, 1}:
+                raise ValueError("expected value is incompatible with selector")
+            if fact == "bit-values-mask" and self.expected_value not in {1, 2, 3}:
+                raise ValueError("expected value is incompatible with selector")
         return self
 
 
@@ -1304,6 +1420,20 @@ def _nested_model_data(value: object) -> object:
     if isinstance(value, BaseModel):
         return value.model_dump(mode="python", by_alias=True)
     return value
+
+
+def _diagnostic_step_data(step: DiagnosticObservationStep) -> dict[str, object]:
+    """Dump one step while omitting only the inapplicable top-level bit index."""
+
+    data = step.model_dump(mode="python", by_alias=True)
+    selector = data.get("selector")
+    if (
+        isinstance(selector, dict)
+        and selector.get("kind") == "physical-monitor-fact/1"
+        and selector.get("bit_index") is None
+    ):
+        selector.pop("bit_index", None)
+    return data
 
 
 async def tool_test_target_replay_for_request(
@@ -2310,7 +2440,7 @@ def create_server(
             operationId,
             diagnosticSessionId,
             expectedRevision,
-            [step.model_dump(mode="python") for step in steps],
+            [_diagnostic_step_data(step) for step in steps],
             actor,
         )
 

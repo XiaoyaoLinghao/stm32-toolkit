@@ -28,14 +28,20 @@ from stm32_toolkit.acceptance.recovery_workflows import (
     begin_acceptance_attempt, checkpoint_acceptance_attempt, resume_acceptance_attempt,
 )
 from stm32_toolkit.diagnostic_workflows import (
+    diagnostic_add_hypothesis,
+    diagnostic_add_plan,
+    diagnostic_assess_hypothesis,
+    diagnostic_begin,
     diagnostic_add_verification_plan, diagnostic_start_verification, diagnostic_attach_marker,
-    diagnostic_complete_verification, diagnostic_show,
+    diagnostic_complete_verification, diagnostic_run_plan, diagnostic_show, diagnostic_start,
 )
+import stm32_toolkit.diagnostic_workflows as diagnostic_workflows
 from stm32_toolkit.diagnostics import (
     DIAGNOSTIC_CHAIN_CORRUPT,
     DIAGNOSTIC_EVIDENCE_MISSING,
     DIAGNOSTIC_IDENTITY_MISMATCH,
     DiagnosticValidationError,
+    ObservationResult,
     VerificationPlan,
     create_event,
 )
@@ -55,6 +61,7 @@ def _append_native_physical_monitor_history(
     run_id: str,
     *,
     value_offset: int,
+    definition: dict[str, object] | None = None,
 ) -> tuple[SampleBatch, ...]:
     """Create a persisted software transcript with the exact native wire shape."""
 
@@ -101,6 +108,7 @@ def _append_native_physical_monitor_history(
                         "rawHex": f"0x{sequence + value_offset:08x}",
                         "bitWidth": 32,
                     },
+                    definition=definition,
                 ),
             ),
         )
@@ -541,6 +549,395 @@ def test_diagnostic_store_reads_authenticated_same_session_native_analysis(
     )
     loaded = fresh_store.load(pair.diagnostic_session_id)
     assert loaded.revision == pair.diagnostic_revision + 1
+
+
+def _supplementary_physical_fact_fixture(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> SimpleNamespace:
+    """Build strict native before/after Monitor references for one test."""
+
+    pair = prepare_pair(tmp_path, monkeypatch)
+    attempt = _ok(
+        begin_acceptance_attempt(
+            pair.context,
+            attempt_id=CONTINUATION_ATTEMPT_ID,
+            scenario_id="legacy-keil-physical-repair",
+            scenario_version="1",
+            continuation=pair.bind_request,
+        )
+    )["attempt"]
+    continuation_id = str(attempt["continuationEvidenceId"])
+    refs = []
+    for role, workspace, identity, run_id, value_offset in (
+        (
+            "failed-before",
+            pair.before_workspace,
+            pair.before_identity,
+            pair.failed_run_id,
+            0,
+        ),
+        (
+            "fixed-after",
+            pair.after_workspace,
+            pair.after_identity,
+            pair.fixed_run_id,
+            10,
+        ),
+    ):
+        monitor_id = physical_fixture.vs08a_fixtures.MONITOR_OPERATION_IDS[role]
+        batches = _append_native_physical_monitor_history(
+            workspace,
+            identity,
+            physical_fixture.PHYSICAL_RAW_PROBE,
+            f"flash-{run_id}",
+            f"lease-{run_id}",
+            monitor_id,
+            value_offset=value_offset,
+            definition={"kind": "register", "selector": "r0"},
+        )
+        refs.append(
+            publish_physical_monitor_run(
+                workspace,
+                pair.evidence,
+                scenario_role=role,
+                test_run_id=run_id,
+                run_id=monitor_id,
+                group_id=str(batches[0].group_id),
+                start_sequence=batches[0].sequence,
+                end_sequence_exclusive=batches[-1].sequence + 1,
+                start_captured_unix_ns=batches[0].captured_unix_ns,
+                end_captured_unix_ns_exclusive=batches[-1].captured_unix_ns + 1,
+                probe_id=physical_fixture.PHYSICAL_RAW_PROBE,
+            )
+        )
+    # prepare_pair fixes the session-id seam for its predecessor.  A
+    # supplementary Diagnostic must use a distinct durable session id while
+    # retaining the same failed-before TestRun identity.
+    monkeypatch.setattr(diagnostic_workflows, "_session_id_factory", lambda: "8" * 32)
+    started = _ok(
+        diagnostic_start(
+            pair.diagnostic,
+            operation_id="supp-fact-start",
+            failed_test_run_id=pair.failed_run_id,
+            failed_run_mode="target",
+        )
+    )
+    diagnostic_session_id = str(started["session"]["diagnostic_session_id"])
+    _ok(
+        diagnostic_begin(
+            pair.diagnostic,
+            operation_id="supp-fact-begin",
+            diagnostic_session_id=diagnostic_session_id,
+            expected_revision=1,
+        )
+    )
+    hypothesis = _ok(
+        diagnostic_add_hypothesis(
+            pair.diagnostic,
+            operation_id="supp-fact-hypothesis",
+            diagnostic_session_id=diagnostic_session_id,
+            expected_revision=2,
+            statement="the physical register fact identifies the failing state",
+        )
+    )["hypothesis"]
+    selectors = []
+    for reference in refs:
+        selectors.append(
+            {
+                "kind": "physical-monitor-fact/1",
+                "continuation_evidence_id": continuation_id,
+                "monitor_ref_evidence_id": str(
+                    get_root(
+                        pair.evidence,
+                        "monitor-run-ref",
+                        reference.operation_id,
+                    ).manifest_id
+                ),
+                "monitor_run_ref": reference.to_dict(),
+                "selector_kind": "register",
+                "selector": "r0",
+                "fact": "bit-values-mask",
+                "minimum_valid_samples": 2,
+                "bit_index": 0,
+            }
+        )
+    return SimpleNamespace(
+        pair=pair,
+        continuation_id=continuation_id,
+        refs=tuple(refs),
+        selectors=tuple(selectors),
+        diagnostic_session_id=diagnostic_session_id,
+        hypothesis_id=str(hypothesis["hypothesis_id"]),
+    )
+
+
+def test_physical_monitor_fact_persists_and_fresh_store_recomputes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A supplementary physical fact survives append and a fresh full load."""
+
+    fixture = _supplementary_physical_fact_fixture(tmp_path, monkeypatch)
+    pair = fixture.pair
+    refs = fixture.refs
+    selectors = fixture.selectors
+    diagnostic_session_id = fixture.diagnostic_session_id
+    hypothesis_id = fixture.hypothesis_id
+    plan = _ok(
+        diagnostic_add_plan(
+            pair.diagnostic,
+            operation_id="supp-fact-plan",
+            diagnostic_session_id=diagnostic_session_id,
+            expected_revision=3,
+            steps=[
+                {
+                    "step_id": "physical-register-fact-before",
+                    "selector": selectors[0],
+                    "expected_value": 3,
+                    "purpose": "verify both observed values of the failed-before register bit",
+                },
+                {
+                    "step_id": "physical-register-fact-after",
+                    "selector": selectors[1],
+                    "expected_value": 3,
+                    "purpose": "verify both observed values of the fixed-after register bit",
+                },
+            ],
+        )
+    )["observation_plan"]
+    plan_id = str(plan["plan_id"])
+    run = _ok(
+        diagnostic_run_plan(
+            pair.diagnostic,
+            operation_id="supp-fact-run",
+            diagnostic_session_id=diagnostic_session_id,
+            expected_revision=4,
+            plan_id=plan_id,
+        )
+    )
+    assert [item["observed_value"] for item in run["observation_results"]] == [3, 3]
+    assert [item["evidence_id"] for item in run["observation_results"]] == [
+        refs[0].transcript_evidence_id,
+        refs[1].transcript_evidence_id,
+    ]
+    assessed = _ok(
+        diagnostic_assess_hypothesis(
+            pair.diagnostic,
+            operation_id="supp-fact-assess",
+            diagnostic_session_id=diagnostic_session_id,
+            expected_revision=5,
+            hypothesis_id=hypothesis_id,
+            plan_id=plan_id,
+            step_id="physical-register-fact-before",
+            polarity="supports",
+            rationale="the authenticated physical samples contain both bit values",
+        )
+    )
+    assert assessed["assessment"]["evidence_id"] == refs[0].transcript_evidence_id
+    _ok(
+        diagnostic_assess_hypothesis(
+            pair.diagnostic,
+            operation_id="supp-fact-assess-after",
+            diagnostic_session_id=diagnostic_session_id,
+            expected_revision=6,
+            hypothesis_id=hypothesis_id,
+            plan_id=plan_id,
+            step_id="physical-register-fact-after",
+            polarity="supports",
+            rationale="the fixed-after authenticated physical samples contain both bit values",
+        )
+    )
+
+    fresh_store = DiagnosticStore(
+        pair.workspace.diagnostics_root,
+        EvidenceStore(pair.evidence.root),
+    )
+    loaded = fresh_store.load(diagnostic_session_id)
+    assert loaded.revision == 7
+    assert [item.observed_value for item in loaded.observation_results] == [3, 3]
+    assert [item.evidence_id for item in loaded.observation_results] == [
+        refs[0].transcript_evidence_id,
+        refs[1].transcript_evidence_id,
+    ]
+    assert [item.evidence_id for item in loaded.hypotheses[0].supporting] == [
+        refs[0].transcript_evidence_id,
+        refs[1].transcript_evidence_id,
+    ]
+
+
+def _add_one_supplementary_fact_plan(
+    fixture: SimpleNamespace,
+    *,
+    selector: dict[str, object] | None = None,
+    operation_id: str = "supp-negative-plan",
+) -> dict[str, object]:
+    """Append one physical fact plan to a prepared supplementary session."""
+
+    chosen = fixture.selectors[0] if selector is None else selector
+    return _ok(
+        diagnostic_add_plan(
+            fixture.pair.diagnostic,
+            operation_id=operation_id,
+            diagnostic_session_id=fixture.diagnostic_session_id,
+            expected_revision=3,
+            steps=[
+                {
+                    "step_id": "physical-register-fact",
+                    "selector": chosen,
+                    "expected_value": 3,
+                    "purpose": "verify both observed values of the physical register bit",
+                }
+            ],
+        )
+    )["observation_plan"]
+
+
+@pytest.mark.parametrize("field", ["continuation_evidence_id", "monitor_ref_evidence_id"])
+def test_supplementary_fact_rejects_wrong_proof_or_monitor_reference(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    field: str,
+) -> None:
+    fixture = _supplementary_physical_fact_fixture(tmp_path, monkeypatch)
+    selector = dict(fixture.selectors[0])
+    selector[field] = "f" * 64
+
+    rejected = diagnostic_add_plan(
+        fixture.pair.diagnostic,
+        operation_id="supp-negative-plan",
+        diagnostic_session_id=fixture.diagnostic_session_id,
+        expected_revision=3,
+        steps=[
+            {
+                "step_id": "physical-register-fact",
+                "selector": selector,
+                "expected_value": 3,
+                "purpose": "verify the physical register bit",
+            }
+        ],
+    )
+    assert rejected.ok is False
+    assert rejected.code == EVIDENCE_INTEGRITY_FAILURE
+    assert DiagnosticStore(
+        fixture.pair.workspace.diagnostics_root,
+        EvidenceStore(fixture.pair.evidence.root),
+    ).load_durable(fixture.diagnostic_session_id).revision == 3
+
+
+def test_supplementary_fact_rejects_incompatible_source_identity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fixture = _supplementary_physical_fact_fixture(tmp_path, monkeypatch)
+    state = diagnostic_workflows._make_state(fixture.pair.diagnostic)
+    session = diagnostic_workflows._load_bound_session(
+        state, fixture.diagnostic_session_id
+    )
+    wrong_identity = replace(
+        session.identity,
+        project_id="87654321-4321-8765-4321-876543218765",
+    )
+    wrong_session = replace(session, identity=wrong_identity)
+
+    with pytest.raises(diagnostic_workflows._WorkflowFailure) as raised:
+        diagnostic_workflows._authenticate_physical_monitor_fact(
+            state,
+            wrong_session,
+            fixture.selectors[0],
+        )
+    assert raised.value.code == "INCOMPATIBLE_IDENTITY"
+
+
+@pytest.mark.parametrize("damage", ["missing", "tampered"])
+def test_supplementary_fact_fresh_load_rejects_missing_or_tampered_transcript(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    damage: str,
+) -> None:
+    fixture = _supplementary_physical_fact_fixture(tmp_path, monkeypatch)
+    _add_one_supplementary_fact_plan(fixture)
+    transcript = fixture.pair.evidence.get_envelope(
+        fixture.refs[0].transcript_evidence_id
+    )
+    artifact_path = fixture.pair.evidence.root.joinpath(
+        *transcript.artifacts[0].relative_path.split("/")
+    )
+    if damage == "missing":
+        artifact_path.unlink()
+    else:
+        artifact_path.write_bytes(artifact_path.read_bytes() + b" ")
+
+    fresh_store = DiagnosticStore(
+        fixture.pair.workspace.diagnostics_root,
+        EvidenceStore(fixture.pair.evidence.root),
+    )
+    with pytest.raises(DiagnosticValidationError) as raised:
+        fresh_store.load(fixture.diagnostic_session_id)
+    assert raised.value.code == DIAGNOSTIC_CHAIN_CORRUPT
+    assert fresh_store.load_durable(fixture.diagnostic_session_id).revision == 4
+
+
+def test_supplementary_fact_store_maps_environment_failure_to_missing_evidence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fixture = _supplementary_physical_fact_fixture(tmp_path, monkeypatch)
+    _add_one_supplementary_fact_plan(fixture)
+
+    def environment_failure(*_args: object, **_kwargs: object) -> object:
+        raise diagnostic_workflows._WorkflowFailure("ENVIRONMENT_FAILURE")
+
+    monkeypatch.setattr(
+        diagnostic_workflows,
+        "_resolve_physical_monitor_fact",
+        environment_failure,
+    )
+    fresh_store = DiagnosticStore(
+        fixture.pair.workspace.diagnostics_root,
+        EvidenceStore(fixture.pair.evidence.root),
+    )
+    with pytest.raises(DiagnosticValidationError) as raised:
+        fresh_store.load(fixture.diagnostic_session_id)
+    assert raised.value.code == DIAGNOSTIC_EVIDENCE_MISSING
+
+
+def test_supplementary_fact_rejects_rehashed_stored_scalar_on_append(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fixture = _supplementary_physical_fact_fixture(tmp_path, monkeypatch)
+    _add_one_supplementary_fact_plan(fixture)
+    store = DiagnosticStore(fixture.pair.workspace.diagnostics_root, fixture.pair.evidence)
+    session = store.load(fixture.diagnostic_session_id)
+    plan = session.observation_plans[0]
+    step = plan.steps[0]
+    forged = ObservationResult(
+        plan_id=plan.plan_id,
+        step_id=step.step_id,
+        evidence_id=fixture.refs[0].transcript_evidence_id,
+        selector=step.selector,
+        observed_value=2,
+        expected_value=step.expected_value,
+        matched=False,
+    )
+    event = create_event(
+        diagnostic_session_id=fixture.diagnostic_session_id,
+        operation_id="supp-rehashed-scalar",
+        sequence=session.revision,
+        revision_before=session.revision,
+        event_type="observation.plan_executed",
+        occurred_at_utc="2026-09-17T00:00:00.000000Z",
+        actor="tool",
+        previous_digest=session.event_head,
+        payload={
+            "request": {"plan_id": plan.plan_id},
+            "result": {"observation_results": [forged.to_dict()]},
+        },
+    )
+    with pytest.raises(DiagnosticValidationError) as raised:
+        store.append(
+            fixture.diagnostic_session_id,
+            event,
+            expected_revision=session.revision,
+        )
+    assert raised.value.code == DIAGNOSTIC_CHAIN_CORRUPT
+    assert store.load_durable(fixture.diagnostic_session_id).revision == session.revision
 
 
 def test_diagnostic_store_rejects_missing_same_session_native_artifact(
