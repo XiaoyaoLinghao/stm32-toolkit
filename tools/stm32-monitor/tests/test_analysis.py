@@ -21,13 +21,20 @@ from stm32_monitor.analysis import (
     DiagnosticMarker,
     analyze_monitor_windows,
 )
-from stm32_monitor.models import MAX_SIGNED_INT64, SampleBatch, SampleValue, WatchItem
+from stm32_monitor.models import (
+    MAX_SIGNED_INT64,
+    ObservationBinding,
+    SampleBatch,
+    SampleValue,
+    WatchItem,
+)
 from stm32_monitor.replay import (
     MonitorReplayDocument,
     MonitorRunRef,
     MonitorRunRefV2,
     _make_reference,
     _project_batches,
+    canonical_physical_json_bytes,
     canonical_replay_json_bytes,
 )
 from stm32_toolkit.paths import WorkspacePaths
@@ -136,6 +143,85 @@ def _ref_with(reference: MonitorRunRef, **changes: object) -> MonitorRunRef:
     return MonitorRunRef.from_value(payload)
 
 
+def _native_physical_source(
+    *, role: str, operation_id: str, group_id: str, values: tuple[int, int]
+) -> tuple[MonitorRunRefV2, tuple[SampleBatch, ...]]:
+    payload = _physical_v2_candidate()
+    start = 1_700_000_000_000_000_000
+    payload.update(
+        {
+            "operation_id": operation_id,
+            "scenario_role": role,
+            "origin_run_id": operation_id,
+            "projected_run_id": operation_id,
+            "group_id": group_id,
+            "start_sequence": 0,
+            "end_sequence_exclusive": 2,
+            "start_captured_unix_ns": start,
+            "end_captured_unix_ns_exclusive": start + 1_000_001,
+        }
+    )
+    binding = ObservationBinding(
+        workspace_id=payload["import_workspace_id"],
+        logical_project_id=payload["logical_project_id"],
+        session_id=payload["projected_session_id"],
+        probe_id=payload["probe_id"],
+        target_device=payload["target_device"],
+        physical_target=payload["physical_target"],
+        build_id=payload["build_id"],
+        elf_sha256=payload["elf_sha256"],
+        input_snapshot_sha256=payload["input_snapshot_sha256"],
+        git_head=payload["git_head"],
+        git_dirty=payload["git_dirty"],
+        flash_session_id=payload["flash_session_id"],
+        lease_id=payload["lease_id"],
+        dwarf_sha256=payload["dwarf_sha256"],
+        svd_sha256=payload["svd_sha256"],
+    )
+    batches = tuple(
+        SampleBatch(
+            binding=binding,
+            group_id=UUID(group_id),
+            group_revision=1,
+            run_id=UUID(operation_id),
+            sequence=index,
+            scheduled_unix_ns=start + index * 10,
+            captured_unix_ns=start + index * 1_000_000,
+            latency_ns=1,
+            actual_rate_hz=100.0,
+            subscriber_drops=0,
+            history_drops=0,
+            deadline_drops=0,
+            values=(
+                SampleValue(
+                    WatchItem.register("r0"),
+                    "OK",
+                    typed_value={
+                        "expression": "r0",
+                        "typeName": "uint8_register",
+                        "value": values[index],
+                        "rawHex": f"0x{values[index]:02x}",
+                        "bitWidth": 8,
+                    },
+                ),
+            ),
+        )
+        for index in range(2)
+    )
+    payload["projected_batch_sha256s"] = [
+        sha256(canonical_physical_json_bytes(batch.to_dict())).hexdigest()
+        for batch in batches
+    ]
+    payload["run_ref_sha256"] = sha256(
+        canonical_replay_json_bytes(
+            {key: value for key, value in payload.items() if key != "run_ref_sha256"}
+        )
+    ).hexdigest()
+    reference = MonitorRunRef.from_value(payload)
+    assert type(reference) is MonitorRunRefV2
+    return reference, batches
+
+
 def _physical_reference(*, role: str, operation_id: str, group_id: str) -> MonitorRunRefV2:
     payload = _physical_v2_candidate()
     payload.update(
@@ -176,6 +262,49 @@ def test_request_and_computation_are_closed_canonical_values(tmp_path: Path) -> 
     assert AnalysisComputation.from_value(result.to_dict()) == result
     assert "analysis_id" not in result.to_dict()
     assert "evidence_id" not in result.to_dict()
+
+
+def test_native_request_uses_bounded_register_alignment_and_embeds_in_result3() -> None:
+    before_ref, before = _native_physical_source(
+        role="failed-before",
+        operation_id="11111111-1111-4111-8111-111111111111",
+        group_id="22222222-2222-4222-8222-222222222222",
+        values=(10, 20),
+    )
+    after_ref, after = _native_physical_source(
+        role="fixed-after",
+        operation_id="33333333-3333-4333-8333-333333333333",
+        group_id="44444444-4444-4444-8444-444444444444",
+        values=(11, 25),
+    )
+    request = AnalysisRequest(
+        schema="stm32-monitor-analysis-request/2",
+        before_run=before_ref,
+        after_run=after_ref,
+        selector_kind="register",
+        selector="r0",
+        alignment="bounded-run-relative",
+        minimum_valid_pairs=2,
+        scalar_policy="native-uint-register/1",
+        max_pairing_skew_ns=1,
+    )
+
+    computation = analyze_monitor_windows(request, before, after)
+    assert computation.quality == "VALID"
+    assert computation.aligned_position_count == 2
+    assert computation.aligned_pair_count == 2
+    assert computation.before_first == 10
+    assert computation.after_last == 25
+    lineage = AnalysisLineage.new(
+        before_run=before_ref,
+        after_run=after_ref,
+        source_change_declaration_id=None,
+    )
+    result = AnalysisResult.new(request=request, computation=computation, lineage=lineage)
+    payload = result.to_dict()
+    assert payload["schema"] == "stm32-monitor-analysis/3"
+    assert payload["request"] == request.to_dict()
+    assert AnalysisResult.from_value(payload) == result
 
 
 def test_analysis_request_accepts_exact_physical_v2_pairs_and_rejects_mixed_or_subclass(
@@ -677,6 +806,7 @@ def test_authoritative_dataclass_field_order_and_exact_payload_shapes(tmp_path: 
         "quality", "conclusion", "reason_code", "aligned_position_count", "aligned_pair_count",
         "excluded_position_count", "before_first", "before_last", "before_min", "before_max",
         "after_first", "after_last", "after_min", "after_max", "delta_first", "delta_last", "changed",
+        "request",
     )
     assert tuple(item.name for item in fields(AnalysisEvidenceRef)) == (
         "schema", "analysis_id", "evidence_id",

@@ -19,13 +19,23 @@ from .replay import (
     canonical_physical_json_bytes,
     canonical_replay_json_bytes,
 )
+from stm32_toolkit.monitor_analysis_contract import (
+    NATIVE_ALIGNMENT,
+    NATIVE_ANALYSIS_REQUEST_SCHEMA,
+    NATIVE_SCALAR_POLICY,
+    NativeAnalysisContractError,
+    native_statistics,
+    validate_native_request,
+)
 
 
 ANALYSIS_REQUEST_SCHEMA = "stm32-monitor-analysis-request/1"
+ANALYSIS_REQUEST_SCHEMA_V2 = NATIVE_ANALYSIS_REQUEST_SCHEMA
 ANALYSIS_COMPUTATION_SCHEMA = "stm32-monitor-analysis-computation/1"
 ANALYSIS_LINEAGE_SCHEMA = "stm32-monitor-analysis-lineage/1"
 ANALYSIS_LINEAGE_SCHEMA_V2 = "stm32-monitor-analysis-lineage/2"
 ANALYSIS_RESULT_SCHEMA_V2 = "stm32-monitor-analysis/2"
+ANALYSIS_RESULT_SCHEMA_V3 = "stm32-monitor-analysis/3"
 ANALYSIS_RESULT_SCHEMA = "stm32-monitor-analysis/1"
 ANALYSIS_EVIDENCE_REF_SCHEMA = "stm32-monitor-analysis-evidence-ref/1"
 DIAGNOSTIC_MARKER_SCHEMA = "stm32-diagnostic-marker/1"
@@ -45,6 +55,7 @@ _REQUEST_FIELDS = frozenset(
         "minimum_valid_pairs",
     }
 )
+_REQUEST_FIELDS_V2 = _REQUEST_FIELDS | {"scalar_policy", "max_pairing_skew_ns"}
 _COMPUTATION_FIELDS = frozenset(
     {
         "schema",
@@ -139,6 +150,7 @@ _RESULT_FIELDS = frozenset(
         "changed",
     }
 )
+_RESULT_FIELDS_V3 = _RESULT_FIELDS | {"request"}
 _EVIDENCE_REF_FIELDS = frozenset({"schema", "analysis_id", "evidence_id"})
 _MARKER_FIELDS = frozenset(
     {
@@ -280,22 +292,49 @@ class AnalysisRequest:
     selector: str
     alignment: str
     minimum_valid_pairs: int
+    scalar_policy: str | None = None
+    max_pairing_skew_ns: int | None = None
 
     def __post_init__(self) -> None:
-        if type(self.schema) is not str or self.schema != ANALYSIS_REQUEST_SCHEMA:
+        if type(self.schema) is not str or self.schema not in {
+            ANALYSIS_REQUEST_SCHEMA,
+            ANALYSIS_REQUEST_SCHEMA_V2,
+        }:
             _fail("analysis request schema is invalid")
         if not _is_monitor_run_reference(self.before_run) or not _is_monitor_run_reference(self.after_run):
             _fail("analysis request runs are invalid")
         if not _same_reference_family(self.before_run, self.after_run):
             _fail("analysis request run reference families are incompatible")
         _watch(self.selector_kind, self.selector)
-        if type(self.alignment) is not str or self.alignment != "run-relative":
-            _fail("analysis alignment is invalid")
         if (
             type(self.minimum_valid_pairs) is not int
             or not 2 <= self.minimum_valid_pairs <= MAX_ANALYSIS_VALUES
         ):
             _fail("minimum valid pairs are invalid")
+        if self.schema == ANALYSIS_REQUEST_SCHEMA:
+            if type(self.alignment) is not str or self.alignment != "run-relative":
+                _fail("analysis alignment is invalid")
+            if self.scalar_policy is not None or self.max_pairing_skew_ns is not None:
+                _fail("analysis request v1 carries native fields")
+            return
+        if (
+            type(self.before_run) is not MonitorRunRefV2
+            or type(self.after_run) is not MonitorRunRefV2
+        ):
+            _fail("native analysis requires physical run references")
+        if self.selector_kind != "register" or self.alignment != NATIVE_ALIGNMENT:
+            _fail("native analysis request fields are invalid")
+        if self.scalar_policy != NATIVE_SCALAR_POLICY:
+            _fail("native analysis scalar policy is invalid")
+        if (
+            type(self.max_pairing_skew_ns) is not int
+            or isinstance(self.max_pairing_skew_ns, bool)
+        ):
+            _fail("native analysis pairing skew is invalid")
+        try:
+            validate_native_request(self.to_dict())
+        except NativeAnalysisContractError as error:
+            raise AnalysisError(ANALYSIS_REQUEST_INVALID, "native analysis request is invalid") from error
 
     @property
     def request_digest(self) -> str:
@@ -310,27 +349,36 @@ class AnalysisRequest:
         if type(value) is cls:
             return value
         _reject_tuples(value)
-        if type(value) is not dict or set(value) != _REQUEST_FIELDS:
+        fields = _REQUEST_FIELDS
+        if type(value) is dict and value.get("schema") == ANALYSIS_REQUEST_SCHEMA_V2:
+            fields = _REQUEST_FIELDS_V2
+        if type(value) is not dict or set(value) != fields:
             _fail("analysis request fields are not closed")
         try:
             before = MonitorRunRef.from_value(value["before_run"])
             after = MonitorRunRef.from_value(value["after_run"])
-            return cls(
-                schema=value["schema"],
-                before_run=before,
-                after_run=after,
-                selector_kind=value["selector_kind"],
-                selector=value["selector"],
-                alignment=value["alignment"],
-                minimum_valid_pairs=value["minimum_valid_pairs"],
-            )
+            parsed: dict[str, object] = {
+                "schema": value["schema"],
+                "before_run": before,
+                "after_run": after,
+                "selector_kind": value["selector_kind"],
+                "selector": value["selector"],
+                "alignment": value["alignment"],
+                "minimum_valid_pairs": value["minimum_valid_pairs"],
+            }
+            if fields is _REQUEST_FIELDS_V2:
+                parsed.update(
+                    scalar_policy=value["scalar_policy"],
+                    max_pairing_skew_ns=value["max_pairing_skew_ns"],
+                )
+            return cls(**parsed)
         except AnalysisError:
             raise
         except (MonitorReplayError, TypeError, ValueError, OverflowError) as error:
             raise AnalysisError(ANALYSIS_REQUEST_INVALID, "analysis request is invalid") from error
 
     def to_dict(self) -> dict[str, object]:
-        return {
+        result = {
             "schema": self.schema,
             "before_run": self.before_run.to_dict(),
             "after_run": self.after_run.to_dict(),
@@ -339,6 +387,12 @@ class AnalysisRequest:
             "alignment": self.alignment,
             "minimum_valid_pairs": self.minimum_valid_pairs,
         }
+        if self.schema == ANALYSIS_REQUEST_SCHEMA_V2:
+            result.update(
+                scalar_policy=self.scalar_policy,
+                max_pairing_skew_ns=self.max_pairing_skew_ns,
+            )
+        return result
 
 
 def _validate_stat(value: object, label: str) -> None:
@@ -658,7 +712,7 @@ def _result_computation(value: "AnalysisResult") -> AnalysisComputation:
 
 
 def _result_unsigned(value: "AnalysisResult") -> dict[str, object]:
-    return {
+    result = {
         "schema": value.schema,
         "request_digest": value.request_digest,
         "before_run_id": value.before_run_id,
@@ -682,6 +736,11 @@ def _result_unsigned(value: "AnalysisResult") -> dict[str, object]:
         "delta_last": value.delta_last,
         "changed": value.changed,
     }
+    if value.schema == ANALYSIS_RESULT_SCHEMA_V3:
+        if value.request is None:
+            _fail("native analysis result request is missing")
+        result["request"] = value.request.to_dict()
+    return result
 
 
 def _result_from_values(
@@ -690,8 +749,15 @@ def _result_from_values(
     computation: AnalysisComputation,
     lineage: AnalysisLineage,
 ) -> "AnalysisResult":
+    native = request.schema == ANALYSIS_REQUEST_SCHEMA_V2
     unsigned = {
-        "schema": ANALYSIS_RESULT_SCHEMA if lineage.continuation_evidence_id is None else ANALYSIS_RESULT_SCHEMA_V2,
+        "schema": (
+            ANALYSIS_RESULT_SCHEMA_V3
+            if native
+            else ANALYSIS_RESULT_SCHEMA
+            if lineage.continuation_evidence_id is None
+            else ANALYSIS_RESULT_SCHEMA_V2
+        ),
         "request_digest": request.request_digest,
         "before_run_id": request.before_run.run_ref_sha256,
         "after_run_id": request.after_run.run_ref_sha256,
@@ -714,6 +780,8 @@ def _result_from_values(
         "delta_last": computation.delta_last,
         "changed": computation.changed,
     }
+    if native:
+        unsigned["request"] = request.to_dict()
     analysis_id = sha256(canonical_replay_json_bytes(unsigned)).hexdigest()
     return AnalysisResult(
         schema=unsigned["schema"],
@@ -739,6 +807,7 @@ def _result_from_values(
         delta_first=computation.delta_first,
         delta_last=computation.delta_last,
         changed=computation.changed,
+        request=request if native else None,
     )
 
 
@@ -767,9 +836,14 @@ class AnalysisResult:
     delta_first: float | int | None
     delta_last: float | int | None
     changed: bool | None
+    request: AnalysisRequest | None = None
 
     def __post_init__(self) -> None:
-        if type(self.schema) is not str or self.schema not in {ANALYSIS_RESULT_SCHEMA, ANALYSIS_RESULT_SCHEMA_V2}:
+        if type(self.schema) is not str or self.schema not in {
+            ANALYSIS_RESULT_SCHEMA,
+            ANALYSIS_RESULT_SCHEMA_V2,
+            ANALYSIS_RESULT_SCHEMA_V3,
+        }:
             _fail("analysis result schema is invalid")
         _hash(self.analysis_id, "analysis ID")
         _hash(self.request_digest, "request digest")
@@ -777,10 +851,43 @@ class AnalysisResult:
         _hash(self.after_run_id, "after run ID")
         if type(self.identity) is not AnalysisLineage:
             _fail("analysis result lineage is invalid")
-        expected_schema = ANALYSIS_RESULT_SCHEMA if self.identity.continuation_evidence_id is None else ANALYSIS_RESULT_SCHEMA_V2
+        expected_schema = (
+            ANALYSIS_RESULT_SCHEMA_V3
+            if self.request is not None
+            else ANALYSIS_RESULT_SCHEMA
+            if self.identity.continuation_evidence_id is None
+            else ANALYSIS_RESULT_SCHEMA_V2
+        )
         if self.schema != expected_schema:
             _fail("analysis result schema does not match lineage")
+        if self.schema == ANALYSIS_RESULT_SCHEMA_V3:
+            if type(self.request) is not AnalysisRequest or self.request.schema != ANALYSIS_REQUEST_SCHEMA_V2:
+                _fail("native analysis result request is invalid")
+            if self.request.request_digest != self.request_digest:
+                _fail("native analysis result request digest does not match")
+            if (
+                self.request.before_run.run_ref_sha256 != self.before_run_id
+                or self.request.after_run.run_ref_sha256 != self.after_run_id
+            ):
+                _fail("native analysis result request runs do not match")
+            expected_lineage = AnalysisLineage.new(
+                before_run=self.request.before_run,
+                after_run=self.request.after_run,
+                source_change_declaration_id=self.identity.source_change_declaration_id,
+                continuation_evidence_id=self.identity.continuation_evidence_id,
+            )
+            if expected_lineage != self.identity:
+                _fail("native analysis result lineage does not match request")
+        elif self.request is not None:
+            _fail("legacy analysis result carries a request")
         _result_computation(self)
+        if self.schema == ANALYSIS_RESULT_SCHEMA_V3:
+            assert self.request is not None
+            if self.conclusion == "COMPLETED":
+                if self.aligned_pair_count < self.request.minimum_valid_pairs:
+                    _fail("completed native analysis does not meet request threshold")
+            elif self.aligned_pair_count >= self.request.minimum_valid_pairs:
+                _fail("inconclusive native analysis meets request threshold")
         try:
             expected = sha256(canonical_replay_json_bytes(_result_unsigned(self))).hexdigest()
         except (TypeError, ValueError, OverflowError, MonitorReplayError) as error:
@@ -823,22 +930,28 @@ class AnalysisResult:
     def from_value(cls, value: object) -> "AnalysisResult":
         if type(value) is cls:
             return value
-        if type(value) is not dict or set(value) != _RESULT_FIELDS:
+        fields = _RESULT_FIELDS
+        if type(value) is dict and value.get("schema") == ANALYSIS_RESULT_SCHEMA_V3:
+            fields = _RESULT_FIELDS_V3
+        if type(value) is not dict or set(value) != fields:
             _fail("analysis result fields are not closed")
         _reject_tuples(value)
         try:
-            return cls(
-                schema=value["schema"],
-                analysis_id=value["analysis_id"],
-                request_digest=value["request_digest"],
-                before_run_id=value["before_run_id"],
-                after_run_id=value["after_run_id"],
-                identity=AnalysisLineage.from_value(value["identity"]),
+            parsed: dict[str, object] = {
+                "schema": value["schema"],
+                "analysis_id": value["analysis_id"],
+                "request_digest": value["request_digest"],
+                "before_run_id": value["before_run_id"],
+                "after_run_id": value["after_run_id"],
+                "identity": AnalysisLineage.from_value(value["identity"]),
                 **{
                     field_name: value[field_name]
                     for field_name in _STAT_NAMES + _INTEGER_STAT_NAMES + ("quality", "conclusion", "reason_code", "changed")
                 },
-            )
+            }
+            if fields is _RESULT_FIELDS_V3:
+                parsed["request"] = AnalysisRequest.from_value(value["request"])
+            return cls(**parsed)
         except AnalysisError:
             raise
         except (TypeError, ValueError, OverflowError) as error:
@@ -1163,6 +1276,20 @@ def analyze_monitor_windows(
         _shared_compatibility(request.before_run, request.after_run, before, after, continuation)
         requested = request.watch_item
 
+        if request.schema == ANALYSIS_REQUEST_SCHEMA_V2:
+            try:
+                native = native_statistics(
+                    tuple(batch.to_dict() for batch in before),
+                    tuple(batch.to_dict() for batch in after),
+                    selector=request.selector,
+                    max_pairing_skew_ns=cast(int, request.max_pairing_skew_ns),
+                    minimum_valid_pairs=request.minimum_valid_pairs,
+                    request_digest=request.request_digest,
+                )
+                return AnalysisComputation.from_value(native)
+            except NativeAnalysisContractError as error:
+                raise AnalysisError(ANALYSIS_REQUEST_INVALID, "native analysis input is invalid") from error
+
         before_zero = before[0].scheduled_unix_ns
         after_zero = after[0].scheduled_unix_ns
         before_by_time = {batch.scheduled_unix_ns - before_zero: batch for batch in before}
@@ -1259,7 +1386,10 @@ __all__ = [
     "ANALYSIS_LINEAGE_SCHEMA",
     "ANALYSIS_REQUEST_INVALID",
     "ANALYSIS_REQUEST_SCHEMA",
+    "ANALYSIS_REQUEST_SCHEMA_V2",
     "ANALYSIS_RESULT_SCHEMA",
+    "ANALYSIS_RESULT_SCHEMA_V2",
+    "ANALYSIS_RESULT_SCHEMA_V3",
     "DIAGNOSTIC_MARKER_SCHEMA",
     "AnalysisComputation",
     "AnalysisEvidenceRef",

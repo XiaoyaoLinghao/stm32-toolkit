@@ -38,8 +38,15 @@ from stm32_toolkit.evidence.gc import RootRecord
 from stm32_toolkit.evidence.store import EvidenceStore, MAX_EVIDENCE_READ_BYTES
 from stm32_toolkit.monitor_replay_contract import (
     MAX_PHYSICAL_TRANSCRIPT_BYTES, canonical_physical_json_bytes,
+    canonical_replay_json_bytes,
     decode_canonical_json_bytes, decode_physical_transcript_bytes,
     validate_physical_transcript, validate_run_reference,
+)
+from stm32_toolkit.monitor_analysis_contract import (
+    NATIVE_ANALYSIS_COMPUTATION_SCHEMA,
+    NativeAnalysisContractError,
+    native_statistics,
+    validate_native_request,
 )
 from stm32_toolkit.testing.publication import PublishedTestRun, TestRunRepository
 
@@ -65,6 +72,7 @@ CONTINUATION_ATTEMPT_SCHEMA = "stm32-acceptance-attempt/3"
 CONTINUATION_POLICY_SCHEMA = "stm32-physical-continuation-policy/1"
 CONTINUATION_LINEAGE_SCHEMA = "stm32-monitor-analysis-lineage/2"
 CONTINUATION_ANALYSIS_SCHEMA = "stm32-monitor-analysis/2"
+CONTINUATION_ANALYSIS_SCHEMA_V3 = "stm32-monitor-analysis/3"
 VERIFICATION_PLAN_CONTINUATION_SCHEMA = "stm32-verification-plan/2"
 CONTINUATION_WINDOW_SECONDS = 900
 CONTINUATION_STAGES = ("verification-pending", "target-fix-verified")
@@ -856,7 +864,7 @@ def authenticate_plan_continuation(evidence, diagnostics_root, plan, session):
     return association
 
 
-def _continuation_monitor_reference(evidence, parent_id, loaded, role):
+def _continuation_monitor_reference(evidence, parent_id, loaded, role, *, include_batches=False):
     """Read the existing physical transcript/ref graph under its original identity."""
     parent = evidence.get_envelope(parent_id)
     identity = loaded.manifest.identity
@@ -937,6 +945,8 @@ def _continuation_monitor_reference(evidence, parent_id, loaded, role):
     if (dict(root.metadata) != root_metadata or dict(ref_root.metadata) != ref_metadata
         or dict(ref_envelope.metadata) != ref_metadata):
         raise ContinuationValidationError("continuation Monitor reference metadata differs")
+    if include_batches:
+        return reference, batches
     return reference
 
 
@@ -972,8 +982,10 @@ def validate_continuation_reference(evidence, association, envelope):
         "excluded_position_count", "before_first", "before_last", "before_min", "before_max",
         "after_first", "after_last", "after_min", "after_max", "delta_first", "delta_last", "changed",
     }
-    if (not isinstance(payload, dict) or set(payload) != fields or canonical_json_bytes(payload) != raw
-        or payload.get("schema") != CONTINUATION_ANALYSIS_SCHEMA):
+    native_result = isinstance(payload, dict) and payload.get("schema") == CONTINUATION_ANALYSIS_SCHEMA_V3
+    expected_fields = fields | {"request"} if native_result else fields
+    if (not isinstance(payload, dict) or set(payload) != expected_fields or canonical_json_bytes(payload) != raw
+        or payload.get("schema") not in {CONTINUATION_ANALYSIS_SCHEMA, CONTINUATION_ANALYSIS_SCHEMA_V3}):
         raise ContinuationValidationError("continuation analysis payload differs")
     unsigned = {key: value for key, value in payload.items() if key != "analysis_id"}
     if payload.get("analysis_id") != _hash_payload(unsigned):
@@ -994,13 +1006,49 @@ def validate_continuation_reference(evidence, association, envelope):
     }
     if payload["identity"] != expected_lineage:
         raise ContinuationValidationError("continuation analysis lineage differs")
+    monitor_sources = []
     for parent_id, loaded, role, field in (
         (envelope.parents[0], association.before, "failed-before", "before_run_id"),
         (envelope.parents[1], association.after, "fixed-after", "after_run_id"),
     ):
-        reference = _continuation_monitor_reference(evidence, parent_id, loaded, role)
+        loaded_reference = _continuation_monitor_reference(
+            evidence, parent_id, loaded, role, include_batches=native_result
+        )
+        if native_result:
+            reference, batches = loaded_reference
+            monitor_sources.append((reference, batches))
+        else:
+            reference = loaded_reference
         if payload[field] != reference["run_ref_sha256"]:
             raise ContinuationValidationError("continuation analysis names another Monitor run")
+    if native_result:
+        try:
+            native_request = validate_native_request(
+                payload["request"],
+                expected_before=monitor_sources[0][0],
+                expected_after=monitor_sources[1][0],
+            )
+            if hashlib.sha256(canonical_replay_json_bytes(native_request)).hexdigest() != payload["request_digest"]:
+                raise ContinuationValidationError("continuation native request digest differs")
+            recomputed = native_statistics(
+                monitor_sources[0][1],
+                monitor_sources[1][1],
+                selector=native_request["selector"],
+                max_pairing_skew_ns=native_request["max_pairing_skew_ns"],
+                minimum_valid_pairs=native_request["minimum_valid_pairs"],
+                request_digest=payload["request_digest"],
+            )
+            if recomputed["schema"] != NATIVE_ANALYSIS_COMPUTATION_SCHEMA or any(
+                canonical_replay_json_bytes(payload[field])
+                != canonical_replay_json_bytes(recomputed[field])
+                for field in recomputed
+                if field != "schema"
+            ):
+                raise ContinuationValidationError("continuation native analysis statistics differ")
+        except ContinuationValidationError:
+            raise
+        except (NativeAnalysisContractError, KeyError, TypeError, ValueError, OverflowError) as error:
+            raise ContinuationValidationError("continuation native analysis is invalid") from error
     metadata = {
         "analysis_id": payload["analysis_id"], "before_run_id": payload["before_run_id"],
         "after_run_id": payload["after_run_id"],

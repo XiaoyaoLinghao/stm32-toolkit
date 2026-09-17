@@ -8,12 +8,15 @@ import subprocess
 import sys
 from types import SimpleNamespace
 from pathlib import Path
+from uuid import UUID
 
 import pytest
 
 from test_acceptance_continuation import prepare_pair, _ok, CONTINUATION_ATTEMPT_ID
 import test_acceptance_physical_recovery as physical_fixture
+from stm32_monitor.history import HistoryStore
 from stm32_monitor.analysis import AnalysisRequest, AnalysisResult
+from stm32_monitor.models import ObservationBinding, SampleBatch, SampleValue, WatchItem
 from stm32_monitor.analysis_workflows import (
     ANALYSIS_WORKFLOW_INVALID, EVIDENCE_INTEGRITY_FAILURE,
     AnalysisPublication, AnalysisWorkflowError, compare_monitor_runs, export_analysis_bundle,
@@ -30,6 +33,7 @@ from stm32_toolkit.diagnostic_workflows import (
 )
 from stm32_toolkit.diagnostics import (
     DIAGNOSTIC_CHAIN_CORRUPT,
+    DIAGNOSTIC_EVIDENCE_MISSING,
     DIAGNOSTIC_IDENTITY_MISMATCH,
     DiagnosticValidationError,
     VerificationPlan,
@@ -40,6 +44,75 @@ from stm32_toolkit.evidence import EvidenceEnvelope, canonical_json_bytes, get_r
 from stm32_toolkit.evidence.gc import RootRecord, put_root
 from stm32_toolkit.evidence.gc import plan_gc
 from stm32_toolkit.evidence.store import EvidenceStore
+
+
+def _append_native_physical_monitor_history(
+    workspace,
+    identity,
+    raw_probe: str,
+    flash_session_id: str,
+    lease_id: str,
+    run_id: str,
+    *,
+    value_offset: int,
+) -> tuple[SampleBatch, ...]:
+    """Create a persisted software transcript with the exact native wire shape."""
+
+    binding = ObservationBinding(
+        workspace_id=identity.workspace_id,
+        logical_project_id=str(identity.project_id),
+        session_id=identity.session_id,
+        probe_id=raw_probe,
+        target_device=identity.target_device,
+        physical_target="board:t10",
+        build_id=identity.build_id,
+        elf_sha256=identity.elf_sha256,
+        input_snapshot_sha256=identity.input_snapshot_sha256,
+        git_head=identity.git_commit,
+        git_dirty=identity.git_dirty,
+        flash_session_id=flash_session_id,
+        lease_id=lease_id,
+        dwarf_sha256="e" * 64,
+        svd_sha256=None,
+    )
+    group_id = "11111111-1111-4111-8111-111111111111"
+    batches = tuple(
+        SampleBatch(
+            binding=binding,
+            group_id=UUID(group_id),
+            group_revision=1,
+            run_id=UUID(run_id),
+            sequence=sequence,
+            scheduled_unix_ns=1_700_000_000_000_000_000 + sequence * 1_000_000,
+            captured_unix_ns=1_700_000_000_000_000_100 + sequence * 1_000_000,
+            latency_ns=100,
+            actual_rate_hz=1000.0,
+            subscriber_drops=0,
+            history_drops=0,
+            deadline_drops=0,
+            values=(
+                SampleValue(
+                    WatchItem.register("r0"),
+                    "OK",
+                    typed_value={
+                        "expression": "r0",
+                        "typeName": "uint32_register",
+                        "value": sequence + value_offset,
+                        "rawHex": f"0x{sequence + value_offset:08x}",
+                        "bitWidth": 32,
+                    },
+                ),
+            ),
+        )
+        for sequence in range(2)
+    )
+    history = HistoryStore(workspace)
+    try:
+        result = history.append_batches(batches)
+        assert result.ok, result.to_dict()
+    finally:
+        history.close()
+    return batches
 
 
 def _monitor_baseline(pair: SimpleNamespace, tmp_path: Path) -> SimpleNamespace:
@@ -128,6 +201,119 @@ def _monitor_baseline(pair: SimpleNamespace, tmp_path: Path) -> SimpleNamespace:
     )
 
 
+def _same_session_native_baseline(
+    pair: SimpleNamespace,
+    tmp_path: Path,
+    *,
+    continuation_id: str | None = None,
+) -> SimpleNamespace:
+    """Publish a v3 native analysis for a same-session or continuation pair."""
+
+    if continuation_id is None:
+        after_identity = replace(pair.after_identity, session_id=pair.before_session_id)
+        fixed_run_id = "target-v2-fixed-t10-native"
+        fixed = physical_fixture._publish_physical_from_seed(
+            tmp_path,
+            pair.project_root,
+            pair.data_root,
+            pair.before_session_id,
+            "seed-fixed-t10-cont",
+            fixed_run_id,
+            after_identity,
+        )
+    else:
+        after_identity = pair.after_identity
+        fixed_run_id = pair.fixed_run_id
+        fixed = pair.fixed_physical
+    refs = []
+    for role, identity, test_run_id, run_id, value_offset in (
+        (
+            "failed-before",
+            pair.before_identity,
+            pair.failed_run_id,
+            "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+            0,
+        ),
+        (
+            "fixed-after",
+            after_identity,
+            fixed_run_id,
+            "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+            10,
+        ),
+    ):
+        workspace = (
+            pair.before_workspace
+            if role == "failed-before" or continuation_id is None
+            else pair.after_workspace
+        )
+        batches = _append_native_physical_monitor_history(
+            workspace,
+            identity,
+            physical_fixture.PHYSICAL_RAW_PROBE,
+            f"flash-{test_run_id}",
+            f"lease-{test_run_id}",
+            run_id,
+            value_offset=value_offset,
+        )
+        refs.append(
+            publish_physical_monitor_run(
+                workspace,
+                pair.evidence,
+                scenario_role=role,
+                test_run_id=test_run_id,
+                run_id=run_id,
+                group_id=str(batches[0].group_id),
+                start_sequence=batches[0].sequence,
+                end_sequence_exclusive=batches[-1].sequence + 1,
+                start_captured_unix_ns=batches[0].captured_unix_ns,
+                end_captured_unix_ns_exclusive=batches[-1].captured_unix_ns + 1,
+                probe_id=physical_fixture.PHYSICAL_RAW_PROBE,
+            )
+        )
+    request = AnalysisRequest(
+        schema="stm32-monitor-analysis-request/2",
+        before_run=refs[0],
+        after_run=refs[1],
+        selector_kind="register",
+        selector="r0",
+        alignment="bounded-run-relative",
+        minimum_valid_pairs=2,
+        scalar_policy="native-uint-register/1",
+        max_pairing_skew_ns=1,
+    )
+    compare_args = (
+        pair.before_workspace,
+        pair.evidence,
+        request,
+        pair.diagnostic_session_id,
+        pair.hypothesis_id,
+        "supports",
+        "the fixed fixture changes the native register",
+        pair.declaration,
+    )
+    publication = compare_monitor_runs(
+        *compare_args,
+        **({} if continuation_id is None else {"continuation_evidence_id": continuation_id}),
+    )
+    assert publication.analysis_result.schema == "stm32-monitor-analysis/3"
+    assert publication.analysis_result.quality == "VALID"
+    assert publication.analysis_result.changed is True
+    assert publication.analysis_result.request == request
+    return SimpleNamespace(
+        request=request,
+        compare_args=compare_args,
+        publication=publication,
+        analysis_envelope=pair.evidence.get_envelope(
+            publication.analysis_evidence_ref.evidence_id
+        ),
+        fixed_run_id=fixed_run_id,
+        fixed=fixed,
+        after_identity=after_identity,
+        continuation_id=continuation_id,
+    )
+
+
 def _rehash_analysis_payload(payload: dict[str, object]) -> dict[str, object]:
     unsigned = {key: value for key, value in payload.items() if key != "analysis_id"}
     payload["analysis_id"] = hashlib.sha256(
@@ -180,6 +366,48 @@ def _publish_analysis_variant(
     return envelope
 
 
+def _publish_raw_analysis_variant(
+    pair: SimpleNamespace,
+    tmp_path: Path,
+    baseline: SimpleNamespace,
+    raw: bytes,
+    *,
+    analysis_id: str,
+    label: str,
+) -> EvidenceEnvelope:
+    path = tmp_path / f"{label}-analysis.json"
+    path.write_bytes(raw)
+    artifact = pair.evidence.ingest_file(
+        path, kind="monitor-analysis", media_type="application/json"
+    )
+    metadata = dict(baseline.analysis_envelope.metadata)
+    metadata.update(
+        analysis_id=analysis_id,
+        before_run_id=baseline.publication.analysis_result.before_run_id,
+        after_run_id=baseline.publication.analysis_result.after_run_id,
+        source_change_declaration_id=pair.declaration.declaration_id,
+    )
+    envelope = EvidenceEnvelope(
+        identity=baseline.analysis_envelope.identity,
+        operation=baseline.analysis_envelope.operation,
+        produced_at_utc=baseline.analysis_envelope.produced_at_utc,
+        parents=tuple(baseline.analysis_envelope.parents),
+        artifacts=(artifact,),
+        metadata=metadata,
+    )
+    pair.evidence.put_envelope(envelope)
+    put_root(
+        pair.evidence,
+        RootRecord(
+            root_type="monitor-analysis",
+            root_id=analysis_id,
+            manifest_id=str(envelope.evidence_id),
+            metadata=metadata,
+        ),
+    )
+    return envelope
+
+
 def _verification_plan_event(
     pair: SimpleNamespace, plan: VerificationPlan, operation_id: str
 ) -> object:
@@ -202,13 +430,58 @@ def _verification_plan_event(
     )
 
 
+def _same_session_native_plan(
+    pair: SimpleNamespace,
+    baseline: SimpleNamespace,
+    *,
+    analysis_id: str | None = None,
+    analysis_evidence_id: str | None = None,
+) -> VerificationPlan:
+    resolved_analysis_id = (
+        baseline.publication.analysis_result.analysis_id
+        if analysis_id is None
+        else analysis_id
+    )
+    resolved_analysis_evidence_id = (
+        str(baseline.analysis_envelope.evidence_id)
+        if analysis_evidence_id is None
+        else analysis_evidence_id
+    )
+    return VerificationPlan.new(
+        verification_plan_id=pair.declaration.validation_plan_id,
+        diagnostic_session_id=pair.diagnostic_session_id,
+        failed_before_run_id=pair.failed_run_id,
+        failed_before_evidence_id=str(pair.failed_physical.envelope.evidence_id),
+        source_change_declaration_id=pair.declaration.declaration_id,
+        fixed_after_run_id=baseline.fixed_run_id,
+        fixed_after_evidence_id=str(baseline.fixed.envelope.evidence_id),
+        required_analysis_ids=(resolved_analysis_id,),
+        required_analysis_evidence_ids=(resolved_analysis_evidence_id,),
+        required_monitor_quality="VALID",
+        expected_changed=True,
+        continuation_evidence_id=None,
+    )
+
+
 def _continuation_plan(
     pair: SimpleNamespace,
     baseline: SimpleNamespace,
     *,
     continuation_evidence_id: str | None = None,
     fixed_after_evidence_id: str | None = None,
+    analysis_id: str | None = None,
+    analysis_evidence_id: str | None = None,
 ) -> VerificationPlan:
+    resolved_analysis_id = (
+        baseline.publication.analysis_result.analysis_id
+        if analysis_id is None
+        else analysis_id
+    )
+    resolved_analysis_evidence_id = (
+        str(baseline.analysis_envelope.evidence_id)
+        if analysis_evidence_id is None
+        else analysis_evidence_id
+    )
     return VerificationPlan.new(
         verification_plan_id=pair.declaration.validation_plan_id,
         diagnostic_session_id=pair.diagnostic_session_id,
@@ -221,8 +494,8 @@ def _continuation_plan(
             if fixed_after_evidence_id is None
             else fixed_after_evidence_id
         ),
-        required_analysis_ids=(baseline.publication.analysis_result.analysis_id,),
-        required_analysis_evidence_ids=(str(baseline.analysis_envelope.evidence_id),),
+        required_analysis_ids=(resolved_analysis_id,),
+        required_analysis_evidence_ids=(resolved_analysis_evidence_id,),
         required_monitor_quality="VALID",
         expected_changed=True,
         continuation_evidence_id=(
@@ -243,6 +516,266 @@ def _damage_root_manifest(
     document["manifest_id"] = "0" * 64
     path.write_bytes(canonical_json_bytes(document))
     return path, original
+
+
+def test_diagnostic_store_reads_authenticated_same_session_native_analysis(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pair = prepare_pair(tmp_path, monkeypatch)
+    baseline = _same_session_native_baseline(pair, tmp_path)
+    plan = _same_session_native_plan(pair, baseline)
+    store = DiagnosticStore(pair.workspace.diagnostics_root, pair.evidence)
+
+    accepted = store.append(
+        pair.diagnostic_session_id,
+        _verification_plan_event(pair, plan, "same-session-native-plan"),
+        expected_revision=pair.diagnostic_revision,
+    )
+    assert accepted.session.revision == pair.diagnostic_revision + 1
+
+    # A fresh Store must authenticate the same complete native graph when it
+    # reads the newly persisted diagnostic record.
+    fresh_store = DiagnosticStore(
+        pair.workspace.diagnostics_root,
+        EvidenceStore(pair.evidence.root),
+    )
+    loaded = fresh_store.load(pair.diagnostic_session_id)
+    assert loaded.revision == pair.diagnostic_revision + 1
+
+
+def test_diagnostic_store_rejects_missing_same_session_native_artifact(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pair = prepare_pair(tmp_path, monkeypatch)
+    baseline = _same_session_native_baseline(pair, tmp_path)
+    plan = _same_session_native_plan(pair, baseline)
+    revision = pair.diagnostic_revision
+    _ok(
+        diagnostic_add_verification_plan(
+            pair.diagnostic,
+            operation_id="same-session-native-missing-plan",
+            diagnostic_session_id=pair.diagnostic_session_id,
+            expected_revision=revision,
+            verification_plan=plan,
+        )
+    )
+    _ok(
+        diagnostic_start_verification(
+            pair.diagnostic,
+            operation_id="same-session-native-missing-start",
+            diagnostic_session_id=pair.diagnostic_session_id,
+            expected_revision=revision + 1,
+            verification_plan_id=plan.verification_plan_id,
+        )
+    )
+    _ok(
+        diagnostic_attach_marker(
+            pair.diagnostic,
+            operation_id="same-session-native-missing-marker",
+            diagnostic_session_id=pair.diagnostic_session_id,
+            expected_revision=revision + 2,
+            diagnostic_marker_ref=baseline.publication.diagnostic_marker_ref,
+        )
+    )
+    completed = _ok(
+        diagnostic_complete_verification(
+            pair.diagnostic,
+            operation_id="same-session-native-missing-complete",
+            diagnostic_session_id=pair.diagnostic_session_id,
+            expected_revision=revision + 3,
+            executed_operation_ids=["same-session-native-compare"],
+        )
+    )
+    assert completed["fix_verification"]["status"] == "PASSED"
+    artifact_path = pair.evidence.root / baseline.analysis_envelope.artifacts[0].relative_path
+    artifact_path.unlink()
+    # The record is already complete. A fresh reader must fail closed while
+    # revalidating the persisted result/3 graph after its artifact disappears.
+    store = DiagnosticStore(
+        pair.workspace.diagnostics_root,
+        EvidenceStore(pair.evidence.root),
+    )
+
+    with pytest.raises(DiagnosticValidationError) as raised:
+        store.load(pair.diagnostic_session_id)
+    assert raised.value.code in {DIAGNOSTIC_CHAIN_CORRUPT, DIAGNOSTIC_EVIDENCE_MISSING}
+    assert store.load_durable(pair.diagnostic_session_id).revision == revision + 4
+
+
+@pytest.mark.parametrize(
+    ("label", "field", "value", "delta"),
+    (
+        ("float-stat", "before_first", 0.0, 10),
+        ("bool-stat", "before_first", True, 9),
+    ),
+)
+def test_diagnostic_store_rejects_rehashed_native_type_forgery(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    label: str,
+    field: str,
+    value: object,
+    delta: int,
+) -> None:
+    pair = prepare_pair(tmp_path, monkeypatch)
+    baseline = _same_session_native_baseline(pair, tmp_path)
+    raw = pair.evidence.read_artifact(
+        baseline.analysis_envelope.artifacts[0], maximum_bytes=1024 * 1024
+    )
+    payload = json.loads(raw.decode("utf-8"))
+    assert isinstance(payload, dict)
+    payload[field] = value
+    payload["delta_first"] = delta
+    unsigned = {key: item for key, item in payload.items() if key != "analysis_id"}
+    payload["analysis_id"] = hashlib.sha256(
+        canonical_replay_json_bytes(unsigned)
+    ).hexdigest()
+    variant = _publish_analysis_variant(
+        pair,
+        tmp_path,
+        baseline,
+        payload,
+        tuple(baseline.analysis_envelope.parents),
+        f"same-session-{label}",
+    )
+    plan = _same_session_native_plan(
+        pair,
+        baseline,
+        analysis_id=str(payload["analysis_id"]),
+        analysis_evidence_id=str(variant.evidence_id),
+    )
+    store = DiagnosticStore(pair.workspace.diagnostics_root, pair.evidence)
+    event = _verification_plan_event(pair, plan, f"same-session-forged-{label}")
+
+    with pytest.raises(DiagnosticValidationError) as raised:
+        store.append(
+            pair.diagnostic_session_id,
+            event,
+            expected_revision=pair.diagnostic_revision,
+        )
+    assert raised.value.code == DIAGNOSTIC_CHAIN_CORRUPT
+    assert store.load_durable(pair.diagnostic_session_id).revision == pair.diagnostic_revision
+
+
+@pytest.mark.parametrize(
+    ("label", "raw"),
+    (
+        ("unrecognized", b"{}"),
+        ("noncanonical", b'{"schema":"stm32-monitor-analysis/3"}\n'),
+    ),
+)
+def test_diagnostic_store_rejects_unreadable_or_unrecognized_native_result(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    label: str,
+    raw: bytes,
+) -> None:
+    pair = prepare_pair(tmp_path, monkeypatch)
+    baseline = _same_session_native_baseline(pair, tmp_path)
+    analysis_id = ("c" * 64) if label == "unrecognized" else ("d" * 64)
+    variant = _publish_raw_analysis_variant(
+        pair,
+        tmp_path,
+        baseline,
+        raw,
+        analysis_id=analysis_id,
+        label=f"same-session-{label}",
+    )
+    plan = _same_session_native_plan(
+        pair,
+        baseline,
+        analysis_id=analysis_id,
+        analysis_evidence_id=str(variant.evidence_id),
+    )
+    store = DiagnosticStore(pair.workspace.diagnostics_root, pair.evidence)
+
+    with pytest.raises(DiagnosticValidationError) as raised:
+        store.append(
+            pair.diagnostic_session_id,
+            _verification_plan_event(pair, plan, f"same-session-bad-{label}"),
+            expected_revision=pair.diagnostic_revision,
+        )
+    assert raised.value.code == DIAGNOSTIC_CHAIN_CORRUPT
+    assert store.load_durable(pair.diagnostic_session_id).revision == pair.diagnostic_revision
+
+
+@pytest.mark.parametrize("tamper", ("statistics", "embedded-request"))
+def test_diagnostic_continuation_validation_rejects_native_result3_tamper(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    tamper: str,
+) -> None:
+    pair = prepare_pair(tmp_path, monkeypatch)
+    attempt = _ok(
+        begin_acceptance_attempt(
+            pair.context,
+            attempt_id=CONTINUATION_ATTEMPT_ID,
+            scenario_id="legacy-keil-physical-repair",
+            scenario_version="1",
+            continuation=pair.bind_request,
+        )
+    )["attempt"]
+    baseline = _same_session_native_baseline(
+        pair,
+        tmp_path,
+        continuation_id=str(attempt["continuationEvidenceId"]),
+    )
+    raw = pair.evidence.read_artifact(
+        baseline.analysis_envelope.artifacts[0], maximum_bytes=1024 * 1024
+    )
+    payload = json.loads(raw.decode("utf-8"))
+    assert isinstance(payload, dict)
+    if tamper == "statistics":
+        payload["before_first"] = 0.0
+        payload["delta_first"] = 10
+    else:
+        request = dict(payload["request"])
+        after_run = dict(request["after_run"])
+        forged_operation = "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
+        after_run.update(
+            operation_id=forged_operation,
+            origin_run_id=forged_operation,
+            projected_run_id=forged_operation,
+        )
+        after_run["run_ref_sha256"] = hashlib.sha256(
+            canonical_replay_json_bytes(
+                {key: value for key, value in after_run.items() if key != "run_ref_sha256"}
+            )
+        ).hexdigest()
+        request["after_run"] = after_run
+        payload["request"] = request
+        payload["after_run_id"] = after_run["run_ref_sha256"]
+        payload["request_digest"] = hashlib.sha256(
+            canonical_replay_json_bytes(request)
+        ).hexdigest()
+    payload = _rehash_analysis_payload(payload)
+    variant = _publish_analysis_variant(
+        pair,
+        tmp_path,
+        baseline,
+        payload,
+        tuple(baseline.analysis_envelope.parents),
+        f"continuation-native-{tamper}",
+    )
+    plan = _continuation_plan(
+        pair,
+        baseline,
+        analysis_id=str(payload["analysis_id"]),
+        analysis_evidence_id=str(variant.evidence_id),
+    )
+
+    rejected = diagnostic_add_verification_plan(
+        pair.diagnostic,
+        operation_id=f"continuation-native-{tamper}-plan",
+        diagnostic_session_id=pair.diagnostic_session_id,
+        expected_revision=pair.diagnostic_revision,
+        verification_plan=plan,
+    )
+    assert not rejected.ok
+    assert rejected.code in {EVIDENCE_INTEGRITY_FAILURE, DIAGNOSTIC_CHAIN_CORRUPT}
+    assert DiagnosticStore(
+        pair.workspace.diagnostics_root, pair.evidence
+    ).load_durable(pair.diagnostic_session_id).revision == pair.diagnostic_revision
 
 
 def test_persisted_continuation_monitor_diagnostic_and_expired_attempt_reuse(tmp_path, monkeypatch):

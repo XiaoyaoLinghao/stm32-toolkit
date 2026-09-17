@@ -1242,6 +1242,11 @@ def export_analysis_bundle(
         _fail(INCOMPATIBLE_IDENTITY, "fixed-after replay identity is invalid")
     if publication.analysis_result.request_digest != request.request_digest:
         _fail(INCOMPATIBLE_IDENTITY, "analysis request does not match publication")
+    if (
+        request.schema == "stm32-monitor-analysis-request/2"
+        and publication.analysis_result.request != request
+    ):
+        _fail(INCOMPATIBLE_IDENTITY, "native analysis request is not embedded in publication")
     if publication.analysis_result.identity != lineage:
         _fail(INCOMPATIBLE_IDENTITY, "analysis lineage does not match publication")
     if publication.analysis_evidence_ref.analysis_id != publication.analysis_result.analysis_id:

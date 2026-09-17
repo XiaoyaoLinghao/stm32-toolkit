@@ -65,6 +65,12 @@ from stm32_toolkit.monitor_replay_contract import (
     validate_physical_transcript,
     validate_run_reference,
 )
+from stm32_toolkit.monitor_analysis_contract import (
+    NATIVE_ANALYSIS_COMPUTATION_SCHEMA,
+    NativeAnalysisContractError,
+    native_statistics,
+    validate_native_request,
+)
 from stm32_toolkit.project_model import ProjectManifestError, load_project_model
 from stm32_toolkit.result import OperationResult
 from stm32_toolkit.testing.model import TestProtocolError
@@ -101,6 +107,7 @@ _MARKER_OPERATION = "diagnostic-marker"
 _ANALYSIS_ROOT = "monitor-analysis"
 _MARKER_ROOT = "diagnostic-marker"
 _ANALYSIS_SCHEMA = "stm32-monitor-analysis/1"
+_ANALYSIS_SCHEMA_V3 = "stm32-monitor-analysis/3"
 _ANALYSIS_LINEAGE_SCHEMA = "stm32-monitor-analysis-lineage/1"
 _MARKER_SCHEMA = "stm32-diagnostic-marker/1"
 _ANALYSIS_FIELDS = frozenset(
@@ -111,6 +118,7 @@ _ANALYSIS_FIELDS = frozenset(
         "after_first", "after_last", "after_min", "after_max", "delta_first", "delta_last", "changed",
     }
 )
+_ANALYSIS_FIELDS_V3 = _ANALYSIS_FIELDS | {"request"}
 _ANALYSIS_IDENTITY_FIELDS = frozenset(
     {
         "schema", "origin_workspace_id", "import_workspace_id", "logical_project_id", "target_device",
@@ -1500,7 +1508,7 @@ def _read_transcript_parent(
     evidence_id: str,
     run: object,
     expected_role: str,
-) -> tuple[EvidenceEnvelope, dict[str, object]]:
+) -> tuple[EvidenceEnvelope, dict[str, object], list[object]]:
     try:
         run_identity = getattr(run, "identity", run)
         envelope = state.evidence_store.get_envelope(evidence_id)
@@ -1632,7 +1640,7 @@ def _read_transcript_parent(
             transcript_binding=binding,
             transcript_batches=batches,
         )
-        return envelope, reference
+        return envelope, reference, batches
     except _WorkflowFailure:
         raise
     except FileNotFoundError as error:
@@ -1655,7 +1663,7 @@ def _read_physical_transcript_parent(
     expected_role: str,
     envelope: EvidenceEnvelope,
     metadata: dict[str, object],
-) -> tuple[EvidenceEnvelope, dict[str, object]]:
+) -> tuple[EvidenceEnvelope, dict[str, object], list[object]]:
     """Validate one immutable physical Monitor source and its run authority.
 
     This reader deliberately consumes only the transcript, reference, and linked
@@ -1921,7 +1929,7 @@ def _read_physical_transcript_parent(
             or not _same_replay_identity(getattr(linked_manifest, "identity", None), run_identity)
         ):
             raise _WorkflowFailure(_INCOMPATIBLE_IDENTITY)
-        return envelope, reference
+        return envelope, reference, batches
     except _WorkflowFailure:
         raise
     except FileNotFoundError as error:
@@ -2250,13 +2258,13 @@ def _validate_analysis(
         raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
     if envelope.parents[2] != declaration.diff_evidence_id:
         raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
-    before_transcript, before_reference = _read_transcript_parent(
+    before_transcript, before_reference, before_batches = _read_transcript_parent(
         state,
         evidence_id=envelope.parents[0],
         run=before,
         expected_role="failed-before",
     )
-    after_transcript, after_reference = _read_transcript_parent(
+    after_transcript, after_reference, after_batches = _read_transcript_parent(
         after_state,
         evidence_id=envelope.parents[1],
         run=after,
@@ -2300,9 +2308,17 @@ def _validate_analysis(
         raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
     if envelope.identity != after_transcript.identity:
         raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
-    if set(analysis) != _ANALYSIS_FIELDS:
+    native_result = analysis.get("schema") == _ANALYSIS_SCHEMA_V3
+    expected_fields = _ANALYSIS_FIELDS_V3 if native_result else _ANALYSIS_FIELDS
+    if set(analysis) != expected_fields:
         raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
-    expected_schema = _ANALYSIS_SCHEMA if association is None else "stm32-monitor-analysis/2"
+    expected_schema = (
+        _ANALYSIS_SCHEMA_V3
+        if native_result
+        else _ANALYSIS_SCHEMA
+        if association is None
+        else "stm32-monitor-analysis/2"
+    )
     if analysis["schema"] != expected_schema or analysis["analysis_id"] != analysis_id:
         raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
     unsigned = {key: value for key, value in analysis.items() if key != "analysis_id"}
@@ -2316,6 +2332,49 @@ def _validate_analysis(
         raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
     for field in ("request_digest", "before_run_id", "after_run_id"):
         _hash_value(analysis[field])
+    if native_result:
+        try:
+            native_request = validate_native_request(
+                analysis["request"],
+                expected_before=before_reference,
+                expected_after=after_reference,
+            )
+            expected_request_digest = hashlib.sha256(
+                _canonical_replay_json_bytes(native_request)
+            ).hexdigest()
+            if expected_request_digest != analysis["request_digest"]:
+                raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
+            recomputed = native_statistics(
+                before_batches,
+                after_batches,
+                selector=cast(str, native_request["selector"]),
+                max_pairing_skew_ns=cast(int, native_request["max_pairing_skew_ns"]),
+                minimum_valid_pairs=cast(int, native_request["minimum_valid_pairs"]),
+                request_digest=cast(str, analysis["request_digest"]),
+            )
+            current = {
+                key: analysis[key]
+                for key in recomputed
+                if key != "schema"
+            }
+            expected = {
+                key: recomputed[key]
+                for key in recomputed
+                if key != "schema"
+            }
+            if (
+                any(
+                    _canonical_replay_json_bytes(current[key])
+                    != _canonical_replay_json_bytes(expected[key])
+                    for key in current
+                )
+                or recomputed["schema"] != NATIVE_ANALYSIS_COMPUTATION_SCHEMA
+            ):
+                raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
+        except _WorkflowFailure:
+            raise
+        except (NativeAnalysisContractError, KeyError, TypeError, ValueError, OverflowError) as error:
+            raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE) from error
     identity_fields = _ANALYSIS_IDENTITY_FIELDS
     if association is not None:
         identity_fields = identity_fields | {"before_session_id", "after_session_id", "continuation_evidence_id"}

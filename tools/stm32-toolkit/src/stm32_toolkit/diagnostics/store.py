@@ -515,6 +515,104 @@ class DiagnosticStore:
             _raise(DIAGNOSTIC_CHAIN_CORRUPT)
         return session, tuple(events)
 
+    def _validate_native_analysis_evidence(
+        self,
+        envelope: EvidenceEnvelope,
+        session: DiagnosticSession,
+        declaration: SourceChangeDeclaration,
+    ) -> None:
+        """Route native fresh reads through the complete Diagnostic workflow reader."""
+
+        if envelope.operation != "monitor-analysis":
+            return
+        from types import SimpleNamespace
+
+        from stm32_toolkit.diagnostic_workflows import (
+            _WorkflowFailure,
+            _read_json_evidence,
+            _load_bound_failed_run,
+            _load_completion_fixed_after,
+            _validate_analysis,
+        )
+        from stm32_toolkit.testing.publication import TestRunRepository
+
+        try:
+            matches = [
+                (plan, analysis_id)
+                for plan in session.verification_plans
+                for analysis_id, evidence_id in zip(
+                    plan.required_analysis_ids,
+                    plan.required_analysis_evidence_ids,
+                )
+                if evidence_id == str(envelope.evidence_id)
+            ]
+            if len(matches) != 1:
+                _raise(DIAGNOSTIC_CHAIN_CORRUPT)
+            plan, analysis_id = matches[0]
+            if (
+                plan.continuation_evidence_id is not None
+                or plan.source_change_declaration_id != declaration.declaration_id
+            ):
+                _raise(DIAGNOSTIC_CHAIN_CORRUPT)
+            workspace = SimpleNamespace(
+                workspace_id=session.identity.workspace_id,
+                session_id=session.identity.session_id,
+                diagnostics_root=self.diagnostics_root,
+                workspace_root=self.diagnostics_root.parent,
+            )
+            model = SimpleNamespace(logical_project_id=session.identity.project_id)
+            state = SimpleNamespace(
+                model=model,
+                workspace=workspace,
+                evidence_store=self.evidence_store,
+                diagnostic_store=self,
+                repository=TestRunRepository(self.evidence_store),
+            )
+            _root, authenticated_envelope, _artifact, _payload, analysis = _read_json_evidence(
+                state,
+                root_type="monitor-analysis",
+                root_id=analysis_id,
+                operation="monitor-analysis",
+                kind="monitor-analysis",
+            )
+            if authenticated_envelope.evidence_id != envelope.evidence_id:
+                _raise(DIAGNOSTIC_CHAIN_CORRUPT)
+            if analysis.get("schema") not in {
+                "stm32-monitor-analysis/1",
+                "stm32-monitor-analysis/2",
+                "stm32-monitor-analysis/3",
+            }:
+                _raise(DIAGNOSTIC_CHAIN_CORRUPT)
+            if analysis.get("schema") != "stm32-monitor-analysis/3":
+                # Legacy result/1 and result/2 retain their existing Store
+                # semantics, but their root, envelope, and artifact must still
+                # be authenticated before this reader returns.
+                return
+            before = _load_bound_failed_run(state, session)
+            after = _load_completion_fixed_after(
+                state,
+                plan,
+                expected_identity=getattr(before, "identity"),
+            )
+            _validate_analysis(
+                state,
+                session,
+                declaration,
+                plan,
+                before,
+                getattr(after, "manifest"),
+                analysis_id,
+                str(envelope.evidence_id),
+                allow_nonpassing=True,
+                allow_valid_unchanged=True,
+            )
+        except DiagnosticValidationError:
+            raise
+        except _WorkflowFailure:
+            _raise(DIAGNOSTIC_CHAIN_CORRUPT)
+        except (EvidenceValidationError, OSError, TypeError, ValueError, KeyError, IndexError, AttributeError):
+            _raise(DIAGNOSTIC_CHAIN_CORRUPT)
+
     def _validate_referenced_evidence(self, event: DiagnosticEvent, session: DiagnosticSession) -> None:
         references = _event_references(event)
         new_event = event.event_type in {
@@ -579,6 +677,7 @@ class DiagnosticStore:
                     _raise(DIAGNOSTIC_CHAIN_CORRUPT)
             else:
                 require_scope(envelope)
+                self._validate_native_analysis_evidence(envelope, session, declaration)
             if not _same_after_identity(envelope.identity, declaration):
                 _raise(DIAGNOSTIC_IDENTITY_MISMATCH)
 
