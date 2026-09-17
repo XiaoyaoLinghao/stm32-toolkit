@@ -13,7 +13,7 @@ No new protocol/schema/error vocabulary, public CLI/MCP command, backend, mailbo
 
 ## Frozen contracts and ownership
 
-Target owner changes only `tools/stm32-toolkit/src/stm32_toolkit/testing/target.py` and existing Target tests (`test_target_runner.py`, `test_target_protocol_v2.py`, `test_physical_workflows.py`) as necessary. Retain the `assemble_target_v2_run` argument contract. Capture a separate host UTC anchor once on the first decoded V2 run_start; do not reuse operation-start `instant`, move authorization checks, trust target UTC, or alter V1 timestamps. Fully validate the stream before successful publication. Existing deterministic clock seams or test monkeypatching are sufficient.
+Target owner changes only `tools/stm32-toolkit/src/stm32_toolkit/testing/target.py` and existing Target tests (`test_target_runner.py`, `test_target_protocol_v2.py`, `test_physical_target_workflows.py`) as necessary. Retain the `assemble_target_v2_run` argument contract. Capture a separate host UTC anchor once on the first decoded V2 run_start; do not reuse operation-start `instant`, move authorization checks, trust target UTC, or alter V1 timestamps. Fully validate the stream before successful publication. Existing deterministic clock seams or test monkeypatching are sufficient.
 
 V2 partial evidence derives identity from the already authenticated host binding, never an invented inventory identity. Retain exact raw bytes, action/error, probe/lease/session and physical provenance sufficient to distinguish partial diagnostics from completed physical TestRuns. Keep the initiating error and cleanup precedence. Evidence-retention failure is reported as an added note, never success. Preserve V1 partial behavior.
 
