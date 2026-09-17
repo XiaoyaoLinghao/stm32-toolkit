@@ -537,18 +537,25 @@ class DiagnosticStore:
         from stm32_toolkit.testing.publication import TestRunRepository
 
         try:
-            matches = [
-                (plan, analysis_id)
+            plans = tuple(
+                plan
                 for plan in session.verification_plans
+                if plan.source_change_declaration_id == declaration.declaration_id
+            )
+            if len(plans) != 1:
+                _raise(DIAGNOSTIC_CHAIN_CORRUPT)
+            plan = plans[0]
+            matching_analysis_ids = tuple(
+                analysis_id
                 for analysis_id, evidence_id in zip(
                     plan.required_analysis_ids,
                     plan.required_analysis_evidence_ids,
                 )
                 if evidence_id == str(envelope.evidence_id)
-            ]
-            if len(matches) != 1:
+            )
+            if not matching_analysis_ids or len(set(matching_analysis_ids)) != 1:
                 _raise(DIAGNOSTIC_CHAIN_CORRUPT)
-            plan, analysis_id = matches[0]
+            analysis_id = matching_analysis_ids[0]
             if (
                 plan.continuation_evidence_id is not None
                 or plan.source_change_declaration_id != declaration.declaration_id
