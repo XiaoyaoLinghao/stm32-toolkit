@@ -182,7 +182,13 @@ T10 采样入口复用已接受的有限 Monitor 生命周期，在执行卡中�
 
 按已核实绝对路径清理本轮不再需要的临时输出；保留源码测试、可复用基线、用户数据、共享缓存、rollback、授权账本、有效 PASS 和最小失败证据。Windows 使用同一 PowerShell 原生命令，删除前确认在本轮目录内。自动策略拒绝 cleanup 时记录保留，不换工具/路径绕过。没有新测试不制造清理工作。
 
-## 8. 当前验收断点（2026-09-17）
+## 8. 当前验收断点（2026-09-18）
+
+当前目标是完成 VS10-A；执行与所有权边界见[完成计划](../superpowers/plans/2026-09-17-stm32tk-vs10a-completion.md)。用户已明确授权验收所需实机烧录、测试、读取，以及首错停止、收集错误、修复并离线验证后的有据重试，无需逐次重新请示。执行前仍固定身份、单次预算、停止条件和唯一硬件所有者；不盲目重复失败动作，不复用已消费 action。此授权不包含远程 GitHub 变更。下方较早的“待新授权”均是历史记录，不能覆盖最新授权。
+
+当前 T10 补充评估仍为离线工作。候选 17e67870750482916abc99f7a8cb0ea01f07df2d 的真实副本公共 CLI 链已完成，最终 revision14/INVESTIGATING、三假设、五观测、七评估，131 份原文件未变。独立审查要求修正 provider I/O 分类、MCP/core 原始引用验证一致性、叶模型 evidence-ID 绑定；同一 Luna/max 所有者正在修正。修正后只补定向回归和既有副本新进程读回，不重放已完成的写操作。候选未接受、未部署，生产补充操作 ID 尚未消费。T9、原 G/H、attempt7 保留；P1c 原始身份链及全量差异仍在核对，T10/Task11/Task12/VS10-A 尚未完成。
+
+以下为按时间保留的历史断点；以本节顶部和对应实际执行记录判定当前状态。
 用户已批准[补充评估规格](../superpowers/specs/2026-09-17-stm32tk-t10-hypothesis-assessment-design.md)及计划的实现、独立审查、部署和一次生产离线补充；零硬件、零远程操作。实现候选未接受/部署前，不用旧runtime尝试新selector。新版就绪后，按现有公共入口：fresh `diagnose start <原P3> --failed-run-mode target --operation-id <新ID>` → begin → 三类hypothesis add → plan add/run → 七条明确polarity/rationale的assess → 新进程diagnose show。所有命令以实际help的`--session-id`为准，每步使用返回的新revision；计划输入一次准备五个真实窗口事实（P3 testtime变化、P3 PE3/PE4值集合、P4 PE3/PE4值集合），min297不变，完整引用及proof保持原样。先在131文件哈希核对的真实副本跑通，再执行一次生产链；原RESOLVED/G/H不得重开或重跑。新session仅记录事后补充评估，保留open/unrated/INVESTIGATING实际语义，不制造新的FixVerification终态。输入、执行卡及后续结果在`D:\codex-tmp\t10h-0917`。
 
 原T10 Steps1/2/4/5现已按既有证据独立核对并勾选，Step6保留生产G/H通过；唯一剩余T10条款为Step3。已安装旧版本的ObservationStep只支持run-state、case-state、case-count，直接调用模型已确认无法表达Monitor事实。[补充评估规格](../superpowers/specs/2026-09-17-stm32tk-t10-hypothesis-assessment-design.md)和[实现计划](../superpowers/plans/2026-09-17-stm32tk-t10-hypothesis-assessment.md)已获用户批准，目前正在隔离工作树实现，尚未完成本次新部署/生产链。按计划Step4，在实现提交及针对性测试固定、输入审查通过后，独立代码审查与副本离线集成可针对同一候选并行；两者均通过后才进入部署和生产链。详见[条款对账](../codex/returns/STM32TK-T10-NATIVE-ANALYSIS/t10-clause-reconciliation.md)。
