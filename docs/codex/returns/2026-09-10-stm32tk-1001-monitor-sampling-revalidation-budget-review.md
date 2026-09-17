@@ -1,10 +1,10 @@
 # STM32TK-1001 Monitor Sampling Revalidation Budget Review
 
-**Verdict:** ACCEPTED  
-**Accepted product base:** `7f1a5215c291aa6b805bd4c3b7215bbc49540f50`  
-**Approved-docs / implementation base:** `178e09d2d1daea1467f16d6feac442554e1bc6c8`  
-**Reviewed CodeHead:** `fd5833740c2a3e1c56dd1b65b0bc8f9ea95164c3`  
-**Implementation owner:** GPT-5.6-luna/max  
+**Verdict:** ACCEPTED\
+**Accepted product base:** `7f1a5215c291aa6b805bd4c3b7215bbc49540f50`\
+**Approved-docs / implementation base:** `178e09d2d1daea1467f16d6feac442554e1bc6c8`\
+**Reviewed CodeHead:** `fd5833740c2a3e1c56dd1b65b0bc8f9ea95164c3`\
+**Implementation owner:** GPT-5.6-luna/max\
 **Specification owner and independent reviewer:** GPT-5.6-sol
 
 ## Result
