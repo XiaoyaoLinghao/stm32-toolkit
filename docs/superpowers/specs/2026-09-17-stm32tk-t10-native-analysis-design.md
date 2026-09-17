@@ -30,6 +30,8 @@ Request/2 produces `stm32-monitor-analysis/3`. It retains all current result/sta
 
 The computation schema remains internal /1 because its numeric fields are unchanged and its request_digest binds the explicit new policy. Existing AnalysisRequest constructors remain source-compatible by making the new policy fields absent/default for v1. Serialization of old instances is byte-compatible. Bundles retain their existing schema and embed the versioned request/result; bundle request and embedded result request must agree exactly. Existing VerificationPlan and continuation schemas do not change.
 
+Version mismatch tests cover contradictory request/result pairs and embedded schemas or fields. Legacy results contain only an opaque request digest; this slice does not infer an absent request version from that digest or retroactively add new-policy recomputation to result/1 or /2. A wholly replaced graph relabeled as legacy evidence is not a new guarantee claimed by this correction. New result/3 and any bundle carrying request/2 must enforce the full explicit policy.
+
 ## Native scalar validity
 
 Use the exact existing producer representation from `debug/model.py` and `debug/read.py`, with keys `{bitWidth,expression,rawHex,typeName,value}` and no extras. Only a unique requested Watch sample with status OK is eligible.
@@ -50,7 +52,7 @@ An eligible edge joins before/after offsets with absolute difference <= max_pair
 
 Let B and A be window lengths and T the number of accepted unique time pairs. aligned_position_count=B+A-T. aligned_pair_count is the number of those pairs with compatible valid native values. excluded_position_count=aligned_position_count-aligned_pair_count. This counts a valid time match as one position and every unpaired endpoint as one position. No edge/ambiguous endpoint is silently dropped. The existing computation rules then apply: below the requested minimum is INVALID/INCONCLUSIVE; sufficient pairs plus any exclusion is DEGRADED; sufficient with zero exclusions is VALID. First/last/min/max/delta/changed preserve their current meaning over valid pairs. No new inference about firmware correctness is added to changed=true.
 
-Bounds remain 1024 batches per window, 10,000 total values and 2048 positions. Matching must be deterministic and bounded. This is a finite offline operation, not a new scheduler. The 5ms ceiling is a small explicit allowance relative to the accepted 100ms schedule; observed maximum corresponding skew is 1.4682ms. These observations justify the policy but do not replace algorithmic matching.
+Bounds remain 1024 batches and 10,000 values per window, and 2048 positions across the pair. Matching must be deterministic and bounded. This is a finite offline operation, not a new scheduler. The 5ms ceiling is a small explicit allowance relative to the accepted 100ms schedule; observed maximum corresponding skew is 1.4682ms. These observations justify the policy but do not replace algorithmic matching.
 
 ## Dependency direction and persisted trust
 
