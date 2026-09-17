@@ -3101,6 +3101,8 @@ def _authenticate_physical_monitor_fact(
         )
     except ContinuationIdentityError as error:
         raise _WorkflowFailure(_INCOMPATIBLE_IDENTITY) from error
+    except FileNotFoundError as error:
+        raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE) from error
     except OSError as error:
         raise _WorkflowFailure(_ENVIRONMENT_FAILURE) from error
     except (
@@ -3194,6 +3196,8 @@ def _authenticate_physical_monitor_fact(
             raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE)
     except _WorkflowFailure:
         raise
+    except FileNotFoundError as error:
+        raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE) from error
     except OSError as error:
         raise _WorkflowFailure(_ENVIRONMENT_FAILURE) from error
     except (
