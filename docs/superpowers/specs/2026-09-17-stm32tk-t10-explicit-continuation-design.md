@@ -55,6 +55,17 @@ Update all actual consumers together: Diagnostic plan/start/complete, per-side T
 
 Use existing input/identity/integrity/conflict/timeout error families for each public adapter. A malformed/unknown/mixed continuation request is input-invalid; a valid proof for the wrong context/pair is identity-incompatible; corrupt or missing authoritative evidence is integrity failure. An expired timed attempt is still the existing attempt-timeout result. No new hardware safety code is needed.
 
+The adapter mapping is explicit below. After the error-category finding persisted through two review rounds, local patching stopped to audit all consumers together. The ambiguity was the distinction between external consumer context and contradictions inside a persisted graph; this table freezes that distinction without expanding the approved behavior. `ContinuationIdentityError` applies only after authenticating a proof, when external expected context or a supplied verification plan does not match it. Ordinary `ContinuationValidationError` means malformed/corrupt authoritative graph data; a stored analysis claiming this proof while contradicting its own bound lineage is graph corruption. Pure analysis retains its existing single error code and typed cause; workflow adapters translate that cause.
+
+| Boundary | Malformed request | Valid proof, wrong consumer context | Missing/corrupt proof or bound graph |
+| --- | --- | --- | --- |
+| Recovery public workflow | `ACCEPTANCE_ATTEMPT_INPUT_INVALID` | `ACCEPTANCE_ATTEMPT_IDENTITY_MISMATCH` | `ACCEPTANCE_ATTEMPT_EVIDENCE_INTEGRITY_FAILED` |
+| Monitor public workflow | `ANALYSIS_WORKFLOW_INVALID` | `INCOMPATIBLE_IDENTITY` | `EVIDENCE_INTEGRITY_FAILURE` |
+| Diagnostic public workflow | Existing plan/event input validation | `INCOMPATIBLE_IDENTITY` | `EVIDENCE_INTEGRITY_FAILURE` |
+| DiagnosticStore append/replay | Existing event validation | `DIAGNOSTIC_IDENTITY_MISMATCH` | `DIAGNOSTIC_EVIDENCE_MISSING` for unavailable direct references/provider reads; `DIAGNOSTIC_CHAIN_CORRUPT` for invalid authenticated graphs or stored reference contradictions |
+
+No adapter may catch the shared validation base class and unconditionally label it identity mismatch. Context checks are not moved ahead of proof authentication. The shared reader remains independent from workflow modules and does not create a generic diagnostic framework.
+
 ## Evidence and acceptance
 
 One offline persisted end-to-end scenario must run association creation → fresh-process reload → before/after Monitor compare/bundle → original Diagnostic plan/start/marker/complete → v3 final checkpoint. Exercise real store structures and public functions, not fake successful readers. Negative checks cover missing association, forged/swapped run, wrong workspace/probe/target/mailbox/source declaration/snapshot, stale predecessor/Diagnostic head, replay input, tampered parent/root, conflicting UUID, and expiry/CAS publication boundaries. Show expired v3 can be followed by a fresh timed attempt using the same association and already valid evidence.

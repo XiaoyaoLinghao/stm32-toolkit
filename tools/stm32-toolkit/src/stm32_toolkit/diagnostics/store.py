@@ -552,11 +552,15 @@ class DiagnosticStore:
         def bind_continuation(plan):
             nonlocal association
             if plan.continuation_evidence_id is not None:
-                from stm32_toolkit.acceptance.continuation import authenticate_plan_continuation, ContinuationValidationError
+                from stm32_toolkit.acceptance.continuation import authenticate_plan_continuation, ContinuationValidationError, ContinuationIdentityError
                 try:
                     association = authenticate_plan_continuation(self.evidence_store, self.diagnostics_root, plan, session)
-                except (ContinuationValidationError, EvidenceValidationError, OSError, TypeError, ValueError, KeyError):
+                except ContinuationIdentityError:
                     _raise(DIAGNOSTIC_IDENTITY_MISMATCH)
+                except OSError:
+                    _raise(DIAGNOSTIC_EVIDENCE_MISSING)
+                except (ContinuationValidationError, EvidenceValidationError, TypeError, ValueError, KeyError):
+                    _raise(DIAGNOSTIC_CHAIN_CORRUPT)
 
         def require_scope(envelope: EvidenceEnvelope) -> None:
             if not _same_scope(envelope.identity, session.identity):
@@ -564,11 +568,15 @@ class DiagnosticStore:
 
         def require_after(envelope: EvidenceEnvelope, declaration: SourceChangeDeclaration) -> None:
             if association is not None:
-                from stm32_toolkit.acceptance.continuation import validate_continuation_reference, ContinuationValidationError
+                from stm32_toolkit.acceptance.continuation import validate_continuation_reference, ContinuationValidationError, ContinuationIdentityError
                 try:
                     validate_continuation_reference(self.evidence_store, association, envelope)
-                except (ContinuationValidationError, EvidenceValidationError, OSError, TypeError, ValueError, KeyError):
+                except ContinuationIdentityError:
                     _raise(DIAGNOSTIC_IDENTITY_MISMATCH)
+                except OSError:
+                    _raise(DIAGNOSTIC_EVIDENCE_MISSING)
+                except (ContinuationValidationError, EvidenceValidationError, TypeError, ValueError, KeyError):
+                    _raise(DIAGNOSTIC_CHAIN_CORRUPT)
             else:
                 require_scope(envelope)
             if not _same_after_identity(envelope.identity, declaration):

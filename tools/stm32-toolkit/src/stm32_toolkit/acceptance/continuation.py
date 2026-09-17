@@ -852,7 +852,7 @@ def authenticate_plan_continuation(evidence, diagnostics_root, plan, session):
         or plan.source_change_declaration_id != proof.source_change_declaration_id
         or plan.verification_plan_id != association.diagnostic.declaration.validation_plan_id
         or association.diagnostic.declaration not in session.source_change_declarations):
-        raise ContinuationValidationError("verification plan differs from continuation")
+        raise ContinuationIdentityError("verification plan differs from continuation")
     return association
 
 

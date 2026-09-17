@@ -822,7 +822,7 @@ def _load_completion_fixed_after(
     expected_identity: object,
 ) -> object:
     if plan.continuation_evidence_id is not None:
-        from stm32_toolkit.acceptance.continuation import authenticate_continuation, ContinuationValidationError
+        from stm32_toolkit.acceptance.continuation import authenticate_continuation, ContinuationValidationError, ContinuationIdentityError
         try:
             association = authenticate_continuation(state.evidence_store, state.workspace.diagnostics_root,
                 plan.continuation_evidence_id, expected_workspace_id=state.workspace.workspace_id,
@@ -831,8 +831,10 @@ def _load_completion_fixed_after(
                 expected_diagnostic_session_id=plan.diagnostic_session_id,
                 expected_fixed_after_test_run_id=plan.fixed_after_run_id,
                 expected_fixed_after_evidence_id=plan.fixed_after_evidence_id)
-        except ContinuationValidationError as error:
+        except ContinuationIdentityError as error:
             raise _WorkflowFailure(_INCOMPATIBLE_IDENTITY) from error
+        except ContinuationValidationError as error:
+            raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE) from error
         if association.before.manifest.identity != expected_identity:
             raise _WorkflowFailure(_INCOMPATIBLE_IDENTITY)
         expected_identity = association.after.manifest.identity
@@ -3382,11 +3384,13 @@ __all__ = [
 
 
 def _plan_continuation(state, session, plan):
-    from stm32_toolkit.acceptance.continuation import authenticate_plan_continuation, ContinuationValidationError
+    from stm32_toolkit.acceptance.continuation import authenticate_plan_continuation, ContinuationValidationError, ContinuationIdentityError
     try:
         return authenticate_plan_continuation(state.evidence_store, state.workspace.diagnostics_root, plan, session)
-    except ContinuationValidationError as error:
+    except ContinuationIdentityError as error:
         raise _WorkflowFailure(_INCOMPATIBLE_IDENTITY) from error
+    except ContinuationValidationError as error:
+        raise _WorkflowFailure(_EVIDENCE_INTEGRITY_FAILURE) from error
 
 
 def _validate_plan_pair(state, session, plan, before, after):
