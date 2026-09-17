@@ -121,6 +121,14 @@ T10 顺序如下；动态值只能来自真实返回，缺少的输入结构必�
 | G | P4 运行时采集真实 window → publish fixed-after → compare/bundle 绑定两侧 monitor refs、TestRun、declaration、Diagnostic。selector 必须证明 LED 修复，只有 testtime 增长不够 |
 | H | VerificationPlan → verification start → marker attach → verification complete；Diagnostic=RESOLVED 且 FixVerification=PASSED 后，checkpoint target-fix-verified 绑定 P4 native ID 和实际 fix-verification-id |
 
+若已获准的恢复操作使 P4 与原 P3/Diagnostic 分属两个原始 session，按[显式续验规格](../superpowers/specs/2026-09-17-stm32tk-t10-explicit-continuation-design.md)补充关联，不重做 A–F、不重命名原记录。此入口须先部署包含该规格实现的版本；旧 runtime 不支持续验。先核对原 v2 attempt 停在 revision6、没有 revision7，原 Diagnostic 当前头包含对应 source-change declaration；核对两侧实际 physical TestRun 的 workspace/project/target/probe/transport_config、各自 build/ELF/InputSnapshot，以及历史 source-change intent/authorization。源码授权所引 Diagnostic revision 可以早于 declaration revision，须证明同一事件链中的祖先关系，不能强制两者相等。
+
+在原 P3/Diagnostic session 下，以新 UUID 调用 `scenario attempt begin --continuation-file <bind.json>`；文件 schema 为 `stm32-physical-continuation-request/1`、kind=`bind`，另含 `predecessorAttemptId`、`predecessorCheckpointId`、`predecessorEvidenceId`、`fixedAfterTestRunId`、`fixedAfterEvidenceId`、`diagnosticRevision`、`diagnosticEventHead`，值均取实际已发布记录。begin 发布不可变关联证明及 v3 revision0 attempt；保存返回的 `continuationEvidenceId`，经新进程 show 重新读取。bind 时 Diagnostic 当前头和旧 attempt 状态不匹配即停止，不手工改字段绕过。
+
+G 步中，各侧 physical publish 保持该侧原始 session。compare/bundle 在原 P3/Diagnostic 上下文执行，并都显式附加 `--continuation-evidence-id <同一证明ID>`；输出 analysis v2 保存两侧原始 session 和该证明。H 步使用 `stm32-verification-plan/2`，增加 `continuation_evidence_id`，其余 run/declaration/analysis 等引用仍取真实返回；在原 Diagnostic 内完成验证，再以 v3 当前 revision 调用 target-fix-verified。没有显式证明时仍执行原有同 session 规则，普通 v1/v2 流程不变。
+
+v3 只承担验证完成记录，900 秒截止时间固定，不产生源码、烧录或硬件授权。开始前备齐已有证明与离线验证材料；窗口过期后，以另一新 UUID 和 `{ "schema": "stm32-physical-continuation-request/1", "kind": "reuse", "continuationEvidenceId": "<已接受证明ID>" }` 创建新 attempt，复用仍有效的 FixVerification/Monitor 证据。不能续期旧 attempt、重复消费旧 action，也不能为重建账本重烧或补采同一已充分结论。首次接受证明后，消费者验证其固定历史链；随后正常产生的 Diagnostic 验证事件不使该证明失效。缺失的真实 P4 Monitor 仍需获准的有限采样，离线 fixture 不计作 G/H 实机完成。
+
 attempt 写操作使用当前 attempt revision；Diagnostic 写操作分别使用新 operation-id 和当前 Diagnostic revision，不能混用。hypothesis add 带 statement；plan add 带 steps-file、run 带 plan-id；assess 带 hypothesis-id/plan-id/step-id/polarity/rationale。Diagnostic ID 是实际 32hex，FixVerification ID 是实际 64hex。P3/P4 分别核对 execution_source=physical、physical_transport_evidence=true、build/ELF/input/session/probe/target，以及相同 mailbox transport_config_digest，不能只看 passed 字样。
 
 `MON` 是安装的 `Scripts/stm32-monitor.exe`，不能用无 main 调用入口的 `python -m stm32_monitor.cli`。以下附 `--project <P> --data-root <D> --session-id <T10共同S> --json`；只发布/分析已有 history，**不生成物理采样窗口**。

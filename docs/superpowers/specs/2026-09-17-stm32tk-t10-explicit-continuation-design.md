@@ -1,6 +1,6 @@
 # T10 explicit physical repair continuation
 
-User approval: “同意修改”, following the bounded proposal in `docs/codex/returns/2026-09-17-stm32tk-t10-session-continuation-block.md`. Primary owns this specification, integration and acceptance. Accepted base is `9975bcd3466f949c56801c81d618b2b57493a5a7`. One Luna/max implementer owns this complete slice; an independent reviewer reviews the full diff. Authority covers offline implementation and verification, not installation, deployment, hardware or remote operations.
+User approval: “同意修改”, following the bounded proposal in `docs/codex/returns/2026-09-17-stm32tk-t10-session-continuation-block.md`. Primary owns this specification, integration and acceptance. Accepted base is `9975bcd3466f949c56801c81d618b2b57493a5a7`. The original Luna/max writer's partial work is preserved; the user's later explicit “同意” authorizes the temporary primary implementation exception recorded in the implementation plan, with separate Luna/max contract tests and independent full-diff review. The exception expires after verification. Authority covers offline implementation and verification, not installation, deployment, hardware or remote operations.
 
 ## Runnable scenarios and boundaries
 
