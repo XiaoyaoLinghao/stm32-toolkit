@@ -4,7 +4,10 @@ from pathlib import Path
 import pytest
 
 from stm32_toolkit import cli
+from stm32_toolkit.probe.backend import make_program_diagnostic
 from stm32_toolkit.result import OperationResult
+from stm32_toolkit.testing.target import TargetRunError
+import stm32_toolkit.testing_workflows as workflows
 
 
 CONTEXT_ARGS = [
@@ -358,6 +361,36 @@ def test_testing_failure_result_keeps_operation_result_json_projection(
 
     assert cli.main(_show_argv()) == 2
 
+    captured = capsys.readouterr()
+    assert captured.out == json.dumps(result.to_dict(), ensure_ascii=False, indent=2) + "\n"
+    assert captured.err == ""
+
+
+def test_testing_workflow_failure_keeps_only_validated_program_diagnostic() -> None:
+    diagnostic = make_program_diagnostic("program-call", OSError(5, "program failed"))
+    result = workflows._exception_result(
+        "test.target.execute",
+        TargetRunError(
+            "TEST_FLASH_FAILED", "Target firmware flash failed",
+            {"programDiagnostic": diagnostic, "secret": "drop-me"},
+        ),
+    )
+
+    assert result.code == "TEST_FLASH_FAILED"
+    assert result.to_dict()["details"] == {"programDiagnostic": diagnostic}
+
+
+def test_testing_cli_projects_program_diagnostic_verbatim(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    diagnostic = make_program_diagnostic("program-call", OSError(5, "program failed"))
+    result = OperationResult.failure(
+        "test.show", "TEST_FLASH_FAILED", "Target firmware flash failed",
+        {"programDiagnostic": diagnostic},
+    )
+    monkeypatch.setattr(cli, "test_show", lambda *args, **kwargs: result, raising=False)
+
+    assert cli.main(_show_argv()) == 2
     captured = capsys.readouterr()
     assert captured.out == json.dumps(result.to_dict(), ensure_ascii=False, indent=2) + "\n"
     assert captured.err == ""

@@ -18,6 +18,8 @@ from stm32_toolkit.evidence import EvidenceIdentity, canonical_json_bytes
 from stm32_toolkit.result import OperationResult
 
 from stm32_toolkit.probe import client as probe_client
+from stm32_toolkit.probe.backend import make_program_diagnostic
+from stm32_toolkit.probe import flash as flash_module
 from stm32_toolkit.probe.authorization import ControlAuthorizationError, ControlAuthorizationStore
 from stm32_toolkit.testing import target as target_module
 from stm32_toolkit.testing.model import calculate_inventory_digest
@@ -211,6 +213,37 @@ class FakeFlashWorkflow(target_module.GuardedTargetFlashAdapter):
     async def _run(self, request):
         self.calls.append(request)
         return OperationResult.success("stm32_flash", {"status": "success"})
+
+
+def test_physical_flash_adapter_forwards_only_validated_program_diagnostic(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    diagnostic = make_program_diagnostic(
+        "program-call", OSError(5, r"program failed C:\private\firmware.elf")
+    )
+
+    async def failed_flash(*args: object, **kwargs: object) -> OperationResult[None]:
+        return OperationResult.failure(
+            "stm32_flash", "PROBE_PROGRAM_FAILED", "Firmware programming failed",
+            {"programDiagnostic": diagnostic, "secret": "drop-me"},
+        )
+
+    monkeypatch.setattr(flash_module, "flash_firmware", failed_flash)
+    adapter = target_module.PhysicalTargetFlashAdapter(
+        project_root=tmp_path.absolute(), raw_probe_id="probe-a", client=object(),
+        control_authorizations=ControlAuthorizationStore((tmp_path / "control").absolute()),
+    )
+    binding = {
+        "target": {"mcu": "stm32f407vg"}, "build_id": "b" * 64,
+        "elf_sha256": "e" * 64, "timeout_ms": 1_000,
+        "probe_serial_hash": sha256(b"probe-a").hexdigest(),
+    }
+
+    with pytest.raises(target_module.TargetRunError) as caught:
+        asyncio.run(adapter.run(binding))
+
+    assert caught.value.code == "TEST_FLASH_FAILED"
+    assert caught.value.details == {"programDiagnostic": diagnostic}
 
 
 class FakeTransport:

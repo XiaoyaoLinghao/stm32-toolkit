@@ -14,6 +14,7 @@ from stm32_toolkit.mcp_server import (
     tool_test_host_run_for_request,
     tool_test_show_for_request,
 )
+from stm32_toolkit.probe.backend import make_program_diagnostic
 from stm32_toolkit.result import OperationResult
 
 
@@ -215,6 +216,25 @@ def test_testing_request_helpers_return_workflow_operation_result_verbatim(
     assert len(calls) == 1
     assert calls[0]["args"][0].project_root == runtime.project_root
     assert calls[0]["args"][0].data_root == runtime.data_root
+
+
+def test_testing_mcp_projects_program_diagnostic_verbatim(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    runtime = _runtime(tmp_path)
+    diagnostic = make_program_diagnostic("program-call", OSError(5, "program failed"))
+    result = OperationResult.failure(
+        "test.show", "TEST_FLASH_FAILED", "Target firmware flash failed",
+        {"programDiagnostic": diagnostic},
+    )
+
+    async def roots(*_args: object) -> None:
+        return None
+
+    monkeypatch.setattr(mcp_mod, "_client_roots_failure", roots)
+    monkeypatch.setattr(mcp_mod, "test_show", lambda *args, **kwargs: result)
+
+    assert asyncio.run(tool_test_show_for_request(runtime, None, "run-1")) == result.to_dict()
 
 
 def test_registered_testing_tools_are_thin_delegates_and_run_defaults_case_ids(

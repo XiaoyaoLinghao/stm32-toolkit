@@ -112,6 +112,25 @@ class _WorkerTestBackend:
             self.marker.write_text("late", encoding="utf-8")
 
     def flash_elf(self, image: bytes):
+        if self.mode == "program-diagnostic":
+            raise ProbeBackendError(
+                "PROBE_PROGRAM_FAILED",
+                "private backend detail",
+                {
+                    "programDiagnostic": {
+                        "schemaVersion": 1,
+                        "stage": "program-call",
+                        "exceptions": [{
+                            "type": "builtins.OSError",
+                            "message": "program failed",
+                            "errno": 5,
+                            "winerror": 5,
+                            "address": None,
+                            "resultCode": None,
+                        }],
+                    }
+                },
+            )
         return FlashBackendReport(len(image), 1)
 
     def close(self) -> None:
@@ -287,6 +306,25 @@ def _attach_stage_factory(details: object) -> _AttachStageWorkerBackend:
     return _AttachStageWorkerBackend(details)
 
 
+class _ProgramStageWorkerBackend:
+    """Spawn-safe seam for closed program-diagnostic admission."""
+
+    def __init__(self, details: object) -> None:
+        self.details = details
+
+    def flash_elf(self, image: bytes):
+        raise ProbeBackendError(
+            "PROBE_PROGRAM_FAILED", "private backend detail", self.details
+        )
+
+    def close(self) -> None:
+        return None
+
+
+def _program_stage_factory(details: object) -> _ProgramStageWorkerBackend:
+    return _ProgramStageWorkerBackend(details)
+
+
 def _attach_recovery_factory(mode: str, marker_root: str) -> _AttachRecoveryWorkerBackend:
     return _AttachRecoveryWorkerBackend(mode, marker_root)
 
@@ -327,6 +365,32 @@ def test_worker_normal_call_and_close_leave_no_owned_process(tmp_path: Path) -> 
     worker.close()
     assert not worker.is_alive
     assert pid > 0
+
+
+def test_worker_program_failure_preserves_closed_diagnostic(tmp_path: Path) -> None:
+    worker = ProbeBackendWorker(
+        _test_backend_factory=partial(_factory, "program-diagnostic", str(tmp_path / "unused"))
+    )
+    try:
+        with pytest.raises(ProbeWorkerError) as caught:
+            worker.flash_elf(b"ELF")
+        assert caught.value.code == "PROBE_PROGRAM_FAILED"
+        assert caught.value.details == {
+            "programDiagnostic": {
+                "schemaVersion": 1,
+                "stage": "program-call",
+                "exceptions": [{
+                    "type": "builtins.OSError",
+                    "message": "program failed",
+                    "errno": 5,
+                    "winerror": 5,
+                    "address": None,
+                    "resultCode": None,
+                }],
+            }
+        }
+    finally:
+        worker.close()
 
 
 def test_windows_launcher_preserves_stdlib_identity_and_closes_owned_null_handles(
@@ -681,6 +745,34 @@ def test_spawned_worker_drops_unsafe_register_error_details(mode: str) -> None:
         assert caught.value.message == "Probe worker operation failed"
         assert caught.value.details == {}
         assert "private" not in str(caught.value)
+    finally:
+        if worker.is_alive:
+            worker.close()
+
+
+def test_spawned_worker_drops_invalid_program_diagnostic_details() -> None:
+    invalid = {
+        "programDiagnostic": {
+            "schemaVersion": 1,
+            "stage": "program-call",
+            "exceptions": [{
+                "type": "builtins.OSError",
+                "message": r"failed C:\private\firmware.elf",
+                "errno": 5,
+                "winerror": None,
+                "address": None,
+                "resultCode": None,
+            }],
+        }
+    }
+    worker = ProbeBackendWorker(
+        _test_backend_factory=partial(_program_stage_factory, invalid)
+    )
+    try:
+        with pytest.raises(ProbeWorkerError) as caught:
+            worker.flash_elf(b"ELF")
+        assert caught.value.code == "PROBE_PROGRAM_FAILED"
+        assert caught.value.details == {}
     finally:
         if worker.is_alive:
             worker.close()

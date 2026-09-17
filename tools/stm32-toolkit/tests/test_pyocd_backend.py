@@ -15,7 +15,9 @@ from fakes.fake_pyocd import (
 from stm32_toolkit.probe.backend import (
     DebugHandoffMetadata,
     FlashBackendReport,
+    make_program_diagnostic,
     ProbeBackendError,
+    validate_program_diagnostic,
 )
 from stm32_toolkit.probe.attach_diagnostics import validate_attach_diagnostic
 from stm32_toolkit.probe.pyocd_backend import (
@@ -730,6 +732,149 @@ def test_default_driver_programs_in_memory_elf_without_reset_or_progress():
     ]
 
 
+def test_default_driver_constructor_failure_preserves_programmer_create_stage():
+    calls = []
+
+    class Programmer:
+        def __init__(self, session, **options):
+            calls.append((session, options))
+            raise OSError(5, r"programmer init C:\private\firmware.elf")
+
+    driver = object.__new__(_DefaultPyOCDDriver)
+    driver._programmer_type = Programmer
+    backend = PyOCDBackend(driver)
+    backend._session = object()
+    backend._target = object()
+    backend._probe_id = "pyocd:public-selector"
+    backend._hardware_probe_id = "RAW PROBE 01"
+
+    with pytest.raises(ProbeBackendError) as error:
+        backend.flash_elf(b"ELF")
+
+    assert error.value.code == "PROBE_PROGRAM_FAILED"
+    diagnostic = error.value.details["programDiagnostic"]
+    assert diagnostic["stage"] == "programmer-create"
+    exception = diagnostic["exceptions"][0]
+    assert exception["type"] == "builtins.OSError"
+    assert exception["errno"] == 5
+    assert exception["message"].startswith("[Errno 5]")
+    assert "private" not in str(exception)
+    assert len(calls) == 1
+
+
+def test_default_driver_program_failure_preserves_flash_failure_numbers():
+    from pyocd.core.exceptions import FlashProgramFailure
+
+    class Programmer:
+        def __init__(self, session, **options):
+            pass
+
+        def program(self, stream, *, file_format):
+            raise FlashProgramFailure(
+                "flash program page failure",
+                address=0x08001234,
+                result_code=7,
+            )
+
+    driver = object.__new__(_DefaultPyOCDDriver)
+    driver._programmer_type = Programmer
+    backend = PyOCDBackend(driver)
+    backend._session = object()
+    backend._target = object()
+
+    with pytest.raises(ProbeBackendError) as error:
+        backend.flash_elf(b"ELF")
+
+    diagnostic = error.value.details["programDiagnostic"]
+    assert diagnostic["stage"] == "program-call"
+    exception = diagnostic["exceptions"][0]
+    assert exception["type"] == "pyocd.core.exceptions.FlashProgramFailure"
+    assert exception["address"] == 0x08001234
+    assert exception["resultCode"] == 7
+
+
+def test_driver_acquire_failure_has_distinct_program_diagnostic_stage():
+    class Backend(PyOCDBackend):
+        def _get_driver(self):
+            raise OSError(111, "driver acquire failed")
+
+    backend = Backend()
+    backend._session = object()
+    backend._target = object()
+
+    with pytest.raises(ProbeBackendError) as error:
+        backend.flash_elf(b"ELF")
+
+    diagnostic = error.value.details["programDiagnostic"]
+    assert diagnostic["stage"] == "driver-acquire"
+    assert diagnostic["exceptions"][0]["errno"] == 111
+
+
+def test_program_diagnostic_bounds_cause_chain_and_sanitizes_hostile_text():
+    class HostileError(Exception):
+        def __str__(self):
+            return (
+                r"failed C:\private\firmware.elf https://private.example/x "
+                '"quoted-secret" token=SYNTHETIC_SECRET\x00'
+            )
+
+    outer = HostileError()
+    inner = OSError(5, "inner")
+    outer.__cause__ = inner
+    inner.__cause__ = outer
+
+    diagnostic = make_program_diagnostic(
+        "program-call", outer, redactions=("RAW PROBE 01",)
+    )
+    assert len(diagnostic["exceptions"]) == 2
+    message = diagnostic["exceptions"][0]["message"]
+    assert len(message) <= 256
+    assert all(
+        token not in message
+        for token in ("private", "https://", "quoted-secret", "SYNTHETIC_SECRET")
+    )
+    assert "\x00" not in message
+    assert validate_program_diagnostic(diagnostic) == diagnostic
+
+
+def test_program_diagnostic_handles_unavailable_text_and_properties():
+    class HostileError(Exception):
+        @property
+        def errno(self):
+            raise RuntimeError("property access must stay private")
+
+        @property
+        def address(self):
+            raise RuntimeError("property access must stay private")
+
+        def __str__(self):
+            raise RuntimeError("string conversion must stay private")
+
+    exception = make_program_diagnostic("program-call", HostileError())["exceptions"][0]
+    assert exception["type"] == "unknown"
+    assert exception["message"] == "[unavailable]"
+    assert exception["errno"] is None
+    assert exception["address"] is None
+
+
+def test_program_diagnostic_redacts_bearer_and_truncated_quoted_secrets():
+    values = (
+        "Authorization: Bearer SYNTHETIC_SECRET",
+        chr(34) + "SYNTHETIC_SECRET" + "x" * 2100 + chr(34),
+    )
+    for value in values:
+        message = make_program_diagnostic(
+            "program-call", RuntimeError(value)
+        )["exceptions"][0]["message"]
+        assert "SYNTHETIC_SECRET" not in message
+
+
+def test_program_diagnostic_rejects_unbounded_exception_type():
+    diagnostic = make_program_diagnostic("program-call", RuntimeError("safe"))
+    diagnostic["exceptions"][0]["type"] = "builtins." + "A" * 200
+    assert validate_program_diagnostic(diagnostic) is None
+
+
 def test_flash_elf_failure_has_stable_error_and_no_success_telemetry():
     backend, driver = backend_with_probes("probe-a")
     backend.open_attach("probe-a", "stm32f407vg")
@@ -740,7 +885,12 @@ def test_flash_elf_failure_has_stable_error_and_no_success_telemetry():
 
     assert error.value.code == "PROBE_PROGRAM_FAILED"
     assert error.value.message == "Firmware programming failed"
-    assert error.value.details == {}
+    diagnostic = error.value.details["programDiagnostic"]
+    assert diagnostic["schemaVersion"] == 1
+    assert diagnostic["stage"] == "program-call"
+    assert diagnostic["exceptions"][0]["type"] == "builtins.RuntimeError"
+    assert diagnostic["exceptions"][0]["message"].startswith("program failed at")
+    assert "private" not in str(diagnostic)
     assert "private" not in str(error.value)
 
 

@@ -19,6 +19,7 @@ import zlib
 
 from stm32_toolkit.evidence import EvidenceEnvelope, EvidenceIdentity, canonical_json_bytes
 from stm32_toolkit.execution_provenance import validate_execution_provenance
+from stm32_toolkit.probe.backend import extract_program_diagnostic
 from stm32_toolkit.result import OperationResult
 from stm32_toolkit.testing.artifacts import TestArtifactCollector
 from stm32_toolkit.probe.client import (
@@ -636,10 +637,16 @@ class TargetRunValidator:
 
 
 class TargetRunError(Exception):
-    def __init__(self, code: str, message: str) -> None:
+    def __init__(
+        self,
+        code: str,
+        message: str,
+        details: Mapping[str, object] | None = None,
+    ) -> None:
         super().__init__(message)
         self.code = code
         self.message = message
+        self.details = dict(details) if isinstance(details, Mapping) else {}
         self.cleanup_notes: list[str] = []
 
 
@@ -817,6 +824,17 @@ class ConsumedTargetRun:
     provenance: PhysicalRunProvenance | None = None
 
 
+def _target_flash_failure_details(result: object) -> dict[str, object]:
+    if (
+        not isinstance(result, OperationResult)
+        or result.ok
+        or result.code != "PROBE_PROGRAM_FAILED"
+    ):
+        return {}
+    diagnostic = extract_program_diagnostic(result.details)
+    return {} if diagnostic is None else {"programDiagnostic": diagnostic}
+
+
 class PhysicalTargetFlashAdapter:
     """Program through the already leased Probe client used by the run."""
 
@@ -852,7 +870,11 @@ class PhysicalTargetFlashAdapter:
             self._client,
         )
         if not isinstance(report, OperationResult) or not report.ok:
-            raise TargetRunError("TEST_FLASH_FAILED", "Physical Target flash failed")
+            raise TargetRunError(
+                "TEST_FLASH_FAILED",
+                "Physical Target flash failed",
+                _target_flash_failure_details(report),
+            )
 
     async def _authorized_control(
         self,
@@ -1058,7 +1080,11 @@ class GuardedTargetFlashAdapter:
             )
         )
         if not isinstance(result, OperationResult) or not result.ok:
-            raise TargetRunError("TEST_FLASH_FAILED", "Guarded Target flash failed")
+            raise TargetRunError(
+                "TEST_FLASH_FAILED",
+                "Guarded Target flash failed",
+                _target_flash_failure_details(result),
+            )
 
 
 class TargetTestRunner:

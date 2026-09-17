@@ -17,6 +17,7 @@ from typing import Any
 from .backend import (
     DebugHandoffMetadata,
     FlashBackendReport,
+    extract_program_diagnostic,
     ProbeAttachmentEvidence,
     ProbeBackendError,
     ProbeDescriptor,
@@ -195,6 +196,17 @@ def _safe_register_error_details(code: object, details: object) -> dict[str, str
     return {"state": state}
 
 
+def _safe_program_error_details(
+    code: object, details: object
+) -> dict[str, object] | None:
+    if code != "PROBE_PROGRAM_FAILED" or type(details) is not dict:
+        return None
+    if set(details) != {"programDiagnostic"}:
+        return None
+    diagnostic = extract_program_diagnostic(details)
+    return None if diagnostic is None else {"programDiagnostic": diagnostic}
+
+
 def _safe_attach_error_details(code: object, details: object) -> dict[str, object] | None:
     if type(details) is not dict:
         return None
@@ -317,6 +329,8 @@ def _worker_main(
             safe_details = (
                 _safe_attach_error_details(code, getattr(error, "details", None))
                 if method == "open_attach"
+                else _safe_program_error_details(code, getattr(error, "details", None))
+                if method == "flash_elf"
                 else _safe_register_error_details(code, getattr(error, "details", None))
             )
             if safe_details is not None:
@@ -481,6 +495,8 @@ class ProbeBackendWorker:
                     safe_details = (
                         _safe_attach_error_details(code, failure["details"])
                         if method == "open_attach"
+                        else _safe_program_error_details(code, failure["details"])
+                        if method == "flash_elf"
                         else _safe_register_error_details(code, failure["details"])
                     )
                     if safe_details is None:

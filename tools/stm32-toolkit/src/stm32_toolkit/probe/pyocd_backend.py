@@ -14,6 +14,8 @@ from typing import Callable, Protocol, runtime_checkable
 from .backend import (
     DebugHandoffMetadata,
     FlashBackendReport,
+    extract_program_diagnostic,
+    program_diagnostic_details,
     ProbeAttachmentEvidence,
     ProbeBackendError,
     ProbeDescriptor,
@@ -139,6 +141,15 @@ class PyOCDDriver(Protocol):
     ) -> None: ...
 
 
+class _DefaultPyOCDProgramError(Exception):
+    """Keep the default driver's entered programming boundary explicit."""
+
+    def __init__(self, stage: str, original: Exception) -> None:
+        super().__init__("PyOCD programming operation failed")
+        self.stage = stage
+        self.original = original
+
+
 class _DefaultPyOCDDriver:
     def __init__(self) -> None:
         try:
@@ -169,14 +180,20 @@ class _DefaultPyOCDDriver:
     def program_file(
         self, session: object, image: bytes, *, options: Mapping[str, object]
     ) -> None:
-        programmer = self._programmer_type(
-            session,
-            progress=options["progress"],
-            chip_erase=options["chipErase"],
-            trust_crc=options["trustCrc"],
-            keep_unwritten=options["keepUnwritten"],
-        )
-        programmer.program(BytesIO(image), file_format=str(options["fileFormat"]))
+        try:
+            programmer = self._programmer_type(
+                session,
+                progress=options["progress"],
+                chip_erase=options["chipErase"],
+                trust_crc=options["trustCrc"],
+                keep_unwritten=options["keepUnwritten"],
+            )
+        except Exception as error:
+            raise _DefaultPyOCDProgramError("programmer-create", error) from error
+        try:
+            programmer.program(BytesIO(image), file_format=str(options["fileFormat"]))
+        except Exception as error:
+            raise _DefaultPyOCDProgramError("program-call", error) from error
 
 
 class _AttachedTargetMemoryReader:
@@ -488,6 +505,42 @@ class PyOCDBackend:
             driver = _DefaultPyOCDDriver()
             self._driver = driver
         return driver
+
+    def _program_failure_details(
+        self, stage: str, error: BaseException
+    ) -> dict[str, object]:
+        try:
+            existing = extract_program_diagnostic(getattr(error, "details", None))
+        except BaseException:
+            existing = None
+        if existing is not None:
+            return {"programDiagnostic": existing}
+        candidate: BaseException = error
+        if isinstance(error, ProbeBackendError):
+            try:
+                cause = error.__cause__
+            except BaseException:
+                cause = None
+            if isinstance(cause, BaseException):
+                candidate = cause
+        redactions = tuple(
+            value
+            for value in (self._probe_id, self._hardware_probe_id)
+            if type(value) is str and value
+        )
+        try:
+            return program_diagnostic_details(stage, candidate, redactions=redactions)
+        except BaseException:
+            return {}
+
+    def _program_failure(
+        self, stage: str, error: BaseException
+    ) -> ProbeBackendError:
+        return ProbeBackendError(
+            "PROBE_PROGRAM_FAILED",
+            "Firmware programming failed",
+            self._program_failure_details(stage, error),
+        )
 
     def preflight_target_capabilities(self, probe_id: str, operation_level: object) -> None:
         """Validate static identity/provider facts without enumerating or attaching hardware."""
@@ -1482,11 +1535,16 @@ class PyOCDBackend:
             "fileFormat": "elf",
         }
         try:
-            self._get_driver().program_file(session, image, options=options)
+            driver = self._get_driver()
         except Exception as error:
-            raise ProbeBackendError(
-                "PROBE_PROGRAM_FAILED", "Firmware programming failed"
-            ) from error
+            raise self._program_failure("driver-acquire", error) from error
+        try:
+            driver.program_file(session, image, options=options)
+        except _DefaultPyOCDProgramError as error:
+            cause = error.original
+            raise self._program_failure(error.stage, cause) from cause
+        except Exception as error:
+            raise self._program_failure("program-call", error) from error
         return FlashBackendReport(
             bytes_programmed=None,
             sectors_programmed=None,

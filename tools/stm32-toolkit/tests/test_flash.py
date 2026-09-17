@@ -21,7 +21,7 @@ from stm32_toolkit.build.identity import (
 )
 from stm32_toolkit.build import BuildRequest, run_build
 from stm32_toolkit.build.runner import build_result_document
-from stm32_toolkit.probe.backend import FlashBackendReport
+from stm32_toolkit.probe.backend import FlashBackendReport, make_program_diagnostic
 from stm32_toolkit.probe.attach_diagnostics import make_attach_diagnostic, make_primary
 from stm32_toolkit.probe.client import ProbeClientError
 from stm32_toolkit.probe import flash as flash_mod
@@ -1267,3 +1267,22 @@ def test_flash_atomic_commit_and_structured_client_failures(
     )
     assert internal.code == "FLASH_INTERNAL_ERROR"
     assert "private detail" not in json.dumps(internal.to_dict())
+
+
+def test_flash_preserves_program_diagnostic_from_client_failure(tmp_path: Path) -> None:
+    root = prepare_project(tmp_path)
+    identity = _publish_current_debug_build(root)
+    segment = _elf_with_flash_segment()[84 : 84 + 320]
+    diagnostic = make_program_diagnostic("program-call", OSError(5, "program failed"))
+
+    class FailingProgram(RecordingFlashClient):
+        async def program_verified_elf(self, *args: object, **kwargs: object) -> object:
+            raise ProbeClientError(
+                "PROBE_PROGRAM_FAILED", "Firmware programming failed",
+                {"programDiagnostic": diagnostic},
+            )
+
+    result = asyncio.run(flash_firmware(_request(root, identity), FailingProgram(segment)))
+
+    assert result.code == "PROBE_PROGRAM_FAILED"
+    assert result.to_dict()["details"] == {"programDiagnostic": diagnostic}

@@ -27,6 +27,7 @@ from stm32_toolkit.evidence import (
 )
 from stm32_toolkit.evidence.store import EvidenceStore
 from stm32_toolkit.paths import WorkspacePaths
+from stm32_toolkit.probe.backend import extract_program_diagnostic
 from stm32_toolkit.project_model import ProjectManifestError, load_project_model
 from stm32_toolkit.result import OperationResult
 from stm32_toolkit.testing.host import HostTestRunner
@@ -168,15 +169,24 @@ _TEST_CODE_MAP = {
 }
 
 
-def _failure(operation: str, code: str) -> OperationResult[None]:
+def _failure(
+    operation: str,
+    code: str,
+    details: object = None,
+) -> OperationResult[None]:
     if code not in _PUBLIC_MESSAGES:
         raise RuntimeError(f"unknown public workflow code: {code}")
     public_code = code
+    safe_details: dict[str, object] = {}
+    if public_code == "TEST_FLASH_FAILED":
+        diagnostic = extract_program_diagnostic(details)
+        if diagnostic is not None:
+            safe_details["programDiagnostic"] = diagnostic
     return OperationResult.failure(
         operation,
         public_code,
         _PUBLIC_MESSAGES[public_code],
-        {},
+        safe_details,
     )
 
 
@@ -214,7 +224,7 @@ def _exception_result(operation: str, error: BaseException) -> OperationResult[N
             "PROBE_SERVICE_UNAVAILABLE": "TEST_TRANSPORT_UNAVAILABLE",
         }.get(code, code)
         if mapped in _PUBLIC_MESSAGES:
-            return _failure(operation, mapped)
+            return _failure(operation, mapped, getattr(error, "details", None))
         return _failure(operation, "TEST_EXECUTION_FAILED")
     if operation in {_TARGET_PREPARE_OPERATION, _TARGET_EXECUTE_OPERATION}:
         mapped = {
