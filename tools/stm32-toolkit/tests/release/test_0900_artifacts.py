@@ -40,6 +40,119 @@ def _sha(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def _capture_build_wheel_processes(monkeypatch, tmp_path: Path, *, caller_temp: dict[str, str]):
+    from importlib.util import module_from_spec, spec_from_file_location
+
+    spec = spec_from_file_location("build_0900_artifacts_wheel_environment", UTILITY)
+    module = module_from_spec(spec)
+    assert spec and spec.loader
+    spec.loader.exec_module(module)
+    for name in ("TEMP", "TMP", "TMPDIR"):
+        monkeypatch.delenv(name, raising=False)
+    for name, value in caller_temp.items():
+        monkeypatch.setenv(name, value)
+
+    temporary_root = tmp_path / "build-temp"
+
+    class _TemporaryDirectory:
+        def __init__(self, *, prefix: str):
+            self.path = temporary_root / prefix.rstrip("-")
+
+        def __enter__(self) -> str:
+            self.path.mkdir(parents=True, exist_ok=False)
+            return str(self.path)
+
+        def __exit__(self, exc_type, exc_value, traceback) -> bool:
+            del exc_type, exc_value, traceback
+            return False
+
+    monkeypatch.setattr(module.tempfile, "TemporaryDirectory", _TemporaryDirectory)
+    output = tmp_path / "output"
+    calls = []
+
+    def fake_process(argv, *, cwd=None, env=None, timeout=300, text=False):
+        calls.append(
+            {
+                "argv": list(argv),
+                "cwd": cwd,
+                "env": None if env is None else dict(env),
+                "timeout": timeout,
+                "text": text,
+            }
+        )
+        if "wheel" in argv:
+            _write_wheel(output / "example-1.0.0-py3-none-any.whl")
+        return subprocess.CompletedProcess(list(argv), 0, "", "")
+
+    monkeypatch.setattr(module, "_process", fake_process)
+    wheel = module._build_wheel(
+        REPO_ROOT,
+        "tools/stm32-toolkit",
+        tmp_path / "wheelhouse",
+        output,
+        315532800,
+    )
+    return wheel, calls, output
+
+
+def _assert_build_wheel_call_shape(calls, output: Path) -> None:
+    assert len(calls) == 3
+    assert calls[0]["env"] is None
+    assert calls[1]["env"] is None
+    assert calls[2]["argv"][1:] == [
+        "-I",
+        "-m",
+        "pip",
+        "wheel",
+        "--disable-pip-version-check",
+        "--no-index",
+        "--no-deps",
+        "--no-build-isolation",
+        "--wheel-dir",
+        str(output),
+        str(REPO_ROOT / "tools/stm32-toolkit"),
+    ]
+    assert calls[2]["timeout"] == 600
+    assert calls[2]["text"] is True
+
+
+def test_build_wheel_passes_present_caller_temp_environment_to_wheel_child(monkeypatch, tmp_path: Path):
+    caller_temp = {
+        "TEMP": str(tmp_path / "caller-temp"),
+        "TMP": str(tmp_path / "caller-tmp"),
+        "TMPDIR": str(tmp_path / "caller-tmpdir"),
+    }
+    wheel, calls, output = _capture_build_wheel_processes(
+        monkeypatch,
+        tmp_path,
+        caller_temp=caller_temp,
+    )
+    _assert_build_wheel_call_shape(calls, output)
+    assert wheel == output / "example-1.0.0-py3-none-any.whl"
+    assert calls[2]["env"] == {
+        "PATH": os.environ.get("PATH", ""),
+        "PYTHONNOUSERSITE": "1",
+        "SOURCE_DATE_EPOCH": "315532800",
+        **caller_temp,
+    }
+
+
+def test_build_wheel_does_not_invent_absent_caller_temp_environment(monkeypatch, tmp_path: Path):
+    wheel, calls, output = _capture_build_wheel_processes(
+        monkeypatch,
+        tmp_path,
+        caller_temp={},
+    )
+    _assert_build_wheel_call_shape(calls, output)
+    assert wheel == output / "example-1.0.0-py3-none-any.whl"
+    assert calls[2]["env"] == {
+        "PATH": os.environ.get("PATH", ""),
+        "PYTHONNOUSERSITE": "1",
+        "SOURCE_DATE_EPOCH": "315532800",
+    }
+    assert not {"TEMP", "TMP", "TMPDIR"} & set(calls[2]["env"])
+
+
 def test_bootstrap_anchor_binds_git_archive_bytes_not_worktree_filter_bytes():
     from importlib.util import module_from_spec, spec_from_file_location
 

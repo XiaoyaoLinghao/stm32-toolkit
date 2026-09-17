@@ -651,7 +651,14 @@ def _build_wheel(repo_root: Path, package_path: str, wheelhouse: Path, output: P
         if install.returncode != 0:
             raise ReleaseError("closed build backend is unavailable")
         output.mkdir(parents=True, exist_ok=True)
-        env = {"PATH": os.environ.get("PATH", ""), "PYTHONNOUSERSITE": "1", "SOURCE_DATE_EPOCH": str(epoch)}
+        env = {
+            "PATH": os.environ.get("PATH", ""),
+            "PYTHONNOUSERSITE": "1",
+            "SOURCE_DATE_EPOCH": str(epoch),
+        }
+        for name in ("TEMP", "TMP", "TMPDIR"):
+            if name in os.environ:
+                env[name] = os.environ[name]
         result = _process([str(python), "-I", "-m", "pip", "wheel", "--disable-pip-version-check", "--no-index", "--no-deps", "--no-build-isolation", "--wheel-dir", str(output), str(repo_root / package_path)], env=env, timeout=600, text=True)
         if result.returncode != 0:
             raise ReleaseError("product wheel build failed")
