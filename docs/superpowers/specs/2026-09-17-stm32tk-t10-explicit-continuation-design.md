@@ -64,7 +64,7 @@ The adapter mapping is explicit below. After the error-category finding persiste
 | Diagnostic public workflow | Existing plan/event input validation | `INCOMPATIBLE_IDENTITY` | `EVIDENCE_INTEGRITY_FAILURE` |
 | DiagnosticStore append/replay | Existing event validation | `DIAGNOSTIC_IDENTITY_MISMATCH` | `DIAGNOSTIC_EVIDENCE_MISSING` for unavailable direct references/provider reads; `DIAGNOSTIC_CHAIN_CORRUPT` for invalid authenticated graphs or stored reference contradictions |
 
-No adapter may catch the shared validation base class and unconditionally label it identity mismatch. Context checks are not moved ahead of proof authentication. The shared reader remains independent from workflow modules and does not create a generic diagnostic framework.
+The workflow rows describe direct continuation-proof consumers. An existing DiagnosticStore load failure may still propagate its established store code through a public operation; this slice does not globally rewrite legacy store errors. No adapter may catch the shared validation base class and unconditionally label it identity mismatch. Context checks are not moved ahead of proof authentication. The shared reader remains independent from workflow modules and does not create a generic diagnostic framework.
 
 ## Evidence and acceptance
 
