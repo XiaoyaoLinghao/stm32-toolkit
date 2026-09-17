@@ -150,6 +150,21 @@ def test_physical_monitor_fact_evaluator_is_strict_and_recomputable() -> None:
             minimum_valid_samples=1,
             bit_index=0,
         )
+    malformed_duplicate = _fact_sample(value=1)
+    malformed_duplicate["watch"] = {
+        "kind": "register",
+        "registerPath": "GPIOE.ODR",
+        "unexpected": "field",
+    }
+    with pytest.raises(NativeAnalysisContractError):
+        evaluate_physical_monitor_fact(
+            [{"values": [duplicate, malformed_duplicate]}],
+            selector_kind="register",
+            selector="GPIOE.ODR",
+            fact="bit-values-mask",
+            minimum_valid_samples=1,
+            bit_index=0,
+        )
     with pytest.raises(NativeAnalysisContractError):
         evaluate_physical_monitor_fact(
             [_fact_batch(_fact_sample(selector="GPIOE.IDR", value=0))],

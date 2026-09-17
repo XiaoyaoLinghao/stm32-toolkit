@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from copy import deepcopy
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -39,6 +40,58 @@ CASE_COUNT_STEP = {
     "purpose": "count failed cases in the run",
 }
 PLAN_STEPS = [RUN_STATE_STEP]
+PHYSICAL_MONITOR_REF = {
+    "schema": "stm32-monitor-run-ref/2",
+    "operation_id": "11111111-1111-4111-8111-111111111111",
+    "scenario_role": "failed-before",
+    "execution_source": "physical",
+    "physical_transport_evidence": True,
+    "origin_workspace_id": "a" * 64,
+    "import_workspace_id": "a" * 64,
+    "logical_project_id": "12345678-1234-5678-1234-567812345678",
+    "origin_session_id": "session-a",
+    "projected_session_id": "session-a",
+    "origin_run_id": "11111111-1111-4111-8111-111111111111",
+    "projected_run_id": "11111111-1111-4111-8111-111111111111",
+    "target_device": "target",
+    "probe_id": "probe",
+    "physical_target": "board:t10",
+    "build_id": "b" * 64,
+    "elf_sha256": "c" * 64,
+    "input_snapshot_sha256": "d" * 64,
+    "git_head": "e" * 40,
+    "git_dirty": False,
+    "flash_session_id": "flash",
+    "lease_id": "lease",
+    "dwarf_sha256": "f" * 64,
+    "svd_sha256": None,
+    "group_id": "22222222-2222-4222-8222-222222222222",
+    "group_revision": 1,
+    "start_sequence": 0,
+    "end_sequence_exclusive": 2,
+    "start_captured_unix_ns": 100,
+    "end_captured_unix_ns_exclusive": 102,
+    "projected_batch_sha256s": ["0" * 64],
+    "transcript_evidence_id": "1" * 64,
+    "run_ref_sha256": "2" * 64,
+    "source_record_sha256": "3" * 64,
+}
+PHYSICAL_FACT_STEP = {
+    "step_id": "physical-fact",
+    "selector": {
+        "kind": "physical-monitor-fact/1",
+        "continuation_evidence_id": "4" * 64,
+        "monitor_ref_evidence_id": "5" * 64,
+        "monitor_run_ref": PHYSICAL_MONITOR_REF,
+        "selector_kind": "register",
+        "selector": "r0",
+        "fact": "bit-values-mask",
+        "minimum_valid_samples": 2,
+        "bit_index": 0,
+    },
+    "expected_value": 3,
+    "purpose": "verify the physical register bit",
+}
 LIFECYCLE_TOOLS = {
     "stm32_diagnostic_start",
     "stm32_diagnostic_show",
@@ -1325,6 +1378,97 @@ def test_registered_plan_add_accepts_selector_variants_and_converts_steps(
         [step],
         "user",
     )
+
+
+def test_registered_plan_add_preserves_physical_reference_null_and_bit_shape(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    runtime = _runtime(tmp_path)
+    server = create_server(runtime.project_root, runtime.data_root, runtime.session_id)
+    calls: list[tuple[object, ...]] = []
+
+    async def helper(*args: object) -> dict[str, object]:
+        calls.append(args)
+        return {"tool": "plan-add"}
+
+    monkeypatch.setattr(mcp_mod, "tool_diagnostic_add_plan_for_request", helper, raising=False)
+
+    _content, result = asyncio.run(
+        server.call_tool(
+            "stm32_diagnostic_plan_add",
+            {
+                "operationId": OPERATION_ID,
+                "diagnosticSessionId": DIAGNOSTIC_SESSION_ID,
+                "expectedRevision": 4,
+                "steps": [PHYSICAL_FACT_STEP],
+            },
+        )
+    )
+    assert result == {"tool": "plan-add"}
+    physical_step = calls[-1][5][0]
+    assert physical_step["selector"]["monitor_run_ref"]["svd_sha256"] is None
+    assert physical_step["selector"]["monitor_run_ref"]["schema"] == (
+        "stm32-monitor-run-ref/2"
+    )
+    assert physical_step["selector"]["bit_index"] == 0
+
+    value_varies_step = deepcopy(PHYSICAL_FACT_STEP)
+    value_varies_selector = value_varies_step["selector"]
+    assert isinstance(value_varies_selector, dict)
+    value_varies_selector["fact"] = "value-varies"
+    value_varies_selector.pop("bit_index")
+    value_varies_step["expected_value"] = 1
+    _content, result = asyncio.run(
+        server.call_tool(
+            "stm32_diagnostic_plan_add",
+            {
+                "operationId": OPERATION_ID,
+                "diagnosticSessionId": DIAGNOSTIC_SESSION_ID,
+                "expectedRevision": 4,
+                "steps": [value_varies_step],
+            },
+        )
+    )
+    assert result == {"tool": "plan-add"}
+    value_varies_selector_data = calls[-1][5][0]["selector"]
+    assert "bit_index" not in value_varies_selector_data
+    assert value_varies_selector_data["monitor_run_ref"]["svd_sha256"] is None
+
+    explicit_null_bit_index = deepcopy(value_varies_step)
+    explicit_null_selector = explicit_null_bit_index["selector"]
+    assert isinstance(explicit_null_selector, dict)
+    explicit_null_selector["bit_index"] = None
+    with pytest.raises(Exception):
+        asyncio.run(
+            server.call_tool(
+                "stm32_diagnostic_plan_add",
+                {
+                    "operationId": OPERATION_ID,
+                    "diagnosticSessionId": DIAGNOSTIC_SESSION_ID,
+                    "expectedRevision": 4,
+                    "steps": [explicit_null_bit_index],
+                },
+            )
+        )
+    assert len(calls) == 2
+
+    missing_bit_index = deepcopy(PHYSICAL_FACT_STEP)
+    missing_selector = missing_bit_index["selector"]
+    assert isinstance(missing_selector, dict)
+    missing_selector.pop("bit_index")
+    with pytest.raises(Exception):
+        asyncio.run(
+            server.call_tool(
+                "stm32_diagnostic_plan_add",
+                {
+                    "operationId": OPERATION_ID,
+                    "diagnosticSessionId": DIAGNOSTIC_SESSION_ID,
+                    "expectedRevision": 4,
+                    "steps": [missing_bit_index],
+                },
+            )
+        )
+    assert len(calls) == 2
 
 
 @pytest.mark.parametrize(

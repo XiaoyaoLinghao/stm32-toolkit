@@ -702,8 +702,14 @@ class Hypothesis:
             _fail(DIAGNOSTIC_PLAN_INVALID)
         if len({item.assessment_id for item in assessments}) != len(assessments):
             _fail(DIAGNOSTIC_PLAN_INVALID)
-        supporting_keys = {(item.evidence_id, canonical_diagnostic_json_bytes(item.selector)) for item in self.supporting}
-        refuting_keys = {(item.evidence_id, canonical_diagnostic_json_bytes(item.selector)) for item in self.refuting}
+        supporting_keys = {
+            (item.evidence_id, canonical_diagnostic_json_bytes(_thaw(item.selector)))
+            for item in self.supporting
+        }
+        refuting_keys = {
+            (item.evidence_id, canonical_diagnostic_json_bytes(_thaw(item.selector)))
+            for item in self.refuting
+        }
         if supporting_keys & refuting_keys:
             _fail(DIAGNOSTIC_PLAN_INVALID)
         object.__setattr__(self, "hypothesis_id", hypothesis_id)

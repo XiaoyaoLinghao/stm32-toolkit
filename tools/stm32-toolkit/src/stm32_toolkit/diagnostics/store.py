@@ -630,6 +630,7 @@ class DiagnosticStore:
         """Build the dependency-neutral workflow state used by fresh reads."""
 
         from types import SimpleNamespace
+        from stm32_toolkit.diagnostic_workflows import _WorkflowState
         from stm32_toolkit.testing.publication import TestRunRepository
 
         workspace_root = self.diagnostics_root.parent
@@ -647,7 +648,7 @@ class DiagnosticStore:
             cache_root=workspace_root / "cache",
             session_root=workspace_root / "sessions" / session.identity.session_id,
         )
-        return SimpleNamespace(
+        return _WorkflowState(
             model=SimpleNamespace(logical_project_id=session.identity.project_id),
             workspace=workspace,
             evidence_store=self.evidence_store,
