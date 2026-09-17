@@ -284,6 +284,7 @@ def simple_project(
 def keil_project(tmp_path: Path) -> Path:
     destination = tmp_path / "keil-project"
     shutil.copytree(KEIL_FIXTURE, destination)
+    (destination / "Objects").mkdir()
     return destination
 
 

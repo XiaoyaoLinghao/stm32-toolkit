@@ -33,6 +33,12 @@ COMPONENT_HEADER = "Code  (inc. data)  RO Data  RW Data  ZI Data  Debug"
 COMPONENT_ROW = "62772       5540      1004     1576   406440  534601   Grand Totals"
 COMPONENT_RO_CHECK = "Total RO Size 63776"
 COMPONENT_RW_CHECK = "Total RW Size 408016"
+COMPONENT_ELF_TOTALS = (
+    "62772       5540       1004       180     406440     534601   "
+    "ELF Image Totals (compressed)"
+)
+COMPONENT_ROM_TOTALS = "62772       5540       1004       180          0          0   ROM Totals"
+COMPONENT_SEPARATOR = "=============================================================================="
 
 
 # ---------------------------------------------------------------------------
@@ -217,6 +223,7 @@ def redirect(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
 def keil_project(tmp_path: Path) -> Path:
     destination = tmp_path / "keil-project"
     shutil.copytree(KEIL_FIXTURE, destination)
+    (destination / "Objects").mkdir()
     return destination
 
 
@@ -401,6 +408,37 @@ def test_map_image_component_program_size_parsing(keil_project: Path) -> None:
     inspection = inspect_keil(keil_project)
     baseline = capture_keil_baseline(keil_project, inspection)
     assert baseline.program_size == KeilProgramSize(62772, 1004, 1576, 406440, 65352, 408016)
+
+
+def test_map_image_component_real_footer_layout(keil_project: Path) -> None:
+    write_component_map(
+        keil_project,
+        checks=(
+            COMPONENT_ELF_TOTALS,
+            COMPONENT_ROM_TOTALS,
+            "",
+            COMPONENT_SEPARATOR,
+            "",
+            "Total RO  Size (Code + RO Data)                63776 (  62.28kB)",
+            "Total RW  Size (RW Data + ZI Data)            408016 ( 398.45kB)",
+            "Total ROM Size (Code + RO Data + RW Data)      63956 (  62.46kB)",
+            "",
+            COMPONENT_SEPARATOR,
+            "",
+            "unrelated section starts here",
+        ),
+    )
+    inspection = inspect_keil(keil_project)
+    baseline = capture_keil_baseline(keil_project, inspection)
+    assert baseline.program_size == KeilProgramSize(62772, 1004, 1576, 406440, 65352, 408016)
+
+
+def test_map_image_component_cross_checks_must_be_in_own_footer(keil_project: Path) -> None:
+    write_component_map(
+        keil_project,
+        checks=("unrelated section starts here", COMPONENT_RO_CHECK, COMPONENT_RW_CHECK),
+    )
+    assert_component_map_rule(keil_project, "componentCrossCheck")
 
 
 def test_map_component_totals_require_exact_section(keil_project: Path) -> None:

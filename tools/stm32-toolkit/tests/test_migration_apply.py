@@ -33,7 +33,7 @@ from stm32_toolkit.migration import (
     plan_keil_conversion,
 )
 
-CORE_CPU = 'IRAM(0x20000000,0x30000) IROM(0x8000000,0x100000) CPUTYPE("Cortex-M4")'
+CORE_CPU = 'IRAM(0x20000000,0x30000) IROM(0x8000000,0x100000) CPUTYPE("Cortex-M4") FPU2'
 FRAMEWORK_INCLUDE = "Libraries/STM32F4xx_StdPeriph_Driver"
 
 COMMON_C = (

@@ -54,6 +54,19 @@ _COMPONENT_RW_SIZE_RE = re.compile(
     r"(?:[ \t]+\([^\r\n]*\))?[ \t]*$",
     re.MULTILINE,
 )
+_COMPONENT_ROM_SIZE_RE = re.compile(
+    r"^[ \t]*Total[ \t]+ROM[ \t]+Size(?:[ \t]+\([^\r\n]*\))?[ \t]+([0-9]+)"
+    r"(?:[ \t]+\([^\r\n]*\))?[ \t]*$",
+    re.MULTILINE,
+)
+_COMPONENT_ELF_TOTALS_RE = re.compile(
+    r"^[ \t]*(?:[0-9]+[ \t]+){6}ELF[ \t]+Image[ \t]+Totals"
+    r"(?:[ \t]+\([^\r\n]*\))?[ \t]*$",
+)
+_COMPONENT_ROM_TOTALS_RE = re.compile(
+    r"^[ \t]*(?:[0-9]+[ \t]+){6}ROM[ \t]+Totals[ \t]*$",
+)
+_COMPONENT_SEPARATOR_RE = re.compile(r"^[ \t]*[-=]{3,}[ \t]*$")
 _MAX_UINT64 = 0xFFFFFFFFFFFFFFFF
 _MAX_UINT64_TEXT = str(_MAX_UINT64)
 
@@ -220,6 +233,22 @@ def _parse_component_uint64(value: str, relative: str) -> int:
     return int(normalized)
 
 
+def _is_component_footer_line(line: str) -> bool:
+    stripped = line.strip()
+    if not stripped or _COMPONENT_SEPARATOR_RE.fullmatch(line):
+        return True
+    return any(
+        pattern.fullmatch(line)
+        for pattern in (
+            _COMPONENT_ELF_TOTALS_RE,
+            _COMPONENT_ROM_TOTALS_RE,
+            _COMPONENT_RO_SIZE_RE,
+            _COMPONENT_RW_SIZE_RE,
+            _COMPONENT_ROM_SIZE_RE,
+        )
+    )
+
+
 def _parse_component_summary(text: str, relative: str) -> tuple[int, int, int, int] | None:
     lines = text.splitlines()
     section_indices = [
@@ -255,18 +284,32 @@ def _parse_component_summary(text: str, relative: str) -> tuple[int, int, int, i
             "map component totals require exactly one exact header",
             {"path": relative, "rule": "componentHeader"},
         )
-    total_indices = [
+    all_total_indices = [
         index
         for index, line in enumerate(lines[section_index + 1 :], start=section_index + 1)
         if line.strip().endswith("Grand Totals")
     ]
-    if not total_indices or len(total_indices) != 1 or total_indices[0] <= header_indices[0]:
+    header_index = header_indices[0]
+    total_indices = [index for index in all_total_indices if index > header_index]
+    if any(index <= header_index for index in all_total_indices) or not total_indices:
         raise _raise(
             "KEIL_MAP_INVALID",
             "map component totals require exactly one Grand Totals row",
             {"path": relative, "rule": "componentTotals"},
         )
-    fields = lines[total_indices[0]].strip().split()
+    total_index = total_indices[0]
+    footer_lines: list[str] = []
+    for line in lines[total_index + 1 :]:
+        if line.strip().endswith("Grand Totals"):
+            raise _raise(
+                "KEIL_MAP_INVALID",
+                "map component totals require exactly one Grand Totals row",
+                {"path": relative, "rule": "componentTotals"},
+            )
+        if not _is_component_footer_line(line):
+            break
+        footer_lines.append(line)
+    fields = lines[total_index].strip().split()
     if len(fields) < 2 or fields[-2:] != ["Grand", "Totals"]:
         raise _raise(
             "KEIL_MAP_INVALID",
@@ -282,7 +325,7 @@ def _parse_component_summary(text: str, relative: str) -> tuple[int, int, int, i
         )
     parsed = tuple(_parse_component_uint64(value, relative) for value in values)
     code, _inc_data, ro_data, rw_data, zi_data, _debug = parsed
-    section_text = "\n".join(lines[section_index + 1 :])
+    section_text = "\n".join(footer_lines)
     ro_matches = [match for match in _COMPONENT_RO_SIZE_RE.finditer(section_text)]
     rw_matches = [match for match in _COMPONENT_RW_SIZE_RE.finditer(section_text)]
     if len(ro_matches) != 1 or len(rw_matches) != 1:
