@@ -1,0 +1,26 @@
+# P4 controlled recovery programming result
+
+**RECOVERY_PROGRAMMING_AND_NATIVE_CASE_PASS.** One authorized recovery execute completed in **26,431ms**, exit0/OK. The successful Flash receipt records **54,920 verified bytes**; the physical `d3-heartbeat` case passed1/1, failed/error/timeout/skipped0. No further hardware operation followed. This restores a demonstrated programming path for this P4 candidate; it does not establish the root cause of the earlier programming failure or complete T10/VS10-A.
+
+Primary owns this integration/hardware run and evidence; existing Luna/max product implementation and its independent acceptance are unchanged. User request “开始进行” authorized the proposed existing controlled recovery route following normal prepare's resume-verify failure. No code, firmware build or deployment was repeated; no remote action was authorized or performed. Integration record base is `782dd21c7938e4f5c1fef8703f777bb8b90f5429` on `codex/STM32TK-1001-LEGACY-HARDWARE-CLOSED-LOOP-impl`.
+
+## Exact inputs and operation
+
+- Deployed source `7d22c149d5f83ded14024569bce9a17734b2b7d1`, accepted diagnostic CodeHead `8e75012e0c92dc37e67d0d31064590772a53be4b`; explicit Python `D:\stm32tk-data\fault-controlled-20260911\candidates\program-diagnostic-20260917\runtime\0.9.0\Scripts\python.exe`.
+- Firmware `D:\codex-tmp\t10-d3-fw`, revision `a5ebcab69278d3e25776ba7f9b0ab1376910cdd2`, build `5089b0924da702e38b05d245ae3b05d5f73935c02ee232b097f3e243c132e9fb`, ELF SHA256 `5dfdcdf122f4886132b8270d9abdd7620766af7e81f66770a3e20337440be745`.
+- Original business DataRoot retained; fresh diagnostic session `p4-recovery-20260917-03`, workspace `d7b137149685154d159f2f0ded85852248e4a2de1fe2813a788aa9bb54c2fd74`, probe hash `5157ce5dfaee369c1a49c1acf7a2a58fbcb44be85b5f67d1989e8105290bbe3d`, STM32F429ZGTx.
+- Existing byte-identical capture wrapper SHA256 `e25b59830330d18ff339ccbfca414294c9b9279c9ea942f2d2bbd06c85f19de4`; prior unchanged-runtime probe-exception/spawn checks reused. All outputs stay in `D:\codex-tmp\p4deploy-0917\recovery-03`.
+
+One `test target prepare --recovery-under-reset` completed statically, without hardware. Its fresh record bound recovery=true and the exact firmware, workspace/session, target/probe, protocol and case fields. UTC expiry was checked by direct DateTimeOffset conversion immediately before execution. Only the new action `d5b0e440822671ba2812a367bfedf2f63f85f7091898ab179211de388148d6f1` was consumed.
+
+One public execute started at `2026-09-17T02:52:24.2965734+00:00`, PID11356, with outer420s. The existing route contains two planned native under-reset connections and one programming call, SWD100kHz, sector erase/keepUnwritten=true/auto_unlock=false, readback and native reset/conditional-resume/mailbox/cleanup. There was no timeout, fallback, unlock, chip erase, second execute or additional observation window.
+
+## Result and boundaries
+
+Physical TestRun is `target-v2-d5b0e440822671ba2812a367bfedf2f6`, evidence ID `96d588e2c192e18e531d7007b1f2b2e3eedff21942c9023dd858200082096d74`, manifest SHA256 `81f1691cdd1bae845d363665ad41dcc60b917ad7858581a9563b8d6ad4a876a7`. The public result reports `execution_source=physical`, `physical_transport_evidence=true` and one passed `d3-heartbeat` case with recorded case duration2200ms. Its recorded case timestamps are not substituted for the measured public-operation duration.
+
+The project Flash receipt `artifacts/migration/flash-result.json` is success/OK, modify/authorized, and all seven reviewed identity fields match the fresh binding. SHA256 `8170689bffda028630f9ea6fb11fb326a3f3676ca1acf4baaed19f6a4fd84401`; a byte-identical copy is retained in the run root. `verifiedBytes=54920` is the readback evidence. Backend bytes/sectors programmed are null and must not be inferred. No independent post-close CPU-state read was performed.
+
+New registry lease `lease-3b32d3f98f57489280cac424446ee2a6` is released, the action has a consumed record, and owned/related debug processes are absent. Six preservation hashes for runtime states, firmware source/ELF and the P3 backup manifest remain unchanged. Temp is empty. Primary retains the reusable firmware/runtime and actual operation evidence; previous policy-blocked cleanup remains untouched.
+
+The user has been asked to observe D3/D4 after this operation; that separate reply is pending at this checkpoint. The previous steady-on observation is not reused as the new result. No Monitor window, Diagnostic/FixVerification composition, acceptance-attempt closure, T10 or VS10-A completion is claimed. The successful programming and native case remain valid without repeating hardware to repair administrative lineage. Historical attempt7, T9, 100ms, FullFault and P3 evidence retain their original scope.
