@@ -14,6 +14,8 @@
 
 ## 2. 实机前必须填齐的一张执行卡
 
+Windows 每个验证或部署进程须同时把 `TEMP`、`TMP`、`TMPDIR` 固定到本轮获准的短目录，并显式固定 pytest basetemp、缓存和输出目录。CPython 优先读取 `TMPDIR`；只设置前两项无法阻止继承的外部目录被使用。子进程继承同一设置。运行前记录三项实际值；越界产物先做只读归属核对，不凭目录名删除。当前运行根为 `D:\codex-tmp\t10h-0917`，下方历史示例不是本轮新目录授权。
+
 Windows 离线回归的生成工程 fixture 也须预检路径深度：configuration-staging 含 64 位 plan ID，长 basetemp 会使最终文件达到 260 字符并在 stage 阶段失败。使用独立短 D 盘 basetemp（例如 `D:\codex-tmp\fc-b1`），日志另放有描述性的证据目录；统一记录实际工作目录。2026-09-11 对照已在接受基线复现长路径失败，缩短路径通过；不能仅看到 GENERATION_APPLY_FAILED 就改本轮产品或归因 cwd。清理遭自动策略拒绝时保留，不换工具绕过。
 
 当前 Toolkit Fault fixture 使用相对仓库根目录的 `tools/stm32-toolkit/tests/fixtures/dwarf/typed.elf`。相关五模块回归从实际工作树根目录执行，PYTHONPATH 指向同一工作树的 Toolkit src；短 basetemp 不能替代工作目录核对。fixture 初始化失败和已执行的产品断言分别记录，仅补跑尚未执行的检查。
@@ -183,6 +185,12 @@ T10 采样入口复用已接受的有限 Monitor 生命周期，在执行卡中�
 按已核实绝对路径清理本轮不再需要的临时输出；保留源码测试、可复用基线、用户数据、共享缓存、rollback、授权账本、有效 PASS 和最小失败证据。Windows 使用同一 PowerShell 原生命令，删除前确认在本轮目录内。自动策略拒绝 cleanup 时记录保留，不换工具/路径绕过。没有新测试不制造清理工作。
 
 ## 8. 当前验收断点（2026-09-18）
+
+最新：T10 已完成获批的事后补充评估，见[生产交付记录](../codex/returns/STM32TK-T10-NATIVE-ANALYSIS/hypothesis-production-delivery.md)。已部署 source `227f8ea8b6895d4c2eaa14bd2483cfbce668b4b9`，runtime 为 `D:\stm32tk-data\fault-controlled-20260911\candidates\hypothesis-20260917\runtime\0.9.0`。原始 131 个证据文件未改变；以下 T10 未完成段落保留为历史断点。Task7 补证、Task11 正式交付、Task12 完整差异修正及验收仍未完成。
+
+Task7 本轮是未插桩 P1c 的事后补证，完整固定输入见 `D:\codex-tmp\t10h-0917\task7\execution-card.md`：在新的 P1c checkout/session 中使用与历史 P1c 相同的可编程镜像，保留原 P4 工程和 receipt。普通 flash 成功只证明编程及回读，不证明应用启动；有限入口必须在同一个 MODIFY supervisor/client/lease 中调用公共 `flash_firmware`，核对真实身份，再复用 `PhysicalTargetFlashAdapter.start_after_flash` 的新 reset 和条件 resume，最后验证 running。其 constructor 使用 `project_root`、`raw_probe_id`、`client`、`control_authorizations` 关键字；离线替身须遵循真实签名。P1c 没有 mailbox，不执行 Target 测试或制造 TestRun。烧录/启动主动预算 90 秒，拥有的 cleanup 正常完成。
+
+随后采集一次 5 秒/100ms 的 testtime 与 GPIOE.ODR 同批 Monitor history/snapshot，证明值变化及 PE4 两态；这不是重复 30 秒周期资格验证。一次公共受控 Fault 使用相同固件/探针身份，证明无活动 Cortex-M fault 并恢复 running。用户 D4 目视观察是独立佐证，不能由软件结果代填。最后从独立 p4restore checkout/session 恢复原 P4 相同镜像，通过公共入口取得 running 及 activity 证据，并保留该独立 session 的身份绑定和收尾证据。任一步首错停止并保留错误，诊断修正后依当前用户目标授权作有据重试；禁止盲目重试、绕过身份或复用旧 action。此段和两个有限入口须经审查后才执行依赖实机步骤。
 
 当前目标是完成 VS10-A；执行与所有权边界见[完成计划](../superpowers/plans/2026-09-17-stm32tk-vs10a-completion.md)。用户已明确授权验收所需实机烧录、测试、读取，以及首错停止、收集错误、修复并离线验证后的有据重试，无需逐次重新请示。执行前仍固定身份、单次预算、停止条件和唯一硬件所有者；不盲目重复失败动作，不复用已消费 action。此授权不包含远程 GitHub 变更。下方较早的“待新授权”均是历史记录，不能覆盖最新授权。
 
