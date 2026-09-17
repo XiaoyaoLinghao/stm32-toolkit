@@ -35,6 +35,8 @@ Windows 离线回归的生成工程 fixture 也须预检路径深度：configura
 
 关键字段未知的步骤不是 READY。先用现有源码、日志、CLI help 或既有函数离线补齐。若公共响应吞掉原始异常，必须在首次获准实机前准备好现有异常边界的捕获方式；不能失败后无授权重连补日志。新增脚本前说明现有入口为什么不够，并先离线验证。
 
+2026-09-17 编程异常修正候选使用现有响应的 `details.programDiagnostic`：记录实际 Python 调用阶段、脱敏异常及原因链、可用的 OS 错误号/Flash 地址/算法返回码。部署该候选前须用既有 fake/Windows worker 测试证明字段从 backend 经 IPC 到 Target 公共响应仍保留；外层捕获脚本无法还原 worker 已丢弃的异常。`program-call` 只表示进入编程调用，不能判定擦除或写入是否完成；无字段或 null 就记录证据缺失，不能再次自动连接补证。现有部署在该候选实际部署验证前仍按旧能力记录。
+
 迁移工程首次重新构建前，核对 `build/<preset>/CMakeCache.txt` 的 `CMAKE_HOME_DIRECTORY` 和 `CMAKE_CACHEFILE_DIR` 与当前源目录/构建目录一致。缓存仍引用旧临时路径时，先保存失败日志，验证绝对路径及 reparse 边界后，将生成的 CMakeCache.txt 和 CMakeFiles 移入本轮证据目录，再用现有 build 入口从当前工程重新配置；不得执行或重建旧临时工程。该离线环境纠正不授权硬件重试，不覆盖原失败记录，也不使已接受的 P2 ELF/实机证据失效。
 
 provenance 拒绝必须记录检查函数/行号、逐字段预期值/实际值及各自来源、最后已证实阶段，不能只看错误码或 gitDirty。迁移后文件字节相同不保证 device/inode 身份相同；使用既有只读验证入口，不改 pin、不复活已消费记录。按场景创建 session：当前固件观测和 T9 沿用有效 flash receipt 的绑定，T10 按共同身份契约另建，不能每条命令任意换 session。
@@ -165,6 +167,8 @@ T10 采样入口复用已接受的有限 Monitor 生命周期，在执行卡中�
 按已核实绝对路径清理本轮不再需要的临时输出；保留源码测试、可复用基线、用户数据、共享缓存、rollback、授权账本、有效 PASS 和最小失败证据。Windows 使用同一 PowerShell 原生命令，删除前确认在本轮目录内。自动策略拒绝 cleanup 时记录保留，不换工具/路径绕过。没有新测试不制造清理工作。
 
 ## 8. 当前验收断点（2026-09-17）
+编程异常详情保留补丁已离线 ACCEPTED，CodeHead `8e75012e0c92dc37e67d0d31064590772a53be4b`：保留实际调用阶段、脱敏异常链及可用错误号/Flash地址/算法返回码，贯穿 worker 与 Target 公共响应。实现者相关回归489项通过，主代理干净工作树完整审查及8项关键用例通过；仅本地集成，未部署、未操作硬件。部署仍为 `0c375c03`；不能据此宣称物理烧录已修复。下述P4烧录失败仍是实机断点，T10/VS10-A仍未完成。见 [修正与独立验证](../codex/returns/2026-09-17-stm32tk-program-failure-diagnostic.md)。
+
 P4 单行修复已完成并离线审查通过：固件 commit `a5ebcab69278d3e25776ba7f9b0ab1376910cdd2`，build `5089b0924da702e38b05d245ae3b05d5f73935c02ee232b097f3e243c132e9fb`，只有周期 `LED0=0`→`LED0=!LED0`。用户已授权同轮烧录、30秒采样和闭环；新 attempt `4956a90c-6132-4651-b597-e5aef5a7fd22` 到 revision6。一次正常 prepare 成功，唯一 execute 在6259ms/exit2返回 `TEST_FLASH_FAILED`，原始flash结果为 `PROBE_PROGRAM_FAILED`、details为空。已终态停止；未取得P4烧录成功/TestRun，未采样或闭环、无重试。registry released、无所属调试进程残留；用户随后确认D3/D4均常亮，机器运行状态未证实。原83文件P3备份和既有PASS保留，当前P4构建需保留。T10/VS10-A仍未完成；见 [P4实施与本次烧录停止](../codex/returns/2026-09-17-stm32tk-t10-p4-programming.md)。下述P4尚未改动/待实施是历史断点。
 
 租约修正已部署并完成生产存证验证 **PASS**：部署 source `0c375c03ab6afa4192a37d5732009b82845216a7`，独立 runtime 为业务 DataRoot 下 `candidates\lease-20260914\runtime\0.9.0`，调用其绝对 Python，业务 DataRoot 不变。Check healthy/matching、145 个安装文件匹配；原 failed-before 经公共 publisher 发布 OK，新进程认证读取通过，ref SHA `37e15560615974b49d041cd4386d3fbcbebaea76df395afd09581ae643739fc1`，两侧原 lease 分别保留、32 份原始证据不变。未新增硬件/烧录/采样/P4/attempt；旧 PASS 保留，T10/VS10-A 未完成。下一步按已准备的 P4 修复链路推进，不能使用旧默认 runtime 或复用已消费动作。详见 [部署及生产验证](../codex/returns/2026-09-14-stm32tk-monitor-lease-deployment.md)。以下“未部署/生产发布待执行”均为历史断点。

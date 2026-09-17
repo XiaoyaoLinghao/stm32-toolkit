@@ -1,0 +1,21 @@
+# Programming failure diagnostic correction
+
+Status: **ACCEPTED for the offline diagnostic-preservation slice**. CodeHead `8e75012e0c92dc37e67d0d31064590772a53be4b`; this does not establish physical programming success or the cause of the prior hardware failure.
+
+Accepted base `d02a605fb4b43691f03cdccc28c418c0fc0de869`; plan head `db948cf2a9dd1b7ee8ffa25ec2f1de5ce2a596fc`. The user authorized the bounded local correction after the P4 programming failure. One Luna/max owner (`program_diagnostic_impl`) owns product/tests in `D:\codex-tmp\p4err-0917\impl`; primary owns specification, integration, complete-diff review and cleanup. No ownership override or remote action.
+
+The correction preserves bounded programming exception details through the existing backend/worker/Target result path. Service, client, flash and CLI/MCP projection already preserve their input details and do not need production changes. Existing error codes, authorization, sector-only programming, single-dispatch behavior and cleanup are retained. The diagnostic describes the actual Python failure boundary; it is not proof of erase/write completion or physical board state.
+
+Specification and implementation plan: `docs/superpowers/specs/2026-09-17-stm32tk-program-failure-diagnostic-design.md` and `docs/superpowers/plans/2026-09-17-stm32tk-program-failure-diagnostic-plan.md`. The standard-test-procedure diagnostic paragraph received independent read-only review from `p4_acceptance_contract` with no findings; its exact hash and scope are in the run evidence.
+
+Evidence root `D:\codex-tmp\p4err-0917` records ownership, paths and environment. Existing CPython 3.12.10/pytest 8.4.2 is used for offline tests; the deployed candidate has no pytest and was not modified. All generated test output stays within that root, with primary as cleanup owner.
+
+The owner's initial `r1/red.log` reproduces absent backend and spawned-worker diagnostics (2 expected failures). Final affected regression `g8/all.log` records **489 passed in 171.06 seconds**; the owner also reports 15 focused checks passed. Primary's early inspection used synthetic data only and found Bearer-assignment and truncated-quoted-value redaction gaps; the same owner corrected both and bounded the qualified exception type before CodeHead freeze.
+
+The owner's exact six-module regression command and environment are recorded in `implementation-command.json`. The owner used `--cache-clear` rather than the plan's disabled cache; this is an output-management deviation, not a product failure. All cache/test output remained under the approved run root.
+
+Primary reviewed the complete accepted-base-to-CodeHead diff in clean detached `D:\codex-tmp\p4err-0917\review`, including all five production modules, six changed test files and the governing documents. `git diff --check` passed. Independent verification ran eight existing focused nodes covering real FlashProgramFailure fields, both redaction corrections, the Windows spawned worker, flash-result preservation, Target adapter, workflow and CLI/MCP projections: **8 passed, exit0**. Exact command/environment/head and output are retained in `v1/command.json`, `v1/result.json` and `v1/pytest.log`. No release matrix rerun. The integration branch was fast-forwarded to the reviewed CodeHead; no product changes were made by primary or after review.
+
+Cleanup: all eleven run-owned pytest basetemp paths were resolved and checked within the approved root, but automatic approval policy rejected the deletion command before execution with only `blocked by policy`. No deletion or workaround retry occurred. Basetemps/cache, minimal logs and both source/review worktrees remain retained; exact paths are in `cleanup-plan.json` and the outcome in `cleanup-disposition.json`. This cleanup hold does not change the software verdict.
+
+Deployed source remains `0c375c03ab6afa4192a37d5732009b82845216a7`. This run performs no package/deployment, enumeration, connection, flash, read, control or retry. The old failed action remains consumed and terminal. P4 firmware commit `a5ebcab69278d3e25776ba7f9b0ab1376910cdd2` and its accepted build, original P3 evidence/83-file backup and historical PASS remain preserved. User's last board observation is D3/D4 both steady on; machine execution state is unknown. P4 programming, T10 and VS10-A remain incomplete.
